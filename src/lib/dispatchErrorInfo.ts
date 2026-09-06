@@ -73,6 +73,10 @@ const INFO: Record<string, () => DispatchErrorInfo> = {
     label: m.error_invalid_request_label(),
     hint: m.error_invalid_request_hint(),
   }),
+  chat_request_conflict: () => ({
+    label: m.error_chat_request_conflict_label(),
+    hint: m.error_chat_request_conflict_hint(),
+  }),
   NOT_CONFIGURED: () => ({
     label: m.error_not_configured_label(),
     hint: m.error_not_configured_hint(),

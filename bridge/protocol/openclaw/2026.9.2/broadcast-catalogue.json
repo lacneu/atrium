@@ -1,0 +1,247 @@
+{
+  "_about": "Event names the gateway can BROADCAST — the keys of EVENT_SCOPE_GUARDS in src/gateway/server-broadcast.ts at v2026.9.2, the table every broadcast is scope-checked against (computed keys resolved from src/gateway/events.ts). Larger than event-catalogue.json: a family here and not there reaches the socket without being announced. `scopes` records the guard constants as upstream names them (`[]` = unguarded). Do not edit by hand: re-run scripts/vendor-protocol.mjs.",
+  "derivedFrom": "src/gateway/server-broadcast.ts",
+  "derivedFromSha256": "c9a68bc662421214c278035b59dcd4fe7fc22834dba91c56006caabfa0099a0d",
+  "constantsFrom": "src/gateway/events.ts",
+  "constantsSha256": "1bb49549e18fee5bfa564853aedaa804c2eea0b60663b3199b8d627f05aa959c",
+  "events": [
+    "agent",
+    "chat",
+    "chat.metadata.changed",
+    "board.changed",
+    "board.command",
+    "progressCard.changed",
+    "ui.command",
+    "chat.send_timing",
+    "chat.side_result",
+    "cron",
+    "health",
+    "exec.approval.requested",
+    "exec.approval.resolved",
+    "question.requested",
+    "question.resolved",
+    "heartbeat",
+    "plugin.approval.requested",
+    "plugin.approval.resolved",
+    "openclaw.approval.requested",
+    "openclaw.approval.resolved",
+    "presence",
+    "shutdown",
+    "gateway.suspension",
+    "tick",
+    "talk.event",
+    "talk.mode",
+    "task",
+    "task.suggestion",
+    "update.available",
+    "update.run.changed",
+    "config.changed",
+    "users.prefs.changed",
+    "mentions.changed",
+    "skills.changed",
+    "voicewake.changed",
+    "voicewake.routing.changed",
+    "device.pair.changed",
+    "device.pair.requested",
+    "device.pair.resolved",
+    "device.pair.setup.completed",
+    "device.pair.setup.deliveryUncertain",
+    "node.pair.requested",
+    "node.pair.resolved",
+    "node.presence",
+    "node.hostStats",
+    "node.runnerInventory.changed",
+    "sessions.catalog.host",
+    "sessions.changed",
+    "controlUi.sessionPullRequests.changed",
+    "plugins.controlUi.changed",
+    "session.approval",
+    "session.message",
+    "session.observer",
+    "session.operation",
+    "session.sharing",
+    "session.sharing.evidence",
+    "session.suggestion",
+    "session.typing",
+    "session.tool",
+    "terminal.data",
+    "terminal.exit",
+    "portal.changed"
+  ],
+  "scopes": {
+    "agent": [
+      "READ_SCOPE"
+    ],
+    "chat": [
+      "READ_SCOPE"
+    ],
+    "chat.metadata.changed": [
+      "READ_SCOPE"
+    ],
+    "board.changed": [
+      "READ_SCOPE"
+    ],
+    "board.command": [
+      "READ_SCOPE"
+    ],
+    "progressCard.changed": [
+      "READ_SCOPE"
+    ],
+    "ui.command": [
+      "READ_SCOPE"
+    ],
+    "chat.send_timing": [
+      "READ_SCOPE"
+    ],
+    "chat.side_result": [
+      "READ_SCOPE"
+    ],
+    "cron": [
+      "READ_SCOPE"
+    ],
+    "health": [],
+    "exec.approval.requested": [
+      "APPROVALS_SCOPE"
+    ],
+    "exec.approval.resolved": [
+      "APPROVALS_SCOPE"
+    ],
+    "question.requested": [
+      "QUESTIONS_SCOPE"
+    ],
+    "question.resolved": [
+      "QUESTIONS_SCOPE"
+    ],
+    "heartbeat": [],
+    "plugin.approval.requested": [
+      "APPROVALS_SCOPE"
+    ],
+    "plugin.approval.resolved": [
+      "APPROVALS_SCOPE"
+    ],
+    "openclaw.approval.requested": [
+      "APPROVALS_SCOPE"
+    ],
+    "openclaw.approval.resolved": [
+      "APPROVALS_SCOPE"
+    ],
+    "presence": [
+      "READ_SCOPE"
+    ],
+    "shutdown": [],
+    "gateway.suspension": [],
+    "tick": [],
+    "talk.event": [
+      "READ_SCOPE"
+    ],
+    "talk.mode": [
+      "TALK_SCOPE"
+    ],
+    "task": [
+      "READ_SCOPE"
+    ],
+    "task.suggestion": [
+      "READ_SCOPE"
+    ],
+    "update.available": [],
+    "update.run.changed": [
+      "ADMIN_SCOPE"
+    ],
+    "config.changed": [
+      "READ_SCOPE"
+    ],
+    "users.prefs.changed": [
+      "READ_SCOPE"
+    ],
+    "mentions.changed": [
+      "READ_SCOPE"
+    ],
+    "skills.changed": [
+      "READ_SCOPE"
+    ],
+    "voicewake.changed": [
+      "READ_SCOPE"
+    ],
+    "voicewake.routing.changed": [
+      "READ_SCOPE"
+    ],
+    "device.pair.changed": [
+      "PAIRING_SCOPE"
+    ],
+    "device.pair.requested": [
+      "PAIRING_SCOPE"
+    ],
+    "device.pair.resolved": [
+      "PAIRING_SCOPE"
+    ],
+    "device.pair.setup.completed": [
+      "PAIRING_SCOPE"
+    ],
+    "device.pair.setup.deliveryUncertain": [
+      "PAIRING_SCOPE"
+    ],
+    "node.pair.requested": [
+      "PAIRING_SCOPE"
+    ],
+    "node.pair.resolved": [
+      "PAIRING_SCOPE"
+    ],
+    "node.presence": [
+      "READ_SCOPE"
+    ],
+    "node.hostStats": [
+      "READ_SCOPE"
+    ],
+    "node.runnerInventory.changed": [
+      "READ_SCOPE"
+    ],
+    "sessions.catalog.host": [
+      "READ_SCOPE"
+    ],
+    "sessions.changed": [
+      "READ_SCOPE"
+    ],
+    "controlUi.sessionPullRequests.changed": [
+      "READ_SCOPE"
+    ],
+    "plugins.controlUi.changed": [
+      "READ_SCOPE"
+    ],
+    "session.approval": [
+      "APPROVALS_SCOPE"
+    ],
+    "session.message": [
+      "READ_SCOPE"
+    ],
+    "session.observer": [
+      "READ_SCOPE"
+    ],
+    "session.operation": [
+      "READ_SCOPE"
+    ],
+    "session.sharing": [
+      "READ_SCOPE"
+    ],
+    "session.sharing.evidence": [
+      "READ_SCOPE"
+    ],
+    "session.suggestion": [
+      "READ_SCOPE"
+    ],
+    "session.typing": [
+      "READ_SCOPE"
+    ],
+    "session.tool": [
+      "READ_SCOPE"
+    ],
+    "terminal.data": [
+      "ADMIN_SCOPE"
+    ],
+    "terminal.exit": [
+      "ADMIN_SCOPE"
+    ],
+    "portal.changed": [
+      "READ_SCOPE"
+    ]
+  }
+}

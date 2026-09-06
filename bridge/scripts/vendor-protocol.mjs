@@ -163,6 +163,20 @@ const FILES = [
     "schema/ui-appearance-preferences.ts",
     "../../normalization-core/src/utf16-slice.ts",
   ]),
+
+  // New transitive imports as of 2026.9.2: `config.ts` gained the self-update
+  // run contract (`update-runs.ts`) and the setup wizard (`wizard.ts`, which
+  // reads `setup-inference.ts`); `logs-chat.ts`, `sessions*.ts` and `users.ts`
+  // gained the multi-user mention contract (`human-mentions.ts`). Same closure
+  // rule as the blocks above: a vendored tree that does not typecheck is not a
+  // contract anyone can read, and each module is classified like every other.
+  ...since("2026.9.2", [
+    "schema/human-mentions.ts",
+    "schema/update-runs.ts",
+    "update-run-vocabulary.ts",
+    "schema/wizard.ts",
+    "schema/setup-inference.ts",
+  ]),
 ];
 
 /** The one repository these bytes may be attributed to. */

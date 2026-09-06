@@ -33,6 +33,15 @@ export type DispatchErrorCode =
   // classify it correctly and still let the turn die.
   | "session_init_conflict"
   | "session_write_conflict"
+  // 2026.9.2 ties a `chat.send` idempotency key to the CONTENT it was first used with
+  // (a hash of message + mentions): the same key re-sent with different input is
+  // refused — `INVALID_REQUEST` with `details.reason: "chat-request-conflict"` —
+  // while the ORIGINAL run goes on. Lower-case like the conflicts above because
+  // Convex reads it, and DISTINCT from INVALID_REQUEST because it states a
+  // different fact: nothing is malformed, the key was reused for other input.
+  // Deliberately NOT retryable: a retry under a fresh key would start a second
+  // turn beside the one still running.
+  | "chat_request_conflict"
   // A Hermes surface that is NOT DEPLOYED on this instance, as opposed to one that failed.
   // The managed-files API lives only in the dashboard web server, which upstream starts
   // when HERMES_DASHBOARD is set; `hermes serve` alone answers every turn and 404s every
@@ -82,6 +91,9 @@ const DOWNSTREAM_REJECTION_CODES: ReadonlySet<DispatchErrorCode> = new Set([
   "ATTACHMENT_TOO_LARGE",
   "ATTACHMENT_REJECTED",
   "INVALID_REQUEST",
+  // The gateway RECEIVED the send and refused the key for other input — its link
+  // and credentials worked; the bridge is not the fault.
+  "chat_request_conflict",
   // Not literally "the gateway refused it" — the BRIDGE refused it, on a figure the
   // gateway reported. Listed here because this set's job is bridge HEALTH: the link
   // and the credentials worked perfectly, and a full session must never paint the
@@ -229,6 +241,13 @@ export function classifyGatewayError(
   // (codex). One rule, and it had two doors again.
   if (isSessionInitConflictText(msg)) {
     return "session_init_conflict";
+  }
+  // IDEMPOTENCY-KEY CONFLICT (2026.9.2): the key was already used for different
+  // input. Arrives behind the same `INVALID_REQUEST:` prefix as the conflict
+  // above, so it must be recognised BEFORE the generic bucket; the wording is the
+  // gateway's own (chat-send-pre-admission.ts). Not a shape error, not retryable.
+  if (/already used for different input/i.test(msg)) {
+    return "chat_request_conflict";
   }
   // GENERIC attachment fallback: no marker named the file, we only know the
   // send carried one and the gateway said "invalid request". It sits AFTER the

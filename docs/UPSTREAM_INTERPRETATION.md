@@ -9,7 +9,7 @@ WebSocket protocol, versus the Atrium bridge normalizer
 ratchet; the per-field classification lives in the coverage manifests under
 `bridge/protocol/openclaw/coverage/`.
 
-Reference source: `github.com/openclaw/openclaw` at tag **`v2026.9.1`** — the
+Reference source: `github.com/openclaw/openclaw` at tag **`v2026.9.2`** — the
 exact `maxValidated` gateway version in `bridge/src/compat.ts`. Upstream
 references below (`$UP/…`) are paths inside that tag. The Control UI is a
 **reference interpretation, not a spec**: where Atrium diverges on purpose
@@ -17,10 +17,20 @@ references below (`$UP/…`) are paths inside that tag. The Control UI is a
 the divergence is documented as deliberate rather than "fixed".
 
 No internal offset: the runtime drift detector vendors its schema at
-`2026.9.1` (`DRIFT_VENDORED_VERSION`, `protocol-drift.ts`), the same version as
+`2026.9.2` (`DRIFT_VENDORED_VERSION`, `protocol-drift.ts`), the same version as
 the validated ceiling. An unknown-field warning against a 2026.9.x gateway is
 therefore real drift, not schema staleness — it names a field the published
 contract does not declare, and should be read as such.
+
+**Revision of 2026-09-06 (v2026.9.1 → v2026.9.2).** Re-verified zone by zone
+against the upstream tag (report:
+`openclaw-notes/atrium/bench-runs/upstream-diff-2026.9.1-vs-2026.9.2/`), then
+proved live: full catalogue GO 11/11, attestation
+`bridge/protocol/openclaw/2026.9.2/BENCH.json`. Nothing Atrium reads on the
+wire changed shape; what moved is called out inline under **Changed since
+2026.9.1** in §1, §2 and §5. §3 and §4 were re-checked and still hold. The one
+behavioural change is in §5: the `chat.send` idempotency key is now bound to
+the content it was first used with.
 
 **Revision of 2026-09-03 (v2026.8.2 → v2026.9.1).** Re-verified zone by zone
 against the upstream tag (report:
@@ -99,14 +109,34 @@ bridge reads):
   the 15 s retry grace: a settled failure reaches the wire immediately instead
   of after the grace. Atrium finalizes on the lifecycle itself — no impact.
 
+**Changed since 2026.9.1** (re-verified at v2026.9.2, no impact on what
+Atrium reads): (a) under socket back-pressure the gateway coalesces a run's
+pending text deltas per client (`liveText: {group, coalesce}` in
+`server-broadcast.ts:503-530`) — fewer `chat:delta` frames with longer
+`deltaText` and a non-contiguous `payload.seq`; the envelope `seq` stays
+contiguous and a terminal always drains the queue first, and Atrium reads the
+cumulative `message` snapshot before any delta (`normalizer.ts`); (b) a
+replaceable provisional assistant item (`replace:true, replaceable:true`) now
+clears the prefix on the cumulative text, so the `final` and the assistant
+stream agree; (c) a retryable HTTP 5xx or a reset is no longer promoted to
+`stopReason:"timeout"` — only a recorded timeout is (`run-termination.ts:134-156`),
+and `providerStarted` may arrive without `timeoutPhase`; (d) request-side only:
+`chat.history` gains `maxBytes`, `chat.metadata` gains `authProfileId`,
+`chat.startup` accepts a short id, and `chat.send` gains `mentions` — none
+sent by the bridge, all optional.
+
 ### Control UI interpretation
 
-The Control UI **does not read `stopReason` or `errorKind` at all**. Its
-`ChatEventPayload` type does not even declare the fields
-(`$UP/ui/src/pages/chat/chat-history.ts:464-473`); the reducer discriminates
-on `state` only: `final` → done, `aborted` → interrupted/killed, `error` →
-interrupted/failed + raw `errorMessage` banner
-(`$UP/ui/src/pages/chat/chat-gateway.ts:155-280`). On `error` it
+The Control UI's **live event reducer reads neither `stopReason` nor
+`errorKind`**. Its `ChatEventPayload` type does declare `stopReason` (and
+`errorDetail`, `yielded`; not `errorKind`) —
+`$UP/ui/src/pages/chat/chat-history.ts:186-200` at v2026.9.2 — but the
+reducer discriminates on `state` only: `final` → done, `aborted` →
+interrupted/killed, `error` → interrupted/failed + raw `errorMessage` banner
+(`$UP/ui/src/pages/chat/chat-gateway.ts:155-280`, unchanged 9.1 → 9.2). The
+only readers of `stopReason` in the UI work on persisted history records
+(`chat-agent-run-grouping.ts:58-62,116-129`, `terminal-reply-recovery.ts:24-28`)
+and on the talk result, never on a live frame. On `error` it
 materializes already-streamed parts as visible messages and shows the error
 banner *next to* the kept text.
 
@@ -162,12 +192,26 @@ announce×send race. Contention is resolved by:
   `stopReason:"restart"`).
 
 The bidirectional kills observable in production are therefore **emergent,
-not policy**: during LLM streaming the run releases its prompt lock; if
-another writer touches the session file, the run that *detects* the change on
-reacquire dies with `EmbeddedAttemptSessionTakeoverError`
-(`attempt.session-lock.ts:1147-1151`). Which side loses depends on timing —
-both directions of the race are possible, consistent with what Atrium has
-observed.
+not policy**. Since 2026.8.1 the mechanism is the SQLite transcript write
+fence (see §3): the run whose transcript write finds the session claimed by
+another writer dies with `SessionTranscriptWriterClaimReboundError`
+(`$UP/src/agents/transcript-write-context.ts:239`), or a starting run finds
+its turn already claimed (`ActiveTurnClaimError`,
+`$UP/src/agents/placement-turn-claims.ts:57`). The pre-2026.8.1 prompt-lock
+takeover this section used to cite is gone. Which side loses depends on
+timing — both directions of the race are possible, consistent with what
+Atrium has observed. Re-verified at v2026.9.2: `queue/settings.ts` is
+byte-identical (default `steer`), no `status:"queued"` ack exists on
+`chat.send`, and the announce id stays `announce:v1:<childKey>:<childRunId>`.
+
+**Changed since 2026.9.1**: an announce that cannot wait for the requester's
+transcript commit (`transcript_commit_wait_unsupported`) is no longer
+downgraded to a best-effort re-steer — it takes the direct path, so one more
+`announce:v1:…` run may reach the parent session instead of an invisible
+injection (a path Atrium already merges); a requester recovering from a
+timeout answers `completion_handoff_pending` (retryable, no frame) rather than
+delivering. Neither is a kill; the direct announce still goes through
+admission and waits.
 
 ### Wire visibility
 
@@ -381,22 +425,34 @@ a durable surface the Control UI does not have.
 
 - **Control UI derivation**: `idempotencyKey` **is** the client-generated
   run UUID (`crypto.randomUUID`), assigned once at enqueue time and **reused
-  verbatim on every retry** (`$UP/ui/src/pages/chat/chat-send.ts:275,334,
-  452,595,1072-1103`). No content hash, no timestamp.
+  verbatim on every retry** (`$UP/ui/src/pages/chat/chat-send-queue-state.ts:83`,
+  `chat-send-delivery.ts:211,258`, `chat-send-request.ts:53` at v2026.9.2).
+  No content hash, no timestamp on the client side.
 - **Gateway validation**: `NonEmptyString`, opaque, no normalization — the
   key *becomes* the run's `runId`
-  (`$UP/src/gateway/server-methods/chat.ts:3802`; "chat.send idempotency
-  keys are exact protocol identities", `chat-queued-turns.ts:36`).
+  (`$UP/src/gateway/server-methods/chat-send-session.ts:88`; "chat.send
+  idempotency keys are exact protocol identities", `chat-queued-turns.ts:39`).
 - **Dedupe window**: one `Map<string, DedupeEntry>` **per gateway process**
   (all connections, all sessions). Keys `chat:<idempotencyKey>` (terminal
   results) and `pending-chat:<idempotencyKey>` (admission reservations).
   Sweep every 60 s; **TTL 5 min** (`DEDUPE_TTL_MS`), **cap 1000** entries
   oldest-first — active/pending runs always survive both. Separate
   aborted-run markers live **60 min** (`ABORTED_RUN_TTL_MS`).
-- **Duplicate behavior** (always an ack, never silence/error): terminal
-  cached → same payload replayed with `meta:{cached:true}`; abort marker →
-  synthesized "aborted" payload; pending/active/queued →
+- **Duplicate behavior**: a duplicate with the SAME content is always an ack,
+  never silence — terminal cached → same payload replayed with
+  `meta:{cached:true}`; abort marker → synthesized aborted payload
+  (`{runId, status:"timeout", summary:"aborted", stopReason?, endedAt}`,
+  `chat-abort-authorization.ts:48-54`); pending/active/queued →
   `{runId, status:"in_flight"}`.
+- **Since 2026.9.2 the key is bound to its content.** The gateway stores a
+  request identity with the key — `sha256(JSON.stringify([message,
+  mentions]))`, `chat-send-request.ts:248-256` — at admission, and a reuse of
+  the key with DIFFERENT input is refused: `INVALID_REQUEST` with
+  `details.reason: "chat-request-conflict"` and the message "This message ID
+  was already used for different input…" (`chat-send-pre-admission.ts:148-155`),
+  while the original run keeps running. After the RAM window the comparison
+  falls back to the transcript's submitted input (`:189-217`). "Always an ack"
+  therefore holds for a faithful duplicate only.
 - The announce idempotency family (`announce:v1:<childKey>:<runId>`) is a
   **separate, persisted delivery identity** — unrelated to the chat.send
   dedupe map.
@@ -404,12 +460,24 @@ a durable surface the Control UI does not have.
 ### Atrium behavior and verdict
 
 - Bridge derivation: `webchat-<sha256(sessionKey|clientMessageId)>`
-  (`openclaw-client.ts:518-533`), stable across Convex's at-least-once
+  (`openclaw-client.ts:1007-1018`), stable across Convex's at-least-once
   dispatch — this **exploits the upstream window correctly** (re-POSTs
   replay/`in_flight` while the run is active, since active entries outlive
   the TTL).
+- The 2026.9.2 content binding is the one place where a stable key can hurt:
+  the bridge composes the sent `message` from the user's text plus, on a
+  fresh session, a rehydration prefix (`server.ts`, `computeFreshSession` /
+  `rehydrationDecision`) and, per instance, a media-delivery instruction — so
+  a re-POST of the same outbox row after a lost ack can carry a different
+  text under the same key. Rare in practice: Convex never re-POSTs a row
+  (`convex/bridge.ts`), the preempt re-park and the auto-retry mint fresh keys
+  (`preempt-<messageId>-<now>`, `autoretry-<id>-<n>-<now>`). When it does
+  happen the bridge classifies the refusal as `chat_request_conflict`
+  (`bridge/src/core/dispatch-errors.ts`): a downstream rejection with its own
+  card, deliberately outside the bounded auto-retry, since the first turn is
+  still running on the gateway.
 - The `dispatchKey` alias minted on preempt-repark
-  (`preempt-<messageId>-<now>`, `preemptRepark.ts:293`) is **confirmed
+  (`preempt-<messageId>-<now>`, `preemptRepark.ts:306`) is **confirmed
   necessary and safe** against upstream: the abort path writes *both* the
   abort marker and the terminal `chat:` entry, so a re-POST under the
   original key would replay the "aborted" payload — for up to ~60 min (abort
@@ -495,7 +563,7 @@ Atrium never has (ignored, verifiably); the per-phase `chat.send` timing is a ga
 | Embedded-lock downgrade | **Sound via the `hasRealContent()` gate** (the homologue of upstream "send evidence"), not via the "post-generation" argument, which mid-turn takeovers disprove |
 | Init-conflict retry | **Conformant** with upstream channel-side retry treatment |
 | Compaction | **Explicit signals consumed** — `{stream:"compaction"}` is the primary mid-turn signal (marker + widened budget, no buffer reset); the `abandoned` heuristic survives as the multi-version/Hermes fallback and stands down when explicit signals are present; `session.operation`/`sessions.changed` remain unconsumed (rotation detection covers the manual path) |
-| chat.send idempotency | **Conformant**; the preempt `dispatchKey` alias is necessary (abort markers poison the original key for ~60 min) and timing-independent |
+| chat.send idempotency | **Conformant** for a faithful duplicate; since 2026.9.2 a key reused with other content is refused (`chat-request-conflict`), classified as its own downstream rejection, never retried; the preempt `dispatchKey` alias is necessary (abort markers poison the original key for ~60 min) and timing-independent |
 | Config changes / model roster | **Handled** — `config.changed` (broadcast-only, never announced) invalidates the per-connection roster and triggers a refresh pushed to Convex under the roster's own observation stamp; a frame gap invalidates in the transport and the next publish re-asks and reports the newer answer; the scope-guard table is vendored beside the announced catalogue, and a family in neither vocabulary is named on receipt |
 
 Fixtures extracted from upstream unit tests at `v2026.9.1` are vendored in

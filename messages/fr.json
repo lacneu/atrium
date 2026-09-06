@@ -1393,6 +1393,8 @@
   "error_attachment_rejected_hint": "La passerelle n’a pas pu analyser/préparer la pièce jointe. Bug connu de la passerelle (le validateur base64 déborde sur les gros fichiers, RangeError) — à corriger côté passerelle (isValidBase64). En attendant : un fichier plus petit passe, ou envoyez le texte sans pièce jointe.",
   "error_invalid_request_label": "Requête invalide",
   "error_invalid_request_hint": "La passerelle a rejeté la requête. Consultez les logs du bridge pour le détail brut.",
+  "error_chat_request_conflict_label": "Message déjà envoyé avec un autre contenu",
+  "error_chat_request_conflict_hint": "La passerelle avait déjà accepté ce message avec un contenu différent et a gardé ce tour en cours. Rien n'a été envoyé deux fois : vérifiez la conversation, puis envoyez le nouveau contenu comme un nouveau message.",
   "error_not_configured_label": "Bridge non configuré",
   "error_not_configured_hint": "BRIDGE_URL / BRIDGE_SHARED_SECRET ne sont pas définis côté Convex (npx convex env set).",
   "error_unrouted_label": "Utilisateur non routé",

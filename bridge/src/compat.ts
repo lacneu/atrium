@@ -311,7 +311,7 @@ export const COMPAT_MANIFEST: CompatManifest = {
       // hashes). It had previously been declared through its beta.2 RC
       // (release-day upgrades stay in support with no banner) — that proxy
       // note is now history, the row stands on its own run.
-      supportedRange: { min: "2026.5.19", maxValidated: "2026.9.1" },
+      supportedRange: { min: "2026.5.19", maxValidated: "2026.9.2" },
       // Inside the range, and BROKEN on a stock gateway: a managed-media
       // `attachment` block persisted by the gateway's own path crashes
       // `transcript-transform` on every later turn of that session (upstream
@@ -373,6 +373,18 @@ export const COMPAT_MANIFEST: CompatManifest = {
         // plan tool `progress_card`; one boot of 9.1 over migrated 8.2 state was
         // refused once with a SQLite worker temp-dir error and started on retry.
         "2026.9.1",
+        // 2026.9.2: full live suite GO 11/11 (2026-09-06, attestation
+        // protocol/openclaw/2026.9.2/BENCH.json) on the custom image r3. Static
+        // drift vs 2026.9.1: plan/cron params and the announce id byte-identical,
+        // `tasks.list` additive (`sortBy`). Four interpretation zones re-verified;
+        // the one behavioural change is `chat.send` binding its idempotency key to
+        // the request content (a key reused with other input is refused as
+        // `chat-request-conflict` while the first run goes on), classified as its
+        // own downstream rejection in dispatch-errors.ts. New surface (multi-user
+        // mentions and participants, per-person model accounts, setup wizard,
+        // self-update runs, Control UI plugin catalogue) vendored and classified,
+        // not adopted. Hermes co-run on 0.19.0.
+        "2026.9.2",
       ],
       capabilities: OPENCLAW_CAPABILITIES,
     },

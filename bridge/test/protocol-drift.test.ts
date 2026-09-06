@@ -11,7 +11,7 @@
 import { readFileSync, readdirSync } from "node:fs";
 import { afterEach, describe, expect, it } from "vitest";
 import { promisedVersion } from "./helpers/vendored.js";
-import * as vendoredChatSchemas from "../protocol/openclaw/2026.9.1/logs-chat.js";
+import * as vendoredChatSchemas from "../protocol/openclaw/2026.9.2/logs-chat.js";
 import {
   COVERAGE_SUMMARY,
   DRIFT_VENDORED_VERSION,
@@ -219,7 +219,7 @@ describe("protocol drift detector", () => {
       { properties?: Record<string, unknown> }
     >;
     expect(DRIFT_VENDORED_VERSION, "the static import must track the vendored version").toBe(
-      "2026.9.1",
+      "2026.9.2",
     );
     const bySchema: Record<string, string> = {
       delta: "ChatDeltaEventSchema",

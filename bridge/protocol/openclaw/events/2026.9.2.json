@@ -1,0 +1,332 @@
+{
+  "$comment": "Atrium's classification of the event catalogue the gateway ANNOUNCES about itself (`hello-ok.features.events`, vendored as ../2026.7.2-beta.5/event-catalogue.json). One entry per announced family, no more and no fewer — `events-coverage.test.ts` asserts the BIJECTION, so vendoring a version whose catalogue grew turns CI red until someone classifies the newcomer. Same vocabulary as the field coverage beside it: `handled` carries `by`, `ignored` carries `why`, `gap` REQUIRES a `note` saying what is unsupported and what it costs. 2026.7.2-beta.5: carried forward from 2026.7.1 (all 30 families still announced, entries unchanged); the 14 families new in this tag enter as `gap` on the frame-discovery queue. The tallies live in `counts` below, DERIVED and asserted by the ratchet — three separate corrections rotted when they were prose. `broadcastOnly` classifies the families the gateway can BROADCAST without announcing (broadcast-catalogue.json minus event-catalogue.json — the scope-guard table is the larger vocabulary); same statuses, same anchor rule, tallies in `broadcastOnlyCounts`.",
+  "version": "2026.9.2",
+  "catalogue": "event-catalogue.json",
+  "counts": {
+    "total": 60,
+    "handled": 4,
+    "gap": 25,
+    "ignored": 31
+  },
+  "events": {
+    "connect.challenge": {
+      "status": "handled",
+      "by": "openclaw-client.ts handshake — the auth challenge that precedes hello-ok",
+      "anchor": {
+        "file": "src/providers/openclaw/openclaw-client.ts",
+        "token": "eventPayload(frame, \"connect.challenge\")"
+      }
+    },
+    "agent": {
+      "status": "handled",
+      "by": "normalizer + run-manager — the run/tool/activity stream a turn is built from",
+      "anchor": {
+        "file": "src/providers/openclaw/run-manager.ts",
+        "token": "f.event !== \"agent\""
+      }
+    },
+    "chat": {
+      "status": "handled",
+      "by": "normalizer — the reply content stream (delta/snapshot/final/aborted)",
+      "anchor": {
+        "file": "src/providers/openclaw/normalizer.ts",
+        "token": "eventType !== \"chat\""
+      }
+    },
+    "session.operation": {
+      "status": "gap",
+      "note": "The reader exists, is correct and is covered by tests — but it is NEVER FED (`normalizer.ts`, \"NOT CURRENTLY FED\"). The event reaches only connections that called `sessions.subscribe`, and subscribing on the turn-serving socket cost conversation frames, proven by bisect on the live bench. Real cost: a GATEWAY-decided compaction has no observable cause; only the compactions Atrium performs label themselves. To be fed by the dedicated session-events connection when that is built."
+    },
+    "shutdown": {
+      "status": "handled",
+      "by": "connection-end.ts — names the GATEWAY_RESTARTING cause instead of a bare socket close",
+      "anchor": {
+        "file": "src/providers/openclaw/connection-end.ts",
+        "token": "eventPayload(frame, \"shutdown\")"
+      }
+    },
+    "cron": {
+      "status": "gap",
+      "note": "Atrium ships cron management and a cron calendar, but it reconstructs cron facts from a TOOL completion on the agent stream (core/cron-part.ts matches name===\"cron\" && phase===\"completed\") rather than reading this broadcast. Deriving state from a tool's output is strictly weaker than reading the event the gateway emits for it: a cron that changes outside a tool call is invisible."
+    },
+    "task": {
+      "status": "gap",
+      "note": "Async task engagements are derived from run-id shapes on the agent stream (`<tool>:<taskId>:ok|error`, suffixed `:agent-loop` since 2026.8.1 — subagent-announce-delivery.ts:219,230). Since 2026.8.1 the gateway also wakes the requester session with a synthetic `announce:requester-settle:<agentId>:<sessionKey>:<childRunIds>` run (subagent-announce.requester-settle-wake.ts:389) — no child key, classified apart by isRequesterSettleRun. The native `plan` stream is emitted on delivery runs as well (measured 2026-09-02), so `plan.advance` is inferred for `update_plan` only; `progress_card` replaces the whole card on every put (markdown-only drops the steps) and a `steps: null` result is read as a cleared plan; the plan stream itself carries `steps: []` for those calls (readProgressCardPlanInput: `steps ?? []`) and is materialized as an empty plan, not from this broadcast. A task whose lifecycle the agent stream does not narrate is not observed at all."
+    },
+    "talk.mode": {
+      "status": "gap",
+      "note": "Atrium has a realtime talk mode, driven entirely through RPC methods (`talk.client.*`). The gateway's own mode broadcast is not consumed, so a mode change made anywhere else is not reflected."
+    },
+    "talk.event": {
+      "status": "gap",
+      "note": "Same surface as talk.mode: the talk feature exists but its event feed is unread."
+    },
+    "exec.approval.requested": {
+      "status": "gap",
+      "note": "A turn blocked on an exec approval is, from Atrium's side, a turn that has gone quiet. W5 deliberately limits itself to suspending the budget and NAMING the wait, and the approval UI is explicitly out of scope — but the request event itself is what would let Atrium name it, and it is not read."
+    },
+    "exec.approval.resolved": {
+      "status": "gap",
+      "note": "The other half of the above: nothing tells Atrium the wait ended."
+    },
+    "plugin.approval.requested": {
+      "status": "gap",
+      "note": "Same class as exec.approval.requested, for plugin trust prompts."
+    },
+    "plugin.approval.resolved": {
+      "status": "gap",
+      "note": "Same class as exec.approval.resolved."
+    },
+    "session.message": {
+      "status": "ignored",
+      "why": "Message history is Convex-authoritative in Atrium; the reply content a turn depends on arrives on the `chat` stream. Reading this too would duplicate a record Atrium already owns."
+    },
+    "session.tool": {
+      "status": "ignored",
+      "why": "Tool phases a turn depends on arrive on the `agent` stream (tool.status). This broadcast feeds the upstream sessions view, not a turn."
+    },
+    "sessions.changed": {
+      "status": "ignored",
+      "why": "Session-list housekeeping for the upstream client's own list. Atrium drives its chat list from Convex and never renders the gateway's."
+    },
+    "presence": {
+      "status": "ignored",
+      "why": "Channel presence for chat surfaces (who is online). Atrium is not a chat client and no turn depends on it."
+    },
+    "tick": {
+      "status": "ignored",
+      "why": "Periodic clock broadcast carrying no turn state."
+    },
+    "health": {
+      "status": "ignored",
+      "why": "Gateway self-report. Atrium's own health surface polls `/health` on its schedule rather than following a broadcast, so liveness does not depend on frames arriving."
+    },
+    "heartbeat": {
+      "status": "ignored",
+      "why": "Turn liveness is enforced by the bridge's own recv deadline (lot 29) and by heartbeat RUNS, which the normalizer already refuses as answers. The broadcast adds nothing a turn depends on."
+    },
+    "node.pair.requested": {
+      "status": "ignored",
+      "why": "Node pairing is gateway-operator business, performed outside Atrium."
+    },
+    "node.pair.resolved": {
+      "status": "ignored",
+      "why": "See node.pair.requested."
+    },
+    "node.invoke.request": {
+      "status": "ignored",
+      "why": "Node-to-node invocation. Atrium is a client of one gateway and never services these."
+    },
+    "device.pair.requested": {
+      "status": "ignored",
+      "why": "Device pairing is gateway-operator business, performed outside Atrium."
+    },
+    "device.pair.resolved": {
+      "status": "ignored",
+      "why": "See device.pair.requested."
+    },
+    "voicewake.changed": {
+      "status": "ignored",
+      "why": "Wake-word configuration for a local voice surface Atrium does not host."
+    },
+    "voicewake.routing.changed": {
+      "status": "ignored",
+      "why": "See voicewake.changed."
+    },
+    "terminal.data": {
+      "status": "ignored",
+      "why": "The gateway's terminal surface is a separate product feature; Atrium exposes no terminal and would have nowhere to render this."
+    },
+    "terminal.exit": {
+      "status": "ignored",
+      "why": "See terminal.data."
+    },
+    "update.available": {
+      "status": "ignored",
+      "why": "Gateway self-update notice. Atrium's version awareness comes from the handshake's `server.version` and its own compat manifest, not from an update prompt."
+    },
+    "ui.command": {
+      "status": "gap",
+      "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "session.approval": {
+      "status": "gap",
+      "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "session.observer": {
+      "status": "gap",
+      "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "session.sharing": {
+      "status": "gap",
+      "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "session.suggestion": {
+      "status": "gap",
+      "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "session.typing": {
+      "status": "gap",
+      "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "task.suggestion": {
+      "status": "gap",
+      "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "node.presence": {
+      "status": "gap",
+      "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "node.invoke.cancel": {
+      "status": "gap",
+      "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "node.invoke.input": {
+      "status": "gap",
+      "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "question.requested": {
+      "status": "gap",
+      "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "question.resolved": {
+      "status": "gap",
+      "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "openclaw.approval.requested": {
+      "status": "gap",
+      "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "openclaw.approval.resolved": {
+      "status": "gap",
+      "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+    },
+    "chat.metadata.changed": {
+      "status": "ignored",
+      "why": "Broadcast with an EMPTY payload and `dropIfSlow: true` (server-chat-metadata-lifecycle.ts) — a 'refresh your chat metadata' nudge for a client that caches the gateway's chat list. Atrium's chat list is Convex-authoritative and it never calls `chat.history`, so there is nothing to refresh."
+    },
+    "controlUi.sessionPullRequests.changed": {
+      "status": "ignored",
+      "why": "Control-UI pull-request panel. Atrium exposes no such view and calls none of the GitHub surfaces."
+    },
+    "device.pair.changed": {
+      "status": "ignored",
+      "why": "Device-pairing lifecycle for the Control UI. Atrium's bridge device is paired once out of band (local-openclaw/pair.sh) and it does not react to pairing changes at runtime."
+    },
+    "device.pair.setup.completed": {
+      "status": "ignored",
+      "why": "Operator-facing notice that a pairing hand-off finished (device-pair-setup-completion.ts). Same reason as `device.pair.changed`."
+    },
+    "device.pair.setup.deliveryUncertain": {
+      "status": "ignored",
+      "why": "Operator-facing notice that replay is blocked while credential delivery is unknown. Same reason as `device.pair.changed`."
+    },
+    "node.runnerInventory.changed": {
+      "status": "ignored",
+      "why": "Node/runner inventory for the Control UI. Atrium is a gateway CLIENT, not a node host, and subscribes to no node inventory."
+    },
+    "portal.changed": {
+      "status": "ignored",
+      "why": "Worker-environment portals (server-worker-environment-startup.ts). Atrium calls no `worker.*` or `environments.*` method."
+    },
+    "progressCard.changed": {
+      "status": "ignored",
+      "why": "`{sessionKey, revision}` from the `progressCard.*` methods, which Atrium does not call. CHECKED because it could have replaced the plan card's feed: `update-plan` is still present upstream at 2026.8.1 (14 non-test files, same as 2026.7.1), so this is an ADDITIONAL surface, not a replacement."
+    },
+    "session.sharing.evidence": {
+      "status": "ignored",
+      "why": "Emitted by `sessions.sharing`, a surface Atrium does not call. The same code path emits `sessions.changed` right after, which Atrium already handles — so no state change is lost by ignoring this one."
+    },
+    "skills.changed": {
+      "status": "ignored",
+      "why": "`{reason}` broadcast when the gateway reloads its skills. Atrium neither lists nor invokes skills through the gateway protocol."
+    },
+    "users.prefs.changed": {
+      "status": "ignored",
+      "why": "Control-UI user preferences. Atrium owns its own user model in Convex and reads no gateway user preference."
+    },
+    "gateway.suspension": {
+      "status": "gap",
+      "note": "NEW in 2026.9.1: broadcast of the gateway's suspension phase (accepting → preparing → draining → prepared, GatewaySuspensionSchema) while an operator suspends it via gateway.suspend.*. Not read yet. Together with the GatewaySuspend* schemas it is the candidate source for Atrium's deploy-readiness gate (GET /api/v1/activity): a gateway announcing 'draining'/'prepared' should read as NOT ready. frame-discovery queue."
+    },
+    "mentions.changed": {
+      "status": "gap",
+      "note": "new in 2026.9.2 — the multi-user mention inbox (`mentions.changed {gatewayInstanceId, revision}` from mention-inbox.ts, READ scope): a person mentioned from the composer gets a temporary Inbox entry. Not yet instructed (frame-discovery queue, bench first): the bridge connects with the gateway's single owner profile, so a mention aimed at an Atrium user has nobody to reach until the bridge carries a per-person identity."
+    },
+    "node.hostStats": {
+      "status": "ignored",
+      "why": "`{nodeId, hostStats}` broadcast `dropIfSlow` from server-node-events.ts (2026.9.2): resource meters of a paired device for the Devices page. Atrium pairs no device and shows no node."
+    },
+    "plugins.controlUi.changed": {
+      "status": "ignored",
+      "why": "`{revision}` broadcast from plugins-control-ui.ts (2026.9.2) when the Control UI's plugin module catalogue changes. Atrium is not the Control UI and loads no gateway plugin module."
+    },
+    "update.run.changed": {
+      "status": "ignored",
+      "why": "Gateway self-update run progress (update-run-watcher.ts, 2026.9.2). Same reason as `update.available`: Atrium's version awareness comes from the handshake's `server.version` and its own compat manifest, never from the gateway's updater."
+    }
+  },
+  "broadcastOnly": {
+    "board.changed": {
+      "status": "ignored",
+      "why": "Broadcast by the gateway's BOARD methods (`src/gateway/server-methods/board.ts`, `context.broadcast(\"board.changed\", …)`) after a board mutation, for the Control UI's board page (`ui/src/lib/board/gateway-provider.ts`). Atrium has no board surface and never calls a `board.*` method (verified: no such call in bridge/src), so the notice describes a view Atrium does not hold."
+    },
+    "board.command": {
+      "status": "ignored",
+      "why": "Sent by the dashboard TOOL (`src/agents/tools/dashboard-tool.ts`, `broadcastToConnIds(\"board.command\", params, connIds)`) to the connections subscribed to a board only. Atrium never subscribes to a board, so this frame is never addressed to its socket."
+    },
+    "chat.send_timing": {
+      "status": "gap",
+      "note": "Per-phase latency of a `chat.send` (`src/gateway/server-chat.ts` at the `\"chat.send_timing\"` broadcast: `ackToPhaseMs`, `receivedToPhaseMs`, dispatch offsets, keyed by `sessionKey`). It is broadcast READ-scoped, so Atrium's turn socket receives it and drops it unread. Real cost: the trace of a turn carries only Atrium-side clocks — when a turn is slow, nothing says how much of it was the gateway's own dispatch. To be instructed as its own frame-discovery run."
+    },
+    "chat.side_result": {
+      "status": "handled",
+      "by": "normalizer.ts — admitted at intake (`feedFrame` lets `chat.side_result` through with `agent`/`chat`/`session.operation`) and handled by `handleSideResult` (G-18): the run's side result becomes a part of the reply on the run's own chat `seq`. Sequenced on the run's chat seq upstream (`src/gateway/server-methods/chat-broadcast.ts`, `broadcastSideResult`, scoped to the run's session keys).",
+      "anchor": {
+        "file": "src/providers/openclaw/normalizer.ts",
+        "token": "handleSideResult("
+      }
+    },
+    "config.changed": {
+      "status": "handled",
+      "by": "openclaw-client.ts intake — read by `readConfigChanged` (config-changed.ts) and reported raw to the roster POLICY the session attaches to its connection (`attachRosterPolicy`, providers/openclaw/models-roster.ts): every notice invalidates every owner's cached `models.list` roster (a new epoch; the roster is kept, never deleted; no deduplication by hash, since an answer computed mid-reload is the old roster under the new hash), coalesced over a burst; the refresh (`refreshAfterConfigChange`) re-describes the session, waits for a post-change answer and pushes it to Convex, so the picker follows the gateway's config without a turn — retried once past the failure bound when the roster published was not the post-change one. An envelope frame gap invalidates in the transport itself (the event is sent `dropIfSlow`; a lost one consumed a `seq`), and the next publish re-asks off its path and reports a newer answer alone. The frame is then queued unchanged and dropped by the normalizer, like the shutdown notice. A roster in hand is never blocked on (`ensureAvailableModels`): served as is and refreshed off the caller's path when invalidated or past its bound; a failed re-ask keeps the last good roster; with nothing in hand the publish waits for the answer; an empty list or a list of unavailable models is a failure that keeps the last good roster. Convex keeps a roster for its current owner only (the owner of the latest knob publish accepted) and orders it by its own observation stamp (the gateway's answer), the knob fields by the describe's; a roster answered after its publish is reported alone, unstamped.",
+      "anchor": {
+        "file": "src/providers/openclaw/openclaw-client.ts",
+        "token": "readConfigChanged(frame)"
+      },
+      "proof": {
+        "kind": "deterministic-test",
+        "ref": "bridge/test/config-changed-roster.test.ts",
+        "note": "No catalogue scenario edits the gateway config mid-run, so the bench cannot capture the frame yet; the test drives a real OpenClawConnection over a real socket against a fake gateway that pushes the frame verbatim. The frame was ALSO observed live on a real 2026.9.1 gateway (session socket, hand edit) and the intake cleared the roster — but a live observation outside the bench earns no golden-corpus proof: that stays owed to a scenario that edits the config."
+      },
+      "dossier": {
+        "writers": [
+          "src/gateway/server-reload-managed.ts#onConfigCandidateCommitted — the single notification point for EVERY persisted config change: gateway RPC writes, agent/CLI config_set, doctor repairs, hand edits of the config file; broadcast with `dropIfSlow: true`"
+        ],
+        "resets": [
+          "none — a notice, not state; each persisted revision emits its own frame with a new `hash`"
+        ],
+        "upstreamUse": [
+          "ui/src/app/app-shell-gateway.ts:174 — Control UI: refreshes the runtime config snapshot and reschedules its agent-roster refresh",
+          "ui/src/app/app-host.ts:509 and ui/src/pages/chat/chat-pane-lifecycle.ts:452 — the same UI's host and chat pane react to it",
+          "apps/ios/Sources/Model/NodeAppModel.swift:1791, apps/macos/Sources/OpenClaw/ChannelsStore+Lifecycle.swift:58, apps/linux/src-tauri/src/gateway_ws.rs:912, apps/android/app/src/main/java/ai/openclaw/app/NodeRuntime.kt:5374 — first-party clients branch on the event name and refresh"
+        ],
+        "wire": [
+          "event `config.changed`, gateway → every READ-scoped connection (src/gateway/server-broadcast.ts, EVENT_SCOPE_GUARDS); payload {path: string, hash: string|null, ts: number}; hash = projected config revision (configRevisionProjector.projectRawHash); NOT announced in hello-ok.features.events (absent from GATEWAY_EVENTS) — broadcast-only",
+          "dropIfSlow: a client whose socket buffer exceeds MAX_BUFFERED_BYTES does not receive it and its seq is consumed (the client's gap detector fires)",
+          "OBSERVED on a live gateway 2026.9.1 (local, hand edit of openclaw.json while a chat's session socket was open): {\"type\":\"event\",\"event\":\"config.changed\",\"payload\":{\"path\":\"<config path>\",\"hash\":\"hmac-sha256:v1:<base64url>\",\"ts\":<ms>},\"seq\":<n>} — the frame reaches the per-chat SESSION socket (kept open 15 min past the last activity), which is where the roster cache lives; a bridge with no open session socket has nothing to receive it on, and asks the gateway afresh on the next turn anyway"
+        ]
+      }
+    },
+    "sessions.catalog.host": {
+      "status": "ignored",
+      "why": "Progressive delivery of a `sessions.catalog` answer (`src/gateway/server-methods/session-catalog.ts`, `broadcastToConnIds(\"sessions.catalog.host\", {progressId, agentId, catalog}, …)`), addressed ONLY to the connection that issued the catalog request. Atrium never calls `sessions.catalog` (verified: no such call in bridge/src); the frame cannot reach it."
+    }
+  },
+  "broadcastOnlyCounts": {
+    "total": 6,
+    "handled": 2,
+    "gap": 1,
+    "ignored": 3
+  }
+}

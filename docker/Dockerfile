@@ -54,9 +54,9 @@ RUN go mod init atrium/caddy-dist \
  && printf 'package main\n\nimport (\n\tcaddycmd "github.com/caddyserver/caddy/v2/cmd"\n\t_ "github.com/caddyserver/caddy/v2/modules/standard"\n)\n\nfunc main() { caddycmd.Main() }\n' > main.go \
  && go mod edit -require=github.com/caddyserver/caddy/v2@v2.11.4 \
  && go mod tidy \
- && go get golang.org/x/text@v0.39.0 google.golang.org/grpc@v1.82.1 \
+ && go get golang.org/x/text@v0.39.0 google.golang.org/grpc@v1.83.1 go.opentelemetry.io/otel@v1.44.0 \
  && CGO_ENABLED=0 go build -trimpath -o /out/caddy . \
- && go version -m /out/caddy | grep -E 'golang.org/x/text|google.golang.org/grpc'
+ && go version -m /out/caddy | grep -E 'golang.org/x/text|google.golang.org/grpc|go.opentelemetry.io/otel	'
 FROM alpine:3.24@sha256:28bd5fe8b56d1bd048e5babf5b10710ebe0bae67db86916198a6eec434943f8b AS serve
 # Caddy is statically linked and the entrypoint only needs BusyBox + musl. Removing
 # apk-tools also removes its OpenSSL/zlib dependency chain before the trusted CA bundle

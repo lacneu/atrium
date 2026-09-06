@@ -138,6 +138,35 @@ describe("deriveSnapshotFields", () => {
     }
   });
 
+  it("FOLLOWS a call-initialised binding that is only NARROWED by `delete` (v2026.9.2 layout)", () => {
+    // The gateway builds the fields by a local call, then deletes some of them
+    // before spreading. A deletion only shrinks what reaches the wire, so the
+    // callee's return is the honest superset; refusing here would lose every
+    // field of the callee for the sake of a write that cannot add one.
+    const fields = derive(
+      `function build() { return { a: 1, b: 2 }; }\n` +
+        `const ${SNAPSHOT_FN} = () => { const f = build(); for (const k of ["a"]) { delete f[k]; } delete f.b; return { ...f, c: 3 }; };`,
+    );
+    expect(fields).toEqual(["a", "b", "c"]);
+  });
+
+  it("a `delete` never unlocks reading a LITERAL initialiser as the shape", () => {
+    // Narrowing a literal leaves keys this module cannot subtract; the only thing
+    // a delete unlocks is following a local call, so a literal still refuses.
+    expect(() =>
+      derive(`const ${SNAPSHOT_FN} = () => { const f = { a: 1 }; delete f.a; return { ...f }; };`),
+    ).toThrow(/no readable declaration/i);
+  });
+
+  it("a `delete` beside a real mutation still REFUSES", () => {
+    expect(() =>
+      derive(
+        `function build() { return { a: 1 }; }\n` +
+          `const ${SNAPSHOT_FN} = () => { const f = build(); delete f.a; f.z = 1; return { ...f }; };`,
+      ),
+    ).toThrow(/not a stable const|only uses are its declaration/i);
+  });
+
   it("REFUSES a binding that is BOTH read through Object.* AND used elsewhere (codex P2)", () => {
     // `Object.entries(x)` is an accepted read, `mutate(x)` is not: the second
     // must win. Before, the accepted read short-circuited to "unresolved" and the

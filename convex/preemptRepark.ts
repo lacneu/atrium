@@ -7,13 +7,13 @@
 // session, and the REAL turn died (live prod 2026-07-21, report ms746b01…:
 // chat.send 09:03:46, gateway_abort 09:04:05, announce 09:04:09 — the user's
 // message was silently consumed and had to be re-sent by hand after three
-// session resets). NOT a gateway arbitration policy: upstream (v2026.7.1)
-// resolves announce×send contention by steering/followup-queue/admission and
-// never kills either side by design — the kill is the EMERGENT session-file
-// takeover (EmbeddedAttemptSessionTakeoverError: whichever run detects the
-// other's session-file write on prompt-lock reacquire dies, so the loser is
-// timing-dependent — both directions occur; see
-// docs/UPSTREAM_INTERPRETATION.md §2). Queueing a message
+// session resets). NOT a gateway arbitration policy: upstream (re-verified at
+// v2026.9.2) resolves announce×send contention by steering/followup-queue/
+// admission and never kills either side by design — the kill is EMERGENT, from
+// the transcript write fence (SessionTranscriptWriterClaimReboundError /
+// ActiveTurnClaimError since 2026.8.1: whichever run finds the session claimed
+// by the other writer dies, so the loser is timing-dependent — both directions
+// occur; see docs/UPSTREAM_INTERPRETATION.md §2 and §3). Queueing a message
 // mid-turn is a SUPPORTED feature: the system, not the user, owns the
 // recovery.
 //

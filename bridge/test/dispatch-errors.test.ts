@@ -330,3 +330,30 @@ describe("a session that moved under a starting run is retriable, not malformed"
     expect(faultDomain("session_init_conflict")).toBe("downstream");
   });
 });
+
+// 2026.9.2: an idempotency key is bound to the content it was first used with
+// (src/gateway/server-methods/chat-send-request.ts:248-256 hashes message +
+// mentions; chat-send-pre-admission.ts:148-155 refuses a reuse with other input).
+// The response is `INVALID_REQUEST` with `details.reason: "chat-request-conflict"`
+// and the ORIGINAL run keeps running. Folded into INVALID_REQUEST it read as a
+// malformed send; retried it would start a second turn beside the first.
+describe("a key reused for different input is a conflict, not a malformed request (2026.9.2)", () => {
+  // Verbatim gateway text, chat-send-pre-admission.ts:150-152 at v2026.9.2, behind
+  // the `INVALID_REQUEST:` prefix the client puts on every refused RPC.
+  const raw =
+    "INVALID_REQUEST: This message ID was already used for different input. Check the conversation history and use a new message ID to send again.";
+
+  test("classifies the reuse as chat_request_conflict", () => {
+    expect(classifyGatewayError(new Error(raw))).toBe("chat_request_conflict");
+  });
+
+  test("does NOT fall into the malformed-request bucket, even with an attachment on the send", () => {
+    expect(classifyGatewayError(new Error(raw))).not.toBe("INVALID_REQUEST");
+    expect(classifyGatewayError(new Error(raw), { hasAttachments: true })).toBe("chat_request_conflict");
+  });
+
+  test("is a downstream rejection: the bridge did its job", () => {
+    expect(faultDomain("chat_request_conflict")).toBe("downstream");
+  });
+});
+

@@ -1,5 +1,36 @@
 # Changelog
 
+## [0.79.0] — OpenClaw 2026.9.2 is supported
+
+Compatibility release. No breaking changes.
+
+**Gateways up to OpenClaw 2026.9.2 are supported.** The validated ceiling was
+2026.9.1; an instance on 2026.9.2 ran with its version reported as beyond
+support. It is now inside the range, on the same rule as every version before
+it: declared supported only after a full live bench run exercised it end to end,
+with the record of that run naming the exact bridge code it covered. The
+contract of the new version is vendored and every new schema, field and event
+family it introduces is classified — including the multi-user surface it adds
+(mentions, session participants, per-person model accounts), which is recorded
+as not yet adopted rather than silently unread.
+
+**A message the gateway refuses because its identifier was already used for
+different content gets its own explanation.** Since 2026.9.2 a gateway binds
+each send to the content it was first sent with, and refuses the same
+identifier with other content while the first turn keeps running. Atrium used
+to show that refusal as a malformed request and offered nothing to do. It is
+now named for what it is, is never retried automatically — a retry would start
+a second turn beside the first — and tells you to check the conversation before
+sending the new content as a new message. In practice this is rare: it needs a
+send whose acknowledgement was lost and whose retry composed a different text.
+
+**The web application's image no longer ships a known high-severity
+vulnerability.** The static server it embeds pinned a gRPC library that
+the current vulnerability database rates high; the pin is raised to the fixed
+release, and the tracing library beside it is raised to its fixed release at the
+same time, so the next database update does not send you back here. The image
+build verifies the versions it embeds.
+
 ## [0.78.1] — A model you add to the gateway shows up on its own
 
 Reliability release for the model picker. No breaking changes. Shipped as

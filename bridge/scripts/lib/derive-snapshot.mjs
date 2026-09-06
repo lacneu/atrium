@@ -449,7 +449,29 @@ export function deriveSnapshotFields(source, options = {}) {
             NON_MUTATING_OBJECT_READERS.includes(callee.name.text);
           if (isArgumentRead) argumentReads.add(node.text);
         }
-        if (!isDeclarationName && !isSpreadRead && !isArgumentRead) {
+        // A NARROWING write: `delete eventFields[field]` / `delete eventFields.x`.
+        //
+        // v2026.9.2 builds the shape by a local call, then REMOVES fields from it
+        // before spreading (lifecycle snapshots drop the selection metadata). A
+        // deletion can only shrink the set that reaches the wire, so the callee's
+        // own `return {…}` stays a faithful SUPERSET — exactly what a known-field
+        // set must be. It unlocks the same thing an argument read does, and no
+        // more: FOLLOWING the initialiser's call (never reading a literal as the
+        // shape, since the literal's keys are not what remains). Only the
+        // operand of a `delete` counts; `x.foo = 1` and every other member
+        // access stay unaccounted occurrences.
+        let isNarrowingDelete = false;
+        if (
+          parent !== undefined &&
+          (ts.isElementAccessExpression(parent) || ts.isPropertyAccessExpression(parent)) &&
+          parent.expression === node &&
+          parent.parent !== undefined &&
+          ts.isDeleteExpression(parent.parent)
+        ) {
+          isNarrowingDelete = true;
+          argumentReads.add(node.text);
+        }
+        if (!isDeclarationName && !isSpreadRead && !isArgumentRead && !isNarrowingDelete) {
           occurrences.set(node.text, (occurrences.get(node.text) ?? 0) + 1);
         }
       }

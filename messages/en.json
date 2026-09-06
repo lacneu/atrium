@@ -1393,6 +1393,8 @@
   "error_attachment_rejected_hint": "The gateway could not parse/stage the attachment. Known gateway bug (its base64 validator overflows on large files — RangeError); fix it gateway-side (isValidBase64). Meanwhile: a smaller file works, or send the text without the attachment.",
   "error_invalid_request_label": "Invalid request",
   "error_invalid_request_hint": "The gateway rejected the request. Check the bridge logs for the raw detail.",
+  "error_chat_request_conflict_label": "Message already sent with other content",
+  "error_chat_request_conflict_hint": "The gateway had already accepted this message under different content and kept that turn running. Nothing was sent twice: check the conversation, then send the new content as a new message.",
   "error_not_configured_label": "Bridge not configured",
   "error_not_configured_hint": "BRIDGE_URL / BRIDGE_SHARED_SECRET are not set on the Convex side (npx convex env set).",
   "error_unrouted_label": "User not routed",
