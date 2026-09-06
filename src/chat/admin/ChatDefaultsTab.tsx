@@ -14,7 +14,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { KnobSegmented } from "../KnobRow";
+import { KnobControl } from "../KnobRow";
 import { capitalize } from "../sessionKnobs";
 import {
   THINKING_DEFAULT_OPTIONS,
@@ -452,11 +452,13 @@ export function ChatDefaultsTab() {
             <span className="oc-cdefaults__label">
               {m.cdefaults_thinking_label()}
             </span>
-            <KnobSegmented
+            <KnobControl
+              field="thinkingLevel"
               options={thinkingOptions}
               value={current?.thinkingDefault ?? null}
               onChange={() => {}}
               disabled
+              ariaLabel={m.cdefaults_thinking_label()}
             />
             <p className="oc-cdefaults__help">{m.cdefaults_thinking_help()}</p>
           </div>
@@ -464,7 +466,8 @@ export function ChatDefaultsTab() {
             <span className="oc-cdefaults__label">
               {m.cdefaults_speed_label()}
             </span>
-            <KnobSegmented
+            <KnobControl
+              field="fastMode"
               options={speedOptions}
               value={
                 current === null || current.fastModeDefault === null
@@ -475,6 +478,7 @@ export function ChatDefaultsTab() {
               }
               onChange={() => {}}
               disabled
+              ariaLabel={m.cdefaults_speed_label()}
             />
             <p className="oc-cdefaults__help">{m.cdefaults_speed_help()}</p>
           </div>

@@ -43,6 +43,27 @@ import { vendoredVersions } from "./helpers/vendored.js";
 import { SNAPSHOT_SITES, deriveSnapshotFields } from "../scripts/lib/derive-snapshot.mjs";
 // @ts-expect-error — plain .mjs helper, no types (it runs under node, not tsc)
 import { deriveEventCatalogue } from "../scripts/lib/derive-event-catalogue.mjs";
+// @ts-expect-error — plain .mjs helper, no types
+import { deriveBroadcastCatalogue } from "../scripts/lib/derive-broadcast-catalogue.mjs";
+
+/** Derived artifacts that read (source + constants module) and yield a NAME list,
+ *  keyed by artifact file name. An artifact absent here has no re-derivation and FAILS
+ *  the check below rather than being skipped. */
+const CONSTANT_BACKED_DERIVERS: Record<
+  string,
+  { derive: (raw: string, constRaw: string) => unknown; stored: (body: Record<string, unknown>) => unknown }
+> = {
+  "event-catalogue.json": {
+    derive: deriveEventCatalogue as (r: string, c: string) => string[],
+    stored: (body) => body.events ?? [],
+  },
+  // The WHOLE artifact: a hand edit of a family's scope list must fail here too, not only
+  // a change to the name list.
+  "broadcast-catalogue.json": {
+    derive: deriveBroadcastCatalogue as (r: string, c: string) => { events: string[]; scopes: unknown },
+    stored: (body) => ({ events: body.events ?? [], scopes: body.scopes ?? {} }),
+  },
+};
 
 const PROTOCOL = new URL("../protocol/openclaw/", import.meta.url);
 
@@ -378,8 +399,8 @@ describe("vendored protocol integrity", () => {
           // found", which reads as an upstream rename and is nothing of the sort. An
           // artifact this test does not know how to re-derive must FAIL here rather than
           // be skipped, or adding a third one would silently opt out of verification.
-          let rederived: string[];
-          let stored: string[];
+          let rederived: unknown;
+          let stored: unknown;
           if (name === "session-event-snapshot.json") {
             // The FUNCTION to derive from follows the artifact's declared source,
             // not one hardcoded name: v2026.8.1 moved the shape from
@@ -403,7 +424,9 @@ describe("vendored protocol integrity", () => {
               ) => string[]
             )(raw, { fnName: site.fn, sourceLabel: site.source });
             stored = body.fields ?? [];
-          } else if (name === "event-catalogue.json") {
+          } else if (name in CONSTANT_BACKED_DERIVERS) {
+            // The two catalogues resolve names from the same constants module, and the
+            // same sha rule applies to both — ONE block, or a hardening reaches only one.
             const constantsAt = `${root}/${rec.constantsPath ?? ""}`;
             if (rec.constantsPath === undefined || !existsSync(constantsAt)) {
               wrong.push(`${name}: constants source absent upstream`);
@@ -414,19 +437,20 @@ describe("vendored protocol integrity", () => {
               wrong.push(`${name}: constants sha mismatch`);
               continue;
             }
-            rederived = (
-              deriveEventCatalogue as (r: string, c: string) => string[]
-            )(raw, constRaw);
-            stored = body.events ?? [];
+            const entry = CONSTANT_BACKED_DERIVERS[name]!;
+            rederived = entry.derive(raw, constRaw);
+            stored = entry.stored(body as Record<string, unknown>);
           } else {
             wrong.push(`${name}: no re-derivation is wired for this artifact`);
             continue;
           }
           if (JSON.stringify(rederived) !== JSON.stringify(stored)) {
+            const names = (v: unknown): string[] =>
+              Array.isArray(v) ? (v as string[]) : Object.keys((v as { scopes?: object })?.scopes ?? {});
             wrong.push(
-              `${name}: the stored list is not what the derivation produces ` +
-                `(+${rederived.filter((f) => !stored.includes(f)).join(",")} ` +
-                `-${stored.filter((f) => !rederived.includes(f)).join(",")})`,
+              `${name}: the stored artifact is not what the derivation produces ` +
+                `(+${names(rederived).filter((f) => !names(stored).includes(f)).join(",")} ` +
+                `-${names(stored).filter((f) => !names(rederived).includes(f)).join(",")})`,
             );
           }
         }

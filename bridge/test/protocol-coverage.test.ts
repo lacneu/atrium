@@ -21,6 +21,7 @@
 import { readFileSync, readdirSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
+import { type CoverageEntry, classificationViolations } from "./helpers/coverage-rules.js";
 import { vendoredVersions } from "./helpers/vendored.js";
 
 // EVERY vendored version, not one hardcoded (W10 / G1). The ratchet's whole value is
@@ -121,24 +122,13 @@ function topLevelFields(schema: Record<string, unknown>): string[] {
   return [];
 }
 
-const VALID_STATUSES = new Set(["handled", "ignored", "gap"]);
-
+/** The ONE classification rule (helpers/coverage-rules.ts), applied per entry: a
+ *  missing status or a typo ("hanlded") must FAIL, not silently count as classified. */
 function validEntry(entry: FieldEntry, where: string): string | null {
-  // Runtime-validate the JSON (the TS cast checks nothing): a missing status or
-  // a typo ("hanlded") must FAIL, not silently count as classified.
-  if (!VALID_STATUSES.has(entry.status as string)) {
-    return `${where}: invalid status ${JSON.stringify(entry.status)} (expected handled|ignored|gap)`;
-  }
-  if (entry.status === "handled" && !entry.by) {
-    return `${where}: status "handled" requires \`by\` (where the bridge consumes/emits it)`;
-  }
-  if (entry.status === "ignored" && !entry.why) {
-    return `${where}: status "ignored" requires \`why\` (the deliberate reason)`;
-  }
-  if (entry.status === "gap" && !entry.note) {
-    return `${where}: status "gap" requires \`note\` (what is unsupported + impact)`;
-  }
-  return null;
+  const { unclassified, unjustified } = classificationViolations([where], {
+    [where]: entry as unknown as CoverageEntry,
+  });
+  return unclassified[0] !== undefined ? `${where}: unclassified` : (unjustified[0] ?? null);
 }
 
 for (const VENDORED_VERSION of vendoredVersions()) {

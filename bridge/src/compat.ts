@@ -240,6 +240,31 @@ export const HERMES_RANGE: VersionRange = {
   maxValidated: "0.19.0",
 };
 
+/** The generation from which `models.list` takes (and, on a multi-agent roster,
+ *  REQUIRES) an `agentId` owner — see modelsListTakesOwner (providers/openclaw/
+ *  models-roster.ts). Held here with the other "from version X" facts of the contract,
+ *  where a version bump looks. */
+export const MODELS_LIST_OWNER_SINCE = "2026.8.1";
+
+const parsedVersions = new Map<string, ParsedVersion | null>();
+/** `version >= min`, on the RAW gateway version (not the capped capability table);
+ *  null when either side does not parse. Parses are memoized: the boundaries are
+ *  constants and the gateway version never changes after the handshake. */
+export function gatewayAtLeast(version: string | null, min: string): boolean | null {
+  if (version === null) return null;
+  const parse = (v: string): ParsedVersion | null => {
+    let parsed = parsedVersions.get(v);
+    if (parsed === undefined) {
+      parsed = parseVersion(v);
+      parsedVersions.set(v, parsed);
+    }
+    return parsed;
+  };
+  const a = parse(version);
+  const b = parse(min);
+  return a === null || b === null ? null : compareVersions(a, b) >= 0;
+}
+
 /**
  * Is this string a version in the scheme the Hermes manifest is written in?
  *

@@ -49,6 +49,10 @@ export interface FakeSessionDescribe {
   totalTokensFresh?: boolean;
 }
 
+import type { RosterEntry } from "../../src/providers/openclaw/models-roster.js";
+import type { ConfigChangedNotice } from "../../src/providers/openclaw/config-changed.js";
+import { sleep } from "./sleep.js";
+
 export interface FakeGatewayScript {
   /** Successive `sessions.describe` answers. The LAST one repeats, so a test
    *  scripts [before, after-compaction] and any further describe reads the
@@ -62,7 +66,12 @@ export interface FakeGatewayScript {
 
 export interface FakeGateway {
   /** Per-owner `models.list` cache, like the real connection: the send path reads it. */
-  modelsByOwner: Map<string, { models: { id: string; label: string }[]; failedAt: number | null }>;
+  modelsByOwner: Map<string, RosterEntry>;
+  /** Roster epoch (0 = never invalidated), like the real connection. */
+  rosterEpoch: number;
+  /** The two subscriptions the roster policy takes on a real connection. */
+  onConfigChanged(listener: (notice: ConfigChangedNotice) => void): () => void;
+  onClosed(listener: () => void): () => void;
   /** Session sets this after applying `verboseLevel:"full"` once. */
   verboseFullApplied?: boolean;
   /** Frame cap (null = unknown). Only read on an attachment send. */
@@ -93,6 +102,8 @@ export function fakeGateway(script: FakeGatewayScript = {}): FakeGateway {
   let closed = false;
   let wake: (() => void) | null = null;
   let describeIndex = 0;
+  const configChangedListeners = new Set<(notice: ConfigChangedNotice) => void>();
+  const closedListeners = new Set<() => void>();
 
   const nextDescribe = (): FakeSessionDescribe | null => {
     const list = script.describe;
@@ -104,11 +115,24 @@ export function fakeGateway(script: FakeGatewayScript = {}): FakeGateway {
     return list[i] ?? null;
   };
 
-  return {
+  const gw: FakeGateway = {
     verboseFullApplied: false,
     // Per-OWNER models cache, like the real connection: `ensureAvailableModels`
     // reads it on every dispatch, so a fake without it fails the whole path.
-    modelsByOwner: new Map(),
+    modelsByOwner: new Map<string, RosterEntry>(),
+    rosterEpoch: 0,
+    onConfigChanged(listener) {
+      configChangedListeners.add(listener);
+      return () => {
+        configChangedListeners.delete(listener);
+      };
+    },
+    onClosed(listener) {
+      closedListeners.add(listener);
+      return () => {
+        closedListeners.delete(listener);
+      };
+    },
     maxPayload: null,
     calls,
     timeouts,
@@ -119,8 +143,14 @@ export function fakeGateway(script: FakeGatewayScript = {}): FakeGateway {
       return closed;
     },
     close() {
+      // Same order as the transport: closed FIRST, then the listeners (a disposal that
+      // reads `isClosed` must see the truth), which are gone afterwards.
       closed = true;
       ended = true;
+      const listeners = [...closedListeners];
+      closedListeners.clear();
+      configChangedListeners.clear();
+      for (const l of listeners) l();
       wake?.();
     },
     async request(method, params, timeoutMs) {
@@ -133,7 +163,7 @@ export function fakeGateway(script: FakeGatewayScript = {}): FakeGateway {
       if (method === "sessions.compact") {
         const a = script.compact;
         if (a?.delayMs) {
-          await new Promise((r) => setTimeout(r, a.delayMs));
+          await sleep(a.delayMs);
         }
         if (a?.throws) throw a.throws;
         return { payload: a?.payload ?? { ok: true, compacted: true } };
@@ -161,4 +191,68 @@ export function fakeGateway(script: FakeGatewayScript = {}): FakeGateway {
       wake?.();
     },
   };
+  return gw;
 }
+
+/** A connection double for the ROSTER logic only (`ensureAvailableModels`,
+ *  `refreshSessionRoster`): the members `ModelsConnection` names, no more. `answer` is
+ *  called per request and may return a payload, throw, or return a promise to hold the
+ *  answer (in-flight tests). Structurally typed — no cast at the call site, so a field
+ *  the real connection gains and this double lacks fails to compile. */
+export function modelsConnSpy(
+  answer: (method: string, params: unknown) => unknown,
+  gatewayVersion: string | null = "2026.9.1",
+) {
+  const calls: { method: string; params: unknown }[] = [];
+  const configChangedListeners = new Set<(notice: ConfigChangedNotice) => void>();
+  const closedListeners = new Set<() => void>();
+  let release: () => void = () => {};
+  const gate = new Promise<void>((r) => {
+    release = r;
+  });
+  const conn = {
+    gatewayVersion,
+    modelsByOwner: new Map<string, RosterEntry>(),
+    rosterEpoch: 0,
+    isClosed: false,
+    onConfigChanged(listener: (notice: ConfigChangedNotice) => void) {
+      configChangedListeners.add(listener);
+      return () => {
+        configChangedListeners.delete(listener);
+      };
+    },
+    onClosed(listener: () => void) {
+      closedListeners.add(listener);
+      return () => {
+        closedListeners.delete(listener);
+      };
+    },
+    /** What the transport does on a `config.changed` frame: the epoch moves, then every
+     *  listener hears the notice. */
+    emitConfigChanged(notice: ConfigChangedNotice) {
+      conn.rosterEpoch += 1;
+      for (const l of [...configChangedListeners]) l(notice);
+    },
+    listeners: () => ({ configChanged: configChangedListeners.size, closed: closedListeners.size }),
+    request: async (method: string, params: unknown) => {
+      calls.push({ method, params });
+      const v = await answer(method, params);
+      return { payload: v };
+    },
+    /** Lifecycle, for the tests that hand this double to a Session: `close()` ends the
+     *  frame generator and fires `onClosed`, like the real connection. */
+    close() {
+      conn.isClosed = true;
+      const listeners = [...closedListeners];
+      closedListeners.clear();
+      configChangedListeners.clear();
+      for (const l of listeners) l();
+      release();
+    },
+    async *frames(): AsyncGenerator<never> {
+      await gate;
+    },
+  };
+  return { conn, calls, countOf: (method: string) => calls.filter((c) => c.method === method).length };
+}
+

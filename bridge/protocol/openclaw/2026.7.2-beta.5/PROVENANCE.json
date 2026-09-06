@@ -145,6 +145,13 @@
       "constantsPath": "src/gateway/events.ts",
       "constants": "75cd19f4c9d1f4a7a490a40b248acb4501d7da29ac58659611645b943463f91f",
       "events": 44
+    },
+    "broadcast-catalogue.json": {
+      "upstreamPath": "src/gateway/server-broadcast.ts",
+      "upstream": "99848fe9cfa66a0c809b2e533c0595c82e870e036a7e55a27b414b0e3b401ef7",
+      "constantsPath": "src/gateway/events.ts",
+      "constants": "75cd19f4c9d1f4a7a490a40b248acb4501d7da29ac58659611645b943463f91f",
+      "events": 46
     }
   }
 }

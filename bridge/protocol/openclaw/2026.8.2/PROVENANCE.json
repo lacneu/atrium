@@ -291,6 +291,13 @@
       "constantsPath": "src/gateway/events.ts",
       "constants": "9d2fabfd9fad15d6931e30e795bda9b5e40269512453e5c40668e11a31a39c8c",
       "events": 55
+    },
+    "broadcast-catalogue.json": {
+      "upstreamPath": "src/gateway/server-broadcast.ts",
+      "upstream": "e4aa2f8dd11955cf51982cc7f9432cda32db97d8bae8ccecdaa7b25a5f510144",
+      "constantsPath": "src/gateway/events.ts",
+      "constants": "9d2fabfd9fad15d6931e30e795bda9b5e40269512453e5c40668e11a31a39c8c",
+      "events": 57
     }
   }
 }

@@ -17,6 +17,7 @@ import {
   type SessionMetaView,
   type SessionSettingsView,
   type SpeedOption,
+  knobControlShape,
 } from "./sessionKnobs";
 import { knobRowVisibility } from "./capabilities";
 import { useInstanceCapabilities } from "./useInstanceCapabilities";
@@ -142,15 +143,17 @@ export function KnobSegmented({
   options,
   value,
   onChange,
+  ariaLabel,
   disabled,
 }: {
   options: { id: string; label: string; title?: string }[];
   value: string | null;
   onChange: (id: string) => void;
   disabled: boolean;
+  ariaLabel?: string;
 }) {
   return (
-    <div className="oc-spanel__seg" role="group">
+    <div className="oc-spanel__seg" role="group" aria-label={ariaLabel}>
       {options.map((o) => (
         <button
           key={o.id}
@@ -171,7 +174,7 @@ export function KnobSegmented({
   );
 }
 
-/** Dropdown fallback for > 4 options (widget rules: 5-15 → dropdown). */
+/** The list control (rendered through `KnobControl`, never chosen at a call site). */
 function KnobSelect({
   options,
   value,
@@ -196,7 +199,14 @@ function KnobSelect({
         if (e.target.value && e.target.value !== value) onChange(e.target.value);
       }}
     >
-      {value === null ? <option value="" disabled hidden /> : null}
+      {/* `value` is null before the session is first described (a new chat, a reset),
+          not when the model is inherited: the selected text makes no claim. VISIBLE — a
+          hidden selected option renders per engine (Firefox shows a blank). */}
+      {value === null ? (
+        <option value="" disabled>
+          —
+        </option>
+      ) : null}
       {!known ? <option value={value}>{value}</option> : null}
       {options.map((o) => (
         <option key={o.id} value={o.id}>
@@ -204,6 +214,31 @@ function KnobSelect({
         </option>
       ))}
     </select>
+  );
+}
+
+/** ONE renderer for a knob's control: the SHAPE comes from `knobControlShape`
+ *  (sessionKnobs.ts), the only decision point — a call site never picks
+ *  segmented-or-list itself, the admin's read-only defaults included. */
+export function KnobControl({
+  field,
+  options,
+  value,
+  onChange,
+  disabled,
+  ariaLabel,
+}: {
+  field: KnobField;
+  options: { id: string; label: string }[];
+  value: string | null;
+  onChange: (id: string) => void;
+  disabled: boolean;
+  ariaLabel: string;
+}) {
+  return knobControlShape(field, options.length) === "list" ? (
+    <KnobSelect options={options} value={value} onChange={onChange} disabled={disabled} ariaLabel={ariaLabel} />
+  ) : (
+    <KnobSegmented options={options} value={value} onChange={onChange} disabled={disabled} ariaLabel={ariaLabel} />
   );
 }
 
@@ -255,22 +290,14 @@ export function SessionKnobsGroup({
           onRetry={retry}
           resettable={vis.reset}
         >
-          {models.length <= 4 ? (
-            <KnobSegmented
-              options={models}
-              value={sm.model ?? null}
-              onChange={(id) => void apply("model", id)}
-              disabled={busy}
-            />
-          ) : (
-            <KnobSelect
-              options={models}
-              value={sm.model ?? null}
-              onChange={(id) => void apply("model", id)}
-              disabled={busy}
-              ariaLabel={m.chat_model()}
-            />
-          )}
+          <KnobControl
+            field="model"
+            options={models}
+            value={sm.model ?? null}
+            onChange={(id) => void apply("model", id)}
+            disabled={busy}
+            ariaLabel={m.chat_model()}
+          />
         </KnobRow>
       ) : null}
       {vis.thinking ? (
@@ -283,7 +310,9 @@ export function SessionKnobsGroup({
           onRetry={retry}
           resettable={vis.reset}
         >
-          <KnobSegmented
+          <KnobControl
+            field="thinkingLevel"
+            ariaLabel={m.conf_thinking_label()}
             options={levels.map((l) => ({
               id: l.id,
               label: shortLevelLabel(l.id, capitalize(l.label)),
@@ -305,7 +334,9 @@ export function SessionKnobsGroup({
           onRetry={retry}
           resettable={vis.reset}
         >
-          <KnobSegmented
+          <KnobControl
+            field="fastMode"
+            ariaLabel={m.conf_speed_label()}
             options={SPEED_OPTIONS.map((o) => ({
               id: o,
               label: speedOptionLabel(o),

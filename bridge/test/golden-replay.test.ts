@@ -128,6 +128,7 @@ class RecordingWriter implements ConvexWriter {
   async getRehydrationContext(): Promise<{ history: string | null; turnCount: number }> {
     return { history: null, turnCount: 0 };
   }
+  async reportSessionRoster(): Promise<void> {}
   async reportSessionMeta(): Promise<void> {}
   async upsertSubAgent(row: unknown): Promise<void> {
     const r = row as { kind?: string; status?: string; taskName?: string };

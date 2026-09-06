@@ -157,7 +157,6 @@ import {
   resolveCapabilities,
   resolveCapabilitiesFor,
   HERMES_RANGE,
-  compareVersions,
   parseVersion,
 } from "./compat.js";
 import {
@@ -165,10 +164,16 @@ import {
   DRIFT_VENDORED_VERSION,
   protocolDrift,
 } from "./providers/openclaw/protocol-drift.js";
-import type { ConvexWriter, SessionMetaReport } from "./convex-writer.js";
+import type { ConvexWriter } from "./convex-writer.js";
 import type { ConfigIssue } from "./core/credential-resolver.js";
 import type { BridgeSession, SessionRouting, LiveTarget, InstanceBundle } from "./session.js";
 import { SessionRegistry } from "./session.js";
+import {
+  describeSession,
+  publishDescribedSession,
+  publishSessionMeta,
+  selectBudgetAssessment,
+} from "./providers/openclaw/models-roster.js";
 import {
   AGENT_FILE_NAMES,
   defaultsApplied,
@@ -759,340 +764,6 @@ function extractRunId(response: {
 }
 
 /**
- * Perform the send against OpenClaw and begin the assistant turn.
- *
- * Mirrors backend/app/main.py `_send_chat_message` + `_handle_send`:
- * verboseLevel=full once per connection, then chat.send, then note_run_started.
- */
-/**
- * Extract the header-strip session meta from a `sessions.describe` session row.
- * Defensive about shapes (agentRuntime may be a string or `{id}`; thinkingLevels
- * may be strings or `{id,label}`; fresh sessions omit token counts). The
- * "reasoning level" shown is the per-session OVERRIDE if set, else the agent
- * default (so the chip's "inherited" badge is correct). Non-secret labels only.
- */
-function parseSessionMeta(
-  sess: Record<string, unknown>,
-  availableModels?: { id: string; label: string }[],
-): SessionMetaReport {
-  const str = (v: unknown): string | undefined =>
-    typeof v === "string" && v.length > 0 ? v : undefined;
-  const num = (v: unknown): number | undefined =>
-    typeof v === "number" ? v : undefined;
-
-  const runtime = sess.agentRuntime;
-  const agentRuntime =
-    typeof runtime === "string"
-      ? runtime
-      : str((runtime as { id?: unknown } | null)?.id);
-
-  let thinkingLevels: { id: string; label: string }[] | undefined;
-  if (Array.isArray(sess.thinkingLevels)) {
-    thinkingLevels = sess.thinkingLevels
-      .map((t): { id: string; label: string } => {
-        if (typeof t === "string") return { id: t, label: t };
-        const o = t as { id?: unknown; label?: unknown };
-        const id = typeof o?.id === "string" ? o.id : "";
-        const label = typeof o?.label === "string" ? o.label : id;
-        return { id, label };
-      })
-      .filter((t) => t.id.length > 0);
-  }
-
-  const thinkingDefault = str(sess.thinkingDefault);
-  return {
-    model: str(sess.model),
-    modelProvider: str(sess.modelProvider),
-    agentRuntime,
-    // Effective reasoning level: per-session override, else the agent default.
-    thinkingLevel: str(sess.thinkingLevel) ?? thinkingDefault,
-    thinkingDefault,
-    thinkingLevels,
-    availableModels:
-      availableModels && availableModels.length > 0
-        ? availableModels
-        : undefined,
-    verboseLevel: str(sess.verboseLevel),
-    totalTokens: num(sess.totalTokens),
-    contextTokens: num(sess.contextTokens),
-    estimatedCostUsd: num(sess.estimatedCostUsd),
-    // FRESHNESS of the counter above. The gateway sets it false when the number
-    // is stale; it uses the flag itself to leave its own reading UNKNOWN instead
-    // of showing a frozen figure. We were dropping it and displaying the stale
-    // number as a live fill.
-    totalTokensFresh:
-      typeof sess.totalTokensFresh === "boolean"
-        ? sess.totalTokensFresh
-        : undefined,
-    // The gateway's OWN pre-prompt budget assessment — the numbers it uses for
-    // its own display, and the only ones that account for what the counters
-    // miss (tool schemas, injected context). It rides `sessions.describe`, which
-    // the bridge ALREADY calls before every send, so reading it costs nothing.
-    // Content-free by construction: three token counts.
-    // The SAME selection the guard makes. Projecting only the nested shape here
-    // let the header say 0 % `budget_estimate` while the guard was compacting or
-    // withholding the send on a flat 117 % — the two consumers of one describe,
-    // disagreeing again, which is the whole defect of this lot.
-    ...selectBudgetAssessment(sess, num(sess.contextTokens) ?? null),
-  };
-}
-
-/**
- * Project the gateway's `contextBudgetStatus` down to the three counts the gauge
- * needs. Absent (or not an object) when its pre-prompt check did not run — under
- * a context engine that owns compaction it is never written, and it is cleared
- * after a compaction or a model change. That absence is INFORMATION: it is
- * exactly when the gauge must say "unknown" instead of showing a counter.
- */
-function contextBudgetFields(raw: unknown): {
-  estimatedPromptTokens?: number;
-  promptBudgetBeforeReserve?: number;
-  overflowTokens?: number;
-} {
-  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return {};
-  const o = raw as Record<string, unknown>;
-  const n = (v: unknown): number | undefined =>
-    typeof v === "number" && Number.isFinite(v) ? v : undefined;
-  const estimatedPromptTokens = n(o.estimatedPromptTokens);
-  const promptBudgetBeforeReserve = n(o.promptBudgetBeforeReserve);
-  const overflowTokens = n(o.overflowTokens);
-  return {
-    ...(estimatedPromptTokens !== undefined ? { estimatedPromptTokens } : {}),
-    ...(promptBudgetBeforeReserve !== undefined
-      ? { promptBudgetBeforeReserve }
-      : {}),
-    ...(overflowTokens !== undefined ? { overflowTokens } : {}),
-  };
-}
-
-/**
- * THE budget assessment for one session row: both shapes read, the MOST ALARMING
- * one returned whole.
- *
- * `contextBudgetStatus` is contractual in no pinned version, so the repo learned
- * its shape twice from observation — nested here, flat on the row — and a partial
- * or transitional response can carry both. Two rules, and they are the same rule:
- *
- *  - a RATIO is never crossed: each shape is scored with its own denominator and
- *    the higher fill wins, so a zero in one shape cannot silence a 117 % in the
- *    other;
- *  - an OVERFLOW verdict is positive wherever it appears, so the largest wins.
- *
- * ONE selection, for all three consumers — the pre-send guard, the pressure trace
- * and the header gauge. They used to project the describe separately, which is how
- * the guard and the gauge came to read different shapes of the same figure without
- * anyone noticing (live prod 2026-08-05).
- */
-function selectBudgetAssessment(
-  row: unknown,
-  contextTokens: number | null,
-): {
-  estimatedPromptTokens?: number;
-  promptBudgetBeforeReserve?: number;
-  overflowTokens?: number;
-} {
-  // Named `o`, like the projector's own parameter, so the declaration gate's sweep
-  // sees this read too (describe-field-declaration.test.ts). A cast inline in the
-  // argument list hid `contextBudgetStatus` from it the moment this helper was
-  // extracted — the gate caught that, which is the point of it.
-  const o: Record<string, unknown> =
-    typeof row === "object" && row !== null
-      ? (row as Record<string, unknown>)
-      : {};
-  const nested = contextBudgetFields(o.contextBudgetStatus);
-  const flat = contextBudgetFields(o);
-  // ONE validity predicate, used both to score a shape and to decide whether an
-  // estimate was found at all. Split in two, they diverged: a NEGATIVE estimate
-  // counted as "present" here, selected its shape, and was then rejected
-  // downstream by sessionFillDetail — leaving the counter divided by that shape's
-  // budget instead of the smallest one, and turning a 90 % session into 29 %.
-  // A non-contractual field can carry a sentinel; only a usable figure counts.
-  const usableEstimate = (b: { estimatedPromptTokens?: number }): boolean =>
-    b.estimatedPromptTokens !== undefined && b.estimatedPromptTokens >= 0;
-  const scored = [nested, flat]
-    .filter(usableEstimate)
-    .map((b) => ({
-      b,
-      fill:
-        sessionFillDetail({
-          estimatedPromptTokens: b.estimatedPromptTokens,
-          promptBudgetBeforeReserve: b.promptBudgetBeforeReserve,
-          contextTokens,
-        }).fill ?? -1,
-    }));
-  const ratio =
-    scored.length > 0
-      ? scored.reduce((a, c) => (c.fill > a.fill ? c : a)).b
-      : {};
-  const overflows = [nested.overflowTokens, flat.overflowTokens].filter(
-    (v): v is number => typeof v === "number" && Number.isFinite(v),
-  );
-  // With NO estimate anywhere the fill comes from the counter, and the budget is
-  // only its denominator. Preferring one shape here made the guard OPTIMISTIC by
-  // luck: a nested 308 000 beside a flat 100 000 turns a 90 % fill into 29 % and
-  // sends. A smaller denominator is the more alarming reading, so take the
-  // smallest positive budget — the same rule as the ratio above and the overflow
-  // below: never end up more optimistic than a figure we were handed.
-  const budgets = [
-    nested.promptBudgetBeforeReserve,
-    flat.promptBudgetBeforeReserve,
-  ].filter((v): v is number => typeof v === "number" && v > 0);
-  const budget =
-    usableEstimate(ratio)
-      ? ratio.promptBudgetBeforeReserve
-      : budgets.length > 0
-        ? Math.min(...budgets)
-        : undefined;
-  return {
-    ...(usableEstimate(ratio)
-      ? { estimatedPromptTokens: ratio.estimatedPromptTokens }
-      : {}),
-    ...(budget !== undefined ? { promptBudgetBeforeReserve: budget } : {}),
-    ...(overflows.length > 0
-      ? { overflowTokens: Math.max(...overflows) }
-      : {}),
-  };
-}
-
-/**
- * Fetch `models.list` once per OWNER (cached on `conn.modelsByOwner`) and
- * return the deduped {id,label} list for the header's model picker. The gateway
- * may list the same id under several providers (e.g. gpt-5.5 under openai AND
- * openai-codex) — we dedupe by id (first label wins). Non-fatal: any failure
- * caches `[]` so we do not retry every turn.
- */
-/**
- * Dedupe a raw `models.list` payload into {id,label}. The gateway may list the
- * same id under several providers (e.g. gpt-5.5 under openai AND openai-codex);
- * we keep the first occurrence (its name wins). Empty/invalid ids are dropped.
- * Pure (no I/O) so it is unit-testable. Exported for tests.
- */
-export function dedupeModels(list: unknown): { id: string; label: string }[] {
-  const out: { id: string; label: string }[] = [];
-  const seen = new Set<string>();
-  if (Array.isArray(list)) {
-    for (const m of list) {
-      const o = m as { id?: unknown; name?: unknown; available?: unknown };
-      const id = typeof o?.id === "string" ? o.id : "";
-      if (!id || seen.has(id)) continue;
-      // A model the gateway declares UNAVAILABLE is not offered.
-      //
-      // `available` was dropped here, so the knob row rendered every returned model
-      // and picking an unavailable one patched the session to something that cannot
-      // run — the person found out from a failed turn instead of an absent option.
-      //
-      // `=== false` and not `!== true` on purpose: the field is OPTIONAL upstream, so
-      // a gateway that omits it (or an older one that never had it) must keep offering
-      // its models. A guard must never cost a choice that would have worked.
-      if (o?.available === false) continue;
-      seen.add(id);
-      const label =
-        typeof o?.name === "string" && o.name.length > 0 ? o.name : id;
-      out.push({ id, label });
-    }
-  }
-  return out;
-}
-
-/** The model roster, cached per connection.
- *
- *  `agentId` is REQUIRED on a multi-agent gateway since 2026.8.1: upstream
- *  refuses an ownerless request with
- *  `INVALID_REQUEST: Multiple agents are configured, but this Gateway request has
- *  no explicit owner`. Observed live on the 2026.8.1 bench — and the failure is
- *  SILENT here: the catch below logs "non-fatal" and caches an EMPTY roster, so
- *  the symptom is an empty model picker, never an error. Optional on purpose: a
- *  single-agent gateway (and every version before 2026.8.1) accepts the call
- *  without it, and passing an agent it does not know must not be invented. */
-/** The owner `models.list` must name on a multi-agent gateway. The live session
- *  is authoritative, but `sessions.describe` may omit its OPTIONAL `agentId`
- *  (SessionRow.agentId is optional in 2026.8.x); the turn's routed `agentId`
- *  is mandatory in every request body and already known — never send an
- *  ownerless request when the owner is in hand (2026.8.1 refuses it and
- *  ensureAvailableModels would cache `[]` for the connection). */
-export function resolveModelsOwner(
-  sess: { agentId?: unknown } | null | undefined,
-  routedAgentId: string | null | undefined,
-): string | null {
-  if (sess && typeof sess.agentId === "string" && sess.agentId !== "") return sess.agentId;
-  return typeof routedAgentId === "string" && routedAgentId !== "" ? routedAgentId : null;
-}
-
-/** Whether `models.list` takes (and, on a multi-agent roster, REQUIRES) an
- *  `agentId` owner on this gateway. Two generations, two opposite contracts:
- *  `ModelsListParamsSchema` is a CLOSED object without `agentId` up to 2026.7.x
- *  (vendored 2026.6.11 and 2026.7.1: `additionalProperties: false`) — sending
- *  one is refused — and declares it from 2026.8.1, where an ownerless request is
- *  refused on a multi-agent roster. This is decided on the RAW gateway version,
- *  not the capability table: `resolveCapabilitiesFor` deliberately caps a
- *  version beyond `maxValidated` to the last validated one, which would answer
- *  "no owner" on 2026.8.2 exactly where the owner is mandatory. `null` (the
- *  handshake did not say) = unknown: the caller tries the owner form first and
- *  falls back once. */
-export function modelsListTakesOwner(gatewayVersion: string | null): boolean | null {
-  const parsed = gatewayVersion === null ? null : parseVersion(gatewayVersion);
-  const min = parseVersion("2026.8.1");
-  if (parsed === null || min === null) return null;
-  return compareVersions(parsed, min) >= 0;
-}
-
-/** How long a `models.list` failure stays cached. Long enough that a dead gateway
- *  does not cost an 8s timeout per turn, short enough that a transient one does not
- *  leave an empty model picker until the bridge restarts. */
-const MODELS_FAILURE_TTL_MS = 60_000;
-
-export async function ensureAvailableModels(
-  conn: BridgeSession["connection"],
-  agentId?: string | null,
-): Promise<{ id: string; label: string }[]> {
-  const takesOwner = modelsListTakesOwner(conn.gatewayVersion ?? null);
-  // KNOWN version: send the form that generation declares. UNKNOWN version: send the
-  // form EVERY supported generation accepts — the ownerless one — and keep the owned
-  // form for the retry. Guessing the owned form first put `agentId` on the wire for a
-  // gateway whose schema forbids additional properties, which the outbound ratchet
-  // refuses (it was invisible until a test fake gained the models cache and the call
-  // actually ran). One extra round trip on an unversioned 2026.8.1+ handshake is the
-  // price of never sending a body a supported version rejects.
-  const withOwner = Boolean(agentId) && takesOwner === true;
-  // The cache key is the POSSIBLE SCOPE of the answer, which is NOT the same question
-  // as which form to send first. On an unknown version the ownerless form goes out
-  // first, yet its retry may answer for one agent — keying on the form sent would have
-  // filed Alice's catalogue under the connection-wide key and served it to Bob (codex,
-  // a defect introduced by the previous fix). `""` is used only where the answer really
-  // is connection-wide: a generation that declares it, or a call with no agent at all.
-  const ownerKey = agentId && takesOwner !== false ? agentId : "";
-  const cached = conn.modelsByOwner.get(ownerKey);
-  if (cached !== undefined) {
-    if (cached.failedAt === null) return cached.models;
-    if (Date.now() - cached.failedAt < MODELS_FAILURE_TTL_MS) return cached.models;
-    conn.modelsByOwner.delete(ownerKey); // the failure expired: try again
-  }
-  const paramsFor = (owned: boolean) => (owned && agentId ? { agentId } : {});
-  try {
-    let resp;
-    try {
-      resp = await conn.request("models.list", paramsFor(withOwner), 8_000);
-    } catch (err) {
-      // Version unknown and the ownerless form refused: the owner-scoped form gets
-      // ONE try — a wrong guess must not cost the model picker.
-      if (takesOwner !== null || !agentId) throw err;
-      resp = await conn.request("models.list", paramsFor(!withOwner), 8_000);
-    }
-    const list = (resp.payload as { models?: unknown } | undefined)?.models;
-    const models = dedupeModels(list);
-    conn.modelsByOwner.set(ownerKey, { models, failedAt: null });
-    return models;
-  } catch (err) {
-    console.error(
-      `[models.list] skipped (non-fatal, owner=${ownerKey || "<connection>"}):`,
-      (err as Error)?.message ?? err,
-    );
-    conn.modelsByOwner.set(ownerKey, { models: [], failedAt: Date.now() });
-    return [];
-  }
-}
-
-/**
  * Apply the user's per-chat knob intent to the gateway via `sessions.patch`.
  * Idempotent (patching to the current value is a no-op server-side). Used by BOTH
  * the immediate write-back (`/patch`) and the per-turn re-apply in `performSend`
@@ -1352,15 +1023,9 @@ export async function performSend(
     blocked: false,
   };
   try {
-    const desc = await conn.request(
-      "sessions.describe",
-      { key: sessionKey },
-      8_000,
-    );
-    describeObservedAt = Date.now();
-    let sess = (
-      desc.payload as { session?: Record<string, unknown> } | undefined
-    )?.session;
+    const described = await describeSession(conn, sessionKey);
+    describeObservedAt = described?.observedAt ?? Date.now();
+    let sess = described?.sess;
     // Capture the pre-turn figures from a describe answer. A FUNCTION because the
     // pre-send guard can compact and RE-describe: the rehydration decision and the
     // mirrored meter must then read the POST-compaction session, not the one we
@@ -1535,18 +1200,11 @@ export async function performSend(
           // reason, is unreachable from this connection (see session.ts).
           session.runManager.notePresendCompactionCause("pre_compaction");
           try {
-            const d2 = await conn.request(
-              "sessions.describe",
-              { key: sessionKey },
-              8_000,
-            );
-            const s2 = (
-              d2.payload as { session?: Record<string, unknown> } | undefined
-            )?.session;
-            if (s2) {
-              sess = s2;
-              describeObservedAt = Date.now();
-              captureDescribe(s2);
+            const d2 = await describeSession(conn, sessionKey);
+            if (d2) {
+              sess = d2.sess;
+              describeObservedAt = d2.observedAt;
+              captureDescribe(d2.sess);
             }
           } catch (e) {
             console.error(
@@ -1584,19 +1242,14 @@ export async function performSend(
     // reflects the session as of the LAST COMPLETED turn (a one-turn lag). A v2
     // could re-describe after finalize for during-turn accuracy.
     if (sess) {
-      const models = await ensureAvailableModels(
-        conn,
-        resolveModelsOwner(sess, body.agentId),
-      );
-      void writer
-        .reportSessionMeta(body.chatId, {
-          ...parseSessionMeta(sess, models),
-          // Stamped when the DESCRIBE was observed, not when its POST goes out
-          // (codex P2): a describe of the OLD session already in flight when a
-          // reset/rollover lands would otherwise look newer than the fence and
-          // restore the estimate and budget that were just purged.
-          observedAt: describeObservedAt,
-        })
+      // Published AT ONCE with the roster in hand; the roster's own re-ask runs off this
+      // path and reports alone (models-roster.ts) — a slow `models.list` never delays
+      // `chat.send` nor holds the describe's figures behind it.
+      void publishSessionMeta(
+        { chatId: body.chatId, connection: conn, agentId: body.agentId },
+        writer,
+        { sess, observedAt: describeObservedAt },
+      )
         .catch((e) =>
           console.error(
             "[sessionMeta] skipped (non-fatal):",
@@ -2012,32 +1665,9 @@ async function performPatch(
 
   await applyPatchIntent(conn, sessionKey, body.sessionSettings);
 
-  // Confirm + mirror the live state so the chip converges to the truth.
-  try {
-    const desc = await conn.request(
-      "sessions.describe",
-      { key: sessionKey },
-      8_000,
-    );
-    const sess = (
-      desc.payload as { session?: Record<string, unknown> } | undefined
-    )?.session;
-    if (sess) {
-      const models = await ensureAvailableModels(
-        conn,
-        resolveModelsOwner(sess, body.agentId),
-      );
-      await writer.reportSessionMeta(
-        body.chatId,
-        parseSessionMeta(sess, models),
-      );
-    }
-  } catch (err) {
-    console.error(
-      "[patch] describe/report skipped (non-fatal):",
-      (err as Error)?.message ?? err,
-    );
-  }
+  // Confirm + mirror the live state so the chip converges to the truth — the same
+  // describe-and-publish unit the roster refresh performs, fence stamp included.
+  await publishDescribedSession({ connection: conn, sessionKey, chatId: body.chatId, agentId: body.agentId }, writer);
 }
 
 /**

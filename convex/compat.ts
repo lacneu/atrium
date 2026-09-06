@@ -32,6 +32,7 @@ import {
 import { PERMISSIONS } from "./lib/rbac";
 import { bridgeCompatTarget } from "./schema";
 import {
+  SENSOR_PREFIX_TIERS,
   capabilitiesForInstance,
   foldProtocolInfo,
   mergeDefectAwareness,
@@ -246,18 +247,25 @@ const EXC_SUFFIX = `(?:«hermes»|«non-object»|«non-event»|«other-event»\\
  *  can actually have produced. */
 const ANNOUNCED_NAME = "(?:[A-Za-z][A-Za-z0-9._-]{0,63}|«unprintable»)";
 
+const escapeRegExp = (raw: string): string => raw.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+/** An error CLASS name as the bridge contains it (`containName(cls, SAFE_CLASS_MAX)`, 48 characters): the same
+ *  charset as a wire name, bounded shorter, or the `«unprintable»` sentinel. */
+const CLASS_NAME = "(?:[A-Za-z][A-Za-z0-9._-]{0,47}|«unprintable»)";
+const SUFFIX_GRAMMAR: Record<"segment" | "exception" | "name", string> = {
+  segment: CLASS_NAME,
+  exception: `${CLASS_NAME}@[a-z0-9-]{1,40}\\.${EXC_SUFFIX}`,
+  name: ANNOUNCED_NAME,
+};
+/** Every reserved prefix the bridge ranks (lib/compat.ts, SENSOR_PREFIX_TIERS) — ONE table
+ *  for grammar and rank, so they cannot disagree — plus the closed field grammar. A prefix
+ *  missing here ends in the blind `unnamedLast` counter: the poller drops a shape it
+ *  cannot name BEFORE `recordProtocolShapes`, and the probe → ledger chain is disarmed at
+ *  its last hop. A chain is only as long as the hops someone checked. */
 const KNOWN_SHAPE_GRAMMAR = [
   new RegExp(`^${BASE}$`),
-  new RegExp(`^«detector-failure»\\.${SEGMENT}$`),
-  new RegExp(`^«exception»\\.${SEGMENT}@[a-z0-9-]{1,40}\\.${EXC_SUFFIX}$`),
-  // G-70. Without these two the poller dropped every announcement BEFORE
-  // `recordProtocolShapes`, so a gateway declaring a family nobody had classified bumped
-  // the blind `unnamedLast` counter and produced no triable row — the probe → ledger chain
-  // disarmed at its last hop, which is the whole point of the lot (review pass 13). Third
-  // time a downstream hop defeated this feature: the reservation, the sort, and now the
-  // grammar. A chain is only as long as the hops someone checked.
-  new RegExp(`^«unanticipated-event»\\.${ANNOUNCED_NAME}$`),
-  new RegExp(`^«unanticipated-capability»\\.${ANNOUNCED_NAME}$`),
+  ...SENSOR_PREFIX_TIERS.map(
+    (row) => new RegExp(`^${escapeRegExp(row.prefix)}${SUFFIX_GRAMMAR[row.suffix]}$`),
+  ),
 ];
 
 export function isKnownShapeGrammar(shape: string): boolean {

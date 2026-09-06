@@ -512,8 +512,12 @@ export function boundCompatManifest(raw: unknown): unknown {
  *  need to echo OPENCLAW_INSTANCE_NAME for the version-gated UI to resolve (an
  *  idle bridge with no live session still yields the served instance's caps). */
 // Bounds for the protocol section (a hostile/buggy bridge must not bloat the
-// singleton doc): short strings, capped lists.
-const PROTOCOL_MAX_LIST = 100;
+// singleton doc): short strings, capped lists. The bridge's reserved budgets
+// (protocol-drift.ts SENSOR_KINDS) sum to LESS than this cap, so every reserved row
+// survives even with all of them saturated at once — a test there holds that sum
+// against this number. The tier sort then keeps the sensor rows and truncates field
+// drift, which is the intended precedence.
+export const PROTOCOL_MAX_LIST = 100;
 const PROTOCOL_MAX_STR = 120;
 /** How many RAW drift entries this parse will even look at.
  *
@@ -549,36 +553,26 @@ function shortHash(s: string): string {
  *  (raised in review). A suffix derived from the WHOLE name keeps them apart everywhere.
  *  The suffix is derived from a field NAME, which is already what this surface displays —
  *  no value, no content (SOC2). */
-/** SENSOR shapes — the bridge's own findings (a reader that threw, the detector giving
- *  up) — sort ahead of gateway vocabulary EVERYWHERE a bounded list is ordered.
- *
- *  Both bounds need it, and finding out why took two review passes. A reader exception is
- *  a count of 1 on the day it matters most, so ordering by count buries it; and this
- *  boundary must not lean on the bridge having sorted correctly, because not trusting the
- *  bridge is the rule everywhere else here. The first bound slices a per-response list,
- *  the fold re-sorts the union of all of them: two places, one rule.
- *
- *  Classified by PREFIX here rather than taken on faith. A bridge could mint a shape with
- *  the prefix to buy itself a slot in a bounded list — that is our own code, and the cost
- *  would be a reordering, not a leak. */
+/** The bridge's reserved shape prefixes and their rank at this boundary — ONE table,
+ *  read by the grammar (compat.ts, KNOWN_SHAPE_GRAMMAR) and by the sort below. Tier 0:
+ *  a reader exception or a detector failure (a count of one on the day it matters);
+ *  tier 1: what the gateway announces, or sends, that nobody classified; tier 2: field
+ *  drift. A prefix present in the bridge (protocol-drift.ts, SENSOR_KINDS) and absent
+ *  here ends in the blind `unnamedLast` counter — the failure this chain has produced
+ *  before at exactly this hop. A test reads the bridge's table and holds this one to it. */
+export const SENSOR_PREFIX_TIERS: readonly { prefix: string; tier: 0 | 1; suffix: "segment" | "exception" | "name" }[] = [
+  // `suffix` names the grammar of what follows the prefix (compat.ts builds the regexes):
+  // an error class (segment), an error class + site (exception), or a contained
+  // wire name (name).
+  { prefix: "«exception».", tier: 0, suffix: "exception" },
+  { prefix: "«detector-failure».", tier: 0, suffix: "segment" },
+  { prefix: "«unanticipated-event».", tier: 1, suffix: "name" },
+  { prefix: "«unanticipated-capability».", tier: 1, suffix: "name" },
+  { prefix: "«unanticipated-broadcast».", tier: 1, suffix: "name" },
+];
+
 function sensorFirst(shape: string): number {
-  // THREE tiers, not two, and the third was added because its absence defeated a feature
-  // end to end (G-70, review pass 8). The bridge reserves a budget for what a gateway
-  // ANNOUNCES and never handles, and puts it ahead of ordinary field drift — but this
-  // boundary re-sorted the union and knew only the first two prefixes, so 100 unknown
-  // fields at a higher count buried the single new announcement under the cap. The
-  // operator would have seen `driftTruncated` and never the NAME. That is exactly the
-  // "reservation undone one hop downstream" this comment already warned about for reader
-  // exceptions; a new prefix inherited the old blind spot.
-  if (shape.startsWith("«exception».") || shape.startsWith("«detector-failure».")) {
-    return 0;
-  }
-  if (
-    shape.startsWith("«unanticipated-event».") ||
-    shape.startsWith("«unanticipated-capability».")
-  ) {
-    return 1;
-  }
+  for (const { prefix, tier } of SENSOR_PREFIX_TIERS) if (shape.startsWith(prefix)) return tier;
   return 2;
 }
 

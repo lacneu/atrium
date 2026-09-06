@@ -24,11 +24,14 @@ import WebSocket, { type RawData } from "ws";
 import type { DeviceIdentity } from "../../config.js";
 import { createSeqTracker, type SeqGap } from "./frame-seq.js";
 import {
+  eventPayload,
   classifyConnectionEnd,
   readShutdownNotice,
   type ConnectionEnd,
   type ShutdownNotice,
 } from "./connection-end.js";
+import { readConfigChanged, type ConfigChangedNotice } from "./config-changed.js";
+import type { RosterEntry } from "./models-roster.js";
 import { decodeInboundFrame, protocolDrift } from "./protocol-drift.js";
 
 // DEV-ONLY raw-frame capture. When OPENCLAW_CAPTURE_FRAMES holds a file path, every
@@ -219,10 +222,36 @@ export class OpenClawConnection {
   // A FAILURE is cached too, but with an expiry: caching it forever left an empty
   // model picker with no message until the bridge restarted (the 2026-08-04 symptom),
   // while not caching it at all would pay an 8s timeout on every turn.
-  modelsByOwner = new Map<
-    string,
-    { models: { id: string; label: string }[]; failedAt: number | null }
-  >();
+  modelsByOwner = new Map<string, RosterEntry>(); // the entry is documented at its type
+  /** Roster epoch: incremented on each invalidation, both HERE — a frame gap at the
+   *  sequence tracker, a `config.changed` at intake, before the notice is reported. An
+   *  ordering, not a clock: two events in one millisecond are still ordered. */
+  rosterEpoch = 0;
+  private readonly configChangedListeners = new Set<(notice: ConfigChangedNotice) => void>();
+  private readonly closedListeners = new Set<() => void>();
+  /** Raw signal: a `config.changed` notice arrived (config-changed.ts), the epoch already
+   *  moved. The policy — coalescing, the refresh that pushes the roster to Convex — lives
+   *  with the roster (models-roster.ts); this class only reads the frame and reports it.
+   *  Returns the unsubscribe. */
+  onConfigChanged(listener: (notice: ConfigChangedNotice) => void): () => void {
+    this.configChangedListeners.add(listener);
+    return () => {
+      this.configChangedListeners.delete(listener);
+    };
+  }
+  /** The connection's end — by `close()` or by the gateway side — fired ONCE, the single
+   *  choke point a per-connection policy disposes itself on. A listener added after the
+   *  end hears it at once. Returns the unsubscribe. */
+  onClosed(listener: () => void): () => void {
+    if (this.closed) {
+      listener();
+      return () => {};
+    }
+    this.closedListeners.add(listener);
+    return () => {
+      this.closedListeners.delete(listener);
+    };
+  }
 
   // Gateway server version captured from the connect hello-ok payload
   // (`payload.server.version`, verified live — the same field the harness'
@@ -403,11 +432,11 @@ export class OpenClawConnection {
           return; // not the challenge nor our connect ack; keep waiting (or the close wins)
         }
         if (phase === "challenge") {
-          if (frame.type !== "event" || frame.event !== "connect.challenge") {
+          const challenge = eventPayload(frame, "connect.challenge");
+          if (challenge === null) {
             fail(new OpenClawError("OpenClaw did not send connect.challenge"));
             return;
           }
-          const challenge = (frame.payload ?? {}) as Record<string, unknown>;
           const nonce = challenge.nonce;
           const ts = challenge.ts;
           if (
@@ -723,6 +752,26 @@ export class OpenClawConnection {
       } catch {
         /* a loss report must never break the receive loop */
       }
+      // The roster cached here is a projection of the gateway's config, and the frame
+      // lost may have been its `config.changed` (sent `dropIfSlow`): the epoch moves,
+      // here where both the sequence tracker and the epoch live. Free — no request.
+      this.rosterEpoch += 1;
+    }
+    // `config.changed` (config-changed.ts) is reported to the roster policy, then queued
+    // UNCHANGED like any other frame (observe-only: the normalizer drops it, the drift
+    // sensor sees it) — the same treatment as the shutdown notice above.
+    const configChanged = readConfigChanged(frame);
+    if (configChanged !== null) {
+      // The roster is a projection of the config that just changed: invalidated here,
+      // with the frame-gap case above, so every invalidation lives in one place.
+      this.rosterEpoch += 1;
+      for (const listener of [...this.configChangedListeners]) {
+        try {
+          listener(configChanged);
+        } catch {
+          /* a notification must never break the receive loop */
+        }
+      }
     }
     // Raw inbound frame: the diagnosis + first-fixture material for the harness.
     dbg("frame <-", clip(frame));
@@ -794,6 +843,16 @@ export class OpenClawConnection {
       return;
     }
     this.closed = true;
+    const closedListeners = [...this.closedListeners];
+    this.closedListeners.clear();
+    this.configChangedListeners.clear();
+    for (const listener of closedListeners) {
+      try {
+        listener();
+      } catch {
+        /* a disposal must never break the close path */
+      }
+    }
     // Name the end ONCE, at the moment it happens: the announced-shutdown notice
     // and the close code are both gone afterwards, and a turn still in flight is
     // about to be attributed a cause.

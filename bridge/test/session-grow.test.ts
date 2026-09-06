@@ -33,6 +33,9 @@ function fakeConn() {
       // The real connection caches `models.list` per owner here; `ensureAvailableModels`
     // reads it on the send path, inside the rehydration try block.
     modelsByOwner: new Map(),
+    rosterEpoch: 0,
+    onConfigChanged: () => () => {},
+    onClosed: () => () => {},
     async *frames() {
       await gate;
     },

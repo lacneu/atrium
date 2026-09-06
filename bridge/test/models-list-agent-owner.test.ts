@@ -11,45 +11,32 @@
 
 import { describe, expect, it } from "vitest";
 
-import { ensureAvailableModels, modelsListTakesOwner, resolveModelsOwner } from "../src/server.js";
+import { ensureAvailableModels, modelsListTakesOwner, resolveModelsOwner } from "../src/providers/openclaw/models-roster.js";
+import { modelsConnSpy } from "./helpers/fake-gateway.js";
 
 /** A gateway whose answer DEPENDS on the requested owner — the shape 2026.8.1+
  *  actually has (`agentId` selects a visibility scope). */
+/** Per-owner answers: the reply depends on `params.agentId`; `failFor` throws for one. */
 function perOwnerConnSpy(byOwner: Record<string, { id: string }[]>, failFor?: string) {
-  const calls: { method: string; params: unknown }[] = [];
-  return {
-    calls,
-    conn: {
-      gatewayVersion: "2026.8.1",
-      modelsByOwner: new Map(),
-      request: async (method: string, params: unknown) => {
-        calls.push({ method, params });
-        const owner = (params as { agentId?: string } | undefined)?.agentId ?? "";
-        if (failFor !== undefined && owner === failFor) throw new Error("boom");
-        return { payload: { models: byOwner[owner] ?? [] } };
-      },
-    } as never,
-  };
+  const spy = modelsConnSpy((_method, params) => {
+    const owner = (params as { agentId?: string } | undefined)?.agentId ?? "";
+    if (failFor !== undefined && owner === failFor) throw new Error("boom");
+    return { models: byOwner[owner] ?? [] };
+  });
+  return { calls: spy.calls, conn: spy.conn };
 }
 
+/** One roster for every ask; `rejectParams` throws for the forms a generation refuses. */
 function connSpy(
   models: { id: string }[],
   gatewayVersion: string | null = "2026.8.1",
   rejectParams?: (params: unknown) => boolean,
 ) {
-  const calls: { method: string; params: unknown }[] = [];
-  return {
-    calls,
-    conn: {
-      gatewayVersion,
-      modelsByOwner: new Map(),
-      request: async (method: string, params: unknown) => {
-        calls.push({ method, params });
-        if (rejectParams?.(params)) throw new Error("INVALID_REQUEST");
-        return { payload: { models } };
-      },
-    } as never,
-  };
+  const spy = modelsConnSpy((_method, params) => {
+    if (rejectParams?.(params)) throw new Error("INVALID_REQUEST");
+    return { models };
+  }, gatewayVersion);
+  return { calls: spy.calls, conn: spy.conn };
 }
 
 describe("one catalogue per OWNER, never one for the connection", () => {
@@ -62,8 +49,8 @@ describe("one catalogue per OWNER, never one for the connection", () => {
     });
     const a = await ensureAvailableModels(conn, "alice");
     const b = await ensureAvailableModels(conn, "bob");
-    expect(a.map((m) => m.id)).toEqual(["openai/gpt-5.5"]);
-    expect(b.map((m) => m.id)).toEqual(["anthropic/claude-fable-5.1"]);
+    expect(a!.models.map((m) => m.id)).toEqual(["openai/gpt-5.5"]);
+    expect(b!.models.map((m) => m.id)).toEqual(["anthropic/claude-fable-5.1"]);
     expect(calls).toHaveLength(2); // one round trip each, then cached
     expect(await ensureAvailableModels(conn, "alice")).toEqual(a);
     expect(calls).toHaveLength(2);
@@ -74,8 +61,8 @@ describe("one catalogue per OWNER, never one for the connection", () => {
       { bob: [{ id: "anthropic/claude-fable-5.1" }] },
       "alice",
     );
-    expect(await ensureAvailableModels(conn, "alice")).toEqual([]);
-    expect((await ensureAvailableModels(conn, "bob")).map((m) => m.id)).toEqual([
+    expect(await ensureAvailableModels(conn, "alice"), "nothing in hand — Convex keeps the roster on record").toBeNull();
+    expect((await ensureAvailableModels(conn, "bob"))!.models.map((m) => m.id)).toEqual([
       "anthropic/claude-fable-5.1",
     ]);
   });
@@ -84,33 +71,25 @@ describe("one catalogue per OWNER, never one for the connection", () => {
     // The ownerless form goes first, the gateway refuses it, and the retry answers FOR
     // ALICE. Filing that under the connection-wide key served it to Bob.
     const calls: { params: unknown }[] = [];
-    const conn = {
-      gatewayVersion: null,
-      modelsByOwner: new Map(),
-      request: async (_m: string, params: unknown) => {
+    const { conn } = modelsConnSpy(async (_method, params) => {
         calls.push({ params });
         const owner = (params as { agentId?: string } | undefined)?.agentId;
         if (owner === undefined) throw new Error("INVALID_REQUEST: no explicit owner");
-        return { payload: { models: [{ id: `model-for-${owner}` }] } };
-      },
-    } as never;
+        return { models: [{ id: `model-for-${owner}` }] };
+    }, null);
     const a = await ensureAvailableModels(conn, "alice");
     const b = await ensureAvailableModels(conn, "bob");
-    expect(a.map((m) => m.id)).toEqual(["model-for-alice"]);
-    expect(b.map((m) => m.id)).toEqual(["model-for-bob"]);
+    expect(a!.models.map((m) => m.id)).toEqual(["model-for-alice"]);
+    expect(b!.models.map((m) => m.id)).toEqual(["model-for-bob"]);
   });
   it("UNKNOWN version: Alice failing on BOTH forms does not empty Bob's picker (codex)", async () => {
-    const conn = {
-      gatewayVersion: null,
-      modelsByOwner: new Map(),
-      request: async (_m: string, params: unknown) => {
+    const { conn } = modelsConnSpy(async (_method, params) => {
         const owner = (params as { agentId?: string } | undefined)?.agentId ?? "";
         if (owner !== "bob") throw new Error("boom");
-        return { payload: { models: [{ id: "model-for-bob" }] } };
-      },
-    } as never;
-    expect(await ensureAvailableModels(conn, "alice")).toEqual([]);
-    expect((await ensureAvailableModels(conn, "bob")).map((m) => m.id)).toEqual([
+        return { models: [{ id: "model-for-bob" }] };
+    }, null);
+    expect(await ensureAvailableModels(conn, "alice"), "nothing in hand — Convex keeps the roster on record").toBeNull();
+    expect((await ensureAvailableModels(conn, "bob"))!.models.map((m) => m.id)).toEqual([
       "model-for-bob",
     ]);
   });
@@ -118,14 +97,14 @@ describe("one catalogue per OWNER, never one for the connection", () => {
     // The 2026-08-04 symptom: an empty model picker, no message, until the bridge was
     // restarted. A failure is remembered briefly, not forever.
     const { conn, calls } = perOwnerConnSpy({ alice: [{ id: "openai/gpt-5.5" }] }, "alice");
-    expect(await ensureAvailableModels(conn, "alice")).toEqual([]);
-    expect(await ensureAvailableModels(conn, "alice")).toEqual([]);
+    expect(await ensureAvailableModels(conn, "alice"), "nothing in hand — Convex keeps the roster on record").toBeNull();
+    expect(await ensureAvailableModels(conn, "alice"), "nothing in hand — Convex keeps the roster on record").toBeNull();
     expect(calls, "the failure is cached, not retried on every turn").toHaveLength(1);
     const entry = (conn as unknown as {
-      modelsByOwner: Map<string, { failedAt: number | null }>;
+      modelsByOwner: Map<string, { at: number; ok: boolean; epoch: number }>;
     }).modelsByOwner.get("alice");
-    expect(entry?.failedAt, "a failure must be marked as one").not.toBeNull();
-    entry!.failedAt = Date.now() - 10 * 60_000; // …and it ages out
+    expect(entry?.ok, "a failure must be marked as one").toBe(false);
+    entry!.at = Date.now() - 10 * 60_000; // …and it ages out
     await ensureAvailableModels(conn, "alice");
     expect(calls, "an expired failure is retried").toHaveLength(2);
   });
@@ -137,7 +116,7 @@ describe("models.list carries its owner", () => {
     const models = await ensureAvailableModels(conn, "alice");
     expect(calls[0]?.method).toBe("models.list");
     expect(calls[0]?.params).toEqual({ agentId: "alice" });
-    expect(models).toHaveLength(1);
+    expect(models!.models).toHaveLength(1);
   });
 
   it("omits it when there is none — a single-agent gateway must not be handed a made-up owner", async () => {
@@ -193,7 +172,7 @@ describe("the owner form follows the gateway GENERATION (codex P1, second pass)"
     const { conn, calls } = connSpy([{ id: "m" }], null, (p) => Object.keys(p as object).length > 0);
     const models = await ensureAvailableModels(conn, "alice");
     expect(calls.map((c) => c.params)).toEqual([{}]);
-    expect(models).toHaveLength(1);
+    expect(models!.models).toHaveLength(1);
   });
   it("unknown version: an ownerless REFUSAL falls back to the owner form, once", async () => {
     const { conn, calls } = connSpy(
@@ -203,12 +182,12 @@ describe("the owner form follows the gateway GENERATION (codex P1, second pass)"
     );
     const models = await ensureAvailableModels(conn, "alice");
     expect(calls.map((c) => c.params)).toEqual([{}, { agentId: "alice" }]);
-    expect(models).toHaveLength(1);
+    expect(models!.models).toHaveLength(1);
   });
   it("known version: no second guess — a refusal stays a refusal", async () => {
     const { conn, calls } = connSpy([{ id: "m" }], "2026.8.1", () => true);
     const models = await ensureAvailableModels(conn, "alice");
     expect(calls).toHaveLength(1);
-    expect(models).toEqual([]);
+    expect(models, "refused, nothing in hand").toBeNull();
   });
 });

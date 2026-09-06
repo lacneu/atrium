@@ -101,6 +101,7 @@ class OrderingWriter implements ConvexWriter {
   }> {
     return { history: null, turnCount: 0 };
   }
+  async reportSessionRoster(): Promise<void> {}
   async reportSessionMeta(): Promise<void> {}
   async upsertSubAgent(): Promise<void> {}
   async upsertSubAgentToolPart(): Promise<void> {}

@@ -152,6 +152,7 @@ class FakeWriter implements ConvexWriter {
     // Read-only seam; the RunManager tests never re-hydrate.
     return { history: null, turnCount: 0 };
   }
+  async reportSessionRoster(): Promise<void> {}
   async reportSessionMeta(): Promise<void> {
     // Fire-and-forget seam; the RunManager tests don't assert session meta.
   }

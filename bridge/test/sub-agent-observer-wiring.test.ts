@@ -15,6 +15,7 @@
  */
 
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { sleep } from "./helpers/sleep.js";
 
 import { SessionRegistry } from "../src/session.js";
 import type { BridgeConfig } from "../src/config.js";
@@ -23,7 +24,6 @@ import type { ConvexWriter, SubAgentRecord } from "../src/convex-writer.js";
 import { OpenClawConnection } from "../src/providers/openclaw/openclaw-client.js";
 import { buildSessionKey } from "../src/providers/openclaw/session-keys.js";
 
-const tick = (ms = 5) => new Promise((r) => setTimeout(r, ms));
 
 /** A connection whose frames() iterator yields frames pushed via `push`, and
  *  completes on `close`. Lets the test feed the consume loop one frame at a time. */
@@ -63,6 +63,8 @@ function fakeConnQueue() {
         p({ value: undefined, done: true });
       }
     },
+    onConfigChanged: () => () => {},
+    onClosed: () => () => {},
     frames() {
       return iterator;
     },
@@ -125,7 +127,7 @@ describe("sub-agent observation wiring (Session.consume)", () => {
     const reg = new SessionRegistry(servedMap(config, writer), () => now);
     const s = await reg.acquire(ROUTING);
     const conn = s.connection as unknown as ReturnType<typeof fakeConnQueue>;
-    await tick(); // let the consume loop reach its first frame wait
+    await sleep(5); // let the consume loop reach its first frame wait
 
     const parentKey = buildSessionKey(
       ROUTING.openclawChatId,
@@ -138,7 +140,7 @@ describe("sub-agent observation wiring (Session.consume)", () => {
     // Start the parent turn (mirrors performSend's post-ack sequence).
     await s.runManager.beginTurn(now, "run-1");
     s.wake();
-    await tick();
+    await sleep(5);
 
     // The parent's sessions_spawn tool result -> register the child (running).
     conn.push({
@@ -156,7 +158,7 @@ describe("sub-agent observation wiring (Session.consume)", () => {
         },
       },
     });
-    await tick();
+    await sleep(5);
 
     // The PARENT turn FINALIZES (its own chat:final), BEFORE the child finishes.
     conn.push({
@@ -169,7 +171,7 @@ describe("sub-agent observation wiring (Session.consume)", () => {
         message: { role: "assistant", content: [{ type: "text", text: "I delegated it." }] },
       },
     });
-    await tick();
+    await sleep(5);
     expect(finalized.length).toBe(1); // parent turn is closed
     expect(s.runManager.isFinalized).toBe(true);
 
@@ -185,7 +187,7 @@ describe("sub-agent observation wiring (Session.consume)", () => {
         message: { role: "assistant", content: [{ type: "text", text: "CHILD_LATE_RESULT" }] },
       },
     });
-    await tick();
+    await sleep(5);
 
     // The store was updated even though the parent turn had already finalized.
     const done = subAgents.find((r) => r.childSessionKey === childKey && r.status === "done");
@@ -236,7 +238,7 @@ describe("sub-agent observation wiring (Session.consume)", () => {
     const reg = new SessionRegistry(servedMap(config, writer), () => now);
     const s = await reg.acquire(ROUTING);
     const conn = s.connection as unknown as ReturnType<typeof fakeConnQueue>;
-    await tick();
+    await sleep(5);
     const parentKey = buildSessionKey(
       ROUTING.openclawChatId,
       ROUTING.agentId,
@@ -245,7 +247,7 @@ describe("sub-agent observation wiring (Session.consume)", () => {
     const childKey = "agent:alice:subagent:race-child";
     await s.runManager.beginTurn(now, "run-1");
     s.wake();
-    await tick();
+    await sleep(5);
 
     // Parent's sessions_spawn result → the registration upsert is AWAITED (gate blocks).
     conn.push({
@@ -265,7 +267,7 @@ describe("sub-agent observation wiring (Session.consume)", () => {
         },
       },
     });
-    await tick();
+    await sleep(5);
     // The parent's chat:final is queued BEHIND the spawn frame.
     conn.push({
       type: "event",
@@ -277,7 +279,7 @@ describe("sub-agent observation wiring (Session.consume)", () => {
         message: { role: "assistant", content: [{ type: "text", text: "delegated" }] },
       },
     });
-    await tick();
+    await sleep(5);
 
     // ORDERING PROOF: the loop is blocked on the registration commit, so finalize has
     // NOT run yet. (If the registration were fire-and-forget, finalize would already
@@ -287,8 +289,8 @@ describe("sub-agent observation wiring (Session.consume)", () => {
 
     // Release the registration → it commits, THEN the loop reads + finalizes.
     releaseRegistration();
-    await tick();
-    await tick();
+    await sleep(5);
+    await sleep(5);
     expect(order).toEqual([
       "registration:start",
       "registration:commit",
@@ -307,7 +309,7 @@ describe("sub-agent observation wiring (Session.consume)", () => {
     const reg = new SessionRegistry(servedMap(config, writer), () => now);
     const s = await reg.acquire(ROUTING);
     const conn = s.connection as unknown as ReturnType<typeof fakeConnQueue>;
-    await tick();
+    await sleep(5);
     const parentKey = buildSessionKey(
       ROUTING.openclawChatId,
       ROUTING.agentId,
@@ -316,7 +318,7 @@ describe("sub-agent observation wiring (Session.consume)", () => {
     const childKey = "agent:alice:subagent:swept-child";
     await s.runManager.beginTurn(now, "run-1");
     s.wake();
-    await tick();
+    await sleep(5);
 
     // Register the child (running) — its key is ordered into registeredChildren.
     conn.push({
@@ -334,7 +336,7 @@ describe("sub-agent observation wiring (Session.consume)", () => {
         },
       },
     });
-    await tick();
+    await sleep(5);
     // Parent turn finalizes; the child keeps running (no chat:final for it).
     conn.push({
       type: "event",
@@ -346,7 +348,7 @@ describe("sub-agent observation wiring (Session.consume)", () => {
         message: { role: "assistant", content: [{ type: "text", text: "delegated" }] },
       },
     });
-    await tick();
+    await sleep(5);
     // STILL RUNNING: the key is held (not removed) — the set tracks a live child.
     expect(s.registeredChildCount).toBe(1);
 
@@ -355,8 +357,8 @@ describe("sub-agent observation wiring (Session.consume)", () => {
     // terminalizes the silently-hung child (status:error).
     now = 1000 + 16 * 60; // +16 min > 15-min TTL
     s.wake();
-    await tick();
-    await tick();
+    await sleep(5);
+    await sleep(5);
 
     // The sweep emitted a terminal error for the child...
     const sweptErr = subAgents.find(
@@ -380,10 +382,10 @@ describe("sub-agent observation wiring (Session.consume)", () => {
     const reg = new SessionRegistry(servedMap(config, writer), () => now);
     const s = await reg.acquire(ROUTING);
     const conn = s.connection as unknown as ReturnType<typeof fakeConnQueue>;
-    await tick();
+    await sleep(5);
     await s.runManager.beginTurn(now, "run-1");
     s.wake();
-    await tick();
+    await sleep(5);
 
     // A child frame whose spawnedBy belongs to a DIFFERENT chat must be ignored.
     conn.push({
@@ -397,7 +399,7 @@ describe("sub-agent observation wiring (Session.consume)", () => {
         message: { role: "assistant", content: [{ type: "text", text: "LEAK" }] },
       },
     });
-    await tick();
+    await sleep(5);
 
     expect(subAgents).toHaveLength(0);
     reg.closeAll();

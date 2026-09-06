@@ -71,14 +71,21 @@ const POLICY_CLOSE_CODE = 1008;
  * upstream schema says `Integer({minimum: 0})`, and a garbage value would end up
  * sizing a recovery budget.
  */
-export function readShutdownNotice(frame: unknown): ShutdownNotice | null {
+/** The payload of an inbound `{type:"event", event:<name>}` frame — `{}` when absent or
+ *  not an object — or null for any other frame. The ONE prologue of every event reader
+ *  (shutdown, config.changed): a hardening of the guard reaches all of them. */
+export function eventPayload(frame: unknown, eventName: string): Record<string, unknown> | null {
   if (typeof frame !== "object" || frame === null) return null;
   const f = frame as Record<string, unknown>;
-  if (f.type !== "event" || f.event !== "shutdown") return null;
-  const payload =
-    typeof f.payload === "object" && f.payload !== null
-      ? (f.payload as Record<string, unknown>)
-      : {};
+  if (f.type !== "event" || f.event !== eventName) return null;
+  return typeof f.payload === "object" && f.payload !== null && !Array.isArray(f.payload)
+    ? (f.payload as Record<string, unknown>)
+    : {};
+}
+
+export function readShutdownNotice(frame: unknown): ShutdownNotice | null {
+  const payload = eventPayload(frame, "shutdown");
+  if (payload === null) return null;
   const ms = payload.restartExpectedMs;
   return {
     reasonPresent:

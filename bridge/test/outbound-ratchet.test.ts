@@ -32,13 +32,13 @@
 // refused stays invisible. That is a declared limit, not an oversight.
 
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { sleep } from "./helpers/sleep.js";
 import { readFileSync, readdirSync } from "node:fs";
 import { Value } from "typebox/value";
 
 import {
   applySessionSettings,
   discoverAgents,
-  ensureAvailableModels,
   fetchCompactionHistory,
   fetchCronJobs,
   lcmSendParams,
@@ -46,6 +46,7 @@ import {
   performSend,
   subAgentSendParams,
 } from "../src/server.js";
+import { ensureAvailableModels } from "../src/providers/openclaw/models-roster.js";
 import {
   chatAbortParams,
   sessionsGetParams,
@@ -69,7 +70,6 @@ import { servedMap } from "./helpers/served.js";
 import { oldestVendored, vendoredVersions } from "./helpers/vendored.js";
 import { requestCallSites } from "./helpers/rpc-sites.js";
 
-const tick = (ms = 5) => new Promise((r) => setTimeout(r, ms));
 
 // `import.meta.glob` is Vite's; it is not on the Node `ImportMeta` type this package
 // compiles against. Narrowed here rather than pulling vite's client types in for one
@@ -207,6 +207,7 @@ async function captureDiscoveryBodies(): Promise<
   await ensureAvailableModels({
     ...models.conn,
     modelsByOwner: new Map(),
+    rosterEpoch: 0,
   } as never);
   out.push(...models.calls);
 
@@ -323,7 +324,7 @@ async function captureOutboundBodies(
   );
   const reg = new SessionRegistry(servedMap(config, writerStub()), () => 1000);
   const session = await reg.acquire(ROUTING);
-  await tick();
+  await sleep(5);
   const body = withAttachments
     ? ({
         ...(sendBody as object),

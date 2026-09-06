@@ -441,6 +441,8 @@ type IngestOp =
         thinkingDefault?: string;
         thinkingLevels?: { id: string; label: string }[];
         availableModels?: { id: string; label: string }[];
+        availableModelsOwner?: string;
+        rosterObservedAt?: number;
         verboseLevel?: string;
         totalTokens?: number;
         contextTokens?: number;

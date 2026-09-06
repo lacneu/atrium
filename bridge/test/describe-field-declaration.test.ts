@@ -86,20 +86,27 @@ const AGENT_SCHEMA = "agents-models-skills.ts";
  *  Derived from the SOURCE, never restated: a hand-maintained list is the very
  *  thing that let three reads go undeclared. */
 function capturedFields(): string[] {
-  const src = read("../src/server.ts");
+  // TWO sources: the guard's capture stays in server.ts, the gauge's projection and
+  // the projector pair live with the roster (models-roster.ts).
+  const sources = {
+    server: read("../src/server.ts"),
+    roster: read("../src/providers/openclaw/models-roster.ts"),
+  };
   const found = new Set<string>();
   // BOTH consumers of the describe row, because they disagreed: the guard's
   // capture read the budget figures flat, the gauge's projection read them
   // nested. Sweeping only the first is how that disagreement stayed invisible.
-  const regions: Array<[string, string, RegExp]> = [
+  const regions: Array<[keyof typeof sources, string, string, RegExp]> = [
     [
+      "server",
       "const captureDescribe",
       "if (sess) captureDescribe(sess)",
       /\bs\.([A-Za-z_][A-Za-z0-9_]*)/g,
     ],
     [
+      "roster",
       "function parseSessionMeta",
-      "function contextBudgetFields",
+      "export function dedupeModels",
       /\bsess\.([A-Za-z_][A-Za-z0-9_]*)/g,
     ],
     // The PROJECTOR PAIR — contextBudgetFields and selectBudgetAssessment, which
@@ -109,14 +116,15 @@ function capturedFields(): string[] {
     // alone, the code->contract blind spot would reopen on the nested side. Both
     // functions name their row `o` for exactly this sweep.
     [
+      "roster",
       "function contextBudgetFields",
-      // The projector's OWN end. Anchoring on the next exported function swept
-      // 40 further lines and attributed their `o.` reads to the describe.
-      "Fetch `models.list` once per OWNER",
+      // The projector pair's OWN end: parseSessionMeta follows it in the module.
+      "export function parseSessionMeta",
       /\bo\.([A-Za-z_][A-Za-z0-9_]*)/g,
     ],
   ];
-  for (const [from, to, pattern] of regions) {
+  for (const [file, from, to, pattern] of regions) {
+    const src = sources[file];
     const start = src.indexOf(from);
     const end = src.indexOf(to);
     expect(

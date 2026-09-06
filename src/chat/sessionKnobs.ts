@@ -45,6 +45,29 @@ export type SessionSettingsView = {
 
 export type KnobField = "thinkingLevel" | "model" | "fastMode";
 
+/** The SHAPE of each knob's control, declared once: segmented where the option set is
+ *  small by upstream POLICY (thinking: the gateway's level vocabulary; speed: static), a
+ *  list where the gateway's CONFIGURATION sizes it (models). A control never changes
+ *  shape under the user's hand the day an entry is added; the renderer reads this table
+ *  through `knobControlShape`, it does not decide. */
+export const KNOB_CONTROL: Record<KnobField, "segmented" | "list"> = {
+  thinkingLevel: "segmented",
+  model: "list",
+  fastMode: "segmented",
+};
+
+/** Past this many options a segmented control overflows its row: the wire type of the
+ *  thinking vocabulary is an open string and a provider may report more levels than the
+ *  policy assumed, so the shape table has a floor under it — a list, the shape that
+ *  scales, never a segmented control that does not fit. */
+export const MAX_SEGMENTED_OPTIONS = 5;
+
+/** THE decision point for a knob's control shape: the declared shape, with the overflow
+ *  floor for an option set that came off the wire. Every renderer of a knob reads this. */
+export function knobControlShape(field: KnobField, optionCount: number): "segmented" | "list" {
+  return KNOB_CONTROL[field] === "segmented" && optionCount <= MAX_SEGMENTED_OPTIONS ? "segmented" : "list";
+}
+
 /** Binary provenance (A1): the key is present in the intent = overridden. */
 export function isOverridden(
   settings: SessionSettingsView | undefined,

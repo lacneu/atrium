@@ -14,7 +14,7 @@
       "by": "openclaw-client.ts handshake — the auth challenge that precedes hello-ok",
       "anchor": {
         "file": "src/providers/openclaw/openclaw-client.ts",
-        "token": "frame.event !== \"connect.challenge\""
+        "token": "eventPayload(frame, \"connect.challenge\")"
       }
     },
     "agent": {
@@ -70,7 +70,7 @@
       "by": "connection-end.ts — names the GATEWAY_RESTARTING cause instead of a bare socket close",
       "anchor": {
         "file": "src/providers/openclaw/connection-end.ts",
-        "token": "f.event !== \"shutdown\""
+        "token": "eventPayload(frame, \"shutdown\")"
       }
     },
     "health": {

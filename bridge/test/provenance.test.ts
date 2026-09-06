@@ -308,6 +308,7 @@ class FakeWriter implements ConvexWriter {
   async getRehydrationContext(): Promise<{ history: string | null; turnCount: number }> {
     return { history: null, turnCount: 0 };
   }
+  async reportSessionRoster(): Promise<void> {}
   async reportSessionMeta(): Promise<void> {}
   async upsertSubAgent(): Promise<void> {
     this.calls.push(["other", "upsertSubAgent"]);

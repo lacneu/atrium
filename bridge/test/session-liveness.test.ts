@@ -43,6 +43,8 @@ function fakeConn() {
     async request() {
         return { payload: {} };
       },
+      onConfigChanged: () => () => {},
+      onClosed: () => () => {},
       async *frames() {
       await gate; // never yields a frame
     },
@@ -235,6 +237,8 @@ function fakeConnRecording() {
       closed = true;
       release();
     },
+    onConfigChanged: () => () => {},
+    onClosed: () => () => {},
     async *frames() {
       await gate;
     },
@@ -270,6 +274,8 @@ function fakeConnControllable() {
     close() {
       closed = true;
     },
+    onConfigChanged: () => () => {},
+    onClosed: () => () => {},
     async *frames(): AsyncGenerator<never> {
       await gate; // rejects when crash() is called -> the generator throws
     },
@@ -567,6 +573,8 @@ describe("close mid-turn = transcript recovery, then connection lost (never a us
         return false;
       },
       close() {},
+      onConfigChanged: () => () => {},
+      onClosed: () => () => {},
       async *frames() {},
       async request(method: string) {
         expect(method).toBe("sessions.get");
@@ -626,6 +634,8 @@ describe("close mid-turn = transcript recovery, then connection lost (never a us
         return false;
       },
       close() {},
+      onConfigChanged: () => () => {},
+      onClosed: () => () => {},
       async *frames() {},
       async request() {
         return {
@@ -690,6 +700,8 @@ describe("close mid-turn = transcript recovery, then connection lost (never a us
         return false;
       },
       close() {},
+      onConfigChanged: () => () => {},
+      onClosed: () => () => {},
       async *frames() {},
       async request() {
         staleServed++;
@@ -757,6 +769,8 @@ describe("close mid-turn = transcript recovery, then connection lost (never a us
         return false;
       },
       close() {},
+      onConfigChanged: () => () => {},
+      onClosed: () => () => {},
       async *frames() {},
       async request() {
         served++;
@@ -816,6 +830,8 @@ describe("close mid-turn = transcript recovery, then connection lost (never a us
         return false;
       },
       close() {},
+      onConfigChanged: () => () => {},
+      onClosed: () => () => {},
       async *frames() {},
       async request() {
         return { payload: { messages: [{ role: "user", content: "question" }] } };
@@ -862,6 +878,8 @@ describe("close mid-turn = transcript recovery, then connection lost (never a us
         return false;
       },
       close() {},
+      onConfigChanged: () => () => {},
+      onClosed: () => () => {},
       async *frames() {},
       async request() {
         return { payload: { messages: [{ role: "user", content: "question" }] } };
@@ -916,6 +934,8 @@ describe("close mid-turn = transcript recovery, then connection lost (never a us
         return false;
       },
       close() {},
+      onConfigChanged: () => () => {},
+      onClosed: () => () => {},
       async *frames() {},
       async request() {
         return { payload: { messages: [] } };
@@ -973,6 +993,8 @@ describe("close mid-turn = transcript recovery, then connection lost (never a us
         return false;
       },
       close() {},
+      onConfigChanged: () => () => {},
+      onClosed: () => () => {},
       async *frames() {},
       async request() {
         return { payload: { messages: [{ role: "user", content: "question" }] } };

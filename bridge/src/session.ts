@@ -20,6 +20,7 @@ import {
 } from "./providers/openclaw/history-recovery.js";
 import { SubAgentObserver } from "./providers/openclaw/sub-agent-observer.js";
 import type { ConvexWriter, SubAgentRecord } from "./convex-writer.js";
+import { attachRosterPolicy } from "./providers/openclaw/models-roster.js";
 import type { OutboundScan } from "./core/turn-sink.js";
 import { gatewayHostOf } from "./core/health.js";
 import { sessionsGetParams } from "./core/rpc-params.js";
@@ -270,6 +271,11 @@ class Session implements BridgeSession {
     // reply would fabricate a "this answer is truncated" diagnostic. The
     // gateway's OWN `seq gap` report does name its run and IS charged to the turn
     // (normalizer -> sink). Fire-and-forget: a diagnostic never delays a turn.
+    // The model roster follows the gateway's config WITHOUT a turn: the roster policy
+    // (models-roster.ts) turns the connection's `config.changed` into an invalidation
+    // and a refresh that pushes the roster to Convex; a frame gap moves the epoch in the
+    // transport itself. Same hop as the frame-gap report; a refresh never delays a turn.
+    attachRosterPolicy(this, writer); // disposes itself on the connection's close
     connection.onFrameGap = (gap) => {
       void writer.noteFrameGap?.(chatId, {
         source: "envelope",
@@ -431,7 +437,7 @@ class Session implements BridgeSession {
     // acquire then drops this session and reconnects a fresh one. endTurn writes to
     // Convex (not this socket), so closing first does not affect the finalize.
     try {
-      this.connection.close();
+      this.connection.close(); // the policy disposes itself on the connection's close
     } catch {
       /* already gone */
     }
@@ -1109,7 +1115,7 @@ class Session implements BridgeSession {
   }
 
   close(): void {
-    this.connection.close();
+    this.connection.close(); // the policy disposes itself on the connection's close
   }
 }
 

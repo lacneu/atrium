@@ -29,113 +29,47 @@
 // That is deliberate — lot 47 left its upstream verification conditional on a local
 // checkout, so it was absent exactly where regressions land.
 
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
-// @ts-expect-error — plain .mjs helper, no types (it runs under node, not tsc)
-import { stripComments } from "../scripts/lib/derive-event-catalogue.mjs";
 
 import {
+  BROADCAST_ONLY_EVENTS,
   CLASSIFIED_EVENTS,
   DRIFT_VENDORED_VERSION,
 } from "../src/providers/openclaw/protocol-drift.js";
+import {
+  type CoverageEntry as EventEntry,
+  anchorViolations,
+  classificationViolations,
+  derivedCounts,
+} from "./helpers/coverage-rules.js";
 import { vendoredVersions } from "./helpers/vendored.js";
 
 
-/** A `handled` verdict must point at code that EXISTS.
- *
- *  Review passes 4 and 5 found six classifications claiming a consumption the code does
- *  not perform — `run_status` "polled" by nothing, `chat_completions` "dispatched" to an
- *  endpoint never built, headers "carried" that are never sent. Five of the six named no
- *  verifiable anchor at all: they were prose, and prose cannot be falsified by a test.
- *
- *  So every `handled` carries `anchor: {file, token}`, and this asserts the token is
- *  present in that file AFTER COMMENTS ARE STRIPPED. The stripping is not pedantry: most
- *  of these names appear in explanatory comments too, and an anchor satisfied by a
- *  comment would certify exactly the vague claim this rule exists to kill. The same
- *  stripper the catalogue deriver uses, so the two cannot disagree.
- *
- *  WHAT THIS DOES NOT PROVE: that the code reached by the anchor is FED, or that it does
- *  what the prose says. `session.operation` had a real reader at a real line and was
- *  still wrong — nothing delivers the event. That class stays a human read; this rule
- *  removes the other five.
- */
-function anchorViolations(
-  entries: Record<string, { status: string; anchor?: { file: string; token: string } }>,
-  label: string,
-): string[] {
-  const bad: string[] = [];
-  for (const [name, e] of Object.entries(entries)) {
-    if (e.status !== "handled") {
-      if (e.anchor !== undefined) {
-        bad.push(`${label} ${name}: only \`handled\` carries an anchor`);
-      }
-      continue;
-    }
-    const anchor = e.anchor;
-    if (anchor === undefined || !anchor.file || !anchor.token) {
-      bad.push(`${label} ${name}: \`handled\` requires anchor {file, token}`);
-      continue;
-    }
-    // Production code only, and canonically so. Two bypasses were found in a row:
-    // `src/../test/foo.test.ts` (pass 7, literal segments) and `src/%2e%2e/test/foo.test.ts`
-    // (pass 8 — WHATWG URL decodes the escape, so a segment check on the raw string sees
-    // nothing wrong). Rather than enumerate spellings, the rule is now a whitelist of
-    // harmless characters plus a check on the RESOLVED path: a test certifies that a claim
-    // is TESTED, never that the build DOES it.
-    if (!/^src\/[A-Za-z0-9_./-]+\.ts$/.test(anchor.file) || anchor.file.includes("%")) {
-      bad.push(`${label} ${name}: anchor must point into src/, not ${anchor.file}`);
-      continue;
-    }
-    const at = new URL(`../${anchor.file}`, import.meta.url);
-    if (!at.pathname.includes("/bridge/src/") || at.pathname.includes("/..")) {
-      bad.push(`${label} ${name}: anchor resolves outside src/ (${anchor.file})`);
-      continue;
-    }
-    let body: string;
-    try {
-      body = readFileSync(at, "utf-8");
-    } catch {
-      bad.push(`${label} ${name}: anchor file ${anchor.file} does not exist`);
-      continue;
-    }
-    const code = (stripComments as (s: string) => string)(body);
-    if (!code.includes(anchor.token)) {
-      bad.push(
-        `${label} ${name}: token ${JSON.stringify(anchor.token)} is absent from ` +
-          `${anchor.file} outside comments — the claim cites code that is not there`,
-      );
-    }
-  }
-  return bad;
-}
 
-interface EventEntry {
-  status: "handled" | "ignored" | "gap";
-  /** Only on `handled`: the code that performs the consumption being claimed. */
-  anchor?: { file: string; token: string };
-  by?: string;
-  why?: string;
-  note?: string;
-}
 interface EventManifest {
   version: string;
   catalogue: string;
   counts?: Record<string, number>;
   events: Record<string, EventEntry>;
+  /** Families the gateway can BROADCAST without announcing (broadcast-catalogue.json
+   *  minus event-catalogue.json). Present exactly when the broadcast catalogue is
+   *  vendored for this version; entries may carry the frame-discovery `dossier`/`proof`. */
+  broadcastOnly?: Record<string, EventEntry & { dossier?: unknown; proof?: unknown }>;
+  broadcastOnlyCounts?: Record<string, number>;
+}
+interface BroadcastCatalogue {
+  derivedFrom: string;
+  events: string[];
+  scopes: Record<string, string[]>;
 }
 interface Catalogue {
   derivedFrom: string;
   events: string[];
 }
 
-const VALID_STATUSES = new Set(["handled", "ignored", "gap"]);
-/** The prose each status owes the reader. A status with no justification is a shrug. */
-const REQUIRED_PROSE: Record<string, keyof EventEntry> = {
-  handled: "by",
-  ignored: "why",
-  gap: "note",
-};
+
 
 function readJson<T>(rel: string): T {
   return JSON.parse(
@@ -143,23 +77,36 @@ function readJson<T>(rel: string): T {
   ) as T;
 }
 
+/** One read per vendored version, shared by every gate below: two describes reading the
+ *  same files separately would let a future in-memory mutation in one block show a
+ *  different manifest to the other. `broadcast` is undefined where the broadcast
+ *  catalogue is not vendored. */
+const VERSIONS = vendoredVersions();
+const LEDGER = new Map(
+  VERSIONS.map((version) => [
+    version,
+    {
+      catalogue: readJson<Catalogue>(`../protocol/openclaw/${version}/event-catalogue.json`),
+      manifest: readJson<EventManifest>(`../protocol/openclaw/events/${version}.json`),
+      broadcast: existsSync(
+        new URL(`../protocol/openclaw/${version}/broadcast-catalogue.json`, import.meta.url),
+      )
+        ? readJson<BroadcastCatalogue>(`../protocol/openclaw/${version}/broadcast-catalogue.json`)
+        : undefined,
+    },
+  ]),
+);
+
 describe("the announced event catalogue is fully classified", () => {
-  const versions = vendoredVersions();
 
   it("there is at least one vendored version to check (the gate cannot pass empty)", () => {
     // Lot 14's lesson: a gate that iterates an empty list is green for the wrong
     // reason. Assert the corpus is non-empty before asserting anything about it.
-    expect(versions.length).toBeGreaterThan(0);
+    expect(VERSIONS.length).toBeGreaterThan(0);
   });
 
-  for (const version of versions) {
+  for (const [version, { catalogue, manifest }] of LEDGER) {
     describe(version, () => {
-      const catalogue = readJson<Catalogue>(
-        `../protocol/openclaw/${version}/event-catalogue.json`,
-      );
-      const manifest = readJson<EventManifest>(
-        `../protocol/openclaw/events/${version}.json`,
-      );
 
       it("the manifest classifies THIS version", () => {
         expect(manifest.version).toBe(version);
@@ -171,24 +118,10 @@ describe("the announced event catalogue is fully classified", () => {
       });
 
       it("every ANNOUNCED family is classified, with its justification", () => {
-        const unclassified: string[] = [];
-        const unjustified: string[] = [];
-        for (const name of catalogue.events) {
-          const entry = manifest.events[name];
-          if (entry === undefined) {
-            unclassified.push(name);
-            continue;
-          }
-          if (!VALID_STATUSES.has(entry.status)) {
-            unjustified.push(`${name}: unknown status ${JSON.stringify(entry.status)}`);
-            continue;
-          }
-          const owed = REQUIRED_PROSE[entry.status];
-          const prose = owed === undefined ? undefined : entry[owed];
-          if (typeof prose !== "string" || prose.trim() === "") {
-            unjustified.push(`${name}: status "${entry.status}" requires \`${owed}\``);
-          }
-        }
+        const { unclassified, unjustified } = classificationViolations(
+          catalogue.events,
+          manifest.events,
+        );
         expect(
           unclassified,
           "the gateway announces these and nobody has said what Atrium does with them",
@@ -210,20 +143,8 @@ describe("the announced event catalogue is fully classified", () => {
 
 
       it("the published COUNTS are derived, not remembered", () => {
-        // Three separate corrections rotted while the tallies were prose in a `$comment`
-        // and in the lot note — each time, a `str.replace` that matched nothing and said
-        // nothing (review passes 4, 5 and 6). A number nobody recomputes is a claim, and
-        // this file exists to stop claims from outliving their truth.
-        const c = manifest.counts;
-        const by = (s: string): number =>
-          Object.values(manifest.events).filter((e) => e.status === s).length;
-        expect(c, "the manifest must publish its tallies").toBeDefined();
-        expect(c).toEqual({
-          total: Object.keys(manifest.events).length,
-          handled: by("handled"),
-          gap: by("gap"),
-          ignored: by("ignored"),
-        });
+        expect(manifest.counts, "the manifest must publish its tallies").toBeDefined();
+        expect(manifest.counts).toEqual(derivedCounts(manifest.events));
       });
 
       it("every `handled` CITES code that exists", () => {
@@ -237,6 +158,84 @@ describe("the announced event catalogue is fully classified", () => {
           orphans,
           "these are classified but no longer announced: a stale claim misleads as much as a missing one",
         ).toEqual([]);
+      });
+    });
+  }
+});
+
+describe("the BROADCAST-ONLY families are fully classified", () => {
+  // Upstream keeps two vocabularies: what the gateway ANNOUNCES (`GATEWAY_EVENTS`, the
+  // catalogue above) and what it can BROADCAST (`EVENT_SCOPE_GUARDS`, the larger table).
+  // A ratchet on the announced list alone said nothing about the difference, and that is
+  // where `config.changed` lived: sent on every config edit, dropped unread, and no gate
+  // knew it existed. This gate classifies the difference with the same vocabulary and the
+  // same anchor rule as the announced families.
+  const withCatalogue = [...LEDGER].filter(([, l]) => l.broadcast !== undefined);
+  const withoutCatalogue = [...LEDGER].filter(([, l]) => l.broadcast === undefined);
+
+  it("the broadcast catalogue is vendored for the version the sensor runs on (the mirror cannot be vacuous)", () => {
+    expect(withCatalogue.length).toBeGreaterThan(0);
+    expect(withCatalogue.map(([v]) => v)).toContain(DRIFT_VENDORED_VERSION);
+  });
+
+  it("the RUNTIME set mirrors the derived difference of the version the sensor runs on", () => {
+    // The bridge runs from `dist/` where `protocol/` is absent, so the runtime sensor
+    // compares against a literal; this keeps the literal equal to the derivation.
+    const ledger = LEDGER.get(DRIFT_VENDORED_VERSION);
+    expect(ledger?.broadcast, "the sensor's version must carry the broadcast catalogue").toBeDefined();
+    const announced = new Set(ledger!.catalogue.events);
+    const derived = ledger!.broadcast!.events.filter((e) => !announced.has(e));
+    expect([...BROADCAST_ONLY_EVENTS].sort()).toEqual([...derived].sort());
+  });
+
+  for (const [version, { manifest }] of withoutCatalogue) {
+    it(`${version} has no broadcast catalogue and CLAIMS none — a classification of a list nobody derived is a claim`, () => {
+      // REACHABLE today: 2026.6.11 and 2026.7.1 carry no broadcast catalogue, because
+      // the vendoring script refuses to re-vendor those tags (it requires
+      // `schema/closed-object.ts`, which upstream added later). Until that is fixed,
+      // the manifest must stay silent rather than carry a hand-typed list.
+      expect(manifest.broadcastOnly).toBeUndefined();
+      expect(manifest.broadcastOnlyCounts).toBeUndefined();
+    });
+  }
+
+  for (const [version, { catalogue, manifest, broadcast }] of withCatalogue) {
+    if (broadcast === undefined) continue; // narrowed above; the type does not know
+    describe(version, () => {
+      const announced = new Set(catalogue.events);
+      const broadcastOnly = broadcast.events.filter((e) => !announced.has(e));
+
+      it("the broadcast catalogue is non-empty, duplicate-free, and names a scope for every family", () => {
+        expect(broadcast.events.length).toBeGreaterThan(0);
+        expect(new Set(broadcast.events).size).toBe(broadcast.events.length);
+        for (const e of broadcast.events) expect(broadcast.scopes[e], e).toBeDefined();
+      });
+
+      it("every broadcast-only family is classified, with its justification", () => {
+        const { unclassified, unjustified } = classificationViolations(
+          broadcastOnly,
+          manifest.broadcastOnly ?? {},
+        );
+        expect(
+          unclassified,
+          "the gateway can send these without announcing them, and nobody has said what Atrium does with them",
+        ).toEqual([]);
+        expect(unjustified, "a classification without prose is a shrug").toEqual([]);
+      });
+
+      it("no ORPHAN entry — a family that became announced, or left the table, must leave this section", () => {
+        const orphans = Object.keys(manifest.broadcastOnly ?? {}).filter(
+          (n) => !broadcastOnly.includes(n),
+        );
+        expect(orphans).toEqual([]);
+      });
+
+      it("every `handled` CITES code that exists", () => {
+        expect(anchorViolations(manifest.broadcastOnly ?? {}, `${version} broadcast-only`)).toEqual([]);
+      });
+
+      it("the published COUNTS are derived, not remembered", () => {
+        expect(manifest.broadcastOnlyCounts).toEqual(derivedCounts(manifest.broadcastOnly ?? {}));
       });
     });
   }

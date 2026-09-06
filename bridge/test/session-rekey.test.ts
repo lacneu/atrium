@@ -12,6 +12,7 @@ import { SessionRegistry } from "../src/session.js";
 import type { BridgeConfig } from "../src/config.js";
 import type { InstanceBundle } from "../src/session.js";
 import { servedMap } from "./helpers/served.js";
+import { sleep } from "./helpers/sleep.js";
 import { OpenClawConnection } from "../src/providers/openclaw/openclaw-client.js";
 
 /** Minimal fake connection: never yields a frame; completes only on close.
@@ -44,6 +45,9 @@ function fakeConn() {
     // The real connection caches `models.list` per owner here; `ensureAvailableModels`
     // reads it on the send path, inside the rehydration try block.
     modelsByOwner: new Map(),
+    rosterEpoch: 0,
+    onConfigChanged: () => () => {},
+    onClosed: () => () => {},
     async *frames() {
       try {
         await gate;
@@ -54,7 +58,6 @@ function fakeConn() {
   };
 }
 
-const tick = () => new Promise((r) => setTimeout(r, 10));
 
 const config = {
   openclawGatewayUrl: "ws://127.0.0.1:1",
@@ -137,7 +140,7 @@ describe("SessionRegistry — body-routed keys + re-key", () => {
       agentId: "agent-b", // re-key
       canonical: "alice",
     });
-    await tick(); // let the old consumer observe the closed connection
+    await sleep(10); // let the old consumer observe the closed connection
     const [oldConn, newConn] = conns;
     expect(oldConn!.isClosed).toBe(true);
     // The old loop drained its generator → it can no longer feed the chat under

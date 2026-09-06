@@ -1,5 +1,5 @@
 {
-  "$comment": "Atrium's classification of the event catalogue the gateway ANNOUNCES about itself (`hello-ok.features.events`, vendored as ../2026.7.2-beta.5/event-catalogue.json). One entry per announced family, no more and no fewer — `events-coverage.test.ts` asserts the BIJECTION, so vendoring a version whose catalogue grew turns CI red until someone classifies the newcomer. Same vocabulary as the field coverage beside it: `handled` carries `by`, `ignored` carries `why`, `gap` REQUIRES a `note` saying what is unsupported and what it costs. 2026.7.2-beta.5: carried forward from 2026.7.1 (all 30 families still announced, entries unchanged); the 14 families new in this tag enter as `gap` on the frame-discovery queue. The tallies live in `counts` below, DERIVED and asserted by the ratchet — three separate corrections rotted when they were prose.",
+  "$comment": "Atrium's classification of the event catalogue the gateway ANNOUNCES about itself (`hello-ok.features.events`, vendored as ../2026.7.2-beta.5/event-catalogue.json). One entry per announced family, no more and no fewer — `events-coverage.test.ts` asserts the BIJECTION, so vendoring a version whose catalogue grew turns CI red until someone classifies the newcomer. Same vocabulary as the field coverage beside it: `handled` carries `by`, `ignored` carries `why`, `gap` REQUIRES a `note` saying what is unsupported and what it costs. 2026.7.2-beta.5: carried forward from 2026.7.1 (all 30 families still announced, entries unchanged); the 14 families new in this tag enter as `gap` on the frame-discovery queue. The tallies live in `counts` below, DERIVED and asserted by the ratchet — three separate corrections rotted when they were prose. `broadcastOnly` classifies the families the gateway can BROADCAST without announcing (broadcast-catalogue.json minus event-catalogue.json — the scope-guard table is the larger vocabulary); same statuses, same anchor rule, tallies in `broadcastOnlyCounts`.",
   "version": "2026.8.1",
   "catalogue": "event-catalogue.json",
   "counts": {
@@ -14,7 +14,7 @@
       "by": "openclaw-client.ts handshake — the auth challenge that precedes hello-ok",
       "anchor": {
         "file": "src/providers/openclaw/openclaw-client.ts",
-        "token": "frame.event !== \"connect.challenge\""
+        "token": "eventPayload(frame, \"connect.challenge\")"
       }
     },
     "agent": {
@@ -42,7 +42,7 @@
       "by": "connection-end.ts — names the GATEWAY_RESTARTING cause instead of a bare socket close",
       "anchor": {
         "file": "src/providers/openclaw/connection-end.ts",
-        "token": "f.event !== \"shutdown\""
+        "token": "eventPayload(frame, \"shutdown\")"
       }
     },
     "cron": {
@@ -245,5 +245,68 @@
       "status": "ignored",
       "why": "Control-UI user preferences. Atrium owns its own user model in Convex and reads no gateway user preference."
     }
+  },
+  "broadcastOnly": {
+    "board.changed": {
+      "status": "ignored",
+      "why": "Broadcast by the gateway's BOARD methods (`src/gateway/server-methods/board.ts`, `context.broadcast(\"board.changed\", …)`) after a board mutation, for the Control UI's board page (`ui/src/lib/board/gateway-provider.ts`). Atrium has no board surface and never calls a `board.*` method (verified: no such call in bridge/src), so the notice describes a view Atrium does not hold."
+    },
+    "board.command": {
+      "status": "ignored",
+      "why": "Sent by the dashboard TOOL (`src/agents/tools/dashboard-tool.ts`, `broadcastToConnIds(\"board.command\", params, connIds)`) to the connections subscribed to a board only. Atrium never subscribes to a board, so this frame is never addressed to its socket."
+    },
+    "chat.send_timing": {
+      "status": "gap",
+      "note": "Per-phase latency of a `chat.send` (`src/gateway/server-chat.ts` at the `\"chat.send_timing\"` broadcast: `ackToPhaseMs`, `receivedToPhaseMs`, dispatch offsets, keyed by `sessionKey`). It is broadcast READ-scoped, so Atrium's turn socket receives it and drops it unread. Real cost: the trace of a turn carries only Atrium-side clocks — when a turn is slow, nothing says how much of it was the gateway's own dispatch. To be instructed as its own frame-discovery run."
+    },
+    "chat.side_result": {
+      "status": "handled",
+      "by": "normalizer.ts — admitted at intake (`feedFrame` lets `chat.side_result` through with `agent`/`chat`/`session.operation`) and handled by `handleSideResult` (G-18): the run's side result becomes a part of the reply on the run's own chat `seq`. Sequenced on the run's chat seq upstream (`src/gateway/server-methods/chat-broadcast.ts`, `broadcastSideResult`, scoped to the run's session keys).",
+      "anchor": {
+        "file": "src/providers/openclaw/normalizer.ts",
+        "token": "handleSideResult("
+      }
+    },
+    "config.changed": {
+      "status": "handled",
+      "by": "openclaw-client.ts intake — read by `readConfigChanged` (config-changed.ts) and reported raw to the roster POLICY the session attaches to its connection (`attachRosterPolicy`, providers/openclaw/models-roster.ts): every notice invalidates every owner's cached `models.list` roster (a new epoch; the roster is kept, never deleted; no deduplication by hash, since an answer computed mid-reload is the old roster under the new hash), coalesced over a burst; the refresh (`refreshAfterConfigChange`) re-describes the session, waits for a post-change answer and pushes it to Convex, so the picker follows the gateway's config without a turn — retried once past the failure bound when the roster published was not the post-change one. An envelope frame gap invalidates in the transport itself (the event is sent `dropIfSlow`; a lost one consumed a `seq`), and the next publish re-asks off its path and reports a newer answer alone. The frame is then queued unchanged and dropped by the normalizer, like the shutdown notice. A roster in hand is never blocked on (`ensureAvailableModels`): served as is and refreshed off the caller's path when invalidated or past its bound; a failed re-ask keeps the last good roster; with nothing in hand the publish waits for the answer; an empty list or a list of unavailable models is a failure that keeps the last good roster. Convex keeps a roster for its current owner only (the owner of the latest knob publish accepted) and orders it by its own observation stamp (the gateway's answer), the knob fields by the describe's; a roster answered after its publish is reported alone, unstamped.",
+      "anchor": {
+        "file": "src/providers/openclaw/openclaw-client.ts",
+        "token": "readConfigChanged(frame)"
+      },
+      "proof": {
+        "kind": "deterministic-test",
+        "ref": "bridge/test/config-changed-roster.test.ts",
+        "note": "No catalogue scenario edits the gateway config mid-run, so the bench cannot capture the frame yet; the test drives a real OpenClawConnection over a real socket against a fake gateway that pushes the frame verbatim. The frame was ALSO observed live on a real 2026.9.1 gateway (session socket, hand edit) and the intake cleared the roster — but a live observation outside the bench earns no golden-corpus proof: that stays owed to a scenario that edits the config."
+      },
+      "dossier": {
+        "writers": [
+          "src/gateway/server-reload-managed.ts#onConfigCandidateCommitted — the single notification point for EVERY persisted config change: gateway RPC writes, agent/CLI config_set, doctor repairs, hand edits of the config file; broadcast with `dropIfSlow: true`"
+        ],
+        "resets": [
+          "none — a notice, not state; each persisted revision emits its own frame with a new `hash`"
+        ],
+        "upstreamUse": [
+          "ui/src/app/app-shell-gateway.ts:178 — Control UI: refreshes the runtime config snapshot and reschedules its agent-roster refresh",
+          "ui/src/app/app-host.ts:511 and ui/src/pages/chat/chat-pane-lifecycle.ts:582 — the same UI's host and chat pane react to it; ui/src/pages/new-session/new-session-runtime.ts:7 lists it among the events that refresh the new-session page",
+          "apps/ios/Sources/Model/NodeAppModel.swift:1791, apps/macos/Sources/OpenClaw/ChannelsStore+Lifecycle.swift:58, apps/linux/src-tauri/src/gateway_ws.rs:912 — first-party clients branch on the event name and refresh"
+        ],
+        "wire": [
+          "event `config.changed`, gateway → every READ-scoped connection (src/gateway/server-broadcast.ts, EVENT_SCOPE_GUARDS); payload {path: string, hash: string|null, ts: number}; hash = projected config revision (configRevisionProjector.projectRawHash); NOT announced in hello-ok.features.events (absent from GATEWAY_EVENTS) — broadcast-only",
+          "dropIfSlow: a client whose socket buffer exceeds MAX_BUFFERED_BYTES does not receive it and its seq is consumed (the client's gap detector fires)",
+          "OBSERVED on a live gateway 2026.9.1 (local, hand edit of openclaw.json while a chat's session socket was open): {\"type\":\"event\",\"event\":\"config.changed\",\"payload\":{\"path\":\"<config path>\",\"hash\":\"hmac-sha256:v1:<base64url>\",\"ts\":<ms>},\"seq\":<n>} — the frame reaches the per-chat SESSION socket (kept open 15 min past the last activity), which is where the roster cache lives; a bridge with no open session socket has nothing to receive it on, and asks the gateway afresh on the next turn anyway"
+        ]
+      }
+    },
+    "sessions.catalog.host": {
+      "status": "ignored",
+      "why": "Progressive delivery of a `sessions.catalog` answer (`src/gateway/server-methods/session-catalog.ts`, `broadcastToConnIds(\"sessions.catalog.host\", {progressId, agentId, catalog}, …)`), addressed ONLY to the connection that issued the catalog request. Atrium never calls `sessions.catalog` (verified: no such call in bridge/src); the frame cannot reach it."
+    }
+  },
+  "broadcastOnlyCounts": {
+    "total": 6,
+    "handled": 2,
+    "gap": 1,
+    "ignored": 3
   }
 }

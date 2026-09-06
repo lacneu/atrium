@@ -7,6 +7,8 @@
 // queries (bridge.read / active-user + chat ownership).
 
 import { readFileSync } from "node:fs";
+import ts from "typescript";
+import { SENSOR_PREFIX_TIERS, PROTOCOL_MAX_LIST } from "./lib/compat";
 import { convexTest, type TestConvex } from "convex-test";
 import { withMediaQuarantine } from "./lib/instanceConfig";
 import { afterEach, describe, expect, test, vi } from "vitest";
@@ -1516,6 +1518,26 @@ describe("a gateway announcement is never truncated away by ordinary drift", () 
     ).toContain("«unanticipated-event».brand.new");
   });
 
+  test("a RECEIVED unclassified broadcast outranks field drift the same way (third prefix)", () => {
+    const flood = Array.from({ length: 100 }, (_, i) => ({
+      shape: `chat.delta.filler${i}`,
+      count: 50,
+    }));
+    const folded = foldProtocolInfo([
+      {
+        vendoredVersion: "2026.9.1",
+        coverage: { handled: 1, ignored: 1, gaps: 0, gapList: [] },
+        driftOverflow: 0,
+        driftTruncated: 0,
+        drift: [...flood, { shape: "«unanticipated-broadcast».sessions.catalog.v2", count: 1 }],
+      },
+    ]);
+    const names = (folded?.drift ?? []).map((d: { shape: string }) => d.shape);
+    expect(names, "a received unclassified broadcast is kept, like an announcement").toContain(
+      "«unanticipated-broadcast».sessions.catalog.v2",
+    );
+  });
+
   test("a reader EXCEPTION still outranks an announcement", () => {
     const folded = foldProtocolInfo([
       {
@@ -1546,6 +1568,11 @@ describe("a gateway announcement is never truncated away by ordinary drift", () 
 describe("the poller keeps an ANNOUNCED shape as a triable name", () => {
   test("both announcement families pass the closed grammar", () => {
     expect(isKnownShapeGrammar("«unanticipated-event».terminal.data")).toBe(true);
+    // The received-broadcast sensor (the third reserved prefix) must pass the grammar
+    // too, or its shapes end in the blind `unnamedLast` counter like the first two did.
+    expect(isKnownShapeGrammar("«unanticipated-broadcast».sessions.catalog.v2")).toBe(true);
+    expect(isKnownShapeGrammar("«unanticipated-broadcast».«unprintable»")).toBe(true);
+    expect(isKnownShapeGrammar("«unanticipated-broadcast».")).toBe(false);
     expect(isKnownShapeGrammar("«unanticipated-capability».brand_new_thing")).toBe(true);
     // The sentinel the bridge substitutes for a hostile name must survive too, or the one
     // case where containment fired would be the one case that loses its row.
@@ -1812,3 +1839,81 @@ describe("the media quarantine is a fail-closed ENVELOPE, not a version guess", 
     }
   });
 });
+
+describe("the bridge's reserved prefixes are all known to this boundary (its own table)", () => {
+  // Every prefix the bridge reserves a budget for must pass the grammar AND rank above
+  // field drift here, or its reservation ends in the blind `unnamedLast` counter one hop
+  // downstream. The bridge module cannot be imported here (its lib target is newer than
+  // this package's), so its SENSOR_KINDS table is read from the SYNTAX TREE of its
+  // source — not from the text: a row written over two lines, or reflowed, is the same
+  // row. Each row's `prefix` names a string constant of the same file, resolved here; a
+  // row whose prefix is anything else is refused, never silently skipped.
+  const source = readFileSync(new URL("../bridge/src/providers/openclaw/protocol-drift.ts", import.meta.url), "utf-8");
+  const tree = ts.createSourceFile("protocol-drift.ts", source, ts.ScriptTarget.Latest, true);
+  const constants = new Map<string, string>();
+  const numbers = new Map<string, number>();
+  let rows: { kind: string; prefix: string | null; cap: number }[] = [];
+  const visit = (node: ts.Node): void => {
+    if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.initializer !== undefined) {
+      if (ts.isStringLiteral(node.initializer)) constants.set(node.name.text, node.initializer.text);
+      if (ts.isNumericLiteral(node.initializer)) numbers.set(node.name.text, Number(node.initializer.text));
+      if (node.name.text === "SENSOR_KINDS" && ts.isArrayLiteralExpression(node.initializer)) {
+        rows = node.initializer.elements.map((el) => {
+          if (!ts.isObjectLiteralExpression(el)) throw new Error("SENSOR_KINDS: a row is not an object literal");
+          const prop = (name: string) =>
+            el.properties.find((p): p is ts.PropertyAssignment => ts.isPropertyAssignment(p) && ts.isIdentifier(p.name) && p.name.text === name)?.initializer;
+          const kind = prop("kind");
+          const prefix = prop("prefix");
+          const capNode = prop("cap");
+          if (kind === undefined || !ts.isStringLiteral(kind) || prefix === undefined || capNode === undefined) throw new Error("SENSOR_KINDS: a row lacks kind, prefix or cap");
+          if (!ts.isIdentifier(capNode) || numbers.get(capNode.text) === undefined) throw new Error(`SENSOR_KINDS row ${kind.text}: cap is not a numeric constant`);
+          const cap = numbers.get(capNode.text)!;
+          if (prefix.kind === ts.SyntaxKind.NullKeyword) return { kind: kind.text, prefix: null, cap };
+          if (!ts.isIdentifier(prefix)) throw new Error(`SENSOR_KINDS row ${kind.text}: prefix is not a named constant`);
+          const value = constants.get(prefix.text);
+          if (value === undefined) throw new Error(`SENSOR_KINDS row ${kind.text} names ${prefix.text}, which is not a string constant declared above it`);
+          return { kind: kind.text, prefix: value, cap };
+        });
+      }
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(tree);
+  const prefixes = rows.flatMap((r) => (r.prefix === null ? [] : [r.prefix]));
+  test("every reserved budget fits the per-response slice TOGETHER — a reserved row is only guaranteed to survive if all of them do", () => {
+    // The boundary sorts the sensors first and keeps PROTOCOL_MAX_LIST rows: with the
+    // reserved caps summing past it, a flood on two sensors would push a third — the one
+    // row that mattered that day — off the end, the reservation undone one hop downstream.
+    const reserved = rows.filter((r) => r.prefix !== null).reduce((sum, r) => sum + r.cap, 0);
+    expect(reserved).toBeLessThan(PROTOCOL_MAX_LIST);
+  });
+  test("the table was found whole: exactly one row without a prefix (field drift), and the received-broadcast row", () => {
+    expect(rows.length, "SENSOR_KINDS rows").toBeGreaterThan(0);
+    expect(rows.filter((r) => r.prefix === null).map((r) => r.kind)).toEqual(["field"]);
+    expect(prefixes).toContain("«unanticipated-broadcast».");
+  });
+  test("this boundary's table names exactly the bridge's prefixes", () => {
+    expect([...SENSOR_PREFIX_TIERS.map((r) => r.prefix)].sort()).toEqual([...prefixes].sort());
+  });
+  for (const prefix of prefixes) {
+    const tier1 = SENSOR_PREFIX_TIERS.find((r) => r.prefix === prefix)?.tier === 1;
+    if (!tier1) continue; // tier 0 rows carry their own suffix grammar (error class, site)
+    test(`${prefix} passes the grammar and outranks field drift`, () => {
+      expect(isKnownShapeGrammar(`${prefix}some.family`)).toBe(true);
+      const folded = foldProtocolInfo([
+        {
+          vendoredVersion: "2026.9.1",
+          coverage: { handled: 1, ignored: 1, gaps: 0, gapList: [] },
+          driftOverflow: 0,
+          driftTruncated: 0,
+          drift: [
+            ...Array.from({ length: 100 }, (_, i) => ({ shape: `chat.delta.filler${i}`, count: 50 })),
+            { shape: `${prefix}some.family`, count: 1 },
+          ],
+        },
+      ]);
+      expect((folded?.drift ?? []).map((d: { shape: string }) => d.shape)).toContain(`${prefix}some.family`);
+    });
+  }
+});
+

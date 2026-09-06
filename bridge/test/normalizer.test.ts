@@ -15,6 +15,7 @@ import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
+import { protocolDrift } from "../src/providers/openclaw/protocol-drift.js";
 
 import {
   BASE_RECV_TIMEOUT,
@@ -3221,3 +3222,19 @@ describe("G-21: `stream:\"approval\"`", () => {
     expect(final?.error).toBe("awaiting_approval");
   });
 });
+
+describe("config.changed — the observed broadcast is dropped by the normalizer and is not drift", () => {
+  // Baked from a live 2026.9.1 gateway (fixtures/openclaw_frames.json): the frame is not
+  // session content, so it yields nothing here; the roster policy reads it upstream of
+  // this consumer, and the drift sensor knows the family (broadcast-only).
+  it("yields no event and no drift shape", () => {
+    const n = newNormalizer();
+    protocolDrift.resetForTests();
+    for (const frame of frames("config_changed_broadcast")) {
+      protocolDrift.observe(frame);
+      expect(n.feed(frame as never, 0)).toEqual([]);
+    }
+    expect(protocolDrift.report()).toEqual([]);
+  });
+});
+

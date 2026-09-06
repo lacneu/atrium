@@ -22,86 +22,13 @@ import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { CLASSIFIED_HERMES_CAPABILITIES } from "../src/providers/hermes/classified-capabilities.js";
 import { describe, expect, it } from "vitest";
 
-// @ts-expect-error — plain .mjs helper, no types (it runs under node, not tsc)
-import { stripComments } from "../scripts/lib/derive-event-catalogue.mjs";
+import {
+  type CoverageEntry as FeatureEntry,
+  anchorViolations,
+  classificationViolations,
+  derivedCounts,
+} from "./helpers/coverage-rules.js";
 
-
-/** A `handled` verdict must point at code that EXISTS.
- *
- *  Review passes 4 and 5 found six classifications claiming a consumption the code does
- *  not perform — `run_status` "polled" by nothing, `chat_completions` "dispatched" to an
- *  endpoint never built, headers "carried" that are never sent. Five of the six named no
- *  verifiable anchor at all: they were prose, and prose cannot be falsified by a test.
- *
- *  So every `handled` carries `anchor: {file, token}`, and this asserts the token is
- *  present in that file AFTER COMMENTS ARE STRIPPED. The stripping is not pedantry: most
- *  of these names appear in explanatory comments too, and an anchor satisfied by a
- *  comment would certify exactly the vague claim this rule exists to kill. The same
- *  stripper the catalogue deriver uses, so the two cannot disagree.
- *
- *  WHAT THIS DOES NOT PROVE: that the code reached by the anchor is FED, or that it does
- *  what the prose says. `session.operation` had a real reader at a real line and was
- *  still wrong — nothing delivers the event. That class stays a human read; this rule
- *  removes the other five.
- */
-function anchorViolations(
-  entries: Record<string, { status: string; anchor?: { file: string; token: string } }>,
-  label: string,
-): string[] {
-  const bad: string[] = [];
-  for (const [name, e] of Object.entries(entries)) {
-    if (e.status !== "handled") {
-      if (e.anchor !== undefined) {
-        bad.push(`${label} ${name}: only \`handled\` carries an anchor`);
-      }
-      continue;
-    }
-    const anchor = e.anchor;
-    if (anchor === undefined || !anchor.file || !anchor.token) {
-      bad.push(`${label} ${name}: \`handled\` requires anchor {file, token}`);
-      continue;
-    }
-    // Production code only, and canonically so. Two bypasses were found in a row:
-    // `src/../test/foo.test.ts` (pass 7, literal segments) and `src/%2e%2e/test/foo.test.ts`
-    // (pass 8 — WHATWG URL decodes the escape, so a segment check on the raw string sees
-    // nothing wrong). Rather than enumerate spellings, the rule is now a whitelist of
-    // harmless characters plus a check on the RESOLVED path: a test certifies that a claim
-    // is TESTED, never that the build DOES it.
-    if (!/^src\/[A-Za-z0-9_./-]+\.ts$/.test(anchor.file) || anchor.file.includes("%")) {
-      bad.push(`${label} ${name}: anchor must point into src/, not ${anchor.file}`);
-      continue;
-    }
-    const at = new URL(`../${anchor.file}`, import.meta.url);
-    if (!at.pathname.includes("/bridge/src/") || at.pathname.includes("/..")) {
-      bad.push(`${label} ${name}: anchor resolves outside src/ (${anchor.file})`);
-      continue;
-    }
-    let body: string;
-    try {
-      body = readFileSync(at, "utf-8");
-    } catch {
-      bad.push(`${label} ${name}: anchor file ${anchor.file} does not exist`);
-      continue;
-    }
-    const code = (stripComments as (s: string) => string)(body);
-    if (!code.includes(anchor.token)) {
-      bad.push(
-        `${label} ${name}: token ${JSON.stringify(anchor.token)} is absent from ` +
-          `${anchor.file} outside comments — the claim cites code that is not there`,
-      );
-    }
-  }
-  return bad;
-}
-
-interface FeatureEntry {
-  status: "handled" | "ignored" | "gap";
-  /** Only on `handled`: the code that performs the consumption being claimed. */
-  anchor?: { file: string; token: string };
-  by?: string;
-  why?: string;
-  note?: string;
-}
 interface FeatureManifest {
   version: string;
   contract: string;
@@ -121,13 +48,6 @@ interface RestContract {
 /** A capability upstream OFFERS: declared with anything other than `false`. */
 const isOffered = (v: boolean | string | undefined): boolean =>
   v !== undefined && v !== false;
-
-const VALID_STATUSES = new Set(["handled", "ignored", "gap"]);
-const REQUIRED_PROSE: Record<string, keyof FeatureEntry> = {
-  handled: "by",
-  ignored: "why",
-  gap: "note",
-};
 
 const PROTOCOL = new URL("../protocol/hermes/", import.meta.url);
 const read = <T,>(rel: string): T =>
@@ -183,24 +103,11 @@ describe("the capability surface Hermes publishes is fully classified", () => {
   });
 
   it("every DECLARED capability is classified, with its justification", () => {
-    const unclassified: string[] = [];
-    const unjustified: string[] = [];
-    for (const name of Object.keys(contract.features)) {
-      const entry = manifest.features[name];
-      if (entry === undefined) {
-        unclassified.push(name);
-        continue;
-      }
-      if (!VALID_STATUSES.has(entry.status)) {
-        unjustified.push(`${name}: unknown status ${JSON.stringify(entry.status)}`);
-        continue;
-      }
-      const owed = REQUIRED_PROSE[entry.status];
-      const prose = owed === undefined ? undefined : entry[owed];
-      if (typeof prose !== "string" || prose.trim() === "") {
-        unjustified.push(`${name}: status "${entry.status}" requires \`${owed}\``);
-      }
-    }
+    // The same rule the OpenClaw ledgers are held to (helpers/coverage-rules.ts).
+    const { unclassified, unjustified } = classificationViolations(
+      Object.keys(contract.features),
+      manifest.features,
+    );
     expect(
       unclassified,
       "Hermes declares these capabilities and nobody has said what Atrium does with them",
@@ -217,17 +124,11 @@ describe("the capability surface Hermes publishes is fully classified", () => {
     );
   });
 
-
   it("the published COUNTS are derived, not remembered", () => {
-    const c = manifest.counts;
-    const by = (s: string): number =>
-      Object.values(manifest.features).filter((e) => e.status === s).length;
-    expect(c, "the manifest must publish its tallies").toBeDefined();
-    expect(c).toEqual({
-      total: Object.keys(manifest.features).length,
-      handled: by("handled"),
-      gap: by("gap"),
-      ignored: by("ignored"),
+    expect(manifest.counts, "the manifest must publish its tallies").toBeDefined();
+    expect(manifest.counts).toEqual({
+      ...derivedCounts(manifest.features),
+      // Hermes' ledger also publishes how many capabilities the contract OFFERS.
       offered: Object.values(contract.features).filter((v) => v !== false).length,
     });
   });

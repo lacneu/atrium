@@ -1293,6 +1293,17 @@ export default defineSchema({
           v.array(v.object({ id: v.string(), label: v.string() })),
         ),
         verboseLevel: v.optional(v.string()), // e.g. "full"
+        // Watermark of the KNOB fields (model, levels, verbose): a describe stamped
+        // older than it does not overwrite them — a knob patched while a slower
+        // describe was in flight stays patched.
+        knobsAt: v.optional(v.number()),
+        // The roster's OWN watermark (the publish's `rosterObservedAt`): a roster is
+        // ordered by when the gateway ANSWERED it, not by the describe it rode with —
+        // a describe held across a slow `models.list` is older than its roster.
+        rosterAt: v.optional(v.number()),
+        // The owner (agent id; "" = connection-wide) the roster on record was asked
+        // for: an omitted roster is kept for the SAME owner only.
+        availableModelsOwner: v.optional(v.string()),
         // The gateway's session token counter, read from `sessions.describe`.
         totalTokens: v.optional(v.number()),
         // The SAME upstream counter, read from the per-turn usage stamp instead.

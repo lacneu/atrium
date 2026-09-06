@@ -25,6 +25,9 @@ import {
   effectiveContextUsed,
   contextSource,
   effectiveContextWindow,
+  KNOB_CONTROL,
+  MAX_SEGMENTED_OPTIONS,
+  knobControlShape,
 } from "./sessionKnobs";
 import type { SessionMetaView } from "./sessionKnobs";
 
@@ -452,4 +455,23 @@ describe("the context reading and its source cannot disagree", () => {
       ).toBe(used === null);
     });
   }
+});
+
+describe("KNOB_CONTROL — one shape per knob, declared, not decided at the call site", () => {
+  test("the model knob is a LIST: its option set is sized by the gateway's configuration", () => {
+    // A control that changed shape with the count (segmented up to four, a list beyond)
+    // moved under the user's hand the day a model was added.
+    expect(KNOB_CONTROL.model).toBe("list");
+  });
+  test("every knob field has a declared shape", () => {
+    expect(Object.keys(KNOB_CONTROL).sort()).toEqual(["fastMode", "model", "thinkingLevel"]);
+  });
+});
+
+describe("knobControlShape — the declared shape, with the overflow floor", () => {
+  test("a segmented knob past the floor becomes a list; a list stays a list", () => {
+    expect(knobControlShape("thinkingLevel", MAX_SEGMENTED_OPTIONS)).toBe("segmented");
+    expect(knobControlShape("thinkingLevel", MAX_SEGMENTED_OPTIONS + 1), "a provider reporting more levels than the policy assumed").toBe("list");
+    expect(knobControlShape("model", 1)).toBe("list");
+  });
 });

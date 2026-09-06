@@ -38,6 +38,12 @@ import {
   CATALOGUE_SYMBOL,
   deriveEventCatalogue,
 } from "./lib/derive-event-catalogue.mjs";
+import {
+  BROADCAST_CONST_SOURCE,
+  BROADCAST_SOURCE,
+  BROADCAST_SYMBOL,
+  deriveBroadcastCatalogue,
+} from "./lib/derive-broadcast-catalogue.mjs";
 
 /** Files to vendor, with their path RELATIVE to `packages/gateway-protocol/src/`.
  *  Stated per file because upstream keeps the schema modules in `schema/` and the
@@ -381,22 +387,72 @@ if (snapshotFields === undefined) {
   );
 }
 
+const sha256 = (raw) => createHash("sha256").update(raw).digest("hex");
+
+/** Read one upstream source, or abort the whole vendoring: a derived artifact with a
+ *  missing input is not "empty", it is absent, and the ratchets must see that. */
+function readUpstream(rel) {
+  const p = path.join(src, rel);
+  if (!fs.existsSync(p)) {
+    throw new Error(`upstream has no ${rel} at v${version}`);
+  }
+  return fs.readFileSync(p, "utf-8");
+}
+
+/** Write one derived artifact and return its PROVENANCE record — ONE computation of
+ *  each sha, referenced from both places, so their agreement is structural rather than
+ *  coincidental (vendor-integrity compares them). `constants` is present for the
+ *  artifacts that resolve names from a second module; `countOf` names the body key whose
+ *  length is the provenance tally (`fields` of a return shape, `events` of a catalogue —
+ *  the integrity test expects exactly one such key). */
+function writeDerivedArtifact({ name, about, source, raw, constants, countOf, body }) {
+  const upstream = sha256(raw);
+  const constantsSha = constants ? sha256(constants.raw) : undefined;
+  fs.writeFileSync(
+    path.join(OUT_DIR, name),
+    `${JSON.stringify(
+      {
+        _about: about,
+        derivedFrom: source,
+        derivedFromSha256: upstream,
+        ...(constants ? { constantsFrom: constants.source, constantsSha256: constantsSha } : {}),
+        ...body,
+      },
+      null,
+      2,
+    )}\n`,
+  );
+  return {
+    upstreamPath: source,
+    upstream,
+    // The constants module is attributed too: resolving an entry reads it, so a
+    // change there can move the catalogue without touching the array itself.
+    ...(constants ? { constantsPath: constants.source, constants: constantsSha } : {}),
+    // The count names WHAT was derived and is taken from the body it attests, so the
+    // provenance tally cannot disagree with the artifact.
+    [countOf]: body[countOf].length,
+  };
+}
+
 // Same rule for the announced event catalogue (G-70): derive it BEFORE anything is
 // written, and let an unresolvable entry abort the whole vendoring. A catalogue that
 // is one entry short is worse than none — the ratchet would bless the shortfall.
-const cataloguePath = path.join(src, CATALOGUE_SOURCE);
-const catalogueConstPath = path.join(src, CATALOGUE_CONST_SOURCE);
-for (const [label, p] of [
-  [CATALOGUE_SOURCE, cataloguePath],
-  [CATALOGUE_CONST_SOURCE, catalogueConstPath],
-]) {
-  if (!fs.existsSync(p)) {
-    throw new Error(`upstream has no ${label} at v${version}`);
-  }
-}
-const catalogueRaw = fs.readFileSync(cataloguePath, "utf-8");
-const catalogueConstRaw = fs.readFileSync(catalogueConstPath, "utf-8");
+const catalogueRaw = readUpstream(CATALOGUE_SOURCE);
+const catalogueConstRaw = readUpstream(CATALOGUE_CONST_SOURCE);
 const catalogueEvents = deriveEventCatalogue(catalogueRaw, catalogueConstRaw);
+// And the catalogue the gateway can BROADCAST (server-broadcast.ts). It is the larger
+// vocabulary: families such as `config.changed` reach a client's socket without ever
+// being announced in hello-ok, so a ratchet on the announced list alone never asked
+// what Atrium does with them. Same rule: an entry the deriver cannot name aborts the
+// whole vendoring rather than producing a shorter table.
+const broadcastRaw = readUpstream(BROADCAST_SOURCE);
+// Both catalogues resolve their computed entries from the SAME constants module; it is
+// read once. Stated as an invariant rather than a branch, so a divergence is an error.
+if (BROADCAST_CONST_SOURCE !== CATALOGUE_CONST_SOURCE) {
+  throw new Error(`the two catalogues no longer share a constants module (${BROADCAST_CONST_SOURCE} vs ${CATALOGUE_CONST_SOURCE})`);
+}
+const broadcastConstRaw = catalogueConstRaw;
+const broadcastCatalogue = deriveBroadcastCatalogue(broadcastRaw, broadcastConstRaw);
 
 fs.mkdirSync(OUT_DIR, { recursive: true });
 const files = {};
@@ -492,8 +548,8 @@ for (const { candidates } of vendorEntries) {
     // that falls through to the wrong candidate verifies the wrong file, and the
     // upstream diff cannot derive its watchlist from a guess at all.
     upstreamPath: `packages/gateway-protocol/src/${rel}`,
-    vendored: createHash("sha256").update(body).digest("hex"),
-    upstream: createHash("sha256").update(raw).digest("hex"),
+    vendored: sha256(body),
+    upstream: sha256(raw),
     // Empty when the file needed no rewrite.
     rewrites,
   };
@@ -512,24 +568,19 @@ for (const { candidates } of vendorEntries) {
 // IS vendored is its RETURN SHAPE, derived mechanically, so the drift detector's known-set
 // can be asserted against upstream instead of against memory.
 
-fs.writeFileSync(
-  path.join(OUT_DIR, "session-event-snapshot.json"),
-  `${JSON.stringify(
-    {
-      _about:
-        `Field names of ${SNAPSHOT_FN}'s return shape, DERIVED from ` +
-        `${snapshotSource} at v${version}. The gateway flattens these onto agent ` +
-        `events, so the drift detector's known-field set is asserted against this ` +
-        `instead of against production observations. Do not edit by hand: re-run ` +
-        `scripts/vendor-protocol.mjs.`,
-      derivedFrom: snapshotSource,
-      derivedFromSha256: createHash("sha256").update(snapshotRaw).digest("hex"),
-      fields: snapshotFields,
-    },
-    null,
-    2,
-  )}\n`,
-);
+const snapshotRecord = writeDerivedArtifact({
+  name: "session-event-snapshot.json",
+  about:
+    `Field names of ${SNAPSHOT_FN}'s return shape, DERIVED from ` +
+    `${snapshotSource} at v${version}. The gateway flattens these onto agent ` +
+    `events, so the drift detector's known-field set is asserted against this ` +
+    `instead of against production observations. Do not edit by hand: re-run ` +
+    `scripts/vendor-protocol.mjs.`,
+  source: snapshotSource,
+  raw: snapshotRaw,
+  countOf: "fields",
+  body: { fields: snapshotFields },
+});
 
 // --- DERIVED artifact: the event catalogue the gateway announces about ITSELF ---------
 //
@@ -541,25 +592,35 @@ fs.writeFileSync(
 // Recorded as a resolved JSON list rather than a verbatim copy because one entry is an
 // imported identifier; see lib/derive-event-catalogue.mjs.
 
-fs.writeFileSync(
-  path.join(OUT_DIR, "event-catalogue.json"),
-  `${JSON.stringify(
-    {
-      _about:
-        `Event names announced by the gateway in \`hello-ok.features.events\`, DERIVED ` +
-        `from ${CATALOGUE_SYMBOL} in ${CATALOGUE_SOURCE} at v${version} (imported ` +
-        `constants resolved from ${CATALOGUE_CONST_SOURCE}). Do not edit by hand: ` +
-        `re-run scripts/vendor-protocol.mjs.`,
-      derivedFrom: CATALOGUE_SOURCE,
-      derivedFromSha256: createHash("sha256").update(catalogueRaw).digest("hex"),
-      constantsFrom: CATALOGUE_CONST_SOURCE,
-      constantsSha256: createHash("sha256").update(catalogueConstRaw).digest("hex"),
-      events: catalogueEvents,
-    },
-    null,
-    2,
-  )}\n`,
-);
+const eventCatalogueRecord = writeDerivedArtifact({
+  name: "event-catalogue.json",
+  about:
+    `Event names announced by the gateway in \`hello-ok.features.events\`, DERIVED ` +
+    `from ${CATALOGUE_SYMBOL} in ${CATALOGUE_SOURCE} at v${version} (imported ` +
+    `constants resolved from ${CATALOGUE_CONST_SOURCE}). Do not edit by hand: ` +
+    `re-run scripts/vendor-protocol.mjs.`,
+  source: CATALOGUE_SOURCE,
+  raw: catalogueRaw,
+  constants: { source: CATALOGUE_CONST_SOURCE, raw: catalogueConstRaw },
+  countOf: "events",
+  body: { events: catalogueEvents },
+});
+
+const broadcastCatalogueRecord = writeDerivedArtifact({
+  name: "broadcast-catalogue.json",
+  about:
+    `Event names the gateway can BROADCAST — the keys of ${BROADCAST_SYMBOL} in ` +
+    `${BROADCAST_SOURCE} at v${version}, the table every broadcast is scope-checked ` +
+    `against (computed keys resolved from ${BROADCAST_CONST_SOURCE}). Larger than ` +
+    `event-catalogue.json: a family here and not there reaches the socket without ` +
+    `being announced. \`scopes\` records the guard constants as upstream names them ` +
+    `(\`[]\` = unguarded). Do not edit by hand: re-run scripts/vendor-protocol.mjs.`,
+  source: BROADCAST_SOURCE,
+  raw: broadcastRaw,
+  constants: { source: BROADCAST_CONST_SOURCE, raw: broadcastConstRaw },
+  countOf: "events",
+  body: { events: broadcastCatalogue.events, scopes: broadcastCatalogue.scopes },
+});
 
 fs.writeFileSync(
   path.join(OUT_DIR, "PROVENANCE.json"),
@@ -575,20 +636,9 @@ fs.writeFileSync(
       // The DERIVED artifact, attributed like the copied ones: the sha256 of the upstream
       // file it was read from, so "this list came from that source" is checkable.
       derived: {
-        "session-event-snapshot.json": {
-          upstreamPath: snapshotSource,
-          upstream: createHash("sha256").update(snapshotRaw).digest("hex"),
-          fields: snapshotFields.length,
-        },
-        "event-catalogue.json": {
-          upstreamPath: CATALOGUE_SOURCE,
-          upstream: createHash("sha256").update(catalogueRaw).digest("hex"),
-          // The constants module is attributed too: resolving an entry reads it, so a
-          // change there can move the catalogue without touching the array itself.
-          constantsPath: CATALOGUE_CONST_SOURCE,
-          constants: createHash("sha256").update(catalogueConstRaw).digest("hex"),
-          events: catalogueEvents.length,
-        },
+        "session-event-snapshot.json": snapshotRecord,
+        "event-catalogue.json": eventCatalogueRecord,
+        "broadcast-catalogue.json": broadcastCatalogueRecord,
       },
     },
     null,

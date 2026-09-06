@@ -9,11 +9,8 @@
 
 import { describe, expect, it } from "vitest";
 
-import {
-  parsePatchBody,
-  parseSessionSettings,
-  dedupeModels,
-} from "../src/server.js";
+import { parsePatchBody, parseSessionSettings } from "../src/server.js";
+import { dedupeModels } from "../src/providers/openclaw/models-roster.js";
 
 describe("parsePatchBody", () => {
   // Every body now carries the per-turn routing (agentId + canonical) Convex

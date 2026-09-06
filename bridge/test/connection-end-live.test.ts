@@ -13,70 +13,20 @@
 
 import { afterEach, describe, expect, it } from "vitest";
 import { WebSocketServer, type WebSocket as WsSocket } from "ws";
-import { generateKeyPairSync } from "node:crypto";
 import type { AddressInfo } from "node:net";
 
 import { OpenClawConnection } from "../src/providers/openclaw/openclaw-client.js";
 import { classifyGatewayError } from "../src/core/dispatch-errors.js";
+import { sleep } from "./helpers/sleep.js";
+import { MAX_BUFFERED, MAX_PAYLOAD, NO_ANSWER, deviceIdentity, startWsFakeGateway } from "./helpers/ws-fake-gateway.js";
 
-const MAX_PAYLOAD = 26_214_400; // 25 MiB, the live value
-const MAX_BUFFERED = 52_428_800; // 50 MiB = upstream MAX_BUFFERED_BYTES
 
-function deviceIdentity() {
-  const { publicKey, privateKey } = generateKeyPairSync("ed25519");
-  return {
-    id: "test-device",
-    publicKey: publicKey.export({ type: "spki", format: "pem" }).toString(),
-    privateKey: privateKey.export({ type: "pkcs8", format: "pem" }).toString(),
-  };
-}
 
-/** Minimal gateway: challenge → hello-ok, then whatever the test asks for. */
-function startFakeGateway() {
-  const wss = new WebSocketServer({ port: 0, host: "127.0.0.1" });
-  let live: WsSocket | null = null;
-  const ready = new Promise<void>((resolve) => wss.once("listening", () => resolve()));
-  wss.on("connection", (socket) => {
-    live = socket;
-    socket.send(
-      JSON.stringify({
-        type: "event",
-        event: "connect.challenge",
-        payload: { nonce: "nonce-1", ts: 1 },
-      }),
-    );
-    socket.on("message", (raw) => {
-      const frame = JSON.parse(raw.toString()) as Record<string, unknown>;
-      if (frame.method === "connect") {
-        socket.send(
-          JSON.stringify({
-            type: "res",
-            id: frame.id,
-            ok: true,
-            payload: {
-              type: "hello-ok",
-              protocol: 4,
-              server: { version: "2026.7.1", connId: "conn-1" },
-              policy: { maxPayload: MAX_PAYLOAD, maxBufferedBytes: MAX_BUFFERED },
-            },
-          }),
-        );
-      }
-    });
-  });
-  return {
-    ready,
-    get url() {
-      return `ws://127.0.0.1:${(wss.address() as AddressInfo).port}`;
-    },
-    get socket() {
-      return live;
-    },
-    async stop() {
-      await new Promise<void>((resolve) => wss.close(() => resolve()));
-    },
-  };
-}
+/** The shared choreography (challenge → hello-ok), announcing the older 2026.7.1 these
+ *  connection-end cases were written against. */
+const startFakeGateway = () =>
+  // Never answers a request: these cases are about a request still awaiting its ack.
+  startWsFakeGateway({ version: "2026.7.1", onMethod: () => NO_ANSWER });
 
 let gateway: ReturnType<typeof startFakeGateway> | null = null;
 
@@ -543,7 +493,7 @@ describe("the inbound queue is bounded (G-27)", () => {
     }
     // Wait for the connection to give up on its own.
     for (let i = 0; i < 200 && conn.connectionEnd === null; i++) {
-      await new Promise((r) => setTimeout(r, 10));
+      await sleep(10);
     }
     expect(conn.connectionEnd?.kind).toBe("inbound_overflow");
     // The queue is EMPTIED on the way out: `frames()` shifts from it before it
@@ -571,7 +521,7 @@ describe("the byte ceiling measures the BACKLOG, not the traffic", () => {
       );
     }
     for (let i = 0; i < 100 && conn.inboundQueueLen < 5; i++) {
-      await new Promise((r) => setTimeout(r, 10));
+      await sleep(10);
     }
     expect(conn.inboundQueueBytes).toBeGreaterThan(200_000);
     // …then drain them.
@@ -631,10 +581,10 @@ describe("the inbound queue is bounded in BYTES too", () => {
     const big = "x".repeat(10 * 1024 * 1024);
     for (let i = 0; i < 15 && conn.connectionEnd === null; i++) {
       live!.send(JSON.stringify({ type: "event", event: "tick", seq: i, big }));
-      await new Promise((r) => setTimeout(r, 20));
+      await sleep(20);
     }
     for (let i = 0; i < 200 && conn.connectionEnd === null; i++) {
-      await new Promise((r) => setTimeout(r, 10));
+      await sleep(10);
     }
     expect(conn.connectionEnd?.kind).toBe("inbound_overflow");
     conn.close();

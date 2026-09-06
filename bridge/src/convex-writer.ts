@@ -444,6 +444,12 @@ export interface ConvexWriter {
    * a turn on a meta write.
    */
   reportSessionMeta(chatId: string, meta: SessionMetaReport): Promise<void>;
+  /** The model roster ALONE, under its own observation stamp: the answer to a
+   *  `models.list` that came back after the meta it belongs with was published (a
+   *  re-ask off the turn's path). Rides `setSessionMeta` UNSTAMPED — no `observedAt`,
+   *  so no other group of the meta is carried or judged — and Convex orders it against
+   *  the roster on record by its own stamp, for the current owner only. */
+  reportSessionRoster(chatId: string, roster: SessionRosterReport): Promise<void>;
   /** Per-turn REAL window usage (post-usage snapshot at turn end) — feeds the
    *  context gauge; sessions.get totalTokens is cumulative under a context
    *  engine and reads absurd percentages (859% prod report). OPTIONAL: test
@@ -548,6 +554,17 @@ export interface RehydrateTraceArgs {
  * + context meter from LIVE gateway state. Every field optional (a fresh session
  * omits the token counts). Matches the `setSessionMeta` ingest op shape.
  */
+/** A roster the gateway ANSWERED: the models, the owner they were asked for (`""` =
+ *  connection-wide, on a generation whose `models.list` takes no owner) and when the
+ *  answer was in hand. The stamp is the ROSTER's own: a describe held across a slow
+ *  ask is older than the answer, and ordering the two by one clock discarded the very
+ *  roster a config change had just refreshed. */
+export interface SessionRosterReport {
+  models: { id: string; label: string }[];
+  owner: string;
+  observedAt: number;
+}
+
 export interface SessionMetaReport {
   model?: string;
   modelProvider?: string;
@@ -555,8 +572,13 @@ export interface SessionMetaReport {
   thinkingLevel?: string;
   thinkingDefault?: string;
   thinkingLevels?: { id: string; label: string }[];
-  // Available models for the write-back picker (deduped by id from models.list).
+  // Available models for the write-back picker (deduped by id from models.list),
+  // with the owner they were asked for and the roster's OWN observation stamp (see
+  // SessionRosterReport). Omitted models keep the roster on record — for the SAME
+  // owner; a turn routed to another agent whose ask failed must not inherit them.
   availableModels?: { id: string; label: string }[];
+  availableModelsOwner?: string;
+  rosterObservedAt?: number;
   verboseLevel?: string;
   totalTokens?: number;
   contextTokens?: number;
@@ -2182,6 +2204,17 @@ export class HttpConvexWriter implements ConvexWriter {
       op: "setSessionMeta",
       chatId,
       meta: { ...meta, observedAt: meta.observedAt ?? Date.now() },
+    });
+  }
+
+  async reportSessionRoster(chatId: string, roster: SessionRosterReport): Promise<void> {
+    // Off the chain for the same reason as the meta above. Deliberately NOT stamped
+    // with `observedAt`: an unstamped meta neither carries nor is judged by the
+    // describe-sourced groups, so only the roster (under `rosterObservedAt`) moves.
+    await this.doPost({
+      op: "setSessionMeta",
+      chatId,
+      meta: { availableModels: roster.models, availableModelsOwner: roster.owner, rosterObservedAt: roster.observedAt },
     });
   }
 

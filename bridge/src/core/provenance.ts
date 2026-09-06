@@ -13,6 +13,8 @@
 // This module is PURE (no I/O) — every bound and rejection is unit-tested.
 
 /** Stream suffix plugins must use: `<pluginId>.provenance`. */
+import { eventPayload } from "../providers/openclaw/connection-end.js";
+
 export const PROVENANCE_STREAM_SUFFIX = ".provenance";
 
 /** Hard bounds — a report is a UI affordance, never a payload channel. */
@@ -195,13 +197,8 @@ export function parseProvenanceFrame(
   frame: unknown,
   sessionKey: string,
 ): { runId: string; part: ProvenancePart } | null {
-  if (typeof frame !== "object" || frame === null) return null;
-  const f = frame as Record<string, unknown>;
-  if (f.type !== "event" || f.event !== "agent") return null;
-  const payload = f.payload;
-  if (typeof payload !== "object" || payload === null) return null;
-  const p = payload as Record<string, unknown>;
-  if (!isProvenanceStream(p.stream)) return null;
+  const p = eventPayload(frame, "agent");
+  if (p === null || !isProvenanceStream(p.stream)) return null;
   if (p.sessionKey !== sessionKey) return null;
   if (typeof p.runId !== "string" || p.runId.length === 0) return null;
   const part = parseProvenanceReport(p.data);

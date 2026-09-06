@@ -17,6 +17,7 @@
 import { beforeEach, describe, expect, it } from "vitest";
 
 import {
+  BROADCAST_ONLY_EVENTS,
   CLASSIFIED_EVENTS,
   protocolDrift,
 } from "../src/providers/openclaw/protocol-drift.js";
@@ -42,6 +43,14 @@ describe("what the gateway announces is compared to what we classified", () => {
     // The whole catalogue at once. 25 of these are not read by Atrium; none of them is
     // news, because a human already wrote down why. Silence here is the feature.
     protocolDrift.observeAnnouncedEvents([...CLASSIFIED_EVENTS]);
+    expect(reported()).toEqual([]);
+  });
+
+  it("a family classified under the BROADCAST-ONLY vocabulary is silent too — a gateway that starts announcing it is not news", () => {
+    // The two vocabularies overlap in neither direction today; a family moving from the
+    // scope-guard table into `GATEWAY_EVENTS` is a classified one being declared, and the
+    // ledger already carries its verdict.
+    protocolDrift.observeAnnouncedEvents([...BROADCAST_ONLY_EVENTS]);
     expect(reported()).toEqual([]);
   });
 

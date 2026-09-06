@@ -422,6 +422,70 @@ a durable surface the Control UI does not have.
 
 ---
 
+## 6. Config changes: `config.changed` and the model roster
+
+### Upstream contract
+
+The gateway broadcasts `config.changed` on every persisted configuration change — RPC
+writes, `config_set` from an agent or the CLI, doctor repairs, and hand edits of the
+config file alike — from one place, `onConfigCandidateCommitted`
+(`src/gateway/server-reload-managed.ts`), present since v2026.7.2-beta.5. The payload is
+`{path, hash, ts}`: the hash is the projected config revision (observed form
+`hmac-sha256:v1:…`), stable for one persisted revision and different for the next. The
+event carries `READ` scope (`src/gateway/server-broadcast.ts`) and is sent with
+`dropIfSlow: true`: a client whose socket buffer is over the gateway's limit does not
+receive it, and its envelope sequence number is consumed so the client's gap detector
+fires. Every first-party client — the Control UI, the desktop and mobile apps — listens
+and refreshes; the Control UI also reschedules its agent roster. (`dropIfSlow` and the
+call site are read at v2026.9.1 and not vendored: the derived catalogue below records
+the scope-guard table, not the per-family send options.)
+
+The event is **broadcast but never announced**: it is absent from `GATEWAY_EVENTS`
+(`src/gateway/server-methods-list.ts`), the list `hello-ok.features.events` is built
+from, and present only in the scope-guard table every broadcast is checked against
+(`EVENT_SCOPE_GUARDS`, `src/gateway/server-broadcast.ts`). The gateway keeps two
+vocabularies, and the second is the larger: at v2026.9.1 six families reach a client's
+socket without ever being declared to it.
+
+### Atrium behavior and verdict
+
+The bridge caches the gateway's `models.list` answer per owner on the per-chat session
+connection, which stays open fifteen minutes past the chat's last activity. The event is
+read at the connection's intake and reported to a per-session policy: every notice
+invalidates every owner's cached roster — kept, not deleted, so a failed re-ask still has
+a roster to serve; never deduplicated by hash, since an answer computed while the gateway
+is mid-reload is the old roster under the new hash — coalesced over a burst; the session
+then re-describes itself, waits for a post-change answer and pushes it to Convex, so the
+model picker follows the gateway's configuration without a turn. A refresh that could not
+publish the post-change roster is retried once. An envelope frame gap invalidates in the
+transport itself — a low-precision signal on a socket the gateway just called slow — and
+the next publish (a send, a knob patch) re-asks off its own path and reports the newer
+answer alone. The frame is then queued unchanged and dropped by the per-chat
+normalizer, like the shutdown notice (observe-only). A cached success also carries a soft
+ten-minute bound: past it the roster is served as is and refreshed off the turn, never
+blocking a send or a knob patch; a failed re-ask keeps the last good roster, and a
+session with nothing in hand publishes its meta without the roster field, which Convex
+keeps on record — for the roster's current owner only: the owner of the latest knob
+publish accepted, so a turn routed to another agent whose ask failed never inherits the
+previous agent's list, and another agent's answer landing late is ignored whatever its
+stamp. Ordering between publishers is by observation time in Convex, never by the
+bridge, on two clocks: the knob fields by the describe's, the roster by the gateway's
+answer — a describe held across a slow ask is older than the roster it rode with — and a
+roster answered after its publish is reported alone, as an unstamped meta that carries
+nothing else. With nothing in hand a publish waits for the answer, the only case where
+waiting buys the user anything. An empty model list, a roster whose every model the
+gateway marks unavailable, or an answer without a model list, is a failure that keeps
+the last good roster, never an empty picker. Verdict: **handled**, proven by a
+deterministic test over a real connection.
+
+The scope-guard table is vendored as a derived artifact beside the announced catalogue;
+its difference from the announced list is classified per version with the same statuses
+and the same anchor rule; and the drift sensor names, on receipt, any event family in
+neither vocabulary. Of the six families at v2026.9.1: `config.changed` and the run's side
+result (`chat.side_result`, admitted and handled by the normalizer) are handled; the board
+events and the progressive session-catalog delivery are addressed to surfaces or requests
+Atrium never has (ignored, verifiably); the per-phase `chat.send` timing is a gap.
+
 ## Conformance summary
 
 | Zone | Verdict |
@@ -432,6 +496,7 @@ a durable surface the Control UI does not have.
 | Init-conflict retry | **Conformant** with upstream channel-side retry treatment |
 | Compaction | **Explicit signals consumed** — `{stream:"compaction"}` is the primary mid-turn signal (marker + widened budget, no buffer reset); the `abandoned` heuristic survives as the multi-version/Hermes fallback and stands down when explicit signals are present; `session.operation`/`sessions.changed` remain unconsumed (rotation detection covers the manual path) |
 | chat.send idempotency | **Conformant**; the preempt `dispatchKey` alias is necessary (abort markers poison the original key for ~60 min) and timing-independent |
+| Config changes / model roster | **Handled** — `config.changed` (broadcast-only, never announced) invalidates the per-connection roster and triggers a refresh pushed to Convex under the roster's own observation stamp; a frame gap invalidates in the transport and the next publish re-asks and reports the newer answer; the scope-guard table is vendored beside the announced catalogue, and a family in neither vocabulary is named on receipt |
 
 Fixtures extracted from upstream unit tests at `v2026.9.1` are vendored in
 `bridge/test/fixtures/openclaw_upstream_frames.json` and replayed by

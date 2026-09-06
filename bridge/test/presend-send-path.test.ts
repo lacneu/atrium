@@ -15,6 +15,7 @@
  */
 
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { sleep } from "./helpers/sleep.js";
 
 import { performSend } from "../src/server.js";
 import { SessionRegistry } from "../src/session.js";
@@ -28,7 +29,6 @@ import {
 } from "./helpers/fake-gateway.js";
 import { servedMap } from "./helpers/served.js";
 
-const tick = (ms = 5) => new Promise((r) => setTimeout(r, ms));
 
 const config = {
   openclawGatewayUrl: "ws://127.0.0.1:1",
@@ -75,7 +75,7 @@ async function harness(script: Parameters<typeof fakeGateway>[0]) {
   const { writer, traces } = recordingWriter();
   const reg = new SessionRegistry(servedMap(config, writer), () => 1000);
   const session = await reg.acquire(ROUTING);
-  await tick();
+  await sleep(5);
   return {
     gw: session.connection as unknown as FakeGateway,
     session,
@@ -834,7 +834,7 @@ describe("the fill reading carries the figure it came from", () => {
       };
     const reg = new SessionRegistry(servedMap(config, writer), () => 1000);
     const session = await reg.acquire(ROUTING);
-    await tick();
+    await sleep(5);
     await performSend(session, body, writer, null, null);
 
     const seen = metas.find((m) => m.estimatedPromptTokens !== undefined);

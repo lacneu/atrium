@@ -74,27 +74,39 @@ export const CATALOGUE_SYMBOL = "GATEWAY_EVENTS";
  * @param {string} src
  * @returns {import("typescript").SourceFile}
  */
-function parse(src) {
+export function parse(src) {
   return ts.createSourceFile("upstream.ts", src, ts.ScriptTarget.Latest, true);
 }
 
-/** The initializer of an exported `const NAME = …`, or undefined. */
-function exportedInitializer(sourceFile, name) {
+/** The initializer of a top-level `const NAME = …`, or undefined.
+ *
+ *  SHARED with the broadcast deriver: `requireExport` (the announced catalogue is
+ *  exported, the scope table is not) and `requireConst` (a `let` table can be
+ *  reassigned past its initializer — refused, never derived from a stale initializer). */
+export function exportedInitializer(
+  sourceFile,
+  name,
+  { requireExport = true, requireConst = false } = {},
+) {
   for (const stmt of sourceFile.statements) {
     if (!ts.isVariableStatement(stmt)) continue;
     const exported = (stmt.modifiers ?? []).some(
       (m) => m.kind === ts.SyntaxKind.ExportKeyword,
     );
-    if (!exported) continue;
+    if (requireExport && !exported) continue;
     for (const decl of stmt.declarationList.declarations) {
-      if (ts.isIdentifier(decl.name) && decl.name.text === name) return decl.initializer;
+      if (!ts.isIdentifier(decl.name) || decl.name.text !== name) continue;
+      if (requireConst && (stmt.declarationList.flags & ts.NodeFlags.Const) === 0) {
+        throw new Error(`${name} is not a \`const\` — refusing to derive a mutable table`);
+      }
+      return decl.initializer;
     }
   }
   return undefined;
 }
 
 /** Unwrap `x as const` / `x satisfies T` down to the expression itself. */
-function unwrap(node) {
+export function unwrap(node) {
   let n = node;
   while (n && (ts.isAsExpression(n) || ts.isSatisfiesExpression?.(n) || ts.isParenthesizedExpression(n))) {
     n = n.expression;
@@ -106,7 +118,7 @@ function unwrap(node) {
  *
  *  Only a WHOLE string literal counts. A concatenation (`"update." + suffix`) used to be
  *  recorded as its first piece — a name the gateway never announces (review pass 3). */
-function readConstants(constSource) {
+export function readConstants(constSource) {
   const out = new Map();
   const file = parse(constSource);
   for (const stmt of file.statements) {
@@ -135,19 +147,27 @@ function readConstants(constSource) {
 
 /** Local name → EXPORTED name, for named imports of the constants module only.
  *
+ *  SHARED with the broadcast deriver (parametrised by the two module paths): the two
+ *  derivations must resolve names by exactly the same rules, and a hardening found on
+ *  one must reach the other.
+ *
  *  The entry used to be resolved by SPELLING against every export of `events.ts`, so a
  *  local `const X = "real"` — or an import of `X` from somewhere else entirely — derived
  *  whatever `events.ts` happened to call `X` (review pass 11, reproduced). What binds a
  *  name is its DECLARATION, not its letters. Aliases are honoured because upstream may
  *  legitimately rename on import.
  */
-function importedFromConstants(sourceFile) {
+export function importedFromConstants(
+  sourceFile,
+  fromModule = CATALOGUE_SOURCE,
+  constModule = CATALOGUE_CONST_SOURCE,
+) {
   // Resolved RELATIVE TO the catalogue module, then compared to the constants module in
   // full. Matching on the basename accepted `../other/events.js` and then read the value
   // out of the real `events.ts` — a same-named export elsewhere would have been vendored
   // with the wrong value and nothing would have said so (review pass 12).
-  const dir = CATALOGUE_SOURCE.replace(/\/[^/]*$/, "");
-  const wanted = CATALOGUE_CONST_SOURCE.replace(/\.ts$/, "");
+  const dir = fromModule.replace(/\/[^/]*$/, "");
+  const wanted = constModule.replace(/\.ts$/, "");
   const out = new Map();
   for (const stmt of sourceFile.statements) {
     if (!ts.isImportDeclaration(stmt)) continue;
@@ -171,29 +191,68 @@ function importedFromConstants(sourceFile) {
   return out;
 }
 
-/** Every reference to `name` outside its own declaration. A catalogue that is MUTATED
- *  after it is declared cannot be derived from its initializer, and this deriver has no
- *  way to evaluate one — so it refuses rather than vendor a list upstream will extend at
- *  runtime (review pass 11). */
-function referencedOutsideDeclaration(sourceFile, name) {
+/** The value of an identifier entry: it must be a NAMED IMPORT from the constants module
+ *  (never resolved by spelling) and that export must be a whole string literal. The
+ *  whole reason the announced deriver exists: a dropped entry would make a catalogue look
+ *  complete while being one short, and the ratchet would bless the shortfall. SHARED
+ *  with the broadcast deriver — the last hop of the resolution rule is spelled once.
+ *
+ *  @param {Map<string,string>} imported   local name → exported name (importedFromConstants)
+ *  @param {Map<string,string>} constants  exported name → value (readConstants)
+ *  @param {string} localName
+ *  @param {{symbol: string, constSource: string}} where   for the refusal messages
+ *  @returns {string} */
+export function resolveImportedConstant(imported, constants, localName, where) {
+  const exportedName = imported.get(localName);
+  if (exportedName === undefined) {
+    throw new Error(
+      `${where.symbol} entry ${localName} is not a named import from ` +
+        `${where.constSource} — refusing to resolve it by spelling`,
+    );
+  }
+  const resolved = constants.get(exportedName);
+  if (resolved === undefined) {
+    throw new Error(
+      `${where.symbol} entry ${localName} is not resolvable from ` +
+        `${where.constSource} — refusing to emit a short catalogue`,
+    );
+  }
+  return resolved;
+}
+
+/** Does `name` have a reference outside its own declaration that `isAllowed` does not
+ *  accept? The ONE walker both derivers use: the announced catalogue allows no outside
+ *  reference at all (a mutation would not appear in the vendored list), the scope table
+ *  allows plain reads (the gateway reads it on every broadcast). A hardening of the walk
+ *  itself — a same-named local, a `typeof`, a shorthand property — reaches both.
+ *
+ *  @param {import("typescript").SourceFile} sourceFile
+ *  @param {string} name
+ *  @param {(node: import("typescript").Identifier) => boolean} isAllowed
+ *  @returns {boolean} */
+export function referencesOf(sourceFile, name, isAllowed) {
   let found = false;
   const visit = (node) => {
     if (found) return;
-    if (
-      ts.isVariableDeclaration(node) &&
-      ts.isIdentifier(node.name) &&
-      node.name.text === name
-    ) {
+    if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.name.text === name) {
       return; // the declaration itself, initializer included
     }
     if (ts.isIdentifier(node) && node.text === name) {
-      found = true;
+      if (!isAllowed(node)) found = true;
       return;
     }
     node.forEachChild(visit);
   };
   sourceFile.forEachChild(visit);
   return found;
+}
+
+/** Every reference to `name` outside its own declaration. A catalogue that is MUTATED
+ *  after it is declared cannot be derived from its initializer, and this deriver has no
+ *  way to evaluate one — so it refuses rather than vendor a list upstream will extend at
+ *  runtime. */
+function referencedOutsideDeclaration(sourceFile, name) {
+  return referencesOf(sourceFile, name, () => false);
 }
 
 /**
@@ -240,23 +299,12 @@ export function deriveEventCatalogue(raw, constRaw) {
       continue;
     }
     if (ts.isIdentifier(node)) {
-      const exportedName = imported.get(node.text);
-      if (exportedName === undefined) {
-        throw new Error(
-          `${CATALOGUE_SYMBOL} entry ${node.text} is not a named import from ` +
-            `${CATALOGUE_CONST_SOURCE} — refusing to resolve it by spelling`,
-        );
-      }
-      const resolved = constants.get(exportedName);
-      if (resolved === undefined) {
-        // The whole reason this file exists. A dropped entry would make the catalogue look
-        // complete while being one short, and the ratchet would bless it.
-        throw new Error(
-          `${CATALOGUE_SYMBOL} entry ${node.text} is not resolvable from ` +
-            `${CATALOGUE_CONST_SOURCE} — refusing to emit a short catalogue`,
-        );
-      }
-      names.push(resolved);
+      names.push(
+        resolveImportedConstant(imported, constants, node.text, {
+          symbol: CATALOGUE_SYMBOL,
+          constSource: CATALOGUE_CONST_SOURCE,
+        }),
+      );
       continue;
     }
     throw new Error(

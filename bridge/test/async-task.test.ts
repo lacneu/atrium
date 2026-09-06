@@ -212,6 +212,7 @@ class AsyncWriter implements ConvexWriter {
   }> {
     return { history: null, turnCount: 0 };
   }
+  async reportSessionRoster(): Promise<void> {}
   async reportSessionMeta(): Promise<void> {}
   async upsertSubAgent(record: SubAgentRecord): Promise<void> {
     this.upserts.push(record);

@@ -156,6 +156,12 @@
       "frames": [
         {"event": "agent", "payload": {"stream": "assistant", "data": {"delta": "NO-SESSION-LEAK"}}}
       ]
+    },
+    "config_changed_broadcast": {
+      "description": "A `config.changed` broadcast as OBSERVED on a live 2026.9.1 gateway (hand edit of openclaw.json while a chat's session socket was open): broadcast-only (never announced in hello-ok), READ-scoped, sent dropIfSlow, `hash` = the projected config revision. Reaches the per-chat session socket; the normalizer drops it (no session content), the roster policy reads it.",
+      "frames": [
+        {"type": "event", "event": "config.changed", "payload": {"path": "/home/node/.openclaw/openclaw.json", "hash": "hmac-sha256:v1:NuYsiDVld16_pmtOzXz1T2m8Dbi5SDfCpPVB9VX2XCA", "ts": 1788640743963}, "seq": 23}
+      ]
     }
   }
 }

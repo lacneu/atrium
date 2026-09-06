@@ -9,6 +9,7 @@
 // per backend round-trip, no queue growth.
 
 import { describe, expect, test, vi } from "vitest";
+import { sleep } from "./helpers/sleep.js";
 import { Readable } from "node:stream";
 import { HttpConvexWriter, bytesBucket, uploadContentType } from "../src/convex-writer";
 import {
@@ -44,7 +45,6 @@ function controlledFetch() {
   return { fetchImpl, sent, release, fail, inFlight: () => pending.length };
 }
 
-const tick = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 function writerWith(fetchImpl: typeof fetch, deltaFlushMs = 5) {
   return new HttpConvexWriter({
@@ -76,7 +76,7 @@ describe("ingest auth: the writer presents its configured secret as the Bearer",
       fetchImpl,
     });
     await w.setSnapshot("m1", "hello");
-    await tick(15);
+    await sleep(15);
     expect(seenAuth.length).toBeGreaterThan(0);
     for (const auth of seenAuth) {
       expect(auth).toBe("Bearer oc_live_per-bridge-alpha");
@@ -121,25 +121,25 @@ describe("delta coalescing under backpressure (the prod fix)", () => {
 
     // First delta -> after the 5ms window, POST#1 ("a") goes in flight (held).
     await w.appendDelta("m1", "a");
-    await tick(15);
+    await sleep(15);
     expect(sent.map((s) => s.text)).toEqual(["a"]);
 
     // While POST#1 is STILL IN FLIGHT, more deltas arrive across several flush
     // windows. Fire-time capture would enqueue one POST per window ("b", then
     // "c", then "d"); execution-time capture accumulates them in ONE buffer.
     await w.appendDelta("m1", "b");
-    await tick(12);
+    await sleep(12);
     await w.appendDelta("m1", "c");
-    await tick(12);
+    await sleep(12);
     await w.appendDelta("m1", "d");
-    await tick(12);
+    await sleep(12);
     expect(sent.length).toBe(1); // nothing else left while #1 is in flight
 
     // Release POST#1 -> the chain advances; the next REAL flush carries "bcd".
     release();
-    await tick(20);
+    await sleep(20);
     release(); // release POST#2
-    await tick(20);
+    await sleep(20);
 
     const appended = sent.filter((s) => s.op === "appendDelta");
     expect(appended.map((s) => s.text)).toEqual(["a", "bcd"]);
@@ -152,15 +152,15 @@ describe("delta coalescing under backpressure (the prod fix)", () => {
     const w = writerWith(fetchImpl, 5);
 
     await w.appendDelta("m1", "a");
-    await tick(15); // POST#1 ("a") in flight
+    await sleep(15); // POST#1 ("a") in flight
     fail(); // ingest 5xx / network error
-    await tick(10);
+    await sleep(10);
 
     // New delta after the failure: the retry flush must carry "a" + "b".
     await w.appendDelta("m1", "b");
-    await tick(15);
+    await sleep(15);
     release();
-    await tick(20);
+    await sleep(20);
 
     const appended = sent.filter((s) => s.op === "appendDelta");
     expect(appended.map((s) => s.text)).toEqual(["a", "ab"]);
@@ -173,9 +173,9 @@ describe("delta coalescing under backpressure (the prod fix)", () => {
 
     await w.appendDelta("m1", "early");
     const snap = w.setSnapshot("m1", "FULL");
-    await tick(10);
+    await sleep(10);
     release(); // appendDelta("early")
-    await tick(10);
+    await sleep(10);
     release(); // setSnapshot
     await snap;
 
@@ -207,7 +207,7 @@ describe("reportSessionMeta is OFF the serialization chain (Codex review #12)", 
     void w.reportSessionMeta("c1", { model: "x" }).catch(() => {});
     const id = await Promise.race([
       w.startAssistant("c1", "run-1"),
-      tick(250).then(() => "TIMEOUT" as const),
+      sleep(250).then(() => "TIMEOUT" as const),
     ]);
 
     expect(metaDispatched).toBe(1); // the meta POST WAS dispatched (and is hung)
@@ -322,7 +322,7 @@ describe("addMedia outbound diagnostic (openclaw.media)", () => {
     };
     const w = mediaWriter(fetchImpl, fakeFetcher(nullSize));
     await w.addMedia("m1", { chatId: "c1", filename: "r.md", path: "/x/r.md" });
-    await tick(10);
+    await sleep(10);
     const stored = sent
       .filter((s) => s.op === "mediaTrace")
       .find((t) => t.phase === "stored");
@@ -337,7 +337,7 @@ describe("addMedia outbound diagnostic (openclaw.media)", () => {
       filename: "r.md",
       path: "/home/node/.openclaw/media/outbound/r.md",
     });
-    await tick(10);
+    await sleep(10);
     const ops = sent.map((s) => s.op);
     expect(ops).toContain("getUploadUrl");
     expect(ops).toContain("addMediaPart");
@@ -357,7 +357,7 @@ describe("addMedia outbound diagnostic (openclaw.media)", () => {
     const { fetchImpl, sent } = mediaFlowFetch();
     const w = mediaWriter(fetchImpl, undefined); // no mediaFetcher
     await w.addMedia("m1", { chatId: "c1", filename: "r.md", path: "/x/r.md" });
-    await tick(10);
+    await sleep(10);
     expect(sent.map((s) => s.op)).not.toContain("getUploadUrl");
     const traces = sent.filter((s) => s.op === "mediaTrace");
     expect(traces.map((t) => t.phase)).toEqual(["received", "dropped"]);
@@ -370,7 +370,7 @@ describe("addMedia outbound diagnostic (openclaw.media)", () => {
     const { fetchImpl, sent } = mediaFlowFetch();
     const w = mediaWriter(fetchImpl); // no fetcher needed — nothing is fetched
     await w.noteMediaUndelivered("m1", "c1");
-    await tick(10);
+    await sleep(10);
     const traces = sent.filter((s) => s.op === "mediaTrace");
     expect(traces).toHaveLength(1);
     expect(traces[0]?.phase).toBe("dropped");
@@ -393,7 +393,7 @@ describe("addMedia outbound diagnostic (openclaw.media)", () => {
       const { fetchImpl, sent } = mediaFlowFetch();
       const w = mediaWriter(fetchImpl, fakeFetcher({ ok: false, reason }));
       await w.addMedia("m1", { chatId: "c1", filename: "r.md", path: "/x/r.md" });
-      await tick(10);
+      await sleep(10);
       expect(sent.map((s) => s.op)).not.toContain("getUploadUrl");
       expect(sent.map((s) => s.op)).not.toContain("addMediaPart");
       const traces = sent.filter((s) => s.op === "mediaTrace");
@@ -406,7 +406,7 @@ describe("addMedia outbound diagnostic (openclaw.media)", () => {
     const { fetchImpl, sent } = mediaFlowFetch({ uploadFails: true });
     const w = mediaWriter(fetchImpl, fakeFetcher(okOpen()));
     await w.addMedia("m1", { chatId: "c1", filename: "r.md", path: "/x/r.md" });
-    await tick(10);
+    await sleep(10);
     expect(sent.map((s) => s.op)).toContain("getUploadUrl");
     expect(sent.map((s) => s.op)).not.toContain("addMediaPart");
     const traces = sent.filter((s) => s.op === "mediaTrace");
@@ -430,7 +430,7 @@ describe("addMedia outbound diagnostic (openclaw.media)", () => {
     const { fetchImpl, sent } = mediaFlowFetch();
     const w = mediaWriter(fetchImpl, fakeFetcher(open));
     await w.addMedia("m1", { chatId: "c1", filename: "r.md", path: "/x/r.md" });
-    await tick(10);
+    await sleep(10);
     expect(sent.map((s) => s.op)).toContain("getUploadUrl"); // got that far
     expect(sent.map((s) => s.op)).not.toContain("addMediaPart"); // but never persisted
     const traces = sent.filter((s) => s.op === "mediaTrace");
@@ -448,7 +448,7 @@ describe("addMedia outbound diagnostic (openclaw.media)", () => {
     const { fetchImpl, sent } = mediaFlowFetch({ uploadThrows: capErr });
     const w = mediaWriter(fetchImpl, fakeFetcher(okOpen()));
     await w.addMedia("m1", { chatId: "c1", filename: "r.md", path: "/x/r.md" });
-    await tick(10);
+    await sleep(10);
     expect(sent.map((s) => s.op)).not.toContain("addMediaPart");
     const traces = sent.filter((s) => s.op === "mediaTrace");
     expect(traces[traces.length - 1]?.reason).toBe("too_large");
@@ -465,7 +465,7 @@ describe("addMedia outbound diagnostic (openclaw.media)", () => {
     const { fetchImpl, sent } = mediaFlowFetch({ uploadThrows: wrapped });
     const w = mediaWriter(fetchImpl, fakeFetcher(okOpen()));
     await w.addMedia("m1", { chatId: "c1", filename: "r.md", path: "/x/r.md" });
-    await tick(10);
+    await sleep(10);
     const traces = sent.filter((s) => s.op === "mediaTrace");
     expect(traces[traces.length - 1]?.reason).toBe("too_large");
   });
@@ -476,7 +476,7 @@ describe("addMedia outbound diagnostic (openclaw.media)", () => {
     const { fetchImpl, sent } = mediaFlowFetch({ uploadNoStorageId: true });
     const w = mediaWriter(fetchImpl, fakeFetcher(okOpen()));
     await w.addMedia("m1", { chatId: "c1", filename: "r.md", path: "/x/r.md" });
-    await tick(10);
+    await sleep(10);
     expect(sent.map((s) => s.op)).toContain("getUploadUrl");
     expect(sent.map((s) => s.op)).not.toContain("addMediaPart");
     const traces = sent.filter((s) => s.op === "mediaTrace");
@@ -491,7 +491,7 @@ describe("addMedia outbound diagnostic (openclaw.media)", () => {
     const w = mediaWriter(fetchImpl, fakeFetcher(okOpen()));
     const outcome = await Promise.race([
       w.addMedia("m1", { chatId: "c1", filename: "r.md", path: "/x/r.md" }).then(() => "DONE"),
-      tick(300).then(() => "TIMEOUT" as const),
+      sleep(300).then(() => "TIMEOUT" as const),
     ]);
     expect(outcome).toBe("DONE");
     expect(sent.map((s) => s.op)).toContain("addMediaPart"); // real write happened
@@ -508,12 +508,12 @@ describe("per-message chains + write timeout + delta cap (never-falls)", () => {
     const w = writerWith(fetchImpl, 5);
     // m1's snapshot POST goes in flight and is HELD (slow Convex for that message).
     const p1 = w.setSnapshot("m1", "A");
-    await tick(2);
+    await sleep(2);
     expect(sent.length).toBe(1); // m1's POST in flight, held
     // m2's snapshot must NOT wait behind m1 — with the old single global chain it
     // would; with per-message chains it posts independently.
     const p2 = w.setSnapshot("m2", "B");
-    await tick(2);
+    await sleep(2);
     expect(sent.length).toBe(2); // m2 went through WITHOUT m1 being released
     release();
     release();
@@ -525,9 +525,9 @@ describe("per-message chains + write timeout + delta cap (never-falls)", () => {
     const w = writerWith(fetchImpl, 5);
     const CAP = 256 * 1024;
     await w.appendDelta("m1", "x".repeat(CAP + 50_000)); // way over the cap
-    await tick(15); // the flush POST goes in flight with the CAPPED buffer
+    await sleep(15); // the flush POST goes in flight with the CAPPED buffer
     release();
-    await tick(20);
+    await sleep(20);
     const appended = sent.filter((s) => s.op === "appendDelta");
     expect(appended.length).toBe(1);
     expect(appended[0]!.text!.length).toBe(CAP); // trimmed to the cap, not 306KB
@@ -807,7 +807,7 @@ describe("snapshot write-reduction (suffix-delta, heartbeat-preserving)", () => 
     const w = writerWith(fetchImpl, 5);
     // Delta "ab" buffered, then flushed -> POST#1 goes in flight (HELD).
     await w.appendDelta("m1", "ab");
-    await tick(15);
+    await sleep(15);
     expect(sent.map((s) => s.text)).toEqual(["ab"]);
     expect(inFlight()).toBe(1);
     // While POST#1 is still in flight, a snapshot that extends the (not-yet-acked)
@@ -815,7 +815,7 @@ describe("snapshot write-reduction (suffix-delta, heartbeat-preserving)", () => 
     // it to run AFTER POST#1 settles, so confirmedText is "ab" when it diffs.
     const snap = w.setSnapshot("m1", "abcd");
     release(); // POST#1 ("ab") acks -> confirmedText = "ab"
-    await tick(0);
+    await sleep(0);
     release(); // POST#2 (the suffix) acks
     await snap;
     expect(sent).toEqual([
@@ -829,7 +829,7 @@ describe("snapshot write-reduction (suffix-delta, heartbeat-preserving)", () => 
     const { fetchImpl, sent, release, fail } = controlledFetch();
     const w = writerWith(fetchImpl, 5);
     const p0 = w.setSnapshot("m1", "ab"); // POST#1 (appendDelta "ab" from empty), held
-    await tick(0);
+    await sleep(0);
     release(); // acks -> confirmedText = "ab"
     await p0;
 
@@ -839,7 +839,7 @@ describe("snapshot write-reduction (suffix-delta, heartbeat-preserving)", () => 
       () => "ok",
       () => "threw",
     );
-    await tick(0);
+    await sleep(0);
     fail(); // the suffix post rejects
     expect(await p).toBe("threw"); // the caller sees the error (this.post propagates)
 
@@ -847,7 +847,7 @@ describe("snapshot write-reduction (suffix-delta, heartbeat-preserving)", () => 
     // failed delta actually applied). It full-replaces, correcting liveText whether
     // or not "cd" landed.
     const p2 = w.setSnapshot("m1", "abcdef");
-    await tick(0);
+    await sleep(0);
     release(); // the full-snapshot post acks
     await p2;
     expect(sent.at(-1)).toEqual({
@@ -874,7 +874,7 @@ describe("snapshot write-reduction (suffix-delta, heartbeat-preserving)", () => 
     const w = writerWith(fetchImpl, 5);
 
     await w.appendDelta("m1", "ab");
-    await tick(15); // timer flush posts appendDelta("ab") -> FAILS (re-buffer + resync)
+    await sleep(15); // timer flush posts appendDelta("ab") -> FAILS (re-buffer + resync)
     // A snapshot extends the (ambiguously-applied) prefix. Because the flush failed,
     // it must NOT trust confirmedText and emit a suffix — it full-replaces.
     await w.setSnapshot("m1", "abcd");
@@ -892,7 +892,7 @@ describe("snapshot write-reduction (suffix-delta, heartbeat-preserving)", () => 
     const { fetchImpl, sent, release, fail } = controlledFetch();
     const w = writerWith(fetchImpl, 5);
     const p0 = w.setSnapshot("m1", "abc"); // appendDelta "abc" from empty, held
-    await tick(0);
+    await sleep(0);
     release();
     await p0; // confirmedText = "abc"
 
@@ -901,7 +901,7 @@ describe("snapshot write-reduction (suffix-delta, heartbeat-preserving)", () => 
       () => "ok",
       () => "threw",
     );
-    await tick(0);
+    await sleep(0);
     fail();
     expect(await p).toBe("threw");
 
@@ -909,7 +909,7 @@ describe("snapshot write-reduction (suffix-delta, heartbeat-preserving)", () => 
     // suffix onto a liveText the failed (maybe-applied) snapshot already touched; it
     // must full-replace instead (the full branch's failure must also set resync).
     const p2 = w.setSnapshot("m1", "abcd");
-    await tick(0);
+    await sleep(0);
     release();
     await p2;
     expect(sent.at(-1)).toEqual({
@@ -989,7 +989,7 @@ describe("delivery recorder tagging (Phase 2)", () => {
     const w = writerWith(fetchImpl, 5);
     expect(await w.startAssistant("c1", "run-1")).toBe("m1");
     await w.appendDelta("m1", "hello");
-    await tick(20);
+    await sleep(20);
     const d = sent.find((s) => s.op === "appendDelta");
     expect(d).toBeDefined();
     expect(d!.recSessionId).toBe("sess-X"); // the session learned at startAssistant
@@ -1009,12 +1009,12 @@ describe("delivery recorder tagging (Phase 2)", () => {
     });
     const w = writerWith(fetchImpl, 5);
     await w.startAssistant("c1", "run-1");
-    await tick(5); // calibrate resolves
+    await sleep(5); // calibrate resolves
     await w.appendDelta("m1", "hello");
     const afterFirstDelta = Date.now(); // t0 must be <= this ("hello" receipt window)
-    await tick(20); // first flush -> fails -> re-buffer + restore t0
+    await sleep(20); // first flush -> fails -> re-buffer + restore t0
     await w.appendDelta("m1", "world"); // a LATER delta -> schedules the retry flush
-    await tick(20); // retry flush -> succeeds
+    await sleep(20); // retry flush -> succeeds
     const appends = sent.filter((s) => s.op === "appendDelta");
     expect(appends.length).toBeGreaterThanOrEqual(2); // the failed one + the retry
     const retry = appends[appends.length - 1]!;
@@ -1031,13 +1031,13 @@ describe("delivery recorder tagging (Phase 2)", () => {
     });
     const w = writerWith(fetchImpl, 50);
     await w.startAssistant("c1", "run-1");
-    await tick(5); // calibrate resolves
+    await sleep(5); // calibrate resolves
     await w.appendDelta("m1", "x"); // t0 = early (will be in the DISCARDED prefix)
     const early = Date.now();
-    await tick(10); // < the 50ms flush -> nothing sent yet
+    await sleep(10); // < the 50ms flush -> nothing sent yet
     // Overflow the 256KB cap: the "x" + old prefix is dropped, only the recent tail kept.
     await w.appendDelta("m1", "Z".repeat(300 * 1024));
-    await tick(60); // flush the capped buffer
+    await sleep(60); // flush the capped buffer
     const d = sent.filter((s) => s.op === "appendDelta").pop();
     expect(d).toBeDefined();
     expect(typeof d!.bridgeRecvAt).toBe("number");
@@ -1051,7 +1051,7 @@ describe("delivery recorder tagging (Phase 2)", () => {
     const w = writerWith(fetchImpl, 5);
     await w.startAssistant("c1", "run-1");
     await w.appendDelta("m1", "hello");
-    await tick(20);
+    await sleep(20);
     const d = sent.find((s) => s.op === "appendDelta");
     expect(d).toBeDefined();
     expect(d!.recSessionId).toBeUndefined();
@@ -1068,9 +1068,9 @@ describe("delivery recorder tagging (Phase 2)", () => {
     });
     const w = writerWith(fetchImpl, 5);
     await w.startAssistant("c1", "run-1");
-    await tick(5); // let the fire-and-forget calibrate round-trip resolve
+    await sleep(5); // let the fire-and-forget calibrate round-trip resolve
     await w.appendDelta("m1", "x");
-    await tick(20);
+    await sleep(20);
     // The bridge MUST calibrate via the dedicated op, not piggyback startAssistant
     // (which does heavy server work that biased the skew negative — the original bug),
     // and take MULTIPLE samples (min-RTT pick) rather than trust a single round-trip.
@@ -1087,7 +1087,7 @@ describe("delivery recorder tagging (Phase 2)", () => {
     const w = writerWith(fetchImpl, 5);
     await w.startAssistant("c1", "run-1");
     await w.appendDelta("m1", "café"); // 4 chars, 'é' = 2 bytes -> 5 UTF-8 bytes
-    await tick(20);
+    await sleep(20);
     const d = sent.find((s) => s.op === "appendDelta")!;
     expect(d.sizeBytes).toBe(5); // text.length would wrongly be 4
   });
@@ -1097,10 +1097,10 @@ describe("delivery recorder tagging (Phase 2)", () => {
     const w = writerWith(fetchImpl, 5);
     await w.startAssistant("c1", "run-1");
     await w.appendDelta("m1", "hello");
-    await tick(20);
+    await sleep(20);
     // "goodbye" is NOT a suffix of "hello" -> forces a FULL setSnapshot write.
     await w.setSnapshot("m1", "goodbye");
-    await tick(20);
+    await sleep(20);
     const snap = sent.find((s) => s.op === "setSnapshot");
     expect(snap).toBeDefined();
     expect(snap!.recSessionId).toBe("sess-1");
@@ -1453,7 +1453,7 @@ describe("the session-drop flag reaches the WIRE, not just the method (lot 31)",
     const done = w.finalize("m1", "error", "", "silence", "response_timeout", {
       clearProviderSession: "20260706_212939_aee24e",
     });
-    await tick(1);
+    await sleep(1);
     release();
     await done;
     const op = sent.find((s) => s.op === "finalize") as
@@ -1469,7 +1469,7 @@ describe("the session-drop flag reaches the WIRE, not just the method (lot 31)",
     const { fetchImpl, sent, release } = controlledFetch();
     const w = writerWith(fetchImpl);
     const done = w.finalize("m1", "complete", "voilà", null);
-    await tick(1);
+    await sleep(1);
     release();
     await done;
     const op = sent.find((s) => s.op === "finalize") as

@@ -886,6 +886,19 @@ function beforeSessionReset(
   return observedAt <= resetAt;
 }
 
+/** JSON with object keys sorted at every level: two metas built by different paths
+ *  compare by CONTENT, not by insertion order. `JSON.stringify` semantics on purpose —
+ *  a key holding `undefined` is absent, as it is once stored — which is why the signing
+ *  canonical form (lib/signedAnnouncements.ts) is NOT reused here: it keeps such keys,
+ *  and a signature must not move for a dedupe. */
+function stableJson(value: unknown): string {
+  return JSON.stringify(value, (_k, v) =>
+    typeof v === "object" && v !== null && !Array.isArray(v)
+      ? Object.fromEntries(Object.entries(v as Record<string, unknown>).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)))
+      : v,
+  );
+}
+
 const TURN_PHASES = new Set([
   "processing_history",
   "compacting",
@@ -2776,6 +2789,75 @@ export const setSessionOverfull = internalMutation({
   },
 });
 
+/**
+ * The session-meta fields ORDERED by an observation stamp of their own, in GROUPS — one
+ * rule, one row per group, one loop. A write that CARRIES a group is judged by that
+ * group's watermark and moves it; a write that carries none of it neither moves nor is
+ * judged by it, and the record's fields it does not name travel through (a usage
+ * snapshot never erases the knobs; a roster reported alone never erases the counters).
+ * The clocks are not interchangeable: the knobs' stamp is the describe's, the roster's
+ * is the gateway's ANSWER time — a describe held across a slow `models.list` is older
+ * than the roster it rode with, and one clock for both discarded the very roster a config
+ * change had just refreshed; the estimate block rides the describe's clock and is carried
+ * by ANY stamped write, because a describe that carries no estimate says the gateway's
+ * pre-prompt check did not run — an absence that must be able to win the ordering.
+ */
+type OrderedGroup = {
+  readonly fields: readonly string[];
+  /** Which incoming fields mean "this write carries the group", or `"stamped"`: any
+   *  write with a stamp does. */
+  readonly carriedBy: readonly string[] | "stamped";
+  readonly stamp: string;
+};
+const KNOB_FIELDS = ["model", "modelProvider", "agentRuntime", "thinkingLevel", "thinkingDefault", "thinkingLevels", "verboseLevel"] as const;
+const KNOB_GROUP: OrderedGroup = { fields: KNOB_FIELDS, carriedBy: KNOB_FIELDS, stamp: "knobsAt" };
+const ROSTER_GROUP: OrderedGroup = { fields: ["availableModels"], carriedBy: ["availableModels"], stamp: "rosterAt" };
+const ESTIMATE_GROUP: OrderedGroup = {
+  fields: ["estimatedPromptTokens", "promptBudgetBeforeReserve", "overflowTokens", "totalTokensFresh", "totalTokens", "contextTokens", "estimatedCostUsd"],
+  carriedBy: "stamped",
+  stamp: "estimateAt",
+};
+
+function numberOr(value: unknown): number | undefined {
+  return typeof value === "number" ? value : undefined;
+}
+
+/** The group's contribution to the next meta (spread AFTER the incoming fields, so a key
+ *  present here overrides), and whether the incoming fields were applied. */
+function orderedGroup(
+  group: OrderedGroup,
+  prev: Record<string, unknown> | undefined,
+  incoming: Record<string, unknown>,
+  at: number | undefined,
+): { fields: Record<string, unknown>; applied: boolean } {
+  const carries = group.carriedBy === "stamped" ? at !== undefined : group.carriedBy.some((k) => incoming[k] !== undefined);
+  const prevStamp = numberOr(prev?.[group.stamp]);
+  const fields: Record<string, unknown> = {};
+  if (carries && at !== undefined && prevStamp !== undefined && at < prevStamp) {
+    // Older than the record: the record's fields win — every key set, absent ones as
+    // `undefined`, so they OVERRIDE the incoming values.
+    for (const k of group.fields) fields[k] = prev?.[k];
+    fields[group.stamp] = prevStamp;
+    return { fields, applied: false };
+  }
+  if (!carries) {
+    // Not part of this write: what the record has and the write does not name travels
+    // through, with the watermark.
+    for (const k of group.fields) if (incoming[k] === undefined && prev?.[k] !== undefined) fields[k] = prev[k];
+    if (prevStamp !== undefined) fields[group.stamp] = prevStamp;
+    return { fields, applied: false };
+  }
+  // Carried and not older: the incoming fields apply (their absence included); the
+  // watermark only moves forward, and an unstamped write leaves it where it is.
+  const stamp = at !== undefined ? (prevStamp !== undefined ? Math.max(prevStamp, at) : at) : prevStamp;
+  if (stamp !== undefined) fields[group.stamp] = stamp;
+  return { fields, applied: true };
+}
+
+/** The write stamps a fresh publish always moves: equal on both sides only for a
+ *  duplicate delivery, which is then compared in full. */
+const WATERMARKS = ["knobsAt", "rosterAt", "estimateAt", "terminalFactsAt", "activeTokensAt"] as const;
+
 export const setSessionMeta = internalMutation({
   args: {
     chatId: v.id("chats"),
@@ -2792,6 +2874,8 @@ export const setSessionMeta = internalMutation({
       availableModels: v.optional(
         v.array(v.object({ id: v.string(), label: v.string() })),
       ),
+      availableModelsOwner: v.optional(v.string()),
+      rosterObservedAt: v.optional(v.number()),
       verboseLevel: v.optional(v.string()),
       totalTokens: v.optional(v.number()),
       contextTokens: v.optional(v.number()),
@@ -2830,8 +2914,39 @@ export const setSessionMeta = internalMutation({
     // outrank the newer stamp (codex P2 ×2): ordering comes from the
     // bridge-stamped observedAt; a legacy snapshot without one only drops
     // the stamp on the conservative counter-fell signal.
-    const { observedAt: metaAt, ...metaRest } = meta;
+    const { observedAt: metaAt, rosterObservedAt, ...metaRest } = meta;
     const prev = chat.sessionMeta;
+    const incoming = metaRest as Record<string, unknown>;
+    const record = prev as Record<string, unknown> | undefined;
+    const knobs = orderedGroup(KNOB_GROUP, record, incoming, metaAt);
+    // THE ROSTER'S OWNER. The picker must offer the models of the agent whose knobs it
+    // shows, so the current owner is the owner of the latest KNOBS write accepted (the
+    // turn's agent, as described), and a roster counts for the current owner only:
+    // another agent's answer landing late — a turn routed elsewhere meanwhile, a slow
+    // re-ask — is ignored, whatever its stamp; an owner change starts the roster from a
+    // clean slate (its watermark included), and a write with no roster keeps the one on
+    // record for the same owner only. An owner unknown on either side (an older bridge)
+    // takes part in no such rule.
+    // Only a STAMPED write declares the owner (a describe-sourced publish; a roster
+    // reported alone is unstamped and names the owner it was asked for, never a new
+    // current one), and it is judged by the knobs' own clock — not by whether this
+    // particular describe happened to carry a knob field, which a session with no model
+    // set legitimately does not.
+    const owner = typeof incoming.availableModelsOwner === "string" ? incoming.availableModelsOwner : undefined;
+    const prevOwner = typeof record?.availableModelsOwner === "string" ? record.availableModelsOwner : undefined;
+    const prevKnobsAt = numberOr(record?.knobsAt);
+    const knobsClockStale = metaAt !== undefined && prevKnobsAt !== undefined && metaAt < prevKnobsAt;
+    const ownerNow = metaAt !== undefined && owner !== undefined && !knobsClockStale ? owner : prevOwner;
+    const ownerChanged = ownerNow !== undefined && prevOwner !== undefined && ownerNow !== prevOwner;
+    const foreign = owner !== undefined && ownerNow !== undefined && owner !== ownerNow;
+    const rosterRecord = ownerChanged ? { ...record, availableModels: undefined, rosterAt: undefined } : record;
+    const keepRoster: Record<string, unknown> = foreign
+      ? { availableModels: rosterRecord?.availableModels, rosterAt: rosterRecord?.rosterAt }
+      : // The roster's stamp is its own (the gateway's answer); an older bridge that
+        // sends one clock is ordered by the describe's.
+        orderedGroup(ROSTER_GROUP, rosterRecord, incoming, rosterObservedAt ?? metaAt).fields;
+    keepRoster.availableModelsOwner = ownerNow;
+    const keepKnobs = knobs.fields;
     // RESET FENCE (codex P2): a describe snapshot OBSERVED BEFORE the user reset
     // this conversation describes the session they threw away. Landing after the
     // reset it would restore the old estimate and budget — and immediately
@@ -2876,47 +2991,12 @@ export const setSessionMeta = internalMutation({
                     : prev.activeTokensAt,
               }
             : {};
-    // BUDGET-ESTIMATE ordering (codex P1). Both writers are fire-and-forget, so
-    // an OLDER describe can land after a newer one: accept the incoming estimate
-    // only when its observation time is at least as recent as the stored
-    // watermark, otherwise keep what we have. With no timestamps on either side
-    // the incoming snapshot wins (the historic behavior).
-    const prevEstimateAt = prev?.estimateAt;
-    const estimateIsStale =
-      metaAt !== undefined &&
-      prevEstimateAt !== undefined &&
-      metaAt < prevEstimateAt;
-    // The keys are ALWAYS present in this object (possibly as `undefined`, which
-    // Convex stores as "absent") so they OVERRIDE whatever `metaRest` carries: a
-    // stale snapshot brings its own estimate along, and re-adding the stored one
-    // without overwriting the incoming one would let the stale figure through.
-    const estimateFields = estimateIsStale
-      ? {
-          // Older snapshot: keep the stored assessment (and its watermark).
-          estimatedPromptTokens: prev?.estimatedPromptTokens,
-          promptBudgetBeforeReserve: prev?.promptBudgetBeforeReserve,
-          overflowTokens: prev?.overflowTokens,
-          estimateAt: prevEstimateAt,
-          // The whole DESCRIBE-SOURCED block obeys this watermark as one unit
-          // (codex P2): the freshness flag, and the counters it QUALIFIES. Keeping
-          // the flag while letting `metaRest` write the stale snapshot's counter
-          // would pair a recent "this is fresh" with an old number — a subtler
-          // version of the very defect this lot removes.
-          totalTokensFresh: prev?.totalTokensFresh,
-          totalTokens: prev?.totalTokens,
-          contextTokens: prev?.contextTokens,
-        }
-      : {
-          // Current snapshot wins: its estimate fields (or their ABSENCE, which is
-          // itself information — the gateway's pre-prompt check did not run, or a
-          // compaction/model change cleared it) come from `metaRest`.
-          // The watermark is kept even for an ABSENCE (codex P2): sessionMeta is
-          // replaced wholesale, so dropping it would let an OLDER in-flight
-          // snapshot that still carried an estimate be accepted afterwards and
-          // resurrect a stale gauge. A recent "there is no estimate" must be able
-          // to win the ordering too.
-          ...(metaAt !== undefined ? { estimateAt: metaAt } : {}),
-        };
+    // BUDGET-ESTIMATE ordering (codex P1): the describe-sourced block, ONE unit under
+    // the describe's clock — the freshness flag and the counters it qualifies included,
+    // so a recent "this is fresh" is never paired with an old number — and the cost
+    // figure with it, which had no watermark at all (an older describe landing late
+    // showed an older cost until the next turn).
+    const estimateFields = orderedGroup(ESTIMATE_GROUP, record, incoming, metaAt).fields;
     // TERMINAL FACTS, ordered and monotonic (G-50, raised in review).
     //
     // These four arrive on a turn's TERMINAL, off the ordered chain and un-awaited, so two
@@ -2976,9 +3056,10 @@ export const setSessionMeta = internalMutation({
     ) {
       await noteCountedCompactions(ctx, chatId, after - before);
     }
-    await ctx.db.patch(chatId, {
-      sessionMeta: {
+    const next = {
         ...metaRest,
+        ...keepRoster,
+        ...keepKnobs,
         ...keepActive,
         ...estimateFields,
         ...terminalFacts,
@@ -3003,8 +3084,20 @@ export const setSessionMeta = internalMutation({
           ? { sessionResetAt: prev.sessionResetAt }
           : {}),
         updatedAt: Date.now(),
-      },
-    });
+    };
+    // A DUPLICATE delivery is not written (the writer re-POSTs what it could not
+    // confirm): identical with the watermarks included — a fresh publish always moves
+    // one, so the stamps are compared first and the full content (sorted keys, without
+    // the write stamp, which would differ by construction) only when they all agree.
+    const nextRecord = next as Record<string, unknown>;
+    if (
+      record !== undefined &&
+      WATERMARKS.every((k) => record[k] === nextRecord[k]) &&
+      stableJson({ ...prev, updatedAt: 0 }) === stableJson({ ...next, updatedAt: 0 })
+    ) {
+      return;
+    }
+    await ctx.db.patch(chatId, { sessionMeta: next });
   },
 });
 
