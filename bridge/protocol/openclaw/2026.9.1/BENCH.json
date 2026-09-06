@@ -6,51 +6,51 @@
     {
       "id": "basic-turn",
       "ok": true,
-      "chat": "c133b4a4693f9d8b"
+      "chat": "c7039f493a7c97e4"
     },
     {
       "id": "tool-exec",
       "ok": true,
-      "chat": "c133b4a4693f9d8b"
+      "chat": "c7039f493a7c97e4"
     },
     {
       "id": "update-plan",
       "ok": true,
-      "chat": "c133b4a4693f9d8b"
+      "chat": "c7039f493a7c97e4"
     },
     {
       "id": "media-outbound",
       "ok": true,
-      "chat": "c133b4a4693f9d8b"
+      "chat": "c7039f493a7c97e4"
     },
     {
       "id": "spawn-announce-merge",
       "ok": true,
-      "chat": "c133b4a4693f9d8b"
+      "chat": "c7039f493a7c97e4"
     },
     {
       "id": "spawn-chain-merge",
       "ok": true,
-      "chat": "c133b4a4693f9d8b"
+      "chat": "c7039f493a7c97e4"
     },
     {
       "id": "spawn-parallel-merge",
       "ok": true,
-      "chat": "c133b4a4693f9d8b"
+      "chat": "c7039f493a7c97e4"
     },
     {
       "id": "async-task",
       "ok": true,
-      "chat": "c133b4a4693f9d8b"
+      "chat": "c7039f493a7c97e4"
     },
     {
       "id": "cron-tool",
       "ok": true,
-      "chat": "c133b4a4693f9d8b"
+      "chat": "c7039f493a7c97e4"
     }
   ],
   "verdict": "GO",
-  "at": "2026-09-05T15:52:00.764Z",
+  "at": "2026-09-06T14:16:03.359Z",
   "scenarios": [
     "async-task",
     "basic-turn",
@@ -78,12 +78,12 @@
     "hermes-cron-list": "hermes"
   },
   "flags": [],
-  "atriumSha": "82c8dca5f947e03d3aad79c7d2926d310f026c0a",
+  "atriumSha": "037c7ef7041fa1e1bd72d8d524c056ae71300fb0",
   "worktree": {
-    "dirty": true,
-    "deltaSha256": "71e64cbcf72ac2cd23b4f7d22b1fffc2ab32aaaf136c20745cdf723b2413a1a0"
+    "dirty": false,
+    "deltaSha256": null
   },
-  "supportDigest": "1f1dd9565ed8191184805734a19f11e24cbcd6a8b5aa66c92ae023f53982c8b2",
-  "bridgeVersion": "0.76.0",
-  "vendoredSha256": "179c1be0a5246b974338b359baac0cee8db1461a662993957398de2e3959a1e2"
+  "supportDigest": "ec6c99fd995ada29e4cb9ae59f22b6851aad14c2f7cb6d546d6e96b50c701a0e",
+  "bridgeVersion": "0.78.0",
+  "vendoredSha256": "07fea29a887c5029ca2d7e927f39e7a05bd9afcd381f94a1bb2d24dccb1e5b1d"
 }

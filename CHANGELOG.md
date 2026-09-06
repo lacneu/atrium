@@ -1,8 +1,10 @@
 # Changelog
 
-## [0.78.0] — A model you add to the gateway shows up on its own
+## [0.78.1] — A model you add to the gateway shows up on its own
 
-Reliability release for the model picker. No breaking changes.
+Reliability release for the model picker. No breaking changes. Shipped as
+0.78.1: the 0.78.0 tag published the web application but not the bridge image,
+so this is the first version where the whole set is available.
 
 **A model added to the gateway's configuration now appears without a restart.**
 Atrium asked the gateway for its model catalogue once, when a conversation opened
