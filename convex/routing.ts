@@ -95,7 +95,20 @@ export async function resolveTargetForChat(
   chat: Doc<"chats">,
   userId: Id<"users">,
 ): Promise<ChatResolution> {
-  const canonical = await canonicalForUser(ctx, userId);
+  // TWO different people can be involved in one dispatch, and they answer two
+  // different questions.
+  //
+  //   WHOSE SESSION is this?  The chat OWNER's. `canonical` is a segment of the
+  //   gateway session key, so resolving the SENDER's here would give a
+  //   participant's turn a different key: the gateway would open a SECOND session
+  //   and the group conversation would silently split in two, each half unaware of
+  //   the other's messages.
+  //
+  //   WHO IS ALLOWED to dispatch?  The SENDER. Grants are checked against them
+  //   below, unchanged. Being invited into a conversation must not hand anyone an
+  //   agent an administrator never granted them — that is the same IDOR boundary
+  //   this function has always been, and membership is not a grant.
+  const canonical = await canonicalForUser(ctx, chat.userId);
 
   // Candidate set = the EFFECTIVE union (direct userAgents ∪ group agents), the
   // dispatch-time authorization boundary (IDOR defense). With NO groups this is
@@ -237,7 +250,8 @@ export async function resolveTargetForTurn(
 ): Promise<ChatResolution> {
   if (chosen === null) return resolveTargetForChat(ctx, chat, userId);
 
-  const canonical = await canonicalForUser(ctx, userId);
+  // The chat OWNER's canonical — the session's identity. See resolveTargetForChat.
+  const canonical = await canonicalForUser(ctx, chat.userId);
   const uas = await getEffectiveGrants(ctx, userId);
   const member = uas.find(
     (u) => u.instanceName === chosen.instanceName && u.agentId === chosen.agentId,

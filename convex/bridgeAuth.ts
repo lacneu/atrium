@@ -155,6 +155,8 @@ export const resolveBridgeInstanceBySecretHash = internalQuery({
     gatewayHttpUrl: string | null;
     kind: "openclaw" | "hermes";
     transport: "ws" | "rest" | null;
+    authMode: "token" | "trusted-proxy" | null;
+    systemIdentity: string | null;
   } | null> => {
     const row = await ctx.db
       .query("bridgeAuth")
@@ -172,6 +174,8 @@ export const resolveBridgeInstanceBySecretHash = internalQuery({
       gatewayHttpUrl: inst.gatewayHttpUrl ?? null,
       kind: inst.kind ?? "openclaw",
       transport: inst.transport ?? null,
+      authMode: inst.authMode ?? null,
+      systemIdentity: inst.systemIdentity ?? null,
     };
   },
 });

@@ -28,7 +28,16 @@ export const voiceConfigForChat = query({
     if (id === null) return disabled;
     const chat = await ctx.db.get(id);
     if (chat === null) return disabled;
-    if (chat.userId !== userId) {
+    // A participant hears and dictates in the conversation they take part in, so
+    // the voice configuration is theirs to read too. Refusing them threw before
+    // the chat rendered at all — the view subscribes to this on open.
+    const membership = await ctx.db
+      .query("chatParticipants")
+      .withIndex("by_chat_user", (q) =>
+        q.eq("chatId", chat._id).eq("userId", userId),
+      )
+      .unique();
+    if (chat.userId !== userId && membership === null) {
       throw new Error("Forbidden: chat not owned by user");
     }
     // Legacy chats (pre multi-instance) carry no instanceName yet still route

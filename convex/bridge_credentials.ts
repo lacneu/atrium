@@ -156,6 +156,11 @@ export const instanceCredentials = httpAction(async (ctx, request) => {
         httpUrl: resolved.gatewayHttpUrl,
         kind: resolved.kind,
         transport: resolved.transport ?? null,
+        // Non-secret, and load-bearing: the bridge cannot know from the credentials
+        // alone whether this gateway expects a token or an identity header, and
+        // guessing either way opens sockets the gateway refuses.
+        authMode: resolved.authMode ?? null,
+        systemIdentity: resolved.systemIdentity ?? null,
       },
       credentials,
       // Metadata only: rotation tooling must distinguish a shared enrollment

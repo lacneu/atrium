@@ -372,7 +372,12 @@ export const failDispatch = internalMutation({
     const now = Date.now();
     const failedMessageId = await ctx.db.insert("messages", {
       chatId: row.chatId,
-      userId: row.userId,
+      // The chat OWNER, not the outbox row's sender. `messages.userId` is the
+      // denormalized owner that access checks across the codebase read (feedback,
+      // files, streamingText all copy it), and on a group chat the sender is a
+      // participant — writing them here would leave the owner unable to report an
+      // error message in her own conversation.
+      userId: chat.userId,
       role: "assistant",
       status: "error",
       text: "",
@@ -1284,6 +1289,17 @@ export const reparkIfBusy = internalMutation({
  */
 export const SEND_POST_TIMEOUT_MS = 4 * 60_000;
 
+/** The chat's OWNER. Every routing decision that MUTATES the chat resolves against
+ *  them, never against whoever sent this particular turn (a group chat's sender may
+ *  be a participant). Returns null for a chat deleted mid-turn. */
+export const getChatOwner = internalQuery({
+  args: { chatId: v.id("chats") },
+  handler: async (ctx, { chatId }): Promise<Id<"users"> | null> => {
+    const chat = await ctx.db.get(chatId);
+    return chat?.userId ?? null;
+  },
+});
+
 export const dispatch = internalAction({
   args: { outboxId: v.id("outbox") },
   handler: async (ctx, { outboxId }) => {
@@ -1338,10 +1354,25 @@ export const dispatch = internalAction({
       switchedFromInstanceName: string | null;
       switchedFromAgentId: string | null;
     } | null = null;
+    // WHO the routing decisions belong to. Read once: `row.userId` is the SENDER,
+    // and on a group chat that is a participant whose grants must not decide what
+    // the owner's conversation is bound to.
+    const chatOwnerId =
+      (await ctx.runQuery(internal.bridge.getChatOwner, {
+        chatId: row.chatId as Id<"chats">,
+      })) ?? (row.userId as Id<"users">);
     if (row.routedAgent && row.messageId) {
       turnRouting = await ctx.runMutation(internal.bridge.beginTurnRouting, {
         chatId: row.chatId as Id<"chats">,
-        userId: row.userId as Id<"users">,
+        // THE OWNER, not the sender. This call MUTATES the chat — it flips
+        // `perTurnRouting` and mints a routing segment — and on a group chat the
+        // sender is a participant. Resolving their grants here would let a guest
+        // re-point somebody else's conversation at an agent its owner may not even
+        // be entitled to, and the ingest side (which authorizes on the owner) would
+        // then drop the reply: the transcript would cross the boundary and the
+        // answer would not. Entitlement of the SENDER is checked at the source, in
+        // send.sendMessage.
+        userId: chatOwnerId,
         routedAgent: row.routedAgent,
         turnId: row.messageId as Id<"messages">,
         outboxId,
@@ -1350,7 +1381,10 @@ export const dispatch = internalAction({
 
     const routing = await ctx.runQuery(internal.bridge.getChatRouting, {
       chatId: row.chatId as Id<"chats">,
-      userId: row.userId as Id<"users">,
+      // THE OWNER: this resolution can PERSIST a rebind on the chat (see the
+      // `rebind` branch below). A participant's grants must never decide what the
+      // owner's conversation is bound to.
+      userId: chatOwnerId,
       ...(row.routedAgent ? { routedAgent: row.routedAgent } : {}),
       // ACTUAL switch only (codex P2): `isSwitch` is true EXACTLY when this turn
       // re-keyed the session (routed agent differs from the preceding routed turn, OR a

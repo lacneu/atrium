@@ -10,6 +10,11 @@
 // timeout fires is never dropped; on timeout we `tick()` the normalizer so an
 // armed grace always finalizes (never a hung "thinking" UI).
 
+import {
+  connectUserHeader,
+  humanConnectIdentity,
+  systemConnectIdentity,
+} from "./providers/openclaw/connect-identity.js";
 import { OpenClawConnection } from "./providers/openclaw/openclaw-client.js";
 import { RunManager } from "./providers/openclaw/run-manager.js";
 import {
@@ -1362,9 +1367,16 @@ export class SessionRegistry {
       routing.instanceName ?? bundle.config.instanceName ?? "";
     const connection = await OpenClawConnection.connect(
       bundle.config.openclawGatewayUrl,
-      bundle.config.openclawToken!,
+      bundle.config.openclawToken ?? "",
       bundle.config.deviceIdentity!,
       deviceTokenPromotion(bundle.config),
+      0,
+      // THE per-user socket. In trusted-proxy mode this conversation's socket acts
+      // as the person who owns it, so every session the gateway creates from it
+      // carries their profile as `createdActor` — the fact the gateway's own
+      // visibility boundary reads. `undefined` in token mode: unchanged handshake.
+      humanConnectIdentity(bundle.config, routing.canonical),
+      connectUserHeader(bundle.config),
     );
     // SUBSCRIBE to session events (W2 / G-09). `session.operation` is the
     // gateway's own account of a compaction — it carries the CAUSE (`overflow` vs
@@ -1408,9 +1420,15 @@ export class SessionRegistry {
     const transcriptFetcher: TranscriptFetcher = async (key) => {
       const conn = await OpenClawConnection.connect(
         cfg.openclawGatewayUrl,
-        cfg.openclawToken!,
+        cfg.openclawToken ?? "",
         cfg.deviceIdentity!,
         deviceTokenPromotion(cfg),
+        0,
+        // SYSTEM, not the owner: recovery reads a transcript whose session may have
+        // been created before this bridge knew the person, and it must succeed even
+        // when the role boundary would hide that session from them.
+        systemConnectIdentity(cfg),
+        connectUserHeader(cfg),
       );
       try {
         const raw = await conn.request("sessions.get", sessionsGetParams(key), 10_000);

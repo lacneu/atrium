@@ -31,6 +31,7 @@ import {
   type ShutdownNotice,
 } from "./connection-end.js";
 import { readConfigChanged, type ConfigChangedNotice } from "./config-changed.js";
+import { buildIdentityHeaders, type GatewayIdentity } from "./gateway-identity.js";
 import type { RosterEntry } from "./models-roster.js";
 import { decodeInboundFrame, protocolDrift } from "./protocol-drift.js";
 
@@ -63,9 +64,16 @@ function captureFrame(frame: unknown): void {
   }
 }
 
-// Operator scopes the bridge requests at connect. `operator.admin` IS required:
-// the bridge calls `sessions.patch` (to set verboseLevel=full) which the gateway
-// gates behind `operator.admin` ("missing scope: operator.admin" otherwise).
+// Operator scopes the bridge requests at connect. `operator.admin` IS required by
+// some of what the bridge does: `sessions.patch` is scoped from its FIELDS, and
+// `verboseLevel` (which every send sets once per connection) falls outside the
+// write set, as do `sessions.compact` and `sessions.reset` — see
+// providers/openclaw/session-patch-scope.ts for the upstream rule.
+//
+// This is what the DEVICE asks for. In trusted-proxy mode a person's socket then
+// caps itself BELOW this with `x-openclaw-scopes` (HUMAN_SCOPE_CAP), because on the
+// gateway `operator.admin` bypasses the whole session-visibility boundary; the
+// admin-scoped calls above ride the bridge's system socket instead.
 // `read`/`write` cover chat.send + event streaming. NOTE (#61): the auth model is
 // transport-trust based, NOT scope based — requesting admin only fails over an
 // UNTRUSTED transport (plain ws from a non-loopback peer), which is why the local
@@ -209,6 +217,25 @@ export class OpenClawConnection {
   // The gateway applies verboseLevel=full once per connection (sticky); we
   // track it so chat.send does not re-patch every turn.
   verboseFullApplied = false;
+  /**
+   * TRUSTED-PROXY only: has this socket already CLAIMED its session?
+   *
+   * The first call to touch a session key creates the session, and the identity
+   * that creates it is the one the gateway records as `createdActor` — the fact
+   * its whole visibility boundary reads. The bridge's first call used to be the
+   * admin-scoped `verboseLevel` patch, which rides the SYSTEM socket, so every
+   * conversation was created by `atrium-bridge:<instance>` instead of by the
+   * person having it (observed on the bench: `createdActor.label` named the
+   * bridge on every session). Claiming the session from the person's own socket
+   * first fixes the attribution at its source.
+   */
+  sessionClaimed = false;
+  /**
+   * The ownership claim CREATED the gateway session rather than adopting one. Read
+   * by the freshness rule: a session this connection just brought into existence
+   * is fresh, and must re-hydrate, whatever the later describe reports.
+   */
+  claimCreatedSession = false;
 
   // Cached `models.list` (deduped {id,label}), mirrored into sessionMeta so the
   // header's model picker has a stable list.
@@ -350,11 +377,37 @@ export class OpenClawConnection {
      * operator token per call — used a superseded credential.
      */
     promotionDepth = 0,
+    /**
+     * TRUSTED-PROXY mode only. Present ⇒ this socket states WHO it acts for in the
+     * upgrade headers, and the gateway resolves a per-identity user profile instead
+     * of attributing everything to the single shared-token owner. Absent ⇒ token
+     * mode, byte-for-byte the previous handshake.
+     */
+    identity?: GatewayIdentity,
+    /** Gateway-side `gateway.auth.trustedProxy.userHeader`, when it is not the default. */
+    userHeader?: string,
   ): Promise<OpenClawConnection> {
     return new Promise((resolve, reject) => {
       let settled = false;
+      // The identity headers are built BEFORE the socket so an unrepresentable value
+      // rejects the promise instead of opening a socket that the gateway will refuse
+      // with an opaque 403.
+      let identityHeaders: Record<string, string>;
+      try {
+        identityHeaders = buildIdentityHeaders(identity, userHeader);
+      } catch (err) {
+        reject(
+          err instanceof OpenClawError
+            ? err
+            : new OpenClawError((err as Error).message),
+        );
+        return;
+      }
       // ping_interval=None equivalent: ws does not auto-ping unless we ask.
-      const ws = new WebSocket(normalizeWsUrl(gatewayUrl));
+      const ws = new WebSocket(
+        normalizeWsUrl(gatewayUrl),
+        identity === undefined ? undefined : { headers: identityHeaders },
+      );
 
       const fail = (err: Error) => {
         if (settled) return;
@@ -572,7 +625,16 @@ export class OpenClawConnection {
           // gateway had actually paired — locking the bridge out. At depth >= 1 an
           // equal value is simply the one we just stored, so there is nothing left
           // to record.
+          // TRUSTED-PROXY mode never promotes. The credential that authenticates
+          // such a socket is the upgrade header, not a token: `auth.token` is not
+          // even read, and the gateway refuses to be configured with a shared token
+          // in this mode at all. Persisting the handed-back device token would still
+          // be harmless, but RECONNECTING with it would open a second socket
+          // presenting a credential the mode does not use — a reconnect bought for
+          // nothing, on the one path where a failure costs a live turn. The device
+          // token stays what it is: the token-mode credential, promoted in token mode.
           const promotable =
+            identity === undefined &&
             promoteDeviceToken !== undefined &&
             typeof issuedDeviceToken === "string" &&
             issuedDeviceToken.length > 0 &&
@@ -624,6 +686,8 @@ export class OpenClawConnection {
                     device,
                     promoteDeviceToken,
                     promotionDepth + 1,
+                    identity,
+                    userHeader,
                   ),
                 );
               })

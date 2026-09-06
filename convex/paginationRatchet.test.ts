@@ -118,7 +118,7 @@ function convexSources(): { file: string; source: string }[] {
  */
 const KNOWN_OFFENDERS: ReadonlyArray<string> = [
   "anomalies.ts:1639",
-  "feedback.ts:922",
+  "feedback.ts:923",
 ];
 
 describe("Convex's one-paginated-query rule", () => {

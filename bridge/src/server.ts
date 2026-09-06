@@ -26,6 +26,11 @@ import { timingSafeEqual } from "node:crypto";
 import type { BridgeConfig, SharedConfig } from "./config.js";
 import { deviceTokenPromotion } from "./core/device-token-promotion.js";
 import {
+  connectUserHeader,
+  systemConnectIdentity,
+} from "./providers/openclaw/connect-identity.js";
+import { sessionPatchNeedsAdmin } from "./providers/openclaw/session-patch-scope.js";
+import {
   idempotencyKey,
   OpenClawConnection,
 } from "./providers/openclaw/openclaw-client.js";
@@ -638,9 +643,19 @@ export function computeFreshSession(
   sess: { systemSent?: unknown } | undefined,
   firstSendPending: boolean,
   routedSwitch: boolean,
+  /**
+   * The trusted-proxy ownership claim CREATED this gateway session on this send
+   * (it probed first and found none). Without this the claim would hide the very
+   * absence the first clause reads: the describe below now returns a row, and a
+   * pruned session would answer with no history while the thread still shows it.
+   */
+  claimCreatedSession = false,
 ): boolean {
   return (
-    !sess || sess.systemSent === false || (firstSendPending && routedSwitch)
+    !sess ||
+    claimCreatedSession ||
+    sess.systemSent === false ||
+    (firstSendPending && routedSwitch)
   );
 }
 
@@ -776,41 +791,39 @@ export async function applySessionSettings(
   conn: GatewayRequester,
   sessionKey: string,
   settings: SessionSettings | null,
+  /** The served instance's config, so an admin-scoped field can take the socket
+   *  that carries the scope. Absent ⇒ everything rides `conn`, as before. */
+  config?: BridgeConfig,
 ): Promise<void> {
   if (!settings) return;
   try {
+    // Built as ONE ordered list, then applied together: in trusted-proxy mode the
+    // admin-scoped fields share a single administrative socket instead of opening
+    // one each (see patchSessionBatch). The ORDER is the user's intent.
+    const patches: Array<{ params: Record<string, unknown>; timeoutMs: number }> = [];
     // UNSETS first: `{<field>: null}` removes the stored override (verified
     // 6.5); clearing an already-cleared field is an idempotent no-op.
     for (const field of settings.clears ?? []) {
-      await conn.request(
-        "sessions.patch",
-        { key: sessionKey, [field]: null },
-        10_000,
-      );
+      patches.push({ params: { key: sessionKey, [field]: null }, timeoutMs: 10_000 });
     }
     if (settings.thinkingLevel) {
-      await conn.request(
-        "sessions.patch",
-        { key: sessionKey, thinkingLevel: settings.thinkingLevel },
-        10_000,
-      );
+      patches.push({
+        params: { key: sessionKey, thinkingLevel: settings.thinkingLevel },
+        timeoutMs: 10_000,
+      });
     }
     if (settings.model) {
-      await conn.request(
-        "sessions.patch",
-        { key: sessionKey, model: settings.model },
-        10_000,
-      );
+      patches.push({ params: { key: sessionKey, model: settings.model }, timeoutMs: 10_000 });
     }
     // fastMode: `false` is a real value to apply — presence check MUST be
     // `!== undefined` (a falsy check would silently drop "Standard speed").
     if (settings.fastMode !== undefined) {
-      await conn.request(
-        "sessions.patch",
-        { key: sessionKey, fastMode: settings.fastMode },
-        10_000,
-      );
+      patches.push({
+        params: { key: sessionKey, fastMode: settings.fastMode },
+        timeoutMs: 10_000,
+      });
     }
+    await patchSessionBatch(conn, config, patches);
   } catch (err) {
     console.error(
       "[sessionSettings] patch skipped (non-fatal):",
@@ -832,20 +845,23 @@ export async function applyPatchIntent(
   conn: GatewayRequester,
   sessionKey: string,
   settings: SessionSettings,
+  /** The served instance's config, so an admin-scoped clear takes the socket that
+   *  carries the scope. Absent ⇒ everything rides `conn`, as before. */
+  config?: BridgeConfig,
 ): Promise<void> {
   for (const field of settings.clears ?? []) {
-    await conn.request(
-      "sessions.patch",
-      { key: sessionKey, [field]: null },
-      10_000,
-    );
+    // A clear names the SAME fields a set does, so it is scoped the same way:
+    // clearing `thinkingLevel` is admin, clearing `model` is write.
+    await patchSession(conn, config, { key: sessionKey, [field]: null }, 10_000);
   }
   // Remaining sets stay non-fatal (UI-3 contract). `clears` is stripped: it was
   // just applied strictly above; applySessionSettings must not re-send it.
-  await applySessionSettings(conn, sessionKey, {
-    ...settings,
-    clears: undefined,
-  });
+  await applySessionSettings(
+    conn,
+    sessionKey,
+    { ...settings, clears: undefined },
+    config,
+  );
 }
 
 /**
@@ -931,12 +947,19 @@ export async function performSend(
    *  call): the pre-send deadline is measured from there so time lost acquiring
    *  the session counts too. */
   sendReceivedMs: number = Date.now(),
+  /** The served instance's config, for the admin-scoped pre-send compaction. */
+  presendConfig?: BridgeConfig,
 ): Promise<void> {
   const conn = session.connection;
   const sessionKey = session.sessionKey;
+  await claimSessionForOwner(conn, sessionKey, body.agentId, presendConfig);
   if (!conn.verboseFullApplied) {
-    await conn.request(
-      "sessions.patch",
+    // Admin-scoped upstream (`verboseLevel` is not in the write-scope set), and
+    // sticky server-side — so applying it from the administrative socket sets it
+    // for the session whichever socket then talks to it.
+    await patchSession(
+      conn,
+      presendConfig,
       { key: sessionKey, verboseLevel: "full" },
       10_000,
     );
@@ -946,7 +969,7 @@ export async function performSend(
   // RE-APPLY the user's per-chat knob intent (reasoning/model) BEFORE the describe
   // below, so a reset/rolled session keeps the user's choice AND the meta we mirror
   // reflects it within THIS turn (not the next). Idempotent + non-fatal.
-  await applySessionSettings(conn, sessionKey, body.sessionSettings);
+  await applySessionSettings(conn, sessionKey, body.sessionSettings, presendConfig);
 
   // SESSION RE-HYDRATION (docs/SESSION_CONTINUITY_DESIGN.md). OpenClaw sessions are
   // ephemeral (daily/idle reset, pruning); our webchat displays the FULL thread.
@@ -1140,12 +1163,20 @@ export async function performSend(
         );
       } else if (requiresCompaction(action) && compactMs !== null) {
         try {
-          const r = await conn.request(
-            "sessions.compact",
-            { key: sessionKey },
-            // CLAMPED to what the deadline still allows (never more than the
-            // gateway-sized budget).
-            compactMs,
+          // Admin-scoped upstream, so it cannot ride a person's socket in
+          // trusted-proxy mode (see withSessionAdminConnection). Token mode is
+          // unchanged: same socket, same call.
+          const r = await withSessionAdminConnection(
+            session,
+            presendConfig,
+            (adminConn) =>
+              adminConn.request(
+                "sessions.compact",
+                { key: sessionKey },
+                // CLAMPED to what the deadline still allows (never more than the
+                // gateway-sized budget).
+                compactMs,
+              ),
           );
           const p = r.payload as
             | { compacted?: unknown; reason?: unknown }
@@ -1290,6 +1321,7 @@ export async function performSend(
       sess,
       firstTurnOnSession,
       routedSwitch,
+      conn.claimCreatedSession,
     );
     if (freshSession) {
       // A gateway session the bridge considers FRESH (a daily/idle rollover, a
@@ -1659,11 +1691,16 @@ async function performPatch(
   session: BridgeSession,
   body: PatchBody,
   writer: ConvexWriter,
+  config?: BridgeConfig,
 ): Promise<void> {
   const conn = session.connection;
   const sessionKey = session.sessionKey;
+  // A knob set BEFORE the first message would otherwise create the session on the
+  // administrative socket, and upstream does not restamp provenance when a later
+  // call adopts an existing key — the attribution would be wrong for its whole life.
+  await claimSessionForOwner(conn, sessionKey, body.agentId, config);
 
-  await applyPatchIntent(conn, sessionKey, body.sessionSettings);
+  await applyPatchIntent(conn, sessionKey, body.sessionSettings, config);
 
   // Confirm + mirror the live state so the chip converges to the truth — the same
   // describe-and-publish unit the roster refresh performs, fence stamp included.
@@ -1679,10 +1716,156 @@ async function performPatch(
  * see a truncated thread while the model still reasons over what they removed.
  * We also clear `verboseFullApplied` so the next send re-applies verboseLevel.
  */
-async function performReset(session: BridgeSession): Promise<void> {
-  const conn = session.connection;
-  await conn.request("sessions.reset", { key: session.sessionKey }, 10_000);
-  conn.verboseFullApplied = false;
+/**
+ * Run an ADMIN-SCOPED session operation.
+ *
+ * `sessions.compact` and `sessions.reset` are gated behind `operator.admin`
+ * upstream. A person's socket deliberately does NOT carry that scope in
+ * trusted-proxy mode — on the gateway it bypasses the whole session-visibility
+ * boundary — and an isolating role removes it from the connection anyway, so
+ * these two calls cannot ride the conversation's own socket there. They are
+ * administrative operations on a session, so they run under the bridge's SYSTEM
+ * identity instead, on a socket opened for the call and closed after it.
+ *
+ * In TOKEN mode nothing changes: there is one identity, the conversation socket
+ * already carries admin, and the extra socket would be pure cost on a hot path.
+ */
+/**
+ * Send one `sessions.patch` on the socket whose scope upstream requires.
+ *
+ * A patch of `model` is the person's own choice and rides their socket; a patch
+ * of `verboseLevel` / `thinkingLevel` / `fastMode` is admin-scoped upstream and
+ * cannot, because a person's socket carries no admin in trusted-proxy mode. Token
+ * mode routes everything to the socket it already used.
+ */
+/**
+ * CLAIM the conversation's gateway session for the PERSON, before anything else
+ * touches it.
+ *
+ * Whoever first names a session key creates the session, and the gateway keeps that
+ * identity as `createdActor` — the fact its entire visibility boundary is built on.
+ * Several bridge calls are admin-scoped and ride the SYSTEM socket, so without this
+ * the bridge would own every conversation instead of the person having it (measured
+ * on the bench: `createdActor.label` read `atrium-bridge:<instance>` on every
+ * session). Called from BOTH entry points that can be the first to touch a session:
+ * a send, and a `/patch` from someone setting a knob before typing anything.
+ *
+ * PROBES FIRST, and remembers the answer. `sessions.create` PERSISTS a row, so a
+ * claim sent blindly re-creates a session the gateway had pruned — and the freshness
+ * rule, which reads "no session" as "re-hydrate", would then see a brand-new empty
+ * session and call it warm. The user would keep their whole thread on screen while
+ * the model answered with none of it.
+ *
+ * Best-effort by design: a refusal costs attribution, and attribution must never
+ * cost a turn. No-op outside trusted-proxy mode, and once per connection.
+ */
+async function claimSessionForOwner(
+  conn: OpenClawConnection,
+  sessionKey: string,
+  agentId: string,
+  config: BridgeConfig | undefined,
+): Promise<void> {
+  if (config?.openclawAuthMode !== "trusted-proxy" || conn.sessionClaimed) return;
+  let existedBeforeClaim = true;
+  try {
+    const probe = await conn.request(
+      "sessions.describe",
+      { key: sessionKey, agentId },
+      10_000,
+    );
+    const p = probe.payload as { session?: unknown } | undefined;
+    existedBeforeClaim = (p?.session ?? null) !== null;
+  } catch {
+    // A describe that fails tells us nothing; assume the session exists so the
+    // claim stays a no-op rather than inventing a freshness verdict.
+    existedBeforeClaim = true;
+  }
+  try {
+    await conn.request("sessions.create", { key: sessionKey, agentId }, 10_000);
+    conn.claimCreatedSession = !existedBeforeClaim;
+  } catch (err) {
+    console.error(
+      `[identity] could not claim session ${sessionKey} for its owner: ${
+        (err as Error)?.message ?? err
+      }`,
+    );
+  }
+  conn.sessionClaimed = true;
+}
+
+async function patchSession(
+  // A minimal requester, not the full connection: this is also called with the
+  // narrow `GatewayRequester` the session-settings path receives.
+  conn: GatewayRequester,
+  config: BridgeConfig | undefined,
+  params: Record<string, unknown>,
+  timeoutMs: number,
+): Promise<unknown> {
+  return (await patchSessionBatch(conn, config, [{ params, timeoutMs }]))[0];
+}
+
+/**
+ * Apply SEVERAL `sessions.patch` calls, each on the socket its scope requires,
+ * opening AT MOST ONE administrative connection for the whole batch.
+ *
+ * The batching is the point. An administrative socket is a full WebSocket plus an
+ * Ed25519 challenge/response, and the knob re-apply runs on EVERY send: patching
+ * one at a time made a chat with a reasoning level and a speed setting pay two
+ * complete handshakes per turn, serialized inside the pre-send deadline. One
+ * handshake covers them all, and a batch with no admin-scoped patch opens none.
+ *
+ * Order is preserved across both sockets — the caller's sequence is the user's
+ * intent (unsets before sets), and interleaving it would apply a clear after the
+ * set it was meant to precede.
+ */
+async function patchSessionBatch(
+  conn: GatewayRequester,
+  config: BridgeConfig | undefined,
+  patches: Array<{ params: Record<string, unknown>; timeoutMs: number }>,
+): Promise<unknown[]> {
+  const needsAdmin =
+    config?.openclawAuthMode === "trusted-proxy"
+      ? patches.map((p) => sessionPatchNeedsAdmin(p.params))
+      : patches.map(() => false);
+  if (!needsAdmin.some(Boolean)) {
+    const out: unknown[] = [];
+    for (const p of patches) {
+      out.push(await conn.request("sessions.patch", p.params, p.timeoutMs));
+    }
+    return out;
+  }
+  // `config` is non-null here: needsAdmin can only be true in trusted-proxy mode.
+  return await withOperatorConnection(config!, async (adminConn) => {
+    const out: unknown[] = [];
+    for (const [i, p] of patches.entries()) {
+      const target = needsAdmin[i] === true ? adminConn : conn;
+      out.push(await target.request("sessions.patch", p.params, p.timeoutMs));
+    }
+    return out;
+  });
+}
+
+async function withSessionAdminConnection<T>(
+  session: BridgeSession,
+  config: BridgeConfig | undefined,
+  fn: (conn: OpenClawConnection) => Promise<T>,
+): Promise<T> {
+  if (config === undefined || config.openclawAuthMode !== "trusted-proxy") {
+    return await fn(session.connection);
+  }
+  return await withOperatorConnection(config, fn);
+}
+
+async function performReset(
+  session: BridgeSession,
+  config?: BridgeConfig,
+): Promise<void> {
+  await withSessionAdminConnection(session, config, (conn) =>
+    conn.request("sessions.reset", { key: session.sessionKey }, 10_000),
+  );
+  // The flag belongs to the CONVERSATION's socket whichever socket did the reset:
+  // it records that this connection must re-apply verboseLevel on its next send.
+  session.connection.verboseFullApplied = false;
 }
 
 /**
@@ -1693,11 +1876,10 @@ async function performReset(session: BridgeSession): Promise<void> {
  */
 async function performCompact(
   session: BridgeSession,
+  config?: BridgeConfig,
 ): Promise<{ compacted: boolean; reasonClass: string | null }> {
-  const r = await session.connection.request(
-    "sessions.compact",
-    { key: session.sessionKey },
-    COMPACT_TIMEOUT_MS,
+  const r = await withSessionAdminConnection(session, config, (conn) =>
+    conn.request("sessions.compact", { key: session.sessionKey }, COMPACT_TIMEOUT_MS),
   );
   // The gateway answers `{ok, compacted, reason?}` and REFUSES with a 200 (no
   // transcript, one already running, an unsupported harness). Returning void here
@@ -2025,10 +2207,14 @@ async function withOperatorConnection<T>(
 ): Promise<T> {
   const conn = await OpenClawConnection.connect(
     config.openclawGatewayUrl,
-    // Boot-resolved (index.ts) — non-null by construction.
-    config.openclawToken!,
+    // Boot-resolved (index.ts) — non-null by construction, and "" in trusted-proxy
+    // mode where the gateway refuses to hold a shared token at all.
+    config.openclawToken ?? "",
     config.deviceIdentity!,
     deviceTokenPromotion(config),
+    0,
+    systemConnectIdentity(config),
+    connectUserHeader(config),
   );
   onHandshake?.(conn);
   try {
@@ -2159,10 +2345,14 @@ export async function discoverAgents(
   }
   const conn = await OpenClawConnection.connect(
     config.openclawGatewayUrl,
-    // Boot-resolved (index.ts) — non-null by construction.
-    config.openclawToken!,
+    // Boot-resolved (index.ts) — non-null by construction, and "" in trusted-proxy
+    // mode where the gateway refuses to hold a shared token at all.
+    config.openclawToken ?? "",
     config.deviceIdentity!,
     deviceTokenPromotion(config),
+    0,
+    systemConnectIdentity(config),
+    connectUserHeader(config),
   );
   onHandshake?.(conn);
   try {
@@ -3192,7 +3382,7 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
       }
       try {
         const session = await registry.acquire(toRouting(patch, patchInstance));
-        await performPatch(session, patch, patchBundle.writer);
+        await performPatch(session, patch, patchBundle.writer, patchBundle.config);
         sendJson(res, 200, { ok: true });
       } catch (err) {
         console.error("bridge /patch failed:", (err as Error)?.message ?? err);
@@ -3277,7 +3467,7 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
         // so the sink's delivery-run fold never repaints the interruption as
         // a completed merge (same contract as /abort — codex P2).
         session.runManager.noteUserAbort();
-        await performReset(session);
+        await performReset(session, resetBundle?.config);
         sendJson(res, 200, { ok: true });
       } catch (err) {
         console.error("bridge /reset failed:", (err as Error)?.message ?? err);
@@ -3959,7 +4149,10 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
         const session = await registry.acquire(
           toRouting(compact, compactInstance),
         );
-        const outcome = await performCompact(session);
+        const outcome = await performCompact(
+          session,
+          served.get(compactInstance)?.config,
+        );
         // A REFUSAL is not a server error (nothing broke) but it is not a success
         // either: 200 with the fact, and the caller decides what to tell the user.
         sendJson(res, 200, {
@@ -4752,6 +4945,7 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
           attachmentFixAttested: bundle.config.attachmentFixAttested === true,
         },
         sendReceivedMs,
+        bundle.config,
       );
       // A real send proves connection + the ROUTED agent answered.
       health.recordOk(targetRef(body.agentId, body.canonical, sendInstance));

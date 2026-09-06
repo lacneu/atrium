@@ -185,6 +185,8 @@ export class CredentialResolver {
         httpUrl?: string | null;
         kind?: string;
         transport?: string | null;
+        authMode?: string | null;
+        systemIdentity?: string | null;
       };
       credentials?: Record<string, string>;
       credentialSources?: Record<string, unknown>;
@@ -239,12 +241,23 @@ export class CredentialResolver {
     // provider BEFORE the checks is what lets a Hermes instance (apiKey-only, no
     // device) be served at all (codex P1).
     const kind = body.gateway?.kind === "hermes" ? "hermes" : "openclaw";
+    // Explicit validation (never a bare cast): only the exact string opts an
+    // instance into per-user identity, so a typo keeps the shared-token behaviour
+    // instead of silently opening sockets the gateway will refuse.
+    const authMode =
+      kind === "openclaw" && body.gateway?.authMode === "trusted-proxy"
+        ? "trusted-proxy"
+        : "token";
     // Hermes: the bearer lives in `apiKey` (fall back to `token` defensively).
     const token =
       kind === "hermes"
         ? (nonEmpty(creds.apiKey) ?? nonEmpty(creds.token))
         : nonEmpty(creds.token);
-    if (!token) {
+    // TRUSTED-PROXY instances have NO shared token by construction: upstream
+    // refuses to run that mode with one configured. Demanding a token here would
+    // make a correctly configured instance unresolvable, so the requirement is
+    // scoped to the mode that actually uses it.
+    if (!token && authMode !== "trusted-proxy") {
       throw new CredentialFetchError(
         "no_token",
         `instance "${instanceName}" has no ${
@@ -278,7 +291,9 @@ export class CredentialResolver {
     return {
       instanceName,
       gatewayUrl: url,
-      token,
+      token: token ?? "",
+      authMode,
+      systemIdentity: nonEmpty(body.gateway?.systemIdentity ?? undefined) ?? null,
       tokenSource,
       deviceIdentity,
       gatewayVersion: nonEmpty(body.gateway?.version ?? undefined) ?? null,

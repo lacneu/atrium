@@ -249,7 +249,12 @@ describe("/bridge/credentials end-to-end", () => {
       url: "wss://beta.example.org/ws",
       version: "2026.6.5",
       httpUrl: "https://beta.example.org/media",
-      kind: "hermes", transport: null,
+      kind: "hermes",
+      // Non-secret, and null until an operator opts this instance into per-user
+      // identity. Pinned so the bridge's authentication mode can never start
+      // travelling implicitly.
+      authMode: null,
+      systemIdentity: null, transport: null,
     });
   });
 
@@ -269,6 +274,10 @@ describe("/bridge/credentials end-to-end", () => {
       version: null,
       httpUrl: null,
       kind: "openclaw", transport: null,
+      // Absent on the row ⇒ null on the wire ⇒ "token" at the bridge: an instance
+      // written before per-user identity existed keeps the handshake it had.
+      authMode: null,
+      systemIdentity: null,
     });
   });
 

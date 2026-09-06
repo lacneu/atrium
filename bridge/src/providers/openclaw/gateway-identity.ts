@@ -1,0 +1,275 @@
+// Per-user identity presented to an OpenClaw Gateway running in trusted-proxy mode.
+//
+// WHY THIS EXISTS. In `token` mode every bridge socket authenticates with ONE shared
+// credential, so the gateway attributes every session to the single "gateway owner"
+// profile: `sessions.list` shows all of them to everyone holding the token, and
+// `createdActor` names nobody in particular. In `trusted-proxy` mode the gateway
+// derives the human from a request header on the WebSocket upgrade instead, so the
+// SAME paired device yields a DIFFERENT gateway profile per identity we present —
+// proven on the bench (one device, `x-forwarded-user: alice@…` then `bob@…`, two
+// stable `users.self` profiles, each session carrying its own
+// `createdActor.identity = {type:"profile", id}`).
+//
+// THREE headers, all load-bearing (each proven by a refusal on the bench):
+//   - the user header (default `x-forwarded-user`, configurable gateway-side via
+//     `gateway.auth.trustedProxy.userHeader`): absent ⇒ the gateway refuses the
+//     connect with `authReason: "trusted_proxy_user_missing"`.
+//   - `x-forwarded-for`: the gateway REQUIRES forwarded headers naming a
+//     non-loopback client address before it will attribute an identity at all.
+//     Absent ⇒ the HTTP upgrade itself is rejected 403 and the gateway logs
+//     "observed unattributable proxy-shaped traffic". A loopback value is treated
+//     the same way, which is why `assertForwardedClientIp` refuses one up front
+//     rather than letting every connect fail with an opaque 403.
+//   - `x-openclaw-scopes` (OPTIONAL): a per-connection CEILING. The gateway computes
+//     `device scopes ∪ identityScopes[identity]` and then intersects with this
+//     header, so it is the only way to hand one socket less authority than the
+//     paired device carries. `identityScopes` alone can never subtract.
+//
+// The bridge NEVER forwards a header it received; it states what it knows about the
+// connection it is opening itself. Values are therefore validated as data we
+// produced, and refused loudly when they cannot be represented in a header.
+
+import { networkInterfaces } from "node:os";
+
+/** How this instance authenticates to its gateway. */
+export type GatewayAuthMode = "token" | "trusted-proxy";
+
+/** The identity one socket acts under, and the authority ceiling it accepts. */
+export interface GatewayIdentity {
+  /**
+   * The person (or the bridge's own system actor) this socket acts as. Becomes a
+   * durable gateway user profile keyed by this exact string, so it must be stable
+   * for the life of the account: Atrium sends `profiles.canonical`, never an email
+   * (which can change) and never a Convex id (which is not meaningful upstream).
+   */
+  user: string;
+  /**
+   * Client address the gateway attributes the connection to. The bridge IS the
+   * client here, so this is the bridge's own routable address — not the end user's
+   * browser, which the bridge never learns (Convex dispatches on its behalf).
+   */
+  forwardedFor: string;
+  /**
+   * Per-connection scope ceiling. Omitted ⇒ no `x-openclaw-scopes` header and the
+   * connection keeps everything the device and the identity grant. An EMPTY array
+   * is not "no ceiling": the gateway reads an empty header as "no scopes at all",
+   * so it is refused here rather than silently producing a powerless socket.
+   */
+  scopeCap?: readonly string[];
+}
+
+/** The header name the gateway is configured to read the identity from. */
+export const DEFAULT_TRUSTED_PROXY_USER_HEADER = "x-forwarded-user";
+
+/** The scope-ceiling header the gateway intersects the granted scopes with. */
+export const SCOPE_CAP_HEADER = "x-openclaw-scopes";
+
+/**
+ * Scope ceiling for a socket that acts for a PERSON. Deliberately excludes
+ * `operator.admin`: on the gateway that scope bypasses the whole session-visibility
+ * boundary (an admin client lists, reads and patches every session regardless of the
+ * role's `sessions.others`), so a per-user socket that kept it would present an
+ * identity while retaining the authority that makes identity meaningless.
+ */
+export const HUMAN_SCOPE_CAP = [
+  "operator.read",
+  "operator.write",
+  "operator.approvals",
+] as const;
+
+/**
+ * Header values are ASCII, single-line, and free of the separators a header parser
+ * uses. Rejecting the rest is not decoration: a value carrying CR or LF would let a
+ * caller inject a second header on the upgrade request, and the identity header is
+ * precisely what the gateway trusts to name a person.
+ */
+const SAFE_HEADER_VALUE = /^[\x21-\x7e]+$/;
+
+/** Characters that would split one header value into several fields. */
+const HEADER_SEPARATORS = /[,;]/;
+
+export class GatewayIdentityError extends Error {}
+
+/**
+ * Refuse an identity string that cannot be presented faithfully. Returns the value
+ * so call sites can validate and assign in one expression.
+ */
+export function assertIdentityUser(user: string): string {
+  if (user.length === 0) {
+    throw new GatewayIdentityError(
+      "trusted-proxy identity is empty: the gateway refuses a connect whose user header is missing or blank",
+    );
+  }
+  if (user.length > 200) {
+    throw new GatewayIdentityError(
+      `trusted-proxy identity is too long (${user.length} chars): gateway user profiles are keyed by this value`,
+    );
+  }
+  if (!SAFE_HEADER_VALUE.test(user) || HEADER_SEPARATORS.test(user)) {
+    throw new GatewayIdentityError(
+      `trusted-proxy identity ${JSON.stringify(user)} contains characters that cannot be sent in a header`,
+    );
+  }
+  return user;
+}
+
+/**
+ * Loopback and unspecified addresses are exactly what the gateway treats as
+ * unattributable, so a bridge configured with one would fail EVERY connect with a
+ * bare 403. Refuse at the point the value is chosen, where the message can name the
+ * setting to fix.
+ */
+export function assertForwardedClientIp(ip: string): string {
+  const value = ip.trim();
+  if (value.length === 0) {
+    throw new GatewayIdentityError(
+      "trusted-proxy forwarded client address is empty: set BRIDGE_FORWARDED_CLIENT_IP to the address this bridge reaches its gateway from",
+    );
+  }
+  if (!SAFE_HEADER_VALUE.test(value) || HEADER_SEPARATORS.test(value)) {
+    throw new GatewayIdentityError(
+      `trusted-proxy forwarded client address ${JSON.stringify(value)} contains characters that cannot be sent in a header`,
+    );
+  }
+  if (isLoopbackOrUnspecified(value)) {
+    throw new GatewayIdentityError(
+      `trusted-proxy forwarded client address ${JSON.stringify(value)} is a loopback or unspecified address; ` +
+        "the gateway rejects the upgrade (403) unless the forwarded headers name a routable client address",
+    );
+  }
+  return value;
+}
+
+/** IPv4/IPv6 loopback, the unspecified addresses, and IPv4-mapped loopback. */
+function isLoopbackOrUnspecified(ip: string): boolean {
+  const bare = ip.startsWith("[") && ip.endsWith("]") ? ip.slice(1, -1) : ip;
+  const withoutZone = bare.split("%")[0]!.toLowerCase();
+  if (withoutZone === "::1" || withoutZone === "::" || withoutZone === "0.0.0.0") {
+    return true;
+  }
+  const mapped = withoutZone.startsWith("::ffff:")
+    ? withoutZone.slice("::ffff:".length)
+    : withoutZone;
+  return /^127\./.test(mapped) || mapped === "0.0.0.0";
+}
+
+/**
+ * The system identity a bridge presents on sockets that serve no single person
+ * (agent discovery, orphan-transcript recovery, config defaults, health probes).
+ * Namespaced per instance so two bridges on one gateway stay distinguishable in the
+ * gateway's own user list and audit trail.
+ */
+export function systemIdentityFor(instanceName: string | null): string {
+  const suffix = (instanceName ?? "default")
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+  return `atrium-bridge:${suffix.length > 0 ? suffix : "default"}`;
+}
+
+/**
+ * Build the upgrade headers for one identity. Returns an empty object for a
+ * connection with no identity (token mode), so call sites can spread it
+ * unconditionally.
+ */
+export function buildIdentityHeaders(
+  identity: GatewayIdentity | undefined,
+  userHeader: string = DEFAULT_TRUSTED_PROXY_USER_HEADER,
+): Record<string, string> {
+  if (identity === undefined) {
+    return {};
+  }
+  const headers: Record<string, string> = {
+    [userHeader]: assertIdentityUser(identity.user),
+    "x-forwarded-for": assertForwardedClientIp(identity.forwardedFor),
+  };
+  if (identity.scopeCap !== undefined) {
+    if (identity.scopeCap.length === 0) {
+      throw new GatewayIdentityError(
+        "trusted-proxy scope ceiling is empty: the gateway reads an empty x-openclaw-scopes as 'no scopes', " +
+          "which authenticates a socket that can do nothing; omit the ceiling instead",
+      );
+    }
+    for (const scope of identity.scopeCap) {
+      if (!SAFE_HEADER_VALUE.test(scope) || HEADER_SEPARATORS.test(scope)) {
+        throw new GatewayIdentityError(
+          `trusted-proxy scope ${JSON.stringify(scope)} contains characters that cannot be sent in a header`,
+        );
+      }
+    }
+    headers[SCOPE_CAP_HEADER] = identity.scopeCap.join(",");
+  }
+  return headers;
+}
+
+/**
+ * Resolve the identity one socket should present, or `undefined` in token mode
+ * (where the caller must open the socket exactly as before).
+ *
+ * Throws rather than degrading: a trusted-proxy instance with no usable forwarded
+ * address would open sockets the gateway rejects with a bare 403, and a bridge that
+ * silently fell back to token mode would attribute every session to the shared owner
+ * again — the exact defect this mode exists to remove.
+ */
+export function identityFor(params: {
+  authMode: GatewayAuthMode | undefined;
+  forwardedClientIp: string | null | undefined;
+  user: string;
+  scopeCap?: readonly string[];
+}): GatewayIdentity | undefined {
+  if (params.authMode !== "trusted-proxy") {
+    return undefined;
+  }
+  const forwardedFor = assertForwardedClientIp(params.forwardedClientIp ?? "");
+  return {
+    user: assertIdentityUser(params.user),
+    forwardedFor,
+    ...(params.scopeCap === undefined ? {} : { scopeCap: params.scopeCap }),
+  };
+}
+
+/**
+ * First routable IPv4 of this host, used when no address is configured. The value
+ * is not a security boundary — the gateway only reads forwarded headers from a
+ * source already inside `gateway.trustedProxies`, and checks this one solely for
+ * "is the client loopback" — so discovering it beats making every deployment set it
+ * by hand and get it wrong. Returns null when the host has no routable address,
+ * which `identityFor` turns into a named refusal.
+ */
+export function detectForwardedClientIp(
+  interfaces: Record<string, Array<{ address: string; family: string | number; internal: boolean }> | undefined>,
+): string | null {
+  for (const entries of Object.values(interfaces)) {
+    for (const entry of entries ?? []) {
+      const isV4 = entry.family === "IPv4" || entry.family === 4;
+      if (isV4 && !entry.internal && !isLoopbackOrUnspecified(entry.address)) {
+        return entry.address;
+      }
+    }
+  }
+  return null;
+}
+
+/**
+ * Memoized host address for trusted-proxy sockets. Resolved once: a bridge does not
+ * change network position while it runs, and re-scanning the interfaces on every
+ * connect would put a syscall on the turn path for a value that cannot move.
+ */
+let cachedHostIp: string | null | undefined;
+
+export function hostForwardedClientIp(
+  read: () => Record<
+    string,
+    Array<{ address: string; family: string | number; internal: boolean }> | undefined
+  > = () => networkInterfaces(),
+): string | null {
+  if (cachedHostIp === undefined) {
+    cachedHostIp = detectForwardedClientIp(read());
+  }
+  return cachedHostIp;
+}
+
+/** Test seam: forget the discovered address. */
+export function resetHostForwardedClientIpCache(): void {
+  cachedHostIp = undefined;
+}

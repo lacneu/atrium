@@ -19,7 +19,7 @@
 import { v } from "convex/values";
 import { action, internalQuery, query } from "./_generated/server";
 import { internal } from "./_generated/api";
-import { requireActive, requireOwnedChat } from "./lib/access";
+import { requireActive, requireOwnedChat, requireReachableChat } from "./lib/access";
 import { resolveTargetForChat } from "./routing";
 import { resolveBridgeUrlForDispatch } from "./lib/bridgeRouting";
 import { parseTalkSessionResponse, type TalkSession } from "./lib/talk";
@@ -37,7 +37,7 @@ export const talkAvailable = query({
   handler: async (ctx, { chatId }): Promise<boolean> => {
     try {
       const { userId } = await requireActive(ctx);
-      const chat = await requireOwnedChat(ctx, userId, chatId);
+      const chat = (await requireReachableChat(ctx, userId, chatId)).chat;
       const res = await resolveTargetForChat(ctx, chat, userId);
       if (!res.target) return false;
       const instance = await ctx.db

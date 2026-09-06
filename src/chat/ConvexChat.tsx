@@ -143,6 +143,7 @@ import { CronActivity, CronDetailContext, type CronDetailApi } from "./CronActiv
 import { PlanActivity } from "./PlanActivity";
 import { CronDetailContent } from "./CronDetailPanel";
 import type { CronPartView } from "./convexTypes";
+import { ChatParticipants } from "./ChatParticipants";
 import { PanelBodyBoundary } from "./PanelBodyBoundary";
 import { useWorkspaceRoom } from "./useWorkspaceRoom";
 import { m } from "@/paraglide/messages.js";
@@ -1706,23 +1707,36 @@ function ThreadEmptyState() {
 // rate-limit window, captured by the bridge poll). Same meter language as the
 // context meter; gated by the showUsage pref at the CALL site. Renders nothing
 // until a snapshot exists (bench/idle gateways have none).
-function UsageBadge({ chatId }: { chatId: ConvexId<"chats"> }) {
+function UsageBadge({
+  chatId,
+  viewerRole,
+}: {
+  chatId: ConvexId<"chats">;
+  viewerRole?: "owner" | "participant";
+}) {
   // MULTI-AGENT per-turn: follow the composer's ACTIVE target — the quota shown
   // is the one the NEXT send will consume, not the chat's primary (codex P2).
   // Server-side the override is per-option AUTHENTICATED (resolveTargetForTurn).
   const routing = useChatRouting();
   const selected = routing?.selected ?? null;
-  const data = useQuery(api.agents.usageForChat, {
-    chatId: chatId as Id<"chats">,
-    ...(selected
-      ? {
-          routedAgent: {
-            instanceName: selected.instanceName,
-            agentId: selected.agentId,
-          },
-        }
-      : {}),
-  }) as { usage: ProviderUsageView[]; updatedAt: number } | null | undefined;
+  // OWNER-ONLY: the subscription quota belongs to the chat's owner, and the query
+  // refuses anyone else. Asking as a participant would throw on first render.
+  const data = useQuery(
+    api.agents.usageForChat,
+    viewerRole === "participant"
+      ? "skip"
+      : {
+          chatId: chatId as Id<"chats">,
+          ...(selected
+            ? {
+                routedAgent: {
+                  instanceName: selected.instanceName,
+                  agentId: selected.agentId,
+                },
+              }
+            : {}),
+        },
+  ) as { usage: ProviderUsageView[]; updatedAt: number } | null | undefined;
   const view = usageBadgeView(data?.usage ?? null, Date.now());
   if (!view) return null;
   const detail = view.windows
@@ -1935,7 +1949,18 @@ function ChatHeader({ chatId }: { chatId: ConvexId<"chats"> }) {
           only renders once the session meta exists — a fresh chat (before the
           first sessions.describe) must not lose its quota alert, so render it
           inline for that transient window only (codex P2). */}
-      {ui.showUsage && !sm ? <UsageBadge chatId={chatId} /> : null}
+      {ui.showUsage && !sm ? (
+        <UsageBadge chatId={chatId} viewerRole={meta?.viewerRole} />
+      ) : null}
+      {/* WHO IS IN THE ROOM. Inside renderMeta so the responsive measurer counts
+          it like every other chip — a roster that appeared after the measurement
+          would overflow the header on a narrow window. */}
+      <ChatParticipants
+        chatId={chatId as Id<"chats">}
+        viewerRole={meta?.viewerRole}
+        compact={isCompact}
+        ghost={ghost}
+      />
       <ExportMenu
         chatId={chatId}
         title={meta?.title ?? null}
@@ -1945,6 +1970,7 @@ function ChatHeader({ chatId }: { chatId: ConvexId<"chats"> }) {
       {sm ? (
         <SessionKnobsMenu
           chatId={chatId}
+          viewerRole={meta?.viewerRole}
           sm={sm}
           settings={settings}
           onOpenPanel={() => setPanelOpen(true)}
@@ -1962,6 +1988,10 @@ function ChatHeader({ chatId }: { chatId: ConvexId<"chats"> }) {
   const measureKey = [
     m.chat_export(),
     m.chat_advanced(),
+    // The participants chip widens with the roster: a person joining changes the
+    // measured width, and without this the header would keep a stale compact state.
+    m.participants_solo(),
+    meta?.viewerRole ?? "",
     sm?.model ?? "",
     sm?.thinkingLevel ?? "",
     meta?.title ?? "",
@@ -2167,6 +2197,7 @@ function ExportMenu({
 // 2nd and LAST disclosure level.
 function SessionKnobsMenu({
   chatId,
+  viewerRole,
   sm,
   settings,
   onOpenPanel,
@@ -2175,6 +2206,8 @@ function SessionKnobsMenu({
   showUsage = false,
 }: {
   chatId: ConvexId<"chats">;
+  /** The viewer's standing in this chat — the quota badge is the OWNER's. */
+  viewerRole?: "owner" | "participant";
   sm: SessionMetaView;
   settings: SessionSettingsView;
   onOpenPanel: () => void;
@@ -2229,7 +2262,7 @@ function SessionKnobsMenu({
             <span className="oc-spanel-pop__usage-label">
               {m.chat_usage_section_label()}
             </span>
-            <UsageBadge chatId={chatId} />
+            <UsageBadge chatId={chatId} viewerRole={viewerRole} />
           </div>
         ) : null}
         <SessionKnobsGroup chatId={chatId} sm={sm} settings={settings} />
@@ -3036,6 +3069,11 @@ function UserMessage() {
       )?.quotedRefs ?? null,
   );
   const quoteJumpToast = useToast();
+  const authorName = useMessage(
+    (msg) =>
+      (msg.metadata?.custom as { authorName?: string | null } | undefined)
+        ?.authorName ?? null,
+  );
   return (
     <MessagePrimitive.Root
       className={`oc-msg oc-msg--user${sending ? " is-sending" : ""}${
@@ -3045,6 +3083,12 @@ function UserMessage() {
     >
       <div className="oc-msg__col oc-msg__col--user">
         <BookmarkGutter />
+        {authorName !== null ? (
+          // WHO WROTE IT, on a group conversation only. Above the bubble rather
+          // than inside it: the text of a turn is the turn, and a name folded into
+          // it would be read as part of what was said to the agent.
+          <div className="oc-msg__author">{m.participants_author({ name: authorName })}</div>
+        ) : null}
         {quotedRefs?.map((q, i) => (
           <button
             key={`${q.messageId ?? "orphan"}:${q.blockIndex ?? "all"}:${i}`}

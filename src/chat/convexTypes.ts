@@ -214,6 +214,9 @@ export interface ConvexMessageView {
    *  composer defaults to the last-used one. See src/chat/perTurnAgent.ts. */
   routedInstanceName?: string;
   routedAgentId?: string;
+  /** GROUP CHAT: display name of whoever wrote this turn, when it was not the
+   *  chat owner. Absent on every solo conversation — absence means "the owner". */
+  authorName?: string;
   /** IMPORTED history: the agent that answered, as a name only. Never routable. */
   importedAgentLabel?: string;
   /** IMPORTED history: the agent the CONVERSATION was bound to elsewhere. Used

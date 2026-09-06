@@ -26,10 +26,15 @@
  */
 
 import { readFileSync } from "node:fs";
+// @ts-expect-error — plain .mjs helper, no types (it runs under node, not tsc)
+import { stripComments } from "../scripts/lib/derive-event-catalogue.mjs";
 import { describe, expect, it } from "vitest";
 
 const read = (rel: string): string =>
   readFileSync(new URL(rel, import.meta.url), "utf8");
+
+const strip = (src: string): string =>
+  (stripComments as (s: string) => string)(src);
 
 /** The connect contract we instruct against. NOT the drift pin: 2026.7.1 vendors
  *  no frames.ts, so it can describe nothing about the handshake. */
@@ -52,11 +57,23 @@ function declaredHelloOkFields(): Set<string> {
   return names;
 }
 
-/** The hello-ok fields the handshake actually reads, derived from the SOURCE. */
+/** The hello-ok fields the handshake actually reads, derived from the SOURCE.
+ *
+ *  COMMENTS ARE STRIPPED FIRST, through the same AST-backed helper the coverage
+ *  ratchets use. A regex over raw source cannot tell a read from prose ABOUT a
+ *  read, so a comment explaining why `auth.token` is not consulted registered as a
+ *  consultation of it — a phantom field, undeclarable by construction, that can only
+ *  be silenced by not writing the sentence. The sweep must measure code. */
 function readHelloOkFields(): string[] {
-  const src = read("../src/providers/openclaw/openclaw-client.ts");
-  const start = src.indexOf("// hello-ok: server info is under `payload`");
-  const end = src.indexOf("const error = (frame.error ?? {})");
+  const raw = read("../src/providers/openclaw/openclaw-client.ts");
+  // The region markers ARE comments, so the offsets are taken from the raw text and
+  // the slice from the stripped one. That is sound only because the stripper blanks
+  // comments in place (space for space, newline for newline) instead of removing
+  // them — asserted below, since an offset-shifting stripper would silently sweep
+  // the wrong region.
+  const src = strip(raw);
+  const start = raw.indexOf("// hello-ok: server info is under `payload`");
+  const end = raw.indexOf("const error = (frame.error ?? {})");
   expect(start, "the hello-ok branch moved — this gate sweeps nothing").toBeGreaterThan(
     -1,
   );
@@ -107,6 +124,20 @@ describe("a connect hello-ok field we read must be declared somewhere", () => {
         true,
       );
     }
+  });
+
+  it("prose about a field is not a read of it, and a real read still is", () => {
+    // Both directions, or the strip would be free to swallow the sweep whole: the
+    // guard above only checks the region is non-empty, which a stripper that
+    // blanked everything would still satisfy against a 5-field floor.
+    const withProse = strip(
+      "// mentions auth.phantomField in a comment\nconst x = auth.realField;",
+    );
+    expect(withProse).not.toContain("phantomField");
+    expect(withProse).toContain("auth.realField");
+    // Offsets survive: the sweep slices the stripped text at raw-text indices.
+    const before = "// mentions auth.phantomField in a comment\nconst x = auth.realField;";
+    expect(strip(before)).toHaveLength(before.length);
   });
 
   it("every hello-ok field the handshake reads is declared, or on the record", () => {

@@ -15,7 +15,7 @@ import { v } from "convex/values";
 import { chatAllowsInstance } from "./lib/ingestAuthz";
 import { action, internalMutation, query } from "./_generated/server";
 import { internal } from "./_generated/api";
-import { requireActive, requireOwnedChat } from "./lib/access";
+import { requireActive, requireOwnedChat, requireReachableChat } from "./lib/access";
 import { resolveTargetForChat } from "./routing";
 import { resolveBridgeUrlForDispatch } from "./lib/bridgeRouting";
 import { assertOwnsUpload } from "./uploads";
@@ -220,7 +220,7 @@ export const listSubAgentInteractions = query({
   args: { chatId: v.id("chats"), childSessionKey: v.string() },
   handler: async (ctx, { chatId, childSessionKey }) => {
     const { userId } = await requireActive(ctx);
-    await requireOwnedChat(ctx, userId, chatId);
+    await requireReachableChat(ctx, userId, chatId);
     const rows = await ctx.db
       .query("subAgentInteractions")
       .withIndex("by_child", (q) => q.eq("childSessionKey", childSessionKey))

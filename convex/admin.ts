@@ -235,6 +235,16 @@ export const deleteUser = mutation({
       .collect();
     for (const c of chats) await cascadeDeleteChat(ctx, c._id);
 
+    // GROUP-CHAT memberships. Without this the deleted account keeps a seat in
+    // every conversation it was invited to: the roster renders a nameless ghost, the
+    // seat still counts against the chat's participant limit, and — the reason this
+    // is not cosmetic — a re-provisioned profile for the same person would walk
+    // straight back into every one of those conversations.
+    for (const r of await ctx.db
+      .query("chatParticipants")
+      .withIndex("by_user", (q) => q.eq("userId", userId))
+      .collect())
+      await ctx.db.delete(r._id);
     // Remaining per-user rows, each via its `by_user` index.
     for (const r of await ctx.db
       .query("projects")
@@ -636,6 +646,14 @@ export const upsertInstance = mutation({
     // gatewayHttpUrl = media HTTP override.
     gatewayVersion: v.optional(v.string()),
     gatewayHttpUrl: v.optional(v.string()),
+    // How the bridge authenticates to this gateway. "token" (default) is the
+    // shared operator credential every deployment has used so far; "trusted-proxy"
+    // makes the bridge name the person behind each socket, so the gateway keeps a
+    // profile per Atrium user. The GATEWAY must be configured for the same mode —
+    // upstream refuses to hold a token in trusted-proxy mode — which is why this
+    // is set per instance and never deployment-wide.
+    authMode: v.optional(v.union(v.literal("token"), v.literal("trusted-proxy"))),
+    systemIdentity: v.optional(v.string()),
     // FRONTEND live-stream transport (reactive | sse) — a top-level instance property,
     // NOT bridge-dispatch config. See schema instances.streamTransport.
     streamTransport: v.optional(v.union(v.literal("reactive"), v.literal("sse"))),
@@ -656,6 +674,10 @@ export const upsertInstance = mutation({
       transport: args.transport,
       gatewayVersion: args.gatewayVersion?.trim() || undefined,
       gatewayHttpUrl: args.gatewayHttpUrl?.trim() || undefined,
+      // Absent ⇒ the field is cleared to "token" semantics at the bridge, which is
+      // the behaviour of every instance written before this existed.
+      authMode: args.authMode,
+      systemIdentity: args.systemIdentity?.trim() || undefined,
       streamTransport: args.streamTransport,
     };
     // Refuse a name whose deletion sweep is still owed — same guard the

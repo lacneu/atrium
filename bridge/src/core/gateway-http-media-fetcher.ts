@@ -35,6 +35,17 @@ export interface GatewayHttpMediaFetcherOptions {
   /** Gateway HTTP origin, e.g. "http://host:18790" (trailing slash trimmed). */
   httpBase: string;
   /**
+   * Identity headers for a gateway in TRUSTED-PROXY mode, where no shared token
+   * exists and the same header-based authorization covers the HTTP routes as the
+   * WebSocket. A THUNK for the same reason `token` is one, and returning an empty
+   * object keeps the Bearer path — so a token-mode bridge is unchanged.
+   *
+   * Media is fetched off the consume loop, decoupled from any one person's turn,
+   * so these are the bridge's SYSTEM identity headers: reading media that belongs
+   * to somebody else's session is exactly what this path does.
+   */
+  identityHeaders?: () => Record<string, string>;
+  /**
    * Bearer token for the meta probe — the same OPENCLAW_TOKEN as the WS.
    *
    * A THUNK, deliberately, never a captured value. The operator token is not
@@ -100,6 +111,7 @@ function byteCap(maxBytes: number): Transform {
 export class GatewayHttpMediaFetcher implements MediaFetcher {
   private readonly httpBase: string;
   private readonly token: () => string;
+  private readonly identityHeaders: () => Record<string, string>;
   private readonly maxBytes: number;
   private readonly timeoutMs: number;
   private readonly fetchImpl: typeof fetch;
@@ -108,9 +120,22 @@ export class GatewayHttpMediaFetcher implements MediaFetcher {
   constructor(opts: GatewayHttpMediaFetcherOptions) {
     this.httpBase = opts.httpBase.replace(/\/+$/, "");
     this.token = opts.token;
+    this.identityHeaders = opts.identityHeaders ?? (() => ({}));
     this.maxBytes = opts.maxBytes;
     this.timeoutMs = opts.timeoutMs ?? 60_000;
     this.fetchImpl = opts.fetchImpl ?? fetch;
+  }
+
+  /**
+   * How this fetcher proves who it is. Trusted-proxy instances have NO token to
+   * present, and sending an empty Bearer would authenticate nothing while looking
+   * like it might — so the modes are exclusive here, exactly as they are upstream.
+   */
+  private authHeaders(): Record<string, string> {
+    const identity = this.identityHeaders();
+    return Object.keys(identity).length > 0
+      ? identity
+      : { Authorization: `Bearer ${this.token()}` };
   }
 
   async open(
@@ -131,7 +156,7 @@ export class GatewayHttpMediaFetcher implements MediaFetcher {
       const metaRes = await this.fetchImpl(
         `${this.httpBase}${MEDIA_ROUTE}?source=${enc}&meta=1`,
         {
-          headers: { Authorization: `Bearer ${this.token()}` },
+          headers: this.authHeaders(),
           signal: controller.signal,
         },
       );

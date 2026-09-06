@@ -22,6 +22,7 @@
 // input hardening + the byte-exact source view address that case. `clientInfo`
 // captures the environment (best available diagnostic), nothing more.
 
+import { canReachChat } from "./lib/chatAccess";
 import { v } from "convex/values";
 import { envLabel } from "./lib/envLabel";
 import {
@@ -389,7 +390,7 @@ export const myReportedMessageIds = query({
   handler: async (ctx, { chatId }) => {
     const { userId } = await requireActive(ctx);
     const chat = await ctx.db.get(chatId);
-    if (chat === null || chat.userId !== userId) return [];
+    if (chat === null || !(await canReachChat(ctx, chat._id, userId))) return [];
     const rows = await ctx.db
       .query("feedback")
       .withIndex("by_chat", (q) => q.eq("chatId", chatId))

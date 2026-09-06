@@ -9,6 +9,11 @@
 import type { BridgeConfig } from "../config.js";
 import { LocalDirMediaFetcher, type MediaFetcher } from "./media-fetcher.js";
 import { GatewayHttpMediaFetcher } from "./gateway-http-media-fetcher.js";
+import {
+  connectUserHeader,
+  systemConnectIdentity,
+} from "../providers/openclaw/connect-identity.js";
+import { buildIdentityHeaders } from "../providers/openclaw/gateway-identity.js";
 import type { InboundInstanceConfig, MediaMode } from "./instance-config.js";
 
 /**
@@ -30,6 +35,14 @@ export function buildMediaFetcher(
         // Boot-resolved (index.ts) — non-null by construction; the same operator
         // token the WS connect uses.
         token: () => config.openclawToken!,
+        // Trusted-proxy: the HTTP media route is behind the SAME header-based
+        // authorization as the WebSocket, so the probe must state an identity or
+        // it is refused. Empty in token mode ⇒ the Bearer path is untouched.
+        identityHeaders: () =>
+          buildIdentityHeaders(
+            systemConnectIdentity(config),
+            connectUserHeader(config),
+          ),
         maxBytes,
         timeoutMs: config.mediaFetchTimeoutMs,
       });

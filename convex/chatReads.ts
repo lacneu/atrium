@@ -14,6 +14,7 @@
 import { v } from "convex/values";
 import { mutation, query } from "./_generated/server";
 import type { Id } from "./_generated/dataModel";
+import { resolveChatAccess } from "./lib/chatAccess";
 import { requireActive } from "./lib/access";
 
 // Matches listChats' bounded-window philosophy: more rows than any sidebar
@@ -107,8 +108,12 @@ export const markChatSeen = mutation({
     // user's unread markers (same no-op-under-impersonation rule as the other
     // personal writes, e.g. notification reads).
     if (impersonating) return;
-    const chat = await ctx.db.get(chatId);
-    if (!chat || chat.userId !== userId) {
+    // A read marker is PER VIEWER (`chatReads` is keyed by user+chat), so a
+    // participant marking a group chat seen touches only their own row. Refusing
+    // them threw on every arrival in an open group chat — an unhandled rejection
+    // on the hot path, and an unread dot that could never clear.
+    const access = await resolveChatAccess(ctx, chatId, userId);
+    if (access === null) {
       throw new Error("Forbidden: chat not owned by user");
     }
     const existing = await ctx.db

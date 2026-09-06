@@ -439,6 +439,21 @@ export default defineSchema({
     // unset legacy rows are treated as "openclaw". The bridge adapts API calls
     // by kind; the app stays standardized.
     kind: v.optional(v.union(v.literal("openclaw"), v.literal("hermes"))),
+    // How the bridge AUTHENTICATES to this gateway.
+    //  - unset / "token": one shared operator credential (every deployment so far).
+    //    The gateway attributes every session to a single owner profile, so any
+    //    holder of that token sees all of them.
+    //  - "trusted-proxy": the bridge states WHO each socket acts for in the upgrade
+    //    headers and the gateway resolves one user profile per person. The gateway
+    //    must be configured for the same mode — upstream the two are mutually
+    //    exclusive (a trusted-proxy gateway refuses to hold a token at all), which
+    //    is why this is per instance and never a deployment-wide switch.
+    // OpenClaw only; ignored for Hermes, which has no profile model.
+    authMode: v.optional(v.union(v.literal("token"), v.literal("trusted-proxy"))),
+    // Identity the bridge presents on sockets that serve no single person (agent
+    // discovery, transcript recovery, config defaults). Unset → derived from the
+    // instance name. Only meaningful in "trusted-proxy" mode.
+    systemIdentity: v.optional(v.string()),
     // Hermes transport: "ws" (default — the JSON-RPC WebSocket `hermes serve`
     // surface, richer features) or "rest" (the OpenAI-compatible API server).
     // Ignored for OpenClaw instances.
@@ -1082,6 +1097,33 @@ export default defineSchema({
     .index("by_parent", ["parentId"]),
 
   // A chat thread owned by exactly one user.
+  // WHO ELSE may take part in a chat. A chat has exactly ONE owner
+  // (`chats.userId`); every other person who can read it and post to it has a row
+  // here. Deliberately a separate table, not an array on the chat: membership is
+  // queried from BOTH directions (the chat's roster, and "which group chats am I
+  // in" for the sidebar), and an array would make the second one a full scan.
+  //
+  // WHY ATRIUM OWNS THIS AND THE GATEWAY DOES NOT. OpenClaw 2026.9.2 has no
+  // multi-human session: a session has one creator, and everything else is a
+  // history association. `session.members.add` does not grant visibility under a
+  // role whose `sessions.others` is "none", and a mention is refused unless the
+  // recipient can ALREADY read the session. So the gateway keeps seeing ONE human
+  // per chat — the owner — and Atrium is the layer that knows about the others.
+  // Consequence, load-bearing in routing: a participant's turn must resolve the
+  // OWNER's canonical, or it would open a different gateway session and split the
+  // conversation in two.
+  chatParticipants: defineTable({
+    chatId: v.id("chats"),
+    userId: v.id("users"),
+    /** Who added them — the owner today; kept for the roster's provenance. */
+    addedBy: v.id("users"),
+    addedAt: v.number(),
+  })
+    .index("by_chat", ["chatId"])
+    .index("by_user", ["userId"])
+    // Membership test and idempotent add both read this one.
+    .index("by_chat_user", ["chatId", "userId"]),
+
   chats: defineTable({
     // THE INTERRUPTION EPOCH: when the user last pressed Stop on this chat.
     //
@@ -1470,6 +1512,11 @@ export default defineSchema({
     importedAgentLabel: v.optional(v.string()),
     chatId: v.id("chats"),
     userId: v.id("users"), // owner (denormalized for cheap access checks)
+    // WHO WROTE this message, when it is not the owner. Only set on user messages
+    // in a chat with participants; absent everywhere else, which keeps every
+    // existing row valid and means "the owner wrote it". Never used for access —
+    // `userId` stays the owner precisely so the cheap access checks keep working.
+    authorUserId: v.optional(v.id("users")),
     role: v.union(
       v.literal("user"),
       v.literal("assistant"),

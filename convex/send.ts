@@ -18,7 +18,11 @@ import { v } from "convex/values";
 import { mutation, MutationCtx } from "./_generated/server";
 import { internal } from "./_generated/api";
 import { Id } from "./_generated/dataModel";
-import { requireActive, requireOwnedChat } from "./lib/access";
+import {
+  requireActive,
+  requireOwnedChat,
+  requireReachableChat,
+} from "./lib/access";
 import { deleteFilesByMessage } from "./lib/files";
 import { auditImpersonated } from "./lib/audit";
 import { assertOwnsUpload } from "./uploads";
@@ -95,7 +99,15 @@ export const sendMessage = mutation({
   },
   handler: async (ctx, args) => {
     const { userId, actor } = await requireActive(ctx);
-    const chat = await requireOwnedChat(ctx, userId, args.chatId);
+    // A PARTICIPANT may post: that is what taking part in a conversation means.
+    // Everything downstream still belongs to the OWNER — the gateway session, the
+    // agent binding, the routing — because the gateway knows one human per session.
+    const { chat, role: chatRole } = await requireReachableChat(
+      ctx,
+      userId,
+      args.chatId,
+    );
+    const ownerId = chat.userId;
 
     // 2. Idempotency short-circuit. Run BEFORE any insert so a retry inserts
     //    neither a duplicate message nor a duplicate outbox row, and does not
@@ -237,7 +249,11 @@ export const sendMessage = mutation({
     //    dispatch time when this turn is promoted. Idle sends keep _creationTime order.
     const messageId = await ctx.db.insert("messages", {
       chatId: chat._id,
-      userId,
+      // The OWNER, always — this field is the denormalized owner that the cheap
+      // access checks elsewhere read, and a participant's id here would quietly
+      // re-point them. WHO WROTE IT is `authorUserId` below.
+      userId: ownerId,
+      ...(chatRole === "participant" ? { authorUserId: userId } : {}),
       role: "user",
       status: "complete",
       text: args.text,

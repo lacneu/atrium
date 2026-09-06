@@ -18,6 +18,7 @@
 //     key-authed/MCP route ever reads `subAgentReports` (the reportId is an
 //     opaque pointer, safe even if it leaks).
 
+import { canReachChat } from "./lib/chatAccess";
 import { v } from "convex/values";
 import { mutation, query } from "./_generated/server";
 import { Doc } from "./_generated/dataModel";
@@ -347,7 +348,7 @@ export const myReportedSubAgentIds = query({
   handler: async (ctx, { chatId }) => {
     const { userId } = await requireActive(ctx);
     const chat = await ctx.db.get(chatId);
-    if (chat === null || chat.userId !== userId) return [];
+    if (chat === null || !(await canReachChat(ctx, chat._id, userId))) return [];
     const rows = await ctx.db
       .query("subAgentReports")
       .withIndex("by_chat", (q) => q.eq("chatId", chatId))

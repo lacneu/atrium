@@ -385,6 +385,10 @@ describe("RPC scope derivation (W10)", () => {
       "sessions.patch",
       "sessions.reset",
       "sessions.compact",
+  // Sent ONLY in trusted-proxy mode, to claim a conversation's session for the
+  // person having it before the admin-scoped verboseLevel patch (which rides the
+  // bridge's system socket) would create it under the bridge's own identity.
+  "sessions.create",
       "sessions.compaction.list",
       // The cron/tasks families, added 2026-07-27. This list is the DIRECT,
       // non-derived claim, so every newly covered method must join it — omitting them

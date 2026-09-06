@@ -47,6 +47,8 @@ export function sharedFromConfig(config: BridgeConfig): SharedConfig {
     inboundMediaDirOverride: null,
     attachmentFixAttestedInstances: [],
   bridgeInstanceSecrets: [],
-    credentialRetryMs: 30_000,
+    forwardedClientIp: null,
+  trustedProxyUserHeader: null,
+  credentialRetryMs: 30_000,
   };
 }

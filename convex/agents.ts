@@ -18,6 +18,7 @@ import {
 } from "./_generated/server";
 import { internal } from "./_generated/api";
 import { Doc, Id } from "./_generated/dataModel";
+import { resolveChatAccess } from "./lib/chatAccess";
 import { requireActive, requireAdmin } from "./lib/access";
 import { resolvePollTargets } from "./lib/bridgeRouting";
 import { resolveTargetForTurn } from "./routing";
@@ -1902,11 +1903,18 @@ export const getChatAgent = query({
     const { userId } = await requireActive(ctx);
     const id = ctx.db.normalizeId("chats", chatId);
     if (id === null) return null;
-    const chat = await ctx.db.get(id);
-    if (chat === null) return null;
-    if (chat.userId !== userId) {
+    // A participant reads which agent the conversation is bound to — the composer
+    // shows it on every turn, so refusing them threw before a single message
+    // rendered. The agent SET below stays theirs, not the owner's: what they may
+    // dispatch to is their own entitlement, and the read-only verdict must reflect
+    // the person actually about to send.
+    const access = await resolveChatAccess(ctx, id, userId);
+    if (access === null) {
+      const exists = await ctx.db.get(id);
+      if (exists === null) return null;
       throw new Error("Forbidden: chat not owned by user");
     }
+    const chat = access.chat;
 
     const agents = await enrichUserAgents(ctx, userId);
     // Is the chat's bound agent still PRESENT? (Mirrors the dispatch: a not-in-set

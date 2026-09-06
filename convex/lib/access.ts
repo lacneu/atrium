@@ -19,6 +19,7 @@ import { getAuthUserId } from "@convex-dev/auth/server";
 import { Doc, Id } from "../_generated/dataModel";
 import { MutationCtx, QueryCtx } from "../_generated/server";
 import { anonAuthEnabled, emailDomainAllowed } from "./authDomains";
+import { resolveChatAccess } from "./chatAccess";
 import {
   permissionsForRoleKey,
   roleHasPermission,
@@ -343,6 +344,29 @@ export async function requirePermission(
 }
 
 /** Load a chat and assert the given user owns it. Throws otherwise. */
+/**
+ * Reach a chat as OWNER or PARTICIPANT — the conversational surfaces (read the
+ * messages, watch them stream, post) use this; every administrative surface keeps
+ * `requireOwnedChat`. Throws with the same two messages as that helper, so a
+ * malformed deep link and a foreign chat stay distinguishable to the router.
+ */
+export async function requireReachableChat(
+  ctx: QueryCtx | MutationCtx,
+  userId: Id<"users">,
+  chatId: Id<"chats">,
+): Promise<{ chat: Doc<"chats">; role: "owner" | "participant" }> {
+  const access = await resolveChatAccess(ctx, chatId, userId);
+  if (access === null) {
+    const exists = await ctx.db.get(chatId);
+    throw new Error(
+      exists === null
+        ? "Not found: chat does not exist"
+        : "Forbidden: chat not owned by user",
+    );
+  }
+  return access;
+}
+
 export async function requireOwnedChat(
   ctx: QueryCtx | MutationCtx,
   userId: Id<"users">,

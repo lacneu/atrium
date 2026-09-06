@@ -21,7 +21,7 @@ import {
   query,
   QueryCtx,
 } from "./_generated/server";
-import { requireAdmin } from "./lib/access";
+import { requireAdmin, requireReachableChat } from "./lib/access";
 import { Doc } from "./_generated/dataModel";
 import { internal } from "./_generated/api";
 import {
@@ -491,7 +491,7 @@ export const forChat = query({
   },
   handler: async (ctx, { chatId, routedAgent }) => {
     const { userId } = await requireActive(ctx);
-    const chat = await requireOwnedChat(ctx, userId, chatId);
+    const chat = (await requireReachableChat(ctx, userId, chatId)).chat;
     const instanceName =
       (routedAgent
         ? (await resolveTargetForTurn(ctx, chat, userId, routedAgent)).target

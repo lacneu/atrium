@@ -9,6 +9,8 @@
 // silently drops sends or can't authenticate is worse than a process that
 // refuses to start with a clear message.
 
+import type { GatewayAuthMode } from "./providers/openclaw/gateway-identity.js";
+
 /** Ed25519 device identity used to sign the OpenClaw connect challenge. */
 export interface DeviceIdentity {
   id: string;
@@ -18,6 +20,32 @@ export interface DeviceIdentity {
 }
 
 export interface BridgeConfig {
+  // --- Gateway authentication mode ------------------------------------------
+  /**
+   * How this instance authenticates to its OpenClaw gateway.
+   *  - "token" (DEFAULT, and what every existing deployment keeps): one shared
+   *    operator credential; the gateway attributes every session to the single
+   *    gateway-owner profile.
+   *  - "trusted-proxy": the bridge states WHO each socket acts for in the upgrade
+   *    headers and the gateway resolves a per-person user profile. Requires the
+   *    gateway to run `gateway.auth.mode: "trusted-proxy"` — the two modes are
+   *    mutually exclusive upstream, so this is per-instance, never global.
+   */
+  openclawAuthMode?: GatewayAuthMode;
+  /**
+   * Identity presented on sockets that serve no single person (agent discovery,
+   * orphan-transcript recovery, config defaults). Null ⇒ derived from the instance
+   * name. Ignored in token mode.
+   */
+  openclawSystemIdentity?: string | null;
+  /**
+   * Address the gateway attributes this bridge's connections to. Null ⇒ discovered
+   * from the host's routable interfaces at connect time. Ignored in token mode.
+   */
+  openclawForwardedClientIp?: string | null;
+  /** Gateway-side `gateway.auth.trustedProxy.userHeader`, when it is not the default. */
+  openclawTrustedProxyUserHeader?: string | null;
+
   // --- OpenClaw Gateway ------------------------------------------------------
   /** Gateway URL (ws:// wss:// http:// https://; normalized to ws/wss). */
   openclawGatewayUrl: string;
@@ -401,6 +429,17 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): BridgeConfig {
       // OPTIONAL since 3b: the credential resolver fetches these from Convex via the
       // per-bridge secret, falling back to these env values per field.
       openclawToken: optionalEnvOrNull("OPENCLAW_TOKEN"),
+      // Explicit validation, same reason as BRIDGE_PROVIDER_KIND: a typo must not
+      // silently select the mode that attributes every session to one owner.
+      openclawAuthMode:
+        optionalEnvOrNull("OPENCLAW_AUTH_MODE") === "trusted-proxy"
+          ? "trusted-proxy"
+          : "token",
+      openclawSystemIdentity: optionalEnvOrNull("OPENCLAW_SYSTEM_IDENTITY"),
+      openclawForwardedClientIp: optionalEnvOrNull("BRIDGE_FORWARDED_CLIENT_IP"),
+      openclawTrustedProxyUserHeader: optionalEnvOrNull(
+        "OPENCLAW_TRUSTED_PROXY_USER_HEADER",
+      ),
       deviceIdentity: loadDeviceIdentityOptional(),
       bridgeInstanceSecret: optionalEnvOrNull("BRIDGE_INSTANCE_SECRET"),
       instanceName,
@@ -483,6 +522,14 @@ export interface SharedConfig {
    *  instruction on a stock one beside it (codex). Empty = nothing attested, which is
    *  also what a stray `0` or `false` means here: neither names an instance. */
   attachmentFixAttestedInstances: string[];
+  /** Address the gateway attributes this bridge's connections to, for trusted-proxy
+   *  instances (BRIDGE_FORWARDED_CLIENT_IP). Null ⇒ discovered from the host's
+   *  routable interfaces the first time an identity socket is opened. A HOST fact:
+   *  it describes this process's network position, so it is shared, not per-instance. */
+  forwardedClientIp: string | null;
+  /** Gateway-side `gateway.auth.trustedProxy.userHeader` override
+   *  (OPENCLAW_TRUSTED_PROXY_USER_HEADER). Null ⇒ the upstream default. */
+  trustedProxyUserHeader: string | null;
   /** Per-bridge secrets, one per served instance (the irreducible env anchor). */
   bridgeInstanceSecrets: string[];
   /** Interval (ms) the boot self-heal loop waits between retries of the per-bridge
@@ -504,6 +551,12 @@ export interface InstanceData {
   gatewayHttpUrl: string | null;
   kind: "openclaw" | "hermes";
   transport?: "ws" | "rest" | null; // Hermes only; absent/null → default ("ws")
+  /** How this instance authenticates (Convex `instances.authMode`). Absent ⇒ "token",
+   *  so an instance row written before this field existed keeps its behaviour. */
+  authMode?: GatewayAuthMode | null;
+  /** Identity for this instance's system sockets (Convex `instances.systemIdentity`).
+   *  Absent ⇒ derived from the instance name. */
+  systemIdentity?: string | null;
   /** The per-bridge secret that RESOLVED this instance — carried through so the
    *  writer can present it on `/bridge/ingest`, proving WHICH instance is writing
    *  (the same secret that authenticates `/bridge/credentials`). Absent/null on the
@@ -578,6 +631,10 @@ export function loadSharedConfig(env: NodeJS.ProcessEnv = process.env): SharedCo
       attachmentFixAttestedInstances: parseAttestedInstances(
         process.env.OPENCLAW_ATTACHMENT_FIX_ATTESTED,
       ),
+      forwardedClientIp: optionalEnvOrNull("BRIDGE_FORWARDED_CLIENT_IP"),
+      trustedProxyUserHeader: optionalEnvOrNull(
+        "OPENCLAW_TRUSTED_PROXY_USER_HEADER",
+      ),
       bridgeInstanceSecrets: parseSecretsList("BRIDGE_INSTANCE_SECRETS"),
       // Floor the retry below which a slow Convex would be hammered. The bridge boots
       // regardless; this only paces the self-heal of not-yet-resolved instances.
@@ -620,6 +677,12 @@ export function buildInstanceConfig(
   return {
     openclawGatewayUrl: inst.gatewayUrl,
     openclawToken: inst.token,
+    openclawAuthMode: inst.authMode ?? "token",
+    openclawSystemIdentity: inst.systemIdentity ?? null,
+    // Host-level facts, identical for every instance this bridge serves: they
+    // describe THIS process's network position, not the gateway it talks to.
+    openclawForwardedClientIp: shared.forwardedClientIp,
+    openclawTrustedProxyUserHeader: shared.trustedProxyUserHeader,
     openclawCredentialSource: inst.tokenSource ?? null,
     // The anchor is the token itself, and ONLY when Convex says it is the shared
     // enrollment credential.

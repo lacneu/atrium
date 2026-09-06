@@ -1,0 +1,159 @@
+/* Participants of a conversation: the header chip's avatar stack, and the
+   roster popover. Loaded by ChatParticipants.tsx itself — the component is
+   reachable from a lazily-imported route, so its styles travel with it. */
+
+.oc-avatars {
+  display: inline-flex;
+  align-items: center;
+  /* Overlap: a roster reads as one group, not as a row of separate badges. */
+  padding-left: 4px;
+}
+
+.oc-avatar {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  margin-left: -4px;
+  border-radius: 50%;
+  /* The ring separates overlapping badges against any surface behind them. */
+  border: 1px solid var(--oc-surface, #fff);
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  line-height: 1;
+  color: #fff;
+  background: var(--oc-avatar-bg, #64748b);
+  user-select: none;
+}
+
+/* Eight stable tones, picked from the user id so a face keeps its colour. */
+.oc-avatar[data-tone="0"] { --oc-avatar-bg: #ef4444; }
+.oc-avatar[data-tone="1"] { --oc-avatar-bg: #f97316; }
+.oc-avatar[data-tone="2"] { --oc-avatar-bg: #d97706; }
+.oc-avatar[data-tone="3"] { --oc-avatar-bg: #16a34a; }
+.oc-avatar[data-tone="4"] { --oc-avatar-bg: #0d9488; }
+.oc-avatar[data-tone="5"] { --oc-avatar-bg: #2563eb; }
+.oc-avatar[data-tone="6"] { --oc-avatar-bg: #7c3aed; }
+.oc-avatar[data-tone="7"] { --oc-avatar-bg: #db2777; }
+
+.oc-avatar--more {
+  background: transparent;
+  color: var(--oc-text-muted, #64748b);
+  border-color: transparent;
+  font-size: 10px;
+}
+
+.oc-participants {
+  width: 288px;
+  padding: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.oc-participants__head {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--oc-text-muted, #64748b);
+  padding: 2px 4px;
+}
+
+.oc-participants__list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  /* A full roster (32) must scroll inside the popover, never grow past it. */
+  max-height: 220px;
+  overflow-y: auto;
+}
+
+.oc-participants__row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px;
+  border-radius: 6px;
+}
+
+.oc-participants__row:hover {
+  background: var(--oc-surface-hover, rgb(0 0 0 / 4%));
+}
+
+.oc-participants__row .oc-avatar {
+  width: 24px;
+  height: 24px;
+  margin-left: 0;
+  font-size: 10px;
+  flex: 0 0 auto;
+}
+
+.oc-participants__who {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.oc-participants__name,
+.oc-participants__role {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.oc-participants__name {
+  font-size: 13px;
+  line-height: 1.3;
+}
+
+.oc-participants__role {
+  font-size: 11px;
+  color: var(--oc-text-muted, #64748b);
+}
+
+.oc-participants__add {
+  border-top: 1px solid var(--oc-border, rgb(0 0 0 / 8%));
+  padding-top: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.oc-participants__hint,
+.oc-participants__note {
+  margin: 0;
+  padding: 2px 4px;
+  font-size: 11px;
+  color: var(--oc-text-muted, #64748b);
+}
+
+.oc-participants__note {
+  border-top: 1px solid var(--oc-border, rgb(0 0 0 / 8%));
+  padding-top: 6px;
+}
+
+.oc-participants__error {
+  margin: 0;
+  padding: 4px;
+  font-size: 11px;
+  border-radius: 6px;
+  color: var(--oc-danger-fg, #b91c1c);
+  background: var(--oc-danger-bg, rgb(185 28 28 / 8%));
+}
+
+/* Author line above a group-chat turn written by someone other than the owner.
+   Sits OUTSIDE the bubble: the bubble's text is what was said to the agent, and a
+   name folded into it would read as part of the message. */
+.oc-msg__author {
+  align-self: flex-end;
+  padding: 0 4px 2px;
+  font-size: 11px;
+  color: var(--oc-text-muted, #64748b);
+}

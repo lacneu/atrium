@@ -510,6 +510,27 @@ export async function cascadeDeleteChat(
       .collect();
     for (const b of bookmarkRows) await ctx.db.delete(b._id);
   }
+  // GROUP CHAT roster + every participant's read marker. Left behind, a roster row
+  // outlives the conversation it names: it keeps occupying a slot in the person's
+  // bounded participation scan, so once they accumulate enough orphans their NEW
+  // group chats stop appearing in the sidebar — and the membership itself would
+  // survive, handing back access if the chat id were ever reused.
+  {
+    const roster = await ctx.db
+      .query("chatParticipants")
+      .withIndex("by_chat", (q) => q.eq("chatId", chatId))
+      .collect();
+    for (const row of roster) {
+      const read = await ctx.db
+        .query("chatReads")
+        .withIndex("by_user_chat", (q) =>
+          q.eq("userId", row.userId).eq("chatId", chatId),
+        )
+        .first();
+      if (read) await ctx.db.delete(read._id);
+      await ctx.db.delete(row._id);
+    }
+  }
   // Per-user read state: drop the owner's chatReads row with the chat (rows are
   // owner-only by construction — markChatSeen is owner-scoped and no-ops under
   // impersonation), so deletions never leave orphans eating the myChatReads

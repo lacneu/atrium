@@ -28,7 +28,11 @@ import {
 import { internal } from "./_generated/api";
 import { postBridge } from "./agentFiles";
 import type { Id } from "./_generated/dataModel";
-import { requireActive, requireOwnedChat } from "./lib/access";
+import {
+  requireActive,
+  requireOwnedChat,
+  requireReachableChat,
+} from "./lib/access";
 import { normalizeMessageErrorCode } from "./lib/chatRenderState";
 import { chatAllowsInstance } from "./lib/ingestAuthz";
 import { drainNextQueued, SUBAGENT_STALE_TTL_MS } from "./lib/outboxQueue";
@@ -804,7 +808,10 @@ export const turnActivity = query({
     anchorMessageId: Id<"messages"> | null;
   }> => {
     const { userId } = await requireActive(ctx);
-    await requireOwnedChat(ctx, userId, chatId);
+    // A conversation's sub-agent activity IS the conversation: a participant who
+    // can read the thread must be able to see the work it delegated, or the chat
+    // renders half its content and the owner-only queries throw on first open.
+    await requireReachableChat(ctx, userId, chatId);
     // RUNNING is exact whatever the chat's history: one indexed probe on
     // (chatId, status) — a long-lived child created before 50 newer
     // delegations must still hold the composer/spinner. Read on the
@@ -1077,7 +1084,10 @@ export const listSubAgents = query({
   args: { chatId: v.id("chats") },
   handler: async (ctx, { chatId }) => {
     const { userId } = await requireActive(ctx);
-    await requireOwnedChat(ctx, userId, chatId);
+    // A conversation's sub-agent activity IS the conversation: a participant who
+    // can read the thread must be able to see the work it delegated, or the chat
+    // renders half its content and the owner-only queries throw on first open.
+    await requireReachableChat(ctx, userId, chatId);
     const rows = await ctx.db
       .query("subAgents")
       .withIndex("by_chat", (q) => q.eq("chatId", chatId))
@@ -1184,7 +1194,10 @@ export const listSubAgentToolParts = query({
   args: { chatId: v.id("chats"), childSessionKey: v.string() },
   handler: async (ctx, { chatId, childSessionKey }) => {
     const { userId } = await requireActive(ctx);
-    await requireOwnedChat(ctx, userId, chatId);
+    // A conversation's sub-agent activity IS the conversation: a participant who
+    // can read the thread must be able to see the work it delegated, or the chat
+    // renders half its content and the owner-only queries throw on first open.
+    await requireReachableChat(ctx, userId, chatId);
     const rows = await ctx.db
       .query("subAgentToolParts")
       .withIndex("by_child", (q) => q.eq("childSessionKey", childSessionKey))
@@ -1276,6 +1289,9 @@ export const pendingTaskEngagements = internalQuery({
     taskIds: string[];
   } | null> => {
     const { userId } = await requireActive(ctx);
+    // This one MUTATES nothing but feeds the bridge target, and the chat doc is
+    // what the caller needs: keep it owner-gated (it is an internal query on the
+    // owner's dispatch path, not a surface a participant renders).
     const chat = await requireOwnedChat(ctx, userId, chatId);
     const instanceName = await taskProbeInstanceName(ctx, chat);
     if (instanceName === null) return null;

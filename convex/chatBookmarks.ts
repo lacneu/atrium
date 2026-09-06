@@ -13,6 +13,7 @@ import { v } from "convex/values";
 import { mutation, query } from "./_generated/server";
 import type { MutationCtx, QueryCtx } from "./_generated/server";
 import type { Id } from "./_generated/dataModel";
+import { canReachChat } from "./lib/chatAccess";
 import { requireActive } from "./lib/access";
 
 // Hard cap per (user, chat): far above real usage, keeps every read bounded.
@@ -29,13 +30,19 @@ export interface ChatBookmark {
   createdAt: number;
 }
 
+/**
+ * A bookmark is PER VIEWER (`chatBookmarks` is keyed by user+chat), so anyone who
+ * can read the conversation may place their own without touching anybody else's.
+ * The name is kept — every call site reads the same rule — but the rule is now
+ * "can reach", because the bookmark gutter mounts with the thread and a refusal
+ * took the whole route to the error boundary.
+ */
 async function requireOwnedChat(
   ctx: QueryCtx,
   chatId: Id<"chats">,
   userId: Id<"users">,
 ): Promise<void> {
-  const chat = await ctx.db.get(chatId);
-  if (!chat || chat.userId !== userId) {
+  if (!(await canReachChat(ctx, chatId, userId))) {
     throw new Error("Forbidden: chat not owned by user");
   }
 }

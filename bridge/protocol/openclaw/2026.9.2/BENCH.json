@@ -6,51 +6,51 @@
     {
       "id": "basic-turn",
       "ok": true,
-      "chat": "709cf909daaf4463"
+      "chat": "aa65486df3804f99"
     },
     {
       "id": "tool-exec",
       "ok": true,
-      "chat": "709cf909daaf4463"
+      "chat": "aa65486df3804f99"
     },
     {
       "id": "update-plan",
       "ok": true,
-      "chat": "709cf909daaf4463"
+      "chat": "aa65486df3804f99"
     },
     {
       "id": "media-outbound",
       "ok": true,
-      "chat": "709cf909daaf4463"
+      "chat": "aa65486df3804f99"
     },
     {
       "id": "spawn-announce-merge",
       "ok": true,
-      "chat": "709cf909daaf4463"
+      "chat": "aa65486df3804f99"
     },
     {
       "id": "spawn-chain-merge",
       "ok": true,
-      "chat": "709cf909daaf4463"
+      "chat": "aa65486df3804f99"
     },
     {
       "id": "spawn-parallel-merge",
       "ok": true,
-      "chat": "709cf909daaf4463"
+      "chat": "aa65486df3804f99"
     },
     {
       "id": "async-task",
       "ok": true,
-      "chat": "709cf909daaf4463"
+      "chat": "aa65486df3804f99"
     },
     {
       "id": "cron-tool",
       "ok": true,
-      "chat": "709cf909daaf4463"
+      "chat": "aa65486df3804f99"
     }
   ],
   "verdict": "GO",
-  "at": "2026-09-06T19:41:39.211Z",
+  "at": "2026-09-06T23:33:52.405Z",
   "scenarios": [
     "async-task",
     "basic-turn",
@@ -78,12 +78,12 @@
     "hermes-cron-list": "hermes"
   },
   "flags": [],
-  "atriumSha": "a58b1c7894a0e563a8ac3eaf649b503ea36372aa",
+  "atriumSha": "1f3f553a5a8359bf7e979c3aae3c495871a27e45",
   "worktree": {
     "dirty": true,
-    "deltaSha256": "c3ae53d0071219cdbf2da45e65c0ff7d4587ee9a6eacae7f3a32bef6344c0a78"
+    "deltaSha256": "0db18ebab6a6545719c8b4ca1f8d8b92dc613b45f3fb8d11506ba67175e14d0c"
   },
-  "supportDigest": "ec6f76fe24d3bc9798cba568e35f68900194d7f6f2ea2bdf595963035adc1a7e",
+  "supportDigest": "913709c8611c220dc6e0c35a986d1826052e8011c2371087471608e3e949e3db",
   "bridgeVersion": "0.78.1",
   "vendoredSha256": "85e9f909e0335d19be1dbb2cc1a31c44372b145a03e7952d7d8831f713c23c4c"
 }

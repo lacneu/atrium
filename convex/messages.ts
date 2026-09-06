@@ -36,7 +36,8 @@ import {
 } from "./lib/chatRenderState";
 import { provenancePartStructure } from "./lib/provenance";
 import { Id, Doc } from "./_generated/dataModel";
-import { requireActive, requireOwnedChat } from "./lib/access";
+import { participantChatIds, resolveChatAccess } from "./lib/chatAccess";
+import { requireActive, requireOwnedChat, requireReachableChat } from "./lib/access";
 import { agentIdFromChildKey } from "./lib/subAgentFailure";
 import { drainNextQueued } from "./lib/outboxQueue";
 import { DEFAULT_STREAM_TRANSPORT } from "./lib/instanceConfig";
@@ -241,6 +242,24 @@ async function loadChatView(ctx: QueryCtx, id: Id<"chats">) {
     // newest-N window). Tie-break by _creationTime for a stable order.
     const messages = [...recentDesc].sort(compareOrder);
 
+    // AUTHOR NAMES for a group conversation. One profile read per DISTINCT author
+    // in the window, not per message: a 200-message window written by three people
+    // costs three reads. Empty (and free) on a solo chat, which is every chat until
+    // somebody is invited.
+    const authorNames = new Map<string, string>();
+    for (const msg of messages) {
+      const author = msg.authorUserId;
+      if (author === undefined || authorNames.has(String(author))) continue;
+      const profile = await ctx.db
+        .query("profiles")
+        .withIndex("by_user", (q) => q.eq("userId", author))
+        .unique();
+      authorNames.set(
+        String(author),
+        profile?.name ?? profile?.email ?? profile?.canonical ?? "?",
+      );
+    }
+
     // Dispatch lifecycle per message (queued | pending | sent | failed) — a CONSTANT
     // 4-read budget (see loadOutboxByMessage), NOT per-message. The frontend reads
     // `outbox.status === "queued"` to badge a mid-turn QUEUE follow-up "En attente"
@@ -382,6 +401,13 @@ async function loadChatView(ctx: QueryCtx, id: Id<"chats">) {
           // defaults the composer to the last-used agent.
           routedInstanceName: message.routedInstanceName,
           routedAgentId: message.routedAgentId,
+          // GROUP CHAT: who wrote this turn, when it was not the chat owner.
+          // Resolved to a NAME here (the client never receives the other person's
+          // user id) and absent on every solo conversation, which keeps this hot
+          // per-message view exactly as wide as it was.
+          ...(message.authorUserId === undefined
+            ? {}
+            : { authorName: authorNames.get(String(message.authorUserId)) }),
           // IMPORTED history: the agent that answered, as a name only. Absence of
           // `routedAgentId` already means "inherit the turn's agent, else the
           // chat's", so without this the reader would see an imported reply
@@ -648,9 +674,13 @@ export const listByChat = query({
     // throws (an IDOR signal, handled by the route fallback).
     const id = ctx.db.normalizeId("chats", chatId);
     if (id === null) return [];
-    const chat = await ctx.db.get(id);
-    if (chat === null) return [];
-    if (chat.userId !== userId) {
+    // OWNER or PARTICIPANT: reading the conversation is exactly what taking part
+    // in it means. Administering it stays owner-only (see lib/chatAccess).
+    const access = await resolveChatAccess(ctx, id, userId);
+    if (access === null) {
+      const exists = await ctx.db.get(id);
+      // A deleted chat renders as "introuvable"; a foreign one is an IDOR signal.
+      if (exists === null) return [];
       throw new Error("Forbidden: chat not owned by user");
     }
     return await loadChatView(ctx, id);
@@ -673,9 +703,12 @@ export const getStreamingText = query({
     const { userId } = await requireActive(ctx);
     const id = ctx.db.normalizeId("chats", chatId);
     if (id === null) return [];
-    const chat = await ctx.db.get(id);
-    if (chat === null) return [];
-    if (chat.userId !== userId) {
+    // Without this, a participant would read the transcript but watch it arrive
+    // in one silent jump at the end of each turn — the live text lives here.
+    const access = await resolveChatAccess(ctx, id, userId);
+    if (access === null) {
+      const exists = await ctx.db.get(id);
+      if (exists === null) return [];
       throw new Error("Forbidden: chat not owned by user");
     }
     const rows = await ctx.db
@@ -720,7 +753,14 @@ export const getChatStreamTransport = query({
     const id = ctx.db.normalizeId("chats", chatId);
     if (id === null) return DEFAULT_STREAM_TRANSPORT;
     const chat = await ctx.db.get(id);
-    if (chat === null || chat.userId !== userId) return DEFAULT_STREAM_TRANSPORT;
+    if (chat === null) return DEFAULT_STREAM_TRANSPORT;
+    if (chat.userId !== userId) {
+      const member = await ctx.db
+        .query("chatParticipants")
+        .withIndex("by_chat_user", (q) => q.eq("chatId", chat._id).eq("userId", userId))
+        .unique();
+      if (member === null) return DEFAULT_STREAM_TRANSPORT;
+    }
     // Resolve the SAME routed target as dispatch (resolveTargetForChat: honor the chat's
     // binding, else the default agent + rebind) rather than the raw chat.instanceName — so a
     // legacy / unbound / stale-bound chat reads the instance ACTUALLY used (Codex review).
@@ -958,7 +998,7 @@ export const getProvenanceParts = query({
     const { userId } = await requireActive(ctx);
     const message = await ctx.db.get(messageId);
     if (message === null) return []; // deleted mid-expand: render nothing
-    await requireOwnedChat(ctx, userId, message.chatId);
+    await requireReachableChat(ctx, userId, message.chatId);
     const partDocs = await ctx.db
       .query("messageParts")
       .withIndex("by_message", (q) => q.eq("messageId", messageId))
@@ -986,16 +1026,25 @@ export const getSessionMeta = query({
     const { userId } = await requireActive(ctx);
     const id = ctx.db.normalizeId("chats", chatId);
     if (id === null) return null;
-    const chat = await ctx.db.get(id);
-    if (chat === null) return null;
-    if (chat.userId !== userId) {
+    const access = await resolveChatAccess(ctx, id, userId);
+    if (access === null) {
+      const exists = await ctx.db.get(id);
+      if (exists === null) return null;
       throw new Error("Forbidden: chat not owned by user");
     }
+    const chat = access.chat;
     return {
       title: chat.title ?? null,
+      // The viewer's own standing in this conversation, so the UI can offer the
+      // owner's controls to the owner and nobody else.
+      viewerRole: access.role,
       // Folder membership (null = unfiled) — the header breadcrumb resolves
       // the path client-side against listProjects (one shared subscription).
-      projectId: chat.projectId ?? null,
+      //
+      // NOT sent to a participant: folders are the OWNER's private tree, their
+      // `listProjects` would resolve nothing from it anyway, and an id from a
+      // namespace somebody cannot reach has no business leaving the server.
+      projectId: access.role === "owner" ? (chat.projectId ?? null) : null,
       // MULTI-AGENT: has this chat flipped to per-turn routing (a turn was routed to
       // an agent other than the primary)? Gates the per-message agent chip in the
       // thread. Read-only projection of the chat flag the dispatch maintains.
@@ -1091,6 +1140,18 @@ export const listChats = query({
     const byId = new Map<Id<"chats">, Doc<"chats">>();
     for (const c of recent) byId.set(c._id, c);
     for (const c of pinnedRows) byId.set(c._id, c);
+    // GROUP CHATS the user takes part in without owning. Read in FULL rather than
+    // through the recency window: participations are bounded by their own cap and
+    // are few by nature, and a conversation somebody deliberately invited you into
+    // must not fall off the sidebar because your own chats are busier than it.
+    for (const chatId of await participantChatIds(ctx, userId)) {
+      if (byId.has(chatId)) continue;
+      const c = await ctx.db.get(chatId);
+      // Same exclusions as the owner path: archived rows and the hidden utility
+      // chats (documentary/summarizer) never reach the sidebar.
+      if (c === null || c.archived || c.kind !== undefined) continue;
+      byId.set(c._id, c);
+    }
     const chats = [...byId.values()];
     // Single comparator: pinned first, then manual sortKey (asc), then recency.
     // Manual order WINS over recency (user explicitly drags); recency is only a

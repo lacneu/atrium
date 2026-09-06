@@ -274,6 +274,10 @@ export function convertConvexMessage(
         // The Convex message _id — surfaced so per-message actions (delete) call
         // the mutation with the authoritative id, not assistant-ui's internal one.
         messageId: message._id,
+        // GROUP CHAT: the person who wrote this turn, when it was not the chat
+        // owner. Null on a solo conversation, so the bubble stays exactly as it
+        // was for every chat that has one participant.
+        authorName: message.authorName ?? null,
         // Shown in place of an agent name on imported history. Without it the
         // reply reads as coming from whichever agent the reader later binds,
         // because carrying no routed agent already MEANS "inherit".

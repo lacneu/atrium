@@ -78,6 +78,13 @@ describe("SessionRegistry — runtime growth (boot self-heal)", () => {
       "t",
       expect.anything(),
       undefined,
+      0,
+      // Token mode: NO identity and NO user-header override, so the handshake is
+      // the one that shipped before per-user identity existed. Pinned positionally
+      // — an identity leaking onto a token-mode socket would present a user header
+      // to a gateway that is not configured to read one.
+      undefined,
+      undefined,
     );
 
     // Self-heal registers jerome at runtime (size -> 2).
@@ -96,6 +103,13 @@ describe("SessionRegistry — runtime growth (boot self-heal)", () => {
       "t",
       expect.anything(),
       undefined,
+      0,
+      // Token mode: NO identity and NO user-header override, so the handshake is
+      // the one that shipped before per-user identity existed. Pinned positionally
+      // — an identity leaking onto a token-mode socket would present a user header
+      // to a gateway that is not configured to read one.
+      undefined,
+      undefined,
     );
 
     // Explicit route to the ORIGINAL instance STILL hits olivier's gateway (no misroute
@@ -111,6 +125,13 @@ describe("SessionRegistry — runtime growth (boot self-heal)", () => {
       "ws://olivier/ws",
       "t",
       expect.anything(),
+      undefined,
+      0,
+      // Token mode: NO identity and NO user-header override, so the handshake is
+      // the one that shipped before per-user identity existed. Pinned positionally
+      // — an identity leaking onto a token-mode socket would present a user header
+      // to a gateway that is not configured to read one.
+      undefined,
       undefined,
     );
 

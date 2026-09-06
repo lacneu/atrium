@@ -31,6 +31,11 @@ export interface WsFakeGateway {
   url: string;
   /** The live socket of the last client, or null. */
   socket: WsSocket | null;
+  /** HTTP headers of the last upgrade request, or null before the first connect. */
+  upgradeHeaders: Record<string, string | undefined> | null;
+  /** How many clients have connected. Counts SOCKETS, which is what an extra
+   *  handshake costs — the unit a batching claim has to be measured in. */
+  upgradeCount: number;
   /** Push one frame to the connected client, verbatim. */
   push(frame: unknown): void;
   /** Every request received, in order: `{method, params}`. */
@@ -59,6 +64,8 @@ export function startWsFakeGateway(opts: {
       return `ws://127.0.0.1:${(wss.address() as AddressInfo).port}`;
     },
     socket: null,
+    upgradeHeaders: null,
+    upgradeCount: 0,
     push(frame) {
       gw.socket?.send(JSON.stringify(frame));
     },
@@ -67,8 +74,13 @@ export function startWsFakeGateway(opts: {
       await new Promise<void>((resolve) => wss.close(() => resolve()));
     },
   };
-  wss.on("connection", (socket) => {
+  wss.on("connection", (socket, req) => {
     gw.socket = socket;
+    // The HTTP upgrade headers, captured so a test can assert what the bridge
+    // STATED about itself — the whole of trusted-proxy identity lives here and
+    // nowhere in the frames.
+    gw.upgradeHeaders = { ...req.headers } as Record<string, string | undefined>;
+    gw.upgradeCount += 1;
     socket.send(
       JSON.stringify({ type: "event", event: "connect.challenge", payload: { nonce: "n", ts: 1 } }),
     );

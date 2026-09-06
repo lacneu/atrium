@@ -1779,8 +1779,15 @@ export const reset = mutation({
 
 /** Internal: create/get the bench instance row + set its gatewayUrl (no admin gate). */
 export const _ensureSeedInstance = internalMutation({
-  args: { instanceName: v.string(), gatewayUrl: v.string() },
-  handler: async (ctx, { instanceName, gatewayUrl }): Promise<Id<"instances">> => {
+  args: {
+    instanceName: v.string(),
+    gatewayUrl: v.string(),
+    authMode: v.optional(v.union(v.literal("token"), v.literal("trusted-proxy"))),
+  },
+  handler: async (
+    ctx,
+    { instanceName, gatewayUrl, authMode },
+  ): Promise<Id<"instances">> => {
     assertDev();
     assertDevInstance(instanceName);
     const existing = await ctx.db
@@ -1788,13 +1795,18 @@ export const _ensureSeedInstance = internalMutation({
       .withIndex("by_name", (q) => q.eq("name", instanceName))
       .unique();
     if (existing) {
-      await ctx.db.patch(existing._id, { gatewayUrl });
+      // The mode is PART of the seed: a bench that flips a gateway to
+      // trusted-proxy and leaves the row saying "token" gets a bridge presenting a
+      // credential the gateway no longer accepts, and the failure surfaces as a
+      // scenario timeout rather than as the misconfiguration it is.
+      await ctx.db.patch(existing._id, { gatewayUrl, authMode: authMode ?? "token" });
       return existing._id;
     }
     return await ctx.db.insert("instances", {
       name: instanceName,
       gatewayUrl,
       displayName: instanceName,
+      ...(authMode ? { authMode } : {}),
     });
   },
 });
@@ -1854,25 +1866,57 @@ export const _storeSeedCreds = internalMutation({
   },
 });
 
+/** DEV-ONLY: flip a seeded instance between the two gateway authentication modes
+ *  (and, with it, the gateway URL when the bench stops needing the loopback
+ *  side-car). Kept apart from `seedInstanceCreds` so switching modes does NOT
+ *  regenerate the per-bridge secret the running bridge holds in its env. */
+export const setInstanceAuthMode = mutation({
+  args: {
+    instanceName: v.string(),
+    authMode: v.union(v.literal("token"), v.literal("trusted-proxy")),
+    gatewayUrl: v.optional(v.string()),
+    systemIdentity: v.optional(v.string()),
+  },
+  handler: async (ctx, { instanceName, authMode, gatewayUrl, systemIdentity }) => {
+    assertDev();
+    assertDevInstance(instanceName);
+    const inst = await ctx.db
+      .query("instances")
+      .withIndex("by_name", (q) => q.eq("name", instanceName))
+      .unique();
+    if (inst === null) throw new Error(`no instance named ${instanceName}`);
+    await ctx.db.patch(inst._id, {
+      authMode,
+      ...(gatewayUrl ? { gatewayUrl } : {}),
+      ...(systemIdentity ? { systemIdentity } : {}),
+    });
+    return { ok: true as const, authMode, gatewayUrl: gatewayUrl ?? inst.gatewayUrl };
+  },
+});
+
 export const seedInstanceCreds = action({
   args: {
     instanceName: v.string(),
     gatewayUrl: v.string(),
-    token: v.string(),
+    // OPTIONAL since trusted-proxy: a gateway in that mode holds no shared token,
+    // and demanding one here would make a correctly configured bench unseedable.
+    token: v.optional(v.string()),
     deviceIdentity: v.string(), // inline JSON {id, publicKey, privateKey}
+    authMode: v.optional(v.union(v.literal("token"), v.literal("trusted-proxy"))),
   },
   handler: async (
     ctx,
-    { instanceName, gatewayUrl, token, deviceIdentity },
+    { instanceName, gatewayUrl, token, deviceIdentity, authMode },
   ): Promise<{ secret: string }> => {
     assertDev();
     assertDevInstance(instanceName);
     const instanceId = await ctx.runMutation(internal.dev._ensureSeedInstance, {
       instanceName,
       gatewayUrl,
+      ...(authMode ? { authMode } : {}),
     });
     const { encryptCipher } = loadLocalCrypto();
-    const tokenSecret = await encryptCipher.encrypt(token, `${instanceId}:token`);
+    const tokenSecret = await encryptCipher.encrypt(token ?? "", `${instanceId}:token`);
     const deviceSecret = await encryptCipher.encrypt(
       deviceIdentity,
       `${instanceId}:deviceIdentity`,

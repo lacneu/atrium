@@ -89,6 +89,13 @@ export const MESSAGE_FIELDS_DROPPED: ReadonlyArray<string> = [
   "announceReplayRun",
   "autoRetry",
   "boundInstance",
+  // GROUP CHAT authorship. A `users` id from the SOURCE deployment, and the
+  // import rewrites `userId` to the importing user (see the user-scoped section
+  // rule) precisely because such an id means nothing here. `authorUserId` cannot
+  // be rewritten the same way — the other person may not exist in the target at
+  // all — and carrying it verbatim would attribute somebody's message to whoever
+  // happens to hold that id, which is worse than not naming an author.
+  "authorUserId",
 ];
 
 /**

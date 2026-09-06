@@ -31,6 +31,8 @@ const SHARED: SharedConfig = {
   inboundMediaDirOverride: null,
   attachmentFixAttestedInstances: [],
   bridgeInstanceSecrets: [],
+  forwardedClientIp: null,
+  trustedProxyUserHeader: null,
   credentialRetryMs: 30_000,
 };
 

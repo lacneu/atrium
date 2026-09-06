@@ -1,5 +1,61 @@
 # Changelog
 
+## [0.80.0] — Conversations with more than one person in them
+
+Feature release. No breaking changes, and both new capabilities stay off until
+you turn them on.
+
+**A conversation can now have other people in it.** Open any chat and its header
+says who is in the room; the owner adds a colleague from there and the
+conversation appears in their sidebar. They read it, watch it stream as it
+arrives, and write in it — and each turn keeps its author's name above it, so a
+thread with three people in it still reads as a conversation rather than a
+transcript with no speakers. The owner keeps the conversation: renaming it,
+moving it, changing its agent, resetting it, exporting it and managing the roster
+are theirs alone. A participant converses, and can leave.
+
+**Being invited into a conversation is not a grant.** A participant who is not
+entitled to the conversation's agent can read it but not write in it, and the
+composer says why instead of failing on send. The reverse holds too and matters
+more: if the OWNER loses that entitlement, the conversation is read-only for
+everyone in it, so adding someone can never route around an administrator's
+revocation. The agent, for its part, still sees a single conversation with a
+single person — its gateway has no notion of several humans in one session — so
+the shared thread is Atrium's, and nothing about it is delegated upstream.
+
+**A gateway can now see one profile per Atrium user instead of one shared
+operator.** Set per instance, in the instance's own settings: *Gateway
+authentication* stays on **shared token** — what every deployment has today,
+unchanged — or moves to **trusted proxy**, where the bridge names the person
+behind each connection. The gateway then keeps a durable profile per person, the
+sessions it records carry whoever actually had the conversation, and its own user
+list names them. With gateway roles configured on top, a person stops seeing
+another person's sessions from the gateway's own surfaces — the Control UI, the
+CLI, any other client — which Atrium could not enforce before, because every
+connection looked like the same operator. Atrium's own isolation between users is
+unchanged and was never based on this.
+
+**Two things change on the gateway when you switch an instance to per-user
+identity, and both are worth checking first.** A gateway in that mode holds no
+shared token at all — the two are mutually exclusive upstream — so anything that
+used one to get in, its Control UI in particular, needs another way. And its file
+sandbox starts applying: with a shared token the connection *is* the gateway
+owner and bypasses `tools.fs.workspaceOnly`, while a named identity does not, so
+an agent that writes outside its workspace — into a shared media directory, for
+instance — stops being able to. Look at the instance's `tools.fs` before the
+switch, not after.
+
+**Sub-agents and full session isolation do not yet coexist.** Measured on the
+live bench: with gateway roles set to hide other people's sessions, a sub-agent's
+session is created by the agent rather than by the person who asked for it, so
+the parent no longer receives its events and delegated work stops appearing in
+the conversation. Per-user identity on its own is unaffected — the whole
+catalogue passes with it, sub-agents included. Until upstream changes, an
+instance chooses: identity without the role boundary, where everything works and
+Atrium keeps isolating conversations itself, or the role boundary together with a
+required sandbox, which restores the link at the cost of forcing sandbox
+isolation on every new session.
+
 ## [0.79.0] — OpenClaw 2026.9.2 is supported
 
 Compatibility release. No breaking changes.

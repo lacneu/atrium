@@ -55,6 +55,9 @@ type InstanceForm = {
   transport: "ws" | "rest";
   gatewayVersion: string;
   gatewayHttpUrl: string;
+  // How the bridge authenticates to THIS gateway. OpenClaw only.
+  authMode: "token" | "trusted-proxy";
+  systemIdentity: string;
   // FRONTEND live-stream transport (reactive | sse) — an instance property, NOT bridge config.
   streamTransport: StreamTransport;
 };
@@ -67,6 +70,8 @@ const EMPTY_INSTANCE: InstanceForm = {
   transport: "ws",
   gatewayVersion: "",
   gatewayHttpUrl: "",
+  authMode: "token",
+  systemIdentity: "",
   streamTransport: DEFAULT_STREAM_TRANSPORT,
 };
 
@@ -92,6 +97,8 @@ function formFromInstance(i: Instance): InstanceForm {
     transport: (i.transport ?? "ws") as "ws" | "rest",
     gatewayVersion: i.gatewayVersion ?? "",
     gatewayHttpUrl: i.gatewayHttpUrl ?? "",
+    authMode: (i.authMode ?? "token") as "token" | "trusted-proxy",
+    systemIdentity: i.systemIdentity ?? "",
     streamTransport: i.streamTransport ?? DEFAULT_STREAM_TRANSPORT,
   };
 }
@@ -128,6 +135,14 @@ export function InstancesTab() {
         transport: form.kind === "hermes" ? form.transport : undefined,
         gatewayVersion: form.gatewayVersion || undefined,
         gatewayHttpUrl: form.gatewayHttpUrl || undefined,
+        // OpenClaw only: Hermes has no profile model, so the mode would be inert
+        // and the row would claim a capability the provider does not have.
+        ...(form.kind === "openclaw"
+          ? {
+              authMode: form.authMode,
+              systemIdentity: form.systemIdentity || undefined,
+            }
+          : {}),
         streamTransport: form.streamTransport,
       });
       setForm(EMPTY_INSTANCE);
@@ -365,6 +380,46 @@ export function InstancesTab() {
               }
             />
           </Field>
+          {form.kind === "openclaw" ? (
+            <>
+              <Field label={m.settings_field_auth_mode()}>
+                <Select
+                  value={form.authMode}
+                  onValueChange={(v) =>
+                    setForm({ ...form, authMode: v as "token" | "trusted-proxy" })
+                  }
+                >
+                  <SelectTrigger size="sm" className="w-56">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="token">
+                      {m.settings_auth_mode_token()}
+                    </SelectItem>
+                    <SelectItem value="trusted-proxy">
+                      {m.settings_auth_mode_trusted_proxy()}
+                    </SelectItem>
+                  </SelectContent>
+                </Select>
+                <p className="oc-field__hint">
+                  {form.authMode === "trusted-proxy"
+                    ? m.settings_auth_mode_trusted_proxy_hint()
+                    : m.settings_auth_mode_token_hint()}
+                </p>
+              </Field>
+              {form.authMode === "trusted-proxy" ? (
+                <Field label={m.settings_field_system_identity()}>
+                  <Input
+                    value={form.systemIdentity}
+                    placeholder={m.settings_field_system_identity_ph()}
+                    onChange={(e) =>
+                      setForm({ ...form, systemIdentity: e.target.value })
+                    }
+                  />
+                </Field>
+              ) : null}
+            </>
+          ) : null}
           <Field label={m.settings_field_gateway_http_url()}>
             <Input
               value={form.gatewayHttpUrl}
