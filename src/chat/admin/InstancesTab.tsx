@@ -299,7 +299,7 @@ export function InstancesTab() {
                 setForm({ ...form, kind: v as InstanceKind })
               }
             >
-              <SelectTrigger size="sm" className="w-40">
+              <SelectTrigger size="sm" className="w-full">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
@@ -316,7 +316,7 @@ export function InstancesTab() {
                   setForm({ ...form, transport: v as "ws" | "rest" })
                 }
               >
-                <SelectTrigger size="sm" className="w-56">
+                <SelectTrigger size="sm" className="w-full">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
@@ -356,7 +356,7 @@ export function InstancesTab() {
                 setForm({ ...form, streamTransport: v as StreamTransport })
               }
             >
-              <SelectTrigger size="sm" className="w-40">
+              <SelectTrigger size="sm" className="w-full">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
@@ -389,7 +389,7 @@ export function InstancesTab() {
                     setForm({ ...form, authMode: v as "token" | "trusted-proxy" })
                   }
                 >
-                  <SelectTrigger size="sm" className="w-56">
+                  <SelectTrigger size="sm" className="w-full">
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>

@@ -2203,7 +2203,7 @@
   "participants_author": "Écrit par {name}",
   "settings_field_auth_mode": "Authentification à la passerelle",
   "settings_auth_mode_token": "Jeton partagé",
-  "settings_auth_mode_trusted_proxy": "Mandataire de confiance (un profil par utilisateur)",
+  "settings_auth_mode_trusted_proxy": "Mandataire de confiance",
   "settings_auth_mode_token_hint": "Un seul identifiant pour tout le pont. La passerelle attribue toutes les sessions au même propriétaire.",
   "settings_auth_mode_trusted_proxy_hint": "Le pont nomme la personne derrière chaque connexion. La passerelle doit être réglée sur le même mode et ne peut alors pas détenir de jeton.",
   "settings_field_system_identity": "Identité système du pont",

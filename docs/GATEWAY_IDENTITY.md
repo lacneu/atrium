@@ -63,11 +63,41 @@ how a device is approved once from inside the host.
 token, so anything that opened its Control UI with one needs another route — an
 identity proxy in front of it, or its loopback with a password.
 
-**The gateway's file sandbox starts applying.** With a shared token the connection
-*is* the gateway owner and bypasses `tools.fs.workspaceOnly`; under a named
-identity it does not. An agent that writes outside its workspace — into a shared
-media directory, typically — stops being able to. Look at the instance's
-`tools.fs` before the switch, not after.
+**Outbound media stops leaving the gateway, silently.** A reply that points at a
+host file — the `MEDIA:<path>` convention, used to hand a generated file back to
+the conversation — delivers that file under a shared token and delivers nothing
+under a named identity. The turn still arrives, with its text; only the file is
+missing, and the gateway logs nothing about the drop.
+
+Measured on 2026-09-07 against gateway 2026.9.2 as a matched pair — same
+container, same scenario, same prompt, same `tools.fs`, minutes apart, the
+authentication mode the only difference: shared token delivers the file, trusted
+proxy does not. The gateway resolves outbound media access per agent and per
+requester, so a named requester lands on a different branch; which branch, and
+whether any configuration re-opens it, is not yet established.
+
+An instance whose agents return files this way loses that, and gets no error to
+go on. That is one of the two behaviours to weigh before switching, and it is why
+an instance that depends on it should stay on a shared token for now.
+
+**An agent loses the tools that need `operator.admin`.** A conversation's socket is
+capped below that scope, because a client holding it reads every session on the
+gateway and an identity carrying it is not an identity. But the gateway derives the
+AGENT's tool list from the scopes of the connection that asked for the turn — so the
+cap reaches past the operator and takes tools away from the model. Measured on
+gateway 2026.9.2: `automations` (create or manage a cron from inside a conversation)
+and `computer` disappear. Nothing is refused and nothing is logged; the tool is never
+offered, and the model quietly reaches for whatever is left — in the bench, the
+`openclaw automations` CLI through a shell.
+
+Managing crons from Atrium's own screens is unaffected: that surface does not run
+under a person's socket. What is lost is the agent doing it for you mid-conversation.
+
+Worth knowing before you weigh it: this ceiling only BUYS something once
+`gateway.roles` defines a boundary for admin to bypass. Without roles, every profile
+already sees every session — so on such a deployment the cap costs those tools and
+protects nothing. And roles are exactly what breaks sub-agents (below). The three
+configurations are not independent.
 
 ## Session isolation and sub-agents do not yet coexist
 

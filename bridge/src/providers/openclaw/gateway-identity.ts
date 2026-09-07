@@ -70,6 +70,23 @@ export const SCOPE_CAP_HEADER = "x-openclaw-scopes";
  * boundary (an admin client lists, reads and patches every session regardless of the
  * role's `sessions.others`), so a per-user socket that kept it would present an
  * identity while retaining the authority that makes identity meaningless.
+ *
+ * WHAT THIS CAP COSTS, measured 2026-09-07 on gateway 2026.9.2. The gateway derives
+ * the AGENT's tool list from the scopes of the connection that asked for the turn, so
+ * capping the person's socket removes the tools that need `operator.admin` from the
+ * MODEL — `automations` (create/manage a cron) and `computer` among them. Nothing is
+ * refused and nothing is logged: the tool is simply never offered, and the model
+ * silently falls back to whatever is left (it reached for the `openclaw automations`
+ * CLI through `exec`). Proven as a matched triple, asking the agent to report its own
+ * tool list: token mode ⇒ present; trusted proxy ⇒ absent; trusted proxy with this
+ * cap removed ⇒ present again.
+ *
+ * The cap is kept because the alternative is worse — an identity that carries admin
+ * is not an identity — but note it only BUYS something once `gateway.roles` defines a
+ * boundary for admin to bypass. Without roles every profile already sees every
+ * session, so on such a deployment the cap costs agent tools and protects nothing.
+ * That trade-off belongs to the operator, not to this constant; see
+ * docs/GATEWAY_IDENTITY.md.
  */
 export const HUMAN_SCOPE_CAP = [
   "operator.read",

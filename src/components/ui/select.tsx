@@ -8,6 +8,9 @@ function Select(props: React.ComponentProps<typeof SelectPrimitive.Root>) {
   return <SelectPrimitive.Root data-slot="select" {...props} />;
 }
 
+// NOTE: Radix's `Select.Value` destructures `className` and `style` away and
+// renders the span with neither, so the value cannot be styled from here. The
+// containment below is applied from the trigger, by slot.
 function SelectValue(
   props: React.ComponentProps<typeof SelectPrimitive.Value>,
 ) {
@@ -28,6 +31,15 @@ function SelectTrigger({
       data-size={size}
       className={cn(
         "flex w-fit items-center justify-between gap-2 rounded-lg border border-input bg-background px-2.5 py-1 text-sm whitespace-nowrap shadow-xs transition-[color,box-shadow] outline-none focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring/50 disabled:cursor-not-allowed disabled:opacity-50 data-[size=default]:h-8 data-[size=sm]:h-7 data-[placeholder]:text-muted-foreground dark:bg-input/30 dark:hover:bg-input/50 [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4",
+        // The selected label stays INSIDE the box. Most call sites pin a width
+        // (`w-40`, `w-56`), which tailwind-merge resolves in the caller's favour
+        // over the `w-fit` above — so the trigger stops growing with its content
+        // while `whitespace-nowrap` still forbids wrapping. The value span is
+        // then a flex item with the default `min-width: auto`, refusing to
+        // shrink below its text: a label longer than the pinned width spills
+        // past the border and shoves the chevron out. Styled by slot because
+        // Radix's `Select.Value` drops the `className` it is given.
+        "[&>[data-slot=select-value]]:min-w-0 [&>[data-slot=select-value]]:truncate",
         className,
       )}
       {...props}

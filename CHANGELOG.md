@@ -1,5 +1,36 @@
 # Changelog
 
+## [0.81.1] — Long labels stay inside their box
+
+Corrective release. One user-visible defect, fixed at the component rather than
+at the screen that showed it. No breaking changes.
+
+**A dropdown no longer spills its selected value past its own border.** Almost
+every select in the app pins a width, chosen when the English label fit; the
+component's own "grow to fit the content" rule loses to that pinned width, while
+its "never wrap" rule still holds — so the value had no way to give way, and a
+label longer than the box ran out through the border and pushed the chevron
+outside it. Selected values now shorten with an ellipsis instead. The fix is in
+the select itself, so it holds for all sixty-one of them and for whatever a
+future translation is long enough to break: a French label is routinely half
+again as long as the English one a width was sized for, and no width can be
+trusted to fit in a locale nobody reviewed.
+
+**The per-user identity guide states what the mode actually costs.** It claimed the
+gateway's file sandbox began applying under a named identity; measured against
+gateway 2026.9.2, that is false — the sandbox behaves identically under both modes.
+What does change is outbound media: a reply pointing at a host file delivers that
+file under a shared token and delivers nothing under a named identity, with no error
+anywhere. Managed media, such as a generated image, is unaffected. The guidance now
+says so, because it is the one behaviour worth weighing before switching an instance.
+
+**The instance sheet's four dropdowns follow the column they sit in.** Technology,
+transport, stream transport and gateway authentication were each pinned to a
+width narrower than the panel; they now match the text fields above and below
+them. The gateway authentication choice also drops a parenthetical that the hint
+directly beneath it already said better, so the option reads in full rather than
+being cut short.
+
 ## [0.81.0] — Naming somebody in a conversation
 
 Group conversations gain mentions, and a capability can now depend on how an

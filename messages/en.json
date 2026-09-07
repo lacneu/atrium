@@ -2203,7 +2203,7 @@
   "participants_author": "Written by {name}",
   "settings_field_auth_mode": "Gateway authentication",
   "settings_auth_mode_token": "Shared token",
-  "settings_auth_mode_trusted_proxy": "Trusted proxy (one profile per user)",
+  "settings_auth_mode_trusted_proxy": "Trusted proxy",
   "settings_auth_mode_token_hint": "One credential for the whole bridge. The gateway attributes every session to the same owner.",
   "settings_auth_mode_trusted_proxy_hint": "The bridge names the person behind each connection. The gateway must be set to the same mode, and cannot hold a token then.",
   "settings_field_system_identity": "Bridge system identity",
