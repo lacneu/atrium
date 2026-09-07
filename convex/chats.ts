@@ -10,7 +10,7 @@ import { mutation } from "./_generated/server";
 import type { MutationCtx } from "./_generated/server";
 import type { Id } from "./_generated/dataModel";
 import { internal } from "./_generated/api";
-import { requireActive, requireOwnedChat } from "./lib/access";
+import { requireActive, requireOwnedChat, requireReachableChat } from "./lib/access";
 import { enrichUserAgents, getEffectiveGrants } from "./agents";
 import { auditImpersonated } from "./lib/audit";
 import { deleteFilesByMessage } from "./lib/files";
@@ -590,8 +590,21 @@ export const setChatSidebar = mutation({
   args: { chatId: v.id("chats"), hidden: v.boolean() },
   handler: async (ctx, { chatId, hidden }) => {
     const { userId } = await requireActive(ctx);
-    await requireOwnedChat(ctx, userId, chatId);
-    await ctx.db.patch(chatId, { sidebarHidden: hidden ? true : undefined });
+    // Removing a conversation from YOUR sidebar is a personal preference, so a
+    // participant may do it — but it is written where it belongs to them. The
+    // chat's own flag is per CHAT: writing a participant's choice there would take
+    // the conversation off everybody else's sidebar too.
+    const access = await requireReachableChat(ctx, userId, chatId);
+    if (access.role === "owner") {
+      await ctx.db.patch(chatId, { sidebarHidden: hidden ? true : undefined });
+      return;
+    }
+    const row = await ctx.db
+      .query("chatParticipants")
+      .withIndex("by_chat_user", (q) => q.eq("chatId", chatId).eq("userId", userId))
+      .unique();
+    if (row === null) return; // left between the access check and here
+    await ctx.db.patch(row._id, { sidebarHidden: hidden ? true : undefined });
   },
 });
 

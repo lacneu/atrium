@@ -1118,6 +1118,11 @@ export default defineSchema({
     /** Who added them — the owner today; kept for the roster's provenance. */
     addedBy: v.id("users"),
     addedAt: v.number(),
+    /** THIS participant's working-set opt-out. The owner's own preference lives on
+     *  `chats.sidebarHidden`, which is per CHAT: applying it to everyone in the
+     *  room would let one person's tidying remove the conversation from three
+     *  other sidebars. A participant's belongs to their membership. */
+    sidebarHidden: v.optional(v.boolean()),
   })
     .index("by_chat", ["chatId"])
     .index("by_user", ["userId"])

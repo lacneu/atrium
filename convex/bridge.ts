@@ -23,6 +23,7 @@ import {
   ActionCtx,
 } from "./_generated/server";
 import { internal } from "./_generated/api";
+import { chatParticipantRows } from "./lib/chatAccess";
 import { maybeScheduleTurnRetry } from "./turnRetry";
 import { Doc, Id } from "./_generated/dataModel";
 import { resolveTargetForChat, resolveTargetForTurn } from "./routing";
@@ -107,6 +108,19 @@ async function traceDispatch(
     chatKind?: string | null;
     dispatchStatus: "sent" | "failed";
     target?: { instanceName?: string; agentId?: string };
+    /** How the instance authenticates to its gateway. Says whether the gateway saw
+     *  a NAMED person behind this turn or the single shared operator — the first
+     *  question to answer when a session's attribution looks wrong. */
+    authMode?: "token" | "trusted-proxy";
+    /** The gateway identity this turn ran under. It is the chat OWNER's stable key
+     *  (a slug, never an address): the gateway keeps ONE session per conversation,
+     *  so a participant's turn runs in the owner's session by design, and a reader
+     *  must be able to see that rather than infer it. */
+    gatewayIdentity?: string;
+    /** People in the conversation besides its owner, and whether THIS turn came
+     *  from one of them. Counts and a flag — no names. */
+    participantCount?: number;
+    fromParticipant?: boolean;
     reason?: string;
     // Curated root-cause code (non-PHI enum). For a gateway refusal it comes from
     // the bridge's classified 502 body; for the pre-bridge branches it is a fixed
@@ -136,6 +150,17 @@ async function traceDispatch(
         // out of the trace is what turns a future analysis into one `list_traces`
         // call instead of a second round-trip to ask what the chat was.
         ...(args.chatKind ? { chatKind: args.chatKind } : {}),
+        // WHO the gateway thought it was talking to. Written on every dispatch:
+        // an attribution question ("why does this session belong to the bridge?")
+        // is answered by reading the turn, not by reproducing it.
+        ...(args.authMode ? { authMode: args.authMode } : {}),
+        ...(args.gatewayIdentity ? { gatewayIdentity: args.gatewayIdentity } : {}),
+        ...(args.participantCount !== undefined && args.participantCount > 0
+          ? {
+              participantCount: args.participantCount,
+              fromParticipant: args.fromParticipant === true,
+            }
+          : {}),
       }),
     });
   } catch {
@@ -630,6 +655,12 @@ export const getChatRouting = internalQuery({
     // texts sent to the bridge (an admin override always wins as-is).
     const contentLocale = await contentLocaleForInstance(ctx, instance?.config);
     return {
+      // HOW this instance authenticates to its gateway. An ENUM, non-secret, and
+      // the one fact that says whether the gateway saw a named person or a single
+      // shared operator behind this turn — which is exactly what an operator needs
+      // when a session's attribution looks wrong. Read from the instance already
+      // loaded above, so it costs no extra read on the dispatch path.
+      authMode: instance?.authMode ?? "token",
       // The chat's KIND — `summarizer` | `documentary` | `curator` | `converter` for
       // Atrium's own hidden work, absent for a real conversation. An ENUM, so it is
       // safe on a trace (no content, no identifiers). Reported here because the
@@ -1289,14 +1320,23 @@ export const reparkIfBusy = internalMutation({
  */
 export const SEND_POST_TIMEOUT_MS = 4 * 60_000;
 
-/** The chat's OWNER. Every routing decision that MUTATES the chat resolves against
- *  them, never against whoever sent this particular turn (a group chat's sender may
- *  be a participant). Returns null for a chat deleted mid-turn. */
+/** The chat's OWNER, and how many people share the conversation.
+ *
+ *  The owner is what every routing decision that MUTATES the chat resolves
+ *  against, never whoever sent this particular turn (a group chat's sender may be
+ *  a participant). The count rides along because the dispatch trace states it and
+ *  reading it here costs one bounded query instead of a second round-trip.
+ *  Returns null for a chat deleted mid-turn. */
 export const getChatOwner = internalQuery({
   args: { chatId: v.id("chats") },
-  handler: async (ctx, { chatId }): Promise<Id<"users"> | null> => {
+  handler: async (
+    ctx,
+    { chatId },
+  ): Promise<{ ownerId: Id<"users">; participantCount: number } | null> => {
     const chat = await ctx.db.get(chatId);
-    return chat?.userId ?? null;
+    if (chat === null) return null;
+    const roster = await chatParticipantRows(ctx, chatId);
+    return { ownerId: chat.userId, participantCount: roster.length };
   },
 });
 
@@ -1357,10 +1397,10 @@ export const dispatch = internalAction({
     // WHO the routing decisions belong to. Read once: `row.userId` is the SENDER,
     // and on a group chat that is a participant whose grants must not decide what
     // the owner's conversation is bound to.
-    const chatOwnerId =
-      (await ctx.runQuery(internal.bridge.getChatOwner, {
-        chatId: row.chatId as Id<"chats">,
-      })) ?? (row.userId as Id<"users">);
+    const chatFacts = await ctx.runQuery(internal.bridge.getChatOwner, {
+      chatId: row.chatId as Id<"chats">,
+    });
+    const chatOwnerId = chatFacts?.ownerId ?? (row.userId as Id<"users">);
     if (row.routedAgent && row.messageId) {
       turnRouting = await ctx.runMutation(internal.bridge.beginTurnRouting, {
         chatId: row.chatId as Id<"chats">,
@@ -1784,6 +1824,12 @@ export const dispatch = internalAction({
         instanceName: routing.target.instanceName,
         agentId: routing.target.agentId,
       },
+      authMode: routing.authMode,
+      // The OWNER's key: one gateway session per conversation, so this is the
+      // identity the turn ran under whoever typed it.
+      gatewayIdentity: routing.target.canonical,
+      participantCount: chatFacts?.participantCount ?? 0,
+      fromParticipant: String(row.userId) !== String(chatOwnerId),
       ...(ok ? {} : { reason: "send_failed", errorCode }),
     });
   },

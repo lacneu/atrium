@@ -1,5 +1,40 @@
 # Changelog
 
+## [0.80.1] — You can see which identity a turn ran under
+
+Observability and documentation release for the two capabilities 0.80.0 added.
+No breaking changes.
+
+**A turn now says who the gateway thought sent it.** Per-user identity made a new
+question possible — *this session is attributed to the bridge rather than to a
+person, why?* — and answering it meant correlating by hand. Every dispatch trace
+now carries the instance's authentication mode, the gateway identity the turn ran
+under, how many people share the conversation, and whether the turn came from
+someone who does not own it. The chat assessment reports the mode and the
+participant count beside its verdict, so the diagnosis starts there rather than
+in a trace search. All of it is counts, flags and a stable key: no message text,
+no names, no addresses.
+
+**A bench attestation names the authentication mode it covers.** The bridge takes
+genuinely different paths per mode — identity headers on the connection, a
+separate administrative connection for the calls that need it — so a run that
+passed said nothing about which of the two it exercised. It does now, reported by
+the bridge itself rather than read from the bench's own configuration, and a
+guard refuses an attestation that stays silent about it.
+
+**A participant can take a group conversation out of their own sidebar.** Hiding
+a chat was a property of the chat, so one person tidying up would have cleared it
+from everybody's sidebar. Each person's choice is now their own, and the owner's
+is still theirs.
+
+**Switching an instance to per-user identity has a written procedure.**
+[docs/GATEWAY_IDENTITY.md](docs/GATEWAY_IDENTITY.md) states what the gateway must
+be configured with, the two gateway behaviours that change with the mode — its
+Control UI loses the token it used to open with, and its file sandbox starts
+applying to agents that write outside their workspace — and how session isolation
+and sub-agents interact today. Read it before switching; both consequences are
+easier to check beforehand than to diagnose after.
+
 ## [0.80.0] — Conversations with more than one person in them
 
 Feature release. No breaking changes, and both new capabilities stay off until

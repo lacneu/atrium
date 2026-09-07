@@ -333,6 +333,10 @@ function main(): void {
         "+ bridge availability, classified (stuck_stream | dispatch_error | " +
         "attachment_problem | bridge_unavailable | bridge_degraded | healthy) with a " +
         "`suggestedAction` and, when safe, a `suggestedTool` (e.g. reconcile_chat). " +
+        "Also states `participantCount` (people sharing the chat besides its owner) " +
+        "and `authMode` (`token` = the gateway sees one shared operator for every " +
+        "conversation; `trusted-proxy` = it sees one profile per person) — start " +
+        "here for a question about WHO the gateway thought sent a turn. " +
         "Requires traces.read. Read-only. CALL THIS FIRST on a user report, then act " +
         "on the suggestion.",
       inputSchema: diagnoseChatInput,
@@ -394,7 +398,12 @@ function main(): void {
     {
       title: "List recent traces",
       description:
-        "Recent trace events (GET /traces). Key must have traces.read.",
+        "Recent trace events (GET /traces). Key must have traces.read. " +
+        "An `openclaw.dispatch` event carries, in `meta`: `authMode`, " +
+        "`gatewayIdentity` (the stable key the turn ran under — always the chat " +
+        "OWNER's, because a conversation has one gateway session), " +
+        "`participantCount` and `fromParticipant` (the turn came from someone who " +
+        "does not own the chat). Metadata only — no message text, ever.",
       inputSchema: listTracesInput,
     },
     async (args) => run(() => listTraces(config, args)),

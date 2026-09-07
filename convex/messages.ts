@@ -36,7 +36,11 @@ import {
 } from "./lib/chatRenderState";
 import { provenancePartStructure } from "./lib/provenance";
 import { Id, Doc } from "./_generated/dataModel";
-import { participantChatIds, resolveChatAccess } from "./lib/chatAccess";
+import {
+  chatParticipantRows,
+  participantChatIds,
+  resolveChatAccess,
+} from "./lib/chatAccess";
 import { requireActive, requireOwnedChat, requireReachableChat } from "./lib/access";
 import { agentIdFromChildKey } from "./lib/subAgentFailure";
 import { drainNextQueued } from "./lib/outboxQueue";
@@ -939,9 +943,26 @@ export const chatStateInternal = internalQuery({
     // to the MCP, not only the UI monitor. Bounded reads; enums + counts + opaque
     // ids only (see loadSubAgentSummary).
     const subAgents = await loadSubAgentSummary(ctx, id, now);
+    // Bounded: the roster read is capped, and the instance is a single point read.
+    const participantCountForState = (await chatParticipantRows(ctx, id)).length;
+    const instanceForState = chat.instanceName
+      ? await ctx.db
+          .query("instances")
+          .withIndex("by_name", (q) => q.eq("name", chat.instanceName!))
+          .first()
+      : null;
+    const authModeForState = instanceForState?.authMode ?? "token";
     return {
       ok: true as const,
       chatId: id,
+      // WHO SHARES this conversation, and under which gateway identity it runs.
+      // Counts and an enum, never a name or an address: an operator asking why a
+      // session is attributed to the bridge, or why a turn came from someone who
+      // does not own the chat, gets the answer from the assessment itself instead
+      // of correlating traces by hand. `participantCount` is 0 on the solo chats
+      // that are still the overwhelming majority, so the shape is unchanged there.
+      participantCount: participantCountForState,
+      authMode: authModeForState,
       // The slug (instances.name), never the admin-settable displayName.
       instanceName: chat.instanceName ?? null,
       agentId: chat.agentId ?? null,
@@ -1144,11 +1165,14 @@ export const listChats = query({
     // through the recency window: participations are bounded by their own cap and
     // are few by nature, and a conversation somebody deliberately invited you into
     // must not fall off the sidebar because your own chats are busier than it.
-    for (const chatId of await participantChatIds(ctx, userId)) {
+    for (const chatId of await participantChatIds(ctx, userId, { forSidebar: true })) {
       if (byId.has(chatId)) continue;
       const c = await ctx.db.get(chatId);
       // Same exclusions as the owner path: archived rows and the hidden utility
-      // chats (documentary/summarizer) never reach the sidebar.
+      // chats (documentary/summarizer) never reach the sidebar. NOT the chat's own
+      // `sidebarHidden` — that is the OWNER's working-set choice, and applying it
+      // here would let their tidying clear the conversation from every sidebar in
+      // the room. A participant's own opt-out is filtered above, on their row.
       if (c === null || c.archived || c.kind !== undefined) continue;
       byId.set(c._id, c);
     }

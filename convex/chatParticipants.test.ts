@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { convexTest } from "convex-test";
 import { describe, expect, test } from "vitest";
 
-import { api } from "./_generated/api";
+import { api, internal } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
 import { resolveTargetForChat } from "./routing";
 import schema from "./schema";
@@ -734,5 +734,225 @@ describe("what a participant is NOT told", () => {
     // And the viewer's own standing IS told, because the UI decides on it.
     expect(asOwner?.viewerRole).toBe("owner");
     expect(asGuest?.viewerRole).toBe("participant");
+  });
+});
+
+describe("the sidebar is each person's own", () => {
+  test("a participant hides a group chat for THEMSELVES, not for the room", async () => {
+    // The chat's own `sidebarHidden` is per CHAT. Writing a participant's choice
+    // there would take the conversation off the owner's sidebar — and off every
+    // other participant's — because one person tidied up.
+    const t = convexTest(schema, modules);
+    const owner = await seedUser(t, "owner");
+    const guest = await seedUser(t, "guest");
+    const other = await seedUser(t, "other");
+    const chatId = await seedChat(t, owner, "Revue");
+    await addParticipantRow(t, chatId, guest);
+    await addParticipantRow(t, chatId, other);
+
+    await as(t, guest).mutation(api.chats.setChatSidebar, { chatId, hidden: true });
+
+    const inSidebar = async (u: Id<"users">) =>
+      (await as(t, u).query(api.messages.listChats, {})).map((c: { _id: Id<"chats"> }) =>
+        String(c._id),
+      );
+    expect(await inSidebar(guest)).not.toContain(String(chatId));
+    expect(await inSidebar(owner)).toContain(String(chatId));
+    expect(await inSidebar(other)).toContain(String(chatId));
+    // And the chat itself was not touched.
+    const chat = await t.run(async (ctx) => ctx.db.get(chatId));
+    expect(chat?.sidebarHidden).toBeUndefined();
+  });
+
+  test("the OWNER hiding it does not clear it from the participants' sidebars", async () => {
+    const t = convexTest(schema, modules);
+    const owner = await seedUser(t, "owner");
+    const guest = await seedUser(t, "guest");
+    const chatId = await seedChat(t, owner, "Revue");
+    await addParticipantRow(t, chatId, guest);
+
+    await as(t, owner).mutation(api.chats.setChatSidebar, { chatId, hidden: true });
+
+    const ownerSidebar = (await as(t, owner).query(api.messages.listChats, {})).map(
+      (c: { _id: Id<"chats"> }) => String(c._id),
+    );
+    const guestSidebar = (await as(t, guest).query(api.messages.listChats, {})).map(
+      (c: { _id: Id<"chats"> }) => String(c._id),
+    );
+    expect(ownerSidebar).not.toContain(String(chatId));
+    expect(guestSidebar).toContain(String(chatId));
+  });
+
+  test("a stranger cannot touch anybody's sidebar", async () => {
+    const t = convexTest(schema, modules);
+    const owner = await seedUser(t, "owner");
+    const stranger = await seedUser(t, "stranger");
+    const chatId = await seedChat(t, owner);
+    await expect(
+      as(t, stranger).mutation(api.chats.setChatSidebar, { chatId, hidden: true }),
+    ).rejects.toThrow(/Forbidden/);
+  });
+});
+
+describe("what a trace has to say about a group turn", () => {
+  // The operator question this answers, without reproducing anything anyone wrote:
+  // "the gateway attributed this session to the bridge / to somebody else — why?"
+  // The turn's own trace states the mode, the identity it ran under, and whether
+  // the person who typed it was the owner.
+  test("the routing reports the instance's authentication mode", async () => {
+    const t = convexTest(schema, modules);
+    const owner = await seedUser(t, "owner");
+    const chatId = await seedChat(t, owner);
+    await t.run(async (ctx) => {
+      await ctx.db.insert("instances", {
+        name: "alpha",
+        gatewayUrl: "ws://gw",
+        bridgeUrl: "http://bridge",
+        authMode: "trusted-proxy" as const,
+      });
+      await ctx.db.insert("agents", {
+        instanceName: "alpha",
+        agentId: "alice",
+        displayName: "alice",
+        enabled: true,
+        source: "discovered" as const,
+        presentInLastOk: true,
+        firstSeenAt: 1,
+        lastSeenAt: 1,
+      });
+      await ctx.db.insert("userAgents", {
+        userId: owner,
+        instanceName: "alpha",
+        agentId: "alice",
+        isDefault: true,
+        source: "manual" as const,
+        createdAt: 1,
+      });
+      await ctx.db.patch(chatId, { instanceName: "alpha", agentId: "alice" });
+    });
+
+    const routing = await t.query(internal.bridge.getChatRouting, {
+      chatId,
+      userId: owner,
+    });
+    expect(routing?.authMode).toBe("trusted-proxy");
+    // The identity the turn runs under is the OWNER's key, whoever typed it.
+    expect(routing?.target?.canonical).toBe("owner");
+  });
+
+  test("an instance with no mode recorded reads as the shared token", async () => {
+    // Every instance written before per-user identity existed, and the default.
+    const t = convexTest(schema, modules);
+    const owner = await seedUser(t, "owner");
+    const chatId = await seedChat(t, owner);
+    await t.run(async (ctx) => {
+      await ctx.db.insert("instances", { name: "alpha", gatewayUrl: "ws://gw" });
+      await ctx.db.insert("agents", {
+        instanceName: "alpha",
+        agentId: "alice",
+        displayName: "alice",
+        enabled: true,
+        source: "discovered" as const,
+        presentInLastOk: true,
+        firstSeenAt: 1,
+        lastSeenAt: 1,
+      });
+      await ctx.db.patch(chatId, { instanceName: "alpha", agentId: "alice" });
+    });
+    const routing = await t.query(internal.bridge.getChatRouting, {
+      chatId,
+      userId: owner,
+    });
+    expect(routing?.authMode).toBe("token");
+  });
+
+  test("the dispatch reads the room's size in the same query as its owner", async () => {
+    // One bounded read, not a second round-trip: the trace states the count on
+    // every dispatch, so it must not cost one.
+    const t = convexTest(schema, modules);
+    const owner = await seedUser(t, "owner");
+    const guest = await seedUser(t, "guest");
+    const other = await seedUser(t, "other");
+    const chatId = await seedChat(t, owner);
+    await addParticipantRow(t, chatId, guest);
+    await addParticipantRow(t, chatId, other);
+
+    const facts = await t.query(internal.bridge.getChatOwner, { chatId });
+    expect(String(facts?.ownerId)).toBe(String(owner));
+    expect(facts?.participantCount).toBe(2);
+    expect(await t.query(internal.bridge.getChatOwner, { chatId: chatId })).not.toBeNull();
+  });
+
+  test("the trace states the identity facts on every dispatch, not only on failures", () => {
+    // Asserted in the SOURCE: the dispatch is an action that POSTs to the bridge,
+    // so the only way to pin what it puts on the trace is where it puts it. An
+    // attribution question must be answerable from the turn that raised it.
+    const src = readFileSync(new URL("./bridge.ts", import.meta.url), "utf8")
+      .replace(/\/\*[\s\S]*?\*\//g, " ")
+      .replace(/^[ \t]*\/\/.*$/gm, " ");
+    const at = src.lastIndexOf("await traceDispatch(ctx, {");
+    expect(at).toBeGreaterThan(-1);
+    const call = src.slice(at, at + 900);
+    for (const field of [
+      "authMode:",
+      "gatewayIdentity:",
+      "participantCount:",
+      "fromParticipant:",
+    ]) {
+      expect(call, field).toContain(field);
+    }
+  });
+});
+
+describe("the assessment answers the attribution question on its own", () => {
+  test("it states the room's size and the gateway's authentication mode", async () => {
+    // The MCP entry point for a user report is diagnose_chat, which reads this.
+    // Without these two facts an operator asking "why is this session attributed
+    // to the bridge?" has to correlate traces by hand before they can even start.
+    const t = convexTest(schema, modules);
+    const owner = await seedUser(t, "owner");
+    const guest = await seedUser(t, "guest");
+    const chatId = await seedChat(t, owner);
+    await addParticipantRow(t, chatId, guest);
+    await t.run(async (ctx) => {
+      await ctx.db.insert("instances", {
+        name: "alpha",
+        gatewayUrl: "ws://gw",
+        authMode: "trusted-proxy" as const,
+      });
+      await ctx.db.patch(chatId, { instanceName: "alpha", agentId: "alice" });
+    });
+
+    const state = await t.query(internal.messages.chatStateInternal, { chatId });
+    expect(state.ok).toBe(true);
+    if (!state.ok) return;
+    expect(state.participantCount).toBe(1);
+    expect(state.authMode).toBe("trusted-proxy");
+  });
+
+  test("a solo chat on a token instance reads as 0 and token", async () => {
+    // The overwhelming majority, and the shape must not change for them.
+    const t = convexTest(schema, modules);
+    const owner = await seedUser(t, "owner");
+    const chatId = await seedChat(t, owner);
+    const state = await t.query(internal.messages.chatStateInternal, { chatId });
+    expect(state.ok).toBe(true);
+    if (!state.ok) return;
+    expect(state.participantCount).toBe(0);
+    expect(state.authMode).toBe("token");
+  });
+
+  test("it never carries a participant's name or address", async () => {
+    // SOC2: the observability surfaces state counts, buckets and enums — never
+    // who somebody is. A roster belongs to the conversation, not to a trace.
+    const t = convexTest(schema, modules);
+    const owner = await seedUser(t, "owner");
+    const guest = await seedUser(t, "guest");
+    const chatId = await seedChat(t, owner);
+    await addParticipantRow(t, chatId, guest);
+    const state = await t.query(internal.messages.chatStateInternal, { chatId });
+    const serialized = JSON.stringify(state);
+    expect(serialized).not.toContain("guest@example.com");
+    expect(serialized).not.toContain("@example.com");
   });
 });

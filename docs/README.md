@@ -16,6 +16,7 @@ to do — each one is ordered, and the first entry is the one to read first.
 | [`deploy/TROUBLESHOOTING.md`](../deploy/TROUBLESHOOTING.md) | First-deploy problems with diagnosis and fix: private images, sign-in/JWT, agent discovery. |
 | [`deploy/SHARED_FS_MEDIA.md`](../deploy/SHARED_FS_MEDIA.md) | Wiring the shared-filesystem media exchange. **Read it before mounting anything** — each instance has its own host path. |
 | [INSTANCE_PROVISIONING.md](INSTANCE_PROVISIONING.md) | Registering a gateway with Atrium from an installer, with no administrator in a browser — the unattended counterpart of the admin form. |
+| [GATEWAY_IDENTITY.md](GATEWAY_IDENTITY.md) | Making a gateway see one profile per user instead of one shared operator: what the bridge sends, what the gateway must be configured with, and the two behaviours that change when you switch. |
 | [OPENCLAW_VERSION_COMPAT.md](OPENCLAW_VERSION_COMPAT.md) | What to replay when a new OpenClaw version comes out, and why the harness needs no per-version branch. |
 
 ## I want to work on Atrium

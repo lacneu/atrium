@@ -65,6 +65,8 @@ interface Attestation {
   worktree?: { dirty: boolean | null; deltaSha256: string | null };
   openclawRuns?: { id: string; ok: boolean; chat: string }[];
   supportDigest?: string | null;
+  /** Which gateway authentication mode the run exercised. */
+  authMode?: string | null;
 }
 
 /** The same hash the bench computes, RE-COMPUTED from the directory. A number an artifact
@@ -340,6 +342,27 @@ describe("the attestation agrees with the repository", () => {
         att!.supportDigest,
         "the gateway-reading code changed since the run that attested it: re-run the bench",
       ).toBe(here);
+    });
+
+    it(`${version}: the GO says WHICH authentication mode it covers`, () => {
+      const att = readAttestation(version);
+      if (att === null) return;
+      // ONLY at the ceiling, like the digest above: an attestation for an older
+      // version was earned before the distinction existed, and demanding a re-run
+      // of a version nobody deploys any more would be a ratchet that punishes
+      // history instead of guarding the present.
+      if (version !== OPENCLAW.supportedRange?.maxValidated) return;
+      // The bridge takes genuinely different paths per mode — identity headers on
+      // the upgrade, an administrative socket for the admin-scoped calls — so a GO
+      // that does not name the mode leaves a reader assuming the one they expected.
+      expect(
+        att.authMode,
+        "this attestation does not say which authentication mode it exercised: re-run the bench",
+      ).toBeDefined();
+      expect(
+        ["token", "trusted-proxy"],
+        `unknown authMode ${String(att.authMode)}`,
+      ).toContain(att.authMode);
     });
 
     it(`${version}: the GO proves the session SURVIVES a delivered file`, () => {

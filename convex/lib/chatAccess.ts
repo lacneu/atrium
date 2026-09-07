@@ -67,12 +67,17 @@ export async function resolveChatAccess(
 export async function participantChatIds(
   ctx: QueryCtx | MutationCtx,
   userId: Id<"users">,
+  /** Drop the ones this person took off their own sidebar. The chat's own
+   *  `sidebarHidden` is the OWNER's preference and must not travel. */
+  opts?: { forSidebar?: boolean },
 ): Promise<Id<"chats">[]> {
   const rows = await ctx.db
     .query("chatParticipants")
     .withIndex("by_user", (q) => q.eq("userId", userId))
     .take(MAX_PARTICIPATIONS_SCANNED);
-  return rows.map((r) => r.chatId);
+  return rows
+    .filter((r) => !(opts?.forSidebar === true && r.sidebarHidden === true))
+    .map((r) => r.chatId);
 }
 
 /** The roster of one chat, oldest first. Bounded by the product limit. */

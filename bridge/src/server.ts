@@ -2465,6 +2465,11 @@ export interface CapabilityTarget {
   provider: "openclaw" | "hermes";
   agentId: string;
   gatewayVersion: string | null;
+  /** How this instance authenticates to its gateway. NON-secret, and the one fact
+   *  that says whether the gateway sees one profile per person or a single shared
+   *  operator — so a capability answer, a bench attestation and a trace can all
+   *  name the mode they describe instead of leaving a reader to guess. */
+  authMode: "token" | "trusted-proxy";
   capabilities: Record<string, boolean>;
   versionBeyondValidated?: true;
   /** THIS instance's operator attests its gateway image carries the attachment fix.
@@ -2531,6 +2536,7 @@ export function buildCapabilityTargets(
   provider: "openclaw" | "hermes" = "openclaw",
   transport: "ws" | "rest" = "ws",
   attachmentFixAttested = false,
+  authMode: "token" | "trusted-proxy" = "token",
 ): CapabilityTarget[] {
   const byKey = new Map<string, LiveTarget>();
   for (const t of live) byKey.set(t.canonical, t);
@@ -2551,6 +2557,7 @@ export function buildCapabilityTargets(
     const resolved = resolveCapabilities(provider, effectiveVersion);
     if (provider === "hermes") applyHermesTransportOverlay(resolved, effectiveVersion, transport);
     const target: CapabilityTarget = {
+      authMode,
       key: t.canonical,
       instanceName,
       provider,
@@ -2583,6 +2590,7 @@ export function buildCapabilityTargets(
     const resolved = resolveCapabilities(provider, fallbackVersion);
     if (provider === "hermes") applyHermesTransportOverlay(resolved, fallbackVersion, transport);
     const synthetic: CapabilityTarget = {
+      authMode,
       key: instanceName,
       instanceName,
       provider,
@@ -2951,6 +2959,7 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
           bundle.config.kind ?? "openclaw",
           bundle.config.transport ?? "ws",
           bundle.config.attachmentFixAttested === true,
+          bundle.config.openclawAuthMode ?? "token",
         ),
       );
       const names = [...served.keys()];
