@@ -9,7 +9,10 @@
 // silently drops sends or can't authenticate is worse than a process that
 // refuses to start with a clear message.
 
-import type { GatewayAuthMode } from "./providers/openclaw/gateway-identity.js";
+import type {
+  GatewayAuthMode,
+  PersonScopes,
+} from "./providers/openclaw/gateway-identity.js";
 
 /** Ed25519 device identity used to sign the OpenClaw connect challenge. */
 export interface DeviceIdentity {
@@ -32,6 +35,8 @@ export interface BridgeConfig {
    *    mutually exclusive upstream, so this is per-instance, never global.
    */
   openclawAuthMode?: GatewayAuthMode;
+  /** Scopes a conversation's socket carries. Absent ⇒ "capped". */
+  openclawPersonScopes?: PersonScopes;
   /**
    * Identity presented on sockets that serve no single person (agent discovery,
    * orphan-transcript recovery, config defaults). Null ⇒ derived from the instance
@@ -554,6 +559,11 @@ export interface InstanceData {
   /** How this instance authenticates (Convex `instances.authMode`). Absent ⇒ "token",
    *  so an instance row written before this field existed keeps its behaviour. */
   authMode?: GatewayAuthMode | null;
+  /** Scopes a CONVERSATION's socket carries (Convex `instances.personScopes`).
+   *  Absent ⇒ "capped", the behaviour of every instance written before this field.
+   *  Only meaningful under "trusted-proxy": a token-mode socket presents no
+   *  identity at all, so there is nothing to cap. */
+  personScopes?: PersonScopes | null;
   /** Identity for this instance's system sockets (Convex `instances.systemIdentity`).
    *  Absent ⇒ derived from the instance name. */
   systemIdentity?: string | null;
@@ -678,6 +688,7 @@ export function buildInstanceConfig(
     openclawGatewayUrl: inst.gatewayUrl,
     openclawToken: inst.token,
     openclawAuthMode: inst.authMode ?? "token",
+    openclawPersonScopes: inst.personScopes ?? "capped",
     openclawSystemIdentity: inst.systemIdentity ?? null,
     // Host-level facts, identical for every instance this bridge serves: they
     // describe THIS process's network position, not the gateway it talks to.

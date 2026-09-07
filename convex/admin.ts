@@ -653,6 +653,10 @@ export const upsertInstance = mutation({
     // upstream refuses to hold a token in trusted-proxy mode — which is why this
     // is set per instance and never deployment-wide.
     authMode: v.optional(v.union(v.literal("token"), v.literal("trusted-proxy"))),
+    // Scopes a conversation's socket carries under "trusted-proxy". Absent ⇒
+    // "capped", which is what every instance did before this existed. See the
+    // schema comment for what the ceiling costs and when it buys anything.
+    personScopes: v.optional(v.union(v.literal("capped"), v.literal("full"))),
     systemIdentity: v.optional(v.string()),
     // FRONTEND live-stream transport (reactive | sse) — a top-level instance property,
     // NOT bridge-dispatch config. See schema instances.streamTransport.
@@ -677,6 +681,7 @@ export const upsertInstance = mutation({
       // Absent ⇒ the field is cleared to "token" semantics at the bridge, which is
       // the behaviour of every instance written before this existed.
       authMode: args.authMode,
+      personScopes: args.personScopes,
       systemIdentity: args.systemIdentity?.trim() || undefined,
       streamTransport: args.streamTransport,
     };

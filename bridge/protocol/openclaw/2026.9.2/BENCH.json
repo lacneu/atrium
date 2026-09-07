@@ -6,51 +6,51 @@
     {
       "id": "basic-turn",
       "ok": true,
-      "chat": "4f48cd0641db2c1b"
+      "chat": "becb70a84cdd9630"
     },
     {
       "id": "tool-exec",
       "ok": true,
-      "chat": "4f48cd0641db2c1b"
+      "chat": "becb70a84cdd9630"
     },
     {
       "id": "update-plan",
       "ok": true,
-      "chat": "4f48cd0641db2c1b"
+      "chat": "becb70a84cdd9630"
     },
     {
       "id": "media-outbound",
       "ok": true,
-      "chat": "4f48cd0641db2c1b"
+      "chat": "becb70a84cdd9630"
     },
     {
       "id": "spawn-announce-merge",
       "ok": true,
-      "chat": "4f48cd0641db2c1b"
+      "chat": "becb70a84cdd9630"
     },
     {
       "id": "spawn-chain-merge",
       "ok": true,
-      "chat": "4f48cd0641db2c1b"
+      "chat": "becb70a84cdd9630"
     },
     {
       "id": "spawn-parallel-merge",
       "ok": true,
-      "chat": "4f48cd0641db2c1b"
+      "chat": "becb70a84cdd9630"
     },
     {
       "id": "async-task",
       "ok": true,
-      "chat": "4f48cd0641db2c1b"
+      "chat": "becb70a84cdd9630"
     },
     {
       "id": "cron-tool",
       "ok": true,
-      "chat": "4f48cd0641db2c1b"
+      "chat": "becb70a84cdd9630"
     }
   ],
   "verdict": "GO",
-  "at": "2026-09-07T13:48:51.522Z",
+  "at": "2026-09-07T15:17:19.421Z",
   "scenarios": [
     "async-task",
     "basic-turn",
@@ -78,12 +78,12 @@
     "hermes-cron-list": "hermes"
   },
   "flags": [],
-  "atriumSha": "c46b113948543cbfb49a215f6f67816afa1afb8f",
+  "atriumSha": "f01d33e8fc2444e4b439a169c448d03ea4a0e826",
   "worktree": {
     "dirty": true,
-    "deltaSha256": "ed20fbdc08b2fc5a8bfd3125076d5bf43e6c1e6bd06bdfdec9309ddcfaf6a595"
+    "deltaSha256": "6cee66d1cac5df305ebb2bcf4e5bf541b6156dbe668e28564c532eb8e65e82c4"
   },
-  "supportDigest": "41925a6da192d57199cb92f064d82ce2dd8212a1c63ab6cd3fa6f05d8a0798af",
+  "supportDigest": "d8001c2b0d6566f7e1663e933485e0a591bf988a1c4c9a3b49a8d9ee6df193e6",
   "authMode": "token",
   "bridgeVersion": "0.81.0",
   "vendoredSha256": "85e9f909e0335d19be1dbb2cc1a31c44372b145a03e7952d7d8831f713c23c4c"

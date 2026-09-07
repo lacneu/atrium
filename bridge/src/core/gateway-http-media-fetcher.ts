@@ -195,11 +195,22 @@ export class GatewayHttpMediaFetcher implements MediaFetcher {
       ) {
         return { ok: false, reason: "stale_mention" };
       }
-      // 2) Ticketed download (ticket alone authorizes it; no Bearer).
+      // 2) Ticketed download. The ticket AUTHORIZES the read, so no Bearer — but a
+      // trusted-proxy gateway still has to ATTRIBUTE the client, and it refuses any
+      // request to this route that names none: 403 "Proxy client attribution is
+      // required". Attribution and authorization are different questions, and the
+      // ticket only answers the second. Sending the identity here costs nothing in
+      // token mode, where `identityHeaders()` is empty and this call goes out bare,
+      // exactly as it always has.
+      //
+      // Measured 2026-09-07 against gateway 2026.9.2: the meta probe carries the
+      // identity and answers 200, this download went out bare and answered 403, and
+      // the whole turn lost its file with `fetch_error` and no error anywhere the
+      // operator could see it.
       const dlRes = await this.fetchImpl(
         `${this.httpBase}${MEDIA_ROUTE}?source=${enc}` +
           `&mediaTicket=${encodeURIComponent(meta.mediaTicket)}`,
-        { signal: controller.signal },
+        { headers: this.identityHeaders(), signal: controller.signal },
       );
       // Headers are in: clear the connect deadline. The BODY transfer is left
       // unbounded ON PURPOSE — it is consumed downstream at the speed of the Convex

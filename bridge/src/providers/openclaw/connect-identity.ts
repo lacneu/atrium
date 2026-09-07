@@ -31,7 +31,16 @@ function forwardedClientIp(config: BridgeConfig): string | null {
   return config.openclawForwardedClientIp ?? hostForwardedClientIp();
 }
 
-/** Identity for the socket of ONE conversation, acting as its owner. */
+/**
+ * Identity for the socket of ONE conversation, acting as its owner.
+ *
+ * The ceiling is the instance's stated posture, defaulting to "capped" — what every
+ * instance did before the setting existed. "full" is the operator's answer to a real
+ * trade-off, not a loosening for its own sake: the gateway derives the AGENT's tool
+ * list from this connection's scopes, so the ceiling also takes `automations` and
+ * `computer` away from the model, while it bounds nothing at all until
+ * `gateway.roles` gives admin a boundary to bypass.
+ */
 export function humanConnectIdentity(
   config: BridgeConfig,
   canonical: string,
@@ -40,7 +49,9 @@ export function humanConnectIdentity(
     authMode: config.openclawAuthMode,
     forwardedClientIp: forwardedClientIp(config),
     user: canonical,
-    scopeCap: HUMAN_SCOPE_CAP,
+    ...(config.openclawPersonScopes === "full"
+      ? {}
+      : { scopeCap: HUMAN_SCOPE_CAP }),
   });
 }
 

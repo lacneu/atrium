@@ -1875,9 +1875,13 @@ export const setInstanceAuthMode = mutation({
     instanceName: v.string(),
     authMode: v.union(v.literal("token"), v.literal("trusted-proxy")),
     gatewayUrl: v.optional(v.string()),
+    personScopes: v.optional(v.union(v.literal("capped"), v.literal("full"))),
     systemIdentity: v.optional(v.string()),
   },
-  handler: async (ctx, { instanceName, authMode, gatewayUrl, systemIdentity }) => {
+  handler: async (
+    ctx,
+    { instanceName, authMode, gatewayUrl, personScopes, systemIdentity },
+  ) => {
     assertDev();
     assertDevInstance(instanceName);
     const inst = await ctx.db
@@ -1888,6 +1892,7 @@ export const setInstanceAuthMode = mutation({
     await ctx.db.patch(inst._id, {
       authMode,
       ...(gatewayUrl ? { gatewayUrl } : {}),
+      ...(personScopes ? { personScopes } : {}),
       ...(systemIdentity ? { systemIdentity } : {}),
     });
     return { ok: true as const, authMode, gatewayUrl: gatewayUrl ?? inst.gatewayUrl };

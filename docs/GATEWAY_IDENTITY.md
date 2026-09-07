@@ -63,23 +63,6 @@ how a device is approved once from inside the host.
 token, so anything that opened its Control UI with one needs another route — an
 identity proxy in front of it, or its loopback with a password.
 
-**Outbound media stops leaving the gateway, silently.** A reply that points at a
-host file — the `MEDIA:<path>` convention, used to hand a generated file back to
-the conversation — delivers that file under a shared token and delivers nothing
-under a named identity. The turn still arrives, with its text; only the file is
-missing, and the gateway logs nothing about the drop.
-
-Measured on 2026-09-07 against gateway 2026.9.2 as a matched pair — same
-container, same scenario, same prompt, same `tools.fs`, minutes apart, the
-authentication mode the only difference: shared token delivers the file, trusted
-proxy does not. The gateway resolves outbound media access per agent and per
-requester, so a named requester lands on a different branch; which branch, and
-whether any configuration re-opens it, is not yet established.
-
-An instance whose agents return files this way loses that, and gets no error to
-go on. That is one of the two behaviours to weigh before switching, and it is why
-an instance that depends on it should stay on a shared token for now.
-
 **An agent loses the tools that need `operator.admin`.** A conversation's socket is
 capped below that scope, because a client holding it reads every session on the
 gateway and an identity carrying it is not an identity. But the gateway derives the
@@ -98,6 +81,46 @@ Worth knowing before you weigh it: this ceiling only BUYS something once
 already sees every session — so on such a deployment the cap costs those tools and
 protects nothing. And roles are exactly what breaks sub-agents (below). The three
 configurations are not independent.
+
+Which is why the ceiling is a **setting**, not a constant: Settings → Instances →
+*Modifier l'instance* → **Authority of a conversation**, per instance, and only shown
+under trusted proxy because a token-mode socket presents no identity to cap.
+
+| Choice | A conversation's socket | The agent's tools |
+|---|---|---|
+| **Capped** (default) | below `operator.admin` | loses `automations`, `computer` |
+| **Full** | the device's whole grant | keeps them |
+
+An instance written before this existed reads as capped, and so does one whose
+Convex is too old to send the field: the safe side is the default side, and only the
+exact word `full` lifts the ceiling.
+
+Pick **Full** when the gateway defines no roles — there the ceiling bounds nothing
+and only costs tools. Keep **Capped** the moment roles exist, or the identity is
+decorative: an admin client lists, reads and patches every session whatever
+`sessions.others` says.
+
+Stated rather than inferred, deliberately. The bridge cannot discover the posture:
+the gateway announces no role policy at connect (its hello carries `maxPayload`,
+`maxBufferedBytes`, `tickIntervalMs`, `attachments`, `allowedSessionVisibilities`
+and `hasMultipleSessionSharingIdentities`, and nothing about roles — verified in
+upstream `connect-hello.ts` at v2026.9.2), and the ceiling is an upgrade HEADER,
+chosen before the socket exists. Anything else would be a cached guess about a
+security boundary, failing open exactly when an operator has just configured roles.
+
+## One thing that used to break here, and no longer does
+
+Outbound media — a reply handing back a host file through the `MEDIA:<path>`
+convention — used to arrive with its text and without its file, reported as nothing
+at all. The cause was on our side: the bridge fetches such a file in two steps, and
+the second one, the ticketed download, went out naming nobody. The ticket authorizes
+the READ; it does not attribute the CLIENT, and a trusted-proxy gateway refuses any
+request to that route that names none. The download now carries the same identity as
+the probe before it, and goes out bare in token mode exactly as it always did.
+
+It is written here rather than dropped because the shape recurs: anything the bridge
+reaches over the gateway's HTTP surface must state an identity on EVERY request, not
+only on the one that authenticates.
 
 ## Session isolation and sub-agents do not yet coexist
 

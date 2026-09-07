@@ -450,6 +450,21 @@ export default defineSchema({
     //    is why this is per instance and never a deployment-wide switch.
     // OpenClaw only; ignored for Hermes, which has no profile model.
     authMode: v.optional(v.union(v.literal("token"), v.literal("trusted-proxy"))),
+    // Scopes a CONVERSATION's socket carries, in "trusted-proxy" mode only.
+    // "capped" (default, and the behaviour of every row written before this
+    // existed) keeps a person's socket below `operator.admin`, because a client
+    // holding that scope reads every session on the gateway. "full" hands the
+    // socket the device's whole grant.
+    //
+    // The trade-off is real and measured (2026-09-07, gateway 2026.9.2): the
+    // gateway derives the AGENT's tool list from the scopes of the connection that
+    // asked for the turn, so the ceiling also removes admin-scoped tools from the
+    // MODEL — `automations` (crons from inside a conversation) and `computer`.
+    // And it only BUYS something once `gateway.roles` defines a boundary for admin
+    // to bypass: without roles every profile already sees every session, so on such
+    // a deployment the ceiling costs those tools and protects nothing. Which side
+    // of that is right belongs to the operator, which is why it is a setting.
+    personScopes: v.optional(v.union(v.literal("capped"), v.literal("full"))),
     // Identity the bridge presents on sockets that serve no single person (agent
     // discovery, transcript recovery, config defaults). Unset → derived from the
     // instance name. Only meaningful in "trusted-proxy" mode.

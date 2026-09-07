@@ -1,5 +1,46 @@
 # Changelog
 
+## [0.82.0] — What per-user identity costs, and who decides
+
+Two things an instance running on per-user identity could not do, and the reason it
+could not do them. One was a defect and is fixed; the other is a trade-off and is now
+a setting. No breaking changes, and nothing changes for an instance on a shared token.
+
+**A reply can hand back a file again under per-user identity.** An agent that answers
+with a file — a report it just generated, an export, anything written on the gateway
+host — delivered the text and dropped the file, with no error anywhere: not in the
+conversation, not in the gateway's log. The bridge fetches such a file in two steps,
+and the second one, the actual download, went out naming nobody. The ticket the first
+step obtains authorizes the READ; it does not say WHO is asking, and a gateway that
+resolves a profile per person refuses any request that names nobody at all. The
+download now states the same identity as the probe before it, and still goes out bare
+on a shared token, exactly as it always did.
+
+**An instance chooses how much authority a conversation carries.** Settings →
+Instances → *Modifier l'instance* → **Authority of a conversation**, shown only under
+per-user identity. *Capped* — the default, and what every instance did before this
+release — keeps a conversation's connection below the gateway's admin scope, because a
+client holding it reads every session on the gateway. *Full* hands it the paired
+device's whole grant.
+
+The choice is not decoration. The gateway builds the AGENT's tool list from the scopes
+of the connection that asked for the turn, so the ceiling reaches past the operator and
+takes tools away from the model: managing a cron from inside a conversation stops being
+possible, and the agent quietly does something else instead of saying so. Meanwhile the
+ceiling only bounds anything once the gateway defines roles — without them every profile
+already sees every session, so it costs those tools and protects nothing. Which side of
+that is right depends on the gateway, so it is stated per instance rather than decided
+here. Managing crons from Atrium's own screens is unaffected either way.
+
+**The guide says what the mode actually costs.** `docs/GATEWAY_IDENTITY.md` claimed the
+gateway's file sandbox began applying under a named identity; measured against gateway
+2026.9.2, that is false — it behaves identically under both modes. It also listed
+outbound media as a limitation to weigh, which it no longer is. Both are corrected, the
+new setting is documented with the rule for picking a side, and the reason it is a
+setting rather than something the bridge works out for itself is written down: the
+gateway announces no role policy when a connection opens, and the ceiling is decided
+before the connection exists.
+
 ## [0.81.1] — Long labels stay inside their box
 
 Corrective release. One user-visible defect, fixed at the component rather than

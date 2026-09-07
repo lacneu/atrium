@@ -334,3 +334,91 @@ describe("GatewayHttpMediaFetcher — mention freshness (the stale re-delivery b
     expect(r.ok).toBe(true);
   });
 });
+
+describe("attribution on the ticketed download (trusted proxy)", () => {
+  /** Records the headers of BOTH calls, which is where the defect lived. */
+  function twoStepGateway() {
+    const calls: Array<{ url: string; headers: Record<string, string> }> = [];
+    const fetchImpl = (async (url: unknown, init?: RequestInit) => {
+      const u = String(url);
+      calls.push({ url: u, headers: { ...((init?.headers ?? {}) as Record<string, string>) } });
+      if (u.includes("meta=1")) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ available: true, mediaTicket: "T1", mimeType: "text/plain" }),
+          headers: new Headers(),
+        } as unknown as Response;
+      }
+      const h = new Headers();
+      h.set("content-type", "text/plain");
+      return {
+        ok: true,
+        status: 200,
+        body: new ReadableStream({
+          start(c) {
+            c.enqueue(new TextEncoder().encode("BENCH_MEDIA_OK\n"));
+            c.close();
+          },
+        }),
+        headers: h,
+      } as unknown as Response;
+    }) as unknown as typeof fetch;
+    return { fetchImpl, calls };
+  }
+
+  const IDENTITY = {
+    "x-forwarded-user": "atrium-bridge:olivier",
+    "x-forwarded-for": "10.7.7.7",
+  };
+
+  it("names the client on the DOWNLOAD too, not only on the meta probe", async () => {
+    // The ticket authorizes the READ; it does not attribute the CLIENT. A gateway in
+    // trusted-proxy mode refuses any request to this route that names nobody — 403
+    // "Proxy client attribution is required" — so a bare download lost the file while
+    // the meta probe (which carried the identity) had just answered 200. Measured
+    // against gateway 2026.9.2 on 2026-09-07: the turn arrived with its text and
+    // without its attachment, reported only as `fetch_error`.
+    const { fetchImpl, calls } = twoStepGateway();
+    const f = new GatewayHttpMediaFetcher({
+      httpBase: BASE,
+      token: () => "TKN",
+      maxBytes: 1024,
+      fetchImpl,
+      identityHeaders: () => ({ ...IDENTITY }),
+    });
+
+    const res = await f.open(PATH);
+    expect(res.ok).toBe(true);
+
+    const download = calls.find((c) => c.url.includes("mediaTicket="));
+    expect(download, "the ticketed download must have been attempted").toBeDefined();
+    expect(download!.headers["x-forwarded-user"]).toBe("atrium-bridge:olivier");
+    expect(download!.headers["x-forwarded-for"]).toBe("10.7.7.7");
+  });
+
+  it("still goes out bare in token mode, where there is no identity to name", async () => {
+    // The download deliberately carries no Bearer: the ticket is the authorization,
+    // and re-presenting the operator token would widen what this request proves. A
+    // token-mode instance must therefore send NOTHING here — the behaviour that
+    // shipped before per-user identity existed.
+    const { fetchImpl, calls } = twoStepGateway();
+    const f = new GatewayHttpMediaFetcher({
+      httpBase: BASE,
+      token: () => "TKN",
+      maxBytes: 1024,
+      fetchImpl,
+      identityHeaders: () => ({}),
+    });
+
+    const res = await f.open(PATH);
+    expect(res.ok).toBe(true);
+
+    const download = calls.find((c) => c.url.includes("mediaTicket="))!;
+    expect(Object.keys(download.headers)).toHaveLength(0);
+
+    // And the meta probe still authenticates with the operator token.
+    const meta = calls.find((c) => c.url.includes("meta=1"))!;
+    expect(meta.headers["Authorization"]).toBe("Bearer TKN");
+  });
+});

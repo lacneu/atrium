@@ -160,6 +160,12 @@ export const instanceCredentials = httpAction(async (ctx, request) => {
         // alone whether this gateway expects a token or an identity header, and
         // guessing either way opens sockets the gateway refuses.
         authMode: resolved.authMode ?? null,
+        // Whether a conversation's socket is capped below `operator.admin`. Sent
+        // with the mode because it is meaningless without it, and because the
+        // bridge cannot infer it: the gateway announces no role policy at connect
+        // (verified in upstream `connect-hello.ts` at v2026.9.2), so the posture
+        // has to be stated rather than discovered.
+        personScopes: resolved.personScopes ?? null,
         systemIdentity: resolved.systemIdentity ?? null,
       },
       credentials,

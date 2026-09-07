@@ -58,6 +58,18 @@ export interface GatewayIdentity {
   scopeCap?: readonly string[];
 }
 
+/**
+ * Scopes a CONVERSATION's socket carries, under trusted proxy.
+ *
+ * "capped" keeps it below `operator.admin` (see HUMAN_SCOPE_CAP); "full" hands it
+ * the device's whole grant, which is what an operator picks when the agent's
+ * admin-scoped tools matter more than a ceiling that, without `gateway.roles`,
+ * bounds nothing. Stated rather than discovered: the gateway announces no role
+ * policy at connect, and the ceiling is an upgrade HEADER — decided before the
+ * socket exists, so before anything could be learned from it.
+ */
+export type PersonScopes = "capped" | "full";
+
 /** The header name the gateway is configured to read the identity from. */
 export const DEFAULT_TRUSTED_PROXY_USER_HEADER = "x-forwarded-user";
 

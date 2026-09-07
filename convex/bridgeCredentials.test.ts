@@ -38,6 +38,8 @@ async function seedInstance(
     gatewayHttpUrl: string;
     kind: "openclaw" | "hermes";
     transport: "ws" | "rest";
+    authMode: "token" | "trusted-proxy";
+    personScopes: "capped" | "full";
   }> = {},
 ) {
   return await t.run((ctx) =>
@@ -48,6 +50,8 @@ async function seedInstance(
       ...(gateway.gatewayHttpUrl ? { gatewayHttpUrl: gateway.gatewayHttpUrl } : {}),
       ...(gateway.kind ? { kind: gateway.kind } : {}),
       ...(gateway.transport ? { transport: gateway.transport } : {}),
+      ...(gateway.authMode ? { authMode: gateway.authMode } : {}),
+      ...(gateway.personScopes ? { personScopes: gateway.personScopes } : {}),
     }),
   );
 }
@@ -254,8 +258,33 @@ describe("/bridge/credentials end-to-end", () => {
       // identity. Pinned so the bridge's authentication mode can never start
       // travelling implicitly.
       authMode: null,
+      personScopes: null,
       systemIdentity: null, transport: null,
     });
+  });
+
+  test("the identity POSTURE travels with the mode, and only when stated", async () => {
+    // The bridge cannot discover this one: the gateway announces no role policy at
+    // connect, and the scope ceiling is an upgrade HEADER — chosen before the socket
+    // exists. So an operator who lifted the ceiling must have it carried here, or a
+    // person's socket silently keeps a ceiling the deployment decided against.
+    const t = convexTest(schema, modules);
+    const admin = await seedAdmin(t);
+    const inst = await seedInstance(t, "named", {
+      gatewayUrl: "wss://named.example.org/ws",
+      authMode: "trusted-proxy",
+      personScopes: "full",
+    });
+    const secret = await as(t, admin).action(api.bridgeAuth.mintBridgeSecret, {
+      instanceId: inst,
+    });
+    const res = await get(t, `Bearer ${secret.plaintext}`);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      gateway: { authMode: string | null; personScopes: string | null };
+    };
+    expect(body.gateway.authMode).toBe("trusted-proxy");
+    expect(body.gateway.personScopes).toBe("full");
   });
 
   test("gateway version/httpUrl default to null and kind to openclaw when unset", async () => {
@@ -277,6 +306,7 @@ describe("/bridge/credentials end-to-end", () => {
       // Absent on the row ⇒ null on the wire ⇒ "token" at the bridge: an instance
       // written before per-user identity existed keeps the handshake it had.
       authMode: null,
+      personScopes: null,
       systemIdentity: null,
     });
   });

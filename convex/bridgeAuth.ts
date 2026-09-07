@@ -156,6 +156,7 @@ export const resolveBridgeInstanceBySecretHash = internalQuery({
     kind: "openclaw" | "hermes";
     transport: "ws" | "rest" | null;
     authMode: "token" | "trusted-proxy" | null;
+    personScopes: "capped" | "full" | null;
     systemIdentity: string | null;
   } | null> => {
     const row = await ctx.db
@@ -175,6 +176,7 @@ export const resolveBridgeInstanceBySecretHash = internalQuery({
       kind: inst.kind ?? "openclaw",
       transport: inst.transport ?? null,
       authMode: inst.authMode ?? null,
+      personScopes: inst.personScopes ?? null,
       systemIdentity: inst.systemIdentity ?? null,
     };
   },

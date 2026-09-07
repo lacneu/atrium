@@ -57,6 +57,7 @@ type InstanceForm = {
   gatewayHttpUrl: string;
   // How the bridge authenticates to THIS gateway. OpenClaw only.
   authMode: "token" | "trusted-proxy";
+  personScopes: "capped" | "full";
   systemIdentity: string;
   // FRONTEND live-stream transport (reactive | sse) — an instance property, NOT bridge config.
   streamTransport: StreamTransport;
@@ -71,6 +72,7 @@ const EMPTY_INSTANCE: InstanceForm = {
   gatewayVersion: "",
   gatewayHttpUrl: "",
   authMode: "token",
+  personScopes: "capped",
   systemIdentity: "",
   streamTransport: DEFAULT_STREAM_TRANSPORT,
 };
@@ -98,6 +100,7 @@ function formFromInstance(i: Instance): InstanceForm {
     gatewayVersion: i.gatewayVersion ?? "",
     gatewayHttpUrl: i.gatewayHttpUrl ?? "",
     authMode: (i.authMode ?? "token") as "token" | "trusted-proxy",
+    personScopes: (i.personScopes ?? "capped") as "capped" | "full",
     systemIdentity: i.systemIdentity ?? "",
     streamTransport: i.streamTransport ?? DEFAULT_STREAM_TRANSPORT,
   };
@@ -140,6 +143,7 @@ export function InstancesTab() {
         ...(form.kind === "openclaw"
           ? {
               authMode: form.authMode,
+              personScopes: form.personScopes,
               systemIdentity: form.systemIdentity || undefined,
             }
           : {}),
@@ -407,6 +411,33 @@ export function InstancesTab() {
                     : m.settings_auth_mode_token_hint()}
                 </p>
               </Field>
+              {form.authMode === "trusted-proxy" ? (
+                <Field label={m.settings_field_person_scopes()}>
+                  <Select
+                    value={form.personScopes}
+                    onValueChange={(v) =>
+                      setForm({ ...form, personScopes: v as "capped" | "full" })
+                    }
+                  >
+                    <SelectTrigger size="sm" className="w-full">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="capped">
+                        {m.settings_person_scopes_capped()}
+                      </SelectItem>
+                      <SelectItem value="full">
+                        {m.settings_person_scopes_full()}
+                      </SelectItem>
+                    </SelectContent>
+                  </Select>
+                  <p className="oc-field__hint">
+                    {form.personScopes === "full"
+                      ? m.settings_person_scopes_full_hint()
+                      : m.settings_person_scopes_capped_hint()}
+                  </p>
+                </Field>
+              ) : null}
               {form.authMode === "trusted-proxy" ? (
                 <Field label={m.settings_field_system_identity()}>
                   <Input

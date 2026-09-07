@@ -186,6 +186,7 @@ export class CredentialResolver {
         kind?: string;
         transport?: string | null;
         authMode?: string | null;
+        personScopes?: string | null;
         systemIdentity?: string | null;
       };
       credentials?: Record<string, string>;
@@ -248,6 +249,10 @@ export class CredentialResolver {
       kind === "openclaw" && body.gateway?.authMode === "trusted-proxy"
         ? "trusted-proxy"
         : "token";
+    // Same rule for the posture: only the exact string lifts the ceiling, so a typo
+    // or an older Convex that does not send the field at all keeps a person's socket
+    // capped — the safe side, and the behaviour that shipped before the setting.
+    const personScopes = body.gateway?.personScopes === "full" ? "full" : "capped";
     // Hermes: the bearer lives in `apiKey` (fall back to `token` defensively).
     const token =
       kind === "hermes"
@@ -293,6 +298,7 @@ export class CredentialResolver {
       gatewayUrl: url,
       token: token ?? "",
       authMode,
+      personScopes,
       systemIdentity: nonEmpty(body.gateway?.systemIdentity ?? undefined) ?? null,
       tokenSource,
       deviceIdentity,

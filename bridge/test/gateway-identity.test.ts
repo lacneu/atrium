@@ -184,6 +184,45 @@ describe("a person's socket is not an admin socket", () => {
     expect(system?.user).toBe("atrium-bridge:alpha");
   });
 
+  it("the operator can lift the ceiling, and only with the exact posture", () => {
+    // The setting exists because the ceiling is a TRADE-OFF, not a free safety: the
+    // gateway derives the agent's tool list from this connection's scopes, so a
+    // capped socket also costs the model `automations` and `computer` (measured
+    // 2026-09-07, gateway 2026.9.2) — while bounding nothing at all until
+    // `gateway.roles` gives admin a boundary to bypass.
+    const full = humanConnectIdentity(
+      cfg({ openclawAuthMode: "trusted-proxy", openclawPersonScopes: "full" }),
+      "u-alice",
+    );
+    // No ceiling AT ALL, not an empty one: an empty x-openclaw-scopes reads as "no
+    // scopes" upstream and would authenticate a socket that can do nothing.
+    expect(full?.scopeCap).toBeUndefined();
+    expect(full?.user).toBe("u-alice");
+  });
+
+  it("defaults to capped when the posture is unset", () => {
+    // An instance row written before this setting existed, and a Convex that does
+    // not send the field, must both keep the behaviour that shipped. The safe side
+    // is the default side.
+    const unset = humanConnectIdentity(cfg({ openclawAuthMode: "trusted-proxy" }), "u-alice");
+    const explicit = humanConnectIdentity(
+      cfg({ openclawAuthMode: "trusted-proxy", openclawPersonScopes: "capped" }),
+      "u-alice",
+    );
+    expect(unset?.scopeCap).toEqual([...HUMAN_SCOPE_CAP]);
+    expect(explicit?.scopeCap).toEqual([...HUMAN_SCOPE_CAP]);
+  });
+
+  it("the posture never reaches the SYSTEM socket, which has no ceiling either way", () => {
+    // The setting is about a PERSON's authority. Discovery and recovery read
+    // sessions created by somebody else by design, so "capped" must not quietly
+    // start bounding them.
+    const system = systemConnectIdentity(
+      cfg({ openclawAuthMode: "trusted-proxy", openclawPersonScopes: "capped" }),
+    );
+    expect(system?.scopeCap).toBeUndefined();
+  });
+
   it("both resolve to undefined in token mode", () => {
     expect(humanConnectIdentity(cfg(), "u-alice")).toBeUndefined();
     expect(systemConnectIdentity(cfg())).toBeUndefined();
