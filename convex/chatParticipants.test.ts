@@ -956,3 +956,124 @@ describe("the assessment answers the attribution question on its own", () => {
     expect(serialized).not.toContain("@example.com");
   });
 });
+
+describe("naming somebody in a conversation", () => {
+  async function room(t: T) {
+    const owner = await seedUser(t, "owner");
+    const guest = await seedUser(t, "guest");
+    const chatId = await seedChat(t, owner, "Revue");
+    await addParticipantRow(t, chatId, guest);
+    await t.run(async (ctx) => {
+      await ctx.db.insert("instances", { name: "alpha", gatewayUrl: "ws://gw" });
+      await ctx.db.insert("agents", {
+        instanceName: "alpha",
+        agentId: "alice",
+        displayName: "alice",
+        enabled: true,
+        source: "discovered" as const,
+        presentInLastOk: true,
+        firstSeenAt: 1,
+        lastSeenAt: 1,
+      });
+      await ctx.db.patch(chatId, { instanceName: "alpha", agentId: "alice" });
+    });
+    return { owner, guest, chatId };
+  }
+
+  test("the mention is stored as a SPAN and the person is told", async () => {
+    const t = convexTest(schema, modules);
+    const { owner, guest, chatId } = await room(t);
+    const text = "peux-tu regarder @guest ?";
+    const start = text.indexOf("@guest");
+
+    await as(t, owner).mutation(api.send.sendMessage, {
+      chatId,
+      text,
+      clientMessageId: "c1",
+      mentions: [{ userId: guest, start, end: start + "@guest".length }],
+    });
+
+    const rows = await t.run(async (ctx) =>
+      ctx.db
+        .query("messages")
+        .filter((q) => q.eq(q.field("chatId"), chatId))
+        .collect(),
+    );
+    const sent = rows.find((r) => r.role === "user");
+    expect(sent?.mentions).toEqual([
+      { userId: guest, start, end: start + "@guest".length },
+    ]);
+    // The whole point on Atrium's side: the person learns about it here, not in
+    // the gateway's own interface.
+    const notifs = await t.run(async (ctx) =>
+      ctx.db.query("notifications").collect(),
+    );
+    expect(notifs).toHaveLength(1);
+    expect(String(notifs[0]?.userId)).toBe(String(guest));
+    expect(notifs[0]?.kind).toBe("mention");
+    expect(notifs[0]?.href).toBe(`/chat/${String(chatId)}`);
+  });
+
+  test("naming yourself rings nobody", async () => {
+    const t = convexTest(schema, modules);
+    const { owner, chatId } = await room(t);
+    const text = "note pour @owner";
+    await as(t, owner).mutation(api.send.sendMessage, {
+      chatId,
+      text,
+      clientMessageId: "c1",
+      mentions: [{ userId: owner, start: text.indexOf("@owner"), end: text.length }],
+    });
+    expect(await t.run(async (ctx) => ctx.db.query("notifications").collect())).toEqual([]);
+  });
+
+  test("naming somebody who is NOT in the room is refused", async () => {
+    // A notification about a conversation they cannot open is worse than none.
+    const t = convexTest(schema, modules);
+    const { owner, chatId } = await room(t);
+    const stranger = await seedUser(t, "stranger");
+    const text = "coucou @stranger";
+    await expect(
+      as(t, owner).mutation(api.send.sendMessage, {
+        chatId,
+        text,
+        clientMessageId: "c1",
+        mentions: [
+          { userId: stranger, start: text.indexOf("@stranger"), end: text.length },
+        ],
+      }),
+    ).rejects.toThrow(/not_in_conversation/);
+  });
+
+  test("a span that the gateway would refuse is refused HERE", async () => {
+    // Upstream rejects the whole send on a bad span, so accepting one would cost
+    // the sender their turn instead of their mention.
+    const t = convexTest(schema, modules);
+    const { owner, guest, chatId } = await room(t);
+    await expect(
+      as(t, owner).mutation(api.send.sendMessage, {
+        chatId,
+        text: "bonjour",
+        clientMessageId: "c1",
+        mentions: [{ userId: guest, start: 0, end: 99 }],
+      }),
+    ).rejects.toThrow(/mentions_invalid:out_of_bounds/);
+  });
+
+  test("a message that names nobody stores no mentions field at all", async () => {
+    const t = convexTest(schema, modules);
+    const { owner, chatId } = await room(t);
+    await as(t, owner).mutation(api.send.sendMessage, {
+      chatId,
+      text: "rien de special",
+      clientMessageId: "c1",
+    });
+    const rows = await t.run(async (ctx) =>
+      ctx.db
+        .query("messages")
+        .filter((q) => q.eq(q.field("chatId"), chatId))
+        .collect(),
+    );
+    expect(rows.find((r) => r.role === "user")?.mentions).toBeUndefined();
+  });
+});

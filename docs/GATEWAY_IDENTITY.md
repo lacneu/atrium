@@ -93,6 +93,21 @@ Until upstream changes, an instance chooses one of:
 | Identity + role boundary + `sandbox: "required"` on the role | Isolation holds and the parent–child link is restored, because a required sandbox makes the whole descendance inherit the person's identity — at the cost of forcing sandbox isolation on every session that role creates. |
 | Identity + role boundary alone | Isolation holds; delegated work stops being visible. Not recommended. |
 
+## What the mode turns on
+
+Some capabilities need more than a gateway version. They are listed in the
+bridge's own capability table and reported per instance on `/capabilities`, so a
+client never has to know how an instance authenticates to work out what it may
+offer.
+
+| Capability | Needs | Why |
+|---|---|---|
+| `gatewayMentions` | `trusted-proxy` | A mention names a gateway user PROFILE. A shared-token gateway has one profile for everybody, so there is nobody to name. |
+
+Naming somebody inside Atrium works on BOTH modes — the person is notified in the
+app either way. What the mode adds is forwarding the mention to the gateway's own
+inbox, which only matters to somebody who also uses OpenClaw's own interface.
+
 ## Seeing which mode a conversation ran under
 
 The mode is not a silent property. Three read-only surfaces state it, so an

@@ -24,9 +24,10 @@ import {
 } from "./_generated/server";
 import { internal } from "./_generated/api";
 import { chatParticipantRows } from "./lib/chatAccess";
+import { prependedLength, shiftMentionSpans } from "./lib/mentions";
 import { maybeScheduleTurnRetry } from "./turnRetry";
 import { Doc, Id } from "./_generated/dataModel";
-import { resolveTargetForChat, resolveTargetForTurn } from "./routing";
+import { resolveTargetForChat, resolveTargetForTurn, canonicalForUser } from "./routing";
 import { requireActive, requirePermission } from "./lib/access";
 import { capabilitiesForInstance, mediaQuarantineReason } from "./lib/compat";
 import { readDoc as readCompatDoc } from "./compat";
@@ -1327,6 +1328,32 @@ export const SEND_POST_TIMEOUT_MS = 4 * 60_000;
  *  a participant). The count rides along because the dispatch trace states it and
  *  reading it here costs one bounded query instead of a second round-trip.
  *  Returns null for a chat deleted mid-turn. */
+/**
+ * The mentions carried by an outbox row.
+ *
+ * Read through a narrow accessor rather than off the doc: the field is optional
+ * and absent on every row written before the feature, and a `?? []` scattered at
+ * each use is where one of them eventually gets forgotten.
+ */
+function outboxMentions(
+  row: Doc<"outbox">,
+): ReadonlyArray<{ userId: Id<"users">; start: number; end: number }> {
+  return row.mentions ?? [];
+}
+
+/** Canonicals for a set of users, keyed by user id. Empty for an empty input, so
+ *  the dispatch pays nothing on the overwhelming majority of turns. */
+export const canonicalsForUsers = internalQuery({
+  args: { userIds: v.array(v.id("users")) },
+  handler: async (ctx, { userIds }): Promise<Record<string, string>> => {
+    const out: Record<string, string> = {};
+    for (const userId of userIds) {
+      out[String(userId)] = await canonicalForUser(ctx, userId);
+    }
+    return out;
+  },
+});
+
 export const getChatOwner = internalQuery({
   args: { chatId: v.id("chats") },
   handler: async (
@@ -1634,6 +1661,33 @@ export const dispatch = internalAction({
     ) {
       return;
     } else {
+      // COMPOSED ONCE, then measured. The quoted-reply preamble is PREPENDED to
+      // the user's text, so any mention offset computed on what they typed no
+      // longer points at the same characters — and upstream refuses the WHOLE
+      // send when a span does not re-anchor. Composing here lets the shift be
+      // measured against the exact string that ships.
+      const composedText = (() => {
+        const excerpts = outboxExcerpts(row);
+        return excerpts.length === 0
+          ? row.text
+          : composeQuotedText(
+              fillQuoteTemplate(
+                pickQuoteTemplate(
+                  routing.quoteReplyTemplates ?? { one: "", many: "" },
+                  excerpts.length,
+                ),
+                excerpts,
+              ),
+              row.text,
+            );
+      })();
+      // Atrium knows people by their canonical; the gateway knows them by a
+      // profile id it minted. Only the bridge can map the two, so the canonical
+      // is what crosses — resolved once here for the people this turn names.
+      const mentionCanonicals = await ctx.runQuery(
+        internal.bridge.canonicalsForUsers,
+        { userIds: outboxMentions(row).map((mention) => mention.userId) },
+      );
       try {
         const response = await fetch(`${bridgeUrl.replace(/\/$/, "")}/send`, {
           method: "POST",
@@ -1666,27 +1720,34 @@ export const dispatch = internalAction({
             instanceName: routing.target.instanceName,
             agentId: routing.target.agentId,
             canonical: routing.target.canonical,
+            // WHO THIS TURN NAMES, for the gateway's own mention inbox — carried
+            // as CANONICALS because Atrium does not know gateway profile ids; the
+            // bridge maps them. Offsets are shifted past the quoted-reply preamble
+            // here, because that preamble is composed HERE; the bridge shifts again
+            // past any history it prepends. Omitted entirely when the composition
+            // cannot be measured as a prepend, which costs the mention rather than
+            // the turn (upstream refuses the whole send on a span that does not
+            // re-anchor).
+            ...(() => {
+              const mentions = outboxMentions(row);
+              if (mentions.length === 0) return {};
+              const prefix = prependedLength(row.text, composedText);
+              if (prefix === null) return {};
+              return {
+                mentions: shiftMentionSpans(
+                  mentions.map((mention) => ({
+                    canonical: mentionCanonicals[String(mention.userId)] ?? null,
+                    start: mention.start,
+                    end: mention.end,
+                  })).filter((m) => m.canonical !== null),
+                  prefix,
+                ),
+              };
+            })(),
             // QUOTE-REPLY: a turn replying to a block ships the resolved
             // preamble AHEAD of the user's clean text — plain prompt text, so
             // OpenClaw and Hermes are covered identically (single send path).
-            text: (() => {
-              // The outbox carries the excerpts of THIS turn (one row = one
-              // dispatch), so the count is read here and the singular/plural
-              // template picked from it — one composition point, both providers.
-              const excerpts = outboxExcerpts(row);
-              return excerpts.length === 0
-                ? row.text
-                : composeQuotedText(
-                    fillQuoteTemplate(
-                      pickQuoteTemplate(
-                        routing.quoteReplyTemplates ?? { one: "", many: "" },
-                        excerpts.length,
-                      ),
-                      excerpts,
-                    ),
-                    row.text,
-                  );
-            })(),
+            text: composedText,
             // The GATEWAY idempotency source: the re-park flip mints a fresh
             // `dispatchKey` alias (the killed dispatch consumed the original
             // key) while the browser's own clientMessageId stays intact for

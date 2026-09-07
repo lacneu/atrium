@@ -225,7 +225,12 @@ const fieldBytes = (v: unknown): number =>
 // bug surfaces identically in both, never hidden behind a second implementation
 // (the projection-drift the API was asked to eliminate). Auth + owner-scoping
 // stay in the CALLERS; this core is identity-agnostic, keyed by a validated id.
-async function loadChatView(ctx: QueryCtx, id: Id<"chats">) {
+async function loadChatView(
+  ctx: QueryCtx,
+  id: Id<"chats">,
+  /** The person READING. Only used to mark the mention that concerns them. */
+  viewerId: Id<"users">,
+) {
   // IMPORTED history: the agent this conversation was bound to elsewhere. Read
   // once here rather than copied onto every imported message, because a
   // conversation-wide fallback stored per message would override the real routed
@@ -251,9 +256,13 @@ async function loadChatView(ctx: QueryCtx, id: Id<"chats">) {
     // costs three reads. Empty (and free) on a solo chat, which is every chat until
     // somebody is invited.
     const authorNames = new Map<string, string>();
+    const namedUsers: Id<"users">[] = [];
     for (const msg of messages) {
-      const author = msg.authorUserId;
-      if (author === undefined || authorNames.has(String(author))) continue;
+      if (msg.authorUserId !== undefined) namedUsers.push(msg.authorUserId);
+      for (const mention of msg.mentions ?? []) namedUsers.push(mention.userId);
+    }
+    for (const author of namedUsers) {
+      if (authorNames.has(String(author))) continue;
       const profile = await ctx.db
         .query("profiles")
         .withIndex("by_user", (q) => q.eq("userId", author))
@@ -412,6 +421,19 @@ async function loadChatView(ctx: QueryCtx, id: Id<"chats">) {
           ...(message.authorUserId === undefined
             ? {}
             : { authorName: authorNames.get(String(message.authorUserId)) }),
+          // WHO THIS TURN NAMES, as spans plus a display name — never another
+          // person's id. `isViewer` is what lets the bubble mark the one mention
+          // that concerns the reader, which is why they were notified.
+          ...(message.mentions === undefined || message.mentions.length === 0
+            ? {}
+            : {
+                mentions: message.mentions.map((mention) => ({
+                  start: mention.start,
+                  end: mention.end,
+                  name: authorNames.get(String(mention.userId)) ?? "?",
+                  isViewer: String(mention.userId) === String(viewerId),
+                })),
+              }),
           // IMPORTED history: the agent that answered, as a name only. Absence of
           // `routedAgentId` already means "inherit the turn's agent, else the
           // chat's", so without this the reader would see an imported reply
@@ -687,7 +709,7 @@ export const listByChat = query({
       if (exists === null) return [];
       throw new Error("Forbidden: chat not owned by user");
     }
-    return await loadChatView(ctx, id);
+    return await loadChatView(ctx, id, userId);
   },
 });
 
@@ -803,8 +825,11 @@ export const chatStateInternal = internalQuery({
     if (id === null) return { ok: false as const, error: "bad chatId" };
     const chat = await ctx.db.get(id);
     if (chat === null) return { ok: false as const, error: "not found" };
-    // SAME data path as the client.
-    const view = await loadChatView(ctx, id);
+    // SAME data path as the client. There is no reader here — this is the
+    // observability projection, consumed by an operator tool, not by a person in
+    // the room — so no mention is marked as "yours". The chat OWNER stands in,
+    // which keeps the shape identical without inventing a viewer.
+    const view = await loadChatView(ctx, id, chat.userId);
     const now = Date.now();
     // The streaming HEARTBEAT + live length live on streamingText now (not the
     // message doc, whose updatedAt is frozen at the turn's start during streaming).

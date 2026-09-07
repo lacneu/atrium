@@ -2209,5 +2209,9 @@
   "settings_field_system_identity": "Identité système du pont",
   "settings_field_system_identity_ph": "atrium-bridge:<instance>",
   "participants_limit": "Cette conversation a atteint la limite de {count} participants",
-  "participants_failed": "L'opération a échoué. Réessayez."
+  "participants_failed": "L'opération a échoué. Réessayez.",
+  "notif_mention": "Vous avez été mentionné dans « {chat} »",
+  "mention_pick": "Mentionner une personne",
+  "mention_none": "Personne d'autre dans cette conversation",
+  "mention_gateway_off": "L'agent ne sera pas prévenu : cette instance partage un seul identifiant de passerelle."
 }

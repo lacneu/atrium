@@ -18,6 +18,11 @@ import {
   takePendingQuotes,
   type PendingQuote,
 } from "./pendingQuote";
+import {
+  resolveMentionSpans,
+  restorePendingMentions,
+  takePendingMentions,
+} from "./pendingMention";
 import { useToast } from "@/components/ui/toast";
 import {
   isFirstTurn,
@@ -648,6 +653,16 @@ export function useConvexChatRuntime({ chatId }: UseConvexChatRuntimeArgs) {
         // per-chat keying means a quote staged in another chat can never ride
         // this send.
         const quotes = takePendingQuotes(chatId);
+        // MENTIONS: consumed like the quotes, but their offsets are computed HERE,
+        // against the text as it is about to be sent — a span captured when the
+        // person was picked would have drifted with every keystroke since. A token
+        // the writer deleted resolves to nothing and the mention goes with it.
+        const stagedMentions = takePendingMentions(chatId);
+        const mentions = resolveMentionSpans(text, stagedMentions).map((m) => ({
+          userId: m.userId as Id<"users">,
+          start: m.start,
+          end: m.end,
+        }));
 
         // Mark the turn in-flight IMMEDIATELY (before the await) so isRunning
         // flips this frame — the optimistic echo + gap indicator + double-send
@@ -675,8 +690,13 @@ export function useConvexChatRuntime({ chatId }: UseConvexChatRuntimeArgs) {
                   })),
                 }
               : {}),
+            ...(mentions.length > 0 ? { mentions } : {}),
           });
         } catch (e) {
+          // Same rule as the quotes: a failed send must not silently un-name the
+          // people the writer chose. Restored by TOKEN, so a retry re-resolves the
+          // spans against whatever the text is then.
+          restorePendingMentions(chatId, stagedMentions);
           // Restage the passages so a failed send does not silently drop the
           // user's "replying to" references — but never clobber quotes staged
           // while this send was in flight (restoring on top would REORDER them,

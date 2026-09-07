@@ -317,6 +317,27 @@ export const recordDiscoveryFailure = internalMutation({
  *  cache the result resiliently. Mono-tenant Phase 1: the bridge ignores
  *  `?instance` and returns its single gateway's agents; the loop still works for
  *  one or many instances. */
+/**
+ * Ask a bridge to re-resolve ONE instance's credentials. The same call the manual
+ * "Synchroniser maintenant" makes before it discovers; here it is the retry's
+ * repair step. Never throws and never reports: a bridge that is down simply fails
+ * the discovery that follows, which is where the outcome is recorded.
+ */
+async function refreshBridgeCredentials(
+  instanceName: string,
+  base: string,
+  sharedSecret: string,
+): Promise<void> {
+  try {
+    await fetch(
+      `${base}/refresh-credentials?instance=${encodeURIComponent(instanceName)}`,
+      { method: "POST", headers: { Authorization: sharedSecret } },
+    );
+  } catch {
+    // Unreachable bridge: the discovery below records the real outcome.
+  }
+}
+
 export const pollAgentDiscovery = internalAction({
   args: {},
   handler: async (ctx) => {
@@ -337,7 +358,27 @@ export const pollAgentDiscovery = internalAction({
       served: process.env.BRIDGE_INSTANCE_NAME ?? null,
     });
 
+    const failedBefore = new Set(
+      instances.filter((i) => i.lastPollFailed).map((i) => i.name),
+    );
     for (const { name: instanceName, url: base } of targets) {
+      // RE-ARM before retrying, but only after a failure.
+      //
+      // A bridge that restarts can come back without this instance's credentials
+      // resolved — it then serves nothing for that name, and every two-minute poll
+      // fails identically until a human presses "Synchroniser maintenant", which is
+      // exactly what the manual path does differently: it pokes
+      // `/refresh-credentials` first. Observed in production: discovery stayed
+      // broken for 38 minutes across ~19 polls, and one forced sync fixed both
+      // instances instantly. A retry that cannot repair the thing it retries is not
+      // a retry.
+      //
+      // Gated on the previous failure so a healthy deployment adds no request: the
+      // poke is a repair, not a heartbeat. Best-effort — its outcome never decides
+      // anything, the discovery below is the authoritative check.
+      if (failedBefore.has(instanceName)) {
+        await refreshBridgeCredentials(instanceName, base, sharedSecret);
+      }
       await discoverInstanceAgents(ctx, instanceName, base, sharedSecret);
     }
   },
@@ -451,9 +492,26 @@ export const listInstancesForPoll = internalQuery({
   args: {},
   handler: async (
     ctx,
-  ): Promise<Array<{ name: string; bridgeUrl: string | null }>> => {
+  ): Promise<
+    Array<{ name: string; bridgeUrl: string | null; lastPollFailed: boolean }>
+  > => {
     const rows = await ctx.db.query("instances").collect();
-    return rows.map((r) => ({ name: r.name, bridgeUrl: r.bridgeUrl ?? null }));
+    return await Promise.all(
+      rows.map(async (r) => {
+        // Whether the PREVIOUS poll failed decides if this one re-arms the bridge
+        // first (see pollAgentDiscovery). One point read per instance, on a
+        // two-minute cron.
+        const disc = await ctx.db
+          .query("instanceDiscovery")
+          .withIndex("by_instance", (q) => q.eq("instanceName", r.name))
+          .unique();
+        return {
+          name: r.name,
+          bridgeUrl: r.bridgeUrl ?? null,
+          lastPollFailed: disc !== null && disc.lastPollOk === false,
+        };
+      }),
+    );
   },
 });
 

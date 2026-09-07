@@ -96,6 +96,12 @@ export const MESSAGE_FIELDS_DROPPED: ReadonlyArray<string> = [
   // all — and carrying it verbatim would attribute somebody's message to whoever
   // happens to hold that id, which is worse than not naming an author.
   "authorUserId",
+  // MENTIONS. The spans would survive an import; the people they name would not.
+  // Each names a `users` id from the SOURCE deployment, and the import rewrites
+  // only `userId` — so a mention carried verbatim would highlight a name
+  // belonging to whoever happens to hold that id in the target. Same reason as
+  // `authorUserId`, with a name printed on it.
+  "mentions",
 ];
 
 /**

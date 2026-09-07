@@ -34,7 +34,8 @@ type NotifKind =
   | "feedback_resolved"
   | "feedback_new"
   | "curation"
-  | "operator_announcement";
+  | "operator_announcement"
+  | "mention";
 
 const FEED_LIMIT = 50;
 // Bulk read/clear process at most this many rows per transaction, then SELF-

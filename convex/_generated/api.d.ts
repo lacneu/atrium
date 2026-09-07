@@ -99,6 +99,7 @@ import type * as lib_kpiMetrics from "../lib/kpiMetrics.js";
 import type * as lib_locales from "../lib/locales.js";
 import type * as lib_mediaName from "../lib/mediaName.js";
 import type * as lib_mediaTransport from "../lib/mediaTransport.js";
+import type * as lib_mentions from "../lib/mentions.js";
 import type * as lib_messageOrder from "../lib/messageOrder.js";
 import type * as lib_openclawThread from "../lib/openclawThread.js";
 import type * as lib_outboxQueue from "../lib/outboxQueue.js";
@@ -244,6 +245,7 @@ declare const fullApi: ApiFromModules<{
   "lib/locales": typeof lib_locales;
   "lib/mediaName": typeof lib_mediaName;
   "lib/mediaTransport": typeof lib_mediaTransport;
+  "lib/mentions": typeof lib_mentions;
   "lib/messageOrder": typeof lib_messageOrder;
   "lib/openclawThread": typeof lib_openclawThread;
   "lib/outboxQueue": typeof lib_outboxQueue;

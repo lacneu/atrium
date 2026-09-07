@@ -259,7 +259,14 @@ describe("buildCapabilityTargets (live-session projection)", () => {
     expect(t.provider).toBe("openclaw");
     expect(t.agentId).toBe("main");
     expect(t.gatewayVersion).toBe("2026.7.1");
-    expect(Object.values(t.capabilities).every((v) => v === true)).toBe(true);
+    // Everything this version reaches, and NAMED exceptions rather than a loosened
+    // assertion: `gatewayMentions` has a later floor (2026.9.1) AND needs the
+    // instance to name the person behind each connection, which a target built
+    // without an explicit mode does not.
+    const off = Object.entries(t.capabilities)
+      .filter(([, v]) => v !== true)
+      .map(([k]) => k);
+    expect(off).toEqual(["gatewayMentions"]);
     // The flag is OMITTED (not false) within the validated range.
     expect(t).not.toHaveProperty("versionBeyondValidated");
   });
@@ -277,7 +284,13 @@ describe("buildCapabilityTargets (live-session projection)", () => {
   test("a version beyond maxValidated sets the flag", () => {
     const t = buildCapabilityTargets([LIVE("2026.9.9")], "primary")[0]!;
     expect(t.versionBeyondValidated).toBe(true);
-    expect(Object.values(t.capabilities).every((v) => v === true)).toBe(true);
+    // Frozen at maxValidated, so the version grants everything — except the one
+    // capability the AUTHENTICATION MODE withholds on a token instance, which is
+    // what this target is. Being beyond the ceiling changes nothing about that.
+    const off = Object.entries(t.capabilities)
+      .filter(([, v]) => v !== true)
+      .map(([k]) => k);
+    expect(off).toEqual(["gatewayMentions"]);
   });
 
   test("dedupes by canonical (bounded like /health), last live session wins", () => {
@@ -461,5 +474,44 @@ describe("a LIVE session resolves with its own provider (W11/G8)", () => {
     const [target] = buildCapabilityTargets(live as never, "hermes", null, "hermes", "rest");
     expect(target?.capabilities.agentFiles, "still HTTP-served").toBe(true);
     expect(target?.capabilities.inboundAttachments, "WS-only").toBeUndefined();
+  });
+});
+
+describe("a target states what its instance's MODE allows", () => {
+  const LIVE = (gatewayVersion: string | null, canonical = "u-alice") => ({
+    canonical,
+    agentId: "main",
+    instanceName: "primary",
+    gatewayVersion,
+    maxPayload: null,
+  });
+
+  test("a trusted-proxy instance gets the mention capability; a token one does not", () => {
+    // The same gateway, the same version, two different answers — which is the
+    // whole point of carrying the mode onto the target: a client reading
+    // /capabilities must not have to know how the instance authenticates to work
+    // out what it may offer.
+    const tok = buildCapabilityTargets(
+      [LIVE("2026.9.2")],
+      "primary",
+      null,
+      "openclaw",
+      "ws",
+      false,
+      "token",
+    )[0]!;
+    const proxy = buildCapabilityTargets(
+      [LIVE("2026.9.2")],
+      "primary",
+      null,
+      "openclaw",
+      "ws",
+      false,
+      "trusted-proxy",
+    )[0]!;
+    expect(tok.authMode).toBe("token");
+    expect(proxy.authMode).toBe("trusted-proxy");
+    expect(tok.capabilities.gatewayMentions).toBe(false);
+    expect(proxy.capabilities.gatewayMentions).toBe(true);
   });
 });

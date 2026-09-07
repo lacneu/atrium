@@ -232,6 +232,14 @@ interface BodyRouting {
 
 interface SendBody extends BodyRouting {
   chatId: string;
+  /**
+   * People this turn names, by CANONICAL — Atrium's stable key for a person.
+   * The gateway wants its own profile ids, which only this process can resolve
+   * (`users.mentionable`), so the mapping happens here and nowhere else.
+   * Offsets are UTF-16 code units into `text`, already shifted past anything
+   * Convex composed ahead of it.
+   */
+  mentions?: Array<{ canonical: string; start: number; end: number }>;
   openclawChatId: string | null;
   /** A session this chat LOST a reply on, for ONE read-only harvest (G-47). Parsed here or
    *  it never crosses the HTTP boundary — the whole feature ran only in tests until a review
@@ -996,6 +1004,11 @@ export async function performSend(
   const rehydrationEnabled =
     body.config?.rehydration ?? process.env.OPENCLAW_REHYDRATION !== "off";
   let message = body.text;
+  // How much was PREPENDED to the user's own text, so mention offsets can follow
+  // it. Only re-hydration prepends here (the received-files block and the media
+  // delivery instruction are appended), and Convex has already accounted for the
+  // quoted-reply preamble it composes on its side.
+  let mentionPrefix = 0;
   // Pre-send session snapshot for the turn's context-pressure signal (Inc 2) and
   // the compaction-by-rotation detector (Inc 1): the describe below is ALREADY
   // made every turn — capturing these three fields adds zero gateway calls.
@@ -1400,6 +1413,11 @@ export async function performSend(
         );
       }
       if (ctx.history && composedFits) {
+        // The history is PREPENDED, so every mention offset computed on the
+        // user's own text now points into the history. Shifted by exactly what
+        // was put in front — upstream refuses the WHOLE send on a span that does
+        // not re-anchor, so a mention left unshifted would cost the turn.
+        mentionPrefix = ctx.history.length + 2; // the history plus "\n\n"
         message = `${ctx.history}\n\n${body.text}`;
         prependedTurns = ctx.turnCount;
         // History was INJECTED (verbatim turns OR a summary-only rehydration
@@ -1554,6 +1572,18 @@ export async function performSend(
     message,
     idempotencyKey: await idempotencyKey(sessionKey, body.clientMessageId),
   };
+  // MENTIONS for the gateway's own inbox. Best-effort by construction: the
+  // person has ALREADY been told by Atrium, so a gateway that cannot carry the
+  // mention costs nothing anybody depends on — while a malformed span would cost
+  // the whole turn. Every reason to drop is named in the log.
+  const gatewayMentions = await resolveGatewayMentions(
+    conn,
+    sessionKey,
+    body,
+    mentionPrefix,
+    presendConfig,
+  );
+  if (gatewayMentions.length > 0) params.mentions = gatewayMentions;
   if (hasInlineAttachments) {
     // Frame guard: inbound attachments ride THIS chat.send as inline base64, so
     // the whole frame must fit the gateway's maxPayload — an oversized frame makes
@@ -1792,6 +1822,84 @@ async function claimSessionForOwner(
   }
   conn.sessionClaimed = true;
 }
+
+/**
+ * Map Atrium's canonicals to the gateway's own profile ids, and shift the spans
+ * past anything prepended since they were computed.
+ *
+ * WHY A MAPPING IS NEEDED AT ALL. Atrium knows a person by their canonical; the
+ * gateway knows them by a profile id it minted the first time that identity
+ * connected. Nothing else in the system sees both, so the translation lives on
+ * this hop. `users.mentionable` is asked for THIS session, which also makes the
+ * gateway's own answer the authority on who may be named here.
+ *
+ * Returns an EMPTY list rather than throwing, on every failure: the mentioned
+ * person has already been notified inside Atrium, so a gateway that cannot carry
+ * the mention loses a convenience — while a span the gateway refuses loses the
+ * turn (upstream rejects the whole send on `INVALID_MENTIONS`).
+ */
+async function resolveGatewayMentions(
+  conn: GatewayRequester,
+  sessionKey: string,
+  body: SendBody,
+  prefixLength: number,
+  config: BridgeConfig | undefined,
+): Promise<Array<{ profileId: string; start: number; end: number }>> {
+  const asked = body.mentions ?? [];
+  if (asked.length === 0) return [];
+  // A shared-token gateway has ONE profile for everybody: there is nobody to
+  // name, and asking would only produce a refusal.
+  if (config?.openclawAuthMode !== "trusted-proxy") return [];
+  let mentionable: unknown;
+  try {
+    const res = await conn.request("users.mentionable", { sessionKey }, 10_000);
+    mentionable = (res as { payload?: unknown }).payload;
+  } catch (err) {
+    console.error(
+      `[mentions] chat=${body.chatId} not forwarded — the gateway would not list ` +
+        `who may be named: ${(err as Error)?.message ?? err}`,
+    );
+    return [];
+  }
+  const users = Array.isArray((mentionable as { users?: unknown })?.users)
+    ? ((mentionable as { users: Array<Record<string, unknown>> }).users ?? [])
+    : [];
+  // The gateway derives a profile's display name from the identity it was
+  // created with, and Atrium creates them by presenting the canonical — so the
+  // canonical is what the display name holds. Matched exactly, never fuzzily: a
+  // near-match would name the wrong person.
+  const byName = new Map<string, string>();
+  for (const user of users) {
+    const name = typeof user.displayName === "string" ? user.displayName : null;
+    const profileId = typeof user.profileId === "string" ? user.profileId : null;
+    if (name !== null && profileId !== null) byName.set(name, profileId);
+  }
+  const out: Array<{ profileId: string; start: number; end: number }> = [];
+  for (const mention of asked) {
+    const profileId = byName.get(mention.canonical);
+    if (profileId === undefined) {
+      // Everyone in the room has an Atrium account; not everyone has connected
+      // to this gateway yet, and a profile only exists once they have.
+      console.log(
+        `[mentions] chat=${body.chatId} skipped ${mention.canonical} — no gateway profile yet`,
+      );
+      continue;
+    }
+    out.push({
+      profileId,
+      start: mention.start + prefixLength,
+      end: mention.end + prefixLength,
+    });
+  }
+  // Ordered and disjoint is what upstream walks the list expecting; Convex sorts
+  // them, and a prefix shift preserves order, but a dropped middle entry must not
+  // leave the rest mis-ordered. Sorting here costs nothing and cannot be wrong.
+  return out.sort((a, b) => a.start - b.start);
+}
+
+/** Test seam: the mention resolver is module-private, and its behaviour is the
+ *  difference between a lost convenience and a lost turn. */
+export const __testing = { resolveGatewayMentions };
 
 async function patchSession(
   // A minimal requester, not the full connection: this is also called with the
@@ -2554,7 +2662,10 @@ export function buildCapabilityTargets(
     // OpenClaw support window — every capability off, the panels gated shut, and the
     // synthetic Hermes target below suppressed because a live target already covered the
     // instance. The `provider` argument existed and only the no-session branch used it.
-    const resolved = resolveCapabilities(provider, effectiveVersion);
+    // The MODE is part of the answer, not a footnote: a capability the version
+    // grants can still be impossible for this instance (see
+    // CAPABILITIES_REQUIRING_AUTH_MODE).
+    const resolved = resolveCapabilities(provider, effectiveVersion, authMode);
     if (provider === "hermes") applyHermesTransportOverlay(resolved, effectiveVersion, transport);
     const target: CapabilityTarget = {
       authMode,
@@ -2587,7 +2698,7 @@ export function buildCapabilityTargets(
     (fallbackVersion || provider === "hermes") &&
     !targets.some((t) => t.instanceName === instanceName)
   ) {
-    const resolved = resolveCapabilities(provider, fallbackVersion);
+    const resolved = resolveCapabilities(provider, fallbackVersion, authMode);
     if (provider === "hermes") applyHermesTransportOverlay(resolved, fallbackVersion, transport);
     const synthetic: CapabilityTarget = {
       authMode,

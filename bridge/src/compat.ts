@@ -12,6 +12,7 @@
 // one-time package.json read at module load), so the resolution policy is
 // exhaustively unit-testable.
 
+import type { GatewayAuthMode } from "./providers/openclaw/gateway-identity.js";
 import { createRequire } from "node:module";
 
 // bridgeVersion is read from package.json at boot — never hardcoded. The
@@ -110,6 +111,13 @@ const OPENCLAW_CAPABILITIES: Record<string, string> = {
   // read as unsupported. Older gateways name the methods but their shapes
   // are unverified — conservative floor.
   cronManage: "2026.7.1-beta.2",
+  // HUMAN MENTIONS on a send (`ChatSendParams.mentions`) plus the gateway's own
+  // mention inbox. The RPCs appeared in 2026.8, but that whole line is in the
+  // known-broken window, so the floor is the earliest version a live run has
+  // actually exercised. ALSO gated on the authentication mode
+  // (CAPABILITIES_REQUIRING_AUTH_MODE): a mention names a user PROFILE, and a
+  // shared-token gateway has exactly one for everybody.
+  gatewayMentions: "2026.9.1",
   // Realtime voice ("talk"): the gateway mints an EPHEMERAL provider session
   // (talk.client.create -> {clientSecret, offerUrl, model, voice, expiresAt})
   // for a browser-owned WebRTC session; discovery via talk.catalog. Verified
@@ -565,9 +573,30 @@ export function mediaDeliveryPoisonReason(
   );
 }
 
+/**
+ * Capabilities that a gateway VERSION is necessary but not sufficient for: they
+ * also need the instance to authenticate a particular way.
+ *
+ * The one case today is human mentions. A mention names a gateway user PROFILE,
+ * and profiles only exist per person when the bridge tells the gateway who each
+ * connection acts for — in `token` mode every conversation is the same shared
+ * operator, so there is nobody to mention. Offering the affordance there would
+ * produce a refusal for a reason the person cannot act on.
+ *
+ * Kept as its own table rather than folded into the version map: the two
+ * conditions answer different questions ("does this gateway know the method" vs
+ * "does this deployment have the concept"), and a reader must be able to see
+ * which one turned a capability off.
+ */
+export const CAPABILITIES_REQUIRING_AUTH_MODE: Record<string, GatewayAuthMode> = {
+  gatewayMentions: "trusted-proxy",
+};
+
 export function resolveCapabilities(
   provider: string,
   gatewayVersion: string | null,
+  /** How the instance authenticates. Absent ⇒ "token", the default everywhere. */
+  authMode: GatewayAuthMode = "token",
 ): ResolvedCapabilities {
   const compat = COMPAT_MANIFEST.providers[provider];
   if (!compat) return { capabilities: {}, versionBeyondValidated: false };
@@ -575,7 +604,24 @@ export function resolveCapabilities(
     compat.supportedRange,
     compat.capabilities,
     gatewayVersion,
+    authMode,
   );
+}
+
+/**
+ * Turn OFF what this authentication mode cannot support, whatever the version
+ * said. Only ever subtracts: a mode can withhold a capability, never invent one.
+ */
+function applyAuthModeGate(
+  capabilities: Record<string, boolean>,
+  authMode: GatewayAuthMode,
+): Record<string, boolean> {
+  for (const [cap, required] of Object.entries(CAPABILITIES_REQUIRING_AUTH_MODE)) {
+    if (capabilities[cap] === true && authMode !== required) {
+      capabilities[cap] = false;
+    }
+  }
+  return capabilities;
 }
 
 /**
@@ -590,6 +636,7 @@ export function resolveCapabilitiesFor(
   range: VersionRange | null,
   table: Record<string, string>,
   gatewayVersion: string | null,
+  authMode: GatewayAuthMode = "token",
 ): ResolvedCapabilities {
   if (range === null) return { capabilities: {}, versionBeyondValidated: false };
   const capabilities: Record<string, boolean> = {};
@@ -599,7 +646,10 @@ export function resolveCapabilitiesFor(
     for (const [cap, minVersion] of Object.entries(table)) {
       capabilities[cap] = minVersion === range.min;
     }
-    return { capabilities, versionBeyondValidated: false };
+    return {
+      capabilities: applyAuthModeGate(capabilities, authMode),
+      versionBeyondValidated: false,
+    };
   }
   const maxValidated = parseVersion(range.maxValidated);
   const beyond = maxValidated !== null && compareVersions(parsed, maxValidated) > 0;
@@ -609,5 +659,8 @@ export function resolveCapabilitiesFor(
     const min = parseVersion(minVersion);
     capabilities[cap] = min !== null && compareVersions(effective, min) >= 0;
   }
-  return { capabilities, versionBeyondValidated: beyond };
+  return {
+    capabilities: applyAuthModeGate(capabilities, authMode),
+    versionBeyondValidated: beyond,
+  };
 }

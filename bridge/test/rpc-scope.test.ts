@@ -77,6 +77,10 @@ const NAMESPACE_MODULE: Record<string, string | null> = {
   // "vendor channels.ts" would not cover them. Mapped to the module anyway so the
   // gap is attributable rather than unmapped.
   tts: "channels.ts",
+  // `users.mentionable` is the only `users.*` the bridge calls, and its params
+  // live with the mention schemas rather than in `users.ts` — the module is named
+  // for the FEATURE upstream, not for the namespace.
+  users: "human-mentions.ts",
 };
 
 /** Modules vendored for the version the bridge PROMISES (`maxValidated`).
@@ -389,6 +393,9 @@ describe("RPC scope derivation (W10)", () => {
   // person having it before the admin-scoped verboseLevel patch (which rides the
   // bridge's system socket) would create it under the bridge's own identity.
   "sessions.create",
+  // Asked once per send that names somebody, to map Atrium's canonicals to the
+  // gateway's own profile ids. Read-scoped, and only in trusted-proxy mode.
+  "users.mentionable",
       "sessions.compaction.list",
       // The cron/tasks families, added 2026-07-27. This list is the DIRECT,
       // non-derived claim, so every newly covered method must join it — omitting them

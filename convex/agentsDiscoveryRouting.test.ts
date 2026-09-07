@@ -136,3 +136,110 @@ describe("pollAgentDiscovery — per-instance bridgeUrl (Model M)", () => {
     expect(calls[0].startsWith("http://own-olivier:8787/agents")).toBe(true);
   });
 });
+
+// A RETRY THAT CANNOT REPAIR WHAT IT RETRIES IS NOT A RETRY.
+//
+// Observed in production: a bridge restart left both instances' credentials
+// unresolved, so `/agents` failed identically on every two-minute poll for 38
+// minutes — about nineteen attempts — until somebody pressed "Synchroniser
+// maintenant". The manual path differs in exactly one way: it POSTs
+// `/refresh-credentials` first. The cron now does the same, but only after a
+// failure, so a healthy deployment pays nothing.
+describe("pollAgentDiscovery — re-arming a bridge that came back empty-handed", () => {
+  let origFetch: typeof fetch;
+  let prevSecret: string | undefined;
+
+  beforeEach(() => {
+    origFetch = globalThis.fetch;
+    prevSecret = process.env.BRIDGE_SHARED_SECRET;
+    process.env.BRIDGE_SHARED_SECRET = "s3cret";
+    delete process.env.BRIDGE_URL;
+  });
+  afterEach(() => {
+    globalThis.fetch = origFetch;
+    if (prevSecret === undefined) delete process.env.BRIDGE_SHARED_SECRET;
+    else process.env.BRIDGE_SHARED_SECRET = prevSecret;
+  });
+
+  const seedInstance = async (t: ReturnType<typeof convexTest>) => {
+    await t.run(async (ctx) => {
+      await ctx.db.insert("instances", {
+        name: "olivier",
+        gatewayUrl: "ws://gw1",
+        bridgeUrl: "http://bridge-olivier:8787",
+      });
+    });
+  };
+
+  test("a healthy poll never pokes the bridge", async () => {
+    const t = convexTest(schema, modules);
+    await seedInstance(t);
+    const calls: string[] = [];
+    globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
+      calls.push(String(input));
+      return agentsResponse();
+    }) as unknown as typeof fetch;
+
+    await t.action(internal.agents.pollAgentDiscovery, {});
+    await t.action(internal.agents.pollAgentDiscovery, {});
+
+    expect(calls.filter((c) => c.includes("/refresh-credentials"))).toEqual([]);
+    expect(calls.filter((c) => c.includes("/agents"))).toHaveLength(2);
+  });
+
+  test("the poll AFTER a failure re-arms the bridge, then discovers", async () => {
+    const t = convexTest(schema, modules);
+    await seedInstance(t);
+    const calls: string[] = [];
+    let failing = true;
+    globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      calls.push(url);
+      if (url.includes("/refresh-credentials")) {
+        // The poke is what makes the retry able to succeed.
+        failing = false;
+        return new Response("{}", { status: 200 });
+      }
+      return failing
+        ? new Response("nope", { status: 404 })
+        : agentsResponse();
+    }) as unknown as typeof fetch;
+
+    await t.action(internal.agents.pollAgentDiscovery, {});
+    expect(calls).toHaveLength(1); // first poll: discovery only, and it fails
+    expect(calls[0]).toContain("/agents");
+
+    await t.action(internal.agents.pollAgentDiscovery, {});
+    expect(calls[1]).toContain("/refresh-credentials");
+    expect(calls[1]).toContain("instance=olivier");
+    expect(calls[2]).toContain("/agents");
+
+    const disc = await t.run(async (ctx) =>
+      ctx.db.query("instanceDiscovery").collect(),
+    );
+    expect(disc[0]?.lastPollOk).toBe(true);
+  });
+
+  test("a bridge that is still down does not break the poll", async () => {
+    // The poke is best-effort: a throwing fetch must not stop the discovery that
+    // records the real outcome.
+    const t = convexTest(schema, modules);
+    await seedInstance(t);
+    globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input).includes("/refresh-credentials")) {
+        throw new Error("ECONNREFUSED");
+      }
+      return new Response("nope", { status: 404 });
+    }) as unknown as typeof fetch;
+
+    await t.action(internal.agents.pollAgentDiscovery, {});
+    await expect(
+      t.action(internal.agents.pollAgentDiscovery, {}),
+    ).resolves.not.toThrow();
+    const disc = await t.run(async (ctx) =>
+      ctx.db.query("instanceDiscovery").collect(),
+    );
+    expect(disc[0]?.lastPollOk).toBe(false);
+    expect(disc[0]?.error).toBe("http_404");
+  });
+});

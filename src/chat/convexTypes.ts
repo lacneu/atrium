@@ -217,6 +217,14 @@ export interface ConvexMessageView {
   /** GROUP CHAT: display name of whoever wrote this turn, when it was not the
    *  chat owner. Absent on every solo conversation — absence means "the owner". */
   authorName?: string;
+  /** People this turn names: spans into `text` plus a display name. `isViewer`
+   *  marks the one that concerns the reader. Absent when the turn names nobody. */
+  mentions?: Array<{
+    start: number;
+    end: number;
+    name: string;
+    isViewer: boolean;
+  }>;
   /** IMPORTED history: the agent that answered, as a name only. Never routable. */
   importedAgentLabel?: string;
   /** IMPORTED history: the agent the CONVERSATION was bound to elsewhere. Used

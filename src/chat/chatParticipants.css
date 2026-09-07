@@ -157,3 +157,36 @@
   font-size: 11px;
   color: var(--oc-text-muted, #64748b);
 }
+
+/* A roster row used as a BUTTON (the mention picker): the row already has the
+   layout, so the button only has to stop looking like a button. */
+.oc-participants__pick {
+  width: 100%;
+  border: 0;
+  background: transparent;
+  font: inherit;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.oc-participants__pick:hover {
+  background: var(--oc-surface-hover, rgb(0 0 0 / 4%));
+}
+
+/* A name mentioned inside a message. Deliberately quiet: it marks a person, it
+   does not shout at the rest of the sentence. */
+.oc-mention {
+  border-radius: 4px;
+  padding: 0 2px;
+  font-weight: 600;
+  color: var(--oc-accent-fg, #2563eb);
+  background: var(--oc-accent-bg, rgb(37 99 235 / 10%));
+}
+
+/* The same, when it names the person reading — the one case worth a stronger
+   signal, because it is the reason they were notified. */
+.oc-mention--self {
+  color: var(--oc-warn-fg, #b45309);
+  background: var(--oc-warn-bg, rgb(180 83 9 / 14%));
+}

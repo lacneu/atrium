@@ -1,5 +1,49 @@
 # Changelog
 
+## [0.81.0] — Naming somebody in a conversation
+
+Group conversations gain mentions, and a capability can now depend on how an
+instance authenticates rather than only on its gateway version. No breaking
+changes.
+
+**You can name somebody in a group conversation.** The composer offers the people
+in the room; picking one inserts their name, and that person is notified in
+Atrium with a link straight to the conversation. The name is marked in the
+message, more strongly when it is you. A message stores its mentions as SPANS of
+the text rather than as a name to be searched for again later, so a rename, two
+people sharing a display name, or one name contained inside another cannot change
+what a past message meant. The affordance is absent from a solo conversation —
+there is nobody to name — and a mention never grants access: it names someone who
+is already in the room.
+
+**A capability can now depend on how an instance authenticates, not just on the
+gateway's version.** Mentions are the first. Naming somebody means naming a
+gateway user profile, and a shared-token gateway has exactly one profile for
+everybody, so the newest gateway in the world still cannot carry a mention there.
+An instance in per-user identity mode forwards mentions to the gateway's own
+inbox, so they also reach somebody working from OpenClaw's interface; a
+shared-token instance keeps the Atrium-side notification, sends nothing, and says
+so in the composer rather than offering something that could only be refused. The
+per-instance capability report carries the authentication mode, so a client works
+out what it may offer without knowing how the instance is configured. The same
+mechanism is available to any future capability that needs more than a version
+number.
+
+**Agent discovery repairs itself instead of waiting for a click.** A bridge that
+restarts can come back without an instance's credentials resolved; it then serves
+nothing under that name, and every poll fails identically. The two-minute cron
+kept replaying the same call, so an instance stayed in error until somebody
+pressed *Sync now* — which differs in one respect: it asks the bridge to
+re-resolve its credentials first. The cron now does the same, but only on the
+poll that follows a failure, so a healthy deployment makes no extra request.
+Observed in production: thirty-eight minutes and roughly nineteen identical
+retries across two instances, then one manual sync fixed both instantly.
+
+**The gateway identity guide states which capabilities the mode turns on.**
+`docs/GATEWAY_IDENTITY.md` now carries that table alongside the two gateway
+behaviours that change with the mode, so the decision to switch an instance is
+made from one page.
+
 ## [0.80.1] — You can see which identity a turn ran under
 
 Observability and documentation release for the two capabilities 0.80.0 added.

@@ -1517,6 +1517,21 @@ export default defineSchema({
     importedAgentLabel: v.optional(v.string()),
     chatId: v.id("chats"),
     userId: v.id("users"), // owner (denormalized for cheap access checks)
+    // WHO IS NAMED in this message. The SPAN is stored, not just the person:
+    // re-finding "@Name" later would be wrong the moment two people share a
+    // display name, one name contains another, or somebody is renamed — none of
+    // which may change what a message meant when it was sent. Offsets are UTF-16
+    // code units into `text`, the unit the gateway's own normalizer counts in.
+    // Absent on every message that names nobody, which is nearly all of them.
+    mentions: v.optional(
+      v.array(
+        v.object({
+          userId: v.id("users"),
+          start: v.number(),
+          end: v.number(),
+        }),
+      ),
+    ),
     // WHO WROTE this message, when it is not the owner. Only set on user messages
     // in a chat with participants; absent everywhere else, which keeps every
     // existing row valid and means "the owner wrote it". Never used for access —
@@ -2370,6 +2385,15 @@ export default defineSchema({
     // The dispatch and any REDO read this through `quotedRefsOf`; widening only
     // `messages` would drop every quote but the first on a re-dispatch.
     quotedExcerpts: v.optional(v.array(v.string())),
+    // WHO THE TURN NAMES, carried with the text it was computed against. On the
+    // row rather than read back from the message for the same reason the text is:
+    // one outbox row IS one dispatch, and the dispatch must not depend on a
+    // message a delete could have taken away underneath it.
+    mentions: v.optional(
+      v.array(
+        v.object({ userId: v.id("users"), start: v.number(), end: v.number() }),
+      ),
+    ),
     attachmentIds: v.array(v.id("_storage")),
     // Inbound attachments WITH the browser-supplied filename + mimeType (the
     // dispatch needs both to build OpenClaw's chat.send.attachment shape — the
@@ -2809,6 +2833,8 @@ export default defineSchema({
       v.literal("curation"),
       // Signed, informational announcement received from a configured service.
       v.literal("operator_announcement"),
+      // Somebody named you in a conversation you take part in.
+      v.literal("mention"),
     ),
     // LEGACY-RENDER fallback: pre-rendered labels, kept so old rows (and any
     // producer without a key) still display. New producers ALSO store a

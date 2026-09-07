@@ -278,6 +278,9 @@ export function convertConvexMessage(
         // owner. Null on a solo conversation, so the bubble stays exactly as it
         // was for every chat that has one participant.
         authorName: message.authorName ?? null,
+        // Spans + names, so the bubble can mark who was named without a second
+        // query and without ever holding another person's id.
+        mentions: message.mentions ?? null,
         // Shown in place of an agent name on imported history. Without it the
         // reply reads as coming from whichever agent the reader later binds,
         // because carrying no routed agent already MEANS "inherit".

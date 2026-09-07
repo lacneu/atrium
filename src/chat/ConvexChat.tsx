@@ -144,6 +144,7 @@ import { PlanActivity } from "./PlanActivity";
 import { CronDetailContent } from "./CronDetailPanel";
 import type { CronPartView } from "./convexTypes";
 import { ChatParticipants } from "./ChatParticipants";
+import { MentionPicker } from "./MentionPicker";
 import { PanelBodyBoundary } from "./PanelBodyBoundary";
 import { useWorkspaceRoom } from "./useWorkspaceRoom";
 import { m } from "@/paraglide/messages.js";
@@ -2808,8 +2809,48 @@ function ReasoningSegment({ text }: { text?: string }) {
   );
 }
 
+/**
+ * A user turn's text with the people it names marked.
+ *
+ * Rendered from the STORED SPANS, never by re-finding "@Name": two people can
+ * share a display name, one name can contain another, and a rename must not
+ * change what a past message meant. The span is the record of what was said.
+ */
+function MentionedText({ text }: { text: string }) {
+  const mentions = useMessage(
+    (msg) =>
+      (
+        msg.metadata?.custom as
+          | { mentions?: Array<{ start: number; end: number; name: string; isViewer: boolean }> | null }
+          | undefined
+      )?.mentions ?? null,
+  );
+  if (mentions === null || mentions.length === 0) return <>{text}</>;
+  const out: ReactNode[] = [];
+  let cursor = 0;
+  for (const [i, mention] of mentions.entries()) {
+    // Defensive: a span that no longer fits the text (an edited row, an older
+    // client) is skipped rather than allowed to slice it wrongly.
+    if (mention.start < cursor || mention.end > text.length) continue;
+    if (mention.start > cursor) out.push(text.slice(cursor, mention.start));
+    out.push(
+      <span
+        key={`${mention.start}-${i}`}
+        className={`oc-mention${mention.isViewer ? " oc-mention--self" : ""}`}
+        title={mention.name}
+      >
+        {text.slice(mention.start, mention.end)}
+      </span>,
+    );
+    cursor = mention.end;
+  }
+  if (cursor < text.length) out.push(text.slice(cursor));
+  return <>{out}</>;
+}
+
 const plainComponents = {
   File: MediaPart as never,
+  Text: MentionedText as never,
 };
 const assistantComponents = {
   ...plainComponents,
@@ -5131,6 +5172,9 @@ function Composer({
             rebinding={rebinding}
             onRebindingChange={setRebinding}
           />
+          {/* NAME SOMEBODY in the room. Self-hides on a solo conversation, which
+              is every chat until the owner invites anyone. */}
+          {chatId ? <MentionPicker chatId={chatId as Id<"chats">} /> : null}
         </div>
         <div className="oc-composer__group">
           {/* PIN / release: detach the composer as a floating panel that

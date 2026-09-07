@@ -2209,5 +2209,9 @@
   "settings_field_system_identity": "Bridge system identity",
   "settings_field_system_identity_ph": "atrium-bridge:<instance>",
   "participants_limit": "This conversation has reached its limit of {count} participants",
-  "participants_failed": "That did not work. Try again."
+  "participants_failed": "That did not work. Try again.",
+  "notif_mention": "You were mentioned in “{chat}”",
+  "mention_pick": "Mention someone",
+  "mention_none": "Nobody else in this conversation",
+  "mention_gateway_off": "The agent will not be told: this instance shares a single gateway credential."
 }

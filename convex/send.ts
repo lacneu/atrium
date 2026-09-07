@@ -37,6 +37,9 @@ import {
   type QuoteRef,
 } from "./lib/quoteReply";
 import { requireAgentMembership } from "./chats";
+import { chatParticipantRows } from "./lib/chatAccess";
+import { rejectMentionSpans } from "./lib/mentions";
+import { notifyUser } from "./notifications";
 import { resolveTargetForTurn } from "./routing";
 
 export const sendMessage = mutation({
@@ -49,6 +52,18 @@ export const sendMessage = mutation({
     // (userId, clientMessageId) to guarantee exactly one user message + one
     // dispatch per logical send.
     clientMessageId: v.string(),
+    // WHO THIS TURN NAMES. Spans into `text`, in UTF-16 code units. Every named
+    // person must already be in the conversation: mentioning somebody who cannot
+    // open it would notify them about a room they are not in.
+    mentions: v.optional(
+      v.array(
+        v.object({
+          userId: v.id("users"),
+          start: v.number(),
+          end: v.number(),
+        }),
+      ),
+    ),
     // Attachments the browser already uploaded via
     // `ctx.storage.generateUploadUrl()`. Each carries the storage id plus the
     // browser-known filename/mimeType so the rendered part is accurate. Each
@@ -247,6 +262,26 @@ export const sendMessage = mutation({
     //    carries a SENTINEL orderTime so it sorts AFTER the in-flight turn (and its
     //    not-yet-created assistant reply) — drainNextQueued re-stamps it to the real
     //    dispatch time when this turn is promoted. Idle sends keep _creationTime order.
+    // MENTIONS: validated against the text they were computed on, and against the
+    // room. Refused rather than dropped — a person who typed "@alice" and watched
+    // the mention vanish would have no idea whether she was told.
+    const mentions = args.mentions ?? [];
+    if (mentions.length > 0) {
+      const rejection = rejectMentionSpans(args.text, mentions);
+      if (rejection !== null) {
+        throw new Error(`mentions_invalid:${rejection}`);
+      }
+      const room = new Set<string>([String(ownerId)]);
+      for (const row of await chatParticipantRows(ctx, chat._id)) {
+        room.add(String(row.userId));
+      }
+      for (const mention of mentions) {
+        if (!room.has(String(mention.userId))) {
+          throw new Error("mentions_invalid:not_in_conversation");
+        }
+      }
+    }
+
     const messageId = await ctx.db.insert("messages", {
       chatId: chat._id,
       // The OWNER, always — this field is the denormalized owner that the cheap
@@ -254,6 +289,7 @@ export const sendMessage = mutation({
       // re-point them. WHO WROTE IT is `authorUserId` below.
       userId: ownerId,
       ...(chatRole === "participant" ? { authorUserId: userId } : {}),
+      ...(mentions.length > 0 ? { mentions } : {}),
       role: "user",
       status: "complete",
       text: args.text,
@@ -274,6 +310,25 @@ export const sendMessage = mutation({
       // quote instead of none.
       ...quoteFieldsFor(quotes),
     });
+
+    // TELL THE PEOPLE NAMED. This is the whole point of a mention on Atrium's
+    // side: the gateway's own inbox only reaches somebody who uses OpenClaw's
+    // interface, whereas everyone here reads Atrium. Never notify the sender for
+    // naming themselves, and de-duplicate per message so a retried mutation
+    // cannot ring twice.
+    for (const mention of mentions) {
+      if (String(mention.userId) === String(userId)) continue;
+      await notifyUser(ctx, {
+        userId: mention.userId,
+        kind: "mention",
+        title: "Vous avez été mentionné",
+        body: chat.title ?? "",
+        messageKey: "notif_mention",
+        params: { chat: chat.title ?? "" },
+        href: `/chat/${String(chat._id)}`,
+        dedupeKey: `mention:${String(messageId)}`,
+      });
+    }
 
     // Attach uploaded files as ordered parts on the user message so they render
     // in the thread, preserving the browser-supplied filename/mimeType.
@@ -311,6 +366,7 @@ export const sendMessage = mutation({
       clientMessageId: args.clientMessageId,
       messageId,
       text: args.text,
+      ...(mentions.length > 0 ? { mentions } : {}),
       attachmentIds: attachments.map((a) => a.storageId),
       // Keep filename + mimeType so the dispatch can build OpenClaw's
       // chat.send.attachment shape (the storageId alone loses them).
