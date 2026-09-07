@@ -1,5 +1,42 @@
 # Changelog
 
+## [0.82.1] — A feature that never worked, withdrawn
+
+Corrective release. One capability is removed because a live gateway proved it can
+never work from a bridge, and the defect that had been hiding that is fixed. Nothing
+changes for naming somebody inside Atrium, which was never affected.
+
+**Naming somebody no longer tries to tell the gateway.** 0.81.0 shipped a capability
+that forwarded a mention to OpenClaw's own inbox on instances using per-user
+identity. A live send, with a real gateway profile on both sides, answered:
+
+> Human mentions require a signed-in Control UI chat. Remove the selected mentions
+> to use this mode.
+
+The gateway accepts human mentions only from a signed-in Control UI chat, and a
+bridge is not one under any configuration or any authentication mode — upstream says
+as much in its own words: *custom WebSocket clients are not Control UI sessions*.
+Worse, the refusal rejects the WHOLE message, so the person's turn would simply never
+have run. The forward is withdrawn rather than attempted, and the capability no longer
+appears in what an instance reports it can do.
+
+Naming somebody inside Atrium is untouched and always was: the person is notified, the
+name is highlighted in the message, on both authentication modes. What is gone only
+ever mattered to somebody who also works from OpenClaw's own interface.
+
+**A request field the bridge was given is no longer dropped in silence.** The bridge
+rebuilds each incoming request field by field, and mentions were not among the fields
+it copied — so they were discarded before anything could act on them. That is why the
+capability above appeared to work: nothing was ever forwarded, so the gateway never
+got the chance to refuse. The parser now carries the field, validating each entry and
+dropping only what is malformed. Fixing it alone would have turned a dormant feature
+into a turn-killing one, which is why both land together.
+
+**Three places that used to fail in silence now say what they did.** The bridge
+reports when it forwards a mention and not only when it gives up; the dispatch says
+when it drops one because the composed text cannot be measured. Every outcome on that
+path is now named in a log, which is what made the defect above findable at all.
+
 ## [0.82.0] — What per-user identity costs, and who decides
 
 Two things an instance running on per-user identity could not do, and the reason it

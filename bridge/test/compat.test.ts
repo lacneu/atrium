@@ -17,6 +17,7 @@ import {
   parseVersion,
   resolveCapabilities,
   resolveCapabilitiesFor,
+  CAPABILITIES_REQUIRING_AUTH_MODE,
 } from "../src/compat.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -41,7 +42,6 @@ const ALL_CAPS = [
   "subagents",
   "cronList",
   "cronManage",
-  "gatewayMentions",
   "talk",
 ] as const;
 
@@ -67,7 +67,6 @@ const MATRIX: Record<string, Record<(typeof ALL_CAPS)[number], boolean>> = {
     subagents: true,
     cronList: true,
     cronManage: false,
-    gatewayMentions: false,
     talk: false,
   },
   "2026.6.1": {
@@ -86,7 +85,6 @@ const MATRIX: Record<string, Record<(typeof ALL_CAPS)[number], boolean>> = {
     subagents: true,
     cronList: true,
     cronManage: false,
-    gatewayMentions: false,
     talk: false,
   },
   "2026.6.5": {
@@ -105,7 +103,6 @@ const MATRIX: Record<string, Record<(typeof ALL_CAPS)[number], boolean>> = {
     subagents: true,
     cronList: true,
     cronManage: false,
-    gatewayMentions: false,
     talk: false,
   },
   // 2026.6.10 — live-validated 2026-06-28 (chat round-trip/stream/tool, multi-agent
@@ -128,7 +125,6 @@ const MATRIX: Record<string, Record<(typeof ALL_CAPS)[number], boolean>> = {
     subagents: true,
     cronList: true,
     cronManage: false,
-    gatewayMentions: false,
     talk: false,
   },
   // 2026.7.1 (incl. the validated -beta.2 bench) — adds the cron MANAGEMENT
@@ -149,7 +145,6 @@ const MATRIX: Record<string, Record<(typeof ALL_CAPS)[number], boolean>> = {
     subagents: true,
     cronList: true,
     cronManage: true,
-    gatewayMentions: false,
     // Realtime voice surface (talk.catalog / talk.client.create) — live-probed
     // on the 2026.7.1 bench (2026-07-16).
     talk: true,
@@ -174,7 +169,6 @@ const MATRIX: Record<string, Record<(typeof ALL_CAPS)[number], boolean>> = {
     subagents: true,
     cronList: true,
     cronManage: true,
-    gatewayMentions: false,
     // Realtime voice surface (talk.catalog / talk.client.create) — live-probed
     // on the 2026.7.1 bench (2026-07-16).
     talk: true,
@@ -200,7 +194,6 @@ const MATRIX: Record<string, Record<(typeof ALL_CAPS)[number], boolean>> = {
     subagents: true,
     cronList: true,
     cronManage: true,
-    gatewayMentions: false,
     talk: true,
   },
 };
@@ -581,70 +574,45 @@ describe("capability policy — frozen at the validated profile", () => {
 // reason nobody can act on, which is why the mode subtracts from what the version
 // granted — and only ever subtracts.
 describe("capabilities gated on the authentication mode, not just the version", () => {
-  test("gatewayMentions is OFF on a token instance, however new the gateway", () => {
-    for (const version of ["2026.9.1", "2026.9.2", "2027.1.1"]) {
-      expect(
-        resolveCapabilities("openclaw", version, "token").capabilities
-          .gatewayMentions,
-        version,
-      ).toBe(false);
-    }
-  });
-
-  test("it is ON once the instance names the person behind each connection", () => {
+  test("no capability is mode-gated today, and that is a MEASUREMENT", () => {
+    // `gatewayMentions` was gated here until 2026-09-12. A live send in
+    // trusted-proxy mode, with a real gateway profile on both sides, proved the
+    // gateway refuses mentions from any client that is not a signed-in Control UI
+    // chat — and refuses the WHOLE turn, not the mention. No authentication mode
+    // reaches that condition, so there was nothing to gate: the capability is
+    // withdrawn rather than gated. Pinned so re-adding one is a deliberate edit.
+    expect(Object.keys(CAPABILITIES_REQUIRING_AUTH_MODE)).toEqual([]);
     expect(
       resolveCapabilities("openclaw", "2026.9.2", "trusted-proxy").capabilities
         .gatewayMentions,
-    ).toBe(true);
+    ).toBeUndefined();
   });
 
-  test("the mode never turns a capability ON that the version withheld", () => {
-    // 2026.5.19 predates the surface entirely. A mode gate that granted anything
-    // would be claiming a method the gateway does not have.
-    expect(
-      resolveCapabilities("openclaw", "2026.5.19", "trusted-proxy").capabilities
-        .gatewayMentions,
-    ).toBe(false);
-  });
-
-  test("the default mode is `token`, so an unstated mode withholds it", () => {
-    // Every instance row written before per-user identity existed says nothing,
-    // and reads as the shared token it actually runs.
-    expect(
-      resolveCapabilities("openclaw", "2026.9.2").capabilities.gatewayMentions,
-    ).toBe(false);
-  });
-
-  test("no OTHER capability moves with the mode", () => {
-    // The gate is a named list, not a mood: switching an instance to per-user
-    // identity must not silently change what else it is allowed to do.
+  test("switching an instance's mode changes NOTHING it may do", () => {
+    // The direct consequence of the line above, stated as behaviour: an operator
+    // who flips the posture must not discover a different feature set.
     const tok = resolveCapabilities("openclaw", "2026.9.2", "token").capabilities;
     const proxy = resolveCapabilities("openclaw", "2026.9.2", "trusted-proxy")
       .capabilities;
-    const moved = Object.keys(tok).filter((k) => tok[k] !== proxy[k]);
-    expect(moved).toEqual(["gatewayMentions"]);
+    expect(Object.keys(tok).filter((k) => tok[k] !== proxy[k])).toEqual([]);
   });
 
-  test("an unknown gateway version still applies the mode gate", () => {
-    // The conservative floor is a SECOND return path, and a gate applied to only
-    // one of them is a gate a null version walks past.
-    //
-    // The shipped manifest cannot prove this: `gatewayMentions` sits above the
-    // range minimum, so the floor branch already answers false for a reason that
-    // has nothing to do with the mode — a test written against it stays green with
-    // the gate deleted. Proven instead on an explicit table where the gated
-    // capability sits exactly AT the floor, which is the only input on which the
-    // two behaviours differ.
+  test("the gate itself still works, on both return paths", () => {
+    // The MECHANISM outlives its first user: the next capability that needs more
+    // than a version number will use it, and a gate applied to only one of the two
+    // return paths is a gate a null version walks past. Proven on an explicit table
+    // where the gated capability sits exactly AT the floor — the only input on
+    // which freezing and failing open differ.
     const range = { min: "1.0.0", maxValidated: "2.0.0" } as const;
-    const table = { gatewayMentions: "1.0.0" };
+    const table = { probe: "1.0.0" };
+    const gate = { probe: "trusted-proxy" } as const;
     expect(
-      resolveCapabilitiesFor(range, table, null, "token").capabilities
-        .gatewayMentions,
+      resolveCapabilitiesFor(range, table, null, "token", gate).capabilities.probe,
       "a null version must not walk past the mode gate",
     ).toBe(false);
     expect(
-      resolveCapabilitiesFor(range, table, null, "trusted-proxy").capabilities
-        .gatewayMentions,
+      resolveCapabilitiesFor(range, table, null, "trusted-proxy", gate).capabilities
+        .probe,
       "and the floor still grants it to the mode that supports it",
     ).toBe(true);
   });

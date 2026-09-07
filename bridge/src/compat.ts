@@ -117,7 +117,12 @@ const OPENCLAW_CAPABILITIES: Record<string, string> = {
   // actually exercised. ALSO gated on the authentication mode
   // (CAPABILITIES_REQUIRING_AUTH_MODE): a mention names a user PROFILE, and a
   // shared-token gateway has exactly one for everybody.
-  gatewayMentions: "2026.9.1",
+  // gatewayMentions: WITHDRAWN 2026-09-12. Declaring it was wrong: the gateway
+  // refuses human mentions from anything that is not a signed-in Control UI chat
+  // ("Human mentions require a signed-in Control UI chat"), and the refusal costs
+  // the WHOLE turn. No version and no auth mode changes that for an operator
+  // client, so there is no version floor to state. Atrium-side mentions — the
+  // notification and the highlight — are unaffected and work on both modes.
   // Realtime voice ("talk"): the gateway mints an EPHEMERAL provider session
   // (talk.client.create -> {clientSecret, offerUrl, model, voice, expiresAt})
   // for a browser-owned WebRTC session; discovery via talk.catalog. Verified
@@ -588,9 +593,17 @@ export function mediaDeliveryPoisonReason(
  * "does this deployment have the concept"), and a reader must be able to see
  * which one turned a capability off.
  */
-export const CAPABILITIES_REQUIRING_AUTH_MODE: Record<string, GatewayAuthMode> = {
-  gatewayMentions: "trusted-proxy",
-};
+/**
+ * Capabilities a gateway VERSION alone cannot decide, because they also need the
+ * instance to authenticate a particular way.
+ *
+ * Empty today: `gatewayMentions` lived here until 2026-09-12, when a live send
+ * proved the gateway refuses mentions from any client that is not a signed-in
+ * Control UI chat — a condition no authentication mode reaches. The mechanism is
+ * kept because it is the right shape for the next capability that needs more than
+ * a version number, and `applyAuthModeGate` is exercised by its own tests.
+ */
+export const CAPABILITIES_REQUIRING_AUTH_MODE: Record<string, GatewayAuthMode> = {};
 
 export function resolveCapabilities(
   provider: string,
@@ -615,8 +628,9 @@ export function resolveCapabilities(
 function applyAuthModeGate(
   capabilities: Record<string, boolean>,
   authMode: GatewayAuthMode,
+  gate: Record<string, GatewayAuthMode> = CAPABILITIES_REQUIRING_AUTH_MODE,
 ): Record<string, boolean> {
-  for (const [cap, required] of Object.entries(CAPABILITIES_REQUIRING_AUTH_MODE)) {
+  for (const [cap, required] of Object.entries(gate)) {
     if (capabilities[cap] === true && authMode !== required) {
       capabilities[cap] = false;
     }
@@ -637,6 +651,10 @@ export function resolveCapabilitiesFor(
   table: Record<string, string>,
   gatewayVersion: string | null,
   authMode: GatewayAuthMode = "token",
+  /** The mode gate to apply. Injectable for the same reason the table is: the
+   *  shipped one is EMPTY since `gatewayMentions` was withdrawn, and a mechanism
+   *  proven only through an empty table is a mechanism proven by nothing. */
+  gate: Record<string, GatewayAuthMode> = CAPABILITIES_REQUIRING_AUTH_MODE,
 ): ResolvedCapabilities {
   if (range === null) return { capabilities: {}, versionBeyondValidated: false };
   const capabilities: Record<string, boolean> = {};
@@ -647,7 +665,7 @@ export function resolveCapabilitiesFor(
       capabilities[cap] = minVersion === range.min;
     }
     return {
-      capabilities: applyAuthModeGate(capabilities, authMode),
+      capabilities: applyAuthModeGate(capabilities, authMode, gate),
       versionBeyondValidated: false,
     };
   }
@@ -660,7 +678,7 @@ export function resolveCapabilitiesFor(
     capabilities[cap] = min !== null && compareVersions(effective, min) >= 0;
   }
   return {
-    capabilities: applyAuthModeGate(capabilities, authMode),
+    capabilities: applyAuthModeGate(capabilities, authMode, gate),
     versionBeyondValidated: beyond,
   };
 }

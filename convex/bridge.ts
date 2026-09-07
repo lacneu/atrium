@@ -1732,7 +1732,15 @@ export const dispatch = internalAction({
               const mentions = outboxMentions(row);
               if (mentions.length === 0) return {};
               const prefix = prependedLength(row.text, composedText);
-              if (prefix === null) return {};
+              if (prefix === null) {
+                // Losing the mention here is DELIBERATE (a span that cannot be
+                // re-anchored costs the whole turn upstream), but losing it in
+                // silence is not: this is the only place that knows why.
+                console.warn(
+                  `[mentions] chat=${row.chatId} dropped ${mentions.length}: the composed text is not a prepend of the message`,
+                );
+                return {};
+              }
               return {
                 mentions: shiftMentionSpans(
                   mentions.map((mention) => ({

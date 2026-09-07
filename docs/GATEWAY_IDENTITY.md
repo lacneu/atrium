@@ -2,8 +2,8 @@
 
 How an instance stops presenting every conversation as the same operator, and
 what changes on the gateway when it does. Read this before switching an instance:
-two gateway behaviours change with the mode, and one capability is not yet
-compatible with full isolation.
+one gateway behaviour changes with the mode, and full isolation is not yet
+compatible with sub-agents.
 
 ## The two modes
 
@@ -148,18 +148,28 @@ Until upstream changes, an instance chooses one of:
 
 ## What the mode turns on
 
-Some capabilities need more than a gateway version. They are listed in the
-bridge's own capability table and reported per instance on `/capabilities`, so a
-client never has to know how an instance authenticates to work out what it may
-offer.
+**Nothing, as of 2026-09-12.** The mechanism exists — the bridge's capability table
+can gate a capability on the authentication mode, and reports it per instance on
+`/capabilities` — but no capability uses it today.
 
-| Capability | Needs | Why |
-|---|---|---|
-| `gatewayMentions` | `trusted-proxy` | A mention names a gateway user PROFILE. A shared-token gateway has one profile for everybody, so there is nobody to name. |
+One did. `gatewayMentions` forwarded a mention to the gateway's own inbox, and was
+gated here because a mention names a gateway user PROFILE, which a shared-token
+gateway does not have per person. A live send in trusted-proxy mode, with a real
+profile on both sides, retired the idea:
 
-Naming somebody inside Atrium works on BOTH modes — the person is notified in the
-app either way. What the mode adds is forwarding the mention to the gateway's own
-inbox, which only matters to somebody who also uses OpenClaw's own interface.
+```
+INVALID_REQUEST: Human mentions require a signed-in Control UI chat.
+Remove the selected mentions to use this mode.
+```
+
+The gateway accepts human mentions only from a signed-in Control UI chat. The bridge
+is an operator client and no configuration makes it one, so there was never a mode
+that could carry them — and the refusal costs the WHOLE turn, not the mention. The
+capability is withdrawn and the forward is not attempted.
+
+Naming somebody inside Atrium is unaffected, and always was: the person is notified,
+the name is highlighted, on both modes. Only OpenClaw's own inbox is out of reach,
+which matters solely to somebody who also works from its interface.
 
 ## Seeing which mode a conversation ran under
 

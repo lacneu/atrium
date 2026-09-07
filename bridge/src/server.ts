@@ -414,6 +414,27 @@ function toRouting(
   };
 }
 
+/**
+ * People a turn names, as Convex resolved them: a CANONICAL plus the span it was
+ * computed against. Returns undefined when there is nothing usable, so the caller
+ * reads "no mentions" rather than an empty list it has to interpret.
+ */
+function parseSendMentions(
+  raw: unknown,
+): Array<{ canonical: string; start: number; end: number }> | undefined {
+  if (!Array.isArray(raw)) return undefined;
+  const out: Array<{ canonical: string; start: number; end: number }> = [];
+  for (const entry of raw) {
+    if (typeof entry !== "object" || entry === null) continue;
+    const m = entry as { canonical?: unknown; start?: unknown; end?: unknown };
+    if (typeof m.canonical !== "string" || m.canonical.length === 0) continue;
+    if (!Number.isInteger(m.start) || !Number.isInteger(m.end)) continue;
+    if ((m.start as number) < 0 || (m.end as number) <= (m.start as number)) continue;
+    out.push({ canonical: m.canonical, start: m.start as number, end: m.end as number });
+  }
+  return out.length > 0 ? out : undefined;
+}
+
 export function parseSendBody(raw: string): SendBody | null {
   let parsed: unknown;
   try {
@@ -485,6 +506,15 @@ export function parseSendBody(raw: string): SendBody | null {
         ? obj.switchedFromInstanceName
         : null,
     sessionSettings,
+    // WHO THE TURN NAMES. Reconstructed here like every other field, which is
+    // exactly why it has to be listed: this parser builds the body key by key, so
+    // a field it does not name is dropped SILENTLY. `mentions` was missing, so
+    // `body.mentions` was always undefined and the forward returned "nothing to
+    // carry" on every turn — the capability was declared, gated and unit-tested
+    // against a fake gateway whose body never went through this parser, and dead
+    // everywhere else. Malformed entries are dropped rather than failing the send:
+    // losing a mention costs a convenience, losing the turn costs the message.
+    mentions: parseSendMentions(obj.mentions),
     attachments: obj.attachments,
     referenceAttachments: parseReferenceAttachments(obj.referenceAttachments),
     // Defensive parse: a bad/absent config yields null → env defaults; a malformed
@@ -1576,14 +1606,23 @@ export async function performSend(
   // person has ALREADY been told by Atrium, so a gateway that cannot carry the
   // mention costs nothing anybody depends on — while a malformed span would cost
   // the whole turn. Every reason to drop is named in the log.
-  const gatewayMentions = await resolveGatewayMentions(
-    conn,
-    sessionKey,
-    body,
-    mentionPrefix,
-    presendConfig,
-  );
-  if (gatewayMentions.length > 0) params.mentions = gatewayMentions;
+  //
+  // NOT ATTEMPTED. Measured live on 2026-09-12 against gateway 2026.9.2, in
+  // trusted-proxy mode, with a real gateway profile on both sides: the mapping
+  // works and the send is then refused outright —
+  //
+  //   INVALID_REQUEST: Human mentions require a signed-in Control UI chat.
+  //   Remove the selected mentions to use this mode.
+  //
+  // The bridge is an operator client, not a signed-in Control UI chat, so nothing
+  // we configure reaches that condition. And the refusal costs the WHOLE TURN, not
+  // the mention: the person's message never runs. So the forward is not attempted
+  // at all, rather than declared and refused.
+  //
+  // `resolveGatewayMentions` is kept: the canonical → profile mapping is correct
+  // and proven, and the day upstream admits another client class this call is the
+  // one line to restore. Until then it stays unwired on purpose.
+  void resolveGatewayMentions;
   if (hasInlineAttachments) {
     // Frame guard: inbound attachments ride THIS chat.send as inline base64, so
     // the whole frame must fit the gateway's maxPayload — an oversized frame makes
@@ -1894,7 +1933,17 @@ async function resolveGatewayMentions(
   // Ordered and disjoint is what upstream walks the list expecting; Convex sorts
   // them, and a prefix shift preserves order, but a dropped middle entry must not
   // leave the rest mis-ordered. Sorting here costs nothing and cannot be wrong.
-  return out.sort((a, b) => a.start - b.start);
+  const forwarded = out.sort((a, b) => a.start - b.start);
+  // Say the SUCCESS too. Both failure paths above are logged, so silence used to
+  // mean either "carried" or "there was nothing to carry" — indistinguishable
+  // exactly when someone asks whether the feature works at all. A count, never a
+  // name: who was named is already the message's business, not the log's.
+  if (forwarded.length > 0) {
+    console.log(
+      `[mentions] chat=${body.chatId} forwarded ${forwarded.length}/${asked.length} to the gateway`,
+    );
+  }
+  return forwarded;
 }
 
 /** Test seam: the mention resolver is module-private, and its behaviour is the

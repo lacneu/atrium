@@ -259,14 +259,15 @@ describe("buildCapabilityTargets (live-session projection)", () => {
     expect(t.provider).toBe("openclaw");
     expect(t.agentId).toBe("main");
     expect(t.gatewayVersion).toBe("2026.7.1");
-    // Everything this version reaches, and NAMED exceptions rather than a loosened
-    // assertion: `gatewayMentions` has a later floor (2026.9.1) AND needs the
-    // instance to name the person behind each connection, which a target built
-    // without an explicit mode does not.
+    // Everything this version reaches, with NO exception — the list is empty since
+    // `gatewayMentions` was withdrawn (the gateway refuses mentions from any client
+    // that is not a signed-in Control UI chat). Kept as an exact list rather than a
+    // loosened assertion: the next capability that stops resolving must be named
+    // here deliberately.
     const off = Object.entries(t.capabilities)
       .filter(([, v]) => v !== true)
       .map(([k]) => k);
-    expect(off).toEqual(["gatewayMentions"]);
+    expect(off).toEqual([]);
     // The flag is OMITTED (not false) within the validated range.
     expect(t).not.toHaveProperty("versionBeyondValidated");
   });
@@ -284,13 +285,12 @@ describe("buildCapabilityTargets (live-session projection)", () => {
   test("a version beyond maxValidated sets the flag", () => {
     const t = buildCapabilityTargets([LIVE("2026.9.9")], "primary")[0]!;
     expect(t.versionBeyondValidated).toBe(true);
-    // Frozen at maxValidated, so the version grants everything — except the one
-    // capability the AUTHENTICATION MODE withholds on a token instance, which is
-    // what this target is. Being beyond the ceiling changes nothing about that.
+    // Frozen at maxValidated, so the version grants everything, and no capability
+    // depends on the authentication mode any more.
     const off = Object.entries(t.capabilities)
       .filter(([, v]) => v !== true)
       .map(([k]) => k);
-    expect(off).toEqual(["gatewayMentions"]);
+    expect(off).toEqual([]);
   });
 
   test("dedupes by canonical (bounded like /health), last live session wins", () => {
@@ -486,7 +486,7 @@ describe("a target states what its instance's MODE allows", () => {
     maxPayload: null,
   });
 
-  test("a trusted-proxy instance gets the mention capability; a token one does not", () => {
+  test("the mode is reported per target, and decides no capability today", () => {
     // The same gateway, the same version, two different answers — which is the
     // whole point of carrying the mode onto the target: a client reading
     // /capabilities must not have to know how the instance authenticates to work
@@ -511,7 +511,14 @@ describe("a target states what its instance's MODE allows", () => {
     )[0]!;
     expect(tok.authMode).toBe("token");
     expect(proxy.authMode).toBe("trusted-proxy");
-    expect(tok.capabilities.gatewayMentions).toBe(false);
-    expect(proxy.capabilities.gatewayMentions).toBe(true);
+    // The MODE is still reported per target — an operator answering "what did this
+    // turn run under?" reads it here. What changed is that it no longer decides any
+    // capability: `gatewayMentions` was withdrawn once a live send proved the
+    // gateway refuses mentions from anything but a signed-in Control UI chat.
+    expect(tok.capabilities.gatewayMentions).toBeUndefined();
+    expect(proxy.capabilities.gatewayMentions).toBeUndefined();
+    expect(Object.entries(tok.capabilities)).toEqual(
+      Object.entries(proxy.capabilities),
+    );
   });
 });

@@ -900,8 +900,19 @@ export const testSendRouted = mutation({
     // When creating a chat, the owner to use (find-or-create). Lets the bench drive a
     // SINGLE user across an alice→bob switch deterministically.
     ownerEmail: v.optional(v.string()),
+    // DEV probe for the ONE capability the trusted-proxy mode turns on. Names a
+    // second person: they are seated in the chat, "@<token>" is appended to the
+    // text, and the resulting SPAN is written on both the message and the outbox
+    // row — the shape the composer produces. Without this the mention forward can
+    // only be exercised against a fake gateway, and its upstream failure mode costs
+    // the WHOLE turn (INVALID_MENTIONS), not just the mention.
+    mentionEmail: v.optional(v.string()),
+    mentionToken: v.optional(v.string()),
   },
-  handler: async (ctx, { text, chatId, instanceName, agentId, ownerEmail }) => {
+  handler: async (
+    ctx,
+    { text, chatId, instanceName, agentId, ownerEmail, mentionEmail, mentionToken },
+  ) => {
     assertDev();
     assertDevInstance(instanceName);
     const routedAgent = { instanceName, agentId };
@@ -969,13 +980,52 @@ export const testSendRouted = mutation({
         updatedAt: now,
       }));
 
+    // Resolve the named person (find-or-create), seat them in the chat, and compute
+    // the span against the text ACTUALLY sent — never a guessed offset.
+    let sentText = text;
+    let mentions:
+      | Array<{ userId: Id<"users">; start: number; end: number }>
+      | undefined;
+    if (mentionEmail) {
+      const token = `@${(mentionToken ?? "Mentioned").replace(/\s+/g, ".")}`;
+      const existing = profiles.find((p) => p.email === mentionEmail);
+      let namedUserId: Id<"users">;
+      if (existing) namedUserId = existing.userId;
+      else {
+        namedUserId = await ctx.db.insert("users", {});
+        await ctx.db.insert("profiles", {
+          userId: namedUserId,
+          role: "user",
+          email: mentionEmail,
+          canonical: "u-mentioned",
+        });
+      }
+      const seated = await ctx.db
+        .query("chatParticipants")
+        .withIndex("by_chat", (q) => q.eq("chatId", cid))
+        .collect();
+      if (!seated.some((r) => r.userId === namedUserId)) {
+        await ctx.db.insert("chatParticipants", {
+          chatId: cid,
+          userId: namedUserId,
+          addedBy: userId,
+          addedAt: now,
+        });
+      }
+      const separator = sentText.length === 0 || sentText.endsWith(" ") ? "" : " ";
+      const start = sentText.length + separator.length;
+      sentText = `${sentText}${separator}${token}`;
+      mentions = [{ userId: namedUserId, start, end: sentText.length }];
+    }
+
     const messageId = await ctx.db.insert("messages", {
       chatId: cid,
       userId,
       role: "user",
       status: "complete",
-      text,
+      text: sentText,
       updatedAt: now,
+      ...(mentions ? { mentions } : {}),
       routedInstanceName: routedAgent.instanceName,
       routedAgentId: routedAgent.agentId,
     });
@@ -986,7 +1036,8 @@ export const testSendRouted = mutation({
       userId,
       clientMessageId: `live-routed-${messageId}`,
       messageId,
-      text,
+      text: sentText,
+      ...(mentions ? { mentions } : {}),
       attachmentIds: [],
       status: "pending",
       // Same stamp as the production senders: a dev probe whose dispatch dies must
