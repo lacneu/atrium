@@ -558,3 +558,22 @@ describe("an administrative socket costs a handshake, so it is opened once", () 
     }
   });
 });
+
+describe("naming a person without moving their conversation", () => {
+  it("the gateway name can differ from the routing key", () => {
+    // An instance whose gateway also sits behind an identity proxy needs Atrium to
+    // name people the way that proxy does, or the same human is two gateway
+    // profiles — one from their Control UI, one from their conversations.
+    const headers = buildIdentityHeaders(
+      humanConnectIdentity(
+        cfg({
+          openclawAuthMode: "trusted-proxy",
+          openclawGatewayUrl: "wss://gw.example.org",
+        }),
+        "olivier@example.org",
+      ),
+    );
+    expect(headers["x-forwarded-user"]).toBe("olivier@example.org");
+  });
+
+});

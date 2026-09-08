@@ -58,6 +58,8 @@ type InstanceForm = {
   // How the bridge authenticates to THIS gateway. OpenClaw only.
   authMode: "token" | "trusted-proxy";
   personScopes: "capped" | "full";
+  // WHICH STRING names a person to this gateway. Never the session key.
+  identitySource: "canonical" | "email";
   systemIdentity: string;
   // FRONTEND live-stream transport (reactive | sse) — an instance property, NOT bridge config.
   streamTransport: StreamTransport;
@@ -73,6 +75,7 @@ const EMPTY_INSTANCE: InstanceForm = {
   gatewayHttpUrl: "",
   authMode: "token",
   personScopes: "capped",
+  identitySource: "canonical",
   systemIdentity: "",
   streamTransport: DEFAULT_STREAM_TRANSPORT,
 };
@@ -101,6 +104,7 @@ function formFromInstance(i: Instance): InstanceForm {
     gatewayHttpUrl: i.gatewayHttpUrl ?? "",
     authMode: (i.authMode ?? "token") as "token" | "trusted-proxy",
     personScopes: (i.personScopes ?? "capped") as "capped" | "full",
+    identitySource: (i.identitySource ?? "canonical") as "canonical" | "email",
     systemIdentity: i.systemIdentity ?? "",
     streamTransport: i.streamTransport ?? DEFAULT_STREAM_TRANSPORT,
   };
@@ -144,6 +148,7 @@ export function InstancesTab() {
           ? {
               authMode: form.authMode,
               personScopes: form.personScopes,
+              identitySource: form.identitySource,
               systemIdentity: form.systemIdentity || undefined,
             }
           : {}),
@@ -435,6 +440,36 @@ export function InstancesTab() {
                     {form.personScopes === "full"
                       ? m.settings_person_scopes_full_hint()
                       : m.settings_person_scopes_capped_hint()}
+                  </p>
+                </Field>
+              ) : null}
+              {form.authMode === "trusted-proxy" ? (
+                <Field label={m.settings_field_identity_source()}>
+                  <Select
+                    value={form.identitySource}
+                    onValueChange={(v) =>
+                      setForm({
+                        ...form,
+                        identitySource: v as "canonical" | "email",
+                      })
+                    }
+                  >
+                    <SelectTrigger size="sm" className="w-full">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="canonical">
+                        {m.settings_identity_source_canonical()}
+                      </SelectItem>
+                      <SelectItem value="email">
+                        {m.settings_identity_source_email()}
+                      </SelectItem>
+                    </SelectContent>
+                  </Select>
+                  <p className="oc-field__hint">
+                    {form.identitySource === "email"
+                      ? m.settings_identity_source_email_hint()
+                      : m.settings_identity_source_canonical_hint()}
                   </p>
                 </Field>
               ) : null}

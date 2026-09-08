@@ -159,8 +159,8 @@ different hosts on a self-hosted deployment, and using the API origin yields
 `redirect_uri_mismatch`.
 
 **Upgrading a deployment that predates this release**: run
-`admin.backfillProfileEmailLower` (dashboard, or `npx convex run`) before anybody
-signs in through a newly added provider. It gives every existing profile the
+`admin.backfillProfileEmailLowerCli` from a terminal before anybody signs in through
+a newly added provider. It gives every existing profile the
 lowercased address the duplicate-account guard reads; without it, the first person
 arriving through the new door is neither recognized nor refused, and gets a second
 account beside their first.
@@ -171,9 +171,15 @@ the rows it has not reached in exactly the state the step exists to fix. It is
 idempotent and never touches the address an operator sees.
 
 ```bash
-npx convex run admin:backfillProfileEmailLower '{}'
-npx convex run admin:backfillProfileEmailLower '{"cursor": "<the cursor it returned>"}'
+npx convex run admin:backfillProfileEmailLowerCli '{}'
+npx convex run admin:backfillProfileEmailLowerCli '{"cursor": "<the cursor it returned>"}'
 ```
+
+The `Cli` suffix is not cosmetic. `npx convex run` establishes no signed-in user, so
+the admin-gated `admin.backfillProfileEmailLower` — the same step for an in-app
+administrator — answers `Unauthorized: authentication required` from a terminal. The
+CLI carries the deployment's own key, which is what authorizes the internal function
+above.
 
 ### Environment labelling and credential encryption
 

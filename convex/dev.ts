@@ -18,7 +18,7 @@ import { generateApiKey, hashKey } from "./lib/apikeys";
 import { envLabel } from "./lib/envLabel";
 import { recordFileForPart } from "./lib/files";
 import { seedBuiltinRoles } from "./lib/rbac";
-import { resolveTargetForChat } from "./routing";
+import { resolveTargetForChat, resolveGatewayUser } from "./routing";
 import { resolveBridgeUrlForDispatch } from "./lib/bridgeRouting";
 import { enrichUserAgents } from "./agents";
 import { requireRealUserId, getProfile } from "./lib/access";
@@ -1927,11 +1927,21 @@ export const setInstanceAuthMode = mutation({
     authMode: v.union(v.literal("token"), v.literal("trusted-proxy")),
     gatewayUrl: v.optional(v.string()),
     personScopes: v.optional(v.union(v.literal("capped"), v.literal("full"))),
+    identitySource: v.optional(
+      v.union(v.literal("canonical"), v.literal("email")),
+    ),
     systemIdentity: v.optional(v.string()),
   },
   handler: async (
     ctx,
-    { instanceName, authMode, gatewayUrl, personScopes, systemIdentity },
+    {
+      instanceName,
+      authMode,
+      gatewayUrl,
+      personScopes,
+      identitySource,
+      systemIdentity,
+    },
   ) => {
     assertDev();
     assertDevInstance(instanceName);
@@ -1944,6 +1954,7 @@ export const setInstanceAuthMode = mutation({
       authMode,
       ...(gatewayUrl ? { gatewayUrl } : {}),
       ...(personScopes ? { personScopes } : {}),
+      ...(identitySource ? { identitySource } : {}),
       ...(systemIdentity ? { systemIdentity } : {}),
     });
     return { ok: true as const, authMode, gatewayUrl: gatewayUrl ?? inst.gatewayUrl };
@@ -2382,6 +2393,15 @@ export const devPrepareInteraction = internalMutation({
       served: process.env.BRIDGE_INSTANCE_NAME ?? null,
       isSole: someInstances.length <= 1,
     });
+    // Mirrors the production door (subAgentInteractions.sendToSubAgent): a dev
+    // interaction that named the owner differently would exercise a socket the
+    // product never opens.
+    const gatewayUser = await resolveGatewayUser(ctx, {
+      instanceName: target.instanceName,
+      ownerUserId: chat.userId,
+      canonical: target.canonical,
+      instance,
+    });
     const text = userText.trim().slice(0, 8000);
     const now = Date.now();
     const interactionId = await ctx.db.insert("subAgentInteractions", {
@@ -2402,6 +2422,7 @@ export const devPrepareInteraction = internalMutation({
         agentId: target.agentId,
         canonical: target.canonical,
         instanceName: target.instanceName,
+        ...(gatewayUser === undefined ? {} : { gatewayUser }),
       },
     };
   },

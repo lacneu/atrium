@@ -27,7 +27,12 @@ import { chatParticipantRows } from "./lib/chatAccess";
 import { prependedLength, shiftMentionSpans } from "./lib/mentions";
 import { maybeScheduleTurnRetry } from "./turnRetry";
 import { Doc, Id } from "./_generated/dataModel";
-import { resolveTargetForChat, resolveTargetForTurn, canonicalForUser } from "./routing";
+import {
+  resolveTargetForChat,
+  resolveTargetForTurn,
+  canonicalForUser,
+  resolveGatewayUser,
+} from "./routing";
 import { requireActive, requirePermission } from "./lib/access";
 import { capabilitiesForInstance, mediaQuarantineReason } from "./lib/compat";
 import { readDoc as readCompatDoc } from "./compat";
@@ -576,6 +581,18 @@ export const getChatRouting = internalQuery({
             .withIndex("by_name", (q) => q.eq("name", target.instanceName))
             .first()
         : null;
+    // WHICH STRING names the owner to this gateway. The instance row is already in
+    // hand here, so the shared derivation is handed it rather than re-reading it.
+    const gatewayUser =
+      target === null
+        ? undefined
+        : await resolveGatewayUser(ctx, {
+            instanceName: target.instanceName,
+            ownerUserId: chat.userId,
+            canonical: target.canonical,
+            instance,
+          });
+
     // Does THIS instance's gateway make a delivered file destroy the session? Read
     // once here, before the endpoint is chosen, so the answer holds whichever bridge
     // generation answers the POST (see `withMediaQuarantine`).
@@ -662,6 +679,9 @@ export const getChatRouting = internalQuery({
       // when a session's attribution looks wrong. Read from the instance already
       // loaded above, so it costs no extra read on the dispatch path.
       authMode: instance?.authMode ?? "token",
+      // The string that names the owner to this gateway, when the instance was told
+      // to use something other than the routing key. Absent ⇒ the canonical.
+      gatewayUser,
       // The chat's KIND — `summarizer` | `documentary` | `curator` | `converter` for
       // Atrium's own hidden work, absent for a real conversation. An ENUM, so it is
       // safe on a trace (no content, no identifiers). Reported here because the
@@ -1720,6 +1740,18 @@ export const dispatch = internalAction({
             instanceName: routing.target.instanceName,
             agentId: routing.target.agentId,
             canonical: routing.target.canonical,
+          // Same person, same gateway name: /patch and /abort reach the SAME
+          // per-conversation socket, so omitting it here would open a second one
+          // under a different identity.
+          ...(routing.gatewayUser === undefined
+            ? {}
+            : { gatewayUser: routing.gatewayUser }),
+            // WHO the gateway should call this person, when the instance names
+            // people differently from the routing key. Absent ⇒ the canonical, so
+            // an older bridge and an unset instance both behave as before.
+            ...(routing.gatewayUser === undefined
+              ? {}
+              : { gatewayUser: routing.gatewayUser }),
             // WHO THIS TURN NAMES, for the gateway's own mention inbox — carried
             // as CANONICALS because Atrium does not know gateway profile ids; the
             // bridge maps them. Offsets are shifted past the quoted-reply preamble
@@ -1894,8 +1926,12 @@ export const dispatch = internalAction({
         agentId: routing.target.agentId,
       },
       authMode: routing.authMode,
-      // The OWNER's key: one gateway session per conversation, so this is the
-      // identity the turn ran under whoever typed it.
+      // The OWNER's key: one gateway session per conversation, so this names whose
+      // turn it was whoever typed it. Atrium's key, deliberately, even on an
+      // instance whose `identitySource` tells the gateway a different name — the
+      // trace store is read by administrators and keyed by a stable slug, and an
+      // address would put PII in it to say something the instance setting already
+      // says. Which name went out is a property of the instance, not of the turn.
       gatewayIdentity: routing.target.canonical,
       participantCount: chatFacts?.participantCount ?? 0,
       fromParticipant: String(row.userId) !== String(chatOwnerId),
@@ -1969,6 +2005,12 @@ export const dispatchPatch = internalAction({
           instanceName: routing.target.instanceName,
           agentId: routing.target.agentId,
           canonical: routing.target.canonical,
+          // Same person, same gateway name: /patch and /abort reach the SAME
+          // per-conversation socket, so omitting it here would open a second one
+          // under a different identity.
+          ...(routing.gatewayUser === undefined
+            ? {}
+            : { gatewayUser: routing.gatewayUser }),
           // The COMPLETE persisted intent (sets + clears) — the exact object the
           // per-turn /send re-apply consumes; ONE bridge call both clears the
           // removed knobs and re-asserts the rest. Single source of truth (P2-4).
@@ -2116,6 +2158,12 @@ export const dispatchAbort = internalAction({
           instanceName: routing.target.instanceName,
           agentId: routing.target.agentId,
           canonical: routing.target.canonical,
+          // Same person, same gateway name: /patch and /abort reach the SAME
+          // per-conversation socket, so omitting it here would open a second one
+          // under a different identity.
+          ...(routing.gatewayUser === undefined
+            ? {}
+            : { gatewayUser: routing.gatewayUser }),
           ...(sessionKey ? { sessionKey } : {}),
           ...(runId ? { runId } : {}),
         }),
@@ -2298,6 +2346,12 @@ export const dispatchReset = internalAction({
           instanceName: routing.target.instanceName,
           agentId: routing.target.agentId,
           canonical: routing.target.canonical,
+          // Same person, same gateway name: /patch and /abort reach the SAME
+          // per-conversation socket, so omitting it here would open a second one
+          // under a different identity.
+          ...(routing.gatewayUser === undefined
+            ? {}
+            : { gatewayUser: routing.gatewayUser }),
           // PANEL resets only: the bridge refuses (409 turn_active) when a
           // turn is LIVE at execution time — the atomic close of the
           // schedule→execute race (codex P1, pass 8). Regenerate resets never

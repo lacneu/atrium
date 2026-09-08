@@ -619,6 +619,13 @@ export const compactSession = action({
         instanceName: routing.target.instanceName,
         agentId: routing.target.agentId,
         canonical: routing.target.canonical,
+        // This route opens the OWNER's socket (the registry acquires a session), so
+        // it must name them the way every other door does — or the same person is
+        // one gateway profile or another depending on whether they compacted
+        // before they sent. Absent ⇒ the canonical, unchanged.
+        ...(routing.gatewayUser === undefined
+          ? {}
+          : { gatewayUser: routing.gatewayUser }),
       },
       COMPACT_TIMEOUT_MS,
       // The dispatch routing already resolved this instance's bridge (Model M).

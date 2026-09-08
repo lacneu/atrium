@@ -1,5 +1,73 @@
 # Changelog
 
+## [0.84.0] — One person, one gateway profile
+
+A deployment that authenticates people through its own identity provider can now
+tell each gateway to know them by the same name Atrium does. Nothing changes for a
+deployment that does not ask: the setting defaults to what every instance has always
+sent, and the send body is byte-identical. No breaking changes.
+
+**Choose the name a gateway learns, per instance.** Settings → Instances →
+*Modifier l'instance* → **Name presented to the gateway**, shown under trusted-proxy
+authentication. Left alone, the gateway knows each person by Atrium's own stable
+key, exactly as before. Set to the email address, it knows them by the address the
+identity provider verified.
+
+That second choice exists because a gateway profile is keyed by the exact string it
+is handed. A deployment that puts an identity proxy in front of the same gateway —
+Authelia, Keycloak, Authentik — already hands it the person's address when they open
+the gateway's own interface, while Atrium handed it a different string for their
+conversations. Same human, two profiles, two session lists, and nothing anywhere
+said so. Now they can agree.
+
+Per instance, because deployments in one Atrium are not alike: a gateway sitting
+behind nothing and a gateway behind single sign-on each state their own answer.
+
+**Conversations do not move when you change it — and the change applies to the ones
+started afterwards.** The gateway session key is built from Atrium's key whatever the
+name says, so switching the setting does not orphan a single history. What it also
+does not do is re-attribute conversations that already exist: a gateway records who
+created a session and keeps that record for the session's life. Set the naming while
+a deployment is young; the setting's screen and
+[the identity guide](docs/GATEWAY_IDENTITY.md) say what it costs to set it late.
+
+Every path that opens a person's connection — a turn, a patch, a reset, a
+compaction, a message to a sub-agent — now derives the name the same way, so a
+person cannot end up named one way or another depending on which action happened to
+open their connection first. Two of those paths did not, until this release.
+
+**The address is the one their provider states today.** Atrium keeps a second,
+deliberately stable copy of each address for display; naming a person to a gateway
+by that copy would have handed it an address they no longer have, and recreated the
+duplicate profile the setting exists to prevent — for exactly the people whose
+address changed, silently.
+
+**An address the identity header cannot carry no longer silences the person who has
+it.** That header takes printable ASCII; an internationalized address like
+`josé@example.org` is valid everywhere else and is accepted at sign-in. Handing it
+straight to the gateway failed the connection, so every turn that person sent
+returned an error — caused by a setting flipped on a screen far away, and reported
+nowhere near it. They are now named by their Atrium key instead, which is said in
+the bridge log: they keep a separate gateway profile, and they keep working.
+
+**A sub-agent interaction with no routing is refused instead of connecting as
+nobody.** That request used to substitute empty values, which builds a gateway
+session belonging to no one on a gateway that attributes by exactly that string. It
+now answers 400.
+
+**An edit that says nothing about the naming no longer undoes it.** An instance
+updated by a caller that predates this setting — an older client, a provisioning
+script — silently reverted to naming people by the Atrium key, handing every one of
+them the second gateway profile the setting exists to merge. Saying nothing now
+preserves it; asking for the key back is still an explicit choice.
+
+**The upgrade step 0.83.0 documented can now actually be performed.** The command
+that release gave for the one-time profile backfill answered `Unauthorized:
+authentication required` — `npx convex run` establishes no signed-in user, while the
+function required an administrator. There is now an entry point the CLI can call
+(`admin:backfillProfileEmailLowerCli`), and the documentation points at it. If you
+were told to run the backfill and could not, this is why; run it now.
+
 ## [0.83.1] — The upgrade step now finishes what it says it finished
 
 Corrective release for the one-time backfill 0.83.0 asks an existing deployment to

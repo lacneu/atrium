@@ -11,12 +11,18 @@ import { resolveAgentTypes } from "./lib/agentTypes";
 import { Doc, Id } from "./_generated/dataModel";
 import { QueryCtx, MutationCtx } from "./_generated/server";
 import { getProfile } from "./lib/access";
+import { normalizeEmail } from "./lib/authDomains";
 import { getEffectiveGrants } from "./agents";
 
 export interface ResolvedTarget {
   instanceName: string;
   agentId: string;
   canonical: string;
+  /** The string that NAMES this person to the gateway, when it differs from the
+   *  routing key. Absent ⇒ the canonical, which is what every instance sent before
+   *  `instances.identitySource` existed. Never a session-key segment: the key must
+   *  not move when an operator changes how people are named. */
+  gatewayUser?: string;
   source: "chat-binding" | "user-default";
 }
 
@@ -283,4 +289,75 @@ export async function resolveTargetForTurn(
     rebind: null,
     failReason: null,
   };
+}
+
+/**
+ * WHICH STRING names this conversation's owner to their gateway.
+ *
+ * `undefined` means "the canonical", which is what every instance sent before
+ * `instances.identitySource` existed — so a deployment that does not ask for
+ * anything keeps a byte-identical send body and a byte-identical handshake.
+ *
+ * ONE derivation, deliberately: this value decides how a gateway attributes a
+ * person, and every door that opens a person's socket must answer it the same
+ * way. Two doors answering differently would name the same human two ways
+ * depending on which request happened to open the socket first — the gateway
+ * would hold two profiles for them, and which one you got would depend on
+ * whether you compacted before you sent.
+ *
+ * The address is read ONLY when the operator asked for it: it leaves Atrium in a
+ * request header, which is a deliberate choice about naming, never a default. A
+ * profile with no address falls back to the canonical rather than naming nobody.
+ *
+ * WHICH copy of the address, and why it matters here specifically. Atrium keeps two:
+ * the `users` row, which the auth library rewrites from the provider's claims on
+ * EVERY sign-in, and `profiles.email`, which `ensureProfile` fills only when MISSING
+ * and never overwrites (the display value an administrator sees, deliberately stable).
+ * For every other purpose the profile copy is the right one. Not for this one: the
+ * proxy in front of the gateway injects whatever the provider says TODAY, so reading
+ * the frozen copy would name a person by an address they no longer have — and
+ * recreate the very second profile this setting exists to prevent, silently, for
+ * exactly the people who changed their name.
+ */
+export async function resolveGatewayUser(
+  ctx: QueryCtx | MutationCtx,
+  args: {
+    instanceName: string;
+    ownerUserId: Id<"users">;
+    canonical: string;
+    /** The already-read instance row, when the caller holds one (the dispatch
+     *  path does) — avoids a second read of the same document. */
+    instance?: Doc<"instances"> | null;
+  },
+): Promise<string | undefined> {
+  const instance =
+    args.instance !== undefined
+      ? args.instance
+      : ((await ctx.db
+          .query("instances")
+          .withIndex("by_name", (q) => q.eq("name", args.instanceName))
+          .first()) ?? null);
+  if (
+    instance?.authMode !== "trusted-proxy" ||
+    instance.identitySource !== "email"
+  ) {
+    return undefined;
+  }
+  const user = await ctx.db.get(args.ownerUserId);
+  const current = typeof user?.email === "string" ? user.email : undefined;
+  const profile = current === undefined ? await getProfile(ctx, args.ownerUserId) : null;
+  // NORMALIZED, so the two sources cannot disagree with each other. The providers
+  // normalize what they write to the `users` row; `profiles.email` keeps whatever
+  // its issuer stated, because it is the display value. Emitting one or the other
+  // raw would make the same person's name depend on which copy happened to be
+  // available — different strings in the header, in a log, in an operator's head.
+  //
+  // Not a duplicate-profile fix: the gateway lowercases an identity before
+  // resolving it (upstream `normalizeEmail`, reached from `ensureProfileForEmail`
+  // on both the WS connect and HTTP paths, v2026.9.2), so `Alice@Example.org` and
+  // `alice@example.org` already land on ONE profile. This is about Atrium stating
+  // one string, not about repairing a split.
+  return (
+    normalizeEmail(current ?? profile?.email ?? undefined) ?? args.canonical
+  );
 }

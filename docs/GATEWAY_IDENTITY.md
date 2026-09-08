@@ -41,6 +41,11 @@ transcript recovery after a crash, the administrative session settings — act a
 the bridge's own actor and keep the full grant, because reading a session created
 by somebody else is exactly what they do.
 
+For a deployment being built from scratch — Atrium, a gateway and an identity
+provider together — [INSTALL_SSO_TRUSTED_PROXY.md](INSTALL_SSO_TRUSTED_PROXY.md)
+gives the three sides in order. This page explains what the mode changes; that one
+says what to set.
+
 ## Gateway-side prerequisites
 
 The gateway must be configured for the same mode. In its own configuration:
@@ -107,6 +112,68 @@ and `hasMultipleSessionSharingIdentities`, and nothing about roles — verified 
 upstream `connect-hello.ts` at v2026.9.2), and the ceiling is an upgrade HEADER,
 chosen before the socket exists. Anything else would be a cached guess about a
 security boundary, failing open exactly when an operator has just configured roles.
+
+## Which name the gateway learns
+
+`x-forwarded-user` carries a string, and a gateway profile is keyed by that exact
+string. So the question "who is this person" has one answer per deployment, and a
+deployment that puts an identity proxy in front of the SAME gateway already has
+its own answer.
+
+Left alone, the two disagree. The proxy names people the way it knows them — an
+address — and Atrium names them by its own stable key. Same human, two gateway
+profiles, two session lists: one for what they do in the gateway's Control UI, one
+for what they say in a conversation. Nothing errors; the split is silent, and it
+matters the moment `gateway.roles` draws a boundary per profile.
+
+Settings → Instances → *Modifier l'instance* → **Name presented to the gateway**,
+per instance, shown only under trusted proxy:
+
+| Choice | `x-forwarded-user` carries | Pick it when |
+|---|---|---|
+| **Atrium key** (default) | `profiles.canonical` | nothing else names people to this gateway |
+| **Email address** | the verified address | a proxy in front of the same gateway injects the address too |
+
+Per instance because a community's deployments are not alike: the NAS gateway
+behind nothing and the VPS gateway behind Authelia are two instances of one
+Atrium, and each states its own answer.
+
+**A conversation does not move when this changes.** The gateway session key is
+`agent:<agentId>:atrium:chat:<canonical>:<chatId>` — built from the canonical,
+whatever the name says. Deriving the key from the name instead would have given
+every conversation a brand-new gateway session the day an operator flipped the
+setting, orphaning every history with nothing logged. The name reaches the
+connection; the key stays where it was.
+
+**Which is also the limit: the setting applies to sessions created after it.** A
+gateway stamps `createdActor` when it CREATES a session and carries that stamp
+across every later write (`preserveCreationStamp`, upstream, v2026.9.2), so a
+conversation that already existed keeps the profile it was created under — a
+reconnection under the new name does not re-attribute it, and neither would
+re-keying, which would simply abandon its history instead. Flipping this setting
+therefore converges NEW conversations, not old ones.
+
+That is a real consequence, not a detail, because it is per profile that
+`gateway.roles` draws its visibility boundary: with roles configured, a person whose
+name changed sees their own older conversations only if something re-attributes
+them. Something can — the session owner is mutable (`sessions.assignOwner`,
+`operator.write`, upstream since 2026.8) — but Atrium does not call it today. Choose
+the naming before a deployment accumulates conversations, or expect to reassign the
+old ones by hand.
+
+A profile with no address falls back to the key rather than naming nobody: a
+connection that names no one is refused outright (`trusted_proxy_user_missing`),
+which would take the conversation with it. So does an address the header cannot
+carry — it takes printable ASCII, and an internationalized address like
+`josé@example.org` is valid everywhere else. Such a person keeps the separate
+gateway profile this setting exists to merge, which the bridge log states (by their
+Atrium key, never their address), and keeps being able to speak. The alternative was
+every one of their turns failing at connect.
+
+Every door that opens a person's socket answers this the same way — a turn, a
+patch, a reset, a compaction, an interaction with a sub-agent. They share one
+derivation on purpose: two doors answering differently would give one human two
+profiles depending on which request happened to open the socket first.
 
 ## One thing that used to break here, and no longer does
 
@@ -180,8 +247,11 @@ attribution question is answered by reading, never by reproducing a turn:
   `participantCount` alongside the assessment — the first place to look when a
   session appears attributed to the bridge rather than to a person.
 - **`list_traces`** returns, on every `openclaw.dispatch` event: `authMode`, the
-  `gatewayIdentity` the turn ran under (always the chat OWNER's stable key, since
-  a conversation has one gateway session), `participantCount`, and
+  `gatewayIdentity` whose turn it was (always the chat OWNER's stable Atrium key,
+  since a conversation has one gateway session — never the address, even on an
+  instance that tells the gateway one: a trace store read by administrators does
+  not need PII to say what the instance setting already says), `participantCount`,
+  and
   `fromParticipant` when the turn came from somebody who does not own the chat.
   Metadata only — counts, enums and a slug, never message text.
 - **`get_compat`** / `GET /capabilities` carries `authMode` per instance target,

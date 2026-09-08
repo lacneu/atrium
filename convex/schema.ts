@@ -474,6 +474,24 @@ export default defineSchema({
     // a deployment the ceiling costs those tools and protects nothing. Which side
     // of that is right belongs to the operator, which is why it is a setting.
     personScopes: v.optional(v.union(v.literal("capped"), v.literal("full"))),
+    // WHICH STRING names a person to this gateway, in "trusted-proxy" mode.
+    //
+    // The gateway keys a durable user profile by the exact string it is given, so
+    // this is what decides whether Atrium and something ELSE in front of the same
+    // gateway — an identity proxy serving its Control UI — are talking about the
+    // same person or two of them. A proxy names people the way its directory does;
+    // Atrium's own key is a slug. They only meet if an operator makes them meet,
+    // which is why this is a setting and not a constant.
+    //
+    //   "canonical" (default): `profiles.canonical`, Atrium's own stable key, and
+    //     what every instance sent before this existed.
+    //   "email": the verified address. Choose it when the proxy in front of the
+    //     same gateway injects the email too — then one person is one profile.
+    //
+    // NEVER the session key. `canonical` is a segment of the gateway session key
+    // (`agent:<agent>:atrium:chat:<canonical>:<chat>`), and moving that would give
+    // every conversation a new gateway session. This names the CONNECTION only.
+    identitySource: v.optional(v.union(v.literal("canonical"), v.literal("email"))),
     // Identity the bridge presents on sockets that serve no single person (agent
     // discovery, transcript recovery, config defaults). Unset → derived from the
     // instance name. Only meaningful in "trusted-proxy" mode.

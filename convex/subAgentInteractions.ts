@@ -16,7 +16,7 @@ import { chatAllowsInstance } from "./lib/ingestAuthz";
 import { action, internalMutation, query } from "./_generated/server";
 import { internal } from "./_generated/api";
 import { requireActive, requireOwnedChat, requireReachableChat } from "./lib/access";
-import { resolveTargetForChat } from "./routing";
+import { resolveTargetForChat, resolveGatewayUser } from "./routing";
 import { resolveBridgeUrlForDispatch } from "./lib/bridgeRouting";
 import { assertOwnsUpload } from "./uploads";
 import type { Id } from "./_generated/dataModel";
@@ -119,6 +119,13 @@ export const prepareInteraction = internalMutation({
       served: process.env.BRIDGE_INSTANCE_NAME ?? null,
       isSole: someInstances.length <= 1,
     });
+    // Same derivation as the dispatch path — the instance row is already in hand.
+    const gatewayUser = await resolveGatewayUser(ctx, {
+      instanceName: target.instanceName,
+      ownerUserId: chat.userId,
+      canonical: target.canonical,
+      instance,
+    });
     const text = userText.trim().slice(0, MAX_INTERACTION_CHARS);
     const now = Date.now();
     const attachmentMeta = atts.map((a) => ({
@@ -151,6 +158,9 @@ export const prepareInteraction = internalMutation({
         agentId: target.agentId,
         canonical: target.canonical,
         instanceName: target.instanceName,
+        // Interacting with a sub-agent acquires the PARENT's socket, so this door
+        // names the owner exactly as the send path does. Absent ⇒ the canonical.
+        ...(gatewayUser === undefined ? {} : { gatewayUser }),
       },
     };
   },

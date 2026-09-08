@@ -227,6 +227,17 @@ type ClearableField = (typeof CLEARABLE_FIELDS)[number];
 interface BodyRouting {
   agentId: string;
   canonical: string;
+  /**
+   * The string that NAMES this person to the gateway, when it differs from the
+   * routing key. Convex resolves it from the instance's `identitySource`.
+   *
+   * Separate from `canonical` on purpose: the canonical is a SEGMENT of the gateway
+   * session key, so it must never move — an operator changing how people are named
+   * would otherwise give every conversation a brand-new gateway session and lose its
+   * history. Absent ⇒ the canonical, which is what every instance sent before this
+   * existed and what a token-mode instance never uses at all.
+   */
+  gatewayUser?: string;
   instanceName: string | null;
 }
 
@@ -379,7 +390,16 @@ export function parseBodyRouting(
   const agentId = str(obj.agentId);
   const canonical = str(obj.canonical);
   if (!agentId || !canonical) return null;
-  return { agentId, canonical, instanceName: str(obj.instanceName) };
+  // Named explicitly, because this function REBUILDS the routing field by field: a
+  // field it does not name is dropped in silence — the exact way `mentions` was
+  // lost for every turn until 2026-09-12.
+  const gatewayUser = str(obj.gatewayUser);
+  return {
+    agentId,
+    canonical,
+    ...(gatewayUser === null ? {} : { gatewayUser }),
+    instanceName: str(obj.instanceName),
+  };
 }
 
 /**
@@ -410,6 +430,7 @@ function toRouting(
     openclawChatId: b.openclawChatId,
     agentId: b.agentId,
     canonical: b.canonical,
+    ...(b.gatewayUser === undefined ? {} : { gatewayUser: b.gatewayUser }),
     instanceName,
   };
 }
@@ -4353,6 +4374,10 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
         instanceName?: string;
         agentId?: string;
         canonical?: string;
+        // The NAME the owner is presented under, when the instance asks for one
+        // other than the routing key. Read by `parseBodyRouting` below, with every
+        // other routing field, so this door cannot drift from /send's.
+        gatewayUser?: string;
         chatId?: string;
         openclawChatId?: string | null;
         childSessionKey?: string;
@@ -4384,15 +4409,28 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
         });
         return;
       }
+      // Routing through the SHARED parse rather than a literal rebuilt here: this
+      // door opens the OWNER's socket exactly as /send does, and a field this site
+      // forgot to name would be dropped in silence — how `mentions` was lost for
+      // every turn, and how the gateway name would have been lost for every
+      // interaction. A body missing agentId/canonical is now refused instead of
+      // connecting under empty segments (a session key naming "unknown").
+      const saRouting = parseBodyRouting(body as Record<string, unknown>);
+      if (saRouting === null) {
+        sendJson(res, 400, {
+          ok: false,
+          error: "agentId + canonical required",
+        });
+        return;
+      }
       try {
         const session = await registry.acquire(
           toRouting(
             {
+              ...saRouting,
               chatId: body.chatId ?? "",
               openclawChatId: body.openclawChatId ?? null,
-              agentId: body.agentId ?? "",
-              canonical: body.canonical ?? "",
-            } as never,
+            },
             saInstance,
           ),
         );

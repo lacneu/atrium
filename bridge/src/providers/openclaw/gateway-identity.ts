@@ -121,6 +121,9 @@ export const HUMAN_SCOPE_CAP = [
  */
 const SAFE_HEADER_VALUE = /^[\x21-\x7e]+$/;
 
+/** Longest identity the gateway keys a profile by. */
+const MAX_IDENTITY_USER_CHARS = 200;
+
 /** Characters that would split one header value into several fields. */
 const HEADER_SEPARATORS = /[,;]/;
 
@@ -130,13 +133,34 @@ export class GatewayIdentityError extends Error {}
  * Refuse an identity string that cannot be presented faithfully. Returns the value
  * so call sites can validate and assign in one expression.
  */
+/**
+ * Can this string BE a trusted-proxy identity — i.e. survive the header that
+ * carries it? The rule lives here, once, because two places need it and they must
+ * never disagree: `assertIdentityUser` below refuses what fails it, and the naming
+ * site falls back to the routing key rather than letting a person be unable to
+ * speak at all.
+ *
+ * `x-forwarded-user` carries printable ASCII with no field separator. An
+ * INTERNATIONALIZED address (`josé@example.com`) is a perfectly valid address that
+ * this header cannot carry — so an instance naming people by their address must be
+ * able to ask the question without throwing.
+ */
+export function isHeaderSafeIdentity(user: string): boolean {
+  return (
+    user.length > 0 &&
+    user.length <= MAX_IDENTITY_USER_CHARS &&
+    SAFE_HEADER_VALUE.test(user) &&
+    !HEADER_SEPARATORS.test(user)
+  );
+}
+
 export function assertIdentityUser(user: string): string {
   if (user.length === 0) {
     throw new GatewayIdentityError(
       "trusted-proxy identity is empty: the gateway refuses a connect whose user header is missing or blank",
     );
   }
-  if (user.length > 200) {
+  if (user.length > MAX_IDENTITY_USER_CHARS) {
     throw new GatewayIdentityError(
       `trusted-proxy identity is too long (${user.length} chars): gateway user profiles are keyed by this value`,
     );

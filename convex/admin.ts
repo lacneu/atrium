@@ -7,7 +7,12 @@
 
 import { v } from "convex/values";
 import { isSupportedLocale } from "./lib/locales";
-import { mutation, query, MutationCtx } from "./_generated/server";
+import {
+  internalMutation,
+  mutation,
+  query,
+  MutationCtx,
+} from "./_generated/server";
 import { Id } from "./_generated/dataModel";
 import { getProfile, requireAdmin, requirePermission, roleOf } from "./lib/access";
 import { normalizeEmail } from "./lib/authDomains";
@@ -651,16 +656,15 @@ export const listInstances = query({
  * silently get duplicate accounts. `remaining` is gone with it — a number counted
  * over one page was the thing that lied. `isDone` is the whole answer.
  */
-export const backfillProfileEmailLower = mutation({
-  args: {
-    /** From the previous call. Omit on the first one. */
-    cursor: v.optional(v.union(v.string(), v.null())),
-  },
-  handler: async (
-    ctx,
-    { cursor },
-  ): Promise<{ updated: number; isDone: boolean; cursor: string | null }> => {
-    await requireAdmin(ctx);
+/**
+ * One page of the backfill. Shared by both entry points below so the walk itself
+ * exists once — the two differ only in WHO may start it.
+ */
+async function backfillEmailLowerPage(
+  ctx: MutationCtx,
+  cursor: string | null | undefined,
+): Promise<{ updated: number; isDone: boolean; cursor: string | null }> {
+  {
     const page = await ctx.db
       .query("profiles")
       .withIndex("by_email_lower", (q) => q.eq("emailLower", undefined))
@@ -682,6 +686,43 @@ export const backfillProfileEmailLower = mutation({
       isDone: page.isDone,
       cursor: page.isDone ? null : page.continueCursor,
     };
+  }
+}
+
+/**
+ * The upgrade step, for an OPERATOR at a terminal.
+ *
+ * `internal` on purpose, and not a convenience: `npx convex run` establishes no app
+ * user, so the admin-gated mutation below answers "Unauthorized: authentication
+ * required" — which made the one step 0.83.0 calls mandatory impossible to perform
+ * by following its own instructions. The Convex CLI carries the deployment's own
+ * key, which is what authorizes an internal function, so this is the entry point a
+ * deployment operator actually has.
+ */
+export const backfillProfileEmailLowerCli = internalMutation({
+  args: {
+    /** From the previous call. Omit on the first one. */
+    cursor: v.optional(v.union(v.string(), v.null())),
+  },
+  handler: async (
+    ctx,
+    { cursor },
+  ): Promise<{ updated: number; isDone: boolean; cursor: string | null }> =>
+    await backfillEmailLowerPage(ctx, cursor),
+});
+
+/** The same step for a signed-in administrator (an in-app caller). */
+export const backfillProfileEmailLower = mutation({
+  args: {
+    /** From the previous call. Omit on the first one. */
+    cursor: v.optional(v.union(v.string(), v.null())),
+  },
+  handler: async (
+    ctx,
+    { cursor },
+  ): Promise<{ updated: number; isDone: boolean; cursor: string | null }> => {
+    await requireAdmin(ctx);
+    return await backfillEmailLowerPage(ctx, cursor);
   },
 });
 
@@ -714,6 +755,13 @@ export const upsertInstance = mutation({
     // "capped", which is what every instance did before this existed. See the
     // schema comment for what the ceiling costs and when it buys anything.
     personScopes: v.optional(v.union(v.literal("capped"), v.literal("full"))),
+    // WHICH STRING names a person to this gateway under "trusted-proxy". Absent ⇒
+    // "canonical", Atrium's own stable key and what every instance sent before this
+    // existed. "email" makes Atrium agree with an identity proxy that names people
+    // by their address in front of the SAME gateway. Never a session-key segment.
+    identitySource: v.optional(
+      v.union(v.literal("canonical"), v.literal("email")),
+    ),
     systemIdentity: v.optional(v.string()),
     // FRONTEND live-stream transport (reactive | sse) — a top-level instance property,
     // NOT bridge-dispatch config. See schema instances.streamTransport.
@@ -741,6 +789,7 @@ export const upsertInstance = mutation({
       personScopes: args.personScopes,
       systemIdentity: args.systemIdentity?.trim() || undefined,
       streamTransport: args.streamTransport,
+      // `identitySource` is deliberately NOT here — see the patch path below.
     };
     // Refuse a name whose deletion sweep is still owed — same guard the
     // provisioner endpoint applies. Creation only: patching an EXISTING row cannot
@@ -760,10 +809,29 @@ export const upsertInstance = mutation({
       if (existing.name !== args.name) {
         throw new Error("instance_rename_not_supported");
       }
-      await ctx.db.patch(args.instanceId, fields);
+      await ctx.db.patch(args.instanceId, {
+        ...fields,
+        // OMISSION PRESERVES, for this field only. Convex DELETES a field patched
+        // with `undefined`, so a caller that does not know this argument — an older
+        // client, a provisioning script written before it existed — would reset the
+        // instance to naming people by the Atrium key and hand each of them the
+        // second gateway profile the setting exists to merge, silently. `"canonical"`
+        // remains the explicit way to ask for that.
+        //
+        // The neighbours above deliberately keep clearing: an omitted `authMode` or
+        // `personScopes` falls back to the SAFE side (a shared token, a capped
+        // socket). An omitted naming would fall back to the BROKEN side, which is
+        // why it is the exception rather than a style inconsistency.
+        identitySource: args.identitySource ?? existing.identitySource,
+      });
       return args.instanceId;
     }
-    return await ctx.db.insert("instances", fields);
+    return await ctx.db.insert("instances", {
+      ...fields,
+      // A new instance with nothing stated names people by the Atrium key, which is
+      // what "absent" means everywhere else in this feature.
+      identitySource: args.identitySource,
+    });
   },
 });
 

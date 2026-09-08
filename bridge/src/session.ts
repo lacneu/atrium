@@ -15,6 +15,7 @@ import {
   humanConnectIdentity,
   systemConnectIdentity,
 } from "./providers/openclaw/connect-identity.js";
+import { isHeaderSafeIdentity } from "./providers/openclaw/gateway-identity.js";
 import { OpenClawConnection } from "./providers/openclaw/openclaw-client.js";
 import { RunManager } from "./providers/openclaw/run-manager.js";
 import {
@@ -118,6 +119,12 @@ export interface SessionRouting {
   openclawChatId: string | null;
   agentId: string;
   canonical: string;
+  /** What the gateway is told to call this person, when the instance names people
+   *  differently from the routing key. Absent ⇒ the canonical — which is what every
+   *  instance sent before `instances.identitySource` existed. NEVER used to build
+   *  the session key: that stays on `canonical`, so changing how people are named
+   *  cannot move a conversation's gateway session. */
+  gatewayUser?: string;
   /** Which served instance this turn routes to (selects the gateway + creds). The
    *  server always sets it (from the guarded body); when omitted, a bridge serving a
    *  SINGLE instance falls back to that one. */
@@ -1194,6 +1201,34 @@ export const IDLE_SESSION_TTL_SECONDS = 15 * 60;
  */
 const MAX_RECENT_CHAT_KEYS = 4;
 
+/**
+ * The name this conversation's socket presents.
+ *
+ * Falls back to the routing key when the instance's chosen name cannot travel in
+ * the header that carries it. That case is REAL: with `identitySource: "email"`
+ * the name is somebody's verified address, and an internationalized address
+ * (`josé@example.com`) is valid everywhere except this header. Without the
+ * fallback that person could not send AT ALL — every turn failing at connect,
+ * 502, from a setting an administrator flipped on a screen far away.
+ *
+ * A silent divergence for one person (their gateway profile stays keyed by the
+ * Atrium key, so they keep the second profile the setting exists to merge) is
+ * strictly better than that person being unable to speak. It is said out loud in
+ * the log, without the address — the routing key identifies them for an operator
+ * and carries no personal data into the bridge log.
+ */
+function gatewayNameFor(routing: SessionRouting): string {
+  const wanted = routing.gatewayUser;
+  if (wanted === undefined) return routing.canonical;
+  if (isHeaderSafeIdentity(wanted)) return wanted;
+  console.warn(
+    `[identity] ${routing.canonical}: this instance names people by an address, ` +
+      `but theirs cannot be sent in the identity header — naming them by their ` +
+      `Atrium key instead, so this person keeps a separate gateway profile.`,
+  );
+  return routing.canonical;
+}
+
 export class SessionRegistry {
   private readonly sessions = new Map<string, Session>();
   private readonly inflight = new Map<string, Promise<Session>>();
@@ -1375,7 +1410,10 @@ export class SessionRegistry {
       // as the person who owns it, so every session the gateway creates from it
       // carries their profile as `createdActor` — the fact the gateway's own
       // visibility boundary reads. `undefined` in token mode: unchanged handshake.
-      humanConnectIdentity(bundle.config, routing.canonical),
+      // The NAME, not the routing key. They are the same string unless the instance
+      // says otherwise, and the session key above is built from the canonical
+      // either way.
+      humanConnectIdentity(bundle.config, gatewayNameFor(routing)),
       connectUserHeader(bundle.config),
     );
     // SUBSCRIBE to session events (W2 / G-09). `session.operation` is the
