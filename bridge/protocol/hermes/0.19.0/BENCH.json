@@ -1,11 +1,11 @@
 {
   "kind": "atrium-bench-attestation",
-  "version": 1,
+  "version": 2,
   "provider": "hermes",
   "hermesVersion": "0.19.0",
-  "gatewayVersion": "2026.7.1",
+  "gatewayVersion": "2026.9.2",
   "verdict": "GO",
-  "at": "2026-07-31T02:57:42.458Z",
+  "at": "2026-09-08T17:22:46.681Z",
   "scenarios": [
     "async-task",
     "basic-turn",
@@ -24,6 +24,11 @@
     "hermes-cron-list"
   ],
   "flags": [],
-  "atriumSha": "bbc25fca3c3d625fbf033239f938293d0f865964",
-  "bridgeVersion": "0.68.12"
+  "atriumSha": "30fe61b8c603ff51f1bf86bc2be14101cd602d95",
+  "worktree": {
+    "dirty": true,
+    "deltaSha256": "270502dbaa36a39c6fba5fa087b55ef1f3d68ea48157b36902f128b49a1d6c08"
+  },
+  "supportDigest": "40be5fcd8c42358e9b2cff1630ff5f1666dc4c0681aa0c3b7d160741804578df",
+  "bridgeVersion": "0.83.1"
 }

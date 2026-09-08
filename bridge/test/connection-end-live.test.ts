@@ -39,7 +39,10 @@ describe("connection end over a real socket", () => {
   it("persists a server-issued device token and reconnects with it before returning", async () => {
     const wss = new WebSocketServer({ port: 0, host: "127.0.0.1" });
     await new Promise<void>((resolve) => wss.once("listening", () => resolve()));
-    const observedTokens: string[] = [];
+    const observedCredentials: Array<{
+      token?: string;
+      password?: string;
+    }> = [];
     const promoted: string[] = [];
     wss.on("connection", (socket) => {
       socket.send(
@@ -53,10 +56,10 @@ describe("connection end over a real socket", () => {
         const frame = JSON.parse(raw.toString()) as {
           id: string;
           method?: string;
-          params?: { auth?: { token?: string } };
+          params?: { auth?: { token?: string; password?: string } };
         };
         if (frame.method !== "connect") return;
-        observedTokens.push(frame.params?.auth?.token ?? "missing");
+        observedCredentials.push(frame.params?.auth ?? {});
         socket.send(
           JSON.stringify({
             type: "res",
@@ -86,9 +89,9 @@ describe("connection end over a real socket", () => {
     );
 
     expect(promoted).toEqual(["paired-device-token"]);
-    expect(observedTokens).toEqual([
-      "bootstrap-token",
-      "paired-device-token",
+    expect(observedCredentials).toEqual([
+      { token: "bootstrap-token", password: "bootstrap-token" },
+      { token: "paired-device-token", password: "paired-device-token" },
     ]);
     conn.close();
     await new Promise<void>((resolve) => wss.close(() => resolve()));

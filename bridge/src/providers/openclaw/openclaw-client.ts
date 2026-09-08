@@ -530,7 +530,11 @@ export class OpenClawConnection {
                 },
                 role: CLIENT_ROLE,
                 scopes: DEFAULT_SCOPES,
-                auth: { token },
+                // OpenClaw token mode reads `token`; the hardened trusted-proxy
+                // machine path reads `password`. Sending the same operator
+                // credential in both protocol fields keeps old gateways compatible
+                // without introducing a second stored secret.
+                auth: { token, password: token },
                 device: signedDevice,
                 locale: "en-US",
                 userAgent: "atrium-bridge/0.1.0",
