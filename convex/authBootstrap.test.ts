@@ -173,12 +173,19 @@ describe("cross-provider email collision is blocked (no silent duplicate profile
     });
 
     const as = t.withIdentity({ subject: `${admin}|sA` });
-    const first = await as.mutation(api.admin.backfillProfileEmailLower, {});
-    expect(first.updated).toBe(500);
-    expect(first.remaining, "a page-bound report of 0 is what misleads").toBe(100);
-
-    const second = await as.mutation(api.admin.backfillProfileEmailLower, {});
-    expect(second).toEqual({ updated: 100, remaining: 0 });
+    let cursor: string | null | undefined = undefined;
+    let calls = 0;
+    let healed = 0;
+    for (;;) {
+      const r: { updated: number; isDone: boolean; cursor: string | null } =
+        await as.mutation(api.admin.backfillProfileEmailLower, { cursor });
+      healed += r.updated;
+      calls += 1;
+      if (r.isDone) break;
+      cursor = r.cursor;
+      expect(calls, "must terminate, not loop on the same page").toBeLessThan(10);
+    }
+    expect(healed).toBe(600);
 
     const unhealed = await t.run(async (ctx) =>
       (await ctx.db.query("profiles").collect()).filter(
@@ -186,6 +193,59 @@ describe("cross-provider email collision is blocked (no silent duplicate profile
       ).length,
     );
     expect(unhealed).toBe(0);
+  });
+
+  test("rows it can NEVER heal do not stall it", async () => {
+    // A profile with no address at all — the dev anonymous provider creates them
+    // by design — can never receive an `emailLower`, so it stays in the index range
+    // forever and permanently occupies its head. A backfill that re-reads that head
+    // answers `{updated: 0}` on every call while real rows sit further along, and
+    // an operator reading "nothing left" opens the second provider on a deployment
+    // where those people will silently get duplicate accounts.
+    const t = convexTest(schema, modules);
+    const admin = await t.run(async (ctx) => {
+      const uid = await ctx.db.insert("users", { email: "root@example.com" });
+      await ctx.db.insert("profiles", {
+        userId: uid,
+        role: "admin",
+        email: "root@example.com",
+        emailLower: "root@example.com",
+        canonical: "root",
+      });
+      return uid;
+    });
+    await t.run(async (ctx) => {
+      // 520 unhealable rows FIRST, so they own the head of the range.
+      for (let i = 0; i < 520; i++) {
+        const uid = await ctx.db.insert("users", {});
+        await ctx.db.insert("profiles", {
+          userId: uid,
+          role: "user",
+          canonical: `anon${i}`,
+        });
+      }
+      for (let i = 0; i < 5; i++) {
+        const uid = await ctx.db.insert("users", { email: `L${i}@Example.com` });
+        await ctx.db.insert("profiles", {
+          userId: uid,
+          role: "user",
+          email: `L${i}@Example.com`,
+          canonical: `l${i}`,
+        });
+      }
+    });
+
+    const as = t.withIdentity({ subject: `${admin}|sA` });
+    let cursor: string | null | undefined = undefined;
+    let healed = 0;
+    for (let calls = 0; calls < 10; calls++) {
+      const r: { updated: number; isDone: boolean; cursor: string | null } =
+        await as.mutation(api.admin.backfillProfileEmailLower, { cursor });
+      healed += r.updated;
+      if (r.isDone) break;
+      cursor = r.cursor;
+    }
+    expect(healed, "the five real rows sit BEHIND the unhealable ones").toBe(5);
   });
 
   test("a legacy row is recognized once the deployment has backfilled it", async () => {
@@ -214,7 +274,7 @@ describe("cross-provider email collision is blocked (no silent duplicate profile
     const filled = await t
       .withIdentity({ subject: `${userA}|sA` })
       .mutation(api.admin.backfillProfileEmailLower, {});
-    expect(filled).toEqual({ updated: 1, remaining: 0 });
+    expect(filled).toEqual({ updated: 1, isDone: true, cursor: null });
 
     // Now a second identity with the SAME address, normalized, is recognized.
     const userB = await t.run(async (ctx) =>

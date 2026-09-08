@@ -1,5 +1,27 @@
 # Changelog
 
+## [0.83.1] — The upgrade step now finishes what it says it finished
+
+Corrective release for the one-time backfill 0.83.0 asks an existing deployment to
+run before it adds a second sign-in provider. Nothing else changes.
+
+**The backfill could report itself complete while leaving people behind.** It read
+the same first page on every call, so profiles beyond it were never given the
+lowercased address the duplicate-account guard reads — and it answered "nothing
+left" all the same. Following the documented step to the letter, an operator would
+watch it finish, open the new provider, and the people it had not reached would be
+neither recognized nor refused: they would silently receive a second account beside
+their first, which is the single failure the release exists to prevent.
+
+It now walks the whole table with a cursor and reports `isDone` instead of a count
+taken from one page. The documented procedure changed with it: call it again with
+the cursor it returns, until it says it is done. A profile with no address at all —
+the development sign-in creates them — is stepped over rather than stalled on, which
+is what made the old version report completion on a deployment that had them.
+
+If you already ran the previous version, run this one: it is idempotent, and it will
+finish the rows the first pass could not reach.
+
 ## [0.83.0] — Sign in with your own single sign-on
 
 A deployment can now delegate sign-in to the identity provider it already runs, and

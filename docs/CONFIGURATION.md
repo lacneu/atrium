@@ -159,12 +159,21 @@ different hosts on a self-hosted deployment, and using the API origin yields
 `redirect_uri_mismatch`.
 
 **Upgrading a deployment that predates this release**: run
-`admin.backfillProfileEmailLower` once (dashboard, or `npx convex run`) before
-anybody signs in through a newly added provider. It gives every existing profile
-the lowercased address the duplicate-account guard reads; without it, the first
-person arriving through the new door is neither recognized nor refused, and gets a
-second account beside their first. It is idempotent, never touches the address an
-operator sees, and reports how many rows are left to do.
+`admin.backfillProfileEmailLower` (dashboard, or `npx convex run`) before anybody
+signs in through a newly added provider. It gives every existing profile the
+lowercased address the duplicate-account guard reads; without it, the first person
+arriving through the new door is neither recognized nor refused, and gets a second
+account beside their first.
+
+Call it repeatedly, passing the returned `cursor` back, until it answers
+`isDone: true` — a large deployment needs several passes, and stopping early leaves
+the rows it has not reached in exactly the state the step exists to fix. It is
+idempotent and never touches the address an operator sees.
+
+```bash
+npx convex run admin:backfillProfileEmailLower '{}'
+npx convex run admin:backfillProfileEmailLower '{"cursor": "<the cursor it returned>"}'
+```
 
 ### Environment labelling and credential encryption
 

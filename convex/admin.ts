@@ -638,45 +638,50 @@ export const listInstances = query({
  * BEFORE anybody arrives through the new door, or the first person to do so is
  * neither linked nor refused: they are silently given a second account.
  *
- * Run it once after upgrading, from the dashboard or `npx convex run`. Idempotent,
- * and it never touches `email` — only the derived key the guard reads. Bounded per
- * call and reports what is left, so a large deployment calls it until `remaining`
- * is zero rather than holding one enormous transaction.
+ * Run it after upgrading, from the dashboard or `npx convex run`, passing the
+ * returned `cursor` back until `isDone`. Idempotent, and it never touches `email` —
+ * only the derived key the guard reads.
+ *
+ * A CURSOR, not a repeated first page. Rows this cannot heal — a profile with no
+ * address at all, which the dev anonymous provider creates by design — stay in the
+ * `emailLower === undefined` range forever, so they permanently occupy its head.
+ * Re-reading the head therefore returns the same unhealable rows on every call and
+ * answers `{updated: 0, remaining: 0}` while real rows sit further along: the
+ * operator reads "nothing left", opens the second provider, and those people
+ * silently get duplicate accounts. `remaining` is gone with it — a number counted
+ * over one page was the thing that lied. `isDone` is the whole answer.
  */
 export const backfillProfileEmailLower = mutation({
-  args: {},
-  handler: async (ctx): Promise<{ updated: number; remaining: number }> => {
+  args: {
+    /** From the previous call. Omit on the first one. */
+    cursor: v.optional(v.union(v.string(), v.null())),
+  },
+  handler: async (
+    ctx,
+    { cursor },
+  ): Promise<{ updated: number; isDone: boolean; cursor: string | null }> => {
     await requireAdmin(ctx);
-    // SELECT THE ROWS THAT NEED WORK, through the index. Reading the first page of
-    // the whole table instead would return the same creation-ordered rows on every
-    // call: past one page it heals nothing more and — worse — reports
-    // `remaining: 0`, so the operator follows the documented step, sees it finish,
-    // opens the second provider, and everybody beyond that page silently gets a
-    // duplicate account. Selecting on the missing field makes each call consume
-    // what it healed.
-    const pending = await ctx.db
+    const page = await ctx.db
       .query("profiles")
       .withIndex("by_email_lower", (q) => q.eq("emailLower", undefined))
-      .take(500);
+      .paginate({ numItems: 500, cursor: cursor ?? null });
     let updated = 0;
-    for (const p of pending) {
+    for (const p of page.page) {
       // Same normalization as everywhere else, `normalizeEmail` and not a bare
       // `.toLowerCase()`: a stored address with surrounding whitespace would
-      // otherwise get an `emailLower` no normalized lookup can ever match.
+      // otherwise get an `emailLower` no normalized lookup can ever match. An
+      // address that normalizes to nothing has no key to derive — the cursor walks
+      // past it rather than the call stalling on it.
       const lower = normalizeEmail(p.email);
       if (lower === undefined) continue;
       await ctx.db.patch(p._id, { emailLower: lower });
       updated += 1;
     }
-    // Counted over what is LEFT, after this call's writes — the number the
-    // operator repeats the call on until it reaches zero.
-    const remaining = (
-      await ctx.db
-        .query("profiles")
-        .withIndex("by_email_lower", (q) => q.eq("emailLower", undefined))
-        .take(500)
-    ).filter((p) => p.email !== undefined).length;
-    return { updated, remaining };
+    return {
+      updated,
+      isDone: page.isDone,
+      cursor: page.isDone ? null : page.continueCursor,
+    };
   },
 });
 
