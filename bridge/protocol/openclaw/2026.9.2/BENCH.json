@@ -6,51 +6,51 @@
     {
       "id": "basic-turn",
       "ok": true,
-      "chat": "f4337607c65238b1"
+      "chat": "e408b85a87168cb0"
     },
     {
       "id": "tool-exec",
       "ok": true,
-      "chat": "f4337607c65238b1"
+      "chat": "e408b85a87168cb0"
     },
     {
       "id": "update-plan",
       "ok": true,
-      "chat": "f4337607c65238b1"
+      "chat": "e408b85a87168cb0"
     },
     {
       "id": "media-outbound",
       "ok": true,
-      "chat": "f4337607c65238b1"
+      "chat": "e408b85a87168cb0"
     },
     {
       "id": "spawn-announce-merge",
       "ok": true,
-      "chat": "f4337607c65238b1"
+      "chat": "e408b85a87168cb0"
     },
     {
       "id": "spawn-chain-merge",
       "ok": true,
-      "chat": "f4337607c65238b1"
+      "chat": "e408b85a87168cb0"
     },
     {
       "id": "spawn-parallel-merge",
       "ok": true,
-      "chat": "f4337607c65238b1"
+      "chat": "e408b85a87168cb0"
     },
     {
       "id": "async-task",
       "ok": true,
-      "chat": "f4337607c65238b1"
+      "chat": "e408b85a87168cb0"
     },
     {
       "id": "cron-tool",
       "ok": true,
-      "chat": "f4337607c65238b1"
+      "chat": "e408b85a87168cb0"
     }
   ],
   "verdict": "GO",
-  "at": "2026-09-07T16:22:50.674Z",
+  "at": "2026-09-08T03:15:16.901Z",
   "scenarios": [
     "async-task",
     "basic-turn",
@@ -78,13 +78,13 @@
     "hermes-cron-list": "hermes"
   },
   "flags": [],
-  "atriumSha": "4c6f281ac09084f932ae963cbea7e2a6d9fca946",
+  "atriumSha": "823d1e96d8a2f1e245a9eb6f78591eb462cace5c",
   "worktree": {
     "dirty": true,
-    "deltaSha256": "7ccecd51a5b7dee20e6a662930714d5026c337b5a449bab1580185a55d3299ea"
+    "deltaSha256": "fd9da8e0b785f52698c38883e4fea1d679e4598f7d753163b9ae62f3205aaca8"
   },
-  "supportDigest": "a211252881827a265eba5f8e4737d2e599d8080d7e8603f50a5f89a35ff830aa",
+  "supportDigest": "b5492c8373a4cf3e5c8e1290a305aadbb56cb8d50b5828eb491e240434165375",
   "authMode": "token",
-  "bridgeVersion": "0.81.1",
+  "bridgeVersion": "0.82.1",
   "vendoredSha256": "85e9f909e0335d19be1dbb2cc1a31c44372b145a03e7952d7d8831f713c23c4c"
 }

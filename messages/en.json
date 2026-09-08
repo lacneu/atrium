@@ -1012,6 +1012,7 @@
   "app_signin_title": "Welcome back",
   "app_signin_subtitle": "Sign in to continue",
   "app_signin_google": "Sign in with Google",
+  "app_signin_authelia": "Sign in with SSO",
   "app_signin_microsoft": "Sign in with Microsoft",
   "app_signin_none_enabled": "No sign-in method configured.",
   "app_signin_anonymous": "Continue (dev, no account)",

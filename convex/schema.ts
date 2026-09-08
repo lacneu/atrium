@@ -288,6 +288,14 @@ export default defineSchema({
     ),
     // Display fields (non-secret) for the admin user list.
     email: v.optional(v.string()),
+    // The SAME address, lowercased — the key the duplicate-account guard reads.
+    // A separate field rather than normalizing `email` in place: `email` is what
+    // the identity provider stated and what the admin list shows, and rewriting it
+    // would change what an operator sees for reasons that have nothing to do with
+    // display. Optional because rows written before it exist; `ensureProfile`
+    // backfills each one on its owner's next sign-in, and until then the guard's
+    // second, exact read on `email` behaves exactly as it did before.
+    emailLower: v.optional(v.string()),
     name: v.optional(v.string()),
 
     // Per-user theme preference (identity-level: even a pending user controls
@@ -407,7 +415,8 @@ export default defineSchema({
     // a SECOND profile for a NEW identity (provider+subject) whose email already
     // belongs to an existing profile — cross-provider account linking must be an
     // explicit, signed-in action, never an implicit merge. See lib/access.
-    .index("by_email", ["email"]),
+    .index("by_email", ["email"])
+    .index("by_email_lower", ["emailLower"]),
 
   // OpenClaw / Hermes instances the deployment knows about. NO secrets (gateway
   // tokens and device identities are bridge-env only — the bridge maps `name` ->

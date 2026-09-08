@@ -363,6 +363,26 @@
   outline: 2px solid var(--ring);
   outline-offset: 2px;
 }
+/* Providers with no brand chrome of their own — Microsoft Entra and a self-hosted
+   SSO (Authelia and its kind). They share one neutral surface built from the app's
+   own tokens, because the alternative is what happened before: a button with NO
+   modifier rule at all, rendering as native UA chrome beside the styled Google one.
+   Tokens rather than fixed colours so both themes are covered by construction. */
+.oc-provider--microsoft,
+.oc-provider--authelia {
+  /* --secondary, not --card: the card BEHIND them is --card, so a button using it
+     is a bare outline on an identical surface — visible, but reading as a field
+     rather than something to press, next to Google's solid one. */
+  background: var(--secondary);
+  color: var(--secondary-foreground);
+  border: 1px solid var(--border);
+}
+.oc-provider--microsoft:hover,
+.oc-provider--authelia:hover {
+  background: var(--accent);
+  border-color: var(--ring);
+}
+
 /* Google — official light / dark styles */
 .oc-provider--google {
   background: #ffffff;
@@ -384,8 +404,6 @@
   background: #1e1f20;
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.5);
 }
-/* (Microsoft button removed for now — only Google is wired; re-add later.) */
-
 /* Dev-only anonymous entry — de-emphasized below the real providers. */
 .oc-signin__dev {
   margin-top: 0.15rem;

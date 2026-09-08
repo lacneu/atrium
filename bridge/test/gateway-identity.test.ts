@@ -50,8 +50,12 @@ describe("token mode is left exactly as it was", () => {
   it("resolves NO identity, so the handshake carries no headers at all", () => {
     // The regression this guards: a bridge that always sent a user header would
     // present one to a token-mode gateway, which is not configured to read it.
-    expect(identityFor({ authMode: "token", forwardedClientIp: "10.0.0.1", user: "alice" })).toBeUndefined();
-    expect(identityFor({ authMode: undefined, forwardedClientIp: "10.0.0.1", user: "alice" })).toBeUndefined();
+    expect(identityFor({ authMode: "token", forwardedClientIp: "10.0.0.1",
+      forwardedProto: "http",
+      forwardedHost: "gw.invalid:18789", user: "alice" })).toBeUndefined();
+    expect(identityFor({ authMode: undefined, forwardedClientIp: "10.0.0.1",
+      forwardedProto: "http",
+      forwardedHost: "gw.invalid:18789", user: "alice" })).toBeUndefined();
     expect(buildIdentityHeaders(undefined)).toEqual({});
   });
 
@@ -59,7 +63,9 @@ describe("token mode is left exactly as it was", () => {
     // An unconditional assert on the address would fail a token-mode bridge whose
     // only interface is loopback — a bench, a laptop, a single-host compose file.
     expect(() =>
-      identityFor({ authMode: "token", forwardedClientIp: "127.0.0.1", user: "alice" }),
+      identityFor({ authMode: "token", forwardedClientIp: "127.0.0.1",
+      forwardedProto: "http",
+      forwardedHost: "gw.invalid:18789", user: "alice" }),
     ).not.toThrow();
   });
 });
@@ -70,6 +76,8 @@ describe("trusted-proxy mode states who the socket acts for", () => {
       identityFor({
         authMode: "trusted-proxy",
         forwardedClientIp: "10.1.2.3",
+      forwardedProto: "http",
+      forwardedHost: "gw.invalid:18789",
         user: "u-alice",
         scopeCap: ["operator.read", "operator.write"],
       }),
@@ -81,7 +89,12 @@ describe("trusted-proxy mode states who the socket acts for", () => {
 
   it("honours a gateway configured to read a different header name", () => {
     const headers = buildIdentityHeaders(
-      { user: "u-alice", forwardedFor: "10.1.2.3" },
+      {
+        user: "u-alice",
+        forwardedFor: "10.1.2.3",
+        forwardedProto: "http",
+        forwardedHost: "gw.invalid:18789",
+      },
       "x-atrium-user",
     );
     expect(headers["x-atrium-user"]).toBe("u-alice");
@@ -90,7 +103,12 @@ describe("trusted-proxy mode states who the socket acts for", () => {
 
   it("omits the ceiling header entirely when no ceiling is asked for", () => {
     // Not the same as an empty one: the gateway reads an empty value as "no scopes".
-    const headers = buildIdentityHeaders({ user: "u-alice", forwardedFor: "10.1.2.3" });
+    const headers = buildIdentityHeaders({
+      user: "u-alice",
+      forwardedFor: "10.1.2.3",
+      forwardedProto: "http",
+      forwardedHost: "gw.invalid:18789",
+    });
     expect(SCOPE_CAP_HEADER in headers).toBe(false);
   });
 });
@@ -100,18 +118,23 @@ describe("a value that cannot be presented faithfully is refused, never sent", (
     // The identity header is precisely what the gateway trusts to name a person, so
     // a value that can open a second header line is the one value never to forward.
     expect(() =>
-      buildIdentityHeaders({ user: "alice\r\nx-openclaw-scopes: operator.admin", forwardedFor: "10.1.2.3" }),
+      buildIdentityHeaders({
+        user: "alice\r\nx-openclaw-scopes: operator.admin",
+        forwardedFor: "10.1.2.3",
+        forwardedProto: "http",
+        forwardedHost: "gw.invalid:18789",
+      }),
     ).toThrow(GatewayIdentityError);
   });
 
   it("refuses a comma in the identity, which would read as two header values", () => {
-    expect(() => buildIdentityHeaders({ user: "alice,bob", forwardedFor: "10.1.2.3" })).toThrow(
+    expect(() => buildIdentityHeaders({ user: "alice,bob", forwardedFor: "10.1.2.3", forwardedProto: "http", forwardedHost: "gw.invalid:18789" })).toThrow(
       GatewayIdentityError,
     );
   });
 
   it("refuses an empty identity", () => {
-    expect(() => buildIdentityHeaders({ user: "", forwardedFor: "10.1.2.3" })).toThrow(
+    expect(() => buildIdentityHeaders({ user: "", forwardedFor: "10.1.2.3", forwardedProto: "http", forwardedHost: "gw.invalid:18789" })).toThrow(
       GatewayIdentityError,
     );
   });
@@ -120,11 +143,11 @@ describe("a value that cannot be presented faithfully is refused, never sent", (
     // Proven on the bench: with a loopback client the gateway rejects the upgrade
     // with a bare 403 and no reason header. Failing here names the cause instead.
     for (const ip of ["127.0.0.1", "127.13.9.2", "::1", "[::1]", "::ffff:127.0.0.1", "0.0.0.0"]) {
-      expect(() => buildIdentityHeaders({ user: "u-alice", forwardedFor: ip }), ip).toThrow(
+      expect(() => buildIdentityHeaders({ user: "u-alice", forwardedFor: ip, forwardedProto: "http", forwardedHost: "gw.invalid:18789" }), ip).toThrow(
         /loopback or unspecified/,
       );
     }
-    expect(() => buildIdentityHeaders({ user: "u-alice", forwardedFor: "" })).toThrow(
+    expect(() => buildIdentityHeaders({ user: "u-alice", forwardedFor: "", forwardedProto: "http", forwardedHost: "gw.invalid:18789" })).toThrow(
       /BRIDGE_FORWARDED_CLIENT_IP/,
     );
   });
@@ -133,13 +156,17 @@ describe("a value that cannot be presented faithfully is refused, never sent", (
     // 127.x is loopback; 12.7.x and 172.16.x are not. A prefix test that merely
     // searched for "127" would refuse perfectly routable addresses.
     for (const ip of ["10.1.2.3", "172.16.0.9", "192.168.1.5", "12.7.0.1", "2001:db8::1"]) {
-      expect(buildIdentityHeaders({ user: "u", forwardedFor: ip })["x-forwarded-for"], ip).toBe(ip);
+      expect(buildIdentityHeaders({ user: "u", forwardedFor: ip, forwardedProto: "http", forwardedHost: "gw.invalid:18789" })["x-forwarded-for"], ip).toBe(ip);
     }
   });
 
   it("refuses an EMPTY ceiling instead of authenticating a powerless socket", () => {
     expect(() =>
-      buildIdentityHeaders({ user: "u-alice", forwardedFor: "10.1.2.3", scopeCap: [] }),
+      buildIdentityHeaders({
+        user: "u-alice",
+        forwardedFor: "10.1.2.3", forwardedProto: "http", forwardedHost: "gw.invalid:18789",
+        scopeCap: [],
+      }),
     ).toThrow(/no scopes/);
   });
 
@@ -148,6 +175,8 @@ describe("a value that cannot be presented faithfully is refused, never sent", (
       buildIdentityHeaders({
         user: "u-alice",
         forwardedFor: "10.1.2.3",
+        forwardedProto: "http",
+        forwardedHost: "gw.invalid:18789",
         scopeCap: ["operator.read,operator.admin"],
       }),
     ).toThrow(GatewayIdentityError);
@@ -157,7 +186,9 @@ describe("a value that cannot be presented faithfully is refused, never sent", (
     // Falling back would silently re-attribute every session to the shared owner —
     // the exact defect the mode exists to remove — and nothing would say so.
     expect(() =>
-      identityFor({ authMode: "trusted-proxy", forwardedClientIp: null, user: "u-alice" }),
+      identityFor({ authMode: "trusted-proxy", forwardedClientIp: null,
+      forwardedProto: "http",
+      forwardedHost: "gw.invalid:18789", user: "u-alice" }),
     ).toThrow(GatewayIdentityError);
   });
 });
@@ -223,6 +254,92 @@ describe("a person's socket is not an admin socket", () => {
     expect(system?.scopeCap).toBeUndefined();
   });
 
+  it("carries the headers a real reverse proxy would, which the media route requires", () => {
+    // A deployment that runs an identity proxy for its people AND this bridge for
+    // Atrium sets `gateway.auth.trustedProxy.requiredHeaders` ONCE, for both — and
+    // the canonical value for a proxy is ["x-forwarded-proto", "x-forwarded-host"].
+    //
+    // Measured 2026-09-12 with that list configured: the WebSocket connect is
+    // admitted without them, and the HTTP media route answers 401. A bridge
+    // missing them would therefore connect, run turns, and silently lose every
+    // outbound file — which is why they are sent on every connection and not only
+    // where the refusal was observed.
+    const headers = buildIdentityHeaders(
+      humanConnectIdentity(
+        cfg({
+          openclawAuthMode: "trusted-proxy",
+          openclawGatewayUrl: "wss://gw.example.org:18789/openclaw",
+        }),
+        "u-alice",
+      ),
+    );
+    // Stated from the URL actually dialled, never a placeholder: an operator
+    // debugging a refusal reads these, and a lie there costs an afternoon.
+    expect(headers["x-forwarded-proto"]).toBe("https");
+    expect(headers["x-forwarded-host"]).toBe("gw.example.org:18789");
+  });
+
+  it("a plain ws:// gateway is reported as http, not guessed as https", () => {
+    const headers = buildIdentityHeaders(
+      humanConnectIdentity(
+        cfg({
+          openclawAuthMode: "trusted-proxy",
+          openclawGatewayUrl: "ws://127.0.0.1:18789",
+        }),
+        "u-alice",
+      ),
+    );
+    expect(headers["x-forwarded-proto"]).toBe("http");
+    expect(headers["x-forwarded-host"]).toBe("127.0.0.1:18789");
+  });
+
+  it("an https:// gateway is https, not guessed from `wss:` alone", () => {
+    // `deriveHttpBase` accepts an http(s) operator URL, so a deployment can
+    // legitimately configure one. Reading only `wss:` would advertise
+    // `x-forwarded-proto: http` over TLS — a claim about the connection that is
+    // simply false, on the header a proxy-aware gateway reads.
+    const headers = buildIdentityHeaders(
+      humanConnectIdentity(
+        cfg({
+          openclawAuthMode: "trusted-proxy",
+          openclawGatewayUrl: "https://gw.example.org",
+        }),
+        "u-alice",
+      ),
+    );
+    expect(headers["x-forwarded-proto"]).toBe("https");
+    expect(headers["x-forwarded-host"]).toBe("gw.example.org");
+  });
+
+  it("a schemeless URL names the REAL host, not a placeholder", () => {
+    // `new URL("gw.example.org:18789")` does not throw: it reads "gw.example.org:"
+    // as the protocol and leaves `host` empty. The catch block is therefore not the
+    // guard it looks like, and a blank `x-forwarded-host` is worse than a
+    // placeholder — a gateway whose requiredHeaders lists it reads blank as absent
+    // and 401s the media route, the exact failure these headers prevent.
+    const headers = buildIdentityHeaders(
+      humanConnectIdentity(
+        cfg({
+          openclawAuthMode: "trusted-proxy",
+          openclawGatewayUrl: "gw.example.org:18789",
+        }),
+        "u-alice",
+      ),
+    );
+    // A placeholder would be no better than blank here: it names a host that does
+    // not exist, on the header a gateway with requiredHeaders reads. The connect
+    // path already normalizes this form, so the header can state the truth.
+    expect(headers["x-forwarded-host"]).toBe("gw.example.org:18789");
+    expect(headers["x-forwarded-proto"]).toBe("http");
+  });
+
+  it("token mode still sends NO header at all", () => {
+    // The additions above must not leak into the mode that presents no identity:
+    // a token-mode connect is byte-for-byte the one that shipped before per-user
+    // identity existed.
+    expect(buildIdentityHeaders(humanConnectIdentity(cfg(), "u-alice"))).toEqual({});
+  });
+
   it("both resolve to undefined in token mode", () => {
     expect(humanConnectIdentity(cfg(), "u-alice")).toBeUndefined();
     expect(systemConnectIdentity(cfg())).toBeUndefined();
@@ -260,7 +377,12 @@ describe("the system identity names the bridge, per instance", () => {
     // The two halves are written apart; a slug the validator rejects would only
     // surface on a live connect.
     expect(() =>
-      buildIdentityHeaders({ user: systemIdentityFor("Prod Gateway 1"), forwardedFor: "10.1.2.3" }),
+      buildIdentityHeaders({
+        user: systemIdentityFor("Prod Gateway 1"),
+        forwardedFor: "10.1.2.3",
+        forwardedProto: "http",
+        forwardedHost: "gw.invalid:18789",
+      }),
     ).not.toThrow();
   });
 });
@@ -297,6 +419,8 @@ describe("discovering this host's address", () => {
       identityFor({
         authMode: "trusted-proxy",
         forwardedClientIp: detectForwardedClientIp({}),
+      forwardedProto: "http",
+      forwardedHost: "gw.invalid:18789",
         user: "u-alice",
       }),
     ).toThrow(GatewayIdentityError);
@@ -348,7 +472,7 @@ describe("outbound media proves who it is, in whichever mode", () => {
       httpBase: "http://gw",
       token: () => "",
       identityHeaders: () =>
-        buildIdentityHeaders({ user: "atrium-bridge:alpha", forwardedFor: "10.1.2.3" }),
+        buildIdentityHeaders({ user: "atrium-bridge:alpha", forwardedFor: "10.1.2.3", forwardedProto: "http", forwardedHost: "gw.invalid:18789" }),
       maxBytes: 1024,
       fetchImpl,
     });

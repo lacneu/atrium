@@ -37,6 +37,55 @@ export function emailVerifiedTruthy(v: unknown): boolean {
   return v === true || v === "true";
 }
 
+/**
+ * The one normalization every email crosses before it becomes a KEY.
+ *
+ * Two exact-equality lookups decide whether a person keeps their account:
+ * convex-auth's `uniqueUserWithVerifiedEmail` and `ensureProfile`'s `by_email`
+ * index. Normalizing in one extractor and not the other is the same bug as not
+ * normalizing at all — it just needs two providers to show itself: an Entra
+ * deployment that stored `Alice@Example.com` and later adopts SSO would fork a
+ * second profile instead of linking. Shared so the next extractor cannot drift.
+ */
+export function normalizeEmail(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const email = value.trim().toLowerCase();
+  return email.length > 0 ? email : undefined;
+}
+
+/**
+ * The email a self-hosted OIDC issuer states, or undefined when it states none.
+ *
+ * `email` AND NOTHING ELSE, deliberately. Convex Auth links a sign-in into an
+ * EXISTING account whose email matches, and treats an OIDC email as verified
+ * unless the provider says otherwise — so whatever this returns is a key into
+ * other people's accounts. `extractEntraEmail` also reads `upn` and
+ * `preferred_username`, and can: a pinned Entra tenant is a corporate directory
+ * where those claims are administered. A self-hosted issuer is a different world
+ * — Keycloak and Authentik both offer self-service profile editing — and there
+ * `preferred_username` is whatever the account holder last typed. Accepting it
+ * would let somebody set theirs to a colleague's address and be linked into that
+ * colleague's Atrium account, conversations included.
+ *
+ * An issuer that emits no `email` claim is a configuration to fix on the issuer
+ * (Authelia's `email` scope), not a claim to substitute for here.
+ */
+export function extractOidcEmail(profile: unknown): string | undefined {
+  if (typeof profile !== "object" || profile === null) return undefined;
+  const p = profile as Readonly<{ email?: unknown }>;
+
+  // NORMALIZED, and that is the whole point of the migration story. This value is
+  // an EXACT-equality key twice over: convex-auth links a sign-in to an existing
+  // account through `uniqueUserWithVerifiedEmail`, and `ensureProfile` refuses a
+  // duplicate through the `by_email` index. A self-hosted issuer states whatever
+  // its backend holds — an LDAP or file backend happily says `Alice@Example.com`
+  // for the account Google stored as `alice@example.com`. Unnormalized, that
+  // passes the domain gate, misses BOTH lookups, and silently creates a second
+  // profile: the person keeps neither their canonical nor their conversations,
+  // which is the opposite of what moving to SSO is supposed to preserve.
+  return normalizeEmail(p.email);
+}
+
 /** The dev Anonymous provider (no email) is enabled ONLY with this flag. Shared
  *  so auth.ts (provider list) and access.ts (the no-email exemption) agree. */
 export function anonAuthEnabled(): boolean {
@@ -58,8 +107,6 @@ export function extractEntraEmail(
     upn?: unknown;
     preferred_username?: unknown;
   }>;
-  const cand = (p.email ?? p.upn ?? p.preferred_username) as
-    | string
-    | undefined;
-  return typeof cand === "string" && cand.length > 0 ? cand : undefined;
+  // Normalized like every other email that becomes a key — see normalizeEmail.
+  return normalizeEmail(p.email ?? p.upn ?? p.preferred_username);
 }

@@ -49,6 +49,13 @@ export interface GatewayIdentity {
    * browser, which the bridge never learns (Convex dispatches on its behalf).
    */
   forwardedFor: string;
+  /** Scheme this connection reached the gateway over, for `requiredHeaders`.
+   *  REQUIRED: a default here would advertise a host or scheme nobody chose, on
+   *  the header a proxy-aware gateway reads — see the note in buildIdentityHeaders. */
+  forwardedProto: string;
+  /** Host this connection reached the gateway on, for `requiredHeaders`. REQUIRED
+   *  for the same reason. */
+  forwardedHost: string;
   /**
    * Per-connection scope ceiling. Omitted ⇒ no `x-openclaw-scopes` header and the
    * connection keeps everything the device and the identity grant. An EMPTY array
@@ -211,6 +218,24 @@ export function buildIdentityHeaders(
   const headers: Record<string, string> = {
     [userHeader]: assertIdentityUser(identity.user),
     "x-forwarded-for": assertForwardedClientIp(identity.forwardedFor),
+    "x-forwarded-proto": identity.forwardedProto,
+    "x-forwarded-host": identity.forwardedHost,
+    // `gateway.auth.trustedProxy.requiredHeaders` names headers that must be
+    // present, and the value an operator sets for a real reverse proxy is
+    // ["x-forwarded-proto", "x-forwarded-host"]. A deployment that runs an
+    // identity proxy for its people AND this bridge for Atrium configures that
+    // list ONCE, for both.
+    //
+    // WHERE IT BITES, measured 2026-09-12 against gateway 2026.9.2 with that list
+    // configured: the WebSocket connect is admitted WITHOUT them, but the HTTP
+    // media route answers 401. So a bridge missing them would connect, run turns
+    // normally, and silently lose every outbound file — the same shape of failure
+    // as sending that route no identity at all. Sent on every connection because
+    // the two surfaces share this builder and only one of them enforces the rule.
+    //
+    // Stated as what this connection actually is, never echoed from anywhere: the
+    // bridge speaks to the gateway over its operator URL, and that URL's scheme
+    // and host are the honest answer to "how did you reach me".
   };
   if (identity.scopeCap !== undefined) {
     if (identity.scopeCap.length === 0) {
@@ -244,6 +269,8 @@ export function identityFor(params: {
   authMode: GatewayAuthMode | undefined;
   forwardedClientIp: string | null | undefined;
   user: string;
+  forwardedProto: string;
+  forwardedHost: string;
   scopeCap?: readonly string[];
 }): GatewayIdentity | undefined {
   if (params.authMode !== "trusted-proxy") {
@@ -253,6 +280,8 @@ export function identityFor(params: {
   return {
     user: assertIdentityUser(params.user),
     forwardedFor,
+    forwardedProto: params.forwardedProto,
+    forwardedHost: params.forwardedHost,
     ...(params.scopeCap === undefined ? {} : { scopeCap: params.scopeCap }),
   };
 }

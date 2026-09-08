@@ -140,6 +140,130 @@ describe("cross-provider email collision is blocked (no silent duplicate profile
     else process.env.AUTH_ALLOWED_EMAIL_DOMAINS = prevDomains;
   });
 
+  test("the backfill PROGRESSES past one page, and says what is left", async () => {
+    // The first version read the first page of the whole TABLE on both its reads,
+    // so past one page it healed nothing more and still reported `remaining: 0`.
+    // An operator would follow the documented step, watch it finish, open the
+    // second provider — and everybody beyond that page would silently get a
+    // duplicate account. Selecting the rows that still NEED work is what makes
+    // each call consume what it healed.
+    const t = convexTest(schema, modules);
+    const admin = await t.run(async (ctx) => {
+      const uid = await ctx.db.insert("users", { email: "root@example.com" });
+      await ctx.db.insert("profiles", {
+        userId: uid,
+        role: "admin",
+        email: "root@example.com",
+        emailLower: "root@example.com",
+        canonical: "root",
+      });
+      return uid;
+    });
+    // 600 legacy rows: more than one page, none carrying `emailLower`.
+    await t.run(async (ctx) => {
+      for (let i = 0; i < 600; i++) {
+        const uid = await ctx.db.insert("users", { email: `U${i}@Example.com` });
+        await ctx.db.insert("profiles", {
+          userId: uid,
+          role: "user",
+          email: `U${i}@Example.com`,
+          canonical: `u${i}`,
+        });
+      }
+    });
+
+    const as = t.withIdentity({ subject: `${admin}|sA` });
+    const first = await as.mutation(api.admin.backfillProfileEmailLower, {});
+    expect(first.updated).toBe(500);
+    expect(first.remaining, "a page-bound report of 0 is what misleads").toBe(100);
+
+    const second = await as.mutation(api.admin.backfillProfileEmailLower, {});
+    expect(second).toEqual({ updated: 100, remaining: 0 });
+
+    const unhealed = await t.run(async (ctx) =>
+      (await ctx.db.query("profiles").collect()).filter(
+        (p) => p.emailLower === undefined,
+      ).length,
+    );
+    expect(unhealed).toBe(0);
+  });
+
+  test("a legacy row is recognized once the deployment has backfilled it", async () => {
+    // The guard reads two exact indexes and never scans, so a row written before
+    // `emailLower` existed is invisible to the normalized one until it is filled.
+    // `ensureProfile` heals it on the owner's OWN next sign-in — but a deployment
+    // adopting a second provider needs it healed BEFORE anybody arrives through
+    // the new door, which is what the admin backfill is for. Without it the first
+    // arrival is neither linked nor refused: they get a second account.
+    const t = convexTest(schema, modules);
+    const userA = await t.run(async (ctx) =>
+      ctx.db.insert("users", { email: "Alice@Example.com", name: "Alice A" }),
+    );
+    await t.withIdentity({ subject: `${userA}|sA` }).mutation(api.me.bootstrap, {});
+    await t.run(async (ctx) => {
+      const p = await ctx.db
+        .query("profiles")
+        .filter((q) => q.eq(q.field("userId"), userA))
+        .first();
+      await ctx.db.patch(p!._id, {
+        email: "Alice@Example.com",
+        emailLower: undefined,
+      });
+    });
+
+    const filled = await t
+      .withIdentity({ subject: `${userA}|sA` })
+      .mutation(api.admin.backfillProfileEmailLower, {});
+    expect(filled).toEqual({ updated: 1, remaining: 0 });
+
+    // Now a second identity with the SAME address, normalized, is recognized.
+    const userB = await t.run(async (ctx) =>
+      ctx.db.insert("users", { email: "alice@example.com", name: "Alice A" }),
+    );
+    await expect(
+      t.withIdentity({ subject: `${userB}|sB` }).mutation(api.me.bootstrap, {}),
+    ).rejects.toThrow(/compte existe déjà pour cet email/);
+
+    const count = await t.run(async (ctx) =>
+      (await ctx.db.query("profiles").collect()).length,
+    );
+    expect(count).toBe(1);
+  });
+
+  test("a legacy row is HEALED on its owner's own next sign-in", async () => {
+    // The guard reads two exact indexes; the normalized one only helps once the
+    // row carries `emailLower`. Backfilling it on the owner's own sign-in is the
+    // only moment we can be certain whose row it is — and it is what keeps the
+    // guard from needing a table scan forever.
+    const t = convexTest(schema, modules);
+    const userA = await t.run(async (ctx) =>
+      ctx.db.insert("users", { email: "Alice@Example.com", name: "Alice A" }),
+    );
+    await t.withIdentity({ subject: `${userA}|sA` }).mutation(api.me.bootstrap, {});
+    await t.run(async (ctx) => {
+      const p = await ctx.db
+        .query("profiles")
+        .filter((q) => q.eq(q.field("userId"), userA))
+        .first();
+      await ctx.db.patch(p!._id, {
+        email: "Alice@Example.com",
+        emailLower: undefined,
+      });
+    });
+
+    // The same person signs in again — nothing else happens, and the row heals.
+    await t.withIdentity({ subject: `${userA}|sA` }).mutation(api.me.bootstrap, {});
+    const healed = await t.run(async (ctx) =>
+      (await ctx.db
+        .query("profiles")
+        .filter((q) => q.eq(q.field("userId"), userA))
+        .first())!,
+    );
+    expect(healed.emailLower).toBe("alice@example.com");
+    // And the address an operator SEES is untouched.
+    expect(healed.email).toBe("Alice@Example.com");
+  });
+
   test("a NEW identity with an already-owned email is refused, with ZERO side effects", async () => {
     const t = convexTest(schema, modules);
     // Identity A (e.g. Google) signs in first -> admin, owns the email.

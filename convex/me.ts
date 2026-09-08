@@ -81,10 +81,18 @@ export const bootstrap = mutation({
 export const authProviders = query({
   args: {},
   handler: async () => ({
-    google: !!process.env.AUTH_GOOGLE_ID,
+    google: !!process.env.AUTH_GOOGLE_ID && !!process.env.AUTH_GOOGLE_SECRET,
     microsoft:
       !!process.env.AUTH_MICROSOFT_ENTRA_ID_ID &&
+      !!process.env.AUTH_MICROSOFT_ENTRA_ID_SECRET &&
       !!process.env.AUTH_MICROSOFT_ENTRA_ID_ISSUER,
+    // Same refuse-without-issuer rule as auth.ts: the issuer IS the primary
+    // authorization for a self-hosted OIDC deployment, so a half-configured one
+    // must not render a button that cannot complete.
+    authelia:
+      !!process.env.AUTH_AUTHELIA_ID &&
+      !!process.env.AUTH_AUTHELIA_SECRET &&
+      !!process.env.AUTH_AUTHELIA_ISSUER,
     anonymous: process.env.OPENCLAW_ENABLE_ANON_AUTH === "1",
   }),
 });

@@ -10,6 +10,7 @@ import { isSupportedLocale } from "./lib/locales";
 import { mutation, query, MutationCtx } from "./_generated/server";
 import { Id } from "./_generated/dataModel";
 import { getProfile, requireAdmin, requirePermission, roleOf } from "./lib/access";
+import { normalizeEmail } from "./lib/authDomains";
 import { isGrantableUserPermission, PERMISSIONS } from "./lib/rbac";
 import {
   instanceConfigValidator,
@@ -625,6 +626,57 @@ export const listInstances = query({
   handler: async (ctx) => {
     await requireAdmin(ctx);
     return await ctx.db.query("instances").order("desc").take(200);
+  },
+});
+
+/**
+ * ONE-TIME: give every profile its lowercased address.
+ *
+ * The duplicate-account guard reads `by_email_lower`, and rows written before that
+ * field existed do not have it. `ensureProfile` heals each one on its owner's own
+ * next sign-in — but a deployment adopting a SECOND provider needs them healed
+ * BEFORE anybody arrives through the new door, or the first person to do so is
+ * neither linked nor refused: they are silently given a second account.
+ *
+ * Run it once after upgrading, from the dashboard or `npx convex run`. Idempotent,
+ * and it never touches `email` — only the derived key the guard reads. Bounded per
+ * call and reports what is left, so a large deployment calls it until `remaining`
+ * is zero rather than holding one enormous transaction.
+ */
+export const backfillProfileEmailLower = mutation({
+  args: {},
+  handler: async (ctx): Promise<{ updated: number; remaining: number }> => {
+    await requireAdmin(ctx);
+    // SELECT THE ROWS THAT NEED WORK, through the index. Reading the first page of
+    // the whole table instead would return the same creation-ordered rows on every
+    // call: past one page it heals nothing more and — worse — reports
+    // `remaining: 0`, so the operator follows the documented step, sees it finish,
+    // opens the second provider, and everybody beyond that page silently gets a
+    // duplicate account. Selecting on the missing field makes each call consume
+    // what it healed.
+    const pending = await ctx.db
+      .query("profiles")
+      .withIndex("by_email_lower", (q) => q.eq("emailLower", undefined))
+      .take(500);
+    let updated = 0;
+    for (const p of pending) {
+      // Same normalization as everywhere else, `normalizeEmail` and not a bare
+      // `.toLowerCase()`: a stored address with surrounding whitespace would
+      // otherwise get an `emailLower` no normalized lookup can ever match.
+      const lower = normalizeEmail(p.email);
+      if (lower === undefined) continue;
+      await ctx.db.patch(p._id, { emailLower: lower });
+      updated += 1;
+    }
+    // Counted over what is LEFT, after this call's writes — the number the
+    // operator repeats the call on until it reaches zero.
+    const remaining = (
+      await ctx.db
+        .query("profiles")
+        .withIndex("by_email_lower", (q) => q.eq("emailLower", undefined))
+        .take(500)
+    ).filter((p) => p.email !== undefined).length;
+    return { updated, remaining };
   },
 });
 

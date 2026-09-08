@@ -13,6 +13,7 @@ import {
   emailDomainAllowed,
   emailVerifiedTruthy,
   extractEntraEmail,
+  extractOidcEmail,
 } from "./lib/authDomains";
 
 const modules = import.meta.glob("./**/*.ts");
@@ -136,5 +137,75 @@ describe("ensureProfile email-domain gate (authoritative, defense-in-depth)", ()
       if (prev === undefined) delete process.env.OPENCLAW_ENABLE_ANON_AUTH;
       else process.env.OPENCLAW_ENABLE_ANON_AUTH = prev;
     }
+  });
+});
+
+describe("every email that becomes a KEY crosses the same normalization", () => {
+  test("Entra normalizes too, or a two-provider deployment forks the account", () => {
+    // The lookups that decide whether somebody keeps their account are exact
+    // index reads. Normalizing in one extractor and not the other only needs two
+    // providers to show itself: an Entra deployment that stored
+    // `Alice@Example.com` and later adopts SSO would create a SECOND profile
+    // instead of linking — the very thing the OIDC extractor was fixed for.
+    expect(extractEntraEmail({ email: "Alice@Example.com" })).toBe("alice@example.com");
+    expect(extractEntraEmail({ upn: "  Bob@X.com " })).toBe("bob@x.com");
+    expect(extractOidcEmail({ email: "Alice@Example.com" })).toBe("alice@example.com");
+  });
+
+  test("both refuse what cannot be a key", () => {
+    expect(extractEntraEmail({ email: "   " })).toBeUndefined();
+    expect(extractEntraEmail({ email: 42 })).toBeUndefined();
+    expect(extractOidcEmail({ email: "   " })).toBeUndefined();
+  });
+});
+
+describe("a self-hosted OIDC issuer (Authelia and its kind)", () => {
+  test("an ABSENT email_verified is refused, not trusted", () => {
+    // The provider requires the claim truthy, because convex-auth links the
+    // sign-in into the existing account owning that email. Accepting an absent
+    // claim — the earlier behaviour — trusted a self-hosted issuer to have
+    // administered an address its users may edit themselves.
+    expect(emailVerifiedTruthy(true)).toBe(true);
+    expect(emailVerifiedTruthy("true")).toBe(true);
+    expect(emailVerifiedTruthy(undefined)).toBe(false);
+    expect(emailVerifiedTruthy(false)).toBe(false);
+    expect(emailVerifiedTruthy(null)).toBe(false);
+  });
+
+  test("`preferred_username` is REFUSED as an email, however tempting", () => {
+    // Convex Auth links a sign-in into the existing account owning that email, so
+    // this return value is a key into other people's data. On a self-hosted issuer
+    // with self-service profile editing — Keycloak and Authentik both have it —
+    // `preferred_username` is whatever the account holder last typed. Accepting it
+    // would let somebody set theirs to a colleague's address and land in that
+    // colleague's account. `email` is the only claim an issuer administers.
+    expect(extractOidcEmail({ email: "a@x.com" })).toBe("a@x.com");
+    expect(extractOidcEmail({ preferred_username: "victim@x.com" })).toBeUndefined();
+    expect(
+      extractOidcEmail({ email: "a@x.com", preferred_username: "victim@x.com" }),
+    ).toBe("a@x.com");
+  });
+
+  test("the email is NORMALIZED, because it is an exact-equality key twice over", () => {
+    // convex-auth links by `uniqueUserWithVerifiedEmail` and `ensureProfile`
+    // refuses duplicates by the `by_email` index — both exact. A self-hosted
+    // issuer whose backend holds `Alice@Example.com` would otherwise miss the
+    // account Google stored as `alice@example.com` and create a SECOND profile:
+    // the person loses their canonical and their conversations, which is exactly
+    // what moving to SSO must not do.
+    expect(extractOidcEmail({ email: "Alice@Example.com" })).toBe("alice@example.com");
+    expect(extractOidcEmail({ email: "  bob@x.com  " })).toBe("bob@x.com");
+    expect(extractOidcEmail({ email: "   " })).toBeUndefined();
+  });
+
+  test("no usable email is undefined, which the domain gate then refuses", () => {
+    // Returning "" or a placeholder would walk into the allowlist as a value to
+    // compare; undefined is what `emailDomainAllowed` reads as "no email".
+    expect(extractOidcEmail({})).toBeUndefined();
+    expect(extractOidcEmail({ email: "" })).toBeUndefined();
+    expect(extractOidcEmail({ email: 42 })).toBeUndefined();
+    expect(extractOidcEmail(null)).toBeUndefined();
+    expect(extractOidcEmail("nope")).toBeUndefined();
+    expect(emailDomainAllowed(extractOidcEmail({}))).toBe(false);
   });
 });

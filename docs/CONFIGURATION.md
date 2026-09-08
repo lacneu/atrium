@@ -144,6 +144,27 @@ functions read the **deployment** environment.
 | `AUTH_MICROSOFT_ENTRA_ID_ID` | no | | Microsoft Entra ID application (client) id. Omit the whole trio to disable the provider. | `<client-id>` |
 | `AUTH_MICROSOFT_ENTRA_ID_SECRET` | no | | Its client secret. | `<client-secret>` |
 | `AUTH_MICROSOFT_ENTRA_ID_ISSUER` | no | | Issuer URL for a single-tenant app. | `https://login.microsoftonline.com/<tenant>/v2.0` |
+| `AUTH_AUTHELIA_ID` | no | | Self-hosted OIDC client id — Authelia, Keycloak, Authentik, Zitadel. Omit the whole trio to disable the provider. | `<client-id>` |
+| `AUTH_AUTHELIA_SECRET` | no | | Its client secret. | `<client-secret>` |
+| `AUTH_AUTHELIA_ISSUER` | no | | Issuer URL. REQUIRED: the issuer is the primary authorization, so the provider refuses to enable without it and names the missing piece in the deployment log. | `https://auth.example.org` |
+
+Register `<VITE_CONVEX_SITE_URL>/api/auth/callback/authelia` as the client's
+redirect URI with your issuer, and grant it the `openid profile email` scopes — the
+provider requires the issuer to state the address as verified, and reads both claims
+from the UserInfo endpoint. (The same redirect-URI rule applies to Google and
+Microsoft, with their own provider id at the end of the path — `microsoft-entra-id`
+for Entra, which is the `@auth/core` id and not the name of its variables.) The
+callbacks are served on the **HTTP-actions** origin, not the API one — the two are
+different hosts on a self-hosted deployment, and using the API origin yields
+`redirect_uri_mismatch`.
+
+**Upgrading a deployment that predates this release**: run
+`admin.backfillProfileEmailLower` once (dashboard, or `npx convex run`) before
+anybody signs in through a newly added provider. It gives every existing profile
+the lowercased address the duplicate-account guard reads; without it, the first
+person arriving through the new door is neither recognized nor refused, and gets a
+second account beside their first. It is idempotent, never touches the address an
+operator sees, and reports how many rows are left to do.
 
 ### Environment labelling and credential encryption
 

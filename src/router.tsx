@@ -335,6 +335,7 @@ function SignIn() {
     providers !== undefined &&
     !providers.google &&
     !providers.microsoft &&
+    !providers.authelia &&
     !providers.anonymous;
   return (
     <div className="oc-signin">
@@ -387,6 +388,30 @@ function SignIn() {
             >
               <GoogleIcon />
               <span>{m.app_signin_google()}</span>
+            </button>
+          ) : null}
+          {/* A provider the deployment enabled but the screen does not render is a
+              deployment nobody can sign into: `authProviders` says it is on, the
+              "none enabled" notice stays hidden, and the card is simply empty.
+              Microsoft was in exactly that state — its label existed in both
+              locales with no button to carry it. authProvidersHaveButtons pins the
+              rule so the next provider cannot land the same way. */}
+          {providers?.microsoft ? (
+            <button
+              type="button"
+              className="oc-provider oc-provider--microsoft"
+              onClick={() => void oauth("microsoft-entra-id")}
+            >
+              <span>{m.app_signin_microsoft()}</span>
+            </button>
+          ) : null}
+          {providers?.authelia ? (
+            <button
+              type="button"
+              className="oc-provider oc-provider--authelia"
+              onClick={() => void oauth("authelia")}
+            >
+              <span>{m.app_signin_authelia()}</span>
             </button>
           ) : null}
         </div>

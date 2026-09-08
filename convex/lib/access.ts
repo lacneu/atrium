@@ -18,7 +18,11 @@
 import { getAuthUserId } from "@convex-dev/auth/server";
 import { Doc, Id } from "../_generated/dataModel";
 import { MutationCtx, QueryCtx } from "../_generated/server";
-import { anonAuthEnabled, emailDomainAllowed } from "./authDomains";
+import {
+  anonAuthEnabled,
+  emailDomainAllowed,
+  normalizeEmail,
+} from "./authDomains";
 import { resolveChatAccess } from "./chatAccess";
 import {
   permissionsForRoleKey,
@@ -176,9 +180,24 @@ export async function ensureProfile(ctx: MutationCtx): Promise<Id<"users">> {
     // / pre-persistence profiles without fighting user edits. Never touches
     // `role` (the claim flow above owns it) nor `canonical` (write-once routing
     // key — a change would fork the gateway session). Idempotent once filled.
-    const patch: { role?: Role; email?: string; name?: string } = {};
+    const patch: {
+      role?: Role;
+      email?: string;
+      emailLower?: string;
+      name?: string;
+    } = {};
     if (existing.role === undefined) patch.role = "pending";
     if (existing.email === undefined && email !== undefined) patch.email = email;
+    // Heals a row written before `emailLower` existed, on its owner's own
+    // sign-in — which is the only moment we can be certain whose row it is.
+    // Derived from the STORED address, never from the incoming one: they are the
+    // same person by definition here, and the stored value is what the duplicate
+    // guard must be able to find.
+    const storedEmail = existing.email ?? email;
+    if (existing.emailLower === undefined) {
+      const lower = normalizeEmail(storedEmail);
+      if (lower !== undefined) patch.emailLower = lower;
+    }
     if (existing.name === undefined && name !== undefined) patch.name = name;
     if (Object.keys(patch).length > 0) {
       await ctx.db.patch(existing._id, patch);
@@ -194,18 +213,52 @@ export async function ensureProfile(ctx: MutationCtx): Promise<Id<"users">> {
   // never an implicit auto-merge nor a silent SECOND profile (the duplicate-
   // account bug). BLOCK the auto-provision here — placed BEFORE any appMeta /
   // admin-claim write so a blocked sign-in has ZERO side effects (it must never
-  // flip `adminAssigned`). Org SSO emails are case-stable, so the exact-match
-  // index lookup is reliable in practice.
+  // flip `adminAssigned`).
+  //
+  // CASE. The providers normalize the address they state (lib/authDomains
+  // `normalizeEmail`), so every row written from now on is lowercase and the index
+  // read below is exact and cheap. Rows written BEFORE that kept whatever their
+  // issuer said, and the comment here used to call org emails "case-stable" — an
+  // assumption, not a guarantee. A stored `Alice@Example.com` would miss this
+  // lookup, miss convex-auth's own linking read, and land as a SECOND profile with
+  // a fresh canonical: the duplicate-account bug this guard exists to raise,
+  // arriving through the guard itself. So a miss falls back to a bounded
+  // case-insensitive sweep. It runs only on auto-provision — a first-ever
+  // sign-in — never on the turn path.
   if (email !== undefined) {
-    const emailOwner = await ctx.db
-      .query("profiles")
-      .withIndex("by_email", (q) => q.eq("email", email))
-      .first();
+    // TWO EXACT INDEX READS, never a scan. The earlier version of this guard swept
+    // the table to catch legacy casing, which put every profile into the
+    // mutation's read set and failed OPEN past its bound — a duplicate-account
+    // guard that gives up quietly is the defect it exists to raise.
+    //
+    //   by_email_lower: every row written since normalization, plus every legacy
+    //     row healed on its owner's last sign-in.
+    //   by_email: the exact read that was here before, so a legacy row not yet
+    //     healed is caught exactly as it was — never worse than before.
+    // The probe is NORMALIZED before it touches the normalized index. `email` here
+    // comes off the users row, which a provider from before normalization wrote in
+    // whatever case its issuer used — querying the lower index with a mixed-case
+    // key defeats the very index added to catch those rows.
+    const probe = normalizeEmail(email) ?? email;
+    const emailOwner =
+      (await ctx.db
+        .query("profiles")
+        .withIndex("by_email_lower", (q) => q.eq("emailLower", probe))
+        .first()) ??
+      (await ctx.db
+        .query("profiles")
+        .withIndex("by_email", (q) => q.eq("email", email))
+        .first());
     if (emailOwner !== null) {
+      // Names only a remedy that EXISTS. The previous wording sent people to
+      // "link this provider from your settings" — there is no such screen
+      // anywhere in the app, so the message described a way out that could not be
+      // taken. Signing in with the original method does work, and is the whole
+      // remedy today.
       throw new Error(
         "Un compte existe déjà pour cet email via une autre méthode de " +
-          "connexion. Connectez-vous avec celle-ci, puis liez ce fournisseur " +
-          "depuis vos paramètres.",
+          "connexion. Connectez-vous avec celle-ci pour retrouver vos " +
+          "conversations.",
       );
     }
   }
@@ -245,6 +298,9 @@ export async function ensureProfile(ctx: MutationCtx): Promise<Id<"users">> {
     email,
     name,
     canonical: canonicalFromEmail(email, userId),
+    ...(normalizeEmail(email) === undefined
+      ? {}
+      : { emailLower: normalizeEmail(email) }),
   });
   return userId;
 }

@@ -6,7 +6,10 @@
 
 import { describe, it, expect } from "vitest";
 import { loadConfig } from "../src/config.js";
-import { MediaFetcherProvider } from "../src/core/media-fetcher-provider.js";
+import {
+  MediaFetcherProvider,
+  buildMediaFetcher,
+} from "../src/core/media-fetcher-provider.js";
 import { LocalDirMediaFetcher } from "../src/core/media-fetcher.js";
 import { GatewayHttpMediaFetcher } from "../src/core/gateway-http-media-fetcher.js";
 
@@ -81,5 +84,90 @@ describe("MediaFetcherProvider", () => {
     expect(p.currentMode()).toBe("off");
     p.applyConfig(null);
     expect(p.currentMode()).toBe("shared-fs"); // boot default, not "off"
+  });
+});
+
+describe("the media fetcher describes the origin IT is authorized on", () => {
+  /**
+   * Drives the REAL `buildMediaFetcher` and captures what it actually sends.
+   *
+   * An earlier version of these tests rebuilt the header composition inline and
+   * asserted on that — so reverting the production wiring left them green. A test
+   * that cannot fail is worse than no test: it reports coverage it does not have.
+   * `GatewayHttpMediaFetcher` takes its `fetch` from the global, so intercepting
+   * there is what puts the production path under the assertion.
+   */
+  async function headersSentBy(
+    config: Record<string, unknown>,
+  ): Promise<Record<string, string>> {
+    const seen: Record<string, string>[] = [];
+    const realFetch = globalThis.fetch;
+    // BEFORE building: the fetcher captures `fetch` in its constructor
+    // (`opts.fetchImpl ?? fetch`), so a later swap would never be seen.
+    globalThis.fetch = (async (_url: unknown, init?: RequestInit) => {
+      seen.push({ ...((init?.headers ?? {}) as Record<string, string>) });
+      // A 404 ends `open()` on its shortest path; the headers are already sent.
+      return { ok: false, status: 404 } as unknown as Response;
+    }) as unknown as typeof fetch;
+    const fetcher = buildMediaFetcher(config as never, "gateway-http", 1024);
+    expect(fetcher, "gateway-http must build a fetcher").toBeDefined();
+    try {
+      await fetcher!.open("/tmp/x").catch(() => undefined);
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+    expect(seen.length, "the meta probe must have been attempted").toBeGreaterThan(0);
+    return seen[0]!;
+  }
+
+  const TRUSTED = {
+    openclawAuthMode: "trusted-proxy",
+    instanceName: "alpha",
+    openclawForwardedClientIp: "10.7.7.7",
+    mediaFetchTimeoutMs: 5000,
+    openclawToken: "tkn",
+  };
+
+  it("uses the HTTP base, not the socket's URL, when they differ", async () => {
+    // `gatewayHttpBase` derives from `instances.gatewayHttpUrl` when set, so the
+    // media route can live somewhere other than the operator socket. A gateway
+    // whose `requiredHeaders` lists x-forwarded-host would then be told about the
+    // socket's host while authorizing a request to a different one.
+    const headers = await headersSentBy({
+      ...TRUSTED,
+      openclawGatewayUrl: "wss://socket.example.org:18789",
+      gatewayHttpBase: "https://media.example.org",
+    });
+    expect(headers["x-forwarded-host"]).toBe("media.example.org");
+    expect(headers["x-forwarded-proto"]).toBe("https");
+    expect(headers["x-forwarded-user"]).toBe("atrium-bridge:alpha");
+  });
+
+  it("describes the socket's host when no separate media URL is configured", async () => {
+    // The ordinary case: `gatewayHttpBase` is derived FROM the gateway URL, so the
+    // two agree and the header names the one host there is. Written with the value
+    // a loader actually produces — an empty base is a config no path can build,
+    // and a test pinning one proves only that the stub never parsed it.
+    const headers = await headersSentBy({
+      ...TRUSTED,
+      openclawGatewayUrl: "ws://127.0.0.1:18790",
+      gatewayHttpBase: "http://127.0.0.1:18790",
+    });
+    expect(headers["x-forwarded-host"]).toBe("127.0.0.1:18790");
+    expect(headers["x-forwarded-proto"]).toBe("http");
+  });
+
+  it("token mode sends the Bearer and NO forwarded header", async () => {
+    // The additions must not leak into the mode that presents no identity.
+    const headers = await headersSentBy({
+      openclawAuthMode: "token",
+      instanceName: "alpha",
+      openclawGatewayUrl: "ws://127.0.0.1:18790",
+      gatewayHttpBase: "http://127.0.0.1:18790",
+      mediaFetchTimeoutMs: 5000,
+      openclawToken: "tkn",
+    });
+    expect(headers["Authorization"]).toBe("Bearer tkn");
+    expect(headers["x-forwarded-host"]).toBeUndefined();
   });
 });

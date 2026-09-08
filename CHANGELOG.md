@@ -1,5 +1,54 @@
 # Changelog
 
+## [0.83.0] — Sign in with your own single sign-on
+
+A deployment can now delegate sign-in to the identity provider it already runs, and
+a bridge can sit beside an identity proxy in front of its gateway. Nothing changes
+for a deployment that configures neither: providers are chosen by which credentials
+are set, several can be live at once, and a deployment that sets none of the new
+ones is byte-for-byte the one that shipped before. No breaking changes.
+
+**Sign in through your own SSO.** Set an issuer, a client id and a secret, and the
+sign-in screen offers it — Authelia is the case this was written for, but the shape
+is the standard OIDC one, so Keycloak, Authentik and Zitadel work the same way. A
+deployment can keep Google for one crowd and its own SSO for another; they are not
+alternatives.
+
+People do not lose their account across the move, and never end up with two. A
+sign-in whose verified email matches an existing one is recognized as the same
+person, so somebody who signed in with Google yesterday keeps their conversations
+after the deployment adopts SSO. When it cannot be matched, the sign-in is REFUSED
+with a message naming what to do — sign in the way you did before — rather than
+quietly provisioning a second account beside the first.
+Adopting SSO therefore never silently splits somebody in two, which is the failure
+that would be discovered weeks later.
+
+Both of those rest on the address, which is why the provider is strict about it: it
+requires the issuer to state it as verified, refuses a username claim in its place,
+and normalizes case and spacing before comparing. A directory administers an
+address; an issuer with self-service profiles lets its own users type one, and this
+email is the key that decides which account a sign-in reaches. A deployment that predates
+this release runs one idempotent backfill before opening a new door — the release
+notes for operators say when and why — after which addresses stored in any case are
+recognized too.
+
+Configuring only part of the trio disables the provider and now says which piece is
+missing, instead of leaving an empty sign-in card to explain itself.
+
+**The Microsoft button is back.** The provider could be configured and reported as
+enabled while the screen rendered nothing for it, so a deployment set up for
+Microsoft alone showed an empty card — no button, and not even the "no sign-in
+method configured" notice, precisely because a method *was* configured. Both new
+buttons carry the app's own surface in either theme.
+
+**A bridge can run beside an identity proxy.** An instance using per-user identity
+now states the scheme and host it reached its gateway on, alongside the identity it
+already sent. A gateway configured for a real reverse proxy requires those headers
+on its HTTP surface — measured: the WebSocket connect is admitted without them and
+the media route answers 401 — so a bridge that omitted them would connect, run turns
+normally, and silently lose every outbound file. Instances on a shared token send
+nothing new.
+
 ## [0.82.1] — A feature that never worked, withdrawn
 
 Corrective release. One capability is removed because a live gateway proved it can

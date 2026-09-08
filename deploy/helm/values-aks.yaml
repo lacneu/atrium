@@ -100,6 +100,9 @@ secrets:
     AUTH_MICROSOFT_ENTRA_ID_ID: ""
     AUTH_MICROSOFT_ENTRA_ID_SECRET: ""
     AUTH_MICROSOFT_ENTRA_ID_ISSUER: ""
+    AUTH_AUTHELIA_ID: ""
+    AUTH_AUTHELIA_SECRET: ""
+    AUTH_AUTHELIA_ISSUER: ""
     JWT_PRIVATE_KEY: ""
     JWKS: ""
     # base64 of 32 random bytes (openssl rand -base64 32) — encrypts gateway

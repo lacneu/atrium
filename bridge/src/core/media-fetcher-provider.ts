@@ -12,6 +12,7 @@ import { GatewayHttpMediaFetcher } from "./gateway-http-media-fetcher.js";
 import {
   connectUserHeader,
   systemConnectIdentity,
+  mediaForwardedOrigin,
 } from "../providers/openclaw/connect-identity.js";
 import { buildIdentityHeaders } from "../providers/openclaw/gateway-identity.js";
 import type { InboundInstanceConfig, MediaMode } from "./instance-config.js";
@@ -38,11 +39,19 @@ export function buildMediaFetcher(
         // Trusted-proxy: the HTTP media route is behind the SAME header-based
         // authorization as the WebSocket, so the probe must state an identity or
         // it is refused. Empty in token mode ⇒ the Bearer path is untouched.
-        identityHeaders: () =>
-          buildIdentityHeaders(
-            systemConnectIdentity(config),
+        identityHeaders: () => {
+          // The forwarded ORIGIN must describe the request being authorized. The
+          // socket's identity carries the operator URL, and `gatewayHttpBase` can
+          // differ from it (`instances.gatewayHttpUrl`) — a gateway whose
+          // `requiredHeaders` lists the host would then be told about the wrong one.
+          const identity = systemConnectIdentity(config);
+          return buildIdentityHeaders(
+            identity === undefined
+              ? undefined
+              : { ...identity, ...mediaForwardedOrigin(config) },
             connectUserHeader(config),
-          ),
+          );
+        },
         maxBytes,
         timeoutMs: config.mediaFetchTimeoutMs,
       });

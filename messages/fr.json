@@ -1012,6 +1012,7 @@
   "app_signin_title": "Bon retour",
   "app_signin_subtitle": "Connectez-vous pour continuer",
   "app_signin_google": "Se connecter avec Google",
+  "app_signin_authelia": "Se connecter avec le SSO",
   "app_signin_microsoft": "Se connecter avec Microsoft",
   "app_signin_none_enabled": "Aucun mode de connexion configuré.",
   "app_signin_anonymous": "Continuer (dev, sans compte)",

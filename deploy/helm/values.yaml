@@ -291,6 +291,11 @@ secrets:
     AUTH_MICROSOFT_ENTRA_ID_ID: ""
     AUTH_MICROSOFT_ENTRA_ID_SECRET: ""
     AUTH_MICROSOFT_ENTRA_ID_ISSUER: ""
+    # Self-hosted OIDC single sign-on (Authelia and its kind). The issuer is the
+    # primary authorization; the provider refuses to enable without it.
+    AUTH_AUTHELIA_ID: ""
+    AUTH_AUTHELIA_SECRET: ""
+    AUTH_AUTHELIA_ISSUER: ""
     # @convex-dev/auth keys. JWT_PRIVATE_KEY = PEM with REAL newlines; JWKS = raw JSON.
     JWT_PRIVATE_KEY: ""
     JWKS: ""
