@@ -22,8 +22,15 @@ FROM node:22-alpine@sha256:c610fcdfb1d5b4740dd70c284ed3cb16bb857e0f7166196e36a55
 ENV NODE_ENV=production
 WORKDIR /app
 COPY package.json package-lock.json* ./
+# Apply every published Alpine fix, then refuse to publish an image whose OpenSSL is
+# older than the qualified minimum. The minimum is a FLOOR, expressed as apk's own
+# `>=` constraint: apk upgrades when the repository can satisfy it and exits non-zero
+# when it cannot, so a newer Alpine patch satisfies this line untouched. Asserting the
+# EXACT release instead would break every build — releases included — on the day
+# Alpine ships the next OpenSSL fix, i.e. the day security improves. Raising the floor
+# is a deliberate edit; scripts/check-bridge-container-policy.sh refuses to lower it.
 RUN apk upgrade --no-cache \
-    && apk list --installed libcrypto3 libssl3 | grep -Eq '3\.5\.8-r0' \
+    && apk add --no-cache 'libcrypto3>=3.5.8-r0' 'libssl3>=3.5.8-r0' \
     && npm ci --omit=dev \
     && npm cache clean --force \
     && rm -rf /usr/local/lib/node_modules/npm /usr/local/bin/npm /usr/local/bin/npx

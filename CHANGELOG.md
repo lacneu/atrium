@@ -1,5 +1,25 @@
 # Changelog
 
+## [0.84.3] — The OpenSSL requirement no longer breaks on good news
+
+Corrective release. The gate 0.84.2 added to the bridge image was correct about what it
+demanded and wrong about how it demanded it.
+
+**The bridge image's OpenSSL requirement is now a minimum, not an exact version.** It
+asserted the exact release it needed — 3.5.8-r0 — so the day Alpine publishes the next
+OpenSSL fix, `apk upgrade` would have installed that newer build and the assertion would
+have failed: no bridge image would build at all, releases included. A gate that fails
+when security improves is a gate that gets removed in a hurry by whoever is holding a
+release. It now requires *at least* the qualified version, which a newer patch satisfies
+untouched, and it is expressed with the package manager's own version constraint so the
+check and the upgrade are one step rather than two that can disagree.
+
+Nothing about the guarantee is relaxed: an image whose OpenSSL is older than the
+qualified version still cannot be built, and the container policy now also refuses a
+Dockerfile that *lowers* the minimum — the case an exact-version check could not
+distinguish from raising it. Anyone rebuilding the image from source is the one this
+affects; the published 0.84.2 image was correctly patched.
+
 ## [0.84.2] — The bridge image now proves it is patched
 
 Security release. No behaviour changes: both container images change content, and one
