@@ -22,6 +22,7 @@ cat > "$fixture_dir/unpinned-node" <<'EOF'
 FROM node:22-alpine AS build
 FROM node:22-alpine@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa AS runtime
 RUN rm -rf /usr/local/lib/node_modules/npm /usr/local/bin/npm /usr/local/bin/npx
+RUN apk upgrade --no-cache && apk list --installed libcrypto3 libssl3 | grep -Eq '3\.5\.8-r0'
 USER node
 EOF
 expect_rejected "$fixture_dir/unpinned-node"
@@ -39,6 +40,16 @@ cat > "$fixture_dir/root-runtime" <<'EOF'
 FROM node:22-alpine@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa AS build
 FROM node:22-alpine@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa AS runtime
 RUN rm -rf /usr/local/lib/node_modules/npm /usr/local/bin/npm /usr/local/bin/npx
+RUN apk upgrade --no-cache && apk list --installed libcrypto3 libssl3 | grep -Eq '3\.5\.8-r0'
 USER root
 EOF
 expect_rejected "$fixture_dir/root-runtime"
+
+cat > "$fixture_dir/unpatched-runtime" <<'EOF'
+# syntax=docker/dockerfile:1@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+FROM node:22-alpine@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa AS build
+FROM node:22-alpine@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa AS runtime
+RUN rm -rf /usr/local/lib/node_modules/npm /usr/local/bin/npm /usr/local/bin/npx
+USER node
+EOF
+expect_rejected "$fixture_dir/unpatched-runtime"

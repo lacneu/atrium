@@ -1,4 +1,4 @@
-# syntax=docker/dockerfile:1@sha256:e82bbc85c3cb06cf2a5a27b058208b43984448acbcd6a832cd1491933d4376dd
+# syntax=docker/dockerfile:1@sha256:ecfaec9ed6d810b56388c508f4121597bfbba70d41a6dfeee4d8cad5f295fc32
 # OpenClaw → Convex bridge (the NEW streaming architecture).
 #
 # The bridge connects to the OpenClaw gateway over WS, normalizes events, and
@@ -9,7 +9,7 @@
 # with the OpenClaw container(s); see docker-compose.yml + docs/DEPLOYMENT.md.
 
 # ---- build stage: install dev deps + compile TS -> dist ----
-FROM node:22-alpine@sha256:b74031e546d7f4faf561d797ac1b76beccac856a042815ca77db4fd047581605 AS build
+FROM node:22-alpine@sha256:c610fcdfb1d5b4740dd70c284ed3cb16bb857e0f7166196e36a5501df7a3aa32 AS build
 WORKDIR /app
 COPY package.json package-lock.json* ./
 RUN npm ci
@@ -18,11 +18,13 @@ COPY src ./src
 RUN npm run build
 
 # ---- runtime stage: prod deps + compiled dist only ----
-FROM node:22-alpine@sha256:b74031e546d7f4faf561d797ac1b76beccac856a042815ca77db4fd047581605 AS runtime
+FROM node:22-alpine@sha256:c610fcdfb1d5b4740dd70c284ed3cb16bb857e0f7166196e36a5501df7a3aa32 AS runtime
 ENV NODE_ENV=production
 WORKDIR /app
 COPY package.json package-lock.json* ./
-RUN npm ci --omit=dev \
+RUN apk upgrade --no-cache \
+    && apk list --installed libcrypto3 libssl3 | grep -Eq '3\.5\.8-r0' \
+    && npm ci --omit=dev \
     && npm cache clean --force \
     && rm -rf /usr/local/lib/node_modules/npm /usr/local/bin/npm /usr/local/bin/npx
 COPY --from=build /app/dist ./dist

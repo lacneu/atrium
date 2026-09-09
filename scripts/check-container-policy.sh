@@ -24,6 +24,21 @@ if grep -Eq '^FROM alpine:[^@[:space:]]+([[:space:]]|$)' "$dockerfile"; then
   exit 1
 fi
 
+if ! grep -Eq '^FROM --platform=\$BUILDPLATFORM node:[^[:space:]]+@sha256:[0-9a-f]{64} AS build$' "$dockerfile"; then
+  echo "The Node build stage must run on the native build platform" >&2
+  exit 1
+fi
+
+if ! grep -Eq '^FROM --platform=\$BUILDPLATFORM golang:[^[:space:]]+@sha256:[0-9a-f]{64} AS caddy-builder$' "$dockerfile"; then
+  echo "The Go build stage must run on the native build platform" >&2
+  exit 1
+fi
+
+if ! grep -Fq 'CGO_ENABLED=0 GOOS="$TARGETOS" GOARCH="$TARGETARCH" go build' "$dockerfile"; then
+  echo "The Caddy build must explicitly target the requested runtime platform" >&2
+  exit 1
+fi
+
 if grep -Eq '^[[:space:]]*RUN[[:space:]].*(apk|apt-get|dnf|yum)[[:space:]].*(curl|wget)' "$dockerfile"; then
   echo "Runtime network clients must not be installed by the frontend image" >&2
   exit 1

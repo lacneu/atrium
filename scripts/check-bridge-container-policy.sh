@@ -20,6 +20,12 @@ if ! grep -Fq 'rm -rf /usr/local/lib/node_modules/npm /usr/local/bin/npm /usr/lo
   exit 1
 fi
 
+if ! grep -Fq 'apk upgrade --no-cache' "$dockerfile" \
+  || ! grep -Fq "apk list --installed libcrypto3 libssl3 | grep -Eq '3\\.5\\.8-r0'" "$dockerfile"; then
+  echo "The bridge runtime must apply and attest the qualified Alpine security update" >&2
+  exit 1
+fi
+
 if ! grep -Eq '^USER node$' "$dockerfile"; then
   echo "The bridge runtime must run as the non-root node user" >&2
   exit 1
