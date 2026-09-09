@@ -1,5 +1,43 @@
 # Changelog
 
+## [0.84.2] — The bridge image now proves it is patched
+
+Security release. No behaviour changes: both container images change content, and one
+of them gains a gate it never had.
+
+**The bridge image no longer ships a vulnerable OpenSSL.** Its Node base image carries
+libcrypto3/libssl3 3.5.7-r0; the runtime stage now applies the Alpine security update
+that brings both to 3.5.8-r0. It does more than apply it — it then *asserts* the
+installed version, so a build that fails to pick the patch up fails loudly instead of
+quietly publishing an unpatched runtime. The same requirement is enforced against the
+Dockerfile itself, so the step cannot be dropped in a later edit without the container
+policy check refusing it. Operators get this by pulling the new `atrium-bridge` image;
+nothing to configure.
+
+**The bridge image is now scanned before it can be published.** Only the frontend image
+had a vulnerability gate; the bridge — the component that holds the gateway
+credentials — was published unscanned. Its exact release candidate is now built and
+scanned on every change, and a fixable critical vulnerability fails the build. Two
+images, two gates.
+
+**The frontend image gate now rejects only what can be acted on.** It used to fail on
+any high or critical advisory, including advisories with no published fix — which
+blocks every release on something no operator or maintainer can do anything about,
+and teaches everyone to bypass the gate. It now fails on advisories that have a fix
+available. This is deliberately a narrower gate than before, and the narrowing is the
+point: a gate that cannot be satisfied stops being a gate.
+
+**Two more advisories out of the frontend image.** The pinned Caddy build moves
+`golang.org/x/text` to 0.41.0 and `google.golang.org/grpc` to 1.83.2 — the latter
+because 1.83.1, the version the previous release had just upgraded *to*, is itself
+affected. Caddy's own release is unchanged; only what it links against moves.
+
+**The frontend image can be built for a different architecture.** Its build stages are
+pinned to the machine doing the building and the Caddy binary is cross-compiled for
+the requested target, so a self-hoster on ARM can build an x86 image (or the reverse)
+without emulating the whole toolchain. Previously the build ran entirely under
+emulation, which is slow and, on some hosts, unreliable.
+
 ## [0.84.1] — A failure with no name is a failure you cannot fix
 
 Corrective release. One class of failure was recorded without any cause at all, so it

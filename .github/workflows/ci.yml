@@ -9,9 +9,13 @@ on:
     paths-ignore: ["**.md", "docs/**", "deploy/**"]
 
 jobs:
+  # Image jobs run on GitHub-hosted amd64 runners: they build `linux/amd64`, which
+  # is NATIVE there. On the arm64 self-hosted fleet the same build is emulated by
+  # QEMU, whose x86 emulation segfaults non-deterministically inside `npm ci`
+  # (see the RUNNERS note in build-and-push.yml). Test-only jobs stay on the fleet.
   frontend-image:
     name: frontend image supply chain
-    runs-on: [self-hosted, macOS, ARM64, lacneu-atrium-ci]
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
@@ -100,11 +104,14 @@ jobs:
       - run: npm ci || npm install
       - run: npm run typecheck
       - run: npm test
-      - name: Enforce minimal bridge container policy
-        working-directory: ${{ github.workspace }}
-        run: ./scripts/test-bridge-container-policy.sh
+
+  bridge-image:
+    name: bridge image supply chain
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
       - name: Build the exact bridge review candidate
-        working-directory: ${{ github.workspace }}
         run: |
           docker build --platform linux/amd64 \
             --build-arg ATRIUM_VERSION=ci \
