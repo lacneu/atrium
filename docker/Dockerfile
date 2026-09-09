@@ -6,7 +6,7 @@
 # therefore serves ANY deployment. See src/lib/runtimeConfig.ts.
 
 # --- Build stage --------------------------------------------------------------
-FROM node:24-alpine@sha256:a0b9bf06e4e6193cf7a0f58816cc935ff8c2a908f81e6f1a95432d679c54fbfd AS build
+FROM --platform=$BUILDPLATFORM node:24-alpine@sha256:a0b9bf06e4e6193cf7a0f58816cc935ff8c2a908f81e6f1a95432d679c54fbfd AS build
 WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci
@@ -32,11 +32,14 @@ RUN node -p "JSON.stringify({ version: require('./package.json').version, revisi
 # The toolchain version IS a supply-chain input — the stdlib is linked into the
 # binary — so this pin moves whenever an advisory lands against it, independently
 # of any change in our own code.
-FROM golang:1.26.6-alpine@sha256:af8d6740070b8906d12eae1c3e3ea0957fb63f492051ea05e354c38ef9fe88df AS caddy-builder
+FROM --platform=$BUILDPLATFORM golang:1.26.6-alpine@sha256:af8d6740070b8906d12eae1c3e3ea0957fb63f492051ea05e354c38ef9fe88df AS caddy-builder
+ARG TARGETOS
+ARG TARGETARCH
 # Caddy v2.11.4 (its LATEST release — there is no newer tag to move to) pins two
 # INDIRECT modules that now carry high-severity advisories, which the image scan
 # gate rejects: golang.org/x/text v0.37.0 (GO-2026-5970, fixed in 0.39.0) and
-# google.golang.org/grpc v1.81.0 (GHSA-hrxh-6v49-42gf, fixed in 1.82.1).
+# google.golang.org/grpc v1.81.0 (GHSA-hrxh-6v49-42gf) and v1.83.1
+# (GHSA-2v4p-qf9q-27wj) are fixed in 1.83.2.
 # `go install pkg@version` builds in module-free mode and CANNOT override a
 # dependency, so build the same Caddy release from a throwaway module where both
 # are force-upgraded — the xcaddy pattern, and the same reasoning as the Go
@@ -54,8 +57,8 @@ RUN go mod init atrium/caddy-dist \
  && printf 'package main\n\nimport (\n\tcaddycmd "github.com/caddyserver/caddy/v2/cmd"\n\t_ "github.com/caddyserver/caddy/v2/modules/standard"\n)\n\nfunc main() { caddycmd.Main() }\n' > main.go \
  && go mod edit -require=github.com/caddyserver/caddy/v2@v2.11.4 \
  && go mod tidy \
- && go get golang.org/x/text@v0.39.0 google.golang.org/grpc@v1.83.1 go.opentelemetry.io/otel@v1.44.0 \
- && CGO_ENABLED=0 go build -trimpath -o /out/caddy . \
+ && go get golang.org/x/text@v0.41.0 google.golang.org/grpc@v1.83.2 go.opentelemetry.io/otel@v1.44.0 \
+ && CGO_ENABLED=0 GOOS="$TARGETOS" GOARCH="$TARGETARCH" go build -trimpath -o /out/caddy . \
  && go version -m /out/caddy | grep -E 'golang.org/x/text|google.golang.org/grpc|go.opentelemetry.io/otel	'
 FROM alpine:3.24@sha256:28bd5fe8b56d1bd048e5babf5b10710ebe0bae67db86916198a6eec434943f8b AS serve
 # Caddy is statically linked and the entrypoint only needs BusyBox + musl. Removing
