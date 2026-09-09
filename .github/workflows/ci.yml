@@ -11,7 +11,7 @@ on:
 jobs:
   frontend-image:
     name: frontend image supply chain
-    runs-on: ubuntu-24.04
+    runs-on: [self-hosted, macOS, ARM64, lacneu-atrium-ci]
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
@@ -22,6 +22,7 @@ jobs:
       - name: Build the exact review candidate
         run: |
           docker build \
+            --platform linux/amd64 \
             --build-arg ATRIUM_VERSION=ci \
             --build-arg ATRIUM_REVISION="$GITHUB_SHA" \
             --file docker/Dockerfile \
@@ -41,13 +42,13 @@ jobs:
           image: local/atrium:ci
           fail-build: true
           severity-cutoff: high
-          only-fixed: false
+          only-fixed: true
           output-format: table
           grype-version: v0.116.0
 
   app:
     name: app (front + Convex)
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, macOS, ARM64, lacneu-atrium-ci]
     strategy:
       matrix:
         node-version: [22, 24]
@@ -87,7 +88,7 @@ jobs:
 
   bridge:
     name: bridge
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, macOS, ARM64, lacneu-atrium-ci]
     defaults:
       run:
         working-directory: bridge
@@ -99,3 +100,24 @@ jobs:
       - run: npm ci || npm install
       - run: npm run typecheck
       - run: npm test
+      - name: Enforce minimal bridge container policy
+        working-directory: ${{ github.workspace }}
+        run: ./scripts/test-bridge-container-policy.sh
+      - name: Build the exact bridge review candidate
+        working-directory: ${{ github.workspace }}
+        run: |
+          docker build --platform linux/amd64 \
+            --build-arg ATRIUM_VERSION=ci \
+            --build-arg ATRIUM_REVISION="$GITHUB_SHA" \
+            --file bridge/Dockerfile \
+            --tag local/atrium-bridge:ci \
+            bridge
+      - name: Reject actionable critical bridge vulnerabilities
+        uses: anchore/scan-action@e1165082ffb1fe366ebaf02d8526e7c4989ea9d2 # v7.4.0
+        with:
+          image: local/atrium-bridge:ci
+          fail-build: true
+          severity-cutoff: critical
+          only-fixed: true
+          output-format: table
+          grype-version: v0.116.0
