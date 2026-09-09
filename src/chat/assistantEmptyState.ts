@@ -1,4 +1,5 @@
 import {
+  childAgentIdFromKey,
   shortenSubAgentError,
   type SubAgentRow,
 } from "./subAgentActivityView";
@@ -57,7 +58,14 @@ export type AssistantEmptyState =
    *  reply moments later (live 2026-07-19 — the "block rewrote itself"
    *  report). Hold a composing note until `recheckAt`, then fall back. */
   | { kind: "composing"; taskName?: string; recheckAt: number }
-  | { kind: "done"; taskName?: string; resultText?: string }
+  | {
+      kind: "done";
+      taskName?: string;
+      resultText?: string;
+      /** The delegated agent whose answer this IS — so the reader is told the
+       *  reply comes from the agent the current one asked, not from it. */
+      agentId?: string;
+    }
   | { kind: "failed"; taskName?: string; reason: string }
   | { kind: "generic" };
 
@@ -220,6 +228,7 @@ export function assistantEmptyState(
       kind: "done",
       taskName: cleanTaskName(done.taskName),
       resultText: done.resultText,
+      agentId: childAgentIdFromKey(done.childSessionKey),
     };
   }
 

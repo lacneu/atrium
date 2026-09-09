@@ -117,6 +117,60 @@ describe("feedback.submitFeedback", () => {
     expect(rows.find((r) => r.snapshot.displayedMatchesStored === false)).toBeTruthy();
   });
 
+  // The report is the ONLY evidence that survives deletion of its message, so
+  // the cause has to be IN it. failDispatch stores two different facts on the row:
+  // `error` is the localizable headline the user was shown, `errorCode` the root
+  // cause the diagnose/remediation flows key on. Freezing only the headline made
+  // an `api_error` report unanswerable — prod prod-ms7afzxy… (2026-08-27) said
+  // "send_failed" while the surviving row said "GATEWAY_TIMEOUT".
+  test("snapshot freezes the ROOT CAUSE, not only the headline the user was shown", async () => {
+    const t = convexTest(schema, modules);
+    const { userId, as } = await seedUser(t);
+    const chatId = (await as.mutation(api.chats.createChat, {})) as Id<"chats">;
+    const { replyId } = await seedTurn(t, chatId, userId, "ma question", "");
+    // The exact shape failDispatch writes for a gateway timeout.
+    await t.run(async (ctx) => {
+      await ctx.db.patch(replyId, {
+        status: "error",
+        text: "",
+        error: "send_failed",
+        errorCode: "GATEWAY_TIMEOUT",
+      });
+    });
+
+    await as.mutation(api.feedback.submitFeedback, {
+      chatId,
+      messageId: replyId,
+      category: "api_error",
+      client: { displayedText: "" },
+    });
+
+    const row = await t.run(async (ctx) =>
+      ctx.db
+        .query("feedback")
+        .withIndex("by_message", (q) => q.eq("messageId", replyId))
+        .first(),
+    );
+    expect(row?.snapshot.messageError).toBe("send_failed");
+    expect(row?.snapshot.messageErrorCode).toBe("GATEWAY_TIMEOUT");
+
+    // And it survives the message's deletion — the case the snapshot exists for,
+    // and the one where the row can no longer be consulted for the cause.
+    await t.run(async (ctx) => {
+      await ctx.db.delete(replyId);
+    });
+    const readBack = await t.run(async (ctx) =>
+      ctx.runQuery(internal.feedback.readForApi, {
+        feedbackId: row!._id,
+      }),
+    );
+    expect(readBack.ok).toBe(true);
+    expect(readBack.ok && readBack.report.messageExists).toBe(false);
+    expect(
+      readBack.ok && readBack.report.snapshot.messageErrorCode,
+    ).toBe("GATEWAY_TIMEOUT");
+  });
+
   test("snapshot bundles document-attachment state (status + reference, NO storageId) + pending-fetch age", async () => {
     const t = convexTest(schema, modules);
     const { userId, as } = await seedUser(t);

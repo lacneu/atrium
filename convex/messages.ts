@@ -33,6 +33,7 @@ import {
   textLenBucket,
   normalizeMessageErrorCode,
   mimeTypeBase,
+  summarizeToolActivity,
 } from "./lib/chatRenderState";
 import { provenancePartStructure } from "./lib/provenance";
 import { Id, Doc } from "./_generated/dataModel";
@@ -819,8 +820,15 @@ export const getChatStreamTransport = query({
  * key auth + permission (traces.read).
  */
 export const chatStateInternal = internalQuery({
-  args: { chatId: v.string() },
-  handler: async (ctx, { chatId }) => {
+  args: {
+    chatId: v.string(),
+    // FALSE = drop the per-part list and keep its aggregates. Defaults to the
+    // historical shape (parts included): a diagnostic surface never quietly
+    // returns less than it used to.
+    includeParts: v.optional(v.boolean()),
+  },
+  handler: async (ctx, { chatId, includeParts: includePartsArg }) => {
+    const includeParts = includePartsArg !== false;
     const id = ctx.db.normalizeId("chats", chatId);
     if (id === null) return { ok: false as const, error: "bad chatId" };
     const chat = await ctx.db.get(id);
@@ -915,6 +923,21 @@ export const chatStateInternal = internalQuery({
             return { kind: "unknown" as const };
         }
       });
+      // REPETITION SUMMARY of the turn's tool activity. Derived from `parts`
+      // ABOVE — the SOC2 projection, not the raw parts — so it can never expose
+      // anything the response does not already carry: tool names and phases are
+      // already there, one entry at a time.
+      //
+      // Why it exists: an agent going round in circles and an agent making
+      // progress are the same 74 entries to a reader, and the shape that tells
+      // them apart (many calls over few distinct tools, the same tool back to
+      // back, the same tool erroring again and again) had to be reconstructed by
+      // hand from the whole list. A prod turn ran 60 tool calls against an
+      // instruction capping it at 25 (anomaly 2026-08-24) and nothing said so.
+      // The remedy is deliberately NOT a verdict: Atrium reports the shape and
+      // the caller decides, because "too many" belongs to the agent's
+      // instructions, not here.
+      const toolActivity = summarizeToolActivity(parts);
       return {
         messageId: mDoc._id,
         role: mDoc.role,
@@ -961,7 +984,15 @@ export const chatStateInternal = internalQuery({
         // reply (a COUNT — never references/filenames). null when none.
         attachedDocCount: mDoc.attachedDocCount ?? null,
         partCount: parts.length,
-        parts,
+        // null when the turn called no tool — an absent aggregate says "no tool
+        // activity", which a zero-filled one would blur into "tools that did
+        // nothing".
+        toolActivity,
+        // Omitted when the caller asked for the summary only: this is the field
+        // that makes the response unreadable on a long conversation (a real prod
+        // chat returned 414 KB over 180 messages, past every practical limit),
+        // and `toolActivity` above answers the repetition question without it.
+        ...(includeParts ? { parts } : {}),
       };
     });
     // CONTENT-FREE sub-agent summary (G3): make a failed / stuck delegation visible

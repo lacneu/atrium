@@ -596,7 +596,7 @@ describe("listByChat elides oversized part fields from the window", () => {
     const state = await t.query(internal.messages.chatStateInternal, { chatId });
     if (!state.ok) throw new Error("chat-state not ok");
     const diagTool = state.messages
-      .flatMap((mm) => mm.parts)
+      .flatMap((mm) => mm.parts!)
       .find((p) => p.kind === "tool" && p.name === "web_search");
     expect(diagTool).toMatchObject({ hasInput: true, hasOutput: true });
   });

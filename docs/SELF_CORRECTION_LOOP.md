@@ -40,7 +40,7 @@ user report (chatId)
 | `get_integrations` | `GET /api/v1/integrations` | `traces.read` | Per-vendor configured/enabled + shipping cursors. No keys. |
 | `diagnose_chat` | `GET /api/v1/diagnose` | `traces.read` | Aggregated assessment + suggested action/tool. Read-only. |
 | `get_trace_enrichment` | `GET /api/v1/trace-enrichment` | `traces.read` | SOC2-safe span/observation STRUCTURE from Opik/Langfuse, keyed by `correlationId`. Optional `chatId` adds the Langfuse session augmentation (`fields=core` list = no io on the wire), surfacing other/OpenClaw traces on the same session. |
-| `get_chat_state` | `GET /api/v1/chat-state` | `traces.read` | Per-message lifecycle (metadata only). |
+| `get_chat_state` | `GET /api/v1/chat-state` | `traces.read` | Per-message lifecycle (metadata only) + each turn's tool-repetition shape. `parts=summary` returns the aggregates without the per-part list. |
 | `reconcile_chat` | `POST /api/v1/reconcile-chat` | **`selfheal`** | Flip a chat's stuck `streaming` message → error (text preserved), releasing the hung UI. Audited. |
 
 ## Why this is safe
@@ -101,6 +101,37 @@ trace's `hiddenChatId`) releases even a completed-but-stuck fetch.
 bundles the document-fetch state for the reported message — per-card `status`,
 `entryKey`, `reference` (the reporter's own data, like the provenance file_names already
 in `partsJson`) plus `docFetchPendingAgeSeconds` — but never the storageId or signed URL.
+
+## Reading a turn that repeats itself
+
+Each message of `get_chat_state` carries `toolActivity`, the SHAPE of that turn's
+tool activity:
+
+| Field | Meaning |
+| --- | --- |
+| `calls` / `errors` | tool calls on the turn, and how many ended in error |
+| `distinctTools` | how many DIFFERENT tools those calls used |
+| `repeatedTools[]` | the tools called more than once, most repeated first, with their own error counts |
+| `repeatedToolsTruncated` | the list above is capped; `true` says it was cut |
+| `longestSameToolRun` | the longest run of the SAME tool back to back |
+
+Many calls over few distinct tools, a long `longestSameToolRun`, or the same tool
+erroring again and again is an agent going round in circles rather than
+progressing. The three read differently: a per-name count cannot separate thirty
+calls of one tool in a row from thirty alternating between two, which is what
+`longestSameToolRun` is for.
+
+The projection states **no threshold and no verdict**. What counts as too much
+belongs to the agent's own instructions — a cap on tool calls per turn lives
+there, not in this API — so Atrium reports the shape and the caller decides.
+`toolActivity` is `null` for a turn that called no tool, which is a different
+fact from a turn whose tools did nothing.
+
+It is derived from the per-part projection, so it exposes nothing the response
+does not already carry: tool names and phases are in `parts`, one entry at a time.
+`parts=summary` drops that list and keeps the aggregates — the list is what makes
+the response unreadable on a long conversation, while the aggregates answer the
+question it is usually opened for.
 
 ## What it does NOT do
 

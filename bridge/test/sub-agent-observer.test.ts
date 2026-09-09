@@ -125,6 +125,82 @@ describe("SubAgentObserver — registration & lifecycle (real frames)", () => {
     ]);
   });
 
+  // A delegated agent whose ANSWER IS the delivery. Prod 2026-09-09 (report
+  // prod-ms7bybmm…): the child produced a DOCX + a PDF and its whole reply was
+  // the two `MEDIA:` directives. The sanitiser drops a well-formed directive —
+  // correct on the OWNER's lane, where the normalizer emits a real media part in
+  // its place — but a child's frames are admitted for OBSERVATION ONLY, so on
+  // this lane nothing takes over. Both lines vanished, `resultText` was never
+  // set, and the settled bubble rendered BLANK: the user was told nothing while
+  // OpenClaw's own console showed the two files.
+  it("a child whose whole answer is a MEDIA delivery still says what it delivered", () => {
+    const obs = new SubAgentObserver(PARENT1, "chatA");
+    obs.observe(SPAWN_RESULT_1, 1000);
+    const media = JSON.parse(JSON.stringify(CHILD_FINAL_1)) as Record<string, any>;
+    media.payload.message = {
+      role: "assistant",
+      content: [
+        {
+          type: "text",
+          text:
+            "MEDIA:/home/node/.openclaw/media/outbound/2026 09 10 - VADE-MECUM.docx\n" +
+            "MEDIA:/home/node/.openclaw/media/outbound/2026 09 10 - VADE-MECUM.pdf",
+        },
+      ],
+    };
+    const out = obs.observe(media, 1002);
+    expect(out).toHaveLength(1);
+    const text = (out[0] as { resultText?: string }).resultText ?? "";
+    // The answer NAMES both files...
+    expect(text).toContain("2026 09 10 - VADE-MECUM.docx");
+    expect(text).toContain("2026 09 10 - VADE-MECUM.pdf");
+    // ...and still carries no server path (the SOC2 rule that made it disappear).
+    expect(text).not.toContain("/home/node/");
+    // And the DELIVERY itself rides the record: the child's lane is the only
+    // place these files appear, so the bridge attaches them to the child's
+    // anchor. The RAW path is kept — sanitising rewrites it to a basename, and
+    // the fetch needs the path.
+    expect((out[0] as { deliveredMedia?: unknown }).deliveredMedia).toEqual([
+      {
+        filename: "2026 09 10 - VADE-MECUM.docx",
+        path: "/home/node/.openclaw/media/outbound/2026 09 10 - VADE-MECUM.docx",
+      },
+      {
+        filename: "2026 09 10 - VADE-MECUM.pdf",
+        path: "/home/node/.openclaw/media/outbound/2026 09 10 - VADE-MECUM.pdf",
+      },
+    ]);
+  });
+
+  it("a child that delivered nothing carries no delivery", () => {
+    // The field's ABSENCE is the signal the attach path keys on — a turn with
+    // an empty list would make every ordinary delegation walk the media code.
+    const obs = new SubAgentObserver(PARENT1, "chatA");
+    obs.observe(SPAWN_RESULT_1, 1000);
+    const out = obs.observe(CHILD_FINAL_1, 1002);
+    expect((out[0] as { deliveredMedia?: unknown }).deliveredMedia).toBeUndefined();
+  });
+
+  it("a path MENTIONED in the child's prose is not a delivery", () => {
+    // Only a `MEDIA:` directive is the agent delivering. A path an agent merely
+    // named — reading old notes, echoing a shell transcript — must never
+    // re-attach last week's files to today's bubble.
+    const obs = new SubAgentObserver(PARENT1, "chatA");
+    obs.observe(SPAWN_RESULT_1, 1000);
+    const mentioned = JSON.parse(JSON.stringify(CHILD_FINAL_1)) as Record<string, any>;
+    mentioned.payload.message = {
+      role: "assistant",
+      content: [
+        {
+          type: "text",
+          text: "J'ai relu /home/node/.openclaw/media/outbound/vieux-rapport.pdf pour m'en inspirer.",
+        },
+      ],
+    };
+    const out = obs.observe(mentioned, 1002);
+    expect((out[0] as { deliveredMedia?: unknown }).deliveredMedia).toBeUndefined();
+  });
+
   it("child chat:final -> done + resultText, and the observation is REAPED", () => {
     const obs = new SubAgentObserver(PARENT1, "chatA");
     obs.observe(SPAWN_RESULT_1, 1000);
@@ -463,7 +539,13 @@ describe("SubAgentObserver — a lifecycle phase is NEVER a terminal (round-7 P1
 });
 
 describe("SubAgentObserver — result sanitization (SOC2)", () => {
-  it("strips server paths / MEDIA: directives from resultText", () => {
+  // The SOC2 rule is "no server path leaves"; it was implemented by DELETING the
+  // whole `MEDIA:` line, on the premise that a real attachment part carries the
+  // file instead. That premise holds on the owner's lane and NOT here — a child's
+  // frames are observation-only. So the path still goes, and the file is still
+  // NAMED: a delegated answer that consisted only of directives used to sanitise
+  // to "" and render a blank bubble (prod 2026-09-09).
+  it("keeps the delivered FILE NAME while the server path still never leaves", () => {
     const obs = new SubAgentObserver(PARENT1, "chatA");
     const childFinalWithPath = {
       type: "event",
@@ -484,8 +566,10 @@ describe("SubAgentObserver — result sanitization (SOC2)", () => {
       },
     };
     const out = obs.observe(childFinalWithPath, 1000);
-    expect(out[0]!.resultText).toBe("Here is the file");
+    expect(out[0]!.resultText).toBe("Here is the file\nsecret-report.pdf");
+    // The guarantee that matters, unchanged.
     expect(out[0]!.resultText).not.toContain("/home/node");
+    expect(out[0]!.resultText).not.toContain("media/outbound");
   });
 });
 

@@ -80,12 +80,63 @@ function stripPathsToBasename(line: string): string {
 }
 
 /**
+ * The files a text DELIVERS: one entry per well-formed `MEDIA:` directive line.
+ *
+ * Only DIRECTIVES count — a path merely mentioned in prose is not a delivery,
+ * and treating it as one would re-attach files an agent happened to name while
+ * reading old notes. The whole rest of the line is the path, so a filename with
+ * spaces survives intact (the same rule the normalizer's discovery uses; a
+ * bare-token scan truncates "IFOA Presentation.pdf" at the first space and then
+ * fetches a path that does not exist).
+ *
+ * Exists for the CHILD lane: a sub-agent's frames are observation-only, so the
+ * media pipeline never sees them, and a delegated answer that IS a delivery had
+ * no way to reach the reader (prod 2026-09-09).
+ */
+export function outboundMediaDeliveries(
+  text: string,
+): Array<{ filename: string; path: string }> {
+  if (typeof text !== "string" || !text.includes(OPENCLAW_MARKER)) return [];
+  const out: Array<{ filename: string; path: string }> = [];
+  const seen = new Set<string>();
+  for (const line of text.split(/\r\n|[\n\r\v\f\x1c\x1d\x1e\u0085\u2028\u2029]/)) {
+    const m = MEDIA_DIRECTIVE_RE.exec(line);
+    if (m === null) continue;
+    // trimEnd: the gateway file has no trailing whitespace, and a trailing space
+    // makes the fetch path not-found.
+    const path = m[1]!.trimEnd();
+    if (seen.has(path)) continue;
+    seen.add(path);
+    out.push({ filename: posixBasename(path), path });
+  }
+  return out;
+}
+
+/**
  * Sanitize visible assistant text before it reaches the browser.
  *
  * `mediaSessionKey` is accepted for signature parity with the Python version
  * but is unused (no signing in the Convex architecture).
  */
-export function sanitizeText(text: string, _opts?: { mediaSessionKey?: string }): string {
+export function sanitizeText(
+  text: string,
+  _opts?: {
+    mediaSessionKey?: string;
+    /**
+     * FALSE when the caller does NOT emit a media part for a `MEDIA:` directive.
+     *
+     * Dropping the directive (the default) is right on the OWNER's lane: the
+     * normalizer turns it into a real, downloadable attachment part, and keeping
+     * the line too printed a dead link beside the working one. A SUB-AGENT's
+     * frames are admitted for OBSERVATION ONLY — its content never becomes a
+     * part — so on that lane the drop deletes the only trace of the delivery.
+     * Prod 2026-09-09: a child produced a DOCX and a PDF, its entire answer was
+     * the two directives, both were dropped, and the settled bubble was blank
+     * while the gateway's own console listed both files.
+     */
+    mediaPartsEmitted?: boolean;
+  },
+): string {
   // 1. Early return verbatim (covers the empty string and any path-free text).
   if (typeof text !== "string" || !text.includes(OPENCLAW_MARKER)) {
     return text;
@@ -101,6 +152,14 @@ export function sanitizeText(text: string, _opts?: { mediaSessionKey?: string })
   for (const line of lines) {
     if (line.startsWith("MEDIA:")) {
       if (MEDIA_DIRECTIVE_RE.test(line)) {
+        if (_opts?.mediaPartsEmitted === false) {
+          // Nothing downstream will carry this file, so NAME it. The basename
+          // only — never the server path, and never a `./media/` link, which
+          // would be dead on this lane and is exactly the confusion the drop
+          // was introduced to remove.
+          out.push(stripPathsToBasename(line).replace(/^MEDIA:\s*/, ""));
+          continue;
+        }
         // DROP a well-formed outbound MEDIA: directive from the VISIBLE text: the
         // bridge emits it as a real `kind:media` attachment part (downloadable,
         // Convex storage URL) via the normalizer. Rendering it ALSO as a markdown

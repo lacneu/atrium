@@ -330,6 +330,15 @@ export const getChatStateInput = {
   chatId: z.string().describe(
     "The chat id (the /chat/<id> path segment) to inspect (required).",
   ),
+  parts: z
+    .enum(["full", "summary"])
+    .optional()
+    .describe(
+      "'summary' drops the per-part list and keeps its aggregates — use it on a " +
+        "long conversation, where the list alone can exceed what a client can " +
+        "read (a real 180-message chat answers ~400 KB). 'full' (default) keeps " +
+        "every part.",
+    ),
 } as const;
 
 export const getCompactionHistoryInput = {
@@ -476,10 +485,15 @@ export function getIntegrations(
  */
 export function getChatState(
   config: Config,
-  args: { chatId: string },
+  args: { chatId: string; parts?: "full" | "summary" },
   options?: ApiFetchOptions,
 ): Promise<unknown> {
-  return apiFetch(config, `/chat-state${qs({ chatId: args.chatId })}`, {}, options);
+  return apiFetch(
+    config,
+    `/chat-state${qs({ chatId: args.chatId, parts: args.parts })}`,
+    {},
+    options,
+  );
 }
 
 /**

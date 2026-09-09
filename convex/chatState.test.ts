@@ -120,7 +120,10 @@ describe("chatStateInternal", () => {
     expect(msg.runStatusKind).toBe("generating"); // streaming + has text
     expect(msg.textLenBucket).toBe("1-100");
     expect(msg.errorCode).toBe("unknown"); // raw error normalized away
-    const byKind = Object.fromEntries(msg.parts.map((p) => [p.kind, p]));
+    // The DEFAULT shape carries the per-part list: this route never quietly
+    // returns less than it did before `parts=summary` existed.
+    expect(msg.parts).toBeDefined();
+    const byKind = Object.fromEntries(msg.parts!.map((p) => [p.kind, p]));
     expect(byKind.tool).toMatchObject({
       name: "bash", // base tool name IS exposed (safe per spec)
       hasInput: true,
@@ -484,5 +487,104 @@ describe("chatStateInternal", () => {
       chatId: "not-a-real-id",
     });
     expect(bad.ok).toBe(false);
+  });
+});
+
+// The information the MCP needs in order to see an agent going round in circles
+// rather than progressing. It is a SHAPE, never a verdict: what counts as too
+// much belongs to the agent's own instructions, so no threshold lives here.
+describe("chatStateInternal reports a turn's tool-repetition shape", () => {
+  async function seedTurn(
+    t: ReturnType<typeof convexTest>,
+    tools: { name: string; phase?: string }[],
+  ) {
+    return await t.run(async (ctx) => {
+      const userId = await ctx.db.insert("users", {});
+      const cid = await ctx.db.insert("chats", { userId, updatedAt: 0 });
+      const mid = await ctx.db.insert("messages", {
+        chatId: cid,
+        userId,
+        role: "assistant" as const,
+        status: "complete" as const,
+        text: "voilà",
+        updatedAt: Date.now(),
+      });
+      let order = 0;
+      for (const tool of tools) {
+        await ctx.db.insert("messageParts", {
+          messageId: mid,
+          order: order++,
+          part: {
+            kind: "tool" as const,
+            name: tool.name,
+            phase: (tool.phase ?? "completed") as "completed" | "error",
+            input: { q: "x" },
+            output: "y",
+          },
+        });
+      }
+      return cid;
+    });
+  }
+
+  const repeat = (name: string, n: number, phase?: string) =>
+    Array.from({ length: n }, () => ({ name, phase }));
+
+  test("a looping turn is one field, not 60 entries to count by hand", async () => {
+    const t = convexTest(schema, modules);
+    const chatId = await seedTurn(t, [
+      ...repeat("web_search", 55),
+      ...repeat("web_fetch", 5, "error"),
+    ]);
+
+    const state = await t.query(internal.messages.chatStateInternal, {
+      chatId,
+    });
+    if (!state.ok) throw new Error("chat-state not ok");
+    const msg = state.messages.find((m) => m.role === "assistant")!;
+    expect(msg.toolActivity).toMatchObject({
+      calls: 60,
+      errors: 5,
+      distinctTools: 2,
+      longestSameToolRun: { name: "web_search", length: 55 },
+    });
+  });
+
+  test("a turn that called no tool carries no aggregate", async () => {
+    const t = convexTest(schema, modules);
+    const chatId = await seedTurn(t, []);
+    const state = await t.query(internal.messages.chatStateInternal, {
+      chatId,
+    });
+    if (!state.ok) throw new Error("chat-state not ok");
+    const msg = state.messages.find((m) => m.role === "assistant")!;
+    expect(msg.toolActivity).toBeNull();
+  });
+
+  test("parts=summary drops the LIST and keeps what answers the question", async () => {
+    // The per-part list is what makes this route unreadable on a real
+    // conversation; the aggregate is what it is usually opened for. Asking for
+    // the summary must not cost the counts.
+    const t = convexTest(schema, modules);
+    const chatId = await seedTurn(t, repeat("exec", 12));
+
+    const full = await t.query(internal.messages.chatStateInternal, { chatId });
+    const summary = await t.query(internal.messages.chatStateInternal, {
+      chatId,
+      includeParts: false,
+    });
+    if (!full.ok || !summary.ok) throw new Error("chat-state not ok");
+    const fullMsg = full.messages.find((m) => m.role === "assistant")!;
+    const summaryMsg = summary.messages.find((m) => m.role === "assistant")!;
+
+    expect(fullMsg.parts).toHaveLength(12);
+    expect(summaryMsg.parts).toBeUndefined();
+    // Everything the summary is asked for survives the omission.
+    expect(summaryMsg.partCount).toBe(12);
+    expect(summaryMsg.toolActivity).toEqual(fullMsg.toolActivity);
+    // And it is genuinely smaller — the point of the option.
+    expect(JSON.stringify(summary).length).toBeLessThan(
+      JSON.stringify(full).length,
+    );
   });
 });

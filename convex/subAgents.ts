@@ -35,6 +35,7 @@ import {
 } from "./lib/access";
 import { normalizeMessageErrorCode } from "./lib/chatRenderState";
 import { chatAllowsInstance } from "./lib/ingestAuthz";
+import { currentPlanIndex } from "./lib/planOrder";
 import { drainNextQueued, SUBAGENT_STALE_TTL_MS } from "./lib/outboxQueue";
 import { writeTraceEvent } from "./observability";
 import { deliveryChildKey } from "./lib/deliveryRuns";
@@ -582,6 +583,103 @@ async function maybeDrainOnTerminal(
 ): Promise<void> {
   if (isTerminalStatus(status)) {
     await drainNextQueued(ctx, chatId);
+    await settleEstimatedPlanIfIdle(ctx, chatId);
+  }
+}
+
+/** How far back to look for the plan card the reader is showing. The plan lives
+ *  on a recent delivery bubble; a plan older than this is not what anyone is
+ *  watching, and failing to find it only leaves the status quo. */
+const PLAN_SETTLE_LOOKBACK = 12;
+
+/**
+ * SETTLE an estimated plan once the pipeline is provably idle.
+ *
+ * A delivery run (sub-agent announce / task delivery) carries its `update_plan`
+ * calls as NAME-ONLY items: the step content never reaches the wire, so Convex
+ * advances the last known plan by one step per call and marks the result
+ * `estimated` (stream.ts `advancePlanPart`). That advance can settle the whole
+ * plan, but only when the turn's ONLY tool activity was the plan itself —
+ * because a delivery item names a tool without saying whether it started the
+ * next link of the chain, and an engagement row for that link may not exist yet.
+ *
+ * The cost of that caution was a plan that never finished: prod
+ * prod-ms76j9fj… (2026-08-23) delivered its work through a turn that also ran
+ * two `exec` items, so the advance moved one step and stopped — the card stayed
+ * "Plan — 2/3 étapes · progression estimée" on completed work, for good. The
+ * reporter was right: nothing was ever going to move it.
+ *
+ * So decide the question WHERE IT IS OBSERVABLE instead of guessing at the
+ * turn's terminal: a child has just gone terminal, and if no child of the chat
+ * is still running then nothing is working and the estimate has ended. Two
+ * boundaries keep this honest:
+ *   - only an `estimated` plan is settled. A plan the agent published ITSELF is
+ *     its own statement about its work, and Atrium never overwrites it — if the
+ *     agent left step 3 pending, that is the agent's word, not our estimate.
+ *   - the settled part is written `estimated` too, so the card keeps saying the
+ *     progression is inferred.
+ */
+async function settleEstimatedPlanIfIdle(
+  ctx: MutationCtx,
+  chatId: Id<"chats">,
+): Promise<void> {
+  // DIRECT existence probe, same rule as advancePlanPart: a bounded newest
+  // window could miss an old still-running child behind later terminal rows
+  // and settle a live pipeline's plan.
+  const running = await ctx.db
+    .query("subAgents")
+    .withIndex("by_chat_status", (q) =>
+      q.eq("chatId", chatId).eq("status", "running"),
+    )
+    .first();
+  if (running !== null) return;
+
+  const recent = await ctx.db
+    .query("messages")
+    .withIndex("by_chat", (q) => q.eq("chatId", chatId))
+    .order("desc")
+    .take(PLAN_SETTLE_LOOKBACK);
+
+  for (const message of recent) {
+    const parts = await ctx.db
+      .query("messageParts")
+      .withIndex("by_message", (q) => q.eq("messageId", message._id))
+      .collect();
+    const planRows = parts
+      .filter((e) => e.part.kind === "plan")
+      .sort((a, b) => a.order - b.order);
+    if (planRows.length === 0) continue;
+    // The plan the READER shows — greatest stamp, not the last row (planOrder.ts).
+    const current =
+      planRows[
+        currentPlanIndex(
+          planRows.map((e) => (e.part.kind === "plan" ? e.part : {})),
+        )
+      ];
+    if (current === undefined || current.part.kind !== "plan") return;
+    // Only OUR estimate is ours to close (see the note above).
+    if (current.part.estimated !== true) return;
+    const steps = current.part.steps;
+    // Already closed — and this also covers the EMPTY plan, which is a tombstone
+    // (clearPlanPart) rather than a checklist to finish: `every` is vacuously
+    // true on no steps. A separate length guard here was dead code, and a test
+    // that cannot fail is not a test.
+    if (steps.every((st) => st.status === "completed")) return;
+    await ctx.db.insert("messageParts", {
+      messageId: message._id,
+      order: parts.length,
+      part: {
+        kind: "plan",
+        steps: steps.map((st) => ({ ...st, status: "completed" as const })),
+        estimated: true,
+        stamp: Date.now(),
+      },
+      ...(current.announceRun !== undefined
+        ? { announceRun: current.announceRun }
+        : {}),
+    });
+    await ctx.db.patch(message._id, { updatedAt: Date.now() });
+    return; // the newest plan-bearing message is the card in view
   }
 }
 

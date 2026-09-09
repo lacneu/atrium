@@ -84,6 +84,7 @@ import {
   ArrowUp,
   Bookmark as BookmarkIcon,
   Bot,
+  CornerDownRight,
   Check,
   ChevronDown,
   ChevronRight,
@@ -3431,10 +3432,24 @@ function AssistantEmptyState({ show }: { show: boolean }) {
   }
 
   if (state.kind === "done") {
-    // The sub-agent's result IS this turn's answer — render it as MARKDOWN,
-    // IDENTICAL to a normal reply (no special block). The "a sub-agent produced
-    // this" detail lives in the gated in-thread card, not here.
-    return state.resultText ? <AgentMarkdown text={state.resultText} /> : null;
+    // The sub-agent's result IS this turn's answer. It used to render exactly
+    // like a normal reply, on the view that "a sub-agent produced this" belonged
+    // to the gated in-thread card — but the reader then attributes to the agent
+    // they are talking to a text that agent never wrote, and cannot tell a
+    // delegated answer from its own. The gateway's own console names the source
+    // ("De <agent>"); so does this now, on one quiet line above the answer.
+    if (!state.resultText) return null;
+    return (
+      <>
+        {state.agentId ? (
+          <div className="oc-empty-answer__from" role="note">
+            <CornerDownRight size={13} aria-hidden />
+            <span>{m.assistant_empty_done_from({ agent: state.agentId })}</span>
+          </div>
+        ) : null}
+        <AgentMarkdown text={state.resultText} />
+      </>
+    );
   }
 
   return (

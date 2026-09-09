@@ -289,7 +289,31 @@ describe("assistantEmptyState — parentMessageId correlation (robust) + done ca
       kind: "done",
       taskName: "News",
       resultText: "10 news IA…",
+      // WHO answered: the delegated agent, read off its session key.
+      agentId: "main",
     });
+  });
+
+  // Prod 2026-09-09 (report prod-ms7bybmm…): the gateway ran the `files`
+  // delegation on the `dashboard` face. The answer must still be attributed —
+  // a reader who is not told otherwise credits it to the agent they are talking
+  // to, which is the one thing it is not.
+  it("names the delegated agent whatever FACE the gateway spawned it on", () => {
+    const state = assistantEmptyState(
+      COMPLETE_EMPTY,
+      [spawnPart("agent:files:dashboard:6fd050d2-3c17-4361-8bbf-13fbda97840f")],
+      [
+        row({
+          childSessionKey: "agent:files:dashboard:6fd050d2-3c17-4361-8bbf-13fbda97840f",
+          status: "done",
+          resultText: "2026 09 10 - VADE-MECUM.docx\n2026 09 10 - VADE-MECUM.pdf",
+          updatedAt: 0,
+        }),
+      ],
+      undefined,
+      9_999_999,
+    );
+    expect(state).toMatchObject({ kind: "done", agentId: "files" });
   });
 
   it("a running sibling takes precedence over a done one (still waiting)", () => {
@@ -380,6 +404,7 @@ describe("composing grace (announce merge expected)", () => {
       kind: "done",
       taskName: undefined,
       resultText: "résultat brut du child",
+      agentId: "main",
     });
   });
 

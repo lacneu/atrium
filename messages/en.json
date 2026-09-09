@@ -1719,6 +1719,7 @@
   "assistant_empty_failed_named": "The agent delegated to a sub-agent (\"{task}\") that failed: {reason}",
   "assistant_empty_failed_hint": "You can send a new message to continue.",
   "assistant_empty_generic": "The agent performed some actions but did not return a response.",
+  "assistant_empty_done_from": "Reply from the {agent} agent, asked by this conversation’s agent",
   "integrations_status_endpoint_missing": "Endpoint missing",
   "integrations_otlp_note": "Export Atrium's traces to any OpenTelemetry/OTLP backend (Grafana Tempo, Jaeger, Datadog, an OTEL collector). Everything is configured here — no env vars.",
   "integrations_field_otlp_endpoint": "OTLP/HTTP endpoint (traces)",

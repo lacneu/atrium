@@ -574,6 +574,10 @@ http.route({
     }
     const chatState = await ctx.runQuery(internal.messages.chatStateInternal, {
       chatId,
+      // The assessment reads a SUBSET of the state (lib/diagnose's own input
+      // type) and has never looked at the per-part list — so it stopped being
+      // shipped. On a long conversation that list is the whole payload.
+      includeParts: false,
     });
     const availability = await ctx.runQuery(
       internal.bridgeHealth.availabilityInternal,
@@ -2169,8 +2173,23 @@ http.route({
     if (chatId === undefined) {
       return apiJson({ ok: false, error: "chatId required" }, 400);
     }
+    // `parts=summary` returns the per-message aggregates WITHOUT the per-part
+    // list. The list is what makes this route unusable on a real conversation —
+    // a prod chat of 180 messages answered 414 KB, past the limits of the
+    // clients that read it — while the question it is usually opened for
+    // ("how much did this turn do, and did it repeat itself?") is answered by
+    // `toolActivity`. Default stays FULL: a diagnostic route never quietly
+    // returns less than it did yesterday.
+    const partsMode = strParam(url, "parts");
+    if (partsMode !== undefined && partsMode !== "full" && partsMode !== "summary") {
+      return apiJson(
+        { ok: false, error: "parts must be 'full' or 'summary'" },
+        400,
+      );
+    }
     const state = await ctx.runQuery(internal.messages.chatStateInternal, {
       chatId,
+      includeParts: partsMode !== "summary",
     });
 
     // SOC2 access log (CC6.1/CC7.2): WHO read WHICH chat + how much — non-PHI

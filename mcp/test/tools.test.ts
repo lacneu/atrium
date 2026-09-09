@@ -2,6 +2,8 @@ import { describe, it, expect } from "vitest";
 import { z } from "zod";
 import {
   getActivity,
+  getChatState,
+  getChatStateInput,
   getKpi,
   getKpiInput,
   getSchema,
@@ -530,5 +532,37 @@ describe("delivery sessions list/delete wire format (Phase 5)", () => {
     expect(schema.safeParse({ sessionIds: [] }).success).toBe(false);
     expect(schema.safeParse({ sessionIds: ["s1"] }).success).toBe(true);
     expect(schema.safeParse({}).success).toBe(false);
+  });
+});
+
+describe("getChatState parts mode reaches the wire", () => {
+  it("omits the param by default and forwards 'summary' when asked", async () => {
+    const { impl, calls } = fakeFetch();
+
+    await getChatState(CONFIG, { chatId: "abc" }, { fetchImpl: impl });
+    // Default = the historical FULL shape: no param, so an older deployment that
+    // does not know the option keeps answering exactly as before.
+    expect(calls[0]!.url).toContain("/chat-state?chatId=abc");
+    expect(calls[0]!.url).not.toContain("parts=");
+
+    await getChatState(
+      CONFIG,
+      { chatId: "abc", parts: "summary" },
+      { fetchImpl: impl },
+    );
+    expect(calls[1]!.url).toContain("parts=summary");
+  });
+
+  it("accepts only the two modes the route understands", () => {
+    const schema = z.object(getChatStateInput);
+    expect(schema.safeParse({ chatId: "abc" }).success).toBe(true);
+    expect(schema.safeParse({ chatId: "abc", parts: "summary" }).success).toBe(
+      true,
+    );
+    expect(schema.safeParse({ chatId: "abc", parts: "full" }).success).toBe(true);
+    // A typo must be refused here rather than reaching the route as a 400.
+    expect(schema.safeParse({ chatId: "abc", parts: "sumary" }).success).toBe(
+      false,
+    );
   });
 });

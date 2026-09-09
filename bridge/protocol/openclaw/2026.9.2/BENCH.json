@@ -6,51 +6,51 @@
     {
       "id": "basic-turn",
       "ok": true,
-      "chat": "5de522b1e1930c19"
+      "chat": "e56596dfbf77266e"
     },
     {
       "id": "tool-exec",
       "ok": true,
-      "chat": "5de522b1e1930c19"
+      "chat": "e56596dfbf77266e"
     },
     {
       "id": "update-plan",
       "ok": true,
-      "chat": "5de522b1e1930c19"
+      "chat": "e56596dfbf77266e"
     },
     {
       "id": "media-outbound",
       "ok": true,
-      "chat": "5de522b1e1930c19"
+      "chat": "e56596dfbf77266e"
     },
     {
       "id": "spawn-announce-merge",
       "ok": true,
-      "chat": "5de522b1e1930c19"
+      "chat": "e56596dfbf77266e"
     },
     {
       "id": "spawn-chain-merge",
       "ok": true,
-      "chat": "5de522b1e1930c19"
+      "chat": "e56596dfbf77266e"
     },
     {
       "id": "spawn-parallel-merge",
       "ok": true,
-      "chat": "5de522b1e1930c19"
+      "chat": "e56596dfbf77266e"
     },
     {
       "id": "async-task",
       "ok": true,
-      "chat": "5de522b1e1930c19"
+      "chat": "e56596dfbf77266e"
     },
     {
       "id": "cron-tool",
       "ok": true,
-      "chat": "5de522b1e1930c19"
+      "chat": "e56596dfbf77266e"
     }
   ],
   "verdict": "GO",
-  "at": "2026-09-09T05:40:08.274Z",
+  "at": "2026-09-09T19:17:56.195Z",
   "scenarios": [
     "async-task",
     "basic-turn",
@@ -78,13 +78,13 @@
     "hermes-cron-list": "hermes"
   },
   "flags": [],
-  "atriumSha": "584bdb3317bd9013c83f2d2b19782bb5c73702be",
+  "atriumSha": "40048fd403a34b82f629719876a446f652fe78bf",
   "worktree": {
-    "dirty": false,
-    "deltaSha256": null
+    "dirty": true,
+    "deltaSha256": "61c52e8c06fc8f1a5afe126c2d4af7decf42721c44fcfe371d55863b1fcd92aa"
   },
-  "supportDigest": "504487d274351e0a7ccc16f14aaffe329043868d6f743c38a4d4f73db67b87fb",
+  "supportDigest": "63b2a4ecdd0930542d312cda66ef67a389dd74c7691b6bf93529507ba1805572",
   "authMode": "token",
-  "bridgeVersion": "0.83.1",
+  "bridgeVersion": "0.84.3",
   "vendoredSha256": "85e9f909e0335d19be1dbb2cc1a31c44372b145a03e7952d7d8831f713c23c4c"
 }

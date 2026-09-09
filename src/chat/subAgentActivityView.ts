@@ -159,11 +159,25 @@ export function shortSessionKey(key: string): string {
   return segment.length > 10 ? `${segment.slice(0, 8)}…` : segment;
 }
 
-/** The agent id the CHILD runs AS, parsed from `agent:<id>:subagent:<uuid>` (nesting
- *  keeps the FIRST id — depth-2 keys append more `:subagent:` segments). Undefined on
- *  a foreign/unNparseable key shape rather than a wrong guess. */
+/** The FACES a spawned child session runs on. `subagent` is the ordinary one;
+ *  `dashboard` is what the gateway used for a `files` delegation in prod on
+ *  2026-09-09, and a reader that knew only the first spelling attributed that
+ *  child to nobody. This is an OBSERVED list, not a derived one: the durable fix
+ *  is a single child-key grammar shared by every reader (three exist today —
+ *  here, the sink's spawn-result scan and the empty-state extractor). Keeping it
+ *  a closed set preserves the property that matters: a key we do not recognise
+ *  yields undefined rather than a wrong guess. */
+const CHILD_KEY_FACES = ["subagent", "dashboard"] as const;
+
+/** The agent id the CHILD runs AS, parsed from `agent:<id>:<face>:<tail>` (nesting
+ *  keeps the FIRST id — depth-2 keys append more segments). Undefined on a
+ *  foreign/unparseable key shape rather than a wrong guess. */
+const CHILD_KEY_RE = new RegExp(
+  `^agent:(.+?):(?:${CHILD_KEY_FACES.join("|")}):`,
+);
+
 export function childAgentIdFromKey(key: string): string | undefined {
-  const match = /^agent:(.+?):subagent:/.exec(key.trim());
+  const match = CHILD_KEY_RE.exec(key.trim());
   const id = match?.[1]?.trim();
   return id ? id : undefined;
 }

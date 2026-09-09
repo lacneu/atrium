@@ -92,6 +92,13 @@ export interface SubAgentRecord {
   declaredTimeoutMs?: number;
   status: "running" | "done" | "error" | "aborted";
   resultText?: string;
+  /** Files the child DELIVERED with its answer (`MEDIA:` directives on its own
+   *  lane). Carried on the record because nothing else can: a child's frames are
+   *  observation-only, so the media pipeline that serves the owner's lane never
+   *  sees them, and a delegation whose whole answer is a delivery reached the
+   *  user as an empty bubble (prod 2026-09-09). The bridge attaches these to
+   *  `parentMessageId` — the bubble the reader is looking at. */
+  deliveredMedia?: Array<{ filename: string; path: string }>;
   phase?: string;
   // The failure reason on a status:"error"/"aborted" child (sanitized + capped). Lets the
   // monitor show WHY a sub-agent failed / why the parent is stuck.
@@ -1765,6 +1772,18 @@ export class HttpConvexWriter implements ConvexWriter {
     });
   }
 
+  /** Basenames ALREADY attached to a message, per message id.
+   *
+   *  Two paths can deliver the same file to the same bubble: the turn's own
+   *  media pipeline, and a delegated child's delivery attached to its anchor
+   *  (session.ts). `addPart` INSERTS — it does not upsert — so without this the
+   *  reader would see the same document twice. Keyed on the MESSAGE rather than
+   *  on the run, deliberately: that is where the two paths meet, and deriving a
+   *  child key from a runId here would add yet another reader of a grammar that
+   *  already has too many. Recorded on SUCCESS only, so a failed transfer leaves
+   *  a later re-delivery free to attach (the rule the turn's own dedup states). */
+  private readonly attachedByMessage = new Map<string, Set<string>>();
+
   async addMedia(
     messageId: string,
     media: {
@@ -1786,6 +1805,10 @@ export class HttpConvexWriter implements ConvexWriter {
       runId?: string | null;
     },
   ): Promise<boolean> {
+    if (this.attachedByMessage.get(messageId)?.has(media.filename) === true) {
+      // Already on this bubble — the other delivery path got there first.
+      return true;
+    }
     await this.flushDelta(messageId); // ordering: drain deltas before the part
     // DIAGNOSTIC (SOC2-safe): the normalizer surfaced a media ref, so addMedia was
     // called. This "received" trace is the load-bearing A/B discriminator — if it
@@ -1895,6 +1918,12 @@ export class HttpConvexWriter implements ConvexWriter {
         fetchMs,
         uploadMs,
       });
+      const attached = this.attachedByMessage.get(messageId);
+      if (attached === undefined) {
+        this.attachedByMessage.set(messageId, new Set([media.filename]));
+      } else {
+        attached.add(media.filename);
+      }
       return true;
     } catch (err) {
       // Structural only (never the bytes/content). Filename hints at content, so

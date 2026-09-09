@@ -162,3 +162,81 @@ export function mimeTypeBase(mime: string | null | undefined): string | null {
   const semi = mime.indexOf(";");
   return (semi === -1 ? mime : mime.slice(0, semi)).trim();
 }
+
+/** How many repeated tools to name. A turn that touched more than this many
+ *  DIFFERENT tools more than once is not looping on one thing, and the counts
+ *  above already say how much it did. */
+const MAX_REPEATED_TOOLS = 8;
+
+/** A tool part as the chat-state projection emits it (name + phase only). */
+type ProjectedPart = { kind: string; name?: string; phase?: string | null };
+
+/**
+ * REPETITION SHAPE of one turn's tool activity, computed over the SOC2 projection
+ * of its parts — so it carries nothing the projection does not already carry.
+ *
+ * It answers "did this turn go round in circles?" WITHOUT deciding it: many calls
+ * spread over few distinct tools, the same tool called back to back, or the same
+ * tool erroring over and over. What counts as too much belongs to the agent's own
+ * instructions, so no threshold and no verdict live here — only the shape.
+ *
+ * Returns null for a turn that called no tool: an absent aggregate says "no tool
+ * activity", where a zero-filled one would read as "tools that did nothing".
+ */
+export function summarizeToolActivity(parts: readonly ProjectedPart[]): {
+  calls: number;
+  errors: number;
+  distinctTools: number;
+  repeatedTools: { name: string; calls: number; errors: number }[];
+  repeatedToolsTruncated: boolean;
+  longestSameToolRun: { name: string; length: number } | null;
+} | null {
+  const tools = parts.filter(
+    (p): p is ProjectedPart & { name: string } =>
+      p.kind === "tool" && typeof p.name === "string",
+  );
+  if (tools.length === 0) return null;
+
+  const calls = new Map<string, { calls: number; errors: number }>();
+  let errors = 0;
+  // Longest run of the SAME tool back to back — the most direct loop signal, and
+  // the one a per-name count cannot give: 30 calls alternating between two tools
+  // and 30 calls of one tool in a row are the same counts and not the same turn.
+  let longest: { name: string; length: number } | null = null;
+  let runName: string | undefined;
+  let runLength = 0;
+  for (const tool of tools) {
+    const seen = calls.get(tool.name) ?? { calls: 0, errors: 0 };
+    seen.calls += 1;
+    if (tool.phase === "error") {
+      seen.errors += 1;
+      errors += 1;
+    }
+    calls.set(tool.name, seen);
+    if (tool.name === runName) {
+      runLength += 1;
+    } else {
+      runName = tool.name;
+      runLength = 1;
+    }
+    if (longest === null || runLength > longest.length) {
+      longest = { name: tool.name, length: runLength };
+    }
+  }
+
+  const repeated = [...calls.entries()]
+    .filter(([, v]) => v.calls > 1)
+    // Most repeated first; ties by name so the output is stable across reads.
+    .sort((a, b) => b[1].calls - a[1].calls || a[0].localeCompare(b[0]))
+    .map(([name, v]) => ({ name, calls: v.calls, errors: v.errors }));
+
+  return {
+    calls: tools.length,
+    errors,
+    distinctTools: calls.size,
+    repeatedTools: repeated.slice(0, MAX_REPEATED_TOOLS),
+    // Never a silent truncation: the caller is told the list was cut.
+    repeatedToolsTruncated: repeated.length > MAX_REPEATED_TOOLS,
+    longestSameToolRun: longest,
+  };
+}

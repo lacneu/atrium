@@ -26,6 +26,7 @@ async function seedPlanMessage(
     runId?: string;
     withPlan?: boolean;
     steps?: typeof STEPS;
+    estimated?: boolean;
     withRunningChild?: boolean;
   },
 ) {
@@ -45,7 +46,11 @@ async function seedPlanMessage(
       await ctx.db.insert("messageParts", {
         messageId,
         order: 0,
-        part: { kind: "plan" as const, steps: opts?.steps ?? STEPS },
+        part: {
+          kind: "plan" as const,
+          steps: opts?.steps ?? STEPS,
+          ...(opts?.estimated === true ? { estimated: true } : {}),
+        },
       });
     }
     if (opts?.withRunningChild) {
@@ -73,6 +78,14 @@ async function planParts(
       .sort((a, b) => a.order - b.order)
       .map((r) => r.part);
   });
+}
+
+/** The newest plan part. NOT `Array.prototype.at`: convex/tsconfig.json is
+ *  lib ES2021, where it does not exist — the trap ci.yml's Convex gate names. */
+function lastPlan<T>(parts: T[]): T {
+  const last = parts[parts.length - 1];
+  if (last === undefined) throw new Error("expected at least one plan part");
+  return last;
 }
 
 function statuses(part: { kind: string; steps?: { status: string }[] }) {
@@ -309,5 +322,114 @@ describe("stream.advancePlanPart", () => {
       expectedRunId: "announce:v1:agent:files:subagent:x:y",
     });
     expect(await planParts(t, messageId)).toHaveLength(2);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// AND AN ESTIMATE HAS TO END.
+//
+// advancePlanPart can settle the whole plan, but only when the plan tool was the
+// turn's ONLY activity: a delivery item names a tool without saying whether that
+// tool started the next link of the chain, so at the turn's terminal the question
+// "is anything still working?" has no answer. The cost of that caution was a plan
+// that never finished — prod prod-ms76j9fj… (2026-08-23) delivered its work
+// through a turn that also ran two `exec` items, so the estimate moved one step
+// and stopped at "2/3 étapes" on completed work, with nothing left that could
+// move it.
+//
+// The question is answered where it IS observable: a child has just gone terminal,
+// and if none is left running then nothing is working and the estimate has ended
+// (subAgents.ts `settleEstimatedPlanIfIdle`, on the same path as the send drain).
+describe("an estimated plan settles once the pipeline is provably idle", () => {
+  const CHILD = "agent:files:subagent:aaaa1111-bbbb-2222-cccc-333344445555";
+
+  test("the last child going terminal closes the estimate, and it still says estimated", async () => {
+    const t = convexTest(schema, modules);
+    const { chatId, messageId } = await seedPlanMessage(t, { estimated: true });
+
+    await t.mutation(internal.subAgents.upsertSubAgent, {
+      chatId,
+      childSessionKey: CHILD,
+      status: "running" as const,
+    });
+    // Something is working: the estimate stays open.
+    expect(statuses(lastPlan(await planParts(t, messageId)))).toEqual([
+      "completed",
+      "in_progress",
+      "pending",
+      "pending",
+    ]);
+
+    await t.mutation(internal.subAgents.upsertSubAgent, {
+      chatId,
+      childSessionKey: CHILD,
+      status: "done" as const,
+    });
+    const settled = lastPlan(await planParts(t, messageId));
+    expect(statuses(settled)).toEqual([
+      "completed",
+      "completed",
+      "completed",
+      "completed",
+    ]);
+    // The progression was INFERRED and keeps saying so — settling it does not
+    // promote a guess into a fact.
+    expect((settled as { estimated?: boolean }).estimated).toBe(true);
+  });
+
+  test("a plan the AGENT published itself is never rewritten", async () => {
+    // Its steps are the agent's own statement about its work. If it left a step
+    // open, that is its word — Atrium only ever closes ITS OWN estimate.
+    const t = convexTest(schema, modules);
+    const { chatId, messageId } = await seedPlanMessage(t, { estimated: false });
+
+    await t.mutation(internal.subAgents.upsertSubAgent, {
+      chatId,
+      childSessionKey: CHILD,
+      status: "done" as const,
+    });
+    expect(await planParts(t, messageId)).toHaveLength(1);
+    expect(statuses(lastPlan(await planParts(t, messageId)))).toEqual([
+      "completed",
+      "in_progress",
+      "pending",
+      "pending",
+    ]);
+  });
+
+  test("one child finishing while ANOTHER runs keeps the estimate open", async () => {
+    const t = convexTest(schema, modules);
+    const { chatId, messageId } = await seedPlanMessage(t, {
+      estimated: true,
+      withRunningChild: true, // an older child, still running
+    });
+
+    await t.mutation(internal.subAgents.upsertSubAgent, {
+      chatId,
+      childSessionKey: CHILD,
+      status: "done" as const,
+    });
+    expect(await planParts(t, messageId)).toHaveLength(1);
+  });
+
+  test("an EMPTY estimated plan is a tombstone, not a checklist to finish", async () => {
+    const t = convexTest(schema, modules);
+    const { chatId, messageId } = await seedPlanMessage(t, {
+      withPlan: false,
+    });
+    await t.run(async (ctx) => {
+      await ctx.db.insert("messageParts", {
+        messageId,
+        order: 0,
+        part: { kind: "plan" as const, steps: [], estimated: true },
+      });
+    });
+
+    await t.mutation(internal.subAgents.upsertSubAgent, {
+      chatId,
+      childSessionKey: CHILD,
+      status: "done" as const,
+    });
+    expect(await planParts(t, messageId)).toHaveLength(1); // nothing appended
   });
 });

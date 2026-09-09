@@ -256,7 +256,15 @@ function main(): void {
         "document|context|memory + hasFileName/hasScore booleans, itemCount, " +
         "hasExcerpts, allowlisted source/retrievalRoute) — diagnose a Sources panel " +
         "issue ('documents show no score/excerpt' = a bare lightrag attribution turn: " +
-        "kind document + hasScore:false) without any content.",
+        "kind document + hasScore:false) without any content. Each message also " +
+        "carries `toolActivity` — the turn's tool-repetition SHAPE {calls, errors, " +
+        "distinctTools, repeatedTools[], longestSameToolRun} — which is how you see " +
+        "an agent going round in circles rather than progressing: many calls over " +
+        "few distinct tools, the same tool back to back, or the same tool erroring " +
+        "again and again. It states no threshold and no verdict: what counts as too " +
+        "much lives in the agent's own instructions. Pass parts:'summary' to get " +
+        "these aggregates WITHOUT the per-part list, which is what makes this call " +
+        "unreadable on a long conversation.",
       inputSchema: getChatStateInput,
     },
     async (args) => run(() => getChatState(config, args)),

@@ -29,7 +29,7 @@
 // the registry. A bounded `recentlyFinal` set prevents a stray post-final frame
 // from resurrecting a reaped child.
 
-import { sanitizeText } from "./sanitize.js";
+import { outboundMediaDeliveries, sanitizeText } from "./sanitize.js";
 import { isDeliveryRunId } from "../../core/async-task.js";
 import { classifyFailureText } from "../../core/failure-classifier.js";
 import {
@@ -461,7 +461,12 @@ export class SubAgentObserver {
           ...(obs.telemetry !== undefined ? { telemetry: obs.telemetry } : {}),
         };
         if (term === "done") {
-          const text = this.sanitizeResult(textFromMessage(readField(payload, "message")));
+          const raw = textFromMessage(readField(payload, "message"));
+          // Read the deliveries from the RAW answer: sanitising rewrites the
+          // directive to its basename, and the fetch needs the server path.
+          const delivered = outboundMediaDeliveries(raw);
+          if (delivered.length > 0) rec.deliveredMedia = delivered;
+          const text = this.sanitizeResult(raw);
           if (text) rec.resultText = text;
         } else {
           // error/aborted: capture the failure reason (top-level errorMessage when present,
@@ -1420,7 +1425,14 @@ export class SubAgentObserver {
   /** Strip server paths (sanitizeText) and cap length — for both the success result
    *  text and the failure error message before they reach the store (SOC2 + bounding). */
   private sanitizeResult(text: string): string {
-    const clean = sanitizeText(text, { mediaSessionKey: this.parentSessionKey });
+    const clean = sanitizeText(text, {
+      mediaSessionKey: this.parentSessionKey,
+      // The child's lane emits NO media part (its frames are observation-only),
+      // so a `MEDIA:` directive here must keep NAMING its file instead of
+      // vanishing — a delivery-only answer otherwise sanitises to "" and the
+      // settled bubble renders blank (prod 2026-09-09, report prod-ms7bybmm…).
+      mediaPartsEmitted: false,
+    });
     return clean.length > MAX_RESULT_CHARS ? clean.slice(0, MAX_RESULT_CHARS) : clean;
   }
 

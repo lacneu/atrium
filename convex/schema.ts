@@ -2651,6 +2651,16 @@ export default defineSchema({
       messageText: v.string(),
       messageStatus: v.optional(v.string()),
       messageError: v.optional(v.string()),
+      // The FINEST curated cause, captured alongside the headline `messageError`.
+      // failDispatch deliberately stores two different things — `error` is the
+      // localizable HEADLINE the user reads ("send_failed"), `errorCode` the root
+      // cause the diagnostic flows key on ("GATEWAY_TIMEOUT") — and this snapshot
+      // used to freeze only the headline. A report whose whole purpose is to be
+      // diagnosable therefore answered "the send failed" and never "why", and once
+      // the message is deleted (which this snapshot exists to survive) the cause
+      // was gone for good. Prod prod-ms7afzxy… on 2026-08-27: snapshot said
+      // `send_failed`, the surviving row said `GATEWAY_TIMEOUT`.
+      messageErrorCode: v.optional(v.string()),
       messageUpdatedAt: v.optional(v.number()),
       runId: v.optional(v.string()),
       isRegeneration: v.optional(v.boolean()), // derived from a regen-* outbox key

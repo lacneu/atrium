@@ -3260,6 +3260,21 @@ button.oc-bmk-rail__count:hover {
   color: var(--foreground);
   overflow-wrap: anywhere;
 }
+/* Attribution of a DELEGATED answer: the text below was written by the agent the
+   current one asked, not by the current one. Deliberately quiet — it labels the
+   answer, it must not compete with it. */
+.oc-empty-answer__from {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  margin-bottom: 0.35rem;
+  font-size: 0.76rem;
+  color: var(--muted-foreground);
+}
+.oc-empty-answer__from svg {
+  flex: 0 0 auto;
+  opacity: 0.8;
+}
 .oc-empty-answer__hint {
   font-size: 0.76rem;
   color: var(--muted-foreground);

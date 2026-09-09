@@ -206,6 +206,14 @@ class Session implements BridgeSession {
   // child (its spawn registration) and fire every later status/heartbeat off the
   // loop's critical path. Cleared with the observer on connection close.
   private readonly registeredChildren = new Set<string>();
+  /** Basenames already attached from a CHILD's own lane, per child key.
+   *
+   *  Two readers: this session attaches from it (never twice for the same file),
+   *  and the sink seeds a DELIVERY turn's dedup set from it — so when the child's
+   *  announce finally arrives carrying the same files, it finds them already
+   *  hosted and adds nothing. One rule, one place: the announce path keeps using
+   *  the dedup it already had rather than gaining a second one. */
+  private readonly childDeliveredMedia = new Map<string, Set<string>>();
   private readonly writer: ConvexWriter;
   readonly clock: Clock;
   // Last time this session saw work (a send via acquire, or an inbound frame), on
@@ -365,6 +373,51 @@ class Session implements BridgeSession {
             );
           });
         continue;
+      }
+      // A child that DELIVERED files with its answer. Its frames are
+      // observation-only, so the media pipeline that serves the owner's lane
+      // never sees them: without this, a delegation whose whole answer is a
+      // delivery reaches the reader as an empty bubble (prod 2026-09-09).
+      // Attached to the child's ANCHOR — the bubble the reader is looking at,
+      // which is settled by now, since the child outlives the turn that spawned
+      // it. Best-effort, off the critical path: a delivery must never break the
+      // observation writes that carry the child's lifecycle.
+      if (record.deliveredMedia !== undefined && record.parentMessageId) {
+        const anchor = record.parentMessageId;
+        let hosted = this.childDeliveredMedia.get(record.childSessionKey);
+        if (hosted === undefined) {
+          hosted = new Set<string>();
+          this.childDeliveredMedia.set(record.childSessionKey, hosted);
+        }
+        for (const item of record.deliveredMedia) {
+          // Claim BEFORE the upload: a re-observed terminal (a replayed frame)
+          // must not start a second transfer of a file already in flight.
+          if (hosted.has(item.filename)) continue;
+          hosted.add(item.filename);
+          void this.writer
+            .addMedia(anchor, {
+              chatId: this.chatId,
+              filename: item.filename,
+              path: item.path,
+              // A `MEDIA:` directive is the child DELIVERING, never an
+              // incidental mention — so no freshness gate, exactly as on the
+              // owner's lane. The gate exists for paths found in prose.
+              explicit: true,
+            })
+            .then((attached) => {
+              // Not attached (not found / upload error): release the claim so a
+              // later re-delivery of the same file can still succeed. Keeping it
+              // would turn a transient failure into a permanent silence.
+              if (!attached) hosted.delete(item.filename);
+            })
+            .catch((err) => {
+              hosted.delete(item.filename);
+              console.warn(
+                `[subagent] delivery attach failed chat=${this.chatId}:`,
+                (err as Error)?.message ?? err,
+              );
+            });
+        }
       }
       const isRegistration =
         record.status === "running" &&

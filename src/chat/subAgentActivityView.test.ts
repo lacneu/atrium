@@ -424,9 +424,21 @@ describe("childAgentIdFromKey", () => {
       childAgentIdFromKey("agent:alice:subagent:aaa:subagent:bbb"),
     ).toBe("alice");
   });
+  // Prod 2026-09-09: the gateway ran a `files` delegation on the `dashboard`
+  // face. The reply was attributed to nobody because this reader knew only one
+  // spelling of the face.
+  it("parses a child spawned on the dashboard face", () => {
+    expect(
+      childAgentIdFromKey("agent:files:dashboard:6fd050d2-3c17-4361-8bbf-13fbda97840f"),
+    ).toBe("files");
+  });
   it("returns undefined on a foreign key shape (never a wrong guess)", () => {
     expect(childAgentIdFromKey("session:whatever:123")).toBeUndefined();
     expect(childAgentIdFromKey("")).toBeUndefined();
+    // A PARENT session key is not a child of itself.
+    expect(
+      childAgentIdFromKey("agent:alice:atrium:chat:olivier:mh7e3dcb"),
+    ).toBeUndefined();
   });
 });
 

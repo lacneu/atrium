@@ -1,5 +1,90 @@
 # Changelog
 
+## [0.84.4] — What Atrium knew and did not say
+
+Corrective release, found by reading production reports rather than tests. Each item
+here is the same failure of a different kind: the platform held the information and
+published something poorer, or nothing at all.
+
+**A failure report now carries the cause, not only the headline.** When a turn never
+reaches the gateway, Atrium records two different facts: the headline the reader is
+shown ("the send failed") and the finer cause the diagnostic flows act on ("the gateway
+timed out"). A report submitted from that turn froze only the headline. So the one
+artefact whose entire purpose is to be investigated could say that something failed and
+never why — and because a report deliberately outlives the message it was filed on, the
+cause disappeared for good the moment that message was deleted. Reported in production
+on 2026-08-27 and left unanswerable for two weeks: the report said the send failed while
+the surviving row, and an alert raised eleven minutes later, both named a gateway
+timeout. Reports filed from now on carry both.
+
+**An estimated plan no longer stops one step short of the work it describes.** When a
+delegated agent delivers, its plan updates reach Atrium as bare names with no content:
+the platform can see that the plan moved, never what it now says. It therefore advances
+the last known plan one step per update and labels the progression estimated. That
+estimate could be closed out — but only on a turn whose sole activity was the plan
+itself, because a delivery turn names a tool without saying whether that tool started
+the next piece of work. A turn that delivered its result alongside two ordinary commands
+therefore left the card reading "2/3 steps" on finished work, with nothing left that
+could ever move it. A reporter said so plainly on 2026-08-23, and they were right.
+
+The question that could not be answered at the turn's end is answered where it is
+actually observable: when the conversation's last delegated task finishes and nothing is
+running any more, the estimate has ended and the card completes. Two boundaries hold.
+A plan the agent published itself is never rewritten — a step it left open is its own
+statement about its work, not our guess — and the completed card still says the
+progression was inferred, because it was.
+
+**A turn that repeats itself can now be read as one field.** Whether an agent is
+making progress or going round in circles looked identical from the outside: the
+diagnostic surface listed every tool call one by one, and the shape that separates the
+two — many calls over few distinct tools, the same tool back to back, the same tool
+erroring again and again — had to be reconstructed by hand from the whole list. A
+production turn ran sixty tool calls against an instruction capping it at twenty-five,
+finished normally, and nothing reported it. Each message now carries that shape
+directly, alongside the counts.
+
+It states no threshold and no verdict. What counts as too much belongs to an agent's own
+instructions, so the platform reports what happened and the caller decides. A turn that
+called no tool carries no aggregate at all, which is a different fact from a turn whose
+tools did nothing.
+
+**And that surface is readable again on a long conversation.** The per-part list is what
+made it unusable — one real conversation answered four hundred kilobytes across a
+hundred and eighty messages, past what the tools reading it can accept — so it can now
+be asked for the aggregates without the list. The default is unchanged: a diagnostic
+route never quietly returns less than it did before. The assessment endpoint, which
+never read that list, has stopped being sent it.
+
+**A delegated agent's files now reach the conversation.** When one agent hands work to
+another, the second one delivers what it produced on its own channel. Atrium watched that
+channel but never carried anything off it, so a document produced by a delegate existed
+everywhere except where it had been asked for: the gateway's console listed both files, the
+conversation showed an empty answer. Those deliveries are now fetched and attached to the
+bubble the reader is looking at, exactly as the current agent's own attachments are. Only
+an explicit delivery counts — a file merely named in passing is not one, so an agent
+reading old notes never re-attaches last week's work.
+
+A document can now be delivered twice, by the delegate's own channel and by the reply that
+follows it. It is attached once: a bubble never shows the same file twice.
+
+**A delegated answer is no longer erased on its way to you, and it now says who wrote it.**
+When an agent hands work to another agent, that agent's reply becomes the turn's answer.
+If its whole reply was a file delivery — the case for anything that produces a document —
+the answer arrived empty and the bubble rendered blank. The rule that removes server paths
+deleted the delivery lines entirely, which is right on the main agent's own reply, where a
+real downloadable attachment takes their place, and wrong for a delegated agent, whose
+messages are watched but never turned into attachments. Nothing took over, so nothing was
+left. Reported in production on 2026-09-09 by a user who could see both files in the
+gateway's own console and none in Atrium: the delivered files are now named in the answer,
+still without any server path.
+
+The same answer is also attributed. It used to be rendered exactly like the current agent's
+own words, so a reader credited it to the agent they were talking to — the one thing it is
+not. A quiet line above it now names the agent that produced it. Attribution survives
+whatever kind of session the gateway spawned the delegate on: a delegation running on a
+face other than the ordinary one used to be credited to nobody, which is how this one
+arrived.
+
 ## [0.84.3] — The OpenSSL requirement no longer breaks on good news
 
 Corrective release. The gate 0.84.2 added to the bridge image was correct about what it

@@ -353,6 +353,48 @@ describe("addMedia outbound diagnostic (openclaw.media)", () => {
     }
   });
 
+  // TWO paths can deliver the SAME file to the SAME bubble: the turn's own media
+  // pipeline, and a delegated child's delivery attached to its anchor. `addPart`
+  // inserts rather than upserts, so without a dedup the reader sees the document
+  // twice. It is keyed on the MESSAGE because that is where the two paths meet.
+  test("the same file is attached to a message ONCE, whichever path delivers it", async () => {
+    const { fetchImpl, sent } = mediaFlowFetch();
+    const w = mediaWriter(fetchImpl, fakeFetcher(okOpen(5, "text/markdown")));
+    const media = {
+      chatId: "c1",
+      filename: "vade-mecum.pdf",
+      path: "/home/node/.openclaw/media/outbound/vade-mecum.pdf",
+    };
+    expect(await w.addMedia("m1", media)).toBe(true);
+    await sleep(10);
+    // Second delivery of the same file to the same bubble: reported as attached
+    // (it IS on the message) without a second transfer or a second part.
+    expect(await w.addMedia("m1", media)).toBe(true);
+    await sleep(10);
+    expect(sent.filter((s) => s.op === "addMediaPart")).toHaveLength(1);
+    expect(sent.filter((s) => s.op === "getUploadUrl")).toHaveLength(1);
+
+    // ...and the dedup is per MESSAGE: the same document legitimately delivered
+    // into a LATER bubble still attaches.
+    expect(await w.addMedia("m2", media)).toBe(true);
+    await sleep(10);
+    expect(sent.filter((s) => s.op === "addMediaPart")).toHaveLength(2);
+  });
+
+  test("a FAILED attach leaves a later re-delivery free (nothing is claimed)", async () => {
+    // The turn's own dedup states this rule: a file that did not land must stay
+    // re-deliverable, or a transient not-found becomes permanent silence.
+    const { fetchImpl, sent } = mediaFlowFetch();
+    const w = mediaWriter(fetchImpl, undefined); // no fetcher -> attach fails
+    const media = { chatId: "c1", filename: "r.md", path: "/x/r.md" };
+    expect(await w.addMedia("m1", media)).toBe(false);
+    await sleep(10);
+    const w2 = mediaWriter(fetchImpl, fakeFetcher(okOpen(5, "text/markdown")));
+    expect(await w2.addMedia("m1", media)).toBe(true);
+    await sleep(10);
+    expect(sent.filter((s) => s.op === "addMediaPart")).toHaveLength(1);
+  });
+
   test("NO FETCHER: received -> dropped(no_fetcher), no upload at all", async () => {
     const { fetchImpl, sent } = mediaFlowFetch();
     const w = mediaWriter(fetchImpl, undefined); // no mediaFetcher

@@ -295,6 +295,9 @@ export const submitFeedback = mutation({
         messageText,
         messageStatus: message.status,
         messageError: message.error,
+        // The root cause next to the headline (see the schema note): `error` is
+        // what the user was shown, `errorCode` is what actually happened.
+        messageErrorCode: message.errorCode,
         messageUpdatedAt: message.updatedAt,
         runId: message.runId,
         isRegeneration: outbox?.clientMessageId?.startsWith("regen-"),
