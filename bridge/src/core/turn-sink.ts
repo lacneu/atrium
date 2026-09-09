@@ -84,6 +84,22 @@ const MSGTOOL_UNREADABLE_TEXT =
 const SILENT_RESPONSE_CODE = "empty_response_silent";
 const SILENT_RESPONSE_TEXT =
   "The agent ended the turn without producing any response.";
+// LAST RESORT for a turn that finalizes ERROR while nothing named a cause: no
+// gateway `errorKind`, no text the classifier recognizes. Measured in prod
+// 2026-09-08: an `announce:requester-settle:` turn persisted `errorCode: null`,
+// so the per-cause anomaly plane — which keys on the code — had nothing to file
+// it under and it fell into the generic "N stream errors over 15m" bucket, the
+// count-not-a-cause channel that `CAUSE_ANOMALY_KINDS` exists to replace. The
+// zero-content naming block below cannot reach it: it is gated on
+// `status === "complete"` AND exempts delivery runs, which is what an announce
+// run is.
+//
+// DELIBERATELY NOT `gateway_error`, which the stats plane already used as its
+// own fallback: that code means the GATEWAY said it failed. Filing an
+// unexplained terminal under it would merge a real class with "nobody said
+// anything", and destroy the distinction on the day we finally have data to
+// read. Never retryable — nothing here proves the turn did no work.
+const UNCLASSIFIED_ERROR_CODE = "unclassified_error";
 
 const TERMINAL_STATUS: Record<string, FinalizeStatus> = {
   final: "complete",
@@ -2114,6 +2130,29 @@ export class TurnSink {
     }
     // The error string (if any) was buffered from message.final; on a clean turn
     // it is null. lifecycle:error finalizes with both partial text + error.
+    // ONE derivation of the turn's failure class, applied to the DURABLE field and
+    // to the stats plane below alike. The fallback used to live only on the stats
+    // call twelve lines down, so the ephemeral plane knew a class the persisted
+    // message did not — and `unknown` is what every reader saw.
+    if (
+      effectiveStatus === "error" &&
+      effectiveErrorKind === null &&
+      // NOTHING reported a cause — no class AND no prose. A turn whose failure text
+      // IS the cause (the promoted `Error: <detail>` prose, G-42) is deliberately
+      // left unclassed: the user reads the reason, and a wall like an invalid model
+      // must never be filed as "unexplained". Naming those would be a lie about our
+      // own reporting, and would bury the real hole this code exists to count.
+      (effectiveError ?? "").trim().length === 0
+    ) {
+      effectiveErrorKind = UNCLASSIFIED_ERROR_CODE;
+      // NO synthetic prose. The code is the whole statement, and the UI turns it into
+      // a LOCALIZED headline (`ERROR_CODE_LABEL`); anything else in `error` is shown
+      // BELOW it as a technical detail (`errorDetailView`: detail = text ≠ code), so
+      // an invented English sentence would appear under its own French translation,
+      // saying the same thing twice in two languages. `effectiveError` is empty here
+      // by construction — the guard above requires it — so leaving it alone is also
+      // the honest thing: we have nothing to add.
+    }
     await this.writer.finalize(
       messageId,
       effectiveStatus,
@@ -2158,6 +2197,12 @@ export class TurnSink {
     // can never break the turn lifecycle.
     if (effectiveStatus === "error") {
       try {
+        // By the time we get here a kind-less error NECESSARILY carries prose: the
+        // guard above named the prose-less case, and only the prose case is left
+        // deliberately unclassed (G-42 — the text IS the cause, and a wall like an
+        // invalid model must not be auto-retried). So this label keeps saying
+        // `gateway_error`: telling the health view "nothing reported a cause" about a
+        // turn that explained itself would be the same lie in the other direction.
         this.onTurnError?.(effectiveErrorKind ?? "gateway_error");
       } catch {
         // observability-only — never let stats break a finalize

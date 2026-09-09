@@ -241,6 +241,7 @@ export const ERROR_CODE_LABEL: Record<string, () => string> = {
   // by the backend; this label shows when the bounded retries also came back
   // empty.
   empty_response_silent: m.runstatus_error_empty_silent,
+  unclassified_error: m.runstatus_error_unclassified,
   // Transient upstream failure (provider 5xx / overload / network cut) —
   // auto-retried (turnRetry); the card shows the countdown while scheduled.
   provider_internal: m.runstatus_error_provider_internal,

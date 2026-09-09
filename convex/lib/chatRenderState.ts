@@ -109,6 +109,13 @@ export const KNOWN_ERROR_CODES = [
   // Synthesized by the bridge when a compaction never completes (#40295): a
   // distinct actionable class, not a silent empty turn.
   "compaction_timeout",
+  // A turn that ended in ERROR while NOTHING named a cause: no gateway errorKind,
+  // no text the classifier recognizes. Allowlisted so the diagnostic surface says
+  // "nobody reported a cause" instead of collapsing it to the same `unknown` a
+  // missing code produces — the two were indistinguishable, and prod 2026-09-08
+  // showed the consequence: an announce turn's failure read as unclassifiable when
+  // the truth was that no class had ever been persisted.
+  "unclassified_error",
   // The turn finished COMPLETE but delivered nothing usable (no text + no media).
   "empty_response",
   // The reply went out through a message-tool call whose arguments the bridge

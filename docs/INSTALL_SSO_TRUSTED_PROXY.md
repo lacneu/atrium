@@ -83,8 +83,10 @@ read — and to **overwrite or strip** any such header a client supplied.
         requiredHeaders: ["x-forwarded-proto", "x-forwarded-host"],
       },
     },
-    // /32 per IPv4 address, /128 per IPv6 one — one host each, never a range.
-    trustedProxies: ["<proxy-address>/32", "<bridge-address>/32"],
+    // ONE HOST per entry, never a range. Substitute the addresses and KEEP the
+    // suffix: /32 for IPv4, /128 for IPv6 (on an IPv6 address /32 is 2^96 hosts).
+    trustedProxies: ["203.0.113.10/32", "203.0.113.11/32"],
+    // IPv6 form: ["2001:db8::a/128", "2001:db8::b/128"]
     controlUi: { allowedOrigins: ["https://<the Control UI host>"] },
   },
 }

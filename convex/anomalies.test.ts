@@ -1485,6 +1485,102 @@ describe("failed sub-agent report deliveries have their own alarm", () => {
     ).toContain("assistant.announce_errors");
   });
 
+  test("…and the alarm names the CAUSE, not just the count", async () => {
+    // The half the split had swallowed. The announce branch exits before the stream
+    // aggregation — deliberately, so an undelivered report never fires the
+    // "users are not getting replies" alarm — but that exit also skipped the only
+    // place a cause was read. Every delivery failure therefore reached an admin as a
+    // bare number, which is exactly the count-not-a-cause channel the per-cause work
+    // exists to end. Measured on 2026-09-08: the diagnosis came from reading a chat
+    // by hand because the alert said nothing.
+    const t = convexTest(schema, modules);
+    const now = Date.now();
+    await t.run(async (ctx) => {
+      for (let i = 0; i < 5; i++) {
+        await seedTrace(ctx, {
+          kind: "assistant.stream",
+          at: now - 1000 - i * 100,
+          correlationId: announce(i),
+          meta: {
+            phase: "finalize",
+            streamStatus: "error",
+            textLen: 0,
+            errorCode: "unclassified_error",
+          },
+        });
+      }
+    });
+    await t.mutation(internal.anomalies.detectAnomalies, {});
+    const row = await t.run(async (ctx) =>
+      (await ctx.db.query("anomalies").collect()).find(
+        (a) => a.kind === "assistant.announce_errors",
+      ),
+    );
+    expect(row, "the announce alarm must exist").toBeDefined();
+    const ev = JSON.parse(row!.evidence ?? "{}") as {
+      dominantCode?: string;
+      codeCounts?: Record<string, number>;
+    };
+    expect(ev.dominantCode).toBe("unclassified_error");
+    expect(ev.codeCounts?.unclassified_error).toBe(5);
+    // …and it is readable without opening the evidence, like the dispatch line.
+    expect(row!.message).toContain("unclassified_error");
+  });
+
+  test("the sample link opens a trace of the DOMINANT cause, not the last one", async () => {
+    // Three timeouts then one rate limit: naming "timeout" while linking the rate-limit
+    // run sends an admin to the wrong turn, which is worse than offering no link at
+    // all. The stream path already keeps a sample per cause; this is the same rule.
+    const t = convexTest(schema, modules);
+    const now = Date.now();
+    await t.run(async (ctx) => {
+      for (let i = 0; i < 3; i++) {
+        await seedTrace(ctx, {
+          kind: "assistant.stream",
+          at: now - 5000 + i * 100,
+          correlationId: announce(i),
+          meta: {
+            phase: "finalize",
+            streamStatus: "error",
+            textLen: 0,
+            errorCode: "timeout",
+          },
+        });
+      }
+      // NEWEST, and a different cause: the naive sample would be this one.
+      await seedTrace(ctx, {
+        kind: "assistant.stream",
+        at: now - 1000,
+        correlationId: announce(99),
+        meta: {
+          phase: "finalize",
+          streamStatus: "error",
+          textLen: 0,
+          errorCode: "rate_limit",
+        },
+      });
+    });
+    await t.mutation(internal.anomalies.detectAnomalies, {});
+    const row = await t.run(async (ctx) =>
+      (await ctx.db.query("anomalies").collect()).find(
+        (a) => a.kind === "assistant.announce_errors",
+      ),
+    );
+    const ev = JSON.parse(row!.evidence ?? "{}") as {
+      dominantCode?: string;
+      sampleCorrelationId?: string;
+    };
+    expect(ev.dominantCode).toBe("timeout");
+    // ASSERT THE VALUE, not merely "different from the newest". `not.toBe(...)` also
+    // passes on `undefined`, which is what the row actually held before this lot — so
+    // the assertion would have been green with NO link at all, which is the failure it
+    // is supposed to catch. One of the three timeout runs is the only right answer.
+    const timeouts = [announce(0), announce(1), announce(2)];
+    expect(timeouts).toContain(ev.sampleCorrelationId);
+    // …and it must reach the ROW, because that is where the UI reads its trace link.
+    expect(timeouts).toContain(row!.correlationId);
+  });
+
   test("real turn errors still trip their own alarm alongside announces", async () => {
     const t = convexTest(schema, modules);
     const now = Date.now();

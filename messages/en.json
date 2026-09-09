@@ -1312,6 +1312,7 @@
   "runstatus_error_msgtool_unreadable": "The agent sent its reply through a message tool whose arguments this app could not read, so the text never reached the conversation. The answer may exist in the agent's session history. Retry or rephrase; if it recurs, report it — this is a gap on our side, not yours.",
   "runstatus_error_awaiting_approval": "The agent asked for permission to run a command, and this app cannot grant it. Run the command yourself, or ask the agent for an approach that does not need approval.",
   "runstatus_error_empty_silent": "The agent ended the turn without producing a response. It was retried automatically — you can also rephrase and send again.",
+  "runstatus_error_unclassified": "The turn ended in error and nothing reported a cause — neither the gateway nor the failure text named one. Check whether the work was already done before sending it again: an unexplained failure says nothing about what the agent had already carried out, so a resend can repeat it. If this keeps happening, it is worth reporting — the missing explanation is a gap on our side.",
   "runstatus_error_provider_internal": "The model provider hit a transient failure (internal error, overload, or a dropped connection). The turn is retried automatically; if this card persists after the retries, send your message again or try later.",
   "runstatus_retry_countdown": "Retrying automatically ({attempt}/{max}) in {seconds} s…",
   "runstatus_retry_now": "Retrying automatically ({attempt}/{max})…",

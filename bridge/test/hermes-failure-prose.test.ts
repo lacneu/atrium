@@ -32,6 +32,9 @@ type Final = { status: string; text?: string; error?: string; kind?: string };
 
 async function terminalWith(payload: Record<string, unknown>) {
   const finals: Final[] = [];
+  // The STATS label, which is a different plane from the durable one below and is
+  // allowed to differ from it — see the health-label test at the end of this file.
+  const healthCodes: string[] = [];
   const client = {
     call: async (method: string) => {
       if (method === "session.create") {
@@ -77,6 +80,7 @@ async function terminalWith(payload: Record<string, unknown>) {
       sessionKey: "k",
       providerChatId: null,
       text: "explique-moi",
+      onTurnError: (c: string) => healthCodes.push(c),
     },
     (_sid, cb) => {
       lane = cb.onEvent;
@@ -86,7 +90,7 @@ async function terminalWith(payload: Record<string, unknown>) {
   await run.accepted;
   lane("message.complete", payload);
   await run.done;
-  return finals;
+  return Object.assign(finals, { healthCodes });
 }
 
 describe("the real cause reaches the retry gate (G-42)", () => {
@@ -239,3 +243,23 @@ describe("a real answer is never erased by the loose rule", () => {
 // substitution lives in the WS gateway (`tui_gateway/server.py`), while the REST server
 // answers a failed run with a 502 `_openai_error` body. The two runtime log prefixes,
 // which the REST normalizer does share, are unchanged by this lot.
+
+describe("the health label never contradicts the durable message", () => {
+  it("a turn whose PROSE is the cause is not reported as unexplained", async () => {
+    // Two planes, legitimately different: the durable message keeps the explanation
+    // and stays UNCLASSED so no retry fires (G-42), while the health registry still
+    // needs some label. Recording "nothing reported a cause" there would assert the
+    // exact opposite of what the message holds — the same lie as naming a wall
+    // `unclassified_error`, told in the other direction.
+    const finals = await terminalWith({
+      text: "Error: invalid model slug 'gpt-nope'",
+      status: "error",
+    });
+    expect(finals[0]?.kind, "the durable field stays unclassed").toBeUndefined();
+    expect(finals[0]?.error).toContain("invalid model");
+    expect(
+      (finals as unknown as { healthCodes: string[] }).healthCodes,
+      "the stats plane must not claim the failure was unexplained",
+    ).not.toContain("unclassified_error");
+  });
+});

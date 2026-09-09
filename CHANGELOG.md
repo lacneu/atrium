@@ -1,5 +1,53 @@
 # Changelog
 
+## [0.84.1] — A failure with no name is a failure you cannot fix
+
+Corrective release. One class of failure was recorded without any cause at all, so it
+could never be counted, named, or acted on. Found by reading production, not by a
+test.
+
+**A turn that ends in error now always says something.** When neither the gateway nor
+the failure text named a cause, Atrium stored no cause either — and every surface
+that reads one showed "unknown", indistinguishable from a code it simply did not
+recognize. Measured in production on 2026-09-08: a delegated report's turn failed
+with no cause recorded, while ordinary turns in the same conversation, seconds apart,
+carried theirs.
+
+The consequence was quiet and expensive. Per-cause alerting keys on the stored cause,
+so these failures fell into the one generic channel that announces a COUNT — "2
+stream errors over 15 minutes" — which is exactly the channel the per-cause classes
+were introduced to replace. An alert had been open for five days saying how many
+turns failed and nothing about why.
+
+They now carry an explicit class saying that nothing reported a cause, which is a
+different statement from "the gateway reported an error" and is deliberately kept
+apart from it: merging the two would hide the real gap among the walls we already
+understand. A turn whose failure text IS its explanation keeps being left unclassed,
+so nothing that already told you why now claims otherwise.
+
+The class is never retried automatically: an unexplained failure proves nothing about
+whether the work was done — which is also what its message now says. It used to tell
+you to send the turn again; it now asks you to check whether the work already happened
+first, because a resend can repeat side effects the failure said nothing about.
+
+**A failed delegated report now says WHY it failed.** The alarm for undelivered
+sub-agent reports counted them and stopped there — "3 deliveries failed over 15
+minutes" — while the cause was read only for ordinary turns. It now carries its
+dominant cause, in the alert's own sentence and in its evidence, the way the dispatch
+alarm already did. Same alarm, same threshold, nothing new to configure.
+
+**And that alarm now leads somewhere.** Every detector alert reached an administrator
+with no way to open the failing turn: the sample it recorded never made it onto the
+row the interface reads its link from. A count with no cause and no link is not an
+alert, it is a rumour. The link is there now, and it points at a trace of the cause
+the alert names — not simply the last failure in the window, which could be a
+different one entirely.
+
+**The trusted-proxy install example no longer says `/32` for an IPv6 address.** An
+operator copying that block on an IPv6 deployment would have trusted 2^96 addresses
+instead of one host — every one of them then able to assert who a request is for. The
+block now shows both forms, with values that stay valid when you substitute your own.
+
 ## [0.84.0] — One person, one gateway profile
 
 A deployment that authenticates people through its own identity provider can now

@@ -85,14 +85,16 @@ class OrderingWriter implements ConvexWriter {
   }
   async noteMediaUndelivered(): Promise<void> {}
   lastFinalizeKind: string | null = null;
+  lastFinalizeError: string | null = null;
   async finalize(
     _messageId: string,
     status: FinalizeStatus,
     _text: string,
-    _error: string | null,
+    error: string | null,
     errorKind: string | null,
   ): Promise<void> {
     this.lastFinalizeKind = errorKind;
+    this.lastFinalizeError = error;
     this.order.push(`finalize:${status}${errorKind ? `:${errorKind}` : ""}`);
   }
   async getRehydrationContext(): Promise<{
@@ -774,5 +776,76 @@ describe("provider_internal x undelivered media (codex P1: never re-bill a gener
       { type: "run.status", status: "error" },
     ]);
     expect(writer.lastFinalizeKind).toBe("provider_internal");
+  });
+});
+
+describe("a failure nobody explained is still a NAMED failure", () => {
+  // MEASURED IN PROD, 2026-09-08. An `announce:requester-settle:` turn finalized
+  // `error` with `errorCode` absent from the trace entirely, while webchat turns in
+  // the same conversation seconds apart carried theirs. Nothing named it because the
+  // zero-content naming block is gated on `status === "complete"` AND exempts
+  // delivery runs — and an announce run is one. The message read `unknown`, which has
+  // no entry in CAUSE_ANOMALY_KINDS, so the failure fell into the generic
+  // "N stream errors over 15m" channel: a count, not a cause — the exact regression
+  // the per-cause classes were introduced to end.
+  it("…on the DEFERRED path an announce actually takes, not just an open message", async () => {
+    // WHY THIS TEST AND NOT ONLY THE ONE BELOW. RunManager opens an `announce:*` run
+    // with deferOpen=true, so its message is created only once something visible
+    // arrives. A test that opens the message itself never travels that road, and the
+    // prod case this whole fix exists for WAS a deferred run — its trace carries a
+    // messageId and one provenance part, so it did become visible and did finalize.
+    // This pins that road: visible part first (the message opens), then a terminal
+    // error naming nothing.
+    //
+    // What is deliberately NOT pinned here: a deferred run that stays entirely
+    // invisible is DISCARDED by design (`applyDeferred` logs "silent run discarded"
+    // and creates no bubble) — a parent waiting on a sibling child is the routine
+    // case, not a failure. That branch is upstream of the naming and untouched.
+    const writer = new OrderingWriter();
+    const sink = new TurnSink("chat_deferred", writer);
+    await sink.beginTurn(
+      "announce:requester-settle:agent:x:chat:y:z:yield-1",
+      undefined,
+      undefined,
+      true, // deferOpen — the flag RunManager passes for a spontaneous announce
+    );
+    await sink.apply([
+      // Visible content: this is what opens the deferred message in production.
+      { type: "tool.status", name: "read", phase: "completed" },
+      { type: "run.status", status: "error" },
+    ]);
+    expect(writer.lastFinalizeKind).toBe("unclassified_error");
+    expect(writer.lastFinalizeError ?? "").toBe("");
+  });
+
+  it("an ERROR terminal with no gateway class and no readable text gets a name", async () => {
+    const writer = new OrderingWriter();
+    const sink = new TurnSink("chat_unclassified", writer);
+    // A DELIVERY run id, which is what an announce/settle turn carries: the
+    // complete-path guard exempts it, so this turn has no other namer.
+    await sink.beginTurn("announce:requester-settle:agent:x:chat:y:z:yield-1");
+    await sink.apply([
+      // No `errorKind`, and no text a classifier recognizes: the shape the gateway
+      // actually produced.
+      { type: "run.status", status: "error" },
+    ]);
+    expect(writer.lastFinalizeKind).toBe("unclassified_error");
+    // …and NOTHING invented in the error text: the UI localizes the code into a
+    // headline and would render any prose here as a technical detail beneath it —
+    // an English sentence under its own French translation.
+    expect(writer.lastFinalizeError ?? "").toBe("");
+  });
+
+  it("…and a class the gateway DID state is never overwritten by it", async () => {
+    // The last resort must be exactly that: a turn whose cause is known keeps it,
+    // or the fix would erase the diagnosis it exists to improve.
+    const writer = new OrderingWriter();
+    const sink = new TurnSink("chat_named", writer);
+    await sink.beginTurn("run-named");
+    await sink.apply([
+      { type: "message.final", text: "", errorKind: "rate_limit" },
+      { type: "run.status", status: "error" },
+    ]);
+    expect(writer.lastFinalizeKind).toBe("rate_limit");
   });
 });

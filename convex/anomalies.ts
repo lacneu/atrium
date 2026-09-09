@@ -211,6 +211,11 @@ export const CAUSE_ANOMALY_KINDS: Record<string, string> = {
   empty_response_silent: "assistant.cause.empty_response_silent",
   provider_internal: "assistant.cause.provider_internal",
   empty_response: "assistant.cause.empty_response",
+  // A failure NOTHING explained. Its own class on purpose: folded into the generic
+  // stream-error channel it was a count again, which is the exact regression this
+  // map exists to prevent — and unlike the others it names a hole in our own
+  // reporting, so it must be countable to be closable.
+  unclassified_error: "assistant.cause.unclassified_error",
   DISPATCH_STALLED: "assistant.cause.dispatch_stalled",
   // The gateway's own normalized hard-failure classes (codex P2): allowlisted
   // upstream and real lost turns, so they get named classes like the rest.
@@ -376,6 +381,21 @@ type WindowAgg = {
   streamAborts: number;
   /** Failed sub-agent ANNOUNCE deliveries — counted apart from streamErrors. */
   announceErrors: number;
+  /** Root-cause breakdown of the DELIVERY failures (errorCode -> count). Separate
+   *  from `streamCauses` because the two never mix: the announce branch exits before
+   *  the stream aggregation, deliberately, so an undelivered report is not counted in
+   *  the "users are not getting replies" alarm. Without this the announce channel
+   *  said HOW MANY reports failed and nothing about why — a count, not a cause,
+   *  which is the one thing the per-cause work exists to end. Shaped like
+   *  `dispatchCodes` (dominantCode + codeCounts in the evidence) rather than as new
+   *  anomaly kinds: one alert channel per FACT, causes read inside it. */
+  announceCauses: Record<string, number>;
+  /** One sample per announce cause, so the link offered beside the DOMINANT cause
+   *  opens a trace of THAT cause. Mirrors `streamCauseCorrelation`: without it the
+   *  sample is simply the last failure of the window, and "dominant cause: timeout"
+   *  could hand an admin a rate-limit trace — a diagnosis that sends them to the
+   *  wrong turn is worse than one that offers no link. */
+  announceCauseCorrelation: Record<string, string>;
   taskOverruns: number;
   taskOverrunSampleCorrelation?: string;
   announceSampleCorrelation?: string;
@@ -493,6 +513,15 @@ async function upsertDetectorAnomaly(
       message: args.message,
       source: "detector",
       evidence,
+      // ON THE ROW, not only on the occurrence. AnomaliesTab renders its
+      // drill-down link from `anomalies.correlationId`, and this insert never set
+      // it — so every detector alarm reached an administrator with no way to open
+      // the failing turn, which is the one thing that turns "N failures" into
+      // something fixable. Observed in production 2026-09-08: every detector row
+      // carried `correlationId: null` while an agent-reported one carried its own.
+      ...(args.correlationId !== undefined
+        ? { correlationId: args.correlationId }
+        : {}),
       occurrenceCount: 1,
       firstAt: now,
       ...(args.latestEventAt !== undefined
@@ -553,6 +582,12 @@ async function upsertDetectorAnomaly(
     severity: args.severity,
     message: args.message,
     evidence,
+    // Kept current with the evidence it belongs to: the sample names the DOMINANT
+    // cause of the window, so a stale id would point at a cause the message no
+    // longer names.
+    ...(args.correlationId !== undefined
+      ? { correlationId: args.correlationId }
+      : {}),
     ...(isNewObservation
       ? {
           occurrenceCount: (existing.occurrenceCount ?? 1) + 1,
@@ -705,6 +740,8 @@ export const detectAnomalies = internalMutation({
       internalJobs: {},
       streamErrors: 0,
       streamCauses: {},
+      announceCauses: {},
+      announceCauseCorrelation: {},
       streamCauseCorrelation: {},
       latestAt: { cause: {}, accessByPrincipal: new Map() },
       latestKey: { cause: {}, accessByPrincipal: new Map() },
@@ -786,6 +823,17 @@ export const detectAnomalies = internalMutation({
                 agg.announceSampleCorrelation = row.correlationId;
               agg.latestAt.announceError = row.at;
               agg.latestKey.announceError = row._id;
+              // The cause, BEFORE the exit. The `break` below is what kept this
+              // branch out of the stream aggregation — correctly — but it also
+              // skipped the only place a cause was ever read, so every delivery
+              // failure reached the alert as a bare number.
+              const announceCause = streamFailureCode(row);
+              if (announceCause !== undefined) {
+                agg.announceCauses[announceCause] =
+                  (agg.announceCauses[announceCause] ?? 0) + 1;
+                if (row.correlationId)
+                  agg.announceCauseCorrelation[announceCause] = row.correlationId;
+              }
               break;
             }
             agg.streamErrors += 1;
@@ -992,14 +1040,31 @@ export const detectAnomalies = internalMutation({
       detected.push(ANOMALY_KINDS.TASK_OVERRUNS);
     }
     if (agg.announceErrors >= ANNOUNCE_ERROR_WARN) {
+      // The dominant cause rides the MESSAGE and the evidence, exactly as the
+      // dispatch-failure line does: "3 deliveries failed" sends an admin looking,
+      // "3 deliveries failed — dominant cause: unclassified_error" tells them what
+      // they will find. Measured 2026-09-08: a delivery failure whose cause nothing
+      // had recorded reached this channel as a bare number, and the diagnosis came
+      // from reading a chat by hand.
+      const announceDominant = topKey(agg.announceCauses);
+      // The sample must belong to the cause we NAME. Falling back to the window's
+      // last failure only when no cause was recorded at all.
+      const announceSample =
+        (announceDominant !== undefined
+          ? agg.announceCauseCorrelation[announceDominant]
+          : undefined) ?? agg.announceSampleCorrelation;
       await upsertDetectorAnomaly(ctx, {
         kind: ANOMALY_KINDS.ANNOUNCE_ERRORS,
         severity:
           agg.announceErrors >= ANNOUNCE_ERROR_CRITICAL ? "critical" : "warn",
-        message: `Sub-agent report deliveries failed: ${agg.announceErrors} over ${windowMin}m`,
+        message: announceDominant
+          ? `Sub-agent report deliveries failed: ${agg.announceErrors} over ${windowMin}m — dominant cause: ${announceDominant}`
+          : `Sub-agent report deliveries failed: ${agg.announceErrors} over ${windowMin}m`,
         evidence: {
           announceErrors: agg.announceErrors,
-          sampleCorrelationId: agg.announceSampleCorrelation,
+          dominantCode: announceDominant,
+          codeCounts: agg.announceCauses,
+          sampleCorrelationId: announceSample,
           windowMs: DETECT_WINDOW_MS,
           warnThreshold: ANNOUNCE_ERROR_WARN,
           criticalThreshold: ANNOUNCE_ERROR_CRITICAL,
@@ -1007,7 +1072,7 @@ export const detectAnomalies = internalMutation({
         // Carried into the persisted OCCURRENCE, like every other cause-bearing
         // class: an alarm raised so the next burst can be investigated is
         // worthless if the history it accumulates does not lead back to a run.
-        correlationId: agg.announceSampleCorrelation,
+        correlationId: announceSample,
         latestEventAt: agg.latestAt.announceError,
         latestEventKey: agg.latestKey.announceError,
       });
