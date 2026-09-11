@@ -123,10 +123,23 @@ describe("observability spine", () => {
       expect(roleHasPermission(agentPerms, PERMISSIONS.SELF_HEAL)).toBe(true);
       expect(roleHasPermission(observerPerms, PERMISSIONS.SELF_HEAL)).toBe(false);
 
+      // THE LOST-DELIVERY REPAIR IS NOT `selfheal`. That permission is the agent
+      // role's own BOUNDED corrective (flip a stuck stream, text preserved), and
+      // POST /api/v1/deliver-media ADDS CONTENT to a settled turn from a shared
+      // outbound directory. Reusing selfheal would have let any agent key inject
+      // that directory's files into any conversation, with no ownership check
+      // after the gate. So it holds selfheal and NOT media.repair.
+      expect(roleHasPermission(agentPerms, PERMISSIONS.MEDIA_REPAIR)).toBe(false);
+      expect(roleHasPermission(observerPerms, PERMISSIONS.MEDIA_REPAIR)).toBe(
+        false,
+      );
+
       // admin is the wildcard superset -> every permission.
       const adminPerms = await permissionsForRoleKey(ctx, "admin");
       expect(roleHasPermission(adminPerms, PERMISSIONS.ADMIN_MANAGE)).toBe(true);
       expect(roleHasPermission(adminPerms, PERMISSIONS.SELF_HEAL)).toBe(true);
+      // ...and the repair IS reachable, by admin alone.
+      expect(roleHasPermission(adminPerms, PERMISSIONS.MEDIA_REPAIR)).toBe(true);
       expect(roleHasPermission(adminPerms, PERMISSIONS.TRACES_READ)).toBe(true);
 
       // unknown role -> empty set -> no permissions (least privilege).

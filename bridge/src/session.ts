@@ -168,6 +168,10 @@ export interface BridgeSession {
   /** Phase 2c: arm the sub-agent observer to capture the reply to a user INTERACTION
    *  before the /subagent-send endpoint dispatches the chat.send to the child. */
   armSubAgentInteraction(childKey: string, interactionId: string): void;
+  /** Record the outbound mount `/send` just instructed the agent to use, so a
+   *  delegated child's `MEDIA:` directive is recognised on a custom mount. */
+  noteOutboundMount(dir: string | null): void;
+
 }
 
 /**
@@ -305,10 +309,26 @@ class Session implements BridgeSession {
       });
     };
     this.writer = writer;
-    this.observer = new SubAgentObserver(sessionKey, chatId);
+    this.observer = new SubAgentObserver(sessionKey, chatId, {
+      // Read at the moment a child settles, not captured here: `/send` carries
+      // the instance's CURRENT outbound mount per turn and an admin may change
+      // it while this session lives.
+      outboundAgentMount: () => this.outboundAgentMount,
+    });
     this.clock = clock;
     this.lastActivityAt = clock();
     this.transcriptFetcher = transcriptFetcher;
+  }
+
+  /** The outbound mount the AGENT was instructed to write to on the last send.
+   *  A child's `MEDIA:` directive names a path under it, and an instance may
+   *  override the bridge's own default — matching only the image default left
+   *  every such delivery unrecognised on the child lane. */
+  private outboundAgentMount: string | null = null;
+
+  /** Record the mount `/send` just instructed the agent to use. */
+  noteOutboundMount(dir: string | null): void {
+    this.outboundAgentMount = dir;
   }
 
   /** Anchor the current turn's sent user text (tail) for orphan-recovery

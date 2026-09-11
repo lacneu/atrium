@@ -1290,17 +1290,143 @@ export const addPart = internalMutation({
     // owns this message (an announce merge reopened it) drops silently —
     // it would otherwise pollute the merged result and its provenance.
     expectedRunId: v.optional(v.union(v.string(), v.null())),
+    /** OPERATOR REPAIR only (mediaRepair.ts). Two guarantees the repair promises
+     *  and that only THIS mutation can hold, because only here are they atomic:
+     *   - the target is a SETTLED reply. The action checks it, but a delivery can
+     *     reopen a message between that read and this write — and an announce
+     *     reopen keeps the SAME runId, so the generation guard would not notice.
+     *   - the same file is never attached twice. The action pre-reads the parts
+     *     and the bridge keeps its own set, but two overlapping repairs can both
+     *     pass those and land two copies (an operator retrying after a timeout
+     *     while the first POST is still running is the realistic case).
+     *  Off by default: the live delivery path has its own per-turn dedup and
+     *  legitimately writes into a streaming message. */
+    repair: v.optional(v.boolean()),
     ...boundArg,
   },
-  handler: async (ctx, { messageId, part, expectedRunId, boundInstanceName }) => {
+  handler: async (
+    ctx,
+    { messageId, part, expectedRunId, repair, boundInstanceName },
+  ) => {
+    // The bridge uploads a media part's bytes BEFORE this call, so any path that
+    // refuses the part must RECLAIM them or leave a billable, unreachable
+    // storage object behind on every attempt.
+    //
+    // NEVER A BLOB SOMETHING ELSE STILL POINTS AT. `chatFork` copies a file/media
+    // part storageId AND ALL, so one object is legitimately shared by a message
+    // and its fork — and this op is network input: a caller naming a storageId it
+    // does not own would otherwise destroy the attachment of every message that
+    // references it. `files` mirrors every file/media part by invariant, so its
+    // `by_storage` index answers "is anyone else holding this?" in one read.
+    const reclaim = async () => {
+      if (part.kind !== "media" && part.kind !== "file") return;
+      const storageId = part.storageId;
+      const holders = await ctx.db
+        .query("files")
+        .withIndex("by_storage", (q) => q.eq("storageId", storageId))
+        .take(1);
+      if (holders.length > 0) return;
+      try {
+        await ctx.storage.delete(storageId);
+      } catch {
+        // best-effort: an already-gone blob must not fail the ingest
+      }
+    };
     const message = await ctx.db.get(messageId);
     if (message === null) {
+      // A message DELETED while the transfer ran — a real window, up to the
+      // repair's whole 420 s budget, and the bytes are already uploaded. Nothing
+      // can ever carry this part now, so they are unreachable by construction.
+      //
+      // RECLAIM AND RETURN, never reclaim and throw: a mutation is a
+      // transaction, so a throw rolls the delete back and the object survives
+      // anyway. That is why every other refusal here RETURNS — the deletes below
+      // only commit because their branches do.
+      if (repair === true) {
+        await reclaim();
+        return { accepted: false as const, reason: "message_missing" as const };
+      }
       throw new Error("addPart: message not found");
     }
     // ATOMIC cross-gateway barrier: the message's DURABLE owner stamp (it
     // survives finalize — the chat check alone would reopen terminal messages
     // to any routed instance).
+    //
+    // IT THROWS, AND IT MUST. On the repair path that means a blob the bridge
+    // already uploaded is orphaned — a transaction cannot both delete the object
+    // and refuse the write, and `mediaRepair.resolveTarget` pre-flights this very
+    // check to keep the window down to a revocation racing the transfer. The
+    // ANSWER IS NOT to return a refusal here like the branches below: a bridge
+    // authenticated for another instance would then learn the message's state
+    // from the difference between a 403 and a 200 (codex P1, pass 7). A rare
+    // orphan object is the cheaper of the two.
     await assertMessageBound(ctx, message, boundInstanceName);
+    if (repair === true) {
+      // REPORTED, not silent: the caller reports the file as not delivered and
+      // the operator sees why in the trace, instead of a repair that claims
+      // success while nothing landed.
+      if (message.status === "streaming") {
+        await reclaim();
+        return { accepted: false as const, reason: "turn_reopened" as const };
+      }
+      // A reopen that STARTED AND FINISHED during the transfer is deliberately
+      // NOT refused (raised in review). The target is the same bubble, no reopen
+      // path deletes its parts, and the operator asked for the file on THAT
+      // reply — so attaching is the outcome they want. Refusing on any change
+      // since the read (an `updatedAt` compare is the only available signal, and
+      // it moves for benign patches) would trade a correct attach for a repair
+      // that silently does not happen, plus an orphan blob.
+      // DEDUP BY FILENAME IS THE REPAIR'S RULE, AND ONLY THE REPAIR'S. Extending
+      // it to the live path was tried and is WRONG: a delegated turn legitimately
+      // delivers two DIFFERENT documents under one generated name, and the live
+      // path must keep the second (`announceMerge.test.ts`, "outside the replay
+      // window, a late same-named DIFFERENT file is kept"). The live path's own
+      // rule is the run-keyed replay window further down — narrower on purpose.
+      // Here the operator NAMES a file they say is missing, so a same name on
+      // this bubble is the thing they asked for and never a second document.
+      if (part.kind === "media") {
+        const existing = await ctx.db
+          .query("messageParts")
+          .withIndex("by_message", (q) => q.eq("messageId", messageId))
+          .collect();
+        const filename = part.filename;
+        // BOTH blob-carrying kinds (see `isFilePart`): the bubble may already
+        // carry this name as a `file` part — this op takes the whole part union,
+        // and `chatFork` copies both kinds. Matching only `media` let the same
+        // document land twice and render twice.
+        // A part whose blob is GONE is not an attachment: the renderer drops a
+        // part without a resolved URL, so treating it as present would make this
+        // repair a silent no-op on exactly the bubble it was called to fix. The
+        // dangling row is left where it is — removing it is a different
+        // operation, and the reader never sees it.
+        let already = false;
+        for (const row of existing) {
+          if (!isFilePart(row.part) || row.part.filename !== filename) continue;
+          if ((await ctx.storage.getUrl(row.part.storageId)) === null) continue;
+          already = true;
+          break;
+        }
+        // Already on the bubble: return like any accepted part (this mutation
+        // says nothing on success), because the desired state HOLDS. Reporting a
+        // failure would send the operator chasing a file that is right there.
+        // The bytes THIS attempt uploaded are a duplicate — reclaim them.
+        //
+        // UNLESS AN EXISTING PART POINTS AT THE VERY SAME OBJECT. Deleting it
+        // then would leave the attached part — and its `files` row — referencing
+        // a blob that no longer exists: the reader sees the file listed and gets
+        // nothing. The replay dedup below states the same rule for the same
+        // reason; this branch simply has to obey it too. No current caller
+        // replays one storageId (`addMediaPart` is not in the writer's
+        // IDEMPOTENT_OPS, and each attempt uploads afresh), so the guard is on
+        // the SHAPE this op accepts rather than on a sequence in production.
+        if (already) {
+          // `reclaim` itself refuses to delete a blob anything still references,
+          // so an exact replay keeps the attached object. ONE reader of that rule.
+          await reclaim();
+          return;
+        }
+      }
+    }
     // A SEGMENT belongs to an assistant turn, and to nothing else. This op is generic —
     // the bridge posts any part shape through it — so a mis-correlated `messageId` could
     // otherwise attach assistant prose to a USER message, where it renders inside the
@@ -1345,7 +1471,7 @@ export const addPart = internalMutation({
       // that means "an attachment landed", and it uses it to claim the filename as
       // hosted and to emit a `stored` trace. A drop that reads as success makes the
       // dedup set and the diagnostics both wrong.
-      return { accepted: false as const };
+      return { accepted: false as const, reason: "stale_generation" as const };
     }
     // Heartbeat: a turn streaming ONLY tool/media/reasoning parts (no text deltas)
     // must still refresh its live-text row, else the watchdog (which keys off that

@@ -40,6 +40,52 @@ const OUTBOUND_PATH_RE = /\/home\/node\/\.openclaw\/(?:media\/outbound|workspace
 // group 2 = tail after outbound/.
 const MEDIA_DIRECTIVE_RE = /^MEDIA:(\/home\/node\/\.openclaw\/media\/outbound\/(.+))$/;
 
+/** The mount an unconfigured deployment uses (the image's own outbound dir). */
+const DEFAULT_OUTBOUND_MOUNT = "/home/node/.openclaw/media/outbound";
+
+/** Trim a configured mount to a comparable prefix: no trailing separator, and a
+ *  blank value reads as "not configured" rather than as the filesystem root. */
+function normaliseMount(raw: string | null | undefined): string | null {
+  if (typeof raw !== "string") return null;
+  const trimmed = raw.trim();
+  if (!trimmed.startsWith("/")) return null;
+  // A ROOT mount ("/") is degenerate but Convex ACCEPTS it
+  // (`isValidAgentMountPath`), and silently reading it as "not configured" sent
+  // this lane looking for the image default while the agent wrote to `/` — the
+  // delivery lost, with nothing anywhere saying why. Normalising to the empty
+  // prefix makes the directive `MEDIA:/<tail>`, which is what such an instance
+  // actually instructs.
+  const stripped = trimmed.replace(/\/+$/, "");
+  return stripped;
+}
+
+/**
+ * The shapes NO outbound path may have, whatever lane it arrived on.
+ *
+ * The owner's lane has refused these since the Python original
+ * (`normalizer.isOutboundMediaPath`); the child lane had NO filter at all, so a
+ * directive naming `<mount>/../../secrets.env` was handed to the fetcher — which
+ * in `gateway-http` mode asks the gateway for that exact `source`. Same rule,
+ * ONE definition; each lane adds its own prefix test on top (the owner's is "any
+ * /media/outbound/", the child's is "the mount it was instructed to use").
+ */
+export function isUnsafeOutboundPath(path: string): boolean {
+  if (typeof path !== "string" || path === "") return true;
+  if (!path.startsWith("/")) return true;
+  if (path.includes("..")) return true;
+  if (path.includes("?")) return true; // query component
+  if (/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(path)) return true; // scheme
+  return false;
+}
+
+/** `MEDIA:<mount>/<tail>` for THIS mount. The tail is the rest of the line, so a
+ *  filename with spaces survives (see the note above). */
+function directiveRegExpFor(mount: string): RegExp {
+  if (mount === DEFAULT_OUTBOUND_MOUNT) return MEDIA_DIRECTIVE_RE;
+  const escaped = mount.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(`^MEDIA:(${escaped}\\/(.+))$`);
+}
+
 // Port of _PATH_LABEL_RE (re.IGNORECASE): a whole line that is just a
 // "path:"/"chemin:" label pointing at an outbound/workspace path, optionally
 // backtick-wrapped. Such lines are dropped.
@@ -75,8 +121,36 @@ function mediaHref(filename: string): string {
 }
 
 /** Rewrite every bare outbound/workspace path in a line to its basename. */
-function stripPathsToBasename(line: string): string {
-  return line.replace(OUTBOUND_PATH_RE, (_match, tail: string) => posixBasename(tail));
+function stripPathsToBasename(
+  line: string,
+  /** ALREADY normalised by the caller. Re-normalising here silently dropped the
+   *  ROOT mount, whose normalised form is the empty prefix: the delivery was
+   *  detected and its absolute path stayed in the visible text. */
+  custom?: string | null,
+): string {
+  const stripped = line.replace(OUTBOUND_PATH_RE, (_m, tail: string) =>
+    posixBasename(tail),
+  );
+  if (
+    custom === null ||
+    custom === undefined ||
+    custom === DEFAULT_OUTBOUND_MOUNT
+  ) {
+    return stripped;
+  }
+  // "" is the ROOT mount: every absolute path in this text is inside it.
+  // A CONFIGURED mount is a server path too. The regexes here are a port of the
+  // Python original and know only the image's own directory, so on an instance
+  // that overrides `outboundAgentMount` the absolute path reached the reader.
+  return stripped.replace(customPathRegExpFor(custom), (_m, tail: string) =>
+    posixBasename(tail),
+  );
+}
+
+/** `<mount>/<tail>` for a configured mount, mirroring OUTBOUND_PATH_RE's stops. */
+function customPathRegExpFor(mount: string): RegExp {
+  const escaped = mount.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(`${escaped}\\/([^\\s\`)>]+)`, "g");
 }
 
 /**
@@ -95,16 +169,28 @@ function stripPathsToBasename(line: string): string {
  */
 export function outboundMediaDeliveries(
   text: string,
+  /** The mount the agent was INSTRUCTED to write to for this turn. An instance
+   *  may override it (`outboundAgentMount`), and the directive then names that
+   *  path — the historic constant matched nothing and the delivery stayed lost,
+   *  which is the very defect this function exists for. Defaults to the constant
+   *  so a caller without the config behaves as before. */
+  outboundAgentMount?: string | null,
 ): Array<{ filename: string; path: string }> {
-  if (typeof text !== "string" || !text.includes(OPENCLAW_MARKER)) return [];
+  if (typeof text !== "string") return [];
+  const mount = normaliseMount(outboundAgentMount) ?? DEFAULT_OUTBOUND_MOUNT;
+  if (!text.includes(mount)) return [];
+  const directive = directiveRegExpFor(mount);
   const out: Array<{ filename: string; path: string }> = [];
   const seen = new Set<string>();
   for (const line of text.split(/\r\n|[\n\r\v\f\x1c\x1d\x1e\u0085\u2028\u2029]/)) {
-    const m = MEDIA_DIRECTIVE_RE.exec(line);
+    const m = directive.exec(line);
     if (m === null) continue;
     // trimEnd: the gateway file has no trailing whitespace, and a trailing space
     // makes the fetch path not-found.
     const path = m[1]!.trimEnd();
+    // The child lane's HALF of the shared rule (the other half is the mount
+    // prefix, which the regex above already enforced).
+    if (isUnsafeOutboundPath(path)) continue;
     if (seen.has(path)) continue;
     seen.add(path);
     out.push({ filename: posixBasename(path), path });
@@ -135,12 +221,23 @@ export function sanitizeText(
      * while the gateway's own console listed both files.
      */
     mediaPartsEmitted?: boolean;
+    /** The mount the agent was instructed to write to, when the instance
+     *  overrides the image default. Without it a directive under a custom mount
+     *  is not recognised as one AND its absolute path reaches the reader. */
+    outboundAgentMount?: string | null;
   },
 ): string {
+  const mount = normaliseMount(_opts?.outboundAgentMount);
+  const marker = mount !== null ? `${mount}/` : OPENCLAW_MARKER;
   // 1. Early return verbatim (covers the empty string and any path-free text).
-  if (typeof text !== "string" || !text.includes(OPENCLAW_MARKER)) {
+  if (
+    typeof text !== "string" ||
+    (!text.includes(OPENCLAW_MARKER) && !text.includes(marker))
+  ) {
     return text;
   }
+  const directive =
+    mount !== null ? directiveRegExpFor(mount) : MEDIA_DIRECTIVE_RE;
   // splitlines() full boundary set incl. NEL/LS/PS (u0085,u2028,u2029).
   // a server path placed after one of these separators would otherwise slip
   // splitlines() full boundary set incl. NEL/LS/PS (u0085,u2028,u2029).
@@ -151,13 +248,15 @@ export function sanitizeText(
   const out: string[] = [];
   for (const line of lines) {
     if (line.startsWith("MEDIA:")) {
-      if (MEDIA_DIRECTIVE_RE.test(line)) {
+      if (directive.test(line)) {
         if (_opts?.mediaPartsEmitted === false) {
           // Nothing downstream will carry this file, so NAME it. The basename
           // only — never the server path, and never a `./media/` link, which
           // would be dead on this lane and is exactly the confusion the drop
           // was introduced to remove.
-          out.push(stripPathsToBasename(line).replace(/^MEDIA:\s*/, ""));
+          out.push(
+            stripPathsToBasename(line, mount).replace(/^MEDIA:\s*/, ""),
+          );
           continue;
         }
         // DROP a well-formed outbound MEDIA: directive from the VISIBLE text: the
@@ -170,13 +269,13 @@ export function sanitizeText(
       }
       // A MEDIA: line that is not a well-formed outbound directive: still strip
       // any embedded server path to its basename.
-      out.push(stripPathsToBasename(line));
+      out.push(stripPathsToBasename(line, mount));
       continue;
     }
     if (PATH_LABEL_RE.test(line)) {
       continue; // drop bare "path: /home/node/..." label lines entirely
     }
-    out.push(stripPathsToBasename(line));
+    out.push(stripPathsToBasename(line, mount));
   }
   return out.join("\n");
 }

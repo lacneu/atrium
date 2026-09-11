@@ -266,6 +266,9 @@ type IngestOp =
       filename: string;
       mimeType: string;
       runId?: string | null;
+      /** OPERATOR REPAIR (deliver-media): ask addPart for the settled-target and
+       *  one-copy-per-file guarantees, which only that mutation holds atomically. */
+      repair?: boolean;
     }
   // SOC2-safe outbound-media DIAGNOSTIC (recorded as an `openclaw.media` trace; no
   // message part, no DB write). Structural codes only — never filename/path/bytes.
@@ -893,6 +896,9 @@ export const ingest = httpAction(async (ctx, request) => {
         },
         boundInstanceName,
         ...(body.runId !== undefined ? { expectedRunId: body.runId } : {}),
+        // OPERATOR REPAIR: ask the mutation for the two guarantees only IT can
+        // hold atomically — a settled target, and one copy per file.
+        ...(body.repair === true ? { repair: true as const } : {}),
       });
       // Read the stored object's size/type for the trace (best-effort, non-PII):
       // distinguishes "bytes landed -> a failed download is the storage URL
@@ -910,10 +916,21 @@ export const ingest = httpAction(async (ctx, request) => {
             partKind: "media",
             mimeType,
             ok: false,
-            reason: "stale_generation",
+            // THE REFUSAL'S OWN REASON. This constant predates the repair path,
+            // where `accepted:false` also means the target was deleted or has
+            // reopened — and the trace is the one place the operator is promised
+            // a why. Reporting every refusal as a stale generation sent them
+            // looking at generations for a message that no longer exists.
+            reason: partOutcome?.reason ?? "stale_generation",
           },
         });
-        return json({ ok: true, accepted: false });
+        // The reason rides back too: the BRIDGE emits its own media trace for
+        // this drop, and it had no way to know which refusal it was.
+        return json({
+          ok: true,
+          accepted: false,
+          reason: partOutcome?.reason ?? "stale_generation",
+        });
       }
       let bytes: number | null = null;
       let storedType: string | null = null;

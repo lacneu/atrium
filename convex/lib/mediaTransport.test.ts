@@ -57,9 +57,64 @@ describe("classifyAttachment", () => {
     expect(
       classifyAttachment({ mimeType: "application/pdf", inboundMediaMode: "shared-fs" }),
     ).toBe("reference");
-    // image never becomes a reference, regardless of mode
+    // A DECODABLE image never becomes a reference, regardless of mode. "image/*"
+    // is NOT the rule — see the svg+xml cases below, which are the reason this
+    // comment is narrower than it used to be.
     expect(
       classifyAttachment({ mimeType: "image/gif", inboundMediaMode: "shared-fs" }),
+    ).toBe("inline");
+  });
+});
+
+// The defect these pin (production, 2026-09-11): a user attached two SVG logos and
+// the agent reported them "not accessible", four turns running. `image/svg+xml`
+// matched the old `image/*` rule, so it was pinned to the INLINE path and handed to
+// a Vision model that cannot decode XML — while inline leaves no file on disk for a
+// tool to read either. The attachment reached NOBODY.
+describe("an image the model cannot decode is tool-read, not model-native", () => {
+  test("SVG is NOT model-native (no Vision API decodes XML)", () => {
+    expect(isModelNativeMime("image/svg+xml")).toBe(false);
+    expect(isModelNativeMime("IMAGE/SVG+XML")).toBe(false);
+  });
+
+  test("an SVG rides BY REFERENCE in shared-fs, so a tool can actually read it", () => {
+    expect(
+      classifyAttachment({
+        mimeType: "image/svg+xml",
+        inboundMediaMode: "shared-fs",
+      }),
+    ).toBe("reference");
+  });
+
+  test("the four decodable raster formats stay model-native", () => {
+    for (const mime of ["image/png", "image/jpeg", "image/gif", "image/webp"]) {
+      expect(isModelNativeMime(mime), mime).toBe(true);
+      expect(
+        classifyAttachment({ mimeType: mime, inboundMediaMode: "shared-fs" }),
+        mime,
+      ).toBe("inline");
+    }
+  });
+
+  test("other undecodable image subtypes are tool-read too (same root cause)", () => {
+    for (const mime of ["image/tiff", "image/bmp", "image/heic", "image/x-icon"]) {
+      expect(isModelNativeMime(mime), mime).toBe(false);
+    }
+  });
+
+  test("a parameterised or oddly-cased type classifies on its BASE type", () => {
+    expect(isModelNativeMime("image/png; charset=binary")).toBe(true);
+    expect(isModelNativeMime("  Image/PNG  ")).toBe(true);
+    // ...and the parameter cannot smuggle an undecodable type back in.
+    expect(isModelNativeMime("image/svg+xml; charset=utf-8")).toBe(false);
+  });
+
+  test("inline mode is unchanged: an SVG there still has no reference transport", () => {
+    // Stated so the limit is visible: this fix repairs shared-fs instances. On an
+    // `inline` instance there is no reference leg at all, so an SVG remains
+    // undeliverable to the model — that is a MODE choice, not this function's doing.
+    expect(
+      classifyAttachment({ mimeType: "image/svg+xml", inboundMediaMode: "inline" }),
     ).toBe("inline");
   });
 });

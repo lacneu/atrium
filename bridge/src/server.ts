@@ -3503,6 +3503,13 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
       "/config-defaults",
       "/tts",
       "/validate-media",
+      // OPERATOR REPAIR: attach outbound files an agent PRODUCED but that never
+      // reached the conversation. The delivery path serves the live case; this
+      // one exists because a delivery that was lost is lost — the `MEDIA:`
+      // directive lives on a frame, and no frame is replayed (prod 2026-09-09:
+      // a delegated agent wrote a DOCX and a PDF, both verified on the host,
+      // and the bubble stayed empty). Deliberate, named, audited by Convex.
+      "/deliver-media",
       // Phase 2c: dispatch a user's message to a SUB-AGENT session (chat.send to the
       // child key), arming the observer to capture the reply. Convex verifies IDOR.
       "/subagent-send",
@@ -3552,6 +3559,155 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
       // surfaces an honest cause instead of a generic failed dispatch. Normally
       // unreachable: the cap (32 MiB) clears Convex's 20 MiB-raw attachment ceiling.
       sendJson(res, 413, { ok: false, error: { code: "payload_too_large" } });
+      return;
+    }
+
+    if (req.url === "/deliver-media") {
+      // BASENAMES ONLY, and the path is built HERE. The caller never supplies a
+      // path: that is what makes traversal impossible by construction rather
+      // than by a filter someone has to keep correct. A name carrying a
+      // separator or a parent reference is refused, not sanitised — silently
+      // repairing a suspicious input is how a filter gets bypassed.
+      const MAX_DELIVER_FILES = 16;
+      let dm: {
+        instanceName?: unknown;
+        chatId?: unknown;
+        messageId?: unknown;
+        filenames?: unknown;
+        runId?: unknown;
+        config?: unknown;
+      };
+      try {
+        // `JSON.parse("null")` SUCCEEDS and a cast does not change the value:
+        // the next property read threw, and the global handler turned this
+        // route's announced 400 into a 500.
+        const parsed: unknown = JSON.parse(raw);
+        if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+          sendJson(res, 400, { ok: false, error: "invalid body" });
+          return;
+        }
+        dm = parsed as typeof dm;
+      } catch {
+        sendJson(res, 400, { ok: false, error: "invalid body" });
+        return;
+      }
+      const dmInstance = typeof dm.instanceName === "string" ? dm.instanceName : "";
+      const dmChatId = typeof dm.chatId === "string" ? dm.chatId : "";
+      const dmMessageId = typeof dm.messageId === "string" ? dm.messageId : "";
+      const dmNames = Array.isArray(dm.filenames) ? dm.filenames : null;
+      if (!dmInstance || !dmChatId || !dmMessageId || dmNames === null) {
+        sendJson(res, 400, {
+          ok: false,
+          error: "instanceName, chatId, messageId and filenames are required",
+        });
+        return;
+      }
+      if (dmNames.length === 0 || dmNames.length > MAX_DELIVER_FILES) {
+        sendJson(res, 400, {
+          ok: false,
+          error: `filenames must hold 1..${MAX_DELIVER_FILES} entries`,
+        });
+        return;
+      }
+      const bad = dmNames.find(
+        (n) =>
+          typeof n !== "string" ||
+          n === "" ||
+          n.length > 512 ||
+          n.includes("/") ||
+          n.includes("\\") ||
+          n.includes("..") ||
+          n.startsWith("."),
+      );
+      if (bad !== undefined) {
+        sendJson(res, 400, {
+          ok: false,
+          error: "filenames must be plain basenames (no path, no '..')",
+        });
+        return;
+      }
+      const dmBundle = served.get(dmInstance);
+      if (!dmBundle) {
+        sendJson(res, 409, { ok: false, error: { code: "instance_not_served" } });
+        return;
+      }
+      // The GATEWAY-visible outbound root: the same path the agent writes to and
+      // names in its directive, which is what the media fetcher resolves (the
+      // bridge's own mount is a different point — see config.mediaOutboundDir).
+      // APPLY the instance's current media configuration first. The provider
+      // otherwise keeps whatever it booted with — its only other refresh is on
+      // `/send` — so a repair that is the first call after a restart would read
+      // the directory in the wrong mode and report a present file as not
+      // delivered. Same call the send path makes, same shape.
+      // PARSED, not cast (codex P2). `applyConfig` replaces a provider SHARED with
+      // this instance's live deliveries, so an out-of-range `mediaMode` or a
+      // negative cap arriving here would not just fail this repair — it would keep
+      // failing the ordinary deliveries until the next `/send` restored a valid
+      // config. `/send` has always gone through this parser; so does this route.
+      const dmConfig = parseInboundConfig(dm.config);
+      dmBundle.mediaProvider.applyConfig(
+        dmConfig as Parameters<typeof dmBundle.mediaProvider.applyConfig>[0],
+      );
+      // The instance's OWN outbound mount when it overrides the bridge's, exactly
+      // as the dispatch path carries it: the fetcher hands the gateway this path
+      // verbatim, so a repair composed from the boot value would ask for a file
+      // that exists under a different one and be told it is not there.
+      const dmMountOverride = dmConfig?.outboundAgentMount;
+      const dmRoot = (
+        typeof dmMountOverride === "string" && dmMountOverride !== ""
+          ? dmMountOverride
+          : dmBundle.config.mediaOutboundAgentMount
+      ).replace(/\/+$/, "");
+      // The generation to write under, when the caller states one. Convex reads
+      // the message's CURRENT runId and passes it: `addPart` then refuses a part
+      // whose generation no longer owns the message, which is what stops this
+      // repair from landing inside a turn that reopened while it transferred.
+      // PRESENCE decides — a stated `null` is a real generation (a turn opened
+      // without an ack runId), so the key is only forwarded when it was sent.
+      const dmHasRunId = "runId" in dm;
+      const dmRunId =
+        typeof dm.runId === "string" ? dm.runId : null;
+      const attached: string[] = [];
+      // NOT "missing": `addMedia` answers false for an absent file AND for a
+      // transfer it could not complete (media mode off, over the size cap,
+      // upload error, a generation that moved). Calling all of that "missing"
+      // told the operator a document was gone when it was sitting there — the
+      // reason is in the `openclaw.media` trace the attach emits.
+      const notDelivered: string[] = [];
+      for (const name of dmNames as string[]) {
+        try {
+          // NO `runId`: a repair names its target message explicitly, so it must
+          // not be filtered by a generation. Omitting the key (rather than
+          // passing null) leaves addPart's generation check switched off — a
+          // stated `null` would be a REAL generation and reject the part on any
+          // message that owns a runId.
+          const ok = await dmBundle.writer.addMedia(dmMessageId, {
+            chatId: dmChatId,
+            filename: name,
+            path: `${dmRoot}/${name}`,
+            // An operator asking for this file IS the delivery intent: never
+            // freshness-gated, exactly like an agent's own `MEDIA:` directive.
+            explicit: true,
+            // The guarantees only the insert can hold atomically: a settled
+            // target (an announce reopen keeps the same runId, so the generation
+            // guard would not notice it) and one copy per file (two overlapping
+            // repairs can both pass every pre-check).
+            repair: true,
+            ...(dmHasRunId ? { runId: dmRunId } : {}),
+          });
+          (ok ? attached : notDelivered).push(name);
+        } catch (err) {
+          console.error(
+            "bridge /deliver-media failed for one file:",
+            (err as Error)?.message ?? err,
+          );
+          notDelivered.push(name);
+        }
+      }
+      // 200 even when nothing attached: the CALL succeeded, and its result is
+      // what the caller asked for — which files reached the bubble. A 5xx would
+      // hide which of them landed.
+      sendJson(res, 200, { ok: true, attached, notDelivered });
       return;
     }
 
@@ -4434,6 +4590,14 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
             saInstance,
           ),
         );
+        // This session may be BRAND NEW (the original was reaped after 15 min of
+        // idleness), and then it knows no mount: a reply naming a file under a
+        // custom one showed the reader an absolute server path instead of the
+        // filename. This lane deliberately attaches nothing — that is a stated
+        // limit — but the path must still be stripped.
+        session.noteOutboundMount(
+          served.get(saInstance)?.config.mediaOutboundAgentMount ?? null,
+        );
         // Arm BEFORE the send so a re-woken child's terminal is recognized as this
         // interaction's reply (the child is usually already reaped after its spawn).
         session.armSubAgentInteraction(
@@ -5141,6 +5305,12 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
         return;
       }
       const session = await registry.acquire(toRouting(body, sendInstance));
+      // The mount the AGENT is being told to write to on THIS turn. A delegated
+      // child's `MEDIA:` directive names a path under it, and its frames are
+      // observation-only — so the observer has to be told, or an instance with a
+      // custom `outboundAgentMount` loses every child delivery (the exact defect
+      // the child lane exists to fix, on any non-default mount).
+      session.noteOutboundMount(deliveryDir);
       await performSend(
         session,
         body,

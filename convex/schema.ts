@@ -3083,6 +3083,11 @@ export default defineSchema({
     method: v.optional(v.string()),
     status: v.optional(v.number()),
     chatId: v.optional(v.string()), // present on chat-state reads
+    // The MESSAGE an operation targeted, when it targets one. Opaque id, never
+    // content — added for the lost-delivery repair, whose whole audit promise is
+    // "who repaired WHICH message" and which was previously answered only by a
+    // traceEvents row purged after 14 days, well inside the audit period.
+    messageId: v.optional(v.string()),
     latencyMs: v.optional(v.number()),
   })
     .index("by_at", ["at"]) // retention purge + recent listing

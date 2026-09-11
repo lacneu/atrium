@@ -82,6 +82,19 @@ interface Observation {
    * heartbeatIfDue / HEARTBEAT_THROTTLE_SECONDS.
    */
   lastUpsertAt: number;
+  /** The outbound mount in force when this child was REGISTERED. A delegation
+   *  can outlive several turns, and an admin may change the mount meanwhile —
+   *  reading the session's current value then looked for the NEW directory while
+   *  the child wrote to the old one, losing the delivery and leaving the server
+   *  path in the visible text. Captured per child; the session's current value
+   *  is only the fallback for a child registered before this existed. */
+  outboundAgentMount?: string | null;
+  /** The files this child DELIVERED with its answer, kept until an anchor exists
+   *  to attach them to. A fast child can settle before its spawn result names
+   *  the parent bubble — the terminal upsert then carried the delivery with a
+   *  NULL anchor, the session skipped it, and the late anchor backfill said
+   *  nothing about files: the delivery was lost for good. */
+  deliveredMedia?: Array<{ filename: string; path: string }>;
   /** The tools the child has called so far (name + status; SOC2 — no args/results). */
   tools?: ChildTool[];
   /** Last-known STATIC session config (model/reasoning/speed/scope), merged across
@@ -179,6 +192,11 @@ function upsertChildTool(tools: ChildTool[], tool: ChildTool): ChildTool[] {
 interface SubAgentObserverOptions {
   maxConcurrent?: number;
   ttlSeconds?: number;
+  /** The outbound mount the agent was INSTRUCTED to write to, read at the moment
+   *  a child settles rather than captured at construction: an instance may change
+   *  it while this session lives (`/send` carries it per turn). Without it the
+   *  child-lane delivery only worked on the image's default mount. */
+  outboundAgentMount?: () => string | null;
 }
 
 export class SubAgentObserver {
@@ -186,6 +204,7 @@ export class SubAgentObserver {
   private readonly chatId: string;
   private readonly maxConcurrent: number;
   private readonly ttlSeconds: number;
+  private readonly outboundAgentMount: (() => string | null) | null;
   private readonly observations = new Map<string, Observation>();
   // Insertion-ordered set of recently-reaped child keys (resurrection guard).
   // Key -> the FINAL status it reached. A Map (not a Set) so a straggler spawn-result
@@ -208,6 +227,7 @@ export class SubAgentObserver {
     this.chatId = chatId;
     this.maxConcurrent = opts.maxConcurrent ?? DEFAULT_MAX_CONCURRENT;
     this.ttlSeconds = opts.ttlSeconds ?? DEFAULT_TTL_SECONDS;
+    this.outboundAgentMount = opts.outboundAgentMount ?? null;
   }
 
   /** Number of live observations (test/diagnostic seam for the reap guarantees). */
@@ -405,6 +425,21 @@ export class SubAgentObserver {
         // (a REAL failure stays visible immediately), and a later terminal
         // done/aborted overwrites it (Convex upsertSubAgent allows error→done).
         // A child that truly died emits nothing more — the TTL sweep reaps it.
+        // BEFORE the reap, which detaches this observation: the files this child
+        // delivered have to be ON it when `reap` copies it into the late-anchor
+        // ledger, or a child that settles before its bubble exists loses them
+        // for good (the terminal upsert cannot attach without an anchor, and the
+        // late backfill is the only write that still can).
+        const childMount =
+          obs.outboundAgentMount ?? this.outboundAgentMount?.() ?? null;
+        const deliveredNow =
+          term === "done"
+            ? outboundMediaDeliveries(
+                textFromMessage(readField(payload, "message")),
+                childMount,
+              )
+            : [];
+        if (deliveredNow.length > 0) obs.deliveredMedia = deliveredNow;
         if (term !== "error") {
           this.reap(childKey, term);
         } else {
@@ -417,6 +452,14 @@ export class SubAgentObserver {
         // Phase 2c: this terminal is the reply to a USER INTERACTION -> route it to
         // the interaction record ONLY (the subAgents.resultText keeps the ORIGINAL
         // answer). `aborted` reads as an error for the interaction.
+        //
+        // NO DELIVERY ON THIS LANE, and it is not an oversight (raised in
+        // review). An interaction reply renders as markdown inside the sub-agent
+        // panel — it is not a message and has no parts, so there is nothing to
+        // attach a file to. The sanitiser still NAMES the file (plain text, never
+        // a link, so nothing promises a download), which tells the reader a
+        // document was produced instead of showing them an empty answer.
+        // Delivering it would need a surface that does not exist yet.
         if (interactionId !== undefined) {
           const reply: SubAgentInteractionReply = {
             interactionId,
@@ -464,9 +507,11 @@ export class SubAgentObserver {
           const raw = textFromMessage(readField(payload, "message"));
           // Read the deliveries from the RAW answer: sanitising rewrites the
           // directive to its basename, and the fetch needs the server path.
-          const delivered = outboundMediaDeliveries(raw);
-          if (delivered.length > 0) rec.deliveredMedia = delivered;
-          const text = this.sanitizeResult(raw);
+          // Extracted above (before the reap) — reused here so the terminal
+          // upsert carries it too, for the ordinary case where the anchor is
+          // already known.
+          if (deliveredNow.length > 0) rec.deliveredMedia = deliveredNow;
+          const text = this.sanitizeResult(raw, childMount);
           if (text) rec.resultText = text;
         } else {
           // error/aborted: capture the failure reason (top-level errorMessage when present,
@@ -682,7 +727,12 @@ export class SubAgentObserver {
 
   /** Strip server paths (sanitizeText) + cap — for a tool's args/result detail. */
   private sanitizeDetail(text: string, max: number): string {
-    const clean = sanitizeText(text, { mediaSessionKey: this.parentSessionKey });
+    const clean = sanitizeText(text, {
+      mediaSessionKey: this.parentSessionKey,
+      // A configured mount is a server path too: without it a tool argument or
+      // result naming one was persisted and shown verbatim.
+      outboundAgentMount: this.outboundAgentMount?.() ?? null,
+    });
     return clean.length > max ? clean.slice(0, max) : clean;
   }
 
@@ -1101,7 +1151,13 @@ export class SubAgentObserver {
   // then can't correlate and the result lands in a separate bubble.
   private pendingAnchorBackfills = new Map<
     string, // childSessionKey
-    { runId: string; status: SubAgentStatus; at: number }
+    {
+      runId: string;
+      status: SubAgentStatus;
+      at: number;
+      /** Kept with the reaped child: only the late anchor can still deliver it. */
+      deliveredMedia?: Array<{ filename: string; path: string }>;
+    }
   >();
 
   // TRUE while the CURRENT batch of parked sightings was ever ambiguous (>1
@@ -1164,6 +1220,11 @@ export class SubAgentObserver {
           anchorExact: true,
           childSessionKey: o.childSessionKey,
           status: o.status,
+          // The delivery this child made BEFORE its bubble was known: this is
+          // the only write that can still carry it to the attach path.
+          ...(o.deliveredMedia !== undefined
+            ? { deliveredMedia: o.deliveredMedia }
+            : {}),
         });
       }
     }
@@ -1177,6 +1238,9 @@ export class SubAgentObserver {
         anchorExact: true,
         childSessionKey: childKey,
         status: entry.status,
+        ...(entry.deliveredMedia !== undefined
+          ? { deliveredMedia: entry.deliveredMedia }
+          : {}),
       });
     }
     return lateAnchors;
@@ -1381,6 +1445,10 @@ export class SubAgentObserver {
       parentMessageId: extra.parentMessageId ?? null,
       ...(extra.anchorExact === true ? { anchorExact: true } : {}),
       registeredAt: now,
+      // The mount IN FORCE FOR THIS CHILD's turn. A delegation outlives its turn,
+      // so reading the session's current value at terminal looked for whatever
+      // the LAST send configured.
+      outboundAgentMount: this.outboundAgentMount?.() ?? null,
       status: "running",
       lastFrameAt: now,
       // Seed the heartbeat clock at registration: the spawn-registration path emits a
@@ -1424,7 +1492,7 @@ export class SubAgentObserver {
 
   /** Strip server paths (sanitizeText) and cap length — for both the success result
    *  text and the failure error message before they reach the store (SOC2 + bounding). */
-  private sanitizeResult(text: string): string {
+  private sanitizeResult(text: string, mount?: string | null): string {
     const clean = sanitizeText(text, {
       mediaSessionKey: this.parentSessionKey,
       // The child's lane emits NO media part (its frames are observation-only),
@@ -1432,6 +1500,12 @@ export class SubAgentObserver {
       // vanishing — a delivery-only answer otherwise sanitises to "" and the
       // settled bubble renders blank (prod 2026-09-09, report prod-ms7bybmm…).
       mediaPartsEmitted: false,
+      // The instance's CURRENT mount: a directive under a custom one was neither
+      // recognised as a directive nor stripped, so the reader got a raw absolute
+      // server path instead of a filename.
+      // The CHILD's own mount when the caller knows it (a delegation outlives
+      // its turn, and the session's current value may name another directory).
+      outboundAgentMount: mount ?? this.outboundAgentMount?.() ?? null,
     });
     return clean.length > MAX_RESULT_CHARS ? clean.slice(0, MAX_RESULT_CHARS) : clean;
   }
@@ -1441,7 +1515,10 @@ export class SubAgentObserver {
    *  result/error, so it gets the same sanitation (codex P2). Undefined-safe. */
   private sanitizeTaskName(name: string | undefined): string | undefined {
     if (name === undefined) return undefined;
-    const clean = sanitizeText(name, { mediaSessionKey: this.parentSessionKey });
+    const clean = sanitizeText(name, {
+      mediaSessionKey: this.parentSessionKey,
+      outboundAgentMount: this.outboundAgentMount?.() ?? null,
+    });
     return clean.length > MAX_TASK_CHARS ? clean.slice(0, MAX_TASK_CHARS) : clean;
   }
 
@@ -1462,6 +1539,9 @@ export class SubAgentObserver {
         runId: reaped.spawnRunHint,
         status: finalStatus,
         at: reaped.lastFrameAt,
+        ...(reaped.deliveredMedia !== undefined
+          ? { deliveredMedia: reaped.deliveredMedia }
+          : {}),
       });
     }
     this.observations.delete(childKey);

@@ -158,6 +158,47 @@ describe("bridge_ingest httpAction: addMediaPart dispatch", () => {
     expect(files[0]).toMatchObject({ direction: "outbound", messageId });
   });
 
+  test("a repair refusal returns and TRACES its own reason, not a constant", async () => {
+    // The trace is the one place the operator is promised a WHY for a file that
+    // did not land, and it reported `stale_generation` for every refusal. On the
+    // repair path `accepted:false` also means the target was deleted or has
+    // reopened — so the answer sent them to look at generations for a message
+    // that no longer exists.
+    const t = convexTest(schema, modules);
+    const { messageId } = await seedAssistantMessage(t); // seeded STREAMING
+    const storageId = await storedBlob(t, "bytes");
+    await t.run(async (ctx) => {
+      await ctx.db.patch(messageId, { status: "complete" as const });
+    });
+
+    // Reopened mid-transfer.
+    await t.run(async (ctx) => {
+      await ctx.db.patch(messageId, { status: "streaming" as const });
+    });
+    const res = await post(t, {
+      op: "addMediaPart",
+      messageId,
+      storageId,
+      filename: "v.pdf",
+      mimeType: "application/pdf",
+      repair: true,
+    });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({
+      ok: true,
+      accepted: false,
+      reason: "turn_reopened",
+    });
+    const traces = await tracesByKind(t, "openclaw.ingest");
+    expect(traces).toHaveLength(1);
+    expect(JSON.parse(String(traces[0].meta))).toMatchObject({
+      ok: false,
+      reason: "turn_reopened",
+    });
+    // Nothing landed, and the bytes are not left behind.
+    expect(await partsOf(t, messageId)).toHaveLength(0);
+  });
+
   test("empty mimeType defaults to application/octet-stream on the part", async () => {
     const t = convexTest(schema, modules);
     const { messageId } = await seedAssistantMessage(t);

@@ -118,6 +118,10 @@ const CONFIG_DEFAULTS_SET_TIMEOUT_MS = 150_000; // connect 30 + ops ~35 + recove
  * conflict on set, etc.). `timeoutMs` is the caller-side abort; pass a value
  * above the bridge's own budget for long ops (see the constants above).
  */
+/** A postBridge failure. `aborted` = THIS call's timeout fired, so the bridge
+ *  may still be working on the request — distinct from an unreachable host. */
+export type BridgeFailure = Error & { aborted?: boolean };
+
 export async function postBridge(
   path: string,
   body: Record<string, unknown>,
@@ -150,14 +154,40 @@ export async function postBridge(
     let data: unknown = null;
     try {
       data = await response.json();
-    } catch {
+    } catch (bodyErr) {
+      // A TIMEOUT DURING THE BODY is still a timeout. The headers can arrive and
+      // the body then stall until this function's own AbortController fires:
+      // swallowing that turned a 504 "may still be attaching" into a 502
+      // "malformed response", which tells the operator the opposite of the
+      // truth (the bridge could be mid-transfer).
+      if (
+        (bodyErr as Error | undefined)?.name === "AbortError" ||
+        controller.signal.aborted
+      ) {
+        const failure = new Error("bridge_error: bridge unreachable");
+        (failure as BridgeFailure).aborted = true;
+        throw failure;
+      }
       data = null; // tolerate an empty/non-JSON body
     }
     return { status: response.status, data };
   } catch (err) {
     // Network error / abort / DNS. NEVER include the secret in the message.
     console.error(`agentFiles: bridge POST ${path} failed (network/abort)`);
-    throw new Error("bridge_error: bridge unreachable");
+    // MARK an abort. The message stays exactly what every caller already matches
+    // on, but this function's OWN timeout was indistinguishable from a dead
+    // host — so a caller that wanted to say "it may still be working" could
+    // not, and its classification was dead code. `Error.cause` would be the
+    // idiom; convex/tsconfig.json is lib ES2021, where it does not exist (the
+    // same trap as Array.prototype.at), so the marker is a property.
+    const failure = new Error("bridge_error: bridge unreachable");
+    // An ALREADY-MARKED failure keeps its marker: the body-read path throws one
+    // of these, and recomputing from `name` here (it is a plain Error, not an
+    // AbortError) would silently unmark it.
+    (failure as BridgeFailure).aborted =
+      (err as BridgeFailure | undefined)?.aborted === true ||
+      (err as Error | undefined)?.name === "AbortError";
+    throw failure;
   } finally {
     clearTimeout(timer);
   }

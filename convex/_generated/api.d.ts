@@ -122,6 +122,7 @@ import type * as lib_talk from "../lib/talk.js";
 import type * as lib_timeRange from "../lib/timeRange.js";
 import type * as lib_uiPrefs from "../lib/uiPrefs.js";
 import type * as me from "../me.js";
+import type * as mediaRepair from "../mediaRepair.js";
 import type * as messages from "../messages.js";
 import type * as metricsProbe from "../metricsProbe.js";
 import type * as migrations from "../migrations.js";
@@ -268,6 +269,7 @@ declare const fullApi: ApiFromModules<{
   "lib/timeRange": typeof lib_timeRange;
   "lib/uiPrefs": typeof lib_uiPrefs;
   me: typeof me;
+  mediaRepair: typeof mediaRepair;
   messages: typeof messages;
   metricsProbe: typeof metricsProbe;
   migrations: typeof migrations;

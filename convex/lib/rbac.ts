@@ -60,6 +60,14 @@ export const PERMISSIONS = {
   CHATS_READ: "chats.read", // read conversational data
   GROUPS_MANAGE: "groups.manage", // create/manage groups + group agents (admin-only)
   CHARTS_MANAGE: "charts.manage", // manage chart defaults + group availability (admin-only)
+  // Repair a LOST outbound delivery: attach files an agent produced to the message
+  // that should already carry them (POST /api/v1/deliver-media). Deliberately NOT
+  // `selfheal`: that one is a BOUNDED corrective (flip a stuck stream, text
+  // preserved) and the `agent` role holds it, so gating this here would let any
+  // agent key inject the outbound directory's contents into any conversation.
+  // This one ADDS CONTENT to a settled turn, so it stays admin-only — held by
+  // the wildcard `admin` role and grantable to a custom role on purpose.
+  MEDIA_REPAIR: "media.repair",
   ADMIN_MANAGE: "admin.manage", // superset; UI/admin only
 } as const;
 
@@ -220,8 +228,17 @@ export async function permissionsForRoleKey(
   // them; seedBuiltinRoles overwrites any historical drift), so the stored
   // row carries no intent of its own. Custom roles use the row verbatim.
   const builtin = BUILTIN_ROLES[roleKey]?.permissions;
+  // THE WILDCARD IS THE BUILT-IN `admin` ROLE'S, AND NOTHING ELSE'S. A stored
+  // custom role is the only role a SERVICE ACCOUNT may carry, so a "*" in one is
+  // an API key with every permission — exactly what refusing the `admin` roleKey
+  // on a service account exists to prevent (apiKeys.HUMAN_ONLY_ROLE_KEYS). The
+  // write path refuses it now, and dropping it HERE covers the rows written
+  // before it did: such a role grants what it names, and the wildcard names
+  // nothing.
   const perms: string[] | typeof WILDCARD =
-    builtin !== undefined ? builtin : (row?.permissions ?? []);
+    builtin !== undefined
+      ? builtin
+      : (row?.permissions ?? []).filter((p) => p !== WILDCARD);
 
   return expandPermissions(perms);
 }

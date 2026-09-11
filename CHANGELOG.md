@@ -1,5 +1,95 @@
 # Changelog
 
+## [0.84.5] — Delivering a file that was already lost
+
+Corrective release. 0.84.4 stopped a delegated agent's files from being dropped on
+their way to the conversation. It could do nothing for the deliveries already lost,
+and this is the missing half.
+
+**An administrator can now deliver files a conversation should already have.** A file
+reaches a conversation through a delivery instruction carried on a single event, and
+events are not replayed: once one is lost, no later fix brings it back. A user reported
+exactly that on 2026-09-09 — a document produced for a meeting the next day, verified
+present on the machine that made it, and absent from the conversation that asked for it.
+Until now Atrium had no answer for that conversation at all. It does now: an
+administrator names the message and the files, and they are attached to the bubble that
+should have carried them, exactly as a live delivery would.
+
+The call reports each file as delivered or as not delivered, one by one, rather than
+failing as a block — so a partial result is readable instead of hidden. It stops short of
+claiming a file is gone: not-delivered can also mean a transfer that could not complete,
+and telling someone a document has disappeared when it is sitting there would send them
+to make it again. The reason is recorded per file in the platform's own media trace.
+
+Asking twice is safe. A file already attached to that reply is never attached again, and
+that check reads the reply itself rather than any process's memory, so it holds across a
+restart. "Already attached" means the reader can actually open it: an attachment whose
+stored bytes are gone shows nothing in the conversation, and treating it as present would
+have made the one tool built to restore a missing file decline the very case it exists
+for.
+
+It reaches the bridge the conversation's own instance is served by, resolved exactly as
+an ordinary turn is: on a deployment running several instances, one that has no bridge
+address of its own is refused rather than sent to whichever bridge the deployment-wide
+setting names — that bridge serves someone else's directory.
+
+It does not cover every provider: a conversation served by a Hermes gateway is refused
+outright, because its agents write to a different place and the repair would look in the
+wrong directory and report a file that exists as undelivered. Naming the limit beats
+guessing at a second layout.
+
+It is deliberately explicit. The files are named by the person asking, never guessed:
+several conversations share one directory, and inferring ownership there is how one team
+ends up with another's documents. The name must be a plain filename — anything carrying
+a path is refused rather than cleaned up, and the location is composed by the platform
+from the directory of the instance that actually produced the reply, which is not always
+the conversation's usual one — and a reply old enough that Atrium cannot say which
+instance produced it is refused rather than resolved to the conversation's current one,
+whose directory holds someone else's work. Only a finished reply can be repaired: never
+a message someone typed, and never a reply still being written. It records who repaired which
+message, and counts files without ever writing their names into an audit trail that
+administrators of every conversation can read.
+
+**It is administrator-only, and on its own permission.** The obvious choice was the
+permission the existing stuck-conversation repair uses — and that would have been wrong:
+service accounts hold that one, deliberately, so that an agent can apply the bounded
+correction it just diagnosed. This operation adds content to a conversation from a
+directory several conversations share, which is a different kind of act, so it has its
+own permission that no service account is given.
+
+**And that promise is now actually enforced.** A service account has never been
+allowed the administrator role, precisely because it carries every permission. But the
+check read the role's NAME: an administrator could create a custom role holding the
+"everything" wildcard, assign it to a service account, and hand that key every permission
+present and future — including this one. The wildcard now belongs to the built-in
+administrator role alone. Custom roles must name what they grant, and a custom role that
+already stored the wildcard grants nothing until its permissions are named. Self-hosters:
+if a service account of yours relies on such a role, list its permissions explicitly
+before upgrading.
+
+**Granting it is a normal role edit.** The permission appears in the role editor under
+Chats, so an administrator can create a role that holds it and nothing else. Self-hosters
+upgrading: nobody holds it until it is granted — the built-in administrator role does,
+by way of holding everything.
+
+**A delegated agent's files now arrive on a custom media directory too.** The fix that
+made a delegated answer's delivery reach the conversation recognised only the image's own
+outbound directory. An installation that points its agents somewhere else — a supported
+setting — still lost every such delivery, and the raw server path appeared in the reply
+where the filename should have been. Both now follow the directory the agent was actually
+told to write to.
+
+**An attached SVG now reaches the agent instead of vanishing.** Atrium decided how an
+attachment travels by asking whether its type began with `image/`. An SVG does — but no
+model reads one: it is XML text, not a picture, and the formats a model actually decodes
+are PNG, JPEG, GIF and WebP. So an SVG was sent down the path reserved for pictures the
+model looks at directly, where it arrived as bytes nothing could interpret, and where it
+also left no file on disk for a tool to open. It reached nobody, and nothing reported it:
+the agent simply answered that the file was not accessible and asked for it again. On a
+shared-directory installation these files now travel as files, which an agent can open,
+convert and use. Anything else under `image/*` that a model cannot decode — TIFF, BMP,
+HEIC, icons — takes the same route, for the same reason.
+
 ## [0.84.4] — What Atrium knew and did not say
 
 Corrective release, found by reading production reports rather than tests. Each item

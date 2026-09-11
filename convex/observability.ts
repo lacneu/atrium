@@ -70,6 +70,8 @@ const traceEventArgs = {
   status: v.optional(v.number()),
   latencyMs: v.optional(v.number()),
   chatId: v.optional(v.string()),
+  /** DURABLE-LOG ONLY (see the note above): never written to a trace row. */
+  messageId: v.optional(v.string()),
   runId: v.optional(v.string()),
   correlationId: v.optional(v.string()),
   // JSON-encoded non-PHI extras. The writer does NOT introspect it; callers
@@ -141,6 +143,7 @@ export const recordEvent = internalMutation({
         method: args.method,
         status: args.status,
         chatId: args.chatId,
+        ...(args.messageId !== undefined ? { messageId: args.messageId } : {}),
         latencyMs: args.latencyMs,
       });
     }
@@ -393,6 +396,11 @@ export const listAccessLog = query({
       route: r.route ?? null,
       method: r.method ?? null,
       status: r.status ?? null,
+      // WHICH message an operation targeted. Persisting it without returning it
+      // here left the promise half-kept: this query IS the documented way to
+      // read the 90-day log, so after the 14-day trace purge an operator still
+      // could not tell which message had been repaired.
+      messageId: r.messageId ?? null,
       chatId: r.chatId ?? null,
       latencyMs: r.latencyMs ?? null,
     }));

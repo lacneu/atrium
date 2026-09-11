@@ -32,7 +32,12 @@
  * stripped from any VISIBLE text via sanitizeText.
  */
 
-import { MediaConfigurationError, sanitizeFrame, sanitizeText } from "./sanitize.js";
+import {
+  isUnsafeOutboundPath,
+  MediaConfigurationError,
+  sanitizeFrame,
+  sanitizeText,
+} from "./sanitize.js";
 import { isGatewayInitiatedRunId } from "./run-families.js";
 import { planPartFromPlanStream } from "../../core/plan-part.js";
 import { classifyFailureText } from "../../core/failure-classifier.js";
@@ -379,19 +384,11 @@ function isOutboundMediaPath(path: Json): path is string {
   if (!path.includes("/media/outbound/")) {
     return false;
   }
-  if (path.includes("..")) {
-    return false;
-  }
-  // urlsplit() in Python rejects scheme/netloc/query. For an absolute fs path
-  // those map to: any "://" (scheme+netloc) or any "?" (query). A leading "/"
-  // path has no scheme/netloc, but reject defensively to match Python exactly.
-  if (path.includes("?")) {
-    return false; // query component
-  }
-  if (/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(path)) {
-    return false; // scheme present
-  }
-  return true;
+  // The dangerous SHAPES (".." traversal, a query component, a scheme) live in
+  // ONE definition, shared with the child lane — which had no filter at all
+  // until it was given this one. urlsplit() in Python rejects scheme/netloc/
+  // query; for an absolute fs path those map to "://" and "?".
+  return !isUnsafeOutboundPath(path);
 }
 
 // Global scanner for an outbound media path EMBEDDED anywhere inside a (possibly

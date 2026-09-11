@@ -376,6 +376,10 @@ export interface ConvexWriter {
       path: string;
       mimeType?: string;
       explicit?: boolean;
+      /** OPERATOR REPAIR: ask Convex for the guarantees only the insert can hold
+       *  atomically (settled target, one copy per file). The live delivery path
+       *  never sets it — it writes into streaming messages by design. */
+      repair?: boolean;
       turnStartMs?: number;
         /** Generation of the turn that started this upload — a late attach must not
      *  inherit whatever generation now owns the message (see the impl note). */
@@ -1783,6 +1787,8 @@ export class HttpConvexWriter implements ConvexWriter {
    *  already has too many. Recorded on SUCCESS only, so a failed transfer leaves
    *  a later re-delivery free to attach (the rule the turn's own dedup states). */
   private readonly attachedByMessage = new Map<string, Set<string>>();
+  /** How many messages' attachment sets this process keeps (FIFO eviction). */
+  private static readonly ATTACHED_CACHE_MAX = 500;
 
   async addMedia(
     messageId: string,
@@ -1796,6 +1802,10 @@ export class HttpConvexWriter implements ConvexWriter {
       // agent reading old notes never re-attaches last week's files. Absent /
       // true / no turnStartMs -> no gate (fail open for legit deliveries).
       explicit?: boolean;
+      /** OPERATOR REPAIR: ask Convex for the guarantees only the insert can
+       *  hold atomically (settled target, one copy per file). The live delivery
+       *  path never sets it — it writes into streaming messages by design. */
+      repair?: boolean;
       turnStartMs?: number;
       /** The generation (ack runId) of the turn that STARTED this upload. Passed
        *  explicitly because a slow upload can outlive its own finalize: the lazily
@@ -1805,7 +1815,18 @@ export class HttpConvexWriter implements ConvexWriter {
       runId?: string | null;
     },
   ): Promise<boolean> {
-    if (this.attachedByMessage.get(messageId)?.has(media.filename) === true) {
+    // NOT ON A REPAIR (codex P1). This set is this PROCESS's memory of what it
+    // attached, and an operator repair is called precisely when the bubble does
+    // not show what the process believes it delivered — a part whose stored bytes
+    // are gone being the case that motivated it. Short-circuiting here answered
+    // "attached" without uploading anything, so the repair reported success and
+    // the bubble stayed empty. Convex holds the durable answer (`alreadyAttached`,
+    // which ignores a part whose blob no longer resolves) and `addPart` re-checks
+    // it in the same transaction as the write, so nothing is lost by asking.
+    if (
+      media.repair !== true &&
+      this.attachedByMessage.get(messageId)?.has(media.filename) === true
+    ) {
       // Already on this bubble — the other delivery path got there first.
       return true;
     }
@@ -1874,7 +1895,11 @@ export class HttpConvexWriter implements ConvexWriter {
         mimeType,
       );
       const uploadMs = Date.now() - uploadStartMs;
-      const ack = await this.post<{ accepted?: boolean }>({
+      const ack = await this.post<{
+        ok?: boolean;
+        accepted?: boolean;
+        reason?: string;
+      }>({
         op: "addMediaPart",
         // The CALLER's generation wins when it STATED one — including an explicit
         // `null`, which is a real generation for a turn opened without an ack runId
@@ -1895,14 +1920,35 @@ export class HttpConvexWriter implements ConvexWriter {
         storageId,
         filename: media.filename,
         mimeType,
+        ...(media.repair === true ? { repair: true } : {}),
       });
       // The server can REFUSE a part whose generation no longer owns the message (an
       // announce reopened it while this upload ran). That is not an attachment: the
       // boolean says so, so the caller neither claims the filename as hosted nor
       // records a `stored` trace for a file that never landed (codex P2).
-      if (ack?.accepted === false) {
+      // A 200 IS NOT A RESULT — the rule this lot applies to the bridge's OWN
+      // answers, applied here to Convex's. The ingest returns `{ok:true}` on a
+      // write and `{ok:true, accepted:false, reason}` on a refusal; anything else
+      // (a divergent proxy answering `200 {}`) is NOT proof the mutation ran, and
+      // reading it as success reported a file as attached to a bubble that has
+      // none.
+      if (ack?.ok !== true) {
         this.emitMediaTrace(messageId, media.chatId, "dropped", {
-          reason: "stale_generation",
+          reason: "unacknowledged",
+          mimeBase: mimeBaseOf(mimeType),
+        });
+        return false;
+      }
+      if (ack.accepted === false) {
+        // THE SERVER'S OWN REASON when it gives one. A refusal used to be traced
+        // as a stale generation whatever it was, and on the repair path
+        // `accepted:false` also means the target was deleted or has reopened —
+        // so the trace that exists to explain the drop named the wrong cause.
+        this.emitMediaTrace(messageId, media.chatId, "dropped", {
+          reason:
+            typeof ack.reason === "string" && ack.reason.length > 0
+              ? ack.reason
+              : "stale_generation",
           mimeBase: mimeBaseOf(mimeType),
         });
         return false;
@@ -1918,8 +1964,24 @@ export class HttpConvexWriter implements ConvexWriter {
         fetchMs,
         uploadMs,
       });
+      // A REPAIR DOES NOT WRITE INTO THIS SET EITHER (codex P1). It is the LIVE
+      // path's per-turn memory, and the live path must keep a late same-named
+      // DIFFERENT file (convex/announceMerge.test.ts). Recording a repaired name
+      // here made the next live delivery of a different document under that name
+      // short-circuit to `true` without reading or uploading anything — the sink
+      // then believed it hosted a file the reader never gets.
+      if (media.repair === true) return true;
       const attached = this.attachedByMessage.get(messageId);
       if (attached === undefined) {
+        // BOUNDED. This map used to grow one entry per message that ever carried
+        // a file and was never cleared — a long-lived bridge is exactly where
+        // that accumulates. Eviction is by insertion order and safe: the set
+        // guards against a SECOND delivery path inside one turn, so an entry
+        // stops mattering once the turn is far behind.
+        if (this.attachedByMessage.size >= HttpConvexWriter.ATTACHED_CACHE_MAX) {
+          const oldest = this.attachedByMessage.keys().next();
+          if (!oldest.done) this.attachedByMessage.delete(oldest.value);
+        }
         this.attachedByMessage.set(messageId, new Set([media.filename]));
       } else {
         attached.add(media.filename);

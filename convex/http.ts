@@ -666,6 +666,154 @@ http.route({
   }),
 });
 
+// OPERATOR REPAIR: attach outbound files an agent produced but that never reached
+// the conversation (convex/mediaRepair.ts). A privileged WRITE that ADDS CONTENT
+// to a settled message, so it gates on its OWN `media.repair` — NOT on `selfheal`
+// like reconcile-chat: the `agent` service role holds selfheal (its bounded
+// self-correction), and reusing it here would let any agent key inject the
+// outbound directory's contents into any conversation, with no ownership check
+// after the gate. Audited the same way. The response says which files landed and which the host
+// no longer has: this route is also the only way to ask that question, because
+// the bridge is the one process that can read that directory.
+http.route({
+  path: "/api/v1/deliver-media",
+  method: "POST",
+  handler: httpAction(async (ctx, request) => {
+    const startedAt = Date.now();
+    const authResult = await authenticateApiKey(ctx, request);
+    if (!authResult.ok) {
+      return apiJson({ ok: false, error: authResult.error }, authResult.status);
+    }
+    const { principal } = authResult;
+    if (!principalHasPermission(principal, PERMISSIONS.MEDIA_REPAIR)) {
+      await ctx.runMutation(internal.observability.recordEvent, {
+        kind: "api.call",
+        direction: "inbound",
+        principalType: "service",
+        principalId: principal.id,
+        roleKey: principal.roleKey,
+        route: "/api/v1/deliver-media",
+        method: "POST",
+        status: 403,
+        latencyMs: Date.now() - startedAt,
+      });
+      return apiJson(
+        { ok: false, error: "missing permission: media.repair" },
+        403,
+      );
+    }
+    // EVERY authenticated call is audited, the malformed ones included. Returning
+    // early on a bad body skipped both the `api.call` trace and its durable
+    // accessLog row, so a key probing this route left no trail at all.
+    const reject = async (error: string, code = 400) => {
+      await ctx.runMutation(internal.observability.recordEvent, {
+        kind: "api.call",
+        direction: "inbound",
+        principalType: "service",
+        principalId: principal.id,
+        roleKey: principal.roleKey,
+        route: "/api/v1/deliver-media",
+        method: "POST",
+        status: code,
+        latencyMs: Date.now() - startedAt,
+      });
+      return apiJson({ ok: false, error }, code);
+    };
+    let body: { chatId?: unknown; messageId?: unknown; filenames?: unknown };
+    try {
+      // `JSON.parse("null")` SUCCEEDS, and a cast does not change the value: the
+      // next property read then threw, turning a malformed body into an
+      // unaudited 500 — past the audited 400 this route promises for every
+      // authenticated call.
+      const parsed: unknown = await request.json();
+      if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+        return await reject("the JSON body must be an object");
+      }
+      body = parsed as typeof body;
+    } catch {
+      return await reject("invalid JSON body");
+    }
+    const chatId = typeof body.chatId === "string" ? body.chatId : "";
+    const messageId = typeof body.messageId === "string" ? body.messageId : "";
+    if (!chatId || !messageId) {
+      return await reject("chatId and messageId are required");
+    }
+    // REFUSE the whole array rather than repair it. Filtering out a bad entry
+    // answered 200 while silently doing nothing for it, and letting a path or an
+    // oversized batch through meant the bridge's own 400 came back as a 502 —
+    // a caller's mistake filed as a server fault. Same constraints as the bridge
+    // route, applied at the boundary where the caller can be told.
+    const MAX_REPAIR_FILES = 16;
+    if (!Array.isArray(body.filenames) || body.filenames.length === 0) {
+      return await reject("filenames must be a non-empty array");
+    }
+    if (body.filenames.length > MAX_REPAIR_FILES) {
+      return await reject(`filenames holds at most ${MAX_REPAIR_FILES} entries`);
+    }
+    const badName = body.filenames.find(
+      (n) =>
+        typeof n !== "string" ||
+        n === "" ||
+        n.length > 512 ||
+        n.includes("/") ||
+        n.includes("\\") ||
+        n.includes("..") ||
+        n.startsWith("."),
+    );
+    if (badName !== undefined) {
+      return await reject(
+        "every filename must be a plain basename (no path, no '..')",
+      );
+    }
+    const filenames = body.filenames as string[];
+    // DUPLICATES are refused, not folded. The bridge would answer about the same
+    // name twice, the response's partition check would reject it for
+    // non-uniqueness, and the API would return 502 — a server fault — AFTER the
+    // file had actually been attached. Refusing keeps the caller's mistake the
+    // caller's, and keeps the answer true.
+    if (new Set(filenames).size !== filenames.length) {
+      return await reject("filenames must not repeat a name");
+    }
+    const result = await ctx.runAction(internal.mediaRepair.deliverOutboundFiles, {
+      chatId,
+      messageId,
+      filenames,
+      principalId: principal.id,
+    });
+    // A TRANSIENT SERVER FAULT IS NOT A BAD REQUEST. Returning 400 for a bridge
+    // timeout or an unreachable bridge told the caller its request was wrong —
+    // so a client that retries 5xx and gives up on 4xx would abandon a repair
+    // that would have worked, and the audit would file an outage as user error.
+    // 4xx stays for what IS the caller's: an unknown target, a message that is
+    // not a settled reply, a provider this cannot serve.
+    const status = result.ok
+      ? 200
+      : result.error === "bridge_timeout"
+        ? 504
+        : result.error === "bridge_unreachable" ||
+            result.error.startsWith("bridge_")
+          ? 502
+          : 400;
+    await ctx.runMutation(internal.observability.recordEvent, {
+      kind: "api.call",
+      direction: "inbound",
+      principalType: "service",
+      principalId: principal.id,
+      roleKey: principal.roleKey,
+      route: "/api/v1/deliver-media",
+      method: "POST",
+      chatId,
+      // WHICH message was repaired, in the 90-day access log — the audit
+      // promise this route makes. The richer `media.repair` event carries the
+      // counts, but it lives in traceEvents and is purged after 14 days.
+      messageId,
+      status,
+      latencyMs: Date.now() - startedAt,
+    });
+    return apiJson(result, status);
+  }),
+});
+
 // Delivery-latency recorder control (convex/deliveryTiming.ts). Activation is a
 // privileged WRITE -> `selfheal` (the agent's control permission); the report is
 // read-only -> `traces.read`. Mirrors the /api/v1/traces auth + audit spine.

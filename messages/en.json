@@ -860,6 +860,7 @@
   "roles_perm_report": "Report",
   "roles_perm_manage": "Manage",
   "roles_perm_selfheal": "Self-heal",
+  "roles_perm_media_repair": "Repair a lost file delivery",
   "roles_phi_tooltip": "{key} — access to raw content (PHI), grant with caution",
   "roles_toast_seed_error": "Failed to initialize roles",
   "roles_confirm_edit_builtin_title": "Edit the built-in role “{name}”?",

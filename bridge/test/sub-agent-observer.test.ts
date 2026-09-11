@@ -172,6 +172,137 @@ describe("SubAgentObserver — registration & lifecycle (real frames)", () => {
     ]);
   });
 
+  it("...on a CUSTOM outbound mount too, not only the image's default", () => {
+    // An instance may override `outboundAgentMount`, and `/send` then instructs
+    // the agent to write there — so the child's directive names THAT path. The
+    // recogniser was pinned to the image default, so on any custom mount the
+    // delivery stayed exactly as lost as before this lane existed.
+    const obs = new SubAgentObserver(PARENT1, "chatA", {
+      outboundAgentMount: () => "/srv/atrium/out",
+    });
+    obs.observe(SPAWN_RESULT_1, 1000);
+    const media = JSON.parse(JSON.stringify(CHILD_FINAL_1)) as Record<string, any>;
+    media.payload.message = {
+      role: "assistant",
+      content: [{ type: "text", text: "MEDIA:/srv/atrium/out/report.pdf" }],
+    };
+    const out = obs.observe(media, 1002);
+    expect((out[0] as { deliveredMedia?: unknown }).deliveredMedia).toEqual([
+      { filename: "report.pdf", path: "/srv/atrium/out/report.pdf" },
+    ]);
+    // ...and the VISIBLE answer names the file without the server path. On a
+    // custom mount the line matched no rule at all, so the raw absolute path
+    // reached the reader — the SOC2 rule that the default mount already held.
+    const text = (out[0] as { resultText?: string }).resultText ?? "";
+    expect(text).toContain("report.pdf");
+    expect(text).not.toContain("/srv/atrium/out");
+  });
+
+  it("the SEND PATH tells the session which mount it instructed (the missing link)", () => {
+    // STRUCTURAL, and deliberately so: driving a real `Session` needs a live
+    // gateway socket, so nothing here can exercise `/send -> session -> observer`
+    // end to end. Neutralising the wiring left every behavioural test GREEN,
+    // which is exactly the kind of silent break this asserts against — the two
+    // ends above are proven, this holds the link between them.
+    const server = readFileSync(
+      new URL("../src/server.ts", import.meta.url),
+      "utf-8",
+    );
+    // The mount is recorded from the SAME value `/send` hands to performSend.
+    expect(server).toMatch(/session\.noteOutboundMount\(deliveryDir\);/);
+    // ...and the INTERACTION door does it too: its session may be brand new (the
+    // original is reaped after 15 min idle), and a reply naming a file under a
+    // custom mount then showed an absolute server path instead of the filename.
+    expect(server).toMatch(
+      /noteOutboundMount\(\s*served\.get\(saInstance\)\?\.config\.mediaOutboundAgentMount/,
+    );
+    const session = readFileSync(
+      new URL("../src/session.ts", import.meta.url),
+      "utf-8",
+    );
+    // ...and the session hands the observer a SUPPLIER, so a mount changed
+    // mid-session is seen (a value captured at construction would not be).
+    expect(session).toMatch(/outboundAgentMount: \(\) => this\.outboundAgentMount/);
+  });
+
+  it("a ROOT mount is a real configuration, not a silent fallback", () => {
+    // Convex ACCEPTS "/" (`isValidAgentMountPath`). Reading it as "unset" sent
+    // this lane looking for the image default while the agent wrote to "/": the
+    // delivery lost, and nothing anywhere said why.
+    const obs = new SubAgentObserver(PARENT1, "chatA", {
+      outboundAgentMount: () => "/",
+    });
+    obs.observe(SPAWN_RESULT_1, 1000);
+    const media = JSON.parse(JSON.stringify(CHILD_FINAL_1)) as Record<string, any>;
+    media.payload.message = {
+      role: "assistant",
+      content: [{ type: "text", text: "MEDIA:/rapport.pdf" }],
+    };
+    const out = obs.observe(media, 1002);
+    expect((out[0] as { deliveredMedia?: unknown }).deliveredMedia).toEqual([
+      { filename: "rapport.pdf", path: "/rapport.pdf" },
+    ]);
+    // ...and the visible answer carries the NAME, not the path. The root mount
+    // normalises to the empty prefix, which a second normalisation read as
+    // "unset" — the delivery was detected and the absolute path stayed visible.
+    const text = (out[0] as { resultText?: string }).resultText ?? "";
+    expect(text).toBe("rapport.pdf");
+  });
+
+  it("a child keeps ITS OWN turn's mount, not the session's latest", () => {
+    // A delegation outlives the turn that spawned it. A later `/send` after a
+    // config change moved the session's mount, and reading it at terminal looked
+    // for the NEW directory while the child had written to the old one: the
+    // delivery lost again, and the server path left in the visible text.
+    let current = "/srv/old/out";
+    const obs = new SubAgentObserver(PARENT1, "chatA", {
+      outboundAgentMount: () => current,
+    });
+    obs.observe(SPAWN_RESULT_1, 1000); // registers under /srv/old/out
+    current = "/srv/new/out"; // an admin changes it mid-flight
+    const media = JSON.parse(JSON.stringify(CHILD_FINAL_1)) as Record<string, any>;
+    media.payload.message = {
+      role: "assistant",
+      content: [{ type: "text", text: "MEDIA:/srv/old/out/report.pdf" }],
+    };
+    const out = obs.observe(media, 1002);
+    expect((out[0] as { deliveredMedia?: unknown }).deliveredMedia).toEqual([
+      { filename: "report.pdf", path: "/srv/old/out/report.pdf" },
+    ]);
+    const text = (out[0] as { resultText?: string }).resultText ?? "";
+    expect(text).toBe("report.pdf");
+  });
+
+  it("a TRAVERSING directive delivers nothing (the child lane had no filter)", () => {
+    // The owner's lane has refused these shapes since the Python original
+    // (`isOutboundMediaPath`: no "..", no query, no scheme). The child lane had
+    // NO filter, and its path goes straight to the fetcher — which in
+    // `gateway-http` mode asks the gateway for that exact `source`.
+    const obs = new SubAgentObserver(PARENT1, "chatA");
+    obs.observe(SPAWN_RESULT_1, 1000);
+    const media = JSON.parse(JSON.stringify(CHILD_FINAL_1)) as Record<string, any>;
+    media.payload.message = {
+      role: "assistant",
+      content: [
+        {
+          type: "text",
+          text:
+            "MEDIA:/home/node/.openclaw/media/outbound/../../secrets.env\n" +
+            "MEDIA:/home/node/.openclaw/media/outbound/r.pdf?x=1\n" +
+            "MEDIA:/home/node/.openclaw/media/outbound/ok.pdf",
+        },
+      ],
+    };
+    const out = obs.observe(media, 1002);
+    // ONLY the well-formed one rides.
+    expect((out[0] as { deliveredMedia?: unknown }).deliveredMedia).toEqual([
+      {
+        filename: "ok.pdf",
+        path: "/home/node/.openclaw/media/outbound/ok.pdf",
+      },
+    ]);
+  });
+
   it("a child that delivered nothing carries no delivery", () => {
     // The field's ABSENCE is the signal the attach path keys on — a turn with
     // an empty list would make every ordinary delegation walk the media code.
@@ -1532,6 +1663,92 @@ describe("SubAgentObserver — child-lane anchor fallback (missed spawn result)"
     expect(done.find((u) => u.childSessionKey === CHILD)?.parentMessageId).toBe(
       "msg-announce",
     );
+  });
+});
+
+describe("a delivery made BEFORE the bubble is known", () => {
+  // The SAME shapes the neighbouring anchor-fallback suite uses: an announce-run
+  // item sighting parks a null anchor, the child registers lazily, and the run
+  // correlation supplies the bubble later.
+  const PARENT = "agent:alice:atrium:chat:olivier:latedelivery1";
+  const CHILD = "agent:files:subagent:cccc1111-2222-3333-4444-555566667777";
+  const RUN = "announce:v1:agent:files:subagent:prev:run9";
+
+  it("rides the LATE anchor instead of being lost", () => {
+    // A fast child can settle before its spawn result names the parent bubble.
+    // The terminal upsert then carried the delivery with a NULL anchor — the
+    // session's attach path requires one, so it skipped — and the late anchor
+    // backfill said nothing about files. The document was gone for good.
+    const obs = new SubAgentObserver(PARENT, "chatA");
+    obs.observe(
+      {
+        event: "agent",
+        payload: {
+          sessionKey: PARENT,
+          runId: RUN,
+          stream: "item",
+          data: {
+            name: "sessions_spawn",
+            phase: "start",
+            toolCallId: "call_G|fc_G",
+            meta: "task T., agent files",
+          },
+        },
+      },
+      1000,
+      null,
+    );
+    // The child registers LAZILY (its own runId), still anchor-less.
+    obs.observe(
+      {
+        event: "agent",
+        payload: {
+          sessionKey: CHILD,
+          spawnedBy: PARENT,
+          runId: "child-run",
+          stream: "lifecycle",
+          data: { phase: "startup" },
+        },
+      },
+      1010,
+      null,
+    );
+    const term = obs.observe(
+      {
+        event: "chat",
+        payload: {
+          sessionKey: CHILD,
+          spawnedBy: PARENT,
+          state: "final",
+          message: {
+            role: "assistant",
+            content: [
+              {
+                type: "text",
+                text: "MEDIA:/home/node/.openclaw/media/outbound/r.pdf",
+              },
+            ],
+          },
+        },
+      },
+      1020,
+      null,
+    );
+    const t = term.find((u) => u.childSessionKey === CHILD) as
+      | { parentMessageId?: string | null; deliveredMedia?: unknown }
+      | undefined;
+    expect(t?.parentMessageId ?? null).toBeNull(); // nothing to attach to yet
+    expect(t?.deliveredMedia).toBeDefined();
+
+    // ...and when the bubble finally opens, the delivery rides WITH the anchor.
+    const late = obs.noteRunAnchor([RUN], "msg-announce", 1030);
+    const carried = late.find((u) => u.childSessionKey === CHILD) as
+      | { parentMessageId?: string | null; deliveredMedia?: unknown }
+      | undefined;
+    expect(carried?.parentMessageId).toBe("msg-announce");
+    expect(carried?.deliveredMedia).toEqual([
+      { filename: "r.pdf", path: "/home/node/.openclaw/media/outbound/r.pdf" },
+    ]);
   });
 });
 

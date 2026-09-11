@@ -549,14 +549,25 @@ export const updateRolePermissions = mutation({
 });
 
 /**
- * Reject any permission key outside the closed PERMISSIONS set (the wildcard
- * "*" is allowed for an admin-equivalent role). Keeps the matrix from storing
- * typo'd permissions that would silently never match.
+ * Reject any permission key outside the closed PERMISSIONS set. Keeps the matrix
+ * from storing typo'd permissions that would silently never match.
+ *
+ * AND REJECT THE WILDCARD. It used to be allowed here "for an admin-equivalent
+ * role" — but this function only ever guards CUSTOM roles (built-ins are seeded
+ * from code and `updateRolePermissions` refuses them outright), and a custom role
+ * is the only role a SERVICE ACCOUNT may carry. So the one thing a stored "*"
+ * could do was hand an API key every permission, present and future — the exact
+ * outcome that refusing the `admin` roleKey on a service account exists to
+ * prevent. An admin-equivalent role is `admin`, and `admin` is human-only.
  */
 function assertValidPermissions(permissions: string[]): void {
   const valid = expandPermissions(Object.values(PERMISSIONS)); // all known keys
   for (const p of permissions) {
-    if (p === "*") continue;
+    if (p === "*") {
+      throw new Error(
+        "Refused: '*' is the built-in admin role's; a custom role must name the permissions it grants",
+      );
+    }
     if (!valid.has(p)) {
       throw new Error(`Unknown permission key: ${p}`);
     }

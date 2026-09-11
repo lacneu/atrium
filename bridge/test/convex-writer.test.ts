@@ -32,7 +32,7 @@ function controlledFetch() {
     return await new Promise((resolve, reject) => {
       pending.push({
         resolve: () =>
-          resolve({ ok: true, json: async () => ({}) } as unknown as Response),
+          resolve({ ok: true, json: async () => ({ ok: true }) } as unknown as Response),
         reject,
       });
     });
@@ -67,7 +67,7 @@ describe("ingest auth: the writer presents its configured secret as the Bearer",
       init: { headers?: Record<string, string> },
     ) => {
       seenAuth.push(init.headers?.["Authorization"]);
-      return { ok: true, json: async () => ({}) } as unknown as Response;
+      return { ok: true, json: async () => ({ ok: true }) } as unknown as Response;
     }) as unknown as typeof fetch;
     const w = new HttpConvexWriter({
       convexHttpActionsUrl: "http://test.invalid",
@@ -270,7 +270,7 @@ function mediaFlowFetch(opts?: {
         json: async () => ({ uploadUrl: UPLOAD_URL }),
       } as unknown as Response;
     }
-    return { ok: true, json: async () => ({}) } as unknown as Response;
+    return { ok: true, json: async () => ({ ok: true }) } as unknown as Response;
   }) as unknown as typeof fetch;
   return { fetchImpl, sent };
 }
@@ -581,7 +581,7 @@ describe("per-message chains + write timeout + delta cap (never-falls)", () => {
     const fetchImpl = (async (_url: unknown, init: { body: string }) => {
       const body = JSON.parse(init.body) as { op: string };
       if (body.op === "appendDelta") throw new Error("convex backpressure on flush");
-      return { ok: true, json: async () => ({}) } as unknown as Response;
+      return { ok: true, json: async () => ({ ok: true }) } as unknown as Response;
     }) as unknown as typeof fetch;
     const w = writerWith(fetchImpl, 5);
     await w.appendDelta("m1", "buffered tail"); // arm a pending delta + flush timer
@@ -624,7 +624,7 @@ function autoFetch() {
   const sent: SentOp[] = [];
   const fetchImpl = (async (_url: unknown, init: { body: string }) => {
     sent.push(JSON.parse(init.body) as SentOp);
-    return { ok: true, json: async () => ({}) } as unknown as Response;
+    return { ok: true, json: async () => ({ ok: true }) } as unknown as Response;
   }) as unknown as typeof fetch;
   return { fetchImpl, sent };
 }
@@ -654,7 +654,7 @@ function guardedFetch() {
     sent.push(op);
     if (op.op === "appendDelta") {
       serverText += op.text ?? "";
-      return { ok: true, json: async () => ({}) } as unknown as Response;
+      return { ok: true, json: async () => ({ ok: true }) } as unknown as Response;
     }
     if (op.op === "setSnapshot") {
       const next = op.text ?? "";
@@ -670,7 +670,7 @@ function guardedFetch() {
         json: async () => ({ ok: true, applied: true }),
       } as unknown as Response;
     }
-    return { ok: true, json: async () => ({}) } as unknown as Response;
+    return { ok: true, json: async () => ({ ok: true }) } as unknown as Response;
   }) as unknown as typeof fetch;
   return { fetchImpl, sent, serverText: () => serverText };
 }
@@ -712,7 +712,7 @@ describe("G-14: a refused snapshot must not desynchronize the writer's mirror", 
       sent.push(op);
       if (op.op === "appendDelta") {
         serverText += op.text ?? "";
-        return { ok: true, json: async () => ({}) } as unknown as Response;
+        return { ok: true, json: async () => ({ ok: true }) } as unknown as Response;
       }
       if (op.op === "setSnapshot") {
         const next = op.text ?? "";
@@ -728,7 +728,7 @@ describe("G-14: a refused snapshot must not desynchronize the writer's mirror", 
           json: async () => ({ ok: true, applied: true }),
         } as unknown as Response;
       }
-      return { ok: true, json: async () => ({}) } as unknown as Response;
+      return { ok: true, json: async () => ({ ok: true }) } as unknown as Response;
     }) as unknown as typeof fetch;
 
     const w = writerWith(fetchImpl);
@@ -911,7 +911,7 @@ describe("snapshot write-reduction (suffix-delta, heartbeat-preserving)", () => 
       if (i++ === 0) {
         throw Object.assign(new Error("ingest down"), { name: "Error" });
       }
-      return { ok: true, json: async () => ({}) } as unknown as Response;
+      return { ok: true, json: async () => ({ ok: true }) } as unknown as Response;
     }) as unknown as typeof fetch;
     const w = writerWith(fetchImpl, 5);
 
@@ -1192,7 +1192,7 @@ describe("the session-state clear is retried too (idempotent by construction)", 
     const fetchImpl = (async () => {
       attempts += 1;
       if (attempts === 1) throw new Error("network");
-      return { ok: true, json: async () => ({}) } as unknown as Response;
+      return { ok: true, json: async () => ({ ok: true }) } as unknown as Response;
     }) as unknown as typeof fetch;
     const w = writerWith(fetchImpl);
 
@@ -1215,7 +1215,7 @@ describe("the PLAN clear is retried too (idempotent by construction)", () => {
     const fetchImpl = (async () => {
       attempts += 1;
       if (attempts === 1) throw new Error("network");
-      return { ok: true, json: async () => ({}) } as unknown as Response;
+      return { ok: true, json: async () => ({ ok: true }) } as unknown as Response;
     }) as unknown as typeof fetch;
     const w = writerWith(fetchImpl);
 
@@ -1235,7 +1235,7 @@ describe("the PLAN clear is retried too (idempotent by construction)", () => {
       if (body.op === "clearPlan") stamps.push(body.stamp);
       attempts += 1;
       if (attempts === 1) throw new Error("network");
-      return { ok: true, json: async () => ({}) } as unknown as Response;
+      return { ok: true, json: async () => ({ ok: true }) } as unknown as Response;
     }) as unknown as typeof fetch;
     const w = writerWith(fetchImpl);
 
@@ -1248,7 +1248,7 @@ describe("the PLAN clear is retried too (idempotent by construction)", () => {
     const bodies: Record<string, unknown>[] = [];
     const fetchImpl = (async (_url: unknown, init: { body: string }) => {
       bodies.push(JSON.parse(init.body) as Record<string, unknown>);
-      return { ok: true, json: async () => ({}) } as unknown as Response;
+      return { ok: true, json: async () => ({ ok: true }) } as unknown as Response;
     }) as unknown as typeof fetch;
     const w = writerWith(fetchImpl);
 
@@ -1270,7 +1270,7 @@ describe("finalize is retried when the POST fails transiently (G-30)", () => {
         attempts += 1;
         if (attempts === 1) throw new Error("socket hang up");
       }
-      return { ok: true, json: async () => ({}) } as unknown as Response;
+      return { ok: true, json: async () => ({ ok: true }) } as unknown as Response;
     }) as unknown as typeof fetch;
     const writer = writerWith(fetchImpl);
     await writer.finalize("m1", "complete", "the answer", null);
@@ -1289,7 +1289,7 @@ describe("finalize is retried when the POST fails transiently (G-30)", () => {
           text: async () => "bad request",
         } as unknown as Response;
       }
-      return { ok: true, json: async () => ({}) } as unknown as Response;
+      return { ok: true, json: async () => ({ ok: true }) } as unknown as Response;
     }) as unknown as typeof fetch;
     const writer = writerWith(fetchImpl);
     // The failure still surfaces — the point is that it is not repeated.
@@ -1311,7 +1311,7 @@ describe("finalize is retried when the POST fails transiently (G-30)", () => {
           } as unknown as Response;
         }
       }
-      return { ok: true, json: async () => ({}) } as unknown as Response;
+      return { ok: true, json: async () => ({ ok: true }) } as unknown as Response;
     }) as unknown as typeof fetch;
     const writer = writerWith(fetchImpl);
     await writer.finalize("m1", "complete", "the answer", null);
@@ -1465,6 +1465,249 @@ describe("finalize is retried when the POST fails transiently (G-30)", () => {
     expect(attached).toBe(false);
   });
 
+  test("a 200 that does NOT acknowledge the write is not an attachment", async () => {
+    // A 200 IS NOT A RESULT — the rule this lot applies to the bridge's own
+    // answers, applied to Convex's. The ingest answers `{ok:true}` on a write and
+    // `{ok:true, accepted:false, reason}` on a refusal. A divergent proxy
+    // answering `200 {}` proves nothing ran, and reading it as success reported
+    // the file as attached to a bubble that has none.
+    for (const body of [{}, { ok: false }, { accepted: true }]) {
+      // The malformed answer is for `addMediaPart` ONLY: breaking `getUploadUrl`
+      // too would make this pass for the wrong reason (the upload throws).
+      const fetchImpl = (async (url: unknown, init: { body?: string }) => {
+        if (String(url).includes("upload")) {
+          return {
+            ok: true,
+            json: async () => ({ storageId: "s1" }),
+          } as unknown as Response;
+        }
+        const op = (JSON.parse(init.body ?? "{}") as { op?: string }).op;
+        return {
+          ok: true,
+          json: async () =>
+            op === "addMediaPart"
+              ? body
+              : { ok: true, uploadUrl: "http://upload.invalid" },
+        } as unknown as Response;
+      }) as unknown as typeof fetch;
+      const writer = new HttpConvexWriter({
+        convexHttpActionsUrl: "http://test.invalid",
+        ingestSecret: "s",
+        deltaFlushMs: 5,
+        fetchImpl,
+        getFetcher: () => ({
+          open: async () => ({
+            ok: true as const,
+            stream: Readable.from([Buffer.from("b")]),
+            mimeType: "application/pdf",
+            size: 1,
+          }),
+        }),
+      });
+      expect(
+        await writer.addMedia("m1", {
+          chatId: "c1",
+          filename: "f.pdf",
+          path: "f.pdf",
+        }),
+        JSON.stringify(body),
+      ).toBe(false);
+    }
+  });
+
+  test("a REPAIR ignores this process's memory of what it already attached", async () => {
+    // The in-memory set says "I delivered that already" — and a repair is called
+    // precisely when the bubble does not show what this process believes it
+    // delivered (a part whose stored bytes are gone is the case that motivated
+    // it). Short-circuiting on it answered `true` without uploading anything, so
+    // the operator was told the file landed and the bubble stayed empty. Convex
+    // holds the durable answer and re-checks it in the write's own transaction.
+    const posts: string[] = [];
+    const fetchImpl = (async (url: unknown, init: { body?: string }) => {
+      if (String(url).includes("upload")) {
+        return {
+          ok: true,
+          json: async () => ({ storageId: "s1" }),
+        } as unknown as Response;
+      }
+      const body = JSON.parse(init.body ?? "{}") as { op?: string };
+      if (body.op !== undefined) posts.push(body.op);
+      if (body.op === "addMediaPart") {
+        return { ok: true, json: async () => ({ ok: true }) } as unknown as Response;
+      }
+      return {
+        ok: true,
+        json: async () => ({ uploadUrl: "http://upload.invalid" }),
+      } as unknown as Response;
+    }) as unknown as typeof fetch;
+    const writer = new HttpConvexWriter({
+      convexHttpActionsUrl: "http://test.invalid",
+      ingestSecret: "s",
+      deltaFlushMs: 5,
+      fetchImpl,
+      getFetcher: () => ({
+        open: async () => ({
+          ok: true as const,
+          stream: Readable.from([Buffer.from("bytes")]),
+          mimeType: "application/pdf",
+          size: 5,
+        }),
+      }),
+    });
+    const call = () =>
+      writer.addMedia("m1", {
+        chatId: "c1",
+        filename: "f.pdf",
+        path: "f.pdf",
+        repair: true,
+      });
+    expect(await call()).toBe(true);
+    posts.length = 0;
+    // SECOND repair, same process, same file: it must reach Convex again.
+    expect(await call()).toBe(true);
+    expect(posts).toContain("addMediaPart");
+
+    // ...and it did not WRITE into the set either: a later live delivery of a
+    // genuinely different document under that name must still be read and
+    // uploaded (convex/announceMerge.test.ts keeps such a file).
+    posts.length = 0;
+    expect(
+      await writer.addMedia("m1", {
+        chatId: "c1",
+        filename: "f.pdf",
+        path: "f.pdf",
+      }),
+    ).toBe(true);
+    expect(posts).toContain("addMediaPart");
+
+    // ...while the LIVE path still short-circuits — that is what the set is for.
+    const live = () =>
+      writer.addMedia("m2", { chatId: "c1", filename: "g.pdf", path: "g.pdf" });
+    expect(await live()).toBe(true);
+    posts.length = 0;
+    expect(await live()).toBe(true);
+    expect(posts).not.toContain("addMediaPart");
+  });
+
+  test("the attachment memory is BOUNDED — the oldest message is evicted", async () => {
+    // It used to hold one entry per message that ever carried a file, for the
+    // life of the process, and a bridge runs for weeks. Eviction is by insertion
+    // order and safe: the set guards a SECOND delivery path inside ONE turn, so
+    // an entry stops mattering once the turn is far behind.
+    const posts: string[] = [];
+    const fetchImpl = (async (url: unknown, init: { body?: string }) => {
+      if (String(url).includes("upload")) {
+        return {
+          ok: true,
+          json: async () => ({ storageId: "s1" }),
+        } as unknown as Response;
+      }
+      const body = JSON.parse(init.body ?? "{}") as { op?: string };
+      if (body.op !== undefined) posts.push(body.op);
+      return {
+        ok: true,
+        json: async () => ({ ok: true, uploadUrl: "http://upload.invalid" }),
+      } as unknown as Response;
+    }) as unknown as typeof fetch;
+    const writer = new HttpConvexWriter({
+      convexHttpActionsUrl: "http://test.invalid",
+      ingestSecret: "s",
+      deltaFlushMs: 5,
+      fetchImpl,
+      getFetcher: () => ({
+        open: async () => ({
+          ok: true as const,
+          stream: Readable.from([Buffer.from("b")]),
+          mimeType: "application/pdf",
+          size: 1,
+        }),
+      }),
+    });
+    const attach = (m: string) =>
+      writer.addMedia(m, { chatId: "c1", filename: "f.pdf", path: "f.pdf" });
+
+    await attach("m-first");
+    // 500 more messages: `m-first` is the oldest and falls out.
+    for (let i = 0; i < 500; i++) await attach(`m-${i}`);
+
+    posts.length = 0;
+    await attach("m-first"); // its memory is gone -> it goes to Convex again
+    expect(posts).toContain("addMediaPart");
+
+    posts.length = 0;
+    await attach("m-499"); // still remembered -> short-circuits
+    expect(posts).not.toContain("addMediaPart");
+  });
+
+  test("the dropped trace carries the SERVER's reason, and falls back when it gives none", async () => {
+    // The trace is the one place an operator is told WHY a file did not land, and
+    // it said `stale_generation` whatever the refusal was. On the repair path
+    // `accepted:false` also means the target was deleted or has reopened — so the
+    // answer sent them looking at generations for a message that is gone.
+    const reasonsSeen: Array<string | undefined> = [];
+    const run = async (serverReason: string | undefined) => {
+      const sent: Array<Record<string, unknown>> = [];
+      const fetchImpl = (async (url: unknown, init: { body?: string }) => {
+        if (String(url).includes("upload")) {
+          return {
+            ok: true,
+            json: async () => ({ storageId: "s1" }),
+          } as unknown as Response;
+        }
+        const body = JSON.parse(init.body ?? "{}") as { op?: string };
+        sent.push(body as Record<string, unknown>);
+        if (body.op === "addMediaPart") {
+          return {
+            ok: true,
+            json: async () => ({
+              ok: true,
+              accepted: false,
+              ...(serverReason !== undefined ? { reason: serverReason } : {}),
+            }),
+          } as unknown as Response;
+        }
+        return {
+          ok: true,
+          json: async () => ({ uploadUrl: "http://upload.invalid" }),
+        } as unknown as Response;
+      }) as unknown as typeof fetch;
+      const writer = new HttpConvexWriter({
+        convexHttpActionsUrl: "http://test.invalid",
+        ingestSecret: "s",
+        deltaFlushMs: 5,
+        fetchImpl,
+        getFetcher: () => ({
+          open: async () => ({
+            ok: true as const,
+            stream: Readable.from([Buffer.from("bytes")]),
+            mimeType: "application/pdf",
+            size: 5,
+          }),
+        }),
+      });
+      expect(
+        await writer.addMedia("m1", {
+          chatId: "c1",
+          filename: "f.pdf",
+          path: "f.pdf",
+          repair: true,
+        }),
+      ).toBe(false);
+      // The trace is fire-and-forget: let its post reach the transport.
+      await sleep(5);
+      const trace = sent.find(
+        (b) => b.op === "mediaTrace" && b.phase === "dropped",
+      );
+      reasonsSeen.push(trace?.reason as string | undefined);
+    };
+
+    await run("message_missing");
+    // No reason from the server (an older deployment): the historic constant
+    // stays, rather than a trace with no cause at all.
+    await run(undefined);
+    expect(reasonsSeen).toEqual(["message_missing", "stale_generation"]);
+  });
+
   test("a CONTENT op is never retried — that would duplicate what the reader sees", async () => {
     let attempts = 0;
     const fetchImpl = (async (_url: unknown, init: { body: string }) => {
@@ -1473,7 +1716,7 @@ describe("finalize is retried when the POST fails transiently (G-30)", () => {
         attempts += 1;
         throw new Error("socket hang up");
       }
-      return { ok: true, json: async () => ({}) } as unknown as Response;
+      return { ok: true, json: async () => ({ ok: true }) } as unknown as Response;
     }) as unknown as typeof fetch;
     const writer = writerWith(fetchImpl);
     await writer

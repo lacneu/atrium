@@ -37,7 +37,13 @@ import { m } from "@/paraglide/messages.js";
 // grouped + labeled for the matrix columns. Keep in sync with convex/lib/rbac.ts.
 // label/group resolve through Paraglide at call time (thunks) → they re-localize
 // FR↔EN. A plain m.*() here would freeze the locale at module import.
-const PERMISSION_GROUPS: {
+// EXPORTED so a test can hold it in lockstep with the server's PERMISSIONS: a
+// permission that gates a route but is missing here is grantable to nobody, and
+// the route is then reachable by no supported principal (an API key is always a
+// service account, and the wildcard `admin` role cannot be given to one). That
+// is not a theoretical gap — it shipped once, in this very file's absence of a
+// `media.repair` entry.
+export const PERMISSION_GROUPS: {
   group: () => string;
   keys: { key: string; label: () => string; phi?: boolean }[];
 }[] = [
@@ -77,6 +83,14 @@ const PERMISSION_GROUPS: {
       // Built into the `agent` role; exposed here so CUSTOM service roles can be
       // granted/audited the same key instead of silently 403-ing.
       { key: "selfheal", label: () => m.roles_perm_selfheal() },
+      // Repair a LOST file delivery (POST /api/v1/deliver-media): attach files
+      // an agent produced to the reply that should already carry them. NOT in
+      // any built-in service role on purpose — it ADDS CONTENT from a directory
+      // several conversations share, so it is granted deliberately, per role,
+      // and audited. Exposed here for the same reason `selfheal` is: without
+      // it the route is reachable by no supported principal at all, since
+      // `admin` (the wildcard) cannot be given to a service account.
+      { key: "media.repair", label: () => m.roles_perm_media_repair() },
       { key: "feedback.respond", label: () => m.roles_perm_feedback_respond() },
     ],
   },

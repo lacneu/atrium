@@ -860,6 +860,7 @@
   "roles_perm_report": "Signaler",
   "roles_perm_manage": "Gérer",
   "roles_perm_selfheal": "Auto-correction",
+  "roles_perm_media_repair": "Réparer une livraison de fichier perdue",
   "roles_phi_tooltip": "{key} — accès au contenu brut (PHI), à accorder avec prudence",
   "roles_toast_seed_error": "Échec de l’initialisation des rôles",
   "roles_confirm_edit_builtin_title": "Modifier le rôle intégré « {name} » ?",

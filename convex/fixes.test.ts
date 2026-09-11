@@ -208,6 +208,36 @@ describe("L2 — createServiceAccount rejects human roleKeys", () => {
   });
 });
 
+describe("L2b — a custom role can never be the wildcard", () => {
+  test("createRole and updateRolePermissions both refuse '*'", async () => {
+    // `HUMAN_ONLY_ROLE_KEYS` refuses the `admin` roleKey on a service account
+    // because it would hand an API key the wildcard set. It checks the KEY — so a
+    // custom role holding "*", assigned to a service account, reached the same
+    // outcome by another door: every permission, present and future.
+    const t = convexTest(schema, modules);
+    const { as } = await seedAdmin(t);
+    await expect(
+      as.mutation(api.apiKeys.createRole, {
+        key: "sneaky",
+        name: "Sneaky",
+        permissions: ["*"],
+      }),
+    ).rejects.toThrow(/built-in admin role/i);
+
+    const roleId = await as.mutation(api.apiKeys.createRole, {
+      key: "narrow",
+      name: "Narrow",
+      permissions: ["traces.read"],
+    });
+    await expect(
+      as.mutation(api.apiKeys.updateRolePermissions, {
+        roleId,
+        permissions: ["traces.read", "*"],
+      }),
+    ).rejects.toThrow(/built-in admin role/i);
+  });
+});
+
 describe("D-2 — ensureRolesSeeded seeds built-ins (admin-gated)", () => {
   test("admin can seed; the roles table is populated", async () => {
     const t = convexTest(schema, modules);
