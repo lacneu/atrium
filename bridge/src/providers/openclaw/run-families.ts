@@ -38,3 +38,31 @@ export function isGatewayInitiatedRunId(runId: string): boolean {
   if (isTalkConsultRunId(runId)) return true;
   return false;
 }
+
+/** The delivery LANES upstream appends to an ANNOUNCE identity. Both compose ON
+ *  TOP of the `announce:v1:<childKey>:<childRunId>` grammar, so the child run id
+ *  stops being the last segment:
+ *    subagent-announce-delivery.ts:229        -> `…:agent-loop`
+ *    subagent-announce-descendant-wake.ts:111 -> `…:wake`
+ *  Kept in lockstep with convex/lib/deliveryRuns.ts, which reads the same
+ *  grammar for the same rows — the two MUST agree or a child settles on one
+ *  side and hangs on the other. */
+const ANNOUNCE_DELIVERY_LANES: readonly string[] = ["agent-loop", "wake"];
+
+/**
+ * The sub-agent row key an `announce:v1:` run settles, or null when the runId is
+ * not one. Splitting on ":" and dropping the last segment is NOT enough: a run
+ * carrying a delivery lane folds the child RUN id into the child KEY, the settle
+ * then matches no row, and a finished child holds the chat as `running` until the
+ * reaper. Listed and never guessed — an unknown suffix stays part of the key, so a
+ * new upstream lane shows up as a visible miss rather than a wrong correlation.
+ */
+export function announcedChildKey(runId: string | null | undefined): string | null {
+  if (typeof runId !== "string" || !runId.startsWith("announce:v1:")) return null;
+  const seg = runId.split(":");
+  const last = seg[seg.length - 1];
+  if (last !== undefined && ANNOUNCE_DELIVERY_LANES.includes(last)) seg.pop();
+  if (seg.length < 4) return null;
+  const key = seg.slice(2, -1).join(":");
+  return key === "" ? null : key;
+}

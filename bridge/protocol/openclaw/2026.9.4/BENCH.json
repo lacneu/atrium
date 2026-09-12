@@ -1,0 +1,90 @@
+{
+  "kind": "atrium-bench-attestation",
+  "version": 2,
+  "gatewayVersion": "2026.9.4",
+  "openclawRuns": [
+    {
+      "id": "basic-turn",
+      "ok": true,
+      "chat": "e10e767eba8a1fbe"
+    },
+    {
+      "id": "tool-exec",
+      "ok": true,
+      "chat": "e10e767eba8a1fbe"
+    },
+    {
+      "id": "update-plan",
+      "ok": true,
+      "chat": "e10e767eba8a1fbe"
+    },
+    {
+      "id": "media-outbound",
+      "ok": true,
+      "chat": "e10e767eba8a1fbe"
+    },
+    {
+      "id": "spawn-announce-merge",
+      "ok": true,
+      "chat": "e10e767eba8a1fbe"
+    },
+    {
+      "id": "spawn-chain-merge",
+      "ok": true,
+      "chat": "e10e767eba8a1fbe"
+    },
+    {
+      "id": "spawn-parallel-merge",
+      "ok": true,
+      "chat": "e10e767eba8a1fbe"
+    },
+    {
+      "id": "async-task",
+      "ok": true,
+      "chat": "e10e767eba8a1fbe"
+    },
+    {
+      "id": "cron-tool",
+      "ok": true,
+      "chat": "e10e767eba8a1fbe"
+    }
+  ],
+  "verdict": "GO",
+  "at": "2026-09-12T04:14:13.863Z",
+  "scenarios": [
+    "async-task",
+    "basic-turn",
+    "cron-tool",
+    "hermes-basic-turn",
+    "hermes-cron-list",
+    "media-outbound",
+    "spawn-announce-merge",
+    "spawn-chain-merge",
+    "spawn-parallel-merge",
+    "tool-exec",
+    "update-plan"
+  ],
+  "providers": {
+    "basic-turn": "openclaw",
+    "tool-exec": "openclaw",
+    "update-plan": "openclaw",
+    "media-outbound": "openclaw",
+    "spawn-announce-merge": "openclaw",
+    "spawn-chain-merge": "openclaw",
+    "spawn-parallel-merge": "openclaw",
+    "async-task": "openclaw",
+    "cron-tool": "openclaw",
+    "hermes-basic-turn": "hermes",
+    "hermes-cron-list": "hermes"
+  },
+  "flags": [],
+  "atriumSha": "cb7d6b1a052dc2ecabe425cdca726c7cd665073c",
+  "worktree": {
+    "dirty": true,
+    "deltaSha256": "3248d88db477488f1797c24e5b6ad15710c78e14ec1c6a49da5f96e553f563a5"
+  },
+  "supportDigest": "15b21b61ea9a0c51cdb2b604e80e4304a5a9fe250ef2dcd51723d998a8a54c8a",
+  "authMode": "token",
+  "bridgeVersion": "0.84.5",
+  "vendoredSha256": "99e06ae2c430259848af68304c28804e3fcc4227ae77ec1a99c80f4d26d35d30"
+}

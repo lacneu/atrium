@@ -324,7 +324,7 @@ export const COMPAT_MANIFEST: CompatManifest = {
       // hashes). It had previously been declared through its beta.2 RC
       // (release-day upgrades stay in support with no banner) — that proxy
       // note is now history, the row stands on its own run.
-      supportedRange: { min: "2026.5.19", maxValidated: "2026.9.2" },
+      supportedRange: { min: "2026.5.19", maxValidated: "2026.9.4" },
       // Inside the range, and BROKEN on a stock gateway: a managed-media
       // `attachment` block persisted by the gateway's own path crashes
       // `transcript-transform` on every later turn of that session (upstream
@@ -398,6 +398,31 @@ export const COMPAT_MANIFEST: CompatManifest = {
         // self-update runs, Control UI plugin catalogue) vendored and classified,
         // not adopted. Hermes co-run on 0.19.0.
         "2026.9.2",
+        // 2026.9.4: full live suite GO 11/11 (2026-09-12, attestation
+        // protocol/openclaw/2026.9.4/BENCH.json) on the custom image r5, Hermes
+        // co-run on 0.19.0. 2026.9.3 is NOT listed: nothing was ever run against
+        // it, and `withinSupport` covers it as an intermediate version — a
+        // number in this list means a bench earned it.
+        //
+        // Static drift vs 2026.9.2, five interpretation zones re-verified: the
+        // wire contract HOLDS. The announce identity, the dedup carriers and the
+        // compaction handlers are byte-identical; `agent-run-terminal-outcome`
+        // moved to @openclaw/normalization-core with no observable change (the
+        // bench anchor tracking `timed_out` had to follow it, which is what made
+        // the drift report look worse than it was). `settlementWarning` never
+        // reaches the wire. The two session-lock messages the normalizer matches
+        // verbatim are unchanged.
+        //
+        // ONE new field is DECLARED here — not adopted — `chat.status.retry`
+        // ({attempt,maxAttempts,reason}) — declared in protocol-drift so a
+        // provider back-off is not badged as unknown, and left a manifest gap
+        // because no `status` frame is read yet. Its consequence is worth
+        // knowing: a rate-limited turn shows "post-processing" in Atrium while
+        // the Control UI shows "Retrying… 2/10".
+        //
+        // New surface (Skill Workshop, update reports, cloud workers, the
+        // Plugins workspace, task history) vendored and classified, not adopted.
+        "2026.9.4",
       ],
       capabilities: OPENCLAW_CAPABILITIES,
     },

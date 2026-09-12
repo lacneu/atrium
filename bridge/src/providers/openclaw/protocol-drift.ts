@@ -29,7 +29,7 @@ import { randomBytes } from "node:crypto";
 // to exercise; it cannot enumerate a contract. That is what the vendored schema is
 // for, and inferring "the surface" from a bench run is the exact mistake the ratchet
 // exists to make impossible.
-export const DRIFT_VENDORED_VERSION = "2026.9.2";
+export const DRIFT_VENDORED_VERSION = "2026.9.4";
 
 /** Chat payload fields PER STATE, not their union.
  *
@@ -51,7 +51,24 @@ export const KNOWN_CHAT_FIELDS_BY_STATE: Readonly<
   // contract DECLARES is not drift — leaving it out made every such frame surface as
   // «unknown-state», which is the badge that should mean "the gateway sent something
   // we have never seen".
-  status: new Set(["agentId", "phase", "runId", "seq", "sessionKey", "spawnedBy", "state"]),
+  // `retry` is NEW at 2026.9.4: {attempt, maxAttempts, reason:"rate_limit"} on a
+  // provider back-off. Two things changed with it and only one is a field — a
+  // `status` frame is no longer startup-only, it now arrives MID-TURN, after
+  // tools, while the provider waits. The normalizer still reads no `status`
+  // frame (ChatStatusEvent.retry stays a gap in the manifest), but a field the
+  // vendored contract DECLARES is not drift: without this every rate-limited
+  // turn would badge a false «unknown field», which must keep meaning "the
+  // gateway sent something we have never seen".
+  status: new Set([
+    "agentId",
+    "phase",
+    "retry",
+    "runId",
+    "seq",
+    "sessionKey",
+    "spawnedBy",
+    "state",
+  ]),
   delta: new Set([
     "agentId",
     "deltaText",
@@ -243,6 +260,10 @@ export const AGENT_ROUTING_ENVELOPE_FIELDS: readonly string[] = [
 ];
 
 export const KNOWN_AGENT_FIELDS: ReadonlySet<string> = new Set([
+  // NEW at 2026.9.4 on the session snapshot: gateway auto-labelling, the
+  // pre-prompt budget assessment, and swarm membership (distinct from the
+  // swarmGroupId already listed). Declared, not adopted — the set exists so a
+  // field the vendored contract carries is never badged as unknown drift.
   "abortedLastRun",
   "activeModel",
   "activeModelProvider",
@@ -254,6 +275,7 @@ export const KNOWN_AGENT_FIELDS: ReadonlySet<string> = new Set([
   "archived",
   "archivedAt",
   "archivedBy",
+  "autoLabel",
   "category",
   "channel",
   "channelAvatarUrl",
@@ -261,6 +283,7 @@ export const KNOWN_AGENT_FIELDS: ReadonlySet<string> = new Set([
   "childSessions",
   "color",
   "compactionCheckpointCount",
+  "contextBudgetStatus",
   "contextTokens",
   "controlOwnerSessionKey",
   "createdActor",
@@ -338,6 +361,7 @@ export const KNOWN_AGENT_FIELDS: ReadonlySet<string> = new Set([
   "subagentRole",
   "subagentRunState",
   "subject",
+  "swarm",
   "swarmGroupId",
   "systemSent",
   "thinkingLevel",
@@ -350,6 +374,7 @@ export const KNOWN_AGENT_FIELDS: ReadonlySet<string> = new Set([
   "updatedAt",
   "verboseLevel",
   "visibility",
+
 ]);
 
 /**
@@ -377,17 +402,18 @@ export const KNOWN_AGENT_FIELDS: ReadonlySet<string> = new Set([
  * matrix instead of being invisible omissions.
  */
 export const COVERAGE_SUMMARY = {
-  handled: 157,
-  ignored: 686,
-  gaps: 599,
+  handled: 162,
+  ignored: 715,
+  gaps: 612,
   /** The declared gaps, by schema path — the actionable part of the matrix.
    *
    *  Recounted from the PROMISED version's coverage manifest by protocol-drift.test.ts,
    *  so it cannot drift from it. The list is long because the vendored surface widened
    *  at 2026.7.2-beta.5 (226 schemas -> 309, and 17 gaps -> 493): everything vendored
    *  since then that nobody has instructed yet is a gap by construction. That backlog is
-   *  the frame-discovery queue, not a regression of this bump — 2026.9.1 adds 13 of them
-   *  (the gateway suspension phase, the user profile, ChatErrorEvent.errorDetail).
+   *  the frame-discovery queue, not a regression of this bump — 2026.9.4 adds 18 of them,
+   *  the actionable one being `ChatStatusEvent.retry` (a provider back-off Atrium
+   *  cannot yet tell apart from post-processing).
    *  `ChatFinalEvent.yielded` WAS in that list and is now instructed: leaving it a gap
    *  meant a lost lifecycle frame turned a hand-off into an empty response, which the
    *  guard retries (codex). A gap whose consequence is a retry is not a backlog item. */
@@ -395,6 +421,8 @@ export const COVERAGE_SUMMARY = {
     "AgentKind",
     "AgentSummary.kind",
     "AgentsFileEntry.expectedAbsent",
+    "AgentsFileEntry.hash",
+    "AgentsFilesSetParams.expectedHash",
     "AuthProbeStatus",
     "ChatAbortParams.preserveSideRuns",
     "ChatAbortedEvent.errorMessage",
@@ -413,11 +441,7 @@ export const COVERAGE_SUMMARY = {
     "ChatSendParams.toolBindings",
     "ChatStatusEvent.agentId",
     "ChatStatusEvent.phase",
-    "ChatStatusEvent.runId",
-    "ChatStatusEvent.seq",
-    "ChatStatusEvent.sessionKey",
-    "ChatStatusEvent.spawnedBy",
-    "ChatStatusEvent.state",
+    "ChatStatusEvent.retry",
     "ChatToolTitlesParams.agentId",
     "ChatToolTitlesParams.items",
     "ChatToolTitlesParams.sessionKey",
@@ -585,13 +609,18 @@ export const COVERAGE_SUMMARY = {
     "MentionsListResult.revision",
     "ModelChoice.agentRuntime",
     "ModelChoice.apiKeySupported",
+    "ModelChoice.contextTokens",
     "ModelChoice.input",
+    "ModelChoice.local",
+    "ModelChoice.supportsFastMode",
     "ModelsAuthLogoutParams.agentId",
     "ModelsAuthLogoutParams.profileIds",
     "ModelsAuthLogoutParams.provider",
     "ModelsAuthStatusParams.agentId",
     "ModelsAuthStatusParams.refresh",
     "ModelsListParams.includeProviderCapabilities",
+    "ModelsListResult.accountSelection",
+    "ModelsListResult.refreshFailed",
     "ModelsProbeParams.agentId",
     "ModelsProbeParams.profileId",
     "ModelsProbeParams.provider",
@@ -608,7 +637,10 @@ export const COVERAGE_SUMMARY = {
     "ModelsProbeTargetResult.status",
     "PluginCatalogClawHubInstall.packageName",
     "PluginCatalogClawHubInstall.source",
+    "PluginCatalogEntry.catalogId",
+    "PluginCatalogEntry.categories",
     "PluginCatalogEntry.category",
+    "PluginCatalogEntry.clawhubPackage",
     "PluginCatalogEntry.description",
     "PluginCatalogEntry.enabled",
     "PluginCatalogEntry.error",
@@ -728,9 +760,11 @@ export const COVERAGE_SUMMARY = {
     "SessionObserverDigest.assessment",
     "SessionObserverDigest.headline",
     "SessionObserverDigest.health",
+    "SessionObserverDigest.lifecycleRevision",
     "SessionObserverDigest.planProgress",
     "SessionObserverDigest.revision",
     "SessionObserverDigest.runId",
+    "SessionObserverDigest.sessionId",
     "SessionObserverDigest.sessionKey",
     "SessionObserverDigest.updatedAt",
     "SessionObserverHealth",
@@ -751,6 +785,7 @@ export const COVERAGE_SUMMARY = {
     "SessionRow.archived",
     "SessionRow.archivedAt",
     "SessionRow.archivedBy",
+    "SessionRow.autoLabel",
     "SessionRow.boardFace",
     "SessionRow.channel",
     "SessionRow.chatType",
@@ -786,6 +821,8 @@ export const COVERAGE_SUMMARY = {
     "SessionRow.pinned",
     "SessionRow.pinnedAt",
     "SessionRow.previousSessionId",
+    "SessionRow.repository",
+    "SessionRow.repositoryWorkspaceId",
     "SessionRow.sessionId",
     "SessionRow.sharingRole",
     "SessionRow.spawnDepth",
@@ -795,6 +832,7 @@ export const COVERAGE_SUMMARY = {
     "SessionRow.status",
     "SessionRow.subagentControlScope",
     "SessionRow.subagentRole",
+    "SessionRow.swarm",
     "SessionRow.swarmGroupId",
     "SessionRow.totalTokens",
     "SessionRow.totalTokensFresh",
@@ -923,6 +961,7 @@ export const COVERAGE_SUMMARY = {
     "TalkClientTranscriptParams.text",
     "TalkClientTranscriptParams.timestamp",
     "TalkClientTranscriptParams.voiceSessionId",
+    "TaskSummary.hasTranscript",
     "TaskSummary.lastToolName",
     "TaskSummary.prompt",
     "TaskSummary.toolUseCount",
@@ -1285,10 +1324,18 @@ class ProtocolDriftRegistry {
       if (typeof f.event === "string" && f.event !== "") {
         // Two vocabularies, one question: has anyone said what Atrium does with this
         // family? A frame outside both is the `config.changed` failure mode repeating
-        // for the next family — named here, on receipt, not when someone re-vendors.
+        // for the next family — COUNTED here, on receipt, not when someone re-vendors.
+        // Counted, never named: see the digest just below.
         if (!CLASSIFIED_EVENTS.has(f.event) && !BROADCAST_ONLY_EVENTS.has(f.event)) {
-          const safe = containName(f.event);
-          this.bump(`${UNANTICIPATED_BROADCAST_PREFIX}${safe}`);
+          // DIGESTED, not named — the rule this module already states for the exception
+          // sensor a hundred lines up, and broke here: `containName` is a CHARSET filter,
+          // so `AliceMartin` passes it unchanged and an unanticipated broadcast could
+          // publish a wire value straight into a counter name (adversarial review,
+          // 2026-09-12). An UNCLASSIFIED event name is a wire string by definition — it
+          // is exactly the value nobody has vouched for — and the salted digest keeps the
+          // only property an operator needs here: telling one unknown family apart from
+          // another, across frames, without disclosing either.
+          this.bump(`${UNANTICIPATED_BROADCAST_PREFIX}${shortDigest(f.event)}`);
           return;
         }
       }

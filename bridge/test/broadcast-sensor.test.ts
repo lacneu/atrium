@@ -1,6 +1,7 @@
 // The RECEIVED-broadcast sensor: a frame whose family is in neither vocabulary —
 // announced (`CLASSIFIED_EVENTS`) or broadcast-only (`BROADCAST_ONLY_EVENTS`) — is
-// named on receipt, on its own budget. Without it, such a family is dropped by the
+// COUNTED on receipt, under a salted digest, on its own budget. Never NAMED: an
+// unclassified family name is by definition the wire string nobody vouched for. Without it, such a family is dropped by the
 // normalizer in silence until someone re-vendors and the coverage gate speaks.
 import { beforeEach, describe, expect, it } from "vitest";
 import {
@@ -16,10 +17,28 @@ const shapes = () => protocolDrift.report().map((r) => r.shape);
 // The registry is a process-wide singleton and `report()` does not drain it: isolate.
 beforeEach(() => protocolDrift.resetForTests());
 
-describe("a broadcast family outside both vocabularies is named on receipt", () => {
-  it("an unknown event frame bumps «unanticipated-broadcast».<family>", () => {
+describe("a broadcast family outside both vocabularies is COUNTED on receipt", () => {
+  // DIGESTED, NOT NAMED — changed 2026-09-12. This used to assert the family name
+  // verbatim in the counter, which made the sensor publish a wire value: an
+  // UNCLASSIFIED name is by definition the string nobody has vouched for, and
+  // `containName` is only a charset filter (`AliceMartin` passes it unchanged). The
+  // module already stated that rule for its exception sensor and broke it here.
+  // What an operator actually needs survives, and is what these now pin: telling one
+  // unknown family apart from another, stably, without disclosing either.
+  it("an unknown event frame bumps «unanticipated-broadcast».<digest>, never the name", () => {
     protocolDrift.observe({ type: "event", event: "brand.new.broadcast", payload: {}, seq: 3 });
-    expect(shapes()).toContain("«unanticipated-broadcast».brand.new.broadcast");
+    const seen = shapes();
+    expect(seen).toHaveLength(1);
+    expect(seen[0]).toMatch(/^«unanticipated-broadcast»\.[0-9a-f]{8}$/);
+    expect(seen.some((x) => x.includes("brand.new.broadcast"))).toBe(false);
+  });
+  it("two different unknown families stay DISTINGUISHABLE, and one stays stable", () => {
+    protocolDrift.observe({ type: "event", event: "family.alpha", payload: {} });
+    protocolDrift.observe({ type: "event", event: "family.beta", payload: {} });
+    protocolDrift.observe({ type: "event", event: "family.alpha", payload: {} });
+    // Two counters, not three and not one: the digest separates families and collapses
+    // repeats — the whole reason a digest beats a fixed marker.
+    expect(new Set(shapes()).size).toBe(2);
   });
   it("a classified broadcast-only family (config.changed) is NOT drift — it is handled", () => {
     expect(BROADCAST_ONLY_EVENTS.has("config.changed")).toBe(true);
@@ -33,10 +52,16 @@ describe("a broadcast family outside both vocabularies is named on receipt", () 
     const seen = shapes();
     expect(seen, `unexpected drift: ${seen.join(", ")}`).toEqual([]);
   });
-  it("a name that is not printable is contained, never stored raw", () => {
+  it("a hostile or unprintable name discloses NOTHING — digest, not containment", () => {
     protocolDrift.observe({ type: "event", event: "<script>alert(1)</script>", payload: {} });
-    expect(shapes()).toContain("«unanticipated-broadcast».«unprintable»");
-    expect(shapes().some((s) => s.includes("<script>"))).toBe(false);
+    // A charset filter would have reported «unprintable», which says the name was ugly.
+    // The digest says nothing at all about it, which is the point.
+    expect(shapes()[0]).toMatch(/^«unanticipated-broadcast»\.[0-9a-f]{8}$/);
+    expect(shapes().some((x) => x.includes("script"))).toBe(false);
+  });
+  it("a plausible PERSON NAME is not published either — the case a charset filter passes", () => {
+    protocolDrift.observe({ type: "event", event: "AliceMartin", payload: {} });
+    expect(shapes().some((x) => x.includes("AliceMartin"))).toBe(false);
   });
   it("a flood of unknown broadcasts is CAPPED at its own budget, and a reader EXCEPTION is still named", () => {
     for (let i = 0; i < 600; i += 1) {

@@ -44,3 +44,35 @@ describe("task-delivery run ids across gateway generations", () => {
     }
   });
 });
+
+// THE LANE SUFFIX, ON THE ANNOUNCE FAMILY. `TASK_DELIVERY_RE` already tolerates
+// `:agent-loop` for the task family — the announce family above it never got the
+// same treatment, so `seg.slice(2, -1)` eats the lane and folds the child RUN id
+// into the child KEY. The row then never settles and the chat holds the child as
+// `running` until the reaper. Upstream mints both suffixes:
+//   subagent-announce-delivery.ts:229        -> `…:agent-loop`
+//   subagent-announce-descendant-wake.ts:111 -> `…:wake`
+describe("announce delivery lanes", () => {
+  const CHILD = "agent:main:subagent:worker";
+  const RUN = "run-1";
+
+  it("the bare v1 form still resolves its child key", () => {
+    expect(deliveryChildKey(`announce:v1:${CHILD}:${RUN}`)).toBe(CHILD);
+  });
+
+  it("an :agent-loop lane resolves the SAME child key", () => {
+    expect(deliveryChildKey(`announce:v1:${CHILD}:${RUN}:agent-loop`)).toBe(CHILD);
+  });
+
+  it("a :wake lane resolves the SAME child key", () => {
+    expect(deliveryChildKey(`announce:v1:${CHILD}:${RUN}:wake`)).toBe(CHILD);
+  });
+
+  it("an unknown trailing segment is NOT stripped — it may be the run id", () => {
+    // Fail closed: only the two lanes upstream actually mints are removed. A
+    // future suffix must be added deliberately, never guessed at.
+    expect(deliveryChildKey(`announce:v1:${CHILD}:${RUN}:something-new`)).toBe(
+      `${CHILD}:${RUN}`,
+    );
+  });
+});

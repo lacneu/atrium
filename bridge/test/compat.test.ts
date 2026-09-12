@@ -211,7 +211,7 @@ describe("COMPAT_MANIFEST shape", () => {
 
   test("openclaw provider pins the validated range + versions", () => {
     const oc = COMPAT_MANIFEST.providers.openclaw!;
-    expect(oc.supportedRange).toEqual({ min: "2026.5.19", maxValidated: "2026.9.2" });
+    expect(oc.supportedRange).toEqual({ min: "2026.5.19", maxValidated: "2026.9.4" });
     expect(oc.validatedVersions).toEqual([
       "2026.5.19",
       "2026.6.1",
@@ -223,6 +223,7 @@ describe("COMPAT_MANIFEST shape", () => {
       "2026.7.1",
       "2026.9.1",
       "2026.9.2",
+      "2026.9.4",
     ]);
     expect(Object.keys(oc.capabilities).sort()).toEqual([...ALL_CAPS].sort());
     // The two releases inside the range that a STOCK gateway cannot be trusted on:
@@ -370,12 +371,13 @@ describe("resolveCapabilities — conservative policy (unknown version)", () => 
 });
 
 describe("resolveCapabilities — beyond maxValidated", () => {
-  // All STRICTLY above maxValidated (2026.7.1) now that 7.1 is validated.
+  // All STRICTLY above maxValidated, which is 2026.9.4 since 2026-09-12 — so
+  // 2026.9.3 left this list: it is now BELOW the ceiling and resolves normally.
   // The assertion below was already the frozen profile; only the NAME claimed
   // otherwise ("enables all validated capabilities" read as a grant). On the shipped
   // table the two rules coincide — see the shared-table suite for the input where
   // they do not.
-  test.each(["2026.9.3", "2026.10.0", "2027.1.1"])(
+  test.each(["2026.9.5", "2026.10.0", "2027.1.1"])(
     "%s is FROZEN at the maxValidated profile + flags versionBeyondValidated",
     (raw) => {
       const resolved = resolveCapabilities("openclaw", raw);
