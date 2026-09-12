@@ -38,6 +38,7 @@ const CONFIG: BridgeConfig = {
   gatewayHttpBase: "http://gw.invalid:18790",
   mediaFetchTimeoutMs: 60_000,
   inboundMediaDir: "/tmp/media-inbound",
+  inboundMediaStagingDir: "/tmp/media-inbound-staging",
   inboundAgentMount: "/tmp/media-inbound",
   inboundTtlMs: 6 * 60 * 60 * 1000,
   convexHttpActionsUrl: "http://convex.example.org",
@@ -94,17 +95,26 @@ describe("POST /send body cap", () => {
     // `fetch` RESOLVING (not throwing ECONNRESET) is the core assertion.
     const res = await fetch(`${baseUrl}/send`, {
       method: "POST",
-      headers: { "Content-Type": "application/json", Authorization: "shared-secret" },
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: "shared-secret",
+      },
       body,
     });
     expect(res.status).toBe(413);
-    expect(await res.json()).toEqual({ ok: false, error: { code: "payload_too_large" } });
+    expect(await res.json()).toEqual({
+      ok: false,
+      error: { code: "payload_too_large" },
+    });
   });
 
   test("a body under the cap passes the read gate (reaches dispatch, so NOT 413)", async () => {
     const res = await fetch(`${baseUrl}/send`, {
       method: "POST",
-      headers: { "Content-Type": "application/json", Authorization: "shared-secret" },
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: "shared-secret",
+      },
       body: sendBody(64),
     });
     // It will fail downstream on the unreachable gateway (502), but the point is

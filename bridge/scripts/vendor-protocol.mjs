@@ -149,6 +149,18 @@ const FILES = [
   // From ANOTHER package of the monorepo (see the rewrite below): re-exported by
   // protocol-value-normalization.ts, so the flat tree needs it to typecheck.
   ...since("2026.8.1", ["../../normalization-core/src/record-coerce.ts"]),
+  // 2026.9.4 added three transitive imports (client-info gained
+  // `normalizeOptionalLowercaseString`; agents-models-skills and the user schema
+  // split pieces out). Without them the vendored tree does not
+  // RESOLVE — the coverage ratchet cannot even load client-info.ts, so every
+  // schema in the version reads as unclassified and the real triage is hidden
+  // behind a module-not-found. Found by vendoring 2026.9.4: 51 files written,
+  // then four ratchet failures that all traced to one absent file.
+  ...since("2026.9.4", [
+    "../../normalization-core/src/string-coerce.ts",
+    "schema/model-account-selection.ts",
+    "schema/user-profile-constants.ts",
+  ]),
 
   // New transitive imports as of 2026.9.1 (1230 commits after 2026.8.2): the
   // cron schema split its shared pieces out, sessions gained a title schema,

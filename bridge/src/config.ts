@@ -9,6 +9,7 @@
 // silently drops sends or can't authenticate is worse than a process that
 // refuses to start with a clear message.
 
+import { join } from "node:path";
 import type {
   GatewayAuthMode,
   PersonScopes,
@@ -178,13 +179,17 @@ export interface BridgeConfig {
   mediaFetchTimeoutMs: number;
   /**
    * Phase 3 (shared-fs INBOUND): the dir the bridge WRITES streamed tool-read
-   * files to (OPENCLAW_INBOUND_DIR). Must be a volume bind-mounted into THIS
-   * instance's gateway container (the bridge writes, the gateway reads). Defaults
-   * to the instance-keyed `/home/node/.openclaw/media/<OPENCLAW_INSTANCE_NAME>/
-   * inbound` (flat `…/media/inbound` when no instance name) — the bridge-side
-   * mount, translated to `inboundAgentMount` in the injected `[FICHIERS REÇUS]`.
+   * files to. It is always `<OPENCLAW_INBOUND_DIR>/published`, where
+   * OPENCLAW_INBOUND_DIR names the single bridge-side inbound root mount. The
+   * gateway mounts only the host root's `published/` child read-only.
    */
   inboundMediaDir: string;
+  /**
+   * Bridge-private staging directory. It is always the `.staging/` sibling under
+   * the same inbound root mount as `published/`, so Docker cannot place the two
+   * paths on different mount devices. It must never be mounted into the gateway.
+   */
+  inboundMediaStagingDir: string;
   /**
    * The GATEWAY-visible mount path the agent reads inbound files from
    * (OPENCLAW_INBOUND_AGENT_MOUNT). The bridge translates inboundMediaDir/<name> →
@@ -332,7 +337,9 @@ const MEDIA_ROOT = "/home/node/.openclaw/media";
  * instance name is operator-set, but a `/`, `\` or `..` in it must never widen
  * the mount path beyond one segment.
  */
-export function mediaInstanceSegment(instanceName: string | null): string | null {
+export function mediaInstanceSegment(
+  instanceName: string | null,
+): string | null {
   if (!instanceName) return null;
   const seg = instanceName.trim().replace(/[^A-Za-z0-9._-]/g, "_");
   if (seg === "" || seg === "." || seg === "..") return null;
@@ -364,7 +371,9 @@ export function parseDeviceIdentity(
   try {
     parsed = JSON.parse(inline);
   } catch (err) {
-    throw new ConfigError(`${source} is not valid JSON: ${(err as Error).message}`);
+    throw new ConfigError(
+      `${source} is not valid JSON: ${(err as Error).message}`,
+    );
   }
   if (
     typeof parsed !== "object" ||
@@ -405,7 +414,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): BridgeConfig {
     // multiple per-gateway bridges (Model M — one bridge per gateway) never
     // collide on a shared host and each container's mount is self-documenting:
     // for OPENCLAW_INSTANCE_NAME=<I> the bridge reads/writes
-    // `…/media/<I>/{outbound,inbound}`. The AGENT-visible mounts stay FLAT
+    // `…/media/<I>/{outbound,inbound}`. The inbound root contains the sibling
+    // `published/` and `.staging/` dirs. The AGENT-visible mounts stay FLAT
     // (`…/media/{outbound,inbound}`) — that exact path is what each gateway
     // exposes its media at AND what the instance's openclaw.json
     // `file-transfer.allowReadPaths` whitelists; keying it would break the
@@ -417,9 +427,15 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): BridgeConfig {
     const outboundDirDefault = seg
       ? `${MEDIA_ROOT}/${seg}/outbound`
       : `${MEDIA_ROOT}/outbound`;
-    const inboundDirDefault = seg
+    const inboundRootDefault = seg
       ? `${MEDIA_ROOT}/${seg}/inbound`
       : `${MEDIA_ROOT}/inbound`;
+    if (optionalEnvOrNull("OPENCLAW_INBOUND_STAGING_DIR") !== null) {
+      throw new ConfigError(
+        "OPENCLAW_INBOUND_STAGING_DIR is no longer supported; mount one inbound root with published/ and .staging/ children and set OPENCLAW_INBOUND_DIR to that root",
+      );
+    }
+    const inboundRoot = optionalEnv("OPENCLAW_INBOUND_DIR", inboundRootDefault);
     return {
       openclawGatewayUrl: requireEnv("OPENCLAW_GATEWAY_URL"),
       // Explicit validation (a bare `as` cast would let a typo like "hermess"
@@ -430,7 +446,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): BridgeConfig {
           ? "hermes"
           : "openclaw",
       transport:
-        optionalEnvOrNull("BRIDGE_PROVIDER_TRANSPORT") === "rest" ? "rest" : "ws",
+        optionalEnvOrNull("BRIDGE_PROVIDER_TRANSPORT") === "rest"
+          ? "rest"
+          : "ws",
       // OPTIONAL since 3b: the credential resolver fetches these from Convex via the
       // per-bridge secret, falling back to these env values per field.
       openclawToken: optionalEnvOrNull("OPENCLAW_TOKEN"),
@@ -441,7 +459,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): BridgeConfig {
           ? "trusted-proxy"
           : "token",
       openclawSystemIdentity: optionalEnvOrNull("OPENCLAW_SYSTEM_IDENTITY"),
-      openclawForwardedClientIp: optionalEnvOrNull("BRIDGE_FORWARDED_CLIENT_IP"),
+      openclawForwardedClientIp: optionalEnvOrNull(
+        "BRIDGE_FORWARDED_CLIENT_IP",
+      ),
       openclawTrustedProxyUserHeader: optionalEnvOrNull(
         "OPENCLAW_TRUSTED_PROXY_USER_HEADER",
       ),
@@ -463,8 +483,12 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): BridgeConfig {
         optionalEnv("OPENCLAW_GATEWAY_HTTP_URL", "") ||
           requireEnv("OPENCLAW_GATEWAY_URL"),
       ),
-      mediaFetchTimeoutMs: parseIntEnv("OPENCLAW_MEDIA_FETCH_TIMEOUT_MS", 60_000),
-      inboundMediaDir: optionalEnv("OPENCLAW_INBOUND_DIR", inboundDirDefault),
+      mediaFetchTimeoutMs: parseIntEnv(
+        "OPENCLAW_MEDIA_FETCH_TIMEOUT_MS",
+        60_000,
+      ),
+      inboundMediaDir: join(inboundRoot, "published"),
+      inboundMediaStagingDir: join(inboundRoot, ".staging"),
       inboundAgentMount: optionalEnv(
         "OPENCLAW_INBOUND_AGENT_MOUNT",
         `${MEDIA_ROOT}/inbound`,
@@ -514,12 +538,14 @@ export interface SharedConfig {
   mediaOutboundAgentMount: string;
   inboundAgentMount: string;
   /** Explicit bridge-side media dir OVERRIDES (OPENCLAW_MEDIA_OUTBOUND_DIR /
-   *  OPENCLAW_INBOUND_DIR), null when unset. When set they WIN over the per-instance
-   *  derived path — for a single-instance bridge whose deploy mounts an explicit path
-   *  (e.g. Helm `bridge.media.enabled`). For a MULTI-instance bridge leave them unset
-   *  and rely on the per-instance derived dirs (a single override can't fit N instances). */
+   *  OPENCLAW_INBOUND_DIR), null when unset. OPENCLAW_INBOUND_DIR is the single
+   *  inbound root containing published/ and .staging/. When
+   *  set they WIN over the per-instance derived path — for a single-instance bridge
+   *  whose deploy mounts an explicit path (e.g. Helm `bridge.media.enabled`). For a
+   *  MULTI-instance bridge leave them unset and rely on the per-instance derived dirs
+   *  (a single override can't fit N instances). */
   mediaOutboundDirOverride: string | null;
-  inboundMediaDirOverride: string | null;
+  inboundMediaRootOverride: string | null;
   /** Instances whose gateway image the operator ATTESTS carries the attachment fix
    *  (OPENCLAW_ATTACHMENT_FIX_ATTESTED): a comma-separated list of instance names, or
    *  `*` for every served instance. A LIST, not a boolean, because one bridge serves
@@ -596,27 +622,46 @@ function parseSecretsList(listName: string): string[] {
  *  one bridge serves several gateways, and `0` / `false` are truthy strings that would
  *  have re-armed the poisoning instruction everywhere (codex). A value naming no
  *  instance attests nothing, which is exactly what those two strings then mean. */
-const NEGATIVE_BOOLEANS = new Set(["false", "0", "no", "off", "none", "disabled"]);
+const NEGATIVE_BOOLEANS = new Set([
+  "false",
+  "0",
+  "no",
+  "off",
+  "none",
+  "disabled",
+]);
 
 export function parseAttestedInstances(raw: string | undefined): string[] {
-  return (raw ?? "")
-    .split(",")
-    .map((n) => n.trim())
-    .filter((n) => n.length > 0)
-    // An operator writing `false` means "off", and an instance may legitimately be
-    // NAMED `false` — so the negative words never attest, whatever an instance is
-    // called. Turning the feature off is what an empty value is for (codex).
-    .filter((n) => !NEGATIVE_BOOLEANS.has(n.toLowerCase()));
+  return (
+    (raw ?? "")
+      .split(",")
+      .map((n) => n.trim())
+      .filter((n) => n.length > 0)
+      // An operator writing `false` means "off", and an instance may legitimately be
+      // NAMED `false` — so the negative words never attest, whatever an instance is
+      // called. Turning the feature off is what an empty value is for (codex).
+      .filter((n) => !NEGATIVE_BOOLEANS.has(n.toLowerCase()))
+  );
 }
 
-export function instanceIsAttested(attested: string[], instanceName: string): boolean {
+export function instanceIsAttested(
+  attested: string[],
+  instanceName: string,
+): boolean {
   return attested.includes("*") || attested.includes(instanceName);
 }
 
-export function loadSharedConfig(env: NodeJS.ProcessEnv = process.env): SharedConfig {
+export function loadSharedConfig(
+  env: NodeJS.ProcessEnv = process.env,
+): SharedConfig {
   const prev = process.env;
   process.env = env;
   try {
+    if (optionalEnvOrNull("OPENCLAW_INBOUND_STAGING_DIR") !== null) {
+      throw new ConfigError(
+        "OPENCLAW_INBOUND_STAGING_DIR is no longer supported; mount one inbound root with published/ and .staging/ children and set OPENCLAW_INBOUND_DIR to that root",
+      );
+    }
     return {
       convexHttpActionsUrl: requireEnv("CONVEX_HTTP_ACTIONS_URL"),
       convexIngestSecret: requireEnv("BRIDGE_INGEST_SECRET"),
@@ -625,9 +670,13 @@ export function loadSharedConfig(env: NodeJS.ProcessEnv = process.env): SharedCo
       port: parseIntEnv("BRIDGE_PORT", 8787),
       maxBodyBytes: parseIntEnv("BRIDGE_MAX_BODY_BYTES", 33_554_432),
       inboundTtlMs: parseIntEnv("OPENCLAW_INBOUND_TTL_MS", 6 * 60 * 60 * 1000),
-      mediaFetchTimeoutMs: parseIntEnv("OPENCLAW_MEDIA_FETCH_TIMEOUT_MS", 60_000),
+      mediaFetchTimeoutMs: parseIntEnv(
+        "OPENCLAW_MEDIA_FETCH_TIMEOUT_MS",
+        60_000,
+      ),
       mediaModeDefault: parseMediaMode("OPENCLAW_MEDIA_MODE"),
-      mediaMaxBytesDefault: parseIntEnv("OPENCLAW_MEDIA_MAX_MB", 1024) * 1024 * 1024,
+      mediaMaxBytesDefault:
+        parseIntEnv("OPENCLAW_MEDIA_MAX_MB", 1024) * 1024 * 1024,
       mediaOutboundAgentMount: optionalEnv(
         "OPENCLAW_MEDIA_OUTBOUND_AGENT_MOUNT",
         `${MEDIA_ROOT}/outbound`,
@@ -636,8 +685,10 @@ export function loadSharedConfig(env: NodeJS.ProcessEnv = process.env): SharedCo
         "OPENCLAW_INBOUND_AGENT_MOUNT",
         `${MEDIA_ROOT}/inbound`,
       ),
-      mediaOutboundDirOverride: optionalEnvOrNull("OPENCLAW_MEDIA_OUTBOUND_DIR"),
-      inboundMediaDirOverride: optionalEnvOrNull("OPENCLAW_INBOUND_DIR"),
+      mediaOutboundDirOverride: optionalEnvOrNull(
+        "OPENCLAW_MEDIA_OUTBOUND_DIR",
+      ),
+      inboundMediaRootOverride: optionalEnvOrNull("OPENCLAW_INBOUND_DIR"),
       attachmentFixAttestedInstances: parseAttestedInstances(
         process.env.OPENCLAW_ATTACHMENT_FIX_ATTESTED,
       ),
@@ -671,14 +722,15 @@ export function buildInstanceConfig(
 ): BridgeConfig {
   // An explicit env override (deploy mounts a specific path, e.g. Helm
   // bridge.media.enabled) WINS over the per-instance derived path; else derive
-  // `${MEDIA_ROOT}/<instance>/{outbound,inbound}` so multiple served instances never
-  // collide.
+  // `${MEDIA_ROOT}/<instance>/{outbound,inbound}` so multiple served instances
+  // never collide. The one inbound root is the mount; publication and staging
+  // are fixed sibling children beneath it.
   const seg = mediaInstanceSegment(inst.instanceName);
   const outboundDir =
     shared.mediaOutboundDirOverride ??
     (seg ? `${MEDIA_ROOT}/${seg}/outbound` : `${MEDIA_ROOT}/outbound`);
-  const inboundDir =
-    shared.inboundMediaDirOverride ??
+  const inboundRoot =
+    shared.inboundMediaRootOverride ??
     (seg ? `${MEDIA_ROOT}/${seg}/inbound` : `${MEDIA_ROOT}/inbound`);
   const version =
     inst.gatewayVersion && GATEWAY_VERSION_RE.test(inst.gatewayVersion)
@@ -718,7 +770,8 @@ export function buildInstanceConfig(
     mediaMode: shared.mediaModeDefault,
     gatewayHttpBase: deriveHttpBase(inst.gatewayHttpUrl || inst.gatewayUrl),
     mediaFetchTimeoutMs: shared.mediaFetchTimeoutMs,
-    inboundMediaDir: inboundDir,
+    inboundMediaDir: join(inboundRoot, "published"),
+    inboundMediaStagingDir: join(inboundRoot, ".staging"),
     inboundAgentMount: shared.inboundAgentMount,
     inboundTtlMs: shared.inboundTtlMs,
     convexHttpActionsUrl: shared.convexHttpActionsUrl,
@@ -744,6 +797,7 @@ export function findMediaDirCollision(
     instanceName: string;
     mediaOutboundDir: string;
     inboundMediaDir: string;
+    inboundMediaStagingDir: string;
     kind?: "openclaw" | "hermes";
   }>,
 ): { dir: string; a: string; b: string } | null {
@@ -763,6 +817,11 @@ export function findMediaDirCollision(
       if (prior !== undefined) return { dir, a: prior, b: claimant };
       seen.set(dir, claimant);
     }
+    const dir = inst.inboundMediaStagingDir;
+    const claimant = `${inst.instanceName}/inbound-staging`;
+    const prior = seen.get(dir);
+    if (prior !== undefined) return { dir, a: prior, b: claimant };
+    seen.set(dir, claimant);
   }
   return null;
 }

@@ -171,7 +171,12 @@ import {
 } from "./providers/openclaw/protocol-drift.js";
 import type { ConvexWriter } from "./convex-writer.js";
 import type { ConfigIssue } from "./core/credential-resolver.js";
-import type { BridgeSession, SessionRouting, LiveTarget, InstanceBundle } from "./session.js";
+import type {
+  BridgeSession,
+  SessionRouting,
+  LiveTarget,
+  InstanceBundle,
+} from "./session.js";
 import { SessionRegistry } from "./session.js";
 import {
   describeSession,
@@ -450,8 +455,13 @@ function parseSendMentions(
     const m = entry as { canonical?: unknown; start?: unknown; end?: unknown };
     if (typeof m.canonical !== "string" || m.canonical.length === 0) continue;
     if (!Number.isInteger(m.start) || !Number.isInteger(m.end)) continue;
-    if ((m.start as number) < 0 || (m.end as number) <= (m.start as number)) continue;
-    out.push({ canonical: m.canonical, start: m.start as number, end: m.end as number });
+    if ((m.start as number) < 0 || (m.end as number) <= (m.start as number))
+      continue;
+    out.push({
+      canonical: m.canonical,
+      start: m.start as number,
+      end: m.end as number,
+    });
   }
   return out.length > 0 ? out : undefined;
 }
@@ -859,11 +869,17 @@ export async function applySessionSettings(
     // Built as ONE ordered list, then applied together: in trusted-proxy mode the
     // admin-scoped fields share a single administrative socket instead of opening
     // one each (see patchSessionBatch). The ORDER is the user's intent.
-    const patches: Array<{ params: Record<string, unknown>; timeoutMs: number }> = [];
+    const patches: Array<{
+      params: Record<string, unknown>;
+      timeoutMs: number;
+    }> = [];
     // UNSETS first: `{<field>: null}` removes the stored override (verified
     // 6.5); clearing an already-cleared field is an idempotent no-op.
     for (const field of settings.clears ?? []) {
-      patches.push({ params: { key: sessionKey, [field]: null }, timeoutMs: 10_000 });
+      patches.push({
+        params: { key: sessionKey, [field]: null },
+        timeoutMs: 10_000,
+      });
     }
     if (settings.thinkingLevel) {
       patches.push({
@@ -872,7 +888,10 @@ export async function applySessionSettings(
       });
     }
     if (settings.model) {
-      patches.push({ params: { key: sessionKey, model: settings.model }, timeoutMs: 10_000 });
+      patches.push({
+        params: { key: sessionKey, model: settings.model },
+        timeoutMs: 10_000,
+      });
     }
     // fastMode: `false` is a real value to apply — presence check MUST be
     // `!== undefined` (a falsy check would silently drop "Standard speed").
@@ -911,7 +930,12 @@ export async function applyPatchIntent(
   for (const field of settings.clears ?? []) {
     // A clear names the SAME fields a set does, so it is scoped the same way:
     // clearing `thinkingLevel` is admin, clearing `model` is write.
-    await patchSession(conn, config, { key: sessionKey, [field]: null }, 10_000);
+    await patchSession(
+      conn,
+      config,
+      { key: sessionKey, [field]: null },
+      10_000,
+    );
   }
   // Remaining sets stay non-fatal (UI-3 contract). `clears` is stripped: it was
   // just applied strictly above; applySessionSettings must not re-send it.
@@ -983,7 +1007,6 @@ function warnOnce(key: string, message: string): void {
   console.warn(message);
 }
 
-
 export async function performSend(
   session: BridgeSession,
   body: SendBody,
@@ -1028,7 +1051,12 @@ export async function performSend(
   // RE-APPLY the user's per-chat knob intent (reasoning/model) BEFORE the describe
   // below, so a reset/rolled session keeps the user's choice AND the meta we mirror
   // reflects it within THIS turn (not the next). Idempotent + non-fatal.
-  await applySessionSettings(conn, sessionKey, body.sessionSettings, presendConfig);
+  await applySessionSettings(
+    conn,
+    sessionKey,
+    body.sessionSettings,
+    presendConfig,
+  );
 
   // SESSION RE-HYDRATION (docs/SESSION_CONTINUITY_DESIGN.md). OpenClaw sessions are
   // ephemeral (daily/idle reset, pruning); our webchat displays the FULL thread.
@@ -1186,7 +1214,8 @@ export async function performSend(
       // Convex tells us how long the row was already pending, and everything above
       // (patch, describe, rehydration reads) has already spent some of it.
       const compactMs = compactBudget(
-        PRE_SEND_DEADLINE_MS - (body.dispatchAgeMs + (Date.now() - sendReceivedMs)),
+        PRE_SEND_DEADLINE_MS -
+          (body.dispatchAgeMs + (Date.now() - sendReceivedMs)),
       );
       // A compaction ALREADY known not to work on THIS gateway session (a
       // structural refusal remembered from an earlier turn): skip the call. Waiting
@@ -1344,13 +1373,12 @@ export async function performSend(
         { chatId: body.chatId, connection: conn, agentId: body.agentId },
         writer,
         { sess, observedAt: describeObservedAt },
-      )
-        .catch((e) =>
-          console.error(
-            "[sessionMeta] skipped (non-fatal):",
-            (e as Error)?.message ?? e,
-          ),
-        );
+      ).catch((e) =>
+        console.error(
+          "[sessionMeta] skipped (non-fatal):",
+          (e as Error)?.message ?? e,
+        ),
+      );
     }
 
     // (b) Re-hydration on a fresh/rolled session (systemSent flips true after the
@@ -1537,8 +1565,9 @@ export async function performSend(
 
   // Shared-fs INBOUND (Phase 3): stream each tool-read reference to the shared
   // volume and APPEND a `[FICHIERS REÇUS]` block with the gateway-visible paths to
-  // the message (the agent reads the files BY PATH). Best-effort: a per-file failure
-  // drops only that file; staging NEVER blocks/fails the turn. Reference files do
+  // the message (the agent reads the files BY PATH). Fetch/size/collision failures
+  // drop one file; an unsafe path or uncertain cleanup rolls back the batch and
+  // fails the turn. Reference files do
   // NOT set hasInlineAttachments, so they bypass the frame guard + rehydration guard.
   if (body.referenceAttachments.length > 0 && inbound !== null) {
     const staged = await stageInboundReferences(
@@ -1579,7 +1608,9 @@ export async function performSend(
   // unidentified gateway, and the fallback cannot make it identified.
   const liveVersion = session.connection.gatewayVersion;
   const liveParsed =
-    liveVersion !== null && liveVersion !== undefined && parseVersion(liveVersion) !== null
+    liveVersion !== null &&
+    liveVersion !== undefined &&
+    parseVersion(liveVersion) !== null
       ? liveVersion
       : null;
   const configured = mediaGuard?.gatewayVersionFallback ?? null;
@@ -1723,8 +1754,7 @@ export async function performSend(
           totalTokens: preTurnTotalTokens,
           contextTokens: preTurnContextTokens,
           costUsd: preTurnCostUsd,
-          fillPct:
-            detail.fill === null ? null : Math.round(detail.fill * 100),
+          fillPct: detail.fill === null ? null : Math.round(detail.fill * 100),
           fillSource: detail.source,
           // The window's OWNER (see preTurnModel): without it a fill percentage
           // cannot be checked against the model that actually had to hold it.
@@ -1794,7 +1824,15 @@ async function performPatch(
 
   // Confirm + mirror the live state so the chip converges to the truth — the same
   // describe-and-publish unit the roster refresh performs, fence stamp included.
-  await publishDescribedSession({ connection: conn, sessionKey, chatId: body.chatId, agentId: body.agentId }, writer);
+  await publishDescribedSession(
+    {
+      connection: conn,
+      sessionKey,
+      chatId: body.chatId,
+      agentId: body.agentId,
+    },
+    writer,
+  );
 }
 
 /**
@@ -1855,7 +1893,8 @@ async function claimSessionForOwner(
   agentId: string,
   config: BridgeConfig | undefined,
 ): Promise<void> {
-  if (config?.openclawAuthMode !== "trusted-proxy" || conn.sessionClaimed) return;
+  if (config?.openclawAuthMode !== "trusted-proxy" || conn.sessionClaimed)
+    return;
   let existedBeforeClaim = true;
   try {
     const probe = await conn.request(
@@ -1931,7 +1970,8 @@ async function resolveGatewayMentions(
   const byName = new Map<string, string>();
   for (const user of users) {
     const name = typeof user.displayName === "string" ? user.displayName : null;
-    const profileId = typeof user.profileId === "string" ? user.profileId : null;
+    const profileId =
+      typeof user.profileId === "string" ? user.profileId : null;
     if (name !== null && profileId !== null) byName.set(name, profileId);
   }
   const out: Array<{ profileId: string; start: number; end: number }> = [];
@@ -2057,7 +2097,11 @@ async function performCompact(
   config?: BridgeConfig,
 ): Promise<{ compacted: boolean; reasonClass: string | null }> {
   const r = await withSessionAdminConnection(session, config, (conn) =>
-    conn.request("sessions.compact", { key: session.sessionKey }, COMPACT_TIMEOUT_MS),
+    conn.request(
+      "sessions.compact",
+      { key: session.sessionKey },
+      COMPACT_TIMEOUT_MS,
+    ),
   );
   // The gateway answers `{ok, compacted, reason?}` and REFUSES with a 200 (no
   // transcript, one already running, an unsupported harness). Returning void here
@@ -2683,7 +2727,8 @@ export function applyHermesTransportOverlay(
   transport: "ws" | "rest",
   table: Record<string, string> = hermesCapabilitiesFor(transport),
 ): void {
-  const versionGatePassed = version === null || resolved.capabilities.abort === true;
+  const versionGatePassed =
+    version === null || resolved.capabilities.abort === true;
   if (!versionGatePassed) return;
   const overlay = resolveCapabilitiesFor(HERMES_RANGE, table, version);
   for (const [key, granted] of Object.entries(overlay.capabilities)) {
@@ -2736,7 +2781,8 @@ export function buildCapabilityTargets(
     // grants can still be impossible for this instance (see
     // CAPABILITIES_REQUIRING_AUTH_MODE).
     const resolved = resolveCapabilities(provider, effectiveVersion, authMode);
-    if (provider === "hermes") applyHermesTransportOverlay(resolved, effectiveVersion, transport);
+    if (provider === "hermes")
+      applyHermesTransportOverlay(resolved, effectiveVersion, transport);
     const target: CapabilityTarget = {
       authMode,
       key: t.canonical,
@@ -2769,7 +2815,8 @@ export function buildCapabilityTargets(
     !targets.some((t) => t.instanceName === instanceName)
   ) {
     const resolved = resolveCapabilities(provider, fallbackVersion, authMode);
-    if (provider === "hermes") applyHermesTransportOverlay(resolved, fallbackVersion, transport);
+    if (provider === "hermes")
+      applyHermesTransportOverlay(resolved, fallbackVersion, transport);
     const synthetic: CapabilityTarget = {
       authMode,
       key: instanceName,
@@ -3166,6 +3213,9 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
         // engine refuses to dispatch against a bridge without it (a time-based
         // fallback can settle the wrong job during a rolling upgrade).
         turnSessionEcho: true,
+        // This bridge requires a distinct, same-filesystem staging directory and
+        // publishes only complete inbound files into the gateway-visible mount.
+        inboundPrivateStaging: true,
         protocolVersion: PROTOCOL_VERSION,
         compat: COMPAT_MANIFEST,
         // Protocol-contract Inc 2 (additive; the Convex poller picks known
@@ -3582,7 +3632,11 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
         // the next property read threw, and the global handler turned this
         // route's announced 400 into a 500.
         const parsed: unknown = JSON.parse(raw);
-        if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+        if (
+          typeof parsed !== "object" ||
+          parsed === null ||
+          Array.isArray(parsed)
+        ) {
           sendJson(res, 400, { ok: false, error: "invalid body" });
           return;
         }
@@ -3591,7 +3645,8 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
         sendJson(res, 400, { ok: false, error: "invalid body" });
         return;
       }
-      const dmInstance = typeof dm.instanceName === "string" ? dm.instanceName : "";
+      const dmInstance =
+        typeof dm.instanceName === "string" ? dm.instanceName : "";
       const dmChatId = typeof dm.chatId === "string" ? dm.chatId : "";
       const dmMessageId = typeof dm.messageId === "string" ? dm.messageId : "";
       const dmNames = Array.isArray(dm.filenames) ? dm.filenames : null;
@@ -3628,7 +3683,10 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
       }
       const dmBundle = served.get(dmInstance);
       if (!dmBundle) {
-        sendJson(res, 409, { ok: false, error: { code: "instance_not_served" } });
+        sendJson(res, 409, {
+          ok: false,
+          error: { code: "instance_not_served" },
+        });
         return;
       }
       // The GATEWAY-visible outbound root: the same path the agent writes to and
@@ -3665,8 +3723,7 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
       // PRESENCE decides — a stated `null` is a real generation (a turn opened
       // without an ack runId), so the key is only forwarded when it was sent.
       const dmHasRunId = "runId" in dm;
-      const dmRunId =
-        typeof dm.runId === "string" ? dm.runId : null;
+      const dmRunId = typeof dm.runId === "string" ? dm.runId : null;
       const attached: string[] = [];
       // NOT "missing": `addMedia` answers false for an absent file AND for a
       // transfer it could not complete (media mode off, over the size cap,
@@ -3728,7 +3785,12 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
       }
       try {
         const session = await registry.acquire(toRouting(patch, patchInstance));
-        await performPatch(session, patch, patchBundle.writer, patchBundle.config);
+        await performPatch(
+          session,
+          patch,
+          patchBundle.writer,
+          patchBundle.config,
+        );
         sendJson(res, 200, { ok: true });
       } catch (err) {
         console.error("bridge /patch failed:", (err as Error)?.message ?? err);
@@ -3874,7 +3936,11 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
         // epoch. Unconditional is safe HERE specifically because a turn was found live,
         // which means the message is still streaming and the chat still busy — the exact
         // premise `providerSessionClearPatch` states for its unconditional callers.
-        await applyDurableSessionDrop(abortBundle.writer, abort.chatId, stopped);
+        await applyDurableSessionDrop(
+          abortBundle.writer,
+          abort.chatId,
+          stopped,
+        );
         sendJson(res, 200, hermesAbortResponseBody(stopped));
         return;
       }
@@ -3911,7 +3977,8 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
           abortBundle.config,
           // With runId, the gateway cancels the NAMED run (immune to a newer
           // run having started on the session); without, the active one.
-          (conn) => conn.request("chat.abort", chatAbortParams(sessionKey, runId)),
+          (conn) =>
+            conn.request("chat.abort", chatAbortParams(sessionKey, runId)),
           noteHandshakeFor(abortInstance),
         );
         sendJson(res, 200, { ok: true });
@@ -4316,9 +4383,9 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
                   );
                   for (const outcome of settled) {
                     if (outcome.status !== "fulfilled") continue; // one key's failure is its own
-                    const payload = outcome.value.payload as
-                      | { tasks?: unknown[] }
-                      | null;
+                    const payload = outcome.value.payload as {
+                      tasks?: unknown[];
+                    } | null;
                     const list = Array.isArray(payload?.tasks)
                       ? payload.tasks
                       : [];
@@ -5178,6 +5245,7 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
       }
       const result = await validateSharedFs({
         inboundDir: mvBundle.config.inboundMediaDir,
+        inboundStagingDir: mvBundle.config.inboundMediaStagingDir,
         outboundDir: mvBundle.config.mediaOutboundDir,
         inboundSharedFs: mvBody.inboundMediaMode === "shared-fs",
         outboundSharedFs: mvBody.mediaMode === "shared-fs",
@@ -5227,6 +5295,7 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
         // (per-instance override, else the instance default). These differ when
         // bridge + gateway mount the shared volume at different points.
         inboundDir: cfg.inboundMediaDir,
+        stagingDir: cfg.inboundMediaStagingDir,
         agentMount: body.config?.inboundAgentMount ?? cfg.inboundAgentMount,
         maxBytes: body.config?.mediaMaxBytes ?? cfg.mediaMaxBytes,
       };

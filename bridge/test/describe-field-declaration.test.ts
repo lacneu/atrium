@@ -20,7 +20,11 @@
  * read finds nothing, and a turn died of `context_length` at a reported 51 % of
  * window. What is NOT established is which shape — if either — this gateway build
  * actually produces, so the guard now reads both places and
- * `/frame-discovery contextBudgetStatus` is the open question.
+ * `/frame-discovery contextBudgetStatus` was the open question until 2026.9.4
+ * DECLARED the field — it left this allowlist on 2026-09-12 (see
+ * protocol/openclaw/undeclared-describe-reads.json `$resolved`). What remains
+ * open is only whether the gateway omits the assessment under a context engine
+ * that owns compaction; the flat sibling read is still undeclared and still listed.
  *
  * The way to settle it is the LOCAL bench (`bridge/local-openclaw/up.sh`), not
  * production: boot the pinned gateway and read a real `sessions.describe`. One
@@ -220,7 +224,6 @@ describe("a session-describe field we read must be declared somewhere", () => {
     // Pins the CURRENT extent of the hole. If a fourth appears, this fails and a
     // reviewer decides whether it is acceptable — the point of a ratchet.
     expect([...declaredUndeclaredReads().keys()].sort()).toEqual([
-      "contextBudgetStatus",
       "estimatedPromptTokens",
       "overflowTokens",
       "promptBudgetBeforeReserve",

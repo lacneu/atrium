@@ -1,0 +1,90 @@
+{
+  "kind": "atrium-bench-attestation",
+  "version": 2,
+  "gatewayVersion": "2026.9.4",
+  "openclawRuns": [
+    {
+      "id": "basic-turn",
+      "ok": true,
+      "chat": "b33ee0e92a84e9ae"
+    },
+    {
+      "id": "tool-exec",
+      "ok": true,
+      "chat": "b33ee0e92a84e9ae"
+    },
+    {
+      "id": "update-plan",
+      "ok": true,
+      "chat": "b33ee0e92a84e9ae"
+    },
+    {
+      "id": "media-outbound",
+      "ok": true,
+      "chat": "b33ee0e92a84e9ae"
+    },
+    {
+      "id": "spawn-announce-merge",
+      "ok": true,
+      "chat": "b33ee0e92a84e9ae"
+    },
+    {
+      "id": "spawn-chain-merge",
+      "ok": true,
+      "chat": "b33ee0e92a84e9ae"
+    },
+    {
+      "id": "spawn-parallel-merge",
+      "ok": true,
+      "chat": "b33ee0e92a84e9ae"
+    },
+    {
+      "id": "async-task",
+      "ok": true,
+      "chat": "b33ee0e92a84e9ae"
+    },
+    {
+      "id": "cron-tool",
+      "ok": true,
+      "chat": "b33ee0e92a84e9ae"
+    }
+  ],
+  "verdict": "GO",
+  "at": "2026-09-12T19:02:53.875Z",
+  "scenarios": [
+    "async-task",
+    "basic-turn",
+    "cron-tool",
+    "hermes-basic-turn",
+    "hermes-cron-list",
+    "media-outbound",
+    "spawn-announce-merge",
+    "spawn-chain-merge",
+    "spawn-parallel-merge",
+    "tool-exec",
+    "update-plan"
+  ],
+  "providers": {
+    "basic-turn": "openclaw",
+    "tool-exec": "openclaw",
+    "update-plan": "openclaw",
+    "media-outbound": "openclaw",
+    "spawn-announce-merge": "openclaw",
+    "spawn-chain-merge": "openclaw",
+    "spawn-parallel-merge": "openclaw",
+    "async-task": "openclaw",
+    "cron-tool": "openclaw",
+    "hermes-basic-turn": "hermes",
+    "hermes-cron-list": "hermes"
+  },
+  "flags": [],
+  "atriumSha": "49954c255961d414b154d967a383b3cb3b4aef11",
+  "worktree": {
+    "dirty": false,
+    "deltaSha256": null
+  },
+  "supportDigest": "e1e2abb611092e503c66c633d8a05fecd4523ecfa61f13838b8cdc9fa7161d0c",
+  "authMode": "token",
+  "bridgeVersion": "0.84.5",
+  "vendoredSha256": "99e06ae2c430259848af68304c28804e3fcc4227ae77ec1a99c80f4d26d35d30"
+}

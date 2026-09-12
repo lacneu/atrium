@@ -23,6 +23,7 @@
 import type { SessionFillSource } from "./context-budget.js";
 import type { NormalizedEvent } from "./events.js";
 import type { ConvexWriter, FinalizeStatus, ToolPart } from "../convex-writer.js";
+import { announcedChildKey } from "../providers/openclaw/run-families.js";
 import { cronPartFromTool } from "./cron-part.js";
 import { planPartFromTool } from "./plan-part.js";
 import {
@@ -797,9 +798,11 @@ export class TurnSink {
     // child holds the chat until the reaper (codex P2).
     const runId = this.turnRunId;
     if (typeof runId === "string" && runId.startsWith("announce:v1:")) {
-      const seg = runId.split(":");
-      const childKey = seg.slice(2, -1).join(":");
-      if (childKey !== "") {
+      // The grammar lives in ONE place (run-families.ts): a delivery lane suffix
+      // (`:agent-loop`, `:wake`) makes the child run id stop being the last
+      // segment, and slicing blindly folded it into the key here.
+      const childKey = announcedChildKey(runId);
+      if (childKey !== null) {
         try {
           await this.writer.settleAnnouncedChild?.(this.chatId, childKey);
         } catch (err) {

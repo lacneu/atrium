@@ -28,6 +28,7 @@ const CONFIG: BridgeConfig = {
   gatewayHttpBase: "http://gw.invalid:18790",
   mediaFetchTimeoutMs: 60_000,
   inboundMediaDir: "/tmp/in",
+  inboundMediaStagingDir: "/tmp/in-staging",
   inboundAgentMount: "/tmp/in",
   inboundTtlMs: 1000,
   convexHttpActionsUrl: "http://convex.invalid",
@@ -71,7 +72,10 @@ describe("GET /health with zero instances + configIssues surface", () => {
     server = started.server;
     const res = await fetch(`${started.baseUrl}/health`);
     expect(res.status).toBe(200); // the bridge serves health even with 0 instances
-    const body = (await res.json()) as { targets: unknown[]; configIssues: unknown[] };
+    const body = (await res.json()) as {
+      targets: unknown[];
+      configIssues: unknown[];
+    };
     expect(body.targets).toEqual([]); // nothing resolved -> no targets
     expect(body.configIssues).toEqual([]); // no getter -> empty, not undefined
   });

@@ -16,7 +16,7 @@
 #   agents running where docker is absent. The env checks are the durable part;
 #   their four outcome paths are pinned by bridge/test/preflight.test.ts.
 set -uo pipefail
-cd "$(dirname "$0")"
+cd "$(dirname "$0")" || exit 1
 
 ENV_ONLY=0
 ENV_FILE=".env"
@@ -117,13 +117,24 @@ else
   ok "BRIDGE_INSTANCE_SECRETS set"
 fi
 
-# The media trap: host dirs declared, mounts still commented out.
+# The media trap for CASE A (one bridge, one instance): host dirs declared,
+# mount still commented out. Arbitrary literal multi-instance mounts are not
+# expressible through these process-global OPENCLAW_* variables and are verified
+# per instance with "Vérifier les chemins" plus the documented mount review.
+if has_key OPENCLAW_INBOUND_STAGING_HOST_DIR || has_key OPENCLAW_INBOUND_STAGING_DIR; then
+  fail "separate inbound staging variables are no longer supported — mount one OPENCLAW_INBOUND_HOST_DIR root containing published/ and .staging/"
+fi
+
 if [ -n "$(get OPENCLAW_MEDIA_OUTBOUND_HOST_DIR)" ] || [ -n "$(get OPENCLAW_INBOUND_HOST_DIR)" ]; then
-  if grep -qE '^[[:space:]]*-[[:space:]]*\$\{OPENCLAW_(MEDIA_OUTBOUND|INBOUND)_HOST_DIR' docker-compose.yml; then
-    ok "media host dirs declared AND mounted"
-  else
-    fail "media host dirs are set in $ENV_FILE but the matching volumes in docker-compose.yml are still commented out — nothing mounts them and media delivery fails SILENTLY (see deploy/SHARED_FS_MEDIA.md)"
-  fi
+  for media_var in OPENCLAW_MEDIA_OUTBOUND_HOST_DIR OPENCLAW_INBOUND_HOST_DIR; do
+    if [ -n "$(get "$media_var")" ]; then
+      if grep -qE "^[[:space:]]*-[[:space:]]*\\\$\\{${media_var}" docker-compose.yml; then
+        ok "$media_var declared AND mounted"
+      else
+        fail "$media_var is set in $ENV_FILE but its matching volume in docker-compose.yml is still commented out — media delivery fails SILENTLY (see deploy/SHARED_FS_MEDIA.md)"
+      fi
+    fi
+  done
   if [ -z "$(get BRIDGE_RUN_AS_UID)" ]; then
     warn "shared-fs media without BRIDGE_RUN_AS_UID — inbound files the bridge writes may be unreadable by the agent"
   fi

@@ -3,8 +3,50 @@
 // periodic sweep deletes files older than the TTL. The TTL MUST exceed the longest
 // possible turn so a file is never reaped mid-read by the agent.
 
-import { readdir, rm, stat } from "node:fs/promises";
-import { join } from "node:path";
+import { constants, type Stats } from "node:fs";
+import {
+  lstat,
+  open,
+  readdir,
+  realpath,
+  unlink,
+  type FileHandle,
+} from "node:fs/promises";
+import { isAbsolute, join, resolve } from "node:path";
+
+function sameObject(left: Stats, right: Stats): boolean {
+  return left.dev === right.dev && left.ino === right.ino;
+}
+
+async function openCanonicalDirectory(dir: string): Promise<FileHandle | null> {
+  if (!isAbsolute(dir) || resolve(dir) !== dir) return null;
+  try {
+    if ((await realpath(dir)) !== dir) return null;
+    const handle = await open(
+      dir,
+      constants.O_RDONLY |
+        (constants.O_DIRECTORY ?? 0) |
+        (constants.O_NOFOLLOW ?? 0),
+    );
+    const [opened, current] = await Promise.all([handle.stat(), lstat(dir)]);
+    if (
+      !opened.isDirectory() ||
+      current.isSymbolicLink() ||
+      !current.isDirectory() ||
+      !sameObject(opened, current)
+    ) {
+      await handle.close().catch(() => undefined);
+      return null;
+    }
+    return handle;
+  } catch {
+    return null;
+  }
+}
+
+function anchoredDirectoryPath(handle: FileHandle, dir: string): string {
+  return process.platform === "linux" ? `/proc/self/fd/${handle.fd}` : dir;
+}
 
 /** Pure: should a file of this age be reaped? (the discriminating unit). */
 export function reapDecision(opts: { ageMs: number; ttlMs: number }): boolean {
@@ -18,25 +60,33 @@ export async function sweepInboundDir(
   ttlMs: number,
   now: number,
 ): Promise<number> {
+  const handle = await openCanonicalDirectory(dir);
+  if (handle === null) return 0;
+  const anchoredDir = anchoredDirectoryPath(handle, dir);
   let entries: string[];
   try {
-    entries = await readdir(dir);
+    entries = await readdir(anchoredDir);
   } catch {
+    await handle.close().catch(() => undefined);
     return 0; // dir not created yet (no inbound file ever staged) — nothing to do
   }
   let reaped = 0;
-  for (const name of entries) {
-    const p = join(dir, name);
-    try {
-      const s = await stat(p);
-      if (!s.isFile()) continue;
-      if (reapDecision({ ageMs: now - s.mtimeMs, ttlMs })) {
-        await rm(p, { force: true });
-        reaped++;
+  try {
+    for (const name of entries) {
+      const path = join(anchoredDir, name);
+      try {
+        const metadata = await lstat(path);
+        if (metadata.isSymbolicLink() || !metadata.isFile()) continue;
+        if (reapDecision({ ageMs: now - metadata.mtimeMs, ttlMs })) {
+          await unlink(path);
+          reaped++;
+        }
+      } catch {
+        // Racing delete / permission / vanished — skip, the next sweep retries.
       }
-    } catch {
-      // racing delete / permission / vanished — skip, the next sweep retries.
     }
+  } finally {
+    await handle.close().catch(() => undefined);
   }
   return reaped;
 }

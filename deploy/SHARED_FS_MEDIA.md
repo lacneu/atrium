@@ -4,10 +4,10 @@ Atrium moves files **to** the agent (a user uploads a doc) and **from** the agen
 (the agent produces a file you download) over its bridge. There are two transport
 modes; this page is the unambiguous setup for the second one.
 
-| Mode | Needs a shared filesystem? | Outbound (agent → user) | Inbound (user → agent) |
-|------|----------------------------|-------------------------|------------------------|
-| **gateway-http** (default) | **No** | Best-effort — depends on the agent emitting a path the gateway surfaces | Capped by the WebSocket frame ceiling (~25 MiB) |
-| **shared-fs** (opt-in) | **Yes** — Atrium and the gateway share the gateway's media dirs on disk | **Deterministic** — the bridge scans the dir after every turn and hosts every file the agent wrote, with or without a `MEDIA:` line | **Any size** — the bridge streams big files to the dir and hands the agent a path |
+| Mode                       | Needs a shared filesystem?                                              | Outbound (agent → user)                                                                                                             | Inbound (user → agent)                                                            |
+| -------------------------- | ----------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------- |
+| **gateway-http** (default) | **No**                                                                  | Best-effort — depends on the agent emitting a path the gateway surfaces                                                             | Capped by the WebSocket frame ceiling (~25 MiB)                                   |
+| **shared-fs** (opt-in)     | **Yes** — Atrium and the gateway share the gateway's media dirs on disk | **Deterministic** — the bridge scans the dir after every turn and hosts every file the agent wrote, with or without a `MEDIA:` line | **Any size** — the bridge streams big files to the dir and hands the agent a path |
 
 Use **gateway-http** when Atrium and the gateway run on different hosts. Use
 **shared-fs** when they share a host (or NFS) and you want reliable downloads and
@@ -22,7 +22,7 @@ large (video/audio/big-doc) uploads.
 > HTTP, so Atrium's frontend and Convex can live anywhere.
 
 > This is the **only** way to deliver agent-produced files deterministically: a
-> bare file write surfaces *nothing* over the gateway protocol (no `mediaUrls`, no
+> bare file write surfaces _nothing_ over the gateway protocol (no `mediaUrls`, no
 > artifacts) — the gateway signals a file only if the LLM cooperates. shared-fs
 > sidesteps the LLM by reading the dir directly.
 
@@ -33,11 +33,12 @@ large (video/audio/big-doc) uploads.
 Four paths are in play. Get this table right and everything works; get it wrong
 and files vanish silently.
 
-| # | Path | Lives in | Value | Keyed by instance? |
-|---|------|----------|-------|--------------------|
-| 1 | Host media dirs | the host filesystem | `<H>/media/{outbound,inbound}` | yes — the host is already per-instance |
-| 2 | **Agent** writes/reads | the **gateway** container | `/home/node/.openclaw/media/{outbound,inbound}` | **NO — must stay flat** |
-| 3 | **Bridge** reads/writes | the **bridge** container | `/home/node/.openclaw/media/<instance>/{outbound,inbound}` | **YES** |
+| #   | Path                        | Lives in                          | Value                                                      | Keyed by instance?                     |
+| --- | --------------------------- | --------------------------------- | ---------------------------------------------------------- | -------------------------------------- |
+| 1   | Host media dirs             | the host filesystem               | `<H>/media/outbound`, `<H>/media/inbound`                  | yes — the host is already per-instance |
+| 2   | **Agent** writes/reads      | the **gateway** container         | `/home/node/.openclaw/media/{outbound,inbound}`            | **NO — must stay flat**                |
+| 3   | **Bridge** reads/mounts     | the **bridge** container          | `/home/node/.openclaw/media/<instance>/{outbound,inbound}` | **YES**                                |
+| 4   | **Bridge** publishes/stages | children of its one inbound mount | `inbound/{published,.staging}`                             | inherited from path 3                  |
 
 `<H>` = the gateway's state dir on the host (its `.openclaw` mount), e.g.
 `<root>/instances/<instance>/.openclaw`.
@@ -50,15 +51,16 @@ flat path is also what the instance's `openclaw.json`
 to read its own files unless you also edited every `openclaw.json`. So **never key
 the agent path.**
 
-**Why path 3 (bridge) is keyed.** The bridge's own mount point is free. Keying it
+**Why paths 3 and 4 (bridge) are keyed.** The bridge's own mount points are free. Keying them
 by instance means several bridges (or one bridge serving several gateways) never
 collide and each mount is self-documenting. The bridge derives it automatically
 from each served instance's **name** — which it resolves from Convex via that
 instance's per-bridge secret, so the path follows the name.
 
-Paths 2 and 3 bind the **same host dir** (path 1) at different container paths —
-that co-location is what makes the file the bridge writes the same file the agent
-reads.
+The bridge gets **one** read-write bind for the whole inbound root. It derives
+`published/` and `.staging/` beneath that mount, guaranteeing one filesystem for
+the atomic hardlink. The gateway receives only the same host root's `published/`
+child at its flat inbound path, read-only; it can never see `.staging/`.
 
 ---
 
@@ -67,21 +69,23 @@ reads.
 For an instance named **`<I>`** whose gateway keeps state at host dir **`<H>`**
 and runs as uid **`<UID>:<GID>`**:
 
-| What | Value |
-|------|-------|
-| Host outbound dir | `<H>/media/outbound` |
-| Host inbound dir | `<H>/media/inbound` |
-| Bridge env: per-bridge secret | `BRIDGE_INSTANCE_SECRETS` includes `<I>`'s secret |
-| Bridge env: run-as uid | `user: "<UID>:<GID>"` (match the gateway) |
-| Bridge mount (outbound) | `<H>/media/outbound  →  /home/node/.openclaw/media/<I>/outbound  :ro` |
-| Bridge mount (inbound) | `<H>/media/inbound  →  /home/node/.openclaw/media/<I>/inbound` |
-| Atrium UI | Settings → Agents → Instances: set `<I>`'s gateway URL + credentials, mint its secret; Settings → Agents → Bridge → Configure `<I>` → Outbound **and** Inbound = `shared-fs` |
+| What                              | Value                                                                                                                                                                        |
+| --------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Host outbound dir                 | `<H>/media/outbound`                                                                                                                                                         |
+| Host inbound root                 | `<H>/media/inbound` (contains `published/` + `.staging/`)                                                                                                                    |
+| Bridge env: per-bridge secret     | `BRIDGE_INSTANCE_SECRETS` includes `<I>`'s secret                                                                                                                            |
+| Bridge env: run-as uid            | `user: "<UID>:<GID>"` (match the gateway)                                                                                                                                    |
+| Bridge mount (outbound)           | `<H>/media/outbound  →  /home/node/.openclaw/media/<I>/outbound  :ro`                                                                                                        |
+| Bridge mount (inbound root)       | `<H>/media/inbound → /home/node/.openclaw/media/<I>/inbound` (rw, one mount)                                                                                                 |
+| Gateway mount (published inbound) | `<H>/media/inbound/published → /home/node/.openclaw/media/inbound` (ro)                                                                                                      |
+| Atrium UI                         | Settings → Agents → Instances: set `<I>`'s gateway URL + credentials, mint its secret; Settings → Agents → Bridge → Configure `<I>` → Outbound **and** Inbound = `shared-fs` |
 
 The bridge auto-derives its read/write dirs from the instance **name** it resolves
 from Convex (via `<I>`'s per-bridge secret), so they **equal** the literal mount
 targets above with no extra env. Override only when a bridge serves a **single**
 instance (the overrides are process-global): `OPENCLAW_MEDIA_OUTBOUND_DIR` /
-`OPENCLAW_INBOUND_DIR`.
+`OPENCLAW_INBOUND_DIR`. The latter names the inbound **root**; the bridge always
+derives its distinct `<root>/published` and `<root>/.staging` children.
 
 ---
 
@@ -101,20 +105,21 @@ Convex `bridgeUrl`.)
 
 **Resolved paths (literal — copy these):**
 
-| | `alpha` | `beta` |
-|--|---------|--------|
-| Host outbound | `/srv/openclaw/instances/alpha/.openclaw/media/outbound` | `/srv/openclaw/instances/beta/.openclaw/media/outbound` |
-| Host inbound | `/srv/openclaw/instances/alpha/.openclaw/media/inbound` | `/srv/openclaw/instances/beta/.openclaw/media/inbound` |
-| Bridge outbound target | `/home/node/.openclaw/media/alpha/outbound` | `/home/node/.openclaw/media/beta/outbound` |
-| Bridge inbound target | `/home/node/.openclaw/media/alpha/inbound` | `/home/node/.openclaw/media/beta/inbound` |
-| Convex `instances.bridgeUrl` | `http://<host>:8787` | `http://<host>:8787` (same bridge) |
+|                              | `alpha`                                                  | `beta`                                                  |
+| ---------------------------- | -------------------------------------------------------- | ------------------------------------------------------- |
+| Host outbound                | `/srv/openclaw/instances/alpha/.openclaw/media/outbound` | `/srv/openclaw/instances/beta/.openclaw/media/outbound` |
+| Host inbound root            | `/srv/openclaw/instances/alpha/.openclaw/media/inbound`  | `/srv/openclaw/instances/beta/.openclaw/media/inbound`  |
+| Bridge outbound target       | `/home/node/.openclaw/media/alpha/outbound`              | `/home/node/.openclaw/media/beta/outbound`              |
+| Bridge inbound target        | `/home/node/.openclaw/media/alpha/inbound`               | `/home/node/.openclaw/media/beta/inbound`               |
+| Convex `instances.bridgeUrl` | `http://<host>:8787`                                     | `http://<host>:8787` (same bridge)                      |
 
 **Create the host dirs first, owned by the gateway uid** (else the mount
 auto-creates them root-owned and the agent can't read):
 
 ```bash
 for I in alpha beta; do
-  mkdir -p /srv/openclaw/instances/$I/.openclaw/media/{inbound,outbound}
+  mkdir -p /srv/openclaw/instances/$I/.openclaw/media/inbound/{published,.staging}
+  mkdir -p /srv/openclaw/instances/$I/.openclaw/media/outbound
   chown -R 1000:1000 /srv/openclaw/instances/$I/.openclaw/media
 done
 ```
@@ -125,7 +130,7 @@ done
 services:
   bridge:
     image: ghcr.io/lacneu/atrium-bridge:0.6.0
-    user: "1000:1000"                       # = the shared gateway uid
+    user: "1000:1000" # = the shared gateway uid
     ports: ["8787:8787"]
     environment:
       # One secret per served instance, minted in each instance's Credentials dialog.
@@ -157,7 +162,7 @@ Per gateway you want on shared-fs, with its `<I>`, `<H>`, `<UID>:<GID>` and the
 bridge's `<HOSTPORT>`:
 
 1. **Create + own the host dirs.**
-   `mkdir -p <H>/media/{inbound,outbound} && chown -R <UID>:<GID> <H>/media`
+   `mkdir -p <H>/media/inbound/{published,.staging} <H>/media/outbound && chown -R <UID>:<GID> <H>/media`
 2. **Register the instance in Convex** (Settings → Agents → Instances): name = `<I>`
    **exactly**, set its **gateway URL + credentials**, mint its **per-bridge
    secret**, and `bridgeUrl = http://<host>:<HOSTPORT>`.
@@ -165,9 +170,14 @@ bridge's `<HOSTPORT>`:
    `BRIDGE_INSTANCE_SECRETS`, set `user: "<UID>:<GID>"`, and add the two bind mounts
    (literal `<I>` in the target):
    - `<H>/media/outbound : /home/node/.openclaw/media/<I>/outbound : ro`
-   - `<H>/media/inbound  : /home/node/.openclaw/media/<I>/inbound`
+   - `<H>/media/inbound : /home/node/.openclaw/media/<I>/inbound` (rw, one root)
+
+   The gateway mounts only `<H>/media/inbound/published`, read-only, at its flat
+   `/home/node/.openclaw/media/inbound` path. Leave the two process-global
+   directory overrides unset when this bridge serves more than one instance.
    (One bridge can carry several instances — list several secrets and several mount
    pairs; or run a dedicated bridge per gateway on its own `<HOSTPORT>:8787`.)
+
 4. **Recreate the bridge** (a docker mount is not hot):
    `docker compose up -d --force-recreate bridge`
 5. **Flip the modes** (hot, no restart): Settings → Agents → Bridge → Configure
@@ -182,11 +192,17 @@ bridge's `<HOSTPORT>`:
 
 ## Verify it actually works (don't assume)
 
+- **The compose preflight's env-to-mount check covers only single-instance CASE
+  A** (`OPENCLAW_*_HOST_DIR`). It cannot infer arbitrary literal `alpha`, `beta`,
+  or other multi-instance mounts. For a multi-instance bridge, review both
+  bridge mounts per instance, confirm the inbound one is a single parent mount
+  and no gateway mounts `.staging`, then run
+  **“Vérifier les chemins”** separately for every instance.
 - **“Vérifier les chemins”** confirms the bridge can read its outbound dir and
   write its inbound dir. It can only check the **bridge** side (there is no gateway
   filesystem API), so it catches the common misconfig (volume not mounted / wrong
   uid) but not the agent side — that needs a live turn.
-- **Outbound live test:** trigger the *real* way your agents produce files (e.g.
+- **Outbound live test:** trigger the _real_ way your agents produce files (e.g.
   native generation, not just a hand-written `echo`), and confirm the download chip
   appears. This is the discriminating test — the failure mode that motivated
   shared-fs is the agent writing a file that the gateway never signalled.
@@ -198,19 +214,24 @@ bridge's `<HOSTPORT>`:
 
 ## Gotchas
 
-- **uid match is load-bearing.** The bridge *writes* inbound files; the gateway's
-  agent (its uid) must *read* them. `user:` on the bridge must equal the gateway's
+- **uid match is load-bearing.** The bridge _writes_ inbound files; the gateway's
+  agent (its uid) must _read_ them. `user:` on the bridge must equal the gateway's
   uid:gid, or inbound fails silently “permission denied”. (Alternative: a default
   ACL `setfacl -d -m o::rX` on the host dirs.)
 - **Create the host dirs before recreating.** A bind mount of a missing host dir
   auto-creates it **root-owned** → the agent can't read it. Step 1 prevents this.
 - **A docker mount is not hot.** Modes flip live in the UI, but adding the mount /
   `user:` needs `--force-recreate`.
+- **The former separate staging overrides are intentionally rejected.** Remove
+  `OPENCLAW_INBOUND_STAGING_DIR` and `OPENCLAW_INBOUND_STAGING_HOST_DIR`; point
+  `OPENCLAW_INBOUND_DIR` / `OPENCLAW_INBOUND_HOST_DIR` at the inbound parent.
+  Two sibling bind mounts can surface as distinct devices and make atomic publish
+  fail with `EXDEV`, even when their host paths look adjacent.
 - **The agent must write to `/home/node/.openclaw/media/outbound`.** The dir-scan is
   deterministic only for files that land in the scanned dir. If your agent (e.g.
-  codex native image generation) writes to its *workspace* instead, the scan misses
-  it. Add to the agent's `AGENTS.md`: *“To deliver a file to the user, write it to
-  `/home/node/.openclaw/media/outbound/`.”* (With the dir-scan you no longer need a
+  codex native image generation) writes to its _workspace_ instead, the scan misses
+  it. Add to the agent's `AGENTS.md`: _“To deliver a file to the user, write it to
+  `/home/node/.openclaw/media/outbound/`.”_ (With the dir-scan you no longer need a
   `MEDIA:` line.)
 - **Never key the agent path / never edit `allowReadPaths` to a keyed path.** Path 2
   stays flat by design (see “the one rule”).
@@ -225,8 +246,9 @@ bridge's `<HOSTPORT>`:
 
 A bridge can serve **one or many** gateways. Each served instance is keyed by its
 name (resolved from Convex via its per-bridge secret), so a single bridge keeps every
-instance's media in a distinct `/home/node/.openclaw/media/<instance>/{outbound,inbound}`
-subtree — list one secret and one mount pair per instance.
+instance's media in distinct `/home/node/.openclaw/media/<instance>/{outbound,inbound}`
+subtrees — list one secret and two mounts per instance. Each inbound mount contains
+its own `published/` and `.staging/` children.
 
 Two practical limits push you toward **one bridge per gateway** in some setups:
 

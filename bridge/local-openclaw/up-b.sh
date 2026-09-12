@@ -11,16 +11,17 @@ LOOP_B="${OPENCLAW_LOOPBACK_PORT_B:-18890}"
 
 # 1) Token for gateway B (separate from A's ./.token).
 if [[ ! -f .token-b ]]; then openssl rand -hex 32 > .token-b; fi
-export OPENCLAW_GATEWAY_TOKEN_B="$(cat .token-b)"
+OPENCLAW_GATEWAY_TOKEN_B="$(cat .token-b)"
+export OPENCLAW_GATEWAY_TOKEN_B
 
 [[ -f local.env ]] || cp local.env.example local.env
-mkdir -p media-outbound-b media-inbound-b
+mkdir -p media-outbound-b media-inbound-b/{published,.staging}
 
 echo "▶ starting oc-local-gateway-b (OpenClaw ${OPENCLAW_VERSION:-2026.5.19}) on :${PORT_B} …"
 docker compose -f docker-compose.b.yml up -d
 
 echo "▶ waiting for gateway B health …"
-until [[ "$(curl -s -o /dev/null -w '%{http_code}' --max-time 3 http://127.0.0.1:${PORT_B}/health 2>/dev/null)" == "200" ]]; do sleep 2; done
+until [[ "$(curl -s -o /dev/null -w '%{http_code}' --max-time 3 "http://127.0.0.1:${PORT_B}/health" 2>/dev/null)" == "200" ]]; do sleep 2; done
 echo "✅ gateway B healthy on :${PORT_B}"
 
 # 2) Codex harness (SAME ~/.codex as gateway A — user-approved for this bench).
@@ -41,25 +42,21 @@ if [[ "${OPENCLAW_CODEX_HARNESS:-0}" == "1" && -f "$CODEX_AUTH" && -f "$SEED_FIL
     /home/node/.openclaw/openclaw.json /home/node/.openclaw/.codex 2>/dev/null || true
   docker restart oc-local-gateway-b >/dev/null
   echo "▶ waiting for reconfigured gateway B …"
-  until [[ "$(curl -s -o /dev/null -w '%{http_code}' --max-time 3 http://127.0.0.1:${PORT_B}/health 2>/dev/null)" == "200" ]]; do sleep 2; done
+  until [[ "$(curl -s -o /dev/null -w '%{http_code}' --max-time 3 "http://127.0.0.1:${PORT_B}/health" 2>/dev/null)" == "200" ]]; do sleep 2; done
   echo "✅ codex harness ready on gateway B"
 else
   echo "ℹ codex harness NOT enabled on B (no agent turns; routing/media still testable)."
 fi
 
-# 3) media node-owned (bind makes the parent root-owned otherwise).
-docker exec -u root oc-local-gateway-b sh -c \
-  'mkdir -p /home/node/.openclaw/media/inbound && chown -R node:node /home/node/.openclaw/media' >/dev/null 2>&1 || true
-
-# 4) Re-attach loopback B (codex restart recreated the netns).
+# 3) Re-attach loopback B (codex restart recreated the netns).
 if docker ps -a --format '{{.Names}}' | grep -q '^oc-local-loopback-b$'; then
   docker restart oc-local-loopback-b >/dev/null 2>&1 || true
   echo "▶ waiting for loopback B forwarder (:${LOOP_B}) …"
-  until [[ "$(curl -s -o /dev/null -w '%{http_code}' --max-time 3 http://127.0.0.1:${LOOP_B}/health 2>/dev/null)" == "200" ]]; do sleep 1; done
+  until [[ "$(curl -s -o /dev/null -w '%{http_code}' --max-time 3 "http://127.0.0.1:${LOOP_B}/health" 2>/dev/null)" == "200" ]]; do sleep 1; done
   echo "✅ loopback B ready"
 fi
 
-# 5) Pair bridge B's device on gateway B (uses ../.env.b's identity over loopback B).
+# 4) Pair bridge B's device on gateway B (uses ../.env.b's identity over loopback B).
 TOKEN_B="$(cat .token-b)"
 echo "▶ registering pairing request on gateway B (bridge B identity) …"
 ( cd .. && OPENCLAW_GATEWAY_URL="ws://127.0.0.1:${LOOP_B}" OPENCLAW_TOKEN="$TOKEN_B" \

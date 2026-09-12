@@ -22,6 +22,7 @@ function config(): BridgeConfig {
     gatewayHttpBase: "https://gateway.example.test",
     mediaFetchTimeoutMs: 1,
     inboundMediaDir: "/tmp/in",
+    inboundMediaStagingDir: "/tmp/in-staging",
     inboundAgentMount: "/tmp/in",
     inboundTtlMs: 1,
     convexHttpActionsUrl: "https://convex.example.test/",
@@ -36,8 +37,9 @@ function config(): BridgeConfig {
 describe("device token promotion", () => {
   /** A Convex that always answers with the given outcome. */
   const answering = (outcome: string) =>
-    vi.fn(async () =>
-      new Response(JSON.stringify({ ok: true, outcome }), { status: 200 }),
+    vi.fn(
+      async () =>
+        new Response(JSON.stringify({ ok: true, outcome }), { status: 200 }),
     ) as unknown as typeof fetch;
 
   test("a LOST answer, once repaired, still knows the credential CHANGED", async () => {
@@ -198,7 +200,9 @@ describe("device token promotion", () => {
 
     // Run the scheduled repair.
     pending[0]!();
-    await vi.waitFor(() => expect(value.openclawCredentialSource).toBe("device"));
+    await vi.waitFor(() =>
+      expect(value.openclawCredentialSource).toBe("device"),
+    );
     expect(calls).toBe(2);
     expect(value.openclawToken).toBe("issued-token");
   });

@@ -5,9 +5,11 @@
 // catches the most common shared-fs misconfig: the volume not mounted / wrong
 // permissions on the bridge side.
 
-import { access, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { randomBytes } from "node:crypto";
+import { access, readFile, rm, writeFile } from "node:fs/promises";
 import { constants } from "node:fs";
 import { join } from "node:path";
+import { validateInboundDirectoryPair } from "./inbound-media.js";
 
 export interface DirCheck {
   /** Was this leg checked (its mode is shared-fs)? */
@@ -18,25 +20,35 @@ export interface DirCheck {
   detail: string;
 }
 
-/** Round-trip a marker (mkdir → write → read-back → delete) to prove the bridge
- *  can WRITE the dir (its inbound write path). */
+/** Round-trip an exclusive marker (write → read-back → delete) to prove the bridge
+ *  can WRITE the pre-created dir (its inbound write path). */
 export async function checkWritableDir(
   dir: string,
   now: number,
 ): Promise<DirCheck> {
-  const marker = join(dir, `.atrium_validate_${now}`);
+  const marker = join(
+    dir,
+    `.atrium_validate_${now}_${randomBytes(16).toString("hex")}`,
+  );
+  let created = false;
   try {
-    await mkdir(dir, { recursive: true });
-    await writeFile(marker, "ok");
+    // The directories are deploy-time mounts and must already exist. `wx` makes
+    // validation collision-safe and refuses a pre-existing symlink or hardlink.
+    await writeFile(marker, "ok", { flag: "wx", mode: 0o600 });
+    created = true;
     const back = await readFile(marker, "utf8");
     if (back !== "ok") {
       return { checked: true, ok: false, detail: "read-back mismatch" };
     }
     return { checked: true, ok: true, detail: dir };
   } catch (e) {
-    return { checked: true, ok: false, detail: (e as Error)?.message ?? "error" };
+    return {
+      checked: true,
+      ok: false,
+      detail: (e as Error)?.message ?? "error",
+    };
   } finally {
-    await rm(marker, { force: true }).catch(() => {});
+    if (created) await rm(marker, { force: true }).catch(() => {});
   }
 }
 
@@ -46,11 +58,48 @@ export async function checkReadableDir(dir: string): Promise<DirCheck> {
     await access(dir, constants.R_OK);
     return { checked: true, ok: true, detail: dir };
   } catch (e) {
-    return { checked: true, ok: false, detail: (e as Error)?.message ?? "error" };
+    return {
+      checked: true,
+      ok: false,
+      detail: (e as Error)?.message ?? "error",
+    };
   }
 }
 
 const SKIPPED: DirCheck = { checked: false, ok: true, detail: "not shared-fs" };
+
+async function checkInboundPair(
+  inboundDir: string,
+  stagingDir: string,
+  now: number,
+): Promise<DirCheck> {
+  try {
+    await validateInboundDirectoryPair(inboundDir, stagingDir);
+  } catch {
+    return {
+      checked: true,
+      ok: false,
+      detail: "inbound directory pair refused",
+    };
+  }
+  const published = await checkWritableDir(inboundDir, now);
+  if (!published.ok) {
+    return {
+      checked: true,
+      ok: false,
+      detail: "published directory not writable",
+    };
+  }
+  const staging = await checkWritableDir(stagingDir, now);
+  if (!staging.ok) {
+    return {
+      checked: true,
+      ok: false,
+      detail: "staging directory not writable",
+    };
+  }
+  return { checked: true, ok: true, detail: inboundDir };
+}
 
 /**
  * Validate the bridge-side shared-fs access for the legs that are in shared-fs
@@ -59,6 +108,7 @@ const SKIPPED: DirCheck = { checked: false, ok: true, detail: "not shared-fs" };
  */
 export async function validateSharedFs(opts: {
   inboundDir: string;
+  inboundStagingDir: string;
   outboundDir: string;
   inboundSharedFs: boolean;
   outboundSharedFs: boolean;
@@ -66,7 +116,11 @@ export async function validateSharedFs(opts: {
 }): Promise<{ inbound: DirCheck; outbound: DirCheck }> {
   return {
     inbound: opts.inboundSharedFs
-      ? await checkWritableDir(opts.inboundDir, opts.now)
+      ? await checkInboundPair(
+          opts.inboundDir,
+          opts.inboundStagingDir,
+          opts.now,
+        )
       : SKIPPED,
     outbound: opts.outboundSharedFs
       ? await checkReadableDir(opts.outboundDir)

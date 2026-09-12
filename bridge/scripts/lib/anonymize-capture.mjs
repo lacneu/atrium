@@ -183,8 +183,57 @@ const MEDIA_SENTINEL =
   /((?:MEDIA:)?\/home\/node\/\.openclaw\/media\/outbound\/)([^\s"]+)/g;
 
 /** Containers whose CONTENTS are free-form as far as the protocol is concerned. The
- *  manifest's 226 schemas describe protocol fields; none of them licenses a key that
+ *  manifest's 631 schemas describe protocol fields; none of them licenses a key that
  *  merely appears inside a tool's payload. */
+/** Keys whose OBJECT value is a shape the contract declares, and may therefore be
+ *  walked with the full protocol vocabulary.
+ *
+ *  THE DEFAULT IS NOW THE OTHER WAY ROUND, and that is the point. The old rule was
+ *  "a known key survives, and its subtree is walked with the full vocabulary" — which
+ *  meant ANY known key holding an undeclared object published every
+ *  `VOCABULARY_KEYS` string inside it verbatim. Measured 2026-09-12 over the real
+ *  coverage-derived vocabulary: **586 of 594 keys** leaked a sub-object
+ *  (`{"<anyKnownKey>":{"status":"<sentence>"}}` came out intact). `error` was the one
+ *  an adversarial review demonstrated; it was never the only one.
+ *
+ *  So an object under a known key is FREE-FORM unless it is listed here. Derived from
+ *  the shapes that actually occur in promoted captures, not guessed: adding a key here
+ *  is a review event, because it re-opens the full vocabulary one level deeper.
+ *
+ *  A missing entry costs fidelity (a declared leaf gets masked and the golden replay
+ *  says so, loudly). A wrong entry costs a leak, silently. That asymmetry is why the
+ *  list is short and why the default is closed. */
+const DECLARED_OBJECT_KEYS = new Set([
+  // Envelope and transport.
+  "frame",
+  "payload",
+  "data",
+  // Declared protocol shapes.
+  "message",
+  "content",
+  "session",
+  "identity",
+  "task",
+  "plan",
+  "steps",
+  "schedule",
+  "delivery",
+  "job",
+  "state",
+  "stateVersion",
+  "model",
+  "models",
+  "providers",
+  "plugins",
+  "agents",
+  "agentRuntime",
+  "thinkingLevels",
+  "participants",
+  "expandedParticipants",
+  "contextBudgetStatus",
+  "retry",
+]);
+
 const FREE_FORM_KEYS = new Set([
   "args",
   "result",
@@ -197,6 +246,24 @@ const FREE_FORM_KEYS = new Set([
   // manifest vocabulary and sub-keys such as `status`, `model` or `provider` kept their
   // text verbatim (raised in review).
   "structuredContent",
+  // The plan card's FREE-TEXT leaves. They are reader fields (`core/plan-part.ts`),
+  // so the plan node's vocabulary lets their KEY through — and that is exactly why
+  // they must also be free-form CONTAINERS. Without this, opening the key opened the
+  // subtree: `{"explanation": {"status": "Alice has cancer"}}` walked on with the full
+  // vocabulary, `status` is a protocol value key, and the sentence came out VERBATIM
+  // with `masked: 0` (found by adversarial review, 2026-09-12, on the very change that
+  // stopped the key being dropped). A malformed frame or an upstream shape change is
+  // enough to publish the text; an anonymiser must fail CLOSED on shape.
+  "explanation",
+  "title",
+  // A lifecycle `error` is read as an arbitrary object by the normalizer
+  // (`extractLifecycleError`), and it is a manifest-declared key — so it survived the
+  // vocabulary and its subtree was walked with it: `{"error":{"status":"<sentence>"}}`
+  // came out VERBATIM (adversarial review, 2026-09-12). Demonstrated with the
+  // coverage-derived vocabulary, which is the one the promoter actually passes; the
+  // same probe against `baseKnownKeys()` returns a reassuring zero, so test this node
+  // with the real vocabulary or not at all.
+  "error",
 ]);
 
 /** Structural keys: the containers the frame is built from. Not fields anyone could
@@ -642,17 +709,51 @@ export function anonymizeFrame(
     frame?.payload?.data !== null
       ? frame?.payload?.data
       : undefined;
+  // The NATIVE plan stream's `data` is a reader node like a tool result, and it was not
+  // treated as one: walked with the manifest vocabulary, its own leaves `explanation` and
+  // `title` are not protocol fields, so both came out MASKED AS KEYS and
+  // `planPartFromNative` (core/plan-part.ts) found neither. The plan card promoted from a
+  // capture then silently lost its explanation.
+  //
+  // It never showed because no promoted capture had carried one: the model writes an
+  // explanation only sometimes, and the first capture that did (2026-09-12,
+  // spawn-chain-merge) is what turned the fidelity gate red —
+  // `addPlanPart:explanation+kind+stamp+steps` raw 3, promoted 0. Pre-existing, not a
+  // 2026.9.4 regression.
+  const planData =
+    frame?.payload?.stream === "plan" && frame?.payload?.data !== null
+      ? frame?.payload?.data
+      : undefined;
 
   const walk = (node, key, inToolData = false, freeForm = false) => {
     if (Array.isArray(node)) return node.map((v) => walk(v, key, inToolData, freeForm));
     if (node !== null && typeof node === "object") {
       const out = {};
       const isToolData = toolData !== undefined && node === toolData;
-      const vocabulary = freeForm ? readerKeys : knownKeys;
+      const isPlanData = planData !== undefined && node === planData;
+      // UNION, not substitution: `readerKeys` is the reader's extra vocabulary, not a
+      // superset of the protocol one. Swapping it in wholesale cost the plan node its
+      // `source` field, trading one masked key for another.
+      const vocabulary = isPlanData
+        ? new Set([...knownKeys, ...readerKeys])
+        : freeForm
+          ? readerKeys
+          : knownKeys;
       // Key ORDER is preserved: a reordered object is a different fixture byte-wise, and
       // determinism is what makes a re-promotion a no-op instead of a diff.
       for (const [k, v] of Object.entries(node)) {
-        const childFree = freeForm || FREE_FORM_KEYS.has(k);
+        // An OBJECT under a known key is free-form unless its shape is declared —
+        // see DECLARED_OBJECT_KEYS for why the default flipped.
+        // ARRAYS COUNT TOO. The first version excluded them (`!Array.isArray(v)`), and a
+        // sweep found the hole still open for 560 keys through `{"<key>":[{...}]}` — an
+        // array of objects under an undeclared key carried exactly the content the
+        // inversion exists to close. A value-shape guard hid this for one night; when
+        // that guard was reverted for being both too permissive and too strict, the array
+        // case came straight back. There is no reason an undeclared CONTAINER should be
+        // trusted more because it is indexed.
+        const undeclaredContainer =
+          v !== null && typeof v === "object" && !DECLARED_OBJECT_KEYS.has(k);
+        const childFree = freeForm || FREE_FORM_KEYS.has(k) || undeclaredContainer;
         if (vocabulary.has(k)) {
           out[k] = walk(v, k, isToolData, childFree);
         } else {
@@ -764,6 +865,22 @@ export function anonymizeFrame(
       stats.masked += 1;
       return maskText(node);
     }
+    // VERBATIM BY KEY NAME — and this is a KNOWN HOLE, not a design.
+    //
+    // `VOCABULARY_KEYS` describes a POSITION in the contract; this walker only knows
+    // names, so any value landing under one of these 28 names is published wherever it
+    // sits. A value-SHAPE guard was tried on 2026-09-12 and REVERTED the same night: it
+    // was simultaneously too permissive (`Alice`, `PATIENT-12345`, `sk-proj-AbCd1234`,
+    // `6145551234` all pass a token pattern) and too strict — it silently masked
+    // `image/svg+xml` and `ollama/llama3.1:8b`, which are legitimate values the bridge
+    // reads (`convex-writer.ts` treats svg explicitly), and NOTHING detects that: the
+    // replay-fidelity check does not describe `reportSessionMeta`/`addMedia` arguments.
+    // Shipping it would have traded a known hole for a silent corpus regression.
+    //
+    // The sound fix is position-aware — validate against the vendored schema rather than
+    // a name set — and that is a lot of its own, filed with the rest of the anonymiser
+    // findings. What IS fixed here is the structural inversion below: an object under a
+    // known key is free-form unless its shape is declared.
     if (key !== null && VOCABULARY_KEYS.has(key)) {
       stats.verbatim += 1;
       return node;

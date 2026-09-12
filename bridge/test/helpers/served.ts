@@ -44,11 +44,11 @@ export function sharedFromConfig(config: BridgeConfig): SharedConfig {
     mediaOutboundAgentMount: config.mediaOutboundAgentMount,
     inboundAgentMount: config.inboundAgentMount,
     mediaOutboundDirOverride: null,
-    inboundMediaDirOverride: null,
+    inboundMediaRootOverride: null,
     attachmentFixAttestedInstances: [],
-  bridgeInstanceSecrets: [],
+    bridgeInstanceSecrets: [],
     forwardedClientIp: null,
-  trustedProxyUserHeader: null,
-  credentialRetryMs: 30_000,
+    trustedProxyUserHeader: null,
+    credentialRetryMs: 30_000,
   };
 }

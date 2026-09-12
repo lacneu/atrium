@@ -964,3 +964,319 @@ exports[`golden replay — the interpretation is pinned > 2026.9.2/update-plan 1
   ],
 }
 `;
+
+exports[`golden replay — the interpretation is pinned > 2026.9.4/async-task 1`] = `
+{
+  "bubbles": [
+    "turn",
+    "task-delivery",
+  ],
+  "byCall": {
+    "addToolPart": 2,
+    "finalize": 2,
+    "setSnapshot": 13,
+    "startAssistant": 2,
+    "upsertSubAgent": 2,
+  },
+  "calls": 21,
+  "engagements": [
+    "task:running",
+    "task:done",
+  ],
+  "finals": [
+    "complete",
+    "complete",
+  ],
+  "order": [
+    "startAssistant",
+    "addToolPart",
+    "upsertSubAgent",
+    "finalize",
+    "startAssistant",
+    "setSnapshot",
+    "finalize",
+    "upsertSubAgent",
+  ],
+  "tools": [
+    "tool:image_generate",
+  ],
+}
+`;
+
+exports[`golden replay — the interpretation is pinned > 2026.9.4/basic-turn 1`] = `
+{
+  "bubbles": [
+    "turn",
+  ],
+  "byCall": {
+    "finalize": 1,
+    "setSnapshot": 57,
+    "startAssistant": 1,
+  },
+  "calls": 59,
+  "engagements": [],
+  "finals": [
+    "complete",
+  ],
+  "order": [
+    "startAssistant",
+    "setSnapshot",
+    "finalize",
+  ],
+  "tools": [],
+}
+`;
+
+exports[`golden replay — the interpretation is pinned > 2026.9.4/cron-tool 1`] = `
+{
+  "bubbles": [
+    "turn",
+  ],
+  "byCall": {
+    "addCronPart": 1,
+    "addToolPart": 2,
+    "finalize": 1,
+    "setSnapshot": 15,
+    "startAssistant": 1,
+  },
+  "calls": 20,
+  "engagements": [],
+  "finals": [
+    "complete",
+  ],
+  "order": [
+    "startAssistant",
+    "addToolPart",
+    "addCronPart",
+    "setSnapshot",
+    "finalize",
+  ],
+  "tools": [
+    "tool:automations",
+  ],
+}
+`;
+
+exports[`golden replay — the interpretation is pinned > 2026.9.4/media-outbound 1`] = `
+{
+  "bubbles": [
+    "turn",
+  ],
+  "byCall": {
+    "addMedia": 1,
+    "addToolPart": 2,
+    "finalize": 1,
+    "setSnapshot": 13,
+    "startAssistant": 1,
+  },
+  "calls": 18,
+  "engagements": [],
+  "finals": [
+    "complete",
+  ],
+  "order": [
+    "startAssistant",
+    "addToolPart",
+    "setSnapshot",
+    "addMedia",
+    "setSnapshot",
+    "finalize",
+  ],
+  "tools": [
+    "tool:exec",
+  ],
+}
+`;
+
+exports[`golden replay — the interpretation is pinned > 2026.9.4/spawn-announce-merge 1`] = `
+{
+  "bubbles": [
+    "turn",
+    "announce",
+  ],
+  "byCall": {
+    "addMedia": 1,
+    "addToolPart": 2,
+    "finalize": 2,
+    "setSnapshot": 22,
+    "settleAnnouncedChild": 1,
+    "startAssistant": 2,
+  },
+  "calls": 30,
+  "engagements": [],
+  "finals": [
+    "complete",
+    "complete",
+  ],
+  "order": [
+    "startAssistant",
+    "addToolPart",
+    "setSnapshot",
+    "finalize",
+    "startAssistant",
+    "setSnapshot",
+    "addMedia",
+    "setSnapshot",
+    "finalize",
+    "settleAnnouncedChild",
+  ],
+  "tools": [
+    "tool:sessions_spawn",
+  ],
+}
+`;
+
+exports[`golden replay — the interpretation is pinned > 2026.9.4/spawn-chain-merge 1`] = `
+{
+  "bubbles": [
+    "turn",
+    "announce",
+    "announce",
+  ],
+  "byCall": {
+    "addPlanPart": 3,
+    "addToolPart": 5,
+    "finalize": 3,
+    "setSnapshot": 21,
+    "settleAnnouncedChild": 2,
+    "startAssistant": 3,
+  },
+  "calls": 37,
+  "engagements": [],
+  "finals": [
+    "complete",
+    "complete",
+    "complete",
+  ],
+  "order": [
+    "startAssistant",
+    "addToolPart",
+    "addPlanPart",
+    "addToolPart",
+    "setSnapshot",
+    "finalize",
+    "startAssistant",
+    "addPlanPart",
+    "addToolPart",
+    "setSnapshot",
+    "finalize",
+    "settleAnnouncedChild",
+    "startAssistant",
+    "addPlanPart",
+    "setSnapshot",
+    "finalize",
+    "settleAnnouncedChild",
+  ],
+  "tools": [
+    "tool:progress_card",
+    "tool:sessions_spawn",
+  ],
+}
+`;
+
+exports[`golden replay — the interpretation is pinned > 2026.9.4/spawn-parallel-merge 1`] = `
+{
+  "bubbles": [
+    "turn",
+    "announce",
+    "announce",
+  ],
+  "byCall": {
+    "addToolPart": 5,
+    "finalize": 3,
+    "setSnapshot": 21,
+    "settleAnnouncedChild": 2,
+    "startAssistant": 3,
+  },
+  "calls": 34,
+  "engagements": [],
+  "finals": [
+    "complete",
+    "complete",
+    "complete",
+  ],
+  "order": [
+    "startAssistant",
+    "addToolPart",
+    "setSnapshot",
+    "finalize",
+    "startAssistant",
+    "addToolPart",
+    "setSnapshot",
+    "finalize",
+    "settleAnnouncedChild",
+    "startAssistant",
+    "addToolPart",
+    "setSnapshot",
+    "finalize",
+    "settleAnnouncedChild",
+  ],
+  "tools": [
+    "tool:sessions_spawn",
+    "tool:sessions_yield",
+  ],
+}
+`;
+
+exports[`golden replay — the interpretation is pinned > 2026.9.4/tool-exec 1`] = `
+{
+  "bubbles": [
+    "turn",
+  ],
+  "byCall": {
+    "addToolPart": 3,
+    "finalize": 1,
+    "setSnapshot": 9,
+    "startAssistant": 1,
+  },
+  "calls": 14,
+  "engagements": [],
+  "finals": [
+    "complete",
+  ],
+  "order": [
+    "startAssistant",
+    "addToolPart",
+    "setSnapshot",
+    "finalize",
+  ],
+  "tools": [
+    "tool:exec",
+  ],
+}
+`;
+
+exports[`golden replay — the interpretation is pinned > 2026.9.4/update-plan 1`] = `
+{
+  "bubbles": [
+    "turn",
+  ],
+  "byCall": {
+    "addPlanPart": 3,
+    "addToolPart": 6,
+    "finalize": 1,
+    "setSnapshot": 7,
+    "startAssistant": 1,
+  },
+  "calls": 18,
+  "engagements": [],
+  "finals": [
+    "complete",
+  ],
+  "order": [
+    "startAssistant",
+    "addToolPart",
+    "addPlanPart",
+    "addToolPart",
+    "addPlanPart",
+    "addToolPart",
+    "addPlanPart",
+    "addToolPart",
+    "setSnapshot",
+    "finalize",
+  ],
+  "tools": [
+    "tool:progress_card",
+  ],
+}
+`;

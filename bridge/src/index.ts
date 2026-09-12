@@ -156,7 +156,9 @@ async function main(): Promise<void> {
     readPersistedCredential: async (secret) => {
       if (secret === null || resolver === null) return null;
       const r = await resolver.resolveOne(secret);
-      return r.ok ? { token: r.data.token, source: r.data.tokenSource ?? null } : null;
+      return r.ok
+        ? { token: r.data.token, source: r.data.tokenSource ?? null }
+        : null;
     },
   });
 
@@ -182,15 +184,18 @@ async function main(): Promise<void> {
       instanceName: data.instanceName,
       mediaOutboundDir: config.mediaOutboundDir,
       inboundMediaDir: config.inboundMediaDir,
+      inboundMediaStagingDir: config.inboundMediaStagingDir,
       kind: config.kind,
     };
     const existing = [...served.values()].map((b) => ({
       instanceName: b.config.instanceName ?? "?",
       mediaOutboundDir: b.config.mediaOutboundDir,
       inboundMediaDir: b.config.inboundMediaDir,
+      inboundMediaStagingDir: b.config.inboundMediaStagingDir,
       kind: b.config.kind,
     }));
-    if (findMediaDirCollision([...existing, candidate]) !== null) return "collision";
+    if (findMediaDirCollision([...existing, candidate]) !== null)
+      return "collision";
     registry.register(data.instanceName, buildBundle(config));
     // Reap stale shared-fs inbound files for THIS instance's dir (the bridge
     // owns it). NOT for Hermes: it has no media legs, and its derived dir may
@@ -199,6 +204,7 @@ async function main(): Promise<void> {
     // there could delete the OpenClaw instance's staged files.
     if (config.kind !== "hermes") {
       startInboundReaper(config.inboundMediaDir, config.inboundTtlMs);
+      startInboundReaper(config.inboundMediaStagingDir, config.inboundTtlMs);
     }
     console.log(
       `bridge: instance "${data.instanceName}" now serving (${served.size} total)`,

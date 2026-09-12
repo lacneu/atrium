@@ -9,18 +9,70 @@ WebSocket protocol, versus the Atrium bridge normalizer
 ratchet; the per-field classification lives in the coverage manifests under
 `bridge/protocol/openclaw/coverage/`.
 
-Reference source: `github.com/openclaw/openclaw` at tag **`v2026.9.2`** — the
-exact `maxValidated` gateway version in `bridge/src/compat.ts`. Upstream
+Reference source: `github.com/openclaw/openclaw` at tag **`v2026.9.4`** — the
+exact `maxValidated` gateway version in `bridge/src/compat.ts`.
+
+> **WHAT "ANCHORED AT v2026.9.4" DOES AND DOES NOT MEAN.** The CONCLUSIONS below were
+> re-verified against that tag, zone by zone, at each revision. The `file:line`
+> CITATIONS were not all re-resolved: most were written against the tag of the revision
+> that introduced them, and upstream line numbers move constantly (1230 commits between
+> 2026.8.2 and 2026.9.1 alone). An adversarial review on 2026-09-12 resolved a sample
+> and found roughly thirty that now point at unrelated code — `ChatEventSchema` cited at
+> `logs-chat.ts:197-202` when it lives at 430-436, `agent-runner.ts` cited when the file
+> is down to one line, a documented 150 ms cadence that is now `LIVE_TEXT_PACING_MS = 75`.
+> Those three, and the anchors of §1 and §5 it named, are corrected. The rest are NOT,
+> and a stale anchor is worse than none: it lets a real contract change be "verified"
+> against lines that have nothing to do with it.
+>
+> So: trust the prose, re-resolve any `file:line` you are about to rely on, and fix it
+> in place when it has moved. The only citations mechanically checked today are the ones
+> in `bridge/test/fixtures/openclaw_upstream_frames.json` — and nothing checks them
+> either: `upstream-frames.test.ts` replays the frames and never reads a `description`.
+> Making those resolvable by a test is owed work, not done work. Upstream
 references below (`$UP/…`) are paths inside that tag. The Control UI is a
 **reference interpretation, not a spec**: where Atrium diverges on purpose
 (multi-version support, multi-instance, two providers, durable persistence),
 the divergence is documented as deliberate rather than "fixed".
 
 No internal offset: the runtime drift detector vendors its schema at
-`2026.9.2` (`DRIFT_VENDORED_VERSION`, `protocol-drift.ts`), the same version as
+`2026.9.4` (`DRIFT_VENDORED_VERSION`, `protocol-drift.ts`), the same version as
 the validated ceiling. An unknown-field warning against a 2026.9.x gateway is
 therefore real drift, not schema staleness — it names a field the published
 contract does not declare, and should be read as such.
+
+**Revision of 2026-09-12 (v2026.9.2 → v2026.9.4).** Re-verified zone by zone
+against the upstream tag (report:
+`openclaw-notes/atrium/bench-runs/upstream-diff-2026.9.2-vs-2026.9.4/` — 36
+watchlist files changed, one mechanical anchor broken), then proved live: full
+catalogue GO 11/11, attestation `bridge/protocol/openclaw/2026.9.4/BENCH.json`.
+**The wire contract HOLDS.** The announce identity, the chat.send dedup carriers
+and the compaction handlers are byte-identical; the broken anchor was a MOVE, not
+a change — `agent-run-terminal-outcome` went to `@openclaw/normalization-core`
+with the reason ladder line-for-line identical, and `settlementWarning` (new on
+its `ok` variant) never reaches the wire. The two session-lock messages the
+normalizer matches verbatim are unchanged.
+
+`2026.9.3` is deliberately absent from `validatedVersions`: nothing was ever run
+against it. `withinSupport` covers it as an intermediate version; a number in
+that list means a bench earned it.
+
+One new field is DECLARED — not adopted, nothing reads it: `chat.status.retry`
+(`{attempt, maxAttempts, reason:"rate_limit"}`), declared in `protocol-drift` so
+a provider back-off is not badged unknown, and left a manifest gap because no
+`status` frame is read yet. Two consequences worth stating plainly: a `status`
+frame is **no longer startup-only** (it now arrives mid-turn, after tools, while
+the provider waits), and a rate-limited turn therefore shows "post-processing" in
+Atrium while the Control UI shows "Retrying… 2/10". That is the best candidate in
+the frame-discovery queue.
+
+A long-standing gap closed on the way: `contextBudgetStatus` — the pre-send
+context guard's own input, depended on since the guard existed and declared by NO
+pinned version through 2026.9.2 — is **declared by the 2026.9.4 contract**. It
+left `undeclared-describe-reads.json`; what remains open is only whether the
+gateway omits the assessment under a context engine that owns compaction.
+
+New surface (Skill Workshop, update reports, cloud workers, the Plugins
+workspace, task history) is vendored and classified, not adopted.
 
 **Revision of 2026-09-06 (v2026.9.1 → v2026.9.2).** Re-verified zone by zone
 against the upstream tag (report:
@@ -48,7 +100,7 @@ and fixed (§3). Sections without such a note were re-checked and still hold.
 ### Upstream contract
 
 The wire contract is the TypeBox union `ChatEventSchema`
-(`$UP/packages/gateway-protocol/src/schema/logs-chat.ts:197-202`), four frames
+(`$UP/packages/gateway-protocol/src/schema/logs-chat.ts:430-436`), four frames
 discriminated by `state`, common base `{runId, sessionKey, agentId?,
 spawnedBy?, seq}`:
 
@@ -74,7 +126,7 @@ stale-generation `restart` frames are suppressed entirely —
 
 `errorKind` is a closed enum `refusal | timeout | rate_limit | context_length
 | unknown` (wire mirror `ChatEventErrorKindSchema`,
-`$UP/packages/gateway-protocol/src/schema/logs-chat.ts:282-288`). It is
+`$UP/packages/gateway-protocol/src/schema/logs-chat.ts:308-314`). It is
 populated from a structured kind on the lifecycle event, then from the
 `FailoverReason` (`server-chat.ts:240-288`), then from a timeout probe; in
 practice the fallback never yields `"unknown"`, and a generic 5xx is

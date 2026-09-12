@@ -28,7 +28,7 @@ const SHARED: SharedConfig = {
   mediaOutboundAgentMount: "/home/node/.openclaw/media/outbound",
   inboundAgentMount: "/home/node/.openclaw/media/inbound",
   mediaOutboundDirOverride: null,
-  inboundMediaDirOverride: null,
+  inboundMediaRootOverride: null,
   attachmentFixAttestedInstances: [],
   bridgeInstanceSecrets: [],
   forwardedClientIp: null,
@@ -60,7 +60,11 @@ function routedFetch(
     const r = bySecret[secret];
     if (r === "throw") throw new Error("ECONNREFUSED");
     if (typeof r === "number") {
-      return { ok: r < 400, status: r, json: async () => ({}) } as unknown as Response;
+      return {
+        ok: r < 400,
+        status: r,
+        json: async () => ({}),
+      } as unknown as Response;
     }
     return {
       ok: true,
@@ -184,7 +188,9 @@ describe("CredentialResolver.resolveAll (multi-instance)", () => {
     expect([...served.keys()]).toEqual(["good"]); // healthy one still served
     expect(failures).toHaveLength(1);
     expect(failures[0]!.reason).toBe("unauthorized");
-    expect(onWarn).toHaveBeenCalledWith(expect.stringContaining("unauthorized"));
+    expect(onWarn).toHaveBeenCalledWith(
+      expect.stringContaining("unauthorized"),
+    );
   });
 
   it("SKIPS on a network error (reason unreachable) without throwing", async () => {
@@ -263,7 +269,10 @@ describe("CredentialResolver.resolveAll (multi-instance)", () => {
           shared: {
             instanceName: "shared",
             gateway: { url: "wss://shared/ws" },
-            credentials: { token: "enrollment-secret", deviceIdentity: DEV_JSON },
+            credentials: {
+              token: "enrollment-secret",
+              deviceIdentity: DEV_JSON,
+            },
             credentialSources: { token: "provisioner" },
           },
           paired: {
@@ -400,7 +409,9 @@ describe("CredentialResolver.resolveOne + post-identity instanceName", () => {
   });
 
   it("resolveOne OMITS instanceName on a PRE-identity failure (401 unauthorized)", async () => {
-    const r = new CredentialResolver(deps({ fetchImpl: routedFetch({ s: 401 }) }));
+    const r = new CredentialResolver(
+      deps({ fetchImpl: routedFetch({ s: 401 }) }),
+    );
     const res = await r.resolveOne("s");
     expect(res).toEqual({ ok: false, reason: "unauthorized" });
     if (!res.ok) expect(res.instanceName).toBeUndefined();

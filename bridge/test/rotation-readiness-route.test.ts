@@ -22,6 +22,7 @@ const CONFIG: BridgeConfig = {
   gatewayHttpBase: "http://gw.invalid:18790",
   mediaFetchTimeoutMs: 60_000,
   inboundMediaDir: "/tmp/in",
+  inboundMediaStagingDir: "/tmp/in-staging",
   inboundAgentMount: "/tmp/in",
   inboundTtlMs: 1000,
   convexHttpActionsUrl: "http://convex.invalid",
@@ -38,7 +39,8 @@ describe("GET /rotation-readiness", () => {
   let server: Server | null = null;
 
   afterEach(async () => {
-    if (server) await new Promise<void>((resolve) => server!.close(() => resolve()));
+    if (server)
+      await new Promise<void>((resolve) => server!.close(() => resolve()));
     server = null;
     vi.restoreAllMocks();
   });
@@ -76,7 +78,10 @@ describe("GET /rotation-readiness", () => {
     };
   }
 
-  async function readiness(baseUrl: string, secret = CONFIG.bridgeSharedSecret) {
+  async function readiness(
+    baseUrl: string,
+    secret = CONFIG.bridgeSharedSecret,
+  ) {
     return fetch(`${baseUrl}/rotation-readiness?instance=primary`, {
       headers: { Authorization: secret },
     });
@@ -95,9 +100,12 @@ describe("GET /rotation-readiness", () => {
       ...CONFIG,
       kind: "hermes",
     });
-    const missing = await fetch(`${baseUrl}/rotation-readiness?instance=missing`, {
-      headers: { Authorization: CONFIG.bridgeSharedSecret },
-    });
+    const missing = await fetch(
+      `${baseUrl}/rotation-readiness?instance=missing`,
+      {
+        headers: { Authorization: CONFIG.bridgeSharedSecret },
+      },
+    );
     const hermes = await readiness(baseUrl);
 
     expect(missing.status).toBe(409);
@@ -221,7 +229,7 @@ describe("GET /rotation-readiness", () => {
       if (observed.openclawCredentialSource !== "device") {
         observed.openclawToken = "promoted-device-token";
         observed.openclawCredentialSource = "device";
-              }
+      }
       return discoveryResult;
     });
     const started = await start(ENROLLED, discoverGatewayAgents);
@@ -244,7 +252,7 @@ describe("GET /rotation-readiness", () => {
       if (next !== undefined) {
         observed.openclawToken = next;
         observed.openclawCredentialSource = "device";
-              }
+      }
       return discoveryResult;
     });
     const started = await start(ENROLLED, discoverGatewayAgents);
@@ -296,7 +304,7 @@ describe("GET /rotation-readiness", () => {
     const discoverGatewayAgents = vi.fn(async (observed: BridgeConfig) => {
       observed.openclawToken = `moving-${(n += 1)}`;
       observed.openclawCredentialSource = "device";
-            return discoveryResult;
+      return discoveryResult;
     });
     const started = await start(ENROLLED, discoverGatewayAgents);
     const response = await readiness(started.baseUrl);

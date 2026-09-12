@@ -18,6 +18,18 @@ const TASK_DELIVERY_RE = new RegExp(
   `^([a-z][a-z0-9_]*):(${UUID_RE}):(ok|error)(?::agent-loop)?$`,
 );
 
+/** The delivery LANES upstream appends to an ANNOUNCE identity. Both compose ON
+ *  TOP of the v1 grammar, so the child run id stops being the last segment and a
+ *  bare `slice(2, -1)` folds it into the child KEY — the row then never settles
+ *  and the chat holds a finished child as `running` until the reaper.
+ *    subagent-announce-delivery.ts:229        -> `…:agent-loop`
+ *    subagent-announce-descendant-wake.ts:111 -> `…:wake`
+ *  The task family above already tolerated `:agent-loop`; the announce family
+ *  never got the same treatment. Listed and never guessed: an unknown suffix
+ *  stays part of the key rather than being silently eaten, so a new upstream
+ *  lane surfaces as a visible miss instead of a wrong correlation. */
+const ANNOUNCE_DELIVERY_LANES: readonly string[] = ["agent-loop", "wake"];
+
 /** The subAgents row key a delivery run correlates to, or null when the runId
  *  is not a delivery run (ordinary webchat-… turns). */
 /** Gateway 2026.8.1+ wakes the REQUESTER session after a direct completion
@@ -32,8 +44,24 @@ export function isRequesterSettleRun(runId: string | null | undefined): boolean 
 }
 export function deliveryChildKey(runId: string): string | null {
   if (isRequesterSettleRun(runId)) return null;
+  // BROADER THAN THE BRIDGE ON PURPOSE — `announce:` here, `announce:v1:` there
+  // (run-families.ts `announcedChildKey`). An adversarial review called that a lockstep
+  // break and it is not: the two readers answer different questions.
+  //
+  // This one runs on the INGEST AUTHORIZATION path. Narrowing it to `v1:` was tried on
+  // 2026-09-12 and immediately opened a hole: `bridgeIngestIsolation.test.ts` forges
+  // `announce:1:spy-child:done`, and with the narrow prefix the row stopped being
+  // recognised as a delivery at all — the durable-stamp gate never ran and a FORGED
+  // announce re-own returned 200 where it must return 403. Recognising an
+  // announce-SHAPED identity is what lets it be refused; a parser that only knows the
+  // generations it likes cannot police the ones it does not.
+  //
+  // The bridge's narrowness is equally deliberate: it only SETTLES rows it can name, so
+  // refusing an unknown generation there costs a reaper wait, never a wrong write.
   if (runId.startsWith("announce:")) {
     const seg = runId.split(":");
+    const last = seg[seg.length - 1];
+    if (last !== undefined && ANNOUNCE_DELIVERY_LANES.includes(last)) seg.pop();
     if (seg.length < 4) return null;
     const key = seg.slice(2, -1).join(":");
     return key === "" ? null : key;
