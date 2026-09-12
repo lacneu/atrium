@@ -261,6 +261,7 @@ describe("stageInboundReference", () => {
     const started = new Promise<void>((resolve) => {
       bodyStarted = resolve;
     });
+    let cancelled = false;
     const fetchImpl = (async () =>
       new Response(
         new ReadableStream<Uint8Array>({
@@ -268,9 +269,13 @@ describe("stageInboundReference", () => {
             controller.enqueue(new TextEncoder().encode("first"));
             bodyStarted();
             void released.then(() => {
+              if (cancelled) return;
               controller.enqueue(new TextEncoder().encode("second"));
               controller.close();
             });
+          },
+          cancel() {
+            cancelled = true;
           },
         }),
       )) as unknown as typeof fetch;
@@ -557,6 +562,7 @@ describe("stageInboundReference", () => {
     const started = new Promise<void>((resolve) => {
       bodyStarted = resolve;
     });
+    let cancelled = false;
     const fetchImpl = (async () =>
       new Response(
         new ReadableStream<Uint8Array>({
@@ -564,9 +570,13 @@ describe("stageInboundReference", () => {
             controller.enqueue(new TextEncoder().encode("first"));
             bodyStarted();
             void released.then(() => {
+              if (cancelled) return;
               controller.enqueue(new TextEncoder().encode("second"));
               controller.close();
             });
+          },
+          cancel() {
+            cancelled = true;
           },
         }),
       )) as unknown as typeof fetch;
@@ -672,6 +682,7 @@ describe("stageInboundReferences (best-effort per file)", () => {
     const started = new Promise<void>((resolve) => {
       bodyStarted = resolve;
     });
+    let cancelled = false;
     const fetchImpl = (async () =>
       new Response(
         new ReadableStream<Uint8Array>({
@@ -679,9 +690,13 @@ describe("stageInboundReferences (best-effort per file)", () => {
             controller.enqueue(new TextEncoder().encode("first"));
             bodyStarted();
             void released.then(() => {
+              if (cancelled) return;
               controller.enqueue(new TextEncoder().encode("second"));
               controller.close();
             });
+          },
+          cancel() {
+            cancelled = true;
           },
         }),
       )) as unknown as typeof fetch;
