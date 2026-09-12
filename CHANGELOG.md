@@ -1,5 +1,40 @@
 # Changelog
 
+## [0.84.6] — OpenClaw 2026.9.4, qualified rather than assumed
+
+This release qualifies Atrium against the custom OpenClaw image
+`openclaw-2026.9.4-r5` and replaces the shared-filesystem hand-off with a
+fail-closed delivery boundary.
+
+**OpenClaw 2026.9.4 is now an observed compatibility contract.** The upstream
+gateway protocol is vendored with its provenance, declared methods and events are
+diffed mechanically, and nine OpenClaw scenarios plus two Hermes scenarios were
+replayed against live containers. The checked-in attestation records a GO verdict
+for all eleven scenarios. Versions newer than 2026.9.4 remain outside the validated
+range and are reported as such instead of being silently treated as compatible.
+
+The update also carries the 2026.9.4 run-family vocabulary, including retry and
+task events, without turning unknown frames into guessed product behaviour. Golden
+captures are anonymised before they enter the repository, with regression tests
+covering the newly observed shapes and preventing identifiers from leaking into the
+corpus.
+
+**Shared files now cross one explicit, atomic boundary.** Atrium stages each inbound
+file under `.staging/`, validates its type and inode, then publishes it with an atomic
+rename into `published/`. A gateway receives only the published directory read-only;
+it never sees a partial upload or Atrium's staging area. Symlinks, devices, inode
+replacement, traversal and cross-device publication are rejected. The reaper follows
+the same boundary and cannot delete a newly replaced file through a stale path.
+
+The deployment preflight enforces the directory topology, ownership and read-only
+mounts before startup. Legacy two-root variables are rejected so an installation
+cannot appear healthy while the bridge and gateway disagree about where a file lives.
+The compose examples and operator documentation describe the same contract.
+
+**Delivery retries remain idempotent.** A retried or resumed run reuses its recorded
+delivery state and does not attach the same file twice. The release adds regression
+coverage at both the bridge and Convex layers for that behaviour.
+
 ## [0.84.5] — Delivering a file that was already lost
 
 Corrective release. 0.84.4 stopped a delegated agent's files from being dropped on
