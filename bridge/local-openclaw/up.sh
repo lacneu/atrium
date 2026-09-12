@@ -8,19 +8,20 @@ cd "$(dirname "$0")"
 
 # 1) Fresh token (reused across up/down of the same run; reset.sh clears it).
 if [[ ! -f .token ]]; then openssl rand -hex 32 > .token; fi
-export OPENCLAW_GATEWAY_TOKEN="$(cat .token)"
+OPENCLAW_GATEWAY_TOKEN="$(cat .token)"
+export OPENCLAW_GATEWAY_TOKEN
 
 # 2) local.env must exist (model keys / agent overrides — may be empty).
 [[ -f local.env ]] || cp local.env.example local.env
 
 # 3) Shared media dir (host bind read by a Mac bridge).
-mkdir -p media-outbound
+mkdir -p media-outbound media-inbound/{published,.staging}
 
 echo "▶ starting oc-local-gateway (OpenClaw ${OPENCLAW_VERSION:-2026.5.19}) …"
 docker compose up -d
 
 echo "▶ waiting for gateway health …"
-until [[ "$(curl -s -o /dev/null -w '%{http_code}' --max-time 3 http://127.0.0.1:${OPENCLAW_LOCAL_PORT:-18789}/health 2>/dev/null)" == "200" ]]; do
+until [[ "$(curl -s -o /dev/null -w '%{http_code}' --max-time 3 "http://127.0.0.1:${OPENCLAW_LOCAL_PORT:-18789}/health" 2>/dev/null)" == "200" ]]; do
   sleep 2
 done
 echo "✅ gateway healthy on :${OPENCLAW_LOCAL_PORT:-18789}"
@@ -61,20 +62,13 @@ elif [[ -f "$CODEX_AUTH" && -f "$SEED_FILE" ]]; then
     /home/node/.openclaw/openclaw.json /home/node/.openclaw/.codex 2>/dev/null || true
   docker restart oc-local-gateway >/dev/null
   echo "▶ waiting for reconfigured gateway …"
-  until [[ "$(curl -s -o /dev/null -w '%{http_code}' --max-time 3 http://127.0.0.1:${OPENCLAW_LOCAL_PORT:-18789}/health 2>/dev/null)" == "200" ]]; do sleep 2; done
+  until [[ "$(curl -s -o /dev/null -w '%{http_code}' --max-time 3 "http://127.0.0.1:${OPENCLAW_LOCAL_PORT:-18789}/health" 2>/dev/null)" == "200" ]]; do sleep 2; done
   echo "✅ codex harness ready (agents from $SEED_FILE, turns run on your codex subscription)"
 else
   echo "ℹ codex auth or seed missing → gateway stays unconfigured (no agent turns; media-share still testable)."
 fi
 
-# 4b) Inbound media: the media/outbound bind makes docker create the parent
-# /home/node/.openclaw/media root-owned, so the gateway (node) can't mkdir
-# media/inbound to offload USER-sent attachments (EACCES). Make media node-owned.
-docker exec -u root oc-local-gateway sh -c \
-  'mkdir -p /home/node/.openclaw/media/inbound && chown -R node:node /home/node/.openclaw/media' \
-  >/dev/null 2>&1 || true
-
-# 4c) Re-attach the loopback sidecar (#61). The codex setup above did
+# 4b) Re-attach the loopback sidecar (#61). The codex setup above did
 # `docker restart oc-local-gateway`, which recreates the gateway's network
 # namespace — orphaning oc-loopback (network_mode: service:openclaw). Restart it
 # so socat re-binds inside the CURRENT netns; otherwise :18790 forwards nowhere
@@ -82,7 +76,7 @@ docker exec -u root oc-local-gateway sh -c \
 if docker ps -a --format '{{.Names}}' | grep -q '^oc-local-loopback$'; then
   docker restart oc-local-loopback >/dev/null 2>&1 || true
   echo "▶ waiting for loopback forwarder (:${OPENCLAW_LOOPBACK_PORT:-18790}) …"
-  until [[ "$(curl -s -o /dev/null -w '%{http_code}' --max-time 3 http://127.0.0.1:${OPENCLAW_LOOPBACK_PORT:-18790}/health 2>/dev/null)" == "200" ]]; do sleep 1; done
+  until [[ "$(curl -s -o /dev/null -w '%{http_code}' --max-time 3 "http://127.0.0.1:${OPENCLAW_LOOPBACK_PORT:-18790}/health" 2>/dev/null)" == "200" ]]; do sleep 1; done
   echo "✅ loopback forwarder ready (trusted-transport path for the host bridge)"
 fi
 

@@ -35,6 +35,7 @@ const CONFIG: BridgeConfig = {
   gatewayHttpBase: "http://gw.invalid:18790",
   mediaFetchTimeoutMs: 60_000,
   inboundMediaDir: "/tmp/media-inbound",
+  inboundMediaStagingDir: "/tmp/media-inbound-staging",
   inboundAgentMount: "/tmp/media-inbound",
   inboundTtlMs: 6 * 60 * 60 * 1000,
   convexHttpActionsUrl: "http://convex.example.org",
@@ -76,10 +77,9 @@ describe("GET /capabilities + /health (compat surface)", () => {
   });
 
   test("/capabilities keeps the legacy fields VERBATIM (retro-compat)", async () => {
-    const body = (await (await fetch(`${baseUrl}/capabilities`)).json()) as Record<
-      string,
-      unknown
-    >;
+    const body = (await (
+      await fetch(`${baseUrl}/capabilities`)
+    ).json()) as Record<string, unknown>;
     expect(body.instanceName).toBe("primary");
     // The pre-compat static descriptor, byte-for-byte.
     expect(body.capabilities).toEqual({
@@ -94,10 +94,9 @@ describe("GET /capabilities + /health (compat surface)", () => {
   });
 
   test("/capabilities response shape is pinned (top-level key set)", async () => {
-    const body = (await (await fetch(`${baseUrl}/capabilities`)).json()) as Record<
-      string,
-      unknown
-    >;
+    const body = (await (
+      await fetch(`${baseUrl}/capabilities`)
+    ).json()) as Record<string, unknown>;
     expect(Object.keys(body).sort()).toEqual([
       "bridgeVersion",
       // Build-time truths (image env, CI-frozen) beside the runtime version --
@@ -107,6 +106,7 @@ describe("GET /capabilities + /health (compat surface)", () => {
       "capabilities",
       "compat",
       "gatewayVersion",
+      "inboundPrivateStaging",
       "instanceName",
       // Protocol-contract Inc 2: vendored schema version + runtime drift.
       "protocol",
@@ -115,6 +115,7 @@ describe("GET /capabilities + /health (compat surface)", () => {
       "targets",
       "turnSessionEcho",
     ]);
+    expect(body.inboundPrivateStaging).toBe(true);
   });
 
   test("/capabilities one-shot version discovery is NON-FATAL on an unreachable gateway", async () => {
@@ -225,17 +226,45 @@ describe("the attachment attestation reaches Convex on BOTH branches", () => {
   ] as Parameters<typeof buildCapabilityTargets>[0];
 
   test("live target: attested when the instance is", () => {
-    const [t] = buildCapabilityTargets(live, "alpha", null, "openclaw", "ws", true);
+    const [t] = buildCapabilityTargets(
+      live,
+      "alpha",
+      null,
+      "openclaw",
+      "ws",
+      true,
+    );
     expect(t?.attachmentFixAttested).toBe(true);
-    const [plain] = buildCapabilityTargets(live, "alpha", null, "openclaw", "ws", false);
+    const [plain] = buildCapabilityTargets(
+      live,
+      "alpha",
+      null,
+      "openclaw",
+      "ws",
+      false,
+    );
     expect(plain?.attachmentFixAttested).toBeUndefined();
   });
 
   test("SYNTHETIC target (no live session): attested too", () => {
-    const [t] = buildCapabilityTargets([], "alpha", "2026.8.2", "openclaw", "ws", true);
+    const [t] = buildCapabilityTargets(
+      [],
+      "alpha",
+      "2026.8.2",
+      "openclaw",
+      "ws",
+      true,
+    );
     expect(t, "the synthetic target must exist").toBeDefined();
     expect(t?.attachmentFixAttested).toBe(true);
-    const [plain] = buildCapabilityTargets([], "alpha", "2026.8.2", "openclaw", "ws", false);
+    const [plain] = buildCapabilityTargets(
+      [],
+      "alpha",
+      "2026.8.2",
+      "openclaw",
+      "ws",
+      false,
+    );
     expect(plain?.attachmentFixAttested).toBeUndefined();
   });
 });
@@ -327,7 +356,12 @@ describe("buildCapabilityTargets (live-session projection)", () => {
   });
 
   test("a HERMES served instance: synthetic target exposes hermes caps (codex P2)", () => {
-    const targets = buildCapabilityTargets([], "hermes-inst", "0.18.0", "hermes");
+    const targets = buildCapabilityTargets(
+      [],
+      "hermes-inst",
+      "0.18.0",
+      "hermes",
+    );
     expect(targets).toHaveLength(1);
     const t = targets[0]!;
     expect(t.provider).toBe("hermes");
@@ -361,7 +395,11 @@ describe("buildCapabilityTargets (live-session projection)", () => {
   test("a live session for the served instance SUPPRESSES the fallback", () => {
     // The live target is more specific; the synthetic one must not duplicate it.
     // Its REAL version wins over the configured fallback (precedence).
-    const targets = buildCapabilityTargets([LIVE("2026.6.1")], "primary", "2026.6.5");
+    const targets = buildCapabilityTargets(
+      [LIVE("2026.6.1")],
+      "primary",
+      "2026.6.5",
+    );
     expect(targets).toHaveLength(1);
     expect(targets[0]!.key).toBe("u-alice");
     expect(targets[0]!.gatewayVersion).toBe("2026.6.1");
@@ -458,21 +496,47 @@ describe("a LIVE session resolves with its own provider (W11/G8)", () => {
         gatewayVersion: "0.18.2",
       },
     ];
-    const [target] = buildCapabilityTargets(live as never, "hermes", null, "hermes", "ws");
+    const [target] = buildCapabilityTargets(
+      live as never,
+      "hermes",
+      null,
+      "hermes",
+      "ws",
+    );
     expect(target?.provider).toBe("hermes");
     expect(target?.gatewayVersion).toBe("0.18.2");
-    expect(target?.capabilities.abort, "the version resolved against ITS window").toBe(true);
-    expect(target?.capabilities.agentFiles, "HTTP-served, transport-independent").toBe(true);
+    expect(
+      target?.capabilities.abort,
+      "the version resolved against ITS window",
+    ).toBe(true);
+    expect(
+      target?.capabilities.agentFiles,
+      "HTTP-served, transport-independent",
+    ).toBe(true);
     // …and the WS overlay reaches a live target too, not just an idle one.
-    expect(target?.capabilities.cronList, "the WS overlay applies to live targets").toBe(true);
+    expect(
+      target?.capabilities.cronList,
+      "the WS overlay applies to live targets",
+    ).toBe(true);
   });
 
   test("the REST transport keeps its narrower surface on a live target", async () => {
     const { buildCapabilityTargets } = await import("../src/server.js");
     const live = [
-      { canonical: "h1", instanceName: "hermes", agentId: "a1", gatewayVersion: "0.18.2" },
+      {
+        canonical: "h1",
+        instanceName: "hermes",
+        agentId: "a1",
+        gatewayVersion: "0.18.2",
+      },
     ];
-    const [target] = buildCapabilityTargets(live as never, "hermes", null, "hermes", "rest");
+    const [target] = buildCapabilityTargets(
+      live as never,
+      "hermes",
+      null,
+      "hermes",
+      "rest",
+    );
     expect(target?.capabilities.agentFiles, "still HTTP-served").toBe(true);
     expect(target?.capabilities.inboundAttachments, "WS-only").toBeUndefined();
   });

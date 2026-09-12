@@ -28,6 +28,7 @@ const CONFIG: BridgeConfig = {
   gatewayHttpBase: "http://gw.invalid:18790",
   mediaFetchTimeoutMs: 60_000,
   inboundMediaDir: "/tmp/in",
+  inboundMediaStagingDir: "/tmp/in-staging",
   inboundAgentMount: "/tmp/in",
   inboundTtlMs: 1000,
   convexHttpActionsUrl: "http://convex.invalid",

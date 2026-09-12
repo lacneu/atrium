@@ -320,7 +320,9 @@ describe("compareVersions", () => {
     expect(compareVersions(beta, release)).toBeLessThan(0);
     expect(compareVersions(release, beta)).toBeGreaterThan(0);
     // …but AFTER every older release.
-    expect(compareVersions(beta, parseVersion("2026.6.11")!)).toBeGreaterThan(0);
+    expect(compareVersions(beta, parseVersion("2026.6.11")!)).toBeGreaterThan(
+      0,
+    );
   });
 
   test("pre-release identifiers compare numerically then alphabetically", () => {
@@ -341,7 +343,9 @@ describe("resolveCapabilities — full validated matrix", () => {
       expect(resolved.capabilities).toEqual(expected);
       expect(resolved.versionBeyondValidated).toBe(false);
       // No capability is silently missing or invented.
-      expect(Object.keys(resolved.capabilities).sort()).toEqual([...ALL_CAPS].sort());
+      expect(Object.keys(resolved.capabilities).sort()).toEqual(
+        [...ALL_CAPS].sort(),
+      );
     });
   }
 });
@@ -387,9 +391,9 @@ describe("resolveCapabilities — beyond maxValidated", () => {
   );
 
   test("exactly maxValidated is NOT beyond", () => {
-    expect(resolveCapabilities("openclaw", "2026.6.5").versionBeyondValidated).toBe(
-      false,
-    );
+    expect(
+      resolveCapabilities("openclaw", "2026.6.5").versionBeyondValidated,
+    ).toBe(false);
   });
 
   test("the VALIDATED pre-release bench (2026.7.1-beta.2) is within range, no flag", () => {
@@ -397,7 +401,10 @@ describe("resolveCapabilities — beyond maxValidated", () => {
     // beta.2 > every 2026.6.x minVersion AND >= the cronManage floor (the
     // bench it was validated on) → the 7.1 capability row EXCEPT talk (its
     // floor is the 2026.7.1 RELEASE, and a pre-release sorts below it).
-    expect(resolved.capabilities).toEqual({ ...MATRIX["2026.7.1"], talk: false });
+    expect(resolved.capabilities).toEqual({
+      ...MATRIX["2026.7.1"],
+      talk: false,
+    });
     expect(resolved.versionBeyondValidated).toBe(false);
   });
 
@@ -406,7 +413,10 @@ describe("resolveCapabilities — beyond maxValidated", () => {
     // beta.5 sorts above the cronManage floor (beta.2) and below 2026.7.1.
     const resolved = resolveCapabilities("openclaw", "2026.7.1-beta.5");
     // Same talk exception as beta.2: the talk floor is the 7.1 RELEASE.
-    expect(resolved.capabilities).toEqual({ ...MATRIX["2026.7.1"], talk: false });
+    expect(resolved.capabilities).toEqual({
+      ...MATRIX["2026.7.1"],
+      talk: false,
+    });
     expect(resolved.versionBeyondValidated).toBe(false);
   });
 
@@ -422,7 +432,9 @@ describe("resolveCapabilities — edges", () => {
     "a parseable version BELOW the floor (%s) enables nothing",
     (raw) => {
       const resolved = resolveCapabilities("openclaw", raw);
-      expect(Object.values(resolved.capabilities).every((v) => v === false)).toBe(true);
+      expect(
+        Object.values(resolved.capabilities).every((v) => v === false),
+      ).toBe(true);
       expect(resolved.versionBeyondValidated).toBe(false);
     },
   );
@@ -483,7 +495,8 @@ describe("every claimed version has an examined contract (W10)", () => {
     // placeholder, as the Hermes row was). A missing range here would silently skip
     // the check, so it fails instead.
     const range = COMPAT_MANIFEST.providers.openclaw?.supportedRange;
-    if (!range) throw new Error("the openclaw provider declares no supported range");
+    if (!range)
+      throw new Error("the openclaw provider declares no supported range");
     const max = range.maxValidated;
     expect(
       vendoredVersions(),
@@ -535,7 +548,10 @@ interface PolicyFixture {
   manifest: {
     providers: Record<
       string,
-      { supportedRange: { min: string; maxValidated: string } | null; capabilities: Record<string, string> }
+      {
+        supportedRange: { min: string; maxValidated: string } | null;
+        capabilities: Record<string, string>;
+      }
     >;
   };
   cases: PolicyCase[];
@@ -550,7 +566,10 @@ describe("capability policy — frozen at the validated profile", () => {
     expect(POLICY.cases.length).toBeGreaterThan(5);
     // And it MUST contain the discriminating case, or the whole exercise is theatre.
     const beyondCase = POLICY.cases.find((c) => c.beyond);
-    expect(beyondCase, "no beyond-maxValidated case in the table").toBeDefined();
+    expect(
+      beyondCase,
+      "no beyond-maxValidated case in the table",
+    ).toBeDefined();
     expect(beyondCase!.capabilities.unbenchedCap).toBe(false);
   });
 
@@ -593,9 +612,16 @@ describe("capabilities gated on the authentication mode, not just the version", 
   test("switching an instance's mode changes NOTHING it may do", () => {
     // The direct consequence of the line above, stated as behaviour: an operator
     // who flips the posture must not discover a different feature set.
-    const tok = resolveCapabilities("openclaw", "2026.9.2", "token").capabilities;
-    const proxy = resolveCapabilities("openclaw", "2026.9.2", "trusted-proxy")
-      .capabilities;
+    const tok = resolveCapabilities(
+      "openclaw",
+      "2026.9.2",
+      "token",
+    ).capabilities;
+    const proxy = resolveCapabilities(
+      "openclaw",
+      "2026.9.2",
+      "trusted-proxy",
+    ).capabilities;
     expect(Object.keys(tok).filter((k) => tok[k] !== proxy[k])).toEqual([]);
   });
 
@@ -609,12 +635,13 @@ describe("capabilities gated on the authentication mode, not just the version", 
     const table = { probe: "1.0.0" };
     const gate = { probe: "trusted-proxy" } as const;
     expect(
-      resolveCapabilitiesFor(range, table, null, "token", gate).capabilities.probe,
+      resolveCapabilitiesFor(range, table, null, "token", gate).capabilities
+        .probe,
       "a null version must not walk past the mode gate",
     ).toBe(false);
     expect(
-      resolveCapabilitiesFor(range, table, null, "trusted-proxy", gate).capabilities
-        .probe,
+      resolveCapabilitiesFor(range, table, null, "trusted-proxy", gate)
+        .capabilities.probe,
       "and the floor still grants it to the mode that supports it",
     ).toBe(true);
   });

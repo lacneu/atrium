@@ -37,7 +37,7 @@ services:
     restart: unless-stopped
     ports:
       - "${CONVEX_CLOUD_PORT:-3210}:3210" # cloud origin (queries/mutations)
-      - "${CONVEX_SITE_PORT:-3211}:3211"  # site origin (HTTP actions / .site)
+      - "${CONVEX_SITE_PORT:-3211}:3211" # site origin (HTTP actions / .site)
     environment:
       - INSTANCE_NAME=${CONVEX_INSTANCE_NAME:?set in .env}
       - INSTANCE_SECRET=${CONVEX_INSTANCE_SECRET:?generate + back up; mints admin keys}
@@ -130,7 +130,8 @@ services:
       #
       # [shared-fs] The dirs the BRIDGE reads/writes auto-derive from each served
       # instance's NAME (resolved from Convex via its per-bridge secret, NOT env):
-      # `/home/node/.openclaw/media/<instance>/{outbound,inbound}`. Keying by instance
+      # `/home/node/.openclaw/media/<instance>/{outbound,inbound}`. The ONE inbound
+      # root contains `published/` + private `.staging/`. Keying by instance
       # keeps EACH served gateway's mount distinct + self-documenting, so one bridge can
       # serve several instances. The `volumes:` mount target below MUST equal that
       # derived path (use the LITERAL instance name); a mismatch is the #1 shared-fs
@@ -140,7 +141,8 @@ services:
       # `/home/node/.openclaw/media/{outbound,inbound}` (what the gateway exposes +
       # openclaw.json `file-transfer.allowReadPaths` whitelists; do NOT key it). When a
       # bridge serves a SINGLE instance you may override with OPENCLAW_MEDIA_OUTBOUND_DIR
-      # / OPENCLAW_INBOUND_DIR (process-global — do NOT use them with several instances).
+      # / OPENCLAW_INBOUND_DIR (process-global — do NOT use them with several
+      # instances).
       # Full guide + worked one-bridge-two-instances example: deploy/SHARED_FS_MEDIA.md.
       # [shared-fs] Reap staged inbound files older than this (> the longest turn).
       - OPENCLAW_INBOUND_TTL_MS=${OPENCLAW_INBOUND_TTL_MS:-21600000}
@@ -178,14 +180,15 @@ services:
     #   3. Create the HOST media dirs FIRST, owned by the gateway uid (else the mount
     #      auto-creates them root-owned → the agent can't read). For an instance whose
     #      gateway mounts `<root>/instances/<name>/.openclaw`, the host dirs are
-    #      `<root>/instances/<name>/.openclaw/media/{outbound,inbound}`:
-    #        mkdir -p <root>/instances/<name>/.openclaw/media/{inbound,outbound}
+    #      `<root>/instances/<name>/.openclaw/media/outbound` plus the two sibling
+    #      `<root>/instances/<name>/.openclaw/media/inbound/{published,.staging}` dirs:
+    #        mkdir -p <root>/instances/<name>/.openclaw/media/inbound/{published,.staging} <root>/instances/<name>/.openclaw/media/outbound
     #        chown -R <uid>:<gid> <root>/instances/<name>/.openclaw/media
     #   4. Uncomment the `volumes:` block and point each HOST source at those dirs. The
     #      mount TARGET is keyed by the LITERAL instance name so it equals the bridge's
     #      auto-derived dir.
-    #      Outbound is :ro (bridge only reads agent output); inbound is rw (bridge writes
-    #      staged files).
+    #      Outbound is :ro. The bridge mounts ONE inbound root rw; the gateway
+    #      mounts only that root's published/ child, read-only.
     #   5. Recreate the bridge (a docker mount is NOT hot): `up -d --force-recreate bridge`,
     #      then click "Vérifier les chemins" in the per-instance config modal.
     #
@@ -198,7 +201,7 @@ services:
     # user: "${BRIDGE_RUN_AS_UID:?gateway uid:gid, e.g. 1000017:1000011}"
     # volumes:
     #   - ${OPENCLAW_MEDIA_OUTBOUND_HOST_DIR:?host path to the gateway's media/outbound dir}:/home/node/.openclaw/media/primary/outbound:ro
-    #   - ${OPENCLAW_INBOUND_HOST_DIR:?host path to the gateway's media/inbound dir}:/home/node/.openclaw/media/primary/inbound
+    #   - ${OPENCLAW_INBOUND_HOST_DIR:?host path to inbound root}:/home/node/.openclaw/media/primary/inbound
     #
     # CASE B — ONE bridge, SEVERAL gateways: list every secret in
     # BRIDGE_INSTANCE_SECRETS and mount EACH served instance's host dirs, keyed by that
@@ -211,9 +214,9 @@ services:
     # user: "${BRIDGE_RUN_AS_UID:?gateway uid:gid, e.g. 1000017:1000011}"
     # volumes:
     #   - ${ALPHA_MEDIA_OUTBOUND_HOST_DIR:?host path to alpha's media/outbound dir}:/home/node/.openclaw/media/alpha/outbound:ro
-    #   - ${ALPHA_INBOUND_HOST_DIR:?host path to alpha's media/inbound dir}:/home/node/.openclaw/media/alpha/inbound
+    #   - ${ALPHA_INBOUND_HOST_DIR:?host path to alpha inbound root}:/home/node/.openclaw/media/alpha/inbound
     #   - ${BETA_MEDIA_OUTBOUND_HOST_DIR:?host path to beta's media/outbound dir}:/home/node/.openclaw/media/beta/outbound:ro
-    #   - ${BETA_INBOUND_HOST_DIR:?host path to beta's media/inbound dir}:/home/node/.openclaw/media/beta/inbound
+    #   - ${BETA_INBOUND_HOST_DIR:?host path to beta inbound root}:/home/node/.openclaw/media/beta/inbound
     # NO depends_on convex-backend ON PURPOSE: the bridge boots without touching
     # Convex (it reaches convex-backend by service DNS only on ingest, with
     # retry), so a hard depends_on would needlessly couple their lifecycles and

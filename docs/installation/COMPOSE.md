@@ -6,7 +6,7 @@ worked. Where a step cannot be verified from inside the repository — your
 registry access, your host actually running containers — this page says so
 rather than implying success; everything it CAN pin, it pins with a test.
 
-For *what each variable means*, see [CONFIGURATION.md](../CONFIGURATION.md). This
+For _what each variable means_, see [CONFIGURATION.md](../CONFIGURATION.md). This
 page is the **order**; that one is the **reference**. Do not read them in the
 other direction: filling `.env` without understanding the two scopes is the
 mistake that costs the most time.
@@ -18,13 +18,13 @@ mistake that costs the most time.
 Atrium is not one process. Understanding the split takes two minutes and saves
 an afternoon:
 
-| Piece | What it does | Fails how, when misconfigured |
-|---|---|---|
-| **Convex** (self-hosted backend + dashboard) | Holds every conversation, message, trace and instance. Runs the server functions. | The UI loads and stays empty, or writes are refused. |
-| **Front end** (static image) | The web client. Talks only to Convex. | A blank page, or a client that cannot reach its backend. |
-| **Bridge** | The only piece that talks to a gateway. Sends turns out, streams replies back into Convex. | Everything looks healthy and **sending does nothing**. |
+| Piece                                        | What it does                                                                               | Fails how, when misconfigured                            |
+| -------------------------------------------- | ------------------------------------------------------------------------------------------ | -------------------------------------------------------- |
+| **Convex** (self-hosted backend + dashboard) | Holds every conversation, message, trace and instance. Runs the server functions.          | The UI loads and stays empty, or writes are refused.     |
+| **Front end** (static image)                 | The web client. Talks only to Convex.                                                      | A blank page, or a client that cannot reach its backend. |
+| **Bridge**                                   | The only piece that talks to a gateway. Sends turns out, streams replies back into Convex. | Everything looks healthy and **sending does nothing**.   |
 
-The bridge is where installation mistakes hide, because it fails *late*: the
+The bridge is where installation mistakes hide, because it fails _late_: the
 stack comes up, the UI works, and the first message goes nowhere.
 
 **A gateway is not installed here.** Atrium connects to an OpenClaw (or Hermes)
@@ -42,8 +42,8 @@ docker compose version && node -v && openssl version
 **Expected:** Compose **v2** (`docker-compose` v1 is not supported), Node ≥ 20 for
 the local scripts (the images build on Node 24), and any OpenSSL.
 
-*What no document can check for you: that your Docker may pull the release
-images. That depends on your registry access and is exercised at Step 4.*
+_What no document can check for you: that your Docker may pull the release
+images. That depends on your registry access and is exercised at Step 4._
 
 ---
 
@@ -70,7 +70,7 @@ cd deploy/compose && cp .env.example .env
 Now fill it. Two rules decide almost everything:
 
 1. **There are two scopes.** Some variables are read by the containers, others by
-   Convex *functions* — and the second group is not injected by Docker at all.
+   Convex _functions_ — and the second group is not injected by Docker at all.
    `bootstrap-env.sh` pushes them in Step 5. Skipping that step produces a stack
    that starts and then fails at runtime.
 2. **`CONVEX_HTTP_ACTIONS_URL` is the HTTP-actions origin, not the API origin.**
@@ -106,14 +106,16 @@ output.
 Read-only. It checks the tooling, every required variable of **both** scopes, and
 the coherence traps that fail silently — including the media-mount trap, where
 host directories are declared in `.env` while the matching volumes are still
-commented out in `docker-compose.yml`.
+commented out in `docker-compose.yml`. That env-to-mount check covers the
+single-instance CASE A variables only; follow `deploy/SHARED_FS_MEDIA.md` for
+the explicit per-instance checks required by a multi-instance bridge.
 
 **Expected:** `0 failure(s)` and exit code `0`. Anything else is a stop, not a
 warning to note and move past.
 
-*The script's four outcome paths — missing file, incomplete env, clean env, and
+_The script's four outcome paths — missing file, incomplete env, clean env, and
 the media trap — are pinned by `bridge/test/preflight.test.ts`, so its verdicts
-cannot silently rot as the stack evolves.*
+cannot silently rot as the stack evolves._
 
 ---
 
@@ -126,9 +128,9 @@ docker compose up -d
 **Expected:** the Convex backend, the dashboard, the front end and the bridge all
 `Up`. Check with `docker compose ps`.
 
-*The compose file's syntax is machine-checkable (`docker compose config -q`);
+_The compose file's syntax is machine-checkable (`docker compose config -q`);
 whether the containers come up depends on your host, and only `docker compose ps`
-answers that.*
+answers that._
 
 ---
 
@@ -143,8 +145,8 @@ same `.env`. It is idempotent: re-run it after any change to a Convex-scope
 variable.
 
 One behaviour to know before running it: `ATRIUM_PROVISION_KEYS` is
-**declarative**. Present-but-empty means *revoke every declared provisioner*;
-absent means *leave Convex alone*. Those are opposite intentions and the script
+**declarative**. Present-but-empty means _revoke every declared provisioner_;
+absent means _leave Convex alone_. Those are opposite intentions and the script
 treats them as such.
 
 ---

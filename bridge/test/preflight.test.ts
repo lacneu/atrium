@@ -93,6 +93,38 @@ describe("preflight.sh — the four outcome paths", () => {
     const { code, out } = run(p);
     expect(code).toBe(1);
     expect(out).toContain("commented out");
+    expect(out).toContain("OPENCLAW_INBOUND_HOST_DIR");
+  });
+
+  it("uses one inbound root mount per bridge instance", () => {
+    const compose = readFileSync(
+      new URL("../../deploy/compose/docker-compose.yml", import.meta.url),
+      "utf8",
+    );
+    const mounts = compose
+      .split("\n")
+      .filter(
+        (line) => line.includes("INBOUND_HOST_DIR") && line.includes("}:/"),
+      );
+
+    expect(mounts).toHaveLength(3);
+    for (const mount of mounts) {
+      const target = mount.split("}:", 2)[1];
+      expect(target).toMatch(/^\/home\/node\/\.openclaw\/media\/.+\/inbound$/);
+    }
+    expect(compose).not.toContain("INBOUND_STAGING_HOST_DIR");
+  });
+
+  it("rejects the removed second staging mount variables", () => {
+    const p = join(dir, "deprecated-staging.env");
+    writeFileSync(
+      p,
+      completeEnv() +
+        "\nOPENCLAW_INBOUND_STAGING_HOST_DIR=/srv/separate-staging\n",
+    );
+    const { code, out } = run(p);
+    expect(code).toBe(1);
+    expect(out).toContain("one OPENCLAW_INBOUND_HOST_DIR root");
   });
 
   it("identical bridge secrets are refused — they guard opposite directions", () => {

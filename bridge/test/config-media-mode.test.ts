@@ -32,8 +32,15 @@ const inst = {
 describe("buildInstanceConfig: media dir derivation + overrides", () => {
   it("derives per-instance dirs from the instance name (no override)", () => {
     const c = buildInstanceConfig(loadSharedConfig({ ...sharedEnv }), inst);
-    expect(c.mediaOutboundDir).toBe("/home/node/.openclaw/media/olivier/outbound");
-    expect(c.inboundMediaDir).toBe("/home/node/.openclaw/media/olivier/inbound");
+    expect(c.mediaOutboundDir).toBe(
+      "/home/node/.openclaw/media/olivier/outbound",
+    );
+    expect(c.inboundMediaDir).toBe(
+      "/home/node/.openclaw/media/olivier/inbound/published",
+    );
+    expect(c.inboundMediaStagingDir).toBe(
+      "/home/node/.openclaw/media/olivier/inbound/.staging",
+    );
   });
 
   it("an explicit OPENCLAW_MEDIA_OUTBOUND_DIR / OPENCLAW_INBOUND_DIR override WINS (Helm bridge.media.enabled)", () => {
@@ -46,7 +53,8 @@ describe("buildInstanceConfig: media dir derivation + overrides", () => {
     });
     const c = buildInstanceConfig(shared, inst);
     expect(c.mediaOutboundDir).toBe("/mnt/out");
-    expect(c.inboundMediaDir).toBe("/mnt/in");
+    expect(c.inboundMediaDir).toBe("/mnt/in/published");
+    expect(c.inboundMediaStagingDir).toBe("/mnt/in/.staging");
   });
 });
 
@@ -79,6 +87,15 @@ describe("loadSharedConfig: fatal env boundary (the boot invariant) + retry knob
     expect(shared.bridgeInstanceSecrets).toEqual([]);
   });
 
+  it("rejects the removed independent staging override", () => {
+    expect(() =>
+      loadSharedConfig({
+        ...sharedEnv,
+        OPENCLAW_INBOUND_STAGING_DIR: "/mnt/separate-staging",
+      }),
+    ).toThrow(/mount one inbound root/u);
+  });
+
   it("credentialRetryMs defaults to 30s and is floored at 5s", () => {
     expect(loadSharedConfig({ ...sharedEnv }).credentialRetryMs).toBe(30_000);
     // Floor: a too-small value would hammer a slow Convex.
@@ -94,10 +111,16 @@ describe("loadSharedConfig: fatal env boundary (the boot invariant) + retry knob
 });
 
 describe("findMediaDirCollision (boot guard, codex P2)", () => {
-  const ic = (instanceName: string, out: string, inb: string) => ({
+  const ic = (
+    instanceName: string,
+    out: string,
+    inb: string,
+    staging = `${inb}.staging`,
+  ) => ({
     instanceName,
     mediaOutboundDir: out,
     inboundMediaDir: inb,
+    inboundMediaStagingDir: staging,
   });
 
   it("distinct per-instance dirs -> no collision", () => {
@@ -105,6 +128,49 @@ describe("findMediaDirCollision (boot guard, codex P2)", () => {
       findMediaDirCollision([
         ic("olivier", "/m/olivier/out", "/m/olivier/in"),
         ic("jerome", "/m/jerome/out", "/m/jerome/in"),
+      ]),
+    ).toBeNull();
+  });
+
+  it("derives an isolated private staging directory for every instance", () => {
+    const shared = loadSharedConfig({ ...sharedEnv });
+    const alpha = buildInstanceConfig(shared, {
+      ...inst,
+      instanceName: "alpha",
+    });
+    const beta = buildInstanceConfig(shared, {
+      ...inst,
+      instanceName: "beta",
+    });
+
+    expect(alpha.inboundMediaStagingDir).toBe(
+      "/home/node/.openclaw/media/alpha/inbound/.staging",
+    );
+    expect(beta.inboundMediaStagingDir).toBe(
+      "/home/node/.openclaw/media/beta/inbound/.staging",
+    );
+    expect(alpha.inboundMediaDir).toBe(
+      "/home/node/.openclaw/media/alpha/inbound/published",
+    );
+    expect(beta.inboundMediaDir).toBe(
+      "/home/node/.openclaw/media/beta/inbound/published",
+    );
+    expect(alpha.inboundMediaStagingDir).not.toBe(alpha.inboundMediaDir);
+    expect(beta.inboundMediaStagingDir).not.toBe(beta.inboundMediaDir);
+    expect(
+      findMediaDirCollision([
+        {
+          instanceName: "alpha",
+          mediaOutboundDir: alpha.mediaOutboundDir,
+          inboundMediaDir: alpha.inboundMediaDir,
+          inboundMediaStagingDir: alpha.inboundMediaStagingDir,
+        },
+        {
+          instanceName: "beta",
+          mediaOutboundDir: beta.mediaOutboundDir,
+          inboundMediaDir: beta.inboundMediaDir,
+          inboundMediaStagingDir: beta.inboundMediaStagingDir,
+        },
       ]),
     ).toBeNull();
   });
@@ -131,6 +197,16 @@ describe("findMediaDirCollision (boot guard, codex P2)", () => {
         ic("a_b", dir, "/x/in2"),
       ]),
     ).not.toBeNull();
+  });
+
+  it("detects staging colliding with the same instance's published directory", () => {
+    expect(
+      findMediaDirCollision([ic("olivier", "/m/o/out", "/m/o/in", "/m/o/in")]),
+    ).toEqual({
+      dir: "/m/o/in",
+      a: "olivier/inbound",
+      b: "olivier/inbound-staging",
+    });
   });
 });
 
@@ -182,9 +258,9 @@ describe("loadConfig: outbound media mode", () => {
     expect(
       loadConfig({ ...baseEnv, OPENCLAW_MEDIA_MODE: "shared-fs" }).mediaMode,
     ).toBe("shared-fs");
-    expect(loadConfig({ ...baseEnv, OPENCLAW_MEDIA_MODE: "off" }).mediaMode).toBe(
-      "off",
-    );
+    expect(
+      loadConfig({ ...baseEnv, OPENCLAW_MEDIA_MODE: "off" }).mediaMode,
+    ).toBe("off");
     expect(
       loadConfig({ ...baseEnv, OPENCLAW_MEDIA_MODE: "GATEWAY-HTTP" }).mediaMode,
     ).toBe("gateway-http");
@@ -231,11 +307,20 @@ describe("loadConfig: per-instance media dirs (the bridge's own mount)", () => {
   it("DEFAULTS the bridge dirs to an instance-keyed subdir; agent-mounts stay FLAT", () => {
     const c = loadConfig({ ...baseEnv, OPENCLAW_INSTANCE_NAME: "olivier" });
     // The bridge reads/writes under the per-instance subdir (Model M isolation).
-    expect(c.mediaOutboundDir).toBe("/home/node/.openclaw/media/olivier/outbound");
-    expect(c.inboundMediaDir).toBe("/home/node/.openclaw/media/olivier/inbound");
+    expect(c.mediaOutboundDir).toBe(
+      "/home/node/.openclaw/media/olivier/outbound",
+    );
+    expect(c.inboundMediaDir).toBe(
+      "/home/node/.openclaw/media/olivier/inbound/published",
+    );
+    expect(c.inboundMediaStagingDir).toBe(
+      "/home/node/.openclaw/media/olivier/inbound/.staging",
+    );
     // The AGENT-visible mounts MUST stay flat (the gateway path the agent
     // writes/reads + the openclaw.json allowReadPaths whitelist).
-    expect(c.mediaOutboundAgentMount).toBe("/home/node/.openclaw/media/outbound");
+    expect(c.mediaOutboundAgentMount).toBe(
+      "/home/node/.openclaw/media/outbound",
+    );
     expect(c.inboundAgentMount).toBe("/home/node/.openclaw/media/inbound");
   });
 
@@ -243,7 +328,12 @@ describe("loadConfig: per-instance media dirs (the bridge's own mount)", () => {
     const c = loadConfig({ ...baseEnv });
     expect(c.instanceName).toBeNull();
     expect(c.mediaOutboundDir).toBe("/home/node/.openclaw/media/outbound");
-    expect(c.inboundMediaDir).toBe("/home/node/.openclaw/media/inbound");
+    expect(c.inboundMediaDir).toBe(
+      "/home/node/.openclaw/media/inbound/published",
+    );
+    expect(c.inboundMediaStagingDir).toBe(
+      "/home/node/.openclaw/media/inbound/.staging",
+    );
   });
 
   it("explicit OPENCLAW_MEDIA_OUTBOUND_DIR / OPENCLAW_INBOUND_DIR override the keyed default", () => {
@@ -254,7 +344,17 @@ describe("loadConfig: per-instance media dirs (the bridge's own mount)", () => {
       OPENCLAW_INBOUND_DIR: "/srv/in",
     });
     expect(c.mediaOutboundDir).toBe("/srv/out"); // not /media/olivier/outbound
-    expect(c.inboundMediaDir).toBe("/srv/in");
+    expect(c.inboundMediaDir).toBe("/srv/in/published");
+    expect(c.inboundMediaStagingDir).toBe("/srv/in/.staging");
+  });
+
+  it("rejects OPENCLAW_INBOUND_STAGING_DIR instead of risking a second mount", () => {
+    expect(() =>
+      loadConfig({
+        ...baseEnv,
+        OPENCLAW_INBOUND_STAGING_DIR: "/srv/in-staging",
+      }),
+    ).toThrow(/mount one inbound root/u);
   });
 
   it("sanitizes an unsafe instance name into ONE segment (no path traversal in the mount)", () => {

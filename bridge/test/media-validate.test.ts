@@ -3,7 +3,14 @@
 // dir reports the error; a readable outbound dir passes.
 
 import { afterEach, describe, expect, it } from "vitest";
-import { mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
+import {
+  mkdir,
+  mkdtemp,
+  readdir,
+  realpath,
+  rm,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -14,7 +21,7 @@ import {
 
 const dirs: string[] = [];
 async function tempDir(): Promise<string> {
-  const d = await mkdtemp(join(tmpdir(), "atrium-mv-"));
+  const d = await realpath(await mkdtemp(join(tmpdir(), "atrium-mv-")));
   dirs.push(d);
   return d;
 }
@@ -41,6 +48,15 @@ describe("checkWritableDir", () => {
     expect(r.checked).toBe(true);
     expect(r.ok).toBe(false);
   });
+
+  it("does not create a missing deploy-time mount", async () => {
+    const base = await tempDir();
+    const missing = join(base, "missing");
+    const result = await checkWritableDir(missing, 1);
+
+    expect(result.ok).toBe(false);
+    expect(await readdir(base)).toEqual([]);
+  });
 });
 
 describe("checkReadableDir", () => {
@@ -57,6 +73,7 @@ describe("validateSharedFs", () => {
     const dir = await tempDir();
     const r = await validateSharedFs({
       inboundDir: dir,
+      inboundStagingDir: "",
       outboundDir: dir,
       inboundSharedFs: false,
       outboundSharedFs: false,
@@ -67,15 +84,69 @@ describe("validateSharedFs", () => {
   });
 
   it("checks both legs when both are shared-fs", async () => {
-    const dir = await tempDir();
+    const root = await tempDir();
+    const inbound = join(root, "published");
+    const staging = join(root, ".staging");
+    await mkdir(inbound, { mode: 0o700 });
+    await mkdir(staging, { mode: 0o700 });
     const r = await validateSharedFs({
-      inboundDir: dir,
-      outboundDir: dir,
+      inboundDir: inbound,
+      inboundStagingDir: staging,
+      outboundDir: root,
       inboundSharedFs: true,
       outboundSharedFs: true,
       now: 2,
     });
-    expect(r.inbound).toEqual({ checked: true, ok: true, detail: dir });
-    expect(r.outbound).toEqual({ checked: true, ok: true, detail: dir });
+    expect(r.inbound).toEqual({ checked: true, ok: true, detail: inbound });
+    expect(r.outbound).toEqual({ checked: true, ok: true, detail: root });
+  });
+
+  it("requires staging only when inbound shared-fs is active", async () => {
+    const dir = await tempDir();
+    const inactive = await validateSharedFs({
+      inboundDir: dir,
+      inboundStagingDir: "",
+      outboundDir: dir,
+      inboundSharedFs: false,
+      outboundSharedFs: false,
+      now: 1,
+    });
+    expect(inactive.inbound.ok).toBe(true);
+
+    const active = await validateSharedFs({
+      inboundDir: dir,
+      inboundStagingDir: "",
+      outboundDir: dir,
+      inboundSharedFs: true,
+      outboundSharedFs: false,
+      now: 1,
+    });
+    expect(active.inbound).toEqual({
+      checked: true,
+      ok: false,
+      detail: "inbound directory pair refused",
+    });
+  });
+
+  it("refuses non-canonical directory paths", async () => {
+    const root = await tempDir();
+    const inbound = join(root, "published");
+    const staging = join(root, ".staging");
+    await mkdir(inbound, { mode: 0o700 });
+    await mkdir(staging, { mode: 0o700 });
+
+    const result = await validateSharedFs({
+      inboundDir: `${inbound}/../published`,
+      inboundStagingDir: `${staging}/../.staging`,
+      outboundDir: root,
+      inboundSharedFs: true,
+      outboundSharedFs: false,
+      now: 1,
+    });
+    expect(result.inbound).toEqual({
+      checked: true,
+      ok: false,
+      detail: "inbound directory pair refused",
+    });
   });
 });
