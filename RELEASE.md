@@ -79,7 +79,10 @@ when you see it.
   key registered on GitHub before downstream deployer qualification. The tag
   workflow's version commit is not signed automatically and must not be used as
   a production source reference until a later verified commit contains that
-  tree.
+  tree. Before building a Convex deployer, verify both the commit signature and
+  the committed package version. If the release version commit is unsigned,
+  merge the next reviewed change first and pin the deployer to that verified
+  merge commit; never weaken the deployer provenance gate.
 - npm refuses to republish an existing version, so each tag must be a new version.
   `@lacneu/atrium` **0.1.0 and 0.1.1 are already published**, so the first tag under
   this model must be **`v0.1.2` or higher** (the committed baseline is `0.1.2`).
