@@ -78,7 +78,7 @@
     "hermes-cron-list": "hermes"
   },
   "flags": [],
-  "atriumSha": "49954c255961d414b154d967a383b3cb3b4aef11",
+  "atriumSha": "b8b7f50f0a8bb3fbcd23193cd44dc857716a7d35",
   "worktree": {
     "dirty": false,
     "deltaSha256": null
