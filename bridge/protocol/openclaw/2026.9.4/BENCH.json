@@ -6,51 +6,51 @@
     {
       "id": "basic-turn",
       "ok": true,
-      "chat": "e10e767eba8a1fbe"
+      "chat": "b33ee0e92a84e9ae"
     },
     {
       "id": "tool-exec",
       "ok": true,
-      "chat": "e10e767eba8a1fbe"
+      "chat": "b33ee0e92a84e9ae"
     },
     {
       "id": "update-plan",
       "ok": true,
-      "chat": "e10e767eba8a1fbe"
+      "chat": "b33ee0e92a84e9ae"
     },
     {
       "id": "media-outbound",
       "ok": true,
-      "chat": "e10e767eba8a1fbe"
+      "chat": "b33ee0e92a84e9ae"
     },
     {
       "id": "spawn-announce-merge",
       "ok": true,
-      "chat": "e10e767eba8a1fbe"
+      "chat": "b33ee0e92a84e9ae"
     },
     {
       "id": "spawn-chain-merge",
       "ok": true,
-      "chat": "e10e767eba8a1fbe"
+      "chat": "b33ee0e92a84e9ae"
     },
     {
       "id": "spawn-parallel-merge",
       "ok": true,
-      "chat": "e10e767eba8a1fbe"
+      "chat": "b33ee0e92a84e9ae"
     },
     {
       "id": "async-task",
       "ok": true,
-      "chat": "e10e767eba8a1fbe"
+      "chat": "b33ee0e92a84e9ae"
     },
     {
       "id": "cron-tool",
       "ok": true,
-      "chat": "e10e767eba8a1fbe"
+      "chat": "b33ee0e92a84e9ae"
     }
   ],
   "verdict": "GO",
-  "at": "2026-09-12T04:14:13.863Z",
+  "at": "2026-09-12T19:02:53.875Z",
   "scenarios": [
     "async-task",
     "basic-turn",
@@ -78,12 +78,12 @@
     "hermes-cron-list": "hermes"
   },
   "flags": [],
-  "atriumSha": "cb7d6b1a052dc2ecabe425cdca726c7cd665073c",
+  "atriumSha": "49954c255961d414b154d967a383b3cb3b4aef11",
   "worktree": {
-    "dirty": true,
-    "deltaSha256": "3248d88db477488f1797c24e5b6ad15710c78e14ec1c6a49da5f96e553f563a5"
+    "dirty": false,
+    "deltaSha256": null
   },
-  "supportDigest": "15b21b61ea9a0c51cdb2b604e80e4304a5a9fe250ef2dcd51723d998a8a54c8a",
+  "supportDigest": "e1e2abb611092e503c66c633d8a05fecd4523ecfa61f13838b8cdc9fa7161d0c",
   "authMode": "token",
   "bridgeVersion": "0.84.5",
   "vendoredSha256": "99e06ae2c430259848af68304c28804e3fcc4227ae77ec1a99c80f4d26d35d30"
