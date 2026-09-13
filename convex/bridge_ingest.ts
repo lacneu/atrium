@@ -368,6 +368,8 @@ type IngestOp =
       op: "setPhase";
       messageId: string;
       phase: string;
+      retry?: { attempt: number; maxAttempts: number };
+      onlyIfRetrying?: boolean;
       runId?: string | null;
     }
   | {
@@ -1210,6 +1212,8 @@ export const ingest = httpAction(async (ctx, request) => {
         messageId: body.messageId as Id<"messages">,
         phase: body.phase,
         boundInstanceName,
+        ...(body.retry !== undefined ? { retry: body.retry } : {}),
+        ...(body.onlyIfRetrying === true ? { onlyIfRetrying: true } : {}),
         ...(body.runId !== undefined ? { expectedRunId: body.runId } : {}),
       });
       return json({ ok: true });

@@ -757,6 +757,10 @@ export const getStreamingText = query({
       ...(r.chunkSeq !== undefined ? { chunkSeq: r.chunkSeq } : {}),
       // Live processing phase (Tools-ON placeholder detail) — absent on plain turns.
       ...(r.phase !== undefined ? { phase: r.phase } : {}),
+      // The back-off counter that belongs to `phase: "retrying"`. Projected with
+      // its phase: a label that has to fetch its own number from somewhere else
+      // is the shape that goes stale.
+      ...(r.phaseRetry !== undefined ? { phaseRetry: r.phaseRetry } : {}),
       // In-band delivery-recorder fields, present ONLY while a recording is active
       // (appendDelta/setSnapshot stamp them) -> zero added payload otherwise. The
       // frontend reads recTimingId (the timing row's correlator) to stamp t4 and

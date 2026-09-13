@@ -208,6 +208,10 @@ export interface ConvexMessageView {
    *  querying_gateway/awaiting_subagents) — merged from the streaming row; shown
    *  by the thinking placeholder when Tools is ON. Absent once text streams. */
   phase?: string;
+  /** The provider back-off counter belonging to `phase: "retrying"`. Declared here
+   *  because the converter copies FIELDS, not the row: an undeclared one is silently
+   *  dropped, which is exactly how the counter never reached the label. */
+  phaseRetry?: { attempt: number; maxAttempts: number };
   /** MULTI-AGENT per-turn routing: which agent this turn was addressed to (absent on
    *  a single-agent message). The thread attributes each reply from these (an
    *  assistant without its own inherits the preceding user turn's agent); the

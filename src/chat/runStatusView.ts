@@ -50,6 +50,10 @@ const PHASE_LABEL: Record<string, () => string> = {
   post_processing: m.runstatus_phase_post_processing,
   // A tool is waiting on a human approval this app cannot grant (G-21).
   awaiting_approval: m.runstatus_phase_awaiting_approval,
+  // The provider is rate-limiting and the gateway is backing off. The counter
+  // is supplied separately (see `phaseRetry`): this entry is the fallback for a
+  // back-off frame that arrived without one, which the wire allows.
+  retrying: m.runstatus_phase_retrying,
 };
 
 /** Coarse tool families for the working label (and the lot-C flow summaries):
@@ -130,6 +134,10 @@ export function runStatusView(
   /** The user stopped the conversation while this block's delegated work ran.
    *  A settled block then reads as interrupted (see runStatusKind). */
   interrupted?: boolean,
+  /** The back-off counter that belongs to `phase: "retrying"`. Passed alongside
+   *  the phase rather than folded into it: the bounded "2/10" is the whole
+   *  value — an unbounded "retrying" says no more than the silence it replaces. */
+  phaseRetry?: { attempt: number; maxAttempts: number } | null,
 ): RunStatusView | null {
   const kind = runStatusKind(status, hasText, interrupted ?? false);
   if (kind === null) return null;
@@ -138,6 +146,16 @@ export function runStatusView(
       return {
         kind,
         label: TOOL_FAMILY_LABEL[activeTool.family](activeTool.name),
+        phased: true,
+      };
+    }
+    if (phase === "retrying" && phaseRetry) {
+      return {
+        kind,
+        label: m.runstatus_phase_retrying_attempt({
+          attempt: String(phaseRetry.attempt),
+          maxAttempts: String(phaseRetry.maxAttempts),
+        }),
         phased: true,
       };
     }

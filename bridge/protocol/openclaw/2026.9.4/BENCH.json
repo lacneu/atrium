@@ -6,51 +6,51 @@
     {
       "id": "basic-turn",
       "ok": true,
-      "chat": "56f957bed3af1caa"
+      "chat": "cb8dc0a983f9ab42"
     },
     {
       "id": "tool-exec",
       "ok": true,
-      "chat": "56f957bed3af1caa"
+      "chat": "cb8dc0a983f9ab42"
     },
     {
       "id": "update-plan",
       "ok": true,
-      "chat": "56f957bed3af1caa"
+      "chat": "cb8dc0a983f9ab42"
     },
     {
       "id": "media-outbound",
       "ok": true,
-      "chat": "56f957bed3af1caa"
+      "chat": "cb8dc0a983f9ab42"
     },
     {
       "id": "spawn-announce-merge",
       "ok": true,
-      "chat": "56f957bed3af1caa"
+      "chat": "cb8dc0a983f9ab42"
     },
     {
       "id": "spawn-chain-merge",
       "ok": true,
-      "chat": "56f957bed3af1caa"
+      "chat": "cb8dc0a983f9ab42"
     },
     {
       "id": "spawn-parallel-merge",
       "ok": true,
-      "chat": "56f957bed3af1caa"
+      "chat": "cb8dc0a983f9ab42"
     },
     {
       "id": "async-task",
       "ok": true,
-      "chat": "56f957bed3af1caa"
+      "chat": "cb8dc0a983f9ab42"
     },
     {
       "id": "cron-tool",
       "ok": true,
-      "chat": "56f957bed3af1caa"
+      "chat": "cb8dc0a983f9ab42"
     }
   ],
   "verdict": "GO",
-  "at": "2026-09-12T23:47:55.125Z",
+  "at": "2026-09-13T16:53:23.777Z",
   "scenarios": [
     "async-task",
     "basic-turn",
@@ -78,13 +78,13 @@
     "hermes-cron-list": "hermes"
   },
   "flags": [],
-  "atriumSha": "721584e927555cadc3cf63f8b7a45de357b9a68c",
+  "atriumSha": "d0b1fcb622e050f3c9bad6462374f347f3dfbfad",
   "worktree": {
-    "dirty": false,
-    "deltaSha256": null
+    "dirty": true,
+    "deltaSha256": "03c89bf9ff4afb78cfb7dc81f4b26110a77e888a4440614b0e56f6a49241a0b6"
   },
-  "supportDigest": "e1e2abb611092e503c66c633d8a05fecd4523ecfa61f13838b8cdc9fa7161d0c",
+  "supportDigest": "ffdf0929661aa8c89c0b9ee24669b22d033c0ac4bd495c74c9668a91c788dc40",
   "authMode": "token",
-  "bridgeVersion": "0.84.6",
+  "bridgeVersion": "0.84.7",
   "vendoredSha256": "99e06ae2c430259848af68304c28804e3fcc4227ae77ec1a99c80f4d26d35d30"
 }

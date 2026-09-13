@@ -2929,6 +2929,292 @@ describe("G-20: lifecycle `finishing` and terminal metadata", () => {
     },
   });
 
+  // A PROVIDER BACK-OFF IS NOT A TURN FINISHING.
+  //
+  // Upstream re-enters the attempt (run-loop `while (true)`) and each attempt's
+  // terminal re-emits lifecycle `finishing`, which this normalizer reads as
+  // `post_processing`. A rate-limited turn therefore repeated a finishing label
+  // while the gateway's own UI showed "Retrying… 2/10". The status frame carries
+  // the truth; it was received and dropped.
+  const chatStatus = (extra: Record<string, unknown>) => ({
+    event: "chat",
+    payload: {
+      runId: OWN_RUN,
+      sessionKey: SESSION_KEY,
+      state: "status",
+      seq: 1,
+      ...extra,
+    },
+  });
+
+  it("a back-off status frame says `retrying` AND carries its bounded counter", () => {
+    const { n, clock } = startTurn();
+    const ev = n.feed(
+      chatStatus({
+        phase: "starting_model",
+        retry: { attempt: 2, maxAttempts: 10, reason: "rate_limit" },
+      }),
+      clock.tick(),
+    );
+    const phase = ev.find((e) => e.type === "turn.phase");
+    expect(phase?.phase).toBe("retrying");
+    // The COUNTER is the value: an unbounded "retrying" says no more than the
+    // silence it replaces.
+    expect(phase?.retry).toEqual({ attempt: 2, maxAttempts: 10 });
+  });
+
+  it("a status frame WITHOUT a retry stays eventless", () => {
+    // The startup phases describe work Atrium does not render; inventing a label
+    // for them would replace the turn's real activity with gateway bookkeeping.
+    const { n, clock } = startTurn();
+    const ev = n.feed(chatStatus({ phase: "preparing_workspace" }), clock.tick());
+    expect(ev.find((e) => e.type === "turn.phase")).toBeUndefined();
+  });
+
+  it("REAL OUTPUT ends the back-off, even if no status frame says so", () => {
+    // The clear used to depend solely on the next bare status, and those are sent
+    // `dropIfSlow` — so one dropped frame left "2/10" on screen for the whole
+    // generation, since the label is honoured even once text exists (raised in
+    // review). Visible assistant activity is upstream's own resume signal, and it is
+    // the one that cannot be lost: it rides the text itself.
+    const { n, clock } = startTurn();
+    n.feed(
+      chatStatus({
+        phase: "starting_model",
+        seq: 1,
+        retry: { attempt: 2, maxAttempts: 10, reason: "rate_limit" },
+      }),
+      clock.tick(),
+    );
+    const ev = n.feed(
+      {
+        event: "chat",
+        payload: { runId: OWN_RUN, sessionKey: SESSION_KEY, state: "delta", deltaText: "hi", seq: 2 },
+      },
+      clock.tick(),
+    );
+    expect(ev.find((e) => e.type === "turn.phase")?.phase).toBe("generating");
+  });
+
+  it("a counter outside the contract is refused, the phase is not", () => {
+    // The contract is INTEGERS in 1..10. `typeof number` admitted -1, 0 and 2.5, and a
+    // label reading "2.5/1" makes the reader doubt the turn rather than the frame.
+    for (const retry of [
+      { attempt: 0, maxAttempts: 10, reason: "rate_limit" },
+      { attempt: 2.5, maxAttempts: 10, reason: "rate_limit" },
+      { attempt: 9, maxAttempts: 2, reason: "rate_limit" },
+      // The contract bounds BOTH fields at 10. Only the lower bound was checked, so a
+      // counter the gateway cannot legally emit reached the label (raised in review).
+      { attempt: 11, maxAttempts: 11, reason: "rate_limit" },
+      { attempt: 1, maxAttempts: 11, reason: "rate_limit" },
+    ]) {
+      const { n, clock } = startTurn();
+      const ev = n.feed(chatStatus({ phase: "starting_model", retry }), clock.tick());
+      expect(ev.find((e) => e.type === "turn.phase"), JSON.stringify(retry)).toBeUndefined();
+    }
+  });
+
+  it("the LEGITIMATE edges of the contract are accepted", () => {
+    // A refusal that swallows a valid frame is the same defect mirrored: the reader
+    // would be back to "post-processing" on a real back-off.
+    for (const retry of [
+      { attempt: 1, maxAttempts: 1, reason: "rate_limit" }, // a single attempt
+      { attempt: 10, maxAttempts: 10, reason: "rate_limit" }, // the last one
+      { attempt: 3, maxAttempts: 3, reason: "rate_limit" }, // attempt == max
+    ]) {
+      const { n, clock } = startTurn();
+      const ev = n.feed(chatStatus({ phase: "starting_model", retry }), clock.tick());
+      const phase = ev.find((e) => e.type === "turn.phase");
+      expect(phase?.phase, JSON.stringify(retry)).toBe("retrying");
+      expect(phase?.retry).toEqual({ attempt: retry.attempt, maxAttempts: retry.maxAttempts });
+    }
+  });
+
+  it("ANY resume signal ends the back-off — assistant, tool or item", () => {
+    // Upstream treats assistant, tool and item as equivalent resume signals, and the
+    // next attempt does NOT necessarily re-emit the startup statuses
+    // (`startupStagesEmitted` survives the retry loop's `continue`). The SHAPES are
+    // upstream's own (server-chat-progress-snapshot.ts): a tool needs a call id and a
+    // listed phase, an item must be a PREAMBLE.
+    for (const resume of [
+      { stream: "assistant", data: {} },
+      { stream: "tool", data: { name: "exec", phase: "start", toolCallId: "tc1" } },
+      { stream: "tool", data: { name: "exec", phase: "result", toolCallId: "tc2" } },
+      // a `review` names the review it belongs to, and that id is NESTED
+      {
+        stream: "tool",
+        data: { name: "exec", phase: "review", toolCallId: "tc1", review: { id: "r1" } },
+      },
+      { stream: "item", data: { kind: "preamble", phase: "start" } },
+    ]) {
+      const { n, clock } = startTurn();
+      n.feed(
+        chatStatus({
+          phase: "starting_model",
+          seq: 1,
+          retry: { attempt: 2, maxAttempts: 10, reason: "rate_limit" },
+        }),
+        clock.tick(),
+      );
+      const ev = n.feed(
+        {
+          event: "agent",
+          payload: { runId: OWN_RUN, sessionKey: SESSION_KEY, seq: 2, ...resume },
+        },
+        clock.tick(),
+      );
+      expect(ev.find((e) => e.type === "turn.phase")?.phase, resume.stream).toBe(
+        "generating",
+      );
+    }
+  });
+
+  it("a tool or item frame that is NOT upstream's progress shape leaves it alone", () => {
+    // The breadth was defended on the grounds that `onlyIfRetrying` makes the clear
+    // harmless. It does not: that flag protects OTHER phases from this clear, never
+    // the back-off itself (raised in review).
+    for (const notResume of [
+      { stream: "tool", data: { name: "exec", phase: "start" } }, // no id at all
+      { stream: "tool", data: { name: "exec", phase: "start", toolCallId: "   " } }, // blank
+      { stream: "tool", data: { name: "exec", phase: "queued", toolCallId: "tc1" } },
+      // a `review` with no review object at all
+      { stream: "tool", data: { name: "exec", phase: "review", toolCallId: "tc1" } },
+      // …and the flat `reviewId` I had invented is NOT the contract
+      { stream: "tool", data: { name: "exec", phase: "review", toolCallId: "tc1", reviewId: "r1" } },
+      // the itemId/id fallbacks belong to the PREAMBLE variable, not to the tool
+      { stream: "tool", data: { name: "exec", phase: "result", itemId: "it1" } },
+      { stream: "tool", data: { name: "exec", phase: "update", id: "i1" } },
+      { stream: "item", data: { kind: "tool", name: "exec", phase: "start" } },
+    ]) {
+      const { n, clock } = startTurn();
+      n.feed(
+        chatStatus({
+          phase: "starting_model",
+          seq: 1,
+          retry: { attempt: 2, maxAttempts: 10, reason: "rate_limit" },
+        }),
+        clock.tick(),
+      );
+      const ev = n.feed(
+        {
+          event: "agent",
+          payload: { runId: OWN_RUN, sessionKey: SESSION_KEY, seq: 2, ...notResume },
+        },
+        clock.tick(),
+      );
+      expect(
+        ev.find((e) => e.type === "turn.phase"),
+        JSON.stringify(notResume),
+      ).toBeUndefined();
+    }
+  });
+
+  it("a DIVERGENT retry frame is ignored, not read as a resume", () => {
+    // After a valid back-off, a frame that CLAIMS a retry but breaks the contract used
+    // to fall through to the clear — so `valid -> malformed` read as "the run resumed".
+    const { n, clock } = startTurn();
+    n.feed(
+      chatStatus({
+        phase: "starting_model",
+        seq: 1,
+        retry: { attempt: 2, maxAttempts: 10, reason: "rate_limit" },
+      }),
+      clock.tick(),
+    );
+    const ev = n.feed(
+      chatStatus({ phase: "starting_model", seq: 2, retry: { attempt: 2, maxAttempts: 99 } }),
+      clock.tick(),
+    );
+    expect(ev.find((e) => e.type === "turn.phase")).toBeUndefined();
+  });
+
+  it("the clear names what it may remove", () => {
+    const { n, clock } = startTurn();
+    n.feed(
+      chatStatus({
+        phase: "starting_model",
+        seq: 1,
+        retry: { attempt: 2, maxAttempts: 10, reason: "rate_limit" },
+      }),
+      clock.tick(),
+    );
+    const ev = n.feed(
+      {
+        event: "agent",
+        payload: {
+          runId: OWN_RUN,
+          sessionKey: SESSION_KEY,
+          seq: 2,
+          stream: "assistant",
+          data: {},
+        },
+      },
+      clock.tick(),
+    );
+    const phase = ev.find((e) => e.type === "turn.phase");
+    expect(phase?.phase).toBe("generating");
+    expect(phase?.onlyIfRetrying).toBe(true);
+  });
+
+  it("a retry frame WITHOUT the contract's reason is refused", () => {
+    // The schema declares `reason: "rate_limit"` and nothing else.
+    for (const retry of [
+      { attempt: 2, maxAttempts: 10 },
+      { attempt: 2, maxAttempts: 10, reason: "overloaded" },
+    ]) {
+      const { n, clock } = startTurn();
+      const ev = n.feed(chatStatus({ phase: "starting_model", retry }), clock.tick());
+      expect(ev.find((e) => e.type === "turn.phase"), JSON.stringify(retry)).toBeUndefined();
+    }
+  });
+
+  it("a BARE status does NOT end the back-off — it can be another cause", () => {
+    // Upstream projects the retries whose reason is `overloaded`, `server_error` or
+    // `timeout` as `starting_model` with NO `retry` field. So a bare status can mean
+    // "still backing off, differently". This test used to assert the opposite and
+    // encoded that false premise (raised in review): clearing here told the reader the
+    // wait was over while the provider was still refusing.
+    const { n, clock } = startTurn();
+    n.feed(
+      chatStatus({
+        phase: "starting_model",
+        seq: 1,
+        retry: { attempt: 2, maxAttempts: 10, reason: "rate_limit" },
+      }),
+      clock.tick(),
+    );
+    const ev = n.feed(chatStatus({ phase: "preparing_context", seq: 2 }), clock.tick());
+    expect(ev.find((e) => e.type === "turn.phase")).toBeUndefined();
+  });
+
+  it("…and the clear happens ONCE, on the first real resume", () => {
+    // The clear is a transition, not a state: re-emitting it would heartbeat the
+    // watchdog from bookkeeping and speak for a phase someone else may have set since.
+    const { n, clock } = startTurn();
+    const agent = (seq: number, extra: Record<string, unknown>) => ({
+      event: "agent",
+      payload: { runId: OWN_RUN, sessionKey: SESSION_KEY, seq, ...extra },
+    });
+    n.feed(
+      chatStatus({
+        phase: "starting_model",
+        seq: 1,
+        retry: { attempt: 2, maxAttempts: 10, reason: "rate_limit" },
+      }),
+      clock.tick(),
+    );
+    const first = n.feed(
+      agent(2, { stream: "item", data: { kind: "preamble", phase: "start" } }),
+      clock.tick(),
+    );
+    expect(first.find((e) => e.type === "turn.phase")?.phase).toBe("generating");
+    const again = n.feed(
+      agent(3, { stream: "item", data: { kind: "preamble", phase: "start" } }),
+      clock.tick(),
+    );
+    expect(again.find((e) => e.type === "turn.phase")).toBeUndefined();
+  });
+
   it("`finishing` says what the turn is doing and arms a wait WELL under the 240 s silence", () => {
     const { n, clock } = startTurn();
     const ev = n.feed(lifecycle({ phase: "finishing", startedAt: 1, endedAt: 2 }), clock.tick());

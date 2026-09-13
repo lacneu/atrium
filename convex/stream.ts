@@ -899,6 +899,24 @@ function stableJson(value: unknown): string {
   );
 }
 
+/** Visible text ENDS a provider back-off, atomically with the write that carries it.
+ *
+ *  The bridge also emits a `generating` clear, but that is a SEPARATE best-effort POST
+ *  that swallows its errors and is never retried — so a lost clear left "retrying 2/10"
+ *  on screen for the whole generation, which is the very defect the phase was added to
+ *  remove (raised in review). Clearing it here cannot be lost: it rides the same patch
+ *  as the text.
+ *
+ *  Scoped to `retrying` on purpose. Text arriving during `compacting` or
+ *  `awaiting_approval` says nothing about those, and clearing them here would make the
+ *  label flicker on every delta. */
+function clearsRetryPhase(row: { phase?: string }): {
+  phase?: undefined;
+  phaseRetry?: undefined;
+} {
+  return row.phase === "retrying" ? { phase: undefined, phaseRetry: undefined } : {};
+}
+
 const TURN_PHASES = new Set([
   "processing_history",
   "compacting",
@@ -911,19 +929,35 @@ const TURN_PHASES = new Set([
   // A tool asked for a human approval this app cannot grant (G-21): the turn is
   // deliberately waiting, and saying so beats a silent spinner.
   "awaiting_approval",
+  // The PROVIDER is rate-limiting and the gateway is backing off (OpenClaw
+  // 2026.9.4 `ChatStatusEvent.retry`). Before this, each re-entered attempt
+  // re-emitted the deferred terminal and the turn repeated "post-processing" —
+  // a finishing label for a turn that had not reached the model yet.
+  "retrying",
 ]);
 
 export const setPhase = internalMutation({
   args: {
     messageId: v.id("messages"),
     phase: v.string(),
+    // Only meaningful with `retrying`; ignored for every other phase so a
+    // stale counter can never outlive the back-off that produced it.
+    retry: v.optional(v.object({ attempt: v.number(), maxAttempts: v.number() })),
+    // A clear that may ONLY remove a back-off. `generating` is shared with Hermes'
+    // resume signal and wipes whatever phase is stored, so a retry clear arriving
+    // after some other producer published `awaiting_approval` erased THAT instead
+    // (raised in review). With this flag the clear names what it may remove.
+    onlyIfRetrying: v.optional(v.boolean()),
     // Generation guard (see appendDelta): a delayed phase write from a run
     // that no longer owns this message must not touch (nor heartbeat) the
     // reopened stream.
     expectedRunId: v.optional(v.union(v.string(), v.null())),
     ...boundArg,
   },
-  handler: async (ctx, { messageId, phase, expectedRunId, boundInstanceName }) => {
+  handler: async (
+    ctx,
+    { messageId, phase, retry, onlyIfRetrying, expectedRunId, boundInstanceName },
+  ) => {
     // "generating" is Hermes' RESUME signal (sub-agents settled, the model is
     // producing again) — it is not a phase but the END of one: CLEAR the stored
     // phase, else "awaiting_subagents" sticks on the chip after the children
@@ -947,13 +981,39 @@ export const setPhase = internalMutation({
     // querying_gateway is the bridge's own doubt about a silent turn — bumping
     // the watchdog there would let a bridge death during the recovery leave the
     // stream stuck ~12 extra minutes (codex P2).
+    // The counter belongs to `retrying` alone, and is written on EVERY phase
+    // change so it cannot outlive its back-off: a turn that retried twice and
+    // then started producing must not still read "2/10". `undefined` clears it.
+    //
+    // The BOUNDS are re-checked here, not trusted from the bridge. `v.number()`
+    // accepts any float, the ingest op only casts its JSON, and this mutation is the
+    // last thing between a malformed frame and a label reading "2.5/11" (raised in
+    // review). The contract is integers 1..10 on both fields, attempt <= maxAttempts.
+    const sane =
+      retry !== undefined &&
+      Number.isInteger(retry.attempt) &&
+      Number.isInteger(retry.maxAttempts) &&
+      retry.attempt >= 1 &&
+      retry.maxAttempts <= 10 &&
+      retry.attempt <= retry.maxAttempts;
+    const phaseRetry = phase === "retrying" && sane ? retry : undefined;
+    if (clearing && onlyIfRetrying === true && row.phase !== "retrying") {
+      // A scoped clear whose target is gone: some other producer owns the phase now,
+      // and this must not speak for them. Not an error — the back-off is over either
+      // way, which is all this signal was ever asserting.
+      return;
+    }
     if (clearing) {
       // Resume signal: real gateway activity — clear the phase AND heartbeat.
-      await ctx.db.patch(row._id, { phase: undefined, updatedAt: Date.now() });
+      await ctx.db.patch(row._id, {
+        phase: undefined,
+        phaseRetry: undefined,
+        updatedAt: Date.now(),
+      });
     } else if (phase === "querying_gateway") {
-      await ctx.db.patch(row._id, { phase });
+      await ctx.db.patch(row._id, { phase, phaseRetry });
     } else {
-      await ctx.db.patch(row._id, { phase, updatedAt: Date.now() });
+      await ctx.db.patch(row._id, { phase, phaseRetry, updatedAt: Date.now() });
     }
   },
 });
@@ -1078,6 +1138,7 @@ export const appendDelta = internalMutation({
         text: full,
         updatedAt: now,
         chunkSeq: seq + 1,
+        ...clearsRetryPhase(row),
       });
       streamRowId = row._id;
       chatId = row.chatId;
@@ -1231,7 +1292,12 @@ export const setSnapshot = internalMutation({
         return { applied: false as const };
       }
       seq = row.chunkSeq ?? 1;
-      await ctx.db.patch(row._id, { text, updatedAt: now, chunkSeq: seq + 1 });
+      await ctx.db.patch(row._id, {
+        text,
+        updatedAt: now,
+        chunkSeq: seq + 1,
+        ...clearsRetryPhase(row),
+      });
       streamRowId = row._id;
       chatId = row.chatId;
     }

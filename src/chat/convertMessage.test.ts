@@ -289,3 +289,30 @@ describe("convertConvexMessage interleaved flow (anchored tool parts, lot C)", (
     expect(customMeta(message).activeToolName).toBeNull();
   });
 });
+
+// THE HOP THAT DROPPED THE FACT.
+//
+// The converter copies FIELDS, not the row. `phase` was copied and `phaseRetry` was
+// not, so the provider back-off counter — carried correctly by the normalizer, the
+// sink, the writer, the ingest op, the mutation and the query — died one layer below
+// the label that exists to show it. The UI test did not see it because it called
+// `runStatusView` directly and skipped this hop; a review did.
+describe("convertConvexMessage carries the live phase AND its counter", () => {
+  it("copies phaseRetry, not just phase", () => {
+    const meta = customMeta(
+      makeMessage({
+        status: "streaming",
+        phase: "retrying",
+        phaseRetry: { attempt: 2, maxAttempts: 10 },
+      }),
+    );
+    expect(meta.phase).toBe("retrying");
+    expect(meta.phaseRetry).toEqual({ attempt: 2, maxAttempts: 10 });
+  });
+
+  it("a turn with no back-off carries an explicit null, never a stale counter", () => {
+    const meta = customMeta(makeMessage({ status: "streaming", phase: "compacting" }));
+    expect(meta.phase).toBe("compacting");
+    expect(meta.phaseRetry).toBeNull();
+  });
+});

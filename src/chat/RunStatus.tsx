@@ -34,6 +34,7 @@ interface RunMeta {
   error?: string | null;
   errorCode?: string | null;
   phase?: string | null;
+  phaseRetry?: { attempt: number; maxAttempts: number } | null;
   toolParts?: Array<{ toolName: string; phase?: string }>;
   activeToolName?: string | null;
   autoRetry?: { attempt: number; maxAttempts: number; firesAt: number } | null;
@@ -111,6 +112,9 @@ export function RunStatus() {
   const phase = useMessage(
     (m) => (m.metadata?.custom as RunMeta | undefined)?.phase,
   );
+  const phaseRetry = useMessage(
+    (m) => (m.metadata?.custom as RunMeta | undefined)?.phaseRetry,
+  );
   // The RUNNING tool: convertMessage pre-computes it across ALL tool parts
   // (anchored inline + legacy grouped — neither list alone sees every part
   // since the lot-C split). Fallback to the legacy toolParts derivation for a
@@ -137,7 +141,7 @@ export function RunStatus() {
   const interrupted = useMessage(
     (m) => (m.metadata?.custom as RunMeta | undefined)?.interruptedAt != null,
   );
-  const view = runStatusView(status, hasText, phase, activeTool, interrupted);
+  const view = runStatusView(status, hasText, phase, activeTool, interrupted, phaseRetry);
   // After a while waiting for the first token (slow / overloaded / reconnecting
   // backend — the client can't tell which), swap the thinking label for a
   // cause-NEUTRAL reassurance so the user knows the turn is registered and waits.

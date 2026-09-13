@@ -325,6 +325,10 @@ export function convertConvexMessage(
         // Live processing phase (in-flight turns only) — thinking-placeholder
         // detail when Tools is ON.
         phase: message.phase ?? null,
+        // …and the counter that belongs to it. Copying the phase alone was a REAL
+        // break, not a cosmetic one: the whole value of `retrying` is the bounded
+        // "2/10", and it died here while every hop upstream carried it correctly.
+        phaseRetry: message.phaseRetry ?? null,
         // UN-ANCHORED tool invocations (history / delivery merges), in part
         // order — the legacy grouped ToolActivity block. Anchored parts render
         // INLINE (content) and are excluded here (no double display).

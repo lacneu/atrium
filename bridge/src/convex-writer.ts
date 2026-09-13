@@ -352,7 +352,12 @@ export interface ConvexWriter {
   /** Live processing-phase hint for the Tools-ON placeholder (fire-and-forget;
    *  also touches streamingText.updatedAt = a watchdog heartbeat while the agent
    *  works silently). OPTIONAL: fakes/tests may omit it. */
-  setPhase?(messageId: string, phase: string): void | Promise<void>;
+  setPhase?(
+    messageId: string,
+    phase: string,
+    retry?: { attempt: number; maxAttempts: number },
+    onlyIfRetrying?: boolean,
+  ): void | Promise<void | boolean>;
   /** Boot-time orphan sweep for this writer's instance (best-effort). */
   sweepStreams?(): Promise<void>;
   /** plugin provenance report -> internal.stream.addPart(kind:provenance). */
@@ -784,6 +789,11 @@ type IngestOp =
       op: "setPhase";
       messageId: string;
       phase: string;
+      // Only `retrying` carries it: the provider back-off's bounded counter, so
+      // the label can say 2/10 instead of an unbounded "still working".
+      retry?: { attempt: number; maxAttempts: number };
+      // A clear that may ONLY remove a back-off, never another producer's phase.
+      onlyIfRetrying?: boolean;
       runId?: string | null;
     }
   | {
@@ -1747,19 +1757,31 @@ export class HttpConvexWriter implements ConvexWriter {
       });
   }
 
-  setPhase(messageId: string, phase: string): Promise<void> {
+  setPhase(
+    messageId: string,
+    phase: string,
+    retry?: { attempt: number; maxAttempts: number },
+    onlyIfRetrying?: boolean,
+  ): Promise<boolean> {
     // Best-effort hint — but RETURN the promise so an ORDER-sensitive caller
     // (Hermes ws-turn's awaiting_subagents/generating pair) can serialize the
     // actual HTTP writes; fire-and-forget callers just ignore it (codex P2).
+    //
+    // It now also REPORTS whether the write landed. Swallowing the failure silently
+    // meant a lost back-off clear was never retried and the label stayed on screen for
+    // the rest of the turn — the caller could not even know (raised in review).
     return this.doPost({
       op: "setPhase",
       messageId,
       phase,
+      ...(retry ? { retry } : {}),
+      ...(onlyIfRetrying ? { onlyIfRetrying: true } : {}),
       ...this.genTag(messageId),
     })
-      .then(() => undefined)
+      .then(() => true)
       .catch(() => {
-        // Losing the hint never affects the turn.
+        // Losing the hint still never fails the turn — it is reported, not thrown.
+        return false;
       });
   }
 

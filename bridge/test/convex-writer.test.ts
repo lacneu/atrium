@@ -1764,3 +1764,26 @@ describe("the session-drop flag reaches the WIRE, not just the method (lot 31)",
     expect(op?.clearProviderSession).toBeUndefined();
   });
 });
+
+// A LOST PHASE WRITE MUST BE REPORTABLE.
+//
+// `setPhase` swallowed its failure and returned nothing, so a back-off clear that never
+// reached Convex could not be retried by anyone — the "retrying 2/10" label simply
+// stayed for the rest of the turn. It still never throws: it REPORTS.
+describe("setPhase reports whether the write landed", () => {
+  test("resolves true when the POST succeeds", async () => {
+    const { fetchImpl, release } = controlledFetch();
+    const writer = writerWith(fetchImpl);
+    const p = writer.setPhase("m1", "generating", undefined, true);
+    release();
+    await expect(p).resolves.toBe(true);
+  });
+
+  test("resolves FALSE when the POST fails — and never throws", async () => {
+    const { fetchImpl, fail } = controlledFetch();
+    const writer = writerWith(fetchImpl);
+    const p = writer.setPhase("m1", "generating", undefined, true);
+    fail();
+    await expect(p).resolves.toBe(false);
+  });
+});

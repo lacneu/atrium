@@ -1,5 +1,37 @@
 # Changelog
 
+## [0.84.8] — Saying "the provider is busy" instead of "finishing up"
+
+Corrective release. One thing changes for the reader, and it is the thing a rate-limited
+turn most needed to say.
+
+**A turn waiting on a rate-limited provider now says so, with a bound.** When OpenClaw
+backs off, it retries the attempt, and each attempt closes with the gateway's deferred
+terminal — which Atrium read as "finishing up". So a turn that had not yet reached the
+model showed a finishing label, repeatedly, while the gateway's own interface showed
+"Retrying… 2/10". It now reads as a retry, and carries the count: the wait is bounded and
+the reader can see it progressing rather than guessing whether anything is still alive.
+
+The counter is carried, never re-derived. It travels with the phase from the gateway
+frame through to the label, and it is written on every phase change, so a turn that
+retried twice and then started producing can never still read "2/10". Visible text clears
+it in the same database write that stores the text, so the clear cannot be lost on its own;
+if the separate clear does fail to land, the next phase event re-sends it once.
+
+**The label ends when the run really resumes.** A resume is what the gateway itself counts
+as one — assistant output, a tool call that carries an id and a recognised phase, or a
+preamble item. A bare status frame is deliberately not enough: the gateway reports its
+`overloaded`, `server_error` and `timeout` back-offs the same way, so treating one as a
+resume would announce the end of a wait the provider is still enforcing.
+
+Only a counter the contract allows is shown — whole numbers, one to ten, attempt never past
+the bound, and the gateway's own reason — and the check is repeated at the database boundary
+rather than trusted from the bridge. A frame that claims a back-off but does not satisfy the
+contract is ignored rather than read as a resume.
+
+Nothing else changes: no other phase label, no other provider, and a gateway that never
+rate-limits behaves exactly as before.
+
 ## [0.84.7] — Deployer provenance, and a corpus that cannot republish what it hides
 
 Maintenance release. Nothing in the bridge, Convex or the web app behaves differently:

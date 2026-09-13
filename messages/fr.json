@@ -1263,6 +1263,8 @@
   "runstatus_phase_querying_gateway": "L'agent travaille toujours — vérification de son état…",
   "runstatus_phase_awaiting_subagents": "Travail délégué aux sous-agents — en attente de leurs résultats…",
   "runstatus_phase_post_processing": "Finalisation…",
+  "runstatus_phase_retrying": "Fournisseur saturé, nouvelle tentative…",
+  "runstatus_phase_retrying_attempt": "Fournisseur saturé, nouvelle tentative… {attempt}/{maxAttempts}",
   "runstatus_phase_awaiting_approval": "En attente d'approbation…",
   "runstatus_generating": "Rédaction de la réponse…",
   "runstatus_tool_read": "Lit des fichiers…",

@@ -1263,6 +1263,8 @@
   "runstatus_phase_querying_gateway": "The agent is still working — checking its status…",
   "runstatus_phase_awaiting_subagents": "Work delegated to sub-agents — awaiting their results…",
   "runstatus_phase_post_processing": "Finishing up…",
+  "runstatus_phase_retrying": "Provider busy, retrying…",
+  "runstatus_phase_retrying_attempt": "Provider busy, retrying… {attempt}/{maxAttempts}",
   "runstatus_phase_awaiting_approval": "Waiting for approval…",
   "runstatus_generating": "Writing the reply…",
   "runstatus_tool_read": "Reading files…",

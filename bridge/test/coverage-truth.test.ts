@@ -54,6 +54,7 @@ const PROOF_KINDS = ["golden-corpus", "live-bench", "deterministic-test"] as con
  *  means editing THIS list, which a reviewer sees. */
 const FROZEN_TRUTH_FLOOR = [
   "ChatAbortedEvent.errorMessage",
+  "ChatStatusEvent.retry",
   "ChatSendParams.expectedSessionRoutingContract",
   "ChatAbortParams.preserveSideRuns",
   "SessionOperationEvent.operationId",

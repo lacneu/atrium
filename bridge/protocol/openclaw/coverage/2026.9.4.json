@@ -736,7 +736,7 @@
         },
         "phase": {
           "status": "gap",
-          "note": "2026.9.4 — the run's startup phase, and since this version NOT startup-only (a status frame now arrives mid-turn). Read by nothing; see `retry` (frame-discovery queue)"
+          "note": "2026.9.4 — the run's startup phase, and since this version NOT startup-only (a status frame now arrives mid-turn). The startup values stay deliberately unrendered (they describe work Atrium does not show); only the `retry`-bearing frame produces an event. See `retry`."
         },
         "runId": {
           "status": "handled",
@@ -759,8 +759,29 @@
           "by": "normalizer handleChat dispatch — `status` is recognised and deliberately produces no event"
         },
         "retry": {
-          "status": "gap",
-          "note": "2026.9.4 provider back-off — {attempt,maxAttempts,reason:'rate_limit'}. The frame IS consumed on the common path (isolation, admission, dedup) but NOTHING is projected from it: no event, no UI. A rate-limited turn therefore shows 'post-processing' while the Control UI shows 'Retrying… 2/10'. Best candidate in the frame-discovery queue"
+          "status": "handled",
+          "by": "normalizer handleChat `state:\"status\"` -> EVENT_TURN_PHASE `retrying` carrying {attempt,maxAttempts} -> setPhase (streamingText.phase + phaseRetry) -> runStatusView label. Replaces the `post_processing` a re-entered attempt's deferred terminal used to produce.",
+          "anchor": {
+            "file": "src/providers/openclaw/normalizer.ts",
+            "token": "retry"
+          },
+          "proof": {
+            "kind": "deterministic-test",
+            "ref": "bridge/test/normalizer.test.ts",
+            "note": "No live proof: eliciting it requires the provider to actually rate-limit, which the bench cannot provoke on demand — the attested 2026.9.4 capture carries 33 chat status frames and not one `retry`. The frame is replayed verbatim from the vendored schema instead. FIVE hops each have their own test, proven by neutralization: normalizer (this ref), turn-sink (bridge/test/phase-retry-sink.test.ts), Convex mutation (convex/phaseRetry.test.ts), message converter (src/chat/convertMessage.test.ts) and label (src/chat/runStatusView.test.ts). The HTTP hops between them (convex-writer POST -> bridge_ingest) have NO integrated assertion and are best-effort by design: `setPhase` swallows its errors, so a lost POST loses that one label and nothing retries it. An earlier version of this note claimed the chain was proven per hop while naming a single file, and a review caught both the overclaim and the converter hop that was in fact dropping the counter. Live proof stays owed."
+          },
+          "verifiedVersions": [
+            "2026.9.4"
+          ],
+          "dossier": {
+            "writers": "src/gateway/server-chat.ts:1549-1578 — the ONLY publisher of a chat `state:\"status\"` frame. Driven by an agent event `stream:\"run_status\"`; when `evt.data.phase === \"retrying\"` it publishes `phase:\"starting_model\"` and adds `retry` ONLY if `evt.data.reason === \"rate_limit\"`. The underlying retry is emitted by src/agents/embedded-agent-runner/run/attempt-recovery.ts:326-343 (onRetry), re-entered by the `while (true)` loop of run-loop.ts:319.",
+            "resets": "No reset field: `retry` is optional and simply absent on the next status frame. Upstream's own reader replaces the state — ui/src/pages/chat/tool-stream-status.ts:420 maps `stream:\"assistant\"` to `{state:\"activity\"}`, and ui/src/pages/chat/chat-history-stream.ts:285-288 refuses to do so WHILE retrying. Monotonicity is by agent `seq`: reconcileChatRunStartup (ui/src/pages/chat/chat-run-startup.ts:15-38) drops any frame whose seq <= current, so an older reconnect snapshot cannot resurrect a cleared retry.",
+            "upstreamUse": "ui/src/pages/chat/chat-gateway.ts:344-353 turns `retry` into `{phase:\"retrying\", message: t(\"chat.startupStatus.retrying\", {attempt, maxAttempts})}` — the label is composed CLIENT-SIDE from the two counters, and is DISCARDED unless `payload.seq` is a number. chatStartupStatusLabel (chat-run-startup.ts:52-58) then shows that message instead of the startup-phase label.",
+            "wire": "Event `chat`, server->client, via sendLivePayload(..., {controlUiVisible: true, dropIfSlow: true}). `dropIfSlow` means the frame is DROPPED under outbound-buffer backpressure — but server-broadcast.ts:489-492 consumes the seq for the dropped frame ON PURPOSE, so the client's gap detector sees the loss instead of a silently thinner stream. It is a best-effort hint, never a durable count.",
+            "reachesAtrium": "PROVEN, not assumed: the attested 2026.9.4 capture (bench-runs/2026-09-12T04-08-46-775Z) carries 33 chat `state:\"status\"` payloads AND 33 agent `run_status` events, across all 11 scenarios. `isControlUiVisible` defaults to true (server-chat.ts:1413), so the bridge is not excluded. Only the three startup phases appear — no `retrying`, because no provider back-off occurred during the bench.",
+            "atriumValue": "During a provider back-off the run loop re-enters the attempt, and the per-attempt terminal re-emits lifecycle `finishing` (src/worker/embedded-agent-live.runtime.ts:183, type AgentRunAttemptTerminal), which normalizer.ts:2138-2144 turns into EVENT_TURN_PHASE `post_processing`. Atrium therefore repeats \"post-processing\" while upstream shows \"Retrying... 2/10\". Reading `retry` replaces a misleading terminal-ish label with a bounded, truthful one.",
+            "secondCarrier": "The SAME fact also reaches Atrium on the agent event `stream:\"run_status\"` (src/infra/agent-run-status-events.ts:11 and attempt-recovery.ts:327), which carries strictly MORE: a pre-formatted `message`, `delayMs`, `retryAttempt`/`maxRetries`, and a `reason` that is NOT restricted to rate_limit. `ChatStatusEvent.retry` is the lossier projection: a non-rate-limit back-off arrives here as a bare `phase:\"starting_model\"` with no retry at all. That stream is its own frame-discovery run, not a rider on this one."
+          }
         }
       }
     },

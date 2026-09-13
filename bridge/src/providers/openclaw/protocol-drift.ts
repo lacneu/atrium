@@ -402,9 +402,9 @@ export const KNOWN_AGENT_FIELDS: ReadonlySet<string> = new Set([
  * matrix instead of being invisible omissions.
  */
 export const COVERAGE_SUMMARY = {
-  handled: 162,
+  handled: 163,
   ignored: 715,
-  gaps: 612,
+  gaps: 611,
   /** The declared gaps, by schema path — the actionable part of the matrix.
    *
    *  Recounted from the PROMISED version's coverage manifest by protocol-drift.test.ts,
@@ -441,7 +441,6 @@ export const COVERAGE_SUMMARY = {
     "ChatSendParams.toolBindings",
     "ChatStatusEvent.agentId",
     "ChatStatusEvent.phase",
-    "ChatStatusEvent.retry",
     "ChatToolTitlesParams.agentId",
     "ChatToolTitlesParams.items",
     "ChatToolTitlesParams.sessionKey",

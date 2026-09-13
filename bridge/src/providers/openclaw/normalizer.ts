@@ -138,7 +138,50 @@ export const LIFECYCLE_END_GRACE = 10.0; // wait after lifecycle:end for a follo
 // (verified in the deployed 2026.7.1 build). We had no branch for it, so the turn
 // simply went silent until the 240 s recv timeout. Bounded well under that: the
 // real end normally lands in seconds, and if it never does the turn still closes.
-export const LIFECYCLE_FINISHING_GRACE = 60.0;
+export /** The contract's own ceiling for a back-off counter (logs-chat.ts
+ *  `ChatStatusEventSchema`: integers 1..10 on BOTH fields). Checking only the lower
+ *  bound let `{attempt: 11, maxAttempts: 11}` through to the label — a counter the
+ *  gateway cannot legally emit, which means the frame is not what it claims to be
+ *  (raised in review). */
+/** Upstream's OWN test for "this tool frame is visible progress"
+ *  (`server-chat-progress-snapshot.ts` `isTool`), transcribed rather than approximated.
+ *
+ *  Two earlier versions were wrong. The first accepted a raw non-empty `toolCallId`,
+ *  so `"   "` counted as an id. The second added `itemId`/`id` fallbacks and read a
+ *  flat `data.reviewId` — but those fallbacks belong to `preambleItemId`, a DIFFERENT
+ *  variable in the same upstream function, and the review id is nested at
+ *  `data.review.id` (raised in review). Transcribing from the wrong lines of the right
+ *  file reads as fidelity and is not. */
+function isUpstreamToolProgress(data: JsonObject): boolean {
+  const toolCallId = isString(data.toolCallId) ? data.toolCallId.trim() : "";
+  if (toolCallId === "") return false;
+  const phase = isString(data.phase) ? data.phase.trim() : "";
+  if (!UPSTREAM_RESUME_TOOL_PHASES.has(phase)) return false;
+  // `review` is progress only when the frame names the review it belongs to, and that
+  // id lives INSIDE the `review` object.
+  if (phase === "review") {
+    const review = isObject(data.review) ? data.review : null;
+    const reviewId = review !== null && isString(review.id) ? review.id.trim() : "";
+    if (reviewId === "") return false;
+  }
+  return true;
+}
+
+/** The tool phases upstream counts as a RESUME signal
+ *  (`server-chat-progress-snapshot.ts` `isTool`). Deliberately NOT the same set as
+ *  `TOOL_PROGRESS_PHASES` below, which answers a different question — whether a tool
+ *  frame carries incremental output. Same word, two contracts. */
+const UPSTREAM_RESUME_TOOL_PHASES: ReadonlySet<string> = new Set([
+  "start",
+  "input_delta",
+  "update",
+  "review",
+  "result",
+]);
+
+const RETRY_MAX_ATTEMPTS = 10;
+
+const LIFECYCLE_FINISHING_GRACE = 60.0;
 // A tool asked for HUMAN approval (`stream:"approval" phase:"requested"`). The
 // run is alive and deliberately waiting, so the 240 s silence budget is the wrong
 // clock — but the wait must still be BOUNDED, or this re-creates the "Génération…"
@@ -661,6 +704,18 @@ export class Normalizer {
   private diagAborted = false;
   /** The gateway's OWN hand-off signal (`lifecycle.yielded`). */
   sawYielded = false;
+  /** Whether this normalizer published a provider back-off that nothing has closed yet.
+   *
+   *  It is NOT "the last published phase is still the back-off" — something else can
+   *  publish a phase in between, which is why the clear this flag triggers names what
+   *  it may remove (`onlyIfRetrying`).
+   *
+   *  An earlier version of this comment said a bare `status` frame must clear it. That
+   *  was wrong and the code followed it: upstream projects the `overloaded`,
+   *  `server_error` and `timeout` retries as `starting_model` with no `retry` field, so
+   *  a bare status can equally mean "still backing off, for another cause". The label
+   *  is closed by a real resume signal instead — see `clearRetryingPhase`. */
+  private inRetryingPhase = false;
   /** A tool is waiting on a human approval this app cannot grant (G-21). */
   private approvalPending = false;
   // WHY the current turn finalized (set by finalize()); shipped in the pressure
@@ -755,6 +810,7 @@ export class Normalizer {
     this.diagProviderStarted = null;
     this.diagAborted = false;
     this.sawYielded = false;
+    this.inRetryingPhase = false;
     this.approvalPending = false;
     this.finalizeCause = null;
     this.recvSilence = false;
@@ -1419,6 +1475,68 @@ export class Normalizer {
     }
     this.lastDedupKey = dedupKey;
 
+    // PROVIDER BACK-OFF (2026.9.4 `ChatStatusEvent.retry`). The run loop
+    // re-enters the attempt (upstream run-loop.ts `while (true)`), and each
+    // attempt's terminal re-emits lifecycle `finishing` — which this normalizer
+    // turns into `post_processing`. So a rate-limited turn repeated
+    // "post-processing" while the gateway's own UI showed "Retrying... 2/10":
+    // a terminal-ish label for a turn that has not even reached the model.
+    //
+    // `retry` is present ONLY for `reason === "rate_limit"` (server-chat.ts
+    // gates on it); any other back-off arrives as a bare `starting_model` and
+    // stays invisible here. The richer `stream:"run_status"` agent event is the
+    // fix for that case and is its own lot — this reads the field it is given.
+    //
+    // Best-effort by construction: the frame is sent with `dropIfSlow`, so an
+    // attempt CAN be missed under backpressure. The label must therefore never
+    // be treated as a count of what happened — only as what is happening now.
+    if (state === "status") {
+      const retry = payload.retry;
+      if (isObject(retry)) {
+        const attempt = retry.attempt;
+        const maxAttempts = retry.maxAttempts;
+        // The contract is INTEGERS in 1..10 (logs-chat.ts ChatStatusEventSchema), and
+        // `typeof === "number"` admitted -1, 0 and 2.5 straight to the label (raised in
+        // review). A counter that reads "2.5/1" is worse than no counter: it makes the
+        // reader doubt the turn rather than the frame.
+        if (
+          Number.isInteger(attempt) &&
+          Number.isInteger(maxAttempts) &&
+          (attempt as number) >= 1 &&
+          (maxAttempts as number) >= (attempt as number) &&
+          (maxAttempts as number) <= RETRY_MAX_ATTEMPTS &&
+          // The DISCRIMINANT is part of the contract: the schema declares
+          // `reason: "rate_limit"` and nothing else. Accepting any object with two
+          // plausible counters let a divergent frame say "provider is rate-limiting"
+          // when it never claimed that (raised in review).
+          retry.reason === "rate_limit"
+        ) {
+          events.push({
+            type: EVENT_TURN_PHASE,
+            phase: "retrying",
+            retry: { attempt, maxAttempts },
+          });
+          this.inRetryingPhase = true;
+          return;
+        }
+        // The frame CLAIMS a back-off but does not satisfy the contract. That is a
+        // divergent frame, not a resume: falling through to the clear made
+        // `valid retry -> malformed retry` read as "the run resumed" (raised in
+        // review). Ignore it and leave the label where it was.
+        return;
+      }
+      // A BARE status is NOT proof of resume, and treating it as one was wrong.
+      // Upstream projects the retries whose reason is `overloaded`, `server_error` or
+      // `timeout` as `starting_model` with NO `retry` field (server-chat.ts) — so a
+      // bare status can equally mean "still backing off, for another cause". Clearing
+      // on it told the reader the wait was over while the provider was still refusing
+      // (raised in review). The back-off ends on a real resume signal instead.
+      // Every other status frame stays deliberately eventless: the startup
+      // phases describe work Atrium does not render, and inventing a label for
+      // them would replace the turn's real activity with gateway bookkeeping.
+      return;
+    }
+
     // TERMINAL error/abort on the MAIN chat stream (ChatErrorEventSchema /
     // ChatAbortedEventSchema). Previously unhandled: the turn hung until the
     // 180s recv timeout and the failure class was lost. `errorKind`
@@ -1593,6 +1711,25 @@ export class Normalizer {
 
   // -- agent (5.7 legacy + tool/lifecycle streams) --------------------------
 
+  /** End the provider back-off on ANY sign the run resumed.
+   *
+   *  It used to fire on a bare `status` or on visible text only, and both can be
+   *  absent: upstream treats `assistant`, `tool` and `item` as three equivalent
+   *  resume signals, and the next attempt does NOT necessarily re-emit the startup
+   *  statuses — `startupStagesEmitted` survives the retry `continue` upstream. A run
+   *  that resumed by calling a tool therefore kept showing "retrying 2/10" (raised in
+   *  review). Idempotent: the flag is consumed, so only the FIRST signal speaks. */
+  private clearRetryingPhase(events: BridgeEvent[]): void {
+    if (!this.inRetryingPhase) return;
+    this.inRetryingPhase = false;
+    // `onlyIfRetrying` matters: this flag means "a back-off was seen", not "the last
+    // published phase is still the back-off". Something else can legitimately have
+    // published `awaiting_approval` in between, and the bare `generating` clear —
+    // shared with Hermes' resume signal — wipes whatever phase is stored. So the
+    // clear names what it is allowed to remove (raised in review).
+    events.push({ type: EVENT_TURN_PHASE, phase: "generating", onlyIfRetrying: true });
+  }
+
   private handleAgent(payload: JsonObject, data: JsonObject, now: number, events: BridgeEvent[]): void {
     // Defensive usage sniff: live gateways flatten session metadata onto agent
     // events (dev 2026-07-04: inputTokens/outputTokens/totalTokens/
@@ -1622,6 +1759,12 @@ export class Normalizer {
       return;
     }
     if (stream === "assistant") {
+      // ANY assistant frame is a resume upstream, including the ones that never reach
+      // `applyVisible`: commentary returns early, and a media-only or empty-activity
+      // frame carries no text at all. The clear lived in `applyVisible` alone, so a
+      // run that came back speaking anything but final text kept the back-off label
+      // (raised in review).
+      this.clearRetryingPhase(events);
       const mediaUrls = data.mediaUrls;
       if (Array.isArray(mediaUrls)) {
         this.collectMedia(mediaUrls, events);
@@ -1736,6 +1879,11 @@ export class Normalizer {
       return;
     }
     if (stream === "tool") {
+      // Upstream's rule, not "any tool frame": a tool counts as progress only with a
+      // call id and a recognised phase (server-chat-progress-snapshot.ts). A frame
+      // that is not a resume must not end the back-off — `onlyIfRetrying` protects
+      // OTHER phases from this clear, never the back-off itself (raised in review).
+      if (isUpstreamToolProgress(data)) this.clearRetryingPhase(events);
       this.handleTool(payload, data, now, events);
       return;
     }
@@ -1744,6 +1892,8 @@ export class Normalizer {
       return;
     }
     if (stream === "item") {
+      // Same rule: only a PREAMBLE item is upstream's progress signal.
+      if (data.kind === "preamble") this.clearRetryingPhase(events);
       // 6.5 (bench-verified): the gateway-run message-tool surfaces ONLY as an
       // item frame {itemId, phase, kind:"tool", name:"message", title, status} —
       // no args, no result. The delivered text lives in the session transcript
@@ -2418,6 +2568,14 @@ export class Normalizer {
     this.replaySameRun = false;
       this.armRecv(now);
     }
+    // REAL OUTPUT ENDS THE BACK-OFF, whatever the status frames did. The clear used
+    // to depend solely on the next bare `status`, and those are sent `dropIfSlow` — so
+    // a dropped one left "retrying 2/10" on screen for the whole generation, since the
+    // label is honoured even once text exists. Upstream treats visible assistant
+    // activity as its authoritative resume signal (ui/.../tool-stream-status.ts maps
+    // `stream:"assistant"` to `{state:"activity"}`); this is the same rule, and it is
+    // the one that cannot be lost, because it rides the text itself (raised in review).
+    this.clearRetryingPhase(events);
     events.push({
       type: eventType,
       text: this.safeSanitizeText(emitted),

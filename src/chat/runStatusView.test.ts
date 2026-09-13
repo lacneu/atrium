@@ -211,6 +211,36 @@ describe("live working label (phase/tool — always on, ChatGPT-style)", () => {
     expect(runStatusView("streaming", false)?.phased).toBeUndefined();
     expect(runStatusView("streaming", false, "unknown_phase")?.phased).toBeUndefined();
   });
+  it("a back-off shows its BOUNDED counter, not a bare label", () => {
+    // The counter is the whole value: "retrying" alone says no more than the
+    // silence it replaces, while 2/10 tells the reader it is progressing and
+    // will stop. Before this the turn showed the FINISHING label instead,
+    // because each re-entered attempt re-emitted the deferred terminal.
+    const withCount = runStatusView("streaming", false, "retrying", null, false, {
+      attempt: 2,
+      maxAttempts: 10,
+    });
+    expect(withCount?.phased).toBe(true);
+    // ORDER matters: `toContain("2")` + `toContain("10")` also passed on "10/2",
+    // which reads as attempt ten of two (raised in review). The pair is asserted
+    // as a unit; the surrounding wording stays free to be translated.
+    expect(withCount?.label).toContain("2/10");
+    expect(withCount?.label).not.toContain("10/2");
+    // …and it is NOT the finishing label the turn used to show.
+    expect(withCount?.label).not.toBe(
+      runStatusView("streaming", false, "post_processing")?.label,
+    );
+  });
+
+  it("a back-off WITHOUT a counter still says what is happening", () => {
+    // The wire allows it: `retry` is optional, and the frame is sent with
+    // `dropIfSlow`, so an attempt can be missed entirely. Falling back to the
+    // generic label beats falling back to silence.
+    const bare = runStatusView("streaming", false, "retrying");
+    expect(bare?.phased).toBe(true);
+    expect(bare?.label).not.toBe(runStatusView("streaming", false)?.label);
+  });
+
   it("the ACTIVE TOOL beats the phase, on thinking AND generating", () => {
     const tool = { name: "web_search", family: "search" as const };
     const thinking = runStatusView("streaming", false, "compacting", tool);

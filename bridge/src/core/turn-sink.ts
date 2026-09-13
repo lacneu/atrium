@@ -204,6 +204,11 @@ function boundRisk(v: {
 }
 
 export class TurnSink {
+  /** A back-off clear whose POST did not land. The normalizer consumes its own flag on
+   *  emit, so without this the clear was never attempted again and the label outlived
+   *  the back-off (raised in review). Re-sent on the next phase event. */
+  private retryClearOwed = false;
+
   private readonly chatId: string;
   private readonly writer: ConvexWriter;
   private readonly outboundScan?: OutboundScan;
@@ -1601,8 +1606,50 @@ export class TurnSink {
           {
             const ph = asString(event.phase);
             if (ph) {
+              // The back-off counter rides ALONG the phase rather than being
+              // re-derived downstream: a label recomposed from a second source
+              // is how a fact goes stale in the next normalizer.
+              const r = event.retry;
+              const retry =
+                r !== null &&
+                typeof r === "object" &&
+                Number.isInteger((r as { attempt?: unknown }).attempt) &&
+                Number.isInteger((r as { maxAttempts?: unknown }).maxAttempts) &&
+                (r as { attempt: number }).attempt >= 1 &&
+                (r as { maxAttempts: number }).maxAttempts >=
+                  (r as { attempt: number }).attempt &&
+                (r as { maxAttempts: number }).maxAttempts <= 10
+                  ? {
+                      attempt: (r as { attempt: number }).attempt,
+                      maxAttempts: (r as { maxAttempts: number }).maxAttempts,
+                    }
+                  : undefined;
+              // A retry clear may only remove the retry: see the normalizer's
+              // `clearRetryingPhase`. Carried as a flag rather than a second phase
+              // name so Convex's allowlist stays the single vocabulary.
+              const onlyIfRetrying = event.onlyIfRetrying === true;
               try {
-                await this.writer.setPhase?.(messageId, ph);
+                // An OWED back-off clear goes first. The normalizer consumes its flag
+                // when it emits the clear, so a POST that never landed was never tried
+                // again and the "retrying 2/10" label stayed for the rest of the turn
+                // (raised in review). Re-sending on the next phase event costs one
+                // extra request after a failure and nothing at all otherwise.
+                if (this.retryClearOwed && !onlyIfRetrying) {
+                  const ok = await this.writer.setPhase?.(
+                    messageId,
+                    "generating",
+                    undefined,
+                    true,
+                  );
+                  if (ok !== false) this.retryClearOwed = false;
+                }
+                const landed = await this.writer.setPhase?.(
+                  messageId,
+                  ph,
+                  retry,
+                  onlyIfRetrying,
+                );
+                if (onlyIfRetrying) this.retryClearOwed = landed === false;
               } catch (e) {
                 console.error(
                   "[sink] phase not recorded (non-fatal):",

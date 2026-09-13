@@ -459,7 +459,12 @@ export function useConvexChatRuntime({ chatId }: UseConvexChatRuntimeArgs) {
     // while ConvexMessageView carries our loose ConvexId — same value at runtime.
     const liveByMsg = new Map<
       string,
-      { text: string; chunkSeq?: number; phase?: string }
+      {
+        text: string;
+        chunkSeq?: number;
+        phase?: string;
+        phaseRetry?: { attempt: number; maxAttempts: number };
+      }
     >(
       streamingRows.map((r) => [
         r.messageId as string,
@@ -467,6 +472,10 @@ export function useConvexChatRuntime({ chatId }: UseConvexChatRuntimeArgs) {
           text: r.text,
           chunkSeq: r.chunkSeq,
           phase: (r as { phase?: string }).phase,
+          // The back-off counter travels WITH its phase; separating them is how
+          // a label ends up reading "2/10" during a turn that already resumed.
+          phaseRetry: (r as { phaseRetry?: { attempt: number; maxAttempts: number } })
+            .phaseRetry,
         },
       ]),
     );
@@ -483,8 +492,11 @@ export function useConvexChatRuntime({ chatId }: UseConvexChatRuntimeArgs) {
       // text + status in one mutation, so the reveal is atomic). The phase
       // overlay still applies — the placeholder needs it.
       if (typeof msg.runId === "string" && msg.runId.startsWith("announce:v1:")) {
+        // The counter travels WITH the phase on this branch too — merging one
+        // without the other is the same drop, one layer further down.
         const phase = reactive?.phase;
-        return phase !== undefined ? { ...msg, phase } : msg;
+        const phaseRetry = reactive?.phaseRetry;
+        return phase !== undefined ? { ...msg, phase, phaseRetry } : msg;
       }
       // SSE transport: when active for THIS message, the SSE text drives the display —
       // BUT only once it has CAUGHT UP to the reactive frontier seq. A fresh connection
@@ -510,6 +522,7 @@ export function useConvexChatRuntime({ chatId }: UseConvexChatRuntimeArgs) {
           ...msg,
           text: caughtUp ? sse.text : (reactive?.text ?? sse.text),
           ...(reactive?.phase !== undefined ? { phase: reactive.phase } : {}),
+          ...(reactive?.phaseRetry !== undefined ? { phaseRetry: reactive.phaseRetry } : {}),
         };
       }
       if (reactive !== undefined)
@@ -517,6 +530,7 @@ export function useConvexChatRuntime({ chatId }: UseConvexChatRuntimeArgs) {
           ...msg,
           text: reactive.text,
           ...(reactive.phase !== undefined ? { phase: reactive.phase } : {}),
+          ...(reactive.phaseRetry !== undefined ? { phaseRetry: reactive.phaseRetry } : {}),
         };
       return msg;
     });

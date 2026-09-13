@@ -2173,6 +2173,11 @@ export default defineSchema({
     // thinking placeholder when the user has Tools ON. Values validated at the
     // setPhase ingest op (allowlist); absent on plain turns.
     phase: v.optional(v.string()),
+    // The provider back-off counter that belongs to `phase: "retrying"` ONLY
+    // (OpenClaw 2026.9.4 `ChatStatusEvent.retry`). Carried rather than
+    // re-derived: the label must say 2/10, and recomposing it downstream from a
+    // second source is how a fact goes stale. Cleared whenever the phase is.
+    phaseRetry: v.optional(v.object({ attempt: v.number(), maxAttempts: v.number() })),
     // Delivery-latency recorder (OFF by default): when a recording session is
     // active, appendDelta/setSnapshot stamp the deliveryTimings row id (the unique
     // correlator) + server commit time of the last write here, so getStreamingText
