@@ -205,7 +205,10 @@ describe("capture anonymiser — nothing content-bearing survives", () => {
 
   it("the mask keeps LENGTH and character classes, and nothing else", () => {
     expect(maskText("Bonjour Alice, 42 messages!")).toBe("Xxxxxxx Xxxxx, 00 xxxxxxxx!");
-    expect(maskText("café ☕")).toHaveLength("café ☕".length);
+    // Length alone left the Unicode branch untested: replacing it with `out += ch` kept
+    // this green (raised in review). The accented letter masks like a letter; the emoji
+    // is NOT "kept", it becomes `x` — which is what the header now says.
+    expect(maskText("café ☕")).toBe("xxxx x");
   });
 });
 
@@ -537,6 +540,25 @@ describe("structuredContent is free-form like any tool-result envelope", () => {
 describe("tool names: built-ins are published, custom ones are renamed", () => {
   const custom = "acme_patient_lookup";
 
+  it("a tool named like an alias is not handed its own name", () => {
+    // Aliases are sequential (`tool_1`, `tool_2`), so a custom tool actually CALLED
+    // `tool_1` that sorts first was handed `tool_1` — the name published verbatim while
+    // the run counted a pseudonymisation (raised in review). The counter is monotone, so
+    // stepping over the collision cannot re-issue an alias to a later name.
+    const { renamed } = classifyToolNames(["tool_1", "tool_2"]);
+    expect(renamed.get("tool_1")).not.toBe("tool_1");
+    expect(renamed.get("tool_2")).not.toBe("tool_2");
+    expect(new Set(renamed.values()).size).toBe(renamed.size);
+    // And no alias is ANY harvested name — not merely the one it replaces. Skipping only
+    // the self-collision still put a real name in the corpus as someone else's alias:
+    // `["tool_1","tool_2"]` produced `["tool_2","tool_3"]` (raised in review).
+    for (const alias of renamed.values()) {
+      expect(["tool_1", "tool_2"]).not.toContain(alias);
+    }
+    // And the guard downstream agrees: this map is promotable.
+    expect(() => createPseudonymiser(new Set(), renamed)).not.toThrow();
+  });
+
   it("a CUSTOM tool name never reaches the corpus, on the card or in the run id", () => {
     // A shape regexp validates the form, not the safety: a plugin tool can be named after
     // a client, a project or a patient. Built-ins are gateway registry entries and stay
@@ -738,7 +760,7 @@ describe("media delivered in the VISIBLE text", () => {
 });
 
 describe("a scalar under a reader key is still a value", () => {
-  it("only the two flags the reader tests survive as booleans", () => {
+  it("only the three flags the reader tests survive as booleans", () => {
     // `readerKeys` says a KEY is known; it says nothing about the value. Allowing any
     // scalar under one published `{"status": 123456789}` and `{"taskId": 12345}` verbatim.
     const out = anonymize({
@@ -750,7 +772,11 @@ describe("a scalar under a reader key is still a value", () => {
           result: {
             status: 123456789,
             taskId: 12345,
-            details: { async: true, isError: false, secretFlag: true },
+            // Every allowed flag is TRUE on purpose: masking a boolean yields `false`,
+            // so `isError: false` asserted nothing — removing `isError` from the allow
+            // list left the assertion green (raised in review). `enabled` was not
+            // exercised at all.
+            details: { async: true, isError: true, enabled: true, secretFlag: true },
           },
         },
       },
@@ -758,7 +784,11 @@ describe("a scalar under a reader key is still a value", () => {
       payload: {
         data: {
           result: Record<string, unknown> & {
-            details: Record<string, unknown> & { async: boolean; isError: boolean };
+            details: Record<string, unknown> & {
+              async: boolean;
+              isError: boolean;
+              enabled: boolean;
+            };
           };
         };
       };
@@ -767,7 +797,8 @@ describe("a scalar under a reader key is still a value", () => {
     expect(r.status, "a number under a reader key is still data").toBe(0);
     expect(r.taskId).toBe(0);
     expect(r.details.async, "the ack flag survives").toBe(true);
-    expect(r.details.isError, "so does the error flag").toBe(false);
+    expect(r.details.isError, "so does the error flag").toBe(true);
+    expect(r.details.enabled, "and the cron job's own state").toBe(true);
     expect(r.details[maskText("secretFlag")], "any other flag does not").toBe(false);
   });
 });
@@ -822,10 +853,6 @@ describe("the anonymiser's mirrors match the reader they mirror", () => {
     const expected = literalSet("CURRENT_CHAT_CHANNELS");
     expect(expected.length).toBeGreaterThan(3);
     for (const key of ["channel", "provider"]) {
-      const allowed = anonymize(
-        { payload: { stream: "tool", data: { name: "message", phase: "start", args: Object.fromEntries(expected.map((v) => [key, v])) } } },
-        ["message"],
-      ) as { payload: { data: { args: Record<string, string> } } };
       // Every channel the reader treats as "this chat" must survive verbatim.
       for (const value of expected) {
         const probe = anonymize(
@@ -834,7 +861,6 @@ describe("the anonymiser's mirrors match the reader they mirror", () => {
         ) as { payload: { data: { args: Record<string, string> } } };
         expect(probe.payload.data.args[key], `${key}: ${value}`).toBe(value);
       }
-      expect(allowed).toBeDefined();
     }
   });
 

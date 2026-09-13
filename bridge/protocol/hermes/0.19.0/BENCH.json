@@ -5,7 +5,7 @@
   "hermesVersion": "0.19.0",
   "gatewayVersion": "2026.9.4",
   "verdict": "GO",
-  "at": "2026-09-12T19:02:53.875Z",
+  "at": "2026-09-12T23:47:55.125Z",
   "scenarios": [
     "async-task",
     "basic-turn",
@@ -24,11 +24,11 @@
     "hermes-cron-list"
   ],
   "flags": [],
-  "atriumSha": "b8b7f50f0a8bb3fbcd23193cd44dc857716a7d35",
+  "atriumSha": "721584e927555cadc3cf63f8b7a45de357b9a68c",
   "worktree": {
     "dirty": true,
-    "deltaSha256": "d78e2062c2caea1950f7155a4aa8d770404842ab217897e9d78aeab7ed6e222e"
+    "deltaSha256": "7cee6e4a36b497237fca96c9dbaae7c9fd032c5e6412e5289cf994b49b7a19ab"
   },
   "supportDigest": "e1e2abb611092e503c66c633d8a05fecd4523ecfa61f13838b8cdc9fa7161d0c",
-  "bridgeVersion": "0.84.5"
+  "bridgeVersion": "0.84.6"
 }

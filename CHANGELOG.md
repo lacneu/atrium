@@ -1,5 +1,39 @@
 # Changelog
 
+## [0.84.7] — Deployer provenance, and a corpus that cannot republish what it hides
+
+Maintenance release. Nothing in the bridge, Convex or the web app behaves differently:
+no runtime code changed. It states one requirement for anyone building a production
+deployer, and it closes a confidentiality defect in the tooling that builds the replay
+corpus committed to this repository.
+
+**Building a Convex deployer now has a written provenance rule.** The tag workflow's
+version commit is not signed automatically, so it must not be used as a production source
+reference. Before building a deployer, verify both the commit signature and the committed
+package version; if the release version commit is unsigned, merge the next reviewed change
+first and pin the deployer to that verified merge commit. The provenance gate is not to be
+weakened to make a build pass.
+
+**The capture anonymiser can no longer hand back the value it is replacing.** Pseudonyms
+are numbered (`id1`, `id2`, …) and the minter never compared a candidate with the token it
+was standing in for, so an identifier actually named `id1` came out verbatim — and was
+counted as pseudonymised, which is what kept it out of sight. The same held for a value
+already shaped like the first minted UUID, and for custom tool aliases (`tool_1`). A tool
+or an agent can be named that way on purpose, so this was reachable rather than
+theoretical.
+
+Minted pseudonyms now step over a collision, tool aliases are chosen disjoint from every
+harvested name rather than merely from the one they replace, and promotion refuses to run
+at all if it is handed an alias equal to its own tool name — a corpus that looks
+anonymised and is not is worse than a refusal. Re-running the anonymiser over the attested
+raw capture produces byte-identical output, so no corpus already in the repository was
+affected.
+
+The regression suite around this was rebuilt after several of its assertions were found to
+pass vacuously: the sweep now covers the reader vocabulary the coverage manifest does not
+name, the declared-shape list is pinned so widening it is a review event, and each guard is
+proven by neutralisation rather than asserted.
+
 ## [0.84.6] — OpenClaw 2026.9.4, qualified rather than assumed
 
 This release qualifies Atrium against the custom OpenClaw image

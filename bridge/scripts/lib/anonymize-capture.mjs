@@ -17,7 +17,9 @@
 //                so their separators and their protocol tokens are kept and only the
 //                opaque tokens are renamed — consistently, so `spawnedBy === sessionKey`,
 //                the announce/task/inject families and parent↔child links all still hold.
-//   TEXT         masked per character: letters → `x`, digits → `0`, everything else kept.
+//   TEXT         masked per character: letters → `x`, digits → `0`, and a SHORT list of
+//                separators kept as themselves — everything else, emoji and unlisted
+//                Unicode punctuation included, also becomes `x`.
 //                Per character is not a detail: it makes the mask a homomorphism, so
 //                `mask(a + b) === mask(a) + mask(b)` and every prefix/concatenation
 //                relationship the delta→snapshot→final path depends on survives intact.
@@ -114,15 +116,6 @@ const MEDIA_ROOTS = [
   "/home/node/.openclaw/media/inbound/",
 ];
 
-/** Control VALUES the reading stack compares against, by key. Inside a free-form blob a
- *  protocol-named key is not enough — `result: {status: "Alice's diagnosis"}` was
- *  published verbatim because `status` is vocabulary somewhere (raised in review). Only
- *  these exact values survive; anything else under the same key is masked.
- *
- *  They are not decoration: `messageToolText` branches on `action` and on the channel to
- *  decide whether a message-tool call IS the visible reply, and a plan step's `status` is
- *  what the plan card renders. Masking them made the replay classify an in-chat send as
- *  an external one and never exercise the visible-message path. */
 /** Identifiers that appear INSIDE a free-form blob and must stay correlatable. Masking
  *  `details.taskId` broke the join with the `<tool>:<taskId>:ok` delivery run, so the
  *  engagement opened and could never settle — the corpus covered half the async path
@@ -142,20 +135,37 @@ const FREE_FORM_IDENTIFIER_KEYS = new Set([
   "childSessionKey",
 ]);
 
-/** The only BOOLEANS a free-form blob may keep: the two flags the reading stack tests.
- *  `details.async` is the whole background-task ack and `isError` decides whether a tool
- *  result is a failure; every other boolean in there is data. */
+/** The only BOOLEANS a free-form blob may keep: the three flags the reading stack tests.
+ *  `details.async` is the whole background-task ack, `isError` decides whether a tool
+ *  result is a failure, and `enabled` is the cron job's own state (`core/cron-part.ts`);
+ *  every other boolean in there is data. */
 const FREE_FORM_BOOLEAN_KEYS = new Set(["async", "isError", "enabled"]);
 
+/** Control VALUES the reading stack compares against, by key. Inside a free-form blob a
+ *  protocol-named key is not enough — `result: {status: "Alice's diagnosis"}` was
+ *  published verbatim because `status` is vocabulary somewhere (raised in review). Only
+ *  these exact values survive; anything else under the same key is masked.
+ *
+ *  They are not decoration: `messageToolText` branches on `action` and on the channel to
+ *  decide whether a message-tool call IS the visible reply, and a plan step's `status` is
+ *  what the plan card renders. Masking them made the replay classify an in-chat send as
+ *  an external one and never exercise the visible-message path. */
+
 const FREE_FORM_VALUE_ALLOW = new Map([
-  // `send`/`thread-reply` are read by `messageToolText`; `add`/`update`/`remove` are the
-  // cron mutations `cronPartFromTool` keys on (`core/cron-part.ts` MUTATING_ACTIONS).
-  // Sources of truth are those two readers — and when an entry is missing here the golden
-  // corpus says so by turning a snapshot red, which is exactly how `add` was found.
-  [
-    "action",
-    new Set(["send", "thread-reply", "reply", "post", "add", "update", "remove"]),
-  ],
+  // `send`/`thread-reply` are read by `messageToolText` (normalizer.ts:2530);
+  // `add`/`update`/`remove` are the cron mutations `cronPartFromTool` keys on
+  // (`core/cron-part.ts` MUTATING_ACTIONS). Sources of truth are those two readers — and
+  // when an entry is missing here the golden corpus says so by turning a snapshot red,
+  // which is exactly how `add` was found.
+  //
+  // `reply` and `post` used to sit here and NO reader compares them (raised in review).
+  // Removing them is fail-closed and changes no reading: the one comparison is
+  // `action !== "send" && action !== "thread-reply"`, so a masked value takes the very
+  // same branch the literal did. Both readers of this key behave the same way: neither
+  // `messageToolText` nor `cronPartFromTool` accepts `reply`/`post`, masked or not.
+  // Proven three ways — reader analysis, a green suite, and a 2026.9.4 golden corpus that
+  // is byte-identical without them.
+  ["action", new Set(["send", "thread-reply", "add", "update", "remove"])],
   // MIRROR of the normalizer's `CURRENT_CHAT_CHANNELS`. A value it recognises as "this
   // chat" and the anonymiser masks turns a visible reply into an external send, and the
   // fidelity gate then refuses a perfectly good capture (raised in review).
@@ -173,18 +183,6 @@ const FREE_FORM_VALUE_ALLOW = new Map([
   ["type", new Set(["text", "image", "file", "media", "event", "res", "req"])],
 ]);
 
-/** The gateway's outbound-media ROOT, read verbatim by the normalizer
- *  (`^MEDIA:/home/node/.openclaw/media/outbound/…`). Masking the line killed the
- *  tool-result media path outright, so the prefix is preserved and only the FILE NAME is
- *  masked. Applied inside free-form regions ONLY: assistant deltas and snapshots must
- *  stay a pure character mask, or the prefix relation the replace path depends on breaks
- *  between a partially-streamed sentinel and its final form. */
-const MEDIA_SENTINEL =
-  /((?:MEDIA:)?\/home\/node\/\.openclaw\/media\/outbound\/)([^\s"]+)/g;
-
-/** Containers whose CONTENTS are free-form as far as the protocol is concerned. The
- *  manifest's 631 schemas describe protocol fields; none of them licenses a key that
- *  merely appears inside a tool's payload. */
 /** Keys whose OBJECT value is a shape the contract declares, and may therefore be
  *  walked with the full protocol vocabulary.
  *
@@ -234,6 +232,9 @@ const DECLARED_OBJECT_KEYS = new Set([
   "retry",
 ]);
 
+/** Containers whose CONTENTS are free-form as far as the protocol is concerned. The
+ *  manifest's 631 schemas describe protocol fields; none of them licenses a key that
+ *  merely appears inside a tool's payload. */
 const FREE_FORM_KEYS = new Set([
   "args",
   "result",
@@ -246,9 +247,14 @@ const FREE_FORM_KEYS = new Set([
   // manifest vocabulary and sub-keys such as `status`, `model` or `provider` kept their
   // text verbatim (raised in review).
   "structuredContent",
-  // The plan card's FREE-TEXT leaves. They are reader fields (`core/plan-part.ts`),
-  // so the plan node's vocabulary lets their KEY through — and that is exactly why
-  // they must also be free-form CONTAINERS. Without this, opening the key opened the
+  // FREE-TEXT leaves of two different readers: `explanation` belongs to the plan card
+  // (`planPartFromPlanStream`, core/plan-part.ts:78) and `title` to a provenance item
+  // (`core/provenance.ts:91`) — this comment used to attribute both to the plan card,
+  // and that error survived two reviews before one of them acted on it.
+  // `explanation` is reader vocabulary, so the plan node lets its KEY through — and that
+  // is exactly why it must also be a free-form CONTAINER. `title` is NOT reader
+  // vocabulary, and is listed here for the same fail-closed reason regardless of who
+  // lets its key through: a declared container must never re-open the subtree. Without this, opening the key opened the
   // subtree: `{"explanation": {"status": "Alice has cancer"}}` walked on with the full
   // vocabulary, `status` is a protocol value key, and the sentence came out VERBATIM
   // with `masked: 0` (found by adversarial review, 2026-09-12, on the very change that
@@ -266,8 +272,12 @@ const FREE_FORM_KEYS = new Set([
   "error",
 ]);
 
-/** Structural keys: the containers the frame is built from. Not fields anyone could
- *  mistake for content, and the shape is meaningless without them. */
+/** Structural keys: the skeleton the frame is built from, and the shape is meaningless
+ *  without them. Mostly containers — but NOT only: `text`, `step` and `receivedAt` are in
+ *  here as KEY NAMES. Keeping the name is what the replay needs; the VALUE under it is
+ *  handled by its own value class like any other — masked for prose, rebased for a
+ *  `receivedAt` when an epoch base is given, kept when there is none — so naming a key
+ *  structural says nothing about what happens to its content. */
 const STRUCTURAL_KEYS = new Set([
   "payload",
   "frame",
@@ -334,25 +344,6 @@ const NORMALIZER_ARG_KEYS = new Set([
   "markdown",
 ]);
 
-/** Tokens inside an identifier that are PROTOCOL, not identity — kept verbatim so the
- *  families and the key grammar stay recognisable to the code under test. */
-const IDENTIFIER_LITERALS = new Set([
-  "agent",
-  "atrium",
-  "webchat",
-  "chat",
-  "subagent",
-  "task",
-  "announce",
-  "inject",
-  "tool",
-  "talk",
-  "turn",
-  "ok",
-  "error",
-  "main",
-]);
-
 /** A UUID, as the bridge's own graders spell it. Pseudonymising one token-by-token turned
  *  `1c983f76-2eec-…` into `id32-id33-…`, which stops matching `taskDeliveryRunFromRunId`'s
  *  strict `8-4-4-4-12` grammar — so every background-task DELIVERY run was silently
@@ -395,7 +386,8 @@ function parseJsonObject(text) {
   }
 }
 
-/** Length- and class-preserving mask. A homomorphism over concatenation, which is what
+/** Length-preserving mask, class-preserving only for letters, digits and the listed
+ *  separators; anything else collapses to `x`. A homomorphism over concatenation, which is what
  *  keeps the prefix-sensitive snapshot/replace path meaningful after promotion. */
 export function maskText(s) {
   let out = "";
@@ -485,11 +477,38 @@ export function createPseudonymiser(literals = [], renamed = new Map()) {
   // `Acme` and `acme` onto one alias: the cards stayed distinct while both run ids took
   // the second alias, so a delivery could be attributed to the wrong tool (raised in
   // review).
+  // FAIL CLOSED on an identity alias. The tool-rename map arrives from the caller, and the
+  // walker returns its value directly for `toolName`/`data.name` — so an alias equal to its
+  // own key republishes the name while counting a pseudonymisation, the same fixed point
+  // the id minter had. The producer (`classifyToolNames`) now skips these; this refuses to
+  // promote at all if any other caller supplies one, because the alternative is a corpus
+  // that looks anonymised and is not.
+  for (const [name, alias] of renamed) {
+    if (name === alias) {
+      throw new Error(`tool alias for ${JSON.stringify(name)} is the name itself`);
+    }
+  }
   const renames = new Map(renamed);
+  // FIXED POINTS. The counter used to be `map.size + 1`, so the pseudonym for the token
+  // `id1` was the string `id1`: the value came out VERBATIM while the run counted it as
+  // pseudonymised, which is the one outcome "no value survives" forbids. The same held
+  // for a value that already looked like the first minted UUID. It is reachable on
+  // purpose — an agent or a tool may be named `id1` — so the candidate is now compared
+  // against the token and skipped when they are equal (raised in review).
+  //
+  // The numbering STILL comes from `map.size`, and that detail is load-bearing: the UUID
+  // path writes into the same map, so a standalone counter renumbered every id that
+  // followed a UUID and rewrote the whole golden corpus. The first attempt at this fix did
+  // exactly that and the corpus A/B caught it. Only a COLLISION advances the candidate,
+  // and `issued` keeps a skip from handing the next token the pseudonym just skipped.
+  const issued = new Set();
   const mint = (token) => {
     let p = map.get(token);
     if (p === undefined) {
-      p = `id${map.size + 1}`;
+      let n = map.size + 1;
+      p = `id${n}`;
+      while (p === token || issued.has(p)) p = `id${++n}`;
+      issued.add(p);
       map.set(token, p);
     }
     return p;
@@ -507,7 +526,9 @@ export function createPseudonymiser(literals = [], renamed = new Map()) {
       const uuid = (seg) => {
         let p = map.get(seg);
         if (p === undefined) {
-          p = mintUuid(++uuidCount);
+          do {
+            p = mintUuid(++uuidCount);
+          } while (p === seg);
           map.set(seg, p);
         }
         return p;
@@ -631,31 +652,24 @@ export function knownKeysFromCoverage(coverage, snapshotFields = []) {
   return keys;
 }
 
-/** Walk a frame, applying the classes. `knownKeys` is the vocabulary of key NAMES.
- *
- *  An UNKNOWN key is masked like a value. Field names are protocol vocabulary — that is
- *  why the drift badge may show them — but a key nobody has classified is precisely the
- *  one that could be data rather than vocabulary (a map keyed by an address, a name, an
- *  id), and by definition no code branches on it, so masking it costs the replay nothing.
- *  When the corpus matches its vendored version this never fires; if it does fire, the
- *  drift check over the corpus says so in the same breath. */
 /** Epoch-millisecond range a capture can plausibly carry (2001-09-09 → 2096). A number in
  *  it is a DATE, and a date says when a real conversation happened. */
 const EPOCH_MS_MIN = 1_000_000_000_000;
 const EPOCH_MS_MAX = 4_000_000_000_000;
 
-export function anonymizeFrame(
-  frame,
-  pseudo,
-  stats,
-  knownKeys = baseKnownKeys(),
-  toolNames = new Set(),
-  epochBase = null,
-  renamedTools = new Map(),
-) {
-  // Inside a free-form region the vocabulary shrinks to what the READER consumes — never
-  // the manifest, which describes the protocol and not a tool's private payload.
-  const readerKeys = new Set([
+/** A COPY of the declared list. Exporting the Set itself handed every consumer a
+ *  `.delete("job")` that would silently re-open a masking decision inside the walker —
+ *  raised in review. Nothing needs to mutate it; a test needs to read it. */
+export function declaredObjectKeys() {
+  return new Set(DECLARED_OBJECT_KEYS);
+}
+
+/** The vocabulary a free-form region keeps. Inside such a region the vocabulary shrinks
+ *  to what the READERS consume — never the manifest, which describes the protocol and not
+ *  a tool's private payload. Exported so anonymize-leak.test.ts can sweep the `plan`
+ *  domain over it rather than assume it. */
+export function readerVocabulary() {
+  return new Set([
     ...VOCABULARY_KEYS,
     ...TOOL_RESULT_KEYS,
     ...NORMALIZER_ARG_KEYS,
@@ -666,13 +680,16 @@ export function anonymizeFrame(
     // spawn result — came out as `xxxxxXxxxxxxXxx` and no spawned child could be
     // registered from a promoted capture (raised in review).
     ...FREE_FORM_IDENTIFIER_KEYS,
-    "taskId",
-    "toolCallId",
-    "mediaUrls",
-    "mediaPaths",
     // The cron card's own structure (`core/cron-part.ts`): without these the reader emits
     // a card with almost nothing in it, and counting cards — which is all the fidelity
     // gate did — cannot see the difference (raised in review).
+    //
+    // `payload` and `state` are also reachable through STRUCTURAL_KEYS today, and a review
+    // called them inert. They are restated here on purpose: that set is maintained for the
+    // frame skeleton, for reasons that have nothing to do with a cron card, and dropping
+    // one from it must not silently empty this reader. Four identifier keys that used to
+    // sit here WERE removed in the same review — those merely repeated the spread directly
+    // above, which is exactly the set that owns them.
     "job",
     "patch",
     "jobId",
@@ -696,6 +713,26 @@ export function anonymizeFrame(
     // Same rule — the field survives, its text does not.
     "explanation",
   ]);
+}
+
+/** Walk a frame, applying the classes. `knownKeys` is the vocabulary of key NAMES.
+ *
+ *  An UNKNOWN key is masked like a value. Field names are protocol vocabulary — that is
+ *  why the drift badge may show them — but a key nobody has classified is precisely the
+ *  one that could be data rather than vocabulary (a map keyed by an address, a name, an
+ *  id), and by definition no code branches on it, so masking it costs the replay nothing.
+ *  When the corpus matches its vendored version this never fires; if it does fire, the
+ *  drift check over the corpus says so in the same breath. */
+export function anonymizeFrame(
+  frame,
+  pseudo,
+  stats,
+  knownKeys = baseKnownKeys(),
+  toolNames = new Set(),
+  epochBase = null,
+  renamedTools = new Map(),
+) {
+  const readerKeys = readerVocabulary();
   // The ONE node whose `name` is a tool name: the `data` of a `stream:"tool"` event.
   // Comparing the VALUE against the harvested set was the previous rule and it published
   // a real name the moment a user-facing `name` happened to equal a tool that ran in the
@@ -710,10 +747,21 @@ export function anonymizeFrame(
       ? frame?.payload?.data
       : undefined;
   // The NATIVE plan stream's `data` is a reader node like a tool result, and it was not
-  // treated as one: walked with the manifest vocabulary, its own leaves `explanation` and
-  // `title` are not protocol fields, so both came out MASKED AS KEYS and
-  // `planPartFromNative` (core/plan-part.ts) found neither. The plan card promoted from a
-  // capture then silently lost its explanation.
+  // treated as one: walked with the manifest vocabulary, its leaf `explanation` is not a
+  // protocol field, so it came out MASKED AS A KEY and `planPartFromPlanStream`
+  // (core/plan-part.ts) never found it. The plan card promoted from a capture then
+  // silently lost its explanation.
+  //
+  // This comment used to name `title` alongside `explanation`, and a function
+  // `planPartFromNative` that does not exist. Both were wrong and the pair was actively
+  // dangerous: a review read them and concluded `title` was a reader leaf missing from
+  // `readerVocabulary()` — a fidelity defect — and the fix would have been to widen the
+  // vocabulary. The reader consumes `explanation` and the steps (`step`, `status`) and
+  // NOTHING else; `title` is read by no PLAN reader. It is not in `readerVocabulary()`,
+  // and that absence is deliberately NOT pinned by a test: the provenance reader does
+  // read `items[].title` (core/provenance.ts:91) through a free-form node where only
+  // `readerVocabulary()` applies, so pinning the absence would block that repair. The
+  // provenance fidelity gap is filed as its own lot.
   //
   // It never showed because no promoted capture had carried one: the model writes an
   // explanation only sometimes, and the first capture that did (2026-09-12,
@@ -774,7 +822,8 @@ export function anonymizeFrame(
       stats.masked += 1;
       return typeof node === "boolean" ? false : typeof node === "number" ? 0 : node;
     }
-    // TIMESTAMPS are rebased, never published absolute — AFTER the free-form redaction
+    // TIMESTAMPS are rebased whenever the run gives an epoch base; with `epochBase` null
+    // (the default) a classified timestamp is kept as it stands — AFTER the free-form redaction
     // above, or a date inside a tool payload survives as an exact offset from a capture
     // whose own date is in the header (raised in review).
     // `ts`, `startedAt`, `updatedAt`

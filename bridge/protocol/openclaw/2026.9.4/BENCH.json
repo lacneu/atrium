@@ -6,51 +6,51 @@
     {
       "id": "basic-turn",
       "ok": true,
-      "chat": "b33ee0e92a84e9ae"
+      "chat": "56f957bed3af1caa"
     },
     {
       "id": "tool-exec",
       "ok": true,
-      "chat": "b33ee0e92a84e9ae"
+      "chat": "56f957bed3af1caa"
     },
     {
       "id": "update-plan",
       "ok": true,
-      "chat": "b33ee0e92a84e9ae"
+      "chat": "56f957bed3af1caa"
     },
     {
       "id": "media-outbound",
       "ok": true,
-      "chat": "b33ee0e92a84e9ae"
+      "chat": "56f957bed3af1caa"
     },
     {
       "id": "spawn-announce-merge",
       "ok": true,
-      "chat": "b33ee0e92a84e9ae"
+      "chat": "56f957bed3af1caa"
     },
     {
       "id": "spawn-chain-merge",
       "ok": true,
-      "chat": "b33ee0e92a84e9ae"
+      "chat": "56f957bed3af1caa"
     },
     {
       "id": "spawn-parallel-merge",
       "ok": true,
-      "chat": "b33ee0e92a84e9ae"
+      "chat": "56f957bed3af1caa"
     },
     {
       "id": "async-task",
       "ok": true,
-      "chat": "b33ee0e92a84e9ae"
+      "chat": "56f957bed3af1caa"
     },
     {
       "id": "cron-tool",
       "ok": true,
-      "chat": "b33ee0e92a84e9ae"
+      "chat": "56f957bed3af1caa"
     }
   ],
   "verdict": "GO",
-  "at": "2026-09-12T19:02:53.875Z",
+  "at": "2026-09-12T23:47:55.125Z",
   "scenarios": [
     "async-task",
     "basic-turn",
@@ -78,13 +78,13 @@
     "hermes-cron-list": "hermes"
   },
   "flags": [],
-  "atriumSha": "b8b7f50f0a8bb3fbcd23193cd44dc857716a7d35",
+  "atriumSha": "721584e927555cadc3cf63f8b7a45de357b9a68c",
   "worktree": {
     "dirty": false,
     "deltaSha256": null
   },
   "supportDigest": "e1e2abb611092e503c66c633d8a05fecd4523ecfa61f13838b8cdc9fa7161d0c",
   "authMode": "token",
-  "bridgeVersion": "0.84.5",
+  "bridgeVersion": "0.84.6",
   "vendoredSha256": "99e06ae2c430259848af68304c28804e3fcc4227ae77ec1a99c80f4d26d35d30"
 }

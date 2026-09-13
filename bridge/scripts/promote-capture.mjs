@@ -135,10 +135,25 @@ const BUILT_IN_TOOL_NAMES = new Set([
 export function classifyToolNames(names) {
   const verbatim = new Set();
   const renamed = new Map();
+  // A FIXED POINT publishes the very name it is meant to hide: a custom tool called
+  // `tool_1` that sorts first was handed the alias `tool_1`, so the name came out verbatim
+  // while the run counted it as pseudonymised (raised in review). The counter is monotone,
+  // so advancing past a collision cannot re-issue an alias.
+  // An alias must be disjoint from the WHOLE harvest, not just from the name it replaces.
+  // Skipping only the self-collision still republished a real name: `["tool_1","tool_2"]`
+  // produced `["tool_2","tool_3"]`, so the raw identifier `tool_2` was in the corpus as
+  // someone else's alias, indistinguishable from a pseudonym (raised in review). Every
+  // name is known here before the first alias is minted, so the disjunction is exact —
+  // unlike the streaming id minter, which cannot see a token it has not read yet.
+  const harvested = new Set(names);
   let n = 0;
   for (const name of [...names].sort()) {
     if (BUILT_IN_TOOL_NAMES.has(name)) verbatim.add(name);
-    else renamed.set(name, `tool_${++n}`);
+    else {
+      let alias = `tool_${++n}`;
+      while (harvested.has(alias)) alias = `tool_${++n}`;
+      renamed.set(name, alias);
+    }
   }
   return { verbatim, renamed };
 }
@@ -257,9 +272,14 @@ export function captureEpochBase(rawSlice) {
  *  (its isolation gate compares against it) and the bridge seeds the run id it was acked,
  *  neither of which is derivable from the frames unless you know which session was "ours".
  *  Recording it at promotion is what makes the fixture replayable at all — and it is
- *  derived, not guessed: the parent session is the only key with the `:atrium:chat:`
- *  grammar (children carry `:subagent:`), and a slice that does not have EXACTLY one is
- *  refused rather than promoted with an arbitrary pick. */
+ *  derived, not guessed: the turn is the FIRST acked run, and the session is the one that
+ *  run appears on; a slice where that run spans anything other than EXACTLY one session is
+ *  refused rather than promoted with an arbitrary pick.
+ *
+ *  This doc used to describe the `:atrium:chat:` session-key grammar instead. That was the
+ *  first attempt and the body already says why it was abandoned — it picked two keys on
+ *  `cron-tool` — so the two sat twenty lines apart contradicting each other (raised in
+ *  review). */
 export function replayContext(rawSlice) {
   const frames = [];
   const acks = [];
@@ -523,7 +543,7 @@ async function main() {
     // that every test would happily replay. The vendoring script learned this the same
     // way; a refusal must change nothing at all.
     pending.push({ file: `${id}.jsonl`, body });
-    promoted.push({ id, ...stats, unparsable: stats.unparsable });
+    promoted.push({ id, ...stats });
   }
   if (promoted.length === 0) {
     throw new Error("no OpenClaw scenario was promoted — the corpus would be empty");
