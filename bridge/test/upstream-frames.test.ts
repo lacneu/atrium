@@ -104,21 +104,38 @@ describe("upstream v2026.9.1 frame contracts", () => {
     expect(finalOf(events)?.errorKind).toBe("rate_limit");
   });
 
-  it("writer-claim rebound AFTER streamed content stays an ERROR, classified MID-TURN", () => {
+  it("writer-claim rebound AFTER streamed content stays an ERROR, in its own non-retryable class", () => {
     // The 7.1 embedded prompt-lock flavour downgraded to complete because upstream
     // refused any retry once content had streamed. Its 2026.8.1+ successor does NOT
-    // carry that guarantee — upstream retries the rebound itself
-    // (subagent-announce-delivery-retry.ts:70) — so the honest error card stands and
-    // only the CLASS is transient (what the bounded auto-retry keys on).
+    // carry that guarantee — upstream treats the rebound as transient on the announce
+    // path when nothing was sent (subagent-announce-delivery-retry.ts
+    // isTransientAnnounceDeliveryError) — so the honest error card stands.
     const { events, normalizer } = drive("writer-claim-rebound-after-content");
     expect(statusOf(events)?.status).toBe("error");
     expect(normalizer.finalized).toBe(true);
     const final = finalOf(events);
     expect(final?.error).toContain("session writer claim changed");
-    // Its OWN class, not the retryable init one: this fires after the model ran, so an
-    // automatic re-dispatch could repeat work the zero-content gate cannot see (codex).
+    // Its OWN class, not the retryable init one: upstream throws this text after the
+    // model ran as well as before, so an automatic re-dispatch could repeat work the
+    // zero-content gate cannot see (codex).
     expect(final?.errorKind).toBe("session_write_conflict");
     expect(final?.text).toContain("rapport complet");
+  });
+
+  it("writer-claim rebound after only the PREPARATION prelude is retryable (proven pre-generation)", () => {
+    const { events } = drive("writer-claim-rebound-before-generation");
+    expect(statusOf(events)?.status).toBe("error");
+    const final = finalOf(events) as { errorKind?: string; diagnosticErrorKind?: string } | undefined;
+    expect(final?.errorKind).toBe("session_init_conflict");
+    expect(final?.diagnosticErrorKind).toBe("session_write_conflict");
+  });
+
+  it("writer-claim rebound with ZERO content after lifecycle start stays non-retryable", () => {
+    const { events } = drive("writer-claim-rebound-after-start-zero-content");
+    // The lifecycle start emits an intermediate `running` status: read the TERMINAL one.
+    const statuses = events.filter((e) => e.type === "run.status");
+    expect(statuses[statuses.length - 1]?.status).toBe("error");
+    expect(finalOf(events)?.errorKind).toBe("session_write_conflict");
   });
 
   it("pre-generation init OCC conflict classifies to session_init_conflict (auto-retry key)", () => {

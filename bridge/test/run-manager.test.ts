@@ -267,6 +267,56 @@ describe("run-manager -> convex-writer mapping", () => {
     ]);
   });
 
+  it("a pre-ack buffer OVERFLOW marks the turn's stream as incomplete", async () => {
+    // A writer-claim rebound is retried only when the turn saw no generation frame,
+    // and a frame the cap refused could be exactly the one that proved it: an absence
+    // read from a truncated stream proves nothing.
+    const status = {
+      event: "chat",
+      payload: { runId: OWN_RUN, sessionKey: SESSION_KEY, seq: 1, state: "status", phase: "preparing_workspace" },
+    };
+    const fill = async (count: number) => {
+      const manager = new RunManager(CHAT_ID, SESSION_KEY, new FakeWriter());
+      const clock = new Clock();
+      manager.armReplayBuffer();
+      for (let i = 0; i < count; i++) await manager.feed(status, clock.tick());
+      await manager.beginTurn(clock.now, OWN_RUN);
+      return manager.streamGapNoted;
+    };
+    expect(await fill(1000)).toBe(false); // exactly at the cap: nothing refused
+    expect(await fill(1001)).toBe(true);
+  });
+
+  it("…including an overflow while an ANNOUNCE turn still drives the sink", async () => {
+    // The second stash site: a user send armed during a live spontaneous turn buffers
+    // the upcoming run's frames there, under the same cap.
+    const manager = new RunManager(CHAT_ID, SESSION_KEY, new FakeWriter());
+    const clock = new Clock();
+    await manager.beginTurn(clock.now, "announce:child-9", { expectedSessionId: null, spontaneous: true });
+    manager.armReplayBuffer();
+    const status = {
+      event: "chat",
+      payload: { runId: OWN_RUN, sessionKey: SESSION_KEY, seq: 1, state: "status", phase: "preparing_workspace" },
+    };
+    for (let i = 0; i < 1001; i++) await manager.feed(status, clock.tick());
+    await manager.beginTurn(clock.tick(), OWN_RUN);
+    expect(manager.streamGapNoted).toBe(true);
+  });
+
+  it("…and re-arming forgets an overflow from a send that never began its turn", async () => {
+    const manager = new RunManager(CHAT_ID, SESSION_KEY, new FakeWriter());
+    const clock = new Clock();
+    const status = {
+      event: "chat",
+      payload: { runId: OWN_RUN, sessionKey: SESSION_KEY, seq: 1, state: "status", phase: "preparing_workspace" },
+    };
+    manager.armReplayBuffer();
+    for (let i = 0; i < 1001; i++) await manager.feed(status, clock.tick());
+    manager.armReplayBuffer(); // the failed send's retry arms a fresh window
+    await manager.beginTurn(clock.now, OWN_RUN);
+    expect(manager.streamGapNoted).toBe(false);
+  });
+
   it("codex P1: a `chat.side_result` racing the ack is BUFFERED and replayed like any content frame", async () => {
     // The event carries visible reply text (G-18). If the pre-ack buffer does not
     // recognize its frame type it goes straight through to whatever turn is live —

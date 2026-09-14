@@ -76,6 +76,9 @@ export class RunManager {
   // the freshly-reset+seeded normalizer in beginTurn. The normalizer's runId
   // filter (ownRunIds seeded from the ack) drops any foreign-run frame on replay.
   private pendingFrames: { frame: unknown; now: number }[] = [];
+  // A frame was REFUSED by the pre-ack cap since the last arm: the upcoming turn's
+  // stream is known to be incomplete (consumed by beginTurn).
+  private pendingFramesOverflowed = false;
   // The buffer is ARMED only for the chat.send -> ack window (armReplayBuffer is
   // called right before the request; beginTurn disarms after draining). Outside
   // that window an inactive feed() drops non-provenance frames as before, so a
@@ -278,6 +281,16 @@ export class RunManager {
   armReplayBuffer(): void {
     this.replayArmed = true;
     this.pendingFrames = [];
+    this.pendingFramesOverflowed = false;
+  }
+
+  /** Frames of the active turn may have been lost — see Normalizer.noteStreamGap. */
+  noteStreamGap(): void {
+    this.normalizer.noteStreamGap();
+  }
+
+  get streamGapNoted(): boolean {
+    return this.normalizer.streamGapNoted;
   }
 
   /**
@@ -294,6 +307,7 @@ export class RunManager {
   disarmReplayBuffer(now: number, onFlushed?: () => void): void {
     this.replayArmed = false;
     this.pendingFrames = [];
+    this.pendingFramesOverflowed = false;
     if (this.pendingAnnounce.length > 0) {
       // `now` MUST be the session's own clock (the normalizer arms its recv
       // deadlines against it — an epoch value would park them forever).
@@ -421,6 +435,12 @@ export class RunManager {
       turnContext?.spontaneous === true ? ackRunId : null;
     this.turnEpoch++;
     this.normalizer.beginTurn(now);
+    // A frame of this run was refused by the pre-ack cap: what the normalizer reads
+    // as an ABSENCE (no lifecycle start, say) proves nothing for this turn.
+    if (this.pendingFramesOverflowed) {
+      this.normalizer.noteStreamGap();
+      this.pendingFramesOverflowed = false;
+    }
     this.normalizer.noteExpectedSessionId(
       turnContext?.expectedSessionId ?? null,
     );
@@ -676,13 +696,14 @@ export class RunManager {
         ) {
           this.pendingProvenance.push(stashed);
         }
-      } else if (
-        this.replayArmed &&
-        this.pendingFrames.length < MAX_PENDING_FRAMES
-      ) {
+      } else if (this.replayArmed) {
         // Only while a chat.send is in flight (armed). Between turns the buffer
         // stays empty, so post-finalization stray frames are never replayed.
-        this.pendingFrames.push({ frame, now });
+        if (this.pendingFrames.length < MAX_PENDING_FRAMES) {
+          this.pendingFrames.push({ frame, now });
+        } else {
+          this.pendingFramesOverflowed = true;
+        }
       }
       return;
     }
@@ -748,6 +769,8 @@ export class RunManager {
       if (rid !== null && !this.normalizer.ownRunIds.has(rid)) {
         if (this.pendingFrames.length < MAX_PENDING_FRAMES) {
           this.pendingFrames.push({ frame, now });
+        } else {
+          this.pendingFramesOverflowed = true;
         }
         return;
       }

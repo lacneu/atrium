@@ -326,16 +326,27 @@ active; "Steer" is just a `chat.send` relying on the gateway's steer mode).
   content" it guarded (found 2026-09-03, fixed — see the verdict below).
 - **`session writer claim changed before transcript persistence`**
   (`SessionTranscriptWriterClaimReboundError`,
-  `$UP/src/config/sessions/transcript-write-context.ts:239`, identical
-  2026.8.1 → 2026.9.1): the SQLite replacement. Every transcript commit
-  re-validates the session row's writer claim and lifecycle revision inside
-  the transaction (`session-accessor.sqlite-transcript-write.ts:366-417`);
-  a rebound refuses the write. **Always mid-turn** — it fires at a commit, not
-  at a post-generation re-acquire — so streamed content may already exist.
-  Upstream treats it as a runtime COORDINATION error (no model fallback,
-  `failover-error.ts:719-723`) but, unlike the 2026.7.x lock, **retries it** on
-  the announce path (`subagent-announce-delivery-retry.ts:70` classifies it
-  transitory). Refusal codes are redacted (`session-rebound`,
+  `$UP/src/config/sessions/transcript-write-context.ts:240`, identical
+  2026.8.1 → 2026.9.4): the SQLite replacement. The session row's writer
+  claim and lifecycle revision are re-validated before a transcript write
+  (`session-accessor.sqlite-transcript-write.ts`), and a rebound refuses it.
+  **Not only mid-turn**: the same error is thrown BEFORE generation, while
+  the attempt is prepared (`run/session-bootstrap.ts`
+  `prepareInitialSessionWriter`, `run/pre-persisted-user-turn.ts`
+  `preparePersistedCurrentUserTurn`), and at commits once the model has run
+  (`run/settled-turn-finalization.ts`), where streamed content may already
+  exist. The TEXT names neither moment (`<Name>: <message>`, plus ` <- ` and
+  a JSON object of hashes when a refusal is passed); the STREAM does: a
+  generating run emits `lifecycle start` before its provider loop
+  (`packages/agent-core/src/agent-loop.ts` `agent_start`), and on every run of
+  a full 2026.9.4 bench capture only `chat` status and `agent` `run_status`
+  frames preceded it. Upstream treats it as a
+  runtime COORDINATION error on the main path (no model fallback,
+  `failover-error.ts:758-761`; `model-fallback-runner.ts:611-612` rethrows it) but,
+  unlike the 2026.7.x lock, **retries it** on the announce path when nothing
+  was sent (`subagent-announce-delivery-retry.ts`
+  `isTransientAnnounceDeliveryError`; the regex at `:70` is only its
+  definition). Refusal codes are redacted (`session-rebound`,
   `session-entry-missing`) — no filesystem path reaches the message.
 - **`Session <id> already has an active turn claim`** (`ActiveTurnClaimError`,
   `$UP/src/gateway/worker-environments/placement-turn-claims.ts:57`): joins the
@@ -368,11 +379,20 @@ retry. The UI keeps already-streamed text as messages next to the error.
   They do NOT share one class. The active turn claim and the
   `while starting work` sibling are pre-generation, so they join
   `session_init_conflict`, the transient class the bounded auto-retry keys on.
-  The **writer-claim rebound is mid-turn** — it fires "before transcript
-  persistence", after the model ran and after tools may have had external
-  effects — so it has its own `session_write_conflict`, which is deliberately
-  NOT in `RETRYABLE_KINDS`: the retry's zero-content gate cannot see work that
-  left no visible part, and re-dispatching would repeat it. Pinned by
+  The **writer-claim rebound** is classified `session_write_conflict` by the
+  text classifier, deliberately NOT in `RETRYABLE_KINDS`: upstream throws that
+  text at commits after the model ran, where tools may have had external
+  effects, and the retry's zero-content gate cannot see work that left no
+  visible part. The same text is also thrown before generation, where a retry
+  is safe, and the stream tells the two apart where the text cannot: the
+  OpenClaw normalizer upgrades the rebound to `session_init_conflict` when the
+  turn saw no generation frame (anything but `status`, `run_status` and the
+  failure's own terminals), no known frame loss (socket closed mid-turn,
+  pre-ack buffer overflow), no refused foreign-run frame and no transcript
+  recovery. The true class stays on the trace channel. (Corrected 2026-09-13:
+  this paragraph first called the rebound "always mid-turn", then
+  "indistinguishable on the wire".) Pinned by
+  `writer-rebound-before-generation.test.ts`,
   `failure-classifier.test.ts`, `convex/turnRetry.test.ts` and by the golden
   frame `writer-claim-rebound-after-content` (which also proves the bubble
   stays an honest error, with content preserved).

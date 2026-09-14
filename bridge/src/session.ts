@@ -635,6 +635,9 @@ class Session implements BridgeSession {
           // (live report 2026-07-04). The reconnect/replay resumes it; the
           // stuck-stream watchdog stays the backstop if it never does.
           if (!this.runManager.isFinalized) {
+            // Whatever the gateway sent between the last frame read and the close is
+            // gone: from here on, an absence in this turn's stream proves nothing.
+            this.runManager.noteStreamGap();
             if (this.transcriptFetcher) {
               // Unified orphan-turn recovery (gateway restart OR compaction
               // recreated the session and dropped this socket): the gateway's

@@ -695,6 +695,13 @@ export class Normalizer {
   // (2026.5.19+ gateways emit no compaction stream; Hermes never does).
   private explicitCompaction: "none" | "active" | "ended" = "none";
   private recoveryAttempted = false;
+  // Whether an OWN frame of this turn proved (or may have proved) that a run reached
+  // generation — see provesGeneration. Never reset inside a turn: a replay or a
+  // follow-on run cannot undo work an earlier run of the same turn did.
+  private generationEvidence = false;
+  // Frames of this turn may have been LOST (socket closed mid-turn, pre-ack buffer
+  // overflowed): an absence read from the stream proves nothing after that.
+  private streamGap = false;
   // Diagnostic captures for the per-turn pressure trace (never classification):
   // the terminal frame's optional stopReason, and the REAL post-turn usage the
   // gateway flattens onto agent events on live deployments (dev 2026-07-04).
@@ -850,6 +857,8 @@ export class Normalizer {
     // for the rest of the session (codex P2).
     this.observedChildKeysTruncated = false;
     this.recoveryAttempted = false;
+    this.generationEvidence = false;
+    this.streamGap = false;
     this.suppressNextRotation = false;
     this.compactionSignaled = false;
     this.explicitCompaction = "none";
@@ -1208,6 +1217,9 @@ export class Normalizer {
     // Own frame: refresh the silence budget and emit the deprecated passthrough
     // first, then the normalized interpretation.
     this.armRecv(now);
+    if (!this.generationEvidence && Normalizer.provesGeneration(eventType, payload)) {
+      this.generationEvidence = true;
+    }
     const events: BridgeEvent[] = [
       { type: EVENT_OPENCLAW_FRAME, frame: this.safeSanitizeFrame(frame) },
     ];
@@ -2018,6 +2030,52 @@ export class Normalizer {
   /** Mark the (single) recovery attempt as started so the loop never re-fires. */
   markRecoveryAttempted(): void {
     this.recoveryAttempted = true;
+  }
+
+  /** Frames of THIS turn may have been lost (the socket closed mid-turn, the pre-ack
+   *  buffer refused a frame). Absences read from the stream stop proving anything. */
+  noteStreamGap(): void {
+    this.streamGap = true;
+  }
+
+  get streamGapNoted(): boolean {
+    return this.streamGap;
+  }
+
+  /**
+   * Whether an own frame shows that a run of this turn reached generation, or MAY have.
+   *
+   * Only the frames upstream sends while a run is still being PREPARED are excluded:
+   * `chat` `state:"status"` and `agent` `stream:"run_status"` (measured on every run of
+   * a full bench capture: nothing else precedes `lifecycle start`), plus the failure's
+   * own terminals — a `chat` error and a `lifecycle` `error`/`end`, which a
+   * pre-generation failure emits too. Everything else counts, unknown shapes included:
+   * a wrong "yes" only costs an automatic retry, a wrong "no" could repeat work.
+   */
+  private static provesGeneration(eventType: string, payload: Record<string, unknown>): boolean {
+    if (eventType === "chat") {
+      return payload.state !== "status" && payload.state !== "error";
+    }
+    if (eventType !== "agent") return true;
+    if (payload.stream === "run_status") return false;
+    if (payload.stream === "lifecycle") {
+      const phase = isObject(payload.data) ? payload.data.phase : undefined;
+      return phase !== "error" && phase !== "end";
+    }
+    return true;
+  }
+
+  /** A writer-claim rebound on this turn struck before any run generated: no frame
+   *  proving generation, on a stream with no known loss, no own-looking frame refused
+   *  as foreign (it could have been this run's start), and no transcript recovery
+   *  standing in for frames. Any doubt keeps the conservative class. */
+  private writeReboundBeforeGeneration(): boolean {
+    return (
+      !this.generationEvidence &&
+      !this.streamGap &&
+      this.foreignRunRejections.size === 0 &&
+      !this.recoveryAttempted
+    );
   }
 
   /**
@@ -2873,6 +2931,18 @@ export class Normalizer {
       // ONE classifier, shared with the sub-agent path (W2 / G-11): a second
       // copy would drift and only one side would ever be fixed.
       errorKind = classifyFailureText(error);
+      // The writer-claim rebound TEXT is thrown both before generation and at commits
+      // after the model ran, so the classifier returns the class sized for the worse
+      // case. The STREAM can tell them apart, and only here: every generating run emits
+      // `lifecycle start` before it generates (upstream agent-core agent-loop.ts
+      // `agent_start`), and only status frames precede it. A rebound on a turn that
+      // provably saw none of that is a pre-generation session conflict, the class the
+      // bounded auto-retry keys on. The true class stays on the trace channel.
+      if (errorKind === "session_write_conflict" && this.writeReboundBeforeGeneration()) {
+        (finalEvent as { diagnosticErrorKind?: string | null }).diagnosticErrorKind =
+          "session_write_conflict";
+        errorKind = "session_init_conflict";
+      }
     }
     if (
       error !== null &&

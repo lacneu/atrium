@@ -34,14 +34,22 @@ describe("classifyFailureText", () => {
     ).toBe("session_init_conflict");
   });
 
-  it("the MID-TURN writer rebound gets its OWN class, not the retryable one", () => {
-    // It rebounds "before transcript persistence": the model has RUN and tools may
-    // already have had external effects. Sharing `session_init_conflict` put it in
-    // RETRYABLE_KINDS, whose whole justification is that nothing has happened yet, so a
-    // completed turn could be re-dispatched (codex). Different moment, different class.
+  it("the writer rebound gets its OWN class, whatever cause rides the text", () => {
+    // Upstream throws it before generation and at commits after the model ran, with the
+    // same message. The TEXT names neither moment, so the classifier returns the class
+    // sized for the worse case; the normalizer, which sees the stream, upgrades a proven
+    // pre-generation one (writer-rebound-before-generation.test.ts). Sharing
+    // `session_init_conflict` here put every rebound in RETRYABLE_KINDS (codex).
+    // Two renderings: bare (most throw sites pass no refusal) and with a refusal cause,
+    // which ws-log.ts renders after ` <- ` as JSON.stringify of an object of hashes.
     expect(
       classifyFailureText(
-        "SessionTranscriptWriterClaimReboundError: session writer claim changed before transcript persistence <- session-rebound",
+        'SessionTranscriptWriterClaimReboundError: session writer claim changed before transcript persistence <- {"actualSessionIdHash":"a1b2","agentIdHash":"c3d4","code":"session-rebound","expectedSessionIdHash":"e5f6","sessionKeyHash":"0789"}',
+      ),
+    ).toBe("session_write_conflict");
+    expect(
+      classifyFailureText(
+        "SessionTranscriptWriterClaimReboundError: session writer claim changed before transcript persistence",
       ),
     ).toBe("session_write_conflict");
   });

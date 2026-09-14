@@ -59,10 +59,11 @@ describe("a compacted session's overflow retries ONCE (W2)", () => {
     expect(retryDecision(at("context_length_presend"))).toBeNull();
   });
 
-  test("a MID-TURN writer rebound is never retried, zero content or not", () => {
-    // `session_write_conflict` rebounds AFTER the model ran and after tools may have
-    // had external effects. The zero-content gate cannot see that work, so the class
-    // stays out of RETRYABLE_KINDS entirely — re-dispatching could repeat it (codex).
+  test("a writer rebound is never retried, zero content or not", () => {
+    // `session_write_conflict` is a rebound the bridge could NOT prove pre-generation:
+    // it may have struck at a commit after the model ran. The zero-content gate cannot
+    // see work that left no part, so the class stays out of RETRYABLE_KINDS entirely
+    // (codex). A proven pre-generation rebound arrives here as the init conflict.
     expect(retryDecision(at("session_write_conflict"))).toBeNull();
     expect(RETRYABLE_KINDS.has("session_write_conflict")).toBe(false);
     // …while the INIT conflict, which throws before any generation, still retries.

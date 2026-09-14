@@ -133,10 +133,13 @@ export function retryDecision(input: {
   // model-generated text (pendingAckText is per-turn state reset at beginTurn).
   // Were it ever wrong, the failure mode is the honest error card (fail-safe).
   //
-  // That argument is why `session_write_conflict` is NOT in RETRYABLE_KINDS: the
-  // SQLite writer claim rebounds "before transcript persistence", i.e. AFTER the model
-  // ran and after tools may have had external effects. Zero visible content does not
-  // mean no work happened there, so an automatic re-dispatch could repeat it (codex).
+  // That argument is why `session_write_conflict` is NOT in RETRYABLE_KINDS. Upstream
+  // throws the writer-claim rebound at transcript commits AFTER the model ran, where
+  // tools may have had external effects — and, with the same text, before generation.
+  // The class cannot promise "nothing happened yet", and zero visible content does not
+  // mean no work happened, so an automatic re-dispatch could repeat it (codex). A rebound
+  // the bridge PROVES pre-generation (no generation frame on an unbroken stream) arrives
+  // as `session_init_conflict` instead; see Normalizer.writeReboundBeforeGeneration.
   if (input.finalTextLen > 0 || input.partCount > 0) return null;
   if (input.chatBusy) return null;
   if (input.lastAttempt >= maxRetriesForKind(input.errorKind)) return null;

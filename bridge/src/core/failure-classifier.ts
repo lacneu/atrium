@@ -21,13 +21,13 @@ const SESSION_INIT_CONFLICT_RE =
 // what replaced it.
 const EMBEDDED_LOCK_CONFLICT_RE =
   /session file changed while embedded prompt lock/i;
-// 2026.8.1+: the SQLite writer FENCE. Every transcript commit re-validates the
-// session row's writer/lifecycle revision and refuses with
+// 2026.8.1+: the SQLite writer FENCE. The session row's writer claim and lifecycle
+// revision are re-validated before a transcript write, and a mismatch refuses with
 // `SessionTranscriptWriterClaimReboundError` — verbatim
 // "session writer claim changed before transcript persistence"
-// (upstream src/config/sessions/transcript-write-context.ts:239, identical
-// 8.1→9.1). Coordination error upstream (failover-error.ts: no model fallback),
-// always mid-turn; same transient session OCC as the init conflict.
+// (upstream src/config/sessions/transcript-write-context.ts:240, identical
+// 8.1→9.4). Coordination error upstream (failover-error.ts: no model fallback).
+// NOT always mid-turn — see classifyFailureText for why it keeps its own class anyway.
 const WRITER_CLAIM_REBOUND_RE =
   /session writer claim changed before transcript persistence/i;
 // 2026.9.1: `ActiveTurnClaimError` — "Session <id> already has an active turn
@@ -83,12 +83,21 @@ export function isSessionInitConflictText(text: string): boolean {
 export function classifyFailureText(text: string | null | undefined): string | null {
   if (!text) return null;
   if (CONTEXT_OVERFLOW_TEXT_RE.test(text)) return "context_length";
-  // MID-TURN, and therefore its own class. Every other pattern below fires while the
-  // session is being STARTED, before the model generates anything — which is exactly
-  // what the automatic retry relies on when it re-dispatches a zero-content turn
-  // (convex/turnRetry.ts). The writer claim rebounds "before transcript persistence",
-  // i.e. after the model ran and tools may already have had external effects, so
-  // filing it under the same code let a completed turn be replayed (codex).
+  // Its OWN class, kept out of the automatic retry. Every other pattern below fires
+  // while the session is being STARTED, before the model generates anything — which
+  // is exactly what the retry relies on when it re-dispatches a zero-content turn
+  // (convex/turnRetry.ts). This sentence carries no such guarantee: upstream throws
+  // the SAME error before generation (run/session-bootstrap.ts
+  // prepareInitialSessionWriter, run/pre-persisted-user-turn.ts
+  // preparePersistedCurrentUserTurn) AND at transcript commits once the model has run
+  // (run/settled-turn-finalization.ts, the sqlite transcript writers), where tools may
+  // already have had external effects. The TEXT names neither moment (a refusal cause,
+  // when one is passed, follows ` <- ` as a JSON object of hashes), so this function
+  // returns the class sized for the worse one: a replay could repeat work the
+  // zero-content gate cannot see (codex). The STREAM does tell them apart — a
+  // generating run emits `lifecycle start` first — and the OpenClaw normalizer, which
+  // sees the frames, upgrades a rebound it can prove pre-generation to
+  // `session_init_conflict` (Normalizer.writeReboundBeforeGeneration).
   if (WRITER_CLAIM_REBOUND_RE.test(text)) return "session_write_conflict";
   if (isSessionInitConflictText(text)) return "session_init_conflict";
   if (PROVIDER_INTERNAL_TEXT_RE.test(text) && !PROVIDER_INTERNAL_EXCLUDE_RE.test(text)) {

@@ -89,7 +89,7 @@
       ]
     },
     "writer-claim-rebound-after-content": {
-      "description": "COMPOSED (not copied from one upstream test) — the 2026.8.1+ successor of the 7.1 embedded prompt-lock takeover, which no longer exists (attempt.session-lock.ts is gone since 2026.8.1; transcripts moved to SQLite). Parts, each cited: the message is thrown verbatim by src/config/sessions/transcript-write-context.ts:240 (SessionTranscriptWriterClaimReboundError, identical 8.1->9.4); the error NAME is pinned by src/agents/model-fallback.test.ts:1974; the wire rendering '<Name>: <message>' is pinned by src/gateway/ws-log.test.ts:139-140 (formatForLog), and server-chat.ts:1239 emits it as errorMessage on state:error. CONTRACT: unlike the 7.1 lock flavour, this one is NOT downgraded to complete — upstream itself retries it (subagent-announce-delivery-retry.ts:70 treats it as transitory), so a streamed reply may still be superseded. Atrium keeps the honest error card and classifies the turn session_write_conflict — its OWN class, NOT the retryable session_init_conflict: this one rebounds mid-turn (after the model ran, after tools may have had external effects), so Atrium's bounded auto-retry must not re-dispatch it.",
+      "description": "COMPOSED (not copied from one upstream test) — the 2026.8.1+ successor of the 7.1 embedded prompt-lock takeover, which no longer exists (attempt.session-lock.ts is gone since 2026.8.1; transcripts moved to SQLite). Parts, each cited: the message is thrown verbatim by src/config/sessions/transcript-write-context.ts:240 (SessionTranscriptWriterClaimReboundError, identical 8.1->9.4); the error NAME is pinned by src/agents/model-fallback.test.ts:1974; the wire rendering '<Name>: <message>' is pinned by src/gateway/ws-log.test.ts:139-140 (formatForLog), and server-chat.ts:1239 emits it as errorMessage on state:error. CONTRACT: unlike the 7.1 lock flavour, this one is NOT downgraded to complete — upstream itself retries it on the announce path when nothing was sent (subagent-announce-delivery-retry.ts isTransientAnnounceDeliveryError; the regex at :70 is only its definition), so a streamed reply may still be superseded. Atrium keeps the honest error card and classifies the turn session_write_conflict — its OWN class, NOT the retryable session_init_conflict: upstream throws the same text at commits after the model ran (tools may have had external effects) as well as before generation; here content has streamed, which proves the run generated, so Atrium's bounded auto-retry must not re-dispatch it (the pre-generation case is writer-claim-rebound-before-generation).",
       "frames": [
         {
           "event": "chat",
@@ -107,6 +107,84 @@
             "sessionKey": "agent:main:atrium:chat:u-testuser01:own-chat",
             "runId": "run-own",
             "seq": 2,
+            "state": "error",
+            "errorMessage": "SessionTranscriptWriterClaimReboundError: session writer claim changed before transcript persistence"
+          }
+        }
+      ]
+    },
+    "writer-claim-rebound-before-generation": {
+      "description": "COMPOSED — the same rebound thrown while the attempt is still PREPARED: src/agents/embedded-agent-runner/run/session-bootstrap.ts:262 (prepareInitialSessionWriter, reached from run/session-prompt-state.ts:53) and run/pre-persisted-user-turn.ts:64 (preparePersistedCurrentUserTurn, from run/attempt-session-prepare.ts:571), both before the agent loop emits agent_start (packages/agent-core/src/agent-loop.ts:180) — which embedded-agent-subscribe.handlers.lifecycle.ts:41-52 turns into {stream:'lifecycle', data:{phase:'start'}}. The prelude frames (chat state:'status', agent stream:'run_status') are the shapes captured on every run of a full 2026.9.4 bench run, which showed nothing else before lifecycle start; the terminal frame is as in writer-claim-rebound-after-content. CONTRACT: no generation frame on an unbroken stream proves the rebound pre-generation, so the bridge upgrades it to the retryable session_init_conflict and keeps session_write_conflict on the trace channel.",
+      "frames": [
+        {
+          "event": "chat",
+          "payload": {
+            "runId": "run-own",
+            "sessionKey": "agent:main:atrium:chat:u-testuser01:own-chat",
+            "agentId": "main",
+            "seq": 1,
+            "state": "status",
+            "phase": "preparing_workspace"
+          }
+        },
+        {
+          "event": "agent",
+          "payload": {
+            "runId": "run-own",
+            "stream": "run_status",
+            "data": { "phase": "preparing_context" },
+            "sessionKey": "agent:main:atrium:chat:u-testuser01:own-chat",
+            "agentId": "main",
+            "seq": 2,
+            "ts": 1789349094900,
+            "isHeartbeat": false
+          }
+        },
+        {
+          "event": "chat",
+          "payload": {
+            "sessionKey": "agent:main:atrium:chat:u-testuser01:own-chat",
+            "runId": "run-own",
+            "seq": 3,
+            "state": "error",
+            "errorMessage": "SessionTranscriptWriterClaimReboundError: session writer claim changed before transcript persistence"
+          }
+        }
+      ]
+    },
+    "writer-claim-rebound-after-start-zero-content": {
+      "description": "COMPOSED — the dangerous twin of writer-claim-rebound-before-generation: the run STARTED (lifecycle start, shape as captured on 2026.9.4 and emitted by embedded-agent-subscribe.handlers.lifecycle.ts:41-52) and then rebounded at a commit with NOTHING visible — the post-generation throws of run/settled-turn-finalization.ts:538,585 come after the attempt. Zero content does not mean no work: tools may have had external effects. CONTRACT: stays session_write_conflict, never auto-retried.",
+      "frames": [
+        {
+          "event": "chat",
+          "payload": {
+            "runId": "run-own",
+            "sessionKey": "agent:main:atrium:chat:u-testuser01:own-chat",
+            "agentId": "main",
+            "seq": 1,
+            "state": "status",
+            "phase": "preparing_workspace"
+          }
+        },
+        {
+          "event": "agent",
+          "payload": {
+            "runId": "run-own",
+            "sessionKey": "agent:main:atrium:chat:u-testuser01:own-chat",
+            "agentId": "main",
+            "stream": "lifecycle",
+            "data": { "phase": "start", "startedAt": 1789349095106 },
+            "seq": 2,
+            "ts": 1789349095106,
+            "isHeartbeat": false
+          }
+        },
+        {
+          "event": "chat",
+          "payload": {
+            "sessionKey": "agent:main:atrium:chat:u-testuser01:own-chat",
+            "runId": "run-own",
+            "seq": 3,
             "state": "error",
             "errorMessage": "SessionTranscriptWriterClaimReboundError: session writer claim changed before transcript persistence"
           }

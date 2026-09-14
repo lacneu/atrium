@@ -560,6 +560,46 @@ describe("close mid-turn = transcript recovery, then connection lost (never a us
   // of finalizing immediately — the gateway restart-recovery case (live CSV
   // 2026-07-04: a resumed run delivered its answer 7 min after the SIGTERM).
 
+  it("a close mid-turn marks the turn's stream as incomplete", async () => {
+    // Whatever the gateway sent before the close is gone, so an absence in this turn's
+    // stream — no lifecycle start, say — can no longer prove that nothing ran.
+    vi.useFakeTimers();
+    const now = 1000;
+    const conn = fakeConn();
+    const pollConn = {
+      get isClosed() {
+        return false;
+      },
+      close() {},
+      onConfigChanged: () => () => {},
+      onClosed: () => () => {},
+      async *frames() {},
+      async request() {
+        return { payload: { messages: [] } };
+      },
+    };
+    let first = true;
+    vi.spyOn(OpenClawConnection, "connect").mockImplementation(async () => {
+      if (first) {
+        first = false;
+        return conn as never;
+      }
+      return pollConn as never;
+    });
+    const { writer } = fakeWriter();
+    const reg = new SessionRegistry(servedMap(config, writer), () => now);
+    const s = await reg.acquire(ROUTING);
+    await vi.advanceTimersByTimeAsync(0);
+    await s.runManager.beginTurn(now, "run-1");
+    s.wake();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(s.runManager.streamGapNoted).toBe(false);
+    conn.close();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(s.runManager.streamGapNoted).toBe(true);
+    reg.closeAll();
+  });
+
   it("recovers the RESUMED run's reply from the transcript and finalizes COMPLETE", async () => {
     vi.useFakeTimers();
     let now = 1000;
