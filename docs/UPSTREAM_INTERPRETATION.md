@@ -115,8 +115,9 @@ spawnedBy?, seq}`:
 Type.String())` — no wire enum). Producers: the model runtime enum
 `"stop"|"length"|"toolUse"|"error"|"aborted"` (`$UP/packages/llm-core/src/
 types.ts:283`, raw provider values like `end_turn` may also pass through) and
-gateway abort paths (`"aborted"`, `"restart"`, `"timeout"`, `"rpc"` = the
-user Stop default, `"auth-revoked"`; arbitrary caller values like `"user"`
+gateway abort paths (`"aborted"`, `"restart"`, `"timeout"`, `"rpc"` — a
+generic RPC/internal abort reason, of which a user Stop is one example —
+`"auth-revoked"`; arbitrary caller values like `"user"`
 also occur). Crucially, **the gateway consumes stopReason before emission**:
 `buildAgentRunTerminalOutcome` maps it into `state` (`rpc|stop` → `aborted`
 only when status ≠ ok; `timeout` + aborted → **`error`**, not `aborted`;
@@ -195,66 +196,132 @@ banner *next to* the kept text.
 ### Atrium behavior and verdict
 
 - The normalizer's refusal to reclassify `chat:aborted` by `stopReason`
-  (`normalizer.ts:898-909`) **matches the reference interpretation exactly**:
+  (`normalizer.ts`, the `state === "aborted"` branch of the chat handler) **matches the reference interpretation exactly**:
   `state` already carries the gateway's decision. Client-side stopReason
   interpretation would duplicate (and risk diverging from) a classification
   the gateway has already rendered.
 - Atrium extracts **more** signal than the Control UI, not less: bucketed
-  `stopReason` telemetry (`KNOWN_STOP_REASONS`, `normalizer.ts:192-203`),
+  `stopReason` telemetry (`KNOWN_STOP_REASONS` in `normalizer.ts`),
   `errorKind` persisted as message `errorCode`, plus its own actionable
   classes upstream does not have (`context_length` via widened text regex —
   live gateways rarely populate `errorKind` — `session_init_conflict`,
   `provider_internal`, `empty_response`/`empty_response_silent`).
 - Post-answer `error` frames: Control UI keeps the answer and shows a
   banner; Atrium finalizes `complete` and downgrades the class to a
-  diagnostic trace (`turn-sink.ts:1379-1383`). Same "keep the text" spirit,
+  diagnostic trace (the normalizer's `chat:error AFTER the run ended` branch,
+  `diagnosticErrorKind`). Same "keep the text" spirit,
   different surface — deliberate (Atrium chats are durable documents; a
   transient provider hiccup after a full answer is telemetry, not UX).
-- Diagnostic nit: our stopReason bucket list spells `tool_use` /
-  `content_filter` (Anthropic style) while the upstream model enum emits
-  `toolUse` — such values land in the `"other"` bucket. Trace-only impact.
+- The stopReason bucket list names the closed constants a 2026.9.4 terminal
+  carries (`toolUse`, `end_turn`, `tool_calls`, `restart`, `superseded`,
+  `auth-revoked`, `archive`, `delete`, beside the historical `tool_use` /
+  `content_filter`), each with its upstream provenance in the code. It used to
+  miss all eight (corrected 2026-09-13), which sent a gateway restart, a revoked
+  login and a deleted session to the same `"other"` bucket. Trace-only impact;
+  free text still buckets.
 
 ---
 
 ## 2. Announce/delivery vs `chat.send`: session contention
 
-### Upstream policy — there is no kill policy
+### Upstream policy — steer by default, interrupt when the mode says so
 
-At v2026.9.1 upstream still has **no deliberate preemption** in the
-announce×send race. Contention is resolved by:
+The DEFAULT queue policy does not kill either side of the announce×send
+race; an EFFECTIVE `interrupt` mode does, and so does session writer
+ownership one layer down (below). Re-verified at v2026.9.4 — this heading
+used to read "there is no kill policy". Contention is resolved by:
 
 - **Steering**: a `chat.send` arriving while a run is active on the session
   defaults to queue mode `"steer"` — the message is **injected into the
-  active run** (`$UP/src/auto-reply/reply/queue/settings.ts:30-36`,
-  `agent-runner.ts:1263-1304`). Refused steering degrades to a FIFO
-  **followup queue** drained after the active run ends. Only queue mode
-  `"interrupt"` (or `/reset`) aborts the active run.
+  active run** (`$UP/src/auto-reply/reply/queue/settings.ts:31-36`,
+  `reply-run-registry.message-injection.ts`). Refused steering degrades to a
+  FIFO **followup queue** drained after the active run ends. When the
+  EFFECTIVE mode is `"interrupt"` the active run is aborted before the new
+  one runs (`$UP/src/auto-reply/reply/get-reply-run-queue.ts:33`, through
+  `interruptReplyRunTarget` → `abortByUser`, a generic user abort). That
+  mode resolves send field → message directive (`/queue interrupt`,
+  `get-reply-directives-apply.ts:595`, persisted to the session by a
+  directive-only message) → session → channel → config → `steer`.
 - **Announce delivery**: a sub-agent announce steers into the requester's
-  active turn ("internal handoffs into an active requester turn",
-  `subagent-announce-delivery.ts:674-725`) or, when the requester is idle,
+  active turn (`subagent-announce-direct-delivery.ts:314,347`,
+  `steeringMode:"all"`, path `steered`) or, when the requester is idle,
   runs as a separate in-process `agent` run whose `idempotencyKey`/runId is
   `announce:v1:<childSessionKey>:<childRunId>`
   (`$UP/src/agents/announce-idempotency.ts:11-18`) — the exact shape
-  Atrium's `isDeliveryRunId` recognizes. **An announce never kills a user
-  turn by design.**
+  Atrium's `isDeliveryRunId` recognizes. **The queue policy never makes an
+  announce kill a user turn**; writer ownership (below) can still supersede
+  whichever run held the session.
 - **Admission serialization**: `beginSessionWorkAdmission` queues new work
   per session identity — newcomers wait, they do not steal
-  (`$UP/src/sessions/session-lifecycle-admission.ts:327-378`). Only
-  `sessions.reset`/`sessions.delete` interrupt admissions (dying with
-  `stopReason:"restart"`).
+  (`$UP/src/sessions/session-lifecycle-admission.ts`
+  `beginSessionWorkAdmission`). Runs and admissions are killed on purpose in
+  the cases found at v2026.9.4 — a list from reading, not a proof of
+  completeness (it used to say "only reset/delete"): an effective
+  `interrupt` queue mode (above; at admission too when the send carries the
+  field, `$UP/src/gateway/server-methods/chat-send-admission.ts:293,542`, and
+  `sessions.steer` forces it, `sessions-messaging.ts:299`), a session
+  reset/delete (`session-reset-service.ts:1305`), a session archive/delete
+  drain (`sessions-lifecycle-drain.ts`, `stopReason` = the action), a
+  compaction checkpoint restore (`sessions-compaction-checkpoints.ts:226`),
+  a worker placement move (`server-worker-placement-move-barrier.ts:79`,
+  `server-worker-placement-startup.ts:325`), a sub-agent kill (on the CHILD
+  session, `subagent-control-kill-runtime.ts:282`), a reply session rollover
+  (`$UP/src/auto-reply/reply/session.ts:518`, turned into `abortForRestart`
+  by the active turn, `reply-turn-admission.ts:318-320` — `stopReason:"restart"`)
+  and a writer takeover (below). Atrium's bridge
+  never sets `queueMode` on its `chat.send` calls (a declared gap in
+  `protocol-drift`, inventoried by `outbound-ratchet.test.ts`), but that does
+  NOT keep its turns out of the `interrupt` path: a directive in the user's
+  text, the session, the channel or the config still select it.
 
-The bidirectional kills observable in production are therefore **emergent,
-not policy**. Since 2026.8.1 the mechanism is the SQLite transcript write
-fence (see §3): the run whose transcript write finds the session claimed by
-another writer dies with `SessionTranscriptWriterClaimReboundError`
-(`$UP/src/agents/transcript-write-context.ts:239`), or a starting run finds
-its turn already claimed (`ActiveTurnClaimError`,
-`$UP/src/agents/placement-turn-claims.ts:57`). The pre-2026.8.1 prompt-lock
-takeover this section used to cite is gone. Which side loses depends on
-timing — both directions of the race are possible, consistent with what
-Atrium has observed. Re-verified at v2026.9.2: `queue/settings.ts` is
-byte-identical (default `steer`), no `status:"queued"` ack exists on
-`chat.send`, and the announce id stays `announce:v1:<childKey>:<childRunId>`.
+The race kills covered by this section happen at session **writer
+ownership**, not in the queue policy. On 2026.7.x it was the prompt-lock
+takeover. Since 2026.8.1 a run that claims the writer SUPERSEDES the live
+previous writer on purpose: `claimAgentSessionWriter`
+(`$UP/src/agents/embedded-agent-runner/run/session-bootstrap.ts:364-420`)
+persists `activeWriterRunId`, then emits for the incumbent a lifecycle
+`{phase:"end", aborted:true, status:"superseded", stopReason:"superseded"}`
+before cancelling it — projected by `server-chat.ts` into a `chat` terminal
+classed aborted. Late writes of the loser are fenced by
+`SessionTranscriptWriterClaimReboundError`
+(`$UP/src/config/sessions/transcript-write-context.ts:240`), and a starting run
+can find its turn already claimed (`ActiveTurnClaimError`,
+`$UP/src/gateway/worker-environments/placement-turn-claims.ts:57`). Which side
+loses depends on timing — both directions of the race are possible, consistent
+with what Atrium has observed. (Corrected 2026-09-13: this paragraph called the
+race "emergent, not policy".)
+
+The upstream terminals DIFFER by cause, but no single `stopReason` proves the
+race. `superseded` is NOT exclusive to the writer takeover: every run ended
+by `createAgentRunSupersededAbortError` carries it, and that error is created
+at six sites (one under an import alias, which a search on the canonical
+name misses) — among them a CLI turn whose session incarnation or lifecycle
+revision moved before it executed
+(`$UP/src/agents/command/attempt-execution.ts:930`; also
+`auto-reply/reply/agent-runner-cli-candidate.ts:161`,
+`auto-reply/reply/reply-run-registry.operation.ts:565` (`supersede`, imported
+as `createSupersededError`),
+`embedded-agent-runner/run/deferred-lifecycle-owner.ts:113`,
+`embedded-agent-runner/run/attempt-stream-prepare.ts:520`,
+`gateway/worker-environments/worker-turn-run-owner.ts:67`), mapped to
+`superseded` by `agent-run-terminal-outcome.ts:538-545`. The other kills found
+while reading — examples, NOT an exhaustive list — carry a generic `aborted`
+(`interrupt` queue mode),
+`restart` (rollover, restart), `archive`/`delete` (lifecycle drain), `timeout`
+(maintenance expiry of an active run, `$UP/src/gateway/server-maintenance.ts`
+→ `abortChatRunById`), `rpc` (a generic RPC/internal abort reason used by
+paths scoped to one run or to a whole session, `chat-abort-handler.ts`:
+`chat.abort` — with or without a `runId` — or `sessions.abort` from another
+client, a compaction checkpoint restore via `session-run-interruption.ts`, a
+worker placement cancel `server-worker-placement-cancel.ts`, an ordinary
+gateway shutdown `server-run-shutdown.ts` `abortActiveRuns`),
+`auth-revoked` (provider logout), `stop` (a `/stop` command sent as a message,
+`chat-send-pre-admission.ts`), or no value at all — but
+`convex/preemptRepark.ts` decides on a signature that ignores `stopReason`, so
+it can RE-DISPATCH a turn killed on purpose (open defect, named in that file). Re-verified at v2026.9.4: the default queue mode
+is still `steer` (`queue/settings.ts:36`), no `status:"queued"` ack exists on
+`chat.send` (a replayed send answers `in_flight`), and the announce id stays
+`announce:v1:<childKey>:<childRunId>`.
 
 **Changed since 2026.9.1**: an announce that cannot wait for the requester's
 transcript commit (`transcript_commit_wait_unsupported`) is no longer
@@ -270,10 +337,12 @@ admission and waits.
 - Followup admission is **invisible on the wire** except as an early `chat`
   final (`{status:"ok"}` dedupe entry) — there is **no `status:"queued"`
   ack**.
-- A killed run broadcasts `chat` `{state:"aborted", stopReason, message?}`
-  plus a lifecycle `{phase:"end", status:"cancelled", aborted:true}`;
-  `controlUiVisible:false` runs are killed **without any broadcast**
-  (`chat-abort.ts:528`).
+- A run killed through `chat-abort.ts` broadcasts `chat`
+  `{state:"aborted", stopReason, message?}` plus a lifecycle
+  `{phase:"end", status:"cancelled", aborted:true, stopReason}`; for a
+  `controlUiVisible:false` run only the `chat` broadcast is suppressed — the
+  lifecycle is still emitted (`chat-abort.ts` `abortChatRunById`). A writer
+  takeover emits its own lifecycle `superseded` terminal (above).
 - Steering emits **nothing** at injection time; the text appears inside the
   carrying run's stream.
 
@@ -284,18 +353,24 @@ active; "Steer" is just a `chat.send` relying on the gateway's steer mode).
 
 - Atrium's recovery model (`convex/preemptRepark.ts`: `reparkIfBusy` for one
   direction, `preemptOpenTurn` + repark for the other) **covers both
-  observable outcomes correctly**. However, comments attributing the kill to
-  a gateway "one run per session" policy (`preemptRepark.ts:5-8`,
-  `run-manager.ts:348-352`, `convex/bridge.ts:1037-1039`) describe an
-  emergent takeover mechanism as if it were deliberate gateway policy — the
-  policy does not exist in upstream code. The recovery is right; the causal
-  attribution in the comments is not.
-- The `gatewayPreempted` signature (`chat:aborted` + zero content + no user
-  Stop, `turn-sink.ts:1218-1238`) intercepts exactly the
-  `broadcastChatAborted` frame — but upstream emits that same frame for
-  operator `chat.abort`, timeouts, restarts and provider-down; the
-  sub-agent-recency proof (`preemptRepark.ts:118-136`) is Atrium's own
-  discriminator with no upstream equivalent.
+  observable outcomes** of the race. The comments in `preemptRepark.ts` and
+  `run-manager.ts` now place the kill at writer ownership (not in the queue
+  policy) and name the open defect below (updated 2026-09-13; they used to
+  call it emergent, and earlier still a "one run per session" policy).
+- The `gatewayPreempted` signature (`turn-sink.ts:2026-2034`: an aborted
+  terminal finalized as a gateway abort, on a real non-delivery run, with no
+  Stop signalled to the bridge, no visible text, no tool call and no hosted
+  work) reads no `stopReason`, so inside that subset it cannot tell what
+  produced the terminal — among others, a `chat-abort.ts` broadcast
+  (`chat.abort`/`sessions.abort` from another client, checkpoint restore,
+  worker placement cancel, gateway shutdown, archive/delete, auth
+  revocation, maintenance timeout, `/stop` sent as a message) or a lifecycle
+  terminal projected by
+  `server-chat.ts` (writer takeover `superseded`, `interrupt` → `aborted`,
+  rollover/restart `restart`). The sub-agent-recency
+  proof (`preemptRepark.ts` `recentChildren` / `deliveryImminent`) is Atrium's own discriminator with no
+  upstream equivalent, and it does not separate those causes — the open
+  defect.
 - Deliberate divergence: Atrium's queue lives in Convex (durable outbox),
   the Control UI's lives in browser state. Parallel architectures; the
   upstream followup queue (`chatQueuedTurns` cancellation identities) is not
@@ -549,7 +624,8 @@ a durable surface the Control UI does not have.
   card, deliberately outside the bounded auto-retry, since the first turn is
   still running on the gateway.
 - The `dispatchKey` alias minted on preempt-repark
-  (`preempt-<messageId>-<now>`, `preemptRepark.ts:306`) is **confirmed
+  (`preempt-<messageId>-<now>`, the `dispatchKey` assignment in
+  `preemptRepark.ts` `reparkAfterPreempt`) is **confirmed
   necessary and safe** against upstream: the abort path writes *both* the
   abort marker and the terminal `chat:` entry, so a re-POST under the
   original key would replay the "aborted" payload — for up to ~60 min (abort

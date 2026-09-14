@@ -1685,6 +1685,46 @@ describe("protocol-matrix gaps closed: stopReason + agent usage reach the diagno
     expect(final2?.diagnosticStopReason ?? null).toBeNull();
     expect(final2?.diagnosticUsage ?? null).toBeNull();
   });
+
+  it("fixed upstream stop-reason CONSTANTS keep their name in the trace bucket", () => {
+    // Pins the bucketing of these values, not their emission: each is a closed literal
+    // on a 2026.9.4 terminal (provenance beside KNOWN_STOP_REASONS). The first version of
+    // this test was titled "really emits" and missed end_turn, archive and delete — a
+    // test can only vouch for the values it lists (raised in review).
+    const cases = [
+      ["aborted", "restart"],
+      ["aborted", "superseded"],
+      ["aborted", "auth-revoked"],
+      ["aborted", "archive"],
+      ["aborted", "delete"],
+      ["final", "toolUse"],
+      ["final", "end_turn"],
+      ["final", "tool_calls"],
+    ] as const;
+    for (const [state, stopReason] of cases) {
+      const normalizer = newNormalizer();
+      const clock = new Clock();
+      normalizer.beginTurn(clock.now);
+      normalizer.noteRunStarted(OWN_RUN, clock.now);
+      const events = normalizer.feed(
+        {
+          type: "event",
+          event: "chat",
+          payload: {
+            runId: OWN_RUN,
+            sessionKey: SESSION_KEY,
+            state,
+            stopReason,
+            message: { role: "assistant", content: [{ type: "text", text: "partiel" }] },
+          },
+        },
+        clock.tick(),
+      );
+      const flushed = normalizer.tick(clock.tick(30));
+      const final = [...events, ...flushed].find((e) => e.type === "message.final");
+      expect(final?.diagnosticStopReason, stopReason).toBe(stopReason);
+    }
+  });
 });
 
 

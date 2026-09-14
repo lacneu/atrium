@@ -402,11 +402,13 @@ export class RunManager {
       // OPEN announce turn preempted by a real dispatch (the queued follow-up
       // was already in flight when the announce reopened the parent bubble —
       // rare: bridge.reparkIfBusy re-parks a paced dispatch that wakes into
-      // this state). The announce run dies to the new chat.send not by gateway
-      // policy (upstream steers/queues by design) but by the emergent
-      // session-file takeover — the announce run trips the prompt-lock fence
-      // on the dispatch's session write and its final NEVER comes (see
-      // docs/UPSTREAM_INTERPRETATION.md §2): left alone the
+      // this state). The announce run dies to the new chat.send not by the default
+      // queue policy (steer/queue) but at session WRITER ownership (see
+      // docs/UPSTREAM_INTERPRETATION.md §2-3). On 2026.7.x the prompt-lock takeover
+      // killed it and its final NEVER came. Since 2026.8.1 the new writer supersedes
+      // it on purpose and a `superseded` terminal is emitted — but only if the
+      // gateway records it, and this turn is already being replaced. Either way, left
+      // alone the
       // reopened bubble strands `streaming`, the busy gate stalls the queue
       // drain, and the 12-min watchdog errors it as stream_orphaned (live
       // 2026-07-19, "Génération…" stuck + last queued card never dispatched).

@@ -7,15 +7,42 @@
 // session, and the REAL turn died (live prod 2026-07-21, report ms746b01…:
 // chat.send 09:03:46, gateway_abort 09:04:05, announce 09:04:09 — the user's
 // message was silently consumed and had to be re-sent by hand after three
-// session resets). NOT a gateway arbitration policy: upstream (re-verified at
-// v2026.9.2) resolves announce×send contention by steering/followup-queue/
-// admission and never kills either side by design — the kill is EMERGENT, from
-// the transcript write fence (SessionTranscriptWriterClaimReboundError /
-// ActiveTurnClaimError since 2026.8.1: whichever run finds the session claimed
-// by the other writer dies, so the loser is timing-dependent — both directions
-// occur; see docs/UPSTREAM_INTERPRETATION.md §2 and §3). Queueing a message
-// mid-turn is a SUPPORTED feature: the system, not the user, owns the
-// recovery.
+// session resets). Upstream's default queue policy (steer / followup queue /
+// admission) does not kill either side. The race kill this module exists for happens
+// one layer down, at session WRITER ownership: on 2026.7.x the prompt-lock takeover;
+// since 2026.8.1 a run that claims the writer SUPERSEDES the live previous writer on
+// purpose (session-bootstrap.ts claimAgentSessionWriter: lifecycle end, aborted,
+// stopReason "superseded"). A late persistence by the loser is then refused with
+// SessionTranscriptWriterClaimReboundError; ActiveTurnClaimError is a different refusal
+// — a NEW claim on a turn already claimed. Which run loses is timing-dependent — both
+// directions occur; see docs/UPSTREAM_INTERPRETATION.md §2 and §3. Queueing a message
+// mid-turn is a SUPPORTED feature: the system, not the user, owns the recovery.
+//
+// KNOWN DEFECT (v2026.9.4, open): the bridge flag reads no stopReason. It is set for an
+// aborted terminal finalized as a gateway abort, on a real (non-delivery) run, with no
+// Stop signalled to the bridge, no visible text, no tool call and no hosted work
+// (bridge/src/core/turn-sink.ts `gatewayPreempted`) — whatever the cause. Upstream sends
+// different terminals for different causes, but NO single stopReason proves the race.
+// The writer takeover carries "superseded", and so does every run ended by
+// createAgentRunSupersededAbortError, created at six sites (one imports it under an
+// alias, which a search on the canonical name misses) — among them a CLI turn whose
+// session incarnation or lifecycle revision moved before it executed
+// (agents/command/attempt-execution.ts; also auto-reply agent-runner-cli-candidate.ts
+// and reply-run-registry.operation.ts `supersede`, embedded-agent-runner
+// deferred-lifecycle-owner.ts and attempt-stream-prepare.ts, worker-environments
+// worker-turn-run-owner.ts). A fix therefore needs proof beyond "superseded" and must
+// fail closed without it. The other causes found while reading — examples, NOT an
+// exhaustive list — are not the race either: "aborted" (an EFFECTIVE `interrupt`
+// queue mode: send field, which Atrium never sets, `/queue interrupt` directive in the
+// text, session, channel or config), "restart" (reply session rollover, gateway
+// restart), "archive"/"delete" (session lifecycle drain), "timeout" (maintenance
+// expiry of an active run), "rpc" (a generic RPC/internal abort reason, used by paths
+// scoped to one run or to a whole session: chat.abort — with or without a runId — or
+// sessions.abort from another client, a compaction checkpoint restore, a worker
+// placement cancel, an ordinary gateway shutdown), "auth-revoked"
+// (provider logout), "stop" (a `/stop` command sent as a message), and an absent or
+// unknown value. With a recent child any of them is attributed to the announce race
+// and the turn is RE-DISPATCHED, undoing a kill someone or something asked for.
 //
 // MECHANISM — ride the battle-tested queue, never a bespoke dispatch:
 //   finalize (stream.ts, gatewayPreempted flag minted by the bridge sink for a

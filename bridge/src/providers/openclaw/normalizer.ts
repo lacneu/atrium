@@ -292,16 +292,35 @@ const EMBEDDED_LOCK_CONFLICT_RE =
 // trace. The schema types stopReason as a FREE string — anything outside this
 // allowlist buckets to "other" so a raw network string never reaches traces
 // (SOC2; codex P2). Values: live captures ("stop" = natural end, "rpc" = the
-// user Stop via chat.abort) + the schema-adjacent classic finish reasons.
+// user Stop via chat.abort) + the schema-adjacent classic finish reasons +
+// the CONSTANTS 2026.9.4 puts on a terminal (never free text, so naming them
+// leaks nothing): "restart" (AGENT_RUN_RESTART_ABORT_STOP_REASON — gateway
+// restart, chat-send-admission.ts), "superseded" (AGENT_RUN_SUPERSEDED_STOP_REASON,
+// agent-run-terminal-outcome.ts), "auth-revoked" (a full-provider logout,
+// models-auth-status.ts abortChatRunsForProvider) and "toolUse" (the provider
+// union's own spelling, packages/llm-core/src/types.ts StopReason), "end_turn" /
+// "tool_calls" (embedded-agent-runner/run/terminal-resolution.ts: a yield, a
+// client tool call) and "archive" / "delete" (the closed
+// SessionLifecycleParams.action, sessions-lifecycle-drain.ts, broadcast by
+// chat-abort.ts on the killed run). Bucketed to "other", a trace could not tell
+// a gateway restart from a revoked login or a deleted session.
 const KNOWN_STOP_REASONS = new Set([
   "stop",
   "rpc",
   "length",
   "tool_use",
+  "toolUse",
+  "tool_calls",
+  "end_turn",
   "aborted",
   "error",
   "timeout",
   "content_filter",
+  "restart",
+  "superseded",
+  "auth-revoked",
+  "archive",
+  "delete",
 ]);
 const bucketStopReason = (v: string): string =>
   KNOWN_STOP_REASONS.has(v) ? v : "other";
