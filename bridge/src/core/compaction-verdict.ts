@@ -8,10 +8,34 @@
 // admission policy refuses by construction). Two copies of the rule would drift;
 // this is the single one.
 
+/** A `stream:"compaction"` frame that RELAYS a plugin hook's text, not a verdict.
+ *
+ *  Upstream reuses this stream for two unrelated things. `emitCompactionAgentEvent`
+ *  reports the real outcome (`{phase, completed, willRetry, outcome, reason?}`), while
+ *  `onCompactionHookMessages` relays whatever a `before_compaction` / `after_compaction`
+ *  hook printed — and the `after` case emits `{phase:"end", completed:true, messages}`.
+ *
+ *  Read as a verdict, that text said "the compaction completed" and CLEARED a standing
+ *  overfull verdict nothing had verified: a plugin writing one line was enough to make
+ *  Atrium believe a session had shrunk, and the next turn paid for it with a context
+ *  overflow it had been warned about. `messages` is the discriminant because it exists
+ *  ONLY on the hook path — the real end's payload has no such field at any supported
+ *  version, while `outcome`/`willRetry` could not be shown to be present on the oldest
+ *  ones. */
+export function isCompactionHookRelay(data: unknown): boolean {
+  if (typeof data !== "object" || data === null) return false;
+  return Array.isArray((data as Record<string, unknown>).messages);
+}
+
+function isHookRelay(d: Record<string, unknown>): boolean {
+  return isCompactionHookRelay(d);
+}
+
 /** True when this `stream:"compaction"` data says the compaction failed for good. */
 export function compactionFailedForGood(data: unknown): boolean {
   if (typeof data !== "object" || data === null) return false;
   const d = data as Record<string, unknown>;
+  if (isHookRelay(d)) return false;
   return (
     d.phase === "end" && d.completed === false && d.willRetry !== true
   );
@@ -21,6 +45,7 @@ export function compactionFailedForGood(data: unknown): boolean {
 export function compactionCompleted(data: unknown): boolean {
   if (typeof data !== "object" || data === null) return false;
   const d = data as Record<string, unknown>;
+  if (isHookRelay(d)) return false;
   return d.phase === "end" && d.completed === true;
 }
 

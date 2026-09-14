@@ -45,6 +45,7 @@ import {
   bucketCompactionReason,
   compactionCompleted,
   compactionFailedForGood,
+  isCompactionHookRelay,
   isCompactionRefusal,
 } from "../../core/compaction-verdict.js";
 import {
@@ -716,6 +717,10 @@ export class Normalizer {
    *  a bare status can equally mean "still backing off, for another cause". The label
    *  is closed by a real resume signal instead — see `clearRetryingPhase`. */
   private inRetryingPhase = false;
+  /** A `lifecycle_finishing` grace that a compaction suspended. Re-armed when the
+   *  compaction settles: suspending it is what keeps a long summary from closing the
+   *  turn, but DROPPING it would leave the post-compaction silence unbounded. */
+  private finishingSuspendedByCompaction = false;
   /** A tool is waiting on a human approval this app cannot grant (G-21). */
   private approvalPending = false;
   // WHY the current turn finalized (set by finalize()); shipped in the pressure
@@ -811,6 +816,7 @@ export class Normalizer {
     this.diagAborted = false;
     this.sawYielded = false;
     this.inRetryingPhase = false;
+    this.finishingSuspendedByCompaction = false;
     this.approvalPending = false;
     this.finalizeCause = null;
     this.recvSilence = false;
@@ -1010,6 +1016,7 @@ export class Normalizer {
       // hold the turn to the 240 s silence timeout — the defect this branch
       // exists to end (G-20).
       this.clearWait("lifecycle_finishing");
+      this.finishingSuspendedByCompaction = false;
       events.push(
         ...this.finalize(now, "final", null, null, "lifecycle_finishing_timeout"),
       );
@@ -2192,6 +2199,15 @@ export class Normalizer {
       }
       return;
     }
+    // A HOOK RELAY IS NOT A COMPACTION EVENT — not for the verdict, and not for the state
+    // machine either. Upstream reuses this stream to forward whatever a
+    // `before_compaction`/`after_compaction` hook printed, as `{phase:"start"|"end",
+    // messages}`. Left to fall through, a plugin's text STARTED a compaction here (widening
+    // the silence budget and suspending the finishing grace) or ENDED one (closing that
+    // budget and re-arming the grace) — state changes nothing in the gateway had made.
+    // Found by grepping for every place a compaction decision is recomposed, after a review
+    // showed the verdict itself had two copies.
+    if (isCompactionHookRelay(data)) return;
     const phase = data.phase;
     if (phase === "start") {
       this.explicitCompaction = "active";
@@ -2200,6 +2216,27 @@ export class Normalizer {
     this.replaySameRun = false;
       this.compactionPending = true; // widened recv budget while the gateway summarizes
       this.armRecv(now);
+      // A COMPACTION IN FLIGHT IS PROOF THE GATEWAY IS NOT SILENT.
+      //
+      // `lifecycle_finishing` bounds one thing: the gateway said it was finishing and
+      // then said nothing more. It fires after 60 s and closes the turn as `final`.
+      // But a compaction gets a 900-second door (`compactionPending`, right above), so
+      // the two deadlines disagree by a factor of fifteen — and the shorter one wins,
+      // closing the turn as finished while the gateway is demonstrably still
+      // summarizing. Nothing else cleared this wait: only the real terminal and a new
+      // run did.
+      //
+      // SUSPENDED, not disarmed. Clearing it outright looked safe because the recv
+      // deadline just armed is wider — but when the compaction SETTLES without a replay,
+      // `compactionPending` goes back to false and the recv budget narrows to normal,
+      // and a recv expiry does not finalize: it opens the recovery path and leaves the
+      // turn running. So `finishing -> start -> end -> silence` silently lost the 60 s
+      // bound that `finishing` had explicitly established (raised in review). The wait is
+      // remembered here and re-armed at the real end.
+      if (this.deadlines.has("lifecycle_finishing")) {
+        this.finishingSuspendedByCompaction = true;
+        this.clearWait("lifecycle_finishing");
+      }
       events.push({ type: EVENT_RUN_STATUS, status: "compacting", runId: this.currentRunId });
       if (!this.compactionSignaled) {
         this.compactionSignaled = true;
@@ -2219,7 +2256,19 @@ export class Normalizer {
       // a session that had not shrunk, and the next turn hit the context wall with
       // no prior signal (the recurring production symptom). A failure that will NOT
       // be retried is the actionable one: name it.
-      const failedForGood = data.completed === false && data.willRetry !== true;
+      // THE SHARED RULE, not a second copy of it. This line used to recompute
+      // `completed === false && willRetry !== true` inline while the between-turns path
+      // called `compactionFailedForGood` — so the hook-relay guard added to that function
+      // simply did not exist here, and a relay carrying `completed:false` still raised
+      // `session.overfull` on the active path. The verdict file says in its own header
+      // that two copies would drift; there were two (raised in review).
+      //
+      // NOT provable by a test any more, and that is worth saying: the hook-relay
+      // short-circuit above now intercepts the only frames on which the two formulations
+      // differ, so putting the rule back inline here would keep every test green. The
+      // delegation is kept because one rule with one home is how the next divergence is
+      // avoided — not because a red test is holding it in place.
+      const failedForGood = compactionFailedForGood(data);
       if (failedForGood) {
         events.push({ type: EVENT_CONTEXT_COMPACTION, phase: "failed" });
       }
@@ -2252,11 +2301,23 @@ export class Normalizer {
         this.replayExpected = true;
         this.replaySameRun = true; // upstream continues on the SAME run
         this.armRecv(now);
+        // The replay SUPERSEDES the deferred terminal: the run is producing again, so
+        // the `finishing` promise this compaction suspended no longer stands and must
+        // not be re-armed by a LATER compaction. Leaving the flag set did exactly that —
+        // a 60 s grace resurrected for a turn that had gone back to work.
+        this.finishingSuspendedByCompaction = false;
       } else {
         // Compaction settled with no replay (threshold/manual): the run
         // resumes its normal cadence.
         this.compactionPending = false;
         this.armRecv(now);
+        // …and the finishing bound this compaction suspended comes back with it. The
+        // gateway said it was finishing before it compacted; having finished compacting
+        // it owes a terminal, and that promise is what the 60 s grace holds it to.
+        if (this.finishingSuspendedByCompaction) {
+          this.finishingSuspendedByCompaction = false;
+          this.arm("lifecycle_finishing", now + LIFECYCLE_FINISHING_GRACE);
+        }
       }
     }
   }
@@ -2289,7 +2350,19 @@ export class Normalizer {
       // PRE-terminal, never a terminal: the run produced everything it will
       // produce and the real `end` follows. Say so instead of going silent, and
       // bound the wait — 240 s of nothing was the whole defect.
-      this.arm("lifecycle_finishing", now + LIFECYCLE_FINISHING_GRACE);
+      //
+      // SYMMETRIC with the compaction handler, and the asymmetry was a real hole: that
+      // side suspends the grace when a compaction starts AFTER a `finishing`, but this
+      // side armed it unconditionally, so `compaction start -> finishing -> silence`
+      // closed the turn at 60 s while the gateway was still summarizing — the same
+      // defect from the other end, and nothing upstream forbids that order (raised in
+      // review). While a compaction is pending the promise is RECORDED, not armed; the
+      // compaction's own exit arms it.
+      if (this.compactionPending) {
+        this.finishingSuspendedByCompaction = true;
+      } else {
+        this.arm("lifecycle_finishing", now + LIFECYCLE_FINISHING_GRACE);
+      }
       events.push({ type: EVENT_TURN_PHASE, phase: "post_processing" });
       return;
     }
@@ -2314,6 +2387,15 @@ export class Normalizer {
     }
     if (phase === "end") {
       this.clearWait("lifecycle_finishing"); // the real terminal arrived
+      // …and nothing may re-arm it — UNLESS this end is not the terminal at all. When a
+      // compaction is active, the `abandoned` branch below hands the turn back to the
+      // compaction machinery and returns; dropping the suspension here meant the real
+      // `compaction end` could no longer restore the 60 s bound, and
+      // `finishing -> start -> abandoned end -> compaction end -> silence` was left
+      // holding nothing (raised in review).
+      const compactionGoverns =
+        data.livenessState === "abandoned" && this.explicitCompaction === "active";
+      if (!compactionGoverns) this.finishingSuspendedByCompaction = false;
       // livenessState == "abandoned" is the multi-version compaction FALLBACK
       // heuristic (2026.5.19+ gateways emit no explicit signal). A plain
       // replayInvalid with livenessState == "working" is a normal terminal end
@@ -2378,6 +2460,7 @@ export class Normalizer {
         events.push({ type: EVENT_TURN_PHASE, phase: "generating" });
       }
       this.clearWait("lifecycle_finishing");
+      this.finishingSuspendedByCompaction = false; // a new run owns the turn now
       if (this.compactionPending) {
         this.compactionPending = false;
         this.armRecv(now);
@@ -2561,6 +2644,12 @@ export class Normalizer {
       // same run, which has no lifecycle start to clear this) is over: restore
       // the normal silence budget.
       this.compactionPending = false;
+      // …and, like a replay, visible content SUPERSEDES the deferred terminal: the run
+      // is producing again, so the `finishing` promise a compaction suspended no longer
+      // stands and must not be re-armed by a later one. This exit was not consuming the
+      // marker — found by enumerating the ways a compaction ends rather than reading the
+      // one branch that names itself `end`.
+      this.finishingSuspendedByCompaction = false;
       // …and the replay it announced has ARRIVED. Left standing, a second
       // compaction later in the same turn would inherit an admission proof it
       // never earned, re-opening the foreign-run path (codex P1).

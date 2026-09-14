@@ -773,6 +773,207 @@ describe("W2 / G-09: the cause reaches the marker and the trace", () => {
   });
 });
 
+// A COMPACTION IN FLIGHT OUTRANKS THE "FINISHING" GRACE.
+//
+// `lifecycle_finishing` bounds one thing: the gateway said it was finishing and then
+// went silent. It fires after 60 s and closes the turn as `final`. A compaction gets a
+// 900-second door, because summarizing a long session legitimately takes minutes — so
+// the two deadlines disagreed by a factor of fifteen and the shorter one won, closing
+// the turn as finished while the gateway was demonstrably still working.
+describe("the finishing grace does not outrank a compaction", () => {
+  it("a compaction start keeps the turn open past the 60 s grace", () => {
+    const n = startTurn(PRE_SESSION_ID);
+    n.feed(lifecycleFrame(PRE_SESSION_ID, { phase: "finishing" }), 1);
+    n.feed(compactionStreamFrame(PRE_SESSION_ID, { phase: "start" }), 2);
+    n.tick(1 + 70);
+    expect(n.finalized, "the turn must not close while the gateway summarizes").toBe(
+      false,
+    );
+  });
+
+  it("…and the turn is STILL bounded — by the budget that was widened for it", () => {
+    // Clearing a deadline is only safe if another one is holding the turn. The recv
+    // budget armed by the same compaction is that one: a compaction that never ends
+    // still closes the turn, just not after sixty seconds.
+    const n = startTurn(PRE_SESSION_ID);
+    n.feed(lifecycleFrame(PRE_SESSION_ID, { phase: "finishing" }), 1);
+    n.feed(compactionStreamFrame(PRE_SESSION_ID, { phase: "start" }), 2);
+    expect(n.nextTimeout(1 + 70), "a deadline still exists").not.toBeNull();
+    n.tick(1 + 1000);
+    expect(n.finalized, "nothing hangs for ever").toBe(true);
+  });
+
+  it("the grace COMES BACK when the compaction settles", () => {
+    // Suspending it is what keeps a long summary from closing the turn; DROPPING it left
+    // `finishing -> start -> end -> silence` unbounded, because a settled compaction
+    // narrows the recv budget again and a recv expiry opens recovery instead of
+    // finalizing (raised in review). The gateway said it was finishing before it
+    // compacted; having finished compacting it still owes a terminal.
+    const n = startTurn(PRE_SESSION_ID);
+    n.feed(lifecycleFrame(PRE_SESSION_ID, { phase: "finishing" }), 1);
+    n.feed(compactionStreamFrame(PRE_SESSION_ID, { phase: "start" }), 2);
+    n.feed(
+      compactionStreamFrame(PRE_SESSION_ID, {
+        phase: "end",
+        completed: true,
+        willRetry: false,
+        outcome: "completed",
+      }),
+      3,
+    );
+    n.tick(3 + 70);
+    expect(n.finalized, "the 60 s bound is back once the summary is done").toBe(true);
+  });
+
+  it("a REPLAY supersedes the promise — a later compaction cannot resurrect it", () => {
+    // Found by walking the exit paths of my own fix rather than by reading it: the
+    // replay branch left the suspension flag set for ever, so the NEXT compaction to
+    // settle re-armed a 60 s grace for a `finishing` the replay had already superseded —
+    // closing a turn that had gone back to producing.
+    const n = startTurn(PRE_SESSION_ID);
+    n.feed(lifecycleFrame(PRE_SESSION_ID, { phase: "finishing" }), 1);
+    n.feed(compactionStreamFrame(PRE_SESSION_ID, { phase: "start" }), 2);
+    // settled WITH a replay: the run resumes
+    n.feed(
+      compactionStreamFrame(PRE_SESSION_ID, {
+        phase: "end",
+        completed: true,
+        willRetry: true,
+        outcome: "completed",
+      }),
+      3,
+    );
+    // a second compaction, settling normally, must NOT bring the grace back
+    n.feed(compactionStreamFrame(PRE_SESSION_ID, { phase: "start" }), 4);
+    n.feed(
+      compactionStreamFrame(PRE_SESSION_ID, {
+        phase: "end",
+        completed: true,
+        willRetry: false,
+        outcome: "completed",
+      }),
+      5,
+    );
+    n.tick(5 + 70);
+    expect(n.finalized, "the superseded promise must not close this turn").toBe(false);
+  });
+
+  it("an ABANDONED end during a compaction does not drop the suspension", () => {
+    // `abandoned` while a compaction is active is not the terminal — the branch below it
+    // hands the turn back to the compaction machinery and returns. Clearing the
+    // suspension there meant the real `compaction end` could no longer restore the
+    // 60 s bound, and the turn was left holding nothing (raised in review).
+    const n = startTurn(PRE_SESSION_ID);
+    n.feed(lifecycleFrame(PRE_SESSION_ID, { phase: "finishing" }), 1);
+    n.feed(compactionStreamFrame(PRE_SESSION_ID, { phase: "start" }), 2);
+    n.feed(
+      lifecycleFrame(PRE_SESSION_ID, { phase: "end", livenessState: "abandoned" }),
+      3,
+    );
+    n.feed(
+      compactionStreamFrame(PRE_SESSION_ID, {
+        phase: "end",
+        completed: true,
+        willRetry: false,
+        outcome: "completed",
+      }),
+      4,
+    );
+    n.tick(4 + 70);
+    expect(n.finalized, "the bound comes back when the summary really ends").toBe(true);
+  });
+
+  it("VISIBLE CONTENT supersedes the promise too — the fourth exit", () => {
+    // A compaction ends in more ways than the branch called `end`: resumed content
+    // closes it as well, and that exit was not consuming the suspension marker. Left
+    // standing, a later compaction re-armed a grace for a turn that had gone back to
+    // producing. Enumerated, not guessed.
+    const n = startTurn(PRE_SESSION_ID);
+    n.feed(lifecycleFrame(PRE_SESSION_ID, { phase: "finishing" }), 1);
+    n.feed(compactionStreamFrame(PRE_SESSION_ID, { phase: "start" }), 2);
+    n.feed(assistantFrame(PRE_SESSION_ID, "the run is producing again"), 3);
+    n.feed(compactionStreamFrame(PRE_SESSION_ID, { phase: "start" }), 4);
+    n.feed(
+      compactionStreamFrame(PRE_SESSION_ID, {
+        phase: "end",
+        completed: true,
+        willRetry: false,
+        outcome: "completed",
+      }),
+      5,
+    );
+    n.tick(5 + 70);
+    expect(n.finalized, "a superseded promise must not be resurrected").toBe(false);
+  });
+
+  it("the REVERSE order is handled too — compaction first, finishing second", () => {
+    // The first version of this fix only knew `finishing -> compaction start`. Nothing
+    // upstream forbids the other order, and there the grace was armed unconditionally:
+    // the turn closed at 60 s while the gateway was still summarizing — the same defect
+    // from the other end (raised in review).
+    const n = startTurn(PRE_SESSION_ID);
+    // MONOTONE: the frame stamps move forward with the clock. The first version fed the
+    // compaction end at t=3 after ticking to t=72 — time travel, and a test that asks the
+    // implementation to accept a past it will never see (raised in review).
+    n.feed(compactionStreamFrame(PRE_SESSION_ID, { phase: "start" }), 1);
+    n.feed(lifecycleFrame(PRE_SESSION_ID, { phase: "finishing" }), 2);
+    n.tick(72);
+    expect(n.finalized, "not while the compaction is still running").toBe(false);
+    n.feed(
+      compactionStreamFrame(PRE_SESSION_ID, {
+        phase: "end",
+        completed: true,
+        willRetry: false,
+        outcome: "completed",
+      }),
+      73,
+    );
+    n.tick(143);
+    expect(n.finalized, "…and bounded again once it ends").toBe(true);
+  });
+
+  it("a hook relay does not START a compaction — no widened budget, no suspension", () => {
+    // The relay is `{phase:"start"|"end", messages}`. Falling through, a plugin's text
+    // widened the silence budget and suspended the finishing grace: state changes nothing
+    // in the gateway had made. Found by grepping every place a compaction decision is
+    // recomposed, after a review showed the verdict itself had two copies.
+    const n = startTurn(PRE_SESSION_ID);
+    n.feed(lifecycleFrame(PRE_SESSION_ID, { phase: "finishing" }), 1);
+    n.feed(
+      compactionStreamFrame(PRE_SESSION_ID, { phase: "start", messages: ["hook says hi"] }),
+      2,
+    );
+    n.tick(72);
+    expect(n.finalized, "the 60 s bound must still hold — nothing compacted").toBe(true);
+  });
+
+  it("a hook relay does not END one either", () => {
+    const n = startTurn(PRE_SESSION_ID);
+    n.feed(compactionStreamFrame(PRE_SESSION_ID, { phase: "start" }), 1);
+    n.feed(lifecycleFrame(PRE_SESSION_ID, { phase: "finishing" }), 2);
+    // A hook's `after` text must not close the compaction and re-arm the grace.
+    n.feed(
+      compactionStreamFrame(PRE_SESSION_ID, {
+        phase: "end",
+        completed: true,
+        messages: ["hook says done"],
+      }),
+      3,
+    );
+    n.tick(73);
+    expect(n.finalized, "the real compaction is still running").toBe(false);
+  });
+
+  it("WITHOUT a compaction the grace still closes a silent turn at 60 s", () => {
+    // The guard must not disarm the defect the grace exists for (G-20): a deferred
+    // terminal followed by silence used to hold the turn to the 240 s recv timeout.
+    const n = startTurn(PRE_SESSION_ID);
+    n.feed(lifecycleFrame(PRE_SESSION_ID, { phase: "finishing" }), 1);
+    n.tick(1 + 70);
+    expect(n.finalized).toBe(true);
+  });
+});
+
 describe("normalizer emits the session-overfull verdict", () => {
   it("an explicit compaction that FAILED for good raises it", () => {
     const n = startTurn(PRE_SESSION_ID);
@@ -786,6 +987,85 @@ describe("normalizer emits the session-overfull verdict", () => {
     );
     expect(ev.find((e) => e.type === "session.overfull")).toMatchObject({
       overfull: true,
+    });
+  });
+
+  it("a HOOK's text does not pass for a completed compaction", () => {
+    // Upstream reuses `stream:"compaction"` for two unrelated things: the real outcome,
+    // and a relay of whatever a `before_compaction`/`after_compaction` hook printed.
+    // The `after` relay is `{phase:"end", completed:true, messages:[…]}` — no `outcome`,
+    // no `willRetry` — and reading it as a verdict CLEARED a standing overfull state
+    // nothing had verified. A plugin writing one line made Atrium believe the session
+    // had shrunk, and the next turn paid for it with the overflow it had been warned
+    // about.
+    const n = startTurn(PRE_SESSION_ID);
+    n.feed(
+      compactionStreamFrame(PRE_SESSION_ID, {
+        phase: "end",
+        completed: false,
+        willRetry: false,
+      }),
+      1,
+    );
+    const ev = n.feed(
+      compactionStreamFrame(PRE_SESSION_ID, {
+        phase: "end",
+        completed: true,
+        messages: ["compacted the transcript, boss"],
+      }),
+      2,
+    );
+    expect(
+      ev.find((e) => e.type === "session.overfull"),
+      "a hook relay must not clear the verdict",
+    ).toBeUndefined();
+  });
+
+  it("a hook relay claiming FAILURE raises nothing either — on the ACTIVE path", () => {
+    // The helper-level test passed while the normalizer recomputed the rule inline, so
+    // the guard did not exist on the turn's own path: a relay carrying `completed:false`
+    // still raised the overfull verdict AND the failed-compaction marker (raised in
+    // review, reproduced against the compiled normalizer). This drives the Normalizer,
+    // not the helper.
+    const n = startTurn(PRE_SESSION_ID);
+    const ev = n.feed(
+      compactionStreamFrame(PRE_SESSION_ID, {
+        phase: "end",
+        completed: false,
+        willRetry: false,
+        messages: ["a hook printed this"],
+      }),
+      1,
+    );
+    expect(ev.find((e) => e.type === "session.overfull")).toBeUndefined();
+    expect(
+      ev.find((e) => e.type === "context.compaction" && e.phase === "failed"),
+      "no failed-compaction marker from a hook's text",
+    ).toBeUndefined();
+  });
+
+  it("…while a REAL completion still clears it", () => {
+    // The guard must not turn a working clear into a verdict nobody can ever lift.
+    const n = startTurn(PRE_SESSION_ID);
+    n.feed(
+      compactionStreamFrame(PRE_SESSION_ID, {
+        phase: "end",
+        completed: false,
+        willRetry: false,
+      }),
+      1,
+    );
+    const ev = n.feed(
+      compactionStreamFrame(PRE_SESSION_ID, {
+        phase: "end",
+        completed: true,
+        willRetry: false,
+        outcome: "completed",
+      }),
+      2,
+    );
+    expect(ev.find((e) => e.type === "session.overfull")).toMatchObject({
+      overfull: false,
     });
   });
 
