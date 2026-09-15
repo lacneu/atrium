@@ -27,7 +27,9 @@
 //                            "gatewayVersion": "2026.7.1",   // the version under test
 //                            "verdict": "GO",                // only GO may be promoted
 //                            "results": [                     // one entry per scenario
-//                              { "id": "basic-turn", "provider": "openclaw", … }
+//                              { "id": "basic-turn",          // [a-z0-9][a-z0-9-]*, unique
+//                                "provider": "openclaw",      // "openclaw" | "hermes"
+//                                "violations": [], … }        // REQUIRED, empty on a clean run
 //                            ]
 //                          }
 //   scenario-<id>.jsonl    the frames captured DURING that scenario, one JSON line each,
@@ -392,8 +394,97 @@ export function promoteSlice(rawSlice, knownKeys = undefined) {
   return { lines, stats, pseudonyms: pseudo.size(), context };
 }
 
-async function main() {
-  const args = parseArgs(process.argv.slice(2));
+/**
+ * Which slices a run may promote, decided from the run's OWN report before any slice is
+ * read or any output is written — pure, so the refusals below are tested directly.
+ *
+ * TWO completeness gaps used to let a PARTIAL capture through (defect 16). The promoter
+ * checked that every slice had a result, never that every OpenClaw result had a slice:
+ * a GO report of ten results beside one slice promoted one fixture, then REMOVED the nine
+ * others as stale — the corpus shrank behind an attested run. And the provider guard only
+ * refused when EVERY result lacked a provider, so one marked result let the unmarked ones
+ * be read as non-OpenClaw and skipped in silence.
+ *
+ * A result with no slice is legitimate only off the OpenClaw capture: a bridge-only HTTP
+ * check (hermes-cron-list) records a result and no frames. Measured on the full-catalogue
+ * run 2026-09-15T09-19-29-704Z: every OpenClaw result had its slice.
+ */
+export function planPromotion(results, sliceFiles) {
+  const list = Array.isArray(results) ? results : [];
+  if (list.length === 0) {
+    throw new Error("report.json records no scenario result — nothing to check the slices against");
+  }
+  // The scenario id names the fixture file and the slice: an empty or odd one would
+  // write `.jsonl` and leave every real fixture looking stale (codex). Every id recorded by
+  // the bench so far matches this grammar (26 across all runs, checked 2026-09-15).
+  const badIds = list.filter((r) => typeof r?.id !== "string" || !/^[a-z0-9][a-z0-9-]*$/.test(r.id));
+  if (badIds.length > 0) {
+    throw new Error(
+      `report.json records scenario id(s) outside [a-z0-9][a-z0-9-]*: ${badIds.map((r) => JSON.stringify(r?.id)).join(", ")}`,
+    );
+  }
+  // An id seen twice is refused before any Map is built: a Map keeps the LAST provider,
+  // so `basic-turn` recorded as openclaw then as hermes read as hermes and its fixture was
+  // removed as stale (codex).
+  const seen = new Set();
+  const duplicated = new Set();
+  for (const r of list) {
+    if (seen.has(r?.id)) duplicated.add(r?.id);
+    seen.add(r?.id);
+  }
+  if (duplicated.size > 0) {
+    throw new Error(`report.json records scenario id(s) more than once: ${[...duplicated].join(", ")}`);
+  }
+  // A FAILED scenario inside a GO report is refused too: GO is meant to imply every scenario
+  // ran clean (bench-attestation.test.ts holds the same rule), and a result carrying
+  // violations is not a capture worth publishing whatever the verdict line says.
+  const failed = list
+    .filter((r) => !Array.isArray(r?.violations) || r.violations.length > 0)
+    .map((r) => r?.id);
+  if (failed.length > 0) {
+    throw new Error(
+      `report.json records scenario(s) with violations, or no violations list: ${failed.join(", ")} — not a clean run`,
+    );
+  }
+  // A CLOSED provider domain (bridge/src/server.ts CapabilityTarget.provider): anything
+  // else — a typo, an empty string — was skipped like Hermes, and its OpenClaw fixture
+  // then removed as stale (codex).
+  const unmarked = list
+    .filter((r) => r?.provider !== "openclaw" && r?.provider !== "hermes")
+    .map((r) => r?.id);
+  if (unmarked.length > 0) {
+    throw new Error(
+      `report.json records no known provider ("openclaw" | "hermes") for ${unmarked.join(", ")} — re-run the bench with a harness that does`,
+    );
+  }
+  const providerById = new Map(list.map((r) => [r.id, r.provider]));
+  const sliceIds = sliceFiles
+    .map((f) => f.slice("scenario-".length, -".jsonl".length))
+    .sort();
+  for (const id of sliceIds) {
+    if (!providerById.has(id)) {
+      throw new Error(`slice scenario-${id}.jsonl has no matching result in report.json`);
+    }
+  }
+  const sliced = new Set(sliceIds);
+  const missing = list
+    .filter((r) => r.provider === "openclaw" && !sliced.has(r.id))
+    .map((r) => r.id);
+  if (missing.length > 0) {
+    throw new Error(
+      `OpenClaw result(s) with no slice: ${missing.join(", ")} — promoting this PARTIAL capture would delete their fixtures as stale`,
+    );
+  }
+  return {
+    openclaw: sliceIds.filter((id) => providerById.get(id) === "openclaw"),
+    skipped: sliceIds
+      .filter((id) => providerById.get(id) !== "openclaw")
+      .map((id) => ({ id, provider: providerById.get(id) })),
+  };
+}
+
+export async function main(argv = process.argv.slice(2)) {
+  const args = parseArgs(argv);
   const runDir = path.resolve(args.run);
   const reportPath = path.join(runDir, "report.json");
   if (!fs.existsSync(reportPath)) {
@@ -460,32 +551,17 @@ async function main() {
   // but not that scenario's, and promoting them would file another provider's timeline
   // under a Hermes name. Fail CLOSED when the run predates the provider marker: guessing
   // from the id is how the wrong frames end up in the corpus wearing the right label.
-  const providerById = new Map(
-    (Array.isArray(report.results) ? report.results : []).map((r) => [r.id, r.provider]),
-  );
-  if ([...providerById.values()].every((p) => p === undefined)) {
-    throw new Error(
-      "report.json records no per-scenario provider — re-run the bench with a harness that does",
-    );
-  }
+  const plan = planPromotion(report.results, slices);
 
   // The fidelity gate needs the BUILT bridge. Loaded once, up front, so a missing build
   // stops the promotion before it writes anything rather than half-way through.
   const RunManager = await loadRunManager(path.join(REPO_ROOT, "bridge"));
 
   const promoted = [];
-  const skipped = [];
+  const skipped = plan.skipped;
   const pending = [];
-  for (const file of slices.sort()) {
-    const id = file.slice("scenario-".length, -".jsonl".length);
-    if (!providerById.has(id)) {
-      throw new Error(`slice ${file} has no matching result in report.json`);
-    }
-    const provider = providerById.get(id);
-    if (provider !== "openclaw") {
-      skipped.push({ id, provider });
-      continue;
-    }
+  for (const id of plan.openclaw) {
+    const file = `scenario-${id}.jsonl`;
     const raw = fs.readFileSync(path.join(runDir, file), "utf8");
     const { lines, stats, pseudonyms, context } = promoteSlice(raw, knownKeys);
     if (lines.length === 0) {

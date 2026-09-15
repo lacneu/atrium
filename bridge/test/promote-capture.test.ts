@@ -17,8 +17,9 @@
 
 import { describe, expect, it } from "vitest";
 
-import { readFileSync } from "node:fs";
-import { dirname, resolve } from "node:path";
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import {
@@ -32,6 +33,8 @@ import {
 import {
   classifyToolNames,
   harvestToolNames,
+  main as promoteMain,
+  planPromotion,
   promoteSlice,
   // @ts-expect-error — plain .mjs script, no types (it runs under node, not tsc)
 } from "../scripts/promote-capture.mjs";
@@ -874,5 +877,134 @@ describe("the anonymiser's mirrors match the reader they mirror", () => {
         expect(Object.keys(out.payload.data.args), `${name}: ${key}`).toContain(key);
       }
     }
+  });
+});
+
+// ── Defect 16: a PARTIAL capture must not be promoted ─────────────────────────
+// The promoter replaces the corpus: a fixture absent from the run is removed as stale.
+// So the run must account for every OpenClaw result before anything is written.
+describe("promotion plan: a partial or unclean capture is refused", () => {
+  // The real report shape (report.json of a full-catalogue run): id, provider, violations.
+  const result = (id: string, provider?: string, violations: string[] = []) =>
+    provider === undefined ? { id, violations } : { id, provider, violations };
+
+  it("the full-catalogue shape is accepted, and the Hermes bridge-only result needs no slice", () => {
+    const plan = planPromotion(
+      [
+        result("basic-turn", "openclaw"),
+        result("tool-exec", "openclaw"),
+        result("hermes-basic-turn", "hermes"),
+        result("hermes-cron-list", "hermes"),
+      ],
+      ["scenario-tool-exec.jsonl", "scenario-basic-turn.jsonl", "scenario-hermes-basic-turn.jsonl"],
+    ) as { openclaw: string[]; skipped: { id: string; provider: string }[] };
+    expect(plan.openclaw).toEqual(["basic-turn", "tool-exec"]);
+    expect(plan.skipped).toEqual([{ id: "hermes-basic-turn", provider: "hermes" }]);
+  });
+
+  it("an OpenClaw result with NO slice refuses the whole promotion, naming it", () => {
+    expect(() =>
+      planPromotion(
+        [result("basic-turn", "openclaw"), result("tool-exec", "openclaw"), result("async-task", "openclaw")],
+        ["scenario-basic-turn.jsonl"],
+      ),
+    ).toThrow(/OpenClaw result\(s\) with no slice: tool-exec, async-task/);
+  });
+
+  it("ONE result without a provider refuses, even when the others carry one", () => {
+    expect(() =>
+      planPromotion(
+        [result("basic-turn", "openclaw"), result("tool-exec")],
+        ["scenario-basic-turn.jsonl", "scenario-tool-exec.jsonl"],
+      ),
+    ).toThrow(/no known provider \("openclaw" \| "hermes"\) for tool-exec/);
+  });
+
+  it("a slice with no result still refuses", () => {
+    expect(() =>
+      planPromotion([result("basic-turn", "openclaw")], ["scenario-basic-turn.jsonl", "scenario-ghost.jsonl"]),
+    ).toThrow(/scenario-ghost\.jsonl has no matching result/);
+  });
+
+  it("a provider OUTSIDE the closed domain refuses — a typo or an empty string is not Hermes", () => {
+    for (const provider of ["openclwa", ""]) {
+      expect(() =>
+        planPromotion(
+          [result("basic-turn", "openclaw"), { id: "tool-exec", provider, violations: [] }],
+          ["scenario-basic-turn.jsonl"],
+        ),
+      ).toThrow(/no known provider/);
+    }
+  });
+
+  it("an EMPTY or malformed scenario id refuses — it would name the fixture file", () => {
+    for (const id of ["", "Basic Turn", "../basic-turn"]) {
+      expect(() =>
+        planPromotion([{ id, provider: "openclaw", violations: [] }], [`scenario-${id}.jsonl`]),
+      ).toThrow(/outside \[a-z0-9\]\[a-z0-9-\]\*/);
+    }
+  });
+
+  it("an EMPTY report refuses", () => {
+    expect(() => planPromotion([], ["scenario-basic-turn.jsonl"])).toThrow(/no scenario result/);
+  });
+
+  it("a DUPLICATED scenario id refuses — a Map would keep only the last provider", () => {
+    expect(() =>
+      planPromotion(
+        [result("basic-turn", "openclaw"), result("basic-turn", "hermes"), result("tool-exec", "openclaw")],
+        ["scenario-basic-turn.jsonl", "scenario-tool-exec.jsonl"],
+      ),
+    ).toThrow(/more than once: basic-turn/);
+  });
+
+  it("a scenario with VIOLATIONS inside a GO report refuses", () => {
+    expect(() =>
+      planPromotion(
+        [result("basic-turn", "openclaw", ["assistant status=error"]), result("tool-exec", "openclaw")],
+        ["scenario-basic-turn.jsonl", "scenario-tool-exec.jsonl"],
+      ),
+    ).toThrow(/with violations, or no violations list: basic-turn/);
+  });
+
+  it("a result with NO violations list refuses — an older report cannot vouch for a clean run", () => {
+    expect(() =>
+      planPromotion([{ id: "basic-turn", provider: "openclaw" }], ["scenario-basic-turn.jsonl"]),
+    ).toThrow(/with violations, or no violations list: basic-turn/);
+  });
+
+  it("a RENAMED slice (result kept under its old id) refuses on the slice side", () => {
+    expect(() =>
+      planPromotion([result("basic-turn", "openclaw")], ["scenario-basic-turn-v2.jsonl"]),
+    ).toThrow(/has no matching result/);
+  });
+});
+
+describe("promotion entry point: the refusal happens before anything is written", () => {
+  it("a GO report missing an OpenClaw slice leaves the output directory exactly as it was", async () => {
+    const root = mkdtempSync(join(tmpdir(), "promote-partial-"));
+    const run = join(root, "run");
+    const out = join(root, "out");
+    mkdirSync(run);
+    mkdirSync(join(out, "2026.9.4"), { recursive: true });
+    const existing = join(out, "2026.9.4", "tool-exec.jsonl");
+    writeFileSync(existing, "previous fixture\n");
+    writeFileSync(
+      join(run, "report.json"),
+      JSON.stringify({
+        verdict: "GO",
+        gatewayVersion: "2026.9.4",
+        results: [
+          { id: "basic-turn", provider: "openclaw", violations: [] },
+          { id: "tool-exec", provider: "openclaw", violations: [] },
+        ],
+      }),
+    );
+    writeFileSync(join(run, "scenario-basic-turn.jsonl"), "");
+    await expect(promoteMain(["--run", run, "--out", out])).rejects.toThrow(
+      /OpenClaw result\(s\) with no slice: tool-exec/,
+    );
+    expect(readdirSync(join(out, "2026.9.4"))).toEqual(["tool-exec.jsonl"]);
+    expect(readFileSync(existing, "utf8")).toBe("previous fixture\n");
   });
 });
