@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.84.9] — Provisioned gateway posture reaches the bridge
+
+Corrective release for non-interactive OpenClaw provisioning.
+
+**The provision endpoint now persists the authentication posture it accepts.** A
+control plane can promote an existing instance from token authentication to
+`trusted-proxy` with its requested person-scope policy without rotating the installed
+bridge secret. Replaying the same request is a true no-op, while explicitly returning to
+token mode removes stale trusted-proxy scope metadata.
+
+The HTTP boundary now validates these provider-specific fields and rejects every unknown
+field instead of silently dropping it. Hermes refuses OpenClaw posture fields, and a
+person-scope policy cannot be submitted without explicitly selecting trusted-proxy mode.
+This closes the mismatch where OpenClaw enforced trusted-proxy correctly while Atrium's
+bridge still attempted token-mode WebSocket upgrades and received HTTP 403.
+
 ## [0.84.8] — Saying "the provider is busy" instead of "finishing up"
 
 Corrective release. One thing changes for the reader, and it is the thing a rate-limited

@@ -71,6 +71,8 @@ type Managed = {
   gatewayHttpUrl?: string | null;
   kind: "openclaw" | "hermes";
   transport?: "ws" | "rest" | null;
+  authMode?: "token" | "trusted-proxy";
+  personScopes?: "capped" | "full";
 };
 
 /** Trim, then treat "" as an explicit clear (the admin form's convention). */
@@ -113,6 +115,12 @@ export const applyProvision = internalMutation({
     kind: v.union(v.literal("openclaw"), v.literal("hermes")),
     transport: v.optional(
       v.union(v.literal("ws"), v.literal("rest"), v.null()),
+    ),
+    authMode: v.optional(
+      v.union(v.literal("token"), v.literal("trusted-proxy")),
+    ),
+    personScopes: v.optional(
+      v.union(v.literal("capped"), v.literal("full")),
     ),
   },
   handler: async (
@@ -162,6 +170,9 @@ export const applyProvision = internalMutation({
         gatewayHttpUrl: resolveField(normalize(args.gatewayHttpUrl), undefined),
         kind: args.kind,
         transport: resolveField(args.transport, undefined),
+        authMode: args.authMode,
+        personScopes:
+          args.authMode === "token" ? undefined : args.personScopes,
       });
       return { instanceId, outcome: "created" };
     }
@@ -180,6 +191,11 @@ export const applyProvision = internalMutation({
       ),
       kind: args.kind,
       transport: resolveField(args.transport, existing.transport),
+      authMode: args.authMode ?? existing.authMode,
+      personScopes:
+        args.authMode === "token"
+          ? undefined
+          : args.personScopes ?? existing.personScopes,
     };
     const unchanged =
       next.gatewayUrl === existing.gatewayUrl &&
@@ -191,7 +207,9 @@ export const applyProvision = internalMutation({
       // comparing raw would report a change on every replay of an openclaw
       // instance created before `kind` existed.
       next.kind === (existing.kind ?? "openclaw") &&
-      next.transport === existing.transport;
+      next.transport === existing.transport &&
+      next.authMode === existing.authMode &&
+      next.personScopes === existing.personScopes;
     if (unchanged) return { instanceId: existing._id, outcome: "unchanged" };
     await ctx.db.patch(existing._id, {
       gatewayUrl: next.gatewayUrl,
@@ -201,6 +219,8 @@ export const applyProvision = internalMutation({
       gatewayHttpUrl: next.gatewayHttpUrl ?? undefined,
       kind: next.kind,
       transport: next.transport ?? undefined,
+      authMode: next.authMode,
+      personScopes: next.personScopes,
     });
     return { instanceId: existing._id, outcome: "updated" };
   },
@@ -315,6 +335,12 @@ export const provisionInstance = internalAction({
     kind: v.union(v.literal("openclaw"), v.literal("hermes")),
     transport: v.optional(
       v.union(v.literal("ws"), v.literal("rest"), v.null()),
+    ),
+    authMode: v.optional(
+      v.union(v.literal("token"), v.literal("trusted-proxy")),
+    ),
+    personScopes: v.optional(
+      v.union(v.literal("capped"), v.literal("full")),
     ),
     rotateBridgeSecret: v.optional(v.boolean()),
     /** API-key principal id, for attribution on a minted secret. */

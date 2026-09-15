@@ -1911,6 +1911,25 @@ http.route({
     };
     // A field the caller sends and we silently ignore is how a control plane
     // ships a bug that survives for months — every one is rejected loudly.
+    const allowed = new Set([
+      "name",
+      "gatewayUrl",
+      "kind",
+      "displayName",
+      "bridgeUrl",
+      "gatewayVersion",
+      "gatewayHttpUrl",
+      "transport",
+      "authMode",
+      "personScopes",
+      "rotateBridgeSecret",
+    ]);
+    const unknown = Object.keys(body)
+      .filter((key) => !allowed.has(key))
+      .sort();
+    if (unknown.length > 0) {
+      return await reject(`unsupported field: ${unknown[0]}`);
+    }
     const str = (key: string): string | null | undefined | "bad" => {
       const raw = body[key];
       if (raw === undefined) return undefined;
@@ -1964,6 +1983,29 @@ http.route({
         }
       }
     }
+    let authMode: "token" | "trusted-proxy" | undefined;
+    if (body.authMode !== undefined) {
+      if (body.authMode !== "token" && body.authMode !== "trusted-proxy") {
+        return await reject("authMode must be 'token' or 'trusted-proxy'");
+      }
+      authMode = body.authMode;
+    }
+    let personScopes: "capped" | "full" | undefined;
+    if (body.personScopes !== undefined) {
+      if (body.personScopes !== "capped" && body.personScopes !== "full") {
+        return await reject("personScopes must be 'capped' or 'full'");
+      }
+      personScopes = body.personScopes;
+    }
+    if (
+      kind === "hermes" &&
+      (authMode !== undefined || personScopes !== undefined)
+    ) {
+      return await reject("authMode and personScopes apply to kind 'openclaw' only");
+    }
+    if (personScopes !== undefined && authMode !== "trusted-proxy") {
+      return await reject("personScopes requires authMode 'trusted-proxy'");
+    }
     const rotate = body.rotateBridgeSecret;
     if (rotate !== undefined && typeof rotate !== "boolean") {
       return await reject("rotateBridgeSecret must be a boolean");
@@ -1982,6 +2024,8 @@ http.route({
           gatewayHttpUrl: optional.gatewayHttpUrl,
           kind,
           transport,
+          authMode,
+          personScopes,
           rotateBridgeSecret: rotate,
           principalId: principal.id,
         },
