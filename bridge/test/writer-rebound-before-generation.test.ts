@@ -128,6 +128,22 @@ describe("a writer-claim rebound is retried only when the stream proves nothing 
     expect(final?.errorKind).toBe("session_write_conflict");
   });
 
+  it("the gateway's USER-FACING copy of the rebound, on the wire, classifies like the raw text", () => {
+    // 2026.9.3+ (read at v2026.9.4) renders the rebound as `transcript_writer_fenced` copy and ships THAT as
+    // the lifecycle `error` and the chat error's `errorMessage` (upstream
+    // embedded-agent-subscribe.handlers.lifecycle.ts:151-167,219; server-chat.ts:783,1239).
+    const COPY =
+      "⚠️ Agent run failed: the transcript writer no longer owned this session. Retry in the current session; if it repeats, check Gateway logs.";
+    const started = [...PRELUDE, agentFrame(5, "lifecycle", { phase: "start", startedAt: 2_000 })];
+    const viaLifecycle = once([...started, agentFrame(6, "lifecycle", { phase: "error", error: COPY })]);
+    expect(viaLifecycle?.errorKind).toBe("session_write_conflict");
+    const viaChat = once([
+      ...started,
+      { type: "event", event: "chat", payload: { runId: RUN, sessionKey: SESSION_KEY, seq: 6, state: "error", errorMessage: COPY } },
+    ]);
+    expect(viaChat?.errorKind).toBe("session_write_conflict");
+  });
+
   it("evidence and gaps belong to ONE turn", () => {
     const n = new Normalizer(SESSION_KEY);
     const first = turn(n, [...PRELUDE, agentFrame(5, "lifecycle", { phase: "start", startedAt: 2_000 }), chatError(6)], (x) =>

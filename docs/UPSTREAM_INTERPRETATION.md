@@ -533,6 +533,24 @@ active; "Steer" is just a `chat.send` relying on the gateway's steer mode).
   `isTransientAnnounceDeliveryError`; the regex at `:70` is only its
   definition). Refusal codes are redacted (`session-rebound`,
   `session-entry-missing`) — no filesystem path reaches the message.
+  **Since 2026.9.3 (absent from the v2026.9.1 and v2026.9.2 sources; read at
+  v2026.9.4), when it ends a generating run the wire does not carry this
+  sentence.** The gateway maps it to the storage failure
+  `transcript_writer_fenced` (`$UP/src/infra/sqlite-error-diagnostics.ts:10`)
+  and renders it as the user-facing copy "⚠️ Agent run failed: the transcript
+  writer no longer owned this session. Retry in the current session; if it
+  repeats, check Gateway logs."
+  (`failover/assistant-request-failure-copy.ts:24-25,52`), which becomes the
+  lifecycle `error` (`embedded-agent-subscribe.handlers.lifecycle.ts:151-167,219`)
+  and the chat error's `errorMessage` (`server-chat.ts:783,1239`). Atrium
+  classifies both renderings as `session_write_conflict`; the copy's "Retry"
+  does not make it retryable. A failed run also leaves its partial text in the
+  transcript as an assistant entry with `stopReason: "error"`
+  (`assistant-error-transcript.ts:26-72,105-113`, same versions), returned by
+  `sessions.get` with its `content` and `stopReason` intact: the bridge's
+  transcript recovery never takes such an entry as the reply. Another valid
+  reply or message-tool delivery of the same turn still comes back; with none,
+  the recovery keeps polling and settles with its honest cause.
 - **`Session <id> already has an active turn claim`** (`ActiveTurnClaimError`,
   `$UP/src/gateway/worker-environments/placement-turn-claims.ts:57`): joins the
   coordination family at 2026.9.1 (`failover-error.ts:46-52`), so a busy
@@ -545,7 +563,9 @@ active; "Steer" is just a `chat.send` relying on the gateway's steer mode).
 
 None of these messages receives special handling in the Control UI: they arrive
 as `state:"error"` with the raw text in `errorMessage`, **no `errorKind`**, no
-retry. The UI keeps already-streamed text as messages next to the error.
+retry — except the writer-claim rebound ending a generating run since 2026.9.3,
+whose `errorMessage` carries the `transcript_writer_fenced` user-facing copy
+instead of the raw text (above). The UI keeps already-streamed text as messages next to the error.
 
 ### Atrium behavior and verdict
 

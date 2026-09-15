@@ -54,6 +54,18 @@ describe("classifyFailureText", () => {
     ).toBe("session_write_conflict");
   });
 
+  it("the gateway's USER-FACING rendering of the same rebound gets the same class", () => {
+    // What reaches the wire when the rebound ends a generating run on 2026.9.3+ (read at v2026.9.4): the
+    // storage-failure copy (upstream assistant-request-failure-copy.ts:24-25,52), verbatim,
+    // as the lifecycle `error` preview and the chat error's `errorMessage`.
+    const copy =
+      "⚠️ Agent run failed: the transcript writer no longer owned this session. Retry in the current session; if it repeats, check Gateway logs.";
+    expect(classifyFailureText(copy)).toBe("session_write_conflict");
+    // Its own "Retry" never lets it fall into a retryable class.
+    expect(classifyFailureText(copy)).not.toBe("session_init_conflict");
+    expect(classifyFailureText(copy)).not.toBe("provider_internal");
+  });
+
   it("pins the 2026.8.1+ / 2026.9.1 session COORDINATION errors to the same transient class", () => {
     // The file lock of 7.x is gone; these are what the SQLite generation says
     // instead (upstream anchors in failure-classifier.ts). Wire forms carry the

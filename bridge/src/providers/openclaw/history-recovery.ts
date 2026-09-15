@@ -120,6 +120,18 @@ export function extractLatestAssistantReply(payload: Json): string {
     const role = entry.role;
     if (role === "user") break; // current-turn boundary
     if (role !== "assistant") continue;
+    // A FAILED attempt, never a reply. Since 2026.9.3 (read at v2026.9.4; absent from the
+    // v2026.9.1 and v2026.9.2 sources), when a run fails the gateway appends that attempt's
+    // partial text to the transcript as an assistant entry with `stopReason: "error"`
+    // (upstream src/agents/assistant-error-transcript.ts:26-72 records it, :105-113
+    // persists it under `<runId>:terminal-error`), and sessions.get returns the stored
+    // message with its `content` and `stopReason` intact (session-transcript-readers.ts:158,167
+    // → projectTranscriptEntryMessage, which only attaches `__openclaw` metadata). Read as a
+    // reply, a resumed run that failed would be delivered as a COMPLETE answer made of its
+    // truncated attempt. Skipped, that entry is never taken as the reply: another valid
+    // reply or message-tool delivery of the turn still comes back, and with none the
+    // recovery keeps polling and settles with its honest cause.
+    if (entry.stopReason === "error") continue;
     const text = contentStrings(entry.content).join("").trim();
     if (text) collected.push(text);
   }

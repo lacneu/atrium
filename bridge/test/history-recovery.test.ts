@@ -215,6 +215,34 @@ describe("extractLatestAssistantReply (restart-recovery transcript scan)", () =>
     expect(extractLatestAssistantReply(payload)).toBe("");
   });
 
+  it("a FAILED attempt's entry (stopReason: error) is never the reply", () => {
+    // 2026.9.3+ (read at v2026.9.4) persists a failed run's partial text as an assistant entry marked
+    // `stopReason: "error"` (upstream assistant-error-transcript.ts). Read as a reply, a
+    // resumed run that failed would be delivered complete, made of its truncated attempt.
+    expect(
+      extractLatestAssistantReply({
+        messages: [
+          { role: "user", content: "question du tour" },
+          {
+            role: "assistant",
+            content: [{ type: "text", text: "début de réponse coup" }],
+            stopReason: "error",
+          },
+        ],
+      }),
+    ).toBe("");
+    // A real reply beside it still comes back, alone.
+    expect(
+      extractLatestAssistantReply({
+        messages: [
+          { role: "user", content: "question du tour" },
+          { role: "assistant", content: "réponse", stopReason: "stop" },
+          { role: "assistant", content: "tentative coupée", stopReason: "error" },
+        ],
+      }),
+    ).toBe("réponse");
+  });
+
   it("joins multiple assistant entries chronologically; tolerates malformed payloads", () => {
     expect(
       extractLatestAssistantReply({

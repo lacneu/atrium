@@ -30,6 +30,21 @@ const EMBEDDED_LOCK_CONFLICT_RE =
 // NOT always mid-turn — see classifyFailureText for why it keeps its own class anyway.
 const WRITER_CLAIM_REBOUND_RE =
   /session writer claim changed before transcript persistence/i;
+// The SAME failure after the user-facing rewrite introduced in 2026.9.3 (absent from the
+// v2026.9.1 and v2026.9.2 sources; read at v2026.9.4), which is what actually reaches the
+// wire when it ends a generating run. The gateway maps the rebound message above to
+// the storage failure `transcript_writer_fenced` (upstream
+// src/infra/sqlite-error-diagnostics.ts:10), renders it as
+// "⚠️ Agent run failed: the transcript writer no longer owned this session. Retry in the
+// current session; if it repeats, check Gateway logs."
+// (src/agents/failover/assistant-request-failure-copy.ts:24-25,52;
+// embedded-agent-helpers/error-text.ts:103,128), and ships THAT as the lifecycle
+// `error` (embedded-agent-subscribe.handlers.lifecycle.ts:151-167,219, a ≤400-char
+// preview) and the chat error's `errorMessage` (server-chat.ts:783,1239, ≤240 chars).
+// None of the patterns here matched it, so the turn died unclassified (v2026.9.4).
+// The prose's own "Retry" does not make it retryable: see classifyFailureText.
+const WRITER_FENCED_COPY_RE =
+  /the transcript writer no longer owned this session/i;
 // 2026.9.1: `ActiveTurnClaimError` — "Session <id> already has an active turn
 // claim" (upstream src/gateway/worker-environments/placement-turn-claims.ts:57)
 // joins RUNTIME_COORDINATION_ERROR_NAMES (failover-error.ts:46-52): the session
@@ -98,7 +113,9 @@ export function classifyFailureText(text: string | null | undefined): string | n
   // generating run emits `lifecycle start` first — and the OpenClaw normalizer, which
   // sees the frames, upgrades a rebound it can prove pre-generation to
   // `session_init_conflict` (Normalizer.writeReboundBeforeGeneration).
-  if (WRITER_CLAIM_REBOUND_RE.test(text)) return "session_write_conflict";
+  if (WRITER_CLAIM_REBOUND_RE.test(text) || WRITER_FENCED_COPY_RE.test(text)) {
+    return "session_write_conflict";
+  }
   if (isSessionInitConflictText(text)) return "session_init_conflict";
   if (PROVIDER_INTERNAL_TEXT_RE.test(text) && !PROVIDER_INTERNAL_EXCLUDE_RE.test(text)) {
     return "provider_internal";
