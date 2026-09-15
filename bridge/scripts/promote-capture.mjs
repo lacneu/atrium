@@ -33,9 +33,10 @@
 //                            ]
 //                          }
 //   scenario-<id>.jsonl    the frames captured DURING that scenario, one JSON line each,
-//                          either `{"receivedAt": <epoch ms>, "frame": {…}}` (what the
-//                          bridge writes under OPENCLAW_CAPTURE_FRAMES since 2026-07-28)
-//                          or a bare frame per line (older captures).
+//                          each `{"receivedAt": <epoch ms>, "frame": {"type": …}}` — what
+//                          the bridge writes under OPENCLAW_CAPTURE_FRAMES since 2026-07-28.
+//                          Bare frames (older captures) are refused: they carry no arrival
+//                          time, and any date read inside a frame is one its emitter chose.
 //
 // Any harness that produces that shape can feed this script; the frames come from the
 // bridge itself (OPENCLAW_CAPTURE_FRAMES), and the per-scenario split is the only part a
@@ -56,12 +57,13 @@ import {
   createPseudonymiser,
   knownKeysFromCoverage,
   reservedPseudonymShapes,
+  isEpochMs,
 } from "./lib/anonymize-capture.mjs";
 
 /** Bumped whenever promotion CHANGES the bytes it produces from the same capture. It is
  *  recorded per fixture, so a corpus half-promoted by two different rules is visible
  *  instead of silently mixed. */
-export const PROMOTER_VERSION = 2; // 2: pseudonym-shaped raw strings reserved (defect 15)
+export const PROMOTER_VERSION = 3; // 2: pseudonym-shaped raw strings reserved (defect 15); 3: time origin from arrivals only (defect 14)
 
 const REPO_ROOT = path.resolve(new URL("../..", import.meta.url).pathname);
 const DEFAULT_OUT = path.join(REPO_ROOT, "bridge/test/fixtures/golden");
@@ -190,10 +192,13 @@ export function harvestToolNames(rawSlice) {
   return [...names].sort();
 }
 
-/** Parse a slice into `{receivedAt, frame}` entries, both on-disk shapes accepted. */
+/** Parse a slice into its `{receivedAt, frame}` entries — the same envelope captureEpochBase
+ *  enforces, which promoteSlice has already applied to this slice. */
 export function parseEntries(rawSlice) {
   const out = [];
+  let lineNo = 0;
   for (const line of rawSlice.split("\n")) {
+    lineNo += 1;
     if (!line.trim() || line.startsWith("#")) continue;
     let parsed;
     try {
@@ -201,74 +206,73 @@ export function parseEntries(rawSlice) {
     } catch {
       continue;
     }
-    const enveloped =
-      parsed !== null &&
-      typeof parsed === "object" &&
-      typeof parsed.receivedAt === "number" &&
-      Object.prototype.hasOwnProperty.call(parsed, "frame");
-    out.push(
-      enveloped
-        ? { receivedAt: parsed.receivedAt, frame: parsed.frame }
-        : { receivedAt: null, frame: parsed },
-    );
+    assertCaptureEnvelope(parsed, lineNo);
+    out.push({ receivedAt: parsed.receivedAt, frame: parsed.frame });
   }
   return out;
 }
 
-/** The capture's own time origin.
+/** The capture's own time origin: its EARLIEST arrival time, and nothing else.
  *
- *  The first arrival time when the capture is enveloped — and, for a PRE-ENVELOPE capture,
- *  the earliest epoch-shaped number in the frames themselves. Returning null for those
- *  meant no rebasing happened at all, so `ts`, `startedAt` and `updatedAt` were published
- *  absolute in exactly the captures the promoter says it still accepts. Null now means one
- *  thing only: nothing in this slice looks like a date. */
+ *  Every line must be a capture envelope (assertCaptureEnvelope). The origin is never read
+ *  inside a frame: whatever date a frame carries is one its emitter chose, and an origin an
+ *  emitter can choose gives every published offset back by subtraction (defect 14, codex).
+ *  The pre-envelope fallback that did read frames is gone with the bare shape itself — none
+ *  of the bench's 1547 slices (124 643 lines) and no golden fixture comes from one, measured
+ *  2026-09-15.
+ *
+ *  The EARLIEST, not the first: `Date.now()` is a wall clock, and a clock stepped back during
+ *  a scenario must neither refuse the capture nor publish a negative offset. In all 1547
+ *  slices the first arrival is also the earliest, so the corpus bytes do not move.
+ *
+ *  What rebasing on any origin cannot hide, stated rather than implied: the intervals are
+ *  kept exact, so whoever independently knows the absolute value of one published timestamp
+ *  recovers the origin. The origin only guarantees the corpus itself never supplies it. */
 export function captureEpochBase(rawSlice) {
-  let earliest = null;
-  const consider = (n) => {
-    if (
-      typeof n === "number" &&
-      Number.isFinite(n) &&
-      Math.abs(n) >= 1_000_000_000_000 &&
-      Math.abs(n) <= 4_000_000_000_000 &&
-      (earliest === null || n < earliest)
-    ) {
-      earliest = n;
-    }
-  };
-  // PROTOCOL positions only. A free-form blob can hold any date at all — a document's,
-  // a record's — and letting one become the origin would publish the real `ts` values as
-  // a large offset from it, from which the capture time can be inferred.
-  const FREE_FORM = new Set([
-    "args",
-    "result",
-    "output",
-    "input",
-    "meta",
-    "details",
-    "structuredContent",
-  ]);
-  const visit = (node) => {
-    if (Array.isArray(node)) return node.forEach(visit);
-    if (node !== null && typeof node === "object") {
-      for (const [k, v] of Object.entries(node)) {
-        if (FREE_FORM.has(k)) continue;
-        visit(v);
-      }
-      return;
-    }
-    consider(node);
-  };
+  let base = null;
+  let lineNo = 0;
   for (const line of rawSlice.split("\n")) {
+    lineNo += 1;
     if (!line.trim()) continue;
+    let parsed;
     try {
-      const parsed = JSON.parse(line);
-      if (typeof parsed?.receivedAt === "number") return parsed.receivedAt;
-      visit(parsed);
+      parsed = JSON.parse(line);
     } catch {
-      /* ignored here; counted by promoteSlice */
+      continue; // counted by promoteSlice
     }
+    assertCaptureEnvelope(parsed, lineNo);
+    if (base === null || parsed.receivedAt < base) base = parsed.receivedAt;
   }
-  return earliest;
+  return base;
+}
+
+const isPlainObject = (v) => v !== null && typeof v === "object" && !Array.isArray(v);
+
+/** Refuse any line that is not `{receivedAt: <positive epoch ms>, frame: {type: <string>, …}}`.
+ *
+ *  The envelope is recognised by its own `frame`, never by the field under validation:
+ *  keying it on a numeric `receivedAt` let `"bad"`, `null` or an absent value pass as a bare
+ *  frame and skip the check (codex). The frame must be an object with a string `type` — what
+ *  every gateway frame is (`res`/`event` on all 124 643 bench lines) — and never an envelope
+ *  itself, which would publish a second, un-rebased arrival time one level down (codex). */
+function assertCaptureEnvelope(parsed, lineNo) {
+  if (!isPlainObject(parsed) || !Object.prototype.hasOwnProperty.call(parsed, "frame")) {
+    throw new Error(
+      `capture line ${lineNo}: not a {receivedAt, frame} envelope — a bare frame has no arrival time to rebase on`,
+    );
+  }
+  if (!isEpochMs(parsed.receivedAt)) {
+    throw new Error(
+      `capture line ${lineNo}: receivedAt ${JSON.stringify(parsed.receivedAt)} is not a positive epoch in milliseconds — refusing to rebase timestamps on it`,
+    );
+  }
+  const frame = parsed.frame;
+  if (!isPlainObject(frame) || typeof frame.type !== "string") {
+    throw new Error(`capture line ${lineNo}: frame is not a gateway frame (an object with a string type)`);
+  }
+  if (Object.prototype.hasOwnProperty.call(frame, "frame")) {
+    throw new Error(`capture line ${lineNo}: frame is itself an envelope — refusing a nested capture`);
+  }
 }
 
 /** The replay CONTEXT a fixture cannot be replayed without.
@@ -353,7 +357,7 @@ export function promoteSlice(rawSlice, knownKeys = undefined) {
   // A renamed tool must read the same EVERYWHERE — on the card, and inside the delivery
   // run id — or the two stop joining, exactly as the UUID grammar did.
   const pseudo = createPseudonymiser(toolNames, renamedTools, reserved);
-  // Every time in the fixture is an OFFSET from the first frame. An absolute date says
+  // Every time in the fixture is an OFFSET from the earliest arrival. An absolute date says
   // when a real conversation happened, and the replay only needs the intervals.
   const epochBase = captureEpochBase(rawSlice);
   const stats = { frames: 0, verbatim: 0, pseudonymised: 0, masked: 0, maskedKeys: 0, unparsable: 0 };
@@ -367,17 +371,10 @@ export function promoteSlice(rawSlice, knownKeys = undefined) {
       stats.unparsable += 1;
       continue;
     }
-    // Both capture shapes: the `{receivedAt, frame}` envelope, and the bare frame of a
-    // pre-2026-07-28 capture. A fixture ALWAYS carries `receivedAt`, null when the source
-    // had none — a replay must be able to tell "no arrival time" from "time zero".
-    const enveloped =
-      parsed !== null &&
-      typeof parsed === "object" &&
-      typeof parsed.receivedAt === "number" &&
-      Object.prototype.hasOwnProperty.call(parsed, "frame");
-    const receivedAt =
-      enveloped ? parsed.receivedAt - (epochBase ?? parsed.receivedAt) : null;
-    const frame = enveloped ? parsed.frame : parsed;
+    // captureEpochBase has already refused any line that is not a well-formed envelope, so
+    // every line here is one, and its offset from the earliest arrival is never negative.
+    const receivedAt = parsed.receivedAt - epochBase;
+    const frame = parsed.frame;
     stats.frames += 1;
     lines.push(
       JSON.stringify({

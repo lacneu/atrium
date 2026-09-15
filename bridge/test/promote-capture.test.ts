@@ -33,6 +33,7 @@ import {
 } from "../scripts/lib/anonymize-capture.mjs";
 import {
   classifyToolNames,
+  captureEpochBase,
   harvestToolNames,
   main as promoteMain,
   planPromotion,
@@ -310,11 +311,12 @@ describe("tool-name harvesting cannot be poisoned by the capture", () => {
     const slice = [
       line({
         receivedAt: 1,
-        frame: { event: "agent", payload: { stream: "tool", data: { name: "exec" } } },
+        frame: { type: "event", event: "agent", payload: { stream: "tool", data: { name: "exec" } } },
       }),
       line({
         receivedAt: 2,
         frame: {
+          type: "event",
           event: "agent",
           payload: {
             stream: "lifecycle",
@@ -347,11 +349,11 @@ describe("promoteSlice", () => {
   const line = (o: unknown) => JSON.stringify(o);
 
   const KEY = "agent:a:atrium:chat:u:c";
-  const ACK = line({ receivedAt: 5, frame: { type: "res", payload: { runId: "webchat-r1" } } });
+  const ACK = line({ receivedAt: 1_785_204_000_005, frame: { type: "res", payload: { runId: "webchat-r1" } } });
   const TURN = (extra: Record<string, unknown>) =>
     line({
-      receivedAt: 10,
-      frame: { event: "chat", payload: { sessionKey: KEY, runId: "webchat-r1", ...extra } },
+      receivedAt: 1_785_204_000_010,
+      frame: { type: "event", event: "chat", payload: { sessionKey: KEY, runId: "webchat-r1", ...extra } },
     });
 
   it("is DETERMINISTIC — the same capture promotes to the same bytes", () => {
@@ -359,21 +361,12 @@ describe("promoteSlice", () => {
     expect(promoteSlice(slice).lines).toEqual(promoteSlice(slice).lines);
   });
 
-  it("keeps arrival INTERVALS, rebased, and marks their absence as null", () => {
+  it("keeps arrival INTERVALS, rebased on the earliest arrival", () => {
     // Offsets, not dates: an absolute timestamp says when a real conversation happened,
     // and the replay only ever needs the intervals between frames.
     const enveloped = promoteSlice([ACK, TURN({ state: "final" })].join("\n"));
     expect(JSON.parse(enveloped.lines[0]!).receivedAt, "the origin is zero").toBe(0);
     expect(JSON.parse(enveloped.lines[1]!).receivedAt, "10ms after the ack, at 5").toBe(5);
-    // A pre-envelope capture: null, never a fabricated zero — a replay must be able to
-    // tell "no arrival time recorded" from "arrived at t=0".
-    const bare = promoteSlice(
-      [
-        line({ type: "res", payload: { runId: "webchat-r1" } }),
-        line({ event: "chat", payload: { sessionKey: KEY, runId: "webchat-r1", state: "final" } }),
-      ].join("\n"),
-    );
-    expect(JSON.parse(bare.lines[0]!).receivedAt).toBeNull();
   });
 
   it("counts unparsable lines instead of dropping them silently", () => {
@@ -458,35 +451,6 @@ describe("the media sentinel is spliced, not spared", () => {
     expect(masked).not.toContain("OBJECTIF");
     expect(masked).not.toContain("rapport");
     expect(masked, "length preserved, so the splice offsets hold").toHaveLength(text.length);
-  });
-});
-
-describe("pre-envelope captures are rebased too", () => {
-  it("derives an origin from the FRAMES when there is no arrival time", () => {
-    // A bare capture carries no `receivedAt`, so the origin was null and nothing was
-    // rebased — absolute gateway timestamps went straight into the corpus for exactly the
-    // captures the promoter says it still accepts.
-    const bare = [
-      JSON.stringify({ type: "res", payload: { runId: "webchat-r1" } }),
-      JSON.stringify({
-        event: "chat",
-        payload: {
-          sessionKey: "agent:a:atrium:chat:u:c",
-          runId: "webchat-r1",
-          state: "final",
-          ts: 1_785_204_000_000,
-          startedAt: 1_785_203_990_000,
-        },
-      }),
-    ].join("\n");
-    // With the real vocabulary, as the promoter runs it — `ts` is a manifest field.
-    const { lines } = promoteSlice(bare, KNOWN_KEYS);
-    const payload = JSON.parse(lines[1]!).frame.payload as {
-      ts: number;
-      startedAt: number;
-    };
-    expect(Math.abs(payload.ts), "no absolute date survives").toBeLessThan(1_000_000_000_000);
-    expect(payload.ts - payload.startedAt, "the interval is exact").toBe(10_000);
   });
 });
 
@@ -1053,10 +1017,11 @@ describe("a pseudonym cannot collide with a raw identifier elsewhere in the capt
   it("promoteSlice: an ESCAPED id in serialised tool args never collides with a pseudonym", () => {
     const KEY = "agent:a:atrium:chat:u:c";
     const slice = [
-      line({ receivedAt: 5, frame: { type: "res", payload: { runId: "webchat-r1" } } }),
+      line({ receivedAt: 1_785_204_000_005, frame: { type: "res", payload: { runId: "webchat-r1" } } }),
       line({
-        receivedAt: 7,
+        receivedAt: 1_785_204_000_007,
         frame: {
+          type: "event",
           event: "agent",
           payload: {
             sessionKey: KEY,
@@ -1066,7 +1031,7 @@ describe("a pseudonym cannot collide with a raw identifier elsewhere in the capt
           },
         },
       }),
-      line({ receivedAt: 10, frame: { event: "chat", payload: { sessionKey: KEY, runId: "webchat-r1", state: "final" } } }),
+      line({ receivedAt: 1_785_204_000_010, frame: { type: "event", event: "chat", payload: { sessionKey: KEY, runId: "webchat-r1", state: "final" } } }),
     ].join("\n");
     const out = promoteSlice(slice) as { lines: string[]; context: unknown };
     const text = out.lines.join("\n") + JSON.stringify(out.context);
@@ -1076,20 +1041,22 @@ describe("a pseudonym cannot collide with a raw identifier elsewhere in the capt
   it("promoteSlice: a raw tool_<n> elsewhere in the capture is never a custom tool's alias", () => {
     const KEY = "agent:a:atrium:chat:u:c";
     const slice = [
-      line({ receivedAt: 5, frame: { type: "res", payload: { runId: "webchat-r1" } } }),
-      line({ receivedAt: 6, frame: { event: "health", payload: { instanceName: "tool_1" } } }),
+      line({ receivedAt: 1_785_204_000_005, frame: { type: "res", payload: { runId: "webchat-r1" } } }),
+      line({ receivedAt: 1_785_204_000_006, frame: { type: "event", event: "health", payload: { instanceName: "tool_1" } } }),
       line({
-        receivedAt: 7,
+        receivedAt: 1_785_204_000_007,
         frame: {
+          type: "event",
           event: "agent",
           payload: { sessionKey: KEY, runId: "webchat-r1", stream: "tool", data: { name: "acme", phase: "start", toolCallId: "call-1" } },
         },
       }),
-      line({ receivedAt: 10, frame: { event: "chat", payload: { sessionKey: KEY, runId: "webchat-r1", state: "final" } } }),
+      line({ receivedAt: 1_785_204_000_010, frame: { type: "event", event: "chat", payload: { sessionKey: KEY, runId: "webchat-r1", state: "final" } } }),
       // The custom tool's alias reaches the corpus inside its background-task delivery run id.
       line({
-        receivedAt: 20,
+        receivedAt: 1_785_204_000_020,
         frame: {
+          type: "event",
           event: "chat",
           payload: { sessionKey: KEY, runId: "acme:9b2e6c1a-3f4d-4e5f-8a9b-0c1d2e3f4a5b:ok", state: "final" },
         },
@@ -1104,12 +1071,82 @@ describe("a pseudonym cannot collide with a raw identifier elsewhere in the capt
   it("promoteSlice reserves the capture's own shapes: no raw id1/id2 in the output at all", () => {
     const KEY = "agent:id1:atrium:chat:id2:c";
     const slice = [
-      line({ receivedAt: 5, frame: { type: "res", payload: { runId: "webchat-r1" } } }),
-      line({ receivedAt: 10, frame: { event: "chat", payload: { sessionKey: KEY, runId: "webchat-r1", state: "final" } } }),
+      line({ receivedAt: 1_785_204_000_005, frame: { type: "res", payload: { runId: "webchat-r1" } } }),
+      line({ receivedAt: 1_785_204_000_010, frame: { type: "event", event: "chat", payload: { sessionKey: KEY, runId: "webchat-r1", state: "final" } } }),
     ].join("\n");
     const out = promoteSlice(slice) as { lines: string[]; context: unknown };
     const text = out.lines.join("\n") + JSON.stringify(out.context);
     // Any occurrence would be either the raw token surviving or a pseudonym colliding with it.
     expect(text).not.toMatch(/(?<![A-Za-z0-9_])id[12](?![A-Za-z0-9_])/);
+  });
+});
+
+
+// ── Defect 14: the time origin is a date the corpus only shows as offsets ──────
+describe("the promotion time origin is the earliest ARRIVAL, never a date inside a frame", () => {
+  const line = (o: unknown) => JSON.stringify(o);
+  const KEY = "agent:a:atrium:chat:u:c";
+  const T = 1_785_204_000_000;
+  const ACK = (receivedAt: unknown) => line({ receivedAt, frame: { type: "res", payload: { runId: "webchat-r1" } } });
+  const FINAL = (receivedAt: unknown, payload: Record<string, unknown> = {}) =>
+    line({ receivedAt, frame: { type: "event", event: "chat", payload: { sessionKey: KEY, runId: "webchat-r1", state: "final", ...payload } } });
+
+  it("dates an emitter chose inside frames — declared, undeclared or under a known key — never become the origin", () => {
+    const slice = [
+      ACK(T),
+      FINAL(T + 10, {
+        // Earlier than every arrival, in a rebased protocol position and in two free-form ones.
+        ts: 1_700_000_000_000,
+        startedAt: 1_700_000_000_000,
+        usage: { ts: 1_600_000_000_000 },
+        customBlob: { when: 1_500_000_000_000 },
+      }),
+    ].join("\n");
+    expect(captureEpochBase(slice)).toBe(T);
+    const { lines } = promoteSlice(slice, KNOWN_KEYS);
+    expect(JSON.parse(lines[1]!).frame.payload.ts, "rebased on the arrival, not on itself").toBe(1_700_000_000_000 - T);
+  });
+
+  it("a BARE capture is refused — a root frame or a root scalar date, it has no arrival time", () => {
+    const bareFrame = line({ type: "event", event: "chat", payload: { sessionKey: KEY, runId: "webchat-r1", state: "final", ts: T } });
+    expect(() => captureEpochBase(bareFrame)).toThrow(/line 1: not a \{receivedAt, frame\} envelope/);
+    expect(() => promoteSlice(`${line({ type: "res", payload: { runId: "webchat-r1" } })}\n${bareFrame}`, KNOWN_KEYS)).toThrow(/line 1: not a \{receivedAt, frame\} envelope/);
+    expect(() => captureEpochBase(`1700000000000\n${ACK(T)}`)).toThrow(/line 1: not a \{receivedAt, frame\} envelope/);
+    expect(() => captureEpochBase(`${ACK(T)}\n${bareFrame}`), "no mixing either").toThrow(/line 2: not a \{receivedAt, frame\} envelope/);
+  });
+
+  it("an envelope whose frame is null, a scalar, an array or untyped is refused", () => {
+    for (const frame of [null, T + 3, [{ type: "event" }], { event: "chat", payload: {} }]) {
+      expect(() => captureEpochBase(`${ACK(T)}\n${line({ receivedAt: T + 1, frame })}`), JSON.stringify(frame)).toThrow(
+        /line 2: frame is not a gateway frame/,
+      );
+    }
+  });
+
+  it("a DOUBLE envelope is refused — its inner arrival time would be published un-rebased", () => {
+    const nested = line({ receivedAt: T + 5, frame: { type: "event", receivedAt: T + 4, frame: { type: "event", event: "health", payload: {} } } });
+    expect(() => captureEpochBase(`${ACK(T)}\n${nested}`)).toThrow(/line 2: frame is itself an envelope/);
+  });
+
+  it("an envelope whose receivedAt is a string, null or absent is refused, not read as a bare frame", () => {
+    for (const receivedAt of ["bad", null, undefined]) {
+      const slice = [ACK(T), FINAL(receivedAt, { ts: 1_000_000_000_000 })].join("\n");
+      expect(() => promoteSlice(slice, KNOWN_KEYS), String(receivedAt)).toThrow(/line 2: receivedAt .* is not a positive epoch/);
+    }
+  });
+
+  it("a zero, negative or non-epoch arrival time is refused — every offset would carry the real date", () => {
+    expect(() => promoteSlice([ACK(0), FINAL(0, { ts: T })].join("\n"), KNOWN_KEYS)).toThrow(/receivedAt 0 is not a positive epoch in milliseconds/);
+    expect(() => promoteSlice([ACK(T), FINAL(-T)].join("\n"), KNOWN_KEYS)).toThrow(/line 2: receivedAt -1785204000000 is not a positive epoch/);
+    expect(() => promoteSlice([ACK(T), FINAL(5)].join("\n"), KNOWN_KEYS)).toThrow(/line 2: receivedAt 5/);
+  });
+
+  it("a wall clock stepped BACK is neither refused nor published as a negative offset", () => {
+    // `Date.now()` is not monotonic: the ack arrives, the clock is corrected 2 s back, the reply
+    // arrives. The origin is the earliest arrival, so every offset stays >= 0.
+    const slice = [ACK(T), FINAL(T - 2_000)].join("\n");
+    expect(captureEpochBase(slice)).toBe(T - 2_000);
+    const offsets = promoteSlice(slice, KNOWN_KEYS).lines.map((l: string) => JSON.parse(l).receivedAt);
+    expect(offsets).toEqual([2_000, 0]);
   });
 });

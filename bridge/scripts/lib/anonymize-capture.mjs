@@ -769,6 +769,13 @@ export function readerVocabulary() {
   ]);
 }
 
+/** Is `n` a POSITIVE epoch in milliseconds — the only arrival time a capture records
+ *  (`Date.now()`)? Signed on purpose: a negative origin turns every rebased value into a sum
+ *  that reveals the real date (codex). */
+export function isEpochMs(n) {
+  return typeof n === "number" && Number.isFinite(n) && n >= EPOCH_MS_MIN && n <= EPOCH_MS_MAX;
+}
+
 /** Walk a frame, applying the classes. `knownKeys` is the vocabulary of key NAMES.
  *
  *  An UNKNOWN key is masked like a value. Field names are protocol vocabulary — that is
