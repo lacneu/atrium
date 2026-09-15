@@ -50,7 +50,7 @@ import path from "node:path";
 import process from "node:process";
 import { createHash } from "node:crypto";
 
-import { fidelityDiff, loadRunManager } from "./lib/replay-fidelity.mjs";
+import { consumedReadings, fidelityDiff, loadReaders, loadRunManager } from "./lib/replay-fidelity.mjs";
 import {
   anonymizeFrame,
   baseKnownKeys,
@@ -58,12 +58,13 @@ import {
   knownKeysFromCoverage,
   reservedPseudonymShapes,
   isEpochMs,
+  captureReaderRules,
 } from "./lib/anonymize-capture.mjs";
 
 /** Bumped whenever promotion CHANGES the bytes it produces from the same capture. It is
  *  recorded per fixture, so a corpus half-promoted by two different rules is visible
  *  instead of silently mixed. */
-export const PROMOTER_VERSION = 3; // 2: pseudonym-shaped raw strings reserved (defect 15); 3: time origin from arrivals only (defect 14)
+export const PROMOTER_VERSION = 4; // 2: pseudonym-shaped raw strings reserved (defect 15); 3: time origin from arrivals only (defect 14); 4: provenance, cron schedule, task bound and lifecycle-error reader leaves kept (defect 13)
 
 const REPO_ROOT = path.resolve(new URL("../..", import.meta.url).pathname);
 const DEFAULT_OUT = path.join(REPO_ROOT, "bridge/test/fixtures/golden");
@@ -345,7 +346,7 @@ export function replayContext(rawSlice) {
  *  first version and it produced a corpus that replayed to ZERO events on every scenario:
  *  the recorded session key numbered its tokens independently, so the isolation gate
  *  matched nothing and nine snapshots were vacuously green. */
-export function promoteSlice(rawSlice, knownKeys = undefined) {
+export function promoteSlice(rawSlice, knownKeys = undefined, readers = undefined, consumed = undefined) {
   // Every pseudonym-shaped string of the capture is reserved BEFORE the first mint, for the
   // tool aliases and for the ids alike, so no pseudonym can equal a raw identifier found
   // elsewhere in it (defect 15).
@@ -361,16 +362,20 @@ export function promoteSlice(rawSlice, knownKeys = undefined) {
   // when a real conversation happened, and the replay only needs the intervals.
   const epochBase = captureEpochBase(rawSlice);
   const stats = { frames: 0, verbatim: 0, pseudonymised: 0, masked: 0, maskedKeys: 0, unparsable: 0 };
-  const lines = [];
+  // Parsed ONCE: the rules a whole capture decides (the cron card is built from a start and a
+  // result frame) are keyed on these very objects.
+  const entries = [];
   for (const line of rawSlice.split("\n")) {
     if (!line.trim()) continue;
-    let parsed;
     try {
-      parsed = JSON.parse(line);
+      entries.push(JSON.parse(line));
     } catch {
       stats.unparsable += 1;
-      continue;
     }
+  }
+  const sharedRules = captureReaderRules(entries, readers, consumed);
+  const lines = [];
+  for (const parsed of entries) {
     // captureEpochBase has already refused any line that is not a well-formed envelope, so
     // every line here is one, and its offset from the earliest arrival is never negative.
     const receivedAt = parsed.receivedAt - epochBase;
@@ -387,6 +392,9 @@ export function promoteSlice(rawSlice, knownKeys = undefined) {
           toolNames,
           epochBase,
           renamedTools,
+          readers,
+          sharedRules,
+          consumed,
         ),
       }),
     );
@@ -561,6 +569,9 @@ export async function main(argv = process.argv.slice(2)) {
   // The fidelity gate needs the BUILT bridge. Loaded once, up front, so a missing build
   // stops the promotion before it writes anything rather than half-way through.
   const RunManager = await loadRunManager(path.join(REPO_ROOT, "bridge"));
+  // …and the readers that decide which reader-consumed values promotion keeps, from the SAME
+  // build: the positions kept and the gate that checks them cannot disagree about a reader.
+  const readers = await loadReaders(path.join(REPO_ROOT, "bridge"));
 
   const promoted = [];
   const skipped = plan.skipped;
@@ -568,7 +579,11 @@ export async function main(argv = process.argv.slice(2)) {
   for (const id of plan.openclaw) {
     const file = `scenario-${id}.jsonl`;
     const raw = fs.readFileSync(path.join(runDir, file), "utf8");
-    const { lines, stats, pseudonyms, context } = promoteSlice(raw, knownKeys);
+    // What the reading stack CONSUMES from this capture, from the same replay the fidelity gate
+    // runs: a reader-consumed value is kept only for a reading that replay wrote.
+    const rawEntries = parseEntries(raw);
+    const consumed = await consumedReadings(RunManager, rawEntries, readers);
+    const { lines, stats, pseudonyms, context } = promoteSlice(raw, knownKeys, readers, consumed);
     if (lines.length === 0) {
       throw new Error(`scenario ${id} promoted to ZERO frames — refusing to write it`);
     }
@@ -610,7 +625,6 @@ export async function main(argv = process.argv.slice(2)) {
     // FIDELITY: the promoted capture must make the reading stack do exactly what the raw
     // one does. Every promotion defect in this lot hid here — a masked field, a broken
     // grammar, a dropped control value — and each was invisible in the fixture itself.
-    const rawEntries = parseEntries(raw);
     const promotedEntries = lines.map((l) => JSON.parse(l));
     const diffs = await fidelityDiff(RunManager, rawEntries, promotedEntries);
     if (diffs.length > 0) {

@@ -22,18 +22,33 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 // @ts-expect-error -- untyped .mjs
 import * as anon from "../scripts/lib/anonymize-capture.mjs";
+import { asyncTaskStartFromTool, taskChildKey } from "../src/core/async-task.js";
+import { RunManager } from "../src/providers/openclaw/run-manager.js";
+// @ts-expect-error -- untyped .mjs
+import { consumedReadings } from "../scripts/lib/replay-fidelity.mjs";
+import { cronPartFromTool, isCronTool, printableCronSchedule } from "../src/core/cron-part.js";
+import { MAX_PROVENANCE_ITEMS, isProvenanceStream, parseProvenanceReport } from "../src/core/provenance.js";
 
 const BRIDGE = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const VERSION = "2026.9.4";
 
-const { anonymizeFrame, createPseudonymiser, knownKeysFromCoverage, readerVocabulary, declaredObjectKeys } =
-  anon as {
-    anonymizeFrame: (...a: unknown[]) => unknown;
-    createPseudonymiser: (l?: unknown[], r?: Map<string, string>) => unknown;
-    knownKeysFromCoverage: (c: unknown, s?: string[]) => Set<string>;
-    readerVocabulary: () => Set<string>;
-    declaredObjectKeys: () => Set<string>;
-  };
+const {
+  anonymizeFrame,
+  createPseudonymiser,
+  knownKeysFromCoverage,
+  readerVocabulary,
+  declaredObjectKeys,
+  provenanceVocabulary,
+  captureReaderRules,
+} = anon as {
+  anonymizeFrame: (...a: unknown[]) => unknown;
+  createPseudonymiser: (l?: unknown[], r?: Map<string, string>) => unknown;
+  knownKeysFromCoverage: (c: unknown, s?: string[]) => Set<string>;
+  readerVocabulary: () => Set<string>;
+  declaredObjectKeys: () => Set<string>;
+  provenanceVocabulary: () => Set<string>;
+  captureReaderRules: (entries: unknown[], readers: unknown, consumed: unknown) => unknown;
+};
 
 function realVocabulary(): Set<string> {
   const coverage = JSON.parse(
@@ -146,9 +161,9 @@ describe("an object under an UNDECLARED key is free-form — the inversion", () 
     // `reader.has("title") === false` on that basis. That pin was WRONG at a wider scope:
     // the provenance reader does read `items[].title` (core/provenance.ts:91), and since
     // `items` is not a declared container its objects are walked with `readerVocabulary()`
-    // alone — where `title` is absent. Pinning its absence would have blocked that repair.
-    // The provenance fidelity gap is filed as its own lot; this assertion stays silent on
-    // it rather than taking a side it cannot prove.
+    // alone — where `title` is absent. Pinning its absence would have blocked that repair,
+    // which is the provenance domain (defect 13): `title` is carried inside a provenance
+    // report and nowhere else, and is still not in `readerVocabulary()`.
   });
 
   it("…and for THIS corpus they are exactly the part the manifest misses", () => {
@@ -156,9 +171,11 @@ describe("an object under an UNDECLARED key is free-form — the inversion", () 
     // manifest changed what it declares — a corpus review event, not a regression. The
     // assertion above is the one that guards behaviour.
     const known = realVocabulary();
+    // Defect 13 added the cron SCHEDULE leaves and `detail` (the lifecycle error object);
+    // `timeoutMs`, `error`, `reason` and `code` joined the reader vocabulary too, but 2026.9.4
+    // already names them, so they do not appear here.
     expect([...readerVocabulary()].filter((k) => !known.has(k)).sort()).toEqual([
-      "explanation",
-      "job",
+      "at", "atMs", "cron", "detail", "every", "everyMs", "explanation", "expr", "job", "tz",
     ]);
     // The self-referential loop that stood here is gone: it rebuilt the domain from
     // `readerVocabulary()` and then checked that same value was in it — always true.
@@ -359,5 +376,485 @@ describe("a MINTED pseudonym is never its own input", () => {
       /alias for "tool_1" is the name itself/,
     );
     expect(() => createPseudonymiser([], new Map([["acme", "tool_1"]]))).not.toThrow();
+  });
+});
+
+// ── Defect 13: what the provenance, cron and task readers consume survives promotion ──
+describe("a promoted capture still READS the same — provenance, cron schedule, task bound", () => {
+  // The bridge's OWN readers decide which reader-consumed values survive — the promoter hands
+  // in the built ones, this suite the sources.
+  const READERS = {
+    isProvenanceStream, parseProvenanceReport, MAX_PROVENANCE_ITEMS, asyncTaskStartFromTool,
+    isCronTool, cronPartFromTool, printableCronSchedule, taskChildKey,
+  };
+  type Promoted = { payload: { data: Record<string, unknown> } };
+  /** A capture of these frames, promoted as `promoteSlice` does: one pseudonymiser, the rules
+   *  only the whole capture decides computed over the same objects, and — deciding every kept
+   *  value — what the REAL reading stack consumes when the frames are replayed in a turn acked
+   *  for their run (`consumedReadings`, the fidelity gate's own replay). */
+  const promoteFrames = async (frames: unknown[], toolNames: string[] = [], readers: unknown = READERS): Promise<Promoted[]> => {
+    const entries = [
+      { receivedAt: 0, frame: { type: "res", payload: { runId: "webchat-r1" } } },
+      ...frames.map((frame, i) => ({ receivedAt: 10 + i, frame })),
+    ];
+    const consumed = await consumedReadings(RunManager, entries, readers);
+    const pseudo = createPseudonymiser([], new Map());
+    const shared = captureReaderRules(entries, readers, consumed);
+    return frames.map(
+      (frame) =>
+        anonymizeFrame(
+          frame,
+          pseudo,
+          { frames: 0, verbatim: 0, pseudonymised: 0, masked: 0, maskedKeys: 0 },
+          realVocabulary(),
+          new Set(toolNames),
+          null,
+          new Map(),
+          readers,
+          shared,
+          consumed,
+        ) as Promoted,
+    );
+  };
+  const promote = async (frame: unknown, toolNames: string[] = [], readers: unknown = READERS): Promise<Promoted> =>
+    (await promoteFrames([frame], toolNames, readers))[0]!;
+  /** A cron tool frame, in its wire form. */
+  const cronFrame = (phase: string, extra: Record<string, unknown>) =>
+    agent("tool", { name: "automations", phase, toolCallId: "c1", ...extra });
+  const agent = (stream: string, data: unknown) => ({
+    type: "event",
+    event: "agent",
+    payload: { runId: "webchat-r1", sessionKey: "agent:a:atrium:chat:u:c", stream, data },
+  });
+  // Every value a reader must NOT publish carries one of these tokens.
+  const SECRETS = ["Martin", "alice", "olivier", "patients", "2026-06-01", "Europe", "Paris", "30 9"];
+  const DOCUMENTS = {
+    v: 1, source: "knowledge", kind: "documents", pluginId: "martin-rag", pluginName: "Martin Plugin",
+    injected: { chars: 1300, position: "system_append", truncated: true },
+    retrieval: { route: "pgvector", collections: ["patients_martin"], lightrag: { mode: "mix" } },
+    items: [
+      { file_name: "Dossier-Martin.pdf", title: "Dossier Martin", collection: "patients_martin", score: 0.93, text: "Martin: diabete" },
+      { text: "Synthese Martin", context: true },
+    ],
+  };
+  const MEMORY = {
+    v: 1, source: "hindsight", kind: "memory", pluginId: "hindsight-openclaw",
+    retrieval: { route: "recall", bank: "alice::direct%3Aolivier::olivier" },
+    items: [{ id: "mem_martin_1", type: "observation", date: "2026-06-01", score: 0.8, text: "Martin prefers mornings" }],
+  };
+  /** The report as the reader sees it — its shape and control values, never its text. */
+  const shape = (p: ReturnType<typeof parseProvenanceReport>) =>
+    p === null
+      ? null
+      : {
+          v: p.v,
+          group: p.group,
+          fields: Object.keys(p).sort(),
+          items: p.items.map((i) => ({ keys: Object.keys(i).sort(), context: i.context === true })),
+          injected: p.injected === undefined ? null : { keys: Object.keys(p.injected).sort(), truncated: p.injected.truncated },
+          retrieval: p.retrieval === undefined ? null : Object.keys(p.retrieval).sort(),
+        };
+
+  it("a documents and a memory report read back with the same shape, and publish none of their content", async () => {
+    for (const report of [DOCUMENTS, MEMORY]) {
+      const raw = parseProvenanceReport({ ...report });
+      expect(raw, "the raw report is valid").not.toBeNull();
+      const out = (await promote(agent("martin-rag.provenance", report)));
+      expect(shape(parseProvenanceReport(out.payload.data)), report.kind).toEqual(shape(raw));
+      const text = JSON.stringify(out);
+      for (const secret of SECRETS) expect(text, `${report.kind}: ${secret}`).not.toContain(secret);
+    }
+  });
+
+  it("the report vocabulary applies to the report ALONE — the same payload on another stream stays masked", async () => {
+    const out = (await promote(agent("lifecycle", DOCUMENTS)));
+    const data = out.payload.data;
+    expect(parseProvenanceReport(data), "not a report outside its stream").toBeNull();
+    expect(Object.keys(data)).not.toContain("injected");
+    expect(JSON.stringify(data)).not.toContain("file_name");
+  });
+
+  it("a report the reader would refuse is no report — a version other than 1 keeps nothing", async () => {
+    const out = (await promote(agent("martin-rag.provenance", { ...DOCUMENTS, v: 7 })));
+    expect(out.payload.data.v, "`v` is no protocol key outside a recognised report").toBeUndefined();
+    expect(parseProvenanceReport(out.payload.data)).toBeNull();
+  });
+
+  it("an INVALID report keeps none of its booleans — no reader consumes them", async () => {
+    // No pluginId: parseProvenanceReport refuses it, so bits kept here would be bits nobody
+    // reads, and the fidelity gate (both sides refused) could never see them (codex).
+    const { pluginId: _omitted, ...invalid } = DOCUMENTS;
+    const out = (await promote(agent("martin-rag.provenance", { ...invalid, items: [{ context: true }, { context: false }] })));
+    expect(JSON.stringify(out)).not.toContain("true");
+  });
+
+  it("JSON inside an item's TEXT is content, not a report — nothing in it is published", async () => {
+    const text = JSON.stringify({ context: true, truncated: false, timeoutMs: 12_345_678, v: 1 });
+    const out = (await promote(agent("martin-rag.provenance", { ...DOCUMENTS, injected: undefined, items: [{ text }] })));
+    const json = JSON.stringify(out);
+    expect(json).not.toContain("true");
+    expect(json).not.toContain("12345678");
+    expect(parseProvenanceReport(out.payload.data)?.items[0]?.context).toBeUndefined();
+  });
+
+  it("EVERY provenance position publishes only what its reader consumes — strings, numbers, booleans", async () => {
+    // A sweep by value TYPE, per node: the string SECRET, an unmistakable number, `true`.
+    // Only `items[].context` and `injected.truncated` may keep a boolean, only the report's
+    // `v` a number (fixed at 1). Excluded: the probes that make the frame NO REPORT (a `v`
+    // other than 1, a `kind` other than memory/documents, a non-string pluginId/source, a
+    // non-array items). The reader refuses such a frame, no provenance rule applies, and it is
+    // an ordinary `data` walk — whose values under protocol keys (`kind` is VOCABULARY_KEYS,
+    // `pluginId`/`source` are in the 2026.9.4 vocabulary) are the pre-existing positional hole
+    // pinned by "the remaining hole is bounded and NAMED", not this rule.
+    const derecognises = (where: string, key: string, probe: unknown) =>
+      where === "report" &&
+      (key === "v" ||
+        key === "kind" ||
+        key === "items" ||
+        ((key === "pluginId" || key === "source") && typeof probe !== "string"));
+    const NUMBER = 98_765_432;
+    const base = () => ({
+      v: 1, pluginId: "p", source: "s", kind: "documents",
+      items: [{ file_name: "f" }], injected: { position: "p" }, retrieval: { lightrag: { mode: "m" } },
+    });
+    type Base = ReturnType<typeof base>;
+    const positions: Array<[string, (b: Base) => Record<string, unknown>]> = [
+      ["report", (b) => b],
+      ["item", (b) => b.items[0]!],
+      ["injected", (b) => b.injected],
+      ["retrieval", (b) => b.retrieval],
+      ["lightrag", (b) => b.retrieval.lightrag],
+    ];
+    const booleanAllowed = new Set(["item.context", "injected.truncated"]);
+    for (const [where, at] of positions) {
+      for (const key of provenanceVocabulary()) {
+        // `on-exit` stands for the values a control-value allowlist could publish.
+        for (const probe of [SECRET, NUMBER, true, "on-exit"] as const) {
+          if (derecognises(where, key, probe)) continue;
+          const report = base();
+          at(report)[key] = probe;
+          const json = JSON.stringify((await promote(agent("p.provenance", report))));
+          const label = `${where}.${key} = ${String(probe)}`;
+          if (probe === true) {
+            expect(json.includes("true"), label).toBe(booleanAllowed.has(`${where}.${key}`));
+          } else {
+            expect(json, label).not.toContain(String(probe));
+          }
+        }
+      }
+    }
+  });
+
+  it("a cron card still prints the schedule BRANCH it was given, its values masked", async () => {
+    const schedule = { kind: "cron", expr: "30 9 * * 1", tz: "Europe/Paris" };
+    const data = {
+      name: "automations",
+      phase: "result",
+      toolCallId: "c1",
+      args: { action: "add", job: { name: "martin", schedule, payload: { kind: "agentTurn", message: "hi" } } },
+      result: { details: { id: "j1", name: "martin", schedule } },
+    };
+    const raw = cronPartFromTool("automations", "completed", data.args, data.result);
+    expect(raw?.schedule).toBe("cron 30 9 * * 1 (Europe/Paris)");
+    const out = (await promote(agent("tool", data), ["automations"])).payload.data;
+    const promoted = cronPartFromTool("automations", "completed", out.args, out.result);
+    expect(promoted?.schedule).toMatch(/^cron \S.* \(.+\)$/);
+    for (const secret of SECRETS) expect(JSON.stringify(out), secret).not.toContain(secret);
+  });
+
+  it("the schedule kinds printed BARE by the card (`on-exit`, `stream`) survive as themselves", async () => {
+    for (const schedule of [
+      { kind: "on-exit", command: "make Martin" },
+      { kind: "stream", command: ["tail", "-f", "Martin.log"], mode: "line" },
+    ]) {
+      const data = { name: "automations", phase: "result", toolCallId: "c1", args: { action: "add", job: { name: "n", schedule } }, result: { details: { id: "j1", name: "n", schedule } } };
+      const out = (await promote(agent("tool", data), ["automations"])).payload.data;
+      expect(cronPartFromTool("automations", "completed", out.args, out.result)?.schedule).toBe(schedule.kind);
+      expect(JSON.stringify(out)).not.toContain("Martin");
+    }
+  });
+
+  it("a timeoutMs anywhere but a real async task's details is masked like any number", async () => {
+    const secret = 12_345_678;
+    const cases = [
+      agent("lifecycle", { phase: "error", blob: { timeoutMs: secret } }),
+      agent("tool", { name: "exec", phase: "result", toolCallId: "c1", result: { details: { timeoutMs: secret } } }),
+      // Each acceptance condition on its own: a taskId without `async: true`, then `async: true`
+      // without a taskId — the reader opens no engagement for either.
+      agent("tool", { name: "exec", phase: "result", toolCallId: "c1", result: { details: { taskId: "t", timeoutMs: secret } } }),
+      agent("tool", { name: "exec", phase: "result", toolCallId: "c1", result: { details: { async: true, timeoutMs: secret } } }),
+      agent("tool", { name: "exec", phase: "result", toolCallId: "c1", args: { timeoutMs: secret } }),
+      agent("tool", { name: "exec", phase: "start", toolCallId: "c1", result: { details: { async: true, taskId: "t", timeoutMs: secret } } }),
+      // The `item` stream hands no result to the reader.
+      agent("item", { name: "exec", phase: "result", toolCallId: "c1", result: { details: { async: true, taskId: "t", timeoutMs: secret } } }),
+      // NOT here: a NAMELESS call. Measured on the replay, the stack does open its engagement
+      // (the sink hands the reader an empty name, which it accepts), so its bound IS consumed
+      // and kept — reading `asyncTaskStartFromTool` alone had suggested otherwise.
+      // An ERRORED result reaches the sink as phase `error`: no engagement, nothing to keep.
+      agent("tool", { name: "exec", phase: "result", toolCallId: "c1", isError: true, result: { details: { async: true, taskId: "t", timeoutMs: secret } } }),
+    ];
+    for (const frame of cases) expect(JSON.stringify((await promote(frame, ["exec"])))).not.toContain(String(secret));
+    // …and a real async task's bound, with no readers handed in, is masked too: fail closed.
+    // (`null`, not `undefined`: the helper's default would hand the readers back in.)
+    const real = agent("tool", { name: "exec", phase: "result", toolCallId: "c1", result: { details: { async: true, taskId: "t", timeoutMs: 300_000 } } });
+    expect(JSON.stringify((await promote(real, ["exec"], null)))).not.toContain("300000");
+    expect(JSON.stringify((await promote(real, ["exec"])))).toContain('"timeoutMs":300000');
+  });
+
+  it("a schedule kind is kept on a schedule the cron card READS — never by key name elsewhere", async () => {
+    // A global allowlist published five symbols wherever a `kind` sat (codex): inside a
+    // document excerpt that parses as JSON, inside any free-form blob.
+    const report = { ...DOCUMENTS, items: [{ text: JSON.stringify({ kind: "stream", note: "Martin" }) }] };
+    expect(JSON.stringify((await promote(agent("martin-rag.provenance", report))))).not.toContain('"kind":"stream"');
+    const blob = (await promote(agent("lifecycle", { phase: "error", blob: { kind: "stream" } })));
+    expect(JSON.stringify(blob)).not.toContain('"kind":"stream"');
+    const notCron = (await promote(agent("tool", { name: "exec", phase: "start", toolCallId: "c1", args: { job: { schedule: { kind: "on-exit" } } } }), ["exec"]));
+    expect(JSON.stringify(notCron)).not.toContain("on-exit");
+  });
+
+  it("a schedule kind read from the INPUT job alone, or from the result details alone, survives", async () => {
+    // The pair the card is built from on the wire: the start frame's args (buffered by the
+    // normalizer) and the result frame's details.
+    const [inStart, inResult] = (await promoteFrames(
+      [
+        cronFrame("start", { args: { action: "add", job: { name: "n", schedule: { kind: "on-exit", command: "x" } } } }),
+        cronFrame("result", { result: { details: { id: "j1" } } }),
+      ],
+      ["automations"],
+    ));
+    expect(cronPartFromTool("automations", "completed", inStart!.payload.data.args, inResult!.payload.data.result)?.schedule).toBe("on-exit");
+    const [dStart, dResult] = (await promoteFrames(
+      [
+        cronFrame("start", { args: { action: "add" } }),
+        cronFrame("result", { result: { details: { id: "j1", name: "n", schedule: { kind: "stream", command: ["x"] } } } }),
+      ],
+      ["automations"],
+    ));
+    expect(cronPartFromTool("automations", "completed", dStart!.payload.data.args, dResult!.payload.data.result)?.schedule).toBe("stream");
+  });
+
+  it("a NON-MUTATING cron action keeps no schedule kind — the reader never builds the card", async () => {
+    const json = JSON.stringify(
+      (await promoteFrames(
+        [
+          cronFrame("start", { args: { action: "get", id: "j1", job: { schedule: { kind: "stream" } } } }),
+          cronFrame("result", { result: { details: { id: "j1", name: "n", schedule: { kind: "on-exit", command: "x" } } } }),
+        ],
+        ["automations"],
+      )),
+    );
+    expect(json).not.toContain("on-exit");
+    expect(json).not.toContain('"kind":"stream"');
+  });
+
+  it("an ERRORED cron call keeps no schedule kind — the sink never builds its card", async () => {
+    const json = JSON.stringify(
+      (await promoteFrames(
+        [
+          cronFrame("start", { args: { action: "add", job: { schedule: { kind: "stream", command: ["x"] } } } }),
+          cronFrame("result", { isError: true, result: { details: { id: "j1", schedule: { kind: "on-exit", command: "x" } } } }),
+        ],
+        ["automations"],
+      )),
+    );
+    expect(json).not.toContain("on-exit");
+    expect(json).not.toContain('"kind":"stream"');
+  });
+
+  it("the args buffer behaves as the normalizer's: no empty id, shared by every tool, capped", async () => {
+    const tool = (name: string, phase: string, toolCallId: string, extra: Record<string, unknown>) =>
+      agent("tool", { name, phase, toolCallId, ...extra });
+    const start = { args: { action: "add", job: { schedule: { kind: "on-exit", command: "x" } } } };
+    const result = { result: { details: { id: "j1" } } };
+    const kept = async (frames: unknown[]) => JSON.stringify((await promoteFrames(frames, ["automations", "exec"]))).includes("on-exit");
+    // Sanity: the same pair with a real id IS read — the three cases below are not vacuous.
+    expect((await kept([tool("automations", "start", "c1", start), tool("automations", "result", "c1", result)]))).toBe(true);
+    // An empty id is never buffered: the result reads its own (absent) args, and builds no card.
+    expect((await kept([tool("automations", "start", "", start), tool("automations", "result", "", result)]))).toBe(false);
+    // Another tool starting with the same id overwrites the buffered input.
+    expect(
+      (await kept([
+        tool("automations", "start", "c1", start),
+        tool("exec", "start", "c1", { args: { command: "ls" } }),
+        tool("automations", "result", "c1", result),
+      ])),
+    ).toBe(false);
+    // Past MAX_TOOL_ARGS buffered calls, a new start is not buffered at all.
+    const flood = Array.from({ length: 2_000 }, (_, i) => tool("exec", "start", `x${i}`, { args: {} }));
+    expect((await kept([...flood, tool("automations", "start", "c1", start), tool("automations", "result", "c1", result)]))).toBe(false);
+  });
+
+  it("the INPUT schedule's kind is not kept when the result's schedule is the one printed", async () => {
+    const [start, result] = (await promoteFrames(
+      [
+        cronFrame("start", { args: { action: "add", job: { schedule: { kind: "on-exit", command: "x" } } } }),
+        cronFrame("result", { result: { details: { id: "j1", schedule: { kind: "stream", command: ["x"] } } } }),
+      ],
+      ["automations"],
+    ));
+    expect(JSON.stringify(start)).not.toContain("on-exit");
+    expect(cronPartFromTool("automations", "completed", start!.payload.data.args, result!.payload.data.result)?.schedule).toBe("stream");
+  });
+
+  it("a STRING schedule the reader prints keeps its branch word, the rest masked", async () => {
+    const [start, result] = (await promoteFrames(
+      [cronFrame("start", { args: { action: "add" } }), cronFrame("result", { result: { details: { id: "j1", schedule: "cron 30 9 * * 1" } } })],
+      ["automations"],
+    ));
+    expect(cronPartFromTool("automations", "completed", start!.payload.data.args, result!.payload.data.result)?.schedule).toBe("cron 00 0 * * 0");
+  });
+
+  it("the cron job the reader PARSES out of the result text keeps its schedule kind — and only the first", async () => {
+    const job = (kind: string) => JSON.stringify({ id: "j1", name: "n", schedule: { kind, command: "make Martin" } });
+    const raw = [
+      cronFrame("start", { args: { action: "add" } }),
+      cronFrame("result", { result: { content: [{ type: "text", text: job("on-exit") }, { type: "text", text: job("stream") }] } }),
+    ];
+    const read = (frames: Array<{ payload: { data: Record<string, unknown> } }>) =>
+      cronPartFromTool("automations", "completed", frames[0]!.payload.data.args, frames[1]!.payload.data.result)?.schedule;
+    expect(read(raw as never)).toBe("on-exit");
+    const promoted = (await promoteFrames(raw, ["automations"]));
+    expect(read(promoted)).toBe("on-exit");
+    const json = JSON.stringify(promoted);
+    expect(json, "the second job is not read, so its kind is not kept").not.toContain('"kind":"stream"');
+    expect(json).not.toContain("Martin");
+  });
+
+  it("a report the reader refuses LATER — no valid item, too large — keeps nothing", async () => {
+    const empty = { ...DOCUMENTS, injected: { truncated: true }, items: [{}] };
+    expect(parseProvenanceReport(empty)).toBeNull();
+    expect(JSON.stringify((await promote(agent("martin-rag.provenance", empty))))).not.toContain("true");
+    // Over the reader's JSON budget: refused raw. Promotion must not turn it into a report.
+    const big = { ...DOCUMENTS, items: Array.from({ length: 20 }, () => ({ file_name: "f", context: true, text: "M".repeat(2_000) })) };
+    expect(parseProvenanceReport(big)).toBeNull();
+    const out = (await promote(agent("martin-rag.provenance", big)));
+    expect(parseProvenanceReport(out.payload.data)).toBeNull();
+    expect(JSON.stringify(out)).not.toContain("true");
+  });
+
+  it("only the items the reader READS keep their context flag", async () => {
+    const report = { ...DOCUMENTS, items: Array.from({ length: MAX_PROVENANCE_ITEMS + 1 }, () => ({ file_name: "f", context: true })) };
+    const json = JSON.stringify((await promote(agent("martin-rag.provenance", report))));
+    expect(json.split('"context":true').length - 1).toBe(MAX_PROVENANCE_ITEMS);
+  });
+
+  it("a task's declared timeout survives inside the reader's bounds, and is masked outside them", async () => {
+    const start = async (details: Record<string, unknown>) => {
+      const out = (await promote(
+        agent("tool", { name: "image_generate", phase: "result", toolCallId: "c1", result: { details } }),
+        ["image_generate"],
+      )).payload.data;
+      return { out, read: asyncTaskStartFromTool("image_generate", "completed", out.result) };
+    };
+    expect((await start({ async: true, taskId: "t1", timeoutMs: 300_000 })).read?.timeoutMs).toBe(300_000);
+    // Published as the reader reads it — rounded — not with a precision nothing consumes.
+    const fractional = (await start({ async: true, taskId: "t1", timeoutMs: 300_000.4 }));
+    expect(fractional.read?.timeoutMs).toBe(300_000);
+    expect(JSON.stringify(fractional.out)).not.toContain("300000.4");
+    // An epoch-sized number under the same key is no bound: the reader drops it, and so does
+    // promotion — it must not leave the capture as a date.
+    const epoch = (await start({ async: true, taskId: "t1", timeoutMs: 1_785_204_000_000 }));
+    expect(epoch.read?.timeoutMs).toBeUndefined();
+    expect(JSON.stringify(epoch.out)).not.toContain("1785204000000");
+  });
+
+  it("a lifecycle error OBJECT keeps the key the reader picks, never its text", async () => {
+    const out = (await promote(agent("lifecycle", { phase: "error", error: { detail: "Martin quota exceeded" } })));
+    const error = out.payload.data.error as Record<string, unknown>;
+    expect(Object.keys(error)).toEqual(["detail"]);
+    expect(String(error.detail)).not.toContain("Martin");
+  });
+
+  it("frames the reading stack never CONSUMES keep none of the reader-consumed values — foreign session, foreign run, not an agent event", async () => {
+    // Scope, stated: this is about the values the reader rules keep (`v`, `truncated`, a task
+    // bound). Values under protocol keys of an unrecognised `data` node are the positional hole
+    // pinned by "the remaining hole is bounded and NAMED" (defect 12), not this rule.
+    // Measured on the real replay, not assumed: once the capture's own session is established
+    // (the replay takes its session from the acked run's first frame, so every case starts with
+    // one), a frame of another session, a frame of another run and a non-agent event are refused.
+    const as = (sessionKey: string, runId: string, event: string, stream: string, data: unknown) => ({
+      type: "event",
+      event,
+      payload: { runId, sessionKey, stream, data },
+    });
+    const OWN = "agent:a:atrium:chat:u:c";
+    const OTHER = "agent:b:atrium:chat:v:d";
+    const own = as(OWN, "webchat-r1", "agent", "lifecycle", { phase: "start" });
+    const task = { name: "image_generate", phase: "result", toolCallId: "t1", result: { details: { async: true, taskId: "t", timeoutMs: 300_000 } } };
+    const cases: Array<[string, unknown[]]> = [
+      ["foreign session report", [own, as(OTHER, "webchat-r1", "agent", "martin-rag.provenance", DOCUMENTS)]],
+      ["foreign session task", [own, as(OTHER, "webchat-r1", "agent", "tool", task)]],
+      ["foreign run report", [own, as(OWN, "webchat-other", "agent", "martin-rag.provenance", DOCUMENTS)]],
+      ["foreign run task", [own, as(OWN, "webchat-other", "agent", "tool", task)]],
+      ["not an agent event", [own, as(OWN, "webchat-r1", "chat", "martin-rag.provenance", DOCUMENTS)]],
+    ];
+    for (const [label, frames] of cases) {
+      const json = JSON.stringify(await promoteFrames(frames, ["image_generate"]));
+      expect(json, label).not.toContain('"v":1');
+      expect(json, label).not.toContain('"truncated":true');
+      expect(json, label).not.toContain("300000");
+    }
+    // Sanity: the same report and task in the capture's own session and run ARE consumed and kept.
+    const kept = JSON.stringify(
+      await promoteFrames([own, as(OWN, "webchat-r1", "agent", "martin-rag.provenance", DOCUMENTS), as(OWN, "webchat-r1", "agent", "tool", task)], ["image_generate"]),
+    );
+    expect(kept).toContain('"v":1');
+    expect(kept).toContain('"timeoutMs":300000');
+  });
+
+  it("a FOREIGN-run start between an admitted start and its result lends nothing — the admitted one is read", async () => {
+    // The normalizer refuses the foreign-run start (measured: the card prints `on-exit`), so its
+    // args never reach the buffer. A replay of every raw frame did overwrite it (codex).
+    const start = (runId: string, kind: string) => ({
+      type: "event",
+      event: "agent",
+      payload: {
+        runId,
+        sessionKey: "agent:a:atrium:chat:u:c",
+        stream: "tool",
+        data: { name: "automations", phase: "start", toolCallId: "c1", args: { action: "add", job: { schedule: { kind, command: "x" } } } },
+      },
+    });
+    const json = JSON.stringify(
+      await promoteFrames([start("webchat-r1", "on-exit"), start("webchat-other", "stream"), cronFrame("result", { result: { details: { id: "j1" } } })], ["automations"]),
+    );
+    expect(json, "the admitted start's schedule kind is kept").toContain('"kind":"on-exit"');
+    expect(json, "the refused start's is not").not.toContain('"kind":"stream"');
+  });
+
+
+  it("a lifecycle error's NESTED failure class is kept when a turn closes with it, and only then", async () => {
+    const error = (errorKind: string) => agent("lifecycle", { phase: "error", error: { message: "Martin overflow", errorKind } });
+    const kept = JSON.stringify(await promote(error("context_length")));
+    expect(kept).toContain('"errorKind":"context_length"');
+    expect(kept).not.toContain("Martin");
+    // A value the normalizer does not accept classifies nothing: masked.
+    expect(JSON.stringify(await promote(error("Martin_kind")))).not.toContain("Martin_kind");
+    // An error of another run is never read.
+    const own = agent("lifecycle", { phase: "start" });
+    const foreign = { ...error("context_length"), payload: { ...error("context_length").payload, runId: "webchat-other" } };
+    expect(JSON.stringify(await promoteFrames([own, foreign]))).not.toContain('"errorKind":"context_length"');
+    // …not even when the capture's OWN turn closes with the very same class from another frame:
+    // the reading belongs to the frame that closed the turn, not to its value (codex).
+    // The own terminal carries its class NESTED too: a root `errorKind` is a vocabulary key kept
+    // everywhere, and would prove nothing about the attribution (codex).
+    const ownNestedError = agent("lifecycle", { phase: "error", error: { message: "own boom", errorKind: "context_length" } });
+    const [, promotedForeign, promotedOwn] = await promoteFrames([own, foreign, ownNestedError]);
+    expect(JSON.stringify(promotedForeign)).not.toContain('"errorKind":"context_length"');
+    expect(JSON.stringify(promotedOwn), "the own terminal's class is kept").toContain('"errorKind":"context_length"');
+  });
+
+  it("a schedule's kind is not kept when the card prints its expression instead", async () => {
+    const [start, result] = await promoteFrames(
+      [cronFrame("start", { args: { action: "add" } }), cronFrame("result", { result: { details: { id: "j1", schedule: { kind: "on-exit", expr: "0 5 * * *" } } } })],
+      ["automations"],
+    );
+    expect(cronPartFromTool("automations", "completed", start!.payload.data.args, result!.payload.data.result)?.schedule).toBe("cron 0 0 * * *");
+    expect(JSON.stringify(result)).not.toContain("on-exit");
+  });
+
+  it("a NAMELESS async call's bound is kept — the stack opens its engagement (measured)", async () => {
+    const out = JSON.stringify(await promote(agent("tool", { phase: "result", toolCallId: "c1", result: { details: { async: true, taskId: "t", timeoutMs: 300_000 } } })));
+    expect(out).toContain('"timeoutMs":300000');
   });
 });
