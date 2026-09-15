@@ -5,7 +5,8 @@
  * together:
  *  - `bridge/src/compat.ts` — `maxValidated`, the version Atrium claims to support;
  *  - `test/fixtures/openclaw_upstream_frames.json` — `upstream_tag`, the tag whose
- *    own unit tests the replayed wire shapes were extracted from;
+ *    sources the replayed wire shapes were built from: copied from its unit tests, or
+ *    composed where the fixture says so (its citations: upstream-citations.test.ts);
  *  - `docs/UPSTREAM_INTERPRETATION.md` — the tag the whole
  *    comparison was written against.
  *
@@ -51,7 +52,7 @@ function bare(tag: string): string {
 describe("the upstream reference tag (G3)", () => {
   const promised = promisedVersion();
 
-  it("the replayed frames were extracted from the version we promise", () => {
+  it("the replayed frames were built from the version we promise", () => {
     const fixture = JSON.parse(readFileSync(FIXTURE, "utf-8")) as {
       upstream_tag?: string;
     };
@@ -62,8 +63,8 @@ describe("the upstream reference tag (G3)", () => {
     expect(
       bare(fixture.upstream_tag!),
       `openclaw_upstream_frames.json holds shapes from ${fixture.upstream_tag}, but ` +
-        `compat.ts promises ${promised}. Re-extract the scenarios from the new tag ` +
-        `(the upstream test file:line is cited per scenario) before raising the ` +
+        `compat.ts promises ${promised}. Rebuild the scenarios from the new tag ` +
+        `(each description cites the upstream sources it was built from) before raising the ` +
         `ceiling — otherwise the interpretation contracts are pinned to a gateway ` +
         `we no longer claim to support.`,
     ).toBe(promised);

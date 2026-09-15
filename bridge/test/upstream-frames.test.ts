@@ -1,16 +1,21 @@
 /**
- * Upstream-extracted frame contracts (OpenClaw tag v2026.7.1).
+ * Upstream-derived frame contracts (OpenClaw tag v2026.9.4).
  *
- * Each scenario in fixtures/openclaw_upstream_frames.json is a wire shape the
- * upstream gateway's OWN unit tests guarantee (source file:line cited in the
- * fixture). Replaying them here pins the bridge's interpretation contracts
- * documented in docs/UPSTREAM_INTERPRETATION.md:
+ * Each scenario in fixtures/openclaw_upstream_frames.json is built from the
+ * upstream sources its description cites: copied from upstream's own unit tests,
+ * or COMPOSED — the fixture's `_about` lists every composed part, and only the
+ * three scenarios composed throughout say so in their own description. A composed
+ * frame is our reading of cited production code, not a shape an upstream test
+ * guarantees. The citations are checked by upstream-citations.test.ts. Replaying
+ * the frames here pins the bridge's interpretation contracts documented in
+ * docs/UPSTREAM_INTERPRETATION.md:
  *  - `state` alone decides the terminal class (stopReason is consumed by the
  *    gateway before emission; the Control UI reads neither stopReason nor
  *    errorKind),
  *  - allowlisted wire errorKind survives as the stable errorCode,
- *  - the embedded-lock takeover with streamed content downgrades to complete
- *    (upstream refuses any retry once there is send evidence),
+ *  - the transcript writer-claim rebound stays an error after streamed content,
+ *    in its own non-retryable class (session_write_conflict), and is retryable
+ *    only when nothing but the preparation prelude streamed,
  *  - the init OCC conflict classifies to session_init_conflict,
  *  - explicit {stream:"compaction"} events are the PRIMARY mid-turn compaction
  *    signal: one persisted "midturn" marker, accumulated text never reset (the
@@ -69,7 +74,7 @@ const statusOf = (events: BridgeEvent[]) =>
 const finalOf = (events: BridgeEvent[]) =>
   events.find((e) => e.type === "message.final");
 
-describe("upstream v2026.9.1 frame contracts", () => {
+describe("upstream v2026.9.4 frame contracts", () => {
   it("aborted with free-form stopReason ('user') finalizes aborted on state alone, partial text kept", () => {
     const { events, normalizer } = drive("aborted-user-stop-partial-text");
     expect(statusOf(events)?.status).toBe("aborted");

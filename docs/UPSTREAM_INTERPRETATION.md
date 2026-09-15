@@ -12,23 +12,25 @@ ratchet; the per-field classification lives in the coverage manifests under
 Reference source: `github.com/openclaw/openclaw` at tag **`v2026.9.4`** — the
 exact `maxValidated` gateway version in `bridge/src/compat.ts`.
 
-> **WHAT "ANCHORED AT v2026.9.4" DOES AND DOES NOT MEAN.** The CONCLUSIONS below were
-> re-verified against that tag, zone by zone, at each revision. The `file:line`
-> CITATIONS were not all re-resolved: most were written against the tag of the revision
-> that introduced them, and upstream line numbers move constantly (1230 commits between
-> 2026.8.2 and 2026.9.1 alone). An adversarial review on 2026-09-12 resolved a sample
-> and found roughly thirty that now point at unrelated code — `ChatEventSchema` cited at
-> `logs-chat.ts:197-202` when it lives at 430-436, `agent-runner.ts` cited when the file
-> is down to one line, a documented 150 ms cadence that is now `LIVE_TEXT_PACING_MS = 75`.
-> Those three, and the anchors of §1 and §5 it named, are corrected. The rest are NOT,
-> and a stale anchor is worse than none: it lets a real contract change be "verified"
-> against lines that have nothing to do with it.
+> **WHAT "ANCHORED AT v2026.9.4" MEANS.** The CONCLUSIONS below were re-verified against that
+> tag, zone by zone, at each revision. The `file:line` CITATIONS are checked as well: every
+> citation of this document and of the scenario descriptions of
+> `bridge/test/fixtures/openclaw_upstream_frames.json` is recorded in
+> `bridge/protocol/openclaw/citations.json` with the tag it is read at, its full path and a
+> literal fragment of the cited code, and `bridge/test/upstream-citations.test.ts` refuses a
+> citation that is not recorded, a record whose lines are not the lines written here, a citation
+> without a file name, and — when a checkout of the tag is reachable — a literal that is not
+> inside the cited lines. A review of 2026-09-12 had found about thirty citations pointing at
+> unrelated code (`ChatEventSchema` cited at lines 197-202 of `logs-chat.ts` when it lives at
+> 430-436, a documented 150 ms cadence that is now `LIVE_TEXT_PACING_MS = 75`); on 2026-09-15
+> every citation was re-read at its tag and the moved ones were corrected in place.
 >
-> So: trust the prose, re-resolve any `file:line` you are about to rely on, and fix it
-> in place when it has moved. The only citations mechanically checked today are the ones
-> in `bridge/test/fixtures/openclaw_upstream_frames.json` — and nothing checks them
-> either: `upstream-frames.test.ts` replays the frames and never reads a `description`.
-> Making those resolvable by a test is owed work, not done work. Upstream
+> What the check does not prove: the literal shows the cited lines contain that fragment, chosen
+> by a reader to embody the claim — not that the prose around it is right, and a range wider
+> than the claim still passes. In CI, where no upstream checkout exists, only the record and the
+> citations of Atrium code are checked, and the test says so instead of implying more.
+
+Upstream
 references below (`$UP/…`) are paths inside that tag. The Control UI is a
 **reference interpretation, not a spec**: where Atrium diverges on purpose
 (multi-version support, multi-instance, two providers, durable persistence),
@@ -110,24 +112,25 @@ spawnedBy?, seq}`:
 
 | `state` | Own fields | Emitted when |
 |---|---|---|
-| `delta` | `deltaText` (required), `replace?`, `message?` (cumulative snapshot), `usage?` | per assistant stream frame, throttled 150 ms; a buffered delta is flushed just before any terminal (`server-chat.ts:789-935`) |
-| `final` | `message?` (may be absent), `usage?`, `stopReason?` | lifecycle `end` whose terminal outcome is `done` (`server-chat.ts:954-1002`) |
-| `aborted` | `message?` (partial text), `errorMessage?` (tool-validation summary only), `stopReason?` | terminal outcome `cancelled`/`aborted`, or direct `broadcastChatAborted` (`chat-abort.ts:422-465`) |
-| `error` | `errorMessage?`, `errorKind?`, `usage?`, `stopReason?`, `message` = `"Error: …"` text | lifecycle `error`, or `end` classified `failed`/`timed_out`/`hard_timeout`; lifecycle errors get a 15 s retry grace before emission (`server-chat.ts:186,772-787`) |
+| `delta` | `deltaText` (required), `replace?`, `message?` (cumulative snapshot), `usage?` | per assistant stream frame, paced at 75 ms (`LIVE_TEXT_PACING_MS`); a buffered delta is flushed just before any terminal (`server-chat.ts:1051-1062,1183-1189`) |
+| `final` | `message?` (may be absent), `usage?`, `stopReason?` | lifecycle `end` whose terminal outcome is `done` (`server-chat.ts:774-784,1200-1227`) |
+| `aborted` | `message?` (partial text), `errorMessage?` (tool-validation summary only), `stopReason?` | terminal outcome `cancelled`/`aborted`, or direct `broadcastChatAborted` (`chat-abort.ts:557-596`) |
+| `error` | `errorMessage?`, `errorKind?`, `errorDetail?`, `usage?`, `stopReason?`, `message?` — declared; the gateway's own error payload sets neither `message` (since 2026.8.1) nor `usage` (`server-chat.ts:1231-1243`) | lifecycle `error`, or `end` classified `failed`/`timed_out`/`hard_timeout`; lifecycle errors get a 15 s retry grace before emission (`server-chat.ts:101-106,458,1802-1821`) |
 
 **`stopReason` is a free-form string at the wire level** (`Type.Optional(
 Type.String())` — no wire enum). Producers: the model runtime enum
-`"stop"|"length"|"toolUse"|"error"|"aborted"` (`$UP/packages/llm-core/src/
-types.ts:283`, raw provider values like `end_turn` may also pass through) and
+`"stop"|"length"|"toolUse"|"error"|"aborted"` (`$UP/packages/llm-core/src/types.ts:354`,
+raw provider values like `end_turn` may also pass through) and
 gateway abort paths (`"aborted"`, `"restart"`, `"timeout"`, `"rpc"` — a
 generic RPC/internal abort reason, of which a user Stop is one example —
 `"auth-revoked"`; arbitrary caller values like `"user"`
 also occur). Crucially, **the gateway consumes stopReason before emission**:
 `buildAgentRunTerminalOutcome` maps it into `state` (`rpc|stop` → `aborted`
 only when status ≠ ok; `timeout` + aborted → **`error`**, not `aborted`;
-stale-generation `restart` frames are suppressed entirely —
-`$UP/src/agents/agent-run-terminal-outcome.ts:96-174`,
-`server-chat.agent-events.test.ts:2966-2989`).
+stale-generation `restart` frames are suppressed entirely — rules at
+`$UP/packages/normalization-core/src/agent-run-terminal-outcome.ts:91-129`, suppression at
+`$UP/src/gateway/server-chat.ts:721-738`,
+`server-chat.agent-events.test.ts:3840-3902,4587-4590`).
 
 `errorKind` is a closed enum `refusal | timeout | rate_limit | context_length
 | unknown` (wire mirror `ChatEventErrorKindSchema`,
@@ -142,8 +145,8 @@ bridge reads):
 
 - **`message` is no longer emitted on `state:"error"`** (since 2026.8.1):
   `emitChatTerminal` omits it and the upstream tests assert its absence
-  (`server-chat.agent-events.test.ts:5120`). The `"Error: …"` prefix is now
-  built by the Control UI (`chat-gateway.ts:174-179`). Atrium reads
+  (`server-chat.agent-events.test.ts:4682,5695,5935`). The `"Error: …"` prefix is now
+  built by the Control UI (`chat-gateway.ts:111-126`). Atrium reads
   `errorMessage` first, so nothing changed for it — but the `message` fallback
   in its coverage manifest is dead code against a ≥2026.8.1 gateway.
 - **`detectErrorKind` is gone from the core** (deprecated shim in
@@ -154,7 +157,7 @@ bridge reads):
   `failoverReason`, `providerRuntimeFailureKind`, `providerErrorType`,
   `httpStatus`, `providerErrorMessagePreview`. Purely additive: `errorMessage`
   is still emitted. The Control UI reads exactly one thing from it
-  (`providerRuntimeFailureKind === "auth_refresh"`, `chat-gateway.ts:156-168`).
+  (`providerRuntimeFailureKind === "auth_refresh"`, `chat-gateway.ts:97-109,276-282`).
   Atrium does not read it yet — the failure classifier still works from the
   text; the structured field is the better source and is queued
   (`ChatErrorEvent.errorDetail`, gap).
@@ -176,7 +179,7 @@ cumulative `message` snapshot before any delta (`normalizer.ts`); (b) a
 replaceable provisional assistant item (`replace:true, replaceable:true`) now
 clears the prefix on the cumulative text, so the `final` and the assistant
 stream agree; (c) a retryable HTTP 5xx or a reset is no longer promoted to
-`stopReason:"timeout"` — only a recorded timeout is (`run-termination.ts:134-156`),
+`stopReason:"timeout"` — only a recorded timeout is (`run-termination.ts:109-119,136-162`),
 and `providerStarted` may arrive without `timeoutPhase`; (d) request-side only:
 `chat.history` gains `maxBytes`, `chat.metadata` gains `authProfileId`,
 `chat.startup` accepts a short id, and `chat.send` gains `mentions` — none
@@ -344,7 +347,7 @@ as `createSupersededError`),
 `embedded-agent-runner/run/deferred-lifecycle-owner.ts:113`,
 `embedded-agent-runner/run/attempt-stream-prepare.ts:520`,
 `gateway/worker-environments/worker-turn-run-owner.ts:67`), mapped to
-`superseded` by `agent-run-terminal-outcome.ts:538-545`. The other kills found
+`superseded` by `src/agents/agent-run-terminal-outcome.ts:538-545`. The other kills found
 while reading — examples, NOT an exhaustive list — carry a generic `aborted`
 (`interrupt` queue mode),
 `restart` (rollover, restart), `archive`/`delete` (lifecycle drain), `timeout`
@@ -475,7 +478,7 @@ active; "Steer" is just a `chat.send` relying on the gateway's steer mode).
   (`post-run.ts:638-644`, behind an awaited trajectory flush,
   `deferred-lifecycle-owner.ts:62-78`; trajectory capture is on by default),
   while admission reads that registry (`runs.ts:1017`,
-  `get-reply-run-admission.ts:508`). So after a delivery the bridge also asks
+  `get-reply-run-admission.ts:508-509`). So after a delivery the bridge also asks
   `chat.history` for `sessionInfo.hasActiveRun` — true across that window for
   a run that ended normally (`chat-history-handler.ts:493-503`,
   `runs.ts:1160-1187`) — and waits while it is true. That check only NARROWS
@@ -534,17 +537,18 @@ active; "Steer" is just a `chat.send` relying on the gateway's steer mode).
   `failover-error.ts:758-761`; `model-fallback-runner.ts:611-612` rethrows it) but,
   unlike the 2026.7.x lock, the announce delivery's own retry loop **may retry
   it**: `isTransientAnnounceDeliveryError`
-  (`subagent-announce-delivery-retry.ts:146-181`, used at `:258`) returns no
+  (`subagent-announce-delivery-retry.ts:146-181`, used at `subagent-announce-delivery-retry.ts:258`) returns no
   retry on send evidence, then defers to a typed retryability when one exists,
   then refuses a permanent non-writer error, and only then retries a writer
   rebound. When a direct delivery has failed, its disposition is `ambiguous`
   on send evidence, otherwise `permanent_failure` for this rebound unless a
   typed retryability decides otherwise
   (`subagent-announce-direct-delivery.ts:707-718`,
-  `isPermanentAnnounceDeliveryError` `:183-189`). The regex at `:69-70` is only
+  `isPermanentAnnounceDeliveryError` at `subagent-announce-delivery-retry.ts:183-189`). The regex at
+  `subagent-announce-delivery-retry.ts:69-70` is only
   the shared definition. The retry file is byte-identical 2026.9.2 → 2026.9.4;
-  the direct-delivery classification block is unchanged in meaning (9.2
-  `:689-700`). Refusal codes are redacted (`session-rebound`,
+  the direct-delivery classification block is unchanged in meaning
+  (`subagent-announce-direct-delivery.ts:689-700` at v2026.9.2). Refusal codes are redacted (`session-rebound`,
   `session-entry-missing`) — no filesystem path reaches the message.
   **Since 2026.9.3 (absent from the v2026.9.1 and v2026.9.2 sources; read at
   v2026.9.4), when it ends a generating run the wire does not carry this
@@ -569,7 +573,7 @@ active; "Steer" is just a `chat.send` relying on the gateway's steer mode).
   coordination family at 2026.9.1 (`failover-error.ts:46-52`), so a busy
   session no longer cycles the whole provider fallback chain.
 - The init conflict's OCC now also reads the **parent/main** session rows
-  (`relatedSessionKeys`, `session.ts:590-601`): same message, but a write on a
+  (`relatedSessionKeys`, `auto-reply/reply/session.ts:629-641`): same message, but a write on a
   parent session can now trigger it. Upstream retries up to **5 times** with
   250 ms → 4 s backoff (`SESSION_INIT_CONFLICT_MAX_ATTEMPTS`), not the single
   internal retry described above.
@@ -627,7 +631,7 @@ instead of the raw text (above). The UI keeps already-streamed text as messages 
 ### Upstream state machine
 
 Three closed reasons: `manual | threshold | overflow`
-(`$UP/src/agents/sessions/agent-session.ts:201,324`).
+(`$UP/src/agents/sessions/agent-session-types.ts:34,49`).
 
 - `threshold`: runs **between** requests; no run is abandoned.
 - `overflow`: the failed assistant message is removed and the LLM request is
@@ -652,7 +656,7 @@ Wire signals (all real, all explicit):
 The Control UI drives its compaction indicator **entirely from the explicit
 signals**: `compaction start` → active; `end` + `willRetry && completed` →
 "retrying" until the matching lifecycle terminal; `session.operation` covers
-the manual path (`$UP/ui/src/pages/chat/tool-stream.ts:317-495`).
+the manual path (`$UP/ui/src/pages/chat/tool-stream-status.ts:220-303`).
 
 ### Atrium behavior
 
@@ -716,7 +720,7 @@ a durable surface the Control UI does not have.
 - **Control UI derivation**: `idempotencyKey` **is** the client-generated
   run UUID (`crypto.randomUUID`), assigned once at enqueue time and **reused
   verbatim on every retry** (`$UP/ui/src/pages/chat/chat-send-queue-state.ts:83`,
-  `chat-send-delivery.ts:211,258`, `chat-send-request.ts:53` at v2026.9.2).
+  `chat-send-delivery.ts:211,258`, `ui/src/pages/chat/chat-send-request.ts:53` at v2026.9.2).
   No content hash, no timestamp on the client side.
 - **Gateway validation**: `NonEmptyString`, opaque, no normalization — the
   key *becomes* the run's `runId`
@@ -736,12 +740,12 @@ a durable surface the Control UI does not have.
   `{runId, status:"in_flight"}`.
 - **Since 2026.9.2 the key is bound to its content.** The gateway stores a
   request identity with the key — `sha256(JSON.stringify([message,
-  mentions]))`, `chat-send-request.ts:248-256` — at admission, and a reuse of
+  mentions]))`, `server-methods/chat-send-request.ts:248-256` — at admission, and a reuse of
   the key with DIFFERENT input is refused: `INVALID_REQUEST` with
   `details.reason: "chat-request-conflict"` and the message "This message ID
   was already used for different input…" (`chat-send-pre-admission.ts:148-155`),
   while the original run keeps running. After the RAM window the comparison
-  falls back to the transcript's submitted input (`:189-217`). "Always an ack"
+  falls back to the transcript's submitted input (`chat-send-pre-admission.ts:189-217`). "Always an ack"
   therefore holds for a faithful duplicate only.
 - The announce idempotency family (`announce:v1:<childKey>:<runId>`) is a
   **separate, persisted delivery identity** — unrelated to the chat.send
@@ -750,7 +754,7 @@ a durable surface the Control UI does not have.
 ### Atrium behavior and verdict
 
 - Bridge derivation: `webchat-<sha256(sessionKey|clientMessageId)>`
-  (`openclaw-client.ts:1007-1018`), stable across Convex's at-least-once
+  (`bridge/src/providers/openclaw/openclaw-client.ts:1086-1097`), stable across Convex's at-least-once
   dispatch — this **exploits the upstream window correctly** (re-POSTs
   replay/`in_flight` while the run is active, since active entries outlive
   the TTL).
@@ -863,6 +867,9 @@ Atrium never has (ignored, verifiably); the per-phase `chat.send` timing is a ga
 | chat.send idempotency | **Conformant** for a faithful duplicate; since 2026.9.2 a key reused with other content is refused (`chat-request-conflict`), classified as its own downstream rejection, never retried; the preempt `dispatchKey` alias WAS necessary to the retired inverse repark (abort markers poison the original key for ~60 min) and stays only for a recovery row created before 2026-09-14 (held, flipped `queued`, or promoted again), until the outbox fields are migrated out |
 | Config changes / model roster | **Handled** — `config.changed` (broadcast-only, never announced) invalidates the per-connection roster and triggers a refresh pushed to Convex under the roster's own observation stamp; a frame gap invalidates in the transport and the next publish re-asks and reports the newer answer; the scope-guard table is vendored beside the announced catalogue, and a family in neither vocabulary is named on receipt |
 
-Fixtures extracted from upstream unit tests at `v2026.9.1` are vendored in
+Fixtures built from upstream sources at `v2026.9.4` — copied from upstream unit tests, or
+composed: the fixture's `_about` lists every composed part, and only the three scenarios composed
+throughout say `COMPOSED` in their own description — are vendored in
 `bridge/test/fixtures/openclaw_upstream_frames.json` and replayed by
-`bridge/test/upstream-frames.test.ts`.
+`bridge/test/upstream-frames.test.ts`; their citations are checked by
+`bridge/test/upstream-citations.test.ts`.
