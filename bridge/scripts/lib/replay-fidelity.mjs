@@ -84,7 +84,7 @@ export async function loadRunManager(bridgeDir) {
 }
 
 /** Load the readers promotion consults to keep reader-consumed values (anonymize-capture.mjs
- *  `readerNodeRules`), from the same build as the RunManager. A missing export is a refusal. */
+ *  `captureReaderRules`), from the same build as the RunManager. A missing export is a refusal. */
 export async function loadReaders(bridgeDir) {
   assertFreshBuild(bridgeDir);
   const load = async (rel) => import(pathToFileURL(`${bridgeDir}/dist/${rel}`).href);
@@ -94,6 +94,7 @@ export async function loadReaders(bridgeDir) {
     const cron = await load("core/cron-part.js");
     const readers = {
       isProvenanceStream: provenance.isProvenanceStream,
+      parseProvenanceFrame: provenance.parseProvenanceFrame,
       parseProvenanceReport: provenance.parseProvenanceReport,
       MAX_PROVENANCE_ITEMS: provenance.MAX_PROVENANCE_ITEMS,
       asyncTaskStartFromTool: asyncTask.asyncTaskStartFromTool,
@@ -228,17 +229,44 @@ async function replay(RunManager, entries) {
   // terminal, run-manager.ts) — found by identity, innermost feed first (codex).
   const entryOf = new Map(entries.map((entry, index) => [entry.frame, index]));
   const feeding = [];
-  const { calls, writes, writer } = recorder(() => (feeding.length > 0 ? feeding[feeding.length - 1] : null));
+  // A write outside any feed can still belong to a run: the provenance the manager stashed before
+  // the ack is written while the turn OPENS (run-manager.ts beginTurn, flushed for the acked run).
+  let opening = null;
+  const { calls, writes, writer } = recorder(() =>
+    feeding.length > 0 ? { entry: feeding[feeding.length - 1], run: null } : { entry: null, run: opening },
+  );
   const manager = new RunManager("fidelity", sessionKey, writer);
-  const feed = manager.feed.bind(manager);
-  manager.feed = async (frame, at) => {
+  const tagged = (fn) => async (frame, at) => {
     feeding.push(entryOf.get(frame) ?? null);
     try {
-      return await feed(frame, at);
+      return await fn(frame, at);
     } finally {
       feeding.pop();
     }
   };
+  manager.feed = tagged(manager.feed.bind(manager));
+  // The FRAME each provenance part was read from, by reference. The normalizer turns a report
+  // frame into `{type: "provenance", part}` and the sink hands that very `part` to the writer
+  // (turn-sink.ts addProvenancePart), so the part object names its frame — whichever path fed it:
+  // the manager's feed, a stashed announce re-fed, or a frame that raced the ack and is replayed
+  // straight into the normalizer as the turn opens (run-manager.ts beginTurn). `normalizer.feed`
+  // is synchronous and returns the events, so the wrapper stays synchronous.
+  const partEntry = new WeakMap();
+  if (typeof manager.normalizer?.feed === "function") {
+    const normalizerFeed = manager.normalizer.feed.bind(manager.normalizer);
+    manager.normalizer.feed = (frame, at) => {
+      const events = normalizerFeed(frame, at);
+      const index = entryOf.get(frame);
+      if (index !== undefined && Array.isArray(events)) {
+        for (const event of events) {
+          if (event?.type === "provenance" && event.part !== null && typeof event.part === "object") {
+            partEntry.set(event.part, index);
+          }
+        }
+      }
+      return events;
+    };
+  }
   const base = entries.find((e) => typeof e.receivedAt === "number")?.receivedAt ?? 0;
   const at = (e, i) =>
     typeof e.receivedAt === "number" ? 1000 + (e.receivedAt - base) / 1000 : 1000 + i * 0.01;
@@ -251,11 +279,17 @@ async function replay(RunManager, entries) {
   );
   manager.armReplayBuffer();
   let opened = ackIndex < 0;
-  if (opened) await manager.beginTurn(now, turnRun);
+  if (opened) {
+    opening = turnRun;
+    await manager.beginTurn(now, turnRun);
+    opening = null;
+  }
   for (let i = 0; i < entries.length; i++) {
     const arrival = at(entries[i], i);
     if (!opened && i === ackIndex) {
+      opening = turnRun;
       await manager.beginTurn(arrival, turnRun);
+      opening = null;
       opened = true;
     }
     for (let step = 0; step < 64; step++) {
@@ -282,7 +316,7 @@ async function replay(RunManager, entries) {
   if (manager.turnActive && manager.takeRecvSilence()) {
     await manager.endTurn(now, "final", null, "recv_timeout");
   }
-  return { calls, writes };
+  return { calls, writes, sessionKey, partEntry };
 }
 
 /** Compare the readings of a raw slice and its promoted form. Returns a list of
@@ -332,27 +366,44 @@ function pathIndex(entries) {
   return paths;
 }
 
-/** What the reading stack CONSUMES from a raw capture, from the replay the gate runs: the
- *  provenance parts it writes, and each cron card and each declared-timeout task engagement with
+/** What the reading stack CONSUMES from a raw capture, from the replay the gate runs: each
+ *  provenance part it writes with the run it belongs to, and each cron card and each declared-timeout task engagement with
  *  the raw objects it was read from. The sink writes a completed tool part with the event's
  *  `input`/`output` BY REFERENCE right before the card and the engagement it derives from them
  *  (turn-sink.ts), so those references attribute each reading to the frames the normalizer really
  *  admitted and coalesced. Without `readers`, only provenance parts are collected. */
 export async function consumedReadings(RunManager, rawEntries, readers) {
-  const { writes } = await replay(RunManager, rawEntries);
+  const { writes, sessionKey, partEntry } = await replay(RunManager, rawEntries);
   const paths = pathIndex(rawEntries);
-  const provenanceParts = [];
+  const provenanceReads = [];
   const cronReads = [];
   const taskReads = [];
   const errorReads = [];
   let completed = null;
-  for (const [name, args, fedEntry] of writes) {
+  // The run of the bubble parts are currently written into.
+  let bubbleRun = null;
+  for (const [name, args, tag] of writes) {
+    const fedEntry = tag?.entry ?? null;
+    if (name === "startAssistant") {
+      bubbleRun = typeof args[1] === "string" && args[1].length > 0 ? args[1] : null;
+      continue;
+    }
     if (name === "addToolPart") {
       completed = args[1]?.phase === "completed" ? args[1] : null;
       continue;
     }
     if (name === "addProvenancePart") {
-      provenanceParts.push(args[1]);
+      const part = JSON.stringify(args[1]);
+      // EXACT when the normalizer produced this part from a frame of the capture (see partEntry).
+      // Otherwise it came from the manager's pre-turn STASH (`parseProvenanceFrame`, rebuilt outside
+      // the normalizer) and is written into the bubble of ITS run: the run of the last
+      // `startAssistant` — not of the frame being fed, whose runId may be empty (codex).
+      const entry = partEntry.get(args[1]);
+      if (entry !== undefined) {
+        provenanceReads.push({ entry, part });
+      } else {
+        provenanceReads.push({ run: bubbleRun ?? tag?.run ?? null, part });
+      }
       continue;
     }
     if (name === "finalize") {
@@ -379,5 +430,5 @@ export async function consumedReadings(RunManager, rawEntries, readers) {
       });
     }
   }
-  return readingsLedger({ provenanceParts, cronReads, taskReads, errorReads });
+  return readingsLedger({ sessionKey, provenanceReads, cronReads, taskReads, errorReads });
 }

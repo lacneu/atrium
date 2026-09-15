@@ -795,7 +795,7 @@ export function readerVocabulary() {
  *  boolean, a `timeoutMs` number or a report's `v` mean something at one exact position and
  *  nothing anywhere else — least of all inside a document excerpt that happens to parse as
  *  JSON. A key-name rule published them wherever they sat (codex). So these are decided per
- *  NODE of the raw frame: `readerNodeRules` locates the exact objects a reader would read,
+ *  NODE of the raw frame: `captureReaderRules` locates the exact objects a reader would read,
  *  under the reader's own acceptance conditions, and gives each its vocabulary and the few
  *  scalars kept there. Objects parsed out of a serialised string are never among them, except
  *  where the reader itself parses one (the cron job carried in a tool result's text).
@@ -848,32 +848,21 @@ const nonEmptyString = (v) => typeof v === "string" && v.length > 0;
  *  buffering and turn resets are the stack's own, never restated here (codex: every restatement
  *  of the normalizer's admission rules missed one).
  *
- *  Provenance parts are matched by content (the normalizer rebuilds them; no reference survives)
- *  and counted, so a foreign duplicate of a consumed report only ever re-publishes the very values
- *  the consumed one published. Cron cards and task engagements are ATTRIBUTED: `cronReads` and
- *  `taskReads` carry the paths of the exact raw objects the reader was given (see
- *  captureReaderRules). A report no admitted frame delivered, a task no turn opened, a card no
+ *  Every reading is ATTRIBUTED (see captureReaderRules): cron cards and task engagements by the
+ *  paths of the exact raw objects the reader was given; failure classes by the entry whose feed
+ *  closed the turn; provenance parts — rebuilt by the reader, so no reference reaches the frame —
+ *  by RUN and content. Counting parts by content alone let a report of another run, earlier in the
+ *  capture, take the credit of the one the stack read (measured on a real capture: a sub-agent's
+ *  identical probe report). A report no admitted frame delivered, a task no turn opened, a card no
  *  call wrote, keeps nothing. */
-export function readingsLedger({ provenanceParts = [], cronReads = [], taskReads = [], errorReads = [] } = {}) {
-  const count = (keys) => {
-    const m = new Map();
-    for (const k of keys) m.set(k, (m.get(k) ?? 0) + 1);
-    return m;
-  };
-  return {
-    provenance: count(provenanceParts.map((part) => JSON.stringify(part))),
-    cronReads,
-    taskReads,
-    // The failure class each turn closed with, attributed to the entry whose feed closed it.
-    errorReads,
-  };
-}
-
-function takeReading(counts, key) {
-  const n = counts.get(key) ?? 0;
-  if (n === 0) return false;
-  counts.set(key, n - 1);
-  return true;
+export function readingsLedger({
+  sessionKey = null,
+  provenanceReads = [],
+  cronReads = [],
+  taskReads = [],
+  errorReads = [],
+} = {}) {
+  return { sessionKey, provenanceReads, cronReads, taskReads, errorReads };
 }
 
 /** The five CronScheduleSchema kinds of 2026.9.4 (protocol/openclaw/2026.9.4/cron.ts).
@@ -902,55 +891,6 @@ const cronScheduleStringRule = {
  *  ordinary rules apply; `freeForm` walks the node's own scalars under the free-form rules;
  *  `embedded` maps a key holding serialised JSON the reader parses to the rules of the parsed
  *  value. */
-function readerNodeRules(frame, readers, consumed) {
-  const rules = new Map();
-  if (readers == null || consumed == null) return rules;
-  const payload = frame?.payload;
-  const data = payload?.data;
-  const stream = payload?.stream;
-
-  const report =
-    readers.isProvenanceStream(stream) && isPlainRecord(data) ? readers.parseProvenanceReport(data) : null;
-  if (report !== null && takeReading(consumed.provenance, JSON.stringify(report))) {
-    // The report node is walked FREE-FORM: its keys are known, none of its values is protocol.
-    // As a declared `data` node its booleans and numbers under vocabulary keys were published
-    // as they stood — a `pluginName: true` survived the leak sweep. Two values are kept, the two
-    // the reader compares, and an accepted report holds exactly these: `v` 1 and the `kind`
-    // that picks the group.
-    rules.set(data, {
-      vocabulary: PROVENANCE_REPORT_KEYS,
-      freeForm: true,
-      keep: new Map([
-        ["v", (v) => (v === 1 ? 1 : undefined)],
-        ["kind", (v) => (v === "memory" || v === "documents" ? v : undefined)],
-      ]),
-    });
-    for (const item of data.items.slice(0, readers.MAX_PROVENANCE_ITEMS)) {
-      if (!isPlainRecord(item)) continue;
-      // `context === true` makes an item a context excerpt; any other value reads as absent.
-      rules.set(item, {
-        vocabulary: PROVENANCE_ITEM_KEYS,
-        keep: new Map([["context", (v) => (v === true ? true : undefined)]]),
-      });
-    }
-    if (isPlainRecord(data.injected)) {
-      // `truncated` is carried to the part as the boolean it is.
-      rules.set(data.injected, {
-        vocabulary: PROVENANCE_INJECTED_KEYS,
-        keep: new Map([["truncated", (v) => (typeof v === "boolean" ? v : undefined)]]),
-      });
-    }
-    if (isPlainRecord(data.retrieval)) {
-      rules.set(data.retrieval, { vocabulary: PROVENANCE_RETRIEVAL_KEYS });
-      if (isPlainRecord(data.retrieval.lightrag)) {
-        rules.set(data.retrieval.lightrag, { vocabulary: PROVENANCE_LIGHTRAG_KEYS });
-      }
-    }
-  }
-
-  return rules;
-}
-
 /** THE READINGS ONLY A WHOLE CAPTURE DETERMINES, attributed by the reading stack (defect 13).
  *
  *  A cron card is built at a tool call's completion from the input the normalizer BUFFERED off an
@@ -993,6 +933,74 @@ export function captureReaderRules(entries, readers, consumed) {
       : typeof job.schedule === "string"
         ? [[job, cronScheduleStringRule]]
         : [];
+
+  // PROVENANCE REPORTS. A read written while its own report frame was fed names that ENTRY; the
+  // others name the RUN of the bubble they were written into (a stash flushed later) and claim,
+  // first come first served, a report the reader itself would have stashed —
+  // `readers.parseProvenanceFrame` (core/provenance.ts) — with that runId and the same parsed
+  // content. Run and content alone let a `chat` event carrying the same report take the credit
+  // (codex). Kept on a claimed report: its keys, walked free-form (a declared `data` node
+  // published booleans and numbers under vocabulary keys — the leak sweep caught
+  // `pluginName: true`), `v` 1 and the `kind` that picks the group; the first MAX_PROVENANCE_ITEMS
+  // items' keys and `context: true`; `injected.truncated`; the retrieval keys.
+  const keepReport = (data) => {
+    rules.set(data, {
+      vocabulary: PROVENANCE_REPORT_KEYS,
+      freeForm: true,
+      keep: new Map([
+        ["v", (v) => (v === 1 ? 1 : undefined)],
+        ["kind", (v) => (v === "memory" || v === "documents" ? v : undefined)],
+      ]),
+    });
+    for (const item of data.items.slice(0, readers.MAX_PROVENANCE_ITEMS)) {
+      if (!isPlainRecord(item)) continue;
+      rules.set(item, {
+        vocabulary: PROVENANCE_ITEM_KEYS,
+        keep: new Map([["context", (v) => (v === true ? true : undefined)]]),
+      });
+    }
+    if (isPlainRecord(data.injected)) {
+      rules.set(data.injected, {
+        vocabulary: PROVENANCE_INJECTED_KEYS,
+        keep: new Map([["truncated", (v) => (typeof v === "boolean" ? v : undefined)]]),
+      });
+    }
+    if (isPlainRecord(data.retrieval)) {
+      rules.set(data.retrieval, { vocabulary: PROVENANCE_RETRIEVAL_KEYS });
+      if (isPlainRecord(data.retrieval.lightrag)) {
+        rules.set(data.retrieval.lightrag, { vocabulary: PROVENANCE_LIGHTRAG_KEYS });
+      }
+    }
+  };
+  const reportKey = (payload) =>
+    readers.isProvenanceStream(payload?.stream) && isPlainRecord(payload?.data)
+      ? JSON.stringify(readers.parseProvenanceReport(payload.data))
+      : null;
+  const claimed = new Set();
+  const runReads = [];
+  for (const read of consumed.provenanceReads ?? []) {
+    if (!Number.isInteger(read.entry)) {
+      runReads.push(read);
+      continue;
+    }
+    const payload = entries[read.entry]?.frame?.payload;
+    if (claimed.has(read.entry) || reportKey(payload) !== read.part || read.part === "null") continue;
+    claimed.add(read.entry);
+    keepReport(payload.data);
+  }
+  for (const [index, entry] of entries.entries()) {
+    if (claimed.has(index) || consumed.sessionKey == null) continue;
+    // The reader's OWN admission of a stashable report (`parseProvenanceFrame`): a restated
+    // subset of it (event and session, not `type: "event"`) let a non-event frame claim (codex).
+    const stashable = readers.parseProvenanceFrame(entry?.frame, consumed.sessionKey);
+    if (stashable === null) continue;
+    const key = JSON.stringify(stashable.part);
+    const at = runReads.findIndex((read) => read.run === stashable.runId && read.part === key);
+    if (at < 0) continue;
+    runReads.splice(at, 1);
+    claimed.add(index);
+    keepReport(entry.frame.payload.data);
+  }
 
   for (const read of consumed.taskReads ?? []) {
     const output = resolve(read.output);
@@ -1139,7 +1147,7 @@ export function anonymizeFrame(
   // and that absence is deliberately NOT pinned by a test: the provenance reader does
   // read `items[].title` (core/provenance.ts:91) through a free-form node where only
   // `readerVocabulary()` applies, so pinning the absence would block that repair. That
-  // repair is the provenance report rule (readerNodeRules, defect 13), which carries `title`
+  // repair is the provenance report rule (captureReaderRules, defect 13), which carries `title`
   // on a report item and nowhere else.
   //
   // It never showed because no promoted capture had carried one: the model writes an
@@ -1151,8 +1159,9 @@ export function anonymizeFrame(
     frame?.payload?.stream === "plan" && frame?.payload?.data !== null
       ? frame?.payload?.data
       : undefined;
-  // The reader positions of THIS frame, by node identity (see readerNodeRules).
-  const nodeRules = readerNodeRules(frame, readers, consumed);
+  // The reader positions, by node identity — all of them decided over the whole capture
+  // (captureReaderRules), none from this frame alone.
+  const nodeRules = new Map();
   // …plus the rules only the whole capture can decide (captureReaderRules).
   if (sharedRules !== undefined) {
     for (const [node, rule] of sharedRules) if (!nodeRules.has(node)) nodeRules.set(node, rule);

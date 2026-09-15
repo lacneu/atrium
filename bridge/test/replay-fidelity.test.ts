@@ -22,7 +22,7 @@ import { knownKeysFromCoverage } from "../scripts/lib/anonymize-capture.mjs";
 import { readFileSync } from "node:fs";
 import { asyncTaskStartFromTool, taskChildKey } from "../src/core/async-task.js";
 import { cronPartFromTool, isCronTool, printableCronSchedule } from "../src/core/cron-part.js";
-import { MAX_PROVENANCE_ITEMS, isProvenanceStream, parseProvenanceReport } from "../src/core/provenance.js";
+import { MAX_PROVENANCE_ITEMS, MAX_PROVENANCE_PARTS_PER_TURN, isProvenanceStream, parseProvenanceFrame, parseProvenanceReport } from "../src/core/provenance.js";
 
 // The RunManager comes from SOURCE here. `loadRunManager` reads the compiled bridge
 // because the PROMOTER runs from a checkout with a build; `dist/` is gitignored and the
@@ -267,7 +267,7 @@ describe("a promoted cron capture reads the same through the REAL coalescing", (
     const snap = read("../protocol/openclaw/2026.9.4/session-event-snapshot.json");
     return knownKeysFromCoverage(read("../protocol/openclaw/coverage/2026.9.4.json"), Array.isArray(snap) ? snap : snap.fields);
   };
-  const READERS = { isProvenanceStream, parseProvenanceReport, MAX_PROVENANCE_ITEMS, asyncTaskStartFromTool, isCronTool, cronPartFromTool, printableCronSchedule, taskChildKey };
+  const READERS = { isProvenanceStream, parseProvenanceFrame, parseProvenanceReport, MAX_PROVENANCE_ITEMS, asyncTaskStartFromTool, isCronTool, cronPartFromTool, printableCronSchedule, taskChildKey };
   const T = 1_785_204_000_000;
   const env = (dt: number, frame: unknown) => JSON.stringify({ receivedAt: T + dt, frame });
   const tool = (seq: number, phase: string, extra: Record<string, unknown>) => ({
@@ -378,6 +378,225 @@ describe("a promoted cron capture reads the same through the REAL coalescing", (
     expect(lines[3]).not.toContain('"errorKind":"context_length"');
     expect(lines[4], "the turn's error keeps its class").toContain('"errorKind":"context_length"');
     expect(lines[4]).not.toContain('"errorKind":"rate_limit"');
+  });
+
+  const report = (runId: string, sessionKey: string, seq: number) => ({
+    type: "event",
+    event: "agent",
+    payload: {
+      runId,
+      sessionKey,
+      stream: "provenance-probe.provenance",
+      seq,
+      data: { v: 1, pluginId: "provenance-probe", source: "knowledge", kind: "documents", items: [{ file_name: "a.pdf", collection: "c" }] },
+    },
+  });
+  const finalFrame = (seq: number) => ({ type: "event", event: "chat", payload: { runId: RUN, sessionKey: KEY, seq, state: "final", message: { content: [{ type: "text", text: "Le job est planifie." }] } } });
+
+  it("an IDENTICAL report of another run earlier in the capture does not take the consumed one's credit", async () => {
+    // Measured on a real capture (announce-reverse-hold, 2026-09-15): the probe's identical report of
+    // a sub-agent run came first, took the content-counted credit, and the turn's own report was
+    // masked — the gate refused the promotion.
+    const raw = [
+      env(0, { type: "res", payload: { runId: RUN } }),
+      env(5, report("child-run", "agent:alice:subagent:x", 1)),
+      env(6, report(RUN, KEY, 2)),
+      env(20, finalFrame(3)),
+    ].join("\n");
+    expect(await faithful(raw)).toEqual([]);
+    const consumed = await consumedReadings(RunManager, parseEntries(raw), READERS);
+    const lines = (promoteSlice(raw, vocabulary(), READERS, consumed) as { lines: string[] }).lines;
+    expect(lines[1], "the other run's report").not.toContain('"v":1');
+    expect(lines[2], "the turn's report").toContain('"v":1');
+  });
+
+  it("a report that raced the ack, flushed while the turn opens, is attributed to the acked run", async () => {
+    const raw = [env(0, report(RUN, KEY, 1)), env(5, { type: "res", payload: { runId: RUN } }), env(20, finalFrame(2))].join("\n");
+    const consumed = (await consumedReadings(RunManager, parseEntries(raw), READERS)) as { provenanceReads: Array<{ run: string }> };
+    expect(consumed.provenanceReads.map((read) => read.run)).toEqual([RUN]);
+    expect(await faithful(raw)).toEqual([]);
+    const lines = (promoteSlice(raw, vocabulary(), READERS, consumed) as { lines: string[] }).lines;
+    expect(lines[0]).toContain('"v":1');
+  });
+
+  it("a CHAT event carrying the same report never takes the credit of the agent report the stack reads", async () => {
+    // Run and content alone let a frame the reader never admits claim the read (codex).
+    const asChat = { ...report(RUN, KEY, 1), event: "chat" };
+    const raw = [
+      env(0, { type: "res", payload: { runId: RUN } }),
+      env(5, asChat),
+      env(6, report(RUN, KEY, 2)),
+      env(20, finalFrame(3)),
+    ].join("\n");
+    expect(await faithful(raw)).toEqual([]);
+    const consumed = await consumedReadings(RunManager, parseEntries(raw), READERS);
+    const lines = (promoteSlice(raw, vocabulary(), READERS, consumed) as { lines: string[] }).lines;
+    expect(lines[1], "the chat event").not.toContain('"v":1');
+    expect(lines[2], "the agent report").toContain('"v":1');
+  });
+
+  it("a CHAT event racing the ack with the same report never claims the agent report the stash flushes", async () => {
+    // Here the read is attributed by RUN (written while the turn opens), so only the reader's
+    // admission — an agent event of the session, `parseProvenanceFrame` — tells the two frames apart.
+    const asChat = { ...report(RUN, KEY, 1), event: "chat" };
+    const raw = [env(0, asChat), env(1, report(RUN, KEY, 2)), env(5, { type: "res", payload: { runId: RUN } }), env(20, finalFrame(3))].join("\n");
+    const consumed = (await consumedReadings(RunManager, parseEntries(raw), READERS)) as { provenanceReads: Array<{ run?: string }> };
+    expect(consumed.provenanceReads.map((read) => read.run)).toEqual([RUN]);
+    expect(await faithful(raw)).toEqual([]);
+    const lines = (promoteSlice(raw, vocabulary(), READERS, consumed) as { lines: string[] }).lines;
+    expect(lines[0], "the chat event").not.toContain('"v":1');
+    expect(lines[1], "the stashed agent report").toContain('"v":1');
+  });
+
+  it("an announce report written while a RUNID-LESS frame is fed is attributed to ITS OWN frame and kept", async () => {
+    // Measured on the real RunManager: the parent turn is over, the announce's report is stashed, and
+    // a visible assistant frame of the session with `runId: ""` opens the announce bubble — the part is
+    // written during THAT feed. Naming it after the fed frame recorded `run: ""` and masked the read
+    // (codex). The manager re-feeds the stashed report through the normalizer, whose part names its
+    // frame by reference: the read is exact.
+    const ANNOUNCE = "announce:v1:agent:alice:subagent:5b0f9680-7a29-427a-ace0-02a9eb10f573:a40575b2-6ddd-4b8f-85aa-351e1a26c2b7";
+    const agentFrame = (runId: string, seq: number, stream: string, data: unknown) => ({ type: "event", event: "agent", payload: { runId, sessionKey: KEY, stream, seq, data } });
+    const chatFinal = (runId: string, seq: number, text: string) => ({ type: "event", event: "chat", payload: { runId, sessionKey: KEY, seq, state: "final", message: { content: [{ type: "text", text }] } } });
+    const raw = [
+      env(0, { type: "res", payload: { runId: RUN } }),
+      env(10, agentFrame(RUN, 1, "lifecycle", { phase: "start" })),
+      env(20, chatFinal(RUN, 2, "Le job est planifie.")),
+      env(30, agentFrame(RUN, 3, "lifecycle", { phase: "end" })),
+      env(40, report(ANNOUNCE, KEY, 4)),
+      env(50, agentFrame("", 5, "assistant", { text: "Annonce visible." })),
+      env(60, chatFinal(ANNOUNCE, 6, "Annonce visible.")),
+    ].join("\n");
+    const consumed = (await consumedReadings(RunManager, parseEntries(raw), READERS)) as { provenanceReads: Array<{ run?: string | null; entry?: number }> };
+    expect(consumed.provenanceReads).toEqual([{ entry: 4, part: expect.any(String) }]);
+    expect(await faithful(raw)).toEqual([]);
+    const lines = (promoteSlice(raw, vocabulary(), READERS, consumed) as { lines: string[] }).lines;
+    expect(lines[4]).toContain('"v":1');
+  });
+
+  it("a `res` frame shaped like the announce's report never claims the stashed report the stack reads", async () => {
+    // The reader drops `res` frames and `parseProvenanceFrame` requires `type: "event"`, so this
+    // pseudo report is read by nobody; a restated admission without that check let it claim (codex).
+    const ANNOUNCE = "announce:v1:agent:alice:subagent:5b0f9680-7a29-427a-ace0-02a9eb10f573:a40575b2-6ddd-4b8f-85aa-351e1a26c2b7";
+    const agentFrame = (runId: string, seq: number, stream: string, data: unknown) => ({ type: "event", event: "agent", payload: { runId, sessionKey: KEY, stream, seq, data } });
+    const chatFinal = (runId: string, seq: number, text: string) => ({ type: "event", event: "chat", payload: { runId, sessionKey: KEY, seq, state: "final", message: { content: [{ type: "text", text }] } } });
+    const raw = [
+      env(0, { type: "res", payload: { runId: RUN } }),
+      env(10, agentFrame(RUN, 1, "lifecycle", { phase: "start" })),
+      env(20, chatFinal(RUN, 2, "Le job est planifie.")),
+      env(30, agentFrame(RUN, 3, "lifecycle", { phase: "end" })),
+      env(35, { ...report(ANNOUNCE, KEY, 4), type: "res" }),
+      env(40, report(ANNOUNCE, KEY, 5)),
+      env(50, agentFrame(ANNOUNCE, 6, "assistant", { text: "Annonce visible." })),
+      env(60, chatFinal(ANNOUNCE, 7, "Annonce visible.")),
+    ].join("\n");
+    expect(await faithful(raw)).toEqual([]);
+    const consumed = await consumedReadings(RunManager, parseEntries(raw), READERS);
+    const lines = (promoteSlice(raw, vocabulary(), READERS, consumed) as { lines: string[] }).lines;
+    expect(lines[4], "the pseudo report").not.toContain('"v":1');
+    expect(lines[5], "the stashed report").toContain('"v":1');
+  });
+
+  it("a non-event frame that RACED the ack is read when the turn opens — and keeps its values", async () => {
+    // Measured: the stash refuses it (`type` is not "event"), but the manager replays raced frames
+    // straight into the normalizer, which drops only `res` — the stack writes BOTH reports.
+    const raced = { ...report(RUN, KEY, 1), type: "req" };
+    const raw = [env(0, raced), env(1, report(RUN, KEY, 2)), env(5, { type: "res", payload: { runId: RUN } }), env(20, finalFrame(3))].join("\n");
+    const consumed = (await consumedReadings(RunManager, parseEntries(raw), READERS)) as { provenanceReads: unknown[] };
+    expect(consumed.provenanceReads).toHaveLength(2);
+    expect(await faithful(raw)).toEqual([]);
+    const lines = (promoteSlice(raw, vocabulary(), READERS, consumed) as { lines: string[] }).lines;
+    expect(lines[0]).toContain('"v":1');
+    expect(lines[1]).toContain('"v":1');
+  });
+
+  it("a raced non-event frame whose part the per-turn cap drops never claims the identical stashed report", async () => {
+    // Codex's counter-example: eight distinct reports race the ack and are stashed; a `type: "req"` frame
+    // before them carries a copy of one. At turn start the eight stashed parts are written first, then
+    // the raced `req` frame is replayed into the normalizer — its part is REFUSED by the sink's cap
+    // (MAX_PROVENANCE_PARTS_PER_TURN), so it has no exact read. Only `parseProvenanceFrame`'s
+    // `type: "event"` keeps it from claiming the stashed copy's read; the gate cannot see the swap.
+    const reportOf = (file: string, seq: number, type = "event") => ({
+      type,
+      event: "agent",
+      payload: {
+        runId: RUN,
+        sessionKey: KEY,
+        stream: "provenance-probe.provenance",
+        seq,
+        data: { v: 1, pluginId: "provenance-probe", source: "knowledge", kind: "documents", items: [{ file_name: file, collection: "c" }] },
+      },
+    });
+    // Names of DIFFERENT LENGTHS: masking keeps the length but zeroes digits, so `doc-0.pdf` … `doc-7.pdf`
+    // promote to eight identical reports that the stash de-duplicates into one — a different reading the
+    // gate refuses, and not the attribution this test is about.
+    const files = Array.from({ length: MAX_PROVENANCE_PARTS_PER_TURN }, (_, i) => `d${"x".repeat(i)}.pdf`);
+    const raw = [
+      env(0, reportOf(files[0]!, 1, "req")),
+      ...files.map((file, i) => env(1 + i, reportOf(file, 2 + i))),
+      env(20, { type: "res", payload: { runId: RUN } }),
+      env(30, finalFrame(20)),
+    ].join("\n");
+    const consumed = (await consumedReadings(RunManager, parseEntries(raw), READERS)) as { provenanceReads: unknown[] };
+    expect(consumed.provenanceReads, "the cap: eight parts written").toHaveLength(MAX_PROVENANCE_PARTS_PER_TURN);
+    expect(await faithful(raw)).toEqual([]);
+    const lines = (promoteSlice(raw, vocabulary(), READERS, consumed) as { lines: string[] }).lines;
+    expect(lines[0], "the raced req frame, never written").not.toContain('"v":1');
+    expect(lines[1], "the stashed copy that was written").toContain('"v":1');
+  });
+
+  it("a report WITHOUT a runId, read as it arrives in the turn, is attributed to its own entry and kept", async () => {
+    const { runId: _none, ...payload } = report(RUN, KEY, 2).payload;
+    const raw = [
+      env(0, { type: "res", payload: { runId: RUN } }),
+      env(5, { type: "event", event: "agent", payload: { runId: RUN, sessionKey: KEY, stream: "lifecycle", seq: 1, data: { phase: "start" } } }),
+      env(6, { type: "event", event: "agent", payload }),
+      env(20, finalFrame(3)),
+    ].join("\n");
+    const consumed = (await consumedReadings(RunManager, parseEntries(raw), READERS)) as { provenanceReads: Array<{ entry?: number }> };
+    expect(consumed.provenanceReads, "the stack reads it").toHaveLength(1);
+    expect(consumed.provenanceReads[0]!.entry).toBe(2);
+    expect(await faithful(raw)).toEqual([]);
+    const lines = (promoteSlice(raw, vocabulary(), READERS, consumed) as { lines: string[] }).lines;
+    expect(lines[2]).toContain('"v":1');
+  });
+
+  it("an ANNOUNCE's report stashed during the turn, read when the announce opens, is kept", async () => {
+    const ANNOUNCE = "announce:v1:agent:alice:subagent:5b0f9680-7a29-427a-ace0-02a9eb10f573:a40575b2-6ddd-4b8f-85aa-351e1a26c2b7";
+    const agentFrame = (runId: string, seq: number, stream: string, data: unknown) => ({ type: "event", event: "agent", payload: { runId, sessionKey: KEY, stream, seq, data } });
+    const chatFinal = (runId: string, seq: number, text: string) => ({ type: "event", event: "chat", payload: { runId, sessionKey: KEY, seq, state: "final", message: { content: [{ type: "text", text }] } } });
+    const raw = [
+      env(0, { type: "res", payload: { runId: RUN } }),
+      env(5, agentFrame(RUN, 1, "lifecycle", { phase: "start" })),
+      env(6, report(ANNOUNCE, KEY, 2)),
+      env(7, agentFrame(ANNOUNCE, 3, "lifecycle", { phase: "start" })),
+      env(8, agentFrame(ANNOUNCE, 4, "assistant", { text: "Le sous-agent a termine." })),
+      env(9, agentFrame(ANNOUNCE, 5, "lifecycle", { phase: "end" })),
+      env(10, chatFinal(ANNOUNCE, 6, "Le sous-agent a termine.")),
+      env(15, agentFrame(RUN, 7, "lifecycle", { phase: "end" })),
+      env(16, chatFinal(RUN, 8, "Le job est planifie.")),
+    ].join("\n");
+    const consumed = (await consumedReadings(RunManager, parseEntries(raw), READERS)) as { provenanceReads: unknown[] };
+    expect(consumed.provenanceReads, "the stack reads the announce's report").toHaveLength(1);
+    expect(await faithful(raw)).toEqual([]);
+    const lines = (promoteSlice(raw, vocabulary(), READERS, consumed) as { lines: string[] }).lines;
+    expect(lines[2]).toContain('"v":1');
+  });
+
+  it("ONE consumed report keeps its values on ONE frame: an identical duplicate of the same run stays masked", async () => {
+    // Two identical reports race the ack: the manager stashes the first and drops the duplicate by
+    // signature (run-manager.ts pendingProvenance), so the stack reads ONE. One reading, one claim.
+    const raw = [
+      env(0, report(RUN, KEY, 1)),
+      env(1, report(RUN, KEY, 2)),
+      env(5, { type: "res", payload: { runId: RUN } }),
+      env(20, finalFrame(3)),
+    ].join("\n");
+    const consumed = (await consumedReadings(RunManager, parseEntries(raw), READERS)) as { provenanceReads: unknown[] };
+    expect(consumed.provenanceReads).toHaveLength(1);
+    expect(await faithful(raw)).toEqual([]);
+    const lines = (promoteSlice(raw, vocabulary(), READERS, consumed) as { lines: string[] }).lines;
+    expect(lines[0], "the read report").toContain('"v":1');
+    expect(lines[1], "its duplicate").not.toContain('"v":1');
   });
 
   it("…and the comparison is not vacuous: the card really is written", async () => {

@@ -27,7 +27,7 @@ import { RunManager } from "../src/providers/openclaw/run-manager.js";
 // @ts-expect-error -- untyped .mjs
 import { consumedReadings } from "../scripts/lib/replay-fidelity.mjs";
 import { cronPartFromTool, isCronTool, printableCronSchedule } from "../src/core/cron-part.js";
-import { MAX_PROVENANCE_ITEMS, isProvenanceStream, parseProvenanceReport } from "../src/core/provenance.js";
+import { MAX_PROVENANCE_ITEMS, isProvenanceStream, parseProvenanceFrame, parseProvenanceReport } from "../src/core/provenance.js";
 
 const BRIDGE = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const VERSION = "2026.9.4";
@@ -384,7 +384,7 @@ describe("a promoted capture still READS the same — provenance, cron schedule,
   // The bridge's OWN readers decide which reader-consumed values survive — the promoter hands
   // in the built ones, this suite the sources.
   const READERS = {
-    isProvenanceStream, parseProvenanceReport, MAX_PROVENANCE_ITEMS, asyncTaskStartFromTool,
+    isProvenanceStream, parseProvenanceFrame, parseProvenanceReport, MAX_PROVENANCE_ITEMS, asyncTaskStartFromTool,
     isCronTool, cronPartFromTool, printableCronSchedule, taskChildKey,
   };
   type Promoted = { payload: { data: Record<string, unknown> } };

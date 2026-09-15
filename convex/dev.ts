@@ -1138,6 +1138,10 @@ export const inspectChat = query({
           kind: p.part.kind,
           name: "name" in p.part ? p.part.name : undefined,
           phase: "phase" in p.part ? p.part.phase : undefined,
+          // A provenance part's emitter and group (additive): the bench checks the probe's
+          // memory AND documents reports reached the reply, not merely two parts.
+          pluginId: p.part.kind === "provenance" ? p.part.pluginId : undefined,
+          group: p.part.kind === "provenance" ? p.part.group : undefined,
         })),
       });
     }

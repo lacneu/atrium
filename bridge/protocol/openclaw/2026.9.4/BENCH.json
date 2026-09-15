@@ -6,56 +6,56 @@
     {
       "id": "announce-reverse-hold",
       "ok": true,
-      "chat": "3370cbe6897f680d"
+      "chat": "a6c19e46a3839fb5"
     },
     {
       "id": "basic-turn",
       "ok": true,
-      "chat": "3370cbe6897f680d"
+      "chat": "a6c19e46a3839fb5"
     },
     {
       "id": "tool-exec",
       "ok": true,
-      "chat": "3370cbe6897f680d"
+      "chat": "a6c19e46a3839fb5"
     },
     {
       "id": "update-plan",
       "ok": true,
-      "chat": "3370cbe6897f680d"
+      "chat": "a6c19e46a3839fb5"
     },
     {
       "id": "media-outbound",
       "ok": true,
-      "chat": "3370cbe6897f680d"
+      "chat": "a6c19e46a3839fb5"
     },
     {
       "id": "spawn-announce-merge",
       "ok": true,
-      "chat": "3370cbe6897f680d"
+      "chat": "a6c19e46a3839fb5"
     },
     {
       "id": "spawn-chain-merge",
       "ok": true,
-      "chat": "3370cbe6897f680d"
+      "chat": "a6c19e46a3839fb5"
     },
     {
       "id": "spawn-parallel-merge",
       "ok": true,
-      "chat": "3370cbe6897f680d"
+      "chat": "a6c19e46a3839fb5"
     },
     {
       "id": "async-task",
       "ok": true,
-      "chat": "3370cbe6897f680d"
+      "chat": "a6c19e46a3839fb5"
     },
     {
       "id": "cron-tool",
       "ok": true,
-      "chat": "3370cbe6897f680d"
+      "chat": "a6c19e46a3839fb5"
     }
   ],
   "verdict": "GO",
-  "at": "2026-09-15T09:28:12.034Z",
+  "at": "2026-09-15T15:54:44.462Z",
   "scenarios": [
     "announce-reverse-hold",
     "async-task",
@@ -85,10 +85,10 @@
     "hermes-cron-list": "hermes"
   },
   "flags": [],
-  "atriumSha": "f999478a7a9d540508a8f358f1f26a85abfc1d7e",
+  "atriumSha": "7a992774a2d61fe608dd43854a1f8844fa87ff14",
   "worktree": {
     "dirty": true,
-    "deltaSha256": "684e37d2bf4f52e77c4c632a664b958a97d3ddde85c0c6d6bb7b8efa506a6f25"
+    "deltaSha256": "e35b3d9b8d813d5bde5b5c05956509d4cbe36fb9be5b3b85569bfd96753dc27d"
   },
   "supportDigest": "ece6ab5077a76c4101d9a77198939eadbfe9773e657a05014b521bdf109a5395",
   "authMode": "token",
