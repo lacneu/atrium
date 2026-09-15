@@ -528,10 +528,19 @@ active; "Steer" is just a `chat.send` relying on the gateway's steer mode).
   frames preceded it. Upstream treats it as a
   runtime COORDINATION error on the main path (no model fallback,
   `failover-error.ts:758-761`; `model-fallback-runner.ts:611-612` rethrows it) but,
-  unlike the 2026.7.x lock, **retries it** on the announce path when nothing
-  was sent (`subagent-announce-delivery-retry.ts`
-  `isTransientAnnounceDeliveryError`; the regex at `:70` is only its
-  definition). Refusal codes are redacted (`session-rebound`,
+  unlike the 2026.7.x lock, the announce delivery's own retry loop **may retry
+  it**: `isTransientAnnounceDeliveryError`
+  (`subagent-announce-delivery-retry.ts:146-181`, used at `:258`) returns no
+  retry on send evidence, then defers to a typed retryability when one exists,
+  then refuses a permanent non-writer error, and only then retries a writer
+  rebound. When a direct delivery has failed, its disposition is `ambiguous`
+  on send evidence, otherwise `permanent_failure` for this rebound unless a
+  typed retryability decides otherwise
+  (`subagent-announce-direct-delivery.ts:707-718`,
+  `isPermanentAnnounceDeliveryError` `:183-189`). The regex at `:69-70` is only
+  the shared definition. The retry file is byte-identical 2026.9.2 → 2026.9.4;
+  the direct-delivery classification block is unchanged in meaning (9.2
+  `:689-700`). Refusal codes are redacted (`session-rebound`,
   `session-entry-missing`) — no filesystem path reaches the message.
   **Since 2026.9.3 (absent from the v2026.9.1 and v2026.9.2 sources; read at
   v2026.9.4), when it ends a generating run the wire does not carry this
