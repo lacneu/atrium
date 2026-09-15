@@ -554,19 +554,63 @@
     },
     "ChatHistoryCursorResult": {
       "status": "ignored",
-      "why": "`chat.history` is never called by Atrium (verified: the only two mentions in the repo are comments, one of them stating 'no chat.history'). History is Convex-authoritative."
+      "why": "`chat.history` is called only WITHOUT `cursor` — a one-entry tail request for `sessionInfo.hasActiveRun` after a delivery run (server.ts awaitGatewayRunRelease) — so this cursor-mode result never comes back. History itself stays Convex-authoritative."
     },
     "ChatHistoryDeltaResult": {
       "status": "ignored",
-      "why": "Same as ChatHistoryCursorResult — `chat.history` is not called."
+      "why": "Same as ChatHistoryCursorResult — no `cursor` is ever sent, so this shape never comes back."
     },
     "ChatHistoryParams": {
-      "status": "ignored",
-      "why": "history recovery uses sessions.get (bounded, keyed) instead of chat.history"
+      "fields": {
+        "sessionKey": {
+          "status": "handled",
+          "by": "server.ts awaitGatewayRunRelease — after a delivery run, before chat.send, the session the send is about to target. Reads ONLY the untyped result's `sessionInfo.hasActiveRun` (the full chat.history result is not a vendored schema). Upstream chain read at v2026.9.4: the run's lifecycle `end` is emitted (post-run.ts:638) before `await deferredLifecycle.complete()` (:644), which flushes the trajectory and only then clears the embedded run (deferred-lifecycle-owner.ts:68-78); the gateway's handler of that end event emits the chat terminal (server-chat.ts:1826 -> :777). Until the clear, the retained, non-aborted handle projects `running` (runs.ts:1170-1187, 1242-1257), so `hasActiveRun` is set true (chat-history-handler.ts:493-503) — and admission still counts the handle (runs.ts:1017, get-reply-run-admission.ts:508-511), the window in which chat.send would queue a followup (defect 18). the check fails open (an absent field, a failed call, or the send's release budget spent lets it go as before). The BRIDGE's reaction is proven by bridge/test/presend-send-path.test.ts, on scripted answers; the UPSTREAM behaviour rests only on the source chain cited above — the window was not caught live."
+        },
+        "agentId": {
+          "status": "ignored",
+          "why": "the agent is carried by the session key"
+        },
+        "cursor": {
+          "status": "ignored",
+          "why": "no delta paging: one tail request per check"
+        },
+        "limit": {
+          "status": "handled",
+          "by": "server.ts awaitGatewayRunRelease sends 1 — only `sessionInfo.hasActiveRun` is read from the answer; the history page itself is an unread by-product"
+        },
+        "maxBytes": {
+          "status": "ignored",
+          "why": "not sent: it exists only from 2026.9.2 and the params schema is closed, so an older gateway would refuse the call; `limit: 1` bounds the page"
+        },
+        "offset": {
+          "status": "ignored",
+          "why": "no paging: only `sessionInfo.hasActiveRun` is read from the answer; the history page itself is an unread by-product"
+        },
+        "pendingBefore": {
+          "status": "ignored",
+          "why": "no pending-input window: only `sessionInfo.hasActiveRun` is read from the answer; the history page itself is an unread by-product"
+        },
+        "inputRunIds": {
+          "status": "ignored",
+          "why": "no input receipts: only `sessionInfo.hasActiveRun` is read from the answer; the history page itself is an unread by-product"
+        },
+        "messageId": {
+          "status": "ignored",
+          "why": "no anchored page: only `sessionInfo.hasActiveRun` is read from the answer; the history page itself is an unread by-product"
+        },
+        "sessionId": {
+          "status": "ignored",
+          "why": "addressed by session key; the gateway resolves the id itself"
+        },
+        "maxChars": {
+          "status": "handled",
+          "by": "server.ts awaitGatewayRunRelease sends 1 — bounds the text of the one history entry nobody reads; present on every vendored version, unlike `maxBytes`"
+        }
+      }
     },
     "ChatHistoryResetResult": {
       "status": "ignored",
-      "why": "Same as ChatHistoryCursorResult — `chat.history` is not called."
+      "why": "Same as ChatHistoryCursorResult — no `cursor` is ever sent, so this shape never comes back."
     },
     "ChatInjectParams": {
       "status": "ignored",
@@ -578,7 +622,7 @@
     },
     "ChatInputReceipts": {
       "status": "ignored",
-      "why": "NEW at 2026.8.2: per-run input receipts (`{runId, state: pending|consumed}`), returned on `chat.history` (chat-history-handler.ts). Atrium does not call chat.history — its own send/consume bookkeeping is the Convex outbox, which is authoritative."
+      "why": "NEW at 2026.8.2: per-run input receipts (`{runId, state: pending|consumed}`), returned on `chat.history` (chat-history-handler.ts). Atrium calls chat.history only for `sessionInfo.hasActiveRun` after a delivery (never with `inputRunIds`), so no receipt ever comes back — its own send/consume bookkeeping is the Convex outbox, which is authoritative."
     },
     "ChatMessageGetParams": {
       "status": "ignored",
@@ -594,7 +638,7 @@
     },
     "ChatPendingInputsPage": {
       "status": "ignored",
-      "why": "NEW at 2026.8.1: accepted-but-not-yet-run inputs (`state: queued|cancelled|interrupted`), returned by `chat.history`, which Atrium does not call. Atrium tracks its own pending sends in the Convex outbox."
+      "why": "NEW at 2026.8.1: accepted-but-not-yet-run inputs (`state: queued|cancelled|interrupted`), returned by `chat.history`, which Atrium calls only for `sessionInfo.hasActiveRun` after a delivery, ignoring the pending inputs. Atrium tracks its own pending sends in the Convex outbox."
     },
     "ChatRunStartupPhase": {
       "status": "gap",

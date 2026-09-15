@@ -249,6 +249,56 @@ export class RunManager {
     return this.replayArmed;
   }
 
+  /**
+   * A gateway-initiated DELIVERY run (announce, background-task delivery, talk
+   * consult — see announceRunIdFor) is live on this session as far as the bridge
+   * has seen: its spontaneous turn still drives the sink, or its frames wait in
+   * the stash to open one.
+   *
+   * The send path holds a `chat.send` while this is true (defect 18, measured on
+   * 2026.9.4, live 2026-09-14): a send landing while such a run is live was
+   * admitted into the gateway's followup queue — ack `status:"started"`, a bare
+   * `chat final` for the client run, then the reply under a fresh runId that no
+   * frame links back to the send. The turn closed empty, and its retry made the
+   * model answer twice. Blind, by construction, to a delivery run whose first
+   * frame has not reached the bridge yet.
+   */
+  get deliveryInProgress(): boolean {
+    return (
+      // `finalizing` too (codex P1): flushFinal drops `active` BEFORE its tail
+      // (media, finalize POST) settles, and a real beginTurn resets the same sink
+      // fields that tail still reads.
+      ((this.sink.active || this.sink.finalizing) &&
+        this.currentSpontaneousRun !== null) ||
+      this.pendingAnnounce.length > 0
+    );
+  }
+
+  /** The last turn this session opened was a delivery run's spontaneous turn (reset
+   *  by the next real dispatch). Seeing a delivery run END does not mean the gateway
+   *  has released it: on 2026.9.4 the run's lifecycle `end` and `chat final` are
+   *  broadcast BEFORE the embedded run is cleared, behind an awaited trajectory
+   *  flush (post-run.ts:638-644, deferred-lifecycle-owner.ts:62-78) — and a send
+   *  admitted in between is still queued as a followup. The send path asks the
+   *  gateway whenever this holds. */
+  get lastTurnWasDelivery(): boolean {
+    return this.currentSpontaneousRun !== null;
+  }
+
+  /** Deliver the stashed announce frames NOW when no turn holds the sink — the
+   *  flush feed()/tick() would otherwise perform on the next frame or deadline.
+   *  A sender waiting on `deliveryInProgress` must not wait for a gateway tick to
+   *  learn that the stash only held a finished run. No-op while a turn is active,
+   *  finalizing, or a send is armed. */
+  async flushStashedDeliveries(now: number): Promise<boolean> {
+    if (this.pendingAnnounce.length === 0) return false;
+    const before = this.turnEpoch;
+    await this.flushPendingAnnounce(now);
+    // TRUE only when the flush OPENED a turn: that is the one case whose deadlines
+    // were armed from outside the consume loop and need a wake.
+    return this.turnEpoch !== before;
+  }
+
   /** Whether this parent-lane frame belongs to the ACTIVE turn's run. Gates
    *  handing currentMessageId to the sub-agent observer: a STASHED announce
    *  frame arriving mid-turn must not anchor its spawns to the active turn's
@@ -406,7 +456,9 @@ export class RunManager {
       // behind the announce (measured live 2026-09-14, defect 18 in the
       // 2026.9.4 queue): the announce run is NOT dead, it ends normally while the real
       // turn waits, and its remaining frames are refused below as stale retransmits
-      // (the announce tail after this point is lost — part of defect 18, its own lot).
+      // (the announce tail after this point is lost). The send path now holds a send
+      // while it can see a delivery run (server.ts holdWhileDeliveryRunLive, defect 18),
+      // so this branch is reached only when that hold could not see the run.
       // On the 7.x shape, left alone the reopened bubble strands `streaming`, the busy
       // gate stalls the queue drain, and the 12-min watchdog errors it as
       // stream_orphaned (live 2026-07-19, "Génération…" stuck + last queued card never

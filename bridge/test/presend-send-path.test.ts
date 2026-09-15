@@ -17,7 +17,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { sleep } from "./helpers/sleep.js";
 
-import { performSend } from "../src/server.js";
+import { performSend, setGatewayReleaseBudgetForTests } from "../src/server.js";
+import { PRE_SEND_DEADLINE_MS } from "../src/core/dispatch-deadline.js";
 import { SessionRegistry } from "../src/session.js";
 import type { BridgeConfig } from "../src/config.js";
 import type { ConvexWriter } from "../src/convex-writer.js";
@@ -67,13 +68,16 @@ function recordingWriter() {
 
 /** A session whose gateway answers from `script`. Returns the live pieces a test
  *  asserts on: the fake (its `calls`), the session, and the recorded traces. */
-async function harness(script: Parameters<typeof fakeGateway>[0]) {
+async function harness(
+  script: Parameters<typeof fakeGateway>[0],
+  clock: () => number = () => 1000,
+) {
   const gw = fakeGateway(script);
   vi.spyOn(OpenClawConnection, "connect").mockImplementation(
     async () => gw as never,
   );
   const { writer, traces } = recordingWriter();
-  const reg = new SessionRegistry(servedMap(config, writer), () => 1000);
+  const reg = new SessionRegistry(servedMap(config, writer), clock);
   const session = await reg.acquire(ROUTING);
   await sleep(5);
   return {
@@ -505,18 +509,434 @@ describe("a DEFERRED (announce) turn also forbids the compaction", () => {
     // The run type the last lot's bisect caught: a spontaneous turn creates NO
     // assistant message until content proves visible, so it is busy while being
     // invisible. Compacting there interrupts it — three announce runs on the wire,
-    // one merged.
+    // one merged. The send now waits the run out (defect 18): the compaction may
+    // only happen AFTER the announce turn ended.
     const { gw, session, writer } = await harness({
-      describe: [at(97)],
+      describe: [at(97), at(30)],
       compact: { payload: { ok: true, compacted: true } },
     });
     await session.runManager.beginTurn(1000, "announce-run-1", {
       expectedSessionId: null,
       spontaneous: true,
     });
-    await performSend(session, body, writer, null, null);
-
+    const sending = performSend(session, body, writer, null, null);
+    await sleep(150);
     expect(gw.countOf("sessions.compact")).toBe(0);
+
+    await session.runManager.endTurn(session.clock(), "final");
+    await sending;
+    expect(gw.countOf("sessions.compact")).toBe(1);
+    expect(gw.countOf("chat.send")).toBe(1);
+  });
+});
+
+// ── Defect 18: holding a send behind a delivery run the bridge can see ────────
+// Narrows the followup-queue case, not a guarantee: the release check fails open
+// (field absent, call failed, budget spent), and a delivery run whose first frame
+// has not reached the bridge is invisible to the hold.
+//
+// Measured on 2026.9.4 (live 2026-09-14): a `chat.send` landing while an
+// `announce:v1:` run is live is queued as a followup — ack `started`, a bare
+// `chat final` for the client run, the reply later under a fresh UUID nothing
+// links back. Atrium closed the turn empty and retried it: the model answered twice.
+
+describe("a send waits out a live delivery run", () => {
+  const ANNOUNCE_RUN = "announce:v1:agent:alice:subagent:child-1:run-1";
+  const lifecycle = (sessionKey: string, phase: string, runId = ANNOUNCE_RUN) => ({
+    type: "event",
+    event: "agent",
+    payload: {
+      runId,
+      sessionKey,
+      stream: "lifecycle",
+      data: { phase, ...(phase === "end" ? { stopReason: "stop" } : {}) },
+    },
+  });
+  const chatFinal = (sessionKey: string, runId = ANNOUNCE_RUN) => ({
+    type: "event",
+    event: "chat",
+    payload: {
+      runId,
+      sessionKey,
+      seq: 1,
+      state: "final",
+      stopReason: "stop",
+      message: { role: "assistant", content: [{ type: "text", text: "report" }] },
+    },
+  });
+
+  it("holds chat.send while the announce streams, releases it at the run's end", async () => {
+    const { gw, session, writer } = await harness({ describe: [at(10)] });
+    // The live shape: the announce's lifecycle start, then minutes of tool work
+    // with nothing visible — Convex sees an idle chat and dispatches.
+    gw.emit(lifecycle(session.sessionKey, "start"));
+    await vi.waitFor(() =>
+      expect(session.runManager.deliveryInProgress).toBe(true),
+    );
+
+    const sending = performSend(session, body, writer, null, null);
+    await sleep(200);
+    expect(gw.countOf("chat.send")).toBe(0);
+
+    gw.emit(lifecycle(session.sessionKey, "end"));
+    gw.emit(chatFinal(session.sessionKey));
+    await sending;
+    expect(gw.countOf("chat.send")).toBe(1);
+    expect(session.runManager.deliveryInProgress).toBe(false);
+  });
+
+  it("a delivery run that STARTS during the pre-send work holds the send too", async () => {
+    // The pre-send steps can take seconds (a 97 % session is compacted first): an
+    // announce opening meanwhile must be caught by the last check before the arm.
+    const { gw, session, writer } = await harness({
+      describe: [at(97), at(30)],
+      compact: { delayMs: 300, payload: { ok: true, compacted: true } },
+    });
+    const sending = performSend(session, body, writer, null, null);
+    await vi.waitFor(() => expect(gw.countOf("sessions.compact")).toBe(1));
+    gw.emit(lifecycle(session.sessionKey, "start"));
+    await vi.waitFor(() =>
+      expect(session.runManager.deliveryInProgress).toBe(true),
+    );
+    await sleep(500); // the compaction has answered by now
+    expect(gw.countOf("chat.send")).toBe(0);
+
+    gw.emit(lifecycle(session.sessionKey, "end"));
+    gw.emit(chatFinal(session.sessionKey));
+    await sending;
+    expect(gw.countOf("chat.send")).toBe(1);
+  });
+
+  it("after a delivery ENDED, the send waits until the gateway released its run", async () => {
+    // 2026.9.4 broadcasts the run's end, THEN clears the embedded run behind an
+    // awaited trajectory flush: `hasActiveRun` stays true across that window.
+    const { gw, session, writer } = await harness({
+      describe: [at(10)],
+      sequences: {
+        "chat.history": [
+          { payload: { sessionInfo: { hasActiveRun: true } } },
+          { payload: { sessionInfo: { hasActiveRun: true } } },
+          { payload: { sessionInfo: { hasActiveRun: false } } },
+        ],
+      },
+    });
+    gw.emit(lifecycle(session.sessionKey, "start"));
+    gw.emit(lifecycle(session.sessionKey, "end"));
+    gw.emit(chatFinal(session.sessionKey));
+    await vi.waitFor(() => {
+      expect(session.runManager.lastTurnWasDelivery).toBe(true);
+      expect(session.runManager.deliveryInProgress).toBe(false);
+    });
+
+    await performSend(session, body, writer, null, null);
+    const methods = gw.calls.map(([m]) => m);
+    const sendAt = methods.indexOf("chat.send");
+    expect(sendAt).toBeGreaterThan(-1);
+    // Every release check answered BEFORE the send, and the last one said released.
+    const releaseChecks = methods
+      .map((m, i) => (m === "chat.history" ? i : -1))
+      .filter((i) => i >= 0);
+    expect(releaseChecks.filter((i) => i < sendAt).length).toBeGreaterThanOrEqual(3);
+    expect(releaseChecks.every((i) => i < sendAt)).toBe(true);
+    const params = gw.calls.find(([m]) => m === "chat.history")?.[1];
+    expect(params).toMatchObject({ sessionKey: session.sessionKey, limit: 1 });
+  });
+
+  it("no delivery before the send: the gateway is not asked", async () => {
+    const { gw, session, writer } = await harness({ describe: [at(10)] });
+    await performSend(session, body, writer, null, null);
+    expect(gw.countOf("chat.send")).toBe(1);
+    expect(gw.countOf("chat.history")).toBe(0);
+  });
+
+  it("a failing or field-less release check lets the send go (older gateways)", async () => {
+    for (const answer of [
+      { throws: new Error("unknown method: chat.history") },
+      { payload: { sessionInfo: {} } },
+    ]) {
+      const { gw, session, writer } = await harness({
+        describe: [at(10)],
+        answers: { "chat.history": answer },
+      });
+      await session.runManager.beginTurn(session.clock(), ANNOUNCE_RUN, {
+        expectedSessionId: null,
+        spontaneous: true,
+      });
+      await session.runManager.endTurn(session.clock(), "final");
+      await performSend(session, body, writer, null, null);
+      expect(gw.countOf("chat.send")).toBe(1);
+      vi.restoreAllMocks();
+    }
+  });
+
+  it("a delivery still FINALIZING locally holds the send until its finalize lands", async () => {
+    // flushFinal drops `active` before its tail settles; a real beginTurn would reset
+    // the sink fields that tail still reads (codex P1).
+    const { gw, session, writer } = await harness({ describe: [at(10)] });
+    let release!: () => void;
+    const gate = new Promise<void>((r) => {
+      release = r;
+    });
+    (writer as unknown as { finalize: () => Promise<void> }).finalize = async () => {
+      await gate;
+    };
+    gw.emit(lifecycle(session.sessionKey, "start"));
+    gw.emit(lifecycle(session.sessionKey, "end"));
+    gw.emit(chatFinal(session.sessionKey));
+    await vi.waitFor(() => {
+      expect(session.runManager.turnActive).toBe(false);
+      expect(session.runManager.deliveryInProgress).toBe(true);
+    });
+
+    const sending = performSend(session, body, writer, null, null);
+    await sleep(250);
+    expect(gw.countOf("chat.send")).toBe(0);
+
+    release();
+    await sending;
+    expect(gw.countOf("chat.send")).toBe(1);
+  });
+
+  it("a delivery that opens AND ends during the release check sends the loop round again", async () => {
+    const OTHER_RUN = "announce:v1:agent:alice:subagent:child-2:run-2";
+    const { gw, session, writer } = await harness({
+      describe: [at(10)],
+      sequences: {
+        "chat.history": [
+          { payload: { sessionInfo: { hasActiveRun: false } } }, // top of performSend
+          { delayMs: 400, payload: { sessionInfo: { hasActiveRun: false } } }, // before the arm
+          { payload: { sessionInfo: { hasActiveRun: false } } },
+        ],
+      },
+    });
+    gw.emit(lifecycle(session.sessionKey, "start"));
+    gw.emit(lifecycle(session.sessionKey, "end"));
+    gw.emit(chatFinal(session.sessionKey));
+    await vi.waitFor(() => {
+      expect(session.runManager.lastTurnWasDelivery).toBe(true);
+      expect(session.runManager.deliveryInProgress).toBe(false);
+    });
+
+    const sending = performSend(session, body, writer, null, null);
+    await vi.waitFor(() => expect(gw.countOf("chat.history")).toBe(2));
+    // While the second check is in flight, a whole other delivery runs: the answer
+    // that comes back predates it.
+    gw.emit(lifecycle(session.sessionKey, "start", OTHER_RUN));
+    gw.emit(lifecycle(session.sessionKey, "end", OTHER_RUN));
+    gw.emit(chatFinal(session.sessionKey, OTHER_RUN));
+    await sending;
+
+    const methods = gw.calls.map(([m]) => m);
+    const sendAt = methods.indexOf("chat.send");
+    const checksBeforeSend = methods.filter((m, i) => m === "chat.history" && i < sendAt).length;
+    expect(checksBeforeSend).toBeGreaterThanOrEqual(3);
+  });
+
+  it("a run the gateway counts for good does not hold the send past the release budget", async () => {
+    // `hasActiveRun` over-approximates admission: a true that never clears is not the
+    // release window, and the send goes as before — boundedly, without a refusal.
+    setGatewayReleaseBudgetForTests(300);
+    try {
+      const { gw, session, writer } = await harness({
+        describe: [at(10)],
+        answers: { "chat.history": { payload: { sessionInfo: { hasActiveRun: true } } } },
+      });
+      await session.runManager.beginTurn(session.clock(), ANNOUNCE_RUN, {
+        expectedSessionId: null,
+        spontaneous: true,
+      });
+      await session.runManager.endTurn(session.clock(), "final");
+      await performSend(session, body, writer, null, null);
+      expect(gw.countOf("chat.send")).toBe(1);
+      // Two bounded waits (top + before the arm), paced — not a 100 ms hammer.
+      expect(gw.countOf("chat.history")).toBeLessThanOrEqual(8);
+    } finally {
+      setGatewayReleaseBudgetForTests(30_000);
+    }
+  });
+
+  it("a hold over a SILENT live delivery does not keep waking the consume loop", async () => {
+    // Every wake restarts the loop's frame race and leaves a timer behind (codex).
+    const { gw, session, writer } = await harness({ describe: [at(10)] });
+    await session.runManager.beginTurn(session.clock(), ANNOUNCE_RUN, {
+      expectedSessionId: null,
+      spontaneous: true,
+    });
+    const wake = vi.spyOn(session, "wake");
+    const sending = performSend(session, body, writer, null, null);
+    await sleep(400);
+    expect(wake.mock.calls.length).toBeLessThanOrEqual(1);
+    await session.runManager.endTurn(session.clock(), "final");
+    await sending;
+    expect(gw.countOf("chat.send")).toBe(1);
+  });
+
+  it("a release check that ANSWERS past the deadline refuses before anything else runs", async () => {
+    const { gw, session, writer } = await harness({
+      describe: [at(10)],
+      answers: {
+        "chat.history": { delayMs: 500, payload: { sessionInfo: { hasActiveRun: false } } },
+      },
+    });
+    await session.runManager.beginTurn(session.clock(), ANNOUNCE_RUN, {
+      expectedSessionId: null,
+      spontaneous: true,
+    });
+    await session.runManager.endTurn(session.clock(), "final");
+    const late = { ...body, dispatchAgeMs: PRE_SEND_DEADLINE_MS - 200 };
+    await expect(performSend(session, late, writer, null, null)).rejects.toThrow(
+      /dispatch deadline exceeded/,
+    );
+    expect(gw.countOf("sessions.describe")).toBe(0);
+    expect(gw.countOf("chat.send")).toBe(0);
+  });
+
+  it("the release budget is ONE per send: once the top check spends it, the check before the arm asks nothing", async () => {
+    setGatewayReleaseBudgetForTests(300);
+    try {
+      const { gw, session, writer } = await harness({
+        describe: [at(10)],
+        answers: { "chat.history": { payload: { sessionInfo: { hasActiveRun: true } } } },
+      });
+      await session.runManager.beginTurn(session.clock(), ANNOUNCE_RUN, {
+        expectedSessionId: null,
+        spontaneous: true,
+      });
+      await session.runManager.endTurn(session.clock(), "final");
+      await performSend(session, body, writer, null, null);
+      expect(gw.countOf("chat.send")).toBe(1);
+      const methods = gw.calls.map(([m]) => m);
+      const describedAt = methods.indexOf("sessions.describe");
+      // The check at the top spent the budget: the one before the arm asks nothing.
+      expect(methods.filter((m, i) => m === "chat.history" && i > describedAt)).toHaveLength(0);
+      for (const [i, m] of methods.entries()) {
+        if (m === "chat.history") expect(gw.timeouts[i]).toBeLessThanOrEqual(300);
+      }
+    } finally {
+      setGatewayReleaseBudgetForTests(30_000);
+    }
+  });
+
+  it("each release RPC is given only the budget still LEFT, not the whole of it", async () => {
+    // A slow answer spends budget: the next check's own timeout must shrink with it.
+    setGatewayReleaseBudgetForTests(1_000);
+    try {
+      const { gw, session, writer } = await harness({
+        describe: [at(10)],
+        answers: {
+          "chat.history": { delayMs: 200, payload: { sessionInfo: { hasActiveRun: true } } },
+        },
+      });
+      await session.runManager.beginTurn(session.clock(), ANNOUNCE_RUN, {
+        expectedSessionId: null,
+        spontaneous: true,
+      });
+      await session.runManager.endTurn(session.clock(), "final");
+      await performSend(session, body, writer, null, null);
+      const timeouts = gw.calls
+        .map(([m], i) => (m === "chat.history" ? gw.timeouts[i] : undefined))
+        .filter((t): t is number => t !== undefined);
+      expect(timeouts.length).toBeGreaterThanOrEqual(2);
+      expect(timeouts[0]).toBeLessThanOrEqual(1_000);
+      // The first answer took 200 ms and the pacing slept 250 ms before the second.
+      expect(timeouts[1]).toBeLessThanOrEqual(1_000 - 200);
+      for (let i = 1; i < timeouts.length; i++) {
+        expect(timeouts[i]!).toBeLessThan(timeouts[i - 1]!);
+      }
+      expect(gw.countOf("chat.send")).toBe(1);
+    } finally {
+      setGatewayReleaseBudgetForTests(30_000);
+    }
+  });
+
+  it("a long hold BEFORE THE ARM does not eat into the new turn's silence budget", async () => {
+    // The session clock ADVANCES (the default harness clock is frozen, which is why no
+    // earlier test could see this). The delivery opens during the pre-send work, so the
+    // wait happens in the LAST hold, right before the arm — where a clock read taken
+    // before that hold would hand the turn a silence deadline already spent.
+    let t = 1000;
+    const { gw, session, writer } = await harness(
+      {
+        describe: [at(97), at(30)],
+        compact: { delayMs: 300, payload: { ok: true, compacted: true } },
+      },
+      () => t,
+    );
+    const sending = performSend(session, body, writer, null, null);
+    await vi.waitFor(() => expect(gw.countOf("sessions.compact")).toBe(1));
+    gw.emit(lifecycle(session.sessionKey, "start"));
+    await vi.waitFor(() =>
+      expect(session.runManager.deliveryInProgress).toBe(true),
+    );
+    await sleep(500); // the compaction has answered: the send now waits in the last hold
+    expect(gw.countOf("chat.send")).toBe(0);
+    t += 300; // five minutes of hold, on the session clock
+    gw.emit(lifecycle(session.sessionKey, "end"));
+    gw.emit(chatFinal(session.sessionKey));
+    await sending;
+    expect(gw.countOf("chat.send")).toBe(1);
+    expect(session.runManager.nextTimeout(t)).toBeGreaterThan(200);
+  });
+
+  it("the hold ITSELF refuses at the deadline, with no release check behind it", async () => {
+    // A real turn holds the sink while an announce waits in the stash: the hold waits,
+    // and no delivery turn was the last one, so no release check runs after it. The
+    // hold's own exit is then the only thing standing between the deadline and the
+    // claim/patch/describe that follow.
+    const { gw, session, writer } = await harness({ describe: [at(10)] });
+    const rm = session.runManager;
+    await rm.beginTurn(session.clock(), "own-run", { expectedSessionId: null });
+    await rm.feed(lifecycle(session.sessionKey, "start"), session.clock());
+    expect(rm.lastTurnWasDelivery).toBe(false);
+    expect(rm.deliveryInProgress).toBe(true);
+
+    const late = { ...body, dispatchAgeMs: PRE_SEND_DEADLINE_MS - 300 };
+    await expect(performSend(session, late, writer, null, null)).rejects.toThrow(
+      /dispatch deadline exceeded/,
+    );
+    expect(gw.countOf("sessions.describe")).toBe(0);
+    expect(gw.countOf("chat.history")).toBe(0);
+    expect(gw.countOf("chat.send")).toBe(0);
+  });
+
+  it("a delivery run still live at the pre-send deadline refuses the send", async () => {
+    const { gw, session, writer } = await harness({ describe: [at(10)] });
+    await session.runManager.beginTurn(session.clock(), ANNOUNCE_RUN, {
+      expectedSessionId: null,
+      spontaneous: true,
+    });
+    // Almost the whole budget already spent in Convex: the hold must give up, not
+    // run a turn the reconciler is about to settle.
+    const late = { ...body, dispatchAgeMs: PRE_SEND_DEADLINE_MS - 300 };
+    await expect(
+      performSend(session, late, writer, null, null),
+    ).rejects.toThrow(/dispatch deadline exceeded/);
+    expect(gw.countOf("chat.send")).toBe(0);
+    // The hold at the TOP threw: nothing else ran for a send that will never go out.
+    expect(gw.countOf("sessions.describe")).toBe(0);
+  });
+
+  it("a stash holding a FINISHED delivery releases the send without a gateway tick", async () => {
+    const { gw, session, writer } = await harness({ describe: [at(10)] });
+    const rm = session.runManager;
+    // A UNIT test of the flush seam, on a state built directly: stashed announce
+    // frames with no turn holding the sink and no flush scheduled. Production reaches
+    // that state when frames are stashed while a finalize is still writing
+    // (run-manager feed(), `sink.finalizing`) and nothing flushes until the next frame
+    // or deadline; this test does NOT drive that path — it plants the stash through the
+    // armed-send branch and drops the private armed flag without the disarm's flush.
+    rm.armReplayBuffer();
+    await rm.feed(lifecycle(session.sessionKey, "start"), session.clock());
+    await rm.feed(lifecycle(session.sessionKey, "end"), session.clock());
+    await rm.feed(chatFinal(session.sessionKey), session.clock());
+    (rm as unknown as { replayArmed: boolean }).replayArmed = false;
+    expect(rm.turnActive).toBe(false);
+    expect(rm.deliveryInProgress).toBe(true);
+
+    // Two seconds of budget left: without the flush the hold would sit on the stash
+    // until the deadline and refuse — a failure, not a slow pass.
+    const tight = { ...body, dispatchAgeMs: PRE_SEND_DEADLINE_MS - 2_000 };
+    await performSend(session, tight, writer, null, null);
     expect(gw.countOf("chat.send")).toBe(1);
   });
 });

@@ -1316,7 +1316,11 @@ export const consumeForkRehydration = internalMutation({
  * (Atrium sets no `queueMode`), the send is queued as a gateway followup behind it
  * (live 2026-09-14, defect 18; see
  * docs/UPSTREAM_INTERPRETATION.md §2). Either way the send should wait. Re-park the row as
- * `queued` instead; the announce's own finalize re-drains the queue FIFO.
+ * `queued` instead; the announce's own finalize re-drains the queue FIFO. This sees an
+ * announce only once it has a visible bubble: an announce still invisible (tools before
+ * any text) passes here, and the BRIDGE holds that send while it sees the delivery run live
+ * or finalizing, then — failing open, within a bounded wait — while the gateway still
+ * counts a run on the session (server.ts holdWhileDeliveryRunLive / awaitGatewayRunRelease).
  */
 export const reparkIfBusy = internalMutation({
   args: { outboxId: v.id("outbox") },

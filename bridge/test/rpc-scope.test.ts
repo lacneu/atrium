@@ -389,6 +389,9 @@ describe("RPC scope derivation (W10)", () => {
       "sessions.patch",
       "sessions.reset",
       "sessions.compact",
+      // Asked after a delivery run, before a send, for `sessionInfo.hasActiveRun`:
+      // the gateway clears the run only after broadcasting its end (defect 18).
+      "chat.history",
   // Sent ONLY in trusted-proxy mode, to claim a conversation's session for the
   // person having it before the admin-scoped verboseLevel patch (which rides the
   // bridge's system socket) would create it under the bridge's own identity.

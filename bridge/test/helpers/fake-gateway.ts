@@ -62,6 +62,9 @@ export interface FakeGatewayScript {
   compact?: FakeRpcAnswer;
   /** Anything else, by method name. Unlisted methods answer `{}`. */
   answers?: Record<string, FakeRpcAnswer>;
+  /** Successive answers for a method, like `describe`: the LAST one repeats. Takes
+   *  precedence over `answers` for that method. */
+  sequences?: Record<string, FakeRpcAnswer[]>;
 }
 
 export interface FakeGateway {
@@ -168,7 +171,15 @@ export function fakeGateway(script: FakeGatewayScript = {}): FakeGateway {
         if (a?.throws) throw a.throws;
         return { payload: a?.payload ?? { ok: true, compacted: true } };
       }
-      const a = script.answers?.[method];
+      const seq = script.sequences?.[method];
+      const seen = calls.filter(([m]) => m === method).length - 1;
+      const a =
+        seq && seq.length > 0
+          ? seq[Math.min(seen, seq.length - 1)]
+          : script.answers?.[method];
+      if (a?.delayMs) {
+        await sleep(a.delayMs);
+      }
       if (a?.throws) throw a.throws;
       return { payload: a?.payload ?? {} };
     },

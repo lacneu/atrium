@@ -341,8 +341,36 @@
    "why": "operator-visible synthetic transcript injection — no Atrium feature maps to it"
   },
   "ChatHistoryParams": {
-   "status": "ignored",
-   "why": "history recovery uses sessions.get (bounded, keyed) instead of chat.history"
+   "fields": {
+    "sessionKey": {
+     "status": "handled",
+     "by": "server.ts awaitGatewayRunRelease — after a delivery run, before chat.send, the session the send is about to target. Reads ONLY the untyped result's `sessionInfo.hasActiveRun` (the full chat.history result is not a vendored schema). Upstream chain read at v2026.9.4: the run's lifecycle `end` is emitted (post-run.ts:638) before `await deferredLifecycle.complete()` (:644), which flushes the trajectory and only then clears the embedded run (deferred-lifecycle-owner.ts:68-78); the gateway's handler of that end event emits the chat terminal (server-chat.ts:1826 -> :777). Until the clear, the retained, non-aborted handle projects `running` (runs.ts:1170-1187, 1242-1257), so `hasActiveRun` is set true (chat-history-handler.ts:493-503) — and admission still counts the handle (runs.ts:1017, get-reply-run-admission.ts:508-511), the window in which chat.send would queue a followup (defect 18). On this version the field is not established in the sources read; the check fails open (an absent field, a failed call, or the send's release budget spent lets it go as before). The BRIDGE's reaction is proven by bridge/test/presend-send-path.test.ts, on scripted answers; the UPSTREAM behaviour rests only on the source chain cited above — the window was not caught live."
+    },
+    "agentId": {
+     "status": "ignored",
+     "why": "the agent is carried by the session key"
+    },
+    "limit": {
+     "status": "handled",
+     "by": "server.ts awaitGatewayRunRelease sends 1 — only `sessionInfo.hasActiveRun` is read from the answer; the history page itself is an unread by-product"
+    },
+    "offset": {
+     "status": "ignored",
+     "why": "no paging: only `sessionInfo.hasActiveRun` is read from the answer; the history page itself is an unread by-product"
+    },
+    "messageId": {
+     "status": "ignored",
+     "why": "no anchored page: only `sessionInfo.hasActiveRun` is read from the answer; the history page itself is an unread by-product"
+    },
+    "sessionId": {
+     "status": "ignored",
+     "why": "addressed by session key; the gateway resolves the id itself"
+    },
+    "maxChars": {
+     "status": "handled",
+     "by": "server.ts awaitGatewayRunRelease sends 1 — bounds the text of the one history entry nobody reads; present on every vendored version, unlike `maxBytes`"
+    }
+   }
   },
   "ChatMetadataParams": {
    "status": "ignored",

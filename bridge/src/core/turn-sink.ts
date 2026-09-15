@@ -568,7 +568,8 @@ export class TurnSink {
    *  session takeover by timing; on 2026.9.4, under the default `steer` queue mode
    *  (the bridge sets no `queueMode`), the announce run was observed still alive
    *  and ending normally while the send waited as a followup (live 2026-09-14,
-   *  defect 18 — its tail is then refused as stale); an effective `interrupt` mode
+   *  defect 18 — its tail is then refused as stale; the send path now holds a send
+   *  while it can see such a run, so this is reached only when it could not); an effective `interrupt` mode
    *  aborts it instead. Either way this finalizes the open bubble COMPLETE now with the
    *  streamed text (writer.finalize falls back to the stream row's text when the
    *  buffer is empty). Without this the reopened bubble strands in `streaming` —

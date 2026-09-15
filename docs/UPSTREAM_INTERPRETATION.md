@@ -447,16 +447,45 @@ active; "Steer" is just a `chat.send` relying on the gateway's steer mode).
 - Deliberate divergence: Atrium's queue lives in Convex (durable outbox),
   the Control UI's lives in browser state. Parallel architectures; the
   upstream followup queue (`chatQueuedTurns` cancellation identities) is not
-  modeled by Atrium. It should be: the bridge never sets `queueMode`, yet a
-  `chat.send` landing while a separate `announce:*` run is live IS admitted
-  into the gateway followup queue on 2026.8.1+ under the default `steer` mode
-  (an effective `interrupt` mode from the session, channel or config aborts the
-  announce instead, above) (measured live 2026-09-14 on
-  2026.9.4: the client run gets an empty `chat final` with no lifecycle, and
-  the reply comes back later under a followup run id — a UUID with no wire
-  link to the client run — which Atrium refuses as a foreign run and then
-  retries the turn, so the model answers twice). Open defect 18 of the
-  2026.9.4 queue, its own lot.
+  modeled by Atrium. The bridge never sets `queueMode`, yet a `chat.send`
+  landing while a separate `announce:*` run is live IS admitted into the
+  gateway followup queue on 2026.8.1+ under the default `steer` mode (an
+  effective `interrupt` mode from the session, channel or config aborts the
+  announce instead, above) (measured live 2026-09-14 on 2026.9.4: the client
+  run gets an empty `chat final` with no lifecycle, and the reply comes back
+  later under a followup run id — a UUID with no wire link to the client run —
+  which Atrium refused as a foreign run and then retried, so the model answered
+  twice). Nothing on the wire can repair that afterwards: the `chat.send` ack
+  (`status:"started"`) is sent before the queue decision
+  (`chat-send-handler.ts:503-531`), and nothing on the wire links the client run to
+  the followup run: the gateway holds both identities only in its own state
+  (`chat-send-turn-adoption.ts:43-52`), and names them together in a log line
+  only when the late reply is DROPPED (`chat-send-late-followup.ts:27-36`) —
+  a delivered followup writes no such line. So the bridge narrows
+  it (defect 18) — preventing it only when the delivery run is visible to the
+  bridge and the release check succeeds within its budget: it holds a send
+  while a delivery run it can see is live
+  (spontaneous turn open or still finalizing, or announce frames stashed). A
+  run ENDING is not the gateway releasing it: the run's lifecycle `end` and
+  `chat final` are broadcast before `clearActiveEmbeddedRun`
+  (`post-run.ts:638-644`, behind an awaited trajectory flush,
+  `deferred-lifecycle-owner.ts:62-78`; trajectory capture is on by default),
+  while admission reads that registry (`runs.ts:1017`,
+  `get-reply-run-admission.ts:508`). So after a delivery the bridge also asks
+  `chat.history` for `sessionInfo.hasActiveRun` — true across that window for
+  a run that ended normally (`chat-history-handler.ts:493-503`,
+  `runs.ts:1160-1187`) — and waits while it is true. That check only NARROWS
+  the window. The signal is not the admission predicate: it also counts
+  terminal persistence and projected or queued states
+  (`session-active-runs.ts:245-262`), and misses an aborted handle still
+  registered or a recovery owner. And it fails open: an absent field, a failed
+  call, or a run still counted once a bounded wait is spent (30 s per send,
+  shared by its checks, RPC time included — a policy bound, not an upstream
+  fact) lets the send go as before. Also not covered: a
+  delivery run whose first frame has not reached the bridge when the send goes
+  out. Live proof of the hold: bench scenario `announce-reverse-hold` (the send
+  held ~41 s, the reply ran under the client run itself, once); the release
+  window itself was not caught live.
 
 ---
 
@@ -794,7 +823,7 @@ Atrium never has (ignored, verifiably); the per-phase `chat.send` timing is a ga
 | Zone | Verdict |
 |---|---|
 | stopReason/errorKind refusal | **Conformant** — the Control UI reads neither; `state` carries the gateway's pre-rendered decision |
-| Announce×send kill | **Inverse recovery retired (2026-09-14)** — on 2026.8.1+ no announce-kill mechanism was found on the production paths read (under the default `steer` mode the send is queued as a followup instead: open defect 18); on 2026.7.x the measured incident is attributed to the prompt-lock takeover by timing only, no frame proves it, so `gatewayPreempted` is no longer minted or relayed and the zero-content aborted turn keeps its honest card; `reparkIfBusy` (the other direction) stands |
+| Announce×send kill | **Inverse recovery retired (2026-09-14)** — on 2026.8.1+ no announce-kill mechanism was found on the production paths read (under the default `steer` mode the send is queued as a followup instead: defect 18, narrowed by the bridge holding the send while a delivery run it can see is live or finalizing, then while the gateway still counts a run — a fail-open, bounded check — §2); on 2026.7.x the measured incident is attributed to the prompt-lock takeover by timing only, no frame proves it, so `gatewayPreempted` is no longer minted or relayed and the zero-content aborted turn keeps its honest card; `reparkIfBusy` (the other direction) stands |
 | Embedded-lock downgrade | **Sound via the `hasRealContent()` gate** (the homologue of upstream "send evidence"), not via the "post-generation" argument, which mid-turn takeovers disprove |
 | Init-conflict retry | **Conformant** with upstream channel-side retry treatment |
 | Compaction | **Explicit signals consumed** — `{stream:"compaction"}` is the primary mid-turn signal (marker + widened budget, no buffer reset); the `abandoned` heuristic survives as the multi-version/Hermes fallback and stands down when explicit signals are present; `session.operation`/`sessions.changed` remain unconsumed (rotation detection covers the manual path) |

@@ -203,7 +203,7 @@
     },
     "chat.metadata.changed": {
       "status": "ignored",
-      "why": "Broadcast with an EMPTY payload and `dropIfSlow: true` (server-chat-metadata-lifecycle.ts) — a 'refresh your chat metadata' nudge for a client that caches the gateway's chat list. Atrium's chat list is Convex-authoritative and it never calls `chat.history`, so there is nothing to refresh."
+      "why": "Broadcast with an EMPTY payload and `dropIfSlow: true` (server-chat-metadata-lifecycle.ts) — a 'refresh your chat metadata' nudge for a client that caches the gateway's chat list. Atrium's chat list is Convex-authoritative and it calls `chat.history` only for `sessionInfo.hasActiveRun` after a delivery, never for the chat list, so there is nothing to refresh."
     },
     "controlUi.sessionPullRequests.changed": {
       "status": "ignored",
