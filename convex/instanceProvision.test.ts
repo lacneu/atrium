@@ -207,6 +207,53 @@ describe("provisioning is replay-safe", () => {
     expect(after._id).toBe(before._id);
     expect(after).toEqual(before);
   });
+
+  test("a trusted-proxy replay upgrades posture without rotating the bridge secret", async () => {
+    const t = convexTest(schema, modules);
+    await seed(t);
+    const created = await provision(t, OPENCLAW);
+    const plaintext = created.json.secret!;
+
+    const upgraded = await provision(t, {
+      ...OPENCLAW,
+      authMode: "trusted-proxy",
+      personScopes: "full",
+    });
+    expect(upgraded.status).toBe(200);
+    expect(upgraded.json.outcome).toBe("updated");
+    expect(upgraded.json.bridgeSecret).toBe("existing");
+    expect(upgraded.json.secret).toBeUndefined();
+    expect(await resolves(t, plaintext)).toBe(true);
+    expect((await instances(t))[0]).toMatchObject({
+      authMode: "trusted-proxy",
+      personScopes: "full",
+    });
+
+    const replay = await provision(t, {
+      ...OPENCLAW,
+      authMode: "trusted-proxy",
+      personScopes: "full",
+    });
+    expect(replay.json.outcome).toBe("unchanged");
+    expect(replay.json.bridgeSecret).toBe("existing");
+  });
+
+  test("an explicit token posture clears stale trusted-proxy scope metadata", async () => {
+    const t = convexTest(schema, modules);
+    await seed(t);
+    await provision(t, {
+      ...OPENCLAW,
+      authMode: "trusted-proxy",
+      personScopes: "full",
+    });
+
+    const downgraded = await provision(t, { ...OPENCLAW, authMode: "token" });
+    expect(downgraded.status).toBe(200);
+    expect(downgraded.json.outcome).toBe("updated");
+    const row = (await instances(t))[0]!;
+    expect(row.authMode).toBe("token");
+    expect(row.personScopes).toBeUndefined();
+  });
 });
 
 describe("provisioning grants nothing", () => {
@@ -385,6 +432,42 @@ describe("the payload is kind-discriminated", () => {
     await seed(t);
     const res = await provision(t, { ...OPENCLAW, kind: "gemini" });
     expect(res.status).toBe(400);
+    expect(await instances(t)).toEqual([]);
+  });
+
+  test("OpenClaw authentication posture is validated and never ignored", async () => {
+    const t = convexTest(schema, modules);
+    await seed(t);
+
+    const invalidMode = await provision(t, {
+      ...OPENCLAW,
+      authMode: "password",
+    });
+    expect(invalidMode.status).toBe(400);
+
+    const orphanScope = await provision(t, {
+      ...OPENCLAW,
+      personScopes: "full",
+    });
+    expect(orphanScope.status).toBe(400);
+
+    const hermesPosture = await provision(t, {
+      name: "hermes-rh",
+      gatewayUrl: "ws://rh",
+      kind: "hermes",
+      authMode: "trusted-proxy",
+      personScopes: "full",
+    });
+    expect(hermesPosture.status).toBe(400);
+    expect(await instances(t)).toEqual([]);
+  });
+
+  test("unknown provisioning fields are rejected instead of silently dropped", async () => {
+    const t = convexTest(schema, modules);
+    await seed(t);
+    const res = await provision(t, { ...OPENCLAW, ignoredPosture: "unsafe" });
+    expect(res.status).toBe(400);
+    expect(res.json.error).toBe("unsupported field: ignoredPosture");
     expect(await instances(t)).toEqual([]);
   });
 });
