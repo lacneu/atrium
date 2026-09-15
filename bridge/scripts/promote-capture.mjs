@@ -55,12 +55,13 @@ import {
   baseKnownKeys,
   createPseudonymiser,
   knownKeysFromCoverage,
+  reservedPseudonymShapes,
 } from "./lib/anonymize-capture.mjs";
 
 /** Bumped whenever promotion CHANGES the bytes it produces from the same capture. It is
  *  recorded per fixture, so a corpus half-promoted by two different rules is visible
  *  instead of silently mixed. */
-export const PROMOTER_VERSION = 1;
+export const PROMOTER_VERSION = 2; // 2: pseudonym-shaped raw strings reserved (defect 15)
 
 const REPO_ROOT = path.resolve(new URL("../..", import.meta.url).pathname);
 const DEFAULT_OUT = path.join(REPO_ROOT, "bridge/test/fixtures/golden");
@@ -134,7 +135,7 @@ const BUILT_IN_TOOL_NAMES = new Set([
  *  dictionary attack that made the unknown-state digest need a salt. A counter is not
  *  derivable at all, and the grammar the run-family parser needs (`[a-z][a-z0-9_]*`) is
  *  preserved either way. */
-export function classifyToolNames(names) {
+export function classifyToolNames(names, reserved = new Set()) {
   const verbatim = new Set();
   const renamed = new Map();
   // A FIXED POINT publishes the very name it is meant to hide: a custom tool called
@@ -153,7 +154,9 @@ export function classifyToolNames(names) {
     if (BUILT_IN_TOOL_NAMES.has(name)) verbatim.add(name);
     else {
       let alias = `tool_${++n}`;
-      while (harvested.has(alias)) alias = `tool_${++n}`;
+      // `reserved`: every `tool_<n>` found ANYWHERE in the capture, not only among tool names —
+      // a raw `instanceName: "tool_1"` was otherwise handed out as a custom tool's alias (codex).
+      while (harvested.has(alias) || reserved.has(alias)) alias = `tool_${++n}`;
       renamed.set(name, alias);
     }
   }
@@ -339,12 +342,17 @@ export function replayContext(rawSlice) {
  *  the recorded session key numbered its tokens independently, so the isolation gate
  *  matched nothing and nine snapshots were vacuously green. */
 export function promoteSlice(rawSlice, knownKeys = undefined) {
+  // Every pseudonym-shaped string of the capture is reserved BEFORE the first mint, for the
+  // tool aliases and for the ids alike, so no pseudonym can equal a raw identifier found
+  // elsewhere in it (defect 15).
+  const reserved = reservedPseudonymShapes(rawSlice);
   const { verbatim: toolNames, renamed: renamedTools } = classifyToolNames(
     harvestToolNames(rawSlice),
+    reserved,
   );
   // A renamed tool must read the same EVERYWHERE — on the card, and inside the delivery
   // run id — or the two stop joining, exactly as the UUID grammar did.
-  const pseudo = createPseudonymiser(toolNames, renamedTools);
+  const pseudo = createPseudonymiser(toolNames, renamedTools, reserved);
   // Every time in the fixture is an OFFSET from the first frame. An absolute date says
   // when a real conversation happened, and the replay only needs the intervals.
   const epochBase = captureEpochBase(rawSlice);

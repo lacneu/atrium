@@ -365,6 +365,59 @@ function mintUuid(n) {
   return `00000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
 }
 
+/** Every string in a capture with the SHAPE of a pseudonym — `id<n>`, a UUID, or a tool
+ *  alias `tool_<n>` — so the minters can skip them.
+ *
+ *  THE GAP IT CLOSES (defect 15). The fixed-point guard compared a candidate with the ONE
+ *  token being replaced: `["id1","id2"]` came out `["id2","id3"]`, and the RAW `id2` then
+ *  sat in the corpus as `id1`'s pseudonym, indistinguishable from one. The same held for a
+ *  raw UUID equal to an early minted one, and for a raw `tool_<n>` equal to a custom tool's
+ *  alias. Pseudonyms only ever take these three forms, so reserving every occurrence of
+ *  them in the capture before the first mint makes a collision impossible.
+ *
+ *  Collected the way the anonymiser READS: from the parsed frames — keys and values — and,
+ *  recursively, from JSON serialised inside a string value (the anonymiser re-parses those,
+ *  so an escaped `\u0069d2` there becomes `id2` only at that point, and a lexical scan of
+ *  the outer string missed it — codex). A line that does not parse is scanned as raw text.
+ *  UUIDs are reserved lower-cased, the case the minter writes.
+ *
+ *  NUMBERING: a pseudonym-shaped string anywhere in the raw capture — even in content later
+ *  masked or dropped — advances the minters past that value. Deterministic, and never a
+ *  leak; a capture with no such string promotes exactly as before. */
+export function reservedPseudonymShapes(rawSlice) {
+  const out = new Set();
+  const scan = (text) => {
+    for (const m of text.matchAll(/(?<![A-Za-z0-9_])(?:id|tool_)\d+(?![A-Za-z0-9_])/g)) out.add(m[0]);
+    for (const m of text.matchAll(/[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}/g)) {
+      out.add(m[0].toLowerCase());
+    }
+  };
+  const walk = (value) => {
+    if (typeof value === "string") {
+      scan(value);
+      // The anonymiser re-parses serialised structure (parseJsonObject): read it the same way.
+      const embedded = parseJsonObject(value);
+      if (embedded !== null) walk(embedded);
+    }
+    else if (Array.isArray(value)) for (const item of value) walk(item);
+    else if (value !== null && typeof value === "object") {
+      for (const [key, item] of Object.entries(value)) {
+        scan(key);
+        walk(item);
+      }
+    }
+  };
+  for (const line of rawSlice.split("\n")) {
+    if (!line.trim()) continue;
+    try {
+      walk(JSON.parse(line));
+    } catch {
+      scan(line);
+    }
+  }
+  return out;
+}
+
 /** Separators an identifier may be built from. Kept in place.
  *
  *  `_` is deliberately NOT one: it is part of names, not between them, and splitting on
@@ -466,7 +519,7 @@ export function maskKeepingMediaSentinel(s) {
  *  `literals` adds vocabulary this corpus knows about — in practice the TOOL NAMES the
  *  capture itself carries under `data.name`, which appear again inside delivery run ids
  *  and must stay readable there. */
-export function createPseudonymiser(literals = [], renamed = new Map()) {
+export function createPseudonymiser(literals = [], renamed = new Map(), reserved = new Set()) {
   const map = new Map();
   let uuidCount = 0;
   const extra = new Set([...literals].map((t) => t.toLowerCase()));
@@ -507,7 +560,8 @@ export function createPseudonymiser(literals = [], renamed = new Map()) {
     if (p === undefined) {
       let n = map.size + 1;
       p = `id${n}`;
-      while (p === token || issued.has(p)) p = `id${++n}`;
+      // `reserved`: every pseudonym-shaped string of the capture (reservedPseudonymShapes).
+      while (p === token || issued.has(p) || reserved.has(p)) p = `id${++n}`;
       issued.add(p);
       map.set(token, p);
     }
@@ -528,7 +582,7 @@ export function createPseudonymiser(literals = [], renamed = new Map()) {
         if (p === undefined) {
           do {
             p = mintUuid(++uuidCount);
-          } while (p === seg);
+          } while (p === seg || reserved.has(p));
           map.set(seg, p);
         }
         return p;

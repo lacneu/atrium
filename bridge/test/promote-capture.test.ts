@@ -28,6 +28,7 @@ import {
   knownKeysFromCoverage,
   maskKeepingMediaSentinel,
   maskText,
+  reservedPseudonymShapes,
   // @ts-expect-error — plain .mjs helper, no types (it runs under node, not tsc)
 } from "../scripts/lib/anonymize-capture.mjs";
 import {
@@ -1006,5 +1007,109 @@ describe("promotion entry point: the refusal happens before anything is written"
     );
     expect(readdirSync(join(out, "2026.9.4"))).toEqual(["tool-exec.jsonl"]);
     expect(readFileSync(existing, "utf8")).toBe("previous fixture\n");
+  });
+});
+
+// ── Defect 15: a pseudonym never equals ANOTHER raw identifier of the capture ───
+describe("a pseudonym cannot collide with a raw identifier elsewhere in the capture", () => {
+  const line = (o: unknown) => JSON.stringify(o);
+  const UUID1 = "00000000-0000-4000-8000-000000000001";
+
+  it("collects every pseudonym-SHAPED string from keys, values and serialised text", () => {
+    const slice = [
+      line({ frame: { payload: { sessionKey: "agent:id7:atrium:chat:u:c", id3: 1 } } }),
+      line({ frame: { payload: { args: JSON.stringify({ ref: UUID1.toUpperCase() }) } } }),
+      "not json id9",
+      line({ frame: { payload: { note: "xid4 id5_x paid6" } } }),
+    ].join("\n");
+    const reserved = reservedPseudonymShapes(slice) as Set<string>;
+    expect([...reserved].sort()).toEqual(["id3", "id7", "id9", UUID1].sort());
+  });
+
+  it("reads serialised JSON the way the anonymiser does: escapes decoded, nesting followed", () => {
+    const nested = JSON.stringify({ args: JSON.stringify({ deeper: '{"ref":"tool_\\u0031"}' }) });
+    const slice = [
+      line({ frame: { payload: { args: '{"taskId":"\\u0069d2","run":"00000000-0000-\\u0034000-8000-000000000001"}' } } }),
+      line({ frame: { payload: { blob: nested } } }),
+    ].join("\n");
+    const reserved = reservedPseudonymShapes(slice) as Set<string>;
+    expect(reserved.has("id2"), "an escaped id inside serialised JSON").toBe(true);
+    expect(reserved.has(UUID1), "an escaped UUID inside serialised JSON").toBe(true);
+    expect(reserved.has("tool_1"), "an escaped alias two serialisations deep").toBe(true);
+  });
+
+  it("an id-shaped raw token is never handed out as another token's pseudonym", () => {
+    const pseudo = createPseudonymiser([], new Map(), new Set(["id1", "id2"]));
+    const out = pseudo.identifier("agent:id1:atrium:chat:id2:c") as string;
+    expect(out).not.toMatch(/(?<![A-Za-z0-9_])id[12](?![A-Za-z0-9_])/);
+  });
+
+  it("a raw UUID equal to an early minted one is never handed out to another UUID", () => {
+    const pseudo = createPseudonymiser([], new Map(), new Set([UUID1]));
+    const out = pseudo.identifier("agent:a:subagent:9b2e6c1a-3f4d-4e5f-8a9b-0c1d2e3f4a5b") as string;
+    expect(out).not.toContain(UUID1);
+  });
+
+  it("promoteSlice: an ESCAPED id in serialised tool args never collides with a pseudonym", () => {
+    const KEY = "agent:a:atrium:chat:u:c";
+    const slice = [
+      line({ receivedAt: 5, frame: { type: "res", payload: { runId: "webchat-r1" } } }),
+      line({
+        receivedAt: 7,
+        frame: {
+          event: "agent",
+          payload: {
+            sessionKey: KEY,
+            runId: "webchat-r1",
+            stream: "tool",
+            data: { name: "exec", phase: "start", toolCallId: "call-1", args: '{"taskId":"\\u0069d2"}' },
+          },
+        },
+      }),
+      line({ receivedAt: 10, frame: { event: "chat", payload: { sessionKey: KEY, runId: "webchat-r1", state: "final" } } }),
+    ].join("\n");
+    const out = promoteSlice(slice) as { lines: string[]; context: unknown };
+    const text = out.lines.join("\n") + JSON.stringify(out.context);
+    expect(text).not.toMatch(/(?<![A-Za-z0-9_])id2(?![A-Za-z0-9_])/);
+  });
+
+  it("promoteSlice: a raw tool_<n> elsewhere in the capture is never a custom tool's alias", () => {
+    const KEY = "agent:a:atrium:chat:u:c";
+    const slice = [
+      line({ receivedAt: 5, frame: { type: "res", payload: { runId: "webchat-r1" } } }),
+      line({ receivedAt: 6, frame: { event: "health", payload: { instanceName: "tool_1" } } }),
+      line({
+        receivedAt: 7,
+        frame: {
+          event: "agent",
+          payload: { sessionKey: KEY, runId: "webchat-r1", stream: "tool", data: { name: "acme", phase: "start", toolCallId: "call-1" } },
+        },
+      }),
+      line({ receivedAt: 10, frame: { event: "chat", payload: { sessionKey: KEY, runId: "webchat-r1", state: "final" } } }),
+      // The custom tool's alias reaches the corpus inside its background-task delivery run id.
+      line({
+        receivedAt: 20,
+        frame: {
+          event: "chat",
+          payload: { sessionKey: KEY, runId: "acme:9b2e6c1a-3f4d-4e5f-8a9b-0c1d2e3f4a5b:ok", state: "final" },
+        },
+      }),
+    ].join("\n");
+    const out = promoteSlice(slice) as { lines: string[]; context: unknown };
+    const text = out.lines.join("\n") + JSON.stringify(out.context);
+    expect(text, "the custom tool's alias is in the output").toMatch(/"runId":"tool_\d+:00000000-0000-4000-8000-\d{12}:ok"/);
+    expect(text).not.toMatch(/(?<![A-Za-z0-9_])tool_1(?![A-Za-z0-9_])/);
+  });
+
+  it("promoteSlice reserves the capture's own shapes: no raw id1/id2 in the output at all", () => {
+    const KEY = "agent:id1:atrium:chat:id2:c";
+    const slice = [
+      line({ receivedAt: 5, frame: { type: "res", payload: { runId: "webchat-r1" } } }),
+      line({ receivedAt: 10, frame: { event: "chat", payload: { sessionKey: KEY, runId: "webchat-r1", state: "final" } } }),
+    ].join("\n");
+    const out = promoteSlice(slice) as { lines: string[]; context: unknown };
+    const text = out.lines.join("\n") + JSON.stringify(out.context);
+    // Any occurrence would be either the raw token surviving or a pseudonym colliding with it.
+    expect(text).not.toMatch(/(?<![A-Za-z0-9_])id[12](?![A-Za-z0-9_])/);
   });
 });
