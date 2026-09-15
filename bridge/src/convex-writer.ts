@@ -423,9 +423,15 @@ export interface ConvexWriter {
     errorKind?: string | null,
     /** discardStreamText: the live row's text is protocol noise (NO_REPLY) —
      *  the finalize must not fall back to it (atomic discard).
-     *  gatewayPreempted: the gateway killed this REAL zero-content turn to run
-     *  a delivery (never a user Stop) — Convex re-parks the outbox row for an
-     *  automatic re-dispatch once the delivery settles (preemptRepark.ts). */
+     *  gatewayPreempted: LEGACY, never sent (2026-09-14). It once attributed a
+     *  zero-content aborted real turn to a delivery claiming the session, and
+     *  Convex re-parked the outbox row for an automatic re-dispatch. On the
+     *  gateway versions instructed (v2026.7.1 sources, 8.1–9.4 paths read) no
+     *  frame lets the bridge KNOW that an announce did the killing (TurnSink
+     *  flushFinal says why). The writer below still serializes it when a caller
+     *  sets it — no caller does. Inbound compatibility with an OLDER bridge that
+     *  still sends it lives at the receiver (convex/bridge_ingest.ts accepts the
+     *  field and ignores it); the type keeps it only for that same wire shape. */
     opts?: {
       discardStreamText?: boolean;
       gatewayPreempted?: boolean;

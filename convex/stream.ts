@@ -2364,11 +2364,13 @@ export const finalize = internalMutation({
     // The streamed text is protocol NOISE (a NO_REPLY sentinel reached the
     // live row): never fall back to it. Atomic with the finalize by design.
     discardStreamText: v.optional(v.boolean()),
-    // The gateway killed this REAL zero-content turn to run a delivery on the
-    // same session (announce×queue race, inverse direction — never a user
-    // Stop; the bridge sink mints the flag). The turn's send was consumed but
-    // never processed: re-park its outbox row for ONE automatic re-dispatch
-    // once the delivery settles (preemptRepark.ts).
+    // LEGACY (2026-09-14): a zero-content aborted REAL turn attributed to a delivery
+    // claiming the session (announce×queue race, inverse direction) — re-park its
+    // outbox row for ONE automatic re-dispatch (preemptRepark.ts). The current bridge
+    // never mints the flag, bridge_ingest drops it even when an older bridge still sends
+    // it, and the dev simulator that set it is gone: no wire value reaches this branch
+    // (only preemptRepark.test.ts, through the internal mutation). Kept until the outbox
+    // fields it stamps are migrated out (its own lot).
     gatewayPreempted: v.optional(v.boolean()),
     // This turn ended without knowing whether the provider's run stopped (silence, not a
     // delivered error), so its stored provider session must not be resumed.
@@ -2620,11 +2622,14 @@ export const finalize = internalMutation({
           : {};
       })(),
     });
-    // GATEWAY-PREEMPTED turn (the delivery claimed the session and the gateway
-    // killed this zero-content real turn): re-park the outbox row for one
-    // automatic re-dispatch. BEFORE drainNextQueued so the (deleted) card and
-    // the stamped row are settled when the drain reads the world; the row
-    // itself stays `sent` until the delayed flip, out of this drain's reach.
+    // LEGACY "gateway-preempted" turn (a zero-content real turn once ATTRIBUTED to a
+    // delivery claiming the session — never proven; no production caller sets the flag
+    // any more, only preemptRepark.test.ts does): re-park the outbox row for one
+    // automatic re-dispatch. Kept until the
+    // outbox fields are migrated out. BEFORE drainNextQueued so the (deleted) card and
+    // the stamped row are settled when the drain reads the world; the row is HELD
+    // `pending` at once (the queue's own busy blocker) and the delayed flip takes it
+    // pending → queued, so this drain never promotes it.
     if (status === "aborted" && gatewayPreempted === true) {
       const fresh = await ctx.db.get(messageId);
       if (fresh !== null) {

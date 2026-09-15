@@ -288,6 +288,76 @@ function fakeConnControllable() {
   };
 }
 
+describe("Session never mints gatewayPreempted through the real wiring", () => {
+  // The flag was retired on every gateway version (2026-09-14, see
+  // TurnSink.flushFinal). This feeds the historical incident shape to the RunManager
+  // the SESSION built (connection acquired through the registry, the manager wired by
+  // Session itself — the consume loop is not exercised, the frame is fed directly), not
+  // a hand-built one, so a re-introduction wired from the session side — a version
+  // getter, a policy knob — fails here and not only in preempt-flag.test.ts. The
+  // finalize itself is asserted first: an absent finalize must never read as "unflagged".
+  const abortedRpc = {
+    type: "event",
+    event: "chat",
+    payload: {
+      runId: "run-1",
+      sessionKey: "agent:a:atrium:chat:alice:oc1",
+      state: "aborted",
+      stopReason: "rpc",
+    },
+  };
+
+  async function preemptedFor(gatewayVersion: string | null): Promise<unknown> {
+    const conn = { ...fakeConn(), gatewayVersion };
+    vi.spyOn(OpenClawConnection, "connect").mockImplementation(async () => conn as never);
+    // The aborted finalize path reaches writer methods the minimal fakeWriter above does
+    // not define (recordGatewayPressure…). Every other method is an inert no-op; `then`
+    // stays undefined so the proxy is never mistaken for a promise.
+    const finalized: unknown[][] = [];
+    const writer = new Proxy(
+      {},
+      {
+        get: (_t, prop) => {
+          if (prop === "then") return undefined;
+          if (prop === "finalize") {
+            return async (...args: unknown[]) => {
+              finalized.push(args);
+            };
+          }
+          if (prop === "startAssistant") return async () => "msg-1";
+          if (prop === "setSnapshot" || prop === "addMedia") return async () => true;
+          if (prop === "getRehydrationContext") {
+            return async () => ({ history: null, turnCount: 0 });
+          }
+          return async () => {};
+        },
+      },
+    ) as unknown as ConvexWriter;
+    const reg = new SessionRegistry(servedMap(config, writer), () => 1000);
+    const s = await reg.acquire(ROUTING);
+    const key = (s as unknown as { sessionKey: string }).sessionKey;
+    await s.runManager.beginTurn(1001, "run-1");
+    await s.runManager.feed({ ...abortedRpc, payload: { ...abortedRpc.payload, sessionKey: key } }, 1002);
+    reg.closeAll();
+    // Exactly ONE finalize, of status `aborted`, and only then the absence of the flag:
+    // without the first two checks a lost frame or a removed finalize() would pass.
+    expect(finalized).toHaveLength(1);
+    expect(finalized[0]?.[1]).toBe("aborted");
+    const opts = finalized[0]?.[5] as { gatewayPreempted?: boolean } | undefined;
+    expect(opts?.gatewayPreempted).toBeUndefined();
+    return opts?.gatewayPreempted === true;
+  }
+
+  it("a 2026.7.1 connection finalizes the historical race shape aborted, unflagged", async () => {
+    expect(await preemptedFor("2026.7.1")).toBe(false);
+  });
+
+  it("…and so do a 2026.9.4 connection and one that reported no version", async () => {
+    expect(await preemptedFor("2026.9.4")).toBe(false);
+    expect(await preemptedFor(null)).toBe(false);
+  });
+});
+
 describe("Session consume loop — crash self-heal (Mars robustness)", () => {
   it("an immediate loop crash CLOSES the connection (so acquire reconnects) and does NOT crash the process", async () => {
     const conn = fakeConnControllable();

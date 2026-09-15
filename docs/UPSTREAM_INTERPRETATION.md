@@ -227,9 +227,11 @@ banner *next to* the kept text.
 ### Upstream policy — steer by default, interrupt when the mode says so
 
 The DEFAULT queue policy does not kill either side of the announce×send
-race; an EFFECTIVE `interrupt` mode does, and so does session writer
-ownership one layer down (below). Re-verified at v2026.9.4 — this heading
-used to read "there is no kill policy". Contention is resolved by:
+race; an EFFECTIVE `interrupt` mode does. On 2026.8.1+ no mechanism by which an
+announce kills a LIVE turn was found on the production paths read (below —
+sources, with a consistent live observation). Re-verified at
+v2026.9.4 — this heading used to read "there is no kill policy". Contention is
+resolved by:
 
 - **Steering**: a `chat.send` arriving while a run is active on the session
   defaults to queue mode `"steer"` — the message is **injected into the
@@ -249,12 +251,17 @@ used to read "there is no kill policy". Contention is resolved by:
   `announce:v1:<childSessionKey>:<childRunId>`
   (`$UP/src/agents/announce-idempotency.ts:11-18`) — the exact shape
   Atrium's `isDeliveryRunId` recognizes. **The queue policy never makes an
-  announce kill a user turn**; writer ownership (below) can still supersede
-  whichever run held the session.
-- **Admission serialization**: `beginSessionWorkAdmission` queues new work
-  per session identity — newcomers wait, they do not steal
-  (`$UP/src/sessions/session-lifecycle-admission.ts`
-  `beginSessionWorkAdmission`). Runs and admissions are killed on purpose in
+  announce kill a user turn**, and on 2026.8.1+ no other such mechanism was
+  found for a live turn on the paths read (below).
+- **Serialization is the per-session LANE, not the admission**: every embedded
+  run executes inside `session:<key>` (`$UP/src/agents/embedded-agent-runner/lanes.ts`,
+  `run-orchestrator.ts` `enqueueSession`), a lane created with `maxConcurrent: 1`
+  (`$UP/src/process/command-queue.ts`) and targeted by no concurrency setter
+  (`server-lanes.ts` sets Cron/Main/Nested/Subagent, `background-work.ts` only
+  `background:<owner>`). `beginSessionWorkAdmission` itself lets two holders of
+  the same identity coexist (`isCompetingSessionWorkAdmissionActive`); it only
+  makes newcomers wait behind lifecycle mutations (reset, compaction). Runs
+  and admissions are killed on purpose in
   the cases found at v2026.9.4 — a list from reading, not a proof of
   completeness (it used to say "only reset/delete"): an effective
   `interrupt` queue mode (above; at admission too when the send carries the
@@ -267,29 +274,58 @@ used to read "there is no kill policy". Contention is resolved by:
   `server-worker-placement-startup.ts:325`), a sub-agent kill (on the CHILD
   session, `subagent-control-kill-runtime.ts:282`), a reply session rollover
   (`$UP/src/auto-reply/reply/session.ts:518`, turned into `abortForRestart`
-  by the active turn, `reply-turn-admission.ts:318-320` — `stopReason:"restart"`)
-  and a writer takeover (below). Atrium's bridge
+  by the active turn, `reply-turn-admission.ts:318-320` — `stopReason:"restart"`).
+  Atrium's bridge
   never sets `queueMode` on its `chat.send` calls (a declared gap in
   `protocol-drift`, inventoried by `outbound-ratchet.test.ts`), but that does
   NOT keep its turns out of the `interrupt` path: a directive in the user's
   text, the session, the channel or the config still select it.
 
-The race kills covered by this section happen at session **writer
-ownership**, not in the queue policy. On 2026.7.x it was the prompt-lock
-takeover. Since 2026.8.1 a run that claims the writer SUPERSEDES the live
-previous writer on purpose: `claimAgentSessionWriter`
-(`$UP/src/agents/embedded-agent-runner/run/session-bootstrap.ts:364-420`)
-persists `activeWriterRunId`, then emits for the incumbent a lifecycle
-`{phase:"end", aborted:true, status:"superseded", stopReason:"superseded"}`
-before cancelling it — projected by `server-chat.ts` into a `chat` terminal
-classed aborted. Late writes of the loser are fenced by
+**Where an announce kill could exist.** On 2026.7.x a live user turn was aborted
+(`chat:aborted`, `stopReason:"rpc"`, zero content) and the announce started 4 s
+later — measured in production (2026-07-21) and attributed to the prompt-lock
+takeover by its timing; no frame proves the cause, and `rpc` is that
+gateway's default stop reason (below). **On 2026.8.1+ no mechanism by which an
+announce kills a live `chat.send` turn was found on the production paths read**
+(2026-09-14; the same guards are present at v2026.8.1, 8.2, 9.1, 9.2 and 9.4 —
+an absence on the instructed paths, not a proof over every possible path):
+
+- the announce's separate run waits in the one-slot `session:<key>` lane until
+  the live turn has left it (above);
+- `claimAgentSessionWriter`
+  (`$UP/src/agents/embedded-agent-runner/run/session-bootstrap.ts:364-420`) does
+  supersede a previous writer — emitting for it a lifecycle
+  `{phase:"end", aborted:true, status:"superseded", stopReason:"superseded"}` —
+  but only through `supersedeEmbeddedAgentRunByRunId`, which refuses a stopped
+  handle (`runs.ts` `isEmbeddedRunHandleSupersedable`), and a finished run's
+  handle is stopped (`attempt-prompt-phase.ts` `stopAcceptingSteerMessages` in
+  a `finally`);
+- for an ACTIVE requester the delivery first attempts an active wake that
+  injects the completion into its live run
+  (`subagent-announce-direct-delivery.ts:307-349`). When that wake is not
+  queued, the nominal fallback is a separate direct run, which the one-slot
+  lane above serializes behind the live turn — but the function can also
+  return before that run: a source owner that changed
+  (`sourceOwnerChangedResult`), a cron requester session no longer active
+  (`completion_handoff_pending`), or an aborted signal (`path: "none"`).
+
+Observed live on 2026.9.4 (`announce-race-observe`, an observation scenario of
+the private live-bench catalogue at `<hors-dépôt>/live-bench/scenarios.mjs`,
+run only when selected with `--scenario` — it asserts nothing and is never
+part of an attestation; run 2026-09-14T21-57 UTC): a child
+finished during the parent's turn; the full capture holds no `announce:*` run
+and no `superseded`, the parent ended `stop`, and the exported session
+transcript shows the completion persisted INSIDE the parent's turn as a user
+entry with idempotency key `announce:v1:<childKey>:<childRunId>:active-wake`
+and provenance `{kind:"inter_session", sourceTool:"subagent_announce"}`. The
+residue is a run killed by its own lane TIMEOUT, which is already being aborted
+— not the race. Late writes are still fenced by
 `SessionTranscriptWriterClaimReboundError`
 (`$UP/src/config/sessions/transcript-write-context.ts:240`), and a starting run
 can find its turn already claimed (`ActiveTurnClaimError`,
-`$UP/src/gateway/worker-environments/placement-turn-claims.ts:57`). Which side
-loses depends on timing — both directions of the race are possible, consistent
-with what Atrium has observed. (Corrected 2026-09-13: this paragraph called the
-race "emergent, not policy".)
+`$UP/src/gateway/worker-environments/placement-turn-claims.ts:57`).
+(Corrected 2026-09-14: this paragraph said the race kill happens at writer
+ownership on 2026.8.1+ — earlier still, "emergent, not policy".)
 
 The upstream terminals DIFFER by cause, but no single `stopReason` proves the
 race. `superseded` is NOT exclusive to the writer takeover: every run ended
@@ -317,8 +353,11 @@ worker placement cancel `server-worker-placement-cancel.ts`, an ordinary
 gateway shutdown `server-run-shutdown.ts` `abortActiveRuns`),
 `auth-revoked` (provider logout), `stop` (a `/stop` command sent as a message,
 `chat-send-pre-admission.ts`), or no value at all — but
-`convex/preemptRepark.ts` decides on a signature that ignores `stopReason`, so
-it can RE-DISPATCH a turn killed on purpose (open defect, named in that file). Re-verified at v2026.9.4: the default queue mode
+no `stopReason` alone can tell the race apart. Until 2026-09-14 the bridge's
+preemption flag decided on a signature that ignored `stopReason`, so
+`convex/preemptRepark.ts` could RE-DISPATCH a turn killed on purpose; the flag
+is now never set, on any version (verdict
+below). Re-verified at v2026.9.4: the default queue mode
 is still `steer` (`queue/settings.ts:36`), no `status:"queued"` ack exists on
 `chat.send` (a replayed send answers `in_flight`), and the announce id stays
 `announce:v1:<childKey>:<childRunId>`.
@@ -342,40 +381,82 @@ admission and waits.
   `{phase:"end", status:"cancelled", aborted:true, stopReason}`; for a
   `controlUiVisible:false` run only the `chat` broadcast is suppressed — the
   lifecycle is still emitted (`chat-abort.ts` `abortChatRunById`). A writer
-  takeover emits its own lifecycle `superseded` terminal (above).
+  takeover of a supersedable run emits its own lifecycle `superseded`
+  terminal (above).
 - Steering emits **nothing** at injection time; the text appears inside the
-  carrying run's stream.
+  carrying run's stream. An announce injected into an active requester
+  (`active-wake`) therefore produces no `announce:*` run and no frame of its
+  own: only the requester's session transcript records it.
 
 The Control UI keeps its own client-side queue (no dispatch while a run is
 active; "Steer" is just a `chat.send` relying on the gateway's steer mode).
 
 ### Atrium behavior and verdict
 
-- Atrium's recovery model (`convex/preemptRepark.ts`: `reparkIfBusy` for one
-  direction, `preemptOpenTurn` + repark for the other) **covers both
-  observable outcomes** of the race. The comments in `preemptRepark.ts` and
-  `run-manager.ts` now place the kill at writer ownership (not in the queue
-  policy) and name the open defect below (updated 2026-09-13; they used to
-  call it emergent, and earlier still a "one run per session" policy).
-- The `gatewayPreempted` signature (`turn-sink.ts:2026-2034`: an aborted
-  terminal finalized as a gateway abort, on a real non-delivery run, with no
-  Stop signalled to the bridge, no visible text, no tool call and no hosted
-  work) reads no `stopReason`, so inside that subset it cannot tell what
-  produced the terminal — among others, a `chat-abort.ts` broadcast
-  (`chat.abort`/`sessions.abort` from another client, checkpoint restore,
-  worker placement cancel, gateway shutdown, archive/delete, auth
-  revocation, maintenance timeout, `/stop` sent as a message) or a lifecycle
-  terminal projected by
-  `server-chat.ts` (writer takeover `superseded`, `interrupt` → `aborted`,
-  rollover/restart `restart`). The sub-agent-recency
-  proof (`preemptRepark.ts` `recentChildren` / `deliveryImminent`) is Atrium's own discriminator with no
-  upstream equivalent, and it does not separate those causes — the open
-  defect.
+- Atrium's recovery model used to handle both shapes ATTRIBUTED to the race:
+  a send meeting an open announce (`reparkIfBusy` re-parks the paced dispatch,
+  with `preemptOpenTurn` as its belt when the send still takes the sink over
+  locally), and the inverse, a real turn aborted with zero content right
+  before a delivery (the `gatewayPreempted` repark). Since 2026-09-14 only the
+  first direction is
+  recovered automatically: the inverse one (a real turn aborted with zero
+  content) has a terminal but no DISCRIMINATING frame, so it is no longer
+  re-dispatched (next bullet). The comments in `preemptRepark.ts` and
+  `run-manager.ts` say where the race was attributed (2026.7.x, by timing) and
+  why no such mechanism was found on the production paths read on 2026.8.1+
+  (they used to place it at writer ownership, earlier still call it emergent
+  or a "one run per session" policy).
+- The retired `gatewayPreempted` signature (a variable of `turn-sink.ts`
+  `flushFinal` until 2026-09-14: an
+  aborted terminal finalized as a gateway abort, on a real non-delivery run,
+  with no Stop signalled to the bridge, no visible text, no tool call and no
+  hosted work) could not, on its own, tell what produced the terminal — among
+  others, a `chat-abort.ts` broadcast (`chat.abort`/`sessions.abort` from
+  another client, checkpoint restore, worker placement cancel, gateway
+  shutdown, archive/delete, auth revocation, maintenance timeout, `/stop` sent
+  as a message) or a lifecycle terminal projected by `server-chat.ts` (writer
+  takeover `superseded`, `interrupt` → `aborted`, rollover/restart `restart`),
+  and the sub-agent-recency check (`preemptRepark.ts` `recentChildren` /
+  `deliveryImminent`, a temporal correlation) does not separate those causes
+  either. **Retired
+  2026-09-14** (`turn-sink.ts` `flushFinal`; `bridge_ingest.ts` ignores the
+  field from any bridge): the bridge never sets the flag on any gateway
+  version. On >= 2026.8.1 no announce-kill mechanism was found on the
+  production paths read (above), while known deliberate causes of such an
+  abort exist, and re-dispatching a turn one of those causes ended would undo
+  it.
+  Before 2026.8.1 no frame tells the announce kill apart: `rpc` is that
+  gateway's DEFAULT stop reason on the active send's terminal
+  (`$UP@v2026.7.1/src/gateway/server-methods/chat.ts`
+  `activeRunAbort.entry?.abortStopReason ?? "rpc"`, and for agent runs
+  `server-methods/agent.ts` `resolveAbortedAgentStopReason`), also the reason
+  of a `chat.abort` from another client (`abortOrigin: "rpc", stopReason:
+  "rpc"`; `abortOrigin` never reaches the wire), and the recent-child check is
+  a temporal correlation — a live attempt to reproduce the incident on a
+  2026.7.1 bench (2026-09-14) neither killed the live turn nor produced any
+  discriminating frame. Re-dispatching on that shape acts on a supposition, so
+  the turn keeps its honest aborted card there. What is established is only
+  that the mechanism the incident was attributed to was not found on the
+  production paths read from 2026.8.1 — not that it was the cause on 7.x. A first
+  fix tried to detect the race by the writer takeover's `superseded`
+  terminal: it was aimed at a situation the sources and the bench show does
+  not occur for a live turn, and was withdrawn; a second kept the historical
+  signature below 2026.8.1 and was withdrawn for the same reason. The Convex
+  receiver (`preemptRepark.ts`) stays until its outbox fields are migrated
+  out.
 - Deliberate divergence: Atrium's queue lives in Convex (durable outbox),
   the Control UI's lives in browser state. Parallel architectures; the
   upstream followup queue (`chatQueuedTurns` cancellation identities) is not
-  modeled by Atrium and does not need to be — the bridge never admits into
-  the gateway followup queue.
+  modeled by Atrium. It should be: the bridge never sets `queueMode`, yet a
+  `chat.send` landing while a separate `announce:*` run is live IS admitted
+  into the gateway followup queue on 2026.8.1+ under the default `steer` mode
+  (an effective `interrupt` mode from the session, channel or config aborts the
+  announce instead, above) (measured live 2026-09-14 on
+  2026.9.4: the client run gets an empty `chat final` with no lifecycle, and
+  the reply comes back later under a followup run id — a UUID with no wire
+  link to the client run — which Atrium refuses as a foreign run and then
+  retries the turn, so the model answers twice). Open defect 18 of the
+  2026.9.4 queue, its own lot.
 
 ---
 
@@ -617,20 +698,26 @@ a durable surface the Control UI does not have.
   `rehydrationDecision`) and, per instance, a media-delivery instruction — so
   a re-POST of the same outbox row after a lost ack can carry a different
   text under the same key. Rare in practice: Convex never re-POSTs a row
-  (`convex/bridge.ts`), the preempt re-park and the auto-retry mint fresh keys
-  (`preempt-<messageId>-<now>`, `autoretry-<id>-<n>-<now>`). When it does
+  (`convex/bridge.ts`), the auto-retry mints fresh keys
+  (`autoretry-<id>-<n>-<now>`), and so did the preempt re-park
+  (`preempt-<messageId>-<now>`) while it was reachable. When it does
   happen the bridge classifies the refusal as `chat_request_conflict`
   (`bridge/src/core/dispatch-errors.ts`): a downstream rejection with its own
   card, deliberately outside the bounded auto-retry, since the first turn is
   still running on the gateway.
 - The `dispatchKey` alias minted on preempt-repark
   (`preempt-<messageId>-<now>`, the `dispatchKey` assignment in
-  `preemptRepark.ts` `reparkAfterPreempt`) is **confirmed
-  necessary and safe** against upstream: the abort path writes *both* the
-  abort marker and the terminal `chat:` entry, so a re-POST under the
-  original key would replay the "aborted" payload — for up to ~60 min (abort
-  marker), not just the 5 min dedupe TTL. The alias's fresh timestamp makes
-  every repark a never-seen key regardless of TTL, cap, or gateway restart.
+  `preemptRepark.ts` `reparkAfterPreempt`) WAS necessary to that mechanism, and
+  safe against upstream: the abort path writes *both* the abort marker and the
+  terminal `chat:` entry, so a re-POST under the original key would replay the
+  "aborted" payload — for up to ~60 min (abort marker), not just the 5 min
+  dedupe TTL; the alias's fresh timestamp made every repark a never-seen key
+  regardless of TTL, cap, or gateway restart. Since the inverse repark was
+  retired (2026-09-14, §2) nothing new reaches it: the alias only matters for a
+  recovery row created before that change — still held `pending`, already
+  flipped `queued` (the flip clears `preemptHold` and stamps `dispatchKey`), or
+  promoted `pending` again by the drain — until the outbox fields are migrated
+  out.
 - Theoretical edge (orthogonal to preemption): retrying the *same* message
   more than 5 min after its terminal entry was evicted would start a new
   turn instead of replaying — inherent to the upstream window, shared by
@@ -707,11 +794,11 @@ Atrium never has (ignored, verifiably); the per-phase `chat.send` timing is a ga
 | Zone | Verdict |
 |---|---|
 | stopReason/errorKind refusal | **Conformant** — the Control UI reads neither; `state` carries the gateway's pre-rendered decision |
-| Announce×send kill | **Recovery correct, attribution wrong** — no upstream kill policy exists; kills are emergent session-file takeovers, bidirectional by timing |
+| Announce×send kill | **Inverse recovery retired (2026-09-14)** — on 2026.8.1+ no announce-kill mechanism was found on the production paths read (under the default `steer` mode the send is queued as a followup instead: open defect 18); on 2026.7.x the measured incident is attributed to the prompt-lock takeover by timing only, no frame proves it, so `gatewayPreempted` is no longer minted or relayed and the zero-content aborted turn keeps its honest card; `reparkIfBusy` (the other direction) stands |
 | Embedded-lock downgrade | **Sound via the `hasRealContent()` gate** (the homologue of upstream "send evidence"), not via the "post-generation" argument, which mid-turn takeovers disprove |
 | Init-conflict retry | **Conformant** with upstream channel-side retry treatment |
 | Compaction | **Explicit signals consumed** — `{stream:"compaction"}` is the primary mid-turn signal (marker + widened budget, no buffer reset); the `abandoned` heuristic survives as the multi-version/Hermes fallback and stands down when explicit signals are present; `session.operation`/`sessions.changed` remain unconsumed (rotation detection covers the manual path) |
-| chat.send idempotency | **Conformant** for a faithful duplicate; since 2026.9.2 a key reused with other content is refused (`chat-request-conflict`), classified as its own downstream rejection, never retried; the preempt `dispatchKey` alias is necessary (abort markers poison the original key for ~60 min) and timing-independent |
+| chat.send idempotency | **Conformant** for a faithful duplicate; since 2026.9.2 a key reused with other content is refused (`chat-request-conflict`), classified as its own downstream rejection, never retried; the preempt `dispatchKey` alias WAS necessary to the retired inverse repark (abort markers poison the original key for ~60 min) and stays only for a recovery row created before 2026-09-14 (held, flipped `queued`, or promoted again), until the outbox fields are migrated out |
 | Config changes / model roster | **Handled** — `config.changed` (broadcast-only, never announced) invalidates the per-connection roster and triggers a refresh pushed to Convex under the roster's own observation stamp; a frame gap invalidates in the transport and the next publish re-asks and reports the newer answer; the scope-guard table is vendored beside the announced catalogue, and a family in neither vocabulary is named on receipt |
 
 Fixtures extracted from upstream unit tests at `v2026.9.1` are vendored in

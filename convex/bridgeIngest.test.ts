@@ -1837,3 +1837,88 @@ describe("bridge_ingest httpAction: the plan stamp is screened on every op", () 
     }
   });
 });
+
+describe("finalize IGNORES the legacy gatewayPreempted flag at the ingest boundary", () => {
+  // Retired 2026-09-14 (defect 17 of the 2026.9.4 queue): on the gateway versions
+  // instructed (v2026.7.1 sources, 8.1–9.4 paths read) no frame lets a bridge KNOW
+  // that an announce killed a zero-content turn, so the automatic
+  // re-dispatch (preemptRepark.ts) must not be reachable from the wire — not even
+  // from an OLDER bridge still minting the flag during a rolling deploy. The fixture
+  // is exactly the shape the repark used to act on (zero-content aborted real turn,
+  // sent outbox row, a child finished seconds ago): with the relay in place the card
+  // would be deleted and the row held `pending` in the same transaction.
+  test("an older bridge's gatewayPreempted:true leaves the aborted card and the outbox row untouched", async () => {
+    const t = convexTest(schema, modules);
+    await seedAuthOnly(t);
+    const now = Date.now();
+    const { assistantId, outboxId } = await t.run(async (ctx) => {
+      const userId = await ctx.db.insert("users", {});
+      await ctx.db.insert("profiles", { userId, role: "user" as const, canonical: "u" });
+      const chatId = await ctx.db.insert("chats", {
+        userId,
+        updatedAt: 1,
+        instanceName: "prod",
+        agentId: "alice",
+      });
+      const userMsgId = await ctx.db.insert("messages", {
+        chatId,
+        userId,
+        role: "user" as const,
+        status: "complete" as const,
+        text: "Reprends la présentation et propose trois lignes.",
+        updatedAt: 1,
+      });
+      const outboxId = await ctx.db.insert("outbox", {
+        chatId,
+        userId,
+        clientMessageId: "orig-legacy-preempt-1",
+        messageId: userMsgId,
+        text: "Reprends la présentation et propose trois lignes.",
+        attachmentIds: [],
+        status: "sent" as const,
+      });
+      const assistantId = await ctx.db.insert("messages", {
+        chatId,
+        userId,
+        role: "assistant" as const,
+        status: "streaming" as const,
+        text: "",
+        runId: "webchat-legacy-preempted-1",
+        updatedAt: 2,
+      });
+      await ctx.db.insert("subAgents", {
+        chatId,
+        childSessionKey: "agent:alice:subagent:legacy-proof-1",
+        kind: "subagent" as const,
+        status: "done" as const,
+        createdAt: now,
+        updatedAt: now,
+      });
+      return { assistantId, outboxId };
+    });
+
+    const res = await post(t, {
+      op: "finalize",
+      messageId: assistantId,
+      status: "aborted",
+      text: "",
+      gatewayPreempted: true,
+    });
+    expect(await res.json()).toMatchObject({ ok: true });
+
+    const after = await t.run(async (ctx) => ({
+      card: await ctx.db.get(assistantId),
+      row: await ctx.db.get(outboxId),
+    }));
+    // The honest aborted card stays, the row is neither held nor stamped.
+    expect(after.card?.status).toBe("aborted");
+    expect(after.row?.status).toBe("sent");
+    expect(after.row?.preemptRedispatched).toBeUndefined();
+    expect(after.row?.preemptHold ?? undefined).toBeUndefined();
+    // …and the flag never reaches the trace either.
+    const flagged = (await tracesByKind(t, "openclaw.ingest"))
+      .map((tr) => JSON.parse(tr.meta ?? "{}"))
+      .filter((m) => m.gatewayPreempted === true);
+    expect(flagged).toHaveLength(0);
+  });
+});

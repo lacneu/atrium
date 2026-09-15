@@ -560,16 +560,22 @@ export class TurnSink {
     this.userAbortThisTurn = true;
   }
 
-  /** A real dispatch is preempting an OPEN spontaneous (announce) turn whose
-   *  final never arrived: the gateway KILLS the announce run the moment the
-   *  new chat.send lands (one run per session — measured live 2026-07-19), so
-   *  no further frame of it will ever come. Finalize it COMPLETE now with the
-   *  streamed text (writer.finalize falls back to the stream row's text when
-   *  the buffer is empty). Without this the reopened bubble strands in
-   *  `streaming` forever — busy chat, stalled queue drain, then the 12-min
-   *  watchdog errors it as stream_orphaned. The dispatch-side busy re-check
-   *  (bridge.reparkIfBusy) makes this window rare; this is the belt. No-op
-   *  when the turn is inactive or the message was never created. */
+  /** A real dispatch is taking over the SINK while an OPEN spontaneous (announce)
+   *  turn's final has not arrived: a LOCAL hand-over — the sink serves one turn —
+   *  not a statement about the gateway run. Upstream behaves differently by
+   *  generation: in the observed 2026.7.x incident (live 2026-07-19) the
+   *  announce's final never came after such a send, its cause attributed to a
+   *  session takeover by timing; on 2026.9.4, under the default `steer` queue mode
+   *  (the bridge sets no `queueMode`), the announce run was observed still alive
+   *  and ending normally while the send waited as a followup (live 2026-09-14,
+   *  defect 18 — its tail is then refused as stale); an effective `interrupt` mode
+   *  aborts it instead. Either way this finalizes the open bubble COMPLETE now with the
+   *  streamed text (writer.finalize falls back to the stream row's text when the
+   *  buffer is empty). Without this the reopened bubble strands in `streaming` —
+   *  busy chat, stalled queue drain, then the 12-min watchdog errors it as
+   *  stream_orphaned. The dispatch-side busy re-check (bridge.reparkIfBusy) makes
+   *  this window rare; this is the belt. No-op when the turn is inactive or the
+   *  message was never created. */
   async preemptOpenTurn(): Promise<void> {
     await this.flushFinal("complete");
   }
@@ -2013,25 +2019,35 @@ export class TurnSink {
     ) {
       effectiveStatus = "complete";
     }
-    // A GATEWAY-initiated kill of a REAL turn that produced NOTHING (never a
-    // user Stop — that sets userAbortThisTurn): the gateway preempted the
-    // dispatched turn to run a delivery on the same session (announce×queue
-    // race, inverse direction of reparkIfBusy — live prod 2026-07-21: the
-    // queued follow-up dispatched, the sub-agent's announce killed it 19s in,
-    // and the user's message was silently consumed). The send is a supported
-    // feature — flag the finalize so Convex re-parks the outbox row and
-    // re-dispatches it once the delivery settles, instead of leaving the user
-    // to re-send by hand. Zero-content only: streamed text or tool work keeps
-    // the honest "Interrompu" card (a re-run could duplicate it).
-    const gatewayPreempted =
-      status === "aborted" &&
-      !isDeliveryRunId(this.turnRunId) &&
-      !this.userAbortThisTurn &&
-      this.pendingDiagFinalizeCause === "gateway_abort" &&
-      !this.sawVisibleText &&
-      replyText.trim().length === 0 &&
-      this.toolCallCount === 0 &&
-      this.hostedThisTurn.size === 0;
+    // A GATEWAY-initiated abort of a REAL turn that produced NOTHING was once flagged
+    // here (`gatewayPreempted` — live prod 2026-07-21 on a 2026.7.x gateway: a queued
+    // follow-up dispatched, was aborted 19 s in with stopReason "rpc", and the
+    // sub-agent's announce started 4 s later; the user's message was silently
+    // consumed — an incident ATTRIBUTED to the announce race by its timing, never
+    // proven by a frame) so that Convex re-parked the outbox row for one automatic
+    // re-dispatch (convex/preemptRepark.ts). The flag is NOT minted any more, on any
+    // gateway version (decided 2026-09-14):
+    //   - from 2026.8.1 no announce-kill mechanism was found on the production paths
+    //     read at the instructed tags (docs/UPSTREAM_INTERPRETATION.md §2: one-slot
+    //     session lane, non-supersedable stopped handles, active-wake injection; a live
+    //     observation on 2026.9.4 is consistent with it), while known deliberate causes
+    //     of a zero-content abort do exist — an interrupt queue mode, a rollover, a
+    //     restart, an archive/delete, a timeout, a chat.abort from another client (not an
+    //     exhaustive list) — and re-dispatching a turn one of those causes ended would
+    //     undo it;
+    //   - before 2026.8.1 no frame tells the announce kill apart: "rpc" is the DEFAULT
+    //     stop reason of that gateway (upstream v2026.7.1 gateway/server-methods/chat.ts
+    //     `abortStopReason ?? "rpc"` on the active run, agent.ts
+    //     `resolveAbortedAgentStopReason`) and the one a chat.abort from another client
+    //     carries (chat.ts `abortOrigin: "rpc", stopReason: "rpc"`; `abortOrigin` never
+    //     reaches the wire), and a recently finished child is a temporal correlation,
+    //     not a cause.
+    //     A re-dispatch on that shape acts on a supposition, which this bridge does not
+    //     do: the turn keeps the honest aborted card. What IS established is only that
+    //     the mechanism the incident was attributed to was not found on the production
+    //     paths read from 2026.8.1 — not that it was the cause on 7.x.
+    // The finalize contract still carries the field for older peers; the Convex ingest
+    // ignores it, so an older bridge cannot trigger the re-dispatch either.
     if (
       status === "complete" &&
       // DELIVERY runs are exempt: their tool-only turns legitimately end with
@@ -2219,7 +2235,6 @@ export class TurnSink {
       sentinelOnly ||
         effectiveErrorKind === SILENT_RESPONSE_CODE ||
         this.pendingDiscardStream ||
-        gatewayPreempted ||
         this.pendingClearProviderSession
         ? {
             ...(sentinelOnly ||
@@ -2227,7 +2242,6 @@ export class TurnSink {
             this.pendingDiscardStream
               ? { discardStreamText: true }
               : {}),
-            ...(gatewayPreempted ? { gatewayPreempted: true } : {}),
             ...(this.pendingClearProviderSession !== null
               ? { clearProviderSession: this.pendingClearProviderSession }
               : {}),

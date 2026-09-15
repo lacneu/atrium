@@ -385,10 +385,12 @@ type IngestOp =
        *  ON the finalize so the discard is atomic with it — a separate purge
        *  write could fail and resurrect the sentinel (codex P2). */
       discardStreamText?: boolean;
-      /** TRUE = the gateway killed this REAL zero-content turn to run a
-       *  delivery (announce×queue race, inverse direction — never a user
-       *  Stop): stream.finalize re-parks the outbox row for one automatic
-       *  re-dispatch (preemptRepark.ts). */
+      /** LEGACY, IGNORED (2026-09-14): older bridges flagged a zero-content aborted
+       *  real turn as "killed by a delivery" so stream.finalize re-parked its outbox
+       *  row for one automatic re-dispatch (preemptRepark.ts). No frame on the
+       *  gateway versions instructed (v2026.7.1 sources, 8.1–9.4 paths read)
+       *  proves that attribution, so the field is accepted for wire
+       *  compatibility and never relayed. */
       gatewayPreempted?: boolean;
       /** The provider session id this turn was watching, when it ended WITHOUT knowing
        *  whether its run stopped (silence, a dead socket, a stream that just ended), so
@@ -1228,7 +1230,9 @@ export const ingest = httpAction(async (ctx, request) => {
         boundInstanceName,
         ...(body.runId !== undefined ? { expectedRunId: body.runId } : {}),
         ...(body.discardStreamText === true ? { discardStreamText: true } : {}),
-        ...(body.gatewayPreempted === true ? { gatewayPreempted: true } : {}),
+        // `body.gatewayPreempted` is deliberately NOT relayed: the current bridge never
+        // mints it, and an older bridge still running during a rolling deploy must
+        // not trigger the supposition-based re-dispatch either (see preemptRepark.ts).
         ...(body.recoverableSession === true
           ? { recoverableSession: true }
           : {}),
@@ -1253,7 +1257,6 @@ export const ingest = httpAction(async (ctx, request) => {
           messageId: body.messageId,
           // String lifecycle status lives in meta (the `status` column is numeric).
           finalizeStatus: body.status,
-          ...(body.gatewayPreempted === true ? { gatewayPreempted: true } : {}),
           // WHETHER the terminal dropped the session, never WHICH one: the trace answers
           // the operator's question with a boolean and keeps the identifier out of it.
           ...(body.clearProviderSession ? { clearProviderSession: true } : {}),

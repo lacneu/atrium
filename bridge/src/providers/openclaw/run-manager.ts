@@ -133,13 +133,7 @@ export class RunManager {
   ) {
     this.sessionKey = sessionKey;
     this.normalizer = new Normalizer(sessionKey);
-    this.sink = new TurnSink(
-      chatId,
-      writer,
-      outboundScan,
-      sessionKey,
-      onTurnError,
-    );
+    this.sink = new TurnSink(chatId, writer, outboundScan, sessionKey, onTurnError);
   }
 
   private tallyFrame(frame: unknown): void {
@@ -402,19 +396,22 @@ export class RunManager {
       // OPEN announce turn preempted by a real dispatch (the queued follow-up
       // was already in flight when the announce reopened the parent bubble —
       // rare: bridge.reparkIfBusy re-parks a paced dispatch that wakes into
-      // this state). The announce run dies to the new chat.send not by the default
-      // queue policy (steer/queue) but at session WRITER ownership (see
-      // docs/UPSTREAM_INTERPRETATION.md §2-3). On 2026.7.x the prompt-lock takeover
-      // killed it and its final NEVER came. Since 2026.8.1 the new writer supersedes
-      // it on purpose and a `superseded` terminal is emitted — but only if the
-      // gateway records it, and this turn is already being replaced. Either way, left
-      // alone the
-      // reopened bubble strands `streaming`, the busy gate stalls the queue
-      // drain, and the 12-min watchdog errors it as stream_orphaned (live
-      // 2026-07-19, "Génération…" stuck + last queued card never dispatched).
-      // Close it COMPLETE now with the streamed partial text; no replay is
-      // attempted — the run is dead, nothing would answer it. Best-effort —
-      // the real turn must start regardless.
+      // this state). In the observed 2026.7.x incident the announce's final NEVER came
+      // after the new chat.send (live 2026-07-19; attributed to a prompt-lock takeover by timing, no frame
+      // proves the cause). On 2026.8.1+ no announce-kill mechanism was found on the
+      // production paths read — one-slot per-session lane, stopped handles are not
+      // supersedable (see docs/UPSTREAM_INTERPRETATION.md §2); there, under the default
+      // `steer` queue mode (the bridge sets no `queueMode`; an effective `interrupt` mode
+      // aborts the announce instead), the send is queued as a followup
+      // behind the announce (measured live 2026-09-14, defect 18 in the
+      // 2026.9.4 queue): the announce run is NOT dead, it ends normally while the real
+      // turn waits, and its remaining frames are refused below as stale retransmits
+      // (the announce tail after this point is lost — part of defect 18, its own lot).
+      // On the 7.x shape, left alone the reopened bubble strands `streaming`, the busy
+      // gate stalls the queue drain, and the 12-min watchdog errors it as
+      // stream_orphaned (live 2026-07-19, "Génération…" stuck + last queued card never
+      // dispatched). Close it COMPLETE now with the streamed partial text; no replay is
+      // attempted. Best-effort — the real turn must start regardless.
       try {
         console.log(
           `[announce] open announce turn preempted by real dispatch — closing run=${this.currentSpontaneousRun.slice(0, 60)}`,

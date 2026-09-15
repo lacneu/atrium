@@ -6,51 +6,51 @@
     {
       "id": "basic-turn",
       "ok": true,
-      "chat": "c3b0eac271f74a79"
+      "chat": "6dffad3cb0770576"
     },
     {
       "id": "tool-exec",
       "ok": true,
-      "chat": "c3b0eac271f74a79"
+      "chat": "6dffad3cb0770576"
     },
     {
       "id": "update-plan",
       "ok": true,
-      "chat": "c3b0eac271f74a79"
+      "chat": "6dffad3cb0770576"
     },
     {
       "id": "media-outbound",
       "ok": true,
-      "chat": "c3b0eac271f74a79"
+      "chat": "6dffad3cb0770576"
     },
     {
       "id": "spawn-announce-merge",
       "ok": true,
-      "chat": "c3b0eac271f74a79"
+      "chat": "6dffad3cb0770576"
     },
     {
       "id": "spawn-chain-merge",
       "ok": true,
-      "chat": "c3b0eac271f74a79"
+      "chat": "6dffad3cb0770576"
     },
     {
       "id": "spawn-parallel-merge",
       "ok": true,
-      "chat": "c3b0eac271f74a79"
+      "chat": "6dffad3cb0770576"
     },
     {
       "id": "async-task",
       "ok": true,
-      "chat": "c3b0eac271f74a79"
+      "chat": "6dffad3cb0770576"
     },
     {
       "id": "cron-tool",
       "ok": true,
-      "chat": "c3b0eac271f74a79"
+      "chat": "6dffad3cb0770576"
     }
   ],
   "verdict": "GO",
-  "at": "2026-09-14T03:57:51.498Z",
+  "at": "2026-09-15T04:53:48.300Z",
   "scenarios": [
     "async-task",
     "basic-turn",
@@ -78,12 +78,12 @@
     "hermes-cron-list": "hermes"
   },
   "flags": [],
-  "atriumSha": "a02259062a0de955bbc19738c1ceb51aa23ff3e7",
+  "atriumSha": "8b803baa1ec057dfeb301dd37048e265a80e29d7",
   "worktree": {
     "dirty": true,
-    "deltaSha256": "3cd386119e54068101a4c36102f78026d359ce813d044ebca2c958cf30aa8b1a"
+    "deltaSha256": "67b6afc833bdcd66f6a1d53ffc18c6dc9738295b165c189ca224716c812628da"
   },
-  "supportDigest": "2b337bf283c3d2d186cbbbe0ded037b6a618af383b64d1cca549d92988d2ffd9",
+  "supportDigest": "1021d42ee9656383499819ce6777398d95856d3713cb4026726c85a8906a665f",
   "authMode": "token",
   "bridgeVersion": "0.84.8",
   "vendoredSha256": "99e06ae2c430259848af68304c28804e3fcc4227ae77ec1a99c80f4d26d35d30"

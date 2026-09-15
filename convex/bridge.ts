@@ -300,21 +300,23 @@ export const markOutbox = internalMutation({
       );
       return;
     }
-    // PREEMPT-REPARK HOLD (preemptRepark.ts, codex P1): when the gateway kill
-    // was ingested BEFORE this ack landed, the flagged finalize already took
+    // PREEMPT-REPARK HOLD (preemptRepark.ts, codex P1 — a legacy recovery row: the
+    // flag is no longer set on the wire since 2026-09-14): when the zero-content
+    // gateway abort was ingested BEFORE this ack landed, the flagged finalize already took
     // over the row — stamped it and re-held it `pending` so window sends stay
     // parked behind it. This late `sent` flip would release that hold AND
     // drain a window send ahead of the held turn (FIFO inversion, a fresh
-    // collision with the delivery). The dispatch this ack reports was
-    // consumed by the kill: drop the flip; the scheduled reparkAfterPreempt
+    // collision with the delivery). The dispatch this ack reports already
+    // ended in that zero-content abort: drop the flip; the scheduled reparkAfterPreempt
     // owns the row's next transition. Keyed on the TRANSIENT `preemptHold`
     // (cleared at the flip), NEVER the permanent bound stamp — the row's own
     // RE-dispatch later re-enters `pending` with the stamp still set, and its
     // ack must land or the chat blocks forever (codex P1, pass 4). A `failed`
     // write is dropped too (mirrors failDispatch, codex P2 pass 11): the hold
-    // PROVES the send reached the gateway — a run started and was killed by
-    // the delivery — so a transport "failure" is a lost response, and failing
-    // the row would cancel the recovery.
+    // PROVES the send reached the gateway — a run started and was aborted with
+    // zero content (its attribution to the delivery was never proven) — so a
+    // transport "failure" is a lost response, and failing the row would cancel
+    // the recovery.
     if (row.preemptHold === true && row.status === "pending") {
       return;
     }
@@ -363,7 +365,7 @@ export const failDispatch = internalMutation({
     errorCode: v.optional(v.string()),
     // GENERATION binding (mirrors markOutbox — codex P1, pass 14): the
     // effective dispatch key (dispatchKey ?? clientMessageId) the failing
-    // dispatch READ when it started. A late failure of the KILLED dispatch
+    // dispatch READ when it started. A late failure of the ABORTED dispatch
     // (lost/slow HTTP response outliving the 10s hold) must not fail the
     // re-parked row the flip just re-queued — that would cancel the recovery
     // and paint a spurious error card on a turn whose card is already gone.
@@ -383,9 +385,11 @@ export const failDispatch = internalMutation({
       );
       return;
     }
-    // PREEMPT-REPARK HOLD (preemptRepark.ts, codex P2): the hold existing
-    // PROVES the send reached the gateway — a run started and was killed by
-    // the delivery (that kill is what installed the hold). This "failure" is
+    // PREEMPT-REPARK HOLD (preemptRepark.ts, codex P2 — a legacy recovery row: the
+    // flag is no longer set on the wire since 2026-09-14): the hold existing PROVES
+    // the send reached the gateway — a run started and was aborted with zero content
+    // (that aborted finalize is what installed the hold; attributing the abort to the
+    // delivery was never proven, which is why the flag was retired). This "failure" is
     // the POST's response getting lost on the way back, not a failed send:
     // failing the row would cancel the recovery and paint a spurious error
     // card. The scheduled reparkAfterPreempt owns the row's next transition.
@@ -1304,12 +1308,14 @@ export const consumeForkRehydration = internalMutation({
  * PACED-DISPATCH RE-CHECK (called at the top of `dispatch`): between the
  * drain's queued→pending flip and the delayed wake-up (QUEUE_DRAIN_DELAY_MS),
  * a sub-agent ANNOUNCE may have reopened an assistant bubble — the chat is
- * streaming again. A chat.send now can kill that announce run mid-report —
- * not by gateway policy ("one run per session" is NOT an upstream invariant;
- * v2026.7.1 steers/queues by design) but by the emergent session-file
- * takeover, timing-dependent (live 2026-07-19: the report froze on
- * "Génération…" and the rest never arrived; see
- * docs/UPSTREAM_INTERPRETATION.md §2). Re-park the row as
+ * streaming again. A chat.send landing now meets that announce run mid-report:
+ * in the observed 2026.7.x incident the rest of the report never arrived (live
+ * 2026-07-19: it froze on "Génération…"; attributed to a session-file takeover by timing, not
+ * proven — "one run per session" is NOT an upstream invariant, v2026.7.1
+ * steers/queues by design), and on 2026.8.1+, under the default `steer` queue mode
+ * (Atrium sets no `queueMode`), the send is queued as a gateway followup behind it
+ * (live 2026-09-14, defect 18; see
+ * docs/UPSTREAM_INTERPRETATION.md §2). Either way the send should wait. Re-park the row as
  * `queued` instead; the announce's own finalize re-drains the queue FIFO.
  */
 export const reparkIfBusy = internalMutation({
@@ -1789,7 +1795,7 @@ export const dispatch = internalAction({
             // OpenClaw and Hermes are covered identically (single send path).
             text: composedText,
             // The GATEWAY idempotency source: the re-park flip mints a fresh
-            // `dispatchKey` alias (the killed dispatch consumed the original
+            // `dispatchKey` alias (the aborted dispatch consumed the original
             // key) while the browser's own clientMessageId stays intact for
             // send.sendMessage's retry dedup (preemptRepark.ts).
             clientMessageId: row.dispatchKey ?? row.clientMessageId,
@@ -1907,7 +1913,7 @@ export const dispatch = internalAction({
         reason: "send_failed",
         errorCode,
         // Generation-bound (codex P1, pass 14): a lost-response failure of the
-        // KILLED dispatch outliving the hold must not fail the re-keyed row
+        // ABORTED dispatch outliving the hold must not fail the re-keyed row
         // (the only failDispatch site that can be slow — it sits behind the
         // network call; every earlier site fails in milliseconds, before a
         // hold can exist).

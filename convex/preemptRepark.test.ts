@@ -7,13 +7,18 @@ import { QUEUED_ORDER_SENTINEL } from "./lib/messageOrder";
 
 const modules = import.meta.glob("./**/*.ts");
 
-// Automatic re-dispatch of a turn the GATEWAY killed to run a delivery
-// (announce×queue race, inverse direction — live prod 2026-07-21, report
-// ms746b01…). The system, not the user, owns the recovery: the empty aborted
-// card is dropped, the outbox row re-parks `queued` after a delay, and the
-// normal drain machinery re-dispatches once the delivery settles. The
-// discriminating tests are the GUARDS (a re-park that fires when the user
-// moved on would duplicate a turn) and the BOUND (one automatic re-dispatch).
+// The RETIRED automatic re-dispatch of a zero-content aborted turn once ATTRIBUTED
+// to a delivery claiming the session (announce×queue race, inverse direction —
+// live prod 2026-07-21, report ms746b01…; attribution by timing, never proven).
+// Since 2026-09-14 the current bridge never mints `gatewayPreempted`, and bridge_ingest
+// drops it even when an older bridge still sends it (convex/bridgeIngest.test.ts pins
+// that); these
+// tests drive the internal mutation directly to keep the mechanism honest for the
+// recovery rows created before the change, until its outbox fields are migrated out.
+// Its recovery: the empty aborted card is dropped, the outbox row re-parks `queued`
+// after a delay, and the normal drain re-dispatches. The discriminating tests are
+// the GUARDS (a re-park that fires when the user moved on would duplicate a turn)
+// and the BOUND (one automatic re-dispatch).
 
 beforeEach(() => {
   vi.useFakeTimers();
@@ -66,7 +71,7 @@ async function seedPreemptedTurn(
       status: "sent" as const,
       ...(opts?.alreadyRedispatched ? { preemptRedispatched: true } : {}),
     });
-    // The killed turn's assistant card, still streaming (finalize flips it).
+    // The aborted turn's assistant card, still streaming (finalize flips it).
     const assistantId = await ctx.db.insert("messages", {
       chatId,
       userId,
@@ -76,9 +81,9 @@ async function seedPreemptedTurn(
       runId: "webchat-preempted-1",
       updatedAt: 2,
     });
-    // The PREEMPTION PROOF: the sub-agent whose queued delivery is what kills
-    // the dispatched turn (live shape: analyse-paxi-ppt done 35s before the
-    // kill). Omitted only by the no-proof test.
+    // The ATTRIBUTION SHAPE (a temporal correlation, never a proof): a sub-agent
+    // that went terminal shortly before the abort (live shape: analyse-paxi-ppt
+    // done 35s before it). Omitted only by the no-attribution test.
     if (opts?.withoutRecentChild !== true) {
       await ctx.db.insert("subAgents", {
         chatId,
@@ -129,7 +134,7 @@ describe("finalize(gatewayPreempted) -> re-park -> drain (the automatic re-send)
     expect(end?.status).toBe("failed");
     expect(end?.preemptRedispatched).toBe(true);
     // The flip released the transient hold and minted a FRESH gateway key as
-    // a SEPARATE alias (the killed dispatch consumed the original) — the
+    // a SEPARATE alias (the aborted dispatch consumed the original) — the
     // browser's clientMessageId stays intact for send retry dedup (codex P1).
     expect(end?.preemptHold ?? undefined).toBeUndefined();
     expect(end?.dispatchKey?.startsWith("preempt-")).toBe(true);
@@ -164,9 +169,10 @@ describe("finalize(gatewayPreempted) -> re-park -> drain (the automatic re-send)
     expect(row?.status).toBe("sent");
   });
 
-  test("a STRAGGLER ack from the killed dispatch cannot flip the re-keyed row (codex P1)", async () => {
+  test("a STRAGGLER ack from the aborted dispatch cannot flip the re-keyed row (codex P1)", async () => {
     // The first dispatch's ack arrives AFTER the flip (>10s network lag): the
-    // flip minted a fresh clientMessageId, so the generation-bound ack must
+    // flip minted a fresh `dispatchKey` alias (clientMessageId is kept — it is the
+    // browser retries' idempotency key), so the generation-bound ack must
     // be dropped — flipping the re-queued row `sent` would make the scheduled
     // re-dispatch bail and lose the turn (its card is already deleted).
     const t = convexTest(schema, modules);
@@ -182,7 +188,7 @@ describe("finalize(gatewayPreempted) -> re-park -> drain (the automatic re-send)
     await t.mutation(internal.bridge.markOutbox, {
       outboxId,
       status: "sent" as const,
-      expectedClientMessageId: "orig-preempt-1", // the killed dispatch's key
+      expectedClientMessageId: "orig-preempt-1", // the aborted dispatch's key
     });
     const row = await t.run(async (ctx) => ctx.db.get(outboxId));
     expect(row?.status).toBe("queued"); // untouched — the re-dispatch owns it
@@ -197,7 +203,7 @@ describe("finalize(gatewayPreempted) -> re-park -> drain (the automatic re-send)
   });
 
   test("a transport 'failure' cannot cancel a held recovery (lost-response, codex P2)", async () => {
-    // The hold proves the send reached the gateway (a run was killed) — a
+    // The hold proves the send reached the gateway (a run was aborted) — a
     // lost HTTP response must not fail the row nor paint an error card.
     const t = convexTest(schema, modules);
     const { chatId, assistantId, outboxId } = await seedPreemptedTurn(t);
@@ -224,7 +230,7 @@ describe("finalize(gatewayPreempted) -> re-park -> drain (the automatic re-send)
   });
 
   test("a STRAGGLER failDispatch outliving the hold cannot fail the re-keyed row (codex P1)", async () => {
-    // The killed dispatch's lost-response failure lands AFTER the flip: the
+    // The aborted dispatch's lost-response failure lands AFTER the flip: the
     // row is re-keyed (dispatchKey) and back in `pending` for its re-dispatch
     // — the generation-bound failure must be dropped, not fail the recovery.
     const t = convexTest(schema, modules);
@@ -239,7 +245,7 @@ describe("finalize(gatewayPreempted) -> re-park -> drain (the automatic re-send)
     await t.mutation(internal.bridge.failDispatch, {
       outboxId,
       reason: "send_failed" as const,
-      expectedClientMessageId: "orig-preempt-1", // the killed dispatch's key
+      expectedClientMessageId: "orig-preempt-1", // the aborted dispatch's key
     });
     const state = await t.run(async (ctx) => ({
       row: await ctx.db.get(outboxId),
@@ -329,7 +335,7 @@ describe("finalize(gatewayPreempted) -> re-park -> drain (the automatic re-send)
   });
 
   test("a SECOND queued follow-up (sentinel order) does not veto the recovery (codex P1)", async () => {
-    // Fabien's scenario widened: TWO messages queued during the killed turn.
+    // Fabien's scenario widened: TWO messages queued during the aborted turn.
     // The second is parked with QUEUED_ORDER_SENTINEL (sorts after the aborted
     // card) — it is not yet part of the established order and must not make
     // the last-message guard abandon the first message's recovery.
@@ -366,7 +372,7 @@ describe("finalize(gatewayPreempted) -> re-park -> drain (the automatic re-send)
     expect(mid.row?.preemptRedispatched).toBe(true);
   });
 
-  test("a kill ingested BEFORE the dispatch's sent-flip (row still pending) still recovers (codex P1)", async () => {
+  test("an abort ingested BEFORE the dispatch's sent-flip (row still pending) still recovers (codex P1)", async () => {
     const t = convexTest(schema, modules);
     const { assistantId, outboxId } = await seedPreemptedTurn(t);
     // The 2026-07-09 shape: the gateway error beat markOutbox("sent") — the
@@ -384,7 +390,7 @@ describe("finalize(gatewayPreempted) -> re-park -> drain (the automatic re-send)
     expect(mid.row?.preemptRedispatched).toBe(true);
     // The late markOutbox("sent") ack lands mid-window: it must NOT release
     // the hold (a release would drain a window send ahead of the held turn —
-    // codex P1). The dispatch it reports was consumed by the kill.
+    // codex P1). The dispatch it reports already ended in the zero-content abort.
     await t.mutation(internal.bridge.markOutbox, {
       outboxId,
       status: "sent" as const,
@@ -396,7 +402,7 @@ describe("finalize(gatewayPreempted) -> re-park -> drain (the automatic re-send)
     expect(end?.status).toBe("failed"); // re-queued, drained, dispatch attempted
   });
 
-  test("BOUND: a second kill of the same row keeps the honest aborted card (no loop)", async () => {
+  test("BOUND: a second abort of the same row keeps the honest aborted card (no loop)", async () => {
     const t = convexTest(schema, modules);
     const { assistantId, outboxId } = await seedPreemptedTurn(t, {
       alreadyRedispatched: true,
@@ -489,10 +495,10 @@ describe("finalize(gatewayPreempted) -> re-park -> drain (the automatic re-send)
     expect(end?.status).toBe("sent");
   });
 
-  test("NO recent child = NO proof of the race: the aborted card stays (operator stop, codex P1)", async () => {
-    // A gateway-side stop (CLI abort) has the same wire shape as the
-    // preemption kill — without the delivery signature (a child/task recently
-    // terminal or running) the recovery must NOT re-run the stopped turn.
+  test("NO recent child = no attribution attempted: the aborted card stays (codex P1)", async () => {
+    // A gateway-side stop (CLI abort) has the same wire shape as the abort once
+    // attributed to the race — without the delivery-timing shape (a child/task
+    // recently terminal or running) the recovery must NOT re-run the stopped turn.
     const t = convexTest(schema, modules);
     const { assistantId, outboxId } = await seedPreemptedTurn(t, {
       withoutRecentChild: true,

@@ -1,52 +1,50 @@
-// AUTOMATIC RE-DISPATCH of a turn the GATEWAY killed to run a delivery.
+// AUTOMATIC RE-DISPATCH of a turn attributed to a gateway kill for a delivery — RETIRED
+// from the wire (below), kept for the rows it may still hold.
 //
 // The inverse direction of bridge.reparkIfBusy (0.68): there, a paced dispatch
 // that wakes into an announce-reopened bubble is re-parked BEFORE it reaches
 // the gateway. Here the dispatch WON the race — the follow-up was already
-// running gateway-side when the sub-agent's delivery (announce) claimed the
-// session, and the REAL turn died (live prod 2026-07-21, report ms746b01…:
-// chat.send 09:03:46, gateway_abort 09:04:05, announce 09:04:09 — the user's
-// message was silently consumed and had to be re-sent by hand after three
-// session resets). Upstream's default queue policy (steer / followup queue /
-// admission) does not kill either side. The race kill this module exists for happens
-// one layer down, at session WRITER ownership: on 2026.7.x the prompt-lock takeover;
-// since 2026.8.1 a run that claims the writer SUPERSEDES the live previous writer on
-// purpose (session-bootstrap.ts claimAgentSessionWriter: lifecycle end, aborted,
-// stopReason "superseded"). A late persistence by the loser is then refused with
-// SessionTranscriptWriterClaimReboundError; ActiveTurnClaimError is a different refusal
-// — a NEW claim on a turn already claimed. Which run loses is timing-dependent — both
-// directions occur; see docs/UPSTREAM_INTERPRETATION.md §2 and §3. Queueing a message
-// mid-turn is a SUPPORTED feature: the system, not the user, owns the recovery.
+// running gateway-side, was aborted, and the sub-agent's delivery (announce) started
+// right after (live prod 2026-07-21, report ms746b01…: chat.send 09:03:46,
+// gateway_abort 09:04:05, announce 09:04:09 — the user's message was silently consumed
+// and had to be re-sent by hand after three session resets). That was a 2026.7.x
+// gateway, and the incident was ATTRIBUTED to the announce race (prompt-lock takeover)
+// by its timing — no frame proves the cause. Queueing a message mid-turn is a
+// SUPPORTED feature: the system, not the user, owns the recovery.
 //
-// KNOWN DEFECT (v2026.9.4, open): the bridge flag reads no stopReason. It is set for an
-// aborted terminal finalized as a gateway abort, on a real (non-delivery) run, with no
-// Stop signalled to the bridge, no visible text, no tool call and no hosted work
-// (bridge/src/core/turn-sink.ts `gatewayPreempted`) — whatever the cause. Upstream sends
-// different terminals for different causes, but NO single stopReason proves the race.
-// The writer takeover carries "superseded", and so does every run ended by
-// createAgentRunSupersededAbortError, created at six sites (one imports it under an
-// alias, which a search on the canonical name misses) — among them a CLI turn whose
-// session incarnation or lifecycle revision moved before it executed
-// (agents/command/attempt-execution.ts; also auto-reply agent-runner-cli-candidate.ts
-// and reply-run-registry.operation.ts `supersede`, embedded-agent-runner
-// deferred-lifecycle-owner.ts and attempt-stream-prepare.ts, worker-environments
-// worker-turn-run-owner.ts). A fix therefore needs proof beyond "superseded" and must
-// fail closed without it. The other causes found while reading — examples, NOT an
-// exhaustive list — are not the race either: "aborted" (an EFFECTIVE `interrupt`
-// queue mode: send field, which Atrium never sets, `/queue interrupt` directive in the
-// text, session, channel or config), "restart" (reply session rollover, gateway
-// restart), "archive"/"delete" (session lifecycle drain), "timeout" (maintenance
-// expiry of an active run), "rpc" (a generic RPC/internal abort reason, used by paths
-// scoped to one run or to a whole session: chat.abort — with or without a runId — or
-// sessions.abort from another client, a compaction checkpoint restore, a worker
-// placement cancel, an ordinary gateway shutdown), "auth-revoked"
-// (provider logout), "stop" (a `/stop` command sent as a message), and an absent or
-// unknown value. With a recent child any of them is attributed to the announce race
-// and the turn is RE-DISPATCHED, undoing a kill someone or something asked for.
+// THE CURRENT BRIDGE NO LONGER MINTS THE FLAG, AND THE INGEST IGNORES IT (decided
+// 2026-09-14, sources + live bench; an older bridge still running during a rolling deploy
+// may still POST it, but bridge_ingest.ts drops `gatewayPreempted` before stream.finalize,
+// so it cannot trigger this). From
+// 2026.8.1 no announce-kill mechanism was found on the production paths read at the
+// instructed tags: an embedded run holds a one-slot per-session lane, a finished run's handle
+// is not supersedable, and an active requester gets the child's completion INJECTED into its
+// live run — observed on 2026.9.4 (`announce-race-observe`, an observation scenario of the
+// private live-bench catalogue, selected-only, never attested: the completion was persisted
+// inside the parent's turn as an `announce:v1:…:active-wake` message; no announce run, no
+// kill). Known deliberate causes of a zero-content gateway abort do exist there — an
+// effective `interrupt` queue mode (send field, `/queue interrupt` directive, session,
+// channel, config), a reply session rollover or restart, an archive/delete, a maintenance
+// timeout, a chat.abort or sessions.abort from another client, a checkpoint restore, a
+// placement cancel, a gateway shutdown, a provider logout, a `/stop` sent as a message (not
+// an exhaustive list) — and re-dispatching a turn one of those causes ended would undo it. Before 2026.8.1 no frame tells the announce kill apart: "rpc" is
+// that gateway's DEFAULT stop reason (upstream v2026.7.1 gateway/server-methods/chat.ts)
+// and the one a chat.abort from another client carries; the recent-child check below is a
+// temporal correlation, not a cause. Acting on it would be a supposition, so the bridge
+// keeps the honest aborted card everywhere (bridge/src/core/turn-sink.ts flushFinal).
+// Before that decision the flag fired on every such abort and, with a recent child, this
+// module re-dispatched the turn. It stays, unreachable from the wire: `stream.finalize`
+// (internal) still accepts the field, and its only remaining caller with the flag set is
+// `convex/preemptRepark.test.ts` (the dev simulator `simulatePreemptKill`, a public
+// mutation behind the dev env flag, was removed with the retirement); holds created before
+// the change still need their stand-down paths; retiring the machinery means an outbox
+// field migration (`preemptRedispatched`, `preemptHold`) and is its own lot.
 //
 // MECHANISM — ride the battle-tested queue, never a bespoke dispatch:
-//   finalize (stream.ts, gatewayPreempted flag minted by the bridge sink for a
-//   zero-content, non-user-abort, real-turn gateway kill)
+//   finalize (stream.ts, gatewayPreempted flag — once minted by the bridge sink for a
+//   zero-content, non-user-abort, real-turn gateway abort; today the current bridge never
+//   sets it and bridge_ingest keeps any value received from an older one from reaching
+//   stream.finalize)
 //     → maybeReparkPreemptedTurn (same-transaction: guards, delete the empty
 //       aborted card, stamp the outbox row, HOLD it as `pending`, schedule the
 //       delayed flip)
@@ -55,13 +53,17 @@
 //     → the normal drain machinery (FIFO, QUEUE_DRAIN_DELAY_MS pacing,
 //       reparkIfBusy re-check) dispatches once the delivery settles.
 //
-// WHY the DELAY before the flip: the kill precedes the announce by a few
-// seconds (4s live). Flipping straight to `queued` would let finalize's own
-// drain promote the row while the chat is still idle — the re-dispatch would
-// then land mid-announce and the gateway would kill THE ANNOUNCE (the exact
-// ping-pong reparkIfBusy exists to prevent). By the time the flip fires the
-// announce is streaming (drain no-ops; its finalize re-drains) or the world
-// is idle (drain dispatches, paced + re-checked).
+// WHY the DELAY before the flip (the rationale the mechanism was built on, 2026-07,
+// a 2026.7.x gateway — historical): the abort preceded the announce by a few seconds
+// (4s live). Flipping straight to `queued` would let finalize's own drain promote the
+// row while the chat is still idle — the re-dispatch would then land mid-announce, the
+// shape believed to end the announce on 7.x (the ping-pong reparkIfBusy exists to
+// prevent; on 2026.8.1+, under the default `steer` queue mode, such a send is queued as a
+// followup instead, defect 18). The flip is only SCHEDULED 10 s out (the scheduler
+// gives no exact firing time); when it runs, the INTENDED outcome is that the
+// announce is streaming (drain no-ops; its finalize re-drains) or the world is idle
+// (drain dispatches after QUEUE_DRAIN_DELAY_MS, and reparkIfBusy re-checks) — neither
+// is guaranteed.
 //
 // WHY the hold is `pending`, not `sent` (codex P1): a `sent` row is INERT to
 // isChatBusy — a user send landing inside the delay window would dispatch
@@ -73,10 +75,13 @@
 // can never double-fire it; every stand-down path MUST restore `sent` (the
 // inert terminal) + drain, or the hold would block the chat forever.
 //
-// SAFETY MODEL — one automatic re-dispatch, provably a pure re-run:
-//   - the bridge flag only fires for a ZERO-content aborted turn without a
+// SAFETY MODEL — one automatic re-dispatch, meant as a pure re-run (never proven one:
+// the zero-content gates see no visible text, tool call or hosted work, but a frame
+// gap is only counted, so "nothing observed" is not "no external effect" — one reason
+// the flag was retired):
+//   - the flag only fires for a ZERO-content aborted turn without a
 //     user Stop (sink gates) — nothing visible is lost by deleting the card;
-//   - the row is stamped `preemptRedispatched` BEFORE the flip: a second kill
+//   - the row is stamped `preemptRedispatched` BEFORE the flip: a second abort
 //     of the same row stands down to the honest aborted card (bounded chain);
 //   - the fire-time flip re-checks the world (row untouched, user message
 //     still present, no newer re-dispatch of the same message) — any mismatch
@@ -91,17 +96,20 @@ import { drainNextQueued } from "./lib/outboxQueue";
 import { deleteTurnCardCascade } from "./turnRetry";
 import { writeTraceEvent } from "./observability";
 
-/** Kill→announce gap headroom: the flip must fire AFTER the delivery opened
- *  its stream (live gap 4s), so the drain defers to the delivery instead of
- *  racing it. A delivery that never comes only delays the re-dispatch by this
- *  much. */
+/** Abort→announce gap headroom: the flip is MEANT to fire after the delivery opened
+ *  its stream, so the drain defers to the delivery instead of racing it. The only
+ *  measure is the 2026-07-21 incident (a 4 s gap); 10 s is headroom over that one
+ *  observation, not a guarantee. A delivery that never comes delays the
+ *  re-dispatch by at least this much (then the drain delay, and any re-park while
+ *  the chat is busy). */
 export const PREEMPT_REPARK_DELAY_MS = 10_000;
 
-/** How recently a child/task of the chat must have gone terminal for the kill
- *  to read as "the delivery claimed the session" (live gap: child done
- *  09:03:30 → kill 09:04:05 = 35s). Generous but bounded — outside it the
- *  abort has no delivery to blame and reads as an operator stop. */
-export const PREEMPT_PROOF_WINDOW_MS = 120_000;
+/** How recently a child/task of the chat must have gone terminal for the abort
+ *  to be ATTRIBUTED to "the delivery claimed the session" (live gap: child done
+ *  09:03:30 → abort 09:04:05 = 35s). A temporal correlation, never a proof —
+ *  outside it the attribution is not attempted at all (which says nothing about
+ *  what the abort was). */
+export const PREEMPT_ATTRIBUTION_WINDOW_MS = 120_000;
 
 const traceRepark = async (
   ctx: MutationCtx,
@@ -149,14 +157,16 @@ export async function maybeReparkPreemptedTurn(
   if (parts.some((d) => (d.part as { kind: string }).kind !== "provenance")) {
     return;
   }
-  // PREEMPTION PROOF (codex P1, pass 15): the bridge flag means "gateway
+  // PREEMPTION ATTRIBUTION — a temporal correlation, not a proof (codex P1,
+  // pass 15; the reason the flag was retired): the flag means "gateway
   // chat:aborted, zero content, no user Stop through THIS bridge" — but an
   // operator-side stop (gateway CLI abort) has the exact same wire shape, and
   // auto-re-running an explicitly stopped turn would bypass the stop and can
-  // replay side effects. Require the race's own signature: a child/task of
-  // THIS chat that just went terminal (its queued delivery is what claims the
-  // session and kills the turn) or is still running (delivery imminent).
-  // Recency-bounded read; without the proof the honest aborted card stays.
+  // replay side effects. Require the shape the incident had: a child/task of
+  // THIS chat that just went terminal (its queued delivery was the SUSPECTED
+  // claimant of the session) or is still running (a delivery imminent). A
+  // recency-bounded read that only computes a temporal boolean
+  // (`deliveryImminent`); without it the honest aborted card stays.
   const recentChildren = await ctx.db
     .query("subAgents")
     .withIndex("by_chat", (q) => q.eq("chatId", message.chatId))
@@ -165,10 +175,10 @@ export async function maybeReparkPreemptedTurn(
   const now = Date.now();
   const deliveryImminent = recentChildren.some(
     (c) =>
-      c.status === "running" || now - c.updatedAt <= PREEMPT_PROOF_WINDOW_MS,
+      c.status === "running" || now - c.updatedAt <= PREEMPT_ATTRIBUTION_WINDOW_MS,
   );
   if (!deliveryImminent) return;
-  // The killed turn's outbox row = the newest sent-OR-pending row whose user
+  // The aborted turn's outbox row = the newest sent-OR-pending row whose user
   // message is the turn immediately preceding this card (the exact pairing the
   // dispatch created). `pending` is INCLUDED (codex P1): a fast gateway kill
   // can be ingested before bridge.dispatch's markOutbox("sent") lands (the
@@ -191,7 +201,7 @@ export async function maybeReparkPreemptedTurn(
     .sort((a, b) => b!._creationTime - a!._creationTime)[0];
   if (row === undefined || row === null || row.messageId === undefined) return;
   if (row.preemptRedispatched === true) {
-    // Second kill of the same row: the chain is bounded at ONE automatic
+    // Second abort of the same row: the chain is bounded at ONE automatic
     // re-dispatch — keep the honest aborted card and say so in the trace.
     await traceRepark(ctx, message.chatId, message._id, "exhausted");
     return;
@@ -202,7 +212,7 @@ export async function maybeReparkPreemptedTurn(
   // the chat's LAST two turns; a 50-row recency window is the same bound
   // drainNextQueued uses for its order scan and always contains them.
   // STILL-QUEUED user messages are EXCLUDED (codex P1): a second follow-up
-  // parked during the killed turn carries QUEUED_ORDER_SENTINEL, which sorts
+  // parked during the aborted turn carries QUEUED_ORDER_SENTINEL, which sorts
   // AFTER the aborted card — it is not yet part of the established order, and
   // counting it would veto the recovery of the very turn it queued behind.
   const ordered = (
@@ -220,7 +230,8 @@ export async function maybeReparkPreemptedTurn(
   if (!lastUser || lastUser.role !== "user" || lastUser._id !== row.messageId) {
     return;
   }
-  // Pure re-run established: drop the empty aborted card, stamp the row, and
+  // Every gate passed (a re-run the gates BELIEVE pure — see the safety model
+  // above for why that was never a proof): drop the empty aborted card, stamp the row, and
   // HOLD it as `pending` until the delayed flip — pending is isChatBusy's own
   // blocker, so a user send inside the window parks `queued` behind it (FIFO
   // preserved) instead of racing the incoming delivery (codex P1). No dispatch
@@ -247,7 +258,7 @@ export async function maybeReparkPreemptedTurn(
     delayMs: PREEMPT_REPARK_DELAY_MS,
   });
   console.log(
-    `[preemptRepark] gateway-preempted turn re-parked (chat ${message.chatId}) — flip in ${PREEMPT_REPARK_DELAY_MS}ms`,
+    `[preemptRepark] gateway-preempted turn re-parked (chat ${message.chatId}) — flip scheduled in ${PREEMPT_REPARK_DELAY_MS}ms`,
   );
 }
 
@@ -262,7 +273,7 @@ export const reparkAfterPreempt = internalMutation({
     // marker. Anything else (cascade-deleted, externally re-statused, a hold
     // already released) is not ours to touch. The late markOutbox("sent") ack
     // cannot have released it — bridge.markOutbox drops the sent-flip on a
-    // held row (the dispatch it reports was consumed by the kill).
+    // held row (the dispatch it reports already ended in the zero-content abort).
     if (row === null || row.status !== "pending") return;
     if (row.preemptRedispatched !== true || row.preemptHold !== true) return;
     if (row.messageId === undefined) return;
