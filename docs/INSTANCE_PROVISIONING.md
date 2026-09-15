@@ -89,7 +89,9 @@ See `lib/provisionKeys.ts` for the parsing rules.
   "gatewayUrl": "ws://compta.internal:8080",
   "kind": "openclaw",
   "bridgeUrl": "http://compta.internal:8787",
-  "displayName": "Comptabilité"
+  "displayName": "Comptabilité",
+  "authMode": "trusted-proxy",
+  "personScopes": "full"
 }
 ```
 
@@ -101,6 +103,8 @@ See `lib/provisionKeys.ts` for the parsing rules.
 | `bridgeUrl` | no | Per-instance bridge endpoint. Unset falls back to the deployment's `BRIDGE_URL`. |
 | `displayName` | no | Shown in the UI. |
 | `gatewayVersion`, `gatewayHttpUrl` | no | `openclaw` only — refused for `hermes`. |
+| `authMode` | no | `openclaw` only: `token` or `trusted-proxy`. Sending `token` also clears any stored `personScopes`; refused for `hermes`. |
+| `personScopes` | no | `openclaw` only: `capped` or `full`. Accepted only when the same request explicitly sets `authMode` to `trusted-proxy`; refused otherwise. |
 | `transport` | no | `hermes` only (`ws` or `rest`) — refused for `openclaw`. |
 | `rotateBridgeSecret` | no | See *Replacing a credential*. |
 
@@ -112,6 +116,13 @@ survives for months.
 declaration therefore never wipes a value an administrator set in the UI, and a
 control plane can still unset one deliberately. Settings the admin UI owns
 (`config`, `capabilities`, `streamTransport`, `defaultAgentId`) are never touched.
+
+The authentication posture follows the same idempotent declaration rule. A
+replayed `trusted-proxy` declaration updates the OpenClaw instance without
+rotating its bridge credential. Omitting `authMode` and `personScopes` preserves
+their stored values. An explicit switch to `token` clears the trusted-proxy
+person-scope metadata so the persisted posture cannot claim a scope that the
+gateway authentication mode no longer uses.
 
 ## Response
 
