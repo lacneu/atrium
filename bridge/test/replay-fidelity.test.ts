@@ -16,7 +16,7 @@ import { RunManager } from "../src/providers/openclaw/run-manager.js";
 // @ts-expect-error — plain .mjs helper, no types (it runs under node, not tsc)
 import { consumedReadings, fidelityDiff, loadRunManager } from "../scripts/lib/replay-fidelity.mjs";
 // @ts-expect-error — plain .mjs script, no types (it runs under node, not tsc)
-import { parseEntries, promoteSlice } from "../scripts/promote-capture.mjs";
+import { parseEntries, promoteSlice, turnConnectionSlice } from "../scripts/promote-capture.mjs";
 // @ts-expect-error — plain .mjs helper, no types (it runs under node, not tsc)
 import { knownKeysFromCoverage } from "../scripts/lib/anonymize-capture.mjs";
 import { readFileSync } from "node:fs";
@@ -269,7 +269,7 @@ describe("a promoted cron capture reads the same through the REAL coalescing", (
   };
   const READERS = { isProvenanceStream, parseProvenanceFrame, parseProvenanceReport, MAX_PROVENANCE_ITEMS, asyncTaskStartFromTool, isCronTool, cronPartFromTool, printableCronSchedule, taskChildKey };
   const T = 1_785_204_000_000;
-  const env = (dt: number, frame: unknown) => JSON.stringify({ receivedAt: T + dt, frame });
+  const env = (dt: number, frame: unknown) => JSON.stringify({ receivedAt: T + dt, connection: "c-turn", frame });
   const tool = (seq: number, phase: string, extra: Record<string, unknown>) => ({
     type: "event",
     event: "agent",
@@ -604,5 +604,57 @@ describe("a promoted cron capture reads the same through the REAL coalescing", (
     const withoutResult = slice({ action: "add" }, null);
     const diffs = await fidelityDiff(RunManager, parseEntries(withCard), parseEntries(withoutResult));
     expect(diffs.join("\n")).toMatch(/addCronPart:.*schedule=kind:on-exit: raw 1, promoted 0/);
+  });
+});
+
+// ── Defect 19: a capture holds every socket the bridge reads; a turn reads one ──
+describe("a turn replays the frames of its own gateway connection", () => {
+  const T = 1_785_204_000_000;
+  const at = (dt: number, connection: string, frame: unknown) => JSON.stringify({ receivedAt: T + dt, connection, frame });
+  const tool = (seq: number, phase: string) => ({
+    type: "event",
+    event: "agent",
+    seq: 100 + seq,
+    payload: {
+      runId: RUN,
+      sessionKey: KEY,
+      stream: "tool",
+      seq,
+      data: { name: "exec", phase, toolCallId: "c1", ...(phase === "start" ? { args: {} } : { result: { content: [{ type: "text", text: "sortie" }] } }) },
+    },
+  });
+  // A copy differs from the original by its envelope seq alone: each socket numbers its own.
+  const final = (socketSeq: number) => ({
+    type: "event",
+    event: "chat",
+    seq: socketSeq,
+    payload: { runId: RUN, sessionKey: KEY, seq: 3, state: "final", message: { content: [{ type: "text", text: "La commande a tourne." }] } },
+  });
+  // The shape measured on 2026.9.4 async-task captures: the other socket's copy of the run carries
+  // no tool event, and its final lands before the turn's own socket delivers the tool start and result.
+  const lines = [
+    at(0, "c-turn", { type: "res", payload: { runId: RUN } }),
+    at(10, "c-other", final(900)),
+    at(12, "c-turn", tool(1, "start")),
+    at(13, "c-turn", tool(2, "result")),
+    at(20, "c-turn", final(104)),
+  ];
+  const entries = (kept: string[]) =>
+    kept.map((l) => {
+      const e = JSON.parse(l);
+      return { receivedAt: e.receivedAt, frame: e.frame };
+    });
+  const own = entries(lines.filter((l) => JSON.parse(l).connection === "c-turn"));
+
+  it("the other socket's final, fed with the turn, closes it before the tool result the turn read", async () => {
+    const diffs = await fidelityDiff(RunManager, own, entries(lines));
+    expect(diffs, "the turn's tool start and result are never written").toEqual(["addToolPart:tool: raw 2, promoted 0"]);
+  });
+
+  it("…so the promoted slice is the acked socket alone, frame for frame", async () => {
+    const { slice, otherConnectionFrames } = turnConnectionSlice(lines.join("\n"));
+    expect(otherConnectionFrames).toBe(1);
+    expect(parseEntries(slice)).toEqual(own);
+    expect(await fidelityDiff(RunManager, own, parseEntries(slice))).toEqual([]);
   });
 });

@@ -33,10 +33,14 @@
 //                            ]
 //                          }
 //   scenario-<id>.jsonl    the frames captured DURING that scenario, one JSON line each,
-//                          each `{"receivedAt": <epoch ms>, "frame": {"type": …}}` — what
-//                          the bridge writes under OPENCLAW_CAPTURE_FRAMES since 2026-07-28.
-//                          Bare frames (older captures) are refused: they carry no arrival
+//                          each `{"receivedAt": <epoch ms>, "connection": <socket id>,
+//                          "frame": {"type": …}}` — what the bridge writes under
+//                          OPENCLAW_CAPTURE_FRAMES (receivedAt since 2026-07-28, connection
+//                          since 2026-09-15). Bare frames are refused: they carry no arrival
 //                          time, and any date read inside a frame is one its emitter chose.
+//                          A line without a connection is refused too: the gateway sends
+//                          every event to every socket the bridge holds and a turn reads one,
+//                          so only the frames of the socket its run was acked on are promoted.
 //
 // Any harness that produces that shape can feed this script; the frames come from the
 // bridge itself (OPENCLAW_CAPTURE_FRAMES), and the per-scenario split is the only part a
@@ -64,7 +68,7 @@ import {
 /** Bumped whenever promotion CHANGES the bytes it produces from the same capture. It is
  *  recorded per fixture, so a corpus half-promoted by two different rules is visible
  *  instead of silently mixed. */
-export const PROMOTER_VERSION = 4; // 2: pseudonym-shaped raw strings reserved (defect 15); 3: time origin from arrivals only (defect 14); 4: provenance, cron schedule, task bound and lifecycle-error reader leaves kept (defect 13)
+export const PROMOTER_VERSION = 5; // 2: pseudonym-shaped raw strings reserved (defect 15); 3: time origin from arrivals only (defect 14); 4: provenance, cron schedule, task bound and lifecycle-error reader leaves kept (defect 13); 5: only the turn's own gateway connection is promoted (defect 19)
 
 const REPO_ROOT = path.resolve(new URL("../..", import.meta.url).pathname);
 const DEFAULT_OUT = path.join(REPO_ROOT, "bridge/test/fixtures/golden");
@@ -194,9 +198,10 @@ export function harvestToolNames(rawSlice) {
 }
 
 /** Parse a slice into its `{receivedAt, frame}` entries — the same envelope captureEpochBase
- *  enforces, which promoteSlice has already applied to this slice. */
+ *  enforces, which promoteSlice has already applied to this slice, read by ONE connection. */
 export function parseEntries(rawSlice) {
   const out = [];
+  const connections = new Set();
   let lineNo = 0;
   for (const line of rawSlice.split("\n")) {
     lineNo += 1;
@@ -208,9 +213,62 @@ export function parseEntries(rawSlice) {
       continue;
     }
     assertCaptureEnvelope(parsed, lineNo);
+    connections.add(parsed.connection);
     out.push({ receivedAt: parsed.receivedAt, frame: parsed.frame });
   }
+  assertOneConnection(connections);
   return out;
+}
+
+/** A turn reads ONE gateway socket (defect 19). A slice spanning several replays copies the
+ *  turn never read, so it is refused; turnConnectionSlice keeps the turn's own first. */
+function assertOneConnection(connections) {
+  if (connections.size > 1) {
+    throw new Error(
+      `slice spans ${connections.size} gateway connections — a turn reads one; keep the turn's own first (turnConnectionSlice)`,
+    );
+  }
+}
+
+/** The part of a scenario slice the turn's OWN connection read (defect 19).
+ *
+ *  The bridge holds several gateway sockets at once: each conversation's, and short operator
+ *  ones. The gateway broadcasts every event to every operator connection, each with its own
+ *  seq (server-broadcast.ts), and sends a run's tool events only to the connection that
+ *  started it (server-chat.ts, toolEventRecipients); a conversation reads its own socket
+ *  alone (session.ts, `frames()`). Measured on the 2026.9.4 async-task captures of two GO
+ *  runs: two connections carried the run, only one of them its tool start and result, and
+ *  the other one's final arrived first. Replayed together, the turn ended before the async
+ *  tool result it really read.
+ *
+ *  The turn's connection is the one its acked run arrived on: the first `res` carrying a run
+ *  id, the very response replayContext names as the turn. Frames of every other connection
+ *  are left out and counted; an unparsable line is kept, so promoteSlice still reports it. */
+export function turnConnectionSlice(rawSlice) {
+  const lines = [];
+  let turnConnection = null;
+  let lineNo = 0;
+  for (const text of rawSlice.split("\n")) {
+    lineNo += 1;
+    if (!text.trim()) continue;
+    let parsed;
+    try {
+      parsed = JSON.parse(text);
+    } catch {
+      lines.push({ text, connection: undefined });
+      continue;
+    }
+    assertCaptureEnvelope(parsed, lineNo);
+    lines.push({ text, connection: parsed.connection });
+    if (turnConnection === null && parsed.frame.type === "res" && typeof parsed.frame.payload?.runId === "string") {
+      turnConnection = parsed.connection;
+    }
+  }
+  if (turnConnection === null) {
+    throw new Error("slice carries no acked run — nothing identifies the turn's connection");
+  }
+  const kept = lines.filter((l) => l.connection === undefined || l.connection === turnConnection);
+  return { slice: kept.map((l) => l.text).join("\n"), otherConnectionFrames: lines.length - kept.length };
 }
 
 /** The capture's own time origin: its EARLIEST arrival time, and nothing else.
@@ -231,6 +289,7 @@ export function parseEntries(rawSlice) {
  *  recovers the origin. The origin only guarantees the corpus itself never supplies it. */
 export function captureEpochBase(rawSlice) {
   let base = null;
+  const connections = new Set();
   let lineNo = 0;
   for (const line of rawSlice.split("\n")) {
     lineNo += 1;
@@ -242,8 +301,10 @@ export function captureEpochBase(rawSlice) {
       continue; // counted by promoteSlice
     }
     assertCaptureEnvelope(parsed, lineNo);
+    connections.add(parsed.connection);
     if (base === null || parsed.receivedAt < base) base = parsed.receivedAt;
   }
+  assertOneConnection(connections);
   return base;
 }
 
@@ -265,6 +326,11 @@ function assertCaptureEnvelope(parsed, lineNo) {
   if (!isEpochMs(parsed.receivedAt)) {
     throw new Error(
       `capture line ${lineNo}: receivedAt ${JSON.stringify(parsed.receivedAt)} is not a positive epoch in milliseconds — refusing to rebase timestamps on it`,
+    );
+  }
+  if (typeof parsed.connection !== "string" || parsed.connection.length === 0) {
+    throw new Error(
+      `capture line ${lineNo}: connection ${JSON.stringify(parsed.connection)} names no socket — the gateway sends every event to every connection and a turn reads one, so a frame from an unknown socket cannot be placed in the turn`,
     );
   }
   const frame = parsed.frame;
@@ -578,7 +644,11 @@ export async function main(argv = process.argv.slice(2)) {
   const pending = [];
   for (const id of plan.openclaw) {
     const file = `scenario-${id}.jsonl`;
-    const raw = fs.readFileSync(path.join(runDir, file), "utf8");
+    const capture = fs.readFileSync(path.join(runDir, file), "utf8");
+    // The turn's OWN connection, before anything reads the slice (defect 19): the anonymiser,
+    // the replay context and both sides of the fidelity gate all see what the turn read, and
+    // never another socket's copy of it.
+    const { slice: raw, otherConnectionFrames } = turnConnectionSlice(capture);
     // What the reading stack CONSUMES from this capture, from the same replay the fidelity gate
     // runs: a reader-consumed value is kept only for a reading that replay wrote.
     const rawEntries = parseEntries(raw);
@@ -638,7 +708,7 @@ export async function main(argv = process.argv.slice(2)) {
     // that every test would happily replay. The vendoring script learned this the same
     // way; a refusal must change nothing at all.
     pending.push({ file: `${id}.jsonl`, body });
-    promoted.push({ id, ...stats });
+    promoted.push({ id, ...stats, otherConnectionFrames });
   }
   if (promoted.length === 0) {
     throw new Error("no OpenClaw scenario was promoted — the corpus would be empty");
@@ -666,7 +736,8 @@ export async function main(argv = process.argv.slice(2)) {
     console.log(
       `  ${p.id}: ${p.frames} frames (${p.verbatim} verbatim, ` +
         `${p.pseudonymised} pseudonymised, ${p.masked} masked` +
-        `${p.unparsable > 0 ? `, ${p.unparsable} UNPARSABLE line(s) dropped` : ""})`,
+        `${p.unparsable > 0 ? `, ${p.unparsable} UNPARSABLE line(s) dropped` : ""}` +
+        `${p.otherConnectionFrames > 0 ? `, ${p.otherConnectionFrames} frame(s) of other gateway connections left out` : ""})`,
     );
   }
 }

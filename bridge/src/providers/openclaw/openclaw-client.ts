@@ -48,16 +48,25 @@ import { decodeInboundFrame, protocolDrift } from "./protocol-drift.js";
 // clock, which never reaches any of those thresholds — a golden corpus built from one is
 // born blind to exactly the paths that decide whether a turn ends. `receivedAt` is the
 // bridge's own wall clock, not gateway data: no frame field is added or modified.
+//
+// ONE SOCKET PER LINE. `connection` names the bridge socket that read the frame. The
+// gateway fans every event out to every operator connection, each numbered by its own
+// seq (server-broadcast.ts), and sends a run's tool events only to the connection that
+// started it (server-chat.ts, toolEventRecipients). A turn reads ONE socket, so a capture
+// that cannot say which socket a frame arrived on mixes copies that turn never read: the
+// other socket's final, without the tool events, ends the replayed turn early (defect 19).
+// The id is minted by the bridge, not read from the hello-ok: it exists before the first
+// frame whatever the gateway announces.
 const CAPTURE_FRAMES_PATH =
   typeof process !== "undefined"
     ? process.env?.OPENCLAW_CAPTURE_FRAMES
     : undefined;
-function captureFrame(frame: unknown): void {
+function captureFrame(connection: string, frame: unknown): void {
   if (!CAPTURE_FRAMES_PATH) return;
   try {
     appendFileSync(
       CAPTURE_FRAMES_PATH,
-      JSON.stringify({ receivedAt: Date.now(), frame }) + "\n",
+      JSON.stringify({ receivedAt: Date.now(), connection, frame }) + "\n",
     );
   } catch {
     /* best-effort dev capture — never disturb the read loop */
@@ -213,6 +222,8 @@ export class OpenClawConnection {
   private waiter: ((frame: GatewayFrame | null) => void) | null = null;
   private closed = false;
   private closeError: Error | null = null;
+  /** The socket id this connection's frames carry in a dev capture (see captureFrame). */
+  private readonly captureConnection = CAPTURE_FRAMES_PATH ? randomUUID() : "";
 
   // The gateway applies verboseLevel=full once per connection (sticky); we
   // track it so chat.send does not re-patch every turn.
@@ -776,7 +787,7 @@ export class OpenClawConnection {
     // DEV-ONLY ground-truth frame capture (see captureFrame): the FULL untruncated
     // frame exactly as received — fixture + version-diagnosis material. No-op unless
     // OPENCLAW_CAPTURE_FRAMES is set (never in prod: frames may carry content).
-    captureFrame(frame);
+    captureFrame(this.captureConnection, frame);
     // ANNOUNCED SHUTDOWN — recorded here, at connection scope, because that is
     // what it describes: every session on this socket is about to lose it. The
     // frame is then queued UNCHANGED like any other (observe-only: the normalizer

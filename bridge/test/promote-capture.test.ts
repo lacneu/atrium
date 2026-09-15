@@ -36,8 +36,10 @@ import {
   captureEpochBase,
   harvestToolNames,
   main as promoteMain,
+  parseEntries,
   planPromotion,
   promoteSlice,
+  turnConnectionSlice,
   // @ts-expect-error — plain .mjs script, no types (it runs under node, not tsc)
 } from "../scripts/promote-capture.mjs";
 
@@ -349,10 +351,10 @@ describe("promoteSlice", () => {
   const line = (o: unknown) => JSON.stringify(o);
 
   const KEY = "agent:a:atrium:chat:u:c";
-  const ACK = line({ receivedAt: 1_785_204_000_005, frame: { type: "res", payload: { runId: "webchat-r1" } } });
+  const ACK = line({ connection: "c-turn", receivedAt: 1_785_204_000_005, frame: { type: "res", payload: { runId: "webchat-r1" } } });
   const TURN = (extra: Record<string, unknown>) =>
     line({
-      receivedAt: 1_785_204_000_010,
+      connection: "c-turn", receivedAt: 1_785_204_000_010,
       frame: { type: "event", event: "chat", payload: { sessionKey: KEY, runId: "webchat-r1", ...extra } },
     });
 
@@ -1017,9 +1019,9 @@ describe("a pseudonym cannot collide with a raw identifier elsewhere in the capt
   it("promoteSlice: an ESCAPED id in serialised tool args never collides with a pseudonym", () => {
     const KEY = "agent:a:atrium:chat:u:c";
     const slice = [
-      line({ receivedAt: 1_785_204_000_005, frame: { type: "res", payload: { runId: "webchat-r1" } } }),
+      line({ connection: "c-turn", receivedAt: 1_785_204_000_005, frame: { type: "res", payload: { runId: "webchat-r1" } } }),
       line({
-        receivedAt: 1_785_204_000_007,
+        connection: "c-turn", receivedAt: 1_785_204_000_007,
         frame: {
           type: "event",
           event: "agent",
@@ -1031,7 +1033,7 @@ describe("a pseudonym cannot collide with a raw identifier elsewhere in the capt
           },
         },
       }),
-      line({ receivedAt: 1_785_204_000_010, frame: { type: "event", event: "chat", payload: { sessionKey: KEY, runId: "webchat-r1", state: "final" } } }),
+      line({ connection: "c-turn", receivedAt: 1_785_204_000_010, frame: { type: "event", event: "chat", payload: { sessionKey: KEY, runId: "webchat-r1", state: "final" } } }),
     ].join("\n");
     const out = promoteSlice(slice) as { lines: string[]; context: unknown };
     const text = out.lines.join("\n") + JSON.stringify(out.context);
@@ -1041,20 +1043,20 @@ describe("a pseudonym cannot collide with a raw identifier elsewhere in the capt
   it("promoteSlice: a raw tool_<n> elsewhere in the capture is never a custom tool's alias", () => {
     const KEY = "agent:a:atrium:chat:u:c";
     const slice = [
-      line({ receivedAt: 1_785_204_000_005, frame: { type: "res", payload: { runId: "webchat-r1" } } }),
-      line({ receivedAt: 1_785_204_000_006, frame: { type: "event", event: "health", payload: { instanceName: "tool_1" } } }),
+      line({ connection: "c-turn", receivedAt: 1_785_204_000_005, frame: { type: "res", payload: { runId: "webchat-r1" } } }),
+      line({ connection: "c-turn", receivedAt: 1_785_204_000_006, frame: { type: "event", event: "health", payload: { instanceName: "tool_1" } } }),
       line({
-        receivedAt: 1_785_204_000_007,
+        connection: "c-turn", receivedAt: 1_785_204_000_007,
         frame: {
           type: "event",
           event: "agent",
           payload: { sessionKey: KEY, runId: "webchat-r1", stream: "tool", data: { name: "acme", phase: "start", toolCallId: "call-1" } },
         },
       }),
-      line({ receivedAt: 1_785_204_000_010, frame: { type: "event", event: "chat", payload: { sessionKey: KEY, runId: "webchat-r1", state: "final" } } }),
+      line({ connection: "c-turn", receivedAt: 1_785_204_000_010, frame: { type: "event", event: "chat", payload: { sessionKey: KEY, runId: "webchat-r1", state: "final" } } }),
       // The custom tool's alias reaches the corpus inside its background-task delivery run id.
       line({
-        receivedAt: 1_785_204_000_020,
+        connection: "c-turn", receivedAt: 1_785_204_000_020,
         frame: {
           type: "event",
           event: "chat",
@@ -1071,8 +1073,8 @@ describe("a pseudonym cannot collide with a raw identifier elsewhere in the capt
   it("promoteSlice reserves the capture's own shapes: no raw id1/id2 in the output at all", () => {
     const KEY = "agent:id1:atrium:chat:id2:c";
     const slice = [
-      line({ receivedAt: 1_785_204_000_005, frame: { type: "res", payload: { runId: "webchat-r1" } } }),
-      line({ receivedAt: 1_785_204_000_010, frame: { type: "event", event: "chat", payload: { sessionKey: KEY, runId: "webchat-r1", state: "final" } } }),
+      line({ connection: "c-turn", receivedAt: 1_785_204_000_005, frame: { type: "res", payload: { runId: "webchat-r1" } } }),
+      line({ connection: "c-turn", receivedAt: 1_785_204_000_010, frame: { type: "event", event: "chat", payload: { sessionKey: KEY, runId: "webchat-r1", state: "final" } } }),
     ].join("\n");
     const out = promoteSlice(slice) as { lines: string[]; context: unknown };
     const text = out.lines.join("\n") + JSON.stringify(out.context);
@@ -1087,9 +1089,9 @@ describe("the promotion time origin is the earliest ARRIVAL, never a date inside
   const line = (o: unknown) => JSON.stringify(o);
   const KEY = "agent:a:atrium:chat:u:c";
   const T = 1_785_204_000_000;
-  const ACK = (receivedAt: unknown) => line({ receivedAt, frame: { type: "res", payload: { runId: "webchat-r1" } } });
+  const ACK = (receivedAt: unknown) => line({ receivedAt, connection: "c-turn", frame: { type: "res", payload: { runId: "webchat-r1" } } });
   const FINAL = (receivedAt: unknown, payload: Record<string, unknown> = {}) =>
-    line({ receivedAt, frame: { type: "event", event: "chat", payload: { sessionKey: KEY, runId: "webchat-r1", state: "final", ...payload } } });
+    line({ receivedAt, connection: "c-turn", frame: { type: "event", event: "chat", payload: { sessionKey: KEY, runId: "webchat-r1", state: "final", ...payload } } });
 
   it("dates an emitter chose inside frames — declared, undeclared or under a known key — never become the origin", () => {
     const slice = [
@@ -1117,14 +1119,14 @@ describe("the promotion time origin is the earliest ARRIVAL, never a date inside
 
   it("an envelope whose frame is null, a scalar, an array or untyped is refused", () => {
     for (const frame of [null, T + 3, [{ type: "event" }], { event: "chat", payload: {} }]) {
-      expect(() => captureEpochBase(`${ACK(T)}\n${line({ receivedAt: T + 1, frame })}`), JSON.stringify(frame)).toThrow(
+      expect(() => captureEpochBase(`${ACK(T)}\n${line({ receivedAt: T + 1, connection: "c-turn", frame })}`), JSON.stringify(frame)).toThrow(
         /line 2: frame is not a gateway frame/,
       );
     }
   });
 
   it("a DOUBLE envelope is refused — its inner arrival time would be published un-rebased", () => {
-    const nested = line({ receivedAt: T + 5, frame: { type: "event", receivedAt: T + 4, frame: { type: "event", event: "health", payload: {} } } });
+    const nested = line({ receivedAt: T + 5, connection: "c-turn", frame: { type: "event", receivedAt: T + 4, frame: { type: "event", event: "health", payload: {} } } });
     expect(() => captureEpochBase(`${ACK(T)}\n${nested}`)).toThrow(/line 2: frame is itself an envelope/);
   });
 
@@ -1148,5 +1150,51 @@ describe("the promotion time origin is the earliest ARRIVAL, never a date inside
     expect(captureEpochBase(slice)).toBe(T - 2_000);
     const offsets = promoteSlice(slice, KNOWN_KEYS).lines.map((l: string) => JSON.parse(l).receivedAt);
     expect(offsets).toEqual([2_000, 0]);
+  });
+});
+
+// ── Defect 19: a turn reads ONE gateway connection ─────────────────────────────
+describe("only the turn's own gateway connection is promoted", () => {
+  const line = (o: unknown) => JSON.stringify(o);
+  const KEY = "agent:a:atrium:chat:u:c";
+  const T = 1_785_204_000_000;
+  const at = (dt: number, connection: unknown, frame: unknown) => line({ receivedAt: T + dt, connection, frame });
+  const ACK = { type: "res", payload: { runId: "webchat-r1" } };
+  const FINAL = (seq: number) => ({ type: "event", event: "chat", seq, payload: { sessionKey: KEY, runId: "webchat-r1", state: "final" } });
+
+  it("a line with no socket id — absent, null, empty or not a string — is refused", () => {
+    for (const connection of [undefined, null, "", 7]) {
+      const slice = [at(0, "c-turn", ACK), at(10, connection, FINAL(2))].join("\n");
+      expect(() => captureEpochBase(slice), String(connection)).toThrow(/line 2: connection .* names no socket/);
+      expect(() => turnConnectionSlice(slice), String(connection)).toThrow(/line 2: connection .* names no socket/);
+    }
+  });
+
+  it("a slice spanning two connections is refused by every reader of the capture", () => {
+    const slice = [at(0, "c-turn", ACK), at(10, "c-other", FINAL(900)), at(20, "c-turn", FINAL(2))].join("\n");
+    expect(() => captureEpochBase(slice)).toThrow(/slice spans 2 gateway connections/);
+    expect(() => parseEntries(slice)).toThrow(/slice spans 2 gateway connections/);
+    expect(() => promoteSlice(slice, KNOWN_KEYS)).toThrow(/slice spans 2 gateway connections/);
+  });
+
+  it("keeps the connection the turn was acked on, in order, and counts what it leaves out", () => {
+    const slice = [
+      at(0, "c-other", { type: "event", event: "health", seq: 5, payload: {} }),
+      at(1, "c-turn", ACK),
+      at(10, "c-other", FINAL(900)),
+      "{ not json",
+      at(20, "c-turn", FINAL(2)),
+    ].join("\n");
+    const { slice: kept, otherConnectionFrames } = turnConnectionSlice(slice);
+    expect(kept.split("\n")).toEqual([at(1, "c-turn", ACK), "{ not json", at(20, "c-turn", FINAL(2))]);
+    expect(otherConnectionFrames).toBe(2);
+    const { lines, stats } = promoteSlice(kept, KNOWN_KEYS);
+    expect(lines).toHaveLength(2);
+    expect(stats.unparsable, "an unparsable line is still reported").toBe(1);
+    expect(lines.join("\n"), "the socket id is not published").not.toContain("c-turn");
+  });
+
+  it("a slice with no acked run names no turn connection", () => {
+    expect(() => turnConnectionSlice(at(0, "c-turn", FINAL(2)))).toThrow(/no acked run — nothing identifies the turn's connection/);
   });
 });
