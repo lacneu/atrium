@@ -213,6 +213,45 @@ function describe(name, args) {
   return null;
 }
 
+/** Where a replay arms the pre-ack buffer and opens each acked turn of a capture.
+ *
+ *  Production arms the buffer right before `chat.send` and opens the turn at its ack
+ *  (server.ts: armReplayBuffer, then beginTurn with the acked run id), once PER SEND. A capture
+ *  can hold several sends on the replayed session — announce-reverse-hold holds the user's
+ *  reply behind a delivery, then sends it — and opening only the first left every later turn
+ *  unread: its frames fed an idle manager and wrote nothing (codex).
+ *
+ *  The first turn is armed at the start of the capture, which begins at its send. A later
+ *  send's request is not in the capture, so its buffer is armed at the earliest frame proven to
+ *  follow that request: the first frame of its own run on the replayed session, else its ack.
+ *  A frame of another run arriving between the real request and that point is not placed in
+ *  the buffer — stated, not solved: nothing in the capture dates the request. */
+export function turnOpenings(frames, ackRunIds, sessionKey) {
+  const openings = [];
+  let after = -1;
+  for (const [k, runId] of ackRunIds.entries()) {
+    const ackIndex = frames.findIndex(
+      (f, i) => i > after && f?.type === "res" && f?.payload?.runId === runId,
+    );
+    let armIndex = k === 0 ? 0 : ackIndex;
+    if (k > 0 && ackIndex >= 0) {
+      const raced = frames.findIndex(
+        (f, i) =>
+          i > after &&
+          i < ackIndex &&
+          f?.type === "event" &&
+          f?.payload?.runId === runId &&
+          f?.payload?.sessionKey === sessionKey,
+      );
+      if (raced >= 0) armIndex = raced;
+    }
+    if (k > 0 && ackIndex < 0) continue;
+    openings.push({ runId, armIndex, ackIndex });
+    if (ackIndex >= 0) after = ackIndex;
+  }
+  return openings;
+}
+
 /** Replay one capture (already parsed into `{receivedAt, frame}` entries). */
 async function replay(RunManager, entries) {
   const frames = entries.map((e) => e.frame);
@@ -224,6 +263,21 @@ async function replay(RunManager, entries) {
     frames.find(
       (f) => f?.payload?.runId === turnRun && typeof f?.payload?.sessionKey === "string",
     )?.payload?.sessionKey ?? null;
+  // Every send of the replayed session, as promotion records them (replayContext): the first
+  // acked run, then each later ack whose run appears on that session. A run of another session
+  // (the bridge's own summarize run) is another manager's turn, never this one's.
+  const openings = turnOpenings(
+    frames,
+    turnRun === null
+      ? []
+      : [
+          turnRun,
+          ...acks
+            .slice(1)
+            .filter((runId) => frames.some((f) => f?.payload?.runId === runId && f?.payload?.sessionKey === sessionKey)),
+        ],
+    sessionKey,
+  );
   // The entry each write is attributed to: the frame being fed — including a frame the manager
   // RE-feeds itself (an announce buffered during the turn is replayed with `this.feed` at the
   // terminal, run-manager.ts) — found by identity, innermost feed first (codex).
@@ -274,23 +328,22 @@ async function replay(RunManager, entries) {
   // The pre-ack window, exactly as the golden replay does it: arm, then open the turn at
   // the ack. Both sides of the comparison use it, so the check stays about promotion —
   // but describing production faithfully is the point of the whole exercise.
-  const ackIndex = entries.findIndex(
-    (e) => e.frame?.type === "res" && e.frame?.payload?.runId === turnRun,
-  );
   manager.armReplayBuffer();
-  let opened = ackIndex < 0;
-  if (opened) {
-    opening = turnRun;
-    await manager.beginTurn(now, turnRun);
+  const first = openings[0];
+  if (first === undefined || first.ackIndex < 0) {
+    opening = first?.runId ?? turnRun;
+    await manager.beginTurn(now, opening);
     opening = null;
   }
   for (let i = 0; i < entries.length; i++) {
     const arrival = at(entries[i], i);
-    if (!opened && i === ackIndex) {
-      opening = turnRun;
-      await manager.beginTurn(arrival, turnRun);
-      opening = null;
-      opened = true;
+    for (const [k, turn] of openings.entries()) {
+      if (k > 0 && turn.armIndex === i) manager.armReplayBuffer();
+      if (turn.ackIndex === i) {
+        opening = turn.runId;
+        await manager.beginTurn(arrival, turn.runId);
+        opening = null;
+      }
     }
     for (let step = 0; step < 64; step++) {
       const remaining = manager.nextTimeout(now);

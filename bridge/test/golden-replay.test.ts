@@ -22,6 +22,8 @@
 
 import { createHash } from "node:crypto";
 import { taskDeliveryRunFromRunId } from "../src/core/async-task.js";
+// @ts-expect-error — plain .mjs helper, no types (it runs under node, not tsc)
+import { turnOpenings } from "../scripts/lib/replay-fidelity.mjs";
 import { readdirSync, readFileSync, existsSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -221,22 +223,22 @@ async function replay(fx: Fixture): Promise<RecordingWriter> {
   // turn when `chat.send` is acked; a run frame that arrives in between is STASHED, not
   // treated as belonging to an already-open turn. Calling `beginTurn` up front skipped
   // that window entirely — the very race the run manager exists to handle (raised in
-  // review). The ack is the `res` frame carrying the turn's run id.
-  const ackIndex = fx.entries.findIndex(
-    (e) =>
-      (e.frame as { type?: string; payload?: { runId?: string } })?.type === "res" &&
-      (e.frame as { payload?: { runId?: string } })?.payload?.runId ===
-        fx.header.ackRunIds[0],
-  );
+  // review). The ack is the `res` frame carrying the turn's run id — and EVERY acked run of
+  // the fixture is a send of its own, armed and opened the same way (turnOpenings).
+  const openings = turnOpenings(
+    fx.entries.map((e) => e.frame),
+    fx.header.ackRunIds,
+    fx.header.sessionKey,
+  ) as Array<{ runId: string; armIndex: number; ackIndex: number }>;
   manager.armReplayBuffer();
-  let opened = ackIndex < 0;
-  if (opened) await manager.beginTurn(t0, fx.header.ackRunIds[0] ?? null);
+  const first = openings[0];
+  if (first === undefined || first.ackIndex < 0) await manager.beginTurn(t0, first?.runId ?? null);
   let now = t0;
   for (let i = 0; i < fx.entries.length; i++) {
     const arrival = at(fx.entries[i]!, i);
-    if (!opened && i === ackIndex) {
-      await manager.beginTurn(arrival, fx.header.ackRunIds[0] ?? null);
-      opened = true;
+    for (const [k, opening] of openings.entries()) {
+      if (k > 0 && opening.armIndex === i) manager.armReplayBuffer();
+      if (opening.ackIndex === i) await manager.beginTurn(arrival, opening.runId);
     }
     // Deadlines that expire DURING the silence before this frame fire first. Production's
     // receive loop waits with a timeout and resolves them before the late frame arrives;
@@ -363,6 +365,21 @@ describe("golden replay — the corpus covers what it claims", () => {
       writer.calls.filter((c) => c.call === "finalize").length,
       "the announce turn never finalized",
     ).toBeGreaterThan(1);
+  });
+
+  it("a SECOND send, held behind a delivery, opens its own turn", async () => {
+    // announce-reverse-hold sends the user's reply while an announce run is live; the send is
+    // held and dispatched after it. The fixture records both sends, and opening only the first
+    // ack left the whole reply unread while the snapshot still passed (codex).
+    const fx = byScenario.get("announce-reverse-hold");
+    expect(fx, "the announce-reverse-hold scenario is missing from the corpus").toBeDefined();
+    expect(fx!.header.ackRunIds, "the fixture records both sends").toHaveLength(2);
+    const writer = await replay(fx!);
+    expect(
+      writer.calls.filter((c) => c.call === "startAssistant").map((c) => c.detail?.runFamily),
+      "turn, then the announce, then the held reply",
+    ).toEqual(["turn", "announce", "turn"]);
+    expect(writer.calls.filter((c) => c.call === "finalize").length, "each of the three turns finalized").toBe(3);
   });
 
   it("the BACKGROUND TASK engagement is recorded", async () => {

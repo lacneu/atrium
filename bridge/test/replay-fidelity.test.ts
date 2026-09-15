@@ -473,9 +473,14 @@ describe("a promoted cron capture reads the same through the REAL coalescing", (
     expect(lines[4]).toContain('"v":1');
   });
 
-  it("a `res` frame shaped like the announce's report never claims the stashed report the stack reads", async () => {
-    // The reader drops `res` frames and `parseProvenanceFrame` requires `type: "event"`, so this
-    // pseudo report is read by nobody; a restated admission without that check let it claim (codex).
+  it("a non-event frame shaped like the announce's report, between turns, is READ — and keeps its values", async () => {
+    // Measured: the announce admission opens the spontaneous turn on this frame whatever its `type`,
+    // and the normalizer drops only `res`, so the stack writes BOTH reports as exact reads. This test
+    // used a `res` until the replay opened every acked run: a `res` carrying a run id of the replayed
+    // session is a send ack to the replay and to promotion (every such `res` of the tagged 2026.9.4
+    // captures is a `chat.send` answer `{runId, status: "started"}`), so it now opens a turn of its
+    // own and nothing is left to claim. The stash admission's `type: "event"` stays proven by the
+    // capped raced `req` below.
     const ANNOUNCE = "announce:v1:agent:alice:subagent:5b0f9680-7a29-427a-ace0-02a9eb10f573:a40575b2-6ddd-4b8f-85aa-351e1a26c2b7";
     const agentFrame = (runId: string, seq: number, stream: string, data: unknown) => ({ type: "event", event: "agent", payload: { runId, sessionKey: KEY, stream, seq, data } });
     const chatFinal = (runId: string, seq: number, text: string) => ({ type: "event", event: "chat", payload: { runId, sessionKey: KEY, seq, state: "final", message: { content: [{ type: "text", text }] } } });
@@ -484,16 +489,17 @@ describe("a promoted cron capture reads the same through the REAL coalescing", (
       env(10, agentFrame(RUN, 1, "lifecycle", { phase: "start" })),
       env(20, chatFinal(RUN, 2, "Le job est planifie.")),
       env(30, agentFrame(RUN, 3, "lifecycle", { phase: "end" })),
-      env(35, { ...report(ANNOUNCE, KEY, 4), type: "res" }),
+      env(35, { ...report(ANNOUNCE, KEY, 4), type: "req" }),
       env(40, report(ANNOUNCE, KEY, 5)),
       env(50, agentFrame(ANNOUNCE, 6, "assistant", { text: "Annonce visible." })),
       env(60, chatFinal(ANNOUNCE, 7, "Annonce visible.")),
     ].join("\n");
+    const consumed = (await consumedReadings(RunManager, parseEntries(raw), READERS)) as { provenanceReads: Array<{ entry?: number }> };
+    expect(consumed.provenanceReads.map((r) => r.entry), "both reports are exact reads").toEqual([4, 5]);
     expect(await faithful(raw)).toEqual([]);
-    const consumed = await consumedReadings(RunManager, parseEntries(raw), READERS);
     const lines = (promoteSlice(raw, vocabulary(), READERS, consumed) as { lines: string[] }).lines;
-    expect(lines[4], "the pseudo report").not.toContain('"v":1');
-    expect(lines[5], "the stashed report").toContain('"v":1');
+    expect(lines[4], "the req-shaped report, read by the announce turn").toContain('"v":1');
+    expect(lines[5], "the event report").toContain('"v":1');
   });
 
   it("a non-event frame that RACED the ack is read when the turn opens — and keeps its values", async () => {
@@ -656,5 +662,56 @@ describe("a turn replays the frames of its own gateway connection", () => {
     expect(otherConnectionFrames).toBe(1);
     expect(parseEntries(slice)).toEqual(own);
     expect(await fidelityDiff(RunManager, own, parseEntries(slice))).toEqual([]);
+  });
+});
+
+// ── Every send of the replayed session is a turn of its own (defect 13 B2, codex) ──
+describe("a capture holding several sends replays each acked turn", () => {
+  const T = 1_785_204_000_000;
+  const RUN2 = "webchat-r2";
+  const at = (dt: number, frame: unknown) => ({ receivedAt: T + dt, frame });
+  const agent = (runId: string, seq: number, stream: string, data: unknown, sessionKey = KEY) => ({
+    type: "event",
+    event: "agent",
+    payload: { runId, sessionKey, stream, seq, data },
+  });
+  const chat = (runId: string, seq: number, state: string, text: string, sessionKey = KEY) => ({
+    type: "event",
+    event: "chat",
+    payload: { runId, sessionKey, seq, state, message: { content: [{ type: "text", text }] } },
+  });
+  const firstTurn = [
+    at(0, { type: "res", payload: { runId: RUN } }),
+    at(10, agent(RUN, 1, "lifecycle", { phase: "start" })),
+    at(20, chat(RUN, 2, "final", "Premiere reponse du tour.")),
+    at(30, agent(RUN, 3, "lifecycle", { phase: "end" })),
+  ];
+  const secondTurn = (from: number) => [
+    at(from, { type: "res", payload: { runId: RUN2 } }),
+    at(from + 10, agent(RUN2, 2, "lifecycle", { phase: "start" })),
+    at(from + 20, chat(RUN2, 3, "final", "Seconde reponse, apres le hold.")),
+    at(from + 30, agent(RUN2, 4, "lifecycle", { phase: "end" })),
+  ];
+
+  it("the later send's reply is read: cutting it off changes what the stack writes", async () => {
+    const diffs = await fidelityDiff(RunManager, [...firstTurn, ...secondTurn(5_000)], firstTurn);
+    expect(diffs.join("\n"), "the second turn was never opened").toMatch(/startAssistant.*raw 2, promoted 1/);
+  });
+
+  it("a reply frame of the later run that races its ack is kept for that turn", async () => {
+    const raced = at(4_990, chat(RUN2, 1, "delta", "Seconde"));
+    const withRace = [...firstTurn, raced, ...secondTurn(5_000)];
+    const withoutRace = [...firstTurn, ...secondTurn(5_000)];
+    const diffs = await fidelityDiff(RunManager, withRace, withoutRace);
+    expect(diffs, "the raced delta was dropped instead of stashed for its turn").toEqual(["setSnapshot: raw 3, promoted 2"]);
+  });
+
+  it("an acked run of ANOTHER session opens no turn on the replayed one", async () => {
+    const OTHER = "agent:alice:atrium:chat:u-x:summarize-y";
+    const foreign = [
+      at(40, { type: "res", payload: { runId: "summarize-r" } }),
+      at(50, agent("summarize-r", 1, "lifecycle", { phase: "start" }, OTHER)),
+    ];
+    expect(await fidelityDiff(RunManager, [...firstTurn, ...foreign], firstTurn)).toEqual([]);
   });
 });
