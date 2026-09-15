@@ -12,10 +12,16 @@ import type { OpenClawConnection } from "./openclaw-client.js";
 
 /**
  * Project the gateway's `contextBudgetStatus` down to the three counts the gauge
- * needs. Absent (or not an object) when its pre-prompt check did not run — under
- * a context engine that owns compaction it is never written, and it is cleared
- * after a compaction or a model change. That absence is INFORMATION: it is
- * exactly when the gauge must say "unknown" instead of showing a counter.
+ * needs. Absent (or not an object) when no matching assessment is projected: at
+ * v2026.9.4 the row returns the stored status only when it names the provider and
+ * model SELECTED to build the row, the entry's session id and the row's context-token
+ * budget, with no live model switch pending (context-token-provenance.ts:125-151).
+ * The stored status is also deleted by a SUCCESSFUL compaction (`ok && compacted`) whose
+ * persistence still finds the same session id, lifecycle revision and active writer run
+ * with no work-start error (sessions-compact.ts:415-442), and by a
+ * patch that actually CHANGES `contextWindow` (sessions-patch-context-window.ts:17-29).
+ * Absent nested, each of the three counts may still come from the flat read (see
+ * selectBudgetAssessment).
  */
 function contextBudgetFields(raw: unknown): {
   estimatedPromptTokens?: number;

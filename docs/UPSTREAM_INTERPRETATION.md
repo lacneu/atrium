@@ -66,10 +66,14 @@ Atrium while the Control UI shows "Retrying… 2/10". That is the best candidate
 the frame-discovery queue.
 
 A long-standing gap closed on the way: `contextBudgetStatus` — the pre-send
-context guard's own input, depended on since the guard existed and declared by NO
-pinned version through 2026.9.2 — is **declared by the 2026.9.4 contract**. It
-left `undeclared-describe-reads.json`; what remains open is only whether the
-gateway omits the assessment under a context engine that owns compaction.
+context guard's own input, depended on since the guard existed and named by NO
+pinned artifact through 2026.9.2 — is **carried by the 2026.9.4 derived
+session-event snapshot**. No contract declares it (no vendored schema names it,
+and `sessions.describe` has no result schema): it is observed in the tagged
+implementation, which projects it on the session row the describe also answers
+with. It left `undeclared-describe-reads.json`; that file's `$resolved` entry
+states the projection's exact omission conditions and the anchors that watch the
+describe path.
 
 New surface (Skill Workshop, update reports, cloud workers, the Plugins
 workspace, task history) is vendored and classified, not adopted.

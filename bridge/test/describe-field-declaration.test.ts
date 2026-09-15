@@ -20,11 +20,37 @@
  * read finds nothing, and a turn died of `context_length` at a reported 51 % of
  * window. What is NOT established is which shape — if either — this gateway build
  * actually produces, so the guard now reads both places and
- * `/frame-discovery contextBudgetStatus` was the open question until 2026.9.4
- * DECLARED the field — it left this allowlist on 2026-09-12 (see
- * protocol/openclaw/undeclared-describe-reads.json `$resolved`). What remains
- * open is only whether the gateway omits the assessment under a context engine
- * that owns compaction; the flat sibling read is still undeclared and still listed.
+ * `/frame-discovery contextBudgetStatus` was the open question until the 2026.9.4
+ * derived session-event snapshot carried the field — it left this allowlist on
+ * 2026-09-12 (see
+ * protocol/openclaw/undeclared-describe-reads.json `$resolved`). The flat sibling
+ * read is still undeclared and still listed.
+ *
+ * WHAT THAT "DECLARATION" IS, stated exactly: no contract declares it. Upstream
+ * publishes no result schema for `sessions.describe`, and no vendored TypeBox schema
+ * names `contextBudgetStatus`. The reference below is the session-event snapshot — a
+ * DERIVED artifact (scripts/vendor-protocol.mjs, PROVENANCE.json `derived`) listing
+ * what the TAGGED IMPLEMENTATION copies off the session row
+ * (session-event-payload.ts:120 at v2026.9.4). The field is observed in that
+ * implementation, not promised by a contract. The describe carries it only because it answers with that same row
+ * builder (sessions-read-by-key.ts `buildGatewaySessionRow`, session-utils-row.ts:515)
+ * (reached through the `session-utils.ts` re-export) — a source reading, pinned by
+ * mechanical anchors and watched files in the bench's upstream-anchors.txt and
+ * upstream-watchlist.txt, so a version bump that touches that path raises an alert.
+ * This test cannot see that on its own: were the describe to stop projecting the
+ * field while the events kept it, it would stay green. And the projection itself
+ * returns NOTHING unless a status is stored, the provider and model SELECTED to build
+ * the row (`rowModelProvider`/`rowModel`, session-utils-row.ts:515 — not necessarily
+ * the displayed identity, which may be canonicalised) are non-empty, its
+ * contextTokens is a finite positive number, the status names that same provider and
+ * model, a non-blank session id equal to the entry's, and a budget equal to
+ * contextTokens, with no live model switch pending (context-token-provenance.ts:125-151).
+ * Its absence removes all THREE nested inputs — the estimate, the prompt budget and
+ * the overflow — each of which the flat fallback read may still supply
+ * (models-roster.ts selectBudgetAssessment). The fill then comes from an estimate,
+ * else the counter when usable, else UNKNOWN (core/context-budget.ts
+ * sessionFillDetail); a positive overflow keeps its own path to compact_or_block
+ * (core/presend-guard.ts presendAction).
  *
  * The way to settle it is the LOCAL bench (`bridge/local-openclaw/up.sh`), not
  * production: boot the pinned gateway and read a real `sessions.describe`. One
@@ -47,22 +73,23 @@ import { DRIFT_VENDORED_VERSION } from "../src/providers/openclaw/protocol-drift
 const read = (rel: string): string =>
   readFileSync(new URL(rel, import.meta.url), "utf8");
 
-/** Every field name the pinned contract declares on the session describe. */
-function declaredFields(): Set<string> {
+/** Every field name the pinned version's DERIVED session-event snapshot carries (no
+ *  contract declares the describe result), plus the three enumerated agent fields. */
+function referenceFields(): Set<string> {
   const snap = JSON.parse(
     read(
       `../protocol/openclaw/${DRIFT_VENDORED_VERSION}/session-event-snapshot.json`,
     ),
   ) as { fields: string[] };
-  const declared = new Set(snap.fields);
-  // The describe row carries names declared across SEVERAL vendored schemas, not
-  // only the session snapshot: `agentRuntime`, `thinkingLevels` and
-  // `thinkingDefault` live in agents-models-skills.ts. Checking the snapshot
-  // alone flagged those three as undeclared dependencies when they are nothing of
-  // the kind — a gate that cries wolf gets an allowlist entry per false alarm and
-  // stops meaning anything.
-  for (const f of DESCRIBE_AGENT_FIELDS) declared.add(f);
-  return declared;
+  const reference = new Set(snap.fields);
+  // The describe row carries names the session snapshot does not list:
+  // `thinkingLevels` and `thinkingDefault` are declared in agents-models-skills.ts
+  // (`agentRuntime` is in both, so adding it changes nothing). Checking the snapshot
+  // alone flagged those as undeclared dependencies when they are nothing of the kind
+  // — a gate that cries wolf gets an allowlist entry per false alarm and stops
+  // meaning anything.
+  for (const f of DESCRIBE_AGENT_FIELDS) reference.add(f);
+  return reference;
 }
 
 /** The agent facts the session describe carries alongside the session row.
@@ -72,7 +99,7 @@ function declaredFields(): Set<string> {
  *  `reason` (on the session-operation event), `agents-models-skills.ts` declares
  *  `enabled`, `query`, `error` — none of them on the describe result. Any one of
  *  those names would let a future undeclared read sail through, which is exactly
- *  the code->contract hole this gate exists to close, reopened for the names most
+ *  the code->reference hole this gate exists to close, reopened for the names most
  *  likely to collide.
  *
  *  Three names, each anchoring a read this gate has actually seen. Their presence
@@ -117,7 +144,7 @@ function capturedFields(): string[] {
     // sit together. Their reads were only ever caught by COINCIDENCE, through the
     // flat duplicates in captureDescribe, so the day `/frame-discovery` settles the
     // shape and the flat fallback goes away, or a new sub-field is added here
-    // alone, the code->contract blind spot would reopen on the nested side. Both
+    // alone, the code->reference blind spot would reopen on the nested side. Both
     // functions name their row `o` for exactly this sweep.
     [
       "roster",
@@ -160,9 +187,9 @@ function declaredUndeclaredReads(): Map<
   return new Map(Object.entries(doc.fields));
 }
 
-describe("a session-describe field we read must be declared somewhere", () => {
+describe("a session-describe field we read must be in the reference set, or on the record as absent from it", () => {
   it("the reference set is the session payload, and NOT a union of whole schemas", () => {
-    const declared = declaredFields();
+    const reference = referenceFields();
     // Every enumerated agent field must really be declared upstream — a rename
     // there must fail here rather than quietly empty the reference.
     const agentSchema = read(
@@ -172,20 +199,20 @@ describe("a session-describe field we read must be declared somewhere", () => {
       expect(agentSchema, `${f} is no longer declared in ${AGENT_SCHEMA}`).toContain(
         f,
       );
-      expect(declared.has(f)).toBe(true);
+      expect(reference.has(f)).toBe(true);
     }
     // And the names that made the union approach useless must NOT be in it: each
     // is declared somewhere in the vendored contract, none is on the describe.
     for (const foreign of ["reason", "enabled", "query", "trigger"]) {
       expect(
-        declared.has(foreign),
+        reference.has(foreign),
         `${foreign} is declared elsewhere in the contract, not on the session describe — its presence here would let a future undeclared read through`,
       ).toBe(false);
     }
   });
 
-  it("every captured field is in the contract, or on the record as absent from it", () => {
-    const declared = declaredFields();
+  it("every captured field is in the derived snapshot or the enumerated agent fields, or on the record as absent from both", () => {
+    const reference = referenceFields();
     const allowed = declaredUndeclaredReads();
     const captured = capturedFields();
 
@@ -194,21 +221,21 @@ describe("a session-describe field we read must be declared somewhere", () => {
     expect(captured.length).toBeGreaterThan(4);
 
     const unaccounted = captured.filter(
-      (f) => !declared.has(f) && !allowed.has(f),
+      (f) => !reference.has(f) && !allowed.has(f),
     );
     expect(
       unaccounted,
-      `these fields are read off the gateway's session describe but appear in neither ${DRIFT_VENDORED_VERSION}'s contract nor undeclared-describe-reads.json. They will arrive undefined in production and whatever depends on them will fall open in silence. Declare each one — with what the code does when it is absent — or stop reading it.`,
+      `these fields are read off the gateway's session describe but appear in neither ${DRIFT_VENDORED_VERSION}'s derived session-event snapshot (plus the enumerated agent fields) nor undeclared-describe-reads.json. They will arrive undefined in production and whatever depends on them will fall open in silence. Declare each one — with what the code does when it is absent — or stop reading it.`,
     ).toEqual([]);
   });
 
-  it("the allowlist stays HONEST: no entry for a field that is declared, or unread", () => {
-    const declared = declaredFields();
+  it("the allowlist stays HONEST: no entry for a field the reference set carries, or unread", () => {
+    const reference = referenceFields();
     const captured = new Set(capturedFields());
     for (const [field, entry] of declaredUndeclaredReads()) {
       expect(
-        declared.has(field),
-        `${field} IS declared by ${DRIFT_VENDORED_VERSION} — remove it from the allowlist, it is no longer an undeclared dependency`,
+        reference.has(field),
+        `${field} IS carried by ${DRIFT_VENDORED_VERSION}'s derived session-event snapshot (or the enumerated agent fields) — remove it from the allowlist, it is no longer an unlisted dependency`,
       ).toBe(false);
       expect(
         captured.has(field),
