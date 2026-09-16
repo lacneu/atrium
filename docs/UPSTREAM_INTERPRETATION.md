@@ -321,10 +321,23 @@ the private live-bench catalogue at `<hors-dépôt>/live-bench/scenarios.mjs`,
 run only when selected with `--scenario` — it asserts nothing and is never
 part of an attestation; run 2026-09-14T21-57 UTC): a child
 finished during the parent's turn; the full capture holds no `announce:*` run
-and no `superseded`, the parent ended `stop`, and the exported session
-transcript shows the completion persisted INSIDE the parent's turn as a user
-entry with idempotency key `announce:v1:<childKey>:<childRunId>:active-wake`
-and provenance `{kind:"inter_session", sourceTool:"subagent_announce"}`. The
+and no `superseded`, and the parent ended `stop` — those three facts are in the
+capture and stay verifiable there.
+
+The completion itself is filed INSIDE the parent's turn as a user entry with
+provenance `{kind:"inter_session", sourceTool:"subagent_announce"}` and an
+idempotency key ending `:active-wake`. That shape is established FROM THE
+UPSTREAM SOURCES (the announce delivery module composes that suffix at a single
+site, for the steer into the live run; the direct announce and the settle keep
+the bare key, and the durable generated-media handoff carries `:agent-loop`.
+That suffix identifies the STRING, not its producer: base keys are built by
+prefixing a caller-supplied announce id, and a harness caller chooses that id
+freely, so a delivery that is a turn of its own can end the same way. Nothing in
+the transcript distinguishes the two, which is why Atrium reads none of them as
+a continuation of the running turn); a transcript read by hand during the run
+agreed with
+it, but this scenario exports no transcript, so the run directory does NOT hold
+that evidence and it must not be cited as the proof (corrected 2026-09-16). The
 residue is a run killed by its own lane TIMEOUT, which is already being aborted
 — not the race. Late writes are still fenced by
 `SessionTranscriptWriterClaimReboundError`

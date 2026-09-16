@@ -735,6 +735,124 @@ describe("close mid-turn = transcript recovery, then connection lost (never a us
     reg.closeAll();
   });
 
+  it("…and on 2026.9.4, whose restart recovery appends its RESUME prompt before the reply", async () => {
+    // Measured on the bench (forced gateway restart mid-reply): the transcript becomes the user
+    // entry, then the gateway's resume prompt as a `user` entry with provenance
+    // `internal_system/main_session_restart_recovery` and none of the user's text, then the
+    // complete resumed reply. Read as the turn boundary, that prompt failed the anchor on every
+    // poll: the turn settled as an error after nine minutes while its answer was there.
+    vi.useFakeTimers();
+    let now = 1000;
+    const conn = fakeConn();
+    let stage: "rebooting" | "resumed" | "working" | "answered" = "rebooting";
+    const pollConn = {
+      get isClosed() {
+        return false;
+      },
+      close() {},
+      onConfigChanged: () => () => {},
+      onClosed: () => () => {},
+      async *frames() {},
+      async request(method: string) {
+        expect(method).toBe("sessions.get");
+        return {
+          payload: {
+            messages: [
+              { role: "user", content: "analyse ça s'il te plaît" },
+              ...(stage === "rebooting"
+                ? []
+                : [
+                    // What the interrupted run had committed before the restart: a visible
+                    // fragment, not the answer.
+                    {
+                      role: "assistant",
+                      content: [{ type: "text", text: "début avant la coupure" }],
+                      stopReason: "toolUse",
+                    },
+                    {
+                      role: "user",
+                      content:
+                        "[System] Your previous turn was interrupted by a gateway restart while OpenClaw was waiting on tool/model work. Continue from the existing transcript and finish the interrupted response.",
+                      provenance: {
+                        kind: "internal_system",
+                        sourceSessionKey: "agent:alice:atrium:chat:u:c",
+                        sourceTool: "main_session_restart_recovery",
+                      },
+                    },
+                  ]),
+              // The resumed run starts by calling a tool: a fragment, not an answer.
+              ...(stage === "working" || stage === "answered"
+                ? [
+                    {
+                      role: "assistant",
+                      content: [{ type: "text", text: "je vérifie les journaux" }],
+                      stopReason: "toolUse",
+                    },
+                    { role: "toolResult", toolName: "exec", content: "sortie" },
+                  ]
+                : []),
+              ...(stage === "answered"
+                ? [
+                    {
+                      role: "assistant",
+                      content: [
+                        { type: "thinking", thinking: "…" },
+                        { type: "text", text: "réponse reprise après redémarrage" },
+                      ],
+                      stopReason: "stop",
+                    },
+                  ]
+                : []),
+            ],
+          },
+        };
+      },
+    };
+    let first = true;
+    vi.spyOn(OpenClawConnection, "connect").mockImplementation(async () => {
+      if (first) {
+        first = false;
+        return conn as never;
+      }
+      return pollConn as never;
+    });
+    const { writer, finalized } = fakeWriter();
+    const reg = new SessionRegistry(servedMap(config, writer), () => now);
+    const s = await reg.acquire(ROUTING);
+    await vi.advanceTimersByTimeAsync(0);
+    await s.runManager.beginTurn(now, "run-1");
+    s.noteTurnUserAnchor("analyse ça s'il te plaît");
+    s.wake();
+    await vi.advanceTimersByTimeAsync(0);
+    conn.close();
+    await vi.advanceTimersByTimeAsync(0);
+    now += 20_000;
+    await vi.advanceTimersByTimeAsync(20_000);
+    expect(finalized.length).toBe(0);
+    // The gateway is back and has appended its resume prompt; the resumed run is still writing.
+    stage = "resumed";
+    now += 20_000;
+    await vi.advanceTimersByTimeAsync(20_000);
+    expect(finalized.length, "a resume prompt alone is not an answer").toBe(0);
+    // The resumed run is working: it called a tool. A fragment is not an answer either (codex).
+    stage = "working";
+    now += 20_000;
+    await vi.advanceTimersByTimeAsync(20_000);
+    expect(finalized.length, "a mid-run fragment of the resumed run is not an answer").toBe(0);
+    stage = "answered";
+    now += 20_000;
+    await vi.advanceTimersByTimeAsync(20_000);
+    expect(finalized.length).toBeGreaterThan(0);
+    const last = finalized[finalized.length - 1] as unknown[];
+    expect(last?.[1]).toBe("complete");
+    // The turn's text is what the interrupted run had committed, then what the resumed run
+    // wrote — the same join a turn with several assistant entries already gets.
+    expect(String(last?.[2] ?? "")).toBe(
+      "début avant la coupure\n\nje vérifie les journaux\n\nréponse reprise après redémarrage",
+    );
+    reg.closeAll();
+  });
+
   it("prefers a message-tool DELIVERY over the private ack when the resumed run used it", async () => {
     vi.useFakeTimers();
     let now = 1000;
