@@ -523,6 +523,46 @@ describe("anomaly detection", () => {
     expect(overflow?.severity).toBe("critical");
   });
 
+  test("each STORAGE class raises its OWN cause, not one shared storage bucket", async () => {
+    // The two classes exist because the answer differs — contention clears itself, a full or
+    // read-only disk needs an operator — so they must be countable apart. Asserted at the
+    // detector rather than on the map: an entry in CAUSE_ANOMALY_KINDS proves nothing if the
+    // code never reaches the trace (it did not, until the allowlist was fixed — codex).
+    const t = convexTest(schema, modules);
+    await t.run(async (ctx) => {
+      const now = Date.now();
+      for (const errorCode of [
+        "gateway_storage_busy",
+        "gateway_storage_unavailable",
+      ]) {
+        for (let i = 0; i < 2; i++) {
+          await seedTrace(ctx, {
+            kind: "assistant.stream",
+            at: now - i * 1000,
+            correlationId: `chat:${errorCode}-${i}`,
+            meta: {
+              phase: "finalize",
+              streamStatus: "error",
+              errorCode,
+            },
+          });
+        }
+      }
+    });
+    const res = await t.mutation(internal.anomalies.detectAnomalies, {});
+    expect(res.detected).toContain("assistant.cause.gateway_storage_busy");
+    expect(res.detected).toContain("assistant.cause.gateway_storage_unavailable");
+    const open = await t.query(internal.anomalies.anomaliesInternal, {
+      status: "open",
+    });
+    for (const kind of [
+      "assistant.cause.gateway_storage_busy",
+      "assistant.cause.gateway_storage_unavailable",
+    ]) {
+      expect(open.find((a) => a.kind === kind), kind).toBeDefined();
+    }
+  });
+
   test("an UNKNOWN cause still surfaces through the generic class", async () => {
     // A cause without an entry in the map must never be dropped for that reason.
     const t = convexTest(schema, modules);
