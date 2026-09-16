@@ -208,6 +208,12 @@ export const CAUSE_ANOMALY_KINDS: Record<string, string> = {
   stream_orphaned: "assistant.cause.stream_orphaned",
   session_init_conflict: "assistant.cause.session_init_conflict",
   session_write_conflict: "assistant.cause.session_write_conflict",
+  // The gateway's state database refused the write. Two classes because the ANSWER differs:
+  // contention clears on its own, a full or read-only disk needs the operator. Counting them
+  // apart is the whole point — a storage wall that repeats is an infrastructure signal, not a
+  // run of bad luck.
+  gateway_storage_busy: "assistant.cause.gateway_storage_busy",
+  gateway_storage_unavailable: "assistant.cause.gateway_storage_unavailable",
   empty_response_silent: "assistant.cause.empty_response_silent",
   provider_internal: "assistant.cause.provider_internal",
   empty_response: "assistant.cause.empty_response",

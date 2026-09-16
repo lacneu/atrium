@@ -44,6 +44,19 @@ describe("normalizeMessageErrorCode (raw gateway text never leaves)", () => {
     expect(normalizeMessageErrorCode("connection_lost")).toBe("connection_lost");
     expect(normalizeMessageErrorCode("context_length")).toBe("context_length");
     expect(normalizeMessageErrorCode("rate_limit")).toBe("rate_limit");
+    // The gateway's storage classes: curated CLASS names the bridge mints from the gateway's
+    // sentence, never that sentence. Absent from the list they collapsed to "unknown" and the
+    // trace filter dropped them, leaving their two per-cause anomaly classes unreachable.
+    expect(normalizeMessageErrorCode("gateway_storage_busy")).toBe("gateway_storage_busy");
+    expect(normalizeMessageErrorCode("gateway_storage_unavailable")).toBe(
+      "gateway_storage_unavailable",
+    );
+    // And the gateway's own sentence is NOT a code: it stays out, like any raw text.
+    expect(
+      normalizeMessageErrorCode(
+        "⚠️ Agent run failed: the Gateway state database was full (SQLite: database or disk is full). Free disk space on the Gateway host and retry.",
+      ),
+    ).toBe("unknown");
     expect(normalizeMessageErrorCode("Patient Jean Dupont not found at /records")).toBe(
       "unknown",
     );

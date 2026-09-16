@@ -86,6 +86,15 @@ export const KNOWN_ERROR_CODES = [
   "session_init_conflict",
   "session_write_conflict",
   "empty_response_silent",
+  // The gateway's state database refused the write (SQLite busy/locked, or full,
+  // read-only, I/O). Curated CLASS names the bridge classifier mints from the
+  // gateway's own sentence — never that sentence itself, so no PHI risk. Without
+  // them here the filter above drops the code from the trace, and the two
+  // per-cause anomaly classes they exist for are unreachable: the failure counts
+  // only in the generic stream-error channel and the diagnostic API says
+  // "unknown" (codex, the same hole `provider_internal` was added for).
+  "gateway_storage_busy",
+  "gateway_storage_unavailable",
   // The dispatch never reported back and the reconciler settled the row to unlock
   // the conversation. Delivery is UNKNOWN (the bridge can execute a send and lose
   // only its response), which is what its message says.

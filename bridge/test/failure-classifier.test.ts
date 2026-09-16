@@ -108,6 +108,54 @@ describe("classifyFailureText", () => {
     }
   });
 
+  it("the gateway's STORAGE failures get named classes, split by what they ask of the reader", () => {
+    // The five siblings of the writer-fenced copy above, same upstream file
+    // (assistant-request-failure-copy.ts:13-26,52), verbatim as they reach the wire. A
+    // contention the reader can simply re-send is NOT the same event as a host whose disk
+    // is full: one class for both would make every label half wrong.
+    for (const copy of [
+      "⚠️ Agent run failed: the Gateway state database was busy (SQLite: database is locked). Retry; if it repeats, check Gateway storage health.",
+      "⚠️ Agent run failed: the Gateway state database was locked (SQLite: database table is locked). Retry; if it repeats, check Gateway storage health.",
+    ]) {
+      expect(classifyFailureText(copy), copy).toBe("gateway_storage_busy");
+    }
+    for (const copy of [
+      "⚠️ Agent run failed: the Gateway state database was full (SQLite: database or disk is full). Free disk space on the Gateway host and retry.",
+      "⚠️ Agent run failed: the Gateway state database was read-only (SQLite: attempt to write a readonly database). Check Gateway storage permissions and retry.",
+      "⚠️ Agent run failed: the Gateway state database had an I/O error (SQLite: disk I/O error). Check Gateway storage health and filesystem access before retrying.",
+    ]) {
+      expect(classifyFailureText(copy), copy).toBe("gateway_storage_unavailable");
+    }
+  });
+
+  it("the RAW SQLite messages classify too, copy or no copy", () => {
+    // The copy is rendered only when the gateway classified the failure itself
+    // (sqlite-error-diagnostics.ts:4-11). The bare driver message can reach us instead,
+    // and it names the same event.
+    expect(classifyFailureText("SqliteError: database is locked")).toBe("gateway_storage_busy");
+    expect(classifyFailureText("database table is locked")).toBe("gateway_storage_busy");
+    expect(classifyFailureText("SqliteError: database or disk is full")).toBe(
+      "gateway_storage_unavailable",
+    );
+    expect(classifyFailureText("attempt to write a readonly database")).toBe(
+      "gateway_storage_unavailable",
+    );
+    expect(classifyFailureText("disk I/O error")).toBe("gateway_storage_unavailable");
+  });
+
+  it("a storage failure is NEVER provider_internal, whatever else rides the text", () => {
+    // Its own "Retry" must not buy it an automatic re-dispatch: the run had already
+    // started working when the write failed, exactly like the writer rebound above.
+    const full =
+      "⚠️ Agent run failed: the Gateway state database was full (SQLite: database or disk is full). Free disk space on the Gateway host and retry.";
+    expect(classifyFailureText(full)).not.toBe("provider_internal");
+    expect(classifyFailureText(full)).not.toBe("session_init_conflict");
+    // A 5xx marker in the same sentence does not turn a full disk into a provider blip.
+    expect(
+      classifyFailureText(`internal server error — ${full}`),
+    ).toBe("gateway_storage_unavailable");
+  });
+
   it("FAIL-SAFE: unrecognized or empty text yields NO class", () => {
     expect(classifyFailureText("le sous-agent a rendu quelque chose d'étrange")).toBeNull();
     expect(classifyFailureText("")).toBeNull();

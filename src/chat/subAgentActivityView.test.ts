@@ -310,6 +310,36 @@ describe("shortenSubAgentError (DISPLAY-side error shortening)", () => {
     expect(out).not.toContain("DO NOT");
   });
 
+  it("a localized code label is CAPPED like any other reason (the display contract)", () => {
+    // The early return used to hand the label back WHOLE, quietly breaking this function's own
+    // guarantee: every label this path can reach is longer than the cap (214-395 chars in fr),
+    // so an inline sub-agent row rendered a paragraph where a short reason belongs (codex).
+    // Pinned on a PRE-EXISTING class too — the contract is the function's, not a per-code favour.
+    for (const code of [
+      "session_write_conflict",
+      "gateway_storage_busy",
+      "gateway_storage_unavailable",
+    ]) {
+      const out = shortenSubAgentError("un texte brut quelconque", code);
+      expect(out.length, code).toBeGreaterThan(0);
+      expect(out.length, code).toBeLessThanOrEqual(120);
+    }
+  });
+
+  it("the storage labels NAME the case inside the cap, and promise no detail line", () => {
+    // This row renders ONE line, alone: a label pointing at "the detail below" would be lying
+    // here — and mine did, until the wording was fixed. What survives the cap must still say
+    // which storage problem happened.
+    const busy = shortenSubAgentError(null, "gateway_storage_busy");
+    const unavailable = shortenSubAgentError(null, "gateway_storage_unavailable");
+    expect(busy).toContain("occupée");
+    expect(unavailable).toMatch(/disque plein|lecture seule/);
+    for (const out of [busy, unavailable]) {
+      expect(out).not.toMatch(/ci-dessous|below/i);
+      expect(out.length).toBeLessThanOrEqual(120);
+    }
+  });
+
   it("extracts the tool + code from a bare '<tool> failed (<code>)' line", () => {
     expect(shortenSubAgentError("web_search failed (403)")).toBe(
       "web_search (403)",

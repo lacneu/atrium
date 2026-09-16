@@ -268,6 +268,11 @@ export const ERROR_CODE_LABEL: Record<string, () => string> = {
   // the bounded retries exhaust, stays as the honest final state.
   session_init_conflict: m.runstatus_error_session_init_conflict,
   session_write_conflict: m.runstatus_error_session_write_conflict,
+  // The gateway's state database refused the write. Split by what the reader can DO: a busy
+  // database is contention they can re-send through; a full, read-only or failing disk is the
+  // gateway host, where only an operator can help. Neither is auto-retried.
+  gateway_storage_busy: m.runstatus_error_gateway_storage_busy,
+  gateway_storage_unavailable: m.runstatus_error_gateway_storage_unavailable,
   // Dispatch-failure codes (failDispatch stores the CODE; localized here in the
   // reader's language — formerly pre-rendered French sentences).
   not_configured: m.runstatus_error_not_configured,

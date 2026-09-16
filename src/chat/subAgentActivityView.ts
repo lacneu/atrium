@@ -512,7 +512,12 @@ export function shortenSubAgentError(
   const generic = m.subagents_error_generic();
   if (code) {
     const label = ERROR_CODE_LABEL[code]?.();
-    if (label) return label;
+    // CAPPED like every other branch. The early return used to hand the label back whole,
+    // silently breaking this function's own guarantee: every label this path can reach is
+    // longer than the cap (214 to 395 chars in fr), so an inline sub-agent row rendered a
+    // paragraph where a short reason belongs (codex). The cap is the display contract; a
+    // label too long for it is a label problem, not a reason to drop the contract.
+    if (label) return capReason(label);
   }
   if (raw === null || raw === undefined) return generic;
   const text = raw.trim();

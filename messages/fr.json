@@ -1321,6 +1321,8 @@
   "runstatus_retry_now": "Nouvelle tentative automatique ({attempt}/{max})…",
   "runstatus_error_session_init_conflict": "La passerelle n'a pas pu initialiser la session de réponse (conflit passager, souvent pendant une tâche de fond de l'agent). Atrium relance automatiquement le tour ; si cette erreur reste affichée, renvoyez simplement votre message.",
   "runstatus_error_session_write_conflict": "La passerelle n'a pas pu enregistrer la fin du tour : une autre écriture a pris la main sur la session pendant la réponse. Le tour n'est PAS relancé automatiquement, car il avait déjà commencé à travailler et le rejouer pourrait refaire ses actions. Renvoyez votre message si la réponse manque.",
+  "runstatus_error_gateway_storage_busy": "La base de données interne de la passerelle était occupée : une autre écriture la tenait pendant ce tour. Renvoyez votre message — le tour n'est pas relancé automatiquement, car il avait déjà commencé à travailler. Si cela se répète, la santé du stockage de la passerelle est à vérifier côté opérateur.",
+  "runstatus_error_gateway_storage_unavailable": "La passerelle n'a pas pu écrire dans sa base de données interne : disque plein, base en lecture seule ou erreur d'entrée/sortie. Renvoyer votre message n'y changera rien tant que l'hôte de la passerelle n'est pas rétabli : c'est une intervention opérateur (libérer de l'espace, corriger les permissions, vérifier le disque).",
   "runstatus_error_rate_limit": "Le fournisseur du modèle limite temporairement les requêtes. Patientez quelques instants puis réessayez.",
   "runstatus_error_timeout": "Le tour a expiré côté passerelle avant d'aboutir. Réessayez.",
   "runstatus_error_refusal": "Le modèle a refusé de répondre à cette demande.",

@@ -133,6 +133,16 @@ describe("retryDecision (pure gate/bound logic)", () => {
     expect(retryDecision({ ...base, errorKind: "empty_response" })).toBeNull();
   });
 
+  test("the gateway's STORAGE classes are NEVER auto-retried, contention included", () => {
+    // The write failed with the run already working — the same reason the writer rebound is
+    // kept out: replaying such a turn can repeat actions whose effects already happened. Even
+    // the transient one (a busy database, which the gateway's own sentence invites a human to
+    // re-send) buys its retry from the reader, not from an automatic re-dispatch.
+    for (const errorKind of ["gateway_storage_busy", "gateway_storage_unavailable"]) {
+      expect(retryDecision({ ...base, errorKind }), errorKind).toBeNull();
+    }
+  });
+
   test("provider_internal (transient upstream/network) is retryable, bound 2, same content gates", () => {
     expect(
       retryDecision({ ...base, errorKind: "provider_internal" }),

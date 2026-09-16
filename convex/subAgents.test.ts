@@ -108,6 +108,47 @@ describe("subAgents.upsertSubAgent", () => {
     expect(rows[0]!.errorMessage).toBeUndefined();
   });
 
+  test("a child's STORAGE failure keeps its class; the gateway's sentence never becomes one", async () => {
+    // The child path goes through the SAME non-PHI allowlist as the parent message (G-11), so
+    // a class missing from it reaches the row as "unknown" and loses its localized title —
+    // which is exactly what happened to the two storage classes until they were allowlisted.
+    const t = convexTest(schema, modules);
+    const { chatId } = await seedUserAndChat(t);
+
+    await t.mutation(internal.subAgents.upsertSubAgent, {
+      chatId,
+      childSessionKey: CHILD,
+      status: "error" as const,
+      errorCode: "gateway_storage_unavailable",
+      errorMessage:
+        "⚠️ Agent run failed: the Gateway state database was full (SQLite: database or disk is full). Free disk space on the Gateway host and retry.",
+    });
+    let rows = await t.run(async (ctx) =>
+      ctx.db
+        .query("subAgents")
+        .withIndex("by_child", (q) => q.eq("childSessionKey", CHILD))
+        .collect(),
+    );
+    expect(rows[0]!.errorCode).toBe("gateway_storage_unavailable");
+
+    // The raw sentence is NOT a class: passed as a code it collapses, so no gateway text can
+    // ride into the row's code field.
+    await t.mutation(internal.subAgents.upsertSubAgent, {
+      chatId,
+      childSessionKey: `${CHILD}-raw`,
+      status: "error" as const,
+      errorCode:
+        "⚠️ Agent run failed: the Gateway state database was busy (SQLite: database is locked). Retry; if it repeats, check Gateway storage health.",
+    });
+    rows = await t.run(async (ctx) =>
+      ctx.db
+        .query("subAgents")
+        .withIndex("by_child", (q) => q.eq("childSessionKey", `${CHILD}-raw`))
+        .collect(),
+    );
+    expect(rows[0]!.errorCode).toBe("unknown");
+  });
+
   test("a terminal status is never downgraded back to running (reorder-tolerance)", async () => {
     const t = convexTest(schema, modules);
     const { chatId } = await seedUserAndChat(t);

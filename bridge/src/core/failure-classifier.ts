@@ -66,6 +66,22 @@ const ACTIVE_TURN_CLAIM_RE =
 // `transientSessionChange: true` (upstream src/config/sessions/lifecycle.ts:72,105,109).
 const SESSION_CHANGED_STARTING_RE =
   /session .* (?:changed|was deleted) while starting work/i;
+// 2026.9.3+ (read at v2026.9.4): the gateway's own SQLite STORAGE failures, rendered for the
+// reader by the same upstream file as the writer-fenced copy above
+// (src/agents/failover/assistant-request-failure-copy.ts:13-26,52), from the classification in
+// src/infra/sqlite-error-diagnostics.ts:4-11. They reach us as TEXT and nothing else: the chat
+// error frame declares no errorCode field (packages/gateway-protocol/src/schema/logs-chat.ts:418-432)
+// and its errorKind enum has no storage member (:313-319), so no structured fact survives.
+// SPLIT IN TWO, by what the event asks of the reader — one label for both would be half wrong
+// in each case. Busy/locked is contention: the same send can succeed. Full, read-only and I/O
+// are the gateway's host: no resend helps until an operator acts. The raw sentence is still
+// shown under the localized headline (errorDetailView), so the exact cause stays readable.
+// NEITHER is retryable: the write failed with the run already working, exactly like the writer
+// rebound, so an automatic re-dispatch could repeat work whose effects already happened.
+const GATEWAY_STORAGE_BUSY_RE =
+  /database is locked|database table is locked|state database was (?:busy|locked)\b/i;
+const GATEWAY_STORAGE_UNAVAILABLE_RE =
+  /database or disk is full|attempt to write a readonly database|disk i\/o error|state database was (?:full|read-only)|state database had an i\/o error/i;
 const PROVIDER_INTERNAL_TEXT_RE =
   /the ai service returned an (?:internal )?error|the ai service is temporarily (?:overloaded|unavailable)|returned an html error page|malformed_streaming_fragment|malformed fragment|an error occurred while processing your request|http\s*5\d\d\b|\b5\d\d\s+(?:internal server error|bad gateway|service unavailable|gateway timeout)|internal server error|\bupstream (?:error|connect)|server_error|overloaded_error|fetch failed|socket hang ?up|network error|econnreset|econnrefused|etimedout|enotfound|eai_again|epipe|und_err|terminated unexpectedly/i;
 const PROVIDER_INTERNAL_EXCLUDE_RE =
@@ -116,6 +132,11 @@ export function classifyFailureText(text: string | null | undefined): string | n
   if (WRITER_CLAIM_REBOUND_RE.test(text) || WRITER_FENCED_COPY_RE.test(text)) {
     return "session_write_conflict";
   }
+  // BEFORE the provider rule on purpose: its markers ("internal server error", a 5xx) can ride
+  // the same sentence, and a full disk read as a provider blip would be AUTO-RETRIED into the
+  // same wall (pinned in failure-classifier.test.ts). The graver class is tested first.
+  if (GATEWAY_STORAGE_UNAVAILABLE_RE.test(text)) return "gateway_storage_unavailable";
+  if (GATEWAY_STORAGE_BUSY_RE.test(text)) return "gateway_storage_busy";
   if (isSessionInitConflictText(text)) return "session_init_conflict";
   if (PROVIDER_INTERNAL_TEXT_RE.test(text) && !PROVIDER_INTERNAL_EXCLUDE_RE.test(text)) {
     return "provider_internal";

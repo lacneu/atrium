@@ -150,6 +150,28 @@ describe("errorDetailView (actionable error classification)", () => {
     expect(v.detail).toBeNull(); // the code string is not a useful detail
   });
 
+  it("the gateway's STORAGE failures each get their own headline, detail kept", () => {
+    // Two classes because the answer differs: contention the reader can re-send through, and a
+    // host the reader cannot fix. The gateway's own English sentence stays BELOW the localized
+    // headline — it is what names disk-full versus read-only versus I/O.
+    const busy = errorDetailView(
+      "⚠️ Agent run failed: the Gateway state database was busy (SQLite: database is locked). Retry; if it repeats, check Gateway storage health.",
+      "gateway_storage_busy",
+    );
+    const unavailable = errorDetailView(
+      "⚠️ Agent run failed: the Gateway state database was full (SQLite: database or disk is full). Free disk space on the Gateway host and retry.",
+      "gateway_storage_unavailable",
+    );
+    for (const v of [busy, unavailable]) {
+      expect(v.headline).toBeTruthy();
+      expect(v.detail).toBeTruthy();
+      expect(v.headline).not.toBe(v.detail);
+    }
+    // And they are not the same card: one tells the reader to resend, the other that only an
+    // operator can clear it. A single shared headline would be half wrong in both cases.
+    expect(busy.headline).not.toBe(unavailable.headline);
+  });
+
   it("rate_limit / timeout / refusal all classify", () => {
     for (const code of ["rate_limit", "timeout", "refusal"]) {
       expect(errorDetailView(null, code).headline).toBeTruthy();
