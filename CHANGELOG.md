@@ -1,5 +1,79 @@
 # Changelog
 
+## [0.84.10] — The turn answers once, and says why when it cannot
+
+Corrective release. Nothing new to configure: it closes several ways a turn could
+answer twice, answer with words from another turn, or end with no cause at all.
+
+**A message sent while the gateway is delivering something else is held instead of
+answered twice.** On OpenClaw 2026.9.4, a send that lands while a delivery run is live
+— an announce, a background task result, a voice consult — is queued by the gateway as
+a follow-up: the client's run receives a bare final, and the real reply comes back under
+a run id nothing on the wire ties to the send. Atrium closed that turn empty, retried
+it, and the model answered the same question twice. The bridge now holds such a send
+while it can see a delivery run live or still finalizing, and then until the gateway
+itself reports no active run. The hold deliberately fails open — an absent field, a
+failed call, or a 30-second budget lets the send through as before — so it narrows the
+window rather than claiming to close it.
+
+**A turn is no longer re-dispatched because something looked like it had been killed.**
+A zero-content aborted turn used to be flagged as preempted by a concurrent announce and
+automatically re-sent. On the production paths read, no such kill mechanism exists, while
+deliberate zero-content aborts do: an interrupt, a rollover, a restart, a deleted session,
+a timeout, or a stop from another client. Re-sending those repeated work the user had
+stopped. The flag is no longer minted on any gateway version, and an older bridge's flag
+is dropped at the ingest boundary during a rolling deploy.
+
+**The gateway's own transcript entries no longer end a turn — nor finish it early.** When
+a restart interrupts a running turn, the gateway relaunches it and writes its own resume
+prompt into the transcript. Atrium read that as the end of the turn: the anchor matched
+nothing, so an answer that was already written sat there while the turn polled out its
+deadline and settled as a connection error. That prompt is now recognised and crossed,
+but only once the resumed run has answered with an explicit terminal reason — a fragment
+mid-run is not an answer. An inter-session entry (a sub-agent announce or settle, a media
+or harness completion) ends the turn, and the recovery then returns nothing at all: what
+follows such an entry belongs to whatever it started, and delivering it would put another
+turn's words in this one. The cost is a delay on those turns, and it is deliberate.
+
+**A storage failure in the gateway's database now has a name, and a full disk is no longer
+retried.** When the gateway cannot write its state database, it hands over one sentence and
+no code: the error frame carries no field for it. None of Atrium's patterns matched those
+sentences, so the turn ended with no class at all — no retry decision, nothing for the
+per-cause anomaly plane, and a card titled "Error" above raw English. Worse, a sentence
+carrying both a server-error marker and the full-disk wording was read as a transient
+provider blip, which IS retried — so a host out of disk space was re-dispatched into the
+same wall. There are now two classes, because the answer differs: a busy or locked database
+is contention the reader can resend through, while a full, read-only or failing disk needs
+an operator. Neither is auto-retried, and each raises its own anomaly cause.
+
+**A writer-claim rebound the stream proves happened before generation is retried again.**
+The gateway throws the same error while preparing an attempt and when committing a
+transcript after the model ran. Treating every one as mid-turn lost the user's message
+behind an error card. The text cannot tell the two apart, but the stream can: a generating
+run always emits its lifecycle start first. A rebound on a turn that saw no generation
+frame, no known frame loss and no transcript recovery is now retried; the true class stays
+on the trace channel.
+
+**A failed attempt is never delivered as the reply.** Since 2026.9.3 the gateway persists a
+failed run's partial text as a transcript entry marked as an error, and renders a writer
+fence as a user-facing sentence that matched no pattern here. That sentence is now
+classified like the raw error it replaces, and an entry marked failed is never read as the
+turn's answer — the recovery keeps looking, and settles with its own cause if it finds
+nothing.
+
+**A plugin line printed during compaction no longer clears an "overfull" state, and a long
+compaction no longer closes the turn while it runs.** OpenClaw reuses one stream for the
+compaction verdict and for relaying text printed by a compaction hook; a single relayed
+line was read as a verdict. Relays are now inert, and the 60-second finishing grace is
+suspended while a compaction is in flight and re-armed when it settles.
+
+**For operators.** Traces now name the 2026.9.4 stop reasons — a gateway restart, a revoked
+login and a deleted session no longer look alike in the "other" bucket — and the context
+gauge states what actually backs its budget status, and when that is absent. The tooling
+that publishes this repository's replay corpus can no longer hand out a pseudonym equal to
+another identifier in the same capture, nor let a partial run replace the corpus. Gateway
+authentication posture for non-interactive provisioning is documented.
+
 ## [0.84.9] — Provisioned gateway posture reaches the bridge
 
 Corrective release for non-interactive OpenClaw provisioning.
