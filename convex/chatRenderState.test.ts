@@ -51,6 +51,19 @@ describe("normalizeMessageErrorCode (raw gateway text never leaves)", () => {
     expect(normalizeMessageErrorCode("gateway_storage_unavailable")).toBe(
       "gateway_storage_unavailable",
     );
+    // The bridge's OWN inbound-staging refusals: the turn is never sent, so no
+    // gateway class can carry them. Left out of this list they collapsed
+    // to "unknown", the trace filter dropped the code, and their per-cause anomaly
+    // classes were unreachable — which is how "every attachment send fails" stayed
+    // an unnamed generic error for five days (live prod 2026-09-17).
+    for (const code of [
+      "attachment_path_refused",
+      "attachment_staging_failed",
+      "attachment_cleanup_unconfirmed",
+      "attachment_name_too_long",
+    ]) {
+      expect(normalizeMessageErrorCode(code), code).toBe(code);
+    }
     // And the gateway's own sentence is NOT a code: it stays out, like any raw text.
     expect(
       normalizeMessageErrorCode(

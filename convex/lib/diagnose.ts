@@ -169,6 +169,16 @@ export function actionForErrorCode(code: string | null): string {
       return "The attachment exceeds what this agent accepts. Resend a smaller file, or send the message without the attachment.";
     case "ATTACHMENT_REJECTED":
       return "The gateway could not process the attachment (a known gateway base64-validator overflow on large files). Use a smaller file or text-only; the durable fix is gateway-side (isValidBase64).";
+    // The BRIDGE refused to place the file, so the turn was never sent. Three
+    // remediations because the operator looks in three different places.
+    case "attachment_name_too_long":
+      return "The file name is too long once the bridge composes its on-disk name (the turn id, an index and the name itself must fit one filesystem leaf, 255 bytes). Nothing is wrong with the instance's volumes. The reader fixes this themselves: rename the file shorter and send again.";
+    case "attachment_path_refused":
+      return "The bridge refused the target path for this instance's inbound directory. That covers the whole path contract, not one fault: a path outside the allowed root, a staging directory equal to or nested inside the published one, the two on different filesystems, a non-canonical path or a symlink, a wrong owner, or group/world-writable permissions — and the bridge log records the class, not which rule gave way. The turn was never sent, and this refusal alone proves nothing about the link. Check that pair of directories on the bridge host — distinct, same filesystem, canonical, owned by the bridge user, not group/world-writable — and that they match what the instance is configured with. A retry fails identically until it is fixed.";
+    case "attachment_staging_failed":
+      return "The bridge could not complete the attachment's transfer into this instance's shared space: the write failed (permissions, disk space, a missing mount) OR the download from Convex broke mid-stream — `boundedFailure` folds both into this class. The turn was never sent, and this refusal alone proves nothing about the link. Check the inbound volume on the bridge host; if it is healthy, a broken transfer is the other candidate and a re-send can succeed.";
+    case "attachment_cleanup_unconfirmed":
+      return "Placing a batch of attachments failed AND the rollback could not be confirmed: partial files may remain in this instance's shared inbound space. The turn was never sent. Inspect (and clean) that directory on the bridge host before sending again.";
     case "AGENT_NOT_FOUND":
       return "The configured agent no longer exists on the gateway. Fix OPENCLAW_AGENT_ID in the bridge env to a real gateway agent.";
     case "AUTH_TOKEN_MISMATCH":
@@ -203,7 +213,19 @@ export function actionForErrorCode(code: string | null): string {
   }
 }
 
-const ATTACHMENT_CODES = new Set(["ATTACHMENT_TOO_LARGE", "ATTACHMENT_REJECTED"]);
+const ATTACHMENT_CODES = new Set([
+  "ATTACHMENT_TOO_LARGE",
+  "ATTACHMENT_REJECTED",
+  // The BRIDGE's own inbound-staging refusals. They belong to the file family for
+  // the same reason as the two above — the turn failed because of the ATTACHMENT —
+  // and leaving them out sent the operator the generic "inspect the bridge logs;
+  // retry the turn", which is both the wrong action (no retry can place the file)
+  // and the exact answer this class was minted to replace.
+  "attachment_path_refused",
+  "attachment_name_too_long",
+  "attachment_staging_failed",
+  "attachment_cleanup_unconfirmed",
+]);
 
 /**
  * Assess a chat from its SOC2-safe state + the bridge availability. Priority

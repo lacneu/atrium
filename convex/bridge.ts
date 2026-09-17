@@ -341,6 +341,13 @@ export const markOutbox = internalMutation({
 const ATTACHMENT_FAILURE_CODES = new Set([
   "ATTACHMENT_TOO_LARGE",
   "ATTACHMENT_REJECTED",
+  // The BRIDGE's own inbound-staging refusals: the file never left this side, so
+  // the reader must be told it is the ATTACHMENT that failed — not "the send
+  // failed", which reads as "try again" on a turn no retry can save.
+  "attachment_path_refused",
+  "attachment_name_too_long",
+  "attachment_staging_failed",
+  "attachment_cleanup_unconfirmed",
 ]);
 
 // Terminal FAILURE transition for a dispatch, in ONE transaction: mark the outbox
@@ -1908,8 +1915,11 @@ export const dispatch = internalAction({
         });
       }
     } else {
-      // The bridge accepted the POST shape but the gateway refused the turn
-      // (502): surface it to the user instead of leaving the message unanswered.
+      // The bridge accepted the POST shape and the turn did not go through
+      // (502) — either the gateway refused it, or the BRIDGE refused it itself
+      // before sending (an inbound file it could not place: the
+      // `attachment_*` classes). Surface it to the user either way, instead of
+      // leaving the message unanswered.
       // Pass the curated errorCode so an attachment refusal shows a file-specific
       // message ("trop volumineuse" / "n'a pas pu être traitée"), not a blanket one.
       await ctx.runMutation(internal.bridge.failDispatch, {

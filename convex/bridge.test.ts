@@ -13,6 +13,8 @@ import { convexTest } from "convex-test";
 import { describe, expect, test, vi } from "vitest";
 import { api, internal } from "./_generated/api";
 import schema from "./schema";
+import { RETRYABLE_KINDS } from "./turnRetry";
+import { assessChat } from "./lib/diagnose";
 import type { Id } from "./_generated/dataModel";
 import { readErrorCode } from "./bridge";
 import { maxRawInboundBytes } from "./lib/attachmentLimits";
@@ -139,6 +141,63 @@ describe("bridge.failDispatch", () => {
     expect(msgs[0]!.errorCode).toBe("ATTACHMENT_TOO_LARGE");
     // The user still sees the attachment-specific message, not the generic one.
     expect(msgs[0]!.error).toBe("ATTACHMENT_TOO_LARGE");
+  });
+
+  // THE BRIDGE'S OWN inbound-staging refusals (live prod 2026-09-17: every
+  // attachment send on two instances). They are attachment failures like the two
+  // above — the message is intact and the FILE is what could not be taken — so
+  // they must get the file-specific card, never the generic "send failed" that
+  // reads as "just try again" on a turn no retry can save.
+  test("an inbound-staging refusal reads as an ATTACHMENT failure, and is never re-dispatched", async () => {
+    for (const code of [
+      "attachment_path_refused",
+      "attachment_staging_failed",
+      "attachment_cleanup_unconfirmed",
+      "attachment_name_too_long",
+    ]) {
+      const t = convexTest(schema, modules);
+      const { chatId, outboxId } = await seed(t);
+
+      await t.mutation(internal.bridge.failDispatch, {
+        outboxId,
+        reason: "send_failed",
+        errorCode: code,
+      });
+
+      const msgs = await messagesOf(t, chatId);
+      expect(msgs[0]!.errorCode, code).toBe(code);
+      expect(msgs[0]!.error, code).toBe(code);
+      // A volume does not fix itself between two attempts: no automatic
+      // re-dispatch may be armed for this class.
+      expect(RETRYABLE_KINDS.has(code), code).toBe(false);
+      const scheduled = await t.run((ctx) =>
+        ctx.db.system.query("_scheduled_functions").collect(),
+      );
+      expect(
+        scheduled.filter((f) => f.name.includes("turnRetry")),
+        code,
+      ).toHaveLength(0);
+
+      // AND THE OPERATOR GETS THE RIGHT MOVE. Through the real diagnosis path:
+      // left out of the file family, these came back as a generic `dispatch_error`
+      // telling an admin to "inspect the bridge logs; retry the turn" — the wrong
+      // action (no retry can place the file) and the very answer this class was
+      // minted to replace (codex).
+      const state = await t.query(internal.messages.chatStateInternal, {
+        chatId,
+      });
+      const verdict = assessChat(state, {
+        known: true,
+        available: true,
+        degraded: false,
+        reason: null,
+      });
+      expect(verdict.class, code).toBe("attachment_problem");
+      expect(verdict.suggestedAction, code).not.toMatch(/retry the turn/i);
+      expect(verdict.suggestedAction, code).toMatch(
+        /inbound|shared space|mount|volume/i,
+      );
+    }
   });
 });
 

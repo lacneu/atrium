@@ -2231,5 +2231,16 @@
   "notif_mention": "Vous avez été mentionné dans « {chat} »",
   "mention_pick": "Mentionner une personne",
   "mention_none": "Personne d'autre dans cette conversation",
-  "mention_gateway_off": "L'agent ne sera pas prévenu : cette instance partage un seul identifiant de passerelle."
+  "mention_gateway_off": "L'agent ne sera pas prévenu : cette instance partage un seul identifiant de passerelle.",
+  "runstatus_error_attachment_staging": "Le fichier joint n’a pas pu être déposé pour cet agent, et votre tour n’a donc pas été envoyé — rien n’est perdu. Si le problème vient de l’espace de fichiers partagé de cette instance, renvoyer n’y changera rien : signalez-le à votre administrateur. Un message sans pièce jointe emprunte un autre chemin et peut aboutir.",
+  "error_attachment_path_refused_label": "Chemin de dépôt refusé",
+  "error_attachment_path_refused_hint": "Le bridge a refusé le chemin de dépôt de cette instance. C’est tout le contrat de chemin qui est en cause, pas un défaut unique : chemin hors du dossier autorisé, dossier de transit identique au dossier publié ou imbriqué dedans, les deux sur des systèmes de fichiers différents, chemin non canonique ou lien symbolique, propriétaire incorrect, ou droits ouverts au groupe / à tous. Le journal du bridge enregistre la classe, pas laquelle de ces règles a cédé : contrôlez-les toutes sur l’hôte. Le tour n’a pas été envoyé, et ce refus à lui seul ne dit rien de l’état de la liaison ; un nouvel essai échouera à l’identique tant que la paire de dossiers n’est pas conforme.",
+  "error_attachment_staging_failed_label": "Dépôt de la pièce jointe impossible",
+  "error_attachment_staging_failed_hint": "Le bridge n’a pas pu mener à bien le transfert de la pièce jointe vers l’espace partagé de cette instance : soit l’écriture a échoué (droits, espace disque, volume absent), soit le téléchargement depuis Atrium s’est interrompu en cours de route — cette classe couvre les deux. Le tour n’a pas été envoyé, et ce refus à lui seul ne dit rien de l’état de la liaison. Vérifiez le volume entrant sur l’hôte du bridge ; s’il est sain, il peut s’agir d’un transfert coupé, auquel cas renvoyer le message peut aboutir.",
+  "error_attachment_cleanup_unconfirmed_label": "Dépôt annulé sans certitude",
+  "error_attachment_cleanup_unconfirmed_hint": "Le dépôt d’un lot de pièces jointes a échoué et son annulation n’a pas pu être confirmée : des fichiers partiels peuvent subsister dans l’espace partagé entrant de cette instance. Le tour n’a pas été envoyé. À inspecter (et nettoyer) sur l’hôte du bridge avant de relancer.",
+  "bridge_target_local_refusal": "Refusé par le bridge avant l’envoi — {label} :",
+  "runstatus_error_attachment_name_too_long": "Le nom de ce fichier est trop long pour être déposé : votre tour n’a pas été envoyé. Renommez le fichier plus court et renvoyez-le — rien d’autre n’est en cause.",
+  "error_attachment_name_too_long_label": "Nom de fichier trop long",
+  "error_attachment_name_too_long_hint": "Le nom composé sur disque (identifiant du tour, index, puis le nom du fichier) dépasse la taille d’un élément de chemin (255 octets). Les volumes de l’instance ne sont pas en cause, et rien n’est à corriger côté exploitation : l’utilisateur renomme son fichier plus court et renvoie."
 }

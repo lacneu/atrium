@@ -85,6 +85,22 @@ const INFO: Record<string, () => DispatchErrorInfo> = {
     label: m.error_unrouted_label(),
     hint: m.error_unrouted_hint(),
   }),
+  attachment_name_too_long: () => ({
+    label: m.error_attachment_name_too_long_label(),
+    hint: m.error_attachment_name_too_long_hint(),
+  }),
+  attachment_path_refused: () => ({
+    label: m.error_attachment_path_refused_label(),
+    hint: m.error_attachment_path_refused_hint(),
+  }),
+  attachment_staging_failed: () => ({
+    label: m.error_attachment_staging_failed_label(),
+    hint: m.error_attachment_staging_failed_hint(),
+  }),
+  attachment_cleanup_unconfirmed: () => ({
+    label: m.error_attachment_cleanup_unconfirmed_label(),
+    hint: m.error_attachment_cleanup_unconfirmed_hint(),
+  }),
   UPSTREAM_ERROR: () => ({
     label: m.error_upstream_error_label(),
     hint: m.error_upstream_error_hint(),

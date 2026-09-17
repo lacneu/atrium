@@ -214,6 +214,14 @@ export const CAUSE_ANOMALY_KINDS: Record<string, string> = {
   // run of bad luck.
   gateway_storage_busy: "assistant.cause.gateway_storage_busy",
   gateway_storage_unavailable: "assistant.cause.gateway_storage_unavailable",
+  // NOT the bridge's inbound-staging refusals, deliberately. This map is read for
+  // `streamCauses` only — causes carried by an `assistant.stream` FINALIZE row —
+  // and a staging refusal happens BEFORE any stream exists: it surfaces as an
+  // `openclaw.dispatch` failure. Listing it here would have minted three anomaly
+  // kinds nothing could ever raise (codex). The dispatch-failure detector already
+  // names the cause it counts (`dominantCode` + `codeCounts` in its evidence), and
+  // THAT is what this lot makes truthful: `attachment_path_refused` instead of
+  // `UPSTREAM_ERROR`.
   empty_response_silent: "assistant.cause.empty_response_silent",
   provider_internal: "assistant.cause.provider_internal",
   empty_response: "assistant.cause.empty_response",

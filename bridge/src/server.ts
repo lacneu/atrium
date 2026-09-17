@@ -5660,8 +5660,15 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
       // 502 + code below still drive the per-chat failDispatch bubble, the trace,
       // and the anomaly — the detail/alert path is unchanged.
       const ref = targetRef(body.agentId, body.canonical, sendInstance);
-      if (faultDomain(code) === "downstream") {
+      const domain = faultDomain(code);
+      if (domain === "downstream") {
         health.recordDownstreamReject(ref, code);
+      } else if (domain === "local") {
+        // The bridge refused this send ITSELF and the TURN never went out —
+        // `chat.send` was never called, though the session RPCs before it may
+        // well have reached the gateway. Record it without touching the target's
+        // connectivity state, which this failure neither proves nor disproves.
+        health.recordLocalRefusal(ref, code);
       } else {
         health.recordError(ref, code);
       }

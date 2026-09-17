@@ -4,6 +4,8 @@ import {
   isBridgeHealthy,
   showsBridgeErrorDetail,
   showsDownstreamReject,
+  showsDetailRow,
+  showsLocalRefusal,
   type BridgeTargetView,
   bridgeVerdict,
 } from "./bridgeHealthView";
@@ -37,6 +39,14 @@ const decayedToIdle: BridgeTargetView = {
   state: "idle",
   lastErrorCode: "GATEWAY_TIMEOUT",
   lastDownstreamRejectCode: null,
+};
+// The BRIDGE refused the request itself, before sending (an attachment it could
+// not place on the instance's shared volume). Live prod 2026-09-17.
+const localRefusal: BridgeTargetView = {
+  state: "connected",
+  lastErrorCode: null,
+  lastDownstreamRejectCode: null,
+  lastLocalRefusalCode: "attachment_path_refused",
 };
 
 describe("bridgeErrorTargets / isBridgeHealthy", () => {
@@ -140,5 +150,37 @@ describe("bridgeVerdict (three-state header)", () => {
   });
   test("a pre-this-release payload (no field) degrades to the two-state verdict", () => {
     expect(bridgeVerdict({ reachable: true, targets: [] })).toBe("ok");
+  });
+});
+
+describe("a LOCAL refusal is not a gateway rejection", () => {
+  test("it shows its own note and never the gateway's", () => {
+    // The card's downstream line reads "rejected by the gateway". Folded in
+    // there, a refusal the bridge took itself — before any send — would put that
+    // sentence under a gateway that never saw the request (codex).
+    expect(showsLocalRefusal(localRefusal)).toBe(true);
+    expect(showsDownstreamReject(localRefusal)).toBe(false);
+    expect(showsBridgeErrorDetail(localRefusal)).toBe(false);
+    // And the reverse: a real gateway rejection is not a local refusal.
+    expect(showsLocalRefusal(downstreamReject)).toBe(false);
+    expect(showsDownstreamReject(downstreamReject)).toBe(true);
+  });
+
+  test("and the row that CARRIES it is actually rendered", () => {
+    // The note was computed from the helper and then dropped with the sub-row,
+    // whose condition asked only for an error or a downstream reject — so a lone
+    // local refusal rendered nothing at all (codex P1). The helper alone could
+    // not see that; the enclosing question has to be asked here too.
+    expect(showsDetailRow(localRefusal)).toBe(true);
+    expect(showsDetailRow(bridgeError)).toBe(true);
+    expect(showsDetailRow(downstreamReject)).toBe(true);
+    expect(showsDetailRow(decayedToIdle)).toBe(false);
+  });
+
+  test("and it leaves bridge health alone", () => {
+    expect(bridgeErrorTargets([localRefusal])).toHaveLength(0);
+    expect(isBridgeHealthy({ reachable: true, targets: [localRefusal] })).toBe(
+      true,
+    );
   });
 });

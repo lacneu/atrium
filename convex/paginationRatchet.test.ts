@@ -119,10 +119,11 @@ function convexSources(): { file: string; source: string }[] {
 const KNOWN_OFFENDERS: ReadonlyArray<string> = [
   // Moved 1704 -> 1710 by the two storage cause-classes added to the per-cause map, then
   // 1710 -> 1808 by the repaired-finalize compensation (the `*RepairedFinalize*` helpers and
-  // the pre-pass that drops a repaired pair). The offender itself is untouched: same file,
+  // the pre-pass that drops a repaired pair), then -> 1816 by the note on the three inbound-staging
+  // classes this map deliberately does NOT carry. The offender itself is untouched: same file,
   // same call, and the list still holds exactly two entries — the ratchet counts offenders,
   // and this record is what keeps a line shift from reading as one.
-  "anomalies.ts:1808",
+  "anomalies.ts:1816",
   "feedback.ts:926",
 ];
 

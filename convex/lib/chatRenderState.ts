@@ -95,6 +95,14 @@ export const KNOWN_ERROR_CODES = [
   // "unknown" (codex, the same hole `provider_internal` was added for).
   "gateway_storage_busy",
   "gateway_storage_unavailable",
+  // The bridge's own inbound-staging refusals. Allowlisted for the same reason as
+  // the storage classes: without the code on the trace, the per-cause anomaly
+  // plane cannot count them and the failure falls back into the generic channel —
+  // which is exactly how "every attachment fails" went unnamed for five days.
+  "attachment_path_refused",
+  "attachment_name_too_long",
+  "attachment_staging_failed",
+  "attachment_cleanup_unconfirmed",
   // The dispatch never reported back and the reconciler settled the row to unlock
   // the conversation. Delivery is UNKNOWN (the bridge can execute a send and lose
   // only its response), which is what its message says.

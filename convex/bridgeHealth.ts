@@ -54,6 +54,9 @@ export function normalizeTarget(raw: unknown): {
   lastDownstreamRejectCode: string | null;
   lastDownstreamRejectAt: number | null;
   downstreamRejectCount: number;
+  lastLocalRefusalCode: string | null;
+  lastLocalRefusalAt: number | null;
+  localRefusalCount: number;
   gatewayVersion: string | null;
   maxPayload: number | null;
 } | null {
@@ -76,6 +79,13 @@ export function normalizeTarget(raw: unknown): {
     o.lastDownstreamReject !== null
       ? (o.lastDownstreamReject as Record<string, unknown>)
       : null;
+  // LOCAL refusal (the bridge declined before sending) — its own field, because
+  // the card's downstream line says "rejected by the gateway", about a gateway that
+  // never saw the request. Same defensive parse: an older bridge omits it.
+  const lr =
+    typeof o.lastLocalRefusal === "object" && o.lastLocalRefusal !== null
+      ? (o.lastLocalRefusal as Record<string, unknown>)
+      : null;
   return {
     key,
     instanceName: str(o.instanceName),
@@ -92,6 +102,9 @@ export function normalizeTarget(raw: unknown): {
     lastDownstreamRejectCode: dr ? str(dr.code) : null,
     lastDownstreamRejectAt: dr ? num(dr.at) : null,
     downstreamRejectCount: num(o.downstreamRejectCount) ?? 0,
+    lastLocalRefusalCode: lr ? str(lr.code) : null,
+    lastLocalRefusalAt: lr ? num(lr.at) : null,
+    localRefusalCount: num(o.localRefusalCount) ?? 0,
     // Per-instance gateway version (Model M): each bridge's /health reports its own
     // gateway's version, so the connection row shows it per instance (the compat
     // poller is a singleton and can't).

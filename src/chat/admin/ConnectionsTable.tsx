@@ -22,7 +22,12 @@ import { dispatchErrorInfo } from "@/lib/dispatchErrorInfo";
 import { formatTime } from "@/lib/format";
 import { m } from "@/paraglide/messages.js";
 import { FilterBar } from "./filters/FilterBar";
-import { showsBridgeErrorDetail, showsDownstreamReject } from "./bridgeHealthView";
+import {
+  showsBridgeErrorDetail,
+  showsDownstreamReject,
+  showsDetailRow,
+  showsLocalRefusal,
+} from "./bridgeHealthView";
 import {
   ALL,
   EMPTY_CONN_FILTERS,
@@ -68,6 +73,8 @@ type RowView = {
   lastErrorAt: number | null;
   lastDownstreamRejectCode: string | null;
   lastDownstreamRejectAt: number | null;
+  lastLocalRefusalCode: string | null;
+  lastLocalRefusalAt: number | null;
 };
 
 export function ConnectionsTable({
@@ -103,13 +110,21 @@ export function ConnectionsTable({
         // recordTurnError). Without the fold, a user with two errored turns read
         // zero failures here (report 2026-07-09) — the split stays visible in
         // the error detail sub-row; state/availability semantics are untouched.
-        errorCount: t.errorCount + (t.downstreamRejectCount ?? 0),
+        errorCount:
+          t.errorCount +
+          (t.downstreamRejectCount ?? 0) +
+          // …AND the bridge's own refusals. Left out, six attachments refused in
+          // a row still read "0 failure(s)" on a line whose whole job is to say
+          // how much failed (codex).
+          (t.localRefusalCount ?? 0),
         attempts: t.attempts,
         lastOkAt: t.lastOkAt ?? null,
         lastErrorCode: t.lastErrorCode ?? null,
         lastErrorAt: t.lastErrorAt ?? null,
         lastDownstreamRejectCode: t.lastDownstreamRejectCode ?? null,
         lastDownstreamRejectAt: t.lastDownstreamRejectAt ?? null,
+        lastLocalRefusalCode: t.lastLocalRefusalCode ?? null,
+        lastLocalRefusalAt: t.lastLocalRefusalAt ?? null,
       })),
     [connections, displayByInstance],
   );
@@ -305,6 +320,9 @@ function ConnectionRows({ r }: { r: RowView }) {
   const downstream = showsDownstreamReject(r)
     ? dispatchErrorInfo(r.lastDownstreamRejectCode)
     : null;
+  const localRefusal = showsLocalRefusal(r)
+    ? dispatchErrorInfo(r.lastLocalRefusalCode)
+    : null;
   return (
     <Fragment>
       <TableRow className={`oc-conn__row oc-conn__row--${r.state}`}>
@@ -350,7 +368,7 @@ function ConnectionRows({ r }: { r: RowView }) {
           )}
         </TableCell>
       </TableRow>
-      {info || downstream ? (
+      {showsDetailRow(r) ? (
         <TableRow className="oc-conn__detail-row">
           <TableCell colSpan={7} className="oc-conn__detail-cell">
             {info ? (
@@ -359,6 +377,16 @@ function ConnectionRows({ r }: { r: RowView }) {
                 <code className="oc-traces__mono">{r.lastErrorCode}</code>
                 {r.lastErrorAt ? ` · ${formatTime(r.lastErrorAt)}` : ""}
                 <p className="oc-bridge-card__hint">{info.hint}</p>
+              </div>
+            ) : null}
+            {localRefusal ? (
+              <div className="oc-bridge-target__downstream">
+                {m.bridge_target_local_refusal({ label: localRefusal.label })}{" "}
+                <code className="oc-traces__mono">{r.lastLocalRefusalCode}</code>
+                {r.lastLocalRefusalAt
+                  ? ` · ${formatTime(r.lastLocalRefusalAt)}`
+                  : ""}
+                <p className="oc-bridge-card__hint">{localRefusal.hint}</p>
               </div>
             ) : null}
             {downstream ? (

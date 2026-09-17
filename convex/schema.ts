@@ -227,6 +227,14 @@ export const bridgeHealthTarget = v.object({
   lastDownstreamRejectCode: v.optional(v.union(v.string(), v.null())),
   lastDownstreamRejectAt: v.optional(v.union(v.number(), v.null())),
   downstreamRejectCount: v.optional(v.number()),
+  // Last LOCAL refusal: the bridge declined the request ITSELF, before sending
+  // (an inbound file it could not place). Kept apart from the downstream note
+  // because the card renders that one as "rejected by the gateway", which would
+  // be a statement about a gateway that never saw the request. Optional for the
+  // same version-skew reason.
+  lastLocalRefusalCode: v.optional(v.union(v.string(), v.null())),
+  lastLocalRefusalAt: v.optional(v.union(v.number(), v.null())),
+  localRefusalCount: v.optional(v.number()),
   // Per-instance gateway WS frame limit (Model M): the maxPayload reported by THIS
   // instance's bridge, so the inbound-attachment cap is derived per routed instance
   // (maxPayloadInternal). Optional: a pre-this-release bridge / unreached instance

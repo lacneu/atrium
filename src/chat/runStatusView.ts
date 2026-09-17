@@ -285,6 +285,14 @@ export const ERROR_CODE_LABEL: Record<string, () => string> = {
   DISPATCH_STALLED: m.runstatus_error_dispatch_unknown,
   ATTACHMENT_TOO_LARGE: m.runstatus_error_attachment_too_large,
   ATTACHMENT_REJECTED: m.runstatus_error_attachment_rejected,
+  // The BRIDGE refused the file, so the turn was never sent. The reader's answer is
+  // the same for the three causes — the message is intact, the file is what could
+  // not be taken, and retrying changes nothing until the instance is fixed — so
+  // they share one sentence; the operator surfaces tell them apart.
+  attachment_name_too_long: m.runstatus_error_attachment_name_too_long,
+  attachment_path_refused: m.runstatus_error_attachment_staging,
+  attachment_staging_failed: m.runstatus_error_attachment_staging,
+  attachment_cleanup_unconfirmed: m.runstatus_error_attachment_staging,
 };
 
 // Defense-in-depth: overflow phrasings the UI recognizes CLIENT-side, so a bare
@@ -312,6 +320,10 @@ const ERROR_STRING_CODES = new Set([
   "send_failed",
   "ATTACHMENT_TOO_LARGE",
   "ATTACHMENT_REJECTED",
+  "attachment_path_refused",
+  "attachment_name_too_long",
+  "attachment_staging_failed",
+  "attachment_cleanup_unconfirmed",
 ]);
 
 export function errorDetailView(

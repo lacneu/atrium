@@ -109,6 +109,28 @@ describe("errorDetailView (actionable error classification)", () => {
     expect(v.detail).toBe("Context window exceeded");
   });
 
+  it("an inbound-staging refusal reads as a FILE problem, by code and by error string", () => {
+    // The bridge refuses the file and the turn is never sent, while `failDispatch`
+    // stores the code in BOTH fields — so both routes must recognise it. Live prod
+    // 2026-09-17: the reader got "the chat service is momentarily unavailable",
+    // which was not what happened (text-only sends went through) and was not
+    // actionable (no retry can place the file).
+    for (const code of [
+      "attachment_path_refused",
+      "attachment_staging_failed",
+      "attachment_cleanup_unconfirmed",
+      "attachment_name_too_long",
+    ]) {
+      const byCode = errorDetailView("", code);
+      expect(byCode.headline, code).toBeTruthy();
+      expect(byCode.headline, code).not.toBe(code);
+      const byString = errorDetailView(code, null);
+      expect(byString.headline, code).toBe(byCode.headline);
+      // The bare code is not a useful detail line for the reader.
+      expect(byString.detail, code).toBeNull();
+    }
+  });
+
   it("unknown code -> no headline, raw text stays the message", () => {
     const v = errorDetailView("some gateway error", "weird_code");
     expect(v.headline).toBeNull();

@@ -68,6 +68,11 @@ export const INBOUND_FETCH_FAILED = "inbound_media_fetch_failed";
 export const INBOUND_PATH_REFUSED = "inbound_media_path_refused";
 export const INBOUND_STAGE_FAILED = "inbound_media_stage_failed";
 export const INBOUND_CLEANUP_FAILED = "inbound_media_cleanup_failed";
+// The COMPOSED disk name (clientMessageId + index + the user's filename) does not
+// fit a filesystem leaf. The only member of this family the READER can act on —
+// a shorter name goes through — so it must not wear the path-contract class,
+// which sends an operator to inspect volumes that are perfectly fine (codex).
+export const INBOUND_NAME_TOO_LONG = "inbound_media_name_too_long";
 
 const PRIVATE_FILE_MODE = 0o600;
 const SHARED_WRITE_MASK = 0o022;
@@ -75,6 +80,7 @@ const MAX_LEAF_BYTES = 255;
 const CONTROL_OR_SEPARATOR = /[\u0000-\u001f\u007f/\\]/u;
 const BOUNDED_FAILURES = new Set([
   INBOUND_TOO_LARGE,
+  INBOUND_NAME_TOO_LONG,
   INBOUND_COLLISION,
   INBOUND_FETCH_FAILED,
   INBOUND_PATH_REFUSED,
@@ -87,8 +93,28 @@ const RECOVERABLE_DROP_FAILURES = new Set([
   INBOUND_FETCH_FAILED,
 ]);
 
+/**
+ * A refusal RAISED BY THIS MODULE — the bridge declining to stage an inbound
+ * file, so the TURN is never sent. Typed, because the dispatch classifier must
+ * recognise our own decisions by TYPE and never by how we phrased them (the rule
+ * `ContextBlockedError` already follows): classified on text, these fell into the
+ * `UPSTREAM_ERROR` catch-all, which says "the gateway answered something
+ * unrecognised" about a request it never received — and, being bridge-domain,
+ * marked the connection dead for five minutes (live prod 2026-09-17: every
+ * attachment send on two instances).
+ *
+ * `message` REMAINS the bare code: `BOUNDED_FAILURES`, the per-file drop
+ * reporting and the existing tests all read it.
+ */
+export class InboundMediaRefusal extends Error {
+  constructor(readonly code: string) {
+    super(code);
+    this.name = "InboundMediaRefusal";
+  }
+}
+
 function refused(code: string): Error {
-  return new Error(code);
+  return new InboundMediaRefusal(code);
 }
 
 function boundedFailure(error: unknown): Error {
@@ -373,12 +399,20 @@ async function stageInboundReferenceOwned(
   diskName: string,
   config: InboundMediaConfig,
 ): Promise<OwnedStageResult> {
-  if (
-    !validLeaf(diskName) ||
-    !Number.isSafeInteger(config.maxBytes) ||
-    config.maxBytes < 1
-  ) {
+  if (!Number.isSafeInteger(config.maxBytes) || config.maxBytes < 1) {
     throw refused(INBOUND_PATH_REFUSED);
+  }
+  if (!validLeaf(diskName)) {
+    // LENGTH is the reader's business, every other leaf rule is ours. A composed
+    // name over the filesystem's leaf cap comes from a long filename the user
+    // chose — they can rename and re-send — while a control character or a
+    // non-canonical form is a sanitiser fault on our side. One class for each, so
+    // the person who CAN act is the one who is told (codex).
+    throw refused(
+      Buffer.byteLength(diskName) > MAX_LEAF_BYTES
+        ? INBOUND_NAME_TOO_LONG
+        : INBOUND_PATH_REFUSED,
+    );
   }
   const stagingName = `.atrium-inbound-${process.pid}-${randomBytes(16).toString("hex")}.part`;
   const directories = await openMediaDirectories(config);

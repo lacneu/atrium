@@ -2231,5 +2231,16 @@
   "notif_mention": "You were mentioned in “{chat}”",
   "mention_pick": "Mention someone",
   "mention_none": "Nobody else in this conversation",
-  "mention_gateway_off": "The agent will not be told: this instance shares a single gateway credential."
+  "mention_gateway_off": "The agent will not be told: this instance shares a single gateway credential.",
+  "runstatus_error_attachment_staging": "The attached file could not be placed for this agent, so your turn was not sent — nothing is lost. If the cause is this instance's shared file space, sending again will not help: tell your administrator. A message without an attachment takes a different path and may go through.",
+  "error_attachment_path_refused_label": "Staging path refused",
+  "error_attachment_path_refused_hint": "The bridge refused this instance's staging path. The whole path contract is at stake, not one fault: a path outside the allowed root, a staging directory equal to or nested inside the published one, the two on different filesystems, a non-canonical path or a symlink, a wrong owner, or group/world-writable permissions. The bridge log records the class, not which of those rules gave way: check them all on the host. The turn was not sent, and this refusal alone says nothing about the state of the link; a retry fails identically until the directory pair is compliant.",
+  "error_attachment_staging_failed_label": "Attachment could not be placed",
+  "error_attachment_staging_failed_hint": "The bridge could not complete the attachment's transfer into this instance's shared space: either the write failed (permissions, disk space, a missing mount) or the download from Atrium broke mid-stream — this class covers both. The turn was not sent, and this refusal alone says nothing about the state of the link. Check the inbound volume on the bridge host; if it is healthy, the transfer may simply have broken, and sending again can succeed.",
+  "error_attachment_cleanup_unconfirmed_label": "Rollback not confirmed",
+  "error_attachment_cleanup_unconfirmed_hint": "Placing a batch of attachments failed and its rollback could not be confirmed: partial files may remain in this instance's shared inbound space. The turn was not sent. Inspect (and clean) the bridge host before sending again.",
+  "bridge_target_local_refusal": "Refused by the bridge before sending — {label}:",
+  "runstatus_error_attachment_name_too_long": "This file's name is too long to be placed, so your turn was not sent. Rename the file shorter and send it again — nothing else is at fault.",
+  "error_attachment_name_too_long_label": "File name too long",
+  "error_attachment_name_too_long_hint": "The composed on-disk name (the turn id, an index, then the file name) exceeds one filesystem leaf (255 bytes). The instance's volumes are not at fault and there is nothing to fix on the operator side: the user renames the file shorter and sends again."
 }

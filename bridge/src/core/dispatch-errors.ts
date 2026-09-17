@@ -11,6 +11,16 @@
 // Pure function over the thrown error's message -> unit-tested offline.
 
 import { ContextBlockedError } from "./presend-guard.js";
+import {
+  INBOUND_CLEANUP_FAILED,
+  INBOUND_NAME_TOO_LONG,
+  INBOUND_COLLISION,
+  INBOUND_FETCH_FAILED,
+  INBOUND_PATH_REFUSED,
+  INBOUND_STAGE_FAILED,
+  INBOUND_TOO_LARGE,
+  InboundMediaRefusal,
+} from "./inbound-media.js";
 import { HermesDashboardAbsentError } from "../providers/hermes/files-fetcher.js";
 import { isSessionInitConflictText } from "./failure-classifier.js";
 
@@ -53,6 +63,29 @@ export type DispatchErrorCode =
   // gateway's `context_length`, because it states a different fact — nothing ran and
   // nothing was billed. It gets the same two wired actions (see ContextBlockedError).
   | "context_length_presend"
+  // THE BRIDGE ITSELF refused to stage an inbound file onto this instance's shared
+  // media volume. THE TURN WAS NEVER SENT — the staging runs after the session is
+  // acquired and patched (so the gateway may well have been spoken to) but BEFORE
+  // `chat.send`, which is the precise, defensible claim (codex: "the gateway was
+  // never called" was an overstatement). No gateway code above can describe a
+  // refusal we took ourselves, and the catch-all actively lied: it is
+  // bridge-domain, so one attachment declared a healthy link dead (live prod
+  // 2026-09-17, both instances, every attachment send).
+  //
+  // THREE codes, not one, because the operator acts differently on each: a path
+  // outside the allowed root is a CONFIGURATION fact, a failed write is a HOST
+  // fact (permissions, space, mount), and an unconfirmed rollback additionally
+  // means files may be left behind. The reader's sentence is nearly the same for
+  // all three; the per-cause anomaly plane is what has to tell them apart.
+  // Lower-case like the other codes Convex reads: it keys the retry policy on
+  // these exact strings, and none of them may ever be auto-retried — a volume
+  // does not fix itself between two attempts.
+  | "attachment_path_refused"
+  // The composed on-disk name does not fit a filesystem leaf: the user's filename
+  // is too long. The ONLY member of this family the reader can act on.
+  | "attachment_name_too_long"
+  | "attachment_staging_failed"
+  | "attachment_cleanup_unconfirmed"
   | "UPSTREAM_ERROR"; // anything else (fallback)
 
 /**
@@ -72,11 +105,28 @@ export type DispatchErrorCode =
  *    bridge error. The health module's job is bridge health; the detail/alert job
  *    already belongs to the other two modules.
  *
+ *  - "local": the bridge refused the request ITSELF — the turn was never sent (an
+ *    inbound file it could not stage). It proves NOTHING about connectivity in
+ *    either direction, so the health view leaves the target's state exactly as it
+ *    found it. Two values forced a lie in both directions: as "bridge" it marked a
+ *    healthy link dead (the defect this class was minted for), and as "downstream"
+ *    it would have claimed the gateway answered — clearing a real, unrelated
+ *    network incident and reporting the instance green (codex).
+ *
  * The taxonomy lives HERE (the bridge owns send classification). `/health` then
  * reports a per-target `state` the UI renders blindly, so Convex + the UI stay
  * taxonomy-agnostic.
  */
-export type FaultDomain = "bridge" | "downstream";
+export type FaultDomain = "bridge" | "downstream" | "local";
+
+/** Codes the BRIDGE raises about ITSELF: the turn is never sent. (Session RPCs
+ *  may already have gone out — only `chat.send` is what never happens.) */
+const LOCAL_REFUSAL_CODES: ReadonlySet<DispatchErrorCode> = new Set([
+  "attachment_path_refused",
+  "attachment_name_too_long",
+  "attachment_staging_failed",
+  "attachment_cleanup_unconfirmed",
+]);
 
 // Codes where the gateway DEMONSTRABLY responded and refused this specific request
 // (a missing agent, an oversized/unparseable attachment, a refused request shape):
@@ -118,8 +168,30 @@ export const LOST_RESPONSE_CODES: ReadonlySet<DispatchErrorCode> = new Set([
   "CONNECTION_SATURATED",
 ]);
 
+/**
+ * OUR OWN inbound-media refusals → their dispatch code, one for one.
+ *
+ * Only the BATCH failures actually reach the classifier: a size, collision or
+ * fetch failure drops that one file and the send goes on
+ * (`RECOVERABLE_DROP_FAILURES`). The three are mapped anyway — the day one is
+ * thrown, "your file is too large" must not regress into an unrecognised
+ * upstream error, which is exactly the regression this table exists to end. An
+ * inbound code with no row here falls to the staging class rather than to the
+ * catch-all: whatever it turns out to be, WE refused it and the turn never went.
+ */
+const INBOUND_REFUSAL_CODES: Readonly<Record<string, DispatchErrorCode>> = {
+  [INBOUND_PATH_REFUSED]: "attachment_path_refused",
+  [INBOUND_NAME_TOO_LONG]: "attachment_name_too_long",
+  [INBOUND_STAGE_FAILED]: "attachment_staging_failed",
+  [INBOUND_CLEANUP_FAILED]: "attachment_cleanup_unconfirmed",
+  [INBOUND_TOO_LARGE]: "ATTACHMENT_TOO_LARGE",
+  [INBOUND_COLLISION]: "attachment_staging_failed",
+  [INBOUND_FETCH_FAILED]: "attachment_staging_failed",
+};
+
 /** Fault domain of a classified dispatch error (pure → unit-tested offline). */
 export function faultDomain(code: DispatchErrorCode): FaultDomain {
+  if (LOCAL_REFUSAL_CODES.has(code)) return "local";
   return DOWNSTREAM_REJECTION_CODES.has(code) ? "downstream" : "bridge";
 }
 
@@ -140,6 +212,14 @@ export function classifyGatewayError(
   // Same rule, same reason: a surface the fetcher PROVED absent is recognised by type, so
   // the class survives any rewording of the message.
   if (err instanceof HermesDashboardAbsentError) return "DASHBOARD_NOT_DEPLOYED";
+  // OUR OWN inbound-media refusal, by TYPE for the same reason. Only the BATCH
+  // failures reach here — a size/collision/fetch failure drops that one file and
+  // the send continues (`RECOVERABLE_DROP_FAILURES`) — but the size class is
+  // mapped anyway: the day it is thrown, "your file is too large" must not
+  // regress into an unrecognised upstream error.
+  if (err instanceof InboundMediaRefusal) {
+    return INBOUND_REFUSAL_CODES[err.code] ?? "attachment_staging_failed";
+  }
   const msg = (
     err instanceof Error ? err.message : String(err ?? "")
   ).toLowerCase();

@@ -49,12 +49,19 @@ export interface TargetHealth {
    *  NOT a bridge-health failure: recorded for the health view's neutral note, but
    *  it NEVER sets `state` to `error` (Traces + Anomalies carry the detail/alert). */
   lastDownstreamReject: { code: string; at: number } | null;
+  /** Last LOCAL refusal (the bridge declined the request itself, before sending)
+   *  + when. Its OWN field, not folded into `lastDownstreamReject`: the admin card
+   *  renders that one as "rejected by the gateway", which is a statement about a
+   *  gateway that never saw the request (codex). */
+  lastLocalRefusal: { code: string; at: number } | null;
   lastAttemptAt: number | null;
   attempts: number;
   okCount: number;
   errorCount: number;
   /** Count of downstream rejections (distinct from errorCount = bridge-domain). */
   downstreamRejectCount: number;
+  /** Count of local refusals (the bridge's own, before any send). */
+  localRefusalCount: number;
 }
 
 export interface HealthSnapshot {
@@ -103,11 +110,13 @@ export class HealthRegistry {
         lastOkAt: null,
         lastError: null,
         lastDownstreamReject: null,
+        lastLocalRefusal: null,
         lastAttemptAt: null,
         attempts: 0,
         okCount: 0,
         errorCount: 0,
         downstreamRejectCount: 0,
+        localRefusalCount: 0,
       };
       this.targets.set(ref.key, h);
       return h;
@@ -128,11 +137,13 @@ export class HealthRegistry {
       h.lastOkAt = null;
       h.lastError = null;
       h.lastDownstreamReject = null;
+      h.lastLocalRefusal = null;
       h.lastAttemptAt = null;
       h.attempts = 0;
       h.okCount = 0;
       h.errorCount = 0;
       h.downstreamRejectCount = 0;
+      h.localRefusalCount = 0;
     }
     // Keep the (non-secret) label fresh if a later send learned the instance name.
     if (ref.instanceName) h.instanceName = ref.instanceName;
@@ -201,6 +212,29 @@ export class HealthRegistry {
     const h = this.ensure(ref);
     h.lastDownstreamReject = { code, at: this.clock() };
     h.downstreamRejectCount += 1;
+  }
+
+  /** The BRIDGE refused the request ITSELF — the turn was never sent (an inbound
+   *  file it could not stage — `faultDomain` "local"). Connectivity was neither
+   *  proven nor disproven, so `state` is left EXACTLY as it was: claiming
+   *  `connected` here would clear a real network incident the target is already in
+   *  (codex), and claiming `error` is the defect this class was minted to end. The
+   *  attempt and the code are still recorded — the failure stays visible in the
+   *  health card, the trace and the anomaly. */
+  recordLocalRefusal(ref: TargetRef, code: string): void {
+    const h = this.ensure(ref);
+    h.lastLocalRefusal = { code, at: this.clock() };
+    h.localRefusalCount += 1;
+    // The send WAS attempted — the admin line counts it, like every other
+    // outcome. Only `lastAttemptAt` stays untouched, and that field is not the
+    // attempt counter: it is the decay clock for a stale `error` (below).
+    h.attempts += 1;
+    // `lastAttemptAt` is DELIBERATELY untouched: it is the decay clock for a stale
+    // `error` (see `decayedState`), i.e. "when did we last try the LINK". A local
+    // refusal never tried it, so bumping the clock would resurrect an error that
+    // was about to decay to idle — and a user re-sending an attachment could hold
+    // the admin header red, the instance degraded and the chat banner up for ever,
+    // on a link nothing had tested (codex P1). Same reasoning as recordTurnError.
   }
 
   snapshot(): HealthSnapshot {

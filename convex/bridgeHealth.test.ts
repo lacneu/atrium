@@ -111,6 +111,32 @@ describe("normalizeTarget (defensive parse of the bridge /health body)", () => {
     });
   });
 
+  test("a LOCAL refusal keeps its own fields, never the gateway's", () => {
+    // The bridge declined the request itself, before sending. Projected onto the
+    // downstream fields it would reach the admin card as "rejected by the
+    // gateway", about a gateway that never saw the request (codex).
+    const t = normalizeTarget({
+      key: "l",
+      canonical: "l",
+      agentId: "main",
+      gatewayHost: "h:1",
+      state: "connected",
+      lastOkAt: 1,
+      attempts: 1,
+      okCount: 1,
+      errorCount: 0,
+      lastLocalRefusal: { code: "attachment_path_refused", at: 789 },
+      localRefusalCount: 2,
+    });
+    expect(t).toMatchObject({
+      lastLocalRefusalCode: "attachment_path_refused",
+      lastLocalRefusalAt: 789,
+      localRefusalCount: 2,
+      lastDownstreamRejectCode: null,
+      lastErrorCode: null,
+    });
+  });
+
   test("an older bridge body without downstream fields -> nulls/0 (back-compat)", () => {
     const t = normalizeTarget({
       key: "o",
@@ -127,6 +153,10 @@ describe("normalizeTarget (defensive parse of the bridge /health body)", () => {
     expect(t?.lastDownstreamRejectCode).toBeNull();
     expect(t?.lastDownstreamRejectAt).toBeNull();
     expect(t?.downstreamRejectCount).toBe(0);
+    // Same back-compat for the local-refusal fields.
+    expect(t?.lastLocalRefusalCode).toBeNull();
+    expect(t?.lastLocalRefusalAt).toBeNull();
+    expect(t?.localRefusalCount).toBe(0);
   });
 });
 

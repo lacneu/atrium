@@ -18,6 +18,7 @@ export interface BridgeTargetView {
   /** Last downstream rejection code (cleared by a later ok/error). Optional: a
    *  pre-this-release bridge omits it. */
   lastDownstreamRejectCode?: string | null;
+  lastLocalRefusalCode?: string | null;
 }
 
 /** Targets with a CURRENT bridge-domain failure — drives the red banner + its
@@ -66,4 +67,22 @@ export function showsBridgeErrorDetail(t: BridgeTargetView): boolean {
  *  it on the next ok/error). Independent of the bridge-error block. */
 export function showsDownstreamReject(t: BridgeTargetView): boolean {
   return Boolean(t.lastDownstreamRejectCode);
+}
+
+/** Show the LOCAL-refusal note? The bridge declined the request itself and the
+ *  turn was never sent. Its own block: folded into the downstream note, the card said
+ *  "rejected by the gateway" about a gateway that never saw the request. */
+export function showsLocalRefusal(t: BridgeTargetView): boolean {
+  return Boolean(t.lastLocalRefusalCode);
+}
+
+/** Does this target have a detail sub-row to render at all? The JSX asked for
+ *  `error || downstream` and a LONE local refusal answered neither — so the note
+ *  was computed and then thrown away with the row that would have carried it
+ *  (codex P1). One predicate, so the question is asked in a place a test can
+ *  reach. */
+export function showsDetailRow(t: BridgeTargetView): boolean {
+  return (
+    showsBridgeErrorDetail(t) || showsDownstreamReject(t) || showsLocalRefusal(t)
+  );
 }
