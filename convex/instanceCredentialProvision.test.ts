@@ -195,6 +195,62 @@ describe("provisioner credential enrollment", () => {
     expect(before.find(({ field }) => field === "token")?.source).toBe("device");
   });
 
+  test("an explicit unpaired recovery restores bootstrap auth without rotating identity", async () => {
+    const t = convexTest(schema, modules);
+    await seed(t);
+    await provision(t);
+    const enrolled = await enroll(t, openclawBody());
+    const identity = enrolled.json.deviceIdentity as { id: string; publicKey: string };
+    const instanceId = (await secretRows(t))[0]!.instanceId;
+    await t.action(internal.instanceCredentialProvision.promoteOpenClawDeviceToken, {
+      instanceId,
+      deviceId: identity.id,
+      publicKey: identity.publicKey,
+      token: "old-device-token",
+    });
+    const before = await secretRows(t);
+    const attempt = (id: string, token = "operator-token") =>
+      enroll(t, { ...openclawBody(token), recoverUnpairedDeviceId: id });
+
+    const rejected = await attempt("0".repeat(64));
+    expect(rejected.status).toBe(409);
+    expect(rejected.json.error).toBe("credential_recovery_invalid");
+    expect(await secretRows(t)).toEqual(before);
+
+    const recovered = await attempt(identity.id);
+    expect(recovered.status).toBe(200);
+    expect(recovered.json.outcome).toBe("stored");
+    expect(recovered.json.deviceIdentity).toEqual(identity);
+    const rows = await secretRows(t);
+    expect(rows.find(({ field }) => field === "deviceIdentity")?.secret).toEqual(
+      before.find(({ field }) => field === "deviceIdentity")?.secret,
+    );
+    const token = rows.find(({ field }) => field === "token")!;
+    expect(token.source).toBe("provisioner");
+    expect(token.issuedAtMs).toBeUndefined();
+    const { registry } = loadLocalCrypto({ ATRIUM_SECRET_KEY: MASTER_KEY });
+    expect(await registry.decrypt(token.secret, `${instanceId}:token`)).toBe(
+      "operator-token",
+    );
+    const replay = await attempt(identity.id);
+    expect(replay.json.outcome).toBe("unchanged");
+    expect(await secretRows(t)).toEqual(rows);
+    expect((await attempt(identity.id, "changed-bootstrap")).status).toBe(409);
+    expect(await secretRows(t)).toEqual(rows);
+  });
+
+  test("unpaired recovery rejects Hermes and callers without provisioning rights", async () => {
+    const t = convexTest(schema, modules);
+    await seed(t);
+    await provision(t);
+    const enrolled = await enroll(t, openclawBody());
+    const identity = enrolled.json.deviceIdentity as { id: string };
+    const body = { ...openclawBody(), recoverUnpairedDeviceId: identity.id };
+    expect((await enroll(t, body, OBSERVER_KEY)).status).toBe(403);
+    expect((await enroll(t, { ...body, kind: "hermes" })).status).toBe(400);
+    expect((await enroll(t, { ...body, recoverUnpairedDeviceId: "invalid" })).status).toBe(400);
+  });
+
   /** Rewrite the token row the way a deployment predating `source` left it:
    *  the column is OPTIONAL and nothing backfills it, so production carries rows
    *  whose provenance is genuinely unknown. */
