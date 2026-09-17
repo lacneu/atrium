@@ -2140,7 +2140,7 @@ http.route({
     }
     const body = decoded as Record<string, unknown>;
     const unknown = Object.keys(body).filter(
-      (key) => !["name", "kind", "credentials"].includes(key),
+      (key) => !["name", "kind", "credentials", "recoverUnpairedDeviceId"].includes(key),
     );
     if (unknown.length > 0) {
       return await reject(`unsupported field: ${unknown.sort()[0]}`);
@@ -2154,6 +2154,14 @@ http.route({
     }
     if (body.kind !== "openclaw" && body.kind !== "hermes") {
       return await reject("kind must be 'openclaw' or 'hermes'");
+    }
+    if (
+      body.recoverUnpairedDeviceId !== undefined &&
+      (body.kind !== "openclaw" ||
+        typeof body.recoverUnpairedDeviceId !== "string" ||
+        !/^[0-9a-f]{64}$/.test(body.recoverUnpairedDeviceId))
+    ) {
+      return await reject("recoverUnpairedDeviceId is invalid");
     }
     if (
       typeof body.credentials !== "object" ||
@@ -2204,6 +2212,9 @@ http.route({
           name: body.name,
           kind: body.kind,
           credentials: actionCredentials,
+          ...(body.recoverUnpairedDeviceId === undefined
+            ? {}
+            : { recoverUnpairedDeviceId: body.recoverUnpairedDeviceId as string }),
         },
       );
       await trace(
@@ -2212,6 +2223,7 @@ http.route({
           instance: result.name,
           outcome: result.outcome,
           fields: result.fields,
+          recovery: body.recoverUnpairedDeviceId !== undefined,
         }),
       );
       return apiJson({ ok: true, ...result });
@@ -2227,6 +2239,7 @@ http.route({
         instance_kind_changed: 409,
         instance_kind_mismatch: 409,
         credential_fields_invalid: 400,
+        credential_recovery_invalid: 409,
       };
       const status = known[message] ?? 500;
       const publicError =

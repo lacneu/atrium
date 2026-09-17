@@ -168,7 +168,7 @@ Content-Type: application/json
 ```
 
 Hermes uses `{"apiKey":"…"}` instead of `{"token":"…"}`. The request
-accepts exactly `name`, `kind`, and `credentials`; the credential object must
+accepts exactly `name`, `kind`, and `credentials` in normal operation; the credential object must
 also be exact for its provider. Partial bundles and unknown fields are refused.
 
 For OpenClaw, Atrium mints the Ed25519 device identity in its action runtime,
@@ -194,6 +194,22 @@ replays cannot downgrade it. A changed Hermes key updates only its encrypted
 field. A provider switch removes stale provider fields in the same optimistic mutation.
 Duplicate instance names, kind drift, duplicate secret rows, concurrent changes,
 and malformed stored identities fail closed.
+
+An OpenClaw upgrade or full restore can leave Atrium holding a promoted device
+token while the gateway no longer lists that same device as paired. This is an
+exceptional, operator-controlled recovery, not a normal enrollment replay.
+First stop the affected bridge and verify against the live gateway that the
+returned `deviceIdentity.id` is neither paired nor pending. Then the same
+provisioner may resubmit the pinned bootstrap credential with
+`"recoverUnpairedDeviceId":"<exact 64-character device ID>"`. Atrium
+compares the expected ID to the retained identity and uses optimistic locking
+to replace only a promoted token with the bootstrap credential. The identity
+is preserved, the private key is never returned, and the operation is audited
+as a recovery. A subsequent replay with the same bootstrap value is a no-op;
+changing an already provisioned bootstrap through this recovery path is refused.
+The bridge must then be restarted, paired through the native gateway command,
+and verified to have promoted a fresh device token. Never invoke this path for
+a currently paired device: it deliberately invalidates its existing token.
 
 **A token of UNKNOWN provenance is refused, not overwritten.** The no-downgrade
 rule above reads `instanceSecrets.source`, which is OPTIONAL and which nothing

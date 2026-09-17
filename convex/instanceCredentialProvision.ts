@@ -314,10 +314,11 @@ export const enrollInstanceCredentials = internalAction({
     name: v.string(),
     kind: v.union(v.literal("openclaw"), v.literal("hermes")),
     credentials: credentialValidator,
+    recoverUnpairedDeviceId: v.optional(v.string()),
   },
   handler: async (
     ctx,
-    { name, kind, credentials },
+    { name, kind, credentials, recoverUnpairedDeviceId },
   ): Promise<{
     name: string;
     outcome: "stored" | "unchanged";
@@ -330,6 +331,12 @@ export const enrollInstanceCredentials = internalAction({
     );
     if (state === null) throw new Error("instance_not_found");
     if (state.kind !== kind) throw new Error("instance_kind_mismatch");
+    if (
+      recoverUnpairedDeviceId !== undefined &&
+      (kind !== "openclaw" || !/^[0-9a-f]{64}$/.test(recoverUnpairedDeviceId))
+    ) {
+      throw new Error("credential_recovery_invalid");
+    }
 
     const fields = expectedFields(kind);
     const supplied = Object.entries(credentials).filter(
@@ -389,6 +396,12 @@ export const enrollInstanceCredentials = internalAction({
         });
       }
       deviceIdentity = { id: identity.id, publicKey: identity.publicKey };
+      if (
+        recoverUnpairedDeviceId !== undefined &&
+        (envelope === undefined || identity.id !== recoverUnpairedDeviceId)
+      ) {
+        throw new Error("credential_recovery_invalid");
+      }
     }
     for (const [field, plaintext] of supplied) {
       const current = existing.get(field);
@@ -408,11 +421,25 @@ export const enrollInstanceCredentials = internalAction({
         field === "token" &&
         current?.source === "device" &&
         mintedIdentity;
-      if (
-        !boundToAReplacedIdentity &&
+      const recoveringPromotedToken =
+        field === "token" &&
+        recoverUnpairedDeviceId !== undefined &&
+        current?.source === "device";
+      const suppliedMatchesStored =
         envelope !== undefined &&
         (await registry.decrypt(envelope, `${state.instanceId}:${field}`)) ===
-          plaintext
+          plaintext;
+      if (
+        recoverUnpairedDeviceId !== undefined &&
+        !recoveringPromotedToken &&
+        (current?.source !== "provisioner" || !suppliedMatchesStored)
+      ) {
+        throw new Error("credential_recovery_invalid");
+      }
+      if (
+        !boundToAReplacedIdentity &&
+        !recoveringPromotedToken &&
+        suppliedMatchesStored
       ) {
         continue;
       }
@@ -428,7 +455,8 @@ export const enrollInstanceCredentials = internalAction({
         kind === "openclaw" &&
         field === "token" &&
         current?.source === "device" &&
-        !mintedIdentity
+        !mintedIdentity &&
+        !recoveringPromotedToken
       ) {
         continue;
       }
