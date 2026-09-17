@@ -97,6 +97,25 @@ export async function recordFileForPart(
 }
 
 /**
+ * Remove the `files` rows a message holds for ONE stored object — the delete-side
+ * of the invariant when a single part is dropped (an announce rebroadcast
+ * replacing a row whose blob is gone) rather than the whole message.
+ */
+export async function deleteFileRowsForStorage(
+  ctx: MutationCtx,
+  messageId: Id<"messages">,
+  storageId: Id<"_storage">,
+): Promise<void> {
+  const rows = await ctx.db
+    .query("files")
+    .withIndex("by_message", (q) => q.eq("messageId", messageId))
+    .collect();
+  for (const r of rows) {
+    if (r.storageId === storageId) await ctx.db.delete(r._id);
+  }
+}
+
+/**
  * Remove every `files` row for a message — the delete-side of the invariant.
  * Call this wherever a message's `messageParts` are deleted (chat cascade,
  * deleteMessage truncate-forward / regenerate), paired with the part deletion.

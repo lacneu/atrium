@@ -1844,3 +1844,162 @@ describe("the task-overrun alarm survives the window", () => {
     ).not.toBeNull();
   });
 });
+
+describe("a delivery failure the platform REPAIRED", () => {
+  // A contentless delivery is named `empty_response` at the final, and the
+  // bridge may still land its file minutes later — the platform then takes the
+  // error card back (stream.ts addPart). The alarm reads traces, not messages,
+  // so without a compensation the operator keeps an alert for a delivery the
+  // reader received.
+  const RUN = (n: number) =>
+    `announce:v1:agent:files:subagent:9af5b6c1-d161-4994-a5df-6e256c5b433${n}:r${n}`;
+  const CORR = (n: number) => `chat_${n}:${RUN(n)}`;
+
+  async function seedFailedDeliveries(t: ReturnType<typeof convexTest>) {
+    const now = Date.now();
+    await t.run(async (ctx) => {
+      for (let i = 0; i < 3; i++) {
+        await seedTrace(ctx, {
+          kind: "assistant.stream",
+          at: now - i * 1000,
+          correlationId: CORR(i),
+          meta: {
+            phase: "finalize",
+            streamStatus: "error",
+            errorCode: "empty_response",
+          },
+        });
+      }
+    });
+  }
+
+  test("three failed deliveries raise the alarm", async () => {
+    const t = convexTest(schema, modules);
+    await seedFailedDeliveries(t);
+    const r = await t.mutation(internal.anomalies.detectAnomalies, {});
+    expect(r.detected).toContain("assistant.announce_errors");
+  });
+
+  test("…and each repair takes ITS OWN failure back out of the count", async () => {
+    const t = convexTest(schema, modules);
+    await seedFailedDeliveries(t);
+    // The alarm is OPEN first — this is the case an operator actually lives
+    // through, not a fresh database that never raised anything.
+    const first = await t.mutation(internal.anomalies.detectAnomalies, {});
+    expect(first.detected).toContain("assistant.announce_errors");
+    const opened = await t.run(async (ctx) =>
+      ctx.db
+        .query("anomalies")
+        .withIndex("by_status_kind", (q) =>
+          q.eq("status", "open").eq("kind", "assistant.announce_errors"),
+        )
+        .first(),
+    );
+    expect(opened?.occurrenceCount).toBe(1);
+
+    await t.run(async (ctx) => {
+      for (let i = 0; i < 3; i++) {
+        await seedTrace(ctx, {
+          kind: "assistant.stream",
+          correlationId: CORR(i),
+          meta: {
+            phase: "finalize_repaired",
+            streamStatus: "complete",
+            errorCode: "empty_response",
+          },
+        });
+      }
+    });
+    const second = await t.mutation(internal.anomalies.detectAnomalies, {});
+    expect(second.detected).not.toContain("assistant.announce_errors");
+    const after = await t.run(async (ctx) =>
+      ctx.db
+        .query("anomalies")
+        .withIndex("by_status_kind", (q) =>
+          q.eq("status", "open").eq("kind", "assistant.announce_errors"),
+        )
+        .first(),
+    );
+    // No NEW occurrence for deliveries that arrived. The row itself stays open:
+    // a class that cost a user a turn is closed by a human, never by the
+    // detector (isTurnCostingKind) — the compensation stops the history from
+    // growing, it does not rewrite it.
+    expect(after?.occurrenceCount).toBe(1);
+    expect(after?.status).toBe("open");
+  });
+
+  test("a repair cancels ONE failure, of its own class", async () => {
+    // An announce run can fail, be resumed and fail again under a different
+    // class before a late file repairs the delivery. The compensation must take
+    // out the delivery that arrived — not the run's whole history.
+    const t = convexTest(schema, modules);
+    await t.run(async (ctx) => {
+      await seedTrace(ctx, {
+        kind: "assistant.stream",
+        correlationId: CORR(0),
+        meta: {
+          phase: "finalize",
+          streamStatus: "error",
+          errorCode: "empty_response",
+        },
+      });
+      await seedTrace(ctx, {
+        kind: "assistant.stream",
+        correlationId: CORR(0),
+        meta: { phase: "finalize", streamStatus: "error", errorCode: "timeout" },
+      });
+      for (const i of [1, 2]) {
+        await seedTrace(ctx, {
+          kind: "assistant.stream",
+          correlationId: CORR(i),
+          meta: {
+            phase: "finalize",
+            streamStatus: "error",
+            errorCode: "empty_response",
+          },
+        });
+      }
+      await seedTrace(ctx, {
+        kind: "assistant.stream",
+        correlationId: CORR(0),
+        meta: {
+          phase: "finalize_repaired",
+          streamStatus: "complete",
+          errorCode: "empty_response",
+        },
+      });
+    });
+    const r = await t.mutation(internal.anomalies.detectAnomalies, {});
+    // 4 failures - 1 repaired = 3, still on the threshold.
+    expect(r.detected).toContain("assistant.announce_errors");
+    const row = await t.run(async (ctx) =>
+      ctx.db
+        .query("anomalies")
+        .withIndex("by_status_kind", (q) =>
+          q.eq("status", "open").eq("kind", "assistant.announce_errors"),
+        )
+        .first(),
+    );
+    expect(row?.message).toContain("3 over");
+  });
+
+  test("a repair whose failure is NOT in the window cancels nothing", async () => {
+    // Blind subtraction would cancel somebody else's still-broken delivery and
+    // hide a burst sitting exactly on the threshold.
+    const t = convexTest(schema, modules);
+    await seedFailedDeliveries(t);
+    await t.run(async (ctx) => {
+      await seedTrace(ctx, {
+        kind: "assistant.stream",
+        correlationId: "chat_9:announce:v1:agent:files:subagent:older:r9",
+        meta: {
+          phase: "finalize_repaired",
+          streamStatus: "complete",
+          errorCode: "empty_response",
+        },
+      });
+    });
+    const r = await t.mutation(internal.anomalies.detectAnomalies, {});
+    expect(r.detected).toContain("assistant.announce_errors");
+  });
+});

@@ -25,7 +25,12 @@ import {
 } from "./_generated/server";
 import { Doc } from "./_generated/dataModel";
 import { requirePermission } from "./lib/access";
-import { isAnnounceCorrelation, streamFinalizeClass } from "./anomalies";
+import {
+  collectRepairedFinalizes,
+  isAnnounceCorrelation,
+  isRepairedFinalize,
+  streamFinalizeClass,
+} from "./anomalies";
 import { PERMISSIONS } from "./lib/rbac";
 import { filterValidator, type Filter } from "./lib/filters";
 import { KPI_METRICS } from "./lib/kpiMetrics";
@@ -173,6 +178,13 @@ export const rollupKpis = internalMutation({
     // Bucket -> aggregate. Each event lands in its OWN hour bucket; the window
     // straddles hour boundaries so a single "current hour" would drop events.
     const byBucket = new Map<string, BucketAgg>();
+    // Same rule as the detector, same helper: a delivery failure the platform
+    // REPAIRED never becomes a point. Skipping the failure ROW (rather than
+    // subtracting later) is what makes the hour right — the false point is
+    // removed from the bar that carried it, even when the file landed in the
+    // next hour — and a repair whose failure is outside this scan corrects
+    // nothing instead of taking a point off an innocent bar.
+    const repairedFinalizes = collectRepairedFinalizes(rows);
     for (const row of rows) {
       const bucket = hourBucket(row.at);
       let agg = byBucket.get(bucket);
@@ -180,6 +192,11 @@ export const rollupKpis = internalMutation({
         agg = emptyAgg();
         byBucket.set(bucket, agg);
       }
+      // A repaired pair contributes NOTHING — but its hour is still RECOMPUTED
+      // (the bucket exists above): this rollup REPLACES only the buckets it
+      // rebuilds, so dropping the row without touching its bucket would leave
+      // the point already written for that hour standing at 1 forever.
+      if (isRepairedFinalize(repairedFinalizes, row)) continue;
       accumulate(agg, row);
     }
 

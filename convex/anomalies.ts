@@ -291,6 +291,30 @@ export function streamFinalizeClass(
 }
 
 /**
+ * The class a `finalize_repaired` row COMPENSATES, when the row is one.
+ *
+ * A contentless delivery is named `empty_response` at the final (stream.ts
+ * `deliveredNothing`), and the bridge may still land its file minutes later —
+ * the platform then takes the error card back. The error row is already counted
+ * here, so without this the operator keeps an anomaly, and the chart a point,
+ * for a delivery the reader actually received.
+ */
+export function streamFinalizeRepairCode(
+  row: Doc<"traceEvents">,
+): string | undefined {
+  if (row.kind !== "assistant.stream" || row.meta === undefined) return undefined;
+  try {
+    const m = JSON.parse(row.meta) as { phase?: string; errorCode?: unknown };
+    if (m.phase !== "finalize_repaired") return undefined;
+    return typeof m.errorCode === "string" && m.errorCode.length > 0
+      ? m.errorCode
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
  * The curated failure CLASS of an `assistant.stream` finalize row (meta.errorCode,
  * written by stream.ts through the platform's non-PHI allowlist). Absent on rows
  * written before this shipped, and on failures whose code is not allowlisted —
@@ -306,6 +330,67 @@ function streamFailureCode(row: Doc<"traceEvents">): string | undefined {
   } catch {
     return undefined;
   }
+}
+
+/**
+ * WHICH rows of a scanned window belong to a repaired delivery: every
+ * `finalize_repaired` compensation, plus the ONE failure each of them answers.
+ *
+ * The pair is (correlation, class) — an announce run that failed
+ * `empty_response`, resumed, failed `timeout` and was finally repaired keeps its
+ * `timeout` — and, among several failures of that pair, the repair answers the
+ * MOST RECENT one that precedes it: the card that was on screen when the file
+ * landed. The aggregations themselves stay ascending; only this pairing looks
+ * backwards, because "which point disappears" decides which hour is corrected.
+ */
+export function collectRepairedFinalizes(
+  rows: Doc<"traceEvents">[],
+): Set<Id<"traceEvents">> {
+  const dropped = new Set<Id<"traceEvents">>();
+  // POSITIONS in the scan, never timestamps: same-millisecond writes are real
+  // (the occurrence history keys on identity for exactly this reason), and a
+  // failure written at the same instant as a compensation, right after it, is a
+  // NEW failure — comparing `at` would let the repair swallow it.
+  const failures = new Map<string, number[]>();
+  rows.forEach((row, index) => {
+    if (streamFinalizeClass(row) !== "error") return;
+    const code = streamFailureCode(row);
+    if (code === undefined || !row.correlationId) return;
+    const key = `${row.correlationId}\u0000${code}`;
+    const list = failures.get(key);
+    if (list === undefined) failures.set(key, [index]);
+    else list.push(index);
+  });
+  rows.forEach((row, index) => {
+    const code = streamFinalizeRepairCode(row);
+    if (code === undefined || !row.correlationId) return;
+    dropped.add(row._id); // the compensation carries no observation of its own
+    const list = failures.get(`${row.correlationId}\u0000${code}`);
+    if (list === undefined) return;
+    // The pair's failures, newest first: never one written after the
+    // compensation, never one another compensation already answered.
+    for (let i = list.length - 1; i >= 0; i--) {
+      const position = list[i];
+      if (position === undefined || position >= index) continue;
+      const candidate = rows[position];
+      if (candidate === undefined || dropped.has(candidate._id)) continue;
+      dropped.add(candidate._id);
+      break;
+    }
+  });
+  return dropped;
+}
+
+/**
+ * Is this row one of them? Callers DROP it rather than subtracting afterwards: a
+ * failure that was never recorded leaves no sample correlation and no
+ * latest-event anchor pointing at a delivery the reader received.
+ */
+export function isRepairedFinalize(
+  dropped: Set<Id<"traceEvents">>,
+  row: Doc<"traceEvents">,
+): boolean {
+  return dropped.has(row._id);
 }
 
 /** The hidden-chat kind this dispatch belonged to, or null for a real conversation.
@@ -736,6 +821,16 @@ export const detectAnomalies = internalMutation({
       .order("asc")
       .take(MAX_SCAN);
 
+    // A delivery failure the platform REPAIRED (its file landed after the
+    // verdict — stream.ts addPart) is not an observation an operator can act on:
+    // the reader received it. Collected BEFORE the aggregation so the failure is
+    // never counted at all — subtracting afterwards cannot restore the sample
+    // correlation, the latest-event anchor or the cause it had already recorded,
+    // and a repair whose failure is outside this window (or whose finalize row
+    // was lost) then cancels nothing, instead of taking one off somebody else's
+    // still-broken delivery. Bounded by the same scan.
+    const repairedFinalizes = collectRepairedFinalizes(rows);
+
     const agg: WindowAgg = {
       apiCalls: 0,
       apiErrors: 0,
@@ -815,6 +910,9 @@ export const detectAnomalies = internalMutation({
           break;
         }
         case "assistant.stream": {
+          // The compensation row and the ONE failure it answers carry no
+          // observation an operator can act on: the reader received it.
+          if (isRepairedFinalize(repairedFinalizes, row)) break;
           const cls = streamFinalizeClass(row);
           if (cls === "error") {
             // WHOSE failure is this? An announce delivers a sub-agent's report

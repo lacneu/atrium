@@ -117,11 +117,12 @@ function convexSources(): { file: string; source: string }[] {
  * not the `.paginate(` further down it.
  */
 const KNOWN_OFFENDERS: ReadonlyArray<string> = [
-  // Moved 1704 -> 1710 by the two storage cause-classes added to the per-cause map above it
-  // (gateway_storage_busy / _unavailable). The offender itself is untouched: same file, same
-  // call, and the list still holds exactly two entries — the ratchet counts offenders, and
-  // this record is what keeps a line shift from reading as one.
-  "anomalies.ts:1710",
+  // Moved 1704 -> 1710 by the two storage cause-classes added to the per-cause map, then
+  // 1710 -> 1808 by the repaired-finalize compensation (the `*RepairedFinalize*` helpers and
+  // the pre-pass that drops a repaired pair). The offender itself is untouched: same file,
+  // same call, and the list still holds exactly two entries — the ratchet counts offenders,
+  // and this record is what keeps a line shift from reading as one.
+  "anomalies.ts:1808",
   "feedback.ts:926",
 ];
 

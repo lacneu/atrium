@@ -262,6 +262,13 @@ export const deliverOutboundFiles = internalAction({
           skipped: skipped.length,
         }),
       });
+      // The files ARE on the bubble — which also answers the contentless-delivery
+      // verdict, if one is still standing over them (a probe taken while storage
+      // could not answer). Nothing moved here, and that is exactly the case the
+      // other repair paths never reach.
+      await ctx.runMutation(internal.stream.reconcileDeliveryVerdict, {
+        messageId,
+      });
       return { ok: true as const, attached: [], notDelivered: [], skipped };
     }
 
@@ -396,6 +403,15 @@ export const deliverOutboundFiles = internalAction({
         notDelivered: notDelivered.length,
         skipped: skipped.length,
       }),
+    });
+    // EVERY successful exit, not only the all-skipped one: a bubble can hold a
+    // file the operator did not have to re-attach while another name is still
+    // undeliverable — and that first file is already the proof this delivery was
+    // not empty. The mutation is a no-op on any message this platform did not
+    // stamp, so it costs one read on every repair and ends the lie on the ones
+    // that carry it.
+    await ctx.runMutation(internal.stream.reconcileDeliveryVerdict, {
+      messageId,
     });
     return { ok: true as const, attached, notDelivered, skipped };
   },

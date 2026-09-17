@@ -31,7 +31,11 @@ import {
 import { Doc, Id } from "./_generated/dataModel";
 import { messagePart } from "./schema";
 import { writeTraceEvent } from "./observability";
-import { isFilePart, recordFileForPart } from "./lib/files";
+import {
+  deleteFileRowsForStorage,
+  isFilePart,
+  recordFileForPart,
+} from "./lib/files";
 import { drainNextQueued } from "./lib/outboxQueue";
 import { maybeScheduleTurnRetry } from "./turnRetry";
 import { maybeReparkPreemptedTurn } from "./preemptRepark";
@@ -159,7 +163,7 @@ function streamCorrelationId(
 async function traceStream(
   ctx: MutationCtx,
   args: {
-    phase: "start" | "finalize" | "snapshot_regression";
+    phase: "start" | "finalize" | "snapshot_regression" | "finalize_repaired";
     chatId: Id<"chats">;
     runId: string | undefined;
     messageId: Id<"messages">;
@@ -423,6 +427,145 @@ async function streamingRow(ctx: MutationCtx, messageId: Id<"messages">) {
 // Separator between the parent's own reply and the announced sub-agent result
 // when the two merge into one bubble.
 const ANNOUNCE_SEP = "\n\n";
+
+// A DELIVERY run that finalized COMPLETE while bringing neither text nor a file.
+// Shares the sink's curated class so the reader gets the same card and the
+// per-cause anomaly plane counts one cause, not two (`KNOWN_ERROR_CODES` gates
+// the trace, `CAUSE_ANOMALY_KINDS` files the anomaly, `RETRYABLE_KINDS` — which
+// this code is deliberately absent from — keeps a billed turn from re-running).
+const DELIVERED_NOTHING_CODE = "empty_response";
+const DELIVERED_NOTHING_TEXT =
+  "The delivery finished without bringing anything (no text, no file).";
+
+// How many parts the contentless-delivery probe reads before it gives up. A
+// bubble carrying more than this has plainly been worked on; evidence we did
+// not finish reading may not name a failure (the sink's own doctrine on its
+// truncated child-key sets: INCONCLUSIVE beats a wrong verdict).
+const DELIVERED_PROBE_CAP = 64;
+
+/**
+ * Does this stored object still resolve to something the client can fetch? The
+ * client drops a media part with no url (src/chat/convertMessage.ts), so a row
+ * whose blob is gone is not content. `onFailure` is the answer when STORAGE
+ * itself refuses: each caller states the conservative side of its own decision.
+ */
+async function blobStillResolves(
+  ctx: MutationCtx,
+  storageId: Id<"_storage">,
+  onFailure = false,
+): Promise<boolean> {
+  try {
+    return (await ctx.storage.getUrl(storageId)) !== null;
+  } catch {
+    return onFailure;
+  }
+}
+
+/**
+ * Take the contentless-delivery verdict BACK when the bubble does carry a file.
+ *
+ * The verdict (finalize's `deliveredNothing`) is only as true as the moment it
+ * was taken: the bridge deliberately lets a slow upload land its attachment
+ * AFTER the final, addPart accepts late parts on a terminal message, and a probe
+ * that ran while storage could not answer stood down rather than invent
+ * evidence. Both addPart paths end here — the part that lands, and the replayed
+ * part that dedupes against a twin the reader can open — so an error card is
+ * never left standing over a document.
+ */
+async function reconcileContentlessDelivery(
+  ctx: MutationCtx,
+  message: Doc<"messages">,
+  messageId: Id<"messages">,
+  storageId: Id<"_storage">,
+): Promise<void> {
+  if (
+    message.status !== "error" ||
+    message.errorCode !== DELIVERED_NOTHING_CODE ||
+    message.runId === undefined ||
+    // The exact class this platform stamps, on the exact runs it stamps it for:
+    // the bridge never names a delivery run itself.
+    !isDeliveryRun(message.runId) ||
+    // The EXACT inverse of the verdict, storage included: a row whose blob is
+    // gone renders nothing (the client drops it), so clearing the card for it
+    // would trade a true failure for a false arrival.
+    !(await blobStillResolves(ctx, storageId))
+  ) {
+    return;
+  }
+  await ctx.db.patch(messageId, {
+    status: "complete",
+    error: undefined,
+    errorCode: undefined,
+  });
+  // The reply DID arrive, late: give the sidebar back the arrival cue the
+  // finalize withheld (flash / unread dot / reply sound).
+  await ctx.db.patch(message.chatId, { lastAssistantAt: Date.now() });
+  // …and TELL THE OBSERVABILITY PLANE. The finalize wrote an error row the
+  // detector and the KPI rollup have already counted; without this compensation
+  // an operator keeps an anomaly (and a chart point) for a delivery the reader
+  // received. Same correlation by construction, so the aggregators pair the two.
+  await traceStream(ctx, {
+    phase: "finalize_repaired",
+    chatId: message.chatId,
+    runId: message.runId,
+    messageId,
+    streamStatus: "complete",
+    errorCode: DELIVERED_NOTHING_CODE,
+  });
+}
+
+/**
+ * Does this bubble carry a part the READER gets something out of?
+ *
+ * `plan` and `cron` are visible cards in their own right — a delivery turn whose
+ * only act was an `update_plan` has its estimated plan part inserted BEFORE the
+ * finalize (`advancePlanPart`), and the reader watches the checklist move.
+ * `tool`, `reasoning`, `compaction` and `provenance` deliberately do NOT count:
+ * the sink names a worked-but-undelivered ordinary turn empty on exactly that
+ * reasoning, and the two verdicts must say the same thing.
+ */
+async function carriesDeliveredContent(
+  ctx: MutationCtx,
+  parts: Doc<"messageParts">[],
+): Promise<boolean> {
+  // THE PLAN THE READER SHOWS, not the presence of a plan row: an empty step
+  // list is the normal TOMBSTONE shape (a cleared plan), and the client hides it
+  // (src/chat/planView.ts). Resolved with the same rule the UI uses — greatest
+  // stamp, lib/planOrder.ts — so "there is a checklist on screen" means the same
+  // thing on both sides.
+  const planRows = parts
+    .filter((e) => e.part.kind === "plan")
+    .sort((a, b) => a.order - b.order);
+  if (planRows.length > 0) {
+    const current =
+      planRows[
+        currentPlanIndex(
+          planRows.map((e) => (e.part.kind === "plan" ? e.part : {})),
+        )
+      ];
+    if (
+      current !== undefined &&
+      current.part.kind === "plan" &&
+      current.part.steps.length > 0
+    ) {
+      return true;
+    }
+  }
+  for (const row of parts) {
+    const part = row.part;
+    if (part.kind === "cron") return true;
+    if (part.kind === "file" || part.kind === "media") {
+      // A part whose blob is gone renders NOTHING: the client drops a media
+      // part with no resolved url (src/chat/convertMessage.ts `filePartToContent`).
+      // The card is the delivery only while the reader can open it. Called RAW,
+      // not through `blobStillResolves`: a storage failure is not an answer, and
+      // the throw is what lets the caller rule the probe inconclusive instead of
+      // naming a delivery empty on no evidence.
+      if ((await ctx.storage.getUrl(part.storageId)) !== null) return true;
+    }
+  }
+  return false;
+}
 
 // How long the filename-keyed media dedup stays armed after an announce
 // rebroadcast — long enough for the replayed frames to drain, short enough
@@ -1466,10 +1609,12 @@ export const addPart = internalMutation({
         // dangling row is left where it is — removing it is a different
         // operation, and the reader never sees it.
         let already = false;
+        let attachedStorageId: Id<"_storage"> | undefined;
         for (const row of existing) {
           if (!isFilePart(row.part) || row.part.filename !== filename) continue;
           if ((await ctx.storage.getUrl(row.part.storageId)) === null) continue;
           already = true;
+          attachedStorageId = row.part.storageId;
           break;
         }
         // Already on the bubble: return like any accepted part (this mutation
@@ -1489,6 +1634,18 @@ export const addPart = internalMutation({
           // `reclaim` itself refuses to delete a blob anything still references,
           // so an exact replay keeps the attached object. ONE reader of that rule.
           await reclaim();
+          // The desired state HOLDS — including for the verdict: this is the
+          // moment an operator repair establishes that the file is there, and a
+          // contentless-delivery card still standing over it (a probe that ran
+          // while storage was down) is a lie this path can end.
+          if (attachedStorageId !== undefined) {
+            await reconcileContentlessDelivery(
+              ctx,
+              message,
+              messageId,
+              attachedStorageId,
+            );
+          }
           return;
         }
       }
@@ -1625,7 +1782,39 @@ export const addPart = internalMutation({
         return JSON.stringify(pt);
       };
       const incoming = replayKey(part);
-      if (sameRun.some((e) => replayKey(e.part) === incoming)) {
+      const twins = sameRun.filter((e) => replayKey(e.part) === incoming);
+      // A media/file twin whose BLOB IS GONE is not a copy the reader can open:
+      // the rebroadcast is the repair, and dropping its fresh upload against a
+      // dead row would leave the bubble as empty as it already was (the
+      // filename+mimeType key cannot see this — the storageId always differs).
+      let twinIsUsable = twins.length > 0;
+      let usableTwinStorageId: Id<"_storage"> | undefined;
+      if (twinIsUsable && (part.kind === "media" || part.kind === "file")) {
+        twinIsUsable = false;
+        for (const e of twins) {
+          if (e.part.kind !== "media" && e.part.kind !== "file") continue;
+          // A storage failure keeps the historic behaviour (dedupe): inventing a
+          // "dead twin" here would re-attach the file on every rebroadcast.
+          if (await blobStillResolves(ctx, e.part.storageId, true)) {
+            usableTwinStorageId = e.part.storageId;
+            twinIsUsable = true;
+            break;
+          }
+        }
+      }
+      if (!twinIsUsable && twins.length > 0) {
+        // REPAIR, not accumulation: the dead rows stay invisible in the bubble
+        // (the client drops a part with no url) but `files.listMine` would list
+        // each one forever as an "unavailable" download beside the good copy.
+        // The part and its paired `files` row go together — the invariant.
+        for (const dead of twins) {
+          if (dead.part.kind === "media" || dead.part.kind === "file") {
+            await deleteFileRowsForStorage(ctx, messageId, dead.part.storageId);
+          }
+          await ctx.db.delete(dead._id);
+        }
+      }
+      if (twinIsUsable) {
         // The bridge already uploaded the replayed bytes — reclaim the blob,
         // or every rebroadcast leaks an orphaned (billable) storage object.
         if (
@@ -1641,6 +1830,19 @@ export const addPart = internalMutation({
           } catch {
             // best-effort: an already-gone blob must not fail the ingest
           }
+        }
+        // NOTHING VISIBLE CHANGED — and that is exactly when the verdict can
+        // still be a lie: the finalize's probe is inconclusive when storage
+        // cannot answer, so a bubble can be carrying a file the reader opens
+        // while the error card stands. The replay that deduped against THAT file
+        // is the moment we can see it resolves, so take the card back here too.
+        if (usableTwinStorageId !== undefined) {
+          await reconcileContentlessDelivery(
+            ctx,
+            message,
+            messageId,
+            usableTwinStorageId,
+          );
         }
         return;
       }
@@ -1698,7 +1900,12 @@ export const addPart = internalMutation({
         return;
       }
     }
-    const order = existing.length;
+    // MAX+1, not `existing.length`: a dead-twin replacement (above) deletes rows
+    // from `existing`, and a length-derived order would then collide with a row
+    // that is still there — loadChatView orders the bubble on this number alone,
+    // and a tool part without a provider id takes its identity from its position
+    // (src/chat/convertMessage.ts). Gaps are harmless; duplicates are not.
+    const order = existing.reduce((m, e) => Math.max(m, e.order + 1), 0);
     await ctx.db.insert("messageParts", {
       messageId,
       order,
@@ -1721,7 +1928,46 @@ export const addPart = internalMutation({
         createdAt: Date.now(),
       });
     }
+    if (isFilePart(part)) {
+      await reconcileContentlessDelivery(ctx, message, messageId, part.storageId);
+    }
     await ctx.db.patch(messageId, { updatedAt: Date.now() });
+  },
+});
+
+/**
+ * Take back a contentless-delivery verdict that a LATER observation disproved.
+ *
+ * The verdict is taken at the final, from what the message carried then; an
+ * operator repair may establish afterwards that the bubble does hold a file the
+ * reader can open — including when the repair attaches nothing because the file
+ * was already there. Idempotent, and a no-op on every message this platform did
+ * not stamp.
+ */
+export const reconcileDeliveryVerdict = internalMutation({
+  args: { messageId: v.string() },
+  handler: async (ctx, { messageId }) => {
+    const id = ctx.db.normalizeId("messages", messageId);
+    if (id === null) return;
+    const message = await ctx.db.get(id);
+    if (message === null || message.errorCode !== DELIVERED_NOTHING_CODE) return;
+    // WHOLE bubble, not the finalize probe's window: that cap exists because a
+    // truncated read must not NAME a failure, and this path can only take one
+    // back. A file sitting behind 64 tool cards is exactly the bubble an operator
+    // is repairing, and stopping short would leave the lie standing. Same read
+    // the sibling paths already do on this table (addPart, advancePlanPart).
+    const parts = await ctx.db
+      .query("messageParts")
+      .withIndex("by_message", (q) => q.eq("messageId", id))
+      .collect();
+    for (const row of parts) {
+      if (row.part.kind !== "file" && row.part.kind !== "media") continue;
+      await reconcileContentlessDelivery(ctx, message, id, row.part.storageId);
+      // `reconcileContentlessDelivery` re-reads nothing: one resolving part is
+      // the whole question, and it checks that part itself.
+      const fresh = await ctx.db.get(id);
+      if (fresh?.errorCode !== DELIVERED_NOTHING_CODE) return;
+    }
   },
 });
 
@@ -2548,13 +2794,64 @@ export const finalize = internalMutation({
       });
       finalText = streamedText;
     }
+    // A DELIVERY run is EXEMPT from the sink's empty-response verdict: its
+    // item-derived cards usually ARE the content, and it often merges into an
+    // already-complete bubble — two facts the sink cannot see from the wire. The
+    // exemption left the opposite case unnamed: a delivery that brought NEITHER
+    // text NOR a file landed as a silent empty bubble, with no cause for the
+    // reader and nothing for the per-cause anomaly plane to count (live: four
+    // consecutive empty replies on one chat, and a delegated task whose
+    // deliverable never arrived). The verdict belongs HERE because only the
+    // stored message shows what the reader actually has — the merged text and
+    // the parts already attached to the bubble.
+    let deliveredNothing = false;
+    if (
+      status === "complete" &&
+      errorKind === undefined &&
+      isDeliveryRun(message.runId) &&
+      // `finalText` is what the reader KEEPS — the merge case included: a settle
+      // run that merges into a parent's bubble falls back to the bubble's own
+      // text here (see `streamedText`), so a delivery that added nothing to a
+      // reply the reader can read is never named a failure.
+      finalText.trim() === ""
+    ) {
+      const parts = await ctx.db
+        .query("messageParts")
+        .withIndex("by_message", (q) => q.eq("messageId", messageId))
+        .take(DELIVERED_PROBE_CAP + 1);
+      try {
+        deliveredNothing =
+          parts.length <= DELIVERED_PROBE_CAP &&
+          !(await carriesDeliveredContent(ctx, parts));
+      } catch {
+        // Storage refused to answer: the probe has no evidence, and a verdict
+        // without evidence never names a failure. It must not take the FINALIZE
+        // down with it either — a thrown mutation leaves the message `streaming`
+        // until the watchdog reaps it, which is the very silence this rule
+        // exists to end.
+        deliveredNothing = false;
+      }
+    }
+    // Same shape as the sink's own empty verdict: a status the UI paints as a
+    // failure, and a CURATED class the anomaly plane keys on. `empty_response`
+    // (not the `_silent` variant) because a delivery run that failed to deliver
+    // has already billed its work — it must never be auto-retried.
+    const finalStatus = deliveredNothing ? ("error" as const) : status;
+    const finalErrorKind = deliveredNothing
+      ? DELIVERED_NOTHING_CODE
+      : errorKind;
     await ctx.db.patch(messageId, {
-      status,
+      status: finalStatus,
       text: finalText,
+      ...(deliveredNothing ? { error: DELIVERED_NOTHING_TEXT } : {}),
       // Consumed on success/abort; PRESERVED on error — a rebroadcast may
       // RESUME the merge and needs the pre-merge prefix (parent.text is by
       // then `original + partial`, unusable as a prefix).
-      ...(status !== "error"
+      // `finalStatus`: a contentless delivery IS an error, and the rebroadcast
+      // that can still repair it needs both the pre-merge prefix and the armed
+      // window (the window is what lets a dead twin be replaced rather than
+      // stacked — addPart).
+      ...(finalStatus !== "error"
         ? {
             announcePrefix: undefined,
             announceReplayArmed: undefined,
@@ -2565,7 +2862,7 @@ export const finalize = internalMutation({
       ...(error !== undefined ? { error } : {}),
       // Reuses the existing stable-code field (failDispatch codes live there
       // too) — the UI maps context_length/rate_limit/... to actionable labels.
-      ...(errorKind !== undefined ? { errorCode: errorKind } : {}),
+      ...(finalErrorKind !== undefined ? { errorCode: finalErrorKind } : {}),
       updatedAt: Date.now(),
       // The FIRST terminal transition stamps the generation end. A same-status
       // re-finalize (redelivered final) or a late addPart may bump updatedAt
@@ -2585,7 +2882,10 @@ export const finalize = internalMutation({
     // finalize(complete) passes the idempotence guard above (same-status
     // re-finalize is supported) and must NOT re-stamp — it would resurrect the
     // unread dot / replay the cue for a reply the user already saw (codex P2).
-    if (status === "complete" && message.status === "streaming") {
+    // `finalStatus`, never `status`: a delivery that delivered nothing is a
+    // failure — ringing the sidebar's arrival cue would announce a reply that
+    // does not exist.
+    if (finalStatus === "complete" && message.status === "streaming") {
       await ctx.db.patch(message.chatId, { lastAssistantAt: Date.now() });
     }
     // SSE transport (Phase 1): GC the message's stream chunks (bounded + self-scheduling
@@ -2607,7 +2907,7 @@ export const finalize = internalMutation({
       chatId: message.chatId,
       runId: message.runId,
       messageId,
-      streamStatus: status,
+      streamStatus: finalStatus,
       textLen: finalLen,
       // The class this turn failed with — filtered through the platform's non-PHI
       // ALLOWLIST. `error` can carry raw gateway text (the schema says so), and a
@@ -2615,7 +2915,7 @@ export const finalize = internalMutation({
       // generic class still surfaces the failure. `errorKind` is curated but goes
       // through the same gate, so one contract governs both.
       ...(() => {
-        const code = errorKind ?? error ?? null;
+        const code = finalErrorKind ?? error ?? null;
         return code !== null &&
           (KNOWN_ERROR_CODES as readonly string[]).includes(code)
           ? { errorCode: code }

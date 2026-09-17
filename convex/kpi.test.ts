@@ -166,6 +166,159 @@ describe("kpi splits report deliveries from turns", () => {
     expect(rollups.get(KPI_METRICS.ASSISTANT_ANNOUNCE_ERRORS) ?? 0).toBe(3);
   });
 
+  test("a delivery whose file landed LATE is charted as delivered", async () => {
+    // The platform names a contentless delivery `empty_response` at the final and
+    // takes the card back when the file arrives afterwards. The chart reads
+    // traces, so the repair has to reach it — and the point has to come off the
+    // hour that CARRIED it, even when the file lands in the next hour.
+    const sumAnnounceErrors = async (t: ReturnType<typeof convexTest>) => {
+      const rows = await t.query(internal.kpi.kpisInternal, { limit: 1000 });
+      return rows
+        .filter((r) => r.metric === KPI_METRICS.ASSISTANT_ANNOUNCE_ERRORS)
+        .reduce((n, r) => n + r.value, 0);
+    };
+    const CORR = "chatR:announce:v1:agent:r:subagent:c1:r1";
+    const seed = async (
+      t: ReturnType<typeof convexTest>,
+      rows: Array<{ at: number; corr: string; phase: string }>,
+    ) => {
+      await t.run(async (ctx) => {
+        for (const r of rows) {
+          await ctx.db.insert("traceEvents", {
+            at: r.at,
+            kind: "assistant.stream",
+            principalType: "system",
+            redacted: true,
+            correlationId: r.corr,
+            meta: JSON.stringify({
+              phase: r.phase,
+              streamStatus: r.phase === "finalize" ? "error" : "complete",
+              errorCode: "empty_response",
+            }),
+          });
+        }
+      });
+      await t.mutation(internal.kpi.rollupKpis, {});
+    };
+
+    // Same hour.
+    const now = Date.now();
+    const t1 = convexTest(schema, modules);
+    await seed(t1, [
+      { at: now, corr: CORR, phase: "finalize" },
+      { at: now, corr: CORR, phase: "finalize_repaired" },
+    ]);
+    expect(await sumAnnounceErrors(t1)).toBe(0);
+
+    // The file lands in the NEXT hour: the corrected bar is the failure's.
+    const t2 = convexTest(schema, modules);
+    await seed(t2, [
+      { at: now - 90 * 60 * 1000, corr: CORR, phase: "finalize" },
+      { at: now, corr: CORR, phase: "finalize_repaired" },
+    ]);
+    expect(
+      await sumAnnounceErrors(t2),
+      "the outage stays on the hour the delivery failed in",
+    ).toBe(0);
+
+    // The bar was ALREADY published before the file landed: the next rollup has
+    // to rewrite that hour, not merely stop adding to it.
+    const t2b = convexTest(schema, modules);
+    await seed(t2b, [{ at: now, corr: CORR, phase: "finalize" }]);
+    expect(await sumAnnounceErrors(t2b)).toBe(1);
+    await seed(t2b, [{ at: now, corr: CORR, phase: "finalize_repaired" }]);
+    expect(
+      await sumAnnounceErrors(t2b),
+      "a point already written survives the repair",
+    ).toBe(0);
+
+    // TWO failures of the same class on one correlation (a resumed announce that
+    // failed the same way twice): the repair answers the one that was on screen
+    // when the file landed — the MOST RECENT — so the recent hour is corrected
+    // and the older point, which was a real failure at the time, stays.
+    const t2c = convexTest(schema, modules);
+    const older = now - 90 * 60 * 1000;
+    await seed(t2c, [
+      { at: older, corr: CORR, phase: "finalize" },
+      { at: now - 60_000, corr: CORR, phase: "finalize" },
+      { at: now, corr: CORR, phase: "finalize_repaired" },
+    ]);
+    const rows2c = await t2c.query(internal.kpi.kpisInternal, { limit: 1000 });
+    const announceByBucket = new Map(
+      rows2c
+        .filter((r) => r.metric === KPI_METRICS.ASSISTANT_ANNOUNCE_ERRORS)
+        .map((r) => [r.bucket, r.value]),
+    );
+    const hour = (at: number) =>
+      new Date(Math.floor(at / (60 * 60 * 1000)) * 60 * 60 * 1000)
+        .toISOString()
+        .slice(0, 13);
+    expect(
+      announceByBucket.get(hour(now)) ?? 0,
+      "the repaired hour is the one the reader's card was in",
+    ).toBe(0);
+    expect(announceByBucket.get(hour(older)) ?? 0).toBe(1);
+
+    // A failure written AFTER the repair is a NEW one (the bubble was reopened by
+    // a rebroadcast and failed again): an earlier repair cannot answer it.
+    const t2d = convexTest(schema, modules);
+    await seed(t2d, [
+      { at: older, corr: CORR, phase: "finalize" },
+      { at: older + 60_000, corr: CORR, phase: "finalize_repaired" },
+      { at: now, corr: CORR, phase: "finalize" },
+    ]);
+    const rows2d = await t2d.query(internal.kpi.kpisInternal, { limit: 1000 });
+    const byBucket2d = new Map(
+      rows2d
+        .filter((r) => r.metric === KPI_METRICS.ASSISTANT_ANNOUNCE_ERRORS)
+        .map((r) => [r.bucket, r.value]),
+    );
+    expect(byBucket2d.get(hour(older)) ?? 0).toBe(0);
+    expect(
+      byBucket2d.get(hour(now)) ?? 0,
+      "a failure that came after the repair is still a failure",
+    ).toBe(1);
+
+    // …including at the SAME millisecond: two writes can share a timestamp, and
+    // the one that came after the compensation is a new failure.
+    const t2e = convexTest(schema, modules);
+    await seed(t2e, [
+      { at: now, corr: CORR, phase: "finalize_repaired" },
+      { at: now, corr: CORR, phase: "finalize" },
+    ]);
+    expect(
+      await sumAnnounceErrors(t2e),
+      "a repair swallowed a failure written after it, same millisecond",
+    ).toBe(1);
+
+    // TWO repairs on the same pair answer TWO failures — the second one may not
+    // land on the failure the first already took out.
+    const t2f = convexTest(schema, modules);
+    await seed(t2f, [
+      { at: older, corr: CORR, phase: "finalize" },
+      { at: now - 60_000, corr: CORR, phase: "finalize" },
+      { at: now, corr: CORR, phase: "finalize_repaired" },
+      { at: now, corr: CORR, phase: "finalize_repaired" },
+    ]);
+    expect(
+      await sumAnnounceErrors(t2f),
+      "the second repair answered a failure that was already answered",
+    ).toBe(0);
+
+    // A repair that answers ANOTHER failure cancels nothing here either: the
+    // chart and the alarm apply one rule, through one helper.
+    const t3 = convexTest(schema, modules);
+    await seed(t3, [
+      { at: now, corr: CORR, phase: "finalize" },
+      {
+        at: now,
+        corr: "chatR:announce:v1:agent:r:subagent:c2:r2",
+        phase: "finalize_repaired",
+      },
+    ]);
+    expect(await sumAnnounceErrors(t3)).toBe(1);
+  });
+
   test("a report the USER stopped is not charted as a lost report", async () => {
     const t = convexTest(schema, modules);
     const now = Date.now();

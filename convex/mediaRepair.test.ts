@@ -733,3 +733,147 @@ describe("the repair's audit survives the trace retention", () => {
     expect(traces[0]).not.toHaveProperty("messageId");
   });
 });
+
+describe("an operator repair that finds the file already there", () => {
+  // The contentless-delivery verdict is taken at the final, from what the
+  // message carried THEN. A probe that ran while storage could not answer stood
+  // down and left the card standing; the repair that establishes the file is
+  // present — attaching nothing, because it already is — is the observation that
+  // disproves it, and the only path that reaches this bubble at all.
+  test("takes back the empty_response card and tells the observability plane", async () => {
+    const t = convexTest(schema, modules);
+    const { chatId, messageId } = await t.run(async (ctx) => {
+      const userId = await ctx.db.insert("users", {});
+      await ctx.db.insert("instances", {
+        name: "ataraxis",
+        gatewayUrl: "ws://gw",
+        bridgeUrl: "http://bridge.ataraxis",
+      });
+      const chatId = await ctx.db.insert("chats", {
+        userId,
+        updatedAt: 1,
+        instanceName: "ataraxis",
+      });
+      const messageId = await ctx.db.insert("messages", {
+        chatId,
+        userId,
+        role: "assistant" as const,
+        status: "error" as const,
+        text: "",
+        error:
+          "The delivery finished without bringing anything (no text, no file).",
+        errorCode: "empty_response",
+        runId:
+          "announce:requester-settle:fabien:agent:fabien:atrium:chat:u:c:1fb3b330-5fd8-4a5b-b966-7a40e040c2bb:yield-1",
+        boundInstance: "ataraxis",
+        updatedAt: 2,
+      });
+      const storageId = await ctx.storage.store(new Blob(["pdf"]));
+      await ctx.db.insert("messageParts", {
+        messageId,
+        order: 0,
+        part: {
+          kind: "file" as const,
+          storageId,
+          filename: "vade-mecum.pdf",
+          mimeType: "application/pdf",
+        },
+      });
+      return { chatId, messageId };
+    });
+
+    const res = await t.action(internal.mediaRepair.deliverOutboundFiles, {
+      chatId,
+      messageId,
+      filenames: ["vade-mecum.pdf"],
+      principalId: "operator",
+    });
+    expect(res).toMatchObject({ ok: true, skipped: ["vade-mecum.pdf"] });
+
+
+    const msg = await t.run((ctx) => ctx.db.get(messageId));
+    expect(msg?.status).toBe("complete");
+    expect(msg?.errorCode).toBeUndefined();
+    const traces = await t.run((ctx) => ctx.db.query("traceEvents").collect());
+    expect(
+      traces.some(
+        (ev) =>
+          typeof ev.meta === "string" &&
+          (JSON.parse(ev.meta) as { phase?: string }).phase ===
+            "finalize_repaired",
+      ),
+      "the failure stays counted for a delivery the reader has",
+    ).toBe(true);
+  });
+  test("…and also when another requested file could NOT be delivered", async () => {
+    // The mixed case: one name is already on the bubble (and resolvable), one is
+    // still missing. Nothing is attached, the operator gets `notDelivered` — and
+    // the file that IS there is already proof this delivery was not empty.
+    const t = convexTest(schema, modules);
+    const { chatId, messageId } = await t.run(async (ctx) => {
+      const userId = await ctx.db.insert("users", {});
+      await ctx.db.insert("instances", {
+        name: "ataraxis",
+        gatewayUrl: "ws://gw",
+        bridgeUrl: "http://bridge.ataraxis",
+      });
+      const chatId = await ctx.db.insert("chats", {
+        userId,
+        updatedAt: 1,
+        instanceName: "ataraxis",
+      });
+      const messageId = await ctx.db.insert("messages", {
+        chatId,
+        userId,
+        role: "assistant" as const,
+        status: "error" as const,
+        text: "",
+        errorCode: "empty_response",
+        runId:
+          "announce:requester-settle:fabien:agent:fabien:atrium:chat:u:c:1fb3b330-5fd8-4a5b-b966-7a40e040c2bb:yield-1",
+        boundInstance: "ataraxis",
+        updatedAt: 2,
+      });
+      const storageId = await ctx.storage.store(new Blob(["pdf"]));
+      await ctx.db.insert("messageParts", {
+        messageId,
+        order: 0,
+        part: {
+          kind: "file" as const,
+          storageId,
+          filename: "vade-mecum.pdf",
+          mimeType: "application/pdf",
+        },
+      });
+      return { chatId, messageId };
+    });
+    const savedSecret = process.env.BRIDGE_SHARED_SECRET;
+    process.env.BRIDGE_SHARED_SECRET = "s";
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = (async () => ({
+      status: 200,
+      json: async () => ({ ok: true, attached: [], notDelivered: ["annexe.pdf"] }),
+    })) as unknown as typeof fetch;
+    try {
+      const res = await t.action(internal.mediaRepair.deliverOutboundFiles, {
+        chatId,
+        messageId,
+        filenames: ["vade-mecum.pdf", "annexe.pdf"],
+        principalId: "operator",
+      });
+      expect(res).toMatchObject({
+        ok: true,
+        attached: [],
+        notDelivered: ["annexe.pdf"],
+        skipped: ["vade-mecum.pdf"],
+      });
+    } finally {
+      globalThis.fetch = realFetch;
+      if (savedSecret === undefined) delete process.env.BRIDGE_SHARED_SECRET;
+      else process.env.BRIDGE_SHARED_SECRET = savedSecret;
+    }
+    const msg = await t.run((ctx) => ctx.db.get(messageId));
+    expect(msg?.status).toBe("complete");
+    expect(msg?.errorCode).toBeUndefined();
+  });
+});
