@@ -16,6 +16,7 @@ import { convexTest } from "convex-test";
 import { describe, expect, test } from "vitest";
 import { internal } from "./_generated/api";
 import schema from "./schema";
+import { providerSessionClearPatch } from "./lib/providerSession";
 
 const modules = import.meta.glob("./**/*.ts");
 type T = ReturnType<typeof convexTest>;
@@ -94,8 +95,14 @@ describe("finalize({ clearProviderSession })", () => {
       clearProviderSession: WS_ID,
     });
     const after = await chatOf(t, chatId);
-    expect(after.stored).toBe("turn:nx7abc"); // shape guard, not call site
-    expect(after.epoch).toBe(1); // …but an in-flight bind must still stand down
+    expect(after.stored).toBe("turn:nx7abc");
+    // …and the epoch does NOT move either. This expectation was 1 while the mismatch rule
+    // depended on the id SHAPE: a segment did not look like a session, so the slot read as
+    // EMPTY and took the "our own bind is still in flight, make it stand down" bump. It is
+    // not empty — it holds a binding this terminal did not name — so the mismatch rule
+    // applies in full: neither the slot nor the epoch moves, and the routed turn that owns
+    // that segment keeps its bind (codex).
+    expect(after.epoch).toBe(0);
   });
 
   test("a finalize SKIPPED by the run guard skips the clear with it", async () => {
@@ -232,6 +239,303 @@ describe("finalize({ clearProviderSession })", () => {
       error: "silence",
       errorKind: "response_timeout",
       clearProviderSession: true,
+    });
+    expect(await chatOf(t, chatId)).toEqual({ stored: undefined, epoch: 1 });
+  });
+});
+
+// A NAMED clear must drop the slot whatever the id LOOKS like.
+//
+// The patch used to gate the owning path on `isStoredProviderSessionId`, which recognizes
+// the two Hermes id shapes only. A real OpenClaw session is a UUID and a routed segment is
+// `turn:<turnId>` — neither matches, so the clear bumped the epoch and left the binding in
+// place. The epoch only makes an in-flight bind stand down; what the NEXT turn resumes is
+// the slot (bridge.ts routing) — so the dead conversation came back, turn after turn,
+// which is exactly what a named clear exists to stop.
+describe("providerSessionClearPatch — a named session, whatever its shape", () => {
+  for (const stored of [
+    "000b1aae-99f1-4836-ae45-ab9ebba7d8e8", // a real OpenClaw session id
+    "turn:jd7f2k9x3m1p0q8r", // a per-turn routing segment
+    "api_1700000000_deadbeef", // the Hermes shape, unchanged
+  ]) {
+    test(`clears ${stored}`, () => {
+      const patch = providerSessionClearPatch(stored, 3, { expected: stored });
+      expect(patch.openclawChatId, stored).toBeUndefined();
+      expect("openclawChatId" in patch, stored).toBe(true);
+      expect(patch.providerResetCount, stored).toBe(4);
+    });
+  }
+
+  test("a MISMATCH still clears nothing, and an unnamed clear still needs the shape", () => {
+    // Named but not what we watched: a newer turn owns the slot.
+    expect(
+      providerSessionClearPatch("api_1700000000_deadbeef", 3, {
+        expected: "api_1700000000_cafe",
+      }),
+    ).toEqual({});
+    // Unnamed (legacy flag) over a routing segment: the epoch moves, the slot does not.
+    const legacy = providerSessionClearPatch("turn:jd7f2k9x3m1p0q8r", 3, {});
+    expect("openclawChatId" in legacy).toBe(false);
+    expect(legacy.providerResetCount).toBe(4);
+  });
+});
+
+// Two slots, one name. The bridge keys a per-turn-routed chat on `routingSegment`, which
+// `getChatRouting` sends AS `openclawChatId` — so the session the terminal NAMES can sit
+// in either field. Clearing only the primary one left the dead segment bound for every
+// multi-agent chat, and the next routed turn resumed it.
+describe("finalize({ clearProviderSession }) — a ROUTED segment", () => {
+  const SEGMENT = "turn:jd7f2k9x3m1p0q8r";
+  const PRIMARY = "000b1aae-99f1-4836-ae45-ab9ebba7d8e8";
+
+  async function seedRouted(t: T) {
+    return await t.run(async (ctx) => {
+      const userId = await ctx.db.insert("users", {});
+      const chatId = await ctx.db.insert("chats", {
+        userId,
+        updatedAt: 0,
+        perTurnRouting: true,
+        routingSegment: SEGMENT,
+        // BOTH slots populated, which is the real shape of a per-turn chat: it keeps its
+        // primary thread while a routed turn runs on a segment. With only the segment set,
+        // a return to "pick the slot that happens to be populated" would still pass (codex).
+        openclawChatId: PRIMARY,
+      });
+      const messageId = await ctx.db.insert("messages", {
+        chatId,
+        userId,
+        role: "assistant" as const,
+        status: "streaming" as const,
+        text: "",
+        runId: "run-1",
+        updatedAt: 1,
+      });
+      return { chatId, messageId };
+    });
+  }
+
+  const routedChatOf = async (t: T, chatId: unknown) =>
+    await t.run(async (ctx) => {
+      const c = (await ctx.db.get(chatId as never)) as {
+        routingSegment?: string;
+        openclawChatId?: string;
+        providerResetCount?: number;
+      } | null;
+      return {
+        segment: c?.routingSegment,
+        primary: c?.openclawChatId,
+        epoch: c?.providerResetCount ?? 0,
+      };
+    });
+
+  test("drops the segment the terminal named, and bumps the epoch", async () => {
+    const t = convexTest(schema, modules);
+    const { chatId, messageId } = await seedRouted(t);
+    await t.mutation(internal.stream.finalize, {
+      messageId,
+      status: "error",
+      text: "",
+      error: "no conversation found for session",
+      errorKind: "session_gone",
+      clearProviderSession: SEGMENT,
+    });
+    // The segment goes, the PRIMARY thread stays: it is a different binding.
+    expect(await routedChatOf(t, chatId)).toEqual({
+      segment: undefined,
+      primary: PRIMARY,
+      epoch: 1,
+    });
+  });
+
+  test("a terminal naming ANOTHER segment leaves this one alone", async () => {
+    const t = convexTest(schema, modules);
+    const { chatId, messageId } = await seedRouted(t);
+    await t.mutation(internal.stream.finalize, {
+      messageId,
+      status: "error",
+      text: "",
+      error: "no conversation found for session",
+      errorKind: "session_gone",
+      clearProviderSession: "turn:someone-elses-turn",
+    });
+    expect(await routedChatOf(t, chatId)).toEqual({
+      segment: SEGMENT,
+      primary: PRIMARY,
+      epoch: 0,
+    });
+  });
+
+  test("a terminal naming the PRIMARY thread clears IT, not the segment", async () => {
+    // Keying on the presence of `routingSegment` made this terminal read the segment,
+    // find a mismatch and abandon its own dead binding (codex).
+    const t = convexTest(schema, modules);
+    const { chatId, messageId } = await seedRouted(t);
+    await t.mutation(internal.stream.finalize, {
+      messageId,
+      status: "error",
+      text: "",
+      error: "no conversation found for session",
+      errorKind: "session_gone",
+      clearProviderSession: PRIMARY,
+    });
+    expect(await routedChatOf(t, chatId)).toEqual({
+      segment: SEGMENT,
+      primary: undefined,
+      epoch: 1,
+    });
+  });
+});
+
+// A LATE terminal names a session that is still in use.
+//
+// The late path (a user Stop settled the bubble first) took an exact id match as proof of
+// ownership. But a gateway session is deliberately REUSED across turns: the Stop releases
+// the chat, the next turn starts on the SAME session, and the old terminal then lands
+// naming it. Clearing there drops a live binding and bumps the epoch under a turn that is
+// working — exactly what the mismatch rule already refuses for a different id.
+describe("finalize({ clearProviderSession }) — a LATE terminal under a newer turn", () => {
+  const WS_ID = "20260706_212939_aee24e";
+
+  test("clears nothing while another message is streaming on the chat", async () => {
+    const t = convexTest(schema, modules);
+    const { chatId, messageId } = await seedStreaming(t, WS_ID);
+    // The user Stop settles this turn first; the chat is released.
+    await t.run(async (ctx) => {
+      await ctx.db.patch(messageId, { status: "aborted" as const });
+      // …and the NEXT turn starts, on the same warm session.
+      const msg = (await ctx.db.get(messageId))!;
+      await ctx.db.insert("messages", {
+        chatId,
+        userId: msg.userId,
+        role: "assistant" as const,
+        status: "streaming" as const,
+        text: "",
+        runId: "run-2",
+        updatedAt: 2,
+      });
+    });
+    // The old turn's terminal lands now, naming the session the NEW turn is using.
+    await t.mutation(internal.stream.finalize, {
+      messageId,
+      status: "error",
+      text: "",
+      error: "silence",
+      errorKind: "response_timeout",
+      clearProviderSession: WS_ID,
+    });
+    expect(await chatOf(t, chatId)).toEqual({ stored: WS_ID, epoch: 0 });
+  });
+
+  test("this turn's OWN pending outbox row does not block its clear", async () => {
+    // A fast gateway error finalizes while its own outbox row is typically still `pending`
+    // (live trace: the error beat the sent-flip by 190ms — the trap turnRetry.ts already
+    // documents). Blocking on mere presence would skip a legitimate clear, and nothing
+    // retries it after the row flips to `sent` (codex). The test is on AGE.
+    const t = convexTest(schema, modules);
+    // Seeded in the PRODUCTION order: sendMessage writes the outbox row, then the
+    // dispatch's startAssistant creates the assistant turn. The row is therefore OLDER.
+    const { chatId, messageId } = await t.run(async (ctx) => {
+      const userId = await ctx.db.insert("users", {});
+      const chatId = await ctx.db.insert("chats", {
+        userId,
+        updatedAt: 0,
+        openclawChatId: WS_ID,
+      });
+      await ctx.db.insert("outbox", {
+        chatId,
+        userId,
+        clientMessageId: "own-row",
+        text: "…",
+        attachmentIds: [],
+        status: "pending" as const,
+        // Taken by the dispatch BEFORE the assistant message existed — this turn's own.
+        pendingSince: 1,
+      });
+      const messageId = await ctx.db.insert("messages", {
+        chatId,
+        userId,
+        role: "assistant" as const,
+        status: "aborted" as const, // a user Stop settled it first (the late path)
+        text: "",
+        runId: "run-1",
+        updatedAt: 1,
+      });
+      return { chatId, messageId };
+    });
+    await t.mutation(internal.stream.finalize, {
+      messageId,
+      status: "error",
+      text: "",
+      error: "silence",
+      errorKind: "response_timeout",
+      clearProviderSession: WS_ID,
+    });
+    expect(await chatOf(t, chatId)).toEqual({ stored: undefined, epoch: 1 });
+  });
+
+  test("a follow-up written EARLIER but taken LATER still blocks the clear", async () => {
+    // The follow-up is queued during this turn's pre-ack window, so its row is OLDER than
+    // this turn's assistant message; the drain promotes it after the Stop. An age-of-
+    // creation test called it "ours" and cleared the session the follow-up had just
+    // acquired (codex). What dates the acquisition is `pendingSince`.
+    const t = convexTest(schema, modules);
+    const { chatId, messageId } = await t.run(async (ctx) => {
+      const userId = await ctx.db.insert("users", {});
+      const chatId = await ctx.db.insert("chats", {
+        userId,
+        updatedAt: 0,
+        openclawChatId: WS_ID,
+      });
+      // Written FIRST (during the pre-ack window), while still queued.
+      const followUp = await ctx.db.insert("outbox", {
+        chatId,
+        userId,
+        clientMessageId: "follow-up",
+        text: "…",
+        attachmentIds: [],
+        status: "queued" as const,
+      });
+      const messageId = await ctx.db.insert("messages", {
+        chatId,
+        userId,
+        role: "assistant" as const,
+        status: "aborted" as const,
+        text: "",
+        runId: "run-1",
+        updatedAt: 1,
+      });
+      const msg = (await ctx.db.get(messageId))!;
+      // …and only NOW does the drain take it: it holds the route.
+      await ctx.db.patch(followUp, {
+        status: "pending" as const,
+        pendingSince: msg._creationTime + 1,
+      });
+      return { chatId, messageId };
+    });
+    await t.mutation(internal.stream.finalize, {
+      messageId,
+      status: "error",
+      text: "",
+      error: "silence",
+      errorKind: "response_timeout",
+      clearProviderSession: WS_ID,
+    });
+    expect(await chatOf(t, chatId)).toEqual({ stored: WS_ID, epoch: 0 });
+  });
+
+  test("…but still clears when no newer turn took the chat", async () => {
+    const t = convexTest(schema, modules);
+    const { chatId, messageId } = await seedStreaming(t, WS_ID);
+    await t.run(async (ctx) => {
+      await ctx.db.patch(messageId, { status: "aborted" as const });
+    });
+    await t.mutation(internal.stream.finalize, {
+      messageId,
+      status: "error",
+      text: "",
+      error: "silence",
+      errorKind: "response_timeout",
+      clearProviderSession: WS_ID,
     });
     expect(await chatOf(t, chatId)).toEqual({ stored: undefined, epoch: 1 });
   });

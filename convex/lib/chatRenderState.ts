@@ -101,6 +101,10 @@ export const KNOWN_ERROR_CODES = [
   // it at all (the bridge classifier returned null), so the empty bubble was not this
   // list's doing; the entry is here so that, now that the class exists, a repeat is
   // countable instead of anonymous.
+  // The gateway's conversation is gone: the stored session is dropped and the turn is
+  // re-dispatched onto a fresh one. Countable, so a chat that keeps losing its session
+  // is visible rather than folded into the generic stream-error channel.
+  "session_gone",
   "auth_profile_cooldown",
   "gateway_storage_busy",
   "gateway_storage_unavailable",

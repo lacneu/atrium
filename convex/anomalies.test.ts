@@ -523,6 +523,25 @@ describe("anomaly detection", () => {
     expect(overflow?.severity).toBe("critical");
   });
 
+  test("a GONE conversation raises its own cause, end to end from the trace", async () => {
+    // One is a recovered blip; a run of them on one chat is an operator signal about
+    // session lifetime on that instance — which is only visible if it is countable.
+    const t = convexTest(schema, modules);
+    await t.run(async (ctx) => {
+      const now = Date.now();
+      for (let i = 0; i < 2; i++) {
+        await seedTrace(ctx, {
+          kind: "assistant.stream",
+          at: now - i * 1000,
+          correlationId: `chat:session-gone-${i}`,
+          meta: { phase: "finalize", streamStatus: "error", errorCode: "session_gone" },
+        });
+      }
+    });
+    const res = await t.mutation(internal.anomalies.detectAnomalies, {});
+    expect(res.detected).toContain("assistant.cause.session_gone");
+  });
+
   test("an auth-profile COOLDOWN raises its own cause, end to end from the trace", async () => {
     // Asserted at the DETECTOR, not on the map: an entry in CAUSE_ANOMALY_KINDS proves
     // nothing if the code never reaches the trace — which is exactly what happened

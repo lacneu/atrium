@@ -802,8 +802,20 @@ export class Normalizer {
   // are wall-clock graces armed from a specific event.
   private deadlines: Map<string, number>;
 
-  constructor(sessionKey: string) {
+  /** The provider session Convex has STORED for this chat, when it has one.
+   *
+   *  Carried so a terminal `session_gone` can name it: the clear is guarded by an exact
+   *  match on the Convex side, so an unnamed clear could wipe a binding a newer turn
+   *  had already made. Null when the chat has no stored session — there is then nothing to
+   *  name, and no directive is emitted. The CLASS still arises there: the conversation the
+   *  gateway cannot find is its own, not necessarily one Atrium recorded (see where the
+   *  directive is set, which says the same thing — an earlier version of this sentence
+   *  claimed the opposite, codex). */
+  private readonly providerSessionId: string | null;
+
+  constructor(sessionKey: string, providerSessionId: string | null = null) {
     this.sessionKey = sessionKey;
+    this.providerSessionId = providerSessionId;
     this.ownRunIds = new Set();
     this.turnActive = false;
     this.finalized = true; // no turn in progress until beginTurn
@@ -3015,6 +3027,26 @@ export class Normalizer {
       // `context_length` is the hard-overflow signal the context-overflow
       // observability chain keys on.
       finalEvent.errorKind = errorKind;
+    }
+    // The conversation the gateway was asked to continue NO LONGER EXISTS, and upstream
+    // says so definitively — its own helper calls this class a proof that "the
+    // provider-side conversation can no longer be resumed". Atrium's stored session is
+    // therefore worthless, and keeping it is what made every retry meet the same dead
+    // conversation, leaving a non-technical reader with the gateway's own `/new` as the
+    // only way out (prod-ms717cxh…, prod-ms7ctxqf…, prod-ms760bt1…).
+    //
+    // NAMED, not a bare flag: the Convex side matches the id before clearing, so an
+    // unnamed clear could drop a binding a newer turn already made. With no stored
+    // session there is nothing to drop, and the class is then carried for the card
+    // alone — it CAN arise on a chat with an empty slot, because the id the gateway
+    // could not find is its own, not necessarily one Atrium had recorded.
+    //
+    // No recovery handle is set here. `recoverableSession` is a DIFFERENT mechanism
+    // (a session that lost a reply, kept for one read-only harvest); this session
+    // holds nothing to harvest — the gateway says it does not exist (codex).
+    if (errorKind === "session_gone" && this.providerSessionId !== null) {
+      (finalEvent as { clearProviderSession?: string }).clearProviderSession =
+        this.providerSessionId;
     }
     // Open tool cards close FIRST (see the flush above), then the terminal.
     const result: BridgeEvent[] = [finalEvent, statusEvent];

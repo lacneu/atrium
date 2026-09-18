@@ -130,9 +130,11 @@ export class RunManager {
     // Health-stats hook (see TurnSink.onTurnError): a turn finalizing in error
     // counts as a downstream failure on this session's target.
     onTurnError?: (code: string) => void,
+    /** The provider session Convex stored for this chat — see Normalizer. */
+    providerSessionId: string | null = null,
   ) {
     this.sessionKey = sessionKey;
-    this.normalizer = new Normalizer(sessionKey);
+    this.normalizer = new Normalizer(sessionKey, providerSessionId);
     this.sink = new TurnSink(chatId, writer, outboundScan, sessionKey, onTurnError);
   }
 

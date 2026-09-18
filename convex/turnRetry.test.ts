@@ -8,6 +8,7 @@ import {
   MAX_TURN_RETRIES,
   RETRY_DELAY_MS,
   RETRYABLE_KINDS,
+  maxRetriesForKind,
   SESSION_INIT_CONFLICT_CODE,
   CONTEXT_LENGTH_COMPACTED_CODE,
 } from "./turnRetry";
@@ -57,6 +58,24 @@ describe("a compacted session's overflow retries ONCE (W2)", () => {
     // The guard already decided this one cannot fit. Re-dispatching it would walk
     // straight back into the same measurement.
     expect(retryDecision(at("context_length_presend"))).toBeNull();
+  });
+
+  test("a GONE conversation IS retried, once, on the fresh session", () => {
+    // The gateway refuses at PREFLIGHT COMPACTION, before the model generates anything,
+    // so the zero-content gate is met by construction and a retry repeats no work. The
+    // finalize drops the stored session BEFORE scheduling, so the attempt opens a fresh
+    // one and the rehydration re-ships the history — which is what makes the recovery
+    // invisible instead of showing a reader the gateway's `/new`.
+    expect(RETRYABLE_KINDS.has("session_gone")).toBe(true);
+    expect(retryDecision(at("session_gone"))).not.toBeNull();
+    // ONE attempt: the first lands on a fresh session; a second failure means the fresh
+    // one is failing too, and another wait buys the reader nothing.
+    expect(maxRetriesForKind("session_gone")).toBe(1);
+    // …and the zero-content gate still governs it: a turn that produced something keeps
+    // its honest card rather than losing that content to a re-dispatch.
+    expect(
+      retryDecision({ ...at("session_gone"), finalTextLen: 12 }),
+    ).toBeNull();
   });
 
   test("an auth-profile cooldown is never retried — the window has not elapsed", () => {

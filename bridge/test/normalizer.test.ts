@@ -44,8 +44,8 @@ const FIXTURES = JSON.parse(readFileSync(FIXTURES_PATH, "utf-8")) as {
 const SESSION_KEY = FIXTURES.session_key;
 const OWN_RUN = FIXTURES.run_id;
 
-function newNormalizer(): Normalizer {
-  return new Normalizer(SESSION_KEY);
+function newNormalizer(providerSessionId: string | null = null): Normalizer {
+  return new Normalizer(SESSION_KEY, providerSessionId);
 }
 
 function frames(scenario: string): unknown[] {
@@ -992,6 +992,93 @@ describe("main-lane chat error/aborted terminalization (ChatErrorEventSchema)", 
       payload: { runId: OWN_RUN, sessionKey: SESSION_KEY, seq: 5, ...payload },
     };
   }
+
+  it("a GONE conversation drops the stored session, by name", () => {
+    // Upstream proves the conversation cannot be resumed, so Atrium's stored session is
+    // worthless. Keeping it is what made every retry meet the same dead conversation,
+    // leaving the reader with the gateway's `/new` as the only way out (prod-ms7ctxqf…).
+    const normalizer = newNormalizer("stored-session-1");
+    const clock = new Clock();
+    normalizer.beginTurn(clock.now);
+    normalizer.noteRunStarted(OWN_RUN, clock.now);
+    const events = normalizer.feed(
+      {
+        type: "event",
+        event: "chat",
+        payload: {
+          runId: OWN_RUN,
+          sessionKey: SESSION_KEY,
+          state: "error",
+          errorMessage:
+            "⚠️ Context is too large and auto-compaction could not recover this turn. Reason: no conversation found for session. Try again, use /compact, or use /new to start a fresh session.",
+        },
+      },
+      clock.tick(),
+    );
+    const final = events.find((e) => e.type === "message.final") as
+      | { errorKind?: string; clearProviderSession?: string; recoverableSession?: boolean }
+      | undefined;
+    expect(final?.errorKind).toBe("session_gone");
+    // NAMED: the Convex side matches the id before clearing, so an unnamed clear could
+    // drop a binding a newer turn already made.
+    expect(final?.clearProviderSession).toBe("stored-session-1");
+    // NOT a recovery handle: `recoverableSession` means "lost a reply, harvest it once",
+    // and a conversation the gateway says does not exist has nothing to harvest.
+    expect(final?.recoverableSession).toBeUndefined();
+  });
+
+  it("with NO stored session there is nothing to drop", () => {
+    const normalizer = newNormalizer(null);
+    const clock = new Clock();
+    normalizer.beginTurn(clock.now);
+    normalizer.noteRunStarted(OWN_RUN, clock.now);
+    const events = normalizer.feed(
+      {
+        type: "event",
+        event: "chat",
+        payload: {
+          runId: OWN_RUN,
+          sessionKey: SESSION_KEY,
+          state: "error",
+          errorMessage:
+            "\u26a0\ufe0f Context is too large and auto-compaction could not recover this turn. Reason: no conversation found for session. Try again, use /compact, or use /new to start a fresh session.",
+        },
+      },
+      clock.tick(),
+    );
+    const final = events.find((e) => e.type === "message.final") as
+      | { errorKind?: string; clearProviderSession?: string }
+      | undefined;
+    expect(final?.errorKind).toBe("session_gone");
+    expect(final?.clearProviderSession).toBeUndefined();
+  });
+
+  it("another terminal class does NOT drop the session", () => {
+    // The directive is what makes the next turn start fresh; attaching it to an
+    // unrelated failure would throw away a healthy conversation.
+    const normalizer = newNormalizer("stored-session-1");
+    const clock = new Clock();
+    normalizer.beginTurn(clock.now);
+    normalizer.noteRunStarted(OWN_RUN, clock.now);
+    const events = normalizer.feed(
+      {
+        type: "event",
+        event: "chat",
+        payload: {
+          runId: OWN_RUN,
+          sessionKey: SESSION_KEY,
+          state: "error",
+          errorMessage: "prompt too large for the model",
+        },
+      },
+      clock.tick(),
+    );
+    const final = events.find((e) => e.type === "message.final") as
+      | { errorKind?: string; clearProviderSession?: string }
+      | undefined;
+    expect(final?.errorKind).toBe("context_length");
+    expect(final?.clearProviderSession).toBeUndefined();
+  });
 
   it("a profile NAME cannot buy the embedded-lock downgrade", () => {
     // A second rule reads the raw sentence after the classifier: with real content on

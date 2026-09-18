@@ -226,6 +226,9 @@ export const CAUSE_ANOMALY_KINDS: Record<string, string> = {
   // profiles raise one signal (codex). (What the reader is told about retrying is deliberately hedged; see the
   // probe allowance documented in the bridge classifier.)
   auth_profile_cooldown: "assistant.cause.auth_profile_cooldown",
+  // A conversation the gateway no longer has. One is a recovered blip; a run of them on
+  // one chat is an operator signal about session lifetime on that instance.
+  session_gone: "assistant.cause.session_gone",
   // NOT the bridge's inbound-staging refusals, deliberately. This map is read for
   // `streamCauses` only — causes carried by an `assistant.stream` FINALIZE row —
   // and a staging refusal happens BEFORE any stream exists: it surfaces as an

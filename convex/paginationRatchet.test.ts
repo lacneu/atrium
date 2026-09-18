@@ -120,11 +120,11 @@ const KNOWN_OFFENDERS: ReadonlyArray<string> = [
   // Moved 1704 -> 1710 by the two storage cause-classes added to the per-cause map, then
   // 1710 -> 1808 by the repaired-finalize compensation (the `*RepairedFinalize*` helpers and
   // the pre-pass that drops a repaired pair), then -> 1816 by the note on the three inbound-staging
-  // classes this map deliberately does NOT carry, then -> 1828 by the auth-profile cooldown
+  // classes this map deliberately does NOT carry, then -> 1828 by the auth-profile cooldown, then -> 1831 by the gone-session class
   // class. The offender itself is untouched: same file, same call, and the list still holds
   // exactly two entries — the ratchet counts offenders, and this record is what keeps a line
   // shift from reading as one.
-  "anomalies.ts:1828",
+  "anomalies.ts:1831",
   // Moved 926 -> 930 by the snapshot credential mask, then -> 939 by the masked reads.
   // Same file,
   // same call: the ratchet counts offenders, and this record is what keeps a line shift

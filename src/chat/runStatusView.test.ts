@@ -3,6 +3,7 @@
 
 import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
+import { m } from "@/paraglide/messages.js";
 import {
   runStatusView,
   runStatusOutageLabel,
@@ -171,6 +172,163 @@ describe("errorDetailView (actionable error classification)", () => {
     const v = errorDetailView("stream_orphaned", null);
     expect(v.headline).toBeTruthy();
     expect(v.detail).toBeNull(); // the code string is not a useful detail
+  });
+
+  it("a gone conversation gets a card that asks the reader for NOTHING", () => {
+    // The gateway's own text told a non-technical reader to type `/compact` or `/new`;
+    // that is exactly what this replaces (prod-ms7ctxqf…).
+    //
+    // The WHOLE card, not the headline alone: RunStatus renders headline AND detail
+    // together, so a careful headline over the raw sentence still shows the reader the
+    // two commands — which is what the first version of this test missed (codex P2).
+    const gatewayText =
+      "⚠️ Context is too large and auto-compaction could not recover this turn. Reason: no conversation found for session. Try again, use /compact, or use /new to start a fresh session.";
+    const v = errorDetailView(gatewayText, "session_gone");
+    expect(v.headline).toBeTruthy();
+    expect(v.detail).toBeNull();
+    const card = `${v.headline ?? ""} ${v.detail ?? ""}`;
+    expect(card).not.toMatch(/\/new|\/compact/);
+    // …and the sentence must be true BOTH before and after the automatic retry, which
+    // the card shows a countdown for right underneath: it may not report an attempt
+    // that has not happened yet.
+    //
+    // EVERY locale, named explicitly. The card renders in the reader's language, and a
+    // view-level assertion only ever exercises the ONE locale the test run resolves to —
+    // so a regression in the other sentence would sail through it (proven: neutralizing
+    // the English text left this test green).
+    for (const locale of ["en", "fr"] as const) {
+      const sentence = m.runstatus_error_session_gone({}, { locale });
+      expect(sentence, locale).not.toMatch(/\/new|\/compact/);
+      expect(sentence, locale).not.toMatch(
+        /did not succeed|second attempt|was started|a été ouverte|n'a pas abouti/i,
+      );
+      // …and it may not promise that the reader has nothing to do. The single automatic
+      // attempt can be refused at schedule time or stand down when it fires (turnRetry:
+      // chat busy, the message changed, content appeared); the countdown then disappears
+      // and this sentence stays — in a state where re-sending IS the answer (codex).
+      expect(sentence, locale).not.toMatch(
+        /nothing to do|do not have to do anything|rien à faire/i,
+      );
+      // …nor state the recovery as a FACT. The retry can stand down at fire time (the
+      // message changed, content landed, a real send is in flight), and the card stays
+      // while the countdown goes (codex). Only an attempt may be claimed.
+      expect(sentence, locale).not.toMatch(
+        /Atrium (?:re)?opens|Atrium (?:en )?(?:r)?ouvre\b/i,
+      );
+      // …nor announce the history carry-over: the bridge skips rehydration when it is
+      // disabled, and on any turn carrying an attachment (server.ts) — so a gone session on
+      // a message with a file deliberately restarts WITHOUT the earlier history (codex).
+      expect(sentence, locale).not.toMatch(
+        /your history|votre historique/i,
+      );
+    }
+    expect(card).not.toMatch(/did not succeed|second attempt|was started|a été ouverte/i);
+    expect(v.headline).not.toBe(errorDetailView("fetch failed", "provider_internal").headline);
+  });
+
+  it("the SAME card on a row that carries no errorCode at all", () => {
+    // The row that opened this lot was stored with no class — and a pre-class bridge keeps
+    // writing such rows through a rolling deploy. Keyed on the class alone, the headline
+    // and the suppression were both inactive for exactly those rows: reopening Denis's own
+    // conversation still showed him the two commands (codex).
+    const gatewayText =
+      "\u26a0\ufe0f Context is too large and auto-compaction could not recover this turn. Reason: no conversation found for session. Try again, use /compact, or use /new to start a fresh session.";
+    const v = errorDetailView(gatewayText, null);
+    expect(v.code).toBe("session_gone");
+    expect(v.detail).toBeNull();
+    expect(`${v.headline ?? ""} ${v.detail ?? ""}`).not.toMatch(/\/new|\/compact/);
+    // …and NOT the overflow card: it offers to compact or branch, on a session that no
+    // longer exists. Today nothing contests this — OVERFLOW_TEXT_RE does not match the
+    // wrapper's "Context is too large" — so this pins the outcome, not a precedence.
+    expect(v.code).not.toBe("context_length");
+  });
+
+  it("the historical fallback covers EVERY reason the bridge classifies", () => {
+    // The two vocabularies must stay in step: a reason the bridge mints the class for, on
+    // a row stored before the class existed, has to reach the same card (codex).
+    for (const reason of [
+      "no conversation found for session",
+      "conversation not found",
+      "conversation does not exist",
+      "conversation expired",
+      "conversation invalid",
+      "session not found",
+      "session does not exist",
+      "session expired",
+      "session invalid",
+      "no such session",
+      "invalid session",
+      "session id not found",
+      "conversation id not found",
+    ]) {
+      const v = errorDetailView(
+        `\u26a0\ufe0f Context is too large and auto-compaction could not recover this turn. Reason: ${reason}. Try again, use /compact, or use /new to start a fresh session.`,
+        null,
+      );
+      expect(v.code, reason).toBe("session_gone");
+      expect(v.detail, reason).toBeNull();
+    }
+  });
+
+  it("a COMPOSITE diagnostic does not pair two unrelated sentences into the class", () => {
+    // One line, two facts: a compaction settings problem, and a gone session mentioned in a
+    // separate clause. The bounded window alone still joined them (codex).
+    const v = errorDetailView(
+      "Preflight compaction required but failed: invalid session settings. Diagnostic: no conversation found for session.",
+      null,
+    );
+    expect(v.code).not.toBe("session_gone");
+  });
+
+  it("a SECOND clause opener, belonging to another diagnostic, is not ours", () => {
+    const v = errorDetailView(
+      "Preflight compaction required but failed: invalid session settings. Session cleanup failed: session not found.",
+      null,
+    );
+    expect(v.code).not.toBe("session_gone");
+    for (const text of [
+      "Preflight compaction succeeded; session cleanup failed: session not found.",
+      "Preflight compaction required but failed: invalid session settings, but session cleanup failed: session not found.",
+      "Preflight compaction succeeded - session cleanup failed: session not found.",
+      "Preflight compaction succeeded: session cleanup failed: session not found.",
+    ]) {
+      expect(errorDetailView(text, null).code, text).not.toBe("session_gone");
+    }
+  });
+
+  it("an em dash ends the reason's clause", () => {
+    // The terminator list claimed to accept a dash while requiring a word character right
+    // after it — so the ordinary spaced form never matched, and nothing covered it (codex).
+    const v = errorDetailView(
+      "⚠️ auto-compaction could not recover this turn. Reason: session expired — provider state missing.",
+      null,
+    );
+    expect(v.code).toBe("session_gone");
+  });
+
+  it("a compaction failure that is NOT a gone conversation keeps the gateway text", () => {
+    // The reason has to end its clause; "invalid session settings" is a compaction problem
+    // on a LIVE conversation, and hiding its detail would cost the reader the only thing
+    // that says what went wrong.
+    const v = errorDetailView(
+      "Preflight compaction required but failed: invalid session settings for compaction",
+      null,
+    );
+    expect(v.code).not.toBe("session_gone");
+    expect(v.detail).toBeTruthy();
+  });
+
+  it("an ordinary overflow still gets the overflow card", () => {
+    // The text fallback above is narrow: the wrapper AND a gone-session reason.
+    const v = errorDetailView("maximum context length exceeded", null);
+    expect(v.code).toBe("context_length");
+  });
+
+  it("suppressing the detail is SCOPED — every other class keeps the gateway text", () => {
+    // The suppression is a targeted answer to prose that instructs the reader, not a
+    // licence to hide what the gateway said.
+    const v = errorDetailView("boom: upstream said no", "provider_internal");
+    expect(v.detail).toBe("boom: upstream said no");
   });
 
   it("an auth-profile cooldown gets its OWN card, not the provider-blip one", () => {

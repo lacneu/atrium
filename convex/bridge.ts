@@ -1200,6 +1200,9 @@ export const beginTurnRouting = internalMutation({
       segment: v.string(),
       switchedFromInstanceName: v.union(v.string(), v.null()),
       switchedFromAgentId: v.union(v.string(), v.null()),
+      /** The reset epoch this dispatch starts under — carried to confirmTurnRouting so a
+       *  confirmation cannot resurrect a segment a terminal discarded mid-flight. */
+      resetCount: v.number(),
     }),
     v.null(),
   ),
@@ -1258,6 +1261,9 @@ export const beginTurnRouting = internalMutation({
       segment,
       switchedFromInstanceName: isSwitch ? prevInstance : null,
       switchedFromAgentId: isSwitch ? prevAgent : null,
+      // The reset EPOCH this dispatch starts under, carried so the confirmation can prove
+      // the chat has not discarded its session in the meantime (see confirmTurnRouting).
+      resetCount: chat.providerResetCount ?? 0,
     };
   },
 });
@@ -1275,13 +1281,32 @@ export const confirmTurnRouting = internalMutation({
     routedAgent: v.object({ instanceName: v.string(), agentId: v.string() }),
     // The segment THIS dispatch used (beginTurnRouting's returned `segment`).
     segment: v.string(),
+    /** The reset epoch the dispatch started under (beginTurnRouting's `resetCount`).
+     *
+     *  Frames can finalize BEFORE the /send response returns, so a terminal that discards
+     *  the session — a `session_gone` arriving in the pre-ack buffer — lands first and
+     *  clears the segment; this confirmation then wrote it straight back, and a queued
+     *  follow-up left on the dead conversation (codex). The clear bumps the epoch, so a
+     *  mismatch is the proof that the confirmation is stale. Optional: `outboxReconcile`
+     *  cannot know it, and does not need to — it only confirms on PROVEN acceptance
+     *  (a completed turn or text), which a discarded-session turn never has. */
+    expectedResetCount: v.optional(v.number()),
   },
-  handler: async (ctx, { chatId, routedAgent, segment }) => {
+  handler: async (ctx, { chatId, routedAgent, segment, expectedResetCount }) => {
     const chat = await ctx.db.get(chatId);
     if (chat === null) return;
     // Only meaningful once the chat is per-turn routed (beginTurnRouting flips it before
     // the dispatch); a non-per-turn send never confirms a routed agent.
     if (!chat.perTurnRouting) return;
+    if (
+      expectedResetCount !== undefined &&
+      (chat.providerResetCount ?? 0) !== expectedResetCount
+    ) {
+      console.log(
+        "[routing] confirmTurnRouting skipped: the session was discarded while the send was in flight",
+      );
+      return;
+    }
     if (
       chat.lastRoutedAgentId === routedAgent.agentId &&
       chat.lastRoutedInstanceName === routedAgent.instanceName &&
@@ -1457,6 +1482,7 @@ export const dispatch = internalAction({
       segment: string;
       switchedFromInstanceName: string | null;
       switchedFromAgentId: string | null;
+      resetCount: number;
     } | null = null;
     // WHO the routing decisions belong to. Read once: `row.userId` is the SENDER,
     // and on a group chat that is a participant whose grants must not decide what
@@ -1896,6 +1922,7 @@ export const dispatch = internalAction({
           chatId: row.chatId as Id<"chats">,
           routedAgent: row.routedAgent,
           segment: turnRouting.segment,
+          expectedResetCount: turnRouting.resetCount,
         });
       }
       // BRANCHED chat: consume the one-shot rehydration flag HERE — the

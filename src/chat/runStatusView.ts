@@ -223,6 +223,14 @@ export const CONTEXT_OVERFLOW_CODES: ReadonlySet<string> = new Set([
   "context_length_presend",
 ]);
 
+/** Classes whose gateway sentence instructs the reader to run a command \u2014 the
+ *  headline carries the whole answer and the raw prose is suppressed on the card.
+ *  Adding a code here is a promise that its headline is self-sufficient. */
+export const HEADLINE_REPLACES_DETAIL: ReadonlySet<string> = new Set([
+  // Upstream's preflight-compaction wrapper ends in "/compact" and "/new".
+  "session_gone",
+]);
+
 export const ERROR_CODE_LABEL: Record<string, () => string> = {
   context_length: m.runstatus_error_context_length,
   context_length_compacted: m.runstatus_error_context_length_compacted,
@@ -278,6 +286,12 @@ export const ERROR_CODE_LABEL: Record<string, () => string> = {
   // The gateway had paused the auth profile and refused to use it for THIS candidate,
   // which therefore never reached the provider. A model-scoped pause does not apply to
   // another model — which is what the sentence tells the reader, conditionally.
+  // Shown as soon as the turn fails, ALONGSIDE the retry countdown — the card is not
+  // deferred until the retry is exhausted (RunStatus.tsx renders headline, detail and
+  // countdown together), so the sentence must be true at both moments and never claim
+  // an attempt that has not happened yet. It never tells the reader to type a command,
+  // and the gateway prose that does is suppressed (HEADLINE_REPLACES_DETAIL).
+  session_gone: m.runstatus_error_session_gone,
   auth_profile_cooldown: m.runstatus_error_auth_profile_cooldown,
   gateway_storage_busy: m.runstatus_error_gateway_storage_busy,
   gateway_storage_unavailable: m.runstatus_error_gateway_storage_unavailable,
@@ -307,6 +321,31 @@ export const ERROR_CODE_LABEL: Record<string, () => string> = {
 // overflow error string with no errorCode still gets the actionable card even if
 // the bridge classifier ever misses a novel provider phrasing (the bridge is the
 // primary classifier; this is the backstop).
+/** The gateway's preflight-compaction wrapper, recognized from the TEXT ALONE.
+ *
+ *  Every row already persisted — including the one that opened this lot, stored with no
+ *  errorCode at all — and every row a pre-class bridge writes during a rolling deploy
+ *  carries the sentence and nothing else. Keyed on the class alone, the headline and the
+ *  detail suppression both stayed inactive for exactly those rows, so reopening Denis's
+ *  own conversation still showed him `/compact` and `/new` (codex).
+ *
+ *  The reason list and its clause-ending rule MIRROR `SESSION_GONE_REASON_RE` in
+ *  bridge/src/core/failure-classifier.ts — same sentence, one read by the classifier for
+ *  new rows, one read here for rows stored before the class existed. They must stay in step.
+ *
+ *  Placed before the overflow test, defensively — the wrapper opens with "Context is too
+ *  large", and an overflow vocabulary that grew to cover that phrasing would otherwise win
+ *  and put compact/branch actions on a session that no longer exists. Today's
+ *  OVERFLOW_TEXT_RE does NOT match it, so the order changes nothing yet: neutralizing it
+ *  leaves the suite green, and that is the honest state of it. */
+const SESSION_GONE_TEXT_RE = new RegExp(
+  // The clause opener is BOUND to the compaction clause — `failed:` inside it, or
+  // `Reason:` opening the next sentence. Accepting an opener anywhere after the wrapper
+  // still reached the second one of a composite diagnostic (codex).
+  String.raw`(?:auto-compaction|preflight compaction)(?:[^\n.!?;,:—-]{0,200}?failed\s*:\s*|[^\n.!?;,:—-]{0,200}?[.!?]\s*reason\s*:\s*)(?:no conversation found|conversation (?:not found|does not exist|expired|invalid)|session (?:not found|does not exist|expired|invalid)|no such session|invalid session|(?:session|conversation) id not found)(?=[.,;:!)\]]|\s*$|\s+(?:for|on|in|with)\b|\s+[—-]\s)`,
+  "i",
+);
+
 const OVERFLOW_TEXT_RE =
   /context overflow|prompt too large|maximum context length|context[- ]length exceeded|request_too_large|request too large|input (?:token count )?exceeds the maximum number of (?:input )?tokens|input is too long for the model|too many tokens/i;
 
@@ -354,9 +393,11 @@ export function errorDetailView(
       ? errorCode
       : ERROR_STRING_CODES.has(raw0)
         ? raw0
-        : OVERFLOW_TEXT_RE.test(raw0)
-          ? "context_length"
-          : (errorCode ?? null);
+        : SESSION_GONE_TEXT_RE.test(raw0)
+          ? "session_gone"
+          : OVERFLOW_TEXT_RE.test(raw0)
+            ? "context_length"
+            : (errorCode ?? null);
   const headline = code !== null ? (ERROR_CODE_LABEL[code]?.() ?? null) : null;
   // Already masked above; `raw0` is the single reading of the text in this function.
   const detail0 =
@@ -370,8 +411,22 @@ export function errorDetailView(
   // showing the credential id in full (codex).
   // …and the detail line is the SHOWN text, never the normalized one: blanking a
   // session key would cost the reader the only identifier in the sentence.
+  //
+  // EXCEPT where the gateway's own prose tells the reader to type a command. The card
+  // renders headline AND detail together (RunStatus.tsx), so a headline that carefully
+  // avoids instructing the user is worth nothing while the sentence underneath still
+  // says "/compact or /new" — commands Atrium has no prompt for (codex). For those
+  // classes the headline is the whole answer; the raw sentence stays where it belongs,
+  // on the message row — and in the exports and feedback reports built from it — for the
+  // operator. NOT in the trace: that path deliberately carries `errorCode` only
+  // (convex/stream.ts).
   const detail =
-    shown && shown !== code && !ERROR_STRING_CODES.has(shown) ? shown : null;
+    shown &&
+    shown !== code &&
+    !ERROR_STRING_CODES.has(shown) &&
+    !(code !== null && HEADLINE_REPLACES_DETAIL.has(code))
+      ? shown
+      : null;
   void detail0;
   return { headline, detail, code };
 }

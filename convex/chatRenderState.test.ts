@@ -54,6 +54,9 @@ describe("normalizeMessageErrorCode (raw gateway text never leaves)", () => {
     // the cause is not countable. The reported incident had no class at ALL — the
     // bridge classifier returned null — so this list is not what left the bubble empty;
     // it is what makes a repeat countable now that the class exists.
+    // A conversation the gateway no longer has. Countable, so a chat that keeps losing
+    // its session is visible instead of folded into the generic stream-error channel.
+    expect(normalizeMessageErrorCode("session_gone")).toBe("session_gone");
     expect(normalizeMessageErrorCode("auth_profile_cooldown")).toBe("auth_profile_cooldown");
     expect(normalizeMessageErrorCode("gateway_storage_busy")).toBe("gateway_storage_busy");
     expect(normalizeMessageErrorCode("gateway_storage_unavailable")).toBe(

@@ -343,6 +343,115 @@ describe("classifyFailureText", () => {
     ).toBe("gateway_storage_unavailable");
   });
 
+  it("names the conversation the gateway says is GONE — the message Denis met", () => {
+    // Verbatim from production (prod-ms7ctxqf…). Upstream composes it when preflight
+    // compaction is required and cannot run, and classifies the same family as
+    // `session_expired`, whose own helper says a failover "PROVES the provider-side
+    // conversation can no longer be resumed". Atrium kept re-sending into it, so every
+    // retry met the same dead conversation and the only way out shown to the reader was
+    // the gateway's `/new`.
+    expect(
+      classifyFailureText(
+        "⚠️ Context is too large and auto-compaction could not recover this turn. Reason: no conversation found for session. Try again, use /compact, or use /new to start a fresh session.",
+      ),
+    ).toBe("session_gone");
+    // The other reason spellings, INSIDE the same wrapper.
+    for (const reason of [
+      "session expired",
+      "conversation not found",
+      "no such session",
+      "session id not found",
+    ]) {
+      expect(
+        classifyFailureText(`Preflight compaction required but failed: ${reason}`),
+        reason,
+      ).toBe("session_gone");
+    }
+  });
+
+  it("a compaction failure that is NOT a gone conversation keeps its own class", () => {
+    // The reason has to END its clause. The bare alternatives matched mid-sentence, so a
+    // compaction problem whose conversation is ALIVE read as a gone session — and this
+    // class drops the session and re-runs the turn (codex).
+    for (const text of [
+      "Preflight compaction required but failed: invalid session settings for compaction",
+      "Preflight compaction required but failed: session invalid parameters supplied",
+    ]) {
+      expect(classifyFailureText(text), text).not.toBe("session_gone");
+    }
+  });
+
+  it("a COMPOSITE diagnostic does not pair two unrelated sentences into the class", () => {
+    expect(
+      classifyFailureText(
+        "Preflight compaction required but failed: invalid session settings. Diagnostic: no conversation found for session.",
+      ),
+    ).not.toBe("session_gone");
+  });
+
+  it("a SECOND clause opener, belonging to another diagnostic, is not ours", () => {
+    // The wrapper is present and an opener follows it — but that opener belongs to an
+    // unrelated cleanup sentence. Requiring an opener anywhere after the wrapper reached it
+    // (codex).
+    expect(
+      classifyFailureText(
+        "Preflight compaction required but failed: invalid session settings. Session cleanup failed: session not found.",
+      ),
+    ).not.toBe("session_gone");
+    // …and a semicolon, a comma and an ASCII dash open one just as a full stop does.
+    for (const text of [
+      "Preflight compaction succeeded; session cleanup failed: session not found.",
+      "Preflight compaction required but failed: invalid session settings, but session cleanup failed: session not found.",
+      "Preflight compaction succeeded - session cleanup failed: session not found.",
+      "Preflight compaction succeeded: session cleanup failed: session not found.",
+    ]) {
+      expect(classifyFailureText(text), text).not.toBe("session_gone");
+    }
+  });
+
+  it("an em dash ends the reason's clause", () => {
+    expect(
+      classifyFailureText(
+        "\u26a0\ufe0f auto-compaction could not recover this turn. Reason: session expired \u2014 provider state missing.",
+      ),
+    ).toBe("session_gone");
+  });
+
+  it("does NOT claim the wider session-expired family — it may have generated", () => {
+    // The class drives an automatic re-dispatch, so it may only be minted where nothing
+    // can have run. The upstream family is raised elsewhere too, including where a turn
+    // HAS produced something — upstream refuses to invalidate the session there
+    // (`hasNewGeneratedMediaTask`), and claiming it would let a detached media task lose
+    // the session it still needs, and re-run work already billed (codex P1).
+    for (const text of [
+      "conversation not found",
+      "no such session",
+      "session expired",
+      "Agent run failed: session id not found",
+    ]) {
+      expect(classifyFailureText(text), text).not.toBe("session_gone");
+    }
+  });
+
+  it("does NOT confuse a session being STARTED with one that is gone", () => {
+    // They ask for opposite things: a bounded retry into the same session, versus
+    // dropping the session first. The init conflict must keep its own class.
+    expect(classifyFailureText("Session 7f3a already has an active turn claim")).toBe(
+      "session_init_conflict",
+    );
+    expect(
+      classifyFailureText(
+        'Session "agent:alice:x" changed while starting work. Retry.',
+      ),
+    ).toBe("session_init_conflict");
+    // …and a storage failure riding the same text still wins, as the contract says.
+    expect(
+      classifyFailureText(
+        "database or disk is full — no conversation found for session",
+      ),
+    ).toBe("gateway_storage_unavailable");
+  });
+
   it("a FULL DISK wins over the cooldown sentence riding the same text", () => {
     // The contract above is that the graver class wins, and the cooldown rule was
     // placed before both storage rules — so a gateway whose disk is full, emitting both

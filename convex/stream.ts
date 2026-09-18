@@ -2412,7 +2412,9 @@ async function noteCountedCompactions(
  * winning a race it does not need to win.
  */
 async function dropUntrustedProviderSession(
-  ctx: { db: MutationCtx["db"] },
+  // The FULL MutationCtx, not the narrowed `{ db }` this used to take: the late-path
+  // ownership proof queries two tables of its own.
+  ctx: MutationCtx,
   chatId: Id<"chats">,
   directive: boolean | string | undefined,
   /** TRUE when this finalize transitioned NOTHING (a retry, or a terminal that lost the
@@ -2427,6 +2429,10 @@ async function dropUntrustedProviderSession(
   /** The instance the terminal came from — stamped so the handle can never be replayed
    *  against another gateway (session ids are gateway-local). */
   recoverInstance: string | undefined = undefined,
+  /** This turn's assistant message creation time, used ONLY on the late path: a dispatch
+   *  that took the route AFTER it is a newer turn's, one that took it before is this
+   *  turn's own. */
+  terminalAt = Number.POSITIVE_INFINITY,
 ): Promise<void> {
   if (directive === undefined || directive === false) return;
   if (directive === true) {
@@ -2437,6 +2443,90 @@ async function dropUntrustedProviderSession(
   }
   const chat = await ctx.db.get(chatId);
   if (chat === null) return;
+  // LATE path: an id match is NOT proof of ownership. A gateway session is deliberately
+  // REUSED across turns, so a terminal that lost the race to a user Stop can name the very
+  // session a turn started since is now working on — and clearing it there would drop a
+  // live binding and bump the epoch under that turn, exactly what the mismatch rule
+  // already refuses for a DIFFERENT id (codex). A streaming message other than this
+  // turn's is that proof: the chat has moved on, and this writer has no claim left.
+  if (late) {
+    // Does a LATER turn already hold this chat? Two things can prove it, and the test is
+    // on AGE, not on mere presence.
+    //
+    //  - a `streaming` message: this turn is terminal on this path (the caller's
+    //    `already terminal` branch), so any streaming message is a later one;
+    //  - a `pending` outbox row NEWER than this turn: the streaming row is only created
+    //    after the gateway ACK, while the dispatch acquires the route (and the session)
+    //    when the drain promotes its row to `pending` — seconds earlier (codex).
+    //
+    // The test is on WHEN THE ROW WENT PENDING, not on when it was created. A row's
+    // `pendingSince` is stamped at the exact moment a dispatch takes it — send.ts on an
+    // idle chat, drainNextQueued on a drain, preemptRepark on a re-park — which is when it
+    // acquires the route. Its `_creationTime` says nothing about that: a follow-up written
+    // during THIS turn's pre-ack window is OLDER than this turn's own assistant message and
+    // is still promoted much later, and a re-park does not move it either (codex).
+    //
+    // …and this turn's OWN row went pending BEFORE its assistant message existed (the
+    // dispatch flips the row, sends, then startAssistant creates the message), so the same
+    // test keeps it out. That matters: a fast gateway error finalizes while its own row is
+    // typically still `pending` (live trace: the error beat the sent-flip by 190ms — the
+    // trap turnRetry.ts documents), and blocking on it would skip a legitimate clear with
+    // nothing to retry it afterwards.
+    const streaming = await ctx.db
+      .query("messages")
+      .withIndex("by_chat_status", (q) =>
+        q.eq("chatId", chatId).eq("status", "streaming"),
+      )
+      .first();
+    const newerPending =
+      streaming === null
+        ? (
+            await ctx.db
+              .query("outbox")
+              .withIndex("by_chat_status", (q) =>
+                q.eq("chatId", chatId).eq("status", "pending"),
+              )
+              .collect()
+          ).some((row) =>
+            // A row with no stamp predates the field: no evidence it is ours, fail closed.
+            row.pendingSince === undefined ? true : row.pendingSince > terminalAt,
+          )
+        : false;
+    if (streaming !== null || newerPending) {
+      console.log(
+        "[stream] clearProviderSession skipped: a newer turn already holds this chat",
+      );
+      return;
+    }
+  }
+  // PER-TURN ROUTING: what the bridge keys on — and therefore what it NAMES here — is
+  // `routingSegment`, which `getChatRouting` sends AS `openclawChatId` while the two live
+  // in different fields (convex/bridge.ts). Clearing only the primary slot left the dead
+  // segment bound, and the next routed turn resumed it: the very failure this exists to
+  // end, still live for every multi-agent chat (codex).
+  // The slot is resolved by the NAME, never by which field happens to be populated: the two
+  // coexist legitimately (a per-turn chat keeps its primary thread while a routed turn runs
+  // on a segment), so keying on the presence of `routingSegment` made a primary terminal
+  // read the segment, find a mismatch and abandon its own dead binding (codex).
+  if (typeof directive === "string" && chat.routingSegment === directive) {
+    await ctx.db.patch(chatId, {
+      routingSegment: undefined,
+      providerResetCount: (chat.providerResetCount ?? 0) + 1,
+    });
+    return;
+  }
+  // A named clear that matches NEITHER slot still bumps the epoch on the OWNING path, and
+  // only there.
+  //
+  // On that path the terminal is this turn's own, and the session it names is one this
+  // dispatch minted but nothing has persisted yet: a SWITCH's ephemeral segment lives in
+  // the dispatch alone until `confirmTurnRouting` writes it. With no slot to clear and no
+  // epoch moved, that confirmation found the epoch unchanged and persisted the very segment
+  // the terminal had just declared dead (codex). The epoch is the only thing that can reach
+  // an unpersisted binding, and making it stand down is exactly what it is for.
+  //
+  // On the LATE path the terminal may be a stale writer, so a name that matches nothing is
+  // no claim at all — `onlyExactMatch` already refuses it.
   const patch = providerSessionClearPatch(
     chat.openclawChatId,
     chat.providerResetCount,
@@ -2734,6 +2824,9 @@ export const finalize = internalMutation({
         // either way.
         null,
         boundInstanceName,
+        // This turn's own age: an outbox row older than it is this very turn's, still
+        // `pending` because the error beat the sent-flip.
+        message._creationTime,
       );
       // NOT a transition. The bridge now RETRIES a finalize whose response was lost,
       // so this no-op is expected — and the ingest route must not write a second
@@ -2975,6 +3068,7 @@ export const finalize = internalMutation({
     // (turnRetry.ts: the system does the delete+regenerate the user would do by
     // hand). AFTER drainNextQueued on purpose: if a queued follow-up just
     // drained, the chat is busy and the retry stands down (checked inside).
+    //
     if (status === "error") {
       const fresh = await ctx.db.get(messageId);
       if (fresh !== null) {

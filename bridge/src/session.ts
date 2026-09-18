@@ -263,7 +263,13 @@ class Session implements BridgeSession {
   constructor(
     chatId: string,
     sessionKey: string,
-    routing: { agentId: string; canonical: string; instanceName: string },
+    routing: {
+      agentId: string;
+      canonical: string;
+      instanceName: string;
+      /** What Convex has STORED as this chat's provider session, when it has one. */
+      openclawChatId?: string | null;
+    },
     connection: OpenClawConnection,
     writer: ConvexWriter,
     clock: Clock,
@@ -285,6 +291,9 @@ class Session implements BridgeSession {
       writer,
       outboundScan,
       onTurnError,
+      // What Convex has STORED for this chat. A terminal `session_gone` names it so the
+      // clear can be matched exactly rather than dropping whatever is bound.
+      routing.openclawChatId ?? null,
     );
     // FRAME-LOSS reporting (see providers/openclaw/frame-seq.ts). The gateway
     // drops frames destined for this socket when its outbound buffer is full,
@@ -1563,6 +1572,7 @@ export class SessionRegistry {
         agentId: routing.agentId,
         canonical: routing.canonical,
         instanceName,
+        openclawChatId: routing.openclawChatId ?? null,
       },
       connection,
       bundle.writer,

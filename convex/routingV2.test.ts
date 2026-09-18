@@ -525,6 +525,7 @@ describe("getChatRouting / bindChatTarget — drop stale provider id on rebind (
       isSwitch: true,
       segment: `turn:${m1}`, // a NEW segment on a switch
       switchedFromInstanceName: "prod",
+      resetCount: 0,
       switchedFromAgentId: "alice", // switched FROM the primary
     });
     let c = (await t.run((ctx) => ctx.db.get(chat._id))) as Doc<"chats">;
@@ -553,6 +554,7 @@ describe("getChatRouting / bindChatTarget — drop stale provider id on rebind (
       segment: `turn:${m1}`, // REUSES the confirmed segment (warm), not a new one
       switchedFromInstanceName: null,
       switchedFromAgentId: null,
+      resetCount: 0,
     });
 
     // Switch back to alice → re-key (fresh segment → the bridge rehydrates alice).
@@ -567,6 +569,7 @@ describe("getChatRouting / bindChatTarget — drop stale provider id on rebind (
       isSwitch: true,
       segment: `turn:${m3}`, // a NEW segment on the switch back
       switchedFromInstanceName: "prod",
+      resetCount: 0,
       switchedFromAgentId: "bob", // switched FROM bob
     });
     await t.mutation(internal.bridge.confirmTurnRouting, {
@@ -598,6 +601,7 @@ describe("getChatRouting / bindChatTarget — drop stale provider id on rebind (
       isSwitch: true,
       segment: `turn:${m1}`,
       switchedFromInstanceName: null,
+      resetCount: 0,
       switchedFromAgentId: null,
     });
     const c = (await t.run((ctx) => ctx.db.get(chat._id))) as Doc<"chats">;
@@ -787,5 +791,85 @@ describe("getChatRouting / bindChatTarget — drop stale provider id on rebind (
     expect(r?.openclawChatId).toBe("alice-thread"); // legacy id, NOT "turn:bob-segment"
     expect(r?.configOverrides?.rehydration).toBeUndefined(); // not a routed send
     expect(r?.target?.agentId).toBe("alice");
+  });
+
+  test("a confirmation cannot RESURRECT a segment the turn discarded mid-flight", async () => {
+    // Frames can finalize BEFORE the /send response returns. A `session_gone` arriving in
+    // the pre-ack buffer clears the segment; the confirmation then landed and wrote it
+    // straight back, leaving a queued follow-up on the dead conversation (codex).
+    //
+    // The terminal goes through the REAL `finalize` here, not an injected epoch bump: on a
+    // SWITCH the segment is not in any slot yet, so what has to stop the confirmation is the
+    // bump `finalize` takes for an empty slot — a hand-written bump proves nothing about
+    // whether the production path produces one (codex).
+    const t = convexTest(schema, modules);
+    const uid = await seedUser(t);
+    await seedUA(t, uid, "prod", "alice", true);
+    await seedUA(t, uid, "prod", "bob", false);
+    const chat = await makeChat(t, uid, { instanceName: "prod", agentId: "alice" });
+    const chatId = chat._id;
+    const m1 = await seedMsg(t, chatId, uid);
+    const began = await t.mutation(internal.bridge.beginTurnRouting, {
+      chatId,
+      userId: uid as never,
+      routedAgent: { instanceName: "prod", agentId: "bob" },
+      turnId: m1,
+    });
+    expect(began).not.toBeNull();
+    // The terminal lands first, through the production path: it names the segment this
+    // dispatch minted, which NOTHING has persisted yet (a switch).
+    const assistantId = await t.run(async (ctx) =>
+      await ctx.db.insert("messages", {
+        chatId,
+        userId: uid as never,
+        role: "assistant" as const,
+        status: "streaming" as const,
+        text: "",
+        runId: "run-1",
+        updatedAt: 1,
+      }),
+    );
+    await t.mutation(internal.stream.finalize, {
+      messageId: assistantId,
+      status: "error",
+      text: "",
+      error:
+        "⚠️ Context is too large and auto-compaction could not recover this turn. Reason: no conversation found for session.",
+      errorKind: "session_gone",
+      clearProviderSession: began!.segment,
+    });
+    // …and the ack's confirmation arrives afterwards, carrying the epoch it started under.
+    await t.mutation(internal.bridge.confirmTurnRouting, {
+      chatId,
+      routedAgent: { instanceName: "prod", agentId: "bob" },
+      segment: began!.segment,
+      expectedResetCount: began!.resetCount,
+    });
+    const after = await t.run(async (ctx) => await ctx.db.get(chatId));
+    expect(after?.routingSegment).toBeUndefined();
+  });
+
+  test("…and it DOES confirm when nothing discarded the session", async () => {
+    const t = convexTest(schema, modules);
+    const uid = await seedUser(t);
+    await seedUA(t, uid, "prod", "alice", true);
+    await seedUA(t, uid, "prod", "bob", false);
+    const chat = await makeChat(t, uid, { instanceName: "prod", agentId: "alice" });
+    const chatId = chat._id;
+    const m1 = await seedMsg(t, chatId, uid);
+    const began = await t.mutation(internal.bridge.beginTurnRouting, {
+      chatId,
+      userId: uid as never,
+      routedAgent: { instanceName: "prod", agentId: "bob" },
+      turnId: m1,
+    });
+    await t.mutation(internal.bridge.confirmTurnRouting, {
+      chatId,
+      routedAgent: { instanceName: "prod", agentId: "bob" },
+      segment: began!.segment,
+      expectedResetCount: began!.resetCount,
+    });
+    const after = await t.run(async (ctx) => await ctx.db.get(chatId));
+    expect(after?.routingSegment).toBe(began!.segment);
   });
 });

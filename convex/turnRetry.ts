@@ -62,6 +62,8 @@ export const EMPTY_RESPONSE_RETRY_CODE = "empty_response_silent";
  *  below make the re-dispatch equivalent to the user's own re-send (live prod
  *  2026-07-20: OpenAI internal error, manual re-send succeeded). */
 export const PROVIDER_INTERNAL_CODE = "provider_internal";
+/** The provider-side conversation can no longer be resumed (upstream's own words). */
+export const SESSION_GONE_CODE = "session_gone";
 /** A context overflow on a turn whose session the bridge's pre-send guard had JUST
  *  compacted successfully (W2). The prompt that overflowed was assembled around the
  *  shrink, so the same send composed again is a genuinely different one — unlike a
@@ -72,6 +74,17 @@ export const CONTEXT_LENGTH_COMPACTED_CODE = "context_length_compacted";
 
 /** The errorKinds a finalize may auto-retry (all zero-content classes). */
 export const RETRYABLE_KINDS: ReadonlySet<string> = new Set([
+  // The gateway says the conversation is gone for good. The finalize drops the stored
+  // session before this runs (dropUntrustedProviderSession precedes the schedule) WHEN the
+  // terminal named one — a chat with no stored session has nothing to name, and there the
+  // epoch alone moves. The re-dispatch then opens a fresh conversation, and the rehydration
+  // re-ships the history WHEN it applies: the bridge skips it when rehydration is disabled
+  // and on any turn carrying an attachment (codex). What the class buys in every case is a
+  // second attempt the reader does not have to ask for, instead of the gateway's `/new`.
+  // Safe by the same argument as the init conflict: the gateway refuses at PREFLIGHT
+  // COMPACTION, before the model generates anything, so the zero-content gate below is
+  // met by construction and a retry repeats no work.
+  SESSION_GONE_CODE,
   SESSION_INIT_CONFLICT_CODE,
   EMPTY_RESPONSE_RETRY_CODE,
   PROVIDER_INTERNAL_CODE,
@@ -96,6 +109,9 @@ export function maxRetriesForKind(kind: string): number {
   // context_length_compacted keeps 1 for the same reason as the silent close: the
   // provider refused an oversized prompt, and a second identical refusal buys the
   // user nothing but another wait.
+  // session_gone keeps ONE: the first attempt lands on a fresh session, and a second
+  // failure means the fresh one is failing too — another wait buys the reader nothing.
+  if (kind === SESSION_GONE_CODE) return 1;
   return kind === EMPTY_RESPONSE_RETRY_CODE ||
     kind === CONTEXT_LENGTH_COMPACTED_CODE
     ? 1

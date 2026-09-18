@@ -233,6 +233,72 @@ function blankQuotedValues(raw: string): string {
   return out.replace(/"[^"]*"/g, '"…"');
 }
 
+/** The gateway says the conversation it was asked to continue NO LONGER EXISTS.
+ *
+ *  Upstream composes this when preflight compaction is required and cannot run:
+ *  `Preflight compaction required but failed: … no conversation found for session`
+ *  (auto-reply/reply/agent-runner-failure-reply.ts). It classifies the same family as
+ *  `session_expired` — `agents/failover/classify.ts` — and its own
+ *  `isCliSessionInvalidatingFailoverReason` states what that means:
+ *  "a failover PROVES the provider-side conversation can no longer be resumed".
+ *
+ *  Atrium kept its stored session and re-sent into it, so every retry met the same dead
+ *  conversation and the only way out was the gateway's own advice — `/new` — shown raw
+ *  to a reader who has no idea what that is. Recognising it is what lets the session be
+ *  dropped, WHEN one is stored, and the turn re-dispatched — with the history rehydrated
+ *  where rehydration applies (the bridge skips it when disabled, and on a turn carrying an
+ *  attachment). None of those is unconditional; the second attempt is (codex).
+ *
+ *  Reported in production on three turns of one chat (prod-ms717cxh…, prod-ms7ctxqf…,
+ *  prod-ms760bt1…), where an operator had to reset the session by hand for the user. */
+/** The reasons upstream gives INSIDE the wrapper for a conversation it cannot find.
+ *
+ *  The whole shape is read at once: the compaction wrapper, then the clause opener bound to
+ *  it — `failed:` inside the SAME clause, or `Reason:` opening the very next sentence, the
+ *  two forms upstream's wrappers use — then the reason, which must END that clause.
+ *
+ *  The traversal stops at every mark that can open a new proposition — sentence end,
+ *  semicolon, comma, colon, and both dashes. Each was earned: "Preflight compaction succeeded;
+ *  session cleanup failed: session not found." crossed the semicolon, and ", but session
+ *  cleanup failed:" / " - session cleanup failed:" crossed the comma and the ASCII dash, all
+ *  reaching a SECOND clause's opener that belongs to an unrelated diagnostic — as did
+ *  "Preflight compaction succeeded: session cleanup failed: ..." across the colon (codex).
+ *
+ *  Binding the opener to the wrapper is what a bare "an opener somewhere after the wrapper"
+ *  did not do: "Preflight compaction required but failed: invalid session settings. Session
+ *  cleanup failed: session not found." reached the SECOND opener, which belongs to an
+ *  unrelated diagnostic (codex).
+ *
+ *  Both halves were earned. Matching the bare alternative anywhere let "Preflight
+ *  compaction required but failed: invalid session settings for compaction" — a compaction
+ *  problem on a LIVE conversation — read as a gone session; and matching it anywhere in a
+ *  bounded window let a composite diagnostic pair two unrelated sentences into the class
+ *  ("...failed: invalid session settings. Diagnostic: no conversation found..."). This
+ *  class drops the session and re-runs the turn, so it fails closed on both (codex).
+ *
+ *  Mirrored by `SESSION_GONE_TEXT_RE` in src/chat/runStatusView.ts, which recognizes the
+ *  same sentence on rows stored before this class existed. The two must stay in step. */
+const SESSION_GONE_REASON_RE =
+  /(?:auto-compaction|preflight compaction)(?:[^\n.!?;,:—-]{0,200}?failed\s*:\s*|[^\n.!?;,:—-]{0,200}?[.!?]\s*reason\s*:\s*)(?:no conversation found|conversation (?:not found|does not exist|expired|invalid)|session (?:not found|does not exist|expired|invalid)|no such session|invalid session|(?:session|conversation) id not found)(?=[.,;:!)\]]|\s*$|\s+(?:for|on|in|with)\b|\s+[—-]\s)/;
+
+export function isSessionGoneText(text: string | null | undefined): boolean {
+  if (!text) return false;
+  const t = withoutOperatorData(text).toLowerCase();
+  // NARROW, on purpose: the PREFLIGHT-COMPACTION wrapper, and a reason from the
+  // session-gone family inside it.
+  //
+  // The upstream family is wider than this — `session_expired` is raised in places
+  // where a run HAS produced something, and upstream itself refuses to invalidate the
+  // session there (`hasNewGeneratedMediaTask`). Claiming the whole family would let a
+  // turn with a detached media task reset a session that task still needs, and re-run
+  // work already billed (codex, P1). The wrapper is the one shape that proves nothing
+  // was generated: it is raised BEFORE the run, when compaction could not even start.
+  if (!t.includes("auto-compaction") && !t.includes("preflight compaction")) {
+    return false;
+  }
+  return SESSION_GONE_REASON_RE.test(t);
+}
+
 export function classifyFailureText(raw: string | null | undefined): string | null {
   if (!raw) return null;
   // A sentence that NAMES A CREDENTIAL gets exactly one possible class — the cooldown,
@@ -285,6 +351,10 @@ export function classifyFailureText(raw: string | null | undefined): string | nu
   // RETRYABLE_KINDS.
   if (GATEWAY_STORAGE_UNAVAILABLE_RE.test(text)) return "gateway_storage_unavailable";
   if (GATEWAY_STORAGE_BUSY_RE.test(text)) return "gateway_storage_busy";
+  // BEFORE the session-conflict rule below, which is about a session being STARTED:
+  // this one says the conversation is gone for good, and the two ask for opposite
+  // things — a bounded retry into the same session, versus dropping it first.
+  if (isSessionGoneText(text)) return "session_gone";
   // AFTER the storage classes, like every other rule: the precedence above is that the
   // graver class wins, and a gateway whose disk is full can report both facts in one
   // text (codex).
