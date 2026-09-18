@@ -2069,6 +2069,7 @@
   "talk_error_disabled": "La voix temps réel n'est pas activée sur l'instance de cet agent (Réglages › Plateforme › Voix › Talk).",
   "talk_error_unsupported": "La passerelle de cet agent ne prend pas en charge la voix temps réel.",
   "talk_error_secret_expired": "La session vocale a expiré avant la connexion — réessayez.",
+  "talk_error_session_stale": "La session vocale a expiré — relancez l’appel.",
   "talk_error_generic": "La conversation vocale n'a pas pu démarrer — réessayez dans un instant.",
   "talk_voice_label": "Voix de la conversation",
   "talk_voice_default": "Voix par défaut",

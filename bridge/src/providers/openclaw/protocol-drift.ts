@@ -402,8 +402,8 @@ export const KNOWN_AGENT_FIELDS: ReadonlySet<string> = new Set([
  * matrix instead of being invisible omissions.
  */
 export const COVERAGE_SUMMARY = {
-  handled: 166,
-  ignored: 722,
+  handled: 167,
+  ignored: 721,
   gaps: 611,
   /** The declared gaps, by schema path — the actionable part of the matrix.
    *

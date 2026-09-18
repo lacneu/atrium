@@ -5224,8 +5224,18 @@
           "by": "forwarded from the /talk-session request body; convex/talk.ts sends it only when it is a finite number strictly between 0 and 1, so an out-of-range value silently becomes 'use the gateway default' rather than a rejected session"
         },
         "sessionKey": {
-          "status": "ignored",
-          "why": "Atrium does not send it at create: server.ts builds the `talk.client.create` body from `transport` plus the optional voice and VAD threshold, and nothing else. The conversation is named at consult time instead, by `talk.client.toolCall.sessionKey` (the agent session key `buildSessionKey` produces). CORRECTED after review: an earlier note inferred from this that the gateway mints the session \"unattached\" and that sending the key twice would create two identities — neither is established here, and upstream's own client does send it on create. What this classification rests on is Atrium's behaviour, not a guess about the server's"
+          "status": "handled",
+          "by": "the OWNER of the voice session. convex/talk.ts resolves the chat's current agent + canonical + conversation and posts them to /talk-session; the route builds the agent-scoped key through `talkSessionOwner` -> `buildSessionKey` and passes it to `talkClientCreateParams`, which includes the field only when one was named. WHY IT IS SENT: the gateway derives a Talk session's owning agent from this key and, without one, falls back to `config.talk.agentId` — refusing outright when several agents exist with no such fallback. Live prod 2026-09-17, six and seven agents: voice was dead on both instances, and the fallback would have answered as one arbitrary agent instead of the chat's. The response's `ownerScoped` acknowledges that the key was really sent, so a Convex talking to an older bridge refuses rather than opening a session under another agent.",
+          "anchor": {
+            "file": "src/core/rpc-params.ts",
+            "token": "sessionKey"
+          },
+          "proof": {
+            "kind": "deterministic-test",
+            "ref": "bridge/test/talk-session-owner.test.ts",
+            "note": "No live proof yet: the bench catalogue has no Talk scenario at all — its gateway is driven over chat.send, and nothing in it opens a realtime session — so no attested capture can carry this field. Two deterministic hops cover it instead, each proven by neutralization: the OUTBOUND RATCHET validates every shape of the create body against the vendored schema (so the field cannot be sent in a form the gateway would refuse), and bridge/test/talk-session-owner.test.ts drives the REAL /talk-session route against a socket-level fake gateway and asserts on the params THE GATEWAY RECEIVED — an earlier version of that test built the key itself and stayed green with the wiring deleted. The Convex half (which owner is named, and that a bridge which did not scope the create is refused) is pinned in convex/talkSessionOwner.test.ts. A live proof stays owed and needs a Talk scenario on the bench."
+          },
+          "verifiedVersions": []
         },
         "provider": {
           "status": "ignored",
@@ -5340,7 +5350,7 @@
         },
         "clientControl": {
           "status": "ignored",
-          "why": "NEW at 2026.8.1: `{owner:'gateway'}`, emitted ONLY when the caller declares the `gateway-control-v1` capability (talk-client-create.ts). Atrium sends transport, voice and VAD only, so the gateway never adds it; and the realtime session object is relayed verbatim to the browser, so an extra field would traverse untouched."
+          "why": "NEW at 2026.8.1: `{owner:'gateway'}`, emitted ONLY when the caller declares the `gateway-control-v1` capability (talk-client-create.ts). Atrium never declares that capability — its create body carries transport, the optional voice and VAD threshold, and the agent-scoped `sessionKey`, and nothing else — so the gateway never adds it. Nor would it reach the browser if it did: `parseTalkSessionResponse` PROJECTS the session onto the fields the client needs and drops everything else. An earlier note said the object was relayed verbatim and listed the body without `sessionKey`; both were wrong."
         }
       }
     },

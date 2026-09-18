@@ -2398,6 +2398,48 @@ export default defineSchema({
       "createdAt",
     ]),
 
+  // The address a realtime-voice mint SUCCEEDED with, recorded so a mid-call consult
+  // can be proven to belong to that session. It is not proof that a call is up — the
+  // microphone, the SDP exchange or the connection can still fail after the mint, and
+  // nothing invalidates a row on hang-up; the expiry is what bounds it.
+  //
+  // WHY A SERVER HANDLE AND NOT THE CONVERSATION ITSELF. The consult must reach the
+  // gateway session the user is SPEAKING IN, which means naming the agent and the
+  // conversation that session was minted on. Having the browser send them back and
+  // re-deriving "is this one of the chat's conversations?" cannot work: the answer is
+  // computed from state that MOVES while the call is up. A turn confirmed mid-call
+  // advances `routingSegment`, and a newer send supersedes the row the live session's
+  // conversation came from (the rows are kept, but only the newest per status is
+  // consulted) — so that conversation stops being recognised and the consult leaves
+  // the call. It
+  // also proves the wrong thing: that the chat may name that string, not that THIS
+  // session was minted with it, so a caller could pair any accepted conversation with
+  // any entitled agent. The row below is the proof, and the only thing the browser
+  // holds is its id.
+  //
+  // `conversation` is the EFFECTIVE one — `openclawChatId ?? chatId` — so a session
+  // opened before any turn existed is pinned just as firmly as one that inherited a
+  // segment. No secrets: the provider clientSecret is never persisted here.
+  talkSessions: defineTable({
+    userId: v.id("users"),
+    chatId: v.id("chats"),
+    instanceName: v.string(),
+    agentId: v.string(),
+    // The THIRD component of the gateway session key, pinned with the rest: a
+    // profile whose canonical changes mid-call must not move the consult.
+    canonical: v.string(),
+    conversation: v.string(),
+    createdAt: v.number(),
+    /** HARD TTL, not an end-of-call boundary: nothing invalidates a row when the
+     *  user hangs up, so a handle stays usable until this moment. It bounds how long
+     *  a leaked id could address the session, and it is deliberately longer than a
+     *  call — the gateway's own credential expiry is NOT used, since a connection
+     *  already established outlives it. */
+    expiresAt: v.number(),
+  })
+    // The sweep (opportunistic + the scheduled janitor) ranges this.
+    .index("by_expires", ["expiresAt"]),
+
   // Ownership record for browser-uploaded storage blobs. There is no
   // server-side "upload completed" hook in Convex: `generateUploadUrl` returns
   // the signed URL BEFORE any storageId exists (the storageId only comes back

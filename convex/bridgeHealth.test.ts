@@ -477,6 +477,92 @@ describe("getBridgeAvailability (ownership-scoped, one bridge / N gateways)", ()
   });
 });
 
+describe("getBridgeAvailability — which agent the chat is engaged with", () => {
+  // The precedence lives in routing.ts `currentTurnRouting`, shared with the Talk
+  // lanes since the two reconstructed it separately and disagreed mid-switch. This
+  // pins THIS consumer to it: a FAILED switch is precisely the window where
+  // `lastRouted*` never advanced while the composer and the retry stay on the new
+  // agent — reading the confirmed tuple there reports the WRONG gateway's outage
+  // and the wrong upload cap.
+  const target = (instanceName: string, agentId: string, state: string) => ({
+    key: `${instanceName}:u:${agentId}`,
+    instanceName,
+    canonical: "u",
+    agentId,
+    gatewayHost: "h:1",
+    state,
+    lastOkAt: null,
+    lastErrorCode: null,
+    lastErrorAt: null,
+    attempts: 1,
+    okCount: state === "connected" ? 1 : 0,
+    errorCount: state === "error" ? 1 : 0,
+  });
+
+  test("a FAILED switch's agent outranks the last CONFIRMED one", async () => {
+    const t = convexTest(schema, modules);
+    const { userId, chatId } = await t.run(async (ctx) => {
+      const userId = await ctx.db.insert("users", {});
+      await ctx.db.insert("profiles", { userId, role: "user", canonical: "u" });
+      await ctx.db.insert("bridgeHealth", {
+        key: "singleton",
+        reachable: true,
+        checkedAt: 1,
+        maxPayload: null,
+        // alice healthy, bob erroring.
+        targets: [
+          target("prod", "alice", "connected"),
+          target("prod", "bob", "error"),
+        ],
+      });
+      for (const agentId of ["alice", "bob"]) {
+        await ctx.db.insert("userAgents", {
+          userId,
+          instanceName: "prod",
+          agentId,
+          isDefault: agentId === "alice",
+          source: "manual" as const,
+          createdAt: 1,
+        });
+        await ctx.db.insert("agents", {
+          instanceName: "prod",
+          agentId,
+          source: "discovered" as const,
+          presentInLastOk: true,
+          firstSeenAt: 1,
+          lastSeenAt: 1,
+        });
+      }
+      const chatId = await ctx.db.insert("chats", {
+        userId,
+        updatedAt: 1,
+        instanceName: "prod",
+        agentId: "alice",
+        perTurnRouting: true,
+        // The last CONFIRMED turn was alice's…
+        lastRoutedInstanceName: "prod",
+        lastRoutedAgentId: "alice",
+      });
+      // …but the switch to bob was attempted and FAILED.
+      await ctx.db.insert("outbox", {
+        chatId,
+        userId,
+        clientMessageId: "cm-1",
+        text: "hello bob",
+        attachmentIds: [],
+        status: "failed" as const,
+        routedAgent: { instanceName: "prod", agentId: "bob" },
+      });
+      return { userId, chatId };
+    });
+    const res = await t
+      .withIdentity({ subject: `${userId}|s` })
+      .query(api.bridgeHealth.getBridgeAvailability, { chatId });
+    // Scoped to BOB — the agent the composer and the retry are on.
+    expect(res.degraded).toBe(true);
+  });
+});
+
 describe("computeAvailability — per-instance liveness gate", () => {
   const doc = (over = {}) =>
     ({

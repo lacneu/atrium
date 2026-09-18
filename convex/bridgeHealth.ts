@@ -26,7 +26,11 @@ import {
   resolveHealthPollTargets,
   resolvePollTargets,
 } from "./lib/bridgeRouting";
-import { canonicalForUser, resolveTargetForTurn } from "./routing";
+import {
+  canonicalForUser,
+  currentTurnRouting,
+  resolveTargetForTurn,
+} from "./routing";
 
 const HEALTH_KEY = "singleton";
 // A snapshot older than this means the poller itself is wedged/dead -> treat the
@@ -266,7 +270,8 @@ async function readDoc(ctx: QueryCtx): Promise<Doc<"bridgeHealth"> | null> {
 
 /** Cron: poll the bridge /health and upsert the snapshot. Tolerant — an
  *  unreachable/HTTP-error/non-JSON bridge becomes reachable:false with a reason
- *  code, never a thrown action (a thrown action would retry and never record). */
+ *  code, never a thrown action: a throw writes NOTHING, so the chat would keep
+ *  reading the last good snapshot and show a healthy bridge that is down. */
 export const pollBridgeHealth = internalAction({
   args: {},
   handler: async (ctx) => {
@@ -465,57 +470,29 @@ export const getBridgeAvailability = query({
       const chat = await ctx.db.get(chatId);
       // Only scope by a chat the CALLER owns — never read a third party's chat to
       // expose its instance's state/capacity (parity with the per-chat access gate).
-      // Scope to the instance dispatch ACTUALLY routes to. resolveTargetForChat is the
+      // Scope to the instance dispatch ACTUALLY routes to. The routing resolver is the
       // authority: it honors chat.instanceName when the binding is valid, but REBINDS
-      // to another instance when the bound agent was deleted/revoked — so the resolver
+      // to another instance when the bound agent is GONE (deleted on the gateway or
+      // purged). A revoked-but-PRESENT agent is `agent_restricted` instead, with no
+      // rebind — the chat is read-only, never silently re-routed. So the resolver
       // wins, with chat.instanceName only as a last resort (resolver found no target).
       if (chat && chat.userId === userId) {
         // Narrow `degraded` to the routed AGENT's own target for THIS user's
         // canonical (codex P2: another agent — or another user's canonical on a
         // shared agent — erroring on the same instance must not flag this chat).
-        // PER-TURN routing precedence, mirroring the dispatch's own:
-        //   1. the LAST SEND's explicit routing — the newest outbox row across ALL
-        //      lifecycle states (pending covers a switch mid-send before
-        //      confirmTurnRouting; FAILED covers the outage window itself: the
-        //      switched-to agent's dead gateway fails the dispatch, lastRouted*
-        //      never advances, yet the composer/retry stays on that agent),
-        //   2. the last CONFIRMED routed agent (lastRouted*),
-        //   3. the chat's primary binding.
-        // The choice runs through resolveTargetForTurn — the dispatch's OWN
-        // authorization — so a forged/revoked routedAgent yields target:null and
-        // can never scope-read a non-entitled instance's state or capacity.
-        // NOT "queued": a queued follow-up describes a FUTURE turn — the degraded
-        // signal feeds the ACTIVE turn's RunStatus, so a queued row targeting a
-        // different agent must neither hide the active agent's outage nor show a
-        // false one (codex P2 round 5). pending (being dispatched NOW) outranks
-        // recency; else the newest of sent/failed = the last attempted send.
-        const [pendingRow, sentRow, failedRow] = await Promise.all(
-          (["pending", "sent", "failed"] as const).map((status) =>
-            ctx.db
-              .query("outbox")
-              .withIndex("by_chat_status", (q) =>
-                q.eq("chatId", chatId!).eq("status", status),
-              )
-              .order("desc")
-              .first(),
-          ),
-        );
-        const lastAttempt = [sentRow, failedRow]
-          .filter((r) => r !== null)
-          .sort((a, b) => b!._creationTime - a!._creationTime)[0];
-        const lastSend = pendingRow ?? lastAttempt;
+        // PER-TURN routing precedence: see `currentTurnRouting` (routing.ts),
+        // including WHY `queued` is excluded — the degraded signal feeds the ACTIVE
+        // turn's RunStatus, and a queued row describes a future one. The candidate
+        // runs through resolveTargetForTurn — the dispatch's OWN authorization — so
+        // a forged/revoked routedAgent yields target:null and can never scope-read
+        // a non-entitled instance's state or capacity.
         // An EXPLICIT caller target (the attachment adapter passing the composer's
         // current selection) outranks the send history — the upload cap must be the
-        // gateway the NEXT send will actually hit.
-        const chosen =
-          routedAgent ??
-          lastSend?.routedAgent ??
-          (chat.lastRoutedInstanceName && chat.lastRoutedAgentId
-            ? {
-                instanceName: chat.lastRoutedInstanceName,
-                agentId: chat.lastRoutedAgentId,
-              }
-            : null);
+        // gateway the NEXT send will actually hit. The precedence itself lives in
+        // routing.ts: the Talk lanes need the SAME answer, and when each side
+        // reconstructed it separately they disagreed mid-switch.
+        const chosen = (await currentTurnRouting(ctx, chat, routedAgent ?? null))
+          .agent;
         const target = (await resolveTargetForTurn(ctx, chat, userId, chosen))
           .target;
         instanceName = target?.instanceName ?? chat.instanceName ?? null;

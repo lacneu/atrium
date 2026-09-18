@@ -1,7 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   buildCallUrl,
+  endsTheCall,
   exchangeSdp,
+  hidesTalkControl,
   nextTalkPhase,
   parseTalkToolCall,
   talkErrorKey,
@@ -200,6 +202,9 @@ describe("parseTalkToolCall (provider data-channel events)", () => {
 describe("talkErrorKey (total mapping)", () => {
   it("maps known codes and collapses the rest onto generic", () => {
     expect(talkErrorKey("talk_disabled")).toBe("talk_error_disabled");
+    // Without this, dropping the mapping shows the generic message for a session
+    // the user is told to restart.
+    expect(talkErrorKey("talk_session_stale")).toBe("talk_error_session_stale");
     expect(talkErrorKey("talk_unsupported")).toBe("talk_error_unsupported");
     expect(talkErrorKey("provider_unsupported")).toBe("talk_error_unsupported");
     expect(talkErrorKey("mic_denied")).toBe("talk_error_mic_denied");
@@ -252,5 +257,73 @@ describe("talk mic sensitivity (server_vad threshold presets)", () => {
     expect(loadTalkVad()).toBe("high");
     saveTalkVad("");
     expect(loadTalkVad()).toBe("");
+  });
+});
+
+describe("endsTheCall (which failures are terminal)", () => {
+  it("a right or a session that is GONE ends the call", () => {
+    // Every later consult fails identically: keeping the connection up leaves the
+    // user speaking to an agent that can no longer be reached, while the voice model
+    // apologises once per question.
+    for (const code of [
+      "talk_session_stale", // the handle expired or the row is gone
+      "agent_restricted", // the pinned agent was revoked/deleted/retyped
+      "talk_disabled", // the instance's talk gate was switched off
+      "talk_unsupported", // no talk surface on this target at all
+      "provider_unsupported", // the bridge's spelling of the same
+      "no_agent", // nothing routable left on this chat
+    ]) {
+      expect(endsTheCall(code), code).toBe(true);
+    }
+  });
+
+  it("a failure that could pass next time does NOT", () => {
+    // Transient, or specific to the question asked: the voice model is told and the
+    // conversation continues.
+    for (const code of [
+      "relay_failed",
+      "bridge_unreachable",
+      "bridge_502",
+      "invalid_args",
+      "talk_malformed",
+      "",
+    ]) {
+      expect(endsTheCall(code), code).toBe(false);
+    }
+  });
+});
+
+describe("hidesTalkControl (when the button may disappear)", () => {
+  const up = { available: true };
+
+  it("an IDLE button is withdrawn unless the server says yes", () => {
+    // ONE answer, computed server-side for the instance the session would reach and
+    // FAIL CLOSED there (admin gate AND gateway capability). `undefined` is the query
+    // still in flight, which is not a yes.
+    expect(hidesTalkControl({ ...up, phase: "idle", available: false })).toBe(true);
+    expect(
+      hidesTalkControl({ ...up, phase: "idle", available: undefined }),
+    ).toBe(true);
+    expect(hidesTalkControl({ ...up, phase: "idle" })).toBe(false);
+  });
+
+  it("a RUNNING call is never hidden — the user would lose the controls", () => {
+    // Rendering null does NOT unmount the component: React keeps it and its effects,
+    // so the microphone and the peer connection stay up. What disappears are the mute
+    // and hang-up buttons — an answer flipping mid-sentence would leave the user in a
+    // live call with no way out.
+    for (const phase of [
+      "minting",
+      "connecting",
+      "live",
+      "ending",
+    ] as TalkPhase[]) {
+      for (const available of [false, undefined]) {
+        expect(
+          hidesTalkControl({ phase, available }),
+          `${phase} ${String(available)}`,
+        ).toBe(false);
+      }
+    }
   });
 });

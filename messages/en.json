@@ -2069,6 +2069,7 @@
   "talk_error_disabled": "Realtime voice is not enabled on this agent's instance (Settings › Platform › Voice › Talk).",
   "talk_error_unsupported": "This agent's gateway does not support realtime voice.",
   "talk_error_secret_expired": "The voice session expired before connecting — try again.",
+  "talk_error_session_stale": "The voice session expired — start the call again.",
   "talk_error_generic": "The voice conversation could not be started — try again in a moment.",
   "talk_voice_label": "Conversation voice",
   "talk_voice_default": "Default voice",

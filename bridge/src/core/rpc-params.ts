@@ -38,14 +38,26 @@ export function chatAbortParams(
 /** `talk.client.create` params: the browser-held realtime session. Only `transport` is
  *  always sent; voice and the VAD threshold ride along when the caller chose them, and
  *  are OMITTED otherwise so the gateway default applies. Extracted for the outbound
- *  ratchet — `additionalProperties:false` makes an extra field here a hard refusal. */
+ *  ratchet — `additionalProperties:false` makes an extra field here a hard refusal.
+ *
+ *  `sessionKey` NAMES THE OWNER. The gateway derives a Talk session's agent from an
+ *  agent-scoped key (`agent:<id>:…`, upstream `resolveTalkSessionAgentId`) and,
+ *  without one, falls back to `config.talk.agentId` — refusing outright only when
+ *  several agents exist and no such fallback is set: "Talk session ownership has no
+ *  explicit owner" (live prod 2026-09-17, six and seven agents, voice unavailable).
+ *  BOTH outcomes are wrong for Atrium: the refusal kills voice, and the fallback
+ *  answers as one arbitrary agent instead of the chat's. Optional here, and omitted
+ *  when the caller named no owner at all, so a single-agent gateway and an older
+ *  Convex keep the previous behaviour. */
 export function talkClientCreateParams(
   transport: string,
   voice: string | null,
   vadThreshold: number | null,
+  sessionKey: string | null = null,
 ): Record<string, unknown> {
   return {
     transport,
+    ...(sessionKey !== null ? { sessionKey } : {}),
     ...(voice !== null ? { voice } : {}),
     ...(vadThreshold !== null ? { vadThreshold } : {}),
   };

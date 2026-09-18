@@ -223,4 +223,13 @@ crons.interval(
   {},
 );
 
+// Realtime-voice handles: the mint sweeps opportunistically, which is enough while
+// calls keep happening and nothing at all once they stop. Hourly, bounded.
+crons.interval(
+  "sweep talk session handles",
+  { hours: 1 },
+  internal.talk.sweepTalkSessions,
+  {},
+);
+
 export default crons;

@@ -4706,6 +4706,7 @@ function Composer({
   const composerIdentity = useAssistantIdentity();
   const composerRouting = useChatRouting();
   const composerSelected = composerRouting?.selected ?? null;
+
   const composerName = composerSelected
     ? (findAgentDisplay(composerRouting?.pool ?? [], composerSelected)
         ?.displayName ?? composerSelected.agentId)
@@ -5265,9 +5266,31 @@ function Composer({
           {/* Realtime voice — FAIL CLOSED (unlike attachments' fail-open): a
               talk button on a gateway without the surface would hard-fail at
               mint, so it only renders on an explicitly resolved capability. */}
-          {!capsLoading && capsResolved && chatCan("talk") ? (
-            <TalkControl chatId={chatId} />
-          ) : null}
+          {/* ALWAYS mounted (per chat). Realtime voice is still FAIL CLOSED — the
+              button renders only on an explicitly resolved `talk` capability — but
+              that decision belongs INSIDE the control: the two conditions that
+              withdraw it (the admin gate and the gateway capability) are reactive
+              and can flip while a conversation is UP, and deciding HERE would
+              unmount the control, whose unmount effect hangs the call up. Inside,
+              the same answer only hides an IDLE button (hidesTalkControl).
+              The composer's CURRENT selection rides along: a user who picks another
+              agent and presses the button must talk to THAT agent, not to the one
+              the thread last engaged. Authorized server-side. */}
+          <TalkControl
+            // REMOUNT per chat. This route component is REUSED across chats, so
+            // without a key a call started in one conversation keeps its microphone
+            // and its gateway session live under another's UI.
+            key={chatId}
+            chatId={chatId}
+            routedAgent={
+              composerSelected
+                ? {
+                    instanceName: composerSelected.instanceName,
+                    agentId: composerSelected.agentId,
+                  }
+                : null
+            }
+          />
           {unavailable ? (
             // Greyed, non-clickable send: the bridge is down, so persisting a
             // turn would only produce an unanswerable message.

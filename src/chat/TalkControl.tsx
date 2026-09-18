@@ -25,6 +25,8 @@ import {
   loadTalkVad,
   loadTalkVoice,
   nextTalkPhase,
+  endsTheCall,
+  hidesTalkControl,
   parseTalkToolCall,
   saveTalkVad,
   saveTalkVoice,
@@ -62,12 +64,21 @@ function talkErrorMessage(code: string): string {
       return m.chat_mic_error_denied();
     case "talk_error_secret_expired":
       return m.talk_error_secret_expired();
+    case "talk_error_session_stale":
+      return m.talk_error_session_stale();
     case "talk_error_generic":
       return `${m.talk_error_generic()} (${code})`;
   }
 }
 
-export function TalkControl({ chatId }: { chatId: string }) {
+export function TalkControl({
+  chatId,
+  routedAgent = null,
+}: {
+  chatId: string;
+  /** The composer's current per-turn selection, or null. */
+  routedAgent?: { instanceName: string; agentId: string } | null;
+}) {
   const [status, setStatus] = useState<TalkStatus>(INITIAL_TALK_STATUS);
   // The user's voice pick ("" = the gateway's configured default), persisted
   // per browser — passed to the mint; the gateway validates against ITS list.
@@ -75,15 +86,28 @@ export function TalkControl({ chatId }: { chatId: string }) {
   const [vad, setVad] = useState<string>(() => loadTalkVad());
   // Per-instance admin gate, REACTIVE: no button at all on a chat whose
   // instance has talk disabled (the capability alone is version-level).
+  // ONE server answer: the admin gate AND the gateway capability, both evaluated for
+  // the instance this session would actually reach. Reading the capability here
+  // instead would describe the chat's BOUND instance, which a rebind makes the wrong
+  // one, and it would fail open where the policy is fail closed.
   const available = useQuery(api.talk.talkAvailable, {
     chatId: chatId as Id<"chats">,
+    ...(routedAgent ? { routedAgent } : {}),
   });
+
   const mint = useAction(api.talk.mintTalkSession);
   const relayToolCall = useAction(api.talk.relayTalkToolCall);
   const toast = useToast();
   // Generation guard: bumped on every start AND hang-up; async continuations
   // compare before touching shared state.
   const genRef = useRef(0);
+  // The HANDLE of this call, from the mint: an id, and nothing else. WHICH agent,
+  // canonical and conversation the session was opened on lives in the SERVER's row —
+  // the browser never holds them, which is what makes the handle proof rather than a
+  // claim. The thread can move to another agent while the user is speaking; without
+  // this the consult would re-resolve and reach a DIFFERENT gateway session than the
+  // one on the line. Cleared on teardown.
+  const sessionIdRef = useRef<Id<"talkSessions"> | null>(null);
   // Phase mirror for non-render checks (start guard + transition source).
   const phaseRef = useRef<TalkPhase>("idle");
   const resourcesRef = useRef<{
@@ -119,6 +143,9 @@ export function TalkControl({ chatId }: { chatId: string }) {
     }
     r.mic = null;
     r.pc = null;
+    // The session is over: its handle must not survive into the next call, where it
+    // would address whatever the previous one belonged to.
+    sessionIdRef.current = null;
     if (audioRef.current) audioRef.current.srcObject = null;
   }, []);
 
@@ -130,8 +157,10 @@ export function TalkControl({ chatId }: { chatId: string }) {
     setStatus((s) => ({ ...s, muted: false }));
   }, [advance, teardown]);
 
-  // Unmount (navigation away) = hang up: never leave a mic live behind a
-  // conversation the user left.
+  // Unmount = hang up: never leave a mic live behind a conversation the user left.
+  // Navigating between chats does NOT unmount this by itself — the route component
+  // is reused — so the mount site keys it on the chat id; that key is what turns a
+  // navigation into the unmount this effect is waiting for.
   useEffect(
     () => () => {
       genRef.current++;
@@ -153,16 +182,23 @@ export function TalkControl({ chatId }: { chatId: string }) {
       toast.error(talkErrorMessage(code));
     };
     const vadValue = talkVadThreshold(vad);
+    // The action can REJECT (an authorization gate throws before its own try block).
+    // Without this the control would sit in `connecting` with no error and no way
+    // back — the failure has to become a code like any other.
     const minted = await mint({
       chatId: chatId as Id<"chats">,
       ...(voice !== "" ? { voice } : {}),
       ...(vadValue !== null ? { vadThreshold: vadValue } : {}),
-    });
+      // The composer's CURRENT pick: a user who selects another agent and presses
+      // the button must talk to THAT agent. Authorized server-side.
+      ...(routedAgent ? { routedAgent } : {}),
+    }).catch(() => ({ ok: false as const, code: "mint_failed" }));
     if (genRef.current !== gen) return;
     if (!minted.ok) {
       fail(minted.code);
       return;
     }
+    sessionIdRef.current = minted.sessionId;
     // Mic AFTER the mint: no permission prompt for a session that would be
     // refused anyway (disabled/unsupported).
     let mic: MediaStream;
@@ -234,6 +270,9 @@ export function TalkControl({ chatId }: { chatId: string }) {
       const res = await relayToolCall({
         chatId: chatId as Id<"chats">,
         callId: call.callId,
+        // The session this consult belongs to. The composer's selection can move
+        // while the call is live; the consult must not.
+        ...(sessionIdRef.current ? { sessionId: sessionIdRef.current } : {}),
         args: {
           question:
             typeof call.args.question === "string" ? call.args.question : "",
@@ -246,6 +285,14 @@ export function TalkControl({ chatId }: { chatId: string }) {
         },
       }).catch(() => ({ ok: false as const, code: "relay_failed" }));
       if (genRef.current !== gen) return; // hung up while the agent worked
+      if (!res.ok && endsTheCall(res.code)) {
+        // Every later consult would fail identically: keeping the connection up
+        // would leave the user talking to an agent that can no longer be reached.
+        hangup();
+        setStatus((st) => ({ ...st, errorCode: res.code }));
+        toast.error(talkErrorMessage(res.code));
+        return;
+      }
       const output = !res.ok
         ? `The agent could not be reached (${res.code}). Tell the user and suggest typing the request in the conversation instead.`
         : res.pending
@@ -300,7 +347,7 @@ export function TalkControl({ chatId }: { chatId: string }) {
     if (genRef.current !== gen) return;
     advance("connected");
     // eslint-disable-next-line react-hooks/exhaustive-deps -- toast identity stable
-  }, [advance, chatId, mint, teardown, voice, vad]);
+  }, [advance, chatId, mint, teardown, voice, vad, routedAgent]);
 
   const toggleMute = useCallback(() => {
     const mic = resourcesRef.current.mic;
@@ -314,7 +361,7 @@ export function TalkControl({ chatId }: { chatId: string }) {
   // Hidden while the instance is not enabled (or the probe still loads). An
   // ACTIVE session keeps rendering so a mid-call admin flip never strands a
   // live mic without its controls.
-  if (phase === "idle" && available !== true) return null;
+  if (hidesTalkControl({ phase, available })) return null;
   return (
     <>
       {/* Remote (agent) audio sink — never rendered visibly. */}

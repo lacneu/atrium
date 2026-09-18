@@ -262,6 +262,79 @@ export function parseTalkToolCall(raw: string): TalkToolCall | null {
   return { callId, name, args };
 }
 
+/**
+ * Should the voice control render NOTHING?
+ *
+ * `available` is ONE server answer — the per-instance admin gate AND the gateway
+ * capability, both evaluated for the instance the session would actually reach and
+ * both FAIL CLOSED (the standing policy for talk: a button on a gateway without the
+ * surface hard-fails at the mint). `undefined` is the query in flight, which is not
+ * a yes.
+ *
+ * NEVER TRUE OUTSIDE `idle`. That answer is reactive and can flip while a
+ * conversation is UP. Rendering null does not unmount this component — React keeps
+ * it and its effects, so the microphone and the peer connection survive — it removes
+ * the CONTROLS, leaving the user in a live call with no way to mute or hang up. (The
+ * parent's remount key is a different mechanism: unmounting DOES run the teardown
+ * effect, which is why changing chat correctly ends the call.)
+ */
+export function hidesTalkControl(state: {
+  phase: TalkPhase;
+  /** `talkAvailable` — undefined while the query is in flight. */
+  available: boolean | undefined;
+}): boolean {
+  if (state.phase !== "idle") return false;
+  return state.available !== true;
+}
+
+/**
+ * Is this failure TERMINAL for the CALL IN PROGRESS? Only consult failures reach
+ * here; a mint that fails never opened a call.
+ *
+ * The line between the two lists is whether the NEXT consult could plausibly
+ * succeed. Terminal means a right or a session is gone for good:
+ *
+ *   talk_session_stale   the server no longer recognises the session this call was
+ *                        opened on (handle expired, row lost);
+ *   agent_restricted     the agent this call was pinned to was revoked, deleted or
+ *                        retyped mid-call;
+ *   talk_disabled        the instance's talk gate was switched off;
+ *   talk_unsupported     the target has no talk surface at all (Hermes);
+ *   provider_unsupported the bridge's spelling of the same;
+ *   no_agent             no routable agent remains for this chat.
+ *
+ * None of these is permanent in principle — a grant can be given back, talk can be
+ * switched on again, a roster can refill. What they share is that nothing the USER
+ * can do from inside the call changes them, so every later consult fails identically
+ * while the voice model apologises once per question. The call is ended instead and
+ * the failure is surfaced as a toast — `talkErrorMessage` gives several of these
+ * codes the generic wording plus the technical code, which is what a screenshot
+ * needs to pinpoint the step.
+ *
+ * Everything else — a relay that failed, an unreachable or erroring bridge, a bad
+ * argument, a one-off gateway error — is a SINGLE consult failing. Those can be
+ * transient or specific to the question asked, so the voice model is told and the
+ * conversation continues.
+ */
+const TERMINAL_TALK_CODES = new Set([
+  "talk_session_stale",
+  "agent_restricted",
+  "talk_disabled",
+  "talk_unsupported",
+  // The bridge's own spelling of the same thing, from /talk-toolcall: a target with
+  // no talk surface. `talkErrorKey` already treats the two as one; this must too, or
+  // a bridge redeploy under a live call leaves every consult failing identically.
+  "provider_unsupported",
+  "no_agent",
+]);
+// NOT here: `talk_owner_unconfirmed`. It is a MINT failure (the bridge could not
+// prove it scoped the session), and this predicate only ever sees a consult failing
+// — there is no call to end. It reaches the user through the mint's own error path.
+
+export function endsTheCall(code: string): boolean {
+  return TERMINAL_TALK_CODES.has(code);
+}
+
 /** Map a talk error code to the i18n message KEY the panel shows. Pure, total:
  *  unknown codes collapse onto the generic entry (never a raw code in the UI). */
 export function talkErrorKey(
@@ -271,10 +344,13 @@ export function talkErrorKey(
   | "talk_error_unsupported"
   | "talk_error_mic_denied"
   | "talk_error_secret_expired"
+  | "talk_error_session_stale"
   | "talk_error_generic" {
   switch (code) {
     case "talk_disabled":
       return "talk_error_disabled";
+    case "talk_session_stale":
+      return "talk_error_session_stale";
     case "talk_unsupported":
     case "provider_unsupported":
       return "talk_error_unsupported";

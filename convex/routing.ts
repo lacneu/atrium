@@ -361,3 +361,135 @@ export async function resolveGatewayUser(
     normalizeEmail(current ?? profile?.email ?? undefined) ?? args.canonical
   );
 }
+
+/**
+ * WHICH agent is this chat engaged with RIGHT NOW, and on WHICH gateway
+ * conversation — the per-turn precedence, stated ONCE.
+ *
+ * A per-turn routed chat has no single binding, so every consumer that must name
+ * "the agent the next/current turn talks to" has to reconstruct it. Two of them
+ * did, separately, and they disagreed: the health/capacity read consulted the
+ * OUTBOX, while the Talk lanes read only the last CONFIRMED tuple — so during a
+ * switch (or after a failed one) voice addressed the previous agent while text
+ * addressed the new one.
+ *
+ * THE EVIDENCE, newest first. Each entry names an agent (or `null` = the chat's
+ * primary binding) together with the conversation THAT agent is on. It is read as a
+ * statement about the chat's CURRENT addressee, not as history: an entry naming no
+ * agent is re-read against the binding in force NOW, which is what the dispatch does
+ * with a null choice. (`bindChatTarget` clears `openclawChatId` when it moves a
+ * binding, so a new agent cannot inherit the previous one's conversation that way.)
+ *
+ *   1. the LAST SEND: `pending` (being dispatched now) outranks the newest of
+ *      `sent`/`failed` — a failed switch is exactly the window where `lastRouted*`
+ *      never advanced while the composer and the retry stayed on the new agent.
+ *      NOT `queued`: a queued follow-up describes a FUTURE turn. Its conversation
+ *      is the EPHEMERAL segment `beginTurnRouting` stamps on that very row
+ *      (`dispatchSegment`), because the chat's confirmed segment must not advance
+ *      before the ack;
+ *   2. the last CONFIRMED tuple, on `chat.routingSegment`;
+ *   3. the primary binding, on `chat.openclawChatId`.
+ *
+ * `explicit` — a caller that already knows which agent it means (the composer's
+ * current selection) — does NOT replace that chain: it SELECTS from it. The agent
+ * is the caller's, and the conversation is the newest evidence naming that SAME
+ * agent. Replacing the chain instead was a real defect: the composer's selection is
+ * the thread's effective agent, not "a pick never sent", so passing it hid the very
+ * outbox row that knew the conversation — the voice session then opened
+ * `<agent>:<chatId>` while the turn in flight used `<agent>:turn:<n>`.
+ *
+ * Equally, a row whose `dispatchSegment` is not stamped yet does not mean the agent
+ * has NO conversation: if an older piece of evidence names the same agent, that is
+ * its conversation. `null` is answered only when nothing in the chain knows one —
+ * an agent this chat has genuinely never run.
+ *
+ * `agent` is a CANDIDATE, not an authorization: hand it to `resolveTargetForTurn`,
+ * which validates it against the user's effective grants.
+ */
+export interface CurrentTurnRouting {
+  /** null = this turn addresses the chat's primary binding. */
+  agent: { instanceName: string; agentId: string } | null;
+  /** The gateway conversation THAT agent is on; null when it has none yet. */
+  conversation: string | null;
+}
+
+type AgentRef = { instanceName: string; agentId: string };
+
+export async function currentTurnRouting(
+  ctx: QueryCtx | MutationCtx,
+  chat: Doc<"chats">,
+  explicit: AgentRef | null = null,
+): Promise<CurrentTurnRouting> {
+  const bound = chat.openclawChatId ?? null;
+  // WHICH SEND IS THE LATEST is a question about DISPATCH, not about insertion, and
+  // `pendingSince` is the moment a row entered dispatch — so that is what this
+  // orders by. Rows without one fall back to their creation.
+  //
+  // WHAT THIS IS NOT: a fix for a defect anyone can reach today. `outboxQueue` keeps
+  // ONE send in flight per chat and drains the rest FIFO, so for a single chat the
+  // two orderings currently agree, and every producer stamps `pendingSince` when it
+  // promotes a row to `pending`. This states the rule the answer actually depends on
+  // instead of relying on that coincidence: the day the queue gains a priority lane,
+  // a retry that re-dispatches an older row, or an import writes rows without the
+  // stamp, insertion order would quietly start answering the wrong agent — and the
+  // failure would look like a routing bug, not a sort.
+  const DISPATCH_WINDOW = 10;
+  const dispatchedAt = (r: Doc<"outbox">): number =>
+    r.pendingSince ?? r._creationTime;
+  const newestByDispatch = (rows: Doc<"outbox">[]): Doc<"outbox"> | null =>
+    rows.length === 0
+      ? null
+      : rows.reduce((a, b) => (dispatchedAt(b) > dispatchedAt(a) ? b : a));
+  const [pendingRows, sentRows, failedRows] = await Promise.all(
+    (["pending", "sent", "failed"] as const).map((status) =>
+      ctx.db
+        .query("outbox")
+        .withIndex("by_chat_status", (q) =>
+          q.eq("chatId", chat._id).eq("status", status),
+        )
+        .order("desc")
+        .take(DISPATCH_WINDOW),
+    ),
+  );
+  const pendingRow = newestByDispatch(pendingRows);
+  const lastAttempt = newestByDispatch([...sentRows, ...failedRows]);
+  const lastSend = pendingRow ?? lastAttempt;
+
+  const evidence: CurrentTurnRouting[] = [];
+  if (lastSend) {
+    evidence.push(
+      lastSend.routedAgent
+        ? {
+            agent: lastSend.routedAgent,
+            conversation: lastSend.dispatchSegment ?? null,
+          }
+        : { agent: null, conversation: bound },
+    );
+  }
+  if (chat.lastRoutedInstanceName && chat.lastRoutedAgentId) {
+    evidence.push({
+      agent: {
+        instanceName: chat.lastRoutedInstanceName,
+        agentId: chat.lastRoutedAgentId,
+      },
+      conversation: chat.routingSegment ?? null,
+    });
+  }
+  evidence.push({ agent: null, conversation: bound });
+
+  const agent = explicit ?? evidence[0].agent;
+  // `null` (the primary binding) matches evidence that names no agent AND evidence
+  // that names the bound agent explicitly — they are the same addressee.
+  const isBinding = (a: AgentRef | null): boolean =>
+    a === null ||
+    (a.instanceName === chat.instanceName && a.agentId === chat.agentId);
+  const names = (e: CurrentTurnRouting): boolean =>
+    agent === null
+      ? isBinding(e.agent)
+      : e.agent === null
+        ? isBinding(agent)
+        : e.agent.instanceName === agent.instanceName &&
+          e.agent.agentId === agent.agentId;
+  const known = evidence.find((e) => names(e) && e.conversation !== null);
+  return { agent, conversation: known?.conversation ?? null };
+}

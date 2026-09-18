@@ -114,6 +114,7 @@ import {
 import { applyMediaDeliveryInjection } from "./core/outbound-delivery.js";
 import {
   buildSessionKey,
+  talkSessionOwner,
   safeSessionPart,
 } from "./providers/openclaw/session-keys.js";
 import {
@@ -5080,6 +5081,16 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
         transport?: unknown;
         voice?: unknown;
         vadThreshold?: unknown;
+        // The SESSION-KEY ingredients, re-derived by Convex from OWNED state (same
+        // three fields `/talk-toolcall` already takes, same reason): the gateway
+        // reads the owning agent OFF the key, and without one falls back to
+        // `config.talk.agentId` — refusing only when several agents exist with no
+        // such fallback. All optional — an older Convex deploy, or a single-agent
+        // gateway, keeps the previous unscoped behaviour.
+        chatId?: unknown;
+        openclawChatId?: unknown;
+        canonical?: unknown;
+        agentId?: unknown;
       } = {};
       try {
         talkBody = JSON.parse(raw || "{}") as typeof talkBody;
@@ -5132,13 +5143,77 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
         talkBody.vadThreshold < 1
           ? talkBody.vadThreshold
           : null;
+      // SCOPE the session on the chat's agent when Convex named it, with the same
+      // construction a TYPED turn uses (buildSessionKey) — which is also how
+      // `talk.client.toolCall` addresses its consult. Convex decides WHICH
+      // conversation; when it names one, the voice session lands in the thread's
+      // own gateway session. A blank is normalized to
+      // ABSENT here so the owner decision sees the same values the typed-turn path
+      // sees (never an empty segment). See `talkSessionOwner` for what the gateway
+      // does without a key — it is NOT always a refusal.
+      const talkStr = (v: unknown): string | null =>
+        typeof v === "string" && v.trim() !== "" ? v.trim() : null;
+      // RAW presence, taken BEFORE normalization: `{chatId: 123}`, `{chatId: ""}`
+      // and `{chatId: null}` all normalize to null, and treating them as "the caller
+      // named nothing" would send the create out unowned on the strength of a
+      // malformed body. PRESENCE of the key, not its value — an explicit `null` is
+      // a field the caller wrote.
+      const talkNamedAnOwner = (
+        ["chatId", "openclawChatId", "canonical", "agentId"] as const
+      ).some((k) => Object.hasOwn(talkBody, k));
+      const talkOwner = talkSessionOwner(
+        {
+          chatId: talkStr(talkBody.chatId),
+          openclawChatId: talkStr(talkBody.openclawChatId),
+          // `null` reads as ABSENT (Convex omits the field rather than sending null
+          // when a chat has no conversation). Anything else that survives to here
+          // and normalizes away — a number, a blank string — is a conversation the
+          // caller meant and we cannot use.
+          openclawChatIdInvalid:
+            talkBody.openclawChatId !== undefined &&
+            talkBody.openclawChatId !== null &&
+            talkStr(talkBody.openclawChatId) === null,
+          canonical: talkStr(talkBody.canonical),
+          agentId: talkStr(talkBody.agentId),
+        },
+        talkNamedAnOwner,
+      );
+      if (talkOwner.kind === "incomplete") {
+        // A PARTIALLY named owner is a bug in the caller, not a gateway matter:
+        // minting a key from what is left would name a different session. Refuse
+        // under Atrium's own code — the gateway never sees this request.
+        console.error(
+          `bridge /talk-session refused [talk_owner_incomplete]: missing ${talkOwner.missing.join(", ")}`,
+        );
+        sendJson(res, 400, {
+          ok: false,
+          error: { code: "talk_owner_incomplete" },
+        });
+        return;
+      }
+      if (talkOwner.kind === "unscoped") {
+        // A caller that named no owner at all: an older Convex. The create still
+        // goes out (a single-agent gateway is fine unscoped), but the skew is
+        // NAMED here — on a multi-agent gateway this either fails outright or,
+        // worse, succeeds as whatever `talk.agentId` points at.
+        console.warn(
+          "bridge /talk-session: no session owner named — Convex predates the scoped-Talk contract; the gateway will pick the owner",
+        );
+      }
+      const talkSessionKey =
+        talkOwner.kind === "scoped" ? talkOwner.sessionKey : null;
       try {
         const created = await withOperatorConnection(
           talkBundle.config,
           (conn) =>
             conn.request(
               "talk.client.create",
-              talkClientCreateParams(talkTransport, talkVoice, talkVad),
+              talkClientCreateParams(
+                talkTransport,
+                talkVoice,
+                talkVad,
+                talkSessionKey,
+              ),
               15_000,
             ),
           noteHandshakeFor(talkInstance),
@@ -5148,7 +5223,17 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
           sendJson(res, 502, { ok: false, error: { code: "talk_malformed" } });
           return;
         }
-        sendJson(res, 200, { ok: true, session });
+        // ACKNOWLEDGE what we did with the owner. A bridge that predates this
+        // contract answers the SAME `{ok, session}` shape while silently dropping
+        // the ownership fields — the gateway then opens the session under its own
+        // `talk.agentId` fallback while Convex records the handle under the agent it
+        // asked for, and voice and consult end up on two different agents. Convex
+        // refuses a session it cannot prove is scoped; this field is that proof.
+        sendJson(res, 200, {
+          ok: true,
+          session,
+          ownerScoped: talkSessionKey !== null,
+        });
       } catch (err) {
         // A gateway without a CONFIGURED realtime provider errors here — the
         // classified code is the graceful "not ready" answer (the capability
@@ -5189,8 +5274,12 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
         sendJson(res, 400, { ok: false, error: "invalid body" });
         return;
       }
+      // SAME normalization as /talk-session: trim, and a blank counts as absent.
+      // The two routes must agree, because they address the SAME gateway session —
+      // a whitespace-only conversation that one of them kept and the other dropped
+      // would build two different keys for one conversation.
       const tcStr = (v: unknown): string | null =>
-        typeof v === "string" && v !== "" ? v : null;
+        typeof v === "string" && v.trim() !== "" ? v.trim() : null;
       const tcInstance = tcStr(tcBody.instanceName);
       const tcChatId = tcStr(tcBody.chatId);
       const tcCanonical = tcStr(tcBody.canonical);

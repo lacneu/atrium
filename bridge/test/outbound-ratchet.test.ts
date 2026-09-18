@@ -237,13 +237,51 @@ function builtBodies(): [string, Record<string, unknown>][] {
     ["tts.providers", ttsParams("providers", "")],
     ["tasks.get", taskGetParams("task-7")],
     ["tasks.list", taskListParams("agent:alice:atrium:chat:olivier:c1")],
-    // All FOUR talk create shapes. The two optionals are built independently, so
-    // voice-only and threshold-only are really sendable — capturing the empty and the
-    // both-set cases alone left two valid bodies unvalidated (raised in review).
+    // EVERY talk create shape. The three optionals are built independently, so each
+    // combination is really sendable — capturing only the empty and the all-set cases
+    // left valid bodies unvalidated (raised in review). `sessionKey` joined them when
+    // unscoped Talk sessions stopped landing on the chat's agent, and it is the one
+    // field whose ABSENCE is now the exception rather than the rule.
     ["talk.client.create", talkClientCreateParams("webrtc", null, null)],
     ["talk.client.create", talkClientCreateParams("webrtc", "cedar", null)],
     ["talk.client.create", talkClientCreateParams("webrtc", null, 0.6)],
     ["talk.client.create", talkClientCreateParams("webrtc", "cedar", 0.6)],
+    [
+      "talk.client.create",
+      talkClientCreateParams(
+        "webrtc",
+        null,
+        null,
+        "agent:alice:atrium:chat:olivier:c1",
+      ),
+    ],
+    [
+      "talk.client.create",
+      talkClientCreateParams(
+        "webrtc",
+        "cedar",
+        null,
+        "agent:alice:atrium:chat:olivier:c1",
+      ),
+    ],
+    [
+      "talk.client.create",
+      talkClientCreateParams(
+        "webrtc",
+        null,
+        0.6,
+        "agent:alice:atrium:chat:olivier:c1",
+      ),
+    ],
+    [
+      "talk.client.create",
+      talkClientCreateParams(
+        "webrtc",
+        "cedar",
+        0.6,
+        "agent:alice:atrium:chat:olivier:c1",
+      ),
+    ],
     [
       "talk.client.toolCall",
       talkToolCallParams("agent:alice:atrium:chat:olivier:c1", "call-1", {
@@ -719,14 +757,19 @@ describe("outbound ratchet — what the bridge SENDS fits the vendored contract"
     const talkShapes = new Set(keysFor(builtBodies(), "talk.client.create"));
     expect(
       [...talkShapes].sort(),
-      "talk.client.create builds its two optionals independently — all four shapes must " +
-        "be captured",
+      "talk.client.create builds its optionals independently — every shape the bridge " +
+        "can really send must be captured, INCLUDING the scoped `sessionKey` that names " +
+        "the owning agent (without a key the gateway picks the owner itself)",
     ).toEqual(
       [
         "transport",
         "transport+voice",
         "transport+vadThreshold",
         "transport+vadThreshold+voice",
+        "sessionKey+transport",
+        "sessionKey+transport+voice",
+        "sessionKey+transport+vadThreshold",
+        "sessionKey+transport+vadThreshold+voice",
       ].sort(),
     );
 

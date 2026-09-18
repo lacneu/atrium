@@ -70,6 +70,7 @@ const FROZEN_TRUTH_FLOOR = [
   "CronRunLogEntry.usage",
   "TaskSummary.progressSummary",
   "TalkClientToolCallResult.idempotencyKey",
+  "TalkClientCreateParams.sessionKey",
   "TalkClientCreateResult.expiresAt",
   "TalkClientCreateResult.offerHeaders",
   "CronJobState.lastDelivered",

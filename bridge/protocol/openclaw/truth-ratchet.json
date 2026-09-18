@@ -91,6 +91,10 @@
       "scan": false
     },
     {
+      "path": "TalkClientCreateParams.sessionKey",
+      "scan": false
+    },
+    {
       "path": "TalkClientCreateResult.expiresAt",
       "scan": false
     },
