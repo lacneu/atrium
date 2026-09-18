@@ -6,56 +6,66 @@
     {
       "id": "announce-reverse-hold",
       "ok": true,
-      "chat": "714dea7ef5ae0f29"
+      "chat": "2eba67227c6771c4"
     },
     {
       "id": "basic-turn",
       "ok": true,
-      "chat": "714dea7ef5ae0f29"
+      "chat": "2eba67227c6771c4"
     },
     {
       "id": "tool-exec",
       "ok": true,
-      "chat": "714dea7ef5ae0f29"
+      "chat": "2eba67227c6771c4"
     },
     {
       "id": "update-plan",
       "ok": true,
-      "chat": "714dea7ef5ae0f29"
+      "chat": "2eba67227c6771c4"
     },
     {
       "id": "media-outbound",
       "ok": true,
-      "chat": "714dea7ef5ae0f29"
+      "chat": "2eba67227c6771c4"
+    },
+    {
+      "id": "inbound-attachment",
+      "ok": true,
+      "chat": "2eba67227c6771c4"
+    },
+    {
+      "id": "talk-session",
+      "ok": true,
+      "chat": "2eba67227c6771c4"
     },
     {
       "id": "spawn-announce-merge",
       "ok": true,
-      "chat": "714dea7ef5ae0f29"
+      "chat": "2eba67227c6771c4"
     },
     {
       "id": "spawn-chain-merge",
       "ok": true,
-      "chat": "714dea7ef5ae0f29"
+      "chat": "2eba67227c6771c4"
     },
     {
       "id": "spawn-parallel-merge",
       "ok": true,
-      "chat": "714dea7ef5ae0f29"
+      "chat": "2eba67227c6771c4"
     },
     {
       "id": "async-task",
       "ok": true,
-      "chat": "714dea7ef5ae0f29"
+      "chat": "2eba67227c6771c4"
     },
     {
       "id": "cron-tool",
       "ok": true,
-      "chat": "714dea7ef5ae0f29"
+      "chat": "2eba67227c6771c4"
     }
   ],
   "verdict": "GO",
-  "at": "2026-09-18T02:18:35.151Z",
+  "at": "2026-09-18T04:01:46.952Z",
   "scenarios": [
     "announce-reverse-hold",
     "async-task",
@@ -63,10 +73,12 @@
     "cron-tool",
     "hermes-basic-turn",
     "hermes-cron-list",
+    "inbound-attachment",
     "media-outbound",
     "spawn-announce-merge",
     "spawn-chain-merge",
     "spawn-parallel-merge",
+    "talk-session",
     "tool-exec",
     "update-plan"
   ],
@@ -76,6 +88,8 @@
     "tool-exec": "openclaw",
     "update-plan": "openclaw",
     "media-outbound": "openclaw",
+    "inbound-attachment": "openclaw",
+    "talk-session": "openclaw",
     "spawn-announce-merge": "openclaw",
     "spawn-chain-merge": "openclaw",
     "spawn-parallel-merge": "openclaw",
@@ -85,12 +99,12 @@
     "hermes-cron-list": "hermes"
   },
   "flags": [],
-  "atriumSha": "491ddb17533fe28d90184fbd7f8eab548f9a8c94",
+  "atriumSha": "a4b99adeda0696479f8066ce4eb1a7ae089348a4",
   "worktree": {
     "dirty": true,
-    "deltaSha256": "35dd5c4e5c3a272beca5d08297e5e0b00581daf6ed9725176507b59af16d7eb6"
+    "deltaSha256": "9baf317256229c60c012ece781e02f5a6a83437f5f8ff8d1d021e6ee51140c99"
   },
-  "supportDigest": "c6f93f490a61b5921a985eafc261439d1d0fdc759a9771a6e6c0357b1da21a81",
+  "supportDigest": "2d9be08199872007aff5ed5932272384108d726dd10d1586d0b1750e04b6abae",
   "authMode": "token",
   "bridgeVersion": "0.84.11",
   "vendoredSha256": "99e06ae2c430259848af68304c28804e3fcc4227ae77ec1a99c80f4d26d35d30"
