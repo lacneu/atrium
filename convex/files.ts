@@ -10,6 +10,7 @@ import { v } from "convex/values";
 import { query, mutation, internalMutation } from "./_generated/server";
 import { internal } from "./_generated/api";
 import { requirePermission, requireUserId } from "./lib/access";
+import { resolveChatAccess } from "./lib/chatAccess";
 import { PERMISSIONS } from "./lib/rbac";
 import {
   isFilePart,
@@ -227,6 +228,94 @@ export const listMine = query({
         multiProvider: instanceSet.size > 1,
         categories: [...categorySet].sort(),
       },
+    };
+  },
+});
+
+/** What the file-chip's metadata popover shows. `null` = nothing to show: no such
+ *  file in that bubble, a bubble the caller cannot read, or a blob that is gone.
+ *  The three collapse on purpose — the popover says "unavailable" for all of them,
+ *  and a query that THREW for the second would reach the error boundary instead of
+ *  rendering that note (a participation revoked while the chip is mounted). */
+export type FileMetadataView = {
+  filename: string;
+  /** The content type STORAGE holds — the header the upload declared, not a type
+   *  sniffed from the bytes, so it can disagree with the file's real format. It is
+   *  the one worth showing because it is what storage will SERVE the file as. The
+   *  part's own declared mimeType is deliberately not returned beside it: one Type
+   *  row, and it names what the download will carry. */
+  contentType: string | null;
+  bytes: number;
+  /** Storage's own digest of the blob, relayed unchanged by THIS layer. The encoding
+   *  is the backend's business and is not restated here: the convex-test harness
+   *  returns base64, the docs describe hex, and nothing in this lot verified the
+   *  production backend. The view trims surrounding whitespace before showing it
+   *  (see `digestLabel`) — the one transformation on the way to the screen. */
+  sha256: string | null;
+  direction: "inbound" | "outbound";
+  createdAt: number;
+};
+
+// The file chip's "metadata" action. The SIZE and the DIGEST exist ONLY in storage —
+// a message part declares a storageId, a filename and a mimeType, and nothing about
+// the bytes — so they are the two facts here that describe the blob itself. The name,
+// the direction and the date come from the `files` row; `contentType` is the header
+// the upload declared, which is what storage will serve the file as and therefore the
+// type worth showing.
+//
+// AUTHORIZED ON THE MESSAGE'S OWN CHAT. The action hangs off a bubble, so the
+// boundary is the bubble's: whoever may READ that conversation may read its file's
+// metadata. Requiring `files.userId === caller` looked stricter and was simply wrong
+// in a group chat — a participant saw the agent's file and got "unavailable" while
+// looking straight at it, and the owner was refused a file a participant had sent.
+// The chat comes from the MESSAGE, not from the denormalized `files.chatId`: the two
+// agree for every producer today, and authorizing on the copy would make a row that
+// ever disagreed decide who may read it.
+//
+// NAMED BY (BUBBLE, BLOB) — which is as precise as the chip can be, not a true
+// occupancy identity. A storageId alone is NOT unique: forking a chat re-uses the
+// same blob, so several `files` rows carry it. Answering from "the first
+// row with this storageId that belongs to me" showed one conversation's filename and
+// date under another's chip. DECLARED LIMIT: nothing forbids one message from
+// holding the same blob twice under two names (only the backfill dedupes), and the
+// index cannot separate them either — both chips then resolve to the same row, same
+// blob and same bubble, possibly showing the other one's display name.
+export const metadata = query({
+  args: { storageId: v.id("_storage"), messageId: v.id("messages") },
+  handler: async (
+    ctx,
+    { storageId, messageId },
+  ): Promise<FileMetadataView | null> => {
+    await requirePermission(ctx, PERMISSIONS.CHATS_READ);
+    const userId = await requireUserId(ctx);
+    const message = await ctx.db.get(messageId);
+    if (message === null) return null;
+    // Reachable = owner or participant. `null` rather than a throw, so the popover
+    // renders its note instead of the error boundary taking the conversation down.
+    const access = await resolveChatAccess(ctx, message.chatId, userId);
+    if (access === null) return null;
+    // A POINT READ on (messageId, storageId). Reading the message's files and
+    // filtering in memory forced a choice between an unbounded query and a `.take()`
+    // that truncates the DOMAIN — a bubble's 51st file is still on screen, and its
+    // chip would have answered "unavailable". Tombstone-inclusive, so a file hidden
+    // from Settings › Fichiers still answers: hiding it there does not remove it from
+    // its conversation, which is where this action lives.
+    const row = await ctx.db
+      .query("files")
+      .withIndex("by_message_storage", (q) =>
+        q.eq("messageId", messageId).eq("storageId", storageId),
+      )
+      .first();
+    if (!row) return null;
+    const meta = await ctx.db.system.get("_storage", storageId);
+    if (!meta) return null;
+    return {
+      filename: row.filename,
+      contentType: meta.contentType ?? null,
+      bytes: meta.size,
+      sha256: meta.sha256 ?? null,
+      direction: row.direction,
+      createdAt: row.createdAt,
     };
   },
 });

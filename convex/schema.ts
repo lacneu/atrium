@@ -2369,6 +2369,13 @@ export default defineSchema({
     // + the admin user-delete must see ALL rows, deleted or not.)
     .index("by_user_created", ["userId", "deletedAt", "createdAt"]) // unfiltered listing + facets
     .index("by_message", ["messageId"]) // cascade-delete mirror
+    // The file chip's metadata action asks about ONE BLOB IN ONE BUBBLE — as precise
+    // as the chip can be, since nothing carries a part identity down to it. Reading
+    // `by_message` and
+    // filtering in memory meant either an unbounded read or a `.take()` that
+    // TRUNCATED the domain — the 51st file of a bubble is still on screen, and its
+    // chip answered "unavailable". This is the point read that question deserves.
+    .index("by_message_storage", ["messageId", "storageId"])
     .index("by_storage", ["storageId"]) // GC / backfill dedup
     // Filtered listings: each puts the filter dimension in the index prefix so a
     // filter on a rare/old value scans only matching rows (not the whole owner

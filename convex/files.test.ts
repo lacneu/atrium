@@ -9,6 +9,7 @@ import { convexTest } from "convex-test";
 import { describe, expect, test } from "vitest";
 import { api, internal } from "./_generated/api";
 import schema from "./schema";
+import type { Id } from "./_generated/dataModel";
 import { QUEUED_ORDER_SENTINEL } from "./lib/messageOrder";
 
 const modules = import.meta.glob("./**/*.ts");
@@ -484,5 +485,317 @@ describe("auto-generated (pasted) files: hidden by default, revealed by the togg
     ]);
     const pasted = all.files.find((f) => f.filename === "texte-colle-1.txt");
     expect(pasted?.origin).toBe("pasted");
+  });
+});
+
+describe("files.metadata: what the chip's ⓘ may read", () => {
+  /** A delivered file in `owner`'s conversation; returns the ids the chip holds. */
+  async function deliverFile(
+    t: ReturnType<typeof convexTest>,
+    owner: Awaited<ReturnType<typeof seedUser>>,
+    bytes: string,
+    filename = "rapport.pdf",
+  ) {
+    const { chatId, messageId } = await t.run(async (ctx) => {
+      const chatId = await ctx.db.insert("chats", {
+        userId: owner,
+        updatedAt: 1,
+        instanceName: "prod",
+      });
+      const messageId = await ctx.db.insert("messages", {
+        chatId,
+        userId: owner,
+        role: "assistant" as const,
+        status: "complete" as const,
+        text: "",
+        updatedAt: 1,
+      });
+      return { chatId, messageId };
+    });
+    // The Blob CARRIES a type, so the fixture really exercises the limit the
+    // assertions describe rather than describing one it never meets.
+    const storageId = await t.run((ctx) =>
+      ctx.storage.store(new Blob([bytes], { type: "text/plain" })),
+    );
+    await t.mutation(internal.stream.addPart, {
+      messageId,
+      part: { kind: "file", storageId, filename, mimeType: "application/pdf" },
+    });
+    return { chatId, messageId, storageId };
+  }
+
+  test("the owner gets the blob's OWN size and digest, from storage", async () => {
+    const t = convexTest(schema, modules);
+    const userId = await seedUser(t, "u");
+    const { messageId, storageId } = await deliverFile(t, userId, "0123456789");
+    const meta = await t
+      .withIdentity({ subject: `${userId}|session` })
+      .query(api.files.metadata, { storageId, messageId });
+    expect(meta).not.toBeNull();
+    expect(meta!.bytes).toBe(10);
+    expect(meta!.filename).toBe("rapport.pdf");
+    expect(meta!.direction).toBe("outbound");
+    // EXACTLY the row's own timestamp: `toBeGreaterThan(0)` passed for `Date.now()`,
+    // for the message's time, and for any constant.
+    const rowCreatedAt = await t.run(async (ctx) => {
+      const rows = await ctx.db
+        .query("files")
+        .withIndex("by_message", (q) => q.eq("messageId", messageId))
+        .collect();
+      return rows[0].createdAt;
+    });
+    expect(meta!.createdAt).toBe(rowCreatedAt);
+    // STORAGE's own digest, EXACTLY — `toBeTruthy()` would have passed for any
+    // constant. This is the SHA-256 of the ten bytes the fixture stores, in the
+    // encoding this harness answers with.
+    expect(meta!.sha256).toBe("hNiYd/DUBB77a/kaFvAkjy/Vc+avBcGflr7bn4gveII=");
+    // The part declares `application/pdf` and the stored Blob declares `text/plain`.
+    //
+    // HARNESS LIMIT, stated rather than papered over: convex-test drops a Blob's type
+    // on the way into `_storage` (verified — a typed Blob still yields no
+    // `contentType`). So this CANNOT tell "reads storage" from "always null", and
+    // the production wiring of this one field is NOT guarded here. What it does lock
+    // is the mistake that would actually mislead a reader — the row's mimeType
+    // substituted for storage's header — and it is written so a harness that one day
+    // preserves the type does not turn this test red for the wrong reason.
+    expect(meta!.contentType).not.toBe("application/pdf");
+  });
+
+  test("a PARTICIPANT of the conversation may read it too", async () => {
+    // The action hangs off a bubble, so the boundary is the bubble's. Keying on
+    // `files.userId` instead looked stricter and was wrong: in a group chat a
+    // participant saw the agent's file and got "unavailable" while looking at it.
+    const t = convexTest(schema, modules);
+    const owner = await seedUser(t, "owner");
+    const guest = await seedUser(t, "guest");
+    const { chatId, messageId, storageId } = await deliverFile(t, owner, "abc");
+    await t.run((ctx) =>
+      ctx.db.insert("chatParticipants", {
+        chatId,
+        userId: guest,
+        addedBy: owner,
+        addedAt: 1,
+      }),
+    );
+    const meta = await t
+      .withIdentity({ subject: `${guest}|session` })
+      .query(api.files.metadata, { storageId, messageId });
+    expect(meta).not.toBeNull();
+    expect(meta!.bytes).toBe(3);
+  });
+
+  test("a stranger gets NOTHING, and gets it as `null` rather than a throw", async () => {
+    // THE REASON THIS QUERY IS NOT A BARE `_storage` READ: a raw storage id would
+    // let any caller size and fingerprint any blob in the deployment.
+    //
+    // `null`, not a throw: `useQuery` rethrows during render, so a participation
+    // revoked while the chip is mounted would take the conversation down through the
+    // error boundary instead of rendering "unavailable".
+    const t = convexTest(schema, modules);
+    const owner = await seedUser(t, "owner");
+    const stranger = await seedUser(t, "stranger");
+    const { messageId, storageId } = await deliverFile(t, owner, "secret-bytes");
+    expect(
+      await t
+        .withIdentity({ subject: `${stranger}|session` })
+        .query(api.files.metadata, { storageId, messageId }),
+    ).toBeNull();
+  });
+
+  test("the OWNER may read a file a PARTICIPANT sent", async () => {
+    // The other half of the group case. A boundary that refused anything but
+    // `files.userId === caller` would pass the participant test above and still fail
+    // here, which is how the original defect hid.
+    const t = convexTest(schema, modules);
+    const owner = await seedUser(t, "owner");
+    const guest = await seedUser(t, "guest");
+    const { chatId, messageId } = await t.run(async (ctx) => {
+      const chatId = await ctx.db.insert("chats", {
+        userId: owner,
+        updatedAt: 1,
+        instanceName: "prod",
+      });
+      await ctx.db.insert("chatParticipants", {
+        chatId,
+        userId: guest,
+        addedBy: owner,
+        addedAt: 1,
+      });
+      // The GUEST's own turn, carrying their upload.
+      const messageId = await ctx.db.insert("messages", {
+        chatId,
+        userId: guest,
+        role: "user" as const,
+        status: "complete" as const,
+        text: "voici le fichier",
+        updatedAt: 1,
+      });
+      return { chatId, messageId };
+    });
+    void chatId;
+    const storageId = await t.run((ctx) =>
+      ctx.storage.store(new Blob(["du-guest"])),
+    );
+    await t.mutation(internal.stream.addPart, {
+      messageId,
+      part: {
+        kind: "file",
+        storageId,
+        filename: "envoye-par-le-guest.pdf",
+        mimeType: "application/pdf",
+      },
+    });
+    const meta = await t
+      .withIdentity({ subject: `${owner}|session` })
+      .query(api.files.metadata, { storageId, messageId });
+    expect(meta, "the owner cannot read a participant's file").not.toBeNull();
+    expect(meta!.filename).toBe("envoye-par-le-guest.pdf");
+    // The only INBOUND fixture in this file: a hard-wired "outbound" would otherwise
+    // pass everywhere.
+    expect(meta!.direction).toBe("inbound");
+  });
+
+  test("the bubble's OWN chat decides, not the row's denormalized copy", async () => {
+    // The row carries `chatId` beside `messageId`. Authorizing on that copy would
+    // let a row that ever disagreed with its message decide who may read it; the
+    // message is what the caller named, so the message's chat is the boundary.
+    const t = convexTest(schema, modules);
+    const owner = await seedUser(t, "owner");
+    const stranger = await seedUser(t, "stranger");
+    const { messageId, storageId } = await deliverFile(t, owner, "abc");
+    // A chat the STRANGER owns, pointed at by the row alone.
+    await t.run(async (ctx) => {
+      const theirs = await ctx.db.insert("chats", {
+        userId: stranger,
+        updatedAt: 1,
+        instanceName: "prod",
+      });
+      const rows = await ctx.db
+        .query("files")
+        .withIndex("by_message", (q) => q.eq("messageId", messageId))
+        .collect();
+      await ctx.db.patch(rows[0]._id, { chatId: theirs });
+    });
+    expect(
+      await t
+        .withIdentity({ subject: `${stranger}|session` })
+        .query(api.files.metadata, { storageId, messageId }),
+      "the row's chatId let a stranger in",
+    ).toBeNull();
+    // …and the OWNER still gets it. An implementation that checked the message's
+    // chat AND ALSO demanded access to the row's copy would pass the line above
+    // while refusing the person whose conversation this is.
+    expect(
+      await t
+        .withIdentity({ subject: `${owner}|session` })
+        .query(api.files.metadata, { storageId, messageId }),
+      "the row's chatId shut the owner out",
+    ).not.toBeNull();
+  });
+
+  test("a FORKED chat's chip answers about ITS OWN bubble", async () => {
+    // A fork re-uses the blob, so the same storageId belongs to several `files`
+    // rows. Answering from "the first row with this storageId" showed one
+    // conversation's name and date under another's chip.
+    const t = convexTest(schema, modules);
+    const userId = await seedUser(t, "u");
+    const original = await deliverFile(t, userId, "abc", "original.pdf");
+    const fork = await t.run(async (ctx) => {
+      const chatId = await ctx.db.insert("chats", {
+        userId,
+        updatedAt: 1,
+        instanceName: "prod",
+      });
+      const messageId = await ctx.db.insert("messages", {
+        chatId,
+        userId,
+        role: "assistant" as const,
+        status: "complete" as const,
+        text: "",
+        updatedAt: 1,
+      });
+      return { chatId, messageId };
+    });
+    await t.mutation(internal.stream.addPart, {
+      messageId: fork.messageId,
+      part: {
+        kind: "file",
+        storageId: original.storageId,
+        filename: "dans-le-fork.pdf",
+        mimeType: "application/pdf",
+      },
+    });
+    const as = t.withIdentity({ subject: `${userId}|session` });
+    expect(
+      (await as.query(api.files.metadata, {
+        storageId: original.storageId,
+        messageId: original.messageId,
+      }))!.filename,
+    ).toBe("original.pdf");
+    expect(
+      (await as.query(api.files.metadata, {
+        storageId: original.storageId,
+        messageId: fork.messageId,
+      }))!.filename,
+    ).toBe("dans-le-fork.pdf");
+  });
+
+  test("a file HIDDEN from Settings › Fichiers still answers in its bubble", async () => {
+    // softDelete removes a file from the listing, not from the conversation.
+    const t = convexTest(schema, modules);
+    const userId = await seedUser(t, "u");
+    const { messageId, storageId } = await deliverFile(t, userId, "abc");
+    const as = t.withIdentity({ subject: `${userId}|session` });
+    const listed = await as.query(api.files.listMine, {});
+    await as.mutation(api.files.softDelete, { fileId: listed.files[0]._id });
+    expect(
+      await as.query(api.files.metadata, { storageId, messageId }),
+    ).not.toBeNull();
+  });
+});
+
+describe("files.metadata: a bubble with many files", () => {
+  test("the LAST file of a crowded message still answers", async () => {
+    // A `.take(N)` on the message's files bounded the read by TRUNCATING the domain:
+    // past the cap a chip that is plainly on screen answered "unavailable". The
+    // (messageId, storageId) index is the point read that question deserves.
+    const t = convexTest(schema, modules);
+    const userId = await seedUser(t, "u");
+    const messageId = await t.run(async (ctx) => {
+      const chatId = await ctx.db.insert("chats", {
+        userId,
+        updatedAt: 1,
+        instanceName: "prod",
+      });
+      return await ctx.db.insert("messages", {
+        chatId,
+        userId,
+        role: "assistant" as const,
+        status: "complete" as const,
+        text: "",
+        updatedAt: 1,
+      });
+    });
+    let last: Id<"_storage"> | null = null;
+    for (let i = 0; i < 60; i++) {
+      const storageId = await t.run((ctx) =>
+        ctx.storage.store(new Blob([`f${i}`])),
+      );
+      await t.mutation(internal.stream.addPart, {
+        messageId,
+        part: {
+          kind: "file",
+          storageId,
+          filename: `f${i}.pdf`,
+          mimeType: "application/pdf",
+        },
+      });
+      last = storageId;
+    }
+    const meta = await t
+      .withIdentity({ subject: `${userId}|session` })
+      .query(api.files.metadata, { storageId: last!, messageId });
+    expect(meta, "the 60th file's chip answered nothing").not.toBeNull();
+    expect(meta!.filename).toBe("f59.pdf");
   });
 });

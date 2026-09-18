@@ -1,5 +1,18 @@
 import { m } from "@/paraglide/messages.js";
-import { ArrowRight, Download } from "lucide-react";
+import { getLocale } from "@/paraglide/runtime.js";
+import { useState } from "react";
+import { useMessage } from "@assistant-ui/react";
+import { useQuery } from "convex/react";
+import { ArrowRight, Copy, Download, Info } from "lucide-react";
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@/components/ui/popover";
+import { api } from "./convexApi";
+import type { Id } from "./convexApi";
+import { digestLabel, exactBytes, formatFileSize } from "./fileMetaView";
+import { displayFilename } from "./convertMessage";
 import { useLightbox } from "./ImageLightbox";
 import { useDocumentViewer } from "./DocumentViewer";
 import { isConvertibleDocument, viewerKindFor } from "./documentViewerView";
@@ -186,7 +199,128 @@ function FileChip({
           <ArrowRight size={14} aria-hidden />
         </button>
       ) : null}
+      {/* METADATA — size, digest and the type STORAGE holds, read from storage
+          rather than from the part's declared fields. Only on a chip that
+          carries a storageId: without one there is nothing to look up. */}
+      {storageId ? <FileMetaButton storageId={storageId} name={name} /> : null}
     </span>
+  );
+}
+
+/** The chip's metadata affordance. The query runs ONLY while the popover is
+ *  open ("skip" otherwise): a thread full of files must not issue a storage read
+ *  per chip on render.
+ *
+ *  It asks about THIS BUBBLE's file. A storageId alone does not name one: forking a
+ *  chat re-uses the blob, so the same id can belong to several conversations, and a
+ *  chip would show another one's name and date. */
+function FileMetaButton({ storageId, name }: { storageId: string; name: string }) {
+  const [open, setOpen] = useState(false);
+  const messageId = useMessage((msg) => msg.id);
+  const meta = useQuery(
+    api.files.metadata,
+    open && messageId
+      ? {
+          storageId: storageId as Id<"_storage">,
+          messageId: messageId as Id<"messages">,
+        }
+      : "skip",
+  );
+  const locale = getLocale();
+  return (
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger asChild>
+        <button
+          type="button"
+          className="oc-filechip__btn"
+          title={m.chat_filechip_meta({ name })}
+          aria-label={m.chat_filechip_meta({ name })}
+        >
+          <Info size={14} aria-hidden />
+        </button>
+      </PopoverTrigger>
+      <PopoverContent side="top" align="end" className="oc-filemeta">
+        <div className="oc-filemeta__title">{m.file_meta_title()}</div>
+        {meta === undefined ? (
+          <div className="oc-filemeta__note">{m.file_meta_loading()}</div>
+        ) : meta === null ? (
+          // No such file in this bubble, a bubble this caller cannot read, or a
+          // blob that is gone. The query collapses the three into `null` so this
+          // note covers them all — and, for the middle one, so a revoked
+          // participation renders here instead of reaching the error boundary.
+          <div className="oc-filemeta__note">{m.file_meta_unavailable()}</div>
+        ) : (
+          <dl className="oc-filemeta__rows">
+            {/* The DISPLAY name, like the chip and the download: the stored row
+                keeps the gateway's `---<uuid>` media id, and showing it here would
+                put a name in front of the user that appears nowhere else. */}
+            <Row
+              label={m.file_meta_name()}
+              value={displayFilename(meta.filename) ?? meta.filename}
+            />
+            <Row
+              label={m.file_meta_type()}
+              value={meta.contentType ?? m.file_meta_unknown()}
+            />
+            <Row
+              label={m.file_meta_size()}
+              value={`${formatFileSize(meta.bytes, locale)} (${m.file_meta_size_exact({ count: exactBytes(meta.bytes, locale) })})`}
+            />
+            {/* "inbound" is a DIRECTION, not an author: it means the file came
+                from a user turn, which in a group chat may be anyone in the room.
+                The wording says that and no more — claiming "sent by you" was a
+                lie the widened read boundary made visible. */}
+            <Row
+              label={m.file_meta_origin()}
+              value={
+                meta.direction === "inbound"
+                  ? m.file_meta_origin_inbound()
+                  : m.file_meta_origin_outbound()
+              }
+            />
+            <Row
+              label={m.file_meta_added()}
+              value={new Intl.DateTimeFormat(locale, {
+                dateStyle: "medium",
+                timeStyle: "short",
+              }).format(new Date(meta.createdAt))}
+            />
+            {digestLabel(meta.sha256) ? (
+              <div className="oc-filemeta__row oc-filemeta__row--digest">
+                <dt>{m.file_meta_digest()}</dt>
+                <dd>
+                  <code className="oc-filemeta__digest">
+                    {digestLabel(meta.sha256)}
+                  </code>
+                  <button
+                    type="button"
+                    className="oc-filemeta__copy"
+                    title={m.file_meta_copy_digest()}
+                    aria-label={m.file_meta_copy_digest()}
+                    onClick={() => {
+                      void navigator.clipboard?.writeText(
+                        digestLabel(meta.sha256) ?? "",
+                      );
+                    }}
+                  >
+                    <Copy size={12} aria-hidden />
+                  </button>
+                </dd>
+              </div>
+            ) : null}
+          </dl>
+        )}
+      </PopoverContent>
+    </Popover>
+  );
+}
+
+function Row({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="oc-filemeta__row">
+      <dt>{label}</dt>
+      <dd>{value}</dd>
+    </div>
   );
 }
 

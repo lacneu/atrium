@@ -2323,6 +2323,14 @@ button.oc-bmk-rail__count:hover {
    oc-msg__meta (anchor-block exclusion) with tightened spacing for inline use. */
 .oc-flowact {
   margin: 0.5rem 0;
+}
+/* The QUIET-CHIP sizing belongs to the collapsed ROW, not to the group. On the group
+   it also measured the EXPANDED state, where the group hosts the ToolCards: every
+   card was squeezed to the width of a short summary label ("2 outils"), wrapping
+   argument and result text into a column a few words wide. Scoped to the direct row,
+   the chip still hugs its label while the detail block below takes the thread's full
+   width like the grouped meta block does. */
+.oc-flowact > .oc-actrow {
   width: fit-content;
   max-width: 100%;
 }
@@ -3584,8 +3592,17 @@ button.oc-bmk-rail__count:hover {
   color: var(--muted-foreground);
   margin-top: 0.25rem;
 }
+/* The chip sits on its OWN line. It was inline-level, and a delivered document is
+   normally followed by its rendered pages (image parts, also inline-level): page 1
+   landed on the chip's line and pages 2..n wrapped underneath, so the gallery read
+   as one stray page plus a grid. `flex` + `fit-content` keeps the pill hugging its
+   label while ending the line, and consecutive page thumbs still wrap as a grid
+   among themselves. ACCEPTED CONSEQUENCE: several ordinary file chips no longer
+   share a line. */
 .oc-media--file {
-  display: inline-flex;
+  display: flex;
+  width: fit-content;
+  max-width: 100%;
   align-items: center;
   gap: 0.4rem;
   padding: 0.4rem 0.6rem;
@@ -7977,6 +7994,73 @@ button.oc-bmk-rail__count:hover {
   gap: 0.15rem;
 }
 
+
+/* File METADATA popover (the chip's ⓘ): the stored blob's size, digest and
+   declared type. A
+   definition list, label left / value right, with the digest on its own full-width
+   row — a hash that wraps mid-column cannot be compared by eye, and comparing it is
+   the only reason to show one. */
+.oc-filemeta {
+  width: min(22rem, calc(100vw - 2rem));
+  font-size: 0.8rem;
+}
+.oc-filemeta__title {
+  font-weight: 600;
+  margin-bottom: 0.4rem;
+}
+.oc-filemeta__note {
+  color: var(--muted-foreground);
+}
+.oc-filemeta__rows {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  margin: 0;
+}
+.oc-filemeta__row {
+  display: flex;
+  align-items: baseline;
+  gap: 0.6rem;
+}
+.oc-filemeta__row dt {
+  flex: 0 0 5.5rem;
+  color: var(--muted-foreground);
+}
+.oc-filemeta__row dd {
+  margin: 0;
+  min-width: 0;
+  /* A long filename breaks anywhere rather than widening the popover. */
+  overflow-wrap: anywhere;
+}
+.oc-filemeta__row--digest {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 0.2rem;
+}
+.oc-filemeta__row--digest dd {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.35rem;
+}
+.oc-filemeta__digest {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 0.72rem;
+  overflow-wrap: anywhere;
+}
+.oc-filemeta__copy {
+  flex: 0 0 auto;
+  display: inline-flex;
+  padding: 0.15rem;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--muted-foreground);
+  cursor: pointer;
+}
+.oc-filemeta__copy:hover {
+  background: var(--accent);
+  color: var(--foreground);
+}
 
 /* --- Images: thumbnails in the thread + app lightbox ------------------------ */
 /* A message image renders as a bounded, clickable thumbnail (a wall of
