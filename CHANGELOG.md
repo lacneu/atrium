@@ -1,5 +1,46 @@
 # Changelog
 
+## [0.84.12] — Voice reaches the right agent, and a refused file says which rule refused
+
+Corrective release. Nothing new to configure. It fixes realtime voice on a gateway
+that hosts several agents, stops a delivery that delivered nothing from looking like
+an answer, and makes an attachment the bridge refuses say what to fix.
+
+**Realtime voice works on a gateway with more than one agent.** A voice session is
+opened against a gateway that derives the owning agent from the session key; without
+one it falls back to a single configured agent, or refuses outright when several
+exist. Atrium sent no key, so the voice button was dead on multi-agent instances and
+would otherwise have answered as an arbitrary agent. Sessions are now opened on the
+chat's own agent, on the conversation the thread is using — including while the chat
+is switching agents, and after a switch that failed. The composer's current selection
+is honoured, so picking another agent and pressing the button talks to that agent. A
+call is pinned for its whole duration: a mid-call consult reaches the session you are
+speaking in even if the thread moves on, and a right withdrawn during the call
+(a revoked agent, talk switched off) ends it instead of answering as someone else.
+
+**A turn that delivered nothing no longer reads as an answer.** A reply whose only
+content was a file that never arrived settled as a complete, empty message. Atrium now
+recognises that case, says so, and takes it back if the file lands afterwards — the
+bubble becomes the real answer rather than a silent gap, and the anomaly and KPI
+surfaces no longer count a repaired turn as a failure.
+
+**An attachment Atrium's own bridge refuses is reported as such, not as a gateway
+failure.** A shared-filesystem attachment that could not be staged came back as an
+upstream error: the instance looked unhealthy, its connection state was overwritten,
+and the real fault — a path the bridge declined to write to — was attributed to the
+wrong component. Those refusals are now their own class with their own fault domain:
+they are recorded against the instance without touching its connectivity, so a
+configuration problem no longer erases a real outage or invents one. A file whose name
+is too long for the destination gets its own code rather than the catch-all.
+
+**A delivered file sits on its own line, tool cards use the full width, and a file
+chip can show its metadata.** A document's first rendered page no longer shares a line
+with the file chip; expanded tool activity is no longer squeezed to the width of its
+collapsed summary; and a new action on the chip shows the stored file's name, type,
+size (with the exact byte count), origin, date and SHA-256. Anyone who can read the
+conversation can read its files' metadata — previously the answer depended on who
+uploaded the file, so a participant saw "unavailable" while looking straight at it.
+
 ## [0.84.10] — The turn answers once, and says why when it cannot
 
 Corrective release. Nothing new to configure: it closes several ways a turn could
