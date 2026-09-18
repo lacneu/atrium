@@ -7,6 +7,7 @@
 // next send would fail — while text-only sends kept going through on that link.
 import { describe, expect, test, vi } from "vitest";
 import { readFileSync } from "node:fs";
+import ts from "typescript";
 import {
   classifyGatewayError,
   faultDomain,
@@ -161,64 +162,305 @@ describe("an inbound-media refusal is OURS, and says so", () => {
       "utf8",
     );
     // Every `refused(` call's arguments, comments stripped.
-    const calls = src
-      .replace(/\/\*[\s\S]*?\*\//g, " ")
-      .replace(/\/\/[^\n]*/g, " ")
-      .split("refused(")
-      .slice(1)
-      // BALANCED parens, not a window or the first `);`. Two heuristics in a row ran
-      // past the call and flagged code that has nothing to do with a refusal — a
-      // guard that cries wolf gets its allowlist padded until it guards nothing.
-      .map((chunk) => {
-        let depth = 1;
-        for (let i = 0; i < chunk.length; i++) {
-          if (chunk[i] === "(") depth++;
-          else if (chunk[i] === ")" && --depth === 0) return chunk.slice(0, i);
-        }
-        return chunk;
-      });
-    // TOTAL by construction, not by a list of spellings: a reason may only
-    // interpolate from an allowlist of structural expressions. An alias, another
-    // property or a helper carrying the name would fail this, where naming four
-    // forbidden spellings would not.
-    const ALLOWED = [
-      "current",
-      "path",
-      "real",
-      "root",
-      "config.inboundDir",
-      "config.stagingDir",
-      "config.maxBytes",
-      "expectedUid",
-      "metadata.uid",
-      "opened.uid",
-      "opened.nlink",
-      "(opened.mode & 0o777).toString(8)",
-      "PRIVATE_FILE_MODE.toString(8)",
-      "PRIVATE_FILE_MODE",
-      "MAX_LEAF_BYTES",
-      "process.geteuid?.()",
-      "publishedStat.dev",
-      "stagingStat.dev",
-      "expectedLinks",
-      "Buffer.byteLength(diskName)", // a LENGTH, not the name
-      '(error as NodeJS.ErrnoException)?.code ?? "unknown"',
-      "(error as NodeJS.ErrnoException)?.code",
-      // A local holding "it does not exist" or an errno phrase — structural, and the
-      // allowlist caught it the moment it was written, which is the point: a name
-      // enters this list only when someone has looked at what it holds.
-      "why",
-    ];
-    for (const call of calls) {
-      for (const m of call.matchAll(/\$\{([^}]*)\}/g)) {
-        const expr = m[1] ?? "";
-        expect(
-          ALLOWED.includes(expr.trim()),
-          `a refusal reason interpolates \`${expr.trim()}\`, which is not in the ` +
-            "structural allowlist — if it carries no user data, add it there",
-        ).toBe(true);
+    // The structural expressions a reason may carry, PER FUNCTION.
+    //
+    // A flat list was wrong: `path` is a configured directory in
+    // `openPrivateDirectory` and in `assertPrivateDirectory`, but in
+    // `assertInboundFile` the caller passes `diskPath` — the composed name, which
+    // contains the reader's filename. One list vouched for all three (codex). A name
+    // is now vouched for in the scope where someone looked at what it holds.
+    const ALLOWED_IN: Record<string, string[]> = {
+      openPrivateDirectory: [
+        "path",
+        "current",
+        "real",
+        '(error as NodeJS.ErrnoException)?.code ?? "unknown"',
+        "metadata.uid",
+        "expectedUid",
+        // A local holding "it does not exist" or an errno phrase — structural, and
+        // the allowlist caught it the moment it was written, which is the point.
+        "why",
+      ],
+      assertPrivateDirectory: ["path", "opened.uid", "expectedUid"],
+      openMediaDirectories: [
+        "config.inboundDir",
+        "config.stagingDir",
+        "publishedStat.dev",
+        "stagingStat.dev",
+      ],
+      assertInboundFile: [
+        // NOT `path`: here it is the composed disk name.
+        "opened.nlink",
+        "expectedLinks",
+        "(opened.mode & 0o777).toString(8)",
+        "PRIVATE_FILE_MODE.toString(8)",
+        "opened.uid",
+        "process.geteuid?.()",
+      ],
+      // The helper itself: it forwards its own parameter to the constructor. Every
+      // call site's reason is checked above, so what arrives here has already been
+      // vouched for — this entry says that out loud rather than special-casing it.
+      refused: ["reason"],
+      stageInboundReferenceOwned: [
+        "config.maxBytes",
+        "Buffer.byteLength(diskName)", // a LENGTH, not the name
+        "MAX_LEAF_BYTES",
+      ],
+    };
+
+    // The reasons, taken from the TYPESCRIPT AST.
+    //
+    // Three text-based versions were wrong in a row, each in a way the next one only
+    // narrowed: forbidden spellings, then `${…}` holes, then a hand-walked expression
+    // whose paren balancing counted parentheses INSIDE string literals — so
+    // `` refused(CODE, `${config.inboundDir})${ref.fileName}`) `` read as safe, and
+    // `refused (CODE, ref.fileName)`, with a space, was not seen at all (codex). The
+    // compiler already knows where a call ends and what its arguments are.
+    const sf = ts.createSourceFile(
+      "inbound-media.ts",
+      src,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const unwrap = (e: ts.Expression): ts.Expression =>
+      ts.isParenthesizedExpression(e) ? unwrap(e.expression) : e;
+    const enclosingFunction = (node: ts.Node): string => {
+      let p: ts.Node | undefined = node.parent;
+      while (p) {
+        if (ts.isFunctionDeclaration(p) && p.name) return p.name.text;
+        if (ts.isVariableDeclaration(p) && p.name) return p.name.getText(sf);
+        p = p.parent;
       }
-    }
+      return "<top>";
+    };
+
+    const reasons: { expr: ts.Expression; fn: string }[] = [];
+    // `refused` must never become a VALUE. `(refused)(…)`, `const reject = refused`
+    // and `new InboundMediaRefusal(…)` all raise a refusal while escaping a collector
+    // that only matches a bare callee (codex), so the collector takes the first and
+    // the last, and this walk REFUSES the second outright: static collection cannot
+    // follow an alias, so the alias must not exist.
+    const escapedNames: string[] = [];
+    const unreadable: string[] = [];
+    const visit = (node: ts.Node) => {
+      if (ts.isCallExpression(node) || ts.isNewExpression(node)) {
+        const callee = unwrap(node.expression as ts.Expression);
+        const name = ts.isIdentifier(callee) ? callee.text : null;
+        if (name === "refused" || name === "InboundMediaRefusal") {
+          const args = node.arguments ?? ([] as unknown as ts.NodeArray<ts.Expression>);
+          // A SPREAD cannot be read statically: `new InboundMediaRefusal(...[CODE,
+          // path])` has ONE argument and hid the reason entirely (codex). There is no
+          // safe way to inspect it, so it is a failure rather than a skip.
+          if (args.some((a) => ts.isSpreadElement(a))) {
+            unreadable.push(node.getText(sf).slice(0, 80));
+          } else if (args.length > 1) {
+            reasons.push({ expr: args[1]!, fn: enclosingFunction(node) });
+          }
+        }
+      }
+      // BOTH names. Closing the alias on `refused` alone still let
+      // `const Reject = InboundMediaRefusal; throw new Reject(CODE, path)` through
+      // (codex): the escape is the aliasing, not the particular name.
+      if (
+        ts.isIdentifier(node) &&
+        (node.text === "refused" || node.text === "InboundMediaRefusal") &&
+        !(ts.isFunctionDeclaration(node.parent) && node.parent.name === node) &&
+        !(ts.isClassDeclaration(node.parent) && node.parent.name === node)
+      ) {
+        let up: ts.Node = node;
+        while (ts.isParenthesizedExpression(up.parent)) up = up.parent;
+        const isCallee =
+          (ts.isCallExpression(up.parent) || ts.isNewExpression(up.parent)) &&
+          up.parent.expression === up;
+        // A TYPE position names the class without capturing it: an annotation, an
+        // `instanceof`, an export specifier. None of them can raise a refusal.
+        // `ExpressionWithTypeArguments` is NOT always a type position: in
+        // `class Reject extends InboundMediaRefusal` it is a runtime capture, and a
+        // subclass calling `super(CODE, path)` escaped both this closure and the
+        // reason collector (codex). Only an `implements` clause is inert.
+        const heritage = ts.isExpressionWithTypeArguments(node.parent)
+          ? node.parent.parent
+          : undefined;
+        const isInertHeritage =
+          heritage !== undefined &&
+          ts.isHeritageClause(heritage) &&
+          heritage.token === ts.SyntaxKind.ImplementsKeyword;
+        const isTypeOrExport =
+          ts.isTypeReferenceNode(node.parent) ||
+          isInertHeritage ||
+          ts.isExportSpecifier(node.parent) ||
+          ts.isImportSpecifier(node.parent) ||
+          (ts.isBinaryExpression(node.parent) &&
+            node.parent.operatorToken.kind === ts.SyntaxKind.InstanceOfKeyword &&
+            node.parent.right === node);
+        if (!isCallee && !isTypeOrExport) escapedNames.push(node.getText(sf));
+      }
+      ts.forEachChild(node, visit);
+    };
+    visit(sf);
+    expect(
+      escapedNames,
+      "`refused` or `InboundMediaRefusal` is used as a value somewhere — an alias " +
+        "cannot be followed " +
+        "statically, so this guard would stop seeing the refusals raised through it",
+    ).toEqual([]);
+    // SHADOWING. The allowlist vouches for an expression by its TEXT, in a function
+    // named by its position — neither resolves the symbol. So a local rebinding of an
+    // allowlisted root turns a vouched name into anything at all, and
+    // `const config = { maxBytes: ref.fileName }` inside
+    // `stageInboundReferenceOwned` would have logged the filename through
+    // `${config.maxBytes}` (codex). Resolving symbols properly means a full
+    // TypeChecker over the project; forbidding the rebinding is exact, cheap, and
+    // fails closed — the roots may only be the parameters and imports the reader of
+    // this allowlist actually looked at.
+    const shadowed: string[] = [];
+    const roots = new Set(
+      Object.values(ALLOWED_IN)
+        .flat()
+        .map((e) => /^[A-Za-z_$][\w$]*/.exec(e)?.[0])
+        .filter((r): r is string => Boolean(r)),
+    );
+    const findShadowing = (node: ts.Node) => {
+      if (
+        (ts.isVariableDeclaration(node) ||
+          ts.isBindingElement(node) ||
+          // PARAMETERS are bindings too: `path` is one, and leaving them out meant the
+          // inventory did not cover the very name the allowlist vouches for (codex).
+          ts.isParameter(node)) &&
+        ts.isIdentifier(node.name) &&
+        roots.has(node.name.text)
+      ) {
+        shadowed.push(`${enclosingFunction(node)}: ${node.name.text}`);
+      }
+      ts.forEachChild(node, findShadowing);
+    };
+    findShadowing(sf);
+    // The bindings that EXIST today, each one a place someone read to write the
+    // allowlist. Forbidding every binding outright was wrong — the values have to be
+    // computed somewhere — so the inventory is FROZEN instead: a new binding of a
+    // vouched root, anywhere, fails this until someone looks at what it holds and
+    // adds it here on purpose.
+    const KNOWN_BINDINGS = [
+      "<top>: MAX_LEAF_BYTES",
+      "<top>: PRIVATE_FILE_MODE",
+      // A destructured pair: `enclosingFunction` reports the binding pattern it sits
+      // in, which is stable and enough to notice a move.
+      "[publishedStat, stagingStat]: publishedStat",
+      "[publishedStat, stagingStat]: stagingStat",
+      "assertInboundFile: current",
+      "assertInboundFile: opened",
+      "assertPrivateDirectory: current",
+      "assertPrivateDirectory: expectedUid",
+      "assertPrivateDirectory: opened",
+      "openPrivateDirectory: current",
+      "openPrivateDirectory: expectedUid",
+      "openPrivateDirectory: metadata",
+      "openPrivateDirectory: real",
+      "openPrivateDirectory: why",
+      "removeOwnedPartial: current",
+      "rollbackPublished: path",
+      // …and the PARAMETERS, now that they count as bindings. Each was read to write
+      // the allowlist: `path` is a configured directory in `openPrivateDirectory` and
+      // `assertPrivateDirectory` and the composed disk name in `assertInboundFile`
+      // (which is why it is absent from that function's list), `config` is the
+      // resolved configuration, `reason` is the already-checked message the helper
+      // forwards, `expectedLinks` is a count.
+      "<top>: reason",
+      "assertInboundFile: expectedLinks",
+      "assertInboundFile: path",
+      "assertPrivateDirectory: path",
+      "openMediaDirectories: config",
+      "openPrivateDirectory: path",
+      "refused: reason",
+      "removeOwnedPartial: expectedLinks",
+      "removeOwnedPartial: path",
+      "requireAbsent: path",
+      "rollbackPublished: config",
+      "stageInboundReference: config",
+      "stageInboundReferenceOwned: config",
+      "stageInboundReferences: config",
+      "stageInboundReferences: reason",
+    ].sort();
+    // NOT deduplicated: counting is what catches a homonym added in a nested block,
+    // where a `Set` collapsed the second binding onto the first and stayed green
+    // (codex). A move WITHIN a function still passes — the name is bound the same
+    // number of times in the same place — which is the limit of a structural
+    // inventory and the reason this is a guard, not a proof.
+    expect(
+      [...shadowed].sort(),
+      "a binding of a name the refusal allowlist vouches for appeared or moved — the " +
+        "allowlist judges an expression by its TEXT, so a rebinding makes it vouch " +
+        "for something nobody looked at",
+    ).toEqual(KNOWN_BINDINGS);
+    expect(
+      unreadable,
+      "a refusal is raised with spread arguments — its reason cannot be read " +
+        "statically, so write the arguments out",
+    ).toEqual([]);
+    // A pass that found nothing would be a guard watching an empty room.
+    expect(reasons.length, "no refusal reason was found to inspect").toBeGreaterThan(5);
+
+    const unsafe: string[] = [];
+    /** A reason may be built ONLY from text the reader wrote and from expressions the
+     *  allowlist vouches for IN THIS FUNCTION — combined with `+`, a ternary, or a
+     *  list that is filtered and joined. Anything else could hold the filename. */
+    const checkReason = (node: ts.Expression, fn: string) => {
+      const allowed = ALLOWED_IN[fn] ?? [];
+      const text = node.getText(sf).trim();
+      if (ts.isParenthesizedExpression(node)) return checkReason(node.expression, fn);
+      if (ts.isAsExpression(node) || ts.isNonNullExpression(node)) {
+        return allowed.includes(text) ? undefined : checkReason(node.expression, fn);
+      }
+      if (ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node)) return;
+      if (node.kind === ts.SyntaxKind.NullKeyword) return; // dropped by the filter
+      if (ts.isIdentifier(node) && node.text === "undefined") return;
+      if (allowed.includes(text)) return; // vouched for, here
+      if (ts.isTemplateExpression(node)) {
+        for (const span of node.templateSpans) {
+          const inner = span.expression.getText(sf).trim();
+          if (!allowed.includes(inner)) unsafe.push(`${fn}: ${inner}`);
+        }
+        return;
+      }
+      if (ts.isConditionalExpression(node)) {
+        checkReason(node.whenTrue, fn); // the condition is not emitted
+        checkReason(node.whenFalse, fn);
+        return;
+      }
+      if (
+        ts.isBinaryExpression(node) &&
+        node.operatorToken.kind === ts.SyntaxKind.PlusToken
+      ) {
+        checkReason(node.left, fn);
+        checkReason(node.right, fn);
+        return;
+      }
+      if (ts.isArrayLiteralExpression(node)) {
+        for (const el of node.elements) checkReason(el, fn);
+        return;
+      }
+      // `[…].filter(Boolean).join("; ")` — only methods that cannot introduce a value
+      // of their own, and only literal arguments.
+      if (
+        ts.isCallExpression(node) &&
+        ts.isPropertyAccessExpression(node.expression) &&
+        ["filter", "map", "flat", "join"].includes(node.expression.name.text) &&
+        node.arguments.every(
+          (a) => ts.isStringLiteral(a) || (ts.isIdentifier(a) && a.text === "Boolean"),
+        )
+      ) {
+        checkReason(node.expression.expression, fn);
+        return;
+      }
+      unsafe.push(`${fn}: ${text}`);
+    };
+    for (const { expr, fn } of reasons) checkReason(expr, fn);
+    expect(
+      unsafe,
+      "a refusal reason is built from something the allowlist does not vouch for in " +
+        "that function — an identifier, a property or a call could carry the user's " +
+        "filename, so the shape is constrained before the content",
+    ).toEqual([]);
   });
 
   test("the REAL staging path produces a class, not the catch-all", async () => {
