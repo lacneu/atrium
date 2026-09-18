@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.84.13] — The release image, rebuilt on an attested bridge
+
+Maintenance release. No product change from 0.84.12: it carries the same code plus a
+re-earned bench attestation, so the versioned image builds.
+
+**The bench attestation matches the shipped bridge again.** 0.84.12 was tagged on a
+commit whose gateway-reading sources had changed since the run that attested them, so
+the guard that refuses a stale attestation failed the image build. The full live
+catalogue was re-run against OpenClaw 2026.9.4 — 14 of 14 scenarios clean, including
+the two added for inbound shared-filesystem attachments and for realtime voice
+sessions — and the attestation now recomputes to the same digest as the sources.
+
 ## [0.84.12] — Voice reaches the right agent, and a refused file says which rule refused
 
 Corrective release. Nothing new to configure. It fixes realtime voice on a gateway
