@@ -45,20 +45,16 @@ const seedInstance = (t: ReturnType<typeof convexTest>, config?: unknown) =>
 
 const configOf = (t: ReturnType<typeof convexTest>) =>
   t.run(async (ctx) => {
-    const inst = await ctx.db
-      .query("instances")
-      .withIndex("by_name", (q) => q.eq("name", "bench"))
-      .first();
-    return inst?.config ?? null;
+    // `t.run`'s ctx is not schema-typed, so the named index is out of reach here — a
+    // full scan over a one-row table in a test says the same thing.
+    const all = await ctx.db.query("instances").collect();
+    return all.find((i) => i.name === "bench")?.config ?? null;
   });
 
 const modeOf = (t: ReturnType<typeof convexTest>) =>
   t.run(async (ctx) => {
-    const inst = await ctx.db
-      .query("instances")
-      .withIndex("by_name", (q) => q.eq("name", "bench"))
-      .first();
-    return inst?.config?.inboundMediaMode ?? null;
+    const all = await ctx.db.query("instances").collect();
+    return all.find((i) => i.name === "bench")?.config?.inboundMediaMode ?? null;
   });
 
 describe("dev.testSetInboundMediaMode — the value the bench puts back", () => {

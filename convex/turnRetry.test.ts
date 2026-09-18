@@ -59,6 +59,18 @@ describe("a compacted session's overflow retries ONCE (W2)", () => {
     expect(retryDecision(at("context_length_presend"))).toBeNull();
   });
 
+  test("an auth-profile cooldown is never retried — the window has not elapsed", () => {
+    // Upstream refuses the candidate BEFORE calling the provider (isProfileInCooldown,
+    // src/agents/auth-profiles/usage-state.ts). Whether a retry is even attempted there
+    // depends on the reason that opened the window — allowed for billing and the
+    // transient ones (rate_limit, overloaded, unknown, empty_response,
+    // no_error_details, unclassified, timeout), refused for auth, auth_permanent,
+    // session_expired, format and model_not_found — and this class does not say which. `provider_internal`, which the sentence's wording invites, would show that
+    // as a countdown promising recovery. The reader decides instead.
+    expect(RETRYABLE_KINDS.has("auth_profile_cooldown")).toBe(false);
+    expect(retryDecision(at("auth_profile_cooldown"))).toBeNull();
+  });
+
   test("a writer rebound is never retried, zero content or not", () => {
     // `session_write_conflict` is a rebound the bridge could NOT prove pre-generation:
     // it may have struck at a commit after the model ran. The zero-content gate cannot

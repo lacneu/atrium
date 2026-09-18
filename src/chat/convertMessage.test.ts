@@ -316,3 +316,29 @@ describe("convertConvexMessage carries the live phase AND its counter", () => {
     expect(meta.phaseRetry).toBeNull();
   });
 });
+
+describe("the error card's inputs survive the conversion", () => {
+  it("carries the failure CLASS and the error text to the card", () => {
+    // Nothing pinned this hop. Dropping `errorCode` here left the classifier test, the
+    // detector test and the view test all green — each one hands the code straight to
+    // the thing it tests — while the real card lost its headline and fell back to a
+    // bare sentence, which is exactly the shape of the incident this lot fixes (codex).
+    const meta = customMeta(
+      makeMessage({
+        status: "error",
+        error: 'Auth profile "…" is temporarily unavailable for openai/gpt-5.6-terra.',
+        errorCode: "auth_profile_cooldown",
+      }),
+    );
+    expect(meta.errorCode).toBe("auth_profile_cooldown");
+    expect(meta.error).toBe(
+      'Auth profile "…" is temporarily unavailable for openai/gpt-5.6-terra.',
+    );
+  });
+
+  it("a message with no class carries null, never the string 'undefined'", () => {
+    const meta = customMeta(makeMessage({ status: "error", error: "fetch failed" }));
+    expect(meta.errorCode).toBeNull();
+    expect(meta.error).toBe("fetch failed");
+  });
+});

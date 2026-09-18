@@ -9,6 +9,7 @@
 // contribute an honest "unsupported" entry instead of an error.
 
 import { action, internalQuery } from "./_generated/server";
+import { maskCredentialId } from "./lib/chatRenderState";
 import { internal } from "./_generated/api";
 import { ConvexError, v } from "convex/values";
 import { requireActive, requirePermission } from "./lib/access";
@@ -548,7 +549,15 @@ export const listCronRuns = action({
         runAtMs: detailNum(r.runAtMs),
         status: detailStr(r.status, 40),
         summary: detailStr(r.summary, 800),
-        error: detailStr(r.error, 400),
+        // A scheduled run can fail on the SAME cooldown, and both surfaces print this
+        // verbatim (CronDetailPanel, ScheduledTab) — so the credential id reached a
+        // reader by a route with no message and no sub-agent row at all (codex).
+        // Masked BEFORE the 400-character clip: a long operator value could push the
+        // credential trigger past the cut, leaving the first one served (codex).
+        error: detailStr(
+          typeof r.error === "string" ? maskCredentialId(r.error) : r.error,
+          400,
+        ),
         durationMs: detailNum(r.durationMs),
         model: detailStr(r.model, 120),
         // The run's OWN delivery verdict. The bridge started carrying these and

@@ -382,8 +382,9 @@ export class TurnSink {
   // Buffered final from message.final, applied when the paired run.status lands.
   private pendingFinalText = "";
   private pendingFinalError: string | null = null;
-  // Stable gateway failure class (refusal|timeout|rate_limit|context_length)
-  // from message.final — persisted as the message's errorCode at finalize.
+  // Stable failure class from message.final — the gateway's own errorKind when it
+  // sends one, otherwise a class the bridge's text classifier minted from the
+  // sentence. Persisted as the message's errorCode at finalize.
   private pendingFinalErrorKind: string | null = null;
   /** The provider marked the streamed live text as NOISE (promoted failure
    *  prose / sentinel): the finalize must not fall back to it. */
@@ -2357,8 +2358,10 @@ export class TurnSink {
             ? { compactionReason: this.compactionReason }
             : {}),
           ...(this.compactionRefused ? { compactionRefused: true } : {}),
-          // The HARD-overflow marker: the gateway reported errorKind
-          // "context_length" (un-recovered), vs `compaction` = handled silently.
+          // The STABLE failure class for the diagnostic channel: the gateway's own
+          // errorKind when it sends one, otherwise a class the bridge's classifier
+          // minted from the sentence. "context_length" here is the HARD-overflow
+          // marker (un-recovered), vs `compaction` = handled silently.
           errorKind: this.pendingDiagErrorKind,
           stopReason: this.pendingDiagStopReason,
           finalizeCause: this.pendingDiagFinalizeCause,

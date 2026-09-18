@@ -18,7 +18,7 @@
 
 import { v } from "convex/values";
 import { contentLocaleForInstance } from "./lib/serverLocale";
-import { KNOWN_ERROR_CODES } from "./lib/chatRenderState";
+import { KNOWN_ERROR_CODES, maskCredentialId } from "./lib/chatRenderState";
 import { internalMutation, internalQuery, MutationCtx } from "./_generated/server";
 import { internal } from "./_generated/api";
 import { MESSAGE_WINDOW } from "./messages";
@@ -2597,9 +2597,12 @@ export const finalize = internalMutation({
     ),
     text: v.optional(v.string()),
     error: v.optional(v.string()),
-    // Stable gateway failure class (ChatErrorEventSchema.errorKind: refusal|
-    // timeout|rate_limit|context_length) — persisted into the message's existing
-    // `errorCode` field so the UI maps it to an actionable localized label.
+    // Stable failure class — persisted into the message's existing `errorCode` field so
+    // the UI maps it to an actionable localized label. It is EITHER the gateway's own
+    // `ChatErrorEventSchema.errorKind` (refusal|timeout|rate_limit|context_length) or a
+    // class the bridge's text classifier minted when the gateway sent none —
+    // `auth_profile_cooldown` is one of the latter, and naming only the enum here read
+    // as if it could not be (codex).
     errorKind: v.optional(v.string()),
     // Generation guard for LATE terminal writers (dispatchAbort's guaranteed
     // settle): when set and the message meanwhile belongs to ANOTHER run (an
@@ -2665,6 +2668,22 @@ export const finalize = internalMutation({
       recoverableSession,
     },
   ) => {
+    // The gateway's own sentence is stored on the message and served to the browser
+    // (messages.ts), copied with the bubble, and written into an archive export. When
+    // it is the auth-profile cooldown, that sentence NAMES THE CREDENTIAL — upstream
+    // lets an operator call a profile anything, and the reported one was an email
+    // address — while the reader of a chat is not necessarily its owner (codex).
+    //
+    // Masked HERE, at the first mutation that could STORE it, rather than at the view:
+    // a view mask leaves the id in the row, in every client's copy of it and in the
+    // export. Precise about what this does and does not achieve: the raw body does
+    // reach Convex — it arrives on the ingest HTTP action — and this is where it stops
+    // for a TURN, before anything persists or serves it. The sub-agent writers are a
+    // second door and call the same masker (subAgents.ts, subAgentInteractions.ts). The operator's source of truth for which
+    // profile is paused is the GATEWAY's own auth-profile store; the bridge logs raw
+    // frames only under BRIDGE_DEBUG / BRIDGE_FRAME_DUMP, which are off in production
+    // (codex).
+    error = maskCredentialId(error);
     const message = await ctx.db.get(messageId);
     if (message === null) {
       throw new Error("finalize: message not found");

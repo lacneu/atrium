@@ -164,9 +164,10 @@ export function RunStatus() {
   // error presentation. The transient states (thinking/generating/aborted) stay
   // as the lightweight inline chip.
   if (view.kind === "error") {
-    // Actionable presentation: a CLASSIFIED failure (gateway errorKind such as
-    // context_length, or a curated code) shows a localized headline; the raw
-    // gateway text demotes to a technical detail line underneath.
+    // Actionable presentation: a CLASSIFIED failure — the gateway's own errorKind,
+    // a class the bridge minted from the sentence, or a curated code — shows a
+    // localized headline; the gateway's text demotes to a detail line underneath,
+    // masked of any credential id.
     const { headline, detail, code } = errorDetailView(error, errorCode);
     return (
       <div className="oc-error-card" role="alert" title={runId ? `run ${runId}` : undefined}>

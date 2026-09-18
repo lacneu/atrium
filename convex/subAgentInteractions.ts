@@ -12,6 +12,7 @@
 // the upload-storageId IDOR lesson). The reply/mutations are internal (bridge-only).
 
 import { v } from "convex/values";
+import { maskCredentialId } from "./lib/chatRenderState";
 import { chatAllowsInstance } from "./lib/ingestAuthz";
 import { action, internalMutation, query } from "./_generated/server";
 import { internal } from "./_generated/api";
@@ -195,7 +196,9 @@ export const recordInteractionReply = internalMutation({
     }
     await ctx.db.patch(interactionId, {
       replyText,
-      errorMessage,
+      // The interaction's failure sentence is shown in the sub-agent panel, and this
+      // path does not go through `stream.finalize` (codex).
+      errorMessage: maskCredentialId(errorMessage),
       status,
       updatedAt: Date.now(),
     });
@@ -214,7 +217,7 @@ export const failInteraction = internalMutation({
     if (row === null || row.status !== "pending") return null;
     await ctx.db.patch(interactionId, {
       status: "error",
-      errorMessage,
+      errorMessage: maskCredentialId(errorMessage),
       updatedAt: Date.now(),
     });
     return null;
@@ -237,7 +240,10 @@ export const listSubAgentInteractions = query({
       .collect();
     return rows
       .filter((r) => r.chatId === chatId)
-      .sort((a, b) => a.createdAt - b.createdAt);
+      .sort((a, b) => a.createdAt - b.createdAt)
+      // Rows written before the backfill reached them still hold the credential id,
+      // and the backfill is operator-invoked, so a read can precede it (codex).
+      .map((r) => ({ ...r, errorMessage: maskCredentialId(r.errorMessage) }));
   },
 });
 

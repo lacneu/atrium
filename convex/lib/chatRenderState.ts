@@ -93,6 +93,15 @@ export const KNOWN_ERROR_CODES = [
   // per-cause anomaly classes they exist for are unreachable: the failure counts
   // only in the generic stream-error channel and the diagnostic API says
   // "unknown" (codex, the same hole `provider_internal` was added for).
+  // The gateway refused to USE the credential: it had put the auth profile in a
+  // cooldown window. Allowlisted for the same reason as the storage classes — without
+  // the code on the trace the per-cause anomaly plane cannot count it, and the failure
+  // falls back into the generic stream-error channel. That is ALL this list decides —
+  // whether a cause that exists is countable. In the reported incident no class reached
+  // it at all (the bridge classifier returned null), so the empty bubble was not this
+  // list's doing; the entry is here so that, now that the class exists, a repeat is
+  // countable instead of anonymous.
+  "auth_profile_cooldown",
   "gateway_storage_busy",
   "gateway_storage_unavailable",
   // The bridge's own inbound-staging refusals. Allowlisted for the same reason as
@@ -256,4 +265,97 @@ export function summarizeToolActivity(parts: readonly ProjectedPart[]): {
     repeatedToolsTruncated: repeated.length > MAX_REPEATED_TOOLS,
     longestSameToolRun: longest,
   };
+}
+
+/** Remove the credential id from a gateway failure sentence.
+ *
+ *  Upstream composes `Auth profile "<id>" …` and lets an operator name a profile
+ *  anything: the one that reached a user was an email address. That sentence is stored
+ *  on a message, on a sub-agent row, in a scheduled run's history, and served to every
+ *  reader of the chat, copied with the bubble and written into an archive export — and
+ *  the reader is not necessarily the credential's owner (codex).
+ *
+ *  THE RULE IS TOTAL, AND DELIBERATELY BLUNT: from the opening quote to the end of the
+ *  string, everything goes.
+ *
+ *  Three cleverer versions were defeated in a row, each by the same thing — the id is
+ *  OPERATOR-CONTROLLED, so it can contain whatever the redaction uses as a delimiter.
+ *  A closing quote (`"[^"]*"` stopped early), a newline (`.` stopped), a second
+ *  sentence (greedy ran to the wrong tail), and finally the tail itself: an id holding
+ *  `" is temporarily unavailable` ended the lazy match and left its own suffix
+ *  readable. A partial redaction of an attacker-chosen string is not winnable, so this
+ *  one does not try.
+ *
+ *  WHAT IT COSTS, stated rather than discovered later: the provider and the model are
+ *  lost from the detail line, and so is the target of the sibling `type mismatch`
+ *  sentence. The localized card carries what the reader should do, the session meta
+ *  already names the model, and the gateway's own auth-profile store is the operator's
+ *  source of truth for which profile is paused and why. That is a smaller loss than a
+ *  redaction that can be walked out of.
+ *
+ *  WHERE IT RUNS: every door that PERSISTS such a sentence — a turn
+ *  (`stream.finalize`), a child and its two interaction writers, a settled task
+ *  engagement, a fork that copies history, an import that writes rows from a file, and
+ *  the two report creators that FREEZE a snapshot of one (`feedback.submitFeedback`,
+ *  `subAgentReports.createSubAgentReport`) — plus every READ path, which masks on the
+ *  way out for rows the operator-invoked backfill has not reached yet: the chat query,
+ *  the sub-agent and interaction listings, both feedback reads, the sub-agent report
+ *  read, the two dev probes, the scheduled run history (re-typed from the bridge
+ *  rather than stored) and the archive export — and the reader's view, as a belt. Traces never carry the
+ *  sentence at all (stream.ts refuses raw text), and anomaly evidence carries a class,
+ *  a count and a correlation id.
+ *
+ *  ROWS WRITTEN BEFORE THIS EXISTED are handled by the one-time migration in
+ *  `migrations.maskStoredCredentialIds` (convex/migrations.ts) — masking the readers
+ *  instead would
+ *  mean finding every query that serves such a row, which is the enumeration this
+ *  design exists to avoid. */
+/** Where an operator-chosen credential id starts, STRUCTURALLY.
+ *
+ *  Not a list of openings. Upstream composes about thirty different sentences around a
+ *  quoted profile id — `Auth profile "…"`, `Per-entry apiKey "…"`,
+ *  `No credentials found for profile "…"`, `MCP server "…" references auth profile
+ *  "…"`, and so on — and three passes of this review added one opening at a time while
+ *  more remained (codex). What they share is the WORD before the quote: a `profile` or
+ *  an `apiKey` followed by a quoted string is that string being named as a credential.
+ *  A new sentence upstream is covered the day it appears. */
+const CREDENTIAL_SENTENCE_RE = /\b(?:profile|api\s*key)\s+"/i;
+
+/** The text with every OPERATOR-CHOSEN value removed, for code that CLASSIFIES.
+ *
+ *  The bridge has the same function, and the rule is the same because the hazard is:
+ *  a gateway failure sentence interpolates values an operator picked — a profile id, a
+ *  provider, a model, an MCP server name, a session key — and any pattern applied to
+ *  the raw text lets one of them choose the verdict (codex, five passes running).
+ *
+ *  Two rules by context. A sentence that NAMES A CREDENTIAL is CUT at its first quote:
+ *  no class but the cooldown is legitimate there, so losing the tail costs nothing.
+ *  Every other sentence keeps its SHAPE and loses only what is inside each quote,
+ *  because real sentences put a value first and their classifying words after it.
+ *
+ *  Distinct from `maskCredentialId`, which protects the credential in text a READER is
+ *  shown; this one protects a DECISION. */
+export function withoutOperatorValues(raw: string): string {
+  if (CREDENTIAL_SENTENCE_RE.test(raw)) {
+    const firstQuote = raw.indexOf('"');
+    return firstQuote === -1 ? raw : `${raw.slice(0, firstQuote + 1)}…`;
+  }
+  let out = raw;
+  if (((out.match(/"/g) ?? []).length % 2) === 1) out = out.replace(/"[^"]*$/, '"…');
+  return out.replace(/"[^"]*"/g, '"…"');
+}
+
+export function maskCredentialId<T extends string | undefined | null>(text: T): T {
+  if (typeof text !== "string") return text;
+  // THREE PREFIXES, not one. Upstream names the same operator-chosen id in
+  // `Auth profile "<id>" …`, `Per-entry apiKey profile "<id>" …` and
+  // `Per-entry apiKey "<id>" …` (prepare-auth.ts, model-auth-provider.ts) — and the
+  // last two were passing through intact, one of them guaranteed so by a test of mine
+  // (codex).
+  if (!CREDENTIAL_SENTENCE_RE.test(text)) return text;
+  // Cut at the FIRST quote, not at the credential word. `MCP server "<name>"
+  // references auth profile "<id>"` puts an operator value BEFORE that word, and
+  // cutting there left it stored, served and exported (codex).
+  const firstQuote = text.indexOf('"');
+  return (firstQuote === -1 ? text : `${text.slice(0, firstQuote + 1)}…`) as T;
 }

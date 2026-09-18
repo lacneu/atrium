@@ -22,7 +22,7 @@ import {
   InboundMediaRefusal,
 } from "./inbound-media.js";
 import { HermesDashboardAbsentError } from "../providers/hermes/files-fetcher.js";
-import { isSessionInitConflictText } from "./failure-classifier.js";
+import { isSessionInitConflictText, withoutOperatorData } from "./failure-classifier.js";
 
 export type DispatchErrorCode =
   | "AGENT_NOT_FOUND" // configured agentId no longer exists on the gateway
@@ -220,8 +220,13 @@ export function classifyGatewayError(
   if (err instanceof InboundMediaRefusal) {
     return INBOUND_REFUSAL_CODES[err.code] ?? "attachment_staging_failed";
   }
-  const msg = (
-    err instanceof Error ? err.message : String(err ?? "")
+  // Through the SAME normalization the frame classifier uses, not a special case of
+  // it: an early return for credential sentences left every OTHER quoted value free
+  // here, so `Session "agent:timeout:…" changed while starting work` became
+  // GATEWAY_TIMEOUT before it could reach `session_init_conflict` — losing the bounded
+  // retry and blaming the bridge (codex).
+  const msg = withoutOperatorData(
+    err instanceof Error ? err.message : String(err ?? ""),
   ).toLowerCase();
 
   if (

@@ -993,6 +993,86 @@ describe("main-lane chat error/aborted terminalization (ChatErrorEventSchema)", 
     };
   }
 
+  it("a profile NAME cannot buy the embedded-lock downgrade", () => {
+    // A second rule reads the raw sentence after the classifier: with real content on
+    // the turn, the embedded-lock phrase turns the failure into `complete` and clears
+    // both the error and its class. The phrase is matchable by an operator-chosen
+    // PROFILE NAME, so a name could erase its own failure — and the class it erases is
+    // the one the anomaly plane counts (codex).
+    const normalizer = newNormalizer();
+    const clock = new Clock();
+    normalizer.beginTurn(clock.now);
+    normalizer.noteRunStarted(OWN_RUN, clock.now);
+    // Real content first: that is the gate the downgrade rides on.
+    normalizer.feed(
+      {
+        type: "event",
+        event: "chat",
+        payload: {
+          runId: OWN_RUN,
+          sessionKey: SESSION_KEY,
+          state: "delta",
+          deltaText: "une vraie réponse",
+        },
+      },
+      clock.tick(),
+    );
+    const events = normalizer.feed(
+      {
+        type: "event",
+        event: "chat",
+        payload: {
+          runId: OWN_RUN,
+          sessionKey: SESSION_KEY,
+          state: "error",
+          // The phrase in BOTH operator-chosen segments — the profile name and the
+          // model id the tail names (codex).
+          errorMessage:
+            'Auth profile "session file changed while embedded prompt lock" is temporarily unavailable for openai/session file changed while embedded prompt lock.',
+        },
+      },
+      clock.tick(),
+    );
+    const final = events.find((e) => e.type === "message.final");
+    expect(final?.status, "a profile name downgraded its own failure").not.toBe(
+      "complete",
+    );
+    expect(final?.errorKind).toBe("auth_profile_cooldown");
+  });
+
+  it("the auth-profile COOLDOWN sentence classifies from bare text, as production sent it", () => {
+    // The production frame carried NO errorKind — which is why the reader got an empty
+    // bubble (feedback prod-ms7ed3bn…). This is the hop the per-hop tests do not cover
+    // on their own: a terminal frame carrying only the gateway's sentence must leave
+    // this normalizer with the class the card and the detector key on.
+    const normalizer = newNormalizer();
+    const clock = new Clock();
+    normalizer.beginTurn(clock.now);
+    normalizer.noteRunStarted(OWN_RUN, clock.now);
+    const events = normalizer.feed(
+      {
+        type: "event",
+        event: "chat",
+        payload: {
+          runId: OWN_RUN,
+          sessionKey: SESSION_KEY,
+          state: "error",
+          errorMessage:
+            'Auth profile "openai:someone@example.com" is temporarily unavailable for openai/gpt-5.6-terra.',
+        },
+      },
+      clock.tick(),
+    );
+    const final = events.find((e) => e.type === "message.final");
+    expect(final?.errorKind).toBe("auth_profile_cooldown");
+    // The gateway's sentence is carried through untouched. The bridge is not where the
+    // credential id is removed — Convex's `stream.finalize` is, before anything stores
+    // or serves it — so this asserts the bridge does not mask EARLY, which would cost
+    // the classifier its input. It does not claim the id is readable anywhere here:
+    // raw frames are logged only under BRIDGE_DEBUG / BRIDGE_FRAME_DUMP (codex).
+    expect(final?.error).toContain("openai:someone@example.com");
+  });
+
   it("EVERY documented overflow phrasing (no errorKind) classifies to context_length (fallback RE)", () => {
     // The OpenClaw-documented provider overflow patterns (docs/concepts/compaction)
     // + Atrium's UI phrasing — each must reach the actionable card, not a generic

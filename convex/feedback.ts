@@ -23,6 +23,7 @@
 // captures the environment (best available diagnostic), nothing more.
 
 import { canReachChat } from "./lib/chatAccess";
+import { maskCredentialId } from "./lib/chatRenderState";
 import { v } from "convex/values";
 import { envLabel } from "./lib/envLabel";
 import {
@@ -294,7 +295,10 @@ export const submitFeedback = mutation({
         messageRole: message.role,
         messageText,
         messageStatus: message.status,
-        messageError: message.error,
+        // A snapshot FREEZES the sentence, so it outlives the row it came from — and a
+        // snapshot taken while the migration is still walking the table would copy a
+        // row it has not reached yet (codex).
+        messageError: maskCredentialId(message.error),
         // The root cause next to the headline (see the schema note): `error` is
         // what the user was shown, `errorCode` is what actually happened.
         messageErrorCode: message.errorCode,
@@ -528,7 +532,12 @@ export const readSnapshot = mutation({
         text: m.text,
         at: m.at,
       })),
-      snapshot: fb.snapshot,
+      // A snapshot frozen before the backfill reached it still holds the credential
+      // id, and the backfill is operator-invoked, so a read can precede it (codex).
+      snapshot: {
+        ...fb.snapshot,
+        messageError: maskCredentialId(fb.snapshot.messageError),
+      },
     };
   },
 });
@@ -886,7 +895,11 @@ export const readForApi = internalQuery({
         chatId: String(fb.chatId),
         messageId: String(fb.messageId),
         displayedMatchesStored: fb.snapshot.displayedMatchesStored ?? null,
-        snapshot: fb.snapshot,
+        // Same reason as the owner-facing read above.
+        snapshot: {
+          ...fb.snapshot,
+          messageError: maskCredentialId(fb.snapshot.messageError),
+        },
         chatExists: chat !== null,
         messageExists: message !== null,
         // The response THREAD (user follow-ups + service/admin replies): the

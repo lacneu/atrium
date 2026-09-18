@@ -404,7 +404,7 @@ describe("an inbound-media refusal is OURS, and says so", () => {
     /** A reason may be built ONLY from text the reader wrote and from expressions the
      *  allowlist vouches for IN THIS FUNCTION — combined with `+`, a ternary, or a
      *  list that is filtered and joined. Anything else could hold the filename. */
-    const checkReason = (node: ts.Expression, fn: string) => {
+    const checkReason = (node: ts.Expression, fn: string): void => {
       const allowed = ALLOWED_IN[fn] ?? [];
       const text = node.getText(sf).trim();
       if (ts.isParenthesizedExpression(node)) return checkReason(node.expression, fn);

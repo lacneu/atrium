@@ -163,6 +163,243 @@ describe("classifyFailureText", () => {
     expect(classifyFailureText(undefined)).toBeNull();
   });
 
+  it("names the AUTH PROFILE COOLDOWN — the sentence that reached a user as an empty bubble", () => {
+    // Verbatim from production (feedback prod-ms7ed3bn…), and the shape upstream
+    // composes at src/agents/runtime-plan/prepare-auth.ts in v2026.9.4.
+    expect(
+      classifyFailureText(
+        'Auth profile "openai:olivier@lacneu.com" is temporarily unavailable for openai/gpt-5.6-terra.',
+      ),
+    ).toBe("auth_profile_cooldown");
+    // An id containing a QUOTE still classifies: upstream requires only a non-empty
+    // string, and a lazy `"[^"]*"` stopped recognizing the sentence entirely — no
+    // class, which is the exact failure this rule exists to end (codex).
+    expect(
+      classifyFailureText(
+        'Auth profile "openai:team"someone@example.com" is temporarily unavailable for openai/gpt-5.6-sol.',
+      ),
+    ).toBe("auth_profile_cooldown");
+    // …and one containing a NEWLINE. Same reason, and the classifier fails CLOSED
+    // there — no class at all — which is the failure this rule exists to end (codex).
+    expect(
+      classifyFailureText(
+        'Auth profile "openai:line1\nline2@example.com" is temporarily unavailable for openai/gpt-5.6-sol.',
+      ),
+    ).toBe("auth_profile_cooldown");
+    // The other producer names the provider without a model
+    // (src/agents/provider-model-route-auth.ts).
+    expect(
+      classifyFailureText('Auth profile "anthropic:team" is temporarily unavailable for anthropic.'),
+    ).toBe("auth_profile_cooldown");
+  });
+
+  it("is NOT a provider blip, though it says 'temporarily unavailable'", () => {
+    // `provider_internal` is auto-retried (RETRYABLE_KINDS). Upstream refuses this
+    // candidate BEFORE calling the provider (isProfileInCooldown,
+    // src/agents/auth-profiles/usage-state.ts), and whether a later attempt is let
+    // through as a probe depends on the reason that opened the window — which this
+    // sentence does not name.
+    const text = 'Auth profile "openai:someone" is temporarily unavailable for openai/gpt-5.6-sol.';
+    expect(classifyFailureText(text)).not.toBe("provider_internal");
+    // …and a 5xx marker riding the same sentence does not turn it into one.
+    expect(classifyFailureText(`internal server error — ${text}`)).toBe(
+      "auth_profile_cooldown",
+    );
+  });
+
+  it("an id carrying the TAIL cannot turn its SIBLING into a cooldown", () => {
+    // The id is operator-controlled, so it can contain the very words this rule keys
+    // on. A profile named `openai:x" is temporarily unavailable` made the permanent
+    // `type mismatch` sentence match, showing a misconfiguration as a transient pause
+    // (codex). The tail must now run to the END with no further quote after it.
+    expect(
+      classifyFailureText(
+        'Auth profile "openai:x" is temporarily unavailable" type mismatch for secrets.openai.',
+      ),
+    ).not.toBe("auth_profile_cooldown");
+    // …while the real sentence, with an id containing a quote, still classifies.
+    expect(
+      classifyFailureText(
+        'Auth profile "openai:team"someone@example.com" is temporarily unavailable for openai/gpt-5.6-sol.',
+      ),
+    ).toBe("auth_profile_cooldown");
+  });
+
+  it("a profile NAME cannot choose the class — the worst one of all", () => {
+    // The id is whatever an operator called the profile, and it travels inside the
+    // sentence every rule reads. Verified: `database or disk is full` became a full
+    // disk, `prompt too large` a context overflow, and the writer-rebound phrase a
+    // session conflict — which the normalizer can upgrade to the class the bounded
+    // AUTO-RETRY keys on, so a profile name could buy itself re-dispatches (codex).
+    for (const name of [
+      "prompt too large",
+      "database or disk is full",
+      "database is locked",
+      "session writer claim changed before transcript persistence",
+      "fetch failed",
+    ]) {
+      expect(
+        classifyFailureText(
+          `Auth profile "${name}" is temporarily unavailable for openai/gpt-5.6-sol.`,
+        ),
+        name,
+      ).toBe("auth_profile_cooldown");
+    }
+    // …and neither can the MODEL ID, which the tail names and an operator also chooses
+    // (codex): the sentence's fixed words are all that survives the strip.
+    for (const model of [
+      "prompt too large",
+      "database or disk is full",
+      "timeout",
+      "session file changed while embedded prompt lock",
+      // …including one containing a QUOTE. The tail used to require that no quote
+      // followed it, so this fell to the truncated form and lost its class (codex).
+      'x"neutral',
+    ]) {
+      expect(
+        classifyFailureText(
+          `Auth profile "openai:someone" is temporarily unavailable for openai/${model}.`,
+        ),
+        model,
+      ).toBe("auth_profile_cooldown");
+    }
+    // …and a name cannot steal a class for a sentence that is NOT a cooldown either.
+    expect(
+      classifyFailureText('Auth profile "database or disk is full" type mismatch for x.'),
+    ).toBeNull();
+  });
+
+  it("NOTHING quoted reaches a rule — whichever operator string it is", () => {
+    // `MCP server "<name>" references auth profile "<id>"` puts an operator string
+    // BEFORE the credential word, so keying on `profile "` still let a server called
+    // `reply session initialization conflicted` buy an automatic re-dispatch (codex).
+    // A classification is never made from quoted content now.
+    for (const hostile of [
+      "reply session initialization conflicted",
+      "prompt too large",
+      "database or disk is full",
+      "database is locked",
+    ]) {
+      expect(
+        classifyFailureText(
+          `MCP server "${hostile}" references auth profile "someone@example.com" which is missing.`,
+        ),
+        hostile,
+      ).toBeNull();
+    }
+    // …including an UNQUOTED operator value: upstream interpolates `${provider}` into
+    // these sentences too, and a provider named after a conflict phrase produced
+    // `session_init_conflict`, which the bounded auto-retry keys on (codex).
+    for (const hostile of [
+      "reply session initialization conflicted",
+      "prompt too large",
+      "database or disk is full",
+    ]) {
+      expect(
+        classifyFailureText(
+          `Per-entry apiKey profile "neutral" has no usable credentials for ${hostile}.`,
+        ),
+        hostile,
+      ).toBeNull();
+    }
+    // `API key` with a space is the same family — upstream writes
+    // `No API key found for provider "<provider>"` and `apikey` missed it (codex).
+    expect(
+      classifyFailureText(
+        'No API key found for provider "reply session initialization conflicted".',
+      ),
+    ).toBeNull();
+    // …and an EARLIER operator segment cannot win the cooldown exception by carrying
+    // its phrase: the exception applies only when the first quote is the cooldown's own.
+    expect(
+      classifyFailureText(
+        'MCP server "Auth profile \u0022x\u0022 is temporarily unavailable for y" references auth profile "real" which is missing.',
+      ),
+    ).not.toBe("auth_profile_cooldown");
+    // …and a quote INJECTED into the id cannot shift the pairing to expose a phrase:
+    // the sentence is cut at its FIRST quote, so nothing after it is read at all.
+    expect(
+      classifyFailureText(
+        'Auth profile "x"reply session initialization conflicted" type mismatch for y.',
+      ),
+    ).toBeNull();
+    // …and a sentence that does NOT name a credential keeps its shape, so the gateway's
+    // own words after a quoted value still classify — cutting there would have thrown
+    // the class away, which is why the two rules differ.
+    expect(
+      classifyFailureText(
+        'Session "agent:reply session initialization conflicted:x" was deleted while starting work. Retry.',
+      ),
+    ).toBe("session_init_conflict");
+    // …while the operator value inside those quotes still cannot pick one.
+    expect(
+      classifyFailureText('Session "database or disk is full" is fine.'),
+    ).toBeNull();
+    // …and the gateway's OWN unquoted words still classify, which is the whole point.
+    expect(
+      classifyFailureText(
+        '⚠️ Agent run failed: the Gateway state database was full (SQLite: database or disk is full).',
+      ),
+    ).toBe("gateway_storage_unavailable");
+  });
+
+  it("a FULL DISK wins over the cooldown sentence riding the same text", () => {
+    // The contract above is that the graver class wins, and the cooldown rule was
+    // placed before both storage rules — so a gateway whose disk is full, emitting both
+    // sentences, was named a credential pause and the only operator-actionable fact
+    // disappeared (codex).
+    expect(
+      classifyFailureText(
+        'database or disk is full — Auth profile "openai:x" is temporarily unavailable for openai/m.',
+      ),
+    ).toBe("gateway_storage_unavailable");
+    expect(
+      classifyFailureText(
+        'database is locked — Auth profile "openai:x" is temporarily unavailable for openai/m.',
+      ),
+    ).toBe("gateway_storage_busy");
+  });
+
+  it("does not claim the PERMANENT credential failures that sit beside it upstream", () => {
+    // Same file upstream, different fact: no usable credentials at all. A cooldown
+    // sentence tells the reader to wait or switch model; this one would be a lie —
+    // nothing elapses. It stays unclassified rather than borrowing a class.
+    expect(
+      classifyFailureText(
+        'Per-entry apiKey profile "openai:x" has no usable credentials for openai.',
+      ),
+    ).not.toBe("auth_profile_cooldown");
+    // …and an id inside ANY upstream sentence that quotes one cannot pick a class
+    // either. Swept from the pinned sources: about thirty compose such a sentence, and
+    // three review passes added one opening at a time while more remained (codex).
+    for (const opening of [
+      "Per-entry apiKey profile",
+      "Per-entry apiKey",
+      "No credentials found for profile",
+      "Provider auth profile",
+      "Selected auth profile",
+      "unknown auth profile",
+      // …and an opening that puts ANOTHER operator string BEFORE the credential word:
+      // keying on `profile "` was still a guess about where the operator's text sits
+      // (codex). Nothing quoted reaches a rule now.
+      'MCP server "x" references auth profile',
+    ]) {
+      expect(
+        classifyFailureText(
+          `${opening} "reply session initialization conflicted" has no usable credentials for openai.`,
+        ),
+        opening,
+      ).not.toBe("session_init_conflict");
+      expect(
+        classifyFailureText(`${opening} "prompt too large" has no usable credentials.`),
+        opening,
+      ).not.toBe("context_length");
+    }
+    expect(
+      classifyFailureText('Auth profile "openai:x" type mismatch for secrets.openai.'),
+    ).not.toBe("auth_profile_cooldown");
+  });
+
   it("OVERFLOW wins over a co-occurring 5xx marker (the class that is actionable)", () => {
     expect(
       classifyFailureText("internal server error: prompt too large for the model"),

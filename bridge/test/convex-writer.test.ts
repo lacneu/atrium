@@ -1787,3 +1787,36 @@ describe("setPhase reports whether the write landed", () => {
     await expect(p).resolves.toBe(false);
   });
 });
+
+describe("finalize carries the failure CLASS to Convex", () => {
+  test("errorKind rides the finalize POST, beside the error text", async () => {
+    // Nothing pinned this. The normalizer test proves the class comes OUT of the
+    // normalizer and the Convex tests hand it straight to the mutation, so deleting
+    // `errorKind` from this POST left both green while production lost the class — no
+    // headline, no countable cause, the shape of the incident this lot fixes (codex).
+    const sent: Array<Record<string, unknown>> = [];
+    const fetchImpl = (async (_url: unknown, init: { body: string }) => {
+      sent.push(JSON.parse(init.body) as Record<string, unknown>);
+      return { ok: true, json: async () => ({ ok: true }) } as unknown as Response;
+    }) as unknown as typeof fetch;
+    const w = writerWith(fetchImpl);
+
+    await w.finalize(
+      "m1",
+      "error",
+      // The empty reply an errored turn carries — `text` is declared `string` and the
+      // sink always passes one (turn-sink `replyText`), so `null` is not a shape this
+      // writer has to handle.
+      "",
+      'Auth profile "openai:someone@example.com" is temporarily unavailable for openai/gpt-5.6-terra.',
+      "auth_profile_cooldown",
+    );
+
+    const finalize = sent.find((op) => op.op === "finalize");
+    expect(finalize, "no finalize POST was sent").toBeDefined();
+    expect(finalize?.errorKind).toBe("auth_profile_cooldown");
+    // The sentence goes too: Convex masks the credential id, and it can only mask what
+    // it receives.
+    expect(String(finalize?.error)).toContain("temporarily unavailable");
+  });
+});

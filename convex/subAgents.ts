@@ -33,7 +33,7 @@ import {
   requireOwnedChat,
   requireReachableChat,
 } from "./lib/access";
-import { normalizeMessageErrorCode } from "./lib/chatRenderState";
+import { normalizeMessageErrorCode, maskCredentialId } from "./lib/chatRenderState";
 import { chatAllowsInstance } from "./lib/ingestAuthz";
 import { currentPlanIndex } from "./lib/planOrder";
 import { drainNextQueued, SUBAGENT_STALE_TTL_MS } from "./lib/outboxQueue";
@@ -335,7 +335,10 @@ export const upsertSubAgent = internalMutation({
         providerStatus: args.providerStatus,
         rollup: args.rollup,
         phase: args.phase,
-        errorMessage: args.errorMessage,
+        // Same door as `stream.finalize`: a sub-agent failure sentence is persisted and
+        // shown too, and the sub-agent path does NOT go through that mutation, so the
+        // credential id reached Convex by this route (codex).
+        errorMessage: maskCredentialId(args.errorMessage),
         // Same allowlist as the parent message's `errorCode` (G-11): one list,
         // so a class the UI cannot localize never reaches a row.
         ...(args.errorCode !== undefined
@@ -463,7 +466,8 @@ export const upsertSubAgent = internalMutation({
       patch.providerStatus = args.providerStatus;
     }
     if (args.rollup !== undefined) patch.rollup = args.rollup;
-    if (args.errorMessage !== undefined) patch.errorMessage = args.errorMessage;
+    if (args.errorMessage !== undefined)
+      patch.errorMessage = maskCredentialId(args.errorMessage);
     if (args.errorCode !== undefined) {
       patch.errorCode = normalizeMessageErrorCode(args.errorCode) ?? undefined;
     }
@@ -1192,7 +1196,9 @@ export const listSubAgents = query({
       .collect();
     // Stable, useful order for a future UI: most-recently-spawned first.
     rows.sort((a, b) => b.createdAt - a.createdAt);
-    return rows;
+    // Rows written before the backfill reached them still hold the credential id, and
+    // the backfill is operator-invoked, so a read can always precede it (codex).
+    return rows.map((r) => ({ ...r, errorMessage: maskCredentialId(r.errorMessage) }));
   },
 });
 
@@ -1606,7 +1612,11 @@ export const settleTaskEngagement = internalMutation({
     }
     await ctx.db.patch(row._id, {
       status,
-      ...(errorMessage !== undefined ? { errorMessage } : {}),
+      // The FIFTH door: a task engagement settles from `tasks.get`'s own
+      // `TaskSummary.error`, which never passes through any writer above (codex).
+      ...(errorMessage !== undefined
+        ? { errorMessage: maskCredentialId(errorMessage) }
+        : {}),
       updatedAt: Date.now(),
     });
     // Same post-settle hooks as the upsert path: the summarize watermark

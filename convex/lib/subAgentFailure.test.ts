@@ -151,3 +151,34 @@ describe("toSubAgentFailureStructure — content-free projection", () => {
     });
   });
 });
+
+describe("a profile NAME cannot choose the category", () => {
+  it("the operator-chosen id is stripped before the patterns run", () => {
+    // A row written before the masker existed still holds the id, and the id is
+    // whatever an operator called the profile. Without the strip, a profile named
+    // `timeout` picked the category published in the anomaly and the diagnostic — the
+    // same family as the bridge classifier's defect (codex).
+    for (const [name, expected] of [
+      ["timeout", "unknown"],
+      ["rate limit exceeded", "unknown"],
+      ["tool failed", "unknown"],
+    ] as const) {
+      expect(
+        classifySubAgentError(
+          "error",
+          `Auth profile "${name}" is temporarily unavailable for openai/m.`,
+        ),
+        name,
+      ).toBe(expected);
+    }
+    // …and a quoted value in ANY sentence, not only a credential one: the display mask
+    // left every other one free to pick the category (codex).
+    expect(
+      classifySubAgentError("error", 'Session "agent:timeout:x" was deleted.'),
+    ).toBe("unknown");
+    // …while a real timeout, with no profile name in it, still classifies.
+    expect(classifySubAgentError("error", "the child timed out after 100 tool calls")).toBe(
+      "timeout",
+    );
+  });
+});

@@ -17,6 +17,7 @@
 // and using it would leak content into the anomaly/MCP plane.
 
 /** The four lifecycle states the bridge writes (mirrors the schema union). */
+import { withoutOperatorValues } from "./chatRenderState";
 export type SubAgentStatus = "running" | "done" | "error" | "aborted";
 
 /**
@@ -67,7 +68,10 @@ export function classifySubAgentError(
   errorMessage?: string,
 ): SubAgentErrorCategory {
   if (status === "aborted") return "aborted";
-  const text = (errorMessage ?? "").trim();
+  // Through the CLASSIFICATION normalizer, not the display mask: the mask protects a
+  // credential in text a reader is shown, and it left every OTHER quoted value free to
+  // pick the category published in the anomaly and the diagnostic (codex).
+  const text = withoutOperatorValues((errorMessage ?? "").trim()).trim();
   if (text === "") return "unknown";
   if (TIMEOUT_RE.test(text)) return "timeout";
   if (API_ERROR_RE.test(text)) return "api_error";

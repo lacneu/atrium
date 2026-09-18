@@ -332,7 +332,9 @@ export interface ConvexWriter {
       timeoutPhase?: string;
       providerStarted?: boolean;
       gatewayAborted?: boolean;
-      /** Hard-overflow marker: the gateway's errorKind when the turn FAILED on
+      /** The STABLE failure class — the gateway's errorKind when it sends one,
+       *  otherwise one the bridge's text classifier minted (auth_profile_cooldown,
+       *  the storage classes). Hard-overflow marker: set when the turn FAILED on
        *  context_length (vs `compaction` = handled silently). Null otherwise. */
       errorKind?: string | null;
       /** Terminal frame's optional stopReason — diagnosis only (matrix gap closed). */
@@ -418,8 +420,10 @@ export interface ConvexWriter {
     status: FinalizeStatus,
     text: string,
     error: string | null,
-    /** Stable gateway failure class (refusal|timeout|rate_limit|context_length)
-     *  — persisted as the message's errorCode; null on clean turns. */
+    /** Stable failure class — the gateway's own errorKind
+     *  (refusal|timeout|rate_limit|context_length) when it sends one, otherwise a
+     *  class the bridge's text classifier minted from the sentence. Persisted as the
+     *  message's errorCode; null on clean turns, never `unknown`. */
     errorKind?: string | null,
     /** discardStreamText: the live row's text is protocol noise (NO_REPLY) —
      *  the finalize must not fall back to it (atomic discard).
@@ -731,7 +735,9 @@ type IngestOp =
       // THE window's owner: three models with different windows run on one
       // instance, so a window value alone cannot be interpreted.
       model?: string | null;
-      // Hard-overflow marker (errorKind "context_length" on a FAILED turn).
+      // The stable failure class — the gateway's own, or one the bridge's text
+      // classifier minted. "context_length" here is the hard-overflow marker on a
+      // FAILED turn.
       errorKind?: string | null;
       stopReason?: string | null;
       postTotalTokens?: number | null;

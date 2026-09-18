@@ -214,6 +214,18 @@ export const CAUSE_ANOMALY_KINDS: Record<string, string> = {
   // run of bad luck.
   gateway_storage_busy: "assistant.cause.gateway_storage_busy",
   gateway_storage_unavailable: "assistant.cause.gateway_storage_unavailable",
+  // The gateway refused to USE the credential: the auth profile was inside a cooldown
+  // window. It belongs in this map — which is read for causes carried by an
+  // `assistant.stream` FINALIZE row — because the send SUCCEEDS and the refusal comes
+  // back on the stream: the reported turn had `outboxStatus: "sent"` with the error on
+  // the assistant message (feedback prod-ms7ed3bn…). Its own class because the answer
+  // differs from every neighbour: the refusal is about a CREDENTIAL, not a provider or
+  // a disk, so a repeat points an operator at the gateway's auth profiles rather than
+  // at its storage or an upstream blip. WHICH profile it does not say — the trace drops
+  // the sentence and these counts aggregate on the code alone, so two different paused
+  // profiles raise one signal (codex). (What the reader is told about retrying is deliberately hedged; see the
+  // probe allowance documented in the bridge classifier.)
+  auth_profile_cooldown: "assistant.cause.auth_profile_cooldown",
   // NOT the bridge's inbound-staging refusals, deliberately. This map is read for
   // `streamCauses` only — causes carried by an `assistant.stream` FINALIZE row —
   // and a staging refusal happens BEFORE any stream exists: it surfaces as an

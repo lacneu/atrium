@@ -40,7 +40,10 @@ import {
 } from "./sanitize.js";
 import { isGatewayInitiatedRunId } from "./run-families.js";
 import { planPartFromPlanStream } from "../../core/plan-part.js";
-import { classifyFailureText } from "../../core/failure-classifier.js";
+import {
+  classifyFailureText,
+  withoutOperatorData,
+} from "../../core/failure-classifier.js";
 import {
   bucketCompactionReason,
   compactionCompleted,
@@ -226,8 +229,9 @@ const VISIBLE_TEXT_KEYS = ["message", "caption", "text", "body", "content", "mar
 //   (?:\s+dans\s+le\s+(?:canal|webchat)[^.\n]*)?[\s.!…]*$
 // JS \s matches Unicode whitespace by default; `i` and `u` flags applied.
 // ChatErrorEventSchema.errorKind enum (gateway-protocol logs-chat.ts), minus
-// "unknown" (nothing actionable to classify). Only these values may persist as
-// the message's stable errorCode.
+// "unknown" (nothing actionable to classify). These are the values the GATEWAY may
+// send; the stable errorCode also carries classes this build mints from the sentence
+// when the gateway sends none (auth_profile_cooldown, the storage classes).
 // Known gateway overflow phrasings (live capture: "Context overflow: prompt
 // too large for the model. Try /reset (or /new) ...").
 // Every context-overflow phrasing a supported gateway can surface as BARE TEXT
@@ -2943,7 +2947,10 @@ export class Normalizer {
     if (!errorKind && error) {
       // FALLBACK classification: real 2026.6.11 gateways do not populate
       // errorKind (live-verified — like `usage`), so a hard overflow arrived
-      // as bare text. Pin the known overflow phrasings to context_length so
+      // as bare text. What this mints is NOT restricted to the gateway's own
+      // `errorKind` enum — `auth_profile_cooldown` and the storage classes are
+      // ours, minted from the sentence; every consumer downstream treats the field
+      // as "a stable class", never as that enum, and `unknown` is excluded (codex). Pin the known overflow phrasings to context_length so
       // the actionable headline + pressure-trace marker still fire. Same for
       // the session-init OCC conflict — the stable code Convex's bounded
       // auto-retry keys on (only ever fired for a ZERO-content turn there).
@@ -2965,7 +2972,10 @@ export class Normalizer {
     }
     if (
       error !== null &&
-      EMBEDDED_LOCK_CONFLICT_RE.test(error) &&
+      // Through the SAME normalization as every other decision: this downgrade clears
+      // the error AND its class, and a quoted value carrying the lock phrase — in a
+      // credential sentence or any other — erased its own failure (codex).
+      EMBEDDED_LOCK_CONFLICT_RE.test(withoutOperatorData(error)) &&
       this.hasRealContent()
     ) {
       // The EMBEDDED-LOCK flavor ONLY (structural discriminant, codex P1).
@@ -2997,8 +3007,10 @@ export class Normalizer {
       errorKind = null;
     }
     if (errorKind) {
-      // The gateway's normalized failure class (ChatErrorEventSchema.errorKind:
-      // refusal|timeout|rate_limit|context_length|unknown). Rides message.final
+      // The STABLE failure class: the gateway's own `errorKind`
+      // (refusal|timeout|rate_limit|context_length) when it sends one, otherwise a
+      // class this build minted from the sentence (`auth_profile_cooldown`, the
+      // storage classes). `unknown` is excluded above. Rides message.final
       // so the sink can persist it as the message's stable errorCode —
       // `context_length` is the hard-overflow signal the context-overflow
       // observability chain keys on.

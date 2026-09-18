@@ -2,6 +2,7 @@
 // (sub-second) so the live capture cannot reliably prove every branch — these do.
 
 import { describe, expect, it } from "vitest";
+import { readFileSync } from "node:fs";
 import {
   runStatusView,
   runStatusOutageLabel,
@@ -170,6 +171,74 @@ describe("errorDetailView (actionable error classification)", () => {
     const v = errorDetailView("stream_orphaned", null);
     expect(v.headline).toBeTruthy();
     expect(v.detail).toBeNull(); // the code string is not a useful detail
+  });
+
+  it("an auth-profile cooldown gets its OWN card, not the provider-blip one", () => {
+    // The reported turn produced no text and no class, so the reader got the gateway's
+    // English sentence and nothing else — no headline, nothing to act on (feedback
+    // prod-ms7ed3bn…). The class is what supplies the headline.
+    const v = errorDetailView(
+      'Auth profile "openai:someone@example.com" is temporarily unavailable for openai/gpt-5.6-terra.',
+      "auth_profile_cooldown",
+    );
+    expect(v.headline).toBeTruthy();
+    expect(v.headline).not.toBe(v.detail);
+    // …and it is NOT the transient-upstream card: that one promises an automatic
+    // retry this class deliberately does not get.
+    const providerBlip = errorDetailView("fetch failed", "provider_internal");
+    expect(v.headline).not.toBe(providerBlip.headline);
+  });
+
+  it("a quoted value cannot win the overflow fallback", () => {
+    // With no usable errorCode, the view falls back to phrasing. It read the DISPLAY
+    // mask, which leaves every non-credential quoted value in place — so a stored row
+    // could put context-overflow actions on a failure that has nothing to do with
+    // context (codex). The decision reads the classification normalizer now.
+    const v = errorDetailView('Session "prompt too large" was deleted.', null);
+    expect(v.code).not.toBe("context_length");
+    // …and a real overflow phrasing, unquoted, still gets its card.
+    expect(errorDetailView("prompt too large for the model", null).code).toBe(
+      "context_length",
+    );
+  });
+
+  it("the cooldown detail does NOT carry the profile id to the reader", () => {
+    // The detail is the gateway's own sentence, shown below the headline and copied
+    // with the message. Upstream lets an operator name a profile anything; the reported
+    // one was an EMAIL, and the reader of a chat is not necessarily the credential's
+    // owner (codex). The whole remainder goes with it — provider and model included — because a
+    // partial redaction of an operator-chosen string is not winnable; see the masker.
+    // New rows never hold the id, and the one-time migration clears the old ones; the
+    // operator reads it on the gateway, which is what the message tells them.
+    const v = errorDetailView(
+      'Auth profile "openai:olivier@example.com" is temporarily unavailable for openai/gpt-5.6-terra.',
+      "auth_profile_cooldown",
+    );
+    expect(v.detail).toBeTruthy();
+    expect(v.detail).not.toContain("olivier@example.com");
+    expect(v.detail).toBe('Auth profile "…');
+    // Any id, not just an email-looking one.
+    expect(
+      errorDetailView(
+        'Auth profile "acme-prod-key-7" is temporarily unavailable for anthropic.',
+        "auth_profile_cooldown",
+      ).detail,
+    ).not.toContain("acme-prod-key-7");
+    // …and it does NOT depend on the class. The message that opened this lot was
+    // stored with NO errorCode — which cost it the headline, not the detail line — so a
+    // code-keyed mask would have left that very row, and every row persisted before
+    // the boundary mask existed, showing the id in full (codex).
+    const noCode = errorDetailView(
+      'Auth profile "openai:olivier@example.com" is temporarily unavailable for openai/gpt-5.6-terra.',
+      null,
+    );
+    expect(noCode.detail).toBeTruthy();
+    expect(noCode.detail).not.toContain("olivier@example.com");
+    // A sentence that is not this one keeps its text: the mask rewrites the quoted id
+    // after "Auth profile", nothing else.
+    expect(errorDetailView("fetch failed", "provider_internal").detail).toBe(
+      "fetch failed",
+    );
   });
 
   it("the gateway's STORAGE failures each get their own headline, detail kept", () => {
@@ -381,3 +450,54 @@ describe("toolFamily bucketing", () => {
   });
 });
 
+describe("the two surfaces that show an error go through this view", () => {
+  // The mask that protects rows persisted before the boundary mask existed lives in
+  // `errorDetailView`. Testing the function alone left both CONSUMERS free to read the
+  // raw error instead, which would re-expose those ids on screen and in the clipboard
+  // (codex). Read as source, comments stripped, because a DOM test of either component
+  // would not say which value it rendered.
+  const strip = (src: string) =>
+    src.replace(/\/\*[\s\S]*?\*\//g, " ").replace(/\/\/[^\n]*/g, " ");
+  const read = (f: string) =>
+    strip(readFileSync(new URL(f, import.meta.url), "utf8"));
+
+  it("the error CARD renders what errorDetailView returned, not the raw error", () => {
+    const src = read("./RunStatus.tsx");
+    // …and its two inputs still come from the stored message. Pinning only the CALL
+    // left `errorDetailView(null, null)` green while the real card lost both its
+    // headline and its detail (codex).
+    expect(src).toMatch(
+      /const error = useMessage\(\(m\) => \(m\.metadata\?\.custom as RunMeta \| undefined\)\?\.error\);/,
+    );
+    expect(src).toMatch(
+      /const errorCode = useMessage\(\s*\(m\) => \(m\.metadata\?\.custom as RunMeta \| undefined\)\?\.errorCode,/,
+    );
+    expect(src).toMatch(
+      /const \{ headline, detail, code \} = errorDetailView\(error, errorCode\);/,
+    );
+    // …and the card body shows that `detail`, never the `error` it was built from.
+    // TOTAL, not a window: `error` may appear nowhere in the rendered JSX. The first
+    // version of this guard looked for a CSS class that does not exist
+    // (`oc-error-card__detail`; the real one is `oc-error-card__msg--detail`), so it
+    // was green whatever the card rendered (codex) — a guard that cannot fail.
+    expect(src).toMatch(/\{detail\}/);
+    const jsx = src.slice(src.indexOf('<div className="oc-error-card"'));
+    expect(
+      /\{\s*error\s*\}/.test(jsx),
+      "the card renders the raw error text somewhere in its JSX",
+    ).toBe(false);
+  });
+
+  it("COPY builds its payload from the view, not from the raw error", () => {
+    const src = read("./ConvexChat.tsx");
+    expect(src).toMatch(/const detail = errorDetailView\(error, errorCode\);/);
+    // Same for the clipboard's own two selectors.
+    expect(src).toMatch(/\)\?\.error \?\? null,/);
+    expect(src).toMatch(/\)\?\.errorCode \?\? null,/);
+    // The WHOLE payload expression, anchored: asserting only that the safe expression
+    // exists somewhere left `error ||` free to sit in front of it (codex).
+    expect(src).toMatch(
+      /const payload =\s*text\.trim\(\) \|\|\s*\[detail\.headline, detail\.detail\]\.filter\(Boolean\)\.join\("\\n"\);/,
+    );
+  });
+});

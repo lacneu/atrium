@@ -25,6 +25,7 @@
 //     copied — they belong to the source's live sessions.
 
 import { quoteFieldsFor, quotedRefsOf } from "./lib/quoteReply";
+import { maskCredentialId } from "./lib/chatRenderState";
 import { ConvexError, v } from "convex/values";
 import { mutation } from "./_generated/server";
 import { Id } from "./_generated/dataModel";
@@ -239,7 +240,12 @@ export const forkChat = mutation({
         role: msg.role,
         status: msg.status,
         text: msg.text,
-        ...(msg.error !== undefined ? { error: msg.error } : {}),
+        // A fork COPIES history, so a row written before the masker existed would be
+        // written again, fresh, still carrying the credential id (codex). Masking on
+        // the copy costs nothing and stops it spreading.
+        ...(msg.error !== undefined
+          ? { error: maskCredentialId(msg.error) }
+          : {}),
         ...(msg.errorCode !== undefined ? { errorCode: msg.errorCode } : {}),
         // Per-turn agent attribution rides (the per-message agent chip; also
         // what the composer's "last used agent" default reads through).
@@ -354,6 +360,10 @@ export const forkChat = mutation({
       const { _id, _creationTime, ...rest } = row;
       await ctx.db.insert("subAgents", {
         ...rest,
+        // Same reason as the message copy above.
+        ...(rest.errorMessage !== undefined
+          ? { errorMessage: maskCredentialId(rest.errorMessage) }
+          : {}),
         chatId: forkId,
         parentMessageId: mappedParent,
         // UNIQUE key: `childSessionKey` is globally one-row-per-key (the

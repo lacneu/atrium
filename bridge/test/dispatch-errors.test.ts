@@ -357,3 +357,32 @@ describe("a key reused for different input is a conflict, not a malformed reques
   });
 });
 
+describe("a profile NAME cannot choose the dispatch code", () => {
+  test("the operator-chosen id is stripped before the patterns run", () => {
+    // The id travels inside the sentence this classifier reads. A profile called
+    // `timeout` became GATEWAY_TIMEOUT, and one carrying a conflict phrase reached the
+    // RETRYABLE branch — a name buying itself re-dispatches (codex).
+    const cooldown = (name: string, model = "gpt-5.6-sol") =>
+      new Error(
+        `Auth profile "${name}" is temporarily unavailable for openai/${model}.`,
+      );
+    expect(classifyGatewayError(cooldown("timeout"))).not.toBe("GATEWAY_TIMEOUT");
+    // AGENT_NOT_FOUND, the value this function really returns for that phrase — the
+    // first version of this case compared against `no_agent`, which it never returns,
+    // so it was green by construction (codex).
+    expect(classifyGatewayError(cooldown("unknown agent"))).not.toBe("AGENT_NOT_FOUND");
+    // The MODEL ID is operator-chosen too, and the tail names it (codex).
+    expect(classifyGatewayError(cooldown("x", "timeout"))).not.toBe("GATEWAY_TIMEOUT");
+    // …and the RETRYABLE branch, which is the one worth buying: a session-init
+    // conflict is re-dispatched by a bounded auto-retry.
+    expect(
+      classifyGatewayError(
+        cooldown("reply session initialization conflicted"),
+      ),
+    ).not.toBe("session_init_conflict");
+    // …while a real timeout, with no profile name in it, still classifies.
+    expect(classifyGatewayError(new Error("gateway timeout after 60s"))).toBe(
+      "GATEWAY_TIMEOUT",
+    );
+  });
+});

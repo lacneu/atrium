@@ -20,6 +20,7 @@
  * an unknown field into its own schema and fail partway through the import.
  * Refusing at the manifest is the whole point of the number.
  */
+import { maskCredentialId } from "./chatRenderState";
 export const ARCHIVE_FORMAT_VERSION = 3;
 
 /** Rows read per bounded page. Small enough that any single call stays well
@@ -312,6 +313,18 @@ export function stripRowForExport(
       }
       if (STORAGE_POINTER_KEYS.includes(key)) {
         if (typeof inner === "string") options.collect?.(inner);
+        continue;
+      }
+      // The credential id never leaves in a file. An export copies what is STORED, so
+      // one taken while the migration is still walking the tables writes the raw id
+      // permanently into an archive already handed to the reader — and masking on
+      // IMPORT cannot repair a file that is already out (codex). One place, so every
+      // table that carries a gateway failure sentence is covered.
+      if (
+        (key === "error" || key === "errorMessage" || key === "messageError") &&
+        typeof inner === "string"
+      ) {
+        out[key] = maskCredentialId(inner);
         continue;
       }
       out[key] = walk(inner, false);

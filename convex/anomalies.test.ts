@@ -523,6 +523,39 @@ describe("anomaly detection", () => {
     expect(overflow?.severity).toBe("critical");
   });
 
+  test("an auth-profile COOLDOWN raises its own cause, end to end from the trace", async () => {
+    // Asserted at the DETECTOR, not on the map: an entry in CAUSE_ANOMALY_KINDS proves
+    // nothing if the code never reaches the trace — which is exactly what happened
+    // here. The cause had no class at all, so the failure counted only in the generic
+    // stream-error channel, and the reader got no actionable headline (feedback
+    // prod-ms7ed3bn…).
+    const t = convexTest(schema, modules);
+    await t.run(async (ctx) => {
+      const now = Date.now();
+      for (let i = 0; i < 2; i++) {
+        await seedTrace(ctx, {
+          kind: "assistant.stream",
+          at: now - i * 1000,
+          correlationId: `chat:auth-cooldown-${i}`,
+          meta: {
+            phase: "finalize",
+            streamStatus: "error",
+            errorCode: "auth_profile_cooldown",
+          },
+        });
+      }
+    });
+    const res = await t.mutation(internal.anomalies.detectAnomalies, {});
+    expect(res.detected).toContain("assistant.cause.auth_profile_cooldown");
+    const open = await t.query(internal.anomalies.anomaliesInternal, {
+      status: "open",
+    });
+    expect(
+      open.find((a) => a.kind === "assistant.cause.auth_profile_cooldown"),
+      "the cooldown cause is countable apart from the generic stream-error channel",
+    ).toBeDefined();
+  });
+
   test("each STORAGE class raises its OWN cause, not one shared storage bucket", async () => {
     // The two classes exist because the answer differs — contention clears itself, a full or
     // read-only disk needs an operator — so they must be countable apart. Asserted at the

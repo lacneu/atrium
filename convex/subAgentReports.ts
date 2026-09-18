@@ -19,6 +19,7 @@
 //     opaque pointer, safe even if it leaks).
 
 import { canReachChat } from "./lib/chatAccess";
+import { maskCredentialId } from "./lib/chatRenderState";
 import { v } from "convex/values";
 import { mutation, query } from "./_generated/server";
 import { Doc } from "./_generated/dataModel";
@@ -55,8 +56,10 @@ const ADMIN_LIST_MAX = 200;
 // errorMessage/resultText (or a long spawning turn), and the whole snapshot lands
 // in ONE Convex document (hard ~1MB limit) — an over-cap insert would THROW and
 // lose the report exactly when the failure is most worth capturing. Cap so the
-// worst case stays well under 1MB even at CHILDREN_MAX: 3 text fields × 20
-// children × 10KB + parentText ≈ 0.6MB, with headroom for keys + sessionMeta.
+// worst case stays well under 1MB even at CHILDREN_MAX: FOUR capped text fields
+// (errorMessage/resultText/taskName/phase) × 20 children × 10KB + parentText ≈ 0.85MB,
+// with headroom for keys + sessionMeta. The arithmetic said three for a while, which
+// understated it — and the migration pages this table on that number (codex).
 // Any clip flips `snapshot.textTruncated` so the audited admin read knows.
 export const FIELD_TEXT_MAX_BYTES = 10_000;
 // sessionMeta is bounded gateway metadata, but a large models list could still
@@ -226,7 +229,11 @@ export const createSubAgentReport = mutation({
       childSessionKey: c.childSessionKey,
       taskName: clip(c.taskName),
       status: c.status,
-      errorMessage: clip(c.errorMessage),
+      // Same reason as the feedback snapshot: frozen, so it outlives its row.
+      // Masked BEFORE the clip, for the same reason as the scheduled history: a long
+      // operator value could push the trigger past the cut and freeze the first one
+      // into the report (codex).
+      errorMessage: clip(maskCredentialId(c.errorMessage)),
       resultText: clip(c.resultText),
       phase: clip(c.phase),
       createdAt: c.createdAt,
@@ -458,7 +465,15 @@ export const readReport = mutation({
         text: m.text,
         at: m.at,
       })),
-      snapshot: r.snapshot,
+      // A snapshot frozen before the backfill reached it still holds the credential
+      // id, and the backfill is operator-invoked, so a read can precede it (codex).
+      snapshot: {
+        ...r.snapshot,
+        children: r.snapshot.children.map((c) => ({
+          ...c,
+          errorMessage: maskCredentialId(c.errorMessage),
+        })),
+      },
     };
   },
 });

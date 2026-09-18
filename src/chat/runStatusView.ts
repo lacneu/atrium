@@ -2,7 +2,9 @@ import { m } from "@/paraglide/messages.js";
 import {
   runStatusKind,
   messageHasText as sharedMessageHasText,
+  maskCredentialId,
   type RunStatusKind,
+  withoutOperatorValues,
 } from "../../convex/lib/chatRenderState";
 
 // Thin localization wrapper over the SHARED pure derivation
@@ -183,11 +185,12 @@ export function runStatusOutageLabel(
 }
 
 /**
- * Actionable error presentation: maps the message's STABLE failure class
- * (gateway ChatErrorEventSchema.errorKind, or a curated dispatch/watchdog code)
- * to a localized, user-actionable headline; the raw gateway error text stays as
- * the technical detail underneath (never shown as the primary line when a
- * classification exists). Pure — testable without React.
+ * Actionable error presentation: maps the message's STABLE failure class — the
+ * gateway's own `errorKind`, a class the bridge's text classifier minted from the
+ * sentence, or a curated dispatch/watchdog code — to a localized, user-actionable
+ * headline; the gateway's error text stays as the technical detail underneath (never
+ * the primary line when a classification exists), MASKED of any credential id.
+ * Pure — testable without React.
  *
  *   context_length -> the HARD un-recovered overflow (the context-overflow
  *                     initiative's user-facing end): explain + suggest recovery
@@ -197,7 +200,8 @@ export function runStatusOutageLabel(
 export interface ErrorDetailView {
   /** Localized headline (actionable) — null when the code is unknown. */
   headline: string | null;
-  /** Raw technical detail (gateway text) — null when empty or redundant. */
+  /** Technical detail: the gateway's own text, MASKED of any credential id — null
+   *  when empty or redundant. */
   detail: string | null;
   /** The class this view RESOLVED to, including the text-phrasing fallback. The
    *  card keys its wired actions on THIS, not on the raw `errorCode`: an overflow
@@ -271,6 +275,10 @@ export const ERROR_CODE_LABEL: Record<string, () => string> = {
   // The gateway's state database refused the write. Split by what the reader can DO: a busy
   // database is contention they can re-send through; a full, read-only or failing disk is the
   // gateway host, where only an operator can help. Neither is auto-retried.
+  // The gateway had paused the auth profile and refused to use it for THIS candidate,
+  // which therefore never reached the provider. A model-scoped pause does not apply to
+  // another model — which is what the sentence tells the reader, conditionally.
+  auth_profile_cooldown: m.runstatus_error_auth_profile_cooldown,
   gateway_storage_busy: m.runstatus_error_gateway_storage_busy,
   gateway_storage_unavailable: m.runstatus_error_gateway_storage_unavailable,
   // Dispatch-failure codes (failDispatch stores the CODE; localized here in the
@@ -330,7 +338,13 @@ export function errorDetailView(
   error: string | null | undefined,
   errorCode: string | null | undefined,
 ): ErrorDetailView {
-  const raw0 = (error ?? "").trim();
+  // TWO readings of the text, and they are not the same one. What is SHOWN goes
+  // through the display mask; what DECIDES goes through the classification normalizer,
+  // which removes every operator-chosen value, not only a credential id — otherwise a
+  // quoted value could still win the overflow fallback below and put context actions
+  // on a failure that has nothing to do with context (codex).
+  const shown = maskCredentialId((error ?? "").trim());
+  const raw0 = withoutOperatorValues(shown);
   // Prefer a MAPPED errorCode; a curated-but-unmapped one (e.g.
   // BRIDGE_UNREACHABLE, kept for diagnostics) falls through to the error
   // STRING code (the localizable reason failDispatch stores), then the
@@ -344,10 +358,21 @@ export function errorDetailView(
           ? "context_length"
           : (errorCode ?? null);
   const headline = code !== null ? (ERROR_CODE_LABEL[code]?.() ?? null) : null;
-  const raw = (error ?? "").trim();
-  // A code string in `error` (orphaned/dispatch pattern) is not a useful detail.
+  // Already masked above; `raw0` is the single reading of the text in this function.
+  const detail0 =
+    raw0 && raw0 !== code && !ERROR_STRING_CODES.has(raw0) ? raw0 : null;
+  // BELT, behind the boundary mask in `stream.finalize`.
+  //
+  // Keyed on the TEXT, never on the class: the very message that opened this lot was
+  // stored with NO errorCode — which cost it the actionable headline, not the whole
+  // card: the raw sentence still rendered as a detail line (codex) — so a
+  // code-keyed mask left it, and every row persisted before the boundary mask existed,
+  // showing the credential id in full (codex).
+  // …and the detail line is the SHOWN text, never the normalized one: blanking a
+  // session key would cost the reader the only identifier in the sentence.
   const detail =
-    raw && raw !== code && !ERROR_STRING_CODES.has(raw) ? raw : null;
+    shown && shown !== code && !ERROR_STRING_CODES.has(shown) ? shown : null;
+  void detail0;
   return { headline, detail, code };
 }
 

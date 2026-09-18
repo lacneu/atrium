@@ -29,6 +29,7 @@ import { enrichUserAgents } from "./agents";
 import { requireRealUserId, getProfile } from "./lib/access";
 import { loadLocalCrypto } from "./lib/crypto/keyProvider";
 import { encryptedSecretValidator } from "./lib/crypto/convexValidator";
+import { maskCredentialId } from "./lib/chatRenderState";
 
 function assertDev() {
   if (process.env.OPENCLAW_ENABLE_ANON_AUTH !== "1") {
@@ -1268,7 +1269,11 @@ export const inspectChat = query({
         created: m._creationTime,
         role: m.role,
         status: m.status,
-        error: m.error ? m.error.slice(0, 140) : undefined,
+        // Masked BEFORE the slice: 140 characters is far more than enough to carry
+        // `Auth profile "<id>"`, and these probes are public queries once dev mode is
+        // on, so the sentence can leave the deployment before the backfill has run
+        // (codex).
+        error: m.error ? maskCredentialId(m.error).slice(0, 140) : undefined,
         // The STABLE failure class (never free text) — the field the diagnose
         // surface keys on. Absent from this probe until a live restart test needed
         // it and could not read it.
@@ -1405,9 +1410,11 @@ export const chatStats = query({
           lastStatus: m.status,
           lastCreated: m._creationTime,
           // System error string (e.g. "codex app-server client closed before
-          // turn completed") — non-PHI, lets the stability test classify the
-          // irritation. Truncated.
-          lastError: m.error ? m.error.slice(0, 100) : undefined,
+          // turn completed"), which lets the stability test classify the irritation.
+          // It was called non-PHI, and that was wrong: a gateway failure sentence can
+          // name an auth profile, which an operator may have called anything — the one
+          // that reached a user was an email address (codex). Masked, then truncated.
+          lastError: m.error ? maskCredentialId(m.error).slice(0, 100) : undefined,
         }
       : null;
   },

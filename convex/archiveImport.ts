@@ -11,6 +11,7 @@
 //     because an archive identifier means something ELSE here.
 //
 // An import spans several calls because an archive holds more rows than one
+import { maskCredentialId } from "./lib/chatRenderState";
 // transaction may write. That is why there is a session row: it lets batches
 // agree, and it lets an import be abandoned instead of leaving a folder of
 // conversations nobody can name.
@@ -651,7 +652,14 @@ async function prepareRow(
     if (key === "importedAgentLabel") continue;
     if (key === "archiveOrder") continue;
     if (value === undefined) continue;
-    out[key] = value;
+    // An import writes rows from a FILE, so nothing upstream of it has masked them —
+    // and an archive may have been exported before the masker existed, or from another
+    // deployment entirely (codex). The two fields that carry a gateway failure sentence
+    // go through the same rule as every other door.
+    out[key] =
+      (key === "error" || key === "errorMessage") && typeof value === "string"
+        ? maskCredentialId(value)
+        : value;
   }
   // THE OWNER IS THE CALLER — where the table has an owner at all. Never the
   // archive: it is a value in a file, and honouring it would let anyone hand

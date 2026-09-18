@@ -195,8 +195,10 @@ export interface ConvexMessageView {
   status: MessageStatus;
   text: string;
   error?: string;
-  /** Stable failure class: gateway errorKind (context_length|rate_limit|timeout|
-   *  refusal) or a curated dispatch code — maps to a localized headline. */
+  /** Stable failure class: the gateway's own errorKind (context_length|rate_limit|
+   *  timeout|refusal), a class the bridge's text classifier minted from the sentence
+   *  (auth_profile_cooldown, the storage classes), or a curated dispatch code — maps
+   *  to a localized headline. */
   errorCode?: string;
   /** Visible auto-retry state (turnRetry stamp): a bounded automatic
    *  re-dispatch of this errored turn is scheduled. */

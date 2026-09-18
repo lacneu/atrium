@@ -1176,9 +1176,10 @@ export const ingest = httpAction(async (ctx, request) => {
           // The gateway DECLINED to compact (vs tried and failed): the difference
           // between "your session is unchanged" and "something broke".
           ...(body.compactionRefused === true ? { compactionRefused: true } : {}),
-          // Hard, UN-recovered overflow (gateway errorKind "context_length") —
-          // the counterpart of `compaction` (= handled silently). Distinguishes
-          // "the gateway coped" from "the turn FAILED on context".
+          // The stable failure class, whether the gateway sent it or the bridge's
+          // text classifier minted it. "context_length" is the hard, UN-recovered
+          // overflow — the counterpart of `compaction` (= handled silently), which
+          // distinguishes "the gateway coped" from "the turn FAILED on context".
           ...(body.errorKind ? { errorKind: body.errorKind } : {}),
           // Terminal stopReason (diagnosis only — protocol-matrix gap closed).
           ...(typeof body.stopReason === "string" && body.stopReason

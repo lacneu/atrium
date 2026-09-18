@@ -263,3 +263,22 @@ describe("the health label never contradicts the durable message", () => {
     ).not.toContain("unclassified_error");
   });
 });
+
+describe("a quoted value cannot choose the Hermes class", () => {
+  it("the operator's text is removed before the patterns run", () => {
+    // The same family as every other decision in this bridge: a quoted value is
+    // operator-chosen, and one containing `fetch failed` minted `provider_internal` —
+    // which arms the bounded auto-retry — while one containing `rate limit` neutralised
+    // a real transient failure through the exclusion (codex). All four callers go
+    // through this one function.
+    expect(
+      classifyProviderInternal('Session "agent:fetch failed:x" was deleted.'),
+    ).toBeNull();
+    expect(
+      classifyProviderInternal('Error: connection error on session "rate limit"'),
+    ).toBe("provider_internal");
+    // …and the gateway's OWN unquoted words still classify, which is the point.
+    expect(classifyProviderInternal("Error: connection error")).toBe("provider_internal");
+    expect(classifyProviderInternal("Error: rate limit exceeded")).toBeNull();
+  });
+});

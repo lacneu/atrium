@@ -13,8 +13,10 @@
 
 import { v } from "convex/values";
 import { internalMutation, internalQuery } from "./_generated/server";
+import type { Doc } from "./_generated/dataModel";
 import { internal } from "./_generated/api";
 import { resolveTargetForChat } from "./routing";
+import { maskCredentialId } from "./lib/chatRenderState";
 
 const BATCH = 200;
 
@@ -82,5 +84,138 @@ export const countNullInstanceChats = internalQuery({
       done: page.isDone,
       cursor: page.isDone ? null : page.continueCursor,
     };
+  },
+});
+
+// maskStoredCredentialIds — clear the credential id from rows written BEFORE the
+// masker existed.
+//
+// Every door that persists a gateway failure sentence now masks it, so no NEW row can
+// hold a profile id. The rows already stored still do, and they are served by a dozen
+// readers: the chat query, the sub-agent queries, a feedback snapshot, a sub-agent
+// report, the dev helpers. Masking each READER would mean finding all of them and
+// keeping that list correct forever (codex enumerated five and did not claim to be
+// done). Fixing the ROWS makes every reader safe at once, including the ones nobody
+// has written yet.
+//
+// Idempotent — the masker is a no-op on an already-masked value — and self-chaining,
+// one table at a time so each invocation uses ONE paginated query (the Convex rule).
+// Two of these are SNAPSHOTS, and that is the point: they FREEZE the sentence, so it
+// outlives the row it was copied from. Fixing the live rows alone left a feedback
+// report and a sub-agent report holding the id forever (codex) — and the reported
+// incident was found IN one of those snapshots.
+const CREDENTIAL_TABLES = [
+  "messages",
+  "subAgents",
+  "subAgentInteractions",
+  "feedback",
+  "subAgentReports",
+] as const;
+
+/** How much of a table one transaction may read.
+ *
+ *  A ROW COUNT is the wrong bound here, and reasoning about which table holds "short"
+ *  values was wrong twice: this query reads whole DOCUMENTS, and a message near the 1
+ *  MiB document limit, or a sub-agent row with a 128 k-character result, makes any
+ *  fixed count unsafe (codex). So the page is bounded in BYTES, well under Convex's 16
+ *  MiB per-transaction read limit, with headroom for the patches this mutation then
+ *  writes. The row count stays only as a ceiling for tables of small rows.
+ *
+ *  The cost of being wrong in this direction is a few more scheduled pages. */
+const PAGE_BYTES = 4_000_000;
+
+function pageSizeFor(table: (typeof CREDENTIAL_TABLES)[number]): number {
+  // A snapshot table's worst-case row (~850 KB for `subAgentReports`: four 10 KB fields
+  // per captured child, plus parentText and sessionMetaJson) fits about five times into
+  // the byte budget; the count is the cheaper bound to hit first.
+  return table === "subAgentReports" || table === "feedback" ? 5 : BATCH;
+}
+
+export const maskStoredCredentialIds = internalMutation({
+  args: {
+    table: v.optional(
+      v.union(
+        v.literal("messages"),
+        v.literal("subAgents"),
+        v.literal("subAgentInteractions"),
+        v.literal("feedback"),
+        v.literal("subAgentReports"),
+      ),
+    ),
+    cursor: v.optional(v.union(v.string(), v.null())),
+  },
+  handler: async (
+    ctx,
+    { table, cursor },
+  ): Promise<{ done: boolean; table: string; masked: number }> => {
+    const current = table ?? CREDENTIAL_TABLES[0];
+    // BOUNDED IN BYTES as well as in rows — see `pageSizeFor`. A page that exceeds the
+    // transaction's read limit throws before scheduling the next one, which leaves the
+    // backfill silently unfinished (codex).
+    const page = await ctx.db.query(current).paginate({
+      numItems: pageSizeFor(current),
+      maximumBytesRead: PAGE_BYTES,
+      cursor: cursor ?? null,
+    });
+
+    let masked = 0;
+    for (const row of page.page) {
+      if (current === "messages") {
+        const before = (row as { error?: string }).error;
+        const after = maskCredentialId(before);
+        if (after !== before) {
+          await ctx.db.patch(row._id, { error: after });
+          masked++;
+        }
+      } else if (current === "feedback") {
+        // `row` is a union across the tables above, so the table name alone does not
+        // narrow it — the cast is what tells the compiler which document this is.
+        const fb = row as Doc<"feedback">;
+        const before = fb.snapshot.messageError;
+        const after = maskCredentialId(before);
+        if (after !== before) {
+          await ctx.db.patch(fb._id, {
+            snapshot: { ...fb.snapshot, messageError: after },
+          });
+          masked++;
+        }
+      } else if (current === "subAgentReports") {
+        const rep = row as Doc<"subAgentReports">;
+        const children = rep.snapshot.children;
+        const next = children.map((c) => ({
+          ...c,
+          errorMessage: maskCredentialId(c.errorMessage),
+        }));
+        if (next.some((c, i) => c.errorMessage !== children[i]?.errorMessage)) {
+          await ctx.db.patch(rep._id, {
+            snapshot: { ...rep.snapshot, children: next },
+          });
+          masked++;
+        }
+      } else {
+        const before = (row as { errorMessage?: string }).errorMessage;
+        const after = maskCredentialId(before);
+        if (after !== before) {
+          await ctx.db.patch(row._id, { errorMessage: after });
+          masked++;
+        }
+      }
+    }
+
+    if (!page.isDone) {
+      await ctx.scheduler.runAfter(0, internal.migrations.maskStoredCredentialIds, {
+        table: current,
+        cursor: page.continueCursor,
+      });
+    } else {
+      // …and on to the next table, so ONE invocation drains all five.
+      const next = CREDENTIAL_TABLES[CREDENTIAL_TABLES.indexOf(current) + 1];
+      if (next !== undefined) {
+        await ctx.scheduler.runAfter(0, internal.migrations.maskStoredCredentialIds, {
+          table: next,
+        });
+      }
+    }
+    return { done: page.isDone, table: current, masked };
   },
 });

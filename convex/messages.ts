@@ -33,8 +33,7 @@ import {
   textLenBucket,
   normalizeMessageErrorCode,
   mimeTypeBase,
-  summarizeToolActivity,
-} from "./lib/chatRenderState";
+  summarizeToolActivity, maskCredentialId } from "./lib/chatRenderState";
 import { provenancePartStructure } from "./lib/provenance";
 import { Id, Doc } from "./_generated/dataModel";
 import {
@@ -471,7 +470,9 @@ async function loadChatView(
             message.status === "streaming"
               ? (message.liveText ?? message.text)
               : message.text,
-          error: message.error,
+          // A row the backfill has not reached still holds the credential id, and the
+          // backfill is operator-invoked, so a read can always precede it (codex).
+          error: maskCredentialId(message.error),
           errorCode: message.errorCode, // stable curated code (set by failDispatch)
           // The user's Stop landed on this block while its delegated work ran.
           // Carried so the reply can be marked interrupted WITHOUT its status or

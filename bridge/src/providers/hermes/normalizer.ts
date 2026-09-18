@@ -14,6 +14,7 @@
 // every documented AND observed spelling so a capture only PRUNES it, never
 // requires a rewrite.
 
+import { withoutOperatorData } from "../../core/failure-classifier.js";
 import {
   EVENT_MESSAGE_DELTA,
   EVENT_MESSAGE_FINAL,
@@ -107,8 +108,14 @@ export function isHermesHistoryDesyncWarning(warning: string): boolean {
 }
 
 export function classifyProviderInternal(error: string): string | null {
-  return PROVIDER_INTERNAL_TEXT_RE.test(error) &&
-    !PROVIDER_INTERNAL_EXCLUDE_RE.test(error)
+  // Through the SAME normalization as every other decision in this bridge: a quoted
+  // value in a Hermes failure sentence is operator-chosen, and one containing
+  // `fetch failed` could mint `provider_internal` — which arms the bounded auto-retry —
+  // while one containing `rate limit` could neutralise a real transient failure through
+  // the exclusion (codex). This is the ONE place all four callers go through.
+  const text = withoutOperatorData(error);
+  return PROVIDER_INTERNAL_TEXT_RE.test(text) &&
+    !PROVIDER_INTERNAL_EXCLUDE_RE.test(text)
     ? "provider_internal"
     : null;
 }
