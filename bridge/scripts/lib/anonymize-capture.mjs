@@ -114,6 +114,12 @@ const IDENTIFIER_KEYS = new Set([
 const MEDIA_ROOTS = [
   "/home/node/.openclaw/media/outbound/",
   "/home/node/.openclaw/media/inbound/",
+  // …and where the media-generation tools WRITE. Absent from this list, an async image
+  // delivery's `mediaUrls` was masked whole, so the corpus could not replay the one frame
+  // that carries the artifact — the path the bridge had to learn to accept (codex).
+  "/home/node/.openclaw/media/tool-image-generation/",
+  "/home/node/.openclaw/media/tool-music-generation/",
+  "/home/node/.openclaw/media/tool-video-generation/",
 ];
 
 /** Identifiers that appear INSIDE a free-form blob and must stay correlatable. Masking
@@ -471,7 +477,12 @@ export function maskText(s) {
  *  A media root is kept VERBATIM (it is infrastructure, identical everywhere); a session
  *  key is kept PSEUDONYMISED (it is identity, and the pseudonym is the same one the
  *  structured fields get, so the two still join). */
-const EMBEDDED_MEDIA_ROOT = /(?:MEDIA:)?\/home\/node\/\.openclaw\/media\/outbound\/[^\s"]+/g;
+// The SAME directories `MEDIA_ROOTS` preserves in structured fields. Pinned to `outbound`
+// alone, a captured `MEDIA:` line or a tool result naming a GENERATED file was masked whole
+// — so the corpus could replay a structured `mediaUrls` but never the directive and embedded
+// forms, which are exactly the readers a capture is meant to exercise (codex).
+const EMBEDDED_MEDIA_ROOT =
+  /(?:MEDIA:)?\/home\/node\/\.openclaw\/media\/(?:outbound|tool-image-generation|tool-music-generation|tool-video-generation)\/[^\s"]+/g;
 const EMBEDDED_SESSION_KEY = /agent:[A-Za-z0-9_.-]+(?::subagent:[A-Za-z0-9-]+)+/g;
 
 /** Mask free text, preserving the protocol-shaped tokens the reading stack scans for.
@@ -497,8 +508,13 @@ export function maskFreeText(s, pseudo = null) {
     if (span.start < cursor) continue; // overlapping match: the first one wins
     out += maskText(s.slice(cursor, span.start));
     if (span.re === EMBEDDED_MEDIA_ROOT) {
-      // Root verbatim, FILE NAME masked.
-      const cut = span.text.lastIndexOf("/") + 1;
+      // The DELIVERABLE ROOT verbatim, EVERYTHING after it masked — intermediate directories
+      // included. Keeping the path up to the last `/` published every directory name along
+      // the way, and a delivery may legitimately be nested, so a folder called after a
+      // person or a case would have reached the corpus intact (codex P1). The root is what
+      // the reading stack scans for; nothing below it is structure worth keeping.
+      const m = /^(MEDIA:)?(.*?\/media\/[^/]+\/)/.exec(span.text);
+      const cut = m === null ? span.text.lastIndexOf("/") + 1 : m[0].length;
       out += span.text.slice(0, cut) + maskText(span.text.slice(cut));
     } else {
       out += pseudo === null ? maskText(span.text) : pseudo.identifier(span.text);

@@ -37,6 +37,7 @@ import {
   MediaConfigurationError,
   sanitizeFrame,
   sanitizeText,
+  DELIVERABLE_MEDIA_SUBDIRS,
 } from "./sanitize.js";
 import { isGatewayInitiatedRunId } from "./run-families.js";
 import { planPartFromPlanStream } from "../../core/plan-part.js";
@@ -440,7 +441,7 @@ function textFromMessage(message: Json): string {
   return textFromContent(message.text);
 }
 
-/** True for a safe OpenClaw outbound media path (no scheme/traversal). */
+/** True for a safe OpenClaw deliverable media path (no scheme/traversal). */
 function isOutboundMediaPath(path: Json): path is string {
   if (!isString(path) || path === "") {
     return false;
@@ -448,7 +449,16 @@ function isOutboundMediaPath(path: Json): path is string {
   if (!path.startsWith("/")) {
     return false;
   }
-  if (!path.includes("/media/outbound/")) {
+  // ROOT-AGNOSTIC, deliberately: a gateway's state dir follows its account or
+  // `OPENCLAW_STATE_DIR`, so `/home/alice/.openclaw/…` and `/srv/openclaw/…` are ordinary
+  // deployments — and `gateway-http`, the default transport, serves whatever path the
+  // gateway itself minted a ticket for. Anchoring this on `/home/node` looked tidier and
+  // silently dropped every delivery from such a gateway (codex P1).
+  //
+  // What a path must have is a DELIVERABLE DIRECTORY in it. Where the bytes then come from
+  // is the fetcher's business, and the shared-fs one enforces its own, stricter rule —
+  // that is a transport constraint and does not belong in this shared reader.
+  if (!DELIVERABLE_MEDIA_SUBDIRS.some((d) => path.includes(`/media/${d}/`))) {
     return false;
   }
   // The dangerous SHAPES (".." traversal, a query component, a scheme) live in
@@ -465,8 +475,11 @@ function isOutboundMediaPath(path: Json): path is string {
 // transcript is extracted without trailing junk. Each hit is re-validated
 // through isOutboundMediaPath, so the "..", inbound, scheme and query filters
 // still apply -- this widens DISCOVERY only, never the safety gate.
-const EMBEDDED_OUTBOUND_RE =
-  /\/home\/node\/\.openclaw\/media\/outbound\/[^\s`)>"']+/g;
+const EMBEDDED_OUTBOUND_RE = new RegExp(
+  // …and the embedded scan with it: what the reader accepts, the scanner must find.
+  String.raw`(?:/[^\s\`)>"']+)*/media/(?:${DELIVERABLE_MEDIA_SUBDIRS.join("|")})/[^\s\`)>"']+`,
+  "g",
+);
 
 // A whole-line MEDIA: delivery directive (the convention the bridge injects via
 // the [LIVRAISON] block). Mirrors sanitize.ts MEDIA_DIRECTIVE_RE so DISCOVERY and
@@ -476,8 +489,10 @@ const EMBEDDED_OUTBOUND_RE =
 // truncate it at the first space (the reported gateway-http delivery bug: the
 // visible text was stripped correctly but the file the bridge then tried to
 // fetch was the truncated ".../IFOA", which does not exist -> no media part).
-const MEDIA_DIRECTIVE_LINE_RE =
-  /^MEDIA:(\/home\/node\/\.openclaw\/media\/outbound\/.+)$/;
+const MEDIA_DIRECTIVE_LINE_RE = new RegExp(
+  // Root-agnostic, mirroring sanitize.ts MEDIA_DIRECTIVE_RE so DISCOVERY and STRIPPING agree.
+  String.raw`^MEDIA:((?:/.*)?/media/(?:${DELIVERABLE_MEDIA_SUBDIRS.join("|")})/.+)$`,
+);
 
 /**
  * Every outbound media path embedded in a string (may be empty). Scanned
@@ -496,7 +511,13 @@ function extractOutboundPaths(
   text: string,
 ): Array<{ path: string; explicit: boolean }> {
   const out: Array<{ path: string; explicit: boolean }> = [];
-  for (const line of text.split(/\r\n|[\n\r\v\f]/)) {
+  // The SAME separators the visible-text stripper splits on. Narrower here, a
+  // `MEDIA:<path>\u2028rest` line read as one line missed the directive and demoted the path
+  // to a mention — while the stripper DID see the directive and removed it: the line was
+  // gone and the file was not attached (codex).
+  for (const line of text.split(
+    /\r\n|[\n\r\v\f\x1c\x1d\x1e\u0085\u2028\u2029]/,
+  )) {
     const directive = MEDIA_DIRECTIVE_LINE_RE.exec(line);
     if (directive) {
       // trimEnd: the gateway file has no trailing whitespace, and a trailing
@@ -585,6 +606,14 @@ function posixBasename(path: string): string {
 }
 
 // --- The transducer ----------------------------------------------------------
+
+/** A media-generation task's DELIVERY run: `<tool>:<taskId>:ok[:<suffix>]`.
+ *
+ *  Anchored on the three tool names upstream lists as background media tasks, and on `:ok` —
+ *  the `:error` sibling is a failure the turn already reports as one. Live shape:
+ *  `image_generate:f21f0360-…:ok:agent-loop`. */
+const MEDIA_TASK_DELIVERY_RUN_RE =
+  /^(?:image_generate|music_generate|video_generate):[^:]+:ok(?::|$)/;
 
 export class Normalizer {
   readonly sessionKey: string;
@@ -685,6 +714,22 @@ export class Normalizer {
   // item). It carries no path/url/bytes — if the turn then delivers no media
   // (no MEDIA:/mediaUrls), finalize emits a diagnostic so the gap is visible.
   sawMediaGeneration: boolean;
+  /** This turn IS the delivery run of a media-generation background task.
+   *
+   *  Upstream runs `image_generate` / `music_generate` / `video_generate` as background
+   *  tasks (media-generation-task-status.ts @ v2026.9.4): the asking turn gets an ACK
+   *  (`details.async:true`, a `taskId`) and the artifact arrives later, in a run the gateway
+   *  names `<tool>:<taskId>:ok`. That name IS the contract — the run exists for nothing else,
+   *  and `:ok` is the gateway's own word that the task succeeded — so finalizing it with no
+   *  media is a promise broken by construction. No prose is read to know it.
+   *
+   *  Both shapes were captured live on the SAME build, hours apart (bench 2026-09-18,
+   *  scenario async-task): one delivery run carried
+   *  `mediaUrls:["…/media/tool-image-generation/…png"]`, the next carried none and said
+   *  "l'image arrivera automatiquement dès qu'elle sera prête". Five production reports
+   *  describe the second — and nothing saw it: the turn ends `complete`, so it carries no
+   *  failure class at all. */
+  mediaDeliveryRun = false;
   // Child session keys observed THIS turn (spawnedBy admission): the parent may
   // legitimately end SILENT while children work — its real reply arrives later
   // as an announce/spontaneous turn. A SET (not a boolean) so the sink can
@@ -945,6 +990,7 @@ export class Normalizer {
       if (this.currentRunId === null) {
         this.currentRunId = runId;
       }
+      if (MEDIA_TASK_DELIVERY_RUN_RE.test(runId)) this.mediaDeliveryRun = true;
     }
     this.armRecv(now);
   }
@@ -2932,7 +2978,8 @@ export class Normalizer {
       // the sink's empty-result guard needs this AT finalize time (the separate
       // EVENT_MEDIA_UNDELIVERED below is pushed AFTER run.status, too late).
       mediaGeneratedUndelivered:
-        this.sawMediaGeneration && this.mediaPaths.size === 0,
+        (this.sawMediaGeneration || this.mediaDeliveryRun) &&
+        this.mediaPaths.size === 0,
       observedChildKeys: [...this.observedChildKeys],
       // …and whether that list is COMPLETE: the sink's empty-response guard makes a
       // negative decision from it, which an incomplete list cannot support.
@@ -3053,7 +3100,10 @@ export class Normalizer {
     // The agent ran native media generation this turn but delivered NO media
     // (no MEDIA:/mediaUrls/outbound path) -> emit a content-free diagnostic so the
     // gap (agent omitted the delivery directive) is visible to the #7 loop.
-    if (this.sawMediaGeneration && this.mediaPaths.size === 0) {
+    if (
+      (this.sawMediaGeneration || this.mediaDeliveryRun) &&
+      this.mediaPaths.size === 0
+    ) {
       result.push({ type: EVENT_MEDIA_UNDELIVERED, runId: this.currentRunId });
     }
     return result;

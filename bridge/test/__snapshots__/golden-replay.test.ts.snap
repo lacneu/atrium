@@ -9,11 +9,12 @@ exports[`golden replay — the interpretation is pinned > 2026.7.1/async-task 1`
   "byCall": {
     "addToolPart": 2,
     "finalize": 2,
+    "noteMediaUndelivered": 1,
     "setSnapshot": 9,
     "startAssistant": 2,
     "upsertSubAgent": 2,
   },
-  "calls": 17,
+  "calls": 18,
   "engagements": [
     "task:running",
     "task:done",
@@ -31,6 +32,7 @@ exports[`golden replay — the interpretation is pinned > 2026.7.1/async-task 1`
     "setSnapshot",
     "finalize",
     "upsertSubAgent",
+    "noteMediaUndelivered",
   ],
   "tools": [
     "tool:image_generate",
@@ -332,11 +334,12 @@ exports[`golden replay — the interpretation is pinned > 2026.9.1/async-task 1`
   "byCall": {
     "addToolPart": 2,
     "finalize": 2,
+    "noteMediaUndelivered": 1,
     "setSnapshot": 12,
     "startAssistant": 2,
     "upsertSubAgent": 2,
   },
-  "calls": 20,
+  "calls": 21,
   "engagements": [
     "task:running",
     "task:done",
@@ -354,6 +357,7 @@ exports[`golden replay — the interpretation is pinned > 2026.9.1/async-task 1`
     "setSnapshot",
     "finalize",
     "upsertSubAgent",
+    "noteMediaUndelivered",
   ],
   "tools": [
     "tool:image_generate",
@@ -657,11 +661,12 @@ exports[`golden replay — the interpretation is pinned > 2026.9.2/async-task 1`
   "byCall": {
     "addToolPart": 2,
     "finalize": 2,
+    "noteMediaUndelivered": 1,
     "setSnapshot": 8,
     "startAssistant": 2,
     "upsertSubAgent": 2,
   },
-  "calls": 16,
+  "calls": 17,
   "engagements": [
     "task:running",
     "task:done",
@@ -679,6 +684,7 @@ exports[`golden replay — the interpretation is pinned > 2026.9.2/async-task 1`
     "setSnapshot",
     "finalize",
     "upsertSubAgent",
+    "noteMediaUndelivered",
   ],
   "tools": [
     "tool:image_generate",
@@ -1021,11 +1027,12 @@ exports[`golden replay — the interpretation is pinned > 2026.9.4/async-task 1`
     "addProvenancePart": 4,
     "addToolPart": 2,
     "finalize": 2,
+    "noteMediaUndelivered": 1,
     "setSnapshot": 6,
     "startAssistant": 2,
     "upsertSubAgent": 2,
   },
-  "calls": 18,
+  "calls": 19,
   "engagements": [
     "task:running",
     "task:done",
@@ -1045,6 +1052,7 @@ exports[`golden replay — the interpretation is pinned > 2026.9.4/async-task 1`
     "setSnapshot",
     "finalize",
     "upsertSubAgent",
+    "noteMediaUndelivered",
   ],
   "tools": [
     "tool:image_generate",

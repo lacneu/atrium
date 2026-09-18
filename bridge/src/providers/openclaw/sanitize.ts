@@ -33,12 +33,71 @@ const OPENCLAW_MARKER = "/home/node/.openclaw/";
 // outbound/workspace dir). Matches /home/node/.openclaw/(media/outbound |
 // workspace-<...>)/<tail>, where the tail and workspace token stop at
 // whitespace, backtick, ")" or ">".
-const OUTBOUND_PATH_RE = /\/home\/node\/\.openclaw\/(?:media\/outbound|workspace-[^\s`)>]+)\/([^\s`)>]+)/g;
+/** The gateway media directories a file may be DELIVERED from — the single list, read by
+ *  the visible-text stripper here and by the normalizer's discovery, which must agree on the
+ *  same paths or a file is attached while its absolute path stays printed in the reply.
+ *
+ *  `outbound` is the delivery staging dir; the three others are where upstream's media
+ *  generation tools write their artifact (`GENERATED_{IMAGE,MUSIC,VIDEO}_MEDIA_SUBDIR` in
+ *  `src/agents/tools/*-generate-tool.execution.ts` @ v2026.9.4), and a delivery run names
+ *  that path in `assistant/final_answer.mediaUrls`.
+ *
+ *  STATED LIMIT — this reaches `gateway-http` only, which is the DEFAULT transport and asks
+ *  the gateway for the path it minted a ticket for. The opt-in `shared-fs` fetcher mounts
+ *  `media/outbound` and resolves a BASENAME inside it, so it cannot reach a generated file —
+ *  and because that basename would otherwise have matched a HOMONYM in the staging dir, the
+ *  fetcher refuses these directories by name instead of serving the wrong file (codex).
+ *  Making that mode deliver generated media needs the sibling directories mounted AND a
+ *  resolution rule that does not break the deterministic outbound scan, which hands that
+ *  seam a bare filename — a lot of its own, not a rider on this one. */
+export const DELIVERABLE_MEDIA_SUBDIRS = [
+  "outbound",
+  "tool-image-generation",
+  "tool-music-generation",
+  "tool-video-generation",
+] as const;
+
+
+/** A deliverable media path under ANY state dir — `/srv/openclaw/…`, `/home/alice/…`.
+ *
+ *  `isOutboundMediaPath` (the reader) has always been root-agnostic, while the stripper gated
+ *  on the image's own `/home/node/.openclaw/` marker. A gateway whose state dir is elsewhere
+ *  therefore had its file ATTACHED and its absolute server path PRINTED in the reply — true
+ *  of `outbound` long before this lot, and the lot's new directories inherit it (codex).
+ *  Group 1 is the tail after the directory, so the stripper keeps the file name.
+ *
+ *  A root containing SPACES is out of reach for this one, and inherently so: a path written
+ *  in prose has no delimiter, which is why the bare-token scan has always stopped at
+ *  whitespace — `media/outbound` included, long before this lot. The `MEDIA:` directive is
+ *  the supported way to deliver such a path, and it takes the WHOLE rest of the line, so it
+ *  accepts any root (codex). */
+const DELIVERABLE_ANY_ROOT_RE = new RegExp(
+  String.raw`(?:MEDIA:)?(?:/[^\s\`)>"']+)*/media/(?:${DELIVERABLE_MEDIA_SUBDIRS.join("|")})/([^\s\`)>]+)`,
+  "g",
+);
+
+/** Does this text carry a deliverable media path at all — whatever the gateway's root? */
+export function containsDeliverableMediaPath(text: string): boolean {
+  return DELIVERABLE_MEDIA_SUBDIRS.some((d) => text.includes(`/media/${d}/`));
+}
+
+const OUTBOUND_PATH_RE = new RegExp(
+  // `media/outbound` and the WORKSPACE dirs. The deliverable GENERATION directories are not
+  // listed here: `DELIVERABLE_ANY_ROOT_RE` already covers them under any root, and a second
+  // pattern for the same paths is a rule that can drift from its twin.
+  String.raw`/home/node/\.openclaw/(?:media/outbound|workspace-[^\s\`)>]+)/([^\s\`)>]+)`,
+  "g",
+);
 
 // Port of _MEDIA_DIRECTIVE_RE: a line that is exactly
 // "MEDIA:/home/node/.openclaw/media/outbound/<tail>". Group 1 = full path,
 // group 2 = tail after outbound/.
-const MEDIA_DIRECTIVE_RE = /^MEDIA:(\/home\/node\/\.openclaw\/media\/outbound\/(.+))$/;
+const MEDIA_DIRECTIVE_RE = new RegExp(
+  // ROOT-AGNOSTIC, like the reader: a gateway's state dir follows its account or
+  // OPENCLAW_STATE_DIR, and a sub-agent's directive under such a root was recognised by
+  // nobody — neither delivered nor stripped (codex).
+  String.raw`^MEDIA:((?:/.*)?/media/(?:${DELIVERABLE_MEDIA_SUBDIRS.join("|")})/(.+))$`,
+);
 
 /** The mount an unconfigured deployment uses (the image's own outbound dir). */
 const DEFAULT_OUTBOUND_MOUNT = "/home/node/.openclaw/media/outbound";
@@ -82,8 +141,12 @@ export function isUnsafeOutboundPath(path: string): boolean {
  *  filename with spaces survives (see the note above). */
 function directiveRegExpFor(mount: string): RegExp {
   if (mount === DEFAULT_OUTBOUND_MOUNT) return MEDIA_DIRECTIVE_RE;
+  // The UNION of the configured mount and the deliverable form. Built for the mount ALONE,
+  // an instance with a custom `outboundAgentMount` recognised no generated delivery at all —
+  // and a sub-agent has no second extraction to fall back on (codex P1).
   const escaped = mount.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  return new RegExp(`^MEDIA:(${escaped}\\/(.+))$`);
+  const deliverable = String.raw`(?:/.*)?/media/(?:${DELIVERABLE_MEDIA_SUBDIRS.join("|")})`;
+  return new RegExp(`^MEDIA:((?:${escaped}|${deliverable})\\/(.+))$`);
 }
 
 // Port of _PATH_LABEL_RE (re.IGNORECASE): a whole line that is just a
@@ -128,9 +191,11 @@ function stripPathsToBasename(
    *  detected and its absolute path stayed in the visible text. */
   custom?: string | null,
 ): string {
-  const stripped = line.replace(OUTBOUND_PATH_RE, (_m, tail: string) =>
-    posixBasename(tail),
-  );
+  const stripped = line
+    .replace(OUTBOUND_PATH_RE, (_m, tail: string) => posixBasename(tail))
+    // …and the same paths under ANY state dir: the reader accepts them, so leaving them
+    // printed is a server path published to the reader (codex).
+    .replace(DELIVERABLE_ANY_ROOT_RE, (_m, tail: string) => posixBasename(tail));
   if (
     custom === null ||
     custom === undefined ||
@@ -178,7 +243,11 @@ export function outboundMediaDeliveries(
 ): Array<{ filename: string; path: string }> {
   if (typeof text !== "string") return [];
   const mount = normaliseMount(outboundAgentMount) ?? DEFAULT_OUTBOUND_MOUNT;
-  if (!text.includes(mount)) return [];
+  // The configured mount OR any deliverable media directory. This is a SUB-AGENT's only
+  // extraction — the parent cannot be trusted to re-deliver — so gating it on the staging
+  // mount alone meant a delegated agent's generated image was never delivered at all, the
+  // same defect one lane over (codex).
+  if (!text.includes(mount) && !containsDeliverableMediaPath(text)) return [];
   const directive = directiveRegExpFor(mount);
   const out: Array<{ filename: string; path: string }> = [];
   const seen = new Set<string>();
@@ -232,7 +301,9 @@ export function sanitizeText(
   // 1. Early return verbatim (covers the empty string and any path-free text).
   if (
     typeof text !== "string" ||
-    (!text.includes(OPENCLAW_MARKER) && !text.includes(marker))
+    (!text.includes(OPENCLAW_MARKER) &&
+      !text.includes(marker) &&
+      !containsDeliverableMediaPath(text))
   ) {
     return text;
   }
@@ -254,8 +325,17 @@ export function sanitizeText(
           // only — never the server path, and never a `./media/` link, which
           // would be dead on this lane and is exactly the confusion the drop
           // was introduced to remove.
+          //
+          // Taken from the DIRECTIVE's own capture, not by re-scanning the line: the bare
+          // scan is bounded by whitespace — it has to be, a path in prose has no delimiter —
+          // so a root containing a space came back half-stripped, publishing a piece of the
+          // server path beside the file name. The directive already told us where the path
+          // ends: the end of the line (codex).
+          const m = directive.exec(line);
           out.push(
-            stripPathsToBasename(line, mount).replace(/^MEDIA:\s*/, ""),
+            m === null
+              ? stripPathsToBasename(line, mount).replace(/^MEDIA:\s*/, "")
+              : posixBasename(m[1]!.trimEnd()),
           );
           continue;
         }

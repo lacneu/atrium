@@ -23,7 +23,14 @@
 import { createReadStream } from "node:fs";
 import { lstat } from "node:fs/promises";
 import type { Readable } from "node:stream";
+import { DELIVERABLE_MEDIA_SUBDIRS } from "../providers/openclaw/sanitize.js";
 import { basename, join, resolve, sep } from "node:path";
+
+/** The deliverable directories that are NOT this fetcher's mount: upstream's
+ *  media-generation tools write there, beside `media/outbound`. */
+const GENERATED_MEDIA_SUBDIRS: readonly string[] = DELIVERABLE_MEDIA_SUBDIRS.filter(
+  (d) => d !== "outbound",
+);
 
 export interface OpenedMedia {
   /** Raw byte stream of the file (no base64, no full buffer). */
@@ -207,6 +214,28 @@ export class LocalDirMediaFetcher implements MediaFetcher {
     ) {
       this.onSkip("invalid filename", filename || "<empty>");
       return { ok: false, reason: "invalid_filename" };
+    }
+    // A GENERATED file is not in this mount, and its basename must not be looked up here.
+    //
+    // This fetcher deliberately keeps only the basename and joins it under the mounted
+    // `media/outbound`. That is right for every path it serves — a bare name from the
+    // deterministic scan, a custom agent mount, a nested staging path — but the
+    // media-generation tools write BESIDE the mount, so
+    // `tool-image-generation/result.png` would open `outbound/result.png`: a different,
+    // older file, delivered as this turn's (codex P1). Refused by name, with a reason,
+    // rather than served wrong. `gateway-http` asks the gateway for the path and is
+    // unaffected; making THIS mode deliver generated media needs the sibling directories
+    // mounted and a resolution rule of its own — a lot apart.
+    // The MIRROR of the normalizer's acceptance rule — `/media/<generated dir>/` anywhere in
+    // the path — not the immediate parent. Testing the parent let a descendant
+    // (`…/tool-image-generation/jobs/result.png`) and a `./` form through to the basename
+    // join, and refused legitimate paths that merely END in such a name, like a nested
+    // staging path or a custom agent mount called `/srv/atrium/tool-image-generation`
+    // (codex). Same predicate on both sides, so what is accepted upstream is exactly what
+    // is judged here.
+    if (GENERATED_MEDIA_SUBDIRS.some((d) => path.includes(`/media/${d}/`))) {
+      this.onSkip("generated media is not in this mount", filename);
+      return { ok: false, reason: "not_found" };
     }
     const resolved = resolve(join(this.baseDir, filename));
     if (resolved !== this.baseDir && !resolved.startsWith(this.baseDir + sep)) {

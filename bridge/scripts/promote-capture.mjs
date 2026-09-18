@@ -68,7 +68,7 @@ import {
 /** Bumped whenever promotion CHANGES the bytes it produces from the same capture. It is
  *  recorded per fixture, so a corpus half-promoted by two different rules is visible
  *  instead of silently mixed. */
-export const PROMOTER_VERSION = 5; // 2: pseudonym-shaped raw strings reserved (defect 15); 3: time origin from arrivals only (defect 14); 4: provenance, cron schedule, task bound and lifecycle-error reader leaves kept (defect 13); 5: only the turn's own gateway connection is promoted (defect 19)
+export const PROMOTER_VERSION = 6; // 2: pseudonym-shaped raw strings reserved (defect 15); 3: time origin from arrivals only (defect 14); 4: provenance, cron schedule, task bound and lifecycle-error reader leaves kept (defect 13); 5: only the turn's own gateway connection is promoted (defect 19); 6: the media-generation directories are preserved like `outbound` — a generated delivery's path was pseudonymised whole, so the corpus replayed a delivery that appeared to carry nothing
 
 const REPO_ROOT = path.resolve(new URL("../..", import.meta.url).pathname);
 const DEFAULT_OUT = path.join(REPO_ROOT, "bridge/test/fixtures/golden");

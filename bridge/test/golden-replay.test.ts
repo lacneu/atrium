@@ -382,6 +382,18 @@ describe("golden replay — the corpus covers what it claims", () => {
     expect(writer.calls.filter((c) => c.call === "finalize").length, "each of the three turns finalized").toBe(3);
   });
 
+  // WHY `async-task` replays a delivery that carries nothing.
+  //
+  // Its fixture was produced by PROMOTER 5, which pseudonymised a generated file's path
+  // whole — `mediaUrls:["/id43/id44/.id19/…"]` — because the anonymiser preserved
+  // `media/outbound` and `media/inbound` only. The capture DID deliver an image; the corpus
+  // cannot show it. So the replay finds no media and the delivery-run sensor names the gap,
+  // which is the correct reading of what this fixture contains.
+  //
+  // Promoter 6 preserves the generation directories, and the `promoter` stamp in each
+  // fixture header is what makes the mixture visible instead of silent. Re-promoting needs a
+  // bench run whose scenarios ALL produced a slice — the promoter refuses a partial capture
+  // rather than deleting the fixtures it would leave behind, which is the right refusal.
   it("the BACKGROUND TASK engagement is recorded", async () => {
     const fx = byScenario.get("async-task");
     expect(fx, "the async-task scenario is missing from the corpus").toBeDefined();
