@@ -5,13 +5,14 @@
 // with `UPSTREAM_ERROR`, whose fault domain is `bridge`, so one attachment marked
 // a perfectly healthy connection dead for five minutes and told the user their
 // next send would fail — while text-only sends kept going through on that link.
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
+import { readFileSync } from "node:fs";
 import {
   classifyGatewayError,
   faultDomain,
 } from "../src/core/dispatch-errors.js";
 import { HealthRegistry } from "../src/core/health.js";
-import { mkdir, mkdtemp, realpath, rm } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -23,6 +24,7 @@ import {
   INBOUND_STAGE_FAILED,
   INBOUND_TOO_LARGE,
   InboundMediaRefusal,
+  logInboundRefusal,
   stageInboundReferences,
 } from "../src/core/inbound-media.js";
 
@@ -96,6 +98,126 @@ describe("an inbound-media refusal is OURS, and says so", () => {
       expect(t.attempts, `${code}: the attempt went uncounted`).toBe(2);
       expect(t.lastDownstreamReject, `${code}: borrowed the gateway's note`).toBeNull();
       expect(t.lastError, `${code}: minted a bridge error`).toBeNull();
+    }
+  });
+
+  test("the refusal NAMES the clause that refused, not just the code", async () => {
+    // WHAT THIS IS FOR. `inbound_media_path_refused` covers a dozen clauses, and the
+    // message named none of them: a live incident spent two hours discovering that
+    // two sibling directories were missing, and the bench spent two more on a
+    // `/home` symlink and then a world-writable ancestor. The code stays the wire
+    // contract; the reason is the sentence the operator needs, and it is STRUCTURAL
+    // — the rule and the directory, never a filename.
+    const root = await realpath(await mkdtemp(join(tmpdir(), "atrium-reason-")));
+    try {
+      const thrown = (await stageInboundReferences(
+        [{ url: "u", mimeType: "application/pdf", fileName: "secret-invoice.pdf" }],
+        "cmid",
+        {
+          // The production shape of the failure: the root is there, the published
+          // directory beside it is not.
+          inboundDir: join(root, "published"),
+          stagingDir: join(root, ".staging"),
+          agentMount: "/m",
+          maxBytes: 1024,
+          fetchImpl: (async () =>
+            new Response(new Blob([new Uint8Array([1])]), {
+              status: 200,
+            })) as unknown as typeof fetch,
+        },
+      ).then(
+        () => null,
+        (err: unknown) => err,
+      )) as InboundMediaRefusal | null;
+      expect(thrown, "the staging did not refuse").toBeInstanceOf(
+        InboundMediaRefusal,
+      );
+      // STAGE_FAILED, not PATH_REFUSED: an absent directory is "the place to write
+      // is gone", the same fact as a mount vanishing mid-batch, and the existing
+      // suite pins that classification. A first version of this change turned the
+      // absence into a path refusal and moved a wire-visible code — the rollback
+      // test caught it.
+      expect(thrown!.code).toBe("inbound_media_stage_failed");
+      expect(thrown!.reason, "the refusal carries no reason").toBeTruthy();
+      // It says WHICH directory and WHY, so the next step is obvious.
+      expect(thrown!.reason).toContain(join(root, "published"));
+      expect(thrown!.reason).toMatch(/does not exist/);
+      // …and it does NOT carry the user's filename into a log line.
+      expect(thrown!.reason).not.toContain("secret-invoice");
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test("NO reason anywhere interpolates the user's filename", () => {
+    // The assertion above covers ONE early failure, and sampling cannot cover the
+    // rest: the leaf rules work on the composed disk name, which contains the
+    // filename, and a reason added there later would slip past any single fixture.
+    // (Those clauses do not throw — a bad file is DROPPED best-effort — so there is
+    // no thrown reason to inspect for them at all.) The invariant is total, so it is
+    // asserted at the source: no `refused(...)` reason may interpolate a name.
+    const src = readFileSync(
+      new URL("../src/core/inbound-media.ts", import.meta.url),
+      "utf8",
+    );
+    // Every `refused(` call's arguments, comments stripped.
+    const calls = src
+      .replace(/\/\*[\s\S]*?\*\//g, " ")
+      .replace(/\/\/[^\n]*/g, " ")
+      .split("refused(")
+      .slice(1)
+      // BALANCED parens, not a window or the first `);`. Two heuristics in a row ran
+      // past the call and flagged code that has nothing to do with a refusal — a
+      // guard that cries wolf gets its allowlist padded until it guards nothing.
+      .map((chunk) => {
+        let depth = 1;
+        for (let i = 0; i < chunk.length; i++) {
+          if (chunk[i] === "(") depth++;
+          else if (chunk[i] === ")" && --depth === 0) return chunk.slice(0, i);
+        }
+        return chunk;
+      });
+    // TOTAL by construction, not by a list of spellings: a reason may only
+    // interpolate from an allowlist of structural expressions. An alias, another
+    // property or a helper carrying the name would fail this, where naming four
+    // forbidden spellings would not.
+    const ALLOWED = [
+      "current",
+      "path",
+      "real",
+      "root",
+      "config.inboundDir",
+      "config.stagingDir",
+      "config.maxBytes",
+      "expectedUid",
+      "metadata.uid",
+      "opened.uid",
+      "opened.nlink",
+      "(opened.mode & 0o777).toString(8)",
+      "PRIVATE_FILE_MODE.toString(8)",
+      "PRIVATE_FILE_MODE",
+      "MAX_LEAF_BYTES",
+      "process.geteuid?.()",
+      "publishedStat.dev",
+      "stagingStat.dev",
+      "expectedLinks",
+      "Buffer.byteLength(diskName)", // a LENGTH, not the name
+      '(error as NodeJS.ErrnoException)?.code ?? "unknown"',
+      "(error as NodeJS.ErrnoException)?.code",
+      // A local holding "it does not exist" or an errno phrase — structural, and the
+      // allowlist caught it the moment it was written, which is the point: a name
+      // enters this list only when someone has looked at what it holds.
+      "why",
+    ];
+    for (const call of calls) {
+      for (const m of call.matchAll(/\$\{([^}]*)\}/g)) {
+        const expr = m[1] ?? "";
+        expect(
+          ALLOWED.includes(expr.trim()),
+          `a refusal reason interpolates \`${expr.trim()}\`, which is not in the ` +
+            "structural allowlist — if it carries no user data, add it there",
+        ).toBe(true);
+      }
     }
   });
 
@@ -244,5 +366,83 @@ describe("an inbound-media refusal is OURS, and says so", () => {
     expect(classifyGatewayError(new Error(INBOUND_PATH_REFUSED))).toBe(
       "UPSTREAM_ERROR",
     );
+  });
+});
+
+describe("logInboundRefusal — the line the operator reads", () => {
+  // The refusal carrying a reason proves nothing if nothing prints it. WHAT THIS
+  // DOES NOT COVER, said plainly: it calls the function directly, so removing the
+  // call from `/send` would leave it green. The source guard below is what pins
+  // that the route still makes the call.
+  test("a refused staging writes the clause to the bridge log", async () => {
+    const root = await realpath(await mkdtemp(join(tmpdir(), "atrium-log-")));
+    const errors: string[] = [];
+    const spy = vi
+      .spyOn(console, "error")
+      .mockImplementation((...args: unknown[]) => {
+        errors.push(args.map((a) => String(a)).join(" "));
+      });
+    try {
+      // Straight through the module the route calls, then the route's own branch:
+      // booting the whole server for one log line would test the HTTP stack, not
+      // this. What is pinned is that the branch exists and says the reason.
+      const thrown = (await stageInboundReferences(
+        [{ url: "u", mimeType: "application/pdf", fileName: "v.pdf" }],
+        "cmid",
+        {
+          inboundDir: join(root, "published"),
+          stagingDir: join(root, ".staging"),
+          agentMount: "/m",
+          maxBytes: 1024,
+          fetchImpl: (async () =>
+            new Response(new Blob([new Uint8Array([1])]), {
+              status: 200,
+            })) as unknown as typeof fetch,
+        },
+      ).then(
+        () => null,
+        (err: unknown) => err,
+      )) as InboundMediaRefusal;
+      logInboundRefusal(thrown);
+      expect(
+        errors.some((line) => line.includes("[inbound-media] refused because")),
+        `nothing named the clause; logged: ${JSON.stringify(errors)}`,
+      ).toBe(true);
+      expect(errors.join(" ")).toContain("does not exist");
+    } finally {
+      spy.mockRestore();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test("a failure that is NOT ours logs nothing extra", () => {
+    const errors: string[] = [];
+    const spy = vi
+      .spyOn(console, "error")
+      .mockImplementation((...args: unknown[]) => {
+        errors.push(args.map((a) => String(a)).join(" "));
+      });
+    try {
+      logInboundRefusal(new Error("some gateway error"));
+      // A refusal with no reason is also silent: an empty "refused because" line
+      // would be worse than none.
+      logInboundRefusal(new InboundMediaRefusal("inbound_media_stage_failed"));
+      expect(errors).toEqual([]);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+});
+
+describe("the /send route still calls it", () => {
+  // The tests above drive `logInboundRefusal` directly; only this says the route
+  // uses it. Reading the source is a weaker instrument than exercising the route —
+  // which would need a live gateway — and it is named as such rather than dressed up.
+  test("the failure path passes the error to logInboundRefusal", () => {
+    const src = readFileSync(
+      new URL("../src/server.ts", import.meta.url),
+      "utf8",
+    ).replace(/\/\*[\s\S]*?\*\//g, " ").replace(/\/\/[^\n]*/g, " ");
+    expect(src).toMatch(/bridge \/send failed[\s\S]{0,300}logInboundRefusal\(err\)/);
   });
 });

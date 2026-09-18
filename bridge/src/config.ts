@@ -491,7 +491,14 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): BridgeConfig {
       inboundMediaStagingDir: join(inboundRoot, ".staging"),
       inboundAgentMount: optionalEnv(
         "OPENCLAW_INBOUND_AGENT_MOUNT",
-        `${MEDIA_ROOT}/inbound`,
+        // The PUBLISHED directory, not the root beside it. Files land in
+        // `<root>/published/<name>` and the agent is told `<mount>/<name>`, so a
+        // mount pointing at the root hands out a path that does not exist — the
+        // agent reports the file missing while it sits one directory deeper. This
+        // default now matches `inboundMediaDir`, which is what the field's own
+        // documentation promises for a co-located bridge and gateway; every
+        // deployment so far had to override it by hand to say the same thing.
+        `${MEDIA_ROOT}/inbound/published`,
       ),
       inboundTtlMs: parseIntEnv("OPENCLAW_INBOUND_TTL_MS", 6 * 60 * 60 * 1000),
       convexHttpActionsUrl: requireEnv("CONVEX_HTTP_ACTIONS_URL"),
@@ -683,7 +690,14 @@ export function loadSharedConfig(
       ),
       inboundAgentMount: optionalEnv(
         "OPENCLAW_INBOUND_AGENT_MOUNT",
-        `${MEDIA_ROOT}/inbound`,
+        // The PUBLISHED directory, not the root beside it. Files land in
+        // `<root>/published/<name>` and the agent is told `<mount>/<name>`, so a
+        // mount pointing at the root hands out a path that does not exist — the
+        // agent reports the file missing while it sits one directory deeper. This
+        // default now matches `inboundMediaDir`, which is what the field's own
+        // documentation promises for a co-located bridge and gateway; every
+        // deployment so far had to override it by hand to say the same thing.
+        `${MEDIA_ROOT}/inbound/published`,
       ),
       mediaOutboundDirOverride: optionalEnvOrNull(
         "OPENCLAW_MEDIA_OUTBOUND_DIR",

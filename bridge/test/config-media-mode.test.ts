@@ -43,6 +43,27 @@ describe("buildInstanceConfig: media dir derivation + overrides", () => {
     );
   });
 
+  it("the path the AGENT is told matches where the file actually lands", () => {
+    // THE DEFECT. Files are published to `<root>/published/<name>` and the agent is
+    // told `<inboundAgentMount>/<name>`. The default mount pointed at the root, one
+    // directory ABOVE the files: the agent reported the attachment missing while it
+    // sat right there, and every deployment had to override the variable by hand to
+    // say what the default should have said. Measured on the bench 2026-09-17 — the
+    // staging succeeded, the file existed, and the agent could not find it.
+    const shared = loadSharedConfig({ ...sharedEnv });
+    expect(shared.inboundAgentMount).toBe(
+      "/home/node/.openclaw/media/inbound/published",
+    );
+  });
+
+  it("an explicit mount still WINS — a split bridge/gateway layout names its own", () => {
+    const shared = loadSharedConfig({
+      ...sharedEnv,
+      OPENCLAW_INBOUND_AGENT_MOUNT: "/mnt/agent-sees-here",
+    });
+    expect(shared.inboundAgentMount).toBe("/mnt/agent-sees-here");
+  });
+
   it("an explicit OPENCLAW_MEDIA_OUTBOUND_DIR / OPENCLAW_INBOUND_DIR override WINS (Helm bridge.media.enabled)", () => {
     // Regression guard (codex P2): without honoring the override the bridge would
     // scan/write the derived path, NOT the mounted one -> shared-fs breaks.
@@ -316,12 +337,19 @@ describe("loadConfig: per-instance media dirs (the bridge's own mount)", () => {
     expect(c.inboundMediaStagingDir).toBe(
       "/home/node/.openclaw/media/olivier/inbound/.staging",
     );
-    // The AGENT-visible mounts MUST stay flat (the gateway path the agent
-    // writes/reads + the openclaw.json allowReadPaths whitelist).
+    // The AGENT-visible mounts stay flat in the sense that matters here: NO
+    // per-instance segment (the gateway path the agent writes/reads, and the
+    // openclaw.json allowReadPaths whitelist, are one shared mount).
     expect(c.mediaOutboundAgentMount).toBe(
       "/home/node/.openclaw/media/outbound",
     );
-    expect(c.inboundAgentMount).toBe("/home/node/.openclaw/media/inbound");
+    // …but the INBOUND one names `published/`, because that is where the files are.
+    // Outbound has no such child, which is why the two differ. A mount one directory
+    // above the files made the agent report an attachment missing while it sat right
+    // there — and every deployment overrode the variable by hand to fix it.
+    expect(c.inboundAgentMount).toBe(
+      "/home/node/.openclaw/media/inbound/published",
+    );
   });
 
   it("falls back to the FLAT bridge dirs when no instance name (co-located dev)", () => {

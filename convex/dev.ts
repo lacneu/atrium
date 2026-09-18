@@ -18,7 +18,12 @@ import { generateApiKey, hashKey } from "./lib/apikeys";
 import { envLabel } from "./lib/envLabel";
 import { recordFileForPart } from "./lib/files";
 import { seedBuiltinRoles } from "./lib/rbac";
-import { resolveTargetForChat, resolveGatewayUser } from "./routing";
+import {
+  currentTurnRouting,
+  resolveTargetForChat,
+  resolveGatewayUser,
+  resolveTargetForTurn,
+} from "./routing";
 import { resolveBridgeUrlForDispatch } from "./lib/bridgeRouting";
 import { enrichUserAgents } from "./agents";
 import { requireRealUserId, getProfile } from "./lib/access";
@@ -1099,6 +1104,150 @@ export const inspectRouting = query({
  *
  *   npx convex run dev:inspectChat '{"chatId":"<id>"}'
  */
+/**
+ * A bench chat on a named target, without spending a turn on it.
+ *
+ * The Talk scenario needs a chat that EXISTS and is entitled to the agent, but it
+ * never sends a turn — `talk.client.create` is an RPC, not a conversation. Sending a
+ * throwaway turn just to obtain a chat id would put a second agent run in the middle
+ * of a catalogue whose timings are already the thing most likely to make it flaky.
+ */
+export const testEnsureChat = mutation({
+  args: {
+    instanceName: v.string(),
+    agentId: v.string(),
+    ownerEmail: v.string(),
+  },
+  handler: async (ctx, { instanceName, agentId, ownerEmail }) => {
+    assertDev();
+    assertDevInstance(instanceName);
+    const now = Date.now();
+    const profiles = await ctx.db.query("profiles").take(500);
+    const existing = profiles.find((p) => p.email === ownerEmail);
+    let userId: Id<"users">;
+    if (existing) userId = existing.userId;
+    else {
+      userId = await ctx.db.insert("users", {});
+      await ctx.db.insert("profiles", {
+        userId,
+        role: "user",
+        email: ownerEmail,
+        canonical: "u-repro",
+      });
+    }
+    // Entitlement is dispatch authorization; the Talk prepare applies it too.
+    const grants = await ctx.db
+      .query("userAgents")
+      .withIndex("by_user", (q) => q.eq("userId", userId))
+      .collect();
+    if (!grants.some((g) => g.instanceName === instanceName && g.agentId === agentId)) {
+      await ctx.db.insert("userAgents", {
+        userId,
+        instanceName,
+        agentId,
+        isDefault: grants.length === 0,
+        source: "manual",
+        createdAt: now,
+      });
+    }
+    const chats = await ctx.db
+      .query("chats")
+      .withIndex("by_user", (q) => q.eq("userId", userId))
+      .collect();
+    // The AGENT is part of the identity: after a run on alice, a run on bob must not
+    // silently test alice again.
+    const bench = chats.find(
+      (c) =>
+        c.title === "Live talk test" &&
+        c.instanceName === instanceName &&
+        c.agentId === agentId,
+    );
+    if (bench) return { ok: true as const, chatId: bench._id };
+    const chatId = await ctx.db.insert("chats", {
+      userId,
+      title: "Live talk test",
+      archived: false,
+      sortKey: -1000,
+      instanceName,
+      agentId,
+      updatedAt: now,
+    });
+    return { ok: true as const, chatId };
+  },
+});
+
+/**
+ * The session-key ingredients the bench posts to `/talk-session`, read through the
+ * SAME prepare the product uses.
+ *
+ * The scenario could not resolve them itself without re-implementing the routing it
+ * is there to exercise — and a bench that computes its own expected answer proves
+ * only that two copies of the same mistake agree.
+ */
+export const testTalkIngredients = query({
+  args: { chatId: v.id("chats") },
+  handler: async (
+    ctx,
+    { chatId },
+  ): Promise<
+    | { ok: true; instanceName: string; agentId: string; canonical: string; openclawChatId: string | null }
+    | { ok: false; code: string }
+  > => {
+    assertDev();
+    const chat = await ctx.db.get(chatId);
+    if (!chat) return { ok: false as const, code: "chat_not_found" };
+    // The SAME two calls `resolveTalkRouting` makes. Re-deriving the conversation
+    // here (a `perTurnRouting ? segment : bound` of its own) is exactly the "two
+    // copies of the same mistake agree" trap this helper exists to avoid.
+    const current = await currentTurnRouting(ctx, chat);
+    const res = await resolveTargetForTurn(ctx, chat, chat.userId, current.agent);
+    if (!res.target) return { ok: false as const, code: "no_agent" };
+    return {
+      ok: true as const,
+      instanceName: res.target.instanceName,
+      agentId: res.target.agentId,
+      canonical: res.target.canonical,
+      openclawChatId: res.rebind ? null : current.conversation,
+    };
+  },
+});
+
+/**
+ * Pin an instance's media transport for a bench scenario, and report what it was.
+ *
+ * WHY THE BENCH MUST SET THIS ITSELF. `inboundMediaMode` decides whether an
+ * attachment rides INLINE (base64 in the frame, read from the prompt) or BY
+ * REFERENCE (streamed to the shared volume, read from disk by path). They are
+ * different chains, and only the second is the shared-fs feature. A scenario that
+ * simply attaches a file exercises whichever one the bench happens to be configured
+ * for — which is how the first version of `inbound-attachment` passed while proving
+ * nothing about staging at all: the file never reached the disk, and the agent read
+ * it out of the prompt.
+ *
+ * Returns the PREVIOUS value so the runner can put it back: a scenario that changes
+ * the deployment and leaves it changed poisons every run after it.
+ */
+export const testSetInboundMediaMode = mutation({
+  args: {
+    instanceName: v.string(),
+    mode: v.union(v.literal("inline"), v.literal("shared-fs")),
+  },
+  handler: async (ctx, { instanceName, mode }) => {
+    assertDev();
+    assertDevInstance(instanceName);
+    const inst = await ctx.db
+      .query("instances")
+      .withIndex("by_name", (q) => q.eq("name", instanceName))
+      .first();
+    if (!inst) return { ok: false as const, reason: "instance not found" };
+    const previous = inst.config?.inboundMediaMode ?? null;
+    await ctx.db.patch(inst._id, {
+      config: { ...(inst.config ?? {}), inboundMediaMode: mode },
+    });
+    return { ok: true as const, previous };
+  },
+});
+
 export const inspectChat = query({
   args: { chatId: v.id("chats"), take: v.optional(v.number()) },
   handler: async (ctx, { chatId, take }) => {
@@ -1288,10 +1437,14 @@ export const seedImageAttachment = action({
     mimeType: v.string(),
     text: v.string(),
     chatId: v.optional(v.id("chats")),
+    // Named target (live bench): the shared-fs inbound dirs are keyed by the
+    // resolved instance, so a scenario must be able to say which one stages.
+    instanceName: v.optional(v.string()),
+    agentId: v.optional(v.string()),
   },
   handler: async (
     ctx,
-    { base64, filename, mimeType, text, chatId },
+    { base64, filename, mimeType, text, chatId, instanceName, agentId },
   ): Promise<
     | { ok: true; chatId: Id<"chats">; outboxId: Id<"outbox">; storageId: Id<"_storage"> }
     | { ok: false; reason: string }
@@ -1310,6 +1463,8 @@ export const seedImageAttachment = action({
       mimeType,
       text,
       chatId,
+      instanceName,
+      agentId,
     });
     if (!res.ok) return res;
     return { ok: true, chatId: res.chatId, outboxId: res.outboxId, storageId };
@@ -1406,13 +1561,20 @@ export const enqueueAttachmentTurn = internalMutation({
   args: {
     storageId: v.id("_storage"),
     filename: v.string(),
+    // ROUTE the turn like `testSendRouted` does. Without it the dispatch takes the
+    // chat's primary, so a bench scenario cannot say WHICH instance staged the
+    // file — and the shared-fs inbound path is per-instance (its dirs are keyed by
+    // the resolved instance name). Optional: the pre-existing single-instance
+    // probes keep their behaviour.
+    instanceName: v.optional(v.string()),
+    agentId: v.optional(v.string()),
     mimeType: v.string(),
     text: v.string(),
     chatId: v.optional(v.id("chats")),
   },
   handler: async (
     ctx,
-    { storageId, filename, mimeType, text, chatId },
+    { storageId, filename, mimeType, text, chatId, instanceName, agentId },
   ): Promise<
     | { ok: true; chatId: Id<"chats">; messageId: Id<"messages">; outboxId: Id<"outbox"> }
     | { ok: false; reason: string }
@@ -1459,6 +1621,44 @@ export const enqueueAttachmentTurn = internalMutation({
         updatedAt: now,
       }));
 
+    // The routed target, when the caller named one: stamped on the message AND on
+    // the outbox row, exactly as `testSendRouted` does — the dispatch reads the row.
+    //
+    // GATED IN ITS OWN RIGHT. The `assertDevInstance` above answers for the target
+    // the chat RESOLVES to; this one is named by the caller and overrides it, so
+    // checking the resolved one and then routing somewhere else would let a dev call
+    // reach an instance the allowlist exists to keep it away from — and it would
+    // grant entitlement to that agent on the way. Never touch protected tenants.
+    const routedAgent =
+      instanceName !== undefined && agentId !== undefined
+        ? { instanceName, agentId }
+        : undefined;
+    if (routedAgent) assertDevInstance(routedAgent.instanceName);
+    // Entitlement = dispatch auth: grant it if missing, or the send dies
+    // `agent_restricted` on a freshly-named bench agent (same rule as
+    // `testSendRouted`).
+    if (routedAgent) {
+      const grants = await ctx.db
+        .query("userAgents")
+        .withIndex("by_user", (q) => q.eq("userId", userId))
+        .collect();
+      if (
+        !grants.some(
+          (g) =>
+            g.instanceName === routedAgent.instanceName &&
+            g.agentId === routedAgent.agentId,
+        )
+      ) {
+        await ctx.db.insert("userAgents", {
+          userId,
+          instanceName: routedAgent.instanceName,
+          agentId: routedAgent.agentId,
+          isDefault: grants.length === 0,
+          source: "manual",
+          createdAt: now,
+        });
+      }
+    }
     const messageId = await ctx.db.insert("messages", {
       chatId: cid,
       userId,
@@ -1466,6 +1666,12 @@ export const enqueueAttachmentTurn = internalMutation({
       status: "complete",
       text,
       updatedAt: now,
+      ...(routedAgent
+        ? {
+            routedInstanceName: routedAgent.instanceName,
+            routedAgentId: routedAgent.agentId,
+          }
+        : {}),
     });
     // Render the attachment in the thread (faithful to send.sendMessage step 4).
     const part = { kind: "file" as const, storageId, filename, mimeType };
@@ -1490,6 +1696,7 @@ export const enqueueAttachmentTurn = internalMutation({
       attachmentIds: [storageId],
       attachments: [{ storageId, filename, mimeType }],
       status: "pending",
+      ...(routedAgent ? { routedAgent } : {}),
       // Same stamp as the production senders: a dev probe whose dispatch dies must
       // not hold its chat on the legacy hour-long bound (codex P3).
       pendingSince: Date.now(),

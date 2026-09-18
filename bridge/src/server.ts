@@ -107,6 +107,7 @@ import {
 } from "./core/instance-config.js";
 import {
   buildFilesReceivedBlock,
+  logInboundRefusal,
   stageInboundReferences,
   type InboundMediaConfig,
   type InboundReference,
@@ -5765,6 +5766,12 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
         `bridge /send failed [${code}]:`,
         (err as Error)?.message ?? err,
       );
+      // WHICH rule refused, when the refusal knows. The code is the wire contract
+      // and does not change; this line is for whoever has to fix the deployment.
+      // `inbound_media_path_refused` alone cost a live incident two hours, because
+      // the path contract has a dozen clauses and the message named none of them.
+      // Structural only — the reason never carries a filename.
+      logInboundRefusal(err);
       sendJson(res, 502, { ok: false, error: { code } });
     }
   }

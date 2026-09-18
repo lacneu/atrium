@@ -107,14 +107,49 @@ const RECOVERABLE_DROP_FAILURES = new Set([
  * reporting and the existing tests all read it.
  */
 export class InboundMediaRefusal extends Error {
-  constructor(readonly code: string) {
+  constructor(
+    readonly code: string,
+    /**
+     * WHICH rule refused, in words, for the bridge's own log.
+     *
+     * The code is the wire contract and stays as it is; this is the sentence an
+     * operator needs. `inbound_media_path_refused` alone cost a live incident two
+     * hours: the path contract has a dozen clauses, and the message named none of
+     * them — the answer (two sibling directories missing) came from reading the
+     * source and the filesystem by hand.
+     *
+     * STRUCTURAL ONLY. It names the rule and the directory's ROLE, never a leaf: a
+     * filename is the user's data and has no business in a log line. The configured
+     * directory path is operator configuration and may appear.
+     */
+    readonly reason?: string,
+  ) {
     super(code);
     this.name = "InboundMediaRefusal";
   }
 }
 
-function refused(code: string): Error {
-  return new InboundMediaRefusal(code);
+function refused(code: string, reason?: string): Error {
+  return new InboundMediaRefusal(code, reason);
+}
+
+/** A refusal this module raised passes through untouched — including its `reason`,
+ *  because a refusal's MESSAGE is its code and every code raised here is bounded.
+ *  (A `keepReason` wrapper was written for this and deleted: it could not fire.)
+ *  Anything else becomes the catch-all, which by construction has no reason to give. */
+/**
+ * Print WHICH clause refused, when the failure knows. Exported so the route's one
+ * line is a function with a test rather than an `if` nobody can reach from a test —
+ * deleting it used to leave every refusal test green while the operator went on
+ * reading one opaque code.
+ *
+ * Silent for anything that is not ours, and for a refusal with no reason: an empty
+ * "refused because" line is worse than none.
+ */
+export function logInboundRefusal(error: unknown): void {
+  if (error instanceof InboundMediaRefusal && error.reason) {
+    console.error(`[inbound-media] refused because ${error.reason}`);
+  }
 }
 
 function boundedFailure(error: unknown): Error {
@@ -123,6 +158,7 @@ function boundedFailure(error: unknown): Error {
   }
   return refused(INBOUND_STAGE_FAILED);
 }
+
 
 function errno(error: unknown): string | undefined {
   return typeof error === "object" && error !== null && "code" in error
@@ -160,18 +196,40 @@ function anchoredChildPath(
 
 async function openPrivateDirectory(path: string): Promise<FileHandle> {
   if (!isAbsolute(path) || resolve(path) !== path) {
-    throw refused(INBOUND_PATH_REFUSED);
+    throw refused(
+      INBOUND_PATH_REFUSED,
+      `configured path is not absolute+normalized: ${path}`,
+    );
   }
   const root = parse(path).root;
   let current = root;
   const expectedUid = process.geteuid?.();
   if (expectedUid === undefined) {
-    throw refused(INBOUND_PATH_REFUSED);
+    throw refused(
+      INBOUND_PATH_REFUSED,
+      "this platform does not report an effective uid, so ownership cannot be checked",
+    );
   }
   try {
     for (const part of path.slice(root.length).split(sep).filter(Boolean)) {
       current = join(current, part);
-      const metadata = await lstat(current);
+      let metadata;
+      try {
+        metadata = await lstat(current);
+      } catch (error) {
+        // A directory that is simply ABSENT is not a refused path — it is a staging
+        // failure, and it keeps that code: a mount that vanishes mid-batch lands here
+        // too, and the two are the same fact (the place to write is gone). What
+        // changes is that it now SAYS which one, which is the whole point: the
+        // `published/` and `.staging/` siblings are created by the operator, and
+        // "the root is mounted" does not imply they exist.
+        throw refused(
+          INBOUND_STAGE_FAILED,
+          (error as NodeJS.ErrnoException)?.code === "ENOENT"
+            ? `${current} does not exist (an inbound root must contain published/ and .staging/)`
+            : `${current} cannot be read (${(error as NodeJS.ErrnoException)?.code ?? "unknown"})`,
+        );
+      }
       const sharedWritable = (metadata.mode & SHARED_WRITE_MASK) !== 0;
       const sticky = (metadata.mode & 0o1000) !== 0;
       if (
@@ -180,11 +238,30 @@ async function openPrivateDirectory(path: string): Promise<FileHandle> {
         ![0, expectedUid].includes(metadata.uid) ||
         (sharedWritable && !sticky)
       ) {
-        throw refused(INBOUND_PATH_REFUSED);
+        throw refused(
+          INBOUND_PATH_REFUSED,
+          `ancestor ${current} fails the contract: ` +
+            [
+              metadata.isSymbolicLink() ? "it is a symlink" : null,
+              !metadata.isDirectory() ? "it is not a directory" : null,
+              ![0, expectedUid].includes(metadata.uid)
+                ? `it is owned by uid ${metadata.uid}, not root or ${expectedUid}`
+                : null,
+              sharedWritable && !sticky
+                ? "it is group/world-writable without the sticky bit"
+                : null,
+            ]
+              .filter(Boolean)
+              .join("; "),
+        );
       }
     }
-    if ((await realpath(path)) !== path) {
-      throw refused(INBOUND_PATH_REFUSED);
+    const real = await realpath(path);
+    if (real !== path) {
+      throw refused(
+        INBOUND_PATH_REFUSED,
+        `${path} resolves elsewhere (${real}) — a link is in the way`,
+      );
     }
   } catch (error) {
     throw boundedFailure(error);
@@ -195,8 +272,15 @@ async function openPrivateDirectory(path: string): Promise<FileHandle> {
   let handle: FileHandle;
   try {
     handle = await open(path, constants.O_RDONLY | directoryOnly | noFollow);
-  } catch {
-    throw refused(INBOUND_PATH_REFUSED);
+  } catch (error) {
+    // The overwhelmingly common one, and the whole reason this lot exists: the
+    // directory simply is not there. `published/` and `.staging/` are SIBLINGS the
+    // operator creates; the media root existing is not enough.
+    const why =
+      (error as NodeJS.ErrnoException)?.code === "ENOENT"
+        ? "it does not exist"
+        : `opening it failed (${(error as NodeJS.ErrnoException)?.code ?? "unknown"})`;
+    throw refused(INBOUND_PATH_REFUSED, `${path}: ${why}`);
   }
   try {
     await assertPrivateDirectory(path, handle);
@@ -216,7 +300,10 @@ async function assertPrivateDirectory(
   try {
     [opened, current] = await Promise.all([handle.stat(), lstat(path)]);
   } catch {
-    throw refused(INBOUND_PATH_REFUSED);
+    throw refused(
+      INBOUND_PATH_REFUSED,
+      `${path} could not be re-examined after it was opened`,
+    );
   }
   const expectedUid = process.geteuid?.();
   if (
@@ -228,7 +315,28 @@ async function assertPrivateDirectory(
     opened.uid !== expectedUid ||
     (opened.mode & SHARED_WRITE_MASK) !== 0
   ) {
-    throw refused(INBOUND_PATH_REFUSED);
+    throw refused(
+      INBOUND_PATH_REFUSED,
+      `${path} is not the private directory that was opened: ` +
+        [
+          expectedUid === undefined ? "no effective uid on this platform" : null,
+          !opened.isDirectory() || !current.isDirectory()
+            ? "it is not a directory"
+            : null,
+          current.isSymbolicLink() ? "it is a symlink" : null,
+          !sameObject(opened, current)
+            ? "it was replaced between the open and this check"
+            : null,
+          opened.uid !== expectedUid
+            ? `it is owned by uid ${opened.uid}, not ${expectedUid}`
+            : null,
+          (opened.mode & SHARED_WRITE_MASK) !== 0
+            ? "it is group/world-writable"
+            : null,
+        ]
+          .filter(Boolean)
+          .join("; "),
+    );
   }
 }
 
@@ -249,7 +357,12 @@ async function openMediaDirectories(
     (!publishedFromStaging.startsWith(`..${sep}`) &&
       publishedFromStaging !== "..")
   ) {
-    throw refused(INBOUND_PATH_REFUSED);
+    throw refused(
+      INBOUND_PATH_REFUSED,
+      `published (${config.inboundDir}) and staging (${config.stagingDir}) must be ` +
+        "SIBLINGS — one inside the other, or the same directory, would let a staged " +
+        "file be published without ever moving",
+    );
   }
   const published = await openPrivateDirectory(config.inboundDir);
   let staging: FileHandle | undefined;
@@ -263,7 +376,13 @@ async function openMediaDirectories(
       publishedStat.dev !== stagingStat.dev ||
       sameObject(publishedStat, stagingStat)
     ) {
-      throw refused(INBOUND_PATH_REFUSED);
+      throw refused(
+        INBOUND_PATH_REFUSED,
+        publishedStat.dev !== stagingStat.dev
+          ? `published and staging are on DIFFERENT filesystems (${publishedStat.dev} vs ` +
+            `${stagingStat.dev}) — publishing hard-links the staged file, and a link cannot cross one`
+          : "published and staging resolve to the SAME directory",
+      );
     }
     return { published, staging };
   } catch (error) {
@@ -307,7 +426,10 @@ async function assertInboundFile(
   try {
     [opened, current] = await Promise.all([handle.stat(), lstat(path)]);
   } catch {
-    throw refused(INBOUND_PATH_REFUSED);
+    throw refused(
+      INBOUND_PATH_REFUSED,
+      "the staged file could not be re-examined after it was written",
+    );
   }
   if (
     !opened.isFile() ||
@@ -319,7 +441,28 @@ async function assertInboundFile(
     (opened.mode & 0o777) !== PRIVATE_FILE_MODE ||
     opened.uid !== process.geteuid?.()
   ) {
-    throw refused(INBOUND_PATH_REFUSED);
+    throw refused(
+      INBOUND_PATH_REFUSED,
+      "the staged file is not the private file that was written: " +
+        [
+          !opened.isFile() || !current.isFile() ? "it is not a regular file" : null,
+          current.isSymbolicLink() ? "it is a symlink" : null,
+          !sameObject(opened, current)
+            ? "it was replaced between the write and this check"
+            : null,
+          opened.nlink !== expectedLinks || current.nlink !== expectedLinks
+            ? `it has ${opened.nlink} links, expected ${expectedLinks} (another name points at it)`
+            : null,
+          (opened.mode & 0o777) !== PRIVATE_FILE_MODE
+            ? `its mode is ${(opened.mode & 0o777).toString(8)}, expected ${PRIVATE_FILE_MODE.toString(8)}`
+            : null,
+          opened.uid !== process.geteuid?.()
+            ? `it is owned by uid ${opened.uid}, not ${process.geteuid?.()}`
+            : null,
+        ]
+          .filter(Boolean)
+          .join("; "),
+    );
   }
   return opened;
 }
@@ -400,7 +543,10 @@ async function stageInboundReferenceOwned(
   config: InboundMediaConfig,
 ): Promise<OwnedStageResult> {
   if (!Number.isSafeInteger(config.maxBytes) || config.maxBytes < 1) {
-    throw refused(INBOUND_PATH_REFUSED);
+    throw refused(
+      INBOUND_PATH_REFUSED,
+      `the configured inbound maxBytes is not a positive integer: ${config.maxBytes}`,
+    );
   }
   if (!validLeaf(diskName)) {
     // LENGTH is the reader's business, every other leaf rule is ours. A composed
@@ -408,10 +554,15 @@ async function stageInboundReferenceOwned(
     // chose — they can rename and re-send — while a control character or a
     // non-canonical form is a sanitiser fault on our side. One class for each, so
     // the person who CAN act is the one who is told (codex).
+    const tooLong = Buffer.byteLength(diskName) > MAX_LEAF_BYTES;
     throw refused(
-      Buffer.byteLength(diskName) > MAX_LEAF_BYTES
-        ? INBOUND_NAME_TOO_LONG
-        : INBOUND_PATH_REFUSED,
+      tooLong ? INBOUND_NAME_TOO_LONG : INBOUND_PATH_REFUSED,
+      // STRUCTURAL: which rule the composed name broke, never the name itself — it
+      // is the user's filename, and a log line is the last place for it.
+      tooLong
+        ? `the composed disk name is ${Buffer.byteLength(diskName)} bytes, over the ${MAX_LEAF_BYTES}-byte leaf cap`
+        : "the composed disk name is not a valid leaf (empty, a path segment, " +
+          "non-canonical, or carrying a separator or control character)",
     );
   }
   const stagingName = `.atrium-inbound-${process.pid}-${randomBytes(16).toString("hex")}.part`;

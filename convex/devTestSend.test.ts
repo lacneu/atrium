@@ -158,6 +158,63 @@ describe("dev user switcher (listUsersDev / setMyRole)", () => {
 });
 
 describe("dev.enqueueAttachmentTurn — gates the RESOLVED target (Codex P2)", () => {
+  test("an ALLOWED named target really reaches the message and the outbox row", async () => {
+    // The refusal test above proves the gate. Only this proves the target is
+    // carried: dropping the stamps would leave the dispatch on the chat's primary,
+    // and a bench scenario could not say which instance stages a file — while every
+    // test stayed green.
+    const t = convexTest(schema, modules);
+    const uid = await seedAdmin(t);
+    await seedUA(t, uid, "admin", "alice", true);
+    const storageId = await t.run((ctx) => ctx.storage.store(new Blob(["x"])));
+    const res = await t.mutation(internal.dev.enqueueAttachmentTurn, {
+      storageId,
+      filename: "a.png",
+      mimeType: "image/png",
+      text: "hi",
+      instanceName: "admin",
+      agentId: "bob",
+    });
+    expect(res.ok, JSON.stringify(res)).toBe(true);
+    if (!res.ok) return;
+    const { message, row } = await t.run(async (ctx) => ({
+      message: await ctx.db.get(res.messageId),
+      row: await ctx.db.get(res.outboxId),
+    }));
+    expect(message?.routedInstanceName).toBe("admin");
+    expect(message?.routedAgentId).toBe("bob");
+    expect(row?.routedAgent).toEqual({ instanceName: "admin", agentId: "bob" });
+  });
+
+  test("refuses a NAMED target on a protected instance, even when the resolved one is fine", async () => {
+    // The bench needs to say WHICH instance stages a file, so the call takes a
+    // target — and that target OVERRIDES the resolved one. Gating only the
+    // resolution would check one instance and route to another, granting
+    // entitlement on the protected agent on the way there.
+    const t = convexTest(schema, modules);
+    const uid = await seedAdmin(t);
+    await seedUA(t, uid, "admin", "alice", true); // resolves to the allowlisted one
+    const storageId = await t.run((ctx) => ctx.storage.store(new Blob(["x"])));
+    await expect(
+      t.mutation(internal.dev.enqueueAttachmentTurn, {
+        storageId,
+        filename: "a.png",
+        mimeType: "image/png",
+        text: "hi",
+        instanceName: "family", // …but the turn is routed HERE
+        agentId: "bob",
+      }),
+    ).rejects.toThrow(/family|restricted|never touch/i);
+    // …and nothing was granted on the way to the refusal.
+    const grants = await t.run((ctx) =>
+      ctx.db
+        .query("userAgents")
+        .withIndex("by_user", (q) => q.eq("userId", uid))
+        .collect(),
+    );
+    expect(grants.some((g) => g.instanceName === "family")).toBe(false);
+  });
+
   test("refuses when the user DEFAULT is a non-allowlisted instance, even though .first() is allowlisted", async () => {
     const t = convexTest(schema, modules);
     const uid = await seedAdmin(t);
