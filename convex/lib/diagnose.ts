@@ -194,7 +194,10 @@ export function actionForErrorCode(code: string | null): string {
     // The SAME connection end, but the two spellings mark two different MOMENTS,
     // and the delivery state differs between them — so the remediation must too.
     // Uppercase = the DISPATCH path (classifyGatewayError): the close beat the
-    // `chat.send` ack, so nothing reached the agent. Lowercase = the STREAMING path
+    // `chat.send` ack, which leaves delivery UNPROVEN rather than refused — a response
+    // can race ahead of the ack, as the text below says. An earlier version of this
+    // comment said "nothing reached the agent", which the text itself contradicts
+    // (codex). Lowercase = the STREAMING path
     // (Session.closeCauseCode): the send was already ACKed and the run had begun.
     case "GATEWAY_RESTARTING":
       return "The gateway ANNOUNCED a shutdown and closed the connection before acknowledging this send. Delivery is UNPROVEN, not refused: a response can race ahead of the ack, so the agent may have taken the turn. Nothing to fix if the restart was intended — check the session transcript for a reply before re-running the work; if the gateway does not come back, check the OpenClaw service.";

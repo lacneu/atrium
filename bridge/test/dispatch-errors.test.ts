@@ -1,6 +1,7 @@
 import { describe, expect, test } from "vitest";
 import {
   classifyGatewayError,
+  errorChainText,
   faultDomain,
   LOST_RESPONSE_CODES,
   type DispatchErrorCode,
@@ -384,5 +385,88 @@ describe("a profile NAME cannot choose the dispatch code", () => {
     expect(classifyGatewayError(new Error("gateway timeout after 60s"))).toBe(
       "GATEWAY_TIMEOUT",
     );
+  });
+});
+
+describe("a network cut is NAMED, not swept into the catch-all", () => {
+  test("the errno behind `fetch failed` is read from the CAUSE", () => {
+    // Node reports a cut socket as `TypeError: fetch failed` and puts the errno in
+    // `cause`. Reading only `message` saw a sentence no rule recognises, so the send
+    // fell to `UPSTREAM_ERROR` — "something upstream", with nothing for an operator to
+    // act on. That is the open production anomaly this fixes (dispatch failure on
+    // instance `lacneu`, dominant cause UPSTREAM_ERROR).
+    const wrapped = new TypeError("fetch failed", {
+      cause: Object.assign(new Error("read ECONNRESET"), { code: "ECONNRESET" }),
+    });
+    expect(classifyGatewayError(wrapped)).toBe("GATEWAY_DISCONNECTED");
+    // …and with an OUTER message no rule recognises either, so ONLY the cause can
+    // answer.
+    const opaque = new Error("dispatch failed", {
+      cause: new Error("read ECONNRESET"),
+    });
+    expect(classifyGatewayError(opaque)).toBe("GATEWAY_DISCONNECTED");
+    // A BARE wrapper proves nothing and must stay the catch-all: Node emits
+    // `fetch failed` for an unknown scheme, a bad port or a TLS failure as readily as
+    // for a cut socket, and this class asserts the write may have been applied
+    // (LOST_RESPONSE_CODES) — a claim the wrapper does not support (codex).
+    expect(classifyGatewayError(new TypeError("fetch failed"))).toBe("UPSTREAM_ERROR");
+  });
+
+  test("the ERRNO spellings, not only the prose ones", () => {
+    // `connection reset` was listed; `econnreset`, what Node actually emits, was not.
+    for (const message of [
+      "read ECONNRESET",
+      "write EPIPE",
+      "socket hang up",
+      // BOTH spellings — the pattern says `socket hang ?up` and only one was covered.
+      "socket hangup",
+    ]) {
+      expect(classifyGatewayError(new Error(message)), message).toBe(
+        "GATEWAY_DISCONNECTED",
+      );
+    }
+  });
+
+  test("the pre-connection errnos are classed PESSIMISTICALLY, and that is stated", () => {
+    // They go to the class that says a write MAY have been applied, which they cannot
+    // support — nothing was written yet. A first attempt to give them their own
+    // "nothing was sent" class was WRONG in the dangerous direction: after the gateway
+    // ACKs, `startAssistant` fetches Convex, so a Convex outage surfaces the very same
+    // ECONNREFUSED, and telling the reader it is safe to re-send would invite
+    // re-running a turn the agent may already be executing (codex). Pessimistic is the
+    // safe error until the PHASE is threaded from the call sites.
+    for (const message of [
+      "connect ECONNREFUSED 127.0.0.1:8790",
+      "getaddrinfo ENOTFOUND gateway.example",
+      "getaddrinfo EAI_AGAIN gateway.example",
+    ]) {
+      expect(classifyGatewayError(new Error(message)), message).toBe(
+        "GATEWAY_DISCONNECTED",
+      );
+    }
+    expect(LOST_RESPONSE_CODES.has("GATEWAY_DISCONNECTED")).toBe(true);
+  });
+
+  test("a timeout keeps its OWN name, and an unknown failure still falls through", () => {
+    // The errno family must not swallow the timeout class beside it…
+    expect(classifyGatewayError(new Error("connect ETIMEDOUT"))).toBe("GATEWAY_TIMEOUT");
+    // …and the catch-all must remain reachable: an unrecognised throw is not a network
+    // cut, and painting it as one would hide it.
+    expect(classifyGatewayError(new Error("the gateway did something new"))).toBe(
+      "UPSTREAM_ERROR",
+    );
+  });
+
+  test("the chain walk is BOUNDED — a cause chain can loop", () => {
+    // The errno is on the INNER error, so the walk has to reach it — and the chain
+    // loops back, which is the shape the bound exists for.
+    const a = new Error("dispatch failed");
+    const b = new Error("read ECONNRESET");
+    (a as { cause?: unknown }).cause = b;
+    (b as { cause?: unknown }).cause = a;
+    expect(classifyGatewayError(a)).toBe("GATEWAY_DISCONNECTED");
+    // Asserted on the TEXT: without the bound this walk does not return at all, so
+    // there is nothing to assert about the classifier. Five links is the bound.
+    expect(errorChainText(a).split(" <- ")).toHaveLength(5);
   });
 });

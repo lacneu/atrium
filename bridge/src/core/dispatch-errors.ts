@@ -8,7 +8,8 @@
 // into a STABLE CODE here and ship only the code. The code is what the admin UI
 // groups on (Sentry-style fingerprint) and maps to a human hint.
 //
-// Pure function over the thrown error's message -> unit-tested offline.
+// Pure function over the thrown error's message AND the messages of the causes behind
+// it (`errorChainText`) -> unit-tested offline.
 
 import { ContextBlockedError } from "./presend-guard.js";
 import {
@@ -202,6 +203,34 @@ export function faultDomain(code: DispatchErrorCode): FaultDomain {
  * "INVALID_REQUEST: Agent \"main\" no longer exists in configuration", so the
  * agent rule must win over the invalid-request rule).
  */
+/** An error's own message AND the messages of the causes behind it.
+ *
+ *  Node's fetch reports a network cut as `TypeError: fetch failed` and puts what
+ *  actually happened — often an errno such as `read ECONNRESET` or
+ *  `getaddrinfo ENOTFOUND`, but sometimes a TLS or URL failure — in `cause`. The
+ *  wrapper says nothing on its own, which is why it is not a pattern below. Reading
+ *  only `message`
+ *  therefore saw a sentence no rule below recognises, and the send fell to the
+ *  `UPSTREAM_ERROR` catch-all: an operator was told "something upstream" for a socket
+ *  that was reset, with nothing to act on. That is the shape of the open production
+ *  anomaly this fixes.
+ *
+ *  Bounded depth, because a cause chain can be circular. */
+export function errorChainText(err: unknown): string {
+  const parts: string[] = [];
+  let current: unknown = err;
+  for (let depth = 0; depth < 5 && current !== null && current !== undefined; depth++) {
+    if (current instanceof Error) {
+      parts.push(current.message);
+      current = (current as { cause?: unknown }).cause;
+      continue;
+    }
+    parts.push(String(current));
+    break;
+  }
+  return parts.join(" <- ");
+}
+
 export function classifyGatewayError(
   err: unknown,
   opts?: { hasAttachments?: boolean },
@@ -225,9 +254,7 @@ export function classifyGatewayError(
   // here, so `Session "agent:timeout:…" changed while starting work` became
   // GATEWAY_TIMEOUT before it could reach `session_init_conflict` — losing the bounded
   // retry and blaming the bridge (codex).
-  const msg = withoutOperatorData(
-    err instanceof Error ? err.message : String(err ?? ""),
-  ).toLowerCase();
+  const msg = withoutOperatorData(errorChainText(err)).toLowerCase();
 
   if (
     /no longer exists|agent[^.]*not found|unknown agent|no such agent/.test(msg)
@@ -271,7 +298,29 @@ export function classifyGatewayError(
     return "CONNECTION_SATURATED";
   }
   if (
-    /closed|disconnect|econnrefused|socket hang up|not connected|connection reset/.test(
+    // The ERRNO spellings beside the prose ones. `connection reset` was listed but
+    // `econnreset` — what Node actually emits — was not, so a reset socket was
+    // reported as a generic upstream error (the open production anomaly).
+    //
+    // KNOWN GAP, recorded rather than implied: this class sits in LOST_RESPONSE_CODES,
+    // so it says a write MAY have been applied — and some members cannot support that.
+    // A refused connection or a DNS failure happens before anything is written; a
+    // restart announced during connect, or a Hermes socket closed before
+    // `gateway.ready`, likewise (codex). Text cannot carry the PHASE, and a first
+    // attempt to split them by errno was WRONG in the dangerous direction: after the
+    // gateway ACKs, `startAssistant` fetches Convex, so a Convex outage surfaces the
+    // very same `ECONNREFUSED` — and calling it "nothing was sent" would invite
+    // re-running a turn the agent may already be executing. Being pessimistic about
+    // delivery is the safe error; closing the gap means threading the phase from the
+    // call sites, which is its own change.
+    //
+    // `fetch failed`, `und_err` and `terminated` are NOT here, deliberately. Node emits
+    // the first for an unknown scheme, a bad port or a TLS failure as readily as for a
+    // cut socket, and this class sits in LOST_RESPONSE_CODES — it asserts the write may
+    // have been applied (codex). What proves a cut is the ERRNO, which `errorChainText`
+    // brings up from the cause; a bare wrapper stays the catch-all, which is the honest
+    // answer for a failure we cannot name.
+    /closed|disconnect|econnrefused|econnreset|enotfound|eai_again|epipe|socket hang ?up|not connected|connection reset/.test(
       msg,
     )
   ) {

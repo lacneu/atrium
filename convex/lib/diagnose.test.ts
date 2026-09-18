@@ -273,10 +273,11 @@ describe("actionForErrorCode", () => {
     expect(restarting).not.toBe(saturated);
     expect(restarting).toMatch(/announced|restart/i);
     expect(saturated).toMatch(/slowly|buffer|dropped/i);
-    // The two spellings mark two MOMENTS with different delivery states, so they
-    // must NOT share a text: before the ack nothing reached the agent, after it the
-    // agent had the turn and may resume it. Telling a streaming interruption that
-    // "nothing reached the agent" would invite resending work already in flight.
+    // The two spellings mark two MOMENTS with different delivery states, so they must
+    // NOT share a text: before the ack delivery is UNPROVEN — a response can race the
+    // ack — while after it the agent had the turn and may resume it. Saying "nothing
+    // reached the agent" about the first would invite resending work that may already
+    // have been taken (codex).
     const midStream = actionForErrorCode("gateway_restarting");
     expect(midStream).not.toBe(restarting);
     // NEITHER may claim the request was refused: a response frame can race ahead of
