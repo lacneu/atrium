@@ -189,6 +189,27 @@ const FILES = [
     "schema/wizard.ts",
     "schema/setup-inference.ts",
   ]),
+
+  // New transitive import as of 2026.9.5: `agents-models-skills.ts` gained the
+  // database-admission refusal contract. Same closure rule as the blocks above —
+  // without it the vendored tree does not RESOLVE, and the ratchet reports
+  // "module not found" instead of the real triage.
+  ...since("2026.9.5", [
+    "schema/agent-database-admission.ts",
+    "schema/model-runtime-options.ts",
+    "schema/plugin-credentials.ts",
+    "schema/runtime-vitals.ts",
+    "schema/sessions-activity-summary.ts",
+    "schema/sessions-storage.ts",
+    // Not new upstream: 2026.9.5 SPLIT the tool catalogue out of
+    // agents-models-skills.ts. Vendored so the ratchet keeps seeing the same
+    // contract instead of reporting five phantom orphans.
+    "schema/tools-catalog.ts",
+    "svg-image.ts",
+    "protocol-validator.ts",
+    "validation-errors.ts",
+    "../../normalization-core/src/json-schema.ts",
+  ]),
 ];
 
 /** The one repository these bytes may be attributed to. */

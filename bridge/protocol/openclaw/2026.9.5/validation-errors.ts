@@ -1,0 +1,72 @@
+// VENDORED VERBATIM from openclaw/openclaw @ v2026.9.5 — packages/gateway-protocol/src/validation-errors.ts.
+// Source of truth for the wire protocol; used ONLY by the protocol-coverage
+// ratchet test (never imported by runtime bridge code). Do not edit by hand:
+// re-run scripts/vendor-protocol.mjs — vendor-integrity.test.ts checks the sha256.
+// (Only change vs upstream: @openclaw/<pkg>/<module> workspace specifiers collapsed to ./<module>.js.)
+import type { TypeBoxValidationError } from "./json-schema.js";
+
+/** Normalized validation error shape exposed by every protocol validator. */
+export type ValidationError = TypeBoxValidationError;
+
+function firstStringParam(value: unknown): string | undefined {
+  if (typeof value === "string" && value.trim()) {
+    return value;
+  }
+  if (Array.isArray(value)) {
+    return value.find(
+      (entry): entry is string => typeof entry === "string" && entry.trim().length > 0,
+    );
+  }
+  return undefined;
+}
+
+/** Convert validator errors into compact operator-facing failure text. */
+export function formatValidationErrors(errors: ValidationError[] | null | undefined) {
+  if (!errors?.length) {
+    return "unknown validation error";
+  }
+
+  const parts: string[] = [];
+
+  for (const err of errors) {
+    const keyword = typeof err?.keyword === "string" ? err.keyword : "";
+    const instancePath = typeof err?.instancePath === "string" ? err.instancePath : "";
+
+    if (keyword === "additionalProperties") {
+      const additionalProperty =
+        firstStringParam(err?.params?.additionalProperty) ??
+        firstStringParam(err?.params?.additionalProperties);
+      if (additionalProperty) {
+        const where = instancePath ? `at ${instancePath}` : "at root";
+        parts.push(`${where}: unexpected property '${additionalProperty}'`);
+        continue;
+      }
+    }
+    if (keyword === "required") {
+      const missingProperty =
+        firstStringParam(err?.params?.missingProperty) ??
+        firstStringParam(err?.params?.requiredProperties);
+      if (missingProperty) {
+        const where = instancePath ? `at ${instancePath}: ` : "";
+        parts.push(`${where}must have required property '${missingProperty}'`);
+        continue;
+      }
+    }
+
+    const failingKeyword =
+      typeof err?.params?.failingKeyword === "string" ? err.params.failingKeyword : "";
+    // TypeBox reports conditional required-property misses through if/then
+    // keywords, which otherwise hide the actionable missing-property context.
+    const message =
+      keyword === "then" || (keyword === "if" && failingKeyword === "then")
+        ? "must have required conditional properties"
+        : typeof err?.message === "string" && err.message.trim()
+          ? err.message
+          : "validation error";
+    const where = instancePath ? `at ${instancePath}: ` : "";
+    parts.push(`${where}${message}`);
+  }
+
+  const unique = [...new Set(parts.filter((part) => part.trim()))];
+  return unique.length > 0 ? unique.join("; ") : "unknown validation error";
+}
