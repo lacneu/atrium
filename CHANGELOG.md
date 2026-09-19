@@ -1,5 +1,48 @@
 # Changelog
 
+## [0.84.14] — The promised file arrives, and a dead conversation heals itself
+
+Reliability release, corrective throughout. No breaking changes, no new feature. Four
+failures that readers reported in their own words, and one credential that should never
+have been displayed.
+
+**A file an agent generates now reaches the conversation.** An image, a piece of music or a
+video produced by the agent's generation tools is written to its own directory on the
+gateway, not to the delivery staging one — and Atrium accepted only the staging directory,
+so it dropped the artifact the gateway had just handed it. The bubble showed "voici
+l'image :" with nothing under it. Five reports described exactly that ("Image non délivrée",
+"manque une partie de la réponse (image)", "Pas de fichier bien que annoncé"). A delegated
+agent's file was lost the same way, on a lane that has no second chance to deliver it.
+
+**And when the gateway hands over nothing, the turn says so instead of staying silent.** A
+delivery run exists only to pass on one finished artifact; finishing it with no file is a
+broken promise, and it now surfaces as one rather than as a reply that reads complete.
+
+**A conversation the gateway no longer has recovers on its own.** When a session vanished
+upstream, the gateway's own sentence reached the reader verbatim — including its advice to
+type `/compact` or `/new`, commands Atrium does not offer. Every retry then met the same dead
+conversation, and an operator had to reset the session by hand. Atrium now drops the stored
+session so the next attempt starts a fresh one, and the card explains the situation in the
+reader's language without asking for anything.
+
+**A paused credential is named, and never displayed in full.** A turn refused because the
+gateway had paused an authentication profile used to produce an empty bubble with no
+explanation. It now has its own card, its own anomaly class, and it is deliberately left out
+of the automatic retry — the pause applies before the provider is called. The gateway's
+sentence quotes the profile itself, and an operator may name a profile anything, including an
+email address: that value is masked everywhere it is displayed, and a one-time migration
+clears the rows already stored, including feedback, sub-agent reports and archive exports.
+
+**An operator-chosen name can no longer decide how a failure is classified.** These gateway
+sentences interpolate values someone configured — a profile id, a provider, a model, an MCP
+server name. A profile called after a disk-full message was classified as a full disk, and
+one named after an internal retry phrase could buy itself extra re-dispatches. No
+classification reads operator-chosen text any more.
+
+**A network cut mid-turn is recognised instead of ending unclassified.** The errno that names
+it (a reset, a broken pipe, a name that does not resolve) is often buried in a wrapped cause
+the classifier never read, so the turn settled with no diagnosis at all.
+
 ## [0.84.13] — The release image, rebuilt on an attested bridge
 
 Maintenance release. No product change from 0.84.12: it carries the same code plus a
