@@ -173,6 +173,39 @@ describe("normalizeCompatTarget (defensive parse)", () => {
     });
   });
 
+  test("the CONFIGURED media transport is read from the INSTANCE, not from the bridge", () => {
+    // The bridge knows only its BOOT DEFAULT; what a dispatch carries is this instance's own
+    // configuration, edited in the admin UI. Publishing the bridge's default answered
+    // `gateway-http` for an instance switched to `shared-fs` — exactly the wrong answer this
+    // field exists to prevent (codex).
+    const doc = {
+      bridgeVersion: "0.84.14",
+      protocolVersion: 2,
+      compat: null,
+      targets: [
+        {
+          instanceName: "ataraxis",
+          provider: "openclaw",
+          gatewayVersion: "2026.9.4",
+          capabilities: { abort: true },
+          versionBeyondValidated: false,
+        },
+        {
+          instanceName: "lacneu",
+          provider: "openclaw",
+          gatewayVersion: "2026.9.4",
+          capabilities: { abort: true },
+          versionBeyondValidated: false,
+        },
+      ],
+    };
+    const summary = summarizeCompat(doc, new Map([["ataraxis", "shared-fs"]]));
+    expect(summary.instances[0]?.configuredMediaMode).toBe("shared-fs");
+    // …and an instance with none configured reads UNKNOWN, never a default.
+    expect(summary.instances[1]?.configuredMediaMode).toBeNull();
+    expect(summarizeCompat(doc).instances[0]?.configuredMediaMode).toBeNull();
+  });
+
   test("versionBeyondValidated:true is preserved; non-boolean caps dropped", () => {
     const t = normalizeCompatTarget({
       instanceName: "main",
@@ -503,6 +536,9 @@ describe("providerSupport + summarizeCompat (the /api/v1/compat payload)", () =>
         gatewayVersion: "2026.6.5",
         withinSupport: true,
         versionBeyondValidated: false,
+        // These fixtures predate the field, so the served view says UNKNOWN. That null is
+        // the point: an operator answer must not read an absent mode as a default.
+        configuredMediaMode: null,
       },
       {
         instanceName: "edge",
@@ -510,6 +546,7 @@ describe("providerSupport + summarizeCompat (the /api/v1/compat payload)", () =>
         gatewayVersion: "2026.7.1",
         withinSupport: true, // supported (>= min) even beyond validated
         versionBeyondValidated: true,
+        configuredMediaMode: null,
       },
       {
         instanceName: "h1",
@@ -517,6 +554,7 @@ describe("providerSupport + summarizeCompat (the /api/v1/compat payload)", () =>
         gatewayVersion: "0.3.0",
         withinSupport: false, // no published hermes range yet
         versionBeyondValidated: false,
+        configuredMediaMode: null,
       },
     ]);
   });
@@ -622,6 +660,99 @@ async function readCompatDoc(t: TestConvex<typeof schema>) {
   );
 }
 
+describe("compatInternal — the join the API actually serves", () => {
+  test("reads the CONFIGURED transport off the instance row, and null when there is none", async () => {
+    // The unit test above injects the map by hand, so it would stay green if this query
+    // stopped reading `instances.config.mediaMode` altogether (codex). This one drives the
+    // real query against real rows.
+    const t = convexTest(schema, modules);
+    await t.run(async (ctx) => {
+      await ctx.db.insert("instances", {
+        name: "ataraxis",
+        gatewayUrl: "wss://example.invalid",
+        config: { mediaMode: "shared-fs" },
+      });
+      // …and one with a config that names no transport at all.
+      await ctx.db.insert("instances", {
+        name: "lacneu",
+        gatewayUrl: "wss://example.invalid",
+        config: {},
+      });
+      await ctx.db.insert("bridgeCompat", {
+        key: "singleton",
+        bridgeVersion: "0.84.14",
+        protocolVersion: 2,
+        compat: null,
+        targets: [
+          {
+            instanceName: "ataraxis",
+            provider: "openclaw",
+            gatewayVersion: "2026.9.4",
+            capabilities: { abort: true },
+            versionBeyondValidated: false,
+          },
+          {
+            instanceName: "lacneu",
+            provider: "openclaw",
+            gatewayVersion: "2026.9.4",
+            capabilities: { abort: true },
+            versionBeyondValidated: false,
+          },
+        ],
+        reachable: true,
+        fetchedAt: 1,
+      });
+    });
+    const summary = await t.query(internal.compat.compatInternal, {});
+    const byName = new Map(
+      (summary?.instances ?? []).map((i) => [i.instanceName, i.configuredMediaMode]),
+    );
+    expect(byName.get("ataraxis")).toBe("shared-fs");
+    expect(byName.get("lacneu")).toBeNull();
+  });
+
+  test("a DUPLICATE instance name does not take the whole route down", async () => {
+    // `by_name` is not a unique index and the admin path can leave two rows sharing a name.
+    // Resolving with `.unique()` threw, and this field is a reporting detail — it must never
+    // cost the compat route a 500 (codex). The dispatch resolves with `.first()`; so does
+    // this join.
+    const t = convexTest(schema, modules);
+    await t.run(async (ctx) => {
+      await ctx.db.insert("instances", {
+        name: "ataraxis",
+        gatewayUrl: "wss://example.invalid",
+        config: { mediaMode: "shared-fs" },
+      });
+      await ctx.db.insert("instances", {
+        name: "ataraxis",
+        gatewayUrl: "wss://example.invalid",
+        config: { mediaMode: "gateway-http" },
+      });
+      await ctx.db.insert("bridgeCompat", {
+        key: "singleton",
+        bridgeVersion: "0.84.14",
+        protocolVersion: 2,
+        compat: null,
+        targets: [
+          {
+            instanceName: "ataraxis",
+            provider: "openclaw",
+            gatewayVersion: "2026.9.4",
+            capabilities: { abort: true },
+            versionBeyondValidated: false,
+          },
+        ],
+        reachable: true,
+        fetchedAt: 1,
+      });
+    });
+    const summary = await t.query(internal.compat.compatInternal, {});
+    expect(summary?.instances[0]?.instanceName).toBe("ataraxis");
+    // Whichever row wins, the route answers — that is what this pins.
+    expect(typeof summary?.instances[0]?.configuredMediaMode).toBe("string");
+  });
+});
+
 describe("pollBridgeCompat (cron storage, both endpoints mocked)", () => {
   afterEach(() => vi.unstubAllGlobals());
 
@@ -712,6 +843,7 @@ describe("pollBridgeCompat (cron storage, both endpoints mocked)", () => {
         gatewayVersion: "2026.6.5",
         withinSupport: true,
         versionBeyondValidated: false,
+        configuredMediaMode: null,
       },
     ]);
     // front path: capabilitiesForInstance resolves agentFiles for the served chat.

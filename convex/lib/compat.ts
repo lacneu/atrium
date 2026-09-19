@@ -101,6 +101,19 @@ export type CompatSummary = {
     gatewayVersion: string | null;
     withinSupport: boolean;
     versionBeyondValidated: boolean;
+    /** The CONFIGURED media transport for this instance — `gateway-http`, `shared-fs`,
+     *  `off` — read from its own configuration, which is what a dispatch carries.
+     *
+     *  Named `configured` because it is not a promise about a given turn: the media
+     *  quarantine can force `off` for a dispatch, and a bridge can withhold the media
+     *  instruction on a gateway version it distrusts (codex). What an operator needs to
+     *  answer "can this instance deliver a file at all" is this value; what happened on
+     *  one turn is a trace question.
+     *
+     *  Null when nothing is configured: UNKNOWN, never a default. Reading an absence as a
+     *  default is how an operator answer becomes a guess — the guess that kept two
+     *  production reports open for eleven days. */
+    configuredMediaMode: string | null;
   }>;
   /** Protocol-contract section: the bridge's vendored schema surface + the LIVE
    *  drift (payload field names the gateway emits that this bridge build does
@@ -464,6 +477,7 @@ export function normalizeCompatTarget(raw: unknown): CompatTarget | null {
     capabilities,
     versionBeyondValidated: o.versionBeyondValidated === true,
     ...(o.attachmentFixAttested === true ? { attachmentFixAttested: true } : {}),
+
   };
 }
 
@@ -1019,6 +1033,10 @@ export function summarizeCompat(
     fetchedAt?: number;
     protocol?: unknown;
   } | null,
+  /** Per-instance CONFIGURED media transports, keyed by instance name — read from the
+   *  instance rows, the only place that holds what a dispatch carries. Defaulted so every
+   *  existing caller keeps its behaviour and simply reports the mode as unknown. */
+  modesByInstance: ReadonlyMap<string, string> = new Map(),
 ): CompatSummary {
   if (doc === null) {
     return {
@@ -1052,6 +1070,7 @@ export function summarizeCompat(
         t.gatewayVersion,
       ),
       versionBeyondValidated: t.versionBeyondValidated,
+      configuredMediaMode: modesByInstance.get(t.instanceName) ?? null,
     })),
     // Re-bound on the way out (the doc field is v.any()): a hand-edited or
     // legacy doc can never leak an unbounded/foreign shape to the API.

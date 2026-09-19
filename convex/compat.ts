@@ -512,7 +512,29 @@ export const forChat = query({
 export const compatInternal = internalQuery({
   args: {},
   handler: async (ctx): Promise<CompatSummary> => {
-    return summarizeCompat(await readDoc(ctx));
+    // The CONFIGURED media transport mode, joined from the instance row — not asked of the
+    // bridge, which knows only its own boot default and would answer `gateway-http` for an
+    // instance switched to `shared-fs` (codex).
+    //
+    // Only the instances the snapshot actually names, looked up by index: a full scan of the
+    // registry ran on every call to this route, returning whole documents to read one field
+    // (codex). The snapshot is read FIRST so a deployment with no poll yet does no work at
+    // all.
+    const doc = await readDoc(ctx);
+    const modes = new Map<string, string>();
+    for (const name of new Set((doc?.targets ?? []).map((t) => t.instanceName))) {
+      const inst = await ctx.db
+        .query("instances")
+        .withIndex("by_name", (q) => q.eq("name", name))
+        // `.first()`, exactly as the DISPATCH resolves an instance by name. `by_name` is not
+        // a unique index and the admin path can still leave two rows sharing a name — a
+        // state this repo acknowledges — so `.unique()` would throw and take the whole
+        // compat route down with a 500 for a reporting field (codex).
+        .first();
+      const mode = inst?.config?.mediaMode;
+      if (typeof mode === "string") modes.set(name, mode);
+    }
+    return summarizeCompat(doc, modes);
   },
 });
 
