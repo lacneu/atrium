@@ -197,6 +197,10 @@ import {
   selectBudgetAssessment,
 } from "./providers/openclaw/models-roster.js";
 import {
+  ensureSessionRestored,
+  readArchiveState,
+} from "./core/session-archive.js";
+import {
   AGENT_FILE_NAMES,
   defaultsApplied,
   extractAgentDefaults,
@@ -1354,7 +1358,44 @@ export async function performSend(
     blocked: false,
   };
   try {
-    const described = await describeSession(conn, sessionKey);
+    let described = await describeSession(conn, sessionKey);
+    // THE SEVEN-DAY WALL. Upstream auto-archives an idle dashboard session, and an
+    // archived session refuses `chat.send` outright — which reached the user as a
+    // conversation that had simply stopped answering (prod 2026-09-20). Restored
+    // HERE, on the describe this path already makes, so an unarchived session pays
+    // nothing: `readArchiveState` reads the answer in hand, and only an archived one
+    // costs the patch + the re-read below.
+    //
+    // Before `chat.send` and AFTER the holds above, so the session we restore is the
+    // one this turn will run on. Fail-open throughout: if the restore does not take,
+    // the send goes anyway and the gateway's own refusal is classified
+    // (`session_archived`) rather than swallowed.
+    const archiveState = readArchiveState({ session: described?.sess });
+    if (archiveState?.archived === true) {
+      const restored = await ensureSessionRestored(
+        conn,
+        sessionKey,
+        { key: sessionKey, agentId: body.agentId },
+        (params) => patchSession(conn, presendConfig, params, 10_000),
+        // The read we already hold: describing again here would cost a second RPC
+        // AND could answer "live" on a row that moved, silently skipping the patch.
+        { known: archiveState },
+      );
+      console.log(
+        `[archive] chat=${body.chatId} session was archived — restore ${restored.kind}` +
+          ("reason" in restored ? `: ${restored.reason}` : ""),
+      );
+      if (restored.kind === "restored") {
+        // RE-READ: the row we measured describes an archived session, and every
+        // figure below (the fill, the freshness verdict, the mirrored meta) must
+        // describe the session the turn actually runs on.
+        try {
+          described = await describeSession(conn, sessionKey);
+        } catch {
+          /* the pre-restore read stands; the guards below fall open on it */
+        }
+      }
+    }
     describeObservedAt = described?.observedAt ?? Date.now();
     let sess = described?.sess;
     // Capture the pre-turn figures from a describe answer. A FUNCTION because the
@@ -2333,6 +2374,23 @@ async function performReset(
   session: BridgeSession,
   config?: BridgeConfig,
 ): Promise<void> {
+  // `sessions.reset` is "starting work" too (upstream session-reset-service.ts:1048),
+  // so an archived conversation refused the very action a user reaches for when a
+  // conversation stops answering — the one way out was closed by the same wall.
+  // Restored first, on the CONVERSATION's socket: `archived` is a write-scoped field
+  // upstream, so it needs no administrative socket.
+  const restored = await ensureSessionRestored(
+    session.connection,
+    session.sessionKey,
+    { key: session.sessionKey },
+    (params) => patchSession(session.connection, config, params, 10_000),
+  );
+  if (restored.kind !== "not_archived" && restored.kind !== "absent") {
+    console.log(
+      `[archive] chat=${session.chatId} /reset on an archived session — restore ${restored.kind}` +
+        ("reason" in restored ? `: ${restored.reason}` : ""),
+    );
+  }
   await withSessionAdminConnection(session, config, (conn) =>
     conn.request("sessions.reset", { key: session.sessionKey }, 10_000),
   );
@@ -5270,6 +5328,33 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
             return;
           }
           noteHandshakeFor(talkInstance)(ownerSession.connection);
+          // THE VOICE LANE HITS THE SAME WALL. The gateway runs its agent consult on
+          // THIS session key (`openclaw_agent_consult` → reply-turn-admission.ts:388),
+          // so on an archived conversation every question needing the agent came back
+          // as "my attempt did not succeed" — spoken aloud, with nothing in the thread
+          // to explain it (prod 2026-09-20). Restored before the mint, on the
+          // conversation's own socket, exactly as a typed turn does.
+          const talkRestored = await ensureSessionRestored(
+            ownerSession.connection,
+            talkSessionKey!,
+            { key: talkSessionKey!, agentId: talkStr(talkBody.agentId)! },
+            (params) =>
+              patchSession(
+                ownerSession!.connection,
+                talkBundle.config,
+                params,
+                10_000,
+              ),
+          );
+          if (
+            talkRestored.kind !== "not_archived" &&
+            talkRestored.kind !== "absent"
+          ) {
+            console.log(
+              `[archive] talk session was archived — restore ${talkRestored.kind}` +
+                ("reason" in talkRestored ? `: ${talkRestored.reason}` : ""),
+            );
+          }
           // RESERVE THE SOCKET BEFORE ASKING FOR THE CALL.
           //
           // The real hold needs the gateway's voiceSessionId, which only exists once

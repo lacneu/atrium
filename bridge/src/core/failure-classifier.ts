@@ -149,6 +149,33 @@ export function isSessionInitConflictText(text: string): boolean {
   );
 }
 
+/** The gateway refused NEW WORK on an ARCHIVED session (2026.9.5).
+ *
+ *  Upstream auto-archives a durable dashboard session after 7 days of inactivity
+ *  (`session.maintenance.archiveDashboardAfter`, default
+ *  `DEFAULT_DASHBOARD_ARCHIVE_AFTER_MS`, src/config/sessions/store-maintenance.ts:25)
+ *  — and every Atrium conversation is a dashboard session. From then on the session
+ *  refuses everything that starts work: `chat.send` (agent-admission-controller.ts:172),
+ *  `sessions.reset` (session-reset-service.ts:1048) and the voice consult
+ *  (reply-turn-admission.ts:388), all through ONE sentence,
+ *  src/config/sessions/lifecycle.ts:124-125:
+ *    `Session "<key>" is archived. Restore it before starting new work.`
+ *  `chat.send` ships it behind `INVALID_REQUEST:` (server-methods/chat.ts:140), so
+ *  without this rule it fell to the generic bucket — or, on a turn carrying a file,
+ *  to ATTACHMENT_REJECTED, blaming a file that had nothing to do with it.
+ *
+ *  Read through `withoutOperatorData`: the quoted key is blanked before the test, so
+ *  the rule keys on the sentence alone and a key containing these words cannot
+ *  match by itself. The bridge RESTORES the session before sending (core/
+ *  session-archive.ts); this classifier is for the refusal that slips past that —
+ *  a restore that failed, or a race with the janitor. */
+const SESSION_ARCHIVED_RE = /is archived\.?\s*restore it before starting new work/i;
+
+export function isSessionArchivedText(text: string | null | undefined): boolean {
+  if (!text) return false;
+  return SESSION_ARCHIVED_RE.test(withoutOperatorData(text));
+}
+
 /** Does this sentence NAME A CREDENTIAL?
  *
  *  Upstream composes about thirty sentences around a quoted profile id, and each of

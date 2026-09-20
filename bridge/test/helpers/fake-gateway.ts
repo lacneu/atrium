@@ -47,6 +47,10 @@ export interface FakeSessionDescribe {
     overflowTokens?: number;
   };
   totalTokensFresh?: boolean;
+  /** The archive state, as the gateway presents it (session-utils-row.ts:514-515).
+   *  A session older than the maintenance window answers `true` and refuses every
+   *  call that starts work until it is restored. */
+  archived?: boolean;
 }
 
 import type { RosterEntry } from "../../src/providers/openclaw/models-roster.js";

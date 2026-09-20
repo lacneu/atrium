@@ -64,6 +64,14 @@ export const EMPTY_RESPONSE_RETRY_CODE = "empty_response_silent";
 export const PROVIDER_INTERNAL_CODE = "provider_internal";
 /** The provider-side conversation can no longer be resumed (upstream's own words). */
 export const SESSION_GONE_CODE = "session_gone";
+/** The gateway ARCHIVED the conversation (upstream auto-archives an idle dashboard
+ *  session after 7 days) and refuses new work on it. The bridge restores it before
+ *  every send, so this class means the restore did not take — a failed patch, or the
+ *  janitor winning the race. Retrying is a genuine second chance, because the retry
+ *  runs the restore again; and it is SAFE by the same argument as the init conflict:
+ *  upstream refuses at ADMISSION, before the model generates anything, so the
+ *  zero-content gate below is met by construction and nothing is re-billed. */
+export const SESSION_ARCHIVED_CODE = "session_archived";
 /** A context overflow on a turn whose session the bridge's pre-send guard had JUST
  *  compacted successfully (W2). The prompt that overflowed was assembled around the
  *  shrink, so the same send composed again is a genuinely different one — unlike a
@@ -85,6 +93,7 @@ export const RETRYABLE_KINDS: ReadonlySet<string> = new Set([
   // COMPACTION, before the model generates anything, so the zero-content gate below is
   // met by construction and a retry repeats no work.
   SESSION_GONE_CODE,
+  SESSION_ARCHIVED_CODE,
   SESSION_INIT_CONFLICT_CODE,
   EMPTY_RESPONSE_RETRY_CODE,
   PROVIDER_INTERNAL_CODE,
@@ -112,6 +121,10 @@ export function maxRetriesForKind(kind: string): number {
   // session_gone keeps ONE: the first attempt lands on a fresh session, and a second
   // failure means the fresh one is failing too — another wait buys the reader nothing.
   if (kind === SESSION_GONE_CODE) return 1;
+  // session_archived keeps ONE: the retry's own pre-send restore is the second
+  // chance. If THAT is refused too, the restore is failing for a reason more waiting
+  // will not change — an operator fact, not a blip.
+  if (kind === SESSION_ARCHIVED_CODE) return 1;
   return kind === EMPTY_RESPONSE_RETRY_CODE ||
     kind === CONTEXT_LENGTH_COMPACTED_CODE
     ? 1

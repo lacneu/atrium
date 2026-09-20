@@ -24,7 +24,11 @@ import {
 } from "./inbound-media.js";
 import { HermesDashboardAbsentError } from "../providers/hermes/files-fetcher.js";
 import { TalkCallActiveError } from "../session.js";
-import { isSessionInitConflictText, withoutOperatorData } from "./failure-classifier.js";
+import {
+  isSessionArchivedText,
+  isSessionInitConflictText,
+  withoutOperatorData,
+} from "./failure-classifier.js";
 
 export type DispatchErrorCode =
   | "AGENT_NOT_FOUND" // configured agentId no longer exists on the gateway
@@ -54,6 +58,18 @@ export type DispatchErrorCode =
   // Deliberately NOT retryable: a retry under a fresh key would start a second
   // turn beside the one still running.
   | "chat_request_conflict"
+  // The gateway refuses NEW WORK because it ARCHIVED the session. Upstream
+  // auto-archives an idle dashboard session after 7 days and every Atrium
+  // conversation is one, so this is a conversation the person is reopening — not a
+  // broken request. The bridge restores the session before every send, reset and
+  // voice mint (core/session-archive.ts); this class exists for the refusal that
+  // gets past that — a restore that failed, or the janitor archiving between our
+  // patch and the send.
+  //
+  // Lower-case like the other codes Convex reads, and RETRYABLE there: upstream
+  // refuses at ADMISSION, before the model generates anything, so the retry's own
+  // pre-send restore is a real second chance that repeats no work and bills nothing.
+  | "session_archived"
   // A Hermes surface that is NOT DEPLOYED on this instance, as opposed to one that failed.
   // The managed-files API lives only in the dashboard web server, which upstream starts
   // when HERMES_DASHBOARD is set; `hermes serve` alone answers every turn and 404s every
@@ -170,6 +186,10 @@ const DOWNSTREAM_REJECTION_CODES: ReadonlySet<DispatchErrorCode> = new Set([
   // link and credentials worked, so this must not paint the bridge red. It is
   // surfaced as every rejection is — card, trace, anomaly — and retried.
   "session_init_conflict",
+  // The gateway RECEIVED the send and refused it on a session it had archived: its
+  // link and credentials worked. A seven-day-old conversation must never paint the
+  // bridge red.
+  "session_archived",
 ]);
 
 /**
@@ -393,6 +413,15 @@ export function classifyGatewayError(
   // (codex). One rule, and it had two doors again.
   if (isSessionInitConflictText(msg)) {
     return "session_init_conflict";
+  }
+  // ARCHIVED SESSION — beside the conflict above and for the same reason: it
+  // arrives behind the same `INVALID_REQUEST:` prefix, so the generic bucket would
+  // swallow it and call a reopened conversation a malformed request. Placed AFTER
+  // the explicit attachment markers so a genuine staging failure still wins, and
+  // BEFORE the generic attachment fallback: a file on the turn has nothing to do
+  // with the session being archived, and blaming it would make this terminal.
+  if (isSessionArchivedText(msg)) {
+    return "session_archived";
   }
   // IDEMPOTENCY-KEY CONFLICT (2026.9.2): the key was already used for different
   // input. Arrives behind the same `INVALID_REQUEST:` prefix as the conflict

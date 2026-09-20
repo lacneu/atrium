@@ -78,23 +78,44 @@ export function printableCronSchedule(sched: unknown): string | undefined {
   return str(sched.kind);
 }
 
+/** The job itself, from one level of the tool result.
+ *
+ *  TWO SHAPES, and upstream declares both in its own output contract
+ *  (src/agents/tools/cron-tool.output-contract.test.ts:95-104):
+ *    plain creation          -> `{ ...job, deliveryPreview }`   (the job FLAT)
+ *    declarative convergence -> `{ created, updated, job, … }`  (the job NESTED)
+ *  The second is what an `add` carrying a `declarationKey` answers — an ordinary
+ *  way to write a cron, not an edge case. Reading only the flat shape returned
+ *  NOTHING for it, so the card fell back to the INPUT alone: no server-assigned
+ *  id, no normalized schedule, no effective `enabled`, no next run. Without the id
+ *  the job cannot even be addressed afterwards (`/cron-manage` keys on it).
+ *  Measured on the live bench, 2026-09-20. */
+function unwrapJob(value: unknown): Record<string, unknown> | null {
+  if (!isRecord(value)) return null;
+  if (value.id !== undefined || value.name !== undefined) return value;
+  // The wrapper. Tested AFTER the flat shape so a job that legitimately carries a
+  // `job` field of its own is never mistaken for one.
+  return isRecord(value.job) &&
+    (value.job.id !== undefined || value.job.name !== undefined)
+    ? value.job
+    : null;
+}
+
 /** The job object carried by the tool RESULT: `details` when present, else the
  *  JSON re-parsed from the first text content block (the gateway emits both). */
 function jobFromOutput(output: unknown): Record<string, unknown> | null {
   if (!isRecord(output)) return null;
-  const details = output.details;
-  if (isRecord(details) && (details.id !== undefined || details.name !== undefined)) {
-    return details;
-  }
+  const fromDetails = unwrapJob(output.details);
+  if (fromDetails !== null) return fromDetails;
   const content = output.content;
   if (Array.isArray(content)) {
     for (const block of content) {
       if (!isRecord(block) || typeof block.text !== "string") continue;
       try {
-        const parsed: unknown = JSON.parse(block.text);
-        if (isRecord(parsed) && (parsed.id !== undefined || parsed.name !== undefined)) {
-          return parsed;
-        }
+        // The text block mirrors `details`, wrapper included — so it is unwrapped
+        // by the same rule rather than by a second one that could disagree.
+        const fromText = unwrapJob(JSON.parse(block.text));
+        if (fromText !== null) return fromText;
       } catch {
         /* not JSON — keep scanning */
       }

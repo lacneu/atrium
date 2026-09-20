@@ -105,6 +105,10 @@ export const KNOWN_ERROR_CODES = [
   // re-dispatched onto a fresh one. Countable, so a chat that keeps losing its session
   // is visible rather than folded into the generic stream-error channel.
   "session_gone",
+  // The gateway had ARCHIVED the conversation and refused new work on it. Countable
+  // so a parc where restores keep failing is visible as itself, rather than folded
+  // into the generic stream-error channel.
+  "session_archived",
   "auth_profile_cooldown",
   "gateway_storage_busy",
   "gateway_storage_unavailable",

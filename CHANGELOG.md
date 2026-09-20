@@ -1,5 +1,37 @@
 # Changelog
 
+## [0.84.17] — A week-old conversation answers again
+
+Corrective release. No breaking changes, nothing to reconfigure, and no change to
+how your gateway manages its own sessions.
+
+**A conversation left idle for more than a week works again.** OpenClaw sets an
+inactive conversation aside after seven days to save resources — and from then on it
+refuses any new work on it until it is brought back. Atrium did not notice, so the
+conversation simply stopped answering: a message went nowhere, with no error, no
+reply and nothing to click. By voice it was worse, because the spoken agent answers
+through the same conversation: anything needing the agent — the date, a fact, a tool
+— came back as "my attempt did not succeed".
+
+Atrium now brings the conversation back by itself, before your message is sent, and
+the same applies to resetting a conversation (the very thing you reach for when one
+stops answering — it hit exactly the same wall) and to starting a voice call. You
+are never shown this, and never have to act on it. Your gateway's archiving policy
+is untouched: a conversation you stop using is set aside again after another seven
+idle days, exactly as before.
+
+Two details worth knowing. A conversation younger than a week costs nothing extra —
+the check rides a call Atrium already makes on every message. And if the repair
+itself fails, the message still goes out and the failure now carries a plain
+explanation and one automatic retry, instead of the silence people reported.
+
+**A scheduled job created by name keeps its identity.** When an agent creates a
+scheduled job with a declaration key — an ordinary way to write one — the gateway
+answers in a different shape from a plain creation, and Atrium read only the plain
+one. The job was created correctly, but its card lost the identifier the gateway had
+assigned it, which is what every later action on that job uses. Both shapes are read
+now.
+
 ## [0.84.16] — Generated files arrive, hand-offs speak, and a refusal says why
 
 Corrective release. No breaking changes, nothing to reconfigure — every fix below

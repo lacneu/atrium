@@ -302,3 +302,79 @@ describe("turn-sink integration: cron tool frames emit ONE cron part", () => {
     });
   });
 });
+
+describe("declarative convergence: the job arrives WRAPPED", () => {
+  // Upstream declares TWO shapes for the same `add`, in its own output contract
+  // (src/agents/tools/cron-tool.output-contract.test.ts:95-104):
+  //   plain creation          -> { ...job, deliveryPreview }   — the job FLAT
+  //   declarative convergence -> { created, updated, job, … }  — the job NESTED
+  // The second is what an `add` carrying a `declarationKey` answers. Reading only
+  // the flat shape, the extraction returned nothing and the card fell back to the
+  // INPUT — losing the SERVER-ASSIGNED id, which is what every later operation
+  // addresses the job by. Captured on the live bench, 2026-09-20.
+  const DECLARATIVE_INPUT = {
+    action: "add",
+    job: {
+      name: "bench-cron",
+      declarationKey: "bench-cron",
+      schedule: { kind: "cron", expr: "0 5 1 1 *", tz: "UTC" },
+      payload: { kind: "systemEvent", text: "bench" },
+    },
+  };
+  const WRAPPED = {
+    created: true,
+    job: {
+      id: "d47d5e1c-6b66-4717-b127-6616efc77a9e",
+      declarationKey: "bench-cron",
+      name: "bench-cron",
+      agentId: "alice",
+      enabled: true,
+      schedule: { kind: "cron", expr: "0 5 1 1 *", tz: "UTC" },
+    },
+    deliveryPreview: { mode: "announce" },
+  };
+
+  it("takes the server id out of the wrapper, from `details`", () => {
+    const part = cronPartFromTool("automations", "completed", DECLARATIVE_INPUT, {
+      content: [{ type: "text", text: JSON.stringify(WRAPPED) }],
+      details: WRAPPED,
+    });
+    expect(part).toMatchObject({
+      kind: "cron",
+      op: "created",
+      jobId: "d47d5e1c-6b66-4717-b127-6616efc77a9e",
+      name: "bench-cron",
+      enabled: true,
+    });
+  });
+
+  it("…and from the TEXT block when `details` is absent", () => {
+    // The two carriers must be unwrapped by the same rule: a gateway that sends
+    // only the text block must not lose the id the other path keeps.
+    const part = cronPartFromTool("automations", "completed", DECLARATIVE_INPUT, {
+      content: [{ type: "text", text: JSON.stringify(WRAPPED) }],
+    });
+    expect(part?.jobId).toBe("d47d5e1c-6b66-4717-b127-6616efc77a9e");
+  });
+
+  it("a FLAT job is still read flat — the wrapper is tried second", () => {
+    // Order matters: a job that legitimately carried a `job` field of its own must
+    // never be mistaken for the wrapper.
+    const flat = { id: "flat-1", name: "plain", job: { id: "decoy" } };
+    const part = cronPartFromTool("automations", "completed", DECLARATIVE_INPUT, {
+      content: [],
+      details: flat,
+    });
+    expect(part?.jobId).toBe("flat-1");
+  });
+
+  it("a wrapper carrying NO job leaves the extraction empty, not wrong", () => {
+    const part = cronPartFromTool("automations", "completed", DECLARATIVE_INPUT, {
+      content: [],
+      details: { created: false, updated: false },
+    });
+    // The input has no id to fall back on either, so the card simply carries none —
+    // never an id invented from the wrapper.
+    expect(part?.jobId).toBeUndefined();
+  });
+});

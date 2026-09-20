@@ -292,6 +292,12 @@ export const ERROR_CODE_LABEL: Record<string, () => string> = {
   // an attempt that has not happened yet. It never tells the reader to type a command,
   // and the gateway prose that does is suppressed (HEADLINE_REPLACES_DETAIL).
   session_gone: m.runstatus_error_session_gone,
+  // The gateway had archived an idle conversation and refused the turn. The sentence
+  // never asks the reader to do anything about it — Atrium restores the session on
+  // every send, and this card means that repair itself failed, which is ours to fix,
+  // not theirs. It is shown alongside the retry countdown, so it must be true both
+  // before and after the retry.
+  session_archived: m.runstatus_error_session_archived,
   auth_profile_cooldown: m.runstatus_error_auth_profile_cooldown,
   gateway_storage_busy: m.runstatus_error_gateway_storage_busy,
   gateway_storage_unavailable: m.runstatus_error_gateway_storage_unavailable,

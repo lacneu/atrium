@@ -229,6 +229,11 @@ export const CAUSE_ANOMALY_KINDS: Record<string, string> = {
   // A conversation the gateway no longer has. One is a recovered blip; a run of them on
   // one chat is an operator signal about session lifetime on that instance.
   session_gone: "assistant.cause.session_gone",
+  // The gateway archived the conversation and refused the turn. ONE is a lost race
+  // with the janitor; a run of them means the bridge's restore is failing on that
+  // instance, which is an operator signal about session maintenance — not an
+  // upstream blip and not a user error.
+  session_archived: "assistant.cause.session_archived",
   // NOT the bridge's inbound-staging refusals, deliberately. This map is read for
   // `streamCauses` only — causes carried by an `assistant.stream` FINALIZE row —
   // and a staging refusal happens BEFORE any stream exists: it surfaces as an
