@@ -268,6 +268,12 @@ export const AGENT_ROUTING_ENVELOPE_FIELDS: readonly string[] = [
   // Stamped on every broadcast, in no schema and in no session row.
   "sessionKey",
   "agentId",
+  // `lane` joined them in 2026.9.5: the gateway copies the run request's lane onto the
+  // emitted agent event (src/gateway/agent-turn/agent-run-execution-phase.ts:426, absent
+  // at v2026.9.4) without declaring it on AgentEvent — so it is in no schema and on no
+  // session row, which is exactly what this list is for. It names the queue that ran the
+  // turn (hook, cron, chat); Atrium does not read it yet.
+  "lane",
 ];
 
 export const KNOWN_AGENT_FIELDS: ReadonlySet<string> = new Set([
@@ -329,6 +335,7 @@ export const KNOWN_AGENT_FIELDS: ReadonlySet<string> = new Set([
   "isHeartbeat",
   "kind",
   "label",
+  "lane",
   "lastAccountId",
   "lastActivityAt",
   "lastChannel",

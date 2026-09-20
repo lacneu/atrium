@@ -221,13 +221,18 @@ describe("an object under an UNDECLARED key is free-form — the inversion", () 
 // detect the loss). The sound fix validates against the vendored schema and is its own
 // lot. Until then this records the EXTENT, so widening it fails here.
 describe("the remaining hole is bounded and NAMED", () => {
-  // 28 keys publish a token-shaped value wherever it sits, because `VOCABULARY_KEYS`
+  // 29 keys publish a token-shaped value wherever it sits, because `VOCABULARY_KEYS`
   // names a POSITION in the contract and this walker only knows names. Bounding the
   // COUNT was not enough — an adversarial review pointed out that swapping one key for
   // another, or adding a 29th, left the assertion green. The list is spelled out so any
   // change to it is a review event, and so the extent is legible without running a probe.
   const PUBLISHING = [
     "channel", "chatType", "contentType", "elevatedLevel", "errorKind", "event", "kind",
+    // 29th, added 2026-09-20 for 2026.9.5: the queue that ran the turn. A CLOSED
+    // vocabulary (hook, cron, chat) the gateway copies onto every agent event, so the
+    // value carries no user text — and the corpus must keep the KEY, or the drift
+    // detector reads the masked name as an unknown field.
+    "lane",
     "mime", "mimeType", "model", "modelProvider", "operation", "origin", "phase",
     "provider", "reasoningLevel", "role", "sendPolicy", "state", "status", "stopReason",
     "stream", "subagentControlScope", "subagentRole", "thinkingLevel", "traceLevel",

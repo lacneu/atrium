@@ -62,6 +62,11 @@ const VOCABULARY_KEYS = new Set([
   "elevatedLevel",
   "subagentRole",
   "subagentControlScope",
+  // 2026.9.5: the queue that ran the turn (hook, cron, chat), copied onto the agent
+  // event by the gateway without being declared on AgentEvent. A closed vocabulary,
+  // and the drift detector reads the KEY — masking it made the corpus report
+  // `agent.xxxx` as unknown drift.
+  "lane",
 ]);
 
 /** Keys whose STRING value is an identifier: pseudonymised, structure preserved. */
