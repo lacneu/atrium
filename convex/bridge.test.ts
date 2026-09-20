@@ -633,6 +633,132 @@ describe("bridge.dispatch — over-cap inbound attachment FAILS (never silently 
 // produce the SAME string the bridge sends with (session-keys.ts) — these pin that
 // the Convex-side reconstruction (resolveTargetForChat + the openclawChatId??chatId
 // + rebind rules) agrees with the bridge byte-for-byte.
+describe("bridge.dispatch — the bridge's refusal to cut a live call REQUEUES the turn", () => {
+  test("a 502 talk_call_active leaves the row queued, with no error card", async () => {
+    // The bridge is the only place that can decide with the socket in hand, so it is
+    // the one that refuses (codex P1, pass 3). What comes back is NOT a failure: the
+    // turn was never sent and it goes out when the call ends. An error card here
+    // would tell the reader their message failed while it is simply waiting for the
+    // person to stop speaking.
+    const t = convexTest(schema, modules);
+    const prevUrl = process.env.BRIDGE_URL;
+    const prevSecret = process.env.BRIDGE_SHARED_SECRET;
+    process.env.BRIDGE_URL = "http://127.0.0.1:0";
+    process.env.BRIDGE_SHARED_SECRET = "test-secret";
+    const origFetch = globalThis.fetch;
+    globalThis.fetch = (async () =>
+      new Response(
+        JSON.stringify({ ok: false, error: { code: "talk_call_active" } }),
+        { status: 502, headers: { "content-type": "application/json" } },
+      )) as unknown as typeof fetch;
+    try {
+      const { outboxId, chatId } = await t.run(async (ctx) => {
+        const userId = await ctx.db.insert("users", {});
+        const now = Date.now();
+        await ctx.db.insert("userAgents", {
+          userId,
+          instanceName: "primary",
+          agentId: "alice",
+          isDefault: true,
+          source: "manual",
+          createdAt: now,
+        });
+        const chatId = await ctx.db.insert("chats", {
+          userId,
+          archived: false,
+          updatedAt: now,
+        });
+        const messageId = await ctx.db.insert("messages", {
+          chatId,
+          userId,
+          role: "user",
+          status: "complete",
+          text: "hello",
+          updatedAt: now,
+        });
+        const outboxId = await ctx.db.insert("outbox", {
+          chatId,
+          userId,
+          clientMessageId: "cmid-call",
+          messageId,
+          text: "hello",
+          attachmentIds: [],
+          status: "pending",
+        });
+        return { outboxId, chatId };
+      });
+
+      await t.action(internal.bridge.dispatch, { outboxId });
+
+      const row = await t.run((ctx) => ctx.db.get(outboxId));
+      expect(row?.status).toBe("queued"); // back in the queue, NOT failed
+      const msgs = await messagesOf(t, chatId);
+      expect(
+        msgs.find((m) => m.role === "assistant" && m.status === "error"),
+      ).toBeUndefined();
+      // AND IT ARMED ITS OWN RETURN. Convex's holds are released by a Convex write
+      // that drains; THIS one lives in the bridge's memory and never writes here. Two
+      // real sequences leave nothing behind — a hangup that drains while the bridge is
+      // still inside `talk.client.close`, and a mint Convex then refuses to record —
+      // and the message sat queued indefinitely (codex P1, pass 4).
+      const scheduled = await t.run((ctx) =>
+        ctx.db.system.query("_scheduled_functions").collect(),
+      );
+      expect(
+        scheduled.filter((f) => f.name.includes("drainAfterCallRefusal")),
+      ).toHaveLength(1);
+    } finally {
+      globalThis.fetch = origFetch;
+      if (prevUrl === undefined) delete process.env.BRIDGE_URL;
+      else process.env.BRIDGE_URL = prevUrl;
+      if (prevSecret === undefined) delete process.env.BRIDGE_SHARED_SECRET;
+      else process.env.BRIDGE_SHARED_SECRET = prevSecret;
+    }
+  });
+
+  test("a STALE refusal, from a dispatch a re-park already replaced, is DROPPED", async () => {
+    // This mutation sits behind the network call, so a slow refusal from an ABORTED
+    // dispatch can land after a preempt re-park re-keyed the row. Flipping it back to
+    // `queued` would undo a promotion the new generation owns and arm a second retry
+    // chain on a row that is no longer this dispatch's — the same reason markOutbox
+    // and failDispatch are generation-bound (codex P1, pass 14).
+    const t = convexTest(schema, modules);
+    const { outboxId } = await t.run(async (ctx) => {
+      const userId = await ctx.db.insert("users", {});
+      const chatId = await ctx.db.insert("chats", {
+        userId,
+        archived: false,
+        updatedAt: Date.now(),
+      });
+      const outboxId = await ctx.db.insert("outbox", {
+        chatId,
+        userId,
+        clientMessageId: "cmid-stale",
+        // The row was re-keyed by a re-park: a NEW generation owns it.
+        dispatchKey: "cmid-stale#2",
+        text: "hello",
+        attachmentIds: [],
+        status: "pending" as const,
+      });
+      return { outboxId };
+    });
+    // …and the OLD generation's refusal finally lands.
+    await t.mutation(internal.bridge.requeueForCall, {
+      outboxId,
+      expectedClientMessageId: "cmid-stale",
+    });
+    expect(await t.run((ctx) => ctx.db.get(outboxId))).toMatchObject({
+      status: "pending", // untouched: the new generation still owns it
+    });
+    const scheduled = await t.run((ctx) =>
+      ctx.db.system.query("_scheduled_functions").collect(),
+    );
+    expect(
+      scheduled.filter((f) => f.name.includes("drainAfterCallRefusal")),
+    ).toHaveLength(0);
+  });
+});
+
 describe("bridge.openclawThreadForChat — reconstruct the OpenClaw thread_id", () => {
   async function seedChat(
     t: ReturnType<typeof convexTest>,

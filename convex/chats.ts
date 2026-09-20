@@ -11,6 +11,7 @@ import type { MutationCtx } from "./_generated/server";
 import type { Id } from "./_generated/dataModel";
 import { internal } from "./_generated/api";
 import { requireActive, requireOwnedChat, requireReachableChat } from "./lib/access";
+import { liveTalkCall } from "./talk";
 import { enrichUserAgents, getEffectiveGrants } from "./agents";
 import { auditImpersonated } from "./lib/audit";
 import { deleteFilesByMessage } from "./lib/files";
@@ -197,6 +198,17 @@ export const rebindChatAgent = mutation({
     );
     if (target?.state === "deleted") {
       throw new Error("Invalid: agent is deleted on its gateway");
+    }
+    // NOT WHILE SOMEONE IS SPEAKING. A rebind moves the whole conversation to
+    // another agent; the live voice call is pinned to the one it was minted for and
+    // would be left addressing a session this chat no longer uses. Same rule as the
+    // per-turn route in `send.ts`, same code, so the composer explains it once.
+    const call = await liveTalkCall(ctx, chatId);
+    if (
+      call !== null &&
+      (call.instanceName !== instanceName || call.agentId !== agentId)
+    ) {
+      throw new Error("TALK_CALL_ACTIVE");
     }
     const firstMessage = await ctx.db
       .query("messages")

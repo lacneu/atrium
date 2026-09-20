@@ -869,6 +869,59 @@ describe("promotion plan: a partial or unclean capture is refused", () => {
     expect(plan.skipped).toEqual([{ id: "hermes-basic-turn", provider: "hermes" }]);
   });
 
+  it("an OpenClaw scenario that DECLARES it captures nothing needs no slice", () => {
+    // `talk-session` drives the gateway over the OPERATOR connection, and the capture is
+    // the SESSION socket's alone — so the harness writes no slice for it and says so.
+    // Without this, the first OpenClaw bridge-only scenario made the whole promotion
+    // impossible; with a name-based exemption instead, a future partial capture of that
+    // same scenario would pass unseen.
+    const plan = planPromotion(
+      [
+        result("basic-turn", "openclaw"),
+        { id: "talk-session", provider: "openclaw", violations: [], capturesFrames: false },
+      ],
+      ["scenario-basic-turn.jsonl"],
+    ) as { openclaw: string[]; skipped: { id: string; provider: string }[] };
+    expect(plan.openclaw).toEqual(["basic-turn"]);
+    // …and it is NOT reported as skipped-because-another-provider: it is OpenClaw.
+    expect(plan.skipped).toEqual([]);
+  });
+
+  it("the exemption is DECLARED, never inferred: a report without the field still refuses", () => {
+    // Every run before 2026-09-20 predates the field. Treating "absent" as "captures
+    // nothing" would silently retire the guard for all of them.
+    expect(() =>
+      planPromotion(
+        [result("basic-turn", "openclaw"), result("talk-session", "openclaw")],
+        ["scenario-basic-turn.jsonl"],
+      ),
+    ).toThrow(/OpenClaw result\(s\) with no slice: talk-session/);
+    // …and an explicit `true` is not a licence either.
+    expect(() =>
+      planPromotion(
+        [
+          result("basic-turn", "openclaw"),
+          { id: "talk-session", provider: "openclaw", violations: [], capturesFrames: true },
+        ],
+        ["scenario-basic-turn.jsonl"],
+      ),
+    ).toThrow(/OpenClaw result\(s\) with no slice: talk-session/);
+  });
+
+  it("a declaration CONTRADICTED by the directory refuses — the harness moved", () => {
+    // A slice exists for a scenario that claims to produce none: promoting it would
+    // publish a fixture whose provenance nobody can re-derive.
+    expect(() =>
+      planPromotion(
+        [
+          result("basic-turn", "openclaw"),
+          { id: "talk-session", provider: "openclaw", violations: [], capturesFrames: false },
+        ],
+        ["scenario-basic-turn.jsonl", "scenario-talk-session.jsonl"],
+      ),
+    ).toThrow(/declare capturesFrames:false yet a slice exists: talk-session/);
+  });
+
   it("an OpenClaw result with NO slice refuses the whole promotion, naming it", () => {
     expect(() =>
       planPromotion(

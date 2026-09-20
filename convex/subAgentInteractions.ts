@@ -20,6 +20,9 @@ import { requireActive, requireOwnedChat, requireReachableChat } from "./lib/acc
 import { resolveTargetForChat, resolveGatewayUser } from "./routing";
 import { resolveBridgeUrlForDispatch } from "./lib/bridgeRouting";
 import { assertOwnsUpload } from "./uploads";
+import { SUBAGENT_STALE_TTL_MS } from "./lib/outboxQueue";
+import { liveTalkCall } from "./talk";
+import { subAgentOwnerAgentId } from "./lib/talkFreeze";
 import type { Id } from "./_generated/dataModel";
 
 const MAX_INTERACTION_CHARS = 8000;
@@ -51,6 +54,62 @@ const ATTACHMENT_REF = v.object({
  * the operator connection (the SAME resolution as a normal dispatch). Throws on a
  * missing/foreign child or an unresolvable agent. Internal — only the action calls it.
  */
+/**
+ * Settle `pending` interactions nothing will ever answer.
+ *
+ * A successful POST deliberately leaves the row pending: the child's reply arrives
+ * asynchronously, and the bridge holds the correlation IN MEMORY. A restart between
+ * the ACK and that reply loses it, and no Convex path terminalizes the row — which
+ * then blocks the panel and, since this lot, every call to another agent too
+ * (codex P2, pass 22).
+ *
+ * ONLY WHEN THE CHILD IS NOT WORKING. An age cutoff on its own would cut a child
+ * still legitimately running; the child's own row is the liveness signal, and it has
+ * its own reaper for when THAT goes stale. So this settles a pending interaction that
+ * is both old AND whose child is no longer running.
+ */
+export const reapStalePendingInteractions = internalMutation({
+  args: {},
+  handler: async (ctx): Promise<{ settled: number }> => {
+    const cutoff = Date.now() - SUBAGENT_STALE_TTL_MS;
+    const stale = await ctx.db
+      .query("subAgentInteractions")
+      .withIndex("by_status_updated", (q) =>
+        q.eq("status", "pending").lt("updatedAt", cutoff),
+      )
+      .take(100);
+    let settled = 0;
+    for (const row of stale) {
+      const child = await ctx.db
+        .query("subAgents")
+        .withIndex("by_child", (q) =>
+          q.eq("childSessionKey", row.childSessionKey),
+        )
+        .first();
+      // LIVENESS IS THE CHILD'S CLOCK, NOT ITS STATUS. An interaction may only be
+      // started on a TERMINAL child, and Convex refuses to move a terminal child back
+      // to `running` — so the row stays `done` for the whole interaction even while
+      // the child works. Keying on the status therefore settled live work after twenty
+      // minutes and opened the freeze with it (codex P1, pass 23). Every observer
+      // event patches `updatedAt` whether or not the status transition is applied, so
+      // that is the heartbeat. A child row absent entirely is nothing working at all.
+      if (child !== null && child.updatedAt >= cutoff) continue;
+      await ctx.db.patch(row._id, {
+        status: "error",
+        errorMessage: "no reply: the sub-agent session was lost",
+        updatedAt: Date.now(),
+      });
+      settled += 1;
+    }
+    return { settled };
+  },
+});
+
+/** How long the sub-agent POST may take. Comfortably over a child `chat.send`, and
+ *  well under the action budget — the point is that SOMETHING settles the row rather
+ *  than the platform killing the action with it still `pending`. */
+const SUBAGENT_SEND_TIMEOUT_MS = 4 * 60_000;
+
 export const prepareInteraction = internalMutation({
   args: {
     chatId: v.id("chats"),
@@ -82,6 +141,41 @@ export const prepareInteraction = internalMutation({
     if (!child || child.chatId !== chatId) {
       throw new Error("sub-agent not found in this chat");
     }
+    // NOT WHILE SOMEONE IS SPEAKING TO ANOTHER AGENT.
+    //
+    // This door bypassed the freeze entirely: it writes no outbox row and no parent
+    // assistant message, so neither the send rule nor the mirror ever saw it. And the
+    // bridge cannot catch it either — `/subagent-send` acquires the PARENT's socket,
+    // which during a call is already the call's own, so the key matches, nothing is
+    // re-keyed, and `holdsVoiceCall` is never consulted before the child `chat.send`
+    // goes out (codex P1, pass 19). A message typed into a child of ANOTHER agent
+    // therefore reached it mid-call.
+    //
+    // A child of the agent on the line is fine — it is that agent's own delegate, and
+    // its answer comes back into the same conversation.
+    //
+    // Placed HERE, after the row is known, for two reasons: the row carries the
+    // INSTANCE (two gateways can expose the same agent id, so the id alone is not an
+    // identity), and the more specific refusals above — a copied `fork:` card, an
+    // unknown child — should say what they are rather than be masked by this one.
+    const call = await liveTalkCall(ctx, chatId);
+    if (call !== null) {
+      const owner = subAgentOwnerAgentId(child.childSessionKey);
+      // ABSENT BLOCKS, here too. `?? call.instanceName` turned "I was not told" into
+      // "it matches", so a legacy child on one gateway was typed into while the call
+      // ran on another under the same agent name — the same fail-open the mirror had,
+      // in the other direction (codex P1, pass 23).
+      if (child.instanceName !== call.instanceName) {
+        throw new Error("TALK_CALL_ACTIVE");
+      }
+      // UNPARSEABLE BLOCKS. The schema pins the key's shape in prose only
+      // (`v.string()`), and the observer accepts any non-empty key — so a key this
+      // parser cannot read must not pass for "the agent on the line" (codex P1,
+      // pass 24).
+      if (owner === null || owner !== call.agentId) {
+        throw new Error("TALK_CALL_ACTIVE");
+      }
+    }
     // SCOPE (2c): only a TERMINAL sub-agent (resume-done — LIVE-VERIFIED) can be
     // interacted with. Steering a still-RUNNING child is unverified — the reply-capture
     // keys on the child's next chat:final, which on a live child could bind to the
@@ -110,6 +204,15 @@ export const prepareInteraction = internalMutation({
     const res = await resolveTargetForChat(ctx, chat, userId);
     if (!res.target) throw new Error("no resolvable agent for this chat");
     const target = res.target;
+    // THE GATEWAY THE POST GOES TO MUST BE THE CHILD'S. This resolves the PARENT's
+    // routing, which on a per-turn chat can have moved to another instance since the
+    // child was spawned — the interaction then left for a bridge that never held the
+    // child, while the freeze above had vetted the CHILD's identity, not this one
+    // (codex P1, pass 24: a guard that validates one destination and sends to another
+    // is no guard). A pre-existing routing defect, refused here rather than sent wrong.
+    if (child.instanceName !== undefined && child.instanceName !== target.instanceName) {
+      throw new Error("sub-agent belongs to another instance than the chat routes to");
+    }
     const instance = await ctx.db
       .query("instances")
       .withIndex("by_name", (q) => q.eq("name", target.instanceName))
@@ -136,6 +239,9 @@ export const prepareInteraction = internalMutation({
     const interactionId = await ctx.db.insert("subAgentInteractions", {
       chatId,
       childSessionKey,
+      // CAPTURED, like the routing the action carries: the POST goes to THIS
+      // instance whatever the chat resolves to later.
+      instanceName: target.instanceName,
       userText: text,
       ...(attachmentMeta.length > 0 ? { attachments: attachmentMeta } : {}),
       status: "pending",
@@ -288,17 +394,22 @@ export const sendToSubAgent = action({
       fileName: string;
       content: string;
     }> = [];
-    for (const ref of prep.attachmentRefs) {
-      const blob = await ctx.storage.get(ref.storageId);
-      if (blob === null) continue; // blob gone — skip (never fail the whole send)
-      resolved.push({
-        type: "file",
-        mimeType: ref.mimeType || blob.type || "application/octet-stream",
-        fileName: ref.filename,
-        content: arrayBufferToBase64(await blob.arrayBuffer()),
-      });
-    }
+    // EVERYTHING AFTER THE ROW EXISTS IS INSIDE THE TRY. The row is written before
+    // this, and a `pending` row now refuses voice calls to other agents as well as
+    // holding the panel — so every way out of here has to settle it. Reading and
+    // encoding the blobs used to sit outside, where a failure escaped and left the
+    // row pending with no reconciler to clear it (codex P2, pass 21).
     try {
+      for (const ref of prep.attachmentRefs) {
+        const blob = await ctx.storage.get(ref.storageId);
+        if (blob === null) continue; // blob gone — skip (never fail the whole send)
+        resolved.push({
+          type: "file",
+          mimeType: ref.mimeType || blob.type || "application/octet-stream",
+          fileName: ref.filename,
+          content: arrayBufferToBase64(await blob.arrayBuffer()),
+        });
+      }
       const httpRes = await fetch(
         `${prep.bridgeUrl.replace(/\/$/, "")}/subagent-send`,
         {
@@ -307,6 +418,10 @@ export const sendToSubAgent = action({
             "Content-Type": "application/json",
             Authorization: sharedSecret,
           },
+          // BOUNDED. Without a deadline a hung bridge held this action until the
+          // platform killed it — and a killed action settles nothing, so the row
+          // stayed `pending` for good.
+          signal: AbortSignal.timeout(SUBAGENT_SEND_TIMEOUT_MS),
           body: JSON.stringify({
             ...prep.routing,
             childSessionKey,

@@ -69,6 +69,10 @@ import {
   drainNextQueued,
   isChatBusy,
 } from "./lib/outboxQueue";
+import {
+  blockingCallForTurn,
+  scheduleCallWindowDrain,
+} from "./lib/talkFreeze";
 import { failDocumentaryFetchForChat } from "./documentAttachments";
 import { failSummarizeForChat } from "./chatSummaries";
 import { providerSessionClearPatch } from "./lib/providerSession";
@@ -1354,6 +1358,80 @@ export const consumeForkRehydration = internalMutation({
  * or finalizing, then — failing open, within a bounded wait — while the gateway still
  * counts a run on the session (server.ts holdWhileDeliveryRunLive / awaitGatewayRunRelease).
  */
+/** How long to wait before asking the bridge again, after IT refused a send to keep
+ *  a live call alive. The bridge's hold is memory-only and it never writes to Convex,
+ *  so no Convex event marks its release: only asking again finds out. Long enough
+ *  that a call in progress is not re-probed every few seconds, short enough that a
+ *  message is not left sitting after a hold the row cannot see (a `talk.client.close`
+ *  still running, a mint the server then refused to record). */
+export const CALL_REQUEUE_RETRY_MS = 20_000;
+
+/**
+ * The bridge refused this send to keep a live call alive: put the row BACK in the
+ * queue. Unlike `reparkIfBusy` this runs AFTER the POST came back, so the row may
+ * have been settled meanwhile by a reconciler — only a still-`pending` row moves,
+ * and it keeps its place because the queue is ordered on the row, not on when it
+ * was promoted.
+ *
+ * AND IT ARMS ITS OWN RETURN. Convex's own holds are released by a Convex write —
+ * the hangup, or the end-of-window marker armed at the mint — and that write drains
+ * the queue. THIS refusal has neither: the hold lives in the bridge's memory, and
+ * two real sequences leave nothing behind to wake the row (codex P1, pass 4):
+ *
+ *   * a hangup marks the call ended and drains at once, while the bridge is still
+ *     inside `talk.client.close` (up to 10 s) and still holding — the woken dispatch
+ *     is refused, and the end-of-window marker has already run;
+ *   * the bridge holds from the mint, then Convex REFUSES to record that mint (a
+ *     grant withdrawn between the prepare and the write) — so there is no row, and
+ *     nothing was ever scheduled to end it.
+ *
+ * In both the message sat `queued` on a quiet chat indefinitely, and a later send
+ * could overtake it (`isChatBusy` ignores queued rows). So the retry is armed here,
+ * where the refusal is known, rather than inferred from state Convex cannot see.
+ */
+export const requeueForCall = internalMutation({
+  args: {
+    outboxId: v.id("outbox"),
+    // GENERATION binding, like markOutbox and failDispatch (codex P1, pass 14): the
+    // effective dispatch key this dispatch READ when it started. This mutation sits
+    // behind the network call, so a slow refusal from an ABORTED dispatch can land
+    // after a preempt re-park already re-queued and re-keyed the row — and flipping
+    // it back to `queued` would undo a promotion the new generation owns, or arm a
+    // second retry chain on a row that is no longer this dispatch's.
+    expectedClientMessageId: v.optional(v.string()),
+  },
+  handler: async (ctx, { outboxId, expectedClientMessageId }): Promise<void> => {
+    const row = await ctx.db.get(outboxId);
+    if (row === null || row.status !== "pending") return;
+    if (
+      expectedClientMessageId !== undefined &&
+      (row.dispatchKey ?? row.clientMessageId) !== expectedClientMessageId
+    ) {
+      console.log(
+        "bridge.requeueForCall: stale refusal for a re-keyed row — dropped",
+      );
+      return;
+    }
+    await ctx.db.patch(outboxId, { status: "queued" });
+    await ctx.scheduler.runAfter(
+      CALL_REQUEUE_RETRY_MS,
+      internal.bridge.drainAfterCallRefusal,
+      { chatId: row.chatId },
+    );
+  },
+});
+
+/** The armed return of `requeueForCall`. An ordinary drain: if the call is still up
+ *  (in Convex's eyes or the bridge's) the row is simply held again, and held again
+ *  arms the next attempt — the loop ends when the send goes through, or when the
+ *  row leaves the queue for any other reason. */
+export const drainAfterCallRefusal = internalMutation({
+  args: { chatId: v.id("chats") },
+  handler: async (ctx, { chatId }): Promise<void> => {
+    await drainNextQueued(ctx, chatId);
+  },
+});
+
 export const reparkIfBusy = internalMutation({
   args: { outboxId: v.id("outbox") },
   handler: async (ctx, { outboxId }): Promise<boolean> => {
@@ -1363,9 +1441,34 @@ export const reparkIfBusy = internalMutation({
     // `subagent.start` observed during the dispatch delay must hold too, or
     // the follow-up would be routed into / kill the child session (codex P1).
     // Only the `pending` clause of isChatBusy is skipped: this row IS pending.
-    if (!(await chatHasActivityBlockers(ctx, row.chatId))) return false;
-    await ctx.db.patch(outboxId, { status: "queued" });
-    return true;
+    if (await chatHasActivityBlockers(ctx, row.chatId)) {
+      await ctx.db.patch(outboxId, { status: "queued" });
+      return true;
+    }
+    // …and the same window can start a CALL. The drain checks the freeze before it
+    // promotes the row, then waits QUEUE_DRAIN_DELAY_MS: a call minted inside those
+    // 2.5 s is bound to the bridge's one socket for this chat, and this dispatch
+    // would re-key it and cut the call — the check has to be re-asked at the moment
+    // the send actually leaves (codex P1, pass 2). Re-parked, not dropped: the
+    // hangup's own drain picks it up, like every other held turn.
+    const chat = await ctx.db.get(row.chatId);
+    if (chat !== null) {
+      const chosen =
+        row.routedAgent === undefined
+          ? null
+          : {
+              instanceName: row.routedAgent.instanceName,
+              agentId: row.routedAgent.agentId,
+            };
+      const blocking = await blockingCallForTurn(ctx, chat, chosen);
+      if (blocking !== null) {
+        await ctx.db.patch(outboxId, { status: "queued" });
+        // This row never went through the drain, so the drain's arming did not run.
+        await scheduleCallWindowDrain(ctx, blocking);
+        return true;
+      }
+    }
+    return false;
   },
 });
 
@@ -1751,6 +1854,19 @@ export const dispatch = internalAction({
         internal.bridge.canonicalsForUsers,
         { userIds: outboxMentions(row).map((mention) => mention.userId) },
       );
+      // THE LAST THING BEFORE THE SEND LEAVES.
+      //
+      // The same check already ran at the top of this action — but everything since
+      // (resolving the owner and the routing, fetching and base64-encoding every
+      // attachment) happens in between, and a call minted in that gap is bound to the
+      // socket this POST is about to re-key. The bridge refuses such a re-key, which
+      // is what makes the guarantee hold at all, but its hold is sized to the race
+      // around the mint (two minutes) — a dispatch carrying large attachments can
+      // take longer than that to get here, and then nothing catches it. Asking again
+      // HERE shrinks the remaining window to one round trip.
+      if (await ctx.runMutation(internal.bridge.reparkIfBusy, { outboxId })) {
+        return;
+      }
       try {
         const response = await fetch(`${bridgeUrl.replace(/\/$/, "")}/send`, {
           method: "POST",
@@ -1941,6 +2057,17 @@ export const dispatch = internalAction({
           chatId: row.chatId as Id<"chats">,
         });
       }
+    } else if (errorCode === "talk_call_active") {
+      // NOT a failure: the bridge refused to cut a live voice call, and the turn was
+      // never sent. Put it BACK in the queue — it is dispatched when the call ends
+      // (the hangup drains), exactly like a turn held by the drain itself. Painting
+      // an error card here would tell the reader their message failed when it is
+      // simply waiting for the person to stop speaking.
+      await ctx.runMutation(internal.bridge.requeueForCall, {
+        outboxId,
+        expectedClientMessageId: row.dispatchKey ?? row.clientMessageId,
+      });
+      return;
     } else {
       // The bridge accepted the POST shape and the turn did not go through
       // (502) — either the gateway refused it, or the BRIDGE refused it itself

@@ -211,7 +211,7 @@ describe("COMPAT_MANIFEST shape", () => {
 
   test("openclaw provider pins the validated range + versions", () => {
     const oc = COMPAT_MANIFEST.providers.openclaw!;
-    expect(oc.supportedRange).toEqual({ min: "2026.5.19", maxValidated: "2026.9.4" });
+    expect(oc.supportedRange).toEqual({ min: "2026.5.19", maxValidated: "2026.9.5" });
     expect(oc.validatedVersions).toEqual([
       "2026.5.19",
       "2026.6.1",
@@ -224,6 +224,7 @@ describe("COMPAT_MANIFEST shape", () => {
       "2026.9.1",
       "2026.9.2",
       "2026.9.4",
+      "2026.9.5",
     ]);
     expect(Object.keys(oc.capabilities).sort()).toEqual([...ALL_CAPS].sort());
     // The two releases inside the range that a STOCK gateway cannot be trusted on:
@@ -375,13 +376,14 @@ describe("resolveCapabilities — conservative policy (unknown version)", () => 
 });
 
 describe("resolveCapabilities — beyond maxValidated", () => {
-  // All STRICTLY above maxValidated, which is 2026.9.4 since 2026-09-12 — so
-  // 2026.9.3 left this list: it is now BELOW the ceiling and resolves normally.
+  // All STRICTLY above maxValidated, which is 2026.9.5 since 2026-09-20 — so
+  // 2026.9.5 left this list, as 2026.9.3 did before it: a version that earns a GO
+  // stops being "beyond" and resolves normally.
   // The assertion below was already the frozen profile; only the NAME claimed
   // otherwise ("enables all validated capabilities" read as a grant). On the shipped
   // table the two rules coincide — see the shared-table suite for the input where
   // they do not.
-  test.each(["2026.9.5", "2026.10.0", "2027.1.1"])(
+  test.each(["2026.9.6", "2026.10.0", "2027.1.1"])(
     "%s is FROZEN at the maxValidated profile + flags versionBeyondValidated",
     (raw) => {
       const resolved = resolveCapabilities("openclaw", raw);
@@ -389,6 +391,20 @@ describe("resolveCapabilities — beyond maxValidated", () => {
       expect(resolved.versionBeyondValidated).toBe(true);
     },
   );
+
+  // The version this release adds: NOT beyond any more, and no banner. Pinned as its
+  // own case because the list above is what a reader scans for "is 9.5 still beyond?",
+  // and a name simply removed from a list leaves no trace of the decision.
+  test("2026.9.5 is the new ceiling: inside the range, no flag", () => {
+    const resolved = resolveCapabilities("openclaw", "2026.9.5");
+    // Identical to 2026.9.4's profile: no capability carries a 2026.9.5 floor, so the
+    // GO changes the CLAIM, not the surface. Said here so a future capability gated on
+    // 2026.9.5 has to change this line deliberately.
+    expect(resolved.capabilities).toEqual(
+      resolveCapabilities("openclaw", "2026.9.4").capabilities,
+    );
+    expect(resolved.versionBeyondValidated).toBe(false);
+  });
 
   test("exactly maxValidated is NOT beyond", () => {
     expect(

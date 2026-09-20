@@ -196,6 +196,17 @@ export interface AgentSelectorGate {
   hidden: boolean;
   disabled: boolean;
   mode: AgentSelectorMode;
+  /** WHY it is disabled, when the reason is not the first-turn rule. The trigger
+   *  shows a different hint for each: a reader told "set with the first message"
+   *  while they are on a call would go looking for a message that does not exist. */
+  reason?: "call-active";
+  /** WHO is on the line, when `reason` is "call-active". The label must name the
+   *  agent the CALL is on, not this tab's local selection: another tab, or a
+   *  participant with a different pick, showed a locked control naming the wrong
+   *  agent while the call ran on someone else (codex P2, pass 5). Carried on the
+   *  gate, beside the decision it belongs to — the closure and the name coming from
+   *  two different reads is how they disagreed in the first place. */
+  onCall?: { instanceName: string; agentId: string } | null;
 }
 
 /**
@@ -241,8 +252,28 @@ export function resolveAgentSelectorGate(params: {
    *  would light the escape hatch up over a list where nothing can be clicked: an
    *  active control with no possible action, which is the same lie in a new place. */
   poolSize: number;
+  /** A voice call is up on this chat. Its agent is pinned (the gateway holds the
+   *  session and the mid-call consult addresses that agent), so switching would
+   *  split the conversation in two — and on a gateway-owned call it would end the
+   *  call. The server refuses it too (`TALK_CALL_ACTIVE`); this is the half that
+   *  tells the reader BEFORE they click. */
+  callActive?: boolean;
+  /** The agent that call is on, when the server knows it. */
+  onCall?: { instanceName: string; agentId: string } | null;
 }): AgentSelectorGate {
   const { hasUserTurn, emptyThread, readOnly, multiAgent, poolSize } = params;
+  // Ahead of every other verdict, and never HIDDEN: the control must keep showing
+  // which agent is on the line — it is simply not changeable right now.
+  if (params.callActive === true) {
+    const hiddenDuringCall = poolSize === 0 || !multiAgent;
+    return {
+      hidden: hiddenDuringCall,
+      disabled: true,
+      mode: "route",
+      reason: "call-active",
+      onCall: params.onCall ?? null,
+    };
+  }
   const verdict: Omit<AgentSelectorGate, "hidden"> = emptyThread
     ? { disabled: false, mode: "rebind" }
     : hasUserTurn && !readOnly

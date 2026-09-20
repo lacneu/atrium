@@ -546,8 +546,33 @@ export function planPromotion(results, sliceFiles) {
     }
   }
   const sliced = new Set(sliceIds);
+  // A scenario that CANNOT be captured, said out loud by the run that produced it.
+  // `talk-session` is the first OpenClaw scenario to drive the gateway over the OPERATOR
+  // connection (`talk.client.create` is an RPC, not a turn), and the capture records the
+  // session socket alone — so the harness writes no slice for it, by construction.
+  //
+  // That is a different fact from a slice that went MISSING, and the two must not be
+  // conflated in either direction: a partial capture promoted as complete deletes the
+  // absent scenarios' fixtures as stale, which is the whole reason this guard exists.
+  // So the exemption is DECLARED (`capturesFrames: false`), never inferred: a report
+  // that does not carry the field — every run before this one — still fails closed.
+  const declaredNoCapture = new Set(
+    list.filter((r) => r.capturesFrames === false).map((r) => r.id),
+  );
+  // …and the declaration must agree with the directory. A scenario that claims it
+  // captures nothing yet produced a slice is a harness that changed under this script:
+  // promoting it would publish a fixture nothing re-derives.
+  const contradicted = [...declaredNoCapture].filter((id) => sliced.has(id));
+  if (contradicted.length > 0) {
+    throw new Error(
+      `result(s) declare capturesFrames:false yet a slice exists: ${contradicted.join(", ")} — the harness and this script disagree`,
+    );
+  }
   const missing = list
-    .filter((r) => r.provider === "openclaw" && !sliced.has(r.id))
+    .filter(
+      (r) =>
+        r.provider === "openclaw" && !sliced.has(r.id) && !declaredNoCapture.has(r.id),
+    )
     .map((r) => r.id);
   if (missing.length > 0) {
     throw new Error(

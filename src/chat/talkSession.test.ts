@@ -204,6 +204,15 @@ describe("parseTalkToolCall (provider data-channel events)", () => {
 describe("talkErrorKey (total mapping)", () => {
   it("maps known codes and collapses the rest onto generic", () => {
     expect(talkErrorKey("talk_disabled")).toBe("talk_error_disabled");
+    // TWO SPELLINGS, one fact: Convex refuses `call_active` from its own reading, the
+    // BRIDGE refuses `talk_call_active` when only the socket could tell. A second tab
+    // that slipped past both Convex reads must not get the generic message with a raw
+    // code instead of "hang up first" (codex P3, pass 4).
+    expect(talkErrorKey("call_active")).toBe("talk_error_call_active");
+    expect(talkErrorKey("talk_call_active")).toBe("talk_error_call_active");
+    // The MIRROR is a different fact from "someone is already speaking", and the
+    // reader acts on it differently: they wait for an answer, not for a call.
+    expect(talkErrorKey("turn_in_flight")).toBe("talk_error_turn_in_flight");
     // Without this, dropping the mapping shows the generic message for a session
     // the user is told to restart.
     expect(talkErrorKey("talk_session_stale")).toBe("talk_error_session_stale");
@@ -307,6 +316,24 @@ describe("hidesTalkControl (when the button may disappear)", () => {
       hidesTalkControl({ ...up, phase: "idle", available: undefined }),
     ).toBe(true);
     expect(hidesTalkControl({ ...up, phase: "idle" })).toBe(false);
+  });
+
+  it("…but NOT while the server still sees a call this tab does not own", () => {
+    // The recovery hangup must not vanish on the very answer that makes it needed: an
+    // admin disabling talk, or the agent revoked, flips `available` to false while
+    // the call goes on freezing the chat. `prepareTalkHangup` authorizes a hangup
+    // after exactly those two events, so hiding the only control that can send it
+    // left the freeze standing for the whole window with no way out (codex P2, pass 8).
+    expect(
+      hidesTalkControl({ phase: "idle", available: false, serverCall: true }),
+    ).toBe(false);
+    expect(
+      hidesTalkControl({ phase: "idle", available: undefined, serverCall: true }),
+    ).toBe(false);
+    // …and with no call to end, an unavailable instance still shows nothing.
+    expect(
+      hidesTalkControl({ phase: "idle", available: false, serverCall: false }),
+    ).toBe(true);
   });
 
   it("a RUNNING call is never hidden — the user would lose the controls", () => {
@@ -444,9 +471,12 @@ describe("mintedSessionDisposition — a session that arrives after the user hun
     // per socket; left alone it blocks a reservation until its TTL.
     expect(mintedSessionDisposition({ offerRelay: { relayId: "r" } }, false)).toBe("hangup-now");
   });
-  it("simply drops a direct session — it is the browser's own and expires", () => {
-    expect(mintedSessionDisposition({ offerRelay: null }, false)).toBe("drop");
-    expect(mintedSessionDisposition({}, false)).toBe("drop");
+  it("hangs up a DIRECT session too — an unclosed one freezes the chat's agent", () => {
+    // It holds no gateway resource, but the server reads the row as a live call and
+    // a live call freezes the agent: dropping it silently locked the selector for
+    // the whole call window (codex P1, pass 2).
+    expect(mintedSessionDisposition({ offerRelay: null }, false)).toBe("hangup-now");
+    expect(mintedSessionDisposition({}, false)).toBe("hangup-now");
   });
 });
 

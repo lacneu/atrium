@@ -23,6 +23,7 @@ import {
   InboundMediaRefusal,
 } from "./inbound-media.js";
 import { HermesDashboardAbsentError } from "../providers/hermes/files-fetcher.js";
+import { TalkCallActiveError } from "../session.js";
 import { isSessionInitConflictText, withoutOperatorData } from "./failure-classifier.js";
 
 export type DispatchErrorCode =
@@ -87,6 +88,17 @@ export type DispatchErrorCode =
   | "attachment_name_too_long"
   | "attachment_staging_failed"
   | "attachment_cleanup_unconfirmed"
+  // THE BRIDGE ITSELF refused to re-key the chat's socket, because a gateway-owned
+  // voice call is live on it. ONE live socket per chat is this registry's invariant,
+  // and the GATEWAY binds a GPT Live call to the socket that minted it — so re-keying
+  // ends the call. Until 2026-09-19 the registry logged that and did it anyway; the
+  // decision is now that a call in progress is not something a typed turn may cut.
+  // THE TURN WAS NEVER SENT: `acquire` throws before any gateway RPC.
+  //
+  // A DISTINCT code because Convex acts on it differently from every other refusal:
+  // the turn is not failed, it is put BACK in the queue and dispatched when the call
+  // ends. Lower-case like the other codes Convex reads.
+  | "talk_call_active"
   | "UPSTREAM_ERROR"; // anything else (fallback)
 
 /**
@@ -127,6 +139,10 @@ const LOCAL_REFUSAL_CODES: ReadonlySet<DispatchErrorCode> = new Set([
   "attachment_name_too_long",
   "attachment_staging_failed",
   "attachment_cleanup_unconfirmed",
+  // We refused to cut a live call. The link and the credentials are fine — painting
+  // the bridge red for honouring its own invariant is the exact lie this class exists
+  // to prevent.
+  "talk_call_active",
 ]);
 
 // Codes where the gateway DEMONSTRABLY responded and refused this specific request
@@ -241,6 +257,8 @@ export function classifyGatewayError(
   // Same rule, same reason: a surface the fetcher PROVED absent is recognised by type, so
   // the class survives any rewording of the message.
   if (err instanceof HermesDashboardAbsentError) return "DASHBOARD_NOT_DEPLOYED";
+  // Our own refusal to cut a live voice call, by TYPE for the same reason.
+  if (err instanceof TalkCallActiveError) return "talk_call_active";
   // OUR OWN inbound-media refusal, by TYPE for the same reason. Only the BATCH
   // failures reach here — a size/collision/fetch failure drops that one file and
   // the send continues (`RECOVERABLE_DROP_FAILURES`) — but the size class is

@@ -324,7 +324,7 @@ export const COMPAT_MANIFEST: CompatManifest = {
       // hashes). It had previously been declared through its beta.2 RC
       // (release-day upgrades stay in support with no banner) — that proxy
       // note is now history, the row stands on its own run.
-      supportedRange: { min: "2026.5.19", maxValidated: "2026.9.4" },
+      supportedRange: { min: "2026.5.19", maxValidated: "2026.9.5" },
       // Inside the range, and BROKEN on a stock gateway: a managed-media
       // `attachment` block persisted by the gateway's own path crashes
       // `transcript-transform` on every later turn of that session (upstream
@@ -423,6 +423,43 @@ export const COMPAT_MANIFEST: CompatManifest = {
         // New surface (Skill Workshop, update reports, cloud workers, the
         // Plugins workspace, task history) vendored and classified, not adopted.
         "2026.9.4",
+        // 2026.9.5: full live suite GO (2026-09-20) on the PATCHED distribution
+        // image, which is the image the parc runs — the bench validates what is
+        // deployed, not an upstream tarball nobody installs.
+        //
+        // TWO things had to be built before this run could be green, and both are
+        // load-bearing for anyone reading this row:
+        //
+        //  - VOICE. This release makes GPT Live the default browser realtime model
+        //    when `talk.realtime.model` is unset, and a GPT Live call is
+        //    GATEWAY-OWNED: bound to the socket that called `talk.client.create`,
+        //    consulted under that socket's identity, closed when it closes, with an
+        //    SDP offer path ON the gateway that no browser here can reach. Atrium
+        //    now mints on the conversation's own long-lived socket and relays the
+        //    offer through the bridge. The classic `gpt-realtime` lane is untouched.
+        //
+        //  - PLUGINS ON THE AGENT PATH. Upstream ties a plugin's RUNTIME side
+        //    effects to whether its registry is PUBLISHED as the process-wide one
+        //    (`runtimeSideEffects ?? shouldActivate`, loader-load-context.ts:356-358),
+        //    and the agent-runtime load passes `activate: false` — as it did in
+        //    2026.9.4, where the flag did not exist. So every plugin on an agent
+        //    turn goes mute: `emitAgentEvent` answers "global side effects
+        //    disabled", next-turn injection is dropped, run context and session
+        //    attachments refuse. No error, no diagnostic, the turn completes. There
+        //    is NO config key and NO environment variable for it anywhere in the
+        //    tree: the flag is settable only by the caller, in code. The
+        //    distribution image restores it (openclaw-docker
+        //    `patch-runtime-side-effects.mjs`), which is why this row stands on the
+        //    custom image and would NOT stand on a stock 2026.9.5 gateway.
+        //
+        // UPGRADE NOTE, one-way: the agent database schema moves 19 -> 21
+        // (`OPENCLAW_AGENT_SCHEMA_VERSION`). Until it is migrated the gateway
+        // refuses EVERY session with `UNAVAILABLE` /
+        // `details.code = "agent-database-inspection-failed"`. Run `openclaw doctor
+        // --fix` with the container stopped, then restart. Going BACK to 2026.9.4
+        // needs a state snapshot AND fresh agent databases: an older binary refuses
+        // both a newer config and a newer schema, by design.
+        "2026.9.5",
       ],
       capabilities: OPENCLAW_CAPABILITIES,
     },

@@ -15,6 +15,7 @@ import {
   humanConnectIdentity,
   systemConnectIdentity,
 } from "./providers/openclaw/connect-identity.js";
+import { TALK_CALL_HOLD_MS } from "./core/talk-relay.js";
 import { isHeaderSafeIdentity } from "./providers/openclaw/gateway-identity.js";
 import { OpenClawConnection } from "./providers/openclaw/openclaw-client.js";
 import { RunManager } from "./providers/openclaw/run-manager.js";
@@ -167,6 +168,10 @@ export interface BridgeSession {
    *  released it, and re-arming would pin the socket for a call the gateway has
    *  closed (codex P2, pass 3). */
   extendVoiceCall(voiceSessionId: string, holdMs: number): boolean;
+  /** Extend every live hold on this socket — see the implementation. */
+  extendLiveVoiceCalls(holdMs: number): number;
+  /** Is a gateway-owned voice call possibly live on this socket at `now`? */
+  holdsVoiceCall(now: number): boolean;
   /** THAT call ended (hangup, or the gateway closed it). The gateway allows two calls
    *  per owning socket, so releasing one must not release the other (codex P1). */
   releaseVoiceCall(voiceSessionId: string): void;
@@ -241,11 +246,17 @@ class Session implements BridgeSession {
   // don't accumulate to FD exhaustion (the next send transparently reconnects).
   lastActivityAt: number;
   // Per voice call the gateway bound to THIS socket: until which instant (SECONDS
-  // clock) it may still be live. The sweeper treats the session as busy while any
-  // entry is in the future. Keyed by voiceSessionId because the gateway allows two
-  // calls per owning socket — one timestamp would let the first hangup release the
-  // second call's hold (codex P1, 2026-09-19).
-  private readonly voiceCallsUntil = new Map<string, number>();
+  // clock) it may still be live, and the CEILING past which no extension may push it.
+  // The sweeper treats the session as busy while any entry is in the future. Keyed by
+  // voiceSessionId because the gateway allows two calls per owning socket — one
+  // timestamp would let the first hangup release the second call's hold (codex P1,
+  // 2026-09-19). The ceiling exists because the gateway arms a call's TTL at
+  // ALLOCATION: every hold for one call dies at the same absolute instant however
+  // often it is extended (codex P2, pass 13).
+  private readonly voiceCallsUntil = new Map<
+    string,
+    { until: number; ceiling: number }
+  >();
   private readonly transcriptFetcher?: TranscriptFetcher;
   // Tail of the CURRENT turn's sent user message (set by the send path at
   // beginTurn). The orphan recovery only accepts a transcript whose last user
@@ -1232,20 +1243,80 @@ class Session implements BridgeSession {
     }
   }
 
+  /**
+   * Hold the socket for a call, with a CEILING it can never be extended past.
+   *
+   * The gateway arms a call's 30-minute TTL at ALLOCATION — the mint — not when the
+   * browser finally connects. So every hold for a given call, however often it is
+   * later extended, dies at the same absolute instant. Without that ceiling an
+   * extension simply reset the clock, and a consult belonging to one call pushed an
+   * unrelated, already-dead call on the same socket half an hour past its own TTL
+   * (the gateway allows two per owner connection) — freezing the chat's agent long
+   * after anything was live (codex P2, pass 13).
+   */
   holdForVoiceCall(voiceSessionId: string, holdMs: number): void {
-    this.voiceCallsUntil.set(voiceSessionId, this.clock() + Math.ceil(holdMs / 1000));
-    this.lastActivityAt = this.clock();
+    const now = this.clock();
+    const existing = this.voiceCallsUntil.get(voiceSessionId);
+    this.voiceCallsUntil.set(voiceSessionId, {
+      until: now + Math.ceil(holdMs / 1000),
+      // Re-holding the SAME id keeps the original ceiling: it is the same call.
+      ceiling: existing?.ceiling ?? now + Math.ceil(TALK_CALL_HOLD_MS / 1000),
+    });
+    this.lastActivityAt = now;
   }
 
+  /**
+   * Extend a hold BY NAME — and re-set its ceiling with it.
+   *
+   * This is the allocation moment: the offer being spent is when the gateway arms the
+   * call's TTL, up to a minute after the mint. The caller names the call, so it knows
+   * what it is saying; `extendLiveVoiceCalls` does not and may only prolong WITHIN
+   * the ceiling this sets.
+   */
   extendVoiceCall(voiceSessionId: string, holdMs: number): boolean {
+    const now = this.clock();
     const current = this.voiceCallsUntil.get(voiceSessionId);
-    if (current === undefined || current <= this.clock()) {
+    if (current === undefined || current.until <= now) {
       this.voiceCallsUntil.delete(voiceSessionId);
       return false;
     }
-    this.voiceCallsUntil.set(voiceSessionId, this.clock() + Math.ceil(holdMs / 1000));
-    this.lastActivityAt = this.clock();
+    current.until = now + Math.ceil(holdMs / 1000);
+    current.ceiling = current.until;
+    this.lastActivityAt = now;
     return true;
+  }
+
+  /**
+   * Extend every hold that is still live, without naming one.
+   *
+   * The relayed lane extends by id when the offer is spent — its proof that the call
+   * really connected. The DIRECT lane has no such moment: the browser talks to the
+   * provider and the bridge never hears about it. Its one server-visible proof of
+   * life is a CONSULT, which does not carry a voice session id. So the consult
+   * extends whatever this socket is holding: it cannot name the call, but it has
+   * just proven one is happening (codex P1, pass 12).
+   *
+   * Returns how many holds were extended — zero means the consult belongs to a call
+   * this socket never held, which the caller may ignore.
+   */
+  extendLiveVoiceCalls(holdMs: number): number {
+    const now = this.clock();
+    let extended = 0;
+    for (const [id, hold] of this.voiceCallsUntil) {
+      if (hold.until <= now) {
+        this.voiceCallsUntil.delete(id);
+        continue;
+      }
+      // Clamped to each hold's OWN ceiling: a consult proves a call is live, not
+      // WHICH one, so it must never push another past the instant it must die.
+      const next = Math.min(now + Math.ceil(holdMs / 1000), hold.ceiling);
+      if (next > hold.until) {
+        hold.until = next;
+        extended += 1;
+      }
+    }
+    if (extended > 0) this.lastActivityAt = now;
+    return extended;
   }
 
   releaseVoiceCall(voiceSessionId: string): void {
@@ -1256,8 +1327,8 @@ class Session implements BridgeSession {
    *  holds are dropped on the way, so an un-hung-up call cannot pin the socket past
    *  the gateway's own call TTL. */
   holdsVoiceCall(now: number): boolean {
-    for (const [id, until] of this.voiceCallsUntil) {
-      if (until > now) return true;
+    for (const [id, hold] of this.voiceCallsUntil) {
+      if (hold.until > now) return true;
       this.voiceCallsUntil.delete(id);
     }
     return false;
@@ -1366,6 +1437,22 @@ function gatewayNameFor(routing: SessionRouting): string {
   return routing.canonical;
 }
 
+/**
+ * The registry refused to re-key a chat's socket: a gateway-owned voice call is live
+ * on it, and the gateway ends that call with the socket. THE TURN WAS NEVER SENT —
+ * this is thrown before any gateway RPC.
+ *
+ * Carries no chat content, only the chat id the bridge already logs.
+ */
+export class TalkCallActiveError extends Error {
+  constructor(readonly chatId: string) {
+    super(
+      `send withheld: a gateway-owned voice call is live on chat ${chatId}'s socket`,
+    );
+    this.name = "TalkCallActiveError";
+  }
+}
+
 export class SessionRegistry {
   private readonly sessions = new Map<string, Session>();
   private readonly inflight = new Map<string, Promise<Session>>();
@@ -1470,6 +1557,13 @@ export class SessionRegistry {
     return this.served.get(instanceName)?.writer;
   }
 
+  /**
+   * Refuse to re-key the chat's socket while a gateway-owned voice call is live on
+   * it. Thrown BEFORE any gateway RPC: the turn is never sent.
+   *
+   * By TYPE, not by message, like every other decision the bridge takes itself — a
+   * refusal must not depend on how it was phrased (`classifyGatewayError`).
+   */
   async acquire(routing: SessionRouting): Promise<BridgeSession> {
     this.ensureSweeper();
     const { chatId, openclawChatId, agentId, canonical } = routing;
@@ -1507,15 +1601,18 @@ export class SessionRegistry {
         // ONE live socket per chat is this registry's invariant (the old consumer
         // loop would keep writing under the old key). A gateway-owned voice call
         // (GPT Live) is bound by the GATEWAY to the socket that minted it and ends
-        // with that socket — so switching the chat's agent mid-call ENDS THE CALL.
-        // A decision, stated by name rather than left to a mute `rtc_lost` in the
-        // browser: keeping the old socket alive beside the new one would need a
-        // second live session per chat, which this registry does not model
-        // (codex P1, 2026-09-19 — recorded, not fixed here).
+        // with that socket — so re-keying mid-call ENDS THE CALL.
+        //
+        // THE REFUSAL LIVES HERE, and nowhere else can make it true. Convex checks
+        // the freeze before every send, every drain, every mint — but each of those
+        // is a read that happens BEFORE the POST, so a call minted in the gap still
+        // got cut (two concurrent mints; a call started while the dispatch was
+        // encoding attachments — codex P1, pass 3). This is the one place every path
+        // funnels through, and the only one that can decide with the socket in hand.
+        // Refusing here also makes the guarantee hold against a client that never
+        // asked Convex at all.
         if (existing.holdsVoiceCall(this.clock())) {
-          console.warn(
-            `[talk] chat ${chatId}: re-keyed to ${sessionKey} while a gateway-owned voice call was live on the previous socket — the gateway ends that call with the socket`,
-          );
+          throw new TalkCallActiveError(chatId);
         }
         existing.close();
       }

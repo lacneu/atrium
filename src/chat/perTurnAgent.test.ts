@@ -590,3 +590,78 @@ describe("imported agent labels", () => {
     expect(labels.get("a1")).toBe(null);
   });
 });
+
+describe("the agent is frozen while a voice call is in progress", () => {
+  // A call is minted for the agent selected at that instant: the gateway holds the
+  // session and the mid-call consult addresses THAT agent. Switching would split one
+  // conversation across two agents — and on a gateway-owned call (GPT Live, the
+  // OpenClaw 2026.9.5 default) it would end the call outright, since the bridge keeps
+  // one live socket per chat and re-keying it closes the one the call is bound to.
+  const base = {
+    hasUserTurn: true,
+    emptyThread: false,
+    unavailable: false,
+    readOnly: false,
+    multiAgent: true,
+    poolSize: 3,
+  };
+
+  test("closes the control, and says the call is why", () => {
+    expect(resolveAgentSelectorGate({ ...base, callActive: true })).toEqual({
+      hidden: false,
+      disabled: true,
+      mode: "route",
+      reason: "call-active",
+      onCall: null,
+    });
+  });
+
+  test("carries WHO is on the line, so the locked label is the CALL's agent", () => {
+    // The control's whole job while closed is to say who is on the line. Left to the
+    // tab's own selection it named the wrong agent for a second tab, or for a
+    // participant whose pick differs from the owner's call (codex P2, pass 5).
+    const onCall = { instanceName: "lacneu", agentId: "alice" };
+    expect(
+      resolveAgentSelectorGate({ ...base, callActive: true, onCall }).onCall,
+    ).toEqual(onCall);
+    // …and it is NOT carried when no call is up: a stale name on an open control
+    // would be a different lie in the same place.
+    expect(
+      resolveAgentSelectorGate({ ...base, callActive: false, onCall }).onCall,
+    ).toBeUndefined();
+  });
+
+  test("still SHOWS which agent is on the line — closed is not hidden", () => {
+    // Hiding it would leave the reader with no idea who they are talking to at the
+    // exact moment that matters most.
+    expect(resolveAgentSelectorGate({ ...base, callActive: true }).hidden).toBe(false);
+  });
+
+  test("outranks every other verdict, including the one that would OPEN it", () => {
+    // An empty thread normally opens the control in `rebind` mode. A call on an empty
+    // thread is possible (the voice button does not need a typed turn), and a rebind
+    // during a call is exactly what must not happen.
+    const onEmpty = resolveAgentSelectorGate({
+      ...base,
+      hasUserTurn: false,
+      emptyThread: true,
+      callActive: true,
+    });
+    expect(onEmpty.disabled).toBe(true);
+    expect(onEmpty.mode).toBe("route");
+    expect(onEmpty.reason).toBe("call-active");
+  });
+
+  test("changes nothing when no call is up", () => {
+    const off = resolveAgentSelectorGate({ ...base, callActive: false });
+    expect(off).toEqual({ hidden: false, disabled: false, mode: "route" });
+    // …and the flag is optional: every existing caller keeps its verdict.
+    expect(resolveAgentSelectorGate(base)).toEqual(off);
+  });
+
+  test("a single-agent user still sees nothing — there was never a choice", () => {
+    expect(
+      resolveAgentSelectorGate({ ...base, multiAgent: false, callActive: true }).hidden,
+    ).toBe(true);
+  });
+});

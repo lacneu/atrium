@@ -43,6 +43,7 @@ import type { Id } from "../../convex/_generated/dataModel";
 import { ActivityRow } from "./ActivityRow";
 import { AgentMarkdown } from "./MarkdownText";
 import { ToolCard } from "./ToolCard";
+import { useToast } from "@/components/ui/toast";
 import {
   SubAgentReportDialog,
   type SubAgentReportTarget,
@@ -699,6 +700,7 @@ export function SubAgentPanelContent({
   // 2c send: dispatch the user's message (+ any staged files) to the sub-agent
   // (chat.send to the child); the reply arrives async into the interaction thread.
   // A message may be text-only OR file-only. Clears the draft + strip on accept.
+  const toast = useToast();
   const doSend = async () => {
     const text = draft.trim();
     // Same guard as the disabled button — Enter in the textarea calls doSend()
@@ -723,6 +725,17 @@ export function SubAgentPanelContent({
       });
       setDraft("");
       setAttachments([]);
+    } catch (e) {
+      // A SERVER REFUSAL, said out loud. The freeze refuses this door too — a message
+      // to a child of another agent would reach it mid-call — and with only a
+      // `finally` the rejection died silently: the draft stayed, nothing happened,
+      // and the reader had no idea why (codex P3, pass 21). The draft is deliberately
+      // KEPT so the message is not lost.
+      toast.error(
+        String((e as Error)?.message ?? "").includes("TALK_CALL_ACTIVE")
+          ? m.chat_send_call_active()
+          : m.chat_queue_failed(),
+      );
     } finally {
       setSending(false);
     }

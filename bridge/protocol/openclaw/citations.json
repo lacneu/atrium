@@ -5,7 +5,7 @@
       "source": "bridge/test/fixtures/openclaw_upstream_frames.json",
       "cite": "embedded-agent-subscribe.handlers.lifecycle.ts:41-52",
       "repo": "upstream",
-      "tag": "2026.9.4",
+      "tag": "2026.9.5",
       "path": "src/agents/embedded-agent-subscribe.handlers.lifecycle.ts",
       "lines": [
         [
@@ -21,7 +21,7 @@
       "source": "bridge/test/fixtures/openclaw_upstream_frames.json",
       "cite": "packages/agent-core/src/agent-loop.ts:180",
       "repo": "upstream",
-      "tag": "2026.9.4",
+      "tag": "2026.9.5",
       "path": "packages/agent-core/src/agent-loop.ts",
       "lines": [
         [
@@ -35,14 +35,14 @@
     },
     {
       "source": "bridge/test/fixtures/openclaw_upstream_frames.json",
-      "cite": "run/attempt-session-prepare.ts:571",
+      "cite": "run/attempt-session-prepare.ts:581",
       "repo": "upstream",
-      "tag": "2026.9.4",
+      "tag": "2026.9.5",
       "path": "src/agents/embedded-agent-runner/run/attempt-session-prepare.ts",
       "lines": [
         [
-          571,
-          571
+          581,
+          581
         ]
       ],
       "literals": [
@@ -51,14 +51,14 @@
     },
     {
       "source": "bridge/test/fixtures/openclaw_upstream_frames.json",
-      "cite": "run/pre-persisted-user-turn.ts:64",
+      "cite": "run/pre-persisted-user-turn.ts:96",
       "repo": "upstream",
-      "tag": "2026.9.4",
+      "tag": "2026.9.5",
       "path": "src/agents/embedded-agent-runner/run/pre-persisted-user-turn.ts",
       "lines": [
         [
-          64,
-          64
+          96,
+          96
         ]
       ],
       "literals": [
@@ -67,14 +67,14 @@
     },
     {
       "source": "bridge/test/fixtures/openclaw_upstream_frames.json",
-      "cite": "run/session-prompt-state.ts:53",
+      "cite": "run/session-prompt-state.ts:54",
       "repo": "upstream",
-      "tag": "2026.9.4",
+      "tag": "2026.9.5",
       "path": "src/agents/embedded-agent-runner/run/session-prompt-state.ts",
       "lines": [
         [
-          53,
-          53
+          54,
+          54
         ]
       ],
       "literals": [
@@ -83,18 +83,18 @@
     },
     {
       "source": "bridge/test/fixtures/openclaw_upstream_frames.json",
-      "cite": "run/settled-turn-finalization.ts:538,585",
+      "cite": "run/settled-turn-finalization.ts:573,620",
       "repo": "upstream",
-      "tag": "2026.9.4",
+      "tag": "2026.9.5",
       "path": "src/agents/embedded-agent-runner/run/settled-turn-finalization.ts",
       "lines": [
         [
-          538,
-          538
+          573,
+          573
         ],
         [
-          585,
-          585
+          620,
+          620
         ]
       ],
       "literals": [
@@ -104,14 +104,14 @@
     },
     {
       "source": "bridge/test/fixtures/openclaw_upstream_frames.json",
-      "cite": "server-chat.ts:1239",
+      "cite": "server-chat.ts:1264",
       "repo": "upstream",
-      "tag": "2026.9.4",
+      "tag": "2026.9.5",
       "path": "src/gateway/server-chat.ts",
       "lines": [
         [
-          1239,
-          1239
+          1264,
+          1264
         ]
       ],
       "literals": [
@@ -120,14 +120,14 @@
     },
     {
       "source": "bridge/test/fixtures/openclaw_upstream_frames.json",
-      "cite": "src/agents/embedded-agent-runner/run/session-bootstrap.ts:262",
+      "cite": "src/agents/embedded-agent-runner/run/session-bootstrap.ts:286",
       "repo": "upstream",
-      "tag": "2026.9.4",
+      "tag": "2026.9.5",
       "path": "src/agents/embedded-agent-runner/run/session-bootstrap.ts",
       "lines": [
         [
-          262,
-          262
+          286,
+          286
         ]
       ],
       "literals": [
@@ -136,14 +136,14 @@
     },
     {
       "source": "bridge/test/fixtures/openclaw_upstream_frames.json",
-      "cite": "src/agents/model-fallback.test.ts:1974",
+      "cite": "src/agents/model-fallback.test.ts:1949",
       "repo": "upstream",
-      "tag": "2026.9.4",
+      "tag": "2026.9.5",
       "path": "src/agents/model-fallback.test.ts",
       "lines": [
         [
-          1974,
-          1974
+          1949,
+          1949
         ]
       ],
       "literals": [
@@ -152,22 +152,22 @@
     },
     {
       "source": "bridge/test/fixtures/openclaw_upstream_frames.json",
-      "cite": "src/agents/sessions/agent-session-compaction.ts:121-122,128-129,142-145",
+      "cite": "src/agents/sessions/agent-session-compaction.ts:122-123,129-130,143-146",
       "repo": "upstream",
-      "tag": "2026.9.4",
+      "tag": "2026.9.5",
       "path": "src/agents/sessions/agent-session-compaction.ts",
       "lines": [
         [
-          121,
-          122
+          122,
+          123
         ],
         [
-          128,
-          129
+          129,
+          130
         ],
         [
-          142,
-          145
+          143,
+          146
         ]
       ],
       "literals": [
@@ -180,7 +180,7 @@
       "source": "bridge/test/fixtures/openclaw_upstream_frames.json",
       "cite": "src/auto-reply/reply/session-init-conflict-retry.ts:12",
       "repo": "upstream",
-      "tag": "2026.9.4",
+      "tag": "2026.9.5",
       "path": "src/auto-reply/reply/session-init-conflict-retry.ts",
       "lines": [
         [
@@ -196,7 +196,7 @@
       "source": "bridge/test/fixtures/openclaw_upstream_frames.json",
       "cite": "src/auto-reply/reply/session.init-conflict-retry.test.ts:110,122",
       "repo": "upstream",
-      "tag": "2026.9.4",
+      "tag": "2026.9.5",
       "path": "src/auto-reply/reply/session.init-conflict-retry.test.ts",
       "lines": [
         [
@@ -215,14 +215,14 @@
     },
     {
       "source": "bridge/test/fixtures/openclaw_upstream_frames.json",
-      "cite": "src/config/sessions/transcript-write-context.ts:240",
+      "cite": "src/config/sessions/transcript-write-context.ts:241",
       "repo": "upstream",
-      "tag": "2026.9.4",
+      "tag": "2026.9.5",
       "path": "src/config/sessions/transcript-write-context.ts",
       "lines": [
         [
-          240,
-          240
+          241,
+          241
         ]
       ],
       "literals": [
@@ -233,7 +233,7 @@
       "source": "bridge/test/fixtures/openclaw_upstream_frames.json",
       "cite": "src/gateway/chat-abort.test.ts:470-484",
       "repo": "upstream",
-      "tag": "2026.9.4",
+      "tag": "2026.9.5",
       "path": "src/gateway/chat-abort.test.ts",
       "lines": [
         [
@@ -247,14 +247,14 @@
     },
     {
       "source": "bridge/test/fixtures/openclaw_upstream_frames.json",
-      "cite": "src/gateway/server-chat.agent-events.test.ts:4573-4582",
+      "cite": "src/gateway/server-chat.agent-events.test.ts:4709-4718",
       "repo": "upstream",
-      "tag": "2026.9.4",
+      "tag": "2026.9.5",
       "path": "src/gateway/server-chat.agent-events.test.ts",
       "lines": [
         [
-          4573,
-          4582
+          4709,
+          4718
         ]
       ],
       "literals": [
@@ -263,14 +263,14 @@
     },
     {
       "source": "bridge/test/fixtures/openclaw_upstream_frames.json",
-      "cite": "src/gateway/server-chat.agent-events.test.ts:4655-4682",
+      "cite": "src/gateway/server-chat.agent-events.test.ts:4791-4818",
       "repo": "upstream",
-      "tag": "2026.9.4",
+      "tag": "2026.9.5",
       "path": "src/gateway/server-chat.agent-events.test.ts",
       "lines": [
         [
-          4655,
-          4682
+          4791,
+          4818
         ]
       ],
       "literals": [
@@ -279,14 +279,14 @@
     },
     {
       "source": "bridge/test/fixtures/openclaw_upstream_frames.json",
-      "cite": "src/gateway/server-chat.agent-events.test.ts:5675-5702",
+      "cite": "src/gateway/server-chat.agent-events.test.ts:5771-5798",
       "repo": "upstream",
-      "tag": "2026.9.4",
+      "tag": "2026.9.5",
       "path": "src/gateway/server-chat.agent-events.test.ts",
       "lines": [
         [
-          5675,
-          5702
+          5771,
+          5798
         ]
       ],
       "literals": [
@@ -297,7 +297,7 @@
       "source": "bridge/test/fixtures/openclaw_upstream_frames.json",
       "cite": "src/gateway/ws-log.test.ts:130-132,139-140",
       "repo": "upstream",
-      "tag": "2026.9.4",
+      "tag": "2026.9.5",
       "path": "src/gateway/ws-log.test.ts",
       "lines": [
         [
@@ -316,14 +316,14 @@
     },
     {
       "source": "bridge/test/fixtures/openclaw_upstream_frames.json",
-      "cite": "src/infra/agent-events.test.ts:796-801",
+      "cite": "src/infra/agent-events.test.ts:788-793",
       "repo": "upstream",
-      "tag": "2026.9.4",
+      "tag": "2026.9.5",
       "path": "src/infra/agent-events.test.ts",
       "lines": [
         [
-          796,
-          801
+          788,
+          793
         ]
       ],
       "literals": [
@@ -334,7 +334,7 @@
       "source": "bridge/test/fixtures/openclaw_upstream_frames.json",
       "cite": "src/plugins/wired-hooks-compaction.test.ts:243-252",
       "repo": "upstream",
-      "tag": "2026.9.4",
+      "tag": "2026.9.5",
       "path": "src/plugins/wired-hooks-compaction.test.ts",
       "lines": [
         [
@@ -350,7 +350,7 @@
       "source": "bridge/test/fixtures/openclaw_upstream_frames.json",
       "cite": "subagent-announce-delivery-retry.ts:146-181",
       "repo": "upstream",
-      "tag": "2026.9.4",
+      "tag": "2026.9.5",
       "path": "src/agents/subagents/announce/subagent-announce-delivery-retry.ts",
       "lines": [
         [
@@ -366,7 +366,7 @@
       "source": "bridge/test/fixtures/openclaw_upstream_frames.json",
       "cite": "subagent-announce-delivery-retry.ts:183-189",
       "repo": "upstream",
-      "tag": "2026.9.4",
+      "tag": "2026.9.5",
       "path": "src/agents/subagents/announce/subagent-announce-delivery-retry.ts",
       "lines": [
         [
@@ -382,7 +382,7 @@
       "source": "bridge/test/fixtures/openclaw_upstream_frames.json",
       "cite": "subagent-announce-delivery-retry.ts:258",
       "repo": "upstream",
-      "tag": "2026.9.4",
+      "tag": "2026.9.5",
       "path": "src/agents/subagents/announce/subagent-announce-delivery-retry.ts",
       "lines": [
         [
@@ -398,7 +398,7 @@
       "source": "bridge/test/fixtures/openclaw_upstream_frames.json",
       "cite": "subagent-announce-delivery-retry.ts:69-70",
       "repo": "upstream",
-      "tag": "2026.9.4",
+      "tag": "2026.9.5",
       "path": "src/agents/subagents/announce/subagent-announce-delivery-retry.ts",
       "lines": [
         [
@@ -414,7 +414,7 @@
       "source": "bridge/test/fixtures/openclaw_upstream_frames.json",
       "cite": "subagent-announce-direct-delivery.ts:707-718",
       "repo": "upstream",
-      "tag": "2026.9.4",
+      "tag": "2026.9.5",
       "path": "src/agents/subagents/announce/subagent-announce-direct-delivery.ts",
       "lines": [
         [
@@ -430,7 +430,7 @@
       "source": "docs/UPSTREAM_INTERPRETATION.md",
       "cite": "$UP/packages/gateway-protocol/src/schema/logs-chat.ts:308-314",
       "repo": "upstream",
-      "tag": "2026.9.4",
+      "tag": "2026.9.5",
       "path": "packages/gateway-protocol/src/schema/logs-chat.ts",
       "lines": [
         [
@@ -446,7 +446,7 @@
       "source": "docs/UPSTREAM_INTERPRETATION.md",
       "cite": "$UP/packages/gateway-protocol/src/schema/logs-chat.ts:430-436",
       "repo": "upstream",
-      "tag": "2026.9.4",
+      "tag": "2026.9.5",
       "path": "packages/gateway-protocol/src/schema/logs-chat.ts",
       "lines": [
         [
@@ -460,14 +460,14 @@
     },
     {
       "source": "docs/UPSTREAM_INTERPRETATION.md",
-      "cite": "$UP/packages/llm-core/src/types.ts:354",
+      "cite": "$UP/packages/llm-core/src/types.ts:356",
       "repo": "upstream",
-      "tag": "2026.9.4",
+      "tag": "2026.9.5",
       "path": "packages/llm-core/src/types.ts",
       "lines": [
         [
-          354,
-          354
+          356,
+          356
         ]
       ],
       "literals": [
@@ -478,7 +478,7 @@
       "source": "docs/UPSTREAM_INTERPRETATION.md",
       "cite": "$UP/packages/normalization-core/src/agent-run-terminal-outcome.ts:91-129",
       "repo": "upstream",
-      "tag": "2026.9.4",
+      "tag": "2026.9.5",
       "path": "packages/normalization-core/src/agent-run-terminal-outcome.ts",
       "lines": [
         [
@@ -494,7 +494,7 @@
       "source": "docs/UPSTREAM_INTERPRETATION.md",
       "cite": "$UP/src/agents/announce-idempotency.ts:11-18",
       "repo": "upstream",
-      "tag": "2026.9.4",
+      "tag": "2026.9.5",
       "path": "src/agents/announce-idempotency.ts",
       "lines": [
         [
@@ -508,14 +508,14 @@
     },
     {
       "source": "docs/UPSTREAM_INTERPRETATION.md",
-      "cite": "$UP/src/agents/command/attempt-execution.ts:930",
+      "cite": "$UP/src/agents/command/attempt-execution.ts:623",
       "repo": "upstream",
-      "tag": "2026.9.4",
+      "tag": "2026.9.5",
       "path": "src/agents/command/attempt-execution.ts",
       "lines": [
         [
-          930,
-          930
+          623,
+          623
         ]
       ],
       "literals": [
@@ -524,14 +524,14 @@
     },
     {
       "source": "docs/UPSTREAM_INTERPRETATION.md",
-      "cite": "$UP/src/agents/embedded-agent-runner/run/session-bootstrap.ts:364-420",
+      "cite": "$UP/src/agents/embedded-agent-runner/run/session-bootstrap.ts:426-482",
       "repo": "upstream",
-      "tag": "2026.9.4",
+      "tag": "2026.9.5",
       "path": "src/agents/embedded-agent-runner/run/session-bootstrap.ts",
       "lines": [
         [
-          364,
-          420
+          426,
+          482
         ]
       ],
       "literals": [
@@ -540,18 +540,18 @@
     },
     {
       "source": "docs/UPSTREAM_INTERPRETATION.md",
-      "cite": "$UP/src/agents/sessions/agent-session-types.ts:34,49",
+      "cite": "$UP/src/agents/sessions/agent-session-types.ts:33,48",
       "repo": "upstream",
-      "tag": "2026.9.4",
+      "tag": "2026.9.5",
       "path": "src/agents/sessions/agent-session-types.ts",
       "lines": [
         [
-          34,
-          34
+          33,
+          33
         ],
         [
-          49,
-          49
+          48,
+          48
         ]
       ],
       "literals": [
@@ -563,7 +563,7 @@
       "source": "docs/UPSTREAM_INTERPRETATION.md",
       "cite": "$UP/src/auto-reply/reply/get-reply-run-queue.ts:33",
       "repo": "upstream",
-      "tag": "2026.9.4",
+      "tag": "2026.9.5",
       "path": "src/auto-reply/reply/get-reply-run-queue.ts",
       "lines": [
         [
@@ -579,7 +579,7 @@
       "source": "docs/UPSTREAM_INTERPRETATION.md",
       "cite": "$UP/src/auto-reply/reply/queue/settings.ts:31-36",
       "repo": "upstream",
-      "tag": "2026.9.4",
+      "tag": "2026.9.5",
       "path": "src/auto-reply/reply/queue/settings.ts",
       "lines": [
         [
@@ -593,14 +593,14 @@
     },
     {
       "source": "docs/UPSTREAM_INTERPRETATION.md",
-      "cite": "$UP/src/auto-reply/reply/session.ts:518",
+      "cite": "$UP/src/auto-reply/reply/session.ts:517",
       "repo": "upstream",
-      "tag": "2026.9.4",
+      "tag": "2026.9.5",
       "path": "src/auto-reply/reply/session.ts",
       "lines": [
         [
-          518,
-          518
+          517,
+          517
         ]
       ],
       "literals": [
@@ -609,14 +609,14 @@
     },
     {
       "source": "docs/UPSTREAM_INTERPRETATION.md",
-      "cite": "$UP/src/config/sessions/transcript-write-context.ts:240",
+      "cite": "$UP/src/config/sessions/transcript-write-context.ts:241",
       "repo": "upstream",
-      "tag": "2026.9.4",
+      "tag": "2026.9.5",
       "path": "src/config/sessions/transcript-write-context.ts",
       "lines": [
         [
-          240,
-          240
+          241,
+          241
         ]
       ],
       "literals": [
@@ -625,14 +625,14 @@
     },
     {
       "source": "docs/UPSTREAM_INTERPRETATION.md",
-      "cite": "$UP/src/gateway/server-chat.ts:721-738",
+      "cite": "$UP/src/gateway/server-chat.ts:667-684",
       "repo": "upstream",
-      "tag": "2026.9.4",
+      "tag": "2026.9.5",
       "path": "src/gateway/server-chat.ts",
       "lines": [
         [
-          721,
-          738
+          667,
+          684
         ]
       ],
       "literals": [
@@ -641,18 +641,18 @@
     },
     {
       "source": "docs/UPSTREAM_INTERPRETATION.md",
-      "cite": "$UP/src/gateway/server-methods/chat-send-admission.ts:293,542",
+      "cite": "$UP/src/gateway/server-methods/chat-send-admission.ts:290,552",
       "repo": "upstream",
-      "tag": "2026.9.4",
+      "tag": "2026.9.5",
       "path": "src/gateway/server-methods/chat-send-admission.ts",
       "lines": [
         [
-          293,
-          293
+          290,
+          290
         ],
         [
-          542,
-          542
+          552,
+          552
         ]
       ],
       "literals": [
@@ -664,7 +664,7 @@
       "source": "docs/UPSTREAM_INTERPRETATION.md",
       "cite": "$UP/src/gateway/server-methods/chat-send-session.ts:88",
       "repo": "upstream",
-      "tag": "2026.9.4",
+      "tag": "2026.9.5",
       "path": "src/gateway/server-methods/chat-send-session.ts",
       "lines": [
         [
@@ -678,14 +678,14 @@
     },
     {
       "source": "docs/UPSTREAM_INTERPRETATION.md",
-      "cite": "$UP/src/gateway/worker-environments/placement-turn-claims.ts:57",
+      "cite": "$UP/src/gateway/worker-environments/placement-turn-claims.ts:58",
       "repo": "upstream",
-      "tag": "2026.9.4",
+      "tag": "2026.9.5",
       "path": "src/gateway/worker-environments/placement-turn-claims.ts",
       "lines": [
         [
-          57,
-          57
+          58,
+          58
         ]
       ],
       "literals": [
@@ -696,7 +696,7 @@
       "source": "docs/UPSTREAM_INTERPRETATION.md",
       "cite": "$UP/src/infra/sqlite-error-diagnostics.ts:10",
       "repo": "upstream",
-      "tag": "2026.9.4",
+      "tag": "2026.9.5",
       "path": "src/infra/sqlite-error-diagnostics.ts",
       "lines": [
         [
@@ -712,7 +712,7 @@
       "source": "docs/UPSTREAM_INTERPRETATION.md",
       "cite": "$UP/ui/src/pages/chat/chat-gateway.ts:155-280",
       "repo": "upstream",
-      "tag": "2026.9.4",
+      "tag": "2026.9.5",
       "path": "ui/src/pages/chat/chat-gateway.ts",
       "lines": [
         [
@@ -742,14 +742,14 @@
     },
     {
       "source": "docs/UPSTREAM_INTERPRETATION.md",
-      "cite": "$UP/ui/src/pages/chat/chat-send-queue-state.ts:83",
+      "cite": "$UP/ui/src/pages/chat/chat-send-queue-state.ts:87",
       "repo": "upstream",
-      "tag": "2026.9.4",
+      "tag": "2026.9.5",
       "path": "ui/src/pages/chat/chat-send-queue-state.ts",
       "lines": [
         [
-          83,
-          83
+          87,
+          87
         ]
       ],
       "literals": [
@@ -760,7 +760,7 @@
       "source": "docs/UPSTREAM_INTERPRETATION.md",
       "cite": "$UP/ui/src/pages/chat/tool-stream-status.ts:220-303",
       "repo": "upstream",
-      "tag": "2026.9.4",
+      "tag": "2026.9.5",
       "path": "ui/src/pages/chat/tool-stream-status.ts",
       "lines": [
         [
@@ -774,18 +774,18 @@
     },
     {
       "source": "docs/UPSTREAM_INTERPRETATION.md",
-      "cite": "assistant-error-transcript.ts:26-72,105-113",
+      "cite": "assistant-error-transcript.ts:58-104,141-149",
       "repo": "upstream",
-      "tag": "2026.9.4",
+      "tag": "2026.9.5",
       "path": "src/agents/assistant-error-transcript.ts",
       "lines": [
         [
-          26,
-          72
+          58,
+          104
         ],
         [
-          105,
-          113
+          141,
+          149
         ]
       ],
       "literals": [
@@ -795,14 +795,14 @@
     },
     {
       "source": "docs/UPSTREAM_INTERPRETATION.md",
-      "cite": "auto-reply/reply/agent-runner-cli-candidate.ts:161",
+      "cite": "auto-reply/reply/agent-runner-cli-candidate.ts:167",
       "repo": "upstream",
-      "tag": "2026.9.4",
+      "tag": "2026.9.5",
       "path": "src/auto-reply/reply/agent-runner-cli-candidate.ts",
       "lines": [
         [
-          161,
-          161
+          167,
+          167
         ]
       ],
       "literals": [
@@ -813,7 +813,7 @@
       "source": "docs/UPSTREAM_INTERPRETATION.md",
       "cite": "auto-reply/reply/reply-run-registry.operation.ts:565",
       "repo": "upstream",
-      "tag": "2026.9.4",
+      "tag": "2026.9.5",
       "path": "src/auto-reply/reply/reply-run-registry.operation.ts",
       "lines": [
         [
@@ -829,7 +829,7 @@
       "source": "docs/UPSTREAM_INTERPRETATION.md",
       "cite": "auto-reply/reply/session.ts:629-641",
       "repo": "upstream",
-      "tag": "2026.9.4",
+      "tag": "2026.9.5",
       "path": "src/auto-reply/reply/session.ts",
       "lines": [
         [
@@ -861,7 +861,7 @@
       "source": "docs/UPSTREAM_INTERPRETATION.md",
       "cite": "chat-abort-authorization.ts:48-54",
       "repo": "upstream",
-      "tag": "2026.9.4",
+      "tag": "2026.9.5",
       "path": "src/gateway/server-methods/chat-abort-authorization.ts",
       "lines": [
         [
@@ -875,14 +875,14 @@
     },
     {
       "source": "docs/UPSTREAM_INTERPRETATION.md",
-      "cite": "chat-abort.ts:557-596",
+      "cite": "chat-abort.ts:524-563",
       "repo": "upstream",
-      "tag": "2026.9.4",
+      "tag": "2026.9.5",
       "path": "src/gateway/chat-abort.ts",
       "lines": [
         [
-          557,
-          596
+          524,
+          563
         ]
       ],
       "literals": [
@@ -893,7 +893,7 @@
       "source": "docs/UPSTREAM_INTERPRETATION.md",
       "cite": "chat-agent-run-grouping.ts:58-62,116-129",
       "repo": "upstream",
-      "tag": "2026.9.4",
+      "tag": "2026.9.5",
       "path": "ui/src/pages/chat/chat-agent-run-grouping.ts",
       "lines": [
         [
@@ -914,7 +914,7 @@
       "source": "docs/UPSTREAM_INTERPRETATION.md",
       "cite": "chat-gateway.ts:111-126",
       "repo": "upstream",
-      "tag": "2026.9.4",
+      "tag": "2026.9.5",
       "path": "ui/src/pages/chat/chat-gateway.ts",
       "lines": [
         [
@@ -928,9 +928,9 @@
     },
     {
       "source": "docs/UPSTREAM_INTERPRETATION.md",
-      "cite": "chat-gateway.ts:97-109,276-282",
+      "cite": "chat-gateway.ts:97-109,280-286",
       "repo": "upstream",
-      "tag": "2026.9.4",
+      "tag": "2026.9.5",
       "path": "ui/src/pages/chat/chat-gateway.ts",
       "lines": [
         [
@@ -938,8 +938,8 @@
           109
         ],
         [
-          276,
-          282
+          280,
+          286
         ]
       ],
       "literals": [
@@ -951,7 +951,7 @@
       "source": "docs/UPSTREAM_INTERPRETATION.md",
       "cite": "chat-history-handler.ts:493-503",
       "repo": "upstream",
-      "tag": "2026.9.4",
+      "tag": "2026.9.5",
       "path": "src/gateway/server-methods/chat-history-handler.ts",
       "lines": [
         [
@@ -967,7 +967,7 @@
       "source": "docs/UPSTREAM_INTERPRETATION.md",
       "cite": "chat-queued-turns.ts:39",
       "repo": "upstream",
-      "tag": "2026.9.4",
+      "tag": "2026.9.5",
       "path": "src/gateway/chat-queued-turns.ts",
       "lines": [
         [
@@ -1002,14 +1002,14 @@
     },
     {
       "source": "docs/UPSTREAM_INTERPRETATION.md",
-      "cite": "chat-send-handler.ts:503-531",
+      "cite": "chat-send-handler.ts:580-608",
       "repo": "upstream",
-      "tag": "2026.9.4",
+      "tag": "2026.9.5",
       "path": "src/gateway/server-methods/chat-send-handler.ts",
       "lines": [
         [
-          503,
-          531
+          580,
+          608
         ]
       ],
       "literals": [
@@ -1018,14 +1018,14 @@
     },
     {
       "source": "docs/UPSTREAM_INTERPRETATION.md",
-      "cite": "chat-send-late-followup.ts:27-36",
+      "cite": "chat-send-late-followup.ts:39-48",
       "repo": "upstream",
-      "tag": "2026.9.4",
+      "tag": "2026.9.5",
       "path": "src/gateway/server-methods/chat-send-late-followup.ts",
       "lines": [
         [
-          27,
-          36
+          39,
+          48
         ]
       ],
       "literals": [
@@ -1036,7 +1036,7 @@
       "source": "docs/UPSTREAM_INTERPRETATION.md",
       "cite": "chat-send-pre-admission.ts:148-155",
       "repo": "upstream",
-      "tag": "2026.9.4",
+      "tag": "2026.9.5",
       "path": "src/gateway/server-methods/chat-send-pre-admission.ts",
       "lines": [
         [
@@ -1052,7 +1052,7 @@
       "source": "docs/UPSTREAM_INTERPRETATION.md",
       "cite": "chat-send-pre-admission.ts:189-217",
       "repo": "upstream",
-      "tag": "2026.9.4",
+      "tag": "2026.9.5",
       "path": "src/gateway/server-methods/chat-send-pre-admission.ts",
       "lines": [
         [
@@ -1068,7 +1068,7 @@
       "source": "docs/UPSTREAM_INTERPRETATION.md",
       "cite": "chat-send-turn-adoption.ts:43-52",
       "repo": "upstream",
-      "tag": "2026.9.4",
+      "tag": "2026.9.5",
       "path": "src/gateway/server-methods/chat-send-turn-adoption.ts",
       "lines": [
         [
@@ -1082,14 +1082,14 @@
     },
     {
       "source": "docs/UPSTREAM_INTERPRETATION.md",
-      "cite": "deferred-lifecycle-owner.ts:62-78",
+      "cite": "deferred-lifecycle-owner.ts:103-119",
       "repo": "upstream",
-      "tag": "2026.9.4",
+      "tag": "2026.9.5",
       "path": "src/agents/embedded-agent-runner/run/deferred-lifecycle-owner.ts",
       "lines": [
         [
-          62,
-          78
+          103,
+          119
         ]
       ],
       "literals": [
@@ -1098,14 +1098,14 @@
     },
     {
       "source": "docs/UPSTREAM_INTERPRETATION.md",
-      "cite": "embedded-agent-runner/run/attempt-stream-prepare.ts:520",
+      "cite": "embedded-agent-runner/run/attempt-stream-prepare.ts:521",
       "repo": "upstream",
-      "tag": "2026.9.4",
+      "tag": "2026.9.5",
       "path": "src/agents/embedded-agent-runner/run/attempt-stream-prepare.ts",
       "lines": [
         [
-          520,
-          520
+          521,
+          521
         ]
       ],
       "literals": [
@@ -1114,14 +1114,14 @@
     },
     {
       "source": "docs/UPSTREAM_INTERPRETATION.md",
-      "cite": "embedded-agent-runner/run/deferred-lifecycle-owner.ts:113",
+      "cite": "embedded-agent-runner/run/deferred-lifecycle-owner.ts:158",
       "repo": "upstream",
-      "tag": "2026.9.4",
+      "tag": "2026.9.5",
       "path": "src/agents/embedded-agent-runner/run/deferred-lifecycle-owner.ts",
       "lines": [
         [
-          113,
-          113
+          158,
+          158
         ]
       ],
       "literals": [
@@ -1132,7 +1132,7 @@
       "source": "docs/UPSTREAM_INTERPRETATION.md",
       "cite": "embedded-agent-subscribe.handlers.lifecycle.ts:151-167,219",
       "repo": "upstream",
-      "tag": "2026.9.4",
+      "tag": "2026.9.5",
       "path": "src/agents/embedded-agent-subscribe.handlers.lifecycle.ts",
       "lines": [
         [
@@ -1151,14 +1151,14 @@
     },
     {
       "source": "docs/UPSTREAM_INTERPRETATION.md",
-      "cite": "failover-error.ts:46-52",
+      "cite": "failover-error.ts:50-56",
       "repo": "upstream",
-      "tag": "2026.9.4",
+      "tag": "2026.9.5",
       "path": "src/agents/failover-error.ts",
       "lines": [
         [
-          46,
-          52
+          50,
+          56
         ]
       ],
       "literals": [
@@ -1167,14 +1167,14 @@
     },
     {
       "source": "docs/UPSTREAM_INTERPRETATION.md",
-      "cite": "failover-error.ts:758-761",
+      "cite": "failover-error.ts:772-775",
       "repo": "upstream",
-      "tag": "2026.9.4",
+      "tag": "2026.9.5",
       "path": "src/agents/failover-error.ts",
       "lines": [
         [
-          758,
-          761
+          772,
+          775
         ]
       ],
       "literals": [
@@ -1183,18 +1183,18 @@
     },
     {
       "source": "docs/UPSTREAM_INTERPRETATION.md",
-      "cite": "failover/assistant-request-failure-copy.ts:24-25,52",
+      "cite": "failover/assistant-request-failure-copy.ts:37-38,65",
       "repo": "upstream",
-      "tag": "2026.9.4",
+      "tag": "2026.9.5",
       "path": "src/agents/failover/assistant-request-failure-copy.ts",
       "lines": [
         [
-          24,
-          25
+          37,
+          38
         ],
         [
-          52,
-          52
+          65,
+          65
         ]
       ],
       "literals": [
@@ -1206,7 +1206,7 @@
       "source": "docs/UPSTREAM_INTERPRETATION.md",
       "cite": "gateway/worker-environments/worker-turn-run-owner.ts:67",
       "repo": "upstream",
-      "tag": "2026.9.4",
+      "tag": "2026.9.5",
       "path": "src/gateway/worker-environments/worker-turn-run-owner.ts",
       "lines": [
         [
@@ -1222,7 +1222,7 @@
       "source": "docs/UPSTREAM_INTERPRETATION.md",
       "cite": "get-reply-directives-apply.ts:595",
       "repo": "upstream",
-      "tag": "2026.9.4",
+      "tag": "2026.9.5",
       "path": "src/auto-reply/reply/get-reply-directives-apply.ts",
       "lines": [
         [
@@ -1236,14 +1236,14 @@
     },
     {
       "source": "docs/UPSTREAM_INTERPRETATION.md",
-      "cite": "get-reply-run-admission.ts:508-509",
+      "cite": "get-reply-run-admission.ts:509-510",
       "repo": "upstream",
-      "tag": "2026.9.4",
+      "tag": "2026.9.5",
       "path": "src/auto-reply/reply/get-reply-run-admission.ts",
       "lines": [
         [
-          508,
-          509
+          509,
+          510
         ]
       ],
       "literals": [
@@ -1254,7 +1254,7 @@
       "source": "docs/UPSTREAM_INTERPRETATION.md",
       "cite": "logs-chat.ts:337-391",
       "repo": "upstream",
-      "tag": "2026.9.4",
+      "tag": "2026.9.5",
       "path": "packages/gateway-protocol/src/schema/logs-chat.ts",
       "lines": [
         [
@@ -1270,7 +1270,7 @@
       "source": "docs/UPSTREAM_INTERPRETATION.md",
       "cite": "model-fallback-runner.ts:611-612",
       "repo": "upstream",
-      "tag": "2026.9.4",
+      "tag": "2026.9.5",
       "path": "src/agents/model-fallback-runner.ts",
       "lines": [
         [
@@ -1286,7 +1286,7 @@
       "source": "docs/UPSTREAM_INTERPRETATION.md",
       "cite": "plugin-sdk/infra-runtime.ts:34-77",
       "repo": "upstream",
-      "tag": "2026.9.4",
+      "tag": "2026.9.5",
       "path": "src/plugin-sdk/infra-runtime.ts",
       "lines": [
         [
@@ -1300,14 +1300,14 @@
     },
     {
       "source": "docs/UPSTREAM_INTERPRETATION.md",
-      "cite": "post-run.ts:638-644",
+      "cite": "post-run.ts:655-661",
       "repo": "upstream",
-      "tag": "2026.9.4",
+      "tag": "2026.9.5",
       "path": "src/agents/command/post-run.ts",
       "lines": [
         [
-          638,
-          644
+          655,
+          661
         ]
       ],
       "literals": [
@@ -1318,7 +1318,7 @@
       "source": "docs/UPSTREAM_INTERPRETATION.md",
       "cite": "queue/settings.ts:36",
       "repo": "upstream",
-      "tag": "2026.9.4",
+      "tag": "2026.9.5",
       "path": "src/auto-reply/reply/queue/settings.ts",
       "lines": [
         [
@@ -1332,14 +1332,14 @@
     },
     {
       "source": "docs/UPSTREAM_INTERPRETATION.md",
-      "cite": "reply-turn-admission.ts:318-320",
+      "cite": "reply-turn-admission.ts:320-322",
       "repo": "upstream",
-      "tag": "2026.9.4",
+      "tag": "2026.9.5",
       "path": "src/auto-reply/reply/reply-turn-admission.ts",
       "lines": [
         [
-          318,
-          320
+          320,
+          322
         ]
       ],
       "literals": [
@@ -1348,18 +1348,18 @@
     },
     {
       "source": "docs/UPSTREAM_INTERPRETATION.md",
-      "cite": "run-termination.ts:109-119,136-162",
+      "cite": "run-termination.ts:134-144,165-191",
       "repo": "upstream",
-      "tag": "2026.9.4",
+      "tag": "2026.9.5",
       "path": "src/agents/run-termination.ts",
       "lines": [
         [
-          109,
-          119
+          134,
+          144
         ],
         [
-          136,
-          162
+          165,
+          191
         ]
       ],
       "literals": [
@@ -1369,14 +1369,14 @@
     },
     {
       "source": "docs/UPSTREAM_INTERPRETATION.md",
-      "cite": "runs.ts:1017",
+      "cite": "embedded-agent-runner/runs.ts:1011",
       "repo": "upstream",
-      "tag": "2026.9.4",
+      "tag": "2026.9.5",
       "path": "src/agents/embedded-agent-runner/runs.ts",
       "lines": [
         [
-          1017,
-          1017
+          1011,
+          1011
         ]
       ],
       "literals": [
@@ -1385,9 +1385,9 @@
     },
     {
       "source": "docs/UPSTREAM_INTERPRETATION.md",
-      "cite": "runs.ts:1160-1187",
+      "cite": "embedded-agent-runner/runs.ts:1160-1187",
       "repo": "upstream",
-      "tag": "2026.9.4",
+      "tag": "2026.9.5",
       "path": "src/agents/embedded-agent-runner/runs.ts",
       "lines": [
         [
@@ -1401,14 +1401,14 @@
     },
     {
       "source": "docs/UPSTREAM_INTERPRETATION.md",
-      "cite": "server-broadcast.ts:503-530",
+      "cite": "server-broadcast.ts:529-563",
       "repo": "upstream",
-      "tag": "2026.9.4",
+      "tag": "2026.9.5",
       "path": "src/gateway/server-broadcast.ts",
       "lines": [
         [
-          503,
-          530
+          529,
+          563
         ]
       ],
       "literals": [
@@ -1417,18 +1417,18 @@
     },
     {
       "source": "docs/UPSTREAM_INTERPRETATION.md",
-      "cite": "server-chat.agent-events.test.ts:3840-3902,4587-4590",
+      "cite": "server-chat.agent-events.test.ts:3976-4038,4723-4726",
       "repo": "upstream",
-      "tag": "2026.9.4",
+      "tag": "2026.9.5",
       "path": "src/gateway/server-chat.agent-events.test.ts",
       "lines": [
         [
-          3840,
-          3902
+          3976,
+          4038
         ],
         [
-          4587,
-          4590
+          4723,
+          4726
         ]
       ],
       "literals": [
@@ -1438,22 +1438,22 @@
     },
     {
       "source": "docs/UPSTREAM_INTERPRETATION.md",
-      "cite": "server-chat.agent-events.test.ts:4682,5695,5935",
+      "cite": "server-chat.agent-events.test.ts:4818,5791,6072",
       "repo": "upstream",
-      "tag": "2026.9.4",
+      "tag": "2026.9.5",
       "path": "src/gateway/server-chat.agent-events.test.ts",
       "lines": [
         [
-          4682,
-          4682
+          4818,
+          4818
         ],
         [
-          5695,
-          5695
+          5791,
+          5791
         ],
         [
-          5935,
-          5935
+          6072,
+          6072
         ]
       ],
       "literals": [
@@ -1464,9 +1464,9 @@
     },
     {
       "source": "docs/UPSTREAM_INTERPRETATION.md",
-      "cite": "server-chat.ts:101-106,458,1802-1821",
+      "cite": "server-chat.ts:101-106,393,1833-1852",
       "repo": "upstream",
-      "tag": "2026.9.4",
+      "tag": "2026.9.5",
       "path": "src/gateway/server-chat.ts",
       "lines": [
         [
@@ -1474,12 +1474,12 @@
           106
         ],
         [
-          458,
-          458
+          393,
+          393
         ],
         [
-          1802,
-          1821
+          1833,
+          1852
         ]
       ],
       "literals": [
@@ -1490,14 +1490,14 @@
     },
     {
       "source": "docs/UPSTREAM_INTERPRETATION.md",
-      "cite": "server-chat.ts:1051-1062,1183-1189",
+      "cite": "server-chat.ts:1032-1043,1183-1189",
       "repo": "upstream",
-      "tag": "2026.9.4",
+      "tag": "2026.9.5",
       "path": "src/gateway/server-chat.ts",
       "lines": [
         [
-          1051,
-          1062
+          1032,
+          1043
         ],
         [
           1183,
@@ -1511,14 +1511,14 @@
     },
     {
       "source": "docs/UPSTREAM_INTERPRETATION.md",
-      "cite": "server-chat.ts:1231-1243",
+      "cite": "server-chat.ts:1240-1252",
       "repo": "upstream",
-      "tag": "2026.9.4",
+      "tag": "2026.9.5",
       "path": "src/gateway/server-chat.ts",
       "lines": [
         [
-          1231,
-          1243
+          1240,
+          1252
         ]
       ],
       "literals": [
@@ -1527,14 +1527,14 @@
     },
     {
       "source": "docs/UPSTREAM_INTERPRETATION.md",
-      "cite": "server-chat.ts:240-288",
+      "cite": "server-chat.ts:185-233",
       "repo": "upstream",
-      "tag": "2026.9.4",
+      "tag": "2026.9.5",
       "path": "src/gateway/server-chat.ts",
       "lines": [
         [
-          240,
-          288
+          185,
+          233
         ]
       ],
       "literals": [
@@ -1543,14 +1543,14 @@
     },
     {
       "source": "docs/UPSTREAM_INTERPRETATION.md",
-      "cite": "server-chat.ts:774-784,1200-1227",
+      "cite": "server-chat.ts:720-730,1200-1227",
       "repo": "upstream",
-      "tag": "2026.9.4",
+      "tag": "2026.9.5",
       "path": "src/gateway/server-chat.ts",
       "lines": [
         [
-          774,
-          784
+          720,
+          730
         ],
         [
           1200,
@@ -1564,18 +1564,18 @@
     },
     {
       "source": "docs/UPSTREAM_INTERPRETATION.md",
-      "cite": "server-chat.ts:783,1239",
+      "cite": "server-chat.ts:729,1264",
       "repo": "upstream",
-      "tag": "2026.9.4",
+      "tag": "2026.9.5",
       "path": "src/gateway/server-chat.ts",
       "lines": [
         [
-          783,
-          783
+          729,
+          729
         ],
         [
-          1239,
-          1239
+          1264,
+          1264
         ]
       ],
       "literals": [
@@ -1587,7 +1587,7 @@
       "source": "docs/UPSTREAM_INTERPRETATION.md",
       "cite": "server-methods/chat-send-request.ts:248-256",
       "repo": "upstream",
-      "tag": "2026.9.4",
+      "tag": "2026.9.5",
       "path": "src/gateway/server-methods/chat-send-request.ts",
       "lines": [
         [
@@ -1603,7 +1603,7 @@
       "source": "docs/UPSTREAM_INTERPRETATION.md",
       "cite": "server-worker-placement-move-barrier.ts:79",
       "repo": "upstream",
-      "tag": "2026.9.4",
+      "tag": "2026.9.5",
       "path": "src/gateway/server-worker-placement-move-barrier.ts",
       "lines": [
         [
@@ -1617,14 +1617,14 @@
     },
     {
       "source": "docs/UPSTREAM_INTERPRETATION.md",
-      "cite": "server-worker-placement-startup.ts:325",
+      "cite": "server-worker-placement-startup.ts:328",
       "repo": "upstream",
-      "tag": "2026.9.4",
+      "tag": "2026.9.5",
       "path": "src/gateway/server-worker-placement-startup.ts",
       "lines": [
         [
-          325,
-          325
+          328,
+          328
         ]
       ],
       "literals": [
@@ -1635,7 +1635,7 @@
       "source": "docs/UPSTREAM_INTERPRETATION.md",
       "cite": "session-active-runs.ts:245-262",
       "repo": "upstream",
-      "tag": "2026.9.4",
+      "tag": "2026.9.5",
       "path": "src/gateway/server-methods/session-active-runs.ts",
       "lines": [
         [
@@ -1649,14 +1649,14 @@
     },
     {
       "source": "docs/UPSTREAM_INTERPRETATION.md",
-      "cite": "session-reset-service.ts:1305",
+      "cite": "session-reset-service.ts:1076",
       "repo": "upstream",
-      "tag": "2026.9.4",
+      "tag": "2026.9.5",
       "path": "src/gateway/session-reset-service.ts",
       "lines": [
         [
-          1305,
-          1305
+          1076,
+          1076
         ]
       ],
       "literals": [
@@ -1667,7 +1667,7 @@
       "source": "docs/UPSTREAM_INTERPRETATION.md",
       "cite": "sessions-compaction-checkpoints.ts:226",
       "repo": "upstream",
-      "tag": "2026.9.4",
+      "tag": "2026.9.5",
       "path": "src/gateway/server-methods/sessions-compaction-checkpoints.ts",
       "lines": [
         [
@@ -1683,7 +1683,7 @@
       "source": "docs/UPSTREAM_INTERPRETATION.md",
       "cite": "sessions-messaging.ts:299",
       "repo": "upstream",
-      "tag": "2026.9.4",
+      "tag": "2026.9.5",
       "path": "src/gateway/server-methods/sessions-messaging.ts",
       "lines": [
         [
@@ -1699,7 +1699,7 @@
       "source": "docs/UPSTREAM_INTERPRETATION.md",
       "cite": "src/agents/agent-run-terminal-outcome.ts:538-545",
       "repo": "upstream",
-      "tag": "2026.9.4",
+      "tag": "2026.9.5",
       "path": "src/agents/agent-run-terminal-outcome.ts",
       "lines": [
         [
@@ -1715,7 +1715,7 @@
       "source": "docs/UPSTREAM_INTERPRETATION.md",
       "cite": "subagent-announce-delivery-retry.ts:146-181",
       "repo": "upstream",
-      "tag": "2026.9.4",
+      "tag": "2026.9.5",
       "path": "src/agents/subagents/announce/subagent-announce-delivery-retry.ts",
       "lines": [
         [
@@ -1731,7 +1731,7 @@
       "source": "docs/UPSTREAM_INTERPRETATION.md",
       "cite": "subagent-announce-delivery-retry.ts:183-189",
       "repo": "upstream",
-      "tag": "2026.9.4",
+      "tag": "2026.9.5",
       "path": "src/agents/subagents/announce/subagent-announce-delivery-retry.ts",
       "lines": [
         [
@@ -1747,7 +1747,7 @@
       "source": "docs/UPSTREAM_INTERPRETATION.md",
       "cite": "subagent-announce-delivery-retry.ts:258",
       "repo": "upstream",
-      "tag": "2026.9.4",
+      "tag": "2026.9.5",
       "path": "src/agents/subagents/announce/subagent-announce-delivery-retry.ts",
       "lines": [
         [
@@ -1763,7 +1763,7 @@
       "source": "docs/UPSTREAM_INTERPRETATION.md",
       "cite": "subagent-announce-delivery-retry.ts:69-70",
       "repo": "upstream",
-      "tag": "2026.9.4",
+      "tag": "2026.9.5",
       "path": "src/agents/subagents/announce/subagent-announce-delivery-retry.ts",
       "lines": [
         [
@@ -1779,7 +1779,7 @@
       "source": "docs/UPSTREAM_INTERPRETATION.md",
       "cite": "subagent-announce-direct-delivery.ts:307-349",
       "repo": "upstream",
-      "tag": "2026.9.4",
+      "tag": "2026.9.5",
       "path": "src/agents/subagents/announce/subagent-announce-direct-delivery.ts",
       "lines": [
         [
@@ -1793,18 +1793,18 @@
     },
     {
       "source": "docs/UPSTREAM_INTERPRETATION.md",
-      "cite": "subagent-announce-direct-delivery.ts:314,347",
+      "cite": "subagent-announce-direct-delivery.ts:291,325",
       "repo": "upstream",
-      "tag": "2026.9.4",
+      "tag": "2026.9.5",
       "path": "src/agents/subagents/announce/subagent-announce-direct-delivery.ts",
       "lines": [
         [
-          314,
-          314
+          291,
+          291
         ],
         [
-          347,
-          347
+          325,
+          325
         ]
       ],
       "literals": [
@@ -1832,7 +1832,7 @@
       "source": "docs/UPSTREAM_INTERPRETATION.md",
       "cite": "subagent-announce-direct-delivery.ts:707-718",
       "repo": "upstream",
-      "tag": "2026.9.4",
+      "tag": "2026.9.5",
       "path": "src/agents/subagents/announce/subagent-announce-direct-delivery.ts",
       "lines": [
         [
@@ -1846,25 +1846,25 @@
     },
     {
       "source": "docs/UPSTREAM_INTERPRETATION.md",
-      "cite": "subagent-control-kill-runtime.ts:282",
+      "cite": "subagent-control-kill-runtime.ts:319-324",
       "repo": "upstream",
-      "tag": "2026.9.4",
+      "tag": "2026.9.5",
       "path": "src/agents/subagents/registry/subagent-control-kill-runtime.ts",
       "lines": [
         [
-          282,
-          282
+          319,
+          324
         ]
       ],
       "literals": [
-        "const released = await interruptSessionWorkAdmissions("
+        "startSessionWorkAdmissionInterruption({"
       ]
     },
     {
       "source": "docs/UPSTREAM_INTERPRETATION.md",
       "cite": "terminal-reply-recovery.ts:24-28",
       "repo": "upstream",
-      "tag": "2026.9.4",
+      "tag": "2026.9.5",
       "path": "ui/src/pages/chat/terminal-reply-recovery.ts",
       "lines": [
         [
@@ -1890,6 +1890,38 @@
       ],
       "literals": [
         "idempotencyKey: params.runId"
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "$UP/ui/src/pages/chat/chat-gateway.ts:151-154",
+      "repo": "upstream",
+      "tag": "2026.9.5",
+      "path": "ui/src/pages/chat/chat-gateway.ts",
+      "lines": [
+        [
+          151,
+          154
+        ]
+      ],
+      "literals": [
+        "incoming.stopReason === \"auth-revoked\""
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "bridge/src/providers/openclaw/normalizer.ts:1781",
+      "repo": "atrium",
+      "tag": null,
+      "path": "bridge/src/providers/openclaw/normalizer.ts",
+      "lines": [
+        [
+          1781,
+          1781
+        ]
+      ],
+      "literals": [
+        "isString(deltaText) && deltaText"
       ]
     }
   ]

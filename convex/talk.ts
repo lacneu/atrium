@@ -30,19 +30,29 @@
 import { v } from "convex/values";
 import {
   action,
+  internalAction,
   internalMutation,
   internalQuery,
   query,
+  type ActionCtx,
+  type MutationCtx,
   type QueryCtx,
 } from "./_generated/server";
 import { internal } from "./_generated/api";
-import { requireActive, requireOwnedChat, requireUserId } from "./lib/access";
+import {
+  requireActive,
+  requireOwnedChat,
+  requireReachableChat,
+  requireUserId,
+} from "./lib/access";
 import {
   currentTurnRouting,
   resolveGatewayUser,
   resolveTargetForTurn,
 } from "./routing";
 import { resolveBridgeUrlForDispatch } from "./lib/bridgeRouting";
+import { drainNextQueued } from "./lib/outboxQueue";
+import { turnInFlightForOtherAgent } from "./lib/talkFreeze";
 import { capabilitiesForInstance } from "./lib/compat";
 import { capabilityOf } from "../src/chat/capabilities";
 import { readDoc as readCompatDoc } from "./compat";
@@ -188,6 +198,199 @@ async function resolveTalkRouting(
  * the handle from answering.
  */
 const TALK_HANDLE_TTL_MS = 2 * 60 * 60 * 1000;
+/** Upper bound on how long a call can still be up when nobody said it ended: the
+ *  gateway's own realtime session TTL (OPENAI_QUICKSILVER_SESSION_TTL_MS,
+ *  v2026.9.5). A browser that crashed never sends its hangup, so "live" has to
+ *  expire on its own — and this is the instant past which the gateway has dropped
+ *  the call anyway. */
+export const TALK_CALL_MAX_MS = 30 * 60 * 1000;
+/** …and the call's clock starts when the OFFER is spent, not at the mint: the
+ *  gateway arms its TTL at allocation, up to the relay handle's 60 s later. The
+ *  freeze window adds that, so it can never end a minute BEFORE the call does
+ *  (codex P2). It only ever over-holds, and only for a browser that crashed. */
+export const TALK_CALL_WINDOW_MS = TALK_CALL_MAX_MS + 60_000;
+
+/**
+ * The call this CHAT is on right now, or null. "Live" = recorded, not ended by its
+ * owner, and still inside the window the gateway could still be holding it.
+ *
+ * KEYED BY CHAT, not by caller. Only the owner can mint a call, but a PARTICIPANT
+ * may post in the same conversation — and their turn re-keys the very socket the
+ * owner's call is bound to. Filtering by the asking user found nothing for a
+ * participant and let them switch the agent out from under a live call (codex P1).
+ * The call belongs to the conversation; so does the freeze.
+ */
+export async function liveTalkCall(
+  ctx: QueryCtx,
+  chatId: Id<"chats">,
+): Promise<Doc<"talkSessions"> | null> {
+  const now = Date.now();
+  // `endedAt` is part of the index KEY: this reads the chat's UNENDED rows only.
+  // Reading the newest 20 of the chat and filtering afterwards was wrong — twenty
+  // calls made and hung up since would push the live one out of the read and answer
+  // "no call" while someone was speaking (codex P1, pass 2).
+  const rows = await ctx.db
+    .query("talkSessions")
+    .withIndex("by_chat_live", (q) =>
+      q.eq("chatId", chatId).eq("endedAt", undefined),
+    )
+    .order("desc")
+    .take(20);
+  // The newest live one wins: a second mint on the same chat supersedes the first.
+  return rows.find((r) => r.createdAt + TALK_CALL_WINDOW_MS > now) ?? null;
+}
+
+/**
+ * Is THIS chat on a call right now — as the SERVER sees it?
+ *
+ * The composer knew only what its own TalkControl told it, which is nothing after a
+ * reload and nothing in a second tab. The selector then looked open, and the send
+ * came back `TALK_CALL_ACTIVE`: the freeze was enforced but never explained. Read
+ * here so the control is greyed out with its hint before anyone clicks.
+ *
+ * SOFT on every failure, like `talkAvailable`: a probe must never crash the composer.
+ *
+ * OWNER OR PARTICIPANT, unlike the mint. Only the owner can START a call, so the
+ * BUTTON is owner-only — but the FREEZE is keyed by chat and refuses a participant's
+ * send too. Answering them `{active:false}` left the selector open on the one path
+ * the identity fix was written for, and handed them the raw refusal instead of the
+ * sentence (codex P2, pass 4). They can already read every message in this
+ * conversation; that it is being spoken in is not a smaller fact.
+ */
+export const chatCallState = query({
+  args: { chatId: v.id("chats") },
+  handler: async (
+    ctx,
+    { chatId },
+  ): Promise<{
+    active: boolean;
+    instanceName?: string;
+    agentId?: string;
+    /** The row to hang up — FOR THE OWNER ONLY.
+     *
+     *  Carried so a tab that owns no call can still END the one the server sees:
+     *  after a reload, or a browser that crashed mid-call, nothing in this tab knows
+     *  the session, and the freeze was visible but not clearable for the whole
+     *  window. Withheld from a participant because `prepareTalkHangup` authorizes by
+     *  ROW ownership and would refuse them: handing it over rendered a hangup button
+     *  whose every click failed silently through three retries (codex P2, pass 9).
+     *  They still get `active` and the agent's name — what they need is the reason
+     *  their send was refused, which the send's own message gives them. */
+    sessionId?: Id<"talkSessions">;
+  }> => {
+    try {
+      const { userId } = await requireActive(ctx);
+      // Throws for a stranger; the catch below turns that into `{active:false}`.
+      const { role } = await requireReachableChat(ctx, userId, chatId);
+      const call = await liveTalkCall(ctx, chatId);
+      return call === null
+        ? { active: false }
+        : {
+            active: true,
+            instanceName: call.instanceName,
+            agentId: call.agentId,
+            // Only the owner can act on it — see the field's note.
+            ...(role === "owner" ? { sessionId: call._id } : {}),
+          };
+    } catch {
+      return { active: false };
+    }
+  },
+});
+
+/**
+ * Tell the bridge to drop a session it minted but Convex never recorded.
+ *
+ * The SAME wire call the hangup makes, without any of the row work: there IS no row,
+ * which is the whole problem. Best-effort and silent — the caller is already failing
+ * the mint, the bridge's hold expires on its own, and a bridge that cannot be reached
+ * must not turn one failure into two.
+ */
+async function abandonMintedSession(
+  prep: { instanceName: string; canonical: string; agentId: string; openclawChatId: string | null },
+  chatId: Id<"chats">,
+  bridgeUrl: string,
+  voiceSessionId: string | null,
+): Promise<void> {
+  const sharedSecret = process.env.BRIDGE_SHARED_SECRET;
+  if (voiceSessionId === null || !sharedSecret) return;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), TALK_HANGUP_TIMEOUT_MS);
+  try {
+    await fetch(`${bridgeUrl.replace(/\/$/, "")}/talk-hangup`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: sharedSecret },
+      body: JSON.stringify({
+        instanceName: prep.instanceName,
+        chatId,
+        ...(prep.openclawChatId !== null ? { openclawChatId: prep.openclawChatId } : {}),
+        canonical: prep.canonical,
+        agentId: prep.agentId,
+        voiceSessionId,
+      }),
+      signal: controller.signal,
+    });
+  } catch {
+    // Nothing to do and nothing to say: the hold expires on its own.
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
+ * Is THIS call — the one this tab holds a handle for — still live?
+ *
+ * Keyed on the SESSION, not on the chat, and that is the whole point. Asking about
+ * the chat gave an answer that could predate this tab's own mint, so a tab had to
+ * first observe its call appear before it could trust its disappearance — and a tab
+ * that never saw the intermediate state (suspended, reconnecting, a coalesced
+ * update) could then never react to being hung up from elsewhere. On the direct lane
+ * nothing else can end its media, so it kept talking to one agent while the server,
+ * seeing no call, let another tab route the conversation to a second one (codex P1,
+ * pass 16 — a hole opened by the very guard that closed the earlier race).
+ *
+ * A subscription on this id can only start once the id exists, which is after the row
+ * was committed. So `false` is never "not yet": it is ended, gone, or past the window.
+ *
+ * SOFT on failure, but the OTHER WAY from the probes above: a false answer tears down
+ * a live call, so anything unexpected answers `true` — keep talking, and let the
+ * ordinary paths refuse whatever must be refused.
+ */
+export const talkCallLive = query({
+  args: { sessionId: v.id("talkSessions") },
+  handler: async (ctx, { sessionId }): Promise<boolean> => {
+    try {
+      const userId = await requireUserId(ctx);
+      const row = await ctx.db.get(sessionId);
+      if (row === null) return false;
+      if (row.userId !== userId) return true; // not ours to judge
+      return (
+        row.endedAt === undefined &&
+        row.createdAt + TALK_CALL_WINDOW_MS > Date.now()
+      );
+    } catch {
+      return true;
+    }
+  },
+});
+
+/** Mark a call ended. Idempotent: a retry, or a hangup racing an unmount, must not
+ *  rewrite the instant the user stopped speaking. */
+export const markTalkSessionEnded = internalMutation({
+  args: { sessionId: v.id("talkSessions") },
+  handler: async (ctx, { sessionId }): Promise<void> => {
+    const row = await ctx.db.get(sessionId);
+    if (row === null || row.endedAt !== undefined) return;
+    await ctx.db.patch(sessionId, { endedAt: Date.now() });
+    // WAKE THE QUEUE. A turn for another agent, accepted before the call started,
+    // is HELD by the drain while the call is up (lib/talkFreeze). The end of the
+    // call is the moment it becomes dispatchable, and nothing else would notice:
+    // the ordinary drain fires on a turn ending, and a held row has no turn to end.
+    // Without this the message would wait for the next unrelated turn — or, on a
+    // quiet chat, for the freeze window to expire.
+    await drainNextQueued(ctx, row.chatId);
+  },
+});
 
 /**
  * Record the session a successful mint opened, and hand back the only thing the
@@ -254,13 +457,49 @@ export const recordTalkSession = internalMutation({
     if (instance?.kind === "hermes" || instance?.config?.talkEnabled !== true) {
       throw new Error("talk no longer enabled on this instance");
     }
+    // AND RE-ASK THE FREEZE, HERE, WHERE THE WRITE HAPPENS.
+    //
+    // `prepareTalkSession` already refused a mint that would switch agent — but that
+    // is a QUERY, taken before the POST. The bridge's own reservation closes the race
+    // inside ONE bridge process; two tabs minting on two DIFFERENT instances reach two
+    // different bridges, whose registries know nothing of each other, and both mints
+    // succeeded. The chat then carried two live calls on two agents, and `liveTalkCall`
+    // answered with the newest — so typed turns left the person still speaking to the
+    // other one (codex P1, pass 6).
+    //
+    // This is a MUTATION, and it READS the very index range it INSERTS into
+    // (`by_chat_live`, this chat's unended rows). Two concurrent records therefore
+    // conflict under Convex's serializable OCC: one retries, sees the other's row, and
+    // refuses. That is the serialization no bridge-local reservation can give.
+    //
+    // Refusing here FAILS THE MINT CLOSED, the path this handler already documents:
+    // the caller answers `talk_session_unrecorded`, the secret is never relayed, and
+    // the orphaned gateway session expires on its own.
+    const concurrent = await liveTalkCall(ctx, chatId);
+    if (
+      concurrent !== null &&
+      (concurrent.instanceName !== instanceName || concurrent.agentId !== agentId)
+    ) {
+      throw new Error("talk call already active on another agent");
+    }
+    // …AND THE MIRROR: a turn already on its way to another agent. The send's last
+    // check and its POST cannot be one transaction, and when the two sit on different
+    // instances they sit on different bridge processes — so the socket-in-hand
+    // refusal that catches every same-bridge case never runs, and the turn lands on
+    // one agent while this call runs on another (codex P1, pass 17). The mint gives
+    // way: pressing the button again a moment later costs far less than a split
+    // conversation.
+    if (await turnInFlightForOtherAgent(ctx, chat, { instanceName, agentId })) {
+      throw new Error("a turn is already on its way to another agent");
+    }
     const now = Date.now();
-    const stale = await ctx.db
-      .query("talkSessions")
-      .withIndex("by_expires", (q) => q.lt("expiresAt", now))
-      .take(20);
-    for (const row of stale) await ctx.db.delete(row._id);
-    return await ctx.db.insert("talkSessions", {
+    // THE SAME helper the janitor uses. This purge deleted expired rows silently, so
+    // a mint in ANY chat could remove the row that was freezing another one — and the
+    // janitor would never see it again, leaving that chat's queue stopped for good
+    // (codex P1, pass 9). A deletion that lifts a freeze wakes its queue, wherever it
+    // happens.
+    await deleteExpiredHandles(ctx, 20);
+    const sessionId = await ctx.db.insert("talkSessions", {
       userId,
       chatId,
       instanceName,
@@ -272,21 +511,110 @@ export const recordTalkSession = internalMutation({
       ...(bridgeUrl !== undefined ? { bridgeUrl } : {}),
       createdAt: now,
       expiresAt: now + TALK_HANDLE_TTL_MS,
+      // STAMPED HERE, because the marker is armed right below. Without it the first
+      // hold saw no stamp and armed a SECOND marker a second later — idempotent, but
+      // a write and a scheduled run per blocking call for nothing (codex P3, pass 10).
+      windowDrainScheduled: true,
     });
+    // ARM THE END OF THE WINDOW, at the mint, for every call.
+    //
+    // A call that is never hung up (a browser that crashed) stops being live when the
+    // window runs out — but only in the eyes of a query that runs again. Nothing
+    // WROTE at that instant, so two readers stayed wrong indefinitely: a turn held by
+    // the drain waited for an unrelated turn that never came on a quiet chat, and the
+    // composer's live subscription kept the selector greyed out on a call that ended
+    // half an hour ago (codex P1 + P2, pass 3). `markTalkSessionEnded` is idempotent
+    // and drains the queue, so a real hangup landing first simply makes this a no-op.
+    await ctx.scheduler.runAt(
+      now + TALK_CALL_WINDOW_MS,
+      internal.talk.markTalkSessionEnded,
+      { sessionId },
+    );
+    return sessionId;
   },
 });
 
 /** Scheduled sweep: the opportunistic one only runs when someone mints, so a quiet
  *  deployment would keep its last expired handles indefinitely. Bounded per run. */
+/**
+ * Delete expired handles, and WAKE the queues those deletions just unfroze.
+ *
+ * Deleting a row that was never ended lifts the freeze, so a turn held behind it has
+ * to be told — otherwise it waits for an unrelated turn that never comes on a quiet
+ * chat, and since a queued row makes the chat busy, every later send waits with it
+ * (codex P1, pass 8). Ended rows froze nothing and are skipped.
+ *
+ * SCHEDULED, never drained inline. A drain promotes a row and reads up to fifty of
+ * its chat's messages; doing that for two hundred chats inside the delete mutation
+ * could cross Convex's per-transaction read limit, and the whole mutation — deletions
+ * included — would roll back. The hourly cron would then retry the same two hundred
+ * rows forever, deleting nothing and waking nobody (codex P1, pass 9). One scheduled
+ * mutation per chat keeps each drain in its own transaction.
+ */
+async function deleteExpiredHandles(
+  ctx: MutationCtx,
+  limit: number,
+): Promise<number> {
+  const stale = await ctx.db
+    .query("talkSessions")
+    .withIndex("by_expires", (q) => q.lt("expiresAt", Date.now()))
+    .take(limit);
+  const unfrozen = new Set(
+    stale.filter((r) => r.endedAt === undefined).map((r) => r.chatId),
+  );
+  for (const row of stale) await ctx.db.delete(row._id);
+  for (const chatId of unfrozen) {
+    await ctx.scheduler.runAfter(0, internal.talk.drainAfterCallWindow, {
+      chatId,
+    });
+  }
+  return stale.length;
+}
+
+/** The scheduled drain of a chat whose freeze a deletion just lifted. An ordinary
+ *  drain, in its own transaction — which is the whole point. */
+export const drainAfterCallWindow = internalMutation({
+  args: { chatId: v.id("chats") },
+  handler: async (ctx, { chatId }): Promise<void> => {
+    await drainNextQueued(ctx, chatId);
+  },
+});
+
 export const sweepTalkSessions = internalMutation({
   args: {},
-  handler: async (ctx): Promise<{ deleted: number }> => {
-    const stale = await ctx.db
+  handler: async (ctx): Promise<{ deleted: number; ended: number }> => {
+    // FIRST, end the calls whose window is over but which nobody ended.
+    //
+    // A call minted from this version ends itself (the marker armed at the mint), and
+    // one holding a queued turn is ended by the hold's own arming. A row that predates
+    // this lot on a QUIET chat has neither: nothing writes at 31 minutes, so a
+    // composer already subscribed keeps its selector frozen — on a call that has been
+    // over for an hour — until the handle's two-hour TTL (codex P2, pass 12). Ending
+    // it here IS the write that re-evaluates that subscription.
+    // BOUNDED WELL BELOW the deletion pass, because each of these costs a write AND a
+    // scheduled drain, and the two passes share one transaction. Draining inline
+    // already blew that budget once (codex P1, pass 9) — this is the same shape and
+    // gets the same caution. The volume is tiny by construction: a call minted from
+    // this version ends itself, so what lands here is a row that predates the lot or
+    // one whose own marker never ran. Anything beyond the cap waits an hour.
+    const cutoff = Date.now() - TALK_CALL_WINDOW_MS;
+    const overdue = await ctx.db
       .query("talkSessions")
-      .withIndex("by_expires", (q) => q.lt("expiresAt", Date.now()))
-      .take(200);
-    for (const row of stale) await ctx.db.delete(row._id);
-    return { deleted: stale.length };
+      .withIndex("by_live_created", (q) =>
+        q.eq("endedAt", undefined).lt("createdAt", cutoff),
+      )
+      .take(50);
+    const now = Date.now();
+    for (const row of overdue) {
+      await ctx.db.patch(row._id, { endedAt: now });
+      // Same pairing as a deletion that lifts a freeze: the write re-evaluates the
+      // composer's subscription, and the queue is woken in its own transaction.
+      await ctx.scheduler.runAfter(0, internal.talk.drainAfterCallWindow, {
+        chatId: row.chatId,
+      });
+    }
+    const deleted = await deleteExpiredHandles(ctx, 200);
+    return { deleted, ended: overdue.length };
   },
 });
 
@@ -336,6 +664,26 @@ export const prepareTalkSession = internalQuery({
     );
     if (routing === null) return { ok: false, code: "no_agent" };
     const target = routing.target;
+    // A SECOND mint is a turn like any other: minting for another agent re-keys the
+    // bridge's one socket for this chat and closes the socket the first call is
+    // bound to — the very cut this freeze exists to prevent, reachable from a second
+    // tab without touching the composer the freeze greys out (codex P1, pass 2).
+    // Re-minting the SAME agent stays allowed: that is a reconnect, not a switch.
+    const live = await liveTalkCall(ctx, chatId);
+    if (
+      live !== null &&
+      (live.instanceName !== target.instanceName || live.agentId !== target.agentId)
+    ) {
+      return { ok: false, code: "call_active" };
+    }
+    // …and the MIRROR, asked early. `recordTalkSession` asks it again at the write,
+    // which is where the answer is binding — but only after a session has been minted
+    // on the gateway and then abandoned, and the caller learns that as the generic
+    // "could not record" (codex P3, pass 18). Asking here spends nothing and lets the
+    // reader be told what actually happened.
+    if (await turnInFlightForOtherAgent(ctx, chat, target)) {
+      return { ok: false, code: "turn_in_flight" };
+    }
     const instance = await ctx.db
       .query("instances")
       .withIndex("by_name", (q) => q.eq("name", target.instanceName))
@@ -451,6 +799,18 @@ export const prepareTalkToolCall = internalQuery({
         live === null ||
         live.userId !== userId ||
         live.chatId !== chatId ||
+        // ENDED IS OVER. A hangup marks the row before anything else, and until now
+        // only the handle's two-hour TTL stopped the consults: a call ended in one
+        // place went on asking the agent questions from another. It matters most on
+        // the DIRECT lane, where `talk.client.close` closes the gateway's logical
+        // record and NOTHING can reach the browser↔provider media
+        // (upstream client-voice-session.ts: "Transport close does not end consult
+        // runs"). So a second tab's recovery hangup lifted the freeze while the first
+        // tab kept talking — and could then route the conversation to another agent,
+        // which is the one thing this lot exists to prevent (codex P1, pass 11).
+        // `talk_session_stale` is TERMINAL, so the still-open call ends with a
+        // message instead of drifting on unanswered.
+        live.endedAt !== undefined ||
         live.expiresAt <= Date.now()
       ) {
         return { ok: false, code: "talk_session_stale" };
@@ -695,7 +1055,27 @@ export const hangupTalkSession = action({
       sessionId,
     });
     if (!prep.ok) return prep;
-    if (!prep.relayed || prep.voiceSessionId === null) {
+    // THE CALLER STOPPED SPEAKING — record it before anything else can return. Every
+    // early exit below (a direct-lane call the gateway does not own, a deployment
+    // with no bridge configured) used to skip the `finally` and leave the row
+    // looking live, which froze the chat's agent for the rest of the call window
+    // over a call that had ended (codex P1). Marking first also makes the common
+    // path idempotent: the mutation ignores an already-ended row.
+    await ctx.runMutation(internal.talk.markTalkSessionEnded, { sessionId });
+    // THE BRIDGE IS TOLD ON BOTH LANES.
+    //
+    // It holds this chat's socket for the whole call window on the direct lane too
+    // (server.ts — the consult is pinned to the call's agent, so a re-key hands the
+    // conversation to another one mid-sentence). That hold lives in the bridge's
+    // memory and nothing else releases it: skipping the POST here, as this did while
+    // only the relayed lane held, would have left every agent switch refused for up
+    // to thirty minutes after a call the user ended in ten seconds (codex P1, pass
+    // 10). The bridge releases the hold in its own `finally`, whatever the gateway
+    // answers, so a close that fails still gives the socket back.
+    //
+    // Only a mint with no `voiceSessionId` skips it: there is nothing to name, and an
+    // old gateway that minted one placed no hold either.
+    if (prep.voiceSessionId === null) {
       return { ok: true, closed: "none" };
     }
     const sharedSecret = process.env.BRIDGE_SHARED_SECRET;
@@ -730,17 +1110,194 @@ export const hangupTalkSession = action({
         const code =
           (data as { error?: { code?: string } } | null)?.error?.code ??
           `bridge_${response.status}`;
+        // A 5xx from an ingress in front of a bridge that is DOWN never reached the
+        // handler, so the hold still stands and the server still owes this close.
+        // A 4xx is the bridge answering — it ran, and released. Arming on the first
+        // is what the chain is for; arming on the second would be noise.
+        if (response.status >= 500) await armHangupRetry(ctx, chatId, sessionId);
         return { ok: false, code };
       }
       const d = data as { ok?: boolean; closed?: unknown } | null;
       if (d?.ok !== true) return { ok: false, code: "talk_malformed" };
       return { ok: true, closed: typeof d.closed === "string" ? d.closed : "closed" };
     } catch {
+      // UNANSWERED, so the bridge may never have run its release. Convex has already
+      // marked the row ended, so every reader sees no call while the bridge keeps
+      // holding this chat's socket — the server owes that close and retries it.
+      await armHangupRetry(ctx, chatId, sessionId);
       return { ok: false, code: "bridge_unreachable" };
     } finally {
       clearTimeout(timer);
     }
   },
+});
+
+/**
+ * When to ask the bridge again to release a hold the user has already ended.
+ *
+ * DENSE, not merely long. Two earlier shapes were wrong in the same way: a chain of
+ * three over a minute gave up at once, and one of five whose delays kept doubling
+ * reached past the hold but left a twenty-minute silence in the middle — a partition
+ * healing at seventeen minutes met no attempt until after the hold had expired by
+ * itself, which is the exact hole the chain exists to close (codex P2, passes 14 and
+ * 15). Reaching the end is not enough; what matters is how long the chat can stay
+ * frozen after the network comes back.
+ *
+ * So the invariant is a PAIR, and both halves are asserted against the call window
+ * rather than re-added by hand: no gap longer than `TALK_HANGUP_RETRY_MAX_GAP_MS`,
+ * and a reach past the hold. Past the last attempt the hold expires on its own, and
+ * `requeueForCall` has been moving the message along throughout.
+ */
+const TALK_HANGUP_RETRY_DELAYS_MS = [
+  20_000,
+  60_000,
+  120_000,
+  300_000,
+  300_000,
+  300_000,
+  300_000,
+  300_000,
+  300_000,
+];
+
+/** The longest a healed partition may wait for the next attempt. */
+export const TALK_HANGUP_RETRY_MAX_GAP_MS = Math.max(
+  ...TALK_HANGUP_RETRY_DELAYS_MS,
+);
+
+/** What the chain above actually reaches, from the first failure. Exported so the
+ *  test can hold it against the call window rather than re-adding the numbers. */
+export const TALK_HANGUP_RETRY_REACH_MS = TALK_HANGUP_RETRY_DELAYS_MS.reduce(
+  (a, b) => a + b,
+  0,
+);
+
+/**
+ * Arm the retry chain for this session — AT MOST ONCE.
+ *
+ * The browser retries the hangup action up to three times of its own accord, and a
+ * user with two tabs doubles that again. Each rejection used to arm a fresh chain:
+ * one hangup under a lasting partition became eighteen POSTs and fifteen scheduled
+ * actions, all trying to release the same hold (codex P2, pass 15). The row is the
+ * natural key — it is the thing the hold belongs to — so the stamp lives there.
+ */
+async function armHangupRetry(
+  ctx: ActionCtx,
+  chatId: Id<"chats">,
+  sessionId: Id<"talkSessions">,
+): Promise<void> {
+  const armed = await ctx.runMutation(internal.talk.claimHangupRetry, {
+    sessionId,
+  });
+  if (!armed) return;
+  try {
+    await ctx.scheduler.runAfter(
+      TALK_HANGUP_RETRY_DELAYS_MS[0]!,
+      internal.talk.retryTalkHangup,
+      { chatId, sessionId, attempt: 0 },
+    );
+  } catch (err) {
+    // The claim and the scheduling are two operations. A claim that survives a
+    // failed scheduling is worse than no claim at all: the browser's own retries
+    // find the stamp already set and can no longer rebuild the chain, so nothing
+    // ever releases the hold (codex P3, pass 16). Give the claim back.
+    await ctx.runMutation(internal.talk.releaseHangupRetryClaim, { sessionId });
+    throw err;
+  }
+}
+
+/** Claim the one retry chain this session gets. Returns false when another caller
+ *  (another tab, another of the browser's own attempts) already holds it. */
+export const claimHangupRetry = internalMutation({
+  args: { sessionId: v.id("talkSessions") },
+  handler: async (ctx, { sessionId }): Promise<boolean> => {
+    const row = await ctx.db.get(sessionId);
+    if (row === null || row.hangupRetryArmed === true) return false;
+    await ctx.db.patch(sessionId, { hangupRetryArmed: true });
+    return true;
+  },
+});
+
+/** Give back a claim whose scheduling failed, so the next attempt can take it. */
+export const releaseHangupRetryClaim = internalMutation({
+  args: { sessionId: v.id("talkSessions") },
+  handler: async (ctx, { sessionId }): Promise<void> => {
+    const row = await ctx.db.get(sessionId);
+    if (row === null) return;
+    await ctx.db.patch(sessionId, { hangupRetryArmed: undefined });
+  },
+});
+
+/**
+ * Ask the bridge again to release a hold whose hangup never reached it.
+ *
+ * THE SERVER OWES THIS CLOSE, not the browser. Convex marks the row ended BEFORE the
+ * POST, so from every reader's point of view the call is over — while the bridge, on
+ * the other side of a partition, keeps holding this chat's socket and refusing every
+ * agent switch. The browser's own bounded retries stop long before that hold does,
+ * and it then forgets the session for good: nothing was left to try (codex P2, pass
+ * 12). Best-effort and idempotent — the bridge releases in its own `finally`, and an
+ * exhausted chain simply lets the hold expire.
+ */
+export const retryTalkHangup = internalAction({
+  args: {
+    chatId: v.id("chats"),
+    sessionId: v.id("talkSessions"),
+    attempt: v.number(),
+  },
+  handler: async (ctx, { chatId, sessionId, attempt }): Promise<void> => {
+    const row = await ctx.runQuery(internal.talk.peekTalkSession, { sessionId });
+    // Gone, or never ended: nothing is owed. (A row the sweep deleted took its hold's
+    // reason with it; the bridge's own TTL covers what is left.)
+    if (row === null || row.endedAt === undefined) return;
+    const sharedSecret = process.env.BRIDGE_SHARED_SECRET;
+    const bridgeUrl = row.bridgeUrl ?? process.env.BRIDGE_URL ?? null;
+    if (!bridgeUrl || !sharedSecret || row.voiceSessionId === undefined) return;
+    let delivered = false;
+    try {
+      const response = await fetch(`${bridgeUrl.replace(/\/$/, "")}/talk-hangup`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: sharedSecret },
+        body: JSON.stringify({
+          instanceName: row.instanceName,
+          chatId,
+          // THE SAME INGREDIENTS THE FIRST POST SENT. The bridge rebuilds the session
+          // key from these and answers `closed:"gone"` — WITHOUT releasing anything —
+          // when it does not match the socket it holds. Omitting the conversation
+          // made every retry on a bound chat a polite no-op that the loop then read
+          // as delivered, leaving the agent frozen for up to thirty minutes (codex
+          // P2, pass 13). The row's `conversation` is exactly what the mint used.
+          openclawChatId: row.conversation,
+          canonical: row.canonical,
+          agentId: row.agentId,
+          voiceSessionId: row.voiceSessionId,
+        }),
+        signal: AbortSignal.timeout(TALK_HANGUP_TIMEOUT_MS),
+      });
+      // ONLY AN ANSWER THE BRIDGE ITSELF PRODUCED. Its `finally` releases the hold
+      // whatever the gateway said — but an ingress returning 503 while the bridge is
+      // down answers too, and reading that as "released" ended the chain on the one
+      // failure it exists for (codex P2, pass 15). A 2xx is the bridge's own handler;
+      // anything else is someone speaking for it.
+      delivered = response.ok;
+    } catch {
+      delivered = false;
+    }
+    const next = TALK_HANGUP_RETRY_DELAYS_MS[attempt + 1];
+    if (delivered || next === undefined) return;
+    await ctx.scheduler.runAfter(next, internal.talk.retryTalkHangup, {
+      chatId,
+      sessionId,
+      attempt: attempt + 1,
+    });
+  },
+});
+
+/** The row, for the retry above — it runs as the SERVER, on a call the user ended. */
+export const peekTalkSession = internalQuery({
+  args: { sessionId: v.id("talkSessions") },
+  handler: async (ctx, { sessionId }): Promise<Doc<"talkSessions"> | null> =>
+    await ctx.db.get(sessionId),
 });
 
 // The consult can run a real (long) agent turn: bridge holds up to 90s, so the
@@ -997,7 +1554,18 @@ export const mintTalkSession = action({
         // The gateway session is OPEN and we cannot prove what it is. Fail closed —
         // the clientSecret is never handed out — and say so under its own code: the
         // broad catch below would report this as an unreachable bridge, which is the
-        // one thing it is not. The orphaned gateway session expires on its own.
+        // one thing it is not.
+        //
+        // AND GIVE THE SOCKET BACK. The bridge has been holding this chat's socket
+        // since the mint (the 2-minute pending window), and that hold is what refuses
+        // a typed turn for another agent. With no row written there is no hangup to
+        // send later, no end-of-window marker, and nothing in Convex that even knows
+        // the hold exists: a message could sit queued for two minutes behind a call
+        // that will never happen, with no call visible anywhere and no way for anyone
+        // to release it (codex P2, pass 7). So the abandon goes out HERE, where the
+        // failure is known. Best-effort by design — the hold expires on its own, and
+        // a bridge that cannot be reached must not turn a mint failure into a throw.
+        await abandonMintedSession(prep, chatId, bridgeUrl, session.voiceSessionId);
         return { ok: false, code: "talk_session_unrecorded" };
       }
       return { ok: true, session, sessionId };

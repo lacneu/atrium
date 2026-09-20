@@ -9,7 +9,9 @@
 // by value (the same numbers the upstream tag declares).
 import { describe, expect, test, vi } from "vitest";
 import {
+  TALK_DIRECT_HOLD_MS,
   TALK_OFFER_MAX_SDP_BYTES,
+  TALK_PENDING_HOLD_MS,
   TALK_RELAY_TTL_MS,
   TalkRelayRegistry,
   isGatewayRelativeOffer,
@@ -25,6 +27,24 @@ const ENTRY = {
   offerPath: "/plugins/openai/realtime/calls",
   gatewayHttpBase: "http://gw.test:18789",
 };
+
+describe("the two mint holds are each sized to their OWN hazard", () => {
+  test("the pending hold outlives the relay handle it waits for", () => {
+    // It covers the gap between a mint and its offer, and that gap cannot outlast the
+    // handle: once the relay id expires the browser has lost the call anyway. A hold
+    // shorter than the handle would cut calls whose offer was still legitimately
+    // coming.
+    expect(TALK_PENDING_HOLD_MS).toBeGreaterThan(TALK_RELAY_TTL_MS);
+  });
+
+  test("the DIRECT hold is the longer one — nothing bounds its gap but the send", () => {
+    // The direct lane has no offer step, so there is no handle expiry to lean on:
+    // only the send's own deadline bounds how late a dispatch can arrive (asserted
+    // against `SEND_POST_TIMEOUT_MS` in the routing-wiring suite). Pinned as an
+    // ORDER so a future reader "harmonising" the two cannot quietly shorten it.
+    expect(TALK_DIRECT_HOLD_MS).toBeGreaterThan(TALK_PENDING_HOLD_MS);
+  });
+});
 
 describe("isGatewayRelativeOffer", () => {
   test("an absolute path is the gateway's own route", () => {

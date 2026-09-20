@@ -2112,6 +2112,13 @@ export default defineSchema({
   subAgentInteractions: defineTable({
     chatId: v.id("chats"),
     childSessionKey: v.string(),
+    /** The instance this interaction RESOLVED to when it was prepared — captured, not
+     *  re-derived. The child key names an agent and nothing more, so the Talk mirror
+     *  could only compare ids: a child on one gateway and a call on another, both
+     *  called `alice`, read as the same agent and the call was allowed while the
+     *  message went to the other gateway (codex P1, pass 21). Optional for rows
+     *  written before this field existed; those compare on the agent alone, as before. */
+    instanceName: v.optional(v.string()),
     userText: v.string(), // the message the user sent to the sub-agent
     // Files the user attached to THIS message — METADATA ONLY (name + type), for the
     // thread to show "sent X"; the bytes ride the dispatch (resolved to base64), never
@@ -2130,6 +2137,18 @@ export default defineSchema({
     updatedAt: v.number(),
   })
     .index("by_chat", ["chatId"]) // cascade delete with the chat
+    // "Is a message already on its way to one of this chat's sub-agents?" — the Talk
+    // mirror's fourth shape. A `pending` row is written before the POST leaves, so a
+    // call minted in that gap has to conflict with it: reading THIS range is what
+    // makes `recordTalkSession` serialize against the interaction that created it
+    // (codex P1, pass 20).
+    .index("by_chat_status", ["chatId", "status"])
+    // The reaper's range: a `pending` row that nothing will ever settle. The bridge
+    // arms the reply correlation IN MEMORY, so a restart between the ACK and the
+    // child's final loses it and no Convex path terminalizes the row — which then
+    // blocks the panel AND every call to another agent, with no reconciler
+    // (codex P2, pass 22).
+    .index("by_status_updated", ["status", "updatedAt"])
     .index("by_child", ["childSessionKey"]), // the panel's interaction thread
 
   // LIVE streaming text for an in-flight assistant turn, kept OFF the `messages`
@@ -2448,6 +2467,27 @@ export default defineSchema({
      *  THAT process; the offer and the hangup must reach it even if the instance's
      *  routing moves to another bridge mid-call (codex P2, pass 5). */
     bridgeUrl: v.optional(v.string()),
+    /** When the caller ended this call. Set by the hangup, whatever the gateway
+     *  answered — the user is done either way. Absent = the call may still be up,
+     *  which is what freezes the chat's agent while someone is speaking. */
+    endedAt: v.optional(v.number()),
+    /** Set once a queued turn has been HELD because of this call, to arm exactly one
+     *  wake-up at the end of the freeze window.
+     *
+     *  The mint arms that wake-up for every call it records, which covers everything
+     *  minted from this version on. It does NOT cover a row that already existed when
+     *  this shipped: the drain holds a turn behind it, nothing writes at 31 minutes,
+     *  and the 2-hour sweep deletes the row without draining — so the message waited
+     *  indefinitely while every later send queued behind it (codex P1, pass 8). The
+     *  drain therefore arms its own, and this stamp is what keeps repeated holds from
+     *  arming it again on every pass. */
+    windowDrainScheduled: v.optional(v.boolean()),
+    /** Set when the server's own hangup-retry chain has been armed for this call.
+     *  The browser retries the hangup action up to three times by itself, and a second
+     *  tab doubles that again: without this each rejection armed another chain, and one
+     *  hangup under a lasting partition became eighteen POSTs all releasing the same
+     *  hold (codex P2, pass 15). */
+    hangupRetryArmed: v.optional(v.boolean()),
     /** HARD TTL, not an end-of-call boundary: nothing invalidates a row when the
      *  user hangs up, so a handle stays usable until this moment. It bounds how long
      *  a leaked id could address the session, and it is deliberately longer than a
@@ -2456,7 +2496,28 @@ export default defineSchema({
     expiresAt: v.number(),
   })
     // The sweep (opportunistic + the scheduled janitor) ranges this.
-    .index("by_expires", ["expiresAt"]),
+    .index("by_expires", ["expiresAt"])
+    // "Is this chat on a call right now?" — asked on every routed send and every
+    // rebind. A bounded scan of `by_expires` answered it until 2026-09-19 and could
+    // MISS the row on a busy deployment (200 older sessions ahead of it), which
+    // silently unfroze the agent mid-call (codex P1).
+    //
+    // `endedAt` is IN the index, not filtered after the read: ranging the chat alone
+    // and taking the newest N still missed a live call once N calls had been made
+    // and ended on that chat since — a bound on the read is not a bound on the
+    // answer (codex P1, pass 2). Ended rows sort into their own key range, so
+    // eq(chatId).eq(endedAt, undefined) reads live rows ONLY, however many closed
+    // ones precede them.
+    .index("by_chat_live", ["chatId", "endedAt"])
+    // "Which calls are still live although their window is over?" — the janitor's
+    // second job. A call minted from this version on ends itself at the window (the
+    // marker armed at the mint), and one holding a queued turn is ended by the hold's
+    // own arming. A row that predates this lot on a QUIET chat has neither: nothing
+    // writes at 31 minutes, so a composer already subscribed keeps its selector
+    // frozen until the handle's two-hour TTL (codex P2, pass 12). Keyed on
+    // `endedAt` first so the unended rows are one range, `createdAt` second so the
+    // sweep can take the oldest of them.
+    .index("by_live_created", ["endedAt", "createdAt"]),
 
   // Ownership record for browser-uploaded storage blobs. There is no
   // server-side "upload completed" hook in Convex: `generateUploadUrl` returns

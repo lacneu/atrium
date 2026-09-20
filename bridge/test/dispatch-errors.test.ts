@@ -1,4 +1,5 @@
 import { describe, expect, test } from "vitest";
+import { TalkCallActiveError } from "../src/session.js";
 import {
   classifyGatewayError,
   errorChainText,
@@ -217,6 +218,17 @@ describe("faultDomain (bridge-health classification)", () => {
 
   test.each(DOWNSTREAM)("%s is a DOWNSTREAM rejection (bridge stays green)", (code) => {
     expect(faultDomain(code)).toBe("downstream");
+  });
+
+  test("refusing to cut a live voice call is a LOCAL refusal, not a bridge fault", () => {
+    // The link and the credentials are perfect: we declined to re-key the socket
+    // because a gateway-owned call was live on it. Painting the bridge red for
+    // honouring its own invariant is the exact lie the `local` class exists to end,
+    // and `downstream` would claim the gateway answered — clearing a real incident.
+    expect(faultDomain("talk_call_active")).toBe("local");
+    expect(classifyGatewayError(new TalkCallActiveError("c1"))).toBe(
+      "talk_call_active",
+    );
   });
 
   test("the production case: a rejected attachment is NOT a bridge fault", () => {

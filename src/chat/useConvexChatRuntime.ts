@@ -835,10 +835,23 @@ export function useConvexChatRuntime({ chatId }: UseConvexChatRuntimeArgs) {
             );
           }
         }
+        const failure = (e as Error)?.message ?? "";
         toast.error(
-          (e as Error)?.message?.includes("QUEUE_FULL")
+          failure.includes("QUEUE_FULL")
             ? m.chat_queue_full()
-            : m.chat_queue_failed(),
+            : // A voice call pins this chat's agent. The selector normally says so
+              // BEFORE the click — but not for a reader who has no selector: a
+              // single-agent participant sees no picker and no voice control, so the
+              // refusal reached them as the generic "send failed" with nothing to act
+              // on (codex P2, pass 8). Named here, where every send failure passes.
+              //
+              // ITS OWN STRING, not the selector's tooltip: that one says "the agent
+              // cannot be changed — hang up first", and this reader changed nothing
+              // and cannot hang up a call that is not theirs. It states what actually
+              // happened to their message instead.
+              failure.includes("TALK_CALL_ACTIVE")
+              ? m.chat_send_call_active()
+              : m.chat_queue_failed(),
         );
         return false;
       }

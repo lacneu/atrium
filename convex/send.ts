@@ -41,6 +41,7 @@ import { chatParticipantRows } from "./lib/chatAccess";
 import { rejectMentionSpans } from "./lib/mentions";
 import { notifyUser } from "./notifications";
 import { resolveTargetForTurn } from "./routing";
+import { assertNoAgentSwitchDuringCall } from "./lib/talkFreeze";
 
 export const sendMessage = mutation({
   args: {
@@ -186,6 +187,19 @@ export const sendMessage = mutation({
       }
     }
 
+    // NOT WHILE SOMEONE IS SPEAKING. A voice call is pinned to the agent it was
+    // minted for — the gateway holds the session, and the mid-call consult
+    // addresses THAT agent. Routing a typed turn elsewhere would split one
+    // conversation across two agents mid-sentence; on a gateway-owned call it also
+    // ends the call outright, because the bridge keeps one live socket per chat and
+    // re-keying it closes the one the gateway bound the call to.
+    //
+    // Compared against the turn's EFFECTIVE target, not against the optional
+    // `routedAgent` field: a client that simply omits it still routes somewhere —
+    // to the chat's binding — and reading only the field let that path through
+    // (codex P2). Resolved once here and reused by the branch above when present.
+    await assertNoAgentSwitchDuringCall(ctx, chat, args.routedAgent ?? null);
+
     // 2b. Mid-turn serialization (Phase 1: QUEUE). If the chat already has a turn
     //     IN FLIGHT, this send is parked as a `queued` outbox row and the drainer
     //     dispatches it (FIFO) once the current turn ends — the bridge is strictly
@@ -193,7 +207,40 @@ export const sendMessage = mutation({
     //     An idle chat dispatches immediately (the historical behavior). Computed
     //     BEFORE any insert so the busy-check (and Convex's serializable read set)
     //     reflects only PRIOR turns, not this row.
-    const busy = await isChatBusy(ctx, chat._id);
+    //     EVERY WAY A ROW REACHES `queued`, AND WHAT RELEASES IT. Since this clause
+    //     went in, a row with no wake-up stops the whole CONVERSATION and not just
+    //     itself — so the list is written down rather than re-derived:
+    //
+    //       1. here, because the chat was busy      → whatever made it busy ends and
+    //                                                  drains (a turn finalizing, a
+    //                                                  sub-agent going terminal, or —
+    //                                                  case 1 again — the row ahead);
+    //       2. bridge.requeueForCall (the bridge
+    //          refused, to keep a call alive)       → `drainAfterCallRefusal`, armed
+    //                                                  by that refusal, at +20 s;
+    //       3. bridge.reparkIfBusy (an announce
+    //          reopened the chat mid-delay)         → that announce's own finalize;
+    //       4. bridge.reparkIfBusy (a call started
+    //          inside the dispatch delay)           → the hangup's drain, or the
+    //                                                  end-of-window marker it arms;
+    //       5. preemptRepark (a killed dispatch)    → it drains in the same mutation;
+    //       6. drainNextQueued HOLDING it, mid-call → `markTalkSessionEnded`: the
+    //                                                  hangup's, the one armed at the
+    //                                                  mint, or the one the hold arms
+    //                                                  for a call that predates it.
+    //
+    //     A ROW ALREADY QUEUED COUNTS AS BUSY, here and only here. `isChatBusy` looks
+    //     for a turn IN FLIGHT, which a queued row is not — so a chat holding one
+    //     while nothing streams read as idle and this send dispatched straight past
+    //     it. Normally that window is the drain's 2.5 s; the bridge's call refusal
+    //     opens a 20 s one (the row waits for its armed retry), and a message sent in
+    //     between reached the agent BEFORE the one the reader sent first (codex P1,
+    //     pass 5). The queue is FIFO or it is not a queue. Scoped to the send path:
+    //     `isChatBusy` itself also answers the dispatch-reset probe, where a queued
+    //     row must not read as activity.
+    const busy =
+      (await isChatBusy(ctx, chat._id)) ||
+      (await countQueued(ctx, chat._id)) > 0;
     if (busy && (await countQueued(ctx, chat._id)) >= MAX_QUEUED_PER_CHAT) {
       // Bounded queue: refuse a runaway backlog with a clear, catchable error
       // (the composer surfaces it as a toast). Thrown before any write, so the

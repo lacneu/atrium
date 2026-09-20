@@ -93,19 +93,20 @@ export type TalkHandshakeSession = {
 
 /**
  * What to do with a session the mint just returned, given whether the user is still
- * on the line. A RELAYED session is a call the GATEWAY owns and holds open on the
- * bridge's socket; if the user hung up while the mint was in flight, nobody will ever
- * connect to it and nobody would ever close it — it would sit on one of the two
- * reservations the gateway allows per socket until its TTL (codex P1, 2026-09-19).
- * So an owned session arriving after a hangup is hung up AT ONCE. A direct session is
- * the browser's own; unused, it simply expires. Pure, so the race is table-testable.
+ * on the line. A session that arrives after the user hung up is hung up AT ONCE, on
+ * BOTH lanes. A relayed session is a call the GATEWAY owns and holds open on the
+ * bridge's socket: nobody would ever connect to it and nobody would ever close it, so
+ * it would sit on one of the two reservations the gateway allows per socket until its
+ * TTL (codex P1, 2026-09-19). A direct session holds no gateway resource, but the
+ * server counts it as a live call for this chat, and a live call freezes the chat's
+ * agent — leaving it unclosed would lock the selector for the whole call window
+ * (codex P1, pass 2). Pure, so the race is table-testable.
  */
 export function mintedSessionDisposition(
   session: { offerRelay?: { relayId: string } | null },
   stillCurrent: boolean,
-): "connect" | "hangup-now" | "drop" {
-  if (stillCurrent) return "connect";
-  return session.offerRelay ? "hangup-now" : "drop";
+): "connect" | "hangup-now" {
+  return stillCurrent ? "connect" : "hangup-now";
 }
 
 /** The headers the direct-lane handshake sets itself; a provider header of the same
@@ -369,13 +370,24 @@ export function parseTalkToolCall(raw: string): TalkToolCall | null {
  * the CONTROLS, leaving the user in a live call with no way to mute or hang up. (The
  * parent's remount key is a different mechanism: unmounting DOES run the teardown
  * effect, which is why changing chat correctly ends the call.)
+ *
+ * NOR WHEN THE SERVER STILL SEES A CALL. The recovery hangup — a call this tab does
+ * not own, after a reload or a crash — must not vanish on the very answer that makes
+ * it necessary: an admin disabling talk, or the agent being revoked, flips
+ * `available` to false while the call goes on freezing the chat. `prepareTalkHangup`
+ * deliberately authorizes a hangup after exactly those two events; hiding the only
+ * control that can send it left the freeze standing for the whole window with no way
+ * out (codex P2, pass 8).
  */
 export function hidesTalkControl(state: {
   phase: TalkPhase;
   /** `talkAvailable` — undefined while the query is in flight. */
   available: boolean | undefined;
+  /** A call the SERVER sees on this chat that this tab does not own. */
+  serverCall?: boolean;
 }): boolean {
   if (state.phase !== "idle") return false;
+  if (state.serverCall === true) return false;
   return state.available !== true;
 }
 
@@ -437,10 +449,29 @@ export function talkErrorKey(
   | "talk_error_mic_denied"
   | "talk_error_secret_expired"
   | "talk_error_session_stale"
+  | "talk_error_call_active"
+  | "talk_error_turn_in_flight"
   | "talk_error_generic" {
   switch (code) {
     case "talk_disabled":
       return "talk_error_disabled";
+    // A mint refused because this chat is already on a call with ANOTHER agent —
+    // from a second tab, say. Generic wording would read as a bug; the user needs
+    // to know the other call is still up and whose it is (codex P1, pass 2).
+    //
+    // TWO SPELLINGS, one fact. Convex refuses `call_active` from its own reading;
+    // the BRIDGE refuses `talk_call_active` when the race got past that reading and
+    // only the socket could tell. A second tab that slipped through both Convex reads
+    // got the generic message with a raw code (codex P3, pass 4) — the user's
+    // situation is identical either way, so the sentence must be.
+    case "call_active":
+    case "talk_call_active":
+      return "talk_error_call_active";
+    // The mirror of the freeze: a turn is already on its way to another agent, so the
+    // call gives way. A different fact from "someone is already speaking", and the
+    // reader acts on it differently — they wait for an answer, not for a call.
+    case "turn_in_flight":
+      return "talk_error_turn_in_flight";
     case "talk_session_stale":
       return "talk_error_session_stale";
     case "talk_unsupported":

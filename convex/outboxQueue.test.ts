@@ -1397,3 +1397,380 @@ describe("a task that blew its own deadline raises a signal", () => {
     ).toBe(false);
   });
 });
+
+// ── A queued turn must not cut a voice call ──────────────────────────────────
+//
+// The send-time freeze cannot see a call that did not exist when the message was
+// accepted. A turn parked for another agent, promoted while the user is speaking,
+// re-keys the bridge's socket — and the gateway ends the call bound to it. The drain
+// therefore re-applies the rule, and HOLDS the row rather than dropping it.
+
+describe("the queue holds a turn that would switch agent mid-call", () => {
+  async function seedCallChat(t: ReturnType<typeof convexTest>) {
+    return t.run(async (ctx) => {
+      const userId = await ctx.db.insert("users", {});
+      await ctx.db.insert("profiles", {
+        userId,
+        role: "user" as const,
+        canonical: "u",
+      });
+      for (const agentId of ["main", "other"]) {
+        await ctx.db.insert("userAgents", {
+          userId,
+          instanceName: "prod",
+          agentId,
+          isDefault: agentId === "main",
+          source: "manual" as const,
+          createdAt: 1,
+        });
+        await ctx.db.insert("agents", {
+          instanceName: "prod",
+          agentId,
+          source: "discovered" as const,
+          presentInLastOk: true,
+          firstSeenAt: 1,
+          lastSeenAt: 1,
+        });
+      }
+      const chatId = await ctx.db.insert("chats", {
+        userId,
+        updatedAt: 1,
+        instanceName: "prod",
+        agentId: "main",
+      });
+      return { userId, chatId };
+    });
+  }
+
+  const startCall = (
+    t: ReturnType<typeof convexTest>,
+    chatId: Id<"chats">,
+    userId: Id<"users">,
+    agentId: string,
+  ) =>
+    t.run((ctx) =>
+      ctx.db.insert("talkSessions", {
+        userId,
+        chatId,
+        instanceName: "prod",
+        agentId,
+        canonical: "u",
+        conversation: String(chatId),
+        createdAt: Date.now(),
+        expiresAt: Date.now() + 60 * 60 * 1000,
+        relayed: true,
+        voiceSessionId: "vs-queue",
+      }),
+    );
+
+  const queueFor = (
+    t: ReturnType<typeof convexTest>,
+    chatId: Id<"chats">,
+    userId: Id<"users">,
+    agentId: string,
+  ) =>
+    t.run((ctx) =>
+      ctx.db.insert("outbox", {
+        chatId,
+        userId,
+        clientMessageId: `cm-${agentId}`,
+        text: "queued",
+        attachmentIds: [],
+        status: "queued" as const,
+        routedAgent: { instanceName: "prod", agentId },
+      }),
+    );
+
+  test("a row for ANOTHER agent stays queued while the call is up", async () => {
+    const t = convexTest(schema, modules);
+    const { userId, chatId } = await seedCallChat(t);
+    const rowId = await queueFor(t, chatId, userId, "other");
+    await startCall(t, chatId, userId, "main");
+    await t.run((ctx) => drainNextQueued(ctx, chatId));
+    expect(await t.run((ctx) => ctx.db.get(rowId))).toMatchObject({
+      status: "queued",
+    });
+  });
+
+  test("a row for the agent ON THE CALL drains normally", async () => {
+    // The rule is about switching, not about speaking.
+    const t = convexTest(schema, modules);
+    const { userId, chatId } = await seedCallChat(t);
+    const rowId = await queueFor(t, chatId, userId, "main");
+    await startCall(t, chatId, userId, "main");
+    await t.run((ctx) => drainNextQueued(ctx, chatId));
+    expect(await t.run((ctx) => ctx.db.get(rowId))).toMatchObject({
+      status: "pending",
+    });
+  });
+
+  test("ending the call WAKES the held row — nothing else would", async () => {
+    // The ordinary drain fires when a turn ends, and a held row has no turn to end.
+    // Without a wake it would wait for the next unrelated turn, or for the freeze
+    // window to expire.
+    const t = convexTest(schema, modules);
+    const { userId, chatId } = await seedCallChat(t);
+    const rowId = await queueFor(t, chatId, userId, "other");
+    const call = await startCall(t, chatId, userId, "main");
+    await t.run((ctx) => drainNextQueued(ctx, chatId));
+    expect(await t.run((ctx) => ctx.db.get(rowId))).toMatchObject({
+      status: "queued",
+    });
+    await t.mutation(internal.talk.markTalkSessionEnded, { sessionId: call });
+    expect(await t.run((ctx) => ctx.db.get(rowId))).toMatchObject({
+      status: "pending",
+    });
+  });
+
+  test("a call minted INSIDE the dispatch delay re-parks the promoted row", async () => {
+    // The drain checks the freeze, promotes the row, then waits 2.5 s before the
+    // dispatch actually leaves. A call minted in that window is bound to the bridge's
+    // one socket for this chat, and the send would re-key it and cut the call. The
+    // question has to be asked again at the top of the dispatch (codex P1, pass 2).
+    const t = convexTest(schema, modules);
+    const { userId, chatId } = await seedCallChat(t);
+    const rowId = await queueFor(t, chatId, userId, "other");
+    // No call yet: the drain promotes it, exactly as it did in production.
+    await t.run((ctx) => drainNextQueued(ctx, chatId));
+    expect(await t.run((ctx) => ctx.db.get(rowId))).toMatchObject({
+      status: "pending",
+    });
+    // …and the user starts speaking before the delayed dispatch fires.
+    await startCall(t, chatId, userId, "main");
+    await expect(
+      t.mutation(internal.bridge.reparkIfBusy, { outboxId: rowId }),
+    ).resolves.toBe(true);
+    expect(await t.run((ctx) => ctx.db.get(rowId))).toMatchObject({
+      status: "queued",
+    });
+  });
+
+  test("a call that PREDATES this lot still releases its held turn", async () => {
+    // Every call minted from this version on arms its own end-of-window marker. A row
+    // that was already live when this shipped has none: nothing writes at 31 minutes,
+    // and the 2-hour sweep deletes it without telling the queue — so the held turn
+    // waited indefinitely while every later send queued behind it (codex P1, pass 8).
+    // The drain therefore arms one itself, once per call.
+    const t = convexTest(schema, modules);
+    const { userId, chatId } = await seedCallChat(t);
+    const rowId = await queueFor(t, chatId, userId, "other");
+    const call = await startCall(t, chatId, userId, "main");
+    await t.run((ctx) => drainNextQueued(ctx, chatId));
+    expect(await t.run((ctx) => ctx.db.get(rowId))).toMatchObject({
+      status: "queued",
+    });
+    // The stamp IS the armed wake-up, and a second hold must not arm a second one.
+    expect(await t.run((ctx) => ctx.db.get(call))).toMatchObject({
+      windowDrainScheduled: true,
+    });
+    const armed = await t.run((ctx) =>
+      ctx.db.system.query("_scheduled_functions").collect(),
+    );
+    expect(
+      armed.filter((f) => f.name.includes("markTalkSessionEnded")),
+    ).toHaveLength(1);
+    await t.run((ctx) => drainNextQueued(ctx, chatId));
+    const again = await t.run((ctx) =>
+      ctx.db.system.query("_scheduled_functions").collect(),
+    );
+    expect(
+      again.filter((f) => f.name.includes("markTalkSessionEnded")),
+    ).toHaveLength(1);
+  });
+
+  test("a MINTED call holds a turn without arming a second marker", async () => {
+    // The two arming sites meet here. The mint arms one marker; the hold arms one for
+    // a call that has none. Covered separately, they both read as "exactly one" — but
+    // a mint that armed without STAMPING let the first hold arm a second a second
+    // later (codex P3, pass 10). Idempotent, and a wasted write plus a wasted run per
+    // blocking call.
+    const t = convexTest(schema, modules);
+    const { userId, chatId } = await seedCallChat(t);
+    const rowId = await queueFor(t, chatId, userId, "other");
+    // A call recorded the way the mint records it — stamp and marker together.
+    const call = await t.run(async (ctx) => {
+      const id = await ctx.db.insert("talkSessions", {
+        userId,
+        chatId,
+        instanceName: "prod",
+        agentId: "main",
+        canonical: "u",
+        conversation: String(chatId),
+        createdAt: Date.now(),
+        expiresAt: Date.now() + 60 * 60 * 1000,
+        windowDrainScheduled: true,
+      });
+      await ctx.scheduler.runAt(
+        Date.now() + 31 * 60 * 1000,
+        internal.talk.markTalkSessionEnded,
+        { sessionId: id },
+      );
+      return id;
+    });
+    await t.run((ctx) => drainNextQueued(ctx, chatId));
+    expect(await t.run((ctx) => ctx.db.get(rowId))).toMatchObject({
+      status: "queued",
+    });
+    const armed = await t.run((ctx) =>
+      ctx.db.system.query("_scheduled_functions").collect(),
+    );
+    expect(
+      armed.filter((f) => f.name.includes("markTalkSessionEnded")),
+    ).toHaveLength(1);
+    void call;
+  });
+
+  test("the 2-hour sweep TELLS the queue when it deletes a live call", async () => {
+    // Deleting a row that was never ended lifts the freeze. A turn held behind it
+    // would otherwise wait for an unrelated turn that never comes on a quiet chat.
+    const t = convexTest(schema, modules);
+    const { userId, chatId } = await seedCallChat(t);
+    const rowId = await queueFor(t, chatId, userId, "other");
+    const call = await startCall(t, chatId, userId, "main");
+    await t.run((ctx) => drainNextQueued(ctx, chatId));
+    expect(await t.run((ctx) => ctx.db.get(rowId))).toMatchObject({
+      status: "queued",
+    });
+    // …the handle's own 2-hour TTL runs out.
+    await t.run((ctx) => ctx.db.patch(call, { expiresAt: Date.now() - 1 }));
+    await t.mutation(internal.talk.sweepTalkSessions, {});
+    expect(await t.run((ctx) => ctx.db.get(call))).toBeNull();
+    // The drain is SCHEDULED, not run inline: a sweep deleting two hundred rows would
+    // otherwise promote two hundred turns and read fifty messages for each, inside one
+    // transaction — over Convex's read limit, rolling the deletions back too, so the
+    // hourly cron retried the same rows forever (codex P1, pass 9).
+    expect(await t.run((ctx) => ctx.db.get(rowId))).toMatchObject({
+      status: "queued",
+    });
+    // …and the wake-up is ARMED for this chat, in its own transaction.
+    const armed = (
+      await t.run((ctx) => ctx.db.system.query("_scheduled_functions").collect())
+    ).filter((f) => f.name.includes("drainAfterCallWindow"));
+    expect(armed).toHaveLength(1);
+    expect(armed[0]?.args?.[0]).toMatchObject({ chatId });
+    // When it runs, the freeze is gone with the row and the turn goes out.
+    await t.mutation(internal.talk.drainAfterCallWindow, { chatId });
+    expect(await t.run((ctx) => ctx.db.get(rowId))).toMatchObject({
+      status: "pending",
+    });
+  });
+
+  test("the OPPORTUNISTIC purge wakes a queue too — a mint elsewhere must not wedge it", async () => {
+    // `recordTalkSession` purges expired handles on every mint, ANY chat's. It deleted
+    // them silently, so a mint in one conversation could remove the row freezing
+    // another — and the janitor, which now wakes what it deletes, would never see that
+    // row again. The other chat's queue stopped for good (codex P1, pass 9).
+    const t = convexTest(schema, modules);
+    const { userId, chatId } = await seedCallChat(t);
+    const rowId = await queueFor(t, chatId, userId, "other");
+    const call = await startCall(t, chatId, userId, "main");
+    await t.run((ctx) => drainNextQueued(ctx, chatId));
+    expect(await t.run((ctx) => ctx.db.get(rowId))).toMatchObject({
+      status: "queued",
+    });
+    // The handle expires, and the purge runs from its own site — not the janitor.
+    await t.run((ctx) => ctx.db.patch(call, { expiresAt: Date.now() - 1 }));
+    await t.run(async (ctx) => {
+      const stale = await ctx.db
+        .query("talkSessions")
+        .withIndex("by_expires", (q) => q.lt("expiresAt", Date.now()))
+        .take(20);
+      expect(stale).toHaveLength(1); // the purge really has this row in range
+    });
+    await t.mutation(internal.talk.sweepTalkSessions, {});
+    const armed = (
+      await t.run((ctx) => ctx.db.system.query("_scheduled_functions").collect())
+    ).filter((f) => f.name.includes("drainAfterCallWindow"));
+    expect(armed).toHaveLength(1);
+    await t.mutation(internal.talk.drainAfterCallWindow, { chatId });
+    expect(await t.run((ctx) => ctx.db.get(rowId))).toMatchObject({
+      status: "pending",
+    });
+  });
+
+  test("the janitor ENDS a call whose window is over, even on a silent chat", async () => {
+    // A call minted from this version ends itself; one holding a queued turn is ended
+    // by the hold's own arming. A row that predates this lot on a QUIET chat has
+    // neither — nothing writes at 31 minutes, so a composer already subscribed keeps
+    // its selector frozen on a call that has been over for an hour, until the
+    // handle's two-hour TTL (codex P2, pass 12). The janitor's write IS what
+    // re-evaluates that subscription.
+    const t = convexTest(schema, modules);
+    const { userId, chatId } = await seedCallChat(t);
+    const call = await t.run((ctx) =>
+      ctx.db.insert("talkSessions", {
+        userId,
+        chatId,
+        instanceName: "prod",
+        agentId: "main",
+        canonical: "u",
+        conversation: String(chatId),
+        // Over the 31-minute window, well inside the 2-hour handle TTL.
+        createdAt: Date.now() - 45 * 60 * 1000,
+        expiresAt: Date.now() + 60 * 60 * 1000,
+      }),
+    );
+    // Nothing is queued: no drain will ever run on this chat by itself.
+    expect((await t.run((ctx) => ctx.db.get(call)))?.endedAt).toBeUndefined();
+    await t.mutation(internal.talk.sweepTalkSessions, {});
+    const after = await t.run((ctx) => ctx.db.get(call));
+    expect(after?.endedAt).toEqual(expect.any(Number));
+    // …and the handle is still there: this is an END, not the two-hour deletion.
+    expect(after).not.toBeNull();
+  });
+
+  test("the janitor leaves a call that is still INSIDE its window alone", async () => {
+    // Ending a live call would cut it — the opposite defect, in the same place.
+    const t = convexTest(schema, modules);
+    const { userId, chatId } = await seedCallChat(t);
+    const call = await startCall(t, chatId, userId, "main");
+    await t.mutation(internal.talk.sweepTalkSessions, {});
+    expect((await t.run((ctx) => ctx.db.get(call)))?.endedAt).toBeUndefined();
+  });
+
+  test("a NEW send cannot overtake a row already waiting in the queue", async () => {
+    // `isChatBusy` looks for a turn IN FLIGHT, which a queued row is not — so a chat
+    // holding one while nothing streams read as idle and a later send dispatched
+    // straight past it. The bridge's call refusal opens a 20 s window of exactly that
+    // shape, and the message sent second reached the agent first (codex P1, pass 5).
+    const t = convexTest(schema, modules);
+    const { userId, chatId } = await seedCallChat(t);
+    const first = await queueFor(t, chatId, userId, "main");
+    // Nothing is pending and nothing streams: the chat LOOKS idle.
+    expect(
+      await t.run((ctx) => ctx.db.query("outbox").filter((q) =>
+        q.eq(q.field("status"), "pending")).first()),
+    ).toBeNull();
+    await t.withIdentity({ subject: `${userId}|session` }).mutation(api.send.sendMessage, {
+      chatId,
+      text: "second",
+      clientMessageId: "cm-overtake",
+    });
+    const rows = await t.run((ctx) => ctx.db.query("outbox").collect());
+    const second = rows.find((r) => r.clientMessageId === "cm-overtake");
+    expect(second?.status).toBe("queued"); // BEHIND the first, not ahead of it
+    expect(rows.find((r) => r._id === first)?.status).toBe("queued");
+  });
+
+  test("a held row is RELEASED when the freeze window expires with no hangup", async () => {
+    // A browser that crashed mid-call never sends a hangup. Nothing else releases the
+    // row: the ordinary drain fires on a turn ending, and a held row has no turn. On a
+    // quiet chat it waited forever, while a later send could overtake it — `isChatBusy`
+    // ignores queued rows (codex P1, pass 2). The hold arms exactly one wake-up.
+    const t = convexTest(schema, modules);
+    const { userId, chatId } = await seedCallChat(t);
+    const rowId = await queueFor(t, chatId, userId, "other");
+    const call = await startCall(t, chatId, userId, "main");
+    await t.run((ctx) => drainNextQueued(ctx, chatId));
+    expect(await t.run((ctx) => ctx.db.get(rowId))).toMatchObject({
+      status: "queued",
+    });
+    // The mint armed `markTalkSessionEnded` for the end of the window. When it fires
+    // it ends the row — which releases the hold AND invalidates the composer's live
+    // subscription, so the selector re-opens without anyone touching the chat.
+    await t.mutation(internal.talk.markTalkSessionEnded, { sessionId: call });
+    expect(await t.run((ctx) => ctx.db.get(rowId))).toMatchObject({
+      status: "pending",
+    });
+  });
+});

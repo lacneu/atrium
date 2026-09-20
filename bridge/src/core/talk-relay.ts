@@ -34,11 +34,37 @@ export const TALK_RELAY_TTL_MS = 60_000;
 export const TALK_OFFER_MAX_SDP_BYTES = 256 * 1024;
 export const TALK_OFFER_TIMEOUT_MS = 30_000;
 export const TALK_CALL_HOLD_MS = 30 * 60_000;
-/** How long the minting socket is held BEFORE the offer arrives: the gateway's own
- *  pending-offer window plus a margin. The 30-minute call TTL is armed only when the
- *  offer is spent — the gateway arms its own at call allocation, not at mint
- *  (codex P2, 2026-09-19); a mint nobody follows up must not pin the socket 30 min. */
+/**
+ * How long the minting socket is held BEFORE the offer arrives: the gateway's own
+ * pending-offer window plus a margin. The 30-minute call TTL is armed only when the
+ * offer is spent — the gateway arms its own at call allocation, not at mint
+ * (codex P2, 2026-09-19); a mint nobody follows up must not pin the socket 30 min.
+ *
+ * DELIBERATELY SHORTER THAN `TALK_DIRECT_HOLD_MS`, and not an oversight: the two
+ * guard different hazards. This one covers the gap between a mint and its offer —
+ * bounded by the relay handle's own 60-second life, so double that is generous. A
+ * send arriving after it has lapsed can only cut a call whose offer never came,
+ * i.e. one the browser has already lost (its handle expired). The direct lane has no
+ * offer step at all, so nothing bounds its gap but the send's own deadline, which is
+ * why that one is sized against `SEND_POST_TIMEOUT_MS` instead.
+ */
 export const TALK_PENDING_HOLD_MS = 2 * 60_000;
+/**
+ * How long a DIRECT mint holds the socket.
+ *
+ * Sized against ONE number: how long a `/send` may legitimately still be in flight.
+ * Convex allows a send POST four minutes (`SEND_POST_TIMEOUT_MS`), and that clock
+ * starts before the request leaves — so a dispatch which read "no call" just before
+ * the mint can still arrive minutes later. The hold exists precisely to refuse that
+ * arrival, so anything shorter than the send's own deadline reopens the hand-off it
+ * was written to prevent (codex P1, pass 14).
+ *
+ * NOT the call window: the direct lane's media is the browser's, Convex's freeze owns
+ * the steady state, and a hold nobody can release — a mint whose response was lost
+ * writes no row — should cost minutes, not half an hour (codex P2, pass 11). A
+ * consult extends it up to the call's own ceiling when one really is live.
+ */
+export const TALK_DIRECT_HOLD_MS = 5 * 60_000;
 
 /** A gateway-relative offer path: absolute path, not a scheme-relative URL. */
 export function isGatewayRelativeOffer(offerUrl: unknown): offerUrl is string {

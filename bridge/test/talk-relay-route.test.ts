@@ -22,7 +22,11 @@ import type { AddressInfo } from "node:net";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import type { BridgeConfig } from "../src/config.js";
 import { HealthRegistry } from "../src/core/health.js";
-import { IDLE_SESSION_TTL_SECONDS, SessionRegistry } from "../src/session.js";
+import {
+  IDLE_SESSION_TTL_SECONDS,
+  SessionRegistry,
+  TalkCallActiveError,
+} from "../src/session.js";
 import { createBridgeServer } from "../src/server.js";
 import { buildSessionKey } from "../src/providers/openclaw/session-keys.js";
 import { servedMap, sharedFromConfig } from "./helpers/served.js";
@@ -455,15 +459,286 @@ describe("GPT Live: the call rides the conversation's socket and the offer is re
     expect(reg.reapStaleSessions(now)).toBe(1);
   });
 
-  test("switching the chat's agent mid-call ends the call — by name, not silently", async () => {
+  test("switching the chat's agent mid-call is REFUSED — the call is not cut", async () => {
     // One live socket per chat is the registry's invariant; the gateway binds a GPT
-    // Live call to the socket that minted it. The two together mean a re-key ends the
-    // call. This test pins that the consequence is STATED in the log, so an operator
-    // reading a dropped call finds the cause rather than a mute `rtc_lost`.
-    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    // Live call to the socket that minted it. Until 2026-09-19 the two together meant
+    // a re-key ENDED the call, and this test pinned that the consequence was at least
+    // stated in the log. The decision changed: a call in progress is not something a
+    // typed turn may cut, so `acquire` refuses. Proven END TO END here — through the
+    // real mint route, on the socket the gateway actually holds the call on.
     const { gw, post, registry: reg } = await boot();
     await post("/talk-session", OWNER);
     expect(gw.upgradeCount).toBe(1);
+    await expect(
+      reg.acquire({
+        chatId: "c1",
+        openclawChatId: "oc-bound",
+        agentId: "bob",
+        canonical: "olivier",
+        instanceName: "primary",
+      }),
+    ).rejects.toThrow(TalkCallActiveError);
+    // No second socket was opened, and the first one still carries the call.
+    expect(gw.upgradeCount).toBe(1);
+  });
+
+  test("the socket is reserved DURING talk.client.create, not only after it", async () => {
+    // The real hold needs the gateway's voiceSessionId, which only exists once the RPC
+    // answers — and that RPC takes up to 15 s. A turn for another agent landing in that
+    // window found no hold and re-keyed, closing the very socket the gateway was about
+    // to bind the call to: the exact cut this lot exists to prevent, through the one
+    // window the refusal did not cover (codex P1, pass 4). Driven through the REAL
+    // route, so it pins the route's ordering and not a re-statement of it here.
+    let releaseCreate: () => void = () => {};
+    const createHeld = new Promise<void>((r) => {
+      releaseCreate = r;
+    });
+    const gw = startWsFakeGateway({
+      onMethod: async (method) => {
+        if (method === "talk.client.create") {
+          await createHeld; // the gateway is still thinking
+          return GPT_LIVE_MINT;
+        }
+        if (method === "talk.client.close") return { ok: true };
+        return {};
+      },
+    });
+    const route = startOfferRoute();
+    await Promise.all([gw.ready, route.ready]);
+    gateway = gw;
+    offerRoute = route;
+    const config = CONFIG(gw.url, route.url);
+    const shared = sharedFromConfig(config);
+    const reg = new SessionRegistry(servedMap(config), () =>
+      Math.floor(Date.now() / 1000),
+    );
+    registry = reg;
+    const srv = createBridgeServer({
+      shared,
+      served: servedMap(config),
+      registry: reg,
+      health: new HealthRegistry(1000, () => 2000),
+    });
+    await new Promise<void>((r) => srv.listen(0, r));
+    server = srv;
+    const base = `http://127.0.0.1:${(srv.address() as AddressInfo).port}`;
+    const minting = fetch(`${base}/talk-session`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: shared.bridgeSharedSecret,
+      },
+      body: JSON.stringify(OWNER),
+    });
+    // Wait until the gateway has RECEIVED the create — the window is open from here.
+    for (let i = 0; i < 200; i += 1) {
+      if (gw.requests.some((r) => r.method === "talk.client.create")) break;
+      await new Promise((r) => setTimeout(r, 10));
+    }
+    expect(gw.requests.some((r) => r.method === "talk.client.create")).toBe(true);
+    await expect(
+      reg.acquire({
+        chatId: "c1",
+        openclawChatId: "oc-bound",
+        agentId: "bob",
+        canonical: "olivier",
+        instanceName: "primary",
+      }),
+    ).rejects.toThrow(TalkCallActiveError);
+    releaseCreate();
+    expect((await minting).status).toBe(200);
+  });
+
+  test("a DIRECT mint holds the socket too — the consult is pinned to its agent", async () => {
+    // The direct call is the browser's own, so a re-key does not END it — which is
+    // why this lane held nothing. But the consult addresses the agent the call was
+    // minted for, and a typed turn that re-keys the socket reaches ANOTHER one while
+    // the person is speaking (codex P1, pass 10). Convex refuses that on every door,
+    // and each of those is a read taken before the POST.
+    const gw = startWsFakeGateway({
+      onMethod: (method) => {
+        if (method === "talk.client.create") {
+          // The CLASSIC shape: a real https offer URL, no gateway-relative path.
+          return {
+            clientSecret: "ek_direct",
+            offerUrl: "https://api.openai.com/v1/realtime/calls",
+            voiceSessionId: "vs-direct",
+            model: "gpt-realtime",
+          };
+        }
+        if (method === "talk.client.close") return { ok: true };
+        return {};
+      },
+    });
+    const route = startOfferRoute();
+    await Promise.all([gw.ready, route.ready]);
+    gateway = gw;
+    offerRoute = route;
+    const config = CONFIG(gw.url, route.url);
+    const shared = sharedFromConfig(config);
+    let now = Math.floor(Date.now() / 1000);
+    const reg = new SessionRegistry(servedMap(config), () => now);
+    registry = reg;
+    const srv = createBridgeServer({
+      shared,
+      served: servedMap(config),
+      registry: reg,
+      health: new HealthRegistry(1000, () => 2000),
+    });
+    await new Promise<void>((r) => srv.listen(0, r));
+    server = srv;
+    const base = `http://127.0.0.1:${(srv.address() as AddressInfo).port}`;
+    const minted = await fetch(`${base}/talk-session`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: shared.bridgeSharedSecret,
+      },
+      body: JSON.stringify(OWNER),
+    });
+    expect(minted.status).toBe(200);
+    const body = (await minted.json()) as Record<string, unknown>;
+    expect(body.relayed).toBeUndefined(); // the direct lane, not the relay
+    // …and the socket is held: a turn for another agent is refused, not served.
+    await expect(
+      reg.acquire({
+        chatId: "c1",
+        openclawChatId: "oc-bound",
+        agentId: "bob",
+        canonical: "olivier",
+        instanceName: "primary",
+      }),
+    ).rejects.toThrow(TalkCallActiveError);
+    // …AND THE HOLD IS SIZED TO THE RACE, not to the call. It closes a window measured
+    // in milliseconds — a dispatch that read Convex just before the mint landed — and
+    // Convex's freeze covers the call from there. Sized to the call instead, a mint
+    // whose HTTP response was lost (no row written, nothing able to release it) froze
+    // every agent switch for THIRTY minutes with no call visible (codex P2, pass 11).
+    // STILL HELD inside the window — the bound is pinned from both sides, so a hold
+    // of a few milliseconds would not pass for one sized to the pending window.
+    now += 60;
+    await expect(
+      reg.acquire({
+        chatId: "c1",
+        openclawChatId: "oc-bound",
+        agentId: "dave",
+        canonical: "olivier",
+        instanceName: "primary",
+      }),
+    ).rejects.toThrow(TalkCallActiveError);
+    now += 5 * 60; // past the direct window, nowhere near a 30-minute one
+    await reg.acquire({
+      chatId: "c1",
+      openclawChatId: "oc-bound",
+      agentId: "carol",
+      canonical: "olivier",
+      instanceName: "primary",
+    });
+    now -= 3 * 60;
+    // The hangup gives it back — on this lane too, which is why Convex now posts it.
+    const hung = await fetch(`${base}/talk-hangup`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: shared.bridgeSharedSecret,
+      },
+      body: JSON.stringify({ ...OWNER, voiceSessionId: "vs-direct" }),
+    });
+    expect(hung.status).toBe(200);
+    await reg.acquire({
+      chatId: "c1",
+      openclawChatId: "oc-bound",
+      agentId: "bob",
+      canonical: "olivier",
+      instanceName: "primary",
+    });
+  });
+
+  test("an OLD gateway that mints no voiceSessionId is held all the same", async () => {
+    // Talk is supported from 2026.7.1, whose WebRTC session schema has no such field.
+    // Keying the hold on it left those gateways with NO hold at all — the one case
+    // with no second line of defence, since Convex skips the hangup POST there too
+    // (codex P1, pass 12). The provisional reservation already covers the same
+    // window, so the mint keeps it instead of releasing it.
+    const gw = startWsFakeGateway({
+      onMethod: (method) => {
+        if (method === "talk.client.create") {
+          // The 2026.7.1 shape: a secret and an offer URL, and nothing to name it by.
+          return {
+            clientSecret: "ek_old",
+            offerUrl: "https://api.openai.com/v1/realtime/calls",
+            model: "gpt-4o-realtime-preview",
+          };
+        }
+        return {};
+      },
+    });
+    const route = startOfferRoute();
+    await Promise.all([gw.ready, route.ready]);
+    gateway = gw;
+    offerRoute = route;
+    const config = CONFIG(gw.url, route.url);
+    const shared = sharedFromConfig(config);
+    let now = Math.floor(Date.now() / 1000);
+    const reg = new SessionRegistry(servedMap(config), () => now);
+    registry = reg;
+    const srv = createBridgeServer({
+      shared,
+      served: servedMap(config),
+      registry: reg,
+      health: new HealthRegistry(1000, () => 2000),
+    });
+    await new Promise<void>((r) => srv.listen(0, r));
+    server = srv;
+    const base = `http://127.0.0.1:${(srv.address() as AddressInfo).port}`;
+    const minted = await fetch(`${base}/talk-session`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: shared.bridgeSharedSecret,
+      },
+      body: JSON.stringify(OWNER),
+    });
+    expect(minted.status).toBe(200);
+    await expect(
+      reg.acquire({
+        chatId: "c1",
+        openclawChatId: "oc-bound",
+        agentId: "bob",
+        canonical: "olivier",
+        instanceName: "primary",
+      }),
+    ).rejects.toThrow(TalkCallActiveError);
+    // …for the DIRECT window, not the shorter pending one the reservation was made
+    // with: this hold now guards the same arrival a named direct hold does, and a
+    // send may legitimately still be in flight for four minutes.
+    now += 3 * 60;
+    await expect(
+      reg.acquire({
+        chatId: "c1",
+        openclawChatId: "oc-bound",
+        agentId: "carol",
+        canonical: "olivier",
+        instanceName: "primary",
+      }),
+    ).rejects.toThrow(TalkCallActiveError);
+    // …and bounded all the same: a mint nobody can release costs minutes, not hours.
+    now += 3 * 60;
+    await reg.acquire({
+      chatId: "c1",
+      openclawChatId: "oc-bound",
+      agentId: "bob",
+      canonical: "olivier",
+      instanceName: "primary",
+    });
+  });
+
+  test("…and the switch goes through once the call is hung up", async () => {
+    // The refusal is about a LIVE call, not about the chat having had one: a hangup
+    // must not leave the conversation stuck on the agent that was spoken to.
+    const { gw, post, registry: reg } = await boot();
+    await post("/talk-session", OWNER);
+    await post("/talk-hangup", { ...OWNER, voiceSessionId: "vs-1" });
     await reg.acquire({
       chatId: "c1",
       openclawChatId: "oc-bound",
@@ -472,9 +747,6 @@ describe("GPT Live: the call rides the conversation's socket and the offer is re
       instanceName: "primary",
     });
     expect(gw.upgradeCount).toBe(2);
-    expect(
-      warn.mock.calls.some((c) => String(c[0]).includes("gateway-owned voice call was live")),
-    ).toBe(true);
   });
 
   test("a body that parses to null or an array is a 400 on both routes, not a 500", async () => {

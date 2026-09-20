@@ -119,6 +119,7 @@ import type * as lib_serverLocale from "../lib/serverLocale.js";
 import type * as lib_signedAnnouncements from "../lib/signedAnnouncements.js";
 import type * as lib_subAgentFailure from "../lib/subAgentFailure.js";
 import type * as lib_talk from "../lib/talk.js";
+import type * as lib_talkFreeze from "../lib/talkFreeze.js";
 import type * as lib_timeRange from "../lib/timeRange.js";
 import type * as lib_uiPrefs from "../lib/uiPrefs.js";
 import type * as me from "../me.js";
@@ -266,6 +267,7 @@ declare const fullApi: ApiFromModules<{
   "lib/signedAnnouncements": typeof lib_signedAnnouncements;
   "lib/subAgentFailure": typeof lib_subAgentFailure;
   "lib/talk": typeof lib_talk;
+  "lib/talkFreeze": typeof lib_talkFreeze;
   "lib/timeRange": typeof lib_timeRange;
   "lib/uiPrefs": typeof lib_uiPrefs;
   me: typeof me;

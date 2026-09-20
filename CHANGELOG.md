@@ -1,5 +1,82 @@
 # Changelog
 
+## [0.84.15] — OpenClaw 2026.9.5 supported: voice survives the gateway that owns it, and nobody switches agents mid-call
+
+Support and reliability release, corrective throughout. No breaking changes in Atrium —
+but read the upgrade notes for 2026.9.5 at the end of this entry before moving a gateway,
+because the agent database migration is one-way. OpenClaw 2026.9.5 becomes the validated
+ceiling; voice on it works again; a voice call can no longer be cut, or quietly handed to
+another agent, by a typed message; and an operator can finally read which media transport
+an instance uses.
+
+**Voice works on OpenClaw 2026.9.5.** That release changed who owns a browser voice session:
+without a configured realtime model the default is now GPT Live, and a GPT Live call belongs
+to the gateway — bound to the socket that created it, consulted under that socket's identity,
+closed when that socket closes, with an offer path that lives on the gateway itself. Atrium
+created the call on a throwaway socket it closed at once, so the call was dead before the
+person could speak. The call now rides the conversation's own long-lived socket, the secret
+never leaves the bridge, and the browser hands its offer through a single-use handle. The
+classic `gpt-realtime` lane, where the browser talks to the provider directly, is unchanged;
+each call decides its own lane.
+
+**Switching agents during a voice call is refused, not silently ruinous.** Before, picking
+another agent while speaking either ended the call outright (a gateway-owned call dies with
+its socket) or, on the classic lane, let the typed conversation drift to a second agent while
+the voice kept consulting the first. The chat's agent is now frozen for the length of the
+call, at every door: the composer's selector greys out and says why; a typed message that
+would switch is refused with a sentence, or held in the queue until the call ends when it
+was already waiting; a second tab cannot start a call with someone else; a message typed
+into another agent's sub-agent is refused too. The bridge itself refuses to move the socket
+while a call is on it — the one place that decides with the call in hand — so the guarantee
+holds even for a client that never asked. The reverse holds as well: a call cannot start
+while a message is already on its way to another agent; the button simply asks to try again
+in a moment.
+
+**A call ended anywhere ends everywhere.** Hanging up from a second tab, from a recovery
+control after a page reload, or by the server at the end of the call window now tears the
+call down in the tab that held it, with a message saying so — on the classic lane nothing
+else could reach that browser's microphone, which kept running on a call the server had
+already closed. A tab that reloads mid-call finds a hang-up control where the call button
+used to be, so a freeze it can see is a freeze it can clear.
+
+**Nothing waits forever.** A message held behind a call is released when the call ends,
+when its window runs out, or when a crashed browser leaves a call the janitor has to close;
+a hang-up the bridge never received is retried by the server for as long as the hold it
+releases can last; a sub-agent reply lost to a bridge restart no longer pins its
+conversation. Every one of these is a case that used to leave a chat stuck with no way out.
+
+**An operator can read which media transport an instance uses.** `/api/v1/compat` now
+carries `configuredMediaMode` per instance — the value a dispatch actually carries — so the
+question two undelivered-file reports turned on can be answered from the operator surface
+instead of being guessed. Absent reads as unknown, never as a default.
+
+**OpenClaw 2026.9.5 is supported, and is now the ceiling.** Every schema that release
+publishes is vendored, every new field classified, and the full live catalogue runs clean
+against it, so `2026.9.5` joins the validated versions and `maxValidated` moves up to it.
+
+Read this before you upgrade, because two of the three points are things Atrium cannot do
+for you:
+
+- **The agent database migrates one way.** 2026.9.5 moves the agent schema from 19 to 21.
+  Until the migration runs the gateway refuses every session with `UNAVAILABLE` and
+  `agent-database-inspection-failed` — not a bad request, a closed door. Stop the container,
+  run `openclaw doctor --fix`, restart. Going back to 2026.9.4 afterwards needs both a state
+  snapshot taken before the upgrade and fresh agent databases: an older binary refuses a
+  newer config and a newer schema by design.
+- **A stock 2026.9.5 gateway runs your plugins mute on agent turns.** That release ties a
+  plugin's runtime side effects to whether its registry is published as the process-wide
+  one, and the agent runtime deliberately does not publish its registry — so on an agent
+  turn `emitAgentEvent` answers "global side effects disabled", next-turn injection is
+  dropped, and run context and session attachments refuse. There is no error, no diagnostic
+  and no log line: the turn simply completes having done less than it said. There is also no
+  configuration key and no environment variable for it anywhere in that release — the flag is
+  settable only by the caller, in code. If you build your gateway image from the
+  `openclaw-docker` recipe, the build restores it and nothing is owed; if you run the
+  upstream image unchanged, expect plugin-driven behaviour to go quiet on agent turns until
+  upstream decouples the two.
+- **Voice needs this release.** See the first point above: on 2026.9.5 a browser call is
+  gateway-owned, and an Atrium older than 0.84.15 cannot hold one open.
+
 ## [0.84.14] — The promised file arrives, and a dead conversation heals itself
 
 Reliability release, corrective throughout. No breaking changes, no new feature. Four

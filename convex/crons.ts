@@ -203,6 +203,19 @@ crons.interval(
   {},
 );
 
+// The SAME hazard one table over: a sub-agent interaction stays `pending` until the
+// child's reply arrives, and the bridge holds that correlation in memory. A restart
+// between the ACK and the reply loses it, and nothing else settles the row — which
+// then blocks the panel and, since the Talk freeze reads this range, every call to
+// another agent as well. Settles only rows whose child is no longer running: the
+// child's own liveness is what says the work is still real.
+crons.interval(
+  "reap stale sub-agent interactions",
+  { minutes: 5 },
+  internal.subAgentInteractions.reapStalePendingInteractions,
+  {},
+);
+
 // Durable access-log retention (SOC2): daily bounded purge of access-log rows
 // past ACCESS_LOG_RETENTION_DAYS (default 90 — spans a Type II audit period,
 // vs the 14-day traceEvents purge). Self-reschedules to drain a backlog.

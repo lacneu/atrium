@@ -20,6 +20,10 @@
 // invariant holds without an explicit lock.
 
 import { internal } from "../_generated/api";
+import {
+  blockingCallForTurn,
+  scheduleCallWindowDrain,
+} from "./talkFreeze";
 import type { Id } from "../_generated/dataModel";
 import type { MutationCtx, QueryCtx } from "../_generated/server";
 import { effectiveOrder, QUEUED_ORDER_SENTINEL } from "./messageOrder";
@@ -188,6 +192,32 @@ export async function drainNextQueued(
     // index order = _creationTime ascending within the (chat, "queued") range → FIFO.
     .first();
   if (next === null) return;
+  // NOT WHILE SOMEONE IS SPEAKING. This row was ACCEPTED before the call started —
+  // the send-time check cannot see a call that did not exist yet — so the rule is
+  // re-applied at the moment the turn would actually dispatch. It is HELD, not
+  // dropped: the message stays queued and drains when the call ends (or when the
+  // freeze window expires), which is what the reader expects from a message they
+  // already sent. Without this, a queued turn for another agent promoted mid-call
+  // re-keyed the socket and cut the call (codex P1).
+  const chat = await ctx.db.get(chatId);
+  if (chat !== null) {
+    const chosen =
+      next.routedAgent === undefined
+        ? null
+        : {
+            instanceName: next.routedAgent.instanceName,
+            agentId: next.routedAgent.agentId,
+          };
+    const blocking = await blockingCallForTurn(ctx, chat, chosen);
+    // Held, not dropped. The release comes from `markTalkSessionEnded` — the hangup's
+    // own, or the one armed at the mint — and that mutation drains the queue. The
+    // arming here covers the call that was already live when this shipped, which has
+    // no marker of its own.
+    if (blocking !== null) {
+      await scheduleCallWindowDrain(ctx, blocking);
+      return;
+    }
+  }
   // The dispatch window opens NOW — stamped so the reconciler measures the time
   // this row has actually been in flight, not how long it waited in the queue.
   await ctx.db.patch(next._id, { status: "pending", pendingSince: Date.now() });

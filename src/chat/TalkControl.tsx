@@ -68,6 +68,10 @@ function talkErrorMessage(code: string): string {
       return m.talk_error_secret_expired();
     case "talk_error_session_stale":
       return m.talk_error_session_stale();
+    case "talk_error_call_active":
+      return m.talk_error_call_active();
+    case "talk_error_turn_in_flight":
+      return m.talk_error_turn_in_flight();
     case "talk_error_generic":
       return `${m.talk_error_generic()} (${code})`;
   }
@@ -76,10 +80,22 @@ function talkErrorMessage(code: string): string {
 export function TalkControl({
   chatId,
   routedAgent = null,
+  onCallActiveChange,
+  serverCallSessionId = null,
 }: {
   chatId: string;
   /** The composer's current per-turn selection, or null. */
   routedAgent?: { instanceName: string; agentId: string } | null;
+  /** A call the SERVER sees on this chat that THIS tab does not own — after a
+   *  reload, or from a second tab. Without it the freeze was visible and not
+   *  clearable: the selector named the agent on the line and nothing here offered to
+   *  end the call, for the whole 31-minute window. The idle pill then hangs up
+   *  instead of starting. */
+  serverCallSessionId?: string | null;
+  /** Raised while a call is being set up or is live, so the composer can freeze the
+   *  agent selector. The call is pinned to its agent; switching would split the
+   *  conversation (and end a gateway-owned call). The server refuses it as well. */
+  onCallActiveChange?: (active: boolean) => void;
 }) {
   const [status, setStatus] = useState<TalkStatus>(INITIAL_TALK_STATUS);
   // The user's voice pick ("" = the gateway's configured default), persisted
@@ -156,6 +172,7 @@ export function TalkControl({
     // The session is over: its handle must not survive into the next call, where it
     // would address whatever the previous one belonged to.
     sessionIdRef.current = null;
+    setOwnCall(null);
     if (audioRef.current) audioRef.current.srcObject = null;
   }, []);
 
@@ -180,6 +197,43 @@ export function TalkControl({
     advance("ended");
     setStatus((s) => ({ ...s, muted: false }));
   }, [advance, releaseOwnedCall, teardown]);
+
+  // THE SERVER ENDED THIS CALL — SO END IT HERE.
+  //
+  // A hangup from anywhere else (the recovery pill in another tab, an admin action,
+  // the end-of-window marker) marks the row ended. On the RELAYED lane the gateway
+  // closes the call with it; on the DIRECT lane nothing can reach this browser's
+  // peer connection, and upstream's close says so in as many words ("Transport close
+  // does not end consult runs"). So this tab kept a live microphone and a voice model
+  // on a call the server had ended — and the other tab, seeing no call, could route
+  // the conversation to another agent (codex P2, pass 12). The freeze is only honest
+  // if "hung up" means hung up everywhere.
+  //
+  // ASKED ABOUT THIS SESSION, not about the chat. The chat-wide answer could predate
+  // this tab's own mint, so an earlier version first had to WATCH its call appear
+  // before it would trust the disappearance — and a tab that never saw that
+  // intermediate state (suspended, reconnecting, a coalesced update) could then never
+  // react at all, which is the hole that guard opened (codex P1, pass 16). A
+  // subscription on this id cannot exist before the row does, so `false` is always
+  // "ended", never "not yet".
+  const [ownCall, setOwnCall] = useState<Id<"talkSessions"> | null>(null);
+  const ownCallLive = useQuery(
+    api.talk.talkCallLive,
+    ownCall === null ? "skip" : { sessionId: ownCall },
+  );
+  const serverEndedOurs = phaseRef.current !== "idle" && ownCallLive === false;
+  useEffect(() => {
+    if (!serverEndedOurs) return;
+    genRef.current++;
+    releaseOwnedCall();
+    teardown();
+    advance("ended");
+    setStatus((s) => ({ ...s, muted: false }));
+    // NOT "the session expired": it did not. Someone ended this call — another tab,
+    // or the server at the end of the window — and a reader told about an expiry
+    // would go looking for a timeout that never happened (codex P3, pass 13).
+    toast.error(m.talk_error_ended_elsewhere());
+  }, [serverEndedOurs, advance, releaseOwnedCall, teardown, toast]);
 
   // Unmount = hang up: never leave a mic live behind a conversation the user left.
   // Navigating between chats does NOT unmount this by itself — the route component
@@ -222,15 +276,14 @@ export function TalkControl({
     if (minted.ok) {
       const disposition = mintedSessionDisposition(minted.session, genRef.current === gen);
       if (disposition === "hangup-now") {
-        // Hung up while the mint was in flight: the gateway-owned call exists and
-        // nobody will connect to it. Close it now rather than leave it holding a
-        // reservation until its TTL.
+        // Hung up while the mint was in flight: the call exists and nobody will
+        // connect to it. Close it now rather than leave it holding a gateway
+        // reservation, and the chat's agent frozen, until the call window runs out.
         void hangupWithRetry(() =>
           hangupSession({ chatId: chatId as Id<"chats">, sessionId: minted.sessionId }),
         );
         return;
       }
-      if (disposition === "drop") return;
     } else if (genRef.current !== gen) {
       return;
     }
@@ -239,8 +292,13 @@ export function TalkControl({
       return;
     }
     sessionIdRef.current = minted.sessionId;
-    ownedCallRef.current =
-      minted.session.offerRelay !== null ? { sessionId: minted.sessionId } : null;
+    setOwnCall(minted.sessionId); // …and start watching THIS call's own row
+    // EVERY minted session is owed a hangup, on both lanes. The gateway-owned one
+    // needs it to close the call; the direct one needs it so the server stops
+    // treating this chat as "on a call" and unfreezes its agent. Tying this to the
+    // relayed lane left a direct call frozen for the whole call window after the
+    // user hung up (codex P1).
+    ownedCallRef.current = { sessionId: minted.sessionId };
     // Mic AFTER the mint: no permission prompt for a session that would be
     // refused anyway (disabled/unsupported).
     let mic: MediaStream;
@@ -413,15 +471,59 @@ export function TalkControl({
   }, [status.muted]);
 
   const phase = status.phase;
+  // From the FIRST click (minting) to the last: the session is minted for the agent
+  // selected at that instant, so the selection must freeze before the mint, not once
+  // audio flows. `ending` stays frozen too — the hangup is still travelling.
+  const callActive = phase !== "idle";
+  useEffect(() => {
+    onCallActiveChange?.(callActive);
+  }, [callActive, onCallActiveChange]);
+  // Unmount: whatever the phase was, this chat no longer has a call under this UI.
+  useEffect(
+    () => () => {
+      onCallActiveChange?.(false);
+    },
+    [onCallActiveChange],
+  );
   // Hidden while the instance is not enabled (or the probe still loads). An
   // ACTIVE session keeps rendering so a mid-call admin flip never strands a
   // live mic without its controls.
-  if (hidesTalkControl({ phase, available })) return null;
+  if (
+    hidesTalkControl({
+      phase,
+      available,
+      serverCall: serverCallSessionId !== null,
+    })
+  ) {
+    return null;
+  }
   return (
     <>
       {/* Remote (agent) audio sink — never rendered visibly. */}
       <audio ref={audioRef} autoPlay className="oc-talk__audio" />
-      {phase === "idle" ? (
+      {phase === "idle" && serverCallSessionId !== null ? (
+        // A call the server sees and this tab does not own: the only useful action is
+        // to end it. Starting another would be refused (the mint refuses a switch),
+        // and leaving no action at all is what made the freeze unclearable.
+        <span className="oc-talk__pill">
+          <button
+            type="button"
+            className="oc-talk__pillmain"
+            title={m.talk_stop()}
+            aria-label={m.talk_stop()}
+            onClick={() => {
+              void hangupWithRetry(() =>
+                hangupSession({
+                  chatId: chatId as Id<"chats">,
+                  sessionId: serverCallSessionId as Id<"talkSessions">,
+                }),
+              );
+            }}
+          >
+            <PhoneOff size={16} aria-hidden />
+          </button>
+        </span>
+      ) : phase === "idle" ? (
         <span className="oc-talk__pill">
           {/* The pill BODY starts the conversation; the chevron opens the
               settings (voice + mic sensitivity) — mirrors the agent chip,

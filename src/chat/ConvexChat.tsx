@@ -1100,11 +1100,36 @@ function ChatThread({
     chatId: chatId as Id<"chats">,
   });
   const readOnly = agentInfo?.readOnly === true;
+  // Is a voice call up on this chat? Owned HERE because the gate is resolved here
+  // and TalkControl — which knows the phase — lives two levels down in the
+  // composer. The setter is a useState setter, so its identity is stable and the
+  // child's effect does not re-fire on every render.
+  const [talkCallActive, setTalkCallActive] = useState(false);
+  // …and what the SERVER sees. The local flag is this tab's TalkControl: it is false
+  // after a reload and false in a second tab, and the selector then looked open while
+  // every send came back TALK_CALL_ACTIVE. Either source counts as "on a call".
+  const serverCall = useQuery(api.talk.chatCallState, {
+    chatId: chatId as Id<"chats">,
+  });
   // The agent selector's verdict, resolved HERE and passed down — not re-derived in
   // the composer. Two consumers read it (the selector itself, and the unreachable
   // banner, whose copy points at the selector and must not point at a control the
   // gate has closed), and two copies of this rule would drift.
   const agentGate = resolveAgentSelectorGate({
+    // A live voice call pins this chat's agent (see the gate). Lifted from
+    // TalkControl, which owns the phase; the server refuses the switch too.
+    callActive: talkCallActive || serverCall?.active === true,
+    // …and WHO is on it, so the locked control names the agent the CALL is on rather
+    // than this tab's local pick (codex P2, pass 5).
+    onCall:
+      serverCall?.active === true &&
+      serverCall.instanceName !== undefined &&
+      serverCall.agentId !== undefined
+        ? {
+            instanceName: serverCall.instanceName,
+            agentId: serverCall.agentId,
+          }
+        : null,
     hasUserTurn: routing?.hasUserTurn === true,
     emptyThread: routing?.emptyThread === true,
     unavailable: unavailable !== null,
@@ -1439,6 +1464,13 @@ function ChatThread({
         onToggleTools={onToggleTools}
         unavailable={unavailable !== null || readOnly}
         agentGate={agentGate}
+        onTalkCallActiveChange={setTalkCallActive}
+        // A call the SERVER sees that this tab does not own (a reload, a second tab):
+        // the voice pill then offers to END it, so the freeze it explains is also
+        // clearable. Null once this tab owns the call — its own hangup path runs.
+        serverCallSessionId={
+          talkCallActive ? null : (serverCall?.sessionId ?? null)
+        }
         subAgentBusy={subAgentBusy}
       />
     </ThreadPrimitive.Root>
@@ -4147,6 +4179,14 @@ function ComposerAgentSelect({
     () => new Set(pool.map((a) => a.instanceName)).size > 1,
     [pool],
   );
+  // An agent's identity is the PAIR instance/id. During a call the name shown is the
+  // call's, which may be on an instance the READER has no agent on at all — their
+  // pool then spans one instance, `multiInstance` is false, and the label collapsed
+  // to a bare id indistinguishable from their own agent of the same name (codex P3,
+  // pass 6). So the instance is named whenever the name did not come from this
+  // reader's pool, whatever the pool's own shape.
+  const showsForeignAgent =
+    gate.onCall != null && !pool.some((a) => agentRefEquals(a, gate.onCall!));
   if (!routing || gate.hidden) return null;
   const { selected, setSelected } = routing;
   // WHETHER the control is offered and WHAT a pick does. See resolveAgentSelectorGate:
@@ -4179,7 +4219,12 @@ function ComposerAgentSelect({
   // `selected` is null for a single-agent user (resolveEffectiveSelection refuses a
   // per-turn pick there), so a rebind-only selector would show no name at all — fall
   // back to the chat's own agent, which is precisely what the pick would replace.
-  const shown = selected ?? (mode === "rebind" ? routing.primary : null);
+  // DURING A CALL the name is the CALL'S, not this tab's selection: another tab, or
+  // a participant with a different pick, showed a locked control naming the wrong
+  // agent while the call ran on someone else (codex P2, pass 5). The control's whole
+  // job while it is closed is to say who is on the line.
+  const shown =
+    gate.onCall ?? selected ?? (mode === "rebind" ? routing.primary : null);
   const display = findAgentDisplay(pool, shown);
   const currentName =
     display?.displayName ?? shown?.agentId ?? m.chat_agent_select_label();
@@ -4196,7 +4241,12 @@ function ComposerAgentSelect({
           className="oc-composer__agent"
           disabled={disabled}
           title={
-            disabled
+            gate.reason === "call-active"
+              ? // A voice call is up: the agent is pinned to it. Saying "set with the
+                // first message" here would send the reader looking for a message
+                // that has nothing to do with why the control is closed.
+                m.chat_agent_select_call_hint()
+              : disabled
               ? m.chat_agent_select_firstturn_hint()
               : mode === "rebind"
                 ? // Nothing has been said yet, so the pick moves the conversation
@@ -4219,7 +4269,7 @@ function ComposerAgentSelect({
             <Bot size={15} aria-hidden />
           )}
           <span className="oc-composer__agent-name">{currentName}</span>
-          {multiInstance && shown ? (
+          {(multiInstance || showsForeignAgent) && shown ? (
             <span
               className="oc-composer__agent-instance"
               title={m.chat_agent_instance_title({
@@ -4659,6 +4709,8 @@ function Composer({
   onToggleTools,
   unavailable = false,
   agentGate,
+  onTalkCallActiveChange,
+  serverCallSessionId,
   subAgentBusy = false,
 }: {
   chatId: ConvexId<"chats">;
@@ -4676,6 +4728,11 @@ function Composer({
    *  (see resolveAgentSelectorGate) — deliberately not re-derived from `unavailable`,
    *  which merges "gateway down" with "read-only chat". */
   agentGate: AgentSelectorGate;
+  /** Raised by TalkControl while a call is being set up or is live: the thread
+   *  freezes the agent selector on it (the call is pinned to its agent). */
+  onTalkCallActiveChange: (active: boolean) => void;
+  /** Forwarded to TalkControl — see its prop. */
+  serverCallSessionId: string | null;
   /** A sub-agent this chat spawned is still running: hold the next send (queue) and
    *  SHOW the hold, exactly like an in-flight turn. */
   subAgentBusy?: boolean;
@@ -5282,6 +5339,8 @@ function Composer({
             // and its gateway session live under another's UI.
             key={chatId}
             chatId={chatId}
+            onCallActiveChange={onTalkCallActiveChange}
+            serverCallSessionId={serverCallSessionId}
             routedAgent={
               composerSelected
                 ? {

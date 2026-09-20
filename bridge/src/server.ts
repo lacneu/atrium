@@ -21,7 +21,7 @@ import {
   type Server,
   type ServerResponse,
 } from "node:http";
-import { timingSafeEqual } from "node:crypto";
+import { randomUUID, timingSafeEqual } from "node:crypto";
 
 import type { BridgeConfig, SharedConfig } from "./config.js";
 import { deviceTokenPromotion } from "./core/device-token-promotion.js";
@@ -47,6 +47,7 @@ import {
 } from "./core/rpc-params.js";
 import {
   TALK_CALL_HOLD_MS,
+  TALK_DIRECT_HOLD_MS,
   TALK_OFFER_MAX_SDP_BYTES,
   TALK_PENDING_HOLD_MS,
   TalkRelayRegistry,
@@ -5224,6 +5225,10 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
       }
       const talkSessionKey =
         talkOwner.kind === "scoped" ? talkOwner.sessionKey : null;
+      // The provisional reservation held across `talk.client.create` (see below).
+      // Released in the `finally` on EVERY exit: a mint that produced a call has
+      // already replaced it with the real hold, under the gateway's own id.
+      let talkReservation: { session: BridgeSession; id: string } | null = null;
       try {
         // WHICH SOCKET CREATES THE SESSION DECIDES WHO OWNS THE CALL. On OpenClaw
         // >= 2026.9.5 the default realtime model is GPT Live, and a GPT Live browser
@@ -5265,6 +5270,19 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
             return;
           }
           noteHandshakeFor(talkInstance)(ownerSession.connection);
+          // RESERVE THE SOCKET BEFORE ASKING FOR THE CALL.
+          //
+          // The real hold needs the gateway's voiceSessionId, which only exists once
+          // the RPC answers — and the RPC takes up to 15 s. A concurrent acquire for
+          // another agent landing in that window saw no hold and re-keyed, closing the
+          // very socket the gateway was about to bind the call to (codex P1, pass 4).
+          // So the reservation is taken FIRST, under a provisional id, and released on
+          // every exit that does not produce a call. It is bounded by the same pending
+          // window as a minted call, so a bridge that dies mid-mint cannot pin the
+          // chat's socket for longer than an unanswered offer would.
+          const reservationId = `pending:${randomUUID()}`;
+          ownerSession.holdForVoiceCall(reservationId, TALK_PENDING_HOLD_MS);
+          talkReservation = { session: ownerSession, id: reservationId };
           created = await ownerSession.connection.request(
             "talk.client.create",
             talkClientCreateParams(
@@ -5361,6 +5379,60 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
           });
           return;
         }
+        // THE DIRECT LANE HOLDS THE SOCKET TOO.
+        //
+        // Its call is the browser's own — the gateway does not bind it to this socket,
+        // so a re-key does not END it. But the chat's agent is still pinned: the
+        // consult addresses the agent the call was minted for, and a typed turn that
+        // re-keys the socket reaches ANOTHER one while the person is speaking. Convex
+        // refuses that on every door, but each of those is a read taken before the
+        // POST — a dispatch that passed the check just before the mint landed still
+        // went out (codex P1, pass 10). The relayed lane was already covered; this is
+        // the same window on the other lane.
+        //
+        // SIZED TO THE HAZARD, not to the call. This hold closes a race measured in
+        // milliseconds — a dispatch that read Convex just before the mint landed —
+        // and Convex's own freeze covers the call from there on, which is the right
+        // division of labour on a lane whose media the gateway does not hold.
+        //
+        // Sizing it to the call instead made every failure expensive: a mint whose
+        // HTTP response was lost writes no row, so nothing can ever release it, and
+        // a hangup whose POST fails leaves it standing — in both cases the chat
+        // refused every agent switch for THIRTY MINUTES with no call visible anywhere
+        // (codex P2, pass 11). `hangupTalkSession` releases this one on the way out.
+        //
+        // The hazard is measured by the SEND's own deadline, not by a round number:
+        // Convex allows a POST four minutes, and its clock starts before the request
+        // leaves, so a dispatch that read "no call" just before this mint can still
+        // arrive minutes later. See TALK_DIRECT_HOLD_MS.
+        //
+        // AN OLD GATEWAY MINTS NO `voiceSessionId` AT ALL. Talk is supported from
+        // 2026.7.1, whose WebRTC session schema has no such field — so keying the hold
+        // on it left those gateways with no hold whatsoever, which is the one case
+        // with no second line of defence (codex P1, pass 12). The provisional
+        // reservation already covers the same window under its own id: rather than
+        // releasing it, the mint KEEPS it. Nothing can name it to release it early,
+        // which is exactly right — there is no session id to hang up by either, so
+        // Convex skips the POST and the window is all the hold was ever for.
+        if (ownerSession !== null) {
+          if (
+            typeof minted.voiceSessionId === "string" &&
+            minted.voiceSessionId !== ""
+          ) {
+            ownerSession.holdForVoiceCall(
+              minted.voiceSessionId,
+              TALK_DIRECT_HOLD_MS,
+            );
+          } else if (talkReservation !== null) {
+            // Kept, not released: it IS the hold now — re-held for the same window a
+            // named direct hold gets, since it guards the same arrival.
+            ownerSession.holdForVoiceCall(
+              talkReservation.id,
+              TALK_DIRECT_HOLD_MS,
+            );
+            talkReservation = null;
+          }
+        }
         // ACKNOWLEDGE what we did with the owner. A bridge that predates this
         // contract answers the SAME `{ok, session}` shape while silently dropping
         // the ownership fields — the gateway then opens the session under its own
@@ -5383,6 +5455,8 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
           (err as Error)?.message ?? err,
         );
         sendJson(res, 502, { ok: false, error: { code } });
+      } finally {
+        talkReservation?.session.releaseVoiceCall(talkReservation.id);
       }
       return;
     }
@@ -5633,6 +5707,14 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
         tcAgentId,
         tcCanonical,
       );
+      // A CONSULT PROVES A CALL IS HAPPENING — so it extends the hold on this chat's
+      // socket. The relayed lane extends when the offer is spent; the direct lane has
+      // no such moment, because the browser talks to the provider and the bridge never
+      // hears about it. Without this, a direct call outlived its hold after two
+      // minutes and a typed turn could re-key the socket out from under the agent the
+      // voice model is consulting (codex P1, pass 12). No-op when this socket holds
+      // nothing: the extension can only prolong a hold that already exists.
+      registry.peekByChat(tcChatId)?.extendLiveVoiceCalls(TALK_CALL_HOLD_MS);
       // The consult is a real agent turn: it can run long. The VOICE hold is
       // bounded (on deadline the caller reports "still working" to the voice
       // model); the THREAD writer below is DETACHED from this response and
