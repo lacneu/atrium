@@ -204,7 +204,13 @@ describe("the shared-fs mount refuses what it cannot serve", () => {
     ]) {
       const got = await fetcher.open(generated);
       expect(got.ok, generated).toBe(false);
-      expect(got.ok === false && got.reason, generated).toBe("not_found");
+      // The SAFETY property is unchanged — the homonym is never opened. What
+      // changed on 2026-09-20 is the NAME of the refusal: `not_in_this_mount`,
+      // because nothing is missing, the file is simply outside this mount. The
+      // composite fetcher delegates to the gateway on this reason alone, so
+      // calling it `not_found` here would put every generated image back in the
+      // bin — which is exactly what production did for weeks.
+      expect(got.ok === false && got.reason, generated).toBe("not_in_this_mount");
     }
 
     // …and everything this mount DOES serve is untouched: a staging file, a NESTED staging

@@ -309,6 +309,12 @@ export class TurnSink {
   // The rate at which strangers reach a live turn was never measured; shipping
   // the counter is how the policy stops being a guess.
   private pendingForeignRunRejections = 0;
+  /** The same refusals, kept BY REASON. The total says a frame was refused; only
+   *  the reason says whether that was the guard working (an announce chain is its
+   *  own turn) or a frame this turn could have used going missing. Collapsing them
+   *  left a production turn — 21 refusals, `empty_final_timeout` — undiagnosable
+   *  without the bridge's own log. */
+  private pendingForeignRunRefusalCounts: Record<string, number> = {};
   /** Media attaches enqueued on the chain this turn — the enqueue-time counterpart
    *  of the hosted cap (the set only grows once an upload SUCCEEDS). */
   private queuedMediaCount = 0;
@@ -356,6 +362,17 @@ export class TurnSink {
   // turn's wire (the intersection can't catch that case). Live prod: denis'
   // delegate-then-yield turn was falsely marked empty_response (2026-07-10).
   private yieldCalledThisTurn = false;
+  /** The WAITING REPLY the parent wrote for the user when it handed off.
+   *
+   *  `sessions_yield` takes two strings and they are opposites, by upstream's own
+   *  schema (src/agents/tools/sessions-yield-tool.ts:25-31):
+   *    `message`         — "Private context for the resumed turn; NOT sent to the user."
+   *    `acknowledgment`  — "Optional waiting reply for an otherwise-silent interactive parent turn."
+   *  Only the second one may ever be shown, and showing it is precisely what it is
+   *  for. The gateway does NOT put it on the lifecycle terminal (agent-job.ts
+   *  carries `yielded` and not this), so the tool frame's own arguments are the
+   *  only place it reaches us — which is why it was dropped for so long. */
+  private yieldAcknowledgment: string | null = null;
   /** A tool result STARTED a gateway background task this turn (structured
    *  details {async:true, taskId}): the reply may legitimately end silent —
    *  the delivery arrives later as a correlated spontaneous run. Same
@@ -668,9 +685,11 @@ export class TurnSink {
     this.pendingDiagProviderStarted = null;
     this.pendingDiagAborted = false;
     this.pendingForeignRunRejections = 0;
+    this.pendingForeignRunRefusalCounts = {};
     this.queuedMediaCount = 0;
     this.spawnCalledThisTurn = false;
     this.yieldCalledThisTurn = false;
+    this.yieldAcknowledgment = null;
     this.asyncTaskStartedThisTurn = false;
     this.turnRunId = ackRunId;
     this.lastChildHeartbeatMs = 0;
@@ -1202,6 +1221,16 @@ export class TurnSink {
               asString(event.phase) === "completed"
             ) {
               this.yieldCalledThisTurn = true;
+              // …and the sentence the parent wrote FOR THE USER while handing
+              // off. Read from the call's own arguments — never from `message`,
+              // which upstream declares private to the resumed turn.
+              const ack = asString(
+                (event.input as { acknowledgment?: unknown } | undefined)
+                  ?.acknowledgment,
+              );
+              if (ack !== undefined && ack.trim() !== "") {
+                this.yieldAcknowledgment = ack;
+              }
             }
           }
           // Correlation source for the outbound scan: the call's ARGUMENTS
@@ -1579,13 +1608,21 @@ export class TurnSink {
             this.pendingTruncatedFinals = typeof cut === "number" ? cut : 0;
             const refused = (event as { foreignRunRejections?: unknown })
               .foreignRunRejections;
-            this.pendingForeignRunRejections =
-              typeof refused === "object" && refused !== null
-                ? Object.values(refused as Record<string, unknown>).reduce<number>(
-                    (n, v) => n + (typeof v === "number" ? v : 0),
-                    0,
-                  )
-                : 0;
+            // The map is kept AND summed, from the same pass: two readings of one
+            // fact, never two facts that can disagree.
+            const counts: Record<string, number> = {};
+            let total = 0;
+            if (typeof refused === "object" && refused !== null) {
+              for (const [reason, n] of Object.entries(
+                refused as Record<string, unknown>,
+              )) {
+                if (typeof n !== "number" || !Number.isFinite(n) || n <= 0) continue;
+                counts[reason] = (counts[reason] ?? 0) + n;
+                total += n;
+              }
+            }
+            this.pendingForeignRunRejections = total;
+            this.pendingForeignRunRefusalCounts = counts;
           }
           this.hasPendingFinal = true;
           break;
@@ -1981,6 +2018,19 @@ export class TurnSink {
     // settling a bubble that literally shows "NO_REPLY" (codex P2).
     const sentinelOnly = replyText.trim() === "NO_REPLY";
     if (sentinelOnly) replyText = "";
+    // THE HAND-OFF'S OWN WORDS. A parent that yields answers nothing of its own,
+    // so the bubble arrived with a plan card, a sub-agent card and not one
+    // sentence — while the agent HAD written the sentence, into
+    // `sessions_yield.acknowledgment`, for exactly this moment (prod report
+    // 2026-09-20: "Les trois propositions de la page 4 sont en préparation. Je te
+    // les livre ici après contrôle." — never shown).
+    //
+    // ONLY when the reply is otherwise empty, which is the condition upstream's
+    // own description states ("an otherwise-silent … parent turn"): text the model
+    // actually wrote always wins, and the acknowledgment never appends to it.
+    if (replyText.trim() === "" && this.yieldAcknowledgment !== null) {
+      replyText = this.yieldAcknowledgment;
+    }
     let effectiveStatus = status;
     let effectiveError = this.pendingFinalError;
     let effectiveErrorKind = this.pendingFinalErrorKind;
@@ -2348,7 +2398,13 @@ export class TurnSink {
             ? { finalTruncated: this.pendingTruncatedFinals }
             : {}),
           ...(this.pendingForeignRunRejections > 0
-            ? { foreignRunsRefused: this.pendingForeignRunRejections }
+            ? {
+                foreignRunsRefused: this.pendingForeignRunRejections,
+                // Raw, as the normalizer named them. Convex allowlists the
+                // vocabulary, so an unreviewed reason never reaches storage —
+                // the same split `compactionReason` uses.
+                foreignRunRefusalCounts: this.pendingForeignRunRefusalCounts,
+              }
             : {}),
           compaction: this.compactionPhase,
           // The CAUSE, allowlisted upstream of here. Absent = the gateway's own

@@ -90,6 +90,7 @@ import type * as lib_exportArchive from "../lib/exportArchive.js";
 import type * as lib_files from "../lib/files.js";
 import type * as lib_filters from "../lib/filters.js";
 import type * as lib_folderTree from "../lib/folderTree.js";
+import type * as lib_foreignRunRefusals from "../lib/foreignRunRefusals.js";
 import type * as lib_groupAccess from "../lib/groupAccess.js";
 import type * as lib_importArchive from "../lib/importArchive.js";
 import type * as lib_ingestAuthz from "../lib/ingestAuthz.js";
@@ -238,6 +239,7 @@ declare const fullApi: ApiFromModules<{
   "lib/files": typeof lib_files;
   "lib/filters": typeof lib_filters;
   "lib/folderTree": typeof lib_folderTree;
+  "lib/foreignRunRefusals": typeof lib_foreignRunRefusals;
   "lib/groupAccess": typeof lib_groupAccess;
   "lib/importArchive": typeof lib_importArchive;
   "lib/ingestAuthz": typeof lib_ingestAuthz;

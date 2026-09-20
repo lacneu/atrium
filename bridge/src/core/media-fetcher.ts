@@ -97,6 +97,15 @@ export type MediaSkipReason =
   | "invalid_filename"
   | "fetch_error"
   | "route_absent"
+  // The path IS a deliverable generated-media path, but it lives in a SIBLING
+  // directory this fetcher's mount does not contain (`media/tool-image-generation`
+  // beside `media/outbound`). Distinct from `not_found` on purpose: nothing is
+  // missing, the file is simply somewhere this fetcher cannot look — so the
+  // operator fix is NOT "check the mount for a lost file", and a caller that can
+  // reach the gateway's own media route should ask IT instead of giving up.
+  // Production, 2026-09-20: reported as `not_found`, this read as a vanished file
+  // for weeks while every generated image was in fact sitting on the gateway.
+  | "not_in_this_mount"
   // The source is OLDER than the caller's freshness bound: the path was merely
   // MENTIONED (e.g. the agent read memory notes citing last week's deliveries),
   // not produced this turn — re-delivering it would attach stale files.
@@ -235,7 +244,7 @@ export class LocalDirMediaFetcher implements MediaFetcher {
     // is judged here.
     if (GENERATED_MEDIA_SUBDIRS.some((d) => path.includes(`/media/${d}/`))) {
       this.onSkip("generated media is not in this mount", filename);
-      return { ok: false, reason: "not_found" };
+      return { ok: false, reason: "not_in_this_mount" };
     }
     const resolved = resolve(join(this.baseDir, filename));
     if (resolved !== this.baseDir && !resolved.startsWith(this.baseDir + sep)) {

@@ -12,6 +12,7 @@ import {
 } from "../src/core/media-fetcher-provider.js";
 import { LocalDirMediaFetcher } from "../src/core/media-fetcher.js";
 import { GatewayHttpMediaFetcher } from "../src/core/gateway-http-media-fetcher.js";
+import { CompositeMediaFetcher } from "../src/core/composite-media-fetcher.js";
 
 const baseEnv = {
   OPENCLAW_GATEWAY_URL: "ws://gw.invalid:18790",
@@ -37,11 +38,31 @@ describe("MediaFetcherProvider", () => {
     const p = new MediaFetcherProvider(loadConfig({ ...baseEnv }));
     p.applyConfig({ mediaMode: "shared-fs" });
     expect(p.currentMode()).toBe("shared-fs");
-    expect(p.current()).toBeInstanceOf(LocalDirMediaFetcher);
+    // Since 2026-09-20 `shared-fs` is a COMPOSITE: the mount serves
+    // `media/outbound`, and the sibling generation directories it structurally
+    // cannot see are asked of the gateway's own media route. Announced here so a
+    // future reader does not "simplify" it back into a bare LocalDirMediaFetcher
+    // and silently undeliver every generated image again.
+    expect(p.current()).toBeInstanceOf(CompositeMediaFetcher);
 
     p.applyConfig({ mediaMode: "off" });
     expect(p.currentMode()).toBe("off");
     expect(p.current()).toBeUndefined();
+  });
+
+  it("shared-fs WITHOUT a usable gateway route stays a bare local fetcher", () => {
+    // The fallback is a bonus, never a requirement. With no token the gateway
+    // media route cannot be authorized, so composing would only turn one honest
+    // refusal into a doomed round-trip per turn. The skip reason then remains
+    // `not_in_this_mount`, which is the truthful account of what happened — not a
+    // `not_found` implying a lost file.
+    const p = new MediaFetcherProvider(
+      loadConfig({ ...baseEnv, OPENCLAW_TOKEN: "" }),
+    );
+    p.applyConfig({ mediaMode: "shared-fs" });
+    expect(p.currentMode()).toBe("shared-fs");
+    expect(p.current()).toBeInstanceOf(LocalDirMediaFetcher);
+    expect(p.current()).not.toBeInstanceOf(CompositeMediaFetcher);
   });
 
   it("REBUILDS only when the signature changes (same config → same instance)", () => {

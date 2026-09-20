@@ -1,5 +1,45 @@
 # Changelog
 
+## [0.84.16] — Generated files arrive, hand-offs speak, and a refusal says why
+
+Corrective release. No breaking changes, nothing to reconfigure — every fix below
+applies itself on upgrade.
+
+**Generated images, videos and audio are delivered again on shared-filesystem
+instances.** An instance in `shared-fs` media mode mounts one directory, the
+gateway's `media/outbound`. The generation tools write to sibling directories
+beside it — `tool-image-generation`, `tool-music-generation`,
+`tool-video-generation` — which Atrium accepted as deliverable and then could not
+open, so a generated file was announced in the reply and never attached. Every
+time, by construction. Atrium now serves those siblings through the gateway's own
+media route, the same one `gateway-http` mode uses and under the same
+authorization, while the mount keeps serving `outbound` as a local read. Nothing
+to re-mount. The diagnostic also stops lying about it: this refusal used to be
+recorded as `not_found`, which reads as a vanished file — it is now
+`not_in_this_mount`, because the file was on the gateway all along.
+
+**An agent that hands off now says so.** When an agent delegates and waits, it
+writes a short sentence for you in the hand-off itself ("the three proposals are
+being prepared, I will deliver them here after review"). Atrium never read it, so
+the reply arrived as a plan card and a sub-agent card with not one word of
+explanation. That sentence is now the reply, and only when the agent wrote nothing
+else — text it actually produced always wins. The hand-off's other field is
+private context the agent writes to itself, and it stays invisible.
+
+**A hand-off is no longer reported as a failed delivery.** A delegated turn that
+delegates again legitimately carries no text of its own: the answer arrives in the
+next run. That intermediate step was painted as a red "the delivery finished
+without bringing anything" card while the real reply — with its files — landed
+minutes later. An explicit hand-off is now recognised as what it is.
+
+**An operator can tell a healthy refusal from a lost reply.** Atrium refuses frames
+belonging to another run so that someone else's text can never close your turn, and
+counted them as one number. That number mixes two opposite facts: an announce chain
+or a heartbeat being refused is the guard working, while a frame that could not be
+placed is a frame the turn lost. The trace now carries the reason for each refusal
+and a separate count of only the costly ones, so "21 frames refused" on a turn that
+ended empty is answerable without reading the bridge log.
+
 ## [0.84.15] — OpenClaw 2026.9.5 supported: voice survives the gateway that owns it, and nobody switches agents mid-call
 
 Support and reliability release, corrective throughout. No breaking changes in Atrium —

@@ -9,6 +9,7 @@
 import type { BridgeConfig } from "../config.js";
 import { LocalDirMediaFetcher, type MediaFetcher } from "./media-fetcher.js";
 import { GatewayHttpMediaFetcher } from "./gateway-http-media-fetcher.js";
+import { CompositeMediaFetcher } from "./composite-media-fetcher.js";
 import {
   connectUserHeader,
   systemConnectIdentity,
@@ -16,6 +17,41 @@ import {
 } from "../providers/openclaw/connect-identity.js";
 import { buildIdentityHeaders } from "../providers/openclaw/gateway-identity.js";
 import type { InboundInstanceConfig, MediaMode } from "./instance-config.js";
+
+/** The gateway's own media route, built once and used by TWO modes: as the whole
+ *  fetcher in `gateway-http`, and as the sibling-directory fallback under
+ *  `shared-fs`. Extracted verbatim rather than duplicated — the identity and
+ *  origin rules below are the authorization contract, and a second copy is a
+ *  second thing to get wrong. */
+function buildGatewayHttpFetcher(
+  config: BridgeConfig,
+  maxBytes: number,
+): GatewayHttpMediaFetcher {
+  return new GatewayHttpMediaFetcher({
+    httpBase: config.gatewayHttpBase,
+    // Boot-resolved (index.ts) — non-null by construction; the same operator
+    // token the WS connect uses.
+    token: () => config.openclawToken!,
+    // Trusted-proxy: the HTTP media route is behind the SAME header-based
+    // authorization as the WebSocket, so the probe must state an identity or
+    // it is refused. Empty in token mode ⇒ the Bearer path is untouched.
+    identityHeaders: () => {
+      // The forwarded ORIGIN must describe the request being authorized. The
+      // socket's identity carries the operator URL, and `gatewayHttpBase` can
+      // differ from it (`instances.gatewayHttpUrl`) — a gateway whose
+      // `requiredHeaders` lists the host would then be told about the wrong one.
+      const identity = systemConnectIdentity(config);
+      return buildIdentityHeaders(
+        identity === undefined
+          ? undefined
+          : { ...identity, ...mediaForwardedOrigin(config) },
+        connectUserHeader(config),
+      );
+    },
+    maxBytes,
+    timeoutMs: config.mediaFetchTimeoutMs,
+  });
+}
 
 /**
  * Build the outbound-media fetcher for a (mode, maxBytes) pair. DEFAULT
@@ -31,35 +67,28 @@ export function buildMediaFetcher(
 ): MediaFetcher | undefined {
   switch (mode) {
     case "gateway-http":
-      return new GatewayHttpMediaFetcher({
-        httpBase: config.gatewayHttpBase,
-        // Boot-resolved (index.ts) — non-null by construction; the same operator
-        // token the WS connect uses.
-        token: () => config.openclawToken!,
-        // Trusted-proxy: the HTTP media route is behind the SAME header-based
-        // authorization as the WebSocket, so the probe must state an identity or
-        // it is refused. Empty in token mode ⇒ the Bearer path is untouched.
-        identityHeaders: () => {
-          // The forwarded ORIGIN must describe the request being authorized. The
-          // socket's identity carries the operator URL, and `gatewayHttpBase` can
-          // differ from it (`instances.gatewayHttpUrl`) — a gateway whose
-          // `requiredHeaders` lists the host would then be told about the wrong one.
-          const identity = systemConnectIdentity(config);
-          return buildIdentityHeaders(
-            identity === undefined
-              ? undefined
-              : { ...identity, ...mediaForwardedOrigin(config) },
-            connectUserHeader(config),
-          );
-        },
-        maxBytes,
-        timeoutMs: config.mediaFetchTimeoutMs,
-      });
-    case "shared-fs":
-      return new LocalDirMediaFetcher({
+      return buildGatewayHttpFetcher(config, maxBytes);
+    case "shared-fs": {
+      const local = new LocalDirMediaFetcher({
         baseDir: config.mediaOutboundDir,
         maxBytes,
       });
+      // The mount holds `media/outbound` ONLY; upstream's generation tools write
+      // to sibling directories the normalizer also accepts. Without this, every
+      // generated image on a shared-fs instance was announced and then dropped.
+      // The gateway serves them on the same route `gateway-http` mode uses, so we
+      // ask IT rather than asking the operator to re-mount (2026-09-20 report).
+      const httpBase = config.gatewayHttpBase;
+      const token = config.openclawToken;
+      // No HTTP base or no token ⇒ no fallback, and the skip reason stays
+      // `not_in_this_mount`: an honest "this fetcher cannot see it", never a
+      // silent pretence that the file was missing.
+      if (!httpBase || !token) return local;
+      return new CompositeMediaFetcher({
+        primary: local,
+        fallback: buildGatewayHttpFetcher(config, maxBytes),
+      });
+    }
     case "off":
       return undefined;
   }

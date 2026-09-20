@@ -515,6 +515,35 @@ async function reconcileContentlessDelivery(
 }
 
 /**
+ * Did this turn EXPLICITLY hand off instead of answering?
+ *
+ * `sessions_yield` is the parent saying "I am not the one who replies — the child
+ * announces later". The sink already exempts it from its own empty-response
+ * verdict (`turn-sink.ts`, `yieldCalledThisTurn`, added after a live report where
+ * an async child made a legitimate hand-off look like a failure). The DELIVERY
+ * verdict here was written later, for the opposite case, and never received that
+ * exemption — so a settle run that yielded AGAIN was named a failed delivery.
+ *
+ * Production, 2026-09-20: one "Continue" produced two assistant messages from the
+ * same prompt. The first ran `exec`, `view_image`, `sessions_spawn`, then
+ * `sessions_yield` — and got a red "delivery finished without bringing anything"
+ * card. The second, five minutes later, carried the PDF and the three images. The
+ * hand-off was working; only our account of it was wrong.
+ *
+ * COMPLETED only: a yield that ERRORED handed nothing to anyone, and a turn that
+ * merely started one is not a hand-off. Read off the stored parts, which is where
+ * the bridge already writes it — no new field, no new wire contract.
+ */
+function handedOffToChild(parts: Doc<"messageParts">[]): boolean {
+  return parts.some(
+    (row) =>
+      row.part.kind === "tool" &&
+      row.part.name === "sessions_yield" &&
+      row.part.phase === "completed",
+  );
+}
+
+/**
  * Does this bubble carry a part the READER gets something out of?
  *
  * `plan` and `cron` are visible cards in their own right — a delivery turn whose
@@ -2934,6 +2963,11 @@ export const finalize = internalMutation({
       try {
         deliveredNothing =
           parts.length <= DELIVERED_PROBE_CAP &&
+          // An explicit hand-off is not a failed delivery: the parent chose to
+          // answer nothing and the child replies in its own run. Checked BEFORE
+          // the content probe because it is decisive on its own and needs no
+          // storage round-trip.
+          !handedOffToChild(parts) &&
           !(await carriesDeliveredContent(ctx, parts));
       } catch {
         // Storage refused to answer: the probe has no evidence, and a verdict

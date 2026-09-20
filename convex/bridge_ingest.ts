@@ -30,6 +30,10 @@ import { v } from "convex/values";
 import { hashKey } from "./lib/apikeys";
 import { chatAllowsInstance } from "./lib/ingestAuthz";
 import { compactionReasonClass } from "./lib/compactionReasons";
+import {
+  classifyForeignRunRefusals,
+  costlyForeignRunRefusals,
+} from "./lib/foreignRunRefusals";
 import { usablePlanStamp } from "./lib/planOrder";
 import {
   rehydrateTraceMeta,
@@ -353,6 +357,7 @@ type IngestOp =
       framesLost?: number;
       finalTruncated?: number;
       foreignRunsRefused?: number;
+      foreignRunRefusalCounts?: Record<string, number>;
       timeoutPhase?: string;
       providerStarted?: boolean;
       gatewayAborted?: boolean;
@@ -1154,6 +1159,25 @@ export const ingest = httpAction(async (ctx, request) => {
           ...(typeof body.foreignRunsRefused === "number"
             ? { foreignRunsRefused: body.foreignRunsRefused }
             : {}),
+          // …and WHY, which is the half that decides. `gateway_initiated` and
+          // `heartbeat` are the guard doing its job — an announce chain is its own
+          // turn — while `no_grace` and `compaction_no_replay_signal` are frames
+          // this turn could have used. The total alone cannot tell them apart, and
+          // a 2026-09-20 production turn (21 refusals, `empty_final_timeout`) is
+          // what proved that. Allowlisted here, like `compactionReason`: the
+          // boundary does not trust the sender's vocabulary.
+          ...(() => {
+            const by = classifyForeignRunRefusals(body.foreignRunRefusalCounts);
+            if (by === null) return {};
+            const costly = costlyForeignRunRefusals(by);
+            return {
+              foreignRunRefusalsByReason: by,
+              // Pre-computed rather than left to every reader to re-derive from a
+              // vocabulary they would have to know: this is the number that means
+              // "a frame went missing from this turn".
+              ...(costly > 0 ? { foreignRunsRefusedCostly: costly } : {}),
+            };
+          })(),
           // Terminal metadata the gateway ships on its lifecycle terminal
           // (G-20): WHERE a timeout struck, whether the provider had even
           // started, whether the run was aborted. Structural only.

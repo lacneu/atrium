@@ -238,4 +238,37 @@ describe("LocalDirMediaFetcher — freshness guard (stale mentions)", () => {
     );
     expect(res.ok).toBe(true);
   });
+  // The 2026-09-20 report: a generated image announced six times and delivered
+  // none. This fetcher's mount is `media/outbound`; the generation tools write to
+  // siblings the normalizer also accepts. Refusing them is CORRECT — calling that
+  // refusal `not_found` is not, and the difference is load-bearing: the composite
+  // fetcher delegates on this reason ALONE, so a `not_found` here would silently
+  // put every generated image back in the bin.
+  it.each([
+    "tool-image-generation",
+    "tool-music-generation",
+    "tool-video-generation",
+  ])("a %s path is `not_in_this_mount`, NOT `not_found`", async (subdir) => {
+    const dir = await mkdtemp(join(tmpdir(), "media-generated-"));
+    const fetcher = new LocalDirMediaFetcher({
+      baseDir: dir,
+      maxBytes: 1024,
+      onSkip: () => {},
+    });
+    const res = await fetcher.open(`/home/node/.openclaw/media/${subdir}/out.png`);
+    expect(res).toEqual({ ok: false, reason: "not_in_this_mount" });
+  });
+
+  it("a file genuinely missing UNDER the mount is still `not_found`", async () => {
+    // The other half of the distinction: this one really is a broken mount or a
+    // vanished file, and it must not become a gateway round-trip.
+    const dir = await mkdtemp(join(tmpdir(), "media-missing-"));
+    const fetcher = new LocalDirMediaFetcher({
+      baseDir: dir,
+      maxBytes: 1024,
+      onSkip: () => {},
+    });
+    const res = await fetcher.open("/home/node/.openclaw/media/outbound/gone.pdf");
+    expect(res).toEqual({ ok: false, reason: "not_found" });
+  });
 });

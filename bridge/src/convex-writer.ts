@@ -329,6 +329,8 @@ export interface ConvexWriter {
       framesLost?: number;
       finalTruncated?: number;
       foreignRunsRefused?: number;
+      /** The same count BY REASON, raw. Convex allowlists it. */
+      foreignRunRefusalCounts?: Record<string, number>;
       timeoutPhase?: string;
       providerStarted?: boolean;
       gatewayAborted?: boolean;
