@@ -38,12 +38,21 @@ import { buildMediaFetcher } from "./core/media-fetcher-provider.js";
 import {
   chatAbortParams,
   sessionsGetParams,
+  talkClientCloseParams,
   talkClientCreateParams,
   talkToolCallParams,
   taskGetParams,
   taskListParams,
   ttsParams,
 } from "./core/rpc-params.js";
+import {
+  TALK_CALL_HOLD_MS,
+  TALK_OFFER_MAX_SDP_BYTES,
+  TALK_PENDING_HOLD_MS,
+  TalkRelayRegistry,
+  isGatewayRelativeOffer,
+  relayTalkOffer,
+} from "./core/talk-relay.js";
 import {
   REHYDRATION_MAX_FILL,
   composedPromptFits,
@@ -3247,6 +3256,9 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
   // session registry, so this tracks the one live SSE turn per chat.
   const hermesTurns = new HermesTurnRegistry();
   hermesTurnsRef = hermesTurns;
+  // Pending SDP offers for gateway-owned (GPT Live) voice calls: the ephemeral
+  // secret stays HERE, keyed by the opaque id the browser holds (talk-relay.ts).
+  const talkRelay = new TalkRelayRegistry();
   const noteGatewayVersion = (instanceName: string, v: string | null): void => {
     if (typeof v === "string" && v.length > 0)
       lastGatewayVersion.set(instanceName, v);
@@ -3822,6 +3834,12 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
       // Realtime voice: gateway-minted ephemeral browser session
       // (talk.client.create). Convex owns the user/chat authorization.
       "/talk-session",
+      // Realtime voice, GPT Live lane: relay the browser's SDP offer to the
+      // gateway's own offer route with the secret this bridge kept (talk-relay.ts).
+      "/talk-offer",
+      // Realtime voice, GPT Live lane: end the gateway-owned logical call
+      // (talk.client.close) on the socket that owns it.
+      "/talk-hangup",
       // Realtime voice: relay the voice model's agent-consult tool call to a
       // REAL agent run (talk.client.toolCall) and wait (bounded) for its final.
       "/talk-toolcall",
@@ -5092,6 +5110,9 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
         openclawChatId?: unknown;
         canonical?: unknown;
         agentId?: unknown;
+        // What the gateway calls this person (instances.identitySource), the SAME
+        // value `/send` routes with — the conversation's socket presents it.
+        gatewayUser?: unknown;
       } = {};
       try {
         talkBody = JSON.parse(raw || "{}") as typeof talkBody;
@@ -5204,24 +5225,140 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
       const talkSessionKey =
         talkOwner.kind === "scoped" ? talkOwner.sessionKey : null;
       try {
-        const created = await withOperatorConnection(
-          talkBundle.config,
-          (conn) =>
-            conn.request(
-              "talk.client.create",
-              talkClientCreateParams(
-                talkTransport,
-                talkVoice,
-                talkVad,
-                talkSessionKey,
-              ),
-              15_000,
+        // WHICH SOCKET CREATES THE SESSION DECIDES WHO OWNS THE CALL. On OpenClaw
+        // >= 2026.9.5 the default realtime model is GPT Live, and a GPT Live browser
+        // session is GATEWAY-OWNED: the gateway binds it to the connection that
+        // called `talk.client.create`, runs the agent consult itself under THAT
+        // connection's identity and scopes, and closes the call when that connection
+        // closes (upstream `talk/handlers/client-create.ts:229-250`,
+        // `talk/client-gateway-control.ts:612-625`). A short-lived operator socket —
+        // what this route used until 2026-09-19 — therefore minted a call that was
+        // dead before the browser could send its offer, and would have consulted the
+        // agent as the bridge's SYSTEM identity rather than the person speaking.
+        //
+        // So a SCOPED create goes out on the CONVERSATION's own socket: long-lived,
+        // acting as the person who owns the chat (humanConnectIdentity), keyed by the
+        // same session key a typed turn uses. `acquire` builds that key from the same
+        // ingredients `talkSessionOwner` did; the equality below is a guard against
+        // the two derivations drifting apart, not a decision.
+        let ownerSession: BridgeSession | null = null;
+        let created: { payload?: unknown };
+        if (talkOwner.kind === "scoped") {
+          ownerSession = await registry.acquire({
+            chatId: talkStr(talkBody.chatId)!,
+            openclawChatId: talkStr(talkBody.openclawChatId),
+            agentId: talkStr(talkBody.agentId)!,
+            canonical: talkStr(talkBody.canonical)!,
+            ...(talkStr(talkBody.gatewayUser) !== null
+              ? { gatewayUser: talkStr(talkBody.gatewayUser)! }
+              : {}),
+            instanceName: talkInstance,
+          });
+          if (ownerSession.sessionKey !== talkSessionKey) {
+            console.error(
+              `bridge /talk-session refused [talk_owner_mismatch]: acquire keyed ${ownerSession.sessionKey}, owner decided ${talkSessionKey}`,
+            );
+            sendJson(res, 500, {
+              ok: false,
+              error: { code: "talk_owner_mismatch" },
+            });
+            return;
+          }
+          noteHandshakeFor(talkInstance)(ownerSession.connection);
+          created = await ownerSession.connection.request(
+            "talk.client.create",
+            talkClientCreateParams(
+              talkTransport,
+              talkVoice,
+              talkVad,
+              talkSessionKey,
             ),
-          noteHandshakeFor(talkInstance),
-        );
+            15_000,
+          );
+        } else {
+          // A caller that named no owner (an older Convex): the unscoped create keeps
+          // its short operator socket. It cannot own a gateway-owned call — that case
+          // is refused below by name rather than minted dead.
+          created = await withOperatorConnection(
+            talkBundle.config,
+            (conn) =>
+              conn.request(
+                "talk.client.create",
+                talkClientCreateParams(
+                  talkTransport,
+                  talkVoice,
+                  talkVad,
+                  talkSessionKey,
+                ),
+                15_000,
+              ),
+            noteHandshakeFor(talkInstance),
+          );
+        }
         const session = created.payload ?? null;
         if (session === null || typeof session !== "object") {
           sendJson(res, 502, { ok: false, error: { code: "talk_malformed" } });
+          return;
+        }
+        const minted = session as Record<string, unknown>;
+        if (isGatewayRelativeOffer(minted.offerUrl)) {
+          // GPT Live: the offer goes to the GATEWAY, which the browser cannot reach.
+          // Keep the secret here, hand the browser an id, hold the socket for the
+          // call's lifetime (the gateway ends the call when the socket ends).
+          if (ownerSession === null) {
+            console.error(
+              "bridge /talk-session refused [talk_owner_required]: the gateway minted a gateway-owned call for an unscoped create",
+            );
+            sendJson(res, 502, {
+              ok: false,
+              error: { code: "talk_owner_required" },
+            });
+            return;
+          }
+          // The contract requires a non-empty `voiceSessionId` on a WebRTC mint
+          // (vendored channels.ts, BrowserRealtimeWebRtcSdpSessionSchema): it is
+          // what the hangup closes by. A gateway-owned call with no way to close it
+          // is refused rather than minted (codex P2, pass 2).
+          if (
+            typeof minted.clientSecret !== "string" ||
+            minted.clientSecret === "" ||
+            typeof minted.voiceSessionId !== "string" ||
+            minted.voiceSessionId === ""
+          ) {
+            sendJson(res, 502, { ok: false, error: { code: "talk_malformed" } });
+            return;
+          }
+          const relay = talkRelay.issue({
+            instanceName: talkInstance,
+            chatId: ownerSession.chatId,
+            sessionKey: ownerSession.sessionKey,
+            voiceSessionId: minted.voiceSessionId,
+            clientSecret: minted.clientSecret,
+            offerPath: minted.offerUrl,
+            gatewayHttpBase: talkBundle.config.gatewayHttpBase,
+            ...(typeof minted.expiresAt === "number"
+              ? { expiresAtMs: minted.expiresAt }
+              : {}),
+          });
+          // Held for the OFFER window only; the call TTL is armed when the offer is spent.
+          ownerSession.holdForVoiceCall(minted.voiceSessionId, TALK_PENDING_HOLD_MS);
+          // NEVER the secret, NEVER the gateway-relative path (it names nothing a
+          // browser can use); the rest of the mint is descriptive and rides along.
+          const {
+            clientSecret: _secret,
+            offerUrl: _path,
+            offerHeaders: _headers,
+            ...descriptive
+          } = minted;
+          sendJson(res, 200, {
+            ok: true,
+            session: {
+              ...descriptive,
+              offerRelay: { relayId: relay.relayId, expiresAt: relay.expiresAtMs },
+            },
+            ownerScoped: true,
+            relayed: true,
+          });
           return;
         }
         // ACKNOWLEDGE what we did with the owner. A bridge that predates this
@@ -5246,6 +5383,188 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
           (err as Error)?.message ?? err,
         );
         sendJson(res, 502, { ok: false, error: { code } });
+      }
+      return;
+    }
+
+    if (req.url === "/talk-offer") {
+      // GPT Live lane, step two: the browser's SDP offer, relayed to the gateway's
+      // own offer route with the secret `/talk-session` kept. Convex authorized the
+      // caller against the `talkSessions` row; here the id is the whole credential —
+      // single-use and 60 s, like the gateway's token behind it (talk-relay.ts).
+      let offerBody: {
+        instanceName?: unknown;
+        chatId?: unknown;
+        openclawChatId?: unknown;
+        canonical?: unknown;
+        agentId?: unknown;
+        relayId?: unknown;
+        sdp?: unknown;
+      } = {};
+      try {
+        // `JSON.parse("null")` SUCCEEDS: the object check is the real guard.
+        const parsed: unknown = JSON.parse(raw || "{}");
+        if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+          sendJson(res, 400, { ok: false, error: "invalid body" });
+          return;
+        }
+        offerBody = parsed as typeof offerBody;
+      } catch {
+        sendJson(res, 400, { ok: false, error: "invalid body" });
+        return;
+      }
+      const offerInstance =
+        typeof offerBody.instanceName === "string" ? offerBody.instanceName : null;
+      // The chat Convex authorized the caller on — the handle is spendable for THAT
+      // chat only, never for another person's on the same gateway.
+      const offerChat =
+        typeof offerBody.chatId === "string" && offerBody.chatId.trim() !== ""
+          ? offerBody.chatId.trim()
+          : null;
+      const offerStr = (v: unknown): string | null =>
+        typeof v === "string" && v.trim() !== "" ? v.trim() : null;
+      const offerAgent = offerStr(offerBody.agentId);
+      const offerCanonical = offerStr(offerBody.canonical);
+      const relayId = typeof offerBody.relayId === "string" ? offerBody.relayId : null;
+      const offerSdp = typeof offerBody.sdp === "string" ? offerBody.sdp : null;
+      if (!offerInstance || !served.has(offerInstance)) {
+        sendJson(res, 409, { ok: false, error: { code: "instance_not_served" } });
+        return;
+      }
+      if (
+        relayId === null ||
+        offerSdp === null ||
+        offerChat === null ||
+        offerAgent === null ||
+        offerCanonical === null
+      ) {
+        sendJson(res, 400, { ok: false, error: "invalid body" });
+        return;
+      }
+      // Deterministic, LOCAL refusals come BEFORE the handle is spent: an offer the
+      // relay would refuse anyway (blank, or over the gateway's byte cap — Convex
+      // bounds UTF-16 units, and a multibyte SDP can pass there and fail here) must
+      // leave the single-use handle usable for a corrected retry (codex P3, pass 5).
+      if (
+        offerSdp.trim() === "" ||
+        Buffer.byteLength(offerSdp, "utf8") > TALK_OFFER_MAX_SDP_BYTES
+      ) {
+        sendJson(res, 413, { ok: false, error: { code: "sdp_too_large" } });
+        return;
+      }
+      // The row Convex authorized names the agent and the conversation; the handle
+      // is spendable for THAT session and no other of the same chat.
+      const offerKey = buildSessionKey(
+        offerStr(offerBody.openclawChatId) ?? offerChat,
+        offerAgent,
+        offerCanonical,
+      );
+      const entry = talkRelay.take(relayId, offerInstance, offerChat, offerKey);
+      if (entry === null) {
+        // Unknown, spent, expired, or another instance's/session's: ONE answer.
+        sendJson(res, 404, { ok: false, error: { code: "talk_relay_unknown" } });
+        return;
+      }
+      const relayed = await relayTalkOffer(entry, offerSdp);
+      if (relayed.ok) {
+        // The call is allocated NOW (the gateway arms its own TTL at allocation):
+        // lengthen the owning socket's hold to the call's lifetime from here, not
+        // from the mint. EXTEND, never create: a hangup that landed during the HTTP
+        // round trip above released the pending hold, and the gateway closed that
+        // call with it — re-creating a hold would pin the socket for nothing.
+        const owning = registry.peekByChat(entry.chatId);
+        if (owning && !owning.connection.isClosed && owning.sessionKey === entry.sessionKey) {
+          owning.extendVoiceCall(entry.voiceSessionId ?? relayId, TALK_CALL_HOLD_MS);
+        }
+      }
+      if (!relayed.ok) {
+        console.error(
+          `bridge /talk-offer failed [${relayed.code}]${relayed.status ? ` gateway ${relayed.status}` : ""}`,
+        );
+        sendJson(res, relayed.code === "sdp_too_large" ? 413 : 502, {
+          ok: false,
+          error: { code: relayed.code, ...(relayed.status ? { status: relayed.status } : {}) },
+        });
+        return;
+      }
+      sendJson(res, 200, { ok: true, answerSdp: relayed.answerSdp, status: relayed.status });
+      return;
+    }
+
+    if (req.url === "/talk-hangup") {
+      // GPT Live lane, last step: close the LOGICAL call the gateway owns, on the
+      // socket that owns it. Read-only on the registry: a session that is gone was
+      // reaped or dropped, and the gateway closed the call with its socket — there
+      // is nothing left to close and no reason to open a socket to say so.
+      let hangBody: {
+        instanceName?: unknown;
+        chatId?: unknown;
+        openclawChatId?: unknown;
+        canonical?: unknown;
+        agentId?: unknown;
+        voiceSessionId?: unknown;
+      } = {};
+      try {
+        const parsed: unknown = JSON.parse(raw || "{}");
+        if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+          sendJson(res, 400, { ok: false, error: "invalid body" });
+          return;
+        }
+        hangBody = parsed as typeof hangBody;
+      } catch {
+        sendJson(res, 400, { ok: false, error: "invalid body" });
+        return;
+      }
+      const str = (v: unknown): string | null =>
+        typeof v === "string" && v.trim() !== "" ? v.trim() : null;
+      const hangInstance = str(hangBody.instanceName);
+      const hangChat = str(hangBody.chatId);
+      const hangAgent = str(hangBody.agentId);
+      const hangCanonical = str(hangBody.canonical);
+      const hangVoice = str(hangBody.voiceSessionId);
+      if (!hangInstance || !served.has(hangInstance)) {
+        sendJson(res, 409, { ok: false, error: { code: "instance_not_served" } });
+        return;
+      }
+      if (!hangChat || !hangAgent || !hangCanonical || !hangVoice) {
+        sendJson(res, 400, { ok: false, error: "invalid body" });
+        return;
+      }
+      const hangKey = buildSessionKey(
+        str(hangBody.openclawChatId) ?? hangChat,
+        hangAgent,
+        hangCanonical,
+      );
+      const owner = registry.peekByChat(hangChat);
+      if (
+        !owner ||
+        owner.connection.isClosed ||
+        owner.instanceName !== hangInstance ||
+        owner.sessionKey !== hangKey
+      ) {
+        // Not "not found": the call cannot be live without its socket, so from the
+        // caller's point of view it IS closed. A key mismatch reads the same way —
+        // the socket that owns THAT key is not this chat's, and we do not close a
+        // call on someone else's socket.
+        sendJson(res, 200, { ok: true, closed: "gone" });
+        return;
+      }
+      try {
+        await owner.connection.request(
+          "talk.client.close",
+          talkClientCloseParams(hangKey, hangVoice),
+          10_000,
+        );
+        sendJson(res, 200, { ok: true, closed: "closed" });
+      } catch (err) {
+        const code = classifyGatewayError(err);
+        console.error(`bridge /talk-hangup failed [${code}]:`, (err as Error)?.message ?? err);
+        sendJson(res, 502, { ok: false, error: { code } });
+      } finally {
+        // Whatever the gateway said, the bridge no longer holds the socket for THIS
+        // call. Another call the gateway allows on the same socket (two per owner)
+        // keeps its own hold.
+        owner.releaseVoiceCall(hangVoice);
       }
       return;
     }

@@ -145,8 +145,15 @@ const MINTED = {
 describe("POST /talk-session scopes the create on the chat's agent", () => {
   let gateway: WsFakeGateway | null = null;
   let server: Server | null = null;
+  let registry: SessionRegistry | null = null;
 
   afterEach(async () => {
+    // A SCOPED create now rides the conversation's own long-lived socket (a
+    // gateway-owned voice call is bound to the connection that minted it), so the
+    // registry holds a live session after the request: close it, or the fake
+    // gateway's close waits on that socket forever.
+    registry?.closeAll();
+    registry = null;
     if (server) await new Promise<void>((r) => server!.close(() => r()));
     server = null;
     await gateway?.stop();
@@ -163,10 +170,11 @@ describe("POST /talk-session scopes the create on the chat's agent", () => {
     gateway = gw;
     const config = CONFIG(gw.url);
     const shared = sharedFromConfig(config);
+    registry = new SessionRegistry(servedMap(config));
     const srv = createBridgeServer({
       shared,
       served: servedMap(config),
-      registry: new SessionRegistry(servedMap(config)),
+      registry,
       health: new HealthRegistry(1000, () => 2000),
     });
     await new Promise<void>((r) => srv.listen(0, r));

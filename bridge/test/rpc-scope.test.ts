@@ -424,6 +424,9 @@ describe("RPC scope derivation (W10)", () => {
       // is now under contract except the ones upstream publishes no params schema for.
       "talk.client.create",
       "talk.client.toolCall",
+      // The hangup of a gateway-owned (GPT Live) call, added 2026-09-19: the call is
+      // bound to the socket that minted it, and this is how that socket ends it.
+      "talk.client.close",
     ];
     // The list must be EXHAUSTIVE, not a sample (raised in review): adding a call to
     // a method whose schema happens to be vendored — `cron.status`, say — would leave

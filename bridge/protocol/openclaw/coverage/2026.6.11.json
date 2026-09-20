@@ -2334,7 +2334,11 @@
         },
         "offerUrl": {
           "status": "handled",
-          "by": "forwarded as part of `{ok:true, session}` and PROJECTED by the consumer (convex/lib/talk.ts): REQUIRED and must be https, because the browser posts its SDP offer there; a non-https value is refused outright"
+          "by": "TWO lanes, decided per mint (OpenClaw >= 2026.9.5 defaults to GPT Live): an https URL is forwarded to the browser, which posts its SDP offer to the provider directly (convex/lib/talk.ts requires https on that lane); a GATEWAY-RELATIVE path (`/plugins/openai/realtime/calls`) is kept on the bridge and relayed by /talk-offer with the secret the bridge kept — the browser receives an opaque relayId and never the path (server.ts, talk-relay.ts)",
+          "anchor": {
+            "file": "src/server.ts",
+            "token": "isGatewayRelativeOffer(minted.offerUrl)"
+          }
         },
         "provider": {
           "status": "handled",
@@ -2388,8 +2392,17 @@
           "why": "managed-room join token — see roomUrl"
         },
         "offerHeaders": {
-          "status": "gap",
-          "note": "NOT projected and NOT sent. The contract lets a session require extra headers on the SDP offer POST; convex/lib/talk.ts drops them and `exchangeSdp` (src/chat/talkSession.ts) sends `Authorization` and `Content-Type` only. CORRECTED after review: this was classified `ignored` while its own note admitted the handshake would fail — a reason that names a breakage is a GAP, not a deliberate exclusion. Impact: a gateway or provider that starts requiring a header fails voice in the browser, at the SDP exchange, with a bare `sdp_<status>` and nothing pointing here."
+          "status": "handled",
+          "by": "https lane: forwarded to the browser and sent on the SDP offer POST beside Authorization and Content-Type (convex/lib/talk.ts projects a string record, src/chat/talkSession.ts exchangeSdp merges it). Relay lane: dropped on purpose — the gateway's own offer route takes Authorization + Content-Type only (upstream realtime-quicksilver-session.ts handleOffer), and the destructuring in server.ts names the field so the drop is explicit",
+          "anchor": {
+            "file": "src/server.ts",
+            "token": "offerHeaders: _headers"
+          },
+          "proof": {
+            "kind": "deterministic-test",
+            "ref": "bridge/test/talk-relay-route.test.ts",
+            "note": "the bench gateway mints GPT Live (relay lane); the https lane's header pass-through is exercised by the route test with a scripted mint. The live proof on a classic-model gateway stays owed."
+          }
         },
         "initialMessage": {
           "status": "ignored",

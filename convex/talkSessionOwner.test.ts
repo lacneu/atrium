@@ -1378,3 +1378,449 @@ describe("the button asks about the instance the session would REACH", () => {
     ).toBe(false);
   });
 });
+
+// ── The GPT Live lane (OpenClaw >= 2026.9.5): relayed offer + owed hangup ──────
+//
+// On the 2026.9.5 default model the gateway OWNS the call and its offer path is on
+// the gateway itself; the bridge keeps the secret and answers a handle. Convex then
+// carries two more things: the browser's SDP through `relayTalkOffer`, and the
+// hangup through `hangupTalkSession` — both authorized by the row the mint recorded,
+// exactly as the mid-call consult is.
+
+/** Stub the bridge: answer the mint with `mint`, record every POST by route. */
+function stubBridge(mint: Record<string, unknown>) {
+  const prevUrl = process.env.BRIDGE_URL;
+  const prevSecret = process.env.BRIDGE_SHARED_SECRET;
+  process.env.BRIDGE_URL = "http://bridge.test";
+  process.env.BRIDGE_SHARED_SECRET = "s3cret";
+  const posts: { route: string; host: string; body: Record<string, unknown> }[] = [];
+  vi.stubGlobal("fetch", async (input: unknown, init?: RequestInit) => {
+    const url = new URL(String(input));
+    const route = url.pathname;
+    posts.push({ route, host: url.host, body: JSON.parse(String(init?.body)) as Record<string, unknown> });
+    if (route === "/talk-session") {
+      return new Response(JSON.stringify(mint), { status: 200 });
+    }
+    if (route === "/talk-offer") {
+      return new Response(
+        JSON.stringify({ ok: true, answerSdp: "v=0\r\nanswer", status: 201 }),
+        { status: 200 },
+      );
+    }
+    if (route === "/talk-hangup") {
+      return new Response(JSON.stringify({ ok: true, closed: "closed" }), { status: 200 });
+    }
+    return new Response("not found", { status: 404 });
+  });
+  return {
+    posts,
+    restore() {
+      vi.unstubAllGlobals();
+      if (prevUrl === undefined) delete process.env.BRIDGE_URL;
+      else process.env.BRIDGE_URL = prevUrl;
+      if (prevSecret === undefined) delete process.env.BRIDGE_SHARED_SECRET;
+      else process.env.BRIDGE_SHARED_SECRET = prevSecret;
+    },
+  };
+}
+
+const RELAYED_BRIDGE_ANSWER = {
+  ok: true,
+  ownerScoped: true,
+  relayed: true,
+  session: {
+    provider: "openai",
+    transport: "webrtc",
+    offerRelay: { relayId: "r_handle_0123456789abcdef", expiresAt: 9_999_999_999 },
+    model: "gpt-live-1",
+    voice: "marin",
+    expiresAt: 9_999_999_999,
+    voiceSessionId: "vs-live-1",
+  },
+};
+
+const DIRECT_BRIDGE_ANSWER = {
+  ok: true,
+  ownerScoped: true,
+  session: {
+    clientSecret: "ek_x",
+    offerUrl: "https://api.openai.com/v1/realtime/calls",
+    model: "gpt-realtime-2.1",
+    expiresAt: 9_999_999_999,
+    voiceSessionId: "vs-classic-1",
+  },
+};
+
+describe("GPT Live: the relayed mint, the relayed offer and the owed hangup", () => {
+  test("a relayed mint hands the browser a handle, and records the call on its row", async () => {
+    const t = convexTest(schema, modules);
+    const { userId, chatId } = await seedTalkChat(t);
+    const bridge = stubBridge(RELAYED_BRIDGE_ANSWER);
+    try {
+      const res = await asOwner(t, userId).action(api.talk.mintTalkSession, { chatId });
+      expect(res.ok, JSON.stringify(res)).toBe(true);
+      if (!res.ok) return;
+      expect(res.session.offerRelay).toEqual({
+        relayId: "r_handle_0123456789abcdef",
+        expiresAt: 9_999_999_999,
+      });
+      expect(res.session.clientSecret).toBeNull();
+      expect(res.session.offerUrl).toBeNull();
+      expect(res.session.voiceSessionId).toBe("vs-live-1");
+      // The row is what the hangup will read: the gateway's id and the lane.
+      const row = await t.run((ctx) => ctx.db.get(res.sessionId));
+      expect(row?.voiceSessionId).toBe("vs-live-1");
+      expect(row?.relayed).toBe(true);
+    } finally {
+      bridge.restore();
+    }
+  });
+
+  test("the offer is posted under the ROW's instance, with the handle and the SDP", async () => {
+    const t = convexTest(schema, modules);
+    const { userId, chatId } = await seedTalkChat(t);
+    const bridge = stubBridge(RELAYED_BRIDGE_ANSWER);
+    try {
+      const minted = await asOwner(t, userId).action(api.talk.mintTalkSession, { chatId });
+      if (!minted.ok) throw new Error(JSON.stringify(minted));
+      const res = await asOwner(t, userId).action(api.talk.relayTalkOffer, {
+        chatId,
+        sessionId: minted.sessionId,
+        relayId: "r_handle_0123456789abcdef",
+        sdp: "v=0\r\noffer",
+      });
+      expect(res).toEqual({ ok: true, answerSdp: "v=0\r\nanswer" });
+      const offer = bridge.posts.find((p) => p.route === "/talk-offer");
+      expect(offer?.body).toEqual({
+        instanceName: "lacneu",
+        // The SESSION the row proved the caller on — the bridge spends the handle
+        // for that session key and no other of the same chat.
+        chatId,
+        openclawChatId: "oc-bound",
+        canonical: "olivier",
+        agentId: "alice",
+        relayId: "r_handle_0123456789abcdef",
+        sdp: "v=0\r\noffer",
+      });
+    } finally {
+      bridge.restore();
+    }
+  });
+
+  test("an offer on a handle that is not this chat's is refused before any POST", async () => {
+    // Same boundary as the consult: a foreign or stale row never reaches the bridge.
+    const t = convexTest(schema, modules);
+    const { userId, chatId } = await seedTalkChat(t);
+    const other = await seedTalkChat(t);
+    const bridge = stubBridge(RELAYED_BRIDGE_ANSWER);
+    try {
+      const minted = await asOwner(t, other.userId).action(api.talk.mintTalkSession, {
+        chatId: other.chatId,
+      });
+      if (!minted.ok) throw new Error(JSON.stringify(minted));
+      const before = bridge.posts.length;
+      const res = await asOwner(t, userId).action(api.talk.relayTalkOffer, {
+        chatId,
+        sessionId: minted.sessionId,
+        relayId: "r_handle_0123456789abcdef",
+        sdp: "v=0",
+      });
+      expect(res).toEqual({ ok: false, code: "talk_session_stale" });
+      expect(bridge.posts.length).toBe(before);
+    } finally {
+      bridge.restore();
+    }
+  });
+
+  test("a blank or oversized offer never leaves Convex", async () => {
+    const t = convexTest(schema, modules);
+    const { userId, chatId } = await seedTalkChat(t);
+    const bridge = stubBridge(RELAYED_BRIDGE_ANSWER);
+    try {
+      const minted = await asOwner(t, userId).action(api.talk.mintTalkSession, { chatId });
+      if (!minted.ok) throw new Error(JSON.stringify(minted));
+      const before = bridge.posts.length;
+      for (const sdp of ["", "   ", "a".repeat(256 * 1024 + 1)]) {
+        const res = await asOwner(t, userId).action(api.talk.relayTalkOffer, {
+          chatId,
+          sessionId: minted.sessionId,
+          relayId: "r_x",
+          sdp,
+        });
+        expect(res).toEqual({ ok: false, code: "invalid_args" });
+      }
+      expect(bridge.posts.length).toBe(before);
+    } finally {
+      bridge.restore();
+    }
+  });
+
+  test("the hangup posts the row's ingredients and the gateway's voice id", async () => {
+    const t = convexTest(schema, modules);
+    const { userId, chatId } = await seedTalkChat(t);
+    const bridge = stubBridge(RELAYED_BRIDGE_ANSWER);
+    try {
+      const minted = await asOwner(t, userId).action(api.talk.mintTalkSession, { chatId });
+      if (!minted.ok) throw new Error(JSON.stringify(minted));
+      const res = await asOwner(t, userId).action(api.talk.hangupTalkSession, {
+        chatId,
+        sessionId: minted.sessionId,
+      });
+      expect(res).toEqual({ ok: true, closed: "closed" });
+      const hang = bridge.posts.find((p) => p.route === "/talk-hangup");
+      expect(hang?.body).toEqual({
+        instanceName: "lacneu",
+        chatId,
+        openclawChatId: "oc-bound",
+        canonical: "olivier",
+        agentId: "alice",
+        voiceSessionId: "vs-live-1",
+      });
+    } finally {
+      bridge.restore();
+    }
+  });
+
+  test("Talk switched OFF mid-call does not stop the hangup", async () => {
+    // The consult's prepare refuses a disabled instance — rightly. A hangup must
+    // not: closing a call one owns is never a capability, and refusing it here would
+    // keep the call alive on the gateway until its TTL (codex P2, pass 2).
+    const t = convexTest(schema, modules);
+    const { userId, chatId } = await seedTalkChat(t);
+    const bridge = stubBridge(RELAYED_BRIDGE_ANSWER);
+    try {
+      const minted = await asOwner(t, userId).action(api.talk.mintTalkSession, { chatId });
+      if (!minted.ok) throw new Error(JSON.stringify(minted));
+      await t.run(async (ctx) => {
+        const instance = await ctx.db
+          .query("instances")
+          .withIndex("by_name", (q) => q.eq("name", "lacneu"))
+          .first();
+        await ctx.db.patch(instance!._id, { config: { talkEnabled: false } });
+      });
+      const res = await asOwner(t, userId).action(api.talk.hangupTalkSession, {
+        chatId,
+        sessionId: minted.sessionId,
+      });
+      expect(res).toEqual({ ok: true, closed: "closed" });
+      expect(bridge.posts.some((p) => p.route === "/talk-hangup")).toBe(true);
+    } finally {
+      bridge.restore();
+    }
+  });
+
+  test("a chat deleted mid-call can still hang up its gateway-owned session", async () => {
+    // cascadeDeleteChat takes the chat and its rows; the talkSessions row survives,
+    // and the unmount that follows the navigation must still close the call the
+    // gateway holds open. Ownership is the ROW's `userId` + `chatId`, checked when it
+    // was written; requiring the chat to exist would throw first (codex P2, pass 3).
+    const t = convexTest(schema, modules);
+    const { userId, chatId } = await seedTalkChat(t);
+    const bridge = stubBridge(RELAYED_BRIDGE_ANSWER);
+    try {
+      const minted = await asOwner(t, userId).action(api.talk.mintTalkSession, { chatId });
+      if (!minted.ok) throw new Error(JSON.stringify(minted));
+      await asOwner(t, userId).mutation(api.chats.deleteChat, { chatId });
+      const res = await asOwner(t, userId).action(api.talk.hangupTalkSession, {
+        chatId,
+        sessionId: minted.sessionId,
+      });
+      expect(res).toEqual({ ok: true, closed: "closed" });
+      expect(bridge.posts.some((p) => p.route === "/talk-hangup")).toBe(true);
+    } finally {
+      bridge.restore();
+    }
+  });
+
+  test("an agent grant withdrawn mid-call does not stop the hangup either", async () => {
+    // The consult's prepare re-runs the grant and refuses `agent_restricted`. A
+    // hangup must not re-check it: the call is the user's own, and closing it after
+    // the grant went away is exactly what should happen (codex P3, pass 3).
+    const t = convexTest(schema, modules);
+    const { userId, chatId } = await seedTalkChat(t);
+    const bridge = stubBridge(RELAYED_BRIDGE_ANSWER);
+    try {
+      const minted = await asOwner(t, userId).action(api.talk.mintTalkSession, { chatId });
+      if (!minted.ok) throw new Error(JSON.stringify(minted));
+      await t.run(async (ctx) => {
+        const grants = await ctx.db.query("userAgents").collect();
+        for (const g of grants) await ctx.db.delete(g._id);
+      });
+      const res = await asOwner(t, userId).action(api.talk.hangupTalkSession, {
+        chatId,
+        sessionId: minted.sessionId,
+      });
+      expect(res).toEqual({ ok: true, closed: "closed" });
+      expect(bridge.posts.some((p) => p.route === "/talk-hangup")).toBe(true);
+    } finally {
+      bridge.restore();
+    }
+  });
+
+  test("an account set PENDING mid-call can still hang up its own session", async () => {
+    // Every data function gates on an ACTIVE role, rightly. The hangup must not: the
+    // moment an account is suspended is exactly when its live call must be closable,
+    // and it is closing its OWN call (row ownership) — nothing else (codex P2, pass 4).
+    const t = convexTest(schema, modules);
+    const { userId, chatId } = await seedTalkChat(t);
+    const bridge = stubBridge(RELAYED_BRIDGE_ANSWER);
+    try {
+      const minted = await asOwner(t, userId).action(api.talk.mintTalkSession, { chatId });
+      if (!minted.ok) throw new Error(JSON.stringify(minted));
+      await t.run(async (ctx) => {
+        const profile = await ctx.db
+          .query("profiles")
+          .withIndex("by_user", (q) => q.eq("userId", userId))
+          .unique();
+        await ctx.db.patch(profile!._id, { role: "pending" });
+      });
+      const res = await asOwner(t, userId).action(api.talk.hangupTalkSession, {
+        chatId,
+        sessionId: minted.sessionId,
+      });
+      expect(res).toEqual({ ok: true, closed: "closed" });
+      expect(bridge.posts.some((p) => p.route === "/talk-hangup")).toBe(true);
+    } finally {
+      bridge.restore();
+    }
+  });
+
+  test("the offer and the hangup reach the bridge the MINT went to, not the current routing", async () => {
+    // The relay handle and the owning socket live on one bridge process. A
+    // failover that moves the instance's routing mid-call would otherwise send the
+    // hangup to a bridge that answers `closed:"gone"` for a call it never had, while
+    // the real one keeps it until its TTL (codex P2, pass 5).
+    const t = convexTest(schema, modules);
+    const { userId, chatId } = await seedTalkChat(t);
+    const bridge = stubBridge(RELAYED_BRIDGE_ANSWER);
+    try {
+      const minted = await asOwner(t, userId).action(api.talk.mintTalkSession, { chatId });
+      if (!minted.ok) throw new Error(JSON.stringify(minted));
+      const row = await t.run((ctx) => ctx.db.get(minted.sessionId));
+      expect(row?.bridgeUrl).toBe("http://bridge.test");
+      // The routing moves.
+      process.env.BRIDGE_URL = "http://bridge-b.test";
+      await asOwner(t, userId).action(api.talk.relayTalkOffer, {
+        chatId,
+        sessionId: minted.sessionId,
+        relayId: "r_handle_0123456789abcdef",
+        sdp: "v=0",
+      });
+      await asOwner(t, userId).action(api.talk.hangupTalkSession, {
+        chatId,
+        sessionId: minted.sessionId,
+      });
+      const hosts = bridge.posts.filter((p) => p.route !== "/talk-session").map((p) => p.host);
+      expect(hosts).toEqual(["bridge.test", "bridge.test"]);
+    } finally {
+      bridge.restore();
+    }
+  });
+
+  test("an unauthenticated caller cannot hang up anyone's session", async () => {
+    // Ownership is checked against the ROW, so the identity must come from the
+    // request. A derivation that read `live.userId` instead would let anyone holding
+    // the two ids close the call; this pins that the request must be signed in.
+    const t = convexTest(schema, modules);
+    const { userId, chatId } = await seedTalkChat(t);
+    const bridge = stubBridge(RELAYED_BRIDGE_ANSWER);
+    try {
+      const minted = await asOwner(t, userId).action(api.talk.mintTalkSession, { chatId });
+      if (!minted.ok) throw new Error(JSON.stringify(minted));
+      const before = bridge.posts.length;
+      await expect(
+        t.action(api.talk.hangupTalkSession, { chatId, sessionId: minted.sessionId }),
+      ).rejects.toThrow(/authenticat/i);
+      expect(bridge.posts.length).toBe(before);
+    } finally {
+      bridge.restore();
+    }
+  });
+
+  test("a relayed mint without a voiceSessionId is refused — nothing to hang up by", async () => {
+    const t = convexTest(schema, modules);
+    const { userId, chatId } = await seedTalkChat(t);
+    const { voiceSessionId: _v, ...session } = RELAYED_BRIDGE_ANSWER.session;
+    const bridge = stubBridge({ ...RELAYED_BRIDGE_ANSWER, session });
+    try {
+      const res = await asOwner(t, userId).action(api.talk.mintTalkSession, { chatId });
+      expect(res).toEqual({ ok: false, code: "talk_malformed" });
+    } finally {
+      bridge.restore();
+    }
+  });
+
+  test("a DIRECT session owes the gateway no hangup — nothing is posted", async () => {
+    // Its call is the browser's own (client-owned WebRTC to the provider); closing
+    // the peer connection ends it. Posting a close would name a call the gateway
+    // does not own.
+    const t = convexTest(schema, modules);
+    const { userId, chatId } = await seedTalkChat(t);
+    const bridge = stubBridge(DIRECT_BRIDGE_ANSWER);
+    try {
+      const minted = await asOwner(t, userId).action(api.talk.mintTalkSession, { chatId });
+      if (!minted.ok) throw new Error(JSON.stringify(minted));
+      expect(minted.session.offerRelay).toBeNull();
+      const row = await t.run((ctx) => ctx.db.get(minted.sessionId));
+      expect(row?.relayed).toBe(false);
+      const before = bridge.posts.length;
+      const res = await asOwner(t, userId).action(api.talk.hangupTalkSession, {
+        chatId,
+        sessionId: minted.sessionId,
+      });
+      expect(res).toEqual({ ok: true, closed: "none" });
+      expect(bridge.posts.length).toBe(before);
+    } finally {
+      bridge.restore();
+    }
+  });
+});
+
+describe("the conversation's socket is opened AS the person the gateway knows", () => {
+  test("a trusted-proxy instance naming people by email puts that name on the mint", async () => {
+    // A gateway-owned voice call runs under the identity of the socket that minted
+    // it. The bridge opens the conversation's socket as `gatewayUser ?? canonical`;
+    // the dispatch derives that name (resolveGatewayUser) and so must the mint —
+    // one derivation, or the same person gets two gateway profiles.
+    const t = convexTest(schema, modules);
+    const { userId, chatId } = await seedTalkChat(t);
+    await t.run(async (ctx) => {
+      await ctx.db.patch(userId, { email: "Olivier@Example.org" });
+      const instance = await ctx.db
+        .query("instances")
+        .withIndex("by_name", (q) => q.eq("name", "lacneu"))
+        .first();
+      await ctx.db.patch(instance!._id, {
+        authMode: "trusted-proxy",
+        identitySource: "email",
+      });
+    });
+    const prep = await asOwner(t, userId).query(internal.talk.prepareTalkSession, { chatId });
+    expect(prep.ok, JSON.stringify(prep)).toBe(true);
+    if (!prep.ok) return;
+    expect(prep.gatewayUser).toBe("olivier@example.org");
+    const bridge = stubBridge(RELAYED_BRIDGE_ANSWER);
+    try {
+      const res = await asOwner(t, userId).action(api.talk.mintTalkSession, { chatId });
+      expect(res.ok, JSON.stringify(res)).toBe(true);
+      const mint = bridge.posts.find((p) => p.route === "/talk-session");
+      expect(mint?.body.gatewayUser).toBe("olivier@example.org");
+      expect(mint?.body.canonical).toBe("olivier");
+    } finally {
+      bridge.restore();
+    }
+  });
+
+  test("a token-mode instance names nobody: the field is absent, not empty", async () => {
+    const t = convexTest(schema, modules);
+    const { userId, chatId } = await seedTalkChat(t);
+    const bridge = stubBridge(RELAYED_BRIDGE_ANSWER);
+    try {
+      await asOwner(t, userId).action(api.talk.mintTalkSession, { chatId });
+      const mint = bridge.posts.find((p) => p.route === "/talk-session");
+      expect(mint?.body).not.toHaveProperty("gatewayUser");
+    } finally {
+      bridge.restore();
+    }
+  });
+});

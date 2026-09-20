@@ -155,6 +155,21 @@ export interface BridgeSession {
    *  wired actions immediately. A transient refusal ("already active") is NOT
    *  remembered: it says only "not right now". */
   presendCompactRefusedFor: string | null;
+  /** Keep this conversation's socket OPEN while a gateway-owned voice call rides on
+   *  it. On a GPT Live call the gateway binds the call to the connection that created
+   *  it and closes the call when that connection closes (upstream
+   *  `client-gateway-control.ts`, `registerTalkConnectionCleanup`) — so the idle
+   *  sweeper must not reap this session mid-call. Bounded: the gateway's own call TTL. */
+  holdForVoiceCall(voiceSessionId: string, holdMs: number): void;
+  /** Lengthen an EXISTING hold (the offer was spent: the call is allocated and its
+   *  TTL starts now). Returns false — and holds nothing — when no hold exists for
+   *  that call any more: a hangup that raced the offer's HTTP round trip already
+   *  released it, and re-arming would pin the socket for a call the gateway has
+   *  closed (codex P2, pass 3). */
+  extendVoiceCall(voiceSessionId: string, holdMs: number): boolean;
+  /** THAT call ended (hangup, or the gateway closed it). The gateway allows two calls
+   *  per owning socket, so releasing one must not release the other (codex P1). */
+  releaseVoiceCall(voiceSessionId: string): void;
   /** Prod the inbound consume loop to re-evaluate its next deadline. MUST be
    *  called after `runManager.beginTurn` (which arms the recv/grace deadline from
    *  OUTSIDE the loop) so a loop blocked on a null-timeout frame wait does not
@@ -225,6 +240,12 @@ class Session implements BridgeSession {
   // WebSocket/FD — once this is older than IDLE_SESSION_TTL_SECONDS, so idle sockets
   // don't accumulate to FD exhaustion (the next send transparently reconnects).
   lastActivityAt: number;
+  // Per voice call the gateway bound to THIS socket: until which instant (SECONDS
+  // clock) it may still be live. The sweeper treats the session as busy while any
+  // entry is in the future. Keyed by voiceSessionId because the gateway allows two
+  // calls per owning socket — one timestamp would let the first hangup release the
+  // second call's hold (codex P1, 2026-09-19).
+  private readonly voiceCallsUntil = new Map<string, number>();
   private readonly transcriptFetcher?: TranscriptFetcher;
   // Tail of the CURRENT turn's sent user message (set by the send path at
   // beginTurn). The orphan recovery only accepts a transcript whose last user
@@ -1211,6 +1232,37 @@ class Session implements BridgeSession {
     }
   }
 
+  holdForVoiceCall(voiceSessionId: string, holdMs: number): void {
+    this.voiceCallsUntil.set(voiceSessionId, this.clock() + Math.ceil(holdMs / 1000));
+    this.lastActivityAt = this.clock();
+  }
+
+  extendVoiceCall(voiceSessionId: string, holdMs: number): boolean {
+    const current = this.voiceCallsUntil.get(voiceSessionId);
+    if (current === undefined || current <= this.clock()) {
+      this.voiceCallsUntil.delete(voiceSessionId);
+      return false;
+    }
+    this.voiceCallsUntil.set(voiceSessionId, this.clock() + Math.ceil(holdMs / 1000));
+    this.lastActivityAt = this.clock();
+    return true;
+  }
+
+  releaseVoiceCall(voiceSessionId: string): void {
+    this.voiceCallsUntil.delete(voiceSessionId);
+  }
+
+  /** Is a gateway-owned voice call possibly live on this socket at `now`? Expired
+   *  holds are dropped on the way, so an un-hung-up call cannot pin the socket past
+   *  the gateway's own call TTL. */
+  holdsVoiceCall(now: number): boolean {
+    for (const [id, until] of this.voiceCallsUntil) {
+      if (until > now) return true;
+      this.voiceCallsUntil.delete(id);
+    }
+    return false;
+  }
+
   close(): void {
     this.connection.close(); // the policy disposes itself on the connection's close
   }
@@ -1392,7 +1444,11 @@ export class SessionRegistry {
     let reaped = 0;
     for (const [chatId, session] of this.sessions) {
       const dead = session.connection.isClosed;
-      const idle = now - session.lastActivityAt > IDLE_SESSION_TTL_SECONDS;
+      // A socket carrying a gateway-owned voice call is never "idle": the call is
+      // the activity, and reaping the socket would end it (gateway-side cleanup).
+      const idle =
+        now - session.lastActivityAt > IDLE_SESSION_TTL_SECONDS &&
+        !session.holdsVoiceCall(now);
       if (dead || idle) {
         if (!dead) {
           try {
@@ -1447,7 +1503,22 @@ export class SessionRegistry {
     // A closed, missing, OR re-keyed (incl. re-routed) session: drop (closing if
     // still open) and (re)connect, deduping concurrent acquisitions for the same chat.
     if (existing) {
-      if (!existing.connection.isClosed) existing.close();
+      if (!existing.connection.isClosed) {
+        // ONE live socket per chat is this registry's invariant (the old consumer
+        // loop would keep writing under the old key). A gateway-owned voice call
+        // (GPT Live) is bound by the GATEWAY to the socket that minted it and ends
+        // with that socket — so switching the chat's agent mid-call ENDS THE CALL.
+        // A decision, stated by name rather than left to a mute `rtc_lost` in the
+        // browser: keeping the old socket alive beside the new one would need a
+        // second live session per chat, which this registry does not model
+        // (codex P1, 2026-09-19 — recorded, not fixed here).
+        if (existing.holdsVoiceCall(this.clock())) {
+          console.warn(
+            `[talk] chat ${chatId}: re-keyed to ${sessionKey} while a gateway-owned voice call was live on the previous socket — the gateway ends that call with the socket`,
+          );
+        }
+        existing.close();
+      }
       this.sessions.delete(chatId);
     }
     const pending = this.inflight.get(chatId);

@@ -80,22 +80,114 @@ export function buildCallUrl(offerUrl: string, model: string | null): string {
   return `${offerUrl}${sep}model=${encodeURIComponent(model)}`;
 }
 
+/** The material the handshake needs, on either lane (see convex/lib/talk.ts). */
+export type TalkHandshakeSession = {
+  /** Direct lane: the provider's https endpoint + the ephemeral secret. */
+  offerUrl?: string | null;
+  clientSecret?: string | null;
+  offerHeaders?: Record<string, string> | null;
+  model?: string | null;
+  /** Relayed lane (GPT Live): the opaque handle the bridge issued. */
+  offerRelay?: { relayId: string } | null;
+};
+
 /**
- * SDP handshake against the provider's realtime endpoint. `fetchImpl` is
- * injected (tests + future transports). Returns the answer SDP, or a coded
+ * What to do with a session the mint just returned, given whether the user is still
+ * on the line. A RELAYED session is a call the GATEWAY owns and holds open on the
+ * bridge's socket; if the user hung up while the mint was in flight, nobody will ever
+ * connect to it and nobody would ever close it — it would sit on one of the two
+ * reservations the gateway allows per socket until its TTL (codex P1, 2026-09-19).
+ * So an owned session arriving after a hangup is hung up AT ONCE. A direct session is
+ * the browser's own; unused, it simply expires. Pure, so the race is table-testable.
+ */
+export function mintedSessionDisposition(
+  session: { offerRelay?: { relayId: string } | null },
+  stillCurrent: boolean,
+): "connect" | "hangup-now" | "drop" {
+  if (stillCurrent) return "connect";
+  return session.offerRelay ? "hangup-now" : "drop";
+}
+
+/** The headers the direct-lane handshake sets itself; a provider header of the same
+ *  name, in any spelling, is never merged beside them. */
+const RESERVED_OFFER_HEADERS = new Set(["authorization", "content-type"]);
+
+/**
+ * Hang up a gateway-owned call with BOUNDED retries. The hangup is fire-and-forget
+ * from the UI's point of view, but forgetting it on the first network blip would
+ * leave the call held on the bridge's socket until the gateway's own TTL (codex P2,
+ * pass 5). A refusal (`ok:false`) and a rejection are both retried; the gateway's
+ * close is idempotent, so a duplicate costs nothing. Delays are injected for tests.
+ */
+export async function hangupWithRetry(
+  attempt: () => Promise<{ ok: boolean }>,
+  delaysMs: readonly number[] = [1_000, 3_000],
+  sleep: (ms: number) => Promise<void> = (ms) => new Promise((r) => setTimeout(r, ms)),
+): Promise<boolean> {
+  for (let i = 0; ; i += 1) {
+    try {
+      if ((await attempt()).ok) return true;
+    } catch {
+      /* retried below */
+    }
+    if (i >= delaysMs.length) return false;
+    await sleep(delaysMs[i]!);
+  }
+}
+
+/** How a RELAYED offer travels: the Convex action that posts it through the bridge
+ *  to the gateway's own route. Injected so this module stays pure. */
+export type TalkOfferRelay = (
+  relayId: string,
+  offerSdp: string,
+) => Promise<{ ok: true; answerSdp: string } | { ok: false; code: string }>;
+
+/**
+ * SDP handshake, on whichever lane the mint chose. `fetchImpl` (direct lane) and
+ * `relayImpl` (relayed lane) are injected. Returns the answer SDP, or a coded
  * error — NEVER throws (component code stays branch-simple).
- * The clientSecret is used ONLY as the Authorization header here — never
- * logged, never persisted.
+ *
+ * Direct lane: the clientSecret is used ONLY as the Authorization header here —
+ * never logged, never persisted — and the provider's extra offer headers ride
+ * beside it (the gateway strips its server-only ones before handing them over).
+ * Relayed lane: the browser never held a secret; it presents the handle and its
+ * SDP, and the bridge does the rest.
  */
 export async function exchangeSdp(
-  session: { offerUrl: string; clientSecret: string; model?: string | null },
+  session: TalkHandshakeSession,
   offerSdp: string,
   fetchImpl: typeof fetch = fetch,
+  relayImpl?: TalkOfferRelay,
 ): Promise<{ ok: true; answerSdp: string } | { ok: false; code: string }> {
+  if (session.offerRelay) {
+    if (!relayImpl) return { ok: false, code: "relay_unavailable" };
+    try {
+      const res = await relayImpl(session.offerRelay.relayId, offerSdp);
+      if (!res.ok) return res;
+      if (res.answerSdp.trim() === "") return { ok: false, code: "sdp_empty" };
+      return res;
+    } catch {
+      return { ok: false, code: "relay_failed" };
+    }
+  }
+  if (!session.offerUrl || !session.clientSecret) {
+    return { ok: false, code: "talk_malformed" };
+  }
   try {
+    // The provider's extra headers ride along, EXCEPT the two this handshake owns.
+    // HTTP header names are case-insensitive and Fetch COMBINES same-name entries:
+    // an `authorization` (lowercase) beside our `Authorization` would reach the wire
+    // as `Bearer stale, Bearer ours` (codex P2, pass 4). Dropped by lowercase name,
+    // so ours are the only ones there whatever the spelling.
+    const extra = Object.fromEntries(
+      Object.entries(session.offerHeaders ?? {}).filter(
+        ([name]) => !RESERVED_OFFER_HEADERS.has(name.toLowerCase()),
+      ),
+    );
     const res = await fetchImpl(buildCallUrl(session.offerUrl, session.model ?? null), {
       method: "POST",
       headers: {
+        ...extra,
         Authorization: `Bearer ${session.clientSecret}`,
         "Content-Type": "application/sdp",
       },

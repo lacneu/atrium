@@ -129,7 +129,7 @@ describe("the composer's selection reaches the voice session", () => {
     // The file disables exhaustive-deps for an unrelated reason, so a missing
     // dependency here is invisible: the click would mint the PREVIOUS selection.
     const deps = talkControlSlice(
-      "}, [advance, chatId, mint, teardown",
+      "}, [advance, chatId, hangupSession, mint",
       "]);",
     );
     expect(deps).toMatch(/routedAgent/);
@@ -191,10 +191,43 @@ describe("a call that cannot continue is ENDED, not left open", () => {
   test("hangup and unmount really call teardown", () => {
     // The guard above only proves teardown CLEARS the handle; if nothing calls it,
     // the microphone and the handle both survive.
-    const hangup = talkControlSlice("const hangup = useCallback(", "}, [advance, teardown]);");
+    const hangup = talkControlSlice(
+      "const hangup = useCallback(",
+      "}, [advance, releaseOwnedCall, teardown]);",
+    );
     expect(hangup).toMatch(/teardown\(\)/);
-    const unmount = talkControlSlice("useEffect(\n    () => () => {", "[teardown],");
+    const unmount = talkControlSlice(
+      "useEffect(\n    () => () => {",
+      "[releaseOwnedCall, teardown],",
+    );
     expect(unmount).toMatch(/teardown\(\)/);
+    // A GPT Live call is the GATEWAY's, held open on the bridge's socket: the
+    // browser's own teardown does not end it. Both exits must ALSO tell the gateway,
+    // or a call outlives the person who hung up (until the gateway's TTL).
+    expect(hangup).toMatch(/releaseOwnedCall\(\)/);
+    expect(unmount).toMatch(/releaseOwnedCall\(\)/);
+    const release = talkControlSlice("const releaseOwnedCall = useCallback(", "}, [chatId, hangupSession]);");
+    expect(release).toMatch(/hangupWithRetry\(/);
+  });
+});
+
+describe("a gateway-owned session that arrives after a hangup is closed at once", () => {
+  test("`start` hangs up the minted session, by its own handle", () => {
+    // The pure disposition proves the DECISION; only this proves the component
+    // acts on it. Replacing the branch by a bare `return` would leave every other
+    // guard green while the call sat on a gateway reservation until its TTL.
+    const branch = talkControlSlice(
+      'if (disposition === "hangup-now") {',
+      'if (disposition === "drop")',
+    );
+    // BEFORE the branch returns: a `return` placed ahead of the call would leave the
+    // text in place as dead code, and a match on the whole branch would stay green.
+    const reachable = branch.slice(0, branch.indexOf("return"));
+    expect(reachable).toMatch(/hangupSession\(\{/);
+    expect(reachable).toMatch(/sessionId:\s*minted\.sessionId/);
+    // …and through the bounded retry, like every other hangup: a first network blip
+    // must not leave the call held until the gateway's TTL.
+    expect(reachable).toMatch(/hangupWithRetry\(/);
   });
 });
 

@@ -2437,6 +2437,17 @@ export default defineSchema({
     canonical: v.string(),
     conversation: v.string(),
     createdAt: v.number(),
+    /** The gateway's id for the LOGICAL voice session (OpenClaw >= 2026.7.2). On a
+     *  gateway-owned call (GPT Live, the 2026.9.5 default) this is what the hangup
+     *  closes; absent on mints from older gateways. */
+    voiceSessionId: v.optional(v.string()),
+    /** TRUE when the bridge kept the provider secret and the browser holds only a
+     *  relay handle (GPT Live). The hangup is owed to the gateway on this lane only. */
+    relayed: v.optional(v.boolean()),
+    /** The bridge the mint went to. The relay handle and the owning socket live on
+     *  THAT process; the offer and the hangup must reach it even if the instance's
+     *  routing moves to another bridge mid-call (codex P2, pass 5). */
+    bridgeUrl: v.optional(v.string()),
     /** HARD TTL, not an end-of-call boundary: nothing invalidates a row when the
      *  user hangs up, so a handle stays usable until this moment. It bounds how long
      *  a leaked id could address the session, and it is deliberately longer than a

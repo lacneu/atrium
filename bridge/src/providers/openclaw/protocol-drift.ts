@@ -402,9 +402,9 @@ export const KNOWN_AGENT_FIELDS: ReadonlySet<string> = new Set([
  * matrix instead of being invisible omissions.
  */
 export const COVERAGE_SUMMARY = {
-  handled: 167,
+  handled: 172,
   ignored: 721,
-  gaps: 611,
+  gaps: 606,
   /** The declared gaps, by schema path — the actionable part of the matrix.
    *
    *  Recounted from the PROMISED version's coverage manifest by protocol-drift.test.ts,
@@ -944,14 +944,9 @@ export const COVERAGE_SUMMARY = {
     "Snapshot.uptimeMs",
     "StateVersion.health",
     "StateVersion.presence",
-    "TalkClientCloseParams.sessionKey",
-    "TalkClientCloseParams.voiceSessionId",
     "TalkClientCreateParams.capabilities",
     "TalkClientCreateParams.voiceSessionId",
     "TalkClientCreateResult.expiresAt",
-    "TalkClientCreateResult.offerHeaders",
-    "TalkClientCreateResult.voiceSessionId",
-    "TalkClientMutationResult.ok",
     "TalkClientToolCallParams.voiceSessionId",
     "TalkClientToolCallResult.idempotencyKey",
     "TalkClientTranscriptParams.entryId",

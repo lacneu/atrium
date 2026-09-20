@@ -21,7 +21,9 @@ import type { Id } from "./convexApi";
 import { useToast } from "@/components/ui/toast";
 import {
   exchangeSdp,
+  hangupWithRetry,
   INITIAL_TALK_STATUS,
+  mintedSessionDisposition,
   loadTalkVad,
   loadTalkVoice,
   nextTalkPhase,
@@ -97,6 +99,14 @@ export function TalkControl({
 
   const mint = useAction(api.talk.mintTalkSession);
   const relayToolCall = useAction(api.talk.relayTalkToolCall);
+  // The GPT Live lane: the offer travels through Convex and the bridge to the
+  // gateway's own route, and the call the gateway OWNS has to be told when the
+  // user hangs up — the socket that owns it outlives this component.
+  const relayOffer = useAction(api.talk.relayTalkOffer);
+  const hangupSession = useAction(api.talk.hangupTalkSession);
+  // Set when the minted session is a gateway-owned call: the hangup is then owed
+  // to the gateway, not just to the browser's own WebRTC objects.
+  const ownedCallRef = useRef<{ sessionId: Id<"talkSessions"> } | null>(null);
   const toast = useToast();
   // Generation guard: bumped on every start AND hang-up; async continuations
   // compare before touching shared state.
@@ -149,13 +159,27 @@ export function TalkControl({
     if (audioRef.current) audioRef.current.srcObject = null;
   }, []);
 
+  // Tell the gateway the call is over, when it is the gateway's call to end.
+  // Best-effort and fire-and-forget: the socket that owns the call is the bridge's,
+  // and a gateway that already closed it answers idempotently. Read-and-clear FIRST
+  // so a hangup and an unmount racing each other send it once.
+  const releaseOwnedCall = useCallback(() => {
+    const owned = ownedCallRef.current;
+    ownedCallRef.current = null;
+    if (owned === null) return;
+    void hangupWithRetry(() =>
+      hangupSession({ chatId: chatId as Id<"chats">, sessionId: owned.sessionId }),
+    );
+  }, [chatId, hangupSession]);
+
   const hangup = useCallback(() => {
     if (advance("hangup") === null) return;
     genRef.current++;
+    releaseOwnedCall();
     teardown();
     advance("ended");
     setStatus((s) => ({ ...s, muted: false }));
-  }, [advance, teardown]);
+  }, [advance, releaseOwnedCall, teardown]);
 
   // Unmount = hang up: never leave a mic live behind a conversation the user left.
   // Navigating between chats does NOT unmount this by itself — the route component
@@ -164,9 +188,10 @@ export function TalkControl({
   useEffect(
     () => () => {
       genRef.current++;
+      releaseOwnedCall();
       teardown();
     },
-    [teardown],
+    [releaseOwnedCall, teardown],
   );
 
   const start = useCallback(async () => {
@@ -176,6 +201,7 @@ export function TalkControl({
     const fail = (code: string) => {
       if (genRef.current !== gen) return; // a newer session owns the state
       advance("failed");
+      releaseOwnedCall();
       teardown();
       advance("ended");
       setStatus((s) => ({ ...s, errorCode: code }));
@@ -193,12 +219,28 @@ export function TalkControl({
       // the button must talk to THAT agent. Authorized server-side.
       ...(routedAgent ? { routedAgent } : {}),
     }).catch(() => ({ ok: false as const, code: "mint_failed" }));
-    if (genRef.current !== gen) return;
+    if (minted.ok) {
+      const disposition = mintedSessionDisposition(minted.session, genRef.current === gen);
+      if (disposition === "hangup-now") {
+        // Hung up while the mint was in flight: the gateway-owned call exists and
+        // nobody will connect to it. Close it now rather than leave it holding a
+        // reservation until its TTL.
+        void hangupWithRetry(() =>
+          hangupSession({ chatId: chatId as Id<"chats">, sessionId: minted.sessionId }),
+        );
+        return;
+      }
+      if (disposition === "drop") return;
+    } else if (genRef.current !== gen) {
+      return;
+    }
     if (!minted.ok) {
       fail(minted.code);
       return;
     }
     sessionIdRef.current = minted.sessionId;
+    ownedCallRef.current =
+      minted.session.offerRelay !== null ? { sessionId: minted.sessionId } : null;
     // Mic AFTER the mint: no permission prompt for a session that would be
     // refused anyway (disabled/unsupported).
     let mic: MediaStream;
@@ -333,7 +375,20 @@ export function TalkControl({
       const offer = await pc.createOffer();
       await pc.setLocalDescription(offer);
       if (genRef.current !== gen) return;
-      const sdp = await exchangeSdp(minted.session, offer.sdp ?? "");
+      const sdp = await exchangeSdp(
+        minted.session,
+        offer.sdp ?? "",
+        fetch,
+        // The relayed lane: Convex authorizes the handle against the session row
+        // this mint recorded, the bridge presents the offer with the secret it kept.
+        (relayId, offerSdp) =>
+          relayOffer({
+            chatId: chatId as Id<"chats">,
+            sessionId: minted.sessionId,
+            relayId,
+            sdp: offerSdp,
+          }),
+      );
       if (genRef.current !== gen) return;
       if (!sdp.ok) {
         fail(sdp.code);
@@ -347,7 +402,7 @@ export function TalkControl({
     if (genRef.current !== gen) return;
     advance("connected");
     // eslint-disable-next-line react-hooks/exhaustive-deps -- toast identity stable
-  }, [advance, chatId, mint, teardown, voice, vad, routedAgent]);
+  }, [advance, chatId, hangupSession, mint, relayOffer, releaseOwnedCall, teardown, voice, vad, routedAgent]);
 
   const toggleMute = useCallback(() => {
     const mic = resourcesRef.current.mic;

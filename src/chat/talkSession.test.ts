@@ -3,6 +3,8 @@ import {
   buildCallUrl,
   endsTheCall,
   exchangeSdp,
+  hangupWithRetry,
+  mintedSessionDisposition,
   hidesTalkControl,
   nextTalkPhase,
   parseTalkToolCall,
@@ -325,5 +327,154 @@ describe("hidesTalkControl (when the button may disappear)", () => {
         ).toBe(false);
       }
     }
+  });
+});
+
+describe("exchangeSdp — the relayed lane (GPT Live, OpenClaw >= 2026.9.5)", () => {
+  const RELAYED = { offerRelay: { relayId: "r_handle" }, model: "gpt-live-1" };
+
+  it("presents the handle and the SDP to the relay, never a fetch", async () => {
+    const fetchImpl = vi.fn();
+    const relayImpl = vi.fn(async () => ({ ok: true as const, answerSdp: "v=0\r\nanswer" }));
+    const res = await exchangeSdp(RELAYED, "v=0\r\noffer", fetchImpl as typeof fetch, relayImpl);
+    expect(res).toEqual({ ok: true, answerSdp: "v=0\r\nanswer" });
+    expect(relayImpl).toHaveBeenCalledWith("r_handle", "v=0\r\noffer");
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it("a relay refusal keeps its code (the bridge speaks the same vocabulary)", async () => {
+    const relayImpl = vi.fn(async () => ({ ok: false as const, code: "talk_secret_expired" }));
+    expect(await exchangeSdp(RELAYED, "v=0", undefined, relayImpl)).toEqual({
+      ok: false,
+      code: "talk_secret_expired",
+    });
+  });
+
+  it("an empty relayed answer is a failure, and a throwing relay is named", async () => {
+    expect(
+      await exchangeSdp(RELAYED, "v=0", undefined, async () => ({ ok: true, answerSdp: " " })),
+    ).toEqual({ ok: false, code: "sdp_empty" });
+    expect(
+      await exchangeSdp(RELAYED, "v=0", undefined, async () => {
+        throw new Error("boom");
+      }),
+    ).toEqual({ ok: false, code: "relay_failed" });
+  });
+
+  it("a relayed session with no relay wired is refused, not fetched", async () => {
+    const fetchImpl = vi.fn();
+    expect(await exchangeSdp(RELAYED, "v=0", fetchImpl as typeof fetch)).toEqual({
+      ok: false,
+      code: "relay_unavailable",
+    });
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it("the direct lane sends the provider's extra headers beside the two it owns", async () => {
+    const fetchImpl = vi.fn(async () => new Response("v=0\r\nanswer", { status: 200 }));
+    await exchangeSdp(
+      {
+        offerUrl: "https://api.openai.com/v1/realtime/calls",
+        clientSecret: "ek_test",
+        offerHeaders: { "OpenAI-Beta": "realtime=v1", Authorization: "Bearer stolen" },
+      },
+      "v=0\r\noffer",
+      fetchImpl as typeof fetch,
+    );
+    expect(fetchImpl).toHaveBeenCalledWith(
+      "https://api.openai.com/v1/realtime/calls",
+      expect.objectContaining({
+        headers: {
+          "OpenAI-Beta": "realtime=v1",
+          // Ours win: a header the gateway hands over cannot replace the credential.
+          Authorization: "Bearer ek_test",
+          "Content-Type": "application/sdp",
+        },
+      }),
+    );
+  });
+
+  it("a provider header spelled in ANY case never rides beside ours", async () => {
+    // Fetch combines same-name headers case-insensitively: `authorization` beside
+    // `Authorization` reaches the wire as `Bearer stale, Bearer ours` (codex P2).
+    const fetchImpl = vi.fn(async () => new Response("v=0\r\nanswer", { status: 200 }));
+    await exchangeSdp(
+      {
+        offerUrl: "https://api.openai.com/v1/realtime/calls",
+        clientSecret: "ek_test",
+        // MIXED case on purpose: an all-lowercase spelling would pass a filter that
+        // forgot to normalize, since the reserved set is lowercase itself.
+        offerHeaders: {
+          AUTHORIZATION: "Bearer stale",
+          "Content-type": "text/plain",
+          "OpenAI-Beta": "realtime=v1",
+        },
+      },
+      "v=0",
+      fetchImpl as typeof fetch,
+    );
+    const [, init] = fetchImpl.mock.calls[0] as unknown as [string, RequestInit];
+    expect(init.headers).toEqual({
+      "OpenAI-Beta": "realtime=v1",
+      Authorization: "Bearer ek_test",
+      "Content-Type": "application/sdp",
+    });
+    // …and the normalized wire view agrees: exactly one value per name.
+    const wire = new Headers(init.headers);
+    expect(wire.get("authorization")).toBe("Bearer ek_test");
+    expect(wire.get("content-type")).toBe("application/sdp");
+  });
+
+  it("a direct session missing its secret or URL is refused before any fetch", async () => {
+    const fetchImpl = vi.fn();
+    expect(
+      await exchangeSdp({ offerUrl: "https://x", clientSecret: null }, "v=0", fetchImpl as typeof fetch),
+    ).toEqual({ ok: false, code: "talk_malformed" });
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+});
+
+describe("mintedSessionDisposition — a session that arrives after the user hung up", () => {
+  it("connects while the user is still on the line, on either lane", () => {
+    expect(mintedSessionDisposition({ offerRelay: { relayId: "r" } }, true)).toBe("connect");
+    expect(mintedSessionDisposition({ offerRelay: null }, true)).toBe("connect");
+  });
+  it("hangs up AT ONCE a gateway-owned session nobody will connect to", () => {
+    // The gateway holds it open on the bridge's socket, on one of two reservations
+    // per socket; left alone it blocks a reservation until its TTL.
+    expect(mintedSessionDisposition({ offerRelay: { relayId: "r" } }, false)).toBe("hangup-now");
+  });
+  it("simply drops a direct session — it is the browser's own and expires", () => {
+    expect(mintedSessionDisposition({ offerRelay: null }, false)).toBe("drop");
+    expect(mintedSessionDisposition({}, false)).toBe("drop");
+  });
+});
+
+describe("hangupWithRetry — a hangup is not forgotten on the first blip", () => {
+  const noSleep = async () => {};
+  it("stops at the first success", async () => {
+    const attempt = vi.fn(async () => ({ ok: true }));
+    expect(await hangupWithRetry(attempt, [1, 1], noSleep)).toBe(true);
+    expect(attempt).toHaveBeenCalledTimes(1);
+  });
+  it("retries a refusal AND a rejection, then succeeds", async () => {
+    const attempt = vi
+      .fn<() => Promise<{ ok: boolean }>>()
+      .mockResolvedValueOnce({ ok: false })
+      .mockRejectedValueOnce(new Error("network"))
+      .mockResolvedValueOnce({ ok: true });
+    const slept: number[] = [];
+    expect(
+      await hangupWithRetry(attempt, [10, 20], async (ms) => {
+        slept.push(ms);
+      }),
+    ).toBe(true);
+    expect(attempt).toHaveBeenCalledTimes(3);
+    expect(slept).toEqual([10, 20]);
+  });
+  it("is BOUNDED: gives up after the delays are spent", async () => {
+    const attempt = vi.fn(async () => ({ ok: false }));
+    expect(await hangupWithRetry(attempt, [1, 1], noSleep)).toBe(false);
+    expect(attempt).toHaveBeenCalledTimes(3);
   });
 });

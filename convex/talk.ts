@@ -36,8 +36,12 @@ import {
   type QueryCtx,
 } from "./_generated/server";
 import { internal } from "./_generated/api";
-import { requireActive, requireOwnedChat } from "./lib/access";
-import { currentTurnRouting, resolveTargetForTurn } from "./routing";
+import { requireActive, requireOwnedChat, requireUserId } from "./lib/access";
+import {
+  currentTurnRouting,
+  resolveGatewayUser,
+  resolveTargetForTurn,
+} from "./routing";
 import { resolveBridgeUrlForDispatch } from "./lib/bridgeRouting";
 import { capabilitiesForInstance } from "./lib/compat";
 import { capabilityOf } from "../src/chat/capabilities";
@@ -209,10 +213,16 @@ export const recordTalkSession = internalMutation({
     agentId: v.string(),
     canonical: v.string(),
     conversation: v.string(),
+    // The gateway's id for the logical voice session, and whether the bridge kept
+    // the secret (GPT Live). Both come from the mint the bridge just answered; the
+    // hangup reads them back off THIS row, never off the browser.
+    voiceSessionId: v.optional(v.string()),
+    relayed: v.optional(v.boolean()),
+    bridgeUrl: v.optional(v.string()),
   },
   handler: async (
     ctx,
-    { chatId, instanceName, agentId, canonical, conversation },
+    { chatId, instanceName, agentId, canonical, conversation, voiceSessionId, relayed, bridgeUrl },
   ): Promise<Id<"talkSessions">> => {
     const { userId } = await requireActive(ctx);
     // RE-CHECK EVERY AUTHORIZATION AND GATE AT THE WRITE. The prepare, the POST and
@@ -257,6 +267,9 @@ export const recordTalkSession = internalMutation({
       agentId,
       canonical,
       conversation,
+      ...(voiceSessionId !== undefined ? { voiceSessionId } : {}),
+      ...(relayed !== undefined ? { relayed } : {}),
+      ...(bridgeUrl !== undefined ? { bridgeUrl } : {}),
       createdAt: now,
       expiresAt: now + TALK_HANDLE_TTL_MS,
     });
@@ -289,6 +302,12 @@ type PrepareResult =
       agentId: string;
       canonical: string;
       openclawChatId: string | null;
+      /** What the gateway calls this person, when the instance names people by
+       *  something other than the routing key. The bridge opens the conversation's
+       *  socket AS this person (a gateway-owned voice call runs under that identity),
+       *  so it must be the SAME string a typed turn uses — the dispatch's own
+       *  derivation, not a second one. */
+      gatewayUser?: string;
     }
   | { ok: false; code: string };
 
@@ -337,10 +356,17 @@ export const prepareTalkSession = internalQuery({
       served: process.env.BRIDGE_INSTANCE_NAME ?? null,
       isSole: someInstances.length <= 1,
     });
+    const gatewayUser = await resolveGatewayUser(ctx, {
+      instanceName: target.instanceName,
+      ownerUserId: chat.userId,
+      canonical: target.canonical,
+      instance,
+    });
     return {
       ok: true,
       instanceName: target.instanceName,
       bridgeUrl: bridgeUrl ?? null,
+      ...(gatewayUser === undefined ? {} : { gatewayUser }),
       // The browser lane — the only client-owned transport; the gateway
       // validates it regardless.
       transport: "webrtc",
@@ -369,6 +395,9 @@ type ToolCallPrepare =
       canonical: string;
       openclawChatId: string | null;
       bridgeUrl: string | null;
+      /** From the session row, when a handle was supplied: what the hangup closes. */
+      voiceSessionId?: string;
+      relayed?: boolean;
     }
   | { ok: false; code: string };
 
@@ -479,8 +508,238 @@ export const prepareTalkToolCall = internalQuery({
       agentId: target.agentId,
       canonical: target.canonical,
       openclawChatId: routing.openclawChatId,
-      bridgeUrl: bridgeUrl ?? null,
+      bridgeUrl: pinnedBridgeUrl(live, bridgeUrl),
+      ...(live?.voiceSessionId !== undefined ? { voiceSessionId: live.voiceSessionId } : {}),
+      ...(live?.relayed !== undefined ? { relayed: live.relayed } : {}),
     };
+  },
+});
+
+/** The bridge a session's requests must reach: the one PINNED at the mint when the
+ *  row carries it (the relay handle and the owning socket live on that process),
+ *  else the instance's current routing. */
+function pinnedBridgeUrl(
+  live: { bridgeUrl?: string } | null,
+  resolved: string | null | undefined,
+): string | null {
+  return live?.bridgeUrl ?? resolved ?? null;
+}
+
+// The bridge presents the offer to the gateway within 30 s (the gateway's own
+// upstream timeout); the action budget must clear that with margin.
+const TALK_OFFER_TIMEOUT_MS = 45_000;
+// The gateway's own cap on an offer body (OPENAI_QUICKSILVER_MAX_SDP_BYTES); a
+// browser offer is a few KB, so anything near this is not an offer.
+const TALK_OFFER_MAX_SDP_CHARS = 256 * 1024;
+const TALK_HANGUP_TIMEOUT_MS = 20_000;
+
+/**
+ * PUBLIC entry, GPT Live lane: present the browser's SDP offer to the gateway
+ * through the bridge, which kept the ephemeral secret. The handle names the session
+ * the mint recorded; the row decides the instance and proves the caller may speak
+ * on it (the same check the mid-call consult makes). Returns the answer SDP, or a
+ * code in the handshake's own vocabulary (`talk_secret_expired` = mint again).
+ */
+export const relayTalkOffer = action({
+  args: {
+    chatId: v.id("chats"),
+    sessionId: v.id("talkSessions"),
+    relayId: v.string(),
+    sdp: v.string(),
+  },
+  handler: async (
+    ctx,
+    { chatId, sessionId, relayId, sdp },
+  ): Promise<{ ok: true; answerSdp: string } | { ok: false; code: string }> => {
+    if (relayId.trim() === "" || relayId.length > 128) {
+      return { ok: false, code: "invalid_args" };
+    }
+    if (sdp.trim() === "" || sdp.length > TALK_OFFER_MAX_SDP_CHARS) {
+      return { ok: false, code: "invalid_args" };
+    }
+    const prep: ToolCallPrepare = await ctx.runQuery(
+      internal.talk.prepareTalkToolCall,
+      { chatId, sessionId },
+    );
+    if (!prep.ok) return prep;
+    const sharedSecret = process.env.BRIDGE_SHARED_SECRET;
+    const bridgeUrl = prep.bridgeUrl ?? process.env.BRIDGE_URL ?? null;
+    if (!bridgeUrl || !sharedSecret) return { ok: false, code: "not_configured" };
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), TALK_OFFER_TIMEOUT_MS);
+    try {
+      const response = await fetch(`${bridgeUrl.replace(/\/$/, "")}/talk-offer`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: sharedSecret,
+        },
+        // The SESSION the row proved the caller on — chat, conversation, agent and
+        // canonical: the bridge spends the handle for that session key and no other
+        // of the same chat (codex P1, pass 2).
+        body: JSON.stringify({
+          instanceName: prep.instanceName,
+          chatId,
+          ...(prep.openclawChatId !== null ? { openclawChatId: prep.openclawChatId } : {}),
+          canonical: prep.canonical,
+          agentId: prep.agentId,
+          relayId,
+          sdp,
+        }),
+        signal: controller.signal,
+      });
+      let data: unknown = null;
+      try {
+        data = await response.json();
+      } catch {
+        data = null;
+      }
+      if (!response.ok) {
+        const code =
+          (data as { error?: { code?: string } } | null)?.error?.code ??
+          `bridge_${response.status}`;
+        return { ok: false, code };
+      }
+      const d = data as { ok?: boolean; answerSdp?: unknown } | null;
+      if (d?.ok !== true || typeof d.answerSdp !== "string") {
+        return { ok: false, code: "talk_malformed" };
+      }
+      return { ok: true, answerSdp: d.answerSdp };
+    } catch {
+      return { ok: false, code: "bridge_unreachable" };
+    } finally {
+      clearTimeout(timer);
+    }
+  },
+});
+
+type HangupPrepare =
+  | {
+      ok: true;
+      instanceName: string;
+      agentId: string;
+      canonical: string;
+      openclawChatId: string | null;
+      bridgeUrl: string | null;
+      voiceSessionId: string | null;
+      relayed: boolean;
+    }
+  | { ok: false; code: string };
+
+/** Ownership of the ROW is the whole authorization of a hangup. Deliberately NOT the
+ *  consult's prepare: that one re-runs the agent grant and the instance's talk gate,
+ *  and a grant revoked or Talk switched off mid-call are exactly the moments a call
+ *  MUST still be closable — refusing the close there would keep the revoked call
+ *  alive on the gateway until its TTL (codex P2, pass 2). Closing a call one owns is
+ *  never a capability. */
+export const prepareTalkHangup = internalQuery({
+  args: { chatId: v.id("chats"), sessionId: v.id("talkSessions") },
+  handler: async (ctx, { chatId, sessionId }): Promise<HangupPrepare> => {
+    // WHO, not WHETHER THEY MAY: `requireActive` refuses a `pending` account, and an
+    // account set pending mid-call must still be able to close the call it opened —
+    // otherwise the revocation itself keeps the call alive on the gateway until its
+    // TTL (codex P2, pass 4). The row's ownership is the only authorization here.
+    const userId = await requireUserId(ctx);
+    // The ROW alone — not the chat. A chat deleted during a call takes its rows
+    // with it except this one, and the unmount that follows must still be able to
+    // close the gateway-owned call; `requireOwnedChat` would throw "not found"
+    // first and leave the call held until its TTL (codex P2, pass 3). The row's own
+    // `userId` + `chatId` are the ownership that was checked when it was written.
+    const live = await ctx.db.get(sessionId);
+    if (
+      live === null ||
+      live.userId !== userId ||
+      live.chatId !== chatId ||
+      live.expiresAt <= Date.now()
+    ) {
+      return { ok: false, code: "talk_session_stale" };
+    }
+    const instance = await ctx.db
+      .query("instances")
+      .withIndex("by_name", (q) => q.eq("name", live.instanceName))
+      .first();
+    const someInstances = await ctx.db.query("instances").take(2);
+    const bridgeUrl = resolveBridgeUrlForDispatch(instance, {
+      instanceName: live.instanceName,
+      served: process.env.BRIDGE_INSTANCE_NAME ?? null,
+      isSole: someInstances.length <= 1,
+    });
+    return {
+      ok: true,
+      instanceName: live.instanceName,
+      agentId: live.agentId,
+      canonical: live.canonical,
+      openclawChatId: live.conversation === chatId ? null : live.conversation,
+      bridgeUrl: pinnedBridgeUrl(live, bridgeUrl),
+      voiceSessionId: live.voiceSessionId ?? null,
+      relayed: live.relayed === true,
+    };
+  },
+});
+
+/**
+ * PUBLIC entry, GPT Live lane: the user hung up (or left the page) — tell the
+ * gateway to close the logical call it owns, on the socket that owns it. The row
+ * carries everything the bridge needs; the browser sends only the handle. A session
+ * that was never relayed owes the gateway nothing (its call is the browser's own),
+ * and says so instead of posting.
+ */
+export const hangupTalkSession = action({
+  args: { chatId: v.id("chats"), sessionId: v.id("talkSessions") },
+  handler: async (
+    ctx,
+    { chatId, sessionId },
+  ): Promise<{ ok: true; closed: string } | { ok: false; code: string }> => {
+    const prep: HangupPrepare = await ctx.runQuery(internal.talk.prepareTalkHangup, {
+      chatId,
+      sessionId,
+    });
+    if (!prep.ok) return prep;
+    if (!prep.relayed || prep.voiceSessionId === null) {
+      return { ok: true, closed: "none" };
+    }
+    const sharedSecret = process.env.BRIDGE_SHARED_SECRET;
+    const bridgeUrl = prep.bridgeUrl ?? process.env.BRIDGE_URL ?? null;
+    if (!bridgeUrl || !sharedSecret) return { ok: false, code: "not_configured" };
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), TALK_HANGUP_TIMEOUT_MS);
+    try {
+      const response = await fetch(`${bridgeUrl.replace(/\/$/, "")}/talk-hangup`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: sharedSecret,
+        },
+        body: JSON.stringify({
+          instanceName: prep.instanceName,
+          chatId,
+          ...(prep.openclawChatId !== null ? { openclawChatId: prep.openclawChatId } : {}),
+          canonical: prep.canonical,
+          agentId: prep.agentId,
+          voiceSessionId: prep.voiceSessionId,
+        }),
+        signal: controller.signal,
+      });
+      let data: unknown = null;
+      try {
+        data = await response.json();
+      } catch {
+        data = null;
+      }
+      if (!response.ok) {
+        const code =
+          (data as { error?: { code?: string } } | null)?.error?.code ??
+          `bridge_${response.status}`;
+        return { ok: false, code };
+      }
+      const d = data as { ok?: boolean; closed?: unknown } | null;
+      if (d?.ok !== true) return { ok: false, code: "talk_malformed" };
+      return { ok: true, closed: typeof d.closed === "string" ? d.closed : "closed" };
+    } catch {
+      return { ok: false, code: "bridge_unreachable" };
+    } finally {
+      clearTimeout(timer);
+    }
   },
 });
 
@@ -663,6 +922,9 @@ export const mintTalkSession = action({
             ...(prep.openclawChatId !== null
               ? { openclawChatId: prep.openclawChatId }
               : {}),
+            ...(prep.gatewayUser !== undefined
+              ? { gatewayUser: prep.gatewayUser }
+              : {}),
             ...(typeof voice === "string" && voice !== ""
               ? { voice: voice.slice(0, 60) }
               : {}),
@@ -724,6 +986,12 @@ export const mintTalkSession = action({
           agentId: prep.agentId,
           canonical: prep.canonical,
           conversation: prep.openclawChatId ?? chatId,
+          ...(session.voiceSessionId !== null
+            ? { voiceSessionId: session.voiceSessionId }
+            : {}),
+          relayed: session.offerRelay !== null,
+          // PIN the bridge the mint went to: the handle and the owning socket are there.
+          bridgeUrl,
         });
       } catch {
         // The gateway session is OPEN and we cannot prove what it is. Fail closed —

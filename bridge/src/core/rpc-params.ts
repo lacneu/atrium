@@ -73,6 +73,17 @@ export function talkToolCallParams(
   return { sessionKey, callId, name: "openclaw_agent_consult", args };
 }
 
+/** `talk.client.close` params: end the LOGICAL voice session the gateway owns for
+ *  a GPT Live call, addressed like the create was — by the agent session key — plus
+ *  the `voiceSessionId` the mint returned. Idempotent upstream
+ *  (docs/gateway/protocol/rpc-talk-config-and-agents.md, v2026.9.5). */
+export function talkClientCloseParams(
+  sessionKey: string,
+  voiceSessionId: string,
+): Record<string, unknown> {
+  return { sessionKey, voiceSessionId };
+}
+
 /** `tasks.get` params. Extracted so the OUTBOUND ratchet validates the REAL body
  *  against every vendored schema — these live inside an HTTP handler, and a body built
  *  inline can only be tested by transcribing it, which tests the transcription. */

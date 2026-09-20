@@ -32,6 +32,7 @@
 // refused stays invisible. That is a declared limit, not an oversight.
 
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { compareVersions, parseVersion } from "../src/compat.js";
 import { sleep } from "./helpers/sleep.js";
 import { readFileSync, readdirSync } from "node:fs";
 import { Value } from "typebox/value";
@@ -50,6 +51,7 @@ import { ensureAvailableModels } from "../src/providers/openclaw/models-roster.j
 import {
   chatAbortParams,
   sessionsGetParams,
+  talkClientCloseParams,
   talkClientCreateParams,
   talkToolCallParams,
   taskGetParams,
@@ -288,6 +290,12 @@ function builtBodies(): [string, Record<string, unknown>][] {
         question: "où en est le lot ?",
       }),
     ],
+    // The hangup of a gateway-owned (GPT Live) call: the same key the create used
+    // plus the voiceSessionId the mint returned.
+    [
+      "talk.client.close",
+      talkClientCloseParams("agent:alice:atrium:chat:olivier:c1", "vs-1"),
+    ],
   ];
 }
 
@@ -399,6 +407,25 @@ const NO_PARAMS_SCHEMA = [
   "usage.status",
 ];
 
+/** Methods whose params schema was ADDED upstream at a tag: against an older vendored
+ *  version the body has nothing to validate against, and that absence is expected —
+ *  for THOSE versions only. A global skip would also skip the versions that do carry
+ *  the schema, which is the silence NO_PARAMS_SCHEMA exists to forbid. */
+const SCHEMA_SINCE: Record<string, string> = {
+  // The gateway-owned voice call hangup: `TalkClientCloseParamsSchema` joined
+  // schema/channels.ts in 2026.7.2-beta.5.
+  "talk.client.close": "2026.7.2-beta.5",
+};
+
+function schemaPredatesVersion(method: string, version: string): boolean {
+  const since = SCHEMA_SINCE[method];
+  if (since === undefined) return false;
+  const a = parseVersion(version);
+  const b = parseVersion(since);
+  if (a === null || b === null) return false;
+  return compareVersions(a, b) < 0;
+}
+
 /** Validate a set of captured bodies against one version — ONE rule, shared.
  *
  *  Two loops with two different rigours is how the send path kept a silent
@@ -439,7 +466,9 @@ async function expectBodiesValid(
     `${label}: no params schema in ${version} for these captured bodies — a schema was ` +
       `renamed or dropped, or the method belongs in NO_PARAMS_SCHEMA deliberately`,
   ).toEqual(
-    NO_PARAMS_SCHEMA.filter((m) => bodies.some(([x]) => x === m)).sort(),
+    [...new Set(bodies.map(([m]) => m))]
+      .filter((m) => NO_PARAMS_SCHEMA.includes(m) || schemaPredatesVersion(m, version))
+      .sort(),
   );
   // …and every OTHER captured method must actually have been validated. Naming a few was
   // a sample; this is the set.
@@ -448,7 +477,7 @@ async function expectBodiesValid(
     `${label}: captured but not validated against ${version}`,
   ).toEqual(
     [...new Set(bodies.map(([m]) => m))]
-      .filter((m) => !NO_PARAMS_SCHEMA.includes(m))
+      .filter((m) => !NO_PARAMS_SCHEMA.includes(m) && !schemaPredatesVersion(m, version))
       .sort(),
   );
   expect(
@@ -623,6 +652,7 @@ describe("outbound ratchet — what the bridge SENDS fits the vendored contract"
     "sessions.describe",
     "sessions.get",
     "sessions.patch",
+    "talk.client.close",
     "talk.client.create",
     "talk.client.toolCall",
     "tasks.get",
