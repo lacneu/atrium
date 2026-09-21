@@ -78,7 +78,9 @@ export class CompositeMediaFetcher implements MediaFetcher {
   private delegated = 0;
   /** Generated paths refused BEFORE the round trip for not being a plain
    *  `<media>/<generated dir>/<file>` — a containment refusal, not a transport
-   *  failure, and the only way an operator can tell the two apart. */
+   *  failure. Read by TESTS today, not by any observability surface: the operator's
+   *  actual signal is the one-shot warning below. Said plainly so nobody plans
+   *  against a counter nothing publishes. */
   private refusedShape = 0;
   /** The gateway has no media route at all — an OPERATOR fact, logged once and
    *  deliberately kept out of the per-file reason code. */

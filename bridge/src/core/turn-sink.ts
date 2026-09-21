@@ -25,7 +25,10 @@ import type { NormalizedEvent } from "./events.js";
 import type { ConvexWriter, FinalizeStatus, ToolPart } from "../convex-writer.js";
 import { announcedChildKey } from "../providers/openclaw/run-families.js";
 import { cronPartFromTool } from "./cron-part.js";
-import { redactPrivateToolArgs } from "./private-tool-args.js";
+import {
+  redactPrivateToolArgs,
+  yieldHandedOff,
+} from "./private-tool-args.js";
 import { planPartFromTool } from "./plan-part.js";
 import {
   asyncTaskStartFromTool,
@@ -1217,9 +1220,17 @@ export class TurnSink {
             // An explicit hand-off to a child: the parent deliberately produces
             // no reply of its own (the child announces later). Exempts the
             // empty-response guard even when the child ran async after the yield.
+            // …AND the yield actually handed off. The phase is a PROXY for that and
+            // a wrong one: a gateway that refuses a yield answers through
+            // `jsonResult`, which sets no `isError`, so the refusal arrives as a
+            // SUCCESSFUL call in phase "completed" carrying `{status:"error"}`.
+            // Taken as a hand-off it exempted the empty-response guard AND promoted
+            // the acknowledgment into the reply — a turn that delegated nothing
+            // settling as a calm "I'm on it", with no error and no anomaly. Third
+            // reader of this one fact; see core/private-tool-args.ts.
             if (
               asString(event.name) === "sessions_yield" &&
-              asString(event.phase) === "completed"
+              yieldHandedOff(asString(event.phase), event.output)
             ) {
               this.yieldCalledThisTurn = true;
               // …and the sentence the parent wrote FOR THE USER while handing
@@ -1281,13 +1292,30 @@ export class TurnSink {
             // PRIVATE ARGUMENTS NEVER REACH THE DATABASE. `sessions_yield.message`
             // is the parent's note to its own resumed turn ("not sent to the
             // user", upstream's schema) and the chat renders tool input, its
-            // header preview AND its output. Stripped here, at the only layer
-            // that writes it, so no later reader can put it back on screen.
+            // header preview AND its output. Stripped before the write.
+            //
+            // This is ONE of the two writers, not the only one: a CHILD's tool
+            // arguments are persisted by the sub-agent observer on its own path
+            // (providers/openclaw/sub-agent-observer.ts), and it applies the same
+            // rule. An earlier comment here claimed to be the only layer and was
+            // wrong, which left the child's yield note on screen.
             ...(event.input !== undefined
-              ? { input: redactPrivateToolArgs(asString(event.name) ?? "", event.input) }
+              ? {
+                  input: redactPrivateToolArgs(
+                    asString(event.name) ?? "",
+                    event.input,
+                    "input",
+                  ),
+                }
               : {}),
             ...(event.output !== undefined
-              ? { output: redactPrivateToolArgs(asString(event.name) ?? "", event.output) }
+              ? {
+                  output: redactPrivateToolArgs(
+                    asString(event.name) ?? "",
+                    event.output,
+                    "output",
+                  ),
+                }
               : {}),
             // The gateway's risk verdict on this tool's output, when it sent one. Rides
             // the SAME part as the call it judges (upsert-keyed by toolCallId), so the

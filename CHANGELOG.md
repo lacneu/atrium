@@ -1,5 +1,77 @@
 # Changelog
 
+## [0.84.19] — What a bubble says about its own delegation
+
+Corrective release, from one production report and the adversarial review of the
+release before it. No breaking changes, nothing to reconfigure.
+
+**A healthy delegation is no longer reported as a failed one.** 0.84.18 tightened
+the rule that exempts a hand-off from the "this delivery brought nothing" verdict.
+It tightened it too far: a delivery turn may legitimately delegate again and hand
+off, and those turns were being marked as errors — which also blocked the merge
+that was about to bring the real answer, so it landed in a second bubble under a
+red card. The exemption now follows each card's own provenance, which the database
+records, instead of guessing from the kind of run.
+
+**A hand-off's private note stays private — everywhere it could be read.** The note
+an agent writes to its own resumed turn is not meant for you. 0.84.18 stopped
+storing it on one of the two paths that store it, which left it visible whenever a
+sub-agent handed work back to its parent. Both paths are covered now, on every
+gateway generation and whichever shape the note arrives in.
+
+More importantly, the notes ALREADY recorded are no longer readable. The earlier
+repair protected new turns only, so reopening an older conversation still showed
+them — and they also travelled out through downloadable archives and through the
+snapshot frozen into a problem report. All four of those readers redact now, so
+history is covered without waiting for a migration. The stored values themselves are
+still there: clearing them is a separate job, and this makes them unreachable in the
+meantime.
+
+**…without deleting text that was meant for you.** The same guard was removing an
+explanation the gateway sends on purpose (why a hand-off was deferred), and blanking
+any waiting reply that happened to quote the word "message". Both survive.
+
+**A refused hand-off is no longer mistaken for a successful one.** When the gateway
+refuses to hand a turn off, it answers as though the call had succeeded and puts the
+refusal inside the reply. Three separate decisions read only the outer signal and
+took the refusal for a hand-off: a delivery that brought nothing stayed silent
+instead of being named, and a turn that delegated nothing settled with a calm "I'm
+on it". All three now read what the gateway actually said.
+
+**A delegation whose sub-agent has not been seen yet says so — for a moment, not
+forever.** A turn that delegated and settled without text used to state that the
+agent had returned nothing. It now reports that it is waiting, and only while that
+can still be true: past a short delay, or when the hand-off itself was refused by
+the gateway, the plain verdict returns. A turn that genuinely produced nothing is
+named exactly as before.
+
+**Sub-agents are recognised on current gateways again.** The chat matched a spawned
+child using an array name the gateway renamed at OpenClaw 2026.6.10; only the copy
+inside the bridge had been updated. The chat now reads both, so the correlation it
+documents actually works.
+
+**An archived conversation's card is clean for older turns too.** The suppression of
+the gateway's raw sentence — which tells you to restore the conversation yourself,
+something Atrium does for you, and spells out an internal session key — applied only
+to turns recorded after 0.84.18. It is now also recognised from the sentence itself,
+so conversations that failed before the upgrade read the same way.
+
+**A delegated child is recognised on the turns that delegate the most work.** The
+gateway reports a spawn twice — as a structured record and as a copy of it inside a
+text blob — and Atrium read the copy, which is the one that changes shape between
+versions. It reads the record now. And because an oversized result is trimmed from
+the chat's own read, that record used to be trimmed away with it: on precisely the
+turns carrying a long brief, the delegation became invisible and the bubble fell
+back to guessing. The record now survives the trim; what you see on the card is
+unchanged.
+
+**Smaller repairs.** A refused oversized media download releases its connection
+instead of parking it. A scheduled-job card no longer carries a state for a case the
+gateway never produces.
+
+Validated against OpenClaw 2026.9.5 with a full live-bench run: 14 of 14 scenarios
+clean, corpus re-promoted.
+
 ## [0.84.18] — What the bubble says is what actually happened
 
 Corrective release, entirely from an audit of the three releases before it. No

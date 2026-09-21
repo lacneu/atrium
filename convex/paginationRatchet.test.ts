@@ -129,7 +129,7 @@ const KNOWN_OFFENDERS: ReadonlyArray<string> = [
   // Same file,
   // same call: the ratchet counts offenders, and this record is what keeps a line shift
   // from reading as one.
-  "feedback.ts:939",
+  "feedback.ts:983",
 ];
 
 describe("Convex's one-paginated-query rule", () => {

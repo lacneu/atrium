@@ -241,6 +241,8 @@ export const HEADLINE_REPLACES_DETAIL: ReadonlySet<string> = new Set([
   // The sentence stays on the message row, the exports and the feedback reports
   // for the operator — that is where it is useful.
   "session_archived",
+  // Same sentence, same suppression — see ERROR_CODE_LABEL for why the copy differs.
+  "session_archived_historic",
 ]);
 
 export const ERROR_CODE_LABEL: Record<string, () => string> = {
@@ -310,6 +312,13 @@ export const ERROR_CODE_LABEL: Record<string, () => string> = {
   // not theirs. It is shown alongside the retry countdown, so it must be true both
   // before and after the retry.
   session_archived: m.runstatus_error_session_archived,
+  // The SAME cause, recognised from the sentence on a row stored before the class
+  // existed. A separate copy because the difference is load-bearing: the other one
+  // states that a second attempt is under way, and that is only true when the
+  // RETRYABLE class was stored — `retryDecision` keys on the stored `errorKind`
+  // (convex/turnRetry.ts), so a row written as `unclassified_error` never scheduled
+  // one. Reusing the copy would have put a false operational promise on the card.
+  session_archived_historic: m.runstatus_error_session_archived_historic,
   auth_profile_cooldown: m.runstatus_error_auth_profile_cooldown,
   gateway_storage_busy: m.runstatus_error_gateway_storage_busy,
   gateway_storage_unavailable: m.runstatus_error_gateway_storage_unavailable,
@@ -364,6 +373,33 @@ const SESSION_GONE_TEXT_RE = new RegExp(
   "i",
 );
 
+/** THE SAME REFUSAL, READ FROM ITS TEXT.
+ *
+ *  `session_archived` became a stored class only in 0.84.18. Keyed on the class
+ *  alone, both the headline AND the detail suppression stay inactive for every row
+ *  written before that — and for any row written during a rolling deploy, where
+ *  Convex and the front can be ahead of the bridge image. Those rows keep showing
+ *  the gateway's raw sentence, which is exactly what the suppression exists to
+ *  prevent: an instruction to restore the conversation yourself (Atrium does it),
+ *  and the session key, which spells out the reader's canonical id and the chat id.
+ *
+ *  This is the lesson `session_gone` already paid for, in the comment just above:
+ *  "Keyed on the class alone, the headline and the detail suppression both stayed
+ *  inactive for exactly those rows." Two readers, one sentence — the bridge's
+ *  `SESSION_ARCHIVED_RE` (core/failure-classifier.ts) for new rows, this one here
+ *  for rows stored before the class existed. They must stay in step.
+ *
+ *  Quoted spans are blanked first, mirroring the bridge's `withoutOperatorData`: a
+ *  session key is operator data and must never be able to mint the class by itself. */
+const SESSION_ARCHIVED_TEXT_RE =
+  /is archived\.?\s*restore it before starting new work/i;
+
+/** Operator-chosen values live inside double quotes in every upstream sentence of
+ *  this family; blanking them keeps a key or a title from deciding a class. */
+function withoutQuotedSpans(text: string): string {
+  return text.replace(/"[^"]*"/g, '""');
+}
+
 const OVERFLOW_TEXT_RE =
   /context overflow|prompt too large|maximum context length|context[- ]length exceeded|request_too_large|request too large|input (?:token count )?exceeds the maximum number of (?:input )?tokens|input is too long for the model|too many tokens/i;
 
@@ -406,16 +442,27 @@ export function errorDetailView(
   // BRIDGE_UNREACHABLE, kept for diagnostics) falls through to the error
   // STRING code (the localizable reason failDispatch stores), then the
   // overflow phrasing fallback, then the raw errorCode (headline null).
+  // THE ONE STORED CODE THAT YIELDS TO THE TEXT.
+  //
+  // `unclassified_error` does not name a cause — it asserts the ABSENCE of one, in
+  // so many words: "nothing gave its cause, neither the gateway nor the failure
+  // text". When a text rule below does recognise the sentence, that stored code is
+  // simply false, and letting it win keeps the reader staring at a card that says
+  // we know nothing about a failure we can name. Every other stored code states a
+  // fact and still wins outright. Nothing is lost when no rule matches: the final
+  // fallback returns `errorCode` unchanged.
   const code =
-    errorCode && ERROR_CODE_LABEL[errorCode]
+    errorCode && ERROR_CODE_LABEL[errorCode] && errorCode !== "unclassified_error"
       ? errorCode
       : ERROR_STRING_CODES.has(raw0)
         ? raw0
         : SESSION_GONE_TEXT_RE.test(raw0)
           ? "session_gone"
-          : OVERFLOW_TEXT_RE.test(raw0)
-            ? "context_length"
-            : (errorCode ?? null);
+          : SESSION_ARCHIVED_TEXT_RE.test(withoutQuotedSpans(raw0))
+            ? "session_archived_historic"
+            : OVERFLOW_TEXT_RE.test(raw0)
+              ? "context_length"
+              : (errorCode ?? null);
   const headline = code !== null ? (ERROR_CODE_LABEL[code]?.() ?? null) : null;
   // Already masked above; `raw0` is the single reading of the text in this function.
   const detail0 =

@@ -70,6 +70,8 @@ async function seedYieldedEmptyParent(
     await ctx.db.insert("messageParts", {
       messageId: parentId,
       order: 0,
+      // NO `announceRun`: this yield was written by the parent's OWN webchat run,
+      // which is what makes it stale for any later delivery that merges in.
       part: {
         kind: "tool" as const,
         name: "sessions_yield",
@@ -118,6 +120,82 @@ describe("the hand-off exemption is scoped to the run that handed off", () => {
       settled?.status,
       "a delivery that delivered nothing must be an error, not a silent bubble",
     ).toBe("error");
+    expect(settled?.errorCode).toBe("empty_response");
+  });
+
+  test("a yield written BY the announce run is still exempt — the healthy chain must not be reclassified", async () => {
+    // A delivery turn can legitimately delegate again and yield: captured on the
+    // wire in golden/2026.7.1/spawn-parallel-merge.jsonl, where `sessions_yield`
+    // COMPLETES on an `announce:v1:` run. Keying the exemption on the run FAMILY
+    // refused exactly this turn and turned it into a red `empty_response` card —
+    // and a parent left in `error` then fails the merge gate, so the child's real
+    // answer lands in a NEW bubble with the false card stranded above it.
+    const t = convexTest(schema, modules);
+    const { chatId, parentId } = await seedYieldedEmptyParent(t);
+
+    const reopened = await t.mutation(internal.stream.startAssistant, {
+      chatId,
+      runId: ANNOUNCE_RUN,
+    });
+    expect(reopened).toBe(parentId);
+
+    // THIS run's own yield, stamped with its provenance exactly as addPart writes it.
+    await t.run(async (ctx) => {
+      await ctx.db.insert("messageParts", {
+        messageId: parentId,
+        order: 1,
+        part: {
+          kind: "tool" as const,
+          name: "sessions_yield",
+          phase: "completed",
+          output: { details: { status: "yielded" } },
+        },
+        announceRun: ANNOUNCE_RUN,
+      });
+    });
+
+    await t.mutation(internal.stream.finalize, {
+      messageId: parentId,
+      status: "complete",
+      text: "",
+    });
+
+    const settled = await t.run((ctx) => ctx.db.get(parentId));
+    expect(
+      settled?.status,
+      "this delivery handed off again; it did not fail to deliver",
+    ).toBe("complete");
+    expect(settled?.errorCode).toBeUndefined();
+  });
+
+  test("a yield that ERRORED on this run handed nothing to anyone", async () => {
+    const t = convexTest(schema, modules);
+    const { chatId, parentId } = await seedYieldedEmptyParent(t);
+    const reopened = await t.mutation(internal.stream.startAssistant, {
+      chatId,
+      runId: ANNOUNCE_RUN,
+    });
+    expect(reopened).toBe(parentId);
+    await t.run(async (ctx) => {
+      await ctx.db.insert("messageParts", {
+        messageId: parentId,
+        order: 1,
+        part: {
+          kind: "tool" as const,
+          name: "sessions_yield",
+          phase: "error",
+          output: { details: { status: "error" } },
+        },
+        announceRun: ANNOUNCE_RUN,
+      });
+    });
+    await t.mutation(internal.stream.finalize, {
+      messageId: parentId,
+      status: "complete",
+      text: "",
+    });
+    const settled = await t.run((ctx) => ctx.db.get(parentId));
+    expect(settled?.status).toBe("error");
     expect(settled?.errorCode).toBe("empty_response");
   });
 

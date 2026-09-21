@@ -104,6 +104,16 @@ type ClientPart =
       output?: unknown;
       outputOmitted?: boolean;
       outputBytes?: number;
+      /** THE STRUCTURED REMNANT OF AN ELIDED OUTPUT.
+       *
+       *  A tool result carries the same object twice: destructured under `details`,
+       *  and re-serialized inside `content[0].text`. The bulk is the echo — a
+       *  `sessions_spawn` repeats its whole brief there — so an oversized result
+       *  dropped `details` with it, and every structured reader downstream went
+       *  blind on exactly the turns that delegate the most work. `details` alone is
+       *  a few hundred bytes; it survives when it fits, under the same cap. The
+       *  DISPLAY is unchanged: `outputOmitted` still drives the size note. */
+      outputDetails?: unknown;
     }
   // `storageId` is exposed (as an opaque string) ONLY so the Document Viewer can
   // request a PDF rendition of an Office file (fileRenditions.requestRendition).
@@ -211,7 +221,32 @@ function compactProvenancePart(part: StoredProvenancePart): StoredProvenancePart
 // stored part); only this reactive read drops it, flagged with `*Bytes` so the UI
 // renders a "(N KB, not shown here)" line instead of the payload. Cap chosen from
 // the wire: ordinary tool outputs are ≤~6KB, the pathological dumps are 10–15KB.
+import { readableToolValue } from "./lib/privateToolArgs";
+
 const PART_FIELD_CAP = 8192;
+
+/** The `details` of an oversized tool result, when it alone fits under the cap.
+ *  Returns `{}` otherwise, so the spread is a no-op. Never throws: a payload that
+ *  cannot be measured is simply not kept. */
+function elidedDetails(
+  toolName: string,
+  output: unknown,
+): { outputDetails?: unknown } {
+  if (typeof output !== "object" || output === null || Array.isArray(output)) {
+    return {};
+  }
+  const details = (output as { details?: unknown }).details;
+  if (details === undefined) return {};
+  if (fieldBytes(details) > PART_FIELD_CAP) return {};
+  // The remnant is a READ value like any other — it must not become the way the
+  // private note gets out.
+  const clean = readableToolValue(
+    toolName,
+    { details, content: [] },
+    "output",
+  ) as { details?: unknown } | undefined;
+  return { outputDetails: clean?.details ?? details };
+}
 // Real UTF-8 byte size (what crosses the wire), NOT UTF-16 `.length`: a CJK/emoji
 // field is multi-byte, so `.length` undercounts and would let an oversized payload
 // slip past the cap (and mis-report its size).
@@ -310,12 +345,23 @@ async function loadChatView(
                 ...(part.textOffset !== undefined
                   ? { textOffset: part.textOffset }
                   : {}),
+                // REDACTED ON READ, not only on write. The bridge stopped storing
+                // `sessions_yield.message`, which covers new turns and nothing
+                // else: every conversation that ran before the repair still holds
+                // it, and this projection handed it straight to `ToolCard`.
                 ...(inBytes > PART_FIELD_CAP
                   ? { inputOmitted: true, inputBytes: inBytes }
-                  : { input: part.input }),
+                  : { input: readableToolValue(part.name, part.input, "input") }),
                 ...(outBytes > PART_FIELD_CAP
-                  ? { outputOmitted: true, outputBytes: outBytes }
-                  : { output: part.output }),
+                  ? {
+                      outputOmitted: true,
+                      outputBytes: outBytes,
+                      // …but keep the structured copy when it fits on its own.
+                      ...(elidedDetails(part.name, part.output)),
+                    }
+                  : {
+                      output: readableToolValue(part.name, part.output, "output"),
+                    }),
               });
               break;
             }

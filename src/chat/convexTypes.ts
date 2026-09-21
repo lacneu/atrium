@@ -55,6 +55,8 @@ export type ConvexMessagePartView =
       inputBytes?: number;
       output?: unknown;
       outputOmitted?: boolean;
+      /** Structured `details` kept when the bulk of the output was elided. */
+      outputDetails?: unknown;
       outputBytes?: number;
     }
   | {

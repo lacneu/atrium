@@ -43,6 +43,7 @@ import type {
   SubAgentTelemetry,
   SubAgentToolPartRecord,
 } from "../../convex-writer.js";
+import { redactPrivateToolArgs } from "../../core/private-tool-args.js";
 
 /** The Convex upsert the observer emits (see convex/subAgents.ts). Alias of the
  *  writer's record type -- single source of truth for the shape. */
@@ -711,14 +712,30 @@ export class SubAgentObserver {
       name: capToolName(name),
       status: done ? (isError ? "error" : "done") : "running",
     };
-    const argsRaw = stringifyToolArgs(data.args);
+    // THE SECOND WRITER of tool arguments. A child that hands back to its parent
+    // calls `sessions_yield` too, and its `message` is private by upstream's own
+    // schema — persisted here it reached the chat through `argsText`, which
+    // `ToolCard` renders and `toolPreview` can lift into the collapsed header.
+    // Same rule as the main sink; a privacy guard applied on one of two paths is
+    // not a guard.
+    const argsRaw = stringifyToolArgs(
+      redactPrivateToolArgs(capToolName(name), data.args, "input"),
+    );
     if (argsRaw) {
       part.argsText = this.sanitizeDetail(argsRaw, MAX_TOOL_ARGS_CHARS);
     }
     // The result lands on the `result` frame; an `update` (partialResult) frame never
     // reaches here (it doesn't change the summary, so observeChildTool returns before
     // building a toolPart), so only data.result is read.
-    const resultRaw = extractToolResultText(data.result);
+    //
+    // REDACTED LIKE THE ARGUMENTS, for the same reason and on the same tool. A
+    // successful `sessions_yield` echoes the call back, and a gateway older than
+    // 2026.9.5 puts `message` in that echo — captured in production. Cleaning the
+    // arguments three lines above and leaving the result here would have moved the
+    // leak, not closed it: `sanitizeDetail` only strips server paths.
+    const resultRaw = extractToolResultText(
+      redactPrivateToolArgs(capToolName(name), data.result, "output"),
+    );
     if (resultRaw) {
       part.resultText = this.sanitizeDetail(resultRaw, MAX_TOOL_RESULT_CHARS);
     }
@@ -1652,6 +1669,17 @@ function extractToolResultText(value: unknown): string {
  */
 function extractChildSessionKey(result: Record<string, unknown> | null): string | null {
   if (result === null) return null;
+  // `details` FIRST — the structured copy, and the canonical one.
+  //
+  // The gateway sends the same object twice: destructured under `details`, and
+  // re-serialized inside `content[0].text`. Upstream's own normalizer reads only
+  // the first (`accepted-session-spawn.ts`), and so should we: parsing the pretty-
+  // printed echo is the fragile road, and it is the one that has already broken
+  // once — the array key was renamed `contentItems` -> `content` at 2026.6.10 and
+  // this reader had to chase it. Reading `details` is immune to the next rename.
+  // The text scan stays as the fallback, for a gateway that sends no `details`.
+  const fromDetails = readString(result.details, "childSessionKey");
+  if (fromDetails !== null && fromDetails !== "") return fromDetails;
   // The array key CHANGED between gateway versions: `contentItems` (<=2026.6.5) ->
   // `content` (2026.6.10+). Read whichever is present so the spawn RESULT still
   // registers the child (else it falls back to lazy admission and LOSES taskName +

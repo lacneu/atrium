@@ -23,6 +23,7 @@
 // captures the environment (best available diagnostic), nothing more.
 
 import { canReachChat } from "./lib/chatAccess";
+import { readableToolValue } from "./lib/privateToolArgs";
 import { maskCredentialId } from "./lib/chatRenderState";
 import { v } from "convex/values";
 import { envLabel } from "./lib/envLabel";
@@ -111,6 +112,42 @@ export function parseReference(reference: string): string | null {
   return m ? m[1] : null;
 }
 
+/** A stored part as a READER may see it. Tool parts carry arguments the gateway
+ *  declares private; every other kind passes through untouched. Shared by the
+ *  snapshot WRITE and the snapshot READ — the second covers reports frozen before
+ *  this rule existed, which is most of them. */
+/** The frozen `partsJson` as a READER may see it.
+ *
+ *  Applied on READ as well as on write, for the same reason the credential mask
+ *  beside it is: a snapshot frozen before this rule still holds the private note,
+ *  and most of them were. Best-effort — a blob that will not parse is returned
+ *  unchanged rather than dropped, because losing the forensic copy would be its own
+ *  defect. */
+function readablePartsJson(json: string | undefined): string | undefined {
+  if (json === undefined) return json;
+  if (!json.includes('"sessions_yield"')) return json;
+  try {
+    const parsed: unknown = JSON.parse(json);
+    if (!Array.isArray(parsed)) return json;
+    return JSON.stringify(
+      parsed.map((p) =>
+        readablePart(p as Doc<"messageParts">["part"]),
+      ),
+    );
+  } catch {
+    return json;
+  }
+}
+
+function readablePart(part: Doc<"messageParts">["part"]): unknown {
+  if (part.kind !== "tool") return part;
+  return {
+    ...part,
+    input: readableToolValue(part.name, part.input, "input"),
+    output: readableToolValue(part.name, part.output, "output"),
+  };
+}
+
 export const submitFeedback = mutation({
   args: {
     chatId: v.id("chats"),
@@ -164,8 +201,13 @@ export const submitFeedback = mutation({
       .collect();
     partDocs.sort((a, b) => a.order - b.order);
     const partsCount = partDocs.length;
+    // A FROZEN COPY IS STILL A COPY. `sessions_yield.message` is private by
+    // upstream's schema, and a report taken on a historic turn copied it into a
+    // permanent snapshot that `readSnapshot` and /api/v1/feedback-report hand back —
+    // outliving the message it came from, and surviving its deletion. Observed:
+    // a production report carried a parent's private hand-off note verbatim.
     const partsJson = safeJson(
-      partDocs.slice(0, PARTS_MAX).map((p) => p.part),
+      partDocs.slice(0, PARTS_MAX).map((p) => readablePart(p.part)),
     );
 
     // Bounded recent window to locate the message + freeze generating context.
@@ -537,6 +579,7 @@ export const readSnapshot = mutation({
       snapshot: {
         ...fb.snapshot,
         messageError: maskCredentialId(fb.snapshot.messageError),
+        partsJson: readablePartsJson(fb.snapshot.partsJson),
       },
     };
   },
@@ -899,6 +942,7 @@ export const readForApi = internalQuery({
         snapshot: {
           ...fb.snapshot,
           messageError: maskCredentialId(fb.snapshot.messageError),
+          partsJson: readablePartsJson(fb.snapshot.partsJson),
         },
         chatExists: chat !== null,
         messageExists: message !== null,

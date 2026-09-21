@@ -7,6 +7,7 @@
 // depends on state kept between calls.
 
 import { v } from "convex/values";
+import { readableToolText, readableToolValue } from "./lib/privateToolArgs";
 import type { Doc, Id } from "./_generated/dataModel";
 import { action, internalQuery, query } from "./_generated/server";
 import { internal } from "./_generated/api";
@@ -89,7 +90,24 @@ async function exportPart(
   part: Doc<"messageParts">,
 ): Promise<Record<string, unknown>> {
   const pointers: string[] = [];
-  const row = stripRowForExport(part, {
+  // THE SAME REDACTION AS EVERY OTHER READER. An export is a read like any other —
+  // and the one that leaves the product. `sessions_yield.message` is private by
+  // upstream's schema, and a historic part still holds it: without this the note
+  // travelled out in a downloadable archive while the chat itself no longer showed
+  // it. Redacted on the VALUE before the row is stripped, so the export's own
+  // pointer/opaque handling is untouched.
+  const redacted: Doc<"messageParts"> =
+    part.part.kind === "tool"
+      ? {
+          ...part,
+          part: {
+            ...part.part,
+            input: readableToolValue(part.part.name, part.part.input, "input"),
+            output: readableToolValue(part.part.name, part.part.output, "output"),
+          },
+        }
+      : part;
+  const row = stripRowForExport(redacted, {
     collect: (pointer) => pointers.push(pointer),
     opaque: OPAQUE_PART_KEYS,
   });
@@ -490,7 +508,27 @@ export const exportChatSection = query({
       .paginate(page);
     return {
       rows: result.page.map((row) =>
-        stripRowForExport(row, { drop: SUBAGENT_FIELDS_DROPPED }),
+        stripRowForExport(
+          // A child that hands back to its parent calls `sessions_yield` too, and
+          // this section carries its arguments and result AS TEXT. Same rule, same
+          // reason: an export is the read that leaves the product.
+          section === "subAgentToolParts"
+            ? {
+                ...row,
+                argsText: readableToolText(
+                  (row as { name?: string }).name ?? "",
+                  (row as { argsText?: string }).argsText,
+                  "input",
+                ),
+                resultText: readableToolText(
+                  (row as { name?: string }).name ?? "",
+                  (row as { resultText?: string }).resultText,
+                  "output",
+                ),
+              }
+            : row,
+          { drop: SUBAGENT_FIELDS_DROPPED },
+        ),
       ),
       blobs: [],
       cursor: result.isDone ? null : result.continueCursor,

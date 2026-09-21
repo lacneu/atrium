@@ -74,14 +74,20 @@ const agentTool = (data: Record<string, unknown>) => ({
   payload: { runId: RUN, sessionKey: SK, stream: "tool", data },
 });
 
-const yieldTool = (args: Record<string, unknown>) => [
+const yieldTool = (
+  args: Record<string, unknown>,
+  /** The gateway's PAYLOAD. A refusal comes back through `jsonResult` with no
+   *  `isError`, so it is a successful call carrying `{status:"error"}` — the
+   *  default here is the success it used to be assumed to always be. */
+  result: unknown = { details: { status: "yielded" } },
+) => [
   agentTool({ phase: "start", name: "sessions_yield", toolCallId: "y1", args }),
   agentTool({
     phase: "result",
     name: "sessions_yield",
     toolCallId: "y1",
     args,
-    result: { details: { status: "yielded" } },
+    result,
   }),
 ];
 
@@ -173,6 +179,40 @@ describe("a hand-off speaks with the acknowledgment it was given", () => {
       lifecycleEnd(),
     ]);
     expect(w.finals[0]?.text).toBe("");
+  });
+
+  it("a REFUSED yield is not a hand-off — the phase alone lied", async () => {
+    // A gateway that refuses a yield answers through `jsonResult`, which sets no
+    // `isError`: the refusal arrives as a SUCCESSFUL call in phase "completed"
+    // carrying `{status:"error"}`. Read as a hand-off, it exempted the
+    // empty-response guard AND promoted the acknowledgment into the reply — a turn
+    // that delegated nothing settling as a calm "I'm on it", with no error and no
+    // anomaly anywhere.
+    const w = await runTurn([
+      ...yieldTool(
+        { message: PRIVATE, acknowledgment: ACK },
+        {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify({
+                status: "error",
+                error: "No pending child completion is owned by this turn.",
+              }),
+            },
+          ],
+          details: {
+            status: "error",
+            error: "No pending child completion is owned by this turn.",
+          },
+        },
+      ),
+      lifecycleEnd(),
+    ]);
+    expect(
+      w.finals[0]?.text,
+      "nothing was handed off, so nothing may speak for it",
+    ).not.toBe(ACK);
   });
 
   it("a yield with NO acknowledgment stays silent — nothing is invented", async () => {

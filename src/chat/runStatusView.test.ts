@@ -243,6 +243,51 @@ describe("errorDetailView (actionable error classification)", () => {
     expect(v.code).not.toBe("context_length");
   });
 
+  it("a row stored BEFORE the class existed gets the same treatment, from its text", () => {
+    // `session_archived` became a stored class only in 0.84.18. Keyed on the class
+    // alone, every row written before it — and every row written during a rolling
+    // deploy where Convex/front lead the bridge image — kept showing the raw
+    // sentence: the instruction to restore it yourself, and the session key. This is
+    // the lesson `session_gone` already paid for.
+    const gatewayText =
+      'INVALID_REQUEST: Session "agent:olivier:atrium:chat:olivier:mh77m9e7q7ek2xvr636e3bvfr58b9khn" is archived. Restore it before starting new work.';
+    for (const stored of [null, "unclassified_error"]) {
+      const v = errorDetailView(gatewayText, stored);
+      // A DISTINCT class, on purpose. The retry the other copy promises is decided
+      // at finalize from the STORED errorKind (convex/turnRetry.ts), so a row
+      // written before the class existed never scheduled one — telling its reader
+      // that an attempt is under way would be a false operational promise.
+      expect(v.code, `stored=${stored}`).toBe("session_archived_historic");
+      expect(v.headline, `stored=${stored}`).toBeTruthy();
+      expect(v.detail, `stored=${stored}`).toBeNull();
+      const card = `${v.headline ?? ""} ${v.detail ?? ""}`;
+      expect(card).not.toMatch(/Restore it before starting new work/i);
+      expect(card).not.toMatch(/agent:olivier:atrium:chat|mh77m9e7q7ek/);
+    }
+    // …and the copy must not claim a retry that was never scheduled.
+    for (const locale of ["en", "fr"] as const) {
+      const sentence = m.runstatus_error_session_archived_historic({}, { locale });
+      expect(sentence, locale).not.toMatch(
+        /nouvelle tentative|automatiquement|retried|automatically/i,
+      );
+      expect(sentence, locale).not.toMatch(/agent:|chat:/);
+    }
+    // The STORED class keeps its own copy, retry promise included.
+    expect(errorDetailView(gatewayText, "session_archived").code).toBe(
+      "session_archived",
+    );
+  });
+
+  it("a session KEY that reads like the sentence cannot mint the class", () => {
+    // Quoted spans are operator data and are blanked before the test, mirroring the
+    // bridge's `withoutOperatorData`.
+    const v = errorDetailView(
+      'INVALID_REQUEST: Session "agent:a:atrium:chat:u:c is archived. Restore it before starting new work." was deleted while starting work. Retry.',
+      null,
+    );
+    expect(v.code).not.toBe("session_archived");
+  });
+
   it("an ARCHIVED session shows the headline alone — not the gateway's own sentence", () => {
     // Production wording, verbatim (openclaw 2026.9.5,
     // src/config/sessions/lifecycle.ts:124-125). Two things must not reach the

@@ -3380,18 +3380,34 @@ function AssistantEmptyState({ show }: { show: boolean }) {
     (msg) =>
       (msg.metadata?.custom as { messageId?: string } | undefined)?.messageId,
   );
+  const settledAt = useMessage(
+    (msg) =>
+      (msg.metadata?.custom as { settledAt?: number | null } | undefined)
+        ?.settledAt ?? undefined,
+  );
 
   // Re-evaluate when a "composing" grace window elapses: the pure decision is
   // time-dependent there (child done -> announce still expected) and nothing
   // else re-renders this component at the deadline.
   const [, bumpClock] = useState(0);
   const state = assistantEmptyState(
-    { status, hasText, hasMedia },
+    { status, hasText, hasMedia, settledAt },
     toolParts,
-    subAgents ?? [],
+    // NOT `?? []` — undefined means "the query has not answered", and collapsing
+    // that into "no sub-agents" made a settled hand-off read as a turn that
+    // returned nothing.
+    subAgents,
     messageId,
   );
-  const recheckAt = state.kind === "composing" ? state.recheckAt : null;
+  // `waiting` carries one ONLY when it is unbacked (no correlated row): that note
+  // expires back to the terminal verdict, and nothing else would re-render us at
+  // the deadline.
+  const recheckAt =
+    state.kind === "composing"
+      ? state.recheckAt
+      : state.kind === "waiting"
+        ? (state.recheckAt ?? null)
+        : null;
   useEffect(() => {
     if (recheckAt === null) return;
     const t = window.setTimeout(
@@ -3446,7 +3462,13 @@ function AssistantEmptyState({ show }: { show: boolean }) {
     // The running CARD already shows this turn's delegation in the analysis view;
     // only the clean view (which hides running cards) needs the prose so the
     // settled-empty bubble is never blank.
-    if (show) return null;
+    //
+    // …EXCEPT when there is no card to defer to. An UNBACKED waiting (marked by its
+    // expiry stamp) means no sub-agent row correlated, and `MessageSubAgents`
+    // returns null in exactly that case — so deferring left the analysis view with
+    // neither card nor note: a blank bubble, the one thing this component exists to
+    // prevent. The note is rendered in both views there.
+    if (show && state.recheckAt === undefined) return null;
     return (
       <div className="oc-empty-answer oc-empty-answer--waiting" role="status">
         {/* Animated dashed ring: the dots orbit the pill while the delegated
@@ -3571,7 +3593,7 @@ function AssistantMessage() {
       ? assistantEmptyState(
           { status: quoteMetaStatus, hasText: false, hasMedia: quoteHasMedia },
           quoteToolParts,
-          quoteSubAgents ?? [],
+          quoteSubAgents,
           quoteMetaMessageId,
         )
       : null;

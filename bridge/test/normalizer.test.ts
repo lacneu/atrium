@@ -3529,6 +3529,42 @@ describe("G-20: lifecycle `finishing` and terminal metadata", () => {
     expect(tool?.input?.message).toBe("Attendre la livraison.");
   });
 
+  it("the waiting reply is sanitized on the START frame too, not only at the end", () => {
+    // The sink writes a card for `start`, so a raw value reached the database and
+    // the screen there and was only replaced when the result landed. If the turn
+    // died first — or the anti-spinner guard re-wrote the open card — the raw value
+    // was what stayed.
+    const { n, clock } = startTurn();
+    const events = n.feed(
+      {
+        event: "agent",
+        payload: {
+          sessionKey: SESSION_KEY,
+          runId: OWN_RUN,
+          stream: "tool",
+          data: {
+            name: "sessions_yield",
+            phase: "start",
+            toolCallId: "tc-y2",
+            args: {
+              message: "Attendre la livraison.",
+              acknowledgment:
+                "Je te livre le dossier.\nMEDIA:/home/node/.openclaw/media/outbound/rapport.pdf",
+            },
+          },
+        },
+      },
+      clock.tick(),
+    );
+    const tool = events.find(
+      (e) => e.type === "tool.status" && e.name === "sessions_yield",
+    ) as { phase?: string; input?: { acknowledgment?: string } } | undefined;
+    expect(tool?.phase).toBe("start");
+    expect(tool?.input?.acknowledgment).toBeDefined();
+    expect(tool!.input!.acknowledgment).not.toContain("/home/node/.openclaw");
+    expect(tool!.input!.acknowledgment).toContain("Je te livre le dossier.");
+  });
+
   it("`yielded` is the PRIMARY hand-off signal, reported without any sessions_yield tool", () => {
     const { n, clock } = startTurn();
     n.feed(lifecycle({ phase: "end", yielded: true, livenessState: "working" }), clock.tick());

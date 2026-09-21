@@ -16,6 +16,7 @@
 // own chats' sub-agents.
 
 import { v } from "convex/values";
+import { readableToolText } from "./lib/privateToolArgs";
 import {
   action,
   internalMutation,
@@ -1308,7 +1309,16 @@ export const listSubAgentToolParts = query({
       .collect();
     return rows
       .filter((r) => r.chatId === chatId)
-      .sort((a, b) => a._creationTime - b._creationTime);
+      .sort((a, b) => a._creationTime - b._creationTime)
+      // REDACTED ON READ. A child that hands work back to its parent calls
+      // `sessions_yield` too, and its `message` is private by upstream's schema.
+      // The write side stops storing it, which covers nothing already recorded —
+      // and this panel renders `argsText`/`resultText` verbatim.
+      .map((r) => ({
+        ...r,
+        argsText: readableToolText(r.name, r.argsText, "input"),
+        resultText: readableToolText(r.name, r.resultText, "output"),
+      }));
   },
 });
 

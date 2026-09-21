@@ -4,6 +4,7 @@ import {
   assistantEmptyState,
   extractSpawnedChildKeys,
   toolPartsHaveSpawn,
+  UNBACKED_DELEGATION_GRACE_MS,
   type EmptyStateToolPart,
 } from "./assistantEmptyState";
 import type { SubAgentRow } from "./subAgentActivityView";
@@ -26,12 +27,21 @@ function row(overrides: Partial<SubAgentRow> = {}): SubAgentRow {
 }
 
 /** A `sessions_spawn` tool part whose output carries `childKey` exactly as the
- *  gateway emits it (and the bridge stores it): { contentItems: [{ text: json }] }. */
-function spawnPart(childKey: string): EmptyStateToolPart {
+ *  gateway emits it (and the bridge stores it).
+ *
+ *  The array key CHANGED upstream: `contentItems` up to 2026.6.5, `content` from
+ *  2026.6.10 on. This fixture pinned the OLD one alone, which is why nothing here
+ *  ever noticed that the reader had stopped matching production. Both shapes are
+ *  exercised now, and `content` is the default because it is what every supported
+ *  gateway actually sends. */
+function spawnPart(
+  childKey: string,
+  key: "content" | "contentItems" = "content",
+): EmptyStateToolPart {
   return {
     toolName: "sessions_spawn",
     result: {
-      contentItems: [
+      [key]: [
         { text: JSON.stringify({ childSessionKey: childKey, success: false }) },
       ],
     },
@@ -433,7 +443,14 @@ describe("composing grace (announce merge expected)", () => {
 // complaint left open by a user whose delegated document never arrived — the
 // silence became a sentence, which is worse than the silence.
 describe("a hand-off keeps its delegation state even once it speaks", () => {
-  const YIELD: EmptyStateToolPart = { toolName: "sessions_yield" };
+  // A real part always carries its phase (the Convex schema requires it) AND the
+  // gateway's payload: a refusal comes back as a SUCCESSFUL call whose result says
+  // `status:"error"`, so both are what decides a hand-off.
+  const YIELD: EmptyStateToolPart = {
+    toolName: "sessions_yield",
+    phase: "completed",
+    result: { details: { status: "yielded" } },
+  };
   const SPOKE = { status: "complete", hasText: true, hasMedia: false };
 
   it("a RUNNING child is still announced under the waiting reply", () => {
@@ -497,5 +514,274 @@ describe("a hand-off keeps its delegation state even once it speaks", () => {
         [row({ childSessionKey: "K", status: "running", taskName: "vademecum" })],
       ),
     ).toEqual({ kind: "waiting", taskName: "vademecum" });
+  });
+});
+
+
+// THE FIVE-SECOND ACCUSATION (production report, 2026-09-21).
+//
+// A turn delegated its work and settled with no text. For about five seconds the
+// bubble read "the agent performed some actions but did not return a response",
+// then replaced it with the waiting note. Nothing was ever wrong server-side: the
+// message was `complete`, `errorCode: null`, zero tool errors. The whole thing was
+// this decision, run on data it did not have.
+//
+// Root cause: `extractSpawnedChildKeys` read only `result.contentItems`. Upstream
+// renamed that array to `content` at gateway 2026.6.10 — the bridge's own twin was
+// corrected for it and says so (sub-agent-observer.ts:1655-1657) — so on every
+// gateway in production this reader returned NO keys and the documented fallback
+// correlation was dead. Correlation fell back to `parentMessageId` alone, which the
+// bridge stamps a moment AFTER the bubble settles.
+describe("a delegation is never mistaken for a turn that returned nothing", () => {
+  // A real part always carries its phase (the Convex schema requires it) AND the
+  // gateway's payload: a refusal comes back as a SUCCESSFUL call whose result says
+  // `status:"error"`, so both are what decides a hand-off.
+  const YIELD: EmptyStateToolPart = {
+    toolName: "sessions_yield",
+    phase: "completed",
+    result: { details: { status: "yielded" } },
+  };
+  const KEY = "agent:files:subagent:615b0b0e-1a1a-48dc-8e3c-28b53e95b8a4";
+
+  it("correlates a child through the CURRENT gateway shape (`content`)", () => {
+    // The exact shape production stores, verified on 2026.9.5.
+    expect(
+      assistantEmptyState(
+        COMPLETE_EMPTY,
+        [spawnPart(KEY, "content"), YIELD],
+        [row({ childSessionKey: KEY, status: "running", taskName: "r003" })],
+      ),
+    ).toEqual({ kind: "waiting", taskName: "r003" });
+  });
+
+  it("still correlates the OLD shape (`contentItems`) — this adds a key, drops none", () => {
+    expect(
+      assistantEmptyState(
+        COMPLETE_EMPTY,
+        [spawnPart(KEY, "contentItems"), YIELD],
+        [row({ childSessionKey: KEY, status: "running", taskName: "r003" })],
+      ),
+    ).toEqual({ kind: "waiting", taskName: "r003" });
+  });
+
+  it("says NOTHING while the sub-agent list has not answered", () => {
+    // `useQuery` returns undefined until it resolves, and both call sites turned
+    // that into `[]` — "no sub-agents" — which is a verdict on data we do not have.
+    expect(
+      assistantEmptyState(COMPLETE_EMPTY, [spawnPart(KEY), YIELD], undefined),
+    ).toEqual({ kind: "none" });
+  });
+
+  it("a hand-off whose row has not arrived yet WAITS instead of accusing", () => {
+    // Written first as `[YIELD]` alone with no settle stamp — which described a
+    // scenario it did not set up (an adversarial review caught it), and encoded a
+    // rule too loose to keep: a bare `sessions_yield` is not proof that anything
+    // was delegated. The real scenario: the turn spawned AND yielded, a foreign
+    // row exists but correlates to neither this message nor this turn's child key.
+    const foreign = row({
+      childSessionKey: "agent:files:subagent:someone-else",
+      parentMessageId: undefined,
+      status: "running",
+    });
+    const s = assistantEmptyState(
+      { ...COMPLETE_EMPTY, settledAt: 1_000 },
+      [spawnPart("agent:files:subagent:mine"), { toolName: "sessions_yield", phase: "completed" }],
+      [foreign],
+      "msg-1",
+      1_100,
+    );
+    expect(s.kind).toBe("waiting");
+    expect(s.kind === "waiting" && s.recheckAt).toBe(
+      1_000 + UNBACKED_DELEGATION_GRACE_MS,
+    );
+  });
+
+  it("an ordinary turn that produced nothing is STILL named", () => {
+    // The generic verdict is not weakened — only turns that handed off are exempt.
+    expect(
+      assistantEmptyState(
+        COMPLETE_EMPTY,
+        [{ toolName: "exec", result: {} }],
+        [],
+        "msg-1",
+      ),
+    ).toEqual({ kind: "generic" });
+  });
+});
+
+
+// WHAT THE FIRST REPAIR GOT WRONG (adversarial review, 2026-09-21).
+//
+// Making every `sessions_yield` mean "waiting" replaced a false accusation with a
+// false reassurance. Upstream refuses a yield through FIVE paths that all return a
+// SUCCESSFUL tool result carrying `status:"error"` (sessions-yield-tool.ts:52-76),
+// so a turn that delegated nothing was read as a hand-off — and the note it got had
+// no expiry, so it span under a settled bubble forever.
+describe("only a yield that succeeded, on a turn that really delegated", () => {
+  const SPAWN = spawnPart("agent:files:subagent:k1");
+  const OK_YIELD: EmptyStateToolPart = {
+    toolName: "sessions_yield",
+    phase: "completed",
+  };
+  const SETTLED = { ...COMPLETE_EMPTY, settledAt: 1_000 };
+
+  it("a REFUSED yield is not a hand-off — the turn returned nothing and says so", () => {
+    const refused: EmptyStateToolPart = {
+      toolName: "sessions_yield",
+      phase: "error",
+      result: { details: { status: "error", error: "No pending child completion" } },
+    };
+    expect(
+      assistantEmptyState(SETTLED, [refused], [], "m1", 1_100),
+    ).toEqual({ kind: "generic" });
+  });
+
+  it("a yield with NO spawn and NO async task is not a hand-off either", () => {
+    expect(
+      assistantEmptyState(SETTLED, [OK_YIELD], [], "m1", 1_100),
+    ).toEqual({ kind: "generic" });
+  });
+
+  it("a real delegation whose row has not arrived waits — and EXPIRES", () => {
+    const within = assistantEmptyState(
+      SETTLED,
+      [SPAWN, OK_YIELD],
+      [],
+      "m1",
+      1_000 + UNBACKED_DELEGATION_GRACE_MS - 1,
+    );
+    expect(within.kind).toBe("waiting");
+    expect(
+      within.kind === "waiting" && within.recheckAt,
+      "an unbacked note must carry its own deadline",
+    ).toBe(1_000 + UNBACKED_DELEGATION_GRACE_MS);
+
+    // Past it, the terminal verdict stands: a note no event can close is a lie
+    // with no end date.
+    expect(
+      assistantEmptyState(
+        SETTLED,
+        [SPAWN, OK_YIELD],
+        [],
+        "m1",
+        1_000 + UNBACKED_DELEGATION_GRACE_MS + 1,
+      ),
+    ).toEqual({ kind: "generic" });
+  });
+
+  it("a BACKED waiting carries no deadline — the row's own transition ends it", () => {
+    const s = assistantEmptyState(
+      SETTLED,
+      [SPAWN, OK_YIELD],
+      [row({ childSessionKey: "agent:files:subagent:k1", status: "running" })],
+      "m1",
+      1_000,
+    );
+    expect(s.kind).toBe("waiting");
+    expect(s.kind === "waiting" && s.recheckAt).toBeUndefined();
+  });
+
+  it("a correlated row that already SETTLED does not reopen a waiting", () => {
+    // The module's own rule: a task settled silently carries no resultText, and
+    // "the generic state is honest". The grace must not overrule it — it only
+    // covers the case where NOTHING correlated.
+    expect(
+      assistantEmptyState(
+        SETTLED,
+        [SPAWN, OK_YIELD],
+        [row({ childSessionKey: "agent:files:subagent:k1", kind: "task", status: "done" })],
+        "m1",
+        1_100,
+      ),
+    ).toEqual({ kind: "generic" });
+  });
+
+  it("with no settle stamp there is no grace — nothing is invented", () => {
+    expect(
+      assistantEmptyState(COMPLETE_EMPTY, [SPAWN, OK_YIELD], [], "m1", 1_100),
+    ).toEqual({ kind: "generic" });
+  });
+});
+
+
+// THE CANONICAL SOURCE, AND THE ONE THAT SURVIVES ELISION.
+//
+// A spawn result carries the same object twice: destructured under `details`, and
+// re-serialized inside `content[0].text`. Upstream's own normalizer reads only the
+// first; this reader parsed the echo, which is how it spent months not noticing
+// that the array key had been renamed. And when the window read elides an oversized
+// output, the echo is the part that goes — a `sessions_spawn` repeats its whole
+// brief there — so on exactly the turns that delegate the most work, the key
+// vanished with it.
+describe("a spawned child is recognised from the structured copy", () => {
+  const KEY = "agent:files:subagent:615b0b0e";
+
+  it("reads `details` even when the text echo says something else", () => {
+    // If the two ever disagree, the destructured copy is the one upstream trusts.
+    expect(
+      extractSpawnedChildKeys([
+        {
+          toolName: "sessions_spawn",
+          result: {
+            details: { status: "accepted", childSessionKey: KEY },
+            content: [{ type: "text", text: '{"childSessionKey":"agent:files:subagent:stale"}' }],
+          },
+        },
+      ]),
+    ).toEqual([KEY]);
+  });
+
+  it("falls back to the text echo for a gateway that sends no `details`", () => {
+    expect(
+      extractSpawnedChildKeys([
+        {
+          toolName: "sessions_spawn",
+          result: { content: [{ text: JSON.stringify({ childSessionKey: KEY }) }] },
+        },
+      ]),
+    ).toEqual([KEY]);
+  });
+
+  it("an ELIDED output still yields its key, from the remnant", () => {
+    // The window read drops an oversized `output` entirely — it is ABSENT, not "a
+    // string note" as an earlier comment claimed — and keeps `details` beside the
+    // size note. This is the shape a big delegated brief produces.
+    expect(
+      extractSpawnedChildKeys([
+        {
+          toolName: "sessions_spawn",
+          result: "output elided (11.2 kB)",
+          resultDetails: { status: "accepted", childSessionKey: KEY },
+        },
+      ]),
+    ).toEqual([KEY]);
+  });
+
+  it("an elided output with NO remnant yields nothing, and never throws", () => {
+    expect(
+      extractSpawnedChildKeys([
+        { toolName: "sessions_spawn", result: "output elided (11.2 kB)" },
+      ]),
+    ).toEqual([]);
+  });
+
+  it("the correlation actually WORKS on an elided spawn — the point of all this", () => {
+    const s = assistantEmptyState(
+      { ...COMPLETE_EMPTY, settledAt: 1_000 },
+      [
+        {
+          toolName: "sessions_spawn",
+          result: "output elided (11.2 kB)",
+          resultDetails: { childSessionKey: KEY },
+        },
+        { toolName: "sessions_yield", phase: "completed" },
+      ],
+      [row({ childSessionKey: KEY, status: "running", taskName: "r003" })],
+      undefined,
+      1_100,
+    );
+    // Correlated by KEY alone (no parentMessageId passed): a BACKED waiting, with
+    // the task name and no expiry — not the bounded guess.
+    expect(s).toEqual({ kind: "waiting", taskName: "r003" });
   });
 });

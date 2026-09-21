@@ -751,6 +751,110 @@ describe("SubAgentObserver — child TOOL capture (Inc 4: name + status only, SO
     },
   });
 
+  it("a CHILD's private yield note never reaches argsText — the second writer", () => {
+    // `sessions_yield.message` is private by upstream's own schema ("not sent to
+    // the user"). The main sink was taught to strip it and its comment claimed to
+    // be "the only layer that writes it" — it is not. A child that hands back to
+    // its parent calls the same tool, and THIS path persists its arguments into
+    // `argsText`, which `ToolCard` renders and `toolPreview` can lift into the
+    // collapsed header. A privacy guard applied on one of two paths is not a guard.
+    const PRIVATE = "Attendre la livraison puis vérifier les fichiers.";
+    const ACK = "Je te livre ça dès que c'est prêt.";
+    const obs = new SubAgentObserver(PARENT, "chat1");
+    const ups = obs.observe(
+      {
+        event: "agent",
+        payload: {
+          stream: "tool",
+          sessionKey: CHILD,
+          spawnedBy: PARENT,
+          data: {
+            phase: "start",
+            name: "sessions_yield",
+            toolCallId: "call_y",
+            args: { message: PRIVATE, acknowledgment: ACK },
+          },
+        },
+      },
+      100,
+    );
+    const args = ups.at(-1)?.toolPart?.argsText ?? "";
+    expect(args, "the private note must not be persisted").not.toContain(PRIVATE);
+    // …and the waiting reply, which IS meant for the reader, survives.
+    expect(args).toContain(ACK);
+  });
+
+  it("…and never through its RESULT either — the same leak, three lines down", () => {
+    // A successful yield echoes the call back, and a gateway older than 2026.9.5
+    // puts `message` in that echo. Cleaning the arguments and leaving the result
+    // would have moved the leak, not closed it: `sanitizeDetail` only strips paths.
+    const PRIVATE = "Reprendre la vérification des fichiers avant de répondre.";
+    const ACK = "Je m'en occupe.";
+    const obs = new SubAgentObserver(PARENT, "chat1");
+    const ups = obs.observe(
+      {
+        event: "agent",
+        payload: {
+          stream: "tool",
+          sessionKey: CHILD,
+          spawnedBy: PARENT,
+          data: {
+            phase: "result",
+            name: "sessions_yield",
+            toolCallId: "call_y2",
+            result: {
+              content: [
+                {
+                  type: "text",
+                  text: JSON.stringify({
+                    status: "yielded",
+                    message: PRIVATE,
+                    acknowledgment: ACK,
+                  }),
+                },
+              ],
+              details: { status: "yielded", message: PRIVATE, acknowledgment: ACK },
+            },
+          },
+        },
+      },
+      100,
+    );
+    const shown = JSON.stringify(ups.at(-1)?.toolPart ?? {});
+    expect(shown, "the private note must not be persisted").not.toContain(PRIVATE);
+    expect(shown).toContain(ACK);
+  });
+
+  it("registers the child from `details`, the canonical copy", () => {
+    // The gateway sends the same object twice — destructured under `details`, and
+    // re-serialized inside `content[0].text`. Upstream's own normalizer reads only
+    // the first (accepted-session-spawn.ts); parsing the echo is the fragile road,
+    // and it is the one whose array key was renamed at 2026.6.10.
+    const obs = new SubAgentObserver(PARENT, "chat1");
+    const ups = obs.observe(
+      {
+        event: "agent",
+        payload: {
+          stream: "tool",
+          sessionKey: PARENT,
+          data: {
+            phase: "result",
+            name: "sessions_spawn",
+            toolCallId: "call_s",
+            result: {
+              details: { status: "accepted", childSessionKey: CHILD },
+              content: [
+                { type: "text", text: JSON.stringify({ childSessionKey: CHILD }) },
+              ],
+            },
+          },
+        },
+      },
+      100,
+    );
+    expect(ups.some((u) => u.childSessionKey === CHILD)).toBe(true);
+  });
+
   it("records a tool NAME + running status on its start frame", () => {
     const obs = new SubAgentObserver(PARENT, "chat1");
     const ups = obs.observe(toolFrame("start", "exec", "call_1"), 100);

@@ -25,10 +25,10 @@ import { MESSAGE_WINDOW } from "./messages";
 import {
   deliveryChildKey,
   isDeliveryRun,
-  isRequesterSettleRun,
   taskDeliveryIdentity,
   taskDeliveryOutcome,
 } from "./lib/deliveryRuns";
+import { yieldHandedOff } from "./lib/toolOutcome";
 import { Doc, Id } from "./_generated/dataModel";
 import { messagePart } from "./schema";
 import { writeTraceEvent } from "./observability";
@@ -539,32 +539,47 @@ function handedOffToChild(
   runId: string | null | undefined,
   parts: Doc<"messageParts">[],
 ): boolean {
-  // SCOPED TO THE RUN BEING FINALIZED, because `messageParts` carry no runId and
-  // a bubble outlives the run that wrote them.
+  // SCOPED BY THE PART'S OWN PROVENANCE, not by the run's family.
   //
-  // The parts alone were the whole test, and that made the exemption leak onto a
-  // shape production produces constantly. An announce merge REOPENS the parent's
-  // bubble and rotates its runId (`runId: announceRunId` above) WITHOUT deleting
-  // its parts, so the `sessions_yield` the parent wrote in an earlier run stays
-  // attached. A later `announce:v1:<child>:<run>` merge that brought neither text
-  // nor file then matched on that stale part and was exempted — a silent empty
-  // bubble with no card, no cause and nothing for the anomaly plane, which is the
-  // exact defect the verdict exists to end (and the one a user is still waiting
-  // on: a delegated deliverable that never arrived and never said so).
+  // A bubble outlives the run that wrote its parts: an announce merge REOPENS the
+  // parent and rotates its runId (`runId: announceRunId` above) WITHOUT deleting
+  // them. So a `sessions_yield` the parent wrote in an earlier run stays attached,
+  // and a later delivery that brought neither text nor file matched on that stale
+  // part and was exempted — a silent empty bubble with no cause and nothing
+  // counted, which is the defect this verdict exists to end.
   //
-  // The legitimate case is one run, and upstream names it: the gateway wakes the
-  // REQUESTER session after a delivery with `announce:requester-settle:…`
-  // (subagent-announce.requester-settle-wake.ts:443-447, which appends `:yield-N`
-  // when the requester re-armed). THAT run is "the parent chose to answer nothing
-  // and the child replies in its own run". A child-announce merge is not: there,
-  // an empty result means the child announced and delivered nothing, and the
-  // reader must be told.
-  if (!isRequesterSettleRun(runId)) return false;
+  // The first repair keyed the exemption on the RUN FAMILY (requester-settle only)
+  // on the stated premise that `messageParts` carry no runId. That premise was
+  // wrong: `addPart` stamps `announceRun` on every part it inserts during a
+  // delivery run (see the stamp computed there), precisely so a replay can never
+  // fuse into a prior generation's part. And the family test was too blunt — a
+  // delivery turn can legitimately delegate and yield again (captured on the wire:
+  // golden/2026.7.1/spawn-parallel-merge.jsonl carries a `sessions_yield` that
+  // COMPLETES on an `announce:v1:` run, and on a delivery run an item-stream tool
+  // end writes a part with phase "completed", normalizer.ts). Refusing that turn
+  // its exemption turns a healthy hand-off into a red `empty_response` card, an
+  // anomaly and a KPI point — and, because a parent left in `error` fails the
+  // merge gate above, the child's real answer then lands in a NEW bubble with the
+  // false card stranded over it. Worse than the silence it replaced.
+  //
+  // So: the part must have been written BY the run being finalized. The stamp is
+  // recomputed exactly as `addPart` would have written it.
+  const stamp =
+    runId !== undefined && runId !== null && deliveryChildKey(runId) !== null
+      ? runId
+      : undefined;
   return parts.some(
     (row) =>
       row.part.kind === "tool" &&
       row.part.name === "sessions_yield" &&
-      row.part.phase === "completed",
+      (row.announceRun ?? undefined) === stamp &&
+      // …AND the call actually handed off. The phase alone is a PROXY for that, and
+      // a wrong one: a gateway that refuses a yield answers through `jsonResult`,
+      // which sets no `isError`, so the refusal arrives as a successful call in
+      // phase "completed" carrying `{status:"error"}`. Read the payload
+      // (lib/toolOutcome.ts) — the second time this rule was written from the card
+      // instead of the fact.
+      yieldHandedOff(row.part.phase, row.part.output),
   );
 }
 

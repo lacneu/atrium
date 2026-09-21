@@ -22,6 +22,10 @@ export type ToolActivityPart = {
   argsText?: string;
   /** Tool output, present once the tool completed. */
   result?: unknown;
+  /** The structured `details` of an output the window read ELIDED for size. The
+   *  card still shows the size note (`result` carries it); this is for readers that
+   *  need the FACT, not the display — the spawned child's key above all. */
+  resultDetails?: unknown;
   /** Bridge tool phase: "started" | "running" | "completed" | "error". */
   phase?: string;
 };

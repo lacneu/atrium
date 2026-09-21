@@ -263,6 +263,11 @@ export class GatewayHttpMediaFetcher implements MediaFetcher {
       const lenHeader = dlRes.headers.get("content-length");
       const len = lenHeader ? Number.parseInt(lenHeader, 10) : NaN;
       if (Number.isFinite(len) && len > this.maxBytes) {
+        // The ONE error exit the first sweep missed, and the one certain to have a
+        // body: it is reached AFTER the `!dlRes.ok || !dlRes.body` guard, so the
+        // stream exists and nothing has read it. A gateway serving an oversized
+        // file parked one keep-alive connection per turn.
+        discardBody(dlRes);
         return { ok: false, reason: "too_large" };
       }
       const mimeType =

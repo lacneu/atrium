@@ -2234,7 +2234,16 @@ export class Normalizer {
             name: name ?? null,
             phase: "start",
             toolCallId,
-            input: data.args ?? undefined,
+            // Sanitized on EVERY phase, not just the terminal one. The sink writes
+            // a card for `start` too, so an acknowledgment carrying a `MEDIA:`
+            // directive or an absolute `/home/node/.openclaw/...` path reached the
+            // database and the screen on the start frame, to be replaced only when
+            // the result landed — and if the turn died first, or the anti-spinner
+            // guard re-wrote the open card, the raw value was what stayed.
+            input:
+              name === "sessions_yield"
+                ? (this.sanitizeYieldAcknowledgment(data.args) ?? undefined)
+                : (data.args ?? undefined),
             runId: this.currentRunId,
           });
         }
@@ -2258,7 +2267,13 @@ export class Normalizer {
             name: name ?? null,
             phase: "start", // the card stays in its running state
             toolCallId,
-            input: this.toolArgs.get(toolCallId) ?? data.args ?? undefined,
+            // Same rule on a progress frame — it re-emits the buffered args.
+            input:
+              name === "sessions_yield"
+                ? (this.sanitizeYieldAcknowledgment(
+                    this.toolArgs.get(toolCallId) ?? data.args,
+                  ) ?? undefined)
+                : (this.toolArgs.get(toolCallId) ?? data.args ?? undefined),
             runId: this.currentRunId,
           });
         }

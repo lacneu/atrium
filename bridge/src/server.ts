@@ -5369,8 +5369,18 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
           // was built to close: a concurrent acquire for another agent landing in
           // it saw no hold, re-keyed, and closed the socket the gateway was about
           // to bind the call to. The reservation is released on every exit that
-          // produces no call (the `finally` below), so holding it across the
-          // restore costs nothing and closes the race for the whole mint.
+          // produces no call (the `finally` below), including one where the restore
+          // itself throws.
+          //
+          // The cost is REAL and worth stating, because the next reader will weigh
+          // it: the reservation is what makes a re-key of this chat's socket refuse
+          // (TalkCallActiveError). It used to span the mint RPC alone, ~15 s. It now
+          // also spans the restore — up to two describe+patch round trips at 10 s
+          // each — so worst case ~55 s during which a `/send` that switches agent on
+          // this conversation is refused, even if no call is ever minted. Still the
+          // right trade: the alternative is cutting the socket the gateway is about
+          // to bind. TALK_PENDING_HOLD_MS (120 s) bounds it, so the hold cannot
+          // expire mid-restore and reopen the race.
           const talkRestored = await ensureSessionRestored(
             ownerSession.connection,
             talkSessionKey!,

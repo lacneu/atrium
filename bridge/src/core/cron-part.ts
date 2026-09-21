@@ -148,9 +148,13 @@ function resolvedOp(
   output: unknown,
 ): CronPart["op"] {
   const result = isRecord(output) ? (unwrapResult(output) ?? {}) : {};
-  if (asked === "removed") {
-    return result.removed === false ? "unchanged" : "removed";
-  }
+  // `remove` is NOT part of this rule. An unsuccessful removal does not come back
+  // as a completed call at all: upstream answers CRON_JOB_NOT_FOUND
+  // (server-methods/cron.ts:1155-1158), so the tool errors, `phase !== "completed"`
+  // and this function is never reached. The first version of this code mapped
+  // `removed:false` to "unchanged" to repair a card that said "Removed" for a
+  // deletion that never happened — a defect that does not exist. Left out rather
+  // than kept as dead code justified by an invented fact.
   if (asked === "created") {
     if (result.created === true) return "created";
     if (result.created === false) {
@@ -207,8 +211,8 @@ export function cronPartFromTool(
   //     (ops-mutations.ts:281/292/363): `created:false, updated:true` when it
   //     rewrote an existing job, and `created:false, updated:false` when the job
   //     already matched. Both showed "Created".
-  //   - `remove` answers `{ok, removed}` and does NOT throw when there was
-  //     nothing to remove. `removed:false` showed "Removed".
+  //   (`remove` needs no rule: upstream refuses an unknown job outright, so the
+  //     call errors and never reaches this verdict.)
   // A scheduler card that says a job was created when none was is worse than no
   // card: it is the kind of false fact a reader only discovers when the job does
   // not fire.

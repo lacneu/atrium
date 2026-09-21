@@ -431,14 +431,21 @@ describe("the cron card states what the scheduler DID", () => {
     expect(part?.jobId).toBe("j-1");
   });
 
-  it("a remove that removed NOTHING does not claim a deletion", () => {
-    const part = cronPartFromTool(
-      "cron",
-      "completed",
-      { action: "remove", jobId: "j-gone" },
-      out({ ok: false, removed: false }),
-    );
-    expect(part?.op).toBe("unchanged");
+  it("an UNSUCCESSFUL remove never reaches this verdict at all", () => {
+    // Written first as "removed:false must say Unchanged, not Removed" — a repair
+    // for a defect that does not exist. Verified upstream: the gateway answers
+    // CRON_JOB_NOT_FOUND when nothing was removed (server-methods/cron.ts:1155-1158),
+    // so the TOOL errors and the phase is never "completed". The card that said
+    // "Removed" for a deletion that never happened was never produced.
+    expect(
+      cronPartFromTool(
+        "cron",
+        "error",
+        { action: "remove", jobId: "j-gone" },
+        out({ ok: false, removed: false }),
+      ),
+      "an errored call changes nothing worth surfacing",
+    ).toBeNull();
   });
 
   it("a real removal still says Removed", () => {

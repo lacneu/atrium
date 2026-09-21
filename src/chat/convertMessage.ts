@@ -81,6 +81,12 @@ function toolPartToActivity(
     // Oversized output/input are elided from the window read; show the size note in
     // place of the payload (the full value stays in the DB, not on the hot path).
     result: part.outputOmitted ? omittedNote(part.outputBytes) : part.output,
+    // Carried BESIDE the display value, never in place of it: the card keeps
+    // showing "output elided (N bytes)", and a reader that needs the structured
+    // fact — which child was spawned — stops going blind on the big payloads.
+    ...(part.outputDetails !== undefined
+      ? { resultDetails: part.outputDetails }
+      : {}),
     // `argsText` keeps the JSON form available so a tool card can show inputs
     // while the tool is still running.
     argsText: part.inputOmitted
@@ -288,6 +294,10 @@ export function convertConvexMessage(
         // The message's true moment (fork copies carry their SOURCE time in
         // orderTime) — shown in the reply's contextual menu header.
         sentAt: message.orderTime ?? message._creationTime,
+        // WHEN THIS BUBBLE SETTLED — the stable terminal stamp, falling back to the
+        // last write. Bounds the empty-state's unbacked "waiting" note: a delegation
+        // whose sub-agent row never arrives must stop claiming to be in flight.
+        settledAt: message.finalizedAt ?? message.updatedAt ?? null,
         // How long the reply took: dispatch creates the assistant placeholder,
         // the finalize is its last write — so updatedAt − _creationTime IS the
         // generation window. Only meaningful on a SETTLED assistant turn and
