@@ -1,5 +1,30 @@
 # Changelog
 
+## [0.84.20] — A turn the gateway is still working on
+
+Corrective release, from one production report. No breaking changes, nothing to
+reconfigure.
+
+**A turn that was still running no longer reads as finished.** When the gateway
+says it is about to close a turn, Atrium gives it a minute to actually do so, and
+closes the turn itself if nothing comes. That minute was never cancelled when the
+gateway went back to work instead — and a single long command produces no traffic
+while it runs, which is indistinguishable from silence. So a turn was marked
+finished, successfully and with no answer, while the agent worked for another
+seventeen minutes and the gateway's own console showed it plainly still going.
+Any new work now cancels that countdown, exactly as a context compaction already
+did.
+
+**A tool that fails during a delegated delivery now says why.** On that path the
+gateway sends one compact update per tool rather than a full result, and Atrium
+kept only the name and whether it failed. The reason was in the update all along
+and was discarded — so a refused step showed as a bare red line, on the one path
+where nothing else could explain it. The reason is carried through now, in the
+same shape an ordinary turn produces.
+
+Validated against OpenClaw 2026.9.5 with a full live-bench run: 14 of 14 scenarios
+clean, corpus re-promoted.
+
 ## [0.84.19] — What a bubble says about its own delegation
 
 Corrective release, from one production report and the adversarial review of the

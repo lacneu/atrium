@@ -3432,6 +3432,159 @@ describe("G-20: lifecycle `finishing` and terminal metadata", () => {
     expect(wait!).toBeLessThan(BASE_RECV_TIMEOUT);
   });
 
+  it("a failed tool on a DELIVERY run carries the gateway's reason, not just `error`", () => {
+    // The item stream is the only telemetry a tool gets on a delivery run — there
+    // is no `tool` frame with its result — and this branch kept the name and the
+    // phase and nothing else. Production, 2026-09-21: `sessions_yield` was refused
+    // twice, the agent carried on working, and neither the reader nor the diagnosis
+    // could see why. The sentence was on the wire: captured verbatim in
+    // golden/2026.9.1/spawn-parallel-merge.jsonl.
+    const REASON =
+      "No pending child completion is owned by this turn. If the assigned work is complete, return its result normally.";
+    const DELIVERY_RUN =
+      "announce:v1:agent:files:subagent:615b0b0e:0430a471-58d3-46ba-9e6f-6920d380a4da";
+    const n = newNormalizer();
+    const clock = new Clock();
+    n.beginTurn(clock.now);
+    n.noteRunStarted(DELIVERY_RUN, clock.now);
+    const events = n.feed(
+      {
+        event: "agent",
+        payload: {
+          sessionKey: SESSION_KEY,
+          runId: DELIVERY_RUN,
+          stream: "item",
+          data: {
+            kind: "tool",
+            name: "sessions_yield",
+            phase: "end",
+            status: "failed",
+            toolCallId: "tc-refused",
+            error: REASON,
+          },
+        },
+      },
+      clock.tick(),
+    );
+    const tool = events.find(
+      (e) => e.type === "tool.status" && e.name === "sessions_yield",
+    ) as { phase?: string; output?: unknown } | undefined;
+    expect(tool?.phase).toBe("error");
+    expect(
+      JSON.stringify(tool?.output ?? null),
+      "the reason must reach the card",
+    ).toContain("No pending child completion");
+    // Shaped like an ordinary run's payload, so the structured-status readers work
+    // on this lane too instead of falling back on the phase.
+    expect(
+      (tool?.output as { details?: { status?: string } } | undefined)?.details?.status,
+    ).toBe("error");
+  });
+
+  it("a tool START after `finishing` cancels the wait — the gateway went back to work", () => {
+    // Production, 2026-09-21. The agent's `sessions_yield` was REFUSED, so instead of
+    // ending it carried on with forty more `exec`/`sessions_history` calls. A single
+    // `exec` longer than the 60 s grace looks exactly like silence: the grace fired,
+    // and the turn was closed as `final` — a SUCCESS, with no text — while the
+    // gateway worked another seventeen minutes and the Control UI showed the run
+    // plainly still going. The file already states the rule for compaction ("proof
+    // the gateway is not silent"); it was never applied to ordinary work.
+    const { n, clock } = startTurn();
+    n.feed(lifecycle({ phase: "finishing" }), clock.tick());
+    n.feed(
+      {
+        event: "agent",
+        payload: {
+          sessionKey: SESSION_KEY,
+          runId: OWN_RUN,
+          stream: "tool",
+          data: { name: "exec", phase: "start", toolCallId: "tc-resume" },
+        },
+      },
+      clock.tick(),
+    );
+    // Well past the 60 s grace, and the turn is STILL OPEN.
+    const ev = n.tick(clock.now + 61);
+    expect(
+      ev.some((e) => e.type === "message.final"),
+      "a turn the gateway is still working on must not be declared finished",
+    ).toBe(false);
+    expect(n.finalized).toBe(false);
+  });
+
+  it("…and on a DELIVERY run, where the incident actually happened (item lane)", () => {
+    // A delivery run receives NO `tool` frames at all — only `item` ones — and the
+    // item branch reads `phase === "end"` alone, so starts were ignored entirely.
+    // The production turn was an `announce:requester-settle:` run, so the first
+    // version of this repair, placed on the `tool` lane, could never have caught it
+    // — and the test that "proved" it used the ordinary lane.
+    const DELIVERY_RUN =
+      "announce:requester-settle:olivier:agent:olivier:atrium:chat:olivier:c1:1623c22b:yield-1";
+    const n = newNormalizer();
+    const clock = new Clock();
+    n.beginTurn(clock.now);
+    n.noteRunStarted(DELIVERY_RUN, clock.now);
+    n.feed(
+      {
+        event: "agent",
+        payload: {
+          runId: DELIVERY_RUN,
+          sessionKey: SESSION_KEY,
+          stream: "lifecycle",
+          data: { phase: "finishing" },
+        },
+      },
+      clock.tick(),
+    );
+    n.feed(
+      {
+        event: "agent",
+        payload: {
+          runId: DELIVERY_RUN,
+          sessionKey: SESSION_KEY,
+          stream: "item",
+          data: {
+            kind: "tool",
+            name: "exec",
+            phase: "start",
+            status: "running",
+            toolCallId: "tc-resume-item",
+          },
+        },
+      },
+      clock.tick(),
+    );
+    const ev = n.tick(clock.now + 61);
+    expect(
+      ev.some((e) => e.type === "message.final"),
+      "the gateway went back to work on the only lane this run has",
+    ).toBe(false);
+    expect(n.finalized).toBe(false);
+  });
+
+  it("a straggler RESULT does not cancel it — that is the tail G-20 bounds", () => {
+    // The bound exists because a `finishing` followed by silence used to hold the
+    // turn to the 240 s timeout. A result for a tool that began BEFORE the finishing
+    // is that tail, not new work; dropping the bound for it would give the defect
+    // back.
+    const { n, clock } = startTurn();
+    n.feed(lifecycle({ phase: "finishing" }), clock.tick());
+    n.feed(
+      {
+        event: "agent",
+        payload: {
+          sessionKey: SESSION_KEY,
+          runId: OWN_RUN,
+          stream: "tool",
+          data: { name: "exec", phase: "result", toolCallId: "tc-tail", result: {} },
+        },
+      },
+      clock.tick(),
+    );
+    const ev = n.tick(clock.now + 61);
+    expect(ev.some((e) => e.type === "message.final")).toBe(true);
+  });
+
   it("the real `end` cancels that wait (no double terminal)", () => {
     const { n, clock } = startTurn();
     n.feed(lifecycle({ phase: "finishing" }), clock.tick());

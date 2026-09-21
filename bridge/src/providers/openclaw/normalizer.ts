@@ -2010,6 +2010,21 @@ export class Normalizer {
       // not exist on these runs) so the turn's work is user-visible: the
       // deferred announce open then triggers and merges into the anchored
       // bubble instead of the whole tool-only turn being discarded as silent.
+      // A DELIVERY RUN'S ONLY TOOL TELEMETRY IS THIS LANE — starts included.
+      //
+      // The branch below reads `phase === "end"` because that is where the card is
+      // written. But a `start` here is still the gateway beginning new work, and it
+      // is the ONLY such signal a delivery run emits: the production incident that
+      // motivated the finishing-grace repair ran on exactly this lane, and a repair
+      // placed only on the `tool` lane could never have caught it.
+      if (
+        (data.kind === "tool" || data.kind === "command") &&
+        isString(data.name) &&
+        data.name !== "" &&
+        data.phase === "start"
+      ) {
+        this.noteGatewayResumedWork();
+      }
       // Ordinary runs keep their exact tool-frame pipeline — never both.
       if (
         (data.kind === "tool" || data.kind === "command") &&
@@ -2030,10 +2045,48 @@ export class Normalizer {
         // emits the plan stream under `!isToolError`, so a failed call has this
         // item as its only telemetry — its error card must surface (codex P2).
         if (!(data.name === "progress_card" && itemStatus === "completed")) {
+          // THE REASON THE GATEWAY SENT, AND WE DROPPED.
+          //
+          // On a delivery run the item stream is the ONLY telemetry a tool gets —
+          // there is no `tool` frame with its result — and this branch kept the
+          // name and the phase and nothing else. So a failed tool showed a card
+          // saying `sessions_yield — error` with no reason anywhere, on the one
+          // lane where no other frame could supply it.
+          //
+          // The frame HAS the reason: `data.error`, captured in
+          // golden/2026.9.1/spawn-parallel-merge.jsonl on a refused
+          // `sessions_yield`. Production, 2026-09-21: an agent's yield was refused
+          // twice, it carried on working, and neither the reader nor the diagnosis
+          // could see why — the sentence was on the wire the whole time.
+          //
+          // Shaped like the payload an ordinary run carries (`jsonResult({status,
+          // error})`, upstream tool-results.ts) so both lanes produce the SAME
+          // thing: the card renders it the same way, and the readers that decide on
+          // a tool's structured status (core/private-tool-args.ts,
+          // convex/lib/toolOutcome.ts) work on a delivery run too instead of
+          // falling back on the phase.
+          //
+          // SANITIZED TO PARITY, NOT BETTER — said plainly because the file's
+          // header claims "never leak server paths to the browser" and that claim is
+          // already imperfect here. `safeSanitizeText` returns text VERBATIM unless
+          // it names `/home/node/.openclaw/` or a deliverable media root
+          // (providers/openclaw/sanitize.ts), so an absolute path under any other
+          // root — a real one seen in production: `Local media path is not under an
+          // allowed directory: /tmp/…` — survives. The ordinary tool lane is wider
+          // still: it persists `data.result` with no sanitization at all. So this
+          // reaches the same exposure the other lane already has, and no more.
+          // Closing it properly means sanitizing every tool payload, which is a lot
+          // of its own and would destroy useful error text if done bluntly.
+          const itemError = isString(data.error)
+            ? this.safeSanitizeText(data.error)
+            : null;
           events.push({
             type: EVENT_TOOL_STATUS,
             name: data.name,
             phase: itemStatus === "completed" ? "completed" : "error",
+            ...(itemError !== null && itemError !== ""
+              ? { output: { details: { status: "error", error: itemError } } }
+              : {}),
             runId: this.currentRunId,
           });
         }
@@ -2219,6 +2272,27 @@ export class Normalizer {
       // The start also anchors the card's textOffset at its true position in
       // the narrative flow (the completed would anchor too late).
       if (phase === "start") {
+        // A TOOL START AFTER "FINISHING" IS PROOF THE GATEWAY WENT BACK TO WORK.
+        //
+        // The same reasoning the compaction branch already states — "a compaction in
+        // flight is proof the gateway is not silent" — and it was never applied to
+        // ordinary work. `lifecycle_finishing` promises a terminal within 60 s and,
+        // on expiry, closes the turn as `final`: a SUCCESS, on the premise written
+        // there that "the answer is already written". That premise fails outright
+        // when the gateway resumes: production, 2026-09-21 — the agent's
+        // `sessions_yield` was REFUSED, so it carried on with forty more `exec` and
+        // `sessions_history` calls. A single `exec` longer than the grace looks
+        // exactly like silence, the 60 s fired, and Atrium settled the bubble as
+        // finished — with no text — while the gateway worked another seventeen
+        // minutes and the Control UI showed the run plainly still going.
+        //
+        // Cleared on the START only, never on a result: a straggler result for a
+        // tool that began BEFORE the finishing is the tail of the turn, and dropping
+        // the bound for it would give back the very defect the 60 s grace exists to
+        // fix (G-20). A start is new work, and unambiguous. The turn then falls back
+        // to the ordinary silence budget, which activity refreshes and whose expiry
+        // opens recovery instead of declaring success.
+        this.noteGatewayResumedWork();
         if (toolCallId) {
           if (
             !this.capReached(
@@ -2479,6 +2553,31 @@ export class Normalizer {
         }
       }
     }
+  }
+
+  /**
+   * The gateway said it was FINISHING and then started new work.
+   *
+   * `lifecycle_finishing` promises a terminal within 60 s and, on expiry, closes the
+   * turn as `final` — a SUCCESS — on the premise stated there that "the answer is
+   * already written". A tool STARTING after that says the gateway went back to work,
+   * so the premise is void and the bound must go: the turn falls back to the ordinary
+   * silence budget, which activity refreshes and whose expiry opens recovery instead
+   * of declaring success.
+   *
+   * BOTH LANES. The first version of this lived in the tool-frame handler alone — and
+   * a DELIVERY run receives no `tool` frames at all, only `item` ones. That is exactly
+   * the lane the production incident ran on (an `announce:requester-settle:` turn), so
+   * the repair missed the case that produced it, and the test that "proved" it used the
+   * ordinary lane.
+   *
+   * The SUSPENDED flag is cleared too: while a compaction holds the grace,
+   * `deadlines` no longer carries it, and leaving the flag set let the compaction's
+   * exit re-arm a 60 s bound for a turn that had demonstrably gone back to work.
+   */
+  private noteGatewayResumedWork(): void {
+    this.clearWait("lifecycle_finishing");
+    this.finishingSuspendedByCompaction = false;
   }
 
   private handleLifecycle(_payload: JsonObject, data: JsonObject, now: number, events: BridgeEvent[]): void {
