@@ -423,3 +423,79 @@ describe("composing grace (announce merge expected)", () => {
     expect(state.kind).toBe("failed");
   });
 });
+
+// A BUBBLE THAT SPEAKS CAN STILL BE WAITING — AND CAN STILL HAVE FAILED.
+//
+// Surfacing the hand-off's acknowledgment gave a yielded turn text for the first
+// time, and text switched this decision off entirely. The bubble then said "je le
+// prépare et je te le livre ici" and said it forever: the child could run, finish
+// or die without the conversation ever mentioning it again. That is precisely the
+// complaint left open by a user whose delegated document never arrived — the
+// silence became a sentence, which is worse than the silence.
+describe("a hand-off keeps its delegation state even once it speaks", () => {
+  const YIELD: EmptyStateToolPart = { toolName: "sessions_yield" };
+  const SPOKE = { status: "complete", hasText: true, hasMedia: false };
+
+  it("a RUNNING child is still announced under the waiting reply", () => {
+    expect(
+      assistantEmptyState(
+        SPOKE,
+        [spawnPart("K"), YIELD],
+        [row({ childSessionKey: "K", status: "running", taskName: "vademecum" })],
+      ),
+    ).toEqual({ kind: "waiting", taskName: "vademecum" });
+  });
+
+  it("a FAILED child is named — the case the user is still waiting on", () => {
+    const s = assistantEmptyState(
+      SPOKE,
+      [spawnPart("K"), YIELD],
+      [
+        row({
+          childSessionKey: "K",
+          status: "error",
+          taskName: "vademecum",
+          errorMessage: "run timed out",
+        }),
+      ],
+    );
+    expect(s.kind).toBe("failed");
+  });
+
+  it("nothing else is: a bubble with an answer is not given another one", () => {
+    // `composing`, `done` and `generic` all exist to SUPPLY the answer a blank
+    // bubble lacks. This bubble has one.
+    const done = row({
+      childSessionKey: "K",
+      status: "done",
+      resultText: "voici le document",
+      updatedAt: 1000,
+    });
+    expect(
+      assistantEmptyState(SPOKE, [spawnPart("K"), YIELD], [done], undefined, 1_000_000),
+    ).toEqual({ kind: "none" });
+    // …and a hand-off with no child at all stays quiet rather than claiming the
+    // agent returned nothing.
+    expect(assistantEmptyState(SPOKE, [YIELD], [])).toEqual({ kind: "none" });
+  });
+
+  it("a turn that did NOT hand off is unchanged — text still means render normally", () => {
+    expect(
+      assistantEmptyState(
+        SPOKE,
+        [spawnPart("K")],
+        [row({ childSessionKey: "K", status: "error" })],
+      ),
+    ).toEqual({ kind: "none" });
+  });
+
+  it("a BLANK hand-off is unchanged too — this adds a case, it removes none", () => {
+    expect(
+      assistantEmptyState(
+        COMPLETE_EMPTY,
+        [spawnPart("K"), YIELD],
+        [row({ childSessionKey: "K", status: "running", taskName: "vademecum" })],
+      ),
+    ).toEqual({ kind: "waiting", taskName: "vademecum" });
+  });
+});

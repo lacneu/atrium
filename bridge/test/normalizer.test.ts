@@ -3485,6 +3485,50 @@ describe("G-20: lifecycle `finishing` and terminal metadata", () => {
     });
   });
 
+  it("the hand-off's waiting reply is sanitized like the prose it becomes", () => {
+    // `sessions_yield.acknowledgment` is the ONE tool argument that is promoted
+    // into the visible bubble (turn-sink, when the turn is otherwise silent).
+    // Every other road to the bubble passes through the text sanitizer; this one
+    // came straight from the call's arguments and did not, so an absolute server
+    // path or a `MEDIA:` directive written into it reached the browser verbatim.
+    const { n, clock } = startTurn();
+    const events = n.feed(
+      {
+        event: "agent",
+        payload: {
+          sessionKey: SESSION_KEY,
+          runId: OWN_RUN,
+          stream: "tool",
+          data: {
+            name: "sessions_yield",
+            phase: "result",
+            toolCallId: "tc-y",
+            args: {
+              message: "Attendre la livraison.",
+              acknowledgment:
+                "Je te livre le dossier ici.\nMEDIA:/home/node/.openclaw/media/outbound/rapport.pdf",
+            },
+            result: { status: "yielded" },
+          },
+        },
+      },
+      clock.tick(),
+    );
+    const tool = events.find(
+      (e) => e.type === "tool.status" && e.name === "sessions_yield",
+    ) as { input?: { acknowledgment?: string; message?: string } } | undefined;
+    expect(tool?.input?.acknowledgment).toBeDefined();
+    expect(
+      tool!.input!.acknowledgment,
+      "no absolute server path may reach the reader",
+    ).not.toContain("/home/node/.openclaw");
+    expect(tool!.input!.acknowledgment).toContain("Je te livre le dossier ici.");
+    // …and the OTHER arguments are untouched: the sink correlates this turn's
+    // artifacts from the call's arguments, and rewriting paths there would
+    // silently change which files a turn is judged to own.
+    expect(tool?.input?.message).toBe("Attendre la livraison.");
+  });
+
   it("`yielded` is the PRIMARY hand-off signal, reported without any sessions_yield tool", () => {
     const { n, clock } = startTurn();
     n.feed(lifecycle({ phase: "end", yielded: true, livenessState: "working" }), clock.tick());

@@ -24,7 +24,10 @@ import {
   readArchiveState,
 } from "../src/core/session-archive.js";
 import { classifyGatewayError, faultDomain } from "../src/core/dispatch-errors.js";
-import { isSessionArchivedText } from "../src/core/failure-classifier.js";
+import {
+  classifyFailureText,
+  isSessionArchivedText,
+} from "../src/core/failure-classifier.js";
 
 const KEY = "agent:olivier:atrium:chat:olivier:mh77m9e7q7ek";
 const PARAMS = { key: KEY, agentId: "olivier" };
@@ -164,6 +167,28 @@ describe("restoring before the work starts", () => {
   });
 });
 
+describe("only a lost RACE is retried", () => {
+  it("a MISSING expectedSessionId is reported at once — it answers the same every time", async () => {
+    // Upstream writes two refusals about this field and only one is a race:
+    //   `Session <key> changed before patch. Retry.`            -> retry
+    //   `expectedSessionId required for session lifecycle patch` -> never
+    // A predicate matching the bare field name took the second for the first and
+    // paid a second describe + patch to be told the same thing. It also matched any
+    // refusal whose operator data merely contained the word.
+    const patch = vi
+      .fn()
+      .mockRejectedValue(
+        new Error(
+          `INVALID_REQUEST: expectedSessionId required for session lifecycle patch: ${KEY}`,
+        ),
+      );
+    const c = conn([describing({ sessionId: "s-1", archived: true })]);
+    const out = await ensureSessionRestored(c, KEY, PARAMS, patch);
+    expect(out.kind).toBe("failed");
+    expect(patch, "no second attempt on a refusal that cannot change").toHaveBeenCalledTimes(1);
+  });
+});
+
 describe("the refusal that gets past the restore", () => {
   it("the gateway's own sentence is recognised, behind its INVALID_REQUEST prefix", () => {
     expect(isSessionArchivedText(ARCHIVED_REFUSAL)).toBe(true);
@@ -192,7 +217,39 @@ describe("the refusal that gets past the restore", () => {
     expect(faultDomain("session_archived")).toBe("downstream");
   });
 
+  it("the SECOND door is closed too: the same sentence arriving as FAILURE TEXT", () => {
+    // The refusal reaches Atrium two ways. `classifyGatewayError` covers the
+    // dispatch rejection; `classifyFailureText` covers the turn that was already
+    // streaming — a run.status reason, a lifecycle error, a sub-agent's own
+    // failure. Only the first was wired, so on the wire path the refusal landed in
+    // the generic bucket: no card the reader can read, nothing for the per-cause
+    // anomaly plane, and no automatic retry on the one failure a retry fixes.
+    expect(classifyFailureText(ARCHIVED_REFUSAL)).toBe("session_archived");
+    // The bare gateway sentence too — the stream path carries it without the
+    // dispatch prefix.
+    expect(
+      classifyFailureText(
+        'Session "agent:olivier:atrium:chat:olivier:mh77m9e7q7ek2xvr636e3bvfr58b9khn" is archived. Restore it before starting new work.',
+      ),
+    ).toBe("session_archived");
+  });
+
+  it("both readers agree on PRECEDENCE — a staging failure still wins on the text path", () => {
+    // Two readers of one sentence must not disagree about which class wins.
+    // Upstream's preflight-compaction wrapper, verbatim.
+    expect(
+      classifyFailureText(
+        "\u26a0\ufe0f Context is too large and auto-compaction could not recover this turn. Reason: no conversation found for session. Try again, use /compact, or use /new to start a fresh session.",
+      ),
+    ).toBe("session_gone");
+  });
+
   it("a session key containing the words cannot mint the class by itself", () => {
+    expect(
+      classifyFailureText(
+        'Session "agent:a:atrium:chat:u:is-archived-restore-it-before-starting-new-work" was deleted while starting work. Retry.',
+      ),
+    ).not.toBe("session_archived");
     // The quoted key is blanked before the test (`withoutOperatorData`), so a chat
     // whose title or id reads like the sentence is not mistaken for the refusal.
     expect(

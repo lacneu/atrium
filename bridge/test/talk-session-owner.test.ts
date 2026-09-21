@@ -215,6 +215,65 @@ describe("POST /talk-session scopes the create on the chat's agent", () => {
     );
   });
 
+  test("the socket is RESERVED before the archive restore, not after it", async () => {
+    // The reservation exists because a concurrent acquire for another agent that
+    // lands while the mint is in flight sees no hold, re-keys, and closes the very
+    // socket the gateway is about to bind the call to.
+    //
+    // The archive restore was placed BEFORE it: up to two describe+patch round
+    // trips, 10 s each, all of them inside the window the reservation was built to
+    // close. Every RPC the mint makes must be covered by the hold.
+    const held: Record<string, number> = {};
+    const gw = startWsFakeGateway({
+      onMethod: (method) => {
+        // Observed AT THE MOMENT the gateway is asked, from the live session.
+        held[method] = registry?.peekByChat("c1")?.liveVoiceCallCount() ?? -1;
+        if (method === "sessions.describe") {
+          // Archived: this is the conversation that needs restoring.
+          return { session: { sessionId: "s-arch", archived: true } };
+        }
+        return method === "talk.client.create" ? MINTED : {};
+      },
+    });
+    await gw.ready;
+    gateway = gw;
+    const config = CONFIG(gw.url);
+    const shared = sharedFromConfig(config);
+    registry = new SessionRegistry(servedMap(config));
+    const srv = createBridgeServer({
+      shared,
+      served: servedMap(config),
+      registry,
+      health: new HealthRegistry(1000, () => 2000),
+    });
+    await new Promise<void>((r) => srv.listen(0, r));
+    server = srv;
+    const base = `http://127.0.0.1:${(srv.address() as AddressInfo).port}`;
+    const res = await fetch(`${base}/talk-session`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: shared.bridgeSharedSecret,
+      },
+      body: JSON.stringify({
+        instanceName: "primary",
+        chatId: "c1",
+        openclawChatId: "oc-bound",
+        canonical: "olivier",
+        agentId: "alice",
+      }),
+    });
+    expect(res.status).toBe(200);
+    // The restore ran…
+    expect(held["sessions.describe"], "the restore must have happened").toBeDefined();
+    // …and the socket was already held when it did.
+    expect(
+      held["sessions.describe"],
+      "an acquire landing during the restore would have re-keyed the socket",
+    ).toBeGreaterThan(0);
+    expect(held["talk.client.create"]).toBeGreaterThan(0);
+  });
+
   test("a pre-contract caller still mints, unscoped", async () => {
     const { gw, post } = await boot();
     const res = await post({ instanceName: "primary" });

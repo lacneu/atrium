@@ -175,6 +175,11 @@ export interface BridgeSession {
   /** THAT call ended (hangup, or the gateway closed it). The gateway allows two calls
    *  per owning socket, so releasing one must not release the other (codex P1). */
   releaseVoiceCall(voiceSessionId: string): void;
+  /** How many voice holds are LIVE right now (expired ones do not count).
+   *  Read-only: the rekey guard reads the map itself, this exists so the hold can
+   *  be OBSERVED — by diagnostics, and by the tests that pin when it is taken
+   *  relative to the RPCs it must cover. */
+  liveVoiceCallCount(): number;
   /** Prod the inbound consume loop to re-evaluate its next deadline. MUST be
    *  called after `runManager.beginTurn` (which arms the recv/grace deadline from
    *  OUTSIDE the loop) so a loop blocked on a null-timeout frame wait does not
@@ -1317,6 +1322,15 @@ class Session implements BridgeSession {
     }
     if (extended > 0) this.lastActivityAt = now;
     return extended;
+  }
+
+  liveVoiceCallCount(): number {
+    const now = this.clock();
+    let live = 0;
+    for (const hold of this.voiceCallsUntil.values()) {
+      if (hold.until > now) live += 1;
+    }
+    return live;
   }
 
   releaseVoiceCall(voiceSessionId: string): void {

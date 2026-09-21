@@ -28,9 +28,8 @@ import { basename, join, resolve, sep } from "node:path";
 
 /** The deliverable directories that are NOT this fetcher's mount: upstream's
  *  media-generation tools write there, beside `media/outbound`. */
-const GENERATED_MEDIA_SUBDIRS: readonly string[] = DELIVERABLE_MEDIA_SUBDIRS.filter(
-  (d) => d !== "outbound",
-);
+export const GENERATED_MEDIA_SUBDIRS: readonly string[] =
+  DELIVERABLE_MEDIA_SUBDIRS.filter((d) => d !== "outbound");
 
 export interface OpenedMedia {
   /** Raw byte stream of the file (no base64, no full buffer). */

@@ -111,6 +111,40 @@ describe("a week-old conversation answers again", () => {
     expect(gw.countOf("sessions.describe")).toBe(2);
   });
 
+  it("a re-read that ANSWERS NOTHING keeps the pre-restore read — the session we just saved is not thrown away", async () => {
+    // `describeSession` RESOLVES null when the payload carries no session
+    // (models-roster.ts:493); it does not throw, so the try/catch around the
+    // re-read never covered this and the assignment replaced a good read with
+    // nothing. The session we had just restored then looked BRAND NEW: the
+    // freshness verdict re-injects and re-bills the whole history, the stored
+    // state is cleared, and the turn is dispatched with `expectedSessionId: null`
+    // — the exact loss the restore exists to prevent, caused by the restore.
+    const cleared: unknown[] = [];
+    const watchful = {
+      ...writer,
+      clearSessionState: async (...a: unknown[]) => {
+        cleared.push(a);
+      },
+    } as unknown as ConvexWriter;
+    const { gw, session } = await harness({ describe: [ARCHIVED, null] });
+    await performSend(session, body, watchful, null, null);
+
+    // The restore happened and the turn still goes out — fail-open is unchanged.
+    expect(gw.countOf("chat.send")).toBe(1);
+    // …and the empty answer did NOT make the conversation look fresh.
+    expect(
+      cleared,
+      "an unlucky RPC is not evidence that the session is gone",
+    ).toHaveLength(0);
+    const send = gw.calls.find(([m]) => m === "chat.send")?.[1] as
+      | Record<string, unknown>
+      | undefined;
+    expect(
+      JSON.stringify(send ?? {}),
+      "the history must not be re-injected on a session that already holds it",
+    ).not.toContain("<conversation-history>");
+  });
+
   it("a LIVE conversation pays NOTHING — no patch, one describe", async () => {
     // This is every turn of every conversation younger than a week. A repair that
     // taxed the happy path would be the wrong trade.

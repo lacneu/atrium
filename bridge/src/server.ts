@@ -1390,7 +1390,20 @@ export async function performSend(
         // figure below (the fill, the freshness verdict, the mirrored meta) must
         // describe the session the turn actually runs on.
         try {
-          described = await describeSession(conn, sessionKey);
+          // ONLY ON AN ANSWER. `describeSession` RESOLVES `null` when the payload
+          // carries no session (models-roster.ts:493) — it does not throw, so the
+          // catch below never covered that case and the assignment happily
+          // replaced a good read with nothing. The session we JUST restored then
+          // looked brand new: `preSendSessionId` null, the freshness verdict
+          // "fresh", the whole history re-injected and re-billed, the state
+          // cleared, and the turn dispatched with `expectedSessionId: null` — the
+          // exact loss the restore exists to prevent, caused by the restore.
+          //
+          // A describe that answers nothing is never evidence that the session is
+          // gone: it is one unlucky RPC. The pre-restore read is stale about the
+          // archive flag and correct about everything else, so it stands.
+          const after = await describeSession(conn, sessionKey);
+          if (after !== null) described = after;
         } catch {
           /* the pre-restore read stands; the guards below fall open on it */
         }
@@ -5328,12 +5341,36 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
             return;
           }
           noteHandshakeFor(talkInstance)(ownerSession.connection);
-          // THE VOICE LANE HITS THE SAME WALL. The gateway runs its agent consult on
-          // THIS session key (`openclaw_agent_consult` → reply-turn-admission.ts:388),
-          // so on an archived conversation every question needing the agent came back
-          // as "my attempt did not succeed" — spoken aloud, with nothing in the thread
-          // to explain it (prod 2026-09-20). Restored before the mint, on the
-          // conversation's own socket, exactly as a typed turn does.
+          // RESERVE THE SOCKET BEFORE ASKING FOR THE CALL.
+          //
+          // The real hold needs the gateway's voiceSessionId, which only exists once
+          // the RPC answers — and the RPC takes up to 15 s. A concurrent acquire for
+          // another agent landing in that window saw no hold and re-keyed, closing the
+          // very socket the gateway was about to bind the call to (codex P1, pass 4).
+          // So the reservation is taken FIRST, under a provisional id, and released on
+          // every exit that does not produce a call. It is bounded by the same pending
+          // window as a minted call, so a bridge that dies mid-mint cannot pin the
+          // chat's socket for longer than an unanswered offer would.
+          const reservationId = `pending:${randomUUID()}`;
+          ownerSession.holdForVoiceCall(reservationId, TALK_PENDING_HOLD_MS);
+          talkReservation = { session: ownerSession, id: reservationId };
+          // …AND BEFORE THE RESTORE, not after it.
+          //
+          // THE VOICE LANE HITS THE SAME WALL as a typed turn. The gateway runs its
+          // agent consult on THIS session key (`openclaw_agent_consult` →
+          // reply-turn-admission.ts:388), so on an archived conversation every
+          // question needing the agent came back as "my attempt did not succeed" —
+          // spoken aloud, with nothing in the thread to explain it (prod
+          // 2026-09-20). Restored on the conversation's own socket, exactly as a
+          // typed turn does.
+          //
+          // The restore is up to two describe+patch round trips, 10 s each. Run
+          // BEFORE the reservation it reopened precisely the window the reservation
+          // was built to close: a concurrent acquire for another agent landing in
+          // it saw no hold, re-keyed, and closed the socket the gateway was about
+          // to bind the call to. The reservation is released on every exit that
+          // produces no call (the `finally` below), so holding it across the
+          // restore costs nothing and closes the race for the whole mint.
           const talkRestored = await ensureSessionRestored(
             ownerSession.connection,
             talkSessionKey!,
@@ -5355,19 +5392,6 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
                 ("reason" in talkRestored ? `: ${talkRestored.reason}` : ""),
             );
           }
-          // RESERVE THE SOCKET BEFORE ASKING FOR THE CALL.
-          //
-          // The real hold needs the gateway's voiceSessionId, which only exists once
-          // the RPC answers — and the RPC takes up to 15 s. A concurrent acquire for
-          // another agent landing in that window saw no hold and re-keyed, closing the
-          // very socket the gateway was about to bind the call to (codex P1, pass 4).
-          // So the reservation is taken FIRST, under a provisional id, and released on
-          // every exit that does not produce a call. It is bounded by the same pending
-          // window as a minted call, so a bridge that dies mid-mint cannot pin the
-          // chat's socket for longer than an unanswered offer would.
-          const reservationId = `pending:${randomUUID()}`;
-          ownerSession.holdForVoiceCall(reservationId, TALK_PENDING_HOLD_MS);
-          talkReservation = { session: ownerSession, id: reservationId };
           created = await ownerSession.connection.request(
             "talk.client.create",
             talkClientCreateParams(

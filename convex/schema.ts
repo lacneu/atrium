@@ -128,6 +128,11 @@ export const messagePart = v.union(
       v.literal("created"),
       v.literal("updated"),
       v.literal("removed"),
+      // The scheduler converged and changed NOTHING: a declarative `add` whose
+      // job already matched, or a `remove` that found none. Upstream does not
+      // throw for either, so without this the card claimed a creation or a
+      // deletion that never happened.
+      v.literal("unchanged"),
     ),
     jobId: v.optional(v.string()),
     name: v.optional(v.string()),

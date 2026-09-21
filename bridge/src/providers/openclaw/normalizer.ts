@@ -2280,7 +2280,12 @@ export class Normalizer {
           name: name ?? null,
           phase: errored ? "error" : "completed",
           ...(toolCallId ? { toolCallId } : {}),
-          input: input ?? undefined,
+          // The hand-off's waiting reply becomes visible text downstream, so it is
+          // sanitized like text. `sessions_yield` only — see the method's note.
+          input:
+            name === "sessions_yield"
+              ? (this.sanitizeYieldAcknowledgment(input) ?? undefined)
+              : (input ?? undefined),
           output: data.result ?? undefined,
           runId: this.currentRunId,
         });
@@ -3198,6 +3203,34 @@ export class Normalizer {
       }
       throw err;
     }
+  }
+
+  /**
+   * The ONE tool argument that becomes VISIBLE REPLY TEXT.
+   *
+   * `sessions_yield.acknowledgment` is the sentence a handing-off parent writes
+   * for the reader, and the sink promotes it into the bubble when the turn is
+   * otherwise silent. Every other route to the bubble passes through
+   * `safeSanitizeText`; this one arrived straight from the tool call's arguments
+   * and did not — so a `MEDIA:` directive or an absolute
+   * `/home/node/.openclaw/...` path written into it reached the browser verbatim,
+   * and a dropped directive would have printed a dead link beside a real
+   * attachment.
+   *
+   * NARROW ON PURPOSE. Sanitizing the whole tool input would also rewrite paths
+   * the sink CORRELATES on (`noteTurnArtifacts` reads the call's arguments to
+   * learn which files this turn produced) — a display fix that silently changed
+   * ownership detection. Only the field that is displayed as prose is treated as
+   * prose.
+   */
+  private sanitizeYieldAcknowledgment(input: unknown): unknown {
+    if (input === null || typeof input !== "object" || Array.isArray(input)) {
+      return input;
+    }
+    const args = input as Record<string, unknown>;
+    const ack = args.acknowledgment;
+    if (typeof ack !== "string" || ack === "") return input;
+    return { ...args, acknowledgment: this.safeSanitizeText(ack) };
   }
 
   private safeSanitizeFrame(frame: Json): Json {

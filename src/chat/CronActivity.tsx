@@ -9,7 +9,7 @@
 
 import { createContext, useContext, useState } from "react";
 import { useMessage } from "@assistant-ui/react";
-import { CalendarClock, Pencil, Plus, Trash2 } from "lucide-react";
+import { CalendarClock, CircleDot, Pencil, Plus, Trash2 } from "lucide-react";
 import { m } from "@/paraglide/messages.js";
 import { ActivityRow } from "./ActivityRow";
 import type { CronPartView } from "./convexTypes";
@@ -42,12 +42,15 @@ const NO_PARTS: CronPartView[] = [];
 function opIcon(op: CronPartView["op"]) {
   if (op === "created") return <Plus size={12} aria-hidden />;
   if (op === "removed") return <Trash2 size={12} aria-hidden />;
+  // Nothing changed: neither a write nor a deletion earned a glyph of its own.
+  if (op === "unchanged") return <CircleDot size={12} aria-hidden />;
   return <Pencil size={12} aria-hidden />;
 }
 
 export function opLabel(op: CronPartView["op"]): string {
   if (op === "created") return m.cron_op_created();
   if (op === "removed") return m.cron_op_removed();
+  if (op === "unchanged") return m.cron_op_unchanged();
   return m.cron_op_updated();
 }
 

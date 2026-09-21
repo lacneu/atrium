@@ -6,66 +6,66 @@
     {
       "id": "announce-reverse-hold",
       "ok": true,
-      "chat": "2b70aa109c0c4fc8"
+      "chat": "4b9b300e8a611edc"
     },
     {
       "id": "basic-turn",
       "ok": true,
-      "chat": "2b70aa109c0c4fc8"
+      "chat": "4b9b300e8a611edc"
     },
     {
       "id": "tool-exec",
       "ok": true,
-      "chat": "2b70aa109c0c4fc8"
+      "chat": "4b9b300e8a611edc"
     },
     {
       "id": "update-plan",
       "ok": true,
-      "chat": "2b70aa109c0c4fc8"
+      "chat": "4b9b300e8a611edc"
     },
     {
       "id": "media-outbound",
       "ok": true,
-      "chat": "2b70aa109c0c4fc8"
+      "chat": "4b9b300e8a611edc"
     },
     {
       "id": "inbound-attachment",
       "ok": true,
-      "chat": "2b70aa109c0c4fc8"
+      "chat": "4b9b300e8a611edc"
     },
     {
       "id": "talk-session",
       "ok": true,
-      "chat": "2b70aa109c0c4fc8"
+      "chat": "4b9b300e8a611edc"
     },
     {
       "id": "spawn-announce-merge",
       "ok": true,
-      "chat": "2b70aa109c0c4fc8"
+      "chat": "4b9b300e8a611edc"
     },
     {
       "id": "spawn-chain-merge",
       "ok": true,
-      "chat": "2b70aa109c0c4fc8"
+      "chat": "4b9b300e8a611edc"
     },
     {
       "id": "spawn-parallel-merge",
       "ok": true,
-      "chat": "2b70aa109c0c4fc8"
+      "chat": "4b9b300e8a611edc"
     },
     {
       "id": "async-task",
       "ok": true,
-      "chat": "2b70aa109c0c4fc8"
+      "chat": "4b9b300e8a611edc"
     },
     {
       "id": "cron-tool",
       "ok": true,
-      "chat": "2b70aa109c0c4fc8"
+      "chat": "4b9b300e8a611edc"
     }
   ],
   "verdict": "GO",
-  "at": "2026-09-20T16:42:21.370Z",
+  "at": "2026-09-20T20:39:07.808Z",
   "scenarios": [
     "announce-reverse-hold",
     "async-task",
@@ -99,13 +99,13 @@
     "hermes-cron-list": "hermes"
   },
   "flags": [],
-  "atriumSha": "0e4a8ee90c11d6af5c580bd4a8b8c8745f4efb49",
+  "atriumSha": "592b0a307953a660c4e7730f397cc40f4ecee4c6",
   "worktree": {
     "dirty": true,
-    "deltaSha256": "8150ec4bf1685909eeff9c26b4ed0fcf805ff63e3219479ad8d1c684570062cf"
+    "deltaSha256": "c2512b72fb20d8fbc706749f65a54a1f0b51214892b1eb64eb8dc0495fe0498f"
   },
-  "supportDigest": "49566303dbdfba9da4858bca5c26fa49d9b24421cf99459d004e6266c58d7ebc",
+  "supportDigest": "c05e032c1e3d8e04dc08a33e75efe56f49fb07873c18968f2cc91a98d8e50332",
   "authMode": "token",
-  "bridgeVersion": "0.84.15",
+  "bridgeVersion": "0.84.17",
   "vendoredSha256": "8b6478d79519732a481f54031dcedb9ce6d8dcf1d490b371c783b614131d7c36"
 }

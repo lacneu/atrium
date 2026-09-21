@@ -154,7 +154,8 @@ function cleanTaskName(name: string | undefined): string | undefined {
  * Decide the empty-bubble state for an assistant turn.
  *
  * Rules (in order):
- *  - There IS a visible answer (text or a delivered file) -> none (render normally).
+ *  - There IS a visible answer (text or a delivered file) -> none (render normally),
+ *    EXCEPT when that answer is a hand-off's waiting reply: see `handedOff` below.
  *  - The turn is NOT settled-complete (streaming / error / aborted / placeholder)
  *    -> none: the thinking indicator / RunStatus error card already cover it.
  *  - Settled-complete with NO answer (the blank-bubble bug). Correlate the turn's
@@ -171,7 +172,23 @@ export function assistantEmptyState(
   messageId?: string,
   now: number = Date.now(),
 ): AssistantEmptyState {
-  if (message.hasText || message.hasMedia) return { kind: "none" };
+  // A BUBBLE THAT SPEAKS CAN STILL BE WAITING.
+  //
+  // Until the hand-off's acknowledgment was surfaced, a yielded turn arrived
+  // blank and this decision supplied the only thing the reader had: "waiting on
+  // <task>", or "<task> failed: <reason>". Showing the acknowledgment filled
+  // `hasText`, which switched this off — so the bubble now states that the work is
+  // being prepared, and then states it forever, whether the child is running,
+  // finished or dead. That is the exact complaint still open from a user whose
+  // delegated document never arrived and was never mentioned again: the silence
+  // became a sentence, which is worse.
+  //
+  // So a turn that HANDED OFF keeps the two delegation facts even with text. Only
+  // those two: `composing`, `done` and `generic` are about supplying an answer the
+  // bubble does not have, and this bubble has one.
+  const spoke = message.hasText || message.hasMedia;
+  const handedOff = toolParts.some((p) => p.toolName === "sessions_yield");
+  if (spoke && !handedOff) return { kind: "none" };
   if (message.status !== "complete") return { kind: "none" };
 
   // PRIMARY correlation = parentMessageId (the bridge tags every child with its
@@ -206,6 +223,10 @@ export function assistantEmptyState(
       reason: shortenSubAgentError(failed.errorMessage, failed.errorCode),
     };
   }
+
+  // The bubble already carries the hand-off's waiting reply, and no child is
+  // running or broken. Everything below supplies an ANSWER — the bubble has one.
+  if (spoke) return { kind: "none" };
 
   // A child that FINISHED with a result. On modern gateways the parent's
   // ANNOUNCE merge follows and writes the REAL reply into this bubble —

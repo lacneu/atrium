@@ -25,6 +25,7 @@ import type { NormalizedEvent } from "./events.js";
 import type { ConvexWriter, FinalizeStatus, ToolPart } from "../convex-writer.js";
 import { announcedChildKey } from "../providers/openclaw/run-families.js";
 import { cronPartFromTool } from "./cron-part.js";
+import { redactPrivateToolArgs } from "./private-tool-args.js";
 import { planPartFromTool } from "./plan-part.js";
 import {
   asyncTaskStartFromTool,
@@ -1228,7 +1229,18 @@ export class TurnSink {
                 (event.input as { acknowledgment?: unknown } | undefined)
                   ?.acknowledgment,
               );
-              if (ack !== undefined && ack.trim() !== "") {
+              // NOT the protocol sentinel. `NO_REPLY` means SILENCE on this wire
+              // (the gateway's own spawn note instructs the agent to answer
+              // exactly that when a child's completion lands late), and the
+              // sentinel check on the reply text runs BEFORE this value is
+              // promoted into it — so an acknowledgment of `NO_REPLY` would have
+              // settled a bubble that literally reads "NO_REPLY". The same word,
+              // the same meaning, on both of the two roads into the bubble.
+              if (
+                ack !== undefined &&
+                ack.trim() !== "" &&
+                ack.trim() !== "NO_REPLY"
+              ) {
                 this.yieldAcknowledgment = ack;
               }
             }
@@ -1266,8 +1278,17 @@ export class TurnSink {
             phase: asString(event.phase),
             ...(toolCallId ? { toolCallId } : {}),
             ...(anchorable ? { textOffset: this.visibleLineStart } : {}),
-            ...(event.input !== undefined ? { input: event.input } : {}),
-            ...(event.output !== undefined ? { output: event.output } : {}),
+            // PRIVATE ARGUMENTS NEVER REACH THE DATABASE. `sessions_yield.message`
+            // is the parent's note to its own resumed turn ("not sent to the
+            // user", upstream's schema) and the chat renders tool input, its
+            // header preview AND its output. Stripped here, at the only layer
+            // that writes it, so no later reader can put it back on screen.
+            ...(event.input !== undefined
+              ? { input: redactPrivateToolArgs(asString(event.name) ?? "", event.input) }
+              : {}),
+            ...(event.output !== undefined
+              ? { output: redactPrivateToolArgs(asString(event.name) ?? "", event.output) }
+              : {}),
             // The gateway's risk verdict on this tool's output, when it sent one. Rides
             // the SAME part as the call it judges (upsert-keyed by toolCallId), so the
             // reader sees the verdict on the card it is about.
@@ -1616,7 +1637,14 @@ export class TurnSink {
               for (const [reason, n] of Object.entries(
                 refused as Record<string, unknown>,
               )) {
-                if (typeof n !== "number" || !Number.isFinite(n) || n <= 0) continue;
+                // `Number.isInteger`, NOT `isFinite` — the SAME predicate the other
+                // side of this boundary applies (convex/lib/foreignRunRefusals.ts:65).
+                // A count of 1.5 is not a count; accepted here and refused there, it
+                // went into the TOTAL the bridge reports while vanishing from the
+                // per-reason breakdown Convex keeps, so the two readings of one fact
+                // disagreed — which is exactly what keeping them in one pass was
+                // meant to prevent.
+                if (typeof n !== "number" || !Number.isInteger(n) || n <= 0) continue;
                 counts[reason] = (counts[reason] ?? 0) + n;
                 total += n;
               }

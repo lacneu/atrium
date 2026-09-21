@@ -422,3 +422,72 @@ describe("attribution on the ticketed download (trusted proxy)", () => {
     expect(meta.headers["Authorization"]).toBe("Bearer TKN");
   });
 });
+
+// EVERY ERROR EXIT RELEASES ITS CONNECTION.
+//
+// `fetch` keeps the underlying connection checked out until the body is read or
+// cancelled. The refusal paths returned without touching it, so a gateway
+// answering 401 or 404 on each turn parked one connection per refusal in the
+// keep-alive pool — invisible until the pool is exhausted and real media requests
+// queue behind dead ones.
+describe("an error response does not strand its connection", () => {
+  function res(status: number, cancelled: { n: number }) {
+    return {
+      ok: status >= 200 && status < 300,
+      status,
+      body: {
+        cancel: async () => {
+          cancelled.n += 1;
+        },
+      },
+      json: async () => ({}),
+    } as unknown as Response;
+  }
+
+  const build = (fetchImpl: typeof fetch) =>
+    new GatewayHttpMediaFetcher({
+      httpBase: "http://gw",
+      token: () => "t",
+      maxBytes: 1024,
+      timeoutMs: 1000,
+      fetchImpl,
+    });
+
+  it("releases the body on a 404 (no media route)", async () => {
+    const cancelled = { n: 0 };
+    const f = build((async () => res(404, cancelled)) as unknown as typeof fetch);
+    const r = await f.open("/m/x.png");
+    expect(r.ok === false && r.reason).toBe("route_absent");
+    expect(cancelled.n, "the 404 body must be released").toBe(1);
+  });
+
+  it("releases the body on a 401 (transport failure)", async () => {
+    const cancelled = { n: 0 };
+    const f = build((async () => res(401, cancelled)) as unknown as typeof fetch);
+    const r = await f.open("/m/x.png");
+    expect(r.ok === false && r.reason).toBe("fetch_error");
+    expect(cancelled.n).toBe(1);
+  });
+
+  it("releases the DOWNLOAD body when the ticketed read is refused", async () => {
+    // The 403 the trusted-proxy attribution rule produces: the meta probe
+    // succeeded, so this is the second request and its body is a different one.
+    const cancelled = { n: 0 };
+    let call = 0;
+    const f = build((async () => {
+      call += 1;
+      if (call === 1) {
+        return {
+          ok: true,
+          status: 200,
+          body: { cancel: async () => {} },
+          json: async () => ({ available: true, mediaTicket: "tk", size: 10 }),
+        } as unknown as Response;
+      }
+      return res(403, cancelled);
+    }) as unknown as typeof fetch);
+    const r = await f.open("/m/x.png");
+    expect(r.ok === false && r.reason).toBe("fetch_error");
+    expect(cancelled.n, "the refused download body must be released").toBe(1);
+  });
+});

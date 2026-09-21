@@ -25,6 +25,7 @@ import { MESSAGE_WINDOW } from "./messages";
 import {
   deliveryChildKey,
   isDeliveryRun,
+  isRequesterSettleRun,
   taskDeliveryIdentity,
   taskDeliveryOutcome,
 } from "./lib/deliveryRuns";
@@ -534,7 +535,31 @@ async function reconcileContentlessDelivery(
  * merely started one is not a hand-off. Read off the stored parts, which is where
  * the bridge already writes it — no new field, no new wire contract.
  */
-function handedOffToChild(parts: Doc<"messageParts">[]): boolean {
+function handedOffToChild(
+  runId: string | null | undefined,
+  parts: Doc<"messageParts">[],
+): boolean {
+  // SCOPED TO THE RUN BEING FINALIZED, because `messageParts` carry no runId and
+  // a bubble outlives the run that wrote them.
+  //
+  // The parts alone were the whole test, and that made the exemption leak onto a
+  // shape production produces constantly. An announce merge REOPENS the parent's
+  // bubble and rotates its runId (`runId: announceRunId` above) WITHOUT deleting
+  // its parts, so the `sessions_yield` the parent wrote in an earlier run stays
+  // attached. A later `announce:v1:<child>:<run>` merge that brought neither text
+  // nor file then matched on that stale part and was exempted — a silent empty
+  // bubble with no card, no cause and nothing for the anomaly plane, which is the
+  // exact defect the verdict exists to end (and the one a user is still waiting
+  // on: a delegated deliverable that never arrived and never said so).
+  //
+  // The legitimate case is one run, and upstream names it: the gateway wakes the
+  // REQUESTER session after a delivery with `announce:requester-settle:…`
+  // (subagent-announce.requester-settle-wake.ts:443-447, which appends `:yield-N`
+  // when the requester re-armed). THAT run is "the parent chose to answer nothing
+  // and the child replies in its own run". A child-announce merge is not: there,
+  // an empty result means the child announced and delivered nothing, and the
+  // reader must be told.
+  if (!isRequesterSettleRun(runId)) return false;
   return parts.some(
     (row) =>
       row.part.kind === "tool" &&
@@ -2967,7 +2992,7 @@ export const finalize = internalMutation({
           // answer nothing and the child replies in its own run. Checked BEFORE
           // the content probe because it is decisive on its own and needs no
           // storage round-trip.
-          !handedOffToChild(parts) &&
+          !handedOffToChild(message.runId, parts) &&
           !(await carriesDeliveredContent(ctx, parts));
       } catch {
         // Storage refused to answer: the probe has no evidence, and a verdict

@@ -65,6 +65,28 @@ describe("MediaFetcherProvider", () => {
     expect(p.current()).not.toBeInstanceOf(CompositeMediaFetcher);
   });
 
+  it("a TRUSTED-PROXY instance composes even though it has no token", () => {
+    // Upstream REFUSES to run trusted-proxy with a shared token configured, so a
+    // correctly configured instance of that mode has none — which is exactly why
+    // `credential-resolver.ts:265` scopes the missing-token error to the other
+    // mode. A flat `!token` here read that correct configuration as
+    // "unauthenticated" and silently dropped the fallback, so every generated image
+    // on a trusted-proxy deployment kept being announced and never delivered.
+    //
+    // The fallback needs no token: it presents identity headers instead
+    // (gateway-http-media-fetcher.ts:130-138), the same authorization the socket
+    // uses.
+    const p = new MediaFetcherProvider(
+      loadConfig({
+        ...baseEnv,
+        OPENCLAW_TOKEN: "",
+        OPENCLAW_AUTH_MODE: "trusted-proxy",
+      }),
+    );
+    p.applyConfig({ mediaMode: "shared-fs" });
+    expect(p.current()).toBeInstanceOf(CompositeMediaFetcher);
+  });
+
   it("REBUILDS only when the signature changes (same config → same instance)", () => {
     const p = new MediaFetcherProvider(loadConfig({ ...baseEnv }));
     const first = p.current();

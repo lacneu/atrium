@@ -117,7 +117,7 @@ export type PlanPartView = {
  *  job from the gateway (api.scheduled.getCronDetail). */
 export type CronPartView = {
   kind: "cron";
-  op: "created" | "updated" | "removed";
+  op: "created" | "updated" | "removed" | "unchanged";
   jobId?: string;
   name?: string;
   enabled?: boolean;

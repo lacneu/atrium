@@ -23,6 +23,10 @@ const RUN = "webchat-yield-run";
 
 class CaptureWriter implements ConvexWriter {
   readonly finals: { status: FinalizeStatus; text: string }[] = [];
+  /** RECORDED, not discarded. Dropping these made the privacy assertion below
+   *  vacuous: it only ever read the reply TEXT, while the leak was in the
+   *  PERSISTED tool part the chat renders. */
+  readonly toolParts: ToolPart[] = [];
   async startAssistant(): Promise<string> {
     return "msg_1";
   }
@@ -30,7 +34,9 @@ class CaptureWriter implements ConvexWriter {
   async setSnapshot(): Promise<boolean> {
     return true;
   }
-  async addToolPart(_m: string, _p: ToolPart): Promise<void> {}
+  async addToolPart(_m: string, p: ToolPart): Promise<void> {
+    this.toolParts.push(p);
+  }
   async addCompactionPart(): Promise<void> {}
   async recordGatewayPressure(): Promise<void> {}
   async addProvenancePart(): Promise<void> {}
@@ -145,6 +151,28 @@ describe("a hand-off speaks with the acknowledgment it was given", () => {
       lifecycleEnd(),
     ]);
     expect(w.finals[0]?.text).not.toContain(PRIVATE);
+    // AND it is not in the stored tool part either — which is where it actually
+    // was: the chat renders `input` in a <pre>, lifts a preview into the header
+    // and prints the output. Serialized whole so a value nested anywhere in the
+    // payload cannot slip past a key-by-key check.
+    const yieldPart = w.toolParts.find((p) => p.name === "sessions_yield");
+    expect(yieldPart, "the yield must still be recorded as a card").toBeDefined();
+    expect(JSON.stringify(yieldPart)).not.toContain(PRIVATE);
+    // The acknowledgment is NOT collateral damage: showing it is its purpose.
+    expect(JSON.stringify(yieldPart)).toContain(ACK);
+  });
+
+  it("an acknowledgment of NO_REPLY is SILENCE, not the word", async () => {
+    // `NO_REPLY` is the protocol sentinel for "say nothing" — the gateway's own
+    // spawn note tells the agent to answer exactly that when a child completion
+    // lands after its final answer. The reply text is checked for it BEFORE the
+    // acknowledgment is promoted into that text, so this road bypassed the check
+    // and would have settled a bubble reading "NO_REPLY".
+    const w = await runTurn([
+      ...yieldTool({ message: PRIVATE, acknowledgment: "NO_REPLY" }),
+      lifecycleEnd(),
+    ]);
+    expect(w.finals[0]?.text).toBe("");
   });
 
   it("a yield with NO acknowledgment stays silent — nothing is invented", async () => {

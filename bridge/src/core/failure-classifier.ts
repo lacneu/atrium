@@ -387,6 +387,18 @@ export function classifyFailureText(raw: string | null | undefined): string | nu
   // text (codex).
   if (COOLDOWN_SENTENCE_RE.test(text)) return "auth_profile_cooldown";
   if (isSessionInitConflictText(text)) return "session_init_conflict";
+  // THE SECOND DOOR. The same refusal reaches Atrium two ways: as a dispatch
+  // rejection (classified in dispatch-errors.ts:423) and as the FAILURE TEXT of a
+  // turn already streaming — a run.status reason, a lifecycle error, a sub-agent's
+  // own failure. Only the first was named, so an archived refusal arriving on the
+  // wire fell to the generic bucket: `unclassified_error`, no card the reader can
+  // read, nothing for the per-cause anomaly plane, and — because the retry policy
+  // keys on the class — no automatic second attempt, on the one failure that a
+  // second attempt reliably fixes.
+  //
+  // Placed exactly where dispatch-errors places it, after the init-conflict rule:
+  // two readers of one sentence must not disagree about which class wins.
+  if (isSessionArchivedText(text)) return "session_archived";
   if (PROVIDER_INTERNAL_TEXT_RE.test(text) && !PROVIDER_INTERNAL_EXCLUDE_RE.test(text)) {
     return "provider_internal";
   }

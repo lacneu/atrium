@@ -108,6 +108,24 @@ function byteCap(maxBytes: number): Transform {
   });
 }
 
+/**
+ * Release an error response's body.
+ *
+ * `fetch` keeps the underlying connection checked out until the body is read or
+ * cancelled. Every error exit here returned without touching it, so a gateway
+ * answering 401 or 404 on each turn parked one connection per refusal in the
+ * keep-alive pool — invisible until the pool is exhausted and ordinary media
+ * requests start queueing behind dead ones. Best-effort by construction: a body
+ * that cannot be cancelled is not worth failing a refusal we have already decided.
+ */
+function discardBody(res: { body?: { cancel(): Promise<void> } | null }): void {
+  try {
+    void res.body?.cancel().catch(() => {});
+  } catch {
+    /* a body already disturbed or absent — nothing to release */
+  }
+}
+
 export class GatewayHttpMediaFetcher implements MediaFetcher {
   private readonly httpBase: string;
   private readonly token: () => string;
@@ -164,11 +182,13 @@ export class GatewayHttpMediaFetcher implements MediaFetcher {
         // The gateway has no assistant-media route (pre-6.x gateway-http target).
         // DISTINCT + actionable (switch to shared-fs), not a transient blip.
         this.warnRouteAbsentOnce(metaRes.status);
+        discardBody(metaRes);
         return { ok: false, reason: "route_absent" };
       }
       if (!metaRes.ok) {
         // 401 (bad/absent token), 5xx, unreachable -> a TRANSPORT failure, which is
         // a different operator fix than a genuinely missing file.
+        discardBody(metaRes);
         return { ok: false, reason: "fetch_error" };
       }
       const meta = (await metaRes.json()) as {
@@ -217,6 +237,7 @@ export class GatewayHttpMediaFetcher implements MediaFetcher {
       // upload, and aborting on a backpressure pause would false-drop valid media.
       clearTimeout(connectTimer);
       if (!dlRes.ok || !dlRes.body) {
+        discardBody(dlRes);
         return { ok: false, reason: "fetch_error" };
       }
       // Download-side freshness check (covers a gateway that sets Last-Modified

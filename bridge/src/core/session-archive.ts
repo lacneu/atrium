@@ -148,7 +148,18 @@ export async function ensureSessionRestored(
       const reason = errText(err);
       // The optimistic lock lost a race: re-read and try once more. Anything else
       // is a real refusal and is reported as it stands.
-      if (attempt === 0 && /changed before patch|expectedsessionid/i.test(reason)) {
+      // THE RACE SENTENCE ONLY. Upstream writes exactly two refusals about this
+      // field, and only one of them is a lost race:
+      //   `Session <key> changed before patch. Retry.`  (sessions-patch.ts — retry)
+      //   `expectedSessionId required for session lifecycle patch: <key>`
+      //                                          (sessions-patch.ts:194 — never)
+      // A bare `expectedsessionid` matched BOTH, so a caller that forgot the field
+      // — a programming error that answers identically every time — bought a second
+      // describe and a second patch before reporting the same thing. It also matched
+      // any refusal whose OPERATOR DATA happened to contain the word, which is a
+      // session key away from being arbitrary. Upstream tells us to retry in so many
+      // words; that sentence is the signal.
+      if (attempt === 0 && /changed before patch/i.test(reason)) {
         continue;
       }
       return { kind: "failed", reason };

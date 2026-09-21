@@ -229,6 +229,18 @@ export const CONTEXT_OVERFLOW_CODES: ReadonlySet<string> = new Set([
 export const HEADLINE_REPLACES_DETAIL: ReadonlySet<string> = new Set([
   // Upstream's preflight-compaction wrapper ends in "/compact" and "/new".
   "session_gone",
+  // `Session "<key>" is archived. Restore it before starting new work.` Two
+  // reasons, either of which is enough:
+  //   1. It hands the reader an action Atrium now performs by itself on every
+  //      send, reset and voice consult. Our headline says exactly that, so the
+  //      sentence underneath CONTRADICTS it — and the whole product decision on
+  //      archiving is that the user never touches the concept.
+  //   2. `<key>` is `agent:<agent>:atrium:chat:<canonical>:<chatId>`: the raw
+  //      prose is the one place a reader's own identifier and the chat id show
+  //      up in the chat surface.
+  // The sentence stays on the message row, the exports and the feedback reports
+  // for the operator — that is where it is useful.
+  "session_archived",
 ]);
 
 export const ERROR_CODE_LABEL: Record<string, () => string> = {

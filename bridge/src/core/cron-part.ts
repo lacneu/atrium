@@ -18,7 +18,7 @@
 
 export interface CronPart {
   kind: "cron";
-  op: "created" | "updated" | "removed";
+  op: "created" | "updated" | "removed" | "unchanged";
   jobId?: string;
   name?: string;
   enabled?: boolean;
@@ -139,6 +139,49 @@ export function isCronTool(name: string | null): boolean {
   return name === "cron" || name === "automations";
 }
 
+/** The result's own verdict, when it states one. Absent/ill-formed => the asked-for
+ *  op stands: an older gateway that answers with a bare job body is not evidence
+ *  that nothing happened, and inventing "unchanged" there would be the same class
+ *  of lie in the other direction. */
+function resolvedOp(
+  asked: CronPart["op"],
+  output: unknown,
+): CronPart["op"] {
+  const result = isRecord(output) ? (unwrapResult(output) ?? {}) : {};
+  if (asked === "removed") {
+    return result.removed === false ? "unchanged" : "removed";
+  }
+  if (asked === "created") {
+    if (result.created === true) return "created";
+    if (result.created === false) {
+      return result.updated === true ? "updated" : "unchanged";
+    }
+    return "created";
+  }
+  return asked;
+}
+
+/** The envelope that carries `created`/`updated`/`removed`: `details` when the
+ *  gateway sent one, else the JSON re-parsed from the first text block — the same
+ *  two places `jobFromOutput` reads, so the verdict and the job body can never be
+ *  taken from different copies of the answer. */
+function unwrapResult(output: Record<string, unknown>): Record<string, unknown> | null {
+  if (isRecord(output.details)) return output.details;
+  const content = output.content;
+  if (Array.isArray(content)) {
+    for (const block of content) {
+      if (!isRecord(block) || typeof block.text !== "string") continue;
+      try {
+        const parsed: unknown = JSON.parse(block.text);
+        if (isRecord(parsed)) return parsed;
+      } catch {
+        /* not JSON — keep scanning */
+      }
+    }
+  }
+  return null;
+}
+
 export function cronPartFromTool(
   name: string | null,
   phase: string | null,
@@ -148,13 +191,28 @@ export function cronPartFromTool(
   if (!isCronTool(name) || phase !== "completed") return null;
   if (!isRecord(input)) return null;
   const action = typeof input.action === "string" ? input.action : null;
-  const op = action !== null ? MUTATING_ACTIONS[action] : undefined;
-  if (op === undefined) return null;
+  const asked = action !== null ? MUTATING_ACTIONS[action] : undefined;
+  if (asked === undefined) return null;
 
   // Field precedence: the RESULT job is authoritative (server-assigned id,
   // normalized schedule, effective enabled); the input job/patch is the
   // fallback when the result omits a field (remove carries no job body).
   const job = jobFromOutput(output);
+  // WHAT THE SCHEDULER DID, not what the agent asked for.
+  //
+  // The op used to be read from `input.action` alone, so the card stated a fact
+  // the result contradicts:
+  //   - a DECLARATIVE `add` (one carrying a `declarationKey`) converges. Upstream
+  //     answers `{created, updated?, job, deliveryPreview}`
+  //     (ops-mutations.ts:281/292/363): `created:false, updated:true` when it
+  //     rewrote an existing job, and `created:false, updated:false` when the job
+  //     already matched. Both showed "Created".
+  //   - `remove` answers `{ok, removed}` and does NOT throw when there was
+  //     nothing to remove. `removed:false` showed "Removed".
+  // A scheduler card that says a job was created when none was is worse than no
+  // card: it is the kind of false fact a reader only discovers when the job does
+  // not fire.
+  const op = resolvedOp(asked, output);
   const inputJob = isRecord(input.job)
     ? input.job
     : isRecord(input.patch)

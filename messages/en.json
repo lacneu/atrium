@@ -96,6 +96,7 @@
   "cron_op_created": "Created",
   "cron_op_updated": "Updated",
   "cron_op_removed": "Removed",
+  "cron_op_unchanged": "Unchanged",
   "cron_panel_close": "Close cron detail",
   "cron_panel_loading": "Loading cron…",
   "cron_panel_gone": "This cron no longer exists on the gateway (deleted). The information below is from the time of the message.",

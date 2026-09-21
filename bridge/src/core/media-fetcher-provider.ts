@@ -80,10 +80,26 @@ export function buildMediaFetcher(
       // ask IT rather than asking the operator to re-mount (2026-09-20 report).
       const httpBase = config.gatewayHttpBase;
       const token = config.openclawToken;
-      // No HTTP base or no token ⇒ no fallback, and the skip reason stays
-      // `not_in_this_mount`: an honest "this fetcher cannot see it", never a
-      // silent pretence that the file was missing.
-      if (!httpBase || !token) return local;
+      // No HTTP base ⇒ no fallback, and the skip reason stays `not_in_this_mount`:
+      // an honest "this fetcher cannot see it", never a silent pretence that the
+      // file was missing.
+      //
+      // The TOKEN requirement is scoped to the mode that uses one. A trusted-proxy
+      // instance has NO shared token BY CONSTRUCTION — upstream refuses to run that
+      // mode with one configured, which is why `credential-resolver.ts:265` writes
+      // exactly this condition to decide whether a missing token is an error. A
+      // flat `!token` here read that correct configuration as "unauthenticated" and
+      // silently returned the local fetcher, so every generated image on a
+      // trusted-proxy deployment kept being announced and dropped — the very defect
+      // this composite exists to fix, disabled on one whole class of instance with
+      // no log and no reason code.
+      //
+      // The fallback itself already knows: it presents identity headers instead of
+      // a Bearer when there is no token (gateway-http-media-fetcher.ts:130-138),
+      // which is the same authorization the WebSocket uses. Nothing downstream
+      // needed changing — only this gate disagreed with it.
+      const trustedProxy = config.openclawAuthMode === "trusted-proxy";
+      if (!httpBase || (!token && !trustedProxy)) return local;
       return new CompositeMediaFetcher({
         primary: local,
         fallback: buildGatewayHttpFetcher(config, maxBytes),

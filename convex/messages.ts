@@ -130,7 +130,7 @@ type ClientPart =
   // bounded at write time by the bridge — passes through untouched).
   | {
       kind: "cron";
-      op: "created" | "updated" | "removed";
+      op: "created" | "updated" | "removed" | "unchanged";
       jobId?: string;
       name?: string;
       enabled?: boolean;

@@ -1,5 +1,75 @@
 # Changelog
 
+## [0.84.18] — What the bubble says is what actually happened
+
+Corrective release, entirely from an audit of the three releases before it. No
+breaking changes, nothing to reconfigure — every fix below applies itself on
+upgrade.
+
+**A delegated task that brings back nothing is named again.** When an agent hands
+work to a sub-agent, Atrium exempts that turn from its "this reply delivered
+nothing" verdict — the hand-off is deliberate, and the child answers later in its
+own right. That exemption was decided from the cards left on the bubble, and a
+bubble outlives the turn that wrote them: once a sub-agent's result had been merged
+into it, the old hand-off card stayed attached forever, and every later delivery
+into that same bubble inherited the exemption. A child that announced and delivered
+nothing therefore left a silent empty bubble — no card, no cause, nothing counted.
+The exemption is now tied to the one turn that actually handed off.
+
+**A hand-off no longer hides what happened next.** Since the previous release the
+waiting sentence an agent writes when it delegates is shown to you. Because the
+bubble then had text, the indicator that says *waiting on <task>* — or *<task>
+failed: <reason>* — switched off. The bubble said "I'm preparing it" and said it
+forever, whether the child was running, finished or dead. Both facts are shown
+again, under the sentence.
+
+**Private notes stay private.** `sessions_yield` carries two strings that are
+opposites: a waiting reply meant for you, and the agent's private instructions to
+its own resumed turn. Atrium stored the whole call and the chat renders it, so the
+private half was on screen in the tool card. It is now removed before anything is
+stored — from the call, from its result, and from the copy the gateway echoes back.
+The waiting reply is untouched: showing it is what it is for.
+
+**An archived conversation is restored without losing its history.** The repair
+shipped in 0.84.17 re-read the conversation after restoring it. When that read came
+back empty — an ordinary unlucky round trip — the answer was taken as fact and the
+conversation looked brand new: its whole history was re-sent and re-billed, and its
+stored state was cleared. An empty answer is no longer treated as evidence. The same
+refusal is also recognised now when it arrives mid-turn rather than on the way out,
+so it produces a real card and an automatic retry instead of an unnamed error.
+
+**A scheduled job card states what the scheduler did, not what was asked.** Creating
+a job by declaration converges: the scheduler may rewrite an existing job, or find
+it already correct and change nothing. Both showed "Created". Removing a job that
+was not there showed "Removed". The card now reads the scheduler's own answer, and
+says *Unchanged* when nothing happened.
+
+**An error card no longer contradicts its own headline.** The archived-conversation
+card explains that Atrium handles the restore for you — and the gateway's raw
+sentence underneath told you to restore it yourself, spelling out the internal
+session key as it went. The headline now stands alone; the raw sentence stays in
+exports and reports, where an operator wants it.
+
+**Generated files are delivered on identity-based instances too.** The 0.84.16 fix
+asks the gateway for a generated file the mounted directory cannot see. It required
+a shared token — which an instance authenticating by forwarded identity does not
+have, by design — so on those instances the fix silently did nothing and every
+generated image went on being announced and dropped. The fix also now asks only for
+a plain file sitting directly in a generation directory, never for a path nested
+below one.
+
+**Smaller repairs.** A voice call reserves its connection before any repair work
+rather than after, closing the window a concurrent conversation could take it in. A
+waiting reply is cleaned of server paths like any other text, and one made only of
+the protocol's silence keyword stays silent instead of printing it. A gateway with
+no media route no longer answers "switch to shared filesystem" to an instance that
+already is one. A restore is retried only on the refusal the gateway explicitly
+asks to retry. Refused media requests release their connection instead of parking
+it.
+
+Validated against OpenClaw 2026.9.5 with a full live-bench run: 14 of 14 scenarios
+clean, corpus re-promoted.
+
 ## [0.84.17] — A week-old conversation answers again
 
 Corrective release. No breaking changes, nothing to reconfigure, and no change to

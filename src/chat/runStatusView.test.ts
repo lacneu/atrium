@@ -243,6 +243,39 @@ describe("errorDetailView (actionable error classification)", () => {
     expect(v.code).not.toBe("context_length");
   });
 
+  it("an ARCHIVED session shows the headline alone — not the gateway's own sentence", () => {
+    // Production wording, verbatim (openclaw 2026.9.5,
+    // src/config/sessions/lifecycle.ts:124-125). Two things must not reach the
+    // card under our headline:
+    //   1. "Restore it before starting new work" — an instruction for something
+    //      Atrium now does by itself on every send, reset and voice consult. The
+    //      product decision is that the reader never touches this concept, and a
+    //      headline that says so is worthless while the sentence below contradicts
+    //      it.
+    //   2. the session key, which spells out the reader's own canonical id and the
+    //      chat id.
+    const gatewayText =
+      'Session "agent:olivier:atrium:chat:olivier:mh77m9e7q7ek2xvr636e3bvfr58b9khn" is archived. Restore it before starting new work.';
+    const v = errorDetailView(gatewayText, "session_archived");
+    expect(v.headline).toBeTruthy();
+    expect(v.detail).toBeNull();
+    const card = `${v.headline ?? ""} ${v.detail ?? ""}`;
+    expect(card).not.toMatch(/Restore it before starting new work/i);
+    expect(card, "the session key carries the canonical id and the chat id").not.toMatch(
+      /agent:olivier:atrium:chat|mh77m9e7q7ek/,
+    );
+    // EVERY locale, named explicitly: the card renders in the reader's language
+    // and a view-level assertion only exercises the one the run resolves to.
+    for (const locale of ["en", "fr"] as const) {
+      const sentence = m.runstatus_error_session_archived({}, { locale });
+      expect(sentence, locale).not.toMatch(/agent:|chat:/);
+      // It must not tell the reader to restore anything themselves.
+      expect(sentence, locale).not.toMatch(
+        /restore it|restaurez|remettez[- ]la|réactivez/i,
+      );
+    }
+  });
+
   it("the historical fallback covers EVERY reason the bridge classifies", () => {
     // The two vocabularies must stay in step: a reason the bridge mints the class for, on
     // a row stored before the class existed, has to reach the same card (codex).

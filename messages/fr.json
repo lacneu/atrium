@@ -96,6 +96,7 @@
   "cron_op_created": "Créé",
   "cron_op_updated": "Modifié",
   "cron_op_removed": "Supprimé",
+  "cron_op_unchanged": "Inchangé",
   "cron_panel_close": "Fermer le détail du cron",
   "cron_panel_loading": "Chargement du cron…",
   "cron_panel_gone": "Ce cron n'existe plus sur la passerelle (supprimé). Les informations ci-dessous sont celles du moment du message.",

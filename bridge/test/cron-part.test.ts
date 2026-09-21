@@ -378,3 +378,103 @@ describe("declarative convergence: the job arrives WRAPPED", () => {
     expect(part?.jobId).toBeUndefined();
   });
 });
+
+// THE CARD THAT SAID "CREATED" WHEN NOTHING WAS CREATED.
+//
+// The op was read from `input.action` — what the AGENT ASKED FOR — and the
+// scheduler does not always do it:
+//
+//   * A DECLARATIVE `add` (one carrying a `declarationKey`) CONVERGES. Upstream
+//     answers `{created, updated?, job, deliveryPreview}`: `created:false,
+//     updated:true` when it rewrote an existing job, and `created:false,
+//     updated:false` when the job already matched. Both rendered "Created".
+//   * `remove` answers `{ok, removed}` and does NOT throw when there was nothing
+//     to remove. `removed:false` rendered "Removed".
+//
+// A scheduler card is read exactly once — to check the job is there. A false
+// creation is only discovered when it fails to fire.
+describe("the cron card states what the scheduler DID", () => {
+  const JOB = { id: "j-1", name: "rapport", schedule: "0 8 * * *", enabled: true };
+  const out = (details: Record<string, unknown>) => ({
+    content: [{ type: "text", text: JSON.stringify(details) }],
+    details,
+  });
+
+  it("a declarative add that only UPDATED says Updated, not Created", () => {
+    const part = cronPartFromTool(
+      "automations",
+      "completed",
+      { action: "add", declarationKey: "daily-report", job: JOB },
+      out({ ...JOB, created: false, updated: true, job: JOB }),
+    );
+    expect(part?.op).toBe("updated");
+  });
+
+  it("a declarative add that converged to a NO-OP says neither", () => {
+    const part = cronPartFromTool(
+      "automations",
+      "completed",
+      { action: "add", declarationKey: "daily-report", job: JOB },
+      out({ ...JOB, created: false, updated: false, job: JOB }),
+    );
+    expect(part?.op).toBe("unchanged");
+  });
+
+  it("a genuine creation is untouched", () => {
+    const part = cronPartFromTool(
+      "automations",
+      "completed",
+      { action: "add", job: JOB },
+      out({ ...JOB, created: true, job: JOB }),
+    );
+    expect(part?.op).toBe("created");
+    expect(part?.jobId).toBe("j-1");
+  });
+
+  it("a remove that removed NOTHING does not claim a deletion", () => {
+    const part = cronPartFromTool(
+      "cron",
+      "completed",
+      { action: "remove", jobId: "j-gone" },
+      out({ ok: false, removed: false }),
+    );
+    expect(part?.op).toBe("unchanged");
+  });
+
+  it("a real removal still says Removed", () => {
+    const part = cronPartFromTool(
+      "cron",
+      "completed",
+      { action: "remove", jobId: "j-1" },
+      out({ ok: true, removed: true }),
+    );
+    expect(part?.op).toBe("removed");
+  });
+
+  it("a gateway that states NO verdict keeps the asked-for op", () => {
+    // An older generation answers with a bare job body. Silence is not evidence
+    // that nothing happened, and inventing "unchanged" there would be the same
+    // class of false fact in the other direction.
+    const part = cronPartFromTool(
+      "cron",
+      "completed",
+      { action: "add", job: JOB },
+      out({ ...JOB }),
+    );
+    expect(part?.op).toBe("created");
+  });
+
+  it("the verdict is read from the TEXT block when `details` is absent", () => {
+    // The two readers must never take the verdict and the job body from
+    // different copies of the same answer.
+    const body = { ...JOB, created: false, updated: true, job: JOB };
+    const part = cronPartFromTool(
+      "automations",
+      "completed",
+      { action: "add", declarationKey: "k", job: JOB },
+      { content: [{ type: "text", text: JSON.stringify(body) }] },
+    );
+    expect(part?.op).toBe("updated");
+    expect(part?.name).toBe("rapport");
+  });
+});
