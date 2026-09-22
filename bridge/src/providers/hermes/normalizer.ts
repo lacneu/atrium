@@ -23,6 +23,7 @@ import {
   EVENT_TOOL_STATUS,
   type BridgeEvent,
 } from "../../core/events.js";
+import type { FinalizeCause } from "../../core/finalize-causes.js";
 import type { SseFrame } from "./sse.js";
 import { protocolDrift } from "../openclaw/protocol-drift.js";
 
@@ -425,7 +426,7 @@ export class HermesNormalizer {
           : typeof data.error === "string"
             ? data.error
             : "Hermes run failed.";
-      return this.finalize("error", message);
+      return this.finalize("error", message, null, null, "gateway_error");
     }
     if (nameIn(HERMES_EVENT_NAMES.assistantCompleted, ev)) {
       // The assistant message's authoritative text (LIVE: {content}) — a
@@ -443,7 +444,7 @@ export class HermesNormalizer {
       // deltas that had accumulated (raised in review). The flags describe the RUN, not
       // the string.
       if (data.interrupted === true || data.partial === true) {
-        return this.finalize("aborted", null);
+        return this.finalize("aborted", null, null, null, "gateway_abort");
       }
       if (typeof content === "string" && content) {
         return [
@@ -459,16 +460,30 @@ export class HermesNormalizer {
       // that looked deliberate, which is the loss this programme exists to end (raised in
       // review). Settled as a delivered ERROR instead: the user is told, the operator has
       // the C4 entry, and nothing is presented as an answer that never arrived.
-      if (unreadableBody) return this.finalize("error", UNREADABLE_TERMINAL);
+      if (unreadableBody)
+        return this.finalize(
+          "error",
+          UNREADABLE_TERMINAL,
+          null,
+          null,
+          "unreadable_terminal",
+        );
       const finalText = extractFinalText(data);
       if (finalText) this.text = finalText;
-      return this.finalize("complete", null);
+      return this.finalize("complete", null, null, null, "gateway_final");
     }
     if (nameIn(HERMES_EVENT_NAMES.done, ev)) {
       // Stream closed. Success terminals precede it; if none did (clean close
       // with only deltas), settle complete on the accumulated text.
-      if (unreadableBody) return this.finalize("error", UNREADABLE_TERMINAL);
-      return this.finalize("complete", null);
+      if (unreadableBody)
+        return this.finalize(
+          "error",
+          UNREADABLE_TERMINAL,
+          null,
+          null,
+          "unreadable_terminal",
+        );
+      return this.finalize("complete", null, null, null, "gateway_final");
     }
     if (nameIn(HERMES_EVENT_NAMES.delta, ev)) {
       const text = extractDeltaText(data);
@@ -550,12 +565,25 @@ export class HermesNormalizer {
 
   /** Force-finalize (transport error / socket close before a terminal frame). */
   endTurn(
-    error: string | null = null,
-    errorKind: string | null = null,
-    clearProviderSession: string | null = null,
+    error: string | null,
+    errorKind: string | null,
+    clearProviderSession: string | null,
+    /** WHY the transport ended it. REQUIRED, and never inferred: deriving it from
+     *  "is there an error text?" produced two FALSE verdicts on the REST paths — a
+     *  read timeout filed as a lost connection, and a body that simply ended filed
+     *  as a clean provider terminal, on the very path that says the provider never
+     *  declared the turn over. A false cause is worse than none: it is the sentence
+     *  an operator acts on once the traces are gone. */
+    cause: FinalizeCause,
   ): BridgeEvent[] {
     if (this.finalized) return [];
-    return this.finalize(error ? "error" : "complete", error, errorKind, clearProviderSession);
+    return this.finalize(
+      error ? "error" : "complete",
+      error,
+      errorKind,
+      clearProviderSession,
+      cause,
+    );
   }
 
   /** Finalize as ABORTED — used when a /reset cancels a live stream (Convex has
@@ -569,7 +597,15 @@ export class HermesNormalizer {
     // left the spinner behind — the same symptom, one terminal over (raised in review).
     return [
       ...this.closeStrandedTools(),
-      { type: EVENT_MESSAGE_FINAL, text: this.text },
+      {
+        type: EVENT_MESSAGE_FINAL,
+        text: this.text,
+        // This path bypasses the funnel, so it names its own verdict. OURS, not the
+        // provider's: it settles a `/reset` that cleared the conversation under the
+        // turn, and `gateway_abort` would claim Hermes reported something it never
+        // did — the stored verdict inventing a fact about the party it describes.
+        diagnosticFinalizeCause: "session_reset",
+      },
       { type: EVENT_RUN_STATUS, status: "aborted", runId: this.runId },
     ];
   }
@@ -581,6 +617,9 @@ export class HermesNormalizer {
     /** The provider session id this turn was watching, when the turn cannot vouch for
      *  its run. The ID, not a flag — see the mutation: a hop that drops it fails CLOSED. */
     clearProviderSession: string | null = null,
+    /** WHY this turn closed. Re-derived below when a `complete` is demoted, so a
+     *  caller cannot promise a clean ending the terminal no longer has. */
+    cause: FinalizeCause = "gateway_final",
   ): BridgeEvent[] {
     // ONE place, so a `complete` path added later cannot forget it: a turn that lost a
     // frame it could not read never settles as a success. An abort stays an abort — the
@@ -588,6 +627,10 @@ export class HermesNormalizer {
     if (status === "complete" && this.corrupted) {
       status = "error";
       error = error ?? UNREADABLE_TERMINAL;
+      // …and the VERDICT follows the demotion. A cause saying the provider ended
+      // the turn cleanly, on a terminal we just refused to read, would be the one
+      // sentence an operator must be able to trust.
+      cause = "unreadable_terminal";
     }
     this.finalized = true;
     // CLOSE EVERY OPEN TOOL CARD, exactly as the WS path does. A tool whose `tool.completed`
@@ -602,6 +645,10 @@ export class HermesNormalizer {
       // The STABLE failure class when the caller knows it — a free-text error alone
       // leaves the operator (and the diagnose path) matching on prose.
       ...(errorKind ? { errorKind } : {}),
+      // WHY the turn closed, stored with the turn: traces expire, the message does
+      // not. Without it every Hermes turn stayed permanently unexplainable — the
+      // defect the field exists to remove, on a whole provider.
+      diagnosticFinalizeCause: cause,
       // Rides the terminal so the drop and the settle are one write (lot 31).
       ...(clearProviderSession ? { clearProviderSession } : {}),
     };

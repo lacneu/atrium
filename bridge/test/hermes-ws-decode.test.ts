@@ -184,3 +184,37 @@ describe("routeEventDecision — what a corrupt frame does to the turn it names"
     }
   });
 });
+
+describe("a terminal we could not DECODE is not a failure Hermes reported", () => {
+  // The promotion to `error` is lossy on purpose — the reader needs one terminal
+  // shape — but the distinction has to survive it. Filed as `gateway_error`, a
+  // protocol drift of OURS sat in the record for ever as a provider failure, and
+  // the message's stored verdict is exactly where an operator would read it long
+  // after the traces expired.
+  it("the promotion is marked OUT OF BAND, never inside the provider's payload", () => {
+    const d = routeEventDecision({
+      type: "message.complete",
+      session_id: "sid-1",
+      payload: null,
+    });
+    expect(d?.type).toBe("error");
+    expect(d?.synthetic).toBe("unreadable_terminal");
+  });
+
+  it("a genuine provider error is not synthetic — even if it spells the word itself", () => {
+    // The payload is HERMES'S. A first attempt put the discriminant inside it, so a
+    // real error event carrying that key would have been filed for ever as a decode
+    // failure of ours — the persistent verdict forged by the party it describes.
+    const d = routeEventDecision({
+      type: "error",
+      session_id: "sid-1",
+      payload: {
+        message: "upstream model refused",
+        synthetic: "unreadable_terminal",
+        __unreadableTerminal: true,
+      },
+    });
+    expect(d?.type).toBe("error");
+    expect(d?.synthetic).toBeUndefined();
+  });
+});

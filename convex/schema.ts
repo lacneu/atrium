@@ -1731,6 +1731,29 @@ export default defineSchema({
     // ATTACHMENT_TOO_LARGE, …), stored alongside the user-facing `error` text so a
     // diagnosis can read the code without parsing a localized phrase. OPTIONAL.
     errorCode: v.optional(v.string()),
+    // WHY this turn closed (gateway_final | recv_timeout | lifecycle_finishing_timeout
+    // | …), from the bridge's own account, allowlisted at the ingest boundary
+    // (convex/lib/finalizeCause.ts). Diagnosis only — no path reads it to decide
+    // anything, and it is content-free by construction (our own enum).
+    //
+    // It lived on the `chat.gateway_pressure` TRACE alone, and traces expire while
+    // the message they explain does not: prod triage 2026-09-21 found an
+    // `empty_response` from the previous day, still red, whose traces were already
+    // out of retention — seven tool calls, no text, and no way left to say why. The
+    // trace also fired conditionally, so an ordinary terminal was often computed and
+    // never written at all. The verdict now lives on the object it explains.
+    finalizeCause: v.optional(v.string()),
+    /** The verdicts of the generations this bubble had BEFORE the current one.
+     *
+     *  A merged bubble is several turns in one row: an announce reopens it and the
+     *  reopen clears `finalizeCause`, because a value left there would be read as
+     *  the NEW generation's — a false verdict, which is worse than none. But simply
+     *  dropping it lost the first turn's ending the moment a delegated report came
+     *  back, and a merged bubble is exactly what the triage that motivated this
+     *  field was looking at. Kept per generation, bounded, oldest first. */
+    priorFinalizeCauses: v.optional(
+      v.array(v.object({ runId: v.optional(v.string()), cause: v.string() })),
+    ),
     // L2: count of READY downloadable document attachments fetched for THIS
     // assistant message (denormalized by correlateDocumentaryFetch). Drives the
     // subtle "joints" badge on the Sources chip without a per-message query.

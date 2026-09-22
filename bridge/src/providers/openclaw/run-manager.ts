@@ -13,6 +13,7 @@ import { Normalizer } from "./normalizer.js";
 import { protocolDrift } from "./protocol-drift.js";
 import { TurnSink, type OutboundScan } from "../../core/turn-sink.js";
 import type { SessionFillSource } from "../../core/context-budget.js";
+import type { FinalizeCause } from "../../core/finalize-causes.js";
 import { taskDeliveryRunFromRunId } from "../../core/async-task.js";
 import {
   compactionCompleted,
@@ -1105,7 +1106,7 @@ export class RunManager {
     now: number,
     status = "final",
     error: string | null = null,
-    cause = "external",
+    cause: FinalizeCause = "external",
     /** Known failure class, when the caller has one (see Normalizer.endTurn). */
     errorKind: string | null = null,
   ): Promise<void> {

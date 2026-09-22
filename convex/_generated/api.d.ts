@@ -89,6 +89,7 @@ import type * as lib_envLabel from "../lib/envLabel.js";
 import type * as lib_exportArchive from "../lib/exportArchive.js";
 import type * as lib_files from "../lib/files.js";
 import type * as lib_filters from "../lib/filters.js";
+import type * as lib_finalizeCause from "../lib/finalizeCause.js";
 import type * as lib_folderTree from "../lib/folderTree.js";
 import type * as lib_foreignRunRefusals from "../lib/foreignRunRefusals.js";
 import type * as lib_groupAccess from "../lib/groupAccess.js";
@@ -240,6 +241,7 @@ declare const fullApi: ApiFromModules<{
   "lib/exportArchive": typeof lib_exportArchive;
   "lib/files": typeof lib_files;
   "lib/filters": typeof lib_filters;
+  "lib/finalizeCause": typeof lib_finalizeCause;
   "lib/folderTree": typeof lib_folderTree;
   "lib/foreignRunRefusals": typeof lib_foreignRunRefusals;
   "lib/groupAccess": typeof lib_groupAccess;

@@ -32,9 +32,11 @@
 // the rare live-socket WS case (`unknown`) afterwards, not because they behave
 // differently.
 
+import { readFileSync } from "node:fs";
 import { convexTest } from "convex-test";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { internal } from "./_generated/api";
+import { ABORT_POST_TIMEOUT_MS } from "./bridge";
 import schema from "./schema";
 import type { Id } from "./_generated/dataModel";
 
@@ -198,5 +200,235 @@ describe("a Stop the provider did not honour drops the session", () => {
       await bindingOf(t, seeded.chatId),
       "clearing a binding this turn never held would cut a turn that is working",
     ).toBe(SESSION);
+  });
+});
+
+describe("a Stop says WHY it ended, durably", () => {
+  const prev = { url: process.env.BRIDGE_URL, secret: process.env.BRIDGE_SHARED_SECRET };
+  beforeEach(() => {
+    process.env.BRIDGE_URL = "http://127.0.0.1:8787";
+    process.env.BRIDGE_SHARED_SECRET = "x";
+  });
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    if (prev.url === undefined) delete process.env.BRIDGE_URL;
+    else process.env.BRIDGE_URL = prev.url;
+    if (prev.secret === undefined) delete process.env.BRIDGE_SHARED_SECRET;
+    else process.env.BRIDGE_SHARED_SECRET = prev.secret;
+  });
+
+  // `first terminal write wins`, so this guaranteed finalize is the ONLY chance to
+  // name the cause: a later `chat:aborted` from the gateway cannot add one, and on
+  // the Hermes path Convex owns the terminal outright. Blank, every Stop became
+  // permanently unexplained the moment its traces expired.
+  test("the guaranteed finalize stamps user_stop", async () => {
+    const t = convexTest(schema, modules);
+    const seeded = await seedStreamingTurn(t);
+    await stopWith({ ok: true, stopped: true }, seeded, t);
+    const stored = await t.run(
+      async (ctx) => (await ctx.db.get(seeded.messageId))?.finalizeCause,
+    );
+    // Not `gateway_abort`: that one means the gateway CONFIRMED the stop, and this
+    // write runs whether or not it could even be reached.
+    expect(stored).toBe("user_stop");
+  });
+});
+
+describe("the guaranteed settle cannot be held hostage by the kill", () => {
+  const prev = { url: process.env.BRIDGE_URL, secret: process.env.BRIDGE_SHARED_SECRET };
+  beforeEach(() => {
+    process.env.BRIDGE_URL = "http://127.0.0.1:8787";
+    process.env.BRIDGE_SHARED_SECRET = "x";
+  });
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    if (prev.url === undefined) delete process.env.BRIDGE_URL;
+    else process.env.BRIDGE_URL = prev.url;
+    if (prev.secret === undefined) delete process.env.BRIDGE_SHARED_SECRET;
+    else process.env.BRIDGE_SHARED_SECRET = prev.secret;
+  });
+
+  // `/abort` was the one call on this path with no deadline. A bridge that
+  // accepted the connection and never answered left the promise pending, so the
+  // `finally` that settles the turn was never reached: the bubble stayed
+  // `streaming` until the twelve-minute watchdog, the queue behind it stayed
+  // blocked, and the Stop's verdict was never written.
+  test("a bridge that never answers still settles the turn, with its cause", async () => {
+    const t = convexTest(schema, modules);
+    const seeded = await seedStreamingTurn(t);
+    // The real deadline is 20 s of wall clock; the contract under test is that the
+    // call CARRIES one and that its expiry is treated as a failed kill. Honour the
+    // signal the way the platform does.
+    let carriedDeadline = false;
+    vi.stubGlobal("fetch", (_url: string, init?: { signal?: AbortSignal }) => {
+      carriedDeadline = init?.signal instanceof AbortSignal;
+      // Reject either way, so the action completes and the assertions below are
+      // the ONLY thing that can fail. Without this the unbounded case would hang
+      // the test rather than report the defect.
+      return Promise.reject(new DOMException("TimeoutError", "TimeoutError"));
+    });
+    await t.action(internal.bridge.dispatchAbort, {
+      chatId: seeded.chatId,
+      userId: seeded.userId,
+      runId: "run_abc",
+      finalizeMessageId: seeded.messageId,
+    });
+    expect(
+      carriedDeadline,
+      "the abort POST must carry a deadline — unbounded, the settle below is never reached in production",
+    ).toBe(true);
+    const settled = await t.run(
+      async (ctx) => await ctx.db.get(seeded.messageId),
+    );
+    expect(settled?.status, "the user asked to stop; the turn stops").toBe(
+      "aborted",
+    );
+    expect(settled?.finalizeCause).toBe("user_stop");
+    // …and the session is QUARANTINED. A kill we cannot vouch for says nothing
+    // about the run: it may still be alive on the provider, writing this turn into
+    // the transcript the next send would resume — a reply the user believes they
+    // cancelled, arriving inside someone else's answer.
+    expect(
+      await bindingOf(t, seeded.chatId),
+      "a kill that failed must not leave the session bound",
+    ).toBeNull();
+  });
+});
+
+describe("the kill's deadline leaves room for the kill", () => {
+  // The bridge gives its own `chat.abort` RPC 30 s. A shorter deadline here cuts
+  // off a kill that was about to report — and that report is the ONLY thing that
+  // names the provider session as untrusted, so a session the gateway never
+  // stopped would stay bound and be resumed by the next send. An expiry must mean
+  // "the bridge is hung", not "the kill is slow".
+  test("the abort deadline exceeds the gateway RPC wait it contains", () => {
+    const rpcWait = Number(
+      /const DEFAULT_REQUEST_TIMEOUT_MS = ([0-9_]+);/
+        .exec(
+          readFileSync(
+            new URL(
+              "../bridge/src/providers/openclaw/openclaw-client.ts",
+              import.meta.url,
+            ),
+            "utf8",
+          ),
+        )?.[1]
+        ?.replaceAll("_", "") ?? "0",
+    );
+    expect(rpcWait, "the RPC wait was not found — the guard would be vacuous").toBe(
+      30_000,
+    );
+    expect(ABORT_POST_TIMEOUT_MS).toBeGreaterThan(rpcWait);
+  });
+});
+
+describe("the quarantine is bounded by what it protects against", () => {
+  const prev = { url: process.env.BRIDGE_URL, secret: process.env.BRIDGE_SHARED_SECRET };
+  beforeEach(() => {
+    process.env.BRIDGE_URL = "http://127.0.0.1:8787";
+    process.env.BRIDGE_SHARED_SECRET = "x";
+  });
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    if (prev.url === undefined) delete process.env.BRIDGE_URL;
+    else process.env.BRIDGE_URL = prev.url;
+    if (prev.secret === undefined) delete process.env.BRIDGE_SHARED_SECRET;
+    else process.env.BRIDGE_SHARED_SECRET = prev.secret;
+  });
+
+  // The kill's deadline is forty-five seconds, and the action decides from a state
+  // that old. The run can finish normally inside it and win the race — and a
+  // COMPLETE terminal is the gateway's own account of a run that ended. Dropping
+  // the session then costs a rehydration and the provider's warm context to
+  // protect against a run that is demonstrably over.
+  test("a run that FINISHED during the kill keeps its session", async () => {
+    const t = convexTest(schema, modules);
+    const seeded = await seedStreamingTurn(t);
+    // The reply lands while the kill is still in flight.
+    await t.mutation(internal.stream.finalize, {
+      messageId: seeded.messageId,
+      status: "complete",
+      text: "La réponse est arrivée avant l'arrêt.",
+    });
+    vi.stubGlobal("fetch", () =>
+      Promise.reject(new DOMException("TimeoutError", "TimeoutError")),
+    );
+    await t.action(internal.bridge.dispatchAbort, {
+      chatId: seeded.chatId,
+      userId: seeded.userId,
+      runId: "run_abc",
+      finalizeMessageId: seeded.messageId,
+    });
+    expect(
+      await bindingOf(t, seeded.chatId),
+      "the gateway said the run ended: there is nothing to quarantine",
+    ).not.toBeNull();
+    // …and the answer the user received is untouched.
+    const settled = await t.run((ctx) => ctx.db.get(seeded.messageId));
+    expect(settled?.status).toBe("complete");
+  });
+});
+
+describe("a kill that was never even attempted still sets the session aside", () => {
+  const prev = { url: process.env.BRIDGE_URL, secret: process.env.BRIDGE_SHARED_SECRET };
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    if (prev.url === undefined) delete process.env.BRIDGE_URL;
+    else process.env.BRIDGE_URL = prev.url;
+    if (prev.secret === undefined) delete process.env.BRIDGE_SHARED_SECRET;
+    else process.env.BRIDGE_SHARED_SECRET = prev.secret;
+  });
+
+  // These exits leave before the POST. The `finally` still settles the turn and
+  // releases the queue, so a send can follow immediately — onto a run nobody tried
+  // to stop. They had no quarantine at all, which is strictly worse than a kill
+  // that failed: here we know for certain nothing was attempted.
+  test("a missing shared secret quarantines the session", async () => {
+    const t = convexTest(schema, modules);
+    process.env.BRIDGE_URL = "http://127.0.0.1:8787";
+    delete process.env.BRIDGE_SHARED_SECRET;
+    const seeded = await seedStreamingTurn(t);
+    await t.action(internal.bridge.dispatchAbort, {
+      chatId: seeded.chatId,
+      userId: seeded.userId,
+      runId: "run_abc",
+      finalizeMessageId: seeded.messageId,
+    });
+    expect(
+      await bindingOf(t, seeded.chatId),
+      "nothing was sent: the run is certainly still out there",
+    ).toBeNull();
+    const settled = await t.run((ctx) => ctx.db.get(seeded.messageId));
+    expect(settled?.status, "the user asked to stop; the turn stops").toBe("aborted");
+  });
+});
+
+describe("an interrupt the gateway could NOT honour always quarantines", () => {
+  const prev = { url: process.env.BRIDGE_URL, secret: process.env.BRIDGE_SHARED_SECRET };
+  beforeEach(() => {
+    process.env.BRIDGE_URL = "http://127.0.0.1:8787";
+    process.env.BRIDGE_SHARED_SECRET = "x";
+  });
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    if (prev.url === undefined) delete process.env.BRIDGE_URL;
+    else process.env.BRIDGE_URL = prev.url;
+    if (prev.secret === undefined) delete process.env.BRIDGE_SHARED_SECRET;
+    else process.env.BRIDGE_SHARED_SECRET = prev.secret;
+  });
+
+  // "We could not stop it" is the most alarming verdict of all, and it was the
+  // only one that quarantined nothing when the answer named no session. The
+  // absence of an id is itself a live case — a first turn whose bind is still in
+  // flight reports none — and the unnamed form is what reaches that binding: the
+  // epoch bump is what makes a bind landing afterwards stand down.
+  test("an unhonoured verdict with NO session named still sets the binding aside", async () => {
+    const t = convexTest(schema, modules);
+    const seeded = await seedStreamingTurn(t);
+    await stopWith({ ok: true, interrupt: "ineffective" }, seeded, t);
+    expect(
+      await bindingOf(t, seeded.chatId),
+      "the gateway said the run did not stop: nothing here may be resumed",
+    ).toBeNull();
   });
 });

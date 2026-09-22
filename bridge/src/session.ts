@@ -36,25 +36,26 @@ import type { BridgeConfig } from "./config.js";
 import type { MediaFetcherProvider } from "./core/media-fetcher-provider.js";
 import { buildSessionKey } from "./providers/openclaw/session-keys.js";
 import { protocolDrift } from "./providers/openclaw/protocol-drift.js";
+import type { FinalizeCause } from "./core/finalize-causes.js";
 
 // Stable errorCode for a bridge-side infrastructure end (socket drop / crash
 // mid-turn): the UI maps it to "connection lost — retry", never the user
 // "Interrompu". Distinct from the user Stop (Convex-set "aborted").
-const CONNECTION_LOST_CODE = "connection_lost";
+const CONNECTION_LOST_CODE: FinalizeCause = "connection_lost";
 // The gateway ANNOUNCED its own restart (`event:"shutdown"`) before the socket
 // went away: a KNOWN maintenance window, not a mystery. Distinct from
 // connection_lost because the honest message differs ("it is coming back", and
 // often when) and because a restart RESUMES the run gateway-side.
-const GATEWAY_RESTARTING_CODE = "gateway_restarting";
+const GATEWAY_RESTARTING_CODE: FinalizeCause = "gateway_restarting";
 // The gateway hung up with `1008 "slow consumer"`: our receive buffer passed its
 // ceiling, so it had already been DROPPING frames before cutting us off. Distinct
 // from a network blip — the reply was provably incomplete, and the remedy is on
 // our side, not the user's.
-const CONNECTION_SATURATED_CODE = "connection_saturated";
+const CONNECTION_SATURATED_CODE: FinalizeCause = "connection_saturated";
 // The gateway kept reasoning past the recovery budget (a recv-silence turn whose
 // active status-query never resolved) — an actionable class distinct from a
 // dropped connection (the socket was fine; the agent simply took too long).
-const RESPONSE_TIMEOUT_CODE = "response_timeout";
+const RESPONSE_TIMEOUT_CODE: FinalizeCause = "response_timeout";
 
 // Orphan-turn recovery (gateway restart mid-turn): the gateway's
 // main-session-restart-recovery RESUMES the run after boot and the answer
@@ -589,7 +590,12 @@ class Session implements BridgeSession {
           this.clock(),
           "error",
           crashCause,
-          "external",
+          // THE CAUSE WE JUST COMPUTED, not the generic one. This slot used to
+          // feed a trace; it is now the turn's durable verdict, and writing
+          // `external` over a known `gateway_restarting` or `connection_saturated`
+          // would make the record lie about the one class of incident an operator
+          // most needs to recognise afterwards.
+          crashCause,
           Session.namedKind(crashCause),
         );
       } catch (err) {
@@ -738,7 +744,7 @@ class Session implements BridgeSession {
                       settleClock(),
                       "error",
                       deferredCause,
-                      "external",
+                      deferredCause,
                       Session.namedKind(deferredCause),
                     )
                     .catch((e) =>
@@ -759,7 +765,7 @@ class Session implements BridgeSession {
                   now,
                   "error",
                   abortCause,
-                  "external",
+                  abortCause,
                   Session.namedKind(abortCause),
                 );
               } catch (err) {
@@ -964,7 +970,7 @@ class Session implements BridgeSession {
       : null;
   }
 
-  private closeCauseCode(): string {
+  private closeCauseCode(): FinalizeCause {
     switch (this.connection.connectionEnd?.kind) {
       case "gateway_restarting":
         return GATEWAY_RESTARTING_CODE;
@@ -994,7 +1000,7 @@ class Session implements BridgeSession {
     // Cause captured AT THE DROP: by the time the deadline fires, the connection
     // object may have been replaced, so re-reading it then would lose the name of
     // the end we are settling for.
-    dropCause: string = CONNECTION_LOST_CODE,
+    dropCause: FinalizeCause = CONNECTION_LOST_CODE,
   ): void {
     const rm = this.runManager;
     const fetcher = this.transcriptFetcher;

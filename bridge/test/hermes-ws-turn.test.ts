@@ -10,6 +10,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it, vi } from "vitest";
 import { runHermesWsTurn, isHermesWsStoredSessionId } from "../src/providers/hermes/ws-turn.js";
+import { routeEventDecision } from "../src/providers/hermes/ws-client.js";
 import type { HermesWsClient } from "../src/providers/hermes/ws-client.js";
 import type { ConvexWriter } from "../src/convex-writer.js";
 
@@ -68,9 +69,16 @@ function spyWriter() {
       text?: string,
       error?: string | null,
       errorKind?: string | null,
+      // WHY the turn closed rides the finalize OPTIONS. Recorded because the
+      // verdict is a fact tests must be able to assert: without it a test reading
+      // this slot silently compared undefined against undefined.
+      opts?: { finalizeCause?: string | null },
     ) => {
       calls.push(["finalize", status]);
-      calls.push(["finalizeDetail", { status, text, error, errorKind }]);
+      calls.push([
+        "finalizeDetail",
+        { status, text, error, errorKind, finalizeCause: opts?.finalizeCause },
+      ]);
     },
     reportSessionMeta: async (_chatId: string, meta: unknown) => {
       calls.push(["reportSessionMeta", meta]);
@@ -93,6 +101,9 @@ function fakeWsClient(opts: {
   submittedTexts?: string[];
   /** The ACK status prompt.submit answers with. Upstream declares THREE. */
   ackStatus?: string;
+  /** Holds `prompt.submit` open so a test can land an event in the PRE-ACK window
+   *  — the buffer that holds events until the verdict is in. */
+  submitGate?: Promise<void>;
 }): HermesWsClient {
   return {
     call: async (method: string, params?: Record<string, unknown>) => {
@@ -110,6 +121,7 @@ function fakeWsClient(opts: {
         opts.submittedTexts?.push(
           String((params as { text?: string })?.text ?? ""),
         );
+        if (opts.submitGate) await opts.submitGate;
         if (opts.submitError) throw opts.submitError;
         return { status: opts.ackStatus ?? "streaming" };
       }
@@ -1215,5 +1227,159 @@ describe("prompt.submit answers THREE acknowledgements, not one (G-36)", () => {
     await expect(run.accepted).rejects.toThrow(/already has a live turn/);
     await run.done;
     expect(submitted).toEqual([]);
+  });
+});
+
+describe("a WS terminal this build could not decode says so, all the way down", () => {
+  // The router promotes such a terminal to `error` so the reader has one terminal
+  // shape. Filed as `gateway_error`, a protocol drift of OURS would sit in the
+  // message's stored verdict for ever as a failure Hermes reported — read long
+  // after the traces that could have contradicted it expired.
+  it("the stored cause is unreadable_terminal, not gateway_error", async () => {
+    const { writer, calls } = spyWriter();
+    let onEvent!: (
+      type: string,
+      payload: Record<string, unknown>,
+      synthetic?: "unreadable_terminal",
+    ) => void;
+    const run = runHermesWsTurn(
+      {
+        client: fakeWsClient({}),
+        writer,
+        chatId: "c1",
+        sessionKey: "hermes:hermes-agent:chat:u:c1",
+        providerChatId: null,
+        text: "hi",
+      },
+      (_sid, cb) => {
+        onTransportLost = cb.onTransportLost;
+        onEvent = cb.onEvent;
+        return () => {};
+      },
+    );
+    await run.accepted;
+    // EXACTLY what the router emits for a terminal whose payload would not decode
+    // — built by the router itself, so a rename of the mark cannot pass this test.
+    const promoted = routeEventDecision({
+      type: "message.complete",
+      session_id: "s",
+      payload: null,
+    });
+    if (promoted === null) throw new Error("the router dropped the terminal");
+    // Exactly as the client relays it: the reason travels BESIDE the payload.
+    onEvent(promoted.type, promoted.payload, promoted.synthetic);
+    await run.done;
+    const detail = calls.find(([n]) => n === "finalizeDetail")?.[1] as
+      | { finalizeCause?: string }
+      | undefined;
+    expect(detail?.finalizeCause).toBe("unreadable_terminal");
+  });
+});
+
+describe("Hermes cannot forge our own verdict about it", () => {
+  // The payload is the PROVIDER'S. The first attempt put the discriminant inside
+  // it, so a genuine `error` event carrying that key would have been filed for
+  // ever as a decode failure of ours — the persistent verdict forged by the party
+  // it describes.
+  it("a real provider error spelling the reserved words stays gateway_error", async () => {
+    const { writer, calls } = spyWriter();
+    let onEvent!: (
+      type: string,
+      payload: Record<string, unknown>,
+      synthetic?: "unreadable_terminal",
+    ) => void;
+    const run = runHermesWsTurn(
+      {
+        client: fakeWsClient({}),
+        writer,
+        chatId: "c1",
+        sessionKey: "hermes:hermes-agent:chat:u:c1",
+        providerChatId: null,
+        text: "hi",
+      },
+      (_sid, cb) => {
+        onTransportLost = cb.onTransportLost;
+        onEvent = cb.onEvent;
+        return () => {};
+      },
+    );
+    await run.accepted;
+    const forged = routeEventDecision({
+      type: "error",
+      session_id: "s",
+      payload: {
+        message: "upstream model refused",
+        synthetic: "unreadable_terminal",
+        __unreadableTerminal: true,
+      },
+    });
+    if (forged === null) throw new Error("the router dropped a real error");
+    expect(forged.synthetic, "nothing in a payload may mark it ours").toBeUndefined();
+    onEvent(forged.type, forged.payload, forged.synthetic);
+    await run.done;
+    const detail = calls.find(([n]) => n === "finalizeDetail")?.[1] as
+      | { finalizeCause?: string }
+      | undefined;
+    expect(detail?.finalizeCause).toBe("gateway_error");
+  });
+});
+
+describe("an undecodable terminal arriving BEFORE the ACK keeps its account", () => {
+  // Events that arrive while `prompt.submit` is still in flight are held and
+  // replayed once the verdict is in. The buffer stored `[type, payload]` and
+  // dropped the router's own account — so a terminal we could not decode, arriving
+  // in that window, came back as a failure Hermes reported. The window is a
+  // supported path, not a theoretical one.
+  it("the pre-ACK buffer replays the synthetic origin, not just type + payload", async () => {
+    const { writer, calls } = spyWriter();
+    let release!: () => void;
+    const gate = {
+      promise: new Promise<void>((r) => {
+        release = r;
+      }),
+    };
+    let onEvent!: (
+      type: string,
+      payload: Record<string, unknown>,
+      synthetic?: "unreadable_terminal",
+    ) => void;
+    const run = runHermesWsTurn(
+      {
+        client: fakeWsClient({ submitGate: gate.promise }),
+        writer,
+        chatId: "c1",
+        sessionKey: "hermes:hermes-agent:chat:u:c1",
+        providerChatId: null,
+        text: "hi",
+      },
+      (_sid, cb) => {
+        onTransportLost = cb.onTransportLost;
+        onEvent = cb.onEvent;
+        return () => {};
+      },
+    );
+    // The lane is registered before `prompt.submit` is called; wait for it.
+    for (let i = 0; i < 50 && typeof onEvent !== "function"; i++) {
+      await new Promise((r) => setTimeout(r, 0));
+    }
+    expect(
+      typeof onEvent,
+      "the lane never registered — the hold window was never reached",
+    ).toBe("function");
+    const promoted = routeEventDecision({
+      type: "message.complete",
+      session_id: "s",
+      payload: null,
+    });
+    if (promoted === null) throw new Error("the router dropped the terminal");
+    // BEFORE the ACK resolves: this goes into the hold buffer.
+    onEvent(promoted.type, promoted.payload, promoted.synthetic);
+    release();
+    await run.accepted;
+    await run.done;
+    const detail = calls.find(([n]) => n === "finalizeDetail")?.[1] as
+      | { finalizeCause?: string }
+      | undefined;
+    expect(detail?.finalizeCause).toBe("unreadable_terminal");
   });
 });

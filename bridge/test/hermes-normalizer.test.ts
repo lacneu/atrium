@@ -418,3 +418,78 @@ describe("corruption on ANY interpreted frame poisons the success (W9/C4)", () =
     expect(status?.status).toBe("complete");
   });
 });
+
+// The AST guard next door proves every Hermes terminal CARRIES a cause. It cannot
+// prove the cause is TRUE — and the first version of this work derived it from
+// "is there an error text?", which falsified two real REST endings: a read timeout
+// filed as a lost connection, and a body that simply ended filed as a clean
+// provider terminal, on the very branch that exists because the provider never
+// declared the turn over. A false verdict is worse than an absent one: it is the
+// sentence an operator acts on once the traces are gone.
+describe("a forced Hermes ending says what actually happened", () => {
+  const causeOf = (events: BridgeEvent[]): unknown =>
+    (
+      events.find((e) => e.type === "message.final") as {
+        diagnosticFinalizeCause?: unknown;
+      }
+    )?.diagnosticFinalizeCause;
+
+  it("a body that ended with no terminal is NOT a clean provider ending", () => {
+    const n = new HermesNormalizer();
+    // The shape of turn.ts's EOF branch: no error text, because the run had been
+    // stamped — and that absence is exactly what used to read as success.
+    expect(causeOf(n.endTurn(null, null, "sess-1", "terminal_missing"))).toBe(
+      "terminal_missing",
+    );
+  });
+
+  it("a read timeout is a timeout, not a lost connection", () => {
+    const n = new HermesNormalizer();
+    expect(
+      causeOf(
+        n.endTurn(
+          "Hermes stopped sending before the reply was complete.",
+          "response_timeout",
+          "sess-1",
+          "response_timeout",
+        ),
+      ),
+    ).toBe("response_timeout");
+  });
+
+  it("our own socket breaking is a lost connection", () => {
+    const n = new HermesNormalizer();
+    expect(causeOf(n.endTurn("read ECONNRESET", null, "sess-1", "connection_lost"))).toBe(
+      "connection_lost",
+    );
+  });
+
+  it("a frame we could not read overrides whatever the caller promised", () => {
+    const n = new HermesNormalizer();
+    // An `assistant.delta` whose body is not a JSON object: the turn is corrupted
+    // from here on, and its `complete` is demoted to an error.
+    n.feed({ event: "assistant.delta", data: "not-json" } as never);
+    const events = n.endTurn(null, null, null, "gateway_final");
+    expect(
+      events.some((e) => e.type === "run.status" && e.status === "error"),
+      "the demotion is the premise of this test — without it nothing is proven",
+    ).toBe(true);
+    // The caller's optimistic verdict must not survive that demotion.
+    expect(causeOf(events)).toBe("unreadable_terminal");
+  });
+});
+
+describe("a reset we performed is not an abort Hermes reported", () => {
+  // `abortTurn` settles a `/reset` that cleared the conversation under the turn.
+  // Filed as `gateway_abort` — the cause reserved for a terminal the provider
+  // actually sent — the stored verdict claimed Hermes did something it never did,
+  // and no trace survived to contradict it.
+  it("the SSE reset path names itself", () => {
+    const n = new HermesNormalizer();
+    const events = n.abortTurn();
+    const final = events.find((e) => e.type === "message.final") as
+      | { diagnosticFinalizeCause?: unknown }
+      | undefined;
+    expect(final?.diagnosticFinalizeCause).toBe("session_reset");
+  });
+});

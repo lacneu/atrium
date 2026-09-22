@@ -72,6 +72,7 @@ import {
   stampReceived,
   type BridgeEvent,
 } from "../../core/events.js";
+import type { FinalizeCause } from "../../core/finalize-causes.js";
 import { isDeliveryRunId } from "../../core/async-task.js";
 import {
   isProvenanceStream,
@@ -1104,7 +1105,7 @@ export class Normalizer {
     now: number,
     status = "final",
     error: string | null = null,
-    cause = "external",
+    cause: FinalizeCause = "external",
     // A caller that ALREADY knows the failure class states it (a NAMED connection
     // end). Without this the kind stayed null on every forced finalize, the text
     // fallback below could not classify a bare code, and the operator telemetry
@@ -2418,7 +2419,7 @@ export class Normalizer {
     // seconds. One deadline, cancellable, never shorter than the call it opens nor
     // than the grace it replaces (`truncated_final`'s twenty seconds are deliberate).
     let deadline = now + HISTORY_RECOVERY_GRACE;
-    const causeOf: Record<string, string> = {
+    const causeOf: Record<string, FinalizeCause> = {
       private_ack: "private_ack_grace",
       empty_final: "empty_final_timeout",
       truncated_final: "truncated_final_grace",
@@ -3356,7 +3357,7 @@ export class Normalizer {
   private recoveredTails: string[] = [];
   /** The finalize cause of the grace `markRecoveryAttempted` converted into the
    *  recovery window, so the trace still names the wait that actually closed. */
-  private recoveryWindowCause: string | null = null;
+  private recoveryWindowCause: FinalizeCause | null = null;
   /** A terminal the gateway already delivered, held back while a transcript fetch is
    *  still on the wire. Consumed the moment that fetch lands or its window expires —
    *  never dropped, and never left to the silence budget. */
@@ -3566,7 +3567,11 @@ export class Normalizer {
    * already owns, and the held cause is revocable: work resuming after it means the
    * gateway is not finished after all.
    */
-  private finalizeOrHold(now: number, cause: string, events: BridgeEvent[]): void {
+  private finalizeOrHold(
+    now: number,
+    cause: FinalizeCause,
+    events: BridgeEvent[],
+  ): void {
     this.finalizeOrHoldWith(now, events, (at) =>
       this.finalize(at, "final", null, null, cause),
     );
@@ -3720,7 +3725,7 @@ export class Normalizer {
     // WHY the turn closed — diagnosis only (rides the pressure trace). Lets an
     // AUTO-close on a silence deadline (recv/empty_final/lifecycle_end) be told
     // apart from a real gateway terminal, WITHOUT assuming the mechanism.
-    cause: string | null = null,
+    cause: FinalizeCause | null = null,
   ): BridgeEvent[] {
     if (this.finalized) {
       return [];

@@ -43,6 +43,7 @@ import type {
   SubAgentRecord,
 } from "../../convex-writer.js";
 import type { HermesWsClient } from "./ws-client.js";
+import type { SyntheticOrigin } from "./ws-client.js";
 import type { HermesFilesFetcher } from "./files-fetcher.js";
 import { protocolDrift } from "../openclaw/protocol-drift.js";
 import { isHermesVersionScheme } from "../../compat.js";
@@ -177,7 +178,14 @@ export interface HermesWsTurnRun {
  *  lane would mean a wire frame could impersonate it, and would put a bridge-internal
  *  name into the terminal vocabulary the reader's switch defines. */
 export interface HermesWsSessionHandlers {
-  onEvent: (type: string, payload: Record<string, unknown>) => void;
+  onEvent: (
+    type: string,
+    payload: Record<string, unknown>,
+    /** Set only when the ROUTER made this event up (a terminal whose payload would
+     *  not decode). Beside the payload, never inside it: the payload is the
+     *  provider's, and a fact about OUR decoding cannot be one it can forge. */
+    synthetic?: SyntheticOrigin,
+  ) => void;
   /** THIS instance's socket died while the turn was waiting. */
   onTransportLost: (reason: string) => void;
 }
@@ -521,7 +529,15 @@ export function runHermesWsTurn(
       closeMoaAggregator("aborted");
       if (writeAborted) {
         apply([
-          { type: EVENT_MESSAGE_FINAL, text: replyText },
+          {
+            type: EVENT_MESSAGE_FINAL,
+            text: replyText,
+            // OURS, not the provider's: this terminal is written for a `/reset`,
+            // before the interrupt call even goes out. Filed as `gateway_abort` it
+            // was indistinguishable from an abort Hermes actually reported — the
+            // stored verdict claiming the provider did something it never did.
+            diagnosticFinalizeCause: "session_reset",
+          },
           { type: EVENT_RUN_STATUS, status: "aborted", runId: runtimeSid },
         ]);
       }
@@ -550,9 +566,15 @@ export function runHermesWsTurn(
      *  test asserting "both providers are instrumented" by reading that file was green
      *  for exactly that wrong reason. Reports and RETHROWS: whatever the dispatcher does
      *  with a throwing handler today, it keeps doing. */
-    const onEvent = (type: string, payload: Record<string, unknown>): void => {
+    const onEvent = (
+      type: string,
+      payload: Record<string, unknown>,
+      /** Set only when the ROUTER made this event up — beside the payload, never
+       *  inside it (see HermesWsSessionHandlers). */
+      synthetic?: SyntheticOrigin,
+    ): void => {
       try {
-        applyEvent(type, payload);
+        applyEvent(type, payload, synthetic);
       } catch (err) {
         protocolDrift.observeException({ type, payload }, err, "hermes-ws-event");
         throw err;
@@ -621,7 +643,14 @@ export function runHermesWsTurn(
           holdForPrompt(type);
         });
     };
-    const applyEvent = (type: string, payload: Record<string, unknown>): void => {
+    const applyEvent = (
+      type: string,
+      payload: Record<string, unknown>,
+      /** Set only when the ROUTER made this event up — beside the payload, never
+       *  inside it: the payload is the provider's, and a fact about OUR decoding
+       *  cannot be one it can forge. */
+      synthetic?: SyntheticOrigin,
+    ): void => {
       // The QUEUED gate. Everything before our run's `message.start` belongs to the turn
       // this prompt interrupted — its deltas, its tools, and above all its TERMINAL,
       // which used to close this bubble with someone else's reply.
@@ -1226,6 +1255,15 @@ export function runHermesWsTurn(
           const finalEv: BridgeEvent = {
             type: EVENT_MESSAGE_FINAL,
             text,
+            // WHY it closed, from the provider's OWN terminal status — the three it
+            // can report, told apart. Without it a Hermes turn stayed permanently
+            // unexplainable once its traces expired.
+            diagnosticFinalizeCause:
+              status === "error"
+                ? "gateway_error"
+                : status === "aborted"
+                  ? "gateway_abort"
+                  : "gateway_final",
             // The drop rides THIS terminal, atomically, exactly as the silence path does.
             ...(historyWarning && boundStoredSid
               ? { clearProviderSession: boundStoredSid }
@@ -1300,12 +1338,21 @@ export function runHermesWsTurn(
             promoted = true;
           }
           const errKind = classifyProviderInternal(msg);
+          // A terminal this build could not DECODE reaches here as an `error` —
+          // the router promotes it so the reader has one terminal shape. The reason
+          // travels BESIDE the payload: filed as `gateway_error`, a protocol drift
+          // of ours would sit in the record for ever as a failure Hermes reported,
+          // and read from the payload it would be a fact Hermes could forge.
+          const unreadable = synthetic === "unreadable_terminal";
           apply([
             {
               type: EVENT_MESSAGE_FINAL,
               text: errText,
               error: msg,
               ...(errKind ? { errorKind: errKind } : {}),
+              diagnosticFinalizeCause: unreadable
+                ? "unreadable_terminal"
+                : "gateway_error",
               // The prose streamed live — discard the stream fallback too
               // (codex P1).
               ...(promoted ? { discardStreamText: true } : {}),
@@ -1350,7 +1397,12 @@ export function runHermesWsTurn(
      *  comes — 240 s of "Réflexion…" and a healthy session dropped. So we HOLD them and
      *  decide once the verdict is in. */
     let ackPending = true;
-    const ackHeld: Array<[string, Record<string, unknown>]> = [];
+    // The third slot is the ROUTER's own account of the event (see SyntheticOrigin).
+    // Held events are replayed verbatim below, and a tuple that dropped it turned an
+    // undecodable terminal arriving before the ACK back into a provider failure.
+    const ackHeld: Array<
+      [string, Record<string, unknown>, SyntheticOrigin | undefined]
+    > = [];
     /** Bounded, like every buffer in this bridge. The window is one RPC round trip, so
      *  this is orders of magnitude above any real burst; overflowing means the provider
      *  is behaving in a way we do not model, and holding more would trade a wrong
@@ -1457,6 +1509,7 @@ export function runHermesWsTurn(
           text: replyText,
           error: "Hermes stopped sending before the reply was complete.",
           errorKind: "response_timeout",
+          diagnosticFinalizeCause: "response_timeout",
           // The ID we were watching, not a flag: this terminal can land AFTER a user
           // Stop released the chat and a newer turn bound a session of its own, and the
           // mutation drops the binding only while it is still this one.
@@ -1509,6 +1562,7 @@ export function runHermesWsTurn(
           type: EVENT_MESSAGE_FINAL,
           text: replyText,
           error: msg,
+          diagnosticFinalizeCause: "connection_lost",
           // The CURRENT binding, not the one this turn started on: a rotation learned
           // mid-turn moved it, and clearing the stale id would match nothing and leave
           // the rotated session bound to a turn declared unusable (raised in review).
@@ -1533,14 +1587,14 @@ export function runHermesWsTurn(
     // exit: the dispatch fails by name and Convex owns the single error bubble. Sending
     // anyway would put this turn's reply into someone else's message.
     const laneHandlers: HermesWsSessionHandlers = {
-      onEvent: (type, payload) => {
+      onEvent: (type, payload, synthetic) => {
         // RE-ARMED BY ANY EVENT of this session — including the monitoring ones that
         // outlive the parent turn. Progress is progress: a delegation still reporting is
         // not a stalled provider.
         armRecv();
         if (ackPending) {
           if (ackHeld.length < ACK_HOLD_MAX) {
-            ackHeld.push([type, payload]);
+            ackHeld.push([type, payload, synthetic]);
             return;
           }
           // Overflow FAILS CLOSED. Routing the surplus "because streaming is the common
@@ -1557,7 +1611,7 @@ export function runHermesWsTurn(
           }
           return;
         }
-        onEvent(type, payload);
+        onEvent(type, payload, synthetic);
       },
       onTransportLost,
     };
@@ -1682,6 +1736,7 @@ export function runHermesWsTurn(
             text: "",
             error: msg,
             ...(sendKind ? { errorKind: sendKind } : {}),
+            diagnosticFinalizeCause: "upstream_error",
           },
           { type: EVENT_RUN_STATUS, status: "error", runId: runtimeSid, message: msg },
         ]);
@@ -1745,6 +1800,7 @@ export function runHermesWsTurn(
               text: "",
               error: lostMsg,
               errorKind: "correlation_lost",
+              diagnosticFinalizeCause: "correlation_lost",
               // The CURRENT binding, not the one this turn started on: a rotation learned
           // mid-turn moved it, and clearing the stale id would match nothing and leave
           // the rotated session bound to a turn declared unusable (raised in review).
@@ -1769,12 +1825,12 @@ export function runHermesWsTurn(
         const start = held.findIndex(([t]) => t === "message.start");
         if (start >= 0) {
           awaitingOurTurn = false;
-          for (const [t, p] of held.slice(start + 1)) onEvent(t, p);
+          for (const [t, p, syn] of held.slice(start + 1)) onEvent(t, p, syn);
         } else {
           awaitingOurTurn = true;
         }
       } else {
-        for (const [t, p] of held) onEvent(t, p);
+        for (const [t, p, syn] of held) onEvent(t, p, syn);
       }
       // QUEUED: the provider owes us a reply, but not yet — the interrupted turn's
       // events come first, on this same lane. Gate the bubble until `message.start`
@@ -1800,6 +1856,7 @@ export function runHermesWsTurn(
             text: "",
             error: steeredMsg,
             errorKind: "prompt_steered",
+            diagnosticFinalizeCause: "prompt_steered",
           },
           {
             type: EVENT_RUN_STATUS,

@@ -30,6 +30,7 @@ import { v } from "convex/values";
 import { hashKey } from "./lib/apikeys";
 import { chatAllowsInstance } from "./lib/ingestAuthz";
 import { compactionReasonClass } from "./lib/compactionReasons";
+import { finalizeCauseClass } from "./lib/finalizeCause";
 import {
   classifyForeignRunRefusals,
   costlyForeignRunRefusals,
@@ -385,6 +386,9 @@ type IngestOp =
       error: string | null;
       errorKind?: string | null;
       runId?: string | null;
+      /** WHY the turn closed, from the bridge's own account. Allowlisted below
+       *  before it reaches storage — the wire never writes its own vocabulary. */
+      finalizeCause?: string | null;
       /** TRUE = the streamed text is protocol NOISE (a NO_REPLY sentinel that
        *  reached the live row): the finalize must NOT fall back to it. Carried
        *  ON the finalize so the discard is atomic with it — a separate purge
@@ -1212,9 +1216,13 @@ export const ingest = httpAction(async (ctx, request) => {
           // WHY the turn closed — the label that tells an auto-close on a silence
           // deadline (recv_timeout / lifecycle_end_timeout / empty_final_timeout)
           // apart from a real gateway terminal (gateway_final / gateway_terminal).
-          ...(typeof body.finalizeCause === "string" && body.finalizeCause
-            ? { finalizeCause: body.finalizeCause }
-            : {}),
+          // Bucketed like `compactionReason`: this boundary does not trust the
+          // sender's vocabulary, and this field alone was still storing the raw
+          // wire string.
+          ...(() => {
+            const cls = finalizeCauseClass(body.finalizeCause);
+            return cls !== null ? { finalizeCause: cls } : {};
+          })(),
           // REAL post-turn usage when the gateway stamps session metadata on
           // agent events (vs the PRE-turn counters above): per-turn tokens/cost
           // read directly instead of by delta.
@@ -1266,6 +1274,13 @@ export const ingest = httpAction(async (ctx, request) => {
           body.clearProviderSession !== "")
           ? { clearProviderSession: body.clearProviderSession }
           : {}),
+        // WHY the turn closed, onto the MESSAGE — allowlisted here, so no raw wire
+        // string can reach storage. Until now this only ever rode the pressure
+        // trace, which expires while the message it explains does not.
+        ...(() => {
+          const cls = finalizeCauseClass(body.finalizeCause);
+          return cls !== null ? { finalizeCause: cls } : {};
+        })(),
       });
       // Trace only a REAL terminal transition. The bridge retries a finalize whose
       // response was lost, so the second call is an expected no-op — tracing it too

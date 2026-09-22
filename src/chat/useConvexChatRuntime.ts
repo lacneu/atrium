@@ -166,6 +166,10 @@ export function useConvexChatRuntime({ chatId }: UseConvexChatRuntimeArgs) {
         // No outbox row yet at echo time (the mutation creates it on commit); the real
         // message that replaces this echo carries the queued/pending/sent status.
         outbox: null,
+        // A turn this session just echoed has not closed, so there is no verdict
+        // on why it did. Diagnosis-only field; nothing here reads it.
+        finalizeCause: undefined,
+        priorFinalizeCauses: undefined,
         // Never set on a message this session just wrote: the label only exists on
         // imported history.
         importedAgentLabel: undefined,

@@ -2340,25 +2340,29 @@ export class TurnSink {
       // marked the streamed text as noise (promoted Hermes failure prose —
       // codex P1: without the flag the prose survives as the reply via the
       // stream fallback and blocks the retry). Atomic with the finalize.
-      sentinelOnly ||
+      {
+        ...(sentinelOnly ||
         effectiveErrorKind === SILENT_RESPONSE_CODE ||
-        this.pendingDiscardStream ||
-        this.pendingClearProviderSession
-        ? {
-            ...(sentinelOnly ||
-            effectiveErrorKind === SILENT_RESPONSE_CODE ||
-            this.pendingDiscardStream
-              ? { discardStreamText: true }
-              : {}),
-            ...(this.pendingClearProviderSession !== null
-              ? { clearProviderSession: this.pendingClearProviderSession }
-              : {}),
-            ...(this.pendingRecoverableSession &&
-            this.pendingClearProviderSession !== null
-              ? { recoverableSession: true }
-              : {}),
-          }
-        : undefined,
+        this.pendingDiscardStream
+          ? { discardStreamText: true }
+          : {}),
+        ...(this.pendingClearProviderSession !== null
+          ? { clearProviderSession: this.pendingClearProviderSession }
+          : {}),
+        ...(this.pendingRecoverableSession &&
+        this.pendingClearProviderSession !== null
+          ? { recoverableSession: true }
+          : {}),
+        // WHY this turn closed, stored WITH the turn. It rode the pressure trace
+        // alone — which expires while the message it explains does not, and which
+        // fires only on pre-send pressure or an AUTO_CLOSE cause, so an ordinary
+        // `gateway_final` was computed and persisted nowhere at all. Passed on
+        // EVERY terminal, success included: a turn that ended well is exactly the
+        // one whose verdict the trace channel skipped.
+        ...(this.pendingDiagFinalizeCause !== null
+          ? { finalizeCause: this.pendingDiagFinalizeCause }
+          : {}),
+      },
     );
     // A visible task-delivery run also settles its engagement here (the
     // Convex-side settle on startAssistant covers the merge path; this one is

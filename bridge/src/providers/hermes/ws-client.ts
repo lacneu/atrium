@@ -32,7 +32,15 @@ export interface HermesWsOptions {
   credential: string;
   requestTimeoutMs?: number;
   /** Called for every event notification: (type, sessionId, payload). */
-  onEvent: (type: string, sessionId: string, payload: Record<string, unknown>) => void;
+  onEvent: (
+    type: string,
+    sessionId: string,
+    payload: Record<string, unknown>,
+    /** Set only when the ROUTER made this event up — see `SyntheticOrigin`. It
+     *  travels beside the payload, never inside it, because the payload is the
+     *  provider's and this fact is ours. */
+    synthetic?: SyntheticOrigin,
+  ) => void;
   onClose?: (reason: string) => void;
 }
 
@@ -72,9 +80,23 @@ interface Pending {
  *     it settles now instead of waiting for a terminal that already arrived broken.
  *   - `payload` unreadable on anything else: a lost delta. Report only — ending a turn
  *     over a delta trades a visible defect for a worse one. */
-export function routeEventDecision(
-  rawParams: unknown,
-): { type: string; sid: string; payload: Record<string, unknown> } | null {
+/**
+ * WHY this event is not what the provider actually sent.
+ *
+ * OUT OF BAND, deliberately. The first attempt stamped a reserved key inside the
+ * payload — and the payload comes from Hermes: a genuine `error` event carrying
+ * that key would have been filed for ever as a decode failure of ours. A verdict
+ * meant to survive its traces cannot be forgeable by the party it describes.
+ */
+export type SyntheticOrigin = "unreadable_terminal";
+
+export function routeEventDecision(rawParams: unknown): {
+  type: string;
+  sid: string;
+  payload: Record<string, unknown>;
+  /** Absent on every event the provider really sent. */
+  synthetic?: SyntheticOrigin;
+} | null {
   const params = asJsonObject(rawParams);
   if (params === null) {
     protocolDrift.observeException(
@@ -107,6 +129,11 @@ export function routeEventDecision(
       type: "error",
       sid,
       payload: { message: "Hermes sent a terminal event this build could not read." },
+      // The promotion to `error` is lossy by design — the reader needs one terminal
+      // shape — but the DISTINCTION must survive it: filed as a provider failure, a
+      // protocol drift of OURS would sit in the message's stored verdict for ever,
+      // read long after the traces that could contradict it expired.
+      synthetic: "unreadable_terminal",
     };
   }
   return { type, sid, payload };
@@ -294,7 +321,13 @@ export class HermesWsClient {
     // Event notification → fan out by session id.
     if (obj.method === "event") {
       const decision = routeEventDecision(obj.params);
-      if (decision !== null) this.onEvent(decision.type, decision.sid, decision.payload);
+      if (decision !== null)
+        this.onEvent(
+          decision.type,
+          decision.sid,
+          decision.payload,
+          decision.synthetic,
+        );
     }
   }
 

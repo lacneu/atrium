@@ -325,6 +325,10 @@ export function runHermesTurn(opts: HermesTurnOptions): HermesTurnRun {
             stampedRunId ? null : "Hermes accepted the run but sent no response.",
             null,
             boundSessionId,
+            // The body ended without a terminal. NOT `gateway_final`: this branch
+            // exists precisely because the provider never declared the turn over,
+            // and it drops the session as unreliable for that reason.
+            "terminal_missing",
           ),
         );
       }
@@ -378,6 +382,7 @@ export function runHermesTurn(opts: HermesTurnOptions): HermesTurnRun {
               "Hermes stopped sending before the reply was complete.",
               "response_timeout",
               boundSessionId,
+              "response_timeout",
             ),
           );
         }
@@ -407,7 +412,11 @@ export function runHermesTurn(opts: HermesTurnOptions): HermesTurnRun {
         // reasoning the WS transport-lost path follows.
         sessionCleared = true;
         opts.onSessionForgotten?.();
-        enqueue(norm.endTurn(messageOf(err), null, boundSessionId));
+        // OUR socket broke, so the run's fate is unknown — the same reading the WS
+        // transport-lost path takes.
+        enqueue(
+          norm.endTurn(messageOf(err), null, boundSessionId, "connection_lost"),
+        );
       }
     }
     disarmRecv();

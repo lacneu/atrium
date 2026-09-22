@@ -981,3 +981,45 @@ describe("archive export", () => {
     expect(manifest.origin).toMatch(/^atr_[0-9a-f]{32}$/);
   });
 });
+
+describe("why a turn ended stays with the deployment that ended it", () => {
+  // The verdict names deadlines of the gateway that produced the turn. Carried
+  // into another deployment it would answer a question nobody there can check —
+  // and it is diagnosis, not conversation. Dropped ON PURPOSE, and therefore
+  // STATED: an archive silent about an omission reads as complete.
+  test("the cause does not travel, and the manifest says so", async () => {
+    const t = convexTest(schema, modules);
+    const userId = await user(t);
+    const chatId = await chatFor(t, userId);
+    await t.run(async (ctx) => {
+      await ctx.db.insert("messages", {
+        chatId,
+        userId,
+        role: "assistant",
+        status: "error",
+        text: "",
+        errorCode: "empty_response",
+        finalizeCause: "lifecycle_finishing_timeout",
+        updatedAt: 1,
+      });
+    });
+    const asUser = t.withIdentity({ subject: userId });
+
+    const messages = await asUser.query(api.archiveExport.exportChatSection, {
+      chatId,
+      section: "messages",
+    });
+    // The failure CLASS travels — it describes the exchange. The verdict about
+    // this deployment's own deadlines does not.
+    expect(JSON.stringify(messages.rows)).toContain("empty_response");
+    expect(JSON.stringify(messages.rows)).not.toContain(
+      "lifecycle_finishing_timeout",
+    );
+
+    const manifest = await asUser.action(api.archiveExport.exportManifest, {});
+    expect(
+      manifest.notIncluded.some((entry) => /why each turn ended/i.test(entry.what)),
+      "an omission nobody declared is the same silent loss this lot removed",
+    ).toBe(true);
+  });
+});

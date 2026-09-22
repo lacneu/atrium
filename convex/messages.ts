@@ -520,6 +520,15 @@ async function loadChatView(
           // backfill is operator-invoked, so a read can always precede it (codex).
           error: maskCredentialId(message.error),
           errorCode: message.errorCode, // stable curated code (set by failDispatch)
+          // WHY the turn closed (diagnosis only). INERT for the browser — no
+          // client path reads it, and it must stay that way: it names a mechanism,
+          // not something to tell a reader. It rides this projection because the
+          // observability inspector consumes the EXACT client path by design, so
+          // that a structural bug cannot surface in one and not the other.
+          finalizeCause: message.finalizeCause,
+          // …and the verdicts of this bubble's earlier generations (merged
+          // bubbles only). Inert for the browser, for the same reason.
+          priorFinalizeCauses: message.priorFinalizeCauses,
           // The user's Stop landed on this block while its delegated work ran.
           // Carried so the reply can be marked interrupted WITHOUT its status or
           // its text being rewritten.
@@ -1024,6 +1033,17 @@ export const chatStateInternal = internalQuery({
         // is classified precisely; fall back to normalizing the error text (the
         // path for gateway/stream errors that only carry a text reason).
         errorCode: mDoc.errorCode ?? normalizeMessageErrorCode(mDoc.error),
+        // WHY this turn closed, as the bridge named it (allowlisted at ingest).
+        // The point of storing it on the message is that it can be READ here: the
+        // triage that motivated the field looked at a red turn from the previous
+        // day and found its traces already out of retention, so the verdict existed
+        // nowhere a reader could reach. null = no cause reached us (an older
+        // bridge, or a message that predates the field) — never "we hid it".
+        finalizeCause: mDoc.finalizeCause ?? null,
+        // A merged bubble is several turns in one row. Without these, the first
+        // turn's ending vanished the moment a delegated report came back — and a
+        // merged bubble is what the triage that motivated this field was reading.
+        priorFinalizeCauses: mDoc.priorFinalizeCauses ?? null,
         // Client's DERIVED render-state from the SHARED logic (runStatusView core).
         runStatusKind: runStatusKind(
           mDoc.status,

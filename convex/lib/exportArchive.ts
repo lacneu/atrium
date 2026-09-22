@@ -90,6 +90,14 @@ export const MESSAGE_FIELDS_DROPPED: ReadonlyArray<string> = [
   "announceReplayRun",
   "autoRetry",
   "boundInstance",
+  // WHY a turn closed on the SOURCE deployment. It names a mechanism of a run
+  // that is not ours — the same reason `runId` and `boundInstance` stay behind —
+  // and it is diagnosis, not conversation: an archive read back elsewhere would
+  // carry a verdict about deadlines nobody there can check.
+  "finalizeCause",
+  // Same reasoning, same manifest entry: the earlier generations' verdicts are
+  // about runs on the deployment that produced them.
+  "priorFinalizeCauses",
   // GROUP CHAT authorship. A `users` id from the SOURCE deployment, and the
   // import rewrites `userId` to the importing user (see the user-scoped section
   // rule) precisely because such an id means nothing here. `authorUserId` cannot
@@ -158,6 +166,10 @@ export const NOT_EXPORTED: ReadonlyArray<{ what: string; why: string }> = [
   {
     what: "resumable provider session handles",
     why: "such a handle belongs to the gateway that issued it; replaying one elsewhere would present a key that gateway never handed out. Correlation keys that merely link rows to each other are kept — they are what holds the archive together",
+  },
+  {
+    what: "why each turn ended",
+    why: "a verdict about a run on the deployment that produced it — the deadlines it names cannot be checked anywhere else, and an imported message must not appear to answer a question this deployment can no longer ask. It is diagnosis, not conversation",
   },
   {
     what: "identities of who owned the rows",

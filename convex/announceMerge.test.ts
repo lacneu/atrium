@@ -2035,3 +2035,53 @@ describe("a turn merged before the stamp existed keeps its identity", () => {
     ).toBe("healthy");
   });
 });
+
+describe("a reopened bubble does not keep the previous generation's verdict", () => {
+  // `finalizeCause` is written only when a cause is SENT, so a value left behind
+  // by the first generation survives a second one that legitimately reports none —
+  // an older bridge, Hermes, a Stop settled directly, a cause refused at the
+  // ingest. The diagnostic plane would then attribute the old run's ending to the
+  // new one, durably, long after the traces that could contradict it expired.
+  test("the old cause is cleared on reopen, not inherited by the merge", async () => {
+    const t = convexTest(schema, modules);
+    const { chatId, parentId } = await seedDelegatedTurn(t);
+
+    // Generation 1 ended on a named deadline. Stamped directly: the seed hands us
+    // an already-terminal parent, so a finalize here is the idempotent no-op — and
+    // that the finalize WRITES the cause is proven at the ingest boundary
+    // (bridgeIngest.test.ts). What is under test here is the generation boundary.
+    await t.run((ctx) =>
+      ctx.db.patch(parentId, { finalizeCause: "lifecycle_finishing_timeout" }),
+    );
+
+    // The announce reopens the SAME bubble…
+    const reopened = await t.mutation(internal.stream.startAssistant, {
+      chatId,
+      runId: ANNOUNCE_RUN,
+    });
+    if (reopened === null) throw new Error("startAssistant refused the delivery");
+    expect(reopened).toBe(parentId);
+    const afterReopen = await t.run((ctx) => ctx.db.get(parentId));
+    expect(
+      afterReopen?.finalizeCause ?? null,
+      "the previous generation's verdict does not cross the boundary",
+    ).toBeNull();
+    // …but it is PARKED, not destroyed: a merged bubble is several turns in one
+    // row, and the first one's ending is what a triage reading it a day later
+    // needs. Attributed to the run that earned it.
+    expect(afterReopen?.priorFinalizeCauses).toEqual([
+      { runId: "webchat-parent-run", cause: "lifecycle_finishing_timeout" },
+    ]);
+
+    // …and generation 2 ends WITHOUT a cause (an older bridge, say).
+    await t.mutation(internal.stream.finalize, {
+      messageId: reopened,
+      status: "complete",
+      text: "Document créé et vérifié.",
+    });
+    expect(
+      (await t.run((ctx) => ctx.db.get(parentId)))?.finalizeCause ?? null,
+      "absent means nobody named one — never the last run's answer",
+    ).toBeNull();
+  });
+});

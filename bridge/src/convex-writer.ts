@@ -446,6 +446,11 @@ export interface ConvexWriter {
        *  no longer be ours. */
       clearProviderSession?: string;
       recoverableSession?: boolean;
+      /** WHY this turn closed. Rides the finalize so the verdict is stored WITH the
+       *  turn: it used to ride the pressure trace alone, which expires while the
+       *  message it explains does not — and which fires conditionally, so an
+       *  ordinary terminal was computed and written nowhere. */
+      finalizeCause?: string | null;
     },
   ): Promise<void>;
   /**
@@ -2188,6 +2193,11 @@ export class HttpConvexWriter implements ConvexWriter {
        *  no longer be ours. */
       clearProviderSession?: string;
       recoverableSession?: boolean;
+      /** WHY this turn closed. Rides the finalize so the verdict is stored WITH the
+       *  turn: it used to ride the pressure trace alone, which expires while the
+       *  message it explains does not — and which fires conditionally, so an
+       *  ordinary terminal was computed and written nowhere. */
+      finalizeCause?: string | null;
     },
   ): Promise<void> {
     try {
@@ -2206,6 +2216,9 @@ export class HttpConvexWriter implements ConvexWriter {
         ...(typeof opts?.clearProviderSession === "string" &&
         opts.clearProviderSession !== ""
           ? { clearProviderSession: opts.clearProviderSession }
+          : {}),
+        ...(typeof opts?.finalizeCause === "string" && opts.finalizeCause !== ""
+          ? { finalizeCause: opts.finalizeCause }
           : {}),
         ...this.genTag(messageId),
       });

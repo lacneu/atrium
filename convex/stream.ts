@@ -615,7 +615,18 @@ async function carriesDeliveredContent(
     if (
       current !== undefined &&
       current.part.kind === "plan" &&
-      current.part.steps.length > 0
+      current.part.steps.length > 0 &&
+      // …AND IT MUST STILL BE A STATEMENT OF WORK, not a claim of delivery.
+      //
+      // A checklist with steps left to run tells the reader something true: this is
+      // under way. A checklist where EVERY step is ticked, on a delivery that
+      // brought neither text nor file, says the opposite of what happened — and it
+      // counted as content, so the verdict that exists to name an empty delivery
+      // never fired. Production 2026-09-22 (prod-ms75p66z…): a delivery run whose
+      // only part was "2/2 complete", the last step reading "check the final render
+      // and deliver the image", with no image anywhere. The reader saw a green
+      // checklist and an empty bubble, and nothing was counted as a failure.
+      current.part.steps.some((step) => step.status !== "completed")
     ) {
       return true;
     }
@@ -713,6 +724,11 @@ async function bornOfRunEngagement(
     .filter((q) => q.eq(q.field("chatId"), chatId))
     .first();
 }
+
+/** How many previous generations' verdicts a merged bubble keeps. Bounded because
+ *  a row must not grow without limit: four is well past any merge chain observed,
+ *  and the oldest is the one a reader is least likely to still need. */
+const MAX_PRIOR_FINALIZE_CAUSES = 4;
 
 async function reopenParentForAnnounce(
   ctx: MutationCtx,
@@ -930,6 +946,27 @@ async function reopenParentForAnnounce(
     // it on a completed message otherwise.
     error: undefined,
     errorCode: undefined,
+    // …and the previous generation's VERDICT with them. The field is written only
+    // when a cause is sent, so a value left here would survive a generation that
+    // legitimately reports none — an older bridge, Hermes, a Stop settled
+    // directly, a malformed cause refused at the ingest — and the diagnostic plane
+    // would then attribute the OLD run's ending to the new one, durably, long
+    // after the traces that could contradict it had expired.
+    finalizeCause: undefined,
+    // …but PARKED, not thrown away. A merged bubble is several turns in one row,
+    // and the first one's ending is precisely what a triage reading this bubble a
+    // day later needs. Bounded, oldest first; attributed to the run that earned it.
+    ...(parent.finalizeCause !== undefined
+      ? {
+          priorFinalizeCauses: [
+            ...(parent.priorFinalizeCauses ?? []),
+            {
+              ...(parent.runId !== undefined ? { runId: parent.runId } : {}),
+              cause: parent.finalizeCause,
+            },
+          ].slice(-MAX_PRIOR_FINALIZE_CAUSES),
+        }
+      : {}),
     // Re-stamped by the merge's own finalize: the reply-duration UI must
     // reflect the merged result's arrival, not the first generation's end.
     finalizedAt: undefined,
@@ -2809,6 +2846,15 @@ export const finalize = internalMutation({
      *  a separate write can fail on its own while the turn settles anyway, and the handle
      *  would then point at a session nobody recorded clearing. */
     recoverableSession: v.optional(v.boolean()),
+    /** WHY this turn closed, from the bridge's own account — already allowlisted at
+     *  the ingest boundary (`convex/lib/finalizeCause.ts`). Diagnosis only: nothing
+     *  reads it to decide anything, and it is content-free by construction.
+     *
+     *  It rides THIS mutation, not a write of its own, for the reason the session
+     *  clear established: a separate write can fail while the turn settles anyway,
+     *  and the message would then carry a terminal nobody could explain — which is
+     *  the exact gap the field exists to close. */
+    finalizeCause: v.optional(v.string()),
     ...boundArg,
   },
   handler: async (
@@ -2825,6 +2871,7 @@ export const finalize = internalMutation({
       gatewayPreempted,
       clearProviderSession,
       recoverableSession,
+      finalizeCause,
     },
   ) => {
     // The gateway's own sentence is stored on the message and served to the browser
@@ -2875,7 +2922,16 @@ export const finalize = internalMutation({
       console.log(
         `[stream] finalize skipped: already terminal (${message.status} vs ${status})`,
       );
-      // …but the SESSION DROP still applies. A user Stop finalizes the bubble `aborted`
+      // …but the SESSION DROP still applies — unless the terminal already there is a
+      // COMPLETE one. That is the gateway's own account of a run that ENDED: a kill
+      // whose POST failed or timed out declares the session untrusted from the
+      // action, which reads a state up to forty-five seconds old, and during that
+      // wait the run can finish normally and win the race. Dropping then costs a
+      // rehydration and the provider's warm context to protect against a run that
+      // is demonstrably over. An `aborted` row is the opposite case — our own
+      // settle won — and keeps the drop.
+      //
+      // A user Stop finalizes the bubble `aborted`
       // in Convex while the bridge's own silence terminal is in flight; the bridge writes
       // no terminal of its own on a Stop (`forceSettle(false)`), so if the drop rode only
       // the transition it would vanish with the race — and the chat is released, so the
@@ -2884,7 +2940,7 @@ export const finalize = internalMutation({
       await dropUntrustedProviderSession(
         ctx,
         message.chatId,
-        clearProviderSession,
+        message.status === "complete" ? undefined : clearProviderSession,
         true,
         // NEVER on this branch. It exists for the race where a user Stop already settled the
         // message and our terminal is still in flight — so the row is the user's
@@ -3049,6 +3105,11 @@ export const finalize = internalMutation({
       // Reuses the existing stable-code field (failDispatch codes live there
       // too) — the UI maps context_length/rate_limit/... to actionable labels.
       ...(finalErrorKind !== undefined ? { errorCode: finalErrorKind } : {}),
+      // The turn's own verdict, stored WITH the turn. Written whenever the bridge
+      // sent one — including on a success, which is the case the trace channel
+      // most often skipped: `gateway_final` fires no pressure trace of its own, so
+      // the ordinary terminal was computed and persisted nowhere.
+      ...(finalizeCause !== undefined ? { finalizeCause } : {}),
       updatedAt: Date.now(),
       // The FIRST terminal transition stamps the generation end. A same-status
       // re-finalize (redelivered final) or a late addPart may bump updatedAt

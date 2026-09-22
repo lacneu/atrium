@@ -1922,3 +1922,78 @@ describe("finalize IGNORES the legacy gatewayPreempted flag at the ingest bounda
     expect(flagged).toHaveLength(0);
   });
 });
+
+describe("the turn's VERDICT is stored with the turn, not only on a trace", () => {
+  // Prod triage 2026-09-21: an `empty_response` from the previous day, still red —
+  // seven tool calls, no text — and `list_traces` returned nothing for the message
+  // or the child key. The cause had been computed and written only to a
+  // `chat.gateway_pressure` record, which had since expired. A red turn one day old
+  // could no longer be named at all.
+  test("a finalize carries its cause onto the message", async () => {
+    const t = convexTest(schema, modules);
+    const { messageId } = await seedAssistantMessage(t);
+    await post(t, {
+      op: "finalize",
+      messageId,
+      status: "complete",
+      text: "La réponse.",
+      finalizeCause: "gateway_final",
+    });
+    const stored = await t.run(
+      async (ctx) => (await ctx.db.get(messageId))?.finalizeCause,
+    );
+    expect(stored).toBe("gateway_final");
+  });
+
+  test("an UNKNOWN cause is recorded as such — a newer bridge is not silenced", async () => {
+    const t = convexTest(schema, modules);
+    const { messageId } = await seedAssistantMessage(t);
+    await post(t, {
+      op: "finalize",
+      messageId,
+      status: "error",
+      text: "",
+      finalizeCause: "some_future_cause",
+    });
+    const stored = await t.run(
+      async (ctx) => (await ctx.db.get(messageId))?.finalizeCause,
+    );
+    // Dropping it would read exactly like "we never computed one" — the gap again.
+    expect(stored).toBe("unclassified");
+  });
+
+  test("a raw wire SENTENCE never reaches storage", async () => {
+    const t = convexTest(schema, modules);
+    const { messageId } = await seedAssistantMessage(t);
+    await post(t, {
+      op: "finalize",
+      messageId,
+      status: "error",
+      text: "",
+      finalizeCause: "Context overflow: prompt too large for the model.",
+    });
+    const stored = await t.run(
+      async (ctx) => (await ctx.db.get(messageId))?.finalizeCause,
+    );
+    // The boundary does not trust the sender's vocabulary, and this field is the
+    // one that was still storing it verbatim on the trace path. (`t.run` hands an
+    // absent field back as null — Convex values carry no `undefined`.)
+    expect(stored ?? null).toBeNull();
+  });
+
+  test("an older bridge that sends none leaves the field absent", async () => {
+    const t = convexTest(schema, modules);
+    const { messageId } = await seedAssistantMessage(t);
+    await post(t, {
+      op: "finalize",
+      messageId,
+      status: "complete",
+      text: "La réponse.",
+    });
+    const stored = await t.run(
+      async (ctx) => (await ctx.db.get(messageId))?.finalizeCause,
+    );
+    // Absence means "no cause reached us", never "we had one and hid it".
+    expect(stored ?? null).toBeNull();
+  });
+});

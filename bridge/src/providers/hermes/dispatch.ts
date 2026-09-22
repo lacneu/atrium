@@ -167,9 +167,12 @@ export class HermesTurnRegistry {
     const client = new HermesWsClient({
       baseUrl: cfg.gatewayHttpBase || cfg.openclawGatewayUrl,
       credential: cfg.openclawToken ?? "",
-      onEvent: (type, sessionId, payload) => {
+      onEvent: (type, sessionId, payload, synthetic) => {
         const sub = this.wsSubscribers.get(`${key}\u0000${sessionId}`);
-        sub?.onEvent(type, payload);
+        // `synthetic` travels the whole way. Dropped here, a terminal the router
+        // promoted because it could not decode it arrived at the reader looking
+        // exactly like a failure Hermes reported — and was stored as one, for good.
+        sub?.onEvent(type, payload, synthetic);
       },
       onClose: () => {
         // THIS instance's socket died: its subscribed turns settle so no message is
@@ -262,6 +265,16 @@ export class HermesTurnRegistry {
       this.wsTurns.delete(chatId);
     }
   }
+  /** Is a NEWER dispatch holding this chat's seat, with nothing submitted yet?
+   *
+   *  `peekWsTurn` deliberately masks a reserved seat — there is no run to abort.
+   *  But "no run to abort" and "no turn here at all" are different answers, and a
+   *  Stop must not read the first as the second: a reserved seat means a newer
+   *  dispatch owns the chat, so quarantining its session would drop a binding that
+   *  is about to be used. Same reading as a runId mismatch. */
+  wsSeatReserved(chatId: string): boolean {
+    return this.wsTurns.get(chatId) === WS_TURN_SEAT_RESERVED;
+  }
   peekWsTurn(chatId: string): LiveHermesWsTurn | undefined {
     const t = this.wsTurns.get(chatId);
     // A merely RESERVED seat has no run to abort: nothing has been submitted yet.
@@ -348,6 +361,60 @@ export class HermesTurnRegistry {
     }
     this.resetGens.set(chatId, this.generationOf(chatId) + 1);
   }
+  /** Convex's OWN reset epoch, as last seen by THIS process.
+   *
+   *  The durable quarantine and the cache eviction are two layers, and the note
+   *  above `forgetChat` says why: without the second, the first is decoration —
+   *  `selectPriorSession` falls back to this registry and resumes the very session
+   *  that was declared untrusted. They travel together whenever the kill reaches
+   *  us, because `/abort` evicts on the spot.
+   *
+   *  They came APART exactly where it matters: a kill whose POST never arrived —
+   *  the bridge hung, a 502, a missing secret, no route — is quarantined durably by
+   *  Convex alone, and this process never hears of it. The epoch rides every
+   *  dispatch, so the next send is where we find out. */
+  private seenDurableEpoch = new Map<string, number>();
+  /** Chats this process has dispatched for WITHOUT an epoch — an older Convex, or
+   *  a rollback. Everything learned in that window is unverifiable. */
+  private epochBlindChats = new Set<string>();
+  /** Reconcile with the durable epoch before choosing a session to continue. */
+  noteDurableEpoch(chatId: string, epoch: number | null | undefined): void {
+    if (typeof epoch !== "number") {
+      // An epoch-less dispatch: whatever we remember from here on was learned
+      // blind, and a quarantine during that window leaves no trace we can read.
+      this.epochBlindChats.add(chatId);
+      return;
+    }
+    // Consumed UNCONDITIONALLY, not only on a first sighting: a blind window can
+    // open at any time (a Convex rollback mid-life), and reading the marker only
+    // when no epoch had ever been seen let `3 -> absent -> 3` keep everything the
+    // window taught us — the exact case the marker exists for.
+    const wasBlind = this.epochBlindChats.delete(chatId);
+    const seen = this.seenDurableEpoch.get(chatId);
+    this.seenDurableEpoch.set(chatId, epoch);
+    if (seen !== undefined && epoch > seen) {
+      console.log(
+        `[hermes] provider session evicted chat=${chatId} — Convex quarantined it while we were not told (epoch ${seen} -> ${epoch})`,
+      );
+      this.forgetChat(chatId);
+      return;
+    }
+    // A numeric sighting with no blind window behind it is a baseline, never an
+    // eviction: this process may have started long after the epoch last moved, and
+    // evicting then would cost a rehydration on every restart — safe precisely
+    // because a restart has no cache to lose.
+    //
+    // After a blind window it is NOT a baseline: the cache holds something learned
+    // while a durable quarantine could have passed unseen, and an epoch that comes
+    // back UNCHANGED is no evidence at all. One eviction at that transition costs
+    // one rehydration; trusting it could resume the very run the user cancelled.
+    if (wasBlind) {
+      console.log(
+        `[hermes] provider session evicted chat=${chatId} — the epoch is back after a blind window; what we remember is unverifiable`,
+      );
+      this.forgetChat(chatId);
+    }
+  }
   rememberSession(targetKey: string, sessionId: string): void {
     this.sessions.set(targetKey, sessionId);
   }
@@ -420,8 +487,18 @@ const FRESH_SESSION_NONCE_RE = /^(summarize|documentary|curate):/i;
  *   3. otherwise (null, or a `turn:` per-turn-routing segment) → the bridge's per-target
  *      memory, which survives a routing-segment clobber within this process. */
 export function selectPriorSession(
-  registry: Pick<HermesTurnRegistry, "knownSession">,
-  body: { chatId: string; openclawChatId: string | null },
+  registry: Pick<HermesTurnRegistry, "knownSession" | "noteDurableEpoch">,
+  body: {
+    chatId: string;
+    openclawChatId: string | null;
+    /** Convex's reset epoch at dispatch. Read HERE rather than at the call sites
+     *  for the reason the note below already gives about the transports: one
+     *  decision, one place. A reconciliation the caller had to remember was a
+     *  reconciliation a new caller would forget, and forgetting it restores the
+     *  exact blind spot — the fallback resuming a session Convex quarantined
+     *  while this process was never told. */
+    providerResetCount?: number | null;
+  },
   targetKey: string,
   /** Which id shape THIS transport may continue. Passed in rather than assumed: the two
    *  transports store different shapes, and feeding a REST `api_…` id to the WS path (or
@@ -431,6 +508,10 @@ export function selectPriorSession(
    *  decision, one place, or the same blind spot returns. */
   isOwnSessionId: (id: string | null) => boolean = isHermesSessionId,
 ): string | null {
+  // FIRST, before any answer: the durable quarantine may have happened without
+  // us (a kill whose POST never reached this process). It can only evict the
+  // in-memory fallback, which is exactly the branch that needs it.
+  registry.noteDurableEpoch(body.chatId, body.providerResetCount);
   if (isOwnSessionId(body.openclawChatId)) return body.openclawChatId;
   if (body.openclawChatId && FRESH_SESSION_NONCE_RE.test(body.openclawChatId)) return null;
   const known = registry.knownSession(targetKey);
@@ -704,11 +785,19 @@ async function performHermesWsAbort(
   cause: "user" | "reset" = "user",
 ): Promise<HermesAbortResult> {
   const current = registry.peekWsTurn(chatId);
-  if (!current) return NOT_ABORTED;
+  if (!current) {
+    // A seat a NEWER dispatch has reserved is not an empty registry: it owns the
+    // chat and has simply not submitted yet. Reading it as "we know nothing" would
+    // quarantine the session that dispatch is about to use — the working-turn case,
+    // which `NOT_OURS` exists for.
+    return registry.wsSeatReserved(chatId) ? NOT_OURS : NO_TURN_KNOWN;
+  }
   const liveSid = current.run.runtimeSessionId();
-  if (expectedRunId && expectedRunId !== liveSid) return NOT_ABORTED;
+  if (expectedRunId && expectedRunId !== liveSid) return NOT_OURS;
   const turn = registry.takeWsTurn(chatId);
-  if (!turn) return NOT_ABORTED;
+  // It vanished between the peek and the take. We cannot say the run stopped, so
+  // this is the unknown case, not the safe one.
+  if (!turn) return NO_TURN_KNOWN;
   const sid = turn.run.runtimeSessionId();
   // FIRST, and regardless of how the interrupt turns out: a turn being cut must not persist
   // a binding it decided in its dying moments. `session.info` can rotate the session in the
@@ -828,9 +917,34 @@ export interface HermesAbortResult {
   providerSession: string | null;
 }
 
-const NOT_ABORTED: HermesAbortResult = {
+/** WE KNOW this turn is not ours to stop: a newer one owns the chat, and its runId
+ *  proves it. Quarantining here would drop a binding that is working. */
+const NOT_OURS: HermesAbortResult = {
   aborted: false,
   interrupt: null,
+  providerSession: null,
+};
+
+/** WE HAVE NO IDEA. The registry holds no turn for this chat — this process was
+ *  restarted mid-turn, or the entry vanished under us — and cutting our reading of
+ *  the stream never stopped the provider's run. That is not the same statement as
+ *  `NOT_OURS`, and Convex could not tell them apart: both answered with no verdict
+ *  at all, so the one case where the run may well still be writing quarantined
+ *  nothing. `unknown` is already in the unhonoured vocabulary; this is what it is
+ *  for.
+ *
+ *  KNOWN LIMIT, stated rather than papered over. "This process has no turn" is
+ *  read as "the run may still be going", which is right for a restart and wrong
+ *  for a chat whose turn lives in ANOTHER process — the registry is per-process.
+ *  `bridge.replicas` is 1 (deploy/helm/values.yaml), so that case exists only in
+ *  the overlap of a rolling update: for a few seconds a `/send` handled by the old
+ *  pod can be followed by an `/abort` reaching the new one, which then quarantines
+ *  a session the old pod is still using. The cost is one rehydration, not a lost
+ *  reply, and resolving it properly means routing the abort to the owning process —
+ *  an ownership token, or a broadcast. Not built here. */
+const NO_TURN_KNOWN: HermesAbortResult = {
+  aborted: false,
+  interrupt: "unknown",
   providerSession: null,
 };
 
@@ -984,17 +1098,18 @@ export async function performHermesAbort(
   // newer turn — do NOT abort that one; codex P2). A null expectedRunId is a
   // legacy/best-effort abort of whatever is live.
   const current = registry.peek(chatId);
-  if (!current) return NOT_ABORTED;
+  if (!current) return NO_TURN_KNOWN;
   const liveRunId = current.run.runId();
   // With a named target: abort ONLY on an EXACT match. If the live turn has no
   // run id yet (a newer turn that has not received run.started), it CANNOT be
   // the targeted old run — do NOT abort it (codex P2). A null expectedRunId is
   // a best-effort abort of whatever is live (e.g. Stop before run.started).
   if (expectedRunId && expectedRunId !== liveRunId) {
-    return NOT_ABORTED;
+    return NOT_OURS;
   }
   const turn = registry.take(chatId);
-  if (!turn) return NOT_ABORTED;
+  // Vanished between the peek and the take: same reading as above.
+  if (!turn) return NO_TURN_KNOWN;
   const runId = turn.run.runId();
   // Same three steps, same order, same reasons as the WS path: mark so no NEW binding can
   // be written, CUT THE STREAM, and only then wait on the writes already in flight. The

@@ -237,7 +237,7 @@ const UNHONOURED_INTERRUPTS = new Set(["ineffective", "unknown"]);
  */
 export async function readUntrustedSessionAfterAbort(
   response: Response,
-): Promise<string | null> {
+): Promise<string | true | null> {
   try {
     const body = (await response.json()) as {
       interrupt?: unknown;
@@ -253,8 +253,17 @@ export async function readUntrustedSessionAfterAbort(
     }
     const session = body?.providerSession;
     if (typeof session !== "string" || session === "") {
-      // A failed interrupt with nothing to name: the turn had no binding to drop.
-      return null;
+      // A failed interrupt with nothing to NAME — which is not the same as nothing
+      // to drop. The gateway just told us the run did not stop, and the absence of
+      // an id is itself a live case: a first turn whose bind is still in flight
+      // reports none. The UNNAMED form is what reaches that binding — it bumps the
+      // reset epoch, and the epoch is what makes a bind landing afterwards stand
+      // down. Returning null here left the most alarming verdict of all — "we could
+      // not stop it" — as the only one that quarantined nothing.
+      console.error(
+        `bridge /abort: interrupt "${verdict}" with no session named — quarantining the binding unnamed`,
+      );
+      return true;
     }
     console.error(
       `bridge /abort: interrupt "${verdict}" — provider session dropped as untrusted`,
@@ -723,6 +732,14 @@ export const getChatRouting = internalQuery({
           : res.rebind
             ? null
             : (chat.openclawChatId ?? null),
+      // WHAT IS STORED, as opposed to what this send may use. The field above is
+      // nulled on a rebind — it means "do not reuse this" — so a caller that needs
+      // to NAME the binding (to quarantine it after a kill it cannot vouch for)
+      // read null exactly when there was something to drop.
+      boundProviderSession:
+        chat.perTurnRouting && routedAgent
+          ? (routingSegment ?? chat.routingSegment ?? null)
+          : (chat.openclawChatId ?? null),
       // A session this chat LOST a reply on, for ONE read-only harvest before it is
       // forgotten (G-47). Carried beside `openclawChatId` and never merged into it: that
       // slot decides what the next turn RESUMES, and this is precisely a session nobody may
@@ -1485,6 +1502,26 @@ export const reparkIfBusy = internalMutation({
  * (with its real cause) long before the reconciler has to.
  */
 export const SEND_POST_TIMEOUT_MS = 4 * 60_000;
+/**
+ * The kill itself, bounded.
+ *
+ * `/send` may legitimately take minutes; a Stop may not — the user is waiting,
+ * and the settle behind it is what releases the conversation. This POST was the
+ * one call on the path with no deadline at all (`/send`, `/hangup` and the
+ * sub-agent send all carry one), so a bridge that accepted the connection and
+ * never answered left the promise pending: the `finally` that settles the turn
+ * was never reached, the bubble stayed `streaming` until the twelve-minute
+ * watchdog, the queue behind it stayed blocked, and the Stop's own verdict was
+ * never written.
+ *
+ * ABOVE the bridge's own wait, deliberately. Its `chat.abort` RPC is given 30 s
+ * (`DEFAULT_REQUEST_TIMEOUT_MS`), and a shorter deadline here would cut off a kill
+ * that was about to report — losing the one answer that names the provider session
+ * as untrusted, so a session the gateway never actually stopped would stay bound
+ * and be resumed by the next send. A deadline that expires now means the BRIDGE is
+ * hung, not that the kill is merely slow.
+ */
+export const ABORT_POST_TIMEOUT_MS = 45_000;
 
 /** The chat's OWNER, and how many people share the conversation.
  *
@@ -2275,8 +2312,43 @@ export const dispatchAbort = internalAction({
      *  it stopped. Set only from a verdict the bridge actually reported; it rides the
      *  guaranteed settle below, because on a user Stop that finalize is the ONLY write
      *  this path makes and the drop has to be atomic with it (lot 31). */
-    let untrusted: string | null = null;
+    /** The session to declare untrusted: its ID when we can name it, or the
+     *  UNNAMED form when we cannot. `true` is not a fallback for laziness — it is
+     *  what reaches a binding that is not persisted yet (a switch whose segment
+     *  lives in the dispatch alone, a first turn still binding): there is no slot
+     *  to clear, and the epoch bump is the only thing that can make an in-flight
+     *  bind stand down. Without it a chat with no stored binding escaped the
+     *  quarantine entirely, and the next send resumed the very session whose kill
+     *  we could not vouch for.
+     *
+     *  KNOWN LIMIT, stated rather than papered over. The unnamed form clears our
+     *  slot and bumps the reset epoch; the epoch is read by the Hermes post-ACK
+     *  bind, and NOT by the OpenClaw session key, which the bridge derives as
+     *  `openclawChatId ?? chatId` (bridge/src/session.ts, session-keys.ts). So on
+     *  an OpenClaw conversation with no stored binding there is nothing distinct
+     *  to set aside: the key IS the conversation, and rotating it would mean
+     *  minting a new segment or telling the gateway — a structural change, not a
+     *  quarantine. The named case (a bound session) and the in-flight case (a bind
+     *  that has not landed) are covered; that one is not. */
+    let untrusted: string | true | null = null;
+    /** The provider session this kill is aimed at, captured as soon as routing
+     *  resolves so the CATCH below can still name it. A kill that failed or timed
+     *  out tells us nothing about the run, and that is exactly the state that must
+     *  not be resumed by the next send. */
+    let killTarget: string | null = null;
     try {
+      // ROUTING FIRST, before the configuration checks below: each of them exits
+      // without ever attempting the kill, and the `finally` still settles the turn
+      // and releases the queue. An exit that could not NAME the binding would leave
+      // the next send free to resume a run nobody tried to stop.
+      const routing = await ctx.runQuery(internal.bridge.getChatRouting, {
+        chatId,
+        userId,
+        ...(routedAgent ? { routedAgent } : {}),
+      });
+      // The STORED binding, not the one this send may use: a kill we cannot vouch
+      // for must be able to name what the NEXT send would resume.
+      killTarget = routing?.boundProviderSession ?? null;
       const sharedSecret = process.env.BRIDGE_SHARED_SECRET;
       if (!sharedSecret) {
         console.error(
@@ -2285,6 +2357,7 @@ export const dispatchAbort = internalAction({
         // PRE-SEND exit, like the routing failures below: nothing left this
         // process, so the child is certainly still running and must not stay
         // hidden behind an optimistic terminal state.
+        untrusted = killTarget ?? true;
         if (childRowId !== undefined) {
           await ctx.runMutation(internal.subAgents.restoreRunningAfterFailedKill, {
             childRowId,
@@ -2292,15 +2365,11 @@ export const dispatchAbort = internalAction({
         }
         return;
       }
-      const routing = await ctx.runQuery(internal.bridge.getChatRouting, {
-        chatId,
-        userId,
-        ...(routedAgent ? { routedAgent } : {}),
-      });
       if (!routing || routing.target === null) {
         console.error(
           "bridge.dispatchAbort: no routing target (nothing to kill)",
         );
+        untrusted = killTarget ?? true;
         if (childRowId !== undefined) {
           await ctx.runMutation(internal.subAgents.restoreRunningAfterFailedKill, {
             childRowId,
@@ -2313,6 +2382,7 @@ export const dispatchAbort = internalAction({
         console.error(
           "bridge.dispatchAbort: no bridgeUrl for the routed instance",
         );
+        untrusted = killTarget ?? true;
         if (childRowId !== undefined) {
           await ctx.runMutation(internal.subAgents.restoreRunningAfterFailedKill, {
             childRowId,
@@ -2322,6 +2392,7 @@ export const dispatchAbort = internalAction({
       }
       const response = await fetch(`${bridgeUrl.replace(/\/$/, "")}/abort`, {
         method: "POST",
+        signal: AbortSignal.timeout(ABORT_POST_TIMEOUT_MS),
         headers: {
           "Content-Type": "application/json",
           Authorization: sharedSecret,
@@ -2344,11 +2415,22 @@ export const dispatchAbort = internalAction({
       });
       if (!response.ok) {
         console.error(`bridge POST /abort -> HTTP ${response.status}`);
+        // A kill we cannot vouch for. Same reading as an interrupt the gateway
+        // reported UNHONOURED: the run may still be alive on the provider,
+        // writing this turn into the session transcript the next send would
+        // resume — a reply the user believes they cancelled, arriving inside
+        // someone else's answer. We have no session id from a response that
+        // failed, so the BINDING is what we drop, under the id guard below.
+        untrusted = killTarget ?? true;
       } else {
         untrusted = await readUntrustedSessionAfterAbort(response);
       }
     } catch (err) {
+      // Includes the deadline above: a bridge that accepted the connection and
+      // never answered tells us nothing about the run, which is exactly the
+      // state that must not be resumed.
       console.error("bridge POST /abort failed:", err);
+      untrusted = killTarget ?? true;
     } finally {
       // GUARANTEED settle, whatever the kill did: the user asked to stop.
       // TRADE-OFF (reviewed, deliberate): when the kill itself failed (legacy
@@ -2374,6 +2456,14 @@ export const dispatchAbort = internalAction({
           // only fires while the chat is still bound to what the bridge tried to stop —
           // a turn that has since rotated or rebound is untouched.
           ...(untrusted ? { clearProviderSession: untrusted } : {}),
+          // THE VERDICT, and this is the only chance to set it. `first terminal
+          // write wins`, so a later `chat:aborted` from the gateway cannot add one
+          // afterwards — and on the Hermes path Convex owns this terminal outright.
+          // Left blank, every Stop became permanently unexplained the moment its
+          // traces expired, which is the defect the field exists to remove.
+          // `user_stop`, not `gateway_abort`: that one means the gateway CONFIRMED
+          // the stop, and this write runs whether or not it could even be reached.
+          finalizeCause: "user_stop",
         });
       }
     }

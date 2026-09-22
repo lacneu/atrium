@@ -240,14 +240,37 @@ describe("REST: the stop that can never work is reported as such", () => {
     expect(result.providerSession).toBe(REST_SESSION);
   });
 
-  it("a Stop that matched no live turn reports no verdict at all", async () => {
-    // Nothing was aborted, so there is nothing to say about an interrupt — and above
-    // all no session to drop: the chat may be bound to a turn that is working.
+  it("a Stop that found NO turn at all reports `unknown` — we cannot say the run stopped", async () => {
+    // This used to report no verdict, on the reasoning that nothing was aborted so
+    // there was nothing to say. It conflated two different statements, and Convex
+    // could not tell them apart: an empty registry means THIS PROCESS has no turn —
+    // it was restarted mid-turn, or the entry vanished — and cutting our reading of
+    // the stream never stopped the provider's run. The run may well still be
+    // writing the answer the user cancelled, into the session the next send would
+    // resume. `unknown` is already in the unhonoured vocabulary; this is what it is
+    // for, and it is what makes Convex quarantine the binding.
     const { cfg } = await gatewayAnswering("ok");
     const registry = new HermesTurnRegistry();
     const result = await performHermesAbort(cfg, "c1", registry, null);
     expect(result.aborted).toBe(false);
-    expect(result.interrupt).toBeNull();
+    expect(result.interrupt).toBe("unknown");
+    expect(result.providerSession).toBeNull();
+  });
+
+  it("a Stop aimed at a run a NEWER turn replaced reports nothing — that one is working", async () => {
+    // The other half of the split, and the reason the old single answer existed: a
+    // runId mismatch PROVES a newer turn owns the chat. Quarantining there would
+    // drop a binding that is working, to protect against one that already lost its
+    // claim.
+    const { cfg } = await gatewayAnswering("ok");
+    const registry = new HermesTurnRegistry();
+    await liveRestTurn(registry);
+    const result = await performHermesAbort(cfg, "c1", registry, "a-run-that-is-gone");
+    expect(result.aborted).toBe(false);
+    expect(
+      result.interrupt,
+      "no verdict: this is not our turn to stop",
+    ).toBeNull();
     expect(result.providerSession).toBeNull();
   });
 });
@@ -857,5 +880,42 @@ describe("the durable drop has a second carrier", () => {
         providerSession: REST_SESSION,
       }),
     ).resolves.toBeUndefined();
+  });
+});
+
+describe("a seat a newer dispatch reserved is not an empty registry", () => {
+  // `peekWsTurn` masks a RESERVED seat, deliberately: there is no run to abort
+  // yet. But "no run to abort" and "no turn here at all" are different answers,
+  // and the verdict split made the difference matter — read as the second, a Stop
+  // would report `unknown` and quarantine the session the new dispatch is about to
+  // use. That is the working-turn case, which reports nothing.
+  it("a Stop landing on a reserved seat reports no verdict", async () => {
+    const { cfg } = await gatewayAnswering("ok");
+    const registry = new HermesTurnRegistry();
+    expect(registry.claimWsTurnSeat("c1"), "the seat must be claimed").toBe(true);
+    const result = await performHermesAbort(
+      { ...cfg, transport: "ws" } as typeof cfg,
+      "c1",
+      registry,
+      null,
+    );
+    expect(result.aborted).toBe(false);
+    expect(
+      result.interrupt,
+      "a dispatch owns this chat and has simply not submitted yet",
+    ).toBeNull();
+    expect(result.providerSession).toBeNull();
+  });
+
+  it("…and a genuinely empty registry still reports `unknown`", async () => {
+    const { cfg } = await gatewayAnswering("ok");
+    const registry = new HermesTurnRegistry();
+    const result = await performHermesAbort(
+      { ...cfg, transport: "ws" } as typeof cfg,
+      "c1",
+      registry,
+      null,
+    );
+    expect(result.interrupt).toBe("unknown");
   });
 });

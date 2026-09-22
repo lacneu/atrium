@@ -426,3 +426,57 @@ describe("a silent REST stream settles instead of hanging (lot 30)", () => {
   });
 });
 
+
+// The AST guard proves every Hermes terminal CARRIES a cause; the normalizer's own
+// tests prove `endTurn` honours the one it is handed. Neither proves that THIS
+// caller hands over the right one — and it is the call site Codex caught inventing
+// a clean provider ending for a body that simply stopped.
+describe("the REST turn names its forced endings truthfully", () => {
+  function causeSpy() {
+    const causes: unknown[] = [];
+    const writer = {
+      startAssistant: async () => "msg-1",
+      appendDelta: async () => {},
+      setSnapshot: async () => true,
+      addPart: async () => {},
+      addMedia: async () => {},
+      addProvenancePart: async () => {},
+      finalize: async (
+        _id: string,
+        _status: string,
+        _text?: string,
+        _error?: string | null,
+        _kind?: string | null,
+        opts?: { finalizeCause?: string | null },
+      ) => {
+        causes.push(opts?.finalizeCause);
+      },
+      reportSessionMeta: async () => {},
+      getRehydrationContext: async () => ({ history: null, turnCount: 0 }),
+    } as unknown as ConvexWriter;
+    return { writer, causes };
+  }
+
+  it("a body that ends with no terminal is `terminal_missing`, never a clean ending", async () => {
+    const { writer, causes } = causeSpy();
+    const run = runHermesTurn({
+      client: fakeClient({
+        // The run is acknowledged and then the stream simply ends: no
+        // `run.completed`, no error frame. The provider never declared the turn
+        // over, which is why this branch drops the session as unreliable.
+        frames: [{ event: "run.started", data: JSON.stringify({ run_id: "r1" }) }],
+      }),
+      writer,
+      chatId: "c1",
+      sessionKey: "hermes:a:chat:u:c1",
+      providerChatId: "api_1_abcd",
+      text: "hi",
+    });
+    await run.done;
+    expect(
+      causes.length,
+      "the turn must have settled — otherwise nothing below is proven",
+    ).toBeGreaterThan(0);
+    expect(causes.at(-1)).toBe("terminal_missing");
+  });
+});

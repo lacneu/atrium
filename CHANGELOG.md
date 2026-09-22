@@ -1,5 +1,57 @@
 # Changelog
 
+## [0.84.21] — Why a turn ended, kept with the turn
+
+Observability and reliability release, from the production triage of 2026-09-21
+and 2026-09-22. No breaking changes, nothing to reconfigure.
+
+**A failed turn can still be explained the next day.** Why a turn closed —
+delivered, timed out, aborted, closed on a deadline — was computed on every turn
+and written only to a diagnostic trace, which expires. So a red conversation from
+the previous day could no longer be explained at all: the verdict had gone while
+the turn it described stayed on screen. Worse, that trace was conditional, and an
+ordinary successful close matched none of its conditions, so the commonest verdict
+of all was recorded nowhere. It is now stored with the turn itself and readable
+from the diagnostic tools. A cause this version does not recognise is recorded as
+unrecognised rather than dropped, so a newer gateway can never make a turn
+silently unexplainable again.
+
+**A conversation that merged a delegated report keeps both endings.** Such a
+conversation is several turns in one bubble. The reopening that lets a report land
+had to clear the previous verdict — left in place it would read as the new one —
+and that would have lost the first turn's ending exactly where it matters most.
+Earlier verdicts are kept beside the current one, each attributed to the run that
+earned it.
+
+**A stop, and every Hermes turn, now say why they ended too.** A user's stop is
+settled by Atrium itself and named nothing at all; and on the Hermes provider no
+terminal carried a verdict, so those turns stayed unexplainable by construction.
+Both are covered, and the distinctions that matter are kept: a stop we performed
+reads differently from one the gateway confirmed, a conversation reset differently
+from an abort, and a reply we could not decode differently from a failure the
+provider reported — that last one could previously have been forged by the
+provider itself.
+
+**A stop can no longer be held up by an unresponsive gateway, nor leave a run
+loose.** The call that kills the run had no deadline, so a gateway that accepted
+the connection and never answered left the turn marked as running until the
+twelve-minute watchdog, with the next message blocked behind it. It is now bounded
+— above the gateway's own limit, so a kill that was merely slow still gets to
+report what it found. And a kill we cannot vouch for now sets the conversation's
+provider session aside: the run may still be alive and writing, and the next
+message would otherwise have resumed it and inherited a reply you believed you had
+cancelled. Set aside only when it is warranted — a stop the gateway confirmed, or a
+reply that arrived before the stop did, keeps its session and its warm context.
+
+**A finished checklist is no longer mistaken for a delivery.** A task list on screen
+counts as something the reader can see, and it should: a list with work left in it
+says truthfully that the turn is under way. But a list whose every box is ticked,
+on a delivery that brought neither text nor file, says the opposite of what
+happened — and it counted, so the rule that names an empty delivery never fired.
+Reported in production: a bubble showing "2/2 complete", the last line reading
+"check the final render and deliver the image", with no image and no error card.
+Such a turn is now named, with a cause.
+
 ## [0.84.20] — A turn the gateway is still working on
 
 Corrective release, from one production report and a long adversarial review of
