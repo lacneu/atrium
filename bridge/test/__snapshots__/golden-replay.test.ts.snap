@@ -1410,10 +1410,10 @@ exports[`golden replay — the interpretation is pinned > 2026.9.5/async-task 1`
     "task-delivery",
   ],
   "byCall": {
+    "addMedia": 1,
     "addProvenancePart": 4,
     "addToolPart": 2,
     "finalize": 2,
-    "noteMediaUndelivered": 1,
     "setSnapshot": 20,
     "startAssistant": 2,
     "upsertSubAgent": 2,
@@ -1437,9 +1437,10 @@ exports[`golden replay — the interpretation is pinned > 2026.9.5/async-task 1`
     "startAssistant",
     "addProvenancePart",
     "setSnapshot",
+    "addMedia",
+    "setSnapshot",
     "finalize",
     "upsertSubAgent",
-    "noteMediaUndelivered",
   ],
   "tools": [
     "tool:image_generate",

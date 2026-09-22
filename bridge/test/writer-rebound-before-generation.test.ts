@@ -124,7 +124,7 @@ describe("a writer-claim rebound is retried only when the stream proves nothing 
   });
 
   it("a transcript recovery standing in for frames keeps it", () => {
-    const final = once([...PRELUDE, chatError(5)], (n) => n.markRecoveryAttempted());
+    const final = once([...PRELUDE, chatError(5)], (n) => n.markRecoveryAttempted(0));
     expect(final?.errorKind).toBe("session_write_conflict");
   });
 

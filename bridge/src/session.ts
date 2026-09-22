@@ -634,8 +634,9 @@ class Session implements BridgeSession {
       // normal frame/tick path this is equivalent to the old loop-bottom placement
       // (no await between feed and the re-top). takeRecoveryRequest latches, so it
       // fires at most once per turn.
-      if (this.runManager.takeRecoveryRequest()) {
-        void this.recoverDeliveredReply();
+      const recoveryToken = this.runManager.takeRecoveryRequest(this.clock());
+      if (recoveryToken !== null) {
+        void this.recoverDeliveredReply(recoveryToken);
       }
       // The next deadline is the EARLIER of the parent turn's grace and any live
       // sub-agent observation's TTL — so the observer's stalled-child sweep fires
@@ -1018,6 +1019,20 @@ class Session implements BridgeSession {
         return;
       }
     }
+    // …and this poll takes its OWN right to close the turn. A recovery started
+    // because the socket died or the silence budget ran out IS the turn's ending;
+    // inheriting an earlier attempt's revocation would leave it applying the reply
+    // and never settling the bubble. Minted AFTER the re-entry guard above: a poll
+    // that never starts must not leave a token behind, which the arbitration would
+    // read as a fetch still on the wire.
+    const orphanToken = rm.noteRecoveryDispatched();
+    // Every terminal exit of this poll goes through here. A token left behind holds
+    // the turn's terminal back for an answer nobody is going to send, and on a dead
+    // socket no tick remains to expire the window that would otherwise bound it.
+    const finishPoll = (): void => {
+      rm.releaseRecoveryToken(orphanToken);
+      if (this.recoveryEpoch === boundEpoch) this.recoveryEpoch = null;
+    };
     this.recoveryEpoch = boundEpoch;
     this.recoveryReason = reason;
     const boundGen = ++this.recoveryGen;
@@ -1044,7 +1059,12 @@ class Session implements BridgeSession {
     let lastSeenReply: string | null = null;
     const tick = async (): Promise<void> => {
       if (this.recoveryGen !== boundGen) {
-        return; // superseded by a newer recovery (do NOT touch its claim)
+        // Superseded by a newer recovery: do NOT touch its claim — but DO release
+        // our own. A token left behind counts as a fetch still on the wire, and the
+        // arbitration then holds the turn's terminal back for an answer that is
+        // never coming. Not `finishPoll`: the epoch now belongs to the newer poll.
+        rm.releaseRecoveryToken(orphanToken);
+        return;
       }
       if (
         rm.turnEpoch !== boundEpoch ||
@@ -1056,12 +1076,12 @@ class Session implements BridgeSession {
         // endTurn directly, so without this a stale poll could close the replay
         // that is still running as `connection_lost` / `response_timeout`.
         // Only release the claim if a newer recovery hasn't already re-claimed it.
-        if (this.recoveryEpoch === boundEpoch) this.recoveryEpoch = null;
+        finishPoll();
         return;
       }
       if (rm.isFinalized) {
         // The live socket delivered the real result first — nothing to recover.
-        if (this.recoveryEpoch === boundEpoch) this.recoveryEpoch = null;
+        finishPoll();
         return;
       }
       if (reason === "recv_silence" && rm.recvDeadlineArmed) {
@@ -1070,7 +1090,7 @@ class Session implements BridgeSession {
         // (its wall could truncate a long in-flight reply as response_timeout;
         // codex P1). A NEW silence elapse re-raises the signal and a fresh
         // recovery re-claims the epoch (released here).
-        if (this.recoveryEpoch === boundEpoch) this.recoveryEpoch = null;
+        finishPoll();
         return;
       }
       polls++;
@@ -1102,7 +1122,7 @@ class Session implements BridgeSession {
               (e as Error)?.message ?? e,
             ),
           );
-        if (this.recoveryEpoch === boundEpoch) this.recoveryEpoch = null;
+        finishPoll();
         return;
       }
       try {
@@ -1112,14 +1132,14 @@ class Session implements BridgeSession {
         // acceptance/recovery so a stale poll can never touch the new turn
         // (codex P1 — anchor-less turns would otherwise pass the checks below).
         if (rm.turnEpoch !== boundEpoch || rm.isFinalized) {
-          if (this.recoveryEpoch === boundEpoch) this.recoveryEpoch = null;
+          finishPoll();
           return;
         }
         if (reason === "recv_silence" && rm.recvDeadlineArmed) {
           // The live stream resumed WHILE we were fetching — same cancel as the
           // pre-fetch check, or a partial transcript could finalize a turn that
           // is actively streaming again (codex R9 P2).
-          if (this.recoveryEpoch === boundEpoch) this.recoveryEpoch = null;
+          finishPoll();
           return;
         }
         // STALE-transcript guard: mid-reboot the gateway can serve a transcript
@@ -1179,8 +1199,14 @@ class Session implements BridgeSession {
           );
           // The tick checks the epoch above, but this write happens after another
           // await: pass the bound epoch so the guard holds at the write itself.
-          await rm.recoverVisibleText(text, clock(), boundEpoch, boundRecoveryGen);
-          if (this.recoveryEpoch === boundEpoch) this.recoveryEpoch = null;
+          await rm.recoverVisibleText(
+            text,
+            clock(),
+            boundEpoch,
+            boundRecoveryGen,
+            orphanToken,
+          );
+          finishPoll();
           return;
         }
       } catch (err) {
@@ -1194,7 +1220,7 @@ class Session implements BridgeSession {
     setTimeout(() => void tick(), ORPHAN_RECOVERY_POLL_MS).unref?.();
   }
 
-  private async recoverDeliveredReply(): Promise<void> {
+  private async recoverDeliveredReply(token: number): Promise<void> {
     // Bind the turn we are recovering BEFORE the RPC below: it is allowed 10 s, the
     // private-ack grace can finalize this turn in 5, and a queued send can open the
     // next one immediately after. Captured here, checked at the write.
@@ -1228,6 +1254,7 @@ class Session implements BridgeSession {
           this.clock(),
           boundEpoch,
           boundRecoveryGen,
+          token,
         );
         console.log(
           applied
@@ -1245,6 +1272,13 @@ class Session implements BridgeSession {
         "[recovery] sessions.get failed:",
         (err as Error)?.message ?? err,
       );
+    } finally {
+      // ALWAYS, on every exit: a fetch that found nothing, or threw, is over just as
+      // surely as one that delivered. Left behind, its token counts as a fetch still
+      // on the wire and the arbitration holds the turn's terminal back for an answer
+      // nobody is going to send. A no-op when `recoverVisibleText` already consumed
+      // it.
+      this.runManager.releaseRecoveryToken(token);
     }
   }
 

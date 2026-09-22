@@ -942,12 +942,26 @@ export class RunManager {
    * the normalizer holds a bare ack after a gateway-delivered message-tool —
    * the session loop should fetch `sessions.get` and call `recoverVisibleText`.
    */
-  takeRecoveryRequest(): boolean {
+  /** The dispatch TOKEN when a recovery is wanted, null otherwise — the caller
+   *  carries it to `recoverVisibleText` so the answer is judged against the state
+   *  its own question left with. */
+  takeRecoveryRequest(now: number): number | null {
     if (!this.normalizer.wantsHistoryRecovery) {
-      return false;
+      return null;
     }
-    this.normalizer.markRecoveryAttempted();
-    return true;
+    return this.normalizer.markRecoveryAttempted(now);
+  }
+
+  /** A recovery dispatcher OTHER than `takeRecoveryRequest` (the orphan/silence
+   *  poll) announcing that its fetch leaves now — see
+   *  `Normalizer.noteRecoveryDispatched`. */
+  noteRecoveryDispatched(): number {
+    return this.normalizer.noteRecoveryDispatched();
+  }
+
+  /** See `Normalizer.releaseRecoveryToken` — this fetch is over with nothing. */
+  releaseRecoveryToken(token: number): void {
+    this.normalizer.releaseRecoveryToken(token);
   }
 
   /** See `Normalizer.recoveryNeedsFullText` — read at the recovery's write. */
@@ -1041,6 +1055,11 @@ export class RunManager {
     now: number,
     expectedEpoch: number,
     expectedRecoveryGen: number,
+    /** The dispatch token from `takeRecoveryRequest`/`noteRecoveryDispatched`. Not
+     *  optional, for the same reason the epoch is not: a caller that forgets it is
+     *  the whole defect, and the compiler is the only guard for code not yet
+     *  written. */
+    token: number,
   ): Promise<boolean> {
     if (!this.sink.active) {
       return false;
@@ -1066,7 +1085,7 @@ export class RunManager {
         return [];
       }
       applied = true;
-      return this.normalizer.recoverVisibleText(text, now);
+      return this.normalizer.recoverVisibleText(text, now, token);
     });
     if (!applied) return false;
     if (!this.sink.active) {

@@ -136,7 +136,7 @@ describe("normalizer history-recovery wiring", () => {
     n.feed(ackFinalFrame("r1"), 2);
     expect(n.finalized).toBe(false); // ack is grace-held, not finalized
     expect(n.wantsHistoryRecovery).toBe(true);
-    n.markRecoveryAttempted();
+    n.markRecoveryAttempted(0);
     expect(n.wantsHistoryRecovery).toBe(false); // one-shot
   });
 
@@ -664,7 +664,7 @@ describe("G-13: a gateway-truncated chat final", () => {
     n.beginTurn(0);
     n.noteRunStarted("r1", 0);
     n.feed(truncatedFinalFrame("r1", "a".repeat(8000)), 1);
-    n.markRecoveryAttempted();
+    n.markRecoveryAttempted(0);
     const ev = n.recoverVisibleText("a".repeat(8000) + "THE REST OF THE ANSWER", 2);
     const snap = ev.find((e) => e.type === "message.snapshot");
     expect(String(snap?.text)).toContain("THE REST OF THE ANSWER");
@@ -677,7 +677,7 @@ describe("G-13: a gateway-truncated chat final", () => {
     n.beginTurn(0);
     n.noteRunStarted("r1", 0);
     n.feed(truncatedFinalFrame("r1", "a".repeat(8000)), 1);
-    n.markRecoveryAttempted();
+    n.markRecoveryAttempted(0);
     const ev = n.tick(1 + 21); // past TRUNCATED_FINAL_GRACE
     const final = ev.find((e) => e.type === "message.final");
     expect(n.finalized).toBe(true);

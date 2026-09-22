@@ -136,6 +136,12 @@ export const TRUNCATED_FINAL_GRACE = 20.0;
 // loses the detection — never the reply.
 export const TRUNCATED_FINAL_MIN_BODY = 8_000;
 export const PRIVATE_ACK_GRACE = 5.0; // wait after a private-ack final for the visible message
+// The same wait, when it exists ONLY to let the history recovery run: that recovery
+// calls `sessions.get` with a 10 s budget (bridge/src/session.ts, recoverDeliveredReply),
+// so a 5 s window finalizes the turn while its own RPC is still in flight and the
+// reply that comes back is refused as belonging to a finalized turn. This one has to
+// outlive the call it opens.
+export const HISTORY_RECOVERY_GRACE = 12.0;
 export const LIFECYCLE_END_GRACE = 10.0; // wait after lifecycle:end for a follow-on run
 // The DEFERRED terminal (`phase:"finishing"`): the gateway is done producing and
 // is finishing its post-turn work (transcript persistence, hooks) before it emits
@@ -389,6 +395,28 @@ function bucketTimeoutPhase(phase: string): string {
  */
 function observedAtMs(nowSeconds: number): number {
   return Math.round(nowSeconds * 1000);
+}
+
+/**
+ * Does `haystack` already carry `needle` AS A DELIVERY — the whole of it, or one of
+ * its blank-line-separated segments?
+ *
+ * Plain `includes` was wrong: a recovered reply "OK" is not already present because
+ * the live answer happens to contain "TOKEN", and dropping it on that basis loses a
+ * message the user was really sent.
+ */
+function holdsDelivery(haystack: string, needle: string): boolean {
+  if (needle === "") return true;
+  if (haystack === needle) return true;
+  let at = haystack.indexOf(needle);
+  while (at >= 0) {
+    const startsSegment = at === 0 || haystack.startsWith("\n\n", at - 2);
+    const end = at + needle.length;
+    const endsSegment = end === haystack.length || haystack.startsWith("\n\n", end);
+    if (startsSegment && endsSegment) return true;
+    at = haystack.indexOf(needle, at + 1);
+  }
+  return false;
 }
 
 const PRIVATE_ACK_RE =
@@ -795,9 +823,57 @@ export class Normalizer {
   /** A `lifecycle_finishing` grace that a compaction suspended. Re-armed when the
    *  compaction settles: suspending it is what keeps a long summary from closing the
    *  turn, but DROPPING it would leave the post-compaction silence unbounded. */
-  private finishingSuspendedByCompaction = false;
+  private finishingSuspended = false;
   /** A tool is waiting on a human approval this app cannot grant (G-21). */
-  private approvalPending = false;
+  /** The approvals awaiting a human, BY ID.
+   *
+   *  One boolean for all of them said "someone is waiting" and nothing more, so the
+   *  first `resolved` released every pending request. That was survivable while its
+   *  only effect was restoring the silence clock early; it stopped being survivable
+   *  when a release also gives the 60 s finishing promise back — one answered
+   *  approval would then close the turn as a SUCCESS while another command was still
+   *  waiting for someone to authorise it, and could still run afterwards.
+   *
+   *  Upstream names the request, but NOT with one stable field: the emitter
+   *  (`embedded-agent-subscribe.handlers.tools.completion.ts`, v2026.9.5) puts
+   *  `toolCallId` on BOTH frames and `approvalId` only on a `requested` whose status
+   *  is `approval-pending` — the `resolved` carries no `approvalId` at all. Keying on
+   *  `approvalId` therefore missed on every single resolution. Both ids are stored as
+   *  ALIASES of one record so either frame finds it; a frame naming nothing falls
+   *  back to a count, because a generation that names nothing must not silently
+   *  become "nothing is pending". */
+  private readonly approvalAliases = new Map<string, string>();
+  /** How many approvals this TURN has requested, resolved ones included. Content can
+   *  stand in for a resolution only on a turn that asked exactly once: after a second
+   *  request, text is far more likely to be the first command's output than an answer
+   *  to the one still waiting. */
+  private approvalsRequested = 0;
+  /** May an in-flight transcript recovery FINALIZE this turn with what it finds?
+   *
+   *  Normally yes — a recovery running because the connection died IS the turn's
+   *  ending. It is revoked only where the question arises: `sessions.get` is given
+   *  10 s and answers long after the window that dispatched it was torn down.
+   *  Cancelling that deadline said "stop waiting"; it did not reach the request
+   *  already on the wire, which came back and closed the turn as a success over a
+   *  tool that had resumed — or over a human still being asked to authorise a
+   *  command. Revoked, the text is still APPLIED: the reply really was delivered and
+   *  discarding it would be the other half of the same defect. It simply no longer
+   *  ends the turn. */
+  private workResumeCount = 0;
+  /** One entry per transcript fetch IN FLIGHT: its token, and the `workResumeCount`
+   *  it left with.
+   *
+   *  Turn-scoped revocation was wrong twice over. Once any promise had been torn
+   *  down, a LATER and entirely legitimate recovery — the socket died, the silence
+   *  budget expired — inherited the revocation and could no longer close the turn it
+   *  was recovering. And a single shared mark was not per-attempt at all: with A
+   *  revoked and B dispatched before A returned, B's mark was the current count, so
+   *  A came back, compared against B's mark, matched, and closed the turn with its
+   *  stale transcript. The answer belongs to the attempt that asked the question. */
+  private readonly recoveryAttempts = new Map<number, number>();
+  private nextRecoveryToken = 1;
+  private readonly pendingApprovalIds = new Set<string>();
+  private anonymousApprovals = 0;
   // WHY the current turn finalized (set by finalize()); shipped in the pressure
   // trace so the exact close path is unambiguous on the next live repro.
   private finalizeCause: string | null = null;
@@ -821,6 +897,9 @@ export class Normalizer {
    *  logged ONCE per episode — the pattern `stashAnnounceFrame` already sets in the
    *  run-manager — because a silent truncation reads as "nothing was dropped". */
   private static readonly MAX_TOOL_ARGS = 2_000;
+  /** Deliveries recovered after work resumed and held for the terminal. Bounded for
+   *  memory alone — reaching it is reported, never absorbed. */
+  private static readonly MAX_RECOVERED_TAILS = 16;
   private static readonly MAX_MEDIA_PATHS = 2_000;
   private static readonly MAX_OBSERVED_CHILDREN = 1_000;
   /** Chat dedup memory (G-15). NOT one of the caps above: eviction here is an
@@ -903,8 +982,18 @@ export class Normalizer {
     this.diagAborted = false;
     this.sawYielded = false;
     this.inRetryingPhase = false;
-    this.finishingSuspendedByCompaction = false;
-    this.approvalPending = false;
+    this.finishingSuspended = false;
+    this.clearApprovals();
+    // Per TURN, not per release: `clearApprovals` also runs when the turn ends and
+    // when content answers one, and zeroing the count there would let the NEXT
+    // request on the same turn look like the turn's first.
+    this.approvalsRequested = 0;
+    this.workResumeCount = 0;
+    this.recoveryAttempts.clear();
+    this.recoveredTails = [];
+    this.recoveryWindowCause = null;
+    this.pendingFinal = null;
+    this.pendingFinalMark = -1;
     this.finalizeCause = null;
     this.recvSilence = false;
     this.diagUsage = null;
@@ -1068,14 +1157,58 @@ export class Normalizer {
       return [];
     }
     const events: BridgeEvent[] = [];
-    if (expired.has("private_ack")) {
+    if (expired.has("history_recovery")) {
+      // The window the finishing grace opened for the transcript fetch. It is its own
+      // deadline, not a borrowed `private_ack`, for one reason: resumed work must be
+      // able to cancel it. Reusing the ack key left `approval:requested`, a compaction
+      // start or a fresh tool start unable to reach it — `cancelFinishingGrace` only
+      // knows about `lifecycle_finishing` — and its expiry finalized a SUCCESS over
+      // demonstrably live work, twelve seconds after the repair that was supposed to
+      // prevent exactly that.
+      this.clearWait("history_recovery");
+      if (
+        this.pendingFinal !== null &&
+        this.pendingFinalMark === this.workResumeCount
+      ) {
+        // A terminal the gateway already delivered was held for a fetch that never
+        // came back. Close on IT, with everything we hold.
+        const run = this.pendingFinal;
+        this.pendingFinal = null;
+        events.push(...run(now));
+      } else if (this.approvalPending() || this.compactionPending) {
+        // Held by someone with a stronger claim; THEIR bound (900 s approval_wait,
+        // the compaction path) ends the turn, with a named cause.
+      } else {
+        if (!this.text && this.pendingAckText) this.text = this.pendingAckText;
+        events.push(
+          ...this.finalize(
+            now,
+            "final",
+            null,
+            null,
+            this.recoveryWindowCause ?? "history_recovery_grace",
+          ),
+        );
+      }
+    } else if (expired.has("private_ack")) {
       // Grace elapsed with no visible follow-on. The chat.history fallback is
       // deferred; degrade gracefully to best-effort content (never hang).
       this.clearWait("private_ack");
       if (!this.text && this.pendingAckText) {
         this.text = this.pendingAckText;
       }
-      events.push(...this.finalize(now, "final", null, null, "private_ack_grace"));
+      if (this.approvalPending() || this.compactionPending) {
+        // …unless someone with a stronger claim owns this turn's end. A five-second
+        // grace armed by an ack has no business closing a turn whose next command a
+        // human is still being asked to authorise, or whose context is being
+        // summarised: THEIR bounds end it, with a named cause. The same rule the
+        // recovery window states, and it was missing here.
+      } else {
+        // Through the same arbitration as every other success: a fetch on the wire
+        // outlives this five-second grace, and closing here handed Atrium the ack
+        // ("Envoyé dans le webchat.") and lost the reply it acknowledges.
+        this.finalizeOrHold(now, "private_ack_grace", events);
+      }
     } else if (expired.has("approval_wait")) {
       // Nobody answered within the budget. NAMED, never a silent timeout: the
       // turn is blocked on a decision this app cannot make.
@@ -1086,7 +1219,7 @@ export class Normalizer {
       // kill a command a human is about to approve in the Control UI. Declared,
       // with its consequences, in bridge/protocol/openclaw/coverage/<version>.json.
       this.clearWait("approval_wait");
-      this.approvalPending = false;
+      this.clearApprovals();
       // The CODE is persisted as the error string too (codex P2): the UI shows
       // the localized headline for the code and suppresses a detail identical to
       // it, so a hardcoded English sentence here would be printed underneath the
@@ -1106,16 +1239,35 @@ export class Normalizer {
       // hold the turn to the 240 s silence timeout — the defect this branch
       // exists to end (G-20).
       this.clearWait("lifecycle_finishing");
-      this.finishingSuspendedByCompaction = false;
-      events.push(
-        ...this.finalize(now, "final", null, null, "lifecycle_finishing_timeout"),
-      );
+      this.finishingSuspended = false;
+      // …but "already written" and "readable by us" are not the same thing. The
+      // gateway-run message-tool delivers its text through the session transcript
+      // alone — we see only an item frame. `wantsHistoryRecovery` keys on the three
+      // graces that mean "held, with nothing to show" (`private_ack`, `empty_final`,
+      // `truncated_final`); this one was never among them, so the order
+      // `finishing -> message item -> 60 s` finalized a SUCCESS with no text and the
+      // recovery that exists for exactly this case never ran. Hand it the 5 s window
+      // instead of closing blind — once per turn, and the ack grace finalizes anyway
+      // if the transcript brings nothing back.
+      if (
+        (this.sawMessageToolItem || this.msgtoolUnreadableArgs > 0) &&
+        !this.hasRealContent() &&
+        !this.recoveryAttempted
+      ) {
+        this.arm("history_recovery", now + HISTORY_RECOVERY_GRACE);
+        return events;
+      }
+      this.finalizeOrHold(now, "lifecycle_finishing_timeout", events);
     } else if (expired.has("truncated_final")) {
       // The recovery had its window and brought nothing back. Finalize with the
       // truncated text we do have — never hold the turn open for a reply that
       // already arrived, only shortened.
       this.clearWait("truncated_final");
-      events.push(...this.finalize(now, "final", null, null, "truncated_final_grace"));
+      if (this.approvalPending() || this.compactionPending) {
+        // Same rule: a holder owns the end (see the ack branch above).
+      } else {
+        this.finalizeOrHold(now, "truncated_final_grace", events);
+      }
     } else if (expired.has("empty_final") || expired.has("lifecycle_end") || expired.has("recv")) {
       if (this.compactionPending && expired.has("recv")) {
         // #40295 DEADLOCK: a compaction started, then the gateway went silent for
@@ -1146,13 +1298,20 @@ export class Normalizer {
         // deadline + the Convex watchdog bound a genuine hang.
         this.clearWait("recv");
         this.recvSilence = true;
+      } else if (this.approvalPending() || this.compactionPending) {
+        // A holder owns this turn's end (see the ack branch above): a grace must not
+        // close it while a human is being asked to authorise a command or the
+        // context is being summarised. THEIR bounds end it, with a named cause.
+        this.clearWait("empty_final");
+        this.clearWait("lifecycle_end");
+        this.armRecv(now);
       } else {
         // A lifecycle_end / empty_final GRACE elapsed = the gateway signaled the
         // turn's end; that IS a terminal, so finalize (not a silence auto-close).
         const cause = expired.has("lifecycle_end")
           ? "lifecycle_end_timeout"
           : "empty_final_timeout";
-        events.push(...this.finalize(now, "final", null, null, cause));
+        this.finalizeOrHold(now, cause, events);
       }
     }
     return events;
@@ -1611,6 +1770,13 @@ export class Normalizer {
           // when it never claimed that (raised in review).
           retry.reason === "rate_limit"
         ) {
+          // A BACK-OFF IS NOT SILENCE. The gateway may emit `finishing` before the
+          // retry status, and this branch published the label and returned without
+          // touching the 60 s promise — so a back-off longer than a minute closed the
+          // turn as a SUCCESS while the provider was still retrying. Cancelled
+          // WITHOUT the helper: the label belongs to the back-off, and a bare
+          // `generating` would wipe the very counter this branch just published.
+          this.cancelFinishingGrace(now);
           events.push({
             type: EVENT_TURN_PHASE,
             phase: "retrying",
@@ -1679,7 +1845,12 @@ export class Normalizer {
         // (e.g. a large-session self-compact recreating the session) — is caught
         // unambiguously by the session close path (connection_lost), which never
         // fires for a user Stop (that keeps the socket open).
-        events.push(...this.finalize(now, "aborted", null, null, "gateway_abort"));
+        // Through the arbitration like the other terminals: an abort closes the sink
+        // just as hard, and a reply the message-tool had really delivered — still
+        // being read out of the transcript — was lost to it. The abort still arrives.
+        this.finalizeOrHoldWith(now, events, (at) =>
+          this.finalize(at, "aborted", null, null, "gateway_abort"),
+        );
         return;
       }
       const reason = isString(payload.errorMessage)
@@ -1711,14 +1882,16 @@ export class Normalizer {
         console.log(
           "[normalizer] chat:error AFTER the run ended — finalizing complete (post-reply gateway failure, see gateway_pressure trace)",
         );
-        const evs = this.finalize(now, "complete", null, null, "gateway_terminal");
-        for (const e of evs) {
-          if (e.type === "message.final") {
-            (e as { diagnosticErrorKind?: string | null }).diagnosticErrorKind =
-              diagKind;
+        this.finalizeOrHoldWith(now, events, (at) => {
+          const evs = this.finalize(at, "complete", null, null, "gateway_terminal");
+          for (const e of evs) {
+            if (e.type === "message.final") {
+              (e as { diagnosticErrorKind?: string | null }).diagnosticErrorKind =
+                diagKind;
+            }
           }
-        }
-        events.push(...evs);
+          return evs;
+        });
         return;
       }
       // ALLOWLIST the wire value against the schema enum before persisting it
@@ -1728,14 +1901,13 @@ export class Normalizer {
         CHAT_ERROR_KINDS.has(payload.errorKind)
           ? payload.errorKind
           : null;
-      events.push(
-        ...this.finalize(
-          now,
-          "error",
-          this.safeSanitizeText(reason) || "gateway error",
-          kind,
-          "gateway_error",
-        ),
+      // Through the arbitration like the successes: an error terminal closes the
+      // sink exactly as hard, and a reply the user was really sent — still being read
+      // out of the transcript — was lost to it. Held, the error still arrives; it
+      // arrives with the delivery beside it.
+      const errorText = this.safeSanitizeText(reason) || "gateway error";
+      this.finalizeOrHoldWith(now, events, (at) =>
+        this.finalize(at, "error", errorText, kind, "gateway_error"),
       );
       return;
     }
@@ -1796,13 +1968,13 @@ export class Normalizer {
     // follow-on content instead of ending the turn blank.
     if (isFinal && !this.finalized) {
       if (this.hasRealContent()) {
-        events.push(...this.finalize(now, "final", null, null, "gateway_final"));
+        this.finalizeOrHold(now, "gateway_final", events);
       } else if (this.sawYielded) {
         // A HAND-OFF, not a silence. The gateway said this turn passed the work on, so
         // there is no follow-on content to wait for: arming the 90s empty-final grace
         // left the turn showing as active for a minute and a half, which is exactly the
         // frame-loss case `ChatFinalEvent.yielded` exists to cover (codex).
-        events.push(...this.finalize(now, "final", null, null, "gateway_final"));
+        this.finalizeOrHold(now, "gateway_final", events);
       } else {
         this.arm("empty_final", now + EMPTY_FINAL_GRACE);
       }
@@ -1918,16 +2090,65 @@ export class Normalizer {
       // waiting for, suspend the silence clock, and BOUND the wait.
       const phase = data.phase;
       if (phase === "requested") {
-        this.approvalPending = true;
+        // `toolCallId` first: it is the one id the resolution is guaranteed to carry.
+        this.approvalsRequested += 1;
+        const aliases = [data.toolCallId, data.approvalId].filter(isString);
+        if (aliases.length > 0) {
+          const record = aliases[0]!;
+          this.pendingApprovalIds.add(record);
+          for (const alias of aliases) this.approvalAliases.set(alias, record);
+        } else this.anonymousApprovals += 1;
         this.clearWait("recv");
+        // …AND THE FINISHING GRACE, for the same reason every other resumption
+        // clears it: an approval request is proof the gateway is not silent. It
+        // suspended the 240 s recv clock and bounded the wait at 900 s, but left the
+        // 60 s finishing promise armed — so `finishing -> approval requested`
+        // finalized the turn as a SUCCESS one minute later, while a human was still
+        // being asked to authorise a command the gateway had not cancelled. Ordered
+        // AFTER `approvalPending` is set so the helper keeps `awaiting_approval` and
+        // does not publish `generating` over it.
+        this.suspendFinishingGrace(now);
         this.arm("approval_wait", now + APPROVAL_WAIT);
         events.push({ type: EVENT_TURN_PHASE, phase: "awaiting_approval" });
       } else if (phase === "resolved") {
         // Explicitly released by the gateway (approved, denied or failed) — the
         // run resumes its normal cadence. `generating` CLEARS the stored phase.
-        this.approvalPending = false;
+        // THIS request, not every request. A second command can be waiting on its
+        // own authorisation, and releasing it here would re-arm the finishing promise
+        // and close the turn while a human still had a decision to make.
+        const record = [data.toolCallId, data.approvalId]
+          .filter(isString)
+          .map((alias) => this.approvalAliases.get(alias))
+          .find((found) => found !== undefined);
+        if (record !== undefined) {
+          this.pendingApprovalIds.delete(record);
+          for (const [alias, target] of this.approvalAliases) {
+            if (target === record) this.approvalAliases.delete(alias);
+          }
+        } else if (
+          this.anonymousApprovals > 0 &&
+          !isString(data.toolCallId) &&
+          !isString(data.approvalId)
+        ) {
+          // An unnamed request answered by an unnamed resolution — the only pairing
+          // a count can justify. A NAMED resolution that matches no alias is a
+          // request whose `requested` we never saw; spending the anonymous token on
+          // it would release an approval a human is demonstrably still holding.
+          this.anonymousApprovals -= 1;
+        }
+        // A resolution that correlates with NOTHING releases nothing: it is either a
+        // request whose `requested` frame we never saw — in which case there is
+        // nothing of ours to release — or a stray, and treating it as "release
+        // everything" is how one answer used to close a turn over someone else's
+        // still-pending authorisation. The 900 s `approval_wait` remains the bound,
+        // and it ends with a NAMED cause rather than a silent success.
+        if (this.approvalPending()) return; // someone else is still waiting
         this.clearWait("approval_wait");
         this.armRecv(now);
+        // …and the finishing promise this approval suspended comes back with it: the
+        // gateway said it was finishing before it asked, so having been answered it
+        // owes a terminal. Only if no OTHER holder still has it.
+        this.rearmFinishingIfReleased(now);
         events.push({ type: EVENT_TURN_PHASE, phase: "generating" });
       }
       return;
@@ -1993,7 +2214,22 @@ export class Normalizer {
     }
     if (stream === "item") {
       // Same rule: only a PREAMBLE item is upstream's progress signal.
-      if (data.kind === "preamble") this.clearRetryingPhase(events);
+      if (data.kind === "preamble") {
+        this.clearRetryingPhase(events);
+        // A preamble is the gateway narrating work it is about to do — this file
+        // already treats it as a progress signal, which is why it clears the
+        // retrying phase. After a `finishing` it is therefore resumption too, on the
+        // same footing as a tool start.
+        //
+        // NOT the `assistant` stream, deliberately, and the corpus says why: 461
+        // assistant frames follow a `finishing` across the captures. That IS the
+        // answer being written — the exact case where the grace's premise ("the
+        // answer is already written") holds — so cancelling there would fire on
+        // nearly every turn and give back the G-20 defect the 60 s bound exists to
+        // fix. No capture exercises a preamble after a finishing; this branch is
+        // reasoned from the signal's meaning here, not from an observed frame.
+        this.noteGatewayResumedWork(events, now);
+      }
       // 6.5 (bench-verified): the gateway-run message-tool surfaces ONLY as an
       // item frame {itemId, phase, kind:"tool", name:"message", title, status} —
       // no args, no result. The delivered text lives in the session transcript
@@ -2001,6 +2237,12 @@ export class Normalizer {
       // the turn ends up holding a bare ack (wantsHistoryRecovery below).
       if (data.kind === "tool" && data.name === "message") {
         this.sawMessageToolItem = true;
+        // A `start` here is the tool BEGINNING to deliver, not proof it delivered:
+        // the same reading every other tool start gets (see handleTool), and the
+        // reason it matters is that this branch returns before the generic start
+        // handling below. Without it, `finishing -> message start` kept the 60 s
+        // promise armed over a tool that was still running.
+        if (data.phase === "start") this.noteGatewayResumedWork(events, now);
         return;
       }
       // DELIVERY runs (sub-agent announce / task delivery) carry NO `tool`
@@ -2023,7 +2265,7 @@ export class Normalizer {
         data.name !== "" &&
         data.phase === "start"
       ) {
-        this.noteGatewayResumedWork();
+        this.noteGatewayResumedWork(events, now);
       }
       // Ordinary runs keep their exact tool-frame pipeline — never both.
       if (
@@ -2145,6 +2387,7 @@ export class Normalizer {
       // where holding text must not stop the recovery.
       (!this.hasRealContent() || this.sawTruncatedFinal) &&
       (this.deadlines.has("private_ack") ||
+        this.deadlines.has("history_recovery") ||
         this.deadlines.has("empty_final") ||
         this.deadlines.has("truncated_final"))
     );
@@ -2162,8 +2405,81 @@ export class Normalizer {
   }
 
   /** Mark the (single) recovery attempt as started so the loop never re-fires. */
-  markRecoveryAttempted(): void {
+  markRecoveryAttempted(now: number): number {
     this.recoveryAttempted = true;
+    // The window that triggered this fetch BECOMES the recovery window.
+    //
+    // Two things were wrong with leaving it where it was. It must outlive the fetch:
+    // `private_ack` is five seconds and `sessions.get` is given ten, so the ack grace
+    // could finalize the turn on "Envoyé dans le webchat." while the real reply was
+    // still on the wire. And it must be REACHABLE: resumed work cancels
+    // `history_recovery`, and only that — so an ack grace left in place went on to
+    // close the turn as a success over a tool that had been running for twelve
+    // seconds. One deadline, cancellable, never shorter than the call it opens nor
+    // than the grace it replaces (`truncated_final`'s twenty seconds are deliberate).
+    let deadline = now + HISTORY_RECOVERY_GRACE;
+    const causeOf: Record<string, string> = {
+      private_ack: "private_ack_grace",
+      empty_final: "empty_final_timeout",
+      truncated_final: "truncated_final_grace",
+    };
+    for (const key of ["private_ack", "empty_final", "truncated_final"]) {
+      const at = this.deadlines.get(key);
+      if (at === undefined) continue;
+      if (at > deadline) deadline = at;
+      // The grace moves, its DIAGNOSIS does not: whoever reads the trace needs to
+      // know which wait closed the turn, and "history_recovery_grace" everywhere
+      // would erase the distinction the causes exist to draw.
+      this.recoveryWindowCause = causeOf[key] ?? null;
+      this.clearWait(key);
+    }
+    this.arm("history_recovery", deadline);
+    return this.noteRecoveryDispatched();
+  }
+
+  /** A transcript fetch LEAVES now, holding the right to close the turn with what it
+   *  brings back. Bound to the work-resume count of this instant: if work resumes
+   *  before the answer lands, the right is gone — and a recovery dispatched AFTER
+   *  that resumption gets its own, current, binding. Every dispatcher calls this,
+   *  including the orphan/silence poll, which is a turn's ending by construction. */
+  noteRecoveryDispatched(): number {
+    const token = this.nextRecoveryToken++;
+    this.recoveryAttempts.set(token, this.workResumeCount);
+    // An attempt that never comes back would leak an entry; bound the map by the
+    // same one-shot logic the turn already has — a handful of tokens at most.
+    if (this.recoveryAttempts.size > 8) {
+      const oldest = this.recoveryAttempts.keys().next().value;
+      if (oldest !== undefined) this.recoveryAttempts.delete(oldest);
+    }
+    return token;
+  }
+
+  /** This fetch is OVER and brought nothing — superseded, failed, or empty.
+   *
+   *  A token that never resolves used to hold the arbitration's terminal back until
+   *  the window expired, and on a dead socket no tick comes to expire it. Releasing
+   *  is the dispatcher's own statement that nothing more is coming; the held terminal
+   *  is then run by whatever next reaches the pipeline (the window, or the session's
+   *  own end), because nothing outside it may emit events. */
+  releaseRecoveryToken(token: number): void {
+    this.recoveryAttempts.delete(token);
+  }
+
+  /** May the recovery now landing finalize the turn? Asked of ITS token, never of
+   *  the newest one. A token this turn does not know (an untokenized caller, or one
+   *  evicted) is believed: refusing would silently stop closing turns. */
+  private recoveryMayClose(token: number | undefined): boolean {
+    if (token === undefined) {
+      // An untokenized caller is believed, and it answers for EVERY attempt: it
+      // cannot say which one it is, so leaving the others "in flight" would hold the
+      // turn open waiting for fetches nobody is going to report. Both real
+      // dispatchers carry a token; this is the compatibility door.
+      this.recoveryAttempts.clear();
+      return true;
+    }
+    const mark = this.recoveryAttempts.get(token);
+    this.recoveryAttempts.delete(token);
+    return mark === undefined || mark === this.workResumeCount;
   }
 
   /** Frames of THIS turn may have been lost (the socket closed mid-turn, the pre-ack
@@ -2217,18 +2533,117 @@ export class Normalizer {
    * close the turn (the chat final that armed the grace has already passed).
    * No-op once finalized (the grace may have flushed the ack meanwhile).
    */
-  recoverVisibleText(text: string, now: number): BridgeEvent[] {
-    return stampReceived(this.recoverVisibleTextAt(text, now), now);
+  recoverVisibleText(text: string, now: number, token?: number): BridgeEvent[] {
+    return stampReceived(this.recoverVisibleTextAt(text, now, token), now);
   }
 
-  private recoverVisibleTextAt(text: string, now: number): BridgeEvent[] {
+  private recoverVisibleTextAt(
+    text: string,
+    now: number,
+    token: number | undefined,
+  ): BridgeEvent[] {
     if (this.finalized || !text) {
       return [];
     }
     const events: BridgeEvent[] = [];
+    this.applyingRecovery = true;
+    try {
+      return this.applyRecoveredText(text, now, token, events);
+    } finally {
+      this.applyingRecovery = false;
+    }
+  }
+
+  private applyRecoveredText(
+    text: string,
+    now: number,
+    token: number | undefined,
+    events: BridgeEvent[],
+  ): BridgeEvent[] {
+    const mayClose = this.recoveryMayClose(token); // consumes THIS token
+    // Another fetch may still be on the wire: the mechanism supports several
+    // attempts, and closing on the first arrival would refuse the later ones — the
+    // loss this arbitration exists to prevent, reached by its own hand.
+    const othersInFlight = this.recoveryAttempts.size > 0;
+    // A terminal the gateway already delivered OWNS the close, with its own status,
+    // cause and diagnosis. Finalizing generically here would throw all three away.
+    const heldTerminal =
+      this.pendingFinal !== null && this.pendingFinalMark === this.workResumeCount;
+    if (mayClose) {
+      this.hasVisibleToolText = true;
+      this.applyVisible(text, true, !heldTerminal && !othersInFlight, now, events);
+      return this.runHeldTerminal(now, events, othersInFlight, heldTerminal);
+    }
+    // Work resumed while this fetch was on the wire. What came back is an OLDER
+    // delivery, and the run that resumed is writing the answer the user will read.
+    if (
+      holdsDelivery(this.text, text) ||
+      this.recoveredTails.some((held) => holdsDelivery(held, text))
+    ) {
+      // We already hold this exact delivery — the only case where dropping loses
+      // nothing. Dropping merely BECAUSE the live run has content was wrong: the
+      // recovered reply really was delivered to the user, and it then vanished from
+      // Atrium entirely.
+      console.log(
+        `[recovery] DROPPED (session=${this.sessionKey}) — the delivered text is already in this turn's reply`,
+      );
+      return this.runHeldTerminal(now, events, othersInFlight, heldTerminal);
+    }
+    // Held for the terminal, not written into the live stream. The turn stays open
+    // and ends by its own path; the delivered reply is materialised then.
+    console.log(
+      `[recovery] HELD for the terminal (session=${this.sessionKey}) — work resumed while the transcript fetch was in flight`,
+    );
     this.hasVisibleToolText = true;
-    this.applyVisible(text, true, true, now, events);
+    // MERGED, never overwritten. A scalar lost a delivery outright: a compaction
+    // replay re-arms the recovery, and a second revoked result whose transcript is
+    // not a superset of the first replaced it — A had really been sent, and vanished.
+    this.noteRecoveredTail(text);
+    return this.runHeldTerminal(now, events, othersInFlight, heldTerminal);
+  }
+
+  /**
+   * Run the terminal that was waiting on the transcript — once nothing is left on
+   * the wire, and only while the gateway has not gone back to work since.
+   */
+  private runHeldTerminal(
+    now: number,
+    events: BridgeEvent[],
+    othersInFlight: boolean,
+    heldTerminal: boolean,
+  ): BridgeEvent[] {
+    if (!heldTerminal) {
+      // Work that resumed AFTER that terminal revokes it: the gateway said it was
+      // done and then went back to work, so the turn ends by its own path.
+      this.pendingFinal = null;
+      return events;
+    }
+    if (othersInFlight) return events; // its window still bounds the wait
+    const run = this.pendingFinal!;
+    this.pendingFinal = null;
+    this.clearWait("history_recovery");
+    events.push(...run(now));
     return events;
+  }
+
+  /** Hold one recovered delivery for the terminal, merged monotonically. */
+  private noteRecoveredTail(text: string): void {
+    // A segment is replaced only by one that demonstrably CONTINUES it (same
+    // prefix), never by one that merely contains it somewhere: a delivery "OK" is
+    // not the same reply as one that happens to contain "TOKEN".
+    const extended = this.recoveredTails.findIndex((held) => text.startsWith(held));
+    if (extended >= 0) {
+      this.recoveredTails[extended] = text;
+    } else if (this.recoveredTails.length >= Normalizer.MAX_RECOVERED_TAILS) {
+      // NAMED, never silent: evicting one would drop a reply the user received, and
+      // so would dropping this one quietly. Sixteen independent revoked recoveries
+      // in a single turn has never been observed; if it happens, the trace says so.
+      console.warn(
+        `[recovery] held-delivery cap reached (session=${this.sessionKey}) — this recovered reply is NOT materialised`,
+      );
+    } else {
+      this.recoveredTails.push(text);
+    }
   }
 
   private handleTool(_payload: JsonObject, data: JsonObject, now: number, events: BridgeEvent[]): void {
@@ -2246,6 +2661,11 @@ export class Normalizer {
         runId: this.currentRunId,
       });
       if (phase === "start") {
+        // Same reading as every other tool start (see the `else` branch below): the
+        // gateway BEGINNING to send is work, and this branch returns before that
+        // one. A no-op on the ordinary order, where the message precedes the
+        // `finishing` and there is no promise to cancel.
+        this.noteGatewayResumedWork(events, now);
         const { text: visible, unreadable } = this.messageToolText(data.args);
         if (visible) {
           this.hasVisibleToolText = true;
@@ -2292,7 +2712,7 @@ export class Normalizer {
         // fix (G-20). A start is new work, and unambiguous. The turn then falls back
         // to the ordinary silence budget, which activity refreshes and whose expiry
         // opens recovery instead of declaring success.
-        this.noteGatewayResumedWork();
+        this.noteGatewayResumedWork(events, now);
         if (toolCallId) {
           if (
             !this.capReached(
@@ -2466,10 +2886,7 @@ export class Normalizer {
       // turn running. So `finishing -> start -> end -> silence` silently lost the 60 s
       // bound that `finishing` had explicitly established (raised in review). The wait is
       // remembered here and re-armed at the real end.
-      if (this.deadlines.has("lifecycle_finishing")) {
-        this.finishingSuspendedByCompaction = true;
-        this.clearWait("lifecycle_finishing");
-      }
+      this.suspendFinishingGrace(now);
       events.push({ type: EVENT_RUN_STATUS, status: "compacting", runId: this.currentRunId });
       if (!this.compactionSignaled) {
         this.compactionSignaled = true;
@@ -2538,7 +2955,7 @@ export class Normalizer {
         // the `finishing` promise this compaction suspended no longer stands and must
         // not be re-armed by a LATER compaction. Leaving the flag set did exactly that —
         // a 60 s grace resurrected for a turn that had gone back to work.
-        this.finishingSuspendedByCompaction = false;
+        this.finishingSuspended = false;
       } else {
         // Compaction settled with no replay (threshold/manual): the run
         // resumes its normal cadence.
@@ -2547,10 +2964,7 @@ export class Normalizer {
         // …and the finishing bound this compaction suspended comes back with it. The
         // gateway said it was finishing before it compacted; having finished compacting
         // it owes a terminal, and that promise is what the 60 s grace holds it to.
-        if (this.finishingSuspendedByCompaction) {
-          this.finishingSuspendedByCompaction = false;
-          this.arm("lifecycle_finishing", now + LIFECYCLE_FINISHING_GRACE);
-        }
+        this.rearmFinishingIfReleased(now);
       }
     }
   }
@@ -2575,9 +2989,121 @@ export class Normalizer {
    * `deadlines` no longer carries it, and leaving the flag set let the compaction's
    * exit re-arm a 60 s bound for a turn that had demonstrably gone back to work.
    */
-  private noteGatewayResumedWork(): void {
+  /**
+   * Give the finishing promise back — but only once NOBODY still holds it.
+   *
+   * `finishingSuspended` is one boolean standing for two holders: a compaction in
+   * flight and an approval awaiting a human. Each release site used to consume it on
+   * its own, so with `approval requested -> compaction start -> finishing` the FIRST
+   * holder to let go armed a 60 s deadline while the other was demonstrably still
+   * working — closing the turn as a success mid-compaction or mid-approval. A shared
+   * flag needs a shared release.
+   */
+  private rearmFinishingIfReleased(now: number): void {
+    if (!this.finishingSuspended) return;
+    if (this.approvalPending() || this.compactionPending) return;
+    this.finishingSuspended = false;
+    this.arm("lifecycle_finishing", now + LIFECYCLE_FINISHING_GRACE);
+  }
+
+  /** Consume the finishing promise, saying whether there was one. PURE — it never
+   *  touches the label, because the callers disagree about what the turn should then
+   *  be called: a resumption says `generating`, an approval says `awaiting_approval`,
+   *  a provider back-off says `retrying`. */
+  private cancelFinishingGrace(now: number): boolean {
+    // The recovery window IS the finishing promise, in its second act: the grace
+    // expired and handed its remaining time to the transcript fetch. Work resuming
+    // ends both, or the twelve seconds become a shorter road to the same wrong
+    // success the sixty were.
+    const recovering = this.deadlines.has("history_recovery");
+    if (recovering) this.clearWait("history_recovery");
+    // …and every OTHER synthetic success this turn is holding. `empty_final` waits
+    // 90 s for content after a blank final and then closes the turn as a success: a
+    // tool that started in between makes that premise false exactly as it does for
+    // the finishing promise, and the turn could no longer be completed by what the
+    // tool went on to produce. `lifecycle_end` is the same shape. The silence budget
+    // is the right home for a turn whose gateway is demonstrably working: its expiry
+    // opens recovery instead of declaring an answer.
+    const hadTerminalGrace =
+      this.deadlines.has("empty_final") || this.deadlines.has("lifecycle_end");
+    if (hadTerminalGrace) {
+      this.clearWait("empty_final");
+      this.clearWait("lifecycle_end");
+      this.armRecv(now);
+    }
+    const hadPromise =
+      this.deadlines.has("lifecycle_finishing") || this.finishingSuspended;
+    // Only a promise we actually tore down revokes the authority — and only then is
+    // there a question to answer. A recovery dispatched with no promise in the first
+    // place (the connection died mid-turn) is the turn's ending, and must stay
+    // allowed to say so.
+    // Unconditional: every caller here is proof the gateway went back to work, and
+    // an in-flight fetch must lose its right to close whatever this call finds armed.
+    // Safe to count freely now that each attempt carries its own token — a recovery
+    // dispatched AFTER the resumption binds the new count and keeps its authority.
+    this.workResumeCount += 1;
+    if (!hadPromise) {
+      return recovering;
+    }
     this.clearWait("lifecycle_finishing");
-    this.finishingSuspendedByCompaction = false;
+    this.finishingSuspended = false;
+    return true;
+  }
+
+  /** Is a human still being asked to authorise something? */
+  private approvalPending(): boolean {
+    return this.pendingApprovalCount() > 0;
+  }
+
+  /** HOW MANY — content can stand in for a resolution only when there is exactly
+   *  one request it could possibly be answering. */
+  private pendingApprovalCount(): number {
+    return this.pendingApprovalIds.size + this.anonymousApprovals;
+  }
+
+  /** Every pending approval is released — the turn ended, or real content proved the
+   *  run resumed. A content resume cannot name WHICH request was answered, so it
+   *  answers all of them; that is the same reading the compaction release makes. */
+  private clearApprovals(): void {
+    this.pendingApprovalIds.clear();
+    this.approvalAliases.clear();
+    this.anonymousApprovals = 0;
+  }
+
+  /**
+   * HOLD the finishing promise instead of destroying it.
+   *
+   * A resumption CANCELS it — the gateway went back to work and owes nothing. A
+   * holder (a compaction, an approval) only borrows it: when the holder lets go the
+   * gateway still owes the terminal it announced. Cancelling outright at
+   * `approval:requested` left `rearmFinishingIfReleased` with nothing to give back,
+   * so `finishing -> requested -> resolved` dropped the 60 s bound for good and fell
+   * through to the 240 s recovery.
+   */
+  private suspendFinishingGrace(now: number): void {
+    if (this.cancelFinishingGrace(now)) this.finishingSuspended = true;
+  }
+
+  private noteGatewayResumedWork(events: BridgeEvent[], now: number): void {
+    if (!this.cancelFinishingGrace(now)) return;
+    // …AND THE LABEL MUST STOP SAYING "Finishing up…" — unless something with a
+    // stronger claim on it is already speaking.
+    //
+    // A bare `generating` wipes WHATEVER phase is stored; this file learned that once
+    // already and answered it with a qualifier (`clearRetryingPhase`, just above).
+    // The case here is approval: the gateway is asking a human to authorise a
+    // command, the turn is legitimately labelled `awaiting_approval`, and a tool
+    // starting must not erase that — least of all while `approvalPending` is still
+    // true and nothing has released it.
+    if (this.approvalPending() || this.inRetryingPhase) return;
+    //
+    // `finishing` publishes `post_processing`, and the only thing that took it back
+    // to `generating` was a new lifecycle `start` — gated on the very deadline this
+    // helper removes. So cancelling the grace silently disarmed the reset too, and
+    // the turn kept telling the reader it was wrapping up for the whole resumed
+    // stretch. A lot whose point is to stop misreporting a turn's state cannot leave
+    // its label lying; the cancellation and the label are one fact and move together.
+    events.push({ type: EVENT_TURN_PHASE, phase: "generating" });
   }
 
   private handleLifecycle(_payload: JsonObject, data: JsonObject, now: number, events: BridgeEvent[]): void {
@@ -2616,12 +3142,22 @@ export class Normalizer {
       // defect from the other end, and nothing upstream forbids that order (raised in
       // review). While a compaction is pending the promise is RECORDED, not armed; the
       // compaction's own exit arms it.
-      if (this.compactionPending) {
-        this.finishingSuspendedByCompaction = true;
+      // …AND SYMMETRIC FOR APPROVAL TOO, which is the same hole one step further.
+      // The comment above records that arming unconditionally was wrong for a
+      // compaction already in flight; an approval already pending is no different.
+      // `requested -> finishing` armed the 60 s promise AND replaced the
+      // `awaiting_approval` label with `post_processing`, so the turn settled as a
+      // success one minute later while a human was still being asked. The promise is
+      // RECORDED in both cases and re-armed when the holder releases.
+      if (this.compactionPending || this.approvalPending()) {
+        this.finishingSuspended = true;
       } else {
         this.arm("lifecycle_finishing", now + LIFECYCLE_FINISHING_GRACE);
       }
-      events.push({ type: EVENT_TURN_PHASE, phase: "post_processing" });
+      // The label only moves when nothing with a stronger claim holds it.
+      if (!this.approvalPending()) {
+        events.push({ type: EVENT_TURN_PHASE, phase: "post_processing" });
+      }
       return;
     }
     if (phase === "error") {
@@ -2638,8 +3174,11 @@ export class Normalizer {
       const rawKind = errObj?.errorKind ?? data.errorKind;
       const kind =
         isString(rawKind) && CHAT_ERROR_KINDS.has(rawKind) ? rawKind : null;
-      events.push(
-        ...this.finalize(now, "error", message, kind, "gateway_error"),
+      // Through the arbitration, like `chat:error`: this terminal closes the sink
+      // just as hard, and the message-tool reply still being read out of the
+      // transcript was lost to it. The error survives; so does the delivery.
+      this.finalizeOrHoldWith(now, events, (at) =>
+        this.finalize(at, "error", message, kind, "gateway_error"),
       );
       return;
     }
@@ -2653,7 +3192,7 @@ export class Normalizer {
       // holding nothing (raised in review).
       const compactionGoverns =
         data.livenessState === "abandoned" && this.explicitCompaction === "active";
-      if (!compactionGoverns) this.finishingSuspendedByCompaction = false;
+      if (!compactionGoverns) this.finishingSuspended = false;
       // livenessState == "abandoned" is the multi-version compaction FALLBACK
       // heuristic (2026.5.19+ gateways emit no explicit signal). A plain
       // replayInvalid with livenessState == "working" is a normal terminal end
@@ -2714,11 +3253,14 @@ export class Normalizer {
       // A new run STARTS after a deferred terminal: the "Finishing up…" label
       // belongs to the run that just ended. Nothing else clears a phase — deltas
       // do not — so without this the resumed turn keeps showing it (codex P2).
-      if (this.deadlines.has("lifecycle_finishing")) {
+      // Through the primitive, not by hand: a direct `clearWait` reaches only the
+      // 60 s promise and left the recovery window it had already handed off to —
+      // `finishing -> 60 s -> window -> lifecycle:start` then closed the turn as a
+      // success twelve seconds into a run that had only just begun.
+      if (this.cancelFinishingGrace(now)) {
         events.push({ type: EVENT_TURN_PHASE, phase: "generating" });
       }
-      this.clearWait("lifecycle_finishing");
-      this.finishingSuspendedByCompaction = false; // a new run owns the turn now
+      this.finishingSuspended = false; // a new run owns the turn now
       if (this.compactionPending) {
         this.compactionPending = false;
         this.armRecv(now);
@@ -2799,6 +3341,33 @@ export class Normalizer {
     Normalizer.touch(this.seenDedupKeys, key, Normalizer.MAX_DEDUP_KEYS);
   }
 
+  /** True while `recoverVisibleTextAt` is the one writing — its own application must
+   *  not count as the gateway resuming work. */
+  private applyingRecovery = false;
+  /** A delivery recovered from the transcript AFTER work resumed. It is held OUT of
+   *  the live buffer — the run that resumed owns that — and materialised at the
+   *  turn's terminal.
+   *
+   *  Appending it into the stream was wrong twice: it split the current answer in
+   *  two (A + recovered + C), and the next ordinary SNAPSHOT replaced the buffer
+   *  outright, erasing the recovered delivery for good. It really was sent to the
+   *  user, so it survives to the end; it simply never competes with the answer being
+   *  written. */
+  private recoveredTails: string[] = [];
+  /** The finalize cause of the grace `markRecoveryAttempted` converted into the
+   *  recovery window, so the trace still names the wait that actually closed. */
+  private recoveryWindowCause: string | null = null;
+  /** A terminal the gateway already delivered, held back while a transcript fetch is
+   *  still on the wire. Consumed the moment that fetch lands or its window expires —
+   *  never dropped, and never left to the silence budget. */
+  private pendingFinal: ((at: number) => BridgeEvent[]) | null = null;
+  /** The `workResumeCount` at the instant that terminal was held. A held cause is as
+   *  revocable as the fetch it waits for: work resuming after it means the gateway is
+   *  no longer finished, and consuming it then closed the turn as a success over live
+   *  work — the defect this whole repair exists to prevent, reached through the door
+   *  the repair itself added. */
+  private pendingFinalMark = -1;
+
   private applyVisible(
     candidate: string,
     isSnapshot: boolean,
@@ -2821,7 +3390,7 @@ export class Normalizer {
         // We already have the real reply; ignore the ack but still close the
         // turn if this was the terminal final.
         if (isFinal) {
-          events.push(...this.finalize(now, "final", null, null, "lifecycle_final"));
+          this.finalizeOrHold(now, "lifecycle_final", events);
         }
         return;
       }
@@ -2884,18 +3453,59 @@ export class Normalizer {
       emitted = candidate;
       eventType = EVENT_MESSAGE_DELTA;
     }
+    // VISIBLE CONTENT REVOKES AN IN-FLIGHT RECOVERY — and only HERE, where the
+    // write is known to have been accepted.
+    //
+    // The token mechanism caught tool starts and lifecycle starts, and missed the
+    // plainest proof of all: the run is writing its answer right now. A transcript
+    // fetch returning afterwards held an OLDER delivery and, still believing itself
+    // authoritative, replaced the buffer with it and closed the turn. Counting it
+    // earlier was wrong in the other direction: a delta the snapshot lock discards
+    // changes nothing on screen, and must not revoke a recovery on its way back.
+    // The recovery's OWN write is exempt — it is not the gateway resuming anything.
+    if (!this.applyingRecovery) {
+      this.workResumeCount += 1;
+      // …and the window this recovery was given dies with its authority. Revoking
+      // the fetch while leaving its 12 s armed left the other door open: the grace
+      // expired mid-stream and finalized the turn as a success over deltas still
+      // arriving, which were then refused for landing on a finalized turn.
+      this.clearWait("history_recovery");
+      // …and the finishing promise SLIDES. It does not cancel — that text IS the
+      // answer being written, which is the grace's own premise — but it must measure
+      // silence since the last write, not absolute time since `finishing`. Measured
+      // from `finishing`, a delta at 59.9 s did not stop the bound firing at 60: the
+      // turn closed mid-sentence and every frame after it was refused. A turn that
+      // really does fall silent still closes sixty seconds later.
+      if (this.deadlines.has("lifecycle_finishing")) {
+        this.arm("lifecycle_finishing", now + LIFECYCLE_FINISHING_GRACE);
+      }
+    }
     this.pendingAckText = "";
     this.clearWait("empty_final");
     this.clearWait("private_ack");
-    if (this.approvalPending) {
+    if (this.pendingApprovalCount() === 1 && this.approvalsRequested === 1) {
       // Real content resumed: the approval was answered somewhere (the gateway's
       // own `resolved` may not reach us on every version). Release the wait the
       // same way resumed content releases a compaction.
-      this.approvalPending = false;
+      //
+      // ONE request, for the whole turn. Content says "an approval was answered"; it
+      // cannot say WHICH — the door the id correlation had just closed on the
+      // explicit `resolved` path, standing open on the implicit one. Counting only
+      // the PENDING ones is not enough either: after `requested(a), requested(b),
+      // resolved(a)`, b is alone, and the text that follows is far more likely to be
+      // a's newly authorised output than an answer to b. A turn that asked twice
+      // waits for correlated resolutions, bounded by the 900 s `approval_wait` and
+      // its named cause.
+      this.clearApprovals();
       this.clearWait("approval_wait");
       // The frame's own re-arm ran BEFORE this (with the flag still set, so it
       // deleted the deadline): put the normal silence budget back now.
       this.armRecv(now);
+      // …and the finishing promise this approval suspended, exactly as the explicit
+      // `resolved` path does. Without it `requested -> finishing -> content` lost the
+      // 60 s bound altogether and fell back to the 240 s recovery — the very defect
+      // the bound exists to prevent, reached through the implicit door.
+      this.rearmFinishingIfReleased(now);
     }
     if (this.compactionPending) {
       // Real content resumed ⇒ the compaction (incl. an overflow replay on the
@@ -2907,7 +3517,7 @@ export class Normalizer {
       // stands and must not be re-armed by a later one. This exit was not consuming the
       // marker — found by enumerating the ways a compaction ends rather than reading the
       // one branch that names itself `end`.
-      this.finishingSuspendedByCompaction = false;
+      this.finishingSuspended = false;
       // …and the replay it announced has ARRIVED. Left standing, a second
       // compaction later in the same turn would inherit an admission proof it
       // never earned, re-opening the foreign-run path (codex P1).
@@ -2935,8 +3545,48 @@ export class Normalizer {
     // surfaced from a tool result.
     this.collectMedia([candidate], events);
     if (isFinal) {
-      events.push(...this.finalize(now, "final", null, null, "gateway_final"));
+      this.finalizeOrHold(now, "gateway_final", events);
     }
+  }
+
+  /**
+   * Close the turn as a SUCCESS — unless a transcript fetch is still on the wire,
+   * in which case the terminal WAITS for it.
+   *
+   * `recoveredTails` only ever protected the order "recovery returns, then the
+   * terminal". Reversed — the resumed run finishes first — the answer came back to a
+   * finalized turn and both guards refused it (`RunManager` because the sink is
+   * closed, the normalizer because `finalized` is set), and a message the user had
+   * really been sent disappeared from Atrium.
+   *
+   * Every success path goes through here, not just the one that revealed it: the ack
+   * and the empty-final-with-content branches close the sink exactly as hard, and
+   * `finishing -> message-tool -> fetch -> new message-tool -> "Envoyé…"` reached the
+   * same loss through the ack door. The wait is bounded by the window the fetch
+   * already owns, and the held cause is revocable: work resuming after it means the
+   * gateway is not finished after all.
+   */
+  private finalizeOrHold(now: number, cause: string, events: BridgeEvent[]): void {
+    this.finalizeOrHoldWith(now, events, (at) =>
+      this.finalize(at, "final", null, null, cause),
+    );
+  }
+
+  /** The same arbitration for a terminal of any SHAPE — the post-reply `complete`
+   *  carries its own status and a diagnostic stamp, and closes the sink just as
+   *  hard, so it cannot be the one path that runs ahead of a fetch on the wire. */
+  private finalizeOrHoldWith(
+    now: number,
+    events: BridgeEvent[],
+    run: (at: number) => BridgeEvent[],
+  ): void {
+    if (this.applyingRecovery || this.recoveryAttempts.size === 0) {
+      events.push(...run(now));
+      return;
+    }
+    this.pendingFinal = run;
+    this.pendingFinalMark = this.workResumeCount;
+    this.arm("history_recovery", now + HISTORY_RECOVERY_GRACE);
   }
 
   // -- media ----------------------------------------------------------------
@@ -3080,6 +3730,31 @@ export class Normalizer {
     this.turnActive = false;
     this.compactionPending = false;
     this.deadlines = new Map();
+    // Deliveries recovered after work resumed are materialised HERE, at the turn's
+    // boundary — never inside the stream the resumed run was writing, where a later
+    // snapshot would simply replace them away.
+    // A G-13 truncated final is a PROJECTION of this very text: the first 8 000
+    // characters plus the marker. Appending the full reply after it would ship the
+    // same 8 000 characters twice, so the segment that EXTENDS the projection
+    // replaces it — and it is resolved FIRST, against the original text. Resolved in
+    // order instead, an unrelated delivery materialised ahead of it removed the
+    // marker from the end of `this.text`, the extension stopped being recognised,
+    // and the duplication came back with the other reply wedged in between.
+    const cut = this.text.endsWith(TRUNCATED_FINAL_MARKER)
+      ? this.text.slice(0, -TRUNCATED_FINAL_MARKER.length)
+      : null;
+    const extendsCut =
+      cut === null
+        ? -1
+        : this.recoveredTails.findIndex((held) => held.startsWith(cut));
+    if (extendsCut >= 0) {
+      this.text = this.recoveredTails[extendsCut]!;
+    }
+    this.recoveredTails.forEach((held, i) => {
+      if (i === extendsCut || holdsDelivery(this.text, held)) return;
+      this.text = this.text === "" ? held : `${this.text}\n\n${held}`;
+    });
+    this.recoveredTails = [];
     const text = this.text || this.pendingAckText;
     const finalEvent: BridgeEvent = {
       type: EVENT_MESSAGE_FINAL,
@@ -3253,6 +3928,10 @@ export class Normalizer {
     // final that armed it, so leaving it running would let its 20 s expire on a
     // replay still in flight and finalize the turn on partial or empty text.
     this.deadlines.delete("truncated_final");
+    // …and the transcript-recovery window, for the same reason: the replay
+    // invalidates the message-tool delivery that opened it, so its 12 s would expire
+    // on a replay still in flight.
+    this.deadlines.delete("history_recovery");
     this.sawTruncatedFinal = false;
     // The abandoned attempt's DIAGNOSTICS are invalidated with its content
     // (codex P2): kept, they would let an empty replay be classed
@@ -3278,7 +3957,7 @@ export class Normalizer {
     if (this.finalized) {
       return;
     }
-    if (this.approvalPending) {
+    if (this.approvalPending()) {
       // A tool is waiting on a HUMAN (G-21). Keep-alive traffic — heartbeats,
       // health frames — would otherwise re-arm the 240 s silence budget, which
       // then fires long before the approval wait and closes the turn as a

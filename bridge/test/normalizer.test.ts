@@ -22,6 +22,9 @@ import {
   EMPTY_FINAL_GRACE,
   LIFECYCLE_END_GRACE,
   PRIVATE_ACK_GRACE,
+  HISTORY_RECOVERY_GRACE,
+  TRUNCATED_FINAL_MARKER,
+  TRUNCATED_FINAL_MIN_BODY,
   Normalizer,
   type BridgeEvent,
 } from "../src/providers/openclaw/normalizer.js";
@@ -3491,7 +3494,7 @@ describe("G-20: lifecycle `finishing` and terminal metadata", () => {
     // the gateway is not silent"); it was never applied to ordinary work.
     const { n, clock } = startTurn();
     n.feed(lifecycle({ phase: "finishing" }), clock.tick());
-    n.feed(
+    const resumed = n.feed(
       {
         event: "agent",
         payload: {
@@ -3503,6 +3506,14 @@ describe("G-20: lifecycle `finishing` and terminal metadata", () => {
       },
       clock.tick(),
     );
+    // …and the LABEL moves with it: the reset to `generating` used to be gated on
+    // the very deadline this cancellation removes, so the turn kept saying
+    // "Finishing up…" for the whole resumed stretch — a lot about not misreporting
+    // a turn's state cannot leave its own label lying.
+    expect(
+      resumed.find((e) => e.type === "turn.phase")?.phase,
+      "the reader must stop being told the turn is wrapping up",
+    ).toBe("generating");
     // Well past the 60 s grace, and the turn is STILL OPEN.
     const ev = n.tick(clock.now + 61);
     expect(
@@ -3536,7 +3547,7 @@ describe("G-20: lifecycle `finishing` and terminal metadata", () => {
       },
       clock.tick(),
     );
-    n.feed(
+    const resumed = n.feed(
       {
         event: "agent",
         payload: {
@@ -3554,12 +3565,1662 @@ describe("G-20: lifecycle `finishing` and terminal metadata", () => {
       },
       clock.tick(),
     );
+    expect(resumed.find((e) => e.type === "turn.phase")?.phase).toBe("generating");
     const ev = n.tick(clock.now + 61);
     expect(
       ev.some((e) => e.type === "message.final"),
       "the gateway went back to work on the only lane this run has",
     ).toBe(false);
     expect(n.finalized).toBe(false);
+  });
+
+  it("an APPROVAL request after `finishing` is not a finished turn", () => {
+    // `approval:requested` suspended the 240 s recv clock and bounded its own wait
+    // at 900 s — but left the 60 s finishing promise armed. So the turn settled as a
+    // SUCCESS one minute later while a human was still being asked to authorise a
+    // command the gateway had not cancelled, and which could still run afterwards.
+    const { n, clock } = startTurn();
+    n.feed(lifecycle({ phase: "finishing" }), clock.tick());
+    const asked = n.feed(
+      {
+        event: "agent",
+        payload: {
+          sessionKey: SESSION_KEY,
+          runId: OWN_RUN,
+          stream: "approval",
+          data: { phase: "requested" },
+        },
+      },
+      clock.tick(),
+    );
+    expect(asked.find((e) => e.type === "turn.phase")?.phase).toBe(
+      "awaiting_approval",
+    );
+    const ev = n.tick(clock.now + 61);
+    expect(
+      ev.some((e) => e.type === "message.final"),
+      "a turn waiting on a human is not finished",
+    ).toBe(false);
+  });
+
+  it("a tool start during an approval does not erase `awaiting_approval`", () => {
+    // A bare `generating` wipes whatever phase is stored — the lesson this file
+    // already learned for the back-off label. The approval has the stronger claim:
+    // nothing has released it.
+    //
+    // ORDER MATTERS, and the first version of this test got it wrong: written as
+    // `finishing -> requested -> tool start`, the request had already consumed the
+    // grace, so the helper returned before it ever read `approvalPending` and the
+    // assertion passed without exercising the guard at all. Here the approval comes
+    // FIRST and the `finishing` only suspends the promise, so the guard is the only
+    // thing that can keep the label.
+    const { n, clock } = startTurn();
+    n.feed(
+      {
+        event: "agent",
+        payload: {
+          sessionKey: SESSION_KEY,
+          runId: OWN_RUN,
+          stream: "approval",
+          data: { phase: "requested" },
+        },
+      },
+      clock.tick(),
+    );
+    n.feed(lifecycle({ phase: "finishing" }), clock.tick());
+    const resumed = n.feed(
+      {
+        event: "agent",
+        payload: {
+          sessionKey: SESSION_KEY,
+          runId: OWN_RUN,
+          stream: "tool",
+          data: { name: "exec", phase: "start", toolCallId: "tc-during" },
+        },
+      },
+      clock.tick(),
+    );
+    expect(
+      resumed.some(
+        (e) => e.type === "turn.phase" && e.phase === "generating",
+      ),
+      "the reader must keep being told a human is being asked",
+    ).toBe(false);
+  });
+
+  it("the REVERSE order too: an approval already pending when `finishing` arrives", () => {
+    // The file records that arming the grace unconditionally was wrong for a
+    // compaction already in flight. An approval already pending is no different, and
+    // the symmetry was never made: `requested -> finishing` armed the 60 s promise
+    // AND replaced `awaiting_approval` with `post_processing`.
+    const { n, clock } = startTurn();
+    n.feed(
+      {
+        event: "agent",
+        payload: {
+          sessionKey: SESSION_KEY,
+          runId: OWN_RUN,
+          stream: "approval",
+          data: { phase: "requested" },
+        },
+      },
+      clock.tick(),
+    );
+    const fin = n.feed(lifecycle({ phase: "finishing" }), clock.tick());
+    expect(
+      fin.some((e) => e.type === "turn.phase" && e.phase === "post_processing"),
+      "the approval keeps the label",
+    ).toBe(false);
+    const ev = n.tick(clock.now + 61);
+    expect(
+      ev.some((e) => e.type === "message.final"),
+      "a turn waiting on a human is not finished, whichever order the frames came in",
+    ).toBe(false);
+  });
+
+  const approvalFrame = (phase: string) => ({
+    event: "agent",
+    payload: {
+      sessionKey: SESSION_KEY,
+      runId: OWN_RUN,
+      stream: "approval",
+      data: { phase },
+    },
+  });
+  const compactionFrame2 = (data: Record<string, unknown>) => ({
+    type: "event",
+    event: "agent",
+    payload: {
+      runId: OWN_RUN,
+      sessionKey: SESSION_KEY,
+      seq: 1,
+      stream: "compaction",
+      ts: 0,
+      data,
+    },
+  });
+
+  it("an approval BORROWS the promise, it does not destroy it", () => {
+    // A resumption cancels the promise — the gateway went back to work and owes
+    // nothing. A holder only borrows it: when the approval is answered the gateway
+    // still owes the terminal it announced. Cancelling outright at `requested` left
+    // the re-arm with nothing to give back, so the 60 s bound was gone for good and
+    // the turn fell through to the 240 s recovery.
+    for (const release of ["explicit", "implicit"] as const) {
+      const { n, clock } = startTurn();
+      n.feed(lifecycle({ phase: "finishing" }), clock.tick());
+      n.feed(approvalFrame("requested"), clock.tick());
+      n.feed(
+        release === "explicit"
+          ? approvalFrame("resolved")
+          : {
+              event: "agent",
+              payload: {
+                sessionKey: SESSION_KEY,
+                runId: OWN_RUN,
+                stream: "assistant",
+                data: { text: "Voici le résultat.", phase: "final_answer" },
+              },
+            },
+        clock.tick(),
+      );
+      const ev = n.tick(clock.now + 61);
+      expect(
+        ev.some((e) => e.type === "message.final"),
+        `${release}: the promise must come back once the approval is answered`,
+      ).toBe(true);
+    }
+  });
+
+  it("TWO holders of the suspension: the first to let go does not arm the grace", () => {
+    // `finishingSuspended` is one boolean standing for two holders — a compaction in
+    // flight and an approval awaiting a human. Each release site used to consume it
+    // on its own, so the FIRST to let go armed a 60 s deadline while the other was
+    // demonstrably still working.
+    const { n, clock } = startTurn();
+    n.feed(approvalFrame("requested"), clock.tick());
+    n.feed(compactionFrame2({ phase: "start" }), clock.tick());
+    n.feed(lifecycle({ phase: "finishing" }), clock.tick());
+    // The approval is answered; the compaction is NOT.
+    n.feed(approvalFrame("resolved"), clock.tick());
+    const ev = n.tick(clock.now + 61);
+    expect(
+      ev.some((e) => e.type === "message.final"),
+      "the gateway is still compacting",
+    ).toBe(false);
+  });
+
+  it("TWO approvals: answering one does not answer the other", () => {
+    // `approvalPending` was a single boolean, so the FIRST `resolved` released every
+    // request at once — and with the promise re-armed, a second command still waiting
+    // on a human saw its turn finalized as a success 60 s later. Upstream names the
+    // request (`{phase, approvalId, toolCallId}`), so the correlation is available.
+    // The UPSTREAM shape, verbatim (v2026.9.5
+    // embedded-agent-subscribe.handlers.tools.completion.ts:495-520 and :600-615):
+    // `toolCallId` on BOTH frames, `approvalId` on the REQUEST only. Keying on
+    // `approvalId` alone therefore missed on every resolution ever sent.
+    const idFrame = (phase: string, toolCallId: string) => ({
+      event: "agent",
+      payload: {
+        sessionKey: SESSION_KEY,
+        runId: OWN_RUN,
+        stream: "approval",
+        data:
+          phase === "requested"
+            ? { phase, toolCallId, approvalId: `ap-for-${toolCallId}` }
+            : { phase, toolCallId },
+      },
+    });
+    const { n, clock } = startTurn();
+    n.feed(idFrame("requested", "call-1"), clock.tick());
+    n.feed(idFrame("requested", "call-2"), clock.tick());
+    n.feed(lifecycle({ phase: "finishing" }), clock.tick());
+    n.feed(idFrame("resolved", "call-1"), clock.tick());
+    expect(
+      n.tick(clock.now + 61).some((e) => e.type === "message.final"),
+      "ap-2 is still waiting on a human",
+    ).toBe(false);
+    // The second answer releases the last holder, and the promise comes back.
+    n.feed(idFrame("resolved", "call-2"), clock.tick());
+    expect(
+      n.tick(clock.now + 61).some((e) => e.type === "message.final"),
+      "both answered: the terminal the gateway announced is owed again",
+    ).toBe(true);
+  });
+
+  const messageItem = (phase: string) => ({
+    event: "agent",
+    payload: {
+      sessionKey: SESSION_KEY,
+      runId: OWN_RUN,
+      stream: "item",
+      data: {
+        itemId: "i1",
+        kind: "tool",
+        name: "message",
+        phase,
+        status: phase === "start" ? "running" : "completed",
+      },
+    },
+  });
+
+  it("a message-tool STARTING after `finishing` is work, not a delivered answer", () => {
+    // The item branch for the message-tool sets its recovery flag and RETURNS, ahead
+    // of the generic start handling — so this one tool start, alone among all of
+    // them, left the 60 s promise armed over a tool that had not finished running.
+    const { n, clock } = startTurn();
+    n.feed(lifecycle({ phase: "finishing" }), clock.tick());
+    n.feed(messageItem("start"), clock.tick());
+    const at61 = clock.now + 61;
+    expect(
+      n.tick(at61).some((e) => e.type === "message.final"),
+      "the message tool is still running",
+    ).toBe(false);
+    // …and it must be CANCELLED, not merely deferred into the recovery window: a
+    // tool that has not finished running has delivered nothing to recover, and the
+    // turn belongs on the ordinary 240 s silence budget, whose expiry OPENS recovery
+    // instead of declaring a success. Asserting only "no final at 61 s" passes on
+    // the deferral too — the recovery hand-off would answer for it — so the shape of
+    // the state is what is pinned here.
+    expect(
+      n.wantsHistoryRecovery,
+      "nothing was delivered yet: there is no reply to go and fetch",
+    ).toBe(false);
+    expect(
+      n.tick(at61 + HISTORY_RECOVERY_GRACE + 1).some((e) => e.type === "message.final"),
+      "the turn is on the silence budget now, and 73 s is not silence",
+    ).toBe(false);
+  });
+
+  it("a message-tool that ALREADY ran hands the turn to RECOVERY, not to a blank success", () => {
+    // The gateway-run message-tool delivers its text through the session transcript
+    // alone: on the wire it is an item frame with no args and no result. Here the
+    // delivery is DONE and the `finishing` follows it, so the grace's premise ("the
+    // answer is already written") holds — and that is exactly why finalizing on it
+    // was wrong: `wantsHistoryRecovery` keys on the three graces that mean "held with
+    // nothing to show" (`private_ack`, `empty_final`, `truncated_final`), and
+    // `lifecycle_finishing` was not among them. The turn settled as a SUCCESS with no
+    // text while its reply sat in the transcript, unread.
+    const { n, clock } = startTurn();
+    n.feed(messageItem("start"), clock.tick());
+    n.feed(messageItem("end"), clock.tick());
+    n.feed(lifecycle({ phase: "finishing" }), clock.tick());
+    const at61 = clock.now + 61;
+    expect(
+      n.tick(at61).some((e) => e.type === "message.final"),
+      "a blank final here is the delivered reply thrown away",
+    ).toBe(false);
+    expect(
+      n.wantsHistoryRecovery,
+      "the grace must open the window the recovery reads",
+    ).toBe(true);
+    // And the window OUTLIVES the call it opens: `recoverDeliveredReply` gives
+    // `sessions.get` 10 s, so a 5 s ack grace would finalize mid-RPC and refuse the
+    // text that came back. Bounded all the same — nothing waits forever.
+    expect(
+      n.tick(at61 + PRIVATE_ACK_GRACE + 1).some((e) => e.type === "message.final"),
+      "10 s of RPC must fit inside the window",
+    ).toBe(false);
+    expect(
+      n.tick(at61 + HISTORY_RECOVERY_GRACE + 1).some((e) => e.type === "message.final"),
+      "the recovery window is bounded, not another open turn",
+    ).toBe(true);
+  });
+
+  it("work resuming INSIDE the recovery window cancels it too", () => {
+    // The window the finishing grace opens for the transcript fetch was a borrowed
+    // `private_ack`, and `cancelFinishingGrace` only ever knew about
+    // `lifecycle_finishing` — so an approval, a compaction or a tool start arriving
+    // during those 12 s could not reach it, and its expiry finalized a SUCCESS over
+    // live work. Twelve seconds is a shorter road to the same wrong answer as sixty.
+    const { n, clock } = startTurn();
+    n.feed(messageItem("start"), clock.tick());
+    n.feed(messageItem("end"), clock.tick());
+    n.feed(lifecycle({ phase: "finishing" }), clock.tick());
+    const at61 = clock.now + 61;
+    n.tick(at61); // the grace expires and opens the recovery window
+    expect(n.wantsHistoryRecovery, "the window is open").toBe(true);
+    // The gateway goes back to work inside it.
+    n.feed(
+      {
+        event: "agent",
+        payload: {
+          sessionKey: SESSION_KEY,
+          runId: OWN_RUN,
+          stream: "tool",
+          data: { name: "exec", phase: "start", toolCallId: "tc-after" },
+        },
+      },
+      at61 + 1,
+    );
+    expect(
+      n.tick(at61 + HISTORY_RECOVERY_GRACE + 1).some((e) => e.type === "message.final"),
+      "an `exec` is running: the window has no business closing the turn",
+    ).toBe(false);
+  });
+
+  it("content answers ONE approval, never two", () => {
+    // `applyVisible` reads real content as "the approval was answered somewhere" and
+    // cleared them ALL — the exact door the id correlation had just closed on the
+    // explicit `resolved`, left open on the implicit one. Content cannot name which
+    // request it answers; with two outstanding it was answering for both.
+    const idFrame = (phase: string, toolCallId: string) => ({
+      event: "agent",
+      payload: {
+        sessionKey: SESSION_KEY,
+        runId: OWN_RUN,
+        stream: "approval",
+        data: { phase, toolCallId },
+      },
+    });
+    const { n, clock } = startTurn();
+    n.feed(idFrame("requested", "call-1"), clock.tick());
+    n.feed(idFrame("requested", "call-2"), clock.tick());
+    n.feed(lifecycle({ phase: "finishing" }), clock.tick());
+    n.feed(idFrame("resolved", "call-1"), clock.tick());
+    n.feed(
+      {
+        event: "agent",
+        payload: {
+          sessionKey: SESSION_KEY,
+          runId: OWN_RUN,
+          stream: "assistant",
+          data: { text: "Première commande faite.", phase: "final_answer" },
+        },
+      },
+      clock.tick(),
+    );
+    expect(
+      n.tick(clock.now + 61).some((e) => e.type === "message.final"),
+      "call-2 is still waiting on a human",
+    ).toBe(false);
+  });
+
+  it("a NEW run starting inside the recovery window closes it", () => {
+    // `lifecycle:start` cleared the 60 s promise by hand instead of through the
+    // primitive, so it never reached the recovery window that promise had handed off
+    // to: `finishing -> 60 s -> window -> lifecycle:start` finalized the turn as a
+    // success twelve seconds into a run that had only just begun.
+    const { n, clock } = startTurn();
+    n.feed(messageItem("start"), clock.tick());
+    n.feed(messageItem("end"), clock.tick());
+    n.feed(lifecycle({ phase: "finishing" }), clock.tick());
+    const at61 = clock.now + 61;
+    n.tick(at61);
+    expect(n.wantsHistoryRecovery, "the window is open").toBe(true);
+    n.feed(lifecycle({ phase: "start" }), at61 + 1);
+    expect(
+      n.tick(at61 + HISTORY_RECOVERY_GRACE + 1).some((e) => e.type === "message.final"),
+      "a run that just started is not a turn that just ended",
+    ).toBe(false);
+  });
+
+  it("a recovery in flight loses the right to CLOSE when work resumes", () => {
+    // Cancelling the window says "stop waiting"; it cannot reach the `sessions.get`
+    // already on the wire, which is given 10 s and answers afterwards. That answer
+    // used to finalize the turn — over a tool that had resumed. The text is still
+    // KEPT: the reply really was delivered, and discarding it would be the other
+    // half of the same defect. It just no longer ends the turn.
+    const { n, clock } = startTurn();
+    n.feed(messageItem("start"), clock.tick());
+    n.feed(messageItem("end"), clock.tick());
+    n.feed(lifecycle({ phase: "finishing" }), clock.tick());
+    const at61 = clock.now + 61;
+    n.tick(at61);
+    expect(n.wantsHistoryRecovery).toBe(true);
+    const token = n.markRecoveryAttempted(clock.now); // the fetch leaves, bound to this instant
+    n.feed(
+      {
+        event: "agent",
+        payload: {
+          sessionKey: SESSION_KEY,
+          runId: OWN_RUN,
+          stream: "tool",
+          data: { name: "exec", phase: "start", toolCallId: "tc-resumed" },
+        },
+      },
+      at61 + 1,
+    );
+    const recovered = n.recoverVisibleText("La réponse livrée.", at61 + 9, token);
+    expect(
+      recovered.map((e) => (e as { type: string }).type),
+      "it writes nothing into the stream the resumed run owns",
+    ).toEqual([]);
+    expect(n.finalized, "…and it does not close a turn still working").toBe(false);
+    // Held, not lost: it appears at the turn's own terminal.
+    n.feed(lifecycle({ phase: "end" }), at61 + 20);
+    const ended = n.tick(at61 + 400);
+    expect(
+      JSON.stringify(ended),
+      "the delivered reply reaches the reader at the boundary",
+    ).toContain("La réponse livrée.");
+  });
+
+  it("a LATER recovery gets its own right to close", () => {
+    // The revocation was turn-scoped: once any promise had been torn down, every
+    // subsequent recovery inherited it — including the one that runs because the
+    // socket died, which IS the turn's ending. The reply came back, was applied, and
+    // the bubble stayed streaming until the watchdog.
+    const { n, clock } = startTurn();
+    n.feed(lifecycle({ phase: "finishing" }), clock.tick());
+    n.feed(
+      {
+        event: "agent",
+        payload: {
+          sessionKey: SESSION_KEY,
+          runId: OWN_RUN,
+          stream: "tool",
+          data: { name: "exec", phase: "start", toolCallId: "tc-1" },
+        },
+      },
+      clock.tick(),
+    ); // tears the promise down — revocation, under the old rule, for the whole turn
+    // Now the socket dies and the orphan poll starts its OWN fetch.
+    const token = n.noteRecoveryDispatched();
+    const recovered = n.recoverVisibleText("La réponse complète.", clock.tick(), token);
+    expect(
+      recovered.map((e) => (e as { type: string }).type),
+      "this recovery is the turn's ending and must be allowed to say so",
+    ).toContain("message.final");
+    expect(n.finalized).toBe(true);
+  });
+
+  it("a revoked recovery never overwrites the answer the live run is writing", () => {
+    // Without the right to close, the text was still applied as an AUTHORITATIVE
+    // snapshot: it replaced the buffer and raised `hasSnapshot`, after which the
+    // resumed run's own deltas were refused by the snapshot lock. The old delivery
+    // overwrote the new answer and then froze it — a worse outcome than the blank
+    // success this whole repair set out to prevent.
+    const { n, clock } = startTurn();
+    n.feed(lifecycle({ phase: "finishing" }), clock.tick());
+    const token = n.markRecoveryAttempted(clock.now);
+    n.feed(
+      {
+        event: "agent",
+        payload: {
+          sessionKey: SESSION_KEY,
+          runId: OWN_RUN,
+          stream: "tool",
+          data: { name: "exec", phase: "start", toolCallId: "tc-1" },
+        },
+      },
+      clock.tick(),
+    );
+    n.feed(
+      {
+        event: "agent",
+        payload: {
+          sessionKey: SESSION_KEY,
+          runId: OWN_RUN,
+          stream: "assistant",
+          data: { text: "La NOUVELLE réponse, en cours" },
+        },
+      },
+      clock.tick(),
+    );
+    const recovered = n.recoverVisibleText("Une VIEILLE livraison.", clock.tick(), token);
+    expect(
+      recovered,
+      "it takes no authority, and no place, in the live buffer",
+    ).toEqual([]);
+    // …and the live stream is still free to grow.
+    const more = n.feed(
+      {
+        event: "agent",
+        payload: {
+          sessionKey: SESSION_KEY,
+          runId: OWN_RUN,
+          stream: "assistant",
+          data: { text: " et voici la suite." },
+        },
+      },
+      clock.tick(),
+    );
+    expect(
+      JSON.stringify(more),
+      "the snapshot lock must not have closed the stream",
+    ).toContain("et voici la suite");
+  });
+
+  it("a STALE recovery cannot borrow a newer attempt's right to close", () => {
+    // One shared mark was not per-attempt at all: with A revoked by resumed work and
+    // B dispatched before A returned, B's mark was the current count — so A came
+    // back, compared itself against B's mark, matched, and closed the turn with its
+    // stale transcript.
+    const { n, clock } = startTurn();
+    n.feed(lifecycle({ phase: "finishing" }), clock.tick());
+    const tokenA = n.markRecoveryAttempted(clock.now); // A leaves
+    n.feed(
+      {
+        event: "agent",
+        payload: {
+          sessionKey: SESSION_KEY,
+          runId: OWN_RUN,
+          stream: "tool",
+          data: { name: "exec", phase: "start", toolCallId: "tc-1" },
+        },
+      },
+      clock.tick(),
+    ); // work resumes: A is revoked
+    n.noteRecoveryDispatched(); // B leaves, with a current binding
+    const late = n.recoverVisibleText("Le vieux transcript.", clock.tick(), tokenA);
+    expect(
+      late.map((e) => (e as { type: string }).type),
+      "A was revoked; B's binding is not A's",
+    ).not.toContain("message.final");
+    expect(n.finalized).toBe(false);
+  });
+
+  it("no terminal grace closes a turn over a pending approval", () => {
+    // `wantsHistoryRecovery` opens from four windows, and only two of them had the
+    // rule. A five-second ack grace would close a turn whose next command a human is
+    // still being asked to authorise — the 900 s `approval_wait` and its named cause
+    // are what end that turn.
+    const { n, clock } = startTurn();
+    n.feed(
+      {
+        event: "agent",
+        payload: {
+          sessionKey: SESSION_KEY,
+          runId: OWN_RUN,
+          stream: "approval",
+          data: { phase: "requested", toolCallId: "tc-approve" },
+        },
+      },
+      clock.tick(),
+    );
+    n.feed(
+      {
+        type: "event",
+        event: "chat",
+        payload: {
+          sessionKey: SESSION_KEY,
+          runId: OWN_RUN,
+          seq: 9,
+          state: "final",
+          message: {
+            role: "assistant",
+            content: [{ type: "text", text: "Envoyé dans le webchat." }],
+          },
+        },
+      },
+      clock.tick(),
+    );
+    expect(n.finalized, "the ack is grace-held, not an answer").toBe(false);
+    expect(
+      n.tick(clock.now + PRIVATE_ACK_GRACE + 1).some((e) => e.type === "message.final"),
+      "a human is still holding this turn",
+    ).toBe(false);
+  });
+
+  const ackFinal = () => ({
+    type: "event",
+    event: "chat",
+    payload: {
+      sessionKey: SESSION_KEY,
+      runId: OWN_RUN,
+      seq: 9,
+      state: "final",
+      message: {
+        role: "assistant",
+        content: [{ type: "text", text: "Envoyé dans le webchat." }],
+      },
+    },
+  });
+
+  it("dispatching a recovery EXTENDS a window shorter than the fetch it opens", () => {
+    // `private_ack` is five seconds; `sessions.get` is given ten. The ack grace
+    // therefore finalized the turn on "Envoyé dans le webchat." while the real reply
+    // was still on the wire — and once finalized, the reply that came back was
+    // refused. Extended at dispatch, never shortened.
+    const { n, clock } = startTurn();
+    n.feed(messageItem("start"), clock.tick());
+    n.feed(messageItem("end"), clock.tick());
+    n.feed(ackFinal(), clock.tick());
+    expect(n.wantsHistoryRecovery).toBe(true);
+    const at = clock.now;
+    n.markRecoveryAttempted(at); // the fetch leaves
+    expect(
+      n.tick(at + PRIVATE_ACK_GRACE + 1).some((e) => e.type === "message.final"),
+      "the fetch has ten seconds; five is not a window, it is a race",
+    ).toBe(false);
+    expect(
+      n.tick(at + HISTORY_RECOVERY_GRACE + 1).some((e) => e.type === "message.final"),
+      "…and it stays bounded",
+    ).toBe(true);
+  });
+
+  it("visible content revokes an in-flight recovery", () => {
+    // The token caught tool starts and lifecycle starts and missed the plainest
+    // proof of all: the run is writing its answer right now. The fetch returned an
+    // OLDER delivery, still believing itself authoritative, replaced the buffer with
+    // it and closed the turn.
+    const { n, clock } = startTurn();
+    n.feed(messageItem("start"), clock.tick());
+    n.feed(messageItem("end"), clock.tick());
+    n.feed(ackFinal(), clock.tick());
+    const token = n.markRecoveryAttempted(clock.now);
+    n.feed(
+      {
+        event: "agent",
+        payload: {
+          sessionKey: SESSION_KEY,
+          runId: OWN_RUN,
+          stream: "assistant",
+          data: { text: "La NOUVELLE réponse arrive." },
+        },
+      },
+      clock.tick(),
+    );
+    const late = n.recoverVisibleText("Une VIEILLE livraison.", clock.tick(), token);
+    const types = late.map((e) => (e as { type: string }).type);
+    expect(types, "it must not replace what the run is writing").not.toContain(
+      "message.snapshot",
+    );
+    expect(types, "…nor close the turn").not.toContain("message.final");
+  });
+
+  it("a revoked delivery is KEPT, not thrown away for having arrived late", () => {
+    // Dropping it merely because the live run held content lost a reply the user had
+    // already been sent: it existed in the transcript and vanished from Atrium
+    // entirely. Only an exact duplicate of what we already hold may be dropped.
+    const { n, clock } = startTurn();
+    n.feed(messageItem("start"), clock.tick());
+    n.feed(messageItem("end"), clock.tick());
+    n.feed(ackFinal(), clock.tick());
+    const token = n.markRecoveryAttempted(clock.now);
+    n.feed(
+      {
+        event: "agent",
+        payload: {
+          sessionKey: SESSION_KEY,
+          runId: OWN_RUN,
+          stream: "assistant",
+          data: { text: "La NOUVELLE réponse arrive." },
+        },
+      },
+      clock.tick(),
+    );
+    n.recoverVisibleText("Une VIEILLE livraison.", clock.tick(), token);
+    // The run that resumed keeps writing, and ends with a SNAPSHOT — which replaces
+    // the buffer outright. An append into the stream would have been erased right
+    // here; held for the terminal, the delivery survives it.
+    const ended = n.feed(
+      {
+        type: "event",
+        event: "chat",
+        payload: {
+          sessionKey: SESSION_KEY,
+          runId: OWN_RUN,
+          seq: 11,
+          state: "final",
+          message: {
+            role: "assistant",
+            content: [{ type: "text", text: "La NOUVELLE réponse, complète." }],
+          },
+        },
+      },
+      clock.tick(),
+    );
+    const text = JSON.stringify(ended);
+    expect(text, "the new answer is delivered").toContain("NOUVELLE réponse, complète");
+    expect(text, "…and the reply the user already received is not erased").toContain(
+      "VIEILLE livraison",
+    );
+  });
+
+  it("deltas arriving inside the recovery window disarm it", () => {
+    // Content revoked the FETCH's right to close, and left the window's own 12 s
+    // armed. The other door: the grace expired mid-stream and finalized the turn as
+    // a success while deltas were still arriving — which were then refused for
+    // landing on a finalized turn. Tool starts reached the window through
+    // `cancelFinishingGrace`; content did not.
+    const { n, clock } = startTurn();
+    n.feed(messageItem("start"), clock.tick());
+    n.feed(messageItem("end"), clock.tick());
+    n.feed(lifecycle({ phase: "finishing" }), clock.tick());
+    const at61 = clock.now + 61;
+    n.tick(at61);
+    expect(n.wantsHistoryRecovery, "the window is open").toBe(true);
+    n.feed(
+      {
+        event: "agent",
+        payload: {
+          sessionKey: SESSION_KEY,
+          runId: OWN_RUN,
+          stream: "assistant",
+          data: { text: "La réponse s'écrit" },
+        },
+      },
+      at61 + 1,
+    );
+    expect(
+      n.tick(at61 + HISTORY_RECOVERY_GRACE + 1).some((e) => e.type === "message.final"),
+      "the run is writing: the window has no business closing the turn",
+    ).toBe(false);
+  });
+
+  it("the grace that triggered a recovery BECOMES the cancellable window", () => {
+    // Extending `private_ack` in place was half the repair: resumed work cancels
+    // `history_recovery` and only that, so an ack grace left where it was went on to
+    // close the turn as a success over a tool that had been running for twelve
+    // seconds. Converted, one deadline answers to the resumption.
+    const { n, clock } = startTurn();
+    n.feed(messageItem("start"), clock.tick());
+    n.feed(messageItem("end"), clock.tick());
+    n.feed(ackFinal(), clock.tick());
+    const at = clock.now;
+    n.markRecoveryAttempted(at);
+    n.feed(
+      {
+        event: "agent",
+        payload: {
+          sessionKey: SESSION_KEY,
+          runId: OWN_RUN,
+          stream: "tool",
+          data: { name: "exec", phase: "start", toolCallId: "tc-live" },
+        },
+      },
+      at + 1,
+    );
+    expect(
+      n.tick(at + HISTORY_RECOVERY_GRACE + 5).some((e) => e.type === "message.final"),
+      "the tool is still running",
+    ).toBe(false);
+  });
+
+  it("a second held delivery does not erase the first", () => {
+    // `recoveredTail` was scalar: a compaction replay re-arms the recovery, and a
+    // second revoked result whose transcript is not a superset of the first replaced
+    // it. A had really been sent to the user, and vanished at the terminal.
+    const { n, clock } = startTurn();
+    n.feed(messageItem("start"), clock.tick());
+    n.feed(messageItem("end"), clock.tick());
+    n.feed(lifecycle({ phase: "finishing" }), clock.tick());
+    const at61 = clock.now + 61;
+    n.tick(at61);
+    const tokenA = n.markRecoveryAttempted(at61);
+    n.feed(
+      {
+        event: "agent",
+        payload: {
+          sessionKey: SESSION_KEY,
+          runId: OWN_RUN,
+          stream: "tool",
+          data: { name: "exec", phase: "start", toolCallId: "tc-1" },
+        },
+      },
+      at61 + 1,
+    );
+    n.recoverVisibleText("PREMIÈRE livraison.", at61 + 2, tokenA);
+    const tokenB = n.noteRecoveryDispatched();
+    n.feed(
+      {
+        event: "agent",
+        payload: {
+          sessionKey: SESSION_KEY,
+          runId: OWN_RUN,
+          stream: "tool",
+          data: { name: "exec", phase: "start", toolCallId: "tc-2" },
+        },
+      },
+      at61 + 3,
+    );
+    n.recoverVisibleText("SECONDE livraison.", at61 + 4, tokenB);
+    n.feed(lifecycle({ phase: "end" }), at61 + 5);
+    const ended = JSON.stringify(n.tick(at61 + 400));
+    expect(ended, "both reached the user; both survive").toContain("PREMIÈRE livraison.");
+    expect(ended, "both reached the user; both survive").toContain("SECONDE livraison.");
+  });
+
+  it("a G-13 recovery REPLACES the truncated projection, it does not follow it", () => {
+    // The cut final is the first 8 000 characters of this very text plus a marker.
+    // Appending the full reply after it shipped those 8 000 characters twice.
+    const { n, clock } = startTurn();
+    const body = "a".repeat(TRUNCATED_FINAL_MIN_BODY);
+    n.feed(
+      {
+        type: "event",
+        event: "chat",
+        payload: {
+          sessionKey: SESSION_KEY,
+          runId: OWN_RUN,
+          seq: 9,
+          state: "final",
+          message: {
+            role: "assistant",
+            content: [{ type: "text", text: body + TRUNCATED_FINAL_MARKER }],
+          },
+        },
+      },
+      clock.tick(),
+    );
+    const token = n.markRecoveryAttempted(clock.now);
+    n.feed(
+      {
+        event: "agent",
+        payload: {
+          sessionKey: SESSION_KEY,
+          runId: OWN_RUN,
+          stream: "tool",
+          data: { name: "exec", phase: "start", toolCallId: "tc-1" },
+        },
+      },
+      clock.tick(),
+    );
+    n.recoverVisibleText(body + "LA FIN.", clock.tick(), token);
+    n.feed(lifecycle({ phase: "end" }), clock.tick());
+    const final = n.tick(clock.now + 400).find((e) => e.type === "message.final") as
+      | { text?: string }
+      | undefined;
+    expect(final?.text ?? "", "the full reply is delivered").toContain("LA FIN.");
+    expect(
+      (final?.text ?? "").length,
+      "…once, not twice",
+    ).toBeLessThan(TRUNCATED_FINAL_MIN_BODY * 2);
+  });
+
+  it("the G-13 replacement does not depend on the ORDER the deliveries came back", () => {
+    // The loop mutated `this.text` as it went: an unrelated delivery materialised
+    // ahead of the G-13 extension removed the marker from the end, the extension
+    // stopped being recognised, and the 8 000 characters were shipped twice with the
+    // other reply wedged in between.
+    const { n, clock } = startTurn();
+    const body = "a".repeat(TRUNCATED_FINAL_MIN_BODY);
+    n.feed(
+      {
+        type: "event",
+        event: "chat",
+        payload: {
+          sessionKey: SESSION_KEY,
+          runId: OWN_RUN,
+          seq: 9,
+          state: "final",
+          message: {
+            role: "assistant",
+            content: [{ type: "text", text: body + TRUNCATED_FINAL_MARKER }],
+          },
+        },
+      },
+      clock.tick(),
+    );
+    const resume = (id: string, at: number) =>
+      n.feed(
+        {
+          event: "agent",
+          payload: {
+            sessionKey: SESSION_KEY,
+            runId: OWN_RUN,
+            stream: "tool",
+            data: { name: "exec", phase: "start", toolCallId: id },
+          },
+        },
+        at,
+      );
+    const t1 = n.markRecoveryAttempted(clock.now);
+    resume("tc-1", clock.tick());
+    // The UNRELATED delivery comes back first…
+    n.recoverVisibleText("Un message indépendant.", clock.tick(), t1);
+    const t2 = n.noteRecoveryDispatched();
+    resume("tc-2", clock.tick());
+    // …and the G-13 extension second.
+    n.recoverVisibleText(body + "LA FIN.", clock.tick(), t2);
+    n.feed(lifecycle({ phase: "end" }), clock.tick());
+    const final = n.tick(clock.now + 400).find((e) => e.type === "message.final") as
+      | { text?: string }
+      | undefined;
+    const text = final?.text ?? "";
+    expect(text, "the full reply is delivered").toContain("LA FIN.");
+    expect(text, "…and so is the other one").toContain("Un message indépendant.");
+    expect(text.length, "…with the body ONCE").toBeLessThan(
+      TRUNCATED_FINAL_MIN_BODY * 2,
+    );
+  });
+
+  it("a short delivery is not swallowed by a longer word that contains it", () => {
+    // Dedup by `includes` dropped a recovered "OK" because the live answer happened
+    // to contain "TOKEN". A delivery counts as already held only when it is the
+    // whole text or one of its blank-line-separated segments.
+    const { n, clock } = startTurn();
+    n.feed(lifecycle({ phase: "finishing" }), clock.tick());
+    const token = n.markRecoveryAttempted(clock.now);
+    n.feed(
+      {
+        event: "agent",
+        payload: {
+          sessionKey: SESSION_KEY,
+          runId: OWN_RUN,
+          stream: "assistant",
+          data: { text: "Voici le TOKEN demandé." },
+        },
+      },
+      clock.tick(),
+    );
+    n.recoverVisibleText("OK", clock.tick(), token);
+    n.feed(lifecycle({ phase: "end" }), clock.tick());
+    const final = n.tick(clock.now + 400).find((e) => e.type === "message.final") as
+      | { text?: string }
+      | undefined;
+    expect(final?.text ?? "", "the delivered «OK» is its own message").toContain(
+      "\n\nOK",
+    );
+  });
+
+  const emptyFinal = () => ({
+    type: "event",
+    event: "chat",
+    payload: {
+      sessionKey: SESSION_KEY,
+      runId: OWN_RUN,
+      seq: 9,
+      state: "final",
+      message: { role: "assistant", content: [] },
+    },
+  });
+
+  it("an `empty_final` grace does not close a turn a tool has resumed", () => {
+    // The rule reached the finishing promise and the recovery window, and stopped
+    // there. `empty_final` waits 90 s for content after a blank final and then closes
+    // the turn as a success — over a tool started in between, whose output could then
+    // no longer complete the turn it belonged to.
+    const { n, clock } = startTurn();
+    n.feed(emptyFinal(), clock.tick());
+    n.feed(
+      {
+        event: "agent",
+        payload: {
+          sessionKey: SESSION_KEY,
+          runId: OWN_RUN,
+          stream: "tool",
+          data: { name: "exec", phase: "start", toolCallId: "tc-live" },
+        },
+      },
+      clock.tick(),
+    );
+    expect(
+      n.tick(clock.now + 120).some((e) => e.type === "message.final"),
+      "the exec is still running",
+    ).toBe(false);
+  });
+
+  it("an `empty_final` grace does not close a turn over a pending approval", () => {
+    // The approval comes FIRST: the request clears whatever grace is armed, so the
+    // order that actually reaches the tick's own guard is the one where the blank
+    // final lands while a human is already being asked.
+    const { n, clock } = startTurn();
+    n.feed(
+      {
+        event: "agent",
+        payload: {
+          sessionKey: SESSION_KEY,
+          runId: OWN_RUN,
+          stream: "approval",
+          data: { phase: "requested", toolCallId: "tc-approve" },
+        },
+      },
+      clock.tick(),
+    );
+    n.feed(emptyFinal(), clock.tick());
+    expect(
+      n.tick(clock.now + 120).some((e) => e.type === "message.final"),
+      "a human is still holding this turn",
+    ).toBe(false);
+  });
+
+  it("the terminal WAITS for a fetch still on the wire", () => {
+    // `recoveredTails` only ever protected the order "recovery returns, then the
+    // terminal". Reversed — the resumed run finishes first — the answer came back to
+    // a finalized turn and both guards refused it, and a message the user had really
+    // been sent disappeared from Atrium.
+    const { n, clock } = startTurn();
+    n.feed(messageItem("start"), clock.tick());
+    n.feed(messageItem("end"), clock.tick());
+    n.feed(lifecycle({ phase: "finishing" }), clock.tick());
+    const at61 = clock.now + 61;
+    n.tick(at61);
+    const token = n.markRecoveryAttempted(at61); // the fetch leaves
+    n.feed(
+      {
+        event: "agent",
+        payload: {
+          sessionKey: SESSION_KEY,
+          runId: OWN_RUN,
+          stream: "tool",
+          data: { name: "exec", phase: "start", toolCallId: "tc-1" },
+        },
+      },
+      at61 + 1,
+    ); // work resumes: the fetch loses its right to close
+    // The resumed run finishes FIRST, with a gateway final.
+    const early = n.feed(
+      {
+        type: "event",
+        event: "chat",
+        payload: {
+          sessionKey: SESSION_KEY,
+          runId: OWN_RUN,
+          seq: 11,
+          state: "final",
+          message: {
+            role: "assistant",
+            content: [{ type: "text", text: "La NOUVELLE réponse." }],
+          },
+        },
+      },
+      at61 + 2,
+    );
+    expect(
+      early.some((e) => e.type === "message.final"),
+      "the terminal waits for the delivery still on the wire",
+    ).toBe(false);
+    expect(n.finalized).toBe(false);
+    // …and the fetch lands, bringing the reply that had been sent.
+    const landed = n.recoverVisibleText("Une VIEILLE livraison.", at61 + 5, token);
+    const final = landed.find((e) => e.type === "message.final") as
+      | { text?: string }
+      | undefined;
+    expect(final, "its arrival closes the turn").toBeDefined();
+    expect(final?.text ?? "", "the new answer is there").toContain("NOUVELLE réponse");
+    expect(final?.text ?? "", "…and so is the one already sent").toContain(
+      "VIEILLE livraison",
+    );
+  });
+
+  it("…and a fetch that never returns does not hold the turn open", () => {
+    const { n, clock } = startTurn();
+    n.feed(messageItem("start"), clock.tick());
+    n.feed(messageItem("end"), clock.tick());
+    n.feed(lifecycle({ phase: "finishing" }), clock.tick());
+    const at61 = clock.now + 61;
+    n.tick(at61);
+    n.markRecoveryAttempted(at61);
+    n.feed(
+      {
+        event: "agent",
+        payload: {
+          sessionKey: SESSION_KEY,
+          runId: OWN_RUN,
+          stream: "tool",
+          data: { name: "exec", phase: "start", toolCallId: "tc-1" },
+        },
+      },
+      at61 + 1,
+    );
+    n.feed(
+      {
+        type: "event",
+        event: "chat",
+        payload: {
+          sessionKey: SESSION_KEY,
+          runId: OWN_RUN,
+          seq: 11,
+          state: "final",
+          message: {
+            role: "assistant",
+            content: [{ type: "text", text: "La NOUVELLE réponse." }],
+          },
+        },
+      },
+      at61 + 2,
+    );
+    const final = n
+      .tick(at61 + 2 + HISTORY_RECOVERY_GRACE + 1)
+      .find((e) => e.type === "message.final") as { text?: string } | undefined;
+    expect(final, "the window closes it, with everything we hold").toBeDefined();
+    expect(final?.text ?? "").toContain("NOUVELLE réponse");
+  });
+
+  it("a held terminal is revoked by work that resumes after it", () => {
+    // The held cause was not bound to anything. Order: fetch in flight, terminal
+    // held, a NEW tool starts, then the fetch lands — the arrival consumed the held
+    // cause and closed the turn as a success while the gateway was working again.
+    // The 12 s window does not cover it: the arrival, not the expiry, is the trigger.
+    const { n, clock } = startTurn();
+    n.feed(messageItem("start"), clock.tick());
+    n.feed(messageItem("end"), clock.tick());
+    n.feed(lifecycle({ phase: "finishing" }), clock.tick());
+    const at61 = clock.now + 61;
+    n.tick(at61);
+    const token = n.markRecoveryAttempted(at61);
+    const toolStart = (id: string, at: number) =>
+      n.feed(
+        {
+          event: "agent",
+          payload: {
+            sessionKey: SESSION_KEY,
+            runId: OWN_RUN,
+            stream: "tool",
+            data: { name: "exec", phase: "start", toolCallId: id },
+          },
+        },
+        at,
+      );
+    toolStart("tc-1", at61 + 1);
+    n.feed(
+      {
+        type: "event",
+        event: "chat",
+        payload: {
+          sessionKey: SESSION_KEY,
+          runId: OWN_RUN,
+          seq: 11,
+          state: "final",
+          message: {
+            role: "assistant",
+            content: [{ type: "text", text: "La NOUVELLE réponse." }],
+          },
+        },
+      },
+      at61 + 2,
+    ); // terminal HELD for the fetch
+    toolStart("tc-2", at61 + 3); // …and the gateway goes back to work
+    const landed = n.recoverVisibleText("Une VIEILLE livraison.", at61 + 4, token);
+    expect(
+      landed.some((e) => e.type === "message.final"),
+      "the gateway is working again: the held terminal is stale",
+    ).toBe(false);
+    expect(n.finalized).toBe(false);
+  });
+
+  it("the ACK door waits for a fetch on the wire too", () => {
+    // The wait lived only at the terminal that revealed it. The private-ack branch
+    // closes the sink exactly as hard: fetch in flight, the gateway writes a second
+    // reply, and its "Envoyé dans le webchat." met `hasRealContent()` and finalized —
+    // so the first delivery, already sent to the user, came back to a closed turn.
+    const { n, clock } = startTurn();
+    n.feed(messageItem("start"), clock.tick());
+    n.feed(messageItem("end"), clock.tick());
+    n.feed(lifecycle({ phase: "finishing" }), clock.tick());
+    const at61 = clock.now + 61;
+    n.tick(at61);
+    const token = n.markRecoveryAttempted(at61);
+    n.feed(
+      {
+        event: "agent",
+        payload: {
+          sessionKey: SESSION_KEY,
+          runId: OWN_RUN,
+          stream: "assistant",
+          data: { text: "La SECONDE réponse." },
+        },
+      },
+      at61 + 1,
+    );
+    const acked = n.feed(ackFinal(), at61 + 2);
+    expect(
+      acked.some((e) => e.type === "message.final"),
+      "a delivery is still on the wire",
+    ).toBe(false);
+    const landed = n.recoverVisibleText("La PREMIÈRE livraison.", at61 + 4, token);
+    const final = landed.find((e) => e.type === "message.final") as
+      | { text?: string }
+      | undefined;
+    expect(final, "its arrival closes the turn").toBeDefined();
+    expect(final?.text ?? "", "both replies reached the user").toContain(
+      "PREMIÈRE livraison",
+    );
+    expect(final?.text ?? "").toContain("SECONDE réponse");
+  });
+
+  it("the private-ack GRACE waits for a fetch on the wire", () => {
+    // The last direct success. A fetch leaves, a new message-tool resumes the work
+    // (item frames only — nothing readable is held), and the ack final re-arms the
+    // five-second grace. It expires before `sessions.get`'s ten, closes the sink, and
+    // Atrium keeps "Envoyé dans le webchat." while losing the reply it acknowledges.
+    const { n, clock } = startTurn();
+    n.feed(messageItem("start"), clock.tick());
+    n.feed(messageItem("end"), clock.tick());
+    n.feed(lifecycle({ phase: "finishing" }), clock.tick());
+    const at61 = clock.now + 61;
+    n.tick(at61);
+    const token = n.markRecoveryAttempted(at61);
+    n.feed(messageItem("start"), at61 + 1); // the gateway sends again
+    n.feed(messageItem("end"), at61 + 2);
+    n.feed(ackFinal(), at61 + 3);
+    expect(
+      n.tick(at61 + 3 + PRIVATE_ACK_GRACE + 1).some((e) => e.type === "message.final"),
+      "the fetch has ten seconds; this grace has five",
+    ).toBe(false);
+    const landed = n.recoverVisibleText("La réponse livrée.", at61 + 12, token);
+    expect(
+      JSON.stringify(landed),
+      "the delivered reply survives the ack that acknowledged it",
+    ).toContain("La réponse livrée.");
+  });
+
+  it("a `yielded` terminal waits for a fetch on the wire too", () => {
+    // The last gateway terminal bypassing the arbitration. A hand-off carries no
+    // text, so `hasRealContent()` is false and the branch closed the turn outright —
+    // while a delivered reply was still being read out of the transcript.
+    const { n, clock } = startTurn();
+    n.feed(messageItem("start"), clock.tick());
+    n.feed(messageItem("end"), clock.tick());
+    n.feed(lifecycle({ phase: "finishing" }), clock.tick());
+    const at61 = clock.now + 61;
+    n.tick(at61);
+    const token = n.markRecoveryAttempted(at61);
+    const yielded = n.feed(
+      {
+        type: "event",
+        event: "chat",
+        payload: {
+          sessionKey: SESSION_KEY,
+          runId: OWN_RUN,
+          seq: 11,
+          state: "final",
+          yielded: true,
+          message: { role: "assistant", content: [] },
+        },
+      },
+      at61 + 1,
+    );
+    expect(
+      yielded.some((e) => e.type === "message.final"),
+      "a delivery is still on the wire",
+    ).toBe(false);
+    const landed = n.recoverVisibleText("La réponse livrée.", at61 + 5, token);
+    expect(
+      JSON.stringify(landed),
+      "the hand-off does not take the reply with it",
+    ).toContain("La réponse livrée.");
+  });
+
+  it("the post-reply `complete` waits for a fetch on the wire, keeping its diagnosis", () => {
+    // The audit that cleared the other terminals keyed on the literal "final" and
+    // missed this one: a post-reply gateway failure closes the turn `complete`, and
+    // it closes the sink exactly as hard. It carries a status and a diagnostic stamp
+    // of its own, so the arbitration had to learn to hold a terminal of any shape.
+    const { n, clock } = startTurn();
+    n.feed(messageItem("start"), clock.tick());
+    n.feed(messageItem("end"), clock.tick());
+    n.feed(lifecycle({ phase: "finishing" }), clock.tick());
+    const at61 = clock.now + 61;
+    n.tick(at61);
+    const token = n.markRecoveryAttempted(at61);
+    n.feed(
+      {
+        type: "event",
+        event: "chat",
+        payload: {
+          sessionKey: SESSION_KEY,
+          runId: OWN_RUN,
+          state: "delta",
+          deltaText: "La réponse reprise.",
+        },
+      },
+      at61 + 1,
+    );
+    n.feed(lifecycle({ phase: "end" }), at61 + 2);
+    const failed = n.feed(
+      {
+        type: "event",
+        event: "chat",
+        payload: {
+          sessionKey: SESSION_KEY,
+          runId: OWN_RUN,
+          state: "error",
+          errorMessage: "Context overflow: prompt too large for the model.",
+        },
+      },
+      at61 + 3,
+    );
+    expect(
+      failed.some((e) => e.type === "message.final"),
+      "a delivery is still on the wire",
+    ).toBe(false);
+    const landed = n.recoverVisibleText("La réponse livrée.", at61 + 6, token);
+    const final = landed.find((e) => e.type === "message.final") as
+      | { text?: string; diagnosticErrorKind?: string | null }
+      | undefined;
+    expect(final, "its arrival runs the terminal that was waiting").toBeDefined();
+    expect(final?.text ?? "", "the delivered reply survives").toContain(
+      "La réponse livrée.",
+    );
+    expect(
+      final?.diagnosticErrorKind,
+      "…and the held terminal kept its own diagnosis",
+    ).toBe("context_length");
+  });
+
+  it("the FIRST arrival does not close a turn another fetch is still answering", () => {
+    // The mechanism supports several attempts at once. Only the returning token was
+    // removed, so A coming back ran the held terminal while B was still on the wire —
+    // and B's delivery was then refused by a closed sink.
+    const { n, clock } = startTurn();
+    n.feed(messageItem("start"), clock.tick());
+    n.feed(messageItem("end"), clock.tick());
+    n.feed(lifecycle({ phase: "finishing" }), clock.tick());
+    const at61 = clock.now + 61;
+    n.tick(at61);
+    const tokenA = n.markRecoveryAttempted(at61);
+    const tokenB = n.noteRecoveryDispatched();
+    n.feed(
+      {
+        type: "event",
+        event: "chat",
+        payload: {
+          sessionKey: SESSION_KEY,
+          runId: OWN_RUN,
+          seq: 11,
+          state: "final",
+          message: {
+            role: "assistant",
+            content: [{ type: "text", text: "La réponse." }],
+          },
+        },
+      },
+      at61 + 1,
+    ); // the terminal is HELD
+    const first = n.recoverVisibleText("Livraison A.", at61 + 2, tokenA);
+    expect(
+      first.some((e) => e.type === "message.final"),
+      "B is still answering",
+    ).toBe(false);
+    const second = n.recoverVisibleText("Livraison B.", at61 + 3, tokenB);
+    const final = second.find((e) => e.type === "message.final") as
+      | { text?: string }
+      | undefined;
+    expect(final, "the LAST arrival runs the held terminal").toBeDefined();
+    expect(final?.text ?? "").toContain("Livraison A.");
+    expect(final?.text ?? "").toContain("Livraison B.");
+  });
+
+  it("a HELD terminal keeps its own close when the recovery is still authorised", () => {
+    // With the token still authorised the branch finalized generically through
+    // `applyVisible(isFinal=true)`, so a post-reply `complete` held just before —
+    // with its cause and its `diagnosticErrorKind` — was replaced by a plain
+    // `gateway_final` and its diagnosis was lost.
+    const { n, clock } = startTurn();
+    // A G-13 cut final: real content AND a recovery trigger, which is what the
+    // post-reply `complete` branch needs to be reachable at all.
+    const body = "a".repeat(TRUNCATED_FINAL_MIN_BODY);
+    n.feed(
+      {
+        type: "event",
+        event: "chat",
+        payload: {
+          sessionKey: SESSION_KEY,
+          runId: OWN_RUN,
+          seq: 9,
+          state: "final",
+          message: {
+            role: "assistant",
+            content: [{ type: "text", text: body + TRUNCATED_FINAL_MARKER }],
+          },
+        },
+      },
+      clock.tick(),
+    );
+    const token = n.markRecoveryAttempted(clock.now);
+    n.feed(lifecycle({ phase: "end" }), clock.tick());
+    n.feed(
+      {
+        type: "event",
+        event: "chat",
+        payload: {
+          sessionKey: SESSION_KEY,
+          runId: OWN_RUN,
+          state: "error",
+          errorMessage: "Context overflow: prompt too large for the model.",
+        },
+      },
+      clock.tick(),
+    );
+    const landed = n.recoverVisibleText(body + "LA FIN.", clock.tick(), token);
+    const final = landed.find((e) => e.type === "message.final") as
+      | { text?: string; diagnosticErrorKind?: string | null }
+      | undefined;
+    expect(final?.text ?? "", "the full reply is delivered").toContain("LA FIN.");
+    expect(
+      final?.diagnosticErrorKind,
+      "the held terminal owns the close, with its diagnosis",
+    ).toBe("context_length");
+  });
+
+  it("a released token stops blocking the held terminal", () => {
+    // Waiting for EVERY attempt was right, and it made a token that never resolves
+    // able to hold the turn back — on a dead socket no tick comes to expire the
+    // window either. The dispatcher says so explicitly when its fetch is over with
+    // nothing.
+    const { n, clock } = startTurn();
+    n.feed(messageItem("start"), clock.tick());
+    n.feed(messageItem("end"), clock.tick());
+    n.feed(lifecycle({ phase: "finishing" }), clock.tick());
+    const at61 = clock.now + 61;
+    n.tick(at61);
+    const tokenA = n.markRecoveryAttempted(at61);
+    const tokenB = n.noteRecoveryDispatched();
+    n.feed(
+      {
+        type: "event",
+        event: "chat",
+        payload: {
+          sessionKey: SESSION_KEY,
+          runId: OWN_RUN,
+          seq: 11,
+          state: "final",
+          message: {
+            role: "assistant",
+            content: [{ type: "text", text: "La réponse." }],
+          },
+        },
+      },
+      at61 + 1,
+    ); // the terminal is HELD
+    n.releaseRecoveryToken(tokenB); // B was superseded: nothing is coming
+    const landed = n.recoverVisibleText("Livraison A.", at61 + 2, tokenA);
+    const final = landed.find((e) => e.type === "message.final") as
+      | { text?: string }
+      | undefined;
+    expect(final, "nothing is left on the wire: the terminal runs").toBeDefined();
+    expect(final?.text ?? "").toContain("Livraison A.");
+  });
+
+  it("an ERROR terminal waits for a fetch on the wire too", () => {
+    // An error closes the sink exactly as hard as a success. A reply the user was
+    // really sent, still being read out of the transcript, was lost to it — the
+    // error arrived and the delivery did not.
+    const { n, clock } = startTurn();
+    n.feed(messageItem("start"), clock.tick());
+    n.feed(messageItem("end"), clock.tick());
+    n.feed(ackFinal(), clock.tick());
+    const token = n.markRecoveryAttempted(clock.now);
+    const failed = n.feed(
+      {
+        type: "event",
+        event: "chat",
+        payload: {
+          sessionKey: SESSION_KEY,
+          runId: OWN_RUN,
+          state: "error",
+          errorMessage: "Gateway exploded.",
+        },
+      },
+      clock.tick(),
+    );
+    expect(
+      failed.some((e) => e.type === "message.final"),
+      "a delivery is still on the wire",
+    ).toBe(false);
+    const landed = n.recoverVisibleText("La réponse livrée.", clock.tick(), token);
+    const final = landed.find((e) => e.type === "message.final") as
+      | { text?: string; error?: string | null }
+      | undefined;
+    expect(final?.text ?? "", "the delivery survives the error").toContain(
+      "La réponse livrée.",
+    );
+    expect(final?.error ?? "", "…and the error still arrives").toContain(
+      "Gateway exploded",
+    );
+  });
+
+  it("a lifecycle ERROR waits for a fetch on the wire too", () => {
+    // `chat:error` learned the rule; its lifecycle twin had not. The error message
+    // survived and the reply the user was really sent did not.
+    const { n, clock } = startTurn();
+    n.feed(messageItem("start"), clock.tick());
+    n.feed(messageItem("end"), clock.tick());
+    n.feed(ackFinal(), clock.tick());
+    const token = n.markRecoveryAttempted(clock.now);
+    const failed = n.feed(
+      lifecycle({ phase: "error", error: { message: "Gateway exploded." } }),
+      clock.tick(),
+    );
+    expect(
+      failed.some((e) => e.type === "message.final"),
+      "a delivery is still on the wire",
+    ).toBe(false);
+    const landed = n.recoverVisibleText("La réponse livrée.", clock.tick(), token);
+    const final = landed.find((e) => e.type === "message.final") as
+      | { text?: string; error?: string | null }
+      | undefined;
+    expect(final?.text ?? "", "the delivery survives the error").toContain(
+      "La réponse livrée.",
+    );
+    expect(final?.error ?? "", "…and the error still arrives").toContain(
+      "Gateway exploded",
+    );
+  });
+
+  it("the finishing bound SLIDES on writes: it measures silence, not elapsed time", () => {
+    // The bound did not cancel on assistant text — correctly, that text is the
+    // answer being written — but it measured absolute time since `finishing`. A
+    // delta at 59.9 s did not stop it firing at 60: the turn closed mid-sentence and
+    // every frame after it was refused for landing on a finalized turn.
+    const { n, clock } = startTurn();
+    n.feed(lifecycle({ phase: "finishing" }), clock.tick());
+    const start = clock.now;
+    const delta = (text: string, at: number) =>
+      n.feed(
+        {
+          type: "event",
+          event: "chat",
+          payload: {
+            sessionKey: SESSION_KEY,
+            runId: OWN_RUN,
+            state: "delta",
+            deltaText: text,
+          },
+        },
+        at,
+      );
+    delta("La réponse ", start + 30);
+    delta("s'écrit encore", start + 59);
+    expect(
+      n.tick(start + 61).some((e) => e.type === "message.final"),
+      "it was writing one second ago",
+    ).toBe(false);
+    // …and a turn that really does fall silent still closes sixty seconds later.
+    expect(
+      n.tick(start + 59 + 61).some((e) => e.type === "message.final"),
+      "sixty seconds of silence is still sixty seconds of silence",
+    ).toBe(true);
+  });
+
+  it("an ABORT waits for a fetch on the wire too", () => {
+    const { n, clock } = startTurn();
+    n.feed(messageItem("start"), clock.tick());
+    n.feed(messageItem("end"), clock.tick());
+    n.feed(ackFinal(), clock.tick());
+    const token = n.markRecoveryAttempted(clock.now);
+    const aborted = n.feed(
+      {
+        type: "event",
+        event: "chat",
+        payload: { sessionKey: SESSION_KEY, runId: OWN_RUN, state: "aborted" },
+      },
+      clock.tick(),
+    );
+    expect(
+      aborted.some((e) => e.type === "message.final"),
+      "a delivery is still on the wire",
+    ).toBe(false);
+    const landed = n.recoverVisibleText("La réponse livrée.", clock.tick(), token);
+    const final = landed.find((e) => e.type === "message.final") as
+      | { text?: string; status?: string }
+      | undefined;
+    expect(final?.text ?? "", "the delivery survives the abort").toContain(
+      "La réponse livrée.",
+    );
+  });
+
+  it("an approval resolved IMPLICITLY by content gives the promise back", () => {
+    // `applyVisible` treats real content as an answer to the approval (the gateway's
+    // own `resolved` does not reach us on every version). It released the wait
+    // without restoring the suspended promise, so `requested -> finishing -> content`
+    // lost the 60 s bound altogether and fell through to the 240 s recovery — the
+    // defect the bound exists to prevent, reached through the implicit door.
+    const { n, clock } = startTurn();
+    n.feed(approvalFrame("requested"), clock.tick());
+    n.feed(lifecycle({ phase: "finishing" }), clock.tick());
+    n.feed(
+      {
+        event: "agent",
+        payload: {
+          sessionKey: SESSION_KEY,
+          runId: OWN_RUN,
+          stream: "assistant",
+          data: { text: "Voici le résultat.", phase: "final_answer" },
+        },
+      },
+      clock.tick(),
+    );
+    const ev = n.tick(clock.now + 61);
+    expect(
+      ev.some((e) => e.type === "message.final"),
+      "the bound must come back with the answered approval",
+    ).toBe(true);
+  });
+
+  it("a provider BACK-OFF after `finishing` is not silence either", () => {
+    // The gateway can emit `finishing` before the retry status. The retry branch
+    // published its counter and returned without touching the 60 s promise, so a
+    // back-off longer than a minute closed the turn as a success while the provider
+    // was still retrying.
+    const { n, clock } = startTurn();
+    n.feed(lifecycle({ phase: "finishing" }), clock.tick());
+    const retry = n.feed(
+      chatStatus({
+        phase: "starting_model",
+        retry: { attempt: 2, maxAttempts: 10, reason: "rate_limit" },
+      }),
+      clock.tick(),
+    );
+    expect(
+      retry.find((e) => e.type === "turn.phase")?.phase,
+      "the back-off owns the label",
+    ).toBe("retrying");
+    const ev = n.tick(clock.now + 61);
+    expect(
+      ev.some((e) => e.type === "message.final"),
+      "a provider still retrying is not a finished turn",
+    ).toBe(false);
+  });
+
+  it("assistant TEXT after `finishing` does NOT cancel it — that text IS the answer", () => {
+    // Measured on the captures: 461 assistant frames follow a `finishing`. That is
+    // the answer being written, i.e. exactly the case where the grace's premise
+    // holds. Cancelling there would fire on nearly every turn and hand back the
+    // G-20 defect the 60 s bound exists to fix.
+    const { n, clock } = startTurn();
+    n.feed(lifecycle({ phase: "finishing" }), clock.tick());
+    n.feed(
+      {
+        event: "agent",
+        payload: {
+          sessionKey: SESSION_KEY,
+          runId: OWN_RUN,
+          stream: "assistant",
+          data: { text: "Voici le résultat.", phase: "final_answer" },
+        },
+      },
+      clock.tick(),
+    );
+    const ev = n.tick(clock.now + 61);
+    expect(
+      ev.some((e) => e.type === "message.final"),
+      "the bound must still close a turn whose answer is written",
+    ).toBe(true);
   });
 
   it("a straggler RESULT does not cancel it — that is the tail G-20 bounds", () => {

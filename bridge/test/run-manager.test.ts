@@ -548,12 +548,12 @@ describe("history recovery arming (6.5 message-tool item frame)", () => {
       advanceToFinalize: false,
     });
     expect(manager.isFinalized).toBe(false); // private-ack grace holds it open
-    expect(manager.takeRecoveryRequest()).toBe(true);
+    expect(manager.takeRecoveryRequest(0)).not.toBeNull();
   });
 
   it("a private-ack WITHOUT a message-tool item does NOT arm recovery (discriminant)", async () => {
     const { manager } = await drive("private-ack-only", { advanceToFinalize: false });
-    expect(manager.takeRecoveryRequest()).toBe(false);
+    expect(manager.takeRecoveryRequest(0)).toBeNull();
   });
 });
 
@@ -663,6 +663,7 @@ describe("recovery epoch guard (Q9 / G-28)", () => {
       clock.tick(),
       recoveredEpoch,
       manager.recoveryGeneration,
+      manager.noteRecoveryDispatched(),
     );
 
     // Reported as NOT delivered, so the caller cannot log a success (codex P3).
@@ -683,6 +684,7 @@ describe("recovery epoch guard (Q9 / G-28)", () => {
       clock.tick(),
       manager.turnEpoch,
       manager.recoveryGeneration,
+      manager.noteRecoveryDispatched(),
     );
     expect(applied).toBe(true);
     const finalize = writer.calls.find((c) => c[0] === "finalize");
@@ -720,6 +722,7 @@ describe("recovery epoch guard (Q9 / G-28)", () => {
       clock.tick(),
       boundEpoch,
       boundGen,
+      manager.noteRecoveryDispatched(),
     );
     expect(applied).toBe(false);
     expect(manager.isFinalized).toBe(false);
@@ -841,7 +844,10 @@ describe("recovery epoch guard (Q9 / G-28)", () => {
     // The generation is the second guard: a compaction reset invalidates the
     // attempt a recovery belongs to WITHOUT moving the turn epoch.
     const manager = new RunManager(CHAT_ID, SESSION_KEY, new FakeWriter());
-    expect(manager.recoverVisibleText.length).toBe(4);
+    // Five now: the DISPATCH TOKEN joined them. A recovery judged against the
+    // newest mark instead of its own let a revoked attempt come back and close the
+    // turn with a stale transcript, so the token is as mandatory as the epoch.
+    expect(manager.recoverVisibleText.length).toBe(5);
   });
 });
 
@@ -1072,6 +1078,7 @@ describe("single ordered application path (G-29)", () => {
       clock.tick(),
       recoveredEpoch,
       manager.recoveryGeneration,
+      manager.noteRecoveryDispatched(),
     );
     // …and a new turn starts before the queued unit runs. NOT awaited: awaiting would
     // drain the chain first, which is precisely the race this test must avoid

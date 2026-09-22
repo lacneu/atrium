@@ -2,8 +2,8 @@
 
 ## [0.84.20] — A turn the gateway is still working on
 
-Corrective release, from one production report. No breaking changes, nothing to
-reconfigure.
+Corrective release, from one production report and a long adversarial review of
+the fix itself. No breaking changes, nothing to reconfigure.
 
 **A turn that was still running no longer reads as finished.** When the gateway
 says it is about to close a turn, Atrium gives it a minute to actually do so, and
@@ -12,8 +12,27 @@ gateway went back to work instead — and a single long command produces no traf
 while it runs, which is indistinguishable from silence. So a turn was marked
 finished, successfully and with no answer, while the agent worked for another
 seventeen minutes and the gateway's own console showed it plainly still going.
-Any new work now cancels that countdown, exactly as a context compaction already
-did.
+Any new work now ends that countdown: a tool starting, a reply being sent, a new
+run beginning. A pause that cannot answer — a context compaction, a command
+waiting on a human — only suspends it, and it comes back when the pause does.
+And it now measures silence rather than elapsed time, so a reply still being
+written one second before the deadline is no longer cut off at it.
+
+**A reply that reached you is no longer lost on its way into the conversation.**
+Some replies are delivered by the gateway itself and reach Atrium only by reading
+the session back. That read takes a few seconds, and anything that ended the turn
+in the meantime — the answer arriving, an acknowledgement, an error, a stop, even
+a grace period elapsing — closed the conversation before the read came back, and
+the message you had already been sent simply disappeared. Every one of those
+endings now waits for a read still in flight, keeps its own wording and its own
+diagnosis, and is bounded so nothing is ever held open waiting for an answer that
+is not coming. If the agent went back to work while the read was out, what comes
+back is kept beside the new answer instead of replacing it.
+
+**Two commands awaiting authorisation are now told apart.** Approving one released
+them all, so a turn could be closed as finished while a second command was still
+waiting for someone to authorise it. Each request is now tracked by the identifier
+the gateway itself sends.
 
 **A tool that fails during a delegated delivery now says why.** On that path the
 gateway sends one compact update per tool rather than a full result, and Atrium
