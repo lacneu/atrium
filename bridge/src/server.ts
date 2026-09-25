@@ -175,6 +175,8 @@ import {
   resolveCapabilitiesFor,
   HERMES_RANGE,
   parseVersion,
+  gatewayAtLeast,
+  COMPACTION_CHECKPOINTS_RETIRED_IN,
 } from "./compat.js";
 import {
   COVERAGE_SUMMARY,
@@ -2460,6 +2462,14 @@ async function performCompact(
  * tokens the compaction condensed. Checkpoint shape pinned on live capture
  * 2026-07-03 (reason "auto-threshold", tokensBefore 19698 → tokensAfter 1050).
  */
+/** The gateway keeps no compaction history at all (see COMPACTION_CHECKPOINTS_RETIRED_IN). */
+export class CompactionHistoryRetiredError extends Error {
+  constructor(readonly gatewayVersion: string) {
+    super(`gateway ${gatewayVersion} keeps no compaction checkpoints`);
+    this.name = "CompactionHistoryRetiredError";
+  }
+}
+
 export async function fetchCompactionHistory(
   conn: OpenClawConnection,
   sessionKey: string,
@@ -2485,6 +2495,9 @@ export async function fetchCompactionHistory(
     tokensTrusted: boolean | null;
   }[];
 }> {
+  if (gatewayAtLeast(conn.gatewayVersion, COMPACTION_CHECKPOINTS_RETIRED_IN) === true) {
+    throw new CompactionHistoryRetiredError(conn.gatewayVersion!);
+  }
   const res = await conn.request(
     "sessions.compaction.list",
     { key: sessionKey },
@@ -4462,6 +4475,11 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
         );
         sendJson(res, 200, { ok: true, ...history });
       } catch (err) {
+        if (err instanceof CompactionHistoryRetiredError) {
+          // Not a failure to retry: this gateway generation has no such history.
+          sendJson(res, 410, { ok: false, error: { code: "compaction_history_retired" } });
+          return;
+        }
         const code = classifyGatewayError(err);
         console.error(
           `bridge /compaction-history failed [${code}]:`,

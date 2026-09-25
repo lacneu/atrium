@@ -66,6 +66,16 @@ const ACTIVE_TURN_CLAIM_RE =
 // `transientSessionChange: true` (upstream src/config/sessions/lifecycle.ts:72,105,109).
 const SESSION_CHANGED_STARTING_RE =
   /session .* (?:changed|was deleted) while starting work/i;
+// Two more admission refusals of the SAME family — refused before any work, nothing
+// reserved, and the gateway itself says to retry:
+//  - 2026.9.6: `session transcript is rebuilding; retry shortly` — `UNAVAILABLE`,
+//    `retryable: true, retryAfterMs: 250`, and no `pending-chat` reservation left
+//    behind (src/gateway/server-methods/chat-send-pre-admission.ts:99-110). It fell to
+//    UPSTREAM_ERROR: blamed on the bridge and never retried.
+//  - since 2026.9.5 at least: `Session "<key>" is still initializing. Retry after
+//    initialization completes.` (src/config/sessions/lifecycle.ts:123), unclassified.
+const TRANSCRIPT_REBUILDING_RE = /session transcript is rebuilding;?\s*retry shortly/i;
+const SESSION_INITIALIZING_RE = /is still initializing\.?\s*retry after initialization completes/i;
 // 2026.9.3+ (read at v2026.9.4): the gateway's own SQLite STORAGE failures, rendered for the
 // reader by the same upstream file as the writer-fenced copy above
 // (src/agents/failover/assistant-request-failure-copy.ts:13-26,52), from the classification in
@@ -145,8 +155,28 @@ export function isSessionInitConflictText(text: string): boolean {
     SESSION_INIT_CONFLICT_RE.test(text) ||
     EMBEDDED_LOCK_CONFLICT_RE.test(text) ||
     SESSION_CHANGED_STARTING_RE.test(text) ||
-    ACTIVE_TURN_CLAIM_RE.test(text)
+    ACTIVE_TURN_CLAIM_RE.test(text) ||
+    TRANSCRIPT_REBUILDING_RE.test(text) ||
+    SESSION_INITIALIZING_RE.test(withoutOperatorData(text))
   );
+}
+
+/** The gateway PAUSED the session after a provider refusal it wants reviewed (2026.9.6).
+ *
+ *  A refusal of category `misalignment` (OpenAI) pauses the session "as a precaution"
+ *  (src/agents/embedded-agent-runner/run/provider-review-run.ts:126-163), and from then
+ *  on every start of work is refused through src/config/sessions/lifecycle.ts:129,137:
+ *    `Session "<key>" is paused as a precaution. Review the provider findings in chat before continuing.`
+ *    `Session "<key>" provider review changed. Refresh the findings before continuing.`
+ *  until an operator calls `sessions.providerReview.continue`, which Atrium does not
+ *  offer. NOT a malformed request, and NOT retryable: a second attempt is refused the
+ *  same way. Read through `withoutOperatorData`, like the archived rule. */
+const PROVIDER_REVIEW_PAUSED_RE =
+  /is paused as a precaution\.?\s*review the provider findings|provider review changed\.?\s*refresh the findings/i;
+
+export function isProviderReviewPausedText(text: string | null | undefined): boolean {
+  if (!text) return false;
+  return PROVIDER_REVIEW_PAUSED_RE.test(withoutOperatorData(text));
 }
 
 /** The gateway refused NEW WORK on an ARCHIVED session (2026.9.5).
@@ -399,6 +429,8 @@ export function classifyFailureText(raw: string | null | undefined): string | nu
   // Placed exactly where dispatch-errors places it, after the init-conflict rule:
   // two readers of one sentence must not disagree about which class wins.
   if (isSessionArchivedText(text)) return "session_archived";
+  // Same place in both readers (dispatch-errors.ts), for the same reason.
+  if (isProviderReviewPausedText(text)) return "session_paused_review";
   if (PROVIDER_INTERNAL_TEXT_RE.test(text) && !PROVIDER_INTERNAL_EXCLUDE_RE.test(text)) {
     return "provider_internal";
   }

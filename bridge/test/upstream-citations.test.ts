@@ -165,6 +165,16 @@ describe("upstream citations are recorded, and the record matches the texts", ()
     expect(keys.filter((k, i) => keys.indexOf(k) !== i), "recorded twice").toEqual([]);
   });
 
+  it("no citation claims the SAME range twice (a re-anchoring collapsed two claims into one)", () => {
+    // `settled-turn-finalization.ts:606,653` cites two distinct throws with the same literal;
+    // a mechanical re-anchor mapped both to the nearest occurrence and wrote `606,606` —
+    // the second claim silently gone, and every other check still green (codex, 9.6 pass 3).
+    const collapsed = record.citations
+      .filter((c) => new Set(c.lines.map(([a, b]) => `${a}-${b}`)).size !== c.lines.length)
+      .map((c) => c.cite);
+    expect(collapsed).toEqual([]);
+  });
+
   it("every entry is well formed, and its path, ranges and literals are the citation's own", () => {
     const wrong: string[] = [];
     for (const c of record.citations) {

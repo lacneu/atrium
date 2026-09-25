@@ -10,8 +10,8 @@
 
 import { readFileSync, readdirSync } from "node:fs";
 import { afterEach, describe, expect, it } from "vitest";
-import { promisedVersion } from "./helpers/vendored.js";
-import * as vendoredChatSchemas from "../protocol/openclaw/2026.9.5/logs-chat.js";
+import { promisedVersion, vendoredVersions } from "./helpers/vendored.js";
+import * as vendoredChatSchemas from "../protocol/openclaw/2026.9.6/logs-chat.js";
 import {
   COVERAGE_SUMMARY,
   DRIFT_VENDORED_VERSION,
@@ -219,7 +219,7 @@ describe("protocol drift detector", () => {
       { properties?: Record<string, unknown> }
     >;
     expect(DRIFT_VENDORED_VERSION, "the static import must track the vendored version").toBe(
-      "2026.9.5",
+      "2026.9.6",
     );
     const bySchema: Record<string, string> = {
       delta: "ChatDeltaEventSchema",
@@ -405,14 +405,29 @@ describe("runtime sets <-> coverage manifest bijection (the anti-drift chain)", 
       "the derived snapshot is empty — the extraction stopped working",
     ).toBeGreaterThan(30);
 
+    // …UNIONED over every vendored version: a field a SUPPORTED older gateway still emits
+    // is not drift. 2026.9.6 retired the two compaction-checkpoint fields, and a 2026.9.5
+    // frame carrying them was badged "gateway newer than vendored" (codex, 9.6 pass 2).
+    const older = vendoredVersions().flatMap(
+      (v) =>
+        (
+          JSON.parse(
+            readFileSync(
+              new URL(`../protocol/openclaw/${v}/session-event-snapshot.json`, import.meta.url),
+              "utf-8",
+            ),
+          ) as { fields: string[] }
+        ).fields,
+    );
     const expected = new Set([
       ...Object.keys(MANIFEST.schemas.AgentEvent?.fields ?? {}),
       ...snapshot.fields,
+      ...older,
       ...AGENT_ROUTING_ENVELOPE_FIELDS,
     ]);
     expect(
       [...KNOWN_AGENT_FIELDS].sort(),
-      "the known-field set no longer equals (manifest ∪ derived snapshot ∪ envelope) — " +
+      "the known-field set no longer equals (manifest ∪ every vendored derived snapshot ∪ envelope) — " +
         "re-run scripts/vendor-protocol.mjs and copy the derived list, deliberately",
     ).toEqual([...expected].sort());
   });
@@ -655,5 +670,22 @@ describe("C4 — the reservation has to survive the trip, not just the registry"
     expect(protocolDrift.report()).toEqual([
       { shape: "«exception».Boom@feed.chat.delta", count: 2 },
     ]);
+  });
+});
+
+describe("a field only an OLDER supported gateway emits is not drift (codex, 9.6 pass 2)", () => {
+  it("a 2026.9.5 frame carrying the retired compaction-checkpoint fields is not badged", () => {
+    const frame = (extra: Record<string, unknown>) => ({
+      type: "event",
+      event: "agent",
+      payload: { runId: "r1", stream: "lifecycle", data: {}, sessionKey: SESSION_KEY, ...extra },
+    });
+    protocolDrift.observe(frame({ compactionCheckpointCount: 2, latestCompactionCheckpoint: { id: "k1" } }));
+    const shapes = protocolDrift.report().map((e) => e.shape);
+    expect(shapes).not.toContain("agent.compactionCheckpointCount");
+    expect(shapes).not.toContain("agent.latestCompactionCheckpoint");
+    // …while a field NO supported gateway ever sent still is (the detector is not blind).
+    protocolDrift.observe(frame({ neverSentByAnyone: 1 }));
+    expect(protocolDrift.report().map((e) => e.shape)).toContain("agent.neverSentByAnyone");
   });
 });

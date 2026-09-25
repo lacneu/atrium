@@ -26,8 +26,35 @@ import {
 // two keys are computed from imported constants and are resolved by their DECLARATION;
 // anything this deriver cannot name is a hard error, never a shorter list.
 
-/** Upstream module holding the scope-guard table. */
+/** Upstream module holding the scope-guard table up to v2026.9.5. */
 export const BROADCAST_SOURCE = "src/gateway/server-broadcast.ts";
+/** Every module the table has lived in, newest first: v2026.9.6 moved it into
+ *  `server-broadcast-scopes.ts`. Exactly ONE of them may declare it at a given version
+ *  (`locateBroadcastSource`) — two would be two tables, and choosing one would vendor
+ *  half of what the gateway checks. */
+export const BROADCAST_SOURCES = ["src/gateway/server-broadcast-scopes.ts", BROADCAST_SOURCE];
+
+/** The module that declares the table at this version, read through `read(rel)` (which
+ *  returns undefined for a file the version does not have). Refuses zero or several. */
+export function locateBroadcastSource(read) {
+  const found = [];
+  for (const rel of BROADCAST_SOURCES) {
+    const raw = read(rel);
+    if (raw === undefined) continue;
+    const init = exportedInitializer(parse(raw), BROADCAST_SYMBOL, {
+      requireExport: false,
+      requireConst: true,
+    });
+    if (init !== undefined) found.push({ source: rel, raw });
+  }
+  if (found.length !== 1) {
+    throw new Error(
+      `${BROADCAST_SYMBOL} is declared at top level in ${found.length} of ${BROADCAST_SOURCES.join(", ")} ` +
+        "— expected exactly one: upstream moved the table",
+    );
+  }
+  return found[0];
+}
 /** Upstream module holding the constants the table's computed keys import. */
 export const BROADCAST_CONST_SOURCE = "src/gateway/events.ts";
 /** The table this reads. NOT exported upstream — a top-level `const` all the same. */
@@ -92,21 +119,21 @@ function referencedBeyondReads(sourceFile, name) {
  * @param {string} constRaw   contents of BROADCAST_CONST_SOURCE
  * @returns {{ events: string[], scopes: Record<string, string[]> }}
  */
-export function deriveBroadcastCatalogue(raw, constRaw) {
+export function deriveBroadcastCatalogue(raw, constRaw, source = BROADCAST_SOURCE) {
   const file = parse(raw);
   const init = unwrap(
     exportedInitializer(file, BROADCAST_SYMBOL, { requireExport: false, requireConst: true }),
   );
   if (init === undefined) {
-    throw new Error(`${BROADCAST_SOURCE} has no top-level ${BROADCAST_SYMBOL} — upstream moved the table`);
+    throw new Error(`${source} has no top-level ${BROADCAST_SYMBOL} — upstream moved the table`);
   }
   if (referencedBeyondReads(file, BROADCAST_SYMBOL)) {
-    throw new Error(`${BROADCAST_SYMBOL} is mutated or escapes its declaration in ${BROADCAST_SOURCE} (a reference beyond a plain read) — refusing to derive it`);
+    throw new Error(`${BROADCAST_SYMBOL} is mutated or escapes its declaration in ${source} (a reference beyond a plain read) — refusing to derive it`);
   }
   if (!ts.isObjectLiteralExpression(init)) {
     throw new Error(`${BROADCAST_SYMBOL} is not an object literal`);
   }
-  const imported = importedFromConstants(file, BROADCAST_SOURCE, BROADCAST_CONST_SOURCE);
+  const imported = importedFromConstants(file, source, BROADCAST_CONST_SOURCE);
   const constants = readConstants(constRaw);
   const scopes = new Map();
   for (const prop of init.properties) {
@@ -141,10 +168,14 @@ export function deriveBroadcastCatalogue(raw, constRaw) {
     const guards = [];
     for (const el of value.elements) {
       const g = unwrap(el);
-      if (!ts.isIdentifier(g)) {
-        throw new Error(`${BROADCAST_SYMBOL}[${JSON.stringify(name)}] has a guard that is not a named constant: ${JSON.stringify(el.getText())}`);
+      // A named constant is recorded by its NAME (`READ_SCOPE`); a scope written as a
+      // string literal (v2026.9.6: `"operator.sessions.read"`) by its VALUE. The two
+      // cannot be confused — constant names are UPPER_SNAKE, scope values are dotted.
+      if (ts.isIdentifier(g)) guards.push(g.text);
+      else if (ts.isStringLiteral(g) && g.text !== "") guards.push(g.text);
+      else {
+        throw new Error(`${BROADCAST_SYMBOL}[${JSON.stringify(name)}] has a guard that is neither a named constant nor a scope string: ${JSON.stringify(el.getText())}`);
       }
-      guards.push(g.text);
     }
     scopes.set(name, guards);
   }

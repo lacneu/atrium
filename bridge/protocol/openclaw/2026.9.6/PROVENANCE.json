@@ -1,0 +1,596 @@
+{
+  "version": "2026.9.6",
+  "upstreamRepo": "openclaw/openclaw",
+  "upstreamTag": "v2026.9.6",
+  "upstreamSha": "eb377ac59e6c9fd6c7705028034812becf00271b",
+  "files": {
+    "logs-chat.ts": {
+      "upstreamPath": "packages/gateway-protocol/src/schema/logs-chat.ts",
+      "vendored": "f96d3450a913ad7eea1bf1b4e4272313eae068ecc4aac144d7cdb39d0fdf80ec",
+      "upstream": "799791ed567af97fca48a3663abea881b8437ae92f5421b81ca76a034bcd9ba1",
+      "rewrites": [
+        {
+          "line": 1,
+          "upstream": "import { asOptionalRecord } from \"@openclaw/normalization-core/record-coerce\";"
+        },
+        {
+          "line": 2,
+          "upstream": "import { truncateUtf16Safe } from \"@openclaw/normalization-core/utf16-slice\";"
+        },
+        {
+          "line": 5,
+          "upstream": "import { CHAT_WORK_CONTEXT_LIMITS } from \"../chat-work-context.js\";"
+        }
+      ]
+    },
+    "agent.ts": {
+      "upstreamPath": "packages/gateway-protocol/src/schema/agent.ts",
+      "vendored": "5ab416d1bc3d3d88a0714adc2453365a67b24468b2c84f9a8f21be4dd4fa7432",
+      "upstream": "ca8a748134d289f07806eecb947204b33583a676a62c6043251f47311536b785",
+      "rewrites": []
+    },
+    "primitives.ts": {
+      "upstreamPath": "packages/gateway-protocol/src/schema/primitives.ts",
+      "vendored": "35ac4859b58916fe363c1db63e060f686ddaf9dd4dd1488fa52e48ebfa595ed4",
+      "upstream": "32ac5dabfcb4dbffe3e87f5b5ed77e768f222427e0411effed6d07c8d599ff68",
+      "rewrites": [
+        {
+          "line": 2,
+          "upstream": "import { GATEWAY_CLIENT_IDS, GATEWAY_CLIENT_MODES } from \"../client-info.js\";"
+        },
+        {
+          "line": 9,
+          "upstream": "} from \"../secret-ref-contract.js\";"
+        }
+      ]
+    },
+    "sessions.ts": {
+      "upstreamPath": "packages/gateway-protocol/src/schema/sessions.ts",
+      "vendored": "c8c6837b6d975ce0f61d25dbbcb8e5596947eda37538ef153bc36e65c54add65",
+      "upstream": "42aff8f10139d8e713fdd7fe92c59bcedd2fa7eb144ab59af30b3d85c2125529",
+      "rewrites": []
+    },
+    "cron.ts": {
+      "upstreamPath": "packages/gateway-protocol/src/schema/cron.ts",
+      "vendored": "99c3c0be16bacf7707fa1df374bdff62d0786f0e3fbd28c33ddcad0e4bd0f60b",
+      "upstream": "3ce8508061c67f070daf5c05423b727fe5da76f1e56df3a00ea916add18ba645",
+      "rewrites": []
+    },
+    "tasks.ts": {
+      "upstreamPath": "packages/gateway-protocol/src/schema/tasks.ts",
+      "vendored": "5dccfd07b5401f77dde6797d6ed944352d57551fc922884a3656e8f00b224923",
+      "upstream": "9d10e44d3872c308a26b670305ecf6e2e8f3f74321f872102c5b92acdb2f4d65",
+      "rewrites": []
+    },
+    "config.ts": {
+      "upstreamPath": "packages/gateway-protocol/src/schema/config.ts",
+      "vendored": "975956db6471728dc55e6d75c6605614da641405983d8e283d8b40ab738d5fee",
+      "upstream": "249885ce86e1b919c9ee8aabdf158a2a24a4aec05fcd29624c5f5306598839ca",
+      "rewrites": []
+    },
+    "channels.ts": {
+      "upstreamPath": "packages/gateway-protocol/src/schema/channels.ts",
+      "vendored": "5ff7ec6633fc873adfd56f1c60827246326ac96621499dae5729f06006100995",
+      "upstream": "8dab6844756ac00e8f38ae87847c0d39cd24923528b68ac5245b6bb03c5a00c1",
+      "rewrites": []
+    },
+    "agents-models-skills.ts": {
+      "upstreamPath": "packages/gateway-protocol/src/schema/agents-models-skills.ts",
+      "vendored": "f33c8eae4afc7f5330354c9cf2ff8529e18edc0c65b765cc16c266a6c8d1c40f",
+      "upstream": "cfdcc609573ac1ebde927de68e21c900abfd5a857f22f6fd7034935e43af8228",
+      "rewrites": []
+    },
+    "client-info.ts": {
+      "upstreamPath": "packages/gateway-protocol/src/client-info.ts",
+      "vendored": "7918f360f0f1b6f47e08eb6afc0cf08f5cb700a0fb482fffdbf731bb050509f5",
+      "upstream": "9f3104f54370d265ce8a2b9aeea46104410e9235178ca9e1d8d37a05741ddcfd",
+      "rewrites": [
+        {
+          "line": 6,
+          "upstream": "import { normalizeOptionalLowercaseString } from \"@openclaw/normalization-core/string-coerce\";"
+        }
+      ]
+    },
+    "secret-ref-contract.ts": {
+      "upstreamPath": "packages/gateway-protocol/src/secret-ref-contract.ts",
+      "vendored": "e75036ea72d5cdbf33e24b7263fa2898d41b953bfeaf6b7ba1d0254d08ea85d1",
+      "upstream": "258b1473ee06c2635f399382238d20d3f19b3d12acef63aae0413b8d9dc2a32c",
+      "rewrites": []
+    },
+    "plugins.ts": {
+      "upstreamPath": "packages/gateway-protocol/src/schema/plugins.ts",
+      "vendored": "3a3774b6fbfa69998890562e56c6d7acce4dd013a6638a80551038e52a068cab",
+      "upstream": "36a99fd457fd9823a35a004b5b3144572a213135984284d469bca343ed5f59a4",
+      "rewrites": []
+    },
+    "closed-object.ts": {
+      "upstreamPath": "packages/gateway-protocol/src/schema/closed-object.ts",
+      "vendored": "7b6d1d64e4554dad62244dd0be71d9f473bda50b7fd0d63218f7ff1d76847570",
+      "upstream": "bde281a1ad728af1050bf627f31a45857b0a3a0f65856b9943a0f7a488d53307",
+      "rewrites": []
+    },
+    "frames.ts": {
+      "upstreamPath": "packages/gateway-protocol/src/schema/frames.ts",
+      "vendored": "9355f5344a40eda51ba0937ff2ce6478012440c8052256f11638c62bf439d48b",
+      "upstream": "f865431ce24527d33ac4e32df0749187480f9560bedaa01a99fb96aed173a741",
+      "rewrites": [
+        {
+          "line": 19,
+          "upstream": "export { GATEWAY_SERVER_CAPS } from \"../server-capabilities.js\";"
+        }
+      ]
+    },
+    "sessions-create.ts": {
+      "upstreamPath": "packages/gateway-protocol/src/schema/sessions-create.ts",
+      "vendored": "d1553c0572e6432c69f18fc2df6d74b49e9d0b0cf2b90385f7f0a2e9fbb7711a",
+      "upstream": "2f9f3ab147903a3551682650a842ac9e939687c6c0284e0cc1f60159539bb38a",
+      "rewrites": []
+    },
+    "sessions-row.ts": {
+      "upstreamPath": "packages/gateway-protocol/src/schema/sessions-row.ts",
+      "vendored": "cc89153a0a805885cd624ee3b1a6b2223def74c55f6a2da7767831bbeece4bfe",
+      "upstream": "78083339bdbae36825de6a3dd58a992598f741865aa5e8eee1a598c5fdfcad17",
+      "rewrites": []
+    },
+    "sessions-sharing-values.ts": {
+      "upstreamPath": "packages/gateway-protocol/src/schema/sessions-sharing-values.ts",
+      "vendored": "42d0b78973d6940d5e78db952c66a4a82e7d2eeea188950a6ba5f39643261378",
+      "upstream": "45be7503191510e5864e1bba3c99594adbb01f5c453ef781b7b899901e7b3fee",
+      "rewrites": []
+    },
+    "snapshot.ts": {
+      "upstreamPath": "packages/gateway-protocol/src/schema/snapshot.ts",
+      "vendored": "5314c7a0c397a983a0492e6a4c2cd274d61f38aee415e3691a225c736dc11fb9",
+      "upstream": "bddba615958ed45a6382136e08f717e5ba8afaf5cf3fc1892cde2421a3a5f55a",
+      "rewrites": []
+    },
+    "session-agent-status.ts": {
+      "upstreamPath": "packages/gateway-protocol/src/session-agent-status.ts",
+      "vendored": "22b38a21d75f8b8020b34fd036e5dd31ddabbb476c9ec22abf9e577a9097d77a",
+      "upstream": "19b8f2084217ab3bd8ffcea59bb6c3ccd748c4f85dbca0105edd728268674322",
+      "rewrites": []
+    },
+    "failover-reasons.ts": {
+      "upstreamPath": "packages/gateway-protocol/src/failover-reasons.ts",
+      "vendored": "49e51020117f684bf57f0219f65dcc2d1cee80c1f2de4fc44b4d5dbdb1d6a552",
+      "upstream": "1dd165b29334cb3fc2c81d35887fbc91cf1e5af2418212bdf2f1b63db960d0ef",
+      "rewrites": []
+    },
+    "protocol-value-normalization.ts": {
+      "upstreamPath": "packages/gateway-protocol/src/protocol-value-normalization.ts",
+      "vendored": "cb72fa9b88be65b80be45c7f1172c097d22c2ecebdc61660d0d9fc95a6b59576",
+      "upstream": "1156d307684b8589cabc410d98803ca42bafb214f3d5c40f4a962effe9b85247",
+      "rewrites": [
+        {
+          "line": 3,
+          "upstream": "} from \"@openclaw/normalization-core/record-coerce\";"
+        },
+        {
+          "line": 4,
+          "upstream": "export { normalizeOptionalString as normalizeOptionalProtocolString } from \"@openclaw/normalization-core/string-coerce\";"
+        }
+      ]
+    },
+    "server-capabilities.ts": {
+      "upstreamPath": "packages/gateway-protocol/src/server-capabilities.ts",
+      "vendored": "4278b55bec385adfc9f1e654e128a77255dbe7d70609ddf62bc70817e84b5e59",
+      "upstream": "17583f0fa0108236088b6fe3072471cfe37f753b780774c2d7923306bd20b377",
+      "rewrites": []
+    },
+    "chat-history-constants.ts": {
+      "upstreamPath": "packages/gateway-protocol/src/schema/chat-history-constants.ts",
+      "vendored": "1078084b46e274ad3c827d4fb0e8e6dadf1da9368e9a622881617748079caecc",
+      "upstream": "9f76d3d2e27e061121ece442f3a05df41f5884a9ee19fffb3456bc0466c092ee",
+      "rewrites": []
+    },
+    "environments.ts": {
+      "upstreamPath": "packages/gateway-protocol/src/schema/environments.ts",
+      "vendored": "a99c18e4a6c2a2be3fda02f58e18187dde0663ec8c19055f49f312ab974fd221",
+      "upstream": "1a10a6c10f1f13a507d9a141464cd5bd4e03996c6f311807cbff35bb1175ab36",
+      "rewrites": []
+    },
+    "failover-reason.ts": {
+      "upstreamPath": "packages/gateway-protocol/src/schema/failover-reason.ts",
+      "vendored": "b560cb81b740c24914369481e8bd585c9821f4df7b25f8a49b14bc131ec7e3f1",
+      "upstream": "d31a71de43374a107695aee3fc98242f3f4362361857b50cb9d846ea2e94cf8b",
+      "rewrites": [
+        {
+          "line": 1,
+          "upstream": "import { FAILOVER_REASONS } from \"../failover-reasons.js\";"
+        }
+      ]
+    },
+    "plugin-declared-surface-groups.ts": {
+      "upstreamPath": "packages/gateway-protocol/src/schema/plugin-declared-surface-groups.ts",
+      "vendored": "5fac8828e4c5a364253197d6d60f2640666344f9f207d6f34a2742e021854e3b",
+      "upstream": "14736b039707d69ff42e0cf017648c7db28336772f13f345df0d76bd595062c7",
+      "rewrites": []
+    },
+    "secrets.ts": {
+      "upstreamPath": "packages/gateway-protocol/src/schema/secrets.ts",
+      "vendored": "5285fc50eea523f85a12c15587dcf8a30d793484951a7a307759034519b39993",
+      "upstream": "d0e94f8b787d73e62ea1f014652c7c36fb620af7daa6e95c8bdc6aad4c7e64bc",
+      "rewrites": []
+    },
+    "session-classification.ts": {
+      "upstreamPath": "packages/gateway-protocol/src/schema/session-classification.ts",
+      "vendored": "53c24e21c376d7c94758728c4392791b4f10ad6cf000d3b98c48e441022e4a71",
+      "upstream": "9cca4ab3cc7e4cbd06c06879916ef1de1458b57e3cd84778ee779511dadc99f8",
+      "rewrites": []
+    },
+    "session-github-publication.ts": {
+      "upstreamPath": "packages/gateway-protocol/src/schema/session-github-publication.ts",
+      "vendored": "4a0bbf6a51a9465d0f155b8822c3a5ae72d00b3be293732822903fb1a10d3c00",
+      "upstream": "df36defa11ce901f999c1a3b8dfc524774778c3635ff838ccf1aee058df25633",
+      "rewrites": []
+    },
+    "session-participant.ts": {
+      "upstreamPath": "packages/gateway-protocol/src/schema/session-participant.ts",
+      "vendored": "6666b469a9f5c63a2a381f81b2be6a5afc3eff4f9a2c7fe2a85924986f08a57f",
+      "upstream": "0e13b778c98e1c7160749a0b16ddaeebfa64725d089c03796fdd32cf56f1df28",
+      "rewrites": []
+    },
+    "sessions-delete.ts": {
+      "upstreamPath": "packages/gateway-protocol/src/schema/sessions-delete.ts",
+      "vendored": "8f0456f5ade44e2c47861c2d990fea51a0677b857e05968a7f20f14fa25325ff",
+      "upstream": "7689b3b026f83066041a5f69b8c196711ea7951a1499cf7a9eb4b5a9b9ca28d4",
+      "rewrites": []
+    },
+    "sessions-goal.ts": {
+      "upstreamPath": "packages/gateway-protocol/src/schema/sessions-goal.ts",
+      "vendored": "011038566eed8deca5d75bcdf5fc2b189f9c0f3bf7fcc8accbe1c23b36482b1c",
+      "upstream": "44e3599fef09978e09a69f69f6d5494cf0c285ed357451a8212a83813b284846",
+      "rewrites": []
+    },
+    "sessions-list.ts": {
+      "upstreamPath": "packages/gateway-protocol/src/schema/sessions-list.ts",
+      "vendored": "dca215f369012c4a769685e85250ce77e93e64ad2f1ab413a8e98bd8e50908eb",
+      "upstream": "b58969f66cbefed253a2d54be903f36ffab36609277d5fe55dd6ceab786a2332",
+      "rewrites": []
+    },
+    "sessions-patch.ts": {
+      "upstreamPath": "packages/gateway-protocol/src/schema/sessions-patch.ts",
+      "vendored": "83b8fa24de5c18b519745f3f21b2672c7bd6baa211848651fe502f9020c095da",
+      "upstream": "f442a779cbe6d6b4c09df019095b059048b98285a5f16a35e88524148315b687",
+      "rewrites": [
+        {
+          "line": 2,
+          "upstream": "import { SESSION_AGENT_ATTENTION_ICON_IDS } from \"../session-agent-status.js\";"
+        }
+      ]
+    },
+    "sessions-recover.ts": {
+      "upstreamPath": "packages/gateway-protocol/src/schema/sessions-recover.ts",
+      "vendored": "33ecdfddc30914e00a13bd03cf60344e37c4a7fd118887a6b4f27b8f65785f6c",
+      "upstream": "63c326f01cdb2a235c1c5ee330fb280090252a91f6a638965738f30bc6b91bde",
+      "rewrites": []
+    },
+    "since.ts": {
+      "upstreamPath": "packages/gateway-protocol/src/schema/since.ts",
+      "vendored": "6179585784e539d80f5c7e9db37d417d85bd2546cf72419f9de065bdb3e6b89d",
+      "upstream": "326a08ae68a5b839ffe2da7591af0b495ca918489d23a9316bf7ebf0284afe76",
+      "rewrites": []
+    },
+    "worker-admission.ts": {
+      "upstreamPath": "packages/gateway-protocol/src/schema/worker-admission.ts",
+      "vendored": "ee2788e3a1014ea92f8314f135b1cc297d2c288fb26b6c40126e6d42ad839deb",
+      "upstream": "38843867526ce882fc491390d9d28f3781f56969a717c2a588d504464328207e",
+      "rewrites": [
+        {
+          "line": 1,
+          "upstream": "import { GATEWAY_CLIENT_IDS, GATEWAY_CLIENT_MODES } from \"../client-info.js\";"
+        }
+      ]
+    },
+    "worker-computer.ts": {
+      "upstreamPath": "packages/gateway-protocol/src/schema/worker-computer.ts",
+      "vendored": "1f8680d4dc47e1defa5731300d8d0e477e1c38d535a934e6143f686cca249e11",
+      "upstream": "dcf6be9b3aa464a7211d40f388426ba13f46415c09f336b0db65429d511fdd48",
+      "rewrites": []
+    },
+    "worker-protocol-primitives.ts": {
+      "upstreamPath": "packages/gateway-protocol/src/schema/worker-protocol-primitives.ts",
+      "vendored": "6604f276a3882032041781c909c34a6cad04ce054edbb4c616caffa69be4e996",
+      "upstream": "a950ed626fcefe6acc6abd03d84831ac0f701a652eb0546a514fd932ba4f4eaf",
+      "rewrites": []
+    },
+    "record-coerce.ts": {
+      "upstreamPath": "packages/gateway-protocol/src/../../normalization-core/src/record-coerce.ts",
+      "vendored": "8a53fbebcd52626cfc04c8fab76c045b829ae59e36bc8299ebbca5c67494a155",
+      "upstream": "a5f7df2bfb3218e403448d43491a79ad90a70ed496754e82cb2d424e770c4b28",
+      "rewrites": []
+    },
+    "string-coerce.ts": {
+      "upstreamPath": "packages/gateway-protocol/src/../../normalization-core/src/string-coerce.ts",
+      "vendored": "a4df8a8a3ae174701ea2eb3bd214a93d8b804d39070a416fd5c851a9038c98f9",
+      "upstream": "8df47fcd91cd520eacfe003fe81cb941d3a2e868b88f8e1f6cbc246bd738613c",
+      "rewrites": []
+    },
+    "model-account-selection.ts": {
+      "upstreamPath": "packages/gateway-protocol/src/schema/model-account-selection.ts",
+      "vendored": "c6b06187656251f3c6b4b40f14fd753d90707343fd43ad3cf97d57e97fc55f5c",
+      "upstream": "99cc147a22056d1c9984dddd880b75eea27f44424c98df80f06fb32a504c4269",
+      "rewrites": []
+    },
+    "user-profile-constants.ts": {
+      "upstreamPath": "packages/gateway-protocol/src/schema/user-profile-constants.ts",
+      "vendored": "0e6126d0c4965cd55216da2231b04333721bd142d4cf678077ee92674385718e",
+      "upstream": "62162a0f5da4ba34ac74f731b5bfd7d34ee0909f78966730739fc2c16e49665b",
+      "rewrites": []
+    },
+    "cron-shared.ts": {
+      "upstreamPath": "packages/gateway-protocol/src/schema/cron-shared.ts",
+      "vendored": "f87197818548fe06c4988faf8f2eef7e75556796261ad517eefd773e1fa5e286",
+      "upstream": "7ff2d4fdbcac23acf5fa1bd2ff012a78a331917b0af0c38fc75ae8373b0231bb",
+      "rewrites": []
+    },
+    "sessions-title.ts": {
+      "upstreamPath": "packages/gateway-protocol/src/schema/sessions-title.ts",
+      "vendored": "c5d34b77ecb982405cd9bf722a4b760fd546c4f27513e848d8bb697d4406bfeb",
+      "upstream": "7269ca02f29bc819684128d418a4e0aeac6ce41fe190142879718287b3f09b04",
+      "rewrites": []
+    },
+    "gateway-suspend.ts": {
+      "upstreamPath": "packages/gateway-protocol/src/schema/gateway-suspend.ts",
+      "vendored": "5264929b00af97ff48e85ac6d5074a12d8cdc6a6f6017f72f2c77873207b3daf",
+      "upstream": "7ba647c222353394180d39d0271d4cd9c4b3434ae1cc41e99b64bdc89f9bedf8",
+      "rewrites": []
+    },
+    "users.ts": {
+      "upstreamPath": "packages/gateway-protocol/src/schema/users.ts",
+      "vendored": "918d3c60160911d905e813b70a151d4cd4a276cbd6ef2694ff77e7cb990a86cb",
+      "upstream": "770ad37a6b4bd586874304b149167c76623b308010a9d8b7bd424eb76df5f477",
+      "rewrites": []
+    },
+    "ui-appearance-preferences.ts": {
+      "upstreamPath": "packages/gateway-protocol/src/schema/ui-appearance-preferences.ts",
+      "vendored": "4cb040ba197b106746edf5c11252296ec41898deee66d9bdfb5ccbd9330723c9",
+      "upstream": "5bd293299b4bb4dc8263dba6c04d36e891d3db9585d4835d1b61ec476558dc8a",
+      "rewrites": [
+        {
+          "line": 0,
+          "upstream": "import { isThemeId, normalizeThemeMode } from \"../theme-ids.js\";"
+        }
+      ]
+    },
+    "utf16-slice.ts": {
+      "upstreamPath": "packages/gateway-protocol/src/../../normalization-core/src/utf16-slice.ts",
+      "vendored": "85d179c3ea75b7125e30f19f013b466f4acce886eafa3c8e56c107dc4699b2ea",
+      "upstream": "12fd3212b08522a1523263c92f654151ad01605ee48a0ff58a1256889fb7cb5f",
+      "rewrites": []
+    },
+    "human-mentions.ts": {
+      "upstreamPath": "packages/gateway-protocol/src/schema/human-mentions.ts",
+      "vendored": "b24db361d80e9136a3302fdfad8a51ce431eaf26d6e0000d3a6f31fe6daaa8a4",
+      "upstream": "2986bfe9829569fc98eec6aa07132994158e50674f039340b579c6de9aaad3a4",
+      "rewrites": []
+    },
+    "update-runs.ts": {
+      "upstreamPath": "packages/gateway-protocol/src/schema/update-runs.ts",
+      "vendored": "023a06a0624f490c6dee3f6aa37e0aadcd59b666285581c8d43e9d19a993ae53",
+      "upstream": "78a9d338142b8eef5445652b3edbab4b37f58f9904db4f63c6e40df95ecf439f",
+      "rewrites": [
+        {
+          "line": 7,
+          "upstream": "} from \"../update-run-vocabulary.js\";"
+        }
+      ]
+    },
+    "update-run-vocabulary.ts": {
+      "upstreamPath": "packages/gateway-protocol/src/update-run-vocabulary.ts",
+      "vendored": "bb361da1ec66f48bc7e44f1b4bb486956cfd3a861cb3a5c3fa9c893d60ce5f1d",
+      "upstream": "acac9c81d6f58781762abd4c1a121205abf2d9a402e6e821de7633d1fc7727bb",
+      "rewrites": []
+    },
+    "wizard.ts": {
+      "upstreamPath": "packages/gateway-protocol/src/schema/wizard.ts",
+      "vendored": "a5ff2cd687aebec6bda2787f7a610dc296ae4e5340aa1abd49734ba21f168aa9",
+      "upstream": "fa605cf11b9a31b11536a6fef7551543a78eecc1ab205b535ce6ff68122e0761",
+      "rewrites": []
+    },
+    "setup-inference.ts": {
+      "upstreamPath": "packages/gateway-protocol/src/schema/setup-inference.ts",
+      "vendored": "77b333e84eb7adaac2906a9cf8f426774181e74261dff9d4ce479baa20aa72b5",
+      "upstream": "b1779d55fd665ed54d624089fcc58049dae1451569946ae8ebe9df2bf11cd16d",
+      "rewrites": []
+    },
+    "agent-database-admission.ts": {
+      "upstreamPath": "packages/gateway-protocol/src/schema/agent-database-admission.ts",
+      "vendored": "0ba1d15aa93e327509dffc29ede16372afc3c95e59accf78c5d8d4f6bdf69b8e",
+      "upstream": "68d68af495fdcecd1c664307fe4eddc562950bd1b5ced248b57abe668dfd9a34",
+      "rewrites": []
+    },
+    "model-runtime-options.ts": {
+      "upstreamPath": "packages/gateway-protocol/src/schema/model-runtime-options.ts",
+      "vendored": "6de6740632989d3a23ed832486e709dab42a2218e3507efe0e92fa4e98371628",
+      "upstream": "4a42c0bbfbc962ba02e964d33862ea7526daee408d2ecad0d7c854ced2ee14f3",
+      "rewrites": []
+    },
+    "plugin-credentials.ts": {
+      "upstreamPath": "packages/gateway-protocol/src/schema/plugin-credentials.ts",
+      "vendored": "df98642dd50802ff95937af01517ef2550cc492f4d1038679e00d0dabada1beb",
+      "upstream": "91a4c6d786bb19f4145543ed3d918bbad9ab7ac7178162d8afcf28acf9da3d45",
+      "rewrites": [
+        {
+          "line": 1,
+          "upstream": "import { lazyCompile } from \"../protocol-validator.js\";"
+        }
+      ]
+    },
+    "runtime-vitals.ts": {
+      "upstreamPath": "packages/gateway-protocol/src/schema/runtime-vitals.ts",
+      "vendored": "946da9f86152b90c834b304ae1610bf324dc62c859b795f06b5f1b554c089481",
+      "upstream": "69e9df25f883a2fa23886bae99244f960112ce314dc3f0ebb4a13f5db8f4e3d8",
+      "rewrites": []
+    },
+    "sessions-activity-summary.ts": {
+      "upstreamPath": "packages/gateway-protocol/src/schema/sessions-activity-summary.ts",
+      "vendored": "eb81790ebacf9015726e3e59394e17ff08580d3df7f0280c24305e30b9a507d4",
+      "upstream": "9f38bb051d5e4d848317f00b3a39fc0395b9947b5c57300cd1d92fc85c53e880",
+      "rewrites": []
+    },
+    "sessions-storage.ts": {
+      "upstreamPath": "packages/gateway-protocol/src/schema/sessions-storage.ts",
+      "vendored": "c63dc102ef18c457247f07acf56688bf86a43a6b084e6855e5dccbae277e4e5b",
+      "upstream": "9d18b15eaa00e522ab291a85bae04ad4d09e2278d57af75d6dfd686f422277ef",
+      "rewrites": []
+    },
+    "tools-catalog.ts": {
+      "upstreamPath": "packages/gateway-protocol/src/schema/tools-catalog.ts",
+      "vendored": "55a63b43c37f00f8b379da289ce63c28bffcc8c796e7f7baf0df391ea7dbd112",
+      "upstream": "7a93515abcd25ba36d6ef505313b2c150b78e69d41f9d8ac1941c57a66f1d5e5",
+      "rewrites": []
+    },
+    "svg-image.ts": {
+      "upstreamPath": "packages/gateway-protocol/src/svg-image.ts",
+      "vendored": "9f90e4c4a351965e6647f22f25674d18d6c5076293ce88f5b542101f25c5d36f",
+      "upstream": "34234d8d2847ded17ab926a59396631e40ad58c4a65c0bcd94a16264d97840e6",
+      "rewrites": []
+    },
+    "protocol-validator.ts": {
+      "upstreamPath": "packages/gateway-protocol/src/protocol-validator.ts",
+      "vendored": "e8d8df0befc9b2dd586108293ade95b084cf7e0e22311bf59833a672d46b063a",
+      "upstream": "f81ed262d650faf8ac946b38799e7a72923e1ff1c027a41dcfae2d4e2451fa40",
+      "rewrites": [
+        {
+          "line": 0,
+          "upstream": "import { normalizeTypeBoxValidationErrors } from \"@openclaw/normalization-core/json-schema\";"
+        }
+      ]
+    },
+    "validation-errors.ts": {
+      "upstreamPath": "packages/gateway-protocol/src/validation-errors.ts",
+      "vendored": "226a12202d615402bd653c147506513b1fd35da421f837f1289d1dae3e60b811",
+      "upstream": "05fa98bafd001a2f8eca5e04ef829a51017ee7b2aff22c1a1bd922080ea61852",
+      "rewrites": [
+        {
+          "line": 0,
+          "upstream": "import type { TypeBoxValidationError } from \"@openclaw/normalization-core/json-schema\";"
+        }
+      ]
+    },
+    "json-schema.ts": {
+      "upstreamPath": "packages/gateway-protocol/src/../../normalization-core/src/json-schema.ts",
+      "vendored": "accbc9a4e19fae7c79ec9970da707e46fdc660efecc08b7c432029e80582b551",
+      "upstream": "dc681787b55d4092d24e5829e912a992b39bb4fb06c83c9d6a7bf84df3ae55d6",
+      "rewrites": []
+    },
+    "chat-work-context.ts": {
+      "upstreamPath": "packages/gateway-protocol/src/chat-work-context.ts",
+      "vendored": "db0903cdc4e3e5e6580eabf89d2d11021717dd6d13f36906f4ed66c3c75839fe",
+      "upstream": "3667c17c10621f6d4e61d3886574622ba5ede36e048f69899a93dde8d575b2b3",
+      "rewrites": []
+    },
+    "theme-ids.ts": {
+      "upstreamPath": "packages/gateway-protocol/src/theme-ids.ts",
+      "vendored": "1a5838a4aaff53868565b18469c969b49c332d9df434cf84d5648f650eb431ef",
+      "upstream": "42939691ff6f967cc3508aa0be4e85404e3b7adefdc7522a5dbbfb8fb97f1117",
+      "rewrites": []
+    },
+    "control-ui-link-reader.ts": {
+      "upstreamPath": "packages/gateway-protocol/src/schema/control-ui-link-reader.ts",
+      "vendored": "de3f0a6ed64e8e8f3f6542c19838287e932b98f3273b4a7b2fc9cb5eca8c693a",
+      "upstream": "06076c467d396000536783cce86d31b62f0a786c0358e54c01707da17f3f548e",
+      "rewrites": []
+    },
+    "environments-session.ts": {
+      "upstreamPath": "packages/gateway-protocol/src/schema/environments-session.ts",
+      "vendored": "00cf2854d013288f06cecc344467dbf8a2db46221096ad7294210d7d260ed8f8",
+      "upstream": "29307c695f0eeb09526b399d919aec73d86d8dc1cec0ddb8e49ba76d0f7472d8",
+      "rewrites": []
+    },
+    "environments-session-exec.ts": {
+      "upstreamPath": "packages/gateway-protocol/src/schema/environments-session-exec.ts",
+      "vendored": "010a19f73fe72627942a5e9e48e0acfc1eb561a1ee234ddad80277089242391b",
+      "upstream": "90a846abfdad858f42f1722e21d49ca48ba5dbcf59964422788e588a82fc6fea",
+      "rewrites": []
+    },
+    "model-catalog.ts": {
+      "upstreamPath": "packages/gateway-protocol/src/schema/model-catalog.ts",
+      "vendored": "bd2462b1a39fa62eb30ffb574500b7c7ddd1d1e8c1dec12ee77370f7ab90cad5",
+      "upstream": "40be40da1b319186df7858d6b211df8c206f3536371b30e6d4f0663e55b3f98f",
+      "rewrites": []
+    },
+    "plugin-inspection.ts": {
+      "upstreamPath": "packages/gateway-protocol/src/schema/plugin-inspection.ts",
+      "vendored": "e3a35c857de24dfc7ffcb7c50e3b3e480f9f8406e2e88b6dee3278b174898bd8",
+      "upstream": "f8cf565381d51e6ae9b177565ce3ae22746cec6ced372dac1d64aef7df0c01f5",
+      "rewrites": []
+    },
+    "plugin-install-progress.ts": {
+      "upstreamPath": "packages/gateway-protocol/src/schema/plugin-install-progress.ts",
+      "vendored": "28f4ef18333b4051718fda015fd7136f735135c66020ee616226ab25eb1b7a73",
+      "upstream": "d30db7b6b20be20fea3d5c625ba419ac5c86356a905fd2e41e13fcb9a3226215",
+      "rewrites": []
+    },
+    "sessions-involvement.ts": {
+      "upstreamPath": "packages/gateway-protocol/src/schema/sessions-involvement.ts",
+      "vendored": "a64af65e24d55c89ae9e0c89ecac556da054d882a2ad80a663d36f82fb353110",
+      "upstream": "9cb148efd85237cbe79bb2a656b5a21bf722748edd61de05898869a16f8b195d",
+      "rewrites": []
+    },
+    "sessions-provider-review.ts": {
+      "upstreamPath": "packages/gateway-protocol/src/schema/sessions-provider-review.ts",
+      "vendored": "6b10b1e22d369989a46898a7b12904c7607362bac27aa6f8669eb373c8dd63e3",
+      "upstream": "bca8a030f607a48ee481f56418e68b4d3e427b4ffa781695e705b9b85768de83",
+      "rewrites": []
+    },
+    "sessions-search.ts": {
+      "upstreamPath": "packages/gateway-protocol/src/schema/sessions-search.ts",
+      "vendored": "c43a1ea37173bc44f7a2e0f91d161ba0adb24aa5ed35c69569ddb7db69227ca3",
+      "upstream": "4408a11ac12a5def6d8684ab24b2ecfcf72b6a2f78797a9bf9e553f8c8b14d56",
+      "rewrites": []
+    },
+    "skill-curator.ts": {
+      "upstreamPath": "packages/gateway-protocol/src/schema/skill-curator.ts",
+      "vendored": "8444f34ad3c69df4085feb04db1bfa0fa8475d1393e629b789a462233b6f0645",
+      "upstream": "3fec339c93f378ae13d9f218e7b57d2eb445bac8ba88aa84a03bdd59046ee002",
+      "rewrites": []
+    },
+    "ui-appearance-typefaces.ts": {
+      "upstreamPath": "packages/gateway-protocol/src/schema/ui-appearance-typefaces.ts",
+      "vendored": "b2b265d03ab205d272ecba90cae526d1efb3d9e6776aa5f3e77ac29f699b6a6b",
+      "upstream": "13662fb659f1b8fd074d2723ce823cf45a0d82ab702ea82dc36a90ea3cc297aa",
+      "rewrites": []
+    },
+    "questions.ts": {
+      "upstreamPath": "packages/gateway-protocol/src/schema/questions.ts",
+      "vendored": "43d0577831801a1b7744f02d3faccaf03b4459834aecb840b94dcf4c6e4731db",
+      "upstream": "fc90503303afed7fdcbb015307d2913c4b8b07faffd8add2ed547d9c37c7bf1d",
+      "rewrites": []
+    },
+    "approvals.ts": {
+      "upstreamPath": "packages/gateway-protocol/src/schema/approvals.ts",
+      "vendored": "b901711967cfc8c96ea76f78423141123f6f2a9d5ea64cb81c4bf3a36086130b",
+      "upstream": "3cb0fac852c3515b93b98ea482ff9e405e3a401a409ea2c2fd9b9659dc42d4cb",
+      "rewrites": []
+    },
+    "approval-id.ts": {
+      "upstreamPath": "packages/gateway-protocol/src/schema/approval-id.ts",
+      "vendored": "1914304506e5184d8ff1d1c01da1e78e6a72ea98388ac2dd00b9ae3d914af207",
+      "upstream": "25b08b6c6ad34a1f4b0f381cd9c1cfc1f811367df949f660b2d38de64bae191f",
+      "rewrites": []
+    }
+  },
+  "derived": {
+    "session-event-snapshot.json": {
+      "upstreamPath": "src/gateway/session-event-payload.ts",
+      "upstream": "99e419e2208867cacbd010a00e0f167a2e4e6ebfbe610a093474fd56267bbd48",
+      "fields": 104
+    },
+    "event-catalogue.json": {
+      "upstreamPath": "src/gateway/server-methods-list.ts",
+      "upstream": "ba684483ade51ead60d8ba05bed0f3360276b4765488688eca5226d5321f6fd8",
+      "constantsPath": "src/gateway/events.ts",
+      "constants": "1bb49549e18fee5bfa564853aedaa804c2eea0b60663b3199b8d627f05aa959c",
+      "events": 64
+    },
+    "broadcast-catalogue.json": {
+      "upstreamPath": "src/gateway/server-broadcast-scopes.ts",
+      "upstream": "51e6ae26fe8217b0b92e1ab960e4568a6381d866f08c45ee045c8ead822dff86",
+      "constantsPath": "src/gateway/events.ts",
+      "constants": "1bb49549e18fee5bfa564853aedaa804c2eea0b60663b3199b8d627f05aa959c",
+      "events": 65
+    }
+  }
+}

@@ -25,6 +25,7 @@ import {
 import { HermesDashboardAbsentError } from "../providers/hermes/files-fetcher.js";
 import { TalkCallActiveError } from "../session.js";
 import {
+  isProviderReviewPausedText,
   isSessionArchivedText,
   isSessionInitConflictText,
   withoutOperatorData,
@@ -115,6 +116,11 @@ export type DispatchErrorCode =
   // the turn is not failed, it is put BACK in the queue and dispatched when the call
   // ends. Lower-case like the other codes Convex reads.
   | "talk_call_active"
+  // The gateway PAUSED the session after a provider refusal it wants reviewed
+  // (2026.9.6, see isProviderReviewPausedText). Every send is refused the same way
+  // until the review is continued, which Atrium does not offer: NOT retryable, and
+  // not a malformed request either. Lower-case like the other codes Convex reads.
+  | "session_paused_review"
   | "UPSTREAM_ERROR"; // anything else (fallback)
 
 /**
@@ -190,6 +196,8 @@ const DOWNSTREAM_REJECTION_CODES: ReadonlySet<DispatchErrorCode> = new Set([
   // link and credentials worked. A seven-day-old conversation must never paint the
   // bridge red.
   "session_archived",
+  // The gateway RECEIVED the send and refused it on a session it paused for review.
+  "session_paused_review",
 ]);
 
 /**
@@ -422,6 +430,10 @@ export function classifyGatewayError(
   // with the session being archived, and blaming it would make this terminal.
   if (isSessionArchivedText(msg)) {
     return "session_archived";
+  }
+  // PAUSED FOR PROVIDER REVIEW (2026.9.6) — same prefix, same reason to come first.
+  if (isProviderReviewPausedText(msg)) {
+    return "session_paused_review";
   }
   // IDEMPOTENCY-KEY CONFLICT (2026.9.2): the key was already used for different
   // input. Arrives behind the same `INVALID_REQUEST:` prefix as the conflict

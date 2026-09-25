@@ -720,7 +720,7 @@ export const compactionHistoryInternal = internalAction({
     // `code` disambiguates the HTTP mapping (codex P2: a gateway outage must
     // never read as "chat not found"): not_found -> 404, no_agent -> 409,
     // upstream (bridge/gateway failure) -> 502.
-    | { ok: false; code: "not_found" | "no_agent" | "upstream"; error: string }
+    | { ok: false; code: "not_found" | "no_agent" | "upstream" | "retired"; error: string }
   > => {
     const chat = await ctx.runQuery(internal.agentFiles.chatOwnerInternal, {
       chatId,
@@ -748,6 +748,15 @@ export const compactionHistoryInternal = internalAction({
         COMPACT_TIMEOUT_MS,
         routing.bridgeUrl,
       );
+      if (status === 410) {
+        // The gateway generation keeps no compaction checkpoints (OpenClaw 2026.9.6
+        // removed them): a fact about the gateway, not an outage — and never "0".
+        return {
+          ok: false,
+          code: "retired",
+          error: "this gateway version no longer keeps compaction history",
+        };
+      }
       if (status !== 200) {
         return {
           ok: false,

@@ -2719,14 +2719,17 @@ http.route({
     );
 
     // Status mapping (codex P2: a gateway outage must never read as "chat not
-    // found"): not_found -> 404, no_agent -> 409, upstream failure -> 502.
+    // found"): not_found -> 404, no_agent -> 409, retired (the gateway keeps no
+    // such history, OpenClaw 2026.9.6+) -> 410, upstream failure -> 502.
     const status = history.ok
       ? 200
       : history.code === "not_found"
         ? 404
         : history.code === "no_agent"
           ? 409
-          : 502;
+          : history.code === "retired"
+            ? 410
+            : 502;
 
     // SOC2 access log (CC6.1/CC7.2): WHO read WHICH chat's compaction history —
     // counts only, no content in the trace.

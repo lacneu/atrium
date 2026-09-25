@@ -245,6 +245,8 @@ export const HEADLINE_REPLACES_DETAIL: ReadonlySet<string> = new Set([
   "session_archived",
   // Same sentence, same suppression — see ERROR_CODE_LABEL for why the copy differs.
   "session_archived_historic",
+  // The provider-review pause quotes the same session key (OpenClaw 2026.9.6).
+  "session_paused_review",
 ]);
 
 export const ERROR_CODE_LABEL: Record<string, () => string> = {
@@ -321,6 +323,9 @@ export const ERROR_CODE_LABEL: Record<string, () => string> = {
   // (convex/turnRetry.ts), so a row written as `unclassified_error` never scheduled
   // one. Reusing the copy would have put a false operational promise on the card.
   session_archived_historic: m.runstatus_error_session_archived_historic,
+  // The gateway paused the conversation after a provider refusal (OpenClaw 2026.9.6).
+  // Stated as it is: no retry is under way, and none would help.
+  session_paused_review: m.runstatus_error_session_paused_review,
   auth_profile_cooldown: m.runstatus_error_auth_profile_cooldown,
   gateway_storage_busy: m.runstatus_error_gateway_storage_busy,
   gateway_storage_unavailable: m.runstatus_error_gateway_storage_unavailable,
@@ -396,6 +401,15 @@ const SESSION_GONE_TEXT_RE = new RegExp(
 const SESSION_ARCHIVED_TEXT_RE =
   /is archived\.?\s*restore it before starting new work/i;
 
+/** The provider-review PAUSE, read from its text — same reason as the archived rule
+ *  above: a row stored before `session_paused_review` existed (or during a rolling deploy,
+ *  a bridge ahead of or behind the front) would otherwise show the raw sentence, session
+ *  key included. Mirrors the bridge's `PROVIDER_REVIEW_PAUSED_RE`
+ *  (core/failure-classifier.ts); they must stay in step. The class's copy holds for such
+ *  a row too — it promises no retry, and none was scheduled. */
+const SESSION_PAUSED_REVIEW_TEXT_RE =
+  /is paused as a precaution\.?\s*review the provider findings|provider review changed\.?\s*refresh the findings/i;
+
 /** Operator-chosen values live inside double quotes in every upstream sentence of
  *  this family; blanking them keeps a key or a title from deciding a class. */
 function withoutQuotedSpans(text: string): string {
@@ -462,7 +476,9 @@ export function errorDetailView(
           ? "session_gone"
           : SESSION_ARCHIVED_TEXT_RE.test(withoutQuotedSpans(raw0))
             ? "session_archived_historic"
-            : OVERFLOW_TEXT_RE.test(raw0)
+            : SESSION_PAUSED_REVIEW_TEXT_RE.test(withoutQuotedSpans(raw0))
+              ? "session_paused_review"
+              : OVERFLOW_TEXT_RE.test(raw0)
               ? "context_length"
               : (errorCode ?? null);
   const headline = code !== null ? (ERROR_CODE_LABEL[code]?.() ?? null) : null;

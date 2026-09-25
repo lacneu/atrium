@@ -11,7 +11,7 @@
 import { describe, expect, it } from "vitest";
 
 // @ts-expect-error — plain .mjs helper, no types (it runs under node, not tsc)
-import { BROADCAST_SYMBOL, deriveBroadcastCatalogue } from "../scripts/lib/derive-broadcast-catalogue.mjs";
+import { BROADCAST_SOURCE, BROADCAST_SYMBOL, deriveBroadcastCatalogue, locateBroadcastSource } from "../scripts/lib/derive-broadcast-catalogue.mjs";
 
 const derive = deriveBroadcastCatalogue as (
   raw: string,
@@ -116,7 +116,14 @@ describe("deriveBroadcastCatalogue — every way to come back SHORT is a refusal
   });
   it("a guard list that is not an array, or holds a non-constant, is not a scope contract", () => {
     refuses(`agent: READ_SCOPE,`).toThrow(/not an array/);
-    refuses(`agent: ["read"],`).toThrow(/not a named constant/);
+    // Neither a constant nor a scope string: a call, a template, an empty string.
+    refuses(`agent: [scopeFor("read")],`).toThrow(/neither a named constant nor a scope string/);
+    refuses("agent: [`operator.${x}`],").toThrow(/neither a named constant nor a scope string/);
+    refuses(`agent: [""],`).toThrow(/neither a named constant nor a scope string/);
+  });
+  it("a scope written as a STRING (v2026.9.6) is recorded by its value, beside named constants", () => {
+    const out = derive(source(`"chat.metadata.changed": [READ_SCOPE, "operator.sessions.read"],`), CONSTANTS);
+    expect(out.scopes["chat.metadata.changed"]).toEqual(["READ_SCOPE", "operator.sessions.read"]);
   });
   it("an assignment into the table after declaration grows it past the initializer", () => {
     refuses(REAL_SHAPE, { tail: `${BROADCAST_SYMBOL}["later.event"] = [READ_SCOPE];` }).toThrow(/mutated or escapes/);
@@ -154,5 +161,28 @@ describe("deriveBroadcastCatalogue — every way to come back SHORT is a refusal
       const s = "const ${BROADCAST_SYMBOL} = { fake: [] }";
       const r = /const ${BROADCAST_SYMBOL} = \\{/;`;
     expect(() => derive(src, CONSTANTS)).toThrow(/no top-level/);
+  });
+});
+
+describe("locateBroadcastSource — the table's module is found, never assumed", () => {
+  const locate = locateBroadcastSource as (read: (rel: string) => string | undefined) => {
+    source: string;
+    raw: string;
+  };
+  const SCOPES = "src/gateway/server-broadcast-scopes.ts";
+  it("v2026.9.6: the table lives in server-broadcast-scopes.ts", () => {
+    const files: Record<string, string> = {
+      [SCOPES]: source(REAL_SHAPE),
+      [BROADCAST_SOURCE]: "export function broadcast() {}",
+    };
+    expect(locate((rel) => files[rel]).source).toBe(SCOPES);
+  });
+  it("up to v2026.9.5: server-broadcast.ts, the scopes module absent", () => {
+    const files: Record<string, string> = { [BROADCAST_SOURCE]: source(REAL_SHAPE) };
+    expect(locate((rel) => files[rel]).source).toBe(BROADCAST_SOURCE);
+  });
+  it("refuses NONE, and refuses TWO declarations (two tables, half of what is checked)", () => {
+    expect(() => locate(() => "export const other = 1;")).toThrow(/in 0 of/);
+    expect(() => locate(() => source(REAL_SHAPE))).toThrow(/in 2 of/);
   });
 });

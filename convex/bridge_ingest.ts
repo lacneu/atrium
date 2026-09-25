@@ -24,6 +24,7 @@
 // is validated by `npx convex dev` / a live deployment.
 
 import { httpAction, ActionCtx, internalQuery } from "./_generated/server";
+import { boundPartDepth } from "./lib/partDepth";
 import { internal } from "./_generated/api";
 import { Id } from "./_generated/dataModel";
 import { v } from "convex/values";
@@ -852,7 +853,10 @@ export const ingest = httpAction(async (ctx, request) => {
         messageId: body.messageId as Id<"messages">,
         // The bridge only sends tool/reasoning parts through `addPart`; media
         // goes through `addMedia` (needs a storage round-trip).
-        part: body.part as never,
+        // Bounded in depth HERE too, before the value crosses into the mutation's
+        // arguments: Convex documents a 16-level limit on values, not only on stored
+        // documents. The mutation bounds again (the other callers do not pass here).
+        part: boundPartDepth(body.part as { kind: string }) as never,
         boundInstanceName,
         ...(body.runId !== undefined ? { expectedRunId: body.runId } : {}),
       });

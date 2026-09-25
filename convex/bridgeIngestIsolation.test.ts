@@ -1211,6 +1211,34 @@ describe("the ingest route carries a Hermes approval's supersession bound", () =
   });
 });
 
+describe("a deep tool payload through the ingest route (OpenClaw 2026.9.6)", () => {
+  test("19 levels of tool output are stored within Convex's 16-level limit", async () => {
+    // Bounded at the route (before the value crosses into the mutation's arguments) and
+    // again in the mutation — redundant by design (codex, 9.6 pass 5); removing BOTH fails.
+    const t = convexTest(schema, modules);
+    const admin = await seedAdmin(t);
+    const a = await seedInstanceWithChat(t, admin, "alpha");
+    let deep: Record<string, unknown> = { leaf: "x" };
+    for (let i = 1; i < 19; i++) deep = { a: deep };
+    const res = await post(
+      t,
+      { op: "addPart", messageId: a.messageId, part: { kind: "tool", name: "exec", phase: "completed", toolCallId: "d1", output: { result: deep } } },
+      a.secret,
+    );
+    expect(res.status).toBe(200);
+    const row = await t.run(async (ctx) =>
+      (await ctx.db.query("messageParts").collect()).find((p) => p.messageId === a.messageId),
+    );
+    const depth = (v: unknown): number =>
+      v !== null && typeof v === "object"
+        ? 1 + Math.max(0, ...Object.values(v as Record<string, unknown>).map(depth))
+        : 0;
+    expect(row).toBeDefined();
+    expect(1 + depth(row!.part)).toBeLessThanOrEqual(16);
+    expect(JSON.stringify(row!.part)).toContain("leaf");
+  });
+});
+
 describe("the ingest route never cuts an observed verdict (codex, 0.21.5 pass 12)", () => {
   test("a settle with a malformed answer entry is reported unreadable, not filtered into a match", async () => {
     const t = convexTest(schema, modules);

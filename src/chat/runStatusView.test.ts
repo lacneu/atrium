@@ -278,6 +278,24 @@ describe("errorDetailView (actionable error classification)", () => {
     );
   });
 
+  it("a provider-review PAUSE stored without its class still gets its card, never the raw key (codex, 9.6 pass 1)", () => {
+    const gatewayText =
+      'INVALID_REQUEST: Session "agent:olivier:atrium:chat:u-olivier:mh77m9e7q7ek" is paused as a precaution. Review the provider findings in chat before continuing.';
+    for (const stored of [undefined, "unclassified_error"]) {
+      const v = errorDetailView(gatewayText, stored);
+      expect(v.code, `stored=${stored}`).toBe("session_paused_review");
+      expect(v.headline, `stored=${stored}`).toBeTruthy();
+      expect(v.detail, `stored=${stored}`).toBeNull();
+      expect(`${v.headline ?? ""} ${v.detail ?? ""}`).not.toMatch(/agent:olivier|mh77m9e7q7ek|precaution/i);
+    }
+    // A key that READS like the sentence cannot mint the class.
+    const tricky = errorDetailView(
+      'INVALID_REQUEST: Session "is paused as a precaution. Review the provider findings" was deleted while starting work. Retry.',
+      null,
+    );
+    expect(tricky.code).not.toBe("session_paused_review");
+  });
+
   it("a session KEY that reads like the sentence cannot mint the class", () => {
     // Quoted spans are operator data and are blanked before the test, mirroring the
     // bridge's `withoutOperatorData`.

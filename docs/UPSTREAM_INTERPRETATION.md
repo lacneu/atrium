@@ -9,10 +9,10 @@ WebSocket protocol, versus the Atrium bridge normalizer
 ratchet; the per-field classification lives in the coverage manifests under
 `bridge/protocol/openclaw/coverage/`.
 
-Reference source: `github.com/openclaw/openclaw` at tag **`v2026.9.5`** — the
+Reference source: `github.com/openclaw/openclaw` at tag **`v2026.9.6`** — the
 exact `maxValidated` gateway version in `bridge/src/compat.ts`.
 
-> **WHAT "ANCHORED AT v2026.9.5" MEANS.** The CONCLUSIONS below were re-verified against that
+> **WHAT "ANCHORED AT v2026.9.6" MEANS.** The CONCLUSIONS below were re-verified against that
 > tag, zone by zone, at each revision. The `file:line` CITATIONS are checked as well: every
 > citation of this document and of the scenario descriptions of
 > `bridge/test/fixtures/openclaw_upstream_frames.json` is recorded in
@@ -37,10 +37,44 @@ references below (`$UP/…`) are paths inside that tag. The Control UI is a
 the divergence is documented as deliberate rather than "fixed".
 
 No internal offset: the runtime drift detector vendors its schema at
-`2026.9.5` (`DRIFT_VENDORED_VERSION`, `protocol-drift.ts`), the same version as
+`2026.9.6` (`DRIFT_VENDORED_VERSION`, `protocol-drift.ts`), the same version as
 the validated ceiling. An unknown-field warning against a 2026.9.x gateway is
 therefore real drift, not schema staleness — it names a field the published
 contract does not declare, and should be read as such.
+
+**Revision of 2026-09-25 (v2026.9.5 → v2026.9.6).** Re-verified zone by zone
+against the upstream tag (report:
+`openclaw-notes/atrium/bench-runs/upstream-diff-2026.9.5-vs-2026.9.6/` — 55
+watchlist files changed, 38 anchors held, none broke), then proved live: full
+catalogue GO 17/17 on the patched distribution image. Every `file:line` citation
+was re-read at the new tag: 58 ranges had MOVED and were corrected in place, and
+TWO claims had disappeared with the code they cited — the compaction checkpoint
+restore, removed upstream with the checkpoints themselves (#154131), and the
+`sessions.steer` interrupt, which now lives in a shared helper (both corrected
+below).
+
+**The wire contract HOLDS on zones 1 to 5.** `ChatEvent` and `errorKind` are
+byte-identical, no preemption policy and no `status:"queued"` ack appeared, the
+announce identity and the dedup window are unchanged, and the session-lock
+sentences the classifier matches are intact. What changed, and what Atrium does:
+
+- **Compaction checkpoints are RETIRED** with `sessions.compaction.list|branch|restore`
+  and the row fields `compactionCheckpointCount` / `latestCompactionCheckpoint`.
+  Atrium's on-demand history read is refused by name from 2026.9.6 on
+  (`COMPACTION_CHECKPOINTS_RETIRED_IN`, bridge `compat.ts`), never sent.
+- **Two new `chat.send` admission refusals.** `UNAVAILABLE "session transcript is
+  rebuilding; retry shortly"` (`retryable`, no reservation left) joins the transient
+  session-conflict class and its bounded retry; `Session "<key>" is paused as a
+  precaution…` — a session paused after a provider refusal until
+  `sessions.providerReview.continue` — is named `session_paused_review` and never
+  retried. The continue flow is a DECLARED GAP.
+- **A new deliberate `rpc` abort**: revoking an operator's authority (device, role,
+  profile identity) aborts its admitted runs (`operator-run-cancellation.ts:129-133`).
+  Same `chat:aborted` frame as any `rpc`, read as such.
+- **Two behaviours owed a bench scenario, not measured**: an announce interrupted by a
+  gateway restart is now RESUMED under a fresh UUID run Atrium does not attribute (its
+  reply may exist gateway-side and stay unseen), and an injection may be refused with
+  `reply_expectation_mismatch` when a required send meets an optional run.
 
 **Revision of 2026-09-20 (v2026.9.4 → v2026.9.5).** Re-verified zone by zone
 against the upstream tag (report:
@@ -139,16 +173,16 @@ and fixed (§3). Sections without such a note were re-checked and still hold.
 ### Upstream contract
 
 The wire contract is the TypeBox union `ChatEventSchema`
-(`$UP/packages/gateway-protocol/src/schema/logs-chat.ts:430-436`), four frames
+(`$UP/packages/gateway-protocol/src/schema/logs-chat.ts:479-485`), four frames
 discriminated by `state`, common base `{runId, sessionKey, agentId?,
 spawnedBy?, seq}`:
 
 | `state` | Own fields | Emitted when |
 |---|---|---|
-| `delta` | `deltaText` (required), `replace?`, `message?` (cumulative snapshot), `usage?` | per assistant stream frame, paced at 75 ms (`LIVE_TEXT_PACING_MS`); a buffered delta is flushed just before any terminal (`server-chat.ts:1032-1043,1183-1189`) |
-| `final` | `message?` (may be absent), `usage?`, `stopReason?` | lifecycle `end` whose terminal outcome is `done` (`server-chat.ts:720-730,1200-1227`) |
-| `aborted` | `message?` (partial text), `errorMessage?` (tool-validation summary only), `stopReason?` | terminal outcome `cancelled`/`aborted`, or direct `broadcastChatAborted` (`chat-abort.ts:524-563`) |
-| `error` | `errorMessage?`, `errorKind?`, `errorDetail?`, `usage?`, `stopReason?`, `message?` — declared; the gateway's own error payload sets neither `message` (since 2026.8.1) nor `usage` (`server-chat.ts:1240-1252`) | lifecycle `error`, or `end` classified `failed`/`timed_out`/`hard_timeout`; lifecycle errors get a 15 s retry grace before emission (`server-chat.ts:101-106,393,1833-1852`) |
+| `delta` | `deltaText` (required), `replace?`, `message?` (cumulative snapshot), `usage?` | per assistant stream frame, paced at 75 ms (`LIVE_TEXT_PACING_MS`); a buffered delta is flushed just before any terminal (`server-chat.ts:1011-1022,1162-1168`) |
+| `final` | `message?` (may be absent), `usage?`, `stopReason?` | lifecycle `end` whose terminal outcome is `done` (`server-chat.ts:713-723,1179-1206`) |
+| `aborted` | `message?` (partial text), `errorMessage?` (tool-validation summary only), `stopReason?` | terminal outcome `cancelled`/`aborted`, or direct `broadcastChatAborted` (`chat-abort.ts:525-564`) |
+| `error` | `errorMessage?`, `errorKind?`, `errorDetail?`, `usage?`, `stopReason?`, `message?` — declared; the gateway's own error payload sets neither `message` (since 2026.8.1) nor `usage` (`server-chat.ts:1219-1231`) | lifecycle `error`, or `end` classified `failed`/`timed_out`/`hard_timeout`; lifecycle errors get a 15 s retry grace before emission (`server-chat.ts:105-110,377,1812-1831`) |
 
 **`stopReason` is a free-form string at the wire level** (`Type.Optional(
 Type.String())` — no wire enum). Producers: the model runtime enum
@@ -163,13 +197,13 @@ only when status ≠ ok; `timeout` + aborted → **`error`**, not `aborted`;
 stale-generation `restart` frames are suppressed entirely — rules at
 `$UP/packages/normalization-core/src/agent-run-terminal-outcome.ts:91-129`, suppression at
 `$UP/src/gateway/server-chat.ts:667-684`,
-`server-chat.agent-events.test.ts:3976-4038,4723-4726`).
+`server-chat.agent-events.test.ts:3968-4030,4709-4712`).
 
 `errorKind` is a closed enum `refusal | timeout | rate_limit | context_length
 | unknown` (wire mirror `ChatEventErrorKindSchema`,
-`$UP/packages/gateway-protocol/src/schema/logs-chat.ts:308-314`). It is
+`$UP/packages/gateway-protocol/src/schema/logs-chat.ts:357-363`). It is
 populated from a structured kind on the lifecycle event, then from the
-`FailoverReason` (`server-chat.ts:185-233`), then from a timeout probe; in
+`FailoverReason` (`server-chat.ts:189-237`), then from a timeout probe; in
 practice the fallback never yields `"unknown"`, and a generic 5xx is
 deliberately left unbadged.
 
@@ -178,7 +212,7 @@ bridge reads):
 
 - **`message` is no longer emitted on `state:"error"`** (since 2026.8.1):
   `emitChatTerminal` omits it and the upstream tests assert its absence
-  (`server-chat.agent-events.test.ts:4818,5791,6072`). The `"Error: …"` prefix is now
+  (`server-chat.agent-events.test.ts:4804,5685,5960`). The `"Error: …"` prefix is now
   built by the Control UI (`chat-gateway.ts:111-126`). Atrium reads
   `errorMessage` first, so nothing changed for it — but the `message` fallback
   in its coverage manifest is dead code against a ≥2026.8.1 gateway.
@@ -186,7 +220,7 @@ bridge reads):
   `plugin-sdk/infra-runtime.ts:34-77`); the derivation above replaced it. The
   enum and its five values are unchanged.
 - **NEW `errorDetail` on `state:"error"`** (2026.9.1,
-  `logs-chat.ts:337-391`): a bounded, redacted record — `provider`, `model`,
+  `logs-chat.ts:386-440`): a bounded, redacted record — `provider`, `model`,
   `failoverReason`, `providerRuntimeFailureKind`, `providerErrorType`,
   `httpStatus`, `providerErrorMessagePreview`. Purely additive: `errorMessage`
   is still emitted. The Control UI reads exactly one thing from it
@@ -205,7 +239,7 @@ bridge reads):
 **Changed since 2026.9.1** (re-verified at v2026.9.2, no impact on what
 Atrium reads): (a) under socket back-pressure the gateway coalesces a run's
 pending text deltas per client (`liveText: {group, coalesce}` in
-`server-broadcast.ts:529-563`) — fewer `chat:delta` frames with longer
+`server-broadcast.ts:407-441`) — fewer `chat:delta` frames with longer
 `deltaText` and a non-contiguous `payload.seq`; the envelope `seq` stays
 contiguous and a terminal always drains the queue first, and Atrium reads the
 cumulative `message` snapshot before any delta (`normalizer.ts`); (b) a
@@ -282,10 +316,10 @@ resolved by:
   one runs (`$UP/src/auto-reply/reply/get-reply-run-queue.ts:33`, through
   `interruptReplyRunTarget` → `abortByUser`, a generic user abort). That
   mode resolves send field → message directive (`/queue interrupt`,
-  `get-reply-directives-apply.ts:595`, persisted to the session by a
+  `get-reply-directives-apply.ts:598`, persisted to the session by a
   directive-only message) → session → channel → config → `steer`.
 - **Announce delivery**: a sub-agent announce steers into the requester's
-  active turn (`subagent-announce-direct-delivery.ts:291,325`,
+  active turn (`subagent-announce-direct-delivery.ts:299,333`,
   `steeringMode:"all"`, path `steered`) or, when the requester is idle,
   runs as a separate in-process `agent` run whose `idempotencyKey`/runId is
   `announce:v1:<childSessionKey>:<childRunId>`
@@ -305,16 +339,17 @@ resolved by:
   the cases found at v2026.9.4 — a list from reading, not a proof of
   completeness (it used to say "only reset/delete"): an effective
   `interrupt` queue mode (above; at admission too when the send carries the
-  field, `$UP/src/gateway/server-methods/chat-send-admission.ts:290,552`, and
-  `sessions.steer` forces it, `sessions-messaging.ts:299`), a session
-  reset/delete (`session-reset-service.ts:1076`), a session archive/delete
-  drain (`sessions-lifecycle-drain.ts`, `stopReason` = the action), a
-  compaction checkpoint restore (`sessions-compaction-checkpoints.ts:226`),
-  a worker placement move (`server-worker-placement-move-barrier.ts:79`,
-  `server-worker-placement-startup.ts:328`), a sub-agent kill (on the CHILD
-  session, `subagent-control-kill-runtime.ts:319-324`), a reply session rollover
-  (`$UP/src/auto-reply/reply/session.ts:517`, turned into `abortForRestart`
-  by the active turn, `reply-turn-admission.ts:320-322` — `stopReason:"restart"`).
+  field, `$UP/src/gateway/server-methods/chat-send-admission.ts:294,575`, and
+  `sessions.steer` forces it, `sessions-messaging.ts:107`), a session
+  reset/delete (`session-reset-service.ts:960`), a session archive/delete
+  drain (`sessions-lifecycle-drain.ts`, `stopReason` = the action), an
+  operator's authority revoked (`operator-run-cancellation.ts:129-133`, new at
+  v2026.9.6 — a compaction checkpoint restore was on this list until checkpoints
+  were retired), a worker placement move (`server-worker-placement-move-barrier.ts:79`,
+  `server-worker-placement-startup.ts:318`), a sub-agent kill (on the CHILD
+  session, `subagent-control-kill-runtime.ts:332-337`), a reply session rollover
+  (`$UP/src/auto-reply/reply/session.ts:478`, turned into `abortForRestart`
+  by the active turn, `reply-turn-admission.ts:319-321` — `stopReason:"restart"`).
   Atrium's bridge
   never sets `queueMode` on its `chat.send` calls (a declared gap in
   `protocol-drift`, inventoried by `outbound-ratchet.test.ts`), but that does
@@ -342,7 +377,7 @@ an absence on the instructed paths, not a proof over every possible path):
   a `finally`);
 - for an ACTIVE requester the delivery first attempts an active wake that
   injects the completion into its live run
-  (`subagent-announce-direct-delivery.ts:307-349`). When that wake is not
+  (`subagent-announce-direct-delivery.ts:315-357`). When that wake is not
   queued, the nominal fallback is a separate direct run, which the one-slot
   lane above serializes behind the live turn — but the function can also
   return before that run: a source owner that changed
@@ -374,7 +409,7 @@ that evidence and it must not be cited as the proof (corrected 2026-09-16). The
 residue is a run killed by its own lane TIMEOUT, which is already being aborted
 — not the race. Late writes are still fenced by
 `SessionTranscriptWriterClaimReboundError`
-(`$UP/src/config/sessions/transcript-write-context.ts:241`), and a starting run
+(`$UP/src/config/sessions/transcript-write-context.ts:418`), and a starting run
 can find its turn already claimed (`ActiveTurnClaimError`,
 `$UP/src/gateway/worker-environments/placement-turn-claims.ts:58`).
 (Corrected 2026-09-14: this paragraph said the race kill happens at writer
@@ -386,13 +421,13 @@ by `createAgentRunSupersededAbortError` carries it, and that error is created
 at six sites (one under an import alias, which a search on the canonical
 name misses) — among them a CLI turn whose session incarnation or lifecycle
 revision moved before it executed
-(`$UP/src/agents/command/attempt-execution.ts:623`; also
-`auto-reply/reply/agent-runner-cli-candidate.ts:167`,
+(`$UP/src/agents/command/attempt-execution.ts:651`; also
+`auto-reply/reply/agent-runner-cli-candidate.ts:180`,
 `auto-reply/reply/reply-run-registry.operation.ts:565` (`supersede`, imported
 as `createSupersededError`),
 `embedded-agent-runner/run/deferred-lifecycle-owner.ts:158`,
-`embedded-agent-runner/run/attempt-stream-prepare.ts:521`,
-`gateway/worker-environments/worker-turn-run-owner.ts:67`), mapped to
+`embedded-agent-runner/run/attempt-stream-prepare.ts:389`,
+`gateway/worker-environments/worker-turn-run-owner.ts:71`), mapped to
 `superseded` by `src/agents/agent-run-terminal-outcome.ts:538-545`. The other kills found
 while reading — examples, NOT an exhaustive list — carry a generic `aborted`
 (`interrupt` queue mode),
@@ -401,7 +436,7 @@ while reading — examples, NOT an exhaustive list — carry a generic `aborted`
 → `abortChatRunById`), `rpc` (a generic RPC/internal abort reason used by
 paths scoped to one run or to a whole session, `chat-abort-handler.ts`:
 `chat.abort` — with or without a `runId` — or `sessions.abort` from another
-client, a compaction checkpoint restore via `session-run-interruption.ts`, a
+client, an operator's authority revoked (v2026.9.6), a
 worker placement cancel `server-worker-placement-cancel.ts`, an ordinary
 gateway shutdown `server-run-shutdown.ts` `abortActiveRuns`),
 `auth-revoked` (provider logout), `stop` (a `/stop` command sent as a message,
@@ -465,7 +500,7 @@ active; "Steer" is just a `chat.send` relying on the gateway's steer mode).
   with no Stop signalled to the bridge, no visible text, no tool call and no
   hosted work) could not, on its own, tell what produced the terminal — among
   others, a `chat-abort.ts` broadcast (`chat.abort`/`sessions.abort` from
-  another client, checkpoint restore, worker placement cancel, gateway
+  another client, operator revocation, worker placement cancel, gateway
   shutdown, archive/delete, auth revocation, maintenance timeout, `/stop` sent
   as a message) or a lifecycle terminal projected by `server-chat.ts` (writer
   takeover `superseded`, `interrupt` → `aborted`, rollover/restart `restart`),
@@ -510,9 +545,9 @@ active; "Steer" is just a `chat.send` relying on the gateway's steer mode).
   which Atrium refused as a foreign run and then retried, so the model answered
   twice). Nothing on the wire can repair that afterwards: the `chat.send` ack
   (`status:"started"`) is sent before the queue decision
-  (`chat-send-handler.ts:580-608`), and nothing on the wire links the client run to
+  (`chat-send-handler.ts:579-607`), and nothing on the wire links the client run to
   the followup run: the gateway holds both identities only in its own state
-  (`chat-send-turn-adoption.ts:43-52`), and names them together in a log line
+  (`chat-send-turn-adoption.ts:13-22`), and names them together in a log line
   only when the late reply is DROPPED (`chat-send-late-followup.ts:39-48`) —
   a delivered followup writes no such line. So the bridge narrows
   it (defect 18) — preventing it only when the delivery run is visible to the
@@ -521,7 +556,7 @@ active; "Steer" is just a `chat.send` relying on the gateway's steer mode).
   (spontaneous turn open or still finalizing, or announce frames stashed). A
   run ENDING is not the gateway releasing it: the run's lifecycle `end` and
   `chat final` are broadcast before `clearActiveEmbeddedRun`
-  (`post-run.ts:655-661`, behind an awaited trajectory flush,
+  (`post-run.ts:660-666`, behind an awaited trajectory flush,
   `deferred-lifecycle-owner.ts:103-119`; trajectory capture is on by default),
   while admission reads that registry (`embedded-agent-runner/runs.ts:1011`,
   `get-reply-run-admission.ts:509-510`). So after a delivery the bridge also asks
@@ -530,7 +565,7 @@ active; "Steer" is just a `chat.send` relying on the gateway's steer mode).
   `embedded-agent-runner/runs.ts:1160-1187`) — and waits while it is true. That check only NARROWS
   the window. The signal is not the admission predicate: it also counts
   terminal persistence and projected or queued states
-  (`session-active-runs.ts:245-262`), and misses an aborted handle still
+  (`session-active-runs.ts:258-275`), and misses an aborted handle still
   registered or a recovery owner. And it fails open: an absent field, a failed
   call, or a run still counted once a bounded wait is spent (30 s per send,
   shared by its checks, RPC time included — a policy bound, not an upstream
@@ -564,7 +599,7 @@ active; "Steer" is just a `chat.send` relying on the gateway's steer mode).
   content" it guarded (found 2026-09-03, fixed — see the verdict below).
 - **`session writer claim changed before transcript persistence`**
   (`SessionTranscriptWriterClaimReboundError`,
-  `$UP/src/config/sessions/transcript-write-context.ts:241`, identical
+  `$UP/src/config/sessions/transcript-write-context.ts:418`, identical
   2026.8.1 → 2026.9.4): the SQLite replacement. The session row's writer
   claim and lifecycle revision are re-validated before a transcript write
   (`session-accessor.sqlite-transcript-write.ts`), and a rebound refuses it.
@@ -580,7 +615,7 @@ active; "Steer" is just a `chat.send` relying on the gateway's steer mode).
   a full 2026.9.4 bench capture only `chat` status and `agent` `run_status`
   frames preceded it. Upstream treats it as a
   runtime COORDINATION error on the main path (no model fallback,
-  `failover-error.ts:772-775`; `model-fallback-runner.ts:611-612` rethrows it) but,
+  `failover-error.ts:681-684`; `model-fallback-runner.ts:577-578` rethrows it) but,
   unlike the 2026.7.x lock, the announce delivery's own retry loop **may retry
   it**: `isTransientAnnounceDeliveryError`
   (`subagent-announce-delivery-retry.ts:146-181`, used at `subagent-announce-delivery-retry.ts:258`) returns no
@@ -589,7 +624,7 @@ active; "Steer" is just a `chat.send` relying on the gateway's steer mode).
   rebound. When a direct delivery has failed, its disposition is `ambiguous`
   on send evidence, otherwise `permanent_failure` for this rebound unless a
   typed retryability decides otherwise
-  (`subagent-announce-direct-delivery.ts:707-718`,
+  (`subagent-announce-direct-delivery.ts:572-583`,
   `isPermanentAnnounceDeliveryError` at `subagent-announce-delivery-retry.ts:183-189`). The regex at
   `subagent-announce-delivery-retry.ts:69-70` is only
   the shared definition. The retry file is byte-identical 2026.9.2 → 2026.9.4;
@@ -599,13 +634,13 @@ active; "Steer" is just a `chat.send` relying on the gateway's steer mode).
   **Since 2026.9.3 (absent from the v2026.9.1 and v2026.9.2 sources; read at
   v2026.9.4), when it ends a generating run the wire does not carry this
   sentence.** The gateway maps it to the storage failure
-  `transcript_writer_fenced` (`$UP/src/infra/sqlite-error-diagnostics.ts:10`)
+  `transcript_writer_fenced` (`$UP/src/infra/sqlite-error-diagnostics.ts:11`)
   and renders it as the user-facing copy "⚠️ Agent run failed: the transcript
   writer no longer owned this session. Retry in the current session; if it
   repeats, check Gateway logs."
-  (`failover/assistant-request-failure-copy.ts:37-38,65`), which becomes the
-  lifecycle `error` (`embedded-agent-subscribe.handlers.lifecycle.ts:151-167,219`)
-  and the chat error's `errorMessage` (`server-chat.ts:729,1264`). Atrium
+  (`failover/assistant-request-failure-copy.ts:48-49,76`), which becomes the
+  lifecycle `error` (`embedded-agent-subscribe.handlers.lifecycle.ts:150-166,218`)
+  and the chat error's `errorMessage` (`server-chat.ts:722,1243`). Atrium
   classifies both renderings as `session_write_conflict`; the copy's "Retry"
   does not make it retryable. A failed run also leaves its partial text in the
   transcript as an assistant entry with `stopReason: "error"`
@@ -619,7 +654,7 @@ active; "Steer" is just a `chat.send` relying on the gateway's steer mode).
   coordination family at 2026.9.1 (`failover-error.ts:50-56`), so a busy
   session no longer cycles the whole provider fallback chain.
 - The init conflict's OCC now also reads the **parent/main** session rows
-  (`relatedSessionKeys`, `auto-reply/reply/session.ts:629-641`): same message, but a write on a
+  (`relatedSessionKeys`, `auto-reply/reply/session.ts:609-621`): same message, but a write on a
   parent session can now trigger it. Upstream retries up to **5 times** with
   250 ms → 4 s backoff (`SESSION_INIT_CONFLICT_MAX_ATTEMPTS`), not the single
   internal retry described above.
@@ -745,15 +780,16 @@ rotation signal (same compaction, one marker).
 Remaining deliberate gaps:
 
 1. **`session.operation` and `sessions.changed` (`reason:"compact"`, rotated
-   sessionId, checkpoint counts) are not consumed** — the bridge holds no
+   sessionId) are not consumed** — the bridge holds no
    `sessions.subscribe` subscription. The manual path is covered by the
    rotation detector and by Atrium's own `sessions.compact` calls.
 2. Upstream's `manual/threshold/overflow` taxonomy is not persisted; Atrium
    keeps its `preflight`/`midturn` phases (a free-string field end-to-end,
    so the taxonomy can be enriched without a schema migration).
 
-What Atrium already uses from the explicit API: `sessions.compact` (manual)
-and `sessions.compaction.list` (content-free history). The detected events
+What Atrium already uses from the explicit API: `sessions.compact` (manual),
+and `sessions.compaction.list` (content-free history) on gateways BELOW v2026.9.6 —
+the checkpoints it listed were retired there, and the read is refused by name. The detected events
 are persisted as `{kind:"compaction"}` message parts and pressure traces —
 a durable surface the Control UI does not have.
 
@@ -765,13 +801,13 @@ a durable surface the Control UI does not have.
 
 - **Control UI derivation**: `idempotencyKey` **is** the client-generated
   run UUID (`crypto.randomUUID`), assigned once at enqueue time and **reused
-  verbatim on every retry** (`$UP/ui/src/pages/chat/chat-send-queue-state.ts:87`,
+  verbatim on every retry** (`$UP/ui/src/pages/chat/chat-send-queue-state.ts:101`,
   `chat-send-delivery.ts:211,258`, `ui/src/pages/chat/chat-send-request.ts:53` at v2026.9.2).
   No content hash, no timestamp on the client side.
 - **Gateway validation**: `NonEmptyString`, opaque, no normalization — the
   key *becomes* the run's `runId`
-  (`$UP/src/gateway/server-methods/chat-send-session.ts:88`; "chat.send
-  idempotency keys are exact protocol identities", `chat-queued-turns.ts:39`).
+  (`$UP/src/gateway/server-methods/chat-send-session.ts:93`; "chat.send
+  idempotency keys are exact protocol identities", `chat-queued-turns.ts:41`).
 - **Dedupe window**: one `Map<string, DedupeEntry>` **per gateway process**
   (all connections, all sessions). Keys `chat:<idempotencyKey>` (terminal
   results) and `pending-chat:<idempotencyKey>` (admission reservations).
@@ -782,16 +818,16 @@ a durable surface the Control UI does not have.
   never silence — terminal cached → same payload replayed with
   `meta:{cached:true}`; abort marker → synthesized aborted payload
   (`{runId, status:"timeout", summary:"aborted", stopReason?, endedAt}`,
-  `chat-abort-authorization.ts:48-54`); pending/active/queued →
+  `chat-abort-authorization.ts:50-56`); pending/active/queued →
   `{runId, status:"in_flight"}`.
 - **Since 2026.9.2 the key is bound to its content.** The gateway stores a
   request identity with the key — `sha256(JSON.stringify([message,
-  mentions]))`, `server-methods/chat-send-request.ts:248-256` — at admission, and a reuse of
+  mentions]))`, `server-methods/chat-send-request.ts:308-316` — at admission, and a reuse of
   the key with DIFFERENT input is refused: `INVALID_REQUEST` with
   `details.reason: "chat-request-conflict"` and the message "This message ID
-  was already used for different input…" (`chat-send-pre-admission.ts:148-155`),
+  was already used for different input…" (`chat-send-pre-admission.ts:172-179`),
   while the original run keeps running. After the RAM window the comparison
-  falls back to the transcript's submitted input (`chat-send-pre-admission.ts:189-217`). "Always an ack"
+  falls back to the transcript's submitted input (`chat-send-pre-admission.ts:217-245`). "Always an ack"
   therefore holds for a faithful duplicate only.
 - The announce idempotency family (`announce:v1:<childKey>:<runId>`) is a
   **separate, persisted delivery identity** — unrelated to the chat.send

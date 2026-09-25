@@ -17,6 +17,7 @@
 // streamed message.
 
 import { v } from "convex/values";
+import { boundPartDepth } from "./lib/partDepth";
 import { contentLocaleForInstance } from "./lib/serverLocale";
 import { KNOWN_ERROR_CODES, maskCredentialId } from "./lib/chatRenderState";
 import { internalMutation, internalQuery, MutationCtx } from "./_generated/server";
@@ -1624,8 +1625,11 @@ export const addPart = internalMutation({
   },
   handler: async (
     ctx,
-    { messageId, part, expectedRunId, repair, boundInstanceName },
+    { messageId, part: rawPart, expectedRunId, repair, boundInstanceName },
   ) => {
+    // A tool payload nested past Convex's document limit is kept as JSON text rather than
+    // refused (convex/lib/partDepth.ts): the card must not be lost to its own depth.
+    let part = boundPartDepth(rawPart);
     // The bridge uploads a media part's bytes BEFORE this call, so any path that
     // refuses the part must RECLAIM them or leave a billable, unreachable
     // storage object behind on every attempt.

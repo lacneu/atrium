@@ -40,7 +40,7 @@ import {
 } from "./lib/derive-event-catalogue.mjs";
 import {
   BROADCAST_CONST_SOURCE,
-  BROADCAST_SOURCE,
+  locateBroadcastSource,
   BROADCAST_SYMBOL,
   deriveBroadcastCatalogue,
 } from "./lib/derive-broadcast-catalogue.mjs";
@@ -209,6 +209,27 @@ const FILES = [
     "protocol-validator.ts",
     "validation-errors.ts",
     "../../normalization-core/src/json-schema.ts",
+  ]),
+
+  // New transitive imports as of 2026.9.6, computed as the closure of the modules
+  // above against the checkout (not one "module not found" at a time): the session
+  // environments split (session / session-exec), sessions gained search, involvement
+  // and provider review, plugins an inspection and install-progress contract, the
+  // UI appearance a typeface list, and chat a work-context module.
+  ...since("2026.9.6", [
+    "chat-work-context.ts",
+    "theme-ids.ts",
+    "schema/control-ui-link-reader.ts",
+    "schema/environments-session.ts",
+    "schema/environments-session-exec.ts",
+    "schema/model-catalog.ts",
+    "schema/plugin-inspection.ts",
+    "schema/plugin-install-progress.ts",
+    "schema/sessions-involvement.ts",
+    "schema/sessions-provider-review.ts",
+    "schema/sessions-search.ts",
+    "schema/skill-curator.ts",
+    "schema/ui-appearance-typefaces.ts",
   ]),
 
   // AGENT REQUESTS: `question.get|list|resolve` and `approval.get|resolve`, named by
@@ -499,19 +520,23 @@ function writeDerivedArtifact({ name, about, source, raw, constants, countOf, bo
 const catalogueRaw = readUpstream(CATALOGUE_SOURCE);
 const catalogueConstRaw = readUpstream(CATALOGUE_CONST_SOURCE);
 const catalogueEvents = deriveEventCatalogue(catalogueRaw, catalogueConstRaw);
-// And the catalogue the gateway can BROADCAST (server-broadcast.ts). It is the larger
+// And the catalogue the gateway can BROADCAST (server-broadcast[-scopes].ts). It is the larger
 // vocabulary: families such as `config.changed` reach a client's socket without ever
 // being announced in hello-ok, so a ratchet on the announced list alone never asked
 // what Atrium does with them. Same rule: an entry the deriver cannot name aborts the
 // whole vendoring rather than producing a shorter table.
-const broadcastRaw = readUpstream(BROADCAST_SOURCE);
+// The table's module is LOCATED, not assumed: v2026.9.6 moved it out of
+// server-broadcast.ts. Exactly one known module must declare it.
+const { source: broadcastSource, raw: broadcastRaw } = locateBroadcastSource((rel) =>
+  fs.existsSync(path.join(src, rel)) ? readUpstream(rel) : undefined,
+);
 // Both catalogues resolve their computed entries from the SAME constants module; it is
 // read once. Stated as an invariant rather than a branch, so a divergence is an error.
 if (BROADCAST_CONST_SOURCE !== CATALOGUE_CONST_SOURCE) {
   throw new Error(`the two catalogues no longer share a constants module (${BROADCAST_CONST_SOURCE} vs ${CATALOGUE_CONST_SOURCE})`);
 }
 const broadcastConstRaw = catalogueConstRaw;
-const broadcastCatalogue = deriveBroadcastCatalogue(broadcastRaw, broadcastConstRaw);
+const broadcastCatalogue = deriveBroadcastCatalogue(broadcastRaw, broadcastConstRaw, broadcastSource);
 
 fs.mkdirSync(OUT_DIR, { recursive: true });
 const files = {};
@@ -669,12 +694,13 @@ const broadcastCatalogueRecord = writeDerivedArtifact({
   name: "broadcast-catalogue.json",
   about:
     `Event names the gateway can BROADCAST — the keys of ${BROADCAST_SYMBOL} in ` +
-    `${BROADCAST_SOURCE} at v${version}, the table every broadcast is scope-checked ` +
+    `${broadcastSource} at v${version}, the table every broadcast is scope-checked ` +
     `against (computed keys resolved from ${BROADCAST_CONST_SOURCE}). Larger than ` +
     `event-catalogue.json: a family here and not there reaches the socket without ` +
-    `being announced. \`scopes\` records the guard constants as upstream names them ` +
-    `(\`[]\` = unguarded). Do not edit by hand: re-run scripts/vendor-protocol.mjs.`,
-  source: BROADCAST_SOURCE,
+    `being announced. \`scopes\` records the guard constants as upstream names them, ` +
+    `or the scope string itself where upstream writes it literally (\`[]\` = ` +
+    `unguarded). Do not edit by hand: re-run scripts/vendor-protocol.mjs.`,
+  source: broadcastSource,
   raw: broadcastRaw,
   constants: { source: BROADCAST_CONST_SOURCE, raw: broadcastConstRaw },
   countOf: "events",

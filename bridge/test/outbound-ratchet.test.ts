@@ -32,7 +32,12 @@
 // refused stays invisible. That is a declared limit, not an oversight.
 
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { compareVersions, parseVersion } from "../src/compat.js";
+import {
+  COMPACTION_CHECKPOINTS_RETIRED_IN,
+  compareVersions,
+  gatewayAtLeast,
+  parseVersion,
+} from "../src/compat.js";
 import { sleep } from "./helpers/sleep.js";
 import { readFileSync, readdirSync } from "node:fs";
 import { Value } from "typebox/value";
@@ -40,6 +45,7 @@ import { Value } from "typebox/value";
 import {
   applySessionSettings,
   discoverAgents,
+  CompactionHistoryRetiredError,
   fetchCompactionHistory,
   fetchCronJobs,
   lcmSendParams,
@@ -112,7 +118,11 @@ async function schemasOf(version: string): Promise<Map<string, unknown>> {
  *  bodies come from the code that ships. The `update` op reads the job first to learn its
  *  payload kind, so the reply has to carry one — otherwise the patch is refused and the
  *  most interesting body of the six is never built. */
-async function captureCronBodies(): Promise<[string, Record<string, unknown>][]> {
+async function captureCronBodies(
+  /** The gateway version the connection announces: what the bridge SENDS depends on it
+   *  (from 2026.9.6 no `sessions.compaction.list` — the gateway retired checkpoints). */
+  gatewayVersion: string | null = null,
+): Promise<[string, Record<string, unknown>][]> {
   const out: [string, Record<string, unknown>][] = [];
   const job = {
     id: "job-1",
@@ -178,7 +188,15 @@ async function captureCronBodies(): Promise<[string, Record<string, unknown>][]>
   // production change at all. Only `sessions.reset` and `sessions.compact` are genuinely
   // inline on the turn path.
   const hist = recorder(() => ({ checkpoints: [] }));
-  await fetchCompactionHistory(hist.conn as never, "agent:alice:atrium:chat:olivier:c1");
+  try {
+    await fetchCompactionHistory(
+      { ...hist.conn, gatewayVersion } as never,
+      "agent:alice:atrium:chat:olivier:c1",
+    );
+  } catch (err) {
+    // A gateway that keeps no checkpoints is refused by name, before anything is sent.
+    if (!(err instanceof CompactionHistoryRetiredError)) throw err;
+  }
   out.push(...hist.calls);
   return out;
 }
@@ -863,23 +881,32 @@ describe("outbound ratchet — what the bridge SENDS fits the vendored contract"
     it(`the operator, cron and built bodies validate against ${version}`, async () => {
       const bodies = [
         ...(await captureOperatorBodies()),
-        ...(await captureCronBodies()),
+        ...(await captureCronBodies(version)),
         ...(await captureDiscoveryBodies()),
         ...(await captureUnsetBodies()),
         ...builtBodies(),
       ];
+      // The compaction history is read only from a gateway that still keeps it.
+      const keepsCheckpoints =
+        gatewayAtLeast(version, COMPACTION_CHECKPOINTS_RETIRED_IN) !== true;
       // The WRITE bodies, named: an incidental read would otherwise satisfy the loop.
       for (const m of [
         "config.patch",
         "cron.update",
         "agents.files.set",
         "talk.client.create",
-        "sessions.compaction.list",
+        ...(keepsCheckpoints ? ["sessions.compaction.list"] : []),
       ]) {
         expect(
           bodies.map(([x]) => x),
           `${m} was never captured for ${version}`,
         ).toContain(m);
+      }
+      // …and to one that retired them, it is never sent at all.
+      if (!keepsCheckpoints) {
+        expect(bodies.map(([x]) => x), `sessions.compaction.list sent to ${version}`).not.toContain(
+          "sessions.compaction.list",
+        );
       }
       await expectBodiesValid(version, bodies, "operator/cron/built");
     });

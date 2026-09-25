@@ -109,6 +109,8 @@ export const KNOWN_ERROR_CODES = [
   // so a parc where restores keep failing is visible as itself, rather than folded
   // into the generic stream-error channel.
   "session_archived",
+  // The gateway paused the conversation for a provider review: countable as itself.
+  "session_paused_review",
   "auth_profile_cooldown",
   "gateway_storage_busy",
   "gateway_storage_unavailable",

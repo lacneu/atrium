@@ -234,6 +234,10 @@ export const CAUSE_ANOMALY_KINDS: Record<string, string> = {
   // instance, which is an operator signal about session maintenance — not an
   // upstream blip and not a user error.
   session_archived: "assistant.cause.session_archived",
+  // The gateway paused the conversation for a provider review (OpenClaw 2026.9.6):
+  // every turn is refused until someone continues it, which Atrium cannot do — a run
+  // of these on one chat is a conversation stuck for good, an operator signal.
+  session_paused_review: "assistant.cause.session_paused_review",
   // NOT the bridge's inbound-staging refusals, deliberately. This map is read for
   // `streamCauses` only — causes carried by an `assistant.stream` FINALIZE row —
   // and a staging refusal happens BEFORE any stream exists: it surfaces as an

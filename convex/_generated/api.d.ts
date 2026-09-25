@@ -107,6 +107,7 @@ import type * as lib_mentions from "../lib/mentions.js";
 import type * as lib_messageOrder from "../lib/messageOrder.js";
 import type * as lib_openclawThread from "../lib/openclawThread.js";
 import type * as lib_outboxQueue from "../lib/outboxQueue.js";
+import type * as lib_partDepth from "../lib/partDepth.js";
 import type * as lib_planOrder from "../lib/planOrder.js";
 import type * as lib_privateToolArgs from "../lib/privateToolArgs.js";
 import type * as lib_promptInjections from "../lib/promptInjections.js";
@@ -261,6 +262,7 @@ declare const fullApi: ApiFromModules<{
   "lib/messageOrder": typeof lib_messageOrder;
   "lib/openclawThread": typeof lib_openclawThread;
   "lib/outboxQueue": typeof lib_outboxQueue;
+  "lib/partDepth": typeof lib_partDepth;
   "lib/planOrder": typeof lib_planOrder;
   "lib/privateToolArgs": typeof lib_privateToolArgs;
   "lib/promptInjections": typeof lib_promptInjections;

@@ -26,6 +26,7 @@ import {
   anonymizeFrame,
   createPseudonymiser,
   knownKeysFromCoverage,
+  maskFreeText,
   maskKeepingMediaSentinel,
   maskText,
   reservedPseudonymShapes,
@@ -599,6 +600,59 @@ describe("outbound media survives in every shape the reader accepts", () => {
     const url = out.payload.data.result.mediaUrls[0]!;
     expect(url.startsWith("/home/node/.openclaw/media/outbound/")).toBe(true);
     expect(url).not.toContain("secret");
+  });
+});
+
+describe("one outbound file keeps ONE name across its carriers (2026.9.6)", () => {
+  it("a path inside a tool result's JSON gets the pseudonym `mediaUrls` gets", () => {
+    // 2026.9.6 reports an exec-written file in the tool result (`value.path`, inside a JSON
+    // text) as well as in `mediaUrls`. Masked in one and pseudonymised in the other, the
+    // promoted capture read TWO files where the raw one had one — the fidelity gate refused.
+    const file = "/home/node/.openclaw/media/outbound/rapport-secret.txt";
+    const pseudo = createPseudonymiser(["exec"]);
+    const stats = newStats();
+    const run = (frame: unknown) => anonymizeFrame(frame, pseudo, stats, KNOWN_KEYS, new Set(["exec"]));
+    const tool = run({
+      payload: {
+        stream: "tool",
+        data: {
+          name: "exec",
+          phase: "result",
+          result: { content: [{ type: "text", text: JSON.stringify({ value: { path: file } }) }] },
+        },
+      },
+    }) as { payload: { data: { result: { content: [{ text: string }] } } } };
+    const final = run({
+      payload: { stream: "assistant", data: { text: "voila", mediaUrls: [file] } },
+    }) as { payload: { data: { mediaUrls: string[] } } };
+    const named = final.payload.data.mediaUrls[0]!;
+    expect(named.startsWith("/home/node/.openclaw/media/outbound/")).toBe(true);
+    expect(named).not.toContain("secret");
+    expect(tool.payload.data.result.content[0].text).toContain(named);
+  });
+
+  it("a whole path with SPACES in its name gets the same pseudonym too (codex, 9.6 pass 3)", () => {
+    const file = "/home/node/.openclaw/media/outbound/IFOA Presentation.pdf";
+    const pseudo = createPseudonymiser(["exec"]);
+    const run = (frame: unknown) => anonymizeFrame(frame, pseudo, newStats(), KNOWN_KEYS, new Set(["exec"]));
+    const tool = run({
+      payload: {
+        stream: "tool",
+        data: { name: "exec", phase: "result", result: { content: [{ type: "text", text: JSON.stringify({ value: { path: file } }) }] } },
+      },
+    }) as { payload: { data: { result: { content: [{ text: string }] } } } };
+    const final = run({ payload: { stream: "assistant", data: { text: "voila", mediaUrls: [file] } } }) as {
+      payload: { data: { mediaUrls: string[] } };
+    };
+    const named = final.payload.data.mediaUrls[0]!;
+    expect(named).not.toContain("IFOA");
+    // Keys of the payload are masked too; what matters is that the SAME name is there.
+    expect(tool.payload.data.result.content[0].text).toContain(JSON.stringify(named));
+  });
+
+  it("STREAMED text still masks per character — its prefix relation is load-bearing", () => {
+    const s = "voir /home/node/.openclaw/media/outbound/rapport.pdf";
+    expect(maskFreeText(s, createPseudonymiser([]))).toHaveLength(s.length);
   });
 });
 

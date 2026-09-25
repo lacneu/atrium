@@ -259,6 +259,14 @@ export const HERMES_RANGE: VersionRange = {
  *  where a version bump looks. */
 export const MODELS_LIST_OWNER_SINCE = "2026.8.1";
 
+/** The generation that no longer keeps compaction checkpoints: 2026.9.6 removed them and
+ *  their three RPCs (`sessions.compaction.list|branch|restore`, upstream b86dc712079
+ *  "refactor: remove compaction checkpoints", #154131). A history read there is refused
+ *  BY NAME rather than sent — the gateway would answer by scope, not by fact (an unknown
+ *  method needs admin before it is found missing), and an empty list would claim the
+ *  session never compacted. */
+export const COMPACTION_CHECKPOINTS_RETIRED_IN = "2026.9.6";
+
 const parsedVersions = new Map<string, ParsedVersion | null>();
 /** `version >= min`, on the RAW gateway version (not the capped capability table);
  *  null when either side does not parse. Parses are memoized: the boundaries are
@@ -324,7 +332,7 @@ export const COMPAT_MANIFEST: CompatManifest = {
       // hashes). It had previously been declared through its beta.2 RC
       // (release-day upgrades stay in support with no banner) — that proxy
       // note is now history, the row stands on its own run.
-      supportedRange: { min: "2026.5.19", maxValidated: "2026.9.5" },
+      supportedRange: { min: "2026.5.19", maxValidated: "2026.9.6" },
       // Inside the range, and BROKEN on a stock gateway: a managed-media
       // `attachment` block persisted by the gateway's own path crashes
       // `transcript-transform` on every later turn of that session (upstream
@@ -460,6 +468,27 @@ export const COMPAT_MANIFEST: CompatManifest = {
         // needs a state snapshot AND fresh agent databases: an older binary refuses
         // both a newer config and a newer schema, by design.
         "2026.9.5",
+        // 2026.9.6: full live suite GO 17/17 (2026-09-25) on the patched distribution
+        // image r5, Hermes co-run on 0.21.5. Six interpretation zones re-verified:
+        // the announce identity, the dedup window and the two lock messages hold.
+        //
+        // What changed for Atrium, and was adapted before the run:
+        //  - The PLUGIN SIDE-EFFECTS regression of 2026.9.5 is STILL upstream; the
+        //    same call site is now compiled into a second worker bundle
+        //    (`sqlite-store.worker.mjs`), and the distribution patch covers every
+        //    worker that carries it. This row stands on the custom image, as 9.5's.
+        //  - COMPACTION CHECKPOINTS are retired upstream (#154131) with their three
+        //    RPCs: the history read is refused by name from this version on
+        //    (COMPACTION_CHECKPOINTS_RETIRED_IN), never sent to a missing method.
+        //  - Two new `chat.send` admission refusals are classified: a transcript
+        //    being rebuilt (`UNAVAILABLE`, retry shortly) rides the bounded retry, and
+        //    a session PAUSED after a provider review is named (`session_paused_review`),
+        //    never retried — Atrium cannot continue a review yet.
+        //
+        // UPGRADE NOTE, one-way: the agent database schema moves 21 -> 23, migrated
+        // automatically at the first boot on the bench. Going back to 2026.9.5 needs a
+        // state snapshot taken before the upgrade.
+        "2026.9.6",
       ],
       capabilities: OPENCLAW_CAPABILITIES,
     },

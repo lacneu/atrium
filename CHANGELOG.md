@@ -1,5 +1,48 @@
 # Changelog
 
+## [0.85.1] — OpenClaw 2026.9.6 supported
+
+Support and reliability release, corrective throughout. No breaking changes in Atrium —
+but read the upgrade note at the end of this entry before moving a gateway: the agent
+database migration is one-way. OpenClaw 2026.9.6 becomes the validated ceiling, proved on
+the live bench against the patched distribution image the parc runs.
+
+**A tool whose result is deeply nested no longer loses its card.** On 2026.9.6 the agent can
+reach its tools through a code runner, and a tool search there returns a tool's full
+parameter schema — nineteen levels deep. The store refuses anything nested past sixteen, so
+the tool card was rejected while the turn carried on without it. Deep parts of a tool's
+input or output are now kept as their text, bounded before storage: nothing is dropped and
+the card shows.
+
+**Compaction history says what the gateway can no longer give.** 2026.9.6 removed compaction
+checkpoints altogether, and the call that listed them with them. Asked for the history of a
+conversation on such a gateway, Atrium now answers that this gateway keeps none — rather
+than an unexplained upstream error, or an empty list that would have claimed the
+conversation never compacted. Older gateways answer as before.
+
+**A message refused while its conversation was being rebuilt is sent again.** 2026.9.6 can
+turn a message away for a moment while it rebuilds a conversation's transcript, and asks to
+retry shortly. That refusal used to be read as a bridge failure and left alone; it now takes
+the automatic retry, like the other brief refusals of the same kind — including a
+conversation that is still being set up, which was not recognised either.
+
+**A conversation paused after a provider review says so.** When the model provider flags a
+reply for review, 2026.9.6 pauses the conversation as a precaution and refuses every new
+message until the review is cleared. That refusal read as a malformed request. It now has
+its own card, which states what happened and that no retry will be made; the same card
+shows for a refusal recorded by an older bridge. Clearing the review from Atrium is not
+available yet.
+
+**Fields an older supported gateway still sends are no longer reported as unknown.** The two
+compaction-checkpoint fields retired in 2026.9.6 are still sent by every supported gateway
+from 2026.8.1 to 2026.9.5; the protocol monitor no longer flags them there.
+
+**Upgrade note — one-way.** On first start, 2026.9.6 migrates each agent's database (schema
+21 → 23) by itself. Going back to 2026.9.5 afterwards needs a snapshot of the gateway's state
+taken before the upgrade. As with 2026.9.5, support stands on the distribution image, which
+restores plugin activity on agent turns — an upstream regression still present in 2026.9.6;
+a stock 2026.9.6 gateway keeps plugins mute on the agent path.
+
 ## [0.85.0] — When the agent asks, you can answer
 
 Feature release: what an agent asks in the middle of a turn — a question, a

@@ -496,7 +496,19 @@ const EMBEDDED_SESSION_KEY = /agent:[A-Za-z0-9_.-]+(?::subagent:[A-Za-z0-9-]+)+/
  *  as "replace the token and keep the rest" — because the first version returned the whole
  *  string whenever it contained a directive, so a long task description survived because
  *  it happened to mention a media path. */
-export function maskFreeText(s, pseudo = null) {
+// A free-form string that IS one media path, whole — spaces included (`IFOA Presentation.pdf`
+// is a legitimate delivered name, and the embedded rule above stops at the first blank).
+const WHOLE_MEDIA_PATH =
+  /^(MEDIA:)?(\/home\/node\/\.openclaw\/media\/(?:outbound|tool-image-generation|tool-music-generation|tool-video-generation)\/[^\n"]+)$/;
+
+export function maskFreeText(s, pseudo = null, opts = {}) {
+  // The WHOLE string is one media path: the same pseudonym a structured `mediaUrls` value
+  // gets, so one file keeps one name across its carriers (codex, 9.6 pass 3 — a spaced
+  // name was cut at its first blank and masked, and the replay read two files).
+  if (opts.mediaPseudonym === true && pseudo !== null) {
+    const whole = WHOLE_MEDIA_PATH.exec(s);
+    if (whole !== null) return (whole[1] ?? "") + pseudo.identifier(whole[2]);
+  }
   const spans = [];
   for (const re of [EMBEDDED_MEDIA_ROOT, EMBEDDED_SESSION_KEY]) {
     re.lastIndex = 0;
@@ -519,8 +531,24 @@ export function maskFreeText(s, pseudo = null) {
       // person or a case would have reached the corpus intact (codex P1). The root is what
       // the reading stack scans for; nothing below it is structure worth keeping.
       const m = /^(MEDIA:)?(.*?\/media\/[^/]+\/)/.exec(span.text);
-      const cut = m === null ? span.text.lastIndexOf("/") + 1 : m[0].length;
-      out += span.text.slice(0, cut) + maskText(span.text.slice(cut));
+      if (
+        opts.mediaPseudonym === true &&
+        pseudo !== null &&
+        span.start === 0 &&
+        span.end === s.length
+      ) {
+        // A free-form string that IS the path, whole (a JSON `"path"` value): it gets the
+        // SAME pseudonym a structured `mediaUrls` field gets, so one file stays ONE file
+        // across its carriers. 2026.9.6 reports an exec-written file in the tool result's
+        // JSON (`value.path`) as well as in `mediaUrls`; masked here and pseudonymised
+        // there, the replay read two files where the capture had one. A path MENTIONED
+        // inside a longer text keeps the length-preserving mask below.
+        const directive = span.text.startsWith("MEDIA:") ? "MEDIA:" : "";
+        out += directive + pseudo.identifier(span.text.slice(directive.length));
+      } else {
+        const cut = m === null ? span.text.lastIndexOf("/") + 1 : m[0].length;
+        out += span.text.slice(0, cut) + maskText(span.text.slice(cut));
+      }
     } else {
       out += pseudo === null ? maskText(span.text) : pseudo.identifier(span.text);
     }
@@ -1315,7 +1343,10 @@ export function anonymizeFrame(
         return node;
       }
       stats.masked += 1;
-      return maskFreeText(node, pseudo);
+      // A free-form string is never a streamed delta (those are classified text, masked
+      // below): an outbound path in it is pseudonymised like a structured one, so one
+      // file keeps one name across its carriers (see maskFreeText).
+      return maskFreeText(node, pseudo, { mediaPseudonym: true });
     }
     // `toolName` names a tool too, and it is a PROTOCOL field, so it was kept verbatim —
     // publishing a custom plugin name the `data.name` path had carefully renamed (raised

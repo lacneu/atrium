@@ -115,6 +115,13 @@ const UNCOVERED_SNAPSHOT = [
   // (server-methods/sessions.ts) and no `SessionsGetParamsSchema` exists. Uncovered by
   // CONSTRUCTION, not by omission — the same category as `usage.status` and `tts.*`.
   "sessions.get",
+  // `sessions.compaction.list` joined it on 2026-09-25 for the OPPOSITE reason: 2026.9.6
+  // RETIRED the method with the compaction checkpoints (upstream #154131), so the
+  // promised contract has no schema for it. The bridge still calls it — on gateways
+  // BELOW that version only, and refuses the read by name from it on
+  // (COMPACTION_CHECKPOINTS_RETIRED_IN, fetchCompactionHistory). Leaves with the last
+  // supported version that had it.
+  "sessions.compaction.list",
   // `usage.status` is `async ({ respond }) => …` upstream: it takes NO parameters, so
   // there is no params schema to vendor and none to classify. Listed anyway — a method
   // the ratchet cannot see is a method nobody re-examines at the next version bump.
@@ -421,7 +428,6 @@ describe("RPC scope derivation (W10)", () => {
   // Asked once per send that names somebody, to map Atrium's canonicals to the
   // gateway's own profile ids. Read-scoped, and only in trusted-proxy mode.
   "users.mentionable",
-      "sessions.compaction.list",
       // The cron/tasks families, added 2026-07-27. This list is the DIRECT,
       // non-derived claim, so every newly covered method must join it — omitting them
       // (as the first edit silently did) leaves their schemas free to vanish while the
