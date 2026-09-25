@@ -37,6 +37,12 @@ import {
 } from "./lib/foreignRunRefusals";
 import { usablePlanStamp } from "./lib/planOrder";
 import {
+  AGENT_REQUEST_SOURCES,
+  type AgentRequestSource,
+} from "./lib/agentRequests";
+
+const AGENT_REQUEST_SOURCE_SET: ReadonlySet<string> = new Set(AGENT_REQUEST_SOURCES);
+import {
   rehydrateTraceMeta,
   shouldReportRehydrateMissed,
 } from "./lib/rehydrateTrace";
@@ -59,6 +65,13 @@ const TIMEOUT_PHASES = new Set(["provider", "queue", "gateway_draining"]);
 function bucketTimeoutPhase(phase: string): string {
   return TIMEOUT_PHASES.has(phase) ? phase : "other";
 }
+
+/** A settle's observed answers past this many entries are not read (a sanity bound far
+ *  above any real request — MAX_QUESTIONS is 5), and are reported unreadable, never cut. */
+const SETTLE_ANSWERS_MAX = 64;
+/** A settle's question shape (`questionShape`) past this is not one the bridge sends —
+ *  dropped, and the settle falls back to the creation time alone. */
+const SETTLE_SHAPE_MAX = 200_000;
 
 export const storageMeta = internalQuery({
   args: { storageId: v.id("_storage") },
@@ -576,6 +589,42 @@ type IngestOp =
       status: "done" | "error";
       replyText?: string;
       errorMessage?: string;
+    }
+  // An agent ASKS the person something (question / approval / credential) — see
+  // convex/agentRequests.ts. The presentation is bounded again inside the mutation.
+  | {
+      op: "upsertAgentRequest";
+      chatId: string;
+      messageId?: string;
+      agentId?: string;
+      source: string;
+      providerRequestId: string;
+      approvalKind?: string;
+      sessionKey?: string;
+      runId?: string;
+      seq?: number;
+      providerCreatedAt?: number;
+      supersedesBeforeSeq?: number;
+      answerById?: boolean;
+      providerSeenSeq?: number;
+      providerSeenEpoch?: string;
+      expiresAt?: number;
+      questions?: unknown;
+      approval?: unknown;
+      credential?: unknown;
+    }
+  // The provider settled one: answered (here or elsewhere), expired, cancelled.
+  | {
+      op: "settleAgentRequest";
+      chatId: string;
+      providerRequestId: string;
+      providerCreatedAt?: number;
+      family?: string;
+      questionShape?: string;
+      providerSeenSeq?: number;
+      status: string;
+      answers?: Array<{ id: string; values: string[] }>;
+      decision?: string;
     };
 
 /** The target id(s) an op writes against — what ingest authorization resolves to
@@ -1521,6 +1570,118 @@ export const ingest = httpAction(async (ctx, request) => {
         },
       });
       return json({ ok: true });
+    }
+    case "upsertAgentRequest": {
+      const source = AGENT_REQUEST_SOURCE_SET.has(body.source)
+        ? (body.source as AgentRequestSource)
+        : null;
+      if (source === null || typeof body.providerRequestId !== "string") {
+        return json({ ok: false, error: "invalid agent request" }, 400);
+      }
+      const approvalKind =
+        body.approvalKind === "exec" ||
+        body.approvalKind === "plugin" ||
+        body.approvalKind === "system-agent"
+          ? body.approvalKind
+          : undefined;
+      const res = await ctx.runMutation(internal.agentRequests.upsertFromBridge, {
+        chatId: body.chatId as Id<"chats">,
+        boundInstanceName,
+        ...(typeof body.messageId === "string" ? { messageId: body.messageId } : {}),
+        ...(typeof body.agentId === "string" ? { agentId: body.agentId } : {}),
+        source,
+        providerRequestId: body.providerRequestId,
+        ...(approvalKind !== undefined ? { approvalKind } : {}),
+        ...(typeof body.sessionKey === "string" ? { sessionKey: body.sessionKey } : {}),
+        ...(typeof body.runId === "string" ? { runId: body.runId } : {}),
+        ...(typeof body.seq === "number" ? { seq: body.seq } : {}),
+        ...(typeof body.providerCreatedAt === "number"
+          ? { providerCreatedAt: body.providerCreatedAt }
+          : {}),
+        ...(typeof body.supersedesBeforeSeq === "number"
+          ? { supersedesBeforeSeq: body.supersedesBeforeSeq }
+          : {}),
+        ...(body.answerById === true ? { answerById: true } : {}),
+        ...(typeof body.providerSeenSeq === "number" ? { providerSeenSeq: body.providerSeenSeq } : {}),
+        ...(typeof body.providerSeenEpoch === "string" ? { providerSeenEpoch: body.providerSeenEpoch } : {}),
+        ...(typeof body.expiresAt === "number" ? { expiresAt: body.expiresAt } : {}),
+        questions: body.questions,
+        approval: body.approval,
+        credential: body.credential,
+      });
+      await traceIngest(ctx, {
+        kind: "openclaw.ingest",
+        chatId: body.chatId,
+        correlationId: body.chatId,
+        // Structural only — never the question, the command or the prompt.
+        meta: { op: body.op, source, created: res.created, ok: res.id !== null },
+      });
+      return json({ ok: true, id: res.id, created: res.created });
+    }
+    case "settleAgentRequest": {
+      const status =
+        body.status === "answered" ||
+        body.status === "allowed" ||
+        body.status === "denied" ||
+        body.status === "expired" ||
+        body.status === "cancelled"
+          ? body.status
+          : null;
+      if (status === null || typeof body.providerRequestId !== "string") {
+        return json({ ok: false, error: "invalid agent request settle" }, 400);
+      }
+      const decision =
+        body.decision === "allow-once" ||
+        body.decision === "allow-session" ||
+        body.decision === "allow-always" ||
+        body.decision === "deny"
+          ? body.decision
+          : undefined;
+      // The provider's verdict, WHOLE or not at all: a filtered or cut copy is a different
+      // answer, and could match ours by its remainder (codex P2). Unreadable → said so.
+      const wellFormed = (a: unknown): a is { id: string; values: string[] } =>
+        typeof a === "object" &&
+        a !== null &&
+        typeof (a as { id?: unknown }).id === "string" &&
+        Array.isArray((a as { values?: unknown }).values) &&
+        ((a as { values: unknown[] }).values).every((x) => typeof x === "string");
+      // Absent is readable (no verdict carried); anything else must be the list, whole —
+      // `answers: {}` is a verdict we cannot read, never an absence (codex P2, 0.21.5 pass 22).
+      const answersReadable =
+        body.answers === undefined ||
+        (Array.isArray(body.answers) &&
+          body.answers.length <= SETTLE_ANSWERS_MAX &&
+          body.answers.every(wellFormed));
+      const answers =
+        Array.isArray(body.answers) && answersReadable
+          ? (body.answers as Array<{ id: string; values: string[] }>)
+          : undefined;
+      const res = await ctx.runMutation(internal.agentRequests.settleFromBridge, {
+        chatId: body.chatId as Id<"chats">,
+        boundInstanceName,
+        providerRequestId: body.providerRequestId,
+        ...(typeof body.providerCreatedAt === "number"
+          ? { providerCreatedAt: body.providerCreatedAt }
+          : {}),
+        ...(body.family === "question" || body.family === "approval" ? { family: body.family } : {}),
+        ...(typeof body.questionShape === "string" && body.questionShape.length <= SETTLE_SHAPE_MAX
+          ? { questionShape: body.questionShape }
+          : {}),
+        ...(typeof body.providerSeenSeq === "number" && Number.isFinite(body.providerSeenSeq)
+          ? { providerSeenSeq: body.providerSeenSeq }
+          : {}),
+        status,
+        ...(answers !== undefined ? { answers } : {}),
+        ...(answersReadable ? {} : { answersUnreadable: true }),
+        ...(decision !== undefined ? { decision } : {}),
+      });
+      await traceIngest(ctx, {
+        kind: "openclaw.ingest",
+        chatId: body.chatId,
+        correlationId: body.chatId,
+        meta: { op: body.op, status, settled: res.settled },
+      });
+      return json({ ok: true, settled: res.settled });
     }
     default:
       return json({ ok: false, error: "unknown op" }, 400);

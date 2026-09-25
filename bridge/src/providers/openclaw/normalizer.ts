@@ -205,6 +205,17 @@ const LIFECYCLE_FINISHING_GRACE = 60.0;
 // `stream_orphaned` before this could close it with the cause it exists to name
 // (codex P2). Ten minutes leaves the watchdog its margin.
 export const APPROVAL_WAIT = 600.0;
+/** A question the agent put to a HUMAN (OpenClaw `ask_user`) holds the turn until the
+ *  gateway's own deadline — 15 min by default (`src/infra/embedded-question-broker.ts:115`
+ *  at v2026.9.5), which is LONGER than our 240 s silence budget and the 12 min Convex
+ *  stuck-stream watchdog. The wait is bounded by that deadline plus a margin, capped so
+ *  a deadline we cannot read never becomes an unbounded hold. */
+export const QUESTION_WAIT_DEFAULT = 15 * 60.0;
+export const QUESTION_WAIT_MAX = 60 * 60.0;
+export const QUESTION_WAIT_MARGIN = 30.0;
+/** While a human is asked, the phase is re-published this often: a phase write is the
+ *  streaming row's heartbeat, and nothing else moves during the wait. */
+export const HUMAN_WAIT_BEAT = 60.0;
 // The turn ended while still waiting for an approval Atrium has no way to grant.
 // A NAMED terminal, so the per-cause anomaly chain reports it instead of the turn
 // reading as an unexplained timeout. See the `gap` entry in
@@ -844,6 +855,11 @@ export class Normalizer {
    *  back to a count, because a generation that names nothing must not silently
    *  become "nothing is pending". */
   private readonly approvalAliases = new Map<string, string>();
+  /** Questions this turn's run put to a human (OpenClaw `ask_user`), by question id.
+   *  Fed from OUTSIDE the frame stream (`question.requested` is a broadcast, not an
+   *  agent frame — see RunManager.noteHumanQuestion). A holder like an approval: while
+   *  one is pending no grace may close the turn and the silence clock is suspended. */
+  private readonly pendingQuestionIds = new Set<string>();
   /** How many approvals this TURN has requested, resolved ones included. Content can
    *  stand in for a resolution only on a turn that asked exactly once: after a second
    *  request, text is far more likely to be the first command's output than an answer
@@ -985,6 +1001,7 @@ export class Normalizer {
     this.inRetryingPhase = false;
     this.finishingSuspended = false;
     this.clearApprovals();
+    this.pendingQuestionIds.clear();
     // Per TURN, not per release: `clearApprovals` also runs when the turn ends and
     // when content answers one, and zeroing the count there would let the NEXT
     // request on the same turn look like the turn's first.
@@ -1158,6 +1175,34 @@ export class Normalizer {
       return [];
     }
     const events: BridgeEvent[] = [];
+    if (expired.has("human_beat")) {
+      // The heartbeat of a turn a human is holding: nothing else moves while someone
+      // decides, and the Convex watchdog would otherwise orphan it at 12 min — before
+      // a 15 min question has even expired.
+      this.clearWait("human_beat");
+      if (this.humanWaitPending()) {
+        this.arm("human_beat", now + HUMAN_WAIT_BEAT);
+        events.push({
+          type: EVENT_TURN_PHASE,
+          phase: this.approvalPending() ? "awaiting_approval" : "awaiting_input",
+        });
+      }
+      if (expired.size === 1) return events;
+    }
+    if (expired.has("question_wait")) {
+      // The gateway's own deadline passed with no answer. It unblocks `ask_user` with
+      // "no answer — proceed with best judgment" and the agent carries on: this is not
+      // a verdict on the turn, so the ORDINARY budget restarts rather than a close.
+      this.clearWait("question_wait");
+      this.pendingQuestionIds.clear();
+      if (!this.approvalPending()) {
+        this.clearWait("human_beat");
+        this.armRecv(now);
+        this.rearmFinishingIfReleased(now);
+        events.push({ type: EVENT_TURN_PHASE, phase: "generating" });
+      }
+      return events;
+    }
     if (expired.has("history_recovery")) {
       // The window the finishing grace opened for the transcript fetch. It is its own
       // deadline, not a borrowed `private_ack`, for one reason: resumed work must be
@@ -1176,7 +1221,7 @@ export class Normalizer {
         const run = this.pendingFinal;
         this.pendingFinal = null;
         events.push(...run(now));
-      } else if (this.approvalPending() || this.compactionPending) {
+      } else if (this.humanWaitPending() || this.compactionPending) {
         // Held by someone with a stronger claim; THEIR bound (900 s approval_wait,
         // the compaction path) ends the turn, with a named cause.
       } else {
@@ -1198,7 +1243,7 @@ export class Normalizer {
       if (!this.text && this.pendingAckText) {
         this.text = this.pendingAckText;
       }
-      if (this.approvalPending() || this.compactionPending) {
+      if (this.humanWaitPending() || this.compactionPending) {
         // …unless someone with a stronger claim owns this turn's end. A five-second
         // grace armed by an ack has no business closing a turn whose next command a
         // human is still being asked to authorise, or whose context is being
@@ -1264,7 +1309,7 @@ export class Normalizer {
       // truncated text we do have — never hold the turn open for a reply that
       // already arrived, only shortened.
       this.clearWait("truncated_final");
-      if (this.approvalPending() || this.compactionPending) {
+      if (this.humanWaitPending() || this.compactionPending) {
         // Same rule: a holder owns the end (see the ack branch above).
       } else {
         this.finalizeOrHold(now, "truncated_final_grace", events);
@@ -1299,7 +1344,7 @@ export class Normalizer {
         // deadline + the Convex watchdog bound a genuine hang.
         this.clearWait("recv");
         this.recvSilence = true;
-      } else if (this.approvalPending() || this.compactionPending) {
+      } else if (this.humanWaitPending() || this.compactionPending) {
         // A holder owns this turn's end (see the ack branch above): a grace must not
         // close it while a human is being asked to authorise a command or the
         // context is being summarised. THEIR bounds end it, with a named cause.
@@ -2117,40 +2162,11 @@ export class Normalizer {
         // THIS request, not every request. A second command can be waiting on its
         // own authorisation, and releasing it here would re-arm the finishing promise
         // and close the turn while a human still had a decision to make.
-        const record = [data.toolCallId, data.approvalId]
-          .filter(isString)
-          .map((alias) => this.approvalAliases.get(alias))
-          .find((found) => found !== undefined);
-        if (record !== undefined) {
-          this.pendingApprovalIds.delete(record);
-          for (const [alias, target] of this.approvalAliases) {
-            if (target === record) this.approvalAliases.delete(alias);
-          }
-        } else if (
-          this.anonymousApprovals > 0 &&
-          !isString(data.toolCallId) &&
-          !isString(data.approvalId)
-        ) {
-          // An unnamed request answered by an unnamed resolution — the only pairing
-          // a count can justify. A NAMED resolution that matches no alias is a
-          // request whose `requested` we never saw; spending the anonymous token on
-          // it would release an approval a human is demonstrably still holding.
-          this.anonymousApprovals -= 1;
-        }
-        // A resolution that correlates with NOTHING releases nothing: it is either a
-        // request whose `requested` frame we never saw — in which case there is
-        // nothing of ours to release — or a stray, and treating it as "release
-        // everything" is how one answer used to close a turn over someone else's
-        // still-pending authorisation. The 900 s `approval_wait` remains the bound,
-        // and it ends with a NAMED cause rather than a silent success.
-        if (this.approvalPending()) return; // someone else is still waiting
-        this.clearWait("approval_wait");
-        this.armRecv(now);
-        // …and the finishing promise this approval suspended comes back with it: the
-        // gateway said it was finishing before it asked, so having been answered it
-        // owes a terminal. Only if no OTHER holder still has it.
-        this.rearmFinishingIfReleased(now);
-        events.push({ type: EVENT_TURN_PHASE, phase: "generating" });
+        this.releaseApproval(
+          [data.toolCallId, data.approvalId].filter(isString),
+          now,
+          events,
+        );
       }
       return;
     }
@@ -3002,7 +3018,7 @@ export class Normalizer {
    */
   private rearmFinishingIfReleased(now: number): void {
     if (!this.finishingSuspended) return;
-    if (this.approvalPending() || this.compactionPending) return;
+    if (this.humanWaitPending() || this.compactionPending) return;
     this.finishingSuspended = false;
     this.arm("lifecycle_finishing", now + LIFECYCLE_FINISHING_GRACE);
   }
@@ -3051,9 +3067,120 @@ export class Normalizer {
     return true;
   }
 
+  /**
+   * Release ONE approval named by any of its aliases (`toolCallId`, `approvalId`), and
+   * the turn with it once nobody else holds it. Shared by the gateway's own
+   * `approval:resolved` frame and by an answer given from Atrium — the latter because
+   * an exec approval's allow is carried by a follow-up run, not by a `resolved` frame
+   * on the run that asked, so without it the turn would sit until `approval_wait`.
+   */
+  private releaseApproval(aliases: string[], now: number, events: BridgeEvent[]): void {
+    const record = aliases
+      .map((alias) => this.approvalAliases.get(alias))
+      .find((found) => found !== undefined);
+    if (record !== undefined) {
+      this.pendingApprovalIds.delete(record);
+      for (const [alias, target] of this.approvalAliases) {
+        if (target === record) this.approvalAliases.delete(alias);
+      }
+    } else if (
+      this.anonymousApprovals > 0 &&
+      aliases.length === 0
+    ) {
+      // An unnamed request answered by an unnamed resolution — the only pairing
+      // a count can justify. A NAMED resolution that matches no alias is a
+      // request whose `requested` we never saw; spending the anonymous token on
+      // it would release an approval a human is demonstrably still holding.
+      this.anonymousApprovals -= 1;
+    }
+    // A resolution that correlates with NOTHING releases nothing: it is either a
+    // request whose `requested` frame we never saw — in which case there is
+    // nothing of ours to release — or a stray, and treating it as "release
+    // everything" is how one answer used to close a turn over someone else's
+    // still-pending authorisation. The 900 s `approval_wait` remains the bound,
+    // and it ends with a NAMED cause rather than a silent success.
+    if (this.approvalPending()) return; // someone else is still waiting
+    this.clearWait("approval_wait");
+    // The last approval is answered, but a QUESTION may still hold the turn: its
+    // own bound (question_wait) and label stay in charge.
+    if (this.humanWaitPending()) {
+      events.push({ type: EVENT_TURN_PHASE, phase: "awaiting_input" });
+      return;
+    }
+    this.armRecv(now);
+    // …and the finishing promise this approval suspended comes back with it: the
+    // gateway said it was finishing before it asked, so having been answered it
+    // owes a terminal. Only if no OTHER holder still has it.
+    this.rearmFinishingIfReleased(now);
+    events.push({ type: EVENT_TURN_PHASE, phase: "generating" });
+  }
+
+  /** An approval of this turn was settled OUTSIDE the frame stream (answered from
+   *  Atrium, or its resolved broadcast). No-op for an id this turn never asked. */
+  noteApprovalSettled(approvalId: string, now: number): BridgeEvent[] {
+    if (this.finalized || !this.approvalAliases.has(approvalId)) return [];
+    const events: BridgeEvent[] = [];
+    this.releaseApproval([approvalId], now, events);
+    return stampReceived(events, now);
+  }
+
   /** Is a human still being asked to authorise something? */
   private approvalPending(): boolean {
     return this.pendingApprovalCount() > 0;
+  }
+
+  /** Is a human being asked ANYTHING — to authorise a command, or to answer a
+   *  question? Every site that asks "may this turn be closed now?" asks this, not the
+   *  approval-only form: a question blocks the run exactly as an approval does. */
+  private humanWaitPending(): boolean {
+    return this.approvalPending() || this.pendingQuestionIds.size > 0;
+  }
+
+  /**
+   * A human is being asked a question by THIS turn's run.
+   *
+   * `expiresInSec` is the time left before the GATEWAY gives up on it (computed by the
+   * caller from the record's epoch deadline — this clock is not an epoch). Like an
+   * approval it suspends the silence clock and borrows the finishing promise; unlike
+   * an approval its expiry is NOT a verdict: at its deadline the gateway unblocks the
+   * tool with "no answer" and the agent carries on, so the turn goes back to its
+   * ordinary budget rather than ending.
+   */
+  noteQuestionRequested(id: string, expiresInSec: number | null, now: number): BridgeEvent[] {
+    if (this.finalized) return [];
+    const fresh = !this.pendingQuestionIds.has(id);
+    this.pendingQuestionIds.add(id);
+    this.clearWait("recv");
+    if (fresh) this.suspendFinishingGrace(now);
+    const wait =
+      expiresInSec !== null && Number.isFinite(expiresInSec) && expiresInSec > 0
+        ? Math.min(expiresInSec, QUESTION_WAIT_MAX)
+        : QUESTION_WAIT_DEFAULT;
+    const until = now + wait + QUESTION_WAIT_MARGIN;
+    const current = this.deadlines.get("question_wait");
+    // Several questions: the turn waits for the LAST deadline among them.
+    this.arm("question_wait", current !== undefined && current > until ? current : until);
+    this.arm("human_beat", now + HUMAN_WAIT_BEAT);
+    return stampReceived([{ type: EVENT_TURN_PHASE, phase: "awaiting_input" }], now);
+  }
+
+  /** The question was answered, cancelled or expired (the gateway's own verdict). */
+  noteQuestionSettled(id: string, now: number): BridgeEvent[] {
+    if (!this.pendingQuestionIds.delete(id)) return [];
+    if (this.finalized || this.pendingQuestionIds.size > 0) return [];
+    this.clearWait("question_wait");
+    if (!this.approvalPending()) this.clearWait("human_beat");
+    if (this.approvalPending()) {
+      return stampReceived([{ type: EVENT_TURN_PHASE, phase: "awaiting_approval" }], now);
+    }
+    this.armRecv(now);
+    this.rearmFinishingIfReleased(now);
+    return stampReceived([{ type: EVENT_TURN_PHASE, phase: "generating" }], now);
+  }
+
+  /** Is a question of this turn still waiting on a human? */
+  get questionPending(): boolean {
+    return this.pendingQuestionIds.size > 0;
   }
 
   /** HOW MANY — content can stand in for a resolution only when there is exactly
@@ -3096,7 +3223,7 @@ export class Normalizer {
     // command, the turn is legitimately labelled `awaiting_approval`, and a tool
     // starting must not erase that — least of all while `approvalPending` is still
     // true and nothing has released it.
-    if (this.approvalPending() || this.inRetryingPhase) return;
+    if (this.humanWaitPending() || this.inRetryingPhase) return;
     //
     // `finishing` publishes `post_processing`, and the only thing that took it back
     // to `generating` was a new lifecycle `start` — gated on the very deadline this
@@ -3150,13 +3277,13 @@ export class Normalizer {
       // `awaiting_approval` label with `post_processing`, so the turn settled as a
       // success one minute later while a human was still being asked. The promise is
       // RECORDED in both cases and re-armed when the holder releases.
-      if (this.compactionPending || this.approvalPending()) {
+      if (this.compactionPending || this.humanWaitPending()) {
         this.finishingSuspended = true;
       } else {
         this.arm("lifecycle_finishing", now + LIFECYCLE_FINISHING_GRACE);
       }
       // The label only moves when nothing with a stronger claim holds it.
-      if (!this.approvalPending()) {
+      if (!this.humanWaitPending()) {
         events.push({ type: EVENT_TURN_PHASE, phase: "post_processing" });
       }
       return;
@@ -3962,7 +4089,7 @@ export class Normalizer {
     if (this.finalized) {
       return;
     }
-    if (this.approvalPending()) {
+    if (this.humanWaitPending()) {
       // A tool is waiting on a HUMAN (G-21). Keep-alive traffic — heartbeats,
       // health frames — would otherwise re-arm the 240 s silence budget, which
       // then fires long before the approval wait and closes the turn as a

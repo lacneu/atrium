@@ -50,8 +50,10 @@ const PHASE_LABEL: Record<string, () => string> = {
   // The gateway finished producing and is closing the turn out (deferred
   // terminal): the reader sees progress instead of an unexplained silence.
   post_processing: m.runstatus_phase_post_processing,
-  // A tool is waiting on a human approval this app cannot grant (G-21).
+  // A tool is waiting on the person's approval (G-21) — answerable in the card.
   awaiting_approval: m.runstatus_phase_awaiting_approval,
+  // The agent asked the person a question or for a credential, and waits.
+  awaiting_input: m.runstatus_phase_awaiting_input,
   // The provider is rate-limiting and the gateway is backing off. The counter
   // is supplied separately (see `phaseRetry`): this entry is the fallback for a
   // back-off frame that arrived without one, which the wire allows.

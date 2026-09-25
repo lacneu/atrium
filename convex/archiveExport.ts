@@ -29,6 +29,7 @@ import {
   MESSAGE_FIELDS_DROPPED,
   OPAQUE_PART_KEYS,
   SUBAGENT_FIELDS_DROPPED,
+  AGENT_REQUEST_FIELDS_DROPPED,
   NOT_EXPORTED,
   stripChatForExport,
   stripRowForExport,
@@ -498,6 +499,20 @@ export const exportChatSection = query({
         rows,
         blobs,
         cursor: encodePartsCursor({ at: messageAt, childAt }),
+      };
+    }
+
+    if (section === "agentRequests") {
+      const result = await ctx.db
+        .query("agentRequests")
+        .withIndex("by_chat_and_created", (q) => q.eq("chatId", chatId))
+        .paginate(page);
+      return {
+        rows: result.page.map((row) =>
+          stripRowForExport(row, { drop: AGENT_REQUEST_FIELDS_DROPPED }),
+        ),
+        blobs: [],
+        cursor: result.isDone ? null : result.continueCursor,
       };
     }
 

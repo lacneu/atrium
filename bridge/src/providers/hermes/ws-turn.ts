@@ -17,6 +17,7 @@
 //                       status}           → the turn's terminal
 //   abort: session.interrupt {session_id}
 
+import { randomUUID } from "node:crypto";
 import { TurnSink } from "../../core/turn-sink.js";
 import {
   assertBeforeSendDeadline,
@@ -42,10 +43,19 @@ import type {
   SessionMetaReport,
   SubAgentRecord,
 } from "../../convex-writer.js";
+import { HERMES_SERVER_REQUEST_EVENT, refuseOpenRequests } from "./ws-client.js";
 import type { HermesWsClient } from "./ws-client.js";
 import type { SyntheticOrigin } from "./ws-client.js";
 import type { HermesFilesFetcher } from "./files-fetcher.js";
 import { protocolDrift } from "../openclaw/protocol-drift.js";
+import {
+  hermesRequestId,
+  readHermesApproval,
+  readHermesClarify,
+  hermesClarifyMultiIds,
+  readHermesCredential,
+  type AgentRequestRecord,
+} from "../../core/agent-requests.js";
 import { isHermesVersionScheme } from "../../compat.js";
 
 /**
@@ -169,7 +179,35 @@ export interface HermesWsTurnRun {
    *  write the aborted terminal pair FIRST — dispatchReset does NOT finalize
    *  optimistically, so the bridge must, or the row stays streaming. */
   forceSettle(writeAborted?: boolean): void;
+  /** The approval Hermes would decide NOW with `approval.respond` — the head of this
+   *  session's queue as the turn has seen it. `null` = nothing Atrium may answer: no
+   *  approval open, or the head is one it could not show. The answer route sends a
+   *  decision only for this id (Hermes answers by session, not by id). */
+  approvalHead(): string | null;
+  /** Why no head is named while approvals wait: a failed call left the order unknown,
+   *  or several wait at once (see `approvalHead`). */
+  approvalAmbiguity(): "order_unknown" | "several" | null;
+  /** Hermes accepted a decision for `id`: it has left the queue's head. */
+  noteApprovalAnswered(id: string): void;
+  /** A decision's fate is unknown: no head until the agent moves again. */
+  noteApprovalOrderUnknown(): void;
+  /** Hermes took Atrium's answer to server→client request `id` (`request.answer` →
+   *  `ok`): it no longer holds the turn. */
+  noteServerRequestAnswered(id: string): void;
+  /** Server→client request `id` as THIS turn holds it, or null when it holds no such
+   *  request — none was raised here, or it was answered, withdrawn or dropped since. */
+  heldServerRequest(id: string): HermesHeldServerRequest | null;
+  /** Whether THIS turn raised request `id` (any form) and it is still unsettled. */
+  holdsRequest(id: string): boolean;
 }
+
+/** What a held server→client request needs to be answered as Hermes reads it. */
+export interface HermesHeldServerRequest {
+  /** Clarify question ids Hermes parses as multi-select (`answer` for a single one). */
+  multiSelect: ReadonlySet<string>;
+}
+
+const NOT_A_CLARIFY: HermesHeldServerRequest = { multiSelect: new Set() };
 
 /** What a turn hands the registry when it subscribes to its session's lane.
  *
@@ -188,6 +226,9 @@ export interface HermesWsSessionHandlers {
   ) => void;
   /** THIS instance's socket died while the turn was waiting. */
   onTransportLost: (reason: string) => void;
+  /** Is this monitoring event (`subagent.*`, `moa.*`) about work THIS turn started?
+   *  How a lane routes a late child to its own parent (dispatch.ts routeLaneEvent). */
+  ownsMonitoring?: (type: string, payload: Record<string, unknown>) => boolean;
 }
 
 /**
@@ -214,7 +255,9 @@ export interface HermesWsSessionHandlers {
  * family — written here because the asymmetry is upstream's, not a slip.
  */
 const HERMES_PROMPT_RESPONDERS: Record<string, { method: string; key: string }> = {
-  "clarify.request": { method: "clarify.respond", key: "answer" },
+  // The only prompt still answered by the bridge itself: a desktop-GUI buffer read,
+  // which no person can answer. Clarifications, approvals and credentials are now
+  // AGENT REQUESTS the person answers (convex/agentRequests.ts).
   "terminal.read.request": { method: "terminal.read.respond", key: "text" },
 };
 
@@ -229,11 +272,61 @@ const HERMES_PROMPT_RESPONDERS: Record<string, { method: string; key: string }> 
  *  review). The same applies whenever we could not answer at all: upstream WILL unblock
  *  at its timeout and the agent carries on, so ending the turn first would be wrong. */
 const HERMES_PROMPT_TIMEOUT_MS: Record<string, number> = {
+  // NOT the approval prompt: its timeout is the operator's (`approvals.timeout`,
+  // tools/approval.py `_get_approval_timeout`, 60 s only by default) and travels in no
+  // payload — see HERMES_APPROVAL_HOLD_CEILING_MS.
   "clarify.request": 300_000,
   "secret.request": 300_000,
   "sudo.request": 120_000,
   "terminal.read.request": 30_000,
 };
+
+/**
+ * An APPROVAL holds the turn until the agent MOVES AGAIN, not for a guessed time.
+ *
+ * Hermes blocks the agent's thread on the approval until an answer or its own timeout —
+ * a setting (`approvals.timeout`) Atrium cannot read from any payload — and says nothing
+ * when it gives up or when the approval is answered elsewhere. What it does say is the
+ * agent's next step: an approval-gated tool (terminal, execute_code) is a SEQUENTIAL
+ * barrier in Hermes' batch planner (run_agent.py `_execute_tool_calls`), so the next
+ * `tool.complete` or message on this turn means the approvals it waited on are over.
+ * The ceiling (a day, the longest a request lives in Convex) only bounds a Hermes that
+ * went silent for good while its socket stayed up; `approvals.timeout` itself has no
+ * upper bound upstream (tools/approval.py `_get_approval_timeout`).
+ *
+ * ALL of them, not the oldest: several approvals wait at once only inside ONE
+ * execute_code call (its RPC handler threads — tools/approval.py, the queue's own
+ * comment), and that call's `tool.complete` is emitted once, for the whole call, after
+ * its function returned (agent/tool_executor.py, `tool_complete_callback`) — i.e.
+ * after every one of them is over. Sub-agents never reach this queue (delegate_tool.py
+ * `_get_subagent_approval_callback`: auto-approve or auto-deny) and their mirrored
+ * tool events are emitted on the CHILD's session, not this one (tui_gateway/server.py,
+ * `subagent.tool`).
+ */
+const HERMES_APPROVAL_HOLD_CEILING_MS = 24 * 60 * 60_000;
+/**
+ * The order of Hermes approvals, across EVERY turn of this process: strictly
+ * increasing, never below the wall clock (×1000). Per turn, it restarted — two turns
+ * under a clock that stood still or stepped back ordered (and named) their approvals
+ * alike, so a new request replayed onto an old card (codex P1).
+ */
+let lastHermesApprovalSeq = 0;
+function nextHermesApprovalSeq(): number {
+  lastHermesApprovalSeq = Math.max(lastHermesApprovalSeq + 1, Date.now() * 1000);
+  return lastHermesApprovalSeq;
+}
+/** Wait before re-trying a request's creation or close that failed past the writer's retries. */
+const HERMES_WRITE_RETRY_LATER_MS = 5_000;
+/** A human is being asked: the bubble's liveness is refreshed on this cadence, or the
+ *  Convex stuck-stream watchdog (12 min) would end a turn that is only waiting. */
+const HUMAN_WAIT_BEAT_MS = 60_000;
+/** The events that prove a blocked agent resumed (see above). */
+const HERMES_APPROVAL_RESUME_EVENTS = new Set([
+  "tool.complete",
+  "message.delta",
+  "message.interim",
+  "message.complete",
+]);
 
 /** Margin over the gateway's own timeout, so the deadline never fires in the same
  *  instant the gateway is giving up — we want its `*.expire`, not our guess. */
@@ -270,12 +363,87 @@ export function runHermesWsTurn(
   registerSession: (
     runtimeSessionId: string,
     handlers: HermesWsSessionHandlers,
-  ) => () => void,
+  ) => (() => void) & { linger?: () => void },
 ): HermesWsTurnRun {
   // The /send handler's OWN entry when given (time lost before this turn started
   // counts too — codex P1); this turn's start otherwise.
   const turnStartedMs = opts.sendReceivedMs ?? Date.now();
   let runtimeSid: string | null = null;
+  /** Agent requests this turn raised and nobody has settled yet (by provider id). */
+  const openRequests = new Set<string>();
+  /** Server→client requests (Hermes 0.21.3+) this turn still waits on, by `srq-…` id. Each
+   *  holds the turn — the agent is blocked on a person — until Hermes withdraws it
+   *  (`request.cancel`), Atrium's answer is taken, or the turn ends. Each keeps what
+   *  answering it needs: the clarify questions Hermes reads as MULTI-select. */
+  const serverRequestsOpen = new Map<string, HermesHeldServerRequest>();
+  let releaseServerRequestRef: (id: string) => void = () => {};
+  /** Whether the turn has finalized (its inner flag, read from outside). */
+  let finalizedRef: () => boolean = () => false;
+  /** Approvals the agent is BLOCKED on, oldest first (shown or not): Hermes resolves
+   *  them by session FIFO, so the queue is ours to keep in step with its own. An entry
+   *  Hermes already took a decision for stays until the agent resumes (it still holds
+   *  the turn) but is no longer the head. */
+  const blockedApprovals: Array<{ id: string | null; answered: boolean }> = [];
+  /** A decision's fate is unknown (see `HermesApprovalQueue.uncertain`): no head is
+   *  named until the agent moves again. */
+  let approvalOrderUnknown = false;
+  /**
+   * The ONE approval a decision may be sent for — or null.
+   *
+   * Only when exactly one waits: `approval.respond` decides the head of Hermes' queue,
+   * addressed by session, and another client (Hermes' own dashboard or TUI) can take an
+   * approval off that queue WITHOUT any event reaching us (tools/approval.py
+   * `resolve_gateway_approval`). With two or more waiting, our copy of the order can
+   * be wrong and a click would decide another command (codex P1). With one, a queue
+   * emptied elsewhere answers `resolved: 0` and the card closes. Several at once only
+   * happen inside one execute_code call; those are answered in Hermes.
+   */
+  const approvalHead = (): string | null => {
+    if (approvalOrderUnknown) return null;
+    const waiting = blockedApprovals.filter((a) => !a.answered);
+    return waiting.length === 1 ? waiting[0]!.id : null;
+  };
+  /** Why no head is named while approvals wait (null = a head exists, or none waits). */
+  const approvalAmbiguity = (): "order_unknown" | "several" | null => {
+    if (blockedApprovals.every((a) => a.answered)) return null;
+    if (approvalOrderUnknown) return "order_unknown";
+    return blockedApprovals.filter((a) => !a.answered).length > 1 ? "several" : null;
+  };
+  /** Each request's first write, so its settle is never posted before it: an unordered
+   *  settle finds no row, and the late insert then stands `pending` for an approval
+   *  Hermes has already moved past (codex P1). */
+  const writes = new Map<string, Promise<unknown>>();
+  const settleRequest = (
+    providerRequestId: string,
+    status: "expired" | "cancelled",
+  ): void => {
+    if (!openRequests.delete(providerRequestId)) return;
+    const after = writes.get(providerRequestId) ?? Promise.resolve();
+    writes.delete(providerRequestId);
+    const attempt = () =>
+      Promise.resolve(
+        opts.writer.settleAgentRequest?.({ chatId: opts.chatId, providerRequestId, status }),
+      );
+    // A close lost past the writer's retries leaves the card open on a request Hermes
+    // has dropped: tried once more, later, like a creation (codex P2). What still gets
+    // lost is closed by the session's next approval (supersedesBeforeSeq).
+    void after
+      .catch(() => undefined)
+      .then(attempt)
+      .catch(async () => {
+        await new Promise((r) => {
+          const t = setTimeout(r, HERMES_WRITE_RETRY_LATER_MS);
+          (t as { unref?: () => void }).unref?.();
+        });
+        await attempt();
+      })
+      .catch((e) =>
+        console.error(
+          "[hermes-ws-turn] agent request settle failed:",
+          (e as Error)?.message ?? e,
+        ),
+      );
+  };
   /** The stored id this turn is bound to — what it resumed, or minted, or has since been
    *  told it ROTATED to. The comparison reference for a rotation, written explicitly
    *  rather than inferred: `session.info` also fires at turn start with the current
@@ -292,6 +460,29 @@ export function runHermesWsTurn(
    *  matched against the chat's slot. */
   let convexBoundSid: string | null = opts.providerChatId ?? null;
   let forceSettleRef: ((writeAborted?: boolean) => void) | null = null;
+  /** Set once the recv clock exists (it lives with the reader, below the events). */
+  let releaseApprovalsRef: () => void = () => {};
+  /** The bubble the human-wait beat keeps alive (set once the sink exists). */
+  let beatMessageIdRef: () => string | null = () => null;
+  let humanBeat: ReturnType<typeof setInterval> | null = null;
+  const stopHumanBeat = (): void => {
+    if (humanBeat !== null) clearInterval(humanBeat);
+    humanBeat = null;
+  };
+  /** While a person is being asked, refresh the bubble's liveness (see
+   *  HUMAN_WAIT_BEAT_MS). Stops by itself once nothing is open any more. */
+  const startHumanBeat = (): void => {
+    if (humanBeat !== null) return;
+    humanBeat = setInterval(() => {
+      if (openRequests.size === 0 && blockedApprovals.length === 0) {
+        stopHumanBeat();
+        return;
+      }
+      const mid = beatMessageIdRef();
+      if (mid) void opts.writer.heartbeat?.(mid);
+    }, HUMAN_WAIT_BEAT_MS);
+    (humanBeat as { unref?: () => void }).unref?.();
+  };
   let markUntrustedRef: (() => void) | null = null;
   let settledBindingsRef: (() => Promise<void>) | null = null;
   let resolveAccepted!: () => void;
@@ -393,6 +584,10 @@ export function runHermesWsTurn(
           session_id: opts.providerChatId,
         });
         noteCwd(r);
+        // Server→client requests still waiting on this session (Hermes 0.21.3+) belong to a
+        // run whose turn was lost; see `refuseOpenRequests` for why they are refused, not
+        // replayed (codex, 0.21.5 passes 1 and 6).
+        refuseOpenRequests(opts.client, r);
         runtimeSid = str(r.session_id) || null;
         storedSid = str(r.stored_session_id) || opts.providerChatId;
         boundStoredSid = storedSid;
@@ -440,6 +635,7 @@ export function runHermesWsTurn(
       opts.sessionKey,
       opts.onTurnError,
     );
+    beatMessageIdRef = () => sink.currentMessageId ?? null;
     const turnStartMs = Date.now();
     let lastThinkingBeatMs = 0;
     let moaAggregatorKey: string | null = null;
@@ -512,6 +708,7 @@ export function runHermesWsTurn(
     };
     let chain: Promise<void> = Promise.resolve();
     let finalized = false;
+    finalizedRef = () => finalized;
     let replyText = "";
     const apply = (events: BridgeEvent[]): void => {
       if (events.length === 0) return;
@@ -580,6 +777,51 @@ export function runHermesWsTurn(
         throw err;
       }
     };
+    /** Record what the agent asked as an AGENT REQUEST: the card the person answers.
+     *  Detached — a slow write must never stall the reader. */
+    const raiseRequest = (
+      record: Omit<AgentRequestRecord, "chatId" | "messageId">,
+    ): void => {
+      openRequests.add(record.providerRequestId);
+      const full = { chatId: opts.chatId, messageId: sink.currentMessageId ?? null, ...record };
+      // A write Convex REFUSED (`id: null`) is a write that failed: no card exists, and the
+      // failure path below must see it (codex P2).
+      const attempt = () =>
+        Promise.resolve(opts.writer.upsertAgentRequest?.(full)).then((r) => {
+          if (r && r.recorded === false) throw new Error("the agent request was not recorded");
+        });
+      // Hermes emits a prompt ONCE and has no list to replay it from: a creation that
+      // fails past the writer's own retries is tried once more, later, while the prompt
+      // still waits (codex P2). The settle waits for this whole chain.
+      const write = attempt()
+        .catch(async () => {
+          await new Promise((r) => {
+            const t = setTimeout(r, HERMES_WRITE_RETRY_LATER_MS);
+            (t as { unref?: () => void }).unref?.();
+          });
+          if (!openRequests.has(record.providerRequestId)) return;
+          await attempt();
+        })
+        .catch((e) => {
+          console.error(
+            "[hermes-ws-turn] agent request write failed:",
+            (e as Error)?.message ?? e,
+          );
+          // No card will ever show it. A server→client request is ADDRESSABLE: refuse it,
+          // so Hermes withdraws it instead of waiting — without limit when its clarify
+          // timeout is <= 0 (server.py `_clarify_timeout_seconds`) — and stop holding the
+          // turn for it.
+          if (record.answerById === true && openRequests.delete(record.providerRequestId)) {
+            releaseServerRequestRef(record.providerRequestId);
+            opts.client.rejectServerRequest?.(
+              record.providerRequestId,
+              "Atrium could not record this request",
+            );
+          }
+        });
+      writes.set(record.providerRequestId, write);
+      startHumanBeat();
+    };
     /** Show a blocking prompt in the thread, as a tool card. The user must SEE what the
      *  agent asked — a prompt answered (or left to expire) with nothing visible would
      *  look like the agent went quiet for no reason. */
@@ -643,6 +885,168 @@ export function runHermesWsTurn(
           holdForPrompt(type);
         });
     };
+    /**
+     * A SERVER→CLIENT request (Hermes 0.21.3+ — tui_gateway/server_requests.py): the
+     * question arrives as a JSON-RPC request addressed by its own `srq-…` id and is answered
+     * by that id (`request.answer`), so what the person answers is exactly what was asked —
+     * no queue, no order to infer. The card is ANSWERED BY ID (`answerById`); Hermes
+     * withdraws it with `request.cancel`, and it holds the turn until then.
+     */
+    const onServerRequest = (
+      id: string,
+      method: string,
+      params: Record<string, unknown>,
+    ): void => {
+      if (!id) return;
+      const refuse = (why: string): void => {
+        // Nothing Atrium can show: said at once (`-32601`), so Hermes withdraws the request
+        // (an approval as "withdrawn", never as a denial) instead of waiting out its deadline.
+        protocolDrift.observeException(
+          { type: method, payload: params },
+          new TypeError(`${method} server request: ${why}`),
+          "hermes-ws-event",
+        );
+        opts.client.rejectServerRequest?.(id, why);
+      };
+      const now = Date.now();
+      switch (method) {
+        case "terminal.read": {
+          // A desktop-GUI buffer read — not something a person answers. Answered empty, as
+          // the event form always was, and shown so the silence has a name.
+          surfacePrompt("hermes.terminal_read", params);
+          void opts.client
+            .call("request.answer", { id, result: { value: "" } })
+            .catch((e) =>
+              console.error(
+                "[hermes-ws-turn] terminal.read answer failed (best effort):",
+                (e as Error)?.message ?? e,
+              ),
+            );
+          return;
+        }
+        case "approval": {
+          const approval = readHermesApproval(params);
+          if (approval === null || runtimeSid === null) {
+            refuse("no command or description to show");
+            return;
+          }
+          raiseRequest({
+            source: "hermes.approval",
+            providerRequestId: id,
+            answerById: true,
+            sessionKey: runtimeSid,
+            seq: nextHermesApprovalSeq(),
+            ...(streamingAckSeq !== null ? { supersedesBeforeSeq: streamingAckSeq } : {}),
+            expiresAt: now + HERMES_APPROVAL_HOLD_CEILING_MS,
+            approval,
+          });
+          const mid = sink.currentMessageId;
+          if (mid) void opts.writer.setPhase?.(mid, "awaiting_approval");
+          holdServerRequest(id);
+          return;
+        }
+        case "clarify": {
+          const questions = readHermesClarify(params);
+          if (questions === null) {
+            refuse("no question to show");
+            return;
+          }
+          raiseRequest({
+            source: "hermes.clarify",
+            providerRequestId: id,
+            answerById: true,
+            ...(runtimeSid !== null ? { sessionKey: runtimeSid } : {}),
+            expiresAt: now + HERMES_APPROVAL_HOLD_CEILING_MS,
+            questions,
+          });
+          const mid = sink.currentMessageId;
+          if (mid) void opts.writer.setPhase?.(mid, "awaiting_input");
+          holdServerRequest(id, { multiSelect: hermesClarifyMultiIds(params) });
+          return;
+        }
+        case "sudo":
+        case "secret": {
+          raiseRequest({
+            source: method === "secret" ? "hermes.secret" : "hermes.sudo",
+            providerRequestId: id,
+            answerById: true,
+            ...(runtimeSid !== null ? { sessionKey: runtimeSid } : {}),
+            expiresAt: now + HERMES_APPROVAL_HOLD_CEILING_MS,
+            credential: readHermesCredential(
+              method === "secret" ? "secret.request" : "sudo.request",
+              params,
+            ),
+          });
+          const mid = sink.currentMessageId;
+          if (mid) void opts.writer.setPhase?.(mid, "awaiting_input");
+          holdServerRequest(id);
+          return;
+        }
+        default:
+          refuse("not a request Atrium answers");
+      }
+    };
+    /** A server→client request no card of this turn will show: refused `-32601`, so
+     *  Hermes withdraws it at once instead of holding the agent for its whole deadline
+     *  with no prompt anywhere (server_requests.py, #112548) — never swallowed after the
+     *  registry told the client it was taken. */
+    const refuseUnshown = (events: ReadonlyArray<readonly [string, Record<string, unknown>, unknown?]>): void => {
+      for (const [t, p] of events) {
+        if (t !== HERMES_SERVER_REQUEST_EVENT) continue;
+        const id = str(p.id);
+        if (id) opts.client.rejectServerRequest?.(id, "not a request this turn can show");
+      }
+    };
+    /**
+     * The agent moved: ask Hermes which of our open requests it still waits on. One
+     * answered by ANOTHER client (`request.answer`, a response frame) leaves with no
+     * `request.cancel` (server_requests.py `resolve_response`), so without asking, its card
+     * stayed actionable and the turn held for nothing. Movement alone decides nothing:
+     * tools run CONCURRENTLY (agent/tool_executor.py), so a neighbour's `tool.complete` says
+     * nothing about a question still waiting. `session.events.since` past the latest seq
+     * replays nothing and lists the requests still open (methods_session.py).
+     */
+    let reconcileInFlight = false;
+    let reconcileAgain = false;
+    const reconcileServerRequests = (): void => {
+      if (reconcileInFlight) {
+        reconcileAgain = true;
+        return;
+      }
+      if (runtimeSid === null) return;
+      reconcileInFlight = true;
+      // Only what was open when the probe LEFT: a request raised while it was on the wire
+      // is absent from its snapshot without being over (codex P2, 0.21.5 pass 22).
+      const probed = [...serverRequestsOpen.keys()];
+      void opts.client
+        .call("session.events.since", {
+          session_id: runtimeSid,
+          last_seen: Number.MAX_SAFE_INTEGER,
+        })
+        .then((r) => {
+          // No list, no verdict: an answer we cannot read closes nothing.
+          if (!Array.isArray(r.open_requests)) return;
+          const stillOpen = new Set(
+            r.open_requests
+              .map((q) => (typeof q === "object" && q !== null ? str((q as { id?: unknown }).id) : ""))
+              .filter((id) => id !== ""),
+          );
+          for (const id of probed) {
+            if (stillOpen.has(id) || !serverRequestsOpen.has(id)) continue;
+            releaseServerRequestRef(id);
+            settleRequest(id, "cancelled");
+          }
+        })
+        .catch(() => {
+          /* the probe failed: nothing learned, nothing closed */
+        })
+        .finally(() => {
+          reconcileInFlight = false;
+          const again = reconcileAgain;
+          reconcileAgain = false;
+          if (again && serverRequestsOpen.size > 0) reconcileServerRequests();
+        });
+    };
     const applyEvent = (
       type: string,
       payload: Record<string, unknown>,
@@ -651,6 +1055,12 @@ export function runHermesWsTurn(
        *  cannot be one it can forge. */
       synthetic?: SyntheticOrigin,
     ): void => {
+      // A question for a run that is not ours yet (QUEUED, before our `message.start`) or
+      // any more (finalized): nobody here will show it.
+      if (type === HERMES_SERVER_REQUEST_EVENT && (awaitingOurTurn || finalized)) {
+        refuseUnshown([[type, payload]]);
+        return;
+      }
       // The QUEUED gate. Everything before our run's `message.start` belongs to the turn
       // this prompt interrupted — its deltas, its tools, and above all its TERMINAL,
       // which used to close this bubble with someone else's reply.
@@ -672,6 +1082,12 @@ export function runHermesWsTurn(
       // agent restarted from the pre-compaction transcript. It carries session-scoped
       // facts, never turn content, so admitting it late changes nothing about the reply.
       if (finalized && !isMonitoring && type !== "session.info") return;
+      if (blockedApprovals.length > 0 && HERMES_APPROVAL_RESUME_EVENTS.has(type)) {
+        releaseApprovalsRef();
+      }
+      if (serverRequestsOpen.size > 0 && HERMES_APPROVAL_RESUME_EVENTS.has(type)) {
+        reconcileServerRequests();
+      }
       switch (type) {
         case "message.delta": {
           const text = str(payload.text);
@@ -721,57 +1137,140 @@ export function runHermesWsTurn(
           return;
         }
         case "approval.request": {
-          // It used to KILL the turn — and tell the user to go approve on the Hermes
-          // dashboard, which is advice to work around our own defect. Worse, it never
-          // answered the gateway: Hermes went on blocking, denied itself ~60 s later, and
-          // PERSISTED that turn, so the next one resumed from a context this thread does
-          // not contain. Answer now, keep the turn alive, and show what was asked.
-          //
-          // The answer is a DENY, which is the same verdict upstream reaches on expiry —
-          // reached immediately instead of after a minute of dead air. The agent is told,
-          // so it can adapt or explain, rather than being cut off mid-thought.
-          surfacePrompt("hermes.approval", payload);
-          void opts.client
-            .call("approval.respond", { session_id: runtimeSid, choice: "deny" })
-            .catch((e) =>
-              console.error(
-                "[hermes-ws-turn] approval.respond failed (best effort):",
-                (e as Error)?.message ?? e,
-              ),
-            );
+          // AN AGENT REQUEST the person answers — no longer a refusal Atrium invents
+          // on their behalf. Hermes addresses approvals by SESSION (oldest first), so
+          // the id is ours; `seq` keeps the order `approval.respond` resolves them in.
+          const approval = readHermesApproval(payload);
+          if (approval === null || runtimeSid === null) {
+            // Nothing we can show or address: Hermes denies on its own at its
+            // deadline, and the turn outlasts that deadline rather than dying first.
+            holdForApproval(null);
+            return;
+          }
+          const seq = nextHermesApprovalSeq();
+          // OURS, and unique: Hermes gives an approval no id, and one that could recur
+          // (clock + per-turn counter) would be recognised as an older card's replay —
+          // the old card then answering the new command (codex P1).
+          const providerRequestId = `hermes-approval:${runtimeSid}:${randomUUID()}`;
+          const nowMs = Date.now();
+          raiseRequest({
+            source: "hermes.approval",
+            providerRequestId,
+            sessionKey: runtimeSid,
+            seq,
+            ...(streamingAckSeq !== null ? { supersedesBeforeSeq: streamingAckSeq } : {}),
+            // No deadline of ours: the card closes when the agent moves again
+            // (HERMES_APPROVAL_HOLD_CEILING_MS), whatever the operator configured.
+            expiresAt: nowMs + HERMES_APPROVAL_HOLD_CEILING_MS,
+            approval,
+          });
+          const mid = sink.currentMessageId;
+          if (mid) void opts.writer.setPhase?.(mid, "awaiting_approval");
+          holdForApproval(providerRequestId);
           return;
         }
-        case "clarify.request":
+        case "clarify.request": {
+          // A QUESTION the person answers in the card — never answered by Atrium in
+          // their place (not even empty any more: an empty answer is what "skip" sends,
+          // and only the person chooses it).
+          const requestId = hermesRequestId(payload);
+          const questions = readHermesClarify(payload);
+          if (requestId === null || questions === null) {
+            protocolDrift.observeException(
+              { type, payload },
+              new TypeError(`${type} carried no request_id or question — cannot answer`),
+              "hermes-ws-event",
+            );
+            holdForPrompt(type);
+            return;
+          }
+          raiseRequest({
+            source: "hermes.clarify",
+            providerRequestId: requestId,
+            ...(runtimeSid !== null ? { sessionKey: runtimeSid } : {}),
+            expiresAt: Date.now() + (HERMES_PROMPT_TIMEOUT_MS[type] ?? 300_000),
+            questions,
+          });
+          const mid = sink.currentMessageId;
+          if (mid) void opts.writer.setPhase?.(mid, "awaiting_input");
+          holdForPrompt(type);
+          return;
+        }
         case "terminal.read.request": {
-          // Answered EMPTY, never composed. Writing something like "proceed with your
-          // best guess" would be Atrium answering the agent in the user's place. The
-          // question is surfaced instead, and the user replies on the next turn.
-          surfacePrompt(
-            type === "clarify.request" ? "hermes.clarify" : "hermes.terminal_read",
-            payload,
-          );
+          // A desktop-GUI buffer read — not something a person answers. Answered
+          // empty, as before, and shown so the silence has a name.
+          surfacePrompt("hermes.terminal_read", payload);
           respondToPrompt(type, payload);
           return;
         }
         case "secret.request":
         case "sudo.request": {
-          // NOT answered — see HERMES_PROMPT_RESPONDERS. A credential prompt gets no
-          // reply invented by Atrium; the gateway's own expiry is the fail-closed, and
-          // answering would suppress the `*.expire` that announces it.
-          surfacePrompt(
-            type === "secret.request" ? "hermes.secret" : "hermes.sudo",
-            payload,
-          );
+          // A CREDENTIAL the person may type (masked; it transits to Hermes and is
+          // never stored). Still never invented by Atrium: left unanswered, the
+          // gateway's own expiry is the fail-closed and its `*.expire` settles the card.
+          const requestId = hermesRequestId(payload);
+          if (requestId === null) {
+            protocolDrift.observeException(
+              { type, payload },
+              new TypeError(`${type} carried no request_id — cannot answer`),
+              "hermes-ws-event",
+            );
+            holdForPrompt(type);
+            return;
+          }
+          raiseRequest({
+            source: type === "secret.request" ? "hermes.secret" : "hermes.sudo",
+            providerRequestId: requestId,
+            ...(runtimeSid !== null ? { sessionKey: runtimeSid } : {}),
+            expiresAt: Date.now() + (HERMES_PROMPT_TIMEOUT_MS[type] ?? 120_000),
+            credential: readHermesCredential(type, payload),
+          });
+          const mid = sink.currentMessageId;
+          if (mid) void opts.writer.setPhase?.(mid, "awaiting_input");
           holdForPrompt(type);
+          return;
+        }
+        case HERMES_SERVER_REQUEST_EVENT: {
+          onServerRequest(
+            str(payload.id),
+            str(payload.method),
+            typeof payload.params === "object" && payload.params !== null && !Array.isArray(payload.params)
+              ? (payload.params as Record<string, unknown>)
+              : {},
+          );
+          return;
+        }
+        case "connection.request": {
+          // `manage_connections` (Hermes 0.21) opened a connection card and the tool BLOCKS
+          // until it settles or its deadline passes (tools/connectors/operation.py, 300 s by
+          // default). Atrium has no surface to act on it; it shows the step so the wait has a
+          // name, and the turn outlasts the SERVER's own deadline instead of dying first as a
+          // silence.
+          surfacePrompt("hermes.connection", payload);
+          const t = typeof payload.timeout_seconds === "number" ? payload.timeout_seconds : 300;
+          const budgetMs = Math.min(Math.max(t, 0), 3600) * 1000;
+          promptGraceUntil = Math.max(
+            promptGraceUntil,
+            Date.now() + budgetMs + PROMPT_GRACE_MARGIN_MS,
+          );
+          armRecv();
+          return;
+        }
+        case "request.cancel": {
+          // Hermes WITHDREW one open request (tui_gateway/contracts/server_requests.py):
+          // its deadline passed, the run was interrupted, the session closed, or another
+          // surface answered it. The card closes — expired for a deadline, no longer awaited
+          // otherwise — and it no longer holds the turn.
+          const id = str(payload.id);
+          if (!id || !serverRequestsOpen.has(id)) return;
+          releaseServerRequestRef(id);
+          settleRequest(id, str(payload.reason) === "timeout" ? "expired" : "cancelled");
           return;
         }
         case "secret.expire":
         case "sudo.expire": {
-          surfacePrompt(
-            type === "secret.expire" ? "hermes.secret" : "hermes.sudo",
-            payload,
-            "expired",
-          );
+          const requestId = hermesRequestId(payload);
+          if (requestId !== null) settleRequest(requestId, "expired");
           return;
         }
         case "subagent.start":
@@ -1304,6 +1803,21 @@ export function runHermesWsTurn(
               // The prose also STREAMED live: the finalize must not resurrect
               // it from the stream row (codex P1 — atomic discard).
               (finalEv as { discardStreamText?: boolean }).discardStreamText = true;
+            } else if (
+              // Hermes 0.21 says it STRUCTURALLY: a failed turn carries `error`, and
+              // `partial: true` only when real partial text exists; otherwise its `text` is
+              // its own failure copy ("… Your message was not answered. Details: …",
+              // prompt_turn.py turn_error_text). Not content — kept as the reply it would
+              // block the zero-content auto-retry. Still refused when anything streamed:
+              // what the person already saw is never erased on a flag.
+              str(payload.error) !== "" &&
+              payload.partial !== true &&
+              typeof finalEv.text === "string" &&
+              finalEv.text.trim() !== "" &&
+              replyText.trim() === ""
+            ) {
+              finalEv.text = "";
+              (finalEv as { discardStreamText?: boolean }).discardStreamText = true;
             }
             finalEv.error = msg;
             statusEv.message = msg;
@@ -1411,6 +1925,10 @@ export function runHermesWsTurn(
     let ackHeldOverflowed = false;
     /** The provider explicitly said it is streaming — see the ACK check below. */
     let ackedStreaming = false;
+    /** Taken when Hermes ACKed this turn `streaming`: its session was idle then, so
+     *  every approval ordered before is over (AgentRequestRecord.supersedesBeforeSeq),
+     *  and every one this turn raises is ordered after. */
+    let streamingAckSeq: number | null = null;
     let recvTimer: ReturnType<typeof setTimeout> | null = null;
     const disarmRecv = (): void => {
       if (recvTimer !== null) {
@@ -1434,12 +1952,53 @@ export function runHermesWsTurn(
       );
       armRecv();
     };
+    /** Until when an approval may hold the turn (0 = none blocks it). */
+    let approvalHoldUntil = 0;
+    /** Until when open server→client requests may hold the turn (0 = none). Hermes
+     *  carries no deadline in the frame — the timeout is its config's — and withdraws the
+     *  request itself (`request.cancel`) when it gives up, so the hold is the same
+     *  ceiling as an approval's rather than a guessed time. */
+    let serverRequestHoldUntil = 0;
+    const holdServerRequest = (id: string, held: HermesHeldServerRequest = NOT_A_CLARIFY): void => {
+      serverRequestsOpen.set(id, held);
+      serverRequestHoldUntil = Date.now() + HERMES_APPROVAL_HOLD_CEILING_MS;
+      startHumanBeat();
+      armRecv();
+    };
+    releaseServerRequestRef = (id: string) => {
+      if (!serverRequestsOpen.delete(id)) return;
+      if (serverRequestsOpen.size === 0) serverRequestHoldUntil = 0;
+      armRecv();
+    };
+    /** The agent is now blocked on an approval (`null` = one we could not show). */
+    const holdForApproval = (providerRequestId: string | null): void => {
+      blockedApprovals.push({ id: providerRequestId, answered: false });
+      approvalHoldUntil = Date.now() + HERMES_APPROVAL_HOLD_CEILING_MS;
+      // Shown or not, the agent waits on a person: the bubble must outlive the
+      // Convex watchdog for as long as Hermes does (codex P2).
+      startHumanBeat();
+      armRecv();
+    };
+    /** The agent moved again: every approval it was blocked on is over — answered here,
+     *  answered elsewhere, or timed out on Hermes' side. The cards still open close as
+     *  no longer awaited (an answer of ours in flight keeps its own verdict: Convex
+     *  ignores this settle for a `submitting` row). Leaving one open would let a click
+     *  decide whatever approval Hermes queues NEXT for this session. */
+    releaseApprovalsRef = () => {
+      for (const { id } of blockedApprovals.splice(0)) {
+        if (id !== null) settleRequest(id, "cancelled");
+      }
+      approvalOrderUnknown = false;
+      approvalHoldUntil = 0;
+      armRecv();
+    };
     const armRecv = (): void => {
       disarmRecv();
       if (finalized || !promptAccepted) return;
       // A blocked turn is not a silent turn: while a prompt we cannot answer is pending,
       // the deadline stretches to cover the gateway's own timeout.
-      const graceLeft = promptGraceUntil - Date.now();
+      const graceLeft =
+        Math.max(promptGraceUntil, approvalHoldUntil, serverRequestHoldUntil) - Date.now();
       const stretched = graceLeft > RECV_SILENCE_MS;
       const budget = stretched ? graceLeft : RECV_SILENCE_MS;
       recvTimer = setTimeout(() => {
@@ -1609,13 +2168,21 @@ export function runHermesWsTurn(
                 `prompt.submit ACK — correlation lost chat=${opts.chatId}`,
             );
           }
+          refuseUnshown([[type, payload]]);
           return;
         }
         onEvent(type, payload, synthetic);
       },
       onTransportLost,
+      // A child is THIS turn's once its first `subagent.*` reached it: a late terminal
+      // then finds its own parent even after the session's next turn took the lane.
+      ownsMonitoring: (type, payload) => {
+        if (!type.startsWith("subagent.")) return false;
+        const child = str(payload.child_session_id) || str(payload.subagent_id);
+        return child !== "" && openChildren.has(child);
+      },
     };
-    let unsubscribe: () => void;
+    let unsubscribe: (() => void) & { linger?: () => void };
     try {
       unsubscribe = registerSession(runtimeSid, laneHandlers);
     } catch (err) {
@@ -1642,6 +2209,10 @@ export function runHermesWsTurn(
           opts.dispatchOutboxId ?? null,
         );
       } catch (err) {
+        // The lane is already subscribed and may hold requests (replayed from the resume):
+        // this turn will show none of them, so Hermes is told at once (codex P2).
+        refuseUnshown(ackHeld);
+        ackHeld.length = 0;
         rejectAccepted(err);
         return;
       }
@@ -1700,6 +2271,7 @@ export function runHermesWsTurn(
             ? (ack as { status?: unknown }).status
             : undefined;
         ackedStreaming = ackStatus === "streaming";
+        if (ackedStreaming) streamingAckSeq = nextHermesApprovalSeq();
         // THREE acknowledgements, not one — read from the upstream handler, never
         // guessed: `streaming` starts our run; `queued` means the session was BUSY, so
         // ours is stashed in a single slot and drained as the very NEXT turn while the
@@ -1709,7 +2281,11 @@ export function runHermesWsTurn(
         // someone else's reply into this bubble — then, since lot 31, dropped a session
         // that was perfectly fine.
         ackQueued = ackStatus === "queued";
-        ackSteered = ackStatus === "steered";
+        // `redirected` (Hermes v2026.7.30+, the default busy policy): the live run's model
+        // request is cancelled and our text joins THAT turn as a correction, or degrades to
+        // a steer during tool execution (agent/interrupt_control.py) — either way the next
+        // terminal is the live turn's, exactly as for `steered`.
+        ackSteered = ackStatus === "steered" || ackStatus === "redirected";
         if (!ackedStreaming && !ackQueued && !ackSteered) {
           protocolDrift.observeException(
             null,
@@ -1726,6 +2302,7 @@ export function runHermesWsTurn(
         // Whatever was held waiting for an ACK that never came is not ours to apply:
         // the prompt was never accepted, so nothing on this lane answers it.
         ackPending = false;
+        refuseUnshown(ackHeld);
         ackHeld.length = 0;
         finalized = true;
         const msg = (err as Error)?.message ?? String(err);
@@ -1780,6 +2357,7 @@ export function runHermesWsTurn(
         // We cannot say which turn any of this belonged to, so we attribute NONE of it.
         // The session goes with it: like a silence, we do not know whether the run we
         // were watching ever stopped — the rule of lot 31.
+        refuseUnshown(held);
         held.length = 0;
         if (!finalized) {
           finalized = true;
@@ -1817,6 +2395,7 @@ export function runHermesWsTurn(
         }
       } else if (ackSteered) {
         // Our text joined the live turn: none of this was ever ours.
+        refuseUnshown(held);
         held.length = 0;
       } else if (ackQueued) {
         // Our run begins at the first `message.start`. If it already arrived while the
@@ -1824,9 +2403,11 @@ export function runHermesWsTurn(
         // for a second start that never comes.
         const start = held.findIndex(([t]) => t === "message.start");
         if (start >= 0) {
+          refuseUnshown(held.slice(0, start));
           awaitingOurTurn = false;
           for (const [t, p, syn] of held.slice(start + 1)) onEvent(t, p, syn);
         } else {
+          refuseUnshown(held);
           awaitingOurTurn = true;
         }
       } else {
@@ -1876,10 +2457,13 @@ export function runHermesWsTurn(
       // timer on a finished turn is a process that will not exit and a log line that
       // makes no sense.
       disarmRecv();
-      // Late-child grace: keep the session lane subscribed ~2 min after the
-      // turn settles so a delegation that finishes after the parent still
-      // lands its terminal in the monitor (only monitoring events pass the
-      // finalized guard above). The timer never blocks process exit.
+      // Late-child grace: keep listening ~2 min after the turn settles so a
+      // delegation that finishes after the parent still lands its terminal in the
+      // monitor (only monitoring events pass the finalized guard above) — but as a
+      // LINGERER: the session's next turn may start meanwhile (Hermes resumes the same
+      // runtime session id), and it must not be refused for this one's grace. The
+      // timer never blocks process exit.
+      unsubscribe.linger?.();
       const t = setTimeout(unsubscribe, 120_000);
       (t as { unref?: () => void }).unref?.();
       await chain.catch((e) =>
@@ -1887,6 +2471,16 @@ export function runHermesWsTurn(
       );
     }
   })();
+  // A turn that ENDS releases every prompt it still held — Hermes unblocks them on its
+  // side (`_clear_pending` on interrupt, `unregister_gateway_notify` at run end), so a
+  // card left open would offer an answer nobody can receive. An answer already in
+  // flight is the person's: Convex keeps it over this settle (settleFromBridge).
+  void done
+    .catch(() => undefined)
+    .then(() => {
+      stopHumanBeat();
+      for (const id of [...openRequests]) settleRequest(id, "cancelled");
+    });
 
   return {
     accepted,
@@ -1896,5 +2490,20 @@ export function runHermesWsTurn(
     markSessionUntrusted: () => markUntrustedRef?.(),
     settledBindings: () => settledBindingsRef?.() ?? Promise.resolve(),
     forceSettle: (writeAborted?: boolean) => forceSettleRef?.(writeAborted),
+    approvalHead,
+    approvalAmbiguity,
+    noteApprovalAnswered: (id: string) => {
+      const entry = blockedApprovals.find((a) => a.id === id && !a.answered);
+      if (entry) entry.answered = true;
+    },
+    noteApprovalOrderUnknown: () => {
+      if (blockedApprovals.length > 0) approvalOrderUnknown = true;
+    },
+    noteServerRequestAnswered: (id: string) => releaseServerRequestRef(id),
+    // A FINALIZED turn holds nothing answerable: once its transport is lost (or it ended)
+    // it reads nothing more, yet it stays registered until `done` settles — an answer
+    // taken in that window would release a run nobody here observes (0.21.5 pass 25).
+    heldServerRequest: (id: string) => (finalizedRef() ? null : (serverRequestsOpen.get(id) ?? null)),
+    holdsRequest: (id: string) => !finalizedRef() && openRequests.has(id),
   };
 }

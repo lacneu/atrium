@@ -85,6 +85,8 @@ describe("SessionRegistry — runtime growth (boot self-heal)", () => {
       // to a gateway that is not configured to read one.
       undefined,
       undefined,
+      // No gateway version known: not declared an approvals reviewer.
+      [],
     );
 
     // Self-heal registers jerome at runtime (size -> 2).
@@ -110,6 +112,8 @@ describe("SessionRegistry — runtime growth (boot self-heal)", () => {
       // to a gateway that is not configured to read one.
       undefined,
       undefined,
+      // No gateway version known: not declared an approvals reviewer.
+      [],
     );
 
     // Explicit route to the ORIGINAL instance STILL hits olivier's gateway (no misroute
@@ -133,6 +137,8 @@ describe("SessionRegistry — runtime growth (boot self-heal)", () => {
       // to a gateway that is not configured to read one.
       undefined,
       undefined,
+      // No gateway version known: not declared an approvals reviewer.
+      [],
     );
 
     reg.closeAll();

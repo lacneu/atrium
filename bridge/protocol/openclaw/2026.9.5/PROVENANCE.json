@@ -465,6 +465,24 @@
       "vendored": "8f3ca16df8917cc472f19867a8371e204c02293d3364a7855d72c9a0bac27fa6",
       "upstream": "dc681787b55d4092d24e5829e912a992b39bb4fb06c83c9d6a7bf84df3ae55d6",
       "rewrites": []
+    },
+    "questions.ts": {
+      "upstreamPath": "packages/gateway-protocol/src/schema/questions.ts",
+      "vendored": "8cd093348535a044206282c7ceea4a409b69b0f5f7f5955d36d82d54c96ef75f",
+      "upstream": "fc90503303afed7fdcbb015307d2913c4b8b07faffd8add2ed547d9c37c7bf1d",
+      "rewrites": []
+    },
+    "approvals.ts": {
+      "upstreamPath": "packages/gateway-protocol/src/schema/approvals.ts",
+      "vendored": "d61689b498ab000ea19f37d3bec7960c9a5c0ea8d17b8f7f53125669b2985e15",
+      "upstream": "3cb0fac852c3515b93b98ea482ff9e405e3a401a409ea2c2fd9b9659dc42d4cb",
+      "rewrites": []
+    },
+    "approval-id.ts": {
+      "upstreamPath": "packages/gateway-protocol/src/schema/approval-id.ts",
+      "vendored": "63996e340e7dd28b88a66c58c49e4379da4172af2f89619ec2fc4a4a7fa7a413",
+      "upstream": "25b08b6c6ad34a1f4b0f381cd9c1cfc1f811367df949f660b2d38de64bae191f",
+      "rewrites": []
     }
   },
   "derived": {

@@ -14,6 +14,7 @@ import {
   ChevronRight,
   FileText,
   Megaphone,
+  MessageCircleQuestion,
 } from "lucide-react";
 import { api } from "./convexApi";
 import type { Id } from "./convexApi";
@@ -51,7 +52,8 @@ type NotifKind =
   | "feedback_resolved"
   | "feedback_new"
   | "curation"
-  | "operator_announcement";
+  | "operator_announcement"
+  | "agent_request";
 type Notif = {
   _id: Id<"notifications">;
   kind: NotifKind;
@@ -75,6 +77,7 @@ const KIND_ICON: Record<NotifKind, typeof Bell> = {
   feedback_new: MessageSquare,
   curation: FileText,
   operator_announcement: Megaphone,
+  agent_request: MessageCircleQuestion,
 };
 
 const OPERATOR_SERVICE_LABELS: Record<string, () => string> = {
@@ -127,6 +130,20 @@ const KEY_RENDERERS: Record<
       reference: p.reference ?? "?",
       category: cat(p.category ?? "other"),
     }),
+  }),
+  // An agent is waiting on the reader: the family decides the title, the chat names
+  // where (its title only — never what was asked).
+  notif_agent_request_question: (p) => ({
+    title: m.notif_agent_request_question_title(),
+    body: m.notif_agent_request_body({ chat: p.chat ?? "" }),
+  }),
+  notif_agent_request_approval: (p) => ({
+    title: m.notif_agent_request_approval_title(),
+    body: m.notif_agent_request_body({ chat: p.chat ?? "" }),
+  }),
+  notif_agent_request_credential: (p) => ({
+    title: m.notif_agent_request_credential_title(),
+    body: m.notif_agent_request_body({ chat: p.chat ?? "" }),
   }),
   notif_curation_proposed: (p) => ({
     title: m.notif_curation_proposed_title(),

@@ -1910,6 +1910,41 @@ export const benchPendingTasks = internalQuery({
   },
 });
 
+/** Agent requests of a bench chat, for the live bench: what the agent asked, its state,
+ *  and the OWNER the runner answers as (`npx convex run agentRequests:answer --identity`
+ *  — the same public action the card calls, not a shortcut around it). Never a secret:
+ *  the table holds none. */
+export const peekAgentRequests = query({
+  args: { chatId: v.id("chats") },
+  handler: async (ctx, { chatId }) => {
+    assertDev();
+    const chat = await ctx.db.get(chatId);
+    const rows = await ctx.db
+      .query("agentRequests")
+      .withIndex("by_chat_and_created", (q) => q.eq("chatId", chatId))
+      .collect();
+    return {
+      ownerUserId: chat?.userId ?? null,
+      requests: rows.map((r) => ({
+        id: r._id,
+        source: r.source,
+        kind: r.kind,
+        status: r.status,
+        providerRequestId: r.providerRequestId,
+        messageId: r.messageId ?? null,
+        questions: r.questions ?? null,
+        approval: r.approval ?? null,
+        answers: r.answers ?? null,
+        decision: r.decision ?? null,
+        failureCode: r.failureCode ?? null,
+        resolvedElsewhere: r.resolvedElsewhere === true,
+        createdAt: r.createdAt,
+        expiresAt: r.expiresAt,
+      })),
+    };
+  },
+});
+
 /** DEV-ONLY: run the task reconcile (probe + settle + adopt) exactly like the
  *  thread's 30s poll would — the bench has no browser to drive it. */
 export const benchReconcileTasks = action({
@@ -2470,6 +2505,231 @@ export const deleteAgentsByInstance = mutation({
 // chats AFTER it learns the user's id from getMe). Optionally bind each to a seeded
 // (instance, agent) so getChatAgent resolves a provider kind. Returns the chatIds so
 // the harness can drive synthetic /bridge/ingest streams into them. Dev-gated.
+// Dev-only: seed a conversation holding one AGENT REQUEST of every family — a
+// two-part question, a command approval, a critical plugin approval, a Hermes
+// credential — waiting, plus settled ones (answered, denied, expired), so the cards,
+// the dock, the panel and the sidebar badge can be reviewed in the browser without
+// driving a real `ask_user` or approval on a gateway. Defaults to the most recently
+// created user (the dev sign-in's anonymous account).
+export const seedAgentRequestsDemo = mutation({
+  args: { userId: v.optional(v.id("users")) },
+  handler: async (ctx, { userId }) => {
+    assertDev();
+    const owner =
+      userId ?? (await ctx.db.query("users").order("desc").first())?._id ?? null;
+    if (owner === null) return { ok: false, reason: "no user" };
+    const now = Date.now();
+    const chatId = await ctx.db.insert("chats", {
+      userId: owner,
+      title: "Demandes d'agent — aperçu",
+      archived: false,
+      sortKey: -1000,
+      updatedAt: now,
+      instanceName: "olivier",
+      agentId: "alice",
+    });
+    await ctx.db.insert("messages", {
+      chatId,
+      userId: owner,
+      role: "user",
+      status: "complete",
+      text: "Prépare le rapport trimestriel et publie-le sur le site.",
+      updatedAt: now - 60_000,
+    });
+    const ask = await ctx.db.insert("messages", {
+      chatId,
+      userId: owner,
+      role: "assistant",
+      status: "complete",
+      text: "J'ai rassemblé les chiffres. Avant de continuer, j'ai besoin de deux précisions et de votre accord pour deux actions.",
+      updatedAt: now - 50_000,
+    });
+    const base = {
+      chatId,
+      userId: owner,
+      messageId: ask,
+      instanceName: "olivier",
+      agentId: "alice",
+      sessionKey: "agent:alice:atrium:chat:dev:demo",
+      createdAt: now - 45_000,
+      updatedAt: now - 45_000,
+    };
+    await ctx.db.insert("agentRequests", {
+      ...base,
+      source: "openclaw.ask_user",
+      kind: "question",
+      providerRequestId: "ask_demo_1",
+      questions: [
+        {
+          id: "format",
+          header: "Format",
+          text: "Sous quel format veux-tu le rapport ?",
+          options: [
+            { label: "PDF", description: "Mise en page figée, prête à diffuser" },
+            { label: "Word", description: "Éditable par l'équipe" },
+            { label: "Page web" },
+          ],
+          multiSelect: false,
+          allowOther: true,
+          secret: false,
+        },
+        {
+          id: "sections",
+          header: "Sections",
+          text: "Quelles sections dois-je inclure ?",
+          options: [{ label: "Ventes" }, { label: "Marges" }, { label: "Prévisions" }, { label: "Risques" }],
+          multiSelect: true,
+          allowOther: false,
+          secret: false,
+        },
+      ],
+      status: "pending",
+      expiresAt: now + 14 * 60_000,
+    });
+    await ctx.db.insert("agentRequests", {
+      ...base,
+      source: "openclaw.exec",
+      kind: "approval",
+      approvalKind: "exec",
+      providerRequestId: "exec_demo_1",
+      approval: {
+        command: "rsync -av --delete ./dist/ deploy@site:/var/www/rapport/",
+        warning: "Supprime sur le serveur les fichiers absents de ./dist/",
+        host: "node",
+        nodeId: "prod-eu-west",
+        decisions: ["allow-once", "allow-always", "deny"],
+      },
+      status: "pending",
+      expiresAt: now + 9 * 60_000,
+    });
+    await ctx.db.insert("agentRequests", {
+      ...base,
+      source: "openclaw.plugin",
+      kind: "approval",
+      approvalKind: "plugin",
+      providerRequestId: "plugin_demo_1",
+      approval: {
+        title: "Envoyer la newsletter",
+        description: "Le plugin Wix veut envoyer l'annonce du rapport à la liste des abonnés.",
+        severity: "critical",
+        pluginId: "wix-openclaw",
+        toolName: "wix_email_send",
+        scope: { kind: "message-send", summary: "newsletter · ×1 200" },
+        decisions: ["allow-once", "deny"],
+      },
+      status: "pending",
+      expiresAt: now + 100_000,
+    });
+    await ctx.db.insert("agentRequests", {
+      ...base,
+      source: "hermes.secret",
+      kind: "credential",
+      providerRequestId: "demo0secret",
+      credential: {
+        mode: "secret",
+        prompt: "Clé API du service d'hébergement, pour publier la page.",
+        envVar: "HOSTING_API_KEY",
+      },
+      status: "pending",
+      expiresAt: now + 4 * 60_000,
+    });
+    await ctx.db.insert("agentRequests", {
+      ...base,
+      source: "hermes.sudo",
+      kind: "credential",
+      providerRequestId: "srq-demo00sudo01",
+      answerById: true,
+      credential: { mode: "password", command: "apt-get install -y pandoc" },
+      status: "pending",
+      expiresAt: now + 24 * 60 * 60_000,
+    });
+    await ctx.db.insert("agentRequests", {
+      ...base,
+      source: "openclaw.secret",
+      kind: "question",
+      providerRequestId: "ask_demo_store",
+      questions: [
+        {
+          id: "deploy_token",
+          header: "Jeton",
+          text: "Jeton de déploiement du site, pour pousser la page publiée.",
+          options: [],
+          multiSelect: false,
+          allowOther: true,
+          secret: true,
+          store: {
+            name: "SITE_DEPLOY_TOKEN",
+            allowedHosts: ["deploy.site.example"],
+            reason: "Publication du rapport trimestriel",
+            replacesSinceMs: now - 40 * 86_400_000,
+          },
+        },
+      ],
+      status: "pending",
+      expiresAt: now + 12 * 60_000,
+    });
+    const earlier = await ctx.db.insert("messages", {
+      chatId,
+      userId: owner,
+      role: "assistant",
+      status: "complete",
+      text: "Première passe terminée.",
+      updatedAt: now - 3_600_000,
+    });
+    const settled = {
+      ...base,
+      messageId: earlier,
+      createdAt: now - 3_600_000,
+      updatedAt: now - 3_500_000,
+      resolvedAt: now - 3_500_000,
+    };
+    await ctx.db.insert("agentRequests", {
+      ...settled,
+      source: "openclaw.ask_user",
+      kind: "question",
+      providerRequestId: "ask_demo_0",
+      questions: [
+        {
+          id: "period",
+          text: "Quel trimestre ?",
+          options: [{ label: "T2" }, { label: "T3" }],
+          multiSelect: false,
+          allowOther: false,
+          secret: false,
+        },
+      ],
+      answers: [{ id: "period", values: ["T3"] }],
+      resolvedByUserId: owner,
+      status: "answered",
+      expiresAt: now - 2_700_000,
+    });
+    await ctx.db.insert("agentRequests", {
+      ...settled,
+      source: "openclaw.exec",
+      kind: "approval",
+      approvalKind: "exec",
+      providerRequestId: "exec_demo_0",
+      approval: { command: "rm -rf ./cache", decisions: ["allow-once", "deny"] },
+      decision: "deny",
+      resolvedByUserId: owner,
+      status: "denied",
+      expiresAt: now - 2_700_000,
+    });
+    await ctx.db.insert("agentRequests", {
+      ...settled,
+      source: "hermes.clarify",
+      kind: "question",
+      providerRequestId: "demo0clarify",
+      questions: [
+        { id: "answer", text: "Faut-il inclure les filiales ?", options: [], multiSelect: false, allowOther: true, secret: false },
+      ],
+      status: "expired",
+      expiresAt: now - 3_300_000,
+    });
+    return { ok: true, chatId };
+  },
+});
+
 export const seedChatsForUser = mutation({
   args: {
     userId: v.id("users"),

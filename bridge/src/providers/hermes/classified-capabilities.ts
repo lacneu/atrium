@@ -7,32 +7,39 @@
 //
 // Kept as a literal rather than read from `protocol/hermes/features/<version>.json`: the
 // bridge runs from `dist/` in a container where `protocol/` is not on disk.
-// `hermes-features-coverage.test.ts` asserts this set EQUALS the manifest, so it cannot
-// drift from the classification it mirrors.
+// `hermes-features-coverage.test.ts` asserts this set EQUALS the union of the manifests of
+// every vendored version (the bridge serves all of them), so it cannot drift from the
+// classification it mirrors.
 
 /** Capability names someone has classified — read, or deliberately not read with a reason. */
 export const CLASSIFIED_HERMES_CAPABILITIES: ReadonlySet<string> = new Set([
   "admin_config_rw",
   "approval_events",
   "audio_api",
+  "browser_extension_control",
   "chat_completions",
   "chat_completions_streaming",
   "cors",
   "jobs_admin",
   "memory_write_api",
+  "model_options",
   "realtime_voice",
+  "reasoning_streaming",
   "responses_api",
   "responses_streaming",
   "run_approval_response",
   "run_events_sse",
   "run_status",
+  "run_steer",
   "run_stop",
   "run_submission",
+  "runs_idempotency",
   "session_chat",
   "session_chat_streaming",
   "session_continuity_header",
   "session_fork",
   "session_key_header",
+  "session_model_lock",
   "session_resources",
   "skills_api",
   "tool_progress_events",

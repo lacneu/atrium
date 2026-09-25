@@ -69,7 +69,7 @@ identical. The two broken anchors are real and are each recorded:
 
 **DECLARED GAP, not a conclusion.** 2026.9.5 adds a RETRACTION delta —
 `delta { deltaText: "", replace: true }` — and the bridge normalizer drops any
-delta whose text is empty (`bridge/src/providers/openclaw/normalizer.ts:1954`,
+delta whose text is empty (`bridge/src/providers/openclaw/normalizer.ts:1999`,
 the `&& deltaText` guard), so Atrium keeps a text the gateway has just withdrawn.
 Written here because it is known and unfixed, not because it was measured on the
 bench: the catalogue never elicits a retraction. It is owed a scenario before it
@@ -800,7 +800,7 @@ a durable surface the Control UI does not have.
 ### Atrium behavior and verdict
 
 - Bridge derivation: `webchat-<sha256(sessionKey|clientMessageId)>`
-  (`bridge/src/providers/openclaw/openclaw-client.ts:1086-1097`), stable across Convex's at-least-once
+  (`bridge/src/providers/openclaw/openclaw-client.ts:1111-1122`), stable across Convex's at-least-once
   dispatch — this **exploits the upstream window correctly** (re-POSTs
   replay/`in_flight` while the run is active, since active entries outlive
   the TTL).

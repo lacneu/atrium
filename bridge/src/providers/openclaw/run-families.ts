@@ -10,6 +10,8 @@
 //   - `announce:…`      sub-agent announce turns (run-manager spontaneous turns)
 //   - `<tool>:<taskId>:ok`  background-task deliveries (async-task.ts)
 //   - `talk-<callId>-…` realtime-voice agent consults (talk-consult.ts)
+//   - `exec-approval-followup:<approvalId>` the continuation of a command a
+//     person approved (source-read at v2026.9.5, see EXEC_APPROVAL_FOLLOWUP_PREFIX)
 //   - `inject-<messageId>`  `chat.inject` broadcasts a `chat` FINAL on the
 //     session with this synthetic runId (gateway `chat.ts`), i.e. an operator or
 //     plugin injection that would otherwise terminate an unrelated live turn.
@@ -25,6 +27,13 @@ import { isTalkConsultRunId } from "../../core/talk-consult.js";
 /** Synthetic runId prefix of a `chat.inject` broadcast. */
 const INJECT_RUN_PREFIX = "inject-";
 
+/** An APPROVED exec's continuation run: `exec-approval-followup:<approvalId>
+ *  [:nonce:<n>]`, the idempotency key the gateway resumes the session with once the
+ *  command ran (bash-tools.exec-approval-followup-state.ts:80 at v2026.9.5). Its own
+ *  turn — the reply to the command a person authorised — never the continuation of
+ *  whatever turn is open when it lands. */
+export const EXEC_APPROVAL_FOLLOWUP_PREFIX = "exec-approval-followup:";
+
 /**
  * True when `runId` belongs to a gateway-minted family — never the continuation
  * of the caller's turn, whatever grace window happens to be open.
@@ -36,6 +45,7 @@ export function isGatewayInitiatedRunId(runId: string): boolean {
   // Ownership (relay-claimed or not) does not matter here: either way the
   // consult is its own turn, not this one's.
   if (isTalkConsultRunId(runId)) return true;
+  if (runId.startsWith(EXEC_APPROVAL_FOLLOWUP_PREFIX)) return true;
   return false;
 }
 

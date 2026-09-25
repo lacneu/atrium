@@ -211,6 +211,12 @@ import {
   type ConfigDefaultsBody,
   type GatewayRequester,
 } from "./conf.js";
+import {
+  parseRespondBody,
+  respondHermes,
+  respondOpenClaw,
+  type RespondOutcome,
+} from "./agent-request-respond.js";
 
 /** Per-chat OpenClaw knob intent (reasoning/model/speed). Non-secret. */
 interface SessionSettings {
@@ -3917,6 +3923,9 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
       "/talk-toolcall",
       // Sanctioned lossless-claw doctor dispatch (allowlisted commands only).
       "/lossless",
+      // A person ANSWERS what an agent asked (question / approval / credential).
+      // Convex owns who may answer and what is well formed (agentRequests.ts).
+      "/agent-request/respond",
     ];
     if (req.method !== "POST" || !POST_ROUTES.includes(req.url ?? "")) {
       sendJson(res, 404, { ok: false, error: "not found" });
@@ -4216,6 +4225,94 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
       } catch (err) {
         console.error("bridge /reset failed:", (err as Error)?.message ?? err);
         sendJson(res, 502, { ok: false, error: "upstream reset failed" });
+      }
+      return;
+    }
+
+    if (req.url === "/agent-request/respond") {
+      const body = parseRespondBody(raw);
+      if (body === null) {
+        sendJson(res, 400, { ok: false, error: { code: "invalid_body" } });
+        return;
+      }
+      const bundle = served.get(body.instanceName);
+      if (!bundle) {
+        sendJson(res, 409, { ok: false, error: { code: "instance_not_served" } });
+        return;
+      }
+      const isHermes = bundle.config.kind === "hermes";
+      if ((body.provider === "hermes") !== isHermes) {
+        sendJson(res, 400, { ok: false, error: { code: "provider_mismatch" } });
+        return;
+      }
+      let outcome: RespondOutcome;
+      if (isHermes) {
+        const client = hermesTurns.wsClientFor(bundle.config);
+        const hermesInstance = bundle.config.instanceName ?? "";
+        const live = hermesTurns.peekWsTurnOn(body.chatId, hermesInstance)?.run;
+        outcome = await respondHermes(
+          body,
+          (method, params) => client.call(method, params),
+          live
+            ? {
+                head: () => live.approvalHead(),
+                ambiguity: () => live.approvalAmbiguity(),
+                answered: (id) => live.noteApprovalAnswered(id),
+                uncertain: () => live.noteApprovalOrderUnknown(),
+                served: (id, verdict) => {
+                  live.noteServerRequestAnswered(id);
+                  if (verdict !== undefined) {
+                    hermesTurns.noteAnswered(hermesInstance, body.chatId, id, verdict);
+                  }
+                },
+                held: (id) => live.heldServerRequest(id),
+                holds: (id) => live.holdsRequest(id),
+              }
+            : undefined,
+          (id) => hermesTurns.answeredAs(hermesInstance, body.chatId, id),
+        );
+      } else {
+        try {
+          outcome = await withOperatorConnection(
+            bundle.config,
+            (conn) =>
+              respondOpenClaw(
+                body,
+                conn,
+                registry.peekByChat(body.chatId)?.routedApproval(body.providerRequestId) === true,
+                registry.peekByChat(body.chatId),
+              ),
+            noteHandshakeFor(body.instanceName),
+          );
+        } catch (err) {
+          const code = classifyGatewayError(err);
+          console.error(
+            `bridge /agent-request/respond connect failed [${code}]:`,
+            (err as Error)?.message ?? err,
+          );
+          outcome = { ok: false, httpStatus: 502, code: "gateway_unreachable" };
+        }
+      }
+      // An approval answered HERE releases the live turn's hold at once: an exec
+      // approval's allow is carried by a follow-up run, not by a `resolved` frame on
+      // the run that asked, so without this the turn would wait out its bound.
+      if (outcome.ok && !isHermes && body.approvalKind !== undefined) {
+        registry.peekByChat(body.chatId)?.noteApprovalAnswered(body.providerRequestId);
+      }
+      // Structural only — never an answer, a decision's subject or a secret.
+      console.log(
+        `[agent-request] respond chat=${body.chatId} source=${body.source} skip=${body.skip} -> ${outcome.ok ? "ok" : outcome.code}`,
+      );
+      if (outcome.ok) {
+        sendJson(res, 200, { ok: true });
+      } else {
+        sendJson(res, outcome.httpStatus, {
+          ok: false,
+          error: {
+            code: outcome.code,
+            ...(outcome.status !== undefined ? { status: outcome.status } : {}),
+          },
+        });
       }
       return;
     }

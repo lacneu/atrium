@@ -20,6 +20,16 @@ import { v } from "convex/values";
 import { authTables } from "@convex-dev/auth/server";
 import { instanceConfigValidator } from "./lib/instanceConfig";
 import {
+  agentRequestAnswerValidator,
+  agentRequestApprovalValidator,
+  agentRequestCredentialValidator,
+  agentRequestKindValidator,
+  agentRequestQuestionValidator,
+  agentRequestSourceValidator,
+  agentRequestStatusValidator,
+  approvalDecisionValidator,
+} from "./lib/agentRequests";
+import {
   encryptedSecretValidator,
   secretFieldValidator,
   secretSourceValidator,
@@ -2179,6 +2189,94 @@ export default defineSchema({
     .index("by_status_updated", ["status", "updatedAt"])
     .index("by_child", ["childSessionKey"]), // the panel's interaction thread
 
+  // What an AGENT asks the person while it works — a question (OpenClaw `ask_user`,
+  // Hermes `clarify`), an approval (a command, a plugin action, a system change) or a
+  // credential — and how it was answered. Each one BLOCKS the agent until someone
+  // answers or the provider's own deadline passes, so the row is the conversation's
+  // record of both the ask and the outcome. See convex/lib/agentRequests.ts.
+  //
+  // Written by the bridge (ingest `upsertAgentRequest` / `settleAgentRequest`) and by
+  // the person's answer (agentRequests.answer). A SECRET never reaches this table:
+  // the credential travels browser → action → bridge and only "provided" is kept.
+  agentRequests: defineTable({
+    chatId: v.id("chats"),
+    /** The chat OWNER at insert — the index behind "which of my conversations is
+     *  waiting on me". Participants reach a row through its chat. */
+    userId: v.id("users"),
+    /** The assistant bubble of the turn that asked; absent when the ask arrived
+     *  outside a turn this bridge was driving. */
+    messageId: v.optional(v.id("messages")),
+    /** The PROVEN instance (per-bridge auth), never the body's word. */
+    instanceName: v.string(),
+    agentId: v.optional(v.string()),
+    source: agentRequestSourceValidator,
+    kind: agentRequestKindValidator,
+    /** The provider's own address for the request: OpenClaw question/approval id,
+     *  Hermes `request_id`, or the bridge-minted id of a Hermes approval (those are
+     *  addressed by SESSION, oldest first — see `seq`). */
+    providerRequestId: v.string(),
+    /** OpenClaw's unified approval kind, which `approval.resolve` requires. */
+    approvalKind: v.optional(
+      v.union(v.literal("exec"), v.literal("plugin"), v.literal("system-agent")),
+    ),
+    /** The gateway session the request belongs to (OpenClaw session key / Hermes
+     *  runtime session id). The bridge re-checks it against the gateway before
+     *  answering. */
+    sessionKey: v.optional(v.string()),
+    runId: v.optional(v.string()),
+    /** Hermes answers approvals oldest-first per session: the order they arrived. */
+    seq: v.optional(v.number()),
+    /** When the PROVIDER created the request: tells a reused provider id's new request
+     *  from a replay of the settled one (OpenClaw forgets a settled question in 15 s and
+     *  accepts caller-chosen ids). */
+    providerCreatedAt: v.optional(v.number()),
+    /** Answered by its own id (a Hermes server→client request), not by session order. */
+    answerById: v.optional(v.boolean()),
+    /** When the bridge saw it: its wall clock (µs), strictly increasing per process
+     *  (tie-break for a reused id whose provider creation time did not advance). */
+    providerSeenSeq: v.optional(v.number()),
+    /** The bridge process that saw it — provenance only, never an order. */
+    providerSeenEpoch: v.optional(v.string()),
+    questions: v.optional(v.array(agentRequestQuestionValidator)),
+    approval: v.optional(agentRequestApprovalValidator),
+    credential: v.optional(agentRequestCredentialValidator),
+    status: agentRequestStatusValidator,
+    createdAt: v.number(),
+    expiresAt: v.number(),
+    updatedAt: v.number(),
+    resolvedAt: v.optional(v.number()),
+    /** Who answered from Atrium. Absent with `resolvedElsewhere` = another client
+     *  (the gateway's own UI, a channel) settled it. */
+    resolvedByUserId: v.optional(v.id("users")),
+    resolvedElsewhere: v.optional(v.boolean()),
+    /** The answer as shown back — a secret question keeps its id with no values. */
+    answers: v.optional(v.array(agentRequestAnswerValidator)),
+    decision: v.optional(approvalDecisionValidator),
+    /** A curated code when the provider refused the answer, or the last transport
+     *  failure while the row went back to `pending`. Never provider prose. */
+    failureCode: v.optional(v.string()),
+  })
+    .index("by_chat_and_created", ["chatId", "createdAt"])
+    .index("by_chat_and_status", ["chatId", "status"])
+    // A request's identity is (chat, INSTANCE, id): a per-turn-routed chat talks to
+    // several gateways, and another's rows must never crowd this one's out of a page.
+    .index("by_chat_instance_provider_request", ["chatId", "instanceName", "providerRequestId"])
+    .index("by_user_and_status", ["userId", "status"])
+    .index("by_message", ["messageId"])
+    // Hermes answers approvals by SESSION, oldest first: "is an earlier one of this
+    // session still open?" must be ONE exact range, never a page filtered afterwards
+    // (a page of other rows hid the earlier approval — codex P1).
+    .index("by_chat_instance_source_session_status_seq", [
+      "chatId",
+      "instanceName",
+      "source",
+      "sessionKey",
+      "status",
+      "seq",
+    ])
+    // The expiry sweep's range: open rows past their deadline.
+    .index("by_status_and_expires", ["status", "expiresAt"]),
+
   // LIVE streaming text for an in-flight assistant turn, kept OFF the `messages`
   // doc on purpose. The per-delta append/snapshot writes land here; the heavy
   // `loadChatView` reads the `messages` docs (NOT this table), so it no longer
@@ -3049,6 +3147,8 @@ export default defineSchema({
       v.literal("operator_announcement"),
       // Somebody named you in a conversation you take part in.
       v.literal("mention"),
+      // An agent is waiting on you: a question, an approval or a credential.
+      v.literal("agent_request"),
     ),
     // LEGACY-RENDER fallback: pre-rendered labels, kept so old rows (and any
     // producer without a key) still display. New producers ALSO store a

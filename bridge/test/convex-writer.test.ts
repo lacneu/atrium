@@ -1820,3 +1820,45 @@ describe("finalize carries the failure CLASS to Convex", () => {
     expect(String(finalize?.error)).toContain("temporarily unavailable");
   });
 });
+
+describe("agent requests survive a transient ingest failure", () => {
+  test("a creation and a settle are re-posted — their broadcast is never repeated", async () => {
+    const ops: string[] = [];
+    let attempts = 0;
+    const fetchImpl = (async (_url: unknown, init: { body: string }) => {
+      const body = JSON.parse(init.body) as { op: string };
+      ops.push(body.op);
+      attempts += 1;
+      if (attempts % 2 === 1) throw new Error("network");
+      return { ok: true, json: async () => ({ ok: true }) } as unknown as Response;
+    }) as unknown as typeof fetch;
+    const w = writerWith(fetchImpl);
+    await w.upsertAgentRequest({
+      chatId: "chat-1",
+      messageId: null,
+      source: "openclaw.ask_user",
+      providerRequestId: "ask_1",
+      questions: [],
+    } as never);
+    await w.settleAgentRequest({ chatId: "chat-1", providerRequestId: "ask_1", status: "answered" });
+    expect(ops).toEqual(["upsertAgentRequest", "upsertAgentRequest", "settleAgentRequest", "settleAgentRequest"]);
+  });
+});
+
+describe("an agent request Convex refused is reported as not recorded (codex, Hermes 0.21.5 pass 5)", () => {
+  test("`id: null` → recorded false; an id → recorded true", async () => {
+    const answers = [{ ok: true, id: null, created: false }, { ok: true, id: "j57abc", created: true }];
+    const fetchImpl = (async () =>
+      ({ ok: true, json: async () => answers.shift() }) as unknown as Response) as unknown as typeof fetch;
+    const w = writerWith(fetchImpl);
+    const record = {
+      chatId: "chat-1",
+      messageId: null,
+      source: "hermes.clarify",
+      providerRequestId: "srq-000000000001",
+      questions: [],
+    } as never;
+    await expect(w.upsertAgentRequest(record)).resolves.toEqual({ recorded: false });
+    await expect(w.upsertAgentRequest(record)).resolves.toEqual({ recorded: true });
+  });
+});

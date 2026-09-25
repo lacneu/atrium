@@ -287,6 +287,12 @@
   --highlight: var(--primary);
   --bookmark: oklch(0.78 0.14 75);
   --voice: var(--primary);
+  /* Agent requests — one accent per family (question / approval / critical
+     approval / credential), so what is being asked reads before the words. */
+  --areq-question: oklch(0.55 0.16 262);
+  --areq-approval: oklch(0.66 0.15 62);
+  --areq-critical: oklch(0.57 0.21 25);
+  --areq-credential: oklch(0.54 0.18 300);
   --chart-1: oklch(0.646 0.222 41.116);
   --chart-2: oklch(0.6 0.118 184.704);
   --chart-3: oklch(0.398 0.07 227.392);
@@ -305,6 +311,10 @@
 }
 
 .dark {
+  --areq-question: oklch(0.74 0.12 262);
+  --areq-approval: oklch(0.8 0.13 75);
+  --areq-critical: oklch(0.71 0.17 25);
+  --areq-credential: oklch(0.74 0.13 300);
   color-scheme: dark;
   --background: oklch(0.145 0 0);
   --foreground: oklch(0.985 0 0);

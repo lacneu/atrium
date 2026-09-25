@@ -8,8 +8,14 @@
 import type { BridgeConfig } from "../../config.js";
 import { CLASSIFIED_HERMES_CAPABILITIES } from "./classified-capabilities.js";
 import type { ConvexWriter } from "../../convex-writer.js";
+import type { HermesAnsweredVerdict } from "../../core/agent-requests.js";
 import { HermesClient, type HermesInterruptVerdict } from "./client.js";
-import { HermesWsClient } from "./ws-client.js";
+import {
+  HERMES_SERVER_REQUEST_EVENT,
+  HERMES_SERVER_REQUESTS_TAKEN,
+  HermesWsClient,
+  refuseOpenRequests,
+} from "./ws-client.js";
 import { HermesFilesFetcher } from "./files-fetcher.js";
 import { safeSessionPart } from "../openclaw/session-keys.js";
 import { protocolDrift } from "../openclaw/protocol-drift.js";
@@ -111,8 +117,13 @@ interface LiveHermesTurn {
   run: HermesTurnRun;
 }
 
+/** How many answered requests the registry remembers (see `noteAnswered`). */
+const HERMES_ANSWERED_MEMORY = 2048;
+
 interface LiveHermesWsTurn {
   run: HermesWsTurnRun;
+  /** The instance whose Hermes this turn runs on (`wsClientFor`'s key). */
+  instanceName?: string;
 }
 
 /** Per-process registry of in-flight Hermes turns + the last-known Hermes
@@ -124,6 +135,41 @@ interface LiveHermesWsTurn {
 /** Two turns cannot share one runtime session's event lane — see `subscribeWsSession`.
  *  A named class so the caller settles the bubble with a stable, actionable cause
  *  instead of matching on prose. */
+/** One runtime session's event lane: at most one LIVE turn, plus finished turns still
+ *  listening for their late sub-agent events. */
+interface HermesWsLane {
+  live: HermesWsSessionHandlers | null;
+  lingering: HermesWsSessionHandlers[];
+}
+
+/** A turn's hold on its lane. Calling it releases; `linger()` hands the lane over to
+ *  whatever turn comes next while this one keeps receiving what it owns. */
+export interface HermesLaneLease {
+  (): void;
+  linger(): void;
+}
+
+/**
+ * Who receives an event on a lane. A monitoring event goes to the turn that OWNS it
+ * (`ownsMonitoring`: the live one first, then a lingering one that saw the child start),
+ * so a child finishing after its parent still lands in the parent's monitor, never in
+ * the next turn's bubble. Everything else — and a monitoring event nobody claims — goes
+ * to the live turn, else to the most recent lingering one (whose finalized guard admits
+ * only monitoring and `session.info`).
+ */
+export function routeLaneEvent(
+  lane: HermesWsLane,
+  type: string,
+  payload: Record<string, unknown>,
+): HermesWsSessionHandlers | undefined {
+  if (type.startsWith("subagent.") || type.startsWith("moa.")) {
+    if (lane.live?.ownsMonitoring?.(type, payload)) return lane.live;
+    const owner = lane.lingering.find((h) => h.ownsMonitoring?.(type, payload));
+    if (owner) return owner;
+  }
+  return lane.live ?? lane.lingering[lane.lingering.length - 1];
+}
+
 /** Placeholder held between claiming a chat's turn seat and binding the run to it. */
 const WS_TURN_SEAT_RESERVED = Symbol("ws-turn-seat-reserved");
 
@@ -156,7 +202,7 @@ export class HermesTurnRegistry {
   private filesFetchers = new Map<string, HermesFilesFetcher>();
   // Keyed by `<instance>\u0000<runtimeSessionId>` — one instance's events (or
   // its socket dying) must NEVER reach another instance's turns.
-  private wsSubscribers = new Map<string, HermesWsSessionHandlers>();
+  private wsSubscribers = new Map<string, HermesWsLane>();
   private wsTurns = new Map<string, LiveHermesWsTurn | typeof WS_TURN_SEAT_RESERVED>();
 
   /** One persistent WS client per instance (lazy; auto-reconnect on next use). */
@@ -168,11 +214,22 @@ export class HermesTurnRegistry {
       baseUrl: cfg.gatewayHttpBase || cfg.openclawGatewayUrl,
       credential: cfg.openclawToken ?? "",
       onEvent: (type, sessionId, payload, synthetic) => {
-        const sub = this.wsSubscribers.get(`${key}\u0000${sessionId}`);
+        const lane = this.wsSubscribers.get(`${key}\u0000${sessionId}`);
         // `synthetic` travels the whole way. Dropped here, a terminal the router
         // promoted because it could not decode it arrived at the reader looking
         // exactly like a failure Hermes reported — and was stored as one, for good.
-        sub?.onEvent(type, payload, synthetic);
+        if (lane) routeLaneEvent(lane, type, payload)?.onEvent(type, payload, synthetic);
+      },
+      // A question the gateway asks (Hermes 0.21.3+) belongs to the run asking it — the
+      // LIVE turn of that session, never a lingering one: a finished turn's reader admits
+      // only its monitoring tail and would drop it unanswered. No live turn: not taken, and
+      // the client answers `-32601` so the agent is told nobody here can answer.
+      onServerRequest: (sessionId, id, method, params) => {
+        if (!HERMES_SERVER_REQUESTS_TAKEN.has(method)) return false;
+        const live = this.wsSubscribers.get(`${key}\u0000${sessionId}`)?.live;
+        if (!live) return false;
+        live.onEvent(HERMES_SERVER_REQUEST_EVENT, { id, method, params });
+        return true;
       },
       onClose: () => {
         // THIS instance's socket died: its subscribed turns settle so no message is
@@ -187,10 +244,12 @@ export class HermesTurnRegistry {
         // ONE heartbeat drops EVERY session of the instance. That is the honest scope:
         // the socket is per-instance, so its death really does leave every turn on it
         // unattributable. The cost is bounded — one rehydration each.
-        for (const [k, sub] of this.wsSubscribers) {
+        for (const [k, lane] of this.wsSubscribers) {
           if (!k.startsWith(`${key}\u0000`)) continue;
           this.wsSubscribers.delete(k);
-          sub.onTransportLost("Hermes WS connection lost.");
+          for (const sub of [...(lane.live ? [lane.live] : []), ...lane.lingering]) {
+            sub.onTransportLost("Hermes WS connection lost.");
+          }
         }
       },
     });
@@ -215,30 +274,46 @@ export class HermesTurnRegistry {
     instanceName: string,
     runtimeSessionId: string,
     handlers: HermesWsSessionHandlers,
-  ): () => void {
+  ): HermesLaneLease {
     const k = `${instanceName}\u0000${runtimeSessionId}`;
-    // REFUSE, never overwrite. A `set` here used to silently replace a live turn's
-    // handlers: turn N then received NOTHING and its terminal — its whole reply — was
-    // applied to turn N+1's bubble. The wire cannot save us after the fact either, and
-    // that is what settles the design: Hermes event frames carry ONLY `session_id`, with
+    // REFUSE, never overwrite, a LIVE turn. A `set` here used to silently replace a live
+    // turn's handlers: turn N then received NOTHING and its terminal — its whole reply —
+    // was applied to turn N+1's bubble. Hermes event frames carry ONLY `session_id`, with
     // no per-turn correlation of any kind (verified against the live capture), so two
-    // Atrium turns sharing one runtime session are not demultiplexable. The honest move
-    // is to keep the lane its first owner has and let the newcomer fail by NAME, before
-    // it submits anything.
-    const held = this.wsSubscribers.get(k);
-    if (held !== undefined) {
+    // LIVE Atrium turns sharing one runtime session are not demultiplexable.
+    //
+    // A FINISHED turn is another matter: it only lingers to receive its late sub-agent
+    // events (see `linger`), and Hermes 0.19 resumes the SAME runtime session id turn
+    // after turn — so a lingering owner used to refuse the person's next message for two
+    // minutes. The newcomer becomes the live owner; the lingerer keeps what it owns.
+    let lane = this.wsSubscribers.get(k);
+    if (lane?.live) {
       throw new HermesSessionLaneBusyError(runtimeSessionId);
     }
-    this.wsSubscribers.set(k, handlers);
-    return () => {
-      // IDENTITY-checked: a later turn on the same runtime session must keep its own
-      // handlers when this turn's deferred unsubscribe fires. `onClose` already deleted
-      // the entry before notifying, so the double-fire is a no-op either way.
-      if (this.wsSubscribers.get(k) === handlers) {
+    if (!lane) {
+      lane = { live: null, lingering: [] };
+      this.wsSubscribers.set(k, lane);
+    }
+    lane.live = handlers;
+    const held = lane;
+    const release = (() => {
+      // IDENTITY-checked: a later turn on the same runtime session keeps its own
+      // handlers when this turn's deferred release fires. `onClose` already deleted the
+      // lane before notifying, so the double-fire is a no-op either way.
+      if (held.live === handlers) held.live = null;
+      held.lingering = held.lingering.filter((h) => h !== handlers);
+      if (held.live === null && held.lingering.length === 0 && this.wsSubscribers.get(k) === held) {
         this.wsSubscribers.delete(k);
       }
+    }) as HermesLaneLease;
+    release.linger = () => {
+      if (held.live !== handlers) return;
+      held.live = null;
+      held.lingering.push(handlers);
     };
+    return release;
   }
+
 
   /** CLAIM the chat's single WS turn seat, before the turn exists.
    *
@@ -275,10 +350,34 @@ export class HermesTurnRegistry {
   wsSeatReserved(chatId: string): boolean {
     return this.wsTurns.get(chatId) === WS_TURN_SEAT_RESERVED;
   }
+  /** Requests Hermes TOOK Atrium's answer for, and as what — kept past the turn that
+   *  raised them: our reply can be lost after Hermes applied it, and the retry may come
+   *  once that turn has ended (the action's own timeout reopens the card). Told as what
+   *  it was, never "expired" (codex P2, 0.21.5 passes 26 and 28). Process memory, bounded. */
+  private answered = new Map<string, HermesAnsweredVerdict>();
+  noteAnswered(instanceName: string, chatId: string, id: string, verdict: HermesAnsweredVerdict): void {
+    const key = `${instanceName}\u0000${chatId}\u0000${id}`;
+    this.answered.delete(key);
+    this.answered.set(key, verdict);
+    if (this.answered.size > HERMES_ANSWERED_MEMORY) {
+      const oldest = this.answered.keys().next().value;
+      if (oldest !== undefined) this.answered.delete(oldest);
+    }
+  }
+  answeredAs(instanceName: string, chatId: string, id: string): HermesAnsweredVerdict | null {
+    return this.answered.get(`${instanceName}\u0000${chatId}\u0000${id}`) ?? null;
+  }
   peekWsTurn(chatId: string): LiveHermesWsTurn | undefined {
     const t = this.wsTurns.get(chatId);
     // A merely RESERVED seat has no run to abort: nothing has been submitted yet.
     return t === WS_TURN_SEAT_RESERVED ? undefined : t;
+  }
+  /** The chat's live turn only when it runs on `instanceName`: what it holds proves
+   *  nothing about a request another instance's Hermes raised under the same id — an
+   *  answer sent there would release a run nobody here reads (codex P1, 0.21.5 pass 24). */
+  peekWsTurnOn(chatId: string, instanceName: string): LiveHermesWsTurn | undefined {
+    const t = this.peekWsTurn(chatId);
+    return t !== undefined && t.instanceName === instanceName ? t : undefined;
   }
   takeWsTurn(chatId: string): LiveHermesWsTurn | undefined {
     const t = this.wsTurns.get(chatId);
@@ -767,7 +866,7 @@ async function runClaimedWsSend(
     (sid, onEvent) =>
       registry.subscribeWsSession(cfg.instanceName ?? "", sid, onEvent),
   );
-  const entry = { run };
+  const entry: LiveHermesWsTurn = { run, instanceName: cfg.instanceName ?? "" };
   registry.bindWsTurn(body.chatId, entry);
   run.done.catch(() => {}).finally(() => registry.deleteWsTurnIf(body.chatId, entry));
   await run.accepted;
@@ -880,7 +979,7 @@ async function performHermesWsAbort(
  * socket while the gateway keeps working should close that, and delete this paragraph.
  */
 export async function harvestLostReply(
-  client: Pick<HermesWsClient, "call">,
+  client: Pick<HermesWsClient, "call"> & Partial<Pick<HermesWsClient, "rejectServerRequest">>,
   session: string,
 ): Promise<string | null> {
   try {
@@ -890,7 +989,13 @@ export async function harvestLostReply(
     if (String((r as { stored_session_id?: unknown }).stored_session_id ?? "") !== session) {
       return null;
     }
-    if ((r as { running?: unknown }).running === true) return null;
+    if ((r as { running?: unknown }).running === true) {
+      // Still running — and possibly BLOCKED on a question asked while Atrium was not
+      // listening: refused so it is withdrawn, rather than parking the lost run for its
+      // whole deadline (codex, 0.21.5 pass 6).
+      refuseOpenRequests(client, r);
+      return null;
+    }
     const inflight = (r as { inflight?: unknown }).inflight;
     if (typeof inflight !== "object" || inflight === null) return null;
     const snap = inflight as { assistant?: unknown; streaming?: unknown };

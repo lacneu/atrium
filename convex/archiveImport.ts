@@ -82,6 +82,10 @@ const SECTION_REFS: Record<
   ],
   subAgentToolParts: [{ field: "chatId", kind: "chats", required: true }],
   subAgentInteractions: [{ field: "chatId", kind: "chats", required: true }],
+  agentRequests: [
+    { field: "chatId", kind: "chats", required: true },
+    { field: "messageId", kind: "messages", required: false },
+  ],
   documentDrafts: [{ field: "chatId", kind: "chats", required: true }],
   chatBookmarks: [
     { field: "chatId", kind: "chats", required: true },
@@ -548,6 +552,7 @@ const USER_SCOPED_SECTIONS: ReadonlyArray<string> = [
   "documentDrafts",
   "chatBookmarks",
   "documentAttachments",
+  "agentRequests",
 ];
 
 /**
@@ -563,6 +568,9 @@ const TERMINALISE: Record<string, Record<string, string>> = {
   subAgents: { running: "aborted" },
   subAgentToolParts: { running: "error" },
   subAgentInteractions: { pending: "error" },
+  // An imported request can never be answered: the agent that asked belongs to the
+  // SOURCE deployment's gateway. Both open states close as expired.
+  agentRequests: { pending: "expired", submitting: "expired" },
   documentAttachments: { pending: "not_found" },
 };
 

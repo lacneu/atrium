@@ -210,6 +210,18 @@ const FILES = [
     "validation-errors.ts",
     "../../normalization-core/src/json-schema.ts",
   ]),
+
+  // AGENT REQUESTS: `question.get|list|resolve` and `approval.get|resolve`, named by
+  // rpc-scope.test.ts once the bridge answered agents' questions and approvals.
+  // Upstream publishes these modules from 2026.8.1 (verified per tag); the bridge only
+  // SENDS the calls from AGENT_REQUESTS_MIN_VERSION (compat.ts) on, which is why the
+  // older vendored trees were not re-vendored for them. `approval-id.ts` rides along
+  // as approvals.ts' only new import.
+  ...since("2026.8.1", [
+    "schema/questions.ts",
+    "schema/approvals.ts",
+    "schema/approval-id.ts",
+  ]),
 ];
 
 /** The one repository these bytes may be attributed to. */

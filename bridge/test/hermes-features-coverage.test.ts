@@ -84,6 +84,18 @@ describe("the capability surface Hermes publishes is fully classified", () => {
     expect(versions.length).toBeGreaterThan(0);
   });
 
+  it("the RUNTIME set is EXACTLY the union of every vendored manifest", () => {
+    // One bridge serves every supported version, so the literal is their union — neither a
+    // capability no manifest classified (it would silence the ledger) nor one missing (a
+    // classified capability flagged on every poll): the hand-kept-list defect, one file over.
+    const union = new Set<string>();
+    for (const v of versions) {
+      const m = read<FeatureManifest>(`../protocol/hermes/features/${v}.json`);
+      for (const n of Object.keys(m.features)) union.add(n);
+    }
+    expect([...CLASSIFIED_HERMES_CAPABILITIES].sort()).toEqual([...union].sort());
+  });
+
   for (const VERSION of versions) {
   describe(VERSION, () => {
   const contract = read<RestContract>(
@@ -115,13 +127,12 @@ describe("the capability surface Hermes publishes is fully classified", () => {
     expect(unjustified, "a classification without prose is a shrug").toEqual([]);
   });
 
-  it("the RUNTIME set mirrors this manifest exactly", () => {
-    // The literal the discovery poll compares against. A literal that drifts from the
-    // manifest would either flag a classified capability on every poll, or stay silent on
-    // one nobody classified — the hand-kept-list defect, one file over.
-    expect([...CLASSIFIED_HERMES_CAPABILITIES].sort()).toEqual(
-      Object.keys(manifest.features).sort(),
-    );
+  it("the RUNTIME set covers this manifest", () => {
+    // The literal the discovery poll compares against. A capability this version declares
+    // and the literal lacks would be flagged on every poll although classified; the
+    // converse — a literal naming what no manifest classified — is the union check below.
+    const runtime = CLASSIFIED_HERMES_CAPABILITIES;
+    expect(Object.keys(manifest.features).filter((n) => !runtime.has(n))).toEqual([]);
   });
 
   it("the published COUNTS are derived, not remembered", () => {

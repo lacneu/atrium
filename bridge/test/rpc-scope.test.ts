@@ -81,6 +81,11 @@ const NAMESPACE_MODULE: Record<string, string | null> = {
   // live with the mention schemas rather than in `users.ts` — the module is named
   // for the FEATURE upstream, not for the namespace.
   users: "human-mentions.ts",
+  // AGENT REQUESTS: `question.get|list|resolve` answer an agent's `ask_user`, and
+  // `approval.get|resolve` its exec / plugin / system-agent approvals — the unified
+  // resolver, one module for all three kinds. Sent only from AGENT_REQUESTS_MIN_VERSION.
+  question: "questions.ts",
+  approval: "approvals.ts",
 };
 
 /** Modules vendored for the version the bridge PROMISES (`maxValidated`).
@@ -232,6 +237,9 @@ const NON_CALL_REFERENCES: { file: string; text: string }[] = [
   { file: "ws-turn.ts", text: '"terminal.read.request"' },
   { file: "ws-turn.ts", text: '"secret.request"' },
   { file: "ws-turn.ts", text: '"sudo.request"' },
+  // Hermes 0.21's connection card (`manage_connections`): an EVENT the turn waits out, not
+  // a call — Atrium never answers it (`connection.respond`).
+  { file: "ws-turn.ts", text: '"connection.request"' },
   // The same two names in the prose that explains WHY they are the exception (a
   // credential prompt gets no answer invented by Atrium). Prose is where a reader looks
   // first, so the rule must be allowed to name what it is about.
@@ -244,6 +252,20 @@ const NON_CALL_REFERENCES: { file: string; text: string }[] = [
   // lot G-70), not a method Atrium calls. Node-to-node invocation is classified
   // `ignored`: Atrium is a client of one gateway and never services these.
   { file: "protocol-drift.ts", text: '"node.invoke.request"' },
+  // AGENT REQUESTS (core/agent-requests.ts). The raw approval broadcast's `request`
+  // FIELD (read for routing only), and the four Hermes prompt EVENT names again —
+  // this time as the keys of their upstream timeouts and in the readers' prose.
+  // Their answers are `approval.respond` / `clarify.respond` / `secret.respond` /
+  // `sudo.respond`, which the sweep sees as the calls they are.
+  { file: "agent-requests.ts", text: "obj(p.request)" },
+  { file: "agent-requests.ts", text: "`approval.request`" },
+  { file: "agent-requests.ts", text: "`clarify.request {question" },
+  { file: "agent-requests.ts", text: "`secret.request {prompt" },
+  { file: "agent-requests.ts", text: 'type === "sudo.request"' },
+  // The approval broadcast's `request` FIELD again, read for routing by the observer,
+  // and a Hermes event name in the turn's prose.
+  { file: "agent-request-observer.ts", text: "(payload as { request?: unknown }).request" },
+  { file: "ws-turn.ts", text: "the `approval.request` case" },
 ];
 
 describe("RPC scope derivation (W10)", () => {
@@ -427,6 +449,14 @@ describe("RPC scope derivation (W10)", () => {
       // The hangup of a gateway-owned (GPT Live) call, added 2026-09-19: the call is
       // bound to the socket that minted it, and this is how that socket ends it.
       "talk.client.close",
+      // AGENT REQUESTS, added 2026-09-22: answering an agent's questions and
+      // approvals. Before this, the calls went through a `(method, params)` adapter
+      // and three of the five were INVISIBLE to this derivation.
+      "question.get",
+      "question.list",
+      "question.resolve",
+      "approval.get",
+      "approval.resolve",
     ];
     // The list must be EXHAUSTIVE, not a sample (raised in review): adding a call to
     // a method whose schema happens to be vendored — `cron.status`, say — would leave

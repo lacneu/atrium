@@ -1207,6 +1207,34 @@ describe("prompt.submit answers THREE acknowledgements, not one (G-36)", () => {
     }
   });
 
+  it("REDIRECTED (the default busy policy since v2026.7.30) is the same: our text joined the live turn", async () => {
+    // agent/interrupt_control.py: the live run's model request is cancelled and the text
+    // is added to THAT turn as a correction (or steered during a tool). Read as a
+    // non-conforming ACK it waited 240 s for a terminal that belongs to another bubble.
+    vi.useFakeTimers();
+    try {
+      const finals: Array<{ status: string; clear?: string; kind?: string }> = [];
+      const run = runHermesWsTurn(
+        {
+          client: fakeWsClient({ ackStatus: "redirected" }),
+          writer: flagWriter(finals),
+          chatId: "c1",
+          sessionKey: "k",
+          providerChatId: null,
+          text: "ma correction",
+        },
+        () => () => {},
+      );
+      await run.accepted;
+      await run.done;
+      expect(finals).toHaveLength(1);
+      expect(finals[0]?.kind).toBe("prompt_steered");
+      expect(finals[0]?.clear).toBeUndefined();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("a REFUSED lane fails the dispatch and submits NOTHING", async () => {
     // The newcomer must not send: its reply would land in the bubble of the turn that
     // owns the lane. Nothing was submitted, so the outbox can re-dispatch it cleanly.
@@ -1381,5 +1409,50 @@ describe("an undecodable terminal arriving BEFORE the ACK keeps its account", ()
       | { finalizeCause?: string }
       | undefined;
     expect(detail?.finalizeCause).toBe("unreadable_terminal");
+  });
+});
+
+describe("a finished turn hands the lane over (bench 2026-09-23)", () => {
+  it("lingers instead of holding the lane, and still claims the children it started", async () => {
+    // Hermes 0.19 resumes the SAME runtime session id for the chat's next turn. Holding
+    // the lane through the 120 s late-child grace refused that turn outright; lingering
+    // hands it over while the finished turn keeps what it owns.
+    vi.useFakeTimers();
+    try {
+      const { writer } = spyWriter();
+      let cb!: Parameters<Parameters<typeof runHermesWsTurn>[1]>[1];
+      const release = Object.assign(vi.fn(), { linger: vi.fn() });
+      const run = runHermesWsTurn(
+        {
+          client: fakeWsClient({}),
+          writer,
+          chatId: "c1",
+          sessionKey: "k",
+          providerChatId: null,
+          text: "délègue",
+        },
+        (_sid, handlers) => {
+          cb = handlers;
+          onTransportLost = handlers.onTransportLost;
+          return release;
+        },
+      );
+      await run.accepted;
+      cb.onEvent("subagent.start", { child_session_id: "child-1", goal: "g" });
+      cb.onEvent("message.complete", { text: "ok", status: "complete" });
+      await run.done;
+      expect(release.linger).toHaveBeenCalledTimes(1);
+      expect(release, "the grace still ends the subscription later").not.toHaveBeenCalled();
+      expect(cb.ownsMonitoring?.("subagent.complete", { child_session_id: "child-1" })).toBe(
+        true,
+      );
+      expect(cb.ownsMonitoring?.("subagent.complete", { child_session_id: "child-2" })).toBe(
+        false,
+      );
+      await vi.advanceTimersByTimeAsync(120_000);
+      expect(release).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

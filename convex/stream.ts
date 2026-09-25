@@ -1175,9 +1175,12 @@ const TURN_PHASES = new Set([
   // the answer is complete and it is finishing its post-turn work. Before this
   // the turn simply went silent until the 240 s recv timeout (G-20).
   "post_processing",
-  // A tool asked for a human approval this app cannot grant (G-21): the turn is
-  // deliberately waiting, and saying so beats a silent spinner.
+  // A tool asked a human to authorise something (G-21): the turn is deliberately
+  // waiting, and the person can now answer it (agentRequests).
   "awaiting_approval",
+  // The agent asked the person a QUESTION (OpenClaw `ask_user`, Hermes `clarify`)
+  // or for a credential, and is blocked until they answer or it expires.
+  "awaiting_input",
   // The PROVIDER is rate-limiting and the gateway is backing off (OpenClaw
   // 2026.9.4 `ChatStatusEvent.retry`). Before this, each re-entered attempt
   // re-emitted the deferred terminal and the turn repeated "post-processing" —

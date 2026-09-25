@@ -34,6 +34,10 @@ import { readConfigChanged, type ConfigChangedNotice } from "./config-changed.js
 import { buildIdentityHeaders, type GatewayIdentity } from "./gateway-identity.js";
 import type { RosterEntry } from "./models-roster.js";
 import { decodeInboundFrame, protocolDrift } from "./protocol-drift.js";
+import {
+  SecretAnswerRedactor,
+  redactAllQuestionAnswers,
+} from "../../core/secret-answer-redaction.js";
 
 // DEV-ONLY raw-frame capture. When OPENCLAW_CAPTURE_FRAMES holds a file path, every
 // inbound gateway frame is appended (full, untruncated) as one JSON line — the
@@ -61,13 +65,20 @@ const CAPTURE_FRAMES_PATH =
   typeof process !== "undefined"
     ? process.env?.OPENCLAW_CAPTURE_FRAMES
     : undefined;
-function captureFrame(connection: string, frame: unknown): void {
+/** One capture line. The redactor is not optional: a question's secret answer travels
+ *  in clear in `question.resolved`, and this file is corpus material (the repository). */
+export function captureLine(
+  connection: string,
+  frame: unknown,
+  redactor: SecretAnswerRedactor,
+  receivedAt: number = Date.now(),
+): string {
+  return JSON.stringify({ receivedAt, connection, frame: redactor.redact(frame) }) + "\n";
+}
+function captureFrame(connection: string, frame: unknown, redactor: SecretAnswerRedactor): void {
   if (!CAPTURE_FRAMES_PATH) return;
   try {
-    appendFileSync(
-      CAPTURE_FRAMES_PATH,
-      JSON.stringify({ receivedAt: Date.now(), connection, frame }) + "\n",
-    );
+    appendFileSync(CAPTURE_FRAMES_PATH, captureLine(connection, frame, redactor));
   } catch {
     /* best-effort dev capture — never disturb the read loop */
   }
@@ -94,6 +105,11 @@ const DEFAULT_SCOPES = [
   "operator.write",
   "operator.admin",
   "operator.approvals",
+  // `question.requested/resolved` are delivered only to this scope (or admin), and
+  // `question.resolve` requires it (core-descriptors.ts:74-78 at v2026.9.5). Asking
+  // for it is NOT a scope upgrade for a device paired with admin: a granted admin
+  // satisfies every `operator.*` request (shared/operator-scope-compat.ts:9-15).
+  "operator.questions",
   "operator.pairing",
 ] as const;
 
@@ -125,12 +141,14 @@ function dbg(...args: unknown[]): void {
   }
 }
 
-function clip(value: unknown, max = 1200): string {
+/** A value as debug text. Every `dbg` of a frame or a response goes through here, so a
+ *  question's answers — a secret may be among them — are replaced first. */
+export function clip(value: unknown, max = 1200): string {
   if (value === undefined) return "undefined";
   let s: string;
   if (typeof value === "string") s = value;
   else {
-    const j = JSON.stringify(value);
+    const j = JSON.stringify(redactAllQuestionAnswers(value));
     // JSON.stringify returns undefined for undefined/functions/symbols.
     s = typeof j === "string" ? j : String(value);
   }
@@ -296,6 +314,8 @@ export class OpenClawConnection {
   // version oracle keys on). `null` when the handshake does not carry it; the
   // compat manifest then applies its CONSERVATIVE capability policy.
   gatewayVersion: string | null = null;
+  /** Keeps a secret answer out of the dev capture (core/secret-answer-redaction.ts). */
+  private readonly captureRedactor = new SecretAnswerRedactor();
 
   // Max WS frame the gateway accepts, captured live from the hello-ok
   // `payload.policy.maxPayload` (observed 26214400 = 25 MiB). This is the ONE
@@ -397,6 +417,10 @@ export class OpenClawConnection {
     identity?: GatewayIdentity,
     /** Gateway-side `gateway.auth.trustedProxy.userHeader`, when it is not the default. */
     userHeader?: string,
+    /** Client capabilities beyond the defaults. `approvals` makes this socket a
+     *  reviewer surface the gateway routes approvals to — see gateway-version-hint.ts
+     *  for when a conversation's socket declares it. */
+    extraCaps: readonly string[] = [],
   ): Promise<OpenClawConnection> {
     return new Promise((resolve, reject) => {
       let settled = false;
@@ -549,7 +573,7 @@ export class OpenClawConnection {
                 device: signedDevice,
                 locale: "en-US",
                 userAgent: "atrium-bridge/0.1.0",
-                caps: ["agent-events", "tool-events"],
+                caps: ["agent-events", "tool-events", ...extraCaps],
               },
             }),
           );
@@ -703,6 +727,7 @@ export class OpenClawConnection {
                     promotionDepth + 1,
                     identity,
                     userHeader,
+                    extraCaps,
                   ),
                 );
               })
@@ -787,7 +812,7 @@ export class OpenClawConnection {
     // DEV-ONLY ground-truth frame capture (see captureFrame): the FULL untruncated
     // frame exactly as received — fixture + version-diagnosis material. No-op unless
     // OPENCLAW_CAPTURE_FRAMES is set (never in prod: frames may carry content).
-    captureFrame(this.captureConnection, frame);
+    captureFrame(this.captureConnection, frame, this.captureRedactor);
     // ANNOUNCED SHUTDOWN — recorded here, at connection scope, because that is
     // what it describes: every session on this socket is about to lose it. The
     // frame is then queued UNCHANGED like any other (observe-only: the normalizer

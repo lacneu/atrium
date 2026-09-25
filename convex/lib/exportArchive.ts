@@ -134,6 +134,7 @@ export const CHAT_SECTIONS = [
   "documentDrafts",
   "chatBookmarks",
   "documentAttachments",
+  "agentRequests",
 ] as const;
 
 export type ChatSection = (typeof CHAT_SECTIONS)[number];
@@ -359,3 +360,22 @@ export const OPAQUE_PART_KEYS: ReadonlyArray<string> = ["input", "output"];
  * replays it against a gateway.
  */
 export const SUBAGENT_FIELDS_DROPPED: ReadonlyArray<string> = ["sessionMeta"];
+
+/**
+ * What an agent request leaves behind in an archive. `sessionKey`/`runId` address a
+ * live gateway session (the resumable-handle rule above), `providerCreatedAt`
+ * only tells that gateway's reused ids apart and `answerById` how that gateway takes an
+ * answer; `resolvedByUserId` names a person of the
+ * SOURCE deployment (the `authorUserId` rule); `failureCode` is a transport diagnosis
+ * of this deployment. The ask and its outcome travel.
+ */
+export const AGENT_REQUEST_FIELDS_DROPPED: ReadonlyArray<string> = [
+  "sessionKey",
+  "runId",
+  "providerCreatedAt",
+  "answerById",
+  "providerSeenSeq",
+  "providerSeenEpoch",
+  "resolvedByUserId",
+  "failureCode",
+];

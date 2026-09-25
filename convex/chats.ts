@@ -18,6 +18,7 @@ import { deleteFilesByMessage } from "./lib/files";
 import { isChatBusy } from "./lib/outboxQueue";
 import { releaseDanglingDocumentaryFetch } from "./documentAttachments";
 import { purgeSummaryForChat } from "./chatSummaries";
+import { deleteChatAgentRequests } from "./agentRequests";
 
 async function requireOwnedProject(
   ctx: MutationCtx,
@@ -501,6 +502,8 @@ export async function cascadeDeleteChat(
     .withIndex("by_chat", (q) => q.eq("chatId", chatId))
     .collect();
   for (const i of subAgentInteractions) await ctx.db.delete(i._id);
+  // What the agent asked and what was answered — conversation content keyed by chat.
+  await deleteChatAgentRequests(ctx, chatId);
   // The owner's document drafts (edited-file text is user content).
   if (chat) {
     const draftRows = await ctx.db

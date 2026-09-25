@@ -111,6 +111,9 @@ export const HUMAN_SCOPE_CAP = [
   "operator.read",
   "operator.write",
   "operator.approvals",
+  // The person's own socket must SEE the questions its agent asks them: without
+  // it the capped socket never receives `question.requested` (server-broadcast.ts:60).
+  "operator.questions",
 ] as const;
 
 /**

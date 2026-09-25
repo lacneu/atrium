@@ -60,6 +60,7 @@ import {
   summaryBackoffMs,
   REHYDRATION_STRINGS,
 } from "./lib/rehydration";
+import { deleteChatAgentRequests } from "./agentRequests";
 
 /** Bounded newest-window read when building a chunk (mirrors rehydration's bounded
  *  tail read, wider). A backlog larger than this window converges over several jobs;
@@ -206,6 +207,7 @@ export async function cleanupHiddenChatContent(
       .withIndex("by_chat", (q) => q.eq("chatId", hiddenChatId))
       .collect();
     for (const it of subAgentInteractions) await ctx.db.delete(it._id);
+    await deleteChatAgentRequests(ctx, hiddenChatId);
   }
 }
 

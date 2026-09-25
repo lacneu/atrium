@@ -1,5 +1,56 @@
 # Changelog
 
+## [0.85.0] — When the agent asks, you can answer
+
+Feature release: what an agent asks in the middle of a turn — a question, a
+permission, a secret — now reaches you in the conversation, on OpenClaw and on
+Hermes. Hermes 0.21.5 is supported. No breaking changes, nothing to reconfigure.
+
+**An agent that asks you something no longer waits in silence.** Reported in
+production: an agent asked a question, nothing showed it, and it waited fifteen
+minutes before carrying on without the answer — once, the question step was even
+shown as "never finished" while the agent was still waiting on it. Every such
+request now becomes a card
+under the reply, with a compact reminder above the composer, a "Requests" panel for
+the conversation, a badge on the conversation in the sidebar and a notification.
+Questions offer their choices (one or several), a free answer when the agent allows
+it, and a way to skip. Approvals show exactly what would run — the command, the
+machine or node, the plugin asking — with allow once, for the session, always, or
+deny. Secrets and passwords are typed into a masked field, sent straight to the
+agent and never stored or logged by Atrium; a secret the gateway keeps says under
+which name and for which hosts before you hand it over.
+
+**You approve only what you were shown.** A command too long to be shown whole can
+only be denied. A password whose purpose the agent does not state cannot be given
+from Atrium. And a card answers only the request it displays: if the agent has
+since asked something else under the same identifier — a different question, other
+choices, another destination for a secret — the answer is refused instead of being
+applied to a request you never saw.
+
+**An answer never releases an agent nobody is watching.** Both gateways accept an
+answer by its identifier alone, even from a connection that reads nothing of what
+follows. So an answer sent while Atrium was not following that run — right after a
+bridge restart, or across instances — would let the agent carry on with its output
+shown nowhere. Such an answer is now refused and the card closes as expired: a
+question comes back as soon as the conversation is live again; an approval runs out
+its own timeout on the gateway. When the reply to an answer was lost on the way
+back, answering again reports what the agent actually received instead of calling
+it expired.
+
+**Hermes 0.21.5 is supported**, validated on the live bench alongside OpenClaw
+2026.9.5. On this version each prompt is answered by its own identifier, so an
+answer settles exactly the request on screen; clarifications with several questions
+or several choices are supported, and a message that joins a turn already running
+is recognised as such. On Hermes 0.19, where an approval is decided by queue order,
+Atrium lets you answer only the one at the head of the queue. On OpenClaw, requests
+are received from gateway 2026.9.5 on.
+
+**A Hermes message sent right after a turn is no longer refused.** Hermes reuses the
+same session from one turn to the next, and a finished turn held it for two more
+minutes to catch late sub-agent reports — so a message sent within those two minutes
+failed as "session busy". A finished turn now hands the session over at once while
+still receiving the reports that belong to it.
+
 ## [0.84.21] — Why a turn ended, kept with the turn
 
 Observability and reliability release, from the production triage of 2026-09-21

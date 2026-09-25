@@ -31,6 +31,8 @@ import {
   provenanceSignature,
   type ProvenancePart,
 } from "../../core/provenance.js";
+import { EXEC_APPROVAL_FOLLOWUP_PREFIX } from "./run-families.js";
+import { redactAllQuestionAnswers } from "../../core/secret-answer-redaction.js";
 
 // Cap on the pre-ack frame stash (see `pendingFrames`): bounds memory if a
 // dispatch fails and beginTurn never drains it. Generous — a whole turn's worth.
@@ -148,7 +150,8 @@ export class RunManager {
     const dumpNeedle = process.env.BRIDGE_FRAME_DUMP;
     if (dumpNeedle) {
       try {
-        const s = JSON.stringify(frame);
+        // A question's answers may be a secret: redacted BEFORE matching and printing.
+        const s = JSON.stringify(redactAllQuestionAnswers(frame));
         if (s.includes(dumpNeedle)) {
           console.log(`[frame-dump] ${s.slice(0, 2400)}`);
         }
@@ -180,7 +183,8 @@ export class RunManager {
       if (process.env.BRIDGE_DEBUG || process.env.BRIDGE_FRAME_DUMP) {
         let sample = "";
         try {
-          sample = JSON.stringify(frame).slice(0, 300);
+          // A question's answers may be a secret: never in a log, even a debug one.
+          sample = JSON.stringify(redactAllQuestionAnswers(frame)).slice(0, 300);
         } catch {
           sample = "<unserializable>";
         }
@@ -573,6 +577,48 @@ export class RunManager {
   /** A user /abort RPC targeted this chat's active run — see TurnSink. */
   noteUserAbort(): void {
     this.sink.noteUserAbort();
+  }
+
+  /**
+   * A HUMAN is being asked a question on this session (OpenClaw `ask_user`).
+   *
+   * Session-scoped, not run-scoped, on purpose: a gateway session runs one run at a
+   * time, so a question pending on it blocks whatever turn this chat is driving —
+   * the record's `runId` names the embedded run, which is not always the id the
+   * turn was admitted under. Returns whether an active turn is now held by it (the
+   * caller wakes the consume loop so the new deadlines take effect).
+   */
+  async noteHumanQuestion(
+    id: string,
+    expiresInSec: number | null,
+    now: number,
+  ): Promise<boolean> {
+    if (!this.sink.active) return false;
+    await this.applyOrdered(() =>
+      this.normalizer.noteQuestionRequested(id, expiresInSec, now),
+    );
+    return true;
+  }
+
+  /** The question was settled by the gateway (answered, cancelled, expired). */
+  async noteHumanQuestionSettled(id: string, now: number): Promise<void> {
+    if (!this.sink.active) return;
+    await this.applyOrdered(() => this.normalizer.noteQuestionSettled(id, now));
+  }
+
+  /** An approval of this turn was settled outside its frames (see
+   *  Normalizer.noteApprovalSettled). */
+  async noteApprovalSettled(approvalId: string, now: number): Promise<void> {
+    if (!this.sink.active) return;
+    await this.applyOrdered(() =>
+      this.normalizer.noteApprovalSettled(approvalId, now),
+    );
+  }
+
+  /** A question of the active turn is still waiting on a human — a silence while it
+   *  waits is not a lost run (see Session's recv-silence recovery). */
+  get questionPending(): boolean {
+    return this.sink.active && this.normalizer.questionPending;
   }
 
   /**
@@ -1142,6 +1188,13 @@ function announceRunIdFor(frame: unknown, sessionKey: string): string | null {
   // 2026-07-16) — the voice-triggered agent turn lands in the thread too.
   if (runId.startsWith("announce:")) return runId;
   if (taskDeliveryRunFromRunId(runId) !== null) return runId;
+  // An APPROVED command's continuation: after a person allows an exec approval the
+  // gateway runs the command and resumes the session with a run whose id is its
+  // idempotency key, `exec-approval-followup:<approvalId>[:nonce:<n>]`
+  // (bash-tools.exec-approval-followup-state.ts:80 at v2026.9.5). Without admission
+  // the agent's reply to its own authorised command was dropped here — the same
+  // loss the three families above were admitted to prevent.
+  if (runId.startsWith(EXEC_APPROVAL_FOLLOWUP_PREFIX)) return runId;
   // Talk consults are normally written by the /talk-toolcall RELAY itself
   // (voice-first chats have no warm session): skip the runs it CLAIMED so a
   // warm session never double-writes the bubble. Unclaimed talk runs (relay

@@ -10,6 +10,11 @@
 // timeout fires is never dropped; on timeout we `tick()` the normalizer so an
 // armed grace always finalizes (never a hung "thinking" UI).
 
+import { openClawAgentRequestsEnabled } from "./compat.js";
+import {
+  holdGatewayVersion,
+  trustedGatewayVersion,
+} from "./providers/openclaw/gateway-version-hint.js";
 import {
   connectUserHeader,
   humanConnectIdentity,
@@ -37,6 +42,7 @@ import type { MediaFetcherProvider } from "./core/media-fetcher-provider.js";
 import { buildSessionKey } from "./providers/openclaw/session-keys.js";
 import { protocolDrift } from "./providers/openclaw/protocol-drift.js";
 import type { FinalizeCause } from "./core/finalize-causes.js";
+import { OpenClawAgentRequestObserver } from "./providers/openclaw/agent-request-observer.js";
 
 // Stable errorCode for a bridge-side infrastructure end (socket drop / crash
 // mid-turn): the UI maps it to "connection lost — retry", never the user
@@ -231,6 +237,10 @@ class Session implements BridgeSession {
   // Decoupled from the parent-turn lifecycle so a child frame arriving AFTER the
   // parent turn finalized still records (the whole reason the monitor exists).
   readonly observer: SubAgentObserver;
+  /** What the agent ASKS the person on this session (questions, approvals) — see
+   *  providers/openclaw/agent-request-observer.ts. Inbound-only, like the sub-agent
+   *  observer; its one effect on the turn is to say that a human now holds it. */
+  private readonly agentRequests: OpenClawAgentRequestObserver;
   // Child session keys whose INITIAL running-row creation we have already ordered
   // (awaited). Lets flushSubAgentObserved await ONLY the first `running` upsert per
   // child (its spawn registration) and fire every later status/heartbeat off the
@@ -362,6 +372,24 @@ class Session implements BridgeSession {
       // it while this session lives.
       outboundAgentMount: () => this.outboundAgentMount,
     });
+    this.agentRequests = new OpenClawAgentRequestObserver({
+      chatId,
+      sessionKey,
+      agentId: routing.agentId,
+      gateway: connection,
+      upsert: writer.upsertAgentRequest?.bind(writer),
+      settle: writer.settleAgentRequest?.bind(writer),
+      currentMessageId: () =>
+        this.runManager.turnActive ? this.runManager.currentMessageId : null,
+      noteQuestion: (id, expiresInSec) =>
+        this.runManager.noteHumanQuestion(id, expiresInSec, this.clock()),
+      noteQuestionSettled: (id) =>
+        this.runManager.noteHumanQuestionSettled(id, this.clock()),
+      noteApprovalSettled: (id) =>
+        this.runManager.noteApprovalSettled(id, this.clock()),
+      wake: () => this.wake(),
+      nowMs: () => Date.now(),
+    });
     this.clock = clock;
     this.lastActivityAt = clock();
     this.transcriptFetcher = transcriptFetcher;
@@ -372,6 +400,26 @@ class Session implements BridgeSession {
    *  override the bridge's own default — matching only the image default left
    *  every such delivery unrecognised on the child lane. */
   private outboundAgentMount: string | null = null;
+
+  /** An approval of this chat was answered from Atrium: release the turn it holds
+   *  (see RunManager.noteApprovalSettled). Detached — a label and a deadline. */
+  /** Whether this conversation's live socket routed approval `id` here (see the
+   *  observer's `routedApproval`). */
+  routedApproval(approvalId: string): boolean {
+    return this.agentRequests.routedApproval(approvalId);
+  }
+
+  noteApprovalAnswered(approvalId: string): void {
+    void this.runManager
+      .noteApprovalSettled(approvalId, this.clock())
+      .then(() => this.wake())
+      .catch((err) =>
+        console.error(
+          `[agent-request] approval release failed chat=${this.chatId}:`,
+          (err as Error)?.message ?? err,
+        ),
+      );
+  }
 
   /** Record the mount `/send` just instructed the agent to use. */
   noteOutboundMount(dir: string | null): void {
@@ -537,6 +585,13 @@ class Session implements BridgeSession {
       return;
     }
     this.consumerStarted = true;
+    // A question asked while no socket of ours was listening would otherwise stay
+    // invisible until it expired. Detached: a read, never on the consume path. Only on a
+    // gateway where the surface is bench-proven (compat.ts, AGENT_REQUESTS_MIN_VERSION):
+    // below it the bridge sends no `question.*` / `approval.*` call at all.
+    if (openClawAgentRequestsEnabled(this.connection.gatewayVersion)) {
+      void this.agentRequests.replayPending();
+    }
     // The consume loop catches its own feed/tick/endTurn errors, but a throw in
     // the loop machinery itself (iterator, race) would otherwise become an
     // unhandled rejection and kill the whole bridge. Guard it: finalize any
@@ -806,6 +861,15 @@ class Session implements BridgeSession {
           // (C4 lives on the reader, so the voice relay and the pre-ack replay are
           // covered too). Reporting again would count one unreadable frame twice.
           console.error("session feed error:", (err as Error)?.message ?? err);
+        }
+        // AGENT REQUESTS ride broadcasts, not the turn's frames: the feed above drops
+        // them. Awaited because the one local effect — a human now holds the turn —
+        // decides the very next deadline; the network writes inside are detached.
+        if (
+          OpenClawAgentRequestObserver.handles(winner.value) &&
+          openClawAgentRequestsEnabled(this.connection.gatewayVersion)
+        ) {
+          await this.agentRequests.observe(winner.value);
         }
         // POST-feed re-evaluation: a legitimately NEW runId admitted DURING
         // feed() (lifecycle_end / compaction adoption windows) was not in
@@ -1090,6 +1154,14 @@ class Session implements BridgeSession {
         finishPoll();
         return;
       }
+      if (reason === "recv_silence" && rm.questionPending) {
+        // A HUMAN is being asked a question: the silence is the agent waiting on
+        // them, not a lost run. Recovering here would settle a false
+        // `response_timeout` over a run that resumes the moment they answer (prod
+        // 2026-09-22, 20:42 → 20:52). The question's own deadline bounds the wait.
+        finishPoll();
+        return;
+      }
       if (reason === "recv_silence" && rm.recvDeadlineArmed) {
         // The live stream RESUMED (own frames re-armed the recv deadline): the
         // turn is healthy again — cancel this recovery instead of racing it
@@ -1141,10 +1213,15 @@ class Session implements BridgeSession {
           finishPoll();
           return;
         }
-        if (reason === "recv_silence" && rm.recvDeadlineArmed) {
+        if (
+          reason === "recv_silence" &&
+          (rm.recvDeadlineArmed || rm.questionPending)
+        ) {
           // The live stream resumed WHILE we were fetching — same cancel as the
           // pre-fetch check, or a partial transcript could finalize a turn that
-          // is actively streaming again (codex R9 P2).
+          // is actively streaming again (codex R9 P2). And a question put to a
+          // human DURING the fetch holds the turn the same way: the text written
+          // before `ask_user` is not the answer (prod 2026-09-22 17:47).
           finishPoll();
           return;
         }
@@ -1707,22 +1784,50 @@ export class SessionRegistry {
     }
     const instanceName =
       routing.instanceName ?? bundle.config.instanceName ?? "";
-    const connection = await OpenClawConnection.connect(
-      bundle.config.openclawGatewayUrl,
-      bundle.config.openclawToken ?? "",
-      bundle.config.deviceIdentity!,
-      deviceTokenPromotion(bundle.config),
-      0,
-      // THE per-user socket. In trusted-proxy mode this conversation's socket acts
-      // as the person who owns it, so every session the gateway creates from it
-      // carries their profile as `createdActor` — the fact the gateway's own
-      // visibility boundary reads. `undefined` in token mode: unchanged handshake.
-      // The NAME, not the routing key. They are the same string unless the instance
-      // says otherwise, and the session key above is built from the canonical
-      // either way.
-      humanConnectIdentity(bundle.config, gatewayNameFor(routing)),
-      connectUserHeader(bundle.config),
-    );
+    // AGENT REQUESTS: `approvals` makes this socket a reviewer surface the gateway
+    // routes approvals to (server-request-context.ts canDeliverApprovals). Declared
+    // ONLY where Atrium shows them — elsewhere an approval would wait for a card no
+    // one sees instead of failing fast. The version is known only after the
+    // handshake: the socket opens on the version a LIVE socket to this instance
+    // proves (gateway-version-hint.ts — none after a boot or a gateway restart), and
+    // re-opens ONCE when the real one allows more.
+    const approvalCaps = (version: string | null): string[] =>
+      openClawAgentRequestsEnabled(version) ? ["approvals"] : [];
+    const connectConversation = (caps: readonly string[]) =>
+      OpenClawConnection.connect(
+        bundle.config.openclawGatewayUrl,
+        bundle.config.openclawToken ?? "",
+        bundle.config.deviceIdentity!,
+        deviceTokenPromotion(bundle.config),
+        0,
+        // THE per-user socket. In trusted-proxy mode this conversation's socket acts
+        // as the person who owns it, so every session the gateway creates from it
+        // carries their profile as `createdActor` — the fact the gateway's own
+        // visibility boundary reads. `undefined` in token mode: unchanged handshake.
+        // The NAME, not the routing key. They are the same string unless the instance
+        // says otherwise, and the session key above is built from the canonical
+        // either way.
+        humanConnectIdentity(bundle.config, gatewayNameFor(routing)),
+        connectUserHeader(bundle.config),
+        caps,
+      );
+    // Every re-open is judged again on ITS handshake: the gateway may restart on
+    // another version between two of them (codex P2). The unsafe direction — the
+    // capability announced to a gateway Atrium does not observe approvals on — never
+    // survives: after a few disagreements the socket opens without it (fail closed:
+    // an approval is then refused as unrouted, never left waiting unseen).
+    let declared = approvalCaps(trustedGatewayVersion(instanceName));
+    let connection = await connectConversation(declared);
+    for (let attempt = 0; ; attempt += 1) {
+      const owed = approvalCaps(connection.gatewayVersion);
+      if (owed.length === declared.length) break;
+      // Out of attempts and on the safe side (nothing announced): keep it.
+      if (attempt >= 2 && declared.length === 0) break;
+      connection.close();
+      declared = attempt >= 2 ? [] : owed;
+      connection = await connectConversation(declared);
+    }
+    connection.onClosed(holdGatewayVersion(instanceName, connection.gatewayVersion));
     // SUBSCRIBE to session events (W2 / G-09). `session.operation` is the
     // gateway's own account of a compaction — it carries the CAUSE (`overflow` vs
     // a threshold vs `manual`), which Atrium could only infer until now, and it is

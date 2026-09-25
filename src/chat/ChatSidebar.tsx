@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { createContext, memo, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { APP_HOST } from "@/lib/appHost";
 import { clearSidebarFlash, useSidebarFlash } from "./sidebarFlash";
 import { formatDateTime } from "@/lib/format";
@@ -56,6 +56,9 @@ import {
   Download,
   Upload,
   EyeOff,
+  KeyRound,
+  MessageCircleQuestion,
+  ShieldCheck,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
@@ -138,6 +141,15 @@ export function ChatListSkeleton() {
   );
 }
 
+/** Which of my conversations have an agent WAITING on me, and what kind of ask
+ *  leads (approval > credential > question: the one that blocks the most). Read by
+ *  every ChatItem through context — the rows are memoized and rendered from five
+ *  places, and a prop would have to thread through all of them. */
+type WaitingTone = "question" | "approval" | "credential";
+const AgentRequestBadgeContext = createContext<ReadonlyMap<string, WaitingTone>>(
+  new Map(),
+);
+
 export function ChatSidebar({
   activeChatId,
   onSelect,
@@ -184,6 +196,23 @@ export function ChatSidebar({
     | Id<"chats">[]
     | undefined;
   const busyIds = useMemo(() => new Set(busyList ?? []), [busyList]);
+  const waitingRequests = useQuery(api.agentRequests.pendingByChat, {}) as
+    | Array<{ chatId: Id<"chats">; count: number; kinds: string[] }>
+    | undefined;
+  const waitingByChat = useMemo(() => {
+    const map = new Map<string, WaitingTone>();
+    for (const w of waitingRequests ?? []) {
+      map.set(
+        w.chatId,
+        w.kinds.includes("approval")
+          ? "approval"
+          : w.kinds.includes("credential")
+            ? "credential"
+            : "question",
+      );
+    }
+    return map;
+  }, [waitingRequests]);
   // Chats carrying at least one bookmark (own bounded query, same reasoning
   // as myBusyChats: never a listChats passenger).
   const bookmarkedList = useQuery(api.chatBookmarks.myBookmarkedChats, {}) as
@@ -563,6 +592,7 @@ export function ChatSidebar({
   const activeChat = activeDragId ? findChat(activeDragId) : null;
 
   return (
+    <AgentRequestBadgeContext.Provider value={waitingByChat}>
     <aside
       className={
         "oc-sidebar" + (archiveDropActive ? " oc-sidebar--archivedrop" : "")
@@ -873,6 +903,7 @@ export function ChatSidebar({
         </DragOverlay>
       </DndContext>
     </aside>
+    </AgentRequestBadgeContext.Provider>
   );
 }
 
@@ -1303,6 +1334,8 @@ const ChatItem = memo(function ChatItem({
   suppressClick: React.MutableRefObject<boolean>;
   onSelect: (id: Id<"chats">) => void;
 }) {
+  // An agent is waiting on the reader in this conversation (see the context above).
+  const waitingTone = useContext(AgentRequestBadgeContext).get(chat._id);
   const archive = useArchiveActions();
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } =
     useSortable({ id: chat._id });
@@ -1434,6 +1467,21 @@ const ChatItem = memo(function ChatItem({
             <span className="oc-chatitem__domain">{domainLabel}</span>
           ) : null}
         </button>
+        {waitingTone !== undefined ? (
+          <span
+            className={`oc-areq-sidebadge oc-areq-sidebadge--${waitingTone}`}
+            title={m.areq_sidebar_badge()}
+            aria-label={m.areq_sidebar_badge()}
+          >
+            {waitingTone === "approval" ? (
+              <ShieldCheck size={11} aria-hidden />
+            ) : waitingTone === "credential" ? (
+              <KeyRound size={11} aria-hidden />
+            ) : (
+              <MessageCircleQuestion size={11} aria-hidden />
+            )}
+          </span>
+        ) : null}
         {busy ? (
           <span
             className="oc-chatitem__busy"

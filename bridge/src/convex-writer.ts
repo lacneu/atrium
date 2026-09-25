@@ -63,6 +63,7 @@ import type { CronPart } from "./core/cron-part.js";
 // The plan part shape lives in core/plan-part.ts (pure contract module).
 export type { PlanPart } from "./core/plan-part.js";
 import type { PlanPart } from "./core/plan-part.js";
+import type { AgentRequestRecord, AgentRequestSettle } from "./core/agent-requests.js";
 
 export type FinalizeStatus = "complete" | "error" | "aborted";
 
@@ -538,6 +539,17 @@ export interface ConvexWriter {
    */
   recordInteractionReply(reply: SubAgentInteractionReply): Promise<void>;
   /**
+   * An agent ASKED the person something (question / approval / credential).
+   * Optional so a writer that predates agent requests (and the test doubles) keeps
+   * compiling; the callers use `?.` and treat an absent writer as "not recorded".
+   * Off every chain, like the sub-agent writes: a request outlives the turn.
+   */
+  /** `recorded: false` = Convex answered and REFUSED it (`id: null`: the chat is gone, the
+   *  request unreadable…) — no card exists. Void from writers that cannot tell. */
+  upsertAgentRequest?(record: AgentRequestRecord): Promise<void | { recorded: boolean }>;
+  /** The provider settled a request (answered here or elsewhere, expired, cancelled). */
+  settleAgentRequest?(settle: AgentRequestSettle): Promise<void>;
+  /**
    * Re-hydration DECISION trace (content-free reconstruction record) -> an
    * `openclaw.rehydrate` trace keyed `chatId:outboxId`. Emitted once per dispatch at
    * the freshness decision so the obs MCP can show WHY a (cross-agent) turn did or did
@@ -907,7 +919,9 @@ type IngestOp =
       status: "done" | "error";
       replyText?: string;
       errorMessage?: string;
-    };
+    }
+  | ({ op: "upsertAgentRequest" } & AgentRequestRecord)
+  | ({ op: "settleAgentRequest" } & AgentRequestSettle);
 
 export interface HttpConvexWriterOptions {
   /** Convex httpActions base URL (the `.site` origin). */
@@ -1153,6 +1167,13 @@ export class HttpConvexWriter implements ConvexWriter {
     // convex/stream.ts `clearPlanPart`. Retrying is therefore no longer a trade: not
     // retrying simply left the superseded checklist on screen for good.
     "clearPlan",
+    // AGENT REQUESTS: idempotent by construction in Convex — a creation is keyed by
+    // (chat, providerRequestId) and a replay returns the existing row; a settle acts
+    // only on an OPEN row, so one that landed leaves nothing for its replay to change.
+    // Not retrying LOST the request for good (codex P1): its broadcast is not repeated,
+    // and the agent waited on a card nobody could see.
+    "upsertAgentRequest",
+    "settleAgentRequest",
   ]);
 
   /** `doPost`, retried on TRANSIENT failures when the op is idempotent. */
@@ -2429,5 +2450,17 @@ export class HttpConvexWriter implements ConvexWriter {
       replyText: reply.replyText,
       errorMessage: reply.errorMessage,
     });
+  }
+
+  async upsertAgentRequest(record: AgentRequestRecord): Promise<{ recorded: boolean }> {
+    const res = await this.doPostWithRetry<{ id?: unknown } | null>({
+      op: "upsertAgentRequest",
+      ...record,
+    });
+    return { recorded: typeof res?.id === "string" && res.id !== "" };
+  }
+
+  async settleAgentRequest(settle: AgentRequestSettle): Promise<void> {
+    await this.doPostWithRetry({ op: "settleAgentRequest", ...settle });
   }
 }

@@ -6,72 +6,85 @@
     {
       "id": "announce-reverse-hold",
       "ok": true,
-      "chat": "44296629be0ccb6d"
+      "chat": "f3112b2b0705286b"
     },
     {
       "id": "basic-turn",
       "ok": true,
-      "chat": "44296629be0ccb6d"
+      "chat": "f3112b2b0705286b"
     },
     {
       "id": "tool-exec",
       "ok": true,
-      "chat": "44296629be0ccb6d"
+      "chat": "f3112b2b0705286b"
     },
     {
       "id": "update-plan",
       "ok": true,
-      "chat": "44296629be0ccb6d"
+      "chat": "f3112b2b0705286b"
     },
     {
       "id": "media-outbound",
       "ok": true,
-      "chat": "44296629be0ccb6d"
+      "chat": "f3112b2b0705286b"
     },
     {
       "id": "inbound-attachment",
       "ok": true,
-      "chat": "44296629be0ccb6d"
+      "chat": "f3112b2b0705286b"
     },
     {
       "id": "talk-session",
       "ok": true,
-      "chat": "44296629be0ccb6d"
+      "chat": "f3112b2b0705286b"
     },
     {
       "id": "spawn-announce-merge",
       "ok": true,
-      "chat": "44296629be0ccb6d"
+      "chat": "f3112b2b0705286b"
     },
     {
       "id": "spawn-chain-merge",
       "ok": true,
-      "chat": "44296629be0ccb6d"
+      "chat": "f3112b2b0705286b"
     },
     {
       "id": "spawn-parallel-merge",
       "ok": true,
-      "chat": "44296629be0ccb6d"
+      "chat": "f3112b2b0705286b"
     },
     {
       "id": "async-task",
       "ok": true,
-      "chat": "44296629be0ccb6d"
+      "chat": "f3112b2b0705286b"
     },
     {
       "id": "cron-tool",
       "ok": true,
-      "chat": "44296629be0ccb6d"
+      "chat": "f3112b2b0705286b"
+    },
+    {
+      "id": "agent-request-question",
+      "ok": true,
+      "chat": "f3112b2b0705286b"
+    },
+    {
+      "id": "agent-request-exec-approval",
+      "ok": true,
+      "chat": "f3112b2b0705286b"
     }
   ],
   "verdict": "GO",
-  "at": "2026-09-22T19:27:42.883Z",
+  "at": "2026-09-24T23:21:17.358Z",
   "scenarios": [
+    "agent-request-exec-approval",
+    "agent-request-question",
     "announce-reverse-hold",
     "async-task",
     "basic-turn",
     "cron-tool",
     "hermes-basic-turn",
+    "hermes-clarify",
     "hermes-cron-list",
     "inbound-attachment",
     "media-outbound",
@@ -95,17 +108,20 @@
     "spawn-parallel-merge": "openclaw",
     "async-task": "openclaw",
     "cron-tool": "openclaw",
+    "agent-request-question": "openclaw",
+    "agent-request-exec-approval": "openclaw",
     "hermes-basic-turn": "hermes",
-    "hermes-cron-list": "hermes"
+    "hermes-cron-list": "hermes",
+    "hermes-clarify": "hermes"
   },
   "flags": [],
-  "atriumSha": "01ec39437307b9034f44c6886912bfe9f29d1247",
+  "atriumSha": "37c82519b914e5b6d71a25582d3f901294f732b8",
   "worktree": {
     "dirty": true,
-    "deltaSha256": "e8ddf186fe01508546459148daf38143c6c6db8149b47093775e9719014a2507"
+    "deltaSha256": "d9a0fd55e7a1507097b8fd665a8361bef475333cdec5d1afdd130e3bec755758"
   },
-  "supportDigest": "79ae91c9ae3438d471200eae59a6e006c5efe35c56d5a7c0fcbd542c2e91f719",
+  "supportDigest": "050ec18fd4609a94a94ccd9a924a0941e130de2eaf36c59f450ecc1cba8d55d5",
   "authMode": "token",
-  "bridgeVersion": "0.84.20",
-  "vendoredSha256": "8b6478d79519732a481f54031dcedb9ce6d8dcf1d490b371c783b614131d7c36"
+  "bridgeVersion": "0.84.21",
+  "vendoredSha256": "7ebb17ce9c9ff8a901e5e9be96232925b1ef2c536e04a932ee8761f848848728"
 }

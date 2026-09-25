@@ -427,9 +427,9 @@ export const KNOWN_AGENT_FIELDS: ReadonlySet<string> = new Set([
  * matrix instead of being invisible omissions.
  */
 export const COVERAGE_SUMMARY = {
-  handled: 172,
-  ignored: 721,
-  gaps: 771,
+  handled: 320,
+  ignored: 798,
+  gaps: 775,
   /** The declared gaps, by schema path — the actionable part of the matrix.
    *
    *  Recounted from the PROMISED version's coverage manifest by protocol-drift.test.ts,
@@ -448,7 +448,10 @@ export const COVERAGE_SUMMARY = {
    *  post-processing).
    *  `ChatFinalEvent.yielded` WAS in that list and is now instructed: leaving it a gap
    *  meant a lost lifecycle frame turned a hand-off into an empty response, which the
-   *  guard retries (codex). A gap whose consequence is a retry is not a backlog item. */
+   *  guard retries (codex). A gap whose consequence is a retry is not a backlog item.
+   *  AGENT REQUESTS (2026-09-22) vendored `questions.ts` + `approvals.ts` into 2026.9.5 and
+   *  classified all 57 schemas: 146 fields handled, 79 ignored, and four gaps — a plugin's
+   *  `externalResolution` (verify in another app), which the card does not offer. */
   gapList: [
     "AgentDatabaseAdmissionRefusal.agentId",
     "AgentDatabaseAdmissionRefusal.code",
@@ -464,6 +467,7 @@ export const COVERAGE_SUMMARY = {
     "AgentsFileEntry.expectedAbsent",
     "AgentsFileEntry.hash",
     "AgentsFilesSetParams.expectedHash",
+    "ApprovalPresentation.externalResolution",
     "AuthProbeStatus",
     "ChatAbortParams.preserveSideRuns",
     "ChatAbortedEvent.errorMessage",
@@ -752,6 +756,9 @@ export const COVERAGE_SUMMARY = {
     "ModelsProbeTargetResult.latencyMs",
     "ModelsProbeTargetResult.profileId",
     "ModelsProbeTargetResult.status",
+    "PluginApprovalExternalResolution.decisions",
+    "PluginApprovalExternalResolution.label",
+    "PluginApprovalPresentation.externalResolution",
     "PluginCatalogClawHubInstall.packageName",
     "PluginCatalogClawHubInstall.source",
     "PluginCatalogEntry.activityIconTools",
@@ -1220,7 +1227,8 @@ export const COVERAGE_SUMMARY = {
     "UsersSelectModelAccountResult.links",
     "UsersUnlinkAuthProfileParams.profileId",
     "UsersUnlinkAuthProfileParams.provider",
-    "UsersUnlinkAuthProfileResult.links",  ],
+    "UsersUnlinkAuthProfileResult.links",
+  ],
 } as const;
 
 export interface DriftEntry {

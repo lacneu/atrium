@@ -169,8 +169,8 @@ describe("GET /capabilities + /health (compat surface)", () => {
       "2026.9.5",
     ]);
     expect(body.compat.providers.hermes).toEqual({
-      supportedRange: { min: "0.18.0", maxValidated: "0.19.0" },
-      validatedVersions: ["0.18.0", "0.18.2", "0.19.0"],
+      supportedRange: { min: "0.18.0", maxValidated: "0.21.5" },
+      validatedVersions: ["0.18.0", "0.18.2", "0.19.0", "0.21.5"],
       // The TRANSPORT-INDEPENDENT surface: `agentFiles` and `mediaOutbound` are served
       // over the managed-files HTTP API on `kind === "hermes"` alone (W11/G8). The WS
       // overlay is applied per target by the server, not here.

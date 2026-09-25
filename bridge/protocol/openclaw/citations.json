@@ -843,14 +843,14 @@
     },
     {
       "source": "docs/UPSTREAM_INTERPRETATION.md",
-      "cite": "bridge/src/providers/openclaw/openclaw-client.ts:1086-1097",
+      "cite": "bridge/src/providers/openclaw/openclaw-client.ts:1111-1122",
       "repo": "atrium",
       "tag": null,
       "path": "bridge/src/providers/openclaw/openclaw-client.ts",
       "lines": [
         [
-          1086,
-          1097
+          1111,
+          1122
         ]
       ],
       "literals": [
@@ -1910,14 +1910,14 @@
     },
     {
       "source": "docs/UPSTREAM_INTERPRETATION.md",
-      "cite": "bridge/src/providers/openclaw/normalizer.ts:1954",
+      "cite": "bridge/src/providers/openclaw/normalizer.ts:1999",
       "repo": "atrium",
       "tag": null,
       "path": "bridge/src/providers/openclaw/normalizer.ts",
       "lines": [
         [
-          1954,
-          1954
+          1999,
+          1999
         ]
       ],
       "literals": [

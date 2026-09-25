@@ -1,12 +1,12 @@
 {
- "$comment": "Atrium's classification of the event catalogue the gateway ANNOUNCES about itself (`hello-ok.features.events`, vendored as ../2026.7.2-beta.5/event-catalogue.json). One entry per announced family, no more and no fewer — `events-coverage.test.ts` asserts the BIJECTION, so vendoring a version whose catalogue grew turns CI red until someone classifies the newcomer. Same vocabulary as the field coverage beside it: `handled` carries `by`, `ignored` carries `why`, `gap` REQUIRES a `note` saying what is unsupported and what it costs. 2026.7.2-beta.5: carried forward from 2026.7.1 (all 30 families still announced, entries unchanged); the 14 families new in this tag enter as `gap` on the frame-discovery queue. The tallies live in `counts` below, DERIVED and asserted by the ratchet — three separate corrections rotted when they were prose. `broadcastOnly` classifies the families the gateway can BROADCAST without announcing (broadcast-catalogue.json minus event-catalogue.json — the scope-guard table is the larger vocabulary); same statuses, same anchor rule, tallies in `broadcastOnlyCounts`. 2026.9.5: carried forward from 2026.9.4; the three families new in this tag (models.snapshot, talk.voice.change, plugins.changed) enter as `gap` on the frame-discovery queue.",
+ "$comment": "Atrium's classification of the event catalogue the gateway ANNOUNCES about itself (`hello-ok.features.events`, vendored as ../2026.7.2-beta.5/event-catalogue.json). One entry per announced family, no more and no fewer — `events-coverage.test.ts` asserts the BIJECTION, so vendoring a version whose catalogue grew turns CI red until someone classifies the newcomer. Same vocabulary as the field coverage beside it: `handled` carries `by`, `ignored` carries `why`, `gap` REQUIRES a `note` saying what is unsupported and what it costs. 2026.7.2-beta.5: carried forward from 2026.7.1 (all 30 families still announced, entries unchanged); the 14 families new in this tag enter as `gap` on the frame-discovery queue. The tallies live in `counts` below, DERIVED and asserted by the ratchet — three separate corrections rotted when they were prose. `broadcastOnly` classifies the families the gateway can BROADCAST without announcing (broadcast-catalogue.json minus event-catalogue.json — the scope-guard table is the larger vocabulary); same statuses, same anchor rule, tallies in `broadcastOnlyCounts`. 2026.9.5: carried forward from 2026.9.4; the three families new in this tag (models.snapshot, talk.voice.change, plugins.changed) enter as `gap` on the frame-discovery queue. 2026-09-22 (agent requests): question.requested/resolved and the three `*.approval.requested|resolved` pairs are now handled (the observer turns them into answerable cards); session.approval is ignored — Atrium reads the operator broadcasts, not a session subscription.",
  "version": "2026.9.5",
  "catalogue": "event-catalogue.json",
  "counts": {
   "total": 63,
-  "handled": 4,
-  "gap": 28,
-  "ignored": 31
+  "handled": 12,
+  "gap": 19,
+  "ignored": 32
  },
  "events": {
   "connect.challenge": {
@@ -62,20 +62,36 @@
    "note": "Same surface as talk.mode: the talk feature exists but its event feed is unread."
   },
   "exec.approval.requested": {
-   "status": "gap",
-   "note": "A turn blocked on an exec approval is, from Atrium's side, a turn that has gone quiet. W5 deliberately limits itself to suspending the budget and NAMING the wait, and the approval UI is explicitly out of scope — but the request event itself is what would let Atrium name it, and it is not read."
+   "status": "handled",
+   "by": "agent-request-observer.ts: routed by request.sessionKey, then shown through approval.get's reviewer-safe presentation (never the raw request) as a exec approval card, answered with approval.resolve",
+   "anchor": {
+    "file": "src/core/agent-requests.ts",
+    "token": "[\"exec.approval.requested\", \"exec\"]"
+   }
   },
   "exec.approval.resolved": {
-   "status": "gap",
-   "note": "The other half of the above: nothing tells Atrium the wait ended."
+   "status": "handled",
+   "by": "agent-request-observer.ts: settles the exec approval card (allowed / denied / expired / cancelled) and releases the turn's approval wait",
+   "anchor": {
+    "file": "src/core/agent-requests.ts",
+    "token": "[\"exec.approval.resolved\", \"exec\"]"
+   }
   },
   "plugin.approval.requested": {
-   "status": "gap",
-   "note": "Same class as exec.approval.requested, for plugin trust prompts."
+   "status": "handled",
+   "by": "agent-request-observer.ts: routed by request.sessionKey, then shown through approval.get's reviewer-safe presentation (never the raw request) as a plugin approval card, answered with approval.resolve",
+   "anchor": {
+    "file": "src/core/agent-requests.ts",
+    "token": "[\"plugin.approval.requested\", \"plugin\"]"
+   }
   },
   "plugin.approval.resolved": {
-   "status": "gap",
-   "note": "Same class as exec.approval.resolved."
+   "status": "handled",
+   "by": "agent-request-observer.ts: settles the plugin approval card (allowed / denied / expired / cancelled) and releases the turn's approval wait",
+   "anchor": {
+    "file": "src/core/agent-requests.ts",
+    "token": "[\"plugin.approval.resolved\", \"plugin\"]"
+   }
   },
   "session.message": {
    "status": "ignored",
@@ -150,8 +166,8 @@
    "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
   },
   "session.approval": {
-   "status": "gap",
-   "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+   "status": "ignored",
+   "why": "delivered only to a `sessions.messages.subscribe` stream opened with includeApprovals; Atrium deliberately opens no such subscription on a conversation socket (one broke the bench before) and reads the operator broadcasts `*.approval.requested|resolved` instead"
   },
   "session.observer": {
    "status": "gap",
@@ -186,20 +202,36 @@
    "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
   },
   "question.requested": {
-   "status": "gap",
-   "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+   "status": "handled",
+   "by": "agent-request-observer.ts: a question of THIS conversation's session becomes an agent request (Convex agentRequests), holds the turn until its deadline, and notifies the owner. From AGENT_REQUESTS_MIN_VERSION only",
+   "anchor": {
+    "file": "src/providers/openclaw/agent-request-observer.ts",
+    "token": "event === \"question.requested\""
+   }
   },
   "question.resolved": {
-   "status": "gap",
-   "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+   "status": "handled",
+   "by": "agent-request-observer.ts: settles the request (answered / cancelled / expired, answers kept unless secret) and releases the turn hold. The event names no session: it is matched by the id this socket recorded",
+   "anchor": {
+    "file": "src/providers/openclaw/agent-request-observer.ts",
+    "token": "event === \"question.resolved\""
+   }
   },
   "openclaw.approval.requested": {
-   "status": "gap",
-   "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+   "status": "handled",
+   "by": "agent-request-observer.ts: routed by request.sessionKey, then shown through approval.get's reviewer-safe presentation (never the raw request) as a system-agent approval card, answered with approval.resolve",
+   "anchor": {
+    "file": "src/core/agent-requests.ts",
+    "token": "[\"openclaw.approval.requested\", \"system-agent\"]"
+   }
   },
   "openclaw.approval.resolved": {
-   "status": "gap",
-   "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+   "status": "handled",
+   "by": "agent-request-observer.ts: settles the system-agent approval card (allowed / denied / expired / cancelled) and releases the turn's approval wait",
+   "anchor": {
+    "file": "src/core/agent-requests.ts",
+    "token": "[\"openclaw.approval.resolved\", \"system-agent\"]"
+   }
   },
   "chat.metadata.changed": {
    "status": "ignored",

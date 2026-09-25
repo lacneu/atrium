@@ -19,6 +19,7 @@ import { api, internal } from "./_generated/api";
 import schema from "./schema";
 import { toBase64 } from "./lib/crypto/cipher";
 import type { Id } from "./_generated/dataModel";
+import { questionShape } from "./lib/agentRequests";
 
 const modules = import.meta.glob("./**/*.ts");
 const URL = "/bridge/ingest";
@@ -1170,5 +1171,171 @@ describe("cross-gateway ingest isolation (per-write authorization)", () => {
     );
     expect(res.status).toBe(401);
     expect(await streamTextOf(t, a.messageId)).toBe("");
+  });
+});
+
+describe("the ingest route carries a Hermes approval's supersession bound", () => {
+  test("a later turn's approval closes the earlier turn's ghost through /bridge/ingest (codex P2, pass 26)", async () => {
+    // The bound is written by the bridge and acted on by the mutation; a route that
+    // dropped it in between would leave the ghost heading the queue, and no test of
+    // either end would see it.
+    const t = convexTest(schema, modules);
+    const admin = await seedAdmin(t);
+    const h = await seedInstanceWithChat(t, admin, "hermes-1", "hermes");
+    const approval = { command: "rm x", decisions: ["allow-once", "deny"] };
+    const base = {
+      op: "upsertAgentRequest",
+      chatId: h.chatId,
+      messageId: h.messageId,
+      source: "hermes.approval",
+      sessionKey: "20260922_101010_abcd",
+      approval,
+    };
+    const a = await post(t, { ...base, providerRequestId: "hermes-approval:A", seq: 1_000_001 }, h.secret);
+    expect(a.status).toBe(200);
+    const b = await post(
+      t,
+      { ...base, providerRequestId: "hermes-approval:B", seq: 5_000_001, supersedesBeforeSeq: 5_000_000 },
+      h.secret,
+    );
+    expect(b.status).toBe(200);
+    const statuses = await t.run(async (ctx) =>
+      (await ctx.db.query("agentRequests").collect())
+        .map((r) => [r.providerRequestId, r.status])
+        .sort(),
+    );
+    expect(statuses).toEqual([
+      ["hermes-approval:A", "cancelled"],
+      ["hermes-approval:B", "pending"],
+    ]);
+  });
+});
+
+describe("the ingest route never cuts an observed verdict (codex, 0.21.5 pass 12)", () => {
+  test("a settle with a malformed answer entry is reported unreadable, not filtered into a match", async () => {
+    const t = convexTest(schema, modules);
+    const admin = await seedAdmin(t);
+    const a = await seedInstanceWithChat(t, admin, "alpha");
+    const up = await post(
+      t,
+      {
+        op: "upsertAgentRequest",
+        chatId: a.chatId,
+        messageId: a.messageId,
+        source: "openclaw.ask_user",
+        providerRequestId: "ask_m",
+        providerCreatedAt: 1,
+        questions: [{ id: "format", text: "Format ?", options: [], multiSelect: false, allowOther: true, secret: false }],
+      },
+      a.secret,
+    );
+    expect(up.status).toBe(200);
+    const row0 = await t.run(async (ctx) => (await ctx.db.query("agentRequests").collect())[0]!);
+    await t.run((ctx) =>
+      ctx.db.patch(row0._id, { status: "submitting", resolvedByUserId: a.userId, answers: [{ id: "format", values: ["PDF"] }] }),
+    );
+    const res = await post(
+      t,
+      {
+        op: "settleAgentRequest",
+        chatId: a.chatId,
+        providerRequestId: "ask_m",
+        providerCreatedAt: 1,
+        status: "answered",
+        answers: [{ id: "format", values: ["PDF"] }, { id: "other", values: [42] }],
+      },
+      a.secret,
+    );
+    expect(res.status).toBe(200);
+    const row = await t.run((ctx) => ctx.db.get(row0._id));
+    expect(row).toMatchObject({ status: "answered", resolvedElsewhere: true });
+    expect(row!.resolvedByUserId).toBeUndefined();
+    expect(row!.answers).toBeUndefined();
+  });
+
+  test("answers that are not a list are UNREADABLE, never an absence (codex, 0.21.5 pass 22)", async () => {
+    const t = convexTest(schema, modules);
+    const admin = await seedAdmin(t);
+    const a = await seedInstanceWithChat(t, admin, "alpha");
+    await post(
+      t,
+      {
+        op: "upsertAgentRequest",
+        chatId: a.chatId,
+        messageId: a.messageId,
+        source: "openclaw.ask_user",
+        providerRequestId: "ask_o",
+        providerCreatedAt: 1,
+        questions: [{ id: "format", text: "Format ?", options: [], multiSelect: false, allowOther: true, secret: false }],
+      },
+      a.secret,
+    );
+    const row0 = await t.run(async (ctx) => (await ctx.db.query("agentRequests").collect())[0]!);
+    await t.run((ctx) =>
+      ctx.db.patch(row0._id, { status: "submitting", resolvedByUserId: a.userId, answers: [{ id: "format", values: ["PDF"] }] }),
+    );
+    const res = await post(
+      t,
+      { op: "settleAgentRequest", chatId: a.chatId, providerRequestId: "ask_o", providerCreatedAt: 1, status: "answered", answers: {} },
+      a.secret,
+    );
+    expect(res.status).toBe(200);
+    const row = await t.run((ctx) => ctx.db.get(row0._id));
+    // Not proof the verdict was ours: not attributed, nothing kept as its answer.
+    expect(row).toMatchObject({ status: "answered", resolvedElsewhere: true });
+    expect(row!.resolvedByUserId).toBeUndefined();
+    expect(row!.answers).toBeUndefined();
+  });
+
+  test("a settle carries WHEN its request was seen through the route (codex, 0.21.5 pass 22)", async () => {
+    const t = convexTest(schema, modules);
+    const admin = await seedAdmin(t);
+    const a = await seedInstanceWithChat(t, admin, "alpha");
+    const q = [{ id: "confirm", text: "Continue?", options: [{ label: "Yes" }], multiSelect: false, allowOther: false, secret: false }];
+    const upsert = (seq: number) =>
+      post(
+        t,
+        { op: "upsertAgentRequest", chatId: a.chatId, messageId: a.messageId, source: "openclaw.ask_user", providerRequestId: "ask_g", providerCreatedAt: 1, providerSeenSeq: seq, questions: q },
+        a.secret,
+      );
+    await upsert(10);
+    await t.run(async (ctx) => {
+      const r = (await ctx.db.query("agentRequests").collect())[0]!;
+      await ctx.db.patch(r._id, { status: "answered" });
+    });
+    await upsert(20);
+    const res = await post(
+      t,
+      { op: "settleAgentRequest", chatId: a.chatId, providerRequestId: "ask_g", providerCreatedAt: 1, family: "question", questionShape: questionShape(q), providerSeenSeq: 10, status: "cancelled" },
+      a.secret,
+    );
+    expect(await res.json()).toMatchObject({ ok: true, settled: false });
+    const statuses = await t.run(async (ctx) => (await ctx.db.query("agentRequests").collect()).map((r) => r.status).sort());
+    expect(statuses).toEqual(["answered", "pending"]);
+  });
+
+  test("a settle carries WHICH question it settles through the route (codex, 0.21.5 pass 21)", async () => {
+    const t = convexTest(schema, modules);
+    const admin = await seedAdmin(t);
+    const a = await seedInstanceWithChat(t, admin, "alpha");
+    const q = (text: string) => [{ id: "confirm", text, options: [{ label: "Yes" }], multiSelect: false, allowOther: false, secret: false }];
+    for (const [text, seq] of [["Delete staging data?", 10], ["Delete production data?", 11]] as const) {
+      const up = await post(
+        t,
+        { op: "upsertAgentRequest", chatId: a.chatId, messageId: a.messageId, source: "openclaw.ask_user", providerRequestId: "ask_r", providerCreatedAt: 1, providerSeenSeq: seq, questions: q(text) },
+        a.secret,
+      );
+      expect(up.status).toBe(200);
+    }
+    const res = await post(
+      t,
+      { op: "settleAgentRequest", chatId: a.chatId, providerRequestId: "ask_r", providerCreatedAt: 1, family: "question", questionShape: questionShape(q("Delete staging data?")), status: "answered" },
+      a.secret,
+    );
+    expect(await res.json()).toMatchObject({ ok: true, settled: false });
+    const statuses = await t.run(async (ctx) =>
+      (await ctx.db.query("agentRequests").collect()).map((r) => [r.questions?.[0]?.text, r.status]),
+    );
+    expect(statuses).toContainEqual(["Delete production data?", "pending"]);
   });
 });

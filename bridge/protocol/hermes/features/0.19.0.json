@@ -4,8 +4,8 @@
   "contract": "rest-contract.json",
   "counts": {
     "total": 24,
-    "handled": 6,
-    "gap": 12,
+    "handled": 3,
+    "gap": 15,
     "ignored": 6,
     "offered": 19
   },
@@ -47,12 +47,8 @@
       }
     },
     "run_approval_response": {
-      "status": "handled",
-      "by": "the blocking-prompt answers of lot 33 (approval.respond)",
-      "anchor": {
-        "file": "src/providers/hermes/ws-turn.ts",
-        "token": "\"approval.respond\""
-      }
+      "status": "gap",
+      "note": "Declared for `POST /v1/runs/{run_id}/approval` (the REST runs API), which the bridge never calls. The person's approval answer goes over the WS transport — `approval.respond` (≤ 0.19) or `request.answer` on a server→client request (0.21.3+) — a different surface: citing it here marked a REST route consumed that is not (codex, 0.21.5 pass 3)."
     },
     "tool_progress_events": {
       "status": "handled",
@@ -63,28 +59,20 @@
       }
     },
     "approval_events": {
-      "status": "handled",
-      "by": "the blocking prompts lot 33 refuses to leave unanswered",
-      "anchor": {
-        "file": "src/providers/hermes/ws-turn.ts",
-        "token": "case \"approval.request\""
-      }
+      "status": "gap",
+      "note": "Declared for the REST runs API: `approval.request` / `approval.responded` on `/v1/runs/{run_id}/events`, answered through `/v1/runs/{run_id}/approval` (gateway/platforms/api_server_runs.py). The REST transport reads no approval event; Atrium's approvals ride the WS transport — the `approval.request` event (≤ 0.19) or the `approval` server→client request (0.21.3+) — a different surface (codex, 0.21.5 pass 4)."
     },
     "session_resources": {
       "status": "gap",
       "note": "Declared and unread. Agent files reach Atrium through the dashboard's /api/files* surface (lot 47), which `hermes serve` alone does not deploy — so a resource surface the API server DOES publish is going unused while the feature it would serve degrades to a named 404."
     },
     "session_chat": {
-      "status": "handled",
-      "by": "the WS transport's turn dispatch — `ws-turn.ts` submits the prompt with `prompt.submit`, the default path. (The earlier anchor pointed at `session.resume` inside `harvestLostReply`, a RECOVERY path: it satisfied the rule while citing the wrong mechanism — review pass 6.)",
-      "anchor": {
-        "file": "src/providers/hermes/ws-turn.ts",
-        "token": "call(\"prompt.submit\""
-      }
+      "status": "gap",
+      "note": "Declared for `POST /api/sessions/{session_id}/chat` (non-streaming session chat), which the bridge never calls: its REST turns use `/chat/stream` (`session_chat_streaming`) and its default transport is the WS `prompt.submit`. Citing `prompt.submit` marked a REST route consumed that is not (codex, 0.21.5 pass 3)."
     },
     "session_chat_streaming": {
       "status": "handled",
-      "by": "the WS delta stream (ws-turn.ts)",
+      "by": "the REST transport's turn stream — `HermesClient` posts to `/api/sessions/{id}/chat/stream` (client.ts). The WS transport's delta stream is a different surface (codex, 0.21.5 pass 7).",
       "anchor": {
         "file": "src/providers/hermes/client.ts",
         "token": "/chat/stream"

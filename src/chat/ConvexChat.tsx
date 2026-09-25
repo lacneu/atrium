@@ -283,6 +283,13 @@ import {
   contextSource,
   effectiveContextWindow,
 } from "./sessionKnobs";
+import {
+  AgentRequestDock,
+  AgentRequestsHeaderButton,
+  AgentRequestsProvider,
+  MessageAgentRequests,
+  useAgentRequests,
+} from "./AgentRequests";
 
 // Top-level chat surface. Wires the reactive Convex-backed runtime into
 // assistant-ui and renders the thread with custom renderers for run status,
@@ -1389,6 +1396,7 @@ function ChatThread({
     <GatewayDegradedContext.Provider value={gatewayDegraded}>
     <TurnActivityAnchorContext.Provider value={anchoredActivity}>
     <BookmarksProvider chatId={chatId} focusMessageId={focusMessageId}>
+    <AgentRequestsProvider chatId={chatId}>
     <ThreadPrimitive.Root className="oc-thread">
       <ChatHeader chatId={chatId} />
       <ThreadAnnouncer chatId={chatId} />
@@ -1457,6 +1465,10 @@ function ChatThread({
           as editable/cancellable cards right above the composer (renders null
           when nothing is queued). */}
       <QueuedDock />
+      {/* What the agent is WAITING on — a question, an approval, a credential —
+          answerable here even when the asking bubble has scrolled out of view.
+          In normal flow (not floating): it must never cover the thread. */}
+      <AgentRequestDock />
       <Composer
         chatId={chatId}
         chatTitle={chatTitleForDock}
@@ -1474,6 +1486,7 @@ function ChatThread({
         subAgentBusy={subAgentBusy}
       />
     </ThreadPrimitive.Root>
+    </AgentRequestsProvider>
     </BookmarksProvider>
     </TurnActivityAnchorContext.Provider>
     </GatewayDegradedContext.Provider>
@@ -1918,6 +1931,7 @@ function ChatHeader({ chatId }: { chatId: ConvexId<"chats"> }) {
   // not pulled toward non-vital diagnostics — only IDENTITY (title) and ACTIONS
   // (export, advanced) remain. model/reasoning stay reachable in Advanced.
   const ui = useUiPrefs();
+  const agentRequests = useAgentRequests();
   // "All session settings" Sheet, opened from the popover's footer.
   const [panelOpen, setPanelOpen] = useState(false);
   // Render the strip when there is EITHER session meta OR a multi-agent chip to
@@ -1995,6 +2009,7 @@ function ChatHeader({ chatId }: { chatId: ConvexId<"chats"> }) {
         compact={isCompact}
         ghost={ghost}
       />
+      <AgentRequestsHeaderButton compact={isCompact} ghost={ghost} />
       <ExportMenu
         chatId={chatId}
         title={meta?.title ?? null}
@@ -2021,6 +2036,10 @@ function ChatHeader({ chatId }: { chatId: ConvexId<"chats"> }) {
   // moved to the composer selector, so it no longer factors into the header width.)
   const measureKey = [
     m.chat_export(),
+    // The requests entry appears with the first request and grows a count badge.
+    agentRequests === null
+      ? ""
+      : `${agentRequests.rows.length > 0 ? 1 : 0}:${agentRequests.waiting.length}`,
     m.chat_advanced(),
     // The participants chip widens with the roster: a person joining changes the
     // measured width, and without this the header would keep a stale compact state.
@@ -3784,6 +3803,9 @@ function AssistantMessage() {
               result's raw text, so rendering it here too would duplicate the
               answer under its own source. */}
           {showSource ? null : <AssistantEmptyState show={ui.showTools} />}
+          {/* What the agent ASKED during this turn — always visible, whatever the
+              tools toggle: a question waiting on the reader is conversation. */}
+          <MessageAgentRequests />
           {/* RunStatus reads the assistant identity for its long-wait label; scope
               it to the per-message routed agent so the reassurance names the right
               one (the override equals the chat identity on a single-agent chat). */}

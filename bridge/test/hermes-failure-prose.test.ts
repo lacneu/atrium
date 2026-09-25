@@ -282,3 +282,32 @@ describe("a quoted value cannot choose the Hermes class", () => {
     expect(classifyProviderInternal("Error: rate limit exceeded")).toBeNull();
   });
 });
+
+describe("Hermes 0.21 says it STRUCTURALLY: `error`, and `partial` only for a real answer", () => {
+  // prompt_turn.py (v2026.9.24): a failed turn carries `error`, `recoverable`, and
+  // `partial: true` only when real partial text exists; otherwise `text` is its own copy
+  // ("<Title>. Your message was not answered.\nDetails: …", user_messages.py).
+  const COPY = "Provider error. Your message was not answered.\nDetails: API connection error";
+
+  it("the failure copy is not the reply: dropped, and the cause classified", async () => {
+    const finals = await terminalWith({
+      text: COPY,
+      status: "error",
+      error: "API connection error",
+      recoverable: true,
+    });
+    expect(finals[0]?.text).toBe("");
+    expect(finals[0]?.error).toBe("API connection error");
+    expect(finals[0]?.kind).toBe("provider_internal");
+  });
+
+  it("…but a REAL partial answer (`partial: true`) is kept", async () => {
+    const finals = await terminalWith({
+      text: "Voici le début de la réponse",
+      status: "error",
+      error: "API connection error",
+      partial: true,
+    });
+    expect(finals[0]?.text).toBe("Voici le début de la réponse");
+  });
+});

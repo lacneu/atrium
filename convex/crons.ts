@@ -216,6 +216,17 @@ crons.interval(
   {},
 );
 
+// An agent request the provider never settled (a bridge that restarted, a socket that
+// closed before the expiry broadcast) is swept past its own deadline, and a
+// `submitting` row whose action was lost goes back to `pending` so the person can
+// answer again while the agent still waits.
+crons.interval(
+  "reap expired agent requests",
+  { minutes: 1 },
+  internal.agentRequests.reapExpired,
+  {},
+);
+
 // Durable access-log retention (SOC2): daily bounded purge of access-log rows
 // past ACCESS_LOG_RETENTION_DAYS (default 90 — spans a Type II audit period,
 // vs the 14-day traceEvents purge). Self-reschedules to drain a backlog.

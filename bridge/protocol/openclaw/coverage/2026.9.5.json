@@ -7637,6 +7637,1058 @@
           "note": "new in 2026.9.5 — not yet instructed (frame-discovery queue)"
         }
       }
+    },
+    "Question": {
+      "fields": {
+        "questionId": {
+          "status": "handled",
+          "by": "core/agent-requests.ts readOpenClawQuestionRequested: the answer key (QUESTION_ID_RE), sent back verbatim in question.resolve"
+        },
+        "header": {
+          "status": "handled",
+          "by": "core/agent-requests.ts readOpenClawQuestionRequested -> the card's chip over the question"
+        },
+        "question": {
+          "status": "handled",
+          "by": "core/agent-requests.ts readOpenClawQuestionRequested -> the question text the card shows"
+        },
+        "url": {
+          "status": "handled",
+          "by": "core/agent-requests.ts readOpenClawQuestionRequested -> an 'open the page' link (convex/lib/agentRequests.ts safeUrl keeps http(s) only); opening it answers nothing"
+        },
+        "options": {
+          "status": "handled",
+          "by": "core/agent-requests.ts readOpenClawQuestionRequested -> the card's choices (max 4, label + description)"
+        },
+        "multiSelect": {
+          "status": "handled",
+          "by": "core/agent-requests.ts readOpenClawQuestionRequested -> checkboxes vs radio; the answer carries every pick or exactly one"
+        },
+        "isOther": {
+          "status": "handled",
+          "by": "core/agent-requests.ts readOpenClawQuestionRequested -> allowOther: free text beside the options (no options at all is free text by construction)"
+        },
+        "isSecret": {
+          "status": "handled",
+          "by": "core/agent-requests.ts readOpenClawQuestionRequested -> a masked input, source openclaw.secret; the value is never stored in Convex (storableAnswers)"
+        },
+        "secretStore": {
+          "status": "handled",
+          "by": "core/agent-requests.ts readOpenClawQuestionRequested readSecretStore -> the card shows the store NAME, allowed hosts and reason before anything is typed; a store-bound question is a secret"
+        },
+        "secretStoreExisting": {
+          "status": "handled",
+          "by": "core/agent-requests.ts readOpenClawQuestionRequested readSecretStore -> 'replaces the value stored on <date>'"
+        }
+      }
+    },
+    "QuestionRequestQuestion": {
+      "status": "ignored",
+      "why": "the ASKING side of the question API (the gateway's ask_user tool and embedded broker call it); Atrium only ever answers — question.get / question.list / question.resolve"
+    },
+    "QuestionOption": {
+      "fields": {
+        "label": {
+          "status": "handled",
+          "by": "core/agent-requests.ts readOpenClawQuestionRequested -> the choice label, sent back as the answer value"
+        },
+        "description": {
+          "status": "handled",
+          "by": "core/agent-requests.ts readOpenClawQuestionRequested -> the line under a choice"
+        }
+      }
+    },
+    "QuestionSecretStoreBinding": {
+      "fields": {
+        "name": {
+          "status": "handled",
+          "by": "core/agent-requests.ts readOpenClawQuestionRequested readSecretStore (upstream's ^[A-Z][A-Z0-9_]{0,127}$ re-checked) -> 'Stored as <name>'"
+        },
+        "kind": {
+          "status": "ignored",
+          "why": "the resolver writes the value as kind \"secret\" whatever the binding says (gateway server-methods/question.ts, storeWriteService.write); there is nothing different to tell the person"
+        },
+        "allowedHosts": {
+          "status": "handled",
+          "by": "core/agent-requests.ts readOpenClawQuestionRequested readSecretStore -> 'Usable only on: <hosts>' (bounded to 16 in Convex)"
+        },
+        "reason": {
+          "status": "handled",
+          "by": "core/agent-requests.ts readOpenClawQuestionRequested readSecretStore -> shown as a fact under the question"
+        }
+      }
+    },
+    "QuestionSecretStoreExisting": {
+      "fields": {
+        "updatedAtMs": {
+          "status": "handled",
+          "by": "core/agent-requests.ts readOpenClawQuestionRequested readSecretStore -> replacesSinceMs, a warning fact"
+        },
+        "updatedBy": {
+          "status": "ignored",
+          "why": "a gateway device/operator id: not a person Atrium can name to its user"
+        }
+      }
+    },
+    "QuestionAnswers": {
+      "fields": {
+        "answers": {
+          "status": "handled",
+          "by": "agent-request-respond.ts respondOpenClaw sends it (openClawQuestionAnswers); readOpenClawQuestionResolved reads it off question.resolved"
+        }
+      }
+    },
+    "QuestionStatus": {
+      "status": "handled",
+      "by": "agent-request-respond.ts: question.get's record.status decides pending vs request_gone(<status>); readOpenClawQuestionRequested refuses a record that is not pending"
+    },
+    "QuestionRecord": {
+      "fields": {
+        "id": {
+          "status": "handled",
+          "by": "agent-request-observer.ts: the providerRequestId every later call and settle is addressed by"
+        },
+        "questions": {
+          "status": "handled",
+          "by": "core/agent-requests.ts readOpenClawQuestionRequested"
+        },
+        "agentId": {
+          "status": "handled",
+          "by": "agent-request-observer.ts onQuestion -> the request's agentId (falls back to the session's)"
+        },
+        "sessionKey": {
+          "status": "handled",
+          "by": "agent-request-observer.ts ours(): the ISOLATION key — a question of another session is never recorded; respond re-checks it before resolving (session_mismatch)"
+        },
+        "runId": {
+          "status": "handled",
+          "by": "agent-request-observer.ts -> kept on the Convex row (bounded) for the trace"
+        },
+        "createdAtMs": {
+          "status": "handled",
+          "by": "agent-request-observer.ts -> providerCreatedAt: a caller-chosen id may come back after the gateway forgets a settled question (15 s, question-manager.ts), and Convex tells the new request from a replay of the old by this time"
+        },
+        "expiresAtMs": {
+          "status": "handled",
+          "by": "agent-request-observer.ts -> the row's expiresAt and the turn hold (noteHumanQuestion, seconds left)"
+        },
+        "status": {
+          "status": "handled",
+          "by": "readOpenClawQuestionRequested: only a pending record is a request; respond reads it on question.get"
+        },
+        "answers": {
+          "status": "ignored",
+          "why": "a pending record carries none; the answers of a settled question are read from question.resolved"
+        },
+        "resolvedBy": {
+          "status": "ignored",
+          "why": "the gateway-side resolver label; Atrium records its own answerer (resolvedByUserId) and marks any other resolution resolvedElsewhere"
+        }
+      }
+    },
+    "QuestionRequestedEvent": {
+      "fields": {
+        "id": {
+          "status": "handled",
+          "by": "agent-request-observer.ts: the providerRequestId every later call and settle is addressed by"
+        },
+        "questions": {
+          "status": "handled",
+          "by": "core/agent-requests.ts readOpenClawQuestionRequested"
+        },
+        "agentId": {
+          "status": "handled",
+          "by": "agent-request-observer.ts onQuestion -> the request's agentId (falls back to the session's)"
+        },
+        "sessionKey": {
+          "status": "handled",
+          "by": "agent-request-observer.ts ours(): the ISOLATION key — a question of another session is never recorded; respond re-checks it before resolving (session_mismatch)"
+        },
+        "runId": {
+          "status": "handled",
+          "by": "agent-request-observer.ts -> kept on the Convex row (bounded) for the trace"
+        },
+        "createdAtMs": {
+          "status": "handled",
+          "by": "agent-request-observer.ts -> providerCreatedAt: a caller-chosen id may come back after the gateway forgets a settled question (15 s, question-manager.ts), and Convex tells the new request from a replay of the old by this time"
+        },
+        "expiresAtMs": {
+          "status": "handled",
+          "by": "agent-request-observer.ts -> the row's expiresAt and the turn hold (noteHumanQuestion, seconds left)"
+        },
+        "status": {
+          "status": "handled",
+          "by": "readOpenClawQuestionRequested: only a pending record is a request; respond reads it on question.get"
+        },
+        "answers": {
+          "status": "ignored",
+          "why": "a pending record carries none; the answers of a settled question are read from question.resolved"
+        },
+        "resolvedBy": {
+          "status": "ignored",
+          "why": "the gateway-side resolver label; Atrium records its own answerer (resolvedByUserId) and marks any other resolution resolvedElsewhere"
+        }
+      }
+    },
+    "QuestionRequestParams": {
+      "status": "ignored",
+      "why": "the ASKING side of the question API (the gateway's ask_user tool and embedded broker call it); Atrium only ever answers — question.get / question.list / question.resolve"
+    },
+    "QuestionRequestResult": {
+      "status": "ignored",
+      "why": "the ASKING side of the question API (the gateway's ask_user tool and embedded broker call it); Atrium only ever answers — question.get / question.list / question.resolve"
+    },
+    "QuestionWaitAnswerParams": {
+      "status": "ignored",
+      "why": "the ASKING side of the question API (the gateway's ask_user tool and embedded broker call it); Atrium only ever answers — question.get / question.list / question.resolve"
+    },
+    "QuestionWaitAnswerResult": {
+      "status": "ignored",
+      "why": "the ASKING side of the question API (the gateway's ask_user tool and embedded broker call it); Atrium only ever answers — question.get / question.list / question.resolve"
+    },
+    "QuestionResolveParams": {
+      "fields": {
+        "id": {
+          "status": "handled",
+          "by": "agent-request-respond.ts respondOpenClaw -> question.resolve {id}"
+        },
+        "answers": {
+          "status": "handled",
+          "by": "agent-request-respond.ts respondOpenClaw -> openClawQuestionAnswers(body.answers)"
+        },
+        "cancel": {
+          "status": "handled",
+          "by": "agent-request-respond.ts respondOpenClaw: 'skip' sends {cancel:true} — the agent proceeds without an answer"
+        },
+        "resolvedBy": {
+          "status": "handled",
+          "by": "agent-request-respond.ts respondOpenClaw sends resolvedBy \"atrium\""
+        },
+        "secretStoreAllowedHosts": {
+          "status": "ignored",
+          "why": "omitted on purpose: the gateway then applies the binding's own allowedHosts (server-methods/question.ts `request.secretStoreAllowedHosts ?? binding.allowedHosts`); Atrium offers no way to widen or narrow them"
+        },
+        "resolutionId": {
+          "status": "ignored",
+          "why": "an id echoed to a waiter that asked includeResolutionId; Atrium's double-submit guard is its own `submitting` state in Convex"
+        }
+      }
+    },
+    "QuestionResolveResult": {
+      "fields": {
+        "status": {
+          "status": "ignored",
+          "why": "success is the absence of an error; the settled state reaches the card through question.resolved, which the observer reads"
+        },
+        "answers": {
+          "status": "ignored",
+          "why": "same: the answers are read from question.resolved"
+        }
+      }
+    },
+    "QuestionGetParams": {
+      "fields": {
+        "id": {
+          "status": "handled",
+          "by": "agent-request-respond.ts respondOpenClaw -> question.get {id} before resolving"
+        }
+      }
+    },
+    "QuestionGetResult": {
+      "fields": {
+        "question": {
+          "status": "handled",
+          "by": "agent-request-respond.ts respondOpenClaw: still pending? same session?"
+        }
+      }
+    },
+    "QuestionListParams": {
+      "status": "handled",
+      "by": "agent-request-observer.ts replayPending -> question.list {} after a (re)connect"
+    },
+    "QuestionListResult": {
+      "fields": {
+        "questions": {
+          "status": "handled",
+          "by": "agent-request-observer.ts replayPending: each record is read like a question.requested, THIS session's only"
+        }
+      }
+    },
+    "QuestionResolvedEvent": {
+      "fields": {
+        "id": {
+          "status": "handled",
+          "by": "agent-request-observer.ts onQuestionResolved -> settle by providerRequestId, release the turn hold"
+        },
+        "status": {
+          "status": "handled",
+          "by": "readOpenClawQuestionResolved -> answered | cancelled | expired"
+        },
+        "answers": {
+          "status": "handled",
+          "by": "readOpenClawQuestionResolved -> the row's answers (a secret question's values are dropped by storableAnswers)"
+        }
+      }
+    },
+    "ApprovalKind": {
+      "status": "handled",
+      "by": "agent-request-observer.ts records approvalKind from the broadcast family; agent-request-respond.ts sends it as approval.resolve {kind}"
+    },
+    "ApprovalDecision": {
+      "status": "handled",
+      "by": "agent-request-respond.ts respondOpenClaw -> approval.resolve {decision} (openClawDecision)"
+    },
+    "ApprovalAllowDecision": {
+      "status": "ignored",
+      "why": "the allowed snapshot's decision is not read: the decision the card records comes from the `*.approval.resolved` broadcast"
+    },
+    "ApprovalTerminalReason": {
+      "status": "ignored",
+      "why": "the card names the outcome (allowed / denied / expired / cancelled) from the `*.approval.resolved` broadcast; the terminal snapshot's reason is only in approval.resolve's result, of which Atrium reads the status alone"
+    },
+    "ApprovalAllowedReason": {
+      "status": "ignored",
+      "why": "the card names the outcome (allowed / denied / expired / cancelled) from the `*.approval.resolved` broadcast; the terminal snapshot's reason is only in approval.resolve's result, of which Atrium reads the status alone"
+    },
+    "ApprovalDeniedReason": {
+      "status": "ignored",
+      "why": "the card names the outcome (allowed / denied / expired / cancelled) from the `*.approval.resolved` broadcast; the terminal snapshot's reason is only in approval.resolve's result, of which Atrium reads the status alone"
+    },
+    "ApprovalExpiredReason": {
+      "status": "ignored",
+      "why": "the card names the outcome (allowed / denied / expired / cancelled) from the `*.approval.resolved` broadcast; the terminal snapshot's reason is only in approval.resolve's result, of which Atrium reads the status alone"
+    },
+    "ApprovalCancelledReason": {
+      "status": "ignored",
+      "why": "the card names the outcome (allowed / denied / expired / cancelled) from the `*.approval.resolved` broadcast; the terminal snapshot's reason is only in approval.resolve's result, of which Atrium reads the status alone"
+    },
+    "PluginApprovalSeverity": {
+      "status": "handled",
+      "by": "core/agent-requests.ts readOpenClawApprovalPresentation -> severity; a critical approval gets its own card tone"
+    },
+    "MessageSendApprovalScope": {
+      "fields": {
+        "kind": {
+          "status": "handled",
+          "by": "core/agent-requests.ts readOpenClawApprovalPresentation scopeSummary -> the blast-radius fact's label"
+        },
+        "target": {
+          "status": "handled",
+          "by": "core/agent-requests.ts readOpenClawApprovalPresentation scopeSummary -> part of the one-line blast radius"
+        },
+        "recipientCount": {
+          "status": "handled",
+          "by": "core/agent-requests.ts readOpenClawApprovalPresentation scopeSummary -> '×<count>'"
+        },
+        "recipients": {
+          "status": "handled",
+          "by": "core/agent-requests.ts readOpenClawApprovalPresentation scopeSummary -> up to five names"
+        },
+        "audience": {
+          "status": "handled",
+          "by": "core/agent-requests.ts readOpenClawApprovalPresentation -> scope.external; the card adds an 'External recipients' warning fact"
+        }
+      }
+    },
+    "PaymentApprovalScope": {
+      "fields": {
+        "kind": {
+          "status": "handled",
+          "by": "core/agent-requests.ts readOpenClawApprovalPresentation scopeSummary -> the blast-radius fact's label"
+        },
+        "amount": {
+          "status": "handled",
+          "by": "core/agent-requests.ts readOpenClawApprovalPresentation scopeSummary -> '<amount> <currency> → <target>'"
+        },
+        "currency": {
+          "status": "handled",
+          "by": "core/agent-requests.ts readOpenClawApprovalPresentation scopeSummary"
+        },
+        "target": {
+          "status": "handled",
+          "by": "core/agent-requests.ts readOpenClawApprovalPresentation scopeSummary -> part of the one-line blast radius"
+        }
+      }
+    },
+    "ExternalPostApprovalScope": {
+      "fields": {
+        "kind": {
+          "status": "handled",
+          "by": "core/agent-requests.ts readOpenClawApprovalPresentation scopeSummary -> the blast-radius fact's label"
+        },
+        "target": {
+          "status": "handled",
+          "by": "core/agent-requests.ts readOpenClawApprovalPresentation scopeSummary -> part of the one-line blast radius"
+        },
+        "visibility": {
+          "status": "handled",
+          "by": "core/agent-requests.ts readOpenClawApprovalPresentation scopeSummary -> appended to the target"
+        }
+      }
+    },
+    "StandingGrantApprovalScope": {
+      "fields": {
+        "kind": {
+          "status": "handled",
+          "by": "core/agent-requests.ts readOpenClawApprovalPresentation scopeSummary -> the blast-radius fact's label"
+        },
+        "automation": {
+          "status": "handled",
+          "by": "core/agent-requests.ts readOpenClawApprovalPresentation scopeSummary -> the standing grant's automation"
+        },
+        "command": {
+          "status": "handled",
+          "by": "core/agent-requests.ts readOpenClawApprovalPresentation scopeSummary -> the command the grant binds"
+        },
+        "expiresInDays": {
+          "status": "handled",
+          "by": "core/agent-requests.ts readOpenClawApprovalPresentation -> scope.grantDays; shown as a fact AND in the always-allow confirmation ('for N days')"
+        }
+      }
+    },
+    "ApprovalScope": {
+      "fields": {
+        "kind": {
+          "status": "handled",
+          "by": "core/agent-requests.ts readOpenClawApprovalPresentation scopeSummary -> the blast-radius fact's label"
+        },
+        "target": {
+          "status": "handled",
+          "by": "core/agent-requests.ts readOpenClawApprovalPresentation scopeSummary -> part of the one-line blast radius"
+        },
+        "recipientCount": {
+          "status": "handled",
+          "by": "core/agent-requests.ts readOpenClawApprovalPresentation scopeSummary -> '×<count>'"
+        },
+        "recipients": {
+          "status": "handled",
+          "by": "core/agent-requests.ts readOpenClawApprovalPresentation scopeSummary -> up to five names"
+        },
+        "audience": {
+          "status": "handled",
+          "by": "core/agent-requests.ts readOpenClawApprovalPresentation -> scope.external; the card adds an 'External recipients' warning fact"
+        },
+        "amount": {
+          "status": "handled",
+          "by": "core/agent-requests.ts readOpenClawApprovalPresentation scopeSummary -> '<amount> <currency> → <target>'"
+        },
+        "currency": {
+          "status": "handled",
+          "by": "core/agent-requests.ts readOpenClawApprovalPresentation scopeSummary"
+        },
+        "visibility": {
+          "status": "handled",
+          "by": "core/agent-requests.ts readOpenClawApprovalPresentation scopeSummary -> appended to the target"
+        },
+        "automation": {
+          "status": "handled",
+          "by": "core/agent-requests.ts readOpenClawApprovalPresentation scopeSummary -> the standing grant's automation"
+        },
+        "command": {
+          "status": "handled",
+          "by": "core/agent-requests.ts readOpenClawApprovalPresentation scopeSummary -> the command the grant binds"
+        },
+        "expiresInDays": {
+          "status": "handled",
+          "by": "core/agent-requests.ts readOpenClawApprovalPresentation -> scope.grantDays; shown as a fact AND in the always-allow confirmation ('for N days')"
+        }
+      }
+    },
+    "PluginApprovalExternalResolution": {
+      "fields": {
+        "label": {
+          "status": "gap",
+          "note": "NOT offered: a plugin's external verification choice (the reviewer confirms in another app). Atrium shows the regular decisions only"
+        },
+        "decisions": {
+          "status": "gap",
+          "note": "same: the decisions an external verification would grant are not offered"
+        }
+      }
+    },
+    "ExecApprovalPresentation": {
+      "fields": {
+        "kind": {
+          "status": "handled",
+          "by": "core/agent-requests.ts readOpenClawApprovalPresentation: picks the exec / plugin / system-agent branch"
+        },
+        "commandText": {
+          "status": "handled",
+          "by": "core/agent-requests.ts readOpenClawApprovalPresentation: the command, when no redacted preview exists"
+        },
+        "commandPreview": {
+          "status": "handled",
+          "by": "core/agent-requests.ts readOpenClawApprovalPresentation: PREFERRED over commandText — the gateway's redacted rendering"
+        },
+        "warningText": {
+          "status": "handled",
+          "by": "core/agent-requests.ts readOpenClawApprovalPresentation -> the card's warning line"
+        },
+        "host": {
+          "status": "handled",
+          "by": "core/agent-requests.ts readOpenClawApprovalPresentation -> 'Host: <host>' fact"
+        },
+        "nodeId": {
+          "status": "handled",
+          "by": "core/agent-requests.ts readOpenClawApprovalPresentation -> shown on the card (convex approval.nodeId): `host: \"node\"` alone cannot tell a production node from a test one"
+        },
+        "agentId": {
+          "status": "handled",
+          "by": "agent-request-respond.ts: an exec or plugin approval whose agent is not the conversation's is refused (session_mismatch) before approval.resolve; one naming NO agent (upstream allows null) is answered only when the chat's own socket routed it here (observer routedApproval)"
+        },
+        "scope": {
+          "status": "handled",
+          "by": "core/agent-requests.ts readOpenClawApprovalPresentation scopeSummary -> one blast-radius fact"
+        },
+        "allowedDecisions": {
+          "status": "handled",
+          "by": "core/agent-requests.ts readOpenClawApprovalPresentation readDecisions -> the buttons; deny is always added (upstream: deny is always available)"
+        }
+      }
+    },
+    "PluginApprovalPresentation": {
+      "fields": {
+        "kind": {
+          "status": "handled",
+          "by": "core/agent-requests.ts readOpenClawApprovalPresentation: picks the exec / plugin / system-agent branch"
+        },
+        "title": {
+          "status": "handled",
+          "by": "core/agent-requests.ts readOpenClawApprovalPresentation -> the card title (plugin, system-agent)"
+        },
+        "description": {
+          "status": "handled",
+          "by": "core/agent-requests.ts readOpenClawApprovalPresentation -> the card body (plugin, system-agent)"
+        },
+        "detail": {
+          "status": "handled",
+          "by": "core/agent-requests.ts readOpenClawApprovalPresentation -> a collapsible detail block (plugin)"
+        },
+        "severity": {
+          "status": "handled",
+          "by": "core/agent-requests.ts readOpenClawApprovalPresentation -> severity fact and the critical tone (plugin)"
+        },
+        "pluginId": {
+          "status": "handled",
+          "by": "core/agent-requests.ts readOpenClawApprovalPresentation -> kept on the request (convex approval.pluginId)"
+        },
+        "toolName": {
+          "status": "handled",
+          "by": "core/agent-requests.ts readOpenClawApprovalPresentation -> a monospace fact naming the tool (plugin)"
+        },
+        "agentId": {
+          "status": "handled",
+          "by": "agent-request-respond.ts: an exec or plugin approval whose agent is not the conversation's is refused (session_mismatch) before approval.resolve; one naming NO agent (upstream allows null) is answered only when the chat's own socket routed it here (observer routedApproval)"
+        },
+        "scope": {
+          "status": "handled",
+          "by": "core/agent-requests.ts readOpenClawApprovalPresentation scopeSummary -> one blast-radius fact"
+        },
+        "allowedDecisions": {
+          "status": "handled",
+          "by": "core/agent-requests.ts readOpenClawApprovalPresentation readDecisions -> the buttons; deny is always added (upstream: deny is always available)"
+        },
+        "externalResolution": {
+          "status": "gap",
+          "note": "NOT offered: see PluginApprovalExternalResolution"
+        }
+      }
+    },
+    "SystemAgentApprovalPresentation": {
+      "fields": {
+        "kind": {
+          "status": "handled",
+          "by": "core/agent-requests.ts readOpenClawApprovalPresentation: picks the exec / plugin / system-agent branch"
+        },
+        "title": {
+          "status": "handled",
+          "by": "core/agent-requests.ts readOpenClawApprovalPresentation -> the card title (plugin, system-agent)"
+        },
+        "description": {
+          "status": "handled",
+          "by": "core/agent-requests.ts readOpenClawApprovalPresentation -> the card body (plugin, system-agent)"
+        },
+        "proposalHash": {
+          "status": "ignored",
+          "why": "the integrity hash of a host-local system change: the gateway's resolver checks it, a reviewer cannot"
+        },
+        "agentId": {
+          "status": "ignored",
+          "why": "the card is shown in the conversation of the agent that asked; the observer takes the agent from the broadcast request"
+        },
+        "allowedDecisions": {
+          "status": "handled",
+          "by": "core/agent-requests.ts readOpenClawApprovalPresentation readDecisions -> the buttons; deny is always added (upstream: deny is always available)"
+        }
+      }
+    },
+    "ApprovalPresentation": {
+      "fields": {
+        "kind": {
+          "status": "handled",
+          "by": "core/agent-requests.ts readOpenClawApprovalPresentation: picks the exec / plugin / system-agent branch"
+        },
+        "commandText": {
+          "status": "handled",
+          "by": "core/agent-requests.ts readOpenClawApprovalPresentation: the command, when no redacted preview exists"
+        },
+        "commandPreview": {
+          "status": "handled",
+          "by": "core/agent-requests.ts readOpenClawApprovalPresentation: PREFERRED over commandText — the gateway's redacted rendering"
+        },
+        "warningText": {
+          "status": "handled",
+          "by": "core/agent-requests.ts readOpenClawApprovalPresentation -> the card's warning line"
+        },
+        "host": {
+          "status": "handled",
+          "by": "core/agent-requests.ts readOpenClawApprovalPresentation -> 'Host: <host>' fact"
+        },
+        "nodeId": {
+          "status": "handled",
+          "by": "core/agent-requests.ts readOpenClawApprovalPresentation -> shown on the card (convex approval.nodeId): `host: \"node\"` alone cannot tell a production node from a test one"
+        },
+        "agentId": {
+          "status": "handled",
+          "by": "agent-request-respond.ts: an exec or plugin approval whose agent is not the conversation's is refused (session_mismatch) before approval.resolve; one naming NO agent (upstream allows null) is answered only when the chat's own socket routed it here (observer routedApproval)"
+        },
+        "scope": {
+          "status": "handled",
+          "by": "core/agent-requests.ts readOpenClawApprovalPresentation scopeSummary -> one blast-radius fact"
+        },
+        "allowedDecisions": {
+          "status": "handled",
+          "by": "core/agent-requests.ts readOpenClawApprovalPresentation readDecisions -> the buttons; deny is always added (upstream: deny is always available)"
+        },
+        "title": {
+          "status": "handled",
+          "by": "core/agent-requests.ts readOpenClawApprovalPresentation -> the card title (plugin, system-agent)"
+        },
+        "description": {
+          "status": "handled",
+          "by": "core/agent-requests.ts readOpenClawApprovalPresentation -> the card body (plugin, system-agent)"
+        },
+        "detail": {
+          "status": "handled",
+          "by": "core/agent-requests.ts readOpenClawApprovalPresentation -> a collapsible detail block (plugin)"
+        },
+        "severity": {
+          "status": "handled",
+          "by": "core/agent-requests.ts readOpenClawApprovalPresentation -> severity fact and the critical tone (plugin)"
+        },
+        "pluginId": {
+          "status": "handled",
+          "by": "core/agent-requests.ts readOpenClawApprovalPresentation -> kept on the request (convex approval.pluginId)"
+        },
+        "toolName": {
+          "status": "handled",
+          "by": "core/agent-requests.ts readOpenClawApprovalPresentation -> a monospace fact naming the tool (plugin)"
+        },
+        "externalResolution": {
+          "status": "gap",
+          "note": "NOT offered: see PluginApprovalExternalResolution"
+        },
+        "proposalHash": {
+          "status": "ignored",
+          "why": "the integrity hash of a host-local system change: the gateway's resolver checks it, a reviewer cannot"
+        }
+      }
+    },
+    "PendingApprovalSnapshot": {
+      "fields": {
+        "id": {
+          "status": "ignored",
+          "why": "the id Atrium keys on is the broadcast's; the snapshot is fetched BY that id"
+        },
+        "urlPath": {
+          "status": "ignored",
+          "why": "a deep link into the gateway's own review page; Atrium answers in place"
+        },
+        "createdAtMs": {
+          "status": "handled",
+          "by": "readOpenClawApprovalPresentation -> providerCreatedAt on the row; agent-request-respond.ts sameGeneration re-checks it on approval.get before approval.resolve (an old card never answers a newer request under the same id)"
+        },
+        "expiresAtMs": {
+          "status": "handled",
+          "by": "core/agent-requests.ts readOpenClawApprovalPresentation -> the row's deadline (the broadcast's is the fallback)"
+        },
+        "presentation": {
+          "status": "handled",
+          "by": "core/agent-requests.ts readOpenClawApprovalPresentation"
+        },
+        "status": {
+          "status": "handled",
+          "by": "readOpenClawApprovalPresentation: only a pending snapshot is asked; agent-request-respond.ts reads it on approval.get and on a lost approval.resolve race (applied:false); agent-request-observer.ts confirmDeny reads a TERMINAL snapshot's status to tell an expiry from a refusal (both broadcast as `deny`)"
+        },
+        "sourceSessionKey": {
+          "status": "ignored",
+          "why": "absent from the PENDING snapshot approval.get serves (every capture on 2026.9.5): it is set only on the session-scoped projection Atrium does not subscribe to. Routing uses the broadcast's request.sessionKey; the answer path re-checks the presentation's agentId instead"
+        }
+      }
+    },
+    "AllowedApprovalSnapshot": {
+      "fields": {
+        "id": {
+          "status": "ignored",
+          "why": "the id Atrium keys on is the broadcast's; the snapshot is fetched BY that id"
+        },
+        "urlPath": {
+          "status": "ignored",
+          "why": "a deep link into the gateway's own review page; Atrium answers in place"
+        },
+        "createdAtMs": {
+          "status": "handled",
+          "by": "readOpenClawApprovalPresentation -> providerCreatedAt on the row; agent-request-respond.ts sameGeneration re-checks it on approval.get before approval.resolve (an old card never answers a newer request under the same id)"
+        },
+        "expiresAtMs": {
+          "status": "handled",
+          "by": "core/agent-requests.ts readOpenClawApprovalPresentation -> the row's deadline (the broadcast's is the fallback)"
+        },
+        "presentation": {
+          "status": "handled",
+          "by": "core/agent-requests.ts readOpenClawApprovalPresentation"
+        },
+        "status": {
+          "status": "handled",
+          "by": "readOpenClawApprovalPresentation: only a pending snapshot is asked; agent-request-respond.ts reads it on approval.get and on a lost approval.resolve race (applied:false); agent-request-observer.ts confirmDeny reads a TERMINAL snapshot's status to tell an expiry from a refusal (both broadcast as `deny`)"
+        },
+        "resolvedAtMs": {
+          "status": "ignored",
+          "why": "Convex records its own resolvedAt when the settle arrives"
+        },
+        "source": {
+          "status": "ignored",
+          "why": "origin attribution of the ledger; the row already belongs to its conversation"
+        },
+        "resolver": {
+          "status": "ignored",
+          "why": "which device or channel resolved it: Atrium records its own answerer and marks any other resolution resolvedElsewhere"
+        },
+        "decision": {
+          "status": "ignored",
+          "why": "the decision recorded on the row comes from the `*.approval.resolved` broadcast"
+        },
+        "reason": {
+          "status": "ignored",
+          "why": "the card names the outcome (allowed / denied / expired / cancelled) from the `*.approval.resolved` broadcast; the terminal snapshot's reason is only in approval.resolve's result, of which Atrium reads the status alone"
+        }
+      }
+    },
+    "DeniedApprovalSnapshot": {
+      "fields": {
+        "id": {
+          "status": "ignored",
+          "why": "the id Atrium keys on is the broadcast's; the snapshot is fetched BY that id"
+        },
+        "urlPath": {
+          "status": "ignored",
+          "why": "a deep link into the gateway's own review page; Atrium answers in place"
+        },
+        "createdAtMs": {
+          "status": "handled",
+          "by": "readOpenClawApprovalPresentation -> providerCreatedAt on the row; agent-request-respond.ts sameGeneration re-checks it on approval.get before approval.resolve (an old card never answers a newer request under the same id)"
+        },
+        "expiresAtMs": {
+          "status": "handled",
+          "by": "core/agent-requests.ts readOpenClawApprovalPresentation -> the row's deadline (the broadcast's is the fallback)"
+        },
+        "presentation": {
+          "status": "handled",
+          "by": "core/agent-requests.ts readOpenClawApprovalPresentation"
+        },
+        "status": {
+          "status": "handled",
+          "by": "readOpenClawApprovalPresentation: only a pending snapshot is asked; agent-request-respond.ts reads it on approval.get and on a lost approval.resolve race (applied:false); agent-request-observer.ts confirmDeny reads a TERMINAL snapshot's status to tell an expiry from a refusal (both broadcast as `deny`)"
+        },
+        "resolvedAtMs": {
+          "status": "ignored",
+          "why": "Convex records its own resolvedAt when the settle arrives"
+        },
+        "source": {
+          "status": "ignored",
+          "why": "origin attribution of the ledger; the row already belongs to its conversation"
+        },
+        "resolver": {
+          "status": "ignored",
+          "why": "which device or channel resolved it: Atrium records its own answerer and marks any other resolution resolvedElsewhere"
+        },
+        "decision": {
+          "status": "ignored",
+          "why": "the decision recorded on the row comes from the `*.approval.resolved` broadcast"
+        },
+        "reason": {
+          "status": "ignored",
+          "why": "the card names the outcome (allowed / denied / expired / cancelled) from the `*.approval.resolved` broadcast; the terminal snapshot's reason is only in approval.resolve's result, of which Atrium reads the status alone"
+        }
+      }
+    },
+    "ExpiredApprovalSnapshot": {
+      "fields": {
+        "id": {
+          "status": "ignored",
+          "why": "the id Atrium keys on is the broadcast's; the snapshot is fetched BY that id"
+        },
+        "urlPath": {
+          "status": "ignored",
+          "why": "a deep link into the gateway's own review page; Atrium answers in place"
+        },
+        "createdAtMs": {
+          "status": "handled",
+          "by": "readOpenClawApprovalPresentation -> providerCreatedAt on the row; agent-request-respond.ts sameGeneration re-checks it on approval.get before approval.resolve (an old card never answers a newer request under the same id)"
+        },
+        "expiresAtMs": {
+          "status": "handled",
+          "by": "core/agent-requests.ts readOpenClawApprovalPresentation -> the row's deadline (the broadcast's is the fallback)"
+        },
+        "presentation": {
+          "status": "handled",
+          "by": "core/agent-requests.ts readOpenClawApprovalPresentation"
+        },
+        "status": {
+          "status": "handled",
+          "by": "readOpenClawApprovalPresentation: only a pending snapshot is asked; agent-request-respond.ts reads it on approval.get and on a lost approval.resolve race (applied:false); agent-request-observer.ts confirmDeny reads a TERMINAL snapshot's status to tell an expiry from a refusal (both broadcast as `deny`)"
+        },
+        "resolvedAtMs": {
+          "status": "ignored",
+          "why": "Convex records its own resolvedAt when the settle arrives"
+        },
+        "source": {
+          "status": "ignored",
+          "why": "origin attribution of the ledger; the row already belongs to its conversation"
+        },
+        "resolver": {
+          "status": "ignored",
+          "why": "which device or channel resolved it: Atrium records its own answerer and marks any other resolution resolvedElsewhere"
+        },
+        "reason": {
+          "status": "ignored",
+          "why": "the card names the outcome (allowed / denied / expired / cancelled) from the `*.approval.resolved` broadcast; the terminal snapshot's reason is only in approval.resolve's result, of which Atrium reads the status alone"
+        }
+      }
+    },
+    "CancelledApprovalSnapshot": {
+      "fields": {
+        "id": {
+          "status": "ignored",
+          "why": "the id Atrium keys on is the broadcast's; the snapshot is fetched BY that id"
+        },
+        "urlPath": {
+          "status": "ignored",
+          "why": "a deep link into the gateway's own review page; Atrium answers in place"
+        },
+        "createdAtMs": {
+          "status": "handled",
+          "by": "readOpenClawApprovalPresentation -> providerCreatedAt on the row; agent-request-respond.ts sameGeneration re-checks it on approval.get before approval.resolve (an old card never answers a newer request under the same id)"
+        },
+        "expiresAtMs": {
+          "status": "handled",
+          "by": "core/agent-requests.ts readOpenClawApprovalPresentation -> the row's deadline (the broadcast's is the fallback)"
+        },
+        "presentation": {
+          "status": "handled",
+          "by": "core/agent-requests.ts readOpenClawApprovalPresentation"
+        },
+        "status": {
+          "status": "handled",
+          "by": "readOpenClawApprovalPresentation: only a pending snapshot is asked; agent-request-respond.ts reads it on approval.get and on a lost approval.resolve race (applied:false); agent-request-observer.ts confirmDeny reads a TERMINAL snapshot's status to tell an expiry from a refusal (both broadcast as `deny`)"
+        },
+        "resolvedAtMs": {
+          "status": "ignored",
+          "why": "Convex records its own resolvedAt when the settle arrives"
+        },
+        "source": {
+          "status": "ignored",
+          "why": "origin attribution of the ledger; the row already belongs to its conversation"
+        },
+        "resolver": {
+          "status": "ignored",
+          "why": "which device or channel resolved it: Atrium records its own answerer and marks any other resolution resolvedElsewhere"
+        },
+        "reason": {
+          "status": "ignored",
+          "why": "the card names the outcome (allowed / denied / expired / cancelled) from the `*.approval.resolved` broadcast; the terminal snapshot's reason is only in approval.resolve's result, of which Atrium reads the status alone"
+        }
+      }
+    },
+    "ApprovalSnapshot": {
+      "fields": {
+        "id": {
+          "status": "ignored",
+          "why": "the id Atrium keys on is the broadcast's; the snapshot is fetched BY that id"
+        },
+        "urlPath": {
+          "status": "ignored",
+          "why": "a deep link into the gateway's own review page; Atrium answers in place"
+        },
+        "createdAtMs": {
+          "status": "handled",
+          "by": "readOpenClawApprovalPresentation -> providerCreatedAt on the row; agent-request-respond.ts sameGeneration re-checks it on approval.get before approval.resolve (an old card never answers a newer request under the same id)"
+        },
+        "expiresAtMs": {
+          "status": "handled",
+          "by": "core/agent-requests.ts readOpenClawApprovalPresentation -> the row's deadline (the broadcast's is the fallback)"
+        },
+        "presentation": {
+          "status": "handled",
+          "by": "core/agent-requests.ts readOpenClawApprovalPresentation"
+        },
+        "status": {
+          "status": "handled",
+          "by": "readOpenClawApprovalPresentation: only a pending snapshot is asked; agent-request-respond.ts reads it on approval.get and on a lost approval.resolve race (applied:false); agent-request-observer.ts confirmDeny reads a TERMINAL snapshot's status to tell an expiry from a refusal (both broadcast as `deny`)"
+        },
+        "sourceSessionKey": {
+          "status": "ignored",
+          "why": "absent from the PENDING snapshot approval.get serves (every capture on 2026.9.5): it is set only on the session-scoped projection Atrium does not subscribe to. Routing uses the broadcast's request.sessionKey; the answer path re-checks the presentation's agentId instead"
+        },
+        "resolvedAtMs": {
+          "status": "ignored",
+          "why": "Convex records its own resolvedAt when the settle arrives"
+        },
+        "source": {
+          "status": "ignored",
+          "why": "origin attribution of the ledger; the row already belongs to its conversation"
+        },
+        "resolver": {
+          "status": "ignored",
+          "why": "which device or channel resolved it: Atrium records its own answerer and marks any other resolution resolvedElsewhere"
+        },
+        "decision": {
+          "status": "ignored",
+          "why": "the decision recorded on the row comes from the `*.approval.resolved` broadcast"
+        },
+        "reason": {
+          "status": "ignored",
+          "why": "the card names the outcome (allowed / denied / expired / cancelled) from the `*.approval.resolved` broadcast; the terminal snapshot's reason is only in approval.resolve's result, of which Atrium reads the status alone"
+        }
+      }
+    },
+    "TerminalApprovalSnapshot": {
+      "fields": {
+        "id": {
+          "status": "ignored",
+          "why": "the id Atrium keys on is the broadcast's; the snapshot is fetched BY that id"
+        },
+        "urlPath": {
+          "status": "ignored",
+          "why": "a deep link into the gateway's own review page; Atrium answers in place"
+        },
+        "createdAtMs": {
+          "status": "handled",
+          "by": "readOpenClawApprovalPresentation -> providerCreatedAt on the row; agent-request-respond.ts sameGeneration re-checks it on approval.get before approval.resolve (an old card never answers a newer request under the same id)"
+        },
+        "expiresAtMs": {
+          "status": "handled",
+          "by": "core/agent-requests.ts readOpenClawApprovalPresentation -> the row's deadline (the broadcast's is the fallback)"
+        },
+        "presentation": {
+          "status": "handled",
+          "by": "core/agent-requests.ts readOpenClawApprovalPresentation"
+        },
+        "status": {
+          "status": "handled",
+          "by": "readOpenClawApprovalPresentation: only a pending snapshot is asked; agent-request-respond.ts reads it on approval.get and on a lost approval.resolve race (applied:false); agent-request-observer.ts confirmDeny reads a TERMINAL snapshot's status to tell an expiry from a refusal (both broadcast as `deny`)"
+        },
+        "resolvedAtMs": {
+          "status": "ignored",
+          "why": "Convex records its own resolvedAt when the settle arrives"
+        },
+        "source": {
+          "status": "ignored",
+          "why": "origin attribution of the ledger; the row already belongs to its conversation"
+        },
+        "resolver": {
+          "status": "ignored",
+          "why": "which device or channel resolved it: Atrium records its own answerer and marks any other resolution resolvedElsewhere"
+        },
+        "decision": {
+          "status": "ignored",
+          "why": "the decision recorded on the row comes from the `*.approval.resolved` broadcast"
+        },
+        "reason": {
+          "status": "ignored",
+          "why": "the card names the outcome (allowed / denied / expired / cancelled) from the `*.approval.resolved` broadcast; the terminal snapshot's reason is only in approval.resolve's result, of which Atrium reads the status alone"
+        }
+      }
+    },
+    "ApprovalGetParams": {
+      "fields": {
+        "id": {
+          "status": "handled",
+          "by": "agent-request-observer.ts (on the broadcast) and agent-request-respond.ts (before resolving) -> approval.get {id}"
+        }
+      }
+    },
+    "ApprovalGetResult": {
+      "fields": {
+        "approval": {
+          "status": "handled",
+          "by": "core/agent-requests.ts readOpenClawApprovalPresentation"
+        }
+      }
+    },
+    "ApprovalHistoryParams": {
+      "status": "ignored",
+      "why": "Atrium keeps its own per-conversation history (the agentRequests table); the gateway's ledger is operator-wide"
+    },
+    "ApprovalHistoryResult": {
+      "status": "ignored",
+      "why": "Atrium keeps its own per-conversation history (the agentRequests table); the gateway's ledger is operator-wide"
+    },
+    "ApprovalChannelReviewer": {
+      "status": "ignored",
+      "why": "attribution for a CHANNEL reviewer (a chat platform account); Atrium resolves as its operator device"
+    },
+    "ApprovalResolveParams": {
+      "fields": {
+        "id": {
+          "status": "handled",
+          "by": "agent-request-respond.ts respondOpenClaw -> approval.resolve {id}"
+        },
+        "kind": {
+          "status": "handled",
+          "by": "agent-request-respond.ts respondOpenClaw -> approval.resolve {kind} (the request's approvalKind)"
+        },
+        "decision": {
+          "status": "handled",
+          "by": "agent-request-respond.ts respondOpenClaw -> openClawDecision(body.decision)"
+        },
+        "reviewer": {
+          "status": "ignored",
+          "why": "attribution for a CHANNEL reviewer; Atrium resolves as its operator device"
+        },
+        "grantExpiresInDays": {
+          "status": "ignored",
+          "why": "left to the gateway's tools.exec.grantExpiryDays; Atrium offers no per-grant expiry"
+        }
+      }
+    },
+    "ApprovalResolveResult": {
+      "fields": {
+        "applied": {
+          "status": "handled",
+          "by": "agent-request-respond.ts: applied:false = someone decided first -> request_gone with THEIR status"
+        },
+        "approval": {
+          "status": "handled",
+          "by": "agent-request-respond.ts: its status is the verdict recorded when the race was lost"
+        }
+      }
+    },
+    "PendingSessionApprovalEvent": {
+      "status": "ignored",
+      "why": "delivered only to a `sessions.messages.subscribe` stream opened with includeApprovals. Atrium deliberately opens no such subscription on a conversation socket (one broke the bench before); it reads the operator broadcasts `*.approval.requested|resolved` and fetches the reviewer-safe snapshot with approval.get instead"
+    },
+    "TerminalSessionApprovalEvent": {
+      "status": "ignored",
+      "why": "delivered only to a `sessions.messages.subscribe` stream opened with includeApprovals. Atrium deliberately opens no such subscription on a conversation socket (one broke the bench before); it reads the operator broadcasts `*.approval.requested|resolved` and fetches the reviewer-safe snapshot with approval.get instead"
+    },
+    "SessionApprovalEvent": {
+      "status": "ignored",
+      "why": "delivered only to a `sessions.messages.subscribe` stream opened with includeApprovals. Atrium deliberately opens no such subscription on a conversation socket (one broke the bench before); it reads the operator broadcasts `*.approval.requested|resolved` and fetches the reviewer-safe snapshot with approval.get instead"
+    },
+    "SessionApprovalReplay": {
+      "status": "ignored",
+      "why": "delivered only to a `sessions.messages.subscribe` stream opened with includeApprovals. Atrium deliberately opens no such subscription on a conversation socket (one broke the bench before); it reads the operator broadcasts `*.approval.requested|resolved` and fetches the reviewer-safe snapshot with approval.get instead"
     }
   }
 }

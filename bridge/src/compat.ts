@@ -250,7 +250,7 @@ export function hermesCapabilitiesFor(
  *  surface as capabilities appearing or vanishing for reasons nobody could trace back. */
 export const HERMES_RANGE: VersionRange = {
   min: "0.18.0",
-  maxValidated: "0.19.0",
+  maxValidated: "0.21.5",
 };
 
 /** The generation from which `models.list` takes (and, on a multi-agent roster,
@@ -470,9 +470,12 @@ export const COMPAT_MANIFEST: CompatManifest = {
       // 0.18.2 live-validated 2026-07-11 (WS transport: send/continuity/tools/
       // delegation/file delivery on the upgraded bench). 0.19.0 is the first Hermes
       // version to EARN its claim: GO 11/11 on the local bench, 2026-07-29, attested at
-      // `bridge/protocol/hermes/0.19.0/BENCH.json`.
+      // `bridge/protocol/hermes/0.19.0/BENCH.json`. 0.21.5 (v2026.9.24): GO 17/17 on
+      // 2026-09-24, attested at `bridge/protocol/hermes/0.21.5/BENCH.json` — the first
+      // version whose prompts are SERVER→CLIENT requests (`client.capabilities`,
+      // `request.answer`, `request.cancel`; tui_gateway/server_requests.py).
       supportedRange: HERMES_RANGE,
-      validatedVersions: ["0.18.0", "0.18.2", "0.19.0"],
+      validatedVersions: ["0.18.0", "0.18.2", "0.19.0", "0.21.5"],
       capabilities: HERMES_CAPABILITIES,
     },
   },
@@ -655,6 +658,27 @@ export function mediaDeliveryPoisonReason(
  * "does this deployment have the concept"), and a reader must be able to see
  * which one turned a capability off.
  */
+/**
+ * AGENT REQUESTS (questions `question.*`, approvals `approval.*`) — a BRIDGE-INTERNAL
+ * gate, not a manifest capability: the UI shows whatever requests Convex holds and has
+ * nothing to unlock, so the key would only widen the cross-repo capability partition.
+ *
+ * The floor is the version the live bench PROVED the surface on (`ask_user` + an exec
+ * approval, answered from Atrium). Upstream published the schemas from 2026.8.1, but a
+ * version number is not a proof: below the floor the bridge sends none of these calls
+ * and an agent's question behaves as it always did. Beyond `maxValidated` the verdict is
+ * FROZEN at the validated profile, like every capability.
+ */
+export const AGENT_REQUESTS_MIN_VERSION = "2026.9.5";
+
+export function openClawAgentRequestsEnabled(gatewayVersion: string | null): boolean {
+  const range = COMPAT_MANIFEST.providers.openclaw?.supportedRange ?? null;
+  return (
+    resolveCapabilitiesFor(range, { agentRequests: AGENT_REQUESTS_MIN_VERSION }, gatewayVersion)
+      .capabilities.agentRequests === true
+  );
+}
+
 /**
  * Capabilities a gateway VERSION alone cannot decide, because they also need the
  * instance to authenticate a particular way.

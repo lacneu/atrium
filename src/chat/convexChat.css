@@ -9874,3 +9874,665 @@ button.oc-bmk-rail__count:hover {
   outline: 2px solid var(--ring);
   outline-offset: 2px;
 }
+
+/* ── Agent requests (AgentRequests.tsx) ──────────────────────────────────────
+   What an agent ASKS the person: a question, an approval, a credential. One
+   card, three surfaces (under the asking bubble, the dock above the composer,
+   the "Requests" panel). The TONE drives every accent: `--tone` is set per
+   family, and everything else is mixed from it, so a family reads the same in
+   every surface and in both themes. */
+.oc-areq {
+  --tone: var(--areq-question);
+  position: relative;
+  border: 1px solid color-mix(in oklch, var(--tone) 30%, var(--border));
+  border-radius: 0.85rem;
+  background: color-mix(in oklch, var(--tone) 4%, var(--card));
+  color: var(--foreground);
+  overflow: hidden;
+  transition:
+    border-color 0.2s ease,
+    background-color 0.2s ease,
+    box-shadow 0.2s ease;
+}
+.oc-areq--approval { --tone: var(--areq-approval); }
+.oc-areq--critical { --tone: var(--areq-critical); }
+.oc-areq--credential { --tone: var(--areq-credential); }
+/* A waiting request carries a tone rail on its left edge and a soft lift: it is
+   the one thing on screen that blocks the agent. */
+.oc-areq--waiting {
+  box-shadow:
+    0 1px 2px color-mix(in oklch, var(--foreground) 6%, transparent),
+    0 6px 18px -10px color-mix(in oklch, var(--tone) 45%, transparent);
+  animation: oc-areq-in 0.28s ease-out;
+}
+.oc-areq--waiting::before {
+  content: "";
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 3px;
+  background: var(--tone);
+}
+/* Settled: quiet. The outcome badge says what happened; the card steps back. */
+.oc-areq--settled {
+  border-color: var(--border);
+  background: color-mix(in oklch, var(--muted) 35%, var(--card));
+}
+.oc-areq--settled .oc-areq__icon {
+  background: var(--muted);
+  color: var(--muted-foreground);
+}
+.oc-areq--settled .oc-areq__kind { color: var(--muted-foreground); }
+
+.oc-areq__head {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  min-height: 2.6rem;
+  padding: 0.4rem 0.55rem 0.4rem 0.8rem;
+  font-size: 0.86rem;
+}
+.oc-areq__icon {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.65rem;
+  height: 1.65rem;
+  border-radius: 999px;
+  background: color-mix(in oklch, var(--tone) 16%, transparent);
+  color: color-mix(in oklch, var(--tone) 88%, var(--foreground));
+}
+.oc-areq__toggle {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: baseline;
+  gap: 0.55rem;
+  padding: 0.2rem 0;
+  border: none;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+  font: inherit;
+}
+.oc-areq__toggle:focus-visible {
+  outline: 2px solid color-mix(in oklch, var(--tone) 60%, transparent);
+  outline-offset: 2px;
+  border-radius: 6px;
+}
+.oc-areq__kind {
+  flex-shrink: 0;
+  font-weight: 600;
+  color: color-mix(in oklch, var(--tone) 80%, var(--foreground));
+  letter-spacing: 0.005em;
+}
+.oc-areq__summary {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--muted-foreground);
+}
+.oc-areq__timer,
+.oc-areq__outcome {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  padding: 0.12rem 0.5rem;
+  border-radius: 999px;
+  font-size: 0.74rem;
+  font-weight: 500;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+.oc-areq__timer {
+  color: var(--muted-foreground);
+  background: color-mix(in oklch, var(--muted) 70%, transparent);
+}
+.oc-areq__timer--urgent {
+  color: var(--areq-critical);
+  background: color-mix(in oklch, var(--areq-critical) 12%, transparent);
+  animation: oc-areq-urgent 1.6s ease-in-out infinite;
+}
+.oc-areq__outcome {
+  color: var(--muted-foreground);
+  background: var(--muted);
+}
+.oc-areq__outcome--answered,
+.oc-areq__outcome--allowed_once,
+.oc-areq__outcome--allowed_session,
+.oc-areq__outcome--allowed_always {
+  color: oklch(0.52 0.13 150);
+  background: color-mix(in oklch, oklch(0.62 0.14 150) 13%, transparent);
+}
+.dark .oc-areq__outcome--answered,
+.dark .oc-areq__outcome--allowed_once,
+.dark .oc-areq__outcome--allowed_session,
+.dark .oc-areq__outcome--allowed_always {
+  color: oklch(0.78 0.13 150);
+}
+.oc-areq__outcome--denied,
+.oc-areq__outcome--failed {
+  color: var(--destructive);
+  background: color-mix(in oklch, var(--destructive) 11%, transparent);
+}
+.oc-areq__outcome--sending {
+  color: color-mix(in oklch, var(--tone) 85%, var(--foreground));
+  background: color-mix(in oklch, var(--tone) 12%, transparent);
+}
+.oc-areq__outcome-detail {
+  max-width: 14rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-weight: 400;
+  opacity: 0.85;
+}
+.oc-areq__outcome-detail::before { content: "·"; margin: 0 0.3rem 0 0.1rem; }
+.oc-areq__iconbtn {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.75rem;
+  height: 1.75rem;
+  border: none;
+  border-radius: 0.5rem;
+  background: transparent;
+  color: var(--muted-foreground);
+  cursor: pointer;
+}
+.oc-areq__iconbtn:hover {
+  background: var(--muted);
+  color: var(--foreground);
+}
+.oc-areq__iconbtn:focus-visible {
+  outline: 2px solid color-mix(in oklch, var(--tone) 60%, transparent);
+  outline-offset: 1px;
+}
+
+.oc-areq__body {
+  padding: 0.1rem 0.95rem 0.9rem 3.05rem;
+  font-size: 0.9rem;
+  line-height: 1.5;
+  animation: oc-areq-open 0.18s ease-out;
+}
+.oc-areq__form,
+.oc-areq__approval {
+  display: flex;
+  flex-direction: column;
+  gap: 0.7rem;
+}
+.oc-areq__q {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  margin: 0;
+  padding: 0;
+  border: none;
+  min-width: 0;
+}
+.oc-areq__q + .oc-areq__q {
+  padding-top: 0.7rem;
+  border-top: 1px dashed color-mix(in oklch, var(--tone) 22%, var(--border));
+}
+.oc-areq__qhead { display: flex; align-items: baseline; gap: 0.5rem; flex-wrap: wrap; }
+.oc-areq__qchip {
+  display: inline-block;
+  padding: 0.05rem 0.45rem;
+  border-radius: 0.35rem;
+  background: color-mix(in oklch, var(--tone) 14%, transparent);
+  color: color-mix(in oklch, var(--tone) 85%, var(--foreground));
+  font-size: 0.72rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.oc-areq__qtext { font-weight: 500; white-space: pre-wrap; overflow-wrap: anywhere; }
+.oc-areq__options { display: flex; flex-wrap: wrap; gap: 0.45rem; align-items: center; }
+.oc-areq__option {
+  display: inline-flex;
+  align-items: flex-start;
+  gap: 0.5rem;
+  max-width: 100%;
+  padding: 0.42rem 0.75rem 0.42rem 0.55rem;
+  border: 1px solid var(--border);
+  border-radius: 0.65rem;
+  background: var(--background);
+  color: var(--foreground);
+  text-align: left;
+  font: inherit;
+  font-size: 0.86rem;
+  cursor: pointer;
+  transition:
+    border-color 0.15s ease,
+    background-color 0.15s ease,
+    transform 0.1s ease;
+}
+.oc-areq__option:hover:not(:disabled) {
+  border-color: color-mix(in oklch, var(--tone) 50%, var(--border));
+  background: color-mix(in oklch, var(--tone) 6%, var(--background));
+}
+.oc-areq__option:active:not(:disabled) { transform: translateY(1px); }
+.oc-areq__option:focus-visible {
+  outline: 2px solid color-mix(in oklch, var(--tone) 60%, transparent);
+  outline-offset: 1px;
+}
+.oc-areq__option--on {
+  border-color: var(--tone);
+  background: color-mix(in oklch, var(--tone) 11%, var(--background));
+}
+.oc-areq__option:disabled { cursor: default; opacity: 0.85; }
+.oc-areq__option-mark {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1rem;
+  height: 1rem;
+  margin-top: 0.12rem;
+  border: 1.5px solid color-mix(in oklch, var(--tone) 45%, var(--border));
+  border-radius: 999px;
+  color: var(--background);
+}
+.oc-areq__options[role="group"] .oc-areq__option-mark { border-radius: 0.3rem; }
+.oc-areq__option--on .oc-areq__option-mark {
+  border-color: var(--tone);
+  background: var(--tone);
+}
+.oc-areq__option-text { display: flex; flex-direction: column; min-width: 0; }
+/* The label is sent back verbatim, so it is never shortened in the data — only here,
+   visually, with the full text on hover (title). */
+.oc-areq__option-label {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 4;
+  overflow: hidden;
+  font-weight: 500;
+  overflow-wrap: anywhere;
+}
+.oc-areq__option-desc { font-size: 0.78rem; color: var(--muted-foreground); }
+.oc-areq__input {
+  width: 100%;
+  min-width: 0;
+  padding: 0.5rem 0.7rem;
+  border: 1px solid var(--input);
+  border-radius: 0.6rem;
+  background: var(--background);
+  color: var(--foreground);
+  font: inherit;
+  font-size: 0.88rem;
+}
+.oc-areq__input:focus {
+  outline: none;
+  border-color: color-mix(in oklch, var(--tone) 60%, var(--input));
+  box-shadow: 0 0 0 3px color-mix(in oklch, var(--tone) 18%, transparent);
+}
+.oc-areq__input--area { resize: vertical; min-height: 3.2rem; }
+.oc-areq__secret { display: flex; align-items: center; gap: 0.35rem; }
+.oc-areq__secret .oc-areq__input { font-family: var(--font-mono); letter-spacing: 0.02em; }
+.oc-areq__link {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  width: fit-content;
+  font-size: 0.84rem;
+  color: color-mix(in oklch, var(--tone) 85%, var(--foreground));
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+.oc-areq__hint,
+.oc-areq__note {
+  margin: 0;
+  font-size: 0.78rem;
+  color: var(--muted-foreground);
+}
+.oc-areq__note {
+  padding: 0.4rem 0.6rem;
+  border-radius: 0.5rem;
+  background: var(--muted);
+}
+.oc-areq__given { margin: 0; color: var(--foreground); white-space: pre-wrap; }
+.oc-areq__error {
+  margin: 0;
+  font-size: 0.82rem;
+  color: var(--destructive);
+}
+.oc-areq__title { margin: 0; font-weight: 600; }
+.oc-areq__desc { margin: 0; color: var(--foreground); white-space: pre-wrap; overflow-wrap: anywhere; }
+.oc-areq__command {
+  position: relative;
+  margin: 0;
+  padding: 0.6rem 0.75rem 0.6rem 2rem;
+  border: 1px solid var(--border);
+  border-radius: 0.6rem;
+  background: color-mix(in oklch, var(--muted) 75%, var(--background));
+  font-family: var(--font-mono);
+  font-size: 0.8rem;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 14rem;
+  overflow-y: auto;
+}
+.oc-areq__command-icon {
+  position: absolute;
+  top: 0.72rem;
+  left: 0.7rem;
+  color: var(--muted-foreground);
+}
+.oc-areq__warning {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.4rem;
+  margin: 0;
+  font-size: 0.84rem;
+  color: color-mix(in oklch, var(--areq-approval) 75%, var(--foreground));
+}
+.oc-areq__warning svg { flex-shrink: 0; margin-top: 0.2rem; }
+.oc-areq__detail summary {
+  cursor: pointer;
+  font-size: 0.82rem;
+  color: var(--muted-foreground);
+}
+.oc-areq__detail pre {
+  margin: 0.4rem 0 0;
+  white-space: pre-wrap;
+  font-size: 0.8rem;
+  max-height: 12rem;
+  overflow-y: auto;
+}
+.oc-areq__facts { display: flex; flex-wrap: wrap; gap: 0.35rem; }
+.oc-areq__facts:empty { display: none; }
+.oc-areq__fact {
+  display: inline-flex;
+  align-items: center;
+  width: fit-content;
+  padding: 0.1rem 0.5rem;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  font-size: 0.74rem;
+  color: var(--muted-foreground);
+}
+.oc-areq__fact--mono { font-family: var(--font-mono); }
+.oc-areq__fact--warning {
+  border-color: color-mix(in oklch, var(--areq-approval) 45%, var(--border));
+  color: color-mix(in oklch, var(--areq-approval) 80%, var(--foreground));
+}
+.oc-areq__fact--critical {
+  border-color: color-mix(in oklch, var(--areq-critical) 50%, var(--border));
+  color: var(--areq-critical);
+  font-weight: 600;
+}
+.oc-areq__actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.45rem;
+}
+.oc-areq__spacer { flex: 1; }
+.oc-areq__confirm {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  padding: 0.6rem 0.7rem;
+  border-radius: 0.6rem;
+  background: color-mix(in oklch, var(--tone) 9%, transparent);
+}
+.oc-areq__confirm p { margin: 0; font-size: 0.84rem; }
+
+/* Under the bubble: part of the turn, spaced like its other blocks. */
+.oc-areq-inline {
+  display: flex;
+  flex-direction: column;
+  gap: 0.55rem;
+  margin: 0.65rem 0 0.2rem;
+}
+/* The jump target, once reached. */
+.oc-areq--flash,
+.oc-msg.oc-areq--flash {
+  animation: oc-areq-flash 2.1s ease-out;
+}
+
+/* ── The dock: what still waits, right above the composer ── */
+.oc-areq-dock {
+  --tone: var(--areq-question);
+  align-self: center;
+  width: calc(100% - 3.8rem);
+  max-width: calc(var(--oc-thread-w) - 1.8rem);
+  margin: 0.35rem auto 0.55rem;
+  position: relative;
+  z-index: 3;
+  border: 1px solid color-mix(in oklch, var(--tone) 35%, var(--border));
+  border-radius: 1rem;
+  background: color-mix(in srgb, var(--card) 80%, transparent);
+  -webkit-backdrop-filter: blur(14px) saturate(1.1);
+  backdrop-filter: blur(14px) saturate(1.1);
+  box-shadow: 0 10px 30px -18px color-mix(in oklch, var(--tone) 60%, transparent);
+  animation: oc-areq-in 0.28s ease-out;
+}
+@supports not (backdrop-filter: blur(1px)) {
+  .oc-areq-dock { background: var(--card); }
+}
+.oc-areq-dock--approval { --tone: var(--areq-approval); }
+.oc-areq-dock--critical { --tone: var(--areq-critical); }
+.oc-areq-dock--credential { --tone: var(--areq-credential); }
+.oc-areq-dock__bar {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  padding: 0.45rem 0.5rem 0.45rem 0.7rem;
+  font-size: 0.86rem;
+}
+.oc-areq-dock__pulse {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.55rem;
+  height: 1.55rem;
+  border-radius: 999px;
+  background: color-mix(in oklch, var(--tone) 18%, transparent);
+  color: color-mix(in oklch, var(--tone) 90%, var(--foreground));
+}
+.oc-areq-dock__pulse::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  border: 2px solid var(--tone);
+  animation: oc-areq-ring 2s ease-out infinite;
+}
+.oc-areq-dock__title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 600;
+}
+.oc-areq-dock__count {
+  flex-shrink: 0;
+  white-space: nowrap;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.2rem;
+  padding: 0.08rem 0.45rem 0.08rem 0.55rem;
+  border: none;
+  border-radius: 999px;
+  background: color-mix(in oklch, var(--tone) 14%, transparent);
+  color: color-mix(in oklch, var(--tone) 85%, var(--foreground));
+  font: inherit;
+  font-size: 0.74rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+.oc-areq-dock__count:hover { background: color-mix(in oklch, var(--tone) 22%, transparent); }
+.oc-areq-dock__list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+  max-height: min(46vh, 28rem);
+  overflow-y: auto;
+  padding: 0 0.5rem 0.55rem;
+  overscroll-behavior: contain;
+}
+.oc-areq--dock { border-radius: 0.75rem; box-shadow: none; animation: none; }
+.oc-areq--dock .oc-areq__head { min-height: 2.35rem; padding-top: 0.25rem; padding-bottom: 0.25rem; }
+.oc-areq--dock .oc-areq__body { padding-left: 0.95rem; }
+
+/* ── The panel: every request of the conversation ── */
+.oc-areq-panel {
+  display: flex;
+  flex-direction: column;
+  width: min(30rem, 100vw);
+  max-width: 100vw;
+}
+.oc-areq-panel__filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  padding: 0 1rem 0.6rem;
+}
+.oc-areq-panel__filter {
+  padding: 0.25rem 0.7rem;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--muted-foreground);
+  font: inherit;
+  font-size: 0.8rem;
+  cursor: pointer;
+}
+.oc-areq-panel__filter:hover { color: var(--foreground); background: var(--muted); }
+.oc-areq-panel__filter--on {
+  border-color: var(--foreground);
+  color: var(--foreground);
+  background: var(--muted);
+}
+.oc-areq-panel__filter--question.oc-areq-panel__filter--on { border-color: var(--areq-question); }
+.oc-areq-panel__filter--approval.oc-areq-panel__filter--on { border-color: var(--areq-approval); }
+.oc-areq-panel__filter--credential.oc-areq-panel__filter--on { border-color: var(--areq-credential); }
+.oc-areq-panel__body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 0.55rem;
+  padding: 0 1rem 1.25rem;
+}
+/* A scrolling column: its cards keep their height instead of being squeezed. */
+.oc-areq-panel__body > * { flex-shrink: 0; }
+.oc-areq-panel__section {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  margin: 0.6rem 0 0.1rem;
+  font-size: 0.74rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted-foreground);
+}
+.oc-areq-panel__n {
+  padding: 0 0.4rem;
+  border-radius: 999px;
+  background: var(--muted);
+  color: var(--foreground);
+  letter-spacing: 0;
+}
+.oc-areq-panel__empty {
+  margin: 2rem 0;
+  text-align: center;
+  color: var(--muted-foreground);
+  font-size: 0.9rem;
+}
+.oc-areq--panel .oc-areq__body { padding-left: 0.95rem; }
+
+/* ── Header entry ── */
+.oc-chip--areq {
+  border-color: color-mix(in oklch, var(--areq-question) 45%, var(--border));
+  color: color-mix(in oklch, var(--areq-question) 85%, var(--foreground));
+}
+.oc-areq-headbadge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 1.15rem;
+  height: 1.15rem;
+  padding: 0 0.3rem;
+  border-radius: 999px;
+  background: var(--areq-question);
+  color: var(--background);
+  font-size: 0.68rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ── Sidebar badge (ChatSidebar) ── */
+.oc-areq-sidebadge {
+  --tone: var(--areq-question);
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.15rem;
+  height: 1.15rem;
+  border-radius: 999px;
+  background: color-mix(in oklch, var(--tone) 18%, transparent);
+  color: color-mix(in oklch, var(--tone) 90%, var(--foreground));
+}
+.oc-areq-sidebadge--approval { --tone: var(--areq-approval); }
+.oc-areq-sidebadge--critical { --tone: var(--areq-critical); }
+.oc-areq-sidebadge--credential { --tone: var(--areq-credential); }
+
+@keyframes oc-areq-in {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: none; }
+}
+@keyframes oc-areq-open {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+@keyframes oc-areq-ring {
+  0% { opacity: 0.55; transform: scale(1); }
+  80%, 100% { opacity: 0; transform: scale(1.7); }
+}
+@keyframes oc-areq-urgent {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.55; }
+}
+@keyframes oc-areq-flash {
+  0% { box-shadow: 0 0 0 0 color-mix(in oklch, var(--tone, var(--highlight)) 55%, transparent); }
+  30% { box-shadow: 0 0 0 6px color-mix(in oklch, var(--tone, var(--highlight)) 25%, transparent); }
+  100% { box-shadow: 0 0 0 0 transparent; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .oc-areq--waiting,
+  .oc-areq__body,
+  .oc-areq-dock,
+  .oc-areq-dock__pulse::after,
+  .oc-areq__timer--urgent,
+  .oc-areq--flash {
+    animation: none;
+  }
+}
+@media (max-width: 640px) {
+  .oc-areq-dock { width: calc(100% - 2rem); }
+  .oc-areq__body { padding-left: 0.95rem; }
+  .oc-areq__summary { display: none; }
+  /* Narrow: the kind yields to the badges instead of running under them. */
+  .oc-areq__kind {
+    flex-shrink: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .oc-areq__head { gap: 0.4rem; }
+  .oc-areq__actions { justify-content: stretch; }
+  .oc-areq__actions > * { flex: 1 1 auto; }
+  .oc-areq__actions .oc-areq__spacer { display: none; }
+}

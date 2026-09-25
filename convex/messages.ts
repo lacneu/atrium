@@ -57,6 +57,7 @@ import {
   shortChildId,
   type SubAgentStatus,
 } from "./lib/subAgentFailure";
+import { deleteMessageAgentRequests } from "./agentRequests";
 
 // Hard upper bound on how many recent messages the reactive feed loads. Chosen
 // to cover a typical visible conversation while keeping the query (and the
@@ -1670,6 +1671,14 @@ export const deleteMessage = mutation({
       deletedIds.add(m._id);
       await ctx.db.delete(m._id);
     }
+
+    // Agent requests shown under a deleted turn go with it: the question or the
+    // command they name belonged to that turn, and an open one could otherwise be
+    // answered for a turn the person just threw away.
+    await deleteMessageAgentRequests(
+      ctx,
+      [...deletedIds].map((id) => id as Id<"messages">),
+    );
 
     // Bookmarks anchored to a deleted turn: purge them with the message
     // (labels are user content; stale rows would also eat the bounded
