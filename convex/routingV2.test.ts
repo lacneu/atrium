@@ -15,6 +15,14 @@ import type { Doc } from "./_generated/dataModel";
 
 const modules = import.meta.glob("./**/*.ts");
 
+/** beginTurnRouting's routed result, narrowed: a refusal or no routing fails here. */
+function routed<R>(r: R): Exclude<R, null | { refused: unknown }> {
+  if (r === null || (typeof r === "object" && "refused" in (r as object))) {
+    throw new Error(`expected a routed turn, got ${JSON.stringify(r)}`);
+  }
+  return r as Exclude<R, null | { refused: unknown }>;
+}
+
 async function seedUser(t: ReturnType<typeof convexTest>) {
   return t.run(async (ctx) => {
     const uid = await ctx.db.insert("users", {});
@@ -535,7 +543,7 @@ describe("getChatRouting / bindChatTarget — drop stale provider id on rebind (
     await t.mutation(internal.bridge.confirmTurnRouting, {
       chatId: chat._id,
       routedAgent: { instanceName: "prod", agentId: "bob" },
-      segment: sw1!.segment,
+      segment: routed(sw1).segment,
     });
     c = (await t.run((ctx) => ctx.db.get(chat._id))) as Doc<"chats">;
     expect(c.routingSegment).toBe(`turn:${m1}`); // confirmed
@@ -575,7 +583,7 @@ describe("getChatRouting / bindChatTarget — drop stale provider id on rebind (
     await t.mutation(internal.bridge.confirmTurnRouting, {
       chatId: chat._id,
       routedAgent: { instanceName: "prod", agentId: "alice" },
-      segment: sw3!.segment,
+      segment: routed(sw3).segment,
     });
     c = (await t.run((ctx) => ctx.db.get(chat._id))) as Doc<"chats">;
     expect(c.routingSegment).toBe(`turn:${m3}`); // RE-KEYED on the switch (confirmed)
@@ -836,14 +844,14 @@ describe("getChatRouting / bindChatTarget — drop stale provider id on rebind (
       error:
         "⚠️ Context is too large and auto-compaction could not recover this turn. Reason: no conversation found for session.",
       errorKind: "session_gone",
-      clearProviderSession: began!.segment,
+      clearProviderSession: routed(began).segment,
     });
     // …and the ack's confirmation arrives afterwards, carrying the epoch it started under.
     await t.mutation(internal.bridge.confirmTurnRouting, {
       chatId,
       routedAgent: { instanceName: "prod", agentId: "bob" },
-      segment: began!.segment,
-      expectedResetCount: began!.resetCount,
+      segment: routed(began).segment,
+      expectedResetCount: routed(began).resetCount,
     });
     const after = await t.run(async (ctx) => await ctx.db.get(chatId));
     expect(after?.routingSegment).toBeUndefined();
@@ -866,10 +874,10 @@ describe("getChatRouting / bindChatTarget — drop stale provider id on rebind (
     await t.mutation(internal.bridge.confirmTurnRouting, {
       chatId,
       routedAgent: { instanceName: "prod", agentId: "bob" },
-      segment: began!.segment,
-      expectedResetCount: began!.resetCount,
+      segment: routed(began).segment,
+      expectedResetCount: routed(began).resetCount,
     });
     const after = await t.run(async (ctx) => await ctx.db.get(chatId));
-    expect(after?.routingSegment).toBe(began!.segment);
+    expect(after?.routingSegment).toBe(routed(began).segment);
   });
 });

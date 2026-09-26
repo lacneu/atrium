@@ -2184,6 +2184,9 @@ export const setInstanceAuthMode = mutation({
       v.union(v.literal("canonical"), v.literal("email")),
     ),
     systemIdentity: v.optional(v.string()),
+    participantIdentity: v.optional(
+      v.union(v.literal("owner"), v.literal("self")),
+    ),
   },
   handler: async (
     ctx,
@@ -2194,6 +2197,7 @@ export const setInstanceAuthMode = mutation({
       personScopes,
       identitySource,
       systemIdentity,
+      participantIdentity,
     },
   ) => {
     assertDev();
@@ -2209,6 +2213,7 @@ export const setInstanceAuthMode = mutation({
       ...(personScopes ? { personScopes } : {}),
       ...(identitySource ? { identitySource } : {}),
       ...(systemIdentity ? { systemIdentity } : {}),
+      ...(participantIdentity ? { participantIdentity } : {}),
     });
     return { ok: true as const, authMode, gatewayUrl: gatewayUrl ?? inst.gatewayUrl };
   },

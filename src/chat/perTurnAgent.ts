@@ -260,6 +260,10 @@ export function resolveAgentSelectorGate(params: {
   callActive?: boolean;
   /** The agent that call is on, when the server knows it. */
   onCall?: { instanceName: string; agentId: string } | null;
+  /** The reader is a GUEST of the conversation. Re-binding it is the owner's (the
+   *  server refuses a guest's rebind); a guest picks between the room's agents from
+   *  the very first turn instead. */
+  guest?: boolean;
 }): AgentSelectorGate {
   const { hasUserTurn, emptyThread, readOnly, multiAgent, poolSize } = params;
   // Ahead of every other verdict, and never HIDDEN: the control must keep showing
@@ -274,7 +278,10 @@ export function resolveAgentSelectorGate(params: {
       onCall: params.onCall ?? null,
     };
   }
-  const verdict: Omit<AgentSelectorGate, "hidden"> = emptyThread
+  const verdict: Omit<AgentSelectorGate, "hidden"> =
+    params.guest === true && (emptyThread || hasUserTurn)
+      ? { disabled: readOnly, mode: "route" }
+      : emptyThread
     ? { disabled: false, mode: "rebind" }
     : hasUserTurn && !readOnly
       ? { disabled: false, mode: "route" }
@@ -325,11 +332,14 @@ export function resolveRoutedAgentToSend(params: {
   perTurnRouting: boolean;
   isFirstTurn: boolean;
   canRoute: boolean;
+  /** A GUEST's pick is honoured on turn 1: they cannot re-bind the conversation
+   *  (the owner's), so the pick is the only way to address a room agent. */
+  guest?: boolean;
 }): AgentRef | undefined {
   const { selected, primary, perTurnRouting, isFirstTurn, canRoute } = params;
   if (!canRoute) return undefined;
   if (!selected) return undefined;
-  if (isFirstTurn) return undefined;
+  if (isFirstTurn && params.guest !== true) return undefined;
   if (perTurnRouting) return selected;
   if (agentRefEquals(selected, primary)) return undefined;
   return selected;
@@ -366,4 +376,116 @@ export function resolveImportedAgentLabels(
     );
   }
   return out;
+}
+
+/**
+ * The composer picker's ORDER — one flat list, read top to bottom, no per-instance
+ * headings to scan past:
+ *   1. the conversation's primary;
+ *   2. the other agents of the room, in the order they were added;
+ *   3. everything else the reader may address, by name.
+ * `room` holds 1 and 2 (empty when the room has no added agent: the list is then
+ * simply the primary followed by the rest). A search keeps the order and drops
+ * what does not match.
+ */
+export function orderComposerAgents<
+  T extends AgentRef & { displayName: string | null },
+>(
+  pool: T[],
+  primary: AgentRef | null,
+  roomAgents: AgentRef[],
+): { room: T[]; others: T[] } {
+  const primaryRow = pool.find((a) => agentRefEquals(a, primary)) ?? null;
+  const added = roomAgents
+    .map((r) => pool.find((a) => agentRefEquals(a, r)) ?? null)
+    .filter((a): a is T => a !== null && !agentRefEquals(a, primary));
+  const inRoom = (a: T) =>
+    agentRefEquals(a, primary) || added.some((r) => agentRefEquals(r, a));
+  // NATURAL order ("bench-2" before "bench-10"), case-insensitive.
+  const collator = new Intl.Collator(undefined, { numeric: true, sensitivity: "base" });
+  const name = (a: T) => a.displayName ?? a.agentId;
+  const rest = pool
+    .filter((a) => !inRoom(a))
+    .sort(
+      (a, b) =>
+        collator.compare(name(a), name(b)) || collator.compare(a.instanceName, b.instanceName),
+    );
+  if (added.length === 0) {
+    return { room: [], others: primaryRow ? [primaryRow, ...rest] : rest };
+  }
+  return { room: primaryRow ? [primaryRow, ...added] : added, others: rest };
+}
+
+/**
+ * The secondary line of an agent row: the model, then — only where a name alone
+ * could be ambiguous — the instance. Never styled apart from the rest of the row.
+ */
+export function agentRowMeta(
+  a: AgentRef & { model?: string | null },
+  showInstance: boolean,
+): string {
+  return [a.model ?? null, showInstance ? a.instanceName : null]
+    .filter((s): s is string => typeof s === "string" && s.length > 0)
+    .join(" · ");
+}
+
+/**
+ * The reader's pool, completed with the room's agents it does NOT hold: an agent
+ * of the room the reader cannot reach (revoked, gone) stays listed, disabled
+ * (`state: "deleted"`), so the list shows who is in the room — as the count does.
+ */
+/** A room agent the reader does not hold, as a disabled picker row. */
+export type RosterRow = AgentRef & {
+  isDefault: boolean;
+  displayName: string | null;
+  emoji: string | null;
+  model: string | null;
+  description: string | null;
+  kind: "openclaw" | "hermes";
+  state: "deleted";
+};
+
+export function withRoomRoster<P extends AgentRef>(
+  pool: P[],
+  roster: Array<
+    | (AgentRef & {
+        role: "primary" | "member";
+        displayName: string | null;
+        emoji: string | null;
+        model: string | null;
+        description: string | null;
+        kind: "openclaw" | "hermes";
+      })
+    | null
+  >,
+): Array<P | RosterRow> {
+  const missing: RosterRow[] = [];
+  for (const a of roster) {
+    if (a === null || pool.some((p) => agentRefEquals(p, a))) continue;
+    missing.push({
+      instanceName: a.instanceName,
+      agentId: a.agentId,
+      isDefault: a.role === "primary",
+      displayName: a.displayName,
+      emoji: a.emoji,
+      model: a.model,
+      description: a.description,
+      kind: a.kind,
+      state: "deleted",
+    });
+  }
+  return missing.length === 0 ? pool : [...pool, ...missing];
+}
+
+/**
+ * WHO the composer's presence strip shows: every person — the reader included —
+ * then every agent, so the strip and the room control state the SAME count. Null
+ * when the conversation is not a room (nobody but the reader, at most one agent).
+ */
+export function presenceRoster<P extends { isSelf: boolean }, A>(
+  people: readonly P[],
+  agents: readonly A[],
+): { people: readonly P[]; agents: readonly A[] } | null {
+  if (people.every((p) => p.isSelf) && agents.length <= 1) return null;
+  return { people, agents };
 }

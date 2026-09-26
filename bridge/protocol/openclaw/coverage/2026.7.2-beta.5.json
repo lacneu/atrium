@@ -3804,8 +3804,17 @@
           "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
         },
         "createdActor": {
-          "status": "gap",
-          "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+          "status": "handled",
+          "by": "server.ts createdByProfile: the profile that CREATED the session (`{type:\"human\", identity:{type:\"profile\", id}}`, projected by upstream session-utils-row.ts / session-identity-projection.ts projectSessionActor) is compared with the socket's own `users.self` id — the proof, in trusted-proxy mode, that the conversation's session is its owner's before a participant's turn may leave from the participant's own socket (claimSessionForOwner, sendAsSpeaker). Anything but a profile-created human reads as unproven.",
+          "anchor": {
+            "file": "src/server.ts",
+            "token": "createdActor"
+          },
+          "proof": {
+            "kind": "deterministic-test",
+            "ref": "bridge/test/trusted-proxy-claim.test.ts",
+            "note": "Shape captured live on 2026.9.6 (trusted-proxy bench, openclaw-notes bench-runs/participant-identity-2026-09-25: row.createdActor and bobFirst.createdActor), not from a full-catalogue GO run — the catalogue has no multi-person scenario yet. The deterministic test replays that shape and is proven by neutralization (existence taken as proof, create taken as proof, no read-back, unreadable profile assumed). Live golden-corpus proof stays owed."
+          }
         },
         "createdAt": {
           "status": "gap",

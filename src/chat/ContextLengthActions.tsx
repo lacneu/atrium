@@ -9,7 +9,7 @@
 // Both actions reuse mutations that already existed; nothing new server-side.
 
 import { useState } from "react";
-import { useAction, useMutation } from "convex/react";
+import { useAction, useMutation, useQuery } from "convex/react";
 import { api } from "./convexApi";
 import type { Id } from "./convexApi";
 import { m } from "@/paraglide/messages.js";
@@ -43,6 +43,11 @@ export function ContextLengthActions(props: {
 }) {
   const compact = useAction(api.agentFiles.compactSession);
   const fork = useMutation(api.chatFork.forkChat);
+  // Compacting and branching are the OWNER's (both refuse a guest server-side):
+  // a guest is not offered two buttons that can only fail.
+  const guestView =
+    useQuery(api.messages.getSessionMeta, { chatId: props.chatId })?.viewerRole ===
+    "participant";
   const [busy, setBusy] = useState<null | "compact" | "branch">(null);
   const [notice, setNotice] = useState<string | null>(null);
   // A DONE action does not offer itself again: the branch created a chat, and a
@@ -93,6 +98,7 @@ export function ContextLengthActions(props: {
     }
   };
 
+  if (guestView) return null;
   return (
     <div className="oc-error-card__actions">
       <Button

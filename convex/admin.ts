@@ -241,16 +241,13 @@ export const deleteUser = mutation({
       .collect();
     for (const c of chats) await cascadeDeleteChat(ctx, c._id);
 
-    // GROUP-CHAT memberships. Without this the deleted account keeps a seat in
-    // every conversation it was invited to: the roster renders a nameless ghost, the
-    // seat still counts against the chat's participant limit, and — the reason this
-    // is not cosmetic — a re-provisioned profile for the same person would walk
-    // straight back into every one of those conversations.
-    for (const r of await ctx.db
-      .query("chatParticipants")
-      .withIndex("by_user", (q) => q.eq("userId", userId))
-      .collect())
-      await ctx.db.delete(r._id);
+    // GROUP-CHAT state, in batches AFTER this transaction (sweepDeletedUserRoomState):
+    // their seat in every conversation they were invited to, and the read markers
+    // and bookmarks they kept there. Unbounded by nature (a seat per room, a
+    // bookmark per message), so it cannot ride this mutation's budget — a heavy
+    // account would roll the whole deletion back and stay undeletable. Nothing is
+    // reachable meanwhile: without a profile the account is refused everywhere.
+    // Scheduled at the END of this transaction, once its generation bound is known.
     // Remaining per-user rows, each via its `by_user` index.
     for (const r of await ctx.db
       .query("projects")
@@ -276,12 +273,9 @@ export const deleteUser = mutation({
       .collect()) {
       await ctx.db.delete(r._id);
     }
-    for (const r of await ctx.db
-      .query("notifications")
-      .withIndex("by_user", (q) => q.eq("userId", userId))
-      .collect()) {
-      await ctx.db.delete(r._id);
-    }
+    // Notifications are NOT deleted here: unbounded (a mention per message, an entry
+    // per question), they go with the batched sweep below. Meanwhile the bell shows
+    // them to nobody (notifications.activeReader: no profile, or a newer one).
     // uploads + any stray (non-chat-mirrored) files use compound by_user* indexes.
     for (const r of await ctx.db
       .query("uploads")
@@ -297,12 +291,86 @@ export const deleteUser = mutation({
     }
 
     await ctx.db.delete(profileId);
-    await recordAudit(
+    const auditId = await recordAudit(
       ctx,
       { realUserId, effectiveUserId: realUserId, impersonating: false },
       "user.delete",
       { resource: "user", resourceId: userId },
     );
+    // THE GENERATION BOUND of the sweep: the `_creationTime` of a row this very
+    // transaction wrote. Every seat, read marker, bookmark and notification of the deleted account
+    // was written by a transaction ordered before this one, so its _creationTime is
+    // below it; the same person re-provisioned (same users doc), re-approved and
+    // re-invited while the sweep is still running writes rows AFTER this commit,
+    // above it — and those are theirs to keep. Not `Date.now()`: it floors to the
+    // millisecond, and a row written in that same millisecond just before the
+    // deletion would carry a larger fractional _creationTime and survive the sweep.
+    const cutoff = (await ctx.db.get(auditId))!._creationTime;
+    await ctx.scheduler.runAfter(0, internal.admin.sweepDeletedUserRoomState, {
+      userId,
+      cutoff,
+    });
+  },
+});
+
+/** Rows removed per transaction by the deleted-account room sweep. */
+const ROOM_STATE_SWEEP_BATCH = 256;
+
+/**
+ * One batch of a deleted account's group-chat state — its seats (chatParticipants),
+ * then its read markers, then its bookmarks, then its notifications — rescheduled
+ * while rows remain.
+ * Without it the account keeps a nameless seat in every conversation it was
+ * invited to, still counted against the room's limit, and a re-provisioned
+ * profile for the same user would walk straight back in.
+ */
+export const sweepDeletedUserRoomState = internalMutation({
+  // `cutoff`: the deletion's generation bound (see deleteUser) — only rows at or
+  // before it are the deleted account's; later ones belong to its re-provisioned
+  // successor and are never touched.
+  args: { userId: v.id("users"), cutoff: v.number() },
+  handler: async (ctx, { userId, cutoff }) => {
+    const seats = await ctx.db
+      .query("chatParticipants")
+      .withIndex("by_user", (q) => q.eq("userId", userId).lte("_creationTime", cutoff))
+      .take(ROOM_STATE_SWEEP_BATCH);
+    // `by_user_chat` is not ordered by _creationTime after the user, so there the
+    // bound is a filter: a successor's read markers are read past, never deleted
+    // (few — only what they opened since the deletion).
+    const reads =
+      seats.length < ROOM_STATE_SWEEP_BATCH
+        ? await ctx.db
+            .query("chatReads")
+            .withIndex("by_user_chat", (q) => q.eq("userId", userId))
+            .filter((q) => q.lte(q.field("_creationTime"), cutoff))
+            .take(ROOM_STATE_SWEEP_BATCH - seats.length)
+        : [];
+    const left = ROOM_STATE_SWEEP_BATCH - seats.length - reads.length;
+    const marks =
+      left > 0
+        ? await ctx.db
+            .query("chatBookmarks")
+            .withIndex("by_user", (q) => q.eq("userId", userId).lte("_creationTime", cutoff))
+            .take(left)
+        : [];
+    const room = ROOM_STATE_SWEEP_BATCH - seats.length - reads.length - marks.length;
+    const notes =
+      room > 0
+        ? await ctx.db
+            .query("notifications")
+            .withIndex("by_user", (q) => q.eq("userId", userId).lte("_creationTime", cutoff))
+            .take(room)
+        : [];
+    for (const r of [...seats, ...reads, ...marks, ...notes]) await ctx.db.delete(r._id);
+    if (
+      seats.length + reads.length + marks.length + notes.length ===
+      ROOM_STATE_SWEEP_BATCH
+    ) {
+      await ctx.scheduler.runAfter(0, internal.admin.sweepDeletedUserRoomState, {
+        userId,
+        cutoff,
+      });
+    }
   },
 });
 
@@ -763,6 +831,11 @@ export const upsertInstance = mutation({
       v.union(v.literal("canonical"), v.literal("email")),
     ),
     systemIdentity: v.optional(v.string()),
+    // WHOSE NAME a participant's turn is sent under ("owner" | "self"). Absent ⇒
+    // "owner", the safe side: every turn reads as the owner's, as before.
+    participantIdentity: v.optional(
+      v.union(v.literal("owner"), v.literal("self")),
+    ),
     // FRONTEND live-stream transport (reactive | sse) — a top-level instance property,
     // NOT bridge-dispatch config. See schema instances.streamTransport.
     streamTransport: v.optional(v.union(v.literal("reactive"), v.literal("sse"))),
@@ -789,6 +862,8 @@ export const upsertInstance = mutation({
       personScopes: args.personScopes,
       systemIdentity: args.systemIdentity?.trim() || undefined,
       streamTransport: args.streamTransport,
+      // Omission clears to "owner" semantics — the safe side, like `authMode`.
+      participantIdentity: args.participantIdentity,
       // `identitySource` is deliberately NOT here — see the patch path below.
     };
     // Refuse a name whose deletion sweep is still owed — same guard the

@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { beforeEach, describe, expect, test } from "vitest";
 
 import {
@@ -6,7 +8,9 @@ import {
   resolveMentionSpans,
   restorePendingMentions,
   stagePendingMention,
+  takeMentionsForSend,
   takePendingMentions,
+  nameInComposer,
 } from "./pendingMention";
 
 // The staged thing is a TOKEN, not a span: a span captured when somebody is
@@ -93,5 +97,80 @@ describe("locating the tokens in the text actually sent", () => {
     expect(resolveMentionSpans(text, [{ userId: "u1", token: "@alice" }])).toEqual([
       { userId: "u1", start: 3, end: 9 },
     ]);
+  });
+});
+
+describe("takeMentionsForSend — what a send carries, consumed once", () => {
+  test("resolves the staged people against the text sent, and clears them", () => {
+    stagePendingMention("c1", { userId: "u-bob", token: "@Bob" });
+    const { staged, mentions } = takeMentionsForSend("c1", "et @Bob ?");
+    expect(mentions).toEqual([{ userId: "u-bob", start: 3, end: 7 }]);
+    expect(staged).toEqual([{ userId: "u-bob", token: "@Bob" }]);
+    // Consumed: a later message with the same token names nobody.
+    expect(peekPendingMentions("c1")).toEqual([]);
+    expect(takeMentionsForSend("c1", "@Bob encore").mentions).toEqual([]);
+  });
+
+  test("BOTH send paths — a new turn and a queued follow-up — carry the mentions", () => {
+    // The runtime is a React hook (no DOM runner here): its wiring is what is
+    // pinned — each path consumes through takeMentionsForSend, sends `mentions`,
+    // and gives the staged people back on failure.
+    const src = readFileSync(join(process.cwd(), "src/chat/useConvexChatRuntime.ts"), "utf-8");
+    const onNew = src.slice(src.indexOf("onNew: async"), src.indexOf("const queueSend"));
+    const queueSend = src.slice(src.indexOf("const queueSend"));
+    for (const body of [onNew, queueSend.slice(0, queueSend.indexOf("\n  );"))]) {
+      expect(body).toMatch(/takeMentionsForSend\(\s*chatId,\s*text,?\s*\)/);
+      expect(body).toMatch(/\.\.\.\(mentions\.length > 0 \? \{ mentions \} : \{\}\)/);
+      expect(body).toMatch(/restorePendingMentions\(chatId, stagedMentions\)/);
+    }
+  });
+});
+
+describe("resolveMentionSpans — only a whole token names somebody", () => {
+  test("@Ali picked, then typed on into @Alice: Ali is not named", () => {
+    expect(resolveMentionSpans("salut @Alice", [{ userId: "u-ali", token: "@Ali" }])).toEqual([]);
+  });
+  test("an address ending in the token is not a mention", () => {
+    expect(resolveMentionSpans("bob@Ali", [{ userId: "u-ali", token: "@Ali" }])).toEqual([]);
+  });
+});
+
+describe("nameInComposer — one person, one unique token per message", () => {
+  test("a first pick appends the token and stages it", () => {
+    expect(nameInComposer("c1", "salut", "u-bob", "@Bob")).toBe("salut @Bob ");
+    expect(peekPendingMentions("c1")).toEqual([{ userId: "u-bob", token: "@Bob" }]);
+  });
+  test("picking someone already named adds nothing", () => {
+    nameInComposer("c1", "", "u-bob", "@Bob");
+    expect(nameInComposer("c1", "salut @Bob ", "u-bob", "@Bob")).toBeNull();
+  });
+  test("…unless the writer deleted their token meanwhile", () => {
+    nameInComposer("c1", "", "u-bob", "@Bob");
+    expect(nameInComposer("c1", "salut ", "u-bob", "@Bob")).toBe("salut @Bob ");
+  });
+  test("two people with the same name get distinct tokens, each resolved to its own", () => {
+    const a = nameInComposer("c1", "", "u-alex1", "@Alex")!;
+    const b = nameInComposer("c1", a, "u-alex2", "@Alex")!;
+    expect(b).toBe("@Alex @Alex-2 ");
+    // The writer deletes the FIRST Alex: the remaining token still names the second.
+    const text = "salut @Alex-2";
+    expect(resolveMentionSpans(text, peekPendingMentions("c1"))).toEqual([
+      { userId: "u-alex2", start: 6, end: 13 },
+    ]);
+  });
+  test("a person renamed meanwhile is re-staged under the new token", () => {
+    nameInComposer("c1", "", "u-bob", "@Bob");
+    expect(nameInComposer("c1", "salut ", "u-bob", "@Robert")).toBe("salut @Robert ");
+    expect(peekPendingMentions("c1")).toEqual([{ userId: "u-bob", token: "@Robert" }]);
+    expect(resolveMentionSpans("salut @Robert", peekPendingMentions("c1"))).toEqual([
+      { userId: "u-bob", start: 6, end: 13 },
+    ]);
+  });
+  test("the composer goes through it", () => {
+    const src = readFileSync(join(process.cwd(), "src/chat/ConvexChat.tsx"), "utf-8");
+    const at = src.indexOf("const mention = (name: string");
+    const body = src.slice(at, src.indexOf("setOpen(false);", at));
+    expect(body).toMatch(/nameInComposer\(\s*String\(chatId\),\s*composer\.getState\(\)\.text,/);
+    expect(body).not.toMatch(/stagePendingMention/);
   });
 });

@@ -29,11 +29,7 @@ import {
 import { internal } from "./_generated/api";
 import { postBridge } from "./agentFiles";
 import type { Id } from "./_generated/dataModel";
-import {
-  requireActive,
-  requireOwnedChat,
-  requireReachableChat,
-} from "./lib/access";
+import { requireActive, requireReachableChat } from "./lib/access";
 import { normalizeMessageErrorCode, maskCredentialId } from "./lib/chatRenderState";
 import { chatAllowsInstance } from "./lib/ingestAuthz";
 import { currentPlanIndex } from "./lib/planOrder";
@@ -1403,10 +1399,13 @@ export const pendingTaskEngagements = internalQuery({
     taskIds: string[];
   } | null> => {
     const { userId } = await requireActive(ctx);
-    // This one MUTATES nothing but feeds the bridge target, and the chat doc is
-    // what the caller needs: keep it owner-gated (it is an internal query on the
-    // owner's dispatch path, not a surface a participant renders).
-    const chat = await requireOwnedChat(ctx, userId, chatId);
+    // Anyone who can REACH the chat: the thread polls this while its activity
+    // indicator is up, and a participant watching alone is as good a witness of a
+    // missed terminal as the owner — owner-only, the poll threw for them and the
+    // task stayed stuck until the reaper. Nothing here comes from the reader: the
+    // target is the CHAT's (the owner's binding and rows), and every write the
+    // reconcile makes (settle, refresh, adopt) is idempotent on the row.
+    const { chat } = await requireReachableChat(ctx, userId, chatId);
     const instanceName = await taskProbeInstanceName(ctx, chat);
     if (instanceName === null) return null;
     // Filter INSIDE the query so 20+ running sub-agent rows can never

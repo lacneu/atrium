@@ -5,19 +5,22 @@
 // this, and as whom?". PHI rule: we record the action verb + the resource
 // kind/id ONLY — never message text, titles, or other user content.
 
+import type { Id } from "../_generated/dataModel";
 import type { MutationCtx } from "../_generated/server";
 import type { Actor } from "./access";
 
 type AuditTarget = { resource?: string; resourceId?: string };
 
-/** Unconditionally write an audit row (used for impersonation start/stop). */
+/** Unconditionally write an audit row (used for impersonation start/stop). Returns
+ *  its id: the row's `_creationTime` is the writing transaction's own place in
+ *  time, which admin.deleteUser uses as its sweep's generation bound. */
 export async function recordAudit(
   ctx: MutationCtx,
   actor: Actor,
   action: string,
   target?: AuditTarget,
-): Promise<void> {
-  await ctx.db.insert("auditLog", {
+): Promise<Id<"auditLog">> {
+  return await ctx.db.insert("auditLog", {
     at: Date.now(),
     action,
     realUserId: actor.realUserId,

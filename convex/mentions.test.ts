@@ -1,6 +1,8 @@
 import { describe, expect, test } from "vitest";
 
 import {
+  findWholeToken,
+  reanchorMentionSpans,
   MAX_MENTIONS,
   prependedLength,
   rejectMentionSpans,
@@ -152,5 +154,35 @@ describe("measuring a preamble that was composed, not passed", () => {
     const [shifted] = shiftMentionSpans([{ start, end: start + 6 }], prefix);
     expect(composed.slice(shifted!.start, shifted!.end)).toBe("@alice");
     expect(rejectMentionSpans(composed, [shifted!])).toBeNull();
+  });
+});
+
+describe("a mention names a WHOLE token, never part of one", () => {
+  test("@Ali inside @Alice, or at the tail of an address, is not Ali", () => {
+    expect(findWholeToken("bonjour @Alice", "@Ali")).toBeNull();
+    expect(findWholeToken("écris à bob@Ali", "@Ali")).toBeNull();
+    expect(findWholeToken("@Ali-Baba", "@Ali")).toBeNull();
+    expect(findWholeToken("@Ali.Baba", "@Ali")).toBeNull();
+  });
+  test("punctuation that ends a sentence still ends the token", () => {
+    expect(findWholeToken("merci @Ali.", "@Ali")).toEqual({ start: 6, end: 10 });
+    expect(findWholeToken("@Ali, tu vois ?", "@Ali")).toEqual({ start: 0, end: 4 });
+    expect(findWholeToken("(@Ali)", "@Ali")).toEqual({ start: 1, end: 5 });
+  });
+  test("a \".\" or \"'\" before the token ends the previous word, not glues to it", () => {
+    expect(findWholeToken("Merci.@Ali", "@Ali")).toEqual({ start: 6, end: 10 });
+    expect(findWholeToken("l'@Ali", "@Ali")).toEqual({ start: 2, end: 6 });
+    // An address still has a token character right before its "@".
+    expect(findWholeToken("jean.dupont@Ali", "@Ali")).toBeNull();
+  });
+  test("the whole occurrence is found past a partial one", () => {
+    expect(findWholeToken("@Alice et @Ali", "@Ali")).toEqual({ start: 10, end: 14 });
+  });
+  test("a queued message edited from @Ali into @Alice drops Ali's mention", () => {
+    const { kept, dropped } = reanchorMentionSpans("salut @Ali", "salut @Alice", [
+      { userId: "u-ali", start: 6, end: 10 },
+    ]);
+    expect(kept).toEqual([]);
+    expect(dropped).toHaveLength(1);
   });
 });

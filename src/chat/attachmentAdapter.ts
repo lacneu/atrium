@@ -165,8 +165,12 @@ export function createConvexAttachmentAdapter(
       let effectiveCap = inlineCap;
       if (chatId && !isModelNativeMime(file.type)) {
         try {
+          // The composer's CURRENT target, as for the inline cap above: the
+          // selected agent may live on an instance with another media mode.
+          const routedAgent = getRoutedAgent?.() ?? null;
           const policy = await convex.query(api.bridge.getChatInboundPolicy, {
             chatId: chatId as Id<"chats">,
+            ...(routedAgent ? { routedAgent } : {}),
           });
           if (policy?.inboundMediaMode === "shared-fs") {
             effectiveCap = policy.sharedFsMaxBytes;

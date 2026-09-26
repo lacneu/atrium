@@ -30,6 +30,7 @@ import { ConvexError, v } from "convex/values";
 import { mutation } from "./_generated/server";
 import { Id } from "./_generated/dataModel";
 import { requireActive } from "./lib/access";
+import { writtenAtOf } from "./lib/chatAccess";
 import { auditImpersonated } from "./lib/audit";
 import { compareOrder, effectiveOrder } from "./lib/messageOrder";
 import { recordFileForPart, isFilePart } from "./lib/files";
@@ -240,6 +241,15 @@ export const forkChat = mutation({
         role: msg.role,
         status: msg.status,
         text: msg.text,
+        // WHO wrote it and WHEN ride the copy. A guest's turn stays theirs in the
+        // branch — without it the fork's owner (the forker) would be its author in
+        // the thread, the summaries and the rehydrated history. The writing time
+        // is the ORIGINAL's: the copy's own _creationTime would make a deleted
+        // account's words look written by its re-provisioned successor to every
+        // generational check (lib/chatAccess.writtenAtOf). Mentions are not copied:
+        // a branch re-notifies nobody, and the names stay in the text.
+        ...(msg.authorUserId !== undefined ? { authorUserId: msg.authorUserId } : {}),
+        writtenAt: writtenAtOf(msg),
         // A fork COPIES history, so a row written before the masker existed would be
         // written again, fresh, still carrying the credential id (codex). Masking on
         // the copy costs nothing and stops it spreading.

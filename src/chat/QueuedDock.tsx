@@ -62,6 +62,7 @@ export function QueuedDock() {
           <span className="oc-queue-card__text" title={t.text}>
             {t.text}
           </span>
+          {t.mine ? (
           <button
             type="button"
             className="oc-queue-card__btn"
@@ -79,6 +80,8 @@ export function QueuedDock() {
           >
             <Pencil size={15} />
           </button>
+          ) : null}
+          {t.canCancel ? (
           <button
             type="button"
             className="oc-queue-card__btn oc-queue-card__btn--danger"
@@ -89,6 +92,7 @@ export function QueuedDock() {
           >
             <Trash2 size={15} />
           </button>
+          ) : null}
         </div>
       ))}
     </div>

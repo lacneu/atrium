@@ -2895,7 +2895,8 @@ http.route({
 //
 // GET /api/v1/message-stream?messageId=<id>
 //   Auth: the USER's Convex identity (propagated into streamPoll's runQuery), which
-//         must OWN the chat (IDOR enforced in streamPoll). NOT the /api/v1 service key.
+//         must REACH the chat — owner or participant (IDOR enforced in streamPoll).
+//         NOT the /api/v1 service key.
 //   Resume: the `Last-Event-ID` request header carries the last seq seen (else 0); the
 //           stream replays from there (seq is 1-based, so a fresh 0 reads the first chunk).
 //   Events: `id:<seq> data:{kind,text}` per chunk; one `event:final data:{text}` with the
@@ -2947,7 +2948,7 @@ http.route({
     let cursor = lastEventId ? Number.parseInt(lastEventId, 10) : 0;
     if (!Number.isFinite(cursor) || cursor < 0) cursor = 0;
 
-    // First poll up-front: validates auth + chat ownership (streamPoll throws on a
+    // First poll up-front: validates auth + chat access (streamPoll throws on a
     // missing/forbidden message) BEFORE we commit to a 200 streaming response.
     let poll: {
       chunks: {

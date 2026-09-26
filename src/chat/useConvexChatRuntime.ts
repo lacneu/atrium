@@ -18,11 +18,7 @@ import {
   takePendingQuotes,
   type PendingQuote,
 } from "./pendingQuote";
-import {
-  resolveMentionSpans,
-  restorePendingMentions,
-  takePendingMentions,
-} from "./pendingMention";
+import { restorePendingMentions, takeMentionsForSend } from "./pendingMention";
 import { useToast } from "@/components/ui/toast";
 import {
   isFirstTurn,
@@ -274,8 +270,62 @@ export function useConvexChatRuntime({ chatId }: UseConvexChatRuntimeArgs) {
   // DISTINGUISH loading (undefined) from a genuinely empty pool ([]): during
   // loading the selection must NOT be filtered against an empty pool (that would
   // silently drop a perTurnRouting chat's last-routed agent — see P2-D).
-  const poolLoading = myAgents === undefined;
-  const pool = useMemo(() => myAgents ?? [], [myAgents]);
+  // THE ROOM'S AGENTS (primary + the ones the owner added). A GUEST may only
+  // address those — the server refuses anything else (send.ts) — so their pool is
+  // narrowed to them; the owner keeps their whole pool, room first in the selector.
+  const roomInfo = useQuery(
+    api.chatAgents.listChatAgents,
+    chatId ? { chatId: chatId as string } : "skip",
+  );
+  // The reader's standing, from whichever answer lands first (the roster, or the
+  // session meta the chat view already subscribes to).
+  const isGuest = (roomInfo?.viewerRole ?? chatMeta?.viewerRole) === "participant";
+  const roomKey = roomInfo
+    ? [roomInfo.primary, ...roomInfo.agents]
+        .filter((a) => a !== null)
+        .map((a) => `${a!.instanceName}\0${a!.agentId}`)
+        .join("|")
+    : "";
+  const roomAgents = useMemo<AgentRef[]>(
+    () =>
+      (roomInfo?.agents ?? []).map((a) => ({
+        instanceName: a.instanceName,
+        agentId: a.agentId,
+      })),
+    // roomKey encodes the only fields read.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [roomKey],
+  );
+  // A guest's pool is not known until the room is: filtering against an absent
+  // room would briefly offer agents the send then refuses.
+  const poolLoading =
+    myAgents === undefined || (chatId !== null && roomInfo === undefined);
+  const pool = useMemo<PickableAgent[]>(() => {
+    // NOTHING until the room is known: the reader may be a guest, and a guest's
+    // pool is the room, never their own agents — offered even for a moment, one of
+    // them could be picked and the send refused (codex pass 21).
+    if (chatId !== null && roomInfo === undefined) return [];
+    if (!isGuest || !roomInfo) return myAgents ?? [];
+    // A GUEST's pool IS the room: they speak through its agents on the owner's
+    // delegation (send.ts), whatever their own grants. An agent the owner can no
+    // longer reach is kept as a disabled row ("deleted"), so the list still says
+    // who is in the room.
+    return [roomInfo.primary, ...roomInfo.agents]
+      .filter((a) => a !== null)
+      .map((a) => ({
+        instanceName: a!.instanceName,
+        agentId: a!.agentId,
+        isDefault: a!.role === "primary",
+        displayName: a!.displayName,
+        emoji: a!.emoji,
+        model: a!.model,
+        description: a!.description,
+        kind: a!.kind,
+        state: a!.usable ? ("ok" as const) : ("deleted" as const),
+      }));
+    // roomKey encodes the room; roomInfo is read for the rows it keys.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [chatId, myAgents, isGuest, roomKey, roomInfo]);
   const multiAgent = chatAgentInfo?.multiAgent === true;
   const perTurnRouting = chatMeta?.perTurnRouting === true;
   // Routing is allowed only when there is a genuine choice: the user has MORE THAN
@@ -410,12 +460,14 @@ export function useConvexChatRuntime({ chatId }: UseConvexChatRuntimeArgs) {
     perTurnRouting: boolean;
     isFirstTurn: boolean;
     canRoute: boolean;
+    guest: boolean;
   }>({
     selected: null,
     primary: null,
     perTurnRouting: false,
     isFirstTurn: false,
     canRoute: false,
+    guest: false,
   });
   routingRef.current = {
     selected: effectiveSelected,
@@ -423,6 +475,7 @@ export function useConvexChatRuntime({ chatId }: UseConvexChatRuntimeArgs) {
     perTurnRouting,
     isFirstTurn: firstTurn,
     canRoute,
+    guest: isGuest,
   };
   // The routedAgent (if any) to send for a turn — the single-agent-path rule.
   const computeRoutedAgent = useCallback((): AgentRef | undefined => {
@@ -433,6 +486,7 @@ export function useConvexChatRuntime({ chatId }: UseConvexChatRuntimeArgs) {
       perTurnRouting: r.perTurnRouting,
       isFirstTurn: r.isFirstTurn,
       canRoute: r.canRoute,
+      guest: r.guest,
     });
   }, []);
 
@@ -552,6 +606,10 @@ export function useConvexChatRuntime({ chatId }: UseConvexChatRuntimeArgs) {
   const queuedTurns = list.filter(isQueuedTurn).map((m) => ({
     messageId: String(m._id),
     text: m.text,
+    // Rewriting is its author's alone; withdrawing, its author's or the owner's
+    // (convex/send.ts). The optimistic echo is always the reader's own.
+    mine: (m as { mine?: boolean }).mine !== false,
+    canCancel: (m as { mine?: boolean }).mine !== false || !isGuest,
     // The optimistic echo has no server row yet — its card shows but its
     // actions arm only once the real id lands (no `optimistic-` prefix).
     pending: String(m._id).startsWith("optimistic-"),
@@ -675,8 +733,11 @@ export function useConvexChatRuntime({ chatId }: UseConvexChatRuntimeArgs) {
         // against the text as it is about to be sent — a span captured when the
         // person was picked would have drifted with every keystroke since. A token
         // the writer deleted resolves to nothing and the mention goes with it.
-        const stagedMentions = takePendingMentions(chatId);
-        const mentions = resolveMentionSpans(text, stagedMentions).map((m) => ({
+        const { staged: stagedMentions, mentions: resolved } = takeMentionsForSend(
+          chatId,
+          text,
+        );
+        const mentions = resolved.map((m) => ({
           userId: m.userId as Id<"users">,
           start: m.start,
           end: m.end,
@@ -797,6 +858,17 @@ export function useConvexChatRuntime({ chatId }: UseConvexChatRuntimeArgs) {
       // has a turn in flight, so it is never the first turn).
       const routedAgent = computeRoutedAgent();
       const quotes = takePendingQuotes(chatId);
+      // MENTIONS: the same consumption as onNew — a person picked while a turn
+      // runs is named in the follow-up that queues, not sent as plain text.
+      const { staged: stagedMentions, mentions: resolved } = takeMentionsForSend(
+        chatId,
+        text,
+      );
+      const mentions = resolved.map((m) => ({
+        userId: m.userId as Id<"users">,
+        start: m.start,
+        end: m.end,
+      }));
       const clientMessageId = crypto.randomUUID();
       // Route the optimistic echo to the QUEUE DOCK (not the thread): the echo
       // id is deterministic (optimistic-<clientMessageId>).
@@ -816,9 +888,11 @@ export function useConvexChatRuntime({ chatId }: UseConvexChatRuntimeArgs) {
                 })),
               }
             : {}),
+          ...(mentions.length > 0 ? { mentions } : {}),
         });
         return true;
       } catch (e) {
+        restorePendingMentions(chatId, stagedMentions);
         // Same restage rules as onNew: never clobber a newer staged quote,
         // never restage a server-rejected (invalid-target) one.
         // A stale anchor is NOT a reason to lose the whole selection: drop
@@ -868,8 +942,11 @@ export function useConvexChatRuntime({ chatId }: UseConvexChatRuntimeArgs) {
   // answered each message; `selected`/`setSelected` drive the composer pick.
   const routing = useMemo(
     () => ({
-      // The user's entitled pool (selector list + chip display names).
+      // The user's entitled pool (selector list + chip display names) — narrowed
+      // to the room's agents for a guest.
       pool,
+      // The agents the owner added to this conversation (not the primary).
+      roomAgents,
       multiAgent,
       perTurnRouting,
       hasUserTurn,
@@ -885,6 +962,7 @@ export function useConvexChatRuntime({ chatId }: UseConvexChatRuntimeArgs) {
     }),
     [
       pool,
+      roomAgents,
       multiAgent,
       perTurnRouting,
       hasUserTurn,

@@ -285,6 +285,17 @@ export async function sweepInstanceNameBoundBatch(
     return "more";
   }
 
+  // Rooms' delegations to this instance's agents: an instance re-created under the
+  // same name must not bring its agents back into rooms nobody added them to.
+  const roomAgents = await ctx.db
+    .query("chatAgents")
+    .withIndex("by_instance_agent", (query) => query.eq("instanceName", name))
+    .take(CASCADE_BATCH);
+  if (roomAgents.length > 0) {
+    for (const row of roomAgents) await ctx.db.delete(row._id);
+    return "more";
+  }
+
   const groupAgents = await ctx.db
     .query("groupAgents")
     .withIndex("by_instance", (query) => query.eq("instanceName", name))

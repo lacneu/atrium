@@ -37,9 +37,12 @@ import {
 import { provenancePartStructure } from "./lib/provenance";
 import { Id, Doc } from "./_generated/dataModel";
 import {
+  MAX_GUEST_OWNERS_JUDGED,
   chatParticipantRows,
-  participantChatIds,
+  currentParticipations,
+  profileIsActive,
   resolveChatAccess,
+  writtenAtOf,
 } from "./lib/chatAccess";
 import { requireActive, requireOwnedChat, requireReachableChat } from "./lib/access";
 import { agentIdFromChildKey } from "./lib/subAgentFailure";
@@ -48,8 +51,15 @@ import { DEFAULT_STREAM_TRANSPORT } from "./lib/instanceConfig";
 import { resolveTargetForChat } from "./routing";
 import { auditImpersonated } from "./lib/audit";
 import { deleteFilesByMessage } from "./lib/files";
-import { enrichUserAgents, resolveAgentForChat } from "./agents";
+import {
+  enrichUserAgents,
+  guestRoomView,
+  resolveAgentForChat,
+  type PresentAgentsCache,
+} from "./agents";
+import { chatAgentRows } from "./chatAgents";
 import { invalidateSummaryOnDeletion } from "./chatSummaries";
+import { withdrawNotifications } from "./notifications";
 import { compareOrder, effectiveOrder } from "./lib/messageOrder";
 import { releaseDanglingDocumentaryFetch } from "./documentAttachments";
 import {
@@ -264,7 +274,7 @@ const fieldBytes = (v: unknown): number =>
 async function loadChatView(
   ctx: QueryCtx,
   id: Id<"chats">,
-  /** The person READING. Only used to mark the mention that concerns them. */
+  /** The person READING: marks the mention that concerns them, and their own turns. */
   viewerId: Id<"users">,
 ) {
   // IMPORTED history: the agent this conversation was bound to elsewhere. Read
@@ -291,23 +301,42 @@ async function loadChatView(
     // in the window, not per message: a 200-message window written by three people
     // costs three reads. Empty (and free) on a solo chat, which is every chat until
     // somebody is invited.
-    const authorNames = new Map<string, string>();
+    //
+    // A name belongs to the account that wrote the words: a message OLDER than its
+    // author's current profile was written by a deleted account whose users row
+    // was provisioned again — the same rule as a seat (lib/chatAccess.seatIsCurrent)
+    // — and is shown like any author without a profile ("?"), never under the
+    // successor's name. The reader's own turns and mentions follow the same rule.
+    const authorProfiles = new Map<string, { name: string; since: number } | null>();
     const namedUsers: Id<"users">[] = [];
     for (const msg of messages) {
       if (msg.authorUserId !== undefined) namedUsers.push(msg.authorUserId);
       for (const mention of msg.mentions ?? []) namedUsers.push(mention.userId);
     }
+    namedUsers.push(viewerId);
     for (const author of namedUsers) {
-      if (authorNames.has(String(author))) continue;
+      if (authorProfiles.has(String(author))) continue;
       const profile = await ctx.db
         .query("profiles")
         .withIndex("by_user", (q) => q.eq("userId", author))
         .unique();
-      authorNames.set(
+      authorProfiles.set(
         String(author),
-        profile?.name ?? profile?.email ?? profile?.canonical ?? "?",
+        profile === null
+          ? null
+          : {
+              name: profile.name ?? profile.email ?? profile.canonical ?? "?",
+              since: profile._creationTime,
+            },
       );
     }
+    /** The account `userId` names NOW, if it existed when `writtenAt` was written. */
+    const currentAt = (userId: Id<"users">, writtenAt: number) => {
+      const p = authorProfiles.get(String(userId));
+      return p !== undefined && p !== null && writtenAt >= p.since ? p : null;
+    };
+    const nameAt = (userId: Id<"users">, writtenAt: number) =>
+      currentAt(userId, writtenAt)?.name ?? "?";
 
     // Dispatch lifecycle per message (queued | pending | sent | failed) — a CONSTANT
     // 4-read budget (see loadOutboxByMessage), NOT per-message. The frontend reads
@@ -467,7 +496,16 @@ async function loadChatView(
           // per-message view exactly as wide as it was.
           ...(message.authorUserId === undefined
             ? {}
-            : { authorName: authorNames.get(String(message.authorUserId)) }),
+            : { authorName: nameAt(message.authorUserId, writtenAtOf(message)) }),
+          // Written by the READER — what decides who may rewrite a queued turn
+          // (only its author) without handing the client anybody's user id.
+          ...(message.role === "user"
+            ? {
+                mine:
+                  (message.authorUserId ?? message.userId) === viewerId &&
+                  currentAt(viewerId, writtenAtOf(message)) !== null,
+              }
+            : {}),
           // WHO THIS TURN NAMES, as spans plus a display name — never another
           // person's id. `isViewer` is what lets the bubble mark the one mention
           // that concerns the reader, which is why they were notified.
@@ -477,8 +515,10 @@ async function loadChatView(
                 mentions: message.mentions.map((mention) => ({
                   start: mention.start,
                   end: mention.end,
-                  name: authorNames.get(String(mention.userId)) ?? "?",
-                  isViewer: String(mention.userId) === String(viewerId),
+                  name: nameAt(mention.userId, writtenAtOf(message)),
+                  isViewer:
+                    String(mention.userId) === String(viewerId) &&
+                    currentAt(viewerId, writtenAtOf(message)) !== null,
                 })),
               }),
           // IMPORTED history: the agent that answered, as a name only. Absence of
@@ -842,18 +882,16 @@ export const getChatStreamTransport = query({
     if (id === null) return DEFAULT_STREAM_TRANSPORT;
     const chat = await ctx.db.get(id);
     if (chat === null) return DEFAULT_STREAM_TRANSPORT;
-    if (chat.userId !== userId) {
-      const member = await ctx.db
-        .query("chatParticipants")
-        .withIndex("by_chat_user", (q) => q.eq("chatId", chat._id).eq("userId", userId))
-        .unique();
-      if (member === null) return DEFAULT_STREAM_TRANSPORT;
+    if (chat.userId !== userId && (await resolveChatAccess(ctx, chat._id, userId)) === null) {
+      return DEFAULT_STREAM_TRANSPORT;
     }
     // Resolve the SAME routed target as dispatch (resolveTargetForChat: honor the chat's
     // binding, else the default agent + rebind) rather than the raw chat.instanceName — so a
     // legacy / unbound / stale-bound chat reads the instance ACTUALLY used (Codex review).
     // Mirrors getChatInboundPolicy.
-    const res = await resolveTargetForChat(ctx, chat, userId);
+    // On the OWNER's grants, a guest's included: the dispatch resolves every turn of
+    // the conversation that way (the delegation).
+    const res = await resolveTargetForChat(ctx, chat, chat.userId);
     const instanceName = res.target?.instanceName ?? null;
     if (instanceName === null) return DEFAULT_STREAM_TRANSPORT;
     const instance = await ctx.db
@@ -1293,9 +1331,24 @@ export const listChats = query({
     // through the recency window: participations are bounded by their own cap and
     // are few by nature, and a conversation somebody deliberately invited you into
     // must not fall off the sidebar because your own chats are busier than it.
-    for (const chatId of await participantChatIds(ctx, userId, { forSidebar: true })) {
-      if (byId.has(chatId)) continue;
-      const c = await ctx.db.get(chatId);
+    //
+    // A GUEST'S VIEW OF IT IS THEIR OWN. The owner's folder, pin, manual order and
+    // colour are the owner's organisation of THEIR sidebar: carried over, a chat
+    // the owner filed in one of their folders matched none of the guest's folders
+    // and was not folder-less either, so it rendered in no section at all. A guest
+    // row has no folder, the guest's own pin, and the owner's name to say whose
+    // conversation it is.
+    const guestPins = new Map<Id<"chats">, boolean>();
+    const guestViewer = new Set<Id<"chats">>();
+    // A guest's OWN opt-out ("hide from my sidebar"). Returned, flagged, rather than
+    // dropped: a guest row has no folder and search reads only one's own chats, so
+    // a row filtered out here would have no way back (codex pass 21) — the sidebar
+    // keeps these apart, folded, each with a way to show it again.
+    const guestHidden = new Set<Id<"chats">>();
+    // CURRENT seats only: a deleted account's leftovers never reach its successor.
+    for (const row of await currentParticipations(ctx, userId)) {
+      if (byId.has(row.chatId)) continue;
+      const c = await ctx.db.get(row.chatId);
       // Same exclusions as the owner path: archived rows and the hidden utility
       // chats (documentary/summarizer) never reach the sidebar. NOT the chat's own
       // `sidebarHidden` — that is the OWNER's working-set choice, and applying it
@@ -1303,17 +1356,61 @@ export const listChats = query({
       // the room. A participant's own opt-out is filtered above, on their row.
       if (c === null || c.archived || c.kind !== undefined) continue;
       byId.set(c._id, c);
+      guestPins.set(c._id, row.pinned === true);
+      if (row.role === "viewer") guestViewer.add(c._id);
+      if (row.sidebarHidden === true) guestHidden.add(c._id);
+    }
+    const isGuest = (c: Doc<"chats">) => guestPins.has(c._id);
+    const pinnedFor = (c: Doc<"chats">) =>
+      isGuest(c) ? guestPins.get(c._id) === true : c.pinned === true;
+    const sortKeyFor = (c: Doc<"chats">) => (isGuest(c) ? 0 : (c.sortKey ?? 0));
+    // WHICH OF MY OWN CHATS ARE GROUPS — people or agents added. Asked per chat the
+    // sidebar shows (at most one row read per table per chat), not by scanning the
+    // owner's rows: a bound on ROWS is not a bound on CHATS — a few full rooms
+    // (32 people + 8 agents each) would exhaust it and drop the mark from others.
+    const groupIds = new Set<string>();
+    for (const c of byId.values()) {
+      if (isGuest(c)) continue; // a guest row is a group by definition
+      const person = await ctx.db
+        .query("chatParticipants")
+        .withIndex("by_chat", (q) => q.eq("chatId", c._id))
+        .first();
+      const agent =
+        person === null
+          ? await ctx.db
+              .query("chatAgents")
+              .withIndex("by_chat", (q) => q.eq("chatId", c._id))
+              .first()
+          : null;
+      if (person !== null || agent !== null) groupIds.add(String(c._id));
+    }
+    // Owner names for the guest rows, one profile read per distinct owner. The
+    // same read says whether the owner is still ACTIVE: when not, every seat of
+    // their rooms acts as a viewer (resolveChatAccess) and the row is read-only.
+    const ownerNames = new Map<string, string>();
+    const inactiveOwners = new Set<string>();
+    for (const c of byId.values()) {
+      if (!isGuest(c) || ownerNames.has(String(c.userId))) continue;
+      const profile = await ctx.db
+        .query("profiles")
+        .withIndex("by_user", (q) => q.eq("userId", c.userId))
+        .unique();
+      if (!profileIsActive(profile)) inactiveOwners.add(String(c.userId));
+      ownerNames.set(
+        String(c.userId),
+        profile?.name ?? profile?.email ?? `#${String(c.userId).slice(0, 6)}`,
+      );
     }
     const chats = [...byId.values()];
     // Single comparator: pinned first, then manual sortKey (asc), then recency.
     // Manual order WINS over recency (user explicitly drags); recency is only a
     // tiebreaker for chats that have never been ordered.
     chats.sort((a, b) => {
-      const pa = a.pinned ? 0 : 1;
-      const pb = b.pinned ? 0 : 1;
+      const pa = pinnedFor(a) ? 0 : 1;
+      const pb = pinnedFor(b) ? 0 : 1;
       if (pa !== pb) return pa - pb;
-      const ka = a.sortKey ?? 0;
-      const kb = b.sortKey ?? 0;
+      const ka = sortKeyFor(a);
+      const kb = sortKeyFor(b);
       if (ka !== kb) return ka - kb;
       return b.updatedAt - a.updatedAt;
     });
@@ -1327,35 +1424,47 @@ export const listChats = query({
     // ONCE (it already maps a kind-unset legacy instance to "openclaw"); then each
     // chat is mapped purely. The frontend shows the badge ONLY when chats span >1
     // kind (invisible until Hermes).
-    const agents = await enrichUserAgents(ctx, userId);
+    // ONE all-pool read for every resolution below (reader + each owner).
+    const presentCache: PresentAgentsCache = {};
+    const agents = await enrichUserAgents(ctx, userId, presentCache);
     const active = chats.filter((c) => !c.archived);
+    // WHOSE GRANTS judge a row. The reader's for their own chats. The OWNER's for a
+    // conversation the reader was invited into: a guest speaks through its agents
+    // on the owner's delegation (send.ts), so the lock and the provider are the
+    // owner's — the guest's own grants would show a false lock (a guest with none)
+    // or hide a real one (the owner lost the agent). One read per distinct owner,
+    // and at most MAX_GUEST_OWNERS_JUDGED of them: participations are capped in
+    // ROWS, and every row may belong to a different owner, whose enrichment is
+    // itself dozens of reads — past the bound the query would exceed its read
+    // budget and take the whole sidebar down. The rows are visited in display order
+    // (pinned, then recent), so the owners judged are those of the rows on screen.
+    const ownerAgents = new Map<string, typeof agents>();
+    const agentsJudging = async (c: Doc<"chats">) => {
+      if (!isGuest(c)) return agents;
+      const key = String(c.userId);
+      let set = ownerAgents.get(key);
+      if (set === undefined) {
+        if (ownerAgents.size >= MAX_GUEST_OWNERS_JUDGED) return null;
+        set = await enrichUserAgents(ctx, c.userId, presentCache);
+        ownerAgents.set(key, set);
+      }
+      return set;
+    };
 
-    // For chats bound to an agent NOT in the effective set, the sidebar lock must
+    // For chats bound to an agent NOT in the judging set, the sidebar lock must
     // match the dispatch: read-only only when the agent still EXISTS (a restriction)
-    // vs gone/purged (fallback). Look up the DISTINCT out-of-set bound agents ONCE
+    // vs gone/purged (fallback). Existence is looked up ONCE per distinct bound agent
     // (typically 0-few) so this stays bounded on the listChats hot path.
     // Collision-free key (length-prefixed instanceName), so an instanceName or
     // agentId containing "/" can never make two distinct pairs share a key (which
     // would desync the sidebar lock from the dispatch/getChatAgent read-only state).
     const agentKey = (instanceName: string, agentId: string) =>
       `${instanceName.length}:${instanceName}/${agentId}`;
-    const effectiveKeys = new Set(
-      agents.map((a) => agentKey(a.instanceName, a.agentId)),
-    );
-    const toCheck = new Map<string, { instanceName: string; agentId: string }>();
-    for (const c of active) {
-      if (c.instanceName && c.agentId) {
-        const key = agentKey(c.instanceName, c.agentId);
-        if (!effectiveKeys.has(key)) {
-          toCheck.set(key, {
-            instanceName: c.instanceName,
-            agentId: c.agentId,
-          });
-        }
-      }
-    }
-    const existsKeys = new Set<string>();
-    for (const [key, { instanceName, agentId }] of toCheck) {
+    const existsCache = new Map<string, boolean>();
+    const boundExists = async (instanceName: string, agentId: string) => {
+      const key = agentKey(instanceName, agentId);
+      const cached = existsCache.get(key);
+      if (cached !== undefined) return cached;
       const row = await ctx.db
         .query("agents")
         .withIndex("by_instance_agent", (q) =>
@@ -1364,18 +1473,58 @@ export const listChats = query({
         .first();
       // PRESENT only (not gateway-deleted): a presentInLastOk:false row is "gone"
       // (falls back), same as the dispatch.
-      if (row !== null && row.presentInLastOk !== false) existsKeys.add(key);
+      const exists = row !== null && row.presentInLastOk !== false;
+      existsCache.set(key, exists);
+      return exists;
+    };
+    const resolvedById = new Map<
+      string,
+      ReturnType<typeof resolveAgentForChat>
+    >();
+    for (const c of active) {
+      const judging = await agentsJudging(c);
+      if (judging === null) {
+        // Not judged here: no lock and no badge on the sidebar row. Fails OPEN on
+        // purpose — the conversation's own view (getChatAgent) and the dispatch
+        // still judge it on the owner's grants when it is opened or written to.
+        resolvedById.set(String(c._id), { agent: null, readOnly: false });
+        continue;
+      }
+      const inSet =
+        c.instanceName && c.agentId
+          ? judging.some(
+              (a) => a.instanceName === c.instanceName && a.agentId === c.agentId,
+            )
+          : true;
+      const boundAgentExists =
+        c.instanceName && c.agentId && !inSet
+          ? await boundExists(c.instanceName, c.agentId)
+          : false;
+      const base = resolveAgentForChat(judging, c, boundAgentExists);
+      // A GUEST row is judged on the ROOM alone, as the header judges it
+      // (agents.guestRoomView): never the owner's fallback, and another room agent
+      // keeps it writable. The roster is read only when the primary is unreachable.
+      const primaryReachable =
+        !base.readOnly &&
+        base.agent !== null &&
+        base.agent.instanceName === c.instanceName &&
+        base.agent.agentId === c.agentId;
+      if (isGuest(c) && !primaryReachable) {
+        const view = guestRoomView(base, judging, c, await chatAgentRows(ctx, c._id));
+        resolvedById.set(String(c._id), {
+          agent: view.primary ?? view.roomAgent,
+          readOnly: view.readOnly,
+        });
+        continue;
+      }
+      resolvedById.set(String(c._id), base);
     }
 
     return active.map((c) => {
-      // ONE resolution per chat: the provider kind for the bridge badge AND whether
-      // the chat is READ-ONLY (bound to an agent the user is no longer entitled to,
-      // but that still exists) so the sidebar can mark it.
-      const boundAgentExists =
-        c.instanceName && c.agentId
-          ? existsKeys.has(agentKey(c.instanceName, c.agentId))
-          : false;
-      const resolved = resolveAgentForChat(agents, c, boundAgentExists);
+      // ONE resolution per chat (above): the provider kind for the bridge badge AND
+      // whether the chat is READ-ONLY. A guest who is a VIEWER is read-only too:
+      // they follow the conversation, they do not write in it.
+      const resolved = resolvedById.get(String(c._id))!;
       return {
         _id: c._id as Id<"chats">,
         title: c.title,
@@ -1383,12 +1532,23 @@ export const listChats = query({
         // Arrival signal (stamped by stream.finalize on COMPLETE replies) — the
         // sidebar crosses it with chatReads.lastSeenAt for the unread dot/flash.
         lastAssistantAt: c.lastAssistantAt ?? null,
-        projectId: c.projectId ?? null,
-        sortKey: c.sortKey ?? 0,
-        pinned: c.pinned ?? false,
-        color: c.color ?? null,
+        projectId: isGuest(c) ? null : (c.projectId ?? null),
+        sortKey: sortKeyFor(c),
+        pinned: pinnedFor(c),
+        color: isGuest(c) ? null : (c.color ?? null),
         providerKind: resolved.agent?.kind ?? null,
-        readOnly: resolved.readOnly,
+        readOnly:
+          resolved.readOnly ||
+          guestViewer.has(c._id) ||
+          (isGuest(c) && inactiveOwners.has(String(c.userId))),
+        /** "participant": somebody else's conversation this user was added to. */
+        role: isGuest(c) ? ("participant" as const) : ("owner" as const),
+        /** A guest row the reader hid from their sidebar (kept, to be shown again). */
+        ...(guestHidden.has(c._id) ? { sidebarHidden: true as const } : {}),
+        /** Whose conversation it is — set on guest rows only. */
+        ownerName: isGuest(c) ? (ownerNames.get(String(c.userId)) ?? null) : null,
+        /** Has other people or other agents in it (either role). */
+        group: isGuest(c) || groupIds.has(String(c._id)),
       };
     });
   },
@@ -1668,6 +1828,10 @@ export const deleteMessage = mutation({
           messageId: m._id,
         });
       }
+      // Whoever a deleted turn named is not left an entry pointing at it.
+      if ((m.mentions?.length ?? 0) > 0) {
+        await withdrawNotifications(ctx, `mention:${String(m._id)}`);
+      }
       deletedIds.add(m._id);
       await ctx.db.delete(m._id);
     }
@@ -1682,13 +1846,8 @@ export const deleteMessage = mutation({
 
     // Bookmarks anchored to a deleted turn: purge them with the message
     // (labels are user content; stale rows would also eat the bounded
-    // windows). Rows are owner-only by construction.
-    await purgeBookmarksForMessages(
-      ctx,
-      chat.userId,
-      chat._id,
-      deletedIds,
-    );
+    // windows). Every member's, not only the owner's (bookmarks are per viewer).
+    await purgeBookmarksForMessages(ctx, chat._id, deletedIds);
 
     // Sub-agents anchored to a deleted turn: the spawning message is gone, so on a
     // retry/regenerate the child's SESSION is considered gone too — purge the row +
@@ -1783,7 +1942,12 @@ export const deleteMessage = mutation({
             : undefined;
         regenerateOutboxId = await ctx.db.insert("outbox", {
           chatId: chat._id,
-          userId,
+          // The turn's AUTHOR, as the auto-retry keeps it (turnRetry.ts): a
+          // regenerate re-sends THEIR words, so it is held to their right to send
+          // them (dispatchReset → senderRefusalAtDispatch) and, on a "self"
+          // instance, leaves under their gateway name — never re-attributed to the
+          // owner who clicked.
+          userId: lastUser.authorUserId ?? chat.userId,
           // Unique key (Date.now() is deterministic in a mutation) so the send
           // idempotency guard never dedupes a regenerate against the original.
           clientMessageId: `regen-${lastUser._id}-${Date.now()}`,

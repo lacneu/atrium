@@ -62,17 +62,25 @@ import {
   type AssistantIdentity,
 } from "./assistantIdentity";
 import {
-  groupByInstance,
   filterAgents,
   type PickableAgent,
 } from "./AgentPicker";
 import {
   agentRefEquals,
+  agentRowMeta,
   findAgentDisplay,
+  orderComposerAgents,
   resolveAgentSelectorGate,
+  withRoomRoster,
   type AgentRef,
   type AgentSelectorGate,
 } from "./perTurnAgent";
+import {
+  arrivalRoleFor,
+  invitableRoles,
+  managesRoom,
+  type MemberRole,
+} from "./conversationRoles";
 import type { ConvexId, ConvexMessageView } from "./convexTypes";
 import {
   transcriptToMarkdown,
@@ -82,14 +90,17 @@ import {
 } from "./transcriptExport";
 import {
   ArrowUp,
+  AtSign,
   Bookmark as BookmarkIcon,
   Bot,
+  Users,
   CornerDownRight,
   Check,
   ChevronDown,
   ChevronRight,
   CircleAlert,
   Clock,
+  Crown,
   Code,
   Download,
   Ellipsis,
@@ -104,12 +115,16 @@ import {
   Paperclip,
   Pin,
   PinOff,
+  User,
+  UserPlus,
   Plus,
   Reply,
   Search,
-  Server,
+  Settings2,
+  ShieldCheck,
   SlidersHorizontal,
   Square,
+  Star,
   Timer,
   Trash2,
   Volume2,
@@ -129,8 +144,6 @@ import {
   PopoverContent,
   PopoverTrigger,
 } from "@/components/ui/popover";
-import { Input } from "@/components/ui/input";
-import { Badge } from "@/components/ui/badge";
 import { useConfirm, usePrompt } from "@/components/ConfirmDialog";
 import { flashSidebarChat } from "./sidebarFlash";
 import {
@@ -144,8 +157,24 @@ import { CronActivity, CronDetailContext, type CronDetailApi } from "./CronActiv
 import { PlanActivity } from "./PlanActivity";
 import { CronDetailContent } from "./CronDetailPanel";
 import type { CronPartView } from "./convexTypes";
-import { ChatParticipants } from "./ChatParticipants";
-import { MentionPicker } from "./MentionPicker";
+import {
+  ConversationPanel,
+  roleTitle,
+  RoomPresence,
+  type ConversationIntent,
+  type ConversationTab,
+} from "./ConversationPanel";
+import { mentionTokenFor } from "./MentionPicker";
+import { nameInComposer } from "./pendingMention";
+import { GatewayMark } from "./GatewayMark";
+import { Avatar } from "./ChatParticipants";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { PanelBodyBoundary } from "./PanelBodyBoundary";
 import { useWorkspaceRoom } from "./useWorkspaceRoom";
 import { m } from "@/paraglide/messages.js";
@@ -394,6 +423,10 @@ export interface QueuedTurnView {
   messageId: string;
   text: string;
   pending: boolean;
+  /** Written by the reader: only its author takes it back to edit. */
+  mine: boolean;
+  /** The reader may withdraw it (its author, or the conversation's owner). */
+  canCancel: boolean;
 }
 export interface QueueDockValue {
   queuedTurns: QueuedTurnView[];
@@ -404,6 +437,10 @@ export const QueueDockContext = createContext<QueueDockValue | null>(null);
 // STOP button context: ends the chat's active turn (optimistic finalize) and
 // best-effort kills the gateway run. Null when no chat is mounted.
 const AbortTurnContext = createContext<(() => Promise<void>) | null>(null);
+// Is the reader this conversation's OWNER? Deleting/regenerating a turn, branching
+// and stopping a run are the owner's (the server refuses them to a guest): a guest
+// is not offered a control whose every click fails.
+const OwnerViewContext = createContext<boolean>(true);
 
 // QUOTE-REPLY: the current chat id, provided to the message tree so the
 // assistant gutter can stage a per-chat pending quote and the composer can
@@ -477,6 +514,16 @@ export function ConvexChat({ chatId, focusMessageId }: ConvexChatProps) {
   // RunStatus). Default is OFF (clean) — see UI_PREF_CODE_DEFAULTS.
   const me = useQuery(api.me.getMe, { host: APP_HOST });
   const ui = (me?.ui?.effective as UiEffective | undefined) ?? DEFAULT_UI;
+  // A GUEST of the conversation: the owner-only controls are not offered.
+  const guestView =
+    useQuery(
+      api.messages.getSessionMeta,
+      chatId ? { chatId: chatId as Id<"chats"> } : "skip",
+    )?.viewerRole === "participant";
+  const uiForReader = useMemo(
+    () => (guestView ? { ...ui, showDelete: false, showReport: false } : ui),
+    [guestView, ui],
+  );
   const showTools = ui.showTools;
 
   // Resolve the assistant identity ONCE (see AssistantIdentityContext): the
@@ -756,10 +803,11 @@ export function ConvexChat({ chatId, focusMessageId }: ConvexChatProps) {
       <QueueSendContext.Provider value={queueSend}>
       <QueueDockContext.Provider value={{ queuedTurns, cancelQueued }}>
       <QuoteChatIdContext.Provider value={chatId}>
-      <AbortTurnContext.Provider value={abortTurn}>
+      <AbortTurnContext.Provider value={guestView ? null : abortTurn}>
+      <OwnerViewContext.Provider value={!guestView}>
       <QueuedTurnContext.Provider value={lastUserTurnQueued}>
       <ChatRoutingContext.Provider value={routing}>
-      <UiPrefsContext.Provider value={ui}>
+      <UiPrefsContext.Provider value={uiForReader}>
       <AssistantIdentityContext.Provider value={assistantIdentity}>
       <SourcesPanelContext.Provider value={sourcesApi}>
       <SubAgentPanelContext.Provider value={subAgentApi}>
@@ -866,6 +914,7 @@ export function ConvexChat({ chatId, focusMessageId }: ConvexChatProps) {
       </UiPrefsContext.Provider>
       </ChatRoutingContext.Provider>
       </QueuedTurnContext.Provider>
+      </OwnerViewContext.Provider>
       </AbortTurnContext.Provider>
       </QuoteChatIdContext.Provider>
       </QueueDockContext.Provider>
@@ -1107,6 +1156,11 @@ function ChatThread({
     chatId: chatId as Id<"chats">,
   });
   const readOnly = agentInfo?.readOnly === true;
+  // Is the reader a GUEST of this conversation (someone else's chat)? Decides the
+  // read-only copy. Same subscription the header holds; Convex dedupes it.
+  const viewerIsGuest =
+    useQuery(api.messages.getSessionMeta, { chatId: chatId as Id<"chats"> })
+      ?.viewerRole === "participant";
   // Is a voice call up on this chat? Owned HERE because the gate is resolved here
   // and TalkControl — which knows the phase — lives two levels down in the
   // composer. The setter is a useState setter, so its identity is stable and the
@@ -1141,6 +1195,7 @@ function ChatThread({
     emptyThread: routing?.emptyThread === true,
     unavailable: unavailable !== null,
     readOnly,
+    guest: viewerIsGuest,
     multiAgent: routing?.multiAgent === true,
     // SELECTABLE agents, not pool size. The picker renders a gateway-deleted agent
     // as a disabled row, so a pool made only of those would light the escape hatch
@@ -1450,7 +1505,10 @@ function ChatThread({
           between the four is asserted by a test instead of being the shape of a
           ternary chain. */}
       {bannerKind === "read_only" ? (
-        <ChatReadOnlyBanner />
+        <ChatReadOnlyBanner
+          reason={agentInfo?.readOnlyReason ?? null}
+          guest={viewerIsGuest}
+        />
       ) : bannerKind === "unavailable" ? (
         <BridgeUnavailableBanner
           reason={unavailable?.reason ?? null}
@@ -1665,11 +1723,31 @@ function BridgeUnavailableBanner({
 // to (an admin narrowed their agent set). Unlike the bridge banner, the reason IS
 // actionable by the user (start a new chat with an available agent), so it is
 // stated plainly.
-function ChatReadOnlyBanner() {
+/**
+ * Why the reader cannot send, said for WHO they are. A guest does not own the
+ * conversation: telling them to "start a new chat" sends them away from the one
+ * they were invited into, and a viewer's lock has nothing to do with agents.
+ */
+function ChatReadOnlyBanner({
+  reason,
+  guest,
+}: {
+  reason: "viewer" | "agent" | null;
+  guest: boolean;
+}) {
+  const text =
+    reason === "viewer"
+      ? m.chat_readonly_viewer_banner()
+      : guest
+        ? m.chat_readonly_guest_banner()
+        : m.chat_readonly_banner();
   return (
-    <div className="oc-chat-banner oc-chat-banner--error" role="status">
+    <div
+      className={`oc-chat-banner ${reason === "viewer" ? "oc-chat-banner--info" : "oc-chat-banner--error"}`}
+      role="status"
+    >
       <Lock size={16} aria-hidden />
-      <span>{m.chat_readonly_banner()}</span>
+      <span>{text}</span>
     </div>
   );
 }
@@ -2000,15 +2078,6 @@ function ChatHeader({ chatId }: { chatId: ConvexId<"chats"> }) {
       {ui.showUsage && !sm ? (
         <UsageBadge chatId={chatId} viewerRole={meta?.viewerRole} />
       ) : null}
-      {/* WHO IS IN THE ROOM. Inside renderMeta so the responsive measurer counts
-          it like every other chip — a roster that appeared after the measurement
-          would overflow the header on a narrow window. */}
-      <ChatParticipants
-        chatId={chatId as Id<"chats">}
-        viewerRole={meta?.viewerRole}
-        compact={isCompact}
-        ghost={ghost}
-      />
       <AgentRequestsHeaderButton compact={isCompact} ghost={ghost} />
       <ExportMenu
         chatId={chatId}
@@ -2016,7 +2085,10 @@ function ChatHeader({ chatId }: { chatId: ConvexId<"chats"> }) {
         compact={isCompact}
         ghost={ghost}
       />
-      {sm ? (
+      {/* The session's knobs (model, reasoning, reset, compaction, summary) act on
+          the owner's gateway session and are owner-only server-side: a guest is
+          not offered them at all, nor the full panel behind them. */}
+      {sm && meta?.viewerRole === "owner" ? (
         <SessionKnobsMenu
           chatId={chatId}
           viewerRole={meta?.viewerRole}
@@ -2041,9 +2113,6 @@ function ChatHeader({ chatId }: { chatId: ConvexId<"chats"> }) {
       ? ""
       : `${agentRequests.rows.length > 0 ? 1 : 0}:${agentRequests.waiting.length}`,
     m.chat_advanced(),
-    // The participants chip widens with the roster: a person joining changes the
-    // measured width, and without this the header would keep a stale compact state.
-    m.participants_solo(),
     meta?.viewerRole ?? "",
     sm?.model ?? "",
     sm?.thinkingLevel ?? "",
@@ -2123,11 +2192,9 @@ function ChatHeader({ chatId }: { chatId: ConvexId<"chats"> }) {
       <div className="oc-chathead-ghost" aria-hidden ref={ghostRef}>
         {renderMeta(false, true)}
       </div>
-      <SessionPanel
-        chatId={chatId}
-        open={panelOpen}
-        onOpenChange={setPanelOpen}
-      />
+      {meta?.viewerRole === "owner" ? (
+        <SessionPanel chatId={chatId} open={panelOpen} onOpenChange={setPanelOpen} />
+      ) : null}
     </header>
   );
 }
@@ -2459,6 +2526,7 @@ function AssistantMoreMenu({
       "streaming",
   );
   const fork = useMutation(api.chatFork.forkChat);
+  const ownerView = useContext(OwnerViewContext);
   const prompt = usePrompt();
   const toast = useToast();
   const [busy, setBusy] = useState(false);
@@ -2545,14 +2613,16 @@ function AssistantMoreMenu({
             {sourceActive ? m.chat_show_rendered() : m.chat_show_source()}
           </ActionBarMorePrimitive.Item>
         ) : null}
-        <ActionBarMorePrimitive.Item
-          className={MSG_MENU_ITEM_CLS}
-          disabled={busy || streaming}
-          onSelect={() => void branch()}
-        >
-          <GitBranch size={14} aria-hidden />
-          {m.chat_branch_action()}
-        </ActionBarMorePrimitive.Item>
+        {ownerView ? (
+          <ActionBarMorePrimitive.Item
+            className={MSG_MENU_ITEM_CLS}
+            disabled={busy || streaming}
+            onSelect={() => void branch()}
+          >
+            <GitBranch size={14} aria-hidden />
+            {m.chat_branch_action()}
+          </ActionBarMorePrimitive.Item>
+        ) : null}
         <BookmarkMenuItem />
       </ActionBarMorePrimitive.Content>
     </ActionBarMorePrimitive.Root>
@@ -4179,7 +4249,7 @@ function StopTurnButton() {
 // MULTI-AGENT: inline per-turn agent selector for the composer action bar. Lets a
 // user with more than one agent route the NEXT turn to a chosen specialist within
 // the SAME conversation (the reply is then attributed to it). Reuses AgentPicker's
-// pure helpers (groupByInstance / filterAgents) + the `.oc-agentpicker` list
+// pure helpers (filterAgents, orderComposerAgents) + the `.oc-agentlist` rows
 // styling. Hidden for a single-agent user (nothing to choose). Disabled until the
 // chat has a first turn: the agent is bound at creation, so turn 1 is never
 // re-routable — matching the single-agent-path rule (never route the first turn).
@@ -4197,6 +4267,7 @@ function ComposerAgentSelect({
   gate,
   rebinding = false,
   onRebindingChange,
+  onManage,
 }: {
   chatId: ConvexId<"chats">;
   /** Resolved by the chat view — see resolveAgentSelectorGate. */
@@ -4208,14 +4279,91 @@ function ComposerAgentSelect({
    *  away from — and then make the rebind fail, since the thread is no longer
    *  empty (codex adversarial review). */
   onRebindingChange?: (busy: boolean) => void;
+  /** Open the conversation panel (agents / people), optionally straight into a
+   *  picker. When given, this control is also the conversation's ENTRY POINT and
+   *  renders even where picking an agent is not offered. */
+  onManage?: (tab: ConversationTab, intent: ConversationIntent) => void;
 }) {
   const routing = useChatRouting();
   const rebindChatAgent = useMutation(api.chats.rebindChatAgent);
+  // Who may manage this room (deduped with the runtime's own subscription).
+  const room = useQuery(api.chatAgents.listChatAgents, {
+    chatId: chatId as string,
+  });
+  const manages = room ? managesRoom(room.viewerRoomRole) : false;
   const toast = useToast();
   const [open, setOpen] = useState(false);
+  const [tab, setTab] = useState<"agents" | "people">("agents");
+  // People tab: one field filters who is here AND finds whom to invite.
+  const [pq, setPq] = useState("");
+  const [inviteRole, setInviteRole] = useState<MemberRole>("member");
+  // The role offered is bounded by the reader's standing in THIS room: the control
+  // is reused across conversations, and a "manager" picked where one is the owner
+  // must not ride into a room where one only manages (the server would refuse it).
+  const offeredRoles = invitableRoles(room?.viewerRoomRole);
+  const arrivalRole = arrivalRoleFor(inviteRole, room?.viewerRoomRole);
+  useEffect(() => {
+    setInviteRole("member");
+    setPq("");
+  }, [chatId]);
+  const invitable = useQuery(
+    api.chatParticipants.listInvitable,
+    manages && tab === "people" && pq.trim() !== "" ? { chatId: chatId as string } : "skip",
+  );
+  const addMember = useMutation(api.chatParticipants.addMember);
+  // ADDING an agent, from the same control (removing one is the panel's): what the
+  // reader may add — agents both they and the owner hold, not yet in the room.
+  const addable = useQuery(
+    api.chatAgents.listAddableAgents,
+    manages && open && tab === "agents" ? { chatId: chatId as string } : "skip",
+  );
+  const addChatAgent = useMutation(api.chatAgents.addChatAgent);
+  const addToRoom = (a: AgentRef) => {
+    void addChatAgent({
+      chatId: chatId as Id<"chats">,
+      instanceName: a.instanceName,
+      agentId: a.agentId,
+    }).catch((err: unknown) => {
+      const raw = err instanceof Error ? err.message : String(err);
+      const limit = /chat_agents_limit:(\d+)/.exec(raw);
+      toast.error(
+        limit !== null
+          ? m.conversation_agents_limit({ count: Number(limit[1]) })
+          : m.conversation_agent_add_failed(),
+      );
+    });
+  };
   const [q, setQ] = useState("");
+  const members = useQuery(api.chatParticipants.listMembers, {
+    chatId: chatId as Id<"chats">,
+  });
+  const composer = useComposerRuntime();
   const pool = routing?.pool ?? [];
-  const groups = useMemo(() => groupByInstance(filterAgents(pool, q)), [pool, q]);
+  // ONE FLAT LIST (orderComposerAgents): the primary, the room's other agents, then
+  // everything else by name — one divider at most, no per-instance headings to scan
+  // past. The instance moves into each row's secondary line (agentRowMeta).
+  const roomAgents = routing?.roomAgents ?? [];
+  // THE ROOM'S OWN ROSTER, not the routing: `routing.primary` is where the next
+  // implicit turn RESOLVES (a fallback when the primary is gone), and the pool holds
+  // only what the reader can address now. The list shows the room as it is — its
+  // primary starred, an agent the reader cannot reach kept as a disabled row.
+  // Loaded with no primary (a new or legacy unbound chat) is NO primary — the
+  // resolved fallback is not starred as the room's. Only while the room is still
+  // loading does the routing's answer stand in.
+  const roomPrimary =
+    room === undefined || room === null
+      ? (routing?.primary ?? null)
+      : room.primary
+        ? { instanceName: room.primary.instanceName, agentId: room.primary.agentId }
+        : null;
+  const listed = useMemo(
+    () => withRoomRoster(pool, room ? [room.primary, ...room.agents] : []),
+    [pool, room],
+  );
+  const { room: roomRows, others: otherRows } = useMemo(
+    () => orderComposerAgents(filterAgents(listed, q), roomPrimary, roomAgents),
+    [listed, q, roomAgents, roomPrimary],
+  );
   // Does the entitled pool span MORE THAN ONE instance? When it does the agent name
   // alone can be ambiguous (the same display name can live on two gateways), so the
   // trigger also names the selected agent's instance (mirrors the old header chip).
@@ -4225,13 +4373,15 @@ function ComposerAgentSelect({
   );
   // An agent's identity is the PAIR instance/id. During a call the name shown is the
   // call's, which may be on an instance the READER has no agent on at all — their
-  // pool then spans one instance, `multiInstance` is false, and the label collapsed
-  // to a bare id indistinguishable from their own agent of the same name (codex P3,
-  // pass 6). So the instance is named whenever the name did not come from this
-  // reader's pool, whatever the pool's own shape.
+  // pool then spans one instance, `multiInstance` is false, and the name alone is
+  // indistinguishable from their own agent of the same name (codex P3, pass 6). So
+  // the instance is named whenever the name did not come from this reader's pool.
   const showsForeignAgent =
     gate.onCall != null && !pool.some((a) => agentRefEquals(a, gate.onCall!));
-  if (!routing || gate.hidden) return null;
+  if (!routing || (gate.hidden && !onManage)) return null;
+  // Picking an agent is offered at all (the gate) — the conversation actions are,
+  // whenever `onManage` is given.
+  const pickOffered = !gate.hidden;
   const { selected, setSelected } = routing;
   // WHETHER the control is offered and WHAT a pick does. See resolveAgentSelectorGate:
   // an unreachable gateway never closes it — that is the state it exists to escape.
@@ -4268,138 +4418,403 @@ function ComposerAgentSelect({
   // agent while the call ran on someone else (codex P2, pass 5). The control's whole
   // job while it is closed is to say who is on the line.
   const shown =
-    gate.onCall ?? selected ?? (mode === "rebind" ? routing.primary : null);
+    gate.onCall ??
+    selected ??
+    (mode === "rebind" || !pickOffered ? routing.primary : null);
   const display = findAgentDisplay(pool, shown);
-  const currentName =
-    display?.displayName ?? shown?.agentId ?? m.chat_agent_select_label();
-  return (
-    <Popover
-      open={open}
-      onOpenChange={(o) => {
-        if (!disabled) setOpen(o);
-      }}
-    >
-      <PopoverTrigger asChild>
-        <button
-          type="button"
-          className="oc-composer__agent"
-          disabled={disabled}
-          title={
-            gate.reason === "call-active"
-              ? // A voice call is up: the agent is pinned to it. Saying "set with the
-                // first message" here would send the reader looking for a message
-                // that has nothing to do with why the control is closed.
-                m.chat_agent_select_call_hint()
-              : disabled
-              ? m.chat_agent_select_firstturn_hint()
-              : mode === "rebind"
-                ? // Nothing has been said yet, so the pick moves the conversation
-                  // itself — the tooltip has to say that, not promise a next-message
-                  // route the send-rule would discard.
-                  m.chat_agent_select_rebind_title()
-                : m.chat_agent_select_title()
-          }
-          aria-label={
-            mode === "rebind"
-              ? m.chat_agent_select_rebind_aria()
-              : m.chat_agent_select_aria()
-          }
-        >
-          {display?.emoji ? (
-            <span className="oc-composer__agent-emoji" aria-hidden>
-              {display.emoji}
-            </span>
-          ) : (
-            <Bot size={15} aria-hidden />
-          )}
-          <span className="oc-composer__agent-name">{currentName}</span>
-          {(multiInstance || showsForeignAgent) && shown ? (
-            <span
-              className="oc-composer__agent-instance"
-              title={m.chat_agent_instance_title({
-                instance: shown.instanceName,
-              })}
-            >
-              <Server size={11} aria-hidden />
-              {shown.instanceName}
+  const addableKeys = new Set(
+    (addable ?? []).map((a) => `${a.instanceName}\u0000${a.agentId}`),
+  );
+  // Addable agents the list does not show (a manager's own agents: their pool is
+  // the room) — offered while searching, under their own divider.
+  const listedKeys = new Set(
+    [...roomRows, ...otherRows].map((a) => `${a.instanceName}\u0000${a.agentId}`),
+  );
+  const addTerm = q.trim().toLocaleLowerCase();
+  const addOnly = (addable ?? [])
+    .filter((a) => !listedKeys.has(`${a.instanceName}\u0000${a.agentId}`))
+    .filter(
+      (a) =>
+        addTerm !== "" &&
+        [a.displayName, a.agentId, a.instanceName]
+          .filter(Boolean)
+          .some((v) => v!.toLocaleLowerCase().includes(addTerm)),
+    )
+    .slice(0, 8);
+  const renderItem = (a: (typeof pool)[number]) => {
+    const isSel = agentRefEquals(selected, {
+      instanceName: a.instanceName,
+      agentId: a.agentId,
+    });
+    const meta = agentRowMeta(a, multiInstance);
+    const canAdd = addableKeys.has(`${a.instanceName}\u0000${a.agentId}`);
+    const row = (
+      <button
+        key={`${a.instanceName}/${a.agentId}`}
+        type="button"
+        role="option"
+        aria-selected={isSel}
+        className={`oc-agentrow${isSel ? " is-selected" : ""}`}
+        disabled={a.state === "deleted" || disabled || !pickOffered}
+        title={
+          a.state === "deleted"
+            ? m.agentpicker_agent_deleted_title()
+            : (a.description ?? undefined)
+        }
+        onClick={() => {
+          pick(a);
+          setOpen(false);
+          setQ("");
+        }}
+      >
+        {/* WHICH GATEWAY, at a glance: a room can mix OpenClaw and Hermes. */}
+        <span className="oc-agentrow__glyph" title={a.kind === "hermes" ? "Hermes" : "OpenClaw"}>
+          <GatewayMark kind={a.kind} size={16} />
+        </span>
+        <span className="oc-agentrow__text">
+          <span className="oc-agentrow__name">
+            {a.emoji ? `${a.emoji} ` : ""}
+            {a.displayName ?? a.agentId}
+            {agentRefEquals(a, roomPrimary) ? (
+              <Star
+                size={12}
+                className="oc-agentrow__primary"
+                aria-label={m.conversation_primary_badge()}
+              >
+                <title>{m.conversation_primary_badge()}</title>
+              </Star>
+            ) : null}
+          </span>
+          {meta ? (
+            // The MODEL truncates first; the instance — what tells two
+            // same-named agents apart — always stays whole.
+            <span className="oc-agentrow__meta" title={meta}>
+              {a.model ? <span className="oc-agentrow__model">{a.model}</span> : null}
+              {multiInstance ? (
+                <span className="oc-agentrow__inst">
+                  {a.model ? " · " : ""}
+                  {a.instanceName}
+                </span>
+              ) : null}
             </span>
           ) : null}
-          <ChevronDown size={13} className="oc-chip__chev" aria-hidden />
-        </button>
-      </PopoverTrigger>
-      <PopoverContent align="start" className="oc-composer__agent-pop p-0">
-        <Input
-          autoFocus
-          value={q}
-          onChange={(e) => setQ(e.target.value)}
-          placeholder={m.agentpicker_search_placeholder()}
-          aria-label={m.agentpicker_search_aria_label()}
-          className="oc-agentpicker__search"
+        </span>
+        <Check
+          size={16}
+          aria-hidden
+          className={`oc-agentrow__check${isSel ? " is-on" : ""}`}
         />
-        <div className="oc-agentpicker__list" role="listbox">
-          {groups.map((g) => (
-            <div key={g.instanceName} className="oc-agentpicker__group">
-              <div className="oc-agentpicker__instance">
-                <Server size={13} aria-hidden />
-                <span>{g.instanceName}</span>
-                <Badge variant="outline" className="oc-agentpicker__kind">
-                  {g.kind}
-                </Badge>
-              </div>
-              {g.agents.map((a) => {
-                const isSel = agentRefEquals(selected, {
-                  instanceName: a.instanceName,
-                  agentId: a.agentId,
-                });
-                return (
-                  <button
-                    key={`${a.instanceName}/${a.agentId}`}
-                    type="button"
-                    role="option"
-                    aria-selected={isSel}
-                    className={`oc-agentpicker__item${isSel ? " is-selected" : ""}`}
-                    disabled={a.state === "deleted"}
-                    title={
-                      a.state === "deleted"
-                        ? m.agentpicker_agent_deleted_title()
-                        : undefined
-                    }
-                    onClick={() => {
-                      pick(a);
-                      setOpen(false);
-                      setQ("");
-                    }}
-                  >
-                    <Bot size={15} aria-hidden className="oc-agentpicker__icon" />
-                    <span className="oc-agentpicker__main">
-                      <span className="oc-agentpicker__label">
-                        {a.emoji ? `${a.emoji} ` : ""}
-                        {a.displayName ?? a.agentId}
-                      </span>
-                      {a.description ? (
-                        <span className="oc-agentpicker__desc">
-                          {a.description}
-                        </span>
-                      ) : null}
-                    </span>
-                    {a.model ? (
-                      <span className="oc-agentpicker__model">{a.model}</span>
-                    ) : null}
-                    {isSel ? (
-                      <Check
-                        size={14}
-                        aria-hidden
-                        className="oc-agentpicker__default"
-                      />
-                    ) : null}
-                  </button>
-                );
-              })}
-            </div>
-          ))}
+      </button>
+    );
+    if (!canAdd) return row;
+    return (
+      <div key={`${a.instanceName}/${a.agentId}`} className="oc-agentrow-wrap">
+        {row}
+        <button
+          type="button"
+          className="oc-agentrow__add"
+          title={m.room_agent_add_title()}
+          aria-label={m.room_agent_add_title()}
+          onClick={() => addToRoom(a)}
+        >
+          <Plus size={14} aria-hidden />
+        </button>
+      </div>
+    );
+  };
+  // WHO IS IN THE ROOM — agents (the primary and those added) and people (the
+  // owner and the participants): the one number the control shows.
+  const roomAgentCount = (roomPrimary ? 1 : 0) + roomAgents.length;
+  const peopleCount = members?.length ?? 1;
+  const countTitle = m.room_pill_title({
+    agents: roomAgentCount,
+    people: peopleCount,
+    next: shown
+      ? `${display?.displayName ?? shown.agentId}${
+          (multiInstance || showsForeignAgent) && shown ? ` (${shown.instanceName})` : ""
+        }`
+      : "—",
+  });
+  const agentsPane = (
+    <>
+      {(pickOffered && pool.length > 6) || manages ? (
+        <div className="oc-agentlist__search">
+          <Search size={14} aria-hidden />
+          <input
+            autoFocus
+            value={q}
+            onChange={(e) => setQ(e.target.value)}
+            placeholder={m.agentpicker_search_placeholder()}
+            aria-label={m.agentpicker_search_aria_label()}
+          />
         </div>
-      </PopoverContent>
-    </Popover>
+      ) : null}
+      <div className="oc-agentlist__caption">
+        {mode === "rebind" ? m.conversation_pick_primary() : m.conversation_pick_next()}
+      </div>
+      {disabled || !pickOffered ? (
+        <p className="oc-agentpicker__hint">
+          {gate.reason === "call-active"
+            ? m.chat_agent_select_call_hint()
+            : m.chat_agent_select_firstturn_hint()}
+        </p>
+      ) : null}
+      <div className="oc-agentlist" role="listbox">
+        {roomRows.map((a) => renderItem(a))}
+        {roomRows.length > 0 && otherRows.length > 0 ? (
+          <div className="oc-agentlist__divider" role="presentation">
+            {m.conversation_agents_others()}
+          </div>
+        ) : null}
+        {otherRows.map((a) => renderItem(a))}
+        {addOnly.length > 0 ? (
+          <>
+            <div className="oc-agentlist__divider" role="presentation">
+              {m.room_agent_add_divider()}
+            </div>
+            {addOnly.map((a) => (
+              <button
+                key={`add/${a.instanceName}/${a.agentId}`}
+                type="button"
+                className="oc-agentrow"
+                onClick={() => addToRoom(a)}
+                title={m.room_agent_add_title()}
+              >
+                <span className="oc-agentrow__glyph">
+                  <GatewayMark kind={a.kind} size={16} />
+                </span>
+                <span className="oc-agentrow__text">
+                  <span className="oc-agentrow__name">
+                    {a.emoji ? `${a.emoji} ` : ""}
+                    {a.displayName ?? a.agentId}
+                  </span>
+                  <span className="oc-agentrow__meta">{agentRowMeta(a, multiInstance)}</span>
+                </span>
+                <Plus size={14} aria-hidden className="oc-agentrow__hover" />
+              </button>
+            ))}
+          </>
+        ) : null}
+      </div>
+    </>
+  );
+  // PEOPLE: who is here, and in which role — a click NAMES them in the message
+  // (the same mention the "@" button used to insert, now one gesture from the
+  // roster). The writer themself is listed, not clickable: naming yourself
+  // notifies nobody.
+  const mention = (name: string, userId: Id<"users">) => {
+    // Already named in this message: nothing to add (a second token would name
+    // nobody — one mention per person per message).
+    const next = nameInComposer(
+      String(chatId),
+      composer.getState().text,
+      String(userId),
+      mentionTokenFor(name),
+    );
+    if (next !== null) composer.setText(next);
+    setOpen(false);
+  };
+  const term = pq.trim().toLocaleLowerCase();
+  const presentRows = (members ?? []).filter(
+    (p) => term === "" || p.name.toLocaleLowerCase().includes(term),
+  );
+  // INVITING, from the same field: typing a name that is not here offers them,
+  // with the role they arrive with. Changing someone's role afterwards is the
+  // conversation panel's (the chevron), where every option lives.
+  const inviteRows = (invitable ?? [])
+    .filter((p) => p.name.toLocaleLowerCase().includes(term))
+    .slice(0, 8);
+  const invite = (p: { userId: Id<"users">; name: string }) => {
+    void addMember({ chatId: chatId as Id<"chats">, memberId: p.userId, role: arrivalRole })
+      .then(() => setPq(""))
+      .catch((err: unknown) => {
+        const raw = err instanceof Error ? err.message : String(err);
+        const limit = /participants_limit:(\d+)/.exec(raw);
+        toast.error(
+          limit !== null
+            ? m.participants_limit({ count: Number(limit[1]) })
+            : m.participants_failed(),
+        );
+      });
+  };
+  const peoplePane = (
+    <>
+      <div className="oc-agentlist__search">
+        <Search size={14} aria-hidden />
+        <input
+          value={pq}
+          onChange={(e) => setPq(e.target.value)}
+          placeholder={manages ? m.room_people_search_invite() : m.room_people_search()}
+          aria-label={manages ? m.room_people_search_invite() : m.room_people_search()}
+        />
+      </div>
+      <div className="oc-agentlist__caption">{m.room_people_caption()}</div>
+      <div className="oc-agentlist" role="list">
+        {presentRows.map((p) => (
+          <button
+            key={String(p.userId)}
+            type="button"
+            role="listitem"
+            className="oc-agentrow oc-agentrow--person"
+            disabled={p.isSelf}
+            onClick={() => mention(p.name, p.userId)}
+            title={p.isSelf ? undefined : m.room_people_mention({ name: p.name })}
+          >
+            <Avatar userId={String(p.userId)} name={p.name} />
+            <span className="oc-agentrow__text">
+              <span className="oc-agentrow__name">
+                {p.name}
+                {p.isSelf ? (
+                  <span className="oc-agentrow__tag">{m.participants_you()}</span>
+                ) : null}
+              </span>
+              <span className="oc-agentrow__meta">
+                <RoleMark role={p.roomRole} />
+              </span>
+            </span>
+            <AtSign size={14} aria-hidden className="oc-agentrow__hover" />
+          </button>
+        ))}
+        {manages && term !== "" ? (
+          <>
+            <div className="oc-agentlist__divider oc-agentlist__divider--invite" role="presentation">
+              <span>{m.room_invite_divider()}</span>
+              <label className="oc-invite-as">
+                <span>{m.conversation_invite_as()}</span>
+                <Select value={arrivalRole} onValueChange={(v) => setInviteRole(v as MemberRole)}>
+                  <SelectTrigger size="sm" className="oc-invite-as__trigger">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {offeredRoles.map((r) => (
+                      <SelectItem key={r} value={r}>
+                        {roleTitle(r)}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </label>
+            </div>
+            {invitable === undefined ? (
+              <p className="oc-agentpicker__hint">{m.room_invite_searching()}</p>
+            ) : inviteRows.length === 0 ? (
+              <p className="oc-agentpicker__hint">{m.participants_nobody()}</p>
+            ) : (
+              inviteRows.map((p) => (
+                <button
+                  key={String(p.userId)}
+                  type="button"
+                  role="listitem"
+                  className="oc-agentrow oc-agentrow--person"
+                  onClick={() => invite(p)}
+                  title={m.room_invite_as_title({ name: p.name, role: roleTitle(arrivalRole) })}
+                >
+                  <Avatar userId={String(p.userId)} name={p.name} />
+                  <span className="oc-agentrow__text">
+                    <span className="oc-agentrow__name">{p.name}</span>
+                  </span>
+                  <UserPlus size={14} aria-hidden className="oc-agentrow__hover" />
+                </button>
+              ))
+            )}
+          </>
+        ) : null}
+      </div>
+    </>
+  );
+  return (
+    <span className="oc-roompill">
+      <Popover
+        open={open}
+        onOpenChange={(o) => {
+          setOpen(o);
+          if (!o) setQ("");
+        }}
+      >
+        <PopoverTrigger asChild>
+          <button
+            type="button"
+            className="oc-roompill__main"
+            title={
+              gate.reason === "call-active" ? m.chat_agent_select_call_hint() : countTitle
+            }
+            aria-label={countTitle}
+          >
+            <Users size={16} aria-hidden />
+            <span className="oc-roompill__count">{roomAgentCount + peopleCount}</span>
+          </button>
+        </PopoverTrigger>
+        <PopoverContent align="start" className="oc-composer__agent-pop p-0">
+          <div className="oc-roomtabs" role="tablist">
+            <button
+              type="button"
+              role="tab"
+              aria-selected={tab === "agents"}
+              className="oc-roomtabs__tab"
+              onClick={() => setTab("agents")}
+            >
+              <Bot size={14} aria-hidden />
+              {m.conversation_tab_agents()}
+              <span className="oc-roomtabs__count">{roomAgentCount}</span>
+            </button>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={tab === "people"}
+              className="oc-roomtabs__tab"
+              onClick={() => setTab("people")}
+            >
+              <Users size={14} aria-hidden />
+              {m.conversation_tab_people()}
+              <span className="oc-roomtabs__count">{peopleCount}</span>
+            </button>
+          </div>
+          {tab === "agents" ? agentsPane : peoplePane}
+        </PopoverContent>
+      </Popover>
+      {onManage ? (
+        // THE CONVERSATION'S SETTINGS behind the chevron, like the Talk control's:
+        // the left half is for choosing, the right half for configuring.
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <button
+              type="button"
+              className="oc-roompill__chev"
+              title={m.room_pill_settings()}
+              aria-label={m.room_pill_settings()}
+            >
+              <ChevronDown size={13} aria-hidden />
+            </button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end" className="oc-roommenu">
+            <DropdownMenuItem onSelect={() => onManage("agents", null)}>
+              <Settings2 aria-hidden />
+              {m.conversation_manage()}
+            </DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
+      ) : null}
+    </span>
+  );
+}
+
+/** A person's role in the room, as a glyph (the label rides the tooltip). */
+function RoleMark({ role }: { role: "owner" | "manager" | "member" | "viewer" }) {
+  const label =
+    role === "owner"
+      ? m.conversation_role_owner()
+      : role === "manager"
+        ? m.conversation_role_manager()
+        : role === "viewer"
+          ? m.conversation_role_viewer()
+          : m.conversation_role_member();
+  const Icon =
+    role === "owner" ? Crown : role === "manager" ? ShieldCheck : role === "viewer" ? Eye : User;
+  return (
+    <span className="oc-rolemark" title={label}>
+      <Icon size={13} aria-hidden />
+      <span>{label}</span>
+    </span>
   );
 }
 
@@ -4806,6 +5221,20 @@ function Composer({
   // to the resolved chat identity (brand / single-agent name).
   const composerIdentity = useAssistantIdentity();
   const composerRouting = useChatRouting();
+  // THE CONVERSATION PANEL, opened from the agent control (and the presence line):
+  // which tab, and whether to go straight into a picker.
+  const [convOpen, setConvOpen] = useState(false);
+  const [convTab, setConvTab] = useState<ConversationTab>("agents");
+  const [convIntent, setConvIntent] = useState<ConversationIntent>(null);
+  const clearConvIntent = useCallback(() => setConvIntent(null), []);
+  const openConversation = useCallback(
+    (tab: ConversationTab, intent: ConversationIntent) => {
+      setConvTab(tab);
+      setConvIntent(intent);
+      setConvOpen(true);
+    },
+    [],
+  );
   const composerSelected = composerRouting?.selected ?? null;
 
   const composerName = composerSelected
@@ -5181,6 +5610,26 @@ function Composer({
           </button>
         </div>
       ) : null}
+      {/* WHO ELSE IS HERE — a group conversation names its people where the
+          message is written, not on a button. Opens the people tab. */}
+      {chatId ? (
+        <RoomPresence
+          chatId={chatId as Id<"chats">}
+          onOpen={() => openConversation("people", null)}
+        />
+      ) : null}
+      {chatId ? (
+        <ConversationPanel
+          chatId={chatId as Id<"chats">}
+          routing={composerRouting}
+          open={convOpen}
+          onOpenChange={setConvOpen}
+          tab={convTab}
+          onTabChange={setConvTab}
+          intent={convIntent}
+          onIntentDone={clearConvIntent}
+        />
+      ) : null}
       <QuoteChip chatId={chatId} />
       {/* WRAPPER, deliberately. `ComposerPrimitive.Attachments` renders a bare
           fragment — no element of its own — so every chip became a direct child
@@ -5288,10 +5737,9 @@ function Composer({
             gate={agentGate}
             rebinding={rebinding}
             onRebindingChange={setRebinding}
+            onManage={openConversation}
           />
-          {/* NAME SOMEBODY in the room. Self-hides on a solo conversation, which
-              is every chat until the owner invites anyone. */}
-          {chatId ? <MentionPicker chatId={chatId as Id<"chats">} /> : null}
+
         </div>
         <div className="oc-composer__group">
           {/* PIN / release: detach the composer as a floating panel that

@@ -1,8 +1,9 @@
 import { v } from "convex/values";
 import { action, internalQuery, query } from "./_generated/server";
 import { internal } from "./_generated/api";
-import { requireActive, requireAdmin } from "./lib/access";
+import { requireActive, requireAdmin, requireReachableChat } from "./lib/access";
 import { parseInstanceConfig } from "./lib/instanceConfig";
+import { resolveChatAccess } from "./lib/chatAccess";
 import { postBridge } from "./agentFiles";
 
 /** The voice (read-aloud) settings the CHAT surface needs — resolved from the
@@ -31,13 +32,7 @@ export const voiceConfigForChat = query({
     // A participant hears and dictates in the conversation they take part in, so
     // the voice configuration is theirs to read too. Refusing them threw before
     // the chat rendered at all — the view subscribes to this on open.
-    const membership = await ctx.db
-      .query("chatParticipants")
-      .withIndex("by_chat_user", (q) =>
-        q.eq("chatId", chat._id).eq("userId", userId),
-      )
-      .unique();
-    if (chat.userId !== userId && membership === null) {
+    if (chat.userId !== userId && (await resolveChatAccess(ctx, chat._id, userId)) === null) {
       throw new Error("Forbidden: chat not owned by user");
     }
     // Legacy chats (pre multi-instance) carry no instanceName yet still route
@@ -82,11 +77,11 @@ export const gatewayTtsRoute = internalQuery({
     const { userId } = await requireActive(ctx);
     const id = ctx.db.normalizeId("chats", chatId);
     if (id === null) throw new Error("chat not found");
-    const chat = await ctx.db.get(id);
-    if (chat === null) throw new Error("chat not found");
-    if (chat.userId !== userId) {
-      throw new Error("Forbidden: chat not owned by user");
-    }
+    // Owner OR participant: reading a reply aloud is conversation, and
+    // voiceConfigForChat already tells a participant the engine is "gateway". The
+    // route below is the CHAT's (the owner's binding), exactly as the dispatch
+    // resolves it — nothing is taken from the reader's own grants.
+    const { chat } = await requireReachableChat(ctx, userId, id);
     let inst = chat.instanceName
       ? await ctx.db
           .query("instances")

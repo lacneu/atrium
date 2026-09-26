@@ -15,7 +15,7 @@
 
 import { convexTest } from "convex-test";
 import { describe, expect, test } from "vitest";
-import { api } from "./_generated/api";
+import { api, internal } from "./_generated/api";
 import schema from "./schema";
 
 const modules = import.meta.glob("./**/*.ts");
@@ -117,6 +117,11 @@ describe("admin.deleteUser", () => {
 
     await asUser(t, adminUid).mutation(api.admin.deleteUser, {
       profileId: target.profileId,
+    });
+    // Notifications (unbounded) go with the batched sweep the deletion scheduled.
+    await t.mutation(internal.admin.sweepDeletedUserRoomState, {
+      userId: target.uid,
+      cutoff: Number.MAX_SAFE_INTEGER,
     });
 
     // Every owned row of the target is gone.

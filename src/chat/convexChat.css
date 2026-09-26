@@ -4128,11 +4128,8 @@ button.oc-bmk-rail__count:hover {
   font-size: 0.72rem;
   color: var(--muted-foreground);
 }
-/* Selector popover: the search + grouped list reuse the .oc-agentpicker styling. */
-.oc-composer__agent-pop {
-  width: min(22rem, calc(100vw - 2rem));
-  padding: 0.5rem;
-}
+/* Selector popover: its type scale and rows live with the conversation styles
+   (chatParticipants.css, .oc-agentlist / .oc-agentrow). */
 /* Currently-selected agent row in the selector list (mirrors the picker item but
    marked active so the current choice is obvious). */
 .oc-agentpicker__item.is-selected {
@@ -5782,6 +5779,14 @@ button.oc-bmk-rail__count:hover {
   background: color-mix(in srgb, var(--destructive) 12%, var(--background));
   color: var(--destructive);
   border: 1px solid color-mix(in srgb, var(--destructive) 35%, transparent);
+}
+
+/* INFO tone (a viewer of a group conversation): nothing is wrong, the reader is
+   simply here to read. Neutral, not the destructive red of a lost agent. */
+.oc-chat-banner--info {
+  background: var(--muted);
+  color: var(--muted-foreground);
+  border: 1px solid var(--border);
 }
 
 /* WARNING tone (gateway outage): informational, the composer stays usable — visually

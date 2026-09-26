@@ -438,10 +438,15 @@ export const KNOWN_AGENT_FIELDS: ReadonlySet<string> = new Set([
  * matrix instead of being invisible omissions.
  */
 export const COVERAGE_SUMMARY = {
-  handled: 312,
-  ignored: 785,
-  gaps: 910,
+  handled: 315,
+  ignored: 783,
+  gaps: 909,
   /** The declared gaps, by schema path — the actionable part of the matrix.
+   *
+   *  GROUP CONVERSATIONS (2026-09-25) instructed `SessionRow.createdActor` and
+   *  `users.self` (both halves of the proof that a trusted-proxy session is its
+   *  owner's before a participant speaks from their own socket): one gap and two
+   *  ignored entries became handled.
    *
    *  Recounted from the PROMISED version's coverage manifest by protocol-drift.test.ts,
    *  so it cannot drift from it. The list is long because the vendored surface widened
@@ -1078,7 +1083,6 @@ export const COVERAGE_SUMMARY = {
     "SessionRow.childSessions",
     "SessionRow.contextTokens",
     "SessionRow.controlOwnerSessionKey",
-    "SessionRow.createdActor",
     "SessionRow.createdAt",
     "SessionRow.createdVia",
     "SessionRow.derivedTitle",

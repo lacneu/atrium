@@ -69,6 +69,7 @@ function harness(
 
 async function turnWith(
   emit: (send: (t: string, p: Record<string, unknown>) => void) => void,
+  extra: { agentId?: string } = {},
 ) {
   const calls: Call[] = [];
   const parts: unknown[] = [];
@@ -86,6 +87,7 @@ async function turnWith(
       sessionKey: "k",
       providerChatId: null,
       text: "fais le travail",
+      ...extra,
     },
     (_sid, cb) => {
       lane = cb.onEvent;
@@ -664,5 +666,20 @@ describe("an approval is the person's decision (G-39)", () => {
     const prose = JSON.stringify(finals);
     expect(prose).not.toMatch(/dashboard/i);
     expect(prose).not.toMatch(/approval_policy/i);
+  });
+});
+
+describe("a request names the agent that raised it", () => {
+  it("carries the turn's agent — an answer is judged against it, not the chat's primary", async () => {
+    const { raised } = await turnWith(
+      (send) =>
+        send("clarify.request", {
+          request_id: "abc123",
+          question: "Quelle base de données ?",
+          choices: ["postgres", "sqlite"],
+        }),
+      { agentId: "hermes-b" },
+    );
+    expect(raised[0]).toMatchObject({ agentId: "hermes-b", providerRequestId: "abc123" });
   });
 });

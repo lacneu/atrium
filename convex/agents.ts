@@ -22,6 +22,7 @@ import { resolveChatAccess } from "./lib/chatAccess";
 import { requireActive, requireAdmin } from "./lib/access";
 import { resolvePollTargets } from "./lib/bridgeRouting";
 import { resolveTargetForTurn } from "./routing";
+import { chatAgentRows } from "./chatAgents";
 import { normalizeAgentTypes, resolveAgentTypes } from "./lib/agentTypes";
 
 // Normalized agent descriptor the bridge `/agents` returns (and the poller relays
@@ -755,6 +756,49 @@ const AGENT_CASCADE_BATCH = 500;
  *  Only a gateway-absent agent can be removed — a still-present one would just be
  *  re-discovered (disable it instead). DESTRUCTIVE (it deletes group/user
  *  preferences), so the UI confirms first. Idempotent. */
+/** Rows deleted per transaction by the room-delegation sweep. */
+const ROOM_DELEGATION_BATCH = 256;
+
+/**
+ * Delete one batch of the rooms' delegations to a PURGED agent, and schedule the
+ * next while rows remain. Bounded by the purge's `cutoff` (a `_creationTime`), not by the agent's
+ * absence: the agent may be re-discovered under the same id between two batches,
+ * and a sweep that stopped there would hand every not-yet-swept room its old
+ * delegation back. Every row added at or before the purge goes; a row added after
+ * it is a delegation to the re-discovered agent, made by an owner who chose it, and
+ * stays.
+ */
+async function sweepRoomDelegationsBatch(
+  ctx: MutationCtx,
+  instanceName: string,
+  agentId: string,
+  cutoff: number,
+): Promise<void> {
+  const rows = await ctx.db
+    .query("chatAgents")
+    .withIndex("by_instance_agent", (q) =>
+      q
+        .eq("instanceName", instanceName)
+        .eq("agentId", agentId)
+        .lte("_creationTime", cutoff),
+    )
+    .take(ROOM_DELEGATION_BATCH);
+  for (const r of rows) await ctx.db.delete(r._id);
+  if (rows.length === ROOM_DELEGATION_BATCH) {
+    await ctx.scheduler.runAfter(0, internal.agents.sweepRoomDelegations, {
+      instanceName,
+      agentId,
+      cutoff,
+    });
+  }
+}
+
+export const sweepRoomDelegations = internalMutation({
+  args: { instanceName: v.string(), agentId: v.string(), cutoff: v.number() },
+  handler: async (ctx, { instanceName, agentId, cutoff }) =>
+    sweepRoomDelegationsBatch(ctx, instanceName, agentId, cutoff),
+});
+
 export const removeInstanceAgent = mutation({
   args: { instanceName: v.string(), agentId: v.string() },
   handler: async (ctx, { instanceName, agentId }) => {
@@ -803,6 +847,25 @@ export const removeInstanceAgent = mutation({
     for (const r of groupRows) {
       if (r.agentId === agentId) await ctx.db.delete(r._id);
     }
+    // …and every room's delegation to it: re-discovered under the same id, it must
+    // not come back into rooms (the room limit counts these rows, too). ONE batch
+    // per transaction — an agent shared in many rooms would otherwise exceed the
+    // mutation's budget and make it impossible to remove at all.
+    //
+    // THE CUTOFF IS THE NEWEST ROW'S `_creationTime`, read in this transaction —
+    // an exact generation boundary: every delegation that exists now is at or
+    // below it, and any made later (to a re-discovered agent) is strictly above.
+    // A wall-clock cutoff could tie with a re-add in the same millisecond.
+    const newest = await ctx.db
+      .query("chatAgents")
+      .withIndex("by_instance_agent", (q) =>
+        q.eq("instanceName", instanceName).eq("agentId", agentId),
+      )
+      .order("desc")
+      .first();
+    if (newest !== null) {
+      await sweepRoomDelegationsBatch(ctx, instanceName, agentId, newest._creationTime);
+    }
     // Re-elect / clear the instance default if it pointed at the removed agent —
     // to an ELIGIBLE (present + enabled) agent, never an absent one (or clear).
     const inst = await instanceByName(ctx, instanceName);
@@ -838,7 +901,7 @@ type EffectiveGrant = {
   via: AgentVia;
 };
 
-type EnrichedUserAgent = {
+export type EnrichedUserAgent = {
   instanceName: string;
   agentId: string;
   isDefault: boolean;
@@ -1167,9 +1230,15 @@ async function filterEnabledGrants(
   return out;
 }
 
+/** The all-pool read (every present agent), shared by several resolutions in ONE
+ *  function call — `listChats` resolves one grant set per conversation owner, and
+ *  for owners in no group each resolution would otherwise re-read the whole pool. */
+export type PresentAgentsCache = { docs?: Doc<"agents">[] };
+
 async function getEffectiveGrantsWithPool(
   ctx: QueryCtx | MutationCtx,
   userId: Id<"users">,
+  presentCache?: PresentAgentsCache,
 ): Promise<{ grants: EffectiveGrant[]; presentDocs: Doc<"agents">[] | null }> {
   const strict = await agentEnablementStrict(ctx);
   const direct = await ctx.db
@@ -1230,7 +1299,8 @@ async function getEffectiveGrantsWithPool(
   if (inGroup) {
     pool = groupPool;
   } else {
-    presentDocs = await collectPresentAgents(ctx);
+    presentDocs = presentCache?.docs ?? (await collectPresentAgents(ctx));
+    if (presentCache !== undefined) presentCache.docs = presentDocs;
     pool = poolFromPresentAgents(presentDocs);
   }
   const out: EffectiveGrant[] = pool.map((p) => ({
@@ -1761,6 +1831,47 @@ export function resolveAgentForChat(
   return { agent: fallback, readOnly };
 }
 
+/**
+ * A GUEST's view of a conversation, judged on the ROOM alone (the primary + the
+ * added agents) under the OWNER's enriched agents — shared by the header
+ * (getChatAgent) and the sidebar (listChats) so the two cannot disagree.
+ *
+ *  - `primary`: the conversation's own agent when the next implicit turn reaches it
+ *    (bound, present, still the owner's) — else null. Never the owner's fallback:
+ *    the dispatch refuses a guest's turn that would re-point the conversation.
+ *  - `roomAgent`: the first added agent the owner may still use, for a guest to
+ *    address explicitly when the primary is unreachable.
+ *  - `readOnly`: neither is reachable.
+ * Pure; `base` is resolveAgentForChat's answer on the owner's agents.
+ */
+export function guestRoomView(
+  base: { agent: EnrichedUserAgent | null; readOnly: boolean },
+  agents: EnrichedUserAgent[],
+  chat: { instanceName?: string; agentId?: string },
+  roomRows: Array<{ instanceName: string; agentId: string }>,
+): { primary: EnrichedUserAgent | null; roomAgent: EnrichedUserAgent | null; readOnly: boolean } {
+  const primary =
+    !base.readOnly &&
+    base.agent !== null &&
+    base.agent.instanceName === chat.instanceName &&
+    base.agent.agentId === chat.agentId
+      ? base.agent
+      : null;
+  const roomAgent =
+    roomRows
+      .map(
+        (r) =>
+          agents.find(
+            (a) =>
+              a.instanceName === r.instanceName &&
+              a.agentId === r.agentId &&
+              a.state !== "deleted",
+          ) ?? null,
+      )
+      .find((a) => a !== null) ?? null;
+  return { primary, roomAgent, readOnly: primary === null && roomAgent === null };
+}
+
 // Pre-loaded per-instance metadata (instances + discovery). The tables are tiny
 // (one row per instance), so loading them ONCE and looking up in-memory keeps
 // agentDisplay at a single indexed read per agent — bounding the cost when a
@@ -1884,6 +1995,8 @@ async function agentDisplay(
 export async function enrichUserAgents(
   ctx: QueryCtx | MutationCtx,
   userId: Id<"users">,
+  /** Share the all-pool read across several calls in one function (listChats). */
+  presentCache?: PresentAgentsCache,
 ): Promise<EnrichedUserAgent[]> {
   // Consume the shared union (P2): with NO groups this is the user's direct rows
   // in by_user order with the same isDefault, so the loop below — and therefore
@@ -1891,7 +2004,11 @@ export async function enrichUserAgents(
   // WithPool returns the all-pool docs it collected (non-null IFF the all-pool was
   // taken — the only set big enough to need the batched preload), so the display map
   // reuses that SAME read instead of a second by_source_present collect.
-  const { grants, presentDocs } = await getEffectiveGrantsWithPool(ctx, userId);
+  const { grants, presentDocs } = await getEffectiveGrantsWithPool(
+    ctx,
+    userId,
+    presentCache,
+  );
   const cx = await loadAgentContext(
     ctx,
     presentDocs !== null,
@@ -1974,7 +2091,14 @@ export const getChatAgent = query({
     }
     const chat = access.chat;
 
-    const agents = await enrichUserAgents(ctx, userId);
+    // A GUEST speaks on the owner's delegation (send.ts): whether the conversation
+    // can be written to, and which agent the next turn reaches, are the OWNER's
+    // answers — the guest's own grants do not enter into it. What a guest may
+    // CHOOSE between is the room (primary + added agents), not their own pool.
+    const guest = access.role === "participant";
+    const agents = await enrichUserAgents(ctx, guest ? chat.userId : userId);
+    const roomRows = guest ? await chatAgentRows(ctx, chat._id) : null;
+    const roomSize = roomRows !== null ? 1 + roomRows.length : null;
     // Is the chat's bound agent still PRESENT? (Mirrors the dispatch: a not-in-set
     // binding is read-only only when the agent is present -- a restriction -- vs
     // gone, i.e. purged OR gateway-deleted (presentInLastOk:false), which falls
@@ -1995,19 +2119,41 @@ export const getChatAgent = query({
     // The agent the NEXT turn dispatches to + whether the chat is READ-ONLY (bound
     // to an agent the user is no longer entitled to). Computed independently of the
     // chip so even a single-agent user gets the read-only lock + reason.
-    const { agent: resolved, readOnly } = resolveAgentForChat(
+    const { agent: ownerResolved, readOnly: boundReadOnly } = resolveAgentForChat(
       agents,
       chat,
       boundAgentExists,
     );
+    // A GUEST is judged on the ROOM only (guestRoomView): the owner's fallback
+    // agent is not theirs to reach, and another room agent keeps them writing.
+    const room =
+      guest && roomRows !== null
+        ? guestRoomView({ agent: ownerResolved, readOnly: boundReadOnly }, agents, chat, roomRows)
+        : null;
+    const agentReadOnly = room !== null ? room.readOnly : boundReadOnly;
+    // What the next IMPLICIT turn reaches: for a guest, the primary when reachable,
+    // else nothing — never the owner's fallback, which a guest cannot route to (and
+    // which, named as "primary", would make the composer send a pick of it as an
+    // implicit turn).
+    const resolved = room !== null ? room.primary : ownerResolved;
+    // A VIEWER of a group conversation cannot send either — same lock, own reason,
+    // so the chat view can say which of the two it is.
+    const viewerOnly = access.roomRole === "viewer";
+    const readOnly = agentReadOnly || viewerOnly;
+    const readOnlyReason: "viewer" | "agent" | null = viewerOnly
+      ? "viewer"
+      : agentReadOnly
+        ? "agent"
+        : null;
     // The chip exists ONLY to disambiguate between several agents. With 0 or 1
     // agent there is nothing to disambiguate -> never surface the chip; readOnly
     // still rides along so the chat view can lock the composer.
-    if (agents.length <= 1) {
+    if (roomSize !== null ? roomSize <= 1 : agents.length <= 1) {
       return {
         multiAgent: false as const,
         multiInstance: false as const,
         readOnly,
+        readOnlyReason,
         // The resolved agent rides along even mono-agent (additive): the header
         // chip still gates on multiAgent, but the Session panel's AGENT section
         // names the agent + its gateway instance for EVERY user. Same projected
@@ -2034,6 +2180,8 @@ export const getChatAgent = query({
     // gateways), so the header also shows which instance the bound agent lives on.
     const multiInstance =
       new Set(agents.map((a) => a.instanceName)).size > 1;
+    // (For a guest `agents` is the OWNER's set: only used here to disambiguate
+    // names by instance, which the room's agents come from.)
 
     // `resolved` + `readOnly` computed above (shared with the early single-agent
     // return). Inherited when the resolved agent is NOT the chat's own (live)
@@ -2051,6 +2199,7 @@ export const getChatAgent = query({
       // (admin narrowed their set). The chat view disables the composer + shows a
       // reason; the dispatch enforces it as `agent_restricted`.
       readOnly,
+      readOnlyReason,
       agent: resolved
         ? {
             instanceName: resolved.instanceName,

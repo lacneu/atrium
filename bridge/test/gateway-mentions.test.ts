@@ -36,6 +36,7 @@ async function resolve(
   body: {
     chatId: string;
     mentions?: Array<{ canonical: string; start: number; end: number }>;
+    gatewayUser?: string;
   },
   prefixLength: number,
   authMode: "token" | "trusted-proxy",
@@ -61,6 +62,29 @@ async function resolve(
 }
 
 describe("who the gateway is told about", () => {
+  it("an instance that names people by email forwards nobody (a label is only the local part)", async () => {
+    // Both profiles read "alice" upstream; the one meant may not even exist yet.
+    const gw = gatewayWith([{ profileId: "p-other-alice", displayName: "alice" }]);
+    await gw.ready;
+    try {
+      const conn = await OpenClawConnection.connect(gw.url, "", deviceIdentity());
+      const out = await resolve(
+        conn,
+        {
+          chatId: "c1",
+          gatewayUser: "owner@example.org",
+          mentions: [{ canonical: "alice", start: 0, end: 6 }],
+        },
+        0,
+        "trusted-proxy",
+      );
+      expect(out).toEqual([]);
+      conn.close();
+    } finally {
+      await gw.stop();
+    }
+  });
+
   it("maps a canonical to the profile the gateway minted for it", async () => {
     const gw = gatewayWith([{ profileId: "p-alice", displayName: "u-alice" }]);
     await gw.ready;

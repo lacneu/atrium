@@ -60,6 +60,7 @@ type InstanceForm = {
   personScopes: "capped" | "full";
   // WHICH STRING names a person to this gateway. Never the session key.
   identitySource: "canonical" | "email";
+  participantIdentity: "owner" | "self";
   systemIdentity: string;
   // FRONTEND live-stream transport (reactive | sse) — an instance property, NOT bridge config.
   streamTransport: StreamTransport;
@@ -76,6 +77,7 @@ const EMPTY_INSTANCE: InstanceForm = {
   authMode: "token",
   personScopes: "capped",
   identitySource: "canonical",
+  participantIdentity: "owner",
   systemIdentity: "",
   streamTransport: DEFAULT_STREAM_TRANSPORT,
 };
@@ -105,6 +107,7 @@ function formFromInstance(i: Instance): InstanceForm {
     authMode: (i.authMode ?? "token") as "token" | "trusted-proxy",
     personScopes: (i.personScopes ?? "capped") as "capped" | "full",
     identitySource: (i.identitySource ?? "canonical") as "canonical" | "email",
+    participantIdentity: (i.participantIdentity ?? "owner") as "owner" | "self",
     systemIdentity: i.systemIdentity ?? "",
     streamTransport: i.streamTransport ?? DEFAULT_STREAM_TRANSPORT,
   };
@@ -149,6 +152,7 @@ export function InstancesTab() {
               authMode: form.authMode,
               personScopes: form.personScopes,
               identitySource: form.identitySource,
+              participantIdentity: form.participantIdentity,
               systemIdentity: form.systemIdentity || undefined,
             }
           : {}),
@@ -470,6 +474,36 @@ export function InstancesTab() {
                     {form.identitySource === "email"
                       ? m.settings_identity_source_email_hint()
                       : m.settings_identity_source_canonical_hint()}
+                  </p>
+                </Field>
+              ) : null}
+              {form.authMode === "trusted-proxy" ? (
+                <Field label={m.settings_field_participant_identity()}>
+                  <Select
+                    value={form.participantIdentity}
+                    onValueChange={(v) =>
+                      setForm({
+                        ...form,
+                        participantIdentity: v as "owner" | "self",
+                      })
+                    }
+                  >
+                    <SelectTrigger size="sm" className="w-full">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="owner">
+                        {m.settings_participant_identity_owner()}
+                      </SelectItem>
+                      <SelectItem value="self">
+                        {m.settings_participant_identity_self()}
+                      </SelectItem>
+                    </SelectContent>
+                  </Select>
+                  <p className="oc-field__hint">
+                    {form.participantIdentity === "self"
+                      ? m.settings_participant_identity_self_hint()
+                      : m.settings_participant_identity_owner_hint()}
                   </p>
                 </Field>
               ) : null}

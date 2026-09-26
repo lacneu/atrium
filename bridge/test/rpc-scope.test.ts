@@ -428,6 +428,9 @@ describe("RPC scope derivation (W10)", () => {
   // Asked once per send that names somebody, to map Atrium's canonicals to the
   // gateway's own profile ids. Read-scoped, and only in trusted-proxy mode.
   "users.mentionable",
+  // Asked once per trusted-proxy connection when a claim must be PROVEN: the
+  // socket's own profile id, compared with the session's `createdActor`.
+  "users.self",
       // The cron/tasks families, added 2026-07-27. This list is the DIRECT,
       // non-derived claim, so every newly covered method must join it — omitting them
       // (as the first edit silently did) leaves their schemas free to vanish while the

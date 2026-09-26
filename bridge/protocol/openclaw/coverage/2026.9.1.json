@@ -3968,8 +3968,17 @@
           "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
         },
         "createdActor": {
-          "status": "gap",
-          "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+          "status": "handled",
+          "by": "server.ts createdByProfile: the profile that CREATED the session (`{type:\"human\", identity:{type:\"profile\", id}}`, projected by upstream session-utils-row.ts / session-identity-projection.ts projectSessionActor) is compared with the socket's own `users.self` id — the proof, in trusted-proxy mode, that the conversation's session is its owner's before a participant's turn may leave from the participant's own socket (claimSessionForOwner, sendAsSpeaker). Anything but a profile-created human reads as unproven.",
+          "anchor": {
+            "file": "src/server.ts",
+            "token": "createdActor"
+          },
+          "proof": {
+            "kind": "deterministic-test",
+            "ref": "bridge/test/trusted-proxy-claim.test.ts",
+            "note": "Shape captured live on 2026.9.6 (trusted-proxy bench, openclaw-notes bench-runs/participant-identity-2026-09-25: row.createdActor and bobFirst.createdActor), not from a full-catalogue GO run — the catalogue has no multi-person scenario yet. The deterministic test replays that shape and is proven by neutralization (existence taken as proof, create taken as proof, no read-back, unreadable profile assumed). Live golden-corpus proof stays owed."
+          }
         },
         "createdAt": {
           "status": "gap",
@@ -5890,12 +5899,20 @@
       "why": "Operator/self-service surface of users.* (2026.9.1: list, self, linkEmail, setDisplayName, setRole, setAvatar, prefs.get/set, github.authorize/disconnect/status): Atrium calls none of them — it owns its identities in Convex and never administers gateway profiles. The FACT that could matter, the profile itself, is tracked as a gap on UserProfile and on the users.prefs.changed event."
     },
     "UsersSelfParams": {
-      "status": "ignored",
-      "why": "Operator/self-service surface of users.* (2026.9.1: list, self, linkEmail, setDisplayName, setRole, setAvatar, prefs.get/set, github.authorize/disconnect/status): Atrium calls none of them — it owns its identities in Convex and never administers gateway profiles. The FACT that could matter, the profile itself, is tracked as a gap on UserProfile and on the users.prefs.changed event."
+      "status": "handled",
+      "by": "server.ts ownProfileId: asked once per trusted-proxy connection, `{}` — the socket's own gateway profile id (`profile.id`, upstream server-methods/users.ts `users.self`), compared with a described session's `createdActor` to PROVE the owner claim before a participant may send from their own socket (claimSessionForOwner). A failure leaves the claim unproven; nothing else of the profile is read. The rest of users.* (list, linkEmail, setDisplayName, setRole, setAvatar, prefs.get/set, github.*) stays unused: Atrium owns its identities in Convex and never administers gateway profiles."
     },
     "UsersSelfResult": {
-      "status": "ignored",
-      "why": "Operator/self-service surface of users.* (2026.9.1: list, self, linkEmail, setDisplayName, setRole, setAvatar, prefs.get/set, github.authorize/disconnect/status): Atrium calls none of them — it owns its identities in Convex and never administers gateway profiles. The FACT that could matter, the profile itself, is tracked as a gap on UserProfile and on the users.prefs.changed event."
+      "fields": {
+        "profile": {
+          "status": "handled",
+          "by": "server.ts ownProfileId: asked once per trusted-proxy connection, `{}` — the socket's own gateway profile id (`profile.id`, upstream server-methods/users.ts `users.self`), compared with a described session's `createdActor` to PROVE the owner claim before a participant may send from their own socket (claimSessionForOwner). A failure leaves the claim unproven; nothing else of the profile is read. The rest of users.* (list, linkEmail, setDisplayName, setRole, setAvatar, prefs.get/set, github.*) stays unused: Atrium owns its identities in Convex and never administers gateway profiles.",
+          "anchor": {
+            "file": "src/server.ts",
+            "token": "users.self"
+          }
+        }
+      }
     },
     "UsersLinkEmailParams": {
       "status": "ignored",

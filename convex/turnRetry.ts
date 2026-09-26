@@ -403,7 +403,7 @@ export async function deleteTurnCardCascade(
   chatId: Id<"chats">,
   messageId: Id<"messages">,
 ): Promise<void> {
-  await purgeBookmarksForMessages(ctx, userId, chatId, new Set([messageId]));
+  await purgeBookmarksForMessages(ctx, chatId, new Set([messageId]));
   const cardParts = await ctx.db
     .query("messageParts")
     .withIndex("by_message", (q) => q.eq("messageId", messageId))
@@ -595,7 +595,11 @@ export const autoRetryTurn = internalMutation({
         : undefined;
     const outboxId = await ctx.db.insert("outbox", {
       chatId,
-      userId: chat.userId,
+      // THE AUTHOR of the turn being retried, as send.ts records it: on a group
+      // chat that is a participant, and the dispatch re-checks their rights and
+      // sends under their name when the instance asks for it. The owner's id here
+      // would hand a revoked participant's turn the owner's standing.
+      userId: lastUser.authorUserId ?? chat.userId,
       // Unique key (Date.now() is deterministic in a mutation) so the send
       // idempotency guard never dedupes the retry against the original send.
       clientMessageId: `autoretry-${lastUser._id}-${attempt}-${Date.now()}`,

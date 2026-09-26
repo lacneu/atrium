@@ -21,7 +21,7 @@ import {
   systemConnectIdentity,
 } from "./providers/openclaw/connect-identity.js";
 import { TALK_CALL_HOLD_MS } from "./core/talk-relay.js";
-import { isHeaderSafeIdentity } from "./providers/openclaw/gateway-identity.js";
+import { presentedIdentity } from "./providers/openclaw/gateway-identity.js";
 import { OpenClawConnection } from "./providers/openclaw/openclaw-client.js";
 import { RunManager } from "./providers/openclaw/run-manager.js";
 import {
@@ -357,12 +357,15 @@ class Session implements BridgeSession {
     // and a refresh that pushes the roster to Convex; a frame gap moves the epoch in the
     // transport itself. Same hop as the frame-gap report; a refresh never delays a turn.
     attachRosterPolicy(this, writer); // disposes itself on the connection's close
+    // A loss on a participant's speaker socket carrying a run of this chat arrives
+    // here too (speaker-pool.ts), named by its source; an end mid-run is uncounted.
     connection.onFrameGap = (gap) => {
+      const counted = gap.carriedBy !== "speaker_closed";
       void writer.noteFrameGap?.(chatId, {
-        source: "envelope",
-        expected: gap.expected,
-        received: gap.received,
-        missing: gap.missing,
+        source: gap.carriedBy ?? "envelope",
+        expected: counted ? gap.expected : null,
+        received: counted ? gap.received : null,
+        missing: counted ? gap.missing : null,
       });
     };
     this.writer = writer;
@@ -1559,13 +1562,14 @@ const MAX_RECENT_CHAT_KEYS = 4;
 function gatewayNameFor(routing: SessionRouting): string {
   const wanted = routing.gatewayUser;
   if (wanted === undefined) return routing.canonical;
-  if (isHeaderSafeIdentity(wanted)) return wanted;
+  const presented = presentedIdentity(wanted, routing.canonical);
+  if (presented === wanted) return wanted;
   console.warn(
     `[identity] ${routing.canonical}: this instance names people by an address, ` +
       `but theirs cannot be sent in the identity header — naming them by their ` +
       `Atrium key instead, so this person keeps a separate gateway profile.`,
   );
-  return routing.canonical;
+  return presented;
 }
 
 /**

@@ -24,6 +24,13 @@ export interface SeqGap {
   expected: number;
   /** The seq that actually arrived. */
   received: number;
+  /**
+   * Set when the loss was seen on ANOTHER socket carrying runs for this connection
+   * — a participant's speaker socket (speaker-pool.ts): `speaker_gap` = a hole in
+   * THAT socket's sequence (the counts are its own), `speaker_closed` = it ended
+   * mid-run, nothing counted (the counts are 0 and mean nothing).
+   */
+  carriedBy?: "speaker_gap" | "speaker_closed";
 }
 
 export interface SeqTracker {

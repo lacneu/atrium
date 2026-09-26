@@ -334,6 +334,10 @@ function reasonText(reason: string): string {
       return m.areq_err_gone();
     case "AGENT_REQUEST_OWNER_ONLY":
       return m.areq_owner_only();
+    case "AGENT_REQUEST_READ_ONLY":
+      return m.areq_err_read_only();
+    case "AGENT_REQUEST_AGENT_NOT_IN_ROOM":
+      return m.areq_err_agent_not_in_room();
     case "AGENT_REQUEST_IMPERSONATING":
       return m.areq_err_impersonating();
     case "AGENT_REQUEST_ANSWER_OLDEST_FIRST":

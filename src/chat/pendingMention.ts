@@ -12,6 +12,8 @@
 // time. Delete the "@Name" from the box and the mention goes with it, which is
 // exactly what deleting it means.
 
+import { findWholeToken } from "../../convex/lib/mentions";
+
 export interface PendingMention {
   /** Atrium user id of the person named. */
   userId: string;
@@ -44,15 +46,19 @@ export function peekPendingMentions(chatId: string): readonly PendingMention[] {
 }
 
 /**
- * Stage one person. Idempotent per (chat, user): picking the same person twice
- * inserts the token twice in the text, and the resolver below then finds two
- * occurrences — but the STAGED list stays one entry per person, because naming
- * somebody twice in one message still names them once.
+ * Stage one person — one entry per (chat, user), because naming somebody twice in
+ * one message still names them once. Staging the same person with a DIFFERENT
+ * token (renamed meanwhile) replaces the old one: the token in the text is the
+ * one that must be found at send time.
  */
 export function stagePendingMention(chatId: string, mention: PendingMention): void {
   const list = byChat.get(chatId) ?? [];
-  if (list.some((m) => m.userId === mention.userId)) return;
-  byChat.set(chatId, [...list, mention]);
+  const at = list.findIndex((m) => m.userId === mention.userId);
+  if (at !== -1 && list[at]!.token === mention.token) return;
+  byChat.set(
+    chatId,
+    at === -1 ? [...list, mention] : list.map((m, i) => (i === at ? mention : m)),
+  );
   emit();
 }
 
@@ -102,22 +108,60 @@ export function resolveMentionSpans(
   staged: readonly PendingMention[],
 ): ResolvedMention[] {
   const found: ResolvedMention[] = [];
-  // Occupied ranges, so two people whose tokens overlap textually ("@ali" inside
-  // "@alice") cannot both claim the same characters.
+  // Occupied ranges, so two people whose tokens overlap cannot both claim the
+  // same characters; and only WHOLE tokens count (findWholeToken) — "@Ali" picked
+  // then typed on into "@Alice" no longer names Ali.
   const taken: Array<{ start: number; end: number }> = [];
   for (const mention of staged) {
-    let from = 0;
-    for (;;) {
-      const start = text.indexOf(mention.token, from);
-      if (start === -1) break;
-      const end = start + mention.token.length;
-      if (!taken.some((t) => start < t.end && end > t.start)) {
-        found.push({ userId: mention.userId, start, end });
-        taken.push({ start, end });
-        break;
-      }
-      from = start + 1;
-    }
+    const at = findWholeToken(text, mention.token, taken);
+    if (at === null) continue;
+    found.push({ userId: mention.userId, start: at.start, end: at.end });
+    taken.push(at);
   }
   return found.sort((a, b) => a.start - b.start);
+}
+
+/**
+ * What a send carries for the people staged in this chat: consumes them (exactly
+ * once) and resolves their spans against the text as sent. BOTH send paths — a
+ * new turn and a follow-up queued behind a live one — go through here, so neither
+ * can send a staged name as plain text or leave it staged for a later message
+ * that happens to contain the same token. `staged` is what to give back with
+ * `restorePendingMentions` if the send fails.
+ */
+export function takeMentionsForSend(
+  chatId: string,
+  text: string,
+): { staged: readonly PendingMention[]; mentions: ResolvedMention[] } {
+  const staged = takePendingMentions(chatId);
+  return { staged, mentions: resolveMentionSpans(text, staged) };
+}
+
+/**
+ * Name somebody in the message being written: stages them and returns the composer
+ * text with their token appended — or null when they are ALREADY named in it (one
+ * mention per person per message; a second "@Name" would name nobody). A pick
+ * whose earlier token the writer has since deleted inserts it again.
+ *
+ * TOKENS ARE UNIQUE PER MESSAGE. Two people may share a display name, and a token
+ * both could claim would be attributed by the order they were picked, not by who
+ * the writer meant — delete the first "@Alex" and the second would name the wrong
+ * Alex. So a token another staged person already holds gets a suffix ("@Alex-2"),
+ * which whole-token matching never confuses with "@Alex".
+ */
+export function nameInComposer(
+  chatId: string,
+  text: string,
+  userId: string,
+  baseToken: string,
+): string | null {
+  const staged = peekPendingMentions(chatId);
+  const mine = staged.find((m) => m.userId === userId);
+  if (mine !== undefined && findWholeToken(text, mine.token) !== null) return null;
+  const heldByOthers = new Set(staged.filter((m) => m.userId !== userId).map((m) => m.token));
+  let token = baseToken;
+  for (let n = 2; heldByOthers.has(token); n += 1) token = `${baseToken}-${n}`;
+  stagePendingMention(chatId, { userId, token });
+  const separator = text.length === 0 || text.endsWith(" ") ? "" : " ";
+  return `${text}${separator}${token} `;
 }

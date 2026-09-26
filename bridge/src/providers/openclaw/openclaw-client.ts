@@ -129,6 +129,14 @@ const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
 
 export class OpenClawError extends Error {}
 
+/**
+ * A request the gateway ANSWERED with an error (`res` with `ok: false`) — as
+ * opposed to one that got no answer (the socket closed, the request timed out, the
+ * frame could not be written). The distinction is whether the gateway definitely
+ * did NOT act on it: a refusal is final, a missing answer is not.
+ */
+export class GatewayAnsweredError extends OpenClawError {}
+
 // Debug instrumentation, gated by BRIDGE_DEBUG=1. Logs the handshake (incl. the
 // gateway `server.version` — the version oracle the live harness keys on), every
 // outgoing request (method + sessionKey ONLY — never the message text, no PHI),
@@ -265,6 +273,18 @@ export class OpenClawConnection {
    * is fresh, and must re-hydrate, whatever the later describe reports.
    */
   claimCreatedSession = false;
+  /**
+   * The claim sent a create into a key the probe saw empty, and could not read the
+   * outcome back. Settled (then cleared) by the send's own describe: a session that
+   * names this socket's profile as its creator is the one the claim made.
+   */
+  claimMayHaveCreated = false;
+  /** The claimed session was replaced under its key: the next send re-hydrates
+   *  (consumed by the send that carries the thread, like claimCreatedSession). */
+  sessionReplaced = false;
+  /** This socket's gateway profile id (`users.self`), read once when a claim needs
+   *  to be proven against a session's `createdActor`. */
+  selfProfileId: string | null = null;
 
   // Cached `models.list` (deduped {id,label}), mirrored into sessionMeta so the
   // header's model picker has a stable list.
@@ -879,7 +899,26 @@ export class OpenClawConnection {
     }
     // Raw inbound frame: the diagnosis + first-fixture material for the harness.
     dbg("frame <-", clip(frame));
+    // A run another socket carries in full (a participant's, speaker-pool.ts): its
+    // frames come through injectFrame, in THAT socket's order. The copies arriving
+    // here natively are dropped — AFTER the sequence tracker, which counts them —
+    // or the consumer would see the run twice, and the two sockets' orders mixed.
+    const foreignRun = eventRunId(frame as GatewayFrame);
+    if (foreignRun !== null && this.runsCarriedElsewhere.has(foreignRun)) return;
     this.push(frame as GatewayFrame, wireBytes);
+  }
+
+  /** Runs whose frames reach this connection's consumer only via injectFrame. */
+  private readonly runsCarriedElsewhere = new Set<string>();
+
+  /** From now on, `runId`'s native frames are dropped: another socket carries it. */
+  carryRunElsewhere(runId: string): void {
+    this.runsCarriedElsewhere.add(runId);
+  }
+
+  /** `runId`'s native frames are this connection's own again. */
+  releaseRun(runId: string): void {
+    this.runsCarriedElsewhere.delete(runId);
   }
 
   /**
@@ -1072,7 +1111,7 @@ export class OpenClawConnection {
           if (frame.ok === false) {
             const error = frame.error ?? {};
             reject(
-              new OpenClawError(
+              new GatewayAnsweredError(
                 `${error.code ?? "REQUEST_FAILED"}: ${error.message ?? method + " failed"}`,
               ),
             );
@@ -1093,6 +1132,24 @@ export class OpenClawConnection {
     });
   }
 
+  /**
+   * Hand this connection's consumer a frame that arrived on ANOTHER socket.
+   *
+   * One use: a participant's turn sent from their own socket in trusted-proxy mode
+   * (speaker-pool.ts). Upstream delivers a run's tool-stream frames only to the
+   * socket that called chat.send, so that socket carries the WHOLE run here, in its
+   * own order, and this socket drops its native copies (carryRunElsewhere). Bypasses
+   * the sequence tracker on purpose: the frame's envelope seq belongs to the other
+   * socket's sequence and would read as a gap here.
+   *
+   * Counted against MAX_INBOUND_BYTES like any frame read off this socket: a tool
+   * result can be as large as the gateway's maxPayload, and a forward that weighed
+   * nothing would let a few of them grow this queue past the ceiling unseen.
+   */
+  injectFrame(frame: GatewayFrame): void {
+    this.push(frame, Buffer.byteLength(JSON.stringify(frame), "utf8"));
+  }
+
   get isClosed(): boolean {
     return this.closed;
   }
@@ -1101,6 +1158,13 @@ export class OpenClawConnection {
   close(): void {
     this.onClose(new OpenClawError("connection closed by bridge"));
   }
+}
+
+/** The runId an EVENT frame belongs to, or null (acks, run-less events). */
+export function eventRunId(frame: GatewayFrame): string | null {
+  if (frame.type !== "event") return null;
+  const runId = (frame.payload as { runId?: unknown } | undefined)?.runId;
+  return typeof runId === "string" && runId.length > 0 ? runId : null;
 }
 
 /**

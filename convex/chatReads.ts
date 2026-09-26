@@ -12,9 +12,9 @@
 // in the sidebar, crossing this map with listChats rows.
 
 import { v } from "convex/values";
-import { mutation, query } from "./_generated/server";
+import { mutation, query, type QueryCtx } from "./_generated/server";
 import type { Id } from "./_generated/dataModel";
-import { resolveChatAccess } from "./lib/chatAccess";
+import { currentParticipations, resolveChatAccess } from "./lib/chatAccess";
 import { requireActive } from "./lib/access";
 
 // Matches listChats' bounded-window philosophy: more rows than any sidebar
@@ -96,9 +96,50 @@ export const myBusyChats = query({
         .take(SIGNAL_CAP);
       for (const r of sends) busy.add(r.chatId);
     }
+    // THE CHATS THE CALLER TAKES PART IN. Their live rows are keyed on the OWNER
+    // (streamingText, subAgents) or on whoever sent the turn (outbox), so the ranges
+    // above miss every turn another member started — and the caller's own send once
+    // it became a streaming turn. Asked per chat instead: at most
+    // MAX_PARTICIPATIONS_SCANNED rooms, each a few point reads that stop at the
+    // first row, and none for a chat already known busy.
+    for (const row of await currentParticipations(ctx, userId)) {
+      if (busy.has(row.chatId)) continue;
+      if (await roomIsBusy(ctx, row.chatId)) busy.add(row.chatId);
+    }
     return [...busy];
   },
 });
+
+/** The same union of live-activity signals as above, for ONE chat, by chat. */
+async function roomIsBusy(ctx: QueryCtx, chatId: Id<"chats">): Promise<boolean> {
+  if (
+    (await ctx.db
+      .query("streamingText")
+      .withIndex("by_chat", (q) => q.eq("chatId", chatId))
+      .first()) !== null
+  ) {
+    return true;
+  }
+  if (
+    (await ctx.db
+      .query("subAgents")
+      .withIndex("by_chat_status", (q) => q.eq("chatId", chatId).eq("status", "running"))
+      .first()) !== null
+  ) {
+    return true;
+  }
+  for (const status of ["pending", "queued"] as const) {
+    if (
+      (await ctx.db
+        .query("outbox")
+        .withIndex("by_chat_status", (q) => q.eq("chatId", chatId).eq("status", status))
+        .first()) !== null
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
 
 export const markChatSeen = mutation({
   args: { chatId: v.id("chats") },

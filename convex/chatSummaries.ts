@@ -28,10 +28,9 @@ import {
   type QueryCtx,
 } from "./_generated/server";
 import { internal } from "./_generated/api";
-import { Doc, Id } from "./_generated/dataModel";
+import { Doc, Id, type TableNames } from "./_generated/dataModel";
 import { writeTraceEvent } from "./observability";
 import { isChatBusy } from "./lib/outboxQueue";
-import { deleteFilesByMessage } from "./lib/files";
 import { requireActive } from "./lib/access";
 import { resolveSummarizerTarget } from "./agents";
 import { resolveTargetForChat } from "./routing";
@@ -58,9 +57,10 @@ import {
   clampSummary,
   freshTailCount,
   summaryBackoffMs,
-  REHYDRATION_STRINGS,
+  historyTurnLabel,
 } from "./lib/rehydration";
-import { deleteChatAgentRequests } from "./agentRequests";
+import { userTurnAuthorLabels } from "./lib/turnAuthors";
+import { AGENT_REQUEST_DELETE_READS, deleteChatAgentRequests } from "./agentRequests";
 
 /** Bounded newest-window read when building a chunk (mirrors rehydration's bounded
  *  tail read, wider). A backlog larger than this window converges over several jobs;
@@ -128,48 +128,127 @@ async function ensureSummarizerChat(
 /** Cascade-purge EVERY content row of a hidden utility chat (messages +
  *  messageParts + files + streamingText + streamChunks + outbox + sub-agent
  *  tables). Generic by hiddenChatId — reused by the curator cleanup. Exported so
- *  the copies-of-user-content hygiene is single-source across hidden kinds. */
+ *  the copies-of-user-content hygiene is single-source across hidden kinds.
+ *
+ *  BOUNDED. Its callers include user-facing mutations (a chat deleted, a message
+ *  deleted, a summary requested), and a hidden chat accumulates rows: purged in
+ *  one pass, enough of them took the CALLER's whole transaction down — a chat that
+ *  could no longer be deleted. So only what must happen NOW happens here: the
+ *  undispatched outbox — the current job's prompt, which must never reach the
+ *  agent — cancelled within a small bound. Everything else goes in budgeted,
+ *  self-scheduled batches (sweepHiddenChat). */
 export async function cleanupHiddenChatContent(
   ctx: MutationCtx,
   hiddenChatId: Id<"chats">,
 ): Promise<void> {
   // Cancel anything not yet dispatched FIRST (pending/queued) — deleting the row
-  // makes bridge.dispatch a no-op (it re-reads the row and returns on null).
+  // makes bridge.dispatch a no-op (it re-reads the row and returns on null). A
+  // hidden chat runs one job at a time, so this is a row or two; past the bound,
+  // the sweep takes the rest (it cancels before anything else).
   for (const status of ["pending", "queued"] as const) {
     const rows = await ctx.db
       .query("outbox")
       .withIndex("by_chat_status", (q) =>
         q.eq("chatId", hiddenChatId).eq("status", status),
       )
-      .collect();
+      .take(HIDDEN_OUTBOX_CANCEL);
     for (const r of rows) await ctx.db.delete(r._id);
   }
-  const msgs = await ctx.db
-    .query("messages")
-    .withIndex("by_chat", (q) => q.eq("chatId", hiddenChatId))
-    .collect();
-  let anyStreamingLeft = false;
-  for (const m of msgs) {
+  await ctx.scheduler.runAfter(0, internal.chatSummaries.sweepHiddenChat, { hiddenChatId });
+}
+
+/** Undispatched rows a cleanup cancels inline, before its sweep. */
+const HIDDEN_OUTBOX_CANCEL = 16;
+
+/** Reads one hidden-chat sweep batch may spend, across every table it purges. */
+export const HIDDEN_SWEEP_BUDGET = 1024;
+
+/**
+ * One budgeted batch of a hidden chat's content, rescheduled while any remains.
+ * STOPS when a job holds the chat (a summarizer's `pendingSummarize`, a curator's
+ * `pendingCurate`): its rows are live, and that job's own settle schedules the
+ * next cleanup. Messages are walked in creation order past a cursor (`after`), so
+ * a streaming reply — left alone, a live gateway turn is finalizing into it — is
+ * stepped over rather than read again forever; the chat-keyed sub-agent tables
+ * are purged only when no streaming reply was met (`sawStreaming`).
+ */
+export const sweepHiddenChat = internalMutation({
+  args: {
+    hiddenChatId: v.id("chats"),
+    after: v.optional(v.number()),
+    sawStreaming: v.optional(v.boolean()),
+  },
+  handler: async (ctx, args) => {
+    await sweepHiddenChatBatch(ctx, args.hiddenChatId, args.after ?? 0, args.sawStreaming === true);
+  },
+});
+
+async function sweepHiddenChatBatch(
+  ctx: MutationCtx,
+  hiddenChatId: Id<"chats">,
+  after: number,
+  sawStreaming: boolean,
+): Promise<void> {
+  const hidden = await ctx.db.get(hiddenChatId);
+  if (hidden === null || hidden.pendingSummarize || hidden.pendingCurate) return;
+  let budget = HIDDEN_SWEEP_BUDGET;
+  let cursor = after;
+  let streaming = sawStreaming;
+  const more = async () => {
+    await ctx.scheduler.runAfter(0, internal.chatSummaries.sweepHiddenChat, {
+      hiddenChatId,
+      after: cursor,
+      sawStreaming: streaming,
+    });
+  };
+  const drain = async (
+    rows: ReadonlyArray<{ _id: Id<TableNames> }>,
+    asked: number,
+  ): Promise<boolean> => {
+    budget -= rows.length;
+    for (const r of rows) await ctx.db.delete(r._id);
+    return rows.length < asked;
+  };
+
+  for (const status of ["pending", "queued"] as const) {
+    const asked = Math.max(budget, 0);
+    const rows = await ctx.db
+      .query("outbox")
+      .withIndex("by_chat_status", (q) => q.eq("chatId", hiddenChatId).eq("status", status))
+      .take(asked);
+    if (!(await drain(rows, asked)) || budget <= 0) return more();
+  }
+
+  for (;;) {
+    const m = await ctx.db
+      .query("messages")
+      .withIndex("by_chat", (q) => q.eq("chatId", hiddenChatId).gt("_creationTime", cursor))
+      .first();
+    budget -= 1;
+    if (m === null) break;
     if (m.status === "streaming") {
-      anyStreamingLeft = true;
+      streaming = true;
+      cursor = m._creationTime;
+      if (budget <= 0) return more();
       continue;
     }
-    const parts = await ctx.db
-      .query("messageParts")
-      .withIndex("by_message", (q) => q.eq("messageId", m._id))
-      .collect();
-    for (const pt of parts) await ctx.db.delete(pt._id);
-    // Files-row invariant (like every other message-deletion path): a summary
-    // reply that carried a file/media part also created `files` rows — purge them
-    // or they linger orphaned in the user's file list.
-    await deleteFilesByMessage(ctx, m._id);
-    const live = await ctx.db
-      .query("streamingText")
-      .withIndex("by_message", (q) => q.eq("messageId", m._id))
-      .collect();
-    for (const st of live) await ctx.db.delete(st._id);
-    // SSE transport: chunks of an un-GC'd reply hold TEXT — schedule the bounded
-    // purge exactly like cascadeDeleteChat (only when present).
+    const hanging = [
+      (n: number) =>
+        ctx.db.query("messageParts").withIndex("by_message", (q) => q.eq("messageId", m._id)).take(n),
+      // Files-row invariant (like every other message-deletion path): a summary
+      // reply that carried a file/media part also created `files` rows.
+      (n: number) =>
+        ctx.db.query("files").withIndex("by_message", (q) => q.eq("messageId", m._id)).take(n),
+      (n: number) =>
+        ctx.db.query("streamingText").withIndex("by_message", (q) => q.eq("messageId", m._id)).take(n),
+      (n: number) =>
+        ctx.db.query("outbox").withIndex("by_message", (q) => q.eq("messageId", m._id)).take(n),
+    ];
+    for (const read of hanging) {
+      const asked = Math.max(budget, 0);
+      if (!(await drain(await read(asked), asked)) || budget <= 0) return more();
+    }
+    // SSE transport: chunks of an un-GC'd reply hold TEXT — their own bounded purge.
     if (
       await ctx.db
         .query("streamChunks")
@@ -180,47 +259,50 @@ export async function cleanupHiddenChatContent(
         messageId: m._id,
       });
     }
-    const ob = await ctx.db
-      .query("outbox")
-      .withIndex("by_message", (q) => q.eq("messageId", m._id))
-      .collect();
-    for (const o of ob) await ctx.db.delete(o._id);
+    budget -= 1;
     await ctx.db.delete(m._id);
+    if (budget <= 0) return more();
   }
+
   // Ancillary CONTENT tables keyed by chat (mirror of cascadeDeleteChat): a
   // summarizer agent that spawned children / recorded interactions leaves copies
   // there too. Skipped while a streaming reply remains (its rows are live; the
   // next settle's sweep finishes the job).
-  if (!anyStreamingLeft) {
-    const subAgents = await ctx.db
-      .query("subAgents")
-      .withIndex("by_chat", (q) => q.eq("chatId", hiddenChatId))
-      .collect();
-    for (const sa of subAgents) await ctx.db.delete(sa._id);
-    const subAgentToolParts = await ctx.db
-      .query("subAgentToolParts")
-      .withIndex("by_chat", (q) => q.eq("chatId", hiddenChatId))
-      .collect();
-    for (const pt of subAgentToolParts) await ctx.db.delete(pt._id);
-    const subAgentInteractions = await ctx.db
-      .query("subAgentInteractions")
-      .withIndex("by_chat", (q) => q.eq("chatId", hiddenChatId))
-      .collect();
-    for (const it of subAgentInteractions) await ctx.db.delete(it._id);
-    await deleteChatAgentRequests(ctx, hiddenChatId);
+  if (streaming) return;
+  // Settled outbox rows no message points back to any more (their message went
+  // without them): copies of a prompt, like the rest. After the messages, and only
+  // when no reply is streaming — a live reply's own row is left to its settle.
+  for (const status of ["sent", "failed"] as const) {
+    const asked = Math.max(budget, 0);
+    const rows = await ctx.db
+      .query("outbox")
+      .withIndex("by_chat_status", (q) => q.eq("chatId", hiddenChatId).eq("status", status))
+      .take(asked);
+    if (!(await drain(rows, asked)) || budget <= 0) return more();
   }
+  for (const table of ["subAgents", "subAgentToolParts", "subAgentInteractions"] as const) {
+    const asked = Math.max(budget, 0);
+    const rows = await ctx.db
+      .query(table)
+      .withIndex("by_chat", (q) => q.eq("chatId", hiddenChatId))
+      .take(asked);
+    if (!(await drain(rows, asked)) || budget <= 0) return more();
+  }
+  const limit = Math.floor(budget / AGENT_REQUEST_DELETE_READS);
+  if (limit < 1 || (await deleteChatAgentRequests(ctx, hiddenChatId, limit))) return more();
 }
 
 /** Scheduled post-settle sweep of the hidden chat (from correlate/fail — deleting
  *  the reply row INSIDE its own finalize transaction would be fragile). Skips when
- *  a NEW job locked the chat meanwhile (its rows are live). */
+ *  a NEW job locked the chat meanwhile (its rows are live). One budgeted batch here,
+ *  the rest self-scheduled (sweepHiddenChat). */
 export const cleanupSummarizerChat = internalMutation({
   args: { hiddenChatId: v.id("chats") },
   handler: async (ctx, { hiddenChatId }) => {
     const hidden = await ctx.db.get(hiddenChatId);
     if (!hidden || hidden.kind !== "summarizer") return;
     if (hidden.pendingSummarize) return "in_flight"; // a live job owns the current rows
-    await cleanupHiddenChatContent(ctx, hiddenChatId);
+    await sweepHiddenChatBatch(ctx, hiddenChatId, 0, false);
   },
 });
 
@@ -379,15 +461,23 @@ export function composedTurnBody(
     : base;
 }
 
+/** One transcript line for the summarizer. `authors` = the group's user-turn
+ *  labels (lib/turnAuthors), null/absent on a solo chat — which then renders as
+ *  it always did. */
 export function renderTurn(
   m: Doc<"messages">,
   children: ChildResultsIndex,
   locale: Locale,
   injections: PromptInjectionConfig | undefined,
+  authors?: ReadonlyMap<string, string> | null,
 ): string {
-  const t9n = REHYDRATION_STRINGS[locale];
   const body = composedTurnBody(m, children, locale, injections);
-  return `${m.role === "user" ? t9n.userLabel : t9n.assistantLabel} : ${body}`;
+  const label = historyTurnLabel(
+    locale,
+    m.role === "user" ? "user" : "assistant",
+    m.role === "user" ? authors?.get(m._id) : undefined,
+  );
+  return `${label} : ${body}`;
 }
 
 /** Outcome of one scheduling attempt — returned to the MANUAL caller so the panel
@@ -692,11 +782,19 @@ async function scheduleSummarizeJob(
     // auto path would stall despite a huge backlog (codex P2). The chunk itself
     // stays bounded; a large backlog converges over several jobs.
     let backlogChars = 0;
+    // A group conversation's transcript names who wrote each user turn — the same
+    // attribution the rehydrated tail carries (lib/turnAuthors). Null on a solo chat.
+    const authors = await userTurnAuthorLabels(ctx, chat, chunkPoolChrono);
     for (const m of chunkPoolChrono) {
       if (pageChildren.unsettled.has(m._id as string)) break;
       backlogChars +=
-        renderTurn(m, pageChildren, contentLocale, instance?.config?.promptInjections)
-          .length + 1;
+        renderTurn(
+          m,
+          pageChildren,
+          contentLocale,
+          instance?.config?.promptInjections,
+          authors,
+        ).length + 1;
     }
     for (const m of chunkPoolChrono) {
       // A turn whose sub-agent is STILL RUNNING is not settled: summarizing it
@@ -709,6 +807,7 @@ async function scheduleSummarizeJob(
         pageChildren,
         contentLocale,
         instance?.config?.promptInjections,
+        authors,
       );
       if (chunkMsgs.length > 0 && chunkChars + line.length + 1 > CHUNK_MAX_CHARS)
         break;

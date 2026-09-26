@@ -27,10 +27,14 @@ import type { BridgeConfig, SharedConfig } from "./config.js";
 import { deviceTokenPromotion } from "./core/device-token-promotion.js";
 import {
   connectUserHeader,
+  humanConnectIdentity,
   systemConnectIdentity,
 } from "./providers/openclaw/connect-identity.js";
+import { SpeakerPool } from "./providers/openclaw/speaker-pool.js";
+import { presentedIdentity } from "./providers/openclaw/gateway-identity.js";
 import { sessionPatchNeedsAdmin } from "./providers/openclaw/session-patch-scope.js";
 import {
+  GatewayAnsweredError,
   idempotencyKey,
   OpenClawConnection,
 } from "./providers/openclaw/openclaw-client.js";
@@ -280,6 +284,18 @@ interface SendBody extends BodyRouting {
    * Convex composed ahead of it.
    */
   mentions?: Array<{ canonical: string; start: number; end: number }>;
+  /**
+   * A group conversation's PARTICIPANT, by gateway name, when their turn is to
+   * reach the gateway as theirs (trusted-proxy, `participantIdentity: "self"`).
+   * Absent ⇒ the conversation's socket (the owner's) sends, as always.
+   */
+  speakerGatewayUser?: string;
+  /**
+   * That participant's Atrium key (routing canonical): the name their speaker
+   * socket presents instead when `speakerGatewayUser` cannot travel in the identity
+   * header — the same fallback as the conversation's own socket (gatewayNameFor).
+   */
+  speakerCanonical?: string;
   openclawChatId: string | null;
   /** A session this chat LOST a reply on, for ONE read-only harvest (G-47). Parsed here or
    *  it never crosses the HTTP boundary — the whole feature ran only in tests until a review
@@ -516,6 +532,14 @@ export function parseSendBody(raw: string): SendBody | null {
   return {
     ...routing,
     chatId: obj.chatId,
+    // Named explicitly: this function rebuilds the body field by field.
+    ...(typeof obj.speakerGatewayUser === "string" &&
+    obj.speakerGatewayUser.length > 0
+      ? { speakerGatewayUser: obj.speakerGatewayUser }
+      : {}),
+    ...(typeof obj.speakerCanonical === "string" && obj.speakerCanonical.length > 0
+      ? { speakerCanonical: obj.speakerCanonical }
+      : {}),
     openclawChatId:
       typeof obj.openclawChatId === "string" ? obj.openclawChatId : null,
     // Both ids REQUIRED and non-empty: a half-formed handle would send the bridge reading a
@@ -1240,6 +1264,9 @@ export async function performSend(
   sendReceivedMs: number = Date.now(),
   /** The served instance's config, for the admin-scoped pre-send compaction. */
   presendConfig?: BridgeConfig,
+  /** Where a participant's own socket comes from (speaker-pool.ts). Injectable for
+   *  tests; the process-wide pool otherwise. */
+  speakers: SpeakerSource = defaultSpeakers,
 ): Promise<void> {
   const conn = session.connection;
   const sessionKey = session.sessionKey;
@@ -1262,8 +1289,15 @@ export async function performSend(
       releaseWait,
     );
   }
-  await claimSessionForOwner(conn, sessionKey, body.agentId, presendConfig);
-  if (!conn.verboseFullApplied) {
+  // Nothing administrative touches a session whose existence the claim could not
+  // establish: an admin `sessions.patch` into an empty key CREATES it — under the
+  // bridge's identity, for good, and already reading `systemSent` (so the next turn
+  // would skip re-hydration). The turn itself still goes out from the owner's
+  // socket, which creates the session as theirs; the knobs follow on the next turn.
+  const sessionEstablished =
+    (await claimSessionForOwner(conn, sessionKey, body.agentId, presendConfig)) ===
+    "exists";
+  if (sessionEstablished && !conn.verboseFullApplied) {
     // Admin-scoped upstream (`verboseLevel` is not in the write-scope set), and
     // sticky server-side — so applying it from the administrative socket sets it
     // for the session whichever socket then talks to it.
@@ -1279,12 +1313,14 @@ export async function performSend(
   // RE-APPLY the user's per-chat knob intent (reasoning/model) BEFORE the describe
   // below, so a reset/rolled session keeps the user's choice AND the meta we mirror
   // reflects it within THIS turn (not the next). Idempotent + non-fatal.
-  await applySessionSettings(
-    conn,
-    sessionKey,
-    body.sessionSettings,
-    presendConfig,
-  );
+  if (sessionEstablished) {
+    await applySessionSettings(
+      conn,
+      sessionKey,
+      body.sessionSettings,
+      presendConfig,
+    );
+  }
 
   // SESSION RE-HYDRATION (docs/SESSION_CONTINUITY_DESIGN.md). OpenClaw sessions are
   // ephemeral (daily/idle reset, pruning); our webchat displays the FULL thread.
@@ -1367,6 +1403,37 @@ export async function performSend(
   };
   try {
     let described = await describeSession(conn, sessionKey);
+    // The gateway ANSWERED that there is no session: whatever the claim proved
+    // earlier on this socket no longer holds (the session was pruned since). The
+    // proof is dropped, so this turn goes out from the OWNER's socket — which
+    // re-creates the session as theirs — and the next send claims it again. A
+    // participant sending into the empty key would otherwise become its owner.
+    if (described === null) {
+      conn.sessionClaimed = false;
+      // `verboseLevel` lives on the SESSION: a session that is gone took it with it.
+      conn.verboseFullApplied = false;
+      // One identity in token mode, so nothing stops re-applying it right away (the
+      // very first turn on a key does exactly this). In trusted-proxy mode an admin
+      // patch into the empty key would create the session under the bridge's
+      // identity: the owner's send creates it, and the next turn re-applies.
+      if (presendConfig?.openclawAuthMode !== "trusted-proxy") {
+        try {
+          await patchSession(
+            conn,
+            presendConfig,
+            { key: sessionKey, verboseLevel: "full" },
+            10_000,
+          );
+          conn.verboseFullApplied = true;
+        } catch (err) {
+          console.error(
+            `[verbose] chat=${body.chatId} could not re-apply verboseLevel on a session that was gone: ${
+              (err as Error)?.message ?? err
+            }`,
+          );
+        }
+      }
+    }
     // THE SEVEN-DAY WALL. Upstream auto-archives an idle dashboard session, and an
     // archived session refuses `chat.send` outright — which reached the user as a
     // conversation that had simply stopped answering (prod 2026-09-20). Restored
@@ -1687,11 +1754,14 @@ export async function performSend(
     // session re-inject after a bridge restart). Gates the new-session freshness to the
     // multi-agent switch only (see computeFreshSession).
     const routedSwitch = body.config?.routedSwitch === true;
+    await settleUnconfirmedClaim(conn, sess);
     const freshSession = computeFreshSession(
       sess,
       firstTurnOnSession,
       routedSwitch,
-      conn.claimCreatedSession,
+      // A session replaced under the key since it was claimed holds none of the
+      // thread either, however warm it reads.
+      conn.claimCreatedSession || conn.sessionReplaced,
     );
     if (freshSession) {
       // A gateway session the bridge considers FRESH (a daily/idle rollover, a
@@ -1950,8 +2020,9 @@ export async function performSend(
   // at all, rather than declared and refused.
   //
   // `resolveGatewayMentions` is kept: the canonical → profile mapping is correct
-  // and proven, and the day upstream admits another client class this call is the
-  // one line to restore. Until then it stays unwired on purpose.
+  // and proven where people are named by canonical (it forwards nobody where they
+  // are named by email), and the day upstream admits another client class this
+  // call is the one line to restore. Until then it stays unwired on purpose.
   void resolveGatewayMentions;
   if (hasInlineAttachments) {
     // Frame guard: inbound attachments ride THIS chat.send as inline base64, so
@@ -2034,12 +2105,29 @@ export async function performSend(
   assertBeforeSendDeadline(sendReceivedMs, Date.now(), body.dispatchAgeMs);
   session.runManager.armReplayBuffer();
   try {
-    const response = await conn.request("chat.send", params, 20_000);
+    // WHO SENDS. The conversation's socket (the owner's), unless this turn is a
+    // participant's on an instance that lets them speak as themselves — then their
+    // own socket sends, and only sends: the owner's socket stays the one consumer.
+    const response = await sendAsSpeaker(
+      conn,
+      params,
+      body,
+      presendConfig,
+      speakers,
+    );
     // The gateway ACCEPTED the message (with any prepended re-hydration history) — only
     // now consume firstSendPending (codex P2.A). A failed send above leaves it true so a
     // retry of this freshly-routed session re-hydrates again; a post-ack beginTurn throw
     // is fine to consume past (the gateway already has the re-grounded message).
     session.firstSendPending = false;
+    // CONSUMED with the send that carried the history, like firstSendPending. Left
+    // set, the claim's "I created this session" verdict made EVERY later turn on this
+    // socket read as fresh and re-prepend the whole thread (measured live on the
+    // trusted-proxy bench, 2026-09-25: a second turn logged `fresh session ->
+    // prepended 2 prior turn(s)`). A failed send above keeps it, so a retry of that
+    // first turn still re-hydrates.
+    conn.claimCreatedSession = false;
+    conn.sessionReplaced = false;
     const ackRunId = extractRunId(response);
     // Anchor the RAW user text for orphan-recovery boundary validation — NOT
     // params.message: the enriched message can END with static injections (the
@@ -2124,7 +2212,7 @@ export async function performSend(
  * (verified live, 6.1: a patch is visible in the very next describe). Does NOT
  * begin a turn (no chat.send): patching a knob must never look like a message.
  */
-async function performPatch(
+export async function performPatch(
   session: BridgeSession,
   body: PatchBody,
   writer: ConvexWriter,
@@ -2135,7 +2223,14 @@ async function performPatch(
   // A knob set BEFORE the first message would otherwise create the session on the
   // administrative socket, and upstream does not restamp provenance when a later
   // call adopts an existing key — the attribution would be wrong for its whole life.
-  await claimSessionForOwner(conn, sessionKey, body.agentId, config);
+  if ((await claimSessionForOwner(conn, sessionKey, body.agentId, config)) !== "exists") {
+    // The patch would CREATE the session under the bridge's identity. The intent is
+    // kept in Convex and re-applied by the next send, once the session is the owner's.
+    console.error(
+      `[identity] chat=${body.chatId} knob not applied: the session's existence is not established`,
+    );
+    return;
+  }
 
   await applyPatchIntent(conn, sessionKey, body.sessionSettings, config);
 
@@ -2183,6 +2278,220 @@ async function performPatch(
  * cannot, because a person's socket carries no admin in trusted-proxy mode. Token
  * mode routes everything to the socket it already used.
  */
+/** Where a participant's own socket comes from. */
+export interface SpeakerSource {
+  /** The socket that acts for `speaker` on this instance (opened on demand). */
+  acquire(config: BridgeConfig, speaker: string): Promise<OpenClawConnection>;
+  /** Carry `runId` — about to be started on `from` — to `to`, in full, from `from`
+   *  alone: `to` stops consuming its own native copies of that run. False when
+   *  `from` is no longer held and open: nothing was routed. */
+  route(from: OpenClawConnection, runId: string, to: OpenClawConnection): boolean;
+  /** Undo `route`: the gateway REFUSED the send, so the run never started. */
+  unroute(from: OpenClawConnection, runId: string): void;
+  /** The send got NO answer (socket closed, timeout): hand the run back to `to`
+   *  WITH the loss signal — it may have started, its native copies were dropped. */
+  abandon(from: OpenClawConnection, runId: string): void;
+}
+
+const speakerPool = new SpeakerPool();
+
+/** The process-wide speaker sockets: one per (instance, person). */
+export const defaultSpeakers: SpeakerSource = {
+  acquire: (config, speaker) =>
+    speakerPool.acquire(`${config.instanceName ?? ""}\u0000${speaker}`, () =>
+      OpenClawConnection.connect(
+        config.openclawGatewayUrl,
+        // "" in trusted-proxy mode, the only mode a speaker socket is opened in.
+        config.openclawToken ?? "",
+        config.deviceIdentity!,
+        deviceTokenPromotion(config),
+        0,
+        humanConnectIdentity(config, speaker),
+        connectUserHeader(config),
+        // NOT `approvals`: approvals are routed by device, and the conversation's
+        // socket (same device) is the one Atrium shows them from. Declaring it here
+        // would make this socket a second reviewer surface nobody reads.
+        [],
+      ),
+    ),
+  route: (from, runId, to) => speakerPool.route(from, runId, to),
+  unroute: (from, runId) => speakerPool.unroute(from, runId),
+  abandon: (from, runId) => speakerPool.abandon(from, runId),
+};
+
+/**
+ * Refusals that mean "this gateway will not take a turn from that person in this
+ * session" — its sharing rules, not the turn. Measured and read upstream (2026.9.6):
+ * `sessions.others: "none"` answers not-found, `view`/`suggest` without membership
+ * and read-only sessions answer SESSION_PARTICIPATION_REQUIRED (message "…for this
+ * connection"), a role's agent list or scope answers FORBIDDEN. Anything else is
+ * about the turn itself and would fail the same way from the owner's socket.
+ */
+export function isSpeakerRefusal(err: unknown): boolean {
+  const text = (err as Error)?.message ?? "";
+  // A gateway answer's CODE leads the message ("FORBIDDEN: …"): any FORBIDDEN on
+  // a participant's chat.send is a refusal of THAT person (their role, their agent
+  // list), whatever the prose after it — the owner's socket may still send.
+  if (/^FORBIDDEN:/.test(text)) return true;
+  return /was not found|for this connection|SESSION_PARTICIPATION_REQUIRED|missing scope|cannot create sessions for agent|Session-scoped writes|trusted_proxy|NOT_PAIRED|pairing required/i.test(
+    text,
+  );
+}
+
+/**
+ * Send one turn's chat.send — from the participant's own socket when the body names
+ * a speaker, else from the conversation's socket.
+ *
+ * ATTRIBUTION NEVER COSTS THE TURN. A speaker socket that cannot open, or a gateway
+ * that refuses the participant (its roles isolate sessions), sends the turn from the
+ * owner's socket instead — the turn then reads as the owner's, exactly as it did
+ * before this existed — and says so in the log. The idempotency key is the same on
+ * both attempts, so a refusal that did reach the gateway can never become two turns.
+ *
+ * The conversation's socket has already CLAIMED the session for its owner
+ * (claimSessionForOwner, earlier in the send), so a participant speaking first can
+ * never become the session's creator — measured: whoever sends first into a fresh
+ * key does.
+ */
+export async function sendAsSpeaker(
+  conn: OpenClawConnection,
+  params: Record<string, unknown>,
+  body: {
+    speakerGatewayUser?: string;
+    speakerCanonical?: string;
+    chatId: string;
+    agentId?: string;
+  },
+  config: BridgeConfig | undefined,
+  speakers: SpeakerSource,
+): Promise<{ payload?: Record<string, unknown> }> {
+  // ONE call site for the send, whichever socket carries it: the outbound ratchet
+  // inventories chat.send call sites, and every body must stay the one
+  // performSend built and the ratchet captures.
+  const send = (via: OpenClawConnection) => via.request("chat.send", params, 20_000);
+  if (
+    body.speakerGatewayUser === undefined ||
+    config === undefined ||
+    config.openclawAuthMode !== "trusted-proxy"
+  ) {
+    return await send(conn);
+  }
+  // The name the participant's socket presents — by the SAME rule as the
+  // conversation's socket (gatewayNameFor): an address the identity header cannot
+  // carry (`josé@example.com`) falls back to their Atrium key, rather than the
+  // socket failing to open and the turn silently going out as the owner's.
+  const speaker = presentedIdentity(body.speakerGatewayUser, body.speakerCanonical);
+  if (speaker !== body.speakerGatewayUser) {
+    console.warn(
+      `[identity] chat=${body.chatId} ${speaker}: this instance names people by an address, ` +
+        `but theirs cannot be sent in the identity header — naming them by their Atrium key instead.`,
+    );
+  }
+  // NOT BEFORE THE OWNER HOLDS THE SESSION. The conversation's socket claims it
+  // for the owner earlier in the send; if that could not be proven (the session
+  // neither seen to exist nor created), a participant sending now could be the one
+  // who creates it — and would own it on the gateway. The owner's socket sends.
+  if (conn.sessionClaimed !== true) {
+    console.error(
+      `[identity] chat=${body.chatId} the owner's claim on the session is not proven — sent as the owner`,
+    );
+    return await send(conn);
+  }
+  const runSessionKey = String(params.sessionKey ?? "");
+  // The socket FIRST, the proof AFTER: opening it can take the whole connect
+  // timeout, and a proof taken before that wait says nothing about the session the
+  // participant's send then lands in — pruned meanwhile, their send would create a
+  // new one, theirs, with no history in it.
+  let speakerConn: OpenClawConnection;
+  try {
+    speakerConn = await speakers.acquire(config, speaker);
+  } catch (err) {
+    // The owner's socket takes the turn — but only into the session the send was
+    // prepared for: the failed open may have taken as long as a successful one.
+    if ((await ownerCreatedSession(conn, runSessionKey, body.agentId)) === "absent") {
+      conn.sessionClaimed = false;
+      throw new SessionVanishedBeforeSend(body.chatId);
+    }
+    console.error(
+      `[identity] chat=${body.chatId} participant socket unavailable — sent as the owner: ${
+        (err as Error)?.message ?? err
+      }`,
+    );
+    return await send(conn);
+  }
+  // …AND STILL HOLDS IT NOW. The proof was taken at the start of the send; the
+  // compaction, the attachment preparation, the holds and the socket's opening
+  // since can take minutes, and a session pruned or re-created in that window is no
+  // longer the owner's. Re-read from the owner's socket, right before the send.
+  const hold = await ownerCreatedSession(conn, runSessionKey, body.agentId);
+  if (hold !== "owned") {
+    conn.sessionClaimed = false;
+    // GONE since the send was prepared: the message in hand was built for the old
+    // session (no history re-hydrated), and sending it — from either socket — would
+    // start a cold session holding only this turn. Nothing reached the gateway yet,
+    // so the whole send is prepared again (claim, describe, freshness, history).
+    if (hold === "absent") throw new SessionVanishedBeforeSend(body.chatId);
+    console.error(
+      `[identity] chat=${body.chatId} the session is no longer proven the owner's — sent as the owner`,
+    );
+    return await send(conn);
+  }
+  // The run's id is the send's idempotencyKey (upstream chat-send-session.ts
+  // `clientRunId = p.idempotencyKey`): routed BEFORE the send, so no frame of the
+  // run can reach either socket ahead of its route.
+  const runId = typeof params.idempotencyKey === "string" ? params.idempotencyKey : "";
+  if (runId === "") return await send(conn);
+  if (!speakers.route(speakerConn, runId, conn)) {
+    // The participant's socket closed after it was acquired (during the proof
+    // above): nothing was routed, nothing sent. The hold was JUST proven, so the
+    // owner's socket takes the turn — once — instead of a send that could only fail.
+    console.error(
+      `[identity] chat=${body.chatId} participant socket closed before the send — sent as the owner`,
+    );
+    return await send(conn);
+  }
+  let response: { payload?: Record<string, unknown> };
+  try {
+    response = await send(speakerConn);
+  } catch (err) {
+    // ANSWERED by the gateway: the run never started — the route simply goes.
+    // UNANSWERED (the socket closed before the ack — its close rejects this request
+    // before the pool's reader sees the end — or a timeout): the run may be live and
+    // its native copies were dropped; handed back with the loss signal, or the owner
+    // never hears of what it missed.
+    const answered =
+      !speakerConn.isClosed && (err instanceof GatewayAnsweredError || isSpeakerRefusal(err));
+    if (answered) speakers.unroute(speakerConn, runId);
+    else speakers.abandon(speakerConn, runId);
+    if (!isSpeakerRefusal(err)) throw err;
+    // "Not found" is ambiguous: the sharing rules hiding the session, OR the session
+    // gone since the re-proof above. Asked again from the owner's socket before it
+    // takes the turn: gone ⇒ the message in hand has no history for the new session,
+    // so the send is prepared again rather than starting a cold one.
+    if ((await ownerCreatedSession(conn, runSessionKey, body.agentId)) === "absent") {
+      conn.sessionClaimed = false;
+      throw new SessionVanishedBeforeSend(body.chatId);
+    }
+    console.error(
+      `[identity] chat=${body.chatId} the gateway refused the participant in this session — sent as the owner: ${
+        (err as Error)?.message ?? err
+      }`,
+    );
+    return await send(conn);
+  }
+  const acked = extractRunId(response as Parameters<typeof extractRunId>[0]);
+  if (acked !== null && acked !== undefined && acked !== runId) {
+    // Not the contract read upstream: carry the run the gateway named instead, and
+    // say so — its first frames may have reached the owner's socket natively.
+    console.error(
+      `[identity] chat=${body.chatId} the gateway named run ${acked}, not the idempotencyKey — re-routed`,
+    );
+    speakers.unroute(speakerConn, runId);
+    speakers.route(speakerConn, acked, conn);
+  }
+  return response;
+}
+
 /**
  * CLAIM the conversation's gateway session for the PERSON, before anything else
  * touches it.
@@ -2203,32 +2512,104 @@ async function performPatch(
  *
  * Best-effort by design: a refusal costs attribution, and attribution must never
  * cost a turn. No-op outside trusted-proxy mode, and once per connection.
+ *
+ * Returns whether the session is known to EXIST now ("exists") — the condition for
+ * any administrative write to it, since an admin patch into an empty key creates
+ * the session under the bridge's identity. "unsettled" = absent, or unknown.
  */
 async function claimSessionForOwner(
   conn: OpenClawConnection,
   sessionKey: string,
   agentId: string,
   config: BridgeConfig | undefined,
-): Promise<void> {
-  if (config?.openclawAuthMode !== "trusted-proxy" || conn.sessionClaimed)
-    return;
-  let existedBeforeClaim = true;
-  try {
-    const probe = await conn.request(
-      "sessions.describe",
-      { key: sessionKey, agentId },
-      10_000,
-    );
-    const p = probe.payload as { session?: unknown } | undefined;
-    existedBeforeClaim = (p?.session ?? null) !== null;
-  } catch {
-    // A describe that fails tells us nothing; assume the session exists so the
-    // claim stays a no-op rather than inventing a freshness verdict.
-    existedBeforeClaim = true;
+): Promise<"exists" | "unsettled"> {
+  if (config?.openclawAuthMode !== "trusted-proxy") return "exists";
+  if (conn.sessionClaimed) {
+    // PROVEN ONCE is not "exists now": the gateway prunes sessions while the socket
+    // stays open, and an admin write into the emptied key would re-create it under
+    // the bridge's identity, reading `systemSent` (no re-hydration). Asked again
+    // before anything writes: present ⇒ as proven; unknown ⇒ nothing administrative
+    // this time; absent ⇒ the proof is dropped and the claim starts over (the new
+    // session is then the claim's, and fresh).
+    let again: unknown = undefined;
+    try {
+      const res = await conn.request("sessions.describe", { key: sessionKey, agentId }, 10_000);
+      again = (res.payload as { session?: unknown } | undefined)?.session ?? null;
+    } catch {
+      again = undefined;
+    }
+    if (again === undefined) return "unsettled";
+    if (again !== null) {
+      // Present — but the SAME session? One deleted and re-created under the key
+      // (by a participant's socket, say) is somebody else's and holds none of the
+      // thread. The CREATOR tells it: `createdActor` never changes for a session's
+      // life, and this socket proved it was its own — so any other creator (none
+      // shown included) is another session. NOT the session id: upstream rotates it
+      // on a compaction of the very same conversation, which must stay warm.
+      const self = await ownProfileId(conn);
+      const replaced = self !== null && createdByProfile(again) !== self;
+      if (!replaced) return "exists";
+      console.error(
+        `[identity] session ${sessionKey}: replaced since it was claimed — proof dropped, thread re-hydrated`,
+      );
+      // Whatever this socket knew of the old session goes with it; the new one
+      // gets the thread (fresh) and is claimed again only on proof.
+      conn.sessionReplaced = true;
+    }
+    conn.sessionClaimed = false;
+    conn.verboseFullApplied = false;
   }
+  let existedBeforeClaim = true;
+  // PROVEN = the gateway itself names THIS socket's profile as the session's
+  // creator. Only a proven claim marks the socket as claimed — a participant's
+  // socket (sendAsSpeaker) is allowed to send only then, because whoever sends first
+  // into a key that does not exist yet CREATES the session and owns it (measured,
+  // 2026.9.6). Existence proves nothing: a session a participant or the system
+  // created is just as describable, and `createdActor` never changes afterwards.
+  // An unproven claim is retried next send; meanwhile only the owner's socket sends.
+  let described: unknown = null;
+  // THREE STATES, not two: present, absent, or UNKNOWN (the describe failed). A
+  // create sent on "unknown" could bring a session into existence that the claim
+  // would then take for an old one — no "created" verdict, so the first turn goes
+  // out warm and the model gets none of the thread. One retry; still unknown, no
+  // claim at all this time (nothing created, nothing proven): the next send asks
+  // again, and meanwhile only the owner's socket sends.
+  let probed = false;
+  for (let attempt = 0; attempt < 2 && !probed; attempt += 1) {
+    try {
+      const probe = await conn.request(
+        "sessions.describe",
+        { key: sessionKey, agentId },
+        10_000,
+      );
+      described = (probe.payload as { session?: unknown } | undefined)?.session ?? null;
+      existedBeforeClaim = described !== null;
+      // No session: whatever this socket applied to the last one is gone with it.
+      if (!existedBeforeClaim) conn.verboseFullApplied = false;
+      probed = true;
+    } catch {
+      /* retried once below */
+    }
+  }
+  if (!probed) {
+    console.error(
+      `[identity] session ${sessionKey}: its state could not be read — not claimed this time`,
+    );
+    return "unsettled";
+  }
+  let created = false;
+  // A "created" verdict still set here belongs to a first send that FAILED before
+  // the gateway accepted it (a successful send consumes it): the retry must still
+  // re-hydrate the session that claim made. Kept below unless this probe finds the
+  // session gone, or created by a profile explicitly not ours.
+  const carried = conn.claimCreatedSession;
+  conn.claimCreatedSession = false;
+  // NOT reset: a doubt raised by an earlier claim on this socket (a `/patch` before
+  // the first send) stays until a send's describe settles it — a probe that now
+  // SEES the session is exactly the case where only its creator can say it is new.
   try {
     await conn.request("sessions.create", { key: sessionKey, agentId }, 10_000);
-    conn.claimCreatedSession = !existedBeforeClaim;
+    created = true;
   } catch (err) {
     console.error(
       `[identity] could not claim session ${sessionKey} for its owner: ${
@@ -2236,7 +2617,162 @@ async function claimSessionForOwner(
       }`,
     );
   }
-  conn.sessionClaimed = true;
+  // What the probe saw predates the create: a session it did not see (absent, or
+  // hidden from this socket) is read again — whether or not the create ANSWERED. A
+  // create whose answer was lost (a timeout) may still have reached the gateway,
+  // and the session it made reads `systemSent: true` like any warm one: only its
+  // creator tells it apart.
+  if (described === null) {
+    try {
+      const after = await conn.request(
+        "sessions.describe",
+        { key: sessionKey, agentId },
+        10_000,
+      );
+      described = (after.payload as { session?: unknown } | undefined)?.session ?? null;
+    } catch {
+      described = null;
+    }
+  }
+  if (described === null) {
+    // Neither confirmed nor ruled out: the send's own describe settles it
+    // (`settleUnconfirmedClaim`), before the freshness verdict is taken.
+    if (!existedBeforeClaim) conn.claimMayHaveCreated = true;
+    return "unsettled";
+  }
+  const self = await ownProfileId(conn);
+  const creator = createdByProfile(described);
+  // "The claim created it" — the verdict that makes this turn re-hydrate the whole
+  // thread into the session — only for a session the probe saw ABSENT, the create
+  // answered, the read-back SEES, and that no other known profile created: a create
+  // that answered on somebody else's session (hidden from the probe) must not have
+  // the conversation poured into it. An unreadable own profile does not block it:
+  // the probe saw nothing and the session now exists, and losing the thread in a
+  // brand-new session is the failure this verdict exists to prevent — but only
+  // while no creator is known: a session a known profile created is somebody's,
+  // and without our own id nothing says it is ours.
+  // A create whose answer was lost counts only on proof: the gateway naming THIS
+  // socket's profile as the creator of a session the probe saw absent.
+  conn.claimCreatedSession =
+    (!existedBeforeClaim &&
+      ((created && creator === null) || (self !== null && creator === self))) ||
+    (carried && existedBeforeClaim && (creator === null || (self !== null && creator === self)));
+  if (self !== null && creator === self) conn.sessionClaimed = true;
+  return "exists";
+}
+
+/**
+ * A claim that could not tell whether its create landed (the probe saw no session,
+ * the create went out, the read-back failed) is settled on the send's own describe:
+ * a session that now exists and names THIS socket's profile as its creator is the
+ * one the claim made — fresh (the thread is re-hydrated into it) and claimed.
+ * Anything else leaves both verdicts as they are. One-shot: the doubt belongs to
+ * the send that raised it.
+ */
+export async function settleUnconfirmedClaim(
+  conn: OpenClawConnection,
+  session: unknown,
+): Promise<void> {
+  if (!conn.claimMayHaveCreated) return;
+  conn.claimMayHaveCreated = false;
+  if (session === null || session === undefined) return;
+  const self = await ownProfileId(conn);
+  if (self !== null && createdByProfile(session) === self) {
+    conn.claimCreatedSession = true;
+    conn.sessionClaimed = true;
+  }
+}
+
+/**
+ * Does the gateway still name THIS socket's profile as the creator of `sessionKey`?
+ * One describe (plus `users.self` the first time). "owned" only on a positive
+ * answer; "absent" when the gateway ANSWERED that there is no session; "unproven"
+ * for everything else — another creator, an unreadable profile, a failed read.
+ */
+async function ownerCreatedSession(
+  conn: OpenClawConnection,
+  sessionKey: string,
+  agentId: string | undefined,
+): Promise<"owned" | "absent" | "unproven"> {
+  if (sessionKey === "") return "unproven";
+  let session: unknown = null;
+  try {
+    const res = await conn.request(
+      "sessions.describe",
+      { key: sessionKey, ...(agentId ? { agentId } : {}) },
+      10_000,
+    );
+    session = (res.payload as { session?: unknown } | undefined)?.session ?? null;
+  } catch {
+    return "unproven";
+  }
+  if (session === null) return "absent";
+  const self = await ownProfileId(conn);
+  return self !== null && createdByProfile(session) === self ? "owned" : "unproven";
+}
+
+/**
+ * The session a participant's send was prepared for disappeared before it left.
+ * Thrown BEFORE any chat.send: the caller prepares the whole send again, once.
+ */
+export class SessionVanishedBeforeSend extends Error {
+  constructor(chatId: string) {
+    super(`session of chat ${chatId} vanished before the participant's send`);
+    this.name = "SessionVanishedBeforeSend";
+  }
+}
+
+/**
+ * Run a send; when it was prepared for a session that vanished before it left
+ * (SessionVanishedBeforeSend — nothing reached the gateway), prepare it again, ONCE:
+ * the second preparation finds the session absent, re-claims it and re-hydrates.
+ * Any other failure, and a second vanishing, propagate unchanged.
+ */
+export async function withOneRePreparation(
+  sendOnce: () => Promise<void>,
+  chatId: string,
+): Promise<void> {
+  try {
+    await sendOnce();
+  } catch (err) {
+    if (!(err instanceof SessionVanishedBeforeSend)) throw err;
+    console.error(`[identity] chat=${chatId} ${err.message} — preparing it again`);
+    await sendOnce();
+  }
+}
+
+/**
+ * The profile id the gateway knows this socket by (`users.self`, upstream
+ * server-methods/users.ts: `{ profile: { id, … } }`), asked once per connection.
+ * Null when it cannot be read — the claim then stays unproven, never assumed.
+ */
+async function ownProfileId(conn: OpenClawConnection): Promise<string | null> {
+  if (typeof conn.selfProfileId === "string") return conn.selfProfileId;
+  try {
+    const res = await conn.request("users.self", {}, 10_000);
+    const profile = (res.payload as { profile?: { id?: unknown } } | undefined)?.profile;
+    const id = typeof profile?.id === "string" && profile.id.length > 0 ? profile.id : null;
+    if (id !== null) conn.selfProfileId = id;
+    return id;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The profile that CREATED a described session, or null when a profile did not
+ * (the system, an agent, a channel identity, or no creator recorded). Shape as
+ * projected on the session row (upstream session-utils-row.ts `createdActor`,
+ * session-identity-projection.ts projectSessionActor) and captured live on
+ * 2026.9.6: `{ type: "human", id, identity: { type: "profile", id } }`.
+ */
+export function createdByProfile(session: unknown): string | null {
+  const actor = (session as { createdActor?: unknown } | null)?.createdActor as
+    | { type?: unknown; identity?: { type?: unknown; id?: unknown } }
+    | undefined;
+  if (actor?.type !== "human" || actor.identity?.type !== "profile") return null;
+  const id = actor.identity.id;
+  return typeof id === "string" && id.length > 0 ? id : null;
 }
 
 /**
@@ -2266,6 +2802,18 @@ async function resolveGatewayMentions(
   // A shared-token gateway has ONE profile for everybody: there is nobody to
   // name, and asking would only produce a refusal.
   if (config?.openclawAuthMode !== "trusted-proxy") return [];
+  // An instance that names people by EMAIL (Convex then sends `gatewayUser`) gives
+  // each profile the address's LOCAL PART as its label (upstream
+  // state/user-profile-email.kernel.ts ensureProfileForEmailInDatabase), and the
+  // mentionable listing carries labels only. `alice@a.org` and `alice@b.org` both
+  // read "alice": a label match could name the wrong person — worse still when the
+  // one meant has no profile yet. Nothing is forwarded there.
+  if (body.gatewayUser !== undefined) {
+    console.log(
+      `[mentions] chat=${body.chatId} not forwarded — this instance names people by email, which a label cannot tell apart`,
+    );
+    return [];
+  }
   let mentionable: unknown;
   try {
     const res = await conn.request("users.mentionable", { sessionKey }, 10_000);
@@ -6349,19 +6897,21 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
       // custom `outboundAgentMount` loses every child delivery (the exact defect
       // the child lane exists to fix, on any non-default mount).
       session.noteOutboundMount(deliveryDir);
-      await performSend(
-        session,
-        body,
-        bundle.writer,
-        inboundCfg,
-        deliveryDir,
-        {
-          gatewayVersionFallback: bundle.config.gatewayVersionFallback ?? null,
-          attachmentFixAttested: bundle.config.attachmentFixAttested === true,
-        },
-        sendReceivedMs,
-        bundle.config,
-      );
+      const sendOnce = () =>
+        performSend(
+          session,
+          body,
+          bundle.writer,
+          inboundCfg,
+          deliveryDir,
+          {
+            gatewayVersionFallback: bundle.config.gatewayVersionFallback ?? null,
+            attachmentFixAttested: bundle.config.attachmentFixAttested === true,
+          },
+          sendReceivedMs,
+          bundle.config,
+        );
+      await withOneRePreparation(sendOnce, body.chatId);
       // A real send proves connection + the ROUTED agent answered.
       health.recordOk(targetRef(body.agentId, body.canonical, sendInstance));
       sendJson(res, 200, { ok: true });

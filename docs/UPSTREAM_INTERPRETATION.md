@@ -836,7 +836,7 @@ a durable surface the Control UI does not have.
 ### Atrium behavior and verdict
 
 - Bridge derivation: `webchat-<sha256(sessionKey|clientMessageId)>`
-  (`bridge/src/providers/openclaw/openclaw-client.ts:1111-1122`), stable across Convex's at-least-once
+  (`bridge/src/providers/openclaw/openclaw-client.ts:1175-1185`), stable across Convex's at-least-once
   dispatch — this **exploits the upstream window correctly** (re-POSTs
   replay/`in_flight` while the run is active, since active entries outlive
   the TTL).

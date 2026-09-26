@@ -28,10 +28,23 @@ import {
 } from "./_generated/server";
 import { internal } from "./_generated/api";
 import type { Doc, Id } from "./_generated/dataModel";
-import { requireActive, requireReachableChat } from "./lib/access";
+import { getProfile, requireActive, requireReachableChat, roleOf } from "./lib/access";
+import {
+  ROSTER_READ_WINDOW,
+  canPost,
+  chatParticipantRows,
+  currentParticipations,
+  memberRoleOf,
+  ownerIsActive,
+} from "./lib/chatAccess";
 import { chatAllowsInstance } from "./lib/ingestAuthz";
 import { resolveBridgeUrlForDispatch } from "./lib/bridgeRouting";
-import { resolveGatewayUser, resolveTargetForChat } from "./routing";
+import {
+  resolveGatewayUser,
+  resolveTargetForChat,
+  resolveTargetForTurn,
+} from "./routing";
+import { isConversationAgent } from "./chatAgents";
 import { writeTraceEvent } from "./observability";
 import { notifyUser } from "./notifications";
 import {
@@ -132,24 +145,67 @@ function boundedDeadline(now: number, expiresAt: number | undefined): number {
 /** The request's notification, gone with it (a cascade): a bell entry linking to a
  *  deleted conversation, unread forever, is worse than none (codex P3). */
 async function deleteNotification(ctx: MutationCtx, row: Doc<"agentRequests">) {
-  const note = await ctx.db
-    .query("notifications")
-    .withIndex("by_user_dedupe", (q) =>
-      q.eq("userId", row.userId).eq("dedupeKey", `agent_request:${String(row._id)}`),
-    )
-    .first();
-  if (note !== null) await ctx.db.delete(note._id);
+  for (const note of await requestNotifications(ctx, row)) await ctx.db.delete(note._id);
 }
 
 async function clearNotification(ctx: MutationCtx, row: Doc<"agentRequests">) {
-  const note = await ctx.db
+  for (const note of await requestNotifications(ctx, row)) {
+    if (note.readAt === undefined) await ctx.db.patch(note._id, { readAt: Date.now() });
+  }
+}
+
+/**
+ * Every bell entry a request rang: the owner's, and the participants' who could
+ * answer it (notifyAnswerers). Found by the request's own key, NOT over the room as
+ * it is now: someone who left since (or whose seat a deletion already swept) must
+ * not keep an unread entry linking to a conversation they can no longer open.
+ * Bounded: one entry per person rung — the owner plus every seat notifyAnswerers
+ * can read (ROSTER_READ_WINDOW, which a room already above the limit may fill).
+ */
+async function requestNotifications(
+  ctx: MutationCtx,
+  row: Doc<"agentRequests">,
+): Promise<Doc<"notifications">[]> {
+  return await ctx.db
     .query("notifications")
-    .withIndex("by_user_dedupe", (q) =>
-      q.eq("userId", row.userId).eq("dedupeKey", `agent_request:${String(row._id)}`),
-    )
-    .first();
-  if (note !== null && note.readAt === undefined) {
-    await ctx.db.patch(note._id, { readAt: Date.now() });
+    .withIndex("by_dedupe", (q) => q.eq("dedupeKey", `agent_request:${String(row._id)}`))
+    .take(ROSTER_READ_WINDOW + 1);
+}
+
+/**
+ * Ring the participants who may ANSWER a question: those who can post (not a
+ * viewer), for an agent they may still address on the owner's delegation — the
+ * rule `listForChat.canAnswer` and `prepareAnswer` apply. Approvals and credentials
+ * act with the owner's authority and ring the owner only.
+ */
+async function notifyAnswerers(
+  ctx: MutationCtx,
+  chat: Doc<"chats">,
+  row: Pick<Doc<"agentRequests">, "_id" | "kind" | "instanceName" | "agentId">,
+): Promise<void> {
+  if (row.kind !== "question") return;
+  if (!(await guestMayAddress(ctx, chat, row))) return;
+  // The EFFECTIVE role, not the stored one: with its owner no longer active, every
+  // seat of the room acts as a viewer (resolveChatAccess) — nobody there may answer.
+  // Judged once for the room, not per seat.
+  if (!(await ownerIsActive(ctx, chat.userId))) return;
+  for (const p of await chatParticipantRows(ctx, chat._id)) {
+    if (memberRoleOf(p) === "viewer") continue;
+    // A seat can outlive its account: a deleted person's seats wait for their sweep
+    // (admin.sweepDeletedUserRoomState), and a pending one may not answer anything.
+    // Only an ACTIVE account is rung.
+    if (roleOf(await getProfile(ctx, p.userId)) === "pending") continue;
+    await notifyUser(ctx, {
+      userId: p.userId,
+      kind: "agent_request",
+      title: "Un agent attend une réponse",
+      body: chat.title ?? "",
+      messageKey: "notif_agent_request_question",
+      params: { chat: chat.title ?? "" },
+      href: `/chat/${String(chat._id)}`,
+      dedupeKey: `agent_request:${String(row._id)}`,
+      chatId: chat._id,
+    });
   }
 }
 
@@ -429,6 +485,13 @@ export const upsertFromBridge = internalMutation({
       params: { chat: chat.title ?? "" },
       href: `/chat/${String(args.chatId)}`,
       dedupeKey: `agent_request:${String(id)}`,
+      chatId: args.chatId,
+    });
+    await notifyAnswerers(ctx, chat, {
+      _id: id,
+      kind,
+      instanceName: args.boundInstanceName,
+      ...(args.agentId !== undefined ? { agentId: args.agentId.slice(0, 128) } : {}),
     });
     await trace(ctx, args.chatId, {
       phase: "requested",
@@ -586,6 +649,28 @@ type PreparedAnswer = {
 };
 
 /**
+ * May a GUEST steer the agent behind this request: the agent is one of the room's
+ * NOW, and the owner — whose delegation a guest speaks on — may still use it NOW.
+ * The same two rules a guest's send is held to (send.ts, bridge.ts
+ * senderRefusalAtDispatch).
+ */
+async function guestMayAddress(
+  ctx: QueryCtx | MutationCtx,
+  chat: Doc<"chats">,
+  row: Pick<Doc<"agentRequests">, "instanceName" | "agentId">,
+): Promise<boolean> {
+  // The agent the REQUEST names — never the chat's primary as a stand-in: in a
+  // room of several agents the primary is not necessarily the one asking, and
+  // judging the wrong one would let a guest answer an agent that left the room.
+  // A request that names no agent (older rows) is the owner's to answer.
+  const agentId = row.agentId;
+  if (!agentId) return false;
+  const ref = { instanceName: row.instanceName, agentId };
+  if (!(await isConversationAgent(ctx, chat, ref))) return false;
+  return (await resolveTargetForTurn(ctx, chat, chat.userId, ref)).target !== null;
+}
+
+/**
  * Access, freshness and answer rules, then `pending → submitting`. The ACTION holds
  * the secret; this mutation never sees one.
  */
@@ -602,11 +687,25 @@ export const prepareAnswer = internalMutation({
     const { userId, impersonating } = await requireActive(ctx);
     const row = await ctx.db.get(args.requestId);
     if (row === null) throw new Error("AGENT_REQUEST_NOT_FOUND");
-    const { chat, role } = await requireReachableChat(ctx, userId, row.chatId);
+    const access = await requireReachableChat(ctx, userId, row.chatId);
+    const { chat, role } = access;
     // A participant may answer a QUESTION — that is conversation. An approval or a
     // credential acts with the owner's authority on the owner's gateway session.
     if (row.kind !== "question" && role !== "owner") {
       throw new Error("AGENT_REQUEST_OWNER_ONLY");
+    }
+    // …and only a participant who may SPEAK: a viewer follows the conversation,
+    // and an answer steers the agent exactly like a message would.
+    if (!canPost(access)) {
+      throw new Error("AGENT_REQUEST_READ_ONLY");
+    }
+    // …and only toward an agent the room still holds, on the owner's delegation:
+    // answering steers the agent like a message does, so the same rules as a guest's
+    // send apply (send.ts) — the agent is in the room NOW and the owner may still
+    // use it NOW. The POST follows this mutation directly (answerAgentRequest), with
+    // nothing slow in between, so this check is also the last one.
+    if (role === "participant" && !(await guestMayAddress(ctx, chat, row))) {
+      throw new Error("AGENT_REQUEST_AGENT_NOT_IN_ROOM");
     }
     // An administrator looking through a person's account may talk in their place
     // (the send path allows it), but never authorise a command or hand over a
@@ -998,7 +1097,8 @@ export const listForChat = query({
   args: { chatId: v.id("chats") },
   handler: async (ctx, { chatId }) => {
     const { userId } = await requireActive(ctx);
-    const { role } = await requireReachableChat(ctx, userId, chatId);
+    const access = await requireReachableChat(ctx, userId, chatId);
+    const { role } = access;
     const recent = await ctx.db
       .query("agentRequests")
       .withIndex("by_chat_and_created", (q) => q.eq("chatId", chatId))
@@ -1034,6 +1134,21 @@ export const listForChat = query({
       }
       return label;
     };
+    // A guest answers only toward an agent they may still address (guestMayAddress),
+    // judged once per distinct agent.
+    const reachable = new Map<string, boolean>();
+    const guestReaches = async (r: Doc<"agentRequests">): Promise<boolean> => {
+      if (role === "owner") return true;
+      const key = `${r.instanceName}\u0000${r.agentId ?? ""}`;
+      let ok = reachable.get(key);
+      if (ok === undefined) {
+        ok = await guestMayAddress(ctx, access.chat, r);
+        reachable.set(key, ok);
+      }
+      return ok;
+    };
+    const mayReach = new Map<Id<"agentRequests">, boolean>();
+    for (const r of rows) mayReach.set(r._id, await guestReaches(r));
     return rows.map((r) => ({
       _id: r._id,
       messageId: r.messageId ?? null,
@@ -1056,12 +1171,22 @@ export const listForChat = query({
       decision: r.decision ?? null,
       failureCode: r.failureCode ?? null,
       /** Whether THIS reader may answer (a participant answers questions only). */
-      canAnswer: r.kind === "question" || role === "owner",
+      canAnswer:
+        canPost(access) &&
+        (r.kind === "question" || role === "owner") &&
+        mayReach.get(r._id) === true,
     }));
   },
 });
 
-/** Which of my conversations have an agent waiting on me — the sidebar badge. */
+/** Which of my conversations have an agent waiting on me — the sidebar badge: my
+ *  own conversations' open requests, and the questions I may answer in the
+ *  conversations I take part in. */
+/** Requests read, in total, to badge the rooms a person takes part in. */
+export const GUEST_BADGE_READ_BUDGET = 400;
+/** …and at most this many per room (a badge is a count). */
+const GUEST_BADGE_PER_ROOM = 20;
+
 export const pendingByChat = query({
   args: {},
   handler: async (ctx) => {
@@ -1080,6 +1205,62 @@ export const pendingByChat = query({
       if (!cur.kinds.includes(r.kind)) cur.kinds.push(r.kind);
       cur.soonestExpiry = Math.min(cur.soonestExpiry, r.expiresAt);
       byChat.set(key, cur);
+    }
+    // …and the conversations I TAKE PART IN. Their requests are indexed on the
+    // owner, so the range above never sees them — yet a member or manager may
+    // answer a QUESTION there, toward an agent they may still address (the same
+    // rule as listForChat's canAnswer). Approvals and credentials stay the owner's,
+    // and a viewer answers nothing: neither is counted. ONE read budget for the
+    // whole scan (GUEST_BADGE_READ_BUDGET), a few rows per room — a badge needs a
+    // count, not the list — so many busy rooms cannot push the query past its
+    // limits and take every badge of the sidebar down. Past the budget, the rest
+    // show no badge (fail open: the conversation still shows its questions).
+    let budget = GUEST_BADGE_READ_BUDGET;
+    // The effective role again: a room whose owner is no longer active makes every
+    // seat a viewer. One profile read per distinct owner, only for rooms with a
+    // question to count.
+    const activeOwners = new Map<string, boolean>();
+    for (const membership of await currentParticipations(ctx, userId)) {
+      if (budget <= 0) break;
+      if (memberRoleOf(membership) === "viewer") continue;
+      const open = await ctx.db
+        .query("agentRequests")
+        .withIndex("by_chat_and_status", (q) =>
+          q.eq("chatId", membership.chatId).eq("status", "pending"),
+        )
+        .take(Math.min(GUEST_BADGE_PER_ROOM, budget));
+      budget -= open.length;
+      const questions = open.filter((r) => r.kind === "question" && r.expiresAt > now);
+      if (questions.length === 0) continue;
+      const chat = await ctx.db.get(membership.chatId);
+      if (chat === null || chat.userId === userId) continue;
+      let ownerActive = activeOwners.get(String(chat.userId));
+      if (ownerActive === undefined) {
+        ownerActive = await ownerIsActive(ctx, chat.userId);
+        activeOwners.set(String(chat.userId), ownerActive);
+      }
+      if (!ownerActive) continue;
+      const reachable = new Map<string, boolean>();
+      for (const r of questions) {
+        const agentKey = `${r.instanceName}\u0000${r.agentId ?? ""}`;
+        let ok = reachable.get(agentKey);
+        if (ok === undefined) {
+          ok = await guestMayAddress(ctx, chat, r);
+          reachable.set(agentKey, ok);
+        }
+        if (!ok) continue;
+        const key = String(r.chatId);
+        const cur = byChat.get(key) ?? {
+          chatId: r.chatId,
+          count: 0,
+          kinds: [],
+          soonestExpiry: r.expiresAt,
+        };
+        cur.count += 1;
+        if (!cur.kinds.includes(r.kind)) cur.kinds.push(r.kind);
+        cur.soonestExpiry = Math.min(cur.soonestExpiry, r.expiresAt);
+        byChat.set(key, cur);
+      }
     }
     return [...byChat.values()];
   },
@@ -1136,20 +1317,30 @@ export const reapExpired = internalMutation({
 export async function deleteChatAgentRequests(
   ctx: MutationCtx,
   chatId: Id<"chats">,
-): Promise<void> {
+  // A caller with its OWN budget and continuation (chats.sweepDeletedChat) takes
+  // at most `limit` requests and is told whether more remain; without it, this
+  // schedules its own continuation.
+  limit?: number,
+): Promise<boolean> {
   const rows = await ctx.db
     .query("agentRequests")
     .withIndex("by_chat_and_created", (q) => q.eq("chatId", chatId))
-    .take(CASCADE_BATCH);
+    .take(limit ?? CASCADE_BATCH);
   for (const r of rows) {
     await deleteNotification(ctx, r);
     await ctx.db.delete(r._id);
   }
+  if (limit !== undefined) return rows.length === limit;
   // One transaction has read/write limits: the rest goes in its own (codex P2).
   if (rows.length === CASCADE_BATCH) {
     await ctx.scheduler.runAfter(0, internal.agentRequests.deleteAgentRequestsStep, { chatId });
   }
+  return false;
 }
+
+/** Reads one request costs `deleteChatAgentRequests`: the row, and its bell entries
+ *  (requestNotifications' window). */
+export const AGENT_REQUEST_DELETE_READS = ROSTER_READ_WINDOW + 2;
 
 /** A provider id's family: questions (and credentials) vs approvals — the two may
  *  carry the same id, and are never the same request (codex P2). */

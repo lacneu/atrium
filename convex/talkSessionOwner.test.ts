@@ -2415,6 +2415,15 @@ describe("every way of switching agent is covered, not just the declared one", (
         addedAt: 1,
         addedBy: userId,
       });
+      // bob is in the ROOM: a guest may only address the conversation's agents
+      // (convex/chatAgents.ts), and this case is about the call freeze, not that.
+      await ctx.db.insert("chatAgents", {
+        chatId,
+        instanceName: "lacneu",
+        agentId: "bob",
+        addedBy: userId,
+        addedAt: 1,
+      });
       return id;
     });
     const bridge = stubBridge(RELAYED_BRIDGE_ANSWER);

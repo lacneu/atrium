@@ -59,6 +59,8 @@ import {
   KeyRound,
   MessageCircleQuestion,
   ShieldCheck,
+  LogOut,
+  Users,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
@@ -74,6 +76,7 @@ import { FolderTreePicker } from "./FolderTreePicker";
 import { Input } from "@/components/ui/input";
 import { useConfirm, usePrompt } from "@/components/ConfirmDialog";
 import { api } from "./convexApi";
+import "./chatParticipants.css";
 import type { Id } from "./convexApi";
 import { relativeAge } from "./relativeAge";
 import { m } from "@/paraglide/messages.js";
@@ -94,6 +97,8 @@ const projDropId = (pid: string) => `project:${pid}`;
 const PROJ_HEAD = "projhead:";
 const projHeadId = (pid: string) => `${PROJ_HEAD}${pid}`;
 const COLLAPSE_KEY = "oc.noproject.collapsed";
+// The "shared with me" section's fold, per browser like the one above.
+const SHARED_COLLAPSE_KEY = "oc.shared.collapsed";
 
 export type ChatRow = {
   _id: Id<"chats">;
@@ -113,6 +118,15 @@ export type ChatRow = {
   // narrowed their set) -> READ-ONLY. Marks the row with a lock so the user
   // understands why that chat can't be sent to.
   readOnly: boolean;
+  // "participant": somebody else's conversation this user was added to. It has
+  // no folder, colour or manual order of its own here — those are the owner's.
+  role: "owner" | "participant";
+  // Whose conversation it is (guest rows only).
+  ownerName: string | null;
+  // Other people or other agents are in it (either role) — the row's group mark.
+  group: boolean;
+  // A guest row the reader hid from their sidebar: kept apart, folded, restorable.
+  sidebarHidden?: boolean;
 };
 type Project = {
   _id: Id<"projects">;
@@ -303,7 +317,12 @@ export function ChatSidebar({
   useEffect(() => {
     if (!pendingRef.current && chats) setBuffer(chats);
   }, [chats]);
-  const rows = buffer ?? chats ?? [];
+  const allRows = buffer ?? chats ?? [];
+  // A GUEST row the reader hid lives in its own folded list (hiddenShared), never in
+  // the working set — and never nowhere: it has no folder, and search reads only
+  // one's own chats, so this is its only way back.
+  const rows = allRows.filter((c) => c.sidebarHidden !== true);
+  const hiddenShared = allRows.filter((c) => c.sidebarHidden === true);
   // First load: the query hasn't resolved AND nothing is buffered yet -> show a
   // skeleton list instead of an empty pane, so the sidebar takes shape immediately.
   const isLoading = chats === undefined && buffer === null;
@@ -312,6 +331,15 @@ export function ChatSidebar({
   const [noProjectCollapsed, setNoProjectCollapsed] = useState(
     () => localStorage.getItem(COLLAPSE_KEY) === "1",
   );
+  const [sharedCollapsed, setSharedCollapsed] = useState(
+    () => localStorage.getItem(SHARED_COLLAPSE_KEY) === "1",
+  );
+  function toggleShared() {
+    setSharedCollapsed((c) => {
+      localStorage.setItem(SHARED_COLLAPSE_KEY, c ? "0" : "1");
+      return !c;
+    });
+  }
   function toggleNoProject() {
     setNoProjectCollapsed((c) => {
       localStorage.setItem(COLLAPSE_KEY, c ? "0" : "1");
@@ -392,7 +420,12 @@ export function ChatSidebar({
   }, []);
 
   const pinned = rows.filter((c) => c.pinned);
-  const unpinned = rows.filter((c) => !c.pinned);
+  // A guest's conversations live in their OWN section, out of the reader's
+  // organisation: a person with a carefully foldered sidebar gets one quiet,
+  // foldable group instead of other people's chats mixed into theirs. A guest
+  // may still PIN one — then it joins their pinned list like any other.
+  const shared = rows.filter((c) => !c.pinned && c.role === "participant");
+  const unpinned = rows.filter((c) => !c.pinned && c.role !== "participant");
   const byProject = (pid: string | null) =>
     unpinned.filter((c) => (c.projectId ?? null) === pid);
 
@@ -489,6 +522,9 @@ export function ChatSidebar({
 
     const moved = findChat(activeId);
     if (!moved) return;
+    // A guest cannot file or reorder somebody else's conversation (the server
+    // refuses both); its section is ordered by recency.
+    if (moved.role === "participant") return;
 
     // Case 1: dropped onto a section container (assign to project). A drop on
     // a folder HEADER counts as dropping into that folder.
@@ -834,6 +870,38 @@ export function ChatSidebar({
                 ))}
               </DropdownMenuContent>
             </DropdownMenu>
+          ) : null}
+
+          {shared.length > 0 || hiddenShared.length > 0 ? (
+            <Section
+              label={m.sidebar_shared()}
+              chats={shared}
+              collapsible
+              collapsed={sharedCollapsed}
+              busy={shared.some((c) => busyIds.has(c._id))}
+              unread={shared.some((c) => unreadIds.has(c._id))}
+              onToggle={toggleShared}
+            >
+              {!sharedCollapsed
+                ? shared.map((c) => (
+                    <ChatItem
+                      key={c._id}
+                      chat={c}
+                      active={c._id === activeChatId}
+                      unread={unreadIds.has(c._id)}
+                      busy={busyIds.has(c._id)}
+                      bookmarked={bookmarkedIds.has(c._id)}
+                      referenceLabel={referenceLabel}
+                      ageTick={minuteTick}
+                      suppressClick={suppressClickRef}
+                      onSelect={onSelect}
+                    />
+                  ))
+                : null}
+              {!sharedCollapsed && hiddenShared.length > 0 ? (
+                <HiddenShared chats={hiddenShared} />
+              ) : null}
+            </Section>
           ) : null}
 
           <Section
@@ -1363,6 +1431,11 @@ const ChatItem = memo(function ChatItem({
   const setColor = useMutation(api.chats.setChatColor);
   const moveToProject = useMutation(api.chats.moveChatToProject);
   const setChatSidebar = useMutation(api.chats.setChatSidebar);
+  const leaveChat = useMutation(api.chatParticipants.leaveChat);
+  // Somebody else's conversation: the reader may pin it, take it off their
+  // sidebar or leave it — the owner's own actions (rename, file, colour, export,
+  // delete) are not offered, since the server refuses them.
+  const isGuest = chat.role === "participant";
   const locateNavigate = useNavigate();
   // "Move to..." tree picker (menu item) — reaches SUB-folders, which the
   // drag&drop can't (only root sections render in the sidebar).
@@ -1459,9 +1532,23 @@ const ChatItem = memo(function ChatItem({
           }}
         >
           <span className="oc-chatitem__title">
+            {chat.group ? (
+              // Other people or other agents are in this conversation. Quiet on
+              // purpose: a mark on the row, not a colour that competes with the
+              // reader's own.
+              <Users
+                className="oc-chatitem__group"
+                size={12}
+                aria-label={m.sidebar_group_title()}
+              />
+            ) : null}
             {chat.title || m.sidebar_untitled()}
           </span>
-          {domainLabel ? (
+          {chat.role === "participant" && chat.ownerName ? (
+            <span className="oc-chatitem__domain">
+              {m.sidebar_shared_by({ name: chat.ownerName })}
+            </span>
+          ) : domainLabel ? (
             // The chat's sub-folder ("domain") — the flattened working-set
             // section still situates deep conversations at a glance.
             <span className="oc-chatitem__domain">{domainLabel}</span>
@@ -1541,6 +1628,7 @@ const ChatItem = memo(function ChatItem({
             className="w-48"
             onClick={(e) => e.stopPropagation()}
           >
+            {isGuest ? null : (
             <DropdownMenuItem
               onSelect={() => {
                 setRenameValue(chat.title ?? "");
@@ -1549,7 +1637,8 @@ const ChatItem = memo(function ChatItem({
             >
               <Pencil /> {m.sidebar_rename()}
             </DropdownMenuItem>
-            {archive ? (
+            )}
+            {archive && !isGuest ? (
               <DropdownMenuItem
                 disabled={archive.state.running}
                 onSelect={() =>
@@ -1565,15 +1654,22 @@ const ChatItem = memo(function ChatItem({
               {chat.pinned ? <PinOff /> : <Pin />}
               {chat.pinned ? m.sidebar_unpin() : m.sidebar_pin()}
             </DropdownMenuItem>
-            <DropdownMenuItem
-              onSelect={copyReference}
-              disabled={referenceLabel === undefined}
-            >
-              <Link2 /> {m.sidebar_copy_reference()}
-            </DropdownMenuItem>
+            {/* A reference resolves only for the conversation's OWNER
+                (chatExport.exportByReference): a guest pasting it would get
+                raw text, not the conversation. */}
+            {isGuest ? null : (
+              <DropdownMenuItem
+                onSelect={copyReference}
+                disabled={referenceLabel === undefined}
+              >
+                <Link2 /> {m.sidebar_copy_reference()}
+              </DropdownMenuItem>
+            )}
+            {isGuest ? null : (
             <DropdownMenuItem onSelect={() => setMoveOpen(true)}>
               <FolderOpen /> {m.sidebar_move_to_folder()}
             </DropdownMenuItem>
+            )}
             {chat.projectId !== null ? (
               // Locate this chat in the folder view: opens ITS folder's page
               // with the row highlighted (?c=) — the fast answer to "where
@@ -1604,6 +1700,18 @@ const ChatItem = memo(function ChatItem({
               </DropdownMenuItem>
             ) : null}
 
+            {isGuest ? (
+              <>
+                <DropdownMenuSeparator />
+                <DropdownMenuItem
+                  variant="destructive"
+                  onSelect={() => void leaveChat({ chatId: chat._id })}
+                >
+                  <LogOut /> {m.participants_leave()}
+                </DropdownMenuItem>
+              </>
+            ) : (
+            <>
             <DropdownMenuLabel>{m.sidebar_color()}</DropdownMenuLabel>
             <div className="oc-colorgrid" onClick={(e) => e.stopPropagation()}>
               <button
@@ -1648,6 +1756,8 @@ const ChatItem = memo(function ChatItem({
             >
               <Trash2 /> {m.sidebar_delete()}
             </DropdownMenuItem>
+            </>
+            )}
           </DropdownMenuContent>
         </DropdownMenu>
       </div>
@@ -1687,3 +1797,43 @@ const ChatItem = memo(function ChatItem({
     </>
   );
 });
+
+/**
+ * The shared conversations the reader hid from their sidebar, folded under one
+ * line — each can be shown again. Kept because a guest row has no folder and search
+ * reads only one's own chats: without this, a hidden shared conversation would be
+ * unreachable from the interface.
+ */
+function HiddenShared({ chats }: { chats: ChatRow[] }) {
+  const [open, setOpen] = useState(false);
+  const setChatSidebar = useMutation(api.chats.setChatSidebar);
+  return (
+    <div className="oc-hiddenshared">
+      <button
+        type="button"
+        className="oc-hiddenshared__toggle"
+        aria-expanded={open}
+        onClick={() => setOpen((o) => !o)}
+      >
+        {open ? <ChevronDown size={12} aria-hidden /> : <ChevronRight size={12} aria-hidden />}
+        {m.sidebar_shared_hidden({ count: chats.length })}
+      </button>
+      {open ? (
+        <ul className="oc-hiddenshared__list">
+          {chats.map((c) => (
+            <li key={c._id} className="oc-hiddenshared__row">
+              <span className="oc-hiddenshared__title">{c.title ?? m.sidebar_chats()}</span>
+              <button
+                type="button"
+                className="oc-hiddenshared__show"
+                onClick={() => void setChatSidebar({ chatId: c._id, hidden: false })}
+              >
+                {m.sidebar_shared_show_again()}
+              </button>
+            </li>
+          ))}
+        </ul>
+      ) : null}
+    </div>
+  );
+}

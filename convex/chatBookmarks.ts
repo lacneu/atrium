@@ -13,7 +13,7 @@ import { v } from "convex/values";
 import { mutation, query } from "./_generated/server";
 import type { MutationCtx, QueryCtx } from "./_generated/server";
 import type { Id } from "./_generated/dataModel";
-import { canReachChat } from "./lib/chatAccess";
+import { canReachChat, chatParticipantRows } from "./lib/chatAccess";
 import { requireActive } from "./lib/access";
 
 // Hard cap per (user, chat): far above real usage, keeps every read bounded.
@@ -226,6 +226,25 @@ export const setActiveBookmark = mutation({
  *  message-deletion paths (manual truncate + the auto-retry that drops an
  *  empty error card) so no deletion leaves orphaned rows. */
 export async function purgeBookmarksForMessages(
+  ctx: MutationCtx,
+  chatId: Id<"chats">,
+  messageIds: ReadonlySet<string>,
+): Promise<void> {
+  // EVERY person of the room: a bookmark is per viewer, and a participant's
+  // anchored to a deleted turn would point at nothing (and keep its active
+  // pointer). Bounded — the owner plus at most MAX_CHAT_PARTICIPANTS.
+  const chat = await ctx.db.get(chatId);
+  if (chat === null) return;
+  const people = [
+    chat.userId,
+    ...(await chatParticipantRows(ctx, chatId)).map((r) => r.userId),
+  ];
+  for (const userId of people) {
+    await purgeUserBookmarksForMessages(ctx, userId, chatId, messageIds);
+  }
+}
+
+async function purgeUserBookmarksForMessages(
   ctx: MutationCtx,
   userId: Id<"users">,
   chatId: Id<"chats">,

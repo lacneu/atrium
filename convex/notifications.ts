@@ -17,10 +17,10 @@ import {
   mutation,
   query,
 } from "./_generated/server";
-import type { MutationCtx } from "./_generated/server";
+import type { MutationCtx, QueryCtx } from "./_generated/server";
 import { internal } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
-import { getActor } from "./lib/access";
+import { getActor, getProfile, roleOf, type Actor } from "./lib/access";
 import {
   loadSignedAnnouncementConfig,
   verifyMailboxResponse,
@@ -36,7 +36,8 @@ type NotifKind =
   | "curation"
   | "operator_announcement"
   | "mention"
-  | "agent_request";
+  | "agent_request"
+  | "chat_added";
 
 const FEED_LIMIT = 50;
 // Bulk read/clear process at most this many rows per transaction, then SELF-
@@ -67,6 +68,8 @@ export async function notifyUser(
     params?: Record<string, string>;
     href?: string;
     dedupeKey?: string;
+    /** The conversation this entry is about, for a conversation-bound kind. */
+    chatId?: Id<"chats">;
     // Override the row's timestamp (e.g. a backfill replaying a past event at its
     // ORIGINAL time). Defaults to now. Note: feed ordering is by _creationTime,
     // so a backfilled row still surfaces at the top — this only fixes its label.
@@ -93,10 +96,128 @@ export async function notifyUser(
     body: args.body,
     href: args.href,
     dedupeKey: args.dedupeKey,
+    ...(args.chatId !== undefined ? { chatId: args.chatId } : {}),
     createdAt: args.createdAt ?? Date.now(),
     expiresAt: args.expiresAt,
   });
 }
+
+/**
+ * Withdraw the entries ONE event rang (its `dedupeKey`), for everyone it rang or
+ * only for `userId`. For the group events whose resource can go away while the
+ * entry is still unread: a seat (`chat_added:<membershipId>`) and a queued or
+ * deleted message (`mention:<messageId>`) — left behind, the bell keeps linking to
+ * a conversation the person was taken out of, or naming them in words that no
+ * longer exist. Bounded: an event rings at most a room's worth of people.
+ */
+export async function withdrawNotifications(
+  ctx: MutationCtx,
+  dedupeKey: string,
+  userId?: Id<"users">,
+): Promise<void> {
+  const rows = await ctx.db
+    .query("notifications")
+    .withIndex("by_dedupe", (q) => q.eq("dedupeKey", dedupeKey))
+    .take(WITHDRAW_LIMIT);
+  for (const r of rows) {
+    if (userId === undefined || r.userId === userId) await ctx.db.delete(r._id);
+  }
+}
+
+/** One event's entries: the owner plus a full room, with room to spare. */
+const WITHDRAW_LIMIT = 64;
+
+/** Entries removed per transaction when a person is revoked from a conversation. */
+const CHAT_WITHDRAW_BATCH = 200;
+
+/**
+ * Withdraw what a conversation rang `userId` for — every kind, or only `kind` —
+ * when their standing in it ends (removed, left) or no longer lets them act
+ * (made viewer: an agent's question is not theirs to answer any more). Left
+ * behind, a `mention` links to a conversation they may no longer open, an
+ * `agent_request` asks for an answer they can no longer give.
+ *
+ * Found by `chatId`, which only entries written since it exists carry; older
+ * ones are reached by their event key (withdrawNotifications) where the caller
+ * knows it. BOUNDED per transaction; a longer history continues in scheduled
+ * batches, limited to the entries that existed NOW (the newest one's
+ * `_creationTime`), so a re-invitation meanwhile keeps what it rings.
+ */
+export async function withdrawChatNotifications(
+  ctx: MutationCtx,
+  userId: Id<"users">,
+  chatId: Id<"chats">,
+  kind?: "agent_request",
+): Promise<void> {
+  // The newest entry OF THE RANGE withdrawn (the whole conversation, or one kind
+  // of it) — the generation boundary for the batches that may follow.
+  const newest =
+    kind === undefined
+      ? await ctx.db
+          .query("notifications")
+          .withIndex("by_user_chat", (q) => q.eq("userId", userId).eq("chatId", chatId))
+          .order("desc")
+          .first()
+      : await ctx.db
+          .query("notifications")
+          .withIndex("by_user_chat_kind", (q) =>
+            q.eq("userId", userId).eq("chatId", chatId).eq("kind", kind),
+          )
+          .order("desc")
+          .first();
+  if (newest === null) return;
+  await withdrawChatNotificationsBatch(ctx, userId, chatId, newest._creationTime, kind);
+}
+
+async function withdrawChatNotificationsBatch(
+  ctx: MutationCtx,
+  userId: Id<"users">,
+  chatId: Id<"chats">,
+  cutoff: number,
+  kind: "agent_request" | undefined,
+): Promise<void> {
+  // A RANGE either way — for one kind, its own index, so the entries of other
+  // kinds are never read (thousands of old mentions cannot exhaust the budget).
+  const rows =
+    kind === undefined
+      ? await ctx.db
+          .query("notifications")
+          .withIndex("by_user_chat", (q) =>
+            q.eq("userId", userId).eq("chatId", chatId).lte("_creationTime", cutoff),
+          )
+          .take(CHAT_WITHDRAW_BATCH)
+      : await ctx.db
+          .query("notifications")
+          .withIndex("by_user_chat_kind", (q) =>
+            q
+              .eq("userId", userId)
+              .eq("chatId", chatId)
+              .eq("kind", kind)
+              .lte("_creationTime", cutoff),
+          )
+          .take(CHAT_WITHDRAW_BATCH);
+  for (const r of rows) await ctx.db.delete(r._id);
+  if (rows.length === CHAT_WITHDRAW_BATCH) {
+    await ctx.scheduler.runAfter(0, internal.notifications.withdrawChatNotificationsStep, {
+      userId,
+      chatId,
+      cutoff,
+      ...(kind !== undefined ? { kind } : {}),
+    });
+  }
+}
+
+export const withdrawChatNotificationsStep = internalMutation({
+  args: {
+    userId: v.id("users"),
+    chatId: v.id("chats"),
+    cutoff: v.number(),
+    kind: v.optional(v.literal("agent_request")),
+  },
+  handler: async (ctx, { userId, chatId, cutoff, kind }) => {
+    await withdrawChatNotificationsBatch(ctx, userId, chatId, cutoff, kind);
+  },
+});
 
 /** Paginated admin fan-out — SCHEDULED off the producer's mutation (Codex R5) so
  *  a large admin set can NEVER make the anomaly insert/resolve itself fail: the
@@ -407,13 +528,37 @@ export const pollSignedAnnouncements = internalAction({
 
 // --- User-facing read --------------------------------------------------------
 
+/**
+ * The bell's reader, or null when the account is not ACTIVE — no profile (deleted,
+ * with a session still valid) or pending. Such a session reads an empty feed and
+ * writes nothing: a deleted account's seats linger until their sweep, and an entry
+ * rung meanwhile would tell it a conversation's title and that an agent waits
+ * there. Empty rather than thrown — the bell subscribes on every page, and an
+ * account that just changed state must not take the page down with it.
+ *
+ * `since`: the reader's CURRENT profile's creation. A deleted account's entries
+ * wait for their sweep (admin.sweepDeletedUserRoomState); the same person
+ * provisioned again meanwhile has a newer profile, and reads only what was rung
+ * for it — never the deleted account's feed.
+ */
+async function activeReader(
+  ctx: QueryCtx | MutationCtx,
+): Promise<(Actor & { since: number }) | null> {
+  const actor = await getActor(ctx);
+  const profile = await getProfile(ctx, actor.effectiveUserId);
+  if (profile === null || roleOf(profile) === "pending") return null;
+  return { ...actor, since: profile._creationTime };
+}
+
 export const myNotifications = query({
   args: {},
   handler: async (ctx) => {
-    const { effectiveUserId } = await getActor(ctx);
+    const reader = await activeReader(ctx);
+    if (reader === null) return [];
+    const { effectiveUserId, since } = reader;
     const rows = await ctx.db
       .query("notifications")
-      .withIndex("by_user", (q) => q.eq("userId", effectiveUserId))
+      .withIndex("by_user", (q) => q.eq("userId", effectiveUserId).gte("_creationTime", since))
       .order("desc")
       .take(FEED_LIMIT);
     const now = Date.now();
@@ -443,11 +588,13 @@ export const myNotifications = query({
 export const myUnreadCount = query({
   args: {},
   handler: async (ctx) => {
-    const { effectiveUserId } = await getActor(ctx);
+    const reader = await activeReader(ctx);
+    if (reader === null) return 0;
+    const { effectiveUserId, since } = reader;
     const unread = await ctx.db
       .query("notifications")
       .withIndex("by_user_unread", (q) =>
-        q.eq("userId", effectiveUserId).eq("readAt", undefined),
+        q.eq("userId", effectiveUserId).eq("readAt", undefined).gte("_creationTime", since),
       )
       .take(FEED_LIMIT);
     const now = Date.now();
@@ -462,8 +609,9 @@ export const myUnreadCount = query({
 export const markRead = mutation({
   args: { notificationId: v.id("notifications") },
   handler: async (ctx, { notificationId }) => {
-    const { effectiveUserId, impersonating } = await getActor(ctx);
-    if (impersonating) return;
+    const reader = await activeReader(ctx);
+    if (reader === null || reader.impersonating) return;
+    const { effectiveUserId } = reader;
     const n = await ctx.db.get(notificationId);
     if (n === null || n.userId !== effectiveUserId) return; // ownership
     if (n.readAt === undefined) await ctx.db.patch(notificationId, { readAt: Date.now() });
@@ -528,8 +676,9 @@ export const markAllReadContinue = internalMutation({
 export const markAllRead = mutation({
   args: {},
   handler: async (ctx) => {
-    const { effectiveUserId, impersonating } = await getActor(ctx);
-    if (impersonating) return;
+    const reader = await activeReader(ctx);
+    if (reader === null || reader.impersonating) return;
+    const { effectiveUserId } = reader;
     await drainMarkAllRead(ctx, effectiveUserId, await clickCutoff(ctx, effectiveUserId));
   },
 });
@@ -538,8 +687,9 @@ export const markAllRead = mutation({
 export const clearOne = mutation({
   args: { notificationId: v.id("notifications") },
   handler: async (ctx, { notificationId }) => {
-    const { effectiveUserId, impersonating } = await getActor(ctx);
-    if (impersonating) return;
+    const reader = await activeReader(ctx);
+    if (reader === null || reader.impersonating) return;
+    const { effectiveUserId } = reader;
     const n = await ctx.db.get(notificationId);
     if (n === null || n.userId !== effectiveUserId) return;
     await ctx.db.delete(notificationId);
@@ -582,8 +732,9 @@ export const clearAllContinue = internalMutation({
 export const clearAll = mutation({
   args: {},
   handler: async (ctx) => {
-    const { effectiveUserId, impersonating } = await getActor(ctx);
-    if (impersonating) return;
+    const reader = await activeReader(ctx);
+    if (reader === null || reader.impersonating) return;
+    const { effectiveUserId } = reader;
     await drainClearAll(ctx, effectiveUserId, await clickCutoff(ctx, effectiveUserId));
   },
 });

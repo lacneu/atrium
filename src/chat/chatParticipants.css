@@ -190,3 +190,693 @@
   color: var(--oc-warn-fg, #b45309);
   background: var(--oc-warn-bg, rgb(180 83 9 / 14%));
 }
+
+/* ── The composer's presence strip ───────────────────────────────────────
+   Who is in a group conversation, at a glance: overlapping faces — people round,
+   agents square with their gateway's glyph — then "+N". Quiet, above the text. */
+.oc-presence {
+  display: inline-flex;
+  align-items: center;
+  align-self: flex-start;
+  margin: 0 0 0.25rem;
+  padding: 0.125rem 0.375rem 0.125rem 0.5rem;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  cursor: pointer;
+}
+.oc-presence:hover {
+  background: var(--muted);
+}
+.oc-presence__face {
+  display: inline-grid;
+  place-items: center;
+  width: 1.25rem;
+  height: 1.25rem;
+  margin-left: -0.3rem;
+  border-radius: 999px;
+  /* The ring separates overlapping faces against the composer behind them. */
+  box-shadow: 0 0 0 2px var(--card, var(--background));
+}
+/* The reader's own face: a second, thin ring — present and counted, told apart. */
+.oc-presence__face.is-self {
+  box-shadow:
+    0 0 0 2px var(--card, var(--background)),
+    0 0 0 3px var(--ring);
+}
+.oc-presence__face:first-child {
+  margin-left: 0;
+}
+.oc-presence__face .oc-avatar {
+  width: 1.25rem;
+  height: 1.25rem;
+  margin-left: 0;
+  font-size: 0.55rem;
+  box-shadow: none;
+}
+.oc-presence__agent {
+  border-radius: 0.3rem;
+  background: var(--accent);
+  color: color-mix(in oklch, var(--foreground) 75%, transparent);
+}
+.oc-presence__agent.is-primary {
+  color: var(--foreground);
+}
+.oc-presence__more {
+  margin-left: 0.35rem;
+  font-size: 0.75rem;
+  font-variant-numeric: tabular-nums;
+  color: var(--muted-foreground);
+}
+
+/* ── The composer's agent control ─────────────────────────────────────────
+   ONE type scale for the whole popover: 14px for what you read (names,
+   actions), 12px muted for what qualifies it (caption, model, instance,
+   "primary"). One family, no capitals, no monospace — every line is scanned
+   at the same rhythm. Rows are flat (no cards); the only rule is a hairline
+   between the conversation's agents and the others. */
+.oc-composer__agent-pop.oc-composer__agent-pop {
+  width: min(21rem, calc(100vw - 2rem));
+  padding: 0.375rem;
+  font-size: 0.875rem;
+  line-height: 1.25rem;
+}
+.oc-agentlist__search {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  height: 2.25rem;
+  margin: -0.375rem -0.375rem 0.25rem;
+  padding: 0 0.875rem;
+  border-bottom: 1px solid var(--border);
+  color: var(--muted-foreground);
+}
+.oc-agentlist__search input {
+  flex: 1 1 auto;
+  min-width: 0;
+  border: 0;
+  background: transparent;
+  outline: none;
+  font: inherit;
+  color: var(--foreground);
+}
+.oc-agentlist__caption,
+.oc-agentpicker__hint {
+  margin: 0;
+  padding: 0.25rem 0.5rem;
+  font-size: 0.75rem;
+  line-height: 1rem;
+  color: var(--muted-foreground);
+}
+.oc-agentlist {
+  display: flex;
+  flex-direction: column;
+  max-height: 20rem;
+  overflow-y: auto;
+}
+.oc-agentlist__divider {
+  margin: 0.25rem 0.5rem 0;
+  padding: 0.5rem 0 0.25rem;
+  border-top: 1px solid var(--border);
+  font-size: 0.75rem;
+  line-height: 1rem;
+  color: var(--muted-foreground);
+}
+.oc-agentrow,
+.oc-agentpicker__action {
+  display: flex;
+  align-items: center;
+  gap: 0.625rem;
+  width: 100%;
+  min-height: 2.25rem;
+  padding: 0.375rem 0.5rem;
+  border: 0;
+  border-radius: 0.375rem;
+  background: transparent;
+  color: var(--foreground);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.oc-agentrow:hover:not(:disabled),
+.oc-agentrow:focus-visible,
+.oc-agentpicker__action:hover,
+.oc-agentpicker__action:focus-visible {
+  background: var(--accent);
+  outline: none;
+}
+.oc-agentrow.is-selected {
+  background: color-mix(in oklch, var(--accent) 70%, transparent);
+}
+.oc-agentrow:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.oc-agentrow__glyph,
+.oc-agentpicker__action > svg {
+  flex: none;
+  color: var(--muted-foreground);
+}
+.oc-agentrow__glyph {
+  display: inline-grid;
+  place-items: center;
+  width: 1rem;
+  font-size: 0.9375rem;
+  line-height: 1;
+}
+/* Name and meta share ONE line: the name keeps its width, the meta takes what
+   is left and truncates first. */
+.oc-agentrow__text {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  align-items: baseline;
+  gap: 0.75rem;
+}
+.oc-agentrow__name {
+  flex: 0 1 auto;
+  min-width: 0;
+  display: inline-flex;
+  align-items: baseline;
+  gap: 0.375rem;
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.oc-agentrow__tag,
+.oc-agentrow__meta {
+  font-size: 0.75rem;
+  font-weight: 400;
+  color: var(--muted-foreground);
+  white-space: nowrap;
+}
+.oc-agentrow__meta {
+  flex: 1 1 0;
+  min-width: 0;
+  display: flex;
+  justify-content: flex-end;
+}
+.oc-agentrow__model {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.oc-agentrow__inst {
+  flex: none;
+  white-space: pre;
+}
+.oc-agentrow__check {
+  flex: none;
+  visibility: hidden;
+}
+.oc-agentrow__check.is-on {
+  visibility: visible;
+}
+.oc-agentpicker__actions {
+  display: flex;
+  flex-direction: column;
+  margin: 0.375rem -0.375rem -0.375rem;
+  padding: 0.375rem;
+  border-top: 1px solid var(--border);
+}
+
+/* ── The conversation panel ────────────────────────────────────────────── */
+.oc-convpanel__tabs {
+  width: 100%;
+  margin-bottom: 0.75rem;
+}
+.oc-convpanel__tabs [role="tab"] {
+  flex: 1 1 0;
+  gap: 0.35rem;
+}
+.oc-convpanel__tab {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+}
+.oc-convpanel__members {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  overflow: hidden;
+}
+.oc-convpanel__member {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  min-height: 3rem;
+  padding: 0.45rem 0.6rem;
+}
+.oc-convpanel__member + .oc-convpanel__member {
+  border-top: 1px solid var(--border);
+}
+.oc-convpanel__member.is-gone {
+  opacity: 0.6;
+}
+.oc-convpanel__member .oc-avatar {
+  width: 28px;
+  height: 28px;
+  margin-left: 0;
+  font-size: 11px;
+  flex: 0 0 auto;
+}
+.oc-convpanel__face {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
+  background: var(--muted);
+  font-size: 15px;
+  line-height: 1;
+}
+.oc-convpanel__who {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  flex: 1 1 auto;
+}
+.oc-convpanel__name {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 0.875rem;
+  line-height: 1.3;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.oc-convpanel__sub {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  font-size: 0.75rem;
+  color: var(--muted-foreground);
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.oc-convpanel__you {
+  font-size: 0.72rem;
+  color: var(--muted-foreground);
+}
+.oc-convpanel__badge {
+  padding: 0 0.4rem;
+  border-radius: 999px;
+  font-size: 0.68rem;
+  line-height: 1.4;
+  color: var(--primary);
+  background: color-mix(in oklch, var(--primary) 12%, transparent);
+}
+.oc-convpanel__badge.is-muted {
+  color: var(--muted-foreground);
+  background: var(--muted);
+}
+.oc-convpanel__badge.is-warn {
+  color: oklch(0.56 0.13 75);
+  background: color-mix(in oklch, oklch(0.74 0.16 75) 14%, transparent);
+}
+.oc-convpanel__role {
+  flex: 0 0 auto;
+  min-width: 7.5rem;
+}
+.oc-convpanel__count {
+  margin-left: 0.25rem;
+  font-weight: 400;
+  color: var(--muted-foreground);
+}
+.oc-convpanel__add {
+  align-self: flex-start;
+}
+.oc-convpanel__link {
+  align-self: flex-start;
+  padding-left: 0;
+}
+.oc-convpanel__hint {
+  margin: 0;
+  font-size: 0.75rem;
+  line-height: 1.4;
+  color: var(--muted-foreground);
+}
+.oc-convpanel__settings {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 0.35rem 0.6rem;
+}
+.oc-convpanel__disclosure {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  width: 100%;
+  border: 0;
+  background: transparent;
+  padding: 0.2rem 0;
+  font: inherit;
+  font-size: 0.85rem;
+  color: var(--foreground);
+  cursor: pointer;
+}
+.oc-convpanel__knobs {
+  padding: 0.35rem 0 0.2rem;
+}
+.oc-convpanel__callout {
+  display: flex;
+  gap: 0.55rem;
+  padding: 0.6rem 0.7rem;
+  border-radius: 10px;
+  background: var(--muted);
+  font-size: 0.75rem;
+  line-height: 1.45;
+  color: var(--muted-foreground);
+}
+.oc-convpanel__callout > svg {
+  flex: 0 0 auto;
+  margin-top: 0.1rem;
+}
+.oc-convpanel__callout p {
+  margin: 0 0 0.35rem;
+}
+.oc-convpanel__callout-title {
+  font-weight: 600;
+  color: var(--foreground);
+}
+.oc-convpanel__roles {
+  margin: 0;
+  display: grid;
+  gap: 0.15rem;
+}
+.oc-convpanel__roles div {
+  display: flex;
+  gap: 0.35rem;
+}
+.oc-convpanel__roles dt {
+  font-weight: 600;
+  color: var(--foreground);
+  text-transform: capitalize;
+}
+.oc-convpanel__roles dd {
+  margin: 0;
+}
+.oc-convpanel__leave {
+  align-self: flex-start;
+}
+
+/* ── The picker dialog (what can be ADDED — never shown in the panel) ──── */
+.oc-convpicker {
+  max-width: 28rem;
+}
+.oc-convpicker__list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  max-height: 22rem;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+}
+.oc-convpicker__row {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.45rem 0.25rem;
+}
+.oc-convpicker__row + .oc-convpicker__row {
+  border-top: 1px solid var(--border);
+}
+.oc-convpicker__row .oc-avatar {
+  width: 28px;
+  height: 28px;
+  margin-left: 0;
+  font-size: 11px;
+}
+.oc-convpicker__empty {
+  padding: 0.75rem 0.25rem;
+  font-size: 0.8rem;
+  color: var(--muted-foreground);
+}
+.oc-convpicker__role {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  font-size: 0.85rem;
+}
+
+/* ── Sidebar: the group mark on a row ─────────────────────────────────────
+   Inline with the title (Tailwind's preflight makes every svg a block). */
+.oc-chatitem__group {
+  display: inline-block;
+  vertical-align: -1px;
+  margin-right: 4px;
+  color: var(--muted-foreground);
+}
+
+/* ── The room control: a split pill like the Talk control's ─────────────────
+   Left: who is in the room (one number) — opens the quick picker (agents /
+   people). Right: the chevron — the conversation's settings. */
+.oc-roompill {
+  display: inline-flex;
+  align-items: center;
+  height: 2rem;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--muted-foreground);
+  overflow: hidden;
+  transition:
+    color 150ms ease,
+    border-color 150ms ease;
+}
+.oc-roompill:hover {
+  color: var(--foreground);
+}
+.oc-roompill__main,
+.oc-roompill__chev {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  border: none;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+}
+.oc-roompill__main {
+  gap: 0.375rem;
+  padding: 0 0.4rem 0 0.65rem;
+}
+.oc-roompill__chev {
+  padding: 0 0.5rem 0 0.25rem;
+}
+.oc-roompill__main:hover,
+.oc-roompill__chev:hover,
+.oc-roompill__main[data-state="open"],
+.oc-roompill__chev[data-state="open"] {
+  background: var(--muted);
+}
+.oc-roompill__count {
+  min-width: 1.125rem;
+  padding: 0 0.3rem;
+  border-radius: 999px;
+  background: var(--muted);
+  color: var(--foreground);
+  font-size: 0.75rem;
+  font-weight: 500;
+  line-height: 1.125rem;
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+}
+.oc-roompill__main:hover .oc-roompill__count,
+.oc-roompill__main[data-state="open"] .oc-roompill__count {
+  background: var(--background);
+}
+
+/* Tabs of the quick picker: two equal halves, the count beside each label. */
+.oc-roomtabs {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.25rem;
+  margin: -0.375rem -0.375rem 0.375rem;
+  padding: 0.375rem;
+  border-bottom: 1px solid var(--border);
+}
+.oc-roomtabs__tab {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.4rem;
+  height: 2rem;
+  border: 0;
+  border-radius: 0.375rem;
+  background: transparent;
+  color: var(--muted-foreground);
+  font: inherit;
+  cursor: pointer;
+}
+.oc-roomtabs__tab:hover {
+  color: var(--foreground);
+}
+.oc-roomtabs__tab[aria-selected="true"] {
+  background: var(--accent);
+  color: var(--foreground);
+  font-weight: 500;
+}
+.oc-roomtabs__count {
+  font-size: 0.75rem;
+  font-weight: 400;
+  color: var(--muted-foreground);
+  font-variant-numeric: tabular-nums;
+}
+/* The search sits under the tabs, not flush against the popover's edge. */
+.oc-roomtabs + .oc-agentlist__search {
+  margin-top: -0.375rem;
+}
+
+/* The primary agent: a star after its name. */
+.oc-agentrow__primary {
+  flex: none;
+  align-self: center;
+  color: oklch(0.75 0.14 80);
+  fill: currentColor;
+}
+/* People rows: the avatar replaces the gateway glyph; the role sits where an
+   agent's model does; "@" appears on hover — a click names the person. */
+.oc-agentrow--person .oc-avatar {
+  margin-left: 0;
+  width: 1.25rem;
+  height: 1.25rem;
+  font-size: 0.6rem;
+}
+.oc-rolemark {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  font-size: 0.75rem;
+  color: var(--muted-foreground);
+}
+.oc-agentrow__hover {
+  flex: none;
+  color: var(--muted-foreground);
+  visibility: hidden;
+}
+.oc-agentrow--person:hover:not(:disabled) .oc-agentrow__hover {
+  visibility: visible;
+}
+.oc-agentrow--person:disabled {
+  opacity: 1;
+  cursor: default;
+}
+.oc-roommenu {
+  min-width: 14rem;
+}
+/* The invite divider carries the arrival role on its right: whoever is picked
+   below arrives with it. */
+.oc-agentlist__divider--invite {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+.oc-invite-as {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+.oc-invite-as__trigger.oc-invite-as__trigger {
+  height: 1.625rem;
+  padding: 0 0.5rem;
+  font-size: 0.75rem;
+}
+
+/* Hidden shared conversations: one folded line at the end of the shared section. */
+.oc-hiddenshared {
+  padding: 0.125rem 0.5rem 0.25rem;
+}
+.oc-hiddenshared__toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  border: 0;
+  background: transparent;
+  padding: 0.25rem 0;
+  font: inherit;
+  font-size: 0.75rem;
+  color: var(--muted-foreground);
+  cursor: pointer;
+}
+.oc-hiddenshared__toggle:hover {
+  color: var(--foreground);
+}
+.oc-hiddenshared__list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.oc-hiddenshared__row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  min-height: 1.75rem;
+  font-size: 0.8125rem;
+  color: var(--muted-foreground);
+}
+.oc-hiddenshared__title {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.oc-hiddenshared__show {
+  flex: none;
+  border: 0;
+  background: transparent;
+  padding: 0.125rem 0.375rem;
+  border-radius: 0.375rem;
+  font: inherit;
+  font-size: 0.75rem;
+  color: var(--foreground);
+  cursor: pointer;
+}
+.oc-hiddenshared__show:hover {
+  background: var(--accent);
+}
+
+/* An agent row that can also be ADDED to the room: the row picks, the "+" adds. */
+.oc-agentrow-wrap {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+}
+.oc-agentrow-wrap > .oc-agentrow {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.oc-agentrow__add {
+  flex: none;
+  display: inline-grid;
+  place-items: center;
+  width: 1.75rem;
+  height: 1.75rem;
+  border: 0;
+  border-radius: 0.375rem;
+  background: transparent;
+  color: var(--muted-foreground);
+  cursor: pointer;
+}
+.oc-agentrow__add:hover,
+.oc-agentrow__add:focus-visible {
+  background: var(--accent);
+  color: var(--foreground);
+  outline: none;
+}
+.oc-agentrow--add .oc-agentrow__hover,
+.oc-agentrow:hover .oc-agentrow__hover {
+  visibility: visible;
+}

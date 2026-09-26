@@ -117,3 +117,77 @@ export function prependedLength(before: string, after: string): number | null {
   if (!after.endsWith(before)) return null;
   return after.length - before.length;
 }
+
+/** A character that continues a mention token ("@Jean-Luc.Picard", "@o_neil"). */
+const TOKEN_CHAR = /[\p{L}\p{N}_\-]/u;
+
+/**
+ * Where `token` stands AS A WHOLE in `text`: the first occurrence at or after
+ * `from` that is neither the tail of a longer word ("bob@Ali" — an address) nor
+ * the head of a longer token ("@Ali" inside "@Alice"), and that overlaps none of
+ * the ranges already `taken`. A "." or "'" continues the token only when a token
+ * character follows it, so "@Ali." at the end of a sentence still names Ali.
+ * Null when there is none. ONE rule for the composer (src/chat/pendingMention.ts)
+ * and for a queued message's edit (reanchorMentionSpans), so what the writer sees
+ * highlighted is what is sent and what is re-found.
+ */
+export function findWholeToken(
+  text: string,
+  token: string,
+  taken: ReadonlyArray<MentionSpan> = [],
+  from = 0,
+): MentionSpan | null {
+  if (token.length === 0) return null;
+  for (let at = text.indexOf(token, from); at !== -1; at = text.indexOf(token, at + 1)) {
+    const end = at + token.length;
+    const before = at > 0 ? text[at - 1]! : "";
+    // Only a token character (or another "@") glues it to what precedes: "." and
+    // "'" end the previous word ("Merci.@Ali", "l'@Ali"), and a real address has a
+    // token character right before its "@" ("jean.dupont@Ali").
+    if (before !== "" && (TOKEN_CHAR.test(before) || before === "@")) continue;
+    const after = text[end] ?? "";
+    if (TOKEN_CHAR.test(after)) continue;
+    if ((after === "." || after === "'") && TOKEN_CHAR.test(text[end + 1] ?? "")) continue;
+    if (taken.some((t) => at < t.end && end > t.start)) continue;
+    return { start: at, end };
+  }
+  return null;
+}
+
+/**
+ * Find a message's mentions again after its text was REWRITTEN (a queued turn
+ * edited before it left).
+ *
+ * The token each span covered in `before` is located in `after` by the rule the
+ * composer applies at send time (findWholeToken, shared with
+ * src/chat/pendingMention.ts): first WHOLE occurrence not already claimed by
+ * another mention, spans returned in text order and disjoint. A token no longer present is DROPPED — the author deleted it.
+ * The result is validated like any send; should it still not hold (it cannot, by
+ * construction, but a stored span may predate a rule), nothing is kept: losing the
+ * mentions costs less than the gateway refusing the whole turn.
+ */
+export function reanchorMentionSpans<T extends MentionSpan>(
+  before: string,
+  after: string,
+  spans: readonly T[],
+): { kept: T[]; dropped: T[] } {
+  const kept: T[] = [];
+  const dropped: T[] = [];
+  for (const span of spans) {
+    const token = before.slice(span.start, span.end);
+    let placed = false;
+    if (token.startsWith("@")) {
+      const found = findWholeToken(after, token, kept);
+      if (found !== null) {
+        kept.push({ ...span, start: found.start, end: found.end });
+        placed = true;
+      }
+    }
+    if (!placed) dropped.push(span);
+  }
+  kept.sort((a, b) => a.start - b.start);
+  if (rejectMentionSpans(after, kept) !== null) {
+    return { kept: [], dropped: [...spans] };
+  }
+  return { kept, dropped };
+}

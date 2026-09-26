@@ -101,6 +101,10 @@ export interface HermesWsTurnOptions {
   writer: ConvexWriter;
   chatId: string;
   sessionKey: string;
+  /** The agent THIS turn runs on — named on every request it raises, so an answer
+   *  is judged against that agent (a room may hold several), never the chat's
+   *  primary. */
+  agentId?: string;
   /** The chat's stored Hermes WS session id (stored_session_id), or null. */
   providerChatId: string | null;
   /** The OUTBOX row this turn was dispatched from (correlation for outbox
@@ -783,7 +787,12 @@ export function runHermesWsTurn(
       record: Omit<AgentRequestRecord, "chatId" | "messageId">,
     ): void => {
       openRequests.add(record.providerRequestId);
-      const full = { chatId: opts.chatId, messageId: sink.currentMessageId ?? null, ...record };
+      const full = {
+        chatId: opts.chatId,
+        messageId: sink.currentMessageId ?? null,
+        ...(opts.agentId !== undefined ? { agentId: opts.agentId } : {}),
+        ...record,
+      };
       // A write Convex REFUSED (`id: null`) is a write that failed: no card exists, and the
       // failure path below must see it (codex P2).
       const attempt = () =>

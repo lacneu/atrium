@@ -14,6 +14,10 @@ import {
   type AgentRef,
   type RoutableMessage,
   type SelectableAgent,
+  orderComposerAgents,
+  agentRowMeta,
+  withRoomRoster,
+  presenceRoster,
 } from "./perTurnAgent";
 
 const ref = (instanceName: string, agentId: string): AgentRef => ({
@@ -663,5 +667,143 @@ describe("the agent is frozen while a voice call is in progress", () => {
     expect(
       resolveAgentSelectorGate({ ...base, multiAgent: false, callActive: true }).hidden,
     ).toBe(true);
+  });
+});
+
+describe("a guest picks between the room's agents from the first turn", () => {
+  const a = { instanceName: "alpha", agentId: "alice" };
+  const b = { instanceName: "alpha", agentId: "bob" };
+  test("the selector ROUTES on an empty thread — re-binding is the owner's", () => {
+    const gate = resolveAgentSelectorGate({
+      hasUserTurn: false,
+      emptyThread: true,
+      unavailable: false,
+      readOnly: false,
+      multiAgent: true,
+      poolSize: 2,
+      guest: true,
+    });
+    expect(gate).toMatchObject({ hidden: false, disabled: false, mode: "route" });
+    // The owner, same thread: re-binds, as before.
+    expect(
+      resolveAgentSelectorGate({
+        hasUserTurn: false,
+        emptyThread: true,
+        unavailable: false,
+        readOnly: false,
+        multiAgent: true,
+        poolSize: 2,
+      }).mode,
+    ).toBe("rebind");
+  });
+
+  test("the pick is sent on turn 1", () => {
+    expect(
+      resolveRoutedAgentToSend({
+        selected: b,
+        primary: a,
+        perTurnRouting: false,
+        isFirstTurn: true,
+        canRoute: true,
+        guest: true,
+      }),
+    ).toEqual(b);
+    expect(
+      resolveRoutedAgentToSend({
+        selected: b,
+        primary: a,
+        perTurnRouting: false,
+        isFirstTurn: true,
+        canRoute: true,
+      }),
+    ).toBeUndefined();
+  });
+});
+
+describe("the composer picker reads as one list", () => {
+  const ag = (instanceName: string, agentId: string, displayName: string | null = agentId) => ({
+    instanceName,
+    agentId,
+    displayName,
+  });
+  test("primary, then the room in the order added, then the rest by name", () => {
+    const pool = [
+      ag("i1", "zed"),
+      ag("i2", "bench-1"),
+      ag("i1", "alice", "Alice"),
+      ag("i2", "hermes"),
+      ag("i1", "bob", "Bob"),
+      ag("i2", "bench-0"),
+    ];
+    const { room, others } = orderComposerAgents(
+      pool,
+      { instanceName: "i1", agentId: "alice" },
+      [
+        { instanceName: "i2", agentId: "hermes" },
+        { instanceName: "i1", agentId: "bob" },
+      ],
+    );
+    expect(room.map((a) => a.agentId)).toEqual(["alice", "hermes", "bob"]);
+    expect(others.map((a) => a.agentId)).toEqual(["bench-0", "bench-1", "zed"]);
+    // Natural order: a number sorts as a number.
+    const natural = orderComposerAgents(
+      [ag("i", "bench-10"), ag("i", "bench-2"), ag("i", "Bench-1")],
+      null,
+      [],
+    );
+    expect(natural.others.map((a) => a.agentId)).toEqual(["Bench-1", "bench-2", "bench-10"]);
+  });
+
+  test("no added agent: one list, the primary first", () => {
+    const { room, others } = orderComposerAgents(
+      [ag("i1", "zed"), ag("i1", "alice")],
+      { instanceName: "i1", agentId: "zed" },
+      [],
+    );
+    expect(room).toEqual([]);
+    expect(others.map((a) => a.agentId)).toEqual(["zed", "alice"]);
+  });
+
+  test("the instance joins the meta only when asked", () => {
+    const a = { instanceName: "lt-inst-0", agentId: "a", model: "openai/gpt-5.5" };
+    expect(agentRowMeta(a, false)).toBe("openai/gpt-5.5");
+    expect(agentRowMeta(a, true)).toBe("openai/gpt-5.5 · lt-inst-0");
+    expect(agentRowMeta({ ...a, model: null }, true)).toBe("lt-inst-0");
+  });
+});
+
+describe("the picker lists the room as it is", () => {
+  test("a room agent the reader cannot reach stays listed, disabled", () => {
+    const pool = [{ instanceName: "i", agentId: "a", displayName: "A" }];
+    const view = (agentId: string, role: "primary" | "member") => ({
+      instanceName: "i",
+      agentId,
+      role,
+      displayName: agentId.toUpperCase(),
+      emoji: null,
+      model: null,
+      description: null,
+      kind: "openclaw" as const,
+    });
+    const listed = withRoomRoster(pool, [view("a", "primary"), view("b", "member"), null]);
+    expect(listed.map((a) => a.agentId)).toEqual(["a", "b"]);
+    expect(listed[1]).toMatchObject({ state: "deleted", isDefault: false });
+    // Nothing missing: the pool itself, untouched.
+    expect(withRoomRoster(pool, [view("a", "primary")])).toBe(pool);
+  });
+});
+
+describe("presenceRoster — the strip counts what the room control counts", () => {
+  const owner = { name: "owner", isSelf: true };
+  const guest = { name: "guest", isSelf: false };
+  test("the reader is shown with the others, not left out", () => {
+    const roster = presenceRoster([owner, guest], ["alice"]);
+    expect(roster?.people).toEqual([owner, guest]);
+    // Two people and one agent: the pill's 3, the strip's 3.
+    expect((roster?.people.length ?? 0) + (roster?.agents.length ?? 0)).toBe(3);
+  });
+  test("alone with one agent is not a room", () => {
+    expect(presenceRoster([owner], ["alice"])).toBeNull();
+    expect(presenceRoster([owner], ["alice", "bob"])?.people).toEqual([owner]);
   });
 });

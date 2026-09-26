@@ -111,6 +111,11 @@ export const MESSAGE_FIELDS_DROPPED: ReadonlyArray<string> = [
   // belonging to whoever happens to hold that id in the target. Same reason as
   // `authorUserId`, with a name printed on it.
   "mentions",
+  // The ORIGINAL writing time of a branched copy (chatFork). It only means
+  // something against the source deployment's profiles, to judge whether
+  // `authorUserId`'s current account wrote the words — and `authorUserId` is
+  // dropped above; an imported message is its importer's.
+  "writtenAt",
 ];
 
 /**

@@ -51,6 +51,13 @@ export interface FakeSessionDescribe {
    *  A session older than the maintenance window answers `true` and refuses every
    *  call that starts work until it is restored. */
   archived?: boolean;
+  /** Who created the session, as projected on the row (live 2026.9.6 shape). */
+  createdActor?: {
+    type: string;
+    id?: string;
+    identity?: { type: string; id: string };
+    label?: string;
+  };
 }
 
 import type { RosterEntry } from "../../src/providers/openclaw/models-roster.js";
@@ -58,6 +65,11 @@ import type { ConfigChangedNotice } from "../../src/providers/openclaw/config-ch
 import { sleep } from "./sleep.js";
 
 export interface FakeGatewayScript {
+  /** The first N `sessions.describe` calls FAIL (a transient gateway error). */
+  describeFailures?: number;
+  /** These `sessions.describe` calls FAIL, by 0-based call index (a read-back that
+   *  fails after a probe that answered). */
+  describeFailAt?: number[];
   /** Successive `sessions.describe` answers. The LAST one repeats, so a test
    *  scripts [before, after-compaction] and any further describe reads the
    *  post-compaction state. */
@@ -109,6 +121,7 @@ export function fakeGateway(script: FakeGatewayScript = {}): FakeGateway {
   let closed = false;
   let wake: (() => void) | null = null;
   let describeIndex = 0;
+  let describeCalls = 0;
   const configChangedListeners = new Set<(notice: ConfigChangedNotice) => void>();
   const closedListeners = new Set<() => void>();
 
@@ -164,6 +177,15 @@ export function fakeGateway(script: FakeGatewayScript = {}): FakeGateway {
       calls.push([method, params]);
       timeouts.push(timeoutMs);
       if (method === "sessions.describe") {
+        const call = describeCalls;
+        describeCalls += 1;
+        if (script.describeFailAt?.includes(call)) {
+          throw new Error("UNAVAILABLE: describe failed");
+        }
+        if ((script.describeFailures ?? 0) > 0) {
+          script.describeFailures = (script.describeFailures ?? 0) - 1;
+          throw new Error("UNAVAILABLE: describe failed");
+        }
         const sess = nextDescribe();
         return { payload: sess === null ? {} : { session: sess } };
       }

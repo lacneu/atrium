@@ -515,6 +515,18 @@ export default defineSchema({
     // (`agent:<agent>:atrium:chat:<canonical>:<chat>`), and moving that would give
     // every conversation a new gateway session. This names the CONNECTION only.
     identitySource: v.optional(v.union(v.literal("canonical"), v.literal("email"))),
+    // WHOSE NAME a group conversation's PARTICIPANT speaks under, in "trusted-proxy"
+    // mode. The conversation's gateway session is always the owner's (it is keyed
+    // on the owner and created by them); this only decides which identity SENDS a
+    // participant's turn into it.
+    //   "owner" (default): the owner's — every turn reads as the owner's on the
+    //     gateway, the behaviour of every instance before this existed.
+    //   "self": the participant's own profile — the gateway records them as the
+    //     author and lists them among the session's participants. Proven on a live
+    //     gateway (2026.9.6) with no `gateway.roles`; a gateway whose roles set
+    //     `sessions.others: "none"` refuses it (upstream session-sharing-policy.ts),
+    //     and the bridge then sends as the owner rather than lose the turn.
+    participantIdentity: v.optional(v.union(v.literal("owner"), v.literal("self"))),
     // Identity the bridge presents on sockets that serve no single person (agent
     // discovery, transcript recovery, config defaults). Unset → derived from the
     // instance name. Only meaningful in "trusted-proxy" mode.
@@ -1180,7 +1192,7 @@ export default defineSchema({
   chatParticipants: defineTable({
     chatId: v.id("chats"),
     userId: v.id("users"),
-    /** Who added them — the owner today; kept for the roster's provenance. */
+    /** Who added them — the owner or a manager (provenance). */
     addedBy: v.id("users"),
     addedAt: v.number(),
     /** THIS participant's working-set opt-out. The owner's own preference lives on
@@ -1188,11 +1200,52 @@ export default defineSchema({
      *  room would let one person's tidying remove the conversation from three
      *  other sidebars. A participant's belongs to their membership. */
     sidebarHidden: v.optional(v.boolean()),
+    /** What this person may do in the room. Absent = "member" (every row written
+     *  before roles existed was a full participant).
+     *   - "viewer"  reads, and may leave;
+     *   - "member"  also posts and addresses the room's agents;
+     *   - "manager" also invites people and adds agents, like the owner, but never
+     *     administers the chat itself (rename, reset, delete stay the owner's). */
+    role: v.optional(
+      v.union(v.literal("viewer"), v.literal("member"), v.literal("manager")),
+    ),
+    /** THIS participant's pin. Same reasoning as `sidebarHidden`: `chats.pinned` is
+     *  the OWNER's, and a guest who pins a conversation they were invited into must
+     *  not reorder the owner's sidebar, nor inherit the owner's pins. */
+    pinned: v.optional(v.boolean()),
   })
     .index("by_chat", ["chatId"])
     .index("by_user", ["userId"])
     // Membership test and idempotent add both read this one.
     .index("by_chat_user", ["chatId", "userId"]),
+
+  // The OTHER agents of a conversation. The primary agent is the chat's binding
+  // (`chats.instanceName`/`agentId`) and is never a row here.
+  //
+  // WHY ATRIUM OWNS THIS TOO. OpenClaw (2026.9.6 included) has no agent membership
+  // for a session: a session key names exactly one agent, and an agentId that does
+  // not match it is refused (session-request-agent.ts). What a gateway CAN do is
+  // run another agent on the same history in its own session — which is exactly
+  // Atrium's per-turn routing (`perTurnRouting` + `routingSegment`, rehydrated on
+  // each switch). This table is therefore not a new transport: it is the list of
+  // agents the OWNER has put in the room, which is what everyone in it may address
+  // and what the composer offers first.
+  chatAgents: defineTable({
+    chatId: v.id("chats"),
+    instanceName: v.string(),
+    agentId: v.string(),
+    /** Who added it — the owner or a manager (provenance). */
+    addedBy: v.id("users"),
+    addedAt: v.number(),
+  })
+    .index("by_chat", ["chatId"])
+    .index("by_chat_instance_agent", ["chatId", "instanceName", "agentId"])
+    // The cascades: an instance deleted (prefix) or one agent purged. A room's
+    // delegation must not outlive the agent — re-created under the same name, it
+    // would come back into rooms nobody added it to. The implicit trailing
+    // `_creationTime` bounds the purge's sweep to the rows that predate it
+    // (agents.sweepRoomDelegations).
+    .index("by_instance_agent", ["instanceName", "agentId"]),
 
   chats: defineTable({
     // THE INTERRUPTION EPOCH: when the user last pressed Stop on this chat.
@@ -1598,10 +1651,16 @@ export default defineSchema({
       ),
     ),
     // WHO WROTE this message, when it is not the owner. Only set on user messages
-    // in a chat with participants; absent everywhere else, which keeps every
-    // existing row valid and means "the owner wrote it". Never used for access —
-    // `userId` stays the owner precisely so the cheap access checks keep working.
+    // in a chat with participants (and on their copies in a branch of one);
+    // absent everywhere else, which keeps every existing row valid and means "the
+    // owner wrote it". Never used for access — `userId` stays the owner precisely
+    // so the cheap access checks keep working.
     authorUserId: v.optional(v.id("users")),
+    // WHEN the words were WRITTEN, on a COPY (a branch, chatFork): the copy's own
+    // `_creationTime` is the copy's, and every check that asks "was this written
+    // by its author's CURRENT account" (lib/chatAccess.writtenAtOf) must judge the
+    // original writing. Absent = `_creationTime`.
+    writtenAt: v.optional(v.number()),
     role: v.union(
       v.literal("user"),
       v.literal("assistant"),
@@ -3149,6 +3208,8 @@ export default defineSchema({
       v.literal("mention"),
       // An agent is waiting on you: a question, an approval or a credential.
       v.literal("agent_request"),
+      // Somebody added you to a conversation.
+      v.literal("chat_added"),
     ),
     // LEGACY-RENDER fallback: pre-rendered labels, kept so old rows (and any
     // producer without a key) still display. New producers ALSO store a
@@ -3165,6 +3226,10 @@ export default defineSchema({
     // De-dupe / correlation key so a producer never double-notifies for the same
     // event (e.g. one anomaly_open per (user, anomalyId)).
     dedupeKey: v.optional(v.string()),
+    // The CONVERSATION an entry is about (chat_added, mention, agent_request), so
+    // revoking someone from it revokes everything it rang them for — whatever the
+    // event. Absent on every other kind, and on entries written before it existed.
+    chatId: v.optional(v.id("chats")),
     createdAt: v.number(),
     // Signed announcements disappear at their verified envelope expiry.
     expiresAt: v.optional(v.number()),
@@ -3172,6 +3237,15 @@ export default defineSchema({
   })
     .index("by_user", ["userId"]) // feed (most-recent page)
     .index("by_user_dedupe", ["userId", "dedupeKey"]) // idempotent producers
+    // Every entry ONE event rang, whoever holds it now — an agent request rings the
+    // owner and the participants who may answer, and must be cleared for all of
+    // them even after one has left the room (agentRequests.requestNotifications).
+    .index("by_dedupe", ["dedupeKey"])
+    // One person's entries about one conversation (notifications.withdrawChatNotifications).
+    .index("by_user_chat", ["userId", "chatId"])
+    // …and ONE kind of it (a demotion to viewer withdraws only agent_request
+    // entries): a range, never a filter over every entry of that conversation.
+    .index("by_user_chat_kind", ["userId", "chatId", "kind"])
     // Unread badge: scan ONLY the unread set (readAt === undefined), never the
     // whole per-user history. A missing optional `readAt` is indexed as
     // `undefined`, so `.eq("readAt", undefined)` ranges exactly the unread rows.

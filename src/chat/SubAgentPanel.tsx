@@ -534,6 +534,10 @@ export function SubAgentPanelContent({
     chatId: chatId as Id<"chats">,
   });
   const chatMeta = useQuery(api.messages.getSessionMeta, { chatId });
+  // A GUEST of the conversation follows its sub-agents but neither reports one nor
+  // talks to it: both are the owner's (subAgentReports / subAgentInteractions
+  // refuse anyone else), and an upload would be staged for nothing.
+  const guestView = chatMeta?.viewerRole === "participant";
   const instanceForChild =
     chatMeta?.perTurnRouting === true
       ? undefined
@@ -774,7 +778,7 @@ export function SubAgentPanelContent({
               {card ? <HeaderStatus card={card} /> : null}
               {/* Report THIS sub-agent (not a message) — same small icon-button as the
                   message feedback flag. */}
-              {card && isReportableSubAgent(card.status) ? (
+              {card && isReportableSubAgent(card.status) && !guestView ? (
                 <button
                   type="button"
                   className={`oc-iconbtn oc-subpanel__report${
@@ -955,6 +959,7 @@ export function SubAgentPanelContent({
       {/* Prompt zone: a message box to talk to the sub-agent directly (2c). The send
           dispatches a chat.send to the child session; the reply streams back into the
           thread above. Enter sends (Shift+Enter = newline). */}
+      {guestView ? null : (
       <footer className="oc-subpanel__foot">
         {promptOpen ? (
           <div className="oc-subpanel__prompt">
@@ -1103,6 +1108,7 @@ export function SubAgentPanelContent({
           </button>
         )}
       </footer>
+      )}
 
       <SubAgentReportDialog
         target={reportTarget}

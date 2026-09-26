@@ -15,6 +15,8 @@ import {
   FileText,
   Megaphone,
   MessageCircleQuestion,
+  AtSign,
+  Users,
 } from "lucide-react";
 import { api } from "./convexApi";
 import type { Id } from "./convexApi";
@@ -53,7 +55,9 @@ type NotifKind =
   | "feedback_new"
   | "curation"
   | "operator_announcement"
-  | "agent_request";
+  | "mention"
+  | "agent_request"
+  | "chat_added";
 type Notif = {
   _id: Id<"notifications">;
   kind: NotifKind;
@@ -77,7 +81,9 @@ const KIND_ICON: Record<NotifKind, typeof Bell> = {
   feedback_new: MessageSquare,
   curation: FileText,
   operator_announcement: Megaphone,
+  mention: AtSign,
   agent_request: MessageCircleQuestion,
+  chat_added: Users,
 };
 
 const OPERATOR_SERVICE_LABELS: Record<string, () => string> = {
@@ -130,6 +136,16 @@ const KEY_RENDERERS: Record<
       reference: p.reference ?? "?",
       category: cat(p.category ?? "other"),
     }),
+  }),
+  // Named in a conversation: the chat's title only, never the message.
+  notif_mention: (p) => ({
+    title: m.notif_mention_title(),
+    body: m.notif_chat_body({ chat: p.chat ?? "" }),
+  }),
+  // Added to somebody's conversation: who, and which one.
+  notif_chat_added: (p) => ({
+    title: m.notif_chat_added_title({ by: p.by ?? "?" }),
+    body: m.notif_chat_body({ chat: p.chat ?? "" }),
   }),
   // An agent is waiting on the reader: the family decides the title, the chat names
   // where (its title only — never what was asked).

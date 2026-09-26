@@ -23,7 +23,7 @@ import {
   emailDomainAllowed,
   normalizeEmail,
 } from "./authDomains";
-import { resolveChatAccess } from "./chatAccess";
+import { resolveChatAccess, type ChatAccess } from "./chatAccess";
 import {
   permissionsForRoleKey,
   roleHasPermission,
@@ -410,7 +410,7 @@ export async function requireReachableChat(
   ctx: QueryCtx | MutationCtx,
   userId: Id<"users">,
   chatId: Id<"chats">,
-): Promise<{ chat: Doc<"chats">; role: "owner" | "participant" }> {
+): Promise<ChatAccess> {
   const access = await resolveChatAccess(ctx, chatId, userId);
   if (access === null) {
     const exists = await ctx.db.get(chatId);

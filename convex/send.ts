@@ -19,9 +19,11 @@ import { mutation, MutationCtx } from "./_generated/server";
 import { internal } from "./_generated/api";
 import { Id } from "./_generated/dataModel";
 import {
+  getProfile,
   requireActive,
   requireOwnedChat,
   requireReachableChat,
+  roleOf,
 } from "./lib/access";
 import { deleteFilesByMessage } from "./lib/files";
 import { auditImpersonated } from "./lib/audit";
@@ -37,10 +39,11 @@ import {
   type QuoteRef,
 } from "./lib/quoteReply";
 import { requireAgentMembership } from "./chats";
-import { chatParticipantRows } from "./lib/chatAccess";
-import { rejectMentionSpans } from "./lib/mentions";
-import { notifyUser } from "./notifications";
-import { resolveTargetForTurn } from "./routing";
+import { isConversationAgent } from "./chatAgents";
+import { canPost, chatParticipantRows, writtenByCurrentAccount } from "./lib/chatAccess";
+import { reanchorMentionSpans, rejectMentionSpans } from "./lib/mentions";
+import { notifyUser, withdrawNotifications } from "./notifications";
+import { resolveTargetForChat, resolveTargetForTurn } from "./routing";
 import { assertNoAgentSwitchDuringCall } from "./lib/talkFreeze";
 
 export const sendMessage = mutation({
@@ -118,11 +121,12 @@ export const sendMessage = mutation({
     // A PARTICIPANT may post: that is what taking part in a conversation means.
     // Everything downstream still belongs to the OWNER — the gateway session, the
     // agent binding, the routing — because the gateway knows one human per session.
-    const { chat, role: chatRole } = await requireReachableChat(
-      ctx,
-      userId,
-      args.chatId,
-    );
+    const access = await requireReachableChat(ctx, userId, args.chatId);
+    const { chat, role: chatRole } = access;
+    // A VIEWER reads the conversation and does not speak in it.
+    if (!canPost(access)) {
+      throw new Error("Forbidden: read-only role in this conversation");
+    }
     const ownerId = chat.userId;
 
     // 2. Idempotency short-circuit. Run BEFORE any insert so a retry inserts
@@ -165,25 +169,52 @@ export const sendMessage = mutation({
     //     routedAgent fails the send immediately instead of stamping a route the
     //     dispatch would only reject later (codex P1).
     if (args.routedAgent !== undefined) {
+      // WHOSE RIGHTS DECIDE. The owner routes with their own grants. A GUEST
+      // (participant or manager — a viewer never gets here) addresses the agents
+      // of the ROOM, and speaks through them on the OWNER's delegation: the turn
+      // runs under the owner's identity and re-points the owner's conversation,
+      // so the owner's entitlement is what authorizes it, and an agent outside the
+      // room is refused whatever the guest holds. The owner put the agent there;
+      // that is the delegation (decided with Olivier, 2026-09-25).
+      const authorizingUser = chatRole === "participant" ? chat.userId : userId;
+      if (
+        chatRole === "participant" &&
+        !(await isConversationAgent(ctx, chat, args.routedAgent))
+      ) {
+        throw new Error("Forbidden: agent is not part of this conversation");
+      }
       await requireAgentMembership(
         ctx,
-        userId,
+        authorizingUser,
         args.routedAgent.instanceName,
         args.routedAgent.agentId,
       );
       // AND the route must be DISPATCHABLE right now — the same resolution the
-      // dispatch applies. A granted-but-gone agent (deleted on the gateway,
-      // userAgents row lingering) would stamp a provenance the dispatch then
-      // rejects as no_agent, leaving a valid-looking route that never ran
-      // (codex P1). Refuse at the source instead.
+      // dispatch applies, for the same user it applies it to. A granted-but-gone
+      // agent (deleted on the gateway, userAgents row lingering) would stamp a
+      // provenance the dispatch then rejects as no_agent, leaving a valid-looking
+      // route that never ran (codex P1). Refuse at the source instead.
       const resolved = await resolveTargetForTurn(
         ctx,
         chat,
-        userId,
+        authorizingUser,
         args.routedAgent,
       );
       if (resolved.target === null) {
         throw new Error("Forbidden: routed agent is not dispatchable");
+      }
+    }
+
+    // A GUEST'S IMPLICIT TURN NEVER RE-POINTS THE CONVERSATION. With the
+    // conversation's agent gone, the implicit route is a rebind onto the owner's
+    // default — refused at dispatch for a guest (bridge.ts). Refused here instead,
+    // before a message and a failed card are written for a send that cannot happen.
+    // Likewise a primary the owner can no longer use: the implicit turn would only
+    // fail at dispatch. The guest may still address another room agent explicitly.
+    if (chatRole === "participant" && args.routedAgent === undefined) {
+      const implicit = await resolveTargetForChat(ctx, chat, chat.userId);
+      if (implicit.target === null || implicit.rebind !== null) {
+        throw new Error("Forbidden: this conversation's agent is gone — only its owner can re-establish it");
       }
     }
 
@@ -365,6 +396,9 @@ export const sendMessage = mutation({
     // cannot ring twice.
     for (const mention of mentions) {
       if (String(mention.userId) === String(userId)) continue;
+      // Not an account that is gone or back to pending: its seat may linger until
+      // the deletion's sweep, but it reads nothing (and must be told nothing).
+      if (roleOf(await getProfile(ctx, mention.userId)) === "pending") continue;
       await notifyUser(ctx, {
         userId: mention.userId,
         kind: "mention",
@@ -374,6 +408,7 @@ export const sendMessage = mutation({
         params: { chat: chat.title ?? "" },
         href: `/chat/${String(chat._id)}`,
         dedupeKey: `mention:${String(messageId)}`,
+        chatId: chat._id,
       });
     }
 
@@ -411,6 +446,14 @@ export const sendMessage = mutation({
       chatId: chat._id,
       userId,
       clientMessageId: args.clientMessageId,
+      // A GUEST's turn gets its own gateway idempotency key. The bridge derives the
+      // key from (session, dispatch key), and the session is the OWNER's: two
+      // members sending the same client id — the browser dedup key is only unique
+      // per person — would otherwise share one gateway run, the second silently
+      // folded into the first. The owner's key is unchanged.
+      ...(chatRole === "participant"
+        ? { dispatchKey: `participant-${String(userId)}-${args.clientMessageId}` }
+        : {}),
       messageId,
       text: args.text,
       ...(mentions.length > 0 ? { mentions } : {}),
@@ -520,7 +563,7 @@ export const cancelQueuedMessage = mutation({
     const { userId } = await requireActive(ctx);
     const message = await ctx.db.get(messageId);
     if (message === null) return; // already gone (double-click)
-    await requireOwnedChat(ctx, userId, message.chatId);
+    const { role } = await requireReachableChat(ctx, userId, message.chatId);
     const queued = await ctx.db
       .query("outbox")
       .withIndex("by_chat_status", (q) =>
@@ -532,6 +575,18 @@ export const cancelQueuedMessage = mutation({
       // Promoted (or never queued): too late to cancel — the turn is in flight.
       throw new Error("QUEUE_ALREADY_DISPATCHED");
     }
+    // WHO MAY WITHDRAW IT: its AUTHOR (the outbox row's `userId` — `message.userId`
+    // is the chat owner on every message), or the owner moderating their room. The
+    // author is the ACCOUNT that wrote it: the same person provisioned again after a
+    // deletion has the same user id, not the deleted account's words
+    // (lib/chatAccess.writtenByCurrentAccount — the rule updateQueuedMessage and the
+    // dispatch apply).
+    if (role !== "owner") {
+      const author = row.userId === userId ? await getProfile(ctx, userId) : null;
+      if (author === null || !(await writtenByCurrentAccount(ctx, row._id, author._creationTime))) {
+        throw new Error("Forbidden: not your queued message");
+      }
+    }
     await ctx.db.delete(row._id);
     // The composer disables attachments in queue mode, but the PUBLIC mutation
     // accepts them — drop any parts AND their mirrored `files` rows (the
@@ -542,6 +597,10 @@ export const cancelQueuedMessage = mutation({
       .collect();
     for (const p of parts) await ctx.db.delete(p._id);
     await deleteFilesByMessage(ctx, messageId);
+    // A withdrawn turn names nobody any more.
+    if ((message.mentions?.length ?? 0) > 0) {
+      await withdrawNotifications(ctx, `mention:${String(messageId)}`);
+    }
     await ctx.db.delete(messageId);
     await ctx.db.patch(message.chatId, { updatedAt: Date.now() });
   },
@@ -555,7 +614,9 @@ export const updateQueuedMessage = mutation({
     if (trimmed === "") throw new Error("EMPTY_TEXT");
     const message = await ctx.db.get(messageId);
     if (message === null) throw new Error("QUEUE_ALREADY_DISPATCHED");
-    await requireOwnedChat(ctx, userId, message.chatId);
+    const access = await requireReachableChat(ctx, userId, message.chatId);
+    // Rewriting a turn is posting it: a person made viewer since keeps no pen.
+    if (!canPost(access)) throw new Error("Forbidden: read-only in this conversation");
     const queued = await ctx.db
       .query("outbox")
       .withIndex("by_chat_status", (q) =>
@@ -564,9 +625,38 @@ export const updateQueuedMessage = mutation({
       .collect();
     const row = queued.find((r) => r.messageId === messageId);
     if (row === undefined) throw new Error("QUEUE_ALREADY_DISPATCHED");
+    // ONLY ITS AUTHOR REWRITES IT. The turn is sent under the author's name (and,
+    // in trusted-proxy with participantIdentity "self", from their own gateway
+    // identity): the owner rewriting a guest's words would put their own text in
+    // somebody else's mouth. The owner may still withdraw it (cancelQueuedMessage).
+    if (row.userId !== userId) {
+      throw new Error("Forbidden: not your queued message");
+    }
+    // …and only the account that wrote it: the same person provisioned again after
+    // a deletion has the same user id, not the deleted account's pen (the same
+    // generational rule the dispatch applies — lib/chatAccess.writtenByCurrentAccount).
+    const author = await getProfile(ctx, userId);
+    if (author === null || !(await writtenByCurrentAccount(ctx, row._id, author._creationTime))) {
+      throw new Error("Forbidden: not your queued message");
+    }
+    // THE MENTIONS FOLLOW THE WORDS. Their spans are offsets into the text they were
+    // computed on; left as they were, the drained turn names whatever now sits at
+    // those offsets — or is refused whole by the gateway (INVALID_MENTIONS). Each
+    // token is found again in the new text by the same rule the composer locates it
+    // with at send time; one the author deleted is dropped, from both rows, and the
+    // person it named is no longer told.
+    const previous = message.mentions ?? [];
+    const { kept, dropped } = reanchorMentionSpans(message.text, trimmed, previous);
+    const mentionPatch =
+      previous.length === 0 ? {} : { mentions: kept.length > 0 ? kept : undefined };
     // Both surfaces: the DISPLAY text (message) and the DISPATCH text (outbox —
     // what the drain actually sends to the gateway).
-    await ctx.db.patch(row._id, { text: trimmed });
-    await ctx.db.patch(messageId, { text: trimmed, updatedAt: Date.now() });
+    await ctx.db.patch(row._id, { text: trimmed, ...mentionPatch });
+    await ctx.db.patch(messageId, { text: trimmed, updatedAt: Date.now(), ...mentionPatch });
+    const stillNamed = new Set(kept.map((m) => String(m.userId)));
+    for (const userId of new Set(dropped.map((m) => String(m.userId)))) {
+      if (stillNamed.has(userId)) continue;
+      await withdrawNotifications(ctx, `mention:${String(messageId)}`, userId as Id<"users">);
+    }
   },
 });

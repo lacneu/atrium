@@ -42,6 +42,7 @@ import {
   type NormalizedCapabilities,
 } from "./lib/compat";
 import { resolveTargetForChat, resolveTargetForTurn } from "./routing";
+import { roomProjection } from "./chatAgents";
 import { resolveHealthPollTargets } from "./lib/bridgeRouting";
 
 const COMPAT_KEY = "singleton";
@@ -491,14 +492,18 @@ export const forChat = query({
   },
   handler: async (ctx, { chatId, routedAgent }) => {
     const { userId } = await requireActive(ctx);
-    const chat = (await requireReachableChat(ctx, userId, chatId)).chat;
+    const access = await requireReachableChat(ctx, userId, chatId);
+    const { chat } = access;
+    // Resolved as the dispatch will: on the owner's grants, a guest's selection
+    // kept only when it is one of the room's agents (chatAgents.roomProjection).
+    const room = await roomProjection(ctx, access, routedAgent ?? null);
     const instanceName =
-      (routedAgent
-        ? (await resolveTargetForTurn(ctx, chat, userId, routedAgent)).target
-            ?.instanceName
+      (room.routedAgent
+        ? (await resolveTargetForTurn(ctx, chat, room.resolver, room.routedAgent))
+            .target?.instanceName
         : null) ??
       chat.instanceName ??
-      (await resolveTargetForChat(ctx, chat, userId)).target?.instanceName ??
+      (await resolveTargetForChat(ctx, chat, room.resolver)).target?.instanceName ??
       null;
     if (instanceName === null) return null;
     const doc = await readDoc(ctx);

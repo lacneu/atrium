@@ -157,6 +157,19 @@ export function isHeaderSafeIdentity(user: string): boolean {
   );
 }
 
+/**
+ * The name a person's socket PRESENTS: `wanted` when the header can carry it, else
+ * `fallback` — their Atrium key, always header-safe. With no fallback to offer,
+ * `wanted` is returned unchanged and the connect refuses it as it always did. One
+ * rule for the conversation's socket (session.ts `gatewayNameFor`) and a
+ * participant's speaker socket (server.ts `sendAsSpeaker`): the same person must
+ * never be named two ways by the two doors.
+ */
+export function presentedIdentity(wanted: string, fallback: string | undefined): string {
+  if (fallback === undefined || isHeaderSafeIdentity(wanted)) return wanted;
+  return fallback;
+}
+
 export function assertIdentityUser(user: string): string {
   if (user.length === 0) {
     throw new GatewayIdentityError(

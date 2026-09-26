@@ -141,7 +141,7 @@ describe("who may change the roster", () => {
     ).resolves.toEqual({ added: true });
     await expect(
       as(t, guest).mutation(api.chatParticipants.addMember, { chatId, memberId: third }),
-    ).rejects.toThrow(/only the chat owner/);
+    ).rejects.toThrow(/do not manage/);
   });
 
   test("adding twice is not an error and does not duplicate the roster", async () => {
@@ -192,7 +192,7 @@ describe("who may change the roster", () => {
 
     await expect(
       as(t, guest).mutation(api.chatParticipants.removeMember, { chatId, memberId: other }),
-    ).rejects.toThrow(/only the chat owner/);
+    ).rejects.toThrow(/do not manage/);
     await expect(
       as(t, guest).mutation(api.chatParticipants.removeMember, { chatId, memberId: guest }),
     ).resolves.toEqual({ removed: true });
@@ -637,8 +637,10 @@ describe("membership never routes around an administrator", () => {
     expect(asOwner.target?.canonical).toBe("owner");
   });
 
-  test("a participant with NO grant cannot send at all", async () => {
-    // Checked at the source: being invited into a conversation is not a grant.
+  test("a participant with NO grant speaks on the owner's delegation", async () => {
+    // Decided 2026-09-25: the owner put the agent in the room; a participant speaks
+    // through it under the owner's identity, whatever their own grants. (Before
+    // that decision this case was refused at the source.)
     const t = convexTest(schema, modules);
     const owner = await seedUser(t, "owner");
     const guest = await seedUser(t, "guest");
@@ -663,7 +665,7 @@ describe("membership never routes around an administrator", () => {
         clientMessageId: "c9",
         routedAgent: { instanceName: "alpha", agentId: "alice" },
       }),
-    ).rejects.toThrow();
+    ).resolves.toMatchObject({ deduped: false });
   });
 });
 
@@ -752,10 +754,13 @@ describe("the sidebar is each person's own", () => {
 
     await as(t, guest).mutation(api.chats.setChatSidebar, { chatId, hidden: true });
 
+    // "In the sidebar" = listed and NOT flagged hidden. The guest's hidden row is
+    // still returned, flagged, so it can be shown again (codex pass 21) — the
+    // sidebar keeps it out of the working set.
     const inSidebar = async (u: Id<"users">) =>
-      (await as(t, u).query(api.messages.listChats, {})).map((c: { _id: Id<"chats"> }) =>
-        String(c._id),
-      );
+      (await as(t, u).query(api.messages.listChats, {}))
+        .filter((c: { sidebarHidden?: boolean }) => c.sidebarHidden !== true)
+        .map((c: { _id: Id<"chats"> }) => String(c._id));
     expect(await inSidebar(guest)).not.toContain(String(chatId));
     expect(await inSidebar(owner)).toContain(String(chatId));
     expect(await inSidebar(other)).toContain(String(chatId));

@@ -795,3 +795,38 @@ describe("codex hardening round (MoA gate, parts cascade)", () => {
     vi.useRealTimers();
   });
 });
+
+describe("the retry of a participant's turn stays theirs (group chats)", () => {
+  test("the rebuilt outbox row names the AUTHOR, not the owner", async () => {
+    // The dispatch re-checks the sender's rights and sends under their name; a
+    // retry rebuilt under the owner's id would hand a removed participant's turn
+    // the owner's standing.
+    const t = convexTest(schema, modules);
+    const { chatId, userMsgId, assistantId } = await seedErroredTurn(t, {
+      routed: true,
+    });
+    const guest = await t.run(async (ctx) => {
+      const id = await ctx.db.insert("users", {});
+      await ctx.db.insert("profiles", { userId: id, role: "user" as const, canonical: "guest" });
+      await ctx.db.insert("chatParticipants", {
+        chatId,
+        userId: id,
+        addedBy: (await ctx.db.get(chatId))!.userId,
+        addedAt: 1,
+      });
+      await ctx.db.patch(userMsgId, { authorUserId: id });
+      return id;
+    });
+    await finalizeConflict(t, assistantId);
+    await t.finishAllScheduledFunctions(vi.runAllTimers);
+    const retry = await t.run(async (ctx) =>
+      (
+        await ctx.db
+          .query("outbox")
+          .withIndex("by_chat_status", (q) => q.eq("chatId", chatId))
+          .collect()
+      ).find((r) => r.autoRetryAttempt === 1),
+    );
+    expect(String(retry?.userId)).toBe(String(guest));
+  });
+});

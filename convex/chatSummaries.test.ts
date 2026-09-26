@@ -505,28 +505,39 @@ describe("codex round-2 hardening", () => {
   });
 
   test("releasing a poisoned job PURGES its undispatched prompt + outbox (privacy)", async () => {
-    const t = convexTest(schema, modules);
-    const { userId, chatId } = await setup(t);
-    await schedule(t, chatId);
-    const hidden = (await hiddenChat(t, userId))!;
-    const target = hidden.pendingSummarize!.watermarkTarget;
-    await t.run(async (ctx) => {
-      await invalidateSummaryOnDeletion(ctx, chatId, userId, target);
-    });
-    await t.run(async (ctx) => {
-      const msgs = await ctx.db
-        .query("messages")
-        .withIndex("by_chat", (q) => q.eq("chatId", hidden._id))
-        .collect();
-      expect(msgs).toHaveLength(0); // the prompt (a copy of deleted content) is gone
-      const pending = await ctx.db
-        .query("outbox")
-        .withIndex("by_chat_status", (q) =>
-          q.eq("chatId", hidden._id).eq("status", "pending"),
-        )
-        .collect();
-      expect(pending).toHaveLength(0); // never reaches the agent
-    });
+    vi.useFakeTimers();
+    try {
+      const t = convexTest(schema, modules);
+      const { userId, chatId } = await setup(t);
+      await schedule(t, chatId);
+      const hidden = (await hiddenChat(t, userId))!;
+      const target = hidden.pendingSummarize!.watermarkTarget;
+      await t.run(async (ctx) => {
+        await invalidateSummaryOnDeletion(ctx, chatId, userId, target);
+      });
+      // AT ONCE, in the releasing transaction: the undispatched prompt never
+      // reaches the agent.
+      await t.run(async (ctx) => {
+        const pending = await ctx.db
+          .query("outbox")
+          .withIndex("by_chat_status", (q) =>
+            q.eq("chatId", hidden._id).eq("status", "pending"),
+          )
+          .collect();
+        expect(pending).toHaveLength(0);
+      });
+      // The copy itself goes with the bounded sweep that release scheduled.
+      await t.finishAllScheduledFunctions(vi.runAllTimers);
+      await t.run(async (ctx) => {
+        const msgs = await ctx.db
+          .query("messages")
+          .withIndex("by_chat", (q) => q.eq("chatId", hidden._id))
+          .collect();
+        expect(msgs).toHaveLength(0); // the prompt (a copy of deleted content) is gone
+      });
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   test("cleanupSummarizerChat sweeps settled rows but never a live job's", async () => {

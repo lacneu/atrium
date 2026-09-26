@@ -31,6 +31,8 @@ import {
   currentTurnRouting,
   resolveTargetForTurn,
 } from "./routing";
+import { roomProjection } from "./chatAgents";
+import { resolveChatAccess } from "./lib/chatAccess";
 
 const HEALTH_KEY = "singleton";
 // A snapshot older than this means the poller itself is wedged/dead -> treat the
@@ -467,7 +469,7 @@ export const getBridgeAvailability = query({
     let agentId: string | null = null;
     let canonical: string | null = null;
     if (chatId) {
-      const chat = await ctx.db.get(chatId);
+      const access = await resolveChatAccess(ctx, chatId, userId);
       // Only scope by a chat the CALLER owns — never read a third party's chat to
       // expose its instance's state/capacity (parity with the per-chat access gate).
       // Scope to the instance dispatch ACTUALLY routes to. The routing resolver is the
@@ -476,7 +478,13 @@ export const getBridgeAvailability = query({
       // purged). A revoked-but-PRESENT agent is `agent_restricted` instead, with no
       // rebind — the chat is read-only, never silently re-routed. So the resolver
       // wins, with chat.instanceName only as a last resort (resolver found no target).
-      if (chat && chat.userId === userId) {
+      // A GUEST reads it too, resolved as the dispatch resolves their turn: on the
+      // OWNER's grants and canonical, their selection kept only when it is one of
+      // the room's agents (chatAgents.roomProjection). Without it a guest saw no
+      // outage banner for a room agent whose gateway was down.
+      if (access !== null) {
+        const chat = access.chat;
+        const room = await roomProjection(ctx, access, routedAgent ?? null);
         // Narrow `degraded` to the routed AGENT's own target for THIS user's
         // canonical (codex P2: another agent — or another user's canonical on a
         // shared agent — erroring on the same instance must not flag this chat).
@@ -491,16 +499,15 @@ export const getBridgeAvailability = query({
         // gateway the NEXT send will actually hit. The precedence itself lives in
         // routing.ts: the Talk lanes need the SAME answer, and when each side
         // reconstructed it separately they disagreed mid-switch.
-        const chosen = (await currentTurnRouting(ctx, chat, routedAgent ?? null))
-          .agent;
-        const target = (await resolveTargetForTurn(ctx, chat, userId, chosen))
+        const chosen = (await currentTurnRouting(ctx, chat, room.routedAgent)).agent;
+        const target = (await resolveTargetForTurn(ctx, chat, room.resolver, chosen))
           .target;
         instanceName = target?.instanceName ?? chat.instanceName ?? null;
         agentId = target?.agentId ?? chat.agentId ?? null;
         // The user's OWN canonical, independent of target resolution — the filter
         // must stay narrow even when the resolver finds no target (else another
         // canonical's error on a shared agent shows this chat a false outage).
-        canonical = await canonicalForUser(ctx, userId);
+        canonical = await canonicalForUser(ctx, room.resolver);
       }
     }
     // Per-instance liveness: the discovery poll (cron, activity-independent)

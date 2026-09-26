@@ -387,16 +387,21 @@ describe("the freeze is re-asked with the POST in hand", () => {
     );
     const post = dispatch.indexOf('")}/send`');
     expect(post, "the dispatch no longer POSTs /send").toBeGreaterThan(-1);
-    // The attachment/mention work, then the check, then the POST — in that order.
-    const mentions = dispatch.lastIndexOf("canonicalsForUsers", post);
-    expect(mentions, "the mention resolution moved").toBeGreaterThan(-1);
-    const recheck = dispatch.lastIndexOf("internal.bridge.reparkIfBusy", post);
+    // The attachment/composition work, then the check, then the POST — in that order.
+    const mentions = dispatch.lastIndexOf("const composedText", post);
+    expect(mentions, "the text composition moved").toBeGreaterThan(-1);
+    // The last gate (bridge.lastGateBeforeSend) re-parks a turn the chat became busy
+    // for, in the same transaction as the sender check — convex/chatAgents.test.ts
+    // "the last gate before the send leaves" proves the re-park itself.
+    const recheck = dispatch.lastIndexOf("internal.bridge.lastGateBeforeSend", post);
     expect(
       recheck,
       "nothing re-asks the freeze between the attachment work and the POST",
     ).toBeGreaterThan(mentions);
     // …and it RETURNS on a re-park: falling through would post anyway.
-    expect(dispatch.slice(recheck, post)).toMatch(/\)\)\s*\{?\s*return;/);
+    expect(dispatch.slice(recheck, post)).toMatch(
+      /gate\.kind === "gone" \|\| gate\.kind === "reparked"\) return;/,
+    );
   });
 });
 
@@ -457,7 +462,8 @@ describe("the agent cannot be switched while a call is in progress", () => {
     // on another gateway entirely (codex P3, pass 6).
     const thread = stripComments(CONVEX_CHAT);
     expect(thread).toMatch(/showsForeignAgent =/);
-    expect(thread).toMatch(/\(multiInstance \|\| showsForeignAgent\) && shown/);
+    // The control names the next agent in its title (the pill shows the room).
+    expect(thread).toMatch(/\(multiInstance \|\| showsForeignAgent\) && shown \?/);
   });
 
   test("a call this tab does NOT own can still be hung up from here", () => {

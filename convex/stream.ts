@@ -98,7 +98,7 @@ async function assertMessageBound(
 
 /** The optional proven-instance arg every ingest-reachable mutation takes. */
 const boundArg = { boundInstanceName: v.optional(v.string()) };
-import { requireActive, requireOwnedChat } from "./lib/access";
+import { requireActive, requireReachableChat } from "./lib/access";
 import { activeRecording, recordDelta } from "./deliveryTiming";
 import { correlateDocumentaryFetch } from "./documentAttachments";
 import { correlateCuration } from "./agentFileCuration";
@@ -120,6 +120,7 @@ import {
   quotesPreamble,
 } from "./lib/quoteReply";
 import { providerSessionClearPatch } from "./lib/providerSession";
+import { userTurnAuthorLabels } from "./lib/turnAuthors";
 
 // Optional delivery-recorder fields the bridge attaches to a stream write while a
 // turn is being recorded (see convex/deliveryTiming.ts). `recSessionId` is the
@@ -2433,8 +2434,10 @@ export const deleteStreamChunksStep = internalMutation({
 // SSE transport (Phase 2): the poll the streaming httpAction runs each tick. Returns the
 // message's chunks AFTER `afterSeq` (the cursor), its lifecycle status, and — once the turn
 // is terminal — the AUTHORITATIVE final text (so the client ends correct even if the chunk
-// GC already raced ahead). Auth: requires an active user that OWNS the chat (IDOR); the
-// httpAction propagates ctx.auth into this runQuery. See openclaw-notes/docs/atrium/convex-http-streaming-transport.md.
+// GC already raced ahead). Auth: requires an active user who can REACH the chat — its
+// owner or a participant, the same people getChatStreamTransport answers "sse" to and the
+// reactive feed shows the stream to (IDOR: a stranger is refused); the httpAction
+// propagates ctx.auth into this runQuery. See openclaw-notes/docs/atrium/convex-http-streaming-transport.md.
 const POLL_CHUNK_CAP = 500;
 export const streamPoll = internalQuery({
   args: { messageId: v.id("messages"), afterSeq: v.number() },
@@ -2442,7 +2445,7 @@ export const streamPoll = internalQuery({
     const { userId } = await requireActive(ctx);
     const message = await ctx.db.get(messageId);
     if (message === null) throw new Error("streamPoll: message not found");
-    await requireOwnedChat(ctx, userId, message.chatId); // IDOR
+    await requireReachableChat(ctx, userId, message.chatId); // IDOR
     const rows = await ctx.db
       .query("streamChunks")
       .withIndex("by_message_seq", (q) =>
@@ -4086,6 +4089,10 @@ export const rehydrationContext = internalQuery({
       clippedByRead &&
       (oldestRead ? effectiveOrder(oldestRead) > watermark : false);
 
+    // A group conversation's user turns carry their author (lib/turnAuthors); a solo
+    // chat's get none and render exactly as before. Resolved on the usable window
+    // only: at most its distinct authors.
+    const authors = await userTurnAuthorLabels(ctx, chat, usableDesc);
     const composed = composeRehydration({
       locale: contentLocale,
       turns: usableDesc
@@ -4093,6 +4100,9 @@ export const rehydrationContext = internalQuery({
         .reverse()
         .map((m) => ({
           role: m.role as "user" | "assistant",
+          ...(m.role === "user" && authors?.has(m._id)
+            ? { author: authors.get(m._id)! }
+            : {}),
           // QUOTE-REPLY: a user turn that replied to a block re-carries the
           // same preamble the dispatch sent (resolved for the SAME instance/
           // locale as the injections above) — the rebuilt history reads like

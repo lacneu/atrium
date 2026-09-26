@@ -155,3 +155,19 @@ describe("attachmentAdapter.add — upfront over-size gate", () => {
     expect(onReject).toHaveBeenCalledOnce();
   });
 });
+
+describe("attachmentAdapter.add — the policy of the agent the composer targets", () => {
+  test("the current selection is sent to the inbound-policy query", async () => {
+    const convex = mockConvex({
+      maxInboundBytes: null,
+      inboundPolicy: { inboundMediaMode: "shared-fs", sharedFsMaxBytes: 500 * MiB },
+    });
+    const target = { instanceName: "beta", agentId: "hermes" };
+    const adapter = createConvexAttachmentAdapter(convex, undefined, "chat123", () => target);
+    await adapter.add({ file: fakeFile(DEFAULT_CAP + MiB, "video/mp4", "clip.mp4") });
+    const policyCall = (convex.query as unknown as { mock: { calls: unknown[][] } }).mock.calls.find(
+      ([fn]) => getFunctionName(fn as Parameters<typeof getFunctionName>[0]) === POLICY,
+    );
+    expect(policyCall?.[1]).toMatchObject({ chatId: "chat123", routedAgent: target });
+  });
+});

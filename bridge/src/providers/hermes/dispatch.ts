@@ -830,6 +830,7 @@ async function runClaimedWsSend(
       writer,
       chatId: body.chatId,
       sessionKey: hermesSessionKey(body),
+      agentId: body.agentId,
       providerChatId: prior,
       dispatchOutboxId: body.outboxId,
       sendReceivedMs,

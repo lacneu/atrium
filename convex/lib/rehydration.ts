@@ -145,6 +145,10 @@ export interface RehydrationTurn {
   role: "user" | "assistant";
   /** Already trimmed, non-empty. */
   text: string;
+  /** WHO wrote this user turn, in a group conversation only (lib/turnAuthors:
+   *  already bounded and single-line). Absent on a solo chat, whose history then
+   *  renders exactly as it always did. */
+  author?: string;
 }
 
 export interface RehydrationSummary {
@@ -220,6 +224,18 @@ export const REHYDRATION_STRINGS: Record<
   },
 };
 
+/** The label a history line opens with — the SAME for the rehydrated tail and the
+ *  summarizer's transcript, so both attribute a group's turns identically. */
+export function historyTurnLabel(
+  locale: Locale,
+  role: "user" | "assistant",
+  author?: string | null,
+): string {
+  const t9n = REHYDRATION_STRINGS[locale];
+  if (role !== "user") return t9n.assistantLabel;
+  return author ? `${t9n.userLabel} (${author})` : t9n.userLabel;
+}
+
 /**
  * Compose the history block. Layout:
  *
@@ -238,7 +254,8 @@ export const REHYDRATION_STRINGS: Record<
 export function composeRehydration(
   input: ComposeRehydrationInput,
 ): ComposedRehydration {
-  const t9n = REHYDRATION_STRINGS[input.locale ?? BASE_LOCALE];
+  const locale = input.locale ?? BASE_LOCALE;
+  const t9n = REHYDRATION_STRINGS[locale];
   const summaryText = input.summary?.text.trim() ?? "";
   const hasSummary = summaryText.length > 0;
 
@@ -256,7 +273,7 @@ export function composeRehydration(
   let truncated = false;
   for (let i = input.turns.length - 1; i >= 0; i--) {
     const t = input.turns[i]!;
-    const label = t.role === "user" ? t9n.userLabel : t9n.assistantLabel;
+    const label = historyTurnLabel(locale, t.role, t.author);
     let line = `${label} : ${t.text}`;
     if (keptDesc.length > 0 && chars + line.length > verbatimBudget) {
       truncated = true;
