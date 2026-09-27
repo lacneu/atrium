@@ -121,3 +121,50 @@ describe("a sub-agent's time-limit failure", () => {
     }
   });
 });
+
+/**
+ * The OTHER timeout path: the run budget expires while the child WAITS ON A TOOL.
+ *
+ * Captured live 2026-09-27 on 2026.9.6 (bench, `runTimeoutSeconds: 30`, the child polling
+ * a background `sleep 120`; gateway log "embedded run timeout: … timeoutMs=29996"). The
+ * attempt records the timeout internally only — `mergeTerminal({kind:"timeout", phase:
+ * "prompt", source:"run_budget"})` (run/attempt-execution-phase.ts:193-194) — while the
+ * broadcast lifecycle terminal is built from `state.timeoutPhase`, set only through the
+ * terminal meta (embedded-agent-subscribe.handlers.lifecycle.ts:200-230,
+ * embedded-agent-subscribe.ts:461), which this path never sets. What reaches the wire is
+ * a plain abort, indistinguishable from a cancellation: `lifecycle end` with
+ * `aborted:false, stopReason:"aborted", livenessState:"paused"`, no `timeoutPhase`, no
+ * `status`, no `errorKind`, then `chat` `state:"aborted"`. Upstream's own classifier calls
+ * that a cancellation (packages/normalization-core/src/agent-run-terminal-outcome.ts,
+ * `resolveAgentRunLifecycleTerminalFacts`: "A mechanical abort is cancellation unless
+ * the producer records a timeout"). Atrium must not invent the class it was not given.
+ * Shapes: the captured frames, ids replaced, the receipt trimmed to its structural keys.
+ */
+describe("a run-budget timeout during a TOOL wait reaches the wire as a plain abort", () => {
+  const KEY = "agent:files:subagent:6fab0bfb-4483-4d58-9102-70e3421ec5d3";
+  const RUN = "402c35bf-dcac-448f-a4c2-55075bdbb52b";
+  const SPAWNER = "agent:alice:atrium:chat:u-repro:turn-nx7bkjdbpv4nk1f437mgk4h2518f75da";
+  const terminalData = {
+    startedAt: 1790532523014,
+    aborted: false,
+    stopReason: "aborted",
+    replayInvalid: true,
+    livenessState: "paused",
+    terminalReply: { disposition: "empty" },
+  };
+  const frames = [
+    { type: "event", event: "agent", payload: { runId: RUN, stream: "lifecycle", sessionKey: KEY, agentId: "files", spawnedBy: SPAWNER, data: { phase: "start", startedAt: 1790532523761 } } },
+    { type: "event", event: "agent", payload: { runId: RUN, stream: "lifecycle", sessionKey: KEY, agentId: "files", spawnedBy: SPAWNER, data: { phase: "finishing", endedAt: 1790532553824, ...terminalData } } },
+    { type: "event", event: "agent", payload: { runId: RUN, stream: "lifecycle", sessionKey: KEY, agentId: "files", spawnedBy: SPAWNER, data: { phase: "end", endedAt: 1790532553835, executionSettled: true, ...terminalData } } },
+    { type: "event", event: "chat", payload: { runId: RUN, sessionKey: KEY, agentId: "files", spawnedBy: SPAWNER, seq: 114, state: "aborted", stopReason: "aborted" } },
+  ];
+
+  it("the child settles `aborted`, with no failure class guessed", () => {
+    const obs = new SubAgentObserver(SPAWNER, "chat1");
+    const ups = frames.flatMap((f, i) => obs.observe(f, 100 + i, null, "msgA"));
+    const term = ups.find((u) => u.childSessionKey === KEY && u.status !== "running");
+    expect(term?.status).toBe("aborted");
+    expect(term?.errorCode).toBeUndefined();
+    expect(term?.childRunId).toBe(RUN);
+  });
+});

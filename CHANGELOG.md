@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.87.2] — The 0.87.1 fixes, as images
+
+Packaging release. The container images of 0.87.1 were not published: the release was cut
+while the live-bench run that attests the gateway-reading code for OpenClaw 2026.9.6 was
+still finishing, so the tagged commit carried the attestation of the previous build and the
+image pipeline refused it. 0.87.2 carries the fresh attestation and publishes the images.
+It contains exactly the changes described under 0.87.1 — nothing else.
+
+**Upgrading.** If you run the npm packages, 0.87.1 and 0.87.2 are the same. If you run the
+container images, go straight from 0.87.0 to 0.87.2, and follow the 0.87.1 deployment note
+(`npx convex deploy` together with the new bridge).
+
 ## [0.87.1] — A delegation inside a delegation stays in its bubble
 
 Corrective release, from two production reports on OpenClaw 2026.9.6. No breaking changes;
