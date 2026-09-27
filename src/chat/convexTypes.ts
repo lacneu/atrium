@@ -202,6 +202,9 @@ export interface ConvexMessageView {
    *  settled children (by run id) whose replies belong there. Supersedes
    *  `continuationAt` on every merge made since it existed. */
   continuations?: ReadonlyArray<{ at: number; childRunIds: readonly string[] }>;
+  /** The child run ids of the continuations this bubble visibly followed up
+   *  (text after the batch, or a file one of its runs delivered). */
+  followedUpChildRunIds?: readonly string[];
   status: MessageStatus;
   text: string;
   error?: string;

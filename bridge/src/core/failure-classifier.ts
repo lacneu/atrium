@@ -11,6 +11,21 @@
 // observability surface. One classifier, two consumers — a second copy would
 // drift and only one side would be fixed.
 
+/** The gateway's OWN failure classes on a chat error frame — `ChatErrorEventSchema.
+ *  errorKind` (upstream packages/gateway-protocol/src/schema/logs-chat.ts:356-362 at
+ *  v2026.9.6), minus `unknown`, which names nothing a reader can act on. The server
+ *  mints `timeout` from the recorded terminal classification rather than from the
+ *  text (src/gateway/server-chat.ts:725-730), so for a run that hit its time limit this
+ *  field is the only structured signal: the sentence beside it is upstream's generic
+ *  advice. Shared by the turn normalizer and the sub-agent observer — the second
+ *  reader of the same frame must not keep its own copy of the vocabulary. */
+export const GATEWAY_CHAT_ERROR_KINDS: ReadonlySet<string> = new Set([
+  "refusal",
+  "timeout",
+  "rate_limit",
+  "context_length",
+]);
+
 const CONTEXT_OVERFLOW_TEXT_RE =
   /context overflow|prompt too large|maximum context length|context[- ]length exceeded|request_too_large|request too large|input (?:token count )?exceeds the maximum number of (?:input )?tokens|input is too long for the model|too many tokens|reduce the length|exceeds? (?:the )?(?:model'?s )?(?:maximum )?context/i;
 const SESSION_INIT_CONFLICT_RE =

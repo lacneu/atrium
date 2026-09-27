@@ -90,6 +90,12 @@ export interface SubAgentRecord {
    *  requester-settle wake names, and so the only exact join from that wake back
    *  to the bubble that spawned the child (convex/lib/deliveryRuns.ts). */
   childRunId?: string;
+  /** The per-run limit the `sessions_spawn` call declared (seconds, 0 = none) —
+   *  so a child cut off by it is told as such, with its figure. A top-level field
+   *  on purpose, never inside `sessionMeta`: the ingest passes that object whole
+   *  to a validator, and a Convex older than this field would refuse the entire
+   *  upsert — the registration with it. */
+  runTimeoutSeconds?: number;
   taskName?: string;
   /** The bound the TOOL declared for this background task (async-start details).
    *  Carried so the row can be bounded by the task's own deadline rather than by a
@@ -2472,6 +2478,9 @@ export class HttpConvexWriter implements ConvexWriter {
       kind: record.kind,
       bornOfRun: record.bornOfRun,
       ...(record.childRunId !== undefined ? { childRunId: record.childRunId } : {}),
+      ...(record.runTimeoutSeconds !== undefined
+        ? { runTimeoutSeconds: record.runTimeoutSeconds }
+        : {}),
       taskName: record.taskName,
       declaredTimeoutMs: record.declaredTimeoutMs,
       status: record.status,

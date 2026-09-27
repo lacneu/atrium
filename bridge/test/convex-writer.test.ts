@@ -1885,3 +1885,28 @@ describe("upsertSubAgent carries the child RUN id to Convex", () => {
     expect("childRunId" in (subs[1] ?? {})).toBe(false);
   });
 });
+
+describe("upsertSubAgent carries the spawn's declared run limit, OUTSIDE sessionMeta", () => {
+  // The ingest hands `sessionMeta` whole to a validator: a field added inside it would
+  // make a Convex that predates it refuse the whole upsert — the registration with it.
+  test("a top-level field when known, absent otherwise, never inside sessionMeta", async () => {
+    const sent: Array<Record<string, unknown>> = [];
+    const fetchImpl = (async (_url: unknown, init: { body: string }) => {
+      sent.push(JSON.parse(init.body) as Record<string, unknown>);
+      return { ok: true, json: async () => ({ ok: true }) } as unknown as Response;
+    }) as unknown as typeof fetch;
+    const w = writerWith(fetchImpl);
+    await w.upsertSubAgent({
+      chatId: "c1",
+      childSessionKey: "agent:files:subagent:x",
+      runTimeoutSeconds: 900,
+      sessionMeta: { model: "gpt-5.5" },
+      status: "running",
+    });
+    await w.upsertSubAgent({ chatId: "c1", childSessionKey: "agent:files:subagent:y", status: "running" });
+    const subs = sent.filter((b) => b.op === "upsertSubAgent");
+    expect(subs[0]?.runTimeoutSeconds).toBe(900);
+    expect(subs[0]?.sessionMeta).toEqual({ model: "gpt-5.5" });
+    expect("runTimeoutSeconds" in (subs[1] ?? {})).toBe(false);
+  });
+});

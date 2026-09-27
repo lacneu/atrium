@@ -3411,6 +3411,8 @@ function MessageAgentChip({
 // Stable empty array so the toolParts selector never returns a fresh reference
 // (which would defeat useMessage's memoization and churn re-renders).
 const EMPTY_TOOL_PARTS: ToolActivityPart[] = [];
+// Same reason: a stable empty list for the answered-run-ids selector.
+const EMPTY_RUN_IDS: string[] = [];
 
 // Animated dashed ring of the waiting/composing pill: a STATIC ring of small
 // px-sized dots (the original dashed-border look) + a short accent block of 3
@@ -3579,13 +3581,18 @@ function AssistantEmptyState({ show }: { show: boolean }) {
       (msg.metadata?.custom as { hasContinuation?: boolean } | undefined)
         ?.hasContinuation === true,
   );
+  const answeredChildRunIds = useMessage(
+    (msg) =>
+      (msg.metadata?.custom as { answeredChildRunIds?: string[] } | undefined)
+        ?.answeredChildRunIds ?? EMPTY_RUN_IDS,
+  );
 
   // Re-evaluate when a "composing" grace window elapses: the pure decision is
   // time-dependent there (child done -> announce still expected) and nothing
   // else re-renders this component at the deadline.
   const [, bumpClock] = useState(0);
   const state = assistantEmptyState(
-    { status, hasText, hasMedia, settledAt, delegatedInline },
+    { status, hasText, hasMedia, settledAt, delegatedInline, answeredChildRunIds },
     toolParts,
     // NOT `?? []` — undefined means "the query has not answered", and collapsing
     // that into "no sub-agents" made a settled hand-off read as a turn that

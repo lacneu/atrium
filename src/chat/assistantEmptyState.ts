@@ -7,6 +7,7 @@ import {
   toolResultStatus,
   yieldHandedOff,
 } from "../../convex/lib/toolOutcome";
+import { parseRequesterSettleRun } from "../../convex/lib/deliveryRuns";
 
 // Pure decision logic for the assistant "empty bubble" state.
 //
@@ -65,6 +66,10 @@ export type EmptyStateMessage = {
    *  delegated replies already render INLINE at that point (`delegatedRepliesFor`).
    *  The `done` fallback must not print them a second time under the body. */
   delegatedInline?: boolean;
+  /** The child RUN ids of the merged continuations this bubble visibly FOLLOWED
+   *  UP — text after the batch, or a file one of its runs delivered
+   *  (convex/lib/deliveryRuns.ts `followedUpChildRunIds`). */
+  answeredChildRunIds?: readonly string[];
 };
 
 /** The discriminated render decision. `none` = render normally (there is an
@@ -363,14 +368,46 @@ export function assistantEmptyState(
   // would render an empty or misleading bubble (the generic state is honest).
   const settled = mine.filter((s) => s.kind !== "task");
 
+  // A failure the agent already ANSWERED is not the bubble's verdict (prod
+  // 2026-09-27: a first child timed out, the continuation re-delegated and
+  // delivered the PDF, and the bubble still read "delegated to a sub-agent that
+  // failed" above it, for good). Answered means the reader can SEE the agent act
+  // on it: the continuation that received it was followed by text or a file, or
+  // it delegated again and that delegation is under way or done. Being named in a
+  // continuation only proves the failure was received — a continuation can end
+  // on nothing, and then the failure is still this bubble's news. Either way it
+  // stays on the child's own card.
+  const answered = new Set(message.answeredChildRunIds ?? []);
+  // The re-delegation must be one THIS bubble shows: a continuation whose merge
+  // was refused opened a bubble of its own, and a child it delegated there
+  // answers nothing here — this bubble never showed the agent act on the failure.
+  // Anchored here is the proof (exact at spawn, or recorded by the settle join).
+  const redelegated = (runId: string): boolean =>
+    messageId !== undefined &&
+    rows.some(
+      (r) =>
+        r.parentMessageId === messageId &&
+        r.kind !== "task" &&
+        (r.status === "running" || r.status === "done") &&
+        (parseRequesterSettleRun(r.bornOfRun)?.childRunIds.includes(runId) ?? false),
+    );
   const failed = settled.find(
-    (s) => s.status === "error" || s.status === "aborted",
+    (s) =>
+      (s.status === "error" || s.status === "aborted") &&
+      !(
+        s.childRunId !== undefined &&
+        (answered.has(s.childRunId) || redelegated(s.childRunId))
+      ),
   );
   if (failed) {
     return {
       kind: "failed",
       taskName: cleanTaskName(failed.taskName),
-      reason: shortenSubAgentError(failed.errorMessage, failed.errorCode),
+      reason: shortenSubAgentError(
+        failed.errorMessage,
+        failed.errorCode,
+        failed.runTimeoutSeconds,
+      ),
     };
   }
 

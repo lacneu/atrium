@@ -10714,3 +10714,15 @@ button.oc-perm__opt:disabled {
   .oc-areq__actions > * { flex: 1 1 auto; }
   .oc-areq__actions .oc-areq__spacer { display: none; }
 }
+/* The gateway's own sentence behind a labelled sub-agent failure: out of the way,
+   but never gone (the label is for the reader, the sentence for the operator). */
+.oc-subpanel__error-detail > summary {
+  cursor: pointer;
+  font-size: 0.75rem;
+  color: var(--muted-foreground);
+}
+.oc-subpanel__error-detail > p {
+  margin-top: 0.35rem;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}

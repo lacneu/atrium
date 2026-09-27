@@ -305,6 +305,9 @@ describe("chatStateInternal", () => {
       await ctx.db.insert("subAgents", {
         chatId: cid,
         childSessionKey: "agent:x:subagent:erruuid000000",
+        // The two joins a merged continuation needs — surfaced as PRESENCE only.
+        childRunId: "SENTINEL-CHILDRUNID-5c2543ae",
+        anchorExact: true,
         taskName: "SENTINEL_SUBTASK",
         status: "error" as const,
         errorMessage: "SENTINEL_SUBERR 429 rate limit for Jean Dupont",
@@ -338,6 +341,7 @@ describe("chatStateInternal", () => {
       "SENTINEL_SUBPHASE", // phase is free-form gateway text -> treated as content
       "SENTINEL_RUNPHASE",
       "Jean Dupont", // PHI inside the raw error must never escape the classifier
+      "SENTINEL-CHILDRUNID", // an id, but the summary only says whether it is known
     ]) {
       expect(serialized).not.toContain(sentinel);
     }
@@ -372,9 +376,13 @@ describe("chatStateInternal", () => {
     expect(failed.status).toBe("error");
     expect(failed.errorCategory).toBe("api_error");
     expect(failed.hasTaskName).toBe(true);
+    expect(failed.hasChildRunId).toBe(true);
+    expect(failed.anchorExact).toBe(true);
     const running = state.subAgents.runningSample[0]!;
     expect(running.status).toBe("running");
     expect(running.hasTaskName).toBe(false); // no taskName seeded
+    expect(running.hasChildRunId).toBe(false);
+    expect(running.anchorExact).toBe(false);
   });
 
   // INTEGRATION: a STALE running sub-agent flows chatStateInternal -> assessChat ->

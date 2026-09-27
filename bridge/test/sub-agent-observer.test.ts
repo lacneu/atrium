@@ -35,6 +35,9 @@ const FRAMES = FIXTURE.split("\n")
 const PARENT1 = "agent:alice:atrium:chat:olivier:subagentcap1782588406379";
 const PARENT2 = "agent:alice:atrium:chat:olivier:subagentcap1782589051772";
 const CHILD1 = "agent:alice:subagent:50a9857b-5b2f-40ce-867d-2e20d2e2b737";
+// The child's run id, as its spawn result returns it and its own frames carry it:
+// every running-state write re-carries it for the settle join (Convex fills once).
+const CHILD1_RUN = "246516bb-8a17-41b7-8fbe-db6a21d7ef15";
 const CHILD2 = "agent:alice:subagent:b50901b0-2f75-45c4-8ffc-47db32472afb";
 
 const find = (pred: (f: Record<string, any>) => boolean): Record<string, any> => {
@@ -121,7 +124,7 @@ describe("SubAgentObserver — registration & lifecycle (real frames)", () => {
     obs.observe(SPAWN_RESULT_1, 1000);
     const out = obs.observe(CHILD_STARTUP_1, 1001);
     expect(out).toEqual([
-      { chatId: "chatA", parentMessageId: null, childSessionKey: CHILD1, status: "running", phase: "startup" },
+      { chatId: "chatA", parentMessageId: null, childSessionKey: CHILD1, childRunId: CHILD1_RUN, status: "running", phase: "startup" },
     ]);
   });
 
@@ -554,7 +557,7 @@ describe("SubAgentObserver — a lifecycle phase is NEVER a terminal (round-7 P1
     };
     // lifecycle:end is a PHASE update — status stays running (queue NOT released).
     expect(obs.observe(lifecycleEnd, 1001)).toEqual([
-      { chatId: "chatA", parentMessageId: null, childSessionKey: CHILD1, status: "running", phase: "end" },
+      { chatId: "chatA", parentMessageId: null, childSessionKey: CHILD1, childRunId: CHILD1_RUN, status: "running", phase: "end" },
     ]);
     expect(obs.size).toBe(1); // NOT reaped — still held
     // chat:final is the authoritative terminal (done + result) that drains the queue.

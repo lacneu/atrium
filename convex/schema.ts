@@ -2107,9 +2107,16 @@ export default defineSchema({
     // not the session key — so without it the continuation of a yielded turn has
     // no exact join back to the bubble that spawned the child. Fill-only: a later
     // run of the same child session (steer, restart recovery) does not replace
-    // it, and the settle join then fails closed. Absent on rows registered from
-    // the child's own frames (no spawn result) and on every pre-field row.
+    // it, and the settle join then fails closed. A child spawned inside a
+    // delivery run (no tool frames reach the bridge there) takes it from its own
+    // `lifecycle start` frame, whose runId is the same id by upstream
+    // construction. Absent on every pre-field row.
     childRunId: v.optional(v.string()),
+    // The per-run limit the `sessions_spawn` call DECLARED, in seconds (0 = none).
+    // Only a spawn seen as a tool call carries it. Lets a child cut off by that
+    // limit be told as such, with its figure, instead of the gateway's generic
+    // advice to raise a config value that was not the one in force. Fill-only.
+    runTimeoutSeconds: v.optional(v.number()),
     // The user stopped THIS child. Distinct from `status`, which legitimately
     // keeps moving afterwards: a late terminal frame turns the row `done` and
     // carries the child's `resultText`, and without a stamp that survives it the

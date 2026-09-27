@@ -72,6 +72,11 @@ export type SubAgentRow = {
   /** The child's run id from its spawn result — how a merged hand-off
    *  continuation (`continuations[].childRunIds`) claims the replies it answered. */
   childRunId?: string;
+  /** The per-run limit the spawn declared, in seconds (0 = none). */
+  runTimeoutSeconds?: number;
+  /** The delivery run this child was spawned INSIDE — for a yielded turn's
+   *  continuation, the `announce:requester-settle:…` run that re-delegated. */
+  bornOfRun?: string;
   /** "task" = a gateway background-task engagement (async tool, e.g. image
    *  generation) rather than a spawned sub-agent session. */
   kind?: "subagent" | "task";
@@ -118,6 +123,9 @@ export type SubAgentCardView = {
   errorMessage?: string;
   /** The child's STABLE failure class (W2 / G-11) — allowlisted server-side. */
   errorCode?: string;
+  /** The per-run limit the spawn declared (seconds, 0 = none) — named when the
+   *  child failed by reaching it. */
+  runTimeoutSeconds?: number;
   resultText?: string;
   /** The tools the child used (name + status + the toolCallId join key) — the
    *  AUTHORITATIVE summary list (its length is the tool count). The panel renders
@@ -317,6 +325,7 @@ function toCard(row: SubAgentRow): SubAgentCardView {
     phase: row.status === "running" ? row.phase : undefined,
     errorMessage: row.errorMessage,
     errorCode: row.errorCode,
+    runTimeoutSeconds: row.runTimeoutSeconds,
     resultText: row.resultText,
     // Name + status only (the row never carries args/results — SOC2).
     tools: row.tools?.map((t) => ({
@@ -511,8 +520,23 @@ export function shortenSubAgentError(
    *  message shows for the same cause, and it is the only useful thing left when
    *  the prose turns out to be boilerplate (the generic fallback below). */
   code?: string | null,
+  /** The per-run limit the spawn DECLARED (seconds, 0 = none), when known. */
+  runTimeoutSeconds?: number | null,
 ): string {
   const generic = m.subagents_error_generic();
+  if (code === "timeout") {
+    // A CHILD cut off by its time limit is not "the turn timed out, retry": the
+    // reader has no turn to retry, and the gateway's own sentence advises raising
+    // `agents.defaults.timeoutSeconds` even when the limit in force was the
+    // spawn's own `runTimeoutSeconds`. Its figure, when the spawn declared one.
+    return capReason(
+      typeof runTimeoutSeconds === "number" &&
+        Number.isInteger(runTimeoutSeconds) &&
+        runTimeoutSeconds > 0
+        ? m.subagents_error_timeout({ seconds: runTimeoutSeconds })
+        : m.subagents_error_timeout_unbounded(),
+    );
+  }
   if (code) {
     const label = ERROR_CODE_LABEL[code]?.();
     // CAPPED like every other branch. The early return used to hand the label back whole,
@@ -538,4 +562,23 @@ export function shortenSubAgentError(
 
   // 3) Nothing usable / everything was boilerplate.
   return generic;
+}
+
+/**
+ * The gateway's OWN sentence for a failed child, when the headline above did not
+ * show it — i.e. a stable class replaced it with our label. Kept reachable in the
+ * panel detail: the label is what the reader can act on, the sentence is what the
+ * operator greps for, and a label must not make the source vanish. Null when the
+ * headline already IS that sentence (no class) or there is none. Boilerplate-only
+ * prose stays hidden, as everywhere else.
+ */
+export function subAgentErrorDetail(
+  raw: string | null | undefined,
+  code: string | null | undefined,
+): string | null {
+  if (!code) return null;
+  if (code !== "timeout" && ERROR_CODE_LABEL[code] === undefined) return null;
+  const text = raw?.trim() ?? "";
+  if (text === "") return null;
+  return firstMeaningfulLine(text) === null ? null : text;
 }

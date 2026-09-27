@@ -43,6 +43,7 @@ import { isGatewayInitiatedRunId } from "./run-families.js";
 import { planPartFromPlanStream } from "../../core/plan-part.js";
 import {
   classifyFailureText,
+  GATEWAY_CHAT_ERROR_KINDS,
   withoutOperatorData,
 } from "../../core/failure-classifier.js";
 import {
@@ -348,12 +349,7 @@ const KNOWN_STOP_REASONS = new Set([
 const bucketStopReason = (v: string): string =>
   KNOWN_STOP_REASONS.has(v) ? v : "other";
 
-const CHAT_ERROR_KINDS = new Set([
-  "refusal",
-  "timeout",
-  "rate_limit",
-  "context_length",
-]);
+const CHAT_ERROR_KINDS = GATEWAY_CHAT_ERROR_KINDS;
 
 /**
  * PROGRESS phases on `stream:"tool"` — a tool is still RUNNING. Enumerated from

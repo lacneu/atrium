@@ -31,7 +31,10 @@
 
 import { outboundMediaDeliveries, sanitizeText } from "./sanitize.js";
 import { isDeliveryRunId } from "../../core/async-task.js";
-import { classifyFailureText } from "../../core/failure-classifier.js";
+import {
+  classifyFailureText,
+  GATEWAY_CHAT_ERROR_KINDS,
+} from "../../core/failure-classifier.js";
 import {
   childChatTerminalStatus,
   type SubAgentStatus,
@@ -112,6 +115,11 @@ interface Observation {
    *  requester-settle wake names. Kept so the terminal upsert re-carries it when
    *  the registration write was lost (Convex fills it once). */
   childRunId?: string;
+  /** The per-run time limit the spawn DECLARED (`sessions_spawn` args
+   *  `runTimeoutSeconds`, 0 = none) — what the reader is told when the child is
+   *  cut off by it. Only a spawn seen as a tool call carries it: an item-only
+   *  spawn (a delivery run) exposes no arguments. */
+  runTimeoutSeconds?: number;
   /** Phase 2c: when set, the child was re-woken by a USER INTERACTION (chat.send from
    *  "Interagir"); its NEXT terminal frame is that interaction's reply (routed to the
    *  interaction record, not the subAgents.resultText). Cleared on that terminal. */
@@ -121,6 +129,21 @@ interface Observation {
   // The run that spawned this child (from its item sighting) — gates the
   // late anchor backfill to that run's own frames.
   spawnRunHint?: string;
+  /** Opened lazily by a frame that preceded the child's startup: the item
+   *  sighting its spawn parked is claimed by the startup OF THAT SAME RUN. */
+  awaitingStartupClaim?: { runId: string; at: number };
+}
+
+/** An item-only `sessions_spawn` sighting, parked until a child claims it. */
+interface PendingItemSpawn {
+  at: number;
+  taskName?: string;
+  seed?: SubAgentSessionMeta;
+  parentMessageId: string | null;
+  // The run that emitted the spawn item — anchors backfill ONLY from that
+  // run's own later frames (a global backfill would re-attribute a
+  // silent spawn to an unrelated later turn).
+  runId: string | null;
 }
 
 /** Bound the registry so a misbehaving stream can't grow it without limit. */
@@ -136,6 +159,7 @@ const DEFAULT_TTL_SECONDS = 15 * 60;
 // SUBAGENT_STALE_TTL_MS = 20 min). 5 min << 20 min leaves ample margin while keeping
 // the upsert churn bounded (NOT one write per frame). Coupling documented, not imported.
 const HEARTBEAT_THROTTLE_SECONDS = 5 * 60;
+
 // Defensive cap on stored result text (a Convex doc must stay < 1MB; a child's
 // answer is normal chat content, so this only guards a pathological run).
 const MAX_RESULT_CHARS = 128_000;
@@ -160,6 +184,9 @@ const MAX_TOOL_CALL_ID_CHARS = 200;
 // is the user's OWN in-app data, but bound each so one pathological tool (a megabyte
 // fetched page) can't blow a row; a longer value is truncated, never dropped whole.
 const MAX_TOOL_ARGS_CHARS = 2000;
+// A declared run limit past a week is not a limit anyone reads; mirrored by the
+// ingest bound (convex/bridge_ingest.ts).
+const MAX_RUN_TIMEOUT_SECONDS = 7 * 24 * 60 * 60;
 const MAX_TOOL_RESULT_CHARS = 4000;
 
 function capToolName(name: string): string {
@@ -220,6 +247,10 @@ export class SubAgentObserver {
   // sessions_spawn config cached from the `start` frame args, keyed by toolCallId,
   // consumed by the matching `result` registration. Bounded (insertion-ordered).
   private readonly pendingSpawnConfig = new Map<string, SpawnConfig>();
+  // The declared per-run limit of the same `start` args, same key and bound. Kept
+  // apart from the config above: that one IS the row's sessionMeta, and a field
+  // added to it would be refused whole by a Convex that predates it.
+  private readonly pendingSpawnTimeout = new Map<string, number>();
   // Log the cap breach only once per observer so a sustained overflow can't spam.
   private warnedCap = false;
 
@@ -319,6 +350,25 @@ export class SubAgentObserver {
     // was missed or arrived later). Respects the cap; null = refused.
     let obs = this.observations.get(childKey);
     let lazySeedUpsert: SubAgentUpsert[] = [];
+    // The child's FIRST lifecycle frame. Claims an item sighting below, and names
+    // the child's run: upstream mints the spawn result's `runId` as the child's
+    // `agent` RPC idempotency key (subagent-spawn.ts:413,469,616,686 at v2026.9.6),
+    // and the gateway runs that request under `runId = request.idempotencyKey`
+    // (gateway/agent-turn/agent-request-preflight.ts:249) — so the frame's own runId
+    // IS the id a requester-settle wake names (golden 2026.9.6 spawn-parallel-merge:
+    // spawn result details.runId at line 25 = the child's `lifecycle start` runId at
+    // line 33). A spawn issued inside a DELIVERY run (a yielded turn's continuation)
+    // reaches us as item frames only — no tool result, so this frame is the ONLY
+    // source of that id there, and without it the next continuation could not find
+    // its bubble (prod 2026-09-27: a second delegation opened a separate bubble).
+    const isStartupFrame =
+      typeof payload.stream === "string" &&
+      payload.stream.endsWith("lifecycle") &&
+      (readString(readField(payload, "data") ?? {}, "phase") === "startup" ||
+        readString(readField(payload, "data") ?? {}, "phase") === "start");
+    const startupRunId = isStartupFrame
+      ? validChildRunId(readString(payload, "runId"))
+      : null;
     if (obs === undefined) {
       // ANNOUNCE-spawn backfill: no tool result ever names this child, so the
       // parked item-spawn sighting is the only source of its task/config/anchor.
@@ -327,13 +377,8 @@ export class SubAgentObserver {
       // must never claim a fresh spawn's sighting (wrong task/anchor, and the
       // announce could merge into the wrong bubble). A freshly-spawned child
       // always leads with its lifecycle startup.
-      const isStartupFrame =
-        typeof payload.stream === "string" &&
-        payload.stream.endsWith("lifecycle") &&
-        (readString(readField(payload, "data") ?? {}, "phase") === "startup" ||
-          readString(readField(payload, "data") ?? {}, "phase") === "start");
       const take = isStartupFrame
-        ? this.takePendingItemSpawn(now)
+        ? this.takePendingItemSpawn(now, childAgentOf(childKey))
         : { claimed: null, ambiguous: false, sharedRun: null };
       const sighting = take.claimed;
       const created = this.register(childKey, now, {
@@ -361,46 +406,86 @@ export class SubAgentObserver {
       });
       if (created === null) return []; // cap reached -> not tracked
       obs = created;
-      if (sighting?.runId != null) {
-        obs.spawnRunHint = sighting.runId;
-        // An item-only spawn inside a DELIVERY run (task delivery OR sub-agent
-        // announce): persist the correlation too (the tool-result path stamps
-        // it in tryRegisterFromSpawn; this is the sighting-claim equivalent).
-        // The announce family is how CHAINED spawns (child N spawning inside
-        // child N-1's announce turn) inherit the ROOT bubble's anchor at
-        // birth — without it every chained delivery opens its own bubble
-        // (live incident 2026-07-14).
-        if (isDeliveryRunId(sighting.runId)) {
-          obs.bornOfRun = sighting.runId;
-        }
-      } else if (take.ambiguous && take.sharedRun !== null) {
-        // AMBIGUOUS sightings (a turn spawned several children — parallel
-        // review gates): which spawn this child matches is unknowable, so no
-        // task/anchor claim — but every parked sighting was emitted under the
-        // SAME delivery run, so the carrier run itself is certain. Stamp it:
-        // Convex birth-inheritance then walks the carrier's row to the ROOT
-        // anchor and the parallel children's deliveries still merge into the
-        // one pipeline bubble (live incident 2026-07-14, second round).
-        if (isDeliveryRunId(take.sharedRun)) {
-          obs.bornOfRun = take.sharedRun;
-        }
+      if (startupRunId !== null) obs.childRunId = startupRunId;
+      // Registered from a frame that PRECEDES the child's startup (on 2026.9.6 a
+      // plugin's provenance frame leads the child lane — golden spawn-parallel-merge
+      // lines 31-33, spawn-chain-merge lines 214-216, each the same runId as the
+      // startup): no claim was possible yet, and the startup OF THAT SAME RUN makes
+      // it (below). Armed only by that frame family — the one frame seen ahead of
+      // a startup. Any other first frame is a child met MID-RUN (a reconnect, a
+      // restart), whose own startup has already passed: it never claims.
+      const openingRun = validChildRunId(readString(payload, "runId"));
+      if (
+        !isStartupFrame &&
+        openingRun !== null &&
+        typeof payload.stream === "string" &&
+        payload.stream.endsWith(".provenance")
+      ) {
+        obs.awaitingStartupClaim = { runId: openingRun, at: now };
       }
+      this.applySightingCarrier(obs, take);
       if (sighting?.seed !== undefined) {
         obs.sessionMeta = { ...sighting.seed };
-        lazySeedUpsert = [
-          {
-            chatId: this.chatId,
-            parentMessageId: obs.parentMessageId,
-          anchorExact: obs.anchorExact,
-            childSessionKey: childKey,
-            ...(obs.bornOfRun !== undefined ? { bornOfRun: obs.bornOfRun } : {}),
-            status: "running",
-            ...(obs.taskName !== undefined ? { taskName: obs.taskName } : {}),
-            sessionMeta: obs.sessionMeta,
-          },
-        ];
+        lazySeedUpsert = [this.claimUpsert(obs)];
       }
       // Fall through so the SAME frame is interpreted (its phase/final still maps).
+    } else if (
+      isStartupFrame &&
+      obs.awaitingStartupClaim !== undefined &&
+      startupRunId === obs.awaitingStartupClaim.runId
+    ) {
+      // THE DEFERRED CLAIM. The observation was opened by a pre-startup frame of
+      // this very child, so the sighting the spawn parked is still waiting for
+      // it: without this claim a child spawned inside a delivery run — a yielded
+      // turn's continuation re-delegating — kept only the positional fallback
+      // anchor, which the settle merge refuses (it needs a correlated one), and
+      // its continuation opened a second bubble. Bound to the RUN, not to a clock:
+      // only the startup of the run whose frame opened the observation claims (a
+      // later run on the lane — steer, interaction, restart — never does), and it
+      // claims for as long as the sighting itself lives (its own TTL, see
+      // purgeExpiredItemSpawns), however late the gateway starts the run. Only a
+      // sighting parked BEFORE the opening frame can be this child's: a spawn's
+      // item is emitted before the child it launches exists.
+      const openedAt = obs.awaitingStartupClaim.at;
+      delete obs.awaitingStartupClaim;
+      {
+        const take = this.takePendingItemSpawn(
+          now,
+          childAgentOf(childKey),
+          openedAt,
+        );
+        const sighting = take.claimed;
+        if (sighting !== null) {
+          if (sighting.taskName !== undefined && obs.taskName === undefined) {
+            obs.taskName = sighting.taskName;
+          }
+          obs.parentMessageId = sighting.parentMessageId;
+          if (sighting.parentMessageId != null) obs.anchorExact = true;
+          else delete obs.anchorExact;
+          if (sighting.seed !== undefined) {
+            obs.sessionMeta = { ...sighting.seed, ...obs.sessionMeta };
+          }
+        } else if (take.ambiguous) {
+          // Same fail-closed rule as a registration that met the ambiguity.
+          obs.parentMessageId = null;
+          delete obs.anchorExact;
+        }
+        this.applySightingCarrier(obs, take);
+        // Fill only: the spawn result's id, when it came first, stays. Only THIS
+        // startup names the spawn's run — never a later one on the same lane (a
+        // steer, an "Interagir" re-wake: `armInteraction` opens no deferred claim),
+        // nor any frame of a child first met mid-run.
+        if (startupRunId !== null && obs.childRunId === undefined) {
+          obs.childRunId = startupRunId;
+        }
+        if (sighting !== null || take.ambiguous) {
+          lazySeedUpsert = [this.claimUpsert(obs)];
+        }
+      }
+    } else if (isStartupFrame && obs.awaitingStartupClaim !== undefined) {
+      // A startup of ANOTHER run: the opening run's own startup is behind us for
+      // good (the lane moved on), so nothing is left to claim for it.
+      delete obs.awaitingStartupClaim;
     }
     obs.lastFrameAt = now;
 
@@ -504,6 +589,9 @@ export class SubAgentObserver {
           // has it, whatever registration path ran (Convex fills once).
           ...(obs.bornOfRun !== undefined ? { bornOfRun: obs.bornOfRun } : {}),
           ...(obs.childRunId !== undefined ? { childRunId: obs.childRunId } : {}),
+          ...(obs.runTimeoutSeconds !== undefined
+            ? { runTimeoutSeconds: obs.runTimeoutSeconds }
+            : {}),
           status: term,
           // The FINAL telemetry (total runtime/tokens/cost) rides on the terminal
           // write — the one place a finished child's numbers become durable.
@@ -532,7 +620,20 @@ export class SubAgentObserver {
           // phrase the classifier matches on. A child that died of a context
           // overflow is now countable — before this it was prose nobody could
           // aggregate, and the classifier already existed one file away.
-          const code = classifyFailureText(reason);
+          //
+          // The gateway's OWN class first, as the turn normalizer does: a child cut
+          // off by its time limit carries `errorKind:"timeout"` (minted from the
+          // run's terminal classification, server-chat.ts:725-730 at v2026.9.6)
+          // beside upstream's generic advice to raise `agents.defaults.
+          // timeoutSeconds` (run/terminal-timeout.ts:50-55) — advice that is wrong
+          // when the ceiling was the spawn's own `runTimeoutSeconds`, and that the
+          // classifier cannot class at all. Unread, the reader got that sentence
+          // cut at 120 characters (prod 2026-09-27, a 900 s child).
+          const kind = readString(payload, "errorKind");
+          const code =
+            kind !== null && GATEWAY_CHAT_ERROR_KINDS.has(kind)
+              ? kind
+              : classifyFailureText(reason);
           if (code) rec.errorCode = code;
         }
         return [...meta, rec];
@@ -572,6 +673,9 @@ export class SubAgentObserver {
           // an ambiguous parallel spawn has no sighting seed, so this
           // lifecycle write is the row's birth (Convex fills once).
           ...(obs.bornOfRun !== undefined ? { bornOfRun: obs.bornOfRun } : {}),
+          // The run id learned from THIS startup frame rides out with it — the
+          // write that follows the child's birth, long before its settle wake.
+          ...(obs.childRunId !== undefined ? { childRunId: obs.childRunId } : {}),
           status: "running",
           phase,
         },
@@ -796,6 +900,7 @@ export class SubAgentObserver {
           // The chain correlation must ride whatever upsert persists FIRST
           // (this one can precede the lifecycle write — codex P2).
           ...(obs.bornOfRun !== undefined ? { bornOfRun: obs.bornOfRun } : {}),
+          ...(obs.childRunId !== undefined ? { childRunId: obs.childRunId } : {}),
           status: obs.status,
           sessionMeta: merged,
         },
@@ -962,6 +1067,59 @@ export class SubAgentObserver {
 
   // -- internals --------------------------------------------------------------
 
+  /** Stamp the run a claimed (or ambiguous-batch) sighting was emitted under:
+   *  the run-correlated anchor backfill keys on it, and a DELIVERY carrier is
+   *  persisted as `bornOfRun` for the Convex chain joins. */
+  private applySightingCarrier(
+    obs: Observation,
+    take: {
+      claimed: { runId: string | null } | null;
+      ambiguous: boolean;
+      sharedRun: string | null;
+    },
+  ): void {
+    const sighting = take.claimed;
+    if (sighting?.runId != null) {
+      obs.spawnRunHint = sighting.runId;
+      // An item-only spawn inside a DELIVERY run (task delivery OR sub-agent
+      // announce): persist the correlation too (the tool-result path stamps
+      // it in tryRegisterFromSpawn; this is the sighting-claim equivalent).
+      // The announce family is how CHAINED spawns (child N spawning inside
+      // child N-1's announce turn) inherit the ROOT bubble's anchor at
+      // birth — without it every chained delivery opens its own bubble
+      // (live incident 2026-07-14).
+      if (isDeliveryRunId(sighting.runId)) {
+        obs.bornOfRun = sighting.runId;
+      }
+    } else if (take.ambiguous && take.sharedRun !== null) {
+      // AMBIGUOUS sightings (a turn spawned several children — parallel
+      // review gates): which spawn this child matches is unknowable, so no
+      // task/anchor claim — but every parked sighting was emitted under the
+      // SAME delivery run, so the carrier run itself is certain. Stamp it:
+      // Convex birth-inheritance then walks the carrier's row to the ROOT
+      // anchor and the parallel children's deliveries still merge into the
+      // one pipeline bubble (live incident 2026-07-14, second round).
+      if (isDeliveryRunId(take.sharedRun)) {
+        obs.bornOfRun = take.sharedRun;
+      }
+    }
+  }
+
+  /** The write that persists a sighting claim: everything the claim settled. */
+  private claimUpsert(obs: Observation): SubAgentUpsert {
+    return {
+      chatId: this.chatId,
+      parentMessageId: obs.parentMessageId,
+      anchorExact: obs.anchorExact,
+      childSessionKey: obs.childSessionKey,
+      ...(obs.bornOfRun !== undefined ? { bornOfRun: obs.bornOfRun } : {}),
+      ...(obs.childRunId !== undefined ? { childRunId: obs.childRunId } : {}),
+      status: "running",
+      ...(obs.taskName !== undefined ? { taskName: obs.taskName } : {}),
+      ...(obs.sessionMeta !== undefined ? { sessionMeta: obs.sessionMeta } : {}),
+    };
+  }
+
   private tryRegisterFromSpawn(
     payload: Record<string, unknown>,
     now: number,
@@ -1003,6 +1161,9 @@ export class SubAgentObserver {
     if (cfg !== undefined && toolCallId !== null) {
       this.pendingSpawnConfig.delete(toolCallId);
     }
+    const runTimeoutSeconds =
+      toolCallId !== null ? this.pendingSpawnTimeout.get(toolCallId) : undefined;
+    if (toolCallId !== null) this.pendingSpawnTimeout.delete(toolCallId);
     // (This call's parked sighting was already retired above — for every
     // terminal result, success or failure.)
     // The spawn result also announces the RESOLVED model/provider — a fill-gaps-only
@@ -1032,7 +1193,8 @@ export class SubAgentObserver {
         Object.keys(lateMeta).length === 0 &&
         taskName === undefined &&
         reapedBorn === undefined &&
-        childRunId === undefined
+        childRunId === undefined &&
+        runTimeoutSeconds === undefined
       ) {
         return [];
       }
@@ -1041,6 +1203,7 @@ export class SubAgentObserver {
           chatId: this.chatId,
           childSessionKey: childKey,
           ...(childRunId !== undefined ? { childRunId } : {}),
+          ...(runTimeoutSeconds !== undefined ? { runTimeoutSeconds } : {}),
           status: finalStatus,
           ...(taskName !== undefined ? { taskName } : {}),
           ...(reapedBorn !== undefined ? { bornOfRun: reapedBorn } : {}),
@@ -1074,8 +1237,19 @@ export class SubAgentObserver {
         existing.bornOfRun = racedBorn;
         changed = true;
       }
+      // The EXACT registration arrived: nothing is left for the startup to
+      // claim. Left armed, that startup would take whichever sighting is pending
+      // then — another spawn's, which its own child then misses, anchorless.
+      delete existing.awaitingStartupClaim;
       if (childRunId !== undefined && existing.childRunId === undefined) {
         existing.childRunId = childRunId;
+        changed = true;
+      }
+      if (
+        runTimeoutSeconds !== undefined &&
+        existing.runTimeoutSeconds === undefined
+      ) {
+        existing.runTimeoutSeconds = runTimeoutSeconds;
         changed = true;
       }
       // The ANCHOR too: a child whose own frames raced ahead registered with
@@ -1117,6 +1291,9 @@ export class SubAgentObserver {
           ...(existing.childRunId !== undefined
             ? { childRunId: existing.childRunId }
             : {}),
+          ...(existing.runTimeoutSeconds !== undefined
+            ? { runTimeoutSeconds: existing.runTimeoutSeconds }
+            : {}),
           status: existing.status, // reorder-guarded Convex-side; never downgrades
           ...(existing.taskName !== undefined
             ? { taskName: existing.taskName }
@@ -1151,6 +1328,7 @@ export class SubAgentObserver {
     // (flush tolerates failures), the terminal upsert still carries it.
     if (bornOfRun !== undefined) obs.bornOfRun = bornOfRun;
     if (childRunId !== undefined) obs.childRunId = childRunId;
+    if (runTimeoutSeconds !== undefined) obs.runTimeoutSeconds = runTimeoutSeconds;
     return [
       {
         chatId: this.chatId,
@@ -1159,6 +1337,7 @@ export class SubAgentObserver {
         childSessionKey: childKey,
         ...(bornOfRun !== undefined ? { bornOfRun } : {}),
         ...(childRunId !== undefined ? { childRunId } : {}),
+        ...(runTimeoutSeconds !== undefined ? { runTimeoutSeconds } : {}),
         taskName,
         status: "running",
         ...(obs.sessionMeta ? { sessionMeta: obs.sessionMeta } : {}),
@@ -1206,26 +1385,19 @@ export class SubAgentObserver {
   // (codex P1). Reset when the batch fully drains OR a NEW batch starts
   // (first sighting parked on an empty map — a TTL-expired leftover must not
   // taint the next spawn, codex P2).
-  private ambiguousSpawnBatch = false;
+  //
+  // Tracked BY KEY (codex pass 3): the batch is the set of sightings that were
+  // ambiguous for some child. A later child none of whose candidates belong to it
+  // is not part of that ambiguity — a global flag forced it through the ambiguous
+  // branch and could hand it the frozen batch's carrier.
+  private ambiguousBatchKeys = new Set<string>();
   // The carrier run FROZEN at the moment the batch became ambiguous: computed
   // over the FULL batch, never recomputed on the shrinking leftover — a mixed
   // batch (two delivery runs) stays bornOfRun-less for EVERY slot, because
   // which child belongs to which run is exactly what is unknowable (codex P1).
   private ambiguousBatchSharedRun: string | null = null;
 
-  private pendingItemSpawns = new Map<
-    string,
-    {
-      at: number;
-      taskName?: string;
-      seed?: SubAgentSessionMeta;
-      parentMessageId: string | null;
-      // The run that emitted the spawn item — anchors backfill ONLY from that
-      // run's own later frames (a global backfill would re-attribute a
-      // silent spawn to an unrelated later turn).
-      runId: string | null;
-    }
-  >();
+  private pendingItemSpawns = new Map<string, PendingItemSpawn>();
 
   /** Run-correlated anchor backfill: fill the parked sightings, live
    *  observations and reaped-ledger entries born from `runId` with the run's
@@ -1326,7 +1498,7 @@ export class SubAgentObserver {
     if (this.pendingItemSpawns.size === 0) {
       // First sighting of a NEW batch: a stale ambiguity flag from a
       // TTL-expired previous batch must not taint it (codex P2).
-      this.ambiguousSpawnBatch = false;
+      this.ambiguousBatchKeys.clear();
       this.ambiguousBatchSharedRun = null;
     }
     if (this.pendingItemSpawns.size >= 16 && !this.pendingItemSpawns.has(toolCallId)) {
@@ -1345,7 +1517,7 @@ export class SubAgentObserver {
     // spawn can leave leftovers for up to the TTL) makes the batch MIXED:
     // its frozen carrier run no longer holds for the next claims (codex P1).
     if (
-      this.ambiguousSpawnBatch &&
+      this.ambiguousBatchKeys.size > 0 &&
       this.ambiguousBatchSharedRun !== null &&
       parkedRun !== this.ambiguousBatchSharedRun
     ) {
@@ -1367,7 +1539,14 @@ export class SubAgentObserver {
    *  children may start out of spawn order and a FIFO claim would hand one
    *  child another spawn's task/config/anchor: better unattributed than
    *  wrong. */
-  private takePendingItemSpawn(now: number): {
+  private takePendingItemSpawn(
+    now: number,
+    /** The agent the claiming child runs as (from its session key), when known. */
+    childAgentId: string | null = null,
+    /** A deferred claim's opening moment: a sighting parked after it belongs to a
+     *  spawn issued after this child already existed — never this child's. */
+    parkedNoLaterThan: number | null = null,
+  ): {
     claimed: {
       taskName?: string;
       seed?: SubAgentSessionMeta;
@@ -1387,41 +1566,81 @@ export class SubAgentObserver {
     sharedRun: string | null;
   } {
     this.purgeExpiredItemSpawns(now);
-    if (this.pendingItemSpawns.size === 0) {
-      this.ambiguousSpawnBatch = false;
-      this.ambiguousBatchSharedRun = null;
+    for (const k of [...this.ambiguousBatchKeys]) {
+      if (!this.pendingItemSpawns.has(k)) this.ambiguousBatchKeys.delete(k);
+    }
+    if (this.ambiguousBatchKeys.size === 0) this.ambiguousBatchSharedRun = null;
+    // ONE filter decides which sightings could be this child's — for the single
+    // AND the ambiguous case alike (codex pass 3: the ambiguous branch counted and
+    // consumed the whole pending set, and handed a child the carrier of spawns
+    // parked after it already existed). Everything below reasons on candidates only.
+    const candidates = this.spawnCandidates(childAgentId, parkedNoLaterThan);
+    if (candidates.length === 0) {
+      // Nothing this child can be: no claim, no carrier, and no slot consumed —
+      // the pending sightings wait for their own children.
       return { claimed: null, ambiguous: false, sharedRun: null };
     }
-    if (this.pendingItemSpawns.size > 1 && !this.ambiguousSpawnBatch) {
-      // The batch turns ambiguous NOW: freeze its carrier run over the FULL
-      // set. Never recomputed on the leftover — a mixed batch stays null.
-      this.ambiguousSpawnBatch = true;
-      const runs = new Set(
-        [...this.pendingItemSpawns.values()].map((e) => e.runId ?? ""),
-      );
-      this.ambiguousBatchSharedRun =
-        runs.size === 1 && [...runs][0] !== ""
-          ? ([...runs][0] as string)
-          : null;
-    }
-    if (this.ambiguousSpawnBatch) {
-      // AMBIGUOUS BATCH: no task/anchor claim for ANY child of the batch —
-      // children start in no guaranteed order, so even the LAST leftover
-      // sighting must not be claimed (codex P1). Each child startup still
-      // CONSUMES one slot (FIFO): N parallel spawns feed at most N children,
-      // so a stale entry can never leak onto a later unrelated child.
-      const oldest = this.pendingItemSpawns.keys().next().value;
-      if (oldest !== undefined) this.pendingItemSpawns.delete(oldest);
-      const sharedRun = this.ambiguousBatchSharedRun;
-      if (this.pendingItemSpawns.size === 0) {
-        this.ambiguousSpawnBatch = false;
+    if (candidates.length > 1) {
+      // Ambiguous NOW for this child: its candidates join the batch. The carrier
+      // is frozen when the batch forms and never recomputed on the leftover; a
+      // candidate under another run joining it makes it MIXED — null for good.
+      const runs = new Set(candidates.map(([, e]) => e.runId ?? ""));
+      const run = runs.size === 1 && [...runs][0] !== "" ? ([...runs][0] as string) : null;
+      if (this.ambiguousBatchKeys.size === 0) {
+        this.ambiguousBatchSharedRun = run;
+      } else if (run === null || run !== this.ambiguousBatchSharedRun) {
         this.ambiguousBatchSharedRun = null;
       }
+      for (const [k] of candidates) this.ambiguousBatchKeys.add(k);
+    }
+    if (candidates.some(([k]) => this.ambiguousBatchKeys.has(k))) {
+      // AMBIGUOUS: no task/anchor claim for ANY child of the batch — children
+      // start in no guaranteed order, so even the LAST leftover sighting must not
+      // be claimed (codex P1). Each child startup still CONSUMES one of ITS
+      // candidate slots (FIFO): N parallel spawns feed at most N children, so a
+      // stale entry can never leak onto a later unrelated child, and a sighting
+      // this child cannot be is never used up by it.
+      const first = candidates[0];
+      if (first !== undefined) {
+        this.pendingItemSpawns.delete(first[0]);
+        this.ambiguousBatchKeys.delete(first[0]);
+      }
+      // The carrier is this child's only when EVERY sighting it could be was
+      // emitted under the frozen run; otherwise it cannot be attributed with
+      // certainty, and nothing is recorded.
+      const frozen = this.ambiguousBatchSharedRun;
+      const sharedRun =
+        frozen !== null && candidates.every(([, e]) => e.runId === frozen)
+          ? frozen
+          : null;
+      if (this.ambiguousBatchKeys.size === 0) this.ambiguousBatchSharedRun = null;
       return { claimed: null, ambiguous: true, sharedRun };
     }
-    const [key, entry] = this.pendingItemSpawns.entries().next().value!;
+    const [key, entry] = candidates[0]!;
     this.pendingItemSpawns.delete(key);
     return { claimed: entry, ambiguous: false, sharedRun: entry.runId ?? null };
+  }
+
+  /** The pending sightings a starting child COULD be the spawn of, oldest first.
+   *  The single place both claim branches filter by (codex pass 3):
+   *  - the target agent: an item spawn's `meta` names it when the spawn named one
+   *    (upstream tool-display-config.ts:390-401 detailKeys, `agentId` rendered
+   *    "agent", tool-display.ts:33-34 at v2026.9.6) — never a child key or a run
+   *    id — so a child running as ANOTHER agent is provably not that spawn's;
+   *  - the lane's opening moment (a deferred claim): a sighting parked after it
+   *    belongs to a spawn issued after this child already existed. */
+  private spawnCandidates(
+    childAgentId: string | null,
+    parkedNoLaterThan: number | null,
+  ): Array<[string, PendingItemSpawn]> {
+    return [...this.pendingItemSpawns.entries()].filter(
+      ([, e]) =>
+        !(
+          childAgentId !== null &&
+          e.seed?.agentId !== undefined &&
+          e.seed.agentId !== childAgentId
+        ) && !(parkedNoLaterThan !== null && e.at > parkedNoLaterThan),
+    );
   }
 
   private maybeCacheSpawnConfig(payload: Record<string, unknown>): void {
@@ -1434,6 +1653,22 @@ export class SubAgentObserver {
     if (toolCallId === null) return;
     const args = readField(data, "args");
     if (args === null) return;
+    // `runTimeoutSeconds`: a non-negative integer, 0 = no limit
+    // (sessions-spawn-tool.ts:192-198,450 at v2026.9.6). Anything else is not what
+    // the gateway enforced, and a reader must never be told a limit it did not.
+    const rawTimeout = args.runTimeoutSeconds;
+    if (
+      typeof rawTimeout === "number" &&
+      Number.isInteger(rawTimeout) &&
+      rawTimeout >= 0 &&
+      rawTimeout <= MAX_RUN_TIMEOUT_SECONDS
+    ) {
+      if (this.pendingSpawnTimeout.size >= 64) {
+        const oldest = this.pendingSpawnTimeout.keys().next().value;
+        if (oldest !== undefined) this.pendingSpawnTimeout.delete(oldest);
+      }
+      this.pendingSpawnTimeout.set(toolCallId, rawTimeout);
+    }
     const cfg: SpawnConfig = {};
     for (const key of ["context", "runtime", "mode", "cleanup", "sandbox"] as const) {
       const val = readString(args, key);
@@ -1521,6 +1756,9 @@ export class SubAgentObserver {
         parentMessageId: obs.parentMessageId,
           anchorExact: obs.anchorExact,
         childSessionKey: obs.childSessionKey,
+        // Re-carried like the terminal write does: a lost startup write must not
+        // leave the settle join without its key (Convex fills it once).
+        ...(obs.childRunId !== undefined ? { childRunId: obs.childRunId } : {}),
         status: "running",
         // Piggyback the last-known telemetry on this already-scheduled write, so a
         // long-running child shows live-ish runtime/tokens/cost at heartbeat cadence.
@@ -1731,6 +1969,16 @@ function extractChildSessionKey(result: Record<string, unknown> | null): string 
  *  which re-checks it at the ingest boundary. */
 const CHILD_RUN_ID_RE = /^[A-Za-z0-9_-]{1,128}$/;
 
+/** The agent a child lane runs as: `agent:<agentId>:subagent:<uuid>`. */
+function childAgentOf(childSessionKey: string): string | null {
+  const m = /^agent:([^:]+):subagent:/.exec(childSessionKey);
+  return m?.[1] ?? null;
+}
+
+function validChildRunId(v: string | null): string | null {
+  return v !== null && CHILD_RUN_ID_RE.test(v) ? v : null;
+}
+
 /**
  * The child's RUN id from the `sessions_spawn` result: `details.runId` first (the
  * structured copy — same reasoning as `extractChildSessionKey`), then the JSON
@@ -1740,8 +1988,7 @@ const CHILD_RUN_ID_RE = /^[A-Za-z0-9_-]{1,128}$/;
  */
 function extractChildRunId(result: Record<string, unknown> | null): string | null {
   if (result === null) return null;
-  const valid = (v: string | null): string | null =>
-    v !== null && CHILD_RUN_ID_RE.test(v) ? v : null;
+  const valid = validChildRunId;
   const fromDetails = valid(readString(result.details, "runId"));
   if (fromDetails !== null) return fromDetails;
   const items = Array.isArray(result.content)

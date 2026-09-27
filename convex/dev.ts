@@ -1288,6 +1288,8 @@ export const inspectChat = query({
         textPreview: m.text.slice(0, 80),
         runId: m.runId ?? null,
         mergedAnnounceRuns: m.mergedAnnounceRuns ?? [],
+        // Each merged hand-off continuation's batch (child run ids — ids only).
+        continuations: m.continuations ?? [],
         parts: parts.map((p) => ({
           kind: p.part.kind,
           name: "name" in p.part ? p.part.name : undefined,
@@ -2061,6 +2063,13 @@ export const peekSubAgents = query({
         instanceName: r.instanceName ?? null,
         taskName: r.taskName ?? null,
         parentMessageId: r.parentMessageId ?? null,
+        // The two joins a merged hand-off continuation needs, and the failure
+        // class a timed-out child must carry — ids and enums, never content.
+        anchorExact: r.anchorExact === true,
+        childRunId: r.childRunId ?? null,
+        bornOfRun: r.bornOfRun ?? null,
+        errorCode: r.errorCode ?? null,
+        runTimeoutSeconds: r.runTimeoutSeconds ?? null,
         sessionMeta: r.sessionMeta ?? null,
         createdAt: r.createdAt,
         updatedAt: r.updatedAt,

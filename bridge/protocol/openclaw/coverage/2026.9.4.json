@@ -506,7 +506,7 @@
         },
         "errorKind": {
           "status": "handled",
-          "by": "handleChat -> finalize errorKind -> messages.errorCode + gateway_pressure trace (context_length = hard overflow)"
+          "by": "handleChat -> finalize errorKind -> messages.errorCode + gateway_pressure trace (context_length = hard overflow); SubAgentObserver child chat:error -> subAgents.errorCode (timeout = the child hit its run limit, labelled with the spawn's runTimeoutSeconds)"
         },
         "usage": {
           "status": "ignored",

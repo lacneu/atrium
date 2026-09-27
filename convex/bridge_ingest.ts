@@ -527,6 +527,7 @@ type IngestOp =
       /** The child's run id from its `sessions_spawn` result — the id the
        *  gateway's requester-settle wake names (convex/lib/deliveryRuns.ts). */
       childRunId?: string;
+      runTimeoutSeconds?: number;
       kind?: "subagent" | "task";
       bornOfRun?: string;
       taskName?: string;
@@ -1527,6 +1528,16 @@ export const ingest = httpAction(async (ctx, request) => {
           typeof body.childRunId === "string" &&
           CHILD_RUN_ID_RE.test(body.childRunId)
             ? body.childRunId
+            : undefined,
+        // A declared limit shown to the reader: only a whole, non-negative number
+        // of seconds, within a week (the bridge's own bound) — anything else is
+        // not a figure the gateway enforced.
+        runTimeoutSeconds:
+          typeof body.runTimeoutSeconds === "number" &&
+          Number.isInteger(body.runTimeoutSeconds) &&
+          body.runTimeoutSeconds >= 0 &&
+          body.runTimeoutSeconds <= 7 * 24 * 60 * 60
+            ? body.runTimeoutSeconds
             : undefined,
         kind: body.kind,
         bornOfRun: body.bornOfRun,

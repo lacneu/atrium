@@ -481,7 +481,9 @@ export function getIntegrations(
  * shows whether/where the chat fans turns to specialists. `subAgents` is the
  * content-free delegation summary: `byStatus` counts + capped `failedSample` /
  * `runningSample` (each = childIdShort + status enum + errorCategory enum +
- * hasTaskName bool + ageSeconds — NEVER the task/result/error text or phase).
+ * hasTaskName bool + hasChildRunId / anchorExact bools (the two joins a merged
+ * hand-off continuation needs) + ageSeconds — NEVER the task/result/error text or
+ * phase).
  */
 export function getChatState(
   config: Config,

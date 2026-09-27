@@ -47,6 +47,7 @@ import {
 } from "./lib/chatAccess";
 import { requireActive, requireOwnedChat, requireReachableChat } from "./lib/access";
 import { agentIdFromChildKey } from "./lib/subAgentFailure";
+import { followedUpChildRunIds } from "./lib/deliveryRuns";
 import { drainNextQueued, MAX_QUEUED_PER_CHAT } from "./lib/outboxQueue";
 import { DEFAULT_STREAM_TRANSPORT } from "./lib/instanceConfig";
 import { resolveTargetForChat } from "./routing";
@@ -508,6 +509,20 @@ async function loadChatView(
           continuationAt: message.continuationAt,
           // One position per merged continuation, with the batch it answered.
           continuations: message.continuations,
+          // …and which of those batches the bubble visibly FOLLOWED UP (text after
+          // the batch, or a file one of its runs delivered): a failed child the
+          // agent received and answered is not the bubble's verdict — one it
+          // received and left unanswered still is. Ids only.
+          followedUpChildRunIds:
+            message.continuations === undefined
+              ? undefined
+              : followedUpChildRunIds(
+                  message.text,
+                  message.continuations,
+                  partDocs
+                    .filter((d) => d.part.kind === "file" || d.part.kind === "media")
+                    .map((d) => d.announceRun),
+                ),
           // MULTI-AGENT per-turn routing (read projection only — routing/dispatch is
           // owned server-side). Which agent THIS turn was addressed to; absent on a
           // single-agent message. The frontend attributes each reply (inheriting the
@@ -696,6 +711,12 @@ type SubAgentEntry = {
   // row written before parentMessageId tagging. This is the field whose absence made
   // a "delegated turn shows no sub-agent" bug hard to diagnose from the obs API.
   parentMessageId: string | null;
+  // Presence booleans for the two joins a merged hand-off depends on: whether the
+  // row knows its child RUN id (what a requester-settle continuation names), and
+  // whether its anchor is CORRELATED rather than the bridge's positional fallback.
+  // A continuation that opened a second bubble is triaged from these two alone.
+  hasChildRunId: boolean;
+  anchorExact: boolean;
   // How many tools the child has used (COUNT only — never names/args; SOC2-safe).
   toolCount: number;
   // The child's STATIC session config (CONFIG, not content — SOC2-safe): model /
@@ -792,6 +813,8 @@ async function loadSubAgentSummary(
     hasTaskName: typeof c.taskName === "string" && c.taskName.trim() !== "",
     // The spawning message id (structural, SOC2-safe) — the correlation link.
     parentMessageId: c.parentMessageId ?? null,
+    hasChildRunId: typeof c.childRunId === "string" && c.childRunId !== "",
+    anchorExact: c.anchorExact === true,
     // Count of the child's tools (never the names/args).
     toolCount: c.tools?.length ?? 0,
     // Static session config (CONFIG, SOC2-safe) — null until the first session frame.

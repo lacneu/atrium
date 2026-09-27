@@ -509,4 +509,12 @@ describe("several continuations: each batch's replies before its own conclusion"
         .hasContinuation,
     ).toBe(true);
   });
+
+  it("the empty state is told which batches the bubble visibly followed up", () => {
+    expect(customMeta(makeMessage({ text: "x" })).answeredChildRunIds).toEqual([]);
+    expect(
+      customMeta(makeMessage({ text: "x", followedUpChildRunIds: ["run-c1"] }))
+        .answeredChildRunIds,
+    ).toEqual(["run-c1"]);
+  });
 });

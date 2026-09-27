@@ -207,6 +207,9 @@ export const upsertSubAgent = internalMutation({
     /** The child's run id from its spawn result (schema note). Validated at the
      *  ingest boundary; fill-only here. */
     childRunId: v.optional(v.string()),
+    /** The per-run limit the spawn declared (schema note). Bounded at the ingest
+     *  boundary; fill-only here. */
+    runTimeoutSeconds: v.optional(v.number()),
     kind: v.optional(v.union(v.literal("subagent"), v.literal("task"))),
     bornOfRun: v.optional(v.string()),
     taskName: v.optional(v.string()),
@@ -313,6 +316,9 @@ export const upsertSubAgent = internalMutation({
         anchorExact,
         childSessionKey: args.childSessionKey,
         ...(args.childRunId !== undefined ? { childRunId: args.childRunId } : {}),
+        ...(args.runTimeoutSeconds !== undefined
+          ? { runTimeoutSeconds: args.runTimeoutSeconds }
+          : {}),
         kind: args.kind,
         bornOfRun: args.bornOfRun,
         taskName: args.taskName,
@@ -386,6 +392,7 @@ export const upsertSubAgent = internalMutation({
       instanceName?: string;
       bornOfRun?: string;
       childRunId?: string;
+      runTimeoutSeconds?: number;
       userId?: Id<"users">;
       declaredTimeoutMs?: number;
       taskDeadlineAt?: number;
@@ -410,6 +417,12 @@ export const upsertSubAgent = internalMutation({
     // re-point the settle join at a run the batch never contained.
     if (args.childRunId !== undefined && existing.childRunId === undefined) {
       patch.childRunId = args.childRunId;
+    }
+    if (
+      args.runTimeoutSeconds !== undefined &&
+      existing.runTimeoutSeconds === undefined
+    ) {
+      patch.runTimeoutSeconds = args.runTimeoutSeconds;
     }
     if (args.bornOfRun !== undefined && existing.bornOfRun === undefined) {
       patch.bornOfRun = args.bornOfRun;

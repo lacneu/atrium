@@ -884,3 +884,141 @@ describe("delegatedRepliesFor: one slot per continuation (codex pass 2, P2)", ()
     expect(keys(delegatedRepliesFor(rows, MSG))).toEqual(["a", "b", "c"]);
   });
 });
+
+// PRODUCTION, 2026-09-27: the turn delegated to C1 and yielded; C1 timed out; the
+// continuation merged into the bubble, re-delegated to C2 and yielded again; C2 delivered
+// the PDF through the second continuation, into the SAME bubble. The bubble still read
+// "délégué à un sous-agent qui a échoué : …" above the PDF, for good — C1's failure had
+// been received AND answered by the agent in that very bubble.
+//
+// Codex pass 1 (P2): RECEIVED is not ANSWERED. A continuation named in the bubble only
+// proves the failure reached the agent; if that continuation ended on nothing, the
+// failure is still the bubble's news.
+describe("a failure the agent visibly answered is not the bubble's verdict", () => {
+  const YIELD: EmptyStateToolPart = {
+    toolName: "sessions_yield",
+    phase: "completed",
+    result: { details: { status: "yielded" } },
+  };
+  const GEN1 = "announce:requester-settle:meta:agent:meta:atrium:chat:o:c:run-c1:yield-1";
+  const MERGED = {
+    status: "complete",
+    hasText: true,
+    hasMedia: false,
+    delegatedInline: true,
+  };
+  const C1 = row({
+    _id: "c1",
+    childSessionKey: "K1",
+    childRunId: "run-c1",
+    parentMessageId: "B",
+    status: "error",
+    errorCode: "timeout",
+    runTimeoutSeconds: 900,
+    errorMessage: "Request timed out before a response was generated.",
+  });
+  const C2 = row({
+    _id: "c2",
+    childSessionKey: "K2",
+    childRunId: "run-c2",
+    parentMessageId: "B",
+    bornOfRun: GEN1,
+    status: "done",
+    resultText: "PDF prêt",
+  });
+  const TIMEOUT_REASON = "Le sous-agent a dépassé son délai de 900 s sans répondre.";
+
+  it("followed by text or a file after its batch: the bubble is not marked failed", () => {
+    const s = assistantEmptyState(
+      { ...MERGED, answeredChildRunIds: ["run-c1"] },
+      [spawnPart("K1"), YIELD],
+      [C1],
+      "B",
+    );
+    expect(s).toEqual({ kind: "none" });
+  });
+
+  it("…nor when the continuation that received it DELEGATED AGAIN and that child is done", () => {
+    const s = assistantEmptyState(
+      { ...MERGED, answeredChildRunIds: [] },
+      [spawnPart("K1"), YIELD],
+      [C1, C2],
+      "B",
+    );
+    expect(s).toEqual({ kind: "none" });
+  });
+
+  it("…or still running (then the bubble is waiting on it)", () => {
+    const s = assistantEmptyState(
+      { ...MERGED, answeredChildRunIds: [] },
+      [spawnPart("K1"), YIELD],
+      [C1, { ...C2, status: "running" }],
+      "B",
+    );
+    expect(s.kind).toBe("waiting");
+  });
+
+  it("RECEIVED but left unanswered (no follow-up, no new delegation): still failed, with its limit", () => {
+    const s = assistantEmptyState(
+      { ...MERGED, answeredChildRunIds: [] },
+      [spawnPart("K1"), YIELD],
+      [C1],
+      "B",
+    );
+    expect(s).toEqual({ kind: "failed", taskName: undefined, reason: TIMEOUT_REASON });
+  });
+
+  it("a re-delegation that itself FAILED answers nothing", () => {
+    const s = assistantEmptyState(
+      { ...MERGED, answeredChildRunIds: [] },
+      [spawnPart("K1"), YIELD],
+      [C1, { ...C2, status: "error", errorMessage: "boom" }],
+      "B",
+    );
+    expect(s.kind).toBe("failed");
+  });
+
+  it("a delegation born of ANOTHER batch does not answer this failure", () => {
+    const other = GEN1.replace("run-c1", "run-zz");
+    const s = assistantEmptyState(
+      { ...MERGED, answeredChildRunIds: [] },
+      [spawnPart("K1"), YIELD],
+      [C1, { ...C2, bornOfRun: other }],
+      "B",
+    );
+    expect(s.kind).toBe("failed");
+  });
+
+  it("codex pass 2: a re-delegation made in ANOTHER bubble (a refused merge) answers nothing here", () => {
+    // C1's continuation could not merge into B and opened bubble B2; it delegated C2
+    // there. B itself never showed the agent act on C1's failure.
+    const s = assistantEmptyState(
+      { ...MERGED, answeredChildRunIds: [] },
+      [spawnPart("K1"), YIELD],
+      [C1, { ...C2, parentMessageId: "B2" }],
+      "B",
+    );
+    expect(s.kind).toBe("failed");
+    // …and in B2, where C2 lives, C1 is not a row of that bubble at all.
+  });
+
+  it("a re-delegation whose row has no anchor yet answers nothing either", () => {
+    const s = assistantEmptyState(
+      { ...MERGED, answeredChildRunIds: [] },
+      [spawnPart("K1"), YIELD],
+      [C1, { ...C2, parentMessageId: undefined }],
+      "B",
+    );
+    expect(s.kind).toBe("failed");
+  });
+
+  it("a row without a run id is never taken for an answered one", () => {
+    const s = assistantEmptyState(
+      { ...MERGED, answeredChildRunIds: ["run-c1"] },
+      [spawnPart("K1"), YIELD],
+      [{ ...C1, childRunId: undefined }],
+      "B",
+    );
+    expect(s.kind).toBe("failed");
+  });
+});

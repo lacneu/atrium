@@ -178,3 +178,34 @@ export function isDeliveryRun(runId: string | null | undefined): boolean {
   if (isRequesterSettleRun(runId)) return true;
   return typeof runId === "string" && deliveryChildKey(runId) !== null;
 }
+
+/** The child run ids of the merged continuations a bubble VISIBLY followed up.
+ *
+ *  A batch named by `continuations[i]` says the agent RECEIVED those children's
+ *  results — not that it did anything with them: a continuation can end on no
+ *  answer at all. A batch counts as followed up only when the reader can see
+ *  something after it: text past its continuation point, or a delivered file
+ *  stamped by a settle run of that batch or of a later one (files carry no text
+ *  offset; the stamp is `messageParts.announceRun`, `deliveryPartStamp`). Pure,
+ *  shared by the message projection and its tests. */
+export function followedUpChildRunIds(
+  text: string,
+  continuations: ReadonlyArray<{ at: number; childRunIds: readonly string[] }>,
+  fileStamps: ReadonlyArray<string | undefined>,
+): string[] {
+  const key = (ids: readonly string[]) => [...ids].sort().join(",");
+  const fileBatches = new Set<string>();
+  for (const stamp of fileStamps) {
+    const settle = parseRequesterSettleRun(stamp);
+    if (settle !== null) fileBatches.add(key(settle.childRunIds));
+  }
+  const out: string[] = [];
+  continuations.forEach((c, i) => {
+    const byText = text.slice(c.at).trim() !== "";
+    const byFile = continuations
+      .slice(i)
+      .some((later) => fileBatches.has(key(later.childRunIds)));
+    if (byText || byFile) out.push(...c.childRunIds);
+  });
+  return out;
+}

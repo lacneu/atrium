@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   deliveryChildKey,
   deliveryPartStamp,
+  followedUpChildRunIds,
   isDeliveryRun,
   isRequesterSettleRun,
   parseRequesterSettleRun,
@@ -129,5 +130,32 @@ describe("requester-settle run grammar", () => {
     );
     expect(deliveryPartStamp("webchat-abc")).toBeUndefined();
     expect(deliveryPartStamp(undefined)).toBeUndefined();
+  });
+});
+
+describe("followedUpChildRunIds — a received batch is not an answered one (codex pass 1)", () => {
+  const R = (ids: string[], sfx = ":yield-1") =>
+    `announce:requester-settle:meta:agent:meta:atrium:chat:o:c:${ids.join(",")}${sfx}`;
+  const conts = [
+    { at: 0, childRunIds: ["c1"] },
+    { at: 12, childRunIds: ["c2"] },
+  ];
+
+  it("text after a batch's point follows it up — and every earlier batch", () => {
+    expect(followedUpChildRunIds("Je relance. Voici le PDF.", conts, [])).toEqual(["c1", "c2"]);
+  });
+
+  it("a continuation that ended on NOTHING follows nothing up", () => {
+    expect(followedUpChildRunIds("", [{ at: 0, childRunIds: ["c1"] }], [])).toEqual([]);
+    expect(followedUpChildRunIds("Je délègue.", [{ at: 11, childRunIds: ["c1"] }], [])).toEqual([]);
+  });
+
+  it("a file delivered by a run of that batch, or of a later one, follows it up", () => {
+    expect(followedUpChildRunIds("", conts, [R(["c2"], ":yield-1:retry-1")])).toEqual(["c1", "c2"]);
+    expect(followedUpChildRunIds("", conts, [R(["c1"])])).toEqual(["c1"]);
+  });
+
+  it("an unstamped file (the turn's own) or another batch's file follows nothing up", () => {
+    expect(followedUpChildRunIds("", conts, [undefined, R(["zz"])])).toEqual([]);
   });
 });

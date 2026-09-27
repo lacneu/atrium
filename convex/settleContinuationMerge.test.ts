@@ -15,10 +15,11 @@
 // names), recorded on each subAgents row from its spawn result.
 
 import { convexTest, type TestConvex } from "convex-test";
-import { describe, expect, test } from "vitest";
-import { internal } from "./_generated/api";
+import { afterEach, beforeEach, describe, expect, test } from "vitest";
+import { api, internal } from "./_generated/api";
 import schema from "./schema";
 import type { Id } from "./_generated/dataModel";
+import { toBase64 } from "./lib/crypto/cipher";
 
 const modules = import.meta.glob("./**/*.ts");
 
@@ -133,6 +134,42 @@ async function assistants(t: T, chatId: Id<"chats">) {
   );
 }
 
+/** A child the CONTINUATION `carrierRun` spawned, written through the mutation the
+ *  bridge ingest calls, in the records the bridge observer emits for it
+ *  (bridge/test/sub-agent-child-run-id.test.ts, "a child spawned inside a
+ *  continuation…"): at its `lifecycle start` — the correlated anchor of the item
+ *  sighting, the carrier run, and the run id read from that very frame — then its
+ *  terminal. No field is seeded behind the bridge's back. */
+async function childSpawnedInContinuation(
+  t: T,
+  chatId: Id<"chats">,
+  parentId: Id<"messages">,
+  carrierRun: string,
+  opts?: { key?: string; runId?: string | null; anchored?: boolean },
+) {
+  const key = opts?.key ?? CHILD_KEY_2;
+  const runId = opts?.runId === undefined ? CHILD_RUN_2 : opts.runId;
+  const anchored = opts?.anchored ?? true;
+  const identity = {
+    chatId,
+    childSessionKey: key,
+    ...(anchored ? { parentMessageId: parentId, anchorExact: true } : {}),
+    ...(runId !== null ? { childRunId: runId } : {}),
+  };
+  await t.mutation(internal.subAgents.upsertSubAgent, {
+    ...identity,
+    bornOfRun: carrierRun,
+    taskName: "Rédige le rapport en PDF",
+    status: "running",
+    phase: "start",
+  });
+  await t.mutation(internal.subAgents.upsertSubAgent, {
+    ...identity,
+    status: "done",
+    resultText: "PDF prêt : rapport.pdf",
+  });
+}
+
 describe("requester-settle continuation merges into the yielded turn", () => {
   test("the production id reopens bubble A — one bubble, the conclusion in it", async () => {
     const t = convexTest(schema, modules);
@@ -202,22 +239,14 @@ describe("requester-settle continuation merges into the yielded turn", () => {
       status: "complete",
       text: "Première conclusion.",
     });
-    // The continuation delegated again and yielded again (generation 2).
-    await t.run(async (ctx) => {
-      await ctx.db.insert("subAgents", {
-        chatId,
-        parentMessageId: parentId,
-        anchorExact: true,
-        childSessionKey: CHILD_KEY_2,
-        childRunId: CHILD_RUN_2,
-        status: "done" as const,
-        createdAt: 3000,
-        updatedAt: 3500,
-      });
-    });
+    // The continuation delegated again and yielded again. Its child is written the
+    // way the bridge writes it — the run id learned from the child's own startup,
+    // the correlated anchor from the item sighting — and ITS settle run is a new
+    // requester run, so its generation counter restarts: `yield-1` again.
+    await childSpawnedInContinuation(t, chatId, parentId, PROD_SETTLE);
     const second = await t.mutation(internal.stream.startAssistant, {
       chatId,
-      runId: settleRun([CHILD_RUN_2], ":yield-2"),
+      runId: settleRun([CHILD_RUN_2]),
     });
     expect(second).toBe(parentId);
     const doc = await t.run((ctx) => ctx.db.get(parentId));
@@ -693,19 +722,8 @@ describe("a retry wake of a batch already merged", () => {
     const { chatId, parentId } = await seedYieldedTurn(t);
     await t.mutation(internal.stream.startAssistant, { chatId, runId: PROD_SETTLE });
     await runGeneration(t, parentId, PROD_SETTLE, "Première.");
-    await t.run(async (ctx) => {
-      await ctx.db.insert("subAgents", {
-        chatId,
-        parentMessageId: parentId,
-        anchorExact: true,
-        childSessionKey: CHILD_KEY_2,
-        childRunId: CHILD_RUN_2,
-        status: "done" as const,
-        createdAt: 3000,
-        updatedAt: 3500,
-      });
-    });
-    const SECOND = settleRun([CHILD_RUN_2], ":yield-2");
+    await childSpawnedInContinuation(t, chatId, parentId, PROD_SETTLE);
+    const SECOND = settleRun([CHILD_RUN_2]);
     await t.mutation(internal.stream.startAssistant, { chatId, runId: SECOND });
     await runGeneration(t, parentId, SECOND, "Seconde.");
 
@@ -952,19 +970,8 @@ describe("a retry wake of a batch already merged", () => {
     await t.mutation(internal.stream.startAssistant, { chatId, runId: PROD_SETTLE });
     await mediaPart(t, parentId, PROD_SETTLE, "pdf-a");
     await runGeneration(t, parentId, PROD_SETTLE, "Première.");
-    await t.run(async (ctx) => {
-      await ctx.db.insert("subAgents", {
-        chatId,
-        parentMessageId: parentId,
-        anchorExact: true,
-        childSessionKey: CHILD_KEY_2,
-        childRunId: CHILD_RUN_2,
-        status: "done" as const,
-        createdAt: 3000,
-        updatedAt: 3500,
-      });
-    });
-    const SECOND = settleRun([CHILD_RUN_2], ":yield-2");
+    await childSpawnedInContinuation(t, chatId, parentId, PROD_SETTLE);
+    const SECOND = settleRun([CHILD_RUN_2]);
     await t.mutation(internal.stream.startAssistant, { chatId, runId: SECOND });
     await runGeneration(t, parentId, SECOND, "Seco", "error");
     const failed = await t.run((ctx) => ctx.db.get(parentId));
@@ -990,19 +997,8 @@ describe("a retry wake of a batch already merged", () => {
     const { chatId, parentId } = await seedYieldedTurn(t, { parentText: "Je délègue." });
     await t.mutation(internal.stream.startAssistant, { chatId, runId: PROD_SETTLE });
     await runGeneration(t, parentId, PROD_SETTLE, "Première.");
-    await t.run(async (ctx) => {
-      await ctx.db.insert("subAgents", {
-        chatId,
-        parentMessageId: parentId,
-        anchorExact: true,
-        childSessionKey: CHILD_KEY_2,
-        childRunId: CHILD_RUN_2,
-        status: "done" as const,
-        createdAt: 3000,
-        updatedAt: 3500,
-      });
-    });
-    const SECOND = settleRun([CHILD_RUN_2], ":yield-2");
+    await childSpawnedInContinuation(t, chatId, parentId, PROD_SETTLE);
+    const SECOND = settleRun([CHILD_RUN_2]);
     await t.mutation(internal.stream.startAssistant, { chatId, runId: SECOND });
     await runGeneration(t, parentId, SECOND, "Seco", "error");
     await t.mutation(internal.stream.startAssistant, { chatId, runId: SECOND });
@@ -1017,19 +1013,8 @@ describe("a retry wake of a batch already merged", () => {
     const { chatId, parentId } = await seedYieldedTurn(t);
     await t.mutation(internal.stream.startAssistant, { chatId, runId: PROD_SETTLE });
     await runGeneration(t, parentId, PROD_SETTLE, "Première.");
-    await t.run(async (ctx) => {
-      await ctx.db.insert("subAgents", {
-        chatId,
-        parentMessageId: parentId,
-        anchorExact: true,
-        childSessionKey: CHILD_KEY_2,
-        childRunId: CHILD_RUN_2,
-        status: "done" as const,
-        createdAt: 3000,
-        updatedAt: 3500,
-      });
-    });
-    const SECOND = settleRun([CHILD_RUN_2], ":yield-2");
+    await childSpawnedInContinuation(t, chatId, parentId, PROD_SETTLE);
+    const SECOND = settleRun([CHILD_RUN_2]);
     await t.mutation(internal.stream.startAssistant, { chatId, runId: SECOND });
     // The SECOND continuation failed: its own rebroadcast may resume it, the first
     // batch's retry may not.
@@ -1042,5 +1027,325 @@ describe("a retry wake of a batch already merged", () => {
     expect(doc?.status).toBe("error");
     expect(doc?.text).toBe(failed?.text);
     expect(doc?.runId).toBe(SECOND);
+  });
+});
+
+// PRODUCTION, 2026-09-27 (chat mh71qt6…, gateway 2026.9.6, bridge 0.87.0). The turn
+// delegated to C1 (`runTimeoutSeconds: 900`) and yielded: bubble B. C1 timed out; its
+// settle run `…:<C1>:yield-1` merged into B. Inside that continuation the agent
+// delegated AGAIN, to C2, and yielded again. C2 finished, and ITS settle run —
+// `…:<C2>:yield-1`, a new requester run, so a counter that restarts — carried the PDF
+// into a SECOND bubble: C2 was spawned by item frames only, no spawn result named its
+// run id, and the join had no member to anchor on.
+//
+// Every write the bridge makes goes through the real ingest door (`/bridge/ingest`,
+// per-bridge secret), in the shapes the observer emits (bridge/test/
+// sub-agent-child-run-id.test.ts, sub-agent-timeout.test.ts). The stream is driven
+// through the mutations the ingest routes to, as everywhere else in this file.
+describe("a continuation that re-delegates and yields AGAIN lands in the SAME bubble", () => {
+  const C1_KEY = "agent:files:subagent:7a1c2e90-4b3d-4f6e-8a21-9c0d1e2f3a4b";
+  const C1_RUN = "3e9b7c10-2d4a-4c8e-9f1b-6a5d4c3b2a19";
+  const C2_KEY = "agent:files:subagent:b82f0d6e-91c4-4e7a-a3d5-0f2e4c6b8a17";
+  const C2_RUN = "c4d2e1f0-7b6a-4958-8c3d-2e1f0a9b8c7d";
+  const GEN1 = settleRun([C1_RUN]);
+  const GEN2 = settleRun([C2_RUN]); // `yield-1` too: the production id
+  const TIMEOUT_TEXT =
+    "Request timed out before a response was generated. Please try again, or increase `agents.defaults.timeoutSeconds` in your config.";
+
+  let prevKey: string | undefined;
+  beforeEach(() => {
+    prevKey = process.env.ATRIUM_SECRET_KEY;
+    process.env.ATRIUM_SECRET_KEY = toBase64(new Uint8Array(32).fill(7));
+  });
+  afterEach(() => {
+    if (prevKey === undefined) delete process.env.ATRIUM_SECRET_KEY;
+    else process.env.ATRIUM_SECRET_KEY = prevKey;
+  });
+
+  /** The bubble B the turn left, C1 registered from its spawn RESULT (a normal turn:
+   *  tool frames reach the bridge), and the bridge's per-bridge secret. */
+  async function seedProd(t: T) {
+    const { chatId, parentId } = await seedYieldedTurn(t, {
+      parentText: "Je confie la rédaction du rapport.",
+      children: [],
+    });
+    const admin = await t.run(async (ctx) => {
+      const a = await ctx.db.insert("users", {});
+      await ctx.db.insert("profiles", { userId: a, role: "admin" });
+      return a;
+    });
+    const instanceId = await t.run((ctx) =>
+      ctx.db.insert("instances", { name: "lacneu", gatewayUrl: "ws://lacneu", kind: "openclaw" as const }),
+    );
+    const minted = await t
+      .withIdentity({ subject: `${admin}|session` })
+      .action(api.bridgeAuth.mintBridgeSecret, { instanceId });
+    const ingest = async (body: Record<string, unknown>) => {
+      const res = await t.fetch("/bridge/ingest", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${minted.plaintext}` },
+        body: JSON.stringify(body),
+      });
+      expect(res.status, JSON.stringify(body.op)).toBe(200);
+    };
+    // C1: the spawn result's registration, then its time-limit failure.
+    const c1 = {
+      op: "upsertSubAgent",
+      chatId,
+      parentMessageId: parentId,
+      anchorExact: true,
+      childSessionKey: C1_KEY,
+      childRunId: C1_RUN,
+      runTimeoutSeconds: 900,
+    };
+    await ingest({ ...c1, taskName: "Rédige le rapport", status: "running" });
+    await ingest({ ...c1, status: "error", errorMessage: TIMEOUT_TEXT, errorCode: "timeout" });
+    return { chatId, parentId, ingest };
+  }
+
+  /** C2 as the bridge writes it at its `lifecycle start` (item-only spawn inside GEN1),
+   *  then at its final. `learnedRunId: false` = the bridge before this fix. */
+  async function c2(
+    ingest: (b: Record<string, unknown>) => Promise<void>,
+    chatId: Id<"chats">,
+    parentId: Id<"messages">,
+    learnedRunId: boolean,
+  ) {
+    const c = {
+      op: "upsertSubAgent",
+      chatId,
+      parentMessageId: parentId,
+      anchorExact: true,
+      childSessionKey: C2_KEY,
+      ...(learnedRunId ? { childRunId: C2_RUN } : {}),
+    };
+    await ingest({ ...c, bornOfRun: GEN1, taskName: "Rédige le rapport en PDF", status: "running", phase: "start" });
+    await ingest({ ...c, status: "done", resultText: "PDF prêt : rapport.pdf" });
+  }
+
+  async function generation(t: T, messageId: Id<"messages">, runId: string, text: string) {
+    await t.mutation(internal.stream.appendDelta, { messageId, text, expectedRunId: runId });
+    await t.mutation(internal.stream.finalize, { messageId, status: "complete", text, expectedRunId: runId });
+  }
+
+  test("ONE bubble: both continuations recorded, the PDF in it", async () => {
+    const t = convexTest(schema, modules);
+    const { chatId, parentId, ingest } = await seedProd(t);
+    const before = (await assistants(t, chatId)).length;
+
+    expect(await t.mutation(internal.stream.startAssistant, { chatId, runId: GEN1 })).toBe(parentId);
+    await c2(ingest, chatId, parentId, true);
+    await generation(t, parentId, GEN1, "Le premier sous-agent a expiré ; je relance la rédaction.");
+
+    const opened = await t.mutation(internal.stream.startAssistant, { chatId, runId: GEN2 });
+    expect(opened).toBe(parentId);
+    const storageId = await t.run((ctx) => ctx.storage.store(new Blob(["%PDF-1.7"])));
+    await t.mutation(internal.stream.addPart, {
+      messageId: parentId,
+      expectedRunId: GEN2,
+      part: { kind: "media", storageId, filename: "rapport.pdf", mimeType: "application/pdf" },
+    });
+    await generation(t, parentId, GEN2, "Voici le rapport en PDF.");
+
+    expect(await assistants(t, chatId)).toHaveLength(before); // NO second bubble
+    const doc = await t.run((ctx) => ctx.db.get(parentId));
+    expect(doc?.status).toBe("complete");
+    expect(doc?.continuations?.map((c) => c.childRunIds)).toEqual([[C1_RUN], [C2_RUN]]);
+    expect(doc?.mergedAnnounceRuns).toEqual(expect.arrayContaining([GEN1, GEN2]));
+    expect(doc?.text?.endsWith("Voici le rapport en PDF.")).toBe(true);
+    const pdf = (
+      await t.run((ctx) =>
+        ctx.db.query("messageParts").withIndex("by_message", (q) => q.eq("messageId", parentId)).collect(),
+      )
+    ).filter((p) => p.part.kind === "media");
+    expect(pdf).toHaveLength(1);
+    expect(pdf[0]?.announceRun).toBe(GEN2);
+    // The rows the bridge wrote carry what the triage needs.
+    const rows = await t.run((ctx) =>
+      ctx.db.query("subAgents").withIndex("by_chat", (q) => q.eq("chatId", chatId)).collect(),
+    );
+    const byKey = new Map(rows.map((r) => [r.childSessionKey, r]));
+    expect(byKey.get(C2_KEY)?.childRunId).toBe(C2_RUN);
+    expect(byKey.get(C1_KEY)?.errorCode).toBe("timeout");
+    expect(byKey.get(C1_KEY)?.runTimeoutSeconds).toBe(900);
+    // The reader's projection: both batches were visibly followed up (text after
+    // each point, and the PDF delivered by the second run) — so C1's failure, which
+    // the agent answered by re-delegating, is not the bubble's verdict.
+    const userId = (await t.run((ctx) => ctx.db.get(chatId)))!.userId;
+    const view = await t
+      .withIdentity({ subject: `${userId}|session` })
+      .query(api.messages.listByChat, { chatId: chatId as string });
+    const b = (view as Array<{ _id: string; followedUpChildRunIds?: string[] }>).find(
+      (m) => m._id === parentId,
+    );
+    expect(b?.followedUpChildRunIds).toEqual([C1_RUN, C2_RUN]);
+  });
+
+  test("a continuation that received C1's failure and ended on NOTHING follows nothing up", async () => {
+    const t = convexTest(schema, modules);
+    const { chatId, parentId } = await seedProd(t);
+    await t.mutation(internal.stream.startAssistant, { chatId, runId: GEN1 });
+    await t.mutation(internal.stream.finalize, { messageId: parentId, status: "complete", text: "", expectedRunId: GEN1 });
+    const userId = (await t.run((ctx) => ctx.db.get(chatId)))!.userId;
+    const view = await t
+      .withIdentity({ subject: `${userId}|session` })
+      .query(api.messages.listByChat, { chatId: chatId as string });
+    const b = (view as Array<{ _id: string; followedUpChildRunIds?: string[] }>).find(
+      (m) => m._id === parentId,
+    );
+    expect(b?.followedUpChildRunIds).toEqual([]);
+  });
+
+  test("RED without the learned run id — today's two bubbles, reproduced", async () => {
+    const t = convexTest(schema, modules);
+    const { chatId, parentId, ingest } = await seedProd(t);
+    const before = (await assistants(t, chatId)).length;
+    await t.mutation(internal.stream.startAssistant, { chatId, runId: GEN1 });
+    await c2(ingest, chatId, parentId, false);
+    await generation(t, parentId, GEN1, "Je relance.");
+    const opened = await t.mutation(internal.stream.startAssistant, { chatId, runId: GEN2 });
+    expect(opened).not.toBe(parentId);
+    expect(await assistants(t, chatId)).toHaveLength(before + 1);
+  });
+
+  test("the ingest refuses a declared limit that is not a whole, bounded number of seconds", async () => {
+    const t = convexTest(schema, modules);
+    const { chatId, ingest } = await seedProd(t);
+    const cases: Array<[string, unknown, number | undefined]> = [
+      ["agent:files:subagent:ok", 900, 900],
+      ["agent:files:subagent:zero", 0, 0],
+      ["agent:files:subagent:frac", 12.5, undefined],
+      ["agent:files:subagent:neg", -1, undefined],
+      ["agent:files:subagent:str", "900", undefined],
+      ["agent:files:subagent:huge", 8 * 24 * 3600, undefined],
+    ];
+    for (const [key, v] of cases) {
+      await ingest({ op: "upsertSubAgent", chatId, childSessionKey: key, runTimeoutSeconds: v, status: "running" });
+    }
+    for (const [key, , stored] of cases) {
+      const row = await t.run((ctx) =>
+        ctx.db.query("subAgents").withIndex("by_child", (q) => q.eq("childSessionKey", key)).first(),
+      );
+      expect(row?.runTimeoutSeconds, key).toBe(stored);
+    }
+    // A registration write that went out without it (or was lost) is repaired by the
+    // terminal write that re-carries it — and never re-pointed afterwards.
+    const late = "agent:files:subagent:late";
+    await ingest({ op: "upsertSubAgent", chatId, childSessionKey: late, status: "running" });
+    await ingest({ op: "upsertSubAgent", chatId, childSessionKey: late, runTimeoutSeconds: 600, status: "error" });
+    await ingest({ op: "upsertSubAgent", chatId, childSessionKey: late, runTimeoutSeconds: 30, status: "error" });
+    const lateRow = await t.run((ctx) =>
+      ctx.db.query("subAgents").withIndex("by_child", (q) => q.eq("childSessionKey", late)).first(),
+    );
+    expect(lateRow?.runTimeoutSeconds).toBe(600);
+  });
+});
+
+// PARALLEL spawns inside a continuation: the bridge cannot tell which spawn each child
+// matches, so it anchors NONE of them — but the run they were spawned in is certain and
+// rides as `bornOfRun`. That run wrote to one bubble; the join resolves through it, and
+// confirms it on the bubble itself (the run is the bubble's run or one it merged).
+describe("children spawned together inside a continuation join through their carrier run", () => {
+  const C2A = "agent:files:subagent:1111aaaa-0000-4000-8000-000000000001";
+  const C2B = "agent:files:subagent:2222bbbb-0000-4000-8000-000000000002";
+  const C2A_RUN = "a1a1a1a1-0000-4000-8000-000000000001";
+  const C2B_RUN = "b2b2b2b2-0000-4000-8000-000000000002";
+
+  async function parallelChildren(t: T, chatId: Id<"chats">, parentId: Id<"messages">, carrier: string) {
+    await childSpawnedInContinuation(t, chatId, parentId, carrier, { key: C2A, runId: C2A_RUN, anchored: false });
+    await childSpawnedInContinuation(t, chatId, parentId, carrier, { key: C2B, runId: C2B_RUN, anchored: false });
+  }
+
+  test("the carrier merged into B: the next continuation merges into B", async () => {
+    const t = convexTest(schema, modules);
+    const { chatId, parentId } = await seedYieldedTurn(t);
+    await t.mutation(internal.stream.startAssistant, { chatId, runId: PROD_SETTLE });
+    await parallelChildren(t, chatId, parentId, PROD_SETTLE);
+    await t.mutation(internal.stream.finalize, { messageId: parentId, status: "complete", text: "Deux relectures lancées.", expectedRunId: PROD_SETTLE });
+    const next = settleRun([C2A_RUN, C2B_RUN].sort());
+    expect(await t.mutation(internal.stream.startAssistant, { chatId, runId: next })).toBe(parentId);
+    const doc = await t.run((ctx) => ctx.db.get(parentId));
+    expect(doc?.continuations?.map((c) => c.childRunIds)).toEqual([[CHILD_RUN], [C2A_RUN, C2B_RUN].sort()]);
+  });
+
+  test("a carrier that never merged here (its own bubble): fails closed", async () => {
+    const t = convexTest(schema, modules);
+    const { chatId, parentId } = await seedYieldedTurn(t);
+    // The carrier names the known child, but it did NOT run on B — B holds no trace of it.
+    await parallelChildren(t, chatId, parentId, PROD_SETTLE);
+    const next = settleRun([C2A_RUN, C2B_RUN].sort());
+    expect(await t.mutation(internal.stream.startAssistant, { chatId, runId: next })).not.toBe(parentId);
+  });
+
+  test("a carrier that is a settle wake WITHOUT a yield (it merges nowhere): fails closed", async () => {
+    const t = convexTest(schema, modules);
+    const { chatId, parentId } = await seedYieldedTurn(t);
+    const noYield = settleRun([CHILD_RUN], "");
+    await t.run((ctx) => ctx.db.patch(parentId, { mergedAnnounceRuns: [noYield] }));
+    await parallelChildren(t, chatId, parentId, noYield);
+    const next = settleRun([C2A_RUN, C2B_RUN].sort());
+    expect(await t.mutation(internal.stream.startAssistant, { chatId, runId: next })).not.toBe(parentId);
+  });
+
+  test("a HEURISTIC anchor with a carrier is still refused", async () => {
+    const t = convexTest(schema, modules);
+    const { chatId, parentId } = await seedYieldedTurn(t);
+    await t.mutation(internal.stream.startAssistant, { chatId, runId: PROD_SETTLE });
+    await t.mutation(internal.stream.finalize, { messageId: parentId, status: "complete", text: "x", expectedRunId: PROD_SETTLE });
+    // The bridge's positional fallback: an anchor, but not a correlated one.
+    await t.mutation(internal.subAgents.upsertSubAgent, {
+      chatId,
+      parentMessageId: parentId,
+      childSessionKey: C2A,
+      childRunId: C2A_RUN,
+      bornOfRun: PROD_SETTLE,
+      status: "done",
+    });
+    expect(
+      await t.mutation(internal.stream.startAssistant, { chatId, runId: settleRun([C2A_RUN]) }),
+    ).not.toBe(parentId);
+  });
+});
+
+// Codex pass 1 (P3): a chain of successive continuations, each re-delegating to
+// children spawned TOGETHER (no direct anchor — only their carrier run). Resolving
+// generation N used to re-walk the whole chain back to the turn's own child, one
+// carrier per generation, under a depth cap: long enough, the chain fell off the cap
+// and the delivery opened a new bubble. The resolved anchor is now recorded on the
+// members at each successful join, so the next generation needs one hop.
+describe("a long chain of parallel re-delegations stays in ONE bubble", () => {
+  test("eight generations, every batch spawned in parallel without a direct anchor", async () => {
+    const t = convexTest(schema, modules);
+    const { chatId, parentId } = await seedYieldedTurn(t);
+    const before = (await assistants(t, chatId)).length;
+    let carrier = PROD_SETTLE; // generation 1: the turn's own child, exactly anchored
+    expect(await t.mutation(internal.stream.startAssistant, { chatId, runId: carrier })).toBe(parentId);
+    await t.mutation(internal.stream.finalize, { messageId: parentId, status: "complete", text: "g1", expectedRunId: carrier });
+    for (let g = 2; g <= 8; g++) {
+      const ids = [`g${g}a-0000-4000-8000-000000000001`, `g${g}b-0000-4000-8000-000000000002`];
+      for (const [i, id] of ids.entries()) {
+        await childSpawnedInContinuation(t, chatId, parentId, carrier, {
+          key: `agent:files:subagent:g${g}-${i}`,
+          runId: id,
+          anchored: false,
+        });
+      }
+      const next = settleRun([...ids].sort());
+      const opened = await t.mutation(internal.stream.startAssistant, { chatId, runId: next });
+      expect(opened, `generation ${g}`).toBe(parentId);
+      await t.mutation(internal.stream.finalize, { messageId: parentId, status: "complete", text: `g${g}`, expectedRunId: next });
+      carrier = next;
+    }
+    expect(await assistants(t, chatId)).toHaveLength(before);
+    const doc = await t.run((ctx) => ctx.db.get(parentId));
+    expect(doc?.continuations).toHaveLength(8);
+    // The joined members now carry the anchor they were proven to belong to.
+    const rows = await t.run((ctx) =>
+      ctx.db.query("subAgents").withIndex("by_chat", (q) => q.eq("chatId", chatId)).collect(),
+    );
+    for (const r of rows) {
+      expect(r.parentMessageId, r.childSessionKey).toBe(parentId);
+      expect(r.anchorExact, r.childSessionKey).toBe(true);
+    }
   });
 });

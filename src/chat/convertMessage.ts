@@ -463,6 +463,11 @@ export function convertConvexMessage(
         // …and whether ANY continuation slot exists (legacy or per-batch): the empty
         // state must not print these replies a second time under the body.
         hasContinuation: continuationSlots(message).length > 0,
+        // The continuations' batches the bubble visibly FOLLOWED UP: a failed child
+        // among them is a result the agent received and acted on here. Received
+        // alone is not enough (the continuation can end on nothing).
+        answeredChildRunIds:
+          message.role === "assistant" ? [...(message.followedUpChildRunIds ?? [])] : [],
         error: message.error ?? null,
         // Stable failure class (gateway errorKind or dispatch code) — drives
         // the actionable localized headline on the error card.

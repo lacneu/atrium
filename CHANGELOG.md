@@ -1,5 +1,34 @@
 # Changelog
 
+## [0.87.1] — A delegation inside a delegation stays in its bubble
+
+Corrective release, from two production reports on OpenClaw 2026.9.6. No breaking changes;
+see the deployment note.
+
+**An agent that delegates again after a first delegation keeps one answer.** Reported in
+production: the agent handed work to a sub-agent and waited, picked up the result in the
+same bubble, then delegated again and waited again — and that second result opened a new,
+separate answer. The second sub-agent was never recognised: on a continuation the gateway
+does not send Atrium the delegation's result, only the sub-agent's own first frames, which
+Atrium now reads to recognise it. The whole exchange now stays in the bubble of the
+question, however many times the agent delegates and waits, including several sub-agents
+started at once.
+
+**A sub-agent that runs out of time says so plainly.** When a delegated sub-agent reaches
+the time limit it was started with, its card now reads "The sub-agent exceeded its N s
+limit without answering" instead of the gateway's raw English message — whose advice to
+raise a configuration setting did not apply when the limit came from the delegation
+itself. The gateway's own sentence stays available in the sub-agent's details.
+
+**A failure the agent recovered from no longer brands the answer as failed.** When a
+sub-agent failed and the agent went on — answering, or delegating again successfully — the
+answer no longer shows "delegated to a sub-agent that failed". A failure the agent received
+but did not act on still shows.
+
+**Deployment note.** Deploy the bridge together with Convex (`npx convex deploy`: one new
+optional field on sub-agents, no migration). A delegation already in flight
+during the upgrade may still open a separate answer.
+
 ## [0.87.0] — Execution permissions, chosen in the conversation
 
 Feature release: on OpenClaw, a conversation's owner now chooses what the agent may do on

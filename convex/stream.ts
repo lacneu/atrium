@@ -783,25 +783,108 @@ async function settleContinuationAnchor(
   ctx: MutationCtx,
   chatId: Id<"chats">,
   settle: { childRunIds: string[]; yieldGeneration: number | null },
+  depth = 0,
+  // Collects the member rows whose anchor was PROVEN through their carrier run, so
+  // the caller can record it on them once the whole join holds (see
+  // `recordCarrierAnchors`).
+  provenThroughCarrier: Id<"subAgents">[] = [],
 ): Promise<Id<"messages"> | null> {
   if (settle.yieldGeneration === null) return null;
+  const proven: Id<"subAgents">[] = [];
   let anchor: Id<"messages"> | null = null;
   for (const childRunId of settle.childRunIds) {
     const rows = await settleMemberRows(ctx, chatId, childRunId);
     if (rows.length === 0) continue;
     const row = rows[0];
     if (rows.length !== 1 || row === undefined) return null;
-    if (
-      row.kind === "task" ||
-      row.anchorExact !== true ||
-      row.parentMessageId === undefined
-    ) {
+    if (row.kind === "task") return null;
+    let memberAnchor: Id<"messages"> | null;
+    if (row.anchorExact === true && row.parentMessageId !== undefined) {
+      memberAnchor = row.parentMessageId;
+    } else if (row.parentMessageId === undefined && row.bornOfRun !== undefined) {
+      // NO anchor at all, but the run the child was spawned INSIDE is known —
+      // the bridge's certain carrier when a continuation spawned several children
+      // at once (it cannot tell which spawn each child matches, so it anchors
+      // none of them). Spawned inside a continuation, the child belongs to the
+      // bubble that continuation wrote to. A heuristic anchor stays refused.
+      memberAnchor = await settleCarrierBubble(
+        ctx,
+        chatId,
+        row.bornOfRun,
+        depth,
+        provenThroughCarrier,
+      );
+      if (memberAnchor !== null) proven.push(row._id);
+    } else {
       return null;
     }
-    if (anchor !== null && anchor !== row.parentMessageId) return null;
-    anchor = row.parentMessageId;
+    if (memberAnchor === null) return null;
+    if (anchor !== null && anchor !== memberAnchor) return null;
+    anchor = memberAnchor;
   }
+  // Only a join that held for EVERY known member proves anything about them.
+  if (anchor !== null) provenThroughCarrier.push(...proven);
   return anchor;
+}
+
+/** Record, on the members a join resolved through their carrier run, the bubble it
+ *  PROVED they belong to — as an exact anchor, which is what it now is.
+ *
+ *  Without it every later generation re-walked the whole chain back to the turn's
+ *  own child, one carrier per generation, and a long enough chain of parallel
+ *  re-delegations fell off the depth cap into a new bubble (codex pass 1, P3). With
+ *  it the next generation's carrier resolves in one hop. It also puts those
+ *  children under their bubble for the reader (the sub-agent monitor and the inline
+ *  replies read `parentMessageId`). Only rows with NO anchor are ever written —
+ *  the same fill rule as `upsertSubAgent`. */
+async function recordCarrierAnchors(
+  ctx: MutationCtx,
+  rowIds: readonly Id<"subAgents">[],
+  anchor: Id<"messages">,
+): Promise<void> {
+  for (const id of rowIds) {
+    const row = await ctx.db.get(id);
+    if (row === null || row.parentMessageId !== undefined) continue;
+    await ctx.db.patch(id, { parentMessageId: anchor, anchorExact: true });
+  }
+}
+
+/** How many continuation generations the carrier walk may climb. Each step is an
+ *  exact proof, so the bound only caps the reads of one mutation. A join records
+ *  the anchors it proved (`recordCarrierAnchors`), so a chain of any length needs
+ *  one hop per delivery: the cap is only met by a chain whose earlier deliveries
+ *  never reached this mutation. */
+const MAX_CARRIER_DEPTH = 4;
+
+/** The bubble a requester-settle run `carrierRun` WROTE TO, or null.
+ *
+ *  Resolved by that run's own join (its batch's members, recursively for a child
+ *  spawned inside a continuation of a continuation), then CONFIRMED on the bubble
+ *  itself: the run must be the bubble's run or one of its merged runs — the record
+ *  `reopenParentForAnnounce` writes only when the run really merged there. A run
+ *  that failed its own join opened a bubble of its own, which nothing here can
+ *  find (no index by run id): the member then fails closed, as before. */
+async function settleCarrierBubble(
+  ctx: MutationCtx,
+  chatId: Id<"chats">,
+  carrierRun: string,
+  depth: number,
+  provenThroughCarrier: Id<"subAgents">[],
+): Promise<Id<"messages"> | null> {
+  if (depth >= MAX_CARRIER_DEPTH) return null;
+  const carrier = parseRequesterSettleRun(carrierRun);
+  if (carrier === null) return null;
+  const nested: Id<"subAgents">[] = [];
+  const bubbleId = await settleContinuationAnchor(ctx, chatId, carrier, depth + 1, nested);
+  if (bubbleId === null) return null;
+  const bubble = await ctx.db.get(bubbleId);
+  if (bubble === null || bubble.chatId !== chatId) return null;
+  const wroteThere =
+    bubble.runId === carrierRun ||
+    (bubble.mergedAnnounceRuns ?? []).includes(carrierRun);
+  if (!wroteThere) return null;
+  provenThroughCarrier.push(...nested);
+  return bubbleId;
 }
 
 /** The rows (at most two — enough to see an ambiguity) carrying one settled child
@@ -1016,8 +1099,18 @@ async function reopenParentForAnnounce(
   if (settle !== null) {
     // The continuation of a YIELDED turn, and nothing else: the join is exact or
     // there is no merge (the run then keeps its own bubble, as before).
-    const anchor = await settleContinuationAnchor(ctx, chatId, settle);
+    const provenThroughCarrier: Id<"subAgents">[] = [];
+    const anchor = await settleContinuationAnchor(
+      ctx,
+      chatId,
+      settle,
+      0,
+      provenThroughCarrier,
+    );
     if (anchor === null) return null;
+    // Recorded whatever the reopen decides below: where these children belong is
+    // a fact about their carrier, not about whether this delivery may merge now.
+    await recordCarrierAnchors(ctx, provenThroughCarrier, anchor);
     parentId = anchor;
     anchoredResolution = true;
   }

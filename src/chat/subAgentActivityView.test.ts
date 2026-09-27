@@ -15,6 +15,7 @@ import {
   subAgentRowsForMessage,
   subAgentToolsProgress,
   shortenSubAgentError,
+  subAgentErrorDetail,
   hasRunningSubAgent,
   type SubAgentRow,
 } from "./subAgentActivityView";
@@ -599,5 +600,49 @@ describe("MoA cards: kind labels + aggregator-first hierarchy", () => {
       subAgentKindLabel({ moaRole: "moa_reference" }),
     );
     expect(subAgentKindLabel({})).toBeTruthy();
+  });
+});
+
+describe("a sub-agent cut off by its time limit (prod 2026-09-27)", () => {
+  // What the gateway says, verbatim (upstream run/terminal-timeout.ts:50-55 at
+  // v2026.9.6): advice to raise a config value that was NOT the limit in force when
+  // the spawn declared its own `runTimeoutSeconds`. Cut at 120 characters, it was the
+  // whole explanation the reader got.
+  const UPSTREAM =
+    "Request timed out before a response was generated. Please try again, or increase `agents.defaults.timeoutSeconds` in your config.";
+
+  it("names the limit the spawn declared, in the reader's language", () => {
+    expect(shortenSubAgentError(UPSTREAM, "timeout", 900)).toBe(
+      "Le sous-agent a dépassé son délai de 900 s sans répondre.",
+    );
+  });
+
+  it("says it without a figure when the spawn declared none (or declared no limit)", () => {
+    for (const n of [undefined, null, 0]) {
+      expect(shortenSubAgentError(UPSTREAM, "timeout", n)).toBe(
+        "Le sous-agent a dépassé son délai sans répondre.",
+      );
+    }
+  });
+
+  it("never repeats the gateway's advice in the headline", () => {
+    expect(shortenSubAgentError(UPSTREAM, "timeout", 900)).not.toContain("timeoutSeconds");
+  });
+
+  it("…which stays reachable, whole, as the panel's detail", () => {
+    expect(subAgentErrorDetail(UPSTREAM, "timeout")).toBe(UPSTREAM);
+  });
+
+  it("no detail when the headline already IS the gateway's sentence (no class)", () => {
+    expect(subAgentErrorDetail(UPSTREAM, undefined)).toBeNull();
+    expect(subAgentErrorDetail("", "timeout")).toBeNull();
+    expect(subAgentErrorDetail("=====", "timeout")).toBeNull();
+  });
+
+  it("the declared limit reaches the card from the row", () => {
+    const view = buildSubAgentActivityView([
+      row({ status: "error", errorCode: "timeout", runTimeoutSeconds: 900 }),
+    ]);
+    expect(view.cards[0]?.runTimeoutSeconds).toBe(900);
   });
 });

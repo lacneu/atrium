@@ -190,6 +190,7 @@ export function useConvexChatRuntime({ chatId }: UseConvexChatRuntimeArgs) {
         mergedIntoTurn: undefined,
         continuationAt: undefined,
         continuations: undefined,
+        followedUpChildRunIds: undefined,
         // Never on a user echo; keys present to match the query's shape.
         autoRetry: undefined,
         interruptedAt: undefined,

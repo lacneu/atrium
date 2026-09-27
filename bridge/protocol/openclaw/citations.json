@@ -1894,14 +1894,14 @@
     },
     {
       "source": "docs/UPSTREAM_INTERPRETATION.md",
-      "cite": "bridge/src/providers/openclaw/normalizer.ts:1999",
+      "cite": "bridge/src/providers/openclaw/normalizer.ts:1995",
       "repo": "atrium",
       "tag": null,
       "path": "bridge/src/providers/openclaw/normalizer.ts",
       "lines": [
         [
-          1999,
-          1999
+          1995,
+          1995
         ]
       ],
       "literals": [

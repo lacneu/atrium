@@ -62,6 +62,7 @@ import {
   isSubAgentSessionArchived,
   isForkedSubAgentCopy,
   shortenSubAgentError,
+  subAgentErrorDetail,
   type SubAgentCardView,
   type SubAgentRow,
   type SubAgentSessionMeta,
@@ -548,6 +549,9 @@ export function SubAgentPanelContent({
   // A terminal `cleanup: "delete"` child has no gateway session left to talk to —
   // the interaction composer disables with an explicit reason (pure, unit-tested).
   const sessionArchived = isSubAgentSessionArchived(card);
+  const gatewayErrorDetail = card?.failure
+    ? subAgentErrorDetail(card.errorMessage, card.errorCode)
+    : null;
   // A card COPIED by a chat branch (fork: key prefix) is display-only: its
   // session belongs to the SOURCE chat — interact there, not from the copy.
   const forkedCopy = isForkedSubAgentCopy(childKey);
@@ -654,7 +658,11 @@ export function SubAgentPanelContent({
         telemetry: card.telemetry,
         result: card.resultText,
         error: card.failure
-          ? shortenSubAgentError(card.errorMessage, card.errorCode)
+          ? shortenSubAgentError(
+              card.errorMessage,
+              card.errorCode,
+              card.runTimeoutSeconds,
+            )
           : undefined,
         tools: exportTools,
       };
@@ -861,8 +869,18 @@ export function SubAgentPanelContent({
                   {m.subagent_panel_error()}
                 </h3>
                 <p className="oc-subpanel__error">
-                  {shortenSubAgentError(card.errorMessage, card.errorCode)}
+                  {shortenSubAgentError(
+                    card.errorMessage,
+                    card.errorCode,
+                    card.runTimeoutSeconds,
+                  )}
                 </p>
+                {gatewayErrorDetail !== null ? (
+                  <details className="oc-subpanel__error-detail">
+                    <summary>{m.subagent_panel_error_gateway()}</summary>
+                    <p className="oc-subpanel__muted">{gatewayErrorDetail}</p>
+                  </details>
+                ) : null}
               </section>
             ) : null}
 
