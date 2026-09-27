@@ -25,7 +25,8 @@ import {
 } from "./lib/quoteReply";
 import { v } from "convex/values";
 import { purgeBookmarksForMessages } from "./chatBookmarks";
-import { query, mutation, internalQuery, type QueryCtx } from "./_generated/server";
+import { query, mutation, internalQuery, type MutationCtx, type QueryCtx } from "./_generated/server";
+import { addressedChain, chainClientMessageId } from "./lib/agentMentions";
 import { internal } from "./_generated/api";
 import { STALE_STREAM_MS } from "./stuckStreams";
 import {
@@ -46,7 +47,7 @@ import {
 } from "./lib/chatAccess";
 import { requireActive, requireOwnedChat, requireReachableChat } from "./lib/access";
 import { agentIdFromChildKey } from "./lib/subAgentFailure";
-import { drainNextQueued } from "./lib/outboxQueue";
+import { drainNextQueued, MAX_QUEUED_PER_CHAT } from "./lib/outboxQueue";
 import { DEFAULT_STREAM_TRANSPORT } from "./lib/instanceConfig";
 import { resolveTargetForChat } from "./routing";
 import { auditImpersonated } from "./lib/audit";
@@ -346,6 +347,25 @@ async function loadChatView(
     // per-delta re-run of this heavy view.
     const { byMessage: outboxByMsg } = await loadOutboxByMessage(ctx, id);
 
+    // THE AGENTS a user turn is addressed to, by name — one read per DISTINCT agent
+    // named in the window (a room holds a handful), none on a chat that never names
+    // one. The name is today's: an agent mention marks WHO the turn was for, and the
+    // span, not the name, is the record.
+    const addressedNames = new Map<string, string>();
+    for (const msg of messages) {
+      for (const a of msg.addressedAgents ?? []) {
+        const key = `${a.instanceName}\u0000${a.agentId}`;
+        if (addressedNames.has(key)) continue;
+        const row = await ctx.db
+          .query("agents")
+          .withIndex("by_instance_agent", (q) =>
+            q.eq("instanceName", a.instanceName).eq("agentId", a.agentId),
+          )
+          .first();
+        addressedNames.set(key, row?.displayName ?? a.agentId);
+      }
+    }
+
     // Batch part resolution: fetch each message's parts in parallel. Convex has
     // no SQL join, so this is per-message — but the message set is bounded by
     // MESSAGE_WINDOW, so the fan-out is bounded too. Within a message, parts are
@@ -483,6 +503,11 @@ async function loadChatView(
           // UNDEFINED on rows written before the stamp existed — readers fall
           // back to `hasMergedRuns`, the old inference.
           mergedIntoTurn: message.mergedIntoTurn,
+          // Where a yielded turn's merged continuation begins (schema note): the
+          // renderer places the delegated children's replies here.
+          continuationAt: message.continuationAt,
+          // One position per merged continuation, with the batch it answered.
+          continuations: message.continuations,
           // MULTI-AGENT per-turn routing (read projection only — routing/dispatch is
           // owned server-side). Which agent THIS turn was addressed to; absent on a
           // single-agent message. The frontend attributes each reply (inheriting the
@@ -509,17 +534,31 @@ async function loadChatView(
           // WHO THIS TURN NAMES, as spans plus a display name — never another
           // person's id. `isViewer` is what lets the bubble mark the one mention
           // that concerns the reader, which is why they were notified.
-          ...(message.mentions === undefined || message.mentions.length === 0
+          // The AGENTS it is addressed to ride the same list, marked `isAgent`, so
+          // the bubble highlights both alike — in text order, as it walks them.
+          ...((message.mentions?.length ?? 0) === 0 &&
+          (message.addressedAgents?.length ?? 0) === 0
             ? {}
             : {
-                mentions: message.mentions.map((mention) => ({
-                  start: mention.start,
-                  end: mention.end,
-                  name: nameAt(mention.userId, writtenAtOf(message)),
-                  isViewer:
-                    String(mention.userId) === String(viewerId) &&
-                    currentAt(viewerId, writtenAtOf(message)) !== null,
-                })),
+                mentions: [
+                  ...(message.mentions ?? []).map((mention) => ({
+                    start: mention.start,
+                    end: mention.end,
+                    name: nameAt(mention.userId, writtenAtOf(message)),
+                    isViewer:
+                      String(mention.userId) === String(viewerId) &&
+                      currentAt(viewerId, writtenAtOf(message)) !== null,
+                  })),
+                  ...(message.addressedAgents ?? []).map((a) => ({
+                    start: a.start,
+                    end: a.end,
+                    name:
+                      addressedNames.get(`${a.instanceName}\u0000${a.agentId}`) ??
+                      a.agentId,
+                    isViewer: false,
+                    isAgent: true,
+                  })),
+                ].sort((a, b) => a.start - b.start),
               }),
           // IMPORTED history: the agent that answered, as a name only. Absence of
           // `routedAgentId` already means "inherit the turn's agent, else the
@@ -628,7 +667,10 @@ async function loadOutboxByMessage(
     if (rows.length > CHAT_STATE_OUTBOX_CAP) truncated = true;
     for (const r of rows.slice(0, CHAT_STATE_OUTBOX_CAP)) {
       // Recent-first within a status; a message maps to exactly one outbox row in
-      // practice (dedup on clientMessageId), so first write wins.
+      // practice (dedup on clientMessageId), so first write wins. A CHAINED reply's
+      // row shares the message but is not its lifecycle: it stays `queued` while the
+      // head runs, and read here it would send the question back to the queue dock.
+      if (r.chainStep !== undefined) continue;
       if (r.messageId !== undefined && !byMessage.has(r.messageId)) {
         byMessage.set(r.messageId, { outboxId: r._id, status });
       }
@@ -1249,9 +1291,44 @@ export const getSessionMeta = query({
       // it to mark which knob is an override vs inherited; the chip itself reads
       // sessionMeta (live truth).
       sessionSettings: chat.sessionSettings ?? null,
+      // The permission chip's fallback: the described agent's default mode, for a
+      // session that sets none. Shown to every reader, like the meta itself.
+      agentDefaultPermissionMode: await describedAgentDefaultMode(ctx, chat),
     };
   },
 });
+
+/**
+ * The default permission mode of the agent whose session `sessionMeta` describes —
+ * read only when it matters (the session sets no mode), so the header does not
+ * subscribe to the agents table otherwise. The described agent is the bound one, or
+ * the last routed one on a per-turn chat; `availableModelsOwner` names the agent the
+ * describe was actually for, and a disagreement answers "unknown" rather than another
+ * agent's default.
+ */
+async function describedAgentDefaultMode(
+  ctx: QueryCtx,
+  chat: Doc<"chats">,
+): Promise<string | null> {
+  const meta = chat.sessionMeta;
+  if (meta === undefined || meta.permissionMode !== null) return null;
+  const instanceName = chat.perTurnRouting === true
+    ? (chat.lastRoutedInstanceName ?? chat.instanceName)
+    : chat.instanceName;
+  const agentId = chat.perTurnRouting === true
+    ? (chat.lastRoutedAgentId ?? chat.agentId)
+    : chat.agentId;
+  if (instanceName === undefined || agentId === undefined) return null;
+  const owner = meta.availableModelsOwner;
+  if (typeof owner === "string" && owner !== "" && owner !== agentId) return null;
+  const agent = await ctx.db
+    .query("agents")
+    .withIndex("by_instance_agent", (q) =>
+      q.eq("instanceName", instanceName).eq("agentId", agentId),
+    )
+    .first();
+  return agent?.defaultPermissionMode ?? null;
+}
 
 // Optional: list the chats owned by the authenticated user (sidebar). Scoped.
 // Hard upper bound on how many recent chats the sidebar feed loads. Pinned chats
@@ -1573,6 +1650,37 @@ export const listChats = query({
 // gateway (bridge POST /abort -> chat.abort). Without the kill the gateway
 // keeps generating for minutes and its late frames are dropped as stale; with
 // it, the gateway's own chat:aborted frame finalizes idempotently after ours.
+/** The user message a reply was DISPATCHED for (its outbox row's message), or null. */
+async function turnMessageOf(
+  ctx: MutationCtx,
+  replyId: Id<"messages">,
+): Promise<Id<"messages"> | null> {
+  const reply = await ctx.db.get(replyId);
+  if (reply === null || reply.dispatchOutboxId === undefined) return null;
+  const rowId = ctx.db.normalizeId("outbox", reply.dispatchOutboxId);
+  const row = rowId === null ? null : await ctx.db.get(rowId);
+  return row?.messageId ?? null;
+}
+
+/** Withdraw the chained replies still waiting for these messages: the agents after
+ *  the one the user stopped are not started one after the other once it settles. */
+async function withdrawChainsOf(
+  ctx: MutationCtx,
+  chatId: Id<"chats">,
+  turns: ReadonlySet<Id<"messages">>,
+): Promise<void> {
+  if (turns.size === 0) return;
+  const waiting = await ctx.db
+    .query("outbox")
+    .withIndex("by_chat_status", (q) => q.eq("chatId", chatId).eq("status", "queued"))
+    .take(MAX_QUEUED_PER_CHAT);
+  for (const row of waiting) {
+    if (row.messageId !== undefined && turns.has(row.messageId) && row.chainStep !== undefined) {
+      await ctx.db.delete(row._id);
+    }
+  }
+}
+
 export const abortTurn = mutation({
   args: { chatId: v.id("chats") },
   handler: async (ctx, { chatId }) => {
@@ -1608,6 +1716,36 @@ export const abortTurn = mutation({
     // as running, until cancelling them has a real upstream primitive.
     const runningChildren = runningRows.filter((r) => r.kind !== "task");
     if (streaming === null && runningChildren.length === 0) {
+      // THE WINDOW BETWEEN TWO AGENTS OF A CHAIN. The step before settled, the drain
+      // promoted the next one, and its dispatch waits out the drain delay: nothing
+      // streams, yet the chain is going on. A step whose send has not LEFT (no
+      // `sentToInstance`: bridge.lastGateBeforeSend stamps it in the very transaction
+      // that lets the POST go, and answers "gone" to a row no longer pending) is
+      // withdrawn here, with the agents after it — atomically, so it can never be
+      // deleted under a POST in flight. One already sent is the reply's to stop.
+      const promoted = (
+        await ctx.db
+          .query("outbox")
+          .withIndex("by_chat_status", (q) => q.eq("chatId", chatId).eq("status", "pending"))
+          .take(MAX_QUEUED_PER_CHAT)
+      ).filter(
+        (r) =>
+          r.chainStep !== undefined &&
+          r.sentToInstance === undefined &&
+          r.preemptHold !== true &&
+          r.messageId !== undefined,
+      );
+      if (promoted.length > 0) {
+        for (const row of promoted) await ctx.db.delete(row._id);
+        await withdrawChainsOf(
+          ctx,
+          chatId,
+          new Set(promoted.map((r) => r.messageId as Id<"messages">)),
+        );
+        // The chat is free again: any other message's queued turn goes (FIFO).
+        await drainNextQueued(ctx, chatId);
+        return { ok: true as const, withdrawn: promoted.length };
+      }
       return { ok: false as const, reason: "no_active_turn" as const };
     }
     // TERMINAL NOW, in this mutation — never on the gateway's word.
@@ -1683,6 +1821,18 @@ export const abortTurn = mutation({
           await ctx.db.patch(anchorId, { interruptedAt: abortedAt });
         }
       }
+      // STOP ENDS THE CHAIN here too. A reply that YIELDED to its sub-agents settled
+      // while they work, and the agents after it in the chain wait for them: the
+      // drain below would start the next one the moment the children are marked
+      // stopped. Every turn whose children the user just stopped has its chain
+      // withdrawn; any other message's queued turn still goes.
+      const stoppedTurns = new Set<Id<"messages">>();
+      for (const child of runningChildren) {
+        if (child.parentMessageId === undefined) continue;
+        const turn = await turnMessageOf(ctx, child.parentMessageId);
+        if (turn !== null) stoppedTurns.add(turn);
+      }
+      await withdrawChainsOf(ctx, chatId, stoppedTurns);
       // THE HELD SEND MUST STILL GO. Every child is terminal above BEFORE this
       // runs — the same ordering the stale-row reaper uses — so `isChatBusy`
       // sees a free chat and the drain dispatches FIFO. Without it a follow-up
@@ -1712,18 +1862,38 @@ export const abortTurn = mutation({
         ),
       )
       .first();
+    // The REPLY's own stamp first: a chained reply (the 2nd..Nth agent a message was
+    // addressed to) carries its agent, while the user message names only the first —
+    // reading that one would send the kill to the wrong agent's instance.
     const routedAgent =
-      lastUser?.routedAgentId && lastUser.routedInstanceName
+      streaming.routedAgentId && streaming.routedInstanceName
         ? {
-            instanceName: lastUser.routedInstanceName,
-            agentId: lastUser.routedAgentId,
+            instanceName: streaming.routedInstanceName,
+            agentId: streaming.routedAgentId,
           }
-        : streaming.routedAgentId && streaming.routedInstanceName
+        : lastUser?.routedAgentId && lastUser.routedInstanceName
           ? {
-              instanceName: streaming.routedInstanceName,
-              agentId: streaming.routedAgentId,
+              instanceName: lastUser.routedInstanceName,
+              agentId: lastUser.routedAgentId,
             }
           : null;
+    // STOP ENDS THE CHAIN. The agents still waiting to answer this message were
+    // waiting on the reply the user just refused: withdrawn, not started one after
+    // the other the moment it settles. Another message's queued turn is untouched.
+    // The message is the one the streaming reply was DISPATCHED for — a follow-up
+    // queued meanwhile is a later user row, and is not this turn.
+    const dispatchedFrom =
+      streaming.dispatchOutboxId !== undefined
+        ? ctx.db.normalizeId("outbox", streaming.dispatchOutboxId)
+        : null;
+    const turnMessageId =
+      (dispatchedFrom !== null ? (await ctx.db.get(dispatchedFrom))?.messageId : undefined) ??
+      lastUser?._id;
+    await withdrawChainsOf(
+      ctx,
+      chatId,
+      new Set(turnMessageId !== undefined ? [turnMessageId as Id<"messages">] : []),
+    );
     // ONE action does kill-THEN-finalize, in that order: finalize runs
     // drainNextQueued, and dispatching a queued follow-up while the gateway
     // still runs the old turn would break one-turn-per-session (the send gets
@@ -1749,6 +1919,41 @@ export const abortTurn = mutation({
     return { ok: true as const };
   },
 });
+
+/** The chain a deleted reply belonged to: its question, the agents it was addressed to
+ *  (in order, as send.ts chains them) and the reply's step — or null for a reply that
+ *  was not part of a chain of several agents. */
+async function chainOfReply(
+  ctx: MutationCtx,
+  reply: Doc<"messages">,
+  deletedIds: ReadonlySet<string>,
+): Promise<{
+  question: Doc<"messages">;
+  agents: Array<{ instanceName: string; agentId: string }>;
+  from: number;
+} | null> {
+  if (reply.dispatchOutboxId === undefined) return null;
+  const rowId = ctx.db.normalizeId("outbox", reply.dispatchOutboxId);
+  const row = rowId === null ? null : await ctx.db.get(rowId);
+  if (row === null || row.messageId === undefined || deletedIds.has(row.messageId)) return null;
+  const question = await ctx.db.get(row.messageId);
+  if (question === null || question.role !== "user") return null;
+  const agents = addressedChain(question.addressedAgents ?? []);
+  if (agents.length < 2) return null;
+  const from = row.chainStep ?? 0;
+  const at = agents[from];
+  // The row must be the step it claims to be: a question edited since cannot
+  // re-order its chain (send.updateQueuedMessage refuses), but never trust it blind.
+  if (
+    at === undefined ||
+    row.routedAgent === undefined ||
+    at.instanceName !== row.routedAgent.instanceName ||
+    at.agentId !== row.routedAgent.agentId
+  ) {
+    return null;
+  }
+  return { question, agents, from };
+}
 
 export const deleteMessage = mutation({
   args: { messageId: v.id("messages") },
@@ -1907,13 +2112,21 @@ export const deleteMessage = mutation({
     // the reset would clear the wrong agent's session — codex P2). Carried to BOTH the
     // regen outbox (re-dispatch routes to it) and dispatchReset (its reset targets it).
     let regenRoutedAgent: { instanceName: string; agentId: string } | undefined;
+    // A CHAINED reply (its message was addressed to several agents): the regenerate
+    // re-runs the chain from THIS reply's agent on — its step again, then every agent
+    // after it — from the question, as the send built it. The replies before it are
+    // kept, and the rerun step is asked with them (bridge.chainedPrompt).
+    let regenChain: { agents: Array<{ instanceName: string; agentId: string }>; from: number } | null =
+      null;
     if (wasAssistant) {
+      const chain = await chainOfReply(ctx, message, deletedIds);
+      regenChain = chain === null ? null : { agents: chain.agents, from: chain.from };
       // The now-last message in LOGICAL order (reuse the already-read set, minus the
       // just-truncated tail) — same compareOrder as the truncation + display.
       const survivors = chatMessages
         .filter((m) => compareOrder(m, message) < 0)
         .sort(compareOrder);
-      const lastUser = survivors[survivors.length - 1];
+      const lastUser = chain?.question ?? survivors[survivors.length - 1];
       if (lastUser && lastUser.role === "user") {
         const partDocs = await ctx.db
           .query("messageParts")
@@ -1934,12 +2147,18 @@ export const deleteMessage = mutation({
           }
         }
         regenRoutedAgent =
-          lastUser.routedInstanceName && lastUser.routedAgentId
-            ? {
-                instanceName: lastUser.routedInstanceName,
-                agentId: lastUser.routedAgentId,
-              }
-            : undefined;
+          regenChain !== null
+            ? regenChain.agents[regenChain.from]
+            : lastUser.routedInstanceName && lastUser.routedAgentId
+              ? {
+                  instanceName: lastUser.routedInstanceName,
+                  agentId: lastUser.routedAgentId,
+                }
+              : undefined;
+        const regenKey = `regen-${lastUser._id}-${Date.now()}`;
+        const regenQuotes = outboxQuoteFieldsFor(
+          quotedRefsOf(lastUser).map((q) => q.excerpt),
+        );
         regenerateOutboxId = await ctx.db.insert("outbox", {
           chatId: chat._id,
           // The turn's AUTHOR, as the auto-retry keeps it (turnRetry.ts): a
@@ -1950,7 +2169,7 @@ export const deleteMessage = mutation({
           userId: lastUser.authorUserId ?? chat.userId,
           // Unique key (Date.now() is deterministic in a mutation) so the send
           // idempotency guard never dedupes a regenerate against the original.
-          clientMessageId: `regen-${lastUser._id}-${Date.now()}`,
+          clientMessageId: regenKey,
           messageId: lastUser._id,
           text: lastUser.text,
           attachmentIds: attachments.map((a) => a.storageId),
@@ -1962,12 +2181,31 @@ export const deleteMessage = mutation({
           // conversation would stay locked much longer than necessary (codex P2).
           pendingSince: Date.now(),
           ...(regenRoutedAgent ? { routedAgent: regenRoutedAgent } : {}),
+          // A LATER step of a chain stays a chained reply: asked with the answers
+          // before it, and checked against the room at dispatch like any chain row.
+          ...(regenChain !== null && regenChain.from > 0 ? { chainStep: regenChain.from } : {}),
           // Quote-reply: the regenerated dispatch must re-carry the excerpt,
           // or the re-sent instruction loses its targeted passage.
-          ...outboxQuoteFieldsFor(
-            quotedRefsOf(lastUser).map((q) => q.excerpt),
-          ),
+          ...regenQuotes,
         });
+        // …and every agent after it, QUEUED behind it as the send queued them.
+        if (regenChain !== null) {
+          for (let index = regenChain.from + 1; index < regenChain.agents.length; index++) {
+            await ctx.db.insert("outbox", {
+              chatId: chat._id,
+              userId: lastUser.authorUserId ?? chat.userId,
+              clientMessageId: chainClientMessageId(regenKey, index),
+              messageId: lastUser._id,
+              text: lastUser.text,
+              attachmentIds: attachments.map((a) => a.storageId),
+              attachments,
+              status: "queued",
+              routedAgent: regenChain.agents[index]!,
+              chainStep: index,
+              ...regenQuotes,
+            });
+          }
+        }
       }
     }
 

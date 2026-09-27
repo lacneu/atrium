@@ -14,8 +14,13 @@ import {
   type PlanPartView,
 } from "./convexTypes";
 import type { ToolActivityPart } from "./toolActivityView";
-import { buildTurnFlow, type AnchoredActivity } from "./turnFlowView";
+import {
+  buildTurnFlow,
+  type AnchoredActivity,
+  type FlowSegment,
+} from "./turnFlowView";
 import { activeToolFromParts } from "./runStatusView";
+import type { DelegatedSlot } from "./assistantEmptyState";
 import { stripGatewayMediaId } from "../../convex/lib/mediaName";
 import { m } from "@/paraglide/messages.js";
 
@@ -127,6 +132,114 @@ function filePartToContent(
   } as ContentPart;
 }
 
+/** Where the delegated replies of ONE continuation (or of none yet) are placed. */
+export type ContinuationSlot = {
+  /** Text offset of the slot. `Infinity` = after everything the body holds. */
+  at: number;
+  /** Stable part identity across re-conversions. */
+  key: string;
+  /** Which replies (assistantEmptyState.ts `DelegatedSlot`); absent = all. */
+  slot?: DelegatedSlot;
+};
+
+type BodySegment =
+  | FlowSegment
+  | { kind: "delegated"; key: string; slot?: DelegatedSlot };
+
+function flowOf(
+  text: string,
+  anchored: AnchoredActivity[],
+  settled: boolean,
+): FlowSegment[] {
+  if (anchored.length > 0) return buildTurnFlow(text, anchored, { settled });
+  return text.length > 0 ? [{ kind: "text", text }] : [];
+}
+
+/**
+ * The body of a bubble holding merged hand-off continuations, with a
+ * delegated-replies marker at each slot's text offset.
+ *
+ * Built as ONE FLOW PER PIECE between slots, not one flow with insertions:
+ * `buildTurnFlow` merges activity groups separated by whitespace only, and the
+ * merge separator IS whitespace — a single flow would fold a continuation's first
+ * tool call into the previous generation's last activity group, above the replies.
+ * Everything a generation wrote is anchored before the next slot (its offsets
+ * never exceed its own text), everything the next continuation wrote at or past it
+ * (stream.addPart rebases them), so each split is exact. Every piece's cuts are
+ * shifted back to absolute offsets, which keeps each group's id stable across
+ * re-conversions. Slots are applied in offset order (a slot list is append-only in
+ * merge order, and each merge starts at the end of the text so far). Pure; exported
+ * for the ordering tests.
+ */
+export function bodyWithContinuations(
+  text: string,
+  anchored: readonly AnchoredActivity[],
+  slots: readonly ContinuationSlot[],
+  settled: boolean,
+): BodySegment[] {
+  const ordered = [...slots].sort((a, b) => a.at - b.at);
+  const out: BodySegment[] = [];
+  let from = 0;
+  for (let i = 0; i <= ordered.length; i++) {
+    const slot = ordered[i];
+    const to = slot === undefined ? Number.POSITIVE_INFINITY : slot.at;
+    const lo = Math.max(0, Math.min(from, text.length));
+    const hi = Math.max(lo, Math.min(to, text.length));
+    out.push(
+      ...flowOf(
+        text.slice(lo, hi),
+        anchored
+          .filter((a) => a.offset >= from && a.offset < to)
+          .map((a) => ({ ...a, offset: a.offset - lo })),
+        settled,
+      ).map((seg) =>
+        seg.kind === "activity" ? { ...seg, cut: seg.cut + lo } : seg,
+      ),
+    );
+    if (slot !== undefined) {
+      out.push({
+        kind: "delegated",
+        key: slot.key,
+        ...(slot.slot !== undefined ? { slot: slot.slot } : {}),
+      });
+      from = Math.max(from, slot.at);
+    }
+  }
+  return out;
+}
+
+/** The delegated-reply slots of a message, or [] for an ordinary bubble.
+ *
+ *  - `continuations` (every merge since per-batch positions exist): one slot per
+ *    continuation, holding the replies of the children ITS settle run named; plus
+ *    one `rest` slot for the finished children no continuation claimed yet — at the
+ *    legacy `continuationAt` when the row recorded its first merge that way,
+ *    otherwise after everything written so far.
+ *  - `continuationAt` alone (a row merged before): one slot with every reply, as it
+ *    always rendered. */
+export function continuationSlots(message: ConvexMessageView): ContinuationSlot[] {
+  if (message.role !== "assistant") return [];
+  const list = message.continuations ?? [];
+  if (list.length === 0) {
+    return message.continuationAt !== undefined
+      ? [{ at: message.continuationAt, key: "" }]
+      : [];
+  }
+  const claimed = list.flatMap((c) => c.childRunIds);
+  return [
+    ...list.map((c, i) => ({
+      at: c.at,
+      key: String(i),
+      slot: { kind: "batch" as const, childRunIds: c.childRunIds },
+    })),
+    {
+      at: message.continuationAt ?? Number.POSITIVE_INFINITY,
+      key: "rest",
+      slot: { kind: "rest" as const, claimed },
+    },
+  ];
+}
+
 function safeStringify(value: unknown): string {
   try {
     return typeof value === "string" ? value : JSON.stringify(value, null, 2);
@@ -208,27 +321,47 @@ export function convertConvexMessage(
   //    via the __turn_flow__ tools mapping. Chronological order is preserved by
   //    construction, so streaming still APPENDS at the bottom (the auto-scroll
   //    invariant that motivated the old grouped block).
-  if (anchored.length > 0) {
-    buildTurnFlow(message.text ?? "", anchored, {
-      settled: message.status !== "streaming",
-    }).forEach((seg) => {
-      if (seg.kind === "text") {
-        content.push({ type: "text", text: seg.text });
-      } else {
-        content.push({
-          type: "tool-call",
-          // STABLE id: keyed by the group's FIXED cut (an index-based id
-          // changed as segments shifted mid-stream — the useClientLookup
-          // crash: assistant-ui lost the part it was tracking).
-          toolCallId: `flow:${message._id}:${seg.cut}`,
-          toolName: "__turn_flow__",
-          args: { parts: seg.parts },
-        } as ContentPart);
-      }
-    });
-  } else if (message.text && message.text.length > 0) {
-    content.push({ type: "text", text: message.text });
-  }
+  const settledBody = message.status !== "streaming";
+  // A MERGED HAND-OFF CONTINUATION: the delegated children's own replies sit at
+  // the stored offset where the continuation begins — after what the turn said,
+  // before the conclusion (see assistantEmptyState.ts `delegatedRepliesFor` for
+  // the rule). One part, rendered by DelegatedReplies, which shows nothing until
+  // a child has a reply.
+  const slots = continuationSlots(message);
+  const withReplies: BodySegment[] =
+    slots.length > 0
+      ? bodyWithContinuations(message.text ?? "", anchored, slots, settledBody)
+      : anchored.length > 0
+        ? buildTurnFlow(message.text ?? "", anchored, { settled: settledBody })
+        : message.text && message.text.length > 0
+          ? [{ kind: "text", text: message.text }]
+          : [];
+  withReplies.forEach((seg) => {
+    if (seg.kind === "text") {
+      content.push({ type: "text", text: seg.text });
+    } else if (seg.kind === "delegated") {
+      content.push({
+        type: "tool-call",
+        // Keyed by the slot: a continuation's position is stamped once and the list
+        // only grows, so each part keeps its identity across re-conversions. The
+        // single-slot legacy key stays what it always was.
+        toolCallId:
+          seg.key === "" ? `delegated:${message._id}` : `delegated:${message._id}:${seg.key}`,
+        toolName: "__delegated_reply__",
+        args: seg.slot !== undefined ? { slot: seg.slot } : {},
+      } as ContentPart);
+    } else {
+      content.push({
+        type: "tool-call",
+        // STABLE id: keyed by the group's FIXED cut (an index-based id
+        // changed as segments shifted mid-stream — the useClientLookup
+        // crash: assistant-ui lost the part it was tracking).
+        toolCallId: `flow:${message._id}:${seg.cut}`,
+        toolName: "__turn_flow__",
+        args: { parts: seg.parts },
+      } as ContentPart);
+    }
+  });
 
   // 3) Media/file attachments stay AFTER the text.
   message.parts.forEach((p) => {
@@ -323,6 +456,13 @@ export function convertConvexMessage(
         // TRUE only when a delivery/announce actually MERGED into this bubble
         // (see loadChatView) — MarkdownText skips its typewriter replay there.
         hasMergedRuns: message.hasMergedRuns ?? false,
+        // Where a merged hand-off continuation begins (null = not one). The body
+        // already carries the delegated-replies part there; the empty state reads
+        // it so the same replies are never printed twice.
+        continuationAt: message.continuationAt ?? null,
+        // …and whether ANY continuation slot exists (legacy or per-batch): the empty
+        // state must not print these replies a second time under the body.
+        hasContinuation: continuationSlots(message).length > 0,
         error: message.error ?? null,
         // Stable failure class (gateway errorKind or dispatch code) — drives
         // the actionable localized headline on the error card.

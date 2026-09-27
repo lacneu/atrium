@@ -438,10 +438,16 @@ export const KNOWN_AGENT_FIELDS: ReadonlySet<string> = new Set([
  * matrix instead of being invisible omissions.
  */
 export const COVERAGE_SUMMARY = {
-  handled: 315,
-  ignored: 783,
-  gaps: 909,
+  handled: 322,
+  ignored: 778,
+  gaps: 907,
   /** The declared gaps, by schema path — the actionable part of the matrix.
+   *
+   *  SESSION ACCESS (2026-09-26) instructed what the describe says about who may act
+   *  and with what permissions — `SessionRow.visibility` / `sharingRole` (two gaps)
+   *  and `permissionMode` / `permissionModePending` / `sessionRoot` (ignored) — plus
+   *  `AgentSummary.defaultPermissionMode` and the guard
+   *  `ChatSendParams.expectedPermissionMode`: seven entries became handled.
    *
    *  GROUP CONVERSATIONS (2026-09-25) instructed `SessionRow.createdActor` and
    *  `users.self` (both halves of the proof that a trusted-proxy session is its
@@ -1120,7 +1126,6 @@ export const COVERAGE_SUMMARY = {
     "SessionRow.repositoryWorkspaceId",
     "SessionRow.sandboxMode",
     "SessionRow.sessionId",
-    "SessionRow.sharingRole",
     "SessionRow.snapshotAt",
     "SessionRow.spawnDepth",
     "SessionRow.spawnedBy",
@@ -1135,7 +1140,6 @@ export const COVERAGE_SUMMARY = {
     "SessionRow.totalTokensFresh",
     "SessionRow.unread",
     "SessionRow.updatedAt",
-    "SessionRow.visibility",
     "SessionRow.workspaceDir",
     "SessionRow.worktree",
     "SessionSharingRole",

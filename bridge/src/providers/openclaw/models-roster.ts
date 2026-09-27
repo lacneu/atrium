@@ -5,6 +5,7 @@
 // refresh itself — one hop, like `onFrameGap` — without the import cycle
 // session.ts → server.ts.
 import { MODELS_LIST_OWNER_SINCE, gatewayAtLeast } from "../../compat.js";
+import { readSessionAccess } from "./session-access.js";
 import type { ConvexWriter, SessionMetaReport, SessionRosterReport } from "../../convex-writer.js";
 import { sessionFillDetail } from "../../core/context-budget.js";
 import type { ConfigChangedNotice } from "./config-changed.js";
@@ -170,6 +171,8 @@ export function parseSessionMeta(
 
   const thinkingDefault = str(sess.thinkingDefault);
   return {
+    // Visibility, the reader's sharing role, the permission mode (session-access.ts).
+    ...readSessionAccess(sess),
     model: str(sess.model),
     modelProvider: str(sess.modelProvider),
     agentRuntime,
@@ -321,6 +324,44 @@ export interface ModelsConnection {
 export interface PolicyConnection extends ModelsConnection {
   onConfigChanged(listener: (notice: ConfigChangedNotice) => void): () => void;
   onClosed(listener: () => void): () => void;
+}
+
+/** What the sharing refresh needs of a connection. */
+export interface SharingConnection extends ModelsConnection {
+  onSessionSharing(listener: (sessionKey: string) => void): () => void;
+  onClosed(listener: () => void): () => void;
+}
+
+/**
+ * Keep the shown VISIBILITY current without a turn: a `session.sharing` notice naming
+ * THIS session (session-access.ts) re-describes it and publishes the meta — the same
+ * unit the knob patch uses, so the ordering rules are Convex's, unchanged. A change made
+ * in the Control UI reaches the header while nobody is typing. Disposes itself on the
+ * connection's close. Permission-mode changes have no such notice (upstream emits only
+ * `sessions.changed`, to subscribers): they are read on the next describe.
+ */
+export function attachSharingRefresh(
+  session: PublishedSession & { connection: SharingConnection },
+  writer: RosterWriter,
+): { dispose(): void } {
+  const conn = session.connection;
+  let disposed = false;
+  const off = conn.onSessionSharing((sessionKey) => {
+    if (disposed || conn.isClosed || sessionKey !== session.sessionKey) return;
+    void publishDescribedSession(session, writer).catch((err: unknown) => {
+      console.error(`[sharing] chat=${session.chatId} refresh skipped (non-fatal):`, (err as Error)?.message ?? err);
+    });
+  });
+  let offClosed: (() => void) | null = null;
+  const policy = {
+    dispose() {
+      disposed = true;
+      off();
+      offClosed?.();
+    },
+  };
+  offClosed = conn.onClosed(() => policy.dispose());
+  return policy;
 }
 
 /** One `models.list` in flight per owner and connection: a send and a patch crossing
@@ -487,10 +528,33 @@ export async function describeSession(
   conn: ModelsConnection,
   sessionKey: string,
 ): Promise<{ sess: Record<string, unknown>; observedAt: number } | null> {
+  const answer = await describeSessionAnswer(conn, sessionKey);
+  return answer.kind === "session" ? { sess: answer.sess, observedAt: answer.observedAt } : null;
+}
+
+/** A `sessions.describe` answer, with the one distinction `describeSession` folds away:
+ *  the gateway stating that NO session exists under the key (`{ session: null }` —
+ *  sessions-read-by-key.ts, v2026.9.6) versus an answer that says nothing readable (a
+ *  payload without the field). Only the former is evidence of absence. A failed ask
+ *  throws, as before. */
+export type DescribeAnswer =
+  | { kind: "session"; sess: Record<string, unknown>; observedAt: number }
+  | { kind: "absent"; observedAt: number }
+  | { kind: "unreadable" };
+
+export async function describeSessionAnswer(
+  conn: ModelsConnection,
+  sessionKey: string,
+): Promise<DescribeAnswer> {
   const desc = await conn.request("sessions.describe", { key: sessionKey }, 8_000);
   const observedAt = Date.now();
-  const sess = (desc.payload as { session?: Record<string, unknown> } | undefined)?.session;
-  return sess ? { sess, observedAt } : null;
+  const payload = desc.payload as { session?: Record<string, unknown> | null } | undefined;
+  const sess = payload?.session;
+  if (sess) return { kind: "session", sess, observedAt };
+  if (payload !== null && typeof payload === "object" && "session" in payload && sess === null) {
+    return { kind: "absent", observedAt };
+  }
+  return { kind: "unreadable" };
 }
 
 /**

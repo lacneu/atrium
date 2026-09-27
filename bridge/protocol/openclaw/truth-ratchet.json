@@ -113,6 +113,34 @@
     {
       "path": "TaskSummary.startedAt",
       "scan": false
+    },
+    {
+      "path": "SessionRow.visibility",
+      "scan": false
+    },
+    {
+      "path": "SessionRow.sharingRole",
+      "scan": false
+    },
+    {
+      "path": "SessionRow.permissionMode",
+      "scan": false
+    },
+    {
+      "path": "SessionRow.permissionModePending",
+      "scan": false
+    },
+    {
+      "path": "SessionRow.sessionRoot",
+      "scan": false
+    },
+    {
+      "path": "AgentSummary.defaultPermissionMode",
+      "scan": false
+    },
+    {
+      "path": "ChatSendParams.expectedPermissionMode",
+      "scan": false
     }
   ]
 }

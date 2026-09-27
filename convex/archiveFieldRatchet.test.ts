@@ -62,6 +62,12 @@ const MESSAGE_FIELDS_KEPT: ReadonlyArray<string> = [
   "announcePrefix",
   "mergedAnnounceRuns",
   "mergedIntoTurn",
+  // Where a yielded turn's merged continuation begins in `text` — a fact about
+  // the stored text, needed to lay it out again; no handle, no content.
+  "continuationAt",
+  // …one per merged continuation, with the child RUN ids of that batch — gateway
+  // identifiers of work this conversation delegated, needed to place each reply.
+  "continuations",
   "routedInstanceName",
   "routedAgentId",
   "orderTime",

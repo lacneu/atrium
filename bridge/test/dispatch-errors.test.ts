@@ -482,3 +482,29 @@ describe("a network cut is NAMED, not swept into the catch-all", () => {
     expect(errorChainText(a).split(" <- ")).toHaveLength(5);
   });
 });
+
+describe("sharing and settings refusals (2026.9.6 / 2026.8.2)", () => {
+  test("a visibility that refuses this connection is named, whichever visibility", () => {
+    for (const v of ["read-only", "suggest", "draft"]) {
+      expect(classifyGatewayError(new Error(`INVALID_REQUEST: session is ${v} for this connection`))).toBe(
+        "session_visibility_refused",
+      );
+    }
+    expect(
+      classifyGatewayError(new Error("INVALID_REQUEST: refused (SESSION_PARTICIPATION_REQUIRED)")),
+    ).toBe("session_visibility_refused");
+  });
+
+  test("a permission mode changed before the send is named, even with a file on the turn", () => {
+    expect(
+      classifyGatewayError(new Error("INVALID_REQUEST: Session settings changed before send. Retry."), {
+        hasAttachments: true,
+      }),
+    ).toBe("session_settings_changed");
+  });
+
+  test("both are the gateway's answer: downstream, never the bridge's health", () => {
+    expect(faultDomain("session_visibility_refused")).toBe("downstream");
+    expect(faultDomain("session_settings_changed")).toBe("downstream");
+  });
+});

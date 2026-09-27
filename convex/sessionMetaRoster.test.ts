@@ -297,3 +297,75 @@ describe("the ESTIMATE block is one ordered group, the cost figure included", ()
     expect([meta?.totalTokens, meta?.estimatedCostUsd, meta?.estimateAt]).toEqual([100, 0.15, 20]);
   });
 });
+
+describe("WHO MAY ACT on the session — one describe-sourced group, ordered like the knobs", () => {
+  const publish = (
+    t: T,
+    chatId: Awaited<ReturnType<typeof seedChat>>,
+    meta: {
+      visibility?: string;
+      sharingRole?: string;
+      permissionMode?: string | null;
+      permissionModePending?: boolean;
+      sessionRoot?: string;
+      availableModels?: { id: string; label: string }[];
+      availableModelsOwner?: string;
+      rosterObservedAt?: number;
+      totalTokens?: number;
+      observedAt?: number;
+    },
+  ) => t.run((ctx) => ctx.runMutation(internal.stream.setSessionMeta, { chatId, meta }));
+  const accessOf = async (t: T, chatId: Awaited<ReturnType<typeof seedChat>>) => {
+    const meta = await metaOf(t, chatId);
+    return {
+      visibility: meta?.visibility,
+      sharingRole: meta?.sharingRole,
+      permissionMode: meta?.permissionMode,
+      permissionModePending: meta?.permissionModePending,
+      sessionRoot: meta?.sessionRoot,
+      accessAt: meta?.accessAt,
+    };
+  };
+  const guarded = {
+    visibility: "read-only",
+    sharingRole: "owner",
+    permissionMode: "guarded",
+    permissionModePending: false,
+    sessionRoot: "/srv/work",
+  };
+
+  test("a roster reported alone (unstamped) and a describe that carries none keep them", async () => {
+    const t = convexTest(schema, modules);
+    const chatId = await seedChat(t);
+    await publish(t, chatId, { ...guarded, observedAt: 10 });
+    // The re-ask's answer, reported alone: no observedAt, no access field.
+    await publish(t, chatId, { availableModels: [{ id: "a", label: "a" }], availableModelsOwner: "alice", rosterObservedAt: 20 });
+    // A stamped write that carries no access fact (a usage snapshot, a Hermes terminal).
+    await publish(t, chatId, { totalTokens: 9, observedAt: 30 });
+    expect(await accessOf(t, chatId)).toEqual({ ...guarded, accessAt: 10 });
+  });
+
+  test("an OLDER describe landing late does not overwrite a newer one", async () => {
+    const t = convexTest(schema, modules);
+    const chatId = await seedChat(t);
+    await publish(t, chatId, { ...guarded, observedAt: 30 });
+    await publish(t, chatId, { visibility: "shared", sharingRole: "owner", permissionMode: "full", permissionModePending: false, observedAt: 10 });
+    expect(await accessOf(t, chatId)).toEqual({ ...guarded, accessAt: 30 });
+  });
+
+  test("a NEWER describe applies as a unit — a cleared mode clears its root with it", async () => {
+    const t = convexTest(schema, modules);
+    const chatId = await seedChat(t);
+    await publish(t, chatId, { ...guarded, observedAt: 10 });
+    // The mode was cleared on the gateway: `null` (none set), and no working root.
+    await publish(t, chatId, { visibility: "shared", sharingRole: "owner", permissionMode: null, permissionModePending: false, observedAt: 20 });
+    expect(await accessOf(t, chatId)).toEqual({
+      visibility: "shared",
+      sharingRole: "owner",
+      permissionMode: null,
+      permissionModePending: false,
+      sessionRoot: undefined,
+      accessAt: 20,
+    });
+  });
+});

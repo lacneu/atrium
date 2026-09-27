@@ -11,20 +11,52 @@
 // records `@Name`, and `resolveMentionSpans` locates it in the final text at send
 // time. Delete the "@Name" from the box and the mention goes with it, which is
 // exactly what deleting it means.
+//
+// AGENTS TOO. In a room of several agents, picking an agent names it the same way
+// (`nameAgentInComposer`): its token is staged beside the people's, located at send
+// time by the same rule, and sent as an ADDRESS — the agents a message is for, in
+// the order their tokens appear (convex/send.ts chains one reply per agent). Tokens
+// are unique per message across people AND agents, so no token names two things.
 
 import { findWholeToken } from "../../convex/lib/mentions";
 
-export interface PendingMention {
+/** A person staged to be named. */
+export interface PendingPersonMention {
   /** Atrium user id of the person named. */
   userId: string;
   /** The literal token inserted in the composer, "@" included. */
   token: string;
 }
 
+/** An agent staged to be addressed. */
+export interface PendingAgentMention {
+  agent: { instanceName: string; agentId: string };
+  /** The literal token inserted in the composer, "@" included. */
+  token: string;
+}
+
+export type PendingMention = PendingPersonMention | PendingAgentMention;
+
 export interface ResolvedMention {
   userId: string;
   start: number;
   end: number;
+}
+
+export interface ResolvedAgentMention {
+  instanceName: string;
+  agentId: string;
+  start: number;
+  end: number;
+}
+
+const isAgentMention = (m: PendingMention): m is PendingAgentMention => "agent" in m;
+
+/** WHAT a staged mention names — a person or an agent — as one comparable key. */
+function mentionKey(m: PendingMention): string {
+  return isAgentMention(m)
+    ? `agent\u0000${m.agent.instanceName}\u0000${m.agent.agentId}`
+    : `user\u0000${m.userId}`;
 }
 
 const EMPTY: readonly PendingMention[] = [];
@@ -53,7 +85,7 @@ export function peekPendingMentions(chatId: string): readonly PendingMention[] {
  */
 export function stagePendingMention(chatId: string, mention: PendingMention): void {
   const list = byChat.get(chatId) ?? [];
-  const at = list.findIndex((m) => m.userId === mention.userId);
+  const at = list.findIndex((m) => mentionKey(m) === mentionKey(mention));
   if (at !== -1 && list[at]!.token === mention.token) return;
   byChat.set(
     chatId,
@@ -83,10 +115,10 @@ export function restorePendingMentions(
 ): void {
   if (mentions.length === 0) return;
   const current = byChat.get(chatId) ?? [];
-  const seen = new Set(current.map((m) => m.userId));
+  const seen = new Set(current.map(mentionKey));
   const merged = [...current];
   for (const m of mentions) {
-    if (!seen.has(m.userId)) merged.push(m);
+    if (!seen.has(mentionKey(m))) merged.push(m);
   }
   byChat.set(chatId, merged);
   emit();
@@ -107,7 +139,21 @@ export function resolveMentionSpans(
   text: string,
   staged: readonly PendingMention[],
 ): ResolvedMention[] {
-  const found: ResolvedMention[] = [];
+  return resolveAllMentionSpans(text, staged).people;
+}
+
+/**
+ * Both kinds at once, located TOGETHER: one set of occupied ranges, so a person's
+ * token and an agent's can never claim the same characters (the server validates
+ * the union — convex/lib/agentMentions.ts). Each list in TEXT order; for the agents
+ * that order is the order they answer in.
+ */
+export function resolveAllMentionSpans(
+  text: string,
+  staged: readonly PendingMention[],
+): { people: ResolvedMention[]; agents: ResolvedAgentMention[] } {
+  const people: ResolvedMention[] = [];
+  const agents: ResolvedAgentMention[] = [];
   // Occupied ranges, so two people whose tokens overlap cannot both claim the
   // same characters; and only WHOLE tokens count (findWholeToken) — "@Ali" picked
   // then typed on into "@Alice" no longer names Ali.
@@ -115,10 +161,17 @@ export function resolveMentionSpans(
   for (const mention of staged) {
     const at = findWholeToken(text, mention.token, taken);
     if (at === null) continue;
-    found.push({ userId: mention.userId, start: at.start, end: at.end });
+    if (isAgentMention(mention)) {
+      agents.push({ ...mention.agent, start: at.start, end: at.end });
+    } else {
+      people.push({ userId: mention.userId, start: at.start, end: at.end });
+    }
     taken.push(at);
   }
-  return found.sort((a, b) => a.start - b.start);
+  return {
+    people: people.sort((a, b) => a.start - b.start),
+    agents: agents.sort((a, b) => a.start - b.start),
+  };
 }
 
 /**
@@ -132,9 +185,23 @@ export function resolveMentionSpans(
 export function takeMentionsForSend(
   chatId: string,
   text: string,
-): { staged: readonly PendingMention[]; mentions: ResolvedMention[] } {
+): {
+  staged: readonly PendingMention[];
+  mentions: ResolvedMention[];
+  /** The agents the message is addressed to, in the order they answer. */
+  agentMentions: ResolvedAgentMention[];
+} {
   const staged = takePendingMentions(chatId);
-  return { staged, mentions: resolveMentionSpans(text, staged) };
+  const { people, agents } = resolveAllMentionSpans(text, staged);
+  return { staged, mentions: people, agentMentions: agents };
+}
+
+/** The agents staged in a chat, in the order they were picked — what the composer
+ *  can know of the next message's addressees before the text is final. */
+export function stagedAgents(
+  staged: readonly PendingMention[],
+): Array<{ instanceName: string; agentId: string }> {
+  return staged.filter(isAgentMention).map((m) => ({ ...m.agent }));
 }
 
 /**
@@ -155,13 +222,41 @@ export function nameInComposer(
   userId: string,
   baseToken: string,
 ): string | null {
+  return stageTokenInComposer(chatId, text, { userId, token: baseToken });
+}
+
+/**
+ * ADDRESS an agent in the message being written — the agent row of the room
+ * popover. The same gesture as naming a person, and the same rules: one token per
+ * agent per message (picking it again adds nothing while its token is still there),
+ * a suffix for a token already held by someone or something else ("@Nova-2").
+ */
+export function nameAgentInComposer(
+  chatId: string,
+  text: string,
+  agent: { instanceName: string; agentId: string },
+  baseToken: string,
+): string | null {
+  return stageTokenInComposer(chatId, text, {
+    agent: { instanceName: agent.instanceName, agentId: agent.agentId },
+    token: baseToken,
+  });
+}
+
+function stageTokenInComposer(
+  chatId: string,
+  text: string,
+  picked: PendingMention,
+): string | null {
+  const key = mentionKey(picked);
+  const baseToken = picked.token;
   const staged = peekPendingMentions(chatId);
-  const mine = staged.find((m) => m.userId === userId);
+  const mine = staged.find((m) => mentionKey(m) === key);
   if (mine !== undefined && findWholeToken(text, mine.token) !== null) return null;
-  const heldByOthers = new Set(staged.filter((m) => m.userId !== userId).map((m) => m.token));
+  const heldByOthers = new Set(staged.filter((m) => mentionKey(m) !== key).map((m) => m.token));
   let token = baseToken;
   for (let n = 2; heldByOthers.has(token); n += 1) token = `${baseToken}-${n}`;
-  stagePendingMention(chatId, { userId, token });
+  stagePendingMention(chatId, { ...picked, token });
   const separator = text.length === 0 || text.endsWith(" ") ? "" : " ";
   return `${text}${separator}${token} `;
 }

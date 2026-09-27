@@ -67,18 +67,21 @@ import {
 } from "./AgentPicker";
 import {
   agentRefEquals,
-  agentRowMeta,
   findAgentDisplay,
+  homonymAgentKeys,
+  mayRemoveRoomAgent,
   orderComposerAgents,
   resolveAgentSelectorGate,
   withRoomRoster,
   type AgentRef,
   type AgentSelectorGate,
 } from "./perTurnAgent";
+import { addableOutsideList, joinSectionOpen } from "./roomSections";
 import {
   arrivalRoleFor,
   invitableRoles,
   managesRoom,
+  mayRemoveMember,
   type MemberRole,
 } from "./conversationRoles";
 import type { ConvexId, ConvexMessageView } from "./convexTypes";
@@ -95,7 +98,6 @@ import {
   Bot,
   Users,
   CornerDownRight,
-  Check,
   ChevronDown,
   ChevronRight,
   CircleAlert,
@@ -121,10 +123,10 @@ import {
   Reply,
   Search,
   Settings2,
+  ShieldAlert,
   ShieldCheck,
   SlidersHorizontal,
   Square,
-  Star,
   Timer,
   Trash2,
   Volume2,
@@ -165,7 +167,7 @@ import {
   type ConversationTab,
 } from "./ConversationPanel";
 import { mentionTokenFor } from "./MentionPicker";
-import { nameInComposer } from "./pendingMention";
+import { nameAgentInComposer, nameInComposer } from "./pendingMention";
 import { GatewayMark } from "./GatewayMark";
 import { Avatar } from "./ChatParticipants";
 import {
@@ -246,7 +248,12 @@ import { ToolActivity } from "./ToolActivity";
 import { MessageSubAgents } from "./SubAgentActivity";
 import { CompactionNotice } from "./CompactionNotice";
 import { usageBadgeView, type ProviderUsageView } from "./usageView";
-import { assistantEmptyState, extractSpawnedChildKeys } from "./assistantEmptyState";
+import {
+  assistantEmptyState,
+  delegatedRepliesFor,
+  extractSpawnedChildKeys,
+  type DelegatedSlot,
+} from "./assistantEmptyState";
 import { errorDetailView, messageHasText } from "./runStatusView";
 import { LightboxProvider } from "./ImageLightbox";
 import { isPastedFile, markPastedFile, routePaste } from "./pasteRouting";
@@ -312,6 +319,7 @@ import {
   contextSource,
   effectiveContextWindow,
 } from "./sessionKnobs";
+import { permissionChipView, visibilityChipView } from "./sessionAccessView";
 import {
   AgentRequestDock,
   AgentRequestsHeaderButton,
@@ -1110,40 +1118,41 @@ function ChatThread({
   //   - ACTIVE turn (RunStatus label): the chatId-only query — server-side it
   //     follows the LAST SEND's routing (the turn the spinner belongs to).
   //   - NEXT send (the warning banner + the availability BLOCK): scoped to the
-  //     agent the COMPOSER currently targets, so switching to an agent on a DOWN
-  //     instance greys the composer even when the chat's current instance is
-  //     healthy. Convex dedupes the two subscriptions when no per-turn selection
-  //     exists (identical args — the common case).
+  //     agent the COMPOSER currently targets — the first agent the message
+  //     mentions, else the primary — so addressing an agent on a DOWN instance
+  //     greys the composer even when the chat's current instance is healthy, and
+  //     addressing a healthy one un-greys a chat whose primary is down. Convex
+  //     dedupes the two subscriptions when there is no target (identical args).
   const routing = useChatRouting();
-  const selected = routing?.selected ?? null;
+  const nextTarget = routing?.nextTarget ?? null;
   const availNext = useQuery(api.bridgeHealth.getBridgeAvailability, {
     chatId: chatId as Id<"chats">,
-    ...(selected
+    ...(nextTarget
       ? {
           routedAgent: {
-            instanceName: selected.instanceName,
-            agentId: selected.agentId,
+            instanceName: nextTarget.instanceName,
+            agentId: nextTarget.agentId,
           },
         }
       : {}),
   });
   // BLOCK on the NEXT send's target (availNext), not the chat's current instance:
-  // a per-turn selection to a down instance must grey the composer BEFORE the send,
-  // and with no selection availNext === the chatId-only query, so the common case is
-  // unchanged. Fail-open while unknown (undefined).
+  // addressing a down instance must grey the composer BEFORE the send, and with no
+  // target availNext === the chatId-only query, so the common case is unchanged.
+  // Fail-open while unknown (undefined).
   const unavailable = availNext && !availNext.available ? availNext : null;
   // The gateway runs a version NOBODY has put through the validation bench (W10/G7).
   // The capability set is FROZEN at the last validated profile, so nothing breaks —
   // but the reader deserves to know their gateway is beyond what we have exercised.
   // Read from the chat's own compat row, the same source the capability gates use.
-  // Scoped to the NEXT send's target, exactly like `availNext` above: a per-turn
-  // selection to an instance beyond the validated range must say so BEFORE the send,
-  // and switching back must clear it.
+  // Scoped to the NEXT send's target, exactly like `availNext` above: addressing an
+  // agent on an instance beyond the validated range must say so BEFORE the send,
+  // and removing its mention must clear it.
   const { beyondValidated, gatewayVersion: beyondVersion } =
     useInstanceCapabilities(
       chatId as ConvexId<"chats">,
-      selected
-        ? { instanceName: selected.instanceName, agentId: selected.agentId }
+      nextTarget
+        ? { instanceName: nextTarget.instanceName, agentId: nextTarget.agentId }
         : null,
     );
   const gatewayDegraded = avail?.available === true && avail.degraded === true;
@@ -1191,11 +1200,8 @@ function ChatThread({
             agentId: serverCall.agentId,
           }
         : null,
-    hasUserTurn: routing?.hasUserTurn === true,
-    emptyThread: routing?.emptyThread === true,
     unavailable: unavailable !== null,
     readOnly,
-    guest: viewerIsGuest,
     multiAgent: routing?.multiAgent === true,
     // SELECTABLE agents, not pool size. The picker renders a gateway-deleted agent
     // as a disabled row, so a pool made only of those would light the escape hatch
@@ -1840,10 +1846,11 @@ function UsageBadge({
   viewerRole?: "owner" | "participant";
 }) {
   // MULTI-AGENT per-turn: follow the composer's ACTIVE target — the quota shown
-  // is the one the NEXT send will consume, not the chat's primary (codex P2).
-  // Server-side the override is per-option AUTHENTICATED (resolveTargetForTurn).
+  // is the one the NEXT send will consume (codex P2): its first mentioned agent,
+  // else the primary. Server-side the override is per-option AUTHENTICATED
+  // (resolveTargetForTurn).
   const routing = useChatRouting();
-  const selected = routing?.selected ?? null;
+  const nextTarget = routing?.nextTarget ?? null;
   // OWNER-ONLY: the subscription quota belongs to the chat's owner, and the query
   // refuses anyone else. Asking as a participant would throw on first render.
   const data = useQuery(
@@ -1852,11 +1859,11 @@ function UsageBadge({
       ? "skip"
       : {
           chatId: chatId as Id<"chats">,
-          ...(selected
+          ...(nextTarget
             ? {
                 routedAgent: {
-                  instanceName: selected.instanceName,
-                  agentId: selected.agentId,
+                  instanceName: nextTarget.instanceName,
+                  agentId: nextTarget.agentId,
                 },
               }
             : {}),
@@ -2029,6 +2036,12 @@ function ChatHeader({ chatId }: { chatId: ConvexId<"chats"> }) {
   const ghostRef = useRef<HTMLDivElement>(null);
   const [compact, setCompact] = useState(false);
 
+  // WHO MAY ACT on the session and with what permissions — every reader sees them,
+  // guests included, and whatever the "Outils" toggle: they say what the agent may do
+  // with what is written here, not how the session is performing.
+  const permissionChip = permissionChipView(sm, meta?.agentDefaultPermissionMode);
+  const visibilityChip = visibilityChipView(sm);
+
   // BINARY, intent-based provenance (CONF amendment A1): inherited = no
   // thinkingLevel key in sessionSettings. The old value-equality heuristic
   // (level === default) was wrong when overriding TO the default's value.
@@ -2068,6 +2081,41 @@ function ChatHeader({ chatId }: { chatId: ConvexId<"chats"> }) {
           {inherited ? (
             <span className="oc-chip__hint">{m.chat_thinking_inherited_hint()}</span>
           ) : null}
+        </span>
+      ) : null}
+      {permissionChip ? (
+        <span
+          className={`oc-chip oc-chip--access${permissionChip.alert ? " is-alert" : ""}`}
+          title={permissionChip.title}
+        >
+          {permissionChip.alert ? (
+            <ShieldAlert size={13} aria-hidden />
+          ) : (
+            <ShieldCheck size={13} aria-hidden />
+          )}
+          {/* Compact: the icon alone, unless the chip is an alert — the one thing a
+              tight header must not fold away. The name stays readable to a screen
+              reader either way. */}
+          {isCompact && !permissionChip.alert ? (
+            <span className="sr-only">{permissionChip.text}</span>
+          ) : (
+            <>
+              <span className="oc-chip__label">{permissionChip.text}</span>
+              {permissionChip.hint ? (
+                <span className="oc-chip__hint">{permissionChip.hint}</span>
+              ) : null}
+            </>
+          )}
+        </span>
+      ) : null}
+      {visibilityChip ? (
+        <span className="oc-chip oc-chip--info" title={visibilityChip.title}>
+          <Lock size={13} aria-hidden />
+          {isCompact ? (
+            <span className="sr-only">{visibilityChip.label}</span>
+          ) : (
+            <span className="oc-chip__label">{visibilityChip.label}</span>
+          )}
         </span>
       ) : null}
       {ui.showTools && sm ? <ContextMeter sm={sm} detail={!isCompact} /> : null}
@@ -2116,6 +2164,8 @@ function ChatHeader({ chatId }: { chatId: ConvexId<"chats"> }) {
     meta?.viewerRole ?? "",
     sm?.model ?? "",
     sm?.thinkingLevel ?? "",
+    permissionChip ? `${permissionChip.text}:${permissionChip.hint ?? ""}` : "",
+    visibilityChip?.label ?? "",
     meta?.title ?? "",
     // The breadcrumb widens the title block — its text must retrigger the
     // measurement (the title claim stays capped at TITLE_CAP either way).
@@ -2932,7 +2982,8 @@ function ReasoningSegment({ text }: { text?: string }) {
 }
 
 /**
- * A user turn's text with the people it names marked.
+ * A user turn's text with the people it names — and the agents it is addressed
+ * to — marked.
  *
  * Rendered from the STORED SPANS, never by re-finding "@Name": two people can
  * share a display name, one name can contain another, and a rename must not
@@ -2943,7 +2994,15 @@ function MentionedText({ text }: { text: string }) {
     (msg) =>
       (
         msg.metadata?.custom as
-          | { mentions?: Array<{ start: number; end: number; name: string; isViewer: boolean }> | null }
+          | {
+              mentions?: Array<{
+                start: number;
+                end: number;
+                name: string;
+                isViewer: boolean;
+                isAgent?: boolean;
+              }> | null;
+            }
           | undefined
       )?.mentions ?? null,
   );
@@ -2958,7 +3017,9 @@ function MentionedText({ text }: { text: string }) {
     out.push(
       <span
         key={`${mention.start}-${i}`}
-        className={`oc-mention${mention.isViewer ? " oc-mention--self" : ""}`}
+        className={`oc-mention${mention.isViewer ? " oc-mention--self" : ""}${
+          mention.isAgent === true ? " oc-mention--agent" : ""
+        }`}
         title={mention.name}
       >
         {text.slice(mention.start, mention.end)}
@@ -2988,7 +3049,12 @@ const assistantComponents = {
   // clean view, narrative only (the working label under the bubble keeps the
   // in-progress signal); ON = the ChatGPT-style interleaved activity.
   tools: {
-    by_name: { __turn_flow__: InlineTurnActivity as never },
+    by_name: {
+      __turn_flow__: InlineTurnActivity as never,
+      // NOT gated by the Tools toggle, unlike the activity rows: these are the
+      // delegated agents' replies — conversation, not tool detail.
+      __delegated_reply__: DelegatedReplies as never,
+    },
   },
 };
 
@@ -3426,6 +3492,48 @@ function AntsRing() {
 // Returns null for a normal turn (there IS an answer) or an in-flight / errored
 // turn (the thinking indicator / RunStatus error card already cover those), so it
 // is inert on every healthy message.
+/**
+ * The delegated agents' own replies, INSIDE a merged hand-off continuation — at
+ * the point convertMessage placed them (`continuationAt`): after what the turn
+ * said, before the conclusion. Same one-line attribution as the empty-state
+ * fallback, so the reader is never led to credit the agent they are talking to
+ * with words another agent wrote. Renders nothing until a child has a reply.
+ */
+function DelegatedReplies(props: { args?: { slot?: DelegatedSlot } }) {
+  const chatId = useMessage(
+    (msg) => (msg.metadata?.custom as { chatId?: string } | undefined)?.chatId,
+  );
+  const messageId = useMessage(
+    (msg) =>
+      (msg.metadata?.custom as { messageId?: string } | undefined)?.messageId,
+  );
+  // The same owner-scoped subscription the empty state and the monitor hold —
+  // Convex dedupes it, so this adds no query.
+  const subAgents = useQuery(
+    api.subAgents.listSubAgents,
+    chatId ? { chatId: chatId as Id<"chats"> } : "skip",
+  ) as SubAgentRow[] | undefined;
+  // THIS slot's replies only: a bubble with several continuations places each batch
+  // before its own conclusion (convertMessage.ts `continuationSlots`).
+  const replies = delegatedRepliesFor(subAgents, messageId, props.args?.slot);
+  if (replies.length === 0) return null;
+  return (
+    <>
+      {replies.map((r) => (
+        <div key={r.childSessionKey} className="oc-delegated-reply">
+          {r.agentId ? (
+            <div className="oc-empty-answer__from" role="note">
+              <CornerDownRight size={13} aria-hidden />
+              <span>{m.assistant_empty_done_from({ agent: r.agentId })}</span>
+            </div>
+          ) : null}
+          <AgentMarkdown text={r.resultText} />
+        </div>
+      ))}
+    </>
+  );
+}
+
 function AssistantEmptyState({ show }: { show: boolean }) {
   const status = useMessage(
     (msg) => (msg.metadata?.custom as { status?: string } | undefined)?.status,
@@ -3474,13 +3582,18 @@ function AssistantEmptyState({ show }: { show: boolean }) {
       (msg.metadata?.custom as { settledAt?: number | null } | undefined)
         ?.settledAt ?? undefined,
   );
+  const delegatedInline = useMessage(
+    (msg) =>
+      (msg.metadata?.custom as { hasContinuation?: boolean } | undefined)
+        ?.hasContinuation === true,
+  );
 
   // Re-evaluate when a "composing" grace window elapses: the pure decision is
   // time-dependent there (child done -> announce still expected) and nothing
   // else re-renders this component at the deadline.
   const [, bumpClock] = useState(0);
   const state = assistantEmptyState(
-    { status, hasText, hasMedia, settledAt },
+    { status, hasText, hasMedia, settledAt, delegatedInline },
     toolParts,
     // NOT `?? []` — undefined means "the query has not answered", and collapsing
     // that into "no sub-agents" made a settled hand-off read as a turn that
@@ -4248,44 +4361,35 @@ function StopTurnButton() {
 
 // MULTI-AGENT: inline per-turn agent selector for the composer action bar. Lets a
 // user with more than one agent route the NEXT turn to a chosen specialist within
-// the SAME conversation (the reply is then attributed to it). Reuses AgentPicker's
-// pure helpers (filterAgents, orderComposerAgents) + the `.oc-agentlist` rows
-// styling. Hidden for a single-agent user (nothing to choose). Disabled until the
-// chat has a first turn: the agent is bound at creation, so turn 1 is never
-// re-routable — matching the single-agent-path rule (never route the first turn).
+// the SAME conversation (the reply is then attributed to it) — from the first turn
+// on. Reuses AgentPicker's pure helpers (filterAgents, orderComposerAgents) + the
+// `.oc-agentlist` rows styling. Hidden for a single-agent user (nothing to choose).
 /**
- * The composer's agent control — and, on a chat that has not spoken yet, the way OUT
- * of a conversation opened on the wrong agent.
+ * The composer's agent control: WHO the next message goes to — and, on a chat whose
+ * agent is down, the way out of it (a pick to a healthy agent routes the turn there).
  *
- * It is deliberately NOT disabled by `unavailable`/`readOnly`: those are the very
- * conditions it exists to resolve (production report, 2026-07-31 — a chat created on
- * a down gateway could only be deleted). `resolveAgentSelectorGate` owns that rule so
- * it is assertable without a DOM; here we only obey it.
+ * It NEVER changes the conversation's primary: that is chosen in the conversation
+ * panel only (chatAgents.setPrimaryAgent), where its consequences are stated.
+ *
+ * It is deliberately NOT disabled by `unavailable`: that is the very condition it
+ * exists to resolve (production report, 2026-07-31 — a chat created on a down
+ * gateway could only be deleted). `resolveAgentSelectorGate` owns that rule so it is
+ * assertable without a DOM; here we only obey it.
  */
 function ComposerAgentSelect({
   chatId,
   gate,
-  rebinding = false,
-  onRebindingChange,
   onManage,
 }: {
   chatId: ConvexId<"chats">;
   /** Resolved by the chat view — see resolveAgentSelectorGate. */
   gate: AgentSelectorGate;
-  /** A rebind this control started is still in flight. */
-  rebinding?: boolean;
-  /** Raised while a REBIND is in flight, so the composer can hold the send. A
-   *  send that commits first would take the turn to the agent the user just moved
-   *  away from — and then make the rebind fail, since the thread is no longer
-   *  empty (codex adversarial review). */
-  onRebindingChange?: (busy: boolean) => void;
   /** Open the conversation panel (agents / people), optionally straight into a
    *  picker. When given, this control is also the conversation's ENTRY POINT and
    *  renders even where picking an agent is not offered. */
   onManage?: (tab: ConversationTab, intent: ConversationIntent) => void;
 }) {
   const routing = useChatRouting();
-  const rebindChatAgent = useMutation(api.chats.rebindChatAgent);
   // Who may manage this room (deduped with the runtime's own subscription).
   const room = useQuery(api.chatAgents.listChatAgents, {
     chatId: chatId as string,
@@ -4302,15 +4406,28 @@ function ComposerAgentSelect({
   // must not ride into a room where one only manages (the server would refuse it).
   const offeredRoles = invitableRoles(room?.viewerRoomRole);
   const arrivalRole = arrivalRoleFor(inviteRole, room?.viewerRoomRole);
+  // Who could JOIN (agents to add, people to invite) is folded until asked for:
+  // see joinSectionOpen.
+  const [othersUnfolded, setOthersUnfolded] = useState(false);
+  const [inviteUnfolded, setInviteUnfolded] = useState(false);
   useEffect(() => {
     setInviteRole("member");
     setPq("");
+    setOthersUnfolded(false);
+    setInviteUnfolded(false);
   }, [chatId]);
   const invitable = useQuery(
     api.chatParticipants.listInvitable,
-    manages && tab === "people" && pq.trim() !== "" ? { chatId: chatId as string } : "skip",
+    manages && open && tab === "people" ? { chatId: chatId as string } : "skip",
   );
   const addMember = useMutation(api.chatParticipants.addMember);
+  // Taking a person out, from the roster row itself — same speed as for an agent.
+  const removeMember = useMutation(api.chatParticipants.removeMember);
+  const removePerson = (p: { userId: Id<"users">; name: string }) => {
+    void removeMember({ chatId: chatId as Id<"chats">, memberId: p.userId })
+      .then(() => toast.success(m.room_removed({ name: p.name })))
+      .catch(() => toast.error(m.participants_failed()));
+  };
   // ADDING an agent, from the same control (removing one is the panel's): what the
   // reader may add — agents both they and the owner hold, not yet in the room.
   const addable = useQuery(
@@ -4318,6 +4435,22 @@ function ComposerAgentSelect({
     manages && open && tab === "agents" ? { chatId: chatId as string } : "skip",
   );
   const addChatAgent = useMutation(api.chatAgents.addChatAgent);
+  // …and TAKING ONE OUT, from the same list: call an agent in for a piece of work,
+  // let it go once it is done, without opening the panel. No confirmation — speed is
+  // the point, and adding it back is one click; the toast names what was removed.
+  const removeChatAgent = useMutation(api.chatAgents.removeChatAgent);
+  const removeFromRoom = (a: AgentRef & { displayName: string | null }) => {
+    const name = a.displayName ?? a.agentId;
+    void removeChatAgent({
+      chatId: chatId as Id<"chats">,
+      instanceName: a.instanceName,
+      agentId: a.agentId,
+    })
+      .then((r) => {
+        if (r.removed) toast.success(m.room_removed({ name }));
+      })
+      .catch(() => toast.error(m.conversation_failed()));
+  };
   const addToRoom = (a: AgentRef) => {
     void addChatAgent({
       chatId: chatId as Id<"chats">,
@@ -4341,14 +4474,15 @@ function ComposerAgentSelect({
   const pool = routing?.pool ?? [];
   // ONE FLAT LIST (orderComposerAgents): the primary, the room's other agents, then
   // everything else by name — one divider at most, no per-instance headings to scan
-  // past. The instance moves into each row's secondary line (agentRowMeta).
+  // past, and no technical detail: the model and the instance live in the
+  // conversation panel. Only homonyms carry their instance (homonymAgentKeys).
   const roomAgents = routing?.roomAgents ?? [];
   // THE ROOM'S OWN ROSTER, not the routing: `routing.primary` is where the next
   // implicit turn RESOLVES (a fallback when the primary is gone), and the pool holds
   // only what the reader can address now. The list shows the room as it is — its
-  // primary starred, an agent the reader cannot reach kept as a disabled row.
+  // primary crowned, an agent the reader cannot reach kept as a disabled row.
   // Loaded with no primary (a new or legacy unbound chat) is NO primary — the
-  // resolved fallback is not starred as the room's. Only while the room is still
+  // resolved fallback is not crowned as the room's. Only while the room is still
   // loading does the routing's answer stand in.
   const roomPrimary =
     room === undefined || room === null
@@ -4364,105 +4498,82 @@ function ComposerAgentSelect({
     () => orderComposerAgents(filterAgents(listed, q), roomPrimary, roomAgents),
     [listed, q, roomAgents, roomPrimary],
   );
-  // Does the entitled pool span MORE THAN ONE instance? When it does the agent name
-  // alone can be ambiguous (the same display name can live on two gateways), so the
-  // trigger also names the selected agent's instance (mirrors the old header chip).
-  const multiInstance = useMemo(
-    () => new Set(pool.map((a) => a.instanceName)).size > 1,
-    [pool],
+  // Which names are borne by MORE THAN ONE agent here (the same display name can live
+  // on two gateways): only those carry their instance, in the rows and in the
+  // trigger's title — everywhere else the name alone reads unambiguously.
+  const homonyms = useMemo(
+    () => homonymAgentKeys([...listed, ...(addable ?? [])]),
+    [listed, addable],
   );
   // An agent's identity is the PAIR instance/id. During a call the name shown is the
-  // call's, which may be on an instance the READER has no agent on at all — their
-  // pool then spans one instance, `multiInstance` is false, and the name alone is
-  // indistinguishable from their own agent of the same name (codex P3, pass 6). So
-  // the instance is named whenever the name did not come from this reader's pool.
+  // call's, which may be on an instance the READER has no agent on at all — the name
+  // alone is then indistinguishable from their own agent of the same name (codex P3,
+  // pass 6). So the instance is named whenever the name did not come from this
+  // reader's pool.
   const showsForeignAgent =
     gate.onCall != null && !pool.some((a) => agentRefEquals(a, gate.onCall!));
   if (!routing || (gate.hidden && !onManage)) return null;
   // Picking an agent is offered at all (the gate) — the conversation actions are,
   // whenever `onManage` is given.
   const pickOffered = !gate.hidden;
-  const { selected, setSelected } = routing;
-  // WHETHER the control is offered and WHAT a pick does. See resolveAgentSelectorGate:
-  // an unreachable gateway never closes it — that is the state it exists to escape.
-  // A rebind in flight SERIALIZES the control. Two quick picks would run two
-  // mutations, and the first to settle would clear the send hold while the second
-  // was still travelling — reopening the exact window the hold exists to close, and
-  // leaving which pick wins up to server ordering (codex pass 4). The control reads
-  // as busy for one round-trip, which is honest; it is not closed.
-  const disabled = gate.disabled || rebinding;
-  const { mode } = gate;
-  // A pick on a thread that has not spoken REBINDS the chat; the per-turn selection
-  // would be discarded by the send-rule on turn 1, so it would light up and do
-  // nothing. The chip then follows the new binding reactively — no local echo that
-  // could survive a refused mutation.
-  const pick = (a: AgentRef) => {
-    if (mode === "rebind") {
-      onRebindingChange?.(true);
-      void rebindChatAgent({
-        chatId: chatId as Id<"chats">,
-        instanceName: a.instanceName,
-        agentId: a.agentId,
-      })
-        .catch(() => toast.error(m.chat_agent_rebind_failed()))
-        .finally(() => onRebindingChange?.(false));
-      return;
-    }
-    setSelected({ instanceName: a.instanceName, agentId: a.agentId });
+  // WHETHER the control is offered. See resolveAgentSelectorGate: an unreachable
+  // gateway never closes it — that is the state it exists to escape.
+  const { disabled } = gate;
+  // A pick ADDRESSES the agent in the message being written: its "@Name" token goes
+  // into the composer, exactly as a person's does from the People tab — there is no
+  // hidden selection. The agents a message is for are the ones it mentions (each
+  // answers in turn); none mentioned = the primary. The primary is never changed
+  // from here.
+  const address = (a: AgentRef & { displayName: string | null }) => {
+    const next = nameAgentInComposer(
+      String(chatId),
+      composer.getState().text,
+      { instanceName: a.instanceName, agentId: a.agentId },
+      mentionTokenFor(a.displayName ?? a.agentId),
+    );
+    if (next !== null) composer.setText(next);
   };
-  // `selected` is null for a single-agent user (resolveEffectiveSelection refuses a
-  // per-turn pick there), so a rebind-only selector would show no name at all — fall
-  // back to the chat's own agent, which is precisely what the pick would replace.
-  // DURING A CALL the name is the CALL'S, not this tab's selection: another tab, or
-  // a participant with a different pick, showed a locked control naming the wrong
-  // agent while the call ran on someone else (codex P2, pass 5). The control's whole
-  // job while it is closed is to say who is on the line.
-  const shown =
-    gate.onCall ??
-    selected ??
-    (mode === "rebind" || !pickOffered ? routing.primary : null);
+  // WHO ANSWERS a message that mentions no agent: the primary.
+  // DURING A CALL the name is the CALL'S: another tab, or a participant, showed a
+  // locked control naming the wrong agent while the call ran on someone else (codex
+  // P2, pass 5). The control's whole job while it is closed is to say who is on the
+  // line.
+  const shown = gate.onCall ?? routing.primary;
   const display = findAgentDisplay(pool, shown);
   const addableKeys = new Set(
     (addable ?? []).map((a) => `${a.instanceName}\u0000${a.agentId}`),
   );
-  // Addable agents the list does not show (a manager's own agents: their pool is
-  // the room) — offered while searching, under their own divider.
-  const listedKeys = new Set(
-    [...roomRows, ...otherRows].map((a) => `${a.instanceName}\u0000${a.agentId}`),
-  );
+  // Addable agents the list does not show, narrowed by the search (see
+  // addableOutsideList).
   const addTerm = q.trim().toLocaleLowerCase();
-  const addOnly = (addable ?? [])
-    .filter((a) => !listedKeys.has(`${a.instanceName}\u0000${a.agentId}`))
-    .filter(
-      (a) =>
-        addTerm !== "" &&
-        [a.displayName, a.agentId, a.instanceName]
-          .filter(Boolean)
-          .some((v) => v!.toLocaleLowerCase().includes(addTerm)),
-    )
-    .slice(0, 8);
+  const addMatches = addableOutsideList(listed, addable ?? [], q);
+  const addOnly = addMatches.slice(0, 8);
+  // What the section holds FOR THIS SEARCH (both lists are already narrowed by it),
+  // before the display bound.
+  const othersCount = otherRows.length + addMatches.length;
+  const othersOpen = joinSectionOpen({
+    unfolded: othersUnfolded,
+    searching: addTerm !== "",
+    hereCount: roomRows.length,
+  });
   const renderItem = (a: (typeof pool)[number]) => {
-    const isSel = agentRefEquals(selected, {
-      instanceName: a.instanceName,
-      agentId: a.agentId,
-    });
-    const meta = agentRowMeta(a, multiInstance);
+    const homonym = homonyms.has(`${a.instanceName}\u0000${a.agentId}`);
     const canAdd = addableKeys.has(`${a.instanceName}\u0000${a.agentId}`);
+    const canRemove = mayRemoveRoomAgent(room?.viewerRoomRole, a, roomPrimary, roomAgents);
     const row = (
       <button
         key={`${a.instanceName}/${a.agentId}`}
         type="button"
         role="option"
-        aria-selected={isSel}
-        className={`oc-agentrow${isSel ? " is-selected" : ""}`}
+        className="oc-agentrow"
         disabled={a.state === "deleted" || disabled || !pickOffered}
         title={
           a.state === "deleted"
             ? m.agentpicker_agent_deleted_title()
-            : (a.description ?? undefined)
+            : m.room_agent_mention({ name: a.displayName ?? a.agentId })
         }
         onClick={() => {
-          pick(a);
+          address(a);
           setOpen(false);
           setQ("");
         }}
@@ -4476,49 +4587,52 @@ function ComposerAgentSelect({
             {a.emoji ? `${a.emoji} ` : ""}
             {a.displayName ?? a.agentId}
             {agentRefEquals(a, roomPrimary) ? (
-              <Star
+              <Crown
                 size={12}
                 className="oc-agentrow__primary"
-                aria-label={m.conversation_primary_badge()}
+                aria-label={m.conversation_primary_title()}
               >
-                <title>{m.conversation_primary_badge()}</title>
-              </Star>
+                <title>{m.conversation_primary_title()}</title>
+              </Crown>
             ) : null}
           </span>
-          {meta ? (
-            // The MODEL truncates first; the instance — what tells two
-            // same-named agents apart — always stays whole.
-            <span className="oc-agentrow__meta" title={meta}>
-              {a.model ? <span className="oc-agentrow__model">{a.model}</span> : null}
-              {multiInstance ? (
-                <span className="oc-agentrow__inst">
-                  {a.model ? " · " : ""}
-                  {a.instanceName}
-                </span>
-              ) : null}
+          {homonym ? (
+            <span className="oc-agentrow__meta">
+              <span className="oc-agentrow__inst">{a.instanceName}</span>
             </span>
           ) : null}
         </span>
-        <Check
-          size={16}
-          aria-hidden
-          className={`oc-agentrow__check${isSel ? " is-on" : ""}`}
-        />
+        {/* The same cue as a person's row: a click MENTIONS it in the message. */}
+        <AtSign size={14} aria-hidden className="oc-agentrow__hover" />
       </button>
     );
-    if (!canAdd) return row;
+    if (!canAdd && !canRemove) return row;
+    const name = a.displayName ?? a.agentId;
     return (
       <div key={`${a.instanceName}/${a.agentId}`} className="oc-agentrow-wrap">
         {row}
-        <button
-          type="button"
-          className="oc-agentrow__add"
-          title={m.room_agent_add_title()}
-          aria-label={m.room_agent_add_title()}
-          onClick={() => addToRoom(a)}
-        >
-          <Plus size={14} aria-hidden />
-        </button>
+        {canAdd ? (
+          <button
+            type="button"
+            className="oc-agentrow__add"
+            title={m.room_agent_add_title()}
+            aria-label={m.room_agent_add_title()}
+            onClick={() => addToRoom(a)}
+          >
+            <Plus size={14} aria-hidden />
+          </button>
+        ) : null}
+        {canRemove ? (
+          <button
+            type="button"
+            className="oc-agentrow__remove"
+            title={m.room_remove_title({ name })}
+            aria-label={m.room_remove_title({ name })}
+            onClick={() => removeFromRoom(a)}
+          >
+            <X size={14} aria-hidden />
+          </button>
+        ) : null}
       </div>
     );
   };
@@ -4531,7 +4645,10 @@ function ComposerAgentSelect({
     people: peopleCount,
     next: shown
       ? `${display?.displayName ?? shown.agentId}${
-          (multiInstance || showsForeignAgent) && shown ? ` (${shown.instanceName})` : ""
+          (homonyms.has(`${shown.instanceName}\u0000${shown.agentId}`) || showsForeignAgent) &&
+          shown
+            ? ` (${shown.instanceName})`
+            : ""
         }`
       : "—",
   });
@@ -4549,25 +4666,64 @@ function ComposerAgentSelect({
           />
         </div>
       ) : null}
-      <div className="oc-agentlist__caption">
-        {mode === "rebind" ? m.conversation_pick_primary() : m.conversation_pick_next()}
-      </div>
-      {disabled || !pickOffered ? (
+      {disabled ? (
         <p className="oc-agentpicker__hint">
           {gate.reason === "call-active"
             ? m.chat_agent_select_call_hint()
-            : m.chat_agent_select_firstturn_hint()}
+            : m.chat_agent_select_readonly_hint()}
         </p>
       ) : null}
       <div className="oc-agentlist" role="listbox">
         {roomRows.map((a) => renderItem(a))}
-        {roomRows.length > 0 && otherRows.length > 0 ? (
-          <div className="oc-agentlist__divider" role="presentation">
-            {m.conversation_agents_others()}
-          </div>
+        {roomRows.length > 0 && othersCount > 0 ? (
+          <button
+            type="button"
+            className="oc-agentlist__divider oc-agentlist__toggle"
+            aria-expanded={othersOpen}
+            onClick={() => setOthersUnfolded(!othersOpen)}
+          >
+            <ChevronRight size={13} aria-hidden className="oc-agentlist__chev" />
+            <span>{m.conversation_agents_others()}</span>
+            <span className="oc-agentlist__togglecount">{othersCount}</span>
+          </button>
         ) : null}
-        {otherRows.map((a) => renderItem(a))}
-        {addOnly.length > 0 ? (
+        {/* OUTSIDE the conversation: never a target — only ever ADDED (then chosen
+            from the room above). An agent the reader may not add is shown, inert. */}
+        {othersOpen ? (
+          <>
+            {otherRows.map((a) => {
+              const key = `${a.instanceName}\u0000${a.agentId}`;
+              const canAdd = addableKeys.has(key);
+              return (
+                <button
+                  key={`other/${a.instanceName}/${a.agentId}`}
+                  type="button"
+                  className="oc-agentrow oc-agentrow--outside"
+                  disabled={!canAdd}
+                  onClick={() => addToRoom(a)}
+                  title={canAdd ? m.room_agent_add_title() : m.room_agent_outside_title()}
+                >
+                  <span className="oc-agentrow__glyph">
+                    <GatewayMark kind={a.kind} size={16} />
+                  </span>
+                  <span className="oc-agentrow__text">
+                    <span className="oc-agentrow__name">
+                      {a.emoji ? `${a.emoji} ` : ""}
+                      {a.displayName ?? a.agentId}
+                    </span>
+                    {homonyms.has(key) ? (
+                      <span className="oc-agentrow__meta">
+                        <span className="oc-agentrow__inst">{a.instanceName}</span>
+                      </span>
+                    ) : null}
+                  </span>
+                  {canAdd ? <Plus size={14} aria-hidden className="oc-agentrow__hover" /> : null}
+                </button>
+              );
+            })}
+          </>
+        ) : null}
+        {othersOpen && addOnly.length > 0 ? (
           <>
             <div className="oc-agentlist__divider" role="presentation">
               {m.room_agent_add_divider()}
@@ -4588,7 +4744,11 @@ function ComposerAgentSelect({
                     {a.emoji ? `${a.emoji} ` : ""}
                     {a.displayName ?? a.agentId}
                   </span>
-                  <span className="oc-agentrow__meta">{agentRowMeta(a, multiInstance)}</span>
+                  {homonyms.has(`${a.instanceName}\u0000${a.agentId}`) ? (
+                    <span className="oc-agentrow__meta">
+                      <span className="oc-agentrow__inst">{a.instanceName}</span>
+                    </span>
+                  ) : null}
                 </span>
                 <Plus size={14} aria-hidden className="oc-agentrow__hover" />
               </button>
@@ -4621,9 +4781,18 @@ function ComposerAgentSelect({
   // INVITING, from the same field: typing a name that is not here offers them,
   // with the role they arrive with. Changing someone's role afterwards is the
   // conversation panel's (the chevron), where every option lives.
-  const inviteRows = (invitable ?? [])
-    .filter((p) => p.name.toLocaleLowerCase().includes(term))
-    .slice(0, 8);
+  // Offered as soon as the tab opens — typing narrows, it is not what reveals them.
+  const inviteMatches = (invitable ?? []).filter(
+    (p) =>
+      p.name.toLocaleLowerCase().includes(term) ||
+      (p.detail ?? "").toLocaleLowerCase().includes(term),
+  );
+  const inviteRows = inviteMatches.slice(0, 8);
+  const inviteOpen = joinSectionOpen({
+    unfolded: inviteUnfolded,
+    searching: term !== "",
+    hereCount: presentRows.filter((p) => !p.isSelf).length,
+  });
   const invite = (p: { userId: Id<"users">; name: string }) => {
     void addMember({ chatId: chatId as Id<"chats">, memberId: p.userId, role: arrivalRole })
       .then(() => setPq(""))
@@ -4650,52 +4819,84 @@ function ComposerAgentSelect({
       </div>
       <div className="oc-agentlist__caption">{m.room_people_caption()}</div>
       <div className="oc-agentlist" role="list">
-        {presentRows.map((p) => (
-          <button
-            key={String(p.userId)}
-            type="button"
-            role="listitem"
-            className="oc-agentrow oc-agentrow--person"
-            disabled={p.isSelf}
-            onClick={() => mention(p.name, p.userId)}
-            title={p.isSelf ? undefined : m.room_people_mention({ name: p.name })}
-          >
-            <Avatar userId={String(p.userId)} name={p.name} />
-            <span className="oc-agentrow__text">
-              <span className="oc-agentrow__name">
-                {p.name}
-                {p.isSelf ? (
-                  <span className="oc-agentrow__tag">{m.participants_you()}</span>
-                ) : null}
+        {presentRows.map((p) => {
+          const row = (
+            <button
+              key={String(p.userId)}
+              type="button"
+              role="listitem"
+              className="oc-agentrow oc-agentrow--person"
+              disabled={p.isSelf}
+              onClick={() => mention(p.name, p.userId)}
+              title={p.isSelf ? undefined : m.room_people_mention({ name: p.name })}
+            >
+              <Avatar userId={String(p.userId)} name={p.name} />
+              <span className="oc-agentrow__text">
+                <span className="oc-agentrow__name">
+                  {p.name}
+                  {p.isSelf ? (
+                    <span className="oc-agentrow__tag">{m.participants_you()}</span>
+                  ) : null}
+                </span>
+                <span className="oc-agentrow__meta">
+                  <RoleMark role={p.roomRole} />
+                </span>
               </span>
-              <span className="oc-agentrow__meta">
-                <RoleMark role={p.roomRole} />
-              </span>
-            </span>
-            <AtSign size={14} aria-hidden className="oc-agentrow__hover" />
-          </button>
-        ))}
-        {manages && term !== "" ? (
+              <AtSign size={14} aria-hidden className="oc-agentrow__hover" />
+            </button>
+          );
+          // The server's rule (chatParticipants.removeMember), mirrored: never the
+          // owner, never oneself, and a manager never removes another manager.
+          if (!mayRemoveMember(room?.viewerRoomRole, p)) return row;
+          return (
+            <div key={String(p.userId)} className="oc-agentrow-wrap">
+              {row}
+              <button
+                type="button"
+                className="oc-agentrow__remove"
+                title={m.room_remove_title({ name: p.name })}
+                aria-label={m.room_remove_title({ name: p.name })}
+                onClick={() => removePerson(p)}
+              >
+                <X size={14} aria-hidden />
+              </button>
+            </div>
+          );
+        })}
+        {manages ? (
           <>
             <div className="oc-agentlist__divider oc-agentlist__divider--invite" role="presentation">
-              <span>{m.room_invite_divider()}</span>
-              <label className="oc-invite-as">
-                <span>{m.conversation_invite_as()}</span>
-                <Select value={arrivalRole} onValueChange={(v) => setInviteRole(v as MemberRole)}>
-                  <SelectTrigger size="sm" className="oc-invite-as__trigger">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {offeredRoles.map((r) => (
-                      <SelectItem key={r} value={r}>
-                        {roleTitle(r)}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </label>
+              <button
+                type="button"
+                className="oc-agentlist__toggle"
+                aria-expanded={inviteOpen}
+                onClick={() => setInviteUnfolded(!inviteOpen)}
+              >
+                <ChevronRight size={13} aria-hidden className="oc-agentlist__chev" />
+                <span>{m.room_invite_divider()}</span>
+                {invitable !== undefined && inviteMatches.length > 0 ? (
+                  <span className="oc-agentlist__togglecount">{inviteMatches.length}</span>
+                ) : null}
+              </button>
+              {inviteOpen ? (
+                <label className="oc-invite-as">
+                  <span>{m.conversation_invite_as()}</span>
+                  <Select value={arrivalRole} onValueChange={(v) => setInviteRole(v as MemberRole)}>
+                    <SelectTrigger size="sm" className="oc-invite-as__trigger">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {offeredRoles.map((r) => (
+                        <SelectItem key={r} value={r}>
+                          {roleTitle(r)}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </label>
+              ) : null}
             </div>
-            {invitable === undefined ? (
+            {!inviteOpen ? null : invitable === undefined ? (
               <p className="oc-agentpicker__hint">{m.room_invite_searching()}</p>
             ) : inviteRows.length === 0 ? (
               <p className="oc-agentpicker__hint">{m.participants_nobody()}</p>
@@ -4712,11 +4913,21 @@ function ComposerAgentSelect({
                   <Avatar userId={String(p.userId)} name={p.name} />
                   <span className="oc-agentrow__text">
                     <span className="oc-agentrow__name">{p.name}</span>
+                    {p.detail ? (
+                      <span className="oc-agentrow__meta" title={p.detail}>
+                        <span className="oc-agentrow__model">{p.detail}</span>
+                      </span>
+                    ) : null}
                   </span>
                   <UserPlus size={14} aria-hidden className="oc-agentrow__hover" />
                 </button>
               ))
             )}
+            {inviteOpen && inviteMatches.length > inviteRows.length ? (
+              <p className="oc-agentpicker__hint">
+                {m.room_invite_more({ count: inviteMatches.length - inviteRows.length })}
+              </p>
+            ) : null}
           </>
         ) : null}
       </div>
@@ -4728,7 +4939,11 @@ function ComposerAgentSelect({
         open={open}
         onOpenChange={(o) => {
           setOpen(o);
-          if (!o) setQ("");
+          if (!o) {
+            setQ("");
+            setOthersUnfolded(false);
+            setInviteUnfolded(false);
+          }
         }}
       >
         <PopoverTrigger asChild>
@@ -5216,9 +5431,8 @@ function Composer({
   // Voice-input feature flag: resolved via the UI-preferences module (gated by
   // system enablement + the user's override). The mic only renders when true.
   const voiceInput = useUiPrefs().voiceInput;
-  // Placeholder identity: the agent the composer CURRENTLY targets (the selector
-  // chip — switching agents must update the placeholder instantly), falling back
-  // to the resolved chat identity (brand / single-agent name).
+  // Placeholder identity: WHO ANSWERS when the message mentions no agent — the
+  // primary — falling back to the resolved chat identity (brand / single-agent name).
   const composerIdentity = useAssistantIdentity();
   const composerRouting = useChatRouting();
   // THE CONVERSATION PANEL, opened from the agent control (and the presence line):
@@ -5235,12 +5449,18 @@ function Composer({
     },
     [],
   );
-  const composerSelected = composerRouting?.selected ?? null;
-
-  const composerName = composerSelected
-    ? (findAgentDisplay(composerRouting?.pool ?? [], composerSelected)
-        ?.displayName ?? composerSelected.agentId)
-    : assistantDisplayName(composerIdentity);
+  // Where the next message goes (its first mentioned agent, else the primary): what
+  // a voice call is opened on.
+  const composerTarget = composerRouting?.nextTarget ?? null;
+  const composerPrimary = composerRouting?.primary ?? null;
+  // In a room of SEVERAL agents the placeholder says the answerer is the primary —
+  // the rule a message that names nobody follows.
+  const composerAmongSeveral = (composerRouting?.roomAgents.length ?? 0) > 0;
+  const composerName =
+    composerAmongSeveral && composerPrimary
+      ? (findAgentDisplay(composerRouting?.pool ?? [], composerPrimary)
+          ?.displayName ?? composerPrimary.agentId)
+      : assistantDisplayName(composerIdentity);
   // Mid-turn QUEUE: while a turn is in flight OR a sub-agent runs, the chat is
   // BUSY — assistant-ui blocks its own Enter→send only for the in-flight turn, so
   // we intercept Enter HERE and queue for BOTH busy sources. When idle we do
@@ -5419,10 +5639,6 @@ function Composer({
   // SR-only announcement of a routed paste (visually silent — codex P2 a11y).
   const [pasteAnnouncement, setPasteAnnouncement] = useState("");
   const pasteAttaching = pasteAttachCount > 0;
-  // A REBIND (the agent selector on a chat that has not spoken) is in flight. Holds
-  // the send exactly like an in-flight paste: the two are separate round-trips, and
-  // a send that landed first would be answered by the agent the user just left.
-  const [rebinding, setRebinding] = useState(false);
   const onInputPaste = (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
     // A clipboard carrying FILES (e.g. an image + text from an office app) is
     // the built-in handler's job — preventDefault here would silently drop
@@ -5543,10 +5759,8 @@ function Composer({
       .finally(() => setPasteAttachCount((n) => Math.max(0, n - 1)));
   };
   const onInputKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-    // Hold submit while a routed paste's attachment is still being added, or while
-    // the chat is being REBOUND to another agent — turn 1 goes to the binding, so a
-    // send that wins the race would be answered by the agent just moved away from.
-    if ((pasteAttaching || rebinding) && e.key === "Enter" && !e.shiftKey) {
+    // Hold submit while a routed paste's attachment is still being added.
+    if (pasteAttaching && e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
       e.stopPropagation();
       return;
@@ -5660,10 +5874,12 @@ function Composer({
         placeholder={
           unavailable
             ? m.chat_composer_unavailable()
-            : // The composer's TARGET name (selected agent, else brand/identity) —
+            : // WHO ANSWERS with no mention (the primary, else brand/identity) —
               // never a hardcoded provider: OpenClaw is one gateway among others
               // (Hermes upcoming), not the product the user writes to.
-              m.chat_composer_placeholder({ name: composerName })
+              composerAmongSeveral
+              ? m.chat_composer_placeholder_primary({ name: composerName })
+              : m.chat_composer_placeholder({ name: composerName })
         }
         autoFocus
         rows={1}
@@ -5730,13 +5946,11 @@ function Composer({
               <span className="oc-composer__tools-label">{m.chat_tools()}</span>
             </button>
           )}
-          {/* MULTI-AGENT: per-turn agent selector (self-hides for a single-agent
-              user; disabled until the chat has a first turn, or when unavailable). */}
+          {/* MULTI-AGENT: the room — a click on an agent mentions it (self-hides
+              for a single-agent user; closed on a read-only chat or during a call). */}
           <ComposerAgentSelect
             chatId={chatId}
             gate={agentGate}
-            rebinding={rebinding}
-            onRebindingChange={setRebinding}
             onManage={openConversation}
           />
 
@@ -5770,14 +5984,11 @@ function Composer({
                 title={m.chat_composer_pin()}
                 aria-label={m.chat_composer_pin()}
                 onClick={dictation.hold}
-                // `rebinding` alongside `pasteAttaching`, for the same reason and by
-                // the same idiom: the PINNED dock owns its own Send, which does not
-                // read this composer's state — pinning mid-rebind would carry the
-                // draft to a surface where the hold does not apply (codex pass 2).
-                disabled={!dictation.canPin || pasteAttaching || rebinding}
-                tabIndex={
-                  !dictation.canPin || pasteAttaching || rebinding ? -1 : 0
-                }
+                // `pasteAttaching`: the PINNED dock owns its own Send, which does not
+                // read this composer's state — pinning mid-paste would carry the draft
+                // to a surface where the hold does not apply (codex pass 2).
+                disabled={!dictation.canPin || pasteAttaching}
+                tabIndex={!dictation.canPin || pasteAttaching ? -1 : 0}
               >
                 <Pin size={16} aria-hidden />
               </button>
@@ -5822,7 +6033,7 @@ function Composer({
               and can flip while a conversation is UP, and deciding HERE would
               unmount the control, whose unmount effect hangs the call up. Inside,
               the same answer only hides an IDLE button (hidesTalkControl).
-              The composer's CURRENT selection rides along: a user who picks another
+              The composer's CURRENT target rides along: a user who addresses another
               agent and presses the button must talk to THAT agent, not to the one
               the thread last engaged. Authorized server-side. */}
           <TalkControl
@@ -5834,10 +6045,10 @@ function Composer({
             onCallActiveChange={onTalkCallActiveChange}
             serverCallSessionId={serverCallSessionId}
             routedAgent={
-              composerSelected
+              composerTarget
                 ? {
-                    instanceName: composerSelected.instanceName,
-                    agentId: composerSelected.agentId,
+                    instanceName: composerTarget.instanceName,
+                    agentId: composerTarget.agentId,
                   }
                 : null
             }
@@ -5878,7 +6089,7 @@ function Composer({
             <ComposerPrimitive.Send
               className="oc-composer__send"
               aria-label={m.chat_send()}
-              disabled={pasteAttaching || rebinding}
+              disabled={pasteAttaching}
             >
               <ArrowUp size={18} aria-hidden />
             </ComposerPrimitive.Send>

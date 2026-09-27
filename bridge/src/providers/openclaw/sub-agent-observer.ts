@@ -108,6 +108,10 @@ interface Observation {
   /** The task-delivery run this child was spawned inside (persisted on the
    *  registration upserts; kept here so raced paths can fill it once). */
   bornOfRun?: string;
+  /** The child's RUN id from its spawn result — the identity the gateway's
+   *  requester-settle wake names. Kept so the terminal upsert re-carries it when
+   *  the registration write was lost (Convex fills it once). */
+  childRunId?: string;
   /** Phase 2c: when set, the child was re-woken by a USER INTERACTION (chat.send from
    *  "Interagir"); its NEXT terminal frame is that interaction's reply (routed to the
    *  interaction record, not the subAgents.resultText). Cleared on that terminal. */
@@ -499,6 +503,7 @@ export class SubAgentObserver {
           // delivery-run correlation so the engagement-anchor fallback always
           // has it, whatever registration path ran (Convex fills once).
           ...(obs.bornOfRun !== undefined ? { bornOfRun: obs.bornOfRun } : {}),
+          ...(obs.childRunId !== undefined ? { childRunId: obs.childRunId } : {}),
           status: term,
           // The FINAL telemetry (total runtime/tokens/cost) rides on the terminal
           // write — the one place a finished child's numbers become durable.
@@ -984,6 +989,10 @@ export class SubAgentObserver {
     }
     const childKey = extractChildSessionKey(readField(data, "result"));
     if (childKey === null) return null;
+    // The child's RUN id rides the same result (subagent-spawn.ts:682-686 at
+    // v2026.9.6) — the only child identity a requester-settle wake names.
+    const childRunId =
+      extractChildRunId(readField(data, "result")) ?? undefined;
     const taskName = this.sanitizeTaskName(extractTaskName(readString(data, "meta")));
     // The spawn CONFIG cached from this call's `start` frame (by toolCallId) — so
     // `context`/runtime/mode/cleanup/sandbox reach the row from the spawn result.
@@ -1017,10 +1026,13 @@ export class SubAgentObserver {
         reapedRun !== null && isDeliveryRunId(reapedRun)
           ? reapedRun
           : undefined;
+      // A FAST child reaped before its own spawn result arrived is exactly the one
+      // whose settle wake follows quickest: its run id must still reach the row.
       if (
         Object.keys(lateMeta).length === 0 &&
         taskName === undefined &&
-        reapedBorn === undefined
+        reapedBorn === undefined &&
+        childRunId === undefined
       ) {
         return [];
       }
@@ -1028,6 +1040,7 @@ export class SubAgentObserver {
         {
           chatId: this.chatId,
           childSessionKey: childKey,
+          ...(childRunId !== undefined ? { childRunId } : {}),
           status: finalStatus,
           ...(taskName !== undefined ? { taskName } : {}),
           ...(reapedBorn !== undefined ? { bornOfRun: reapedBorn } : {}),
@@ -1059,6 +1072,10 @@ export class SubAgentObserver {
           : undefined;
       if (racedBorn !== undefined && existing.bornOfRun === undefined) {
         existing.bornOfRun = racedBorn;
+        changed = true;
+      }
+      if (childRunId !== undefined && existing.childRunId === undefined) {
+        existing.childRunId = childRunId;
         changed = true;
       }
       // The ANCHOR too: a child whose own frames raced ahead registered with
@@ -1097,6 +1114,9 @@ export class SubAgentObserver {
           ...(existing.bornOfRun !== undefined
             ? { bornOfRun: existing.bornOfRun }
             : {}),
+          ...(existing.childRunId !== undefined
+            ? { childRunId: existing.childRunId }
+            : {}),
           status: existing.status, // reorder-guarded Convex-side; never downgrades
           ...(existing.taskName !== undefined
             ? { taskName: existing.taskName }
@@ -1130,6 +1150,7 @@ export class SubAgentObserver {
     // Keep it on the OBSERVATION too: if this registration upsert is lost
     // (flush tolerates failures), the terminal upsert still carries it.
     if (bornOfRun !== undefined) obs.bornOfRun = bornOfRun;
+    if (childRunId !== undefined) obs.childRunId = childRunId;
     return [
       {
         chatId: this.chatId,
@@ -1137,6 +1158,7 @@ export class SubAgentObserver {
           anchorExact: obs.anchorExact,
         childSessionKey: childKey,
         ...(bornOfRun !== undefined ? { bornOfRun } : {}),
+        ...(childRunId !== undefined ? { childRunId } : {}),
         taskName,
         status: "running",
         ...(obs.sessionMeta ? { sessionMeta: obs.sessionMeta } : {}),
@@ -1697,6 +1719,43 @@ function extractChildSessionKey(result: Record<string, unknown> | null): string 
       const parsed = JSON.parse(text) as unknown;
       const key = readString(parsed, "childSessionKey");
       if (key !== null && key !== "") return key;
+    } catch {
+      // Non-JSON content item -- skip.
+    }
+  }
+  return null;
+}
+
+/** The shape upstream mints for a child run id (a UUID or `swarm_<hex>`,
+ *  subagent-spawn-request.ts:268-274) — mirrored by Convex `CHILD_RUN_ID_RE`,
+ *  which re-checks it at the ingest boundary. */
+const CHILD_RUN_ID_RE = /^[A-Za-z0-9_-]{1,128}$/;
+
+/**
+ * The child's RUN id from the `sessions_spawn` result: `details.runId` first (the
+ * structured copy — same reasoning as `extractChildSessionKey`), then the JSON
+ * echo in `content[].text`. A REFUSED spawn can carry both a child key and a
+ * run id (subagent-spawn.ts:600-613); its run never settles into a yielded batch,
+ * so an id recorded for it is inert in the join. Null when absent or malformed.
+ */
+function extractChildRunId(result: Record<string, unknown> | null): string | null {
+  if (result === null) return null;
+  const valid = (v: string | null): string | null =>
+    v !== null && CHILD_RUN_ID_RE.test(v) ? v : null;
+  const fromDetails = valid(readString(result.details, "runId"));
+  if (fromDetails !== null) return fromDetails;
+  const items = Array.isArray(result.content)
+    ? result.content
+    : Array.isArray(result.contentItems)
+      ? result.contentItems
+      : null;
+  if (items === null) return null;
+  for (const item of items) {
+    const text = readString(item, "text");
+    if (text === null) continue;
+    try {
+      const id = valid(readString(JSON.parse(text) as unknown, "runId"));
+      if (id !== null) return id;
     } catch {
       // Non-JSON content item -- skip.
     }

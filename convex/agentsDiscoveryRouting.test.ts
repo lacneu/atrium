@@ -243,3 +243,76 @@ describe("pollAgentDiscovery — re-arming a bridge that came back empty-handed"
     expect(disc[0]?.error).toBe("http_404");
   });
 });
+
+// The agent's DEFAULT permission mode (OpenClaw `agents.list[].defaultPermissionMode`)
+// is what the conversation header shows for a session that sets none. It rides the
+// poll into the `agents` row; a changed default writes, an unchanged one does not (the
+// row is read by reactive queries — a rewrite per poll is a re-execution storm), and a
+// value outside the vocabulary is stored as "not stated", never as a mode.
+describe("pollAgentDiscovery — the agent's default permission mode", () => {
+  let origFetch: typeof fetch;
+  let prevSecret: string | undefined;
+  beforeEach(() => {
+    origFetch = globalThis.fetch;
+    prevSecret = process.env.BRIDGE_SHARED_SECRET;
+    process.env.BRIDGE_SHARED_SECRET = "s3cret";
+    delete process.env.BRIDGE_URL;
+  });
+  afterEach(() => {
+    globalThis.fetch = origFetch;
+    if (prevSecret === undefined) delete process.env.BRIDGE_SHARED_SECRET;
+    else process.env.BRIDGE_SHARED_SECRET = prevSecret;
+  });
+
+  test("carried, written on change only, and an unknown value reads as not stated", async () => {
+    const t = convexTest(schema, modules);
+    await t.run(async (ctx) => {
+      await ctx.db.insert("instances", {
+        name: "olivier",
+        gatewayUrl: "ws://gw1",
+        bridgeUrl: "http://bridge-olivier:8787",
+      });
+    });
+    let mode: unknown = "guarded";
+    globalThis.fetch = vi.fn(async () =>
+      new Response(
+        JSON.stringify({
+          agents: [
+            {
+              agentId: "alice",
+              displayName: "Alice",
+              emoji: null,
+              model: "m",
+              isDefaultOnInstance: true,
+              defaultPermissionMode: mode,
+            },
+          ],
+          count: 1,
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      ),
+    ) as unknown as typeof fetch;
+    const row = () =>
+      t.run(async (ctx) => (await ctx.db.query("agents").collect())[0]!);
+    const tick = () => new Promise((r) => setTimeout(r, 5));
+
+    await t.action(internal.agents.pollAgentDiscovery, {});
+    const first = await row();
+    expect(first.defaultPermissionMode).toBe("guarded");
+
+    await tick();
+    await t.action(internal.agents.pollAgentDiscovery, {});
+    expect((await row()).lastSeenAt, "unchanged: not rewritten").toBe(first.lastSeenAt);
+
+    mode = "full";
+    await tick();
+    await t.action(internal.agents.pollAgentDiscovery, {});
+    const changed = await row();
+    expect(changed.defaultPermissionMode).toBe("full");
+    expect(changed.lastSeenAt, "changed: written").toBeGreaterThan(first.lastSeenAt);
+
+    mode = "yolo";
+    await t.action(internal.agents.pollAgentDiscovery, {});
+    expect((await row()).defaultPermissionMode).toBeUndefined();
+  });
+});

@@ -149,6 +149,13 @@ export interface RehydrationTurn {
    *  already bounded and single-line). Absent on a solo chat, whose history then
    *  renders exactly as it always did. */
   author?: string;
+  /** WHICH AGENT wrote this assistant turn, in a conversation several agents take
+   *  part in only (already bounded and single-line — see agentHistoryLabels). Absent
+   *  on a single-agent chat, whose history then renders exactly as it always did. */
+  agent?: string;
+  /** This assistant turn is the READER's own (the agent the block is composed for):
+   *  its label says so, so the agent can tell its words from another agent's. */
+  self?: boolean;
 }
 
 export interface RehydrationSummary {
@@ -170,6 +177,13 @@ export interface ComposeRehydrationInput {
    *  renders the omission marker even if the budget walk kept everything it saw. */
   readWindowClipped: boolean;
   budgetChars: number;
+  /** The READER's own label, when the block is composed for one agent of a
+   *  conversation several agents take part in: the header then says so in one
+   *  sentence. Absent = the header as it always was. */
+  reader?: string;
+  /** The block holds only the turns since the reader's last reply (the reader's
+   *  session is warm and has the rest): its header says so. */
+  since?: boolean;
 }
 
 export interface ComposedRehydration {
@@ -195,6 +209,19 @@ export const REHYDRATION_STRINGS: Record<
     summaryIntro: (coveredCount: number) => string;
     userLabel: string;
     assistantLabel: string;
+    /** Marks the reader's own replies inside an agent label. */
+    selfMarker: string;
+    /** One sentence: several agents take part, and which one the reader is. */
+    multiAgentReader: (name: string) => string;
+    /** The header of a block holding only the turns since the reader's last reply. */
+    sinceHeader: string;
+    /** Closes a message cut to fit the budget: a fragment is never shown as whole. */
+    truncatedMark: string;
+    /** A CHAINED reply's prompt (composeChainedPrompt): the replies the agents
+     *  addressed before this one already gave to the same message, and the turn
+     *  handed to the reader. */
+    chainIntro: string;
+    chainOutro: string;
   }
 > = {
   fr: {
@@ -209,6 +236,18 @@ export const REHYDRATION_STRINGS: Record<
       `[Résumé de la partie antérieure de la conversation (${n} messages) :]`,
     userLabel: "Utilisateur",
     assistantLabel: "Assistant",
+    selfMarker: "vous",
+    multiAgentReader: (name) =>
+      `[Plusieurs agents participent à cette conversation et chaque réponse est ` +
+      `signée de son auteur : vous êtes ${name}.]`,
+    sinceHeader:
+      "[Reprise de cette conversation : voici les messages échangés depuis votre " +
+      "dernière réponse :]",
+    truncatedMark: "[suite du message omise]",
+    chainIntro:
+      "[Ce message s’adresse à plusieurs agents, qui répondent chacun à leur tour. " +
+      "Réponses déjà données, dans l’ordre :]",
+    chainOutro: "[À vous de répondre au message ci-dessus.]",
   },
   en: {
     header:
@@ -221,6 +260,18 @@ export const REHYDRATION_STRINGS: Record<
       `[Summary of the earlier part of the conversation (${n} messages):]`,
     userLabel: "User",
     assistantLabel: "Assistant",
+    selfMarker: "you",
+    multiAgentReader: (name) =>
+      `[Several agents take part in this conversation and each reply is signed ` +
+      `by its author: you are ${name}.]`,
+    sinceHeader:
+      "[Resuming this conversation: here are the messages exchanged since your " +
+      "last reply:]",
+    truncatedMark: "[rest of the message omitted]",
+    chainIntro:
+      "[This message is addressed to several agents, who answer in turn. " +
+      "Replies already given, in order:]",
+    chainOutro: "[Your turn: answer the message above.]",
   },
 };
 
@@ -230,10 +281,86 @@ export function historyTurnLabel(
   locale: Locale,
   role: "user" | "assistant",
   author?: string | null,
+  agent?: { name: string; self: boolean } | null,
 ): string {
   const t9n = REHYDRATION_STRINGS[locale];
-  if (role !== "user") return t9n.assistantLabel;
+  if (role !== "user") {
+    if (!agent) return t9n.assistantLabel;
+    return agent.self
+      ? `${t9n.assistantLabel} (${agent.name}, ${t9n.selfMarker})`
+      : `${t9n.assistantLabel} (${agent.name})`;
+  }
   return author ? `${t9n.userLabel} (${author})` : t9n.userLabel;
+}
+
+/** An agent as the history names it: the {instance, id} pair. */
+export interface HistoryAgentRef {
+  instanceName: string;
+  agentId: string;
+}
+
+export const historyAgentKey = (a: HistoryAgentRef): string =>
+  `${a.instanceName.length}:${a.instanceName}/${a.agentId}`;
+
+/**
+ * WHICH AGENT each message of a thread is attributed to — the thread's own rule
+ * (src/chat/perTurnAgent.ts resolveMessageAgents), server-side: a user turn by its
+ * routing stamp; an assistant message by its own stamp, else the user turn it
+ * answers; nothing stamped = the chat's primary. `messagesAsc` in LOGICAL order.
+ * An assistant opening the window answers a turn that lies before it: the caller
+ * passes that turn's stamp (`leadingTurnAgent`), else it falls back to the primary.
+ */
+export function attributeHistoryAgents<
+  M extends {
+    _id: string;
+    role: string;
+    routedInstanceName?: string;
+    routedAgentId?: string;
+  },
+>(
+  messagesAsc: readonly M[],
+  primary: HistoryAgentRef | null,
+  // The stamp of the user turn the window's LEADING replies answer, when the caller
+  // looked it up (it lies before the window); null = none, those fall to the primary.
+  leadingTurnAgent: HistoryAgentRef | null = null,
+): Map<string, HistoryAgentRef | null> {
+  const out = new Map<string, HistoryAgentRef | null>();
+  let turnAgent: HistoryAgentRef | null = leadingTurnAgent;
+  for (const m of messagesAsc) {
+    const own =
+      m.routedInstanceName && m.routedAgentId
+        ? { instanceName: m.routedInstanceName, agentId: m.routedAgentId }
+        : null;
+    if (m.role === "user") {
+      turnAgent = own;
+      out.set(m._id, own ?? primary);
+    } else if (m.role === "assistant") {
+      out.set(m._id, own ?? turnAgent ?? primary);
+    }
+  }
+  return out;
+}
+
+/**
+ * One label per agent, from its display name — joined by its instance ONLY where two
+ * of the labelled agents share a name, so a single-instance room reads by name alone
+ * and two gateways' "Nova" can still be told apart. Names must already be safe to
+ * embed in a history line (single-line, no framing characters, bounded).
+ */
+export function agentHistoryLabels(
+  agents: ReadonlyArray<HistoryAgentRef & { name: string; instance: string }>,
+): Map<string, string> {
+  const byName = new Map<string, number>();
+  for (const a of agents) {
+    const n = a.name.toLocaleLowerCase();
+    byName.set(n, (byName.get(n) ?? 0) + 1);
+  }
+  const out = new Map<string, string>();
+  for (const a of agents) {
+    const shared = (byName.get(a.name.toLocaleLowerCase()) ?? 0) > 1;
+    out.set(historyAgentKey(a), shared ? `${a.name} · ${a.instance}` : a.name);
+  }
+  return out;
 }
 
 /**
@@ -257,67 +384,144 @@ export function composeRehydration(
   const locale = input.locale ?? BASE_LOCALE;
   const t9n = REHYDRATION_STRINGS[locale];
   const summaryText = input.summary?.text.trim() ?? "";
-  const hasSummary = summaryText.length > 0;
+  const empty: ComposedRehydration = {
+    history: null,
+    turnCount: 0,
+    summaryUsed: false,
+    summaryChars: 0,
+    omitted: false,
+  };
+  // THE BUDGET IS THE WHOLE BLOCK. The bridge refuses a block longer than the room it
+  // asked for (server.ts, the narrow-window re-ask), so a block over budget is no
+  // history at all: the framing — header, reader line, summary intro, the omission
+  // marker (reserved whether or not it is needed), footer, and the line breaks
+  // between them — is paid out of the budget BEFORE any message is chosen.
+  const head = [input.since === true ? t9n.sinceHeader : t9n.header];
+  if (input.reader) head.push(t9n.multiAgentReader(input.reader));
+  const framingChars = (parts: readonly string[]) =>
+    parts.reduce((n, p) => n + p.length + 1, 0); // each part and the break after it
+  const gapFor = (withSummary: boolean) =>
+    withSummary || input.since === true ? t9n.gapWithSummary : t9n.gapNoSummary;
 
-  // Summary block first (bounded share of the budget) — the remainder funds verbatim.
-  const summaryCap = Math.floor(input.budgetChars * SUMMARY_BUDGET_SHARE);
-  const summaryBlock = hasSummary
-    ? summaryText.length > summaryCap
-      ? `${summaryText.slice(0, Math.max(summaryCap - 1, 0))}…`
-      : summaryText
-    : "";
-  const verbatimBudget = input.budgetChars - summaryBlock.length;
+  // Summary block (bounded share of the budget) — dropped when the framing leaves no
+  // room for it and a line of history.
+  let summaryBlock = "";
+  let summaryIntro = "";
+  if (summaryText.length > 0) {
+    const summaryCap = Math.floor(input.budgetChars * SUMMARY_BUDGET_SHARE);
+    summaryBlock =
+      summaryText.length > summaryCap
+        ? `${summaryText.slice(0, Math.max(summaryCap - 1, 0))}…`
+        : summaryText;
+    summaryIntro = t9n.summaryIntro(input.summary!.coveredCount);
+  }
+  const verbatimRoom = (withSummary: boolean) =>
+    input.budgetChars -
+    framingChars([
+      ...head,
+      ...(withSummary ? [summaryIntro, summaryBlock] : []),
+      gapFor(withSummary),
+    ]) -
+    t9n.footer.length;
+  let hasSummary = summaryBlock.length > 0 && verbatimRoom(true) >= 0;
+  if (!hasSummary) {
+    summaryBlock = "";
+    summaryIntro = "";
+  }
+  const verbatimBudget = verbatimRoom(hasSummary);
+  if (verbatimBudget < 0) return empty;
 
+  // Newest first; each kept line costs its length and the break after it.
   const keptDesc: string[] = [];
   let chars = 0;
   let truncated = false;
   for (let i = input.turns.length - 1; i >= 0; i--) {
     const t = input.turns[i]!;
-    const label = historyTurnLabel(locale, t.role, t.author);
+    const label = historyTurnLabel(
+      locale,
+      t.role,
+      t.author,
+      t.agent ? { name: t.agent, self: t.self === true } : null,
+    );
     let line = `${label} : ${t.text}`;
-    if (keptDesc.length > 0 && chars + line.length > verbatimBudget) {
+    if (chars + line.length + 1 > verbatimBudget) {
       truncated = true;
-      break;
-    }
-    // The always-keep-newest rule must not blow the ceiling: ONE turn aggregating
-    // several sub-agent results can exceed the whole budget — truncate ITS render
-    // to the budget instead of shipping an unbounded block.
-    if (keptDesc.length === 0 && line.length > verbatimBudget) {
-      line = `${line.slice(0, Math.max(verbatimBudget - 1, 0))}…`;
-      truncated = true;
+      if (keptDesc.length > 0) break;
+      // The NEWEST turn alone is over the room: cut, and SAID to be cut — a fragment
+      // is never presented as a complete message.
+      const cutTo = verbatimBudget - 1 - (t9n.truncatedMark.length + 2);
+      if (cutTo <= label.length + 3) break; // not even its label fits: omitted
+      line = `${line.slice(0, cutTo)}… ${t9n.truncatedMark}`;
     }
     keptDesc.push(line);
     chars += line.length + 1;
   }
   const lines = keptDesc.reverse();
 
-  if (lines.length === 0 && !hasSummary) {
-    return {
-      history: null,
-      turnCount: 0,
-      summaryUsed: false,
-      summaryChars: 0,
-      omitted: false,
-    };
-  }
+  if (lines.length === 0 && !hasSummary) return empty;
 
   const omitted = truncated || input.readWindowClipped;
-  const parts: string[] = [t9n.header];
+  const parts: string[] = [...head];
   if (hasSummary) {
-    parts.push(t9n.summaryIntro(input.summary!.coveredCount));
+    parts.push(summaryIntro);
     parts.push(summaryBlock);
   }
-  if (omitted) parts.push(hasSummary ? t9n.gapWithSummary : t9n.gapNoSummary);
+  // A since-block starts at the reader's own last reply, not at the conversation's
+  // beginning: what a budget cut drops there is "intermediate", never "older".
+  if (omitted) parts.push(gapFor(hasSummary));
   if (lines.length > 0) parts.push(lines.join("\n"));
   parts.push(t9n.footer);
+  const history = parts.join("\n");
+  // The contract, checked where it is produced: never a block over budget. Built to
+  // hold by the reservation above; should it ever not, no history beats a refused one.
+  if (history.length > input.budgetChars) return empty;
 
   return {
-    history: parts.join("\n"),
+    history,
     turnCount: lines.length,
     summaryUsed: hasSummary,
     summaryChars: summaryBlock.length,
     omitted,
   };
+}
+
+/** Ceiling on the earlier replies a chained prompt carries (half the history's). */
+export const CHAIN_REPLIES_MAX_CHARS = Math.floor(HARD_MAX_HISTORY_CHARS / 2);
+
+/**
+ * The prompt of a CHAINED reply — the 2nd..Nth agent a message is addressed to.
+ *
+ * The question comes first, ONCE, then the replies the earlier agents already gave
+ * to it, in order and signed. Carried here rather than by the rehydrated history:
+ * the history holds what came strictly BEFORE the question (stream.rehydrationContext
+ * excludes the question and everything after it), so the question is never handed
+ * twice, and the earlier replies reach the agent whether or not its session is
+ * re-hydrated at all (a warm session, a turn carrying a file). No earlier reply with
+ * text (the first agent failed) = the bare question: the chain goes on regardless.
+ */
+export function composeChainedPrompt(
+  question: string,
+  earlier: ReadonlyArray<{ agent: string; text: string }>,
+  locale: Locale = BASE_LOCALE,
+): string {
+  const replies = earlier.filter((r) => r.text.trim().length > 0);
+  if (replies.length === 0) return question;
+  const t9n = REHYDRATION_STRINGS[locale];
+  // The ceiling bounds the WHOLE block after the question — intro, signed lines,
+  // outro and the breaks between them — and every reply keeps an equal share of what
+  // the framing leaves: a long first answer must not push the second out of the
+  // prompt altogether. A reply cut to its share SAYS it was cut.
+  const room =
+    CHAIN_REPLIES_MAX_CHARS - t9n.chainIntro.length - t9n.chainOutro.length - (replies.length + 1);
+  const share = Math.floor(room / replies.length);
+  const lines = replies.map((r) => {
+    const text = r.text.trim();
+    const label = `${historyTurnLabel(locale, "assistant", null, { name: r.agent, self: false })} : `;
+    if (label.length + text.length <= share) return `${label}${text}`;
+    const keep = Math.max(share - label.length - t9n.truncatedMark.length - 2, 0);
+    return `${label}${text.slice(0, keep)}… ${t9n.truncatedMark}`;
+  });
+  return [question, "", t9n.chainIntro, ...lines, t9n.chainOutro].join("\n");
 }
 
 // ---------------------------------------------------------------------------

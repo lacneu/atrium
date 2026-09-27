@@ -74,6 +74,10 @@ export interface FakeGatewayScript {
    *  scripts [before, after-compaction] and any further describe reads the
    *  post-compaction state. */
   describe?: (FakeSessionDescribe | null)[];
+  /** A `null` describe entry answers `{ session: null }` — the gateway STATING that no
+   *  session exists under the key (sessions-read-by-key.ts) — instead of the default
+   *  empty payload, which says nothing readable. */
+  describeAbsentAsNull?: boolean;
   /** `sessions.compact` outcome. Default: succeeds. */
   compact?: FakeRpcAnswer;
   /** Anything else, by method name. Unlisted methods answer `{}`. */
@@ -90,6 +94,7 @@ export interface FakeGateway {
   rosterEpoch: number;
   /** The two subscriptions the roster policy takes on a real connection. */
   onConfigChanged(listener: (notice: ConfigChangedNotice) => void): () => void;
+  onSessionSharing(listener: (sessionKey: string) => void): () => void;
   onClosed(listener: () => void): () => void;
   /** Session sets this after applying `verboseLevel:"full"` once. */
   verboseFullApplied?: boolean;
@@ -141,6 +146,9 @@ export function fakeGateway(script: FakeGatewayScript = {}): FakeGateway {
     // reads it on every dispatch, so a fake without it fails the whole path.
     modelsByOwner: new Map<string, RosterEntry>(),
     rosterEpoch: 0,
+    onSessionSharing() {
+      return () => {};
+    },
     onConfigChanged(listener) {
       configChangedListeners.add(listener);
       return () => {
@@ -187,7 +195,10 @@ export function fakeGateway(script: FakeGatewayScript = {}): FakeGateway {
           throw new Error("UNAVAILABLE: describe failed");
         }
         const sess = nextDescribe();
-        return { payload: sess === null ? {} : { session: sess } };
+        return {
+          payload:
+            sess === null ? (script.describeAbsentAsNull === true ? { session: null } : {}) : { session: sess },
+        };
       }
       if (method === "sessions.compact") {
         const a = script.compact;
@@ -242,6 +253,7 @@ export function modelsConnSpy(
 ) {
   const calls: { method: string; params: unknown }[] = [];
   const configChangedListeners = new Set<(notice: ConfigChangedNotice) => void>();
+  const sharingListeners = new Set<(sessionKey: string) => void>();
   const closedListeners = new Set<() => void>();
   let release: () => void = () => {};
   const gate = new Promise<void>((r) => {
@@ -257,6 +269,16 @@ export function modelsConnSpy(
       return () => {
         configChangedListeners.delete(listener);
       };
+    },
+    onSessionSharing(listener: (sessionKey: string) => void) {
+      sharingListeners.add(listener);
+      return () => {
+        sharingListeners.delete(listener);
+      };
+    },
+    /** What the transport does on a `session.sharing` frame naming `sessionKey`. */
+    emitSessionSharing(sessionKey: string) {
+      for (const l of [...sharingListeners]) l(sessionKey);
     },
     onClosed(listener: () => void) {
       closedListeners.add(listener);

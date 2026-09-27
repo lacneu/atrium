@@ -194,6 +194,14 @@ export interface ConvexMessageView {
   role: MessageRole;
   runId?: string;
   hasMergedRuns?: boolean;
+  /** Text offset at which a yielded turn's merged continuation begins (the
+   *  gateway's requester-settle run): the delegated children's replies render
+   *  there. Absent on every other bubble. */
+  continuationAt?: number;
+  /** One entry per merged hand-off continuation: where its text begins and the
+   *  settled children (by run id) whose replies belong there. Supersedes
+   *  `continuationAt` on every merge made since it existed. */
+  continuations?: ReadonlyArray<{ at: number; childRunIds: readonly string[] }>;
   status: MessageStatus;
   text: string;
   error?: string;
@@ -226,12 +234,14 @@ export interface ConvexMessageView {
    *  chat owner. Absent on every solo conversation — absence means "the owner". */
   authorName?: string;
   /** People this turn names: spans into `text` plus a display name. `isViewer`
-   *  marks the one that concerns the reader. Absent when the turn names nobody. */
+   *  marks the one that concerns the reader. `isAgent` marks an AGENT the turn is
+   *  addressed to (same highlight). Absent when the turn names nobody. */
   mentions?: Array<{
     start: number;
     end: number;
     name: string;
     isViewer: boolean;
+    isAgent?: boolean;
   }>;
   /** IMPORTED history: the agent that answered, as a name only. Never routable. */
   importedAgentLabel?: string;

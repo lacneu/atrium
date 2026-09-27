@@ -45,6 +45,29 @@ afterEach(() => {
 
 type T = TestConvex<typeof schema>;
 
+/** A turn SENT to `instanceName` in this chat: the gateway accepted its outbox row.
+ *  A routing stamp on a user message alone is not provenance — it is written when the
+ *  turn is ASKED for, before anything reaches the instance (lib/ingestAuthz). */
+async function sentTurnTo(
+  t: T,
+  chatId: Id<"chats">,
+  userId: Id<"users">,
+  instanceName: string,
+  agentId: string,
+) {
+  await t.run((ctx) =>
+    ctx.db.insert("outbox", {
+      chatId,
+      userId,
+      clientMessageId: `sent-${instanceName}-${agentId}`,
+      text: `ask ${instanceName}`,
+      attachmentIds: [],
+      status: "sent" as const,
+      routedAgent: { instanceName, agentId },
+    }),
+  );
+}
+
 const asAdmin = (t: T, uid: Id<"users">) =>
   t.withIdentity({ subject: `${uid}|session` });
 
@@ -346,6 +369,7 @@ describe("cross-gateway ingest isolation (per-write authorization)", () => {
       });
     });
     await grantInstance(t, a.userId, "bravo", "bob");
+    await sentTurnTo(t, a.chatId, a.userId, "bravo", "bob");
 
     // B's bridge legitimately starts + streams the routed turn — ALLOWED, not 403.
     const start = await post(
@@ -412,6 +436,8 @@ describe("cross-gateway ingest isolation (per-write authorization)", () => {
     });
     await grantInstance(t, a.userId, "bravo", "bob");
     await grantInstance(t, a.userId, "carol", "carl");
+    await sentTurnTo(t, a.chatId, a.userId, "bravo", "bob");
+    await sentTurnTo(t, a.chatId, a.userId, "carol", "carl");
     // Mint bravo's secret so it can present per-bridge.
     const bravoInst = await t.run((ctx) =>
       ctx.db.insert("instances", {
@@ -755,6 +781,102 @@ describe("cross-gateway ingest isolation (per-write authorization)", () => {
     expect(parent?.runId ?? null).toBe(null); // announce run never attached
   });
 
+  test("a requester-settle re-own is GATED by the parent's durable stamp too (forged child run id)", async () => {
+    // The settle continuation resolves through a sub-agent row's CHILD RUN id,
+    // a new join. It must not become a new door: B forges a row carrying a run
+    // id, pinned to ALPHA's finalized parent with an exact anchor, then sends a
+    // yielded settle run naming that id. Same verdict as the announce family —
+    // 403, parent untouched.
+    const t = convexTest(schema, modules);
+    const admin = await seedAdmin(t);
+    const a = await seedInstanceWithChat(t, admin, "alpha");
+    const b = await seedInstanceWithChat(t, admin, "bravo");
+    const forgedRun = "7d0c2f5e-3b1a-4c8e-9f60-1a2b3c4d5e6f";
+    const parentId = await t.run(async (ctx) => {
+      await ctx.db.patch(a.chatId, { perTurnRouting: true });
+      for (const [inst, agent] of [["alpha", "alice"], ["bravo", "bob"]] as const) {
+        await ctx.db.insert("messages", {
+          chatId: a.chatId,
+          userId: a.userId,
+          role: "user" as const,
+          status: "complete" as const,
+          text: `ask ${inst}`,
+          routedInstanceName: inst,
+          routedAgentId: agent,
+          updatedAt: 5,
+        });
+      }
+      const parentId = await ctx.db.insert("messages", {
+        chatId: a.chatId,
+        userId: a.userId,
+        role: "assistant" as const,
+        status: "complete" as const,
+        text: "",
+        boundInstance: "alpha",
+        updatedAt: 9,
+      });
+      await ctx.db.insert("subAgents", {
+        chatId: a.chatId,
+        parentMessageId: parentId,
+        childSessionKey: "agent:spy:subagent:x",
+        childRunId: forgedRun,
+        status: "done" as const,
+        anchorExact: true,
+        createdAt: 9,
+        updatedAt: 9,
+      });
+      return parentId;
+    });
+    await grantInstance(t, a.userId, "bravo", "bob");
+
+    const denied = await post(
+      t,
+      {
+        op: "startAssistant",
+        chatId: a.chatId,
+        runId: `announce:requester-settle:bob:agent:bob:atrium:chat:u:c:${forgedRun}:yield-1`,
+      },
+      b.secret,
+    );
+    expect(denied.status).toBe(403);
+    const parent = await t.run((ctx) => ctx.db.get(parentId));
+    expect(parent?.boundInstance).toBe("alpha");
+    expect(parent?.status).toBe("complete");
+    expect(parent?.runId ?? null).toBe(null);
+    expect(parent?.continuations).toBeUndefined();
+  });
+
+  test("upsertSubAgent keeps a child run id ONLY in the shape upstream mints", async () => {
+    // The settle grammar splits on ':' and ','. An id carrying either could make
+    // one row answer for another child's run in the join — refused at the door.
+    const t = convexTest(schema, modules);
+    const admin = await seedAdmin(t);
+    const a = await seedInstanceWithChat(t, admin, "alpha");
+    const cases: Array<[string, string, string | undefined]> = [
+      ["child-ok", "5c2543ae-a10b-4bcd-a346-6e3f8ab0e70e", "5c2543ae-a10b-4bcd-a346-6e3f8ab0e70e"],
+      ["child-swarm", "swarm_0123456789abcdef0123456789abcdef", "swarm_0123456789abcdef0123456789abcdef"],
+      ["child-comma", "run-a,run-b", undefined],
+      ["child-colon", "run-a:yield-1", undefined],
+    ];
+    for (const [key, runId] of cases) {
+      const res = await post(
+        t,
+        { op: "upsertSubAgent", chatId: a.chatId, childSessionKey: key, childRunId: runId, status: "running" },
+        a.secret,
+      );
+      expect(res.status).toBe(200);
+    }
+    for (const [key, , stored] of cases) {
+      const row = await t.run((ctx) =>
+        ctx.db
+          .query("subAgents")
+          .withIndex("by_child", (q) => q.eq("childSessionKey", key))
+          .first(),
+      );
+      expect(row?.childRunId, key).toBe(stored);
+    }
+  });
+
   test("per-turn re-validation honors GROUP scope: a direct grant OUTSIDE the group pool is not proof", async () => {
     // The owner is IN a group whose pool contains only ALPHA; their stale
     // direct userAgents row on BRAVO falls OUTSIDE that pool, and
@@ -780,6 +902,8 @@ describe("cross-gateway ingest isolation (per-write authorization)", () => {
     });
     // Direct grant on bravo… but the user's GROUP pool only contains alpha.
     await grantInstance(t, a.userId, "bravo", "bob");
+    // The turn really went to bravo: only the grants can refuse it now.
+    await sentTurnTo(t, a.chatId, a.userId, "bravo", "bob");
     await t.run(async (ctx) => {
       const groupId = await ctx.db.insert("groups", {
         key: "g1",
@@ -902,6 +1026,8 @@ describe("cross-gateway ingest isolation (per-write authorization)", () => {
         lastSeenAt: 1,
       });
     });
+    // The turn really went to bravo: only the grants can refuse it now.
+    await sentTurnTo(t, a.chatId, a.userId, "bravo", "bob");
     const denied = await post(
       t,
       { op: "setSessionActiveTokens", chatId: a.chatId, activeTokens: 1 },
@@ -949,6 +1075,8 @@ describe("cross-gateway ingest isolation (per-write authorization)", () => {
     ).plaintext;
     await grantInstance(t, a.userId, "bravo", "bob");
     await grantInstance(t, a.userId, "carol", "carl");
+    await sentTurnTo(t, a.chatId, a.userId, "bravo", "bob");
+    await sentTurnTo(t, a.chatId, a.userId, "carol", "carl");
     // Bravo starts ITS turn (stamps the row).
     const start = await post(
       t,
@@ -1009,6 +1137,8 @@ describe("cross-gateway ingest isolation (per-write authorization)", () => {
     });
     await grantInstance(t, a.userId, "bravo", "bob");
     await grantInstance(t, a.userId, "carol", "carl");
+    await sentTurnTo(t, a.chatId, a.userId, "bravo", "bob");
+    await sentTurnTo(t, a.chatId, a.userId, "carol", "carl");
     const bravoInst = await t.run((ctx) =>
       ctx.db.insert("instances", {
         name: "bravo",

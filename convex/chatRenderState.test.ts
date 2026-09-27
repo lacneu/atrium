@@ -57,6 +57,14 @@ describe("normalizeMessageErrorCode (raw gateway text never leaves)", () => {
     // A conversation the gateway no longer has. Countable, so a chat that keeps losing
     // its session is visible instead of folded into the generic stream-error channel.
     expect(normalizeMessageErrorCode("session_gone")).toBe("session_gone");
+    // The gateway refused the send on the session's own rules (visibility, or a
+    // permission mode changed since the reader saw it): named, not "unknown".
+    expect(normalizeMessageErrorCode("session_visibility_refused")).toBe(
+      "session_visibility_refused",
+    );
+    expect(normalizeMessageErrorCode("session_settings_changed")).toBe(
+      "session_settings_changed",
+    );
     expect(normalizeMessageErrorCode("auth_profile_cooldown")).toBe("auth_profile_cooldown");
     expect(normalizeMessageErrorCode("gateway_storage_busy")).toBe("gateway_storage_busy");
     expect(normalizeMessageErrorCode("gateway_storage_unavailable")).toBe(

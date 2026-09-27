@@ -4,8 +4,8 @@
   "catalogue": "event-catalogue.json",
   "counts": {
     "total": 44,
-    "handled": 4,
-    "gap": 23,
+    "handled": 5,
+    "gap": 22,
     "ignored": 17
   },
   "events": {
@@ -158,8 +158,12 @@
       "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
     },
     "session.sharing": {
-      "status": "gap",
-      "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+      "status": "handled",
+      "by": "openclaw-client.ts intake — read by `readSessionSharingKey` (providers/openclaw/session-access.ts) and reported raw to the sharing refresh the session attaches to its connection (`attachSharingRefresh`, models-roster.ts): a notice naming THIS session re-describes it and publishes the meta, so a visibility changed in the Control UI reaches the header without a turn. READ-scoped, delivered without a subscription (not in SESSION_SUBSCRIPTION_EVENTS, v2026.9.6 server-broadcast.ts).",
+      "anchor": {
+        "file": "src/providers/openclaw/session-access.ts",
+        "token": "f.event !== \"session.sharing\""
+      }
     },
     "session.suggestion": {
       "status": "gap",

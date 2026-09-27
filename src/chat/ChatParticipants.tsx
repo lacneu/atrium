@@ -28,12 +28,21 @@ export function avatarToneOf(userId: string): number {
   return h % 8;
 }
 
-export function Avatar({ userId, name }: { userId: string; name: string }) {
+export function Avatar({
+  userId,
+  name,
+  showTitle = true,
+}: {
+  userId: string;
+  name: string;
+  /** False where the caller shows the name itself (the presence strip's label). */
+  showTitle?: boolean;
+}) {
   return (
     <span
       className="oc-avatar"
       data-tone={avatarToneOf(userId)}
-      title={name}
+      title={showTitle ? name : undefined}
       aria-hidden
     >
       {initialsOf(name)}

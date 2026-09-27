@@ -22,8 +22,9 @@ type Ctx = QueryCtx | MutationCtx;
 /**
  * May the bound instance write to this chat? PROVENANCE rule:
  *   (a) primary binding matches, OR
- *   (b) perTurnRouting AND a turn here was routed to the bound instance
- *       (indexed point lookup — never a full-chat scan), re-validated against
+ *   (b) perTurnRouting AND a turn here was SENT to the bound instance (a reply its
+ *       bridge opened, or an outbox row that left for it — in flight or sent;
+ *       indexed point lookups, never a full-chat scan), re-validated against
  *       the owner's CURRENT entitlements via targeted reads, OR
  *   (c) a null-primary chat (legacy, missed by the widen-phase migration):
  *       allowed IFF the bound instance IS what dispatch would resolve for the
@@ -41,13 +42,48 @@ export async function chatAllowsInstance(
   const primary = chat.instanceName ?? null;
   if (primary === boundInstanceName) return true;
   if (chat.perTurnRouting === true) {
-    const routedHere = await ctx.db
+    // PROOF THAT A TURN WAS SENT HERE — never that one was merely ASKED FOR. A routing
+    // stamp is written when a turn is addressed (the user message, a chained reply's
+    // row, a failure card naming its agent), before anything reaches the instance: a
+    // turn queued behind the reply before it, promoted but not past the last gate, or
+    // refused there (its agent taken out of the room) names an instance nothing was
+    // ever sent to, and its bridge must not open a reply here with its own key.
+    // Three witnesses, each an indexed point lookup:
+    //  - a reply the instance's bridge OPENED here (`boundInstance`, validated
+    //    atomically at startAssistant): the turn reached it, whatever became of its
+    //    row — late frames, announces and sub-agent deliveries keep landing;
+    //  - a row the LAST GATE let leave for it (`sentToInstance`), while in flight
+    //    (`pending`: its bridge reads the history and opens the reply before the ack)
+    //    or once `sent`;
+    //  - a row routed there that the gateway ACCEPTED (`sent`) — rows sent before the
+    //    gate stamped them.
+    const opened = await ctx.db
       .query("messages")
-      .withIndex("by_chat_routed_instance", (q) =>
-        q.eq("chatId", chatId).eq("routedInstanceName", boundInstanceName),
+      .withIndex("by_chat_bound_instance", (q) =>
+        q.eq("chatId", chatId).eq("boundInstance", boundInstanceName),
       )
       .first();
-    if (routedHere === null) return false;
+    const sentHere = async (status: "pending" | "sent") =>
+      await ctx.db
+        .query("outbox")
+        .withIndex("by_chat_sent_instance_status", (q) =>
+          q.eq("chatId", chatId).eq("sentToInstance", boundInstanceName).eq("status", status),
+        )
+        .first();
+    const addressedHere =
+      opened ??
+      (await sentHere("pending")) ??
+      (await sentHere("sent")) ??
+      (await ctx.db
+        .query("outbox")
+        .withIndex("by_chat_routed_instance_status", (q) =>
+          q
+            .eq("chatId", chatId)
+            .eq("routedAgent.instanceName", boundInstanceName)
+            .eq("status", "sent"),
+        )
+        .first());
+    if (addressedHere === null) return false;
     // RE-VALIDATE against the owner's CURRENT entitlements: a stamp persisted
     // before route validation existed (or forged via a direct pre-R2
     // sendMessage), and a route whose grant was since REVOKED, are not proof

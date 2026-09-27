@@ -91,3 +91,37 @@ describe("adding lives in the button; removing, in the panel", () => {
     expect(src).not.toMatch(/onManage\("agents", "add-agent"\)/);
   });
 });
+
+describe("the room control reads at a glance", () => {
+  test("no check mark, and no 'selected' agent at all — a row MENTIONS it", () => {
+    const src = read("src/chat/ConvexChat.tsx");
+    expect(src).not.toMatch(/oc-agentrow__check/);
+    // Addressing is by mention: no hidden selection to mark. The row says, on
+    // hover, in words, what a click does.
+    expect(src).not.toMatch(/is-selected|room_agent_is_next/);
+    expect(src).toMatch(/m\.room_agent_mention\(/);
+  });
+
+  test("people who may be invited are offered as soon as the tab opens", () => {
+    const src = read("src/chat/ConvexChat.tsx");
+    expect(src).toMatch(/api\.chatParticipants\.listInvitable,\s*\n\s*manages && open && tab === "people" \? /);
+    expect(src).not.toMatch(/manages && term !== ""/);
+  });
+
+  test("each face of the presence strip carries its name for the hover label", () => {
+    const src = read("src/chat/ConversationPanel.tsx");
+    expect(src.match(/data-name=\{/g)?.length).toBe(2);
+    const css = read("src/chat/chatParticipants.css");
+    // The Dock: every face scales by its own --dock-s (presenceDock.ts), grows upward,
+    // spreads its neighbours, and the most magnified one shows its name.
+    expect(css).toMatch(/\.oc-presence__face \{[^}]*transform: translateX\(var\(--dock-x\)\) scale\(var\(--dock-s\)\)/);
+    // Room is made sideways, never with margins (which slid the face off the cursor).
+    expect(css).not.toMatch(/margin-(left|right): calc\([^)]*var\(--dock-s\)/);
+    expect(css).toMatch(/\.oc-presence__face\.is-focus::after \{\s*opacity: 1;/);
+    expect(css).toMatch(/content: attr\(data-name\)/);
+    const panel = read("src/chat/ConversationPanel.tsx");
+    expect(panel).toMatch(/dockScales\(restCenters\.current\.slice\(0, shown\.length\), pointerX\)/);
+    // One name, not two: the avatar's own native title is off inside the strip.
+    expect(panel).toMatch(/<Avatar userId=\{f\.userId\} name=\{f\.name\} showTitle=\{false\} \/>/);
+  });
+});

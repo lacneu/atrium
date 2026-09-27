@@ -342,3 +342,171 @@ describe("the error card's inputs survive the conversion", () => {
     expect(meta.error).toBe("fetch failed");
   });
 });
+
+// THE DELEGATED REPLIES OF A MERGED HAND-OFF CONTINUATION.
+//
+// A yielded turn's continuation (the gateway's requester-settle run) merges back
+// into the turn's bubble, and `continuationAt` records where its text begins. The
+// delegated agents' own replies render THERE: after what the turn said, before
+// the conclusion — by stored offset, whatever arrived first. Production
+// 2026-09-26 (chat mh74rj7t…): the child's reply surfaced UNDER the conclusion.
+describe("hand-off continuation: delegated replies before the conclusion", () => {
+  type Part = { type: string; text?: string; toolName?: string; args?: unknown };
+  const parts = (m: ConvexMessageView): Part[] =>
+    convertConvexMessage(m).content as unknown as Part[];
+  const shape = (m: ConvexMessageView) =>
+    parts(m).map((p) =>
+      p.type === "text" ? `text:${p.text}` : p.type === "tool-call" ? `call:${p.toolName}` : p.type,
+    );
+
+  it("the production shape: the turn said nothing — replies first, then the conclusion", () => {
+    const m = makeMessage({ text: "C'est fait.", continuationAt: 0 });
+    expect(shape(m)).toEqual(["call:__delegated_reply__", "text:C'est fait."]);
+  });
+
+  it("the turn's own words stay above, the conclusion below", () => {
+    const prefix = "Je délègue le renommage.";
+    const m = makeMessage({
+      text: `${prefix}\n\nC'est fait.`,
+      continuationAt: prefix.length + 2,
+    });
+    expect(shape(m)).toEqual([
+      `text:${prefix}\n\n`,
+      "call:__delegated_reply__",
+      "text:C'est fait.",
+    ]);
+  });
+
+  it("before the conclusion streams, the replies already hold their place", () => {
+    const m = makeMessage({ status: "streaming", text: "", continuationAt: 0 });
+    expect(shape(m)).toEqual(["call:__delegated_reply__"]);
+  });
+
+  it("the continuation's first tool call stays BELOW the replies, even across the whitespace separator", () => {
+    const prefix = "Je délègue.\n";
+    const at = prefix.length + 2;
+    const m = makeMessage({
+      text: `${prefix}\n\nConclusion.`,
+      continuationAt: at,
+      parts: [
+        // The turn's own spawn, anchored at the end of its text (line start).
+        toolPart("sessions_spawn", { phase: "completed", textOffset: prefix.length }),
+        // The continuation's exec, rebased by stream.addPart onto `at`.
+        toolPart("exec", { phase: "completed", textOffset: at }),
+      ],
+    });
+    const out = parts(m);
+    const idx = (pred: (p: Part) => boolean) => out.findIndex(pred);
+    const replies = idx((p) => p.toolName === "__delegated_reply__");
+    const spawnGroup = idx(
+      (p) =>
+        p.toolName === "__turn_flow__" &&
+        JSON.stringify(p.args).includes("sessions_spawn"),
+    );
+    const execGroup = idx(
+      (p) => p.toolName === "__turn_flow__" && JSON.stringify(p.args).includes('"exec"'),
+    );
+    const conclusion = idx((p) => p.type === "text" && p.text === "Conclusion.");
+    expect(spawnGroup).toBeGreaterThanOrEqual(0);
+    expect(spawnGroup).toBeLessThan(replies);
+    expect(replies).toBeLessThan(execGroup);
+    expect(execGroup).toBeLessThan(conclusion);
+  });
+
+  it("an ordinary bubble carries no replies part", () => {
+    expect(shape(makeMessage({ text: "Réponse." }))).toEqual(["text:Réponse."]);
+    expect(customMeta(makeMessage({ text: "x" })).continuationAt).toBeNull();
+  });
+});
+
+// ONE POSITION PER CONTINUATION (codex pass 2, P2). A continuation can delegate and
+// yield again; its child's reply belongs before ITS conclusion. With a single offset
+// it rendered above the very text that asked for it.
+describe("several continuations: each batch's replies before its own conclusion", () => {
+  type Part = { type: string; text?: string; toolName?: string; toolCallId?: string; args?: any };
+  const parts = (m: ConvexMessageView): Part[] =>
+    convertConvexMessage(m).content as unknown as Part[];
+  const shape = (m: ConvexMessageView) =>
+    parts(m).map((p) =>
+      p.type === "text"
+        ? `text:${p.text}`
+        : p.toolName === "__delegated_reply__"
+          ? `replies:${p.args?.slot?.kind === "batch" ? p.args.slot.childRunIds.join(",") : (p.args?.slot?.kind ?? "all")}`
+          : `call:${p.toolName}`,
+    );
+  const first = "Première conclusion.";
+
+  it("the second batch sits after the first conclusion, before the second", () => {
+    const m = makeMessage({
+      text: `${first}\n\nSeconde conclusion.`,
+      continuations: [
+        { at: 0, childRunIds: ["run-1"] },
+        { at: first.length + 2, childRunIds: ["run-2"] },
+      ],
+    });
+    expect(shape(m)).toEqual([
+      "replies:run-1",
+      `text:${first}\n\n`,
+      "replies:run-2",
+      "text:Seconde conclusion.",
+      "replies:rest",
+    ]);
+  });
+
+  it("children no continuation claimed yet wait AFTER the text — where the next one will start", () => {
+    const m = makeMessage({
+      text: first,
+      continuations: [{ at: 0, childRunIds: ["run-1"] }],
+    });
+    const out = parts(m);
+    expect(shape(m)).toEqual(["replies:run-1", `text:${first}`, "replies:rest"]);
+    expect(out.at(-1)?.args?.slot).toEqual({ kind: "rest", claimed: ["run-1"] });
+  });
+
+  it("a row whose FIRST merge predates the list keeps it: unclaimed replies stay at continuationAt", () => {
+    const m = makeMessage({
+      text: `${first}\n\nSeconde conclusion.`,
+      continuationAt: 0,
+      continuations: [{ at: first.length + 2, childRunIds: ["run-2"] }],
+    });
+    expect(shape(m)).toEqual([
+      "replies:rest",
+      `text:${first}\n\n`,
+      "replies:run-2",
+      "text:Seconde conclusion.",
+    ]);
+  });
+
+  it("each part keeps a stable identity, the legacy one unchanged", () => {
+    const ids = (m: ConvexMessageView) =>
+      parts(m).filter((p) => p.toolName === "__delegated_reply__").map((p) => p.toolCallId);
+    expect(ids(makeMessage({ text: "x", continuationAt: 0 }))).toEqual(["delegated:msg1"]);
+    expect(
+      ids(makeMessage({ text: "x", continuations: [{ at: 0, childRunIds: ["a"] }] })),
+    ).toEqual(["delegated:msg1:0", "delegated:msg1:rest"]);
+  });
+
+  it("each continuation's own tool call stays below its replies", () => {
+    const at = first.length + 2;
+    const m = makeMessage({
+      text: `${first}\n\nSeconde.`,
+      continuations: [
+        { at: 0, childRunIds: ["run-1"] },
+        { at, childRunIds: ["run-2"] },
+      ],
+      parts: [toolPart("exec", { phase: "completed", textOffset: at })],
+    });
+    const s = shape(m);
+    expect(s.indexOf("replies:run-2")).toBeLessThan(s.indexOf("call:__turn_flow__"));
+    expect(s.indexOf("call:__turn_flow__")).toBeLessThan(s.indexOf("text:Seconde."));
+  });
+
+  it("the empty state is told a continuation bubble holds its replies inline", () => {
+    expect(customMeta(makeMessage({ text: "x" })).hasContinuation).toBe(false);
+    expect(customMeta(makeMessage({ text: "x", continuationAt: 0 })).hasContinuation).toBe(true);
+    expect(
+      customMeta(makeMessage({ text: "x", continuations: [{ at: 0, childRunIds: ["a"] }] }))
+        .hasContinuation,
+    ).toBe(true);
+  });
+});

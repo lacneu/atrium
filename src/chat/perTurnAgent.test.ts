@@ -4,20 +4,21 @@ import {
   agentRefEquals,
   resolveImportedAgentLabels,
   findAgentDisplay,
-  isFirstTurn,
   lastRoutedAgent,
   resolveAgentSelectorGate,
   resolveDefaultSelection,
   resolveEffectiveSelection,
   resolveMessageAgents,
-  resolveRoutedAgentToSend,
+  resolveTurnRoute,
   type AgentRef,
   type RoutableMessage,
   type SelectableAgent,
   orderComposerAgents,
-  agentRowMeta,
+  homonymAgentKeys,
+  mayRemoveRoomAgent,
   withRoomRoster,
   presenceRoster,
+  roomTargets,
 } from "./perTurnAgent";
 
 const ref = (instanceName: string, agentId: string): AgentRef => ({
@@ -201,97 +202,42 @@ describe("resolveDefaultSelection (default filtered against the current pool)", 
   });
 });
 
-describe("resolveRoutedAgentToSend (single-agent-path rule)", () => {
+describe("resolveTurnRoute — addressing by mention, else the primary", () => {
   const alice = ref("prod", "alice"); // primary
-  const bob = ref("prod", "bob"); // a different specialist
+  const bob = ref("prod", "bob");
+  const carol = ref("prod", "carol");
+  const base = {
+    mentioned: [] as AgentRef[],
+    primary: alice,
+    severalAgents: true,
+    perTurnRouting: false,
+    canRoute: true,
+  };
 
-  test("no selection → undefined (unchanged path)", () => {
-    expect(
-      resolveRoutedAgentToSend({
-        selected: null,
-        primary: alice,
-        perTurnRouting: false,
-        isFirstTurn: false,
-        canRoute: true,
-      }),
-    ).toBeUndefined();
-  });
-
-  test("very first turn → undefined even when the selection differs from primary", () => {
-    expect(
-      resolveRoutedAgentToSend({
-        selected: bob,
-        primary: alice,
-        perTurnRouting: false,
-        isFirstTurn: true,
-        canRoute: true,
-      }),
-    ).toBeUndefined();
+  test("mentioned agents → the FIRST one, in text order", () => {
+    expect(resolveTurnRoute({ ...base, mentioned: [bob, carol] })).toEqual(bob);
+    expect(resolveTurnRoute({ ...base, mentioned: [carol, bob] })).toEqual(carol);
   });
 
-  test("selection === primary on a single-agent chat → undefined (no routedAgent)", () => {
-    expect(
-      resolveRoutedAgentToSend({
-        selected: alice,
-        primary: alice,
-        perTurnRouting: false,
-        isFirstTurn: false,
-        canRoute: true,
-      }),
-    ).toBeUndefined();
+  test("nothing mentioned in a room of several → the PRIMARY, never the last agent used", () => {
+    expect(resolveTurnRoute(base)).toEqual(alice);
+    expect(resolveTurnRoute({ ...base, severalAgents: false, perTurnRouting: true })).toEqual(
+      alice,
+    );
   });
 
-  test("selection !== primary on a single-agent chat → routes (flips to multi)", () => {
-    expect(
-      resolveRoutedAgentToSend({
-        selected: bob,
-        primary: alice,
-        perTurnRouting: false,
-        isFirstTurn: false,
-        canRoute: true,
-      }),
-    ).toEqual(bob);
+  test("a single-agent room not yet routed per turn → the unchanged path", () => {
+    expect(resolveTurnRoute({ ...base, severalAgents: false })).toBeUndefined();
   });
 
-  test("already perTurnRouting → ALWAYS stamps, even when selection === primary", () => {
-    expect(
-      resolveRoutedAgentToSend({
-        selected: alice,
-        primary: alice,
-        perTurnRouting: true,
-        isFirstTurn: false,
-        canRoute: true,
-      }),
-    ).toEqual(alice);
+  test("(P2-C) a single-agent user never routes, mention or not", () => {
+    expect(resolveTurnRoute({ ...base, canRoute: false })).toBeUndefined();
+    expect(resolveTurnRoute({ ...base, canRoute: false, mentioned: [bob] })).toBeUndefined();
   });
 
-  test("(P2-C) canRoute false (single-agent user) → undefined even if a selection differs from a null primary", () => {
-    // The single-agent-user shape: lone pool agent selected, primary null. Without
-    // the canRoute guard this would stamp (bob !== null) and implicitly route.
-    expect(
-      resolveRoutedAgentToSend({
-        selected: bob,
-        primary: null,
-        perTurnRouting: false,
-        isFirstTurn: false,
-        canRoute: false,
-      }),
-    ).toBeUndefined();
-  });
-});
-
-describe("isFirstTurn (loading-aware first-turn detection)", () => {
-  test("messages LOADING (undefined) → NOT first turn (don't suppress routing)", () => {
-    expect(isFirstTurn(undefined)).toBe(false);
-  });
-  test("messages loaded EMPTY ([]) → first turn (a genuinely new chat)", () => {
-    expect(isFirstTurn([])).toBe(true);
-  });
-  test("messages with a user turn → not first turn", () => {
-    expect(isFirstTurn([msg("u1", "user"), msg("a1", "assistant")])).toBe(false);
-  });
-  test("assistant-only (no user turn yet) → still first turn", () => {
-    expect(isFirstTurn([msg("a1", "assistant")])).toBe(true);
+  test("no primary known → nothing to route to without a mention", () => {
+    expect(resolveTurnRoute({ ...base, primary: null })).toBeUndefined();
+    expect(resolveTurnRoute({ ...base, primary: null, mentioned: [bob] })).toEqual(bob);
   });
 });
 
@@ -415,13 +361,12 @@ describe("resolveEffectiveSelection (canRoute gate + loading preservation)", () 
 // The escape hatch (production report, 2026-07-31). A chat opened on an agent whose
 // gateway was down had NO way back: the composer greyed out and took the agent
 // selector with it, so the conversation could only be deleted. What is pinned below
-// is that neither of the two "you cannot send" conditions may close the one control
-// that changes WHERE the send goes.
+// is that the "you cannot send there" condition never closes the one control that
+// changes WHERE the send goes — and that the control only ever picks the NEXT
+// message's agent, never the conversation's primary.
 describe("resolveAgentSelectorGate", () => {
   const gate = (o: Partial<Parameters<typeof resolveAgentSelectorGate>[0]>) =>
     resolveAgentSelectorGate({
-      hasUserTurn: false,
-      emptyThread: false,
       unavailable: false,
       readOnly: false,
       multiAgent: true,
@@ -430,66 +375,32 @@ describe("resolveAgentSelectorGate", () => {
     });
 
   test("an UNREACHABLE gateway does not close the selector — it is the way out", () => {
-    expect(gate({ hasUserTurn: true, unavailable: true })).toEqual({
+    expect(gate({ unavailable: true })).toEqual({ hidden: false, disabled: false });
+  });
+
+  test("no mode: a pick is always the next message's agent, never a rebind", () => {
+    // The composer once rebound an empty chat on a pick. The primary is the
+    // conversation panel's now (chatAgents.setPrimaryAgent): the verdict carries no
+    // second meaning for a click.
+    expect(Object.keys(gate({})).sort()).toEqual(["disabled", "hidden"]);
+  });
+
+  test("a read-only chat stays closed, and says why", () => {
+    // Read-only is computed from the chat's binding: a pick would lift nothing.
+    expect(gate({ readOnly: true })).toEqual({
       hidden: false,
-      disabled: false,
-      mode: "route",
+      disabled: true,
+      reason: "read-only",
     });
-  });
-
-  test("a brand-new chat on an unreachable gateway can still change agent", () => {
-    // The reported case, exactly: zero messages, target down. Both locks at once.
-    expect(gate({ emptyThread: true, unavailable: true })).toEqual({
-      hidden: false,
-      disabled: false,
-      mode: "rebind",
-    });
-  });
-
-  test("an EMPTY thread rebinds — it does NOT make a per-turn pick", () => {
-    // Turn 1 goes to the chat's binding whatever the selector shows
-    // (resolveRoutedAgentToSend returns undefined on the first turn), so a `route`
-    // mode here would light up a control that changes nothing and let the send land
-    // on the agent the user just moved away from.
-    expect(gate({ emptyThread: true }).mode).toBe("rebind");
-  });
-
-  test("a started conversation ROUTES — it does not rewrite its own binding", () => {
-    expect(gate({ hasUserTurn: true }).mode).toBe("route");
-  });
-
-  test("a read-only chat WITH turns stays closed (a pick would lift nothing)", () => {
-    // Known gap, stated rather than papered over: read-only is computed from the
-    // chat's binding, so a per-turn pick leaves the composer locked.
-    expect(gate({ hasUserTurn: true, readOnly: true }).disabled).toBe(true);
-  });
-
-  test("an empty read-only chat CAN be rebound — that is what lifts the lock", () => {
-    expect(gate({ emptyThread: true, readOnly: true })).toEqual({
-      hidden: false,
-      disabled: false,
-      mode: "rebind",
-    });
-  });
-
-  test("assistant-only (announce, no user turn) stays closed", () => {
-    // Pre-existing gap: a rebind could re-attribute messages carrying no routing
-    // stamp. Asserted so that widening it later is a DECISION, not a slip.
-    expect(gate({ hasUserTurn: false, emptyThread: false }).disabled).toBe(true);
   });
 });
 
 // What the pure gate could not see until it owned the render decision. The first
 // version of this feature let the COMPONENT hide itself on `multiAgent`, and that
-// check silently discarded a gate that said "enabled" — so an empty chat locked
-// read-only on a revoked binding, for a user narrowed to ONE agent, still had no way
-// out. Found by cross-provider review, not by these tests, which is why the decision
-// now lives here.
+// check silently discarded a gate that said "enabled". The decision lives here.
 describe("resolveAgentSelectorGate — when the control is rendered at all", () => {
   const gate = (o: Partial<Parameters<typeof resolveAgentSelectorGate>[0]>) =>
     resolveAgentSelectorGate({
-      hasUserTurn: false,
-      emptyThread: false,
       unavailable: false,
       readOnly: false,
       multiAgent: true,
@@ -497,43 +408,23 @@ describe("resolveAgentSelectorGate — when the control is rendered at all", () 
       ...o,
     });
 
-  test("a SINGLE-agent user can still move an empty read-only chat off its binding", () => {
-    // The reported dead end: an admin narrows someone to one agent, their empty chat
-    // locks on the old binding, and a `multiAgent` self-hide would render nothing.
-    expect(
-      gate({ emptyThread: true, readOnly: true, multiAgent: false, poolSize: 1 }),
-    ).toEqual({ hidden: false, disabled: false, mode: "rebind" });
-  });
-
-  test("a single-agent user gets NO selector on a started conversation", () => {
-    // There, it really would be a pick between agents — and there is only one.
-    expect(gate({ hasUserTurn: true, multiAgent: false, poolSize: 1 }).hidden).toBe(
-      true,
-    );
+  test("a single-agent user gets NO selector — there is only one agent to pick", () => {
+    expect(gate({ multiAgent: false, poolSize: 1 }).hidden).toBe(true);
+    // …an empty read-only chat included: moving it off its binding is the owner's,
+    // in the conversation panel, not a pick in the composer.
+    expect(gate({ multiAgent: false, poolSize: 1, readOnly: true }).hidden).toBe(true);
   });
 
   test("a pool of only DELETED agents renders nothing", () => {
     // `poolSize` counts SELECTABLE agents. Counting rows instead would light the
     // escape hatch up over a picker whose every option is disabled.
-    expect(gate({ emptyThread: true, multiAgent: false, poolSize: 0 }).hidden).toBe(
-      true,
-    );
+    expect(gate({ multiAgent: false, poolSize: 0 }).hidden).toBe(true);
+    expect(gate({ poolSize: 0 }).hidden).toBe(true);
   });
 
-  test("an EMPTY pool renders nothing — there is nothing to offer", () => {
-    expect(gate({ emptyThread: true, multiAgent: false, poolSize: 0 }).hidden).toBe(
-      true,
-    );
-  });
-
-  test("a closed control is not rendered as a dead chip", () => {
-    // Announce-only thread, single-agent user: no mode is usable, so nothing shows.
-    expect(gate({ multiAgent: false, poolSize: 1 }).hidden).toBe(true);
-  });
-
-  test("a multi-agent user keeps the selector in every usable mode", () => {
-    expect(gate({ hasUserTurn: true }).hidden).toBe(false);
-    expect(gate({ emptyThread: true }).hidden).toBe(false);
+  test("a multi-agent user keeps the selector", () => {
+    expect(gate({}).hidden).toBe(false);
+    expect(gate({ readOnly: true }).hidden).toBe(false);
   });
 });
 
@@ -602,8 +493,6 @@ describe("the agent is frozen while a voice call is in progress", () => {
   // OpenClaw 2026.9.5 default) it would end the call outright, since the bridge keeps
   // one live socket per chat and re-keying it closes the one the call is bound to.
   const base = {
-    hasUserTurn: true,
-    emptyThread: false,
     unavailable: false,
     readOnly: false,
     multiAgent: true,
@@ -614,7 +503,6 @@ describe("the agent is frozen while a voice call is in progress", () => {
     expect(resolveAgentSelectorGate({ ...base, callActive: true })).toEqual({
       hidden: false,
       disabled: true,
-      mode: "route",
       reason: "call-active",
       onCall: null,
     });
@@ -641,24 +529,17 @@ describe("the agent is frozen while a voice call is in progress", () => {
     expect(resolveAgentSelectorGate({ ...base, callActive: true }).hidden).toBe(false);
   });
 
-  test("outranks every other verdict, including the one that would OPEN it", () => {
-    // An empty thread normally opens the control in `rebind` mode. A call on an empty
-    // thread is possible (the voice button does not need a typed turn), and a rebind
-    // during a call is exactly what must not happen.
-    const onEmpty = resolveAgentSelectorGate({
-      ...base,
-      hasUserTurn: false,
-      emptyThread: true,
-      callActive: true,
-    });
-    expect(onEmpty.disabled).toBe(true);
-    expect(onEmpty.mode).toBe("route");
-    expect(onEmpty.reason).toBe("call-active");
+  test("outranks every other verdict, read-only included", () => {
+    // The call is the reason the reader can act on (hang up); naming read-only
+    // instead would send them looking for the wrong cause.
+    const both = resolveAgentSelectorGate({ ...base, readOnly: true, callActive: true });
+    expect(both.disabled).toBe(true);
+    expect(both.reason).toBe("call-active");
   });
 
   test("changes nothing when no call is up", () => {
     const off = resolveAgentSelectorGate({ ...base, callActive: false });
-    expect(off).toEqual({ hidden: false, disabled: false, mode: "route" });
+    expect(off).toEqual({ hidden: false, disabled: false });
     // …and the flag is optional: every existing caller keeps its verdict.
     expect(resolveAgentSelectorGate(base)).toEqual(off);
   });
@@ -670,53 +551,24 @@ describe("the agent is frozen while a voice call is in progress", () => {
   });
 });
 
-describe("a guest picks between the room's agents from the first turn", () => {
+describe("everyone picks between the agents from the first turn", () => {
   const a = { instanceName: "alpha", agentId: "alice" };
   const b = { instanceName: "alpha", agentId: "bob" };
-  test("the selector ROUTES on an empty thread — re-binding is the owner's", () => {
-    const gate = resolveAgentSelectorGate({
-      hasUserTurn: false,
-      emptyThread: true,
-      unavailable: false,
-      readOnly: false,
-      multiAgent: true,
-      poolSize: 2,
-      guest: true,
-    });
-    expect(gate).toMatchObject({ hidden: false, disabled: false, mode: "route" });
-    // The owner, same thread: re-binds, as before.
+  test("the selector is open on an empty thread — for the owner as for a guest", () => {
     expect(
       resolveAgentSelectorGate({
-        hasUserTurn: false,
-        emptyThread: true,
         unavailable: false,
         readOnly: false,
         multiAgent: true,
         poolSize: 2,
-      }).mode,
-    ).toBe("rebind");
+      }),
+    ).toEqual({ hidden: false, disabled: false });
   });
 
-  test("the pick is sent on turn 1", () => {
-    expect(
-      resolveRoutedAgentToSend({
-        selected: b,
-        primary: a,
-        perTurnRouting: false,
-        isFirstTurn: true,
-        canRoute: true,
-        guest: true,
-      }),
-    ).toEqual(b);
-    expect(
-      resolveRoutedAgentToSend({
-        selected: b,
-        primary: a,
-        perTurnRouting: false,
-        isFirstTurn: true,
-        canRoute: true,
-      }),
-    ).toBeUndefined();
+  test("turn 1 goes where the text says: the mentioned agent, else the primary", () => {
+    const route = { primary: a, severalAgents: true, perTurnRouting: false, canRoute: true };
+    expect(resolveTurnRoute({ ...route, mentioned: [b] })).toEqual(b);
+    expect(resolveTurnRoute({ ...route, mentioned: [] })).toEqual(a);
   });
 });
 
@@ -764,11 +616,65 @@ describe("the composer picker reads as one list", () => {
     expect(others.map((a) => a.agentId)).toEqual(["zed", "alice"]);
   });
 
-  test("the instance joins the meta only when asked", () => {
-    const a = { instanceName: "lt-inst-0", agentId: "a", model: "openai/gpt-5.5" };
-    expect(agentRowMeta(a, false)).toBe("openai/gpt-5.5");
-    expect(agentRowMeta(a, true)).toBe("openai/gpt-5.5 · lt-inst-0");
-    expect(agentRowMeta({ ...a, model: null }, true)).toBe("lt-inst-0");
+});
+
+// The composer's list shows NO technical detail — the model and the instance live in
+// the conversation panel. The one exception is correctness: two agents of the same
+// name on two gateways must still read as two.
+describe("homonymAgentKeys — which rows need their instance", () => {
+  const ag = (instanceName: string, agentId: string, displayName: string | null) => ({
+    instanceName,
+    agentId,
+    displayName,
+  });
+
+  test("only the agents whose name another listed agent bears", () => {
+    const keys = homonymAgentKeys([
+      ag("olivier", "alice", "Alice"),
+      ag("jerome", "alice", "Alice"),
+      ag("olivier", "bob", "Bob"),
+    ]);
+    expect([...keys].sort()).toEqual(["jerome\u0000alice", "olivier\u0000alice"]);
+  });
+
+  test("names compare as they read: case, spaces, and the id when unnamed", () => {
+    const keys = homonymAgentKeys([
+      ag("a", "x1", " Nova "),
+      ag("b", "x2", "nova"),
+      ag("a", "carl", null),
+      ag("b", "c9", "Carl"),
+    ]);
+    expect(keys.size).toBe(4);
+  });
+
+  test("the same agent listed twice is not its own homonym", () => {
+    const a = ag("olivier", "alice", "Alice");
+    expect(homonymAgentKeys([a, { ...a }]).size).toBe(0);
+  });
+
+  test("nobody shares a name: nothing is disambiguated", () => {
+    expect(homonymAgentKeys([ag("a", "x", "X"), ag("b", "y", "Y")]).size).toBe(0);
+  });
+});
+
+describe("mayRemoveRoomAgent — the composer's quick removal", () => {
+  const primary = ref("i", "alice");
+  const added = [ref("i", "bob")];
+
+  test("an ADDED agent, by whoever manages the room", () => {
+    expect(mayRemoveRoomAgent("owner", ref("i", "bob"), primary, added)).toBe(true);
+    expect(mayRemoveRoomAgent("manager", ref("i", "bob"), primary, added)).toBe(true);
+  });
+
+  test("never the primary — it changes through the panel's Make primary", () => {
+    expect(mayRemoveRoomAgent("owner", primary, primary, [...added, primary])).toBe(false);
+  });
+
+  test("never an agent outside the room, never by a member or a viewer", () => {
+    expect(mayRemoveRoomAgent("owner", ref("i", "carol"), primary, added)).toBe(false);
+    expect(mayRemoveRoomAgent("member", ref("i", "bob"), primary, added)).toBe(false);
+    expect(mayRemoveRoomAgent("viewer", ref("i", "bob"), primary, added)).toBe(false);
+    expect(mayRemoveRoomAgent(undefined, ref("i", "bob"), primary, added)).toBe(false);
   });
 });
 
@@ -805,5 +711,17 @@ describe("presenceRoster — the strip counts what the room control counts", () 
   test("alone with one agent is not a room", () => {
     expect(presenceRoster([owner], ["alice"])).toBeNull();
     expect(presenceRoster([owner], ["alice", "bob"])?.people).toEqual([owner]);
+  });
+});
+
+describe("roomTargets — only the conversation's agents can be addressed", () => {
+  const a = { instanceName: "olivier", agentId: "alice" };
+  const b = { instanceName: "jerome", agentId: "bob" };
+  const c = { instanceName: "lt-inst-0", agentId: "bench-0" };
+  test("an agent outside the room is not a target", () => {
+    expect(roomTargets([a, b, c], [a, b])).toEqual([a, b]);
+  });
+  test("the room not known yet: nothing is filtered away", () => {
+    expect(roomTargets([a, c], null)).toEqual([a, c]);
   });
 });

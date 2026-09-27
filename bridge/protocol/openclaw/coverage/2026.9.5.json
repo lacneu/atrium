@@ -113,8 +113,20 @@
           "why": "NEW at 2026.8.1: agent creation timestamp. Not surfaced by Atrium's agent list."
         },
         "defaultPermissionMode": {
-          "status": "ignored",
-          "why": "NEW at 2026.8.1: default session permission mode for the agent. Permission policy is gateway-side; Atrium neither reads nor overrides it."
+          "status": "handled",
+          "by": "server.ts normalizeOpenClawAgent -> NormalizedAgent.defaultPermissionMode (null when upstream omits it: sandbox, non-canonical exec policy); Convex keeps it per discovered agent and shows it as the session's mode when the session sets none.",
+          "anchor": {
+            "file": "src/server.ts",
+            "token": "o.defaultPermissionMode"
+          },
+          "proof": {
+            "kind": "deterministic-test",
+            "ref": "bridge/test/session-access.test.ts",
+            "note": "Shape read in the v2026.9.6 sources (session-utils-row.ts materializeSessionRow, session-row-presentation.ts viewer(), sessions-row.ts / sessions-sharing-values.ts schemas) AND captured live on the 2026.9.6 bench (openclaw-notes bench-runs/session-access-2026-09-26: describe fields unset/set, agents.list defaultPermissionMode, session.sharing.evidence heard, expectedPermissionMode refusal text), replayed by the deterministic test and proven by neutralization. No full-catalogue scenario covers it yet: golden-corpus proof stays owed."
+          },
+          "verifiedVersions": [
+            "2026.9.6"
+          ]
         },
         "utilityModel": {
           "status": "gap",
@@ -767,8 +779,20 @@
           "why": "NEW at 2026.8.1. Optional client-sent marker (`{kind:'session-goal-start', version:1, issuedAtMs}`) that makes the gateway stamp `__openclaw.intent` on the transcript message for its session-GOAL feature. Atrium has no goal concept: it never sends `intent`, and it never reads `__openclaw` message metadata. Being optional, omitting it changes no gateway behaviour for a normal send."
         },
         "expectedPermissionMode": {
-          "status": "ignored",
-          "why": "NEW at 2026.8.2. OPTIONAL optimistic-concurrency guard on chat.send (verified `Type.Optional`, so Atrium's existing sends are NOT rejected), alongside expectedSessionId / expectedLifecycleRevision / expectedToolOverrides. Atrium sends no `expected*` guard and does not manage a session permission mode — that is gateway-side configuration."
+          "status": "handled",
+          "by": "server.ts performSend: the mode the READER was shown (SendBody.expectedPermissionMode, from Convex) rides chat.send from EXPECTED_PERMISSION_MODE_SINCE (2026.8.2, the first vendored ChatSendParams carrying it — the params object is closed); a mode changed since fails the send before anything runs (session_settings_changed).",
+          "anchor": {
+            "file": "src/server.ts",
+            "token": "params.expectedPermissionMode"
+          },
+          "proof": {
+            "kind": "deterministic-test",
+            "ref": "bridge/test/session-access.test.ts",
+            "note": "Shape read in the v2026.9.6 sources (session-utils-row.ts materializeSessionRow, session-row-presentation.ts viewer(), sessions-row.ts / sessions-sharing-values.ts schemas) AND captured live on the 2026.9.6 bench (openclaw-notes bench-runs/session-access-2026-09-26: describe fields unset/set, agents.list defaultPermissionMode, session.sharing.evidence heard, expectedPermissionMode refusal text), replayed by the deterministic test and proven by neutralization. No full-catalogue scenario covers it yet: golden-corpus proof stays owed."
+          },
+          "verifiedVersions": [
+            "2026.9.6"
+          ]
         },
         "expectedToolOverrides": {
           "status": "ignored",
@@ -4174,8 +4198,20 @@
           "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
         },
         "sharingRole": {
-          "status": "gap",
-          "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+          "status": "handled",
+          "by": "providers/openclaw/session-access.ts readSessionAccess -> SessionMetaReport.sharingRole: the READER's role on the session as the gateway projects it for this connection (session-row-presentation.ts viewer()); shown, never enforced by Atrium.",
+          "anchor": {
+            "file": "src/providers/openclaw/session-access.ts",
+            "token": "sess.sharingRole"
+          },
+          "proof": {
+            "kind": "deterministic-test",
+            "ref": "bridge/test/session-access.test.ts",
+            "note": "Shape read in the v2026.9.6 sources (session-utils-row.ts materializeSessionRow, session-row-presentation.ts viewer(), sessions-row.ts / sessions-sharing-values.ts schemas) AND captured live on the 2026.9.6 bench (openclaw-notes bench-runs/session-access-2026-09-26: describe fields unset/set, agents.list defaultPermissionMode, session.sharing.evidence heard, expectedPermissionMode refusal text), replayed by the deterministic test and proven by neutralization. No full-catalogue scenario covers it yet: golden-corpus proof stays owed."
+          },
+          "verifiedVersions": [
+            "2026.9.6"
+          ]
         },
         "spawnDepth": {
           "status": "gap",
@@ -4226,8 +4262,20 @@
           "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
         },
         "visibility": {
-          "status": "gap",
-          "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+          "status": "handled",
+          "by": "providers/openclaw/session-access.ts readSessionAccess -> SessionMetaReport.visibility (published with the session meta on every describe, and on a session.sharing notice): SHOWN in the conversation header, never enforced by Atrium — the gateway enforces it.",
+          "anchor": {
+            "file": "src/providers/openclaw/session-access.ts",
+            "token": "sess.visibility"
+          },
+          "proof": {
+            "kind": "deterministic-test",
+            "ref": "bridge/test/session-access.test.ts",
+            "note": "Shape read in the v2026.9.6 sources (session-utils-row.ts materializeSessionRow, session-row-presentation.ts viewer(), sessions-row.ts / sessions-sharing-values.ts schemas) AND captured live on the 2026.9.6 bench (openclaw-notes bench-runs/session-access-2026-09-26: describe fields unset/set, agents.list defaultPermissionMode, session.sharing.evidence heard, expectedPermissionMode refusal text), replayed by the deterministic test and proven by neutralization. No full-catalogue scenario covers it yet: golden-corpus proof stays owed."
+          },
+          "verifiedVersions": [
+            "2026.9.6"
+          ]
         },
         "worktree": {
           "status": "gap",
@@ -4278,12 +4326,36 @@
           "why": "Session-row field carried by the 2026.8.1 event snapshot. VERIFIED not read anywhere in bridge/src or convex: Atrium's chat state is Convex-authoritative, and the drift detector is observe-only (unknown fields keep flowing), so an unread row field changes no behaviour."
         },
         "permissionMode": {
-          "status": "ignored",
-          "why": "Session-row field carried by the 2026.8.1 event snapshot. VERIFIED not read anywhere in bridge/src or convex: Atrium's chat state is Convex-authoritative, and the drift detector is observe-only (unknown fields keep flowing), so an unread row field changes no behaviour."
+          "status": "handled",
+          "by": "providers/openclaw/session-access.ts readSessionAccess -> SessionMetaReport.permissionMode (null = the session sets none, told apart from 'not reported' by permissionModePending): shown in the header, and sent back as chat.send.expectedPermissionMode by Convex.",
+          "anchor": {
+            "file": "src/providers/openclaw/session-access.ts",
+            "token": "sess.permissionMode"
+          },
+          "proof": {
+            "kind": "deterministic-test",
+            "ref": "bridge/test/session-access.test.ts",
+            "note": "Shape read in the v2026.9.6 sources (session-utils-row.ts materializeSessionRow, session-row-presentation.ts viewer(), sessions-row.ts / sessions-sharing-values.ts schemas) AND captured live on the 2026.9.6 bench (openclaw-notes bench-runs/session-access-2026-09-26: describe fields unset/set, agents.list defaultPermissionMode, session.sharing.evidence heard, expectedPermissionMode refusal text), replayed by the deterministic test and proven by neutralization. No full-catalogue scenario covers it yet: golden-corpus proof stays owed."
+          },
+          "verifiedVersions": [
+            "2026.9.6"
+          ]
         },
         "sessionRoot": {
-          "status": "ignored",
-          "why": "Session-row field carried by the 2026.8.1 event snapshot. VERIFIED not read anywhere in bridge/src or convex: Atrium's chat state is Convex-authoritative, and the drift detector is observe-only (unknown fields keep flowing), so an unread row field changes no behaviour."
+          "status": "handled",
+          "by": "providers/openclaw/session-access.ts readSessionAccess -> SessionMetaReport.sessionRoot: the working root a set mode confines file access to; shown beside the mode.",
+          "anchor": {
+            "file": "src/providers/openclaw/session-access.ts",
+            "token": "sess.sessionRoot"
+          },
+          "proof": {
+            "kind": "deterministic-test",
+            "ref": "bridge/test/session-access.test.ts",
+            "note": "Shape read in the v2026.9.6 sources (session-utils-row.ts materializeSessionRow, session-row-presentation.ts viewer(), sessions-row.ts / sessions-sharing-values.ts schemas) AND captured live on the 2026.9.6 bench (openclaw-notes bench-runs/session-access-2026-09-26: describe fields unset/set, agents.list defaultPermissionMode, session.sharing.evidence heard, expectedPermissionMode refusal text), replayed by the deterministic test and proven by neutralization. No full-catalogue scenario covers it yet: golden-corpus proof stays owed."
+          },
+          "verifiedVersions": [
+            "2026.9.6"
+          ]
         },
         "owner": {
           "status": "ignored",
@@ -4306,8 +4378,20 @@
           "why": "Session-row field carried by the 2026.8.1 event snapshot. VERIFIED not read anywhere in bridge/src or convex: Atrium's chat state is Convex-authoritative, and the drift detector is observe-only (unknown fields keep flowing), so an unread row field changes no behaviour."
         },
         "permissionModePending": {
-          "status": "ignored",
-          "why": "NEW at 2026.8.2: a pending permission-mode change on the session row, carried by the event snapshot. Not read by Atrium (same as permissionMode itself): permission policy is gateway-side configuration, and the drift detector is observe-only so an unread row field changes no behaviour."
+          "status": "handled",
+          "by": "providers/openclaw/session-access.ts readSessionAccess: the flag both marks a change in progress (shown) and tells an UNSET mode (row projects permissions, no mode) from an unreported one.",
+          "anchor": {
+            "file": "src/providers/openclaw/session-access.ts",
+            "token": "sess.permissionModePending"
+          },
+          "proof": {
+            "kind": "deterministic-test",
+            "ref": "bridge/test/session-access.test.ts",
+            "note": "Shape read in the v2026.9.6 sources (session-utils-row.ts materializeSessionRow, session-row-presentation.ts viewer(), sessions-row.ts / sessions-sharing-values.ts schemas) AND captured live on the 2026.9.6 bench (openclaw-notes bench-runs/session-access-2026-09-26: describe fields unset/set, agents.list defaultPermissionMode, session.sharing.evidence heard, expectedPermissionMode refusal text), replayed by the deterministic test and proven by neutralization. No full-catalogue scenario covers it yet: golden-corpus proof stays owed."
+          },
+          "verifiedVersions": [
+            "2026.9.6"
+          ]
         },
         "activeModel": {
           "status": "gap",

@@ -24,6 +24,7 @@ import { resolvePollTargets } from "./lib/bridgeRouting";
 import { resolveTargetForTurn } from "./routing";
 import { chatAgentRows } from "./chatAgents";
 import { normalizeAgentTypes, resolveAgentTypes } from "./lib/agentTypes";
+import { isSessionPermissionMode } from "./lib/sessionAccess";
 
 // Normalized agent descriptor the bridge `/agents` returns (and the poller relays
 // into the cache). Matches bridge `NormalizedAgent` (server.ts).
@@ -33,6 +34,10 @@ const agentDescriptor = v.object({
   emoji: v.union(v.string(), v.null()),
   model: v.union(v.string(), v.null()),
   isDefaultOnInstance: v.boolean(),
+  // OpenClaw: the mode a session of this agent runs with when it sets none; null =
+  // not stated (a sandbox, a non-canonical exec policy, an older bridge, Hermes).
+  // Optional so an older poller payload still validates.
+  defaultPermissionMode: v.optional(v.union(v.string(), v.null())),
 });
 
 // ===========================================================================
@@ -243,6 +248,7 @@ export const applyDiscovery = internalMutation({
         emoji: a.emoji ?? undefined,
         model: a.model ?? undefined,
         isDefaultOnInstance: a.isDefaultOnInstance,
+        defaultPermissionMode: a.defaultPermissionMode ?? undefined,
         source: "discovered" as const,
         presentInLastOk: true,
       };
@@ -260,6 +266,8 @@ export const applyDiscovery = internalMutation({
           cur.emoji !== next.emoji ||
           cur.model !== next.model ||
           cur.isDefaultOnInstance !== next.isDefaultOnInstance ||
+          // Read by the conversation header (the permission chip's fallback).
+          cur.defaultPermissionMode !== next.defaultPermissionMode ||
           cur.source !== next.source ||
           cur.presentInLastOk !== next.presentInLastOk;
         if (changed) await ctx.db.patch(cur._id, { ...next, lastSeenAt: now });
@@ -436,6 +444,11 @@ export async function discoverInstanceAgents(
         emoji: typeof a.emoji === "string" ? a.emoji : null,
         model: typeof a.model === "string" ? a.model : null,
         isDefaultOnInstance: a.isDefaultOnInstance === true,
+        // Only a mode of the vendored vocabulary: anything else reads as "not stated",
+        // never as a mode the header would then present as the agent's default.
+        defaultPermissionMode: isSessionPermissionMode(a.defaultPermissionMode)
+          ? a.defaultPermissionMode
+          : null,
       }))
       .filter((a) => a.agentId.length > 0);
     if (agents.length === 0) {

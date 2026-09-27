@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
   deliveryChildKey,
+  deliveryPartStamp,
   isDeliveryRun,
   isRequesterSettleRun,
+  parseRequesterSettleRun,
   taskDeliveryIdentity,
   taskDeliveryOutcome,
 } from "./deliveryRuns";
@@ -74,5 +76,58 @@ describe("announce delivery lanes", () => {
     expect(deliveryChildKey(`announce:v1:${CHILD}:${RUN}:something-new`)).toBe(
       `${CHILD}:${RUN}`,
     );
+  });
+});
+
+// THE REQUESTER-SETTLE GRAMMAR (OpenClaw v2026.9.6,
+// subagent-announce.requester-settle-wake.ts:433-440 + :501-505, announce-idempotency.ts:18-20).
+// The production id below is the one from prod chat mh74rj7t… (2026-09-26).
+describe("requester-settle run grammar", () => {
+  const PROD =
+    "announce:requester-settle:meta:agent:meta:atrium:chat:olivier:mh74rj7t29mhnp7rc1yy5r9nj18f5358:5c2543ae-a10b-4bcd-a346-6e3f8ab0e70e:yield-1";
+
+  it("reads the child run ids and the yield generation off the production id", () => {
+    expect(parseRequesterSettleRun(PROD)).toEqual({
+      childRunIds: ["5c2543ae-a10b-4bcd-a346-6e3f8ab0e70e"],
+      yieldGeneration: 1,
+    });
+  });
+  it("a multi-child batch is comma-joined; a retry suffix follows the yield suffix", () => {
+    const rid =
+      "announce:requester-settle:meta:agent:meta:atrium:chat:u:c:aaa-1,bbb-2:yield-3:retry-1";
+    expect(parseRequesterSettleRun(rid)).toEqual({
+      childRunIds: ["aaa-1", "bbb-2"],
+      yieldGeneration: 3,
+    });
+  });
+  it("a wake WITHOUT a yield (no rearmGeneration) parses with a null generation", () => {
+    const rid = "announce:requester-settle:unknown:agent:meta:main:swarm_0123abcd,uuid-2";
+    expect(parseRequesterSettleRun(rid)).toEqual({
+      childRunIds: ["swarm_0123abcd", "uuid-2"],
+      yieldGeneration: null,
+    });
+  });
+  it("an unknown trailing lane is never read as a yielded continuation", () => {
+    // Not a parse failure: the lane reads as the id list of a wake WITHOUT a yield
+    // generation — which is exactly what keeps it out of the merge.
+    expect(parseRequesterSettleRun(`${PROD}:agent-loop`)?.yieldGeneration ?? null).toBeNull();
+  });
+  it("fails closed on an empty id or a truncated key", () => {
+    for (const rid of [
+      "announce:requester-settle:meta:agent:meta:x:a,,b:yield-1",
+      "announce:requester-settle:meta:5c2543ae:yield-1",
+      "announce:v1:agent:files:subagent:abc:def",
+      "webchat-abc",
+    ]) {
+      expect(parseRequesterSettleRun(rid)).toBeNull();
+    }
+  });
+  it("every delivery family stamps its parts — the settle continuation included", () => {
+    expect(deliveryPartStamp(PROD)).toBe(PROD);
+    expect(deliveryPartStamp("announce:v1:agent:files:subagent:abc:def")).toBe(
+      "announce:v1:agent:files:subagent:abc:def",
+    );
+    expect(deliveryPartStamp("webchat-abc")).toBeUndefined();
+    expect(deliveryPartStamp(undefined)).toBeUndefined();
   });
 });

@@ -111,6 +111,12 @@ export const KNOWN_ERROR_CODES = [
   "session_archived",
   // The gateway paused the conversation for a provider review: countable as itself.
   "session_paused_review",
+  // The gateway refused the send on the session's own rules (OpenClaw 2026.9.6): its
+  // VISIBILITY (read-only / suggest / draft) excludes this person, or its permission
+  // mode changed since the reader saw it. Named, so the diagnostic surface says which
+  // decision stopped the turn instead of "unknown".
+  "session_visibility_refused",
+  "session_settings_changed",
   "auth_profile_cooldown",
   "gateway_storage_busy",
   "gateway_storage_unavailable",

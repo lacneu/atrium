@@ -201,6 +201,22 @@ describe("attribution never costs the turn", () => {
     expect(routed).toEqual([]);
   });
 
+  it("a VISIBILITY that refuses the participant: the turn fails, never re-sent as the owner", async () => {
+    // read-only / suggest / draft is the session owner's decision about this person's
+    // turns: re-sending under the owner's name would walk straight through it.
+    for (const visibility of ["read-only", "suggest", "draft"]) {
+      const owner = ownerConn();
+      const bob = fakeConn(async () => {
+        throw new Error(`INVALID_REQUEST: session is ${visibility} for this connection`);
+      });
+      const { src } = source(bob);
+      await expect(
+        sendAsSpeaker(owner, params, { speakerGatewayUser: "bob", chatId: "c1" }, proxyConfig, src),
+      ).rejects.toThrow(/for this connection/);
+      expect(sends(owner), visibility).toBe(0);
+    }
+  });
+
   it("a speaker socket that cannot open: the owner's socket sends", async () => {
     const owner = ownerConn();
     const { src } = source(new Error("connect refused"));

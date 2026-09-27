@@ -37,6 +37,7 @@ import {
   costlyForeignRunRefusals,
 } from "./lib/foreignRunRefusals";
 import { usablePlanStamp } from "./lib/planOrder";
+import { CHILD_RUN_ID_RE } from "./lib/deliveryRuns";
 import {
   AGENT_REQUEST_SOURCES,
   type AgentRequestSource,
@@ -484,6 +485,12 @@ type IngestOp =
         estimatedPromptTokens?: number;
         promptBudgetBeforeReserve?: number;
         overflowTokens?: number;
+        // Who may act on the session, and with what permissions (lib/sessionAccess.ts).
+        visibility?: string;
+        sharingRole?: string;
+        permissionMode?: string | null;
+        permissionModePending?: boolean;
+        sessionRoot?: string;
       };
     }
   // Session re-hydration READ (see docs/SESSION_CONTINUITY_DESIGN.md). The bridge
@@ -494,6 +501,14 @@ type IngestOp =
       op: "getRehydrationContext";
       chatId: string;
       excludeMessageId?: string | null;
+      // The agent the block is composed FOR: its own replies are marked as its own
+      // and the header names it (stream.rehydrationContext).
+      forAgent?: { instanceName?: unknown; agentId?: unknown } | null;
+      // Only the turns after this agent's last complete reply (a warm session that
+      // missed another agent's turns); the answer's `sinceFound` says if it was found.
+      sinceLastReplyOf?: { instanceName?: unknown; agentId?: unknown } | null;
+      // The caller's own character ceiling — can only lower the budget.
+      maxChars?: unknown;
     }
   // Sub-agent observation upsert (inbound only): the bridge observed a child run
   // (spawn / lifecycle phase / final result) on the gateway and records its status
@@ -509,6 +524,9 @@ type IngestOp =
       parentMessageId?: string | null;
       anchorExact?: boolean;
       childSessionKey: string;
+      /** The child's run id from its `sessions_spawn` result — the id the
+       *  gateway's requester-settle wake names (convex/lib/deliveryRuns.ts). */
+      childRunId?: string;
       kind?: "subagent" | "task";
       bornOfRun?: string;
       taskName?: string;
@@ -1444,12 +1462,31 @@ export const ingest = httpAction(async (ctx, request) => {
       return json({ ok: true });
     }
     case "getRehydrationContext": {
+      // Network input: an agent reference is used only when both names are strings,
+      // and a ceiling only when it is a finite number — anything else is ignored, as
+      // an older bridge's body that carries none of them.
+      const agentRef = (raw: unknown) => {
+        if (raw === null || typeof raw !== "object") return undefined;
+        const r = raw as { instanceName?: unknown; agentId?: unknown };
+        return typeof r.instanceName === "string" && typeof r.agentId === "string"
+          ? { instanceName: r.instanceName, agentId: r.agentId }
+          : undefined;
+      };
+      const forAgent = agentRef(body.forAgent);
+      const sinceLastReplyOf = agentRef(body.sinceLastReplyOf);
+      const maxChars =
+        typeof body.maxChars === "number" && Number.isFinite(body.maxChars)
+          ? body.maxChars
+          : undefined;
       const result = await ctx.runQuery(internal.stream.rehydrationContext, {
         chatId: body.chatId as Id<"chats">,
         boundInstanceName,
         excludeMessageId: body.excludeMessageId
           ? (body.excludeMessageId as Id<"messages">)
           : undefined,
+        ...(forAgent ? { forAgent } : {}),
+        ...(sinceLastReplyOf ? { sinceLastReplyOf } : {}),
+        ...(maxChars !== undefined ? { maxChars } : {}),
       });
       // Metadata only — NEVER the history text (PHI). Just whether we re-hydrated
       // and how many prior turns were included.
@@ -1461,6 +1498,7 @@ export const ingest = httpAction(async (ctx, request) => {
           op: body.op,
           rehydrated: result.history !== null,
           turnCount: result.turnCount,
+          ...(result.sinceFound !== undefined ? { sinceFound: result.sinceFound } : {}),
           ok: true,
         },
       });
@@ -1483,6 +1521,13 @@ export const ingest = httpAction(async (ctx, request) => {
           : undefined,
         anchorExact: body.anchorExact === true ? true : undefined,
         childSessionKey: body.childSessionKey,
+        // Only the shape upstream mints (no ':' or ','): the settle join splits
+        // on both, and an id carrying them could pose as another child's.
+        childRunId:
+          typeof body.childRunId === "string" &&
+          CHILD_RUN_ID_RE.test(body.childRunId)
+            ? body.childRunId
+            : undefined,
         kind: body.kind,
         bornOfRun: body.bornOfRun,
         taskName: body.taskName,

@@ -90,6 +90,17 @@ describe("a compacted session's overflow retries ONCE (W2)", () => {
     expect(retryDecision(at("auth_profile_cooldown"))).toBeNull();
   });
 
+  test("a refusal on the session's own rules is never retried", () => {
+    // OpenClaw 2026.9.6: the session's VISIBILITY excludes this person (the same send is
+    // refused the same way until its owner changes it), or its permission mode changed
+    // since the reader saw it — a re-send under a mode nobody looked at is exactly what
+    // the guard exists to prevent. The reader decides.
+    for (const code of ["session_visibility_refused", "session_settings_changed"]) {
+      expect(RETRYABLE_KINDS.has(code), code).toBe(false);
+      expect(retryDecision(at(code)), code).toBeNull();
+    }
+  });
+
   test("a writer rebound is never retried, zero content or not", () => {
     // `session_write_conflict` is a rebound the bridge could NOT prove pre-generation:
     // it may have struck at a commit after the model ran. The zero-content gate cannot

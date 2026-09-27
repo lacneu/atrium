@@ -46,6 +46,7 @@ import { capabilitiesForInstance, mediaQuarantineReason } from "./lib/compat";
 import { readDoc as readCompatDoc } from "./compat";
 import { PERMISSIONS } from "./lib/rbac";
 import { buildOpenClawThreadId } from "./lib/openclawThread";
+import { expectedPermissionModeFor, withoutSessionAccess } from "./lib/sessionAccess";
 import {
   base64ByteLength,
   base64FitsFrame,
@@ -75,6 +76,7 @@ import { classifyAttachment } from "./lib/mediaTransport";
 import {
   chatHasActivityBlockers,
   drainNextQueued,
+  earlierChainReplies,
   isChatBusy,
 } from "./lib/outboxQueue";
 import {
@@ -84,6 +86,9 @@ import {
 import { failDocumentaryFetchForChat } from "./documentAttachments";
 import { failSummarizeForChat } from "./chatSummaries";
 import { providerSessionClearPatch } from "./lib/providerSession";
+import { compareOrder } from "./lib/messageOrder";
+import { composeChainedPrompt } from "./lib/rehydration";
+import { safeAuthorLabel } from "./lib/turnAuthors";
 
 // OpenClaw's default WS frame limit (policy.maxPayload), observed live on every
 // 2026.x hello-ok. The conservative inbound-attachment fallback (DEFAULT_GATEWAY_MAX_PAYLOAD)
@@ -443,6 +448,17 @@ export const failDispatch = internalMutation({
       userId: chat.userId,
       role: "assistant",
       status: "error",
+      // The row this card answers for, like a reply that streamed carries it
+      // (stream.startAssistant): deleting the card regenerates THIS step — a chained
+      // one included (messages.chainOfReply). The row is kept (`failed`), never deleted.
+      dispatchOutboxId: String(outboxId),
+      // A CHAINED reply's card names its own agent (see stream.startAssistant).
+      ...(row.chainStep !== undefined && row.routedAgent !== undefined
+        ? {
+            routedInstanceName: row.routedAgent.instanceName,
+            routedAgentId: row.routedAgent.agentId,
+          }
+        : {}),
       text: "",
       // `error` carries the LOCALIZABLE code string (the stream_orphaned
       // pattern): the attachment codes get their file-specific headline, every
@@ -558,10 +574,71 @@ export const failDispatch = internalMutation({
 // thread id) PLUS the resolved instance/agent target from the valves. The
 // bridge maps instanceName -> token/deviceIdentity from its env; only names
 // cross this boundary, never secrets.
+/**
+ * The session a per-turn routed chat is CURRENTLY on: the last routed agent the
+ * gateway confirmed, and the segment that keyed it — exactly what the next turn to
+ * that agent reuses warm (beginTurnRouting: same agent + a confirmed segment is not
+ * a switch). Null when the chat is not per-turn routed or has no confirmed route yet:
+ * its session is then still the primary's, on `openclawChatId`.
+ *
+ * Read from the PERSISTED tuple only — advanced atomically on confirmation — never
+ * from an unconfirmed dispatch, whose segment may not exist on the gateway.
+ */
+export function currentRoutedSession(
+  chat: Pick<
+    Doc<"chats">,
+    "perTurnRouting" | "lastRoutedInstanceName" | "lastRoutedAgentId" | "routingSegment"
+  >,
+): {
+  routedAgent: { instanceName: string; agentId: string };
+  segment: string;
+} | null {
+  if (chat.perTurnRouting !== true) return null;
+  if (!chat.lastRoutedInstanceName || !chat.lastRoutedAgentId || !chat.routingSegment) {
+    return null;
+  }
+  return {
+    routedAgent: {
+      instanceName: chat.lastRoutedInstanceName,
+      agentId: chat.lastRoutedAgentId,
+    },
+    segment: chat.routingSegment,
+  };
+}
+
 /** How long a compat snapshot stays evidence for the media quarantine. Three poll
  *  intervals: long enough that a single missed poll changes nothing, short enough that
  *  a gateway swapped during an outage is not vouched for by yesterday's reading. */
 const COMPAT_SNAPSHOT_MAX_AGE_MS = 15 * 60_000;
+
+/**
+ * A send REFUSED on the permission mode it carried as its guard
+ * (`session_settings_changed`): the session it landed on does not hold that mode.
+ *
+ * The bridge re-describes the session before every send and publishes what it finds —
+ * so a mode CHANGED on the gateway is already on record, newer than the guard, and
+ * stays. But when the session is GONE from under the key (pruned, deleted, or a key
+ * this chat never used) the describe answers nothing and nothing is published: the
+ * meta kept the mode of the session that no longer exists, every send carried it, was
+ * refused before admission (so the session was never created, never re-described), and
+ * the refusal repeated for ever. The session such a send creates holds no mode
+ * (`entry?.permissionMode ?? null`, chat-send-session-settings.ts), so the refused
+ * guard is replaced by `null` — only while no describe newer than the one it was read
+ * from has landed (`accessAt`, the describe's own clock), and under that same stamp, so
+ * any later describe still wins. The reader sees the mode change, and the retry lands.
+ */
+export const forgetRefusedPermissionGuard = internalMutation({
+  args: { chatId: v.id("chats"), accessAt: v.union(v.number(), v.null()) },
+  handler: async (ctx, { chatId, accessAt }) => {
+    const chat = await ctx.db.get(chatId);
+    const meta = chat?.sessionMeta;
+    if (chat === null || meta === undefined) return;
+    if ((meta.accessAt ?? null) !== accessAt) return;
+    await ctx.db.patch(chatId, {
+      sessionMeta: { ...withoutSessionAccess(meta), permissionMode: null },
+    });
+  },
+});
 
 export const getChatRouting = internalQuery({
   args: {
@@ -585,14 +662,37 @@ export const getChatRouting = internalQuery({
     // confirm); falls back to the chat's last-confirmed segment for callers that don't
     // run beginTurnRouting (dispatchReset/dispatchPatch).
     routingSegment: v.optional(v.string()),
+    // An operation ON the conversation's session rather than a turn — the panel's
+    // reset, a session-knob patch, a manual compaction. On a per-turn routed chat the
+    // session in use is the LAST CONFIRMED routed agent's, keyed by the confirmed
+    // segment (see currentRoutedSession); without this flag such a call reached the
+    // PRIMARY on its legacy `openclawChatId` — a session the next turn will not use.
+    // Ignored when `routedAgent` is given: the caller already named the session.
+    currentSession: v.optional(v.boolean()),
   },
   handler: async (
     ctx,
-    { chatId, userId, routedAgent, routedSwitch, routingSegment },
+    { chatId, userId, routedAgent: askedAgent, routedSwitch, routingSegment: askedSegment, currentSession },
   ) => {
     const chat = await ctx.db.get(chatId);
     if (chat === null) {
       return null;
+    }
+    // The session a session operation targets: the current routed one when the chat
+    // has one AND its agent still resolves for this user — otherwise the unchanged
+    // primary path (an operation on a session no turn can reach would be a no-op at
+    // best, and a failure where the primary still works).
+    let routedAgent = askedAgent;
+    let routingSegment = askedSegment;
+    if (currentSession === true && askedAgent === undefined) {
+      const current = currentRoutedSession(chat);
+      if (
+        current !== null &&
+        (await resolveTargetForTurn(ctx, chat, userId, current.routedAgent)).target !== null
+      ) {
+        routedAgent = current.routedAgent;
+        routingSegment = current.segment;
+      }
     }
     // Routing v2: resolve from the CHAT's binding (∈ userAgents), with the
     // stale-vs-deleted + default-fallback logic. The returned target is ALWAYS
@@ -732,8 +832,9 @@ export const getChatRouting = internalQuery({
       // within a same-agent run. The segment is passed (not read from the chat doc)
       // because an UNCONFIRMED switch's segment is not persisted (atomic-on-confirm);
       // falls back to the chat's confirmed segment for callers that don't run
-      // beginTurnRouting. ONLY for an actual routed send (`routedAgent` present): a
-      // no-agent call (dispatchPatch/Reset/compact) keeps the legacy session id.
+      // beginTurnRouting. ONLY when a routed agent is in play — a routed send, or a
+      // session operation (dispatchPatch/Reset/compact) asking for `currentSession`
+      // on a chat with a confirmed route; otherwise the legacy session id.
       openclawChatId:
         chat.perTurnRouting && routedAgent
           ? (routingSegment ?? chat.routingSegment ?? null)
@@ -788,6 +889,25 @@ export const getChatRouting = internalQuery({
       // re-applies these via sessions.patch before each turn so they survive a
       // session reset. Non-secret labels only.
       sessionSettings: chat.sessionSettings ?? null,
+      // THE PERMISSIONS THE READER WAS SHOWN, as the send guard — only when this
+      // turn's gateway session is provably the one the stored meta describes (see
+      // expectedPermissionModeFor). null = no guard, and the key is left off the body.
+      // `accessAt`: the describe the guard was read from, so a refusal can tell whether
+      // anything newer has been learnt since (forgetRefusedPermissionGuard).
+      permissionGuard: ((guard) =>
+        guard === null ? null : { ...guard, accessAt: chat.sessionMeta?.accessAt ?? null })(
+        routedTarget === null
+          ? null
+          : expectedPermissionModeFor({
+              provider,
+              chatKind: chat.kind,
+              perTurnRouting: chat.perTurnRouting === true,
+              rebind: res.rebind !== null,
+              storedProviderSession: chat.openclawChatId,
+              targetAgentId: routedTarget.agentId,
+              sessionMeta: chat.sessionMeta,
+            }),
+      ),
       // QUOTE-REPLY: the effective per-instance preamble template (registry
       // entry `quote_reply`, admin-customizable/disable-able). The dispatch
       // fills {excerpt} when the outbox row carries one — resolved HERE so
@@ -860,6 +980,9 @@ export const getChatRouting = internalQuery({
             ? {
                 ...bridgeDispatchConfig(instance?.config, contentLocale),
                 rehydration: true,
+                // For EVERY provider: "another agent spoke since this one's last
+                // turn" is Convex's fact; what a warm session does with it (OpenClaw
+                // re-keys, Hermes asks for the turns it missed) is the bridge's.
                 ...(routedSwitch || chat.forkPendingRehydration === true
                   ? { routedSwitch: true }
                   : {}),
@@ -1203,10 +1326,17 @@ export const bindChatTarget = internalMutation({
     // Rebinding to a different agent: DROP the stale provider conversation id (it
     // belonged to the old agent) so the next turn starts the new agent fresh on
     // the Convex chatId instead of resuming the old agent's thread (Codex P1).
+    // …and the old session's ACCESS facts with it: they describe a session this chat
+    // no longer talks to — shown, they would claim permissions nobody has here; sent
+    // back as the guard, they would refuse the new agent's first turn. The watermark
+    // stays, so a describe of the old session still in flight keeps losing.
     await ctx.db.patch(chatId, {
       instanceName,
       agentId,
       openclawChatId: undefined,
+      ...(chat.sessionMeta === undefined
+        ? {}
+        : { sessionMeta: withoutSessionAccess(chat.sessionMeta) }),
     });
     // The new primary may have been in the room as an ADDED agent: the primary is
     // never a `chatAgents` row, so that row goes (same rule as rebindChatAgent).
@@ -1256,7 +1386,11 @@ export const beginTurnRouting = internalMutation({
   // `sender_not_permitted` (the author may no longer send it — see `senderId`).
   returns: v.union(
     v.object({
-      refused: v.union(v.literal("row_gone"), v.literal("sender_not_permitted")),
+      refused: v.union(
+        v.literal("row_gone"),
+        v.literal("sender_not_permitted"),
+        v.literal("agent_left_room"),
+      ),
     }),
     v.object({
       isSwitch: v.boolean(),
@@ -1282,11 +1416,10 @@ export const beginTurnRouting = internalMutation({
       const row = await ctx.db.get(outboxId);
       if (row === null || row.status !== "pending") return { refused: "row_gone" as const };
     }
-    if (
-      senderId !== undefined &&
-      (await senderRefusal(ctx, { chatId, senderId, routedAgent, outboxId })) !== null
-    ) {
-      return { refused: "sender_not_permitted" as const };
+    if (senderId !== undefined) {
+      const refusal = await senderRefusal(ctx, { chatId, senderId, routedAgent, outboxId });
+      if (refusal === "agent_left_room") return { refused: "agent_left_room" as const };
+      if (refusal !== null) return { refused: "sender_not_permitted" as const };
     }
     // AUTHORIZE before persisting ANY turn state (codex P2): a forged routedAgent — or one
     // revoked/deleted between sendMessage and dispatch — must NOT reconfigure the chat.
@@ -1568,7 +1701,7 @@ export const lastGateBeforeSend = internalMutation({
   ): Promise<
     | { kind: "gone" }
     | { kind: "reparked" }
-    | { kind: "refused" }
+    | { kind: "refused"; agentLeftRoom?: true }
     | {
         kind: "send";
         speakerGatewayUser: string | null;
@@ -1596,6 +1729,7 @@ export const lastGateBeforeSend = internalMutation({
         : {}),
       target,
     });
+    if (refusal === "agent_left_room") return { kind: "refused", agentLeftRoom: true };
     if (refusal !== null) return { kind: "refused" };
     const speaker = await speakerName(ctx, {
       chatId: chat._id,
@@ -1603,6 +1737,10 @@ export const lastGateBeforeSend = internalMutation({
       instanceName: target.instanceName,
     });
     if ("refused" in speaker) return { kind: "refused" };
+    // The send leaves for this instance NOW: from here on (while the row is in flight
+    // or once sent) its bridge may read this chat's history and open the reply — and
+    // not before (lib/ingestAuthz.chatAllowsInstance).
+    await ctx.db.patch(outboxId, { sentToInstance: target.instanceName });
     return {
       kind: "send",
       speakerGatewayUser: speaker.name,
@@ -1701,13 +1839,118 @@ export const getChatOwner = internalQuery({
   handler: async (
     ctx,
     { chatId },
-  ): Promise<{ ownerId: Id<"users">; participantCount: number } | null> => {
+  ): Promise<{
+    ownerId: Id<"users">;
+    participantCount: number;
+    implicitRoute: { instanceName: string; agentId: string } | null;
+  } | null> => {
     const chat = await ctx.db.get(chatId);
     if (chat === null) return null;
     const roster = await chatParticipantRows(ctx, chatId);
-    return { ownerId: chat.userId, participantCount: roster.length };
+    return {
+      ownerId: chat.userId,
+      participantCount: roster.length,
+      implicitRoute: await implicitPrimaryRoute(ctx, chat),
+    };
   },
 });
+
+/**
+ * The PROMPT of a chained reply — the 2nd..Nth agent its message was addressed to:
+ * the question, then what the agents before it already answered, in order and
+ * signed (lib/rehydration.composeChainedPrompt). Null for any other row: its text
+ * is sent as is.
+ *
+ * The earlier replies are found by PROVENANCE — the assistant messages dispatched
+ * from the earlier rows of the same message (`dispatchOutboxId`) — never by
+ * position, so a reply to something else that happens to sit between them (a
+ * sub-agent's late delivery) is not presented as part of the chain.
+ */
+export const chainedPrompt = internalQuery({
+  args: { outboxId: v.id("outbox") },
+  handler: async (ctx, { outboxId }): Promise<string | null> => {
+    const row = await ctx.db.get(outboxId);
+    if (row === null || row.chainStep === undefined || row.messageId === undefined) {
+      return null;
+    }
+    const question = await ctx.db.get(row.messageId);
+    const chat = await ctx.db.get(row.chatId);
+    if (question === null || chat === null) return null;
+    // Each earlier step's reply, with the agent its row went to (the head's route,
+    // else the primary) — found from the replies, whatever the number of rows the
+    // question accumulated over its regenerations (lib/outboxQueue.earlierChainReplies).
+    const primary =
+      chat.instanceName && chat.agentId
+        ? { instanceName: chat.instanceName, agentId: chat.agentId }
+        : null;
+    const earlierRows = new Map<string, { instanceName: string; agentId: string } | null>();
+    const replies = (await earlierChainReplies(ctx, row))
+      // COMPLETE only — the rule every history line follows (rehydrationContext).
+      // A reply that failed or was stopped after it began holds a fragment, and
+      // handed on as an answer already given, the next agent builds on it.
+      .filter(({ reply }) => reply.status === "complete")
+      .map(({ reply, row: source }) => {
+        earlierRows.set(String(source._id), source.routedAgent ?? primary);
+        return reply;
+      })
+      .sort(compareOrder);
+    const names = new Map<string, string>();
+    const earlier: Array<{ agent: string; text: string }> = [];
+    for (const reply of replies) {
+      const agent = earlierRows.get(reply.dispatchOutboxId!) ?? null;
+      const key = agent === null ? "" : `${agent.instanceName}\u0000${agent.agentId}`;
+      if (!names.has(key)) {
+        const found =
+          agent === null
+            ? null
+            : await ctx.db
+                .query("agents")
+                .withIndex("by_instance_agent", (q) =>
+                  q.eq("instanceName", agent.instanceName).eq("agentId", agent.agentId),
+                )
+                .first();
+        // Names land inside a prompt: bounded, single-line, no framing characters.
+        names.set(
+          key,
+          safeAuthorLabel(found?.displayName) ?? safeAuthorLabel(agent?.agentId) ?? "agent",
+        );
+      }
+      earlier.push({ agent: names.get(key)!, text: reply.text });
+    }
+    // The framing follows the language of the instance this reply is sent to — the
+    // same content locale as its other injections.
+    const instance =
+      row.routedAgent === undefined
+        ? null
+        : await ctx.db
+            .query("instances")
+            .withIndex("by_name", (q) => q.eq("name", row.routedAgent!.instanceName))
+            .first();
+    const locale = await contentLocaleForInstance(ctx, instance?.config);
+    return composeChainedPrompt(row.text, earlier, locale);
+  },
+});
+
+/**
+ * Where a turn that names no agent goes on a PER-TURN ROUTED chat: to the PRIMARY,
+ * as a ROUTED turn. Unrouted, it would take the single-agent path — the primary's
+ * legacy session (`openclawChatId`), which stopped following the conversation the
+ * moment other agents spoke, with no switch detected and so no re-hydration. Routed,
+ * beginTurnRouting compares it with the session actually in use and re-hydrates on a
+ * switch. Null — the unchanged path — for a chat that is not per-turn routed, a hidden
+ * utility chat, or a primary the owner can no longer reach (the dispatch's own
+ * rebind then applies, exactly as before).
+ */
+async function implicitPrimaryRoute(
+  ctx: QueryCtx,
+  chat: Doc<"chats">,
+): Promise<{ instanceName: string; agentId: string } | null> {
+  if (chat.perTurnRouting !== true || chat.kind !== undefined) return null;
+  if (!chat.instanceName || !chat.agentId) return null;
+  const primary = { instanceName: chat.instanceName, agentId: chat.agentId };
+  const resolved = await resolveTargetForTurn(ctx, chat, chat.userId, primary);
+  return resolved.target === null ? null : primary;
+}
 
 /**
  * Is the SENDER of this turn still allowed to have it sent — asked when the turn
@@ -1718,7 +1961,8 @@ export const getChatOwner = internalQuery({
  * left or been removed, been made a viewer, or seen the agent they addressed taken
  * out of the room. Their turn would then still run — on the OWNER's gateway
  * identity, since the delegation is the owner's. Null = send; a reason = refuse.
- * The owner is always allowed (their own rights are re-resolved by the routing).
+ * The owner's rights are re-resolved by the routing; the owner's turn is refused only
+ * when it was addressed to a room agent that has left the room since (ownerRefusal).
  */
 export const senderRefusalAtDispatch = internalQuery({
   args: {
@@ -1770,7 +2014,8 @@ async function senderRefusal(
   },
 ): Promise<SenderRefusal | null> {
   const chat = await ctx.db.get(chatId);
-  if (chat === null || chat.userId === senderId) return null;
+  if (chat === null) return null;
+  if (chat.userId === senderId) return await ownerRefusal(ctx, chat, outboxId);
   // An ACCOUNT no longer active (deleted — its seats are swept after the deletion
   // — or back to pending) sends nothing on the owner's delegation, whatever seat
   // it still holds for the moment.
@@ -1804,6 +2049,48 @@ async function senderRefusal(
     if (still.target === null) return "agent_revoked";
   }
   return null;
+}
+
+/**
+ * The OWNER's turn is refused for one reason only: it was ADDRESSED to an agent of
+ * the room — named by an @mention (the message's `addressedAgents`), or a later reply
+ * of a chain — and that agent has left the room since. send.ts admits a mention only
+ * of a room agent, the owner's included; a row that waited (a chained reply queued
+ * behind the one before it, a queued message, a regenerate or an auto-retry of it)
+ * must still be addressed to one when it leaves. The owner's own grants are
+ * re-resolved by the routing as before. An unrouted row, and a row the owner routed
+ * WITHOUT a mention, keep the unchanged path; the primary is in the room by
+ * definition (isConversationAgent).
+ */
+async function ownerRefusal(
+  ctx: QueryCtx | MutationCtx,
+  chat: Doc<"chats">,
+  outboxId: Id<"outbox"> | undefined,
+): Promise<SenderRefusal | null> {
+  if (outboxId === undefined) return null;
+  const row = await ctx.db.get(outboxId);
+  const route = row?.routedAgent;
+  if (row === null || route === undefined) return null;
+  let addressed = row.chainStep !== undefined;
+  if (!addressed && row.messageId !== undefined) {
+    const message = await ctx.db.get(row.messageId);
+    addressed = (message?.addressedAgents ?? []).some(
+      (a) => a.instanceName === route.instanceName && a.agentId === route.agentId,
+    );
+  }
+  if (!addressed) return null;
+  return (await isConversationAgent(ctx, chat, route)) ? null : "agent_left_room";
+}
+
+/**
+ * The code a refused dispatch is settled with. An agent taken out of the room is
+ * named as such — nobody's standing changed, and "your access changed" would send
+ * the reader looking for the wrong cause; every other refusal is the sender's.
+ */
+function refusalErrorCode(
+  refusal: SenderRefusal | "agent_left_room" | "sender_not_permitted",
+): "AGENT_LEFT_ROOM" | "SENDER_NOT_PERMITTED" {
+  return refusal === "agent_left_room" ? "AGENT_LEFT_ROOM" : "SENDER_NOT_PERMITTED";
 }
 
 /**
@@ -1934,6 +2221,10 @@ export const dispatch = internalAction({
       chatId: row.chatId as Id<"chats">,
     });
     const chatOwnerId = chatFacts?.ownerId ?? (row.userId as Id<"users">);
+    // THE AGENT THIS TURN GOES TO: the row's own route, else — on a per-turn routed
+    // chat — the primary, routed explicitly (see implicitPrimaryRoute). Every routing
+    // step below reads this, never `row.routedAgent` directly.
+    const routedAgent = row.routedAgent ?? chatFacts?.implicitRoute ?? undefined;
     // THE SENDER'S RIGHTS, NOW — before this turn touches the routing. See
     // senderRefusalAtDispatch: a turn that waited must not outlive its author's
     // right to send it.
@@ -1942,26 +2233,27 @@ export const dispatch = internalAction({
       {
         chatId: row.chatId as Id<"chats">,
         senderId: row.userId as Id<"users">,
-        ...(row.routedAgent ? { routedAgent: row.routedAgent } : {}),
+        ...(routedAgent ? { routedAgent } : {}),
         outboxId,
       },
     );
     if (senderRefusal !== null) {
+      const errorCode = refusalErrorCode(senderRefusal);
       await ctx.runMutation(internal.bridge.failDispatch, {
         outboxId,
         reason: "agent_restricted",
-        errorCode: "SENDER_NOT_PERMITTED",
+        errorCode,
       });
       await traceDispatch(ctx, {
         outboxId,
         chatId: row.chatId,
         dispatchStatus: "failed",
         reason: "agent_restricted",
-        errorCode: "SENDER_NOT_PERMITTED",
+        errorCode,
       });
       return;
     }
-    if (row.routedAgent && row.messageId) {
+    if (routedAgent && row.messageId) {
       const began = await ctx.runMutation(internal.bridge.beginTurnRouting, {
         chatId: row.chatId as Id<"chats">,
         // THE OWNER, not the sender. This call MUTATES the chat — it flips
@@ -1973,7 +2265,7 @@ export const dispatch = internalAction({
         // answer would not. Entitlement of the SENDER is checked at the source, in
         // send.sendMessage.
         userId: chatOwnerId,
-        routedAgent: row.routedAgent,
+        routedAgent,
         turnId: row.messageId as Id<"messages">,
         outboxId,
         // The author, re-judged INSIDE the mutation before it writes: the check
@@ -1982,17 +2274,20 @@ export const dispatch = internalAction({
       });
       if (began !== null && "refused" in began) {
         if (began.refused === "row_gone") return;
+        const errorCode = refusalErrorCode(
+          began.refused === "agent_left_room" ? began.refused : "sender_not_permitted",
+        );
         await ctx.runMutation(internal.bridge.failDispatch, {
           outboxId,
           reason: "agent_restricted",
-          errorCode: "SENDER_NOT_PERMITTED",
+          errorCode,
         });
         await traceDispatch(ctx, {
           outboxId,
           chatId: row.chatId,
           dispatchStatus: "failed",
           reason: "agent_restricted",
-          errorCode: "SENDER_NOT_PERMITTED",
+          errorCode,
         });
         return;
       }
@@ -2005,7 +2300,7 @@ export const dispatch = internalAction({
       // `rebind` branch below). A participant's grants must never decide what the
       // owner's conversation is bound to.
       userId: chatOwnerId,
-      ...(row.routedAgent ? { routedAgent: row.routedAgent } : {}),
+      ...(routedAgent ? { routedAgent } : {}),
       // ACTUAL switch only (codex P2): `isSwitch` is true EXACTLY when this turn
       // re-keyed the session (routed agent differs from the preceding routed turn, OR a
       // first per-turn selection minting a segment — even a legacy/unbound chat with no
@@ -2232,10 +2527,16 @@ export const dispatch = internalAction({
       // longer points at the same characters — and upstream refuses the WHOLE
       // send when a span does not re-anchor. Composing here lets the shift be
       // measured against the exact string that ships.
+      // A CHAINED reply is asked the question WITH the replies already given to it
+      // (chainedPrompt); every other row sends its text as is.
+      const promptText =
+        row.chainStep === undefined
+          ? row.text
+          : ((await ctx.runQuery(internal.bridge.chainedPrompt, { outboxId })) ?? row.text);
       const composedText = (() => {
         const excerpts = outboxExcerpts(row);
         return excerpts.length === 0
-          ? row.text
+          ? promptText
           : composeQuotedText(
               fillQuoteTemplate(
                 pickQuoteTemplate(
@@ -2244,7 +2545,7 @@ export const dispatch = internalAction({
                 ),
                 excerpts,
               ),
-              row.text,
+              promptText,
             );
       })();
       // THE LAST THING BEFORE THE SEND LEAVES.
@@ -2276,7 +2577,7 @@ export const dispatch = internalAction({
         await ctx.runMutation(internal.bridge.failDispatch, {
           outboxId,
           reason: "agent_restricted",
-          errorCode: "SENDER_NOT_PERMITTED",
+          errorCode: gate.agentLeftRoom === true ? "AGENT_LEFT_ROOM" : "SENDER_NOT_PERMITTED",
         });
         return;
       }
@@ -2397,6 +2698,14 @@ export const dispatch = internalAction({
             // Per-chat knob intent: the bridge re-applies these (sessions.patch)
             // before chat.send so a reset session keeps the user's reasoning/model.
             sessionSettings: routing.sessionSettings,
+            // The permission mode the reader was shown (null = "none set on the
+            // session"), for the gateway to compare with the one it stores: a mode
+            // changed since refuses the send before anything runs. OMITTED when this
+            // turn's session may not be the one described (getChatRouting) — a guard
+            // from another session would refuse a turn for nothing.
+            ...(routing.permissionGuard === null
+              ? {}
+              : { expectedPermissionMode: routing.permissionGuard.mode }),
             attachments: resolvedAttachments,
             // Tool-read files streamed by reference (shared-fs). An old bridge
             // ignores this unknown field (those files simply won't reach the agent
@@ -2457,10 +2766,10 @@ export const dispatch = internalAction({
       // return-to-prior reuses its real segment + a retry to the failed agent is still a
       // switch (rehydrate). Only when beginTurnRouting ran (turnRouting carries the
       // segment); a non-routed send never confirms.
-      if (row.routedAgent && turnRouting) {
+      if (routedAgent && turnRouting) {
         await ctx.runMutation(internal.bridge.confirmTurnRouting, {
           chatId: row.chatId as Id<"chats">,
-          routedAgent: row.routedAgent,
+          routedAgent,
           segment: turnRouting.segment,
           expectedResetCount: turnRouting.resetCount,
         });
@@ -2498,6 +2807,15 @@ export const dispatch = internalAction({
       // before sending (an inbound file it could not place: the
       // `attachment_*` classes). Surface it to the user either way, instead of
       // leaving the message unanswered.
+      // Refused on the permission mode it carried: the mode read for the reader no
+      // longer describes the session the send lands on. Forgotten unless a newer
+      // describe already replaced it, so the retry the refusal asks for can land.
+      if (errorCode === "session_settings_changed" && routing.permissionGuard !== null) {
+        await ctx.runMutation(internal.bridge.forgetRefusedPermissionGuard, {
+          chatId: row.chatId as Id<"chats">,
+          accessAt: routing.permissionGuard.accessAt,
+        });
+      }
       // Pass the curated errorCode so an attachment refusal shows a file-specific
       // message ("trop volumineuse" / "n'a pas pu être traitée"), not a blanket one.
       await ctx.runMutation(internal.bridge.failDispatch, {
@@ -2566,6 +2884,9 @@ export const dispatchPatch = internalAction({
     const routing = await ctx.runQuery(internal.bridge.getChatRouting, {
       chatId,
       userId,
+      // The knobs apply to the session the next turn reuses, not to the primary's
+      // legacy one on a per-turn routed chat (see getChatRouting).
+      currentSession: true,
     });
     if (!routing || routing.target === null) {
       console.error("bridge.dispatchPatch: user is unrouted (no valve target)");
@@ -2877,6 +3198,9 @@ export const chatBusyProbe = internalQuery({
  *     out of the room or no longer the owner's, or a re-point on their behalf).
  *     The reset would wipe the owner's session for a turn the re-dispatch then
  *     refuses — the caller settles the row instead;
+ *   - `agent_left_room`: the same, for the one reason that is nobody's standing —
+ *     the agent the turn was addressed to has left the room (settled with its own
+ *     code, see refusalErrorCode);
  *   - `go`.
  */
 export const regenerateResetGate = internalMutation({
@@ -2890,7 +3214,7 @@ export const regenerateResetGate = internalMutation({
   handler: async (
     ctx,
     { outboxId, chatId, expectedKey, target, rebinds },
-  ): Promise<"go" | "gone" | "refused"> => {
+  ): Promise<"go" | "gone" | "refused" | "agent_left_room"> => {
     const row = await ctx.db.get(outboxId);
     if (
       row === null ||
@@ -2915,6 +3239,7 @@ export const regenerateResetGate = internalMutation({
       target,
       rebinds,
     });
+    if (refusal === "agent_left_room") return refusal;
     return refusal === null ? "go" : "refused";
   },
 });
@@ -3010,18 +3335,17 @@ export const dispatchReset = internalAction({
         return;
       }
       regenKey = regen.dispatchKey ?? regen.clientMessageId;
-      if (
-        (await ctx.runQuery(internal.bridge.senderRefusalAtDispatch, {
-          chatId,
-          senderId: regen.userId as Id<"users">,
-          ...(regen.routedAgent ? { routedAgent: regen.routedAgent } : {}),
-          outboxId: regenerateOutboxId,
-        })) !== null
-      ) {
+      const refusal = await ctx.runQuery(internal.bridge.senderRefusalAtDispatch, {
+        chatId,
+        senderId: regen.userId as Id<"users">,
+        ...(regen.routedAgent ? { routedAgent: regen.routedAgent } : {}),
+        outboxId: regenerateOutboxId,
+      });
+      if (refusal !== null) {
         await ctx.runMutation(internal.bridge.failDispatch, {
           outboxId: regenerateOutboxId,
           reason: "agent_restricted",
-          errorCode: "SENDER_NOT_PERMITTED",
+          errorCode: refusalErrorCode(refusal),
         });
         return;
       }
@@ -3035,7 +3359,15 @@ export const dispatchReset = internalAction({
     const routing = await ctx.runQuery(internal.bridge.getChatRouting, {
       chatId,
       userId,
-      ...(routedAgent ? { routedAgent } : {}),
+      // A REGENERATE resets the session its re-dispatch will use: the routed one it
+      // names, or — unrouted — the primary's, exactly what that dispatch resolves. A
+      // panel reset or a plain delete realigns the session the NEXT turn reuses: on a
+      // per-turn routed chat, the current routed one (see getChatRouting).
+      ...(routedAgent
+        ? { routedAgent }
+        : regenerateOutboxId === undefined
+          ? { currentSession: true }
+          : {}),
     });
     if (!routing || routing.target === null) {
       // Same distinction as the normal dispatch: a chat whose agent the user is no
@@ -3098,11 +3430,13 @@ export const dispatchReset = internalAction({
         console.log("bridge.dispatchReset: regenerate row changed — reset abandoned");
         return;
       }
-      if (verdict === "refused") {
+      if (verdict === "refused" || verdict === "agent_left_room") {
         await ctx.runMutation(internal.bridge.failDispatch, {
           outboxId: regenerateOutboxId,
           reason: "agent_restricted",
-          errorCode: "SENDER_NOT_PERMITTED",
+          errorCode: refusalErrorCode(
+            verdict === "agent_left_room" ? verdict : "sender_not_permitted",
+          ),
         });
         return;
       }

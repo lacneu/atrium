@@ -1,5 +1,61 @@
 # Changelog
 
+## [0.86.0] — Conversations with several people and several agents
+
+Feature release: a conversation can now hold people and agents together — several agents,
+on different gateways, answering in turn. It also fixes a delegated reply that showed up as
+a second, unattached answer. No breaking changes; read the deployment note at the end.
+
+**Invite people into a conversation, with a role.** From the composer's room control you
+add people as viewers (they read), members (they write) or managers (they invite and add
+agents too). A conversation shared with you appears in its own "Shared with me" section,
+with your own pin, without the owner's folders or colours; you can leave it, and you are
+notified when someone adds you or mentions you. The owner's agent answers everyone, on the
+owner's access. On an instance behind a trusted proxy, an administrator can have each
+participant's messages reach the gateway under that person's own identity.
+
+**Several agents in one conversation, across gateways.** Add agents from other OpenClaw
+instances or from Hermes next to the conversation's primary agent, which wears a crown and
+is changed only from the conversation panel. A message that names no agent goes to the
+primary; `@Name` addresses an agent of the room; naming several makes them answer one after
+the other, each one given the question and the replies before it. Stop ends the whole
+chain, regenerating a reply runs the chain again from that agent, and an agent taken out of
+the room is not asked — its turn shows why.
+
+**Each agent knows what was said before it joined.** When the conversation moves to another
+agent, the history it receives names which agent said what, is cut to fit that agent's
+context instead of being dropped, and marks what was left out. A Hermes agent coming back to
+the conversation is caught up on everything the others said since its last reply.
+
+**A room control that stays out of the way.** The composer shows who is in the conversation;
+the list opens on the agents and people already there, with remove and mention always
+visible, and folds away the agents you could add and the people you could invite until you
+ask for them or search. Hovering the faces magnifies them like a dock.
+
+**The session's access, visible and kept.** On OpenClaw 2026.9.6 the conversation header
+shows the session's permission mode and, when it is not shared, its visibility. From gateway
+2026.8.2 on, a message is sent with the mode you were shown: if it was changed in the meantime
+the gateway refuses it rather than running under a mode you never saw, and a session removed
+on the gateway no longer leaves a stale mode behind. A participant's message refused by the
+session's visibility is no longer sent again under the owner's name.
+
+**A delegated reply stays in its bubble.** Reported in production: an agent that handed work
+to a sub-agent and waited for it produced a second answer, unattached to the question, that
+finished before the first. On OpenClaw 2026.9.6 that continuation now lands in the bubble of
+the turn that delegated, with each sub-agent's reply at the place it belongs — including when
+the agent answers through a messaging tool, when it delegates more than once, and when the
+gateway retries the delivery, which no longer duplicates text or files. A delegation you
+stopped does not come back.
+
+**Hardening.** A bridge instance can write to a conversation only once a turn was actually
+sent to it there — a queued or refused turn no longer grants it. The protocol monitor names
+a reader that failed because the store refused its write, instead of an unknown field.
+
+**Deployment note.** The Convex schema gains optional fields and indexes (no migration; the
+indexes build on deploy): run `npx convex deploy` with the new bridge. The primary agent of
+a long conversation can take a moment to change — the panel says so and asks you to try
+again. A delegation already in flight during the upgrade keeps its own bubble.
+
 ## [0.85.1] — OpenClaw 2026.9.6 supported
 
 Support and reliability release, corrective throughout. No breaking changes in Atrium —

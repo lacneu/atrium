@@ -33,6 +33,12 @@ export type SessionMetaView = {
   activeTokens?: number;
   contextTokens?: number;
   estimatedCostUsd?: number;
+  // Who may act on the session, and with what permissions (sessionAccessView.ts).
+  visibility?: string;
+  sharingRole?: string;
+  permissionMode?: string | null;
+  permissionModePending?: boolean;
+  sessionRoot?: string;
   updatedAt?: number;
 };
 

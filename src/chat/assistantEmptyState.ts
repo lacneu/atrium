@@ -61,6 +61,10 @@ export type EmptyStateMessage = {
   /** When this bubble SETTLED (the Convex message `updatedAt`). Bounds the
    *  unbacked waiting note; absent = no grace, the terminal verdict stands. */
   settledAt?: number;
+  /** The bubble holds a merged hand-off continuation (`continuationAt`), so the
+   *  delegated replies already render INLINE at that point (`delegatedRepliesFor`).
+   *  The `done` fallback must not print them a second time under the body. */
+  delegatedInline?: boolean;
 };
 
 /** The discriminated render decision. `none` = render normally (there is an
@@ -391,6 +395,8 @@ export function assistantEmptyState(
         recheckAt,
       };
     }
+    // Already on screen, inline, at the continuation point — see delegatedInline.
+    if (message.delegatedInline === true) return { kind: "none" };
     return {
       kind: "done",
       taskName: cleanTaskName(done.taskName),
@@ -424,4 +430,83 @@ export function assistantEmptyState(
     }
   }
   return { kind: "generic" };
+}
+
+/** One delegated child's own reply, as the bubble shows it. */
+export type DelegatedReply = {
+  childSessionKey: string;
+  /** The delegated agent — named, so the reader is told whose words these are. */
+  agentId?: string;
+  resultText: string;
+};
+
+/**
+ * The delegated replies a merged hand-off continuation shows AT its continuation
+ * point (the message's `continuationAt`): every sub-agent this bubble spawned that
+ * FINISHED with a reply, oldest first.
+ *
+ * THE ORDERING RULE. A yielded turn reads: what the turn said → what the agents it
+ * asked answered → the conclusion the continuation drew from them. The position is
+ * a stored text offset, never an arrival order: a child's row can turn `done`
+ * after the conclusion has started streaming (the observer and the gateway's wake
+ * are two lanes), and the reply still lands ABOVE the conclusion. That is the
+ * defect this fixes — the child's reply used to surface 180 s after the child
+ * finished (ANNOUNCE_COMPOSE_GRACE_MS), under an answer already written.
+ *
+ * Same correlation as the empty state (`parentMessageId`, message-precise), same
+ * exclusions: background-task rows carry no reply, and a failed child is the
+ * sub-agent card's to explain.
+ */
+export function delegatedRepliesFor(
+  rows: readonly SubAgentRow[] | undefined,
+  messageId: string | undefined,
+  /** WHICH of them, when the bubble holds several continuations (see
+   *  `DelegatedSlot`). Absent = all of them: a bubble merged before per-batch
+   *  positions existed shows every reply at its single point, as it always did. */
+  slot?: DelegatedSlot,
+): DelegatedReply[] {
+  if (rows === undefined || messageId === undefined) return [];
+  return rows
+    .filter(
+      (s) =>
+        s.parentMessageId === messageId &&
+        s.kind !== "task" &&
+        s.status === "done" &&
+        typeof s.resultText === "string" &&
+        s.resultText.trim() !== "" &&
+        inSlot(s, slot),
+    )
+    .slice()
+    .sort((a, b) => a.createdAt - b.createdAt)
+    .map((s) => ({
+      childSessionKey: s.childSessionKey,
+      agentId: childAgentIdFromKey(s.childSessionKey),
+      resultText: s.resultText as string,
+    }));
+}
+
+/**
+ * Where a group of delegated replies sits in a bubble with several continuations.
+ *
+ * `batch`: the children ONE continuation answered — its settle run named their run
+ * ids (the message's `continuations[i].childRunIds`). They render at that
+ * continuation's offset: before ITS conclusion, not before the first one. A
+ * continuation can delegate and yield again, and its child's reply printed above the
+ * very text that asked for it read backwards.
+ *
+ * `rest`: every child claimed by no batch — finished, but its continuation has not
+ * merged yet (or the list was full). They render where the next continuation will
+ * begin: after the text written so far on a new-style bubble, or at the legacy
+ * `continuationAt` on a bubble that recorded its first merge that way. When their
+ * batch does merge, its offset IS that point, so the reply does not jump.
+ */
+export type DelegatedSlot =
+  | { kind: "batch"; childRunIds: readonly string[] }
+  | { kind: "rest"; claimed: readonly string[] };
+
+function inSlot(row: SubAgentRow, slot: DelegatedSlot | undefined): boolean {
+  if (slot === undefined) return true;
+  const id = row.childRunId;
+  if (slot.kind === "batch") return id !== undefined && slot.childRunIds.includes(id);
+  return id === undefined || !slot.claimed.includes(id);
 }

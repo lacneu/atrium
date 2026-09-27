@@ -637,6 +637,9 @@ export const compactSession = action({
     const routing = await ctx.runQuery(internal.bridge.getChatRouting, {
       chatId,
       userId,
+      // Compact the session the next turn reuses — on a per-turn routed chat the
+      // current routed one, not the primary's legacy session (see getChatRouting).
+      currentSession: true,
     });
     if (!routing || routing.target === null) {
       throw new Error("no_agent: chat has no routed agent");
@@ -731,6 +734,8 @@ export const compactionHistoryInternal = internalAction({
     const routing = await ctx.runQuery(internal.bridge.getChatRouting, {
       chatId: chat.chatId,
       userId: chat.userId,
+      // The history of the session in use — the same one compactSession compacts.
+      currentSession: true,
     });
     if (!routing || routing.target === null) {
       return { ok: false, code: "no_agent", error: "no_agent" };

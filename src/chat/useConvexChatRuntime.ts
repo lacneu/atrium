@@ -1,4 +1,11 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  useSyncExternalStore,
+} from "react";
 import {
   useExternalStoreRuntime,
   type AppendMessage,
@@ -18,15 +25,22 @@ import {
   takePendingQuotes,
   type PendingQuote,
 } from "./pendingQuote";
-import { restorePendingMentions, takeMentionsForSend } from "./pendingMention";
+import {
+  peekPendingMentions,
+  restorePendingMentions,
+  stagedAgents,
+  subscribePendingMentions,
+  takeMentionsForSend,
+  type PendingMention,
+} from "./pendingMention";
 import { useToast } from "@/components/ui/toast";
 import {
-  isFirstTurn,
   lastRoutedAgent,
   resolveEffectiveSelection,
+  roomTargets,
   resolveImportedAgentLabels,
   resolveMessageAgents,
-  resolveRoutedAgentToSend,
+  resolveTurnRoute,
   type AgentRef,
 } from "./perTurnAgent";
 import type { PickableAgent } from "./AgentPicker";
@@ -46,6 +60,9 @@ import { m } from "@/paraglide/messages.js";
 // and writes every normalized event into Convex; useQuery(listByChat) makes the
 // browser reactive to the DB, so streaming and post-turn events all land the
 // same way: a doc patch -> query re-run -> re-render.
+
+/** Stable empty staging (useSyncExternalStore compares snapshots by identity). */
+const NO_STAGED: readonly PendingMention[] = [];
 
 export interface UseConvexChatRuntimeArgs {
   chatId: ConvexId<"chats"> | null;
@@ -86,6 +103,23 @@ export function quotesRejectedOutright(error: unknown): boolean {
   const message = error instanceof Error ? error.message : "";
   if (goneQuoteTargets(error).size > 0) return false;
   return /Invalid:.*quote/i.test(message);
+}
+
+/** Why the server refused to ADDRESS a message to the agents it mentions, when that
+ *  is why the send failed: `too_many` (more agents than one message may chain),
+ *  `invalid` (an agent no longer in the room or no longer usable, or spans that do
+ *  not hold). Null for any other failure. */
+export function agentAddressFailure(error: unknown): "too_many" | "invalid" | null {
+  const message = error instanceof Error ? error.message : String(error ?? "");
+  if (message.includes("agent_mentions_invalid:too_many_agents")) return "too_many";
+  if (
+    message.includes("agent_mentions_invalid:") ||
+    message.includes("Forbidden: agent is not part of this conversation") ||
+    message.includes("Forbidden: routed agent is not dispatchable")
+  ) {
+    return "invalid";
+  }
+  return null;
 }
 
 export function useConvexChatRuntime({ chatId }: UseConvexChatRuntimeArgs) {
@@ -142,8 +176,10 @@ export function useConvexChatRuntime({ chatId }: UseConvexChatRuntimeArgs) {
         // lastRoutedAgent would briefly see the PREVIOUS turn's agent until the
         // real message lands and corrects it). Keys always present (value
         // undefined on an unrouted send) to match the query's inferred shape.
-        routedInstanceName: args.routedAgent?.instanceName,
-        routedAgentId: args.routedAgent?.agentId,
+        // A turn addressed by mention is routed to its FIRST agent (send.ts).
+        routedInstanceName:
+          args.routedAgent?.instanceName ?? args.agentMentions?.[0]?.instanceName,
+        routedAgentId: args.routedAgent?.agentId ?? args.agentMentions?.[0]?.agentId,
         // Quote-reply echo: the collapsed headers render this frame (key always
         // present to match the query's inferred shape).
         quotedRefs: args.quotes,
@@ -152,6 +188,8 @@ export function useConvexChatRuntime({ chatId }: UseConvexChatRuntimeArgs) {
         hasMergedRuns: false,
         hasAnnouncePrefix: false,
         mergedIntoTurn: undefined,
+        continuationAt: undefined,
+        continuations: undefined,
         // Never on a user echo; keys present to match the query's shape.
         autoRetry: undefined,
         interruptedAt: undefined,
@@ -326,6 +364,14 @@ export function useConvexChatRuntime({ chatId }: UseConvexChatRuntimeArgs) {
     // roomKey encodes the room; roomInfo is read for the rows it keys.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [chatId, myAgents, isGuest, roomKey, roomInfo]);
+  // WHO a message may be addressed to: the room's agents only. The popover still
+  // lists the reader's other agents, but as ADD-only rows (ConvexChat.tsx).
+  const targetPool = useMemo<PickableAgent[]>(
+    () => roomTargets(pool, roomInfo ? [roomInfo.primary, ...roomInfo.agents] : null),
+    // roomKey encodes the room.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [pool, roomKey, roomInfo === undefined],
+  );
   const multiAgent = chatAgentInfo?.multiAgent === true;
   const perTurnRouting = chatMeta?.perTurnRouting === true;
   // Routing is allowed only when there is a genuine choice: the user has MORE THAN
@@ -373,12 +419,17 @@ export function useConvexChatRuntime({ chatId }: UseConvexChatRuntimeArgs) {
     [chatLastRoutedKey],
   );
 
-  // The composer's explicit per-turn pick (null = use the derived default). Reset
-  // on chat switch (the hook is reused across chats, not remounted).
-  const [selectedAgent, setSelectedAgent] = useState<AgentRef | null>(null);
-  useEffect(() => {
-    setSelectedAgent(null);
-  }, [chatId]);
+  // THE AGENTS STAGED for the next message (their "@Name" tokens, picked in the room
+  // popover) — the only thing that addresses a message to an agent. There is no
+  // hidden selection: nothing mentioned = the primary (resolveTurnRoute).
+  const staged = useSyncExternalStore(
+    subscribePendingMentions,
+    () => (chatId ? peekPendingMentions(chatId) : NO_STAGED),
+  );
+  const stagedAgentsKey = stagedAgents(staged)
+    .map((a) => `${a.instanceName}\0${a.agentId}`)
+    .join("|");
+  const severalAgents = roomAgents.length > 0;
 
   // DISTINGUISH messages LOADING (undefined, listByChat not yet responded) from a
   // genuinely EMPTY new chat ([]). While loading we must not treat the chat as
@@ -400,97 +451,102 @@ export function useConvexChatRuntime({ chatId }: UseConvexChatRuntimeArgs) {
     () => (messages ? lastRoutedAgent(messages) : null) ?? chatLastRouted,
     [messages, chatLastRouted],
   );
-  // Default selection = the thread's last-used agent, else the chat's primary —
-  // gated by canRoute, loading-aware, and pool-filtered (see resolveEffectiveSelection).
-  // Also the placeholder chip's fallback (the in-flight turn's just-routed agent).
+  // The in-flight PLACEHOLDER's attribution: the thread's last-routed agent (the
+  // optimistic echo of a just-sent turn carries it), else the primary — gated by
+  // canRoute, loading-aware, and pool-filtered (see resolveEffectiveSelection).
   const defaultAgent = useMemo<AgentRef | null>(
     () =>
       resolveEffectiveSelection({
         selected: null,
         lastRouted: threadLastRouted,
         primary,
-        pool,
+        pool: targetPool,
         poolLoading,
         messagesLoading,
         canRoute,
       }),
-    [threadLastRouted, primary, pool, poolLoading, messagesLoading, canRoute],
+    [threadLastRouted, primary, targetPool, poolLoading, messagesLoading, canRoute],
   );
-  // Effective composer selection: the explicit pick if set, else the thread
-  // default. ONE helper enforces all the edge rules — never for a single-agent user
-  // (canRoute), preserve the last-routed agent while the pool OR messages load, and
-  // drop a stale explicit pick OR stale last-routed once both are known.
-  const effectiveSelected = useMemo<AgentRef | null>(
+  // WHERE THE NEXT MESSAGE GOES, as far as the composer knows before the text is
+  // final: the first agent staged, else the primary (resolveTurnRoute). What the
+  // availability, capability and usage projections — and a voice call — scope to.
+  // Null for a single-agent user: the chat's own resolution applies, unchanged.
+  const nextTarget = useMemo<AgentRef | null>(
     () =>
-      resolveEffectiveSelection({
-        selected: selectedAgent,
-        lastRouted: threadLastRouted,
+      resolveTurnRoute({
+        mentioned: stagedAgents(staged),
         primary,
-        pool,
-        poolLoading,
-        messagesLoading,
+        severalAgents,
+        perTurnRouting,
         canRoute,
-      }),
-    [selectedAgent, threadLastRouted, primary, pool, poolLoading, messagesLoading, canRoute],
+      }) ?? null,
+    // stagedAgentsKey encodes the only part of `staged` read.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [stagedAgentsKey, primary, severalAgents, perTurnRouting, canRoute],
   );
-  // First turn? (loading-aware — see isFirstTurn). Drives the send-rule's "never
-  // route turn 1": while messages load this is FALSE (we don't yet know the
-  // history), so an already-perTurnRouting chat is not misread as turn 1.
-  const firstTurn = isFirstTurn(messages);
-  // Has the chat had a user turn yet? Gates the selector (meaningless on turn 1 —
-  // the agent is bound at creation). Loading → false (selector stays disabled until
-  // we know there is a turn). Distinct from `firstTurn` (which is loading-aware for
-  // the SEND decision); here a conservative disable during load is the safe choice.
-  const hasUserTurn = useMemo(
-    () => (messages ?? []).some((mm) => mm.role === "user"),
-    [messages],
-  );
-  // Has the thread said NOTHING at all? Gates the selector's REBIND mode: on such a
-  // chat the agent selector replaces the chat's binding instead of routing a turn,
-  // because turn 1 always goes to the binding. LOADING (`undefined`) is NOT empty —
-  // offering a rebind on a thread we have not read yet could move the binding under
-  // messages that exist, which is exactly what the server-side guard refuses.
+  // Has the thread said NOTHING at all? Gates the conversation panel's REBIND of an
+  // empty chat (rebindChatAgent — never the composer's). LOADING (`undefined`) is
+  // NOT empty — offering a rebind on a thread we have not read yet could move the
+  // binding under messages that exist, which is exactly what the server refuses.
   const emptyThread = messages !== undefined && messages.length === 0;
 
   // onNew / queueSend run from memoized closures; read the live routing inputs via
   // refs so a selection change never has to rebuild the runtime adapter.
   const routingRef = useRef<{
-    selected: AgentRef | null;
     primary: AgentRef | null;
+    severalAgents: boolean;
     perTurnRouting: boolean;
-    isFirstTurn: boolean;
     canRoute: boolean;
-    guest: boolean;
+    nextTarget: AgentRef | null;
   }>({
-    selected: null,
     primary: null,
+    severalAgents: false,
     perTurnRouting: false,
-    isFirstTurn: false,
     canRoute: false,
-    guest: false,
+    nextTarget: null,
   });
   routingRef.current = {
-    selected: effectiveSelected,
     primary,
+    severalAgents,
     perTurnRouting,
-    isFirstTurn: firstTurn,
     canRoute,
-    guest: isGuest,
+    nextTarget,
   };
-  // The routedAgent (if any) to send for a turn — the single-agent-path rule.
-  const computeRoutedAgent = useCallback((): AgentRef | undefined => {
-    const r = routingRef.current;
-    return resolveRoutedAgentToSend({
-      selected: r.selected,
-      primary: r.primary,
-      perTurnRouting: r.perTurnRouting,
-      isFirstTurn: r.isFirstTurn,
-      canRoute: r.canRoute,
-      guest: r.guest,
-    });
-  }, []);
+  // What a send carries for its ROUTE, from the agents its text mentions (resolved
+  // against the text as sent): the mentions themselves when there are any — the
+  // server chains one reply per agent, in text order — else the route of a message
+  // that names no agent, the primary (resolveTurnRoute).
+  const computeTurnAddress = useCallback(
+    (
+      agentMentions: ReadonlyArray<AgentRef & { start: number; end: number }>,
+    ):
+      | { agentMentions: Array<AgentRef & { start: number; end: number }> }
+      | { routedAgent: AgentRef }
+      | Record<string, never> => {
+      const r = routingRef.current;
+      if (agentMentions.length > 0 && r.canRoute) {
+        return {
+          agentMentions: agentMentions.map((a) => ({
+            instanceName: a.instanceName,
+            agentId: a.agentId,
+            start: a.start,
+            end: a.end,
+          })),
+        };
+      }
+      const routedAgent = resolveTurnRoute({
+        mentioned: [],
+        primary: r.primary,
+        severalAgents: r.severalAgents,
+        perTurnRouting: r.perTurnRouting,
+        canRoute: r.canRoute,
+      });
+      return routedAgent ? { routedAgent } : {};
+    },
+    [],
+  );
 
-  // Defined AFTER computeRoutedAgent (TDZ): the adapter resolves the upload cap
+  // Reads the routing ref (set above): the adapter resolves the upload cap
   // against the agent the COMPOSER currently targets — on a multi-instance chat the
   // last-send scope would apply the WRONG gateway's frame limit after a switch
   // (codex P2: reject a file the target accepts / accept one it rejects).
@@ -500,9 +556,9 @@ export function useConvexChatRuntime({ chatId }: UseConvexChatRuntimeArgs) {
         convex,
         (msg) => toast.error(msg),
         chatId,
-        () => computeRoutedAgent() ?? null,
+        () => routingRef.current.nextTarget,
       ),
-    [convex, toast, chatId, computeRoutedAgent],
+    [convex, toast, chatId],
   );
 
   // Overlay the live streaming text onto its message (keyed by messageId — robust
@@ -720,11 +776,6 @@ export function useConvexChatRuntime({ chatId }: UseConvexChatRuntimeArgs) {
           ...(a.origin ? { origin: a.origin } : {}),
         }));
 
-        // MULTI-AGENT: the agent this turn is routed to, per the single-agent-path
-        // rule (undefined keeps the unchanged single-agent path — never sent on a
-        // normal chat / the very first turn). Authorized + stamped server-side.
-        const routedAgent = computeRoutedAgent();
-
         // QUOTE-REPLY: consume THIS chat's staged passages exactly once — the
         // per-chat keying means a quote staged in another chat can never ride
         // this send.
@@ -733,15 +784,20 @@ export function useConvexChatRuntime({ chatId }: UseConvexChatRuntimeArgs) {
         // against the text as it is about to be sent — a span captured when the
         // person was picked would have drifted with every keystroke since. A token
         // the writer deleted resolves to nothing and the mention goes with it.
-        const { staged: stagedMentions, mentions: resolved } = takeMentionsForSend(
-          chatId,
-          text,
-        );
+        const {
+          staged: stagedMentions,
+          mentions: resolved,
+          agentMentions,
+        } = takeMentionsForSend(chatId, text);
         const mentions = resolved.map((m) => ({
           userId: m.userId as Id<"users">,
           start: m.start,
           end: m.end,
         }));
+        // MULTI-AGENT: WHO the turn is for — the agents it mentions (each answers in
+        // turn), else the primary where there is a choice. Authorized + stamped
+        // server-side.
+        const address = computeTurnAddress(agentMentions);
 
         // Mark the turn in-flight IMMEDIATELY (before the await) so isRunning
         // flips this frame — the optimistic echo + gap indicator + double-send
@@ -759,7 +815,7 @@ export function useConvexChatRuntime({ chatId }: UseConvexChatRuntimeArgs) {
             text,
             clientMessageId: crypto.randomUUID(),
             attachments,
-            ...(routedAgent ? { routedAgent } : {}),
+            ...address,
             ...(quotes.length > 0
               ? {
                   quotes: quotes.map((q) => ({
@@ -800,6 +856,16 @@ export function useConvexChatRuntime({ chatId }: UseConvexChatRuntimeArgs) {
               );
             }
           }
+          // The agents it mentions could not be addressed: said, so the writer knows
+          // the text is intact and only the addressing needs fixing.
+          const addressing = agentAddressFailure(e);
+          if (addressing !== null) {
+            toast.error(
+              addressing === "too_many"
+                ? m.chat_send_agents_too_many()
+                : m.chat_send_agents_invalid(),
+            );
+          }
           // The mutation rejected BEFORE the server accepted the turn (validation,
           // auth, transient client failure). No assistant reply will arrive, so
           // the reactive clear can't fire — release the in-flight gate now instead
@@ -814,7 +880,7 @@ export function useConvexChatRuntime({ chatId }: UseConvexChatRuntimeArgs) {
         attachments: attachmentAdapter,
       },
     };
-  }, [list, isRunning, chatId, sendMessage, attachmentAdapter, computeRoutedAgent]);
+  }, [list, isRunning, chatId, sendMessage, attachmentAdapter, computeTurnAddress]);
 
   // Stable identity: the gate is consumed through context by every message row.
   const turnGate = useMemo<TurnGate>(
@@ -854,16 +920,16 @@ export function useConvexChatRuntime({ chatId }: UseConvexChatRuntimeArgs) {
     async (text: string): Promise<boolean> => {
       const trimmed = text.trim();
       if (!chatId || trimmed === "") return false;
-      // MULTI-AGENT: a queued follow-up routes by the SAME rule (the chat already
-      // has a turn in flight, so it is never the first turn).
-      const routedAgent = computeRoutedAgent();
       const quotes = takePendingQuotes(chatId);
       // MENTIONS: the same consumption as onNew — a person picked while a turn
       // runs is named in the follow-up that queues, not sent as plain text.
-      const { staged: stagedMentions, mentions: resolved } = takeMentionsForSend(
-        chatId,
-        text,
-      );
+      const {
+        staged: stagedMentions,
+        mentions: resolved,
+        agentMentions,
+      } = takeMentionsForSend(chatId, text);
+      // MULTI-AGENT: a queued follow-up is addressed by the SAME rule.
+      const address = computeTurnAddress(agentMentions);
       const mentions = resolved.map((m) => ({
         userId: m.userId as Id<"users">,
         start: m.start,
@@ -878,7 +944,7 @@ export function useConvexChatRuntime({ chatId }: UseConvexChatRuntimeArgs) {
           chatId: chatId as Id<"chats">,
           text,
           clientMessageId,
-          ...(routedAgent ? { routedAgent } : {}),
+          ...address,
           ...(quotes.length > 0
             ? {
                 quotes: quotes.map((q) => ({
@@ -914,8 +980,14 @@ export function useConvexChatRuntime({ chatId }: UseConvexChatRuntimeArgs) {
           }
         }
         const failure = (e as Error)?.message ?? "";
+        // The agents it mentions could not be addressed (agentAddressFailure).
+        const addressing = agentAddressFailure(e);
         toast.error(
-          failure.includes("QUEUE_FULL")
+          addressing === "too_many"
+            ? m.chat_send_agents_too_many()
+            : addressing === "invalid"
+            ? m.chat_send_agents_invalid()
+            : failure.includes("QUEUE_FULL")
             ? m.chat_queue_full()
             : // A voice call pins this chat's agent. The selector normally says so
               // BEFORE the click — but not for a reader who has no selector: a
@@ -934,12 +1006,12 @@ export function useConvexChatRuntime({ chatId }: UseConvexChatRuntimeArgs) {
         return false;
       }
     },
-    [chatId, sendMessage, toast, computeRoutedAgent],
+    [chatId, sendMessage, toast, computeTurnAddress],
   );
 
   // The per-turn router surface the chat UI consumes (composer selector + the
   // per-message attribution chip). `messageAgents`/`fallbackAgent` resolve WHO
-  // answered each message; `selected`/`setSelected` drive the composer pick.
+  // answered each message; `nextTarget` is where the next message goes.
   const routing = useMemo(
     () => ({
       // The user's entitled pool (selector list + chip display names) — narrowed
@@ -949,11 +1021,9 @@ export function useConvexChatRuntime({ chatId }: UseConvexChatRuntimeArgs) {
       roomAgents,
       multiAgent,
       perTurnRouting,
-      hasUserTurn,
       emptyThread,
       primary,
-      selected: effectiveSelected,
-      setSelected: setSelectedAgent,
+      nextTarget,
       messageAgents,
       // The in-flight assistant PLACEHOLDER has a synthetic id absent from
       // messageAgents — fall back to the just-routed agent so it does not flash
@@ -965,10 +1035,9 @@ export function useConvexChatRuntime({ chatId }: UseConvexChatRuntimeArgs) {
       roomAgents,
       multiAgent,
       perTurnRouting,
-      hasUserTurn,
       emptyThread,
       primary,
-      effectiveSelected,
+      nextTarget,
       messageAgents,
       defaultAgent,
     ],

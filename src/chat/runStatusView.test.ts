@@ -11,6 +11,7 @@ import {
   messageHasText,
   activeToolFromParts,
   toolFamily,
+  ERROR_CODE_LABEL,
 } from "./runStatusView";
 
 describe("runStatusView", () => {
@@ -131,6 +132,14 @@ describe("errorDetailView (actionable error classification)", () => {
       // The bare code is not a useful detail line for the reader.
       expect(byString.detail, code).toBeNull();
     }
+  });
+
+  it("an agent taken out of the room is named as such, not as a change of access", () => {
+    // failDispatch stores the reason in `error` and the finer code in `errorCode`.
+    const v = errorDetailView("agent_restricted", "AGENT_LEFT_ROOM");
+    expect(v.headline).toBe(m.runstatus_error_agent_left_room());
+    expect(v.headline).not.toBe(m.runstatus_error_agent_restricted());
+    expect(v.detail).toBeNull();
   });
 
   it("unknown code -> no headline, raw text stays the message", () => {
@@ -294,6 +303,28 @@ describe("errorDetailView (actionable error classification)", () => {
       null,
     );
     expect(tricky.code).not.toBe("session_paused_review");
+  });
+
+  it("the session's own refusals (visibility, settings changed) get their card, and no raw sentence", () => {
+    // Both are DISPATCH failures: failDispatch stores the reason (`send_failed`) as the
+    // error and the class as errorCode. The headline must be the class's own — not the
+    // generic "service unavailable, retry" of `send_failed` — and no detail line shows.
+    for (const code of ["session_visibility_refused", "session_settings_changed"]) {
+      const v = errorDetailView("send_failed", code);
+      expect(v.code, code).toBe(code);
+      expect(v.headline, code).toBe(ERROR_CODE_LABEL[code]!());
+      expect(v.headline, code).not.toBe(m.runstatus_error_send_failed());
+      expect(v.detail, code).toBeNull();
+    }
+    // Neither card promises an automatic attempt: none is scheduled (turnRetry.ts).
+    for (const locale of ["en", "fr"] as const) {
+      for (const sentence of [
+        m.runstatus_error_session_visibility_refused({}, { locale }),
+        m.runstatus_error_session_settings_changed({}, { locale }),
+      ]) {
+        expect(sentence, locale).not.toMatch(/relance automatiquement|retries the turn automatically|is retried automatically/i);
+      }
+    }
   });
 
   it("a session KEY that reads like the sentence cannot mint the class", () => {

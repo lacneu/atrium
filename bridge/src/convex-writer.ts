@@ -86,6 +86,10 @@ export interface SubAgentRecord {
    *  lets the announce merge fall back to the ENGAGEMENT's anchor when the
    *  delivery run never opened a message of its own. */
   bornOfRun?: string;
+  /** The child's RUN id from its `sessions_spawn` result — what the gateway's
+   *  requester-settle wake names, and so the only exact join from that wake back
+   *  to the bubble that spawned the child (convex/lib/deliveryRuns.ts). */
+  childRunId?: string;
   taskName?: string;
   /** The bound the TOOL declared for this background task (async-start details).
    *  Carried so the row can be bounded by the task's own deadline rather than by a
@@ -464,6 +468,7 @@ export interface ConvexWriter {
   getRehydrationContext(
     chatId: string,
     excludeMessageId?: string | null,
+    opts?: RehydrationRequest,
   ): Promise<{
     history: string | null;
     turnCount: number;
@@ -471,6 +476,9 @@ export interface ConvexWriter {
      *  echoed into the openclaw.rehydrate trace. */
     summaryUsed?: boolean;
     summaryChars?: number;
+    /** With `sinceLastReplyOf`: whether that agent's last reply was found (false =
+     *  the whole history came back instead). */
+    sinceFound?: boolean;
   }>;
   /**
    * Mirror the gateway session meta onto the chat (LIVE model/reasoning/context
@@ -610,6 +618,38 @@ export interface SessionRosterReport {
   observedAt: number;
 }
 
+/**
+ * CONVEX refused (or never answered) a write the bridge made while processing a frame.
+ *
+ * A distinct CLASS because the reader-exception sensor (protocol-drift.ts) records only
+ * the error's class name and the frame's shape — never the message, which can quote
+ * content. As a plain `Error` a refused write read exactly like a bug in the bridge's own
+ * reader: production showed `«exception».Error@feed.agent` and nothing said which side
+ * failed. The class says it; the op and status stay on the instance for the log line.
+ */
+export class ConvexIngestError extends Error {
+  constructor(
+    readonly op: string,
+    readonly status: number | null,
+    message: string,
+  ) {
+    super(message);
+    this.name = "ConvexIngestError";
+  }
+}
+
+/** What a re-hydration asks Convex for, beyond the chat and the turn to exclude. */
+export interface RehydrationRequest {
+  /** The agent the history is FOR: its own replies are marked as its own, and the
+   *  others' carry the name of the agent that wrote them (a room holds several). */
+  forAgent?: { instanceName: string; agentId: string };
+  /** Only the turns since THIS agent's last reply (what it has not seen). Falls back
+   *  to the whole history when it never replied. */
+  sinceLastReplyOf?: { instanceName: string; agentId: string };
+  /** A character ceiling below Convex's own budget (what still fits the window). */
+  maxChars?: number;
+}
+
 export interface SessionMetaReport {
   model?: string;
   modelProvider?: string;
@@ -651,6 +691,14 @@ export interface SessionMetaReport {
   activeSubagents?: number;
   /** Provider API calls this session (`usage.calls`). */
   apiCalls?: number;
+  /** WHO MAY ACT, and with what permissions — as the gateway reports them on the
+   *  describe (providers/openclaw/session-access.ts). Shown, never enforced by Atrium.
+   *  `permissionMode: null` = the session sets none (a default applies). */
+  visibility?: string;
+  sharingRole?: string;
+  permissionMode?: string | null;
+  permissionModePending?: boolean;
+  sessionRoot?: string;
   // Bridge observation time: snapshots and per-turn stamps travel as
   // independent fire-and-forget POSTs — Convex orders them by this.
   observedAt?: number;
@@ -1337,7 +1385,11 @@ export class HttpConvexWriter implements ConvexWriter {
       response = await send(this.ingestSecret);
     } catch (err) {
       if (controller.signal.aborted) {
-        throw new Error(`Convex ingest ${body.op} timed out after ${WRITE_TIMEOUT_MS}ms`);
+        throw new ConvexIngestError(
+          body.op,
+          null,
+          `Convex ingest ${body.op} timed out after ${WRITE_TIMEOUT_MS}ms`,
+        );
       }
       throw err;
     } finally {
@@ -1345,7 +1397,9 @@ export class HttpConvexWriter implements ConvexWriter {
     }
     if (!response.ok) {
       const detail = await response.text().catch(() => "");
-      throw new Error(
+      throw new ConvexIngestError(
+        body.op,
+        response.status,
         `Convex ingest ${body.op} -> HTTP ${response.status}${detail ? `: ${detail}` : ""}`,
       );
     }
@@ -2262,21 +2316,29 @@ export class HttpConvexWriter implements ConvexWriter {
   async getRehydrationContext(
     chatId: string,
     excludeMessageId?: string | null,
+    opts: RehydrationRequest = {},
   ): Promise<{
     history: string | null;
     turnCount: number;
     summaryUsed?: boolean;
     summaryChars?: number;
+    /** With `sinceLastReplyOf`: whether that agent's last reply was found (false =
+     *  the whole history came back instead). */
+    sinceFound?: boolean;
   }> {
     return this.post<{
       history: string | null;
       turnCount: number;
       summaryUsed?: boolean;
       summaryChars?: number;
+      sinceFound?: boolean;
     }>({
       op: "getRehydrationContext",
       chatId,
       excludeMessageId: excludeMessageId ?? null,
+      ...(opts.forAgent ? { forAgent: opts.forAgent } : {}),
+      ...(opts.sinceLastReplyOf ? { sinceLastReplyOf: opts.sinceLastReplyOf } : {}),
+      ...(opts.maxChars !== undefined ? { maxChars: opts.maxChars } : {}),
     });
   }
 
@@ -2409,6 +2471,7 @@ export class HttpConvexWriter implements ConvexWriter {
       childSessionKey: record.childSessionKey,
       kind: record.kind,
       bornOfRun: record.bornOfRun,
+      ...(record.childRunId !== undefined ? { childRunId: record.childRunId } : {}),
       taskName: record.taskName,
       declaredTimeoutMs: record.declaredTimeoutMs,
       status: record.status,

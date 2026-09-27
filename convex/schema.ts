@@ -665,6 +665,10 @@ export default defineSchema({
     emoji: v.optional(v.string()),
     model: v.optional(v.string()),
     isDefaultOnInstance: v.optional(v.boolean()),
+    // The permission mode a session of this agent runs with when it sets none
+    // (`agents.list[].defaultPermissionMode`, OpenClaw). Upstream states it only when it
+    // can (no sandbox, canonical exec policy): absent = unknown, never "no mode".
+    defaultPermissionMode: v.optional(v.string()),
     // ADMIN curation: is this discovered agent made available downstream (assignable
     // to groups/users, usable in chats)? Admin-managed, PRESERVED across discovery
     // polls (applyDiscovery never writes it). OPTIONAL → unset/false = NOT enabled
@@ -1287,6 +1291,23 @@ export default defineSchema({
     lastRoutedInstanceName: v.optional(v.string()),
     lastRoutedAgentId: v.optional(v.string()),
     routingSegment: v.optional(v.string()),
+    // How far the history is PINNED to the agents that answered it
+    // (chatAgents.pinUnroutedBatch): every message before `through` (_creationTime),
+    // and those AT `through` listed in `atThrough`, carries its attribution
+    // explicitly, so a primary change stamps only what came after. `_creationTime` is
+    // not unique (two documents can share it), hence the ids at the boundary — the
+    // messages sharing one creation time, a handful at most. `sawUser`: a user turn
+    // lies within the pinned part (the pin rule's state). A long thread is pinned in
+    // scheduled batches to the CURRENT primary — which changes no reader's
+    // attribution — and the primary changes only once the whole thread is pinned, in
+    // the same transaction as the last batch.
+    historyPin: v.optional(
+      v.object({
+        through: v.number(),
+        atThrough: v.optional(v.array(v.id("messages"))),
+        sawUser: v.boolean(),
+      }),
+    ),
     // HIDDEN per-user utility chats (absent = a normal conversational chat):
     //  - "documentary": hosts L2 document-fetch turns (own gateway session so the
     //    conversational chats are never re-keyed);
@@ -1533,6 +1554,21 @@ export default defineSchema({
         // is ordered by this stamp (the two CUMULATIVE counters need none — they can only
         // grow, so their own previous value is the floor).
         terminalFactsAt: v.optional(v.number()),
+        // WHO MAY ACT on the gateway session, and with what permissions (OpenClaw
+        // 2026.9.6, convex/lib/sessionAccess.ts): its visibility, Atrium's connection's
+        // sharing role on it, its permission mode (`null` = the session sets none, so
+        // the agent's or the gateway's default applies; absent = not reported), whether
+        // a mode change is being applied, and the working root that goes with a mode.
+        // Shown to every reader of the conversation; the mode is also sent back as the
+        // send guard. Strings, not literals: the bridge validates against the vendored
+        // enums and a future value must not fail the whole meta write.
+        visibility: v.optional(v.string()),
+        sharingRole: v.optional(v.string()),
+        permissionMode: v.optional(v.union(v.string(), v.null())),
+        permissionModePending: v.optional(v.boolean()),
+        sessionRoot: v.optional(v.string()),
+        // Watermark of the five fields above — the describe's clock, like `knobsAt`.
+        accessAt: v.optional(v.number()),
         updatedAt: v.optional(v.number()),
       }),
     ),
@@ -1650,6 +1686,21 @@ export default defineSchema({
         }),
       ),
     ),
+    // WHICH AGENTS this user turn is ADDRESSED to, in the order their "@Name"
+    // tokens appear in `text` — each one answers in turn (send.ts chains one
+    // outbox row per agent). Spans like `mentions`, disjoint from them. Atrium-
+    // side routing only: never forwarded to the gateway as a human mention.
+    // Absent on every turn that names no agent (it then goes to the primary).
+    addressedAgents: v.optional(
+      v.array(
+        v.object({
+          instanceName: v.string(),
+          agentId: v.string(),
+          start: v.number(),
+          end: v.number(),
+        }),
+      ),
+    ),
     // WHO WROTE this message, when it is not the owner. Only set on user messages
     // in a chat with participants (and on their copies in a branch of one);
     // absent everywhere else, which keeps every existing row valid and means "the
@@ -1705,6 +1756,30 @@ export default defineSchema({
     // written before this field existed — readers fall back to the old inference,
     // which errs toward "a turn" and therefore toward surfacing.
     mergedIntoTurn: v.optional(v.boolean()),
+    // HAND-OFF CONTINUATION: the text offset at which a yielded turn's
+    // continuation (the gateway's `announce:requester-settle:…:yield-N` run,
+    // merged back into this bubble by stream.startAssistant) begins. Stamped
+    // ONCE, at the first such merge; never rewritten. The reader renders the
+    // delegated children's own replies AT this offset — after what the turn
+    // itself said, before the conclusion the continuation writes — whatever order
+    // the two actually arrived in. Absent on every other bubble.
+    continuationAt: v.optional(v.number()),
+    // ONE ENTRY PER MERGED HAND-OFF CONTINUATION, in merge order: where that
+    // continuation's text begins (`at`) and which settled children it answered for
+    // (`childRunIds`, the ids its `announce:requester-settle:…` run named). A
+    // continuation can delegate and yield AGAIN (`:yield-2`), and its children's
+    // replies belong before ITS conclusion, not before the first one — a single
+    // offset put them above the very text that asked for them. Supersedes
+    // `continuationAt` for every merge made since; rows holding only
+    // `continuationAt` keep rendering as before. Bounded in stream.ts.
+    continuations: v.optional(
+      v.array(
+        v.object({
+          at: v.number(),
+          childRunIds: v.array(v.string()),
+        }),
+      ),
+    ),
     // TRANSIENT replay window: the DEADLINE (epoch ms) until which addPart
     // dedupes media by filename (a replay re-uploads the bytes, so storageIds
     // never match). A deadline — not a boolean — so it self-expires and an
@@ -1856,6 +1931,16 @@ export default defineSchema({
     // (chatId, routedInstanceName) so it is an O(log n) point lookup, never a
     // by_chat scan that could exceed Convex read limits on a long chat (codex P1).
     .index("by_chat_routed_instance", ["chatId", "routedInstanceName"])
+    // INGEST AUTHORIZATION: "did the bridge serving instance X ever OPEN a reply in
+    // this chat?" (lib/ingestAuthz.chatAllowsInstance) — the durable proof that a turn
+    // really reached X, unlike a routing stamp written when the turn was only asked for.
+    .index("by_chat_bound_instance", ["chatId", "boundInstance"])
+    // "Where did THIS agent last answer in this chat?" beyond the tail a history is
+    // built from (stream.rehydrationContext, sinceLastReplyOf): the turns stamped with
+    // the agent, newest first — and, with both fields absent, the unstamped ones (the
+    // current primary's, see chatAgents.pinUnroutedBatch). Bounded reads, never a
+    // by_chat scan of a long thread.
+    .index("by_chat_routed_instance_agent", ["chatId", "routedInstanceName", "routedAgentId"])
     // Full-text search over message bodies for the global conversation search
     // (topbar palette). `userId` is a filter field so a single index serves the
     // owner-scoped query directly: q.search("text", term).eq("userId", userId).
@@ -1969,6 +2054,14 @@ export default defineSchema({
     // stale plausible anchor fails closed to two bubbles, never merges wrong.
     anchorExact: v.optional(v.boolean()),
     childSessionKey: v.string(), // `agent:<id>:subagent:<uuid>` — the upsert key
+    // The child's RUN id, as the `sessions_spawn` result returned it
+    // (`details.runId`). It is what the gateway's requester-settle wake names —
+    // not the session key — so without it the continuation of a yielded turn has
+    // no exact join back to the bubble that spawned the child. Fill-only: a later
+    // run of the same child session (steer, restart recovery) does not replace
+    // it, and the settle join then fails closed. Absent on rows registered from
+    // the child's own frames (no spawn result) and on every pre-field row.
+    childRunId: v.optional(v.string()),
     // The user stopped THIS child. Distinct from `status`, which legitimately
     // keeps moving afterwards: a late terminal frame turns the row `done` and
     // carries the child's `resultText`, and without a stamp that survives it the
@@ -2166,7 +2259,10 @@ export default defineSchema({
     // (parentMessageId): the auto-retry gate + cascade read ONLY this turn's
     // children (an unbounded by_chat walk on long chats could exceed the
     // finalize transaction — codex P2).
-    .index("by_parent_message", ["parentMessageId"]),
+    .index("by_parent_message", ["parentMessageId"])
+    // (chatId, childRunId): the requester-settle merge resolves each settled
+    // child RUN id named by the wake to its row — within the chat, bounded.
+    .index("by_chat_child_run", ["chatId", "childRunId"]),
 
   // In-app DETAIL for a sub-agent's tool calls (args + result), kept OFF the
   // `subAgents` doc on purpose: a 67-tool child would O(n^2)-re-push the whole
@@ -2776,6 +2872,13 @@ export default defineSchema({
     routedAgent: v.optional(
       v.object({ instanceName: v.string(), agentId: v.string() }),
     ),
+    // CHAINED REPLY: this row is the Nth (1-based) further agent a user turn was
+    // addressed to — the turn's own row is the head and carries none. Queued
+    // behind the head at send time, drained FIFO like any follow-up, but it
+    // SHARES the head's user message: the drain must not move that message
+    // (its order is the head's), its reply is stamped with this row's agent,
+    // and its prompt carries the earlier replies (bridge.chainedPrompt).
+    chainStep: v.optional(v.number()),
     // AUTO-RETRY (turnRetry.ts): >0 marks this row as the Nth automatic re-dispatch
     // of a turn the gateway failed with a TRANSIENT session-init conflict. The next
     // finalize reads it to bound the retry chain (MAX_TURN_RETRIES); absent = a
@@ -2815,6 +2918,12 @@ export default defineSchema({
     // session with no rehydration. Written next to `perTurnRouting`; unconfirmed by
     // itself (the chat's own tuple stays the only decision state).
     dispatchSegment: v.optional(v.string()),
+    // The instance the LAST GATE let this row's send leave for (bridge.lastGateBeforeSend).
+    // The ingest barrier's proof that a turn here was SENT to an instance
+    // (lib/ingestAuthz.chatAllowsInstance) — together with the status, `pending` (in
+    // flight) or `sent`: a row that only NAMES an instance (queued behind the reply
+    // before it, promoted but not past the gate, refused) proves nothing was sent there.
+    sentToInstance: v.optional(v.string()),
     status: v.union(
       // QUEUED (mid-turn send, Phase 1): inserted while the chat already has an
       // in-flight turn, held here until that turn ends. The drainer (lib/
@@ -2848,7 +2957,16 @@ export default defineSchema({
     .index("by_user_status", ["userId", "status"])
     // Reverse lookup message -> outbox row, used by forensic feedback to capture
     // the dispatched payload best-effort (the row is transient, may be gone).
-    .index("by_message", ["messageId"]),
+    .index("by_message", ["messageId"])
+    // The ingest barrier's proof that a turn was SENT to an instance
+    // (lib/ingestAuthz.chatAllowsInstance): a chained reply's agent may live on an
+    // instance no user message is stamped with — the user message names only the
+    // first agent — so its row is the witness. BY STATUS: only a row the gateway
+    // ACCEPTED (`sent`) proves the turn went there; a queued or refused one does not.
+    .index("by_chat_routed_instance_status", ["chatId", "routedAgent.instanceName", "status"])
+    // …and a row whose send LEFT for an instance (the last gate's stamp), in flight
+    // or sent — point lookups by status, never a scan of the chat's rows.
+    .index("by_chat_sent_instance_status", ["chatId", "sentToInstance", "status"]),
 
   // L2 "Joindre les documents": per (source assistant message, document reference)
   // attachment lifecycle. The user asks a DOCUMENTARY agent to fetch the real file

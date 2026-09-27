@@ -20,12 +20,16 @@ import { v } from "convex/values";
 import { boundPartDepth } from "./lib/partDepth";
 import { contentLocaleForInstance } from "./lib/serverLocale";
 import { KNOWN_ERROR_CODES, maskCredentialId } from "./lib/chatRenderState";
-import { internalMutation, internalQuery, MutationCtx } from "./_generated/server";
+import { SESSION_ACCESS_FIELDS } from "./lib/sessionAccess";
+import { internalMutation, internalQuery, MutationCtx, type QueryCtx } from "./_generated/server";
 import { internal } from "./_generated/api";
 import { MESSAGE_WINDOW } from "./messages";
 import {
   deliveryChildKey,
+  deliveryPartStamp,
   isDeliveryRun,
+  isRequesterSettleRun,
+  parseRequesterSettleRun,
   taskDeliveryIdentity,
   taskDeliveryOutcome,
 } from "./lib/deliveryRuns";
@@ -38,7 +42,8 @@ import {
   isFilePart,
   recordFileForPart,
 } from "./lib/files";
-import { drainNextQueued } from "./lib/outboxQueue";
+import { drainNextQueued, MAX_QUEUED_PER_CHAT } from "./lib/outboxQueue";
+import { MAX_ADDRESSED_AGENTS } from "./lib/agentMentions";
 import { maybeScheduleTurnRetry } from "./turnRetry";
 import { maybeReparkPreemptedTurn } from "./preemptRepark";
 import { chatAllowsInstance } from "./lib/ingestAuthz";
@@ -110,8 +115,12 @@ import {
 } from "./chatSummaries";
 import { compareOrder, effectiveOrder } from "./lib/messageOrder";
 import {
+  agentHistoryLabels,
+  attributeHistoryAgents,
   composeRehydration,
+  historyAgentKey,
   rehydrationBudgetChars,
+  type HistoryAgentRef,
 } from "./lib/rehydration";
 import {
   composeQuotedText,
@@ -120,7 +129,7 @@ import {
   quotesPreamble,
 } from "./lib/quoteReply";
 import { providerSessionClearPatch } from "./lib/providerSession";
-import { userTurnAuthorLabels } from "./lib/turnAuthors";
+import { safeAuthorLabel, userTurnAuthorLabels } from "./lib/turnAuthors";
 
 // Optional delivery-recorder fields the bridge attaches to a stream write while a
 // turn is being recorded (see convex/deliveryTiming.ts). `recSessionId` is the
@@ -246,6 +255,11 @@ export const startAssistant = internalMutation({
     // row's terminal state is the authority, and this is the last place to read it.
     // Throwing is a supported path: the bridge disarms its replay buffer and reports
     // the failed turn (server.ts "beginTurn threw AFTER the ack").
+    // A CHAINED reply (the 2nd..Nth agent its message was addressed to) is stamped
+    // with ITS agent: the user message names only the first, and an unstamped reply
+    // inherits that one — the thread, the export and the rehydrated history would
+    // all sign the second agent's answer with the first agent's name.
+    let chainedAgent: { instanceName: string; agentId: string } | null = null;
     if (dispatchOutboxId !== undefined) {
       const rowId = ctx.db.normalizeId("outbox", dispatchOutboxId);
       if (rowId !== null) {
@@ -254,6 +268,14 @@ export const startAssistant = internalMutation({
           throw new Error(
             "dispatch already reconciled — refusing to open a turn for a settled send",
           );
+        }
+        if (
+          row !== null &&
+          row.chatId === chatId &&
+          row.chainStep !== undefined &&
+          row.routedAgent !== undefined
+        ) {
+          chainedAgent = row.routedAgent;
         }
       }
     }
@@ -273,7 +295,17 @@ export const startAssistant = internalMutation({
     // announce correlates to a finished parent message that is still the
     // chat's last message, REOPEN it and stream the announce into it instead
     // of creating a second assistant message.
-    if (runId !== undefined && deliveryChildKey(runId) !== null) {
+    //
+    // The REQUESTER-SETTLE wake walks the same door: when its id carries a
+    // `yield-N` suffix it is the continuation of a turn that called
+    // `sessions_yield`, and it carries that turn's visible answer
+    // (lib/deliveryRuns.ts `parseRequesterSettleRun`). It names no child key, so
+    // the child-keyed steps below match nothing for it; the reopen resolves it
+    // through the settled children's RUN ids instead.
+    if (
+      runId !== undefined &&
+      (deliveryChildKey(runId) !== null || isRequesterSettleRun(runId))
+    ) {
       // ── THE INTERRUPTION EPOCH ──────────────────────────────────────────
       // THE single door every post-turn delivery walks through — announce and
       // background task alike. Asked HERE, before the row settles and before any
@@ -289,16 +321,7 @@ export const startAssistant = internalMutation({
       // passes untouched — stopping this turn must never mute the next one.
       const stoppedAt = chat.stoppedAt;
       if (stoppedAt !== undefined) {
-        const refusedRow = await ctx.db
-          .query("subAgents")
-          .withIndex("by_child", (q) =>
-            q.eq("childSessionKey", deliveryChildKey(runId) ?? "" /* requester-settle names no child: match nothing */),
-          )
-          .filter((q) => q.eq(q.field("chatId"), chatId))
-          .first();
-        // `<=`, not `<`: a row first persisted in the very millisecond the Stop
-        // was recorded is not proof it started after it.
-        if (refusedRow !== null && refusedRow.createdAt <= stoppedAt) {
+        if (await refusedByStopEpoch(ctx, chatId, runId, stoppedAt)) {
           // Dropped whole: no bubble, no reopen, no row settle. The bridge
           // treats a null start as "this run has nowhere to land" and stops
           // feeding it, so the deltas that follow never arrive either.
@@ -379,6 +402,12 @@ export const startAssistant = internalMutation({
       role: "assistant",
       runId,
       status: "streaming",
+      ...(chainedAgent !== null
+        ? {
+            routedInstanceName: chainedAgent.instanceName,
+            routedAgentId: chainedAgent.agentId,
+          }
+        : {}),
       // Durable owner stamp (message-scoped writes compare against it, and it
       // SURVIVES finalize — see the schema note).
       ...(boundInstanceName !== undefined
@@ -566,10 +595,10 @@ function handedOffToChild(
   //
   // So: the part must have been written BY the run being finalized. The stamp is
   // recomputed exactly as `addPart` would have written it.
-  const stamp =
-    runId !== undefined && runId !== null && deliveryChildKey(runId) !== null
-      ? runId
-      : undefined;
+  // Every delivery family stamps (lib/deliveryRuns.ts `deliveryPartStamp`) —
+  // the requester-settle continuation included, since it now merges into the
+  // very bubble whose own `sessions_yield` it must not borrow.
+  const stamp = deliveryPartStamp(runId);
   return parts.some(
     (row) =>
       row.part.kind === "tool" &&
@@ -727,10 +756,228 @@ async function bornOfRunEngagement(
     .first();
 }
 
+/** The bubble a requester-settle continuation belongs to, or null (fail CLOSED:
+ *  the run then opens its own bubble, the behaviour before the merge existed).
+ *
+ *  Merges ONLY a yielded turn's continuation (`yieldGeneration !== null`). A wake
+ *  without a yield is not one: the requester's turn already ended with its own
+ *  answer, the wake only asks for a consolidation and tells the model to stay
+ *  silent if it already gave one (requester-settle-message.ts:44-46), and its
+ *  batch is an interval-graph wave of children that may come from SEVERAL turns
+ *  (subagent-registry-queries.ts `selectConnectedSettledSubagentWave`, used at
+ *  requester-settle-wake.ts:221-231) — so it has no single bubble to return to.
+ *
+ *  For a yielded batch the members are exactly the children spawned by that one
+ *  requester turn (`settleRequesterTurnAfterSessionSpawns` filters on
+ *  `requesterTurnRunId`, subagent-registry-requester-yield.ts:180-188) — one bubble
+ *  by construction. So the KNOWN members decide: each must resolve, by its run id
+ *  within this chat, to ONE row carrying an EXACT anchor, and all of them to the
+ *  SAME bubble. A duplicate, a heuristic anchor or a split batch return null.
+ *
+ *  An UNKNOWN id (no row carries it) is not evidence against the join: it is a row
+ *  written before the field existed, one whose spawn result never reached us, or a
+ *  child whose run restart recovery replaced (subagent-registry-run-recovery.ts:
+ *  205-222 remaps the batch to the successor id). It is skipped — but at least one
+ *  member must be known, or there is nothing to anchor on at all. */
+async function settleContinuationAnchor(
+  ctx: MutationCtx,
+  chatId: Id<"chats">,
+  settle: { childRunIds: string[]; yieldGeneration: number | null },
+): Promise<Id<"messages"> | null> {
+  if (settle.yieldGeneration === null) return null;
+  let anchor: Id<"messages"> | null = null;
+  for (const childRunId of settle.childRunIds) {
+    const rows = await settleMemberRows(ctx, chatId, childRunId);
+    if (rows.length === 0) continue;
+    const row = rows[0];
+    if (rows.length !== 1 || row === undefined) return null;
+    if (
+      row.kind === "task" ||
+      row.anchorExact !== true ||
+      row.parentMessageId === undefined
+    ) {
+      return null;
+    }
+    if (anchor !== null && anchor !== row.parentMessageId) return null;
+    anchor = row.parentMessageId;
+  }
+  return anchor;
+}
+
+/** The rows (at most two — enough to see an ambiguity) carrying one settled child
+ *  run id within this chat. */
+async function settleMemberRows(
+  ctx: MutationCtx,
+  chatId: Id<"chats">,
+  childRunId: string,
+): Promise<Doc<"subAgents">[]> {
+  return await ctx.db
+    .query("subAgents")
+    .withIndex("by_chat_child_run", (q) =>
+      q.eq("chatId", chatId).eq("childRunId", childRunId),
+    )
+    .take(2);
+}
+
+/** Does the interruption epoch refuse this delivery? The single rule every
+ *  post-turn delivery answers to: work that STARTED at or before the user's Stop
+ *  does not deliver afterwards (`<=`: a row first persisted in the very millisecond
+ *  the Stop was recorded is not proof it started after it).
+ *
+ *  A child-keyed delivery names ONE child by session key. A requester-settle run
+ *  names its children by RUN id only, and the key lookup found nothing for it — so
+ *  the check never ran, and a batch whose join then failed opened a new bubble
+ *  holding the result the user had stopped (codex pass 3). It is refused when ANY
+ *  child it names started before the Stop: the continuation consumes every result
+ *  of the batch, so one refused result is enough to refuse it — the same
+ *  "dropped whole" the announce family gets.
+ *
+ *  A named child Convex does not know (no row carries its run id) cannot be dated,
+ *  and it is not guessed: refusing on it would mute work spawned AFTER the Stop,
+ *  which this epoch promises never to do. A known sibling is enough to date the
+ *  batch, since all its members come from one requester turn (see
+ *  `settleContinuationAnchor`). */
+async function refusedByStopEpoch(
+  ctx: MutationCtx,
+  chatId: Id<"chats">,
+  runId: string,
+  stoppedAt: number,
+): Promise<boolean> {
+  const settle = parseRequesterSettleRun(runId);
+  if (settle !== null) {
+    for (const childRunId of settle.childRunIds) {
+      for (const row of await settleMemberRows(ctx, chatId, childRunId)) {
+        if (row.createdAt <= stoppedAt) return true;
+      }
+    }
+    return false;
+  }
+  const childSessionKey = deliveryChildKey(runId);
+  if (childSessionKey === null) return false;
+  const row = await ctx.db
+    .query("subAgents")
+    .withIndex("by_child", (q) => q.eq("childSessionKey", childSessionKey))
+    .filter((q) => q.eq(q.field("chatId"), chatId))
+    .first();
+  return row !== null && row.createdAt <= stoppedAt;
+}
+
 /** How many previous generations' verdicts a merged bubble keeps. Bounded because
  *  a row must not grow without limit: four is well past any merge chain observed,
  *  and the oldest is the one a reader is least likely to still need. */
 const MAX_PRIOR_FINALIZE_CAUSES = 4;
+
+/** Did this batch's runs already ANSWER on the bubble it owns?
+ *
+ *  What the delivery verdict counts (`carriesDeliveredContent`, applied at finalize),
+ *  with one deliberate difference: text written after the batch's continuation
+ *  point, a file whose blob still resolves, or a cron card. Text alone was the first
+ *  rule (codex pass 11): a run that delivered only a file was reopened by its retry
+ *  and the file landed twice, the replay dedupe being keyed on the run id, which a
+ *  retry changes.
+ *
+ *  TOOL cards do not count, exactly as in that verdict: they are work, not an answer.
+ *  A batch left with tool cards and nothing else is the undelivered run the retry
+ *  exists for; the retry's own cards are added because its tools ran AGAIN — a
+ *  second execution shown as such, not a duplicate. A bare provenance part is not an
+ *  answer either.
+ *
+ *  A live CHECKLIST is the difference. The verdict counts it so that work shown as
+ *  under way is not called an empty bubble; here the question is whether the retry
+ *  would DUPLICATE an answer, and a plan cannot be duplicated (the reader shows the
+ *  one of greatest stamp, src/chat/planView.ts) while silencing the retry would drop
+ *  the answer it brings. A cron card does count: the jobs it reports were really
+ *  changed, and a rerun's card would repeat it.
+ *
+ *  Only the parts a run OF THIS BATCH wrote are read (the stamp every delivery run
+ *  puts on its parts, lib/deliveryRuns.ts `deliveryPartStamp`) — earlier
+ *  generations' parts on the same bubble say nothing about this batch. When storage
+ *  cannot answer, the bubble's own `complete` status stands as the evidence: its
+ *  verdict already found content there, and a re-uploaded duplicate is the risk
+ *  avoided. */
+async function batchAnswered(
+  ctx: MutationCtx,
+  parent: Doc<"messages">,
+  parentId: Id<"messages">,
+  batch: { at: number; childRunIds: string[] },
+): Promise<boolean> {
+  if (parent.text.slice(batch.at).trim() !== "") return true;
+  const key = batchKey(batch.childRunIds);
+  const parts = (
+    await ctx.db
+      .query("messageParts")
+      .withIndex("by_message", (q) => q.eq("messageId", parentId))
+      .collect()
+  ).filter(
+    (row) =>
+      row.announceRun !== undefined &&
+      batchKey(parseRequesterSettleRun(row.announceRun)?.childRunIds ?? []) === key,
+  );
+  for (const row of parts) {
+    const part = row.part;
+    if (part.kind === "cron") return true;
+    if (
+      (part.kind === "file" || part.kind === "media") &&
+      (await blobStillResolves(ctx, part.storageId, true))
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/** Were two delivery runs the SAME delivery? The same run, or two runs of one
+ *  settled batch (a retry wake of it) — the replay dedupe's notion of "a replay". */
+function sameDeliveryGeneration(
+  a: string | undefined,
+  b: string | undefined,
+): boolean {
+  if (a === undefined || b === undefined) return false;
+  if (a === b) return true;
+  const sa = parseRequesterSettleRun(a);
+  const sb = parseRequesterSettleRun(b);
+  return (
+    sa !== null && sb !== null && batchKey(sa.childRunIds) === batchKey(sb.childRunIds)
+  );
+}
+
+/** A settled batch's identity: its child run ids, order-free. */
+function batchKey(childRunIds: readonly string[]): string {
+  return [...childRunIds].sort().join(",");
+}
+
+/** The continuation entry this batch already has on the bubble, or null. */
+function recordedBatch(
+  parent: Doc<"messages">,
+  childRunIds: readonly string[],
+): { at: number; childRunIds: string[] } | null {
+  const key = batchKey(childRunIds);
+  return (parent.continuations ?? []).find((c) => batchKey(c.childRunIds) === key) ?? null;
+}
+
+/** How many hand-off continuations one bubble records. Far past any delegation
+ *  chain observed; a batch beyond it simply gets no entry, and its replies render
+ *  after the text instead (src/chat/convertMessage.ts `bodyWithContinuations`). */
+const MAX_CONTINUATIONS = 16;
+
+/** The message's continuation list with this settled batch recorded, or null when
+ *  there is nothing to write.
+ *
+ *  A batch is identified by the child run ids its settle run names — sorted by
+ *  upstream (requester-settle-wake.ts:256), and disjoint between batches, since a
+ *  yielded batch is exactly the children of ONE requester turn
+ *  (requester-yield.ts:180-188). So a replay of the same batch — a `:retry-N` wake,
+ *  an error resume — keeps the position it was first given. */
+function recordContinuation(
+  parent: Doc<"messages">,
+  childRunIds: readonly string[],
+  at: number,
+): Array<{ at: number; childRunIds: string[] }> | null {
+  const existing = parent.continuations ?? [];
+  if (recordedBatch(parent, childRunIds) !== null) return null;
+  if (existing.length >= MAX_CONTINUATIONS) return null;
+  return [...existing, { at, childRunIds: [...childRunIds] }];
+}
 
 async function reopenParentForAnnounce(
   ctx: MutationCtx,
@@ -744,13 +991,17 @@ async function reopenParentForAnnounce(
   // chat-membership check).
   boundInstanceName?: string,
 ): Promise<{ messageId: Id<"messages">; reopened: boolean } | null> {
+  const settle = parseRequesterSettleRun(announceRunId);
   const childSessionKey = deliveryChildKey(announceRunId);
-  if (childSessionKey === null) return null;
-  const sub = await ctx.db
-    .query("subAgents")
-    .withIndex("by_child", (q) => q.eq("childSessionKey", childSessionKey))
-    .filter((q) => q.eq(q.field("chatId"), chatId))
-    .first();
+  if (childSessionKey === null && settle === null) return null;
+  const sub =
+    childSessionKey === null
+      ? null
+      : await ctx.db
+          .query("subAgents")
+          .withIndex("by_child", (q) => q.eq("childSessionKey", childSessionKey))
+          .filter((q) => q.eq(q.field("chatId"), chatId))
+          .first();
   let parentId = sub?.parentMessageId;
   // TRUE when the anchor is CORRELATED (spawn result / task engagement /
   // chain adoption — not the bridge's last-known-message fallback, flagged
@@ -762,6 +1013,14 @@ async function reopenParentForAnnounce(
   // fail-close to two bubbles, never merge into a wrong one).
   let anchoredResolution =
     parentId !== undefined && sub?.anchorExact === true;
+  if (settle !== null) {
+    // The continuation of a YIELDED turn, and nothing else: the join is exact or
+    // there is no merge (the run then keeps its own bubble, as before).
+    const anchor = await settleContinuationAnchor(ctx, chatId, settle);
+    if (anchor === null) return null;
+    parentId = anchor;
+    anchoredResolution = true;
+  }
   if (parentId === undefined && sub?.bornOfRun !== undefined) {
     // The child was spawned INSIDE a task-delivery run that never opened a
     // message of its own (NO_REPLY): resolve the anchor through the
@@ -835,49 +1094,79 @@ async function reopenParentForAnnounce(
   const alreadyMerged =
     parent.runId === announceRunId ||
     (parent.mergedAnnounceRuns ?? []).includes(announceRunId);
-  if (
-    alreadyMerged &&
-    (parent.status === "complete" || parent.status === "aborted")
-  ) {
-    // Terminal REBROADCAST of an announce already merged (a bridge restart
-    // loses its in-memory announce dedupe) — including an OLDER announce
-    // replayed after a newer one overwrote runId: hand back the settled
-    // parent — every follow-up write no-ops on its terminal status, so the
-    // result is never appended twice. An ABORTED merge is the user's explicit
-    // stop: same silent sink, never a reopen. On a COMPLETE parent, ARM the
-    // replay window so re-uploaded media parts dedupe by filename during the
-    // replay only.
+  // A NEW RUN OF A BATCH THIS BUBBLE ALREADY RECORDED — the gateway's `:retry-N`
+  // wake. Upstream rotates the key only after an attempt came back undelivered with
+  // a retryable disposition (requester-settle-wake.ts:501-505, 695-721), and that
+  // attempt may still have run a turn we merged (a channel delivery failure after
+  // the run finished is retryable: subagent-announce-direct-response.ts ~100-118).
+  // `alreadyMerged` is keyed on the run id and cannot see it (codex pass 10).
+  const replayOf =
+    settle !== null && !alreadyMerged
+      ? recordedBatch(parent, settle.childRunIds)
+      : null;
+  // ONE OWNERSHIP PREDICATE for every decision a delivery that has been here
+  // before can take: it OWNS the bubble when it is the bubble's current run, or a
+  // run of the same settled batch (`sameDeliveryGeneration`). Anything else that
+  // was merged here earlier — an older announce, an older continuation, a retry
+  // of an older batch — is history, and may neither reopen, join nor RESUME what a
+  // later generation left: a rebroadcast of an older run used to satisfy
+  // `alreadyMerged` and resumed the NEXT continuation's failure with its own
+  // answer (codex pass 13). Three rounds of findings came from each gate carrying
+  // its own notion of "this run may act here"; they now read this one.
+  const ownsBubble = sameDeliveryGeneration(parent.runId, announceRunId);
+  let resuming = false;
+  if (alreadyMerged || replayOf !== null) {
+    // Silent sink — the parent handed back unopened; every tagged write fails the
+    // generation guard. On a COMPLETE parent the replay window is armed too: once
+    // the writer forgets the message, a late upload goes out UNTAGGED, and the
+    // window dedupes it by name against what that delivery already attached.
+    const sink = async (): Promise<{
+      messageId: Id<"messages">;
+      reopened: boolean;
+    }> => {
+      if (parent.status === "complete") {
+        await ctx.db.patch(parentId, {
+          announceReplayArmed: now + ANNOUNCE_REPLAY_WINDOW_MS,
+          announceReplayRun: announceRunId,
+        });
+        await ctx.scheduler.runAfter(
+          ANNOUNCE_REPLAY_WINDOW_MS,
+          internal.stream.disarmAnnounceReplay,
+          { messageId: parentId },
+        );
+      }
+      return { messageId: parentId, reopened: false };
+    };
+    // Not the owner: history. Whatever the parent's state, it belongs to a later
+    // generation.
+    if (!ownsBubble) return await sink();
+    // The owner, still streaming: an ingest retry of the SAME run joins, anything
+    // else of this delivery (a retry racing its first attempt) sinks — never a
+    // second bubble, never an interleave. An ABORT is the user's stop: never undone.
+    if (parent.status === "streaming" || parent.status === "aborted") {
+      return await sink();
+    }
     if (parent.status === "complete") {
-      await ctx.db.patch(parentId, {
-        announceReplayArmed: now + ANNOUNCE_REPLAY_WINDOW_MS,
-        announceReplayRun: announceRunId,
-      });
-      await ctx.scheduler.runAfter(
-        ANNOUNCE_REPLAY_WINDOW_MS,
-        internal.stream.disarmAnnounceReplay,
-        { messageId: parentId },
-      );
+      // A rebroadcast of the owning run: already delivered, a replay.
+      if (alreadyMerged) return await sink();
+      // A retry of the owning batch: silent if that batch ANSWERED (text, a file, a
+      // cron card — `batchAnswered`); otherwise it brings the answer, an ordinary
+      // reopen below.
+      if (replayOf !== null && (await batchAnswered(ctx, parent, parentId, replayOf))) {
+        return await sink();
+      }
     }
-    return { messageId: parentId, reopened: false };
-  }
-  if (parent.status === "streaming") {
-    // Idempotent join ONLY for the SAME run (ingest retry). An announce
-    // ALREADY consumed stays a silent sink even while a newer one is merging
-    // (its writes then fail the generation guard — nothing lands twice). Any
-    // OTHER announce falls back to its own fresh bubble (no interleaving).
-    if (parent.runId === announceRunId && parent.announcePrefix !== undefined) {
-      return { messageId: parentId, reopened: false };
-    }
-    if ((parent.mergedAnnounceRuns ?? []).includes(announceRunId)) {
-      return { messageId: parentId, reopened: false };
-    }
+    // ERROR, owned: RESUME — this very delivery's merge died (bridge lost
+    // mid-delivery, watchdog settled the parent, a retryable attempt failed), and
+    // blocking it would lose the result for good. Its parked prefix replaces the
+    // failed fragment.
+    resuming = parent.status === "error";
+  } else if (parent.status === "streaming") {
+    // A delivery that was never here, while another merges: its own fresh bubble
+    // (no interleaving).
     return null;
   }
-  // Never repaint an error/abort — EXCEPT to RESUME this very announce whose
-  // merge died on an ERROR (bridge lost mid-delivery, watchdog settled the
-  // parent): blocking its rebroadcast would lose the result forever. Aborts
-  // never resume (handled above).
-  const resuming = parent.status === "error" && alreadyMerged;
+  // Never repaint an error or an abort that is not this delivery's own (above).
   if (parent.status !== "complete" && !resuming) return null;
   // THE USER SAID STOP. A child killed mid-flight can still push its announce
   // afterwards — the kill and the frame race — and reopening here would repaint
@@ -937,8 +1226,19 @@ async function reopenParentForAnnounce(
   // parent.text at this point is `original + partial announce`, and
   // re-prefixing with THAT would duplicate the partial fragment.
   const prefix = resuming ? (parent.announcePrefix ?? "") : parent.text;
+  // Where the continuation's own text will begin in the stored text: the seed
+  // below is `prefix + ANNOUNCE_SEP`, or nothing when the turn said nothing.
+  const seedLength = prefix !== "" ? prefix.length + ANNOUNCE_SEP.length : 0;
+  const continuations =
+    settle !== null
+      ? recordContinuation(parent, settle.childRunIds, seedLength)
+      : null;
   await ctx.db.patch(parentId, {
     status: "streaming",
+    // One position PER settled batch (schema note): a continuation that delegates
+    // and yields again gets its own entry, so its children's replies land before
+    // ITS conclusion rather than before the first one.
+    ...(continuations !== null ? { continuations } : {}),
     // Re-own the message for the announce generation (durable stamp).
     ...(boundInstanceName !== undefined
       ? { boundInstance: boundInstanceName }
@@ -1790,6 +2090,30 @@ export const addPart = internalMutation({
       );
       return;
     }
+    // A MERGED GENERATION ANCHORS IN ITS OWN COORDINATES. The sink stamps a tool's
+    // `textOffset` against the text IT has streamed (turn-sink.ts
+    // `visibleLineStart`), which for a reopened bubble starts at zero — while the
+    // stored text starts with the parked prefix and its separator, exactly as
+    // appendDelta/setSnapshot compose it. Unshifted, a continuation's tool card
+    // would be cut into the PREVIOUS generation's prose. Only a requester-settle
+    // continuation reaches here with an offset (the sink never anchors the other
+    // delivery families); the rebase is written for any reopened generation so a
+    // future one cannot re-open the defect. Applied while streaming only: the
+    // prefix is consumed at finalize, and a late start part has nothing to rebase
+    // against (the client clamps it).
+    if (
+      part.kind === "tool" &&
+      part.textOffset !== undefined &&
+      message.status === "streaming" &&
+      message.announcePrefix !== undefined &&
+      message.announcePrefix !== ""
+    ) {
+      part = {
+        ...part,
+        textOffset:
+          part.textOffset + message.announcePrefix.length + ANNOUNCE_SEP.length,
+      };
+    }
     if (
       expectedRunId !== undefined &&
       (message.runId ?? null) !== expectedRunId
@@ -1849,8 +2173,7 @@ export const addPart = internalMutation({
     // message already carries is a replay: drop it, or every rebroadcast would
     // stack visible duplicates (and re-mint files rows for media).
     const replayArmed =
-      message.runId !== undefined &&
-      deliveryChildKey(message.runId) !== null &&
+      deliveryPartStamp(message.runId) !== undefined &&
       message.announceReplayArmed !== undefined &&
       message.announceReplayArmed > Date.now();
     if (replayArmed) {
@@ -1863,7 +2186,13 @@ export const addPart = internalMutation({
       // no message ever dedupes — late parts on ordinary terminal messages
       // (even identical ones) keep landing, the historic contract.
       const replayRun = message.announceReplayRun ?? message.runId;
-      const sameRun = existing.filter((e) => e.announceRun === replayRun);
+      // …or born in another run of the SAME settled batch: a `:retry-N` wake that
+      // resumes a failed attempt is that attempt's delivery made again, and meets
+      // what it already attached under the same rule a rebroadcast does (codex
+      // pass 12) — else a re-sent file lands twice, in the bubble and the files list.
+      const sameRun = existing.filter((e) =>
+        sameDeliveryGeneration(e.announceRun, replayRun),
+      );
       const replayKey = (pt: typeof part): string => {
         if (pt.kind === "media" || pt.kind === "file") {
           return JSON.stringify({
@@ -1963,9 +2292,7 @@ export const addPart = internalMutation({
     }
     const announceRun = replayArmed
       ? (message.announceReplayRun ?? message.runId)
-      : message.runId !== undefined && deliveryChildKey(message.runId) !== null
-        ? message.runId
-        : undefined;
+      : deliveryPartStamp(message.runId);
     // TOOL-PART UPSERT: a start and its completed/error share the provider's
     // toolCallId — patch the existing row (fusing phase/input/output) instead
     // of stacking a second card. The ORIGINAL textOffset is preserved: the
@@ -2222,10 +2549,7 @@ export const advancePlanPart = internalMutation({
     if (steps.every((st, i) => st.status === prevSteps[i]?.status)) {
       return;
     }
-    const announceRun =
-      message.runId !== undefined && deliveryChildKey(message.runId) !== null
-        ? message.runId
-        : undefined;
+    const announceRun = deliveryPartStamp(message.runId);
     await ctx.db.insert("messageParts", {
       messageId,
       order: existing.length,
@@ -3567,6 +3891,11 @@ type OrderedGroup = {
 const KNOB_FIELDS = ["model", "modelProvider", "agentRuntime", "thinkingLevel", "thinkingDefault", "thinkingLevels", "verboseLevel"] as const;
 const KNOB_GROUP: OrderedGroup = { fields: KNOB_FIELDS, carriedBy: KNOB_FIELDS, stamp: "knobsAt" };
 const ROSTER_GROUP: OrderedGroup = { fields: ["availableModels"], carriedBy: ["availableModels"], stamp: "rosterAt" };
+// Who may act on the session and with what permissions: describe-sourced like the knobs,
+// and ONE unit — a mode cleared on the gateway arrives as `permissionMode: null` with its
+// `sessionRoot` absent, and that absence must apply with it. A write carrying none of
+// them (a roster reported alone, a Hermes terminal) leaves them as they are.
+const ACCESS_GROUP: OrderedGroup = { fields: SESSION_ACCESS_FIELDS, carriedBy: SESSION_ACCESS_FIELDS, stamp: "accessAt" };
 const ESTIMATE_GROUP: OrderedGroup = {
   fields: ["estimatedPromptTokens", "promptBudgetBeforeReserve", "overflowTokens", "totalTokensFresh", "totalTokens", "contextTokens", "estimatedCostUsd"],
   carriedBy: "stamped",
@@ -3611,7 +3940,7 @@ function orderedGroup(
 
 /** The write stamps a fresh publish always moves: equal on both sides only for a
  *  duplicate delivery, which is then compared in full. */
-const WATERMARKS = ["knobsAt", "rosterAt", "estimateAt", "terminalFactsAt", "activeTokensAt"] as const;
+const WATERMARKS = ["knobsAt", "rosterAt", "estimateAt", "terminalFactsAt", "activeTokensAt", "accessAt"] as const;
 
 export const setSessionMeta = internalMutation({
   args: {
@@ -3649,6 +3978,13 @@ export const setSessionMeta = internalMutation({
       contextPercent: v.optional(v.number()),
       activeSubagents: v.optional(v.number()),
       apiCalls: v.optional(v.number()),
+      // Who may act on the session, and with what permissions (lib/sessionAccess.ts).
+      // `permissionMode: null` = the session sets none; absent = not reported.
+      visibility: v.optional(v.string()),
+      sharingRole: v.optional(v.string()),
+      permissionMode: v.optional(v.union(v.string(), v.null())),
+      permissionModePending: v.optional(v.boolean()),
+      sessionRoot: v.optional(v.string()),
       observedAt: v.optional(v.number()),
     }),
   },
@@ -3752,6 +4088,7 @@ export const setSessionMeta = internalMutation({
     // figure with it, which had no watermark at all (an older describe landing late
     // showed an older cost until the next turn).
     const estimateFields = orderedGroup(ESTIMATE_GROUP, record, incoming, metaAt).fields;
+    const accessFields = orderedGroup(ACCESS_GROUP, record, incoming, metaAt).fields;
     // TERMINAL FACTS, ordered and monotonic (G-50, raised in review).
     //
     // These four arrive on a turn's TERMINAL, off the ordered chain and un-awaited, so two
@@ -3817,6 +4154,7 @@ export const setSessionMeta = internalMutation({
         ...keepKnobs,
         ...keepActive,
         ...estimateFields,
+        ...accessFields,
         ...terminalFacts,
         // The compaction VERDICT belongs to setSessionOverfull and to nothing
         // else: this meta refresh rebuilds the object from scratch, so without
@@ -3955,15 +4293,215 @@ export const setSessionActiveTokens = internalMutation({
 // minus a reserve, keeping the MOST RECENT turns (older turns dropped with a
 // notice). Only `complete` user/assistant turns with text are included; the
 // current turn (`excludeMessageId`) and streaming/empty rows are skipped.
+//
+// SEVERAL AGENTS. When more than one agent answered in the window — or the chat is
+// per-turn routed — each assistant turn is labelled with the agent that wrote it
+// (lib/rehydration attributeHistoryAgents: the thread's own attribution rule). A
+// single-agent chat renders exactly as before. `forAgent` names the READER: its own
+// replies say so, and the header states which agent it is. `sinceLastReplyOf` asks
+// only for what that agent has not seen — the turns after its last complete reply —
+// for a session that is warm but missed the other agents' turns. `maxChars` lowers
+// the budget for a caller that knows its room is smaller.
+const agentRefArg = v.object({ instanceName: v.string(), agentId: v.string() });
+
+/** Below this, a history block is too small to ground anything: none is sent. */
+export const MIN_REHYDRATION_CHARS = 500;
+
+/** How many turns addressed to an agent are examined, newest first, when its last
+ *  reply lies before the tail a history is built from; and how far past a turn its
+ *  reply is looked for. Bounds, not guesses: a longer run of failed turns reads as
+ *  "never replied" (the full history is then sent, as before this search existed). */
+const SINCE_TURN_SCAN = 64;
+// Past a turn, in CREATION order, before its replies: every send queued while it was
+// answered (created first, placed after it — lib/messageOrder), then the replies of
+// every agent the turn was addressed to.
+const REPLY_LOOKAHEAD = MAX_QUEUED_PER_CHAT + MAX_ADDRESSED_AGENTS + 8;
+/** How far back a window-opening reply's question is looked for. */
+const TURN_LOOKBACK = 20;
+
+type Stamped = Pick<Doc<"messages">, "routedInstanceName" | "routedAgentId">;
+function stampOf(m: Stamped): HistoryAgentRef | null {
+  return m.routedInstanceName && m.routedAgentId
+    ? { instanceName: m.routedInstanceName, agentId: m.routedAgentId }
+    : null;
+}
+
+/** The stamp of the user turn `first` answers (null: unstamped, none, or beyond the
+ *  lookback — the primary then applies, the thread's own rule). */
+async function precedingTurnAgent(
+  ctx: QueryCtx,
+  chatId: Id<"chats">,
+  first: Doc<"messages">,
+): Promise<HistoryAgentRef | null> {
+  // CORRELATION FIRST: a reply names the row it was dispatched from, and the row its
+  // question. A creation-order window guesses — the sends queued while the reply was
+  // written are created before it and fill that window (pass 15).
+  const asked = await questionOfReply(ctx, first);
+  if (asked !== undefined) return asked === null ? null : stampOf(asked);
+  // A reply without that provenance (older data, a spontaneous delivery): bounded walk.
+  const before = await ctx.db
+    .query("messages")
+    .withIndex("by_chat", (q) => q.eq("chatId", chatId).lte("_creationTime", first._creationTime))
+    .order("desc")
+    .take(TURN_LOOKBACK + 1);
+  const turn = before
+    .filter((m) => m._id !== first._id && compareOrder(m, first) < 0)
+    .sort((a, b) => compareOrder(b, a))
+    .find((m) => m.role === "user");
+  return turn === undefined ? null : stampOf(turn);
+}
+
+/** The question a reply was dispatched for, through its outbox row: the message, null
+ *  when the row names none, undefined when the reply carries no usable provenance. */
+async function questionOfReply(
+  ctx: QueryCtx,
+  reply: Doc<"messages">,
+): Promise<Doc<"messages"> | null | undefined> {
+  if (reply.dispatchOutboxId === undefined) return undefined;
+  const rowId = ctx.db.normalizeId("outbox", reply.dispatchOutboxId);
+  const row = rowId === null ? null : await ctx.db.get(rowId);
+  if (row === null || row.messageId === undefined) return undefined;
+  const question = await ctx.db.get(row.messageId);
+  return question !== null && question.role === "user" ? question : undefined;
+}
+
+/** The replies dispatched from a user turn's own rows (newest rows first: a regenerate
+ *  appends its generation, and the replies of older ones were deleted with them). */
+async function repliesOfTurn(
+  ctx: QueryCtx,
+  turn: Doc<"messages">,
+): Promise<Doc<"messages">[]> {
+  const rows = await ctx.db
+    .query("outbox")
+    .withIndex("by_message", (q) => q.eq("messageId", turn._id))
+    .order("desc")
+    .take(MAX_ADDRESSED_AGENTS + 8);
+  const out: Doc<"messages">[] = [];
+  for (const row of rows) {
+    for (const m of await ctx.db
+      .query("messages")
+      .withIndex("by_dispatch_outbox", (q) => q.eq("dispatchOutboxId", String(row._id)))
+      .take(4)) {
+      if (m.role === "assistant") out.push(m);
+    }
+  }
+  return out;
+}
+
+/**
+ * The agent's newest COMPLETE reply lying before the rows already read (`read`, the
+ * oldest of which is `oldest`), by the thread's attribution rule: an assistant message
+ * stamped with the agent, or one answering a user turn stamped with it — or, when the
+ * agent is the chat's PRIMARY, an unstamped one (unstamped ⇒ the current primary, which
+ * chatAgents.pinUnroutedBatch keeps true). Found through `by_chat_routed_instance_agent`,
+ * never a scan of the thread.
+ */
+async function lastReplyBefore(
+  ctx: QueryCtx,
+  chat: Doc<"chats">,
+  agent: HistoryAgentRef,
+  oldest: Doc<"messages">,
+  read: ReadonlyArray<Doc<"messages">>,
+): Promise<Doc<"messages"> | null> {
+  const readIds = new Set(read.map((m) => String(m._id)));
+  const key = historyAgentKey(agent);
+  const isPrimary = chat.instanceName === agent.instanceName && chat.agentId === agent.agentId;
+  const stamped = await ctx.db
+    .query("messages")
+    .withIndex("by_chat_routed_instance_agent", (q) =>
+      q
+        .eq("chatId", chat._id)
+        .eq("routedInstanceName", agent.instanceName)
+        .eq("routedAgentId", agent.agentId)
+        .lte("_creationTime", oldest._creationTime),
+    )
+    .order("desc")
+    .take(SINCE_TURN_SCAN);
+  const unstamped = isPrimary
+    ? (
+        await ctx.db
+          .query("messages")
+          .withIndex("by_chat_routed_instance_agent", (q) =>
+            q
+              .eq("chatId", chat._id)
+              .eq("routedInstanceName", undefined)
+              .eq("routedAgentId", undefined)
+              .lte("_creationTime", oldest._creationTime),
+          )
+          .order("desc")
+          .take(SINCE_TURN_SCAN)
+      ).filter((m) => m.role === "user")
+    : [];
+  const candidates = [...stamped, ...unstamped]
+    .filter((m) => !readIds.has(String(m._id)))
+    .sort((a, b) => compareOrder(b, a));
+  for (const c of candidates) {
+    if (c.role === "assistant") {
+      if (c.status === "complete") return c;
+      continue;
+    }
+    if (c.role !== "user") continue;
+    // The replies to this turn, by CORRELATION first: the replies dispatched from its
+    // own rows (newest rows first — the current generation's).
+    const correlated = await repliesOfTurn(ctx, c);
+    let reply: Doc<"messages"> | null = null;
+    for (const m of correlated.sort((a, b) => compareOrder(a, b))) {
+      if (m.status !== "complete") continue;
+      const by = stampOf(m) ?? stampOf(c) ?? (isPrimary ? agent : null);
+      if (by !== null && historyAgentKey(by) === key) reply = m;
+    }
+    if (reply !== null) return reply;
+    // …else, for replies without that provenance: after it, up to the next user turn.
+    const after = await ctx.db
+      .query("messages")
+      .withIndex("by_chat", (q) => q.eq("chatId", chat._id).gte("_creationTime", c._creationTime))
+      .take(REPLY_LOOKAHEAD);
+    for (const m of after
+      .filter((m) => m._id !== c._id && compareOrder(m, c) > 0)
+      .sort((a, b) => compareOrder(a, b))) {
+      if (m.role === "user") break;
+      if (m.role !== "assistant" || m.status !== "complete") continue;
+      const by = stampOf(m) ?? stampOf(c) ?? (isPrimary ? agent : null);
+      if (by !== null && historyAgentKey(by) === key) reply = m;
+    }
+    if (reply !== null) return reply;
+  }
+  return null;
+}
+
+/** Is there any message strictly between `from` and `to` that `read` does not hold? */
+async function messagesBetween(
+  ctx: QueryCtx,
+  chatId: Id<"chats">,
+  from: Doc<"messages">,
+  to: Doc<"messages">,
+  read: ReadonlyArray<Doc<"messages">>,
+): Promise<boolean> {
+  const readIds = new Set(read.map((m) => String(m._id)));
+  const rows = await ctx.db
+    .query("messages")
+    .withIndex("by_chat", (q) =>
+      q
+        .eq("chatId", chatId)
+        .gte("_creationTime", from._creationTime)
+        .lte("_creationTime", to._creationTime),
+    )
+    .take(read.length + 2);
+  return rows.some((m) => m._id !== from._id && !readIds.has(String(m._id)));
+}
+
 export const rehydrationContext = internalQuery({
   args: {
     chatId: v.id("chats"),
     excludeMessageId: v.optional(v.id("messages")),
+    forAgent: v.optional(agentRefArg),
+    sinceLastReplyOf: v.optional(agentRefArg),
+    maxChars: v.optional(v.number()),
     ...boundArg,
   },
   handler: async (
     ctx,
-    { chatId, excludeMessageId, boundInstanceName },
+    { chatId, excludeMessageId, boundInstanceName, forAgent, sinceLastReplyOf, maxChars },
   ): Promise<{
     history: string | null;
     turnCount: number;
@@ -3971,6 +4509,9 @@ export const rehydrationContext = internalQuery({
     // `openclaw.rehydrate` trace. Older bridges ignore them.
     summaryUsed: boolean;
     summaryChars: number;
+    /** Present only when `sinceLastReplyOf` was asked: whether that agent's last
+     *  reply was found (false = the full history was composed instead). */
+    sinceFound?: boolean;
   }> => {
     // Cross-gateway READ barrier: the rebuilt history is chat CONTENT — only
     // an instance allowed to write this chat may read it for rehydration.
@@ -3984,6 +4525,7 @@ export const rehydrationContext = internalQuery({
       turnCount: 0,
       summaryUsed: false,
       summaryChars: 0,
+      ...(sinceLastReplyOf !== undefined ? { sinceFound: false } : {}),
     };
     const chat = await ctx.db.get(chatId);
     if (chat === null) return empty;
@@ -4001,7 +4543,13 @@ export const rehydrationContext = internalQuery({
     // of kilochars of raw history on every cold start. The rolling summary (below)
     // carries the older conversation instead (docs/HYBRID_REHYDRATION.md).
     const windowTokens = chat.sessionMeta?.contextTokens ?? 32_000;
-    const budgetChars = rehydrationBudgetChars(windowTokens);
+    // A caller's own ceiling can only LOWER the budget; one too small to ground
+    // anything sends nothing rather than a header around a fragment.
+    const budgetChars =
+      maxChars === undefined
+        ? rehydrationBudgetChars(windowTokens)
+        : Math.min(rehydrationBudgetChars(windowTokens), Math.floor(maxChars));
+    if (!(budgetChars >= MIN_REHYDRATION_CHARS)) return empty;
 
     // Rolling summary (maintained asynchronously by chatSummaries.ts). An empty
     // summary string = reset/none. The verbatim tail starts AFTER its watermark so
@@ -4067,7 +4615,53 @@ export const rehydrationContext = internalQuery({
       rehydInstance?.config,
     );
     const childResults = await loadChildResults(ctx, chatId, contentLocale);
-    const usableDesc = recent
+    // WHO ANSWERED each message, on everything read before the current turn (summary-
+    // covered rows included: a reply inherits from the turn it answers, which may sit
+    // just under the watermark).
+    const primary: HistoryAgentRef | null =
+      chat.instanceName && chat.agentId
+        ? { instanceName: chat.instanceName, agentId: chat.agentId }
+        : null;
+    const priorAsc = priorProbe
+      .filter((m) => current === null || compareOrder(m, current) < 0)
+      .sort((a, b) => compareOrder(a, b));
+    // Replies OPENING the window answer a turn that lies before it: that turn's stamp,
+    // looked up, rather than the primary by default — or the reply of an agent the
+    // read cut off from its question is taken for the primary's.
+    const leadingTurnAgent =
+      priorAsc[0]?.role === "assistant"
+        ? await precedingTurnAgent(ctx, chatId, priorAsc[0])
+        : null;
+    const agentOf = attributeHistoryAgents(priorAsc, primary, leadingTurnAgent);
+    // SINCE the reader's last COMPLETE reply: the newest one read — else, when the read
+    // did not reach the start of the chat, the newest one BEFORE it (bounded, indexed:
+    // lastReplyBefore). Not found at all = it never replied: the full history, as if
+    // not asked, and `sinceFound: false`.
+    const probeReachesStart = recentProbe.length < TAIL_READ + 1;
+    const sinceInRead =
+      sinceLastReplyOf === undefined
+        ? null
+        : ([...priorAsc]
+            .reverse()
+            .find((m) => {
+              if (m.role !== "assistant" || m.status !== "complete") return false;
+              const by = agentOf.get(m._id);
+              return (
+                by !== undefined &&
+                by !== null &&
+                historyAgentKey(by) === historyAgentKey(sinceLastReplyOf)
+              );
+            }) ?? null);
+    const oldestProbed = priorProbe[priorProbe.length - 1];
+    const sinceBeyond =
+      sinceLastReplyOf !== undefined &&
+      sinceInRead === null &&
+      !probeReachesStart &&
+      oldestProbed !== undefined
+        ? await lastReplyBefore(ctx, chat, sinceLastReplyOf, oldestProbed, priorProbe)
+        : null;
+    const sinceAnchor = sinceInRead ?? sinceBeyond;
+    const usableDesc = (sinceAnchor !== null ? priorProbe : recent)
       .filter((m) => current === null || compareOrder(m, current) < 0) // strictly before the current turn
       .filter(
         (m) =>
@@ -4079,15 +4673,62 @@ export const rehydrationContext = internalQuery({
             hasQuotes(m) ||
             (childResults.byMsg.get(m._id as string)?.length ?? 0) > 0),
       )
-      .filter((m) => effectiveOrder(m) > watermark) // summary-covered turns stay summarized
+      // A since-block starts after the reader's own reply — the reader's session holds
+      // everything before it, the summary included. Otherwise summary-covered turns
+      // stay summarized.
+      .filter((m) =>
+        sinceAnchor !== null
+          ? compareOrder(m, sinceAnchor) > 0
+          : effectiveOrder(m) > watermark,
+      )
       .sort((a, b) => compareOrder(b, a)); // newest logical first, for the budget walk
 
     // The bounded read may hide messages between the summary coverage (or the chat
     // start) and the oldest row read — surface that as an honest omission marker.
+    // A since-block whose anchor WAS read misses nothing after it; one whose anchor
+    // lies before the read misses what sits between the two, when anything does.
     const oldestRead = recent[recent.length - 1];
     const readWindowClipped =
-      clippedByRead &&
-      (oldestRead ? effectiveOrder(oldestRead) > watermark : false);
+      sinceAnchor === null
+        ? clippedByRead && (oldestRead ? effectiveOrder(oldestRead) > watermark : false)
+        : sinceBeyond !== null &&
+          oldestProbed !== undefined &&
+          (await messagesBetween(ctx, chatId, sinceBeyond, oldestProbed, priorProbe));
+
+    // LABEL THE AGENTS only where several take part: more than one answered in the
+    // window, or the chat routes per turn. A single-agent chat stays byte-identical.
+    const answeredBy = new Map<string, HistoryAgentRef>();
+    for (const m of usableDesc) {
+      const by = m.role === "assistant" ? agentOf.get(m._id) : null;
+      if (by) answeredBy.set(historyAgentKey(by), by);
+    }
+    const labelAgents = chat.perTurnRouting === true || answeredBy.size > 1;
+    const named = new Map(answeredBy);
+    if (labelAgents && forAgent !== undefined) named.set(historyAgentKey(forAgent), forAgent);
+    const agentLabels = labelAgents
+      ? agentHistoryLabels(
+          await Promise.all(
+            [...named.values()].map(async (a) => {
+              const row = await ctx.db
+                .query("agents")
+                .withIndex("by_instance_agent", (q) =>
+                  q.eq("instanceName", a.instanceName).eq("agentId", a.agentId),
+                )
+                .first();
+              // Names land inside a prompt: bounded, single-line, no framing characters.
+              return {
+                ...a,
+                name:
+                  safeAuthorLabel(row?.displayName) ??
+                  safeAuthorLabel(a.agentId) ??
+                  "agent",
+                instance: safeAuthorLabel(a.instanceName) ?? "instance",
+              };
+            }),
+          ),
+        )
+      : null;
+    const readerKey = forAgent !== undefined ? historyAgentKey(forAgent) : null;
 
     // A group conversation's user turns carry their author (lib/turnAuthors); a solo
     // chat's get none and render exactly as before. Resolved on the usable window
@@ -4103,6 +4744,14 @@ export const rehydrationContext = internalQuery({
           ...(m.role === "user" && authors?.has(m._id)
             ? { author: authors.get(m._id)! }
             : {}),
+          ...(() => {
+            const by = m.role === "assistant" ? agentOf.get(m._id) : null;
+            const label = by ? agentLabels?.get(historyAgentKey(by)) : undefined;
+            if (label === undefined) return {};
+            return historyAgentKey(by!) === readerKey
+              ? { agent: label, self: true }
+              : { agent: label };
+          })(),
           // QUOTE-REPLY: a user turn that replied to a block re-carries the
           // same preamble the dispatch sent (resolved for the SAME instance/
           // locale as the injections above) — the rebuilt history reads like
@@ -4120,17 +4769,23 @@ export const rehydrationContext = internalQuery({
                 )
               : enrichedTurnText(m, childResults),
         })),
-      summary: hasSummary
-        ? { text: summaryRow.summary, coveredCount: summaryRow.coveredCount }
-        : null,
+      summary:
+        hasSummary && sinceAnchor === null
+          ? { text: summaryRow.summary, coveredCount: summaryRow.coveredCount }
+          : null,
       readWindowClipped,
       budgetChars,
+      ...(readerKey !== null && agentLabels?.has(readerKey)
+        ? { reader: agentLabels.get(readerKey)! }
+        : {}),
+      ...(sinceAnchor !== null ? { since: true } : {}),
     });
     return {
       history: composed.history,
       turnCount: composed.turnCount,
       summaryUsed: composed.summaryUsed,
       summaryChars: composed.summaryChars,
+      ...(sinceLastReplyOf !== undefined ? { sinceFound: sinceAnchor !== null } : {}),
     };
   },
 });

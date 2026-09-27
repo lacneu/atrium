@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   ANNOUNCE_COMPOSE_GRACE_MS,
   assistantEmptyState,
+  delegatedRepliesFor,
   extractSpawnedChildKeys,
   toolPartsHaveSpawn,
   UNBACKED_DELEGATION_GRACE_MS,
@@ -783,5 +784,103 @@ describe("a spawned child is recognised from the structured copy", () => {
     // Correlated by KEY alone (no parentMessageId passed): a BACKED waiting, with
     // the task name and no expiry — not the bounded guess.
     expect(s).toEqual({ kind: "waiting", taskName: "r003" });
+  });
+});
+
+// A MERGED HAND-OFF CONTINUATION shows the delegated replies INLINE, at its
+// continuation point (convertMessage `bodyWithContinuation`). The empty-state
+// fallback must neither print them a second time, nor keep its promise standing
+// once the continuation has answered.
+describe("merged hand-off continuation", () => {
+  const MSG = "ph7dj2wpetf862e5v8n1zw0ez58f4fd2";
+  const child = {
+    _id: "sa1",
+    parentMessageId: MSG,
+    childSessionKey: "agent:files:subagent:0f7e3a6e-1c55-4a3c-9a0b-7c5f4b6e2d10",
+    status: "done" as const,
+    resultText: "Archive renommée.",
+    taskName: "Renommer l'archive mémoire",
+    createdAt: 1_000,
+    updatedAt: 2_000,
+  };
+  const yielded = [
+    {
+      toolName: "sessions_spawn",
+      phase: "completed",
+      result: { details: { status: "accepted", childSessionKey: child.childSessionKey } },
+    },
+    { toolName: "sessions_yield", phase: "completed", result: { details: { status: "yielded" } } },
+  ];
+
+  it("the promise stands while the continuation has not come, and resolves when it has answered", () => {
+    const empty = { status: "complete", hasText: false, hasMedia: false };
+    expect(assistantEmptyState(empty, yielded, [child], MSG, 2_500).kind).toBe("composing");
+    // Reopened by the merge: streaming — the promise gives way to the live turn.
+    expect(
+      assistantEmptyState({ ...empty, status: "streaming", delegatedInline: true }, yielded, [child], MSG, 2_600).kind,
+    ).toBe("none");
+    // Settled with the conclusion, long past the grace: nothing is re-printed below it.
+    expect(
+      assistantEmptyState(
+        { status: "complete", hasText: true, hasMedia: false, delegatedInline: true },
+        yielded,
+        [child],
+        MSG,
+        2_000 + ANNOUNCE_COMPOSE_GRACE_MS + 1,
+      ).kind,
+    ).toBe("none");
+  });
+
+  it("a continuation that answered nothing does not print the replies a SECOND time", () => {
+    const state = assistantEmptyState(
+      { status: "complete", hasText: false, hasMedia: false, delegatedInline: true },
+      yielded,
+      [child],
+      MSG,
+      2_000 + ANNOUNCE_COMPOSE_GRACE_MS + 1,
+    );
+    expect(state.kind).toBe("none");
+  });
+
+  it("delegatedRepliesFor: this bubble's finished children with a reply, oldest first", () => {
+    const rows = [
+      { ...child, _id: "b", childSessionKey: "agent:writer:subagent:b", createdAt: 3_000 },
+      child,
+      { ...child, _id: "t", childSessionKey: "task:x", kind: "task" as const },
+      { ...child, _id: "e", childSessionKey: "agent:x:subagent:e", status: "error" as const },
+      { ...child, _id: "o", childSessionKey: "agent:x:subagent:o", parentMessageId: "other" },
+      { ...child, _id: "n", childSessionKey: "agent:x:subagent:n", resultText: "  " },
+    ];
+    expect(delegatedRepliesFor(rows, MSG)).toEqual([
+      { childSessionKey: child.childSessionKey, agentId: "files", resultText: "Archive renommée." },
+      { childSessionKey: "agent:writer:subagent:b", agentId: "writer", resultText: "Archive renommée." },
+    ]);
+    expect(delegatedRepliesFor(undefined, MSG)).toEqual([]);
+  });
+});
+
+describe("delegatedRepliesFor: one slot per continuation (codex pass 2, P2)", () => {
+  const MSG = "m1";
+  const row = (id: string, runId: string | undefined, createdAt: number) => ({
+    _id: id,
+    parentMessageId: MSG,
+    childSessionKey: `agent:files:subagent:${id}`,
+    ...(runId !== undefined ? { childRunId: runId } : {}),
+    status: "done" as const,
+    resultText: `reply ${id}`,
+    createdAt,
+    updatedAt: createdAt,
+  });
+  const rows = [row("a", "run-1", 1), row("b", "run-2", 2), row("c", undefined, 3)];
+  const keys = (r: { childSessionKey: string }[]) => r.map((x) => x.childSessionKey.split(":").at(-1));
+
+  it("a batch slot shows only the children its settle run named", () => {
+    expect(keys(delegatedRepliesFor(rows, MSG, { kind: "batch", childRunIds: ["run-2"] }))).toEqual(["b"]);
+  });
+  it("the rest slot shows every child no batch claimed (a row without a run id included)", () => {
+    expect(keys(delegatedRepliesFor(rows, MSG, { kind: "rest", claimed: ["run-1"] }))).toEqual(["b", "c"]);
+  });
+  it("no slot = every reply, as a bubble merged before per-batch positions rendered", () => {
+    expect(keys(delegatedRepliesFor(rows, MSG))).toEqual(["a", "b", "c"]);
   });
 });

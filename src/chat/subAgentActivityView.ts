@@ -69,6 +69,9 @@ export type SubAgentRow = {
    *  registration). The ROBUST correlation key — message-precise, no toolPart parse. */
   parentMessageId?: string;
   childSessionKey: string;
+  /** The child's run id from its spawn result — how a merged hand-off
+   *  continuation (`continuations[].childRunIds`) claims the replies it answered. */
+  childRunId?: string;
   /** "task" = a gateway background-task engagement (async tool, e.g. image
    *  generation) rather than a spawned sub-agent session. */
   kind?: "subagent" | "task";

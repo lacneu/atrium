@@ -267,6 +267,12 @@ export const MODELS_LIST_OWNER_SINCE = "2026.8.1";
  *  session never compacted. */
 export const COMPACTION_CHECKPOINTS_RETIRED_IN = "2026.9.6";
 
+/** First gateway version whose `chat.send` accepts `expectedPermissionMode` (the
+ *  vendored 2026.8.2 `ChatSendParamsSchema` is the first to carry it; 2026.8.1's does
+ *  not). The params object is CLOSED upstream: an older gateway would refuse the whole
+ *  send over the unknown key, so the guard is only sent from this version on. */
+export const EXPECTED_PERMISSION_MODE_SINCE = "2026.8.2";
+
 const parsedVersions = new Map<string, ParsedVersion | null>();
 /** `version >= min`, on the RAW gateway version (not the capped capability table);
  *  null when either side does not parse. Parses are memoized: the boundaries are

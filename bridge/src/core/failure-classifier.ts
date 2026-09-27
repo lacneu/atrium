@@ -179,6 +179,35 @@ export function isProviderReviewPausedText(text: string | null | undefined): boo
   return PROVIDER_REVIEW_PAUSED_RE.test(withoutOperatorData(text));
 }
 
+/** The gateway refused THIS CONNECTION's turn because of the session's VISIBILITY
+ *  (2026.9.6): `authorizeSessionSharingTarget` (src/gateway/session-sharing-policy.ts)
+ *  answers `INVALID_REQUEST` "session is <visibility> for this connection" with
+ *  `details.code: SESSION_PARTICIPATION_REQUIRED` — read-only and suggest refuse a
+ *  non-member, draft refuses everyone but the creator and an admin. A choice the
+ *  session's owner made on the gateway, not a malformed request, and not retryable:
+ *  the same connection is refused the same way until the visibility changes. */
+const SESSION_VISIBILITY_REFUSED_RE =
+  /\bsession is (?:read-only|suggest|draft) for this connection\b|SESSION_PARTICIPATION_REQUIRED/i;
+
+export function isSessionVisibilityRefusedText(text: string | null | undefined): boolean {
+  if (!text) return false;
+  return SESSION_VISIBILITY_REFUSED_RE.test(withoutOperatorData(text));
+}
+
+/** The gateway refused the send because the session's permission mode is no longer
+ *  the one the send expected (`expectedPermissionMode`, 2026.8.2+):
+ *  `captureAdmittedChatSendSessionSettings` (chat-send-session-settings.ts) raises
+ *  "session-settings-changed", answered as `INVALID_REQUEST` "Session settings changed
+ *  before send. Retry." (chat-send-pre-admission.ts). Nothing started. NOT retried by
+ *  Atrium: the reader saw one mode and the session now runs another — they confirm,
+ *  then send again. */
+const SESSION_SETTINGS_CHANGED_RE = /session settings changed before send/i;
+
+export function isSessionSettingsChangedText(text: string | null | undefined): boolean {
+  if (!text) return false;
+  return SESSION_SETTINGS_CHANGED_RE.test(text);
+}
+
 /** The gateway refused NEW WORK on an ARCHIVED session (2026.9.5).
  *
  *  Upstream auto-archives a durable dashboard session after 7 days of inactivity

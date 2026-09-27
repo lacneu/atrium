@@ -1589,3 +1589,161 @@ describe("failDispatch arms the bounded retry on a retryable code", () => {
     ).toBeUndefined();
   });
 });
+
+// THE PERMISSIONS THE READER WAS SHOWN, as the send guard (OpenClaw 2026.9.6). Pinned
+// on the REAL dispatch body: `expectedPermissionMode` rides it exactly when this turn's
+// gateway session is the one the stored meta describes, and is absent otherwise — a
+// guard read off another session refuses a turn for nothing.
+describe("dispatch — expectedPermissionMode", () => {
+  async function seedBound(
+    t: ReturnType<typeof convexTest>,
+    opts: {
+      sessionMeta?: Record<string, unknown>;
+      perTurnRouting?: boolean;
+      kind?: "openclaw" | "hermes";
+      openclawChatId?: string;
+    } = {},
+  ): Promise<{ chatId: Id<"chats">; outboxId: Id<"outbox"> }> {
+    return await t.run(async (ctx) => {
+      const userId = await ctx.db.insert("users", {});
+      const now = Date.now();
+      await ctx.db.insert("userAgents", {
+        userId,
+        instanceName: "primary",
+        agentId: "alice",
+        isDefault: true,
+        source: "manual",
+        createdAt: now,
+      });
+      await ctx.db.insert("instances", {
+        name: "primary",
+        gatewayUrl: "ws://gw:18790",
+        bridgeUrl: "http://instance-host:9999",
+        ...(opts.kind ? { kind: opts.kind } : {}),
+      });
+      const chatId = await ctx.db.insert("chats", {
+        userId,
+        archived: false,
+        updatedAt: now,
+        instanceName: "primary",
+        agentId: "alice",
+        ...(opts.perTurnRouting ? { perTurnRouting: true } : {}),
+        ...(opts.openclawChatId ? { openclawChatId: opts.openclawChatId } : {}),
+        ...(opts.sessionMeta ? { sessionMeta: opts.sessionMeta } : {}),
+      });
+      const outboxId = await ctx.db.insert("outbox", {
+        chatId,
+        userId,
+        clientMessageId: "cmid-guard",
+        text: "hello",
+        attachmentIds: [],
+        status: "pending",
+      });
+      return { chatId, outboxId };
+    });
+  }
+
+  async function bodyOf(
+    t: ReturnType<typeof convexTest>,
+    outboxId: Id<"outbox">,
+  ): Promise<Record<string, unknown>> {
+    const prevSecret = process.env.BRIDGE_SHARED_SECRET;
+    process.env.BRIDGE_SHARED_SECRET = "test-secret";
+    const fetchSpy = vi.fn(
+      async (_url: RequestInfo | URL, _init?: RequestInit) =>
+        new Response(null, { status: 200 }),
+    );
+    const origFetch = globalThis.fetch;
+    globalThis.fetch = fetchSpy as unknown as typeof fetch;
+    try {
+      await t.action(internal.bridge.dispatch, { outboxId });
+      const call = fetchSpy.mock.calls.find(([url]) =>
+        String(url).endsWith("/send"),
+      ) as unknown as [string, RequestInit] | undefined;
+      expect(call, "the dispatch reached /send").toBeDefined();
+      return JSON.parse(call![1].body as string) as Record<string, unknown>;
+    } finally {
+      globalThis.fetch = origFetch;
+      if (prevSecret === undefined) delete process.env.BRIDGE_SHARED_SECRET;
+      else process.env.BRIDGE_SHARED_SECRET = prevSecret;
+    }
+  }
+
+  const described = {
+    permissionMode: "guarded",
+    permissionModePending: false,
+    availableModelsOwner: "alice",
+    accessAt: 10,
+  };
+
+  test("the mode on record rides the send — and `null` (none set) rides as null", async () => {
+    let t = convexTest(schema, modules);
+    let { outboxId } = await seedBound(t, { sessionMeta: described });
+    expect((await bodyOf(t, outboxId)).expectedPermissionMode).toBe("guarded");
+
+    t = convexTest(schema, modules);
+    ({ outboxId } = await seedBound(t, {
+      sessionMeta: { ...described, permissionMode: null },
+    }));
+    const body = await bodyOf(t, outboxId);
+    expect("expectedPermissionMode" in body).toBe(true);
+    expect(body.expectedPermissionMode).toBeNull();
+  });
+
+  test("OMITTED when nothing was reported, or when the session may not be the one described", async () => {
+    const cases: Array<[string, Parameters<typeof seedBound>[1]]> = [
+      ["no meta yet", {}],
+      ["a meta without the mode (an older gateway)", { sessionMeta: { model: "m" } }],
+      ["a per-turn routed chat", { sessionMeta: described, perTurnRouting: true }],
+      ["a Hermes instance", { sessionMeta: described, kind: "hermes" }],
+      ["a stored provider id", { sessionMeta: described, openclawChatId: "legacy-uuid" }],
+      ["described for another agent", { sessionMeta: { ...described, availableModelsOwner: "bob" } }],
+    ];
+    for (const [name, opts] of cases) {
+      const t = convexTest(schema, modules);
+      const { outboxId } = await seedBound(t, opts);
+      expect("expectedPermissionMode" in (await bodyOf(t, outboxId)), name).toBe(false);
+    }
+  });
+
+  test("a rebind drops the old session's access facts, keeping their watermark", async () => {
+    const t = convexTest(schema, modules);
+    const { chatId } = await seedBound(t, {
+      sessionMeta: { ...described, visibility: "draft", sessionRoot: "/w", model: "m" },
+    });
+    await t.mutation(internal.bridge.bindChatTarget, {
+      chatId,
+      instanceName: "primary",
+      agentId: "bob",
+    });
+    const meta = await t.run(async (ctx) => (await ctx.db.get(chatId))?.sessionMeta);
+    expect(meta).toEqual({ model: "m", availableModelsOwner: "alice", accessAt: 10 });
+  });
+});
+
+// Two refusals the gateway makes on the session's OWN rules (OpenClaw 2026.9.6), before
+// anything runs. Neither may be re-dispatched: the visibility refuses the same person the
+// same way until its owner changes it, and a changed permission mode is for the reader to
+// look at before sending again — an automatic re-send would go out under a mode nobody saw.
+describe("failDispatch — session visibility / settings refusals", () => {
+  test("stored under their own code, and never re-dispatched", async () => {
+    for (const code of ["session_visibility_refused", "session_settings_changed"]) {
+      const t = convexTest(schema, modules);
+      const { chatId, outboxId } = await seed(t);
+      await t.mutation(internal.bridge.failDispatch, {
+        outboxId,
+        reason: "send_failed",
+        errorCode: code,
+      });
+      const msgs = await messagesOf(t, chatId);
+      expect(msgs[0]!.errorCode, code).toBe(code);
+      // The reason string, never the gateway's sentence: the card's detail stays silent.
+      expect(msgs[0]!.error, code).toBe("send_failed");
+      expect(msgs[0]!.autoRetry, code).toBeUndefined();
+      const scheduled = await t.run((ctx) =>
+        ctx.db.system.query("_scheduled_functions").collect(),
+      );
+      expect(scheduled.filter((f) => f.name.includes("turnRetry")), code).toHaveLength(0);
+    }
+  });
+});

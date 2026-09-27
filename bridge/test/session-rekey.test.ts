@@ -47,6 +47,7 @@ function fakeConn() {
     modelsByOwner: new Map(),
     rosterEpoch: 0,
     onConfigChanged: () => () => {},
+    onSessionSharing: () => () => {},
     onClosed: () => () => {},
     async *frames() {
       try {

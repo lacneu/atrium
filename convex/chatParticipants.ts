@@ -159,7 +159,7 @@ export const listInvitable = query({
   handler: async (
     ctx,
     { chatId },
-  ): Promise<Array<{ userId: Id<"users">; name: string }>> => {
+  ): Promise<Array<{ userId: Id<"users">; name: string; detail?: string }>> => {
     const { userId } = await requireActive(ctx);
     const id = ctx.db.normalizeId("chats", chatId);
     if (id === null) return [];
@@ -170,7 +170,7 @@ export const listInvitable = query({
     for (const row of await chatParticipantRows(ctx, id)) {
       taken.add(String(row.userId));
     }
-    const out: Array<{ userId: Id<"users">; name: string }> = [];
+    const out: Array<{ userId: Id<"users">; name: string; detail?: string }> = [];
     for (const role of ["user", "admin"] as const) {
       const profiles = await ctx.db
         .query("profiles")
@@ -179,9 +179,14 @@ export const listInvitable = query({
       for (const p of profiles) {
         if (taken.has(String(p.userId))) continue;
         taken.add(String(p.userId));
+        // Display names repeat (two "olivier"s): the address — else the account key —
+        // tells the person inviting WHO each one is. Only people who manage the room
+        // reach this list.
+        const detail = p.email ?? p.canonical;
         out.push({
           userId: p.userId,
           name: displayNameOf(p, p.userId),
+          ...(detail !== undefined && detail !== displayNameOf(p, p.userId) ? { detail } : {}),
         });
       }
     }

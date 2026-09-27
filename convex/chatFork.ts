@@ -193,6 +193,16 @@ export const forkChat = mutation({
               sessionOverfull: undefined,
               sessionOverfullAt: undefined,
               sessionResetAt: undefined,
+              // WHO MAY ACT and with what permissions describe the SOURCE's gateway
+              // session too. The fork's is new and sets no mode: inherited, the header
+              // would show permissions the fork does not have, and its first send
+              // would carry the source's mode as a guard and be refused.
+              visibility: undefined,
+              sharingRole: undefined,
+              permissionMode: undefined,
+              permissionModePending: undefined,
+              sessionRoot: undefined,
+              accessAt: undefined,
             },
           }
         : {}),

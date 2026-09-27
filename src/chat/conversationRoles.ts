@@ -41,6 +41,17 @@ export function mayRemove(
   return viewer === "manager" && target !== "manager";
 }
 
+/** May `viewer` remove this person from the room — the rule for a roster row, the
+ *  owner included (never removable; they own the conversation). One rule for the
+ *  conversation panel and the composer's quick list. */
+export function mayRemoveMember(
+  viewer: RoomRole | undefined,
+  member: { roomRole: RoomRole; isSelf: boolean },
+): boolean {
+  if (member.roomRole === "owner") return false;
+  return mayRemove(viewer, member.roomRole, member.isSelf);
+}
+
 /** The roles an INVITATION may carry for this viewer. */
 export function invitableRoles(viewer: RoomRole | undefined): MemberRole[] {
   if (viewer === "owner") return [...MEMBER_ROLES];

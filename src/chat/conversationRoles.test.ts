@@ -6,6 +6,7 @@ import {
   invitableRoles,
   managesRoom,
   mayRemove,
+  mayRemoveMember,
 } from "./conversationRoles";
 
 // Mirrors convex/chatParticipants.ts `mayChangeRole`: a control the panel shows
@@ -55,6 +56,18 @@ describe("who may remove whom", () => {
 
   test("removing oneself is leaving, not removing", () => {
     expect(mayRemove("owner", "member", true)).toBe(false);
+  });
+
+  test("a roster row: never the owner, whoever reads it", () => {
+    // The owner is listed with the others (the composer's quick list and the panel
+    // share this rule); removing them would mean deleting the conversation.
+    expect(mayRemoveMember("owner", { roomRole: "owner", isSelf: true })).toBe(false);
+    expect(mayRemoveMember("manager", { roomRole: "owner", isSelf: false })).toBe(false);
+    expect(mayRemoveMember("owner", { roomRole: "member", isSelf: false })).toBe(true);
+    expect(mayRemoveMember("manager", { roomRole: "manager", isSelf: false })).toBe(false);
+    expect(mayRemoveMember("manager", { roomRole: "viewer", isSelf: false })).toBe(true);
+    expect(mayRemoveMember("member", { roomRole: "viewer", isSelf: false })).toBe(false);
+    expect(mayRemoveMember("manager", { roomRole: "manager", isSelf: true })).toBe(false);
   });
 });
 

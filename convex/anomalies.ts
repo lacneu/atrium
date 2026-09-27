@@ -238,6 +238,12 @@ export const CAUSE_ANOMALY_KINDS: Record<string, string> = {
   // every turn is refused until someone continues it, which Atrium cannot do — a run
   // of these on one chat is a conversation stuck for good, an operator signal.
   session_paused_review: "assistant.cause.session_paused_review",
+  // NOT `session_visibility_refused` / `session_settings_changed`, deliberately. Both are
+  // refused at `chat.send` admission, before any stream exists, so no finalize row could
+  // ever carry them (same reason as the staging refusals below); and both are DECISIONS,
+  // not faults — the session's owner chose who may write, or its permissions changed
+  // under the reader. They still count, under their own name, in the dispatch-failure
+  // detector's `codeCounts`.
   // NOT the bridge's inbound-staging refusals, deliberately. This map is read for
   // `streamCauses` only — causes carried by an `assistant.stream` FINALIZE row —
   // and a staging refusal happens BEFORE any stream exists: it surfaces as an

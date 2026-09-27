@@ -3929,8 +3929,20 @@
           "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
         },
         "sharingRole": {
-          "status": "gap",
-          "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+          "status": "handled",
+          "by": "providers/openclaw/session-access.ts readSessionAccess -> SessionMetaReport.sharingRole: the READER's role on the session as the gateway projects it for this connection (session-row-presentation.ts viewer()); shown, never enforced by Atrium.",
+          "anchor": {
+            "file": "src/providers/openclaw/session-access.ts",
+            "token": "sess.sharingRole"
+          },
+          "proof": {
+            "kind": "deterministic-test",
+            "ref": "bridge/test/session-access.test.ts",
+            "note": "Shape read in the v2026.9.6 sources (session-utils-row.ts materializeSessionRow, session-row-presentation.ts viewer(), sessions-row.ts / sessions-sharing-values.ts schemas) AND captured live on the 2026.9.6 bench (openclaw-notes bench-runs/session-access-2026-09-26: describe fields unset/set, agents.list defaultPermissionMode, session.sharing.evidence heard, expectedPermissionMode refusal text), replayed by the deterministic test and proven by neutralization. No full-catalogue scenario covers it yet: golden-corpus proof stays owed."
+          },
+          "verifiedVersions": [
+            "2026.9.6"
+          ]
         },
         "spawnDepth": {
           "status": "gap",
@@ -3981,8 +3993,20 @@
           "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
         },
         "visibility": {
-          "status": "gap",
-          "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+          "status": "handled",
+          "by": "providers/openclaw/session-access.ts readSessionAccess -> SessionMetaReport.visibility (published with the session meta on every describe, and on a session.sharing notice): SHOWN in the conversation header, never enforced by Atrium — the gateway enforces it.",
+          "anchor": {
+            "file": "src/providers/openclaw/session-access.ts",
+            "token": "sess.visibility"
+          },
+          "proof": {
+            "kind": "deterministic-test",
+            "ref": "bridge/test/session-access.test.ts",
+            "note": "Shape read in the v2026.9.6 sources (session-utils-row.ts materializeSessionRow, session-row-presentation.ts viewer(), sessions-row.ts / sessions-sharing-values.ts schemas) AND captured live on the 2026.9.6 bench (openclaw-notes bench-runs/session-access-2026-09-26: describe fields unset/set, agents.list defaultPermissionMode, session.sharing.evidence heard, expectedPermissionMode refusal text), replayed by the deterministic test and proven by neutralization. No full-catalogue scenario covers it yet: golden-corpus proof stays owed."
+          },
+          "verifiedVersions": [
+            "2026.9.6"
+          ]
         },
         "worktree": {
           "status": "gap",

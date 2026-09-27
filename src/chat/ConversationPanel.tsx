@@ -20,6 +20,7 @@ import {
   Check,
   ChevronDown,
   ChevronRight,
+  Crown,
   LogOut,
   MoreHorizontal,
   Plus,
@@ -28,7 +29,7 @@ import {
   UserPlus,
   Users,
 } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 
 import { Button } from "@/components/ui/button";
 import {
@@ -71,13 +72,14 @@ import {
   arrivalRoleFor,
   invitableRoles,
   managesRoom,
-  mayRemove,
+  mayRemoveMember,
   type MemberRole,
   type RoomRole,
 } from "./conversationRoles";
 import { api } from "./convexApi";
 import { SessionKnobsGroup } from "./KnobRow";
 import { agentRefEquals, presenceRoster } from "./perTurnAgent";
+import { dockFocus, dockOffsets, dockScales } from "./presenceDock";
 import type { SessionMetaView, SessionSettingsView } from "./sessionKnobs";
 import type { ChatRouting } from "./useConvexChatRuntime";
 
@@ -271,6 +273,13 @@ export function RoomPresence({
 }) {
   const members = useQuery(api.chatParticipants.listMembers, { chatId });
   const room = useQuery(api.chatAgents.listChatAgents, { chatId: chatId as string });
+  // THE DOCK: faces magnify around the pointer (presenceDock.ts). Centres are taken at
+  // REST when the pointer enters — measuring while magnified would chase the spread.
+  const faceRefs = useRef<Array<HTMLSpanElement | null>>([]);
+  const restCenters = useRef<number[]>([]);
+  const restWidth = useRef(20);
+  const [pointerX, setPointerX] = useState<number | null>(null);
+  const stripLeft = useRef(0);
   const roster = presenceRoster(
     members ?? [],
     room ? [room.primary, ...room.agents].filter((a) => a !== null) : [],
@@ -303,33 +312,63 @@ export function RoomPresence({
   ];
   const shown = faces.slice(0, PRESENCE_MAX);
   const hidden = faces.slice(PRESENCE_MAX);
+  const reducedMotion =
+    typeof window !== "undefined" &&
+    window.matchMedia?.("(prefers-reduced-motion: reduce)").matches === true;
+  const scales = reducedMotion
+    ? shown.map(() => 1)
+    : dockScales(restCenters.current.slice(0, shown.length), pointerX);
+  const focus = dockFocus(scales);
+  const offsets = dockOffsets(restCenters.current.slice(0, shown.length), scales, restWidth.current);
   return (
     <button
       type="button"
       className="oc-presence"
       onClick={onOpen}
+      onMouseEnter={(e) => {
+        const strip = e.currentTarget.getBoundingClientRect();
+        stripLeft.current = strip.left;
+        restCenters.current = faceRefs.current.slice(0, shown.length).map((el) => {
+          const r = el?.getBoundingClientRect();
+          return r ? r.left + r.width / 2 - strip.left : Number.NaN;
+        });
+        restWidth.current = faceRefs.current[0]?.getBoundingClientRect().width || 20;
+        setPointerX(e.clientX - strip.left);
+      }}
+      onMouseMove={(e) => setPointerX(e.clientX - stripLeft.current)}
+      onMouseLeave={() => setPointerX(null)}
       aria-label={m.conversation_presence_aria({
         people: people.length,
         agents: agents.length,
       })}
-      title={faces.map((f) => f.name).join("\n")}
     >
-      {shown.map((f) =>
+      {shown.map((f, i) =>
         f.kind === "person" ? (
           <span
             key={f.key}
-            className={`oc-presence__face${f.self ? " is-self" : ""}`}
-            title={`${f.name} · ${f.role}`}
+            ref={(el) => {
+              faceRefs.current[i] = el;
+            }}
+            className={`oc-presence__face${f.self ? " is-self" : ""}${focus === i ? " is-focus" : ""}`}
+            style={{ "--dock-s": scales[i] ?? 1, "--dock-x": `${offsets[i] ?? 0}px` } as CSSProperties}
+            data-name={`${f.name} · ${f.role}`}
           >
-            <Avatar userId={f.userId} name={f.name} />
+            <Avatar userId={f.userId} name={f.name} showTitle={false} />
           </span>
         ) : (
           <span
             key={f.key}
-            className={`oc-presence__face oc-presence__agent${f.primary ? " is-primary" : ""}`}
-            title={f.name}
+            ref={(el) => {
+              faceRefs.current[i] = el;
+            }}
+            className={`oc-presence__face oc-presence__agent${f.primary ? " is-primary" : ""}${focus === i ? " is-focus" : ""}`}
+            style={{ "--dock-s": scales[i] ?? 1, "--dock-x": `${offsets[i] ?? 0}px` } as CSSProperties}
+            data-name={f.name}
           >
             <GatewayMark kind={f.gateway} size={12} />
+            {f.primary ? (
+              <Crown size={8} className="oc-presence__crown" aria-hidden />
+            ) : null}
           </span>
         ),
       )}
@@ -469,6 +508,29 @@ function AgentsTab({
   const addAgent = useMutation(api.chatAgents.addChatAgent);
   const removeAgent = useMutation(api.chatAgents.removeChatAgent);
   const rebind = useMutation(api.chats.rebindChatAgent);
+  // THE ONE PLACE the primary changes once the conversation has started: the
+  // composer only ever picks the next message's agent.
+  const setPrimary = useMutation(api.chatAgents.setPrimaryAgent);
+  const makePrimary = (a: RoomData["agents"][number]) =>
+    void setPrimary({
+      chatId,
+      instanceName: a.instanceName,
+      agentId: a.agentId,
+    })
+      .then((r) => {
+        if (!r.changed && r.reason === "busy") toast.error(m.conversation_primary_busy());
+        // A long history is being pinned to the agents that wrote it first (a few
+        // scheduled batches); the change is made when asked again.
+        if (!r.changed && r.reason === "preparing") toast.error(m.conversation_primary_preparing());
+      })
+      .catch((err: unknown) => {
+        const raw = err instanceof Error ? err.message : String(err);
+        toast.error(
+          raw.includes("TALK_CALL_ACTIVE")
+            ? m.chat_agent_select_call_hint()
+            : m.conversation_failed(),
+        );
+      });
   const meta = useQuery(
     api.messages.getSessionMeta,
     isOwner ? { chatId } : "skip",
@@ -505,9 +567,13 @@ function AgentsTab({
         <span className="oc-convpanel__name">
           {agentName(a)}
           {primary ? (
-            <span className="oc-convpanel__badge">
-              {m.conversation_primary_badge()}
-            </span>
+            <Crown
+              size={12}
+              className="oc-convpanel__crown"
+              aria-label={m.conversation_primary_title()}
+            >
+              <title>{m.conversation_primary_title()}</title>
+            </Crown>
           ) : null}
           {a.gone ? (
             <span className="oc-convpanel__badge is-warn">
@@ -536,6 +602,12 @@ function AgentsTab({
             </Button>
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end">
+            {isOwner && a.usable && !a.gone ? (
+              <DropdownMenuItem onSelect={() => makePrimary(a)}>
+                <Crown aria-hidden />
+                {m.conversation_primary_make()}
+              </DropdownMenuItem>
+            ) : null}
             <DropdownMenuItem
               variant="destructive"
               onSelect={() =>
@@ -574,7 +646,7 @@ function AgentsTab({
             </Button>
           ) : null
         ) : (
-          <p className="oc-convpanel__hint">{m.conversation_primary_fixed()}</p>
+          <p className="oc-convpanel__hint">{m.conversation_primary_how()}</p>
         )
       ) : null}
 
@@ -754,8 +826,7 @@ function PeopleTab({
             p.roomRole === "owner" ? null : (p.roomRole as MemberRole);
           const options =
             target === null ? [] : assignableRoles(viewer, target, p.isSelf);
-          const removable =
-            target !== null && mayRemove(viewer, target, p.isSelf);
+          const removable = mayRemoveMember(viewer, p);
           return (
             <li key={String(p.userId)} className="oc-convpanel__member">
               <Avatar userId={String(p.userId)} name={p.name} />

@@ -2219,7 +2219,8 @@ describe("a turn's routing is not written for an author who lost the right to se
     const t = convexTest(schema, modules);
     const s = await roomWithBob(t);
     await as(t, s.owner).mutation(api.chatAgents.removeChatAgent, { chatId: s.chatId, ...bob });
-    expect(await begin(t, s)).toEqual({ refused: "sender_not_permitted" });
+    // Named as what it is (settled AGENT_LEFT_ROOM, not the sender's standing).
+    expect(await begin(t, s)).toEqual({ refused: "agent_left_room" });
     await untouched(t, s.chatId, s.outboxId);
   });
 

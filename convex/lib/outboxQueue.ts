@@ -24,9 +24,10 @@ import {
   blockingCallForTurn,
   scheduleCallWindowDrain,
 } from "./talkFreeze";
-import type { Id } from "../_generated/dataModel";
+import type { Doc, Id } from "../_generated/dataModel";
 import type { MutationCtx, QueryCtx } from "../_generated/server";
 import { effectiveOrder, QUEUED_ORDER_SENTINEL } from "./messageOrder";
+import { yieldHandedOff } from "./toolOutcome";
 
 /** Most a single chat may hold queued behind the in-flight turn (anti-runaway). */
 export const MAX_QUEUED_PER_CHAT = 20;
@@ -218,9 +219,27 @@ export async function drainNextQueued(
       return;
     }
   }
+  // A CHAINED reply waits for the replies before it to be ANSWERS: a step whose agent
+  // yielded to a sub-agent concludes in its continuation, after the child ends.
+  const heldUntil = await chainStepHeldUntil(ctx, next);
+  if (heldUntil !== null) {
+    await ctx.scheduler.runAfter(
+      Math.max(heldUntil - Date.now(), 0),
+      internal.bridge.drainAfterCallRefusal,
+      { chatId },
+    );
+    return;
+  }
   // The dispatch window opens NOW — stamped so the reconciler measures the time
   // this row has actually been in flight, not how long it waited in the queue.
-  await ctx.db.patch(next._id, { status: "pending", pendingSince: Date.now() });
+  // A FRESH dispatch window: a row re-queued after an earlier attempt (a call that
+  // refused it, a re-park) has not left for anyone in this one — the last gate
+  // stamps `sentToInstance` again when it does.
+  await ctx.db.patch(next._id, {
+    status: "pending",
+    pendingSince: Date.now(),
+    sentToInstance: undefined,
+  });
   // Stamp the now-dispatched follow-up's LOGICAL order time (see lib/messageOrder).
   // `next.messageId` is the optimistic user message from send.ts (currently SENTINEL).
   // Use a value STRICTLY GREATER than every already-DISPATCHED message's effectiveOrder
@@ -230,7 +249,10 @@ export async function drainNextQueued(
   // it BEFORE the assistant. The bump stays well below SENTINEL, so it still sorts
   // before any OTHER still-queued follow-up. (Still-queued SENTINEL rows are excluded
   // from the max — the promoted turn dispatches now, ahead of them.)
-  if (next.messageId) {
+  // A CHAINED reply shares its head's user message, which was placed when the head
+  // dispatched: re-stamping it now would move the question below the answers it
+  // already received.
+  if (next.messageId && next.chainStep === undefined) {
     const recent = await ctx.db
       .query("messages")
       .withIndex("by_chat", (q) => q.eq("chatId", chatId))
@@ -258,3 +280,110 @@ export async function drainNextQueued(
   });
 }
 
+/** How many messages after a question are read for the replies its chain gave. */
+export const CHAIN_REPLY_READ = 200;
+
+/**
+ * The replies the EARLIER steps of `row`'s chain gave — found from the REPLIES, never
+ * from the question's rows. Every regenerate adds rows to the question and keeps the
+ * old ones, so its oldest rows are no window onto the current chain: after a few
+ * regenerations the current generation's first step is not among them at all. A reply
+ * names the row it was dispatched from (`dispatchOutboxId`); the replies after the
+ * question are read once (bounded, indexed), and each is kept when its row belongs to
+ * the same question at an earlier step. The replies of earlier generations for those
+ * steps were deleted with them (messages.deleteMessage truncates), so what is found is
+ * the chain as the reader sees it. Any status: callers filter.
+ */
+export async function earlierChainReplies(
+  ctx: QueryCtx,
+  row: Doc<"outbox">,
+): Promise<Array<{ reply: Doc<"messages">; row: Doc<"outbox"> }>> {
+  if (row.chainStep === undefined || row.messageId === undefined) return [];
+  const question = await ctx.db.get(row.messageId);
+  if (question === null) return [];
+  // `gte`: `_creationTime` is not unique, and a reply tied with its question counts.
+  const after = await ctx.db
+    .query("messages")
+    .withIndex("by_chat", (q) =>
+      q.eq("chatId", row.chatId).gte("_creationTime", question._creationTime),
+    )
+    .take(CHAIN_REPLY_READ);
+  const rows = new Map<string, Doc<"outbox"> | null>();
+  const out: Array<{ reply: Doc<"messages">; row: Doc<"outbox"> }> = [];
+  for (const m of after) {
+    if (m.role !== "assistant" || m.dispatchOutboxId === undefined) continue;
+    let source = rows.get(m.dispatchOutboxId);
+    if (source === undefined) {
+      const id = ctx.db.normalizeId("outbox", m.dispatchOutboxId);
+      source = id === null ? null : await ctx.db.get(id);
+      rows.set(m.dispatchOutboxId, source);
+    }
+    if (
+      source === null ||
+      source._id === row._id ||
+      source.messageId !== row.messageId ||
+      (source.chainStep ?? 0) >= row.chainStep
+    ) {
+      continue;
+    }
+    out.push({ reply: m, row: source });
+  }
+  return out;
+}
+
+/**
+ * How long a chained reply waits, once every sub-agent of the step before it has
+ * ended, for that step's CONCLUSION when its agent yielded (OpenClaw `sessions_yield`:
+ * the requester-settle continuation merges into the step's bubble after the child's
+ * result — stream.settleContinuationAnchor). The continuation normally follows within
+ * seconds; one that never comes (a failed wake, a merge that fell back to its own
+ * bubble) must not hold the conversation, so past this the next agent is asked with
+ * what the step did write.
+ */
+export const CHAIN_SETTLE_WAIT_MS = 2 * 60_000;
+
+/**
+ * Until when the chained row `next` must wait, or null to dispatch it now.
+ *
+ * A reply before it in the chain that HANDED OFF (a completed `sessions_yield`, read
+ * like the delivery verdict reads it — lib/toolOutcome) more times than it has
+ * received a continuation (`messages.continuations`, one entry per settled yielded
+ * batch) has not concluded. It is waited for — bounded by CHAIN_SETTLE_WAIT_MS after
+ * its last sub-agent ended (or the reply settled, when none is recorded). The
+ * continuation's own finalize drains again, so the wait ends as soon as it lands.
+ */
+async function chainStepHeldUntil(
+  ctx: MutationCtx,
+  next: Doc<"outbox">,
+): Promise<number | null> {
+  if (next.chainStep === undefined || next.messageId === undefined) return null;
+  let heldUntil: number | null = null;
+  for (const { reply } of await earlierChainReplies(ctx, next)) {
+    if (reply.status === "streaming") continue;
+    const parts = await ctx.db
+      .query("messageParts")
+      .withIndex("by_message", (q) => q.eq("messageId", reply._id))
+      .take(MAX_REPLY_PARTS);
+    const handOffs = parts.filter(
+      (p) =>
+        p.part.kind === "tool" &&
+        p.part.name === "sessions_yield" &&
+        yieldHandedOff(p.part.phase, p.part.output),
+    ).length;
+    if (handOffs <= (reply.continuations?.length ?? 0)) continue;
+    const children = await ctx.db
+      .query("subAgents")
+      .withIndex("by_parent_message", (q) => q.eq("parentMessageId", reply._id))
+      .take(MAX_REPLY_PARTS);
+    const lastEnded = children.reduce(
+      (at, c) => Math.max(at, c.updatedAt ?? 0),
+      reply.finalizedAt ?? reply.updatedAt,
+    );
+    const until = lastEnded + CHAIN_SETTLE_WAIT_MS;
+    if (until > Date.now() && (heldUntil === null || until > heldUntil)) heldUntil = until;
+  }
+  return heldUntil;
+}
+
+/** Bound on the parts and sub-agents read per reply by the chain hold. */
+const MAX_REPLY_PARTS = 256;

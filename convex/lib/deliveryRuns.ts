@@ -42,6 +42,82 @@ const ANNOUNCE_DELIVERY_LANES: readonly string[] = ["agent-loop", "wake"];
 export function isRequesterSettleRun(runId: string | null | undefined): boolean {
   return typeof runId === "string" && runId.startsWith("announce:requester-settle:");
 }
+
+/** A child run id as upstream mints it: `crypto.randomUUID()` or
+ *  `swarm_<32 hex>` (subagent-spawn-request.ts:268-274, acp-spawn.ts:413), or the
+ *  gateway's own `agent` RPC run id. Neither ':' nor ',' can occur — both are
+ *  separators of the settle grammar below, so admitting them would let one id
+ *  masquerade as two. Shared with the ingest boundary (bridge_ingest.ts). */
+export const CHILD_RUN_ID_RE = /^[A-Za-z0-9_-]{1,128}$/;
+
+/** More members than any yielded batch we can correlate in one mutation: a
+ *  larger batch fails CLOSED to its own bubble instead of fanning out reads. */
+const MAX_SETTLE_BATCH = 32;
+
+/** The parsed identity of a requester-settle wake run.
+ *
+ *  Grammar (OpenClaw v2026.9.6), read from the RIGHT because the requester
+ *  session key itself contains ':':
+ *    `announce:` + `requester-settle:<requesterAgentId|unknown>:<requesterSessionKey>:
+ *      <childRunId>[,<childRunId>…]` [`:yield-<rearmGeneration>`] [`:retry-<attempt>`]
+ *  - prefix: announce-idempotency.ts:10,18-20 (`buildAnnounceIdempotencyKey`);
+ *  - base + yield suffix: subagent-announce.requester-settle-wake.ts:433-440;
+ *  - retry suffix, only on a re-attempt of a non-private batch: ibid. :501-505;
+ *  - the ids are the settled CHILD run ids, sorted: ibid. :256 — the same
+ *    `runId` the `sessions_spawn` result returns (subagent-spawn.ts:682-686,
+ *    sessions-spawn-tool.ts:710-711) and the last segment of `announce:v1:`.
+ *
+ *  `yieldGeneration` is non-null EXACTLY when the requester turn yielded:
+ *  `rearmGeneration` is only ever minted inside `settleRequesterTurnAfterSessionSpawns`
+ *  under `params.requesterYielded` (subagent-registry-requester-yield.ts:255-290),
+ *  and it is what makes the wake carry `requireVisibleReply` (requester-settle-
+ *  wake.ts:362-364, 426-432, 623-625): the run IS the yielded turn's continuation.
+ *
+ *  Null on anything that does not parse. An unknown trailing lane is NOT
+ *  rejected here — `…:yield-1:<lane>` reads as a no-yield wake whose "id" is the
+ *  lane — and it does not need to be: it then carries no yield generation, which
+ *  never merges (stream.ts `settleContinuationAnchor`), and a lane word never
+ *  names a recorded child run. A future lane surfaces as a separate bubble, never
+ *  as a guess. */
+export function parseRequesterSettleRun(
+  runId: string | null | undefined,
+): { childRunIds: string[]; yieldGeneration: number | null } | null {
+  if (!isRequesterSettleRun(runId)) return null;
+  const seg = (runId as string).split(":");
+  if (/^retry-\d+$/.test(seg[seg.length - 1] ?? "")) seg.pop();
+  let yieldGeneration: number | null = null;
+  const yieldMatch = /^yield-(\d+)$/.exec(seg[seg.length - 1] ?? "");
+  if (yieldMatch !== null && yieldMatch[1] !== undefined) {
+    yieldGeneration = Number(yieldMatch[1]);
+    seg.pop();
+  }
+  const ids = (seg.pop() ?? "").split(",");
+  // `announce`, `requester-settle`, agent id, and at least one session-key
+  // segment must remain in front of the id list.
+  if (seg.length < 4) return null;
+  if (ids.length === 0 || ids.length > MAX_SETTLE_BATCH) return null;
+  if (!ids.every((id) => CHILD_RUN_ID_RE.test(id))) return null;
+  return { childRunIds: ids, yieldGeneration };
+}
+
+/** The provenance stamp a delivery GENERATION writes on the parts it inserts
+ *  (`messageParts.announceRun`), or undefined for an ordinary turn.
+ *
+ *  Every post-turn delivery family stamps — announce, background task AND the
+ *  requester-settle continuation. The settle family used to fall outside it only
+ *  because the predicate was `deliveryChildKey(...) !== null`, which is null for
+ *  it by design (it names no child key). Once a settle run can MERGE into the
+ *  turn it continues, an unstamped part is indistinguishable from the parent's
+ *  own: the hand-off exemption would match the parent's stale `sessions_yield`,
+ *  and a replay could fuse into the parent's parts. */
+export function deliveryPartStamp(
+  runId: string | null | undefined,
+): string | undefined {
+  if (typeof runId !== "string") return undefined;
+  return isRequesterSettleRun(runId) || deliveryChildKey(runId) !== null
+    ? runId
+    : undefined;
+}
 export function deliveryChildKey(runId: string): string | null {
   if (isRequesterSettleRun(runId)) return null;
   // BROADER THAN THE BRIDGE ON PURPOSE — `announce:` here, `announce:v1:` there

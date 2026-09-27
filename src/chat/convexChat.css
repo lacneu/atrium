@@ -787,7 +787,9 @@
    neutral capability chips (model/reasoning) — the info just needs to be present,
    not emphasized. Only a genuinely problematic agent state (deleted/stale) gets a
    subtle warning tint. */
-.oc-chip--agent.is-warn {
+.oc-chip--agent.is-warn,
+/* Permission chip: full access, or a default nobody states (which may be full access). */
+.oc-chip--access.is-alert {
   background: color-mix(in srgb, var(--destructive) 12%, var(--muted));
   border-color: color-mix(in srgb, var(--destructive) 40%, var(--border));
 }
@@ -3282,6 +3284,11 @@ button.oc-bmk-rail__count:hover {
 .oc-empty-answer__from svg {
   flex: 0 0 auto;
   opacity: 0.8;
+}
+/* A delegated reply INSIDE a merged hand-off continuation, above the conclusion:
+   separated from what follows it, never boxed — it is part of the answer. */
+.oc-delegated-reply {
+  margin-bottom: 0.9rem;
 }
 .oc-empty-answer__hint {
   font-size: 0.76rem;

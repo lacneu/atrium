@@ -65,6 +65,7 @@ function fakeConn() {
       return { payload: {} };
     },
     onConfigChanged: () => () => {},
+    onSessionSharing: () => () => {},
     onClosed: () => () => {},
     async *frames() {
       await gate;

@@ -87,6 +87,7 @@ function fakeConn(sent: string[]) {
     modelsByOwner: new Map(),
     rosterEpoch: 0,
     onConfigChanged: () => () => {},
+    onSessionSharing: () => () => {},
     onClosed: () => () => {},
     async *frames() {
       await new Promise<void>(() => {}); // never yields; the test never awaits it

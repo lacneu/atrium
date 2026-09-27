@@ -111,6 +111,11 @@ export const MESSAGE_FIELDS_DROPPED: ReadonlyArray<string> = [
   // belonging to whoever happens to hold that id in the target. Same reason as
   // `authorUserId`, with a name printed on it.
   "mentions",
+  // The AGENTS a turn was addressed to, by {instance, agent} of the SOURCE
+  // deployment. The import turns a route into an inert label (`routedAgentId` →
+  // `importedAgentLabel`) because nothing there is routable here; these pairs would
+  // be highlighted as addressing whichever agent happens to bear them in the target.
+  "addressedAgents",
   // The ORIGINAL writing time of a branched copy (chatFork). It only means
   // something against the source deployment's profiles, to judge whether
   // `authorUserId`'s current account wrote the words — and `authorUserId` is
@@ -264,6 +269,7 @@ export const CHAT_FIELDS_DROPPED: ReadonlyArray<string> = [
   "pendingCurate",
   "pendingConvert",
   "forkPendingRehydration",
+  "historyPin",
   "stoppedAt",
   "lastRoutedInstanceName",
   "lastRoutedAgentId",

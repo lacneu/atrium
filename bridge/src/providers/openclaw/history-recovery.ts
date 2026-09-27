@@ -286,3 +286,80 @@ export function transcriptEntryCount(payload: Json): number {
     ? payload.messages.length
     : 0;
 }
+
+/**
+ * The text a GIVEN RUN delivered to this conversation through the message tool, read
+ * from the gateway's own delivery mirrors — or "" when it delivered none.
+ *
+ * WHY A THIRD READER. The two above find a turn by walking back to its `user`
+ * boundary, and they must stop at an inter-session entry (see isInterSessionEntry).
+ * A gateway DELIVERY run starts at exactly such an entry — the requester-settle wake
+ * is `role:"user"` with `provenance.kind:"inter_session"`, `sourceTool:
+ * "subagent_settle"` — so for that lane they can never return anything. And the
+ * message tool need not leave a top-level `toolResult` named `message`: called from
+ * code mode it is NESTED inside `exec` (transcript entry
+ * `openclaw.nested-tool.v1`), so `extractMessageToolReplies` would miss it even
+ * without the boundary. Measured on the 2026.9.6 bench (2026-09-26): a private
+ * settle wake ("Your final reply stays internal… send it through a messaging tool…
+ * Reply ONLY: NO_REPLY") → `exec` → nested `message send final:true` → `NO_REPLY`.
+ * The answer existed only as the mirror below, and the merged bubble was named
+ * `empty_response`.
+ *
+ * THE MIRROR. Every internal-ui delivery is persisted as an assistant entry
+ * `{provider:"openclaw", model:"delivery-mirror", stopReason:"stop"}` stamped with
+ * the delivering run (upstream v2026.9.6 internal-source-reply-persistence.ts:132-196
+ * passes `runId`; session-transcript-runtime.ts:541-570 builds the entry), and
+ * `sessions.get` returns it with its fields and `__openclaw` intact
+ * (session-transcript-entry-message.ts:7-23, 46-60).
+ *
+ * OWNERSHIP IS EXACT, NOT POSITIONAL — which is what lets this reader ignore the
+ * boundary the other two must respect. An entry is taken only when BOTH the
+ * gateway-stamped `__openclaw.runId` equals one of the turn's own run ids AND its
+ * idempotency key is that run's message-tool or internal-source-reply key — the very
+ * test upstream applies to recognise a run's own mirror
+ * (subagent-registry-lifecycle-delivery.ts:179-186, 222; key built at
+ * message-tool-idempotency.ts:65). Text only: a media-only delivery carries no text
+ * block and is not recovered here.
+ */
+export function extractRunDeliveryMirrors(
+  payload: Json,
+  runIds: readonly string[],
+): string {
+  if (runIds.length === 0) return "";
+  const messages = isObject(payload) && Array.isArray(payload.messages)
+    ? payload.messages
+    : [];
+  const owners = new Set(runIds);
+  const collected: string[] = [];
+  for (const entry of messages) {
+    if (!isObject(entry)) continue;
+    if (
+      entry.role !== "assistant" ||
+      entry.provider !== "openclaw" ||
+      entry.model !== "delivery-mirror" ||
+      entry.stopReason === "error"
+    ) {
+      continue;
+    }
+    const meta = isObject(entry.__openclaw) ? entry.__openclaw : {};
+    const runId = meta.runId;
+    if (!isString(runId) || !owners.has(runId)) continue;
+    const key = isString(entry.idempotencyKey)
+      ? entry.idempotencyKey
+      : isString(meta.idempotencyKey)
+        ? meta.idempotencyKey
+        : null;
+    if (
+      key === null ||
+      !(
+        key.startsWith(`${runId}:message-tool:`) ||
+        key.startsWith(`${runId}:internal-source-reply:`)
+      )
+    ) {
+      continue;
+    }
+    const text = contentStrings(entry.content).join("").trim();
+    if (text) collected.push(text);
+  }
+  return collected.join("\n\n");
+}

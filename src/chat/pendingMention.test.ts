@@ -11,6 +11,9 @@ import {
   takeMentionsForSend,
   takePendingMentions,
   nameInComposer,
+  nameAgentInComposer,
+  resolveAllMentionSpans,
+  stagedAgents,
 } from "./pendingMention";
 
 // The staged thing is a TOKEN, not a span: a span captured when somebody is
@@ -43,7 +46,11 @@ describe("staging people per conversation", () => {
     const taken = takePendingMentions("c1");
     stagePendingMention("c1", { userId: "u2", token: "@bob" });
     restorePendingMentions("c1", taken);
-    expect(peekPendingMentions("c1").map((m) => m.userId).sort()).toEqual(["u1", "u2"]);
+    expect(
+      peekPendingMentions("c1")
+        .map((m) => (m as { userId: string }).userId)
+        .sort(),
+    ).toEqual(["u1", "u2"]);
     restorePendingMentions("c1", taken);
     expect(peekPendingMentions("c1")).toHaveLength(2);
   });
@@ -172,5 +179,74 @@ describe("nameInComposer — one person, one unique token per message", () => {
     const body = src.slice(at, src.indexOf("setOpen(false);", at));
     expect(body).toMatch(/nameInComposer\(\s*String\(chatId\),\s*composer\.getState\(\)\.text,/);
     expect(body).not.toMatch(/stagePendingMention/);
+  });
+});
+
+describe("addressing AGENTS by mention — the same machinery as people", () => {
+  const nova = { instanceName: "alpha", agentId: "nova" };
+  const orion = { instanceName: "beta", agentId: "orion" };
+
+  test("a pick appends the agent's token and stages it as an ADDRESS", () => {
+    expect(nameAgentInComposer("c1", "salut", nova, "@Nova")).toBe("salut @Nova ");
+    expect(peekPendingMentions("c1")).toEqual([{ agent: nova, token: "@Nova" }]);
+    expect(stagedAgents(peekPendingMentions("c1"))).toEqual([nova]);
+  });
+
+  test("picking an agent already addressed adds nothing — until its token is deleted", () => {
+    nameAgentInComposer("c1", "", nova, "@Nova");
+    expect(nameAgentInComposer("c1", "@Nova ", nova, "@Nova")).toBeNull();
+    expect(nameAgentInComposer("c1", "salut ", nova, "@Nova")).toBe("salut @Nova ");
+  });
+
+  test("tokens are unique ACROSS people and agents: a homonym gets a suffix", () => {
+    // A person called Nova and an agent called Nova: one token each, never shared.
+    const a = nameInComposer("c1", "", "u-nova", "@Nova")!;
+    const b = nameAgentInComposer("c1", a, nova, "@Nova")!;
+    expect(b).toBe("@Nova @Nova-2 ");
+    const { people, agents } = resolveAllMentionSpans(b, peekPendingMentions("c1"));
+    expect(people).toEqual([{ userId: "u-nova", start: 0, end: 5 }]);
+    expect(agents).toEqual([{ ...nova, start: 6, end: 13 }]);
+    // Two agents bearing one name on two gateways: the same rule.
+    clearPendingMentions("c1");
+    const c = nameAgentInComposer("c1", "", nova, "@Nova")!;
+    expect(nameAgentInComposer("c1", c, { ...orion, agentId: "nova" }, "@Nova")).toBe(
+      "@Nova @Nova-2 ",
+    );
+  });
+
+  test("the send carries the agents in TEXT order — the order they answer in", () => {
+    // Picked Orion first, then Nova — but the writer put Nova first in the text.
+    stagePendingMention("c1", { agent: orion, token: "@Orion" });
+    stagePendingMention("c1", { agent: nova, token: "@Nova" });
+    stagePendingMention("c1", { userId: "u-bob", token: "@Bob" });
+    const text = "@Nova puis @Orion, et @Bob pour info";
+    const { mentions, agentMentions, staged } = takeMentionsForSend("c1", text);
+    expect(agentMentions).toEqual([
+      { ...nova, start: 0, end: 5 },
+      { ...orion, start: 11, end: 17 },
+    ]);
+    // People stay people: the agents never ride the people's mentions.
+    expect(mentions).toEqual([{ userId: "u-bob", start: 22, end: 26 }]);
+    expect(staged).toHaveLength(3);
+    expect(peekPendingMentions("c1")).toEqual([]);
+  });
+
+  test("an agent whose token was deleted is not addressed", () => {
+    stagePendingMention("c1", { agent: nova, token: "@Nova" });
+    expect(takeMentionsForSend("c1", "plus personne").agentMentions).toEqual([]);
+  });
+
+  test("a failed send gives the agents back, without duplicating", () => {
+    stagePendingMention("c1", { agent: nova, token: "@Nova" });
+    const taken = takePendingMentions("c1");
+    stagePendingMention("c1", { agent: nova, token: "@Nova" });
+    restorePendingMentions("c1", taken);
+    expect(peekPendingMentions("c1")).toEqual([{ agent: nova, token: "@Nova" }]);
+  });
+
+  test("an agent and a person with the same id are different things", () => {
+    stagePendingMention("c1", { userId: "nova", token: "@Nova" });
+    stagePendingMention("c1", { agent: { instanceName: "x", agentId: "nova" }, token: "@Nova-2" });
+    expect(peekPendingMentions("c1")).toHaveLength(2);
   });
 });

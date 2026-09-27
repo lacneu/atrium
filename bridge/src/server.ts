@@ -32,6 +32,11 @@ import {
 } from "./providers/openclaw/connect-identity.js";
 import { SpeakerPool } from "./providers/openclaw/speaker-pool.js";
 import { presentedIdentity } from "./providers/openclaw/gateway-identity.js";
+import {
+  isSessionPermissionMode,
+  type SessionPermissionMode,
+} from "./providers/openclaw/session-access.js";
+import { isSessionVisibilityRefusedText } from "./core/failure-classifier.js";
 import { sessionPatchNeedsAdmin } from "./providers/openclaw/session-patch-scope.js";
 import {
   GatewayAnsweredError,
@@ -61,6 +66,7 @@ import {
 import {
   REHYDRATION_MAX_FILL,
   composedPromptFits,
+  historyCharsThatFit,
   sessionFill,
   sessionFillDetail,
   type SessionFillSource,
@@ -179,6 +185,7 @@ import {
   resolveCapabilitiesFor,
   HERMES_RANGE,
   parseVersion,
+  EXPECTED_PERMISSION_MODE_SINCE,
   gatewayAtLeast,
   COMPACTION_CHECKPOINTS_RETIRED_IN,
 } from "./compat.js";
@@ -198,6 +205,7 @@ import type {
 import { SessionRegistry } from "./session.js";
 import {
   describeSession,
+  describeSessionAnswer,
   publishDescribedSession,
   publishSessionMeta,
   selectBudgetAssessment,
@@ -296,6 +304,14 @@ interface SendBody extends BodyRouting {
    * header — the same fallback as the conversation's own socket (gatewayNameFor).
    */
   speakerCanonical?: string;
+  /**
+   * The session permission mode the READER was shown when they sent — `null` for
+   * "none set on the session", absent for "not known" (no guard). Forwarded as
+   * `chat.send.expectedPermissionMode`: a mode changed on the gateway since (the
+   * Control UI, another client) makes the send fail before anything runs, instead of
+   * a turn going out under permissions the person did not see.
+   */
+  expectedPermissionMode?: SessionPermissionMode | null;
   openclawChatId: string | null;
   /** A session this chat LOST a reply on, for ONE read-only harvest (G-47). Parsed here or
    *  it never crosses the HTTP boundary — the whole feature ran only in tests until a review
@@ -540,6 +556,13 @@ export function parseSendBody(raw: string): SendBody | null {
     ...(typeof obj.speakerCanonical === "string" && obj.speakerCanonical.length > 0
       ? { speakerCanonical: obj.speakerCanonical }
       : {}),
+    // Only a value the gateway accepts: anything else is dropped (no guard) rather
+    // than sent, since a malformed guard would refuse the whole turn.
+    ...(obj.expectedPermissionMode === null
+      ? { expectedPermissionMode: null }
+      : isSessionPermissionMode(obj.expectedPermissionMode)
+        ? { expectedPermissionMode: obj.expectedPermissionMode }
+        : {}),
     openclawChatId:
       typeof obj.openclawChatId === "string" ? obj.openclawChatId : null,
     // Both ids REQUIRED and non-empty: a half-formed handle would send the bridge reading a
@@ -1391,6 +1414,10 @@ export async function performSend(
   // Stamped when THIS describe's answer is in hand, strictly after the boundary
   // above so the fresh session's own snapshot is never classified as pre-reset.
   let describeObservedAt = sessionObservedAt + 1;
+  // The gateway STATED that no session exists under this key (`{ session: null }`) —
+  // not a failed ask, not an unreadable answer. The session this send creates holds
+  // no permission mode, which decides both what is published and the guard sent.
+  let sessionAbsent = false;
   // Pre-send guard outcome (W2). Set inside the try below — whose catch makes EVERY
   // failure fall open — and acted upon after it. `blocked` is the only value that
   // stops a send, and nothing but an explicit, positive measurement can set it.
@@ -1402,7 +1429,10 @@ export async function performSend(
     blocked: false,
   };
   try {
-    let described = await describeSession(conn, sessionKey);
+    const answer = await describeSessionAnswer(conn, sessionKey);
+    let described =
+      answer.kind === "session" ? { sess: answer.sess, observedAt: answer.observedAt } : null;
+    sessionAbsent = answer.kind === "absent";
     // The gateway ANSWERED that there is no session: whatever the claim proved
     // earlier on this socket no longer holds (the session was pruned since). The
     // proof is dropped, so this turn goes out from the OWNER's socket — which
@@ -1484,7 +1514,8 @@ export async function performSend(
         }
       }
     }
-    describeObservedAt = described?.observedAt ?? Date.now();
+    describeObservedAt =
+      described?.observedAt ?? (answer.kind === "absent" ? answer.observedAt : Date.now());
     let sess = described?.sess;
     // Capture the pre-turn figures from a describe answer. A FUNCTION because the
     // pre-send guard can compact and RE-describe: the rehydration decision and the
@@ -1724,6 +1755,27 @@ export async function performSend(
           (e as Error)?.message ?? e,
         ),
       );
+    } else if (
+      sessionAbsent &&
+      gatewayAtLeast(conn.gatewayVersion, EXPECTED_PERMISSION_MODE_SINCE) === true
+    ) {
+      // NO SESSION under the key (pruned, deleted, or a key this chat never used): the
+      // one this send creates sets no mode. Left alone, the meta kept describing the
+      // session that is gone — its visibility, its role, its mode shown as the guard of
+      // every later send. Reported as what it is, under this describe's clock: the
+      // mode `null`, and with it (one ordered group in setSessionMeta) the rest of the
+      // access facts dropped. A newer describe still wins.
+      void writer
+        .reportSessionMeta(body.chatId, {
+          permissionMode: null,
+          observedAt: describeObservedAt,
+        })
+        .catch((e) =>
+          console.error(
+            "[sessionMeta] absent-session access skipped (non-fatal):",
+            (e as Error)?.message ?? e,
+          ),
+        );
     }
 
     // (b) Re-hydration on a fresh/rolled session (systemSent flips true after the
@@ -1817,10 +1869,44 @@ export async function performSend(
         `[rehydrate] chat=${body.chatId} SKIPPED — attachment present (gateway-crash guard)`,
       );
     } else if (decision === "rehydrate") {
-      const ctx = await writer.getRehydrationContext(
+      // FOR this agent: in a room several agents answer, and each reply must say who
+      // wrote it — the agent must not take another's answer for its own.
+      const forAgent =
+        body.instanceName !== undefined && body.instanceName !== null && body.agentId
+          ? { instanceName: body.instanceName, agentId: body.agentId }
+          : undefined;
+      let ctx = await writer.getRehydrationContext(
         body.chatId,
         body.messageId,
+        forAgent ? { forAgent } : {},
       );
+      // Too long for THIS session: asked again, CUT to what fits, rather than the
+      // agent getting no history at all (an agent switch can land on a narrower
+      // window than the one the history was budgeted for).
+      if (
+        ctx.history &&
+        !composedPromptFits({
+          historyChars: ctx.history.length,
+          userChars: String(body.text ?? "").length,
+          separatorChars: 2,
+          windowTokens: preTurnContextTokens,
+        })
+      ) {
+        const room = historyCharsThatFit({
+          userChars: String(body.text ?? "").length,
+          separatorChars: 2,
+          windowTokens: preTurnContextTokens,
+        });
+        if (room !== null && room > 0) {
+          console.error(
+            `[rehydrate] chat=${body.chatId} history ${ctx.history.length}c over the live window — asked again within ${room}c`,
+          );
+          ctx = await writer.getRehydrationContext(body.chatId, body.messageId, {
+            ...(forAgent ? { forAgent } : {}),
+            maxChars: room,
+          });
+        }
+      }
       // The COMPOSED prompt — history + separator + the user's own text — bounded
       // in TOKENS against the live window (G-10). The composer bounds the history
       // block alone, in characters, so a long message on top of a full-budget
@@ -2002,6 +2088,27 @@ export async function performSend(
     message,
     idempotencyKey: await idempotencyKey(sessionKey, body.clientMessageId),
   };
+  // THE PERMISSIONS THE READER SAW. The gateway compares this with the mode STORED
+  // on the session (`entry.permissionMode ?? null`, chat-send-session-settings.ts)
+  // and refuses before anything starts when they differ — a mode changed in the
+  // Control UI never runs a turn the person sent under another. Only to a gateway
+  // that knows the field: its params object is closed, and an older one would
+  // refuse the whole send over an unknown key.
+  //
+  // …except the mode of a session that no longer EXISTS. The guard was read in Convex
+  // before this send reached us, so it still carries the mode of the session that is
+  // gone, while the one this send creates holds none: the gateway compares
+  // `entry?.permissionMode ?? null` with the guard (chat-send-session-settings.ts) and
+  // would refuse the person's turn for a change they never made. Sent as `null`, not
+  // omitted: identical while the key stays empty (null === null), and still a refusal
+  // if a session carrying a mode appeared under the key since our describe — omitted,
+  // that turn would run under a mode nobody was shown.
+  if (
+    body.expectedPermissionMode !== undefined &&
+    gatewayAtLeast(conn.gatewayVersion, EXPECTED_PERMISSION_MODE_SINCE) === true
+  ) {
+    params.expectedPermissionMode = sessionAbsent ? null : body.expectedPermissionMode;
+  }
   // MENTIONS for the gateway's own inbox. Best-effort by construction: the
   // person has ALREADY been told by Atrium, so a gateway that cannot carry the
   // mention costs nothing anybody depends on — while a malformed span would cost
@@ -2464,6 +2571,11 @@ export async function sendAsSpeaker(
     if (answered) speakers.unroute(speakerConn, runId);
     else speakers.abandon(speakerConn, runId);
     if (!isSpeakerRefusal(err)) throw err;
+    // A VISIBILITY the session's owner chose on the gateway (read-only, suggest,
+    // draft) is a decision about THIS PERSON's turns: re-sending it under the owner's
+    // name would walk straight through it. The turn fails, named
+    // (`session_visibility_refused`), and the person is told why.
+    if (isSessionVisibilityRefusedText((err as Error)?.message)) throw err;
     // "Not found" is ambiguous: the sharing rules hiding the session, OR the session
     // gone since the re-proof above. Asked again from the owner's socket before it
     // takes the turn: gone ⇒ the message in hand has no history for the new session,
@@ -3381,6 +3493,8 @@ export interface NormalizedAgent {
   emoji: string | null;
   model: string | null;
   isDefaultOnInstance: boolean;
+  /** OpenClaw only; absent for a provider without session permission modes. */
+  defaultPermissionMode?: SessionPermissionMode | null;
   raw: unknown;
 }
 
@@ -3422,7 +3536,14 @@ export function normalizeOpenClawAgent(
     o.isDefault === true ||
     o.default === true ||
     (defaultId != null && agentId === defaultId);
-  return { agentId, displayName, emoji, model, isDefaultOnInstance, raw };
+  // The mode a session of this agent runs with when it sets none (`agents.list[].
+  // defaultPermissionMode`, 2026.8.1+). Upstream states it ONLY when it can: omitted
+  // under a sandbox or a non-canonical exec policy (session-utils-store.ts) — null
+  // here, which the reader sees as "unknown", never as a mode.
+  const defaultPermissionMode = isSessionPermissionMode(o.defaultPermissionMode)
+    ? o.defaultPermissionMode
+    : null;
+  return { agentId, displayName, emoji, model, isDefaultOnInstance, defaultPermissionMode, raw };
 }
 
 /** Open a SHORT-LIVED operator connection, call `agents.list`, normalize, close.

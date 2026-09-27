@@ -64,6 +64,7 @@ function fakeConnQueue() {
       }
     },
     onConfigChanged: () => () => {},
+    onSessionSharing: () => () => {},
     onClosed: () => () => {},
     frames() {
       return iterator;

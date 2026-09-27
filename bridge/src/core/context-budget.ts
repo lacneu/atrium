@@ -86,6 +86,25 @@ export function sessionFillDetail(m: SessionFillInputs): {
 }
 
 /**
+ * The most history characters the composed prompt can carry and still fit
+ * (`composedPromptFits`'s own rule, solved for the history): what a history that
+ * does not fit is cut DOWN to, instead of being dropped whole. Null when the window
+ * is unknown (nothing to bound against); 0 when even the user's text alone does not fit.
+ */
+export function historyCharsThatFit(params: {
+  userChars: number;
+  separatorChars: number;
+  windowTokens: number | null | undefined;
+}): number | null {
+  const w = params.windowTokens;
+  if (w == null || !Number.isFinite(w) || w <= 0) return null;
+  const limitTokens = Math.floor(w * 0.5);
+  // Inverse of estimateTokens, rounded DOWN so the result always satisfies it.
+  const totalChars = Math.floor((limitTokens / TOKEN_ESTIMATE_MARGIN) * CHARS_PER_TOKEN);
+  return Math.max(0, totalChars - params.userChars - params.separatorChars);
+}
+
+/**
  * Does the COMPOSED prompt still fit? `windowTokens` must be the SMALLEST live
  * window in play: on an agent switch the turn may run on a narrower model than
  * the one that composed the history.

@@ -5,8 +5,10 @@
 // A single visible conversation can route different turns to different agents.
 // These helpers answer the three questions the UI has to make pure + testable:
 //   - resolveMessageAgents:     which agent answered each message (attribution).
-//   - lastRoutedAgent:          the composer's "last-used agent" default.
-//   - resolveRoutedAgentToSend: the SINGLE-AGENT-PATH rule (what to send, if any).
+//   - lastRoutedAgent:          the in-flight placeholder's attribution fallback.
+//   - resolveTurnRoute:         where the next message goes (mentions, else primary).
+
+import { managesRoom, type RoomRole } from "./conversationRoles";
 
 /** A reference to one agent (the {instance, id} pair the server authorizes). */
 export interface AgentRef {
@@ -84,19 +86,6 @@ export function lastRoutedAgent(messages: RoutableMessage[]): AgentRef | null {
   return null;
 }
 
-/**
- * Is this the chat's FIRST turn? — i.e. should the send-rule treat it as turn 1
- * (never route). CRITICAL: distinguish LOADING (`undefined`, listByChat not yet
- * responded) from a genuinely EMPTY new chat (`[]`). While loading we do NOT know
- * the history, so we must NOT report first-turn (that would suppress routing on an
- * already-perTurnRouting chat → the turn falls back to the primary). Only a LOADED,
- * user-message-free thread is the real first turn.
- */
-export function isFirstTurn(messages: RoutableMessage[] | undefined): boolean {
-  if (messages === undefined) return false;
-  return !messages.some((m) => m.role === "user");
-}
-
 /** An agent as the default-selection resolver sees it: a ref plus the fields that
  *  decide usability (gateway state) and the sensible last-resort (user default).
  *  A subset of AgentPicker's PickableAgent, so the entitled pool passes directly. */
@@ -149,8 +138,8 @@ export function resolveDefaultSelection(params: {
  *
  *  - `canRoute` false (a single-agent user: exactly one entitled agent and the
  *    chat is not already perTurnRouting) → ALWAYS null. Such a user must never get
- *    an implicit routedAgent (which would flip the chat to multi-agent + bypass the
- *    normal rebind). The lone pool agent is NOT a per-turn choice.
+ *    an implicit routedAgent (which would flip the chat to multi-agent). The lone
+ *    pool agent is NOT a per-turn choice.
  *  - pool OR messages still LOADING (`poolLoading`/`messagesLoading`) → preserve the
  *    desired selection (explicit pick, else the last-routed agent), falling back to
  *    primary. Never drop it to null on a transient empty/absent input — in a
@@ -177,29 +166,19 @@ export function resolveEffectiveSelection(params: {
   return resolveDefaultSelection({ lastRouted: desired, primary, pool });
 }
 
-/**
- * What a click on the composer's agent selector DOES — and whether it is offered.
- *
- *  - `route`  : the pick rides on the NEXT turn (`resolveRoutedAgentToSend`). Only
- *    meaningful once the chat has a user turn; before that the send-rule ignores it.
- *  - `rebind` : the pick REPLACES the chat's own binding (`rebindChatAgent`). The
- *    only honest mode on a chat with no turn yet, where the agent is bound at
- *    creation and turn 1 goes to that binding whatever the selector shows.
- */
-export type AgentSelectorMode = "route" | "rebind";
-
-/** The selector's resolved verdict: rendered at all, offered or not, and what a
- *  pick does. `hidden` lives here rather than as a JSX condition because the
- *  component's own `multiAgent` check once discarded a gate that said "enabled" —
- *  a dead end the pure tests could not see. */
+/** The selector's resolved verdict: rendered at all, and offered or not. A pick
+ *  ADDRESSES an agent in the NEXT message (its "@Name" token; `resolveTurnRoute`) — never the
+ *  conversation's primary, which is chosen in the conversation panel only
+ *  (chatAgents.setPrimaryAgent). `hidden` lives here rather than as a JSX condition
+ *  because the component's own `multiAgent` check once discarded a gate that said
+ *  "enabled" — a dead end the pure tests could not see. */
 export interface AgentSelectorGate {
   hidden: boolean;
   disabled: boolean;
-  mode: AgentSelectorMode;
-  /** WHY it is disabled, when the reason is not the first-turn rule. The trigger
-   *  shows a different hint for each: a reader told "set with the first message"
-   *  while they are on a call would go looking for a message that does not exist. */
-  reason?: "call-active";
+  /** WHY it is disabled. The trigger shows a different hint for each: a reader told
+   *  their conversation is read-only while they are on a call would go looking for
+   *  the wrong cause. */
+  reason?: "call-active" | "read-only";
   /** WHO is on the line, when `reason` is "call-active". The label must name the
    *  agent the CALL is on, not this tab's local selection: another tab, or a
    *  participant with a different pick, showed a locked control naming the wrong
@@ -210,7 +189,7 @@ export interface AgentSelectorGate {
 }
 
 /**
- * Is the agent selector offered, and in which mode?
+ * Is the agent selector offered?
  *
  * WHY THIS EXISTS (production report, 2026-07-31). A user opened a new chat on an
  * agent whose gateway happened to be down. The composer greyed out — correctly — but
@@ -218,29 +197,18 @@ export interface AgentSelectorGate {
  * was to delete it. The selector is the ESCAPE HATCH from a bad target; disabling it
  * on the very condition it exists to resolve is the deadlock.
  *
- * `unavailable` and `readOnly` are therefore taken as inputs and DELIBERATELY do not
- * disable a usable mode — passing them makes that decision assertable instead of
- * implicit (re-adding `|| unavailable` at the call site is what the tests neutralize).
+ * `unavailable` is therefore taken as an input and DELIBERATELY does not disable the
+ * control — passing it makes that decision assertable instead of implicit (re-adding
+ * `|| unavailable` at the call site is what the tests neutralize). A pick of a healthy
+ * agent addresses it in the message and re-scopes the availability query to it
+ * (the composer's next target), which un-greys the composer, from the very first
+ * message on: the first turn is routed like any other.
  *
- * The two locks, and why each branch reads the way it does:
- *
- *  - EMPTY thread (no message at all) → `rebind`, always enabled. Nothing has been
- *    said yet, so replacing the binding cannot re-attribute anything, and it is the
- *    ONLY thing that changes where turn 1 goes.
- *  - Has a user turn, not read-only → `route`, always enabled. A per-turn pick to a
- *    healthy agent re-scopes the availability query and un-greys the composer.
- *  - Has a user turn, READ-ONLY → disabled. A per-turn pick would not lift the
- *    read-only lock (it is computed from the chat's BINDING, not the selection), so
- *    the affordance would light up and change nothing. KNOWN GAP: rebinding a
- *    read-only chat that already has turns is not offered anywhere.
- *  - No user turn but the thread is NOT empty (assistant-only, e.g. a spontaneous
- *    announce) → disabled. A rebind there could re-attribute messages that carry no
- *    explicit routing stamp. KNOWN GAP, and a pre-existing one.
+ * READ-ONLY closes it: the lock is computed from the chat's BINDING, not the
+ * selection, so a pick would light up and change nothing. The way out of a read-only
+ * conversation is its owner's — the conversation panel changes the primary.
  */
 export function resolveAgentSelectorGate(params: {
-  hasUserTurn: boolean;
-  /** The thread carries NO message at all (loaded, not merely loading). */
-  emptyThread: boolean;
   /** This chat's next send target is unreachable. Never a reason to disable. */
   unavailable: boolean;
   /** The chat is bound to an agent the user is no longer entitled to. */
@@ -260,43 +228,21 @@ export function resolveAgentSelectorGate(params: {
   callActive?: boolean;
   /** The agent that call is on, when the server knows it. */
   onCall?: { instanceName: string; agentId: string } | null;
-  /** The reader is a GUEST of the conversation. Re-binding it is the owner's (the
-   *  server refuses a guest's rebind); a guest picks between the room's agents from
-   *  the very first turn instead. */
-  guest?: boolean;
 }): AgentSelectorGate {
-  const { hasUserTurn, emptyThread, readOnly, multiAgent, poolSize } = params;
-  // Ahead of every other verdict, and never HIDDEN: the control must keep showing
-  // which agent is on the line — it is simply not changeable right now.
+  const { readOnly, multiAgent, poolSize } = params;
+  // Nothing to offer: a pick between agents is meaningless when there is only one.
+  const hidden = poolSize === 0 || !multiAgent;
+  // Ahead of every other verdict, and never HIDDEN for that reason: the control must
+  // keep showing which agent is on the line — it is simply not changeable right now.
   if (params.callActive === true) {
-    const hiddenDuringCall = poolSize === 0 || !multiAgent;
     return {
-      hidden: hiddenDuringCall,
+      hidden,
       disabled: true,
-      mode: "route",
       reason: "call-active",
       onCall: params.onCall ?? null,
     };
   }
-  const verdict: Omit<AgentSelectorGate, "hidden"> =
-    params.guest === true && (emptyThread || hasUserTurn)
-      ? { disabled: readOnly, mode: "route" }
-      : emptyThread
-    ? { disabled: false, mode: "rebind" }
-    : hasUserTurn && !readOnly
-      ? { disabled: false, mode: "route" }
-      : { disabled: true, mode: "route" };
-  // Nothing to offer, or a closed control: never render it.
-  //
-  // `multiAgent` is the normal test — a per-turn pick between agents is meaningless
-  // when there is only one. But a REBIND is not a pick between agents: it is moving
-  // an empty chat OFF a binding, and that is a real choice even for a single-agent
-  // user. Hiding it there re-creates exactly the dead end this gate exists to
-  // remove — an admin narrows someone to one agent, their empty chat locks
-  // read-only on the old binding, and no control is rendered to move it.
-  const rebindable = verdict.mode === "rebind" && !verdict.disabled;
-  const hidden = poolSize === 0 || (!multiAgent && !rebindable);
-  return { hidden, ...verdict };
+  return readOnly ? { hidden, disabled: true, reason: "read-only" } : { hidden, disabled: false };
 }
 
 /** Look up an agent ref's display (name/emoji) in the user's entitled pool. Null
@@ -311,38 +257,35 @@ export function findAgentDisplay(
 }
 
 /**
- * Decide which `routedAgent` (if any) the composer should send for a turn — the
- * SINGLE-AGENT-PATH rule (server contract). Returns `undefined` to keep the
- * unchanged single-agent path (server stamps nothing), or the agent to route to.
+ * WHERE THE NEXT MESSAGE GOES — addressing by mention, no hidden selection.
  *
- *  - canRoute false              → undefined. A single-agent user (exactly one
- *    entitled agent, chat not perTurnRouting) must NEVER stamp a routedAgent — an
- *    implicit route would flip the chat to multi-agent + bypass the normal rebind.
- *  - Nothing selected            → undefined (no choice made).
- *  - Very first turn of the chat → undefined (the agent is bound at creation;
- *    never flip a brand-new chat to multi-agent on turn 1).
- *  - Chat already perTurnRouting → always stamp the selection (every turn then
- *    carries an explicit agent, so attribution stays unambiguous).
- *  - Selection === primary       → undefined (a normal single-agent send).
- *  - Selection !== primary       → route to it (the server flips perTurnRouting).
+ *  - It mentions agents → the FIRST one (the others answer after it, in text order;
+ *    the server chains them from the mentions themselves).
+ *  - It mentions none → the PRIMARY (the crown), always — never "the last agent
+ *    used". Sent explicitly wherever there is a choice (a room of several agents, or
+ *    a chat already routed per turn), so the server routes it as a turn like any
+ *    other and re-hydrates the primary when another agent spoke last.
+ *  - `canRoute` false (a single-agent user) → undefined whatever else: an implicit
+ *    route would flip the chat to multi-agent (P2-C); the server's own path applies.
+ *  - A single-agent room not yet routed per turn → undefined: the unchanged path.
  */
-export function resolveRoutedAgentToSend(params: {
-  selected: AgentRef | null;
+export function resolveTurnRoute(params: {
+  /** The agents the text mentions, in text order. */
+  mentioned: readonly AgentRef[];
   primary: AgentRef | null;
+  /** The room holds more than one agent. */
+  severalAgents: boolean;
   perTurnRouting: boolean;
-  isFirstTurn: boolean;
   canRoute: boolean;
-  /** A GUEST's pick is honoured on turn 1: they cannot re-bind the conversation
-   *  (the owner's), so the pick is the only way to address a room agent. */
-  guest?: boolean;
 }): AgentRef | undefined {
-  const { selected, primary, perTurnRouting, isFirstTurn, canRoute } = params;
+  const { mentioned, primary, severalAgents, perTurnRouting, canRoute } = params;
   if (!canRoute) return undefined;
-  if (!selected) return undefined;
-  if (isFirstTurn && params.guest !== true) return undefined;
-  if (perTurnRouting) return selected;
-  if (agentRefEquals(selected, primary)) return undefined;
-  return selected;
+  const first = mentioned[0];
+  if (first !== undefined) {
+    return { instanceName: first.instanceName, agentId: first.agentId };
+  }
+  if (primary === null || !(severalAgents || perTurnRouting)) return undefined;
+  return { instanceName: primary.instanceName, agentId: primary.agentId };
 }
 
 /**
@@ -417,16 +360,46 @@ export function orderComposerAgents<
 }
 
 /**
- * The secondary line of an agent row: the model, then — only where a name alone
- * could be ambiguous — the instance. Never styled apart from the rest of the row.
+ * Which listed agents the composer's SIMPLIFIED list must tell apart: those whose
+ * name another listed agent also bears ("Alice" on two gateways). The list shows no
+ * technical detail — no model, no instance — except for these, which carry their
+ * instance so two rows never read the same. Keys are `instance\u0000agentId`; names
+ * compare as they read (trimmed, case-insensitive, the id when unnamed).
  */
-export function agentRowMeta(
-  a: AgentRef & { model?: string | null },
-  showInstance: boolean,
-): string {
-  return [a.model ?? null, showInstance ? a.instanceName : null]
-    .filter((s): s is string => typeof s === "string" && s.length > 0)
-    .join(" · ");
+export function homonymAgentKeys(
+  rows: ReadonlyArray<AgentRef & { displayName: string | null }>,
+): Set<string> {
+  const label = (a: AgentRef & { displayName: string | null }) =>
+    (a.displayName ?? a.agentId).trim().toLocaleLowerCase();
+  const byLabel = new Map<string, Set<string>>();
+  for (const a of rows) {
+    const keys = byLabel.get(label(a)) ?? new Set<string>();
+    keys.add(`${a.instanceName}\u0000${a.agentId}`);
+    byLabel.set(label(a), keys);
+  }
+  const out = new Set<string>();
+  for (const keys of byLabel.values()) {
+    if (keys.size > 1) for (const k of keys) out.add(k);
+  }
+  return out;
+}
+
+/**
+ * May this reader take this agent OUT of the room, from the composer's list? The
+ * same authority as `chatAgents.removeChatAgent` (the owner and the managers), and
+ * only for an ADDED agent: the primary is never removed — it changes through "Make
+ * primary" in the conversation panel — and an agent outside the room has nothing to
+ * remove.
+ */
+export function mayRemoveRoomAgent(
+  viewer: RoomRole | undefined,
+  agent: AgentRef,
+  primary: AgentRef | null,
+  roomAgents: readonly AgentRef[],
+): boolean {
+  if (!managesRoom(viewer)) return false;
+  if (agentRefEquals(agent, primary)) return false;
+  return roomAgents.some((r) => agentRefEquals(r, agent));
 }
 
 /**
@@ -488,4 +461,21 @@ export function presenceRoster<P extends { isSelf: boolean }, A>(
 ): { people: readonly P[]; agents: readonly A[] } | null {
   if (people.every((p) => p.isSelf) && agents.length <= 1) return null;
   return { people, agents };
+}
+
+/**
+ * The agents a message can be ADDRESSED to: those in the conversation (the primary and
+ * the ones added to it). An agent outside the room is only ever ADDED — never a target
+ * — so a room's replies always come from its members. Until the room is known, the pool
+ * is left as is (nothing to filter against yet).
+ */
+export function roomTargets<P extends AgentRef>(
+  pool: readonly P[],
+  room: ReadonlyArray<AgentRef | null> | null,
+): P[] {
+  if (room === null) return [...pool];
+  const inRoom = new Set(
+    room.filter((a): a is AgentRef => a !== null).map((a) => `${a.instanceName}\u0000${a.agentId}`),
+  );
+  return pool.filter((a) => inRoom.has(`${a.instanceName}\u0000${a.agentId}`));
 }

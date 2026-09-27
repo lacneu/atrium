@@ -245,6 +245,28 @@ describe("who may change the roster", () => {
     // A participant is not offered the roster tools at all.
     expect(await as(t, guest).query(api.chatParticipants.listInvitable, { chatId })).toEqual([]);
   });
+  test("two candidates with one display name are told apart by their address", async () => {
+    const t = convexTest(schema, modules);
+    const owner = await seedUser(t, "owner");
+    const a = await seedUser(t, "olivier-a");
+    const b = await seedUser(t, "olivier-b");
+    await t.run(async (ctx) => {
+      for (const id of [a, b]) {
+        const p = await ctx.db
+          .query("profiles")
+          .withIndex("by_user", (q) => q.eq("userId", id))
+          .unique();
+        await ctx.db.patch(p!._id, { name: "olivier" });
+      }
+    });
+    const chatId = await seedChat(t, owner);
+    const candidates = await as(t, owner).query(api.chatParticipants.listInvitable, { chatId });
+    const olivier = candidates.filter((c) => c.name === "olivier");
+    expect(olivier.map((c) => c.detail).sort()).toEqual([
+      "olivier-a@example.com",
+      "olivier-b@example.com",
+    ]);
+  });
 });
 
 describe("a participant posting into the conversation", () => {
@@ -736,6 +758,69 @@ describe("what a participant is NOT told", () => {
     // And the viewer's own standing IS told, because the UI decides on it.
     expect(asOwner?.viewerRole).toBe("owner");
     expect(asGuest?.viewerRole).toBe("participant");
+  });
+});
+
+describe("what EVERY reader is told: who may act on the session, and with what permissions", () => {
+  test("owner and participant both get the access facts and the agent's default mode", async () => {
+    // The permission chip exists so that anyone writing here knows what the agent may do
+    // with it — a guest most of all. Same projection for both.
+    const t = convexTest(schema, modules);
+    const owner = await seedUser(t, "owner");
+    const guest = await seedUser(t, "guest");
+    const chatId = await seedChat(t, owner);
+    await addParticipantRow(t, chatId, guest);
+    await t.run(async (ctx) => {
+      await ctx.db.insert("agents", {
+        instanceName: "prod",
+        agentId: "alice",
+        defaultPermissionMode: "full",
+        source: "discovered",
+        presentInLastOk: true,
+        firstSeenAt: 1,
+        lastSeenAt: 1,
+      });
+      await ctx.db.patch(chatId, {
+        instanceName: "prod",
+        agentId: "alice",
+        sessionMeta: {
+          visibility: "suggest",
+          sharingRole: "owner",
+          permissionMode: null,
+          permissionModePending: false,
+          availableModelsOwner: "alice",
+          accessAt: 1,
+        },
+      });
+    });
+    for (const viewer of [owner, guest]) {
+      const meta = await as(t, viewer).query(api.messages.getSessionMeta, { chatId });
+      expect(meta?.sessionMeta?.visibility).toBe("suggest");
+      expect(meta?.sessionMeta?.permissionMode).toBeNull();
+      expect(meta?.agentDefaultPermissionMode).toBe("full");
+    }
+    // A describe made for ANOTHER agent does not borrow this one's default.
+    await t.run(async (ctx) => {
+      const chat = await ctx.db.get(chatId);
+      await ctx.db.patch(chatId, {
+        sessionMeta: { ...chat!.sessionMeta!, availableModelsOwner: "bob" },
+      });
+    });
+    expect(
+      (await as(t, owner).query(api.messages.getSessionMeta, { chatId }))
+        ?.agentDefaultPermissionMode,
+    ).toBeNull();
+    // A mode set on the session needs no default (and reads none).
+    await t.run(async (ctx) => {
+      const chat = await ctx.db.get(chatId);
+      await ctx.db.patch(chatId, {
+        sessionMeta: { ...chat!.sessionMeta!, availableModelsOwner: "alice", permissionMode: "guarded" },
+      });
+    });
+    expect(
+      (await as(t, guest).query(api.messages.getSessionMeta, { chatId }))
+        ?.agentDefaultPermissionMode,
+    ).toBeNull();
   });
 });
 

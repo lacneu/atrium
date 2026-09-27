@@ -16,6 +16,7 @@
 //     signal the inbound consumer, and terminate the socket (no zombie).
 
 import { createHash, createPrivateKey, sign as cryptoSign } from "node:crypto";
+import { readSessionSharingKey } from "./session-access.js";
 import { appendFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { URL } from "node:url";
@@ -305,6 +306,16 @@ export class OpenClawConnection {
   rosterEpoch = 0;
   private readonly configChangedListeners = new Set<(notice: ConfigChangedNotice) => void>();
   private readonly closedListeners = new Set<() => void>();
+  private readonly sessionSharingListeners = new Set<(sessionKey: string) => void>();
+  /** Raw signal: a `session.sharing(.evidence)` notice named this session key
+   *  (session-access.ts). The refresh lives with the session meta (models-roster.ts);
+   *  this class only reads the frame and reports it. Returns the unsubscribe. */
+  onSessionSharing(listener: (sessionKey: string) => void): () => void {
+    this.sessionSharingListeners.add(listener);
+    return () => {
+      this.sessionSharingListeners.delete(listener);
+    };
+  }
   /** Raw signal: a `config.changed` notice arrived (config-changed.ts), the epoch already
    *  moved. The policy — coalescing, the refresh that pushes the roster to Convex — lives
    *  with the roster (models-roster.ts); this class only reads the frame and reports it.
@@ -897,6 +908,18 @@ export class OpenClawConnection {
         }
       }
     }
+    // A session's visibility or members changed (session.sharing): reported, then queued
+    // unchanged like the notices above.
+    const sharedKey = readSessionSharingKey(frame);
+    if (sharedKey !== null) {
+      for (const listener of [...this.sessionSharingListeners]) {
+        try {
+          listener(sharedKey);
+        } catch {
+          /* a notification must never break the receive loop */
+        }
+      }
+    }
     // Raw inbound frame: the diagnosis + first-fixture material for the harness.
     dbg("frame <-", clip(frame));
     // A run another socket carries in full (a participant's, speaker-pool.ts): its
@@ -989,6 +1012,7 @@ export class OpenClawConnection {
     const closedListeners = [...this.closedListeners];
     this.closedListeners.clear();
     this.configChangedListeners.clear();
+    this.sessionSharingListeners.clear();
     for (const listener of closedListeners) {
       try {
         listener();

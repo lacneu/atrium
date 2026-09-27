@@ -42,6 +42,13 @@ import { requireAgentMembership } from "./chats";
 import { isConversationAgent } from "./chatAgents";
 import { canPost, chatParticipantRows, writtenByCurrentAccount } from "./lib/chatAccess";
 import { reanchorMentionSpans, rejectMentionSpans } from "./lib/mentions";
+import {
+  addressedChain,
+  chainClientMessageId,
+  isReservedClientMessageId,
+  reanchorAddressedAgents,
+  rejectAgentMentions,
+} from "./lib/agentMentions";
 import { notifyUser, withdrawNotifications } from "./notifications";
 import { resolveTargetForChat, resolveTargetForTurn } from "./routing";
 import { assertNoAgentSwitchDuringCall } from "./lib/talkFreeze";
@@ -92,6 +99,22 @@ export const sendMessage = mutation({
     routedAgent: v.optional(
       v.object({ instanceName: v.string(), agentId: v.string() }),
     ),
+    // WHICH AGENTS THIS TURN IS FOR, in a room of several: the "@Name" tokens the
+    // writer picked, as spans into `text`, in TEXT ORDER — the order they answer
+    // in. The first is the turn's route (it supersedes `routedAgent`, which may
+    // only repeat it); each further one gets its own outbox row, queued behind the
+    // previous (a CHAIN). Every one must be an agent of the room. Absent = the
+    // turn goes to `routedAgent`, else the primary.
+    agentMentions: v.optional(
+      v.array(
+        v.object({
+          instanceName: v.string(),
+          agentId: v.string(),
+          start: v.number(),
+          end: v.number(),
+        }),
+      ),
+    ),
     // QUOTE-REPLY: the assistant block this turn replies to ("here is what I am
     // responding to"). The EXCERPT was captured client-side at click time; the
     // dispatch prefixes the outgoing text with the resolved quote_reply
@@ -128,6 +151,12 @@ export const sendMessage = mutation({
       throw new Error("Forbidden: read-only role in this conversation");
     }
     const ownerId = chat.userId;
+    // The keys Atrium derives for its own rows live in a namespace no client key may
+    // enter: a client key equal to one of them would find that row below and be
+    // answered with an old message as its "duplicate".
+    if (isReservedClientMessageId(args.clientMessageId)) {
+      throw new Error("Invalid: clientMessageId is in a reserved namespace");
+    }
 
     // 2. Idempotency short-circuit. Run BEFORE any insert so a retry inserts
     //    neither a duplicate message nor a duplicate outbox row, and does not
@@ -161,6 +190,39 @@ export const sendMessage = mutation({
     const now = Date.now();
     const attachments = args.attachments ?? [];
 
+    // 2a. WHO THE TURN IS FOR. The agent mentions, when there are any, decide it —
+    //     spans checked with the people's (one text, one set of disjoint spans),
+    //     every agent of the ROOM (the owner addresses the room's agents here like
+    //     anyone: an agent outside it is added first, then named). The first one is
+    //     the turn's route; the rest answer after it, in text order.
+    const agentMentions = args.agentMentions ?? [];
+    if (agentMentions.length > 0) {
+      const rejection = rejectAgentMentions(args.text, agentMentions, args.mentions ?? []);
+      if (rejection !== null) {
+        throw new Error(`agent_mentions_invalid:${rejection}`);
+      }
+      const first = agentMentions[0]!;
+      if (
+        args.routedAgent !== undefined &&
+        (args.routedAgent.instanceName !== first.instanceName ||
+          args.routedAgent.agentId !== first.agentId)
+      ) {
+        throw new Error("agent_mentions_invalid:routed_mismatch");
+      }
+      for (const agent of agentMentions) {
+        if (!(await isConversationAgent(ctx, chat, agent))) {
+          throw new Error("Forbidden: agent is not part of this conversation");
+        }
+      }
+    }
+    const chain =
+      agentMentions.length > 0
+        ? addressedChain(agentMentions)
+        : args.routedAgent !== undefined
+          ? [args.routedAgent]
+          : [];
+    const routedAgent = chain[0];
+
     // 2c. PER-TURN ROUTE VALIDATION AT THE SOURCE. The routedInstanceName this
     //     mutation stamps on the user message is what the ingest authorization's
     //     per-turn branch TRUSTS (chatAllowsInstance) — so it must never hold
@@ -168,7 +230,9 @@ export const sendMessage = mutation({
     //     (the same gate createChat applies to a chat binding); a forged/revoked
     //     routedAgent fails the send immediately instead of stamping a route the
     //     dispatch would only reject later (codex P1).
-    if (args.routedAgent !== undefined) {
+    // Every agent of a chain, each exactly as a single routed turn: a chained reply
+    // is dispatched on its own, and must be dispatchable for the same reasons.
+    for (const addressed of chain) {
       // WHOSE RIGHTS DECIDE. The owner routes with their own grants. A GUEST
       // (participant or manager — a viewer never gets here) addresses the agents
       // of the ROOM, and speaks through them on the OWNER's delegation: the turn
@@ -179,15 +243,15 @@ export const sendMessage = mutation({
       const authorizingUser = chatRole === "participant" ? chat.userId : userId;
       if (
         chatRole === "participant" &&
-        !(await isConversationAgent(ctx, chat, args.routedAgent))
+        !(await isConversationAgent(ctx, chat, addressed))
       ) {
         throw new Error("Forbidden: agent is not part of this conversation");
       }
       await requireAgentMembership(
         ctx,
         authorizingUser,
-        args.routedAgent.instanceName,
-        args.routedAgent.agentId,
+        addressed.instanceName,
+        addressed.agentId,
       );
       // AND the route must be DISPATCHABLE right now — the same resolution the
       // dispatch applies, for the same user it applies it to. A granted-but-gone
@@ -198,7 +262,7 @@ export const sendMessage = mutation({
         ctx,
         chat,
         authorizingUser,
-        args.routedAgent,
+        addressed,
       );
       if (resolved.target === null) {
         throw new Error("Forbidden: routed agent is not dispatchable");
@@ -211,7 +275,7 @@ export const sendMessage = mutation({
     // before a message and a failed card are written for a send that cannot happen.
     // Likewise a primary the owner can no longer use: the implicit turn would only
     // fail at dispatch. The guest may still address another room agent explicitly.
-    if (chatRole === "participant" && args.routedAgent === undefined) {
+    if (chatRole === "participant" && routedAgent === undefined) {
       const implicit = await resolveTargetForChat(ctx, chat, chat.userId);
       if (implicit.target === null || implicit.rebind !== null) {
         throw new Error("Forbidden: this conversation's agent is gone — only its owner can re-establish it");
@@ -229,7 +293,11 @@ export const sendMessage = mutation({
     // `routedAgent` field: a client that simply omits it still routes somewhere —
     // to the chat's binding — and reading only the field let that path through
     // (codex P2). Resolved once here and reused by the branch above when present.
-    await assertNoAgentSwitchDuringCall(ctx, chat, args.routedAgent ?? null);
+    // …and every agent of a chain: each reply is a turn of its own to that agent.
+    await assertNoAgentSwitchDuringCall(ctx, chat, routedAgent ?? null);
+    for (const addressed of chain.slice(1)) {
+      await assertNoAgentSwitchDuringCall(ctx, chat, addressed);
+    }
 
     // 2b. Mid-turn serialization (Phase 1: QUEUE). If the chat already has a turn
     //     IN FLIGHT, this send is parked as a `queued` outbox row and the drainer
@@ -269,10 +337,13 @@ export const sendMessage = mutation({
     //     pass 5). The queue is FIFO or it is not a queue. Scoped to the send path:
     //     `isChatBusy` itself also answers the dispatch-reset probe, where a queued
     //     row must not read as activity.
-    const busy =
-      (await isChatBusy(ctx, chat._id)) ||
-      (await countQueued(ctx, chat._id)) > 0;
-    if (busy && (await countQueued(ctx, chat._id)) >= MAX_QUEUED_PER_CHAT) {
+    const queuedBefore = await countQueued(ctx, chat._id);
+    const busy = (await isChatBusy(ctx, chat._id)) || queuedBefore > 0;
+    // A CHAIN QUEUES ITS TAIL whatever the chat's state: every reply after the
+    // first waits for the one before it. All of them count against the bound —
+    // a message addressed to five agents takes five places, as five messages would.
+    const willQueue = (busy ? 1 : 0) + Math.max(chain.length - 1, 0);
+    if (willQueue > 0 && queuedBefore + willQueue > MAX_QUEUED_PER_CHAT) {
       // Bounded queue: refuse a runaway backlog with a clear, catchable error
       // (the composer surfaces it as a toast). Thrown before any write, so the
       // transaction rolls back cleanly — no orphan message/outbox row.
@@ -374,13 +445,15 @@ export const sendMessage = mutation({
       updatedAt: now,
       ...(busy ? { orderTime: QUEUED_ORDER_SENTINEL } : {}),
       // Per-turn routing: record which agent this user turn is addressed to (drives the
-      // per-message agent chip + the composer's "last-used agent" default).
-      ...(args.routedAgent
+      // per-message agent chip). For a chain, the FIRST agent — its reply inherits it;
+      // each later reply carries its own stamp (stream.startAssistant).
+      ...(routedAgent
         ? {
-            routedInstanceName: args.routedAgent.instanceName,
-            routedAgentId: args.routedAgent.agentId,
+            routedInstanceName: routedAgent.instanceName,
+            routedAgentId: routedAgent.agentId,
           }
         : {}),
+      ...(agentMentions.length > 0 ? { addressedAgents: agentMentions } : {}),
       // Quote-reply anchor + display excerpt (the prompt preamble is composed
       // at dispatch/rehydration — `text` stays the user's clean instruction).
       // BOTH vintages (see quoteFieldsFor): the array is the truth, the singular
@@ -472,11 +545,43 @@ export const sendMessage = mutation({
       // row gets its stamp from the drain that promotes it.
       ...(busy ? {} : { pendingSince: Date.now() }),
       // Per-turn routing target, read back by the dispatch.
-      ...(args.routedAgent ? { routedAgent: args.routedAgent } : {}),
+      ...(routedAgent ? { routedAgent } : {}),
       // Quote-reply: the dispatch (and any redo) prefixes the text with the
       // resolved quote_reply injection filled with this excerpt.
       ...outboxQuoteFieldsFor(quotes.map((q) => q.excerpt)),
     });
+
+    // 5b. THE REST OF THE CHAIN: one row per further agent, QUEUED — drained FIFO,
+    //     so each dispatches once the reply before it has settled (successfully or
+    //     not: a failed reply ends a turn like any other, and the chain goes on).
+    //     Same words, files and quotes: each agent answers the same message. The
+    //     people it names are told once, by the head row — never again per agent.
+    //     Own idempotency keys: the browser's key names the logical send (the head),
+    //     and the gateway's key is derived per row.
+    for (const [index, addressed] of chain.entries()) {
+      if (index === 0) continue;
+      const chainKey = chainClientMessageId(args.clientMessageId, index);
+      await ctx.db.insert("outbox", {
+        chatId: chat._id,
+        userId,
+        clientMessageId: chainKey,
+        ...(chatRole === "participant"
+          ? { dispatchKey: `participant-${String(userId)}-${chainKey}` }
+          : {}),
+        messageId,
+        text: args.text,
+        attachmentIds: attachments.map((a) => a.storageId),
+        attachments: attachments.map((a) => ({
+          storageId: a.storageId,
+          filename: a.filename,
+          mimeType: a.mimeType,
+        })),
+        status: "queued",
+        routedAgent: addressed,
+        chainStep: index,
+        ...outboxQuoteFieldsFor(quotes.map((q) => q.excerpt)),
+      });
+    }
 
     // 6. Schedule the dispatch ONLY for an idle chat. A queued row is dispatched
     //    by drainNextQueued when the in-flight turn ends (finalize / failed /
@@ -570,7 +675,10 @@ export const cancelQueuedMessage = mutation({
         q.eq("chatId", message.chatId).eq("status", "queued"),
       )
       .collect();
-    const row = queued.find((r) => r.messageId === messageId);
+    // THE TURN'S OWN ROW, never a chained reply's: those share its message and
+    // stay queued while the head runs — finding one would withdraw a message that
+    // is already in the conversation.
+    const row = queued.find((r) => r.messageId === messageId && r.chainStep === undefined);
     if (row === undefined) {
       // Promoted (or never queued): too late to cancel — the turn is in flight.
       throw new Error("QUEUE_ALREADY_DISPATCHED");
@@ -587,7 +695,10 @@ export const cancelQueuedMessage = mutation({
         throw new Error("Forbidden: not your queued message");
       }
     }
-    await ctx.db.delete(row._id);
+    // …and the whole chain with it: the replies were to this message.
+    for (const r of queued) {
+      if (r.messageId === messageId) await ctx.db.delete(r._id);
+    }
     // The composer disables attachments in queue mode, but the PUBLIC mutation
     // accepts them — drop any parts AND their mirrored `files` rows (the
     // file-mirror invariant: a files row must never outlive its message).
@@ -623,7 +734,7 @@ export const updateQueuedMessage = mutation({
         q.eq("chatId", message.chatId).eq("status", "queued"),
       )
       .collect();
-    const row = queued.find((r) => r.messageId === messageId);
+    const row = queued.find((r) => r.messageId === messageId && r.chainStep === undefined);
     if (row === undefined) throw new Error("QUEUE_ALREADY_DISPATCHED");
     // ONLY ITS AUTHOR REWRITES IT. The turn is sent under the author's name (and,
     // in trusted-proxy with participantIdentity "self", from their own gateway
@@ -646,13 +757,39 @@ export const updateQueuedMessage = mutation({
     // with at send time; one the author deleted is dropped, from both rows, and the
     // person it named is no longer told.
     const previous = message.mentions ?? [];
-    const { kept, dropped } = reanchorMentionSpans(message.text, trimmed, previous);
+    // THE AGENTS IT IS FOR stay the agents it is for. Their tokens are found again
+    // with the people's (one set of spans); a rewrite that drops one, or reorders
+    // them, would leave replies queued from agents the text no longer names — it is
+    // refused: withdrawing the message and sending it again is the way to re-address.
+    const addressed = message.addressedAgents ?? [];
+    let kept: typeof previous;
+    let dropped: typeof previous;
+    let agentPatch = {};
+    if (addressed.length > 0) {
+      const found = reanchorAddressedAgents(message.text, trimmed, addressed, previous);
+      if (found === null) throw new Error("QUEUE_ADDRESSEES_CHANGED");
+      kept = found.people;
+      dropped = found.droppedPeople;
+      agentPatch = { addressedAgents: found.agents };
+    } else {
+      ({ kept, dropped } = reanchorMentionSpans(message.text, trimmed, previous));
+    }
     const mentionPatch =
       previous.length === 0 ? {} : { mentions: kept.length > 0 ? kept : undefined };
     // Both surfaces: the DISPLAY text (message) and the DISPATCH text (outbox —
-    // what the drain actually sends to the gateway).
+    // what the drain actually sends to the gateway), on every row of the chain.
     await ctx.db.patch(row._id, { text: trimmed, ...mentionPatch });
-    await ctx.db.patch(messageId, { text: trimmed, updatedAt: Date.now(), ...mentionPatch });
+    for (const r of queued) {
+      if (r.messageId === messageId && r.chainStep !== undefined) {
+        await ctx.db.patch(r._id, { text: trimmed });
+      }
+    }
+    await ctx.db.patch(messageId, {
+      text: trimmed,
+      updatedAt: Date.now(),
+      ...mentionPatch,
+      ...agentPatch,
+    });
     const stillNamed = new Set(kept.map((m) => String(m.userId)));
     for (const userId of new Set(dropped.map((m) => String(m.userId)))) {
       if (stillNamed.has(userId)) continue;

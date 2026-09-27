@@ -66,7 +66,7 @@ describe("the composer's selection reaches the voice session", () => {
     expect(el).toMatch(/routedAgent=/);
     // The composer's OWN selection — not the chat's binding, which is exactly the
     // value that made the picker and the voice disagree.
-    expect(el).toMatch(/composerSelected/);
+    expect(el).toMatch(/composerTarget/);
   });
 
   test("NOTHING conditions the mount — the decision is inside the control", () => {
@@ -115,9 +115,9 @@ describe("the composer's selection reaches the voice session", () => {
   });
 
   test("the control is handed the composer's selection to begin with", () => {
-    // Bounded to the element: a bare `composerSelected` search matches the next
+    // Bounded to the element: a bare `composerTarget` search matches the next
     // unrelated use a few lines below and stays green after the prop is deleted.
-    expect(talkControlElement()).toMatch(/routedAgent=\{[\s\S]{0,200}composerSelected/);
+    expect(talkControlElement()).toMatch(/routedAgent=\{[\s\S]{0,200}composerTarget/);
   });
 
   test("the mint is asked for that agent", () => {
@@ -457,13 +457,16 @@ describe("the agent cannot be switched while a call is in progress", () => {
 
   test("a call on an agent OUTSIDE the reader's pool is named with its instance", () => {
     // An agent's identity is the PAIR instance/id. A participant whose own agents all
-    // sit on one gateway has `multiInstance` false, so the label collapsed to a bare
-    // id — indistinguishable from their own agent of the same name, while the call ran
-    // on another gateway entirely (codex P3, pass 6).
+    // sit on one gateway sees no homonym in their list, so the label collapsed to a
+    // bare id — indistinguishable from their own agent of the same name, while the
+    // call ran on another gateway entirely (codex P3, pass 6).
     const thread = stripComments(CONVEX_CHAT);
     expect(thread).toMatch(/showsForeignAgent =/);
-    // The control names the next agent in its title (the pill shows the room).
-    expect(thread).toMatch(/\(multiInstance \|\| showsForeignAgent\) && shown \?/);
+    // The control names the next agent in its title (the pill shows the room): with
+    // its instance for a homonym of the list, AND for an agent from outside it.
+    expect(thread).toMatch(
+      /\(homonyms\.has\(`\$\{shown\.instanceName\}\\u0000\$\{shown\.agentId\}`\) \|\| showsForeignAgent\) &&\s*shown\s*\?/,
+    );
   });
 
   test("a call this tab does NOT own can still be hung up from here", () => {

@@ -208,9 +208,27 @@ describe("the hand-off exemption is scoped to the run that handed off", () => {
     });
     // STREAMING, or `finalize` short-circuits on "already terminal" and the
     // assertion below would pass without the verdict ever running.
-    await t.run((ctx) =>
-      ctx.db.patch(parentId, { runId: SETTLE_RUN, status: "streaming" }),
-    );
+    //
+    // The yield that exempts is the one THIS settle run wrote (the 2026-09-20
+    // shape: the settle turn spawned and yielded again), and since the settle
+    // family stamps its parts like every delivery family (lib/deliveryRuns.ts
+    // `deliveryPartStamp`) it carries the run's id. The seeded UNSTAMPED yield is
+    // the parent's own — which must NOT excuse a continuation that brought nothing
+    // (settleContinuationMerge.test.ts pins that half).
+    await t.run(async (ctx) => {
+      await ctx.db.patch(parentId, { runId: SETTLE_RUN, status: "streaming" });
+      await ctx.db.insert("messageParts", {
+        messageId: parentId,
+        order: 1,
+        part: {
+          kind: "tool" as const,
+          name: "sessions_yield",
+          phase: "completed",
+          output: { details: { status: "yielded" } },
+        },
+        announceRun: SETTLE_RUN,
+      });
+    });
 
     await t.mutation(internal.stream.finalize, {
       messageId: parentId,

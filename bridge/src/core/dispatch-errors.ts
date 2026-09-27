@@ -28,6 +28,8 @@ import {
   isProviderReviewPausedText,
   isSessionArchivedText,
   isSessionInitConflictText,
+  isSessionSettingsChangedText,
+  isSessionVisibilityRefusedText,
   withoutOperatorData,
 } from "./failure-classifier.js";
 
@@ -121,6 +123,13 @@ export type DispatchErrorCode =
   // until the review is continued, which Atrium does not offer: NOT retryable, and
   // not a malformed request either. Lower-case like the other codes Convex reads.
   | "session_paused_review"
+  // The session's VISIBILITY (read-only / suggest / draft, set on the gateway) refused
+  // this connection's turn (2026.9.6). Not retryable, not malformed: the person is
+  // told who decided and why. Never re-sent under the owner's name (server.ts).
+  | "session_visibility_refused"
+  // The session's permission mode changed between what the reader saw and the send
+  // (`expectedPermissionMode`). Nothing ran; the reader confirms and sends again.
+  | "session_settings_changed"
   | "UPSTREAM_ERROR"; // anything else (fallback)
 
 /**
@@ -198,6 +207,10 @@ const DOWNSTREAM_REJECTION_CODES: ReadonlySet<DispatchErrorCode> = new Set([
   "session_archived",
   // The gateway RECEIVED the send and refused it on a session it paused for review.
   "session_paused_review",
+  // The gateway RECEIVED the send and applied the session's sharing rules, or its
+  // settings guard: the link and the credentials worked.
+  "session_visibility_refused",
+  "session_settings_changed",
 ]);
 
 /**
@@ -434,6 +447,14 @@ export function classifyGatewayError(
   // PAUSED FOR PROVIDER REVIEW (2026.9.6) — same prefix, same reason to come first.
   if (isProviderReviewPausedText(msg)) {
     return "session_paused_review";
+  }
+  // SHARING and SETTINGS refusals (2026.9.6 / 2026.8.2) — same `INVALID_REQUEST:`
+  // prefix, same reason to come before the generic bucket and the attachment fallback.
+  if (isSessionVisibilityRefusedText(msg)) {
+    return "session_visibility_refused";
+  }
+  if (isSessionSettingsChangedText(msg)) {
+    return "session_settings_changed";
   }
   // IDEMPOTENCY-KEY CONFLICT (2026.9.2): the key was already used for different
   // input. Arrives behind the same `INVALID_REQUEST:` prefix as the conflict

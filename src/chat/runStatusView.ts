@@ -326,6 +326,14 @@ export const ERROR_CODE_LABEL: Record<string, () => string> = {
   // The gateway paused the conversation after a provider refusal (OpenClaw 2026.9.6).
   // Stated as it is: no retry is under way, and none would help.
   session_paused_review: m.runstatus_error_session_paused_review,
+  // The gateway refused the send on the session's own rules (OpenClaw 2026.9.6), before
+  // anything ran. Both reach the card only as dispatch failures, whose stored `error` is
+  // the reason code (`send_failed`) — so the raw upstream sentence never shows under the
+  // headline, and neither needs a text rule or HEADLINE_REPLACES_DETAIL. Neither is
+  // retried: the visibility refuses the same person the same way until its owner changes
+  // it, and a changed permission mode is for the reader to look at before sending again.
+  session_visibility_refused: m.runstatus_error_session_visibility_refused,
+  session_settings_changed: m.runstatus_error_session_settings_changed,
   auth_profile_cooldown: m.runstatus_error_auth_profile_cooldown,
   gateway_storage_busy: m.runstatus_error_gateway_storage_busy,
   gateway_storage_unavailable: m.runstatus_error_gateway_storage_unavailable,
@@ -334,6 +342,11 @@ export const ERROR_CODE_LABEL: Record<string, () => string> = {
   not_configured: m.runstatus_error_not_configured,
   no_agent: m.runstatus_error_no_agent,
   agent_restricted: m.runstatus_error_agent_restricted,
+  // The turn was addressed to a room agent taken out of the room before it could
+  // be sent (the `agent_restricted` refusal, finer code): nobody's access changed,
+  // so the generic "your access changed" headline would send the reader looking
+  // for the wrong cause.
+  AGENT_LEFT_ROOM: m.runstatus_error_agent_left_room,
   send_failed: m.runstatus_error_send_failed,
   // The dispatch never reported back and was reconciled. The generic "send failed"
   // headline would tell the reader to just retry — but delivery is UNKNOWN here,

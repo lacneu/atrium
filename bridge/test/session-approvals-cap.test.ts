@@ -36,6 +36,7 @@ function fakeConn(gatewayVersion: string | null) {
     modelsByOwner: new Map(),
     rosterEpoch: 0,
     onConfigChanged: () => () => {},
+    onSessionSharing: () => () => {},
     onClosed: (l: () => void) => {
       closedListeners.push(l);
       return () => {};

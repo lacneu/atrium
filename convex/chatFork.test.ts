@@ -54,6 +54,13 @@ async function seedChat(
         sessionOverfull: true,
         sessionOverfullAt: 9_000_000,
         sessionResetAt: 8_000_000,
+        // WHO MAY ACT on the SOURCE session, and with what permissions.
+        visibility: "draft",
+        sharingRole: "owner",
+        permissionMode: "full",
+        permissionModePending: false,
+        sessionRoot: "/srv/source",
+        accessAt: 9_000_000,
       },
     });
     const n = opts?.messages ?? 3;
@@ -128,6 +135,19 @@ describe("chatFork.forkChat", () => {
     expect(state.fork!.sessionMeta?.sessionOverfull).toBeUndefined();
     expect(state.fork!.sessionMeta?.sessionOverfullAt).toBeUndefined();
     expect(state.fork!.sessionMeta?.sessionResetAt).toBeUndefined();
+    // …nor the source session's ACCESS facts: the fork's session is new and sets no
+    // mode, so inherited they would show permissions it does not have — and ride its
+    // first send as a guard the gateway would refuse.
+    for (const k of [
+      "visibility",
+      "sharingRole",
+      "permissionMode",
+      "permissionModePending",
+      "sessionRoot",
+      "accessAt",
+    ] as const) {
+      expect(state.fork!.sessionMeta?.[k], k).toBeUndefined();
+    }
     // Same top-of-list placement as createChat (source has no sortKey → min 0).
     expect(state.fork!.archived).toBe(false);
     expect(state.fork!.sortKey).toBeLessThan(0);

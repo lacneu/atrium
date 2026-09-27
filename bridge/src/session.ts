@@ -27,12 +27,13 @@ import { RunManager } from "./providers/openclaw/run-manager.js";
 import {
   extractLatestAssistantReply,
   extractMessageToolReplies,
+  extractRunDeliveryMirrors,
   lastUserEntryText,
   transcriptEntryCount,
 } from "./providers/openclaw/history-recovery.js";
 import { SubAgentObserver } from "./providers/openclaw/sub-agent-observer.js";
 import type { ConvexWriter, SubAgentRecord } from "./convex-writer.js";
-import { attachRosterPolicy } from "./providers/openclaw/models-roster.js";
+import { attachRosterPolicy, attachSharingRefresh } from "./providers/openclaw/models-roster.js";
 import type { OutboundScan } from "./core/turn-sink.js";
 import { gatewayHostOf } from "./core/health.js";
 import { sessionsGetParams } from "./core/rpc-params.js";
@@ -357,6 +358,9 @@ class Session implements BridgeSession {
     // and a refresh that pushes the roster to Convex; a frame gap moves the epoch in the
     // transport itself. Same hop as the frame-gap report; a refresh never delays a turn.
     attachRosterPolicy(this, writer); // disposes itself on the connection's close
+    // Same hop for the session's VISIBILITY: a `session.sharing` notice for this key
+    // re-describes and publishes (models-roster.ts attachSharingRefresh).
+    attachSharingRefresh(this, writer);
     // A loss on a participant's speaker socket carrying a run of this chat arrives
     // here too (speaker-pool.ts), named by its source; an end mid-run is uncounted.
     connection.onFrameGap = (gap) => {
@@ -1316,6 +1320,9 @@ class Session implements BridgeSession {
     // Also captured before the RPC: a compaction reset during it INVALIDATES the
     // attempt this recovery belongs to, and the turn epoch does not move for it.
     const boundRecoveryGen = this.runManager.recoveryGeneration;
+    // …and the runs this turn OWNS, for the run-exact mirror reader below: read after
+    // the RPC they could already name the next turn's run.
+    const boundRunIds = this.runManager.activeRunIds;
     try {
       const raw = await this.connection.request(
         "sessions.get",
@@ -1331,8 +1338,15 @@ class Session implements BridgeSession {
       // for the other triggers that entry is typically the private ack ("Sent."),
       // and persisting it would hide a lost reply behind something that reads
       // like an answer, masking the named cause (codex P1).
+      // Then the delivery MIRRORS this turn's own runs wrote. The only reader that
+      // works on a gateway DELIVERY run (requester-settle, announce): its turn starts
+      // at an inter-session entry the reader above must not cross, and a message tool
+      // called from code mode leaves no top-level `message` result for it to find
+      // (history-recovery.ts `extractRunDeliveryMirrors`). Exact ownership, so it
+      // cannot hand back another turn's words.
       const text =
         extractMessageToolReplies(payload) ||
+        extractRunDeliveryMirrors(payload, boundRunIds) ||
         (needsFullText ? extractLatestAssistantReply(payload) : "");
       if (text) {
         const applied = await this.runManager.recoverVisibleText(

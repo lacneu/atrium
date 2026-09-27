@@ -4,9 +4,9 @@
   "catalogue": "event-catalogue.json",
   "counts": {
     "total": 60,
-    "handled": 4,
-    "gap": 25,
-    "ignored": 31
+    "handled": 6,
+    "gap": 24,
+    "ignored": 30
   },
   "events": {
     "connect.challenge": {
@@ -158,8 +158,12 @@
       "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
     },
     "session.sharing": {
-      "status": "gap",
-      "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+      "status": "handled",
+      "by": "openclaw-client.ts intake — read by `readSessionSharingKey` (providers/openclaw/session-access.ts) and reported raw to the sharing refresh the session attaches to its connection (`attachSharingRefresh`, models-roster.ts): a notice naming THIS session re-describes it and publishes the meta, so a visibility changed in the Control UI reaches the header without a turn. READ-scoped, delivered without a subscription (not in SESSION_SUBSCRIPTION_EVENTS, v2026.9.6 server-broadcast.ts).",
+      "anchor": {
+        "file": "src/providers/openclaw/session-access.ts",
+        "token": "f.event !== \"session.sharing\""
+      }
     },
     "session.suggestion": {
       "status": "gap",
@@ -234,8 +238,12 @@
       "why": "`{sessionKey, revision}` from the `progressCard.*` methods, which Atrium does not call. CHECKED because it could have replaced the plan card's feed: `update-plan` is still present upstream at 2026.8.1 (14 non-test files, same as 2026.7.1), so this is an ADDITIONAL surface, not a replacement."
     },
     "session.sharing.evidence": {
-      "status": "ignored",
-      "why": "Emitted by `sessions.sharing`, a surface Atrium does not call. The same code path emits `sessions.changed` right after, which Atrium already handles — so no state change is lost by ignoring this one."
+      "status": "handled",
+      "by": "openclaw-client.ts intake — read by `readSessionSharingKey` (providers/openclaw/session-access.ts) and reported raw to the sharing refresh the session attaches to its connection (`attachSharingRefresh`, models-roster.ts): a notice naming THIS session re-describes it and publishes the meta, so a visibility changed in the Control UI reaches the header without a turn. READ-scoped, delivered without a subscription (not in SESSION_SUBSCRIPTION_EVENTS, v2026.9.6 server-broadcast.ts).",
+      "anchor": {
+        "file": "src/providers/openclaw/session-access.ts",
+        "token": "f.event !== \"session.sharing.evidence\""
+      }
     },
     "skills.changed": {
       "status": "ignored",

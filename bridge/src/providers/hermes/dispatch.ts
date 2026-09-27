@@ -32,6 +32,9 @@ import {
 export interface HermesSendBody {
   chatId: string;
   agentId: string;
+  /** The instance this turn is routed to (absent on old callers): names this agent
+   *  to Convex when its history is asked for (whose replies are its own). */
+  instanceName?: string | null;
   canonical: string;
   openclawChatId: string | null; // reused as the Hermes session id (providerChatId)
   /** A session this chat LOST a reply on, for ONE read-only harvest before it is forgotten
@@ -63,7 +66,12 @@ export interface HermesSendBody {
   providerResetCount?: number | null;
   /** Per-instance hot config (the `rehydration` knob rides here, same source
    *  the OpenClaw path reads). */
-  config?: { rehydration?: boolean } | null;
+  config?: {
+    rehydration?: boolean;
+    /** Convex's verdict that this turn SWITCHES agent in a multi-agent room: another
+     *  agent may have spoken since this one last answered (convex/bridge.ts). */
+    routedSwitch?: boolean;
+  } | null;
 }
 
 /**
@@ -81,7 +89,11 @@ export async function promptWithFreshSessionHistory(
   body: HermesSendBody,
   freshSession: boolean,
 ): Promise<string> {
-  if (!freshSession) return body.text;
+  // A WARM session keeps its own history on the Hermes side — but in a room of
+  // several agents, what OTHERS said since this agent's last reply is not in it.
+  // On a turn that switches agent, those turns (and only those) are carried.
+  const catchUp = !freshSession && body.config?.routedSwitch === true;
+  if (!freshSession && !catchUp) return body.text;
   const enabled =
     body.config?.rehydration ?? process.env.OPENCLAW_REHYDRATION !== "off";
   if (!enabled) return body.text;
@@ -91,15 +103,30 @@ export async function promptWithFreshSessionHistory(
   // body.text again — a duplicated prompt. Legacy callers without the field
   // ship bare instead (a cold agent beats a doubled message).
   if (!body.messageId) return body.text;
+  const self =
+    body.instanceName !== undefined && body.instanceName !== null && body.agentId
+      ? { instanceName: body.instanceName, agentId: body.agentId }
+      : null;
+  // Catching up needs to know WHICH agent this is; without it, nothing is carried
+  // (a doubled history would be worse than a missed turn).
+  if (catchUp && self === null) return body.text;
   try {
     const ctx = await writer.getRehydrationContext(
       body.chatId,
       body.messageId ?? null,
+      catchUp && self !== null
+        ? { forAgent: self, sinceLastReplyOf: self }
+        : self !== null
+          ? { forAgent: self }
+          : {},
     );
+    // A warm session asked for what it missed and got the WHOLE thread back (its
+    // last reply was not found): prepending it would double what the session holds.
+    if (catchUp && ctx.sinceFound !== true) return body.text;
     if (ctx.history) {
       // Content-free decision log (counts + chatId only), like OpenClaw's.
       console.error(
-        `[rehydrate] hermes chat=${body.chatId} fresh session -> prepended ${ctx.turnCount} prior turn(s)`,
+        `[rehydrate] hermes chat=${body.chatId} ${catchUp ? "warm session, other agents spoke" : "fresh session"} -> prepended ${ctx.turnCount} prior turn(s)`,
       );
       return `${ctx.history}\n\n${body.text}`;
     }

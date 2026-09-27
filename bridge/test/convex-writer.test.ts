@@ -1862,3 +1862,26 @@ describe("an agent request Convex refused is reported as not recorded (codex, He
     await expect(w.upsertAgentRequest(record)).resolves.toEqual({ recorded: true });
   });
 });
+
+describe("upsertSubAgent carries the child RUN id to Convex", () => {
+  // The requester-settle merge joins on it (convex/lib/deliveryRuns.ts): a writer
+  // that dropped it would leave every yielded continuation in its own bubble.
+  test("present when the observer knows it, absent otherwise", async () => {
+    const sent: Array<Record<string, unknown>> = [];
+    const fetchImpl = (async (_url: unknown, init: { body: string }) => {
+      sent.push(JSON.parse(init.body) as Record<string, unknown>);
+      return { ok: true, json: async () => ({ ok: true }) } as unknown as Response;
+    }) as unknown as typeof fetch;
+    const w = writerWith(fetchImpl);
+    await w.upsertSubAgent({
+      chatId: "c1",
+      childSessionKey: "agent:files:subagent:x",
+      childRunId: "5c2543ae-a10b-4bcd-a346-6e3f8ab0e70e",
+      status: "running",
+    });
+    await w.upsertSubAgent({ chatId: "c1", childSessionKey: "agent:files:subagent:y", status: "running" });
+    const subs = sent.filter((b) => b.op === "upsertSubAgent");
+    expect(subs[0]?.childRunId).toBe("5c2543ae-a10b-4bcd-a346-6e3f8ab0e70e");
+    expect("childRunId" in (subs[1] ?? {})).toBe(false);
+  });
+});

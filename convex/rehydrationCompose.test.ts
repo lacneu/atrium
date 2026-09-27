@@ -19,6 +19,7 @@ import {
   composedPromptFits,
   rehydrationBudgetChars,
   summaryBackoffMs,
+  REHYDRATION_STRINGS,
   type RehydrationTurn,
 } from "./lib/rehydration";
 
@@ -27,6 +28,64 @@ const T = (n: number, len = 20): RehydrationTurn[] =>
     role: i % 2 === 0 ? ("user" as const) : ("assistant" as const),
     text: `t${i} ${"x".repeat(len)}`,
   }));
+
+// Codex pass 11 (2026-09-26), P2. The budget is a CONTRACT: the bridge refuses a block
+// longer than the room it asked for, so a block over it is no history at all. The
+// framing (header, reader, summary intro, omission marker, footer) is paid out of it.
+describe("composeRehydration never exceeds its budget", () => {
+  const shapes = [
+    { name: "one huge message", turns: T(1, 20_000), summary: null },
+    { name: "many messages", turns: T(40, 400), summary: null },
+    { name: "summary + huge message", turns: T(1, 20_000), summary: { text: "s".repeat(3_000), coveredCount: 9 } },
+  ];
+  test("for every budget, every shape, with or without reader and since: length <= budget", () => {
+    for (const shape of shapes) {
+      for (const since of [false, true]) {
+        for (const reader of [undefined, "Bob"]) {
+          for (let budget = 50; budget <= 6_000; budget += 37) {
+            for (const locale of ["fr", "en"] as const) {
+              const r = composeRehydration({
+                locale,
+                turns: shape.turns,
+                summary: shape.summary,
+                readWindowClipped: false,
+                budgetChars: budget,
+                ...(reader ? { reader } : {}),
+                ...(since ? { since } : {}),
+              });
+              if (r.history !== null) {
+                expect(r.history.length, `${shape.name} ${locale} since=${since} reader=${reader} budget=${budget}`).toBeLessThanOrEqual(budget);
+              }
+            }
+          }
+        }
+      }
+    }
+  });
+
+  test("a message cut to fit says so — never presented as complete", () => {
+    const r = composeRehydration({
+      turns: T(1, 5_000),
+      summary: null,
+      readWindowClipped: false,
+      budgetChars: 1_200,
+    });
+    expect(r.history).not.toBeNull();
+    expect(r.history!.length).toBeLessThanOrEqual(1_200);
+    expect(r.turnCount).toBe(1);
+    expect(r.history).toContain(REHYDRATION_STRINGS.fr.truncatedMark);
+  });
+
+  test("a budget the framing alone does not fit: no history, rather than one over it", () => {
+    const r = composeRehydration({
+      turns: T(1, 5_000),
+      summary: null,
+      readWindowClipped: false,
+      budgetChars: 100,
+    });
+    expect(r.history).toBeNull();
+  });
+});
 
 describe("composeRehydration", () => {
   test("verbatim only, fits: header + lines + footer, no marker", () => {
@@ -67,12 +126,13 @@ describe("composeRehydration", () => {
       turns: T(1, 5_000),
       summary: null,
       readWindowClipped: false,
-      budgetChars: 100,
+      budgetChars: 700,
     });
     expect(r.turnCount).toBe(1);
     expect(r.history).toContain("t0");
-    // A multi-child turn cannot blow the ceiling: its render is budget-bounded.
-    expect(r.history!.length).toBeLessThan(400); // header+markers+capped line
+    // A multi-child turn cannot blow the ceiling: the whole block, framing included,
+    // is budget-bounded (pass 11 — it used to be the line alone).
+    expect(r.history!.length).toBeLessThanOrEqual(700);
     expect(r.omitted).toBe(true);
   });
 

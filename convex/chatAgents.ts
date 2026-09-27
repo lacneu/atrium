@@ -19,8 +19,10 @@
 
 import { v } from "convex/values";
 
+import { internal } from "./_generated/api";
 import type { Doc, Id } from "./_generated/dataModel";
 import {
+  internalMutation,
   mutation,
   query,
   type MutationCtx,
@@ -28,8 +30,10 @@ import {
 } from "./_generated/server";
 import { enrichUserAgents, type EnrichedUserAgent } from "./agents";
 import { requireAgentMembership } from "./chats";
-import { requireActive } from "./lib/access";
+import { requireActive, requireOwnedChat } from "./lib/access";
 import { auditImpersonated } from "./lib/audit";
+import { isChatBusy } from "./lib/outboxQueue";
+import { liveTalkCall } from "./talk";
 import {
   canManageRoom,
   resolveChatAccess,
@@ -420,5 +424,253 @@ export const removeChatAgent = mutation({
     await ctx.db.delete(row._id);
     await auditImpersonated(ctx, actor, "chat.agent_remove", { resource: "chat", resourceId: chatId });
     return { removed: true as const };
+  },
+});
+
+/** Does the chat hold a turn parked in its queue — accepted, not yet dispatched. */
+async function hasQueuedTurn(ctx: QueryCtx, chatId: Id<"chats">): Promise<boolean> {
+  const queued = await ctx.db
+    .query("outbox")
+    .withIndex("by_chat_status", (q) => q.eq("chatId", chatId).eq("status", "queued"))
+    .first();
+  return queued !== null;
+}
+
+/** Messages one transaction pins to the former primary when the primary changes.
+ *  A bound on the documents (and bytes) a single mutation reads; the rest of a long
+ *  thread follows in scheduled continuations. */
+export const PRIMARY_PIN_BATCH = 256;
+
+/**
+ * Pin the history to the agent that ANSWERED it, before the primary changes.
+ *
+ * A message carrying no routing stamp means "the chat's primary" to every reader —
+ * the thread's attribution chip (resolveMessageAgents), the export, a regenerate's
+ * target, the rehydration labels and the since-search (`by_chat_routed_instance_agent`).
+ * Changing the primary without this would silently
+ * re-attribute every unstamped turn to the NEW primary: the very re-labelling
+ * `rebindChatAgent` refuses by only acting on an empty thread. Stamping the former
+ * primary explicitly keeps "absent = the primary" true for every reader, with no
+ * reader having to learn a new rule.
+ *
+ * What is stamped: an unstamped USER turn (its reply inherits the stamp, as a routed
+ * turn's does), and an unstamped ASSISTANT message that no user turn precedes (a
+ * spontaneous announce — nothing for it to inherit from). An imported message is left
+ * alone: it carries its own label from another deployment, and no agent here answered
+ * it.
+ *
+ * ONE BATCH, from the chat's cursor (`historyPin`) up to `until`, stamped with
+ * `agent` — which MUST be the chat's primary at the time of the write. That is what
+ * makes a long thread safe: pinning the current primary on its own turns changes no
+ * reader's attribution, so the batches may run while the conversation goes on, and
+ * the primary only changes once nothing unstamped is left before the change (the
+ * last batch runs in setPrimaryAgent's own transaction). Returns whether the thread
+ * is pinned through `until`.
+ */
+export async function pinUnroutedBatch(
+  ctx: MutationCtx,
+  chat: Doc<"chats">,
+  agent: { instanceName: string; agentId: string },
+  until: number,
+): Promise<boolean> {
+  // THE CURSOR IS (time, ids at that time), not the time alone: `_creationTime` is not
+  // unique, and a strict `>` on it skipped a message sharing the time of the last one
+  // pinned — left unstamped, then read as the new primary's. The range starts AT the
+  // cursor's time; the ids already pinned there are skipped, and read on top of the
+  // batch so a tie group of any size still makes progress.
+  const after = chat.historyPin?.through ?? 0;
+  const atAfter = new Set((chat.historyPin?.atThrough ?? []).map(String));
+  let sawUser = chat.historyPin?.sawUser ?? false;
+  if (until < after) return true;
+  const read = await ctx.db
+    .query("messages")
+    .withIndex("by_chat", (q) =>
+      q.eq("chatId", chat._id).gte("_creationTime", after).lte("_creationTime", until),
+    )
+    .take(PRIMARY_PIN_BATCH + atAfter.size);
+  const rows = read.filter((m) => !(m._creationTime === after && atAfter.has(String(m._id))));
+  for (const m of rows) {
+    const unrouted =
+      m.routedAgentId === undefined &&
+      m.routedInstanceName === undefined &&
+      m.importedAgentLabel === undefined;
+    if (unrouted && (m.role === "user" || (m.role === "assistant" && !sawUser))) {
+      await ctx.db.patch(m._id, {
+        routedInstanceName: agent.instanceName,
+        routedAgentId: agent.agentId,
+      });
+    }
+    if (m.role === "user") sawUser = true;
+  }
+  const done = read.length < PRIMARY_PIN_BATCH + atAfter.size;
+  const last = rows[rows.length - 1];
+  if (last !== undefined) {
+    const through = last._creationTime;
+    const atThrough = rows.filter((m) => m._creationTime === through).map((m) => m._id);
+    if (through === after) {
+      for (const id of chat.historyPin?.atThrough ?? []) atThrough.push(id);
+    }
+    await ctx.db.patch(chat._id, { historyPin: { through, atThrough, sawUser } });
+  }
+  return done;
+}
+
+/** A long thread's pin, one batch per run, to whoever is primary WHEN it runs (see
+ *  pinUnroutedBatch), up to the newest message; it reschedules itself until done. */
+export const continuePinUnroutedHistory = internalMutation({
+  args: { chatId: v.id("chats") },
+  handler: async (ctx, { chatId }) => {
+    const chat = await ctx.db.get(chatId);
+    if (chat === null) return;
+    const newest = await ctx.db
+      .query("messages")
+      .withIndex("by_chat", (q) => q.eq("chatId", chatId))
+      .order("desc")
+      .first();
+    const done =
+      !chat.instanceName ||
+      !chat.agentId ||
+      newest === null ||
+      (await pinUnroutedBatch(
+        ctx,
+        chat,
+        { instanceName: chat.instanceName, agentId: chat.agentId },
+        newest._creationTime,
+      ));
+    if (!done) {
+      await ctx.scheduler.runAfter(0, internal.chatAgents.continuePinUnroutedHistory, {
+        chatId,
+      });
+    }
+  },
+});
+
+/**
+ * Make one of the room's agents the conversation's PRIMARY, at any point of it.
+ *
+ * THE PRIMARY is the chat's binding (`chats.instanceName/agentId`): the target of a
+ * send that names no agent, the author of the rolling summary (chatSummaries resolves
+ * the chat's binding, so it follows by construction), the target of the session
+ * operations when no routed session exists. It is chosen HERE and only here — the
+ * composer picks the next message's agent, never the conversation's.
+ *
+ * WHO. The owner, as for `rebindChatAgent`: the binding is the owner's conversation
+ * identity on the gateway. The target must already be in the room (a `chatAgents`
+ * row), and pass the same gates as adding it: the owner's grants, conversational, not
+ * deleted on its gateway.
+ *
+ * WHAT MOVES WITH IT, and why:
+ *  - The former primary becomes an added agent of the room (a `chatAgents` row, with
+ *    the usual provenance); the new one leaves the roster — the primary is never a
+ *    row. The count is unchanged, so the room's limit cannot be crossed.
+ *  - The history is pinned to the former primary first (pinUnroutedBatch), so no
+ *    past turn changes author. A thread too long for one transaction is pinned first
+ *    in scheduled batches, to the primary it still has, and the change is refused
+ *    ("preparing") until it is done: the primary never changes while any reader would
+ *    still see a former turn as the new primary's.
+ *  - The chat's non-routed session (`openclawChatId`) is the FORMER primary's gateway
+ *    session: bindChatTarget drops it, and the chat switches to per-turn routing, so
+ *    every later send is routed explicitly and — the new primary starting on a fresh
+ *    segment — re-hydrated from the thread. The persisted routing tuple
+ *    (`lastRouted*` + `routingSegment`) is KEPT: it names the session actually in
+ *    use, whoever is primary, so a turn back to that agent still resumes it warm and
+ *    a turn to the new primary is detected as a switch.
+ *  - An EMPTY thread has no history to carry: the binding moves and nothing else —
+ *    per-turn routing would only force rehydration on for a chat with nothing to
+ *    rehydrate.
+ *
+ * NOT WHILE A TURN RUNS OR WAITS: its frames, its queued follow-ups and its session
+ * all belong to the agent it was sent to (same rule as the panel's reset). NOT DURING
+ * A CALL on another agent: the call is pinned to the agent it was minted for.
+ */
+export const setPrimaryAgent = mutation({
+  args: {
+    chatId: v.id("chats"),
+    instanceName: v.string(),
+    agentId: v.string(),
+  },
+  handler: async (ctx, { chatId, instanceName, agentId }) => {
+    const { userId, actor } = await requireActive(ctx);
+    const chat = await requireOwnedChat(ctx, userId, chatId);
+    if (chat.instanceName === instanceName && chat.agentId === agentId) {
+      return { changed: false as const, reason: "already-primary" as const };
+    }
+    const member = await ctx.db
+      .query("chatAgents")
+      .withIndex("by_chat_instance_agent", (q) =>
+        q.eq("chatId", chatId).eq("instanceName", instanceName).eq("agentId", agentId),
+      )
+      .first();
+    if (member === null) {
+      throw new Error("Invalid: agent is not part of this conversation");
+    }
+    // The same gates as putting it in the room: every turn to it runs under the
+    // owner's identity.
+    await requireAgentMembership(ctx, userId, instanceName, agentId);
+    const target = (await enrichUserAgents(ctx, userId)).find(
+      (a) => a.instanceName === instanceName && a.agentId === agentId,
+    );
+    if (target?.state === "deleted") {
+      throw new Error("Invalid: agent is deleted on its gateway");
+    }
+    const call = await liveTalkCall(ctx, chatId);
+    if (call !== null && (call.instanceName !== instanceName || call.agentId !== agentId)) {
+      throw new Error("TALK_CALL_ACTIVE");
+    }
+    // Busy also while a turn WAITS in the queue, not only while one runs (isChatBusy
+    // ignores `queued` rows): a row sent with no agent named goes to whoever is
+    // primary when it DRAINS, and its message is pinned below to the former one — it
+    // would be answered by the new primary under the old one's name.
+    if ((await isChatBusy(ctx, chatId)) || (await hasQueuedTurn(ctx, chatId))) {
+      return { changed: false as const, reason: "busy" as const };
+    }
+    const former =
+      chat.instanceName && chat.agentId
+        ? { instanceName: chat.instanceName, agentId: chat.agentId }
+        : null;
+    // The NEWEST message bounds the pinning — read, not the clock: a row written
+    // after this mutation is a turn routed after the change, never the former
+    // primary's by default.
+    const newest = await ctx.db
+      .query("messages")
+      .withIndex("by_chat", (q) => q.eq("chatId", chatId))
+      .order("desc")
+      .first();
+    const hasHistory = newest !== null;
+    if (
+      former !== null &&
+      newest !== null &&
+      !(await pinUnroutedBatch(ctx, chat, former, newest._creationTime))
+    ) {
+      // Too long for one transaction: what was stamped stays (the primary's own
+      // turns, still its own), the rest follows in batches, and the change waits.
+      // Asked again meanwhile, it pins from the cursor the same way: a second chain
+      // of batches is redundant work, never a wrong stamp.
+      await ctx.scheduler.runAfter(0, internal.chatAgents.continuePinUnroutedHistory, {
+        chatId,
+      });
+      return { changed: false as const, reason: "preparing" as const };
+    }
+    // Moves the binding, drops the former primary's session id and access facts,
+    // and removes the new primary's roster row (the primary is never a row).
+    await ctx.runMutation(internal.bridge.bindChatTarget, { chatId, instanceName, agentId });
+    if (former !== null) {
+      await ctx.db.insert("chatAgents", {
+        chatId,
+        instanceName: former.instanceName,
+        agentId: former.agentId,
+        addedBy: userId,
+        addedAt: Date.now(),
+      });
+    }
+    await ctx.db.patch(chatId, {
+      updatedAt: Date.now(),
+      ...(hasHistory ? { perTurnRouting: true } : {}),
+    });
+    await auditImpersonated(ctx, actor, "chat.primary_set", {
+      resource: "chat",
+      resourceId: chatId,
+    });
+    return { changed: true as const };
   },
 });
