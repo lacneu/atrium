@@ -438,10 +438,14 @@ export const KNOWN_AGENT_FIELDS: ReadonlySet<string> = new Set([
  * matrix instead of being invisible omissions.
  */
 export const COVERAGE_SUMMARY = {
-  handled: 322,
-  ignored: 778,
+  handled: 323,
+  ignored: 777,
   gaps: 907,
   /** The declared gaps, by schema path — the actionable part of the matrix.
+   *
+   *  PERMISSION MODE CHOICE (2026-09-26): `SessionsPatchParams.permissionMode` — once
+   *  "gateway-side configuration" — is now the conversation owner's choice, applied by
+   *  the bridge to every session of the conversation: one ignored entry became handled.
    *
    *  SESSION ACCESS (2026-09-26) instructed what the describe says about who may act
    *  and with what permissions — `SessionRow.visibility` / `sharingRole` (two gaps)

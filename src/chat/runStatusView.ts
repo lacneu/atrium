@@ -334,6 +334,10 @@ export const ERROR_CODE_LABEL: Record<string, () => string> = {
   // it, and a changed permission mode is for the reader to look at before sending again.
   session_visibility_refused: m.runstatus_error_session_visibility_refused,
   session_settings_changed: m.runstatus_error_session_settings_changed,
+  // The BRIDGE withheld the turn: the owner's chosen permission mode could not be put on
+  // the session it would run on (refused, not authorized, or a gateway without modes).
+  // Stored as a dispatch code like the two above; never retried.
+  permission_mode_not_applied: m.runstatus_error_permission_mode_not_applied,
   auth_profile_cooldown: m.runstatus_error_auth_profile_cooldown,
   gateway_storage_busy: m.runstatus_error_gateway_storage_busy,
   gateway_storage_unavailable: m.runstatus_error_gateway_storage_unavailable,

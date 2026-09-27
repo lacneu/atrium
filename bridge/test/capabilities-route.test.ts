@@ -291,15 +291,14 @@ describe("buildCapabilityTargets (live-session projection)", () => {
     expect(t.provider).toBe("openclaw");
     expect(t.agentId).toBe("main");
     expect(t.gatewayVersion).toBe("2026.7.1");
-    // Everything this version reaches, with NO exception — the list is empty since
-    // `gatewayMentions` was withdrawn (the gateway refuses mentions from any client
-    // that is not a signed-in Control UI chat). Kept as an exact list rather than a
-    // loosened assertion: the next capability that stops resolving must be named
+    // Everything this version reaches, with ONE exception: `permissionModes`, whose
+    // floor (2026.8.2, the send guard) is above 7.1. Kept as an exact list rather than
+    // a loosened assertion: the next capability that stops resolving must be named
     // here deliberately.
     const off = Object.entries(t.capabilities)
       .filter(([, v]) => v !== true)
       .map(([k]) => k);
-    expect(off).toEqual([]);
+    expect(off).toEqual(["permissionModes"]);
     // The flag is OMITTED (not false) within the validated range.
     expect(t).not.toHaveProperty("versionBeyondValidated");
   });

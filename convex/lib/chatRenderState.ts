@@ -117,6 +117,9 @@ export const KNOWN_ERROR_CODES = [
   // decision stopped the turn instead of "unknown".
   "session_visibility_refused",
   "session_settings_changed",
+  // The bridge withheld the turn: the owner's chosen permission mode could not be put
+  // on the session (convex/permissionMode.ts). Named, like the gateway's own refusals.
+  "permission_mode_not_applied",
   "auth_profile_cooldown",
   "gateway_storage_busy",
   "gateway_storage_unavailable",

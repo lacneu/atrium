@@ -43,6 +43,7 @@ const ALL_CAPS = [
   "cronList",
   "cronManage",
   "talk",
+  "permissionModes",
 ] as const;
 
 /**
@@ -68,6 +69,7 @@ const MATRIX: Record<string, Record<(typeof ALL_CAPS)[number], boolean>> = {
     cronList: true,
     cronManage: false,
     talk: false,
+    permissionModes: false,
   },
   "2026.6.1": {
     knobThinkingLevel: true,
@@ -86,6 +88,7 @@ const MATRIX: Record<string, Record<(typeof ALL_CAPS)[number], boolean>> = {
     cronList: true,
     cronManage: false,
     talk: false,
+    permissionModes: false,
   },
   "2026.6.5": {
     knobThinkingLevel: true,
@@ -104,6 +107,7 @@ const MATRIX: Record<string, Record<(typeof ALL_CAPS)[number], boolean>> = {
     cronList: true,
     cronManage: false,
     talk: false,
+    permissionModes: false,
   },
   // 2026.6.10 — live-validated 2026-06-28 (chat round-trip/stream/tool, multi-agent
   // alice+bob, subagent spawn→CHILD_OK). All existing capabilities resolve; 6.10
@@ -126,6 +130,7 @@ const MATRIX: Record<string, Record<(typeof ALL_CAPS)[number], boolean>> = {
     cronList: true,
     cronManage: false,
     talk: false,
+    permissionModes: false,
   },
   // 2026.7.1 (incl. the validated -beta.2 bench) — adds the cron MANAGEMENT
   // surface (cron.get/update/remove/run/runs), live-verified 2026-07-12.
@@ -148,6 +153,7 @@ const MATRIX: Record<string, Record<(typeof ALL_CAPS)[number], boolean>> = {
     // Realtime voice surface (talk.catalog / talk.client.create) — live-probed
     // on the 2026.7.1 bench (2026-07-16).
     talk: true,
+    permissionModes: false,
   },
   // 2026.9.1 — live GO 11/11 (2026-09-03). It adds NO capability gate: the new
   // surface (gateway suspension, user profiles, errorDetail) is vendored and
@@ -172,6 +178,8 @@ const MATRIX: Record<string, Record<(typeof ALL_CAPS)[number], boolean>> = {
     // Realtime voice surface (talk.catalog / talk.client.create) — live-probed
     // on the 2026.7.1 bench (2026-07-16).
     talk: true,
+    // The owner's execution-permission choice: its guard exists from 2026.8.2.
+    permissionModes: true,
   },
   // 2026.9.2 — live GO 11/11 (2026-09-06). Adds NO capability gate either: the
   // new surface (multi-user mentions/participants, per-person model accounts,
@@ -195,6 +203,8 @@ const MATRIX: Record<string, Record<(typeof ALL_CAPS)[number], boolean>> = {
     cronList: true,
     cronManage: true,
     talk: true,
+    // The owner's execution-permission choice: its guard exists from 2026.8.2.
+    permissionModes: true,
   },
 };
 
@@ -450,7 +460,7 @@ describe("resolveCapabilities — beyond maxValidated", () => {
 
   test("the 2026.7.1 RELEASE resolves within range, no flag (prepared support)", () => {
     const resolved = resolveCapabilities("openclaw", "2026.7.1");
-    expect(resolved.capabilities).toEqual(MATRIX["2026.9.1"]);
+    expect(resolved.capabilities).toEqual(MATRIX["2026.7.1"]);
     expect(resolved.versionBeyondValidated).toBe(false);
   });
 });

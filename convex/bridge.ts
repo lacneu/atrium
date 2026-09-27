@@ -46,7 +46,18 @@ import { capabilitiesForInstance, mediaQuarantineReason } from "./lib/compat";
 import { readDoc as readCompatDoc } from "./compat";
 import { PERMISSIONS } from "./lib/rbac";
 import { buildOpenClawThreadId } from "./lib/openclawThread";
-import { expectedPermissionModeFor, withoutSessionAccess } from "./lib/sessionAccess";
+import {
+  expectedPermissionModeFor,
+  withoutSessionAccess,
+  type SessionPermissionMode,
+} from "./lib/sessionAccess";
+import { capabilityOf } from "../src/chat/capabilities";
+import {
+  dispatchPermissionChoice,
+  instanceManagesPermissions,
+  isAdminUser,
+  storedChoice,
+} from "./lib/permissionMode";
 import {
   base64ByteLength,
   base64FitsFrame,
@@ -611,6 +622,80 @@ export function currentRoutedSession(
  *  a gateway swapped during an outage is not vouched for by yesterday's reading. */
 const COMPAT_SNAPSHOT_MAX_AGE_MS = 15 * 60_000;
 
+/** What one turn — or one on-the-spot apply — carries of the conversation's
+ *  execution-permission choice, decided from what holds NOW (lib/permissionMode.ts). */
+export type TurnPermission = {
+  /** The instance has Atrium manage permissions. */
+  managed: boolean;
+  /** What the bridge applies (null = nothing: not managed, or not OpenClaw). */
+  choice: { choice: string; fullAuthorized: boolean } | null;
+  /** A FRESH snapshot of this very instance POSITIVELY declares `permissionModes`. */
+  confirmed: boolean;
+  /** A non-default choice without that confirmation: the turn is refused by name.
+   *  An older bridge ignores the choice fields and would run it under whatever mode
+   *  the session holds — no snapshot (a fresh deployment, a rolling deploy) is no
+   *  proof that the bridge takes the choice. */
+  refuse: boolean;
+  /** "default" without that confirmation: sent WITH the meta-derived guard as well.
+   *  A current bridge clears the override and guards with what it applied (it replaces
+   *  the guard); an older one ignores the choice and keeps the pre-lot guard, so the
+   *  turn still runs under the mode the reader was shown. Refusing instead would stop
+   *  every turn on a managed instance until the first poll — and "default" never asks
+   *  for more than the operator's configuration. */
+  withMetaGuard: boolean;
+  /** The choice revision this decision was taken on. */
+  revision: number;
+};
+
+/**
+ * THE permission decision for a turn on `instanceName`, from the chat, the instance
+ * row, the compat snapshot and the OWNER's role — all read in the caller's
+ * transaction. Called by getChatRouting AND again by lastGateBeforeSend, whose answer
+ * is what the /send body carries: a demotion or a new choice landing between the two
+ * never reaches the bridge with the older decision.
+ */
+export async function decideTurnPermission(
+  ctx: QueryCtx,
+  chat: Doc<"chats">,
+  instanceName: string,
+): Promise<TurnPermission> {
+  const instance = await ctx.db
+    .query("instances")
+    .withIndex("by_name", (q) => q.eq("name", instanceName))
+    .first();
+  const provider = instance?.kind ?? "openclaw";
+  const managed = instanceManagesPermissions(instance);
+  const stored = storedChoice(chat);
+  const choice = dispatchPermissionChoice({
+    choice: stored,
+    provider,
+    managed,
+    ownerIsAdmin:
+      (stored ?? "default") === "full" ? await isAdminUser(ctx, chat.userId) : false,
+  });
+  let confirmed = false;
+  if (choice !== null) {
+    const doc = await readCompatDoc(ctx);
+    const usable =
+      doc !== null &&
+      doc.reachable === true &&
+      Date.now() - doc.fetchedAt < COMPAT_SNAPSHOT_MAX_AGE_MS;
+    const snap = usable ? capabilitiesForInstance(doc.targets, instanceName) : null;
+    confirmed =
+      snap !== null &&
+      snap.provider === provider &&
+      capabilityOf(snap.capabilities, "permissionModes");
+  }
+  return {
+    managed,
+    choice,
+    confirmed,
+    refuse: choice !== null && choice.choice !== "default" && !confirmed,
+    withMetaGuard: choice !== null && choice.choice === "default" && !confirmed,
+    revision: chat.permissionModeRevision ?? 0,
+  };
+}
+
 /**
  * A send REFUSED on the permission mode it carried as its guard
  * (`session_settings_changed`): the session it landed on does not hold that mode.
@@ -804,6 +889,13 @@ export const getChatRouting = internalQuery({
     // The instance's CONTENT locale drives the language of DEFAULT injection
     // texts sent to the bridge (an admin override always wins as-is).
     const contentLocale = await contentLocaleForInstance(ctx, instance?.config);
+    // THE OWNER'S EXECUTION-PERMISSION CHOICE (lib/permissionMode.ts). A PREVIEW for
+    // this dispatch: the /send carries what lastGateBeforeSend decides again, in the
+    // transaction that stamps the send (decideTurnPermission).
+    const permission =
+      routedTarget === null
+        ? null
+        : await decideTurnPermission(ctx, chat, routedTarget.instanceName);
     return {
       // HOW this instance authenticates to its gateway. An ENUM, non-secret, and
       // the one fact that says whether the gateway saw a named person or a single
@@ -894,6 +986,10 @@ export const getChatRouting = internalQuery({
       // expectedPermissionModeFor). null = no guard, and the key is left off the body.
       // `accessAt`: the describe the guard was read from, so a refusal can tell whether
       // anything newer has been learnt since (forgetRefusedPermissionGuard).
+      //
+      // Computed whatever the choice: the dispatch decides at its last gate whether it
+      // rides (not when Atrium applies a mode — the bridge then guards with what it
+      // applied — except "default" on an unconfirmed bridge, see TurnPermission).
       permissionGuard: ((guard) =>
         guard === null ? null : { ...guard, accessAt: chat.sessionMeta?.accessAt ?? null })(
         routedTarget === null
@@ -908,6 +1004,8 @@ export const getChatRouting = internalQuery({
               sessionMeta: chat.sessionMeta,
             }),
       ),
+      // The permission decision for this target, as of this read (null = no target).
+      permission,
       // QUOTE-REPLY: the effective per-instance preamble template (registry
       // entry `quote_reply`, admin-customizable/disable-able). The dispatch
       // fills {excerpt} when the outbox row carries one — resolved HERE so
@@ -1702,11 +1800,13 @@ export const lastGateBeforeSend = internalMutation({
     | { kind: "gone" }
     | { kind: "reparked" }
     | { kind: "refused"; agentLeftRoom?: true }
+    | { kind: "permission_refused" }
     | {
         kind: "send";
         speakerGatewayUser: string | null;
         speakerCanonical: string | null;
         mentionCanonicals: Record<string, string>;
+        permission: TurnPermission;
       }
   > => {
     const row = await ctx.db.get(outboxId);
@@ -1737,6 +1837,12 @@ export const lastGateBeforeSend = internalMutation({
       instanceName: target.instanceName,
     });
     if ("refused" in speaker) return { kind: "refused" };
+    // THE PERMISSION DECISION, taken again HERE — the owner's role, the choice and its
+    // revision, the instance's opt-in and the snapshot, as of the transaction that
+    // stamps the send. What the bridge receives is this, never the earlier routing
+    // read: a demotion or a new choice in between cannot ride an older decision.
+    const permission = await decideTurnPermission(ctx, chat, target.instanceName);
+    if (permission.refuse) return { kind: "permission_refused" };
     // The send leaves for this instance NOW: from here on (while the row is in flight
     // or once sent) its bridge may read this chat's history and open the reply — and
     // not before (lib/ingestAuthz.chatAllowsInstance).
@@ -1746,6 +1852,7 @@ export const lastGateBeforeSend = internalMutation({
       speakerGatewayUser: speaker.name,
       speakerCanonical: speaker.name === null ? null : (speaker.canonical ?? null),
       mentionCanonicals: await mentionCanonicalsStillInRoom(ctx, chat, row),
+      permission,
     };
   },
 });
@@ -2506,6 +2613,10 @@ export const dispatch = internalAction({
     // Curated root-cause code for a failed send (non-PHI). From the bridge's 502
     // body when reachable; a fixed local code when the bridge can't be reached.
     let errorCode: string | undefined;
+    // The meta-derived guard that actually rode this send (decided at the last gate),
+    // for the refusal handler below — null when none did.
+    let sentGuard: { mode: SessionPermissionMode | null; accessAt: number | null } | null =
+      null;
     if (attachmentTooLarge) {
       // Over-cap attachment: do NOT POST it (its base64 would overflow the WS
       // frame and close the gateway connection). Fail with a clear, file-specific
@@ -2573,6 +2684,25 @@ export const dispatch = internalAction({
         },
       });
       if (gate.kind === "gone" || gate.kind === "reparked") return;
+      if (gate.kind === "permission_refused") {
+        // The owner chose a mode this target is not confirmed to take (an older bridge
+        // would ignore it): never sent — a turn does not run under permissions nobody
+        // chose. The existing card names it.
+        await ctx.runMutation(internal.bridge.failDispatch, {
+          outboxId,
+          reason: "send_failed",
+          errorCode: "permission_mode_not_applied",
+        });
+        await traceDispatch(ctx, {
+          outboxId,
+          chatId: row.chatId,
+          chatKind: routing.chatKind,
+          dispatchStatus: "failed",
+          reason: "send_failed",
+          errorCode: "permission_mode_not_applied",
+        });
+        return;
+      }
       if (gate.kind === "refused") {
         await ctx.runMutation(internal.bridge.failDispatch, {
           outboxId,
@@ -2588,6 +2718,13 @@ export const dispatch = internalAction({
       // is what crosses — resolved by the last gate, for the people this turn
       // names who are still in the room.
       const mentionCanonicals = gate.mentionCanonicals;
+      // The guard that rides: the meta's, unless Atrium applies a mode (then the bridge
+      // guards with what it applied) — "default" on an unconfirmed bridge keeps it too.
+      sentGuard =
+        gate.permission.choice === null || gate.permission.withMetaGuard
+          ? routing.permissionGuard
+          : null;
+      const permissionChoice = gate.permission.choice;
       try {
         const response = await fetch(`${bridgeUrl.replace(/\/$/, "")}/send`, {
           method: "POST",
@@ -2703,9 +2840,23 @@ export const dispatch = internalAction({
             // changed since refuses the send before anything runs. OMITTED when this
             // turn's session may not be the one described (getChatRouting) — a guard
             // from another session would refuse a turn for nothing.
-            ...(routing.permissionGuard === null
+            ...(sentGuard === null
               ? {}
-              : { expectedPermissionMode: routing.permissionGuard.mode }),
+              : { expectedPermissionMode: sentGuard.mode }),
+            // The conversation OWNER's permission-mode choice, which the bridge puts
+            // on this turn's session before chat.send (and guards the send with).
+            // An old bridge ignores these unknown fields.
+            ...(permissionChoice === null
+              ? {}
+              : {
+                  // The instance's opt-in, re-read at the last gate: without it the
+                  // bridge applies nothing, whatever else the body says.
+                  permissionModesManaged: true,
+                  permissionModeChoice: permissionChoice.choice,
+                  ...(permissionChoice.fullAuthorized
+                    ? { permissionModeFullAuthorized: true }
+                    : {}),
+                }),
             attachments: resolvedAttachments,
             // Tool-read files streamed by reference (shared-fs). An old bridge
             // ignores this unknown field (those files simply won't reach the agent
@@ -2810,10 +2961,10 @@ export const dispatch = internalAction({
       // Refused on the permission mode it carried: the mode read for the reader no
       // longer describes the session the send lands on. Forgotten unless a newer
       // describe already replaced it, so the retry the refusal asks for can land.
-      if (errorCode === "session_settings_changed" && routing.permissionGuard !== null) {
+      if (errorCode === "session_settings_changed" && sentGuard !== null) {
         await ctx.runMutation(internal.bridge.forgetRefusedPermissionGuard, {
           chatId: row.chatId as Id<"chats">,
-          accessAt: routing.permissionGuard.accessAt,
+          accessAt: sentGuard.accessAt,
         });
       }
       // Pass the curated errorCode so an attachment refusal shows a file-specific

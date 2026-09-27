@@ -231,6 +231,7 @@ export function DocumentViewerContent({
         ) : needsRendition ? (
           <RenditionView
             sourceStorageId={doc.sourceStorageId as string}
+            chatId={chatId}
             downloadUrl={doc.url}
             filename={doc.filename}
           />
@@ -258,15 +259,21 @@ export function DocumentViewerContent({
  *  honest download fallback when conversion is unconfigured or failed. */
 function RenditionView({
   sourceStorageId,
+  chatId,
   downloadUrl,
   filename,
 }: {
   sourceStorageId: string;
+  /** The conversation the file is shown in: the server checks access through THAT
+   *  conversation directly (fileRenditions.readableFile). */
+  chatId: string | null;
   downloadUrl: string;
   filename: string;
 }) {
+  const scope = chatId !== null ? { chatId: chatId as Id<"chats"> } : {};
   const rendition = useQuery(api.fileRenditions.getRendition, {
     sourceStorageId: sourceStorageId as Id<"_storage">,
+    ...scope,
   });
   const request = useMutation(api.fileRenditions.requestRendition);
   // Trigger the conversion at most once per (mounted) source: the server is
@@ -281,7 +288,7 @@ function RenditionView({
     if (rendition?.status !== "pending") return;
     if (triggered.current === sourceStorageId) return;
     triggered.current = sourceStorageId;
-    void request({ sourceStorageId: sourceStorageId as Id<"_storage"> }).catch(
+    void request({ sourceStorageId: sourceStorageId as Id<"_storage">, ...scope }).catch(
       (e) => {
         console.error("[docviewer] rendition request failed:", e);
       },
@@ -679,7 +686,11 @@ function DocumentEditor({
         })
         .catch((e) => {
           console.error("[docviewer] draft save failed:", e);
-          toast.error(m.docviewer_save_failed());
+          toast.error(
+            String((e as Error)?.message ?? e).includes("draft_limit_reached")
+              ? m.docviewer_draft_limit()
+              : m.docviewer_save_failed(),
+          );
           setSaveState("idle");
         });
     },

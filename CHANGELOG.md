@@ -1,5 +1,51 @@
 # Changelog
 
+## [0.87.0] — Execution permissions, chosen in the conversation
+
+Feature release: on OpenClaw, a conversation's owner now chooses what the agent may do on
+its machine, from the composer — like the gateway's own Control UI. It also fixes shared
+files that a participant could download but not open. No breaking changes; read the
+deployment note at the end.
+
+**Choose the agent's execution permissions from the composer.** A new button next to the
+room control shows the conversation's mode and opens the same five choices as OpenClaw's
+Control UI: Default (the agent's own configuration, named — for instance "Default (Full
+access)"), Read only, Supervised (a person reviews what goes beyond the session root),
+Workspace (an AI reviews it) and Full access — each with its description and a "Learn more"
+link, and keys 1 to 5 while the menu is open. The same choice sits in the conversation's
+Advanced settings. The permissions chip is gone from the header: the button carries it.
+
+**Only the owner changes it; full access only for administrators.** Participants see the
+mode and the reason they cannot change it. Choosing Full access explicitly is reserved to
+Atrium administrators — Atrium talks to the gateway with operator rights, and an owner
+must not be able to lift a restriction the operator placed on the agent. Default is always
+available.
+
+**The conversation's mode follows every agent it talks to.** In a conversation with several
+agents, each new gateway session Atrium opens receives the mode before its first message,
+and a turn is never sent under a mode nobody chose: if the mode cannot be applied, the
+message is held back and says why. Hermes has no such modes; the button says so.
+
+**Administrators decide, per instance, whether Atrium manages permissions.** A new instance
+setting, off by default. On: Atrium is authoritative — the conversation's choice (Default
+when none was made) is put back before each turn, including after a change made in the
+Control UI. Off: Atrium never changes the mode on that gateway; the button shows the
+session's mode, locked, as managed by the gateway operator, and a change made behind
+Atrium's back still stops the next message rather than letting it run unseen.
+
+**A participant opens the conversation's files.** Reported in production: a file shared in
+a group conversation downloaded fine for a participant, but its panel failed to open. A
+participant now sees the document, its newer versions and its PDF preview (converted on
+the owner's behalf when they may write in the conversation), and keeps drafts of their
+own, removed when they leave the conversation or their account is deleted. At most 100
+drafts per conversation.
+
+**Deployment note.** The Convex schema gains optional fields and indexes (no migration; the
+indexes build on deploy): run `npx convex deploy` with the new bridge. A non-default mode is
+only sent to an instance whose bridge has confirmed it supports modes, so update every
+bridge; an instance still on an older bridge keeps working with Default. Then switch the
+new setting on for the instances where Atrium should manage permissions.
+
 ## [0.86.0] — Conversations with several people and several agents
 
 Feature release: a conversation can now hold people and agents together — several agents,

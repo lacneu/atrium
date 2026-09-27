@@ -281,11 +281,21 @@ export async function canReachChat(
 }
 
 /**
- * Forget a person's OWN state in one conversation — their read marker and their
- * bookmarks — when they leave it, are removed from it, or it is deleted. Left
+ * Forget a person's OWN state in one conversation — their read marker, their
+ * bookmarks and their document drafts — when they leave it, are removed from it,
+ * or it is deleted. Left
  * behind, a bookmark's label outlives the conversation it names, and dead rows
  * crowd the bounded per-user reads (`myChatReads`) that the sidebar relies on.
  */
+/**
+ * How many document drafts one person may keep in one conversation (one per edited
+ * file). The purge below reads at most DRAFTS_PURGE_BOUND of them in ONE transaction;
+ * `saveDraft` refuses a new one past the cap, so leaving a conversation never leaves
+ * drafts behind.
+ */
+export const MAX_DRAFTS_PER_CHAT = 100;
+export const DRAFTS_PURGE_BOUND = 1000;
+
 export async function purgeMemberState(
   ctx: MutationCtx,
   chatId: Id<"chats">,
@@ -301,5 +311,11 @@ export async function purgeMemberState(
     .withIndex("by_user_chat", (q) => q.eq("userId", userId).eq("chatId", chatId))
     .take(1000)) {
     await ctx.db.delete(bookmark._id);
+  }
+  for (const draft of await ctx.db
+    .query("documentDrafts")
+    .withIndex("by_user_chat_filename", (q) => q.eq("userId", userId).eq("chatId", chatId))
+    .take(DRAFTS_PURGE_BOUND)) {
+    await ctx.db.delete(draft._id);
   }
 }

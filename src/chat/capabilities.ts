@@ -40,6 +40,9 @@ export const CAPABILITY_KEYS = [
   // it. That is the exact failure this contract exists to prevent.
   "cronList",
   "cronManage",
+  // The conversation owner's execution-permission choice (composer picker + Advanced
+  // section). From 2026.8.2, the send guard's floor; never on Hermes.
+  "permissionModes",
 ] as const;
 
 export type CapabilityKey = (typeof CAPABILITY_KEYS)[number];

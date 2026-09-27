@@ -3,6 +3,7 @@ import { describe, expect, test } from "vitest";
 import { api } from "./_generated/api";
 import schema from "./schema";
 import { DRAFT_TEXT_CAP_BYTES } from "./documentDrafts";
+import { DRAFTS_PURGE_BOUND, MAX_DRAFTS_PER_CHAT } from "./lib/chatAccess";
 
 const modules = import.meta.glob("./**/*.ts");
 
@@ -290,3 +291,145 @@ describe("documentDrafts", () => {
     ).toBeNull();
   });
 });
+
+// A PARTICIPANT opens the conversation's documents too. Reported in production:
+// the shared file downloaded, but its side panel failed for the participant —
+// both viewer queries refused anyone but the owner.
+describe("a participant of the conversation", () => {
+  async function room(t: T) {
+    const { userId: ownerId, chatId } = await seed(t, "alice");
+    return t.run(async (ctx) => {
+      const guest = await ctx.db.insert("users", {});
+      await ctx.db.insert("profiles", { userId: guest, role: "user" as const, canonical: "bob" });
+      await ctx.db.insert("chatParticipants", {
+        chatId,
+        userId: guest,
+        addedBy: ownerId,
+        addedAt: 1,
+        role: "member" as const,
+      });
+      const stranger = await ctx.db.insert("users", {});
+      await ctx.db.insert("profiles", {
+        userId: stranger,
+        role: "user" as const,
+        canonical: "eve",
+      });
+      const messageId = await ctx.db.insert("messages", {
+        chatId,
+        userId: ownerId,
+        role: "assistant" as const,
+        status: "complete" as const,
+        text: "voici",
+        updatedAt: 1000,
+      });
+      const sid = await ctx.storage.store(new Blob(["pdf"]));
+      // Delivered files are recorded under the conversation's OWNER.
+      await ctx.db.insert("files", {
+        userId: ownerId,
+        chatId,
+        messageId,
+        storageId: sid,
+        filename: "flan.pdf",
+        mimeType: "application/pdf",
+        kind: "file" as const,
+        direction: "outbound" as const,
+        createdAt: 1000,
+      });
+      return { ownerId, chatId, guest, stranger };
+    });
+  }
+
+  test("sees the conversation's delivered versions and keeps their OWN draft", async () => {
+    const t = convexTest(schema, modules);
+    const { ownerId, chatId, guest } = await room(t);
+    const asGuest = t.withIdentity({ subject: `${guest}|s` });
+    const latest = await asGuest.query(api.documentDrafts.latestDeliveredFile, {
+      chatId,
+      filename: "flan.pdf",
+    });
+    expect(latest?.createdAt).toBe(1000);
+    expect(await asGuest.query(api.documentDrafts.getDraft, { chatId, filename: "n.md" })).toBeNull();
+    await asGuest.mutation(api.documentDrafts.saveDraft, { chatId, filename: "n.md", text: "bob" });
+    expect(
+      (await asGuest.query(api.documentDrafts.getDraft, { chatId, filename: "n.md" }))?.text,
+    ).toBe("bob");
+    // A draft is personal: the owner never sees the participant's.
+    const asOwner = t.withIdentity({ subject: `${ownerId}|s` });
+    expect(await asOwner.query(api.documentDrafts.getDraft, { chatId, filename: "n.md" })).toBeNull();
+  });
+
+  test("someone outside the conversation still reads nothing", async () => {
+    const t = convexTest(schema, modules);
+    const { chatId, stranger } = await room(t);
+    const asStranger = t.withIdentity({ subject: `${stranger}|s` });
+    await expect(
+      asStranger.query(api.documentDrafts.latestDeliveredFile, { chatId, filename: "flan.pdf" }),
+    ).rejects.toThrow(/Forbidden/);
+    await expect(
+      asStranger.query(api.documentDrafts.getDraft, { chatId, filename: "n.md" }),
+    ).rejects.toThrow(/Forbidden/);
+    await expect(
+      asStranger.mutation(api.documentDrafts.saveDraft, { chatId, filename: "n.md", text: "x" }),
+    ).rejects.toThrow(/Forbidden/);
+  });
+
+  test("a participant's drafts go when they leave, and with the conversation", async () => {
+    const t = convexTest(schema, modules);
+    const { ownerId, chatId, guest } = await room(t);
+    const asGuest = t.withIdentity({ subject: `${guest}|s` });
+    await asGuest.mutation(api.documentDrafts.saveDraft, { chatId, filename: "n.md", text: "bob" });
+    await asGuest.mutation(api.chatParticipants.leaveChat, { chatId });
+    const afterLeave = await t.run((ctx) => ctx.db.query("documentDrafts").collect());
+    expect(afterLeave).toEqual([]);
+
+    // Seated again, drafting again, then the owner deletes the conversation.
+    await t.run(async (ctx) => {
+      await ctx.db.insert("chatParticipants", {
+        chatId,
+        userId: guest,
+        addedBy: ownerId,
+        addedAt: 2,
+        role: "member" as const,
+      });
+    });
+    await asGuest.mutation(api.documentDrafts.saveDraft, { chatId, filename: "n.md", text: "bob" });
+    await t.withIdentity({ subject: `${ownerId}|s` }).mutation(api.chats.deleteChat, { chatId });
+    await t.finishAllScheduledFunctions(() => {});
+    const afterDelete = await t.run((ctx) => ctx.db.query("documentDrafts").collect());
+    expect(afterDelete).toEqual([]);
+  });
+});
+
+// Codex review (2026-09-27), P3: a person's drafts in a conversation are purged in ONE
+// transaction when they leave it (purgeMemberState reads at most DRAFTS_PURGE_BOUND).
+// saveDraft had no per-chat bound, so drafts past the purge window outlived the seat.
+describe("drafts are bounded per (person, conversation)", () => {
+  test("the cap fits inside the purge's single read", () => {
+    expect(MAX_DRAFTS_PER_CHAT).toBeLessThanOrEqual(DRAFTS_PURGE_BOUND);
+  });
+
+  test("past the cap a NEW draft is refused by name; an existing one still saves", async () => {
+    const t = convexTest(schema, modules);
+    const { userId, chatId } = await seed(t, "alice");
+    await t.run(async (ctx) => {
+      for (let i = 0; i < MAX_DRAFTS_PER_CHAT; i++) {
+        await ctx.db.insert("documentDrafts", {
+          userId,
+          chatId,
+          filename: `f-${i}.md`,
+          text: "x",
+          createdAt: 1,
+          updatedAt: 1,
+        });
+      }
+    });
+    const as = t.withIdentity({ subject: `${userId}|s` });
+    await expect(
+      as.mutation(api.documentDrafts.saveDraft, { chatId, filename: "one-more.md", text: "y" }),
+    ).rejects.toThrow(/draft_limit_reached/);
+    expect(
+      (await as.mutation(api.documentDrafts.saveDraft, { chatId, filename: "f-3.md", text: "edited" })).applied,
+    ).toBe(true);
+  });
+});
+

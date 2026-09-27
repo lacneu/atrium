@@ -1793,6 +1793,16 @@ describe("the last gate before the send leaves is one transaction", () => {
       speakerGatewayUser: null,
       speakerCanonical: null,
       mentionCanonicals: {},
+      // The execution-permission decision taken at this gate: an instance Atrium does
+      // not manage — nothing applied, the pre-lot guard stands.
+      permission: {
+        managed: false,
+        choice: null,
+        confirmed: false,
+        refuse: false,
+        withMetaGuard: false,
+        revision: 0,
+      },
     });
     await seedGroup(t, "owner-narrowed", [owner], [{ instanceName: "alpha", agentId: "bob" }]);
     expect(await gate(t, outboxId)).toEqual({ kind: "refused" });

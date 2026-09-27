@@ -1863,6 +1863,80 @@ export const peekSessionMeta = query({
 });
 
 /**
+ * DEV-ONLY: a chat's execution-permission state for the bench
+ * (openclaw-notes live-bench/permission-mode.mjs): the owner's choice, the outcome of
+ * its last on-the-spot apply, what the last describe said, and the parts of the gateway
+ * session key the next turn uses — so the bench can ask the GATEWAY itself.
+ *   npx convex run dev:peekPermissionMode '{"chatId":"<id>"}'
+ */
+export const peekPermissionMode = query({
+  args: { chatId: v.id("chats") },
+  handler: async (ctx, { chatId }) => {
+    assertDev();
+    const chat = await ctx.db.get(chatId);
+    if (chat === null) return null;
+    const owner = await ctx.db
+      .query("profiles")
+      .withIndex("by_user", (q) => q.eq("userId", chat.userId))
+      .unique();
+    const routed = chat.perTurnRouting === true;
+    return {
+      ownerUserId: chat.userId,
+      ownerRole: owner?.role ?? null,
+      canonical: owner?.canonical ?? null,
+      choice: chat.permissionModeChoice ?? null,
+      apply: chat.permissionModeApply ?? null,
+      described: {
+        permissionMode: chat.sessionMeta?.permissionMode,
+        permissionModePending: chat.sessionMeta?.permissionModePending ?? null,
+        availableModelsOwner: chat.sessionMeta?.availableModelsOwner ?? null,
+      },
+      agentId: routed ? (chat.lastRoutedAgentId ?? chat.agentId ?? null) : (chat.agentId ?? null),
+      segment: routed
+        ? (chat.routingSegment ?? chat.openclawChatId ?? chatId)
+        : (chat.openclawChatId ?? chatId),
+    };
+  },
+});
+
+/** DEV-ONLY: turn "Atrium manages execution permissions" on/off for a bench instance,
+ *  returning the previous value so the bench can restore it. */
+export const setInstanceManagePermissionsDev = mutation({
+  args: { instanceName: v.string(), on: v.boolean() },
+  handler: async (ctx, { instanceName, on }) => {
+    assertDev();
+    assertDevInstance(instanceName);
+    const inst = await ctx.db
+      .query("instances")
+      .withIndex("by_name", (q) => q.eq("name", instanceName))
+      .first();
+    if (inst === null) return { ok: false as const, previous: null };
+    const previous = inst.managePermissionModes === true;
+    await ctx.db.patch(inst._id, { managePermissionModes: on ? true : undefined });
+    return { ok: true as const, previous };
+  },
+});
+
+/** DEV-ONLY: set ONE user's role by id — bench owners created by testSendRouted share
+ *  a canonical, so `setRole` (by canonical) cannot target one of them. */
+export const setUserRoleDev = mutation({
+  args: {
+    userId: v.id("users"),
+    role: v.union(v.literal("user"), v.literal("admin")),
+  },
+  handler: async (ctx, { userId, role }) => {
+    assertDev();
+    const p = await ctx.db
+      .query("profiles")
+      .withIndex("by_user", (q) => q.eq("userId", userId))
+      .unique();
+    if (p === null) return { ok: false as const };
+    await ctx.db.patch(p._id, { role });
+    return { ok: true as const, role };
+  },
+});
+
+/**
  * Bench probe for the announce-merge + sub-agent metadata path: the chat's
  * subAgents rows (status/task/anchor/meta) + the latest assistant message's
  * merge state. Read-only, dev-gated, SOC2-lean (task names are bench prompts).

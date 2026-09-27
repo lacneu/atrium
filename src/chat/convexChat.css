@@ -787,9 +787,7 @@
    neutral capability chips (model/reasoning) — the info just needs to be present,
    not emphasized. Only a genuinely problematic agent state (deleted/stale) gets a
    subtle warning tint. */
-.oc-chip--agent.is-warn,
-/* Permission chip: full access, or a default nobody states (which may be full access). */
-.oc-chip--access.is-alert {
+.oc-chip--agent.is-warn {
   background: color-mix(in srgb, var(--destructive) 12%, var(--muted));
   border-color: color-mix(in srgb, var(--destructive) 40%, var(--border));
 }
@@ -4071,6 +4069,174 @@ button.oc-bmk-rail__count:hover {
 .oc-composer__tools:focus-visible {
   outline: 2px solid var(--ring);
   outline-offset: 2px;
+}
+/* EXECUTION PERMISSIONS (PermissionModePicker.tsx): a pill sibling of the Outils
+   toggle and the room selector — the current mode's shield + name. Full access
+   (chosen, or the agent's default resolving to it) reads in the alert color, like the
+   Control UI's own picker. */
+.oc-composer__perm {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  height: 2rem;
+  padding: 0 0.65rem;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--muted-foreground);
+  font: inherit;
+  font-size: 0.85rem;
+  cursor: pointer;
+  max-width: 16rem;
+  transition:
+    background 150ms ease,
+    color 150ms ease,
+    border-color 150ms ease;
+}
+.oc-composer__perm:hover {
+  color: var(--foreground);
+  background: var(--muted);
+}
+.oc-composer__perm:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+}
+.oc-composer__perm-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.oc-composer__perm-chev {
+  opacity: 0.55;
+  flex: none;
+}
+.oc-composer__perm.is-alert {
+  color: var(--destructive);
+  border-color: color-mix(in srgb, var(--destructive) 45%, var(--border));
+  background: color-mix(in srgb, var(--destructive) 8%, transparent);
+}
+.oc-composer__perm.is-pending {
+  opacity: 0.7;
+}
+/* Iconify before clipping, like the Outils label. */
+@container composerbar (max-width: 30rem) {
+  .oc-composer__bar .oc-composer__perm .oc-composer__perm-label,
+  .oc-composer__bar .oc-composer__perm .oc-composer__perm-chev {
+    display: none;
+  }
+  .oc-composer__bar .oc-composer__perm {
+    padding: 0 0.55rem;
+  }
+}
+/* The menu and the Advanced section share the option rows. */
+.oc-perm__heading {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding: 0.35rem 0.5rem 0.4rem;
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--foreground);
+}
+.oc-perm__learn {
+  font-weight: 400;
+  font-size: 0.75rem;
+  color: var(--muted-foreground);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.oc-perm__learn:hover {
+  color: var(--foreground);
+}
+.oc-perm__opt {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.6rem;
+  width: 100%;
+  padding: 0.45rem 0.5rem;
+  border: none;
+  border-radius: 0.375rem;
+  background: transparent;
+  color: var(--foreground);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+button.oc-perm__opt:hover:not(:disabled) {
+  background: var(--accent);
+}
+button.oc-perm__opt:disabled {
+  cursor: default;
+  opacity: 0.55;
+}
+.oc-perm__opt.is-selected {
+  background: var(--muted);
+}
+.oc-perm__opt-icon {
+  display: inline-grid;
+  place-items: center;
+  margin-top: 0.1rem;
+  color: var(--muted-foreground);
+}
+.oc-perm__opt.is-full .oc-perm__opt-icon,
+.oc-perm__opt.is-full .oc-perm__opt-title {
+  color: var(--destructive);
+}
+.oc-perm__opt-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+  min-width: 0;
+  flex: 1 1 auto;
+}
+.oc-perm__opt-title {
+  font-size: 0.85rem;
+  font-weight: 500;
+}
+.oc-perm__opt-desc,
+.oc-perm__opt-reason {
+  font-size: 0.75rem;
+  line-height: 1.3;
+  color: var(--muted-foreground);
+  white-space: normal;
+}
+.oc-perm__opt-reason {
+  font-style: italic;
+}
+.oc-perm__opt-state {
+  display: inline-grid;
+  place-items: center;
+  min-width: 1.1rem;
+  margin-top: 0.1rem;
+  color: var(--muted-foreground);
+}
+.oc-perm__shortcut {
+  font-size: 0.7rem;
+  border: 1px solid var(--border);
+  border-radius: 0.25rem;
+  padding: 0 0.3rem;
+  line-height: 1.2rem;
+}
+.oc-perm__status,
+.oc-perm__note {
+  margin: 0.35rem 0.5rem 0.2rem;
+  font-size: 0.75rem;
+  line-height: 1.35;
+  color: var(--muted-foreground);
+}
+.oc-perm__status.is-error {
+  color: var(--destructive);
+}
+.oc-perm__section {
+  border-top: 1px solid var(--border);
+  margin-top: 0.4rem;
+  padding-top: 0.3rem;
+}
+.oc-perm__list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
 }
 /* MULTI-AGENT: per-turn agent selector trigger. Pill sibling of the Outils toggle
    (same height/shape), carrying the routed agent's emoji + name + a chevron. The

@@ -11,28 +11,18 @@
 
 import { v } from "convex/values";
 import { mutation, query } from "./_generated/server";
-import type { QueryCtx } from "./_generated/server";
-import type { Id } from "./_generated/dataModel";
-import { requireActive } from "./lib/access";
+import { requireActive, requireReachableChat } from "./lib/access";
 import { stripGatewayMediaId } from "./lib/mediaName";
+import { MAX_DRAFTS_PER_CHAT } from "./lib/chatAccess";
 
 // Text-kind documents only. UTF-8 BYTES (what Convex stores — a UTF-16
 // character count would let CJK/emoji text blow the ~1MiB document cap
 // while "passing" the check), with headroom for the row's other fields.
 export const DRAFT_TEXT_CAP_BYTES = 600_000;
 
-async function requireOwnedChat(
-  ctx: QueryCtx,
-  chatId: Id<"chats">,
-  userId: Id<"users">,
-): Promise<void> {
-  const chat = await ctx.db.get(chatId);
-  if (!chat || chat.userId !== userId) {
-    throw new Error("Forbidden: chat not owned by user");
-  }
-}
-
-/** The caller's draft for one document of one chat (null = none). */
+/** The caller's draft for one document of one chat (null = none). A draft is the
+ *  reader's OWN state, like a bookmark: anyone who can open the conversation —
+ *  owner or participant — keeps their own, never sees another's. */
 export const getDraft = query({
   args: { chatId: v.id("chats"), filename: v.string() },
   handler: async (
@@ -44,7 +34,7 @@ export const getDraft = query({
     updatedAt: number;
   } | null> => {
     const { userId } = await requireActive(ctx);
-    await requireOwnedChat(ctx, chatId, userId);
+    await requireReachableChat(ctx, userId, chatId);
     const row = await ctx.db
       .query("documentDrafts")
       .withIndex("by_user_chat_filename", (q) =>
@@ -60,8 +50,9 @@ export const getDraft = query({
   },
 });
 
-/** Auto-save upsert (debounced client-side). Owner-scoped; no-op under admin
- *  impersonation (same personal-write rule as bookmarks/read state). */
+/** Auto-save upsert (debounced client-side). The caller's own draft, for anyone
+ *  who can open the conversation; no-op under admin impersonation (same
+ *  personal-write rule as bookmarks/read state). */
 export const saveDraft = mutation({
   args: {
     chatId: v.id("chats"),
@@ -77,7 +68,7 @@ export const saveDraft = mutation({
     // Personal-write no-op under impersonation — but tell the CLIENT so the
     // editor never shows a fictional "saved" (codex P2).
     if (impersonating) return { applied: false };
-    await requireOwnedChat(ctx, chatId, userId);
+    await requireReachableChat(ctx, userId, chatId);
     if (new TextEncoder().encode(text).length > DRAFT_TEXT_CAP_BYTES) {
       throw new Error("Draft too large");
     }
@@ -98,6 +89,15 @@ export const saveDraft = mutation({
         ...(sourceStorageId !== undefined ? { sourceStorageId } : {}),
       });
       return { applied: true };
+    }
+    // A NEW draft: bounded per (person, conversation), so the purge that runs when
+    // they leave it deletes every one in a single transaction (purgeMemberState).
+    const held = await ctx.db
+      .query("documentDrafts")
+      .withIndex("by_user_chat_filename", (q) => q.eq("userId", userId).eq("chatId", chatId))
+      .take(MAX_DRAFTS_PER_CHAT);
+    if (held.length >= MAX_DRAFTS_PER_CHAT) {
+      throw new Error("draft_limit_reached");
     }
     await ctx.db.insert("documentDrafts", {
       userId,
@@ -163,7 +163,10 @@ export const latestDeliveredFile = query({
     createdAt: number;
   } | null> => {
     const { userId } = await requireActive(ctx);
-    await requireOwnedChat(ctx, chatId, userId);
+    // A participant reads the conversation's deliveries too: they are the
+    // OWNER's files rows (files are recorded under the chat's owner).
+    const { chat } = await requireReachableChat(ctx, userId, chatId);
+    const ownerId = chat.userId;
     const wanted = stripGatewayMediaId(filename);
     // ONE bounded read of the chat's files, soft-deleted INCLUDED: hiding a
     // file from Settings › Files keeps its chip in the chat, so it stays a
@@ -179,7 +182,7 @@ export const latestDeliveredFile = query({
     const live = await ctx.db
       .query("files")
       .withIndex("by_user_chat", (q) =>
-        q.eq("userId", userId).eq("chatId", chatId).eq("deletedAt", undefined),
+        q.eq("userId", ownerId).eq("chatId", chatId).eq("deletedAt", undefined),
       )
       .order("desc")
       .take(300);
@@ -191,7 +194,7 @@ export const latestDeliveredFile = query({
     const hidden = await ctx.db
       .query("files")
       .withIndex("by_user_chat", (q) =>
-        q.eq("userId", userId).eq("chatId", chatId).gt("deletedAt", 0),
+        q.eq("userId", ownerId).eq("chatId", chatId).gt("deletedAt", 0),
       )
       .order("desc")
       .take(200);

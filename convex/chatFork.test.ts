@@ -36,6 +36,10 @@ async function seedChat(
       openclawChatId: "gw-thread-1", // the source HAS a live gateway binding
       // The user's per-chat knob intent — the branch must keep it.
       sessionSettings: { model: "opus", thinkingLevel: "high" },
+      // The owner's execution-permission choice — the branch must keep it too; the
+      // outcome of its last apply described the SOURCE's session and must not ride.
+      permissionModeChoice: "read-only",
+      permissionModeApply: { mode: "read-only", status: "applied", at: 1 },
       // Gateway meta: static fields (model, WINDOW size = the rehydration
       // budget) must ride; the source session's USAGE measures must NOT.
       sessionMeta: {
@@ -109,6 +113,10 @@ describe("chatFork.forkChat", () => {
     expect(state.fork!.openclawChatId).toBeUndefined();
     // First-turn rehydration signal armed (consumed by the dispatch at ACK).
     expect(state.fork!.forkPendingRehydration).toBe(true);
+    // The execution-permission choice continues too (a read-only conversation's
+    // branch does not escape to the agent's default); its apply record does not.
+    expect(state.fork!.permissionModeChoice).toBe("read-only");
+    expect(state.fork!.permissionModeApply).toBeUndefined();
     // The per-chat session knobs continue in the branch.
     expect(state.fork!.sessionSettings).toEqual({
       model: "opus",

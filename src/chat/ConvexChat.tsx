@@ -123,7 +123,6 @@ import {
   Reply,
   Search,
   Settings2,
-  ShieldAlert,
   ShieldCheck,
   SlidersHorizontal,
   Square,
@@ -319,7 +318,8 @@ import {
   contextSource,
   effectiveContextWindow,
 } from "./sessionKnobs";
-import { permissionChipView, visibilityChipView } from "./sessionAccessView";
+import { visibilityChipView } from "./sessionAccessView";
+import { PermissionModePicker, PermissionModeSection } from "./PermissionModePicker";
 import {
   AgentRequestDock,
   AgentRequestsHeaderButton,
@@ -2036,10 +2036,9 @@ function ChatHeader({ chatId }: { chatId: ConvexId<"chats"> }) {
   const ghostRef = useRef<HTMLDivElement>(null);
   const [compact, setCompact] = useState(false);
 
-  // WHO MAY ACT on the session and with what permissions — every reader sees them,
-  // guests included, and whatever the "Outils" toggle: they say what the agent may do
-  // with what is written here, not how the session is performing.
-  const permissionChip = permissionChipView(sm, meta?.agentDefaultPermissionMode);
+  // WHO MAY ACT on the session — every reader sees it, guests included, and whatever
+  // the "Outils" toggle. (The permission MODE is not a header chip any more: the
+  // composer's execution-permissions button carries it, and lets the owner change it.)
   const visibilityChip = visibilityChipView(sm);
 
   // BINARY, intent-based provenance (CONF amendment A1): inherited = no
@@ -2081,31 +2080,6 @@ function ChatHeader({ chatId }: { chatId: ConvexId<"chats"> }) {
           {inherited ? (
             <span className="oc-chip__hint">{m.chat_thinking_inherited_hint()}</span>
           ) : null}
-        </span>
-      ) : null}
-      {permissionChip ? (
-        <span
-          className={`oc-chip oc-chip--access${permissionChip.alert ? " is-alert" : ""}`}
-          title={permissionChip.title}
-        >
-          {permissionChip.alert ? (
-            <ShieldAlert size={13} aria-hidden />
-          ) : (
-            <ShieldCheck size={13} aria-hidden />
-          )}
-          {/* Compact: the icon alone, unless the chip is an alert — the one thing a
-              tight header must not fold away. The name stays readable to a screen
-              reader either way. */}
-          {isCompact && !permissionChip.alert ? (
-            <span className="sr-only">{permissionChip.text}</span>
-          ) : (
-            <>
-              <span className="oc-chip__label">{permissionChip.text}</span>
-              {permissionChip.hint ? (
-                <span className="oc-chip__hint">{permissionChip.hint}</span>
-              ) : null}
-            </>
-          )}
         </span>
       ) : null}
       {visibilityChip ? (
@@ -2164,7 +2138,6 @@ function ChatHeader({ chatId }: { chatId: ConvexId<"chats"> }) {
     meta?.viewerRole ?? "",
     sm?.model ?? "",
     sm?.thinkingLevel ?? "",
-    permissionChip ? `${permissionChip.text}:${permissionChip.hint ?? ""}` : "",
     visibilityChip?.label ?? "",
     meta?.title ?? "",
     // The breadcrumb widens the title block — its text must retrigger the
@@ -2389,6 +2362,8 @@ function SessionKnobsMenu({
   ghost?: boolean;
 }) {
   const [open, setOpen] = useState(false);
+  // Where the next message goes — the permissions section is scoped to it.
+  const knobsRouting = useChatRouting();
   // Trigger content shared by the real button AND the ghost stand-in (no width drift).
   const inner = (
     <>
@@ -2436,6 +2411,23 @@ function SessionKnobsMenu({
           </div>
         ) : null}
         <SessionKnobsGroup chatId={chatId} sm={sm} settings={settings} />
+        {/* The conversation's execution permissions — the same choice as the
+            composer's button (one implementation, PermissionModePicker.tsx). */}
+        <PermissionModeSection
+          chatId={chatId}
+          routedAgent={
+            knobsRouting?.nextTarget
+              ? {
+                  instanceName: knobsRouting.nextTarget.instanceName,
+                  agentId: knobsRouting.nextTarget.agentId,
+                }
+              : null
+          }
+          multiAgent={
+            knobsRouting?.perTurnRouting === true ||
+            (knobsRouting?.roomAgents?.length ?? 0) > 0
+          }
+        />
         <button
           type="button"
           className="oc-spanel-pop__all"
@@ -5952,6 +5944,24 @@ function Composer({
             chatId={chatId}
             gate={agentGate}
             onManage={openConversation}
+          />
+          {/* EXECUTION PERMISSIONS of the conversation, like the Control UI composer's
+              picker: every reader sees the mode, only the owner changes it. Scoped to
+              the agent the next message goes to ("Default (<its mode>)", Hermes). */}
+          <PermissionModePicker
+            chatId={chatId}
+            routedAgent={
+              composerTarget
+                ? {
+                    instanceName: composerTarget.instanceName,
+                    agentId: composerTarget.agentId,
+                  }
+                : null
+            }
+            multiAgent={
+              composerRouting?.perTurnRouting === true ||
+              (composerRouting?.roomAgents?.length ?? 0) > 0
+            }
           />
 
         </div>

@@ -60,6 +60,7 @@ const FROZEN_TRUTH_FLOOR = [
   "SessionRow.sessionRoot",
   "AgentSummary.defaultPermissionMode",
   "ChatSendParams.expectedPermissionMode",
+  "SessionsPatchParams.permissionMode",
   "ChatAbortedEvent.errorMessage",
   "ChatStatusEvent.retry",
   "ChatSendParams.expectedSessionRoutingContract",

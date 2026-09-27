@@ -147,6 +147,15 @@ export const forkChat = mutation({
       ...(source.sessionSettings !== undefined
         ? { sessionSettings: source.sessionSettings }
         : {}),
+      // The owner's EXECUTION-PERMISSION choice rides too: a branch of a read-only
+      // conversation must not escape to the agent's default (which may be full
+      // access). Safe for `full`: the dispatch re-authorizes it on the FORK owner's
+      // role (convex/lib/permissionMode.ts), so a non-administrator's branch of an
+      // administrator's full-access conversation is refused by name, never run.
+      // The source's apply outcome does not ride — it described another session.
+      ...(source.permissionModeChoice !== undefined
+        ? { permissionModeChoice: source.permissionModeChoice }
+        : {}),
       // The gateway session meta rides too — the header chips show the real
       // model immediately, and above all `sessionMeta.contextTokens` (the
       // context WINDOW size) is the BUDGET rehydrationContext sizes the

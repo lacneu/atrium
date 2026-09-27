@@ -527,6 +527,14 @@ export default defineSchema({
     //     `sessions.others: "none"` refuses it (upstream session-sharing-policy.ts),
     //     and the bridge then sends as the owner rather than lose the turn.
     participantIdentity: v.optional(v.union(v.literal("owner"), v.literal("self"))),
+    // DOES ATRIUM MANAGE EXECUTION PERMISSIONS on this gateway (convex/permissionMode.ts)?
+    //   true: Atrium is authoritative — every turn's OpenClaw session gets the
+    //     conversation's choice (absent = "default" = the override cleared), the owner
+    //     changes it, and the send is guarded with the mode applied.
+    //   absent/false (default): Atrium never sets a mode here — the gateway's operator
+    //     does — and only SHOWS it; the send carries the mode the reader was shown as
+    //     its guard, the behaviour of every instance before this existed.
+    managePermissionModes: v.optional(v.boolean()),
     // Identity the bridge presents on sockets that serve no single person (agent
     // discovery, transcript recovery, config defaults). Unset → derived from the
     // instance name. Only meaningful in "trusted-proxy" mode.
@@ -1589,6 +1597,46 @@ export default defineSchema({
         clears: v.optional(v.array(v.string())),
       }),
     ),
+    // The OWNER's execution-permission choice for this conversation (see
+    // convex/permissionMode.ts): "default" = the agent's configured policy (the
+    // gateway override cleared), else one OpenClaw mode. The bridge puts it on every
+    // OpenClaw session the conversation uses, before that session's first turn.
+    // ABSENT = never chosen: the gateway is left alone, exactly as before.
+    // Bumped by every choice: an on-the-spot apply carries the revision it was made
+    // for, and an outcome of an older one is never recorded as the current one's.
+    permissionModeRevision: v.optional(v.number()),
+    permissionModeChoice: v.optional(
+      v.union(
+        v.literal("default"),
+        v.literal("read-only"),
+        v.literal("guarded"),
+        v.literal("workspace"),
+        v.literal("full"),
+      ),
+    ),
+    // What happened the last time the choice was applied on the spot (the composer's
+    // pending / error state). `mode` is the choice this outcome is for, so an outcome
+    // of an older choice never reads as the current one's.
+    permissionModeApply: v.optional(
+      v.object({
+        mode: v.string(),
+        // The choice revision this outcome is for (absent on rows written before it).
+        revision: v.optional(v.number()),
+        // Re-applies of THIS revision triggered by an older apply that may have landed
+        // after it (bounded: see recordPermissionModeApply).
+        repairs: v.optional(v.number()),
+        status: v.union(
+          v.literal("pending"),
+          v.literal("applied"),
+          v.literal("deferred"),
+          v.literal("failed"),
+        ),
+        // A closed vocabulary (bridge permission-mode.ts PERMISSION_MODE_FAILURES, plus
+        // the transport's own `bridge_unreachable` / `no_agent`) — never gateway prose.
+        reason: v.optional(v.string()),
+        at: v.number(),
+      }),
+    ),
     // Timestamp of the last COMPLETED assistant reply (stamped by stream.finalize,
     // status "complete" only — never error/aborted). The single arrival signal the
     // sidebar consumes for the flash / unread dot / reply sound: compared against
@@ -2620,7 +2668,10 @@ export default defineSchema({
     createdAt: v.number(),
   })
     // Point lookup + per-chat cascade.
-    .index("by_user_chat_filename", ["userId", "chatId", "filename"]),
+    .index("by_user_chat_filename", ["userId", "chatId", "filename"])
+    // A deleted account's drafts, swept in batches under its generation bound
+    // (admin.sweepDeletedUserRoomState): `_creationTime` follows the user here.
+    .index("by_user", ["userId"]),
 
   files: defineTable({
     userId: v.id("users"), // owner (denormalized)
@@ -2677,6 +2728,11 @@ export default defineSchema({
     // chip answered "unavailable". This is the point read that question deserves.
     .index("by_message_storage", ["messageId", "storageId"])
     .index("by_storage", ["storageId"]) // GC / backfill dedup
+    // WHO may read a blob (fileRenditions.readableFile): the caller's OWN row of it,
+    // then a row of it in a conversation they are in — both point reads. Scanning
+    // `by_storage` instead let fork copies push the caller's row out of a bounded read.
+    .index("by_storage_user", ["storageId", "userId"])
+    .index("by_chat_storage", ["chatId", "storageId"])
     // Filtered listings: each puts the filter dimension in the index prefix so a
     // filter on a rare/old value scans only matching rows (not the whole owner
     // set up to the cap). listMine picks the index of the most-selective active

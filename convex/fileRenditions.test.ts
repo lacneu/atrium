@@ -2,6 +2,7 @@ import { convexTest } from "convex-test";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { api, internal } from "./_generated/api";
 import schema from "./schema";
+import { MAX_PARTICIPATIONS_SCANNED } from "./lib/chatAccess";
 import type { Id } from "./_generated/dataModel";
 import {
   buildConversionPrompt,
@@ -104,14 +105,23 @@ async function seed(
         type: "application/vnd.openxmlformats-officedocument.presentationml.presentation",
       }),
     );
-    // The `files` row IS the authorization anchor (ownedFile). A `foreign` seed
-    // gives it to a DIFFERENT user so the caller doesn't own it.
+    // The `files` row IS the authorization anchor (readableFile). A `foreign`
+    // seed gives it to a DIFFERENT user, in THEIR conversation — one the caller
+    // is not in, so the caller neither owns nor sees it.
     const ownerId = opts?.foreign
       ? await ctx.db.insert("users", {})
       : userId;
+    const fileChatId = opts?.foreign
+      ? await ctx.db.insert("chats", {
+          userId: ownerId,
+          updatedAt: 1,
+          instanceName: "prod",
+          agentId: "main",
+        })
+      : chatId;
     await ctx.db.insert("files", {
       userId: ownerId,
-      chatId,
+      chatId: fileChatId,
       messageId,
       storageId,
       filename: "IFOA.pptx",
@@ -345,3 +355,229 @@ describe("correlation (from stream.finalize) + timeout", () => {
     expect(row!.failureReason).toBe("timeout");
   });
 });
+
+// A PARTICIPANT sees what the conversation shows them: the file is the OWNER's
+// `files` row. Reported in production: the shared file downloaded, but its
+// preview failed for the participant.
+describe("a participant of the conversation", () => {
+  async function seat(
+    t: ReturnType<typeof convexTest>,
+    chatId: Id<"chats">,
+    ownerId: Id<"users">,
+    role: "viewer" | "member",
+  ) {
+    return t.run(async (ctx) => {
+      const guest = await ctx.db.insert("users", {});
+      await ctx.db.insert("profiles", { userId: guest, role: "user" as const, canonical: "bob" });
+      await ctx.db.insert("chatParticipants", {
+        chatId,
+        userId: guest,
+        addedBy: ownerId,
+        addedAt: 1,
+        role,
+      });
+      return guest;
+    });
+  }
+
+  test("a member gets the preview, converted on the OWNER's converter chat", async () => {
+    const t = convexTest(schema, modules);
+    const { userId: ownerId, chatId, storageId } = await seed(t);
+    const guest = await seat(t, chatId, ownerId, "member");
+    const as = t.withIdentity({ subject: `${guest}|session` });
+    const read = await as.query(api.fileRenditions.getRendition, { sourceStorageId: storageId });
+    expect(read.status).toBe("pending");
+    const res = await as.mutation(api.fileRenditions.requestRendition, {
+      sourceStorageId: storageId,
+    });
+    expect(res.status).toBe("pending");
+    const state = await t.run(async (ctx) => ({
+      rows: await ctx.db.query("fileRenditions").collect(),
+      hidden: await ctx.db
+        .query("chats")
+        .filter((q) => q.eq(q.field("kind"), "converter"))
+        .collect(),
+    }));
+    expect(state.rows.length).toBe(1);
+    expect(state.rows[0]!.userId).toBe(ownerId);
+    expect(state.hidden.map((c) => c.userId)).toEqual([ownerId]);
+  });
+
+  test("a viewer reads an existing rendition but never starts one", async () => {
+    const t = convexTest(schema, modules);
+    const { userId: ownerId, chatId, storageId } = await seed(t);
+    const viewer = await seat(t, chatId, ownerId, "viewer");
+    const as = t.withIdentity({ subject: `${viewer}|session` });
+    // No rendition yet: "no preview" (download fallback), not "pending".
+    const before = await as.query(api.fileRenditions.getRendition, { sourceStorageId: storageId });
+    expect(before.status).toBe("unconfigured");
+    await expect(
+      as.mutation(api.fileRenditions.requestRendition, { sourceStorageId: storageId }),
+    ).rejects.toThrow(/forbidden/);
+    // The owner's rendition, once ready, is the viewer's to read.
+    await t.run(async (ctx) => {
+      const pdf = await ctx.storage.store(new Blob(["%PDF"], { type: "application/pdf" }));
+      await ctx.db.insert("fileRenditions", {
+        sourceStorageId: storageId,
+        chatId,
+        userId: ownerId,
+        sourceFilename: "IFOA.pptx",
+        sourceMimeType:
+          "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        status: "ready" as const,
+        pdfStorageId: pdf,
+        converterInstance: "prod",
+        converterAgentId: "convbot",
+        createdAt: 1,
+        updatedAt: 1,
+      });
+    });
+    const after = await as.query(api.fileRenditions.getRendition, { sourceStorageId: storageId });
+    expect(after.status).toBe("ready");
+  });
+
+  // Codex review (2026-09-27), P2: the blob's rows were scanned `take(32)` — a fork
+  // copies them onto the same storageId, so enough copies pushed the caller's row out
+  // of the window — and the FIRST reachable conversation decided, so a viewer seat
+  // shadowed a member seat.
+  async function forkedCopies(
+    t: ReturnType<typeof convexTest>,
+    storageId: Id<"_storage">,
+    count: number,
+  ) {
+    await t.run(async (ctx) => {
+      const stranger = await ctx.db.insert("users", {});
+      for (let i = 0; i < count; i++) {
+        const c = await ctx.db.insert("chats", { userId: stranger, updatedAt: 1, instanceName: "prod", agentId: "main" });
+        const messageId = await ctx.db.insert("messages", {
+          chatId: c,
+          userId: stranger,
+          role: "user" as const,
+          status: "complete" as const,
+          text: "copie",
+          updatedAt: 1,
+        });
+        await ctx.db.insert("files", {
+          userId: stranger,
+          chatId: c,
+          messageId,
+          storageId,
+          filename: "IFOA.pptx",
+          mimeType: "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+          kind: "file" as const,
+          direction: "inbound" as const,
+          createdAt: 1,
+        });
+      }
+    });
+  }
+  async function laterCopyIn(
+    t: ReturnType<typeof convexTest>,
+    ownerId: Id<"users">,
+    storageId: Id<"_storage">,
+  ) {
+    return t.run(async (ctx) => {
+      const c = await ctx.db.insert("chats", { userId: ownerId, updatedAt: 1, instanceName: "prod", agentId: "main" });
+      const messageId = await ctx.db.insert("messages", {
+        chatId: c,
+        userId: ownerId,
+        role: "user" as const,
+        status: "complete" as const,
+        text: "copie",
+        updatedAt: 2,
+      });
+      await ctx.db.insert("files", {
+        userId: ownerId,
+        chatId: c,
+        messageId,
+        storageId,
+        filename: "IFOA.pptx",
+        mimeType: "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        kind: "file" as const,
+        direction: "inbound" as const,
+        createdAt: 2,
+      });
+      return c;
+    });
+  }
+
+  test("a member whose conversation's row sits behind many fork copies still reaches it", async () => {
+    const t = convexTest(schema, modules);
+    const { userId: ownerId, storageId } = await seed(t);
+    await forkedCopies(t, storageId, 40);
+    const later = await laterCopyIn(t, ownerId, storageId);
+    const guest = await seat(t, later, ownerId, "member");
+    const as = t.withIdentity({ subject: `${guest}|session` });
+    const res = await as.mutation(api.fileRenditions.requestRendition, { sourceStorageId: storageId });
+    expect(res.status).toBe("pending");
+  });
+
+  test("a member seat wins over a viewer seat on the same file", async () => {
+    const t = convexTest(schema, modules);
+    const { userId: ownerId, chatId, storageId } = await seed(t);
+    const viewer = await seat(t, chatId, ownerId, "viewer");
+    const later = await laterCopyIn(t, ownerId, storageId);
+    await t.run((ctx) =>
+      ctx.db.insert("chatParticipants", { chatId: later, userId: viewer, addedBy: ownerId, addedAt: 2, role: "member" }),
+    );
+    const as = t.withIdentity({ subject: `${viewer}|session` });
+    const res = await as.mutation(api.fileRenditions.requestRendition, { sourceStorageId: storageId });
+    expect(res.status).toBe("pending");
+  });
+
+  // Codex pass 2 (2026-09-27), P3: without the viewer's conversation, access was found
+  // through the caller's first MAX_PARTICIPATIONS_SCANNED seats — a chat reachable by URL
+  // past that window (or behind stale seats) read `unconfigured`. The viewer passes its
+  // chatId; THAT conversation decides, by point reads.
+  test("the viewer's conversation decides, even past the participation scan", async () => {
+    const t = convexTest(schema, modules);
+    const { userId: ownerId, storageId } = await seed(t);
+    const guest = await t.run(async (ctx) => {
+      const g = await ctx.db.insert("users", {});
+      await ctx.db.insert("profiles", { userId: g, role: "user" as const, canonical: "bob" });
+      // Seats that fill the scan window first (other conversations of the same owner).
+      for (let i = 0; i < MAX_PARTICIPATIONS_SCANNED; i++) {
+        const c = await ctx.db.insert("chats", { userId: ownerId, updatedAt: 1, instanceName: "prod", agentId: "main" });
+        await ctx.db.insert("chatParticipants", { chatId: c, userId: g, addedBy: ownerId, addedAt: 1, role: "member" });
+      }
+      return g;
+    });
+    const later = await laterCopyIn(t, ownerId, storageId);
+    await t.run((ctx) =>
+      ctx.db.insert("chatParticipants", { chatId: later, userId: guest, addedBy: ownerId, addedAt: 2, role: "member" }),
+    );
+    const as = t.withIdentity({ subject: `${guest}|session` });
+    expect((await as.query(api.fileRenditions.getRendition, { sourceStorageId: storageId })).status).toBe("unconfigured");
+    expect(
+      (await as.query(api.fileRenditions.getRendition, { sourceStorageId: storageId, chatId: later })).status,
+    ).toBe("pending");
+    const res = await as.mutation(api.fileRenditions.requestRendition, { sourceStorageId: storageId, chatId: later });
+    expect(res.status).toBe("pending");
+  });
+
+  test("the chatId is no way around the guard: a chat not reachable, or a blob not in it", async () => {
+    const t = convexTest(schema, modules);
+    const { userId: ownerId, chatId, storageId } = await seed(t);
+    const stranger = await t.run(async (ctx) => {
+      const s = await ctx.db.insert("users", {});
+      await ctx.db.insert("profiles", { userId: s, role: "user" as const, canonical: "eve" });
+      return s;
+    });
+    const eve = t.withIdentity({ subject: `${stranger}|session` });
+    expect((await eve.query(api.fileRenditions.getRendition, { sourceStorageId: storageId, chatId })).status).toBe(
+      "unconfigured",
+    );
+    await expect(
+      eve.mutation(api.fileRenditions.requestRendition, { sourceStorageId: storageId, chatId }),
+    ).rejects.toThrow(/forbidden/);
+    // The owner, naming a conversation of theirs that does NOT hold this blob.
+    const other = await t.run((ctx) =>
+      ctx.db.insert("chats", { userId: ownerId, updatedAt: 1, instanceName: "prod", agentId: "main" }),
+    );
+    const owner = t.withIdentity({ subject: `${ownerId}|session` });
+    expect(
+      (await owner.query(api.fileRenditions.getRendition, { sourceStorageId: storageId, chatId: other })).status,
+    ).toBe("unconfigured");
+  });
+});
+

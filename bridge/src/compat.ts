@@ -68,6 +68,16 @@ export interface CompatManifest {
   providers: Record<string, ProviderCompat>;
 }
 
+/** First gateway version whose `chat.send` accepts `expectedPermissionMode` (the
+ *  vendored 2026.8.2 `ChatSendParamsSchema` is the first to carry it; 2026.8.1's does
+ *  not). The params object is CLOSED upstream: an older gateway would refuse the whole
+ *  send over the unknown key, so the guard is only sent from this version on. */
+export const EXPECTED_PERMISSION_MODE_SINCE = "2026.8.2";
+
+/** First gateway version where the owner's permission-mode CHOICE is offered and
+ *  applied (the `permissionModes` capability): the guard's floor, see above. */
+export const PERMISSION_MODES_SINCE = EXPECTED_PERMISSION_MODE_SINCE;
+
 /**
  * Capability -> minVersion, straight from the bench-validation ledger:
  *  - knobThinkingLevel / knobModel: sessions.patch knobs work since 5.19.
@@ -131,6 +141,13 @@ const OPENCLAW_CAPABILITIES: Record<string, string> = {
   // dynamic gateway state, checked at session-create time with a graceful
   // error (same split as inboundAttachments vs the dynamic maxPayload cap).
   talk: "2026.7.1",
+  // The conversation owner's EXECUTION-PERMISSION choice (read-only / guarded /
+  // workspace / full / the agent's default), applied by `sessions.patch
+  // {permissionMode}` to every session Atrium opens for the conversation and held by
+  // the `chat.send.expectedPermissionMode` guard. The field exists on sessions.patch
+  // from 2026.8.1, the guard from 2026.8.2 — the choice ships with its guard.
+  // (providers/openclaw/permission-mode.ts). Never on Hermes: it has no modes.
+  permissionModes: PERMISSION_MODES_SINCE,
 };
 
 // Hermes exposes a DELIBERATELY SMALL surface via its OpenAI-compatible API
@@ -266,12 +283,6 @@ export const MODELS_LIST_OWNER_SINCE = "2026.8.1";
  *  method needs admin before it is found missing), and an empty list would claim the
  *  session never compacted. */
 export const COMPACTION_CHECKPOINTS_RETIRED_IN = "2026.9.6";
-
-/** First gateway version whose `chat.send` accepts `expectedPermissionMode` (the
- *  vendored 2026.8.2 `ChatSendParamsSchema` is the first to carry it; 2026.8.1's does
- *  not). The params object is CLOSED upstream: an older gateway would refuse the whole
- *  send over the unknown key, so the guard is only sent from this version on. */
-export const EXPECTED_PERMISSION_MODE_SINCE = "2026.8.2";
 
 const parsedVersions = new Map<string, ParsedVersion | null>();
 /** `version >= min`, on the RAW gateway version (not the capped capability table);

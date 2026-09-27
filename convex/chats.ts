@@ -509,7 +509,8 @@ async function sweepChatDependents(
   }
 
   // 2. GROUP CHAT roster: each seat with that person's read marker, their bookmarks
-  //    (a participant bookmarks too) and their "you were added" entry. A seat goes
+  //    and document drafts (a participant keeps both too) and their "you were
+  //    added" entry. A seat goes
   //    only once its holder's state here is gone. Left behind, a roster row keeps a
   //    slot in the person's bounded participation scan, and would hand back access
   //    were the chat id ever reused.
@@ -537,14 +538,7 @@ async function sweepChatDependents(
   if (!(await dropMemberState(ctx, chatId, ownerId, () => budget, (n) => (budget -= n)))) {
     return more();
   }
-  {
-    const asked = Math.max(budget, 0);
-    const drafts = await ctx.db
-      .query("documentDrafts")
-      .withIndex("by_user_chat_filename", (q) => q.eq("userId", ownerId).eq("chatId", chatId))
-      .take(asked);
-    if (!(await drain(drafts, asked)) || budget <= 0) return more();
-  }
+  if (budget <= 0) return more();
 
   // 4. Messages, each with what hangs off it: parts and their mirrored files rows
   //    (the file-mirror invariant), documentary attachments, the live-text row, the
@@ -653,7 +647,16 @@ async function dropMemberState(
     .take(asked);
   spend(marks.length);
   for (const b of marks) await ctx.db.delete(b._id);
-  return marks.length < asked;
+  if (marks.length >= asked) return false;
+  // Document drafts: edited-file text, kept per reader (owner AND participants).
+  const draftsAsked = Math.max(left(), 0);
+  const drafts = await ctx.db
+    .query("documentDrafts")
+    .withIndex("by_user_chat_filename", (q) => q.eq("userId", userId).eq("chatId", chatId))
+    .take(draftsAsked);
+  spend(drafts.length);
+  for (const d of drafts) await ctx.db.delete(d._id);
+  return drafts.length < draftsAsked;
 }
 
 export const deleteChat = mutation({

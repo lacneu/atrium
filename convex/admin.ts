@@ -318,7 +318,8 @@ const ROOM_STATE_SWEEP_BATCH = 256;
 
 /**
  * One batch of a deleted account's group-chat state — its seats (chatParticipants),
- * then its read markers, then its bookmarks, then its notifications — rescheduled
+ * then its read markers, then its bookmarks, then its notifications, then its
+ * document drafts — rescheduled
  * while rows remain.
  * Without it the account keeps a nameless seat in every conversation it was
  * invited to, still counted against the room's limit, and a re-provisioned
@@ -361,9 +362,21 @@ export const sweepDeletedUserRoomState = internalMutation({
             .withIndex("by_user", (q) => q.eq("userId", userId).lte("_creationTime", cutoff))
             .take(room)
         : [];
-    for (const r of [...seats, ...reads, ...marks, ...notes]) await ctx.db.delete(r._id);
+    // Document drafts — edited-file TEXT a participant can keep in somebody else's
+    // conversation (their own chats' drafts went with cascadeDeleteChat). Left behind,
+    // the text outlived the account and came back if the same person was
+    // re-provisioned and re-invited.
+    const space = room - notes.length;
+    const drafts =
+      space > 0
+        ? await ctx.db
+            .query("documentDrafts")
+            .withIndex("by_user", (q) => q.eq("userId", userId).lte("_creationTime", cutoff))
+            .take(space)
+        : [];
+    for (const r of [...seats, ...reads, ...marks, ...notes, ...drafts]) await ctx.db.delete(r._id);
     if (
-      seats.length + reads.length + marks.length + notes.length ===
+      seats.length + reads.length + marks.length + notes.length + drafts.length ===
       ROOM_STATE_SWEEP_BATCH
     ) {
       await ctx.scheduler.runAfter(0, internal.admin.sweepDeletedUserRoomState, {
@@ -836,6 +849,8 @@ export const upsertInstance = mutation({
     participantIdentity: v.optional(
       v.union(v.literal("owner"), v.literal("self")),
     ),
+    // Atrium manages this gateway's execution permissions. Absent ⇒ off.
+    managePermissionModes: v.optional(v.boolean()),
     // FRONTEND live-stream transport (reactive | sse) — a top-level instance property,
     // NOT bridge-dispatch config. See schema instances.streamTransport.
     streamTransport: v.optional(v.union(v.literal("reactive"), v.literal("sse"))),
@@ -864,6 +879,9 @@ export const upsertInstance = mutation({
       streamTransport: args.streamTransport,
       // Omission clears to "owner" semantics — the safe side, like `authMode`.
       participantIdentity: args.participantIdentity,
+      // Omission clears to OFF — the safe side: Atrium sets no mode on a gateway an
+      // admin did not explicitly hand over (another operator's policy stands).
+      managePermissionModes: args.managePermissionModes === true ? true : undefined,
       // `identitySource` is deliberately NOT here — see the patch path below.
     };
     // Refuse a name whose deletion sweep is still owed — same guard the

@@ -926,8 +926,20 @@
           "why": "NEW at 2026.8.1: per-session tool allow/deny overrides. Optional. Tool policy is gateway-side; Atrium never patches it."
         },
         "permissionMode": {
-          "status": "ignored",
-          "why": "NEW at 2026.8.1: per-session permission mode. Optional. Permission policy is gateway-side configuration, not an Atrium control."
+          "status": "handled",
+          "by": "providers/openclaw/permission-mode.ts enforcePermissionMode: the conversation OWNER's choice (Convex chats.permissionModeChoice; 'default' = null, clearing the override) is patched onto the session the next turn uses — immediately by POST /permission-mode (performPermissionModeChange), and before every chat.send by performSend when the described mode differs (per-turn switch, rotated segment, recreated session). `full` only when Convex authorizes it (the owner is an Atrium admin), never because the socket carries operator.admin. A refusal withholds the turn (permission_mode_not_applied) or is returned to the owner; a gateway below PERMISSION_MODES_SINCE (2026.8.2, the send guard) cannot receive a non-default choice. Only on an instance whose admin opted in (Convex instances.managePermissionModes, re-read at every dispatch and sent as permissionModesManaged / managed): there an absent choice is 'default' and is enforced; elsewhere nothing is ever patched and the meta-derived guard stays as before.",
+          "anchor": {
+            "file": "src/providers/openclaw/permission-mode.ts",
+            "token": "permissionMode: target"
+          },
+          "proof": {
+            "kind": "deterministic-test",
+            "ref": "bridge/test/permission-mode.test.ts",
+            "note": "Semantics read in the v2026.9.6 sources (session-execution-settings.ts:51-55 null clears; session-method-scopes-base.ts:107 + server-methods/sessions-mutations.ts:124-136 full needs operator.admin; sessions-patch.ts:280-292 a patch creates a missing entry; sessions-patch-permissions.runtime.ts:26-83 live-run change / INVALID_REQUEST / UNAVAILABLE; session-reset-service.ts:1432-1434 reset keeps the mode) and exercised live on the 2026.9.6 bench (openclaw-notes atrium/live-bench/permission-mode.mjs); replayed by the deterministic test and proven by neutralization. No full-catalogue scenario covers it yet: golden-corpus proof stays owed."
+          },
+          "verifiedVersions": [
+            "2026.9.6"
+          ]
         },
         "expectedPermissionMode": {
           "status": "ignored",

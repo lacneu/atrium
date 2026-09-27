@@ -61,6 +61,9 @@ type InstanceForm = {
   // WHICH STRING names a person to this gateway. Never the session key.
   identitySource: "canonical" | "email";
   participantIdentity: "owner" | "self";
+  // Atrium sets the execution-permission mode of this gateway's sessions (off = the
+  // gateway operator does, Atrium only shows it).
+  managePermissionModes: boolean;
   systemIdentity: string;
   // FRONTEND live-stream transport (reactive | sse) — an instance property, NOT bridge config.
   streamTransport: StreamTransport;
@@ -78,6 +81,7 @@ const EMPTY_INSTANCE: InstanceForm = {
   personScopes: "capped",
   identitySource: "canonical",
   participantIdentity: "owner",
+  managePermissionModes: false,
   systemIdentity: "",
   streamTransport: DEFAULT_STREAM_TRANSPORT,
 };
@@ -108,6 +112,7 @@ function formFromInstance(i: Instance): InstanceForm {
     personScopes: (i.personScopes ?? "capped") as "capped" | "full",
     identitySource: (i.identitySource ?? "canonical") as "canonical" | "email",
     participantIdentity: (i.participantIdentity ?? "owner") as "owner" | "self",
+    managePermissionModes: i.managePermissionModes === true,
     systemIdentity: i.systemIdentity ?? "",
     streamTransport: i.streamTransport ?? DEFAULT_STREAM_TRANSPORT,
   };
@@ -153,6 +158,7 @@ export function InstancesTab() {
               personScopes: form.personScopes,
               identitySource: form.identitySource,
               participantIdentity: form.participantIdentity,
+              managePermissionModes: form.managePermissionModes,
               systemIdentity: form.systemIdentity || undefined,
             }
           : {}),
@@ -504,6 +510,33 @@ export function InstancesTab() {
                     {form.participantIdentity === "self"
                       ? m.settings_participant_identity_self_hint()
                       : m.settings_participant_identity_owner_hint()}
+                  </p>
+                </Field>
+              ) : null}
+              {form.kind === "openclaw" ? (
+                <Field label={m.settings_field_manage_permissions()}>
+                  <Select
+                    value={form.managePermissionModes ? "on" : "off"}
+                    onValueChange={(v) =>
+                      setForm({ ...form, managePermissionModes: v === "on" })
+                    }
+                  >
+                    <SelectTrigger size="sm" className="w-full">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="off">
+                        {m.settings_manage_permissions_off()}
+                      </SelectItem>
+                      <SelectItem value="on">
+                        {m.settings_manage_permissions_on()}
+                      </SelectItem>
+                    </SelectContent>
+                  </Select>
+                  <p className="oc-field__hint">
+                    {form.managePermissionModes
+                      ? m.settings_manage_permissions_on_hint()
+                      : m.settings_manage_permissions_off_hint()}
                   </p>
                 </Field>
               ) : null}

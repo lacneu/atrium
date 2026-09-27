@@ -24,6 +24,7 @@ import {
 } from "./inbound-media.js";
 import { HermesDashboardAbsentError } from "../providers/hermes/files-fetcher.js";
 import { TalkCallActiveError } from "../session.js";
+import { PermissionModeNotAppliedError } from "../providers/openclaw/permission-mode.js";
 import {
   isProviderReviewPausedText,
   isSessionArchivedText,
@@ -130,6 +131,12 @@ export type DispatchErrorCode =
   // The session's permission mode changed between what the reader saw and the send
   // (`expectedPermissionMode`). Nothing ran; the reader confirms and sends again.
   | "session_settings_changed"
+  // THE BRIDGE refused to send: the conversation's owner chose a permission mode and
+  // it could not be put on the session this turn would run on (the gateway refused
+  // the patch, cannot receive the mode, or `full` was not authorized). A turn never
+  // runs under permissions nobody chose. Not retried: the same refusal would repeat.
+  // Lower-case like the other codes Convex reads.
+  | "permission_mode_not_applied"
   | "UPSTREAM_ERROR"; // anything else (fallback)
 
 /**
@@ -174,6 +181,9 @@ const LOCAL_REFUSAL_CODES: ReadonlySet<DispatchErrorCode> = new Set([
   // the bridge red for honouring its own invariant is the exact lie this class exists
   // to prevent.
   "talk_call_active",
+  // We withheld the turn because the chosen mode could not be put on the session. What
+  // the gateway said (if anything) is in the log; the link is not in question.
+  "permission_mode_not_applied",
 ]);
 
 // Codes where the gateway DEMONSTRABLY responded and refused this specific request
@@ -300,6 +310,8 @@ export function classifyGatewayError(
   if (err instanceof HermesDashboardAbsentError) return "DASHBOARD_NOT_DEPLOYED";
   // Our own refusal to cut a live voice call, by TYPE for the same reason.
   if (err instanceof TalkCallActiveError) return "talk_call_active";
+  // Our own refusal to send under a mode the owner did not choose, by TYPE.
+  if (err instanceof PermissionModeNotAppliedError) return "permission_mode_not_applied";
   // OUR OWN inbound-media refusal, by TYPE for the same reason. Only the BATCH
   // failures reach here — a size/collision/fetch failure drops that one file and
   // the send continues (`RECOVERABLE_DROP_FAILURES`) — but the size class is

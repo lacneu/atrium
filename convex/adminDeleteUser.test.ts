@@ -170,4 +170,54 @@ describe("admin.deleteUser", () => {
       expect(owners[0]!._id).toBe(kept.profileId);
     });
   });
+
+  // Codex pass 3 (2026-09-27), P2: a participant's document drafts in SOMEBODY ELSE's
+  // conversation survived the account deletion (the sweep took seats, reads, bookmarks
+  // and notifications, not drafts) — and came back with a re-provisioned, re-invited
+  // successor. Swept now, under the same generation bound.
+  test("a deleted participant's drafts in another's chat go with the sweep; a successor's stay", async () => {
+    const t = convexTest(schema, modules);
+    const adminUid = await seedAdmin(t);
+    const owner = await seedUserWithData(t);
+    const guest = await seedUserWithData(t);
+    const draftId = await t.run(async (ctx) => {
+      await ctx.db.insert("chatParticipants", {
+        chatId: owner.chatId,
+        userId: guest.uid,
+        addedBy: owner.uid,
+        addedAt: 0,
+        role: "member" as const,
+      });
+      return ctx.db.insert("documentDrafts", {
+        userId: guest.uid,
+        chatId: owner.chatId,
+        filename: "rapport.md",
+        text: "le texte du participant",
+        createdAt: 0,
+        updatedAt: 0,
+      });
+    });
+    await asUser(t, adminUid).mutation(api.admin.deleteUser, { profileId: guest.profileId });
+    const cutoff = await t.run(async (ctx) => {
+      const del = (await ctx.db.query("auditLog").collect()).find((a) => a.action === "user.delete");
+      return del!._creationTime;
+    });
+    // The same person re-provisioned and re-invited writes a draft AFTER the deletion.
+    const successorDraft = await t.run((ctx) =>
+      ctx.db.insert("documentDrafts", {
+        userId: guest.uid,
+        chatId: owner.chatId,
+        filename: "nouveau.md",
+        text: "après",
+        createdAt: 1,
+        updatedAt: 1,
+      }),
+    );
+    await t.mutation(internal.admin.sweepDeletedUserRoomState, { userId: guest.uid, cutoff });
+    await t.run(async (ctx) => {
+      expect(await ctx.db.get(draftId)).toBeNull();
+      expect(await ctx.db.get(successorDraft)).not.toBeNull();
+    });
+  });
 });
+

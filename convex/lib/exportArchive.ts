@@ -256,6 +256,13 @@ export const CHAT_FIELDS_DROPPED: ReadonlyArray<string> = [
   // clear allow-list ride on every dispatch — so a foreign archive would be
   // dictating this deployment's requests to its own provider.
   "sessionSettings",
+  // The owner's EXECUTION-PERMISSION choice, and the outcome of its last apply. The
+  // same reason, sharper: the bridge puts the choice on this deployment's gateway
+  // sessions — and `full` is reserved to this deployment's administrators, a gate an
+  // imported field would walk straight past.
+  "permissionModeChoice",
+  "permissionModeRevision",
+  "permissionModeApply",
   // Per-turn routing with no routing history left (the segment and the last
   // routed target are dropped above) is simply false — and it also stops the
   // imported conversation from ever binding a target.

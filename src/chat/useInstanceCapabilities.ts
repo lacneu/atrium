@@ -31,6 +31,8 @@ export function useInstanceCapabilities(
    *  long-standing affordance should fail OPEN on unresolved. */
   resolved: boolean;
   gatewayVersion: string | null;
+  /** The provider behind that instance ("openclaw" | "hermes"), null while unknown. */
+  provider: string | null;
   /** The gateway is NEWER than any version the validation bench has exercised
    *  (W10 / G7). Capabilities are FROZEN at the last validated profile, so nothing is
    *  broken — but the chat says so, because a state nobody can see is a state nobody
@@ -60,6 +62,7 @@ export function useInstanceCapabilities(
     resolved: caps !== null,
     loading: res === undefined,
     gatewayVersion: res?.gatewayVersion ?? null,
+    provider: res?.provider ?? null,
     beyondValidated: res?.versionBeyondValidated === true,
   };
 }

@@ -34,8 +34,16 @@ import { SpeakerPool } from "./providers/openclaw/speaker-pool.js";
 import { presentedIdentity } from "./providers/openclaw/gateway-identity.js";
 import {
   isSessionPermissionMode,
+  readSessionAccess,
   type SessionPermissionMode,
 } from "./providers/openclaw/session-access.js";
+import {
+  PermissionModeNotAppliedError,
+  enforcePermissionMode,
+  parsePermissionModeChoice,
+  type PermissionEnforcement,
+  type PermissionModeChoice,
+} from "./providers/openclaw/permission-mode.js";
 import { isSessionVisibilityRefusedText } from "./core/failure-classifier.js";
 import { sessionPatchNeedsAdmin } from "./providers/openclaw/session-patch-scope.js";
 import {
@@ -312,6 +320,20 @@ interface SendBody extends BodyRouting {
    * a turn going out under permissions the person did not see.
    */
   expectedPermissionMode?: SessionPermissionMode | null;
+  /**
+   * The conversation OWNER's permission-mode choice (Convex `chats.permissionModeChoice`),
+   * put on this turn's session before `chat.send` (permission-mode.ts). When present, the
+   * guard is the mode APPLIED, not `expectedPermissionMode` (Convex sends none then).
+   * Absent ⇒ nobody chose: nothing is applied, exactly as before.
+   */
+  permissionModeChoice?: PermissionModeChoice;
+  /** Convex's authorization for a `full` choice: the owner is an Atrium administrator.
+   *  Anything but `true` refuses `full` here, whichever socket could carry it. */
+  permissionModeFullAuthorized?: boolean;
+  /** The instance has Atrium manage execution permissions (`instances.managePermissionModes`,
+   *  re-read by Convex at THIS dispatch). Anything but `true`: nothing is applied — the
+   *  gateway's operator decides, and the guard is Convex's, exactly as before. */
+  permissionModesManaged?: boolean;
   openclawChatId: string | null;
   /** A session this chat LOST a reply on, for ONE read-only harvest (G-47). Parsed here or
    *  it never crosses the HTTP boundary — the whole feature ran only in tests until a review
@@ -367,6 +389,18 @@ interface PatchBody extends BodyRouting {
    * `clears` (one source of truth, P2-4).
    */
   sessionSettings: SessionSettings;
+}
+
+/** Inbound body for applying the conversation's permission-mode choice NOW
+ *  (`POST /permission-mode`). Routed like `/patch`: the session the next turn uses. */
+interface PermissionModeBody extends BodyRouting {
+  chatId: string;
+  openclawChatId: string | null;
+  choice: PermissionModeChoice;
+  /** Convex's authorization for `full` (the owner is an Atrium administrator). */
+  fullAuthorized: boolean;
+  /** The instance has Atrium manage permissions (re-read by Convex for this call). */
+  managed: boolean;
 }
 
 /** Inbound body for a session reset (`POST /reset`). */
@@ -563,6 +597,15 @@ export function parseSendBody(raw: string): SendBody | null {
       : isSessionPermissionMode(obj.expectedPermissionMode)
         ? { expectedPermissionMode: obj.expectedPermissionMode }
         : {}),
+    // Named explicitly (this parser rebuilds the body): an unknown value is dropped, so
+    // the send behaves as if nobody chose — never as a mode nobody chose.
+    ...((choice) => (choice === undefined ? {} : { permissionModeChoice: choice }))(
+      parsePermissionModeChoice(obj.permissionModeChoice),
+    ),
+    ...(obj.permissionModeFullAuthorized === true
+      ? { permissionModeFullAuthorized: true }
+      : {}),
+    ...(obj.permissionModesManaged === true ? { permissionModesManaged: true } : {}),
     openclawChatId:
       typeof obj.openclawChatId === "string" ? obj.openclawChatId : null,
     // Both ids REQUIRED and non-empty: a half-formed handle would send the bridge reading a
@@ -901,6 +944,32 @@ export function parsePatchBody(raw: string): PatchBody | null {
     openclawChatId:
       typeof obj.openclawChatId === "string" ? obj.openclawChatId : null,
     sessionSettings,
+  };
+}
+
+/** Defensive parse of `/permission-mode`. A choice outside the vocabulary rejects the
+ *  body (400): unlike a send, there is nothing else to do with it. Exported for tests. */
+export function parsePermissionModeBody(raw: string): PermissionModeBody | null {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return null;
+  }
+  if (typeof parsed !== "object" || parsed === null) return null;
+  const obj = parsed as Record<string, unknown>;
+  if (typeof obj.chatId !== "string") return null;
+  const choice = parsePermissionModeChoice(obj.choice);
+  if (choice === undefined) return null;
+  const routing = parseBodyRouting(obj);
+  if (routing === null) return null;
+  return {
+    ...routing,
+    chatId: obj.chatId,
+    openclawChatId: typeof obj.openclawChatId === "string" ? obj.openclawChatId : null,
+    choice,
+    fullAuthorized: obj.fullAuthorized === true,
+    managed: obj.managed === true,
   };
 }
 
@@ -1418,6 +1487,12 @@ export async function performSend(
   // not a failed ask, not an unreadable answer. The session this send creates holds
   // no permission mode, which decides both what is published and the guard sent.
   let sessionAbsent = false;
+  // The permission mode the describe below finds on the session (`null` = none set,
+  // undefined = not known) — what the owner's choice is compared with, OUTSIDE the
+  // fail-open block that reads it (see the enforcement after it).
+  let describedPermission: SessionPermissionMode | null | undefined = undefined;
+  // The describe ANSWERED with a session (its existence established).
+  let sessionDescribed = false;
   // Pre-send guard outcome (W2). Set inside the try below — whose catch makes EVERY
   // failure fall open — and acted upon after it. `blocked` is the only value that
   // stops a send, and nothing but an explicit, positive measurement can set it.
@@ -1553,6 +1628,10 @@ export async function performSend(
       preTurnModel = typeof s.model === "string" && s.model ? s.model : null;
     };
     if (sess) captureDescribe(sess);
+    if (sess) {
+      describedPermission = readSessionAccess(sess).permissionMode;
+      sessionDescribed = true;
+    }
 
     // ── PRE-SEND GUARD (W2 / G-04, G-06) ─────────────────────────────────────
     // Four times in three days in production, a turn was spent, the user waited,
@@ -1997,6 +2076,52 @@ export async function performSend(
     throw new ContextBlockedError(presend.fillPct);
   }
 
+  // THE OWNER'S PERMISSION MODE, put on THIS session before the turn
+  // (providers/openclaw/permission-mode.ts). A per-turn switch, a rotated segment and a
+  // session recreated after it was pruned each open a session that holds no mode; a mode
+  // changed elsewhere (the Control UI) is brought back to the conversation's. Compared
+  // with the describe in hand, so an unchanged mode costs no RPC. OUTSIDE the fail-open
+  // block above on purpose: a refusal withholds the turn (`permission_mode_not_applied`)
+  // — a turn never runs under permissions nobody chose.
+  let enforcedPermission: PermissionEnforcement | null = null;
+  if (body.permissionModesManaged === true && body.permissionModeChoice !== undefined) {
+    enforcedPermission = await enforcePermissionMode({
+      choice: body.permissionModeChoice,
+      fullAuthorized: body.permissionModeFullAuthorized === true,
+      gatewayVersion: conn.gatewayVersion,
+      sessionKey,
+      described: sessionAbsent ? null : describedPermission,
+      sessionAbsent,
+      sessionConfirmed: sessionDescribed,
+      // A write-scoped mode rides the owner's own socket, so the session it creates is
+      // theirs; `full` rides the administrative socket in trusted-proxy mode, and a
+      // session created there would be the bridge's for life (claimSessionForOwner).
+      // Undecidable read + `full` in trusted-proxy ⇒ the turn is withheld, named.
+      mayCreateSession:
+        presendConfig?.openclawAuthMode !== "trusted-proxy" ||
+        body.permissionModeChoice !== "full",
+      patch: (params) => patchSession(conn, presendConfig, params, 10_000),
+    });
+    if (enforcedPermission.patched) {
+      console.log(
+        `[permissions] chat=${body.chatId} session set to ${enforcedPermission.mode ?? "default"} before the turn${
+          enforcedPermission.savedNotApplied ? " (a live run on it was stopped)" : ""
+        }`,
+      );
+      // The header's facts described the session BEFORE the patch; re-described so the
+      // reader sees the mode the turn runs under. Fire-and-forget, newer describe wins.
+      void publishDescribedSession(
+        { connection: conn, sessionKey, chatId: body.chatId, agentId: body.agentId },
+        writer,
+      ).catch((e) =>
+        console.error(
+          "[sessionMeta] post-permission describe skipped (non-fatal):",
+          (e as Error)?.message ?? e,
+        ),
+      );
+    }
+  }
+
   // Shared-fs INBOUND (Phase 3): stream each tool-read reference to the shared
   // volume and APPEND a `[FICHIERS REÇUS]` block with the gateway-visible paths to
   // the message (the agent reads the files BY PATH). Fetch/size/collision failures
@@ -2103,7 +2228,16 @@ export async function performSend(
   // omitted: identical while the key stays empty (null === null), and still a refusal
   // if a session carrying a mode appeared under the key since our describe — omitted,
   // that turn would run under a mode nobody was shown.
+  //
+  // A conversation whose owner CHOSE a mode carries that mode, as applied just above:
+  // the guard then says "run only under the mode this conversation holds", and a change
+  // slipped in between the patch and the send refuses the turn instead of running it.
   if (
+    enforcedPermission !== null &&
+    gatewayAtLeast(conn.gatewayVersion, EXPECTED_PERMISSION_MODE_SINCE) === true
+  ) {
+    params.expectedPermissionMode = enforcedPermission.mode;
+  } else if (
     body.expectedPermissionMode !== undefined &&
     gatewayAtLeast(conn.gatewayVersion, EXPECTED_PERMISSION_MODE_SINCE) === true
   ) {
@@ -2352,6 +2486,78 @@ export async function performPatch(
     },
     writer,
   );
+}
+
+/** What applying a permission-mode choice NOW did. `deferred` = no session exists yet
+ *  under the key: the choice is put on the session the next turn creates, before its
+ *  `chat.send` (performSend) — creating it here would make the first turn read a warm,
+ *  empty session and skip re-hydrating the thread. */
+export type PermissionModeOutcome =
+  | {
+      ok: true;
+      result: "applied" | "unchanged" | "deferred";
+      mode: SessionPermissionMode | null;
+      savedNotApplied?: true;
+    }
+  | { ok: false; reason: PermissionModeNotAppliedError["reason"] };
+
+/**
+ * `/permission-mode` worker: bring the session the next turn uses to the owner's choice
+ * now, re-describe it and publish what it holds (the header and the composer read that).
+ * A refusal is RETURNED, never swallowed: the owner is told the mode did not change.
+ * Exported for tests.
+ */
+export async function performPermissionModeChange(
+  session: BridgeSession,
+  body: PermissionModeBody,
+  writer: ConvexWriter,
+  config?: BridgeConfig,
+): Promise<PermissionModeOutcome> {
+  const conn = session.connection;
+  const sessionKey = session.sessionKey;
+  // The gateway's operator manages permissions on this instance: nothing is patched.
+  if (!body.managed) return { ok: false, reason: "not_managed" };
+  // Same rule as a knob set before the first message (performPatch): nothing touches a
+  // session whose ownership the claim could not establish.
+  if ((await claimSessionForOwner(conn, sessionKey, body.agentId, config)) !== "exists") {
+    return { ok: true, result: "deferred", mode: null };
+  }
+  const answer = await describeSessionAnswer(conn, sessionKey);
+  if (answer.kind === "absent") return { ok: true, result: "deferred", mode: null };
+  const described =
+    answer.kind === "session" ? readSessionAccess(answer.sess).permissionMode : undefined;
+  let enforced: PermissionEnforcement;
+  try {
+    enforced = await enforcePermissionMode({
+      choice: body.choice,
+      fullAuthorized: body.fullAuthorized,
+      gatewayVersion: conn.gatewayVersion,
+      sessionKey,
+      described,
+      sessionAbsent: false,
+      // An unreadable answer is no proof the session exists: the apply is refused
+      // (`session_not_established`) rather than risk creating it here.
+      sessionConfirmed: answer.kind === "session",
+      mayCreateSession: false,
+      patch: (params) => patchSession(conn, config, params, 10_000),
+    });
+  } catch (err) {
+    if (err instanceof PermissionModeNotAppliedError) {
+      console.error(`[permissions] chat=${body.chatId} ${err.message}`);
+      return { ok: false, reason: err.reason };
+    }
+    throw err;
+  }
+  await publishDescribedSession(
+    { connection: conn, sessionKey, chatId: body.chatId, agentId: body.agentId },
+    writer,
+  );
+  return {
+    ok: true,
+    result: enforced.patched ? "applied" : "unchanged",
+    mode: enforced.mode,
+    ...(enforced.savedNotApplied ? { savedNotApplied: true as const } : {}),
+  };
 }
 
 /**
@@ -4563,6 +4769,10 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
     const POST_ROUTES = [
       "/send",
       "/patch",
+      // The conversation owner's execution-permission choice, applied NOW to the
+      // session the next turn uses. Convex owns who may choose (the owner) and whether
+      // `full` is authorized (an Atrium administrator).
+      "/permission-mode",
       "/reset",
       "/abort",
       "/compact",
@@ -4822,6 +5032,46 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
       } catch (err) {
         console.error("bridge /patch failed:", (err as Error)?.message ?? err);
         sendJson(res, 502, { ok: false, error: "upstream patch failed" });
+      }
+      return;
+    }
+
+    if (req.url === "/permission-mode") {
+      const pm = parsePermissionModeBody(raw);
+      if (pm === null) {
+        sendJson(res, 400, { ok: false, error: "invalid body" });
+        return;
+      }
+      const pmBundle = pm.instanceName ? served.get(pm.instanceName) : undefined;
+      if (!pm.instanceName || !pmBundle) {
+        sendJson(res, 409, { ok: false, error: { code: "instance_not_served" } });
+        return;
+      }
+      if (pmBundle.config.kind === "hermes") {
+        // Hermes has no permission modes: said, not silently accepted.
+        sendJson(res, 409, {
+          ok: false,
+          error: { code: "permission_mode_not_applied", reason: "unsupported_gateway" },
+        });
+        return;
+      }
+      try {
+        const session = await registry.acquire(toRouting(pm, pm.instanceName));
+        const outcome = await performPermissionModeChange(
+          session,
+          pm,
+          pmBundle.writer,
+          pmBundle.config,
+        );
+        if (outcome.ok) sendJson(res, 200, outcome);
+        else
+          sendJson(res, 409, {
+            ok: false,
+            error: { code: "permission_mode_not_applied", reason: outcome.reason },
+          });
+      } catch (err) {
+        console.error("bridge /permission-mode failed:", (err as Error)?.message ?? err);
+        sendJson(res, 502, { ok: false, error: { code: "upstream_failed" } });
       }
       return;
     }

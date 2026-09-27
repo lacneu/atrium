@@ -72,6 +72,8 @@ describe("CAPABILITY_KEYS contract (lockstep with the bridge manifest)", () => {
       // Read from Convex (`scheduled.ts`) through the typed gate.
       "cronList",
       "cronManage",
+      // The composer's execution-permission picker (floor 2026.8.2).
+      "permissionModes",
     ]);
   });
 
@@ -171,6 +173,8 @@ describe("capabilityOf — capability x set matrix", () => {
         talk: false,
         cronList: false,
         cronManage: false,
+        // Absent from every one of these sets -> false (fail closed).
+        permissionModes: false,
       },
     ],
     [
@@ -189,6 +193,8 @@ describe("capabilityOf — capability x set matrix", () => {
         talk: false,
         cronList: false,
         cronManage: false,
+        // Absent from every one of these sets -> false (fail closed).
+        permissionModes: false,
       },
     ],
     [
@@ -208,6 +214,8 @@ describe("capabilityOf — capability x set matrix", () => {
         talk: false,
         cronList: false,
         cronManage: false,
+        // Absent from every one of these sets -> false (fail closed).
+        permissionModes: false,
       },
     ],
     [
@@ -226,6 +234,8 @@ describe("capabilityOf — capability x set matrix", () => {
         talk: false,
         cronList: false,
         cronManage: false,
+        // Absent from every one of these sets -> false (fail closed).
+        permissionModes: false,
       },
     ],
     [
@@ -244,6 +254,8 @@ describe("capabilityOf — capability x set matrix", () => {
         talk: false,
         cronList: false,
         cronManage: false,
+        // Absent from every one of these sets -> false (fail closed).
+        permissionModes: false,
       },
     ],
   ];

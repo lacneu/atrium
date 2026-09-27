@@ -439,7 +439,7 @@ describe("providerSupport + summarizeCompat (the /api/v1/compat payload)", () =>
     // it has had a published window since 0.18.0 was validated, so the example moved to
     // a provider the manifest genuinely does not declare.)
     expect(providerSupport(MANIFEST, "openclaw")).toEqual({
-      range: { min: "2026.5.19", maxValidated: "2026.7.1" },
+      range: { min: "2026.5.19", maxValidated: "2026.9.6" },
       validatedVersions: [
         "2026.5.19",
         "2026.6.1",
@@ -449,14 +449,29 @@ describe("providerSupport + summarizeCompat (the /api/v1/compat payload)", () =>
         "2026.7.1-beta.2",
         "2026.7.1-beta.5",
         "2026.7.1",
+        "2026.9.1",
+        "2026.9.2",
+        "2026.9.4",
+        "2026.9.5",
+        "2026.9.6",
       ],
-      // The fixture declares none; the projection always answers with the map so a
-      // consumer never has to distinguish "absent" from "empty" (codex P1).
-      knownBrokenVersions: {},
+      // The capture (bridge 0.85.1 / gateway 2026.9.6) names the two releases a stock
+      // gateway poisons sessions on, and the continuous window they belong to.
+      knownBrokenVersions: {
+        "2026.8.1":
+          "a delivered file poisons the session: every later turn fails in transcript-transform (upstream #135747)",
+        "2026.8.2":
+          "a delivered file poisons the session: every later turn fails in transcript-transform (upstream #135747)",
+      },
+      brokenVersionWindow: {
+        from: "2026.8.1",
+        fixedIn: "2026.9.1",
+        why: "a delivered file poisons the session: every later turn fails in transcript-transform (upstream #135747)",
+      },
     });
     expect(providerSupport(MANIFEST, "hermes")).toEqual({
-      range: { min: "0.18.0", maxValidated: "0.18.2" },
-      validatedVersions: ["0.18.0", "0.18.2"],
+      range: { min: "0.18.0", maxValidated: "0.21.5" },
+      validatedVersions: ["0.18.0", "0.18.2", "0.19.0", "0.21.5"],
       knownBrokenVersions: {},
     });
     expect(providerSupport(MANIFEST, "nosuchprovider")).toEqual({

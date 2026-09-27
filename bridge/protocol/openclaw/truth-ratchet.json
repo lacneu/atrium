@@ -141,6 +141,10 @@
     {
       "path": "ChatSendParams.expectedPermissionMode",
       "scan": false
+    },
+    {
+      "path": "SessionsPatchParams.permissionMode",
+      "scan": false
     }
   ]
 }

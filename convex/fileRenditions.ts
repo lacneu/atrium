@@ -31,6 +31,11 @@ import {
 import { internal } from "./_generated/api";
 import { Doc, Id } from "./_generated/dataModel";
 import { requireActive } from "./lib/access";
+import {
+  MAX_PARTICIPATIONS_SCANNED,
+  canPost,
+  resolveChatAccess,
+} from "./lib/chatAccess";
 import { resolveConverterTarget } from "./agents";
 import { contentLocaleForInstance } from "./lib/serverLocale";
 import { isChatBusy } from "./lib/outboxQueue";
@@ -124,18 +129,64 @@ export function buildConversionPrompt(locale: string): string {
 /** The `files` row for a storage blob the CALLER owns, or null. The trust
  *  boundary for both the trigger and the read: a rendition may only be requested
  *  or served for a file the caller actually owns (never an arbitrary storageId). */
-async function ownedFile(
+/**
+ * The `files` row that lets the caller see this source, and whether they may have
+ * it converted. The owner's own file, or a file of a conversation the caller is IN:
+ * a participant sees what the conversation shows them. Converting makes the file
+ * OWNER's converter agent work, so — like everything a participant does in the
+ * room — it goes out on the owner's delegation and needs a seat that may post; a
+ * viewer only reads a rendition that already exists.
+ */
+async function readableFile(
   ctx: QueryCtx | MutationCtx,
   userId: Id<"users">,
   storageId: Id<"_storage">,
-): Promise<Doc<"files"> | null> {
-  const rows = await ctx.db
+  /** The conversation the viewer opened the file from. When given, THAT conversation
+   *  decides, by point reads — it is reachable by URL even past the participation scan
+   *  below, and stale seats cannot crowd it out. Not a way around the guard: a chat the
+   *  caller cannot reach, or a blob that is not in it, reads as nothing. */
+  chatId?: Id<"chats">,
+): Promise<{ file: Doc<"files">; mayConvert: boolean } | null> {
+  if (chatId !== undefined) {
+    const file = await ctx.db
+      .query("files")
+      .withIndex("by_chat_storage", (q) => q.eq("chatId", chatId).eq("storageId", storageId))
+      .first();
+    if (file === null) return null;
+    const access = await resolveChatAccess(ctx, chatId, userId);
+    if (access === null) return null;
+    return { file, mayConvert: canPost(access) };
+  }
+  // A storageId is unique per upload, but a fork copies its files rows onto the same
+  // blob — so the rows are found BY THE CALLER, never by scanning the blob's rows (a
+  // bounded scan let enough copies push the caller's row out of the window). The
+  // caller's own row first (outbound agent files are owned by the chat's user too)…
+  const own = await ctx.db
     .query("files")
-    .withIndex("by_storage", (q) => q.eq("storageId", storageId))
-    .collect();
-  // A storageId is unique per upload, but be defensive: only a row owned by the
-  // caller authorizes. (Outbound agent files are owned by the chat's user too.)
-  return rows.find((r) => r.userId === userId) ?? null;
+    .withIndex("by_storage_user", (q) => q.eq("storageId", storageId).eq("userId", userId))
+    .first();
+  if (own !== null) return { file: own, mayConvert: true };
+  // …then a row of it in a conversation they sit in — the SAME bound the rest of the
+  // access model uses for a person's participations. A seat that may post wins over a
+  // viewer seat: the first reachable one used to decide, and a viewer seat could
+  // refuse a conversion a member seat allows.
+  let viewerOnly: { file: Doc<"files">; mayConvert: boolean } | null = null;
+  const seats = await ctx.db
+    .query("chatParticipants")
+    .withIndex("by_user", (q) => q.eq("userId", userId))
+    .take(MAX_PARTICIPATIONS_SCANNED);
+  for (const seat of seats) {
+    const file = await ctx.db
+      .query("files")
+      .withIndex("by_chat_storage", (q) => q.eq("chatId", seat.chatId).eq("storageId", storageId))
+      .first();
+    if (file === null) continue;
+    const access = await resolveChatAccess(ctx, seat.chatId, userId);
+    if (access === null) continue;
+    if (canPost(access)) return { file, mayConvert: true };
+    viewerOnly ??= { file, mayConvert: false };
+  }
+  return viewerOnly;
 }
 
 /** Find (or lazily create) the user's HIDDEN converter chat, bound to `target`. */
@@ -184,15 +235,16 @@ export type RenditionView =
   | { status: "failed"; reason: string };
 
 /** Reactive read for the viewer: the rendition state for a source file (by its
- *  storageId), IDOR-guarded to the caller-owned source. `unconfigured` = no
+ *  storageId), IDOR-guarded to a source the caller sees (readableFile). `unconfigured` = no
  *  converter designated on the instance (the viewer shows the download fallback,
  *  no error). */
 export const getRendition = query({
-  args: { sourceStorageId: v.id("_storage") },
-  handler: async (ctx, { sourceStorageId }): Promise<RenditionView> => {
+  args: { sourceStorageId: v.id("_storage"), chatId: v.optional(v.id("chats")) },
+  handler: async (ctx, { sourceStorageId, chatId }): Promise<RenditionView> => {
     const { userId } = await requireActive(ctx);
-    const file = await ownedFile(ctx, userId, sourceStorageId);
-    if (file === null) return { status: "unconfigured" }; // not the caller's file
+    const readable = await readableFile(ctx, userId, sourceStorageId, chatId);
+    if (readable === null) return { status: "unconfigured" }; // not a file the caller sees
+    const { file, mayConvert } = readable;
     const row = await ctx.db
       .query("fileRenditions")
       .withIndex("by_source", (q) => q.eq("sourceStorageId", sourceStorageId))
@@ -202,6 +254,9 @@ export const getRendition = query({
       // viewer shows "render as PDF" vs the plain download fallback. `pending`
       // here means "convertible + a converter is configured" — the viewer
       // triggers requestRendition on it; it does NOT mean a job is in flight.
+      // A viewer cannot start a conversion: say "no preview" (download
+      // fallback), never "pending" — the viewer would ask and be refused.
+      if (!mayConvert) return { status: "unconfigured" };
       const target = await resolveConverterTarget(
         ctx,
         await instanceOfChat(ctx, file.chatId),
@@ -230,16 +285,20 @@ async function instanceOfChat(
 }
 
 /** Trigger a conversion (from the viewer). Idempotent: a pending/ready row is
- *  returned as-is; a failed row is retried. Authorization: the source file must
- *  be a `files` row the caller owns. */
+ *  returned as-is; a failed row is retried. Authorization: see readableFile — the
+ *  caller's own file, or a file of a conversation where they may post. */
 export const requestRendition = mutation({
-  args: { sourceStorageId: v.id("_storage") },
-  handler: async (ctx, { sourceStorageId }): Promise<RenditionView> => {
+  args: { sourceStorageId: v.id("_storage"), chatId: v.optional(v.id("chats")) },
+  handler: async (ctx, { sourceStorageId, chatId }): Promise<RenditionView> => {
     const { userId } = await requireActive(ctx);
     const now = Date.now();
 
-    const file = await ownedFile(ctx, userId, sourceStorageId);
-    if (file === null) throw new ConvexError("forbidden");
+    const readable = await readableFile(ctx, userId, sourceStorageId, chatId);
+    if (readable === null || !readable.mayConvert) throw new ConvexError("forbidden");
+    const { file } = readable;
+    // The conversion runs as the FILE's owner (their converter chat, their queue):
+    // for a participant, the owner's delegation, as for any turn in the room.
+    const convertAs = file.userId;
     if (!isConvertibleDocument(file.mimeType, file.filename)) {
       throw new ConvexError("not_convertible");
     }
@@ -280,7 +339,7 @@ export const requestRendition = mutation({
       renditionId = await ctx.db.insert("fileRenditions", {
         sourceStorageId,
         chatId: file.chatId,
-        userId,
+        userId: convertAs,
         sourceFilename: file.filename,
         sourceMimeType: file.mimeType,
         status: "pending" as const,
@@ -291,7 +350,7 @@ export const requestRendition = mutation({
       });
     }
 
-    const hidden = await ensureConverterChat(ctx, userId, target, now);
+    const hidden = await ensureConverterChat(ctx, convertAs, target, now);
     // Serialize: one conversion per hidden chat at a time (mirrors documentary).
     // If the chat is BUSY, the pending row stays queued — drainNextRendition
     // (called when the current conversion settles) picks it up, so opening
