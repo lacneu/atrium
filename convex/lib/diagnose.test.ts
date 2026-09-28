@@ -151,7 +151,12 @@ describe("assessChat — L2 stuck document fetch", () => {
 describe("assessChat — sub-agent failures (G3 + bug-C)", () => {
   const subAgents = (o: {
     byStatus?: Partial<{ running: number; done: number; error: number; aborted: number }>;
-    failedSample?: { status: string; errorCategory: string; ageSeconds: number }[];
+    failedSample?: {
+      status: string;
+      errorCategory: string;
+      ageSeconds: number;
+      parentMessageId?: string | null;
+    }[];
     runningSample?: { status: string; errorCategory: string; ageSeconds: number }[];
   }) => ({
     byStatus: { running: 0, done: 0, error: 0, aborted: 0, ...o.byStatus },
@@ -237,6 +242,69 @@ describe("assessChat — sub-agent failures (G3 + bug-C)", () => {
       AVAIL_OK,
     );
     expect(a.class).toBe("healthy");
+  });
+
+  // Production 2026-09-28 (metadata only): the last turn ended with no text on a
+  // hand-off; its one child was aborted by the gateway and no continuation ever
+  // came. Half an hour later the chat diagnosed `healthy` — the recency horizon
+  // had forgotten the only evidence while it was still the last thing on screen.
+  test("an OLD failed child that the LAST, textless turn handed off to is still the verdict", () => {
+    const a = assessChat(
+      {
+        ok: true,
+        messages: [
+          msg({ role: "user", messageId: "U" }),
+          msg({ messageId: "M", textLenBucket: "0" }),
+        ],
+        subAgents: subAgents({
+          byStatus: { aborted: 1 },
+          failedSample: [
+            {
+              status: "aborted",
+              errorCategory: "aborted",
+              ageSeconds: 30 * 60,
+              parentMessageId: "M",
+            },
+          ],
+        }),
+      },
+      AVAIL_OK,
+    );
+    expect(a.class).toBe("subagent_failure");
+    expect(a.severity).toBe("warn");
+    expect(a.reason).toMatch(/handed off/);
+  });
+
+  test("…but not once the conversation moved on, nor when the turn answered", () => {
+    const failedSample = [
+      {
+        status: "aborted",
+        errorCategory: "aborted",
+        ageSeconds: 30 * 60,
+        parentMessageId: "M",
+      },
+    ];
+    const movedOn = assessChat(
+      {
+        ok: true,
+        messages: [
+          msg({ messageId: "M", textLenBucket: "0" }),
+          msg({ role: "user", messageId: "U2" }),
+        ],
+        subAgents: subAgents({ byStatus: { aborted: 1 }, failedSample }),
+      },
+      AVAIL_OK,
+    );
+    expect(movedOn.class).toBe("healthy");
+    const answered = assessChat(
+      {
+        ok: true,
+        messages: [msg({ messageId: "M", textLenBucket: "101-1k" })],
+        subAgents: subAgents({ byStatus: { aborted: 1 }, failedSample }),
+      },
+      AVAIL_OK,
+    );
+    expect(answered.class).toBe("healthy");
   });
 
   test("priority: a failed MAIN turn beats a recent sub-agent failure", () => {

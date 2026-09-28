@@ -43,6 +43,10 @@ export const CAPABILITY_KEYS = [
   // The conversation owner's execution-permission choice (composer picker + Advanced
   // section). From 2026.8.2, the send guard's floor; never on Hermes.
   "permissionModes",
+  // Which knowledge sources an agent searches (the `openclaw-knowledge` plugin): the
+  // composer's "Connaissances" section and the admin's agent-default card. From 2026.9.6;
+  // never on Hermes. Whether the plugin is INSTALLED is per-agent discovery, not this.
+  "knowledgePolicy",
 ] as const;
 
 export type CapabilityKey = (typeof CAPABILITY_KEYS)[number];

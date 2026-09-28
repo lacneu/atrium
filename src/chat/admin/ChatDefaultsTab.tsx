@@ -23,6 +23,7 @@ import {
 } from "./chatDefaultsView";
 import { instanceTabGate, type InstanceCompat } from "../capabilities";
 import { unsupportedInstanceLabel } from "./compatView";
+import { KnowledgeDefaultsCard } from "./KnowledgeDefaultsCard";
 import "./confTabs.css";
 
 // Settings > chat defaults tab — READ-ONLY view of the gateway's session
@@ -31,7 +32,10 @@ import "./confTabs.css";
 // contradicted the observe-don't-own stance and Hermes has no such write);
 // changing these values is the gateway operator's job. The Atrium-side cards
 // below (summarize threshold, curation) stay editable — they live in the
-// INSTANCE config, not on the gateway.
+// INSTANCE config, not on the gateway. ONE deliberate exception, decided by the
+// product owner: an agent's knowledge-source default (KnowledgeDefaultsCard), written
+// to the knowledge plugin's own config entry through the gateway's validated
+// config.patch — that agent's entry only, never another key.
 
 type LoadState =
   | { status: "loading" }
@@ -511,6 +515,7 @@ export function ChatDefaultsTab() {
                 config?: Record<string, unknown>;
               }}
             />
+            <KnowledgeDefaultsCard instanceName={inst.name} />
           </>
         ) : null;
       })()}

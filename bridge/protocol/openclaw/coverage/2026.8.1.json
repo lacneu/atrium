@@ -469,20 +469,109 @@
       "why": "vendored only as a transitive import of sessions.ts (PluginJsonValueSchema); Atrium exchanges no plugin payloads"
     },
     "PluginsSessionActionFailureResult": {
-      "status": "ignored",
-      "why": "result of an RPC the bridge never calls"
+      "fields": {
+        "ok": {
+          "status": "handled",
+          "by": "knowledge-policy.ts writeKnowledgePolicy: `ok:false` is the plugin's refusal"
+        },
+        "code": {
+          "status": "handled",
+          "by": "knowledge-policy.ts writeKnowledgePolicy: the plugin's closed codes (overrides_disabled, source_not_allowed, unknown_source, invalid_payload, write_failed) pass through by name; anything else reads `rejected`"
+        },
+        "error": {
+          "status": "ignored",
+          "why": "plugin-authored prose: Atrium never shows gateway text, the code is what the owner is told"
+        },
+        "details": {
+          "status": "ignored",
+          "why": "plugin-owned detail (e.g. the refused source id): the composer names the class, not the id"
+        }
+      }
     },
     "PluginsSessionActionParams": {
-      "status": "ignored",
-      "why": "plugin-defined session actions, an operator/Control-UI surface"
+      "fields": {
+        "pluginId": {
+          "status": "handled",
+          "by": "knowledge-policy.ts writeKnowledgePolicy: always `openclaw-knowledge` (KNOWLEDGE_PLUGIN_ID)"
+        },
+        "actionId": {
+          "status": "handled",
+          "by": "knowledge-policy.ts writeKnowledgePolicy: `policy.set` for a choice, `policy.reset` for the agent default"
+        },
+        "sessionKey": {
+          "status": "handled",
+          "by": "knowledge-policy.ts writeKnowledgePolicy: the conversation's session key (the one chat.send uses)"
+        },
+        "agentId": {
+          "status": "handled",
+          "by": "knowledge-policy.ts writeKnowledgePolicy: the routed agent, redundant with the key but sent so the plugin never guesses"
+        },
+        "payload": {
+          "status": "handled",
+          "by": "providers/openclaw/knowledge-policy.ts writeKnowledgePolicy: the conversation OWNER's knowledge choice (Convex chatKnowledgeChoices, per chat AND agent) put on the session with `policy.set {reset:true, sources|injection}` or `policy.reset` — immediately by POST /knowledge op apply (performKnowledgeApply) and before every chat.send by performSend when the override described on the session (sessions.describe pluginExtensions) differs. Sent on the conversation's own socket; only when Convex confirmed the target declares knowledgePolicy (>= 2026.9.6). A refusal withholds the turn (knowledge_policy_not_applied) or is returned to the owner.",
+          "anchor": {
+            "file": "src/providers/openclaw/knowledge-policy.ts",
+            "token": "payload: { reset: true, ...desired }"
+          },
+          "proof": {
+            "kind": "deterministic-test",
+            "ref": "bridge/test/knowledge-policy.test.ts",
+            "note": "Semantics read in the v2026.9.6 sources (plugin-host-hooks.ts:110-300 dispatch, per-action requiredScopes re-check and payload JSON-schema validation, plugin refusals answered as a successful RPC {ok:false,error,code}; session-method-policy.ts:18 session-targeted; method-scopes.ts:132 dynamic admission) and in openclaw-knowledge 4.0.3 (src/control-plane.ts policy.get/set/reset, write_failed on a key with no session). Exercised LIVE on the 2026.9.6 bench with the plugin in test mode (openclaw-notes atrium/live-bench/knowledge-policy.mjs, GO 2026-09-28: set/reset at once, re-applied on a per-turn switch's NEW session before its first chat.send, provenance of the turn shows only the chosen source); replayed by the deterministic test and proven by neutralization. No full-catalogue scenario covers it yet: golden-corpus proof stays owed."
+          }
+        }
+      }
     },
     "PluginsSessionActionResult": {
-      "status": "ignored",
-      "why": "result of an RPC the bridge never calls"
+      "fields": {
+        "ok": {
+          "status": "handled",
+          "by": "knowledge-policy.ts writeKnowledgePolicy: see PluginsSessionActionSuccessResult / FailureResult"
+        },
+        "result": {
+          "status": "handled",
+          "by": "knowledge-policy.ts writeKnowledgePolicy: see PluginsSessionActionSuccessResult / FailureResult"
+        },
+        "continueAgent": {
+          "status": "ignored",
+          "why": "see PluginsSessionActionSuccessResult / FailureResult: not read"
+        },
+        "reply": {
+          "status": "ignored",
+          "why": "see PluginsSessionActionSuccessResult / FailureResult: not read"
+        },
+        "error": {
+          "status": "ignored",
+          "why": "see PluginsSessionActionSuccessResult / FailureResult: not read"
+        },
+        "code": {
+          "status": "handled",
+          "by": "knowledge-policy.ts writeKnowledgePolicy: see PluginsSessionActionSuccessResult / FailureResult"
+        },
+        "details": {
+          "status": "ignored",
+          "why": "see PluginsSessionActionSuccessResult / FailureResult: not read"
+        }
+      }
     },
     "PluginsSessionActionSuccessResult": {
-      "status": "ignored",
-      "why": "result of an RPC the bridge never calls"
+      "fields": {
+        "ok": {
+          "status": "handled",
+          "by": "knowledge-policy.ts writeKnowledgePolicy: `ok !== false` is a landed write"
+        },
+        "result": {
+          "status": "handled",
+          "by": "knowledge-policy.ts parsePolicySnapshot: the plugin's PolicySnapshot (injection, effectiveSources, origin), reported to Convex for the composer"
+        },
+        "continueAgent": {
+          "status": "ignored",
+          "why": "a policy action never continues a turn; Atrium starts turns with chat.send only"
+        },
+        "reply": {
+          "status": "ignored",
+          "why": "a chat-command reply channel; the knowledge actions answer with `result` and Atrium renders its own copy"
+        }
+      }
     },
     "PluginsUiDescriptorsParams": {
       "status": "ignored",
@@ -704,8 +793,128 @@
       "why": "result of an RPC the bridge never calls"
     },
     "SessionsCreateParams": {
-      "status": "ignored",
-      "why": "sessions.create pre-creates a session; the bridge lets chat.send create it implicitly, which is the path every turn already exercises"
+      "fields": {
+        "key": {
+          "status": "handled",
+          "by": "server.ts claimSessionForOwner and performSend (knowledge choice on a key with no session): the conversation's session key"
+        },
+        "idempotencyKey": {
+          "status": "ignored",
+          "why": "not sent: the session is created bare, as chat.send would create it — everything else rides the turn or a sessions.patch"
+        },
+        "agentId": {
+          "status": "handled",
+          "by": "server.ts: the routed agent the session belongs to"
+        },
+        "label": {
+          "status": "ignored",
+          "why": "not sent: the session is created bare, as chat.send would create it — everything else rides the turn or a sessions.patch"
+        },
+        "category": {
+          "status": "ignored",
+          "why": "not sent: the session is created bare, as chat.send would create it — everything else rides the turn or a sessions.patch"
+        },
+        "model": {
+          "status": "ignored",
+          "why": "not sent: the session is created bare, as chat.send would create it — everything else rides the turn or a sessions.patch"
+        },
+        "contextWindow": {
+          "status": "ignored",
+          "why": "not sent: the session is created bare, as chat.send would create it — everything else rides the turn or a sessions.patch"
+        },
+        "thinkingLevel": {
+          "status": "ignored",
+          "why": "not sent: the session is created bare, as chat.send would create it — everything else rides the turn or a sessions.patch"
+        },
+        "fastMode": {
+          "status": "ignored",
+          "why": "not sent: the session is created bare, as chat.send would create it — everything else rides the turn or a sessions.patch"
+        },
+        "permissionMode": {
+          "status": "ignored",
+          "why": "not sent: the session is created bare, as chat.send would create it — everything else rides the turn or a sessions.patch"
+        },
+        "toolOverrides": {
+          "status": "ignored",
+          "why": "not sent: the session is created bare, as chat.send would create it — everything else rides the turn or a sessions.patch"
+        },
+        "incognito": {
+          "status": "ignored",
+          "why": "not sent: the session is created bare, as chat.send would create it — everything else rides the turn or a sessions.patch"
+        },
+        "visibility": {
+          "status": "ignored",
+          "why": "not sent: the session is created bare, as chat.send would create it — everything else rides the turn or a sessions.patch"
+        },
+        "catalogId": {
+          "status": "ignored",
+          "why": "not sent: the session is created bare, as chat.send would create it — everything else rides the turn or a sessions.patch"
+        },
+        "parentSessionKey": {
+          "status": "ignored",
+          "why": "not sent: the session is created bare, as chat.send would create it — everything else rides the turn or a sessions.patch"
+        },
+        "spawnDepth": {
+          "status": "ignored",
+          "why": "not sent: the session is created bare, as chat.send would create it — everything else rides the turn or a sessions.patch"
+        },
+        "fork": {
+          "status": "ignored",
+          "why": "not sent: the session is created bare, as chat.send would create it — everything else rides the turn or a sessions.patch"
+        },
+        "forkFrom": {
+          "status": "ignored",
+          "why": "not sent: the session is created bare, as chat.send would create it — everything else rides the turn or a sessions.patch"
+        },
+        "emitCommandHooks": {
+          "status": "ignored",
+          "why": "not sent: the session is created bare, as chat.send would create it — everything else rides the turn or a sessions.patch"
+        },
+        "succeedsParent": {
+          "status": "ignored",
+          "why": "not sent: the session is created bare, as chat.send would create it — everything else rides the turn or a sessions.patch"
+        },
+        "task": {
+          "status": "ignored",
+          "why": "not sent: the session is created bare, as chat.send would create it — everything else rides the turn or a sessions.patch"
+        },
+        "message": {
+          "status": "ignored",
+          "why": "not sent: the session is created bare, as chat.send would create it — everything else rides the turn or a sessions.patch"
+        },
+        "attachments": {
+          "status": "ignored",
+          "why": "not sent: the session is created bare, as chat.send would create it — everything else rides the turn or a sessions.patch"
+        },
+        "projectId": {
+          "status": "ignored",
+          "why": "not sent: the session is created bare, as chat.send would create it — everything else rides the turn or a sessions.patch"
+        },
+        "projectGitUrl": {
+          "status": "ignored",
+          "why": "not sent: the session is created bare, as chat.send would create it — everything else rides the turn or a sessions.patch"
+        },
+        "worktree": {
+          "status": "ignored",
+          "why": "not sent: the session is created bare, as chat.send would create it — everything else rides the turn or a sessions.patch"
+        },
+        "worktreeBaseRef": {
+          "status": "ignored",
+          "why": "not sent: the session is created bare, as chat.send would create it — everything else rides the turn or a sessions.patch"
+        },
+        "worktreeName": {
+          "status": "ignored",
+          "why": "not sent: the session is created bare, as chat.send would create it — everything else rides the turn or a sessions.patch"
+        },
+        "execNode": {
+          "status": "ignored",
+          "why": "not sent: the session is created bare, as chat.send would create it — everything else rides the turn or a sessions.patch"
+        },
+        "cwd": {
+          "status": "ignored",
+          "why": "not sent: the session is created bare, as chat.send would create it — everything else rides the turn or a sessions.patch"
+        }
+      }
     },
     "SessionsDeleteParams": {
       "status": "ignored",
@@ -961,7 +1170,7 @@
     },
     "SessionsCreateResult": {
       "status": "ignored",
-      "why": "result of sessions.create, which the bridge never calls (chat.send creates the session implicitly)"
+      "why": "the answer is not read: whether the session exists (and whose it is) is re-read with sessions.describe"
     },
     "CronAddParams": {
       "status": "ignored",
@@ -1845,13 +2054,13 @@
     },
     "ConfigGetParams": {
       "status": "handled",
-      "by": "conf.ts sends `{}` before every patch (for the base hash) and after it (for the confirmed read-back), and server.ts polls it while the gateway restarts. The empty-object schema is pinned by the coverage ratchet AND, since 2026-07-27, by the OUTBOUND ratchet: the operator lanes are now driven with a recording requester, so this body is validated against every vendored schema on the way out"
+      "by": "conf.ts sends `{}` before every patch (for the base hash) and after it (for the confirmed read-back), and server.ts polls it while the gateway restarts. The empty-object schema is pinned by the coverage ratchet AND, since 2026-07-27, by the OUTBOUND ratchet: the operator lanes are now driven with a recording requester, so this body is validated against every vendored schema on the way out. Also sent by knowledge-policy.ts (the agent-default write reads the hash and the agent's raw entry; the read-back after a lost answer) and by discovery (server.ts discoverAgents: one read for every agent's raw knowledge default)"
     },
     "ConfigPatchParams": {
       "fields": {
         "raw": {
           "status": "handled",
-          "by": "conf.ts:424 sends `JSON.stringify({agents:{defaults}})` — the ONLY config write Atrium performs"
+          "by": "conf.ts sends `JSON.stringify({agents:{defaults}})` (chat defaults); knowledge-policy.ts buildAgentDefaultPatch sends `{plugins:{entries:{'openclaw-knowledge':{config:{agents:{<id>:{…}}}}}}}` (an agent's knowledge default) — the only two config writes Atrium performs"
         },
         "baseHash": {
           "status": "handled",
@@ -1874,8 +2083,17 @@
           "why": "Atrium never ASKS for a restart. It cannot prevent one either: bench-verified on 2026.6.5, `config.patch` can make the gateway restart on its own (`restartReason=config.patch`), killing the operator socket before the response is read even though the write applied — which is why conf.ts polls `config.get` and reports success only once `defaultsApplied` confirms the read-back. Sending a delay would mean Atrium scheduling gateway downtime, which is not its call"
         },
         "replacePaths": {
-          "status": "ignored",
-          "why": "the patch is a MERGE-patch of a minimal `{agents:{defaults:{…}}}` carrying only the provided fields, and `clear` deletes keys by null-merge — so path replacement is never needed. Naming paths would restate the same intent in a second, coarser vocabulary, and a path replaces everything beneath it"
+          "status": "handled",
+          "by": "providers/openclaw/knowledge-policy.ts performKnowledgeDefaultOp: an admin's agent knowledge default is a merge-patch of exactly `plugins.entries.openclaw-knowledge.config.agents.<id>.{injection,sources}` (never `allowedSources`: the allowlist is the operator's; on a 4.0.x plugin an agent without its own is refused `plugin_too_old`), and `replacePaths` names that agent's `sources` path because narrowing a default removes array entries, which the gateway refuses otherwise. The chat defaults (conf.ts) still send none.",
+          "anchor": {
+            "file": "src/providers/openclaw/knowledge-policy.ts",
+            "token": "replacePaths: patch.replacePaths"
+          },
+          "proof": {
+            "kind": "deterministic-test",
+            "ref": "bridge/test/knowledge-policy.test.ts",
+            "note": "Semantics read in the v2026.9.6 sources (server-methods/config.ts:1016-1227 config.patch: merge-patch of the authored config under the base-hash guard; config.ts:365-391 an array losing entries is refused unless its exact path is in replacePaths; core-descriptors.ts:60 operator.admin). Exercised LIVE on the 2026.9.6 bench (knowledge-policy.mjs GO 2026-09-28: gateway log `config.patch write … changedPaths=plugins.entries.openclaw-knowledge.config.agents.bob`, hot reload applied, no restart; a narrowed default landed with its replacePaths, every other plugin key unchanged). Replayed by the deterministic test."
+          }
         }
       }
     },

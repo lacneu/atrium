@@ -118,6 +118,11 @@ export interface DiagMessage {
    *  it makes the recency checks below fail OPEN (the message is considered
    *  recent), which surfaces rather than hides. */
   ageSeconds?: number;
+  /** The message id — joins a sub-agent row's `parentMessageId`. Optional: absent,
+   *  the lost-hand-off rule below cannot anchor and stays silent. */
+  messageId?: string;
+  /** Coarse text-length bucket ("0" = no text at all). */
+  textLenBucket?: string;
 }
 /** A content-free sub-agent row in the chat-state summary (subset of the
  *  loadSubAgentSummary entry — only the fields the assessment reasons over). */
@@ -125,6 +130,8 @@ export interface DiagSubAgentEntry {
   status: string;
   errorCategory: string;
   ageSeconds: number;
+  /** The spawning message (structural id). Optional: absent = no anchor. */
+  parentMessageId?: string | null;
 }
 export interface DiagChatState {
   ok: boolean;
@@ -386,6 +393,37 @@ export function assessChat(
   // main turn likely answered WITHOUT the delegation's result. (A failed last MAIN
   // turn is already dispatch_error above; a down bridge is above too.) Chat-specific,
   // so it precedes the global bridge_degraded note.
+  // …AND, whatever its age, a failed child the conversation has NOT moved past:
+  // the newest message is a turn that ended with no text, and the child it
+  // delegated to is the failed one. That turn handed its answer to the child, the
+  // child died, and nothing came after — the reader still has no answer. The
+  // recency horizon exists to forget failures a conversation left behind; this
+  // one is still the last thing on screen (production 2026-09-28: diagnosed
+  // `healthy` thirty minutes after the hand-off lost its only answer).
+  const newest = messages[messages.length - 1];
+  const lostHandOff =
+    newest !== undefined &&
+    newest.role === "assistant" &&
+    newest.status === "complete" &&
+    newest.textLenBucket === "0" &&
+    newest.messageId !== undefined
+      ? (state.subAgents?.failedSample ?? []).find(
+          (s) => s.parentMessageId === newest.messageId,
+        )
+      : undefined;
+  if (lostHandOff) {
+    return {
+      class: "subagent_failure",
+      severity: "warn",
+      errorCode: null,
+      reason: `the last turn handed off to a sub-agent that ${lostHandOff.status} (${lostHandOff.errorCategory}) and nothing followed`,
+      summary:
+        "The last turn ended without text, delegating its answer to a sub-agent that did not finish — no reply followed, so the user has no answer.",
+      suggestedAction:
+        "Inspect the sub-agent's failure category and the gateway around that time; the user can send a new message to resume. The failure detail is owner-scoped (the chat's sub-agent monitor).",
+      suggestedTool: null,
+    };
+  }
   const recentFailedChild = (state.subAgents?.failedSample ?? []).find(
     (s) => s.ageSeconds < RECENT_SUBAGENT_FAILURE_SECONDS,
   );

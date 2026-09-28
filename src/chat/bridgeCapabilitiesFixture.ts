@@ -18,7 +18,7 @@
 // The live bench does it as part of a validation run, so the anchor tracks the version
 // the bench actually validated rather than whichever one somebody last pasted.
 //
-// Source: bridge 0.85.1 / gateway 2026.9.6 — captured 2026-09-27
+// Source: bridge 0.87.1 / gateway 2026.9.6 — captured 2026-09-28
 //
 // Imported by TESTS ONLY (src + convex test suites) — never by app or deployed
 // Convex code, so it adds zero runtime weight.
@@ -35,7 +35,7 @@ export const LIVE_CAPABILITIES_BODY = {
     "media": true,
     "streaming": "both"
   },
-  "bridgeVersion": "0.85.1",
+  "bridgeVersion": "0.87.1",
   "buildVersion": null,
   "buildRevision": null,
   "rehydrationDefault": true,
@@ -43,7 +43,7 @@ export const LIVE_CAPABILITIES_BODY = {
   "inboundPrivateStaging": true,
   "protocolVersion": 2,
   "compat": {
-    "bridgeVersion": "0.85.1",
+    "bridgeVersion": "0.87.1",
     "protocolVersion": 2,
     "providers": {
       "openclaw": {
@@ -92,7 +92,8 @@ export const LIVE_CAPABILITIES_BODY = {
           "cronList": "2026.5.19",
           "cronManage": "2026.7.1-beta.2",
           "talk": "2026.7.1",
-          "permissionModes": "2026.8.2"
+          "permissionModes": "2026.8.2",
+          "knowledgePolicy": "2026.9.6"
         }
       },
       "hermes": {
@@ -1059,7 +1060,8 @@ export const LIVE_CAPABILITIES_BODY = {
         "cronList": true,
         "cronManage": true,
         "talk": true,
-        "permissionModes": true
+        "permissionModes": true,
+        "knowledgePolicy": true
       }
     },
     {

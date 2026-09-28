@@ -148,6 +148,15 @@ const OPENCLAW_CAPABILITIES: Record<string, string> = {
   // from 2026.8.1, the guard from 2026.8.2 — the choice ships with its guard.
   // (providers/openclaw/permission-mode.ts). Never on Hermes: it has no modes.
   permissionModes: PERMISSION_MODES_SINCE,
+  // Which KNOWLEDGE SOURCES an agent searches (the `openclaw-knowledge` plugin >= 4.0):
+  // the owner's per-conversation choice applied by `plugins.sessionAction policy.*` to
+  // every session Atrium opens for the conversation, and the admin's per-agent default
+  // written by `config.patch` (providers/openclaw/knowledge-policy.ts). The floor is the
+  // version the plugin contract was verified against and the bench exercised. Version
+  // says "the bridge can drive it" only — whether the plugin is INSTALLED is dynamic
+  // gateway state, detected per agent at discovery (`knowledge.sources`), the same
+  // split as `talk`. Never on Hermes.
+  knowledgePolicy: "2026.9.6",
 };
 
 // Hermes exposes a DELIBERATELY SMALL surface via its OpenAI-compatible API

@@ -44,6 +44,7 @@ const ALL_CAPS = [
   "cronManage",
   "talk",
   "permissionModes",
+  "knowledgePolicy",
 ] as const;
 
 /**
@@ -70,6 +71,8 @@ const MATRIX: Record<string, Record<(typeof ALL_CAPS)[number], boolean>> = {
     cronManage: false,
     talk: false,
     permissionModes: false,
+    // The knowledge plugin's policy control floors at 2026.9.6.
+    knowledgePolicy: false,
   },
   "2026.6.1": {
     knobThinkingLevel: true,
@@ -89,6 +92,8 @@ const MATRIX: Record<string, Record<(typeof ALL_CAPS)[number], boolean>> = {
     cronManage: false,
     talk: false,
     permissionModes: false,
+    // The knowledge plugin's policy control floors at 2026.9.6.
+    knowledgePolicy: false,
   },
   "2026.6.5": {
     knobThinkingLevel: true,
@@ -108,6 +113,8 @@ const MATRIX: Record<string, Record<(typeof ALL_CAPS)[number], boolean>> = {
     cronManage: false,
     talk: false,
     permissionModes: false,
+    // The knowledge plugin's policy control floors at 2026.9.6.
+    knowledgePolicy: false,
   },
   // 2026.6.10 — live-validated 2026-06-28 (chat round-trip/stream/tool, multi-agent
   // alice+bob, subagent spawn→CHILD_OK). All existing capabilities resolve; 6.10
@@ -131,6 +138,8 @@ const MATRIX: Record<string, Record<(typeof ALL_CAPS)[number], boolean>> = {
     cronManage: false,
     talk: false,
     permissionModes: false,
+    // The knowledge plugin's policy control floors at 2026.9.6.
+    knowledgePolicy: false,
   },
   // 2026.7.1 (incl. the validated -beta.2 bench) — adds the cron MANAGEMENT
   // surface (cron.get/update/remove/run/runs), live-verified 2026-07-12.
@@ -154,6 +163,8 @@ const MATRIX: Record<string, Record<(typeof ALL_CAPS)[number], boolean>> = {
     // on the 2026.7.1 bench (2026-07-16).
     talk: true,
     permissionModes: false,
+    // The knowledge plugin's policy control floors at 2026.9.6.
+    knowledgePolicy: false,
   },
   // 2026.9.1 — live GO 11/11 (2026-09-03). It adds NO capability gate: the new
   // surface (gateway suspension, user profiles, errorDetail) is vendored and
@@ -180,6 +191,8 @@ const MATRIX: Record<string, Record<(typeof ALL_CAPS)[number], boolean>> = {
     talk: true,
     // The owner's execution-permission choice: its guard exists from 2026.8.2.
     permissionModes: true,
+    // The knowledge plugin's policy control floors at 2026.9.6.
+    knowledgePolicy: false,
   },
   // 2026.9.2 — live GO 11/11 (2026-09-06). Adds NO capability gate either: the
   // new surface (multi-user mentions/participants, per-person model accounts,
@@ -205,6 +218,8 @@ const MATRIX: Record<string, Record<(typeof ALL_CAPS)[number], boolean>> = {
     talk: true,
     // The owner's execution-permission choice: its guard exists from 2026.8.2.
     permissionModes: true,
+    // The knowledge plugin's policy control floors at 2026.9.6.
+    knowledgePolicy: false,
   },
 };
 
@@ -398,7 +413,9 @@ describe("resolveCapabilities — beyond maxValidated", () => {
     "%s is FROZEN at the maxValidated profile + flags versionBeyondValidated",
     (raw) => {
       const resolved = resolveCapabilities("openclaw", raw);
-      expect(resolved.capabilities).toEqual(MATRIX["2026.9.2"]);
+      // The 2026.9.6 profile: the 2026.9.2 row plus the knowledge control that floors
+      // at 2026.9.6.
+      expect(resolved.capabilities).toEqual({ ...MATRIX["2026.9.2"], knowledgePolicy: true });
       expect(resolved.versionBeyondValidated).toBe(true);
     },
   );
@@ -419,12 +436,15 @@ describe("resolveCapabilities — beyond maxValidated", () => {
 
   test("2026.9.6 is the new ceiling: inside the range, no flag", () => {
     const resolved = resolveCapabilities("openclaw", "2026.9.6");
-    // Identical to 2026.9.5's profile: no capability carries a 2026.9.6 floor. The one
-    // behaviour keyed on 2026.9.6 — the compaction-history refusal — is a raw-version
-    // fact (COMPACTION_CHECKPOINTS_RETIRED_IN), not a capability.
-    expect(resolved.capabilities).toEqual(
-      resolveCapabilities("openclaw", "2026.9.5").capabilities,
-    );
+    // 2026.9.5's profile plus ONE capability floored at 2026.9.6: the knowledge plugin's
+    // policy control (its contract was verified against 2026.9.6 and exercised on that
+    // bench). The compaction-history refusal stays a raw-version fact
+    // (COMPACTION_CHECKPOINTS_RETIRED_IN), not a capability.
+    expect(resolved.capabilities).toEqual({
+      ...resolveCapabilities("openclaw", "2026.9.5").capabilities,
+      knowledgePolicy: true,
+    });
+    expect(resolveCapabilities("openclaw", "2026.9.5").capabilities.knowledgePolicy).toBe(false);
     expect(resolved.versionBeyondValidated).toBe(false);
   });
 

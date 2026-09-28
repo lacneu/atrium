@@ -341,6 +341,18 @@ describe("shortenSubAgentError (DISPLAY-side error shortening)", () => {
     }
   });
 
+  // Production 2026-09-23: a spawn the gateway refused was shown as a sub-agent that
+  // ran out of time. It never started — the card says so, and the gateway's own
+  // sentence stays reachable in the panel detail.
+  it("a refused spawn reads 'could not start', never a timeout, and keeps the gateway's sentence", () => {
+    const raw = "child session patch failed: synthetic storage refusal";
+    const out = shortenSubAgentError(raw, "spawn_refused", 900);
+    expect(out).toMatch(/n’a pas pu démarrer/);
+    expect(out).not.toMatch(/délai|900/);
+    expect(out.length).toBeLessThanOrEqual(120);
+    expect(subAgentErrorDetail(raw, "spawn_refused")).toBe(raw);
+  });
+
   it("extracts the tool + code from a bare '<tool> failed (<code>)' line", () => {
     expect(shortenSubAgentError("web_search failed (403)")).toBe(
       "web_search (403)",

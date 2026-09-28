@@ -226,6 +226,25 @@ export async function sweepInstanceNameBoundBatch(
     return "more";
   }
 
+  // What the knowledge plugin said about this instance's agents, and the conversations'
+  // choices for them: a gateway recreated under the name must not inherit either.
+  const knowledge = await ctx.db
+    .query("agentKnowledge")
+    .withIndex("by_instance", (query) => query.eq("instanceName", name))
+    .take(CASCADE_BATCH);
+  if (knowledge.length > 0) {
+    for (const row of knowledge) await ctx.db.delete(row._id);
+    return "more";
+  }
+  const knowledgeChoices = await ctx.db
+    .query("chatKnowledgeChoices")
+    .withIndex("by_instance_agent", (query) => query.eq("instanceName", name))
+    .take(CASCADE_BATCH);
+  if (knowledgeChoices.length > 0) {
+    for (const row of knowledgeChoices) await ctx.db.delete(row._id);
+    return "more";
+  }
+
   // AGENT FILE CONTENT, before anything else that could free the name. These two
   // hold actual file bodies attributed to (instanceName, agentId): a curation is a
   // PROPOSAL that `claimForApply` writes to a gateway, and a revision is stored

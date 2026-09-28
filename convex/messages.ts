@@ -807,7 +807,7 @@ async function loadSubAgentSummary(
     childIdShort: shortChildId(c.childSessionKey),
     status: c.status,
     // PATTERN-MATCHES the raw error but RETURNS ONLY a fixed enum (never the text).
-    errorCategory: classifySubAgentError(c.status, c.errorMessage),
+    errorCategory: classifySubAgentError(c.status, c.errorMessage, c.errorCode),
     errorCode: c.errorCode ?? null,
     // Presence boolean ONLY — never the taskName text.
     hasTaskName: typeof c.taskName === "string" && c.taskName.trim() !== "",

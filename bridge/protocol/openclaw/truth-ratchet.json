@@ -145,6 +145,14 @@
     {
       "path": "SessionsPatchParams.permissionMode",
       "scan": false
+    },
+    {
+      "path": "PluginsSessionActionParams.payload",
+      "scan": false
+    },
+    {
+      "path": "ConfigPatchParams.replacePaths",
+      "scan": false
     }
   ]
 }

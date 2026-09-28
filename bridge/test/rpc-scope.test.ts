@@ -86,6 +86,14 @@ const NAMESPACE_MODULE: Record<string, string | null> = {
   // resolver, one module for all three kinds. Sent only from AGENT_REQUESTS_MIN_VERSION.
   question: "questions.ts",
   approval: "approvals.ts",
+  // `plugins.sessionAction` — the Gateway-authorized dispatch to a plugin's session
+  // action (the knowledge plugin's `policy.get|set|reset`).
+  plugins: "plugins.ts",
+  // `knowledge.sources` is registered BY A PLUGIN (`openclaw-knowledge`,
+  // registerGatewayMethod): its params live in the plugin's own contract
+  // (docs/atrium-integration.md §3.1 there), never in gateway-protocol. Named so the
+  // gap is attributable; no vendored module can ever cover it.
+  knowledge: "(plugin: openclaw-knowledge)",
 };
 
 /** Modules vendored for the version the bridge PROMISES (`maxValidated`).
@@ -143,6 +151,11 @@ const UNCOVERED_SNAPSHOT = [
   "tts.convert",
   "tts.providers",
   "tts.status",
+  // A PLUGIN-registered method (openclaw-knowledge >= 4.0): its contract is the plugin's
+  // normative doc, not the gateway protocol — uncovered by CONSTRUCTION. Its answer is
+  // parsed defensively (knowledge-policy.ts parseKnowledgeSources) and an `unknown
+  // method` answer is the feature detection itself.
+  "knowledge.sources",
 ];
 
 /** The methods mapped to `null` — "no params on the wire" — whose claim is now
@@ -466,6 +479,9 @@ describe("RPC scope derivation (W10)", () => {
       "question.resolve",
       "approval.get",
       "approval.resolve",
+      // KNOWLEDGE SOURCES, added 2026-09-27: the knowledge plugin's session actions
+      // (`policy.set|reset`), dispatched through the Gateway's own plugin route.
+      "plugins.sessionAction",
     ];
     // The list must be EXHAUSTIVE, not a sample (raised in review): adding a call to
     // a method whose schema happens to be vendored — `cron.status`, say — would leave

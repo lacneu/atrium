@@ -438,10 +438,17 @@ export const KNOWN_AGENT_FIELDS: ReadonlySet<string> = new Set([
  * matrix instead of being invisible omissions.
  */
 export const COVERAGE_SUMMARY = {
-  handled: 323,
-  ignored: 777,
+  handled: 338,
+  ignored: 814,
   gaps: 907,
   /** The declared gaps, by schema path — the actionable part of the matrix.
+   *
+   *  KNOWLEDGE SOURCES (2026-09-27): the knowledge plugin's session actions
+   *  (`plugins.sessionAction`: its params, and both branches of its result, now classified
+   *  field by field) and `ConfigPatchParams.replacePaths` (the agent-default write) are
+   *  handled; `SessionsCreateParams` — already sent by the trusted-proxy claim, and now
+   *  before a knowledge write into a key with no session — is classified field by field
+   *  (key and agentId handled, the rest ignored). No gap moved.
    *
    *  PERMISSION MODE CHOICE (2026-09-26): `SessionsPatchParams.permissionMode` — once
    *  "gateway-side configuration" — is now the conversation owner's choice, applied by

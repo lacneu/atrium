@@ -1803,6 +1803,8 @@ describe("the last gate before the send leaves is one transaction", () => {
         withMetaGuard: false,
         revision: 0,
       },
+      // The owner's knowledge choice for this agent: none made, nothing carried.
+      knowledge: { kind: "none" },
     });
     await seedGroup(t, "owner-narrowed", [owner], [{ instanceName: "alpha", agentId: "bob" }]);
     expect(await gate(t, outboxId)).toEqual({ kind: "refused" });

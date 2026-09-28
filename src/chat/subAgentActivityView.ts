@@ -87,6 +87,10 @@ export type SubAgentRow = {
   errorMessage?: string;
   /** The child's STABLE failure class (W2 / G-11) — allowlisted server-side. */
   errorCode?: string;
+  /** When the USER's Stop terminated this child (convex/messages.ts abortTurn —
+   *  set once, never rewritten). Absent on an `aborted` row = the gateway ended
+   *  the child, not the reader. */
+  stopRequestedAt?: number;
   tools?: ReadonlyArray<SubAgentToolRow>;
   sessionMeta?: SubAgentSessionMeta;
   telemetry?: SubAgentTelemetry;
@@ -537,6 +541,11 @@ export function shortenSubAgentError(
         : m.subagents_error_timeout_unbounded(),
     );
   }
+  if (code === "spawn_refused") {
+    // The gateway refused the spawn: nothing ran, so nothing "failed" or ran out of
+    // time. The gateway's own reason stays in the panel detail (subAgentErrorDetail).
+    return capReason(m.subagents_error_spawn_refused());
+  }
   if (code) {
     const label = ERROR_CODE_LABEL[code]?.();
     // CAPPED like every other branch. The early return used to hand the label back whole,
@@ -577,7 +586,13 @@ export function subAgentErrorDetail(
   code: string | null | undefined,
 ): string | null {
   if (!code) return null;
-  if (code !== "timeout" && ERROR_CODE_LABEL[code] === undefined) return null;
+  if (
+    code !== "timeout" &&
+    code !== "spawn_refused" &&
+    ERROR_CODE_LABEL[code] === undefined
+  ) {
+    return null;
+  }
   const text = raw?.trim() ?? "";
   if (text === "") return null;
   return firstMeaningfulLine(text) === null ? null : text;

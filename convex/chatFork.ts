@@ -35,6 +35,7 @@ import { auditImpersonated } from "./lib/audit";
 import { compareOrder, effectiveOrder } from "./lib/messageOrder";
 import { recordFileForPart, isFilePart } from "./lib/files";
 import { minChatSortKey } from "./chats";
+import { MAX_KNOWLEDGE_CHOICES_PER_CHAT } from "./lib/knowledge";
 
 /** Copy bound = the visible window (loadChatView's MESSAGE_WINDOW): the fork
  *  shows exactly what the user sees in the source. Older context still reaches
@@ -438,6 +439,34 @@ export const forkChat = mutation({
         // _creationTime space; the fork's copies are all newer than that floor,
         // but resetting keeps the engine's monotonic contract clean.
       });
+    }
+
+    // The owner's KNOWLEDGE CHOICES ride too, like the permission mode: a branch of a
+    // conversation whose owner turned a source off must not search it again. Only when
+    // the forker owns the source (a guest's fork is theirs to configure). The source's
+    // outcomes do not ride — they described other sessions: each starts "deferred",
+    // applied by the branch's first turn to that agent.
+    if (source.userId === userId) {
+      const choices = await ctx.db
+        .query("chatKnowledgeChoices")
+        .withIndex("by_chat_agent", (q) => q.eq("chatId", sourceChatId))
+        // EVERY choice: the write side caps a conversation at exactly this many.
+        .take(MAX_KNOWLEDGE_CHOICES_PER_CHAT);
+      for (const c of choices) {
+        await ctx.db.insert("chatKnowledgeChoices", {
+          chatId: forkId,
+          instanceName: c.instanceName,
+          agentId: c.agentId,
+          choice: c.choice,
+          revision: 1,
+          // The branch's sessions are fresh: only a non-default choice will ever leave
+          // an override on one.
+          overrideEver: c.choice.kind !== "default",
+          setBy: userId,
+          setAt: now,
+          apply: { revision: 1, status: "deferred", reason: "next_turn", at: now },
+        });
+      }
     }
 
     // Cross-identity attribution: an admin forking while impersonating writes

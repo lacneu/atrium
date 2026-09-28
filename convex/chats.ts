@@ -611,6 +611,16 @@ async function sweepChatDependents(
     if (!(await drain(rows, asked)) || budget <= 0) return more();
   }
 
+  // 6b. The owner's knowledge choices for this conversation's agents.
+  {
+    const asked = Math.max(budget, 0);
+    const rows = await ctx.db
+      .query("chatKnowledgeChoices")
+      .withIndex("by_chat_agent", (q) => q.eq("chatId", chatId))
+      .take(asked);
+    if (!(await drain(rows, asked)) || budget <= 0) return more();
+  }
+
   // 7. What the agent asked and what was answered, with their bell entries.
   {
     const limit = Math.floor(budget / AGENT_REQUEST_DELETE_READS);

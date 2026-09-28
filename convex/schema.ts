@@ -1259,6 +1259,117 @@ export default defineSchema({
     // (agents.sweepRoomDelegations).
     .index("by_instance_agent", ["instanceName", "agentId"]),
 
+  // KNOWLEDGE SOURCES an agent may search (the `openclaw-knowledge` plugin, >= 4.0), as
+  // the bridge's discovery last read them (`knowledge.sources`, one row per instance +
+  // agent): feature detection, the operator's allowlist (labels and descriptions only —
+  // never a URL, a key or a collection) and the agent's DEFAULT. Written by discovery
+  // and by an admin's confirmed write (convex/knowledge.ts); name-bound (swept with the
+  // instance). `available: false` + `reason` = the plugin is absent, unreadable, or out
+  // of scope for the bridge's socket.
+  agentKnowledge: defineTable({
+    instanceName: v.string(),
+    agentId: v.string(),
+    available: v.boolean(),
+    reason: v.optional(v.string()),
+    configured: v.optional(v.boolean()),
+    injection: v.optional(v.string()),
+    defaultSources: v.optional(v.array(v.string())),
+    overridesAllowed: v.optional(v.boolean()),
+    sources: v.optional(
+      v.array(
+        v.object({
+          id: v.string(),
+          type: v.string(),
+          label: v.string(),
+          description: v.string(),
+          default: v.boolean(),
+        }),
+      ),
+    ),
+    fetchedAt: v.number(),
+    // When the BRIDGE sent the read this row holds (its own clock — never compared with
+    // Convex's): a reading sent earlier never replaces it, so a discovery started before
+    // an admin's confirmed save cannot bring the old default back.
+    observedAt: v.optional(v.number()),
+    // The agent's default AS WRITTEN in the gateway config (unfiltered; null = key
+    // absent): the baseline an admin's write is checked against, so an edit the plugin's
+    // effective view hides (a disabled id added) still reads as a change.
+    config: v.optional(
+      v.object({
+        injection: v.union(v.string(), v.null()),
+        sources: v.union(v.array(v.string()), v.null()),
+      }),
+    ),
+    // The plugin's contract level (`knowledge.sources.contract`; absent = 1, the 4.0.x
+    // contract) and whether the agent has its OWN `allowedSources` in the config (rides
+    // with `config`, same snapshot): on a 4.0.x plugin an agent without one cannot have
+    // its default written from Atrium — it would narrow its allowlist (codex pass 18).
+    contract: v.optional(v.number()),
+    ownAllowlist: v.optional(v.boolean()),
+    // The last admin write of the default was refused for want of scope on the
+    // bridge's socket: the default is shown read-only with that reason until a write
+    // succeeds.
+    defaultWriteRefused: v.optional(v.string()),
+  })
+    .index("by_instance_agent", ["instanceName", "agentId"])
+    .index("by_instance", ["instanceName"])
+    // The admin card pages through the agents that HAVE the plugin (codex pass 22).
+    .index("by_instance_and_available", ["instanceName", "available"]),
+
+  // The conversation OWNER's knowledge choice, PER AGENT (a multi-agent room routes turns
+  // to agents with different sources, and each per-turn switch opens a fresh gateway
+  // session): the bridge puts it on every OpenClaw session this conversation uses with
+  // that agent, before the session's first turn (convex/knowledge.ts → /send
+  // `knowledgeChoice`). ABSENT = never chosen: the agent's default applies and Atrium
+  // touches nothing. `revision` is bumped by every choice; an outcome is only ever
+  // recorded for the revision it was made for.
+  chatKnowledgeChoices: defineTable({
+    chatId: v.id("chats"),
+    instanceName: v.string(),
+    agentId: v.string(),
+    choice: v.union(
+      v.object({ kind: v.literal("default") }),
+      v.object({ kind: v.literal("off") }),
+      v.object({
+        kind: v.literal("sources"),
+        sources: v.array(v.string()),
+        injection: v.optional(
+          v.union(v.literal("auto"), v.literal("hybrid"), v.literal("tool")),
+        ),
+      }),
+    ),
+    revision: v.number(),
+    // An OVERRIDE may still sit on one of this conversation's sessions with this agent:
+    // set when a non-default choice is stored, cleared only when a `default` is CONFIRMED
+    // on a session (an apply or a turn reports it). Absent on a legacy row = unknown =
+    // true. Without it, a `default` turn to a bridge that can no longer reset a session
+    // (a rollback) would run under whatever override was left there.
+    overrideEver: v.optional(v.boolean()),
+    setBy: v.id("users"),
+    setAt: v.number(),
+    // What happened the last time the choice was put on a session (applied now or by a
+    // turn): the composer's pending / error state.
+    apply: v.object({
+      revision: v.number(),
+      status: v.union(
+        v.literal("pending"),
+        v.literal("applied"),
+        v.literal("deferred"),
+        v.literal("failed"),
+        // The turn went, searching fewer of the chosen sources: the operator took
+        // `dropped` out of the agent's allowlist since (codex pass 15).
+        v.literal("clamped"),
+      ),
+      reason: v.optional(v.string()),
+      effectiveSources: v.optional(v.array(v.string())),
+      // `clamped` only: the chosen source ids no longer searched (ids, never labels).
+      dropped: v.optional(v.array(v.string())),
+      at: v.number(),
+    }),
+  })
+    .index("by_chat_agent", ["chatId", "instanceName", "agentId"])
+    .index("by_instance_agent", ["instanceName", "agentId"]),
+
   chats: defineTable({
     // THE INTERRUPTION EPOCH: when the user last pressed Stop on this chat.
     //

@@ -437,7 +437,7 @@ export function defaultsApplied(
 
 /** Top-level `hash` from a `config.get` payload (bench-verified 6.5: the get
  *  payload is `{ config: {...}, hash: "..." }`). */
-function configHash(payload: Record<string, unknown> | undefined): string | null {
+export function configHash(payload: Record<string, unknown> | undefined): string | null {
   // NON-EMPTY, because the vendored schema says `baseHash: NonEmptyString`: an empty
   // string passed the old `typeof === "string"` check and was sent, which the gateway
   // rejects as an invalid request — a malformed read turned into a confusing protocol
@@ -449,7 +449,7 @@ function configHash(payload: Record<string, unknown> | undefined): string | null
 
 /** True when a gateway error is the optimistic-concurrency "base hash"
  *  rejection (the config changed between our get and our patch). */
-function isBaseHashError(err: unknown): boolean {
+export function isBaseHashError(err: unknown): boolean {
   return /base ?hash/i.test((err as Error)?.message ?? "");
 }
 

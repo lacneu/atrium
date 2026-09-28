@@ -981,12 +981,18 @@ describe("outbound ratchet — what the bridge SENDS fits the vendored contract"
     // bespoke `"chat.send"` scanner would have inherited every blindness rpc-scope
     // spent five rounds closing — single quotes, optional calls, generic calls,
     // bracket access, destructured aliases.
+    // ONE site since 2026-09-28 (codex pass 6): every chat.send goes through
+    // `issueChatSend` (providers/openclaw/chat-send.ts), the door that runs the
+    // conversation's knowledge gate right before the request. The three callers —
+    // performSend's (captured), the lossless-claw command, the sub-agent send — each pass
+    // it their body; chat-send-gate.test.ts refuses any other site.
     const sites = requestCallSites().filter((s) => s.method === "chat.send");
     expect(
       sites.length,
       "a chat.send call site was added or removed: capture its body here, or say " +
         "why it cannot be — an uncaptured body is a field addition this gate misses",
-    ).toBe(3);
+    ).toBe(1);
+    expect(sites[0]?.file).toBe("chat-send.ts");
     // The two non-performSend sites must go through the exported builders the test
     // above validates — inlining a body again would put it out of reach.
     //
@@ -994,6 +1000,10 @@ describe("outbound ratchet — what the bridge SENDS fits the vendored contract"
     // the DECLARATION alone, so re-inlining the handler's body left the test green
     // (caught by neutralisation). Two occurrences = the export and its call site.
     const src = readFileSync(new URL("../src/server.ts", import.meta.url), "utf-8");
+    // …and each built body is handed to that door, not inlined.
+    expect(src).toMatch(/issueChatSend\(\s*conn,\s*lcmSendParams\(/);
+    expect(src).toMatch(/const saParams = subAgentSendParams\(/);
+    expect(src).toMatch(/issueChatSend\(session\.connection, saParams,/);
     for (const builder of ["subAgentSendParams(", "lcmSendParams("]) {
       const uses = src.split(builder).length - 1;
       expect(

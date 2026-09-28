@@ -33,6 +33,30 @@ describe("classifySubAgentError — allowlist classifier (never echoes input)", 
     );
   });
 
+  // Production 2026-09-23: two spawns the gateway refused ("child session patch
+  // failed…") were registered as running, then a watchdog wrote "timed out" over
+  // them and the diagnostic published `timeout`. The row's stable class decides,
+  // whatever the prose says.
+  it("a refused spawn is `spawn_refused`, even under a timeout-sounding sentence", () => {
+    expect(
+      classifySubAgentError(
+        "error",
+        "Sub-agent timed out: no activity for 900s and the gateway never reported it finishing.",
+        "spawn_refused",
+      ),
+    ).toBe("spawn_refused");
+    expect(
+      toSubAgentFailureStructure([
+        {
+          childSessionKey: "agent:a:subagent:0000",
+          status: "error",
+          errorMessage: "child session patch failed: synthetic",
+          errorCode: "spawn_refused",
+        },
+      ]).errorCategories,
+    ).toEqual(["spawn_refused"]);
+  });
+
   it("maps the stale-observer reaper message (FR + EN) to timeout", () => {
     expect(
       classifySubAgentError(

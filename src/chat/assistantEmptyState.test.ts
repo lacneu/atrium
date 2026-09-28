@@ -177,7 +177,61 @@ describe("assistantEmptyState — failed (a correlated child errored / aborted)"
       kind: "failed",
       taskName: undefined,
       reason: GENERIC_FR,
+      // Nobody pressed Stop: the card reads "stopped" and shows no failure, so
+      // the bubble must speak in the analysis view too.
+      cardSilent: true,
     });
+  });
+
+  // Production 2026-09-28 (chat mh7bb8dw…, metadata only): the turn ended on
+  // sessions_spawn + sessions_yield with no text; the gateway aborted the child
+  // (lifecycle error, then chat `aborted`, no Stop pressed) and never resumed the
+  // parent. With tool cards shown, the verdict deferred to a card that reads
+  // "stopped", so the bubble said nothing about the missing answer.
+  it("a child the GATEWAY aborted is not owned by its card: the bubble speaks in both views", () => {
+    const state = assistantEmptyState(
+      COMPLETE_EMPTY,
+      [
+        spawnPart("K"),
+        {
+          toolName: "sessions_yield",
+          phase: "completed",
+          result: { details: { status: "yielded" } },
+        },
+      ],
+      [
+        row({
+          childSessionKey: "K",
+          parentMessageId: "M",
+          status: "aborted",
+          childRunId: "11111111-1111-4111-8111-111111111111",
+        }),
+      ],
+      "M",
+    );
+    expect(state.kind).toBe("failed");
+    if (state.kind !== "failed") throw new Error("unreachable");
+    expect(state.cardSilent).toBe(true);
+  });
+
+  it("a child the USER stopped, or one that errored, stays the card's to explain", () => {
+    const stopped = assistantEmptyState(
+      COMPLETE_EMPTY,
+      [spawnPart("K")],
+      [row({ childSessionKey: "K", status: "aborted", stopRequestedAt: 5 })],
+    );
+    expect(stopped.kind).toBe("failed");
+    if (stopped.kind !== "failed") throw new Error("unreachable");
+    expect(stopped.cardSilent).toBeUndefined();
+
+    const errored = assistantEmptyState(
+      COMPLETE_EMPTY,
+      [spawnPart("K")],
+      [row({ childSessionKey: "K", status: "error" })],
+    );
+    expect(errored.kind).toBe("failed");
+    if (errored.kind !== "failed") throw new Error("unreachable");
+    expect(errored.cardSilent).toBeUndefined();
   });
 });
 
@@ -634,6 +688,26 @@ describe("only a yield that succeeded, on a turn that really delegated", () => {
     };
     expect(
       assistantEmptyState(SETTLED, [refused], [], "m1", 1_100),
+    ).toEqual({ kind: "generic" });
+  });
+
+  // Upstream names the child in its spawn REFUSALS too (subagent-spawn.ts:192-197 at
+  // v2026.9.6: `{status:"error", error, childSessionKey}`), so the key alone read a
+  // spawn that never started as a delegation to wait on.
+  it("a REFUSED spawn that still names its child is not a hand-off", () => {
+    const refusedSpawn: EmptyStateToolPart = {
+      toolName: "sessions_spawn",
+      phase: "completed",
+      result: {
+        details: {
+          status: "error",
+          error: "child session patch failed: synthetic",
+          childSessionKey: "agent:files:subagent:k1",
+        },
+      },
+    };
+    expect(
+      assistantEmptyState(SETTLED, [refusedSpawn, OK_YIELD], [], "m1", 1_100),
     ).toEqual({ kind: "generic" });
   });
 

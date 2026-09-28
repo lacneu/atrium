@@ -30,6 +30,9 @@ export const SUBAGENT_ERROR_CATEGORIES = [
   "timeout",
   "aborted",
   "api_error",
+  // The gateway refused the spawn: the child never ran. Decided from the row's
+  // stable class, never from text — a refusal's prose can say anything.
+  "spawn_refused",
   "unknown",
 ] as const;
 export type SubAgentErrorCategory = (typeof SUBAGENT_ERROR_CATEGORIES)[number];
@@ -66,8 +69,14 @@ const TOOL_FAILED_RE =
 export function classifySubAgentError(
   status: SubAgentStatus,
   errorMessage?: string,
+  /** The row's allowlisted STABLE class (an enum, never text). */
+  errorCode?: string,
 ): SubAgentErrorCategory {
   if (status === "aborted") return "aborted";
+  // BEFORE the text patterns: a refused spawn's row used to stay `running` until a
+  // watchdog wrote "timed out" over it, and the TIMEOUT pattern then published a
+  // delegation that never started as one that ran out of time (prod 2026-09-23).
+  if (errorCode === "spawn_refused") return "spawn_refused";
   // Through the CLASSIFICATION normalizer, not the display mask: the mask protects a
   // credential in text a reader is shown, and it left every OTHER quoted value free to
   // pick the category published in the anomaly and the diagnostic (codex).
@@ -99,6 +108,7 @@ export type SubAgentFailureInput = {
   childSessionKey: string;
   status: SubAgentStatus;
   errorMessage?: string;
+  errorCode?: string;
 };
 
 /** The content-free structure shipped into anomaly evidence / the MCP plane. */
@@ -125,7 +135,9 @@ export function toSubAgentFailureStructure(
   let failedCount = 0;
   for (const c of children) {
     statuses.push(c.status);
-    errorCategories.push(classifySubAgentError(c.status, c.errorMessage));
+    errorCategories.push(
+      classifySubAgentError(c.status, c.errorMessage, c.errorCode),
+    );
     childIdShort.push(shortChildId(c.childSessionKey));
     if (isFailedStatus(c.status)) failedCount += 1;
   }

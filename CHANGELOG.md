@@ -1,5 +1,49 @@
 # Changelog
 
+## [0.88.0] — Choose which knowledge an agent searches
+
+Feature release: knowledge sources become something you choose, per agent and per
+conversation. It also carries two corrective fixes from production reports on OpenClaw
+2026.9.6. No breaking changes; see the deployment note.
+
+**The composer's "+" is a menu.** It offers to add a file, to add an image, and — for an
+agent with the `openclaw-knowledge` plugin — to turn each of its knowledge sources on or off
+for this conversation, or to go back to the agent's default. The conversation's owner
+chooses; participants see the choice but cannot change it. The choice follows the
+conversation to every session Atrium opens for it, and to a branch you fork from it.
+
+**What a turn searches is what you chose, or it does not run.** Before a message leaves,
+the bridge puts the owner's choice on the session and checks what the plugin will actually
+search. If a source the owner turned off would be searched, the turn is withheld with a
+named reason instead of being sent. If the operator has since removed one of the chosen
+sources, the turn runs with the ones that remain and says which were dropped.
+
+**Administrators set each agent's default.** The chat defaults settings gain a "Knowledge per
+agent" card: for each agent, the sources it searches by default and how knowledge reaches it
+— on every message, only when the question is about the knowledge base, as a tool the agent
+calls itself, or off. Only the sources the gateway's operator allows are offered. The default is written to the gateway's own configuration, guarded
+against concurrent edits: a default changed on the gateway meanwhile, a source no longer
+allowed there, or a configuration change the plugin has not applied yet is refused with its
+reason rather than overwritten. The card lists every agent of an instance, a page at a time.
+
+**A turn that ends empty because a sub-agent was stopped now says so.** Reported in
+production: an agent handed its answer to a sub-agent, the gateway stopped that sub-agent,
+and the bubble stayed empty with no explanation — a stopped child was shown as a calm
+"stopped". When you did not press Stop yourself, the bubble now states the failure.
+
+**A delegation the gateway refused to start is named as such.** Reported in production: a
+sub-agent the gateway refused to create was recorded as running, held the conversation for
+fifteen minutes — a message sent meanwhile waited behind it — and was then shown as having
+exceeded its time limit. It is now closed at once and its card reads that the delegation
+could not start. Sub-agents already recorded this way keep their old label.
+
+**Deployment note.** Deploy the bridge together with Convex (`npx convex deploy`: new
+tables and an index, no migration). The knowledge controls need OpenClaw 2026.9.6 and the
+`openclaw-knowledge` plugin on the gateway; they stay hidden where the plugin is absent.
+Editing an agent's default from Atrium needs `openclaw-knowledge` 4.1.0 or later — with
+4.0.x it is allowed only for an agent that has its own list of allowed sources, since
+writing the default would otherwise narrow that list too.
+
 ## [0.87.2] — The 0.87.1 fixes, as images
 
 Packaging release. The container images of 0.87.1 were not published: the release was cut

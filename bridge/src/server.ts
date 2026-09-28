@@ -44,6 +44,39 @@ import {
   type PermissionEnforcement,
   type PermissionModeChoice,
 } from "./providers/openclaw/permission-mode.js";
+import {
+  KnowledgePolicyNotAppliedError,
+  enforceKnowledgePolicy,
+  desiredOverride,
+  knowledgeChatSendGate,
+  knowledgeGuard,
+  KNOWLEDGE_DISCOVERY_BUDGET_MS,
+  KNOWLEDGE_PROBE_BUDGET_MS,
+  readKnowledgeBaseline,
+  readSessionPolicy,
+  choiceSelection,
+  noteAppliedKnowledgeRevision,
+  noteKnowledgeRevision,
+  parseKnowledgeChoice,
+  withKnowledgeLock,
+  type SessionKnowledgeGuard,
+  parseKnowledgeDefaultBody,
+  performKnowledgeDefaultOp,
+  probeKnowledgeForAgents,
+  readKnowledgeOverride,
+  type KnowledgeChoice,
+  type KnowledgeEnforcement,
+  type KnowledgeOverride,
+  type KnowledgeProbe,
+  type KnowledgePolicyFailure,
+  type PolicySnapshotView,
+} from "./providers/openclaw/knowledge-policy.js";
+import {
+  NO_CONVERSATION_CHOICE,
+  issueChatSend,
+  wasWithheldBeforeSend,
+  type ChatSendGate,
+} from "./providers/openclaw/chat-send.js";
 import { isSessionVisibilityRefusedText } from "./core/failure-classifier.js";
 import { sessionPatchNeedsAdmin } from "./providers/openclaw/session-patch-scope.js";
 import {
@@ -334,6 +367,14 @@ interface SendBody extends BodyRouting {
    *  re-read by Convex at THIS dispatch). Anything but `true`: nothing is applied — the
    *  gateway's operator decides, and the guard is Convex's, exactly as before. */
   permissionModesManaged?: boolean;
+  /**
+   * The conversation OWNER's knowledge choice for THIS turn's agent (Convex
+   * `chatKnowledgeChoices`), put on the session before `chat.send`
+   * (providers/openclaw/knowledge-policy.ts). Absent ⇒ nobody chose: nothing is touched.
+   */
+  knowledgeChoice?: KnowledgeChoice;
+  /** The choice's revision, echoed back so Convex records the outcome for it only. */
+  knowledgeRevision?: number;
   openclawChatId: string | null;
   /** A session this chat LOST a reply on, for ONE read-only harvest (G-47). Parsed here or
    *  it never crosses the HTTP boundary — the whole feature ran only in tests until a review
@@ -579,6 +620,10 @@ export function parseSendBody(raw: string): SendBody | null {
   // A malformed clears list poisons the whole body (never silently drop an
   // unset); a missing/empty intent is fine for a send.
   if (sessionSettings === "invalid") return null;
+  // Same rule for the knowledge choice: carried but malformed refuses the body — the
+  // turn never runs as if nobody had chosen.
+  const knowledgeChoice = parseKnowledgeChoice(obj.knowledgeChoice);
+  if (knowledgeChoice === "invalid") return null;
   return {
     ...routing,
     chatId: obj.chatId,
@@ -606,6 +651,10 @@ export function parseSendBody(raw: string): SendBody | null {
       ? { permissionModeFullAuthorized: true }
       : {}),
     ...(obj.permissionModesManaged === true ? { permissionModesManaged: true } : {}),
+    ...(knowledgeChoice === undefined ? {} : { knowledgeChoice }),
+    ...(typeof obj.knowledgeRevision === "number" && Number.isInteger(obj.knowledgeRevision)
+      ? { knowledgeRevision: obj.knowledgeRevision }
+      : {}),
     openclawChatId:
       typeof obj.openclawChatId === "string" ? obj.openclawChatId : null,
     // Both ids REQUIRED and non-empty: a half-formed handle would send the bridge reading a
@@ -970,6 +1019,46 @@ export function parsePermissionModeBody(raw: string): PermissionModeBody | null 
     choice,
     fullAuthorized: obj.fullAuthorized === true,
     managed: obj.managed === true,
+  };
+}
+
+/** Inbound body for applying the owner's knowledge choice NOW (`POST /knowledge`,
+ *  op "apply"). */
+export interface KnowledgeApplyBody extends BodyRouting {
+  op: "apply";
+  chatId: string;
+  openclawChatId: string | null;
+  choice: KnowledgeChoice;
+  revision: number | null;
+}
+
+/** Defensive parse of the `/knowledge` body: the owner's apply, or an admin op on the
+ *  agent default. Null for anything else. Exported for tests. */
+export function parseKnowledgeBody(
+  raw: string,
+): KnowledgeApplyBody | ReturnType<typeof parseKnowledgeDefaultBody> {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return null;
+  }
+  if (typeof parsed !== "object" || parsed === null) return null;
+  const obj = parsed as Record<string, unknown>;
+  if (obj.op !== "apply") return parseKnowledgeDefaultBody(obj);
+  if (typeof obj.chatId !== "string") return null;
+  const choice = parseKnowledgeChoice(obj.choice);
+  if (choice === undefined || choice === "invalid") return null;
+  const routing = parseBodyRouting(obj);
+  if (routing === null) return null;
+  return {
+    ...routing,
+    op: "apply",
+    chatId: obj.chatId,
+    openclawChatId: typeof obj.openclawChatId === "string" ? obj.openclawChatId : null,
+    choice,
+    revision:
+      typeof obj.revision === "number" && Number.isInteger(obj.revision) ? obj.revision : null,
   };
 }
 
@@ -1359,6 +1448,9 @@ export async function performSend(
   /** Where a participant's own socket comes from (speaker-pool.ts). Injectable for
    *  tests; the process-wide pool otherwise. */
   speakers: SpeakerSource = defaultSpeakers,
+  /** Filled with what this send did that Convex records (the knowledge choice's
+   *  outcome). The route answers it; tests read it. */
+  report: SendReport = {},
 ): Promise<void> {
   const conn = session.connection;
   const sessionKey = session.sessionKey;
@@ -1493,6 +1585,15 @@ export async function performSend(
   let describedPermission: SessionPermissionMode | null | undefined = undefined;
   // The describe ANSWERED with a session (its existence established).
   let sessionDescribed = false;
+  // The knowledge override the describe finds on the session (`null` = none, undefined =
+  // not known) — what the owner's knowledge choice is compared with.
+  let describedKnowledge: KnowledgeOverride | null | undefined = undefined;
+  // THIS send's knowledge revision is noted BEFORE the describe: an older on-the-spot
+  // apply arriving from now on is refused instead of landing under this turn, and one
+  // already writing is detected by the counter and re-read under the lock (codex P1).
+  const knowledgeLockGuard = knowledgeGuard(body.instanceName ?? "", sessionKey);
+  noteKnowledgeRevision(knowledgeLockGuard, body.knowledgeRevision);
+  const knowledgeWritesAtDescribe = knowledgeLockGuard.writes;
   // Pre-send guard outcome (W2). Set inside the try below — whose catch makes EVERY
   // failure fall open — and acted upon after it. `blocked` is the only value that
   // stops a send, and nothing but an explicit, positive measurement can set it.
@@ -1630,6 +1731,7 @@ export async function performSend(
     if (sess) captureDescribe(sess);
     if (sess) {
       describedPermission = readSessionAccess(sess).permissionMode;
+      describedKnowledge = readKnowledgeOverride(sess);
       sessionDescribed = true;
     }
 
@@ -2122,6 +2224,108 @@ export async function performSend(
     }
   }
 
+  // THE OWNER'S KNOWLEDGE CHOICE for this turn's agent, put on THIS session before the
+  // turn (providers/openclaw/knowledge-policy.ts) — same rule as the permission mode: a
+  // per-turn switch, a rotated segment or a recreated session each start with the agent's
+  // default, so the conversation's choice is (re)applied to every session Atrium uses.
+  // Compared with the describe in hand: an unchanged choice costs no RPC. A refusal
+  // withholds the turn (`knowledge_policy_not_applied`) — never a turn searching
+  // sources the owner turned off.
+  // The override the session was brought to (codex pass 13: a `sources` choice over an
+  // `off` default carries `auto`); undefined until known — the choice's own then.
+  let knowledgeDesired: KnowledgeOverride | null | undefined;
+  if (body.knowledgeChoice !== undefined) {
+    const knowledgeChoice = body.knowledgeChoice;
+    let enforcedKnowledge: KnowledgeEnforcement | "superseded";
+    // What the last check compares with: the override the enforcement brought the session to.
+    try {
+      // Under the session's knowledge lock: no on-the-spot apply can write between this
+      // comparison and the write, and one that wrote since our describe is seen.
+      enforcedKnowledge = await withKnowledgeLock(knowledgeLockGuard, async () => {
+        // A NEWER choice already reached this session (an apply made after the last
+        // gate decided this turn): it is the owner's latest intent — never overwritten
+        // with this turn's older one.
+        if (
+          body.knowledgeRevision !== undefined &&
+          body.knowledgeRevision < knowledgeLockGuard.revision
+        ) {
+          return "superseded" as const;
+        }
+        let stored = sessionAbsent ? null : describedKnowledge;
+        let absent = sessionAbsent;
+        if (knowledgeLockGuard.writes !== knowledgeWritesAtDescribe) {
+          // Our describe predates a write: what the session holds NOW is compared.
+          const fresh = await describeSessionAnswer(conn, sessionKey).catch(
+            () => ({ kind: "unreadable" }) as const,
+          );
+          absent = fresh.kind === "absent";
+          stored =
+            fresh.kind === "session"
+              ? readKnowledgeOverride(fresh.sess)
+              : fresh.kind === "absent"
+                ? null
+                : undefined;
+        }
+        try {
+          const enforced = await enforceKnowledgePolicy({
+            choice: knowledgeChoice,
+            sessionKey,
+            agentId: body.agentId,
+            stored,
+            sessionAbsent: absent,
+            conn,
+            // The conversation's own socket: in trusted-proxy mode the owner's, so the
+            // session it creates is theirs (the same call the claim makes).
+            createSession: () =>
+              conn.request("sessions.create", { key: sessionKey, agentId: body.agentId }, 10_000),
+          });
+          noteAppliedKnowledgeRevision(
+            knowledgeLockGuard,
+            body.knowledgeRevision,
+            enforced.desired,
+            choiceSelection(knowledgeChoice),
+          );
+          return enforced;
+        } finally {
+          knowledgeLockGuard.writes += 1;
+        }
+      });
+    } catch (err) {
+      if (err instanceof KnowledgePolicyNotAppliedError) {
+        report.knowledge = {
+          status: "failed",
+          reason: err.reason,
+          ...(body.knowledgeRevision === undefined ? {} : { revision: body.knowledgeRevision }),
+        };
+      }
+      throw err;
+    }
+    report.knowledge =
+      enforcedKnowledge === "superseded"
+        ? {
+            status: "superseded",
+            ...(body.knowledgeRevision === undefined ? {} : { revision: body.knowledgeRevision }),
+          }
+        : {
+            status: enforcedKnowledge.inert === true
+              ? "inert"
+              : enforcedKnowledge.dropped !== undefined
+                ? "clamped"
+                : enforcedKnowledge.changed
+                  ? "applied"
+                  : "unchanged",
+            ...(enforcedKnowledge.dropped === undefined ? {} : { dropped: enforcedKnowledge.dropped }),
+            ...(enforcedKnowledge.snapshot === null ? {} : { snapshot: enforcedKnowledge.snapshot }),
+            ...(body.knowledgeRevision === undefined ? {} : { revision: body.knowledgeRevision }),
+          };
+    if (enforcedKnowledge !== "superseded") knowledgeDesired = enforcedKnowledge.desired;
+    if (enforcedKnowledge !== "superseded" && enforcedKnowledge.changed) {
+      console.log(
+        `[knowledge] chat=${body.chatId} session set to ${body.knowledgeChoice.kind} before the turn`,
+      );
+    }
+  }
+
   // Shared-fs INBOUND (Phase 3): stream each tool-read reference to the shared
   // volume and APPEND a `[FICHIERS REÇUS]` block with the gateway-visible paths to
   // the message (the agent reads the files BY PATH). Fetch/size/collision failures
@@ -2344,6 +2548,43 @@ export async function performSend(
   // the turn a deadline already spent.
   const now = session.clock();
   assertBeforeSendDeadline(sendReceivedMs, Date.now(), body.dispatchAgeMs);
+  // THE LAST KNOWLEDGE CHECK, run by issueChatSend SYNCHRONOUSLY right before the
+  // request — whichever socket sends, after every wait (the participant's socket
+  // opening, its ownership proof, a fallback): between the choice being put on the
+  // session above and the send, the owner may have made a newer choice whose apply
+  // failed or has not run. Then this turn would go out under a choice the owner
+  // replaced: withheld by name, the outcome reported. A newer choice CONFIRMED on the
+  // session lets the turn go (it runs under the newest choice). (codex passes 3 and 6)
+  const knowledgeGate: ChatSendGate =
+    body.knowledgeChoice === undefined
+      ? NO_CONVERSATION_CHOICE
+      : knowledgeChatSendGate(
+          knowledgeLockGuard,
+          body.knowledgeRevision,
+          (reason) => {
+            report.knowledge = {
+              status: "failed",
+              reason,
+              ...(body.knowledgeRevision === undefined ? {} : { revision: body.knowledgeRevision }),
+            };
+          },
+          {
+            desired: knowledgeDesired !== undefined ? knowledgeDesired : desiredOverride(body.knowledgeChoice),
+            // The last await before the request: what the session holds NOW, read by
+            // the PLUGIN (policy.get) — its answer also proves it is still loaded to
+            // process the choice (codex pass 10). Same single round-trip as a describe.
+            read: () => readSessionPolicy(conn, sessionKey, body.agentId),
+            // The ORIGINAL selection bounds what the turn may search (codex pass 21).
+            selection: choiceSelection(body.knowledgeChoice),
+            onClamped: (dropped) => {
+              report.knowledge = {
+                status: "clamped",
+                dropped,
+                ...(body.knowledgeRevision === undefined ? {} : { revision: body.knowledgeRevision }),
+              };
+            },
+          },
+        );
   session.runManager.armReplayBuffer();
   try {
     // WHO SENDS. The conversation's socket (the owner's), unless this turn is a
@@ -2355,6 +2596,7 @@ export async function performSend(
       body,
       presendConfig,
       speakers,
+      knowledgeGate,
     );
     // The gateway ACCEPTED the message (with any prepended re-hydration history) — only
     // now consume firstSendPending (codex P2.A). A failed send above leaves it true so a
@@ -2488,6 +2730,21 @@ export async function performPatch(
   );
 }
 
+/** What a send reports back beside its acceptance (see performSend `report`). */
+export interface SendReport {
+  knowledge?: {
+    /** `clamped`: sent, but searching fewer of the chosen sources — the operator took
+     *  `dropped` out of the agent's allowlist since (codex pass 15). */
+    /** `inert`: a `default` sent over an override the plugin would not reset (overrides
+     *  disabled — it ignores session state then); the override is still stored. */
+    status: "applied" | "unchanged" | "superseded" | "failed" | "clamped" | "inert";
+    reason?: KnowledgePolicyFailure;
+    snapshot?: PolicySnapshotView;
+    revision?: number;
+    dropped?: string[];
+  };
+}
+
 /** What applying a permission-mode choice NOW did. `deferred` = no session exists yet
  *  under the key: the choice is put on the session the next turn creates, before its
  *  `chat.send` (performSend) — creating it here would make the first turn read a warm,
@@ -2558,6 +2815,115 @@ export async function performPermissionModeChange(
     mode: enforced.mode,
     ...(enforced.savedNotApplied ? { savedNotApplied: true as const } : {}),
   };
+}
+
+/** What applying a knowledge choice NOW did. `deferred` = no session exists yet under
+ *  the key: the choice is put on the session the next turn creates, before its
+ *  `chat.send` (performSend) — creating it here would make the first turn read a warm,
+ *  empty session and skip re-hydrating the thread. */
+export type KnowledgeApplyOutcome =
+  | {
+      ok: true;
+      result: "applied" | "unchanged" | "deferred" | "inert" | "clamped";
+      snapshot?: PolicySnapshotView;
+      /** `clamped`: the chosen ids the agent's allowlist no longer holds (codex pass 19). */
+      dropped?: string[];
+    }
+  | { ok: false; reason: KnowledgePolicyFailure };
+
+/**
+ * `/knowledge` apply worker: bring the session the next turn uses to the owner's choice
+ * now. A refusal is RETURNED, never swallowed: the owner is told the choice did not land.
+ * Exported for tests.
+ */
+/**
+ * ANNOUNCE an on-the-spot apply to its session's guard, SYNCHRONOUSLY — before any await
+ * (the session acquire, the ownership claim): a send prepared under an older revision
+ * must see it at its last check before chat.send (codex pass 5). The key is the one the
+ * registry derives for this routing (session.ts acquire). An apply older than what the
+ * guard already knows is refused here. Exported for tests.
+ */
+export function announceKnowledgeApply(body: KnowledgeApplyBody): {
+  guard: SessionKnowledgeGuard;
+  superseded: boolean;
+} {
+  const sessionKey = buildSessionKey(
+    body.openclawChatId ?? body.chatId,
+    body.agentId,
+    body.canonical,
+  );
+  const guard = knowledgeGuard(body.instanceName ?? "", sessionKey);
+  if (body.revision !== null && body.revision < guard.revision) {
+    return { guard, superseded: true };
+  }
+  noteKnowledgeRevision(guard, body.revision);
+  return { guard, superseded: false };
+}
+
+export async function performKnowledgeApply(
+  session: BridgeSession,
+  body: KnowledgeApplyBody,
+  config?: BridgeConfig,
+): Promise<KnowledgeApplyOutcome> {
+  const conn = session.connection;
+  const sessionKey = session.sessionKey;
+  // Announced FIRST, before the claim's await (the route already did it before the
+  // acquire; doing it again here is idempotent and covers direct callers).
+  const guard = knowledgeGuard(body.instanceName ?? "", sessionKey);
+  if (body.revision !== null && body.revision < guard.revision) {
+    return { ok: false, reason: "superseded" };
+  }
+  noteKnowledgeRevision(guard, body.revision);
+  // Same rule as the permission mode (performPermissionModeChange): nothing touches a
+  // session whose ownership the claim could not establish.
+  if ((await claimSessionForOwner(conn, sessionKey, body.agentId, config)) !== "exists") {
+    return { ok: true, result: "deferred" };
+  }
+  // Checked and written UNDER the session's knowledge lock, against the highest revision
+  // this session was told about: an apply that arrives after a newer choice (another
+  // apply, or a send that carried it) is refused, never landed (codex P1). The describe
+  // is taken inside the lock, so it sees every earlier write.
+  return await withKnowledgeLock(guard, async (): Promise<KnowledgeApplyOutcome> => {
+    if (body.revision !== null && body.revision < guard.revision) {
+      return { ok: false, reason: "superseded" };
+    }
+    const answer = await describeSessionAnswer(conn, sessionKey);
+    if (answer.kind === "absent") return { ok: true, result: "deferred" };
+    try {
+      const enforced = await enforceKnowledgePolicy({
+        choice: body.choice,
+        sessionKey,
+        agentId: body.agentId,
+        stored: answer.kind === "session" ? readKnowledgeOverride(answer.sess) : undefined,
+        // An unreadable answer: the write is attempted (the plugin refuses a key with no
+        // session by itself, `write_failed`), but nothing is created here.
+        sessionAbsent: false,
+        conn,
+      });
+      noteAppliedKnowledgeRevision(guard, body.revision, enforced.desired, choiceSelection(body.choice));
+      return {
+        ok: true,
+        result:
+          enforced.inert === true
+            ? "inert"
+            : enforced.dropped !== undefined
+              ? "clamped"
+              : enforced.changed
+                ? "applied"
+                : "unchanged",
+        ...(enforced.dropped === undefined ? {} : { dropped: enforced.dropped }),
+        ...(enforced.snapshot === null ? {} : { snapshot: enforced.snapshot }),
+      };
+    } catch (err) {
+      if (err instanceof KnowledgePolicyNotAppliedError) {
+        console.error(`[knowledge] chat=${body.chatId} ${err.message}`);
+        return { ok: false, reason: err.reason };
+      }
+      throw err;
+    } finally {
+      guard.writes += 1;
+    }
+  });
 }
 
 /**
@@ -2677,11 +3043,14 @@ export async function sendAsSpeaker(
   },
   config: BridgeConfig | undefined,
   speakers: SpeakerSource,
+  /** Re-checked synchronously right before EVERY attempt, whichever socket sends
+   *  (providers/openclaw/chat-send.ts). */
+  gate: ChatSendGate = NO_CONVERSATION_CHOICE,
 ): Promise<{ payload?: Record<string, unknown> }> {
   // ONE call site for the send, whichever socket carries it: the outbound ratchet
   // inventories chat.send call sites, and every body must stay the one
   // performSend built and the ratchet captures.
-  const send = (via: OpenClawConnection) => via.request("chat.send", params, 20_000);
+  const send = (via: OpenClawConnection) => issueChatSend(via, params, 20_000, gate);
   if (
     body.speakerGatewayUser === undefined ||
     config === undefined ||
@@ -2767,6 +3136,12 @@ export async function sendAsSpeaker(
   try {
     response = await send(speakerConn);
   } catch (err) {
+    // WITHHELD by the gate: no request was issued — the route simply goes, and the
+    // refusal is the turn's (never re-sent from the owner's socket).
+    if (wasWithheldBeforeSend(err)) {
+      speakers.unroute(speakerConn, runId);
+      throw err;
+    }
     // ANSWERED by the gateway: the run never started — the route simply goes.
     // UNANSWERED (the socket closed before the ack — its close rejects this request
     // before the pool's reader sees the end — or a timeout): the run may be live and
@@ -3053,8 +3428,13 @@ export async function withOneRePreparation(
   try {
     await sendOnce();
   } catch (err) {
-    if (!(err instanceof SessionVanishedBeforeSend)) throw err;
-    console.error(`[identity] chat=${chatId} ${err.message} — preparing it again`);
+    // The session lost what the send prepared: gone under the key, or its knowledge
+    // choice dropped by a reset from another client (codex pass 7). Nothing reached
+    // the gateway yet, so the whole send is prepared again — once.
+    const replaced =
+      err instanceof KnowledgePolicyNotAppliedError && err.reason === "session_replaced";
+    if (!(err instanceof SessionVanishedBeforeSend) && !replaced) throw err;
+    console.error(`[identity] chat=${chatId} ${(err as Error).message} — preparing it again`);
     await sendOnce();
   }
 }
@@ -3759,6 +4139,11 @@ export function normalizeOpenClawAgent(
 // createBridgeServer time (module-level so the free function can reach it).
 let hermesTurnsRef: HermesTurnRegistry | undefined;
 
+/** The knowledge-discovery cursor of one INSTANCE (probeKnowledgeForAgents `cursorKey`). */
+export function knowledgeDiscoveryCursorKey(config: Pick<BridgeConfig, "instanceName" | "openclawGatewayUrl">): string {
+  return `${config.instanceName ?? ""}\u0000${config.openclawGatewayUrl}`;
+}
+
 export async function discoverAgents(
   config: BridgeConfig,
   onHandshake?: (conn: OpenClawConnection) => void,
@@ -3767,6 +4152,9 @@ export async function discoverAgents(
   agents: NormalizedAgent[];
   rawCount: number;
   usage: ProviderUsage[] | null;
+  /** Per discovered agent, what the `openclaw-knowledge` plugin says (feature detection +
+   *  the agent's default). Absent on Hermes, and when the probe itself could not run. */
+  knowledge?: Record<string, KnowledgeProbe>;
 }> {
   if (config.kind === "hermes") {
     // Hermes: REST discovery (GET /v1/models → one agent). No operator socket,
@@ -3830,7 +4218,48 @@ export async function discoverAgents(
     } catch {
       usage = null;
     }
-    return { agents, rawCount: list.length, usage };
+    // KNOWLEDGE SOURCES ride the same short-lived connection: one `knowledge.sources`
+    // per agent (feature detection + the agent's default, contract §5 "call once per
+    // connection"), stopping at the first `unknown method` — the plugin is gateway-wide.
+    // Refreshed on every discovery (the Convex poll, a manual sync), never per keystroke.
+    // Best-effort: discovery itself is never failed by it.
+    let knowledge: Record<string, KnowledgeProbe> | undefined;
+    try {
+      // With the RAW default each agent has in the config — the baseline an admin's
+      // write is later checked against — attached only as a coherent pair with the
+      // effective view (knowledge-policy.ts readKnowledgeBaseline, codex pass 9: one
+      // config read on each side of the probes, same hash, plugin reflecting it).
+      // Unpaired: nothing attached, Convex drops its baseline.
+      const deadline = Date.now() + KNOWLEDGE_DISCOVERY_BUDGET_MS;
+      knowledge = await readKnowledgeBaseline(
+        conn,
+        () =>
+          probeKnowledgeForAgents(
+            conn,
+            agents.map((a) => a.agentId),
+            {
+              budgetMs: Math.max(1, Math.min(KNOWLEDGE_PROBE_BUDGET_MS, deadline - Date.now())),
+              // One cursor per INSTANCE (codex pass 22): rows are stored per instance, and
+              // two instances on one gateway syncing in step would each probe the same
+              // window forever under a per-gateway key. The URL is part of the key so an
+              // instance re-pointed at another gateway (the instance's gateway URL is
+              // editable) starts that roster from its beginning rather than at an offset
+              // taken on another list — harmless either way, the offset wraps modulo the
+              // roster.
+              cursorKey: knowledgeDiscoveryCursorKey(config),
+            },
+          ),
+        { deadline },
+      );
+    } catch {
+      knowledge = undefined;
+    }
+    return {
+      agents,
+      rawCount: list.length,
+      usage,
+      ...(knowledge === undefined ? {} : { knowledge }),
+    };
   } finally {
     conn.close();
   }
@@ -4687,7 +5116,7 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
         return;
       }
       try {
-        const { agents, rawCount, usage } = await discoverGatewayAgents(
+        const { agents, rawCount, usage, knowledge } = await discoverGatewayAgents(
           bundle.config,
           noteHandshakeFor(instanceName!),
           (v) => noteGatewayVersion(instanceName!, v),
@@ -4703,6 +5132,9 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
           // per provider, {label, usedPercent, resetAt} — the chat gauge + the
           // Settings ▸ Bridge detail read the stored copy of this.
           usage,
+          // Per agent: the knowledge plugin's answer (absent on an older bridge — Convex
+          // then keeps what it had).
+          ...(knowledge === undefined ? {} : { knowledge }),
           capturedAt: Date.now(),
         });
       } catch (err) {
@@ -4773,6 +5205,9 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
       // session the next turn uses. Convex owns who may choose (the owner) and whether
       // `full` is authorized (an Atrium administrator).
       "/permission-mode",
+      // Knowledge sources: the owner's conversation choice applied NOW, and the admin's
+      // agent default (config.patch). Convex owns who may do either.
+      "/knowledge",
       "/reset",
       "/abort",
       "/compact",
@@ -5072,6 +5507,73 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
       } catch (err) {
         console.error("bridge /permission-mode failed:", (err as Error)?.message ?? err);
         sendJson(res, 502, { ok: false, error: { code: "upstream_failed" } });
+      }
+      return;
+    }
+
+    if (req.url === "/knowledge") {
+      const kb = parseKnowledgeBody(raw);
+      if (kb === null) {
+        sendJson(res, 400, { ok: false, error: "invalid body" });
+        return;
+      }
+      const kbBundle = kb.instanceName ? served.get(kb.instanceName) : undefined;
+      if (!kb.instanceName || !kbBundle) {
+        sendJson(res, 409, { ok: false, error: { code: "instance_not_served" } });
+        return;
+      }
+      if (kbBundle.config.kind === "hermes") {
+        // Hermes has no knowledge plugin surface: said, not silently accepted.
+        sendJson(res, 409, {
+          ok: false,
+          error: { code: "knowledge_unavailable", reason: "unsupported_gateway" },
+        });
+        return;
+      }
+      if (kb.op === "apply") {
+        // Announced before ANY await (codex pass 5): see announceKnowledgeApply.
+        if (announceKnowledgeApply(kb).superseded) {
+          sendJson(res, 409, {
+            ok: false,
+            error: { code: "knowledge_policy_not_applied", reason: "superseded" },
+          });
+          return;
+        }
+        try {
+          const session = await registry.acquire(toRouting(kb, kb.instanceName));
+          const outcome = await performKnowledgeApply(session, kb, kbBundle.config);
+          if (outcome.ok) sendJson(res, 200, outcome);
+          else
+            sendJson(res, 409, {
+              ok: false,
+              error: { code: "knowledge_policy_not_applied", reason: outcome.reason },
+            });
+        } catch (err) {
+          console.error("bridge /knowledge apply failed:", (err as Error)?.message ?? err);
+          sendJson(res, 502, { ok: false, error: { code: "upstream_failed" } });
+        }
+        return;
+      }
+      // The agent default: the bridge's operator (system) socket, like /config-defaults.
+      try {
+        const result = await withOperatorConnection(
+          kbBundle.config,
+          // A lost answer is confirmed on a FRESH operator connection (the write may
+          // have restarted the gateway) before anything is concluded.
+          (conn) =>
+            performKnowledgeDefaultOp(conn, kb, {
+              readFresh: (fn) => withOperatorConnection(kbBundle.config, fn),
+            }),
+          noteHandshakeFor(kb.instanceName),
+        );
+        sendJson(res, result.status, result.body);
+      } catch (err) {
+        const code = classifyGatewayError(err);
+        console.error(
+          `bridge /knowledge ${kb.op} failed [${code}]:`,
+          (err as Error)?.message ?? err,
+        );
+        sendJson(res, 502, { ok: false, error: { code } });
       }
       return;
     }
@@ -5518,10 +6020,12 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
               }
             };
             const before = await countEntries();
-            await conn.request(
-              "chat.send",
+            await issueChatSend(
+              conn,
               lcmSendParams(lcmSessionKey, lcmCommand, Date.now()),
               15_000,
+              // A lossless-claw command session, not the conversation's.
+              NO_CONVERSATION_CHOICE,
             );
             // The command layer answers synchronously gateway-side; poll the
             // transcript until the reply lands (bounded ~12s).
@@ -6069,7 +6573,9 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
           body.interactionId,
           saAtts,
         );
-        await session.connection.request("chat.send", saParams, 20_000);
+        // A sub-agent's CHILD session: the conversation's knowledge choice governs the
+        // conversation's own sessions, not a child the agent spawned.
+        await issueChatSend(session.connection, saParams, 20_000, NO_CONVERSATION_CHOICE);
         sendJson(res, 200, { ok: true });
       } catch (err) {
         const code = classifyGatewayError(err);
@@ -7147,6 +7653,7 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
     // both the body read and any provider/session work — every one of those can be
     // where a paused or blocked bridge loses its minutes.
     const sendReceivedMs = requestReceivedMs;
+    const sendReport: SendReport = {};
     const body = parseSendBody(raw);
     if (body === null) {
       sendJson(res, 400, { ok: false, error: "invalid body" });
@@ -7281,11 +7788,18 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
           },
           sendReceivedMs,
           bundle.config,
+          defaultSpeakers,
+          sendReport,
         );
       await withOneRePreparation(sendOnce, body.chatId);
       // A real send proves connection + the ROUTED agent answered.
       health.recordOk(targetRef(body.agentId, body.canonical, sendInstance));
-      sendJson(res, 200, { ok: true });
+      // The knowledge choice's outcome rides the answer: Convex records it for the
+      // composer (an old Convex ignores the field).
+      sendJson(res, 200, {
+        ok: true,
+        ...(sendReport.knowledge === undefined ? {} : { knowledge: sendReport.knowledge }),
+      });
     } catch (err) {
       // A per-send upstream failure is reported but does not crash the bridge.
       // Classify into a stable, non-PHI code: the RAW message stays in this log
@@ -7328,7 +7842,16 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
       // the path contract has a dozen clauses and the message named none of them.
       // Structural only — the reason never carries a filename.
       logInboundRefusal(err);
-      sendJson(res, 502, { ok: false, error: { code } });
+      sendJson(res, 502, {
+        ok: false,
+        error: {
+          code,
+          // WHY the knowledge choice could not be applied — a closed vocabulary
+          // (knowledge-policy.ts), never gateway text.
+          ...(err instanceof KnowledgePolicyNotAppliedError ? { reason: err.reason } : {}),
+        },
+        ...(sendReport.knowledge === undefined ? {} : { knowledge: sendReport.knowledge }),
+      });
     }
   }
 }

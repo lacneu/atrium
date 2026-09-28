@@ -89,6 +89,9 @@ const FROZEN_TRUTH_FLOOR = [
   "CronRunLogEntry.deliveryStatus",
   "CronRunLogEntry.deliveryError",
   "TaskSummary.startedAt",
+  // The knowledge plugin's session actions and the agent-default config write (2026-09-27).
+  "PluginsSessionActionParams.payload",
+  "ConfigPatchParams.replacePaths",
 ];
 
 const ratchet = JSON.parse(

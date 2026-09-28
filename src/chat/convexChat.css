@@ -4149,6 +4149,12 @@ button.oc-bmk-rail__count:hover {
 .oc-perm__learn:hover {
   color: var(--foreground);
 }
+/* The "+" menu's knowledge heading: where the selection comes from (plain text, not a link). */
+.oc-knowledge__origin {
+  font-weight: 400;
+  font-size: 0.75rem;
+  color: var(--muted-foreground);
+}
 .oc-perm__opt {
   display: flex;
   align-items: flex-start;

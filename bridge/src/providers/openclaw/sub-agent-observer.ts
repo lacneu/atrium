@@ -46,7 +46,10 @@ import type {
   SubAgentTelemetry,
   SubAgentToolPartRecord,
 } from "../../convex-writer.js";
-import { redactPrivateToolArgs } from "../../core/private-tool-args.js";
+import {
+  redactPrivateToolArgs,
+  toolResultStatus,
+} from "../../core/private-tool-args.js";
 
 /** The Convex upsert the observer emits (see convex/subAgents.ts). Alias of the
  *  writer's record type -- single source of truth for the shape. */
@@ -1147,6 +1150,45 @@ export class SubAgentObserver {
     }
     const childKey = extractChildSessionKey(readField(data, "result"));
     if (childKey === null) return null;
+    // A REFUSED spawn still names its child. Upstream mints the key before the
+    // session exists and returns it with the failures that follow — the session
+    // patch, the context preparation, the thread binding, the run pipeline
+    // (subagent-spawn.ts:192-197, :231-235, :264-268, :600-613 at v2026.9.6) — under
+    // the contract's refusal members `status: "error" | "forbidden"`
+    // (subagent-spawn-contract.ts:86-89). Registered as running, that key became a
+    // child that never ran: it held the conversation's next message for the whole
+    // TTL, then "timed out" (prod 2026-09-23: two spawns refused on a full gateway
+    // disk, recorded as timeouts with zero tools, a send parked 14 minutes behind
+    // one). Settled at once instead, as a failure that says it never started.
+    // A child whose own frames were already seen DID run; it keeps the path below.
+    const refusal = spawnRefusal(readField(data, "result"));
+    if (
+      refusal !== null &&
+      !this.observations.has(childKey) &&
+      !this.recentlyFinal.has(childKey)
+    ) {
+      if (resultCallId !== null) {
+        this.pendingSpawnConfig.delete(resultCallId);
+        this.pendingSpawnTimeout.delete(resultCallId);
+      }
+      const refusedTask = this.sanitizeTaskName(
+        extractTaskName(readString(data, "meta")),
+      );
+      const reason =
+        refusal.error !== null ? this.sanitizeResult(refusal.error) : "";
+      return [
+        {
+          chatId: this.chatId,
+          parentMessageId: parentMessageId ?? null,
+          anchorExact: parentMessageId != null,
+          childSessionKey: childKey,
+          status: "error",
+          errorCode: SPAWN_REFUSED_CODE,
+          ...(reason !== "" ? { errorMessage: reason } : {}),
+          ...(refusedTask !== undefined ? { taskName: refusedTask } : {}),
+        },
+      ];
+    }
     // The child's RUN id rides the same result (subagent-spawn.ts:682-686 at
     // v2026.9.6) — the only child identity a requester-settle wake names.
     const childRunId =
@@ -1920,12 +1962,56 @@ function extractToolResultText(value: unknown): string {
   }
 }
 
+/** The class a refused spawn's row carries (allowlisted Convex-side,
+ *  convex/lib/chatRenderState.ts): the delegation never started. */
+export const SPAWN_REFUSED_CODE = "spawn_refused";
+
+/** The refusal members of upstream's spawn contract
+ *  (subagent-spawn-contract.ts:86-89 at v2026.9.6: `accepted | forbidden | error`). */
+const REFUSED_SPAWN_STATUSES: ReadonlySet<string> = new Set(["error", "forbidden"]);
+
+/**
+ * Did the gateway REFUSE this `sessions_spawn`? Read from the payload's own
+ * `status` (`details` first, else the JSON echo in the content blocks), never from
+ * the envelope's `isError`/`success` — the codex runtime sets those on a
+ * SUCCESSFUL spawn too (fixtures/subagent_frames_error.jsonl, status "accepted").
+ * Returns the gateway's reason when it gave one. Null = not a refusal (accepted,
+ * or a status this reader does not know — which must not be called a refusal).
+ */
+function spawnRefusal(
+  result: Record<string, unknown> | null,
+): { error: string | null } | null {
+  const status = toolResultStatus(result);
+  if (status === null || !REFUSED_SPAWN_STATUSES.has(status)) return null;
+  const fromDetails = readString(result?.details, "error");
+  if (fromDetails !== null && fromDetails !== "") return { error: fromDetails };
+  const items =
+    result === null
+      ? null
+      : Array.isArray(result.content)
+        ? result.content
+        : Array.isArray(result.contentItems)
+          ? result.contentItems
+          : null;
+  for (const item of items ?? []) {
+    const text = readString(item, "text");
+    if (text === null) continue;
+    try {
+      const error = readString(JSON.parse(text) as unknown, "error");
+      if (error !== null && error !== "") return { error };
+    } catch {
+      // Non-JSON content item -- skip.
+    }
+  }
+  return { error: null };
+}
+
 /**
  * Pull `childSessionKey` out of a `sessions_spawn` tool result. The result is
  * `{ contentItems: [{ text: "<json string>" }] }`, where the JSON string carries
- * the childSessionKey (and a status flag we deliberately IGNORE -- the codex
- * runtime flags the spawn result isError/success:false even on a successful spawn,
- * so childSessionKey presence is the only reliable signal).
+ * the childSessionKey. The envelope's `isError`/`success:false` is IGNORED — the
+ * codex runtime sets it even on a successful spawn. A key is NOT proof of
+ * acceptance, though: a refused spawn names its child too (`spawnRefusal`).
  */
 function extractChildSessionKey(result: Record<string, unknown> | null): string | null {
   if (result === null) return null;

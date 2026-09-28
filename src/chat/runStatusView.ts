@@ -338,6 +338,10 @@ export const ERROR_CODE_LABEL: Record<string, () => string> = {
   // the session it would run on (refused, not authorized, or a gateway without modes).
   // Stored as a dispatch code like the two above; never retried.
   permission_mode_not_applied: m.runstatus_error_permission_mode_not_applied,
+  // The BRIDGE withheld the turn: the owner's choice of knowledge sources for this agent
+  // could not be put on the session (the plugin refused it or is gone, or the bridge
+  // cannot apply it). Stored as a dispatch code; never retried.
+  knowledge_policy_not_applied: m.runstatus_error_knowledge_policy_not_applied,
   auth_profile_cooldown: m.runstatus_error_auth_profile_cooldown,
   gateway_storage_busy: m.runstatus_error_gateway_storage_busy,
   gateway_storage_unavailable: m.runstatus_error_gateway_storage_unavailable,

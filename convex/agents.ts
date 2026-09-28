@@ -432,6 +432,7 @@ export async function discoverInstanceAgents(
       usage?: unknown;
       agents?: Array<Record<string, unknown>>;
       count?: number;
+      knowledge?: unknown;
     };
     const list = Array.isArray(body.agents) ? body.agents : [];
     // Raw gateway agent count (pre-normalization) from a NEW bridge; null when the bridge
@@ -472,6 +473,24 @@ export async function discoverInstanceAgents(
       return { synced: false, reached: true, httpStatus: 200, agentCount: 0 };
     }
     await ctx.runMutation(internal.agents.applyDiscovery, { instanceName, agents });
+    // Knowledge ride-along (the `openclaw-knowledge` plugin's answer per agent): feature
+    // detection + allowlist + agent default, stored for the composer and the admin card
+    // (convex/knowledge.ts). Absent from an older bridge: the stored rows stand.
+    // Best-effort — discovery is never failed by it.
+    if (
+      typeof body.knowledge === "object" &&
+      body.knowledge !== null &&
+      !Array.isArray(body.knowledge)
+    ) {
+      try {
+        await ctx.runMutation(internal.knowledge.recordKnowledgeDiscovery, {
+          instanceName,
+          entries: body.knowledge,
+        });
+      } catch (err) {
+        console.error("knowledge discovery not recorded (non-fatal):", err);
+      }
+    }
     // Usage ride-along -> the DEDICATED table (never instanceDiscovery: that one
     // is cache-stable for the chat queries). Best-effort, last-good semantics:
     // an absent/empty snapshot never clears the previous one.

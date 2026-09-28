@@ -320,6 +320,7 @@ import {
 } from "./sessionKnobs";
 import { visibilityChipView } from "./sessionAccessView";
 import { PermissionModePicker, PermissionModeSection } from "./PermissionModePicker";
+import { ComposerAddMenu } from "./ComposerAddMenu";
 import {
   AgentRequestDock,
   AgentRequestsHeaderButton,
@@ -3643,7 +3644,9 @@ function AssistantEmptyState({ show }: { show: boolean }) {
     // card is hidden (it now lives in the Outils-gated meta group), so the bubble
     // would otherwise be BLANK on a failed delegation — render the failure prose so
     // it stays un-missable (the persistent composer beacon is the chat-level echo).
-    if (show) return null;
+    // …unless the card has no failure to show (`cardSilent`, a child the gateway
+    // aborted): deferring there left the bubble blank.
+    if (show && state.cardSilent !== true) return null;
     return (
       <div className="oc-empty-answer oc-empty-answer--failed" role="status">
         <Bot size={15} className="oc-empty-answer__icon" aria-hidden />
@@ -5913,15 +5916,22 @@ function Composer({
               so attaching here would be silently dropped. Disable the picker while
               queued (and when unavailable) so the affordance never lies. Including
               attachments in a queued send is a later phase. */}
-          {attachmentsSupported ? (
-            <ComposerPrimitive.AddAttachment
-              className="oc-composer__icon"
-              aria-label={m.chat_attach_file()}
-              disabled={queued || unavailable}
-            >
-              <Plus size={18} aria-hidden />
-            </ComposerPrimitive.AddAttachment>
-          ) : null}
+          {/* "+" is a MENU: a file, an image (the same attachment pipeline and limits),
+              and the knowledge sources the next agent searches (owner chooses,
+              participants see). Self-hides when there is nothing to offer. */}
+          <ComposerAddMenu
+            chatId={chatId}
+            routedAgent={
+              composerTarget
+                ? {
+                    instanceName: composerTarget.instanceName,
+                    agentId: composerTarget.agentId,
+                  }
+                : null
+            }
+            attachmentsSupported={attachmentsSupported}
+            attachDisabled={queued || unavailable}
+          />
           {/* NOT in focus mode. This toggle switches the THREAD between the clean
               and the analysis view (tool activity, model chip, context meter) —
               everything it changes is behind the focus panel's backdrop. It worked

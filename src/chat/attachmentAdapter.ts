@@ -98,6 +98,12 @@ export function attachmentParts(
   return parts;
 }
 
+/** The composer menu's "add an image" picker filter. Only the OS picker is narrowed: the
+ *  file then takes the SAME path as any other (this adapter's `add`, its size cap).
+ *  Concatenated so the source-pin tests' comment stripper never reads the literal's
+ *  slash-star as a comment opener. */
+export const IMAGE_PICKER_ACCEPT = "image/" + "*";
+
 export function createConvexAttachmentAdapter(
   convex: ConvexReactClient,
   // Surface a rejection (e.g. too large) as a VISIBLE toast — assistant-ui only

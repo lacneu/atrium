@@ -95,7 +95,17 @@ export type AssistantEmptyState =
        *  reply comes from the agent the current one asked, not from it. */
       agentId?: string;
     }
-  | { kind: "failed"; taskName?: string; reason: string }
+  | {
+      kind: "failed";
+      taskName?: string;
+      reason: string;
+      /** The child's own card does NOT surface this failure, so the bubble must say
+       *  it in the analysis view too. A card shows a failure only for `error`: an
+       *  `aborted` child reads as a calm "stopped" (statusTone), which is true of a
+       *  Stop the reader pressed and false of a run the GATEWAY ended — there the
+       *  deferral left a hand-off with no answer and nothing naming why. */
+      cardSilent?: true;
+    }
   | { kind: "generic" };
 
 /** How long after the child completes we still EXPECT the announce merge to
@@ -222,27 +232,31 @@ const ACCEPTED_SPAWN_STATUS: ReadonlySet<string> = new Set([
  *  `jsonResult` like any other refusal — a successful call carrying
  *  `{status:"error"}` — so a refused spawn followed by a refused yield read as a
  *  hand-off and put a waiting note on a turn that delegated nothing. A key in the
- *  result is the acceptance signal the bridge itself trusts
- *  (providers/openclaw/sub-agent-observer.ts: "childSessionKey presence is the only
- *  reliable success signal", because the codex runtime flags a SUCCESSFUL spawn as
- *  errored). Falling back to a non-error status keeps a gateway that names no child
- *  from being called a refusal. */
+ *  result is the acceptance signal — the envelope's error flag is not, since the
+ *  codex runtime flags a SUCCESSFUL spawn as errored — except when the payload's
+ *  own status refuses, because upstream names the child in its refusals too.
+ *  Falling back to a non-error status keeps a gateway that names no child from
+ *  being called a refusal. */
 function spawnAccepted(toolParts: readonly EmptyStateToolPart[]): boolean {
-  // A named child is the acceptance signal itself — nothing else to check.
-  if (extractSpawnedChildKeys(toolParts).length > 0) return true;
   return toolParts.some((p) => {
     if (!SPAWN_TOOL_NAMES.has(p.toolName)) return false;
+    // A named child is the acceptance signal — UNLESS the payload refuses. Upstream
+    // returns the key with its refusals too (`status: "error" | "forbidden"`,
+    // subagent-spawn.ts:192-197 at v2026.9.6), and the bridge twin
+    // (sub-agent-observer.ts `spawnRefusal`) no longer takes that key for a child.
+    const stated = toolResultStatus(p.resultDetails ?? p.result);
+    if (stated === "error" || stated === "forbidden") return false;
+    if (extractSpawnedChildKeys([p]).length > 0) return true;
     // A refusal is a refusal whatever word it uses. Keying on "not exactly
     // `error`" let `{status:"rejected", reason:"quota"}` through — a shape this
     // repo already carries — and with a stale completed yield on a merged bubble
     // that was enough to manufacture a hand-off. The phase must agree too: the
     // normalizer does classify a rejected spawn as `error`.
     if (p.phase === "error") return false;
-    // `resultDetails` FIRST: when the window read elided the output, `result` is
-    // the size NOTE (a string), and reading it would find no status and fail open
-    // on exactly the big delegations this field exists to rescue.
-    const status = toolResultStatus(p.resultDetails ?? p.result);
-    return status === null || ACCEPTED_SPAWN_STATUS.has(status);
+    // `resultDetails` FIRST (read above): when the window read elided the output,
+    // `result` is the size NOTE (a string), and reading it would find no status and
+    // fail open on exactly the big delegations this field exists to rescue.
+    return stated === null || ACCEPTED_SPAWN_STATUS.has(stated);
   });
 }
 
@@ -408,6 +422,13 @@ export function assistantEmptyState(
         failed.errorCode,
         failed.runTimeoutSeconds,
       ),
+      // Production 2026-09-28: a turn yielded to its one child, the gateway ended
+      // that child (`aborted`, no Stop pressed) and never resumed the parent. With
+      // tool cards shown, this verdict deferred to a card that said "stopped", and
+      // the bubble held 35 tool cards and no word about the missing answer.
+      ...(failed.status === "aborted" && failed.stopRequestedAt === undefined
+        ? { cardSilent: true as const }
+        : {}),
     };
   }
 

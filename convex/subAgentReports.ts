@@ -294,6 +294,7 @@ export const createSubAgentReport = mutation({
         childSessionKey: c.childSessionKey,
         status: c.status as SubAgentStatus,
         errorMessage: c.errorMessage,
+        errorCode: c.errorCode,
       })),
     );
     const evidence = {

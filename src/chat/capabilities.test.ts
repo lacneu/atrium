@@ -74,6 +74,8 @@ describe("CAPABILITY_KEYS contract (lockstep with the bridge manifest)", () => {
       "cronManage",
       // The composer's execution-permission picker (floor 2026.8.2).
       "permissionModes",
+      // The composer's knowledge sources + the admin's agent default (floor 2026.9.6).
+      "knowledgePolicy",
     ]);
   });
 
@@ -175,6 +177,7 @@ describe("capabilityOf — capability x set matrix", () => {
         cronManage: false,
         // Absent from every one of these sets -> false (fail closed).
         permissionModes: false,
+        knowledgePolicy: false,
       },
     ],
     [
@@ -195,6 +198,7 @@ describe("capabilityOf — capability x set matrix", () => {
         cronManage: false,
         // Absent from every one of these sets -> false (fail closed).
         permissionModes: false,
+        knowledgePolicy: false,
       },
     ],
     [
@@ -216,6 +220,7 @@ describe("capabilityOf — capability x set matrix", () => {
         cronManage: false,
         // Absent from every one of these sets -> false (fail closed).
         permissionModes: false,
+        knowledgePolicy: false,
       },
     ],
     [
@@ -236,6 +241,7 @@ describe("capabilityOf — capability x set matrix", () => {
         cronManage: false,
         // Absent from every one of these sets -> false (fail closed).
         permissionModes: false,
+        knowledgePolicy: false,
       },
     ],
     [
@@ -256,6 +262,7 @@ describe("capabilityOf — capability x set matrix", () => {
         cronManage: false,
         // Absent from every one of these sets -> false (fail closed).
         permissionModes: false,
+        knowledgePolicy: false,
       },
     ],
   ];

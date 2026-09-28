@@ -44,6 +44,7 @@ import {
 import { getProfile, requireActive, requirePermission, roleOf } from "./lib/access";
 import { capabilitiesForInstance, mediaQuarantineReason } from "./lib/compat";
 import { readDoc as readCompatDoc } from "./compat";
+import { decideTurnKnowledge, type TurnKnowledge } from "./knowledge";
 import { PERMISSIONS } from "./lib/rbac";
 import { buildOpenClawThreadId } from "./lib/openclawThread";
 import {
@@ -228,6 +229,27 @@ export async function readErrorCode(
     // empty / non-JSON body -> no structured cause; never throw
   }
   return undefined;
+}
+
+/** The /send answer, read ONCE: the curated failure code (as readErrorCode) and the
+ *  knowledge choice's outcome (`knowledge`, a new bridge only). Never throws. */
+export async function readSendAnswer(
+  response: Response,
+): Promise<{ errorCode?: string; knowledge?: unknown }> {
+  try {
+    const body = (await response.json()) as { error?: unknown; knowledge?: unknown };
+    const err = body?.error;
+    const errorCode =
+      err !== null && typeof err === "object" && typeof (err as { code?: unknown }).code === "string"
+        ? (err as { code: string }).code
+        : undefined;
+    return {
+      ...(errorCode === undefined ? {} : { errorCode }),
+      ...(body?.knowledge === undefined ? {} : { knowledge: body.knowledge }),
+    };
+  } catch {
+    return {};
+  }
 }
 
 /** Interrupt verdicts a bridge may report on `/abort`. Only `interrupted` means the
@@ -1801,12 +1823,14 @@ export const lastGateBeforeSend = internalMutation({
     | { kind: "reparked" }
     | { kind: "refused"; agentLeftRoom?: true }
     | { kind: "permission_refused" }
+    | { kind: "knowledge_refused"; revision: number }
     | {
         kind: "send";
         speakerGatewayUser: string | null;
         speakerCanonical: string | null;
         mentionCanonicals: Record<string, string>;
         permission: TurnPermission;
+        knowledge: TurnKnowledge;
       }
   > => {
     const row = await ctx.db.get(outboxId);
@@ -1843,6 +1867,14 @@ export const lastGateBeforeSend = internalMutation({
     // read: a demotion or a new choice in between cannot ride an older decision.
     const permission = await decideTurnPermission(ctx, chat, target.instanceName);
     if (permission.refuse) return { kind: "permission_refused" };
+    // THE OWNER'S KNOWLEDGE CHOICE for this turn's agent (convex/knowledge.ts), decided
+    // in this same transaction: a non-default choice that could only reach a bridge not
+    // confirmed to apply it is withheld by name — never a turn searching sources the
+    // owner turned off.
+    const knowledge = await decideTurnKnowledge(ctx, chat, target);
+    if (knowledge.kind === "refuse") {
+      return { kind: "knowledge_refused", revision: knowledge.revision };
+    }
     // The send leaves for this instance NOW: from here on (while the row is in flight
     // or once sent) its bridge may read this chat's history and open the reply — and
     // not before (lib/ingestAuthz.chatAllowsInstance).
@@ -1853,6 +1885,7 @@ export const lastGateBeforeSend = internalMutation({
       speakerCanonical: speaker.name === null ? null : (speaker.canonical ?? null),
       mentionCanonicals: await mentionCanonicalsStillInRoom(ctx, chat, row),
       permission,
+      knowledge,
     };
   },
 });
@@ -2613,6 +2646,10 @@ export const dispatch = internalAction({
     // Curated root-cause code for a failed send (non-PHI). From the bridge's 502
     // body when reachable; a fixed local code when the bridge can't be reached.
     let errorCode: string | undefined;
+    // What the bridge reported of the knowledge choice this turn carried (its /send
+    // answer's `knowledge`), and for which agent — recorded for the composer below.
+    let knowledgeReport: unknown = undefined;
+    let knowledgeTarget: { instanceName: string; agentId: string } | null = null;
     // The meta-derived guard that actually rode this send (decided at the last gate),
     // for the refusal handler below — null when none did.
     let sentGuard: { mode: SessionPermissionMode | null; accessAt: number | null } | null =
@@ -2703,6 +2740,30 @@ export const dispatch = internalAction({
         });
         return;
       }
+      if (gate.kind === "knowledge_refused") {
+        // The owner chose this agent's knowledge sources and the target's bridge is not
+        // confirmed to put them on the session: never sent. The card names it.
+        await ctx.runMutation(internal.bridge.failDispatch, {
+          outboxId,
+          reason: "send_failed",
+          errorCode: "knowledge_policy_not_applied",
+        });
+        await ctx.runMutation(internal.knowledge.recordKnowledgeTurn, {
+          chatId: row.chatId as Id<"chats">,
+          instanceName: routing.target.instanceName,
+          agentId: routing.target.agentId,
+          report: { status: "failed", reason: "unsupported_gateway", revision: gate.revision },
+        });
+        await traceDispatch(ctx, {
+          outboxId,
+          chatId: row.chatId,
+          chatKind: routing.chatKind,
+          dispatchStatus: "failed",
+          reason: "send_failed",
+          errorCode: "knowledge_policy_not_applied",
+        });
+        return;
+      }
       if (gate.kind === "refused") {
         await ctx.runMutation(internal.bridge.failDispatch, {
           outboxId,
@@ -2725,6 +2786,13 @@ export const dispatch = internalAction({
           ? routing.permissionGuard
           : null;
       const permissionChoice = gate.permission.choice;
+      const knowledgeChoice = gate.knowledge.kind === "send" ? gate.knowledge : null;
+      if (knowledgeChoice !== null) {
+        knowledgeTarget = {
+          instanceName: routing.target.instanceName,
+          agentId: routing.target.agentId,
+        };
+      }
       try {
         const response = await fetch(`${bridgeUrl.replace(/\/$/, "")}/send`, {
           method: "POST",
@@ -2857,6 +2925,16 @@ export const dispatch = internalAction({
                     ? { permissionModeFullAuthorized: true }
                     : {}),
                 }),
+            // The conversation OWNER's knowledge choice for THIS agent, which the bridge
+            // puts on this turn's session before chat.send (convex/knowledge.ts). Absent
+            // ⇒ nobody chose for this agent. Decided at the last gate: a bridge not
+            // confirmed to apply it never receives a non-default one.
+            ...(knowledgeChoice === null
+              ? {}
+              : {
+                  knowledgeChoice: knowledgeChoice.choice,
+                  knowledgeRevision: knowledgeChoice.revision,
+                }),
             attachments: resolvedAttachments,
             // Tool-read files streamed by reference (shared-fs). An old bridge
             // ignores this unknown field (those files simply won't reach the agent
@@ -2870,10 +2948,13 @@ export const dispatch = internalAction({
           }),
         });
         ok = response.ok;
+        // ONE read of the answer: the curated cause of a failure, and the knowledge
+        // choice's outcome either way (tolerant of old/new bridge).
+        const answer = await readSendAnswer(response);
+        knowledgeReport = answer.knowledge;
         if (!ok) {
           console.error(`bridge POST /send -> HTTP ${response.status}`);
-          // Parse the curated cause from the 502 body (tolerant of old/new bridge).
-          errorCode = await readErrorCode(response);
+          errorCode = answer.errorCode;
         }
       } catch (err) {
         console.error("bridge POST /send failed:", err);
@@ -2903,6 +2984,18 @@ export const dispatch = internalAction({
       }
     }
 
+    if (knowledgeTarget !== null && knowledgeReport !== undefined) {
+      try {
+        await ctx.runMutation(internal.knowledge.recordKnowledgeTurn, {
+          chatId: row.chatId as Id<"chats">,
+          instanceName: knowledgeTarget.instanceName,
+          agentId: knowledgeTarget.agentId,
+          report: knowledgeReport,
+        });
+      } catch (err) {
+        console.error("knowledge outcome not recorded (non-fatal):", err);
+      }
+    }
     if (ok) {
       await ctx.runMutation(internal.bridge.markOutbox, {
         outboxId,

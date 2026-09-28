@@ -30,6 +30,14 @@ import {
   speakerOnlyRunId,
 } from "../src/providers/openclaw/speaker-pool.js";
 import {
+  KnowledgePolicyNotAppliedError,
+  clearKnowledgeGuards,
+  knowledgeChatSendGate,
+  knowledgeGuard,
+  noteAppliedKnowledgeRevision,
+  noteKnowledgeRevision,
+} from "../src/providers/openclaw/knowledge-policy.js";
+import {
   isSpeakerRefusal,
   parseSendBody,
   sendAsSpeaker,
@@ -135,6 +143,8 @@ const params = { sessionKey: "agent:a:atrium:chat:owner:c1", message: "hi", idem
 /** A speaker source double; `routed` lists the routes still in place. */
 function source(speakerConn: OpenClawConnection | Error) {
   const routed: Array<[OpenClawConnection, string, OpenClawConnection]> = [];
+  /** Runs handed back WITH the loss signal (may be live) — as opposed to unrouted. */
+  const abandoned: string[] = [];
   const src: SpeakerSource = {
     acquire: vi.fn(async () => {
       if (speakerConn instanceof Error) throw speakerConn;
@@ -150,11 +160,12 @@ function source(speakerConn: OpenClawConnection | Error) {
       if (i >= 0) routed.splice(i, 1);
     },
     abandon: (from, runId) => {
+      abandoned.push(runId);
       const i = routed.findIndex(([f, r]) => f === from && r === runId);
       if (i >= 0) routed.splice(i, 1);
     },
   };
-  return { src, routed };
+  return { src, routed, abandoned };
 }
 
 describe("who sends a participant's turn", () => {
@@ -890,5 +901,66 @@ describe("a participant's socket that closes before the send", () => {
     // The caller that joined the shared open got a live socket, not the closed one.
     expect([a, b]).toContain(second);
     pool.closeAll();
+  });
+});
+
+// Codex pass 6 (P1): the participant's socket opening and its ownership proof are WAITS
+// between the send path's knowledge check and the request. The gate runs inside the one
+// door (issueChatSend), right before the request, whichever socket sends.
+describe("a newer knowledge choice announced while the participant's socket opens", () => {
+  it("the turn is withheld (superseded) — neither socket sends, nothing stays routed", async () => {
+    clearKnowledgeGuards();
+    const guard = knowledgeGuard("lacneu", params.sessionKey);
+    noteKnowledgeRevision(guard, 2);
+    noteAppliedKnowledgeRevision(guard, 2, { injection: "off" });
+    const owner = ownerConn();
+    const bob = fakeConn();
+    let open: () => void = () => {};
+    const opening = new Promise<void>((r) => (open = r));
+    const { src, routed, abandoned } = source(bob);
+    (src.acquire as ReturnType<typeof vi.fn>).mockImplementation(async () => {
+      await opening;
+      return bob;
+    });
+    let withheld = false;
+    const sending = sendAsSpeaker(
+      owner,
+      params,
+      { speakerGatewayUser: "bob", chatId: "c1" },
+      proxyConfig,
+      src,
+      knowledgeChatSendGate(guard, 2, () => {
+        withheld = true;
+      }),
+    );
+    // The owner's newer choice arrives now — and is not (yet) on the session.
+    noteKnowledgeRevision(guard, 3);
+    open();
+    await expect(sending).rejects.toBeInstanceOf(KnowledgePolicyNotAppliedError);
+    expect(sends(bob)).toBe(0);
+    expect(sends(owner)).toBe(0);
+    expect(routed).toEqual([]);
+    // Never issued: the route is simply withdrawn — no "may be live" signal to the owner.
+    expect(abandoned).toEqual([]);
+    expect(withheld).toBe(true);
+    clearKnowledgeGuards();
+  });
+
+  it("…the same on the owner's fallback after the participant's socket failed to open", async () => {
+    clearKnowledgeGuards();
+    const guard = knowledgeGuard("lacneu", params.sessionKey);
+    noteKnowledgeRevision(guard, 2);
+    noteAppliedKnowledgeRevision(guard, 2, { injection: "off" });
+    const owner = ownerConn();
+    const { src } = source(new Error("connect refused"));
+    (src.acquire as ReturnType<typeof vi.fn>).mockImplementation(async () => {
+      noteKnowledgeRevision(guard, 3);
+      throw new Error("connect refused");
+    });
+    await expect(
+      sendAsSpeaker(owner, params, { speakerGatewayUser: "bob", chatId: "c1" }, proxyConfig, src, knowledgeChatSendGate(guard, 2)),
+    ).rejects.toBeInstanceOf(KnowledgePolicyNotAppliedError);
+    expect(sends(owner)).toBe(0);
+    clearKnowledgeGuards();
   });
 });

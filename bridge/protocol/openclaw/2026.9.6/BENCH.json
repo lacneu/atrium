@@ -6,76 +6,76 @@
     {
       "id": "announce-reverse-hold",
       "ok": true,
-      "chat": "f7da85c8d51eab9a"
+      "chat": "0ee790b21b385cac"
     },
     {
       "id": "basic-turn",
       "ok": true,
-      "chat": "f7da85c8d51eab9a"
+      "chat": "0ee790b21b385cac"
     },
     {
       "id": "tool-exec",
       "ok": true,
-      "chat": "f7da85c8d51eab9a"
+      "chat": "0ee790b21b385cac"
     },
     {
       "id": "update-plan",
       "ok": true,
-      "chat": "f7da85c8d51eab9a"
+      "chat": "0ee790b21b385cac"
     },
     {
       "id": "media-outbound",
       "ok": true,
-      "chat": "f7da85c8d51eab9a"
+      "chat": "0ee790b21b385cac"
     },
     {
       "id": "inbound-attachment",
       "ok": true,
-      "chat": "f7da85c8d51eab9a"
+      "chat": "0ee790b21b385cac"
     },
     {
       "id": "talk-session",
       "ok": true,
-      "chat": "f7da85c8d51eab9a"
+      "chat": "0ee790b21b385cac"
     },
     {
       "id": "spawn-announce-merge",
       "ok": true,
-      "chat": "f7da85c8d51eab9a"
+      "chat": "0ee790b21b385cac"
     },
     {
       "id": "spawn-chain-merge",
       "ok": true,
-      "chat": "f7da85c8d51eab9a"
+      "chat": "0ee790b21b385cac"
     },
     {
       "id": "spawn-parallel-merge",
       "ok": true,
-      "chat": "f7da85c8d51eab9a"
+      "chat": "0ee790b21b385cac"
     },
     {
       "id": "async-task",
       "ok": true,
-      "chat": "f7da85c8d51eab9a"
+      "chat": "0ee790b21b385cac"
     },
     {
       "id": "cron-tool",
       "ok": true,
-      "chat": "f7da85c8d51eab9a"
+      "chat": "0ee790b21b385cac"
     },
     {
       "id": "agent-request-question",
       "ok": true,
-      "chat": "f7da85c8d51eab9a"
+      "chat": "0ee790b21b385cac"
     },
     {
       "id": "agent-request-exec-approval",
       "ok": true,
-      "chat": "f7da85c8d51eab9a"
+      "chat": "0ee790b21b385cac"
     }
   ],
   "verdict": "GO",
-  "at": "2026-09-27T18:03:52.943Z",
+  "at": "2026-09-28T17:33:50.218Z",
   "scenarios": [
     "agent-request-exec-approval",
     "agent-request-question",
@@ -115,13 +115,13 @@
     "hermes-clarify": "hermes"
   },
   "flags": [],
-  "atriumSha": "46c2dbfdc4a77974370c308455df913045dfe94e",
+  "atriumSha": "6e17750f9b4067f1e3f78afcc9c1105246477550",
   "worktree": {
-    "dirty": false,
-    "deltaSha256": null
+    "dirty": true,
+    "deltaSha256": "ff6869768faafd590a58b3b91c1ba652e5475b7d91406e64cfe215fc82341e28"
   },
-  "supportDigest": "f8b0c4fb0d9d27796fc7d4ee5bc81593232d240f9e0f5904e73d653657a6fac7",
+  "supportDigest": "c96fee75a439649462ef586da00669b940f7886e910845817c97e15263435896",
   "authMode": "token",
-  "bridgeVersion": "0.87.0",
+  "bridgeVersion": "0.87.2",
   "vendoredSha256": "2beff1ac117eb6634c448a29fff4161dbc2371491e7fd884c02db0c80c4acf52"
 }

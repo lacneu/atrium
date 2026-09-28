@@ -1901,6 +1901,159 @@ export const peekPermissionMode = query({
   },
 });
 
+/**
+ * DEV-ONLY, INTERNAL (codex pass 14): what the knowledge bench checks a turn searched —
+ * the provenance parts' source family and collections, per recent message. Collection
+ * names are operator configuration: never on a PUBLIC query (with anonymous auth a
+ * public dev query checks no identity nor chat access). `npx convex run` reaches
+ * internal functions with the deployment's admin key.
+ *   npx convex run dev:inspectProvenanceDev '{"chatId":"<id>"}'
+ */
+export const inspectProvenanceDev = internalQuery({
+  args: { chatId: v.id("chats"), take: v.optional(v.number()) },
+  handler: async (ctx, { chatId, take }) => {
+    assertDev();
+    const msgs = await ctx.db
+      .query("messages")
+      .withIndex("by_chat", (q) => q.eq("chatId", chatId))
+      .order("desc")
+      .take(Math.min(Math.max(take ?? 6, 1), 40));
+    const out = [];
+    for (const msg of msgs.reverse()) {
+      const parts = await ctx.db
+        .query("messageParts")
+        .withIndex("by_message", (q) => q.eq("messageId", msg._id))
+        .take(200);
+      out.push({
+        id: msg._id,
+        role: msg.role,
+        provenance: parts
+          .filter((p) => p.part.kind === "provenance")
+          .map((p) =>
+            p.part.kind === "provenance"
+              ? {
+                  pluginId: p.part.pluginId,
+                  source: p.part.source,
+                  collections: p.part.retrieval?.collections ?? null,
+                }
+              : null,
+          ),
+      });
+    }
+    return out;
+  },
+});
+
+/**
+ * DEV-ONLY, INTERNAL (codex pass 14: it names the owner's handle and the operator's
+ * source ids): a chat's KNOWLEDGE state for the bench (openclaw-notes
+ * live-bench/knowledge-policy.mjs): the owner's choices per agent with their outcomes,
+ * what discovery stored about each agent, and the parts of the gateway session key the
+ * next turn uses — so the bench can ask the GATEWAY itself.
+ *   npx convex run dev:peekKnowledge '{"chatId":"<id>"}'
+ */
+export const peekKnowledge = internalQuery({
+  args: { chatId: v.id("chats") },
+  handler: async (ctx, { chatId }) => {
+    assertDev();
+    const chat = await ctx.db.get(chatId);
+    if (chat === null) return null;
+    const owner = await ctx.db
+      .query("profiles")
+      .withIndex("by_user", (q) => q.eq("userId", chat.userId))
+      .unique();
+    const routed = chat.perTurnRouting === true;
+    const choices = await ctx.db
+      .query("chatKnowledgeChoices")
+      .withIndex("by_chat_agent", (q) => q.eq("chatId", chatId))
+      .take(20);
+    const facts = [];
+    for (const agentId of ["alice", "files"]) {
+      const row = await ctx.db
+        .query("agentKnowledge")
+        .withIndex("by_instance_agent", (q) =>
+          q.eq("instanceName", chat.lastRoutedInstanceName ?? chat.instanceName ?? "olivier").eq("agentId", agentId),
+        )
+        .first();
+      if (row !== null) {
+        facts.push({
+          agentId,
+          available: row.available,
+          reason: row.reason ?? null,
+          injection: row.injection ?? null,
+          defaultSources: row.defaultSources ?? [],
+          overridesAllowed: row.overridesAllowed ?? null,
+          sources: (row.sources ?? []).map((s) => s.id),
+          defaultWriteRefused: row.defaultWriteRefused ?? null,
+          fetchedAt: row.fetchedAt,
+        });
+      }
+    }
+    return {
+      ownerUserId: chat.userId,
+      canonical: owner?.canonical ?? null,
+      choices: choices.map((c) => ({
+        instanceName: c.instanceName,
+        agentId: c.agentId,
+        choice: c.choice,
+        revision: c.revision,
+        apply: c.apply,
+      })),
+      facts,
+      agentId: routed ? (chat.lastRoutedAgentId ?? chat.agentId ?? null) : (chat.agentId ?? null),
+      segment: routed
+        ? (chat.routingSegment ?? chat.openclawChatId ?? chatId)
+        : (chat.openclawChatId ?? chatId),
+    };
+  },
+});
+
+/** DEV-ONLY, INTERNAL (codex pass 14: a PUBLIC mutation under anonymous auth would let
+ *  anyone seat themselves in any chat): seat a person (find-or-create by email) in a
+ *  bench chat as a participant, returning their user id — the bench then acts AS them
+ *  (`--identity`). */
+export const seatParticipantDev = internalMutation({
+  args: {
+    chatId: v.id("chats"),
+    email: v.string(),
+    role: v.optional(v.union(v.literal("viewer"), v.literal("member"), v.literal("manager"))),
+  },
+  handler: async (ctx, { chatId, email, role }) => {
+    assertDev();
+    const chat = await ctx.db.get(chatId);
+    if (chat === null) return { ok: false as const };
+    const found = await ctx.db
+      .query("profiles")
+      .filter((q) => q.eq(q.field("email"), email))
+      .first();
+    let userId: Id<"users">;
+    if (found !== null) userId = found.userId;
+    else {
+      userId = await ctx.db.insert("users", {});
+      await ctx.db.insert("profiles", {
+        userId,
+        role: "user",
+        email,
+        canonical: `u-${email.split("@")[0]!.replace(/[^a-z0-9-]/gi, "-").slice(0, 24)}`,
+      });
+    }
+    const seated = await ctx.db
+      .query("chatParticipants")
+      .withIndex("by_chat_user", (q) => q.eq("chatId", chatId).eq("userId", userId))
+      .first();
+    if (seated === null) {
+      await ctx.db.insert("chatParticipants", {
+        chatId,
+        userId,
+        addedBy: chat.userId,
+        addedAt: Date.now(),
+        role: role ?? "member",
+      });
+    }
+    return { ok: true as const, userId };
+  },
+});
+
 /** DEV-ONLY: turn "Atrium manages execution permissions" on/off for a bench instance,
  *  returning the previous value so the bench can restore it. */
 export const setInstanceManagePermissionsDev = mutation({

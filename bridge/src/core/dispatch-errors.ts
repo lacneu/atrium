@@ -25,6 +25,7 @@ import {
 import { HermesDashboardAbsentError } from "../providers/hermes/files-fetcher.js";
 import { TalkCallActiveError } from "../session.js";
 import { PermissionModeNotAppliedError } from "../providers/openclaw/permission-mode.js";
+import { KnowledgePolicyNotAppliedError } from "../providers/openclaw/knowledge-policy.js";
 import {
   isProviderReviewPausedText,
   isSessionArchivedText,
@@ -137,6 +138,12 @@ export type DispatchErrorCode =
   // runs under permissions nobody chose. Not retried: the same refusal would repeat.
   // Lower-case like the other codes Convex reads.
   | "permission_mode_not_applied"
+  // THE BRIDGE refused to send: the conversation's owner chose which knowledge sources
+  // this agent searches, and the choice could not be put on the session this turn would
+  // run on (the plugin refused it, is absent, or the session could not be written). A
+  // turn never searches sources the owner turned off. Not retried: the same refusal
+  // would repeat. Lower-case like the other codes Convex reads.
+  | "knowledge_policy_not_applied"
   | "UPSTREAM_ERROR"; // anything else (fallback)
 
 /**
@@ -184,6 +191,8 @@ const LOCAL_REFUSAL_CODES: ReadonlySet<DispatchErrorCode> = new Set([
   // We withheld the turn because the chosen mode could not be put on the session. What
   // the gateway said (if anything) is in the log; the link is not in question.
   "permission_mode_not_applied",
+  // Same, for the conversation's knowledge choice.
+  "knowledge_policy_not_applied",
 ]);
 
 // Codes where the gateway DEMONSTRABLY responded and refused this specific request
@@ -312,6 +321,8 @@ export function classifyGatewayError(
   if (err instanceof TalkCallActiveError) return "talk_call_active";
   // Our own refusal to send under a mode the owner did not choose, by TYPE.
   if (err instanceof PermissionModeNotAppliedError) return "permission_mode_not_applied";
+  // …and the conversation's knowledge choice, by TYPE.
+  if (err instanceof KnowledgePolicyNotAppliedError) return "knowledge_policy_not_applied";
   // OUR OWN inbound-media refusal, by TYPE for the same reason. Only the BATCH
   // failures reach here — a size/collision/fetch failure drops that one file and
   // the send continues (`RECOVERABLE_DROP_FAILURES`) — but the size class is

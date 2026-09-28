@@ -120,6 +120,8 @@ export const KNOWN_ERROR_CODES = [
   // The bridge withheld the turn: the owner's chosen permission mode could not be put
   // on the session (convex/permissionMode.ts). Named, like the gateway's own refusals.
   "permission_mode_not_applied",
+  // Same, for the owner's knowledge-source choice (convex/knowledge.ts).
+  "knowledge_policy_not_applied",
   "auth_profile_cooldown",
   "gateway_storage_busy",
   "gateway_storage_unavailable",
@@ -154,6 +156,10 @@ export const KNOWN_ERROR_CODES = [
   // Synthesized by the bridge when a compaction never completes (#40295): a
   // distinct actionable class, not a silent empty turn.
   "compaction_timeout",
+  // A SUB-AGENT class: the gateway refused the `sessions_spawn`, so the child never
+  // ran (the bridge settles its row at once — sub-agent-observer.ts). Allowlisted so
+  // the row says "could not start" instead of being read as a timeout or `unknown`.
+  "spawn_refused",
   // A turn that ended in ERROR while NOTHING named a cause: no gateway errorKind,
   // no text the classifier recognizes. Allowlisted so the diagnostic surface says
   // "nobody reported a cause" instead of collapsing it to the same `unknown` a
