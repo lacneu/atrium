@@ -149,6 +149,7 @@ describe("chatReads (per-user read state)", () => {
       await t.run(async (ctx) => (await ctx.db.query("chatReads").collect()).length),
     ).toBe(1);
     await asA.mutation(api.chats.deleteChat, { chatId: a.chatId });
+    await asA.mutation(api.trash.purgeChat, { chatId: a.chatId });
     expect(
       await t.run(async (ctx) => (await ctx.db.query("chatReads").collect()).length),
     ).toBe(0);

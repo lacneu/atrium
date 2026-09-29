@@ -43,6 +43,7 @@ import {
   validateManifest,
 } from "./lib/importArchive";
 import { assertOwnsUpload } from "./uploads";
+import { IMPORT_BLOB_KIND, releaseBlob } from "./lib/blobs";
 import {
   normalizeQuoteRefs,
   quoteFieldsFor,
@@ -119,7 +120,7 @@ const sectionValidator = v.union(
 
 /** Mapping kind under which the bytes this import uploaded are recorded, so they
  *  can be discarded without letting a caller name any blob they like. */
-const IMPORT_BLOB = "blob";
+const IMPORT_BLOB = IMPORT_BLOB_KIND;
 
 /** What an archive identifier became here, or null when this import never saw it. */
 async function mappedId(
@@ -310,12 +311,18 @@ export const listOpenImports = query({
   args: {},
   handler: async (ctx) => {
     const { userId } = await requireActive(ctx);
-    const rows = await ctx.db
-      .query("archiveImports")
-      .withIndex("by_user_status", (q) =>
-        q.eq("userId", userId).eq("status", "applying"),
-      )
-      .take(OPEN_IMPORTS_SCAN);
+    // …and the ones whose UNDO was interrupted (`abandoning`): the same sweep
+    // finishes it, or its rows and bytes would stay behind a session nobody names.
+    const rows = [
+      ...(await ctx.db
+        .query("archiveImports")
+        .withIndex("by_user_status", (q) => q.eq("userId", userId).eq("status", "applying"))
+        .take(OPEN_IMPORTS_SCAN)),
+      ...(await ctx.db
+        .query("archiveImports")
+        .withIndex("by_user_status", (q) => q.eq("userId", userId).eq("status", "abandoning"))
+        .take(OPEN_IMPORTS_SCAN)),
+    ];
     return rows.map((row) => ({
       importId: row._id,
       startedAt: row.startedAt,
@@ -365,7 +372,7 @@ export const finishImport = mutation({
     if (session === null || session.userId !== userId) {
       throw new Error("Not found: import does not exist");
     }
-    if (session.status === "abandoned") {
+    if (session.status === "abandoned" || session.status === "abandoning") {
       throw new Error("Conflict: import was abandoned");
     }
     // Closed on the FIRST call, so no further batch is accepted while the purge
@@ -418,8 +425,11 @@ export const discardUpload = mutation({
       )
       .unique();
     if (owned === null) return { discarded: false };
-    const discarded = await discardImportBlob(ctx, userId, storageId);
-    if (discarded) await ctx.db.delete(registered._id);
+    const discarded = await discardImportBlob(ctx, importId, userId, storageId);
+    // The import's claim goes either way: it no longer needs these bytes, and a
+    // mapping left behind would hold them (lib/blobs.blobReference) for as long as
+    // the import stays open.
+    await ctx.db.delete(registered._id);
     return { discarded };
   },
 });
@@ -443,6 +453,11 @@ export const abandonImport = mutation({
     if (session.status === "done") {
       throw new Error("Conflict: a finished import is not undone this way");
     }
+    if (session.status === "abandoned") return { done: true };
+    // CLOSED TO NEW WORK ON THE FIRST CALL, in its own transaction: from here no
+    // batch and no blob registration is accepted (openImport refuses anything but
+    // `applying`), so no later call of this cleanup can discard bytes a batch
+    // landed meanwhile is using before its files mirror exists.
     // PHASE ONE: the rows. Paged with a CURSOR rather than judged from one page —
     // a hundred attachments are registered before any row is written, so the
     // first page can be nothing but blobs, and "no rows here" would be false.
@@ -466,7 +481,7 @@ export const abandonImport = mutation({
         await ctx.db.delete(mapping._id);
       }
       await ctx.db.patch(importId, {
-        status: "applying",
+        status: "abandoning",
         updatedAt: Date.now(),
         abandonCursor: page.isDone ? null : page.continueCursor,
         ...(page.isDone ? { rowsCleared: true } : {}),
@@ -485,6 +500,7 @@ export const abandonImport = mutation({
       if (mapping.kind === IMPORT_BLOB) {
         await discardImportBlob(
           ctx,
+          importId,
           session.userId,
           mapping.mappedId as Id<"_storage">,
         );
@@ -498,7 +514,7 @@ export const abandonImport = mutation({
     }
     const done = mappings.length < ABANDON_BATCH;
     await ctx.db.patch(importId, {
-      status: done ? "abandoned" : "applying",
+      status: done ? "abandoned" : "abandoning",
       updatedAt: Date.now(),
     });
     return { done };
@@ -508,13 +524,13 @@ export const abandonImport = mutation({
 // ── helpers ────────────────────────────────────────────────────────────────
 
 /**
- * Remove bytes an import uploaded, unless a row still names them.
- *
- * BOTH tables are checked: an attachment can point at storage with no `files`
- * row beside it, so checking only that one deletes bytes a row still names.
+ * Remove bytes an import uploaded, unless a row still names them — any row:
+ * an attachment can point at storage with no `files` row beside it, and so can a
+ * rendition or a chart logo.
  */
 async function discardImportBlob(
   ctx: MutationCtx,
+  importId: Id<"archiveImports">,
   userId: Id<"users">,
   // Written by `registerImportBlob` from a validated `v.id("_storage")`, so the
   // mapping's value is one — it never comes from the archive.
@@ -527,18 +543,17 @@ async function discardImportBlob(
     )
     .unique();
   if (owned === null) return false;
-  const usedByFile = await ctx.db
-    .query("files")
-    .withIndex("by_storage", (q) => q.eq("storageId", id))
-    .first();
-  const usedByAttachment = await ctx.db
-    .query("documentAttachments")
-    .withIndex("by_storage", (q) => q.eq("storageId", id))
-    .first();
-  if (usedByFile !== null || usedByAttachment !== null) return false;
-  await ctx.storage.delete(id);
-  await ctx.db.delete(owned._id);
-  return true;
+  // The import gives up ITS OWN claim — its mapping (dropped by the caller) — and
+  // nothing else. The upload registration is NOT the import's to discard: the same
+  // person may have registered the blob for a draft, and while it is usable
+  // (lib/blobs.uploadIsUsable) it holds the blob; once it expires, the release
+  // (or the orphan sweep) takes it. EVERY other holder is checked as well (a
+  // rendition PDF, a chart logo, another import in progress), and a released blob
+  // waits in the quarantine (lib/blobs.releaseBlob).
+  return (
+    (await releaseBlob(ctx, id, { abandonedImport: importId, reason: "import_discarded" })) !==
+    "kept"
+  );
 }
 
 /** Sections whose table declares an owner. Assigning one to a table that does
@@ -922,6 +937,9 @@ async function prepareRow(
           ? {}
           : { filename: sanitizeFilename(part.filename) }),
       };
+      // The part is found by its blob (lib/blobs.partStorageField): denormalized
+      // here like every other part writer does.
+      if (needsBytes) out.storageId = storageId;
     } else if (needsBytes) {
       // A part of this kind cannot exist without its bytes — the export says so
       // itself when it could not resolve them. Skipping it beats failing the

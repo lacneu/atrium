@@ -622,6 +622,29 @@ describe("SubAgentObserver — a lifecycle phase is NEVER a terminal (round-7 P1
     });
   });
 
+  it("a child whose agent database the gateway CLOSED is named, not `unknown` (prod 2026-09-28)", () => {
+    // Children that had started then failed with the gateway's own sentence
+    // (src/state/openclaw-agent-execution.ts:145 at v2026.9.6) were stored with no class,
+    // and the diagnostic surface read them as `unknown`.
+    const obs = new SubAgentObserver(ERR_PARENT, "chatDbClosed");
+    const closed = {
+      type: "event",
+      event: "chat",
+      payload: {
+        sessionKey: ERR_CHILD,
+        spawnedBy: ERR_PARENT,
+        runId: "child-run",
+        state: "error",
+        errorMessage: "Agent database execution admission is closed",
+      },
+    };
+    expect(obs.observe(closed, 1000)[0]).toMatchObject({
+      status: "error",
+      childSessionKey: ERR_CHILD,
+      errorCode: "gateway_agent_db_closed",
+    });
+  });
+
   it("W2 / G-11: an UNRECOGNIZED failure carries no code (fail-safe, never a guess)", () => {
     const obs = new SubAgentObserver(ERR_PARENT, "chatCode2");
     const odd = {

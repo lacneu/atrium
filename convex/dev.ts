@@ -17,6 +17,7 @@ import { Doc, Id } from "./_generated/dataModel";
 import { generateApiKey, hashKey } from "./lib/apikeys";
 import { envLabel } from "./lib/envLabel";
 import { recordFileForPart } from "./lib/files";
+import { partStorageField } from "./lib/blobs";
 import { seedBuiltinRoles } from "./lib/rbac";
 import {
   currentTurnRouting,
@@ -1546,7 +1547,7 @@ export const devSeedFileRow = internalMutation({
       filename: args.filename,
       mimeType: args.mimeType,
     };
-    await ctx.db.insert("messageParts", { messageId, order: 0, part });
+    await ctx.db.insert("messageParts", { messageId, order: 0, part, ...partStorageField(part) });
     await recordFileForPart(ctx, {
       messageId,
       chatId,
@@ -1684,7 +1685,7 @@ export const enqueueAttachmentTurn = internalMutation({
     });
     // Render the attachment in the thread (faithful to send.sendMessage step 4).
     const part = { kind: "file" as const, storageId, filename, mimeType };
-    await ctx.db.insert("messageParts", { messageId, order: 0, part });
+    await ctx.db.insert("messageParts", { messageId, order: 0, part, ...partStorageField(part) });
     // Dev-seed parity: same paired files-row write as the real send path.
     await recordFileForPart(ctx, {
       messageId,

@@ -24,6 +24,7 @@
 // (session-utils-row.ts:195-196,595) — which is what a turn compares with, so an unchanged
 // choice costs no RPC.
 
+import { gatewayOwnRefusal } from "../../core/failure-classifier.js";
 import { GatewayAnsweredError } from "./openclaw-client.js";
 import {
   configHash,
@@ -881,6 +882,10 @@ export async function readSessionPolicy(
     ).payload;
   } catch (err) {
     const text = (err as Error)?.message ?? "";
+    // The agent's database closed / the gateway's storage unusable is also `UNAVAILABLE`,
+    // and says nothing about the plugin: "no usable answer", so the send goes on and meets
+    // the refusal itself, classified as what it is — not withheld as `plugin_absent`.
+    if (gatewayOwnRefusal(err) !== null) return { kind: "unknown" };
     if (
       err instanceof GatewayAnsweredError &&
       (/^UNAVAILABLE\b/.test(text) || /unknown plugin session action|unknown method/i.test(text))
@@ -986,6 +991,9 @@ export async function writeKnowledgePolicy(
   try {
     payload = (await conn.request("plugins.sessionAction", params, 10_000)).payload;
   } catch (err) {
+    // The gateway's OWN refusal (agent database closed, storage unusable) passes RAW, to be
+    // classified as itself rather than as a knowledge choice not applied.
+    if (gatewayOwnRefusal(err) !== null) throw err;
     if (err instanceof GatewayAnsweredError) {
       throw new KnowledgePolicyNotAppliedError(classifyKnowledgeActionError(err), err.message);
     }
@@ -1145,6 +1153,7 @@ export async function enforceKnowledgePolicy(args: {
   try {
     await args.createSession();
   } catch (err) {
+    if (gatewayOwnRefusal(err) !== null) throw err;
     if (err instanceof GatewayAnsweredError) {
       throw new KnowledgePolicyNotAppliedError("session_not_established", err.message);
     }

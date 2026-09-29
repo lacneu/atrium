@@ -262,7 +262,10 @@ function main(): void {
         "an agent going round in circles rather than progressing: many calls over " +
         "few distinct tools, the same tool back to back, or the same tool erroring " +
         "again and again. It states no threshold and no verdict: what counts as too " +
-        "much lives in the agent's own instructions. Pass parts:'summary' to get " +
+        "much lives in the agent's own instructions. A message still STREAMING also " +
+        "carries `liveDifficulty` — the verdict the user sees on the running turn " +
+        "(null, or repeated_failures {tool, failures, sameTool} / quiet_after_failure " +
+        "{tool, quietMs}). Pass parts:'summary' to get " +
         "these aggregates WITHOUT the per-part list, which is what makes this call " +
         "unreadable on a long conversation.",
       inputSchema: getChatStateInput,
@@ -339,7 +342,8 @@ function main(): void {
       description:
         "ONE actionable assessment of a chat (GET /diagnose): SOC2-safe chat-state " +
         "+ bridge availability, classified (stuck_stream | dispatch_error | " +
-        "attachment_problem | bridge_unavailable | bridge_degraded | healthy) with a " +
+        "attachment_problem | subagent_stuck | subagent_failure | agent_struggling | " +
+        "bridge_unavailable | bridge_degraded | healthy) with a " +
         "`suggestedAction` and, when safe, a `suggestedTool` (e.g. reconcile_chat). " +
         "Also states `participantCount` (people sharing the chat besides its owner) " +
         "and `authMode` (`token` = the gateway sees one shared operator for every " +

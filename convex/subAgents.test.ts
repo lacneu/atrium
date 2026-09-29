@@ -277,6 +277,9 @@ describe("subAgents cleanup (no orphaned chat content)", () => {
     await t
       .withIdentity({ subject: `${userId}|session` })
       .mutation(api.chats.deleteChat, { chatId });
+    await t
+      .withIdentity({ subject: `${userId}|session` })
+      .mutation(api.trash.purgeChat, { chatId });
     expect(await countRows()).toHaveLength(0); // no orphan left
   });
 
@@ -286,6 +289,9 @@ describe("subAgents cleanup (no orphaned chat content)", () => {
     await t
       .withIdentity({ subject: `${userId}|session` })
       .mutation(api.chats.deleteChat, { chatId });
+    await t
+      .withIdentity({ subject: `${userId}|session` })
+      .mutation(api.trash.purgeChat, { chatId });
     // A child frame arrives AFTER the chat is gone.
     const ret = await t.mutation(internal.subAgents.upsertSubAgent, {
       chatId,
@@ -427,6 +433,9 @@ describe("subAgents.upsertSubAgentToolPart — per-tool detail (args + result)",
     await t
       .withIdentity({ subject: `${userId}|session` })
       .mutation(api.chats.deleteChat, { chatId });
+    await t
+      .withIdentity({ subject: `${userId}|session` })
+      .mutation(api.trash.purgeChat, { chatId });
     expect(await count()).toHaveLength(0); // purged with the chat
   });
 
@@ -436,6 +445,9 @@ describe("subAgents.upsertSubAgentToolPart — per-tool detail (args + result)",
     await t
       .withIdentity({ subject: `${userId}|session` })
       .mutation(api.chats.deleteChat, { chatId });
+    await t
+      .withIdentity({ subject: `${userId}|session` })
+      .mutation(api.trash.purgeChat, { chatId });
     const ret = await t.mutation(internal.subAgents.upsertSubAgentToolPart, {
       chatId,
       childSessionKey: CHILD,

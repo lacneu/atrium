@@ -38,6 +38,12 @@ const HEALTH_KEY = "singleton";
 // A snapshot older than this means the poller itself is wedged/dead -> treat the
 // bridge as unavailable (3 missed 60s polls).
 const STALE_MS = 3 * 60 * 1000;
+// One /health call, body included. A bridge whose event loop is blocked accepts the
+// TCP connection and never answers: without a bound the poll hangs, Convex does not
+// start the next run while this one is in flight, and the UI keeps the last good
+// verdict ("operational, checked at …") for as long as the bridge stays wedged.
+// Well under the 60 s cadence, well over a healthy answer (milliseconds).
+const HEALTH_FETCH_TIMEOUT_MS = 10_000;
 
 const str = (x: unknown): string | null => (typeof x === "string" ? x : null);
 const num = (x: unknown): number | null => (typeof x === "number" ? x : null);
@@ -310,7 +316,11 @@ export const pollBridgeHealth = internalAction({
 
     for (const { name, url } of pollTargets) {
       try {
-        const res = await fetch(`${url}/health`, { method: "GET" });
+        // Aborts the body read too: `res.json()` below rejects on the same signal.
+        const res = await fetch(`${url}/health`, {
+          method: "GET",
+          signal: AbortSignal.timeout(HEALTH_FETCH_TIMEOUT_MS),
+        });
         if (!res.ok) {
           lastError = `http_${res.status}`;
           continue; // this instance is down this cycle; others may be up
@@ -341,6 +351,8 @@ export const pollBridgeHealth = internalAction({
           }));
         allTargets.push(...its);
       } catch {
+        // A timeout lands here too: a bridge that cannot answer is unreachable (the
+        // same code INSTANCE_DOWN_ERRORS already reads as a transport outage).
         lastError = "unreachable";
       }
     }

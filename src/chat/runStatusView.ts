@@ -6,6 +6,7 @@ import {
   type RunStatusKind,
   withoutOperatorValues,
 } from "../../convex/lib/chatRenderState";
+import { turnDifficultyLabel, type TurnDifficulty } from "./turnDifficultyView";
 
 // Thin localization wrapper over the SHARED pure derivation
 // (convex/lib/chatRenderState). The status->kind mapping lives in that one
@@ -28,7 +29,17 @@ export interface RunStatusView {
   /** TRUE when the label is a PHASE-specific detail (Tools ON): callers must
    *  not replace it with the generic long-wait reassurance. */
   phased?: boolean;
+  /** TRUE when the label is the live turn's DIFFICULTY (convex/lib/turnDifficulty):
+   *  the chip takes its warning tone — the same state the sidebar bar shows. */
+  struggling?: boolean;
 }
+
+/** Phases that ask the READER to act: their label stays on the chip even when the
+ *  turn is struggling — "answer the question" is the one thing the reader can do. */
+const READER_ACTION_PHASES: ReadonlySet<string> = new Set([
+  "awaiting_approval",
+  "awaiting_input",
+]);
 
 const LABEL: Record<RunStatusKind, () => string> = {
   thinking: m.runstatus_thinking,
@@ -142,10 +153,23 @@ export function runStatusView(
    *  the phase rather than folded into it: the bounded "2/10" is the whole
    *  value — an unbounded "retrying" says no more than the silence it replaces. */
   phaseRetry?: { attempt: number; maxAttempts: number } | null,
+  /** The live turn's difficulty, when the agent is struggling (the verdict of
+   *  convex/lib/turnDifficulty, judged by the caller at its clock). Beats the running
+   *  tool and the phase: "working on view_image" is exactly the sentence that hid a
+   *  fourth failed view_image. Only a phase that asks the reader to act beats it. */
+  difficulty?: TurnDifficulty | null,
 ): RunStatusView | null {
   const kind = runStatusKind(status, hasText, interrupted ?? false);
   if (kind === null) return null;
   if (kind === "thinking" || kind === "generating") {
+    if (difficulty && !(phase && READER_ACTION_PHASES.has(phase))) {
+      return {
+        kind,
+        label: turnDifficultyLabel(difficulty),
+        phased: true,
+        struggling: true,
+      };
+    }
     if (activeTool) {
       return {
         kind,
@@ -247,6 +271,11 @@ export const HEADLINE_REPLACES_DETAIL: ReadonlySet<string> = new Set([
   "session_archived_historic",
   // The provider-review pause quotes the same session key (OpenClaw 2026.9.6).
   "session_paused_review",
+  // An agent-database refusal tells the reader to stop the gateway and run
+  // `openclaw doctor --fix`, and its reason can name a database path on the gateway
+  // host (src/state/agent-database-admission.ts:56-57 and :81 at v2026.9.6). Neither
+  // belongs on the reader's card; the sentence stays on the row for the operator.
+  "gateway_agent_db_closed",
 ]);
 
 export const ERROR_CODE_LABEL: Record<string, () => string> = {
@@ -345,6 +374,8 @@ export const ERROR_CODE_LABEL: Record<string, () => string> = {
   auth_profile_cooldown: m.runstatus_error_auth_profile_cooldown,
   gateway_storage_busy: m.runstatus_error_gateway_storage_busy,
   gateway_storage_unavailable: m.runstatus_error_gateway_storage_unavailable,
+  // The gateway closed the agent's database to new work (OpenClaw 2026.9.5+). Not retried.
+  gateway_agent_db_closed: m.runstatus_error_gateway_agent_db_closed,
   // Dispatch-failure codes (failDispatch stores the CODE; localized here in the
   // reader's language — formerly pre-rendered French sentences).
   not_configured: m.runstatus_error_not_configured,

@@ -433,6 +433,7 @@ describe("sendMessage serialization (integration)", () => {
     const queued = await insertOutbox(t, chatId, userId, "queued", "q-1");
 
     await asUser.mutation(api.chats.deleteChat, { chatId });
+    await asUser.mutation(api.trash.purgeChat, { chatId });
 
     // Regression guard: a pending-only purge leaves the queued row behind, and a
     // later drainNextQueued could dispatch a DELETED chat's queued send.

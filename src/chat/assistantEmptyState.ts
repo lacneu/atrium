@@ -1,6 +1,7 @@
 import {
   childAgentIdFromKey,
   shortenSubAgentError,
+  subAgentLabel,
   type SubAgentRow,
 } from "./subAgentActivityView";
 import {
@@ -290,6 +291,87 @@ function cleanTaskName(name: string | undefined): string | undefined {
 }
 
 /**
+ * Did the agent RECOVER from this failed child — is the failure something the reader
+ * can SEE the agent act on in this bubble? (The 0.87.1 rule: a recovered failure is
+ * not the bubble's news; it stays on the child's own card.)
+ *
+ * Recovered means one of two things. The continuation that received the failure was
+ * followed by text or a file (`answeredChildRunIds`, the child run ids of the merged
+ * continuations this bubble visibly FOLLOWED UP). Or the agent delegated again from
+ * that continuation and the new delegation is under way or done — anchored to THIS
+ * bubble: a continuation whose merge was refused opened a bubble of its own, and a
+ * child it delegated there answers nothing here. Being named in a continuation only
+ * proves the failure was received — a continuation can end on nothing.
+ *
+ * A child without a run id cannot be joined to either proof, so it is never
+ * recovered: an unprovable recovery stays a failure. Shared by the empty-bubble
+ * verdict and the collapsed sub-agent list's failure line, so the two never
+ * disagree about the same child.
+ */
+export function childFailureRecovered(
+  child: Pick<SubAgentRow, "childRunId">,
+  rows: readonly SubAgentRow[],
+  messageId: string | undefined,
+  answeredChildRunIds: readonly string[] | undefined,
+): boolean {
+  const runId = child.childRunId;
+  if (runId === undefined) return false;
+  if ((answeredChildRunIds ?? []).includes(runId)) return true;
+  return (
+    messageId !== undefined &&
+    rows.some(
+      (r) =>
+        r.parentMessageId === messageId &&
+        r.kind !== "task" &&
+        (r.status === "running" || r.status === "done") &&
+        (parseRequesterSettleRun(r.bornOfRun)?.childRunIds.includes(runId) ?? false),
+    )
+  );
+}
+
+/**
+ * The line a COLLAPSED list of several sub-agents shows under its header when one of
+ * them failed and the agent did not recover: the failed child's name and its short
+ * reason, plus how many other unrecovered failures the list hides. Null when there is
+ * nothing to say.
+ *
+ * Why it exists: with several children the cards fold behind a header whose only
+ * trace of a failure was a red count — a reader who does not unfold misses it, and
+ * in the analysis view the empty-bubble verdict DEFERS to those cards. A failure the
+ * agent recovered from (`childFailureRecovered`, the 0.87.1 rule) is not repeated
+ * here: it stays on its card, which the reader finds by unfolding.
+ *
+ * `owned` = the children this bubble anchors, newest first (the list's own order);
+ * `rows` = every row of the chat (a re-delegation is found among them).
+ */
+export function collapsedSubAgentFailure(
+  owned: readonly SubAgentRow[],
+  rows: readonly SubAgentRow[],
+  messageId: string | undefined,
+  answeredChildRunIds: readonly string[] | undefined,
+): { task: string; reason: string; more: number } | null {
+  // `error` only: the one status whose card reads as a failure. A stopped child has
+  // its own calm tone, and a stop the reader did not ask for is named by the
+  // empty-bubble verdict, which does not defer to the card for it.
+  const unrecovered = owned.filter(
+    (r) =>
+      r.status === "error" &&
+      !childFailureRecovered(r, rows, messageId, answeredChildRunIds),
+  );
+  const first = unrecovered[0];
+  if (first === undefined) return null;
+  return {
+    task: subAgentLabel(first),
+    reason: shortenSubAgentError(
+      first.errorMessage,
+      first.errorCode,
+      first.runTimeoutSeconds,
+    ),
+    more: unrecovered.length - 1,
+  };
+}
+
+/**
  * Decide the empty-bubble state for an assistant turn.
  *
  * Rules (in order):
@@ -391,27 +473,10 @@ export function assistantEmptyState(
   // continuation only proves the failure was received — a continuation can end
   // on nothing, and then the failure is still this bubble's news. Either way it
   // stays on the child's own card.
-  const answered = new Set(message.answeredChildRunIds ?? []);
-  // The re-delegation must be one THIS bubble shows: a continuation whose merge
-  // was refused opened a bubble of its own, and a child it delegated there
-  // answers nothing here — this bubble never showed the agent act on the failure.
-  // Anchored here is the proof (exact at spawn, or recorded by the settle join).
-  const redelegated = (runId: string): boolean =>
-    messageId !== undefined &&
-    rows.some(
-      (r) =>
-        r.parentMessageId === messageId &&
-        r.kind !== "task" &&
-        (r.status === "running" || r.status === "done") &&
-        (parseRequesterSettleRun(r.bornOfRun)?.childRunIds.includes(runId) ?? false),
-    );
   const failed = settled.find(
     (s) =>
       (s.status === "error" || s.status === "aborted") &&
-      !(
-        s.childRunId !== undefined &&
-        (answered.has(s.childRunId) || redelegated(s.childRunId))
-      ),
+      !childFailureRecovered(s, rows, messageId, message.answeredChildRunIds),
   );
   if (failed) {
     return {

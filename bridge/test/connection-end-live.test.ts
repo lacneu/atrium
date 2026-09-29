@@ -15,7 +15,10 @@ import { afterEach, describe, expect, it } from "vitest";
 import { WebSocketServer, type WebSocket as WsSocket } from "ws";
 import type { AddressInfo } from "node:net";
 
-import { OpenClawConnection } from "../src/providers/openclaw/openclaw-client.js";
+import {
+  GatewayAnsweredError,
+  OpenClawConnection,
+} from "../src/providers/openclaw/openclaw-client.js";
 import { classifyGatewayError } from "../src/core/dispatch-errors.js";
 import { sleep } from "./helpers/sleep.js";
 import { MAX_BUFFERED, MAX_PAYLOAD, NO_ANSWER, deviceIdentity, startWsFakeGateway } from "./helpers/ws-fake-gateway.js";
@@ -331,6 +334,46 @@ describe("connection end over a real socket", () => {
     const message = await pending;
     expect(message).toContain("[slow_consumer]");
     expect(classifyGatewayError(new Error(message))).toBe("CONNECTION_SATURATED");
+  });
+
+  it("keeps a refusal's structured `details` across the wire (agent-database admission)", async () => {
+    // The gateway answers a request for a refused agent with `UNAVAILABLE` and the whole
+    // `AgentDatabaseAdmissionRefusal` as `details` (src/gateway/session-request-agent.ts:29-38
+    // at v2026.9.6). The client used to keep only `code: message`, so the refusal's code
+    // never reached the classifier. Prose deliberately reworded: only the code decides.
+    gateway = startWsFakeGateway({
+      version: "2026.9.6",
+      onMethod: () => ({
+        error: {
+          code: "UNAVAILABLE",
+          message: "reworded refusal",
+          details: {
+            agentId: "alice",
+            paths: ["/x"],
+            code: "agent-database-inspection-pending",
+            reason: "r",
+            repairHint: "h",
+          },
+        },
+      }),
+    });
+    await gateway.ready;
+    const conn = await OpenClawConnection.connect(gateway.url, "tok", deviceIdentity());
+    try {
+      const err = await conn.request("chat.send", { text: "x" }).then(
+        () => null,
+        (e: unknown) => e,
+      );
+      expect(err).toBeInstanceOf(GatewayAnsweredError);
+      expect((err as GatewayAnsweredError).details).toMatchObject({
+        code: "agent-database-inspection-pending",
+      });
+      expect(classifyGatewayError(err)).toBe("gateway_agent_db_closed");
+    } finally {
+      // Closed even on a failed assertion: a client left open keeps the server's
+      // close pending and times out every test after this one.
+      conn.close();
+    }
   });
 
   it("keeps an announced shutdown that lands DURING the handshake", async () => {

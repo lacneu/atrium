@@ -14,8 +14,10 @@
 import { v } from "convex/values";
 import { mutation, query, type QueryCtx } from "./_generated/server";
 import type { Id } from "./_generated/dataModel";
-import { currentParticipations, resolveChatAccess } from "./lib/chatAccess";
+import { canReachChat, currentParticipations, resolveChatAccess } from "./lib/chatAccess";
 import { requireActive } from "./lib/access";
+import { loadLiveTurnDifficultyFacts } from "./lib/liveTurnDifficulty";
+import type { TurnDifficultyFacts } from "./lib/turnDifficulty";
 
 // Matches listChats' bounded-window philosophy: more rows than any sidebar
 // shows, small enough to never threaten the per-function read budget.
@@ -106,7 +108,66 @@ export const myBusyChats = query({
       if (busy.has(row.chatId)) continue;
       if (await roomIsBusy(ctx, row.chatId)) busy.add(row.chatId);
     }
-    return [...busy];
+    // ONLY conversations the caller may reach NOW: one in the TRASH (a reply may
+    // still be landing in it) or gone is nobody's to show, and a send the caller
+    // made in someone else's room names that room even after they lost access. The
+    // busy set is small (a few live turns), so one access check per id.
+    const reachable: Id<"chats">[] = [];
+    for (const chatId of busy) {
+      if (await canReachChat(ctx, chatId, userId)) reachable.push(chatId);
+    }
+    return reachable;
+  },
+});
+
+/** How many chats one `liveTurnDifficulty` call judges. Far above any real number of
+ *  turns running at once for one reader; it bounds the read budget. */
+const MAX_DIFFICULTY_CHATS = 20;
+/** Streaming messages judged per chat (several agents can answer one room at once). */
+const MAX_LIVE_MESSAGES_PER_CHAT = 3;
+
+/** Is the agent STRUGGLING on a turn that is running right now? The facts of every
+ *  streaming message of the given chats that has a difficulty (see
+ *  lib/turnDifficulty for the rules); chats without one are simply absent.
+ *
+ *  ONE source for every surface that shows it: the sidebar passes the chats it
+ *  already knows are busy (myBusyChats), the streaming bubble passes its own chat.
+ *  Separate from myBusyChats on purpose: that query re-runs on every streamed token,
+ *  and reading parts there would re-read them on every token too. Here the reads
+ *  (a streaming-status point range, the turn's latest parts) move on tool events,
+ *  and — only after a failure — on the throttled activity stamp (at most one write
+ *  per LIVE_ACTIVITY_STAMP_MS), never on the per-token live-text row. A chat the
+ *  caller cannot reach is skipped, never reported. Returns FACTS, not a verdict, and
+ *  reads no clock: rule 3 is judged by the reader, whose timer re-evaluates the
+ *  returned `quietSince` — the query stays deterministic over its reads. */
+export const liveTurnDifficulty = query({
+  args: { chatIds: v.array(v.id("chats")) },
+  handler: async (
+    ctx,
+    { chatIds },
+  ): Promise<
+    { chatId: Id<"chats">; messageId: Id<"messages">; facts: TurnDifficultyFacts }[]
+  > => {
+    const { userId } = await requireActive(ctx);
+    const out: {
+      chatId: Id<"chats">;
+      messageId: Id<"messages">;
+      facts: TurnDifficultyFacts;
+    }[] = [];
+    for (const chatId of [...new Set(chatIds)].slice(0, MAX_DIFFICULTY_CHATS)) {
+      if (!(await canReachChat(ctx, chatId, userId))) continue;
+      const live = await ctx.db
+        .query("messages")
+        .withIndex("by_chat_status", (q) =>
+          q.eq("chatId", chatId).eq("status", "streaming"),
+        )
+        .take(MAX_LIVE_MESSAGES_PER_CHAT);
+      for (const message of live) {
+        const facts = await loadLiveTurnDifficultyFacts(ctx, message);
+        if (facts !== null) out.push({ chatId, messageId: message._id, facts });
+      }
+    }
+    return out;
   },
 });
 

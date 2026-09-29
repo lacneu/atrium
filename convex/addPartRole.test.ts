@@ -77,11 +77,16 @@ describe("addPart(kind:reasoning) and the role boundary", () => {
 // every pre-check. Inside this mutation the read and the insert are one
 // transaction, so this is the only place the promises can actually hold.
 /** Whether a stored blob still exists (a reclaimed one must not). */
+/** Is the blob HELD: served, and not released into the quarantine
+ *  (lib/blobs.releaseBlob — its deletion comes a week later, from the purge)? */
 const blobExists = async (
   t: ReturnType<typeof convexTest>,
   storageId: Id<"_storage">,
 ) =>
-  await t.run(async (ctx) => (await ctx.storage.getUrl(storageId)) !== null);
+  await t.run(async (ctx) => {
+    if ((await ctx.storage.getUrl(storageId)) === null) return false;
+    return !(await ctx.db.query("blobReleases").collect()).some((r) => r.storageId === storageId);
+  });
 
 describe("addPart repair guarantees", () => {
   async function mediaPart(t: ReturnType<typeof convexTest>) {

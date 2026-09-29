@@ -6,6 +6,7 @@
 // action (and, when a safe corrective tool exists, the tool to call).
 
 import { isDeliveryRun } from "./deliveryRuns";
+import type { TurnDifficulty } from "./turnDifficulty";
 
 export type DiagnoseClass =
   | "unknown_chat"
@@ -14,6 +15,7 @@ export type DiagnoseClass =
   | "dispatch_error"
   | "subagent_stuck"
   | "subagent_failure"
+  | "agent_struggling"
   | "bridge_unavailable"
   | "bridge_degraded"
   | "healthy";
@@ -123,6 +125,9 @@ export interface DiagMessage {
   messageId?: string;
   /** Coarse text-length bucket ("0" = no text at all). */
   textLenBucket?: string;
+  /** The live-turn difficulty the reader sees (lib/turnDifficulty), on a message
+   *  still streaming. Absent/null = none. */
+  liveDifficulty?: TurnDifficulty | null;
 }
 /** A content-free sub-agent row in the chat-state summary (subset of the
  *  loadSubAgentSummary entry — only the fields the assessment reasons over). */
@@ -385,6 +390,32 @@ export function assessChat(
       summary: `The bridge is unavailable (${availability.reason ?? "unknown"}) — this blocks ALL chats.`,
       suggestedAction:
         "Check the bridge container and BRIDGE_URL. The composer is correctly disabled until /health recovers.",
+      suggestedTool: null,
+    };
+  }
+
+  // 3.4) A turn RUNNING NOW on which the agent is struggling — the verdict the reader
+  // already sees on the sidebar bar and the bubble's status line (lib/turnDifficulty:
+  // three failed tool calls in a row, the same tool failing again and again, or a
+  // failure followed by two minutes of silence). Below the hard failures above (a
+  // stuck stream, a failed turn, a dead bridge explain more); above the delegation
+  // notes, because this turn is the one the user is watching.
+  const struggling = messages.find(
+    (m) => m.role === "assistant" && m.status === "streaming" && m.liveDifficulty,
+  )?.liveDifficulty;
+  if (struggling) {
+    const detail =
+      struggling.kind === "repeated_failures"
+        ? `${struggling.failures} failed ${struggling.sameTool ? `\`${struggling.tool}\` calls` : `tool calls in a row (last: \`${struggling.tool}\`)`}`
+        : `no activity for ${Math.floor(struggling.quietMs / 1000)} s, after \`${struggling.tool}\` failed`;
+    return {
+      class: "agent_struggling",
+      severity: "warn",
+      errorCode: null,
+      reason: detail,
+      summary: `The running turn is struggling: ${detail}.`,
+      suggestedAction:
+        "Read the failing tool's error in the chat (owner-scoped): a refusal the agent cannot get past (a path outside the gateway's allowed directories, a missing permission) will not resolve by retrying — fix the cause on the gateway, or let the user stop the turn.",
       suggestedTool: null,
     };
   }

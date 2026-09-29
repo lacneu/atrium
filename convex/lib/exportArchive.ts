@@ -281,6 +281,12 @@ export const CHAT_FIELDS_DROPPED: ReadonlyArray<string> = [
   "stoppedAt",
   "lastRoutedInstanceName",
   "lastRoutedAgentId",
+  // THE TRASH is this deployment's lifecycle of the row, not the conversation: an
+  // imported copy arrives live, never already on its way to a purge — and
+  // `trashedBy` names an account of the source deployment.
+  "trashedAt",
+  "purgeAfter",
+  "trashedBy",
 ];
 
 /**

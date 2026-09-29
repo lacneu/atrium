@@ -43,6 +43,10 @@ import {
   installProcessSafetyNet,
   installServerFailFast,
 } from "./core/safety-net.js";
+import {
+  startEventLoopWatchdog,
+  watchdogOptionsFromEnv,
+} from "./core/event-loop-watchdog.js";
 
 /**
  * Build one self-contained bundle for an instance: its hot media provider, a Convex
@@ -112,6 +116,11 @@ async function main(): Promise<void> {
   // cannot function without them, so loadSharedConfig STILL fails fast on a missing one
   // (the deliberate fatal boundary). Everything instance-specific is non-fatal below.
   const shared = loadSharedConfig();
+
+  // A main thread stuck in synchronous code serves nothing (no /health, no ingest) and
+  // nothing on its own loop can notice: a worker logs the stall, captures the stack and
+  // exits so the restart policy recovers the bridge (core/event-loop-watchdog.ts).
+  startEventLoopWatchdog(watchdogOptionsFromEnv(process.env));
 
   // The served instances, keyed by instanceName. STARTS EMPTY: the bridge binds + serves
   // /health regardless, and the self-heal loop fills this map as instances resolve. The

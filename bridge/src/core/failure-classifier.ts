@@ -107,6 +107,119 @@ const GATEWAY_STORAGE_BUSY_RE =
   /database is locked|database table is locked|state database was (?:busy|locked)\b/i;
 const GATEWAY_STORAGE_UNAVAILABLE_RE =
   /database or disk is full|attempt to write a readonly database|disk i\/o error|state database was (?:full|read-only)|state database had an i\/o error/i;
+// The SAME host fact when the full filesystem is not the SQLite file itself but the scratch
+// space the gateway reads it through (v2026.9.6). Every read-only inspection of an agent
+// database first copies it into a private snapshot directory under `$XDG_CACHE_HOME/openclaw`,
+// else `~/.cache/openclaw` (src/infra/sqlite-private-directory.ts:20-33, named with
+// `SQLITE_SNAPSHOT_PREFIX`, sqlite-snapshot-retirement.ts:9); when that copy hits a full disk
+// the errno surfaces through three upstream wrappers, none of which says "database or disk is
+// full":
+//   `sqliteSnapshotStagingError` (sqlite-snapshot-staging.ts:163-184) appends
+//     "; snapshot staging root <dir>: free disk space/quota or set XDG_CACHE_HOME to a writable filesystem"
+//     for ENOSPC / EDQUOT / SQLite FULL;
+//   `formatSqliteReadOnlyInspectionFailure` (sqlite-error-diagnostics.ts:96-132) adds
+//     "failed while creating its private snapshot: " and the " (code=ENOSPC)" suffix;
+//   `createSqliteReadOnlyWorkerError` (sqlite-readonly-worker-protocol.ts:76-82) prefixes
+//     "SQLite read-only worker ".
+// Prod 2026-09-23 (a 256 MiB tmpfs cache): `sessions_spawn` -> "child session patch failed:
+// SQLite read-only worker … ENOSPC … (code=ENOSPC)" and an agent database left refused.
+// The gateway's own reader-facing copy for a full disk is matched too
+// (src/agents/failover/user-copy.ts:159-165 `formatDiskSpaceErrorCopy`, which itself keys on
+// `\benospc\b` / "no space left on device"): "OpenClaw could not write local session data
+// because the disk is full. Free some disk space and try again." — its "try again" does not
+// make it retryable, for the reason given above.
+// EDQUOT is Node's "disk quota exceeded", the quota half of the same staging rule.
+const GATEWAY_HOST_STORAGE_FULL_RE =
+  /\benospc\b|\bedquot\b|no space left on device|disk quota exceeded|could not write local session data because the disk is full|free disk space\/quota or set xdg_cache_home to a writable filesystem/i;
+
+/** Is this the gateway's HOST storage refusing (full, read-only, failing), in either of the
+ *  wordings above? Shared by the frame classifier below and the dispatch classifier
+ *  (core/dispatch-errors.ts) — one rule, two doors. */
+export function isGatewayStorageUnavailableText(text: string | null | undefined): boolean {
+  if (!text) return false;
+  const t = withoutOperatorData(text);
+  return GATEWAY_STORAGE_UNAVAILABLE_RE.test(t) || GATEWAY_HOST_STORAGE_FULL_RE.test(t);
+}
+
+// The gateway CLOSED THIS AGENT'S DATABASE to new work (v2026.9.5+, read at v2026.9.6). Two
+// producers, one fact for the reader — the agent cannot run here until the gateway reopens it:
+//  - `Agent database execution admission is closed` — src/state/openclaw-agent-execution.ts:145,
+//    the only producer (its `assertCurrent`). Thrown to work that holds a reference to an
+//    execution owner that has been RETIRED: closed after a native failure (:249-250
+//    `owner.close()`), revoked by the agent resource registry (:380-383), closed with the
+//    shared state database (:386-392), or a scope still owned by maintenance / agent deletion
+//    (:72-79). Prod 2026-09-28: delegated children that had started failed with it and were
+//    recorded `unknown`.
+//  - `AgentDatabaseAdmissionError` (src/state/agent-database-admission.ts:232-237): message
+//    `${reason}\n${repairHint}`, thrown by `assertAgentDatabaseAdmitted` (:239-244) to work on
+//    an agent the gateway REFUSED at startup. Its three repair hints are fixed gateway prose:
+//      :56 "Sessions remain unavailable until background inspection and preparation finish. …"
+//      :57 "Sessions remain unavailable. Stop the Gateway, run \"openclaw doctor --fix\" …"
+//      src/infra/state-migrations.agent-owner-guidance.ts:21
+//        "Preserve and inspect this database before accepting a fresh agent. …"
+//    The REASON before them is not: an inspection failure carries the underlying error
+//    verbatim (agent-database-startup.ts:152-168, :290-294), which is how the ENOSPC above
+//    ends up inside one — and that is why the storage rule is tested FIRST.
+// The same refusal on a `chat.send` / session RPC arrives with its structured code in
+// `error.details` (session-request-agent.ts:29-38) — read there, by code, in dispatch-errors.ts.
+// Not retryable: a hint that says to stop the gateway and run doctor is not a transient.
+const AGENT_DATABASE_CLOSED_RE =
+  /agent database execution admission is closed|sessions remain unavailable|preserve and inspect this database before accepting a fresh agent/i;
+
+export function isAgentDatabaseClosedText(text: string | null | undefined): boolean {
+  if (!text) return false;
+  return AGENT_DATABASE_CLOSED_RE.test(withoutOperatorData(text));
+}
+
+/** The codes `AgentDatabaseAdmissionRefusal.code` may carry (packages/gateway-protocol/
+ *  src/schema/agent-database-admission.ts:12-25 at v2026.9.6, a closed union). Anything
+ *  else under `details.code` belongs to another refusal. */
+const AGENT_DATABASE_REFUSAL_CODES: ReadonlySet<string> = new Set([
+  "agent-database-ownership-mismatch",
+  "agent-database-inspection-pending",
+  "agent-database-inspection-failed",
+]);
+
+export type GatewayOwnRefusal = "gateway_agent_db_closed" | "gateway_storage_unavailable";
+
+/** Did the GATEWAY refuse this request on its OWN state — the agent's database closed
+ *  to new work, or its host storage unusable — whatever request it was?
+ *
+ *  The gateway answers ANY request resolving to a refused agent `UNAVAILABLE`, with the
+ *  whole `AgentDatabaseAdmissionRefusal` as `details` (src/gateway/session-request-agent.ts:
+ *  29-38, agent-request-preflight.ts:92-100) — `chat.send` (chat-send-setup.ts:73-80), but
+ *  also the `sessions.patch` that applies a permission mode and the knowledge plugin's
+ *  session actions that run BEFORE it. Those callers turn a refusal into their own
+ *  "not applied" error, so this fact has to be asked of the raw error first: read there,
+ *  the reader was told to check a permission mode or a knowledge setting for an agent the
+ *  gateway had closed (codex, 0.88.2). ONE predicate for every door, dispatch included.
+ *
+ *  The code is read STRUCTURALLY (`details` on any error of the cause chain — the client's
+ *  answered-refusal error is the one that carries it) and wins over prose; a refusal whose
+ *  reason is a full disk names the disk, the operator's action. Without a code, the fixed
+ *  gateway sentences above decide. Null for anything else. */
+export function gatewayOwnRefusal(err: unknown): GatewayOwnRefusal | null {
+  const texts: string[] = [];
+  let current: unknown = err;
+  for (let depth = 0; depth < 5 && current instanceof Error; depth++) {
+    texts.push(current.message);
+    const details = (current as { details?: unknown }).details;
+    if (details !== null && typeof details === "object") {
+      const { code, reason } = details as { code?: unknown; reason?: unknown };
+      if (typeof code === "string" && AGENT_DATABASE_REFUSAL_CODES.has(code)) {
+        return typeof reason === "string" && isGatewayStorageUnavailableText(reason)
+          ? "gateway_storage_unavailable"
+          : "gateway_agent_db_closed";
+      }
+    }
+    current = (current as { cause?: unknown }).cause;
+  }
+  const text = texts.join(" <- ");
+  if (isGatewayStorageUnavailableText(text)) return "gateway_storage_unavailable";
+  if (isAgentDatabaseClosedText(text)) return "gateway_agent_db_closed";
+  return null;
+}
+
 // The gateway put the AUTH PROFILE in cooldown and then refused to use it.
 //
 // Upstream (v2026.9.4, `src/agents/runtime-plan/prepare-auth.ts` and
@@ -450,7 +563,13 @@ export function classifyFailureText(raw: string | null | undefined): string | nu
   // say which of those it is, so a countdown promising recovery would be a guess shown
   // as a schedule. The reader decides instead: this class is deliberately absent from
   // RETRYABLE_KINDS.
-  if (GATEWAY_STORAGE_UNAVAILABLE_RE.test(text)) return "gateway_storage_unavailable";
+  if (GATEWAY_STORAGE_UNAVAILABLE_RE.test(text) || GATEWAY_HOST_STORAGE_FULL_RE.test(text)) {
+    return "gateway_storage_unavailable";
+  }
+  // AFTER the host-storage class (an admission refusal can carry a full disk as its reason,
+  // and the disk is what the operator must act on) and BEFORE contention: a refused agent
+  // whose reason happens to say "database is locked" is not a resend-and-it-works event.
+  if (AGENT_DATABASE_CLOSED_RE.test(text)) return "gateway_agent_db_closed";
   if (GATEWAY_STORAGE_BUSY_RE.test(text)) return "gateway_storage_busy";
   // BEFORE the session-conflict rule below, which is about a session being STARTED:
   // this one says the conversation is gone for good, and the two ask for opposite

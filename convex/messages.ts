@@ -35,6 +35,11 @@ import {
   normalizeMessageErrorCode,
   mimeTypeBase,
   summarizeToolActivity, maskCredentialId } from "./lib/chatRenderState";
+import {
+  clearLiveActivity,
+  loadLiveTurnDifficultyFacts,
+} from "./lib/liveTurnDifficulty";
+import { turnDifficultyVerdict, type TurnDifficulty } from "./lib/turnDifficulty";
 import { provenancePartStructure } from "./lib/provenance";
 import { Id, Doc } from "./_generated/dataModel";
 import {
@@ -70,6 +75,8 @@ import {
   type SubAgentStatus,
 } from "./lib/subAgentFailure";
 import { deleteMessageAgentRequests } from "./agentRequests";
+import { isTrashed } from "./lib/trash";
+import { releaseBlob, storageIdsOfPart } from "./lib/blobs";
 
 // Hard upper bound on how many recent messages the reactive feed loads. Chosen
 // to cover a typical visible conversation while keeping the query (and the
@@ -871,7 +878,7 @@ export const listByChat = query({
     if (access === null) {
       const exists = await ctx.db.get(id);
       // A deleted chat renders as "introuvable"; a foreign one is an IDOR signal.
-      if (exists === null) return [];
+      if (exists === null || isTrashed(exists)) return [];
       throw new Error("Forbidden: chat not owned by user");
     }
     return await loadChatView(ctx, id, userId);
@@ -899,7 +906,7 @@ export const getStreamingText = query({
     const access = await resolveChatAccess(ctx, id, userId);
     if (access === null) {
       const exists = await ctx.db.get(id);
-      if (exists === null) return [];
+      if (exists === null || isTrashed(exists)) return [];
       throw new Error("Forbidden: chat not owned by user");
     }
     const rows = await ctx.db
@@ -1020,6 +1027,20 @@ export const chatStateInternal = internalQuery({
     // chat-state message to its dispatch chain in list_traces.
     const { byMessage: outboxByMsg, truncated: outboxTruncated } =
       await loadOutboxByMessage(ctx, id);
+    // LIVE-TURN DIFFICULTY of each streaming message (typically none or one), from
+    // the SAME loader the sidebar and the bubble read (chatReads.liveTurnDifficulty),
+    // judged at this read's clock. Names and phases only — nothing the per-part
+    // projection below does not already carry.
+    const liveDifficultyByMsg = new Map<string, TurnDifficulty | null>();
+    for (const mDoc of view) {
+      if (mDoc.status !== "streaming") continue;
+      const doc = await ctx.db.get(mDoc._id);
+      if (doc === null) continue;
+      liveDifficultyByMsg.set(
+        mDoc._id,
+        turnDifficultyVerdict(await loadLiveTurnDifficultyFacts(ctx, doc), now),
+      );
+    }
     const messages = view.map((mDoc) => {
       const live =
         mDoc.status === "streaming" ? streamByMsg.get(mDoc._id) : undefined;
@@ -1165,6 +1186,12 @@ export const chatStateInternal = internalQuery({
         // activity", which a zero-filled one would blur into "tools that did
         // nothing".
         toolActivity,
+        // The live verdict the reader sees on a turn still running (sidebar bar +
+        // bubble status line): null = no difficulty; absent on a settled turn,
+        // whose shape `toolActivity` above already carries without a verdict.
+        ...(mDoc.status === "streaming"
+          ? { liveDifficulty: liveDifficultyByMsg.get(mDoc._id) ?? null }
+          : {}),
         // Omitted when the caller asked for the summary only: this is the field
         // that makes the response unreadable on a long conversation (a real prod
         // chat returned 414 KB over 180 messages, past every practical limit),
@@ -1196,6 +1223,13 @@ export const chatStateInternal = internalQuery({
       // that are still the overwhelming majority, so the shape is unchanged there.
       participantCount: participantCountForState,
       authMode: authModeForState,
+      // THE TRASH (convex/trash.ts): a trashed conversation stays inspectable here —
+      // this is an operator's metadata tool, not a surface of the conversation — and
+      // says so, with the date its purge is due. Null when it is not in the trash.
+      trash:
+        chat.trashedAt !== undefined
+          ? { trashedAt: chat.trashedAt, purgeAfter: chat.purgeAfter ?? null }
+          : null,
       // The slug (instances.name), never the admin-settable displayName.
       instanceName: chat.instanceName ?? null,
       agentId: chat.agentId ?? null,
@@ -1283,7 +1317,7 @@ export const getSessionMeta = query({
     const access = await resolveChatAccess(ctx, id, userId);
     if (access === null) {
       const exists = await ctx.db.get(id);
-      if (exists === null) return null;
+      if (exists === null || isTrashed(exists)) return null;
       throw new Error("Forbidden: chat not owned by user");
     }
     const chat = access.chat;
@@ -1407,6 +1441,7 @@ export const listChats = query({
       .order("desc")) {
       if (++scanned > CHAT_RECENT_SCAN_CAP) break;
       if (c.archived) continue;
+      if (isTrashed(c)) continue; // in the trash: hidden until restored (convex/trash.ts)
       if (c.kind !== undefined) continue; // hidden utility chats (documentary/summarizer) — never in the sidebar
       // WORKING-SET opt-out: the user removed this chat from the sidebar (it
       // lives on in its folder page / search). Pinned rows come from their own
@@ -1428,7 +1463,7 @@ export const listChats = query({
     // Union by id (same doc from either source — last write wins, identical).
     const byId = new Map<Id<"chats">, Doc<"chats">>();
     for (const c of recent) byId.set(c._id, c);
-    for (const c of pinnedRows) byId.set(c._id, c);
+    for (const c of pinnedRows) if (!isTrashed(c)) byId.set(c._id, c);
     // GROUP CHATS the user takes part in without owning. Read in FULL rather than
     // through the recency window: participations are bounded by their own cap and
     // are few by nature, and a conversation somebody deliberately invited you into
@@ -1456,7 +1491,7 @@ export const listChats = query({
       // `sidebarHidden` — that is the OWNER's working-set choice, and applying it
       // here would let their tidying clear the conversation from every sidebar in
       // the room. A participant's own opt-out is filtered above, on their row.
-      if (c === null || c.archived || c.kind !== undefined) continue;
+      if (c === null || c.archived || c.kind !== undefined || isTrashed(c)) continue;
       byId.set(c._id, c);
       guestPins.set(c._id, row.pinned === true);
       if (row.role === "viewer") guestViewer.add(c._id);
@@ -2021,13 +2056,19 @@ export const deleteMessage = mutation({
       .withIndex("by_chat", (q) => q.eq("chatId", chat._id))
       .collect();
     const deletedIds = new Set<string>();
+    // The storage blobs the truncated rows named — released once every row is gone
+    // (lib/blobs.releaseBlob), so a blob another message or a fork still shows stays.
+    const releasedBlobs = new Set<Id<"_storage">>();
     for (const m of chatMessages) {
       if (compareOrder(m, message) < 0) continue; // strictly BEFORE → keep
       const parts = await ctx.db
         .query("messageParts")
         .withIndex("by_message", (q) => q.eq("messageId", m._id))
         .collect();
-      for (const p of parts) await ctx.db.delete(p._id);
+      for (const p of parts) {
+        for (const blob of storageIdsOfPart(p.part)) releasedBlobs.add(blob);
+        await ctx.db.delete(p._id);
+      }
       // Mirror the files-row invariant on the part deletion (delete + regenerate).
       await deleteFilesByMessage(ctx, m._id);
       // L2: purge this message's documentary attachments (rows reference it; else
@@ -2036,7 +2077,10 @@ export const deleteMessage = mutation({
         .query("documentAttachments")
         .withIndex("by_source_message", (q) => q.eq("sourceMessageId", m._id))
         .collect();
-      for (const d of docs) await ctx.db.delete(d._id);
+      for (const d of docs) {
+        if (d.storageId !== undefined) releasedBlobs.add(d.storageId);
+        await ctx.db.delete(d._id);
+      }
       // Live-text row (present iff this message is mid-stream — a later streaming
       // turn truncated by deleting an earlier message): drop it with the message.
       const live = await ctx.db
@@ -2044,6 +2088,7 @@ export const deleteMessage = mutation({
         .withIndex("by_message", (q) => q.eq("messageId", m._id))
         .collect();
       for (const s of live) await ctx.db.delete(s._id);
+      await clearLiveActivity(ctx, m._id);
       // SSE transport (Phase 1): a message truncated BEFORE its finalize GC ran (e.g. a
       // still-streaming later turn) leaks its stream chunks (which hold text). Schedule
       // the bounded purge. Cheap existence check first, so non-streaming messages (the
@@ -2244,6 +2289,11 @@ export const deleteMessage = mutation({
       // Reset the SAME agent's session the regenerate re-dispatches to (per-turn chats).
       ...(regenRoutedAgent ? { routedAgent: regenRoutedAgent } : {}),
     });
+
+    // Last: the truncated rows are gone (parts, their files mirror, documentary
+    // attachments, the non-terminal outbox), so each blob they named goes too unless
+    // something else still references it — a fork's copy, an earlier message.
+    for (const blob of releasedBlobs) await releaseBlob(ctx, blob, { reason: "message_deleted" });
 
     await ctx.db.patch(chat._id, { updatedAt: Date.now() });
     await auditImpersonated(ctx, actor, "message.delete", {

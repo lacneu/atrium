@@ -553,3 +553,71 @@ describe("a window holding only reports yields no health verdict", () => {
     expect(a.class).toBe("healthy");
   });
 });
+
+describe("a running turn on which the agent is struggling (agent_struggling)", () => {
+  const struggling = msg({
+    status: "streaming",
+    liveDifficulty: {
+      kind: "repeated_failures",
+      tool: "view_image",
+      failures: 4,
+      sameTool: true,
+    },
+  });
+
+  test("names the tool and the count, as the reader sees it", () => {
+    const a = assessChat({ ok: true, messages: [msg({ role: "user" }), struggling] }, AVAIL_OK);
+    expect(a.class).toBe("agent_struggling");
+    expect(a.severity).toBe("warn");
+    expect(a.reason).toBe("4 failed `view_image` calls");
+  });
+
+  test("a failure followed by silence is named with its duration", () => {
+    const a = assessChat(
+      {
+        ok: true,
+        messages: [
+          msg({
+            status: "streaming",
+            liveDifficulty: { kind: "quiet_after_failure", tool: "view_image", quietMs: 185_000 },
+          }),
+        ],
+      },
+      AVAIL_OK,
+    );
+    expect(a.class).toBe("agent_struggling");
+    expect(a.reason).toBe("no activity for 185 s, after `view_image` failed");
+  });
+
+  test("a dead bridge outranks it; it outranks a recent sub-agent failure", () => {
+    expect(
+      assessChat(
+        { ok: true, messages: [struggling] },
+        { known: true, available: false, degraded: false, reason: "down" },
+      ).class,
+    ).toBe("bridge_unavailable");
+    expect(
+      assessChat(
+        {
+          ok: true,
+          messages: [struggling],
+          subAgents: {
+            byStatus: { running: 0, done: 0, error: 1, aborted: 0 },
+            failedSample: [{ status: "error", errorCategory: "timeout", ageSeconds: 30 }],
+            runningSample: [],
+          },
+        },
+        AVAIL_OK,
+      ).class,
+    ).toBe("agent_struggling");
+  });
+
+  test("no difficulty on the streaming turn: healthy", () => {
+    expect(
+      assessChat(
+        { ok: true, messages: [msg({ status: "streaming", liveDifficulty: null })] },
+        AVAIL_OK,
+      ).class,
+    ).toBe("healthy");
+  });
+});

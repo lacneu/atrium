@@ -428,6 +428,7 @@ describe("what the lot must not leave behind", () => {
     const chatId = await seedChat(t, owner);
     await as(t, owner).mutation(api.chatParticipants.addMember, { chatId, memberId: guest });
     await as(t, owner).mutation(api.chats.deleteChat, { chatId });
+    await as(t, owner).mutation(api.trash.purgeChat, { chatId });
     const left = await t.run(async (ctx) => ctx.db.query("chatParticipants").collect());
     expect(left).toEqual([]);
   });

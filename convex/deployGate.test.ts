@@ -38,11 +38,13 @@ describe("the Convex typecheck is wired as a gate", () => {
     expect(pkg.scripts["typecheck:convex"]).toMatch(
       /^tsc\s+--noEmit\s+-p\s+convex\s*$/,
     );
+    // The storage collector (deploy/gc) is its own project, checked the same way.
+    expect(pkg.scripts["typecheck:gc"]).toMatch(/^tsc\s+--noEmit\s+-p\s+deploy\/gc\s*$/);
     // The EXACT chain, not a substring: `… && if false; then npm run typecheck:convex;
-    // fi` mentions the script and never runs it (raised in review). Three commands is
+    // fi` mentions the script and never runs it (raised in review). Four commands is
     // short enough to pin literally, and this one's shape is the gate.
     expect(pkg.scripts.typecheck).toBe(
-      "npm run paraglide:compile && tsc --noEmit && npm run typecheck:convex",
+      "npm run paraglide:compile && tsc --noEmit && npm run typecheck:convex && npm run typecheck:gc",
     );
   });
 
@@ -53,7 +55,7 @@ describe("the Convex typecheck is wired as a gate", () => {
     const pkg = JSON.parse(read("../package.json")) as {
       scripts: Record<string, string>;
     };
-    for (const name of ["typecheck", "typecheck:convex"]) {
+    for (const name of ["typecheck", "typecheck:convex", "typecheck:gc"]) {
       const script = pkg.scripts[name] ?? "";
       expect(script, name).not.toMatch(/\|\||;\s*(true|exit\s+0)|--?force/);
     }

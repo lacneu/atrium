@@ -158,6 +158,9 @@ const SubAgentReportsTab = lazy(() =>
     default: m.SubAgentReportsTab,
   })),
 );
+const TrashTab = lazy(() =>
+  import("./chat/admin/TrashTab").then((m) => ({ default: m.TrashTab })),
+);
 const FilesTab = lazy(() =>
   import("./chat/admin/FilesTab").then((m) => ({ default: m.FilesTab })),
 );
@@ -1020,6 +1023,8 @@ function paramlessTab(tab: string) {
       return <ChatDefaultsTab />;
     case "access":
       return <AccessTab />;
+    case "trash":
+      return <TrashTab />;
     case "roles":
     default:
       return <RolesTab />;
@@ -1123,6 +1128,13 @@ const projectRoute = createRoute({
   validateSearch: (search: Record<string, unknown>): { c?: string } => ({
     c: typeof search.c === "string" ? search.c : undefined,
   }),
+});
+
+// The caller's trash (deleted conversations, restorable until their purge date).
+const trashRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "trash",
+  component: lazyRouteComponent(() => import("./chat/TrashPage"), "TrashPage"),
 });
 
 const settingsRoute = createRoute({
@@ -1321,6 +1333,7 @@ const routeTree = rootRoute.addChildren([
   indexRoute,
   chatRoute,
   projectRoute,
+  trashRoute,
   settingsRoute.addChildren([
     settingsIndexRoute,
     tracesRoute,

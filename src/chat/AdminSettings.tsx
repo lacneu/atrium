@@ -34,6 +34,7 @@ export const TABS = [
   "feedbacks",
   "subagentReports",
   "voice",
+  "trash",
 ] as const;
 export type Tab = (typeof TABS)[number];
 
@@ -53,6 +54,7 @@ export const PARAMLESS_TABS = [
   "agentFiles",
   "preferences",
   "chatDefaults",
+  "trash",
 ] as const;
 export type ParamlessTab = (typeof PARAMLESS_TABS)[number];
 
@@ -84,6 +86,7 @@ export const TAB_I18N: Record<Tab, () => string> = {
   feedbacks: () => m.settings_tab_feedbacks(),
   subagentReports: () => m.settings_tab_subagentreports(),
   voice: () => m.voice_tab_label(),
+  trash: () => m.settings_tab_trash(),
 };
 
 // --- Per-tab RBAC ----------------------------------------------------------
@@ -138,6 +141,10 @@ export const TAB_PERMISSION: Record<Tab, string> = {
   // Voice settings write the instance config (browser read-aloud knobs) —
   // admin-only, like Instances/ChatDefaults.
   voice: "admin.manage",
+  // Every user's trash: restoring or purging someone else's conversation is an
+  // admin act (trash.adminRestoreChat / adminPurgeChat re-check it, audit-logged).
+  // A user's OWN trash is not a Settings tab — it is the sidebar's /trash page.
+  trash: "admin.manage",
 };
 
 // The Settings tabs an admin may grant to a NON-admin. Mirrors the server-side

@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import {
   ANNOUNCE_COMPOSE_GRACE_MS,
   assistantEmptyState,
+  childFailureRecovered,
+  collapsedSubAgentFailure,
   delegatedRepliesFor,
   extractSpawnedChildKeys,
   toolPartsHaveSpawn,
@@ -1094,5 +1096,90 @@ describe("a failure the agent visibly answered is not the bubble's verdict", () 
       "B",
     );
     expect(s.kind).toBe("failed");
+  });
+});
+
+// THE COLLAPSED LIST OF SEVERAL SUB-AGENTS must NAME an unrecovered failure. In the
+// analysis view the empty-bubble verdict defers to the cards, and with several children
+// the cards fold behind a header whose only trace of a failure was a red count. The
+// 0.87.1 rule still holds there: a failure the agent recovered from is not repeated.
+describe("collapsedSubAgentFailure — the folded list's failure line", () => {
+  const GEN1 = "announce:requester-settle:meta:agent:meta:atrium:chat:o:c:run-c1:yield-1";
+  const C1 = row({
+    _id: "c1",
+    childSessionKey: "agent:main:subagent:k1",
+    childRunId: "run-c1",
+    parentMessageId: "B",
+    taskName: "redaction_integree",
+    status: "error",
+    errorCode: "timeout",
+    runTimeoutSeconds: 900,
+    createdAt: 3000,
+  });
+  const C2 = row({
+    _id: "c2",
+    childSessionKey: "agent:main:subagent:k2",
+    childRunId: "run-c2",
+    parentMessageId: "B",
+    taskName: "controle",
+    status: "done",
+    createdAt: 2000,
+  });
+  const C3 = row({
+    _id: "c3",
+    childSessionKey: "agent:main:subagent:k3",
+    childRunId: "run-c3",
+    parentMessageId: "B",
+    status: "error",
+    errorMessage: "web_fetch failed (401)",
+    createdAt: 1000,
+  });
+
+  it("an unrecovered failure is named with its task and short reason, plus the hidden rest", () => {
+    expect(collapsedSubAgentFailure([C1, C2, C3], [C1, C2, C3], "B", [])).toEqual({
+      task: "redaction_integree",
+      reason: "Le sous-agent a dépassé son délai de 900 s sans répondre.",
+      more: 1,
+    });
+  });
+
+  it("a failure the agent followed up (text/file after its batch) is not repeated", () => {
+    expect(collapsedSubAgentFailure([C1, C2, C3], [C1, C2, C3], "B", ["run-c1"])).toEqual({
+      // The child's label falls back to its session key's tail when it has no task.
+      task: "k3",
+      reason: "web_fetch (401)",
+      more: 0,
+    });
+  });
+
+  it("a failure the agent delegated past (a re-delegation, done or running, in THIS bubble) is not repeated", () => {
+    const redo = row({
+      _id: "c4",
+      childSessionKey: "agent:main:subagent:k4",
+      childRunId: "run-c4",
+      parentMessageId: "B",
+      bornOfRun: GEN1,
+      status: "running",
+      createdAt: 4000,
+    });
+    const rows = [redo, C1, C2];
+    expect(collapsedSubAgentFailure(rows, rows, "B", [])).toBeNull();
+    expect(childFailureRecovered(C1, rows, "B", [])).toBe(true);
+    // The same re-delegation anchored to ANOTHER bubble proves nothing here.
+    const elsewhere = [{ ...redo, parentMessageId: "B2" }, C1, C2];
+    expect(collapsedSubAgentFailure(elsewhere, elsewhere, "B", [])?.task).toBe(
+      "redaction_integree",
+    );
+  });
+
+  it("no failure, or only a stopped child: nothing to say", () => {
+    expect(collapsedSubAgentFailure([C2], [C2], "B", [])).toBeNull();
+    const stopped = { ...C1, status: "aborted" as const };
+    expect(collapsedSubAgentFailure([stopped, C2], [stopped, C2], "B", [])).toBeNull();
+  });
+
+  it("a failed child with no run id cannot be proven recovered", () => {
+    const noRun = { ...C1, childRunId: undefined };
+    expect(childFailureRecovered(noRun, [noRun], "B", ["run-c1"])).toBe(false);
   });
 });

@@ -2446,6 +2446,15 @@ button.oc-bmk-rail__count:hover {
 .oc-run-status--aborted {
   color: color-mix(in srgb, var(--destructive) 55%, #d97706);
 }
+/* The agent is STRUGGLING on the running turn (lib/turnDifficulty): the working
+   chip keeps its place and its motion, in the warning amber the sidebar bar uses. */
+.oc-run-status--struggling {
+  color: oklch(0.56 0.13 75);
+}
+.oc-run-status--struggling .oc-dots > span,
+.oc-run-status--struggling .oc-run-status__pulse {
+  background: oklch(0.74 0.16 75);
+}
 .oc-run-status__error {
   color: var(--destructive);
   font-size: 0.78rem;
@@ -5141,6 +5150,19 @@ button.oc-perm__opt:disabled {
 .oc-chatitem:focus-within .oc-chatitem__busy,
 .oc-sidebar__group-head:hover .oc-chatitem__busy,
 .oc-sidebar__group-head:focus-within .oc-chatitem__busy { opacity: 0; }
+/* STRUGGLING: the same bar, in the app's warning amber (oklch hue 75, as the warn
+   banner), with a stalled rhythm — a short catch then a pause instead of the even
+   breath. A state of the one activity indicator, never a second mark beside it. */
+@keyframes oc-busy-bar-struggle {
+  0%, 60%, 100% { transform: scaleY(0.4); opacity: 0.6; }
+  15% { transform: scaleY(1); opacity: 1; }
+  30% { transform: scaleY(0.55); opacity: 0.8; }
+  45% { transform: scaleY(1); opacity: 1; }
+}
+.oc-chatitem__busy--struggling {
+  background: oklch(0.74 0.16 75);
+  animation: oc-busy-bar-struggle 1.8s ease-in-out infinite;
+}
 @media (prefers-reduced-motion: reduce) {
   .oc-chatitem__busy { animation: none; opacity: 0.8; }
 }
@@ -10731,4 +10753,11 @@ button.oc-perm__opt:disabled {
   margin-top: 0.35rem;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
+}
+
+/* The sidebar's way into the trash (TrashPage.tsx), under the conversation list. */
+.oc-sidebar__trash {
+  margin-top: 0.25rem;
+  justify-content: flex-start;
+  color: var(--muted-foreground);
 }

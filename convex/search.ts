@@ -21,6 +21,7 @@ import { query } from "./_generated/server";
 import { requireActive } from "./lib/access";
 import { requireOwnedProject } from "./projects";
 import { pathOf, subtreeIds } from "./lib/folderTree";
+import { isTrashed } from "./lib/trash";
 import {
   buildSnippet,
   queryTerms,
@@ -113,7 +114,7 @@ export const searchConversations = query({
     // signal. Recency-ordered for a stable list.
     const titleSorted = [...chats].sort((a, b) => b.updatedAt - a.updatedAt);
     for (const chat of titleSorted) {
-      if (chat.archived) continue;
+      if (chat.archived || isTrashed(chat)) continue;
       if (!titleMatches(chat.title, terms)) continue;
       if (seen.has(chat._id)) continue;
       seen.add(chat._id);
@@ -141,7 +142,8 @@ export const searchConversations = query({
 
     for (const m of msgHits) {
       const chat = chatById.get(m.chatId);
-      if (!chat || chat.archived) continue; // owner-scoped + skip archived
+      // owner-scoped + skip archived and trashed
+      if (!chat || chat.archived || isTrashed(chat)) continue;
       if (seen.has(m.chatId)) continue;
       seen.add(m.chatId);
       results.push({

@@ -59,7 +59,12 @@ describe("stream.finalize errorKind -> errorCode", () => {
     // Missing from that list, the code was dropped from the trace and the two cause classes
     // were unreachable — the failure counted only in the generic stream-error channel and the
     // diagnostic API said "unknown" (codex).
-    for (const errorKind of ["gateway_storage_busy", "gateway_storage_unavailable"]) {
+    // …and the agent-database refusal (OpenClaw 2026.9.5+), which crosses the same allowlist.
+    for (const errorKind of [
+      "gateway_storage_busy",
+      "gateway_storage_unavailable",
+      "gateway_agent_db_closed",
+    ]) {
       const t = convexTest(schema, modules);
       const { messageId } = await seedStreamingMessage(t);
       await t.mutation(internal.stream.finalize, {

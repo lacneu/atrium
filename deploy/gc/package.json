@@ -1,0 +1,7 @@
+{
+  "name": "atrium-blob-gc",
+  "private": true,
+  "type": "module",
+  "description": "Physical garbage collector for a self-hosted Convex backend's file storage (see docs/installation/BACKUP.md).",
+  "engines": { "node": ">=24" }
+}

@@ -47,6 +47,7 @@ import {
 import { isConversationAgent } from "./chatAgents";
 import { writeTraceEvent } from "./observability";
 import { notifyUser } from "./notifications";
+import { isTrashed } from "./lib/trash";
 import {
   DEFAULT_REQUEST_TTL_MS,
   EXPIRY_SWEEP_GRACE_MS,
@@ -1261,6 +1262,13 @@ export const pendingByChat = query({
         cur.soonestExpiry = Math.min(cur.soonestExpiry, r.expiresAt);
         byChat.set(key, cur);
       }
+    }
+    // A conversation in the TRASH badges nothing — owned or taken part in: its
+    // agent waits on a page nobody can open — nor one already GONE (a purge whose
+    // requests are not swept yet). One read per badged conversation.
+    for (const [key, entry] of [...byChat]) {
+      const chat = await ctx.db.get(entry.chatId);
+      if (chat === null || isTrashed(chat)) byChat.delete(key);
     }
     return [...byChat.values()];
   },

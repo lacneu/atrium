@@ -143,6 +143,50 @@ describe("classifyFailureText", () => {
     expect(classifyFailureText("disk I/O error")).toBe("gateway_storage_unavailable");
   });
 
+  it("a FULL DISK under the read-only worker's scratch space is the same host fact (prod 2026-09-23)", () => {
+    // Composed by three upstream wrappers at v2026.9.6 — sqlite-snapshot-staging.ts:163-184
+    // (the staging advice), sqlite-error-diagnostics.ts:96-132 (operation label + code
+    // suffix), sqlite-readonly-worker-protocol.ts:76-82 (the prefix) — none of which says
+    // "database or disk is full". Synthetic path. It came back unclassified.
+    const enospc =
+      "child session patch failed: SQLite read-only worker failed while creating its private snapshot: ENOSPC: no space left on device, mkdtemp '/home/node/.cache/openclaw/openclaw-sqlite-readonly-v2-AbC123'; snapshot staging root /home/node/.cache/openclaw: free disk space/quota or set XDG_CACHE_HOME to a writable filesystem (code=ENOSPC)";
+    expect(classifyFailureText(enospc)).toBe("gateway_storage_unavailable");
+    // …and when that failure left the agent refused, the refusal's hint follows it; the
+    // DISK still names the class, because it is what the operator must act on.
+    expect(
+      classifyFailureText(
+        `${enospc}\nSessions remain unavailable. Stop the Gateway, run "openclaw doctor --fix" to inspect and repair this agent database, and restart.`,
+      ),
+    ).toBe("gateway_storage_unavailable");
+    // The gateway's own reader copy for the same event (src/agents/failover/user-copy.ts:159-165).
+    expect(
+      classifyFailureText(
+        "OpenClaw could not write local session data because the disk is full. Free some disk space and try again.",
+      ),
+    ).toBe("gateway_storage_unavailable");
+    expect(classifyFailureText("Error: EDQUOT: disk quota exceeded, write")).toBe(
+      "gateway_storage_unavailable",
+    );
+  });
+
+  it("the gateway CLOSED the agent's database: named, and never the busy class", () => {
+    // src/state/openclaw-agent-execution.ts:145 — prod 2026-09-28, children stored `unknown`.
+    expect(classifyFailureText("Agent database execution admission is closed")).toBe(
+      "gateway_agent_db_closed",
+    );
+    // `AgentDatabaseAdmissionError` = `${reason}\n${repairHint}` (agent-database-admission.ts:232-237),
+    // the three hints verbatim (:56, :57, state-migrations.agent-owner-guidance.ts:21).
+    for (const t of [
+      'Agent alice has not completed startup inspection and preparation. inspection deferred\nSessions remain unavailable until background inspection and preparation finish. If they cannot complete, stop the Gateway, run "openclaw doctor --fix", and restart.',
+      'SqliteError: database is locked\nSessions remain unavailable. Stop the Gateway, run "openclaw doctor --fix" to inspect and repair this agent database, and restart.',
+      "Refused agent alice: database /x belongs to agent bob; requested agent alice.\nPreserve and inspect this database before accepting a fresh agent. With all OpenClaw processes stopped, the explicit quarantine move is:\nmv -n -- '/x' '/y'\nThen run openclaw doctor --fix and restart the Gateway.",
+    ]) {
+      // The second one's REASON says "database is locked": still not contention the
+      // reader can resend through — the agent stays refused until the operator acts.
+      expect(classifyFailureText(t), t).toBe("gateway_agent_db_closed");
+    }
+  });
+
   it("a storage failure is NEVER provider_internal, whatever else rides the text", () => {
     // Its own "Retry" must not buy it an automatic re-dispatch: the run had already
     // started working when the write failed, exactly like the writer rebound above.

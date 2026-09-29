@@ -237,6 +237,7 @@ needs the coherent set.
 | --------------------------- | -------- | ------- | ---------------------------------------------------------------------------------------- | ------- |
 | `TRACE_RETENTION_DAYS`      | no       |         | How long trace events are kept before the retention cron deletes them.                   | `30`    |
 | `ACCESS_LOG_RETENTION_DAYS` | no       |         | How long SOC2 access-log rows are kept. Check your own obligations before shortening it. | `365`   |
+| `CHAT_TRASH_RETENTION_DAYS` | no       | `30`    | How long a deleted conversation stays in the trash, restorable, before the daily purge deletes it and releases its files (unreachable from then on; a self-hosted backend keeps the bytes on disk — its storage deletes are soft). | `14`    |
 
 ## Media paths — the one place a wrong value fails silently
 

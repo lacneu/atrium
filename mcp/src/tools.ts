@@ -572,11 +572,14 @@ export function getTraceEnrichment(
  * GET /api/v1/diagnose — ONE actionable assessment of a chat for the
  * self-correction loop: SOC2-safe chat-state + bridge availability, classified
  * (stuck_stream | dispatch_error | attachment_problem | subagent_stuck |
- * subagent_failure | bridge_unavailable | bridge_degraded | healthy) with a
+ * subagent_failure | agent_struggling | bridge_unavailable | bridge_degraded |
+ * healthy) with a
  * `suggestedAction` and, when a safe corrective exists, a `suggestedTool`.
  * `subagent_stuck` (a delegated sub-agent running far too long — a main turn
  * awaiting it can hang) and `subagent_failure` (a recent failed delegation) read
- * the new chat-state `subAgents` summary. Requires `traces.read`. Read-only. Call
+ * the new chat-state `subAgents` summary; `agent_struggling` (the running turn
+ * keeps failing, or went quiet after a failure) reads its `liveDifficulty`.
+ * Requires `traces.read`. Read-only. Call
  * FIRST on a user report, then act on the suggestion.
  */
 export function diagnoseChat(

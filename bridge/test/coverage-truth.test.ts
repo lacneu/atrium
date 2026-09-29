@@ -92,6 +92,8 @@ const FROZEN_TRUTH_FLOOR = [
   // The knowledge plugin's session actions and the agent-default config write (2026-09-27).
   "PluginsSessionActionParams.payload",
   "ConfigPatchParams.replacePaths",
+  // The agent-database admission refusal's code, read from a refused request's details (2026-09-28).
+  "AgentDatabaseAdmissionRefusal.code",
 ];
 
 const ratchet = JSON.parse(

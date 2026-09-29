@@ -9,7 +9,7 @@
 // an import that stops halfway can be undone precisely.
 
 import { convexTest, type TestConvex } from "convex-test";
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 import { api } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
 import { ARCHIVE_FORMAT_VERSION } from "./lib/exportArchive";
@@ -1370,12 +1370,29 @@ describe("archive import", () => {
       });
     }
 
+    // While the owner's own upload registration is USABLE it holds the blob — a
+    // draft may still send it — and the import only drops its claim.
     expect(
       await as.mutation(api.archiveImport.discardUpload, {
         importId,
         storageId: free,
       }),
-    ).toEqual({ discarded: true });
+    ).toEqual({ discarded: false });
+    // Registered again (the claim went), then discarded once the registration has
+    // expired: nothing holds it, it is released.
+    await as.mutation(api.archiveImport.registerImportBlob, { importId, storageId: free });
+    vi.useFakeTimers();
+    vi.setSystemTime(Date.now() + 8 * 24 * 60 * 60 * 1000);
+    try {
+      expect(
+        await as.mutation(api.archiveImport.discardUpload, {
+          importId,
+          storageId: free,
+        }),
+      ).toEqual({ discarded: true });
+    } finally {
+      vi.useRealTimers();
+    }
     expect(
       await as.mutation(api.archiveImport.discardUpload, {
         importId,
@@ -1397,10 +1414,15 @@ describe("archive import", () => {
       }),
     ).toEqual({ discarded: false });
 
+    // The discarded one is RELEASED into the quarantine: its registration goes with
+    // it when the quarantine ends (lib/blobs.endQuarantine), not before.
     const remaining = await t.run((ctx) => ctx.db.query("uploads").collect());
     expect(remaining.map((r) => r.storageId).sort()).toEqual(
-      [usedByFile, usedByDoc, unregistered].sort(),
+      [free, usedByFile, usedByDoc, unregistered].sort(),
     );
+    expect(
+      (await t.run((ctx) => ctx.db.query("blobReleases").collect())).map((r) => r.storageId),
+    ).toEqual([free]);
   });
 
   test("a SAME-DEPLOYMENT import never touches the conversation it copies", async () => {
@@ -1579,6 +1601,8 @@ describe("archive import", () => {
 
     const part = (await t.run((ctx) => ctx.db.query("messageParts").collect()))[0]!;
     expect((part.part as { filename: string }).filename).not.toContain("/");
+    // Found by its blob like every part (lib/blobs.partStorageField).
+    expect(part.storageId).toBe(storageId);
   });
 
   test("abandoning an import with an ATTACHMENT leaves no bytes behind", async () => {
@@ -1638,10 +1662,13 @@ describe("archive import", () => {
     }
 
     expect(done).toBe(true);
-    // Nothing imported remains — and neither do its bytes.
+    // Nothing imported remains, nor any claim of the import. The upload
+    // registration is the importer's own, not the import's: still usable, it keeps
+    // the bytes (a draft may send them) until it expires — then a release or the
+    // orphan sweep takes them.
     expect(await t.run((ctx) => ctx.db.query("chats").collect())).toHaveLength(0);
     expect(await t.run((ctx) => ctx.db.query("files").collect())).toHaveLength(0);
-    expect(await t.run((ctx) => ctx.db.query("uploads").collect())).toHaveLength(0);
+    expect(await t.run((ctx) => ctx.db.query("uploads").collect())).toHaveLength(1);
     expect(
       await t.run((ctx) => ctx.db.query("archiveImportIds").collect()),
     ).toHaveLength(0);

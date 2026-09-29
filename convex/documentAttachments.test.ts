@@ -735,6 +735,7 @@ describe("deletion cascade", () => {
     );
     // Delete the SOURCE chat (cascadeDeleteChat) while the fetch is in flight.
     await as.mutation(api.chats.deleteChat, { chatId });
+    await as.mutation(api.trash.purgeChat, { chatId });
     // The hidden chat survives but its lock is released (the source is gone).
     const pf = await t.run((ctx) =>
       ctx.db.get(hiddenId).then((c) => c?.pendingFetch ?? null),
@@ -762,6 +763,7 @@ describe("deletion cascade", () => {
     expect(before.length).toBeGreaterThan(0);
 
     await as.mutation(api.chats.deleteChat, { chatId });
+    await as.mutation(api.trash.purgeChat, { chatId });
 
     // Regression guard: without the cascade purge, the row (+ its downloadable
     // storageId) survives the deleted message/chat as an orphan.

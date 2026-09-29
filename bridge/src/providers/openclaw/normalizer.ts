@@ -38,6 +38,7 @@ import {
   sanitizeFrame,
   sanitizeText,
   DELIVERABLE_MEDIA_SUBDIRS,
+  containsDeliverableMediaPath,
 } from "./sanitize.js";
 import { isGatewayInitiatedRunId } from "./run-families.js";
 import { planPartFromPlanStream } from "../../core/plan-part.js";
@@ -511,10 +512,29 @@ function isOutboundMediaPath(path: Json): path is string {
 // transcript is extracted without trailing junk. Each hit is re-validated
 // through isOutboundMediaPath, so the "..", inbound, scheme and query filters
 // still apply -- this widens DISCOVERY only, never the safety gate.
+//
+// The root prefix is `(?:/[^…]+)?`, NEVER `(?:/[^…]+)*`. The class admits `/`, so
+// under `*` every slash of a token is a place to split it: a whitespace-free token
+// with n slashes and no deliverable path costs ~2^n steps to reject. That froze the
+// production bridge (2026-09-29): one core at 100 %, no I/O for 17 minutes, on a tool
+// result the scan below reads. Both forms accept the SAME language (a concatenation
+// of "/x+" groups is itself one "/x+" group), so the matches are identical — pinned
+// by a differential test against the old form.
 const EMBEDDED_OUTBOUND_RE = new RegExp(
   // …and the embedded scan with it: what the reader accepts, the scanner must find.
-  String.raw`(?:/[^\s\`)>"']+)*/media/(?:${DELIVERABLE_MEDIA_SUBDIRS.join("|")})/[^\s\`)>"']+`,
+  String.raw`(?:/[^\s\`)>"']+)?/media/(?:${DELIVERABLE_MEDIA_SUBDIRS.join("|")})/[^\s\`)>"']+`,
   "g",
+);
+// The characters no embedded match can span (the scanner's own stop class): a line
+// is cut on them and only a token that can hold a match is scanned. Without it the
+// quantifier fix above still leaves every slash of an unrelated token a start
+// position that rescans that token — quadratic, seconds on a large base64 blob.
+const EMBEDDED_TOKEN_SEPARATOR_RE = /[\s`)>"']+/;
+// A token can hold a match only if a deliverable directory is followed by a tail.
+// With one present the leftmost start succeeds (at worst the next one does), so
+// the scan of that token is linear.
+const EMBEDDED_TOKEN_CANDIDATE_RE = new RegExp(
+  String.raw`/media/(?:${DELIVERABLE_MEDIA_SUBDIRS.join("|")})/.`,
 );
 
 // A whole-line MEDIA: delivery directive (the convention the bridge injects via
@@ -543,7 +563,7 @@ const MEDIA_DIRECTIVE_LINE_RE = new RegExp(
  * note the agent read) is an incidental MENTION — the consumer freshness-gates
  * it so last week's files never re-attach to today's turn (the exports bug).
  */
-function extractOutboundPaths(
+export function extractOutboundPaths(
   text: string,
 ): Array<{ path: string; explicit: boolean }> {
   const out: Array<{ path: string; explicit: boolean }> = [];
@@ -561,8 +581,12 @@ function extractOutboundPaths(
       out.push({ path: directive[1]!.trimEnd(), explicit: true });
       continue;
     }
-    for (const match of line.matchAll(EMBEDDED_OUTBOUND_RE)) {
-      out.push({ path: match[0], explicit: false });
+    if (!containsDeliverableMediaPath(line)) continue;
+    for (const token of line.split(EMBEDDED_TOKEN_SEPARATOR_RE)) {
+      if (!EMBEDDED_TOKEN_CANDIDATE_RE.test(token)) continue;
+      for (const match of token.matchAll(EMBEDDED_OUTBOUND_RE)) {
+        out.push({ path: match[0], explicit: false });
+      }
     }
   }
   return out;

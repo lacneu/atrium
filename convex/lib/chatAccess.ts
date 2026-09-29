@@ -19,6 +19,7 @@
 
 import type { Doc, Id } from "../_generated/dataModel";
 import type { MutationCtx, QueryCtx } from "../_generated/server";
+import { isTrashed } from "./trash";
 
 export type ChatRole = "owner" | "participant";
 
@@ -149,6 +150,11 @@ export const MAX_CHAT_PARTICIPANTS = 32;
  *
  * Returns null — never throws — for a deleted chat, so callers can render "not
  * found" rather than a permission error for a chat that no longer exists.
+ *
+ * A chat in the TRASH is reached by nobody — its owner included: while it waits
+ * there it is gone from every surface, participants lose their seat's access at
+ * once (the seat itself is kept, so a restore gives it back), and nothing may post
+ * to it. The trash's own mutations (convex/trash.ts) read the row directly.
  */
 export async function resolveChatAccess(
   ctx: QueryCtx | MutationCtx,
@@ -156,7 +162,7 @@ export async function resolveChatAccess(
   userId: Id<"users">,
 ): Promise<ChatAccess | null> {
   const chat = await ctx.db.get(chatId);
-  if (chat === null) return null;
+  if (chat === null || isTrashed(chat)) return null;
   if (chat.userId === userId) return { chat, role: "owner", roomRole: "owner" };
   const membership = await ctx.db
     .query("chatParticipants")

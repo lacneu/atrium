@@ -207,6 +207,39 @@ describe("enforcePermissionMode — the decision", () => {
     ).rejects.toBe(lost);
   });
 
+  it("the gateway's OWN refusal (agent database closed, storage unusable) passes RAW, never a permission problem", async () => {
+    // OpenClaw 2026.9.6 answers a `sessions.patch` on an agent whose database it will not
+    // admit `UNAVAILABLE` with the refusal as `details` (src/gateway/session-request-agent.ts:
+    // 29-38). Wrapped as PermissionModeNotAppliedError, the reader was sent to check a
+    // permission mode (codex, 0.88.2).
+    const refusal = new GatewayAnsweredError("UNAVAILABLE: refused", {
+      agentId: "a",
+      paths: ["/x"],
+      code: "agent-database-inspection-pending",
+      reason: "r",
+      repairHint: "h",
+    });
+    const closed = answered("UNAVAILABLE: Agent database execution admission is closed");
+    const full = answered("UNAVAILABLE: SqliteError: database or disk is full");
+    for (const [err, code] of [
+      [refusal, "gateway_agent_db_closed"],
+      [closed, "gateway_agent_db_closed"],
+      [full, "gateway_storage_unavailable"],
+    ] as const) {
+      await expect(
+        enforcePermissionMode({
+          ...base,
+          choice: "guarded",
+          described: null,
+          patch: async () => {
+            throw err;
+          },
+        }),
+      ).rejects.toBe(err);
+      expect(classifyGatewayError(err)).toBe(code);
+    }
+  });
+
   it("the upstream wordings, classified", () => {
     expect(classifyPermissionPatchError(new Error("FORBIDDEN: missing scope: operator.admin"))).toBe("scope_refused");
     expect(classifyPermissionPatchError(new Error("whatever"))).toBe("rejected");

@@ -130,6 +130,13 @@ import {
 } from "./lib/quoteReply";
 import { providerSessionClearPatch } from "./lib/providerSession";
 import { safeAuthorLabel, userTurnAuthorLabels } from "./lib/turnAuthors";
+import { reclaimUnheldBlob } from "./lib/blobSweep";
+import { partStorageField } from "./lib/blobs";
+import {
+  clearLiveActivity,
+  stampLiveActivity,
+  writeLiveActivity,
+} from "./lib/liveTurnDifficulty";
 
 // Optional delivery-recorder fields the bridge attaches to a stream write while a
 // turn is being recorded (see convex/deliveryTiming.ts). `recSessionId` is the
@@ -1569,6 +1576,11 @@ function clearsRetryPhase(row: { phase?: string }): {
   return row.phase === "retrying" ? { phase: undefined, phaseRetry: undefined } : {};
 }
 
+/** The phase a live row keeps after a text write (see clearsRetryPhase). */
+function phaseAfterText(row: { phase?: string }): string | undefined {
+  return row.phase === "retrying" ? undefined : row.phase;
+}
+
 const TURN_PHASES = new Set([
   "processing_history",
   "compacting",
@@ -1658,17 +1670,30 @@ export const setPhase = internalMutation({
       // way, which is all this signal was ever asserting.
       return;
     }
+    // Every phase change reaches the activity row (phase changes are rare), so the
+    // live-turn difficulty reads a declared wait without reading this per-token row;
+    // `at` moves only with the heartbeat, on the same rule as `updatedAt`.
+    const now = Date.now();
     if (clearing) {
       // Resume signal: real gateway activity — clear the phase AND heartbeat.
       await ctx.db.patch(row._id, {
         phase: undefined,
         phaseRetry: undefined,
-        updatedAt: Date.now(),
+        updatedAt: now,
+        activityStampedAt: now,
       });
+      await writeLiveActivity(ctx, messageId, { at: now, phase: undefined });
     } else if (phase === "querying_gateway") {
       await ctx.db.patch(row._id, { phase, phaseRetry });
+      await writeLiveActivity(ctx, messageId, { phase });
     } else {
-      await ctx.db.patch(row._id, { phase, phaseRetry, updatedAt: Date.now() });
+      await ctx.db.patch(row._id, {
+        phase,
+        phaseRetry,
+        updatedAt: now,
+        activityStampedAt: now,
+      });
+      await writeLiveActivity(ctx, messageId, { at: now, phase });
     }
   },
 });
@@ -1686,7 +1711,11 @@ export const heartbeatStream = internalMutation({
     if (row === null) return;
     // ATOMIC cross-gateway barrier (row stamp — zero extra reads).
     await assertRowBound(ctx, row, boundInstanceName);
-    await ctx.db.patch(row._id, { updatedAt: Date.now() });
+    const now = Date.now();
+    await ctx.db.patch(row._id, {
+      updatedAt: now,
+      ...(await stampLiveActivity(ctx, row, now, row.phase)),
+    });
   },
 });
 
@@ -1794,6 +1823,8 @@ export const appendDelta = internalMutation({
         updatedAt: now,
         chunkSeq: seq + 1,
         ...clearsRetryPhase(row),
+        // Throttled last-activity stamp (live-turn difficulty, rule 3).
+        ...(await stampLiveActivity(ctx, row, now, phaseAfterText(row))),
       });
       streamRowId = row._id;
       chatId = row.chatId;
@@ -1952,6 +1983,7 @@ export const setSnapshot = internalMutation({
         updatedAt: now,
         chunkSeq: seq + 1,
         ...clearsRetryPhase(row),
+        ...(await stampLiveActivity(ctx, row, now, phaseAfterText(row))),
       });
       streamRowId = row._id;
       chatId = row.chatId;
@@ -2040,21 +2072,13 @@ export const addPart = internalMutation({
     // part storageId AND ALL, so one object is legitimately shared by a message
     // and its fork — and this op is network input: a caller naming a storageId it
     // does not own would otherwise destroy the attachment of every message that
-    // references it. `files` mirrors every file/media part by invariant, so its
-    // `by_storage` index answers "is anyone else holding this?" in one read.
+    // references it. Every reclaim in this mutation goes through
+    // lib/blobSweep.reclaimUnheldBlob, where ANY holder counts — a fork's file
+    // row, a documentary attachment, a rendition, a chart logo, a user's
+    // not-yet-sent upload — not only `files`.
     const reclaim = async () => {
       if (part.kind !== "media" && part.kind !== "file") return;
-      const storageId = part.storageId;
-      const holders = await ctx.db
-        .query("files")
-        .withIndex("by_storage", (q) => q.eq("storageId", storageId))
-        .take(1);
-      if (holders.length > 0) return;
-      try {
-        await ctx.storage.delete(storageId);
-      } catch {
-        // best-effort: an already-gone blob must not fail the ingest
-      }
+      await reclaimUnheldBlob(ctx, part.storageId);
     };
     const message = await ctx.db.get(messageId);
     if (message === null) {
@@ -2221,13 +2245,10 @@ export const addPart = internalMutation({
     ) {
       // The bridge uploaded a media part's bytes BEFORE this call — reclaim
       // the blob or every stale-generation retransmit leaks a billable,
-      // unreachable storage object (mirrors the dedup path below).
+      // unreachable storage object (mirrors the dedup path below). Never a blob
+      // anything else holds: the id is network input.
       if (part.kind === "media" || part.kind === "file") {
-        try {
-          await ctx.storage.delete(part.storageId);
-        } catch {
-          // best-effort: an already-gone blob must not fail the ingest
-        }
+        await reclaimUnheldBlob(ctx, part.storageId);
       }
       // REPORTED, not silent (codex P2): the bridge's `addMedia` returns a boolean
       // that means "an attachment landed", and it uses it to claim the filename as
@@ -2369,11 +2390,7 @@ export const addPart = internalMutation({
               e.part.storageId === part.storageId,
           )
         ) {
-          try {
-            await ctx.storage.delete(part.storageId);
-          } catch {
-            // best-effort: an already-gone blob must not fail the ingest
-          }
+          await reclaimUnheldBlob(ctx, part.storageId);
         }
         // NOTHING VISIBLE CHANGED — and that is exactly when the verdict can
         // still be a lie: the finalize's probe is inconclusive when storage
@@ -2437,7 +2454,7 @@ export const addPart = internalMutation({
           (e.announceRun ?? null) === (announceRun ?? null),
       );
       if (row !== undefined) {
-        await ctx.db.patch(row._id, { part });
+        await ctx.db.patch(row._id, { part, storageId: partStorageField(part).storageId });
         await ctx.db.patch(messageId, { updatedAt: Date.now() });
         return;
       }
@@ -2452,6 +2469,7 @@ export const addPart = internalMutation({
       messageId,
       order,
       part,
+      ...partStorageField(part),
       ...(announceRun !== undefined ? { announceRun } : {}),
     });
     // Paired files-row write (invariant): a file/media part gets an owner-scoped
@@ -3563,6 +3581,7 @@ export const finalize = internalMutation({
     // Delete the live-text row WITH the lifecycle flip (same atomic mutation) so the
     // "streaming <=> row exists" invariant holds and the watchdog won't re-see it.
     if (stRow !== null) await ctx.db.delete(stRow._id);
+    await clearLiveActivity(ctx, messageId);
     // A COMPLETED reply stamps the chat's `lastAssistantAt` — the single signal
     // the sidebar consumes for the arrival flash / unread dot / reply sound
     // (multi-chat UX). Deliberately NOT on error/aborted: a failed turn already
@@ -3751,6 +3770,20 @@ export const finalize = internalMutation({
           console.error("[convert] correlate failed:", (e as Error)?.message ?? e);
         }
       }
+    }
+    // A DOCUMENTARY or CONVERTER job settled by this finalize: sweep the hidden
+    // chat's rows. What the job captured is held elsewhere (documentAttachments /
+    // fileRenditions) and survives; the prompt, the reply and every other delivered
+    // copy go. Scheduled (never inside this finalize), and a no-op while a newer job
+    // holds the chat. A finalize that settled no job sweeps nothing: the next job's
+    // settle takes its rows along.
+    if (
+      (chat?.kind === "documentary" && chat.pendingFetch) ||
+      (chat?.kind === "converter" && chat.pendingConvert)
+    ) {
+      await ctx.scheduler.runAfter(0, internal.chatSummaries.sweepHiddenChat, {
+        hiddenChatId: chat._id,
+      });
     }
     // Hybrid rehydration: a REGULAR chat's finished turn may have accumulated enough
     // new content for a summarize job — check OUTSIDE this transaction (scheduled,

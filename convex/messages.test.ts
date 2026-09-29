@@ -470,6 +470,9 @@ describe("streamingText row removal on delete / cascade", () => {
     await t
       .withIdentity({ subject: `${userId}|session` })
       .mutation(api.chats.deleteChat, { chatId });
+    await t
+      .withIdentity({ subject: `${userId}|session` })
+      .mutation(api.trash.purgeChat, { chatId });
 
     await t.run(async (ctx) => {
       const orphan = await ctx.db

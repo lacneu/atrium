@@ -435,6 +435,7 @@ describe("what deleting a conversation leaves behind", () => {
       agentId: "bob",
     });
     await as(t, owner).mutation(api.chats.deleteChat, { chatId });
+    await as(t, owner).mutation(api.trash.purgeChat, { chatId });
     const left = await t.run(async (ctx) =>
       ctx.db
         .query("chatAgents")
@@ -1027,6 +1028,7 @@ describe("what a person kept in a conversation leaves with them", () => {
     const { owner, guest, chatId } = await room(t);
     await leaveTraces(t, guest, chatId);
     await as(t, owner).mutation(api.chats.deleteChat, { chatId });
+    await as(t, owner).mutation(api.trash.purgeChat, { chatId });
     expect(await stateOf(t, guest, chatId)).toEqual({ reads: 0, bookmarks: 0 });
   });
 
@@ -3198,6 +3200,7 @@ describe("a group notification does not outlive what it announced", () => {
     const { owner, guest, chatId } = await room(t);
     const key = await seatKey(t, chatId, guest);
     await as(t, owner).mutation(api.chats.deleteChat, { chatId });
+    await as(t, owner).mutation(api.trash.purgeChat, { chatId });
     expect(await notes(t, key)).toEqual([]);
   });
 
@@ -4452,6 +4455,7 @@ describe("deleting a big group conversation", () => {
         }
       });
       await as(t, owner).mutation(api.chats.deleteChat, { chatId });
+      await as(t, owner).mutation(api.trash.purgeChat, { chatId });
       // Unreachable at once, for the owner and every guest.
       expect(await t.run(async (ctx) => resolveChatAccess(ctx, chatId, owner))).toBeNull();
       expect(await t.run(async (ctx) => resolveChatAccess(ctx, chatId, members[0]!))).toBeNull();
@@ -4541,6 +4545,7 @@ describe("deleting a chat whose summarizer holds many rows", () => {
       });
 
       await as(t, owner).mutation(api.chats.deleteChat, { chatId });
+      await as(t, owner).mutation(api.trash.purgeChat, { chatId });
       // At once: the source is unreachable, the lock released, the job cancelled.
       expect(await t.run(async (ctx) => resolveChatAccess(ctx, chatId, owner))).toBeNull();
       const now = await t.run(async (ctx) => ({
@@ -4604,6 +4609,7 @@ describe("a deleted conversation leaves no outbox row behind", () => {
         }
       });
       await as(t, owner).mutation(api.chats.deleteChat, { chatId });
+      await as(t, owner).mutation(api.trash.purgeChat, { chatId });
       await t.finishAllScheduledFunctions(vi.runAllTimers);
       const left = await t.run(async (ctx) =>
         (await ctx.db.query("outbox").collect()).filter((o) => o.chatId === chatId),

@@ -1242,6 +1242,7 @@ describe("cleanup", () => {
       choice: { kind: "off" },
     });
     await t.withIdentity({ subject: owner }).mutation(api.chats.deleteChat, { chatId });
+    await t.withIdentity({ subject: owner }).mutation(api.trash.purgeChat, { chatId });
     await t.finishAllScheduledFunctions(vi.runAllTimers);
     expect(await t.run((ctx) => ctx.db.query("chatKnowledgeChoices").collect())).toEqual([]);
   });

@@ -538,6 +538,17 @@ describe("errorDetailView (actionable error classification)", () => {
     );
   });
 
+  it("a gateway that CLOSED the agent's database gets its headline, and its doctor advice stays off the card", () => {
+    // The upstream hint tells the reader to stop the gateway and run a command
+    // (src/state/agent-database-admission.ts:57 at v2026.9.6): the operator's job, not theirs.
+    const v = errorDetailView(
+      'Agent database admission refused\nSessions remain unavailable. Stop the Gateway, run "openclaw doctor --fix" to inspect and repair this agent database, and restart.',
+      "gateway_agent_db_closed",
+    );
+    expect(v.headline).toBe(m.runstatus_error_gateway_agent_db_closed());
+    expect(v.detail ?? "").not.toContain("doctor");
+  });
+
   it("the gateway's STORAGE failures each get their own headline, detail kept", () => {
     // Two classes because the answer differs: contention the reader can re-send through, and a
     // host the reader cannot fix. The gateway's own English sentence stays BELOW the localized
@@ -871,4 +882,48 @@ it("a retry stopped by the card's OWN unsettled dispatch takes the neutral line,
   });
   expect(line).toBe(m.runstatus_retry_stood_down());
   expect(line).not.toBe(m.runstatus_retry_stood_down_moved_on());
+});
+
+describe("runStatusView — the agent is struggling (live-turn difficulty)", () => {
+  const retrying = {
+    kind: "repeated_failures" as const,
+    tool: "view_image",
+    failures: 4,
+    sameTool: true,
+  };
+
+  it("the difficulty REPLACES the running-tool label, in the struggling tone", () => {
+    const tool = { name: "view_image", family: toolFamily("view_image") };
+    expect(
+      runStatusView("streaming", false, null, tool, false, null, retrying),
+    ).toEqual({
+      kind: "thinking",
+      label: "L'agent réessaie : 4 échecs de view_image",
+      phased: true,
+      struggling: true,
+    });
+    // …and on a turn already writing, too.
+    expect(
+      runStatusView("streaming", true, "querying_gateway", null, false, null, retrying)
+        ?.struggling,
+    ).toBe(true);
+  });
+
+  it("a phase that asks the READER to act keeps the chip", () => {
+    for (const phase of ["awaiting_input", "awaiting_approval"]) {
+      const v = runStatusView("streaming", false, phase, null, false, null, retrying);
+      expect(v?.struggling).toBeUndefined();
+      expect(v?.phased).toBe(true);
+    }
+  });
+
+  it("no difficulty, or a settled turn: nothing changes", () => {
+    expect(runStatusView("streaming", false, null, null, false, null, null)).toEqual({
+      kind: "thinking",
+      label: "Réflexion…",
+    });
+    expect(runStatusView("complete", true, null, null, false, null, retrying)).toBeNull();
+    expect(runStatusView("error", true, null, null, false, null, retrying)?.struggling)
+      .toBeUndefined();
+  });
 });

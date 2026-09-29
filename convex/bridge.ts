@@ -101,6 +101,7 @@ import { providerSessionClearPatch } from "./lib/providerSession";
 import { compareOrder } from "./lib/messageOrder";
 import { composeChainedPrompt } from "./lib/rehydration";
 import { safeAuthorLabel } from "./lib/turnAuthors";
+import { isTrashed } from "./lib/trash";
 
 // OpenClaw's default WS frame limit (policy.maxPayload), observed live on every
 // 2026.x hello-ok. The conservative inbound-attachment fallback (DEFAULT_GATEWAY_MAX_PAYLOAD)
@@ -1769,6 +1770,14 @@ export const reparkIfBusy = internalMutation({
 async function reparkRowIfBusy(ctx: MutationCtx, outboxId: Id<"outbox">): Promise<boolean> {
   const row = await ctx.db.get(outboxId);
   if (row === null || row.status !== "pending") return false;
+  // A conversation moved to the TRASH after this turn was accepted: nothing leaves
+  // for it. Re-parked, not failed — the turn is held with the conversation, and a
+  // restore drains it (chats.restoreFromTrash).
+  const owner = await ctx.db.get(row.chatId);
+  if (owner !== null && isTrashed(owner)) {
+    await ctx.db.patch(outboxId, { status: "queued" });
+    return true;
+  }
   // The FULL activity predicate (streaming message OR live sub-agent) — a
   // `subagent.start` observed during the dispatch delay must hold too, or
   // the follow-up would be routed into / kill the child session (codex P1).

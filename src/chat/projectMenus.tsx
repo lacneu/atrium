@@ -31,6 +31,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { useConfirm, usePrompt } from "@/components/ConfirmDialog";
+import { folderDeleteDescription, useTrashRetentionDays } from "./trashView";
 import { api } from "./convexApi";
 import type { Id } from "./convexApi";
 import { EntitySheet } from "./admin/EntitySheet";
@@ -80,6 +81,7 @@ export function FolderEntryMenu({
   const deleteProject = useMutation(api.projects.deleteProject);
   const createProject = useMutation(api.projects.createProject);
   const confirm = useConfirm();
+  const trashDays = useTrashRetentionDays();
   const prompt = usePrompt();
   const [renameOpen, setRenameOpen] = useState(false);
   const [renameValue, setRenameValue] = useState(name);
@@ -167,15 +169,7 @@ export function FolderEntryMenu({
                 const chats = treeCount?.chats ?? 0;
                 const ok = await confirm({
                   title: m.sidebar_delete_project_confirm_title({ name }),
-                  description:
-                    folders > 0
-                      ? m.sidebar_delete_project_confirm_desc_tree({
-                          folders,
-                          chats,
-                        })
-                      : chats > 0
-                        ? m.sidebar_delete_project_confirm_desc({ count: chats })
-                        : m.sidebar_action_irreversible(),
+                  description: folderDeleteDescription({ folders, chats, days: trashDays }),
                   confirmWord: m.sidebar_delete(),
                   confirmLabel: m.sidebar_delete_project(),
                   destructive: true,
@@ -241,6 +235,7 @@ export function ChatEntryMenu({
   const setChatSidebar = useMutation(api.chats.setChatSidebar);
   const moveChatToProject = useMutation(api.chats.moveChatToProject);
   const confirm = useConfirm();
+  const trashDays = useTrashRetentionDays();
   const [renameOpen, setRenameOpen] = useState(false);
   const [renameValue, setRenameValue] = useState(chat.title ?? "");
   const [moveOpen, setMoveOpen] = useState(false);
@@ -292,7 +287,7 @@ export function ChatEntryMenu({
               requestAnimationFrame(async () => {
                 const ok = await confirm({
                   title: m.sidebar_delete_chat_confirm_title(),
-                  description: m.sidebar_action_irreversible(),
+                  description: m.sidebar_delete_chat_confirm_desc({ days: trashDays }),
                   confirmLabel: m.sidebar_delete(),
                   destructive: true,
                 });

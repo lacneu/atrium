@@ -61,6 +61,13 @@ import {
 } from "./lib/rehydration";
 import { userTurnAuthorLabels } from "./lib/turnAuthors";
 import { AGENT_REQUEST_DELETE_READS, deleteChatAgentRequests } from "./agentRequests";
+import { isTrashed } from "./lib/trash";
+import {
+  BLOB_RELEASE_READS,
+  releaseBlob,
+  storageIdsOfOutbox,
+  storageIdsOfPart,
+} from "./lib/blobs";
 
 /** Bounded newest-window read when building a chunk (mirrors rehydration's bounded
  *  tail read, wider). A backlog larger than this window converges over several jobs;
@@ -166,8 +173,12 @@ export const HIDDEN_SWEEP_BUDGET = 1024;
 /**
  * One budgeted batch of a hidden chat's content, rescheduled while any remains.
  * STOPS when a job holds the chat (a summarizer's `pendingSummarize`, a curator's
- * `pendingCurate`): its rows are live, and that job's own settle schedules the
- * next cleanup. Messages are walked in creation order past a cursor (`after`), so
+ * `pendingCurate`, a documentary `pendingFetch`, a converter `pendingConvert`): its
+ * rows are live, and that job's own settle schedules the next cleanup. What a
+ * settled documentary or converter job KEPT survives the sweep because another row
+ * holds it — the fetched file in `documentAttachments.storageId`, the PDF in
+ * `fileRenditions.pdfStorageId` (both indexed references, lib/blobs) — so
+ * releaseBlob keeps those blobs and releases everything else the job left. Messages are walked in creation order past a cursor (`after`), so
  * a streaming reply — left alone, a live gateway turn is finalizing into it — is
  * stepped over rather than read again forever; the chat-keyed sub-agent tables
  * are purged only when no streaming reply was met (`sawStreaming`).
@@ -190,7 +201,15 @@ async function sweepHiddenChatBatch(
   sawStreaming: boolean,
 ): Promise<void> {
   const hidden = await ctx.db.get(hiddenChatId);
-  if (hidden === null || hidden.pendingSummarize || hidden.pendingCurate) return;
+  if (
+    hidden === null ||
+    hidden.pendingSummarize ||
+    hidden.pendingCurate ||
+    hidden.pendingFetch ||
+    hidden.pendingConvert
+  ) {
+    return;
+  }
   let budget = HIDDEN_SWEEP_BUDGET;
   let cursor = after;
   let streaming = sawStreaming;
@@ -209,6 +228,29 @@ async function sweepHiddenChatBatch(
     for (const r of rows) await ctx.db.delete(r._id);
     return rows.length < asked;
   };
+  /** The same for rows that name blobs: each row goes, THEN its blobs are released
+   *  (lib/blobs.releaseBlob) — deleted once nothing else references them. Without
+   *  it every summary/curation file became an orphan nothing could name. Charged
+   *  to the budget like chats.sweepChatDependents; at least one row per call. */
+  const drainReleasing = async <R extends { _id: Id<TableNames> }>(
+    rows: ReadonlyArray<R>,
+    asked: number,
+    blobsOf: (row: R) => Id<"_storage">[],
+  ): Promise<boolean> => {
+    budget -= rows.length;
+    let done = 0;
+    for (const r of rows) {
+      const blobs = blobsOf(r);
+      if (done > 0 && budget < blobs.length * BLOB_RELEASE_READS) return false;
+      await ctx.db.delete(r._id);
+      for (const blob of blobs) {
+        budget -= BLOB_RELEASE_READS;
+        await releaseBlob(ctx, blob, { reason: "hidden_chat_sweep" });
+      }
+      done += 1;
+    }
+    return rows.length < asked;
+  };
 
   for (const status of ["pending", "queued"] as const) {
     const asked = Math.max(budget, 0);
@@ -216,7 +258,7 @@ async function sweepHiddenChatBatch(
       .query("outbox")
       .withIndex("by_chat_status", (q) => q.eq("chatId", hiddenChatId).eq("status", status))
       .take(asked);
-    if (!(await drain(rows, asked)) || budget <= 0) return more();
+    if (!(await drainReleasing(rows, asked, storageIdsOfOutbox)) || budget <= 0) return more();
   }
 
   for (;;) {
@@ -232,21 +274,43 @@ async function sweepHiddenChatBatch(
       if (budget <= 0) return more();
       continue;
     }
-    const hanging = [
-      (n: number) =>
-        ctx.db.query("messageParts").withIndex("by_message", (q) => q.eq("messageId", m._id)).take(n),
+    {
+      const asked = Math.max(budget, 0);
+      const parts = await ctx.db
+        .query("messageParts")
+        .withIndex("by_message", (q) => q.eq("messageId", m._id))
+        .take(asked);
+      if (!(await drainReleasing(parts, asked, (p) => storageIdsOfPart(p.part))) || budget <= 0) {
+        return more();
+      }
+    }
+    {
       // Files-row invariant (like every other message-deletion path): a summary
       // reply that carried a file/media part also created `files` rows.
-      (n: number) =>
-        ctx.db.query("files").withIndex("by_message", (q) => q.eq("messageId", m._id)).take(n),
-      (n: number) =>
-        ctx.db.query("streamingText").withIndex("by_message", (q) => q.eq("messageId", m._id)).take(n),
-      (n: number) =>
-        ctx.db.query("outbox").withIndex("by_message", (q) => q.eq("messageId", m._id)).take(n),
-    ];
-    for (const read of hanging) {
       const asked = Math.max(budget, 0);
-      if (!(await drain(await read(asked), asked)) || budget <= 0) return more();
+      const files = await ctx.db
+        .query("files")
+        .withIndex("by_message", (q) => q.eq("messageId", m._id))
+        .take(asked);
+      if (!(await drainReleasing(files, asked, (f) => [f.storageId])) || budget <= 0) {
+        return more();
+      }
+    }
+    {
+      const asked = Math.max(budget, 0);
+      const live = await ctx.db
+        .query("streamingText")
+        .withIndex("by_message", (q) => q.eq("messageId", m._id))
+        .take(asked);
+      if (!(await drain(live, asked)) || budget <= 0) return more();
+    }
+    {
+      const asked = Math.max(budget, 0);
+      const outbox = await ctx.db
+        .query("outbox")
+        .withIndex("by_message", (q) => q.eq("messageId", m._id))
+        .take(asked);
+      if (!(await drainReleasing(outbox, asked, storageIdsOfOutbox)) || budget <= 0) return more();
     }
     // SSE transport: chunks of an un-GC'd reply hold TEXT — their own bounded purge.
     if (
@@ -278,7 +342,7 @@ async function sweepHiddenChatBatch(
       .query("outbox")
       .withIndex("by_chat_status", (q) => q.eq("chatId", hiddenChatId).eq("status", status))
       .take(asked);
-    if (!(await drain(rows, asked)) || budget <= 0) return more();
+    if (!(await drainReleasing(rows, asked, storageIdsOfOutbox)) || budget <= 0) return more();
   }
   for (const table of ["subAgents", "subAgentToolParts", "subAgentInteractions"] as const) {
     const asked = Math.max(budget, 0);
@@ -525,7 +589,7 @@ export const requestSummarize = mutation({
   ): Promise<{ outcome: ScheduleSummarizeOutcome }> => {
     const { userId } = await requireActive(ctx);
     const chat = await ctx.db.get(chatId);
-    if (!chat || chat.userId !== userId) {
+    if (!chat || chat.userId !== userId || isTrashed(chat)) {
       throw new Error("Forbidden: chat not owned by user");
     }
     return { outcome: await scheduleSummarizeJob(ctx, chatId, { manual: true }) };
@@ -1228,7 +1292,7 @@ export const getChatSummary = query({
   handler: async (ctx, { chatId }) => {
     const { userId } = await requireActive(ctx);
     const chat = await ctx.db.get(chatId);
-    if (!chat || chat.userId !== userId) return null;
+    if (!chat || chat.userId !== userId || isTrashed(chat)) return null;
     const row = await ctx.db
       .query("chatSummaries")
       .withIndex("by_chat", (q) => q.eq("chatId", chatId))
@@ -1342,7 +1406,7 @@ export const updateSummary = mutation({
   handler: async (ctx, { chatId, summary }) => {
     const { userId } = await requireActive(ctx);
     const chat = await ctx.db.get(chatId);
-    if (!chat || chat.userId !== userId) {
+    if (!chat || chat.userId !== userId || isTrashed(chat)) {
       throw new Error("Forbidden: chat not owned by user");
     }
     const text = summary.trim();

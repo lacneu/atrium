@@ -13,6 +13,7 @@ import { action, internalQuery, query } from "./_generated/server";
 import { internal } from "./_generated/api";
 import { requireActive, requireOwnedChat } from "./lib/access";
 import { compareOrder, effectiveOrder } from "./lib/messageOrder";
+import { isTrashed } from "./lib/trash";
 import {
   pickReconciledIdentity,
   readDeploymentOrigin,
@@ -236,8 +237,9 @@ export const exportFolderChats = query({
       .withIndex("by_project", (q) => q.eq("projectId", projectId))
       .paginate({ numItems: EXPORT_PAGE_SIZE, cursor: cursor ?? null });
     return {
+      // A conversation in the trash is not part of the folder any more.
       chatIds: page.page
-        .filter((chat) => chat.userId === userId)
+        .filter((chat) => chat.userId === userId && !isTrashed(chat))
         .map((chat) => chat._id),
       cursor: page.isDone ? null : page.continueCursor,
     };

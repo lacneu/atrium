@@ -19,6 +19,7 @@ import { getProfile, requireActive } from "./lib/access";
 import { envLabel, formatChatReference } from "./lib/envLabel";
 import { resolveLocale, type Locale } from "./lib/locales";
 import { compareOrder } from "./lib/messageOrder";
+import { isTrashed } from "./lib/trash";
 
 // Bounded export: the newest window of the conversation, capped in messages
 // AND characters (attachment pipelines enforce gateway payload caps ~1MiB —
@@ -43,7 +44,7 @@ export const getChatReference = query({
   handler: async (ctx, { chatId }): Promise<string> => {
     const { userId } = await requireActive(ctx);
     const chat = await ctx.db.get(chatId);
-    if (!chat || chat.userId !== userId) {
+    if (!chat || chat.userId !== userId || isTrashed(chat)) {
       throw new Error("Forbidden: chat not owned by user");
     }
     return formatChatReference(envLabel(), chatId);
@@ -150,7 +151,9 @@ export const exportByReference = query({
     const chatId = ctx.db.normalizeId("chats", raw);
     if (chatId === null) return null;
     const chat = await ctx.db.get(chatId);
-    if (!chat || chat.userId !== userId) return null;
+    // A reference to a conversation in the trash resolves to nothing, like a
+    // deleted one: the composer then just pastes the text.
+    if (!chat || chat.userId !== userId || isTrashed(chat)) return null;
     const profile = await getProfile(ctx, userId);
     const meta = await ctx.db.query("appMeta").first();
     const L =

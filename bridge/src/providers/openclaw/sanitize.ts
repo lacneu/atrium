@@ -70,11 +70,36 @@ export const DELIVERABLE_MEDIA_SUBDIRS = [
  *  in prose has no delimiter, which is why the bare-token scan has always stopped at
  *  whitespace — `media/outbound` included, long before this lot. The `MEDIA:` directive is
  *  the supported way to deliver such a path, and it takes the WHOLE rest of the line, so it
- *  accepts any root (codex). */
+ *  accepts any root (codex).
+ *
+ *  The root prefix is `(?:/[^…]+)?`, never `)*`: the class admits `/`, and under `*` a
+ *  whitespace-free token with n slashes costs ~2^n steps to reject — the catastrophic
+ *  backtracking that pegged the production bridge on 2026-09-29 (see the normalizer's
+ *  twin, EMBEDDED_OUTBOUND_RE). Both forms accept the same language, so the matches and
+ *  the captured tail are unchanged. */
 const DELIVERABLE_ANY_ROOT_RE = new RegExp(
-  String.raw`(?:MEDIA:)?(?:/[^\s\`)>"']+)*/media/(?:${DELIVERABLE_MEDIA_SUBDIRS.join("|")})/([^\s\`)>]+)`,
+  String.raw`(?:MEDIA:)?(?:/[^\s\`)>"']+)?/media/(?:${DELIVERABLE_MEDIA_SUBDIRS.join("|")})/([^\s\`)>]+)`,
   "g",
 );
+/** The characters DELIVERABLE_ANY_ROOT_RE can never span (its tail's stop class, which
+ *  the prefix's stop class contains), kept as separators by `split`. */
+const DELIVERABLE_RUN_SEPARATOR_RE = /([\s`)>]+)/;
+
+/** Strip every deliverable path of `line` to its basename — the replacement
+ *  DELIVERABLE_ANY_ROOT_RE describes, applied only to the runs that can hold one. A
+ *  match never crosses a separator, so the result is the whole-line replacement's;
+ *  what it saves is rescanning a long unrelated run from each of its slashes. */
+export function stripDeliverablePathsToBasename(line: string): string {
+  if (!containsDeliverableMediaPath(line)) return line;
+  return line
+    .split(DELIVERABLE_RUN_SEPARATOR_RE)
+    .map((run, i) =>
+      i % 2 === 1 || !containsDeliverableMediaPath(run)
+        ? run
+        : run.replace(DELIVERABLE_ANY_ROOT_RE, (_m, tail: string) => posixBasename(tail)),
+    )
+    .join("");
+}
 
 /** Does this text carry a deliverable media path at all — whatever the gateway's root? */
 export function containsDeliverableMediaPath(text: string): boolean {
@@ -191,11 +216,11 @@ function stripPathsToBasename(
    *  detected and its absolute path stayed in the visible text. */
   custom?: string | null,
 ): string {
-  const stripped = line
-    .replace(OUTBOUND_PATH_RE, (_m, tail: string) => posixBasename(tail))
-    // …and the same paths under ANY state dir: the reader accepts them, so leaving them
-    // printed is a server path published to the reader (codex).
-    .replace(DELIVERABLE_ANY_ROOT_RE, (_m, tail: string) => posixBasename(tail));
+  // …and the same paths under ANY state dir: the reader accepts them, so leaving them
+  // printed is a server path published to the reader (codex).
+  const stripped = stripDeliverablePathsToBasename(
+    line.replace(OUTBOUND_PATH_RE, (_m, tail: string) => posixBasename(tail)),
+  );
   if (
     custom === null ||
     custom === undefined ||

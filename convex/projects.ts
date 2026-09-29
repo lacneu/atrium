@@ -1,12 +1,14 @@
 // Per-user projects: named groupings of chats in the sidebar. Active-user scoped.
 
 import { v } from "convex/values";
-import { mutation, query } from "./_generated/server";
+import { internalMutation, mutation, query } from "./_generated/server";
+import { internal } from "./_generated/api";
 import type { MutationCtx, QueryCtx } from "./_generated/server";
 import type { Doc, Id } from "./_generated/dataModel";
 import { requireActive } from "./lib/access";
 import { auditImpersonated } from "./lib/audit";
-import { cascadeDeleteChat } from "./chats";
+import { TRASH_CHAT_MAX_COST, moveChatToTrash } from "./chats";
+import { isTrashed } from "./lib/trash";
 import {
   canNest,
   childrenOf,
@@ -262,7 +264,7 @@ export const projectChatCount = query({
       .query("chats")
       .withIndex("by_project", (q) => q.eq("projectId", projectId))
       .collect();
-    return chats.filter((c) => !c.archived).length;
+    return chats.filter((c) => !c.archived && !isTrashed(c)).length;
   },
 });
 
@@ -289,7 +291,7 @@ export const projectTreeCount = query({
           q.eq("projectId", id as Id<"projects">),
         )
         .take(TREE_CHAT_CAP);
-      chats += inFolder.filter((c) => !c.archived).length;
+      chats += inFolder.filter((c) => !c.archived && !isTrashed(c)).length;
     }
     return { folders: ids.length - 1, chats };
   },
@@ -325,7 +327,7 @@ export const projectPage = query({
         .query("chats")
         .withIndex("by_project", (q) => q.eq("projectId", folderId))
         .take(cap);
-      return raw.filter((c) => !c.archived && c.kind === undefined);
+      return raw.filter((c) => !c.archived && c.kind === undefined && !isTrashed(c));
     };
 
     // Sub-folder cards: direct counts + recursive chat count + last activity
@@ -465,7 +467,7 @@ export const folderColumns = query({
           .take(PAGE_CHAT_CAP);
       }
       return raw
-        .filter((c) => !c.archived && c.kind === undefined)
+        .filter((c) => !c.archived && c.kind === undefined && !isTrashed(c))
         .sort(chatComparator)
         .map((c) => ({
           _id: c._id,
@@ -547,7 +549,7 @@ export const projectTreeList = query({
             q.eq("projectId", fid as Id<"projects">),
           )
           .take(PAGE_CHAT_CAP)
-      ).filter((c) => !c.archived && c.kind === undefined);
+      ).filter((c) => !c.archived && c.kind === undefined && !isTrashed(c));
       for (const c of inFolder) {
         chats.push({
           _id: c._id,
@@ -574,16 +576,22 @@ export const projectTreeList = query({
   },
 });
 
-// Delete a project SUBTREE and cascade-delete its chats (+ their messages/
-// parts/outbox). The user explicitly confirms with the recursive counts
-// (projectTreeCount + confirmWord client-side); here we perform the
-// destructive work. Deletion order is leaves-first so a mid-mutation failure
-// never leaves a child pointing at a deleted parent for long — and readers
-// treat a dangling parentId as a root anyway (lib/folderTree).
-// RESIDUAL (documented, inherited from the previous flat version): each folder
-// deletes at most take(500) chats in this mutation; a folder holding more
-// keeps the excess (visible, re-deletable). A scheduled continuation is the
-// planned hardening if real trees ever hit this.
+// Delete a project SUBTREE. Its conversations go to the TRASH (chats.moveChatToTrash)
+// — restorable for the retention period like any deleted conversation — and the
+// FOLDERS themselves are deleted: a folder holds no content of its own, and one
+// kept for a possible restore would have to be hidden everywhere folders are read.
+// The user confirms with the recursive counts (projectTreeCount + confirmWord
+// client-side).
+//
+// EVERY conversation of the subtree, however many: they are trashed in bounded
+// steps (trashFolderStep), the first inline, the rest self-scheduled. Each one
+// trashed also leaves the folder (`projectId` cleared) — the folder is going, a
+// restore brings it back at the root — which is what makes a step's read the NEXT
+// conversations rather than the same ones again, and a repeated step harmless. A
+// folder row is deleted only once no conversation points at it any more, leaves
+// first (readers treat a dangling parentId as a root anyway — lib/folderTree), so
+// no conversation is ever left filed under a folder that is gone. A chain that
+// died leaves the remaining folders visible, and deleting them again resumes.
 export const deleteProject = mutation({
   args: { projectId: v.id("projects") },
   handler: async (ctx, { projectId }) => {
@@ -591,21 +599,79 @@ export const deleteProject = mutation({
     await requireOwnedProject(ctx, userId, projectId);
     const { rows } = await userFolderNodes(ctx, userId);
     // BFS order is parents-first; reverse for leaves-first deletion.
-    const ids = subtreeIds(rows, projectId).reverse();
-    for (const id of ids) {
-      const chats = await ctx.db
-        .query("chats")
-        .withIndex("by_project", (q) =>
-          q.eq("projectId", id as Id<"projects">),
-        )
-        .take(500);
-      for (const c of chats) await cascadeDeleteChat(ctx, c._id);
-      await ctx.db.delete(id as Id<"projects">);
-    }
+    const ids = subtreeIds(rows, projectId).reverse() as Id<"projects">[];
+    await trashFolderStep(ctx, userId, actor.realUserId, ids);
     // ONE audit row for the whole subtree, on the root the user acted on.
     await auditImpersonated(ctx, actor, "project.delete", {
       resource: "project",
       resourceId: projectId,
     });
+  },
+});
+
+/** Conversations one folder-deletion step reads per folder page. */
+export const FOLDER_TRASH_BATCH = 100;
+
+/** Documents (read + written) one folder-deletion step may touch. Each conversation
+ *  costs what moveChatToTrash reports — a few for a quiet one, several hundred for
+ *  one with a full bell and a full room — so the step stops BEFORE a conversation
+ *  that could take it past this bound (TRASH_CHAT_MAX_COST), whatever the count. */
+export const FOLDER_STEP_BUDGET = 4096;
+
+/**
+ * One bounded step of a subtree deletion: trash (and un-file) the conversations of
+ * the folders in `ids`, leaves first, deleting each folder row once none points at
+ * it, until the step's document budget is spent; schedules the next step while any
+ * remains. Idempotent: every write is.
+ */
+async function trashFolderStep(
+  ctx: MutationCtx,
+  userId: Id<"users">,
+  trashedBy: Id<"users">,
+  ids: Id<"projects">[],
+): Promise<void> {
+  const meter = { spent: 0 };
+  const more = async (from: number) => {
+    await ctx.scheduler.runAfter(0, internal.projects.trashFolderContinue, {
+      userId,
+      trashedBy,
+      ids: ids.slice(from),
+    });
+  };
+  for (let index = 0; index < ids.length; index += 1) {
+    const folderId = ids[index]!;
+    for (;;) {
+      const chats = await ctx.db
+        .query("chats")
+        .withIndex("by_project", (q) => q.eq("projectId", folderId))
+        .take(FOLDER_TRASH_BATCH);
+      meter.spent += chats.length;
+      let moved = 0;
+      for (const chat of chats) {
+        if (meter.spent + TRASH_CHAT_MAX_COST + 1 > FOLDER_STEP_BUDGET) return more(index);
+        // Only the owner's own conversations are filed in the owner's folder; any
+        // other row is left alone (and ends the folder's walk below).
+        if (chat.userId !== userId) continue;
+        await moveChatToTrash(ctx, chat, trashedBy, meter);
+        await ctx.db.patch(chat._id, { projectId: undefined });
+        meter.spent += 1;
+        moved += 1;
+      }
+      if (moved === 0) break;
+    }
+    const folder = await ctx.db.get(folderId);
+    meter.spent += 2;
+    if (folder !== null && folder.userId === userId) await ctx.db.delete(folderId);
+  }
+}
+
+export const trashFolderContinue = internalMutation({
+  args: {
+    userId: v.id("users"),
+    trashedBy: v.id("users"),
+    ids: v.array(v.id("projects")),
+  },
+  handler: async (ctx, { userId, trashedBy, ids }) => {
+    await trashFolderStep(ctx, userId, trashedBy, ids);
   },
 });

@@ -164,4 +164,111 @@ describe("pollBridgeHealth — multi-instance aggregation (Model M)", () => {
       }),
     ).toBe(26214400);
   });
+
+  test("a WEDGED bridge (connection accepted, never answers) ends the poll as unreachable", async () => {
+    // Prod 2026-09-29: the bridge's event loop was blocked; /health never answered,
+    // the poll hung with it, and the UI kept "operational, checked at 10:20:59". The
+    // stub below settles ONLY through the request's abort signal — without one it
+    // never settles and this test times out. The timeout signal is made to fire at
+    // once so the test does not wait out the real bound.
+    const t = convexTest(schema, modules);
+    delete process.env.BRIDGE_URL;
+    await t.run(async (ctx) => {
+      await ctx.db.insert("instances", {
+        name: "olivier",
+        gatewayUrl: "ws://g1",
+        bridgeUrl: "http://b-olivier:8787",
+      });
+      await ctx.db.insert("instances", {
+        name: "jerome",
+        gatewayUrl: "ws://g2",
+        bridgeUrl: "http://b-jerome:8787",
+      });
+    });
+    const requestedTimeouts: number[] = [];
+    const timeoutSpy = vi
+      .spyOn(AbortSignal, "timeout")
+      .mockImplementation((ms: number) => {
+        requestedTimeouts.push(ms);
+        const c = new AbortController();
+        c.abort(new DOMException("The operation timed out.", "TimeoutError"));
+        return c.signal;
+      });
+    try {
+      globalThis.fetch = vi.fn(
+        async (input: RequestInfo | URL, init?: RequestInit) => {
+          const u = String(input);
+          if (u.startsWith("http://b-olivier:8787")) {
+            // Wedged: accepts, never answers — settles only on abort.
+            return await new Promise<Response>((_resolve, reject) => {
+              const signal = init?.signal;
+              if (!signal) return; // no bound: hangs forever (the defect)
+              if (signal.aborted) reject(signal.reason);
+              signal.addEventListener("abort", () => reject(signal.reason));
+            });
+          }
+          if (u.startsWith("http://b-jerome:8787")) return healthBody("jerome", 10000000);
+          throw new Error(`unexpected url ${u}`);
+        },
+      ) as unknown as typeof fetch;
+      await t.action(internal.bridgeHealth.pollBridgeHealth, {});
+    } finally {
+      timeoutSpy.mockRestore();
+    }
+
+    // Bounded well under the 60 s poll cadence.
+    expect(requestedTimeouts.length).toBeGreaterThan(0);
+    for (const ms of requestedTimeouts) {
+      expect(ms).toBeGreaterThan(0);
+      expect(ms).toBeLessThan(60_000);
+    }
+    const doc = await t.run((ctx) =>
+      ctx.db
+        .query("bridgeHealth")
+        .withIndex("by_key", (q) => q.eq("key", "singleton"))
+        .unique(),
+    );
+    // The poll COMPLETED: the healthy instance was recorded, the wedged one is absent.
+    expect(doc?.reachable).toBe(true);
+    expect(doc?.targets.map((tg) => tg.instanceName)).toEqual(["jerome"]);
+  });
+
+  test("a single wedged bridge: the poll records it unreachable instead of hanging", async () => {
+    const t = convexTest(schema, modules);
+    delete process.env.BRIDGE_URL;
+    await t.run(async (ctx) => {
+      await ctx.db.insert("instances", {
+        name: "olivier",
+        gatewayUrl: "ws://g1",
+        bridgeUrl: "http://b-olivier:8787",
+      });
+    });
+    const timeoutSpy = vi.spyOn(AbortSignal, "timeout").mockImplementation(() => {
+      const c = new AbortController();
+      c.abort(new DOMException("The operation timed out.", "TimeoutError"));
+      return c.signal;
+    });
+    try {
+      globalThis.fetch = vi.fn(
+        async (_input: RequestInfo | URL, init?: RequestInit) =>
+          await new Promise<Response>((_resolve, reject) => {
+            const signal = init?.signal;
+            if (!signal) return;
+            if (signal.aborted) reject(signal.reason);
+            signal.addEventListener("abort", () => reject(signal.reason));
+          }),
+      ) as unknown as typeof fetch;
+      await t.action(internal.bridgeHealth.pollBridgeHealth, {});
+    } finally {
+      timeoutSpy.mockRestore();
+    }
+    const doc = await t.run((ctx) =>
+      ctx.db
+        .query("bridgeHealth")
+        .withIndex("by_key", (q) => q.eq("key", "singleton"))
+        .unique(),
+    );
+    expect(doc?.reachable).toBe(false);
+    expect(doc?.lastError).toBe("unreachable");
+  });
 });

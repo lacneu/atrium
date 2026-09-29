@@ -1,5 +1,119 @@
 # Changelog
 
+## [0.89.0] — A trash for conversations, files that really go away, and a bridge that no longer freezes
+
+Feature release with urgent corrective fixes, from production incidents and reports on OpenClaw
+2026.9.6. No breaking changes, but deleting a conversation changes meaning and the Compose file
+changes two backend defaults — read the deployment note. **Upgrade the bridge promptly.**
+
+### Conversations and files
+
+**Deleting a conversation moves it to a trash for 30 days.** It disappears everywhere — the
+conversation list, search, folders, notifications — and people it was shared with lose access
+at once. Its owner can restore it (participants get their seats back), delete it permanently,
+or empty the trash, from the new **Trash** link at the bottom of the conversation list.
+Administrators see every trash in **Settings › Trash**, and their restores and purges are
+audit-logged. Deleting a folder moves its conversations to the trash; a conversation whose folder
+is gone comes back at the root. After 30 days (`CHAT_TRASH_RETENTION_DAYS`), a daily job purges
+it. Deleting an account still purges its conversations immediately.
+
+**A purge now removes everything that belonged to the conversation, files included.** Deletion
+used to leave rows behind (document renditions, voice-session handles, delivery timings, some
+notifications) and never released a single stored file. The purge now covers every linked record
+and resumes where it stopped if it is interrupted. A file is released only when nothing else uses
+it any more — another conversation, a branch that shares it, a document attachment, a rendition,
+a chart logo, an upload that can still be sent, an import in progress — and deleting a single
+message releases its files the same way. Support reports and audit trails are kept.
+
+**A released file waits a week before it is deleted.** Every release goes through a 7-day
+quarantine (`BLOB_QUARANTINE_DAYS`); a daily job deletes a file only if nothing references it
+again by then, so a mistake stays recoverable for a week. On first deployment, a one-time
+background job indexes the files of existing messages; nothing leaves the quarantine until it
+has finished.
+
+**Files that were never released can be cleaned up.** **Settings › Trash › Orphaned files**
+analyses the stored files nothing references any more — uploads never sent, leftovers of older
+deletions — as a dry run first, then puts them in quarantine on request. Temporary conversations
+Atrium uses to fetch documents and convert files now clean up after themselves.
+
+**Reclaiming the disk space itself.** A self-hosted Convex backend never deletes a file's bytes,
+only its record. The new `deploy/gc/atrium-blob-gc` tool, run by the operator, removes the bytes
+of files whose record is gone — on the volume or in an S3 bucket. It is a dry run by default,
+deletes only what two successive runs found orphaned after a grace period, re-checks just
+before deleting, and shares an exclusive lock with restores. See
+`docs/installation/BACKUP.md` §6.
+
+### Backups and hosting
+
+**What any backup system needs to know about Atrium is documented.**
+`docs/installation/BACKUP.md` now lists what Atrium stores and where, what can be excluded, how
+to take a consistent copy of the database while it runs (and which common methods fail with this
+backend), how long purged data lingers before it can leave the backups, and how to restore and
+qualify a restore. `docs/installation/MIGRATION.md` describes moving a deployment — including one
+on Convex Cloud — to a self-hosted server with export and import. An opt-in
+`deploy/compose/docker-compose.s3.yml` shows how to keep files in S3-compatible object storage.
+
+**The Convex backend stops cleanly and keeps less history.** In the Compose file and the Helm
+chart, the backend is now stopped with the signal it understands, instead of being killed after
+60 seconds on every stop, restart or backup that stops containers. It also keeps superseded and
+deleted database rows for 2 days instead of 14 (upstream's self-hosted value), which bounds how
+long purged data lingers.
+
+### Reliability
+
+**The bridge no longer freezes on some tool outputs.** Reported in production: the chat became
+unavailable for everyone for about twenty minutes, twice, with the bridge running at 100 % CPU
+and answering nothing. The bridge looks for delivered file paths in every tool result, and the
+pattern it used could take exponentially long on a long run of text without spaces containing
+many slashes — base64 data, a long list of paths, a long URL. That check is now linear and only
+runs on text that can contain a delivered path, with exactly the same results.
+
+**A frozen bridge restarts itself and says why.** If the bridge ever stops responding for more
+than a minute, it now writes where it was stuck to its log and exits, so the container restarts
+it instead of leaving the chat unavailable until someone intervenes. Shorter stalls, over five
+seconds, are logged too. Tunable with `BRIDGE_WATCHDOG_WARN_MS` and `BRIDGE_WATCHDOG_EXIT_MS`
+(`0` disables the exit).
+
+**A bridge that stops answering is shown as unreachable.** The health check Atrium runs on the
+bridge now gives up after ten seconds. A frozen bridge used to leave Settings showing "Bridge
+operational" with an ever older check time; it is now reported as unreachable at the next
+check.
+
+**An agent that keeps failing shows it while it works.** Requested in production: from the
+conversation list you could not tell an agent making progress from one going round in circles on
+a problem. While a turn is running, Atrium now watches its tool calls. After three failed calls in
+a row, the same tool failing again and again, or two minutes without activity after a failure,
+the conversation's activity bar turns amber. It shows the reason on hover, for example "The agent
+is retrying: 4 failures of view_image". The status line of the answer being written says the same.
+A long turn that simply works is never flagged, and the signal clears as soon as the turn ends or
+a call succeeds again. Nothing is flagged while the agent waits for you, compacts its context or
+waits for a sub-agent.
+
+**A failed sub-agent is visible without unfolding the list.** When an answer delegated to several
+sub-agents and one failed without the agent recovering from it, a line under the folded list now
+names that task and why it failed.
+
+**Two gateway failures are named instead of misread.** When the gateway's disk is full, the card
+now says the gateway's storage is saturated. When the gateway has closed an agent's database to
+new work — after a restart, during maintenance or after finding a problem — a new card says so and
+that only the gateway's operator can reopen it. The second failure was reported as a lost
+connection, and turned the bridge red although it was working. It is now read from the gateway's
+structured refusal, and it is no longer disguised as "execution permissions not applied" or
+"knowledge choice not applied" when it happens while those are being set. Neither is retried
+automatically, since the same refusal would come back.
+
+**Deployment note.** Deploy the bridge together with Convex, and run `npx convex deploy` before
+serving the new frontend: new tables and indexes, no manual migration — the indexing of existing
+message files runs by itself in the background. New optional settings on the Convex deployment:
+`CHAT_TRASH_RETENTION_DAYS` (default 30) and `BLOB_QUARANTINE_DAYS` (default 7); on the bridge:
+`BRIDGE_WATCHDOG_WARN_MS` and `BRIDGE_WATCHDOG_EXIT_MS`. If you use Atrium's Compose file or Helm
+chart, the backend's document retention drops to 2 days on the next recreate; set
+`CONVEX_DOCUMENT_RETENTION_DELAY=1209600` (Compose) or
+`convexBackend.documentRetentionDelaySeconds: 1209600` (Helm) to keep 14 days. Deployments that
+use their own stack definition should set `stop_signal: SIGINT` and `DOCUMENT_RETENTION_DELAY`
+themselves. To reclaim disk space, schedule `atrium-blob-gc` as described in BACKUP.md §6, in
+dry-run mode first.
+
 ## [0.88.1] — The error card says what the retry really did
 
 Corrective release, from production reports on OpenClaw 2026.9.6. No breaking changes; see

@@ -27,6 +27,7 @@ import { TalkCallActiveError } from "../session.js";
 import { PermissionModeNotAppliedError } from "../providers/openclaw/permission-mode.js";
 import { KnowledgePolicyNotAppliedError } from "../providers/openclaw/knowledge-policy.js";
 import {
+  gatewayOwnRefusal,
   isProviderReviewPausedText,
   isSessionArchivedText,
   isSessionInitConflictText,
@@ -144,6 +145,22 @@ export type DispatchErrorCode =
   // turn never searches sources the owner turned off. Not retried: the same refusal
   // would repeat. Lower-case like the other codes Convex reads.
   | "knowledge_policy_not_applied"
+  // The gateway's HOST storage refused the work (a full disk, a read-only database, an I/O
+  // failure) — the same class, spelled the same way, as the turn-level one the frame
+  // classifier mints (core/failure-classifier.ts), so the card, the anomaly plane and the
+  // retry policy key on one string whichever door the refusal came through. It was
+  // UPSTREAM_ERROR: blamed on the bridge (bridge-domain), with nothing an operator could
+  // act on. Lower-case like the other codes Convex reads. Never retried.
+  | "gateway_storage_unavailable"
+  // The gateway CLOSED THIS AGENT'S DATABASE to new work: refused at startup
+  // (`AgentDatabaseAdmissionRefusal`, answered `UNAVAILABLE` with the refusal as
+  // `details`, src/gateway/session-request-agent.ts:29-38 at v2026.9.6) or retired under
+  // the run ("Agent database execution admission is closed",
+  // src/state/openclaw-agent-execution.ts:145). The second sentence ends in "closed",
+  // so the disconnect rule below used to claim it — a lost-response class, for a
+  // request the gateway had plainly answered. Not retried: the refusal lasts until the
+  // gateway's operator acts (or its startup inspection finishes).
+  | "gateway_agent_db_closed"
   | "UPSTREAM_ERROR"; // anything else (fallback)
 
 /**
@@ -230,6 +247,11 @@ const DOWNSTREAM_REJECTION_CODES: ReadonlySet<DispatchErrorCode> = new Set([
   // settings guard: the link and the credentials worked.
   "session_visibility_refused",
   "session_settings_changed",
+  // The gateway RECEIVED the request and refused it on its own storage or its own
+  // agent-database admission: the link and the credentials worked. A full disk on the
+  // gateway host must never paint the bridge red.
+  "gateway_storage_unavailable",
+  "gateway_agent_db_closed",
 ]);
 
 /**
@@ -331,6 +353,16 @@ export function classifyGatewayError(
   if (err instanceof InboundMediaRefusal) {
     return INBOUND_REFUSAL_CODES[err.code] ?? "attachment_staging_failed";
   }
+  // The gateway's refusal on its OWN state — the agent's database closed, its storage
+  // unusable — by its structured code first, else its fixed sentences
+  // (failure-classifier.ts `gatewayOwnRefusal`, the same predicate the permission-mode and
+  // knowledge-policy writes ask before wrapping a refusal as theirs). Before any text rule:
+  // "…admission is closed" would otherwise be read as a socket closing, and a refusal's
+  // reason can carry any other rule's words. An inspection that failed on a full disk is
+  // refused under the inspection code with the disk error as its reason
+  // (agent-database-startup.ts:290-294): the disk names the class.
+  const own = gatewayOwnRefusal(err);
+  if (own !== null) return own;
   // Through the SAME normalization the frame classifier uses, not a special case of
   // it: an early return for credential sentences left every OTHER quoted value free
   // here, so `Session "agent:timeout:…" changed while starting work` became

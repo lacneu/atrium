@@ -177,6 +177,7 @@ describe("documentDrafts", () => {
       text: "bye",
     });
     await as.mutation(api.chats.deleteChat, { chatId });
+    await as.mutation(api.trash.purgeChat, { chatId });
     const count = await t.run(async (ctx) =>
       (await ctx.db.query("documentDrafts").collect()).length,
     );
@@ -394,6 +395,7 @@ describe("a participant of the conversation", () => {
     });
     await asGuest.mutation(api.documentDrafts.saveDraft, { chatId, filename: "n.md", text: "bob" });
     await t.withIdentity({ subject: `${ownerId}|s` }).mutation(api.chats.deleteChat, { chatId });
+    await t.withIdentity({ subject: `${ownerId}|s` }).mutation(api.trash.purgeChat, { chatId });
     await t.finishAllScheduledFunctions(() => {});
     const afterDelete = await t.run((ctx) => ctx.db.query("documentDrafts").collect());
     expect(afterDelete).toEqual([]);

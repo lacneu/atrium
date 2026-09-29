@@ -23,6 +23,7 @@
 // owner could grant full access to an agent the operator restricted.
 
 import { PERMISSION_MODES_SINCE, gatewayAtLeast } from "../../compat.js";
+import { gatewayOwnRefusal } from "../../core/failure-classifier.js";
 import { GatewayAnsweredError } from "./openclaw-client.js";
 import {
   SESSION_PERMISSION_MODES,
@@ -157,6 +158,10 @@ export async function enforcePermissionMode(args: {
     await args.patch({ key: args.sessionKey, permissionMode: target });
   } catch (err) {
     if (!(err instanceof GatewayAnsweredError)) throw err;
+    // The gateway refused on its OWN state (the agent's database closed, its storage
+    // unusable), not on the mode: passed through RAW, so the send is classified by what
+    // happened (core/dispatch-errors.ts) instead of reading as a permission problem.
+    if (gatewayOwnRefusal(err) !== null) throw err;
     const reason = classifyPermissionPatchError(err);
     if (reason === "saved_not_applied") {
       return { mode: target, patched: true, savedNotApplied: true };

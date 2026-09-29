@@ -40,6 +40,7 @@ import {
 } from "./lib/access";
 import { PERMISSIONS } from "./lib/rbac";
 import { auditImpersonated } from "./lib/audit";
+import { releaseBlob } from "./lib/blobs";
 import { authorizeGroupManage } from "./lib/groupAccess";
 import {
   BUILTIN_CHARTS,
@@ -1352,17 +1353,18 @@ export const deleteChart = mutation({
       .collect()) {
       await ctx.db.delete(row._id);
     }
-    // Delete both brand-logo blobs too (cascade) so they cannot orphan in storage.
-    if (chart.logoLightStorageId)
-      await ctx.storage.delete(chart.logoLightStorageId);
-    if (chart.logoDarkStorageId)
-      await ctx.storage.delete(chart.logoDarkStorageId);
     // Clear a dangling admin global default (bypasses the availability check).
     const meta = await readAppMeta(ctx);
     if (meta !== null && meta.defaultThemeName === chart.key) {
       await ctx.db.patch(meta._id, { defaultThemeName: undefined });
     }
     await ctx.db.delete(chart._id);
+    // Release both brand-logo blobs AFTER the row that named them is gone, so they
+    // cannot orphan in storage — and a blob anything else still references stays
+    // (lib/blobs.releaseBlob: imported or restored data can share one).
+    for (const logo of [chart.logoLightStorageId, chart.logoDarkStorageId]) {
+      if (logo) await releaseBlob(ctx, logo, { reason: "chart_logo" });
+    }
     await auditImpersonated(ctx, actor, "chart.delete", {
       resource: "chart",
       resourceId: chart.key,
@@ -1430,13 +1432,14 @@ export const persistChartLogo = internalMutation({
     const chart = await authorizeChartWrite(ctx, chartId, actor.effectiveUserId);
     const prev =
       mode === "light" ? chart.logoLightStorageId : chart.logoDarkStorageId;
-    if (prev && prev !== storageId) await ctx.storage.delete(prev);
     await ctx.db.patch(
       chart._id,
       mode === "light"
         ? { logoLightStorageId: storageId, logoLightHasAlpha: hasAlpha }
         : { logoDarkStorageId: storageId, logoDarkHasAlpha: hasAlpha },
     );
+    // After the patch: the previous blob goes only if nothing else names it.
+    if (prev && prev !== storageId) await releaseBlob(ctx, prev, { reason: "chart_logo" });
     await auditImpersonated(ctx, actor, "chart.setLogo", {
       resource: "chart",
       resourceId: `${chart.key}:${mode}`,
@@ -1498,13 +1501,13 @@ export const removeChartLogo = mutation({
     const prev =
       mode === "light" ? chart.logoLightStorageId : chart.logoDarkStorageId;
     if (prev) {
-      await ctx.storage.delete(prev);
       await ctx.db.patch(
         chart._id,
         mode === "light"
           ? { logoLightStorageId: undefined, logoLightHasAlpha: undefined }
           : { logoDarkStorageId: undefined, logoDarkHasAlpha: undefined },
       );
+      await releaseBlob(ctx, prev, { reason: "chart_logo" });
       await auditImpersonated(ctx, actor, "chart.removeLogo", {
         resource: "chart",
         resourceId: `${chart.key}:${mode}`,

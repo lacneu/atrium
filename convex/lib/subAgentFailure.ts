@@ -33,6 +33,12 @@ export const SUBAGENT_ERROR_CATEGORIES = [
   // The gateway refused the spawn: the child never ran. Decided from the row's
   // stable class, never from text — a refusal's prose can say anything.
   "spawn_refused",
+  // The GATEWAY'S host storage refused the child's work (a full disk — including the
+  // scratch space it reads its databases through —, a read-only database, an I/O error).
+  "gateway_storage_unavailable",
+  // The gateway closed the agent's database to new work (OpenClaw 2026.9.5+): the child
+  // was refused or retired by the gateway, not failed by its own task.
+  "gateway_agent_db_closed",
   "unknown",
 ] as const;
 export type SubAgentErrorCategory = (typeof SUBAGENT_ERROR_CATEGORIES)[number];
@@ -59,6 +65,24 @@ const API_ERROR_RE =
 // A tool/command invocation failure.
 const TOOL_FAILED_RE =
   /failed\s*\(|\btool\b|web_fetch|web_search|\bexec\b|command|\bmcp\b/i;
+// The two GATEWAY-side refusals, recognized from the text for a row the bridge did not
+// class (one written before the class existed: prod 2026-09-28, four children `unknown`).
+// A MIRROR of the bridge's rules (bridge/src/core/failure-classifier.ts
+// GATEWAY_STORAGE_UNAVAILABLE_RE + GATEWAY_HOST_STORAGE_FULL_RE, AGENT_DATABASE_CLOSED_RE),
+// which carry the upstream citations; the two must stay in step. Tested BEFORE the generic
+// patterns: the staging sentence says "free disk space/quota", and `quota` alone would call a
+// full gateway disk an API error.
+const GATEWAY_STORAGE_UNAVAILABLE_TEXT_RE =
+  /database or disk is full|attempt to write a readonly database|disk i\/o error|state database was (?:full|read-only)|state database had an i\/o error|\benospc\b|\bedquot\b|no space left on device|disk quota exceeded|could not write local session data because the disk is full|free disk space\/quota or set xdg_cache_home to a writable filesystem/i;
+const GATEWAY_AGENT_DB_CLOSED_TEXT_RE =
+  /agent database execution admission is closed|sessions remain unavailable|preserve and inspect this database before accepting a fresh agent/i;
+
+/** The row's stable class -> its category, where the class names a gateway-side cause
+ *  the text patterns would misread. */
+const CATEGORY_BY_CODE: Readonly<Record<string, SubAgentErrorCategory>> = {
+  gateway_storage_unavailable: "gateway_storage_unavailable",
+  gateway_agent_db_closed: "gateway_agent_db_closed",
+};
 
 /**
  * Classify a sub-agent error into a content-free category. ALWAYS returns one of
@@ -77,11 +101,16 @@ export function classifySubAgentError(
   // watchdog wrote "timed out" over it, and the TIMEOUT pattern then published a
   // delegation that never started as one that ran out of time (prod 2026-09-23).
   if (errorCode === "spawn_refused") return "spawn_refused";
+  const byCode = errorCode !== undefined ? CATEGORY_BY_CODE[errorCode] : undefined;
+  if (byCode !== undefined) return byCode;
   // Through the CLASSIFICATION normalizer, not the display mask: the mask protects a
   // credential in text a reader is shown, and it left every OTHER quoted value free to
   // pick the category published in the anomaly and the diagnostic (codex).
   const text = withoutOperatorValues((errorMessage ?? "").trim()).trim();
   if (text === "") return "unknown";
+  // Storage first, as in the bridge: an admission refusal can carry a full disk as its reason.
+  if (GATEWAY_STORAGE_UNAVAILABLE_TEXT_RE.test(text)) return "gateway_storage_unavailable";
+  if (GATEWAY_AGENT_DB_CLOSED_TEXT_RE.test(text)) return "gateway_agent_db_closed";
   if (TIMEOUT_RE.test(text)) return "timeout";
   if (API_ERROR_RE.test(text)) return "api_error";
   if (TOOL_FAILED_RE.test(text)) return "tool_failed";

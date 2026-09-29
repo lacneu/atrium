@@ -30,6 +30,7 @@ import { writeTraceEvent } from "./observability";
 import { stripGatewayMediaId } from "./lib/mediaName";
 import { isChatBusy } from "./lib/outboxQueue";
 import { isFindableDocumentItem } from "./lib/provenance";
+import { isTrashed } from "./lib/trash";
 import {
   effectiveTemplate,
   fillTemplate,
@@ -152,7 +153,9 @@ export const attachDocuments = mutation({
     const srcMsg = await ctx.db.get(sourceMessageId);
     if (srcMsg === null) throw new Error("source_not_found");
     const srcChat = await ctx.db.get(srcMsg.chatId);
-    if (srcChat === null || srcChat.userId !== userId) throw new Error("forbidden");
+    if (srcChat === null || srcChat.userId !== userId || isTrashed(srcChat)) {
+      throw new Error("forbidden");
+    }
 
     // Entitlement: a documentary agent the user is actually granted.
     const target = await resolveDocumentaryTarget(ctx, userId);
@@ -469,6 +472,14 @@ export async function failDocumentaryFetchForChat(
     await ctx.db.patch(row._id, { status: "failed", updatedAt: now });
   }
   await ctx.db.patch(hiddenChat._id, { pendingFetch: undefined });
+  // THE FAILED FETCH'S ROWS GO TOO, as a settled one's do (stream.finalize): a stuck
+  // turn may already have delivered files, whose files rows would otherwise hold
+  // them for as long as no new fetch arrives. Scheduled — and a no-op while a newer
+  // fetch holds the chat (chatSummaries.sweepHiddenChat); a file a fetch captured
+  // is referenced by its documentAttachments row and survives.
+  await ctx.scheduler.runAfter(0, internal.chatSummaries.sweepHiddenChat, {
+    hiddenChatId: hiddenChat._id,
+  });
   // Keep the denormalized count honest on the failure path too (a card that was
   // re-fetched is now `failed`, not `ready`) — the chip must not advertise it.
   await recomputeAttachedDocCount(ctx, pending.sourceMessageId);
@@ -526,6 +537,12 @@ export const getDocumentAttachments = query({
   args: { sourceMessageId: v.id("messages") },
   handler: async (ctx, { sourceMessageId }) => {
     const { userId } = await requireActive(ctx);
+    // A conversation in the trash shows nothing, its attachments included — nor one
+    // being purged: the chat row goes first, its messages and attachment rows in
+    // batches after (chats.cascadeDeleteChat).
+    const source = await ctx.db.get(sourceMessageId);
+    const sourceChat = source === null ? null : await ctx.db.get(source.chatId);
+    if (sourceChat === null || isTrashed(sourceChat)) return [];
     const rows = await ctx.db
       .query("documentAttachments")
       .withIndex("by_source_message", (q) => q.eq("sourceMessageId", sourceMessageId))

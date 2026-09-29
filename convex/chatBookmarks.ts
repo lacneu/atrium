@@ -108,7 +108,10 @@ export const myBookmarkedChats = query({
         )
         .first();
       if (row === null) break;
-      chats.push(row.chatId);
+      // A conversation in the TRASH, gone, or no longer reachable (a participant who
+      // lost the seat) is not listed — its bookmarks wait, untouched, for a restore.
+      // One access check per DISTINCT chat, within the same bound.
+      if (await canReachChat(ctx, row.chatId, userId)) chats.push(row.chatId);
       cursor = row.chatId;
     }
     return chats;

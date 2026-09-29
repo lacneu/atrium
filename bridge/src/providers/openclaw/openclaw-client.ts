@@ -136,7 +136,19 @@ export class OpenClawError extends Error {}
  * frame could not be written). The distinction is whether the gateway definitely
  * did NOT act on it: a refusal is final, a missing answer is not.
  */
-export class GatewayAnsweredError extends OpenClawError {}
+export class GatewayAnsweredError extends OpenClawError {
+  /** The refusal's structured `ErrorShape.details`, verbatim (packages/gateway-protocol/src/
+   *  schema/frames.ts:180-186 at v2026.9.6: `details: Type.Unknown()`). Kept so a classifier
+   *  can read a CODE the gateway attached instead of pattern-matching the prose beside it —
+   *  e.g. an agent-database admission refusal (`AgentDatabaseAdmissionRefusal.code`,
+   *  src/gateway/session-request-agent.ts:29-38). Unknown by contract: every reader
+   *  narrows it itself. */
+  readonly details: unknown;
+  constructor(message: string, details?: unknown) {
+    super(message);
+    this.details = details;
+  }
+}
 
 // Debug instrumentation, gated by BRIDGE_DEBUG=1. Logs the handshake (incl. the
 // gateway `server.version` — the version oracle the live harness keys on), every
@@ -172,7 +184,7 @@ interface ResponseFrame {
   id: string;
   ok?: boolean;
   payload?: Record<string, unknown>;
-  error?: { code?: string; message?: string };
+  error?: { code?: string; message?: string; details?: unknown };
 }
 
 /** Normalize a gateway URL to a ws:// or wss:// scheme. */
@@ -1137,6 +1149,7 @@ export class OpenClawConnection {
             reject(
               new GatewayAnsweredError(
                 `${error.code ?? "REQUEST_FAILED"}: ${error.message ?? method + " failed"}`,
+                error.details,
               ),
             );
             return;

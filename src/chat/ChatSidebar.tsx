@@ -75,6 +75,7 @@ import { EntitySheet } from "./admin/EntitySheet";
 import { FolderTreePicker } from "./FolderTreePicker";
 import { Input } from "@/components/ui/input";
 import { useConfirm, usePrompt } from "@/components/ConfirmDialog";
+import { folderDeleteDescription, useTrashRetentionDays } from "./trashView";
 import { api } from "./convexApi";
 import "./chatParticipants.css";
 import type { Id } from "./convexApi";
@@ -86,6 +87,12 @@ import { m } from "@/paraglide/messages.js";
 // so existing imports (tests) keep working.
 export { CHAT_COLORS, autoProjectHue, colorHue, projectHue } from "./sidebarPalette";
 import { CHAT_COLORS, colorHue, projectHue } from "./sidebarPalette";
+import {
+  TurnDifficultyContext,
+  busyBarView,
+  turnDifficultyLabel,
+  useLiveTurnDifficulties,
+} from "./turnDifficultyView";
 
 // Droppable id scheme: a chat may be dropped onto a project section
 // ("project:<id>") or the no-project section ("project:none"). Reorder within a
@@ -210,6 +217,9 @@ export function ChatSidebar({
     | Id<"chats">[]
     | undefined;
   const busyIds = useMemo(() => new Set(busyList ?? []), [busyList]);
+  // The struggle of those live turns — asked only about the chats already known to
+  // be busy (a separate query: myBusyChats re-runs on every token).
+  const { byChat: difficultyByChat } = useLiveTurnDifficulties(busyList ?? null);
   const waitingRequests = useQuery(api.agentRequests.pendingByChat, {}) as
     | Array<{ chatId: Id<"chats">; count: number; kinds: string[] }>
     | undefined;
@@ -629,6 +639,7 @@ export function ChatSidebar({
 
   return (
     <AgentRequestBadgeContext.Provider value={waitingByChat}>
+    <TurnDifficultyContext.Provider value={difficultyByChat}>
     <aside
       className={
         "oc-sidebar" + (archiveDropActive ? " oc-sidebar--archivedrop" : "")
@@ -970,7 +981,17 @@ export function ChatSidebar({
           ) : null}
         </DragOverlay>
       </DndContext>
+      {/* THE TRASH: deleted conversations wait there, restorable, until their purge. */}
+      <Button
+        variant="ghost"
+        size="sm"
+        className="oc-sidebar__trash"
+        onClick={() => void navigate({ to: "/trash" })}
+      >
+        <Trash2 /> {m.trash_title()}
+      </Button>
     </aside>
+    </TurnDifficultyContext.Provider>
     </AgentRequestBadgeContext.Provider>
   );
 }
@@ -1018,11 +1039,17 @@ function Section({
 }) {
   const setProjectSidebar = useMutation(api.projects.setProjectSidebar);
   const archive = useArchiveActions();
+  // A folded section whose chats include a struggling turn: its aggregate bar says
+  // so (the first one found names the tool — the rows say the rest once unfolded).
+  const difficulties = useContext(TurnDifficultyContext);
+  const struggling =
+    chats.map((c) => difficulties.get(c._id)).find((d) => d !== undefined) ?? null;
   const deleteProject = useMutation(api.projects.deleteProject);
   const renameProject = useMutation(api.projects.renameProject);
   const setProjectColor = useMutation(api.projects.setProjectColor);
   const moveProject = useMutation(api.projects.moveProject);
   const confirm = useConfirm();
+  const trashDays = useTrashRetentionDays();
   const [renameOpen, setRenameOpen] = useState(false);
   const [renameValue, setRenameValue] = useState(label);
   // "Move folder to..." tree picker — nests this folder under another one
@@ -1096,6 +1123,10 @@ function Section({
         className={
           "oc-sidebar__group-head group/head" +
           (collapsible ? " oc-sidebar__group-head--btn" : "")
+        }
+        // Same reason as the row: the folded bar alone cannot carry a tooltip.
+        title={
+          collapsed && busy && struggling ? turnDifficultyLabel(struggling) : undefined
         }
         {...(collapsible
           ? {
@@ -1177,9 +1208,9 @@ function Section({
             their own. Order: pulse first (transient), then the dot. */}
         {collapsed && busy ? (
           <span
-            className="oc-chatitem__busy"
-            title={m.sidebar_folder_busy()}
-            aria-label={m.sidebar_folder_busy()}
+            className={busyBarView(struggling, m.sidebar_folder_busy()).className}
+            title={busyBarView(struggling, m.sidebar_folder_busy()).label}
+            aria-label={busyBarView(struggling, m.sidebar_folder_busy()).label}
           />
         ) : null}
         {collapsed && unread ? (
@@ -1294,17 +1325,11 @@ function Section({
                     const nChats = treeCount?.chats ?? 0;
                     const ok = await confirm({
                       title: m.sidebar_delete_project_confirm_title({ name: label }),
-                      description:
-                        folders > 0
-                          ? m.sidebar_delete_project_confirm_desc_tree({
-                              folders,
-                              chats: nChats,
-                            })
-                          : nChats > 0
-                            ? m.sidebar_delete_project_confirm_desc({
-                                count: nChats,
-                              })
-                            : m.sidebar_action_irreversible(),
+                      description: folderDeleteDescription({
+                        folders,
+                        chats: nChats,
+                        days: trashDays,
+                      }),
                       confirmWord: m.sidebar_delete(),
                       confirmLabel: m.sidebar_delete_project(),
                       destructive: true,
@@ -1404,6 +1429,8 @@ const ChatItem = memo(function ChatItem({
 }) {
   // An agent is waiting on the reader in this conversation (see the context above).
   const waitingTone = useContext(AgentRequestBadgeContext).get(chat._id);
+  // The live turn's struggle, shown AS the activity bar's state (never beside it).
+  const difficulty = useContext(TurnDifficultyContext).get(chat._id) ?? null;
   const archive = useArchiveActions();
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } =
     useSortable({ id: chat._id });
@@ -1449,6 +1476,7 @@ const ChatItem = memo(function ChatItem({
         | undefined
     )?.showChatAge ?? true;
   const confirm = useConfirm();
+  const trashDays = useTrashRetentionDays();
   const [renameOpen, setRenameOpen] = useState(false);
   const [renameValue, setRenameValue] = useState(chat.title ?? "");
   // One-shot BRANCH flash (chatFork keeps the user in the source chat — this
@@ -1494,6 +1522,10 @@ const ChatItem = memo(function ChatItem({
           (active ? " oc-chatitem--active" : "") +
           (flashing ? " oc-chatitem--flash" : "")
         }
+        // The struggle's sentence on the WHOLE row: the bar itself is 3 px wide,
+        // ignores the pointer and fades on hover, so a tooltip on it alone would
+        // never be seen.
+        title={busy && difficulty ? turnDifficultyLabel(difficulty) : undefined}
         // MAXIMUM click surface: the WHOLE row (age label and badges included)
         // opens the chat; the same surface DRAGS after 4px of travel (mouse) or
         // a long-press (touch). Only the actions menu opts out. Keyboard access
@@ -1571,9 +1603,9 @@ const ChatItem = memo(function ChatItem({
         ) : null}
         {busy ? (
           <span
-            className="oc-chatitem__busy"
-            title={m.sidebar_row_busy()}
-            aria-label={m.sidebar_row_busy()}
+            className={busyBarView(difficulty, m.sidebar_row_busy()).className}
+            title={busyBarView(difficulty, m.sidebar_row_busy()).label}
+            aria-label={busyBarView(difficulty, m.sidebar_row_busy()).label}
           />
         ) : null}
         {unread ? (
@@ -1746,7 +1778,7 @@ const ChatItem = memo(function ChatItem({
                 requestAnimationFrame(async () => {
                   const ok = await confirm({
                     title: m.sidebar_delete_chat_confirm_title(),
-                    description: m.sidebar_delete_chat_confirm_desc(),
+                    description: m.sidebar_delete_chat_confirm_desc({ days: trashDays }),
                     confirmLabel: m.sidebar_delete(),
                     destructive: true,
                   });

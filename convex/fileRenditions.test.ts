@@ -4,6 +4,7 @@ import { api, internal } from "./_generated/api";
 import schema from "./schema";
 import { MAX_PARTICIPATIONS_SCANNED } from "./lib/chatAccess";
 import type { Id } from "./_generated/dataModel";
+import { endQuarantine, releaseBlob } from "./lib/blobs";
 import {
   buildConversionPrompt,
   isConvertibleDocument,
@@ -145,6 +146,42 @@ async function seed(
     return { userId, chatId, messageId, storageId };
   });
 }
+
+describe("a conversion in flight holds its source blob", () => {
+  test("deleting the last message that shows the file does not release it while the conversion has not left", async () => {
+    const t = convexTest(schema, modules);
+    const { userId, messageId, storageId } = await seed(t);
+    const as = t.withIdentity({ subject: `${userId}|session` });
+    await as.mutation(api.fileRenditions.requestRendition, { sourceStorageId: storageId });
+    // The conversion send attaches the source; no files row of the converter chat
+    // names it — only the pending rendition does.
+    const outbox = await t.run(async (ctx) => (await ctx.db.query("outbox").collect())[0]!);
+    expect(outbox.status).toBe("pending");
+
+    await as.mutation(api.messages.deleteMessage, { messageId });
+
+    const alive = await t.run(async (ctx) => ({
+      blob: await ctx.db.system.get("_storage", storageId),
+      files: (await ctx.db.query("files").collect()).length,
+      rendition: (await ctx.db.query("fileRenditions").collect()).length,
+    }));
+    expect(alive.files).toBe(0); // the only files row went with its message…
+    expect(alive.blob).not.toBeNull(); // …yet the send that will read it keeps it
+    expect(alive.rendition).toBe(1);
+
+    // Once the conversion has settled, nothing holds it any more: the next release
+    // deletes it, the (derived) rendition row with it.
+    await t.run(async (ctx) => {
+      const rendition = (await ctx.db.query("fileRenditions").collect())[0]!;
+      await ctx.db.patch(rendition._id, { status: "failed" as const, failureReason: "timeout" });
+      expect(await releaseBlob(ctx, storageId)).toBe("quarantined");
+      // Deleted when its quarantine ends — the (derived) rendition row with it.
+      const entry = (await ctx.db.query("blobReleases").collect())[0]!;
+      expect(await endQuarantine(ctx, entry)).toBe("deleted");
+      expect(await ctx.db.query("fileRenditions").collect()).toEqual([]);
+    });
+  });
+});
 
 describe("requestRendition + getRendition", () => {
   test("happy path: creates ONE pending row + dispatches a converter turn with the file attached", async () => {
@@ -334,9 +371,16 @@ describe("correlation (from stream.finalize) + timeout", () => {
     });
     // finalize with NO pdf part → the first rendition fails, drain dispatches #2.
     await t.mutation(internal.stream.finalize, { messageId: assistantId, status: "complete" as const, text: "done" });
-    await t.finishAllScheduledFunctions(vi.runAllTimers);
+    // The drain dispatches #2 INSIDE the finalize transaction. Counted here, before
+    // the scheduled work runs: in this harness #2's dispatch then fails (no bridge),
+    // and a failed job's rows are swept like a settled one's (failRenditionForChat).
     outboxCount = await t.run(async (ctx) => (await ctx.db.query("outbox").collect()).length);
     expect(outboxCount).toBe(2); // the SECOND got dispatched by the drain
+    const second = await t.run(async (ctx) =>
+      (await ctx.db.query("fileRenditions").collect()).find((r) => r.sourceStorageId === storage2),
+    );
+    expect(second?.status).toBe("pending");
+    await t.finishAllScheduledFunctions(vi.runAllTimers);
   });
 
   test("the timeout cron fails a rendition stuck pending past the window", async () => {

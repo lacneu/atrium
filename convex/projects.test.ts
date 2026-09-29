@@ -1,5 +1,5 @@
 import { convexTest } from "convex-test";
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 import { api } from "./_generated/api";
 import schema from "./schema";
 import type { Id } from "./_generated/dataModel";
@@ -173,7 +173,7 @@ describe("projects hierarchy", () => {
       .toEqual({ folders: 0, chats: 1 });
   });
 
-  test("deleteProject removes the WHOLE subtree: folders, chats and their messages", async () => {
+  test("deleteProject removes the WHOLE subtree: folders go, chats go to the TRASH, purged with it", async () => {
     const t = convexTest(schema, modules);
     const userId = await seedUser(t, "alice");
     const as = t.withIdentity({ subject: `${userId}|session` });
@@ -189,14 +189,44 @@ describe("projects hierarchy", () => {
     const after = await t.run(async (ctx) => ({
       projects: await ctx.db.query("projects").collect(),
       chats: await ctx.db.query("chats").collect(),
+    }));
+    // The folders are deleted; their conversations wait in the trash.
+    expect(after.projects.map((p) => p._id)).toEqual([b]);
+    const trashed = after.chats.filter((c) => c.trashedAt !== undefined).map((c) => c._id);
+    expect(trashed.sort()).toEqual([rootChat, deepChat].sort());
+    expect((await as.query(api.trash.listMyTrash, { paginationOpts: { numItems: 50, cursor: null } })).page.map((r) => r._id).sort()).toEqual(
+      [rootChat, deepChat].sort(),
+    );
+
+    // Emptying the trash purges them and their messages; the survivor stays whole.
+    vi.useFakeTimers();
+    try {
+      await as.mutation(api.trash.emptyTrash, {});
+      await t.finishAllScheduledFunctions(vi.runAllTimers);
+    } finally {
+      vi.useRealTimers();
+    }
+    const purged = await t.run(async (ctx) => ({
+      chats: await ctx.db.query("chats").collect(),
       messages: await ctx.db.query("messages").collect(),
     }));
-    expect(after.projects.map((p) => p._id)).toEqual([b]);
-    expect(after.chats.map((c) => c._id)).toEqual([survivor]);
-    // Every message of the deleted chats is gone; the survivor's remains.
-    expect(after.messages).toHaveLength(1);
-    expect(after.messages[0]!.chatId).toBe(survivor);
-    expect([rootChat, deepChat, a, a1, a11]).toBeDefined(); // ids consumed above
+    expect(purged.chats.map((c) => c._id)).toEqual([survivor]);
+    expect(purged.messages).toHaveLength(1);
+    expect(purged.messages[0]!.chatId).toBe(survivor);
+    expect([a1]).toBeDefined(); // id consumed above
+  });
+
+  test("a conversation restored after its folder was deleted comes back at the root", async () => {
+    const t = convexTest(schema, modules);
+    const userId = await seedUser(t, "alice");
+    const as = t.withIdentity({ subject: `${userId}|session` });
+    const { a } = await seedChain(as);
+    const chat = await seedChatIn(t, userId, a, true);
+    await as.mutation(api.projects.deleteProject, { projectId: a });
+    await as.mutation(api.trash.restoreChat, { chatId: chat });
+    const row = await t.run((ctx) => ctx.db.get(chat));
+    expect(row?.trashedAt).toBeUndefined();
+    expect(row?.projectId).toBeUndefined();
   });
 
   test("IDOR: move/delete/treeCount/create-under are Forbidden on another user's folders", async () => {

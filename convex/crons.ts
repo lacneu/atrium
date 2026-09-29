@@ -24,6 +24,28 @@ crons.cron(
   {},
 );
 
+// THE CONVERSATION TRASH: once a day, permanently purge the conversations whose
+// retention (CHAT_TRASH_RETENTION_DAYS, default 30) has ended, and re-arm any purge
+// whose batched sweep stopped halfway. Bounded per run, re-scheduling itself while
+// a backlog remains (trash.purgeTrash).
+crons.cron("purge expired trash", "30 3 * * *", internal.trash.purgeTrash, {});
+
+// THE BLOB QUARANTINE: once a day, delete the released blobs whose quarantine
+// (BLOB_QUARANTINE_DAYS, default 7) has ended AND that nothing references again —
+// the only place a storage blob is ever deleted (blobQuarantine.purgeQuarantine).
+// Bounded per run, re-scheduling itself while a backlog remains; deletes nothing
+// until the messageParts.storageId backfill below has completed.
+crons.cron("purge blob quarantine", "45 3 * * *", internal.blobQuarantine.purgeQuarantine, {});
+
+// Start or resume the messageParts.storageId backfill until it has completed (a
+// cheap no-op afterwards). The quarantine purge is gated on its completion.
+crons.interval(
+  "backfill message part storage ids",
+  { minutes: 15 },
+  internal.blobQuarantine.ensurePartStorageBackfill,
+  {},
+);
+
 // Hourly at minute 0. Recomputes KPI rollups for the recent hour buckets.
 crons.cron("rollup kpis", "0 * * * *", internal.kpi.rollupKpis, {});
 

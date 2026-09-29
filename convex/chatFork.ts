@@ -34,8 +34,10 @@ import { writtenAtOf } from "./lib/chatAccess";
 import { auditImpersonated } from "./lib/audit";
 import { compareOrder, effectiveOrder } from "./lib/messageOrder";
 import { recordFileForPart, isFilePart } from "./lib/files";
+import { partStorageField } from "./lib/blobs";
 import { minChatSortKey } from "./chats";
 import { MAX_KNOWLEDGE_CHOICES_PER_CHAT } from "./lib/knowledge";
+import { isTrashed } from "./lib/trash";
 
 /** Copy bound = the visible window (loadChatView's MESSAGE_WINDOW): the fork
  *  shows exactly what the user sees in the source. Older context still reaches
@@ -73,7 +75,7 @@ export const forkChat = mutation({
     const source = await ctx.db.get(sourceChatId);
     // OWNERSHIP FIRST: every state-dependent refusal below must come after it,
     // or the distinct error codes would leak a foreign message's existence.
-    if (source === null || source.userId !== userId) {
+    if (source === null || source.userId !== userId || isTrashed(source)) {
       throw new ConvexError("forbidden");
     }
     // Only REGULAR conversations fork — the hidden utility chats (documentary/
@@ -334,6 +336,7 @@ export const forkChat = mutation({
           messageId: newMsgId,
           order: p.order,
           part,
+          ...partStorageField(part),
         });
         if (srcFileRows === null) {
           srcFileRows = await ctx.db

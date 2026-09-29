@@ -283,10 +283,15 @@ export const deleteUser = mutation({
       .collect()) {
       await ctx.db.delete(r._id);
     }
+    // …but a file the person SENT INTO SOMEONE ELSE'S conversation stays there with
+    // its message: its row is that conversation's mirror of the part it still
+    // shows (lib/files), and the blob's reference count reads it (lib/blobs) — a
+    // later purge of a fork of that conversation must not see the blob as unused.
     for (const r of await ctx.db
       .query("files")
       .withIndex("by_user_created", (q) => q.eq("userId", userId))
       .collect()) {
+      if ((await ctx.db.get(r.chatId)) !== null) continue;
       await ctx.db.delete(r._id);
     }
 

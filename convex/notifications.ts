@@ -26,6 +26,7 @@ import {
   verifyMailboxResponse,
   type VerifiedAnnouncement,
 } from "./lib/signedAnnouncements";
+import { isTrashed } from "./lib/trash";
 
 type NotifKind =
   | "anomaly_open"
@@ -77,6 +78,12 @@ export async function notifyUser(
     expiresAt?: number;
   },
 ): Promise<Id<"notifications"> | null> {
+  // A conversation in the TRASH rings nobody: it is hidden from everyone, and its
+  // entries were withdrawn when it went there (withdrawAllChatNotifications).
+  if (args.chatId !== undefined) {
+    const chat = await ctx.db.get(args.chatId);
+    if (chat !== null && isTrashed(chat)) return null;
+  }
   if (args.dedupeKey !== undefined) {
     const dk = args.dedupeKey;
     const existing = await ctx.db
@@ -128,7 +135,7 @@ export async function withdrawNotifications(
 const WITHDRAW_LIMIT = 64;
 
 /** Entries removed per transaction when a person is revoked from a conversation. */
-const CHAT_WITHDRAW_BATCH = 200;
+export const CHAT_WITHDRAW_BATCH = 200;
 
 /**
  * Withdraw what a conversation rang `userId` for — every kind, or only `kind` —
@@ -206,6 +213,53 @@ async function withdrawChatNotificationsBatch(
     });
   }
 }
+
+/**
+ * Withdraw EVERY entry about one conversation, whoever holds it — when it goes to
+ * the trash: a mention, an agent's question or a "you were added" would otherwise
+ * link to a page nobody can open. Bounded per transaction and continued in
+ * scheduled batches, limited to the entries that existed NOW (the newest one's
+ * `_creationTime`), so nothing rung after a restore is taken.
+ */
+export async function withdrawAllChatNotifications(
+  ctx: MutationCtx,
+  chatId: Id<"chats">,
+): Promise<number> {
+  const newest = await ctx.db
+    .query("notifications")
+    .withIndex("by_chat", (q) => q.eq("chatId", chatId))
+    .order("desc")
+    .first();
+  if (newest === null) return 1;
+  return 1 + (await withdrawAllChatNotificationsBatch(ctx, chatId, newest._creationTime));
+}
+
+/** One bounded withdrawal batch; returns the documents it touched (read + deleted). */
+async function withdrawAllChatNotificationsBatch(
+  ctx: MutationCtx,
+  chatId: Id<"chats">,
+  cutoff: number,
+): Promise<number> {
+  const rows = await ctx.db
+    .query("notifications")
+    .withIndex("by_chat", (q) => q.eq("chatId", chatId).lte("_creationTime", cutoff))
+    .take(CHAT_WITHDRAW_BATCH);
+  for (const r of rows) await ctx.db.delete(r._id);
+  if (rows.length === CHAT_WITHDRAW_BATCH) {
+    await ctx.scheduler.runAfter(0, internal.notifications.withdrawAllChatNotificationsStep, {
+      chatId,
+      cutoff,
+    });
+  }
+  return 2 * rows.length;
+}
+
+export const withdrawAllChatNotificationsStep = internalMutation({
+  args: { chatId: v.id("chats"), cutoff: v.number() },
+  handler: async (ctx, { chatId, cutoff }) => {
+    await withdrawAllChatNotificationsBatch(ctx, chatId, cutoff);
+  },
+});
 
 export const withdrawChatNotificationsStep = internalMutation({
   args: {
@@ -550,6 +604,36 @@ async function activeReader(
   return { ...actor, since: profile._creationTime };
 }
 
+/**
+ * Drop the entries about a conversation that is in the TRASH or GONE. Trashing
+ * withdraws its entries in batches (withdrawAllChatNotifications) and a purge
+ * deletes them in batches: until the last batch — or for ever if a chain dies — an
+ * entry would still hand out the conversation's title and link. Bounded: one read
+ * per distinct conversation of a page that is itself bounded (FEED_LIMIT).
+ */
+async function aboutLiveChats<T extends { chatId?: Id<"chats"> }>(
+  ctx: QueryCtx,
+  rows: T[],
+): Promise<T[]> {
+  const live = new Map<string, boolean>();
+  const out: T[] = [];
+  for (const row of rows) {
+    if (row.chatId === undefined) {
+      out.push(row);
+      continue;
+    }
+    const key = String(row.chatId);
+    let ok = live.get(key);
+    if (ok === undefined) {
+      const chat = await ctx.db.get(row.chatId);
+      ok = chat !== null && !isTrashed(chat);
+      live.set(key, ok);
+    }
+    if (ok) out.push(row);
+  }
+  return out;
+}
+
 export const myNotifications = query({
   args: {},
   handler: async (ctx) => {
@@ -562,7 +646,8 @@ export const myNotifications = query({
       .order("desc")
       .take(FEED_LIMIT);
     const now = Date.now();
-    return rows.filter((r) => r.expiresAt === undefined || r.expiresAt > now).map((r) => ({
+    const visible = await aboutLiveChats(ctx, rows);
+    return visible.filter((r) => r.expiresAt === undefined || r.expiresAt > now).map((r) => ({
       _id: r._id,
       kind: r.kind,
       title: r.title,
@@ -598,7 +683,7 @@ export const myUnreadCount = query({
       )
       .take(FEED_LIMIT);
     const now = Date.now();
-    return unread.filter(
+    return (await aboutLiveChats(ctx, unread)).filter(
       (row) => row.expiresAt === undefined || row.expiresAt > now,
     ).length;
   },

@@ -24,6 +24,7 @@ import {
   normalizeEmail,
 } from "./authDomains";
 import { resolveChatAccess, type ChatAccess } from "./chatAccess";
+import { isTrashed } from "./trash";
 import {
   permissionsForRoleKey,
   roleHasPermission,
@@ -415,7 +416,7 @@ export async function requireReachableChat(
   if (access === null) {
     const exists = await ctx.db.get(chatId);
     throw new Error(
-      exists === null
+      exists === null || isTrashed(exists)
         ? "Not found: chat does not exist"
         : "Forbidden: chat not owned by user",
     );
@@ -429,7 +430,9 @@ export async function requireOwnedChat(
   chatId: Id<"chats">,
 ) {
   const chat = await ctx.db.get(chatId);
-  if (chat === null) {
+  // A trashed chat reads as gone to every surface, its owner's included (see
+  // lib/chatAccess.resolveChatAccess); the trash's own mutations do not come here.
+  if (chat === null || isTrashed(chat)) {
     throw new Error("Not found: chat does not exist");
   }
   if (chat.userId !== userId) {

@@ -438,10 +438,16 @@ export const KNOWN_AGENT_FIELDS: ReadonlySet<string> = new Set([
  * matrix instead of being invisible omissions.
  */
 export const COVERAGE_SUMMARY = {
-  handled: 338,
+  handled: 339,
   ignored: 814,
-  gaps: 907,
+  gaps: 906,
   /** The declared gaps, by schema path — the actionable part of the matrix.
+   *
+   *  AGENT-DATABASE REFUSALS (2026-09-28): `AgentDatabaseAdmissionRefusal.code` is handled —
+   *  read from a refused request's `details` so a send to an agent the gateway will not admit
+   *  is named (`gateway_agent_db_closed`, or `gateway_storage_unavailable` when the refusal's
+   *  reason is a full disk) instead of falling to the bridge-domain catch-all. The rest of the
+   *  shape, and `AgentSummary.admissionRefusal` (the picker's availability), stay gaps.
    *
    *  KNOWLEDGE SOURCES (2026-09-27): the knowledge plugin's session actions
    *  (`plugins.sessionAction`: its params, and both branches of its result, now classified
@@ -510,7 +516,6 @@ export const COVERAGE_SUMMARY = {
     "AgentActivityItem.title",
     "AgentActivityItem.toolCallId",
     "AgentDatabaseAdmissionRefusal.agentId",
-    "AgentDatabaseAdmissionRefusal.code",
     "AgentDatabaseAdmissionRefusal.embeddedOwnerId",
     "AgentDatabaseAdmissionRefusal.paths",
     "AgentDatabaseAdmissionRefusal.reason",

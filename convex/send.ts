@@ -30,6 +30,7 @@ import { auditImpersonated } from "./lib/audit";
 import { assertOwnsUpload } from "./uploads";
 import { writeTraceEvent } from "./observability";
 import { recordFileForPart } from "./lib/files";
+import { partStorageField } from "./lib/blobs";
 import { isChatBusy, countQueued, MAX_QUEUED_PER_CHAT } from "./lib/outboxQueue";
 import { QUEUED_ORDER_SENTINEL } from "./lib/messageOrder";
 import {
@@ -495,7 +496,12 @@ export const sendMessage = mutation({
         filename: attachment.filename,
         mimeType: attachment.mimeType,
       };
-      await ctx.db.insert("messageParts", { messageId, order: order++, part });
+      await ctx.db.insert("messageParts", {
+        messageId,
+        order: order++,
+        part,
+        ...partStorageField(part),
+      });
       // Paired files-row write (invariant): an inbound user upload is listable in
       // Settings → Fichiers immediately, NOT gated on the assistant's reply.
       await recordFileForPart(ctx, {

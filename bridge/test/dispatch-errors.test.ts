@@ -1,5 +1,6 @@
 import { describe, expect, test } from "vitest";
 import { TalkCallActiveError } from "../src/session.js";
+import { GatewayAnsweredError } from "../src/providers/openclaw/openclaw-client.js";
 import {
   classifyGatewayError,
   errorChainText,
@@ -506,5 +507,91 @@ describe("sharing and settings refusals (2026.9.6 / 2026.8.2)", () => {
   test("both are the gateway's answer: downstream, never the bridge's health", () => {
     expect(faultDomain("session_visibility_refused")).toBe("downstream");
     expect(faultDomain("session_settings_changed")).toBe("downstream");
+  });
+});
+
+describe("the gateway's own storage and agent-database refusals (OpenClaw 2026.9.6)", () => {
+  // Synthetic values, upstream-shaped: the three repair hints are verbatim
+  // (src/state/agent-database-admission.ts:55-57, state-migrations.agent-owner-guidance.ts:21);
+  // the ENOSPC reason is what the three read-only-worker wrappers compose
+  // (sqlite-snapshot-staging.ts:163-184, sqlite-error-diagnostics.ts:96-132,
+  // sqlite-readonly-worker-protocol.ts:76-82). Every refusal travels as
+  // `UNAVAILABLE: ${reason}\n${repairHint}` with the whole refusal as `details`
+  // (session-request-agent.ts:29-38).
+  const FAILED_HINT =
+    'Sessions remain unavailable. Stop the Gateway, run "openclaw doctor --fix" to inspect and repair this agent database, and restart.';
+  const PENDING_HINT =
+    'Sessions remain unavailable until background inspection and preparation finish. If they cannot complete, stop the Gateway, run "openclaw doctor --fix", and restart.';
+  const ENOSPC_REASON =
+    "SQLite read-only worker failed while creating its private snapshot: ENOSPC: no space left on device, mkdtemp '/home/node/.cache/openclaw/openclaw-sqlite-readonly-v2-AbC123'; snapshot staging root /home/node/.cache/openclaw: free disk space/quota or set XDG_CACHE_HOME to a writable filesystem (code=ENOSPC)";
+  const refused = (
+    code: string,
+    reason: string,
+    repairHint: string,
+    message = `UNAVAILABLE: ${reason}\n${repairHint}`,
+  ) =>
+    new GatewayAnsweredError(message, {
+      agentId: "alice",
+      paths: ["/home/node/.openclaw/agents/alice/agent.sqlite"],
+      code,
+      reason,
+      repairHint,
+    });
+
+  test("a refused agent is named BY ITS CODE, whatever the prose says", () => {
+    // Reworded prose, same code: only the structured read can still recognise it.
+    expect(
+      classifyGatewayError(
+        refused("agent-database-inspection-failed", "x", "y", "UNAVAILABLE: agent refused"),
+      ),
+    ).toBe("gateway_agent_db_closed");
+    expect(
+      classifyGatewayError(
+        refused(
+          "agent-database-inspection-pending",
+          "Agent alice has not completed startup inspection and preparation. inspection timed out",
+          PENDING_HINT,
+        ),
+      ),
+    ).toBe("gateway_agent_db_closed");
+  });
+
+  test("a refusal whose REASON is a full disk names the disk (the operator's action)", () => {
+    expect(
+      classifyGatewayError(refused("agent-database-inspection-failed", ENOSPC_REASON, FAILED_HINT)),
+    ).toBe("gateway_storage_unavailable");
+  });
+
+  test("a details.code from another vocabulary is not read as an agent refusal", () => {
+    const other = new GatewayAnsweredError("UNAVAILABLE: busy", { code: "something-else" });
+    expect(classifyGatewayError(other)).toBe("UPSTREAM_ERROR");
+  });
+
+  test("the same facts from the TEXT alone, when no code travelled", () => {
+    // "…admission is closed" used to be read as a socket closing: GATEWAY_DISCONNECTED,
+    // a lost-response class, for a request the gateway had plainly answered.
+    expect(
+      classifyGatewayError(new Error("UNAVAILABLE: Agent database execution admission is closed")),
+    ).toBe("gateway_agent_db_closed");
+    expect(
+      classifyGatewayError(
+        new Error(
+          "UNAVAILABLE: Refused agent alice: database /x belongs to agent bob; requested agent alice.\nPreserve and inspect this database before accepting a fresh agent. With all OpenClaw processes stopped, the explicit quarantine move is:\nmv -n -- '/x' '/y'\nThen run openclaw doctor --fix and restart the Gateway.",
+        ),
+      ),
+    ).toBe("gateway_agent_db_closed");
+    expect(classifyGatewayError(new Error(`UNAVAILABLE: ${ENOSPC_REASON}\n${FAILED_HINT}`))).toBe(
+      "gateway_storage_unavailable",
+    );
+    expect(classifyGatewayError(new Error("UNAVAILABLE: SqliteError: database or disk is full"))).toBe(
+      "gateway_storage_unavailable",
+    );
+  });
+
+  test("both are the gateway's answer: downstream, never the bridge's health, never a lost response", () => {
+    for (const code of ["gateway_storage_unavailable", "gateway_agent_db_closed"] as const) {
+      expect(faultDomain(code)).toBe("downstream");
+      expect(LOST_RESPONSE_CODES.has(code)).toBe(false);
+    }
   });
 });

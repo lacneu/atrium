@@ -1934,6 +1934,7 @@ describe("GPT Live: the relayed mint, the relayed offer and the owed hangup", ()
       const minted = await asOwner(t, userId).action(api.talk.mintTalkSession, { chatId });
       if (!minted.ok) throw new Error(JSON.stringify(minted));
       await asOwner(t, userId).mutation(api.chats.deleteChat, { chatId });
+      await asOwner(t, userId).mutation(api.trash.purgeChat, { chatId });
       const res = await asOwner(t, userId).action(api.talk.hangupTalkSession, {
         chatId,
         sessionId: minted.sessionId,

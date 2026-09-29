@@ -1828,6 +1828,7 @@ describe("settled elsewhere, swept, deleted", () => {
       ...ASK,
     });
     await t.withIdentity({ subject: `${userId}|session` }).mutation(api.chats.deleteChat, { chatId });
+    await t.withIdentity({ subject: `${userId}|session` }).mutation(api.trash.purgeChat, { chatId });
     const left = await t.run((ctx) => ctx.db.query("agentRequests").collect());
     expect(left).toHaveLength(0);
     // …with their bell entries: none left, unread forever, linking to a deleted chat.

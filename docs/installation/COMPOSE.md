@@ -95,6 +95,12 @@ the usual cause of the `pkcs8` error at sign-in. That is why `.env.example` expo
 only the `*_FILE` form, and its default paths already point at this script's
 output.
 
+**Decide where uploaded files live, now.** By default they go into the
+`convex-data` volume next to the database. To keep them in S3-compatible object
+storage instead, set it up before Step 4: the choice is recorded in the database
+at its first start, and changing it later takes an export and an import. See
+[BACKUP.md § 5](BACKUP.md#5-where-the-files-live--an-install-time-choice).
+
 ---
 
 ## Step 3 — Preflight
@@ -247,7 +253,20 @@ A plain `docker compose up -d` brings up all four services — none declares a
 profile.
 
 **Never `docker compose down -v`** unless you intend to wipe the database. Back up
-first with `npx convex export --include-file-storage --path <snapshot>.zip`.
+first with `npx convex export --include-file-storage --path <snapshot>.zip`. For
+recurring backups, [BACKUP.md](BACKUP.md) is the contract your backup tool has to
+follow: what to capture, how to copy the database consistently while it runs,
+how to restore, how long to keep it.
+
+**Upgrade note — two backend settings changed.** The Convex service now
+declares `stop_signal: SIGINT` and `stop_grace_period: 60s`. The backend ignores
+`SIGTERM` and used to be killed at every stop, recreate or Dokploy "Turn off
+container" backup; it now shuts down cleanly. It also receives
+`DOCUMENT_RETENTION_DELAY`, defaulting to 2 days (upstream's self-hosted value)
+instead of the backend's built-in 14. On the first recreate, the backend starts
+dropping superseded and deleted document versions older than 2 days. Set
+`CONVEX_DOCUMENT_RETENTION_DELAY` (seconds) in `.env` to keep the old window.
+Why 2 days: [BACKUP.md §3](BACKUP.md#3-retention--what-a-deletion-promise-depends-on).
 
 On **Synology Container Manager**, the UI and a shell can disagree about the
 compose project name, so a CLI `down -v` may remove the **wrong** volume — leaving

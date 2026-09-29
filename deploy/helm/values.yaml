@@ -57,6 +57,33 @@ convexBackend:
   cloudPort: 3210
   sitePort: 3211
   rustLog: info
+  # -- Seconds the database keeps superseded and deleted document versions.
+  #    2 days = upstream's self-hosted value (the binary's own default is 14). It
+  #    bounds how long deleted rows linger in the live database and in backups.
+  documentRetentionDelaySeconds: 172800
+  # OPT-IN S3-compatible object storage for files, function bundles, search
+  # indexes, exports and imports (the SQLite database stays on the PVC). Disabled,
+  # it renders nothing. NEW deployments only — see docs/installation/MIGRATION.md.
+  # When enabled, the Secret must also hold CONVEX_S3_ACCESS_KEY_ID and
+  # CONVEX_S3_SECRET_ACCESS_KEY (add them to secrets.values or existingSecret).
+  s3:
+    enabled: false
+    # -- Region of the endpoint (any non-empty value for a self-hosted server).
+    region: ""
+    # -- Endpoint URL of a non-AWS provider; empty for AWS.
+    endpoint: ""
+    forcePathStyle: true
+    # -- Set only if the provider rejects AWS server-side-encryption headers.
+    disableSse: false
+    # -- Set only if the provider rejects AWS's default checksums.
+    disableChecksums: false
+    # -- Five distinct, private, pre-created buckets.
+    buckets:
+      files: ""
+      modules: ""
+      search: ""
+      exports: ""
+      snapshotImports: ""
   persistence:
     # -- Size of the SQLite data PVC (volumeClaimTemplates). Grow, never shrink.
     size: 10Gi

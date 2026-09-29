@@ -24,6 +24,7 @@ import { drainNextQueued } from "./lib/outboxQueue";
 import { failDocumentaryFetchForChat } from "./documentAttachments";
 import { failSummarizeForChat } from "./chatSummaries";
 import { providerSessionClearPatch } from "./lib/providerSession";
+import { clearLiveActivity } from "./lib/liveTurnDifficulty";
 
 /**
  * When the watchdog flips a stale streaming message, also release a documentary
@@ -167,6 +168,7 @@ export const reconcileChatStuckStreams = internalMutation({
         ...(preserved ? { text: preserved } : {}),
       });
       if (row) await ctx.db.delete(row._id);
+      await clearLiveActivity(ctx, msg._id);
       // SSE transport (Phase 1): GC this message's stream chunks too (finalize's GC
       // never ran for an orphaned turn). Bounded + self-scheduling; no-op if none.
       await ctx.scheduler.runAfter(0, internal.stream.deleteStreamChunksStep, {
@@ -276,6 +278,7 @@ export const reconcileStuckStreams = internalMutation({
       // nothing to recover — the turn already ended cleanly).
       if (msg === null || msg.status !== "streaming") {
         await ctx.db.delete(row._id);
+        await clearLiveActivity(ctx, row.messageId);
         await ctx.scheduler.runAfter(0, internal.stream.deleteStreamChunksStep, {
         // Generation cutoff (by SEQ): an announce resume may reopen this
         // message and stream fresh chunks (continuing above this bound)
@@ -295,6 +298,7 @@ export const reconcileStuckStreams = internalMutation({
         ...(preserved ? { text: preserved } : {}),
       });
       await ctx.db.delete(row._id);
+      await clearLiveActivity(ctx, row.messageId);
       // A REAP means nobody settled this turn — no terminal, ever — so nothing is known
       // about the provider's run. That is the same ignorance a silence timeout reports,
       // and it is the case the timeout's own clear cannot cover: it rides the finalize,
@@ -440,6 +444,7 @@ export const sweepInstanceStreams = internalMutation({
       const msg = await ctx.db.get(row.messageId);
       if (msg === null || msg.status !== "streaming") {
         await ctx.db.delete(row._id); // stale row without a live turn
+        await clearLiveActivity(ctx, row.messageId);
         continue;
       }
       const preserved = (row.text ?? "") || (msg.liveText ?? "");
@@ -449,6 +454,7 @@ export const sweepInstanceStreams = internalMutation({
         ...(preserved ? { text: preserved } : {}),
       });
       await ctx.db.delete(row._id);
+      await clearLiveActivity(ctx, row.messageId);
       await ctx.scheduler.runAfter(0, internal.stream.deleteStreamChunksStep, {
         beforeSeq: row.chunkSeq ?? 1,
         messageId: msg._id,

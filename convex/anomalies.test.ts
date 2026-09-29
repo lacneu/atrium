@@ -615,6 +615,24 @@ describe("anomaly detection", () => {
     }
   });
 
+  test("a gateway that CLOSED the agent's database raises its own cause", async () => {
+    // Neither storage class: the operator's answer is the refused agent, not a disk.
+    const t = convexTest(schema, modules);
+    await t.run(async (ctx) => {
+      const now = Date.now();
+      for (let i = 0; i < 2; i++) {
+        await seedTrace(ctx, {
+          kind: "assistant.stream",
+          at: now - i * 1000,
+          correlationId: `chat:agentdb-${i}`,
+          meta: { phase: "finalize", streamStatus: "error", errorCode: "gateway_agent_db_closed" },
+        });
+      }
+    });
+    const res = await t.mutation(internal.anomalies.detectAnomalies, {});
+    expect(res.detected).toContain("assistant.cause.gateway_agent_db_closed");
+  });
+
   test("an UNKNOWN cause still surfaces through the generic class", async () => {
     // A cause without an entry in the map must never be dropped for that reason.
     const t = convexTest(schema, modules);

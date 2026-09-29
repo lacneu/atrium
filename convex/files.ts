@@ -11,6 +11,8 @@ import { query, mutation, internalMutation } from "./_generated/server";
 import { internal } from "./_generated/api";
 import { requirePermission, requireUserId } from "./lib/access";
 import { resolveChatAccess } from "./lib/chatAccess";
+import { isTrashed } from "./lib/trash";
+import type { Id } from "./_generated/dataModel";
 import { PERMISSIONS } from "./lib/rbac";
 import {
   isFilePart,
@@ -53,16 +55,27 @@ export const listMine = query({
       )
       .order("desc")
       .take(CAP);
-    const facetChatIds = [...new Set(ownerWindow.map((r) => r.chatId))];
+    // A conversation in the TRASH hides its files here too (convex/trash.ts): they
+    // come back with it. So does one that is GONE: a purge deletes the chat row
+    // first and its files rows in batches after (chats.cascadeDeleteChat), and a
+    // sweep interrupted midway leaves rows naming a conversation that no longer
+    // exists — never a download. Judged per distinct chat, once, for the facets and
+    // the list.
+    const trashedChats = new Set<string>();
     const chatTitle = new Map<string, string>();
-    for (const cid of facetChatIds) {
+    const learnChat = async (cid: Id<"chats">) => {
+      if (chatTitle.has(cid)) return;
       const c = await ctx.db.get(cid);
       chatTitle.set(cid, c?.title ?? "Conversation");
-    }
+      if (c === null || isTrashed(c)) trashedChats.add(cid);
+    };
+    for (const cid of new Set(ownerWindow.map((r) => r.chatId))) await learnChat(cid);
+    const facetWindow = ownerWindow.filter((r) => !trashedChats.has(r.chatId));
+    const facetChatIds = [...new Set(facetWindow.map((r) => r.chatId))];
     const instanceSet = new Set<string>();
-    for (const r of ownerWindow) if (r.instanceName) instanceSet.add(r.instanceName);
+    for (const r of facetWindow) if (r.instanceName) instanceSet.add(r.instanceName);
     const categorySet = new Set<FileCategory>(
-      ownerWindow.map((r) => r.category ?? mimeCategory(r.mimeType)),
+      facetWindow.map((r) => r.category ?? mimeCategory(r.mimeType)),
     );
 
     // LIST — drive the scan with an INDEX that covers as many active filters as
@@ -183,16 +196,14 @@ export const listMine = query({
     // scanned — no residual `.filter` needed here.
     const rows = await listQuery.take(CAP + 1);
     const truncated = rows.length > CAP;
-    const list = truncated ? rows.slice(0, CAP) : rows;
-
     // Chat titles for the listed rows (reuse the facet window's titles; load any
-    // not already known — e.g. an old chat surfaced only by a filter).
-    for (const r of list) {
-      if (!chatTitle.has(r.chatId)) {
-        const c = await ctx.db.get(r.chatId);
-        chatTitle.set(r.chatId, c?.title ?? "Conversation");
-      }
-    }
+    // not already known — e.g. an old chat surfaced only by a filter). The trash
+    // filter is applied AFTER the cap: a window partly made of trashed rows lists
+    // fewer files, never a wrong one.
+    for (const r of truncated ? rows.slice(0, CAP) : rows) await learnChat(r.chatId);
+    const list = (truncated ? rows.slice(0, CAP) : rows).filter(
+      (r) => !trashedChats.has(r.chatId),
+    );
 
     const files = await Promise.all(
       list.map(async (r) => ({

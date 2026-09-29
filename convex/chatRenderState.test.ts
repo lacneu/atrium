@@ -73,6 +73,8 @@ describe("normalizeMessageErrorCode (raw gateway text never leaves)", () => {
     expect(normalizeMessageErrorCode("gateway_storage_unavailable")).toBe(
       "gateway_storage_unavailable",
     );
+    // The gateway closed the agent's database (OpenClaw 2026.9.5+): named, not "unknown".
+    expect(normalizeMessageErrorCode("gateway_agent_db_closed")).toBe("gateway_agent_db_closed");
     // The bridge's OWN inbound-staging refusals: the turn is never sent, so no
     // gateway class can carry them. Left out of this list they collapsed
     // to "unknown", the trace filter dropped the code, and their per-cause anomaly

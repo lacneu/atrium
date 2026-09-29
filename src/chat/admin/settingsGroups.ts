@@ -39,7 +39,7 @@ export const SETTINGS_GROUPS: readonly SettingsGroup[] = [
   {
     id: "access",
     label: () => m.settings_group_access(),
-    tabs: ["users", "groups", "access", "roles", "serviceAccounts"],
+    tabs: ["users", "groups", "access", "roles", "serviceAccounts", "trash"],
   },
   {
     id: "observability",

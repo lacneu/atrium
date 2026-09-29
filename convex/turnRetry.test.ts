@@ -185,6 +185,12 @@ describe("retryDecision (pure gate/bound logic)", () => {
     }
   });
 
+  test("a gateway that CLOSED the agent's database is not auto-retried either", () => {
+    // Refused until the gateway's operator acts (or its startup inspection finishes), and when
+    // it retires an execution under a run, the run may already have worked. Pinned as a decision.
+    expect(retryDecision({ ...base, errorKind: "gateway_agent_db_closed" })).toBeNull();
+  });
+
   test("provider_internal (transient upstream/network) is retryable, bound 2, same content gates", () => {
     expect(
       retryDecision({ ...base, errorKind: "provider_internal" }),

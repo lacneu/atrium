@@ -214,6 +214,11 @@ export const CAUSE_ANOMALY_KINDS: Record<string, string> = {
   // run of bad luck.
   gateway_storage_busy: "assistant.cause.gateway_storage_busy",
   gateway_storage_unavailable: "assistant.cause.gateway_storage_unavailable",
+  // The gateway closed the AGENT'S database to new work. Its own class because the operator's
+  // answer is neither of the two above: not a disk to free but an agent the gateway refuses
+  // (a startup inspection that failed or is still running, a database owned by another
+  // agent) or an execution it retired — a repeat is a per-agent signal on that instance.
+  gateway_agent_db_closed: "assistant.cause.gateway_agent_db_closed",
   // The gateway refused to USE the credential: the auth profile was inside a cooldown
   // window. It belongs in this map — which is read for causes carried by an
   // `assistant.stream` FINALIZE row — because the send SUCCEEDS and the refusal comes

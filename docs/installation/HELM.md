@@ -203,8 +203,24 @@ export first:
 npx convex export --include-file-storage --path <snapshot>.zip
 ```
 
-A volume snapshot is not a substitute — it captures the file, not a consistent
-application-level export, and it cannot be restored into a different deployment.
+A snapshot of the volume taken while the backend runs is not a substitute: the
+database file can be caught mid-write. [BACKUP.md](BACKUP.md) is the backup
+contract — what to capture, a consistent online copy, restores, retention — and
+documents the opt-in object storage (`convexBackend.s3`); switching an existing
+deployment's storage is [MIGRATION.md](MIGRATION.md).
+
+**Upgrade note — two backend settings changed.**
+
+- The Convex pod now has a `preStop` hook that sends `SIGINT` to the backend,
+  with `terminationGracePeriodSeconds: 60`. The backend ignores `SIGTERM` and
+  used to be killed at every pod stop; it now shuts down cleanly.
+- It also receives `DOCUMENT_RETENTION_DELAY`, set by
+  `convexBackend.documentRetentionDelaySeconds` and defaulting to 2 days
+  (upstream's self-hosted value) instead of the backend's built-in 14. After
+  the upgrade, the backend drops superseded and deleted document versions older
+  than 2 days.
+- To keep the old window, set the value to `1209600`. Why 2 days:
+  [BACKUP.md §3](BACKUP.md#3-retention--what-a-deletion-promise-depends-on).
 
 Upgrades re-run the bootstrap Job (`post-upgrade`), so environment changes in your
 values reach the deployment on `helm upgrade`. Function changes still need step 6.

@@ -8,9 +8,10 @@ import { resolveAgentTypes } from "./lib/agentTypes";
 import { v } from "convex/values";
 import { internalMutation, mutation } from "./_generated/server";
 import type { MutationCtx } from "./_generated/server";
-import type { Id, TableNames } from "./_generated/dataModel";
+import type { Doc, Id, TableNames } from "./_generated/dataModel";
 import { internal } from "./_generated/api";
 import { requireActive, requireOwnedChat, requireReachableChat } from "./lib/access";
+import { ROSTER_READ_WINDOW } from "./lib/chatAccess";
 import { liveTalkCall } from "./talk";
 import { enrichUserAgents, getEffectiveGrants } from "./agents";
 import { auditImpersonated } from "./lib/audit";
@@ -18,6 +19,15 @@ import { isChatBusy } from "./lib/outboxQueue";
 import { releaseDanglingDocumentaryFetch } from "./documentAttachments";
 import { purgeSummaryForChat } from "./chatSummaries";
 import { AGENT_REQUEST_DELETE_READS, deleteChatAgentRequests } from "./agentRequests";
+import { CHAT_WITHDRAW_BATCH, withdrawAllChatNotifications } from "./notifications";
+import { drainNextQueued } from "./lib/outboxQueue";
+import { isTrashed, purgeDateFor } from "./lib/trash";
+import {
+  BLOB_RELEASE_READS,
+  releaseBlob,
+  storageIdsOfOutbox,
+  storageIdsOfPart,
+} from "./lib/blobs";
 
 async function requireOwnedProject(
   ctx: MutationCtx,
@@ -42,7 +52,7 @@ export async function minChatSortKey(
     .withIndex("by_user", (q) => q.eq("userId", userId))
     .collect();
   const keys = chats
-    .filter((c) => (c.projectId ?? null) === projectId && !c.archived)
+    .filter((c) => (c.projectId ?? null) === projectId && !c.archived && !isTrashed(c))
     .map((c) => c.sortKey ?? 0);
   return keys.length ? Math.min(...keys) : 0;
 }
@@ -425,24 +435,39 @@ export const resetSession = mutation({
   },
 });
 
-// Delete a chat and EVERYTHING that hangs off it. Convex has no cascade, and one
-// transaction has a read budget: a group within the published limits (a full room
-// of bookmarking members, hundreds of messages with their parts) can hold more
-// dependent rows than one transaction may read — done in one pass, the deletion
-// failed whole and the conversation became undeletable.
+// Delete a chat and EVERYTHING that hangs off it — the PERMANENT purge, run when a
+// trashed conversation's retention ends (trash.purgeTrash), when its owner or an
+// admin deletes it from the trash, and when an account is deleted. (Deleting a
+// conversation from the sidebar moves it to the trash: moveChatToTrash below.)
+//
+// Convex has no cascade, and one transaction has a read budget: a group within the
+// published limits (a full room of bookmarking members, hundreds of messages with
+// their parts) can hold more dependent rows than one transaction may read — done in
+// one pass, the deletion failed whole and the conversation became undeletable.
 //
 // So: the chat row goes FIRST, in the caller's transaction — from that instant
 // nothing reaches the conversation (every access check reads the chat) — and its
 // dependents follow in batches of at most CHAT_SWEEP_BUDGET reads, the first one
-// inline (a typical chat is gone at once), the rest self-scheduled
-// (sweepDeletedChat). Every dependent is found by its chat (or its message), so
-// the sweep needs nothing of the row it deleted but the owner's id, which it
-// carries. Each batch is idempotent and resumable: a row is deleted only once
-// what hangs off it is gone.
-// Reused by deleteChat, projects.deleteProject and admin.deleteUser.
+// inline (a typical chat is gone at once) unless the caller purges many chats at
+// once, the rest self-scheduled (sweepDeletedChat). Every dependent is found by its
+// chat (or its message), so the sweep needs nothing of the row it deleted but the
+// owner's id, which it carries. Each batch is idempotent and resumable: a row is
+// deleted only once what hangs off it is gone.
+//
+// RESUMABLE BEYOND ITS OWN CHAIN. A `chatPurges` row is written with the deletion
+// and removed by the batch that finishes; every batch stamps it. A chain that died
+// (a batch that threw — the scheduler does not retry those) leaves a stale stamp,
+// and the trash cron re-arms it (trash.purgeTrash).
+//
+// BLOBS GO WITH THEIR LAST HOLDER. Every deleted row that names a storage blob
+// releases it in the same transaction (lib/blobs.releaseBlob): the blob is deleted
+// only when nothing else — a fork's copy, a documentary attachment, a rendition —
+// still references it. (A deleted blob is unreachable; on a self-hosted backend its
+// bytes stay on disk until a physical collector reclaims them — lib/blobs.)
 export async function cascadeDeleteChat(
   ctx: MutationCtx,
   chatId: Id<"chats">,
+  opts: { inline?: boolean } = {},
 ): Promise<void> {
   const chat = await ctx.db.get(chatId);
   if (chat === null) return;
@@ -455,7 +480,128 @@ export async function cascadeDeleteChat(
     console.error("[chatsum] purge on delete:", (e as Error)?.message ?? e);
   }
   await ctx.db.delete(chatId);
+  await dropReadMarkers(ctx, chatId, chat.userId);
+  const now = Date.now();
+  const ledger = await ctx.db
+    .query("chatPurges")
+    .withIndex("by_chat", (q) => q.eq("chatId", chatId))
+    .first();
+  if (ledger === null) {
+    await ctx.db.insert("chatPurges", {
+      chatId,
+      ownerId: chat.userId,
+      startedAt: now,
+      updatedAt: now,
+    });
+  }
+  if (opts.inline === false) {
+    await ctx.scheduler.runAfter(0, internal.chats.sweepDeletedChat, {
+      chatId,
+      ownerId: chat.userId,
+    });
+    return;
+  }
   await sweepChatDependents(ctx, chatId, chat.userId);
+}
+
+/**
+ * Put a conversation in the TRASH: hidden everywhere at once, restorable until
+ * `purgeAfter` (lib/trash). Nothing is deleted — seats, messages, files and blobs
+ * all stay, so a restore gives back exactly what was there.
+ *
+ * WHAT HAPPENS TO WORK IN FLIGHT. A reply already streaming is left to finish: the
+ * bridge's writes land in the trashed conversation as they would anywhere (the
+ * ingest path does not look at the trash), so the stream path cannot break, and a
+ * restore shows the reply. What has NOT left yet is held rather than dropped: a
+ * queued follow-up is not drained while the chat is in the trash
+ * (lib/outboxQueue.drainNextQueued), and a pending turn not yet sent is re-parked
+ * by the dispatch (bridge.reparkRowIfBusy). A restore drains them.
+ *
+ * The conversation's bell entries are withdrawn for everyone (a mention or an
+ * agent question would link to a page nobody can open), and a new one is not rung
+ * while it stays there (notifications.notifyUser).
+ *
+ * False when it already was in the trash (its dates are kept).
+ */
+export async function moveChatToTrash(
+  ctx: MutationCtx,
+  chat: Doc<"chats">,
+  trashedBy: Id<"users">,
+  /** Documents this call touched (read + written) are added here — a caller that
+   *  trashes many conversations in one transaction budgets on it. */
+  meter?: { spent: number },
+): Promise<boolean> {
+  if (isTrashed(chat)) return false;
+  const now = Date.now();
+  await ctx.db.patch(chat._id, {
+    trashedAt: now,
+    purgeAfter: purgeDateFor(now),
+    trashedBy,
+  });
+  let spent = 1 + (await withdrawAllChatNotifications(ctx, chat._id));
+  // A restore comes back without read markers — "no marker" reads as "no unread
+  // dot", never a false one.
+  spent += await dropReadMarkers(ctx, chat._id, chat.userId);
+  if (meter !== undefined) meter.spent += spent;
+  return true;
+}
+
+/** The most documents one moveChatToTrash can touch: the chat, a full first
+ *  withdrawal batch of bell entries (read + delete) and the read markers of a full
+ *  roster window (the seats, then a marker read + delete per reader). */
+export const TRASH_CHAT_MAX_COST =
+  2 + 2 * CHAT_WITHDRAW_BATCH + ROSTER_READ_WINDOW + 2 * (1 + ROSTER_READ_WINDOW);
+
+/**
+ * Delete a conversation's READ MARKERS now, for its owner and every seat — at trash
+ * time and at the start of a purge. `chatReads.myChatReads` returns markers without
+ * reading the chats (it stays off the chats' write path on purpose), so a marker
+ * left behind would keep naming a conversation that is trashed or gone. Bounded by
+ * the roster window.
+ */
+async function dropReadMarkers(
+  ctx: MutationCtx,
+  chatId: Id<"chats">,
+  ownerId: Id<"users">,
+): Promise<number> {
+  const seats = await ctx.db
+    .query("chatParticipants")
+    .withIndex("by_chat", (q) => q.eq("chatId", chatId))
+    .take(ROSTER_READ_WINDOW);
+  let spent = seats.length;
+  for (const reader of [ownerId, ...seats.map((seat) => seat.userId)]) {
+    const marker = await ctx.db
+      .query("chatReads")
+      .withIndex("by_user_chat", (q) => q.eq("userId", reader).eq("chatId", chatId))
+      .first();
+    spent += 1;
+    if (marker !== null) {
+      await ctx.db.delete(marker._id);
+      spent += 1;
+    }
+  }
+  return spent;
+}
+
+/**
+ * Take a conversation out of the trash, as it was: its seats give their holders
+ * access again, its held turns drain. A conversation whose folder was deleted
+ * meanwhile (a folder's deletion trashes its conversations and removes the folder)
+ * comes back at the root.
+ */
+export async function restoreFromTrash(ctx: MutationCtx, chat: Doc<"chats">): Promise<void> {
+  let folderGone = false;
+  if (chat.projectId !== undefined) {
+    const folder = await ctx.db.get(chat.projectId);
+    folderGone = folder === null || folder.userId !== chat.userId;
+  }
+  await ctx.db.patch(chat._id, {
+    trashedAt: undefined,
+    purgeAfter: undefined,
+    trashedBy: undefined,
+    ...(folderGone ? { projectId: undefined } : {}),
+  });
+  await drainNextQueued(ctx, chat._id);
 }
 
 /** Reads one chat-deletion batch may spend, across ALL its dependents. */
@@ -473,7 +619,8 @@ export const sweepDeletedChat = internalMutation({
  * remain. Phases in order — the non-terminal outbox first (nothing may drain from a
  * deleted chat), then the roster with what each person kept there, the owner's own
  * state, the messages with what hangs off them, the sub-agent rows, the room's
- * agents, the agent requests — each taking only what the budget left allows.
+ * agents, the agent requests, and the conversation-keyed leftovers (bell entries,
+ * delivery timings, ended calls) — each taking only what the budget left allows.
  */
 async function sweepChatDependents(
   ctx: MutationCtx,
@@ -482,6 +629,12 @@ async function sweepChatDependents(
 ): Promise<void> {
   let budget = CHAT_SWEEP_BUDGET;
   const more = async () => {
+    // The progress stamp the trash cron reads to tell a live chain from a dead one.
+    const ledger = await ctx.db
+      .query("chatPurges")
+      .withIndex("by_chat", (q) => q.eq("chatId", chatId))
+      .first();
+    if (ledger !== null) await ctx.db.patch(ledger._id, { updatedAt: Date.now() });
     await ctx.scheduler.runAfter(0, internal.chats.sweepDeletedChat, { chatId, ownerId });
   };
   /** Read and delete up to what the budget allows; true when the range is empty. */
@@ -491,6 +644,30 @@ async function sweepChatDependents(
   ): Promise<boolean> => {
     budget -= rows.length;
     for (const r of rows) await ctx.db.delete(r._id);
+    return rows.length < asked;
+  };
+  /** The same, for rows that name storage blobs: each row is deleted, THEN its
+   *  blobs are released (lib/blobs.releaseBlob), in this transaction, so the last
+   *  holder to go releases the blob. A row's release is charged to the budget; when it
+   *  runs out the rest of the page waits for the next batch (at least one row is
+   *  always processed, so the sweep progresses). */
+  const drainReleasing = async <T extends { _id: Id<TableNames> }>(
+    rows: ReadonlyArray<T>,
+    asked: number,
+    blobsOf: (row: T) => Id<"_storage">[],
+  ): Promise<boolean> => {
+    budget -= rows.length;
+    let done = 0;
+    for (const r of rows) {
+      const blobs = blobsOf(r);
+      if (done > 0 && budget < blobs.length * BLOB_RELEASE_READS) return false;
+      await ctx.db.delete(r._id);
+      for (const blob of blobs) {
+        budget -= BLOB_RELEASE_READS;
+        await releaseBlob(ctx, blob, { reason: "chat_purge" });
+      }
+      done += 1;
+    }
     return rows.length < asked;
   };
 
@@ -505,7 +682,7 @@ async function sweepChatDependents(
       .query("outbox")
       .withIndex("by_chat_status", (q) => q.eq("chatId", chatId).eq("status", status))
       .take(asked);
-    if (!(await drain(rows, asked)) || budget <= 0) return more();
+    if (!(await drainReleasing(rows, asked, storageIdsOfOutbox)) || budget <= 0) return more();
   }
 
   // 2. GROUP CHAT roster: each seat with that person's read marker, their bookmarks
@@ -541,9 +718,10 @@ async function sweepChatDependents(
   if (budget <= 0) return more();
 
   // 4. Messages, each with what hangs off it: parts and their mirrored files rows
-  //    (the file-mirror invariant), documentary attachments, the live-text row, the
-  //    stream chunks (their own bounded GC), and the entries of whoever it named.
-  //    A message goes only once all of that is gone.
+  //    (the file-mirror invariant) — each releasing its blob —, documentary
+  //    attachments (their blobs too), the live-text row and the live-activity stamp,
+  //    the stream chunks (their own bounded GC), and the entries of whoever it
+  //    named. A message goes only once all of that is gone.
   for (;;) {
     const m = await ctx.db
       .query("messages")
@@ -551,18 +729,44 @@ async function sweepChatDependents(
       .first();
     budget -= 1;
     if (m === null) break;
+    {
+      const asked = Math.max(budget, 0);
+      const parts = await ctx.db
+        .query("messageParts")
+        .withIndex("by_message", (q) => q.eq("messageId", m._id))
+        .take(asked);
+      if (!(await drainReleasing(parts, asked, (p) => storageIdsOfPart(p.part))) || budget <= 0) {
+        return more();
+      }
+    }
+    {
+      const asked = Math.max(budget, 0);
+      const files = await ctx.db
+        .query("files")
+        .withIndex("by_message", (q) => q.eq("messageId", m._id))
+        .take(asked);
+      if (!(await drainReleasing(files, asked, (f) => [f.storageId])) || budget <= 0) {
+        return more();
+      }
+    }
+    {
+      const asked = Math.max(budget, 0);
+      const docs = await ctx.db
+        .query("documentAttachments")
+        .withIndex("by_source_message", (q) => q.eq("sourceMessageId", m._id))
+        .take(asked);
+      const blobsOfDoc = (d: Doc<"documentAttachments">) =>
+        d.storageId === undefined ? [] : [d.storageId];
+      if (!(await drainReleasing(docs, asked, blobsOfDoc)) || budget <= 0) return more();
+    }
     const hanging = [
       (n: number) =>
-        ctx.db.query("messageParts").withIndex("by_message", (q) => q.eq("messageId", m._id)).take(n),
-      (n: number) =>
-        ctx.db.query("files").withIndex("by_message", (q) => q.eq("messageId", m._id)).take(n),
+        ctx.db.query("streamingText").withIndex("by_message", (q) => q.eq("messageId", m._id)).take(n),
       (n: number) =>
         ctx.db
-          .query("documentAttachments")
-          .withIndex("by_source_message", (q) => q.eq("sourceMessageId", m._id))
+          .query("liveTurnActivity")
+          .withIndex("by_message", (q) => q.eq("messageId", m._id))
           .take(n),
-      (n: number) =>
-        ctx.db.query("streamingText").withIndex("by_message", (q) => q.eq("messageId", m._id)).take(n),
     ];
     for (const read of hanging) {
       const asked = Math.max(budget, 0);
@@ -628,9 +832,45 @@ async function sweepChatDependents(
     if (await deleteChatAgentRequests(ctx, chatId, limit)) return more();
   }
 
+  // 8. What is keyed on the conversation alone: every bell entry about it (any
+  //    kind, anyone's), the delivery-latency samples recorded on it, and its ENDED
+  //    voice calls. A call not ended yet is left to the talk janitor (its hard TTL):
+  //    the hangup authorizes on that row, and the unmount after a deletion must
+  //    still be able to close the gateway-owned call.
+  {
+    const asked = Math.max(budget, 0);
+    const rows = await ctx.db
+      .query("notifications")
+      .withIndex("by_chat", (q) => q.eq("chatId", chatId))
+      .take(asked);
+    if (!(await drain(rows, asked)) || budget <= 0) return more();
+  }
+  {
+    const asked = Math.max(budget, 0);
+    const rows = await ctx.db
+      .query("deliveryTimings")
+      .withIndex("by_chat", (q) => q.eq("chatId", chatId))
+      .take(asked);
+    if (!(await drain(rows, asked)) || budget <= 0) return more();
+  }
+  {
+    const asked = Math.max(budget, 0);
+    const rows = await ctx.db
+      .query("talkSessions")
+      .withIndex("by_chat_live", (q) => q.eq("chatId", chatId).gte("endedAt", 0))
+      .take(asked);
+    if (!(await drain(rows, asked)) || budget <= 0) return more();
+  }
+
   // Done. L2: if this chat held the SOURCE of an in-flight documentary fetch,
   // release the hidden chat's lock — only now that its messages are gone.
   await releaseDanglingDocumentaryFetch(ctx, ownerId, chatId);
+  for (const ledger of await ctx.db
+    .query("chatPurges")
+    .withIndex("by_chat", (q) => q.eq("chatId", chatId))
+    .take(8)) {
+    await ctx.db.delete(ledger._id);
+  }
 }
 
 /**
@@ -669,13 +909,16 @@ async function dropMemberState(
   return drafts.length < draftsAsked;
 }
 
+/** Delete a conversation from the sidebar / a folder menu: it goes to the TRASH
+ *  (moveChatToTrash), restorable by its owner for the retention period. Owner-only,
+ *  as before — a participant leaves a conversation, they do not delete it. */
 export const deleteChat = mutation({
   args: { chatId: v.id("chats") },
   handler: async (ctx, { chatId }) => {
     const { userId, actor } = await requireActive(ctx);
-    await requireOwnedChat(ctx, userId, chatId);
-    await cascadeDeleteChat(ctx, chatId);
-    await auditImpersonated(ctx, actor, "chat.delete", {
+    const chat = await requireOwnedChat(ctx, userId, chatId);
+    await moveChatToTrash(ctx, chat, actor.realUserId);
+    await auditImpersonated(ctx, actor, "chat.trash", {
       resource: "chat",
       resourceId: chatId,
     });

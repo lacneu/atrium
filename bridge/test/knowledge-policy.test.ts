@@ -3183,3 +3183,63 @@ describe("a send running under a newer confirmed choice checks THAT choice is st
     expect(() => gone.check()).toThrow(KnowledgePolicyNotAppliedError);
   });
 });
+
+describe("the gateway's OWN refusal is never a knowledge choice not applied (codex, 0.88.2)", () => {
+  // OpenClaw 2026.9.6 answers every request resolving to an agent whose database it will not
+  // admit `UNAVAILABLE` with the refusal as `details` (src/gateway/session-request-agent.ts:
+  // 29-38) — the plugin's session actions and `sessions.create` included. Wrapped here, the
+  // reader was told a knowledge setting could not be applied, or that the plugin was gone.
+  const REFUSAL = () =>
+    new GatewayAnsweredError("UNAVAILABLE: refused", {
+      agentId: "alice",
+      paths: ["/x"],
+      code: "agent-database-inspection-failed",
+      reason: "r",
+      repairHint: "h",
+    });
+  const FULL = () => answered("UNAVAILABLE: SqliteError: database or disk is full");
+
+  it("`policy.set`: passed through raw, classified as the gateway's", async () => {
+    for (const make of [REFUSAL, FULL]) {
+      const err = make();
+      await expect(
+        writeKnowledgePolicy(requester(() => { throw err; }).conn, "k", "alice", { injection: "off" }),
+      ).rejects.toBe(err);
+    }
+    const err = REFUSAL();
+    await expect(
+      writeKnowledgePolicy(requester(() => { throw err; }).conn, "k", "alice", null),
+    ).rejects.toBe(err);
+    expect(classifyGatewayError(err)).toBe("gateway_agent_db_closed");
+  });
+
+  it("`sessions.create` for the write: passed through raw", async () => {
+    const err = REFUSAL();
+    const r = requester(() => WRITE_FAILED);
+    await expect(
+      enforceKnowledgePolicy({
+        sessionKey: "agent:alice:k",
+        agentId: "alice",
+        sessionAbsent: true,
+        conn: r.conn,
+        choice: { kind: "off" },
+        stored: null,
+        createSession: async () => {
+          throw err;
+        },
+      }),
+    ).rejects.toBe(err);
+  });
+
+  it("`policy.get` before the send: no usable answer, NOT `plugin_gone` — the send meets the refusal itself", async () => {
+    const read = await readSessionPolicy(requester(() => { throw REFUSAL(); }).conn, "k", "alice");
+    expect(read).toEqual({ kind: "unknown" });
+    // An `UNAVAILABLE` that IS about the plugin keeps its meaning.
+    const gone = await readSessionPolicy(
+      requester(() => { throw answered("UNAVAILABLE: unknown plugin session action: openclaw-knowledge/policy.get"); }).conn,
+      "k",
+      "alice",
+    );
+    expect(gone).toEqual({ kind: "plugin_gone" });
+  });
+});

@@ -35,6 +35,12 @@ services:
     image: ghcr.io/get-convex/convex-backend:latest
     container_name: ${COMPOSE_PROJECT_NAME:-atrium}-convex-backend
     restart: unless-stopped
+    # The backend shuts down cleanly on SIGINT and ignores SIGTERM (Docker's
+    # default): without this, every `docker stop` — a recreate, `down`, or a
+    # Dokploy volume backup with "Turn off container" — waits out the grace
+    # period and then SIGKILLs the process holding the database.
+    stop_signal: SIGINT
+    stop_grace_period: 60s
     ports:
       - "${CONVEX_CLOUD_PORT:-3210}:3210" # cloud origin (queries/mutations)
       - "${CONVEX_SITE_PORT:-3211}:3211" # site origin (HTTP actions / .site)
@@ -46,6 +52,11 @@ services:
       - CONVEX_SITE_ORIGIN=${CONVEX_SITE_ORIGIN:?public https URL for the site origin}
       - DISABLE_BEACON=true
       - RUST_LOG=${CONVEX_RUST_LOG:-info}
+      # Seconds the database keeps superseded and deleted document versions.
+      # 2 days = upstream's self-hosted compose value (the binary's own default is
+      # 14). It bounds how long deleted rows linger in the live database — and so
+      # in backups taken meanwhile (docs/installation/BACKUP.md §3).
+      - DOCUMENT_RETENTION_DELAY=${CONVEX_DOCUMENT_RETENTION_DELAY:-172800}
     volumes:
       - convex-data:/convex/data
     healthcheck:

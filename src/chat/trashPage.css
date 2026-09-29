@@ -1,0 +1,84 @@
+/* The trash (TrashPage.tsx) and the admin's view of every trash (TrashTab.tsx).
+   Same page frame as the folder page (projectPage.css). */
+
+.oc-trash {
+  height: 100%;
+  overflow-y: auto;
+  padding: 24px clamp(16px, 5vw, 48px);
+}
+.oc-trash__body {
+  max-width: 860px;
+  margin: 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+.oc-trash__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.oc-trash__heading {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 1.25rem;
+  font-weight: 600;
+  margin: 0;
+}
+.oc-trash__hint,
+.oc-trash__empty {
+  color: var(--muted-foreground);
+  font-size: 0.85rem;
+  margin: 0;
+}
+.oc-trash__list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg, 0.75rem);
+  overflow: hidden;
+}
+.oc-trash__item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--border);
+}
+.oc-trash__item:last-child {
+  border-bottom: 0;
+}
+.oc-trash__meta {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  flex: 1 1 240px;
+}
+.oc-trash__title {
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.oc-trash__dates {
+  color: var(--muted-foreground);
+  font-size: 0.8rem;
+}
+.oc-trash__owner {
+  color: var(--foreground);
+}
+.oc-trash__actions {
+  display: flex;
+  gap: 6px;
+  flex-shrink: 0;
+}
+

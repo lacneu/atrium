@@ -7409,8 +7409,25 @@
           "note": "new in 2026.9.5 — the refusal shape the gateway attaches to an agent whose database it will not admit (ownership mismatch / inspection pending / inspection failed). Atrium shows no agent-admission state, so a refused agent still reads as available in the picker. Not yet instructed (frame-discovery queue)"
         },
         "code": {
-          "status": "gap",
-          "note": "new in 2026.9.5 — the refusal shape the gateway attaches to an agent whose database it will not admit (ownership mismatch / inspection pending / inspection failed). Atrium shows no agent-admission state, so a refused agent still reads as available in the picker. Not yet instructed (frame-discovery queue)"
+          "status": "handled",
+          "by": "Dispatch classification: OpenClawConnection.request keeps the refusal's `ErrorShape.details` on GatewayAnsweredError; `gatewayOwnRefusal` (core/failure-classifier.ts) reads `details.code` against the closed union and names the refusal `gateway_agent_db_closed` — or `gateway_storage_unavailable` when the refusal's reason is a full disk — a downstream code Convex stores on the failed turn (allowlisted in convex/lib/chatRenderState.ts KNOWN_ERROR_CODES) and the card localizes (src/chat/runStatusView.ts ERROR_CODE_LABEL, the doctor advice suppressed by HEADLINE_REPLACES_DETAIL). Refusals that reach Atrium as TEXT only (a chat error frame, a child's failure) take the same classes from the fixed repair-hint prose (core/failure-classifier.ts AGENT_DATABASE_CLOSED_RE). The same predicate is asked BEFORE the permission-mode patch (permission-mode.ts) and the knowledge plugin's policy read/write and sessions.create (knowledge-policy.ts) wrap a refusal as their own, so a refusal there passes through raw to classifyGatewayError.",
+          "anchor": {
+            "file": "src/core/failure-classifier.ts",
+            "token": "agent-database-inspection-failed"
+          },
+          "proof": {
+            "kind": "deterministic-test",
+            "ref": "bridge/test/dispatch-errors.test.ts",
+            "note": "No live proof: eliciting a refusal needs an agent database the gateway refuses at startup (an ownership mismatch, a failed or still-running inspection), which the full-catalogue bench does not stage. Two hops are proven by neutralization: the wire (bridge/test/connection-end-live.test.ts, a real socket carrying `details` into GatewayAnsweredError, then classified by code under reworded prose) and the classifier (this ref), and the three wrap sites (bridge/test/permission-mode.test.ts, bridge/test/knowledge-policy.test.ts). The Convex allowlist and the card have their own tests (convex/chatRenderState.test.ts, convex/errorKind.test.ts, src/chat/runStatusView.test.ts). Live proof stays owed."
+          },
+          "verifiedVersions": [],
+          "dossier": {
+            "writers": "src/state/agent-database-admission.ts at v2026.9.6: createAgentDatabaseInspectionRefusal (:44-59) mints `agent-database-inspection-pending` (startup inspection deferred, src/state/agent-database-startup.ts:212-217) or `agent-database-inspection-failed` (inspection threw, agent-database-startup.ts:152-168; background preparation failed, failPendingAgentDatabase :211-224 via agent-database-startup.ts:290-294, the underlying error kept verbatim as `reason`); inspectAgentDatabaseAdmission (:66-84) mints `agent-database-ownership-mismatch` with `embeddedOwnerId`. Recorded per state database by recordAgentDatabaseAdmissions (:96-124).",
+            "resets": "Only a new admission pass replaces a boot's decisions (:95 comment, recordAgentDatabaseAdmissions); a pending refusal is removed when background preparation succeeds (preparePendingAgentDatabase :150-178) and turned into `inspection-failed` when it fails (failPendingAgentDatabase). A diagnostic pass never overrides a startup one (:102-104).",
+            "upstreamUse": "assertAgentDatabaseAdmitted (:239-244) throws AgentDatabaseAdmissionError (`${reason}\\n${repairHint}`, :232-237) to work on a refused agent; session-request-agent.ts:29-38 answers any request resolving to that agent UNAVAILABLE with the refusal as `details`; agent-request-preflight.ts:92-100 does the same for the `agent` RPC; agent-list.ts:128-139 projects it on AgentSummary.admissionRefusal; server/readiness.ts:124 lists refusals in readiness; server-cron.ts:778 and chat-metadata-runtime.ts:115 skip refused agents.",
+            "wire": "`res` frame `ok:false`, `error: {code: \"UNAVAILABLE\", message, details: AgentDatabaseAdmissionRefusal}` (ErrorShapeSchema, packages/gateway-protocol/src/schema/frames.ts:180-186) on chat.send (chat-send-setup.ts:73-80 responds the shape unchanged) and every session RPC resolving the agent; also inside agents.list as AgentSummary.admissionRefusal (not read by Atrium: a separate field).",
+            "atriumValue": "A send to a refused agent was UPSTREAM_ERROR (bridge-domain: painted the bridge red) and the reader got a generic failure; it is now a downstream refusal with its own card that says the gateway closed the agent's database and that its operator must act, and a full-disk reason is named as such."
+          }
         },
         "embeddedOwnerId": {
           "status": "gap",

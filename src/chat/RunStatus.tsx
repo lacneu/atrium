@@ -17,6 +17,7 @@ import {
 } from "./runStatusView";
 import { useAssistantIdentity, runWaitingLabel } from "./assistantIdentity";
 import { GatewayDegradedContext } from "./gatewayDegradedContext";
+import { useLiveTurnDifficulties } from "./turnDifficultyView";
 
 
 // Renders the run lifecycle for an assistant message, driven by the normalizer's
@@ -148,7 +149,21 @@ export function RunStatus() {
   const interrupted = useMessage(
     (m) => (m.metadata?.custom as RunMeta | undefined)?.interruptedAt != null,
   );
-  const view = runStatusView(status, hasText, phase, activeTool, interrupted, phaseRetry);
+  // Is the agent STRUGGLING on this turn? The same facts and verdict the sidebar's
+  // activity bar shows (chatReads.liveTurnDifficulty), asked only while it streams.
+  const { byMessage: difficultyByMessage } = useLiveTurnDifficulties(
+    status === "streaming" && ctxChatId ? [ctxChatId] : null,
+  );
+  const difficulty = difficultyByMessage.get(ctxMessageId ?? "") ?? null;
+  const view = runStatusView(
+    status,
+    hasText,
+    phase,
+    activeTool,
+    interrupted,
+    phaseRetry,
+    difficulty,
+  );
   // After a while waiting for the first token (slow / overloaded / reconnecting
   // backend — the client can't tell which), swap the thinking label for a
   // cause-NEUTRAL reassurance so the user knows the turn is registered and waits.
@@ -218,7 +233,9 @@ export function RunStatus() {
 
   return (
     <div
-      className={`oc-run-status oc-run-status--${view.kind}`}
+      className={`oc-run-status oc-run-status--${view.kind}${
+        view.struggling ? " oc-run-status--struggling" : ""
+      }`}
       role="status"
       title={runId ? `run ${runId}` : undefined}
     >

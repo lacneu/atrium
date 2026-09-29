@@ -153,6 +153,10 @@
     {
       "path": "ConfigPatchParams.replacePaths",
       "scan": false
+    },
+    {
+      "path": "AgentDatabaseAdmissionRefusal.code",
+      "scan": false
     }
   ]
 }

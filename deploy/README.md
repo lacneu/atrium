@@ -192,6 +192,7 @@ each:
 |---|---|
 | **Docker Compose** | [`docs/installation/COMPOSE.md`](../docs/installation/COMPOSE.md) — nine ordered steps, plus the CI path, the lifecycle rules, and running the same containers without Compose |
 | **Helm (Kubernetes)** | [`docs/installation/HELM.md`](../docs/installation/HELM.md) — what the chart creates, the secret sources, the three public origins, and the post-install step the chart does not perform |
+| **Storage, backup, restore** | [`docs/installation/BACKUP.md`](../docs/installation/BACKUP.md) — the backup contract (what to capture, a consistent online copy, restores, retention) and opt-in object storage; moving a deployment: [`MIGRATION.md`](../docs/installation/MIGRATION.md) |
 
 This page holds what applies to **both**: the pre-flight, the gotchas, how gateway
 credentials reach the bridge, hardening, media, and image versioning. The

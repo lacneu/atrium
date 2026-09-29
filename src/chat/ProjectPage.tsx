@@ -4,7 +4,7 @@
 // conversations — plus a Finder-style COLUMN view (toggle, persisted) and
 // drag & drop between folders (cards, column entries, breadcrumb segments).
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useParams, useSearch } from "@tanstack/react-router";
 import { useMutation, useQuery } from "convex/react";
 import {
@@ -62,6 +62,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { useToast } from "@/components/ui/toast";
 import { useConfirm, usePrompt } from "@/components/ConfirmDialog";
+import { folderDeleteDescription, useTrashRetentionDays } from "./trashView";
 import { api } from "./convexApi";
 import type { Id } from "./convexApi";
 import { EntitySheet } from "./admin/EntitySheet";
@@ -69,6 +70,11 @@ import { FolderTreePicker } from "./FolderTreePicker";
 import { ChatEntryMenu, FolderEntryMenu } from "./projectMenus";
 import { CHAT_COLORS, colorHue, projectHue } from "./sidebarPalette";
 import { relativeAge } from "./relativeAge";
+import {
+  TurnDifficultyContext,
+  busyBarView,
+  useLiveTurnDifficulties,
+} from "./turnDifficultyView";
 import { setPendingFocusTerms } from "./pendingFocusTerms";
 import { useStartNewChat } from "./useStartNewChat";
 import { canNest, childrenOf, type FolderNode } from "../../convex/lib/folderTree";
@@ -193,6 +199,7 @@ export function ProjectPage() {
 function ProjectPageBody({ page }: { page: NonNullable<PageData> }) {
   const navigate = useNavigate();
   const confirm = useConfirm();
+  const trashDays = useTrashRetentionDays();
   const prompt = usePrompt();
   const toast = useToast();
   const renameProject = useMutation(api.projects.renameProject);
@@ -239,6 +246,8 @@ function ProjectPageBody({ page }: { page: NonNullable<PageData> }) {
     | Id<"chats">[]
     | undefined;
   const busyIds = useMemo(() => new Set(busyList ?? []), [busyList]);
+  // The struggling state of the same bars (same source as the sidebar's).
+  const { byChat: difficultyByChat } = useLiveTurnDifficulties(busyList ?? null);
   const reads = useQuery(api.chatReads.myChatReads, {}) as
     | { chatId: Id<"chats">; lastSeenAt: number }[]
     | undefined;
@@ -508,6 +517,7 @@ function ProjectPageBody({ page }: { page: NonNullable<PageData> }) {
   };
 
   return (
+    <TurnDifficultyContext.Provider value={difficultyByChat}>
     <DndContext
       sensors={sensors}
       collisionDetection={collisionDetection}
@@ -695,17 +705,11 @@ function ProjectPageBody({ page }: { page: NonNullable<PageData> }) {
                       title: m.sidebar_delete_project_confirm_title({
                         name: page.project.name,
                       }),
-                      description:
-                        folders > 0
-                          ? m.sidebar_delete_project_confirm_desc_tree({
-                              folders,
-                              chats,
-                            })
-                          : chats > 0
-                            ? m.sidebar_delete_project_confirm_desc({
-                                count: chats,
-                              })
-                            : m.sidebar_action_irreversible(),
+                      description: folderDeleteDescription({
+                        folders,
+                        chats,
+                        days: trashDays,
+                      }),
                       confirmWord: m.sidebar_delete(),
                       confirmLabel: m.sidebar_delete_project(),
                       destructive: true,
@@ -932,6 +936,7 @@ function ProjectPageBody({ page }: { page: NonNullable<PageData> }) {
       ) : null}
     </DragOverlay>
     </DndContext>
+    </TurnDifficultyContext.Provider>
   );
 }
 
@@ -1088,6 +1093,7 @@ function ChatRow({
   locate: boolean;
   suppressClick: React.MutableRefObject<boolean>;
 }) {
+  const difficulty = useContext(TurnDifficultyContext).get(chat._id);
   const navigate = useNavigate();
   const hue = colorHue(chat.color);
   const drag = useSortable({ id: `chat:${chat._id}` });
@@ -1135,9 +1141,9 @@ function ChatRow({
         </span>
         {busy ? (
           <span
-            className="oc-chatitem__busy"
-            title={m.sidebar_folder_busy()}
-            aria-label={m.sidebar_folder_busy()}
+            className={busyBarView(difficulty, m.sidebar_folder_busy()).className}
+            title={busyBarView(difficulty, m.sidebar_folder_busy()).label}
+            aria-label={busyBarView(difficulty, m.sidebar_folder_busy()).label}
           />
         ) : null}
         {unread && !busy ? (
@@ -1382,6 +1388,7 @@ function TreeChatRow({
   locate: boolean;
   suppressClick: React.MutableRefObject<boolean>;
 }) {
+  const difficulty = useContext(TurnDifficultyContext).get(chat._id);
   const navigate = useNavigate();
   const drag = useSortable({ id: `chat:${chat._id}` });
   const locateRef = useLocateRef<HTMLDivElement>(locate);
@@ -1423,7 +1430,9 @@ function TreeChatRow({
         <span className="oc-projpage__colname">
           {chat.title || m.sidebar_untitled()}
         </span>
-        {busy ? <span className="oc-chatitem__busy" aria-hidden /> : null}
+        {busy ? (
+          <span className={busyBarView(difficulty, "").className} aria-hidden />
+        ) : null}
       </button>
       <ChatEntryMenu
         chat={chat}
@@ -1634,6 +1643,7 @@ function ColumnChatEntry({
   suppressClick: React.MutableRefObject<boolean>;
   onOpen: () => void;
 }) {
+  const difficulty = useContext(TurnDifficultyContext).get(chat._id);
   const drag = useSortable({ id: `chat:${chat._id}` });
   const locateRef = useLocateRef<HTMLDivElement>(locate);
   const hue = colorHue(chat.color);
@@ -1672,7 +1682,7 @@ function ColumnChatEntry({
           {chat.title || m.sidebar_untitled()}
         </span>
         {busy ? (
-          <span className="oc-chatitem__busy" aria-hidden />
+          <span className={busyBarView(difficulty, "").className} aria-hidden />
         ) : null}
       </button>
       <ChatEntryMenu

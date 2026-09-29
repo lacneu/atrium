@@ -343,6 +343,7 @@ describe("chatBookmarks", () => {
       blockIndex: 2,
     });
     await as.mutation(api.chats.deleteChat, { chatId });
+    await as.mutation(api.trash.purgeChat, { chatId });
     const orphans = await t.run(async (ctx) =>
       (await ctx.db.query("chatBookmarks").collect()).filter(
         (b) => b.chatId === chatId,

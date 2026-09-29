@@ -125,6 +125,10 @@ export const KNOWN_ERROR_CODES = [
   "auth_profile_cooldown",
   "gateway_storage_busy",
   "gateway_storage_unavailable",
+  // The gateway closed THIS AGENT'S database to new work (refused at startup, or retired
+  // under the run — OpenClaw 2026.9.5+). Named, so a turn or a child that dies of it is
+  // countable instead of `unknown` (prod 2026-09-28).
+  "gateway_agent_db_closed",
   // The bridge's own inbound-staging refusals. Allowlisted for the same reason as
   // the storage classes: without the code on the trace, the per-cause anomaly
   // plane cannot count them and the failure falls back into the generic channel —

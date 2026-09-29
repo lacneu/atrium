@@ -25,6 +25,7 @@ import { resolveTargetForTurn } from "./routing";
 import { chatAgentRows } from "./chatAgents";
 import { normalizeAgentTypes, resolveAgentTypes } from "./lib/agentTypes";
 import { isSessionPermissionMode } from "./lib/sessionAccess";
+import { isTrashed } from "./lib/trash";
 
 // Normalized agent descriptor the bridge `/agents` returns (and the poller relays
 // into the cache). Matches bridge `NormalizedAgent` (server.ts).
@@ -2118,7 +2119,7 @@ export const getChatAgent = query({
     const access = await resolveChatAccess(ctx, id, userId);
     if (access === null) {
       const exists = await ctx.db.get(id);
-      if (exists === null) return null;
+      if (exists === null || isTrashed(exists)) return null;
       throw new Error("Forbidden: chat not owned by user");
     }
     const chat = access.chat;

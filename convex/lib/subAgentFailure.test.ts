@@ -57,6 +57,36 @@ describe("classifySubAgentError — allowlist classifier (never echoes input)", 
     ).toEqual(["spawn_refused"]);
   });
 
+  // Production 2026-09-28: children the gateway retired with "Agent database execution
+  // admission is closed" were published `unknown`; and a full gateway disk's staging
+  // sentence says "free disk space/quota", which `quota` alone read as an API error.
+  it("names the two gateway-side refusals, by the row's class first", () => {
+    expect(classifySubAgentError("error", "anything", "gateway_agent_db_closed")).toBe(
+      "gateway_agent_db_closed",
+    );
+    expect(classifySubAgentError("error", "rate limit 429", "gateway_storage_unavailable")).toBe(
+      "gateway_storage_unavailable",
+    );
+  });
+
+  it("…and by the text for a row stored before the class existed", () => {
+    expect(classifySubAgentError("error", "Agent database execution admission is closed")).toBe(
+      "gateway_agent_db_closed",
+    );
+    expect(
+      classifySubAgentError(
+        "error",
+        'Agent alice has not completed startup inspection and preparation. x\nSessions remain unavailable until background inspection and preparation finish. If they cannot complete, stop the Gateway, run "openclaw doctor --fix", and restart.',
+      ),
+    ).toBe("gateway_agent_db_closed");
+    expect(
+      classifySubAgentError(
+        "error",
+        "SQLite read-only worker failed while creating its private snapshot: ENOSPC: no space left on device, mkdtemp '[path]'; snapshot staging root [path]: free disk space/quota or set XDG_CACHE_HOME to a writable filesystem (code=ENOSPC)",
+      ),
+    ).toBe("gateway_storage_unavailable");
+  });
+
   it("maps the stale-observer reaper message (FR + EN) to timeout", () => {
     expect(
       classifySubAgentError(

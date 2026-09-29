@@ -39,6 +39,7 @@ import {
 import { resolveConverterTarget } from "./agents";
 import { contentLocaleForInstance } from "./lib/serverLocale";
 import { isChatBusy } from "./lib/outboxQueue";
+import { isTrashed } from "./lib/trash";
 
 // ===========================================================================
 // Pure policy (exported for unit tests)
@@ -161,11 +162,23 @@ async function readableFile(
   // blob — so the rows are found BY THE CALLER, never by scanning the blob's rows (a
   // bounded scan let enough copies push the caller's row out of the window). The
   // caller's own row first (outbound agent files are owned by the chat's user too)…
-  const own = await ctx.db
+  // A row in a conversation of theirs that is in the TRASH does not count — the
+  // file is hidden with it — nor one whose conversation is GONE (a purge deletes the
+  // chat row first and its files rows after, in batches); a fork's copy of the same
+  // blob still does.
+  // Read lazily, row by row, until an accessible copy is found — not a fixed first
+  // window, which copies in trashed conversations could fill. Bounded by
+  // OWN_ROWS_MAX all the same (a transaction's read budget); past it the verdict is
+  // "not an own file" and only the participation path below can still grant it.
+  let ownSeen = 0;
+  for await (const own of ctx.db
     .query("files")
-    .withIndex("by_storage_user", (q) => q.eq("storageId", storageId).eq("userId", userId))
-    .first();
-  if (own !== null) return { file: own, mayConvert: true };
+    .withIndex("by_storage_user", (q) => q.eq("storageId", storageId).eq("userId", userId))) {
+    if (++ownSeen > OWN_ROWS_MAX) break;
+    const chat = await ctx.db.get(own.chatId);
+    if (chat === null || isTrashed(chat)) continue;
+    return { file: own, mayConvert: true };
+  }
   // …then a row of it in a conversation they sit in — the SAME bound the rest of the
   // access model uses for a person's participations. A seat that may post wins over a
   // viewer seat: the first reachable one used to decide, and a viewer seat could
@@ -187,6 +200,16 @@ async function readableFile(
     viewerOnly ??= { file, mayConvert: false };
   }
   return viewerOnly;
+}
+
+/** The caller's own rows of one blob judged at most before giving up on "own" (a
+ *  source and its forks — a handful in practice; the bound only protects the read
+ *  budget). */
+export const OWN_ROWS_MAX = 1000;
+
+/** Sweep a hidden chat's settled job rows (chatSummaries.sweepHiddenChat). */
+async function scheduleHiddenSweep(ctx: MutationCtx, hiddenChatId: Id<"chats">): Promise<void> {
+  await ctx.scheduler.runAfter(0, internal.chatSummaries.sweepHiddenChat, { hiddenChatId });
 }
 
 /** Find (or lazily create) the user's HIDDEN converter chat, bound to `target`. */
@@ -546,6 +569,8 @@ export const timeoutStaleRenditions = internalMutation({
         .first();
       if (chat?.pendingConvert?.renditionId === r._id) {
         await ctx.db.patch(chat._id, { pendingConvert: undefined });
+        // The timed-out job's rows go, as in failRenditionForChat.
+        await scheduleHiddenSweep(ctx, chat._id);
         // Freed the lock → let the user's next queued file convert.
         await drainNextRendition(ctx, r.userId);
       }
@@ -569,6 +594,12 @@ export const failRenditionForChat = internalMutation({
     if (!chat || chat.kind !== "converter") return;
     const pending = chat.pendingConvert;
     await ctx.db.patch(chatId, { pendingConvert: undefined });
+    // THE FAILED JOB'S ROWS GO TOO, as a settled one's do (stream.finalize): a stuck
+    // turn may already have delivered a file, whose files row would otherwise hold
+    // it for as long as no new job arrives. Scheduled — and a no-op while a newer
+    // job holds the chat (chatSummaries.sweepHiddenChat); what a SUCCESSFUL job
+    // captured stays referenced elsewhere (a rendition's PDF) and survives.
+    if (pending) await scheduleHiddenSweep(ctx, chatId);
     if (pending) {
       const rendition = await ctx.db.get(pending.renditionId);
       if (rendition && rendition.status === "pending") {

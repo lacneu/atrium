@@ -109,24 +109,23 @@ and the software-versus-operator boundary are in
 
 ### Backing it up
 
-Three things have to survive a host loss, and they are backed up differently:
+Atrium does not run backups; your backup system does. [BACKUP.md](BACKUP.md)
+states the facts it needs:
 
-| What | How |
+| What | Where |
 |---|---|
-| **The conversations and all application data** | `npx convex export --include-file-storage --path <snapshot>.zip` against the deployment |
-| **The three unregenerable secrets** | Wherever you keep secrets — they are not in the export |
-| **The gateway credentials** | They live encrypted in Convex, so the export carries them, but only `ATRIUM_SECRET_KEY` can decrypt them again |
+| **What to capture** — the Convex volume path by path (or its buckets), what can be excluded, what lives outside it; for a Convex Cloud backend, what the bridge host keeps | [BACKUP.md](BACKUP.md) §1 |
+| **How to get a valid copy of the database while Convex runs** — and which online methods fail under writes | §2 |
+| **How long purged data lingers**, and the arithmetic of a deletion promise | §3 |
+| **Restoring, and a qualification checklist** | §4 |
 
-`--include-file-storage` is not the default, and without it **uploaded files are
-not in the snapshot** — you get the conversations that reference them and nothing
-to open. Pass it.
+Keep the three unregenerable secrets (`ATRIUM_SECRET_KEY`, the auth keys, the
+Convex instance secret) in a secret store, off the host: a restore is unusable
+without them.
 
-Against a self-hosted backend, point the CLI at it with
-`CONVEX_SELF_HOSTED_URL` and `CONVEX_SELF_HOSTED_ADMIN_KEY`, the same pair the
-deploy guide uses to push functions.
-
-A snapshot you have never restored is a hypothesis. Restore one into a throwaway
-deployment — a discovery install is exactly the right place — before you need it.
+Where the files live — the Convex volume or S3-compatible object storage — is
+decided **before the first start**; changing it later is the move in
+[MIGRATION.md](MIGRATION.md).
 
 **What this does not give you:** horizontal scale. Convex runs as a single
 replica with a persistent volume — a StatefulSet under Helm — and is not

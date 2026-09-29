@@ -582,6 +582,89 @@ export default defineSchema({
     .index("by_name", ["instanceName"])
     .index("by_updated", ["updatedAt"]),
 
+  // THE BLOB QUARANTINE (lib/blobs.releaseBlob, convex/blobQuarantine.ts). A blob
+  // nothing references any more is not deleted: it is recorded here and kept whole
+  // for BLOB_QUARANTINE_DAYS (default 7). The daily purge re-tests its references
+  // and deletes it only then — a blob referenced again, or all along by a row a
+  // reference-counting bug missed, is spared. One entry per blob; the first
+  // release's date is the one that counts.
+  blobReleases: defineTable({
+    storageId: v.id("_storage"),
+    releasedAt: v.number(),
+    // A closed vocabulary naming the path that released it (never content).
+    reason: v.string(),
+  })
+    .index("by_storage", ["storageId"])
+    .index("by_released_at", ["releasedAt"]),
+
+  // Progress and completion of a data migration, by key. `completedAt` is what a
+  // reader gates on (e.g. the quarantine purge deletes nothing before the
+  // messageParts.storageId backfill has completed); `cursor` + `updatedAt` let a
+  // chain that died be resumed where it stopped.
+  migrationMarkers: defineTable({
+    key: v.string(),
+    cursor: v.union(v.string(), v.null()),
+    updatedAt: v.number(),
+    completedAt: v.optional(v.number()),
+  }).index("by_key", ["key"]),
+
+  // A conversation purge still owing its batched sweep (chats.cascadeDeleteChat).
+  // The chat row goes first, so without this nothing would name the unfinished
+  // work: `updatedAt` is the progress stamp the trash cron watches to re-arm a
+  // chain that died (trash.purgeTrash), and an absent row means the purge ended.
+  chatPurges: defineTable({
+    chatId: v.id("chats"),
+    ownerId: v.id("users"),
+    startedAt: v.number(),
+    updatedAt: v.number(),
+  })
+    .index("by_chat", ["chatId"])
+    .index("by_updated", ["updatedAt"]),
+
+  // One run of the LOGICAL orphan sweep (blobSweep.ts): a dry run's report, or an
+  // apply's record of what it deleted. Counters only — ids of blobs, never content.
+  // `cursor` + `phase` make the run resumable in bounded batches; `updatedAt` is its
+  // progress stamp (a run whose stamp stops moving is taken for stalled).
+  blobSweeps: defineTable({
+    mode: v.union(v.literal("dryRun"), v.literal("apply")),
+    status: v.union(
+      v.literal("running"),
+      v.literal("done"),
+      // Apply refused before deleting anything (see `refusal`).
+      v.literal("refused"),
+      // Its chain died; a new run replaced it.
+      v.literal("stalled"),
+    ),
+    // "mirror": checking every file part has its `files` row (the references
+    // the blob test reads); "blobs": walking `_storage`, oldest first.
+    phase: v.union(v.literal("mirror"), v.literal("blobs")),
+    cursor: v.union(v.string(), v.null()),
+    minAgeDays: v.number(),
+    // Blobs created after this are too young to judge (fixed at the start).
+    cutoff: v.number(),
+    startedBy: v.id("users"),
+    startedAt: v.number(),
+    updatedAt: v.number(),
+    finishedAt: v.optional(v.number()),
+    // The dry run an apply carries out (the report the admin confirmed).
+    confirms: v.optional(v.id("blobSweeps")),
+    partsChecked: v.number(),
+    // File parts whose message exists but which have no `files` row: blobs they
+    // hold would read as unreferenced, so an apply refuses while any is found.
+    mirrorMissing: v.number(),
+    blobsScanned: v.number(),
+    referenced: v.number(),
+    importing: v.number(),
+    orphans: v.object({ count: v.number(), bytes: v.number() }),
+    byOrigin: v.record(v.string(), v.object({ count: v.number(), bytes: v.number() })),
+    byType: v.record(v.string(), v.object({ count: v.number(), bytes: v.number() })),
+    deleted: v.object({ count: v.number(), bytes: v.number() }),
+    sampleIds: v.array(v.id("_storage")),
+    refusal: v.optional(v.string()),
+  })
+    .index("by_started", ["startedAt"])
+    .index("by_status", ["status"]),
+
   instanceSecrets: defineTable({
     instanceId: v.id("instances"),
     field: secretFieldValidator, // "token" | "deviceIdentity" | "apiKey"
@@ -889,7 +972,11 @@ export default defineSchema({
   })
     .index("by_key", ["key"])
     .index("by_owner", ["ownerUserId"])
-    .index("by_scope", ["scope"]),
+    .index("by_scope", ["scope"])
+    // "Is this blob still referenced?" (lib/blobs.blobReference) — a logo is a
+    // storage reference like any other, answered by a point read.
+    .index("by_logo_light", ["logoLightStorageId"])
+    .index("by_logo_dark", ["logoDarkStorageId"]),
 
   // Domain -> chart mapping ("charte par domaine"): when Atrium is accessed at a
   // matching host, that chart becomes the DEFAULT (login + app), subject to the
@@ -925,6 +1012,11 @@ export default defineSchema({
     status: v.union(
       v.literal("applying"),
       v.literal("done"),
+      // Being undone (archiveImport.abandonImport): set by the undo's FIRST call,
+      // atomically, so no batch or blob registration is accepted while its later
+      // calls clean up — a batch landing in between would use bytes the cleanup is
+      // about to discard.
+      v.literal("abandoning"),
       v.literal("abandoned"),
     ),
     formatVersion: v.number(),
@@ -972,7 +1064,10 @@ export default defineSchema({
     mappedId: v.string(),
   })
     .index("by_import_kind_archive", ["importId", "kind", "archiveId"])
-    .index("by_import", ["importId"]),
+    .index("by_import", ["importId"])
+    // "Does an import in progress hold this blob?" (lib/blobs.blobReference): the
+    // blob mappings (kind IMPORT_BLOB_KIND, archiveId = the storage id) by blob.
+    .index("by_kind_archive", ["kind", "archiveId"]),
 
   // This deployment's identity, in a table OF ITS OWN.
   //
@@ -1754,8 +1849,23 @@ export default defineSchema({
     // the user's chatReads.lastSeenAt. Distinct from `updatedAt`, which bumps at
     // turn START (ordering) — this one flips when the answer has fully LANDED.
     lastAssistantAt: v.optional(v.number()),
+    // THE TRASH (convex/trash.ts). A deleted conversation is not removed at once: it
+    // is set aside here, hidden everywhere (every access check reads it —
+    // lib/chatAccess.isTrashed) and restorable by its owner, until `purgeAfter`, when
+    // the daily purge removes it and everything it holds for good. The three are set
+    // and cleared together. `trashedBy` is the REAL account that pressed the button
+    // (an admin acting as the owner is named, not hidden behind the owner).
+    // Distinct from `archived`, a flag every reader already filters but nothing sets.
+    trashedAt: v.optional(v.number()),
+    purgeAfter: v.optional(v.number()),
+    trashedBy: v.optional(v.id("users")),
   })
     .index("by_user", ["userId"])
+    // The owner's trash, newest first; an absent `trashedAt` sorts before every
+    // number, so a lower bound selects the trashed rows only.
+    .index("by_user_trashed", ["userId", "trashedAt"])
+    // The purge cron's range (due rows first) and the admin's trash listing.
+    .index("by_purge_after", ["purgeAfter"])
     // Hidden-utility-chat lookups (the summarizer engine checks per turn-finalize):
     // point-read instead of scanning all the user's chats (codex P2).
     .index("by_user_kind", ["userId", "kind"])
@@ -2184,7 +2294,15 @@ export default defineSchema({
     // SAME announce run — never against the parent reply's own attachments
     // (a same-named parent file must survive a replay). Absent elsewhere.
     announceRun: v.optional(v.string()),
-  }).index("by_message", ["messageId"]),
+    // The blob a file/media part shows, DENORMALIZED from `part.storageId` (inside a
+    // union, not indexable) so a part is found by its blob (lib/blobs.blobReference)
+    // — whether or not its files mirror exists. Written by every part writer
+    // (lib/blobs.partStorageField); older rows are backfilled
+    // (blobQuarantine.backfillPartStorage). Absent on every other kind of part.
+    storageId: v.optional(v.id("_storage")),
+  })
+    .index("by_message", ["messageId"])
+    .index("by_storage", ["storageId"]),
 
   // SUB-AGENT observation store (increment 1 of the sub-agent monitor). A chat's
   // agent can spawn an isolated child via the gateway `sessions_spawn` tool; the
@@ -2683,6 +2801,10 @@ export default defineSchema({
     // monotonic cursor for streamChunks (Last-Event-ID). Server-side state, so it's
     // restart-safe (unlike a bridge-held counter). See streamChunks below.
     chunkSeq: v.optional(v.number()),
+    // THROTTLE CURSOR for `liveTurnActivity` (below): when this row last stamped it.
+    // Absent = never stamped (a row written before the field, or a turn with no
+    // text/phase activity yet).
+    activityStampedAt: v.optional(v.number()),
   })
     .index("by_message", ["messageId"])
     .index("by_chat", ["chatId"])
@@ -2693,6 +2815,26 @@ export default defineSchema({
     // Boot-time sweep: bounded per-instance scan (legacy rows without the
     // stamp are read via eq(undefined) — never a full-table collect).
     .index("by_bound_instance", ["boundInstance"]),
+
+  // A live turn's LAST ACTIVITY at a bounded cadence — one tiny row per streaming
+  // message, stamped by the stream path (text, snapshot, heartbeat) at most once per
+  // LIVE_ACTIVITY_STAMP_MS, and written on each phase change (rare), carrying the
+  // phase (convex/lib/liveTurnDifficulty.ts).
+  //
+  // Why not `streamingText.updatedAt`: that row is rewritten on EVERY token, so any
+  // query reading it re-runs on every token. The live-turn difficulty (rule 3: a
+  // failure followed by silence) needs "did anything happen since", not each token;
+  // reading this row instead keeps its subscribers to one re-run per stamp. Deleted
+  // with the streaming row (finalize, the stuck-stream sweeps, a message deletion).
+  liveTurnActivity: defineTable({
+    messageId: v.id("messages"),
+    // Last stamped activity (absent until the turn did something stamp-worthy).
+    at: v.optional(v.number()),
+    // The live row's phase as of the last write here — written on every phase
+    // change, refreshed on every stamp — so a reader can tell a declared wait from a
+    // silence without reading the per-token row.
+    phase: v.optional(v.string()),
+  }).index("by_message", ["messageId"]),
 
   // Append-only per-message log of streamed text chunks, for the SSE / streamable-HTTP
   // transport (openclaw-notes/docs/atrium/convex-http-streaming-transport.md). One row per stream
@@ -2770,7 +2912,10 @@ export default defineSchema({
     bridgeSkew: v.optional(v.number()), // serverClock - bridgeClock offset
     clientSkew: v.optional(v.number()), // serverClock - browserClock offset
     sizeBytes: v.optional(v.number()),
-  }).index("by_session", ["sessionId"]),
+  })
+    .index("by_session", ["sessionId"])
+    // The complete purge of a conversation (chats.sweepChatDependents).
+    .index("by_chat", ["chatId"]),
 
   // Owner-scoped DENORMALIZATION of every file/media `messagePart`, so a user's
   // files are listable (Settings → Fichiers) WITHOUT iterating chats → messages →
@@ -3245,7 +3390,10 @@ export default defineSchema({
     // Queue drain: the user's next PENDING rendition to dispatch once the (serial)
     // converter chat is idle — so opening several Office files converts them
     // one-by-one instead of leaving all-but-one to time out.
-    .index("by_user_status", ["userId", "status"]),
+    .index("by_user_status", ["userId", "status"])
+    // "Is this blob still referenced?" (lib/blobs.blobReference): a rendered PDF
+    // is held by its rendition row.
+    .index("by_pdf_storage", ["pdfStorageId"]),
 
   // On-demand FORENSIC feedback (OpenRouter-style "Report Feedback"). When a user
   // flags a message (category + comment), we FREEZE a full forensic snapshot at
@@ -3561,6 +3709,9 @@ export default defineSchema({
     // …and ONE kind of it (a demotion to viewer withdraws only agent_request
     // entries): a range, never a filter over every entry of that conversation.
     .index("by_user_chat_kind", ["userId", "chatId", "kind"])
+    // Every entry about one conversation, whoever holds it: withdrawn when it goes
+    // to the trash and when it is purged (convex/trash.ts, chats.sweepChatDependents).
+    .index("by_chat", ["chatId"])
     // Unread badge: scan ONLY the unread set (readAt === undefined), never the
     // whole per-user history. A missing optional `readAt` is indexed as
     // `undefined`, so `.eq("readAt", undefined)` ranges exactly the unread rows.

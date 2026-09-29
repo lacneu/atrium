@@ -12,6 +12,7 @@ import type { Id } from "./convexApi";
 import type { ConvexId } from "./convexTypes";
 import { useInstanceCapabilities } from "./useInstanceCapabilities";
 import {
+  collapsedSubAgentFailure,
   extractSpawnedChildKeys,
   toolPartsHaveSpawn,
   type EmptyStateToolPart,
@@ -140,6 +141,7 @@ function SubAgentCard({ card }: { card: SubAgentCardView }) {
 // A stable empty array so the toolParts selector never returns a fresh reference
 // (which would defeat useMessage's memoization and churn re-renders).
 const EMPTY_TOOL_PARTS: readonly EmptyStateToolPart[] = [];
+const EMPTY_RUN_IDS: readonly string[] = [];
 
 /**
  * Per-message anchor: the sub-agent(s) THIS assistant turn spawned, rendered
@@ -190,6 +192,13 @@ export function MessageSubAgents() {
     (msg) =>
       (msg.metadata?.custom as { messageId?: string } | undefined)?.messageId,
   );
+  // The continuations this bubble visibly followed up — a failed child among them
+  // is one the agent recovered from (see childFailureRecovered).
+  const answeredChildRunIds = useMessage(
+    (msg) =>
+      (msg.metadata?.custom as { answeredChildRunIds?: string[] } | undefined)
+        ?.answeredChildRunIds ?? EMPTY_RUN_IDS,
+  );
   const cid: ConvexId<"chats"> | null =
     hasSpawn && chatId ? (chatId as ConvexId<"chats">) : null;
 
@@ -216,6 +225,17 @@ export function MessageSubAgents() {
   // are still running vs failed — at a glance, above the cards. Empty for a single
   // sub-agent (its own card carries the status).
   const badges = subAgentProgressBadges(view);
+  // Folded, the list must still NAME an unrecovered failure: the red count alone was
+  // missed, and the empty-bubble verdict defers to these cards in this view.
+  const hiddenFailure =
+    badges.length > 0 && !listOpen
+      ? collapsedSubAgentFailure(
+          [...owned].sort((a, b) => b.createdAt - a.createdAt),
+          rows ?? [],
+          messageId,
+          answeredChildRunIds,
+        )
+      : null;
 
   return (
     <div className="oc-msg-subagents">
@@ -251,6 +271,17 @@ export function MessageSubAgents() {
           }
           onClick={() => setListOpen(!listOpen)}
         />
+      ) : null}
+      {hiddenFailure ? (
+        <p className="oc-subagent__error" role="status">
+          {m.subagents_collapsed_failure({
+            task: hiddenFailure.task,
+            reason: hiddenFailure.reason,
+          })}
+          {hiddenFailure.more > 0
+            ? ` ${m.subagents_collapsed_failure_more({ count: String(hiddenFailure.more) })}`
+            : null}
+        </p>
       ) : null}
       {(badges.length === 0 || listOpen) &&
         cards.map((card) => (

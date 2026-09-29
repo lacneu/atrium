@@ -27,6 +27,8 @@ export default defineConfig({
         inline: ["convex-test"],
       },
     },
-    include: ["convex/**/*.test.ts", "src/**/*.test.ts"],
+    // deploy/gc: the physical storage collector (plain Node; its tests opt into
+    // the node environment per file).
+    include: ["convex/**/*.test.ts", "src/**/*.test.ts", "deploy/**/*.test.ts"],
   },
 });

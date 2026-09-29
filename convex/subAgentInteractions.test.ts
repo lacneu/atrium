@@ -114,6 +114,9 @@ describe("subAgentInteractions cleanup", () => {
     await t
       .withIdentity({ subject: `${userId}|session` })
       .mutation(api.chats.deleteChat, { chatId });
+    await t
+      .withIdentity({ subject: `${userId}|session` })
+      .mutation(api.trash.purgeChat, { chatId });
     expect(await count()).toHaveLength(0);
   });
 });

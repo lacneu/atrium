@@ -28,6 +28,7 @@ import type { Doc, Id } from "../_generated/dataModel";
 import type { MutationCtx, QueryCtx } from "../_generated/server";
 import { effectiveOrder, QUEUED_ORDER_SENTINEL } from "./messageOrder";
 import { yieldHandedOff } from "./toolOutcome";
+import { isTrashed } from "./trash";
 
 /** Most a single chat may hold queued behind the in-flight turn (anti-runaway). */
 export const MAX_QUEUED_PER_CHAT = 20;
@@ -185,6 +186,10 @@ export async function drainNextQueued(
   chatId: Id<"chats">,
 ): Promise<void> {
   if (await isChatBusy(ctx, chatId)) return;
+  // A conversation in the TRASH dispatches nothing: its queued turns are HELD, not
+  // dropped — they stay `queued`, and a restore drains them (chats.restoreFromTrash).
+  const trashed = await ctx.db.get(chatId);
+  if (trashed !== null && isTrashed(trashed)) return;
   const next = await ctx.db
     .query("outbox")
     .withIndex("by_chat_status", (q) =>
