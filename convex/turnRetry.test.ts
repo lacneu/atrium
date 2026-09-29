@@ -547,7 +547,10 @@ describe("provider_internal end-to-end (schedule -> visible stamp -> traces)", (
   test("a stand-down (user sent meanwhile) CLEARS the visible stamp and traces its reason", async () => {
     vi.useFakeTimers();
     const t = convexTest(schema, modules);
-    const { chatId, assistantId, userId } = await seedErroredTurn(t);
+    const { chatId, assistantId, userId, outboxId } = await seedErroredTurn(t);
+    // The card knows the row that dispatched it (stream.startAssistant stamps it),
+    // which is what lets the newer row below be PROVEN another send.
+    await t.run((ctx) => ctx.db.patch(assistantId, { dispatchOutboxId: String(outboxId) }));
     await t.mutation(internal.stream.finalize, {
       messageId: assistantId,
       status: "error" as const,
@@ -596,6 +599,56 @@ describe("provider_internal end-to-end (schedule -> visible stamp -> traces)", (
     expect(exhausted).toBeDefined();
     const msg = await t.run((ctx) => ctx.db.get(assistantId));
     expect(msg?.autoRetry).toBeUndefined(); // no countdown when nothing is coming
+    // …and the card KNOWS it is the retry's own failure: only here may it say so.
+    expect(msg?.autoRetryOutcome).toMatchObject({
+      outcome: "exhausted",
+      attempt: 2,
+      maxAttempts: 2,
+    });
+  });
+
+  // Production 2026-09-28 (metadata only): a silent close was scheduled for one
+  // retry; before it fired, a delegation continuation started streaming into the
+  // PREVIOUS bubble, and the retry stood down (`another_turn_streaming`). The card
+  // kept its copy "it was retried automatically" — nothing on the message said
+  // otherwise. The outcome is now recorded on the card itself.
+  test("a retry that stands down because another turn is streaming leaves that FACT on the card", async () => {
+    vi.useFakeTimers();
+    const t = convexTest(schema, modules);
+    const { chatId, assistantId, userId } = await seedErroredTurn(t);
+    await t.mutation(internal.stream.finalize, {
+      messageId: assistantId,
+      status: "error" as const,
+      error: "",
+      errorKind: "empty_response_silent",
+    });
+    const scheduled = await t.run((ctx) => ctx.db.get(assistantId));
+    expect(scheduled?.autoRetry).toMatchObject({ attempt: 1, maxAttempts: 1 });
+    expect(scheduled?.autoRetryOutcome).toBeUndefined();
+    // A continuation of an EARLIER bubble starts streaming before the fire.
+    await t.run(async (ctx) => {
+      await ctx.db.insert("messages", {
+        chatId,
+        userId,
+        role: "assistant" as const,
+        status: "streaming" as const,
+        text: "",
+        runId: "announce:requester-settle:synthetic:yield-1",
+        updatedAt: 3,
+      });
+    });
+    await vi.advanceTimersByTimeAsync(RETRY_DELAY_MS[0]! + 500);
+    await t.finishInProgressScheduledFunctions();
+    const after = await t.run((ctx) => ctx.db.get(assistantId));
+    expect(after?.status).toBe("error");
+    expect(after?.autoRetry).toBeUndefined();
+    expect(after?.autoRetryOutcome).toMatchObject({
+      outcome: "stood_down",
+      reason: "another_turn_streaming",
+      attempt: 1,
+      maxAttempts: 1,
+    });
+    vi.useRealTimers();
   });
 });
 
@@ -839,5 +892,552 @@ describe("the retry of a participant's turn stays theirs (group chats)", () => {
       ).find((r) => r.autoRetryAttempt === 1),
     );
     expect(String(retry?.userId)).toBe(String(guest));
+  });
+});
+
+// Production 2026-09-28 (metadata only): a silent close with ZERO parts had three
+// sub-agent rows anchored to it (fallback anchor). The part gate saw nothing, and a
+// retry's card cascade deletes every row anchored to the card. Delegated work now
+// blocks the retry, and the card records why.
+describe("delegated work on the card blocks the retry — and the card says so", () => {
+  const seedChild = (
+    t: ReturnType<typeof convexTest>,
+    chatId: Id<"chats">,
+    userId: Id<"users">,
+    parentMessageId: Id<"messages">,
+    extra: Record<string, unknown>,
+  ) =>
+    t.run((ctx) =>
+      ctx.db.insert("subAgents", {
+        chatId,
+        userId,
+        parentMessageId,
+        childSessionKey: `agent:jerome:subagent:${String(Math.random()).slice(2)}`,
+        status: "error" as const,
+        createdAt: 1,
+        updatedAt: 1,
+        ...extra,
+      }),
+    );
+
+  test("a child that ran a tool: no retry is scheduled, the outcome is recorded, the row survives", async () => {
+    vi.useFakeTimers();
+    const t = convexTest(schema, modules);
+    const { chatId, assistantId, userId } = await seedErroredTurn(t);
+    const childId = await seedChild(t, chatId, userId, assistantId, {
+      tools: [{ name: "exec", status: "done" as const }],
+    });
+    await t.mutation(internal.stream.finalize, {
+      messageId: assistantId,
+      status: "error" as const,
+      error: "",
+      errorKind: "empty_response_silent",
+    });
+    await vi.advanceTimersByTimeAsync(RETRY_DELAY_MS[0]! + 500);
+    await t.finishInProgressScheduledFunctions();
+    const after = await t.run(async (ctx) => ({
+      msg: await ctx.db.get(assistantId),
+      child: await ctx.db.get(childId),
+      outbox: await ctx.db.query("outbox").collect(),
+    }));
+    expect(after.msg?.status).toBe("error");
+    expect(after.msg?.autoRetry).toBeUndefined();
+    expect(after.msg?.autoRetryOutcome).toMatchObject({
+      outcome: "stood_down",
+      reason: "delegated_work",
+    });
+    expect(after.child).not.toBeNull();
+    expect(after.outbox.some((o) => o.autoRetryAttempt === 1)).toBe(false);
+    vi.useRealTimers();
+  });
+
+  test("a child registered AFTER the schedule (it has a run id) stops the retry at fire time", async () => {
+    vi.useFakeTimers();
+    const t = convexTest(schema, modules);
+    const { chatId, assistantId, userId } = await seedErroredTurn(t);
+    await t.mutation(internal.stream.finalize, {
+      messageId: assistantId,
+      status: "error" as const,
+      error: "",
+      errorKind: "empty_response_silent",
+    });
+    const childId = await seedChild(t, chatId, userId, assistantId, {
+      childRunId: "11111111-1111-4111-8111-111111111111",
+    });
+    await vi.advanceTimersByTimeAsync(RETRY_DELAY_MS[0]! + 500);
+    await t.finishInProgressScheduledFunctions();
+    const after = await t.run(async (ctx) => ({
+      msg: await ctx.db.get(assistantId),
+      child: await ctx.db.get(childId),
+    }));
+    expect(after.msg?.autoRetryOutcome).toMatchObject({
+      outcome: "stood_down",
+      reason: "delegated_work",
+      attempt: 1,
+    });
+    expect(after.child).not.toBeNull();
+    vi.useRealTimers();
+  });
+
+  // REVISED (codex P1 on 0.88.1): such a row is harmless to delete, but its EXISTENCE
+  // proves the session delegated during a turn whose frames said it did not — the
+  // exact prod shape (three children, 0 tools, no run id, fallback-anchored to a
+  // card with toolCalls 0). Its siblings may not have registered yet: no retry.
+  test("a child that failed with no tool, no run id and no result still blocks — it proves the turn delegated", async () => {
+    vi.useFakeTimers();
+    const t = convexTest(schema, modules);
+    const { chatId, assistantId, userId } = await seedErroredTurn(t);
+    const childId = await seedChild(t, chatId, userId, assistantId, {});
+    await t.mutation(internal.stream.finalize, {
+      messageId: assistantId,
+      status: "error" as const,
+      error: "",
+      errorKind: "empty_response_silent",
+    });
+    await vi.advanceTimersByTimeAsync(RETRY_DELAY_MS[0]! + 500);
+    await t.finishInProgressScheduledFunctions();
+    const after = await t.run(async (ctx) => ({
+      msg: await ctx.db.get(assistantId),
+      child: await ctx.db.get(childId),
+    }));
+    expect(after.msg?.autoRetryOutcome).toMatchObject({
+      outcome: "stood_down",
+      reason: "delegated_work",
+    });
+    expect(after.child).not.toBeNull();
+    vi.useRealTimers();
+  });
+
+  test("a child born during the turn but NOT anchored to the card (anchor unknown) stops the retry at fire time", async () => {
+    vi.useFakeTimers();
+    const t = convexTest(schema, modules);
+    const { chatId, assistantId, userId } = await seedErroredTurn(t);
+    await t.mutation(internal.stream.finalize, {
+      messageId: assistantId,
+      status: "error" as const,
+      error: "",
+      errorKind: "empty_response_silent",
+    });
+    // The observer's row lands AFTER the schedule, with no anchor at all.
+    const childId = await t.run((ctx) =>
+      ctx.db.insert("subAgents", {
+        chatId,
+        userId,
+        childSessionKey: "agent:jerome:subagent:late-unanchored",
+        status: "error" as const,
+        createdAt: 1,
+        updatedAt: 1,
+      }),
+    );
+    await vi.advanceTimersByTimeAsync(RETRY_DELAY_MS[0]! + 500);
+    await t.finishInProgressScheduledFunctions();
+    const after = await t.run(async (ctx) => ({
+      msg: await ctx.db.get(assistantId),
+      child: await ctx.db.get(childId),
+    }));
+    expect(after.msg?.autoRetryOutcome).toMatchObject({
+      outcome: "stood_down",
+      reason: "delegated_work",
+    });
+    expect(after.child).not.toBeNull();
+    vi.useRealTimers();
+  });
+
+  test("a sub-agent still RUNNING elsewhere in the chat stops the retry (the session is busy delegating)", async () => {
+    vi.useFakeTimers();
+    const t = convexTest(schema, modules);
+    const { chatId, userId, userMsgId } = await seedErroredTurn(t);
+    // A running child of an EARLIER message, created BEFORE the card below — so
+    // only the "running anywhere" rule can see it.
+    await t.run((ctx) =>
+      ctx.db.insert("subAgents", {
+        chatId,
+        userId,
+        parentMessageId: userMsgId,
+        childSessionKey: "agent:jerome:subagent:earlier-running",
+        status: "running" as const,
+        createdAt: 0,
+        updatedAt: 0,
+      }),
+    );
+    const assistantId = await t.run((ctx) =>
+      ctx.db.insert("messages", {
+        chatId,
+        userId,
+        role: "assistant" as const,
+        status: "streaming" as const,
+        text: "",
+        runId: "webchat-run-2",
+        updatedAt: 3,
+      }),
+    );
+    await t.mutation(internal.stream.finalize, {
+      messageId: assistantId,
+      status: "error" as const,
+      error: "",
+      errorKind: "empty_response_silent",
+    });
+    const msg = await t.run((ctx) => ctx.db.get(assistantId));
+    expect(msg?.autoRetry).toBeUndefined();
+    expect(msg?.autoRetryOutcome).toMatchObject({
+      outcome: "stood_down",
+      reason: "delegated_work",
+    });
+    vi.useRealTimers();
+  });
+});
+
+// codex P2 on 0.88.1: the exhausted line reported the NEW class's limit ("2/1").
+describe("an exhausted chain reports the limit of the chain it ran in", () => {
+  // DECIDED (codex pass 2): the chain's limit governs further attempts too, so a
+  // provider_internal chain (2) whose first retry closes silently (1) runs its
+  // second attempt — and when that fails, the card reports 2 of 2, never "2/1".
+  test("a provider_internal chain (2 allowed) whose retry ends as a silent close runs attempt 2 of 2", async () => {
+    const t = convexTest(schema, modules);
+    const { assistantId, outboxId } = await seedErroredTurn(t, { sentAttempt: 1 });
+    await t.run((ctx) => ctx.db.patch(outboxId, { autoRetryMaxAttempts: 2 }));
+    await t.mutation(internal.stream.finalize, {
+      messageId: assistantId,
+      status: "error" as const,
+      error: "",
+      errorKind: "empty_response_silent",
+    });
+    const msg = await t.run((ctx) => ctx.db.get(assistantId));
+    expect(msg?.autoRetry).toMatchObject({ attempt: 2, maxAttempts: 2 });
+  });
+
+  test("…and its spent chain reports 2 of 2 whatever the last class", async () => {
+    const t = convexTest(schema, modules);
+    const { assistantId, outboxId } = await seedErroredTurn(t, { sentAttempt: 2 });
+    await t.run((ctx) => ctx.db.patch(outboxId, { autoRetryMaxAttempts: 2 }));
+    await t.mutation(internal.stream.finalize, {
+      messageId: assistantId,
+      status: "error" as const,
+      error: "",
+      errorKind: "empty_response_silent",
+    });
+    const msg = await t.run((ctx) => ctx.db.get(assistantId));
+    expect(msg?.autoRetryOutcome).toMatchObject({
+      outcome: "exhausted",
+      attempt: 2,
+      maxAttempts: 2,
+    });
+  });
+
+  test("the retry's own outbox row carries the chain's limit", async () => {
+    vi.useFakeTimers();
+    const t = convexTest(schema, modules);
+    const { assistantId } = await seedErroredTurn(t);
+    await t.mutation(internal.stream.finalize, {
+      messageId: assistantId,
+      status: "error" as const,
+      error: "fetch failed",
+      errorKind: "provider_internal",
+    });
+    await vi.advanceTimersByTimeAsync(RETRY_DELAY_MS[0]! + 500);
+    await t.finishInProgressScheduledFunctions();
+    const rows = await t.run((ctx) => ctx.db.query("outbox").collect());
+    const retry = rows.find((o) => o.autoRetryAttempt === 1);
+    expect(retry?.autoRetryMaxAttempts).toBe(2);
+    vi.useRealTimers();
+  });
+});
+
+// codex P2 on 0.88.1: a card another generation takes over must not keep the
+// previous generation's retry story.
+describe("a new generation's terminal starts its own retry story", () => {
+  test("a reopened card that now completes drops the previous stand-down", async () => {
+    const t = convexTest(schema, modules);
+    const { assistantId } = await seedErroredTurn(t);
+    // The state a reopen leaves if a path forgets to clear: streaming + stale outcome.
+    await t.run((ctx) =>
+      ctx.db.patch(assistantId, {
+        autoRetryOutcome: {
+          outcome: "stood_down" as const,
+          reason: "another_turn_streaming",
+          attempt: 1,
+          maxAttempts: 1,
+          at: 1,
+        },
+      }),
+    );
+    await t.mutation(internal.stream.finalize, {
+      messageId: assistantId,
+      status: "complete" as const,
+      text: "une réponse",
+    });
+    const msg = await t.run((ctx) => ctx.db.get(assistantId));
+    expect(msg?.status).toBe("complete");
+    expect(msg?.autoRetryOutcome).toBeUndefined();
+  });
+});
+
+// codex P3 on 0.88.1 + pass 2: the delegation check is bounded, and background tasks
+// (exempt chat-wide) must neither fill the window nor be counted for another turn.
+describe("background tasks in the delegation check", () => {
+  const insertTask = (
+    t: ReturnType<typeof convexTest>,
+    chatId: Id<"chats">,
+    userId: Id<"users">,
+    i: number,
+    extra: Record<string, unknown> = {},
+  ) =>
+    t.run((ctx) =>
+      ctx.db.insert("subAgents", {
+        chatId,
+        userId,
+        kind: "task" as const,
+        childSessionKey: `task:synthetic-${i}`,
+        status: "running" as const,
+        createdAt: 0,
+        updatedAt: 0,
+        ...extra,
+      }),
+    );
+  const newCard = (
+    t: ReturnType<typeof convexTest>,
+    chatId: Id<"chats">,
+    userId: Id<"users">,
+  ) =>
+    t.run((ctx) =>
+      ctx.db.insert("messages", {
+        chatId,
+        userId,
+        role: "assistant" as const,
+        status: "streaming" as const,
+        text: "",
+        runId: "webchat-run-2",
+        updatedAt: 3,
+      }),
+    );
+  const silentClose = (t: ReturnType<typeof convexTest>, messageId: Id<"messages">) =>
+    t.mutation(internal.stream.finalize, {
+      messageId,
+      status: "error" as const,
+      error: "",
+      errorKind: "empty_response_silent",
+    });
+
+  test("sixteen RUNNING background tasks do not fill the window: the retry is scheduled", async () => {
+    const t = convexTest(schema, modules);
+    const { chatId, userId } = await seedErroredTurn(t);
+    for (let i = 0; i < 16; i++) await insertTask(t, chatId, userId, i);
+    const card = await newCard(t, chatId, userId);
+    await silentClose(t, card);
+    const msg = await t.run((ctx) => ctx.db.get(card));
+    expect(msg?.autoRetry).toMatchObject({ attempt: 1 });
+    expect(msg?.autoRetryOutcome).toBeUndefined();
+  });
+
+  test("a background task of ANOTHER turn, discovered after the card was created, does not block", async () => {
+    const t = convexTest(schema, modules);
+    const { chatId, userId, userMsgId, assistantId } = await seedErroredTurn(t);
+    await insertTask(t, chatId, userId, 1, { parentMessageId: userMsgId, status: "done" });
+    await silentClose(t, assistantId);
+    const msg = await t.run((ctx) => ctx.db.get(assistantId));
+    expect(msg?.autoRetry).toMatchObject({ attempt: 1 });
+    expect(msg?.autoRetryOutcome).toBeUndefined();
+  });
+
+  test("a background task anchored to THIS card still counts: no retry", async () => {
+    const t = convexTest(schema, modules);
+    const { chatId, userId, assistantId } = await seedErroredTurn(t);
+    await insertTask(t, chatId, userId, 1, { parentMessageId: assistantId });
+    await silentClose(t, assistantId);
+    const msg = await t.run((ctx) => ctx.db.get(assistantId));
+    expect(msg?.autoRetry).toBeUndefined();
+    expect(msg?.autoRetryOutcome).toMatchObject({ reason: "delegated_work" });
+  });
+
+  test("a full window of NON-exempt rows with no verdict stays conservative (MoA children, all dead)", async () => {
+    const t = convexTest(schema, modules);
+    const { chatId, userId, assistantId } = await seedErroredTurn(t);
+    await t.run(async (ctx) => {
+      await ctx.db.insert("messageParts", {
+        messageId: assistantId,
+        order: 0,
+        part: { kind: "tool" as const, name: "mixture_of_agents", phase: "completed" },
+      });
+      // Sixteen dead, fruitless MoA children: each is exempt by the MoA gate, so
+      // only the bound can decide — and a bound never licenses a retry.
+      for (let i = 0; i < 16; i++) {
+        await ctx.db.insert("subAgents", {
+          chatId,
+          userId,
+          parentMessageId: assistantId,
+          childSessionKey: `hermes:moa:dead-${i}`,
+          status: "error" as const,
+          createdAt: 1,
+          updatedAt: 1,
+        });
+      }
+    });
+    await t.mutation(internal.stream.finalize, {
+      messageId: assistantId,
+      status: "error" as const,
+      error: "fetch failed",
+      errorKind: "provider_internal",
+    });
+    const msg = await t.run((ctx) => ctx.db.get(assistantId));
+    expect(msg?.autoRetry).toBeUndefined();
+    expect(msg?.autoRetryOutcome).toMatchObject({ reason: "delegated_work" });
+  });
+});
+
+// codex pass 2 on 0.88.1: the dispatch-failure path hands its attempt over and
+// used to lose the chain's limit with it.
+describe("a retry that fails at DISPATCH keeps its chain's limit", () => {
+  const seedRetryRow = (
+    t: ReturnType<typeof convexTest>,
+    attempt: number,
+    max: number,
+  ) =>
+    t.run(async (ctx) => {
+      const userId = await ctx.db.insert("users", {});
+      const chatId = await ctx.db.insert("chats", {
+        userId,
+        updatedAt: 1,
+        instanceName: "ataraxis",
+        agentId: "jerome",
+      });
+      const userMsgId = await ctx.db.insert("messages", {
+        chatId,
+        userId,
+        role: "user" as const,
+        status: "complete" as const,
+        text: "question synthétique",
+        updatedAt: 1,
+      });
+      const outboxId = await ctx.db.insert("outbox", {
+        chatId,
+        userId,
+        clientMessageId: `autoretry-${attempt}`,
+        messageId: userMsgId,
+        text: "question synthétique",
+        attachmentIds: [],
+        status: "pending" as const,
+        autoRetryAttempt: attempt,
+        autoRetryMaxAttempts: max,
+      });
+      return { chatId, outboxId };
+    });
+  const failedCard = (t: ReturnType<typeof convexTest>, chatId: Id<"chats">) =>
+    t.run(async (ctx) =>
+      (await ctx.db.query("messages").collect()).find(
+        (m) => m.chatId === chatId && m.role === "assistant",
+      ),
+    );
+
+  test("DECIDED: the chain's limit (2, provider_internal) governs a retry refused as session_archived (1): attempt 2 runs", async () => {
+    const t = convexTest(schema, modules);
+    const { chatId, outboxId } = await seedRetryRow(t, 1, 2);
+    await t.mutation(internal.bridge.failDispatch, {
+      outboxId,
+      reason: "send_failed",
+      errorCode: "session_archived",
+    });
+    const card = await failedCard(t, chatId);
+    expect(card?.errorCode).toBe("session_archived");
+    expect(card?.autoRetry).toMatchObject({ attempt: 2, maxAttempts: 2 });
+    expect(card?.autoRetryOutcome).toBeUndefined();
+  });
+
+  test("…and when that chain is spent, the card reports it against the chain: 2 of 2", async () => {
+    const t = convexTest(schema, modules);
+    const { chatId, outboxId } = await seedRetryRow(t, 2, 2);
+    await t.mutation(internal.bridge.failDispatch, {
+      outboxId,
+      reason: "send_failed",
+      errorCode: "session_archived",
+    });
+    const card = await failedCard(t, chatId);
+    expect(card?.autoRetry).toBeUndefined();
+    expect(card?.autoRetryOutcome).toMatchObject({
+      outcome: "exhausted",
+      attempt: 2,
+      maxAttempts: 2,
+    });
+  });
+});
+
+// codex pass 4 on 0.88.1: a timer is bound to the countdown it wrote. A card another
+// generation took over (reopen, new failure, new schedule) is not the old timer's.
+describe("a stale retry timer touches nothing", () => {
+  test("old fire after a reopen + new failure + new schedule: no write, the new countdown stands", async () => {
+    vi.useFakeTimers();
+    const t = convexTest(schema, modules);
+    const { assistantId } = await seedErroredTurn(t);
+    await t.mutation(internal.stream.finalize, {
+      messageId: assistantId,
+      status: "error" as const,
+      error: "fetch failed",
+      errorKind: "provider_internal",
+    });
+    const first = await t.run((ctx) => ctx.db.get(assistantId));
+    expect(first?.autoRetry?.attempt).toBe(1);
+    // Within the delay: another generation takes the card (reopen), fails again,
+    // and schedules its OWN retry (a later stamp).
+    await vi.advanceTimersByTimeAsync(1_000);
+    await t.run((ctx) =>
+      ctx.db.patch(assistantId, {
+        status: "streaming" as const,
+        error: undefined,
+        errorCode: undefined,
+        autoRetry: undefined,
+        autoRetryOutcome: undefined,
+      }),
+    );
+    await t.mutation(internal.stream.finalize, {
+      messageId: assistantId,
+      status: "error" as const,
+      error: "fetch failed",
+      errorKind: "provider_internal",
+    });
+    const second = await t.run((ctx) => ctx.db.get(assistantId));
+    expect(second?.autoRetry).toBeDefined();
+    expect(second?.autoRetry?.firesAt).not.toBe(first?.autoRetry?.firesAt);
+    // The OLD timer fires first (it was armed 1 s earlier) and must be a no-op.
+    await vi.advanceTimersByTimeAsync(RETRY_DELAY_MS[0]! - 500);
+    await t.finishInProgressScheduledFunctions();
+    const afterOld = await t.run(async (ctx) => ({
+      msg: await ctx.db.get(assistantId),
+      traces: await ctx.db.query("traceEvents").collect(),
+    }));
+    expect(afterOld.msg).not.toBeNull();
+    expect(afterOld.msg?.autoRetry).toEqual(second?.autoRetry);
+    expect(afterOld.msg?.autoRetryOutcome).toBeUndefined();
+    expect(
+      afterOld.traces.some(
+        (e) => e.kind === "chat.auto_retry" && e.meta?.includes('"superseded"'),
+      ),
+    ).toBe(true);
+    vi.useRealTimers();
+  });
+});
+
+// codex pass 4 on 0.88.1: the turn's OWN dispatch row still pending is not "the
+// conversation moved on" — no newer turn exists. It still blocks (a dispatch that
+// has not reported back may yet paint its own error card), under its own reason.
+describe("the card's own unsettled dispatch is not a newer send", () => {
+  test("own row still pending at fire time: stands down as own_dispatch_unsettled, never chat_busy", async () => {
+    vi.useFakeTimers();
+    const t = convexTest(schema, modules);
+    const { assistantId, outboxId } = await seedErroredTurn(t, { outboxStatus: "pending" });
+    await t.run((ctx) => ctx.db.patch(assistantId, { dispatchOutboxId: String(outboxId) }));
+    await t.mutation(internal.stream.finalize, {
+      messageId: assistantId,
+      status: "error" as const,
+      error: "fetch failed",
+      errorKind: "provider_internal",
+    });
+    await vi.advanceTimersByTimeAsync(RETRY_DELAY_MS[0]! + 500);
+    await t.finishInProgressScheduledFunctions();
+    const msg = await t.run((ctx) => ctx.db.get(assistantId));
+    expect(msg?.status).toBe("error");
+    expect(msg?.autoRetryOutcome).toMatchObject({
+      outcome: "stood_down",
+      reason: "own_dispatch_unsettled",
+    });
+    vi.useRealTimers();
   });
 });

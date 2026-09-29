@@ -7,6 +7,8 @@ import { ContextLengthActions } from "./ContextLengthActions";
 import {
   runStatusView,
   runStatusOutageLabel,
+  autoRetryOutcomeLine,
+  type AutoRetryOutcome,
   errorDetailView,
   CONTEXT_OVERFLOW_CODES,
   messageHasText,
@@ -38,6 +40,8 @@ interface RunMeta {
   toolParts?: Array<{ toolName: string; phase?: string }>;
   activeToolName?: string | null;
   autoRetry?: { attempt: number; maxAttempts: number; firesAt: number } | null;
+  /** What became of that retry when this card survived it (turnRetry). */
+  autoRetryOutcome?: AutoRetryOutcome | null;
   /** Stamped when the user's Stop cut this block's delegated work short. */
   interruptedAt?: number | null;
 }
@@ -86,6 +90,9 @@ export function RunStatus() {
   );
   const autoRetry = useMessage(
     (m) => (m.metadata?.custom as RunMeta | undefined)?.autoRetry ?? null,
+  );
+  const retryOutcomeLine = useMessage((m) =>
+    autoRetryOutcomeLine((m.metadata?.custom as RunMeta | undefined)?.autoRetryOutcome),
   );
   // WIRED exits for a context overflow (W2, P4): the card carries the two actions
   // the label used to merely ADVISE — and one of the sentences it advised cited a
@@ -188,7 +195,13 @@ export function RunStatus() {
               {detail}
             </span>
           ) : null}
-          {autoRetry ? <RetryCountdown retry={autoRetry} /> : null}
+          {autoRetry ? (
+            <RetryCountdown retry={autoRetry} />
+          ) : retryOutcomeLine ? (
+            <span className="oc-error-card__msg oc-error-card__msg--detail">
+              {retryOutcomeLine}
+            </span>
+          ) : null}
           {/* A context overflow is the one failure the app can act on ITSELF —
               compact the session, or branch a fresh one from here. Shown only
               when there is a chat to act on. */}

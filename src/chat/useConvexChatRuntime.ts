@@ -193,6 +193,7 @@ export function useConvexChatRuntime({ chatId }: UseConvexChatRuntimeArgs) {
         followedUpChildRunIds: undefined,
         // Never on a user echo; keys present to match the query's shape.
         autoRetry: undefined,
+        autoRetryOutcome: undefined,
         interruptedAt: undefined,
         // Attachments reconcile a beat later with their server-signed URL; the
         // instant echo carries the text (the primary case). Empty is fine — the

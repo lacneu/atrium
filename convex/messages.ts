@@ -630,6 +630,8 @@ async function loadChatView(
           interruptedAt: message.interruptedAt,
           // Visible auto-retry countdown (turnRetry stamp): attempt/max/firesAt.
           autoRetry: message.autoRetry,
+          // …and what became of it when the card survived it (turnRetry).
+          autoRetryOutcome: message.autoRetryOutcome,
           // L2: ready downloadable-attachment count (subtle Sources-chip badge).
           attachedDocCount: message.attachedDocCount,
           // Dispatch lifecycle (queued | pending | sent | failed); null when no outbox

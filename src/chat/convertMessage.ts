@@ -474,6 +474,8 @@ export function convertConvexMessage(
         errorCode: message.errorCode ?? null,
         // Visible auto-retry countdown (turnRetry stamp on a retryable error).
         autoRetry: message.autoRetry ?? null,
+        // What became of that retry when this card survived it (turnRetry).
+        autoRetryOutcome: message.autoRetryOutcome ?? null,
         // The user's Stop landed on this block while its delegated work ran.
         // The reply itself settled normally, so nothing else can say it.
         interruptedAt: message.interruptedAt ?? null,

@@ -136,6 +136,26 @@ export function maxRetriesForKind(kind: string): number {
  *  incident's churn window (≥18s) is covered by the second delay. */
 export const RETRY_DELAY_MS: readonly number[] = [5_000, 15_000];
 
+/**
+ * The attempt limit that governs a turn: the CHAIN's, when the turn is a retry.
+ *
+ * DECIDED (codex pass 2): when a retry fails with a different class than the one
+ * that started the chain, the chain's limit — fixed by the FIRST failure — governs
+ * both whether a further attempt runs and what the card reports. One turn of the
+ * user's gets one retry budget, however its failures are labelled on the way; the
+ * card's "N of M allowed" is then the rule that was actually applied, never a
+ * figure from a class that did not decide anything. The per-class cost caps hold
+ * under it: the costly class (a silent close re-bills a completion) allows ONE, and
+ * a chain started by a free class (provider_internal, 2) whose first retry closes
+ * silently spends at most that one re-billed completion on its second attempt.
+ */
+export function chainLimit(
+  errorKind: string,
+  chainMaxAttempts: number | undefined,
+): number {
+  return chainMaxAttempts ?? maxRetriesForKind(errorKind);
+}
+
 /** Pure decision: should a finalize schedule a retry, and with which attempt
  *  number + delay? Exported for direct unit-testing of the bound/gate logic. */
 export function retryDecision(input: {
@@ -151,6 +171,10 @@ export function retryDecision(input: {
   // pending follow-up is caught by the FIRE-time guards instead.
   chatBusy: boolean;
   lastAttempt: number; // newest sent/pending outbox row's autoRetryAttempt
+  /** The limit of the chain this turn is a retry in (see `chainLimit`). Absent =
+   *  not a retry, or a chain recorded before the limit travelled: this failure's
+   *  own class decides. */
+  chainMaxAttempts?: number;
 }): { attempt: number; delayMs: number } | null {
   if (input.status !== "error") return null;
   if (input.errorKind === null || !RETRYABLE_KINDS.has(input.errorKind)) return null;
@@ -171,7 +195,9 @@ export function retryDecision(input: {
   // as `session_init_conflict` instead; see Normalizer.writeReboundBeforeGeneration.
   if (input.finalTextLen > 0 || input.partCount > 0) return null;
   if (input.chatBusy) return null;
-  if (input.lastAttempt >= maxRetriesForKind(input.errorKind)) return null;
+  if (input.lastAttempt >= chainLimit(input.errorKind, input.chainMaxAttempts)) {
+    return null;
+  }
   return {
     attempt: input.lastAttempt + 1,
     delayMs: RETRY_DELAY_MS[input.lastAttempt] ?? RETRY_DELAY_MS[RETRY_DELAY_MS.length - 1]!,
@@ -196,6 +222,9 @@ export async function maybeScheduleTurnRetry(
    *  back to 0, and a persistent failure re-arms attempt 1 for ever. Passing
    *  the known value keeps the bound real on that path. */
   knownAttempt?: number,
+  /** …and the chain's limit from that same row (`autoRetryMaxAttempts`), for the
+   *  same reason: the scan cannot see the row it was written on. */
+  knownMaxAttempts?: number,
 ): Promise<void> {
   if (errorKind === undefined || !RETRYABLE_KINDS.has(errorKind)) return;
   // REGULAR chats only: the utility kinds (documentary/summarizer/curator) have
@@ -233,6 +262,16 @@ export async function maybeScheduleTurnRetry(
     .filter((r) => r !== null)
     .sort((a, b) => b!._creationTime - a!._creationTime)[0];
   const lastAttempt = knownAttempt ?? newest?.autoRetryAttempt ?? 0;
+  // The limit of the chain this turn belongs to, when it is a retry: fixed by the
+  // class that STARTED the chain, not by this failure's (a provider_internal chain
+  // allows 2; its retry ending as a silent close allows 1 — "2/1" is nonsense).
+  const chainMaxAttempts =
+    lastAttempt > 0
+      ? knownAttempt !== undefined
+        ? knownMaxAttempts
+        : newest?.autoRetryMaxAttempts
+      : undefined;
+  const limit = chainLimit(errorKind, chainMaxAttempts);
   const decision = retryDecision({
     status: message.status === "error" ? "error" : String(message.status),
     errorKind: errorKind ?? null,
@@ -240,12 +279,23 @@ export async function maybeScheduleTurnRetry(
     partCount,
     chatBusy: queuedRow !== null,
     lastAttempt,
+    chainMaxAttempts,
   });
   if (decision === null) {
     // EXHAUSTED is the chain's honest terminal ("the retry did NOT fix it"):
     // trace it so /traces tells the full story; the other null reasons
     // (content landed / chat busy) are the world moving on — silent.
-    if (lastAttempt >= maxRetriesForKind(errorKind)) {
+    if (lastAttempt >= limit) {
+      // …and on the card: this failure IS the retry's result. Its copy may say the
+      // turn was retried — here, and only here, that is true.
+      await ctx.db.patch(message._id, {
+        autoRetryOutcome: {
+          outcome: "exhausted",
+          attempt: lastAttempt,
+          maxAttempts: Math.max(limit, lastAttempt),
+          at: Date.now(),
+        },
+      });
       try {
         await writeTraceEvent(ctx, {
         kind: "chat.auto_retry",
@@ -270,6 +320,42 @@ export async function maybeScheduleTurnRetry(
     }
     return;
   }
+  // Delegated work on the card: no retry, and the card says why (see
+  // delegationBlocksRetry). Recorded as a stand-down — the retry was due and did not run.
+  if (await delegationBlocksRetry(ctx, message)) {
+    await ctx.db.patch(message._id, {
+      autoRetryOutcome: {
+        outcome: "stood_down",
+        reason: DELEGATED_WORK_REASON,
+        attempt: decision.attempt,
+        maxAttempts: limit,
+        at: Date.now(),
+      },
+    });
+    try {
+      await writeTraceEvent(ctx, {
+        kind: "chat.auto_retry",
+        direction: "internal",
+        principalType: "system",
+        principalId: "turn-retry",
+        chatId: message.chatId,
+        correlationId: `${message.chatId}:${message._id}`,
+        meta: JSON.stringify({
+          phase: "not_scheduled",
+          outcome: "stand_down",
+          reason: DELEGATED_WORK_REASON,
+          attempt: decision.attempt,
+          messageId: message._id,
+        }),
+      });
+    } catch (e) {
+      console.error("[turnRetry] trace failed (non-fatal):", (e as Error)?.message ?? e);
+    }
+    return;
+  }
+  // The stamp doubles as the timer's IDENTITY: the fire proceeds only while the card
+  // still carries this exact stamp (see autoRetryTurn).
+  const firesAt = Date.now() + decision.delayMs;
   await ctx.scheduler.runAfter(
     decision.delayMs,
     internal.turnRetry.autoRetryTurn,
@@ -277,16 +363,17 @@ export async function maybeScheduleTurnRetry(
       chatId: message.chatId,
       messageId: message._id,
       attempt: decision.attempt,
+      firesAt,
     },
   );
   // VISIBLE resilience (the Claude-Code-style countdown): the error card reads
   // this to show "retrying (N/M) in Xs…" instead of a dead-end error.
-  const maxAttempts = maxRetriesForKind(errorKind);
+  const maxAttempts = limit;
   await ctx.db.patch(message._id, {
     autoRetry: {
       attempt: decision.attempt,
       maxAttempts,
-      firesAt: Date.now() + decision.delayMs,
+      firesAt,
     },
   });
   // TRACE the whole chain (schedule -> fire outcome; the retried turn's own
@@ -390,6 +477,102 @@ async function countBlockingParts(
   return blocking;
 }
 
+/** The stand-down reason for a card whose turn had already delegated work. */
+export const DELEGATED_WORK_REASON = "delegated_work";
+
+/** Rows a delegation check reads at most, per query. Hitting the bound without a
+ *  verdict counts as delegation: a bound must limit the transaction, never decide
+ *  that a retry is safe. */
+const DELEGATION_SCAN_BOUND = 16;
+
+/**
+ * Is there delegated work a re-run could repeat, race or erase?
+ *
+ * The part gate above sees only the message's own parts, and a silent close is only
+ * "zero work" as far as the frames the bridge SAW (prod 2026-09-28: a card with zero
+ * parts and `toolCalls 0` had three sub-agent rows, fallback-anchored to it, born
+ * while its run was the one on the session). A child's row is written by the
+ * observer asynchronously, so "no row anchored to the card" at fire time is not
+ * proof there is none. Three DURABLE signals are read instead, each bounded:
+ *
+ *   1. A sub-agent row (background tasks excepted, see below) born in this chat
+ *      since the card was created, anchored ANYWHERE — or nowhere. Its existence proves the session delegated during this
+ *      turn, which the zero-work premise of the retryable classes denies; its
+ *      siblings may simply not have registered yet. Dead or alive, it blocks. (That
+ *      supersedes the earlier rule that let a failed, tool-less, run-id-less row go
+ *      with the card: deleting such a row is harmless in itself, but what it proves
+ *      — that frames were missing — makes the retry unsafe.)
+ *   2. A row anchored to the card, whatever its age (an anchor can be set late).
+ *   3. A sub-agent still RUNNING anywhere in the chat — the session is busy with
+ *      delegated work, the same fact `isChatBusy` holds sends for. Background-task
+ *      rows are excluded, as there — by index, so they cannot fill the window.
+ *
+ * The Hermes MoA marker keeps its own, older verdict (`countBlockingParts`): rows
+ * anchored to a card that carries it are judged there, so an everything-failed-at-
+ * connect aggregation is still retried.
+ *
+ * RESIDUAL, stated: a child whose first frame has not reached Convex by the time
+ * the retry fires is invisible to all three. The retry fires ≥5 s after the
+ * finalize, and a child's frames are relayed as they arrive (prod: rows written
+ * 0.2 s after the child's first frame), so this needs a bridge that is itself not
+ * relaying — the same condition that already makes the card unreliable.
+ */
+async function delegationBlocksRetry(
+  ctx: MutationCtx,
+  message: Doc<"messages">,
+): Promise<boolean> {
+  const moaCard = (
+    await ctx.db
+      .query("messageParts")
+      .withIndex("by_message", (q) => q.eq("messageId", message._id))
+      .take(DELEGATION_SCAN_BOUND * 4)
+  ).some((d) => {
+    const part = d.part as { kind: string; name?: string };
+    return part.kind === "tool" && part.name === "mixture_of_agents";
+  });
+  const judgedByMoaGate = (r: Doc<"subAgents">) =>
+    moaCard && r.parentMessageId === message._id;
+
+  // The CHAT-WIDE checks read sub-agent rows only — kind "subagent", or absent on
+  // rows written before the field — through indexes that never return a
+  // background-task row. A task (image generation, a long tool) belongs to whichever
+  // turn started it and does not hold the session (`isChatBusy` exempts it too):
+  // counted here, sixteen of them filled the window and a task from ANOTHER turn made
+  // this card claim it had delegated (codex pass 2). Tasks anchored to THIS card are
+  // still counted, below.
+  const SUBAGENT_KINDS = [undefined, "subagent"] as const;
+  for (const kind of SUBAGENT_KINDS) {
+    const running = await ctx.db
+      .query("subAgents")
+      .withIndex("by_chat_status_kind", (q) =>
+        q.eq("chatId", message.chatId).eq("status", "running").eq("kind", kind),
+      )
+      .take(DELEGATION_SCAN_BOUND);
+    // A full window of NON-exempt rows without a verdict stays conservative.
+    if (running.length === DELEGATION_SCAN_BOUND) return true;
+    if (running.some((r) => !judgedByMoaGate(r))) return true;
+
+    const bornSince = await ctx.db
+      .query("subAgents")
+      .withIndex("by_chat_kind", (q) =>
+        q
+          .eq("chatId", message.chatId)
+          .eq("kind", kind)
+          .gte("_creationTime", message._creationTime),
+      )
+      .take(DELEGATION_SCAN_BOUND);
+    if (bornSince.length === DELEGATION_SCAN_BOUND) return true;
+    if (bornSince.some((r) => !judgedByMoaGate(r))) return true;
+  }
+
+  const anchored = await ctx.db
+    .query("subAgents")
+    .withIndex("by_parent_message", (q) => q.eq("parentMessageId", message._id))
+    .take(DELEGATION_SCAN_BOUND);
+  if (anchored.length === DELEGATION_SCAN_BOUND) return true;
+  return anchored.some((r) => !judgedByMoaGate(r));
+}
+
 /** Delete a zero-content assistant card WITH its dependent rows — bookmarks
  *  (placeable mid-stream via the message menu; these paths bypass
  *  messages.deleteMessage's cleanup), parts (provenance rows on instrumented
@@ -435,20 +618,44 @@ export async function deleteTurnCardCascade(
   await ctx.db.delete(messageId);
 }
 
-async function hasActiveOutbox(
+/**
+ * Is a send still in flight (pending) or held (queued) in this chat — and whose?
+ *
+ * `own`: the only active row is the one that dispatched THIS card, still `pending`
+ * because its confirmation had not landed (a gateway error can beat the dispatch's
+ * sent-flip — turnRetry's own schedule-time note). No newer turn exists, so the card
+ * must not say the conversation moved on. It still BLOCKS the retry: that dispatch
+ * has not reported back, and if it later fails, `failDispatch` paints its own error
+ * card for the same turn — a retry started meanwhile would leave the reader with two
+ * answers to one question.
+ * `other`: a row that is provably not this card's — a newer send, or a held one.
+ * A card that does not know its dispatch row (an older bridge sends none) cannot
+ * prove a row is another's, and reads as `own`: the neutral wording is true either way.
+ */
+async function activeOutbox(
   ctx: MutationCtx,
   chatId: Id<"chats">,
-): Promise<boolean> {
+  ownDispatchOutboxId: string | undefined,
+): Promise<"none" | "own" | "other"> {
+  let found: "none" | "own" = "none";
   for (const status of ["pending", "queued"] as const) {
-    const row = await ctx.db
+    const rows = await ctx.db
       .query("outbox")
       .withIndex("by_chat_status", (q) =>
         q.eq("chatId", chatId).eq("status", status),
       )
-      .first();
-    if (row !== null) return true;
+      .take(2);
+    for (const row of rows) {
+      if (
+        ownDispatchOutboxId !== undefined &&
+        String(row._id) !== ownDispatchOutboxId
+      ) {
+        return "other";
+      }
+      found = "own";
+    }
   }
-  return false;
+  return found;
 }
 
 /** The delayed re-run. EVERY precondition is re-verified against the live state
@@ -459,8 +666,11 @@ export const autoRetryTurn = internalMutation({
     chatId: v.id("chats"),
     messageId: v.id("messages"),
     attempt: v.number(),
+    /** The countdown stamp the schedule wrote — this timer's identity. Optional only
+     *  so a timer scheduled before it existed still runs (the pre-token behaviour). */
+    firesAt: v.optional(v.number()),
   },
-  handler: async (ctx, { chatId, messageId, attempt }) => {
+  handler: async (ctx, { chatId, messageId, attempt, firesAt }) => {
     // OUTCOME trace (fire side of the schedule trace): stand-downs carry their
     // reason, so /traces explains a retry that did NOT run; the redispatch
     // trace closes the chain (the re-run's own dispatch/finalize follow).
@@ -489,12 +699,26 @@ export const autoRetryTurn = internalMutation({
       }
     };
     // Stand-down helper: clear the visible countdown stamp (the card must not
-    // keep promising a retry that will never come) + trace the reason.
+    // keep promising a retry that will never come), RECORD why on the card, and
+    // trace the reason. Recorded because the card outlives the countdown: before
+    // this, a retry that stood down left no fact behind, and the card's copy
+    // claimed a retry that never ran (prod 2026-09-28, `another_turn_streaming`).
     const standDown = async (reason: string, clearStamp = true) => {
       if (clearStamp) {
         const m = await ctx.db.get(messageId);
-        if (m !== null && m.autoRetry !== undefined) {
-          await ctx.db.patch(messageId, { autoRetry: undefined });
+        if (m !== null) {
+          await ctx.db.patch(messageId, {
+            autoRetry: undefined,
+            autoRetryOutcome: {
+              outcome: "stood_down",
+              reason,
+              attempt,
+              maxAttempts:
+                m.autoRetry?.maxAttempts ??
+                maxRetriesForKind(m.errorCode ?? ""),
+              at: Date.now(),
+            },
+          });
         }
       }
       await traceOutcome("stand_down", reason);
@@ -503,6 +727,22 @@ export const autoRetryTurn = internalMutation({
     if (chat === null) {
       await traceOutcome("stand_down", "chat_deleted");
       return;
+    }
+    // A STALE TIMER touches nothing. Every generation change clears the stamp (a
+    // reopen, a recovery, a new finalize), and a new failure writes its own — so a
+    // card that no longer carries THIS timer's stamp belongs to another generation.
+    // Writing a stand-down there would describe the old failure on the new card and
+    // could wipe the new retry's countdown (codex pass 4). Trace only.
+    if (firesAt !== undefined) {
+      const current = await ctx.db.get(messageId);
+      if (
+        current === null ||
+        current.autoRetry?.firesAt !== firesAt ||
+        current.autoRetry?.attempt !== attempt
+      ) {
+        await traceOutcome("stand_down", "superseded");
+        return;
+      }
     }
     // Regular chats only (mirrors the schedule-time gate — defense in depth).
     if (chat.kind != null) {
@@ -525,10 +765,21 @@ export const autoRetryTurn = internalMutation({
       await standDown("visible_parts_landed");
       return;
     }
+    // Children can register AFTER the schedule (the observer's upserts are async):
+    // re-checked here, before the cascade below would delete their rows.
+    if (await delegationBlocksRetry(ctx, message)) {
+      await standDown(DELEGATED_WORK_REASON);
+      return;
+    }
     // The chat must still be idle: a pending/queued row means a newer send is in
     // flight (or held) — retrying the old turn would re-order the conversation.
-    if (await hasActiveOutbox(ctx, chatId)) {
+    const active = await activeOutbox(ctx, chatId, message.dispatchOutboxId);
+    if (active === "other") {
       await standDown("chat_busy");
+      return;
+    }
+    if (active === "own") {
+      await standDown("own_dispatch_unsettled");
       return;
     }
     // No OTHER turn streaming (defense in depth; the errored turn's own
@@ -617,6 +868,9 @@ export const autoRetryTurn = internalMutation({
       // or the re-sent instruction loses its targeted passage.
       ...outboxQuoteFieldsFor(quotedRefsOf(lastUser).map((q) => q.excerpt)),
       autoRetryAttempt: attempt,
+      // The chain's limit travels with it (see the schema note).
+      autoRetryMaxAttempts:
+        message.autoRetry?.maxAttempts ?? maxRetriesForKind(message.errorCode ?? ""),
     });
     // 3. Ride the regenerate chain: gateway session reset (clears the conflicted
     //    init state + re-hydrates the truncated history), THEN the re-dispatch.

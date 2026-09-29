@@ -216,6 +216,15 @@ export interface ConvexMessageView {
   /** Visible auto-retry state (turnRetry stamp): a bounded automatic
    *  re-dispatch of this errored turn is scheduled. */
   autoRetry?: { attempt: number; maxAttempts: number; firesAt: number };
+  /** What became of that retry when this card survived it: it stood down (with
+   *  turnRetry's reason) or this card is the last allowed attempt's own failure. */
+  autoRetryOutcome?: {
+    outcome: "stood_down" | "exhausted";
+    reason?: string;
+    attempt: number;
+    maxAttempts: number;
+    at: number;
+  };
   /** Stamped when the user's Stop cut this block's delegated work short. The
    *  block itself settled normally, so its status cannot carry the fact. */
   interruptedAt?: number;

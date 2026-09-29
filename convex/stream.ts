@@ -528,6 +528,9 @@ async function reconcileContentlessDelivery(
     status: "complete",
     error: undefined,
     errorCode: undefined,
+    // The failure's retry story goes with the failure.
+    autoRetry: undefined,
+    autoRetryOutcome: undefined,
   });
   // The reply DID arrive, late: give the sidebar back the arrival cue the
   // finalize withheld (flash / unread dot / reply sound).
@@ -1341,6 +1344,11 @@ async function reopenParentForAnnounce(
     // it on a completed message otherwise.
     error: undefined,
     errorCode: undefined,
+    // …and what became of the failed generation's automatic retry. Left here, a
+    // failure of THIS generation would show the previous one's stand-down, and a
+    // success would carry a retry story about an error it no longer has.
+    autoRetry: undefined,
+    autoRetryOutcome: undefined,
     // …and the previous generation's VERDICT with them. The field is written only
     // when a cause is sent, so a value left here would survive a generation that
     // legitimately reports none — an older bridge, Hermes, a Stop settled
@@ -3204,6 +3212,8 @@ export const recoverLostReply = internalMutation({
       text: harvested,
       error: undefined,
       errorCode: undefined,
+      autoRetry: undefined,
+      autoRetryOutcome: undefined,
       updatedAt: Date.now(),
     });
     return true;
@@ -3537,6 +3547,12 @@ export const finalize = internalMutation({
       // most often skipped: `gateway_final` fires no pressure trace of its own, so
       // the ordinary terminal was computed and persisted nowhere.
       ...(finalizeCause !== undefined ? { finalizeCause } : {}),
+      // A generation's terminal starts its OWN retry story (turnRetry writes it
+      // right after this patch). Every reopen path clears the old one already; this
+      // holds the rule for any path that forgets to.
+      ...(message.status === "streaming"
+        ? { autoRetry: undefined, autoRetryOutcome: undefined }
+        : {}),
       updatedAt: Date.now(),
       // The FIRST terminal transition stamps the generation end. A same-status
       // re-finalize (redelivered final) or a late addPart may bump updatedAt

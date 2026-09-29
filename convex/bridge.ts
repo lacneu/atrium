@@ -532,6 +532,7 @@ export const failDispatch = internalMutation({
         errorCode ?? reason,
         0,
         row.autoRetryAttempt ?? 0,
+        row.autoRetryMaxAttempts,
       );
     }
 

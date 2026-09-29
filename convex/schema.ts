@@ -1996,6 +1996,21 @@ export default defineSchema({
     autoRetry: v.optional(
       v.object({ attempt: v.number(), maxAttempts: v.number(), firesAt: v.number() }),
     ),
+    // What became of that retry when the card SURVIVES it — the only cases a reader
+    // sees (a retry that ran deletes this card). `stood_down`: it fired and did not
+    // run, for `reason` (turnRetry's stand-down vocabulary). `exhausted`: this card
+    // is itself the result of the last allowed attempt. Absent = no retry was ever
+    // attempted for this card (or it predates this field), and the card claims none.
+    // OPTIONAL (additive).
+    autoRetryOutcome: v.optional(
+      v.object({
+        outcome: v.union(v.literal("stood_down"), v.literal("exhausted")),
+        reason: v.optional(v.string()),
+        attempt: v.number(),
+        maxAttempts: v.number(),
+        at: v.number(),
+      }),
+    ),
     text: v.string(),
     // A2 streaming (decision A2): during a turn, token deltas are patched into
     // this UN-INDEXED live field — NOT into `text` — so each ~50ms flush does NOT
@@ -2395,6 +2410,10 @@ export default defineSchema({
     // Busy-check point lookups: "does a RUNNING row of THIS kind exist?"
     // (kind=undefined covers legacy sub-agent rows written before the field).
     .index("by_chat_status_kind", ["chatId", "status", "kind"])
+    // (chatId, kind, _creationTime): the auto-retry's delegation check reads the
+    // SUB-AGENT rows born since a card was created, without background-task rows
+    // (kind:"task") filling its bounded window (turnRetry.delegationBlocksRetry).
+    .index("by_chat_kind", ["chatId", "kind"])
     // Sidebar busy signal (chatReads.myBusyChats): the caller's (user, "running")
     // slice in ONE bounded range — never a probe-per-owned-chat on the listChats
     // path. Mirrors streamingText.by_user.
@@ -3058,6 +3077,10 @@ export default defineSchema({
     // finalize reads it to bound the retry chain (MAX_TURN_RETRIES); absent = a
     // normal user send (attempt 0).
     autoRetryAttempt: v.optional(v.number()),
+    // …and the limit of the chain that attempt belongs to, fixed by the error that
+    // STARTED it. A retry can fail with a different class whose own limit differs;
+    // the card then reports the attempts against the chain it actually ran in.
+    autoRetryMaxAttempts: v.optional(v.number()),
     // PREEMPT-REPARK (preemptRepark.ts): the gateway killed this row's dispatched
     // turn to run a delivery on the same session (announce×queue race, inverse
     // direction) and the row was re-parked for ONE automatic re-dispatch. The

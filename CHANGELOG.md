@@ -1,5 +1,29 @@
 # Changelog
 
+## [0.88.1] — The error card says what the retry really did
+
+Corrective release, from production reports on OpenClaw 2026.9.6. No breaking changes; see
+the deployment note.
+
+**An error card no longer claims a retry that never ran.** Reported in production: a turn
+that ended without an answer showed "It was retried automatically" — but the retry had
+stepped aside because another reply was still being written in the conversation, and it
+never ran. The card now states what actually happened: the retry did not run and why, or it
+ran and did not succeed either, counted against the attempts the original error allowed.
+When no retry is attempted, the card says nothing about one. The headlines of the other
+errors that can be retried — a provider's internal error, a session conflict, an archived or
+vanished session — no longer promise a retry either; they invite you to send your message
+again if no answer follows, and the line under them says what really happened.
+
+**A retry never erases work the turn had already delegated.** A turn during which the agent
+delegated — a sub-agent appeared in the conversation after the question, even one that
+failed at once, or one is still running — is no longer retried automatically: running it
+again could repeat that work or delete its record. The card says so, and the delegated work
+stays where it was.
+
+**Deployment note.** Deploy Convex (`npx convex deploy`: two new optional fields and one
+new index, no migration). The bridge is unchanged from 0.88.0.
+
 ## [0.88.0] — Choose which knowledge an agent searches
 
 Feature release: knowledge sources become something you choose, per agent and per

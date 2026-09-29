@@ -538,3 +538,52 @@ export function errorDetailView(
 /** Re-exported from the shared module so existing importers (RunStatus) are
  *  unchanged while the implementation stays single-source. */
 export const messageHasText = sharedMessageHasText;
+
+/** What became of an automatic retry whose error card SURVIVED it (turnRetry's
+ *  `autoRetryOutcome`). A retry that ran deletes its card, so these are the only
+ *  outcomes a reader can see. */
+export type AutoRetryOutcome = {
+  outcome: "stood_down" | "exhausted";
+  reason?: string;
+  attempt: number;
+  maxAttempts: number;
+};
+
+/** turnRetry stand-down reasons that mean the conversation moved on past this turn.
+ *  `chat_busy` qualifies because turnRetry emits it only for a row PROVEN not to be
+ *  this card's own dispatch; its own still-unsettled dispatch stands down as
+ *  `own_dispatch_unsettled`, which takes the neutral line (no newer turn exists). */
+const MOVED_ON_REASONS: ReadonlySet<string> = new Set([
+  "chat_busy",
+  "not_last_message",
+  "no_preceding_user_turn",
+]);
+
+/**
+ * The one line an error card says about its automatic retry, from the stored fact
+ * only — never from the class. The class says a retry is ALLOWED; whether one ran is
+ * a separate event, and a card that asserted it from the class told a reader "it was
+ * retried" about a retry that stood down because another reply was streaming (prod
+ * 2026-09-28). Null = no retry fact: the card claims nothing.
+ */
+export function autoRetryOutcomeLine(
+  outcome: AutoRetryOutcome | null | undefined,
+): string | null {
+  if (outcome === null || outcome === undefined) return null;
+  if (outcome.outcome === "exhausted") {
+    return m.runstatus_retry_exhausted({
+      attempt: String(outcome.attempt),
+      max: String(outcome.maxAttempts),
+    });
+  }
+  if (outcome.reason === "another_turn_streaming") {
+    return m.runstatus_retry_stood_down_streaming();
+  }
+  if (outcome.reason === "delegated_work") {
+    return m.runstatus_retry_stood_down_delegated();
+  }
+  if (outcome.reason !== undefined && MOVED_ON_REASONS.has(outcome.reason)) {
+    return m.runstatus_retry_stood_down_moved_on();
+  }
+  return m.runstatus_retry_stood_down();
+}

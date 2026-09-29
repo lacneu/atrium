@@ -12,6 +12,7 @@ import {
   activeToolFromParts,
   toolFamily,
   ERROR_CODE_LABEL,
+  autoRetryOutcomeLine,
 } from "./runStatusView";
 
 describe("runStatusView", () => {
@@ -230,6 +231,12 @@ describe("errorDetailView (actionable error classification)", () => {
       expect(sentence, locale).not.toMatch(
         /your history|votre historique/i,
       );
+      // …nor guarantee that resending is safe: when the turn had delegated work the retry
+      // stands down, and the line under this card warns that running it again could repeat
+      // that work (codex 0.88.1 pass 3).
+      expect(sentence, locale).not.toMatch(
+        /\bsafe\b|sans risque|nothing was lost|rien n'a été perdu/i,
+      );
     }
     expect(card).not.toMatch(/did not succeed|second attempt|was started|a été ouverte/i);
     expect(v.headline).not.toBe(errorDetailView("fetch failed", "provider_internal").headline);
@@ -281,7 +288,8 @@ describe("errorDetailView (actionable error classification)", () => {
       );
       expect(sentence, locale).not.toMatch(/agent:|chat:/);
     }
-    // The STORED class keeps its own copy, retry promise included.
+    // The STORED class keeps its own copy (which, since codex's 0.88.1 review, no
+    // longer promises a retry either — the card's retry line states what happened).
     expect(errorDetailView(gatewayText, "session_archived").code).toBe(
       "session_archived",
     );
@@ -363,6 +371,10 @@ describe("errorDetailView (actionable error classification)", () => {
     for (const locale of ["en", "fr"] as const) {
       const sentence = m.runstatus_error_session_archived({}, { locale });
       expect(sentence, locale).not.toMatch(/agent:|chat:/);
+      // It describes THIS turn's failed restore only. The card also stays when the retry
+      // stood down (another reply, a new send, delegated work) and no second restore was
+      // ever tried, so it may not blame a refusal it did not see (codex 0.88.1 pass 3).
+      expect(sentence, locale).not.toMatch(/is refusing the restore|refuse la restauration/i);
       // It must not tell the reader to restore anything themselves.
       expect(sentence, locale).not.toMatch(
         /restore it|restaurez|remettez[- ]la|réactivez/i,
@@ -785,4 +797,78 @@ describe("the two surfaces that show an error go through this view", () => {
       /const payload =\s*text\.trim\(\) \|\|\s*\[detail\.headline, detail\.detail\]\.filter\(Boolean\)\.join\("\\n"\);/,
     );
   });
+});
+
+// Production 2026-09-28 (metadata only): a silent close's retry stood down because a
+// delegation continuation was streaming, and the card still said the turn "was
+// retried automatically". Whether a retry ran is an event, not a property of the
+// class: the card speaks of it only from the stored outcome.
+describe("the error card says what became of its automatic retry — from the stored fact", () => {
+  it("the silent-close headline claims no retry of its own, in either locale", () => {
+    for (const locale of ["en", "fr"] as const) {
+      const sentence = m.runstatus_error_empty_silent({}, { locale });
+      expect(sentence, locale).not.toMatch(/retried|relanc|nouvelle tentative/i);
+    }
+  });
+
+  it("a retry that stood down for a streaming reply says so, and asks for a resend", () => {
+    const line = autoRetryOutcomeLine({
+      outcome: "stood_down",
+      reason: "another_turn_streaming",
+      attempt: 1,
+      maxAttempts: 1,
+    });
+    expect(line).toBe(m.runstatus_retry_stood_down_streaming());
+    expect(line).toMatch(/n’a pas eu lieu/);
+    expect(line).toMatch(/Renvoyez/);
+  });
+
+  it("each outcome has its own sentence; no fact, no sentence", () => {
+    expect(
+      autoRetryOutcomeLine({ outcome: "stood_down", reason: "not_last_message", attempt: 1, maxAttempts: 1 }),
+    ).toBe(m.runstatus_retry_stood_down_moved_on());
+    expect(
+      autoRetryOutcomeLine({ outcome: "stood_down", reason: "visible_parts_landed", attempt: 1, maxAttempts: 2 }),
+    ).toBe(m.runstatus_retry_stood_down());
+    expect(
+      autoRetryOutcomeLine({ outcome: "exhausted", attempt: 2, maxAttempts: 2 }),
+    ).toBe(m.runstatus_retry_exhausted({ attempt: "2", max: "2" }));
+    expect(
+      autoRetryOutcomeLine({ outcome: "stood_down", reason: "delegated_work", attempt: 1, maxAttempts: 1 }),
+    ).toBe(m.runstatus_retry_stood_down_delegated());
+    expect(autoRetryOutcomeLine(null)).toBeNull();
+    expect(autoRetryOutcomeLine(undefined)).toBeNull();
+  });
+});
+
+// codex P2 on 0.88.1: a retryable class is a PERMISSION to retry, not an event. The
+// headlines of every retryable class stay neutral; the countdown or the outcome line
+// says what actually happened (turnRetry's stored facts).
+it("no retryable-class headline asserts an automatic retry, in either locale", () => {
+  const headlines = [
+    m.runstatus_error_provider_internal,
+    m.runstatus_error_session_init_conflict,
+    m.runstatus_error_session_archived,
+    m.runstatus_error_session_gone,
+    m.runstatus_error_empty_silent,
+  ];
+  for (const locale of ["en", "fr"] as const) {
+    for (const h of headlines) {
+      expect(h({}, { locale }), locale).not.toMatch(
+        /automatic|automatiquement|retried|retries|relanc|nouvelle tentative|tries to reopen|tente d/i,
+      );
+    }
+  }
+});
+
+// codex pass 4 on 0.88.1: the turn's own unsettled dispatch is not a newer turn.
+it("a retry stopped by the card's OWN unsettled dispatch takes the neutral line, not 'moved on'", () => {
+  const line = autoRetryOutcomeLine({
+    outcome: "stood_down",
+    reason: "own_dispatch_unsettled",
+    attempt: 1,
+    maxAttempts: 2,
+  });
+  expect(line).toBe(m.runstatus_retry_stood_down());
+  expect(line).not.toBe(m.runstatus_retry_stood_down_moved_on());
 });

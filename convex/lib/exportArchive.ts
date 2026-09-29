@@ -89,6 +89,7 @@ export const MESSAGE_FIELDS_DROPPED: ReadonlyArray<string> = [
   "announceReplayArmed",
   "announceReplayRun",
   "autoRetry",
+  "autoRetryOutcome",
   "boundInstance",
   // WHY a turn closed on the SOURCE deployment. It names a mechanism of a run
   // that is not ours — the same reason `runId` and `boundInstance` stay behind —
