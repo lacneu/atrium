@@ -313,6 +313,40 @@ describe("errorDetailView (actionable error classification)", () => {
     expect(tricky.code).not.toBe("session_paused_review");
   });
 
+  it("a DROPPED input gets its card from the class AND from the text of an older row", () => {
+    // Prod 2026-09-28 (message ph7e6a5j…): stored with no errorCode, so the card read
+    // "unknown" over the gateway's fallback summary. A new row carries the class; an old
+    // one is recognized by the gateway's fixed sentence.
+    const summary =
+      "All models failed (3): openai/gpt-6-sol: Pending input is no longer active in its admitted transcript (unknown) | ⚠️ Agent run failed (model: openai/gpt-6-sol).";
+    for (const stored of ["pending_input_dropped", undefined, "unclassified_error"]) {
+      const v = errorDetailView(summary, stored);
+      expect(v.code, `stored=${stored}`).toBe("pending_input_dropped");
+      expect(v.headline, `stored=${stored}`).toBe(
+        ERROR_CODE_LABEL.pending_input_dropped!(),
+      );
+    }
+    // A MIXED summary — an earlier attempt failed another way and may have done work —
+    // must not get the "nothing was processed" card from its text (codex, 0.89.1).
+    const mixed =
+      "All models failed (2): openai/a: internal server error (unknown) | openai/b: Pending input is no longer active in its admitted transcript (unknown)";
+    expect(errorDetailView(mixed, undefined).code).not.toBe("pending_input_dropped");
+    // A cooldown attempt ran nothing either, but the stored text cannot show it: the
+    // credential mask cuts everything after the profile id's quote. No promise from text
+    // that cannot be read (the bridge, which reads it unmasked, stores the code).
+    const cooled =
+      'All models failed (2): openai/a: Auth profile "openai:p" is temporarily unavailable for openai/a. (rate_limit) | openai/b: Pending input is no longer active in its admitted transcript (unknown)';
+    expect(errorDetailView(cooled, undefined).code).not.toBe("pending_input_dropped");
+    // Truthful: nothing ran, the reader resends — and no automatic attempt is claimed,
+    // because none is scheduled (convex/turnRetry.ts).
+    for (const locale of ["en", "fr"] as const) {
+      const sentence = m.runstatus_error_pending_input_dropped({}, { locale });
+      expect(sentence).toMatch(locale === "en" ? /send your message again/i : /renvoyez votre message/i);
+      expect(sentence).toMatch(locale === "en" ? /nothing was processed/i : /rien n’a été traité/i);
+      expect(sentence).not.toMatch(/automatic|retry(ing)? (in|now)|nouvel essai|automatiquement/i);
+    }
+  });
+
   it("the session's own refusals (visibility, settings changed) get their card, and no raw sentence", () => {
     // Both are DISPATCH failures: failDispatch stores the reason (`send_failed`) as the
     // error and the class as errorCode. The headline must be the class's own — not the
@@ -832,6 +866,21 @@ describe("the error card says what became of its automatic retry — from the st
     expect(line).toBe(m.runstatus_retry_stood_down_streaming());
     expect(line).toMatch(/n’a pas eu lieu/);
     expect(line).toMatch(/Renvoyez/);
+  });
+
+  it("a retry that stood down for a CONCURRENT writer says why, and asks for a resend", () => {
+    const line = autoRetryOutcomeLine({
+      outcome: "stood_down",
+      reason: "concurrent_writer",
+      attempt: 1,
+      maxAttempts: 2,
+    });
+    expect(line).toBe(m.runstatus_retry_stood_down_concurrent());
+    for (const locale of ["en", "fr"] as const) {
+      const sentence = m.runstatus_retry_stood_down_concurrent({}, { locale });
+      expect(sentence).toMatch(locale === "en" ? /did not run/ : /n’a pas eu lieu/);
+      expect(sentence).toMatch(locale === "en" ? /Send your message again/ : /Renvoyez/);
+    }
   });
 
   it("each outcome has its own sentence; no fact, no sentence", () => {

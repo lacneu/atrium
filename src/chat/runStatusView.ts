@@ -372,6 +372,11 @@ export const ERROR_CODE_LABEL: Record<string, () => string> = {
   // cannot apply it). Stored as a dispatch code; never retried.
   knowledge_policy_not_applied: m.runstatus_error_knowledge_policy_not_applied,
   auth_profile_cooldown: m.runstatus_error_auth_profile_cooldown,
+  // The gateway dropped the admitted input: another reply was being written at the same
+  // moment. Nothing ran, and no retry is scheduled (convex/turnRetry.ts) — the copy says
+  // so by asking the reader to send again, and claims no attempt of its own. It holds
+  // for rows stored before the class existed too, so the text fallback below shares it.
+  pending_input_dropped: m.runstatus_error_pending_input_dropped,
   gateway_storage_busy: m.runstatus_error_gateway_storage_busy,
   gateway_storage_unavailable: m.runstatus_error_gateway_storage_unavailable,
   // The gateway closed the agent's database to new work (OpenClaw 2026.9.5+). Not retried.
@@ -468,6 +473,38 @@ function withoutQuotedSpans(text: string): string {
   return text.replace(/"[^"]*"/g, '""');
 }
 
+/** The gateway's DROPPED-INPUT sentence, read from the text — same reason as the rules
+ *  above: the row that opened this class (prod 2026-09-28, message ph7e6a5j…) was stored
+ *  with no code at all, and every row written before the bridge minted it still is.
+ *  Mirrors the bridge's `PENDING_INPUT_DROPPED_RE` (core/failure-classifier.ts), which
+ *  carries the upstream citation; they must stay in step. Fixed gateway words only —
+ *  no operator value can carry the whole sentence into a summary by accident. */
+const PENDING_INPUT_DROPPED_TEXT_RE =
+  /pending input is no longer active in its admitted transcript/i;
+const FALLBACK_SUMMARY_TEXT_RE = /^\s*all (?:[a-z][\w -]{0,60}? )?models failed \(\d+\):\s*/i;
+const FALLBACK_ATTEMPT_PREFIX_TEXT_RE = /^[^\s/|]+\/\S+?:\s+/;
+
+/** Does this text prove the input was dropped AND nothing ran? A model-fallback summary
+ *  qualifies only when EVERY attempt lost its input, because an attempt that failed any
+ *  other way may have streamed or run a tool first, and the card promises "nothing was
+ *  processed". Stricter than the bridge's rule (core/failure-classifier.ts), which also
+ *  accepts a candidate refused at preparation for a credential cooldown: a stored text
+ *  cannot prove that one, since the credential mask cuts it at the profile id's quote. A
+ *  row the bridge classified carries the code and does not reach this reading. */
+function droppedInputWithNothingRun(text: string): boolean {
+  const head = FALLBACK_SUMMARY_TEXT_RE.exec(text);
+  if (head === null) return PENDING_INPUT_DROPPED_TEXT_RE.test(text);
+  const attempts = text
+    .slice(head[0].length)
+    .split(" | ")
+    .map((segment) => segment.trim())
+    .filter((segment) => FALLBACK_ATTEMPT_PREFIX_TEXT_RE.test(segment))
+    .map((segment) => segment.replace(FALLBACK_ATTEMPT_PREFIX_TEXT_RE, ""));
+  return (
+    attempts.length > 0 && attempts.every((a) => PENDING_INPUT_DROPPED_TEXT_RE.test(a))
+  );
+}
+
 const OVERFLOW_TEXT_RE =
   /context overflow|prompt too large|maximum context length|context[- ]length exceeded|request_too_large|request too large|input (?:token count )?exceeds the maximum number of (?:input )?tokens|input is too long for the model|too many tokens/i;
 
@@ -530,6 +567,8 @@ export function errorDetailView(
             ? "session_archived_historic"
             : SESSION_PAUSED_REVIEW_TEXT_RE.test(withoutQuotedSpans(raw0))
               ? "session_paused_review"
+              : droppedInputWithNothingRun(shown)
+              ? "pending_input_dropped"
               : OVERFLOW_TEXT_RE.test(raw0)
               ? "context_length"
               : (errorCode ?? null);
@@ -612,6 +651,9 @@ export function autoRetryOutcomeLine(
   }
   if (outcome.reason === "delegated_work") {
     return m.runstatus_retry_stood_down_delegated();
+  }
+  if (outcome.reason === "concurrent_writer") {
+    return m.runstatus_retry_stood_down_concurrent();
   }
   if (outcome.reason !== undefined && MOVED_ON_REASONS.has(outcome.reason)) {
     return m.runstatus_retry_stood_down_moved_on();

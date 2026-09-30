@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { m } from "@/paraglide/messages.js";
 import {
   ANNOUNCE_COMPOSE_GRACE_MS,
   assistantEmptyState,
@@ -534,6 +535,26 @@ describe("a hand-off keeps its delegation state even once it speaks", () => {
       ],
     );
     expect(s.kind).toBe("failed");
+  });
+
+  // Production 2026-09-28, report prod-ms7446xa…: the bubble said "I'll check the corpus,
+  // then explain", its one child was reaped with nothing seen, and nothing followed. The
+  // bubble is not silent about it — and it says what is known: no activity was seen,
+  // not that the child ran out of time (the reaper's own French prose is not the reason).
+  it("a child our reaper gave up on is named under the acknowledgment, as what it is", () => {
+    const s = assistantEmptyState(
+      SPOKE,
+      [spawnPart("K"), YIELD],
+      [
+        row({
+          childSessionKey: "K",
+          status: "error",
+          errorMessage: "Sous-agent expiré — aucune activité, observateur probablement perdu",
+          errorCode: "subagent_no_activity",
+        }),
+      ],
+    );
+    expect(s).toEqual({ kind: "failed", reason: m.subagents_error_no_activity() });
   });
 
   it("nothing else is: a bubble with an answer is not given another one", () => {

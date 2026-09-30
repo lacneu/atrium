@@ -430,6 +430,8 @@ describe("SubAgentObserver — FD-leak guardrails", () => {
     expect(swept).toHaveLength(1);
     expect(swept[0]!.status).toBe("error");
     expect(swept[0]!.errorMessage).toMatch(/timed out/i);
+    // Our verdict, stored as such: the gateway never said this child timed out.
+    expect(swept[0]!.errorCode).toBe("subagent_no_activity");
     expect(obs.size).toBe(0);
   });
 

@@ -39,9 +39,21 @@ export const SUBAGENT_ERROR_CATEGORIES = [
   // The gateway closed the agent's database to new work (OpenClaw 2026.9.5+): the child
   // was refused or retired by the gateway, not failed by its own task.
   "gateway_agent_db_closed",
+  // OUR verdict, not the gateway's: a reaper gave up on a child it saw no activity from
+  // (Convex's stale-row reaper, 20 min; the bridge's no-frame sweep, 15 min). The child
+  // may have run unseen — a frozen bridge, a reconnect — or never started. Decided from
+  // the code those reapers store (SUBAGENT_NO_ACTIVITY_CODE), never from their prose,
+  // and kept apart from `timeout`, which is a limit the GATEWAY enforced.
+  "no_activity",
   "unknown",
 ] as const;
 export type SubAgentErrorCategory = (typeof SUBAGENT_ERROR_CATEGORIES)[number];
+
+/** The stable class Atrium's reapers store on a child they gave up on for want of any
+ *  activity (convex/subAgents.ts `reapStaleSubAgents`; the bridge's observer sweep writes
+ *  the same value, bridge/src/providers/openclaw/sub-agent-observer.ts). Allowlisted in
+ *  KNOWN_ERROR_CODES, like every class a row may carry. */
+export const SUBAGENT_NO_ACTIVITY_CODE = "subagent_no_activity";
 
 /** A terminal FAILURE state (error or aborted) — the failures a report captures. */
 export function isFailedStatus(status: SubAgentStatus): boolean {
@@ -55,8 +67,11 @@ export function isFailedStatus(status: SubAgentStatus): boolean {
 // a generic "tool failed"). The patterns READ the text; the function RETURNS an
 // enum literal only — the text itself is never echoed.
 
-// Timeout / stale-observer reaper (subAgents.STALE_SUBAGENT_MESSAGE is FR:
-// "Sous-agent expiré — aucune activité …"); also the English equivalents.
+// Timeout. It ALSO matches the reapers' own prose ("Sous-agent expiré — aucune activité …",
+// "no activity for 900s"), and that is deliberate: a row reaped before the reapers stored
+// SUBAGENT_NO_ACTIVITY_CODE keeps the category it was always published under — nothing
+// on it says which of the two it was, and re-deriving one from prose is what the code
+// replaces. New rows carry the code, which is read first.
 const TIMEOUT_RE =
   /expir|p[ée]rim|stale|timed?\s*out|timeout|no\s+activity|aucune\s+activit/i;
 // HTTP status (4xx/5xx) or an explicit API/auth/quota signal.
@@ -82,6 +97,7 @@ const GATEWAY_AGENT_DB_CLOSED_TEXT_RE =
 const CATEGORY_BY_CODE: Readonly<Record<string, SubAgentErrorCategory>> = {
   gateway_storage_unavailable: "gateway_storage_unavailable",
   gateway_agent_db_closed: "gateway_agent_db_closed",
+  [SUBAGENT_NO_ACTIVITY_CODE]: "no_activity",
 };
 
 /**

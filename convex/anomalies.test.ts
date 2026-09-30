@@ -575,6 +575,30 @@ describe("anomaly detection", () => {
     ).toBeDefined();
   });
 
+  test("a DROPPED input raises its own cause, end to end from the trace", async () => {
+    // The send succeeded and the gateway refused the input on the stream (a concurrent
+    // run replaced the active branch): a finalize row carries it, so it is countable
+    // apart from the generic stream-error channel.
+    const t = convexTest(schema, modules);
+    await t.run(async (ctx) => {
+      const now = Date.now();
+      for (let i = 0; i < 2; i++) {
+        await seedTrace(ctx, {
+          kind: "assistant.stream",
+          at: now - i * 1000,
+          correlationId: `chat:pending-input-${i}`,
+          meta: {
+            phase: "finalize",
+            streamStatus: "error",
+            errorCode: "pending_input_dropped",
+          },
+        });
+      }
+    });
+    const res = await t.mutation(internal.anomalies.detectAnomalies, {});
+    expect(res.detected).toContain("assistant.cause.pending_input_dropped");
+  });
+
   test("each STORAGE class raises its OWN cause, not one shared storage bucket", async () => {
     // The two classes exist because the answer differs — contention clears itself, a full or
     // read-only disk needs an operator — so they must be countable apart. Asserted at the

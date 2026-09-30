@@ -31,6 +31,7 @@ import { postBridge } from "./agentFiles";
 import type { Id } from "./_generated/dataModel";
 import { requireActive, requireReachableChat } from "./lib/access";
 import { normalizeMessageErrorCode, maskCredentialId } from "./lib/chatRenderState";
+import { SUBAGENT_NO_ACTIVITY_CODE } from "./lib/subAgentFailure";
 import { chatAllowsInstance } from "./lib/ingestAuthz";
 import { currentPlanIndex } from "./lib/planOrder";
 import { drainNextQueued, SUBAGENT_STALE_TTL_MS } from "./lib/outboxQueue";
@@ -496,6 +497,17 @@ export const upsertSubAgent = internalMutation({
       // Explicit undefined => Convex removes the field.
       patch.errorMessage = undefined;
     }
+    // A reaper's "no activity seen" is a PROVISIONAL verdict: the gateway's own word on
+    // the child, arriving later, replaces it. Left in place, the code would keep naming
+    // the reaper under the gateway's sentence (an error that brought no class) or on a
+    // child that finished after all.
+    if (
+      args.errorCode === undefined &&
+      existing.errorCode === SUBAGENT_NO_ACTIVITY_CODE &&
+      (recoveredToDone || args.errorMessage !== undefined)
+    ) {
+      patch.errorCode = undefined;
+    }
     // Drop a stale phase update once the child is terminal.
     if (args.phase !== undefined && !terminal) patch.phase = args.phase;
     // Merge the child's tools (accumulates across frames — a finished child KEEPS
@@ -805,6 +817,9 @@ export const reapStaleSubAgents = internalMutation({
       await ctx.db.patch(row._id, {
         status: "error",
         errorMessage: STALE_SUBAGENT_MESSAGE,
+        // The verdict is about what WE saw (nothing), not about the child: stored as a
+        // code so no reader has to infer it from the sentence, which reads as a timeout.
+        errorCode: SUBAGENT_NO_ACTIVITY_CODE,
         updatedAt: now,
       });
       touchedChats.add(row.chatId);

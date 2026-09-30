@@ -69,6 +69,9 @@ describe("normalizeMessageErrorCode (raw gateway text never leaves)", () => {
       "session_settings_changed",
     );
     expect(normalizeMessageErrorCode("auth_profile_cooldown")).toBe("auth_profile_cooldown");
+    // The gateway dropped the admitted input under a concurrent run (prod 2026-09-28):
+    // named, not the "unknown" the diagnostic showed for it.
+    expect(normalizeMessageErrorCode("pending_input_dropped")).toBe("pending_input_dropped");
     expect(normalizeMessageErrorCode("gateway_storage_busy")).toBe("gateway_storage_busy");
     expect(normalizeMessageErrorCode("gateway_storage_unavailable")).toBe(
       "gateway_storage_unavailable",

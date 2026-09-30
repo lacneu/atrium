@@ -1,5 +1,47 @@
 # Changelog
 
+## [0.89.1] — Long delegation chains stay in one answer
+
+Corrective release, from production reports on OpenClaw 2026.9.6. No breaking changes; see the
+deployment note.
+
+**A long chain of delegations stays in one answer.** Reported in production: an agent working
+autonomously for hours — delegating to sub-agents, waiting, then delegating again — filled the
+conversation with a dozen empty answers instead of one. A single delegated task that Atrium
+could only place approximately was enough to split its whole batch off into a new answer, and
+every later step then followed it. Atrium now records which answer each step of a chain wrote
+to and joins the next step there on certain evidence only, so every step of the chain joins the
+answer that started it. When the evidence is missing — a step whose delivery was lost — it
+opens a separate answer rather than risk merging into the wrong one, and the rest of the chain
+follows that answer.
+
+**A silent step in the middle of a delegation chain is not shown as a failure.** When an agent
+picked up the results of its sub-agents, did some bookkeeping and delegated again without
+writing anything, that step was shown as a red "The agent finished without a usable response" card, although
+the work was carrying on. It now stays quiet while the agent keeps delegating or a sub-agent is
+still running, and such a card is withdrawn if the chain resumes after it. A chain that ends with
+nothing to show still says so.
+
+**A message the gateway dropped says so, and that it is safe to send again.** When a message
+was sent at the very moment an agent picked up delegated work in the same conversation, the
+gateway discarded the message and failed with an unexplained error. The card now explains that
+nothing was processed and asks you to send the message again. Failures reported as "all models
+failed" are now classified by their real cause, not by the name of a model, and the
+automatic retry no longer runs when another reply was being written at the same time — it could
+have discarded that reply; the card says so.
+
+**A delegated task that went quiet is told apart from one that timed out.** A task Atrium saw no
+activity from — which may have run unseen, for example during a connection loss, or never
+started — now says exactly that, instead of claiming it ran out of time. A real timeout is still
+reported as one.
+
+**Diagnostics no longer call a stalled hand-off healthy.** An answer that only says what the
+agent is about to do, followed by a delegated task that died with nothing after it, is now
+reported as a lost hand-off in the operator tools.
+
+**Deployment note.** Deploy the bridge together with Convex (`npx convex deploy`: one new index
+on messages, no migration).
+
 ## [0.89.0] — A trash for conversations, files that really go away, and a bridge that no longer freezes
 
 Feature release with urgent corrective fixes, from production incidents and reports on OpenClaw

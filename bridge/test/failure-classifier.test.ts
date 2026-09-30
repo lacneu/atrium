@@ -6,7 +6,10 @@
 // documented phrasings from the production reports, plus the fail-safe boundary.
 
 import { describe, expect, it } from "vitest";
-import { classifyFailureText } from "../src/core/failure-classifier.js";
+import {
+  classifyFailureText,
+  fallbackSummaryCauses,
+} from "../src/core/failure-classifier.js";
 
 describe("classifyFailureText", () => {
   it("pins every documented OVERFLOW phrasing to context_length", () => {
@@ -557,5 +560,101 @@ describe("classifyFailureText", () => {
     expect(
       classifyFailureText("internal server error: prompt too large for the model"),
     ).toBe("context_length");
+  });
+  // The gateway's model-fallback SUMMARY, verbatim from prod 2026-09-28 (report
+  // prod-ms7eytay…, chat mh72csw4…): the user's send landed while a requester-settle run
+  // replaced the conversation's active branch, and upstream then tried the dropped input
+  // on all three candidates. Stored `unknown` before this class existed.
+  const PROD_PENDING_INPUT_SUMMARY =
+    "All models failed (3): openai/gpt-6-sol: Pending input is no longer active in its admitted transcript (unknown) | openai/gpt-5.6-sol: Pending input is no longer active in its admitted transcript (unknown) | openai/gpt-5.6-terra: Pending input is no longer active in its admitted transcript (unknown) | ⚠️ Agent run failed (model: openai/gpt-5.6-terra).";
+
+  it("names the input the gateway DROPPED, wrapped or bare", () => {
+    expect(classifyFailureText(PROD_PENDING_INPUT_SUMMARY)).toBe("pending_input_dropped");
+    // One candidate only: upstream rethrows the raw error, no summary
+    // (model-fallback-attempt.ts:611-612).
+    expect(
+      classifyFailureText("Pending input is no longer active in its admitted transcript"),
+    ).toBe("pending_input_dropped");
+  });
+
+  it("a fallback summary is classified by the causes INSIDE it, never by a model id", () => {
+    expect(fallbackSummaryCauses(PROD_PENDING_INPUT_SUMMARY)).toEqual([
+      "Pending input is no longer active in its admitted transcript (unknown)",
+      "Pending input is no longer active in its admitted transcript (unknown)",
+      "Pending input is no longer active in its admitted transcript (unknown)",
+    ]);
+    // Model ids are operator configuration. Read with the wrapper, `request_too_large`
+    // in an id made the dropped input a context overflow, and `server_error` made an
+    // unrecognized failure an AUTO-RETRIED provider blip.
+    expect(
+      classifyFailureText(
+        "All models failed (2): acme/request_too_large: Pending input is no longer active in its admitted transcript (unknown) | acme/other: Pending input is no longer active in its admitted transcript (unknown) | ⚠️ Agent run failed (model: acme/request_too_large).",
+      ),
+    ).toBe("pending_input_dropped");
+    expect(
+      classifyFailureText(
+        "All models failed (2): acme/server_error: something odd happened (unknown) | acme/b: something odd happened (unknown)",
+      ),
+    ).toBeNull();
+    // A model id with its own colon still ends at the colon FOLLOWED by a space.
+    expect(
+      fallbackSummaryCauses(
+        "All models failed (2): ollama/llama3:8b: database is locked (unknown) | ollama/qwen:7b: database is locked (unknown)",
+      ),
+    ).toEqual(["database is locked (unknown)", "database is locked (unknown)"]);
+    // Another capability's label, same shape.
+    expect(
+      classifyFailureText(
+        "All image generation models failed (2): a/x: prompt too large (format) | b/y: prompt too large (format)",
+      ),
+    ).toBe("context_length");
+  });
+
+  it("inside a summary the usual precedence still holds: the graver cause wins", () => {
+    expect(
+      classifyFailureText(
+        "All models failed (2): a/x: Pending input is no longer active in its admitted transcript (unknown) | b/y: database or disk is full (unknown)",
+      ),
+    ).toBe("gateway_storage_unavailable");
+  });
+
+  it("a dropped input is named ONLY when no attempt could have done work (codex, 0.89.1)", () => {
+    const DROPPED = "Pending input is no longer active in its admitted transcript (unknown)";
+    // A first attempt that failed another way may have streamed or run a tool before it
+    // died: the card must not promise "nothing was processed". The other cause decides.
+    expect(
+      classifyFailureText(
+        `All models failed (2): a/x: internal server error (unknown) | b/y: ${DROPPED}`,
+      ),
+    ).toBe("provider_internal");
+    expect(
+      classifyFailureText(
+        `All models failed (2): a/x: prompt too large for the model (context_overflow) | b/y: ${DROPPED}`,
+      ),
+    ).toBe("context_length");
+    // An unrecognized first cause proves nothing either way: no class, no promise.
+    expect(
+      classifyFailureText(`All models failed (2): a/x: something odd happened (unknown) | b/y: ${DROPPED}`),
+    ).toBeNull();
+    // A candidate refused at PREPARATION (its credential in cooldown) ran nothing: the
+    // promise still holds for the whole turn.
+    expect(
+      classifyFailureText(
+        `All models failed (2): a/x: Auth profile "openai:p" is temporarily unavailable for openai/gpt-x. (rate_limit) | b/y: ${DROPPED}`,
+      ),
+    ).toBe("pending_input_dropped");
+    // …and a model id still cannot decide: the dropped segments are removed, not the ids'
+    // words read.
+    expect(
+      classifyFailureText(
+        `All models failed (2): acme/server_error: something odd happened (unknown) | acme/b: ${DROPPED}`,
+      ),
+    ).toBeNull();
+  });
+
+  it("text that is not a summary is read whole, as before", () => {
+    expect(fallbackSummaryCauses("prompt too large for the model")).toBeNull();
+    expect(fallbackSummaryCauses("All models failed (2): no attempt segment here")).toBeNull();
+    expect(classifyFailureText("All models failed (2): no attempt segment here")).toBeNull();
   });
 });

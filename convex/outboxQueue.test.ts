@@ -982,6 +982,9 @@ describe("sub-agent dispatch hold (A/B fix)", () => {
     const reaped = await t.run((ctx) => ctx.db.get(staleRow));
     expect(reaped?.status).toBe("error");
     expect(reaped?.errorMessage).toMatch(/expiré/i);
+    // …and a CODE that says whose verdict it is: ours, for want of any activity — not a
+    // limit the gateway enforced (lib/subAgentFailure `no_activity`).
+    expect(reaped?.errorCode).toBe("subagent_no_activity");
     // The held queue drained via the terminal-drain — oldest first, ONE at a time.
     const [s1, s2] = await t.run(async (ctx) => [
       (await ctx.db.get(q1))?.status,

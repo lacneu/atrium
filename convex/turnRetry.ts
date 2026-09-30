@@ -320,6 +320,39 @@ export async function maybeScheduleTurnRetry(
     }
     return;
   }
+  // Another run was writing this session when the turn failed: a retry's session reset
+  // could discard its reply. Recorded as a stand-down, so the card says why.
+  if (failureShowsConcurrentWriter(message.error)) {
+    await ctx.db.patch(message._id, {
+      autoRetryOutcome: {
+        outcome: "stood_down",
+        reason: CONCURRENT_WRITER_REASON,
+        attempt: decision.attempt,
+        maxAttempts: limit,
+        at: Date.now(),
+      },
+    });
+    try {
+      await writeTraceEvent(ctx, {
+        kind: "chat.auto_retry",
+        direction: "internal",
+        principalType: "system",
+        principalId: "turn-retry",
+        chatId: message.chatId,
+        correlationId: `${message.chatId}:${message._id}`,
+        meta: JSON.stringify({
+          phase: "not_scheduled",
+          outcome: "stand_down",
+          reason: CONCURRENT_WRITER_REASON,
+          attempt: decision.attempt,
+          messageId: message._id,
+        }),
+      });
+    } catch (e) {
+      console.error("[turnRetry] trace failed (non-fatal):", (e as Error)?.message ?? e);
+    }
+    return;
+  }
   // Delegated work on the card: no retry, and the card says why (see
   // delegationBlocksRetry). Recorded as a stand-down — the retry was due and did not run.
   if (await delegationBlocksRetry(ctx, message)) {
@@ -479,6 +512,33 @@ async function countBlockingParts(
 
 /** The stand-down reason for a card whose turn had already delegated work. */
 export const DELEGATED_WORK_REASON = "delegated_work";
+
+/** The stand-down reason for a card whose failure shows ANOTHER run writing the same
+ *  session: one of its fallback attempts lost its input to it. */
+export const CONCURRENT_WRITER_REASON = "concurrent_writer";
+
+/** The gateway's fixed sentence for an input a concurrent run displaced (upstream
+ *  src/config/sessions/session-accessor.sqlite-transcript-message-append.ts:185 at
+ *  v2026.9.6; the bridge's PENDING_INPUT_DROPPED_RE carries the analysis). Fixed gateway
+ *  words only, so no operator value can carry it by accident. */
+const PENDING_INPUT_DROPPED_TEXT_RE =
+  /pending input is no longer active in its admitted transcript/i;
+
+/**
+ * Does this failure prove another run was writing the same session?
+ *
+ * A model-fallback summary can mix classes: an earlier candidate died of a retryable
+ * provider error, a later one had its input displaced because another run (a
+ * requester-settle wake, prod 2026-09-28) replaced the active branch. The turn is then
+ * classified by the retryable cause (the bridge no longer promises "nothing ran" for a
+ * mixed summary) — but the retry re-dispatches through a gateway session RESET, which
+ * would throw away the reply that other run wrote. Read from the stored error text: the
+ * class cannot say it. Residual: a text cut by the credential mask before this sentence
+ * does not show it, and that retry proceeds as before.
+ */
+export function failureShowsConcurrentWriter(error: string | undefined): boolean {
+  return error !== undefined && PENDING_INPUT_DROPPED_TEXT_RE.test(error);
+}
 
 /** Rows a delegation check reads at most, per query. Hitting the bound without a
  *  verdict counts as delegation: a bound must limit the transaction, never decide

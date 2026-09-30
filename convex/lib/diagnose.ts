@@ -125,6 +125,14 @@ export interface DiagMessage {
   messageId?: string;
   /** Coarse text-length bucket ("0" = no text at all). */
   textLenBucket?: string;
+  /** The bubble's only text is its `sessions_yield` acknowledgment — a hand-off that
+   *  has not answered yet (lib/toolOutcome textIsYieldAcknowledgment). A boolean,
+   *  computed where the text is; the text itself never reaches this module. */
+  textIsHandOffAck?: boolean;
+  /** Files the bubble carries (media / file parts) — a count, never a name. */
+  deliveredFileCount?: number;
+  /** Downloadable documents fetched for this reply — a count. */
+  attachedDocCount?: number | null;
   /** The live-turn difficulty the reader sees (lib/turnDifficulty), on a message
    *  still streaming. Absent/null = none. */
   liveDifficulty?: TurnDifficulty | null;
@@ -137,6 +145,9 @@ export interface DiagSubAgentEntry {
   ageSeconds: number;
   /** The spawning message (structural id). Optional: absent = no anchor. */
   parentMessageId?: string | null;
+  /** The message whose run this child was born in (a requester-settle continuation
+   *  delegating again leaves `parentMessageId` empty). Optional: absent = no join. */
+  bornOfMessageId?: string | null;
 }
 export interface DiagChatState {
   ok: boolean;
@@ -221,6 +232,8 @@ export function actionForErrorCode(code: string | null): string {
       return "The gateway closed the connection for slow consumption (its 50 MiB send buffer filled) while this turn was streaming: frames had already been DROPPED, so the visible reply is incomplete even though the agent may have finished. Look at bridge CPU/event-loop pressure and at turns producing very large outputs; this is not a gateway fault.";
     case "DISPATCH_STALLED":
       return "This dispatch stayed `pending` far longer than any live dispatch could, so the reconciler settled it to unlock the conversation (its action died before marking the row, its POST to the bridge exceeded the cap, or a preempt re-dispatch never fired). Delivery is UNPROVEN. Look for a crashed/evicted Convex action, or a `/send exceeded` line, around that time.";
+    case "pending_input_dropped":
+      return "The gateway dropped the user's admitted input: a concurrent run on the same session (typically a requester-settle wake reporting delegated work) replaced the transcript's active branch before the input was promoted. Nothing was processed and nothing is retried automatically — the user resends. Recurring on one chat = sends colliding with delegated-work wakes on that instance.";
     case "BRIDGE_UNREACHABLE":
       return "Convex could not reach the bridge. Check the bridge container and BRIDGE_URL.";
     default:
@@ -431,27 +444,47 @@ export function assessChat(
   // recency horizon exists to forget failures a conversation left behind; this
   // one is still the last thing on screen (production 2026-09-28: diagnosed
   // `healthy` thirty minutes after the hand-off lost its only answer).
+  //
+  // "Ended with no text" has two stored shapes. The empty bubble, and the bubble whose
+  // ONLY text is the acknowledgment the hand-off wrote ("I'll check the corpus, then
+  // explain") — which the bridge promotes into the reply precisely because the turn said
+  // nothing else. For the reader the second is the same dead end, with a promise on it
+  // (production 2026-09-28, report prod-ms7446xa…: diagnosed `healthy`).
+  //
+  // And a child reaches the bubble by one of two joins: its anchor, or — for a child a
+  // requester-settle CONTINUATION delegated, which has no anchor to inherit — the run it
+  // was born in (production 2026-09-28, chat mh720t35…: the last continuation's children
+  // were reaped with no anchor, and the chat read `healthy`).
   const newest = messages[messages.length - 1];
-  const lostHandOff =
+  const handOffUnanswered =
     newest !== undefined &&
     newest.role === "assistant" &&
     newest.status === "complete" &&
-    newest.textLenBucket === "0" &&
-    newest.messageId !== undefined
-      ? (state.subAgents?.failedSample ?? []).find(
-          (s) => s.parentMessageId === newest.messageId,
-        )
-      : undefined;
+    (newest.textLenBucket === "0" || newest.textIsHandOffAck === true) &&
+    // A FILE is an answer too: with two children, one can fail while the other delivers
+    // a document into this bubble with no text of its own (codex, 0.89.1).
+    (newest.deliveredFileCount ?? 0) === 0 &&
+    (newest.attachedDocCount ?? 0) === 0 &&
+    newest.messageId !== undefined;
+  const lostHandOff = handOffUnanswered
+    ? (state.subAgents?.failedSample ?? []).find(
+        (s) =>
+          s.parentMessageId === newest.messageId ||
+          s.bornOfMessageId === newest.messageId,
+      )
+    : undefined;
   if (lostHandOff) {
+    const ackOnly = newest?.textIsHandOffAck === true;
     return {
       class: "subagent_failure",
       severity: "warn",
       errorCode: null,
-      reason: `the last turn handed off to a sub-agent that ${lostHandOff.status} (${lostHandOff.errorCategory}) and nothing followed`,
-      summary:
-        "The last turn ended without text, delegating its answer to a sub-agent that did not finish — no reply followed, so the user has no answer.",
+      reason: `the last turn handed off to a sub-agent that ${lostHandOff.status} (${lostHandOff.errorCategory}) and nothing followed${ackOnly ? " (the bubble shows only the hand-off acknowledgment)" : ""}`,
+      summary: ackOnly
+        ? "The last turn only acknowledged the request (\"I'm on it\") and delegated its answer to a sub-agent that did not finish — no reply followed, so the user has a promise and no answer."
+        : "The last turn ended without text, delegating its answer to a sub-agent that did not finish — no reply followed, so the user has no answer.",
       suggestedAction:
-        "Inspect the sub-agent's failure category and the gateway around that time; the user can send a new message to resume. The failure detail is owner-scoped (the chat's sub-agent monitor).",
+        "Inspect the sub-agent's failure category and the gateway around that time (`no_activity` = Atrium saw nothing from the child and gave up on it — the child may have run unseen or never started; `timeout` = a limit the gateway enforced); the user can send a new message to resume. The failure detail is owner-scoped (the chat's sub-agent monitor).",
       suggestedTool: null,
     };
   }

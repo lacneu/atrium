@@ -101,6 +101,16 @@ describe("a compacted session's overflow retries ONCE (W2)", () => {
     }
   });
 
+  test("a DROPPED input is never retried by the system — the reader resends", () => {
+    // Nothing ran (upstream refuses the input before the provider is called), so a
+    // re-run would be safe in itself. What is not safe is HOW the retry re-runs: through
+    // a gateway session reset (dispatchReset), which would throw away the reply the
+    // concurrent run had just written — the very run that dropped this input. The
+    // reader's own resend keeps it, and succeeded in the prod case (report prod-ms7eytay…).
+    expect(RETRYABLE_KINDS.has("pending_input_dropped")).toBe(false);
+    expect(retryDecision(at("pending_input_dropped"))).toBeNull();
+  });
+
   test("a writer rebound is never retried, zero content or not", () => {
     // `session_write_conflict` is a rebound the bridge could NOT prove pre-generation:
     // it may have struck at a commit after the model ran. The zero-content gate cannot
@@ -925,6 +935,35 @@ describe("delegated work on the card blocks the retry — and the card says so",
         ...extra,
       }),
     );
+
+  test("a mixed summary with a DROPPED input is never retried: another run was writing (codex, 0.89.1)", async () => {
+    // A first candidate died of a provider 5xx (retryable), a later one lost its input
+    // to a concurrent run. The retry's session reset could discard that run's reply.
+    vi.useFakeTimers();
+    const t = convexTest(schema, modules);
+    const { assistantId } = await seedErroredTurn(t);
+    await t.mutation(internal.stream.finalize, {
+      messageId: assistantId,
+      status: "error" as const,
+      error:
+        "All models failed (2): openai/a: internal server error (unknown) | openai/b: Pending input is no longer active in its admitted transcript (unknown)",
+      errorKind: "provider_internal",
+    });
+    await vi.advanceTimersByTimeAsync(RETRY_DELAY_MS[0]! + 500);
+    await t.finishInProgressScheduledFunctions();
+    const after = await t.run(async (ctx) => ({
+      msg: await ctx.db.get(assistantId),
+      outbox: await ctx.db.query("outbox").collect(),
+    }));
+    expect(after.msg?.errorCode).toBe("provider_internal");
+    expect(after.msg?.autoRetry).toBeUndefined();
+    expect(after.msg?.autoRetryOutcome).toMatchObject({
+      outcome: "stood_down",
+      reason: "concurrent_writer",
+    });
+    expect(after.outbox.some((o) => o.autoRetryAttempt === 1)).toBe(false);
+    vi.useRealTimers();
+  });
 
   test("a child that ran a tool: no retry is scheduled, the outcome is recorded, the row survives", async () => {
     vi.useFakeTimers();

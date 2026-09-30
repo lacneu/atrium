@@ -326,11 +326,23 @@ describe("the merge fails CLOSED to its own bubble whenever the join is not exac
     await expectOwnBubble(t, chatId, parentId, settleRun([CHILD_RUN, CHILD_RUN_2].sort()));
   });
 
-  test("a heuristic (non-exact) anchor", async () => {
+  test("a heuristic (non-exact) anchor on a bubble the conversation moved past", async () => {
     const t = convexTest(schema, modules);
-    const { chatId, parentId } = await seedYieldedTurn(t, {
+    const { chatId, parentId, userId } = await seedYieldedTurn(t, {
       children: [{ key: CHILD_KEY, runId: CHILD_RUN, anchorExact: false }],
     });
+    // A positional anchor is a guess: it only ever joins the conversation's LAST
+    // bubble (settleChainJoin.test.ts covers the join while it still is).
+    await t.run((ctx) =>
+      ctx.db.insert("messages", {
+        chatId,
+        userId,
+        role: "user" as const,
+        status: "complete" as const,
+        text: "Et ensuite ?",
+        updatedAt: 3000,
+      }),
+    );
     await expectOwnBubble(t, chatId, parentId, PROD_SETTLE);
   });
 
@@ -1268,26 +1280,57 @@ describe("children spawned together inside a continuation join through their car
     expect(doc?.continuations?.map((c) => c.childRunIds)).toEqual([[CHILD_RUN], [C2A_RUN, C2B_RUN].sort()]);
   });
 
-  test("a carrier that never merged here (its own bubble): fails closed", async () => {
+  // The carrier is read where it WROTE, never re-derived: a carrier that opened a
+  // bubble of its own keeps its children's continuation there (settleChainJoin.test.ts:
+  // production 2026-09-29, where re-deriving it broke every link after the first).
+  async function ownBubbleOf(t: T, chatId: Id<"chats">, runId: string) {
+    return t.run(async (ctx) => {
+      const chat = await ctx.db.get(chatId);
+      return ctx.db.insert("messages", {
+        chatId,
+        userId: chat!.userId,
+        role: "assistant" as const,
+        status: "complete" as const,
+        text: "Deux relectures lancées.",
+        runId,
+        finalizedAt: 2600,
+        updatedAt: 2600,
+      });
+    });
+  }
+
+  test("a carrier that never merged here (its own bubble): the next continuation joins THAT bubble", async () => {
     const t = convexTest(schema, modules);
     const { chatId, parentId } = await seedYieldedTurn(t);
-    // The carrier names the known child, but it did NOT run on B — B holds no trace of it.
+    // The carrier did NOT run on B — it opened W.
+    const w = await ownBubbleOf(t, chatId, PROD_SETTLE);
     await parallelChildren(t, chatId, parentId, PROD_SETTLE);
     const next = settleRun([C2A_RUN, C2B_RUN].sort());
-    expect(await t.mutation(internal.stream.startAssistant, { chatId, runId: next })).not.toBe(parentId);
+    expect(await t.mutation(internal.stream.startAssistant, { chatId, runId: next })).toBe(w);
+    expect((await t.run((ctx) => ctx.db.get(parentId)))?.runId).toBe("webchat-6309c12f");
   });
 
-  test("a carrier that is a settle wake WITHOUT a yield (it merges nowhere): fails closed", async () => {
+  test("a carrier that is a settle wake WITHOUT a yield (its own bubble): its children's continuation joins it", async () => {
     const t = convexTest(schema, modules);
     const { chatId, parentId } = await seedYieldedTurn(t);
     const noYield = settleRun([CHILD_RUN], "");
-    await t.run((ctx) => ctx.db.patch(parentId, { mergedAnnounceRuns: [noYield] }));
+    // A wake without a yield never merges: it opens W, and delegates from there.
+    const w = await ownBubbleOf(t, chatId, noYield);
     await parallelChildren(t, chatId, parentId, noYield);
+    const next = settleRun([C2A_RUN, C2B_RUN].sort());
+    expect(await t.mutation(internal.stream.startAssistant, { chatId, runId: next })).toBe(w);
+  });
+
+  test("a carrier that is a settle wake WITHOUT a yield and landed NOWHERE: never walked up", async () => {
+    const t = convexTest(schema, modules);
+    const { chatId, parentId } = await seedYieldedTurn(t);
+    // A no-yield wake has no requester bubble to belong to, lost or not.
+    await parallelChildren(t, chatId, parentId, settleRun([CHILD_RUN], ""));
     const next = settleRun([C2A_RUN, C2B_RUN].sort());
     expect(await t.mutation(internal.stream.startAssistant, { chatId, runId: next })).not.toBe(parentId);
   });
 
-  test("a HEURISTIC anchor with a carrier is still refused", async () => {
+  test("a HEURISTIC anchor with a carrier: the carrier decides (production row 24152ba9)", async () => {
     const t = convexTest(schema, modules);
     const { chatId, parentId } = await seedYieldedTurn(t);
     await t.mutation(internal.stream.startAssistant, { chatId, runId: PROD_SETTLE });
@@ -1303,7 +1346,13 @@ describe("children spawned together inside a continuation join through their car
     });
     expect(
       await t.mutation(internal.stream.startAssistant, { chatId, runId: settleRun([C2A_RUN]) }),
-    ).not.toBe(parentId);
+    ).toBe(parentId);
+    // …and the guess is replaced by what the join proved.
+    const row = await t.run((ctx) =>
+      ctx.db.query("subAgents").withIndex("by_child", (q) => q.eq("childSessionKey", C2A)).first(),
+    );
+    expect(row?.anchorExact).toBe(true);
+    expect(row?.parentMessageId).toBe(parentId);
   });
 });
 

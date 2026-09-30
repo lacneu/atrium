@@ -1130,6 +1130,33 @@ describe("main-lane chat error/aborted terminalization (ChatErrorEventSchema)", 
     expect(final?.errorKind).toBe("auth_profile_cooldown");
   });
 
+  it("the gateway's DROPPED-INPUT summary leaves the normalizer named (prod 2026-09-28)", () => {
+    // The hop the classifier tests do not cover: a terminal chat error carrying only the
+    // fallback summary must reach Convex as a class, not as the `unknown` the diagnostic
+    // showed for message ph7e6a5j… (report prod-ms7eytay…).
+    const normalizer = newNormalizer();
+    const clock = new Clock();
+    normalizer.beginTurn(clock.now);
+    normalizer.noteRunStarted(OWN_RUN, clock.now);
+    const events = normalizer.feed(
+      {
+        type: "event",
+        event: "chat",
+        payload: {
+          runId: OWN_RUN,
+          sessionKey: SESSION_KEY,
+          state: "error",
+          errorMessage:
+            "All models failed (3): openai/gpt-6-sol: Pending input is no longer active in its admitted transcript (unknown) | openai/gpt-5.6-sol: Pending input is no longer active in its admitted transcript (unknown) | openai/gpt-5.6-terra: Pending input is no longer active in its admitted transcript (unknown) | ⚠️ Agent run failed (model: openai/gpt-5.6-terra).",
+        },
+      },
+      clock.tick(),
+    );
+    const final = events.find((e) => e.type === "message.final");
+    expect(final?.error).toBeTruthy();
+    expect(final?.errorKind).toBe("pending_input_dropped");
+  });
+
   it("the auth-profile COOLDOWN sentence classifies from bare text, as production sent it", () => {
     // The production frame carried NO errorKind — which is why the reader got an empty
     // bubble (feedback prod-ms7ed3bn…). This is the hop the per-hop tests do not cover

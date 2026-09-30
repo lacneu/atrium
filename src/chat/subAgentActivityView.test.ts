@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { m } from "@/paraglide/messages.js";
 import {
   subAgentKindLabel,
   buildSubAgentActivityView,
@@ -282,6 +283,23 @@ describe("hasRunningSubAgent (composer busy detection)", () => {
         row({ _id: "a", status: "aborted" }),
       ]),
     ).toBe(false);
+  });
+});
+
+describe("a child our reaper gave up on (subagent_no_activity)", () => {
+  it("says no activity was SEEN — never that it ran out of time — and hides our own prose", () => {
+    const fr = "Sous-agent expiré — aucune activité, observateur probablement perdu";
+    const out = shortenSubAgentError(fr, "subagent_no_activity", 900);
+    expect(out).toBe(m.subagents_error_no_activity());
+    expect(out).not.toBe(m.subagents_error_timeout({ seconds: 900 }));
+    // The reaper's sentence is ours (and French whatever the reader's language): it adds
+    // nothing under the label.
+    expect(subAgentErrorDetail(fr, "subagent_no_activity")).toBeNull();
+    for (const locale of ["en", "fr"] as const) {
+      const sentence = m.subagents_error_no_activity({}, { locale });
+      expect(sentence.length, locale).toBeLessThanOrEqual(120);
+      expect(sentence, locale).not.toMatch(/time limit|délai|timed out|expir/i);
+    }
   });
 });
 

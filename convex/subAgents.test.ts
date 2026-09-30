@@ -149,6 +149,62 @@ describe("subAgents.upsertSubAgent", () => {
     expect(rows[0]!.errorCode).toBe("unknown");
   });
 
+  test("a reaper's NO-ACTIVITY code is provisional: the gateway's later word replaces it", async () => {
+    // The bridge's sweep (or Convex's reaper) gives up on a child it saw nothing from and
+    // stores `subagent_no_activity`. If the gateway's own terminal then arrives, the code
+    // must not keep naming the reaper — neither under the gateway's error sentence (which
+    // brought no class of its own), nor on a child that finished after all.
+    const t = convexTest(schema, modules);
+    const { chatId } = await seedUserAndChat(t);
+    const read = (key: string) =>
+      t.run(async (ctx) =>
+        ctx.db
+          .query("subAgents")
+          .withIndex("by_child", (q) => q.eq("childSessionKey", key))
+          .first(),
+      );
+    for (const key of [`${CHILD}-err`, `${CHILD}-done`]) {
+      await t.mutation(internal.subAgents.upsertSubAgent, {
+        chatId,
+        childSessionKey: key,
+        status: "error" as const,
+        errorMessage: "Sub-agent timed out: no activity for 900s and the gateway never reported it finishing.",
+        errorCode: "subagent_no_activity",
+      });
+      expect((await read(key))?.errorCode, key).toBe("subagent_no_activity");
+    }
+    await t.mutation(internal.subAgents.upsertSubAgent, {
+      chatId,
+      childSessionKey: `${CHILD}-err`,
+      status: "error" as const,
+      errorMessage: "tool exploded",
+    });
+    expect((await read(`${CHILD}-err`))?.errorCode).toBeUndefined();
+    await t.mutation(internal.subAgents.upsertSubAgent, {
+      chatId,
+      childSessionKey: `${CHILD}-done`,
+      status: "done" as const,
+      resultText: "LATE_BUT_DONE",
+    });
+    const done = await read(`${CHILD}-done`);
+    expect(done?.status).toBe("done");
+    expect(done?.errorCode).toBeUndefined();
+    // A refresh that says nothing about the failure leaves the verdict alone.
+    await t.mutation(internal.subAgents.upsertSubAgent, {
+      chatId,
+      childSessionKey: `${CHILD}-keep`,
+      status: "error" as const,
+      errorCode: "subagent_no_activity",
+    });
+    await t.mutation(internal.subAgents.upsertSubAgent, {
+      chatId,
+      childSessionKey: `${CHILD}-keep`,
+      status: "error" as const,
+      telemetry: { runtimeMs: 1 },
+    });
+    expect((await read(`${CHILD}-keep`))?.errorCode).toBe("subagent_no_activity");
+  });
+
   test("a terminal status is never downgraded back to running (reorder-tolerance)", async () => {
     const t = convexTest(schema, modules);
     const { chatId } = await seedUserAndChat(t);

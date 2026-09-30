@@ -595,4 +595,222 @@ describe("chatStateInternal reports a turn's tool-repetition shape", () => {
       JSON.stringify(full).length,
     );
   });
+  // Production 2026-09-28, both shapes at once, end to end through the route's own
+  // composition (chatStateInternal -> assessChat):
+  //  - report prod-ms7446xa…: a bubble whose only text is its hand-off acknowledgment,
+  //    its child reaped with nothing seen;
+  //  - report prod-ms79041n…: a continuation that delegated again, whose child carries
+  //    no anchor, only the run it was born in.
+  test("integration: an unanswered hand-off is found through the ack text and the birth run", async () => {
+    const ACK = "SENTINEL_ACK Je vérifie le corpus, puis je t'explique.";
+    const SETTLE_RUN = "announce:requester-settle:a:agent:a:atrium:chat:c:mh-chat:run-1:yield-1";
+    const t = convexTest(schema, modules);
+    const seeded = await t.run(async (ctx) => {
+      const userId = await ctx.db.insert("users", {});
+      const cid = await ctx.db.insert("chats", { userId, updatedAt: 0 });
+      const now = Date.now();
+      await ctx.db.insert("messages", {
+        chatId: cid,
+        userId,
+        role: "user" as const,
+        status: "complete" as const,
+        text: "explain",
+        updatedAt: now - 40 * 60 * 1000,
+      });
+      const ackMsg = await ctx.db.insert("messages", {
+        chatId: cid,
+        userId,
+        role: "assistant" as const,
+        status: "complete" as const,
+        text: ACK,
+        runId: "webchat-ack-run",
+        updatedAt: now - 35 * 60 * 1000,
+      });
+      await ctx.db.insert("messageParts", {
+        messageId: ackMsg,
+        order: 0,
+        part: {
+          kind: "tool" as const,
+          name: "sessions_yield",
+          phase: "completed",
+          input: { acknowledgment: ACK, waitFor: "message" },
+          output: { details: { status: "yielded", acknowledgment: ACK } },
+        },
+      });
+      await ctx.db.insert("subAgents", {
+        chatId: cid,
+        childSessionKey: "agent:files:subagent:fb081174-a4a6",
+        parentMessageId: ackMsg,
+        status: "error" as const,
+        errorMessage: "Sous-agent expiré — aucune activité, observateur probablement perdu",
+        errorCode: "subagent_no_activity",
+        createdAt: now - 35 * 60 * 1000,
+        updatedAt: now - 30 * 60 * 1000,
+      });
+      return { chatId: cid, userId, ackMsg };
+    });
+
+    let state = await t.query(internal.messages.chatStateInternal, {
+      chatId: seeded.chatId,
+    });
+    expect(state.ok).toBe(true);
+    if (!state.ok) return;
+    const ack = state.messages.find((m) => m.messageId === seeded.ackMsg)!;
+    expect(ack.textIsHandOffAck).toBe(true);
+    // A boolean: the acknowledgment itself never leaves.
+    expect(JSON.stringify(state)).not.toContain("SENTINEL_ACK");
+    expect(state.subAgents.failedSample[0]!.errorCategory).toBe("no_activity");
+    let a = assessChat(state, {
+      known: true,
+      available: true,
+      degraded: false,
+      reason: null,
+    });
+    expect(a.class).toBe("subagent_failure");
+    expect(a.reason).toMatch(/no_activity.*acknowledgment/);
+
+    // The conversation continues: a continuation delegated again and its child, born in
+    // the continuation's run with no anchor, was reaped too.
+    const settle = await t.run(async (ctx) => {
+      const now = Date.now();
+      const mid = await ctx.db.insert("messages", {
+        chatId: seeded.chatId,
+        userId: seeded.userId,
+        role: "assistant" as const,
+        status: "complete" as const,
+        text: "",
+        runId: SETTLE_RUN,
+        updatedAt: now - 25 * 60 * 1000,
+      });
+      await ctx.db.insert("subAgents", {
+        chatId: seeded.chatId,
+        childSessionKey: "agent:files:subagent:fdd1b996-acf",
+        bornOfRun: SETTLE_RUN,
+        status: "error" as const,
+        errorCode: "subagent_no_activity",
+        createdAt: now - 25 * 60 * 1000,
+        updatedAt: now - 20 * 60 * 1000,
+      });
+      return mid;
+    });
+    state = await t.query(internal.messages.chatStateInternal, {
+      chatId: seeded.chatId,
+    });
+    if (!state.ok) return;
+    const born = state.subAgents.failedSample.find(
+      (s) => s.parentMessageId === null,
+    )!;
+    expect(born.bornOfMessageId).toBe(settle);
+    a = assessChat(state, { known: true, available: true, degraded: false, reason: null });
+    expect(a.class).toBe("subagent_failure");
+    expect(a.reason).toMatch(/handed off/);
+  });
+  // Codex pass 2 (0.89.1): a LATER continuation merged into the bubble and rotated its
+  // runId, so the child born in the EARLIER run no longer matched any current run id and
+  // the unanswered hand-off read `healthy`. The durable run -> bubble record resolves it.
+  test("a child born in a run the bubble has since ROTATED away still joins it", async () => {
+    const EARLY = "announce:requester-settle:a:agent:a:atrium:chat:c:mh-chat:run-1:yield-1";
+    const LATE = "announce:requester-settle:a:agent:a:atrium:chat:c:mh-chat:run-2:yield-1";
+    const t = convexTest(schema, modules);
+    const { chatId, bubble } = await t.run(async (ctx) => {
+      const userId = await ctx.db.insert("users", {});
+      const cid = await ctx.db.insert("chats", { userId, updatedAt: 0 });
+      const now = Date.now();
+      await ctx.db.insert("messages", {
+        chatId: cid,
+        userId,
+        role: "user" as const,
+        status: "complete" as const,
+        text: "go",
+        updatedAt: now - 40 * 60 * 1000,
+      });
+      const mid = await ctx.db.insert("messages", {
+        chatId: cid,
+        userId,
+        role: "assistant" as const,
+        status: "complete" as const,
+        text: "",
+        runId: LATE, // rotated: the bubble's run id names only the last run
+        updatedAt: now - 30 * 60 * 1000,
+      });
+      await ctx.db.insert("runBubbles", { chatId: cid, runId: EARLY, messageId: mid, createdAt: now });
+      await ctx.db.insert("runBubbles", { chatId: cid, runId: LATE, messageId: mid, createdAt: now });
+      await ctx.db.insert("subAgents", {
+        chatId: cid,
+        childSessionKey: "agent:files:subagent:rotated-1",
+        bornOfRun: EARLY,
+        status: "error" as const,
+        errorCode: "subagent_no_activity",
+        createdAt: now - 30 * 60 * 1000,
+        updatedAt: now - 25 * 60 * 1000,
+      });
+      return { chatId: cid, bubble: mid };
+    });
+    const state = await t.query(internal.messages.chatStateInternal, { chatId });
+    if (!state.ok) throw new Error("state");
+    expect(state.subAgents.failedSample[0]!.bornOfMessageId).toBe(bubble);
+    const a = assessChat(state, { known: true, available: true, degraded: false, reason: null });
+    expect(a.class).toBe("subagent_failure");
+  });
+  // Codex pass 4 (0.89.1), end to end: the acknowledgment-only bubble holds a file a
+  // second child delivered; its first child was reaped. Not a lost hand-off.
+  test("integration: an acknowledgment bubble holding a delivered file is not a lost hand-off", async () => {
+    const ACK = "Je prépare les deux documents.";
+    const t = convexTest(schema, modules);
+    const chatId = await t.run(async (ctx) => {
+      const userId = await ctx.db.insert("users", {});
+      const cid = await ctx.db.insert("chats", { userId, updatedAt: 0 });
+      const now = Date.now();
+      const mid = await ctx.db.insert("messages", {
+        chatId: cid,
+        userId,
+        role: "assistant" as const,
+        status: "complete" as const,
+        text: ACK,
+        updatedAt: now - 30 * 60 * 1000,
+      });
+      await ctx.db.insert("messageParts", {
+        messageId: mid,
+        order: 0,
+        part: {
+          kind: "tool" as const,
+          name: "sessions_yield",
+          phase: "completed",
+          input: { acknowledgment: ACK },
+          output: { details: { status: "yielded" } },
+        },
+      });
+      const storageId = await ctx.storage.store(new Blob(["pdf"]));
+      await ctx.db.insert("messageParts", {
+        messageId: mid,
+        order: 1,
+        part: {
+          kind: "file" as const,
+          storageId,
+          filename: "SENTINEL_DELIVERED.pdf",
+          mimeType: "application/pdf",
+        },
+      });
+      for (const [key, status] of [["a", "error"], ["b", "done"]] as const) {
+        await ctx.db.insert("subAgents", {
+          chatId: cid,
+          childSessionKey: `agent:files:subagent:${key}`,
+          parentMessageId: mid,
+          status,
+          ...(status === "error" ? { errorCode: "subagent_no_activity" } : {}),
+          createdAt: now - 30 * 60 * 1000,
+          updatedAt: now - 25 * 60 * 1000,
+        });
+      }
+      return cid;
+    });
+    const state = await t.query(internal.messages.chatStateInternal, { chatId, includeParts: false });
+    if (!state.ok) throw new Error("state");
+    const bubble = state.messages.find((m) => m.role === "assistant")!;
+    expect(bubble.textIsHandOffAck).toBe(true);
+    expect(bubble.deliveredFileCount).toBe(1);
+    expect(JSON.stringify(state)).not.toContain("SENTINEL_DELIVERED");
+    const a = assessChat(state, { known: true, available: true, degraded: false, reason: null });
+    expect(a.class).not.toBe("subagent_failure");
+  });
 });

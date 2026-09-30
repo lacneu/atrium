@@ -166,6 +166,56 @@ export function isGatewayStorageUnavailableText(text: string | null | undefined)
 const AGENT_DATABASE_CLOSED_RE =
   /agent database execution admission is closed|sessions remain unavailable|preserve and inspect this database before accepting a fresh agent/i;
 
+// The gateway DROPPED THE USER'S ADMITTED INPUT because another writer replaced the
+// conversation's active branch under it (v2026.9.6). One producer:
+// src/config/sessions/session-accessor.sqlite-transcript-message-append.ts:185, inside
+// `existingAppendResult`, reached when the input's transcript entry already exists but is
+// no longer on the active path — upstream's own words at :179-180, "it cannot revive a
+// replaced transcript branch". Prod 2026-09-28 (chat mh72csw4…, report prod-ms7eytay…): a
+// send dispatched at the same moment as a requester-settle wake.
+//
+// NOTHING WAS PROCESSED. The throw is inside the append's write transaction
+// (session-accessor.sqlite-transcript-turn.ts:153 `runOpenClawAgentWriteTransaction`),
+// BEFORE `consumeSessionPendingInput` (:187), while the attempt persists the user prompt —
+// which precedes the provider call (run/attempt-prompt-submit.ts: `persistThenStream` is the
+// provider boundary). The dead entry sits on a branch the model no longer reads, so a resend
+// (a new idempotency key, a new pending input) neither duplicates work nor context.
+//
+// NOT auto-retried (convex/turnRetry.ts): Atrium's retry re-dispatches through a gateway
+// session RESET, which would throw away the reply the concurrent run just wrote. The
+// reader's own resend keeps it — and in the prod case it succeeded a minute later.
+const PENDING_INPUT_DROPPED_RE = /pending input is no longer active in its admitted transcript/i;
+
+/** The gateway's model-fallback SUMMARY: every candidate failed, and upstream joined their
+ *  causes (src/agents/model-fallback-attempt.ts:626-628 `throwFallbackFailureSummary`, one
+ *  segment per attempt formatted by model-fallback-runner.ts:698-701 as
+ *  `<provider>/<model>: <error>[ (<reason>)]`, joined by " | "). The label varies by
+ *  capability ("models", "image generation models", …), hence the free words before it. */
+const FALLBACK_SUMMARY_RE = /^\s*all (?:[a-z][\w -]{0,60}? )?models failed \(\d+\):\s*/i;
+/** One attempt's `<provider>/<model>: ` prefix. A model id may itself contain a colon
+ *  (`ollama/llama3:8b`), so the prefix ends at the first colon FOLLOWED BY whitespace. */
+const FALLBACK_ATTEMPT_PREFIX_RE = /^[^\s/|]+\/\S+?:\s+/;
+
+/** The CAUSES inside a model-fallback summary, with every candidate's `<provider>/<model>`
+ *  removed — or null when the text is not one.
+ *
+ *  The wrapper names nothing itself; what classifies the turn is what each candidate died
+ *  of. The model ids are operator configuration, and like every other operator value they
+ *  must not be able to choose a class (`withoutOperatorData`). Segments that are not an
+ *  attempt — the `⚠️ Agent run failed (model: …)` trailer the runner appends — are dropped
+ *  for the same reason: they carry a model id and no cause. */
+export function fallbackSummaryCauses(raw: string): string[] | null {
+  const head = FALLBACK_SUMMARY_RE.exec(raw);
+  if (head === null) return null;
+  const causes = raw
+    .slice(head[0].length)
+    .split(" | ")
+    .map((segment) => segment.trim())
+    .filter((segment) => FALLBACK_ATTEMPT_PREFIX_RE.test(segment))
+    .map((segment) => segment.replace(FALLBACK_ATTEMPT_PREFIX_RE, ""));
+  return causes.length > 0 ? causes : null;
+}
+
 export function isAgentDatabaseClosedText(text: string | null | undefined): boolean {
   if (!text) return false;
   return AGENT_DATABASE_CLOSED_RE.test(withoutOperatorData(text));
@@ -515,6 +565,44 @@ export function isSessionGoneText(text: string | null | undefined): boolean {
 
 export function classifyFailureText(raw: string | null | undefined): string | null {
   if (!raw) return null;
+  // A model-fallback summary is classified by the causes INSIDE it, never by its wrapper
+  // or the model ids it lists (see `fallbackSummaryCauses`). The causes are read together,
+  // through the same precedence as a single text: the graver class still wins.
+  const causes = fallbackSummaryCauses(raw);
+  if (causes === null) return classifySingleFailureText(raw);
+  const perAttempt = causes.map((cause) => classifySingleFailureText(cause));
+  if (!perAttempt.includes("pending_input_dropped")) {
+    return classifySingleFailureText(causes.join(" | "));
+  }
+  // `pending_input_dropped` PROMISES THE READER NOTHING RAN. One attempt losing its input
+  // proves that only for that attempt: an earlier candidate may have streamed, or run a
+  // tool, before failing some other way. So the class is given only when EVERY attempt
+  // provably did no work; otherwise the turn is classified by the other attempts' causes,
+  // without the promise.
+  if (perAttempt.every((c) => c !== null && PRE_EXECUTION_CLASSES.has(c))) {
+    return "pending_input_dropped";
+  }
+  return classifySingleFailureText(
+    causes.filter((_, i) => perAttempt[i] !== "pending_input_dropped").join(" | "),
+  );
+}
+
+/** The attempt failures upstream raises BEFORE the candidate executes anything, read at
+ *  v2026.9.6 — the only ones that may stand beside a dropped input in a summary that still
+ *  says "nothing was processed":
+ *   - `pending_input_dropped`: thrown while the attempt persists the user prompt, inside the
+ *     write transaction and before the provider is called (see PENDING_INPUT_DROPPED_RE);
+ *   - `auth_profile_cooldown`: the candidate's credential is refused while its runtime plan
+ *     is PREPARED — src/agents/runtime-plan/prepare-auth.ts:216,491,603 and
+ *     src/agents/provider-model-route-auth.ts:166 — before any prompt is submitted.
+ *  Nothing else qualifies: an overflow, a provider error or a storage failure can each
+ *  strike after the model streamed or a tool ran, and an unrecognized cause proves nothing. */
+const PRE_EXECUTION_CLASSES: ReadonlySet<string> = new Set([
+  "pending_input_dropped",
+  "auth_profile_cooldown",
+]);
+
+function classifySingleFailureText(raw: string): string | null {
   // A sentence that NAMES A CREDENTIAL gets exactly one possible class — the cooldown,
   // decided by fixed words — and otherwise none. Everything else in such a sentence is
   // operator data, and no pattern below may be applied to it (see `namesACredential`).
@@ -571,6 +659,10 @@ export function classifyFailureText(raw: string | null | undefined): string | nu
   // whose reason happens to say "database is locked" is not a resend-and-it-works event.
   if (AGENT_DATABASE_CLOSED_RE.test(text)) return "gateway_agent_db_closed";
   if (GATEWAY_STORAGE_BUSY_RE.test(text)) return "gateway_storage_busy";
+  // After the storage classes (the graver class wins), before everything that could be
+  // retried: a dropped input is not a provider blip, and in a fallback summary it is the
+  // cause every later candidate inherited.
+  if (PENDING_INPUT_DROPPED_RE.test(text)) return "pending_input_dropped";
   // BEFORE the session-conflict rule below, which is about a session being STARTED:
   // this one says the conversation is gone for good, and the two ask for opposite
   // things — a bounded retry into the same session, versus dropping it first.

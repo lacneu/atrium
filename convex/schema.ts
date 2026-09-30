@@ -2194,6 +2194,11 @@ export default defineSchema({
     // mid-turn send serialization (lib/outboxQueue.isChatBusy) — .first() on the
     // (chat, "streaming") point range, no per-chat scan.
     .index("by_chat_status", ["chatId", "status"])
+    // (chatId, runId): "which bubble did THIS run write to?" — the requester-settle
+    // join resolves a child's CARRIER run (the continuation it was spawned in) to its
+    // bubble in one point read (stream.ts `bubbleWrittenByRun`), whether the run
+    // merged into a turn's bubble or opened its own.
+    .index("by_chat_run", ["chatId", "runId"])
     // Bounded scan for the stuck-stream watchdog: a message left `status:
     // "streaming"` whose `updatedAt` is far in the past = the bridge lost the
     // run's WS subscription and never relayed the finalize frame (the UI then
@@ -2235,6 +2240,20 @@ export default defineSchema({
       searchField: "text",
       filterFields: ["userId"],
     }),
+
+  // Which bubble each post-turn DELIVERY run wrote to (stream.ts `recordRunBubble`):
+  // the message it opened, or the one it merged into. The bubble's own `runId` names
+  // only the LAST run that wrote there, so without this record a requester-settle
+  // join could not find where an earlier continuation wrote once a later wave took
+  // the bubble over. Ids only; purged with the chat (chats.cascadeDeleteChat).
+  runBubbles: defineTable({
+    chatId: v.id("chats"),
+    runId: v.string(),
+    messageId: v.id("messages"),
+    createdAt: v.number(),
+  })
+    .index("by_chat", ["chatId"])
+    .index("by_chat_run", ["chatId", "runId"]),
 
   // Structured non-text content attached to a message, ordered for rendering.
   // DURABLE protocol drift — the shapes a gateway emits that this build does not know.

@@ -1043,6 +1043,7 @@ export class SubAgentObserver {
             childSessionKey: key,
             status: "error",
             errorMessage: `Sub-agent timed out: no activity for ${this.ttlSeconds}s and the gateway never reported it finishing.`,
+            errorCode: SUBAGENT_NO_ACTIVITY_CODE,
             // Last-known telemetry so even a timed-out child keeps its numbers.
             ...(obs.telemetry !== undefined ? { telemetry: obs.telemetry } : {}),
           });
@@ -1965,6 +1966,14 @@ function extractToolResultText(value: unknown): string {
 /** The class a refused spawn's row carries (allowlisted Convex-side,
  *  convex/lib/chatRenderState.ts): the delegation never started. */
 export const SPAWN_REFUSED_CODE = "spawn_refused";
+
+/** The class OUR watchdog writes when it gives up on a child it saw nothing from
+ *  (`sweep`). A verdict about the OBSERVER, not the child: the gateway never said the
+ *  child timed out, and it may have run to completion while this bridge was frozen or
+ *  reconnecting. Stored as a code so the category is decided from it, never from the
+ *  prose (convex/lib/subAgentFailure.ts `no_activity`); Convex's own stale-row reaper
+ *  writes the same code (convex/subAgents.ts). */
+export const SUBAGENT_NO_ACTIVITY_CODE = "subagent_no_activity";
 
 /** The refusal members of upstream's spawn contract
  *  (subagent-spawn-contract.ts:86-89 at v2026.9.6: `accepted | forbidden | error`). */

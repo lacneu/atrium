@@ -75,6 +75,7 @@ import {
   type SubAgentStatus,
 } from "./lib/subAgentFailure";
 import { deleteMessageAgentRequests } from "./agentRequests";
+import { textIsYieldAcknowledgment, type YieldAckToolPart } from "./lib/toolOutcome";
 import { isTrashed } from "./lib/trash";
 import { releaseBlob, storageIdsOfPart } from "./lib/blobs";
 
@@ -720,6 +721,13 @@ type SubAgentEntry = {
   // row written before parentMessageId tagging. This is the field whose absence made
   // a "delegated turn shows no sub-agent" bug hard to diagnose from the obs API.
   parentMessageId: string | null;
+  // The message whose RUN this child was born in (`bornOfRun` resolved through the
+  // durable `runBubbles` record, else the observed messages' current run ids). A child
+  // spawned by a requester-settle continuation has NO `parentMessageId` — the
+  // continuation is not a delivery with a carrier row to inherit from — and this is
+  // the only join from it to the bubble that delegated it. A structural message id,
+  // never the run id itself (it embeds the session key: canonical + chatId).
+  bornOfMessageId: string | null;
   // Presence booleans for the two joins a merged hand-off depends on: whether the
   // row knows its child RUN id (what a requester-settle continuation names), and
   // whether its anchor is CORRELATED rather than the bridge's positional fallback.
@@ -769,6 +777,8 @@ async function loadSubAgentSummary(
   ctx: QueryCtx,
   chatId: Id<"chats">,
   now: number,
+  /** Run id -> message id, for the messages in the observed window. */
+  messageIdByRun: ReadonlyMap<string, string> = new Map(),
 ): Promise<{
   total: number;
   byStatus: { running: number; done: number; error: number; aborted: number };
@@ -822,6 +832,8 @@ async function loadSubAgentSummary(
     hasTaskName: typeof c.taskName === "string" && c.taskName.trim() !== "",
     // The spawning message id (structural, SOC2-safe) — the correlation link.
     parentMessageId: c.parentMessageId ?? null,
+    bornOfMessageId:
+      c.bornOfRun !== undefined ? (bubbleByRun.get(c.bornOfRun) ?? null) : null,
     hasChildRunId: typeof c.childRunId === "string" && c.childRunId !== "",
     anchorExact: c.anchorExact === true,
     // Count of the child's tools (never the names/args).
@@ -843,11 +855,38 @@ async function loadSubAgentSummary(
     ageSeconds: Math.round((now - c.updatedAt) / 1000),
   });
   // Failed = error ∪ aborted, newest-first (each slice already desc by creation).
-  const failedSample = [...capRows(errored), ...capRows(aborted)]
+  const failedRows = [...capRows(errored), ...capRows(aborted)]
     .sort((a, b) => b.updatedAt - a.updatedAt)
-    .slice(0, cap)
-    .map(toEntry);
-  const runningSample = capRows(running).map(toEntry);
+    .slice(0, cap);
+  const runningRows = capRows(running);
+  // Where each sampled child's BIRTH RUN wrote. The durable record first (`runBubbles`,
+  // written by stream.ts for every delivery run, the bubble it opened or merged into):
+  // a bubble's own `runId` names only the LAST run that wrote there, so once a later
+  // continuation merges in, the current run ids no longer lead back to it. Then the
+  // current run ids, for a bubble written before that record existed. Bounded: one
+  // point read per distinct birth run among the capped samples.
+  const bornRuns = [
+    ...new Set(
+      [...failedRows, ...runningRows].flatMap((c) =>
+        c.bornOfRun !== undefined ? [c.bornOfRun] : [],
+      ),
+    ),
+  ];
+  const recorded = await Promise.all(
+    bornRuns.map((run) =>
+      ctx.db
+        .query("runBubbles")
+        .withIndex("by_chat_run", (q) => q.eq("chatId", chatId).eq("runId", run))
+        .first(),
+    ),
+  );
+  const bubbleByRun = new Map<string, string>();
+  bornRuns.forEach((run, i) => {
+    const messageId = recorded[i]?.messageId ?? messageIdByRun.get(run);
+    if (messageId !== undefined) bubbleByRun.set(run, messageId);
+  });
+  const failedSample = failedRows.map(toEntry);
+  const runningSample = runningRows.map(toEntry);
   return {
     total: byStatus.running + byStatus.done + byStatus.error + byStatus.aborted,
     byStatus,
@@ -1156,6 +1195,20 @@ export const chatStateInternal = internalQuery({
         updatedAt: effectiveUpdatedAt,
         ageSeconds: Math.round(ageMs / 1000),
         textLenBucket: textLenBucket(effectiveLen),
+        // The bubble's ONLY text is the acknowledgment its `sessions_yield` wrote while
+        // handing off ("I'll check the corpus, then explain") — a hand-off that has not
+        // answered yet, which `textLenBucket` alone cannot tell from an answer. A
+        // boolean: the comparison reads the text and the tool's arguments, and returns
+        // neither (lib/toolOutcome textIsYieldAcknowledgment).
+        textIsHandOffAck:
+          mDoc.role === "assistant" &&
+          mDoc.status !== "streaming" &&
+          textIsYieldAcknowledgment(mDoc.text, mDoc.parts as readonly YieldAckToolPart[]),
+        // How many FILES this bubble carries (media / file parts): a count, never a name.
+        // A hand-off whose bubble shows only its acknowledgment still answered when a
+        // delegated child delivered a file into it (lib/diagnose lostHandOff).
+        deliveredFileCount: parts.filter((p) => p.kind === "media" || p.kind === "file")
+          .length,
         // Prefer the STORED stable code (set by failDispatch) so a dispatch failure
         // is classified precisely; fall back to normalizing the error text (the
         // path for gateway/stream errors that only carry a text reason).
@@ -1202,7 +1255,16 @@ export const chatStateInternal = internalQuery({
     // CONTENT-FREE sub-agent summary (G3): make a failed / stuck delegation visible
     // to the MCP, not only the UI monitor. Bounded reads; enums + counts + opaque
     // ids only (see loadSubAgentSummary).
-    const subAgents = await loadSubAgentSummary(ctx, id, now);
+    // Run id -> message, so a child born in a continuation's run joins the bubble that
+    // delegated it (see SubAgentEntry.bornOfMessageId). First wins: a run id names one
+    // bubble, and a merged one keeps the newest run it rotated to.
+    const messageIdByRun = new Map<string, string>();
+    for (const mDoc of view) {
+      if (mDoc.runId !== undefined && !messageIdByRun.has(mDoc.runId)) {
+        messageIdByRun.set(mDoc.runId, mDoc._id);
+      }
+    }
+    const subAgents = await loadSubAgentSummary(ctx, id, now, messageIdByRun);
     // Bounded: the roster read is capped, and the instance is a single point read.
     const participantCountForState = (await chatParticipantRows(ctx, id)).length;
     const instanceForState = chat.instanceName

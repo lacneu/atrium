@@ -123,6 +123,11 @@ export const KNOWN_ERROR_CODES = [
   // Same, for the owner's knowledge-source choice (convex/knowledge.ts).
   "knowledge_policy_not_applied",
   "auth_profile_cooldown",
+  // The gateway DROPPED the user's admitted input: a concurrent run (a requester-settle
+  // wake, prod 2026-09-28) replaced the conversation's active branch before the input
+  // was promoted, so nothing was processed. Named, so the card can say "send it again"
+  // instead of "unknown", and the per-cause plane can count the race.
+  "pending_input_dropped",
   "gateway_storage_busy",
   "gateway_storage_unavailable",
   // The gateway closed THIS AGENT'S database to new work (refused at startup, or retired
@@ -164,6 +169,11 @@ export const KNOWN_ERROR_CODES = [
   // ran (the bridge settles its row at once — sub-agent-observer.ts). Allowlisted so
   // the row says "could not start" instead of being read as a timeout or `unknown`.
   "spawn_refused",
+  // A SUB-AGENT class too, and ours: a reaper gave up on a child it saw no activity from
+  // (lib/subAgentFailure.ts SUBAGENT_NO_ACTIVITY_CODE). Allowlisted so the bridge's sweep
+  // can store it — outside this list it collapses to "unknown" — and so the category is
+  // decided from it rather than from the reaper's prose, which reads like a timeout.
+  "subagent_no_activity",
   // A turn that ended in ERROR while NOTHING named a cause: no gateway errorKind,
   // no text the classifier recognizes. Allowlisted so the diagnostic surface says
   // "nobody reported a cause" instead of collapsing it to the same `unknown` a

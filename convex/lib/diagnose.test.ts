@@ -156,6 +156,7 @@ describe("assessChat — sub-agent failures (G3 + bug-C)", () => {
       errorCategory: string;
       ageSeconds: number;
       parentMessageId?: string | null;
+      bornOfMessageId?: string | null;
     }[];
     runningSample?: { status: string; errorCategory: string; ageSeconds: number }[];
   }) => ({
@@ -305,6 +306,116 @@ describe("assessChat — sub-agent failures (G3 + bug-C)", () => {
       AVAIL_OK,
     );
     expect(answered.class).toBe("healthy");
+  });
+
+  // Production 2026-09-28, report prod-ms7446xa… (chat mh7d6db7…, message ph7164j7…),
+  // metadata only: the turn's only text was its hand-off acknowledgment ("I'll check the
+  // corpus, then explain"), its one child (fb081174) was reaped with nothing seen, and no
+  // continuation came. Diagnosed `healthy`: the rule required an EMPTY bubble.
+  test("a bubble whose ONLY text is the hand-off acknowledgment is still an unanswered hand-off", () => {
+    const failedSample = [
+      {
+        status: "error",
+        errorCategory: "no_activity",
+        ageSeconds: 30 * 60,
+        parentMessageId: "M",
+      },
+    ];
+    const a = assessChat(
+      {
+        ok: true,
+        messages: [
+          msg({ role: "user", messageId: "U" }),
+          msg({ messageId: "M", textLenBucket: "101-1k", textIsHandOffAck: true }),
+        ],
+        subAgents: subAgents({ byStatus: { error: 1 }, failedSample }),
+      },
+      AVAIL_OK,
+    );
+    expect(a.class).toBe("subagent_failure");
+    expect(a.reason).toMatch(/handed off.*no_activity.*acknowledgment/);
+    // A bubble with its OWN words (not the acknowledgment) answered: no verdict.
+    const answered = assessChat(
+      {
+        ok: true,
+        messages: [msg({ messageId: "M", textLenBucket: "101-1k", textIsHandOffAck: false })],
+        subAgents: subAgents({ byStatus: { error: 1 }, failedSample }),
+      },
+      AVAIL_OK,
+    );
+    expect(answered.class).toBe("healthy");
+  });
+
+  // Codex pass 4 (0.89.1): two children; one failed, the other delivered a file into the
+  // bubble with no text. The user got an answer — a file — so this is not a lost hand-off.
+  test("a hand-off whose bubble holds a DELIVERED file answered, whatever its text", () => {
+    const failedSample = [
+      { status: "error", errorCategory: "no_activity", ageSeconds: 30 * 60, parentMessageId: "M" },
+    ];
+    for (const files of [
+      { deliveredFileCount: 1 },
+      { attachedDocCount: 1 },
+    ]) {
+      for (const text of [
+        { textLenBucket: "101-1k", textIsHandOffAck: true },
+        { textLenBucket: "0" },
+      ]) {
+        const a = assessChat(
+          {
+            ok: true,
+            messages: [msg({ messageId: "M", ...text, ...files })],
+            subAgents: subAgents({ byStatus: { error: 1, done: 1 }, failedSample }),
+          },
+          AVAIL_OK,
+        );
+        expect(a.class, JSON.stringify({ files, text })).toBe("healthy");
+      }
+    }
+  });
+
+  // Production 2026-09-28, report prod-ms79041n… (chat mh720t35…), metadata only: the
+  // last bubble was a requester-settle continuation that delegated again; its children
+  // have no anchor (a continuation has no carrier row to inherit one from) and were
+  // reaped. Joined only through the run they were born in.
+  test("a child a CONTINUATION delegated joins it through its birth run, not an anchor", () => {
+    const a = assessChat(
+      {
+        ok: true,
+        messages: [
+          msg({ role: "user", messageId: "U" }),
+          msg({ messageId: "C", textLenBucket: "0", runId: "announce:requester-settle:x:yield-1" }),
+        ],
+        subAgents: subAgents({
+          byStatus: { error: 1 },
+          failedSample: [
+            {
+              status: "error",
+              errorCategory: "no_activity",
+              ageSeconds: 30 * 60,
+              parentMessageId: null,
+              bornOfMessageId: "C",
+            },
+          ],
+        }),
+      },
+      AVAIL_OK,
+    );
+    expect(a.class).toBe("subagent_failure");
+    expect(a.reason).toMatch(/handed off/);
+  });
+
+  test("a DROPPED input is a failed turn whose action is the reader's resend", () => {
+    const a = assessChat(
+      {
+        ok: true,
+        messages: [msg({ status: "error", errorCode: "pending_input_dropped" })],
+      },
+      AVAIL_OK,
+    );
+    expect(a.class).toBe("dispatch_error");
+    expect(a.suggestedAction).toBe(actionForErrorCode("pending_input_dropped"));
+    expect(a.suggestedAction).toMatch(/nothing was processed/i);
+    expect(a.suggestedAction).toMatch(/resends/);
   });
 
   test("priority: a failed MAIN turn beats a recent sub-agent failure", () => {

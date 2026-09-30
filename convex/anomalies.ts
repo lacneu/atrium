@@ -231,6 +231,11 @@ export const CAUSE_ANOMALY_KINDS: Record<string, string> = {
   // profiles raise one signal (codex). (What the reader is told about retrying is deliberately hedged; see the
   // probe allowance documented in the bridge classifier.)
   auth_profile_cooldown: "assistant.cause.auth_profile_cooldown",
+  // The gateway dropped the user's input because a concurrent run replaced the active
+  // branch under it. The send SUCCEEDED and the refusal came back on the stream, so a
+  // finalize row carries it. A run of them is a race the gateway keeps losing on that
+  // instance (sends colliding with delegated-work wakes), not a provider fault.
+  pending_input_dropped: "assistant.cause.pending_input_dropped",
   // A conversation the gateway no longer has. One is a recovered blip; a run of them on
   // one chat is an operator signal about session lifetime on that instance.
   session_gone: "assistant.cause.session_gone",

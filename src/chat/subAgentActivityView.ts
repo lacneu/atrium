@@ -541,6 +541,13 @@ export function shortenSubAgentError(
         : m.subagents_error_timeout_unbounded(),
     );
   }
+  if (code === "subagent_no_activity") {
+    // OUR reaper gave up on a child it saw nothing from. Not "it ran out of time": the
+    // gateway said no such thing, and the child may have run while we could not see it.
+    // The reaper's own sentence is not shown under it (subAgentErrorDetail): it is our
+    // prose, and the Convex one is French whatever the reader's language.
+    return capReason(m.subagents_error_no_activity());
+  }
   if (code === "spawn_refused") {
     // The gateway refused the spawn: nothing ran, so nothing "failed" or ran out of
     // time. The gateway's own reason stays in the panel detail (subAgentErrorDetail).

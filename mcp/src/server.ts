@@ -265,7 +265,19 @@ function main(): void {
         "much lives in the agent's own instructions. A message still STREAMING also " +
         "carries `liveDifficulty` — the verdict the user sees on the running turn " +
         "(null, or repeated_failures {tool, failures, sameTool} / quiet_after_failure " +
-        "{tool, quietMs}). Pass parts:'summary' to get " +
+        "{tool, quietMs}). `textIsHandOffAck` (boolean) = the bubble's ONLY text is " +
+        "the acknowledgment its sessions_yield wrote while handing off — a hand-off " +
+        "that has not answered yet, however long `textLenBucket` says it is — unless " +
+        "`deliveredFileCount` (files in the bubble, a count) says a file answered. " +
+        "`subAgents` samples carry `errorCategory` (tool_failed | timeout | aborted | " +
+        "api_error | spawn_refused | gateway_storage_unavailable | " +
+        "gateway_agent_db_closed | no_activity | unknown): `timeout` is a limit the " +
+        "GATEWAY enforced; `no_activity` is ATRIUM's reaper giving up on a child it saw " +
+        "nothing from (it may have run unseen — a frozen bridge, a reconnect — or never " +
+        "started); rows reaped before that code existed still read `timeout`. " +
+        "`bornOfMessageId` joins a child with no `parentMessageId` (one a " +
+        "requester-settle continuation delegated) to the bubble whose run spawned it. " +
+        "Pass parts:'summary' to get " +
         "these aggregates WITHOUT the per-part list, which is what makes this call " +
         "unreadable on a long conversation.",
       inputSchema: getChatStateInput,
@@ -345,6 +357,9 @@ function main(): void {
         "attachment_problem | subagent_stuck | subagent_failure | agent_struggling | " +
         "bridge_unavailable | bridge_degraded | healthy) with a " +
         "`suggestedAction` and, when safe, a `suggestedTool` (e.g. reconcile_chat). " +
+        "`subagent_failure` also covers a LAST turn that handed off and got no answer — " +
+        "a bubble with no text or only its hand-off acknowledgment, whose child " +
+        "(anchored to it, or born in its run) failed, with nothing after it. " +
         "Also states `participantCount` (people sharing the chat besides its owner) " +
         "and `authMode` (`token` = the gateway sees one shared operator for every " +
         "conversation; `trusted-proxy` = it sees one profile per person) — start " +

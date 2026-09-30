@@ -796,7 +796,13 @@ async function sweepChatDependents(
 
   // 5. Sub-agent observations, their per-tool detail, and the user's sub-agent
   //    interactions — conversation content keyed by chat.
-  for (const table of ["subAgents", "subAgentToolParts", "subAgentInteractions"] as const) {
+  //    `runBubbles` rides with them: ids only, and meaningless without the chat.
+  for (const table of [
+    "subAgents",
+    "subAgentToolParts",
+    "subAgentInteractions",
+    "runBubbles",
+  ] as const) {
     const asked = Math.max(budget, 0);
     const rows = await ctx.db
       .query(table)

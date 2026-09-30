@@ -482,8 +482,12 @@ export function getIntegrations(
  * content-free delegation summary: `byStatus` counts + capped `failedSample` /
  * `runningSample` (each = childIdShort + status enum + errorCategory enum +
  * hasTaskName bool + hasChildRunId / anchorExact bools (the two joins a merged
- * hand-off continuation needs) + ageSeconds — NEVER the task/result/error text or
- * phase).
+ * hand-off continuation needs) + bornOfMessageId (the bubble whose run spawned an
+ * unanchored child) + ageSeconds — NEVER the task/result/error text or phase).
+ * `errorCategory` separates `timeout` (a limit the gateway enforced) from
+ * `no_activity` (Atrium's reaper gave up on a child it saw nothing from). Per
+ * message, `textIsHandOffAck` says the bubble's only text is its hand-off
+ * acknowledgment — a boolean, never the text.
  */
 export function getChatState(
   config: Config,
@@ -576,7 +580,9 @@ export function getTraceEnrichment(
  * healthy) with a
  * `suggestedAction` and, when a safe corrective exists, a `suggestedTool`.
  * `subagent_stuck` (a delegated sub-agent running far too long — a main turn
- * awaiting it can hang) and `subagent_failure` (a recent failed delegation) read
+ * awaiting it can hang) and `subagent_failure` (a recent failed delegation, or a
+ * last turn that handed off — no text, or only its acknowledgment — to a child that
+ * failed with nothing after it) read
  * the new chat-state `subAgents` summary; `agent_struggling` (the running turn
  * keeps failing, or went quiet after a failure) reads its `liveDifficulty`.
  * Requires `traces.read`. Read-only. Call

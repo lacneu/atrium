@@ -33,7 +33,7 @@ import {
   taskDeliveryIdentity,
   taskDeliveryOutcome,
 } from "./lib/deliveryRuns";
-import { yieldHandedOff } from "./lib/toolOutcome";
+import { spawnAccepted, yieldHandedOff } from "./lib/toolOutcome";
 import { Doc, Id } from "./_generated/dataModel";
 import { messagePart } from "./schema";
 import { writeTraceEvent } from "./observability";
@@ -441,6 +441,9 @@ export const startAssistant = internalMutation({
       text: "",
       updatedAt: now,
     });
+    // A delivery run that opens a bubble of its own: where its children's
+    // continuation will look for it (`bubbleWrittenByRun`).
+    if (runId !== undefined) await recordRunBubble(ctx, chatId, runId, messageId);
     await ctx.db.patch(chatId, { updatedAt: now });
     await traceStream(ctx, {
       phase: "start",
@@ -625,6 +628,150 @@ function handedOffToChild(
 }
 
 /**
+ * Is the DELEGATION this requester-settle continuation belongs to still under way?
+ *
+ * A yielded turn's continuation is asked for its visible final answer "only after
+ * the requested outcome is complete or genuinely blocked" (upstream
+ * subagent-announce.requester-settle-message.ts:44-45 at v2026.9.6). An
+ * intermediate one — bookkeeping between two waves of children — rightly says
+ * nothing, and naming it `empty_response` was false twice over: a red card over
+ * work in progress, and, merged into the turn's bubble, an `error` bubble that
+ * refuses every later continuation of the chain (the merge gate reopens only a
+ * complete one). Production 2026-09-29 (chat mh70qh2y…, ph77vqr3v3 and
+ * ph7ajwt1ej): one `exec`, then read/edit/exec, no text, finalized by the bridge's
+ * lifecycle-end grace — and more children were already running, the chain went on
+ * for hours.
+ *
+ * Under way, from stored facts only:
+ *   - this run delegated again: an accepted `sessions_spawn` IT wrote (its stamp,
+ *     the same provenance rule as `handedOffToChild`; a yield is that rule's case);
+ *   - a child of THIS delegation is still running (anchored exactly to this
+ *     bubble, or spawned in a run that wrote to it): its result is still to come.
+ * A continuation that ends the chain with nothing — no text, no file, no further
+ * delegation, nothing running — keeps the verdict. A wave that was only QUEUED
+ * behind this run (its children already finished, their wake not yet started) is
+ * not visible here; when that wave joins this very bubble, it takes the verdict
+ * back (`retractPrematureSilenceVerdict`). */
+async function delegationContinues(
+  ctx: MutationCtx,
+  message: Doc<"messages">,
+  parts: Doc<"messageParts">[],
+): Promise<boolean> {
+  if (!isRequesterSettleRun(message.runId)) return false;
+  const stamp = deliveryPartStamp(message.runId);
+  const spawnedAgain = parts.some(
+    (row) =>
+      row.part.kind === "tool" &&
+      row.part.name === "sessions_spawn" &&
+      (row.announceRun ?? undefined) === stamp &&
+      spawnAccepted(row.part.phase, row.part.output),
+  );
+  if (spawnedAgain) return true;
+  // THIS delegation's children only (codex pass 2, P2): a child of another turn
+  // still running says nothing about whether this one ended — it would hide a real
+  // failure. A child belongs here when it is anchored EXACTLY to this bubble, or was
+  // spawned in a run that wrote to this bubble (this run included — the carrier
+  // record, `recordRunBubble`, and for a bubble older than it the runs it merged).
+  // A positional anchor is a guess and does not count.
+  const running = await ctx.db
+    .query("subAgents")
+    .withIndex("by_chat_status", (q) =>
+      q.eq("chatId", message.chatId).eq("status", "running"),
+    )
+    .take(RUNNING_PROBE_CAP + 1);
+  if (running.length === 0) return false;
+  // More running children than we read: inconclusive, and a verdict without
+  // evidence never names a failure (the probe's own doctrine, DELIVERED_PROBE_CAP).
+  if (running.length > RUNNING_PROBE_CAP) return true;
+  // Runs the bubble itself still names (a bubble older than the carrier record).
+  const runsHere = new Set<string>([
+    ...(message.runId !== undefined ? [message.runId] : []),
+    ...(message.mergedAnnounceRuns ?? []),
+  ]);
+  for (const row of running) {
+    if (row.anchorExact === true && row.parentMessageId === message._id) return true;
+    if (row.bornOfRun === undefined) continue;
+    if (runsHere.has(row.bornOfRun)) return true;
+    // Where that run wrote — one point read per child, never a capped listing of the
+    // bubble's runs that could stop short of it (codex pass 3, P3).
+    const wrote = await ctx.db
+      .query("runBubbles")
+      .withIndex("by_chat_run", (q) =>
+        q.eq("chatId", message.chatId).eq("runId", row.bornOfRun as string),
+      )
+      .first();
+    if (wrote?.messageId === message._id) return true;
+  }
+  return false;
+}
+
+/** How many running children the chain probe reads (`delegationContinues`). */
+const RUNNING_PROBE_CAP = 64;
+
+/**
+ * Take back an `empty_response` verdict a requester-settle continuation earned by
+ * saying nothing, once a LATER wave is proven to continue the very bubble that
+ * carries it: the delegation was not over, the silence was an intermediate one
+ * (`delegationContinues`). This is the case the finalize could not see — a wave
+ * whose children had all finished while the silent run held the session, its wake
+ * queued behind it.
+ *
+ * The proof is the caller's (`reopenParentForAnnounce`): an EXACT join of a YIELDED,
+ * NEW wave to this bubble, taken back only once that wave has passed every gate and
+ * will reopen it (a late replay of an older wave is refused by those gates and
+ * must not erase a newer verdict on its way out). Any other new wave — a positional guess, a wave that belongs
+ * to another bubble, a wake without a yield whose batch may span several turns —
+ * says nothing about whether this silence ended its own chain, and a delayed wave
+ * of another turn must never erase a true failure card (codex pass 1, P2).
+ *
+ * Only the verdict this platform stamps (its class AND its text — never a
+ * gateway's own failure), only on a settle continuation, and never for a run of the
+ * same batch: a retry of that batch resumes its own failure instead.
+ */
+function prematureSilenceVerdict(
+  message: Doc<"messages">,
+  wakeRun: string,
+): boolean {
+  return (
+    message.role === "assistant" &&
+    message.status === "error" &&
+    message.errorCode === DELIVERED_NOTHING_CODE &&
+    message.error === DELIVERED_NOTHING_TEXT &&
+    isRequesterSettleRun(message.runId) &&
+    !sameDeliveryGeneration(message.runId, wakeRun)
+  );
+}
+
+async function retractPrematureSilenceVerdict(
+  ctx: MutationCtx,
+  message: Doc<"messages">,
+): Promise<void> {
+  const patch = {
+    status: "complete" as const,
+    error: undefined,
+    errorCode: undefined,
+    autoRetry: undefined,
+    autoRetryOutcome: undefined,
+    // What a COMPLETE finalize consumes (the error kept them for a resume that
+    // will now never be needed).
+    announcePrefix: undefined,
+    announceReplayArmed: undefined,
+    announceReplayRun: undefined,
+  };
+  await ctx.db.patch(message._id, patch);
+  // Paired with the finalize's error row by construction (same correlation), so the
+  // anomaly plane and the KPI stop counting a failure that was not one.
+  await traceStream(ctx, {
+    phase: "finalize_repaired",
+    chatId: message.chatId,
+    runId: message.runId,
+    messageId: message._id,
+    streamStatus: "complete",
+    errorCode: DELIVERED_NOTHING_CODE,
+  });
+}
+
+/**
  * Does this bubble carry a part the READER gets something out of?
  *
  * `plan` and `cron` are visible cards in their own right — a delivery turn whose
@@ -766,6 +913,16 @@ async function bornOfRunEngagement(
     .first();
 }
 
+/** Where a requester-settle continuation belongs — always on certain evidence, so
+ *  the reopen may return to a bubble the conversation has moved past.
+ *
+ *  `toRecord`: the member rows the join placed without an exact anchor of their
+ *  own — recorded on them once the merge target is known (`recordCarrierAnchors`). */
+type SettleJoin = {
+  bubble: Id<"messages">;
+  toRecord: Id<"subAgents">[];
+};
+
 /** The bubble a requester-settle continuation belongs to, or null (fail CLOSED:
  *  the run then opens its own bubble, the behaviour before the merge existed).
  *
@@ -780,73 +937,59 @@ async function bornOfRunEngagement(
  *  For a yielded batch the members are exactly the children spawned by that one
  *  requester turn (`settleRequesterTurnAfterSessionSpawns` filters on
  *  `requesterTurnRunId`, subagent-registry-requester-yield.ts:180-188) — one bubble
- *  by construction. So the KNOWN members decide: each must resolve, by its run id
- *  within this chat, to ONE row carrying an EXACT anchor, and all of them to the
- *  SAME bubble. A duplicate, a heuristic anchor or a split batch return null.
- *
- *  An UNKNOWN id (no row carries it) is not evidence against the join: it is a row
- *  written before the field existed, one whose spawn result never reached us, or a
- *  child whose run restart recovery replaced (subagent-registry-run-recovery.ts:
- *  205-222 remaps the batch to the successor id). It is skipped — but at least one
- *  member must be known, or there is nothing to anchor on at all. */
+ *  by construction. So ONE member placed with certainty places the batch, and each
+ *  member is weighed by the evidence it carries, not asked to prove the join alone:
+ *   - an EXACT anchor (the spawn result ran on the turn) names the bubble;
+ *   - a CARRIER run (`bornOfRun`: the continuation it was spawned in — the bridge's
+ *     certain fact when a continuation spawned several children at once) names
+ *     the bubble that run wrote to (`carrierBubble`);
+ *   - a POSITIONAL anchor (the bridge met the child without a sighting to claim and
+ *     took the session's last-known message) is a guess, and never decides: a child
+ *     of turn A registered late can carry turn B's answer, and while B is still the
+ *     last message a gate on position would merge A's continuation into B. A wrong
+ *     merge is worse than a separate bubble (codex pass 3, P1) — so it is neutral;
+ *   - nothing at all (a row written before the fields existed, a spawn result that
+ *     never reached us, a child whose run restart recovery replaced) is no evidence
+ *     for or against, like an id no row carries.
+ *  Production 2026-09-29 (chat mh70qh2y…): one positional member among five carried
+ *  ones used to veto the whole join, and the continuation opened a bubble of its
+ *  own. Certain evidence that DISAGREES still refuses (a split batch, two bubbles),
+ *  as do a duplicate row and a background-task row. */
 async function settleContinuationAnchor(
   ctx: MutationCtx,
   chatId: Id<"chats">,
   settle: { childRunIds: string[]; yieldGeneration: number | null },
-  depth = 0,
-  // Collects the member rows whose anchor was PROVEN through their carrier run, so
-  // the caller can record it on them once the whole join holds (see
-  // `recordCarrierAnchors`).
-  provenThroughCarrier: Id<"subAgents">[] = [],
-): Promise<Id<"messages"> | null> {
+): Promise<SettleJoin | null> {
   if (settle.yieldGeneration === null) return null;
-  const proven: Id<"subAgents">[] = [];
-  let anchor: Id<"messages"> | null = null;
+  let certain: Id<"messages"> | null = null;
+  const toRecord: Id<"subAgents">[] = [];
   for (const childRunId of settle.childRunIds) {
     const rows = await settleMemberRows(ctx, chatId, childRunId);
     if (rows.length === 0) continue;
     const row = rows[0];
     if (rows.length !== 1 || row === undefined) return null;
     if (row.kind === "task") return null;
-    let memberAnchor: Id<"messages"> | null;
+    let evidence: Id<"messages"> | null = null;
     if (row.anchorExact === true && row.parentMessageId !== undefined) {
-      memberAnchor = row.parentMessageId;
-    } else if (row.parentMessageId === undefined && row.bornOfRun !== undefined) {
-      // NO anchor at all, but the run the child was spawned INSIDE is known —
-      // the bridge's certain carrier when a continuation spawned several children
-      // at once (it cannot tell which spawn each child matches, so it anchors
-      // none of them). Spawned inside a continuation, the child belongs to the
-      // bubble that continuation wrote to. A heuristic anchor stays refused.
-      memberAnchor = await settleCarrierBubble(
-        ctx,
-        chatId,
-        row.bornOfRun,
-        depth,
-        provenThroughCarrier,
-      );
-      if (memberAnchor !== null) proven.push(row._id);
+      evidence = row.parentMessageId;
     } else {
-      return null;
+      toRecord.push(row._id);
+      if (row.bornOfRun !== undefined) {
+        evidence = await carrierBubble(ctx, chatId, row.bornOfRun);
+      }
     }
-    if (memberAnchor === null) return null;
-    if (anchor !== null && anchor !== memberAnchor) return null;
-    anchor = memberAnchor;
+    if (evidence === null) continue;
+    if (certain !== null && certain !== evidence) return null;
+    certain = evidence;
   }
-  // Only a join that held for EVERY known member proves anything about them.
-  if (anchor !== null) provenThroughCarrier.push(...proven);
-  return anchor;
+  return certain === null ? null : { bubble: certain, toRecord };
 }
 
-/** Record, on the members a join resolved through their carrier run, the bubble it
- *  PROVED they belong to — as an exact anchor, which is what it now is.
- *
- *  Without it every later generation re-walked the whole chain back to the turn's
- *  own child, one carrier per generation, and a long enough chain of parallel
- *  re-delegations fell off the depth cap into a new bubble (codex pass 1, P3). With
- *  it the next generation's carrier resolves in one hop. It also puts those
- *  children under their bubble for the reader (the sub-agent monitor and the inline
- *  replies read `parentMessageId`). Only rows with NO anchor are ever written —
- *  the same fill rule as `upsertSubAgent`. */
+/** Record, on the members an EXACT join placed, the bubble it proved they belong
+ *  to — as an exact anchor, which is what it now is. It puts those children under
+ *  their bubble for the reader (the sub-agent monitor and the inline replies read
+ *  `parentMessageId`). A positional anchor is replaced: the join proved it or
+ *  proved it wrong. An exact anchor is never touched. */
 async function recordCarrierAnchors(
   ctx: MutationCtx,
   rowIds: readonly Id<"subAgents">[],
@@ -854,47 +997,78 @@ async function recordCarrierAnchors(
 ): Promise<void> {
   for (const id of rowIds) {
     const row = await ctx.db.get(id);
-    if (row === null || row.parentMessageId !== undefined) continue;
+    if (row === null || row.anchorExact === true) continue;
     await ctx.db.patch(id, { parentMessageId: anchor, anchorExact: true });
   }
 }
 
-/** How many continuation generations the carrier walk may climb. Each step is an
- *  exact proof, so the bound only caps the reads of one mutation. A join records
- *  the anchors it proved (`recordCarrierAnchors`), so a chain of any length needs
- *  one hop per delivery: the cap is only met by a chain whose earlier deliveries
- *  never reached this mutation. */
-const MAX_CARRIER_DEPTH = 4;
-
-/** The bubble a requester-settle run `carrierRun` WROTE TO, or null.
+/** Record that DELIVERY run `runId` wrote to bubble `messageId` — when it opens a
+ *  bubble of its own and when it merges into one (`reopenParentForAnnounce`).
  *
- *  Resolved by that run's own join (its batch's members, recursively for a child
- *  spawned inside a continuation of a continuation), then CONFIRMED on the bubble
- *  itself: the run must be the bubble's run or one of its merged runs — the record
- *  `reopenParentForAnnounce` writes only when the run really merged there. A run
- *  that failed its own join opened a bubble of its own, which nothing here can
- *  find (no index by run id): the member then fails closed, as before. */
-async function settleCarrierBubble(
+ *  Durable and indexed on purpose. The bubble's own `runId` names only the LAST run
+ *  that wrote there: a later wave rotates it away, and the requester-settle join
+ *  must still find where an earlier run wrote (`carrierBubble`), however far back
+ *  that bubble has scrolled. A bounded scan of recent messages could miss it — and
+ *  a miss must never read as "this run wrote nowhere". A run writes to one bubble:
+ *  the first record stands. */
+async function recordRunBubble(
+  ctx: MutationCtx,
+  chatId: Id<"chats">,
+  runId: string,
+  messageId: Id<"messages">,
+): Promise<void> {
+  if (!isDeliveryRun(runId)) return;
+  const existing = await ctx.db
+    .query("runBubbles")
+    .withIndex("by_chat_run", (q) => q.eq("chatId", chatId).eq("runId", runId))
+    .first();
+  if (existing !== null) return;
+  await ctx.db.insert("runBubbles", { chatId, runId, messageId, createdAt: Date.now() });
+}
+
+/** The bubble run `run` wrote to in this chat, or null when that is not KNOWN.
+ *
+ *  The durable record first (`recordRunBubble`); then, for a bubble written before
+ *  that record existed, the bubble whose `runId` still names the run — a certain fact
+ *  too, only one a later merge can erase. Anything else is unknown, never "lost": a
+ *  delivery run that opened no bubble (a silent one, a lost one) leaves no trace
+ *  Convex could tell apart, so no guess is made about where its children belong. */
+async function bubbleWrittenByRun(
+  ctx: MutationCtx,
+  chatId: Id<"chats">,
+  run: string,
+): Promise<Id<"messages"> | null> {
+  const recorded = await ctx.db
+    .query("runBubbles")
+    .withIndex("by_chat_run", (q) => q.eq("chatId", chatId).eq("runId", run))
+    .first();
+  // The reopen re-reads and re-checks the bubble (chat, role) before any write.
+  if (recorded !== null) return recorded.messageId;
+  const own = (
+    await ctx.db
+      .query("messages")
+      .withIndex("by_chat_run", (q) => q.eq("chatId", chatId).eq("runId", run))
+      .take(2)
+  ).filter((m) => m.role === "assistant");
+  return own.length === 1 && own[0] !== undefined ? own[0]._id : null;
+}
+
+/** The bubble a child's CARRIER run `carrierRun` belongs to, or null (no evidence).
+ *
+ *  The carrier is the run the child was spawned in; the child's own continuation
+ *  belongs where that run wrote. Read DIRECTLY — never by re-running the carrier's
+ *  own join: a carrier that failed its join opened a bubble of its own, and it is
+ *  there, not in the turn's bubble, that its work sits. Re-deriving it used to find
+ *  nothing, so one broken link broke every link after it (production 2026-09-29:
+ *  twenty consecutive continuations, twenty bubbles) — and re-deriving it when the
+ *  carrier merely could not be found would put the children in the bubble their
+ *  carrier did NOT write to. */
+async function carrierBubble(
   ctx: MutationCtx,
   chatId: Id<"chats">,
   carrierRun: string,
-  depth: number,
-  provenThroughCarrier: Id<"subAgents">[],
 ): Promise<Id<"messages"> | null> {
-  if (depth >= MAX_CARRIER_DEPTH) return null;
-  const carrier = parseRequesterSettleRun(carrierRun);
-  if (carrier === null) return null;
-  const nested: Id<"subAgents">[] = [];
-  const bubbleId = await settleContinuationAnchor(ctx, chatId, carrier, depth + 1, nested);
-  if (bubbleId === null) return null;
-  const bubble = await ctx.db.get(bubbleId);
-  if (bubble === null || bubble.chatId !== chatId) return null;
-  const wroteThere =
-    bubble.runId === carrierRun ||
-    (bubble.mergedAnnounceRuns ?? []).includes(carrierRun);
-  if (!wroteThere) return null;
-  provenThroughCarrier.push(...nested);
-  return bubbleId;
+  return await bubbleWrittenByRun(ctx, chatId, carrierRun);
 }
 
 /** The rows (at most two — enough to see an ambiguity) carrying one settled child
@@ -1107,21 +1281,15 @@ async function reopenParentForAnnounce(
   let anchoredResolution =
     parentId !== undefined && sub?.anchorExact === true;
   if (settle !== null) {
-    // The continuation of a YIELDED turn, and nothing else: the join is exact or
-    // there is no merge (the run then keeps its own bubble, as before).
-    const provenThroughCarrier: Id<"subAgents">[] = [];
-    const anchor = await settleContinuationAnchor(
-      ctx,
-      chatId,
-      settle,
-      0,
-      provenThroughCarrier,
-    );
-    if (anchor === null) return null;
+    // The continuation of a YIELDED turn, and nothing else, joined on certain
+    // evidence only: it may return to a bubble the conversation moved past. No
+    // join: its own bubble, as before.
+    const join = await settleContinuationAnchor(ctx, chatId, settle);
+    if (join === null) return null;
     // Recorded whatever the reopen decides below: where these children belong is
-    // a fact about their carrier, not about whether this delivery may merge now.
-    await recordCarrierAnchors(ctx, provenThroughCarrier, anchor);
-    parentId = anchor;
+    // a fact about their turn, not about whether this delivery may merge now.
+    await recordCarrierAnchors(ctx, join.toRecord, join.bubble);
+    parentId = join.bubble;
     anchoredResolution = true;
   }
   if (parentId === undefined && sub?.bornOfRun !== undefined) {
@@ -1269,8 +1437,22 @@ async function reopenParentForAnnounce(
     // (no interleaving).
     return null;
   }
+  // The chain's bubble, left in `error` by a silent intermediate continuation, must
+  // not refuse the continuation that proves the chain went on. Proven only by an
+  // EXACT join of a YIELDED wave to this very bubble — a positional guess, or a wave
+  // linked to another bubble, says nothing about whether that silence ended its own
+  // chain (a wake without a yield never joins at all, `settleContinuationAnchor`) —
+  // and only by a NEW wave: one this bubble already delivered (its run merged here,
+  // or its batch recorded here) is history, older than the verdict, and never gets
+  // past the ownership gates above (the verdict's own batch is excluded by
+  // `prematureSilenceVerdict`). The verdict itself is taken back only below, once
+  // every gate that can still refuse this wave has passed (codex pass 2, P1).
+  const retracting =
+    settle !== null &&
+    anchoredResolution &&
+    prematureSilenceVerdict(parent, announceRunId);
   // Never repaint an error or an abort that is not this delivery's own (above).
-  if (parent.status !== "complete" && !resuming) return null;
+  if (parent.status !== "complete" && !resuming && !retracting) return null;
   // THE USER SAID STOP. A child killed mid-flight can still push its announce
   // afterwards — the kill and the frame race — and reopening here would repaint
   // the very block the user interrupted with the result they refused to wait
@@ -1328,6 +1510,9 @@ async function reopenParentForAnnounce(
   // RESUME reuses the ORIGINAL prefix preserved by the failed finalize —
   // parent.text at this point is `original + partial announce`, and
   // re-prefixing with THAT would duplicate the partial fragment.
+  // Every gate passed: this wave reopens the bubble, in this transaction. (The
+  // reopen below reads nothing the retraction changes: `text` is the prefix.)
+  if (retracting) await retractPrematureSilenceVerdict(ctx, parent);
   const prefix = resuming ? (parent.announcePrefix ?? "") : parent.text;
   // Where the continuation's own text will begin in the stored text: the seed
   // below is `prefix + ANNOUNCE_SEP`, or nothing when the turn said nothing.
@@ -1417,6 +1602,8 @@ async function reopenParentForAnnounce(
     announceReplayRun: resuming ? announceRunId : undefined,
     updatedAt: now,
   });
+  // Where this run wrote, durably: the bubble's `runId` will name a later run.
+  await recordRunBubble(ctx, chatId, announceRunId, parentId);
   if (resuming) {
     await ctx.scheduler.runAfter(
       ANNOUNCE_REPLAY_WINDOW_MS,
@@ -3519,6 +3706,8 @@ export const finalize = internalMutation({
           // the content probe because it is decisive on its own and needs no
           // storage round-trip.
           !handedOffToChild(message.runId, parts) &&
+          // An intermediate continuation of a delegation still under way.
+          !(await delegationContinues(ctx, message, parts)) &&
           !(await carriesDeliveredContent(ctx, parts));
       } catch {
         // Storage refused to answer: the probe has no evidence, and a verdict

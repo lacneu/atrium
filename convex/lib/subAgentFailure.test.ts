@@ -33,6 +33,39 @@ describe("classifySubAgentError — allowlist classifier (never echoes input)", 
     );
   });
 
+  // A REAPER's verdict is not a timeout. Convex's stale-row reaper and the bridge's sweep
+  // give up on a child they saw NOTHING from — a frozen bridge, a reconnect, or a child
+  // that never started — and say so with a stored code. Prod 2026-09-28 (chat mh7d6db7…,
+  // child fb081174): published `timeout` for a child nobody ever saw time out.
+  it("a reaper's NO-ACTIVITY code is its own category, whatever its prose says", () => {
+    expect(
+      classifySubAgentError(
+        "error",
+        "Sous-agent expiré — aucune activité, observateur probablement perdu",
+        "subagent_no_activity",
+      ),
+    ).toBe("no_activity");
+    expect(
+      classifySubAgentError(
+        "error",
+        "Sub-agent timed out: no activity for 900s and the gateway never reported it finishing.",
+        "subagent_no_activity",
+      ),
+    ).toBe("no_activity");
+    // A limit the GATEWAY enforced stays a timeout.
+    expect(classifySubAgentError("error", "Run timed out after 600s", "timeout")).toBe(
+      "timeout",
+    );
+    // A row reaped BEFORE the code existed keeps the category it was published under:
+    // nothing on it says which it was, and prose is exactly what the code replaces.
+    expect(
+      classifySubAgentError(
+        "error",
+        "Sous-agent expiré — aucune activité, observateur probablement perdu",
+      ),
+    ).toBe("timeout");
+  });
+
   // Production 2026-09-23: two spawns the gateway refused ("child session patch
   // failed…") were registered as running, then a watchdog wrote "timed out" over
   // them and the diagnostic published `timeout`. The row's stable class decides,

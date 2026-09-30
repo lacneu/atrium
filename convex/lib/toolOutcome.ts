@@ -70,3 +70,60 @@ export function yieldHandedOff(
   const status = toolResultStatus(result);
   return status === null || status === "yielded";
 }
+
+/**
+ * Did this `sessions_spawn` actually start a child?
+ *
+ * The contract's acceptance is `status:"accepted"`; `error` and `forbidden` are
+ * refusals that start nothing (subagent-spawn-contract.ts `SpawnSubagentResult` at
+ * v2026.9.6), and they answer through the same success-shaped result as a refused
+ * yield. A continuation spawns through item frames that carry no result at all: the
+ * phase then stands, as it does for `yieldHandedOff`.
+ */
+export function spawnAccepted(
+  phase: string | undefined,
+  result: unknown,
+): boolean {
+  if (phase !== "completed") return false;
+  const status = toolResultStatus(result);
+  return status === null || status === "accepted";
+}
+
+/** The stored tool-part fields `textIsYieldAcknowledgment` reads (a structural subset of
+ *  a `messageParts` tool part as the chat view returns it). */
+export type YieldAckToolPart = {
+  kind?: string;
+  name?: string;
+  phase?: string;
+  input?: unknown;
+  output?: unknown;
+};
+
+function collapseWhitespace(text: string): string {
+  return text.replace(/\s+/g, " ").trim();
+}
+
+/**
+ * Is this bubble's WHOLE text the acknowledgment a `sessions_yield` that handed off wrote?
+ *
+ * The bridge promotes `sessions_yield.acknowledgment` into the reply ONLY when the turn
+ * wrote nothing else (bridge/src/core/turn-sink.ts, "THE HAND-OFF'S OWN WORDS"), so a
+ * bubble whose text equals it is a hand-off that has said nothing yet but "I'm on it" —
+ * the same fact, for a reader, as an empty hand-off. A turn that wrote its own words, or a
+ * continuation that answered after it, has more text than the acknowledgment and is not
+ * one. Compared on the stored parts' own arguments; an elided input (too large for the
+ * view) reads as "not provable", i.e. false. Content is compared here and never returned.
+ */
+export function textIsYieldAcknowledgment(
+  text: string | null | undefined,
+  parts: readonly YieldAckToolPart[],
+): boolean {
+  const shown = collapseWhitespace(text ?? "");
+  if (shown === "") return false;
+  return parts.some((p) => {
+    if (p.kind !== undefined && p.kind !== "tool") return false;
+    if (p.name !== "sessions_yield" || !yieldHandedOff(p.phase, p.output)) return false;
+    const ack = isRecord(p.input) ? p.input.acknowledgment : undefined;
+    return typeof ack === "string" && collapseWhitespace(ack) === shown;
+  });
+}
