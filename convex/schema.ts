@@ -766,6 +766,29 @@ export default defineSchema({
     // (opt-in: the admin explicitly enables). ENFORCEMENT lands in Phase 2 — in
     // Phase 1 this is set-but-not-read (inert), so no existing assignment breaks.
     enabled: v.optional(v.boolean()),
+    // When an enable/disable DECISION was last made on this agent: an admin toggle
+    // (either way), the enablement backfill, a group manager's claim, or — for a row
+    // re-created by discovery after an admin purge — the purge tombstone it inherits
+    // (agentDecisionTombstones). The
+    // durable marker that separates "never enabled, never looked at" (a freshly
+    // discovered agent — CLAIMABLE by a group manager) from "an admin decided"
+    // (disabled on purpose — never claimable). Absent on every row that predates
+    // it, which is why claimability ALSO requires the row to postdate
+    // appMeta.agentClaimEpoch: an older disabled row cannot be proven untouched.
+    enablementDecidedAt: v.optional(v.number()),
+    // RESERVATION: the agent was claimed by (or reserved by an admin for) this
+    // group. A reserved agent is NEVER part of the no-group all-pool and never the
+    // instance default; it is OFFERED only to the members of the groups it is
+    // assigned to (groupAgents) and to admin-made direct grants. Guests of a
+    // member's conversation reach it THROUGH that member (a room turn is authorized
+    // on the owner's grants — send.ts), which is the delegation, not an offer.
+    // Only an admin lifts or moves
+    // it (agents.setAgentReservation). Kept when the group is deleted (fail-closed:
+    // the agent then reaches nobody THROUGH that group and stays out of the all-pool
+    // until an admin decides; an admin's shares with other groups and direct grants
+    // still apply).
+    reservedForGroupId: v.optional(v.id("groups")),
+    reservedAt: v.optional(v.number()),
     // ADMIN curation: the agent's TYPE(s) — a fixed code-defined catalogue
     // (convex/lib/agentTypes.ts: "conversational" | "documentary"). Tells Atrium HOW
     // the agent may be used (normal chat vs a dedicated documentary-source action).
@@ -800,7 +823,9 @@ export default defineSchema({
       "instanceName",
       "source",
       "presentInLastOk",
-    ]),
+    ])
+    // The agents reserved for one group (the manager's re-add list).
+    .index("by_reserved_group", ["reservedForGroupId"]),
 
   // The M:N join: which agents a user may use. user↔instance is DERIVED from this
   // (no second grant table). INVARIANT: exactly one isDefault === true WHENEVER
@@ -859,10 +884,78 @@ export default defineSchema({
     // (promote/demote); create/delete-group + this promotion stay admin-only.
     // OPTIONAL → unset/false = a plain member (consumes the group, doesn't manage).
     manager: v.optional(v.boolean()),
+    // PER-MEMBER restriction WITHIN this group (set by the group's manager or an
+    // admin): when true, this member receives from THIS group only the agents
+    // listed in groupMemberAgents for (groupId, userId) — an empty list gives them
+    // nothing from this group (fail-closed: removing the last allowed agent never
+    // widens the member back to the whole group). Unset = the whole group's agents.
+    // Scoped to ONE group on purpose: a member of several groups keeps every other
+    // group's agents untouched (the global userAgents restriction cannot say that).
+    agentsRestricted: v.optional(v.boolean()),
+    // The restriction above was set by an ADMIN: a group manager may narrow it
+    // further but never widen or lift it (groups.setMemberAgents).
+    agentsRestrictedByAdmin: v.optional(v.boolean()),
+    // This member's default agent AMONG this group's agents (overrides the group's
+    // own default for this member). Ignored at read time when it is no longer in
+    // the member's share of the group.
+    defaultAgent: v.optional(
+      v.object({ instanceName: v.string(), agentId: v.string() }),
+    ),
   })
     .index("by_group", ["groupId"])
     .index("by_user", ["userId"])
     .index("by_user_group", ["userId", "groupId"]),
+
+  // The agents a RESTRICTED member (groupMembers.agentsRestricted) receives from
+  // one group. Read only in combination with the group's own groupAgents (an entry
+  // for an agent the group no longer shares grants nothing).
+  groupMemberAgents: defineTable({
+    groupId: v.id("groups"),
+    userId: v.id("users"),
+    instanceName: v.string(),
+    agentId: v.string(),
+    createdAt: v.number(),
+  })
+    .index("by_group_user", ["groupId", "userId"])
+    .index("by_group_instance_agent", ["groupId", "instanceName", "agentId"])
+    .index("by_user", ["userId"])
+    .index("by_instance_agent", ["instanceName", "agentId"]),
+
+  // The enablement DECISION of an agent an admin purged (agents.removeInstanceAgent):
+  // a re-discovery under the same (instance, agentId) inherits it, so a purged
+  // decided agent never comes back looking "never decided" — i.e. claimable by a
+  // group manager. Consumed (deleted) by that re-discovery; swept with the instance.
+  agentDecisionTombstones: defineTable({
+    instanceName: v.string(),
+    agentId: v.string(),
+    enablementDecidedAt: v.number(),
+  }).index("by_instance_agent", ["instanceName", "agentId"]),
+
+  // A group manager's REQUEST that a person (by exact email) join their group.
+  // Managers never see the user directory and never add anyone themselves: an
+  // admin approves (the account must exist and be approved) or rejects. `email`
+  // is normalized (lib/authDomains.normalizeEmail).
+  groupInviteRequests: defineTable({
+    groupId: v.id("groups"),
+    email: v.string(),
+    requestedBy: v.id("users"),
+    status: v.union(
+      v.literal("pending"),
+      v.literal("approved"),
+      v.literal("rejected"),
+    ),
+    createdAt: v.number(),
+    decidedBy: v.optional(v.id("users")),
+    decidedAt: v.optional(v.number()),
+    // The account the approval added (for the audit trail and the manager's list).
+    approvedUserId: v.optional(v.id("users")),
+  })
+    .index("by_group_status", ["groupId", "status"])
+    .index("by_group_email_status", ["groupId", "email", "status"])
+    .index("by_status", ["status"])
+    // Account deletion (admin.deleteUser) drops the rows naming the account.
+    .index("by_requested_by", ["requestedBy"])
+    .index("by_approved_user", ["approvedUserId"]),
 
   // Agents shared with a group (M:N group↔agent). `isDefault` is an OPTIONAL
   // per-group default with NO "exactly one per group" invariant (unlike
@@ -877,7 +970,9 @@ export default defineSchema({
   })
     .index("by_group", ["groupId"])
     .index("by_instance", ["instanceName"])
-    .index("by_group_instance_agent", ["groupId", "instanceName", "agentId"]),
+    .index("by_group_instance_agent", ["groupId", "instanceName", "agentId"])
+    // "Is this agent shared with ANY group?" (claimability) — a point range.
+    .index("by_instance_agent", ["instanceName", "agentId"]),
 
   // Charts (charte graphique) shared with a group (M:N group<->builtin chart).
   // Parallel to groupAgents. P3 stores ONLY this join (the `charts` custom table
@@ -1102,6 +1197,11 @@ export default defineSchema({
     // Rollout start time: the backfill grandfathers ONLY agents that existed
     // before this (a new agent discovered mid-rollout stays opt-in).
     agentEnabledBackfillStartedAt: v.optional(v.number()),
+    // Group-manager CLAIM epoch (stamped once by internal.agents.stampAgentClaimEpoch):
+    // only an agent row created AFTER it can be claimable. A row that predates it
+    // has no enablementDecidedAt history, so "disabled" there may be an admin's
+    // decision — never claimable (fail-closed). Absent = nothing is claimable yet.
+    agentClaimEpoch: v.optional(v.number()),
     adminAssigned: v.boolean(),
     // Global toggle reserved for future "require admin approval" policy; the
     // pending->user approval flow is always on for now.
@@ -3692,6 +3792,9 @@ export default defineSchema({
       v.literal("agent_request"),
       // Somebody added you to a conversation.
       v.literal("chat_added"),
+      // A group manager asked for a person to join their group (admin-facing),
+      // or an admin decided such a request (requester-facing).
+      v.literal("group_invite"),
     ),
     // LEGACY-RENDER fallback: pre-rendered labels, kept so old rows (and any
     // producer without a key) still display. New producers ALSO store a

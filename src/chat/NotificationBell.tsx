@@ -17,6 +17,7 @@ import {
   MessageCircleQuestion,
   AtSign,
   Users,
+  UserPlus,
 } from "lucide-react";
 import { api } from "./convexApi";
 import type { Id } from "./convexApi";
@@ -57,7 +58,8 @@ type NotifKind =
   | "operator_announcement"
   | "mention"
   | "agent_request"
-  | "chat_added";
+  | "chat_added"
+  | "group_invite";
 type Notif = {
   _id: Id<"notifications">;
   kind: NotifKind;
@@ -84,6 +86,7 @@ const KIND_ICON: Record<NotifKind, typeof Bell> = {
   mention: AtSign,
   agent_request: MessageCircleQuestion,
   chat_added: Users,
+  group_invite: UserPlus,
 };
 
 const OPERATOR_SERVICE_LABELS: Record<string, () => string> = {
@@ -146,6 +149,30 @@ const KEY_RENDERERS: Record<
   notif_chat_added: (p) => ({
     title: m.notif_chat_added_title({ by: p.by ?? "?" }),
     body: m.notif_chat_body({ chat: p.chat ?? "" }),
+  }),
+  // A group manager asked for someone to join their group (admin-facing): the
+  // group and the requester only — the address is on the approval screen.
+  notif_group_invite_request: (p) => ({
+    title: m.notif_group_invite_request_title(),
+    body: m.notif_group_invite_request_body({
+      by: p.by ?? "?",
+      group: p.group ?? "?",
+    }),
+  }),
+  // The requester learns the admin's decision on their own request.
+  notif_group_invite_approved: (p) => ({
+    title: m.notif_group_invite_approved_title(),
+    body: m.notif_group_invite_approved_body({
+      email: p.email ?? "?",
+      group: p.group ?? "?",
+    }),
+  }),
+  notif_group_invite_rejected: (p) => ({
+    title: m.notif_group_invite_rejected_title(),
+    body: m.notif_group_invite_rejected_body({
+      email: p.email ?? "?",
+      group: p.group ?? "?",
+    }),
   }),
   // An agent is waiting on the reader: the family decides the title, the chat names
   // where (its title only — never what was asked).

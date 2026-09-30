@@ -127,22 +127,29 @@ describe("structural ops are admin-only (create/delete/rename/promote)", () => {
 describe("delegated content ops are scoped to the manager's own groups", () => {
   test("manager of G manages G's membership, but NOT H's", async () => {
     const t = convexTest(schema, modules);
-    const { mgr, target, G, H } = await seed(t);
-    // manage own group G → ok.
-    await as(t, mgr).mutation(api.groups.addMember, {
+    const { admin, mgr, target, G, H } = await seed(t);
+    await as(t, admin).mutation(api.groups.addMember, { groupId: G, userId: target });
+    await as(t, admin).mutation(api.groups.addMember, { groupId: H, userId: target });
+    // manage own group G → removing a plain member is ok.
+    await as(t, mgr).mutation(api.groups.removeMember, {
       groupId: G,
       userId: target,
     });
-    expect(await memberCount(t, G)).toBe(2); // mgr + target
+    expect(await memberCount(t, G)).toBe(1); // mgr only
     // H (mgr is only a plain member, not manager) → refused.
     await expect(
-      as(t, mgr).mutation(api.groups.addMember, { groupId: H, userId: target }),
+      as(t, mgr).mutation(api.groups.removeMember, { groupId: H, userId: target }),
     ).rejects.toThrow(/not a manager/);
   });
 
   test("manager of G manages G's agents, but NOT H's", async () => {
     const t = convexTest(schema, modules);
     const { mgr, G, H } = await seed(t);
+    // A manager only (re-)adds an agent RESERVED for their group.
+    await t.run(async (ctx) => {
+      const alice = (await ctx.db.query("agents").collect())[0]!;
+      await ctx.db.patch(alice._id, { reservedForGroupId: G });
+    });
     await as(t, mgr).mutation(api.groups.assignAgentToGroup, {
       groupId: G,
       instanceName: "primary",
@@ -161,7 +168,7 @@ describe("delegated content ops are scoped to the manager's own groups", () => {
     const t = convexTest(schema, modules);
     const { plain, target, G } = await seed(t);
     await expect(
-      as(t, plain).mutation(api.groups.addMember, { groupId: G, userId: target }),
+      as(t, plain).mutation(api.groups.removeMember, { groupId: G, userId: target }),
     ).rejects.toThrow(/missing permission/);
   });
 });
@@ -222,7 +229,9 @@ describe("a manager membership may only be removed by an ADMIN (#1)", () => {
 
   test("a manager CAN remove a NON-manager member; an admin CAN remove a manager", async () => {
     const t = convexTest(schema, modules);
-    const { admin, mgr, target, G } = await seed(t);
+    const { admin, mgr, target, G, H } = await seed(t);
+    // target keeps another group: a manager never removes someone's LAST group.
+    await as(t, admin).mutation(api.groups.addMember, { groupId: H, userId: target });
     await as(t, admin).mutation(api.groups.addMember, { groupId: G, userId: target });
     // mgr removes a plain (non-manager) member → allowed.
     await as(t, mgr).mutation(api.groups.removeMember, { groupId: G, userId: target });
@@ -240,7 +249,8 @@ describe("a manager membership may only be removed by an ADMIN (#1)", () => {
 
   test("bulkSetMembers: a manager removing a set with a co-manager aborts the WHOLE batch", async () => {
     const t = convexTest(schema, modules);
-    const { admin, mgr, target, plain, G } = await seed(t);
+    const { admin, mgr, target, plain, G, H } = await seed(t);
+    await as(t, admin).mutation(api.groups.addMember, { groupId: H, userId: plain });
     await as(t, admin).mutation(api.groups.addMember, { groupId: G, userId: target });
     await as(t, admin).mutation(api.groups.setGroupManager, {
       groupId: G,
@@ -262,21 +272,31 @@ describe("a manager membership may only be removed by an ADMIN (#1)", () => {
 });
 
 describe("delegation-safe directory queries (#2)", () => {
-  test("a manager lists assignable users/instances/agents; a plain user is refused", async () => {
+  test("a manager lists their group's instances/agents (never the user directory); a plain user is refused", async () => {
     const t = convexTest(schema, modules);
-    const { mgr, plain } = await seed(t);
-    const users = await as(t, mgr).query(api.groups.listAssignableUsers, {});
+    const { admin, mgr, plain, G } = await seed(t);
+    // The USER directory is admin-only: a manager requests invitations by email.
+    await expect(
+      as(t, mgr).query(api.groups.listAssignableUsers, {}),
+    ).rejects.toThrow(/admin role required/);
+    const users = await as(t, admin).query(api.groups.listAssignableUsers, {});
     expect(users.length).toBeGreaterThan(0);
-    // BOUNDED: the sensitive grant list is NEVER exposed to a delegated manager.
+    // BOUNDED: the sensitive grant list is NEVER exposed.
     expect(users.every((u) => !("extraPermissions" in u))).toBe(true);
+    await as(t, admin).mutation(api.groups.assignAgentToGroup, {
+      groupId: G,
+      instanceName: "primary",
+      agentId: "alice",
+    });
     const instances = await as(t, mgr).query(
       api.groups.listAssignableInstances,
-      {},
+      { groupId: G },
     );
     expect(instances.some((i) => i.name === "primary")).toBe(true);
     expect(instances.every((i) => !("gatewayUrl" in i))).toBe(true);
     const agents = await as(t, mgr).query(api.groups.listAssignableAgents, {
       instanceName: "primary",
+      groupId: G,
     });
     expect(agents.agents.some((a) => a.agentId === "alice")).toBe(true);
     // A plain user (no groups.manage, not admin) is refused on each.

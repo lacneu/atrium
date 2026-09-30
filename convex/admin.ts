@@ -268,6 +268,26 @@ export const deleteUser = mutation({
       await ctx.db.delete(r._id);
     }
     for (const r of await ctx.db
+      .query("groupMemberAgents")
+      .withIndex("by_user", (q) => q.eq("userId", userId))
+      .collect()) {
+      await ctx.db.delete(r._id);
+    }
+    // Invitation requests the account MADE, and the ones that added it: both name
+    // a person who no longer exists (and a decision must never ring them).
+    for (const r of await ctx.db
+      .query("groupInviteRequests")
+      .withIndex("by_requested_by", (q) => q.eq("requestedBy", userId))
+      .collect()) {
+      await ctx.db.delete(r._id);
+    }
+    for (const r of await ctx.db
+      .query("groupInviteRequests")
+      .withIndex("by_approved_user", (q) => q.eq("approvedUserId", userId))
+      .collect()) {
+      await ctx.db.delete(r._id);
+    }
+    for (const r of await ctx.db
       .query("feedback")
       .withIndex("by_user", (q) => q.eq("userId", userId))
       .collect()) {

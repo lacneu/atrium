@@ -1,4 +1,11 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import {
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type FormEvent,
+  type ReactNode,
+} from "react";
 import { useMutation, useQuery } from "convex/react";
 import {
   ChevronLeft,
@@ -6,7 +13,9 @@ import {
   Palette,
   Server,
   ShieldCheck,
+  SlidersHorizontal,
   Star,
+  UserPlus,
   Users,
   X,
 } from "lucide-react";
@@ -19,8 +28,13 @@ import { DetailChips } from "./DetailChips";
 import { EntitySheet } from "./EntitySheet";
 import { FilterBar } from "./filters/FilterBar";
 import {
+  agentPairKey,
+  agentRowControl,
   filterInstanceAgents,
   filterSortMembers,
+  groupErrorDetail,
+  inviteStatusLabel,
+  nextMemberAllowance,
   paginate,
   roleLabel,
   selectionState,
@@ -53,10 +67,12 @@ import {
 import { useConfirm } from "@/components/ConfirmDialog";
 import { useToast } from "@/components/ui/toast";
 
-// "Groupes" tab (P2). Admin-only surface to regroup users + share agents by
-// group. Every Convex function this calls re-enforces requirePermission(
-// GROUPS_MANAGE) against the REAL identity server-side — this UI is convenience,
-// not the security boundary. See docs/GROUPS_CHARTS_P2_SPEC.md section 7.
+// "Groupes" tab (P2). Regroup users + share agents by group. Reachable by admins
+// and by delegated group MANAGERS (groups.manage), who see only the groups they
+// manage and a narrower surface (no user directory, invitation requests, claims).
+// Every Convex function this calls re-enforces its gate against the REAL identity
+// server-side — this UI is convenience, not the security boundary. See
+// docs/GROUPS_CHARTS_P2_SPEC.md section 7.
 //
 // Layout:
 //  - the list (DataTableShell): name, #members, #agents; add (dialog), rename
@@ -73,6 +89,8 @@ type GroupRow = {
   memberCount: number;
   agentCount: number;
   chartCount: number;
+  // Invitation requests still awaiting an admin's decision.
+  pendingInviteCount: number;
   // Bounded name PREVIEWS for the list "detail" columns (server-capped; the rest
   // are summarized as "+N"). Managers / the default chart are sorted first.
   members: Array<{ label: string; manager: boolean }>;
@@ -188,6 +206,7 @@ export function GroupsTab() {
   return (
     <>
       <p className="oc-admin__hint">{m.groups_hint()}</p>
+      {isAdmin ? <InviteRequestsPanel /> : null}
       <FilterBar
         q={q}
         onQChange={setQ}
@@ -206,17 +225,26 @@ export function GroupsTab() {
           {
             header: m.groups_col_members(),
             cell: (g) => (
-              <DetailChips
-                icon={<Users size={12} aria-hidden />}
-                total={g.memberCount}
-                items={g.members.map((mb) => ({
-                  label: mb.label,
-                  marker: mb.manager ? (
-                    <ShieldCheck size={11} aria-hidden />
-                  ) : null,
-                  highlight: mb.manager,
-                }))}
-              />
+              <>
+                <DetailChips
+                  icon={<Users size={12} aria-hidden />}
+                  total={g.memberCount}
+                  items={g.members.map((mb) => ({
+                    label: mb.label,
+                    marker: mb.manager ? (
+                      <ShieldCheck size={11} aria-hidden />
+                    ) : null,
+                    highlight: mb.manager,
+                  }))}
+                />
+                {g.pendingInviteCount > 0 ? (
+                  <Badge variant="secondary">
+                    {m.groups_invite_pending_count({
+                      count: String(g.pendingInviteCount),
+                    })}
+                  </Badge>
+                ) : null}
+              </>
             ),
             sort: (g) => g.memberCount,
           },
@@ -361,6 +389,9 @@ function Pager({
 
 // Member + shared-agent management for one group. Reactive: it re-reads
 // api.groups.getGroup (the source of truth) so a toggle reflects immediately.
+// An ADMIN gets the full directory picker and shares any enabled agent; a group
+// MANAGER sees only their group: its members (remove, per-member agents, invitation
+// requests by email) and its agents (remove, re-add a reserved one, claim a new one).
 function GroupManageDialog({
   groupId,
   groupName,
@@ -376,14 +407,20 @@ function GroupManageDialog({
     api.groups.getGroup,
     open && groupId ? { groupId } : "skip",
   );
-  // DELEGATION-safe directory queries (GROUPS_MANAGE-gated, label-only) so a
-  // delegated manager — not just an admin — can populate the dialog. The admin
-  // equivalents are requireAdmin + over-disclose (see convex/groups.ts).
+  // Promote/demote a manager, adding people and sharing any agent are ADMIN-only
+  // (server-enforced; the UI shows those controls only to an admin).
+  const viewerIsAdmin = detail?.viewerIsAdmin === true;
+  // Label-only directory queries. The USER directory is admin-only (a manager
+  // requests invitations by email instead); instances are scoped server-side to
+  // what the group reaches for a manager.
   const instances = useQuery(
     api.groups.listAssignableInstances,
-    open ? {} : "skip",
+    open && groupId ? { groupId } : "skip",
   );
-  const users = useQuery(api.groups.listAssignableUsers, open ? {} : "skip");
+  const users = useQuery(
+    api.groups.listAssignableUsers,
+    open && viewerIsAdmin ? {} : "skip",
+  );
 
   const addMember = useMutation(api.groups.addMember);
   const removeMember = useMutation(api.groups.removeMember);
@@ -398,6 +435,11 @@ function GroupManageDialog({
   const [agentQuery, setAgentQuery] = useState("");
   const [tab, setTab] = useState("members");
   const [memberPage, setMemberPage] = useState(1);
+  // The member whose per-group agent settings are open (nested dialog).
+  const [agentsFor, setAgentsFor] = useState<{
+    userId: Id<"users">;
+    label: string;
+  } | null>(null);
   // A FROZEN snapshot of the member set used only for "members first" ordering.
   // We sort against this, not the live (reactively-updated) membership, so a
   // row does not jump to the top a few hundred ms after a toggle commits — the
@@ -406,7 +448,7 @@ function GroupManageDialog({
   const seededFor = useRef<Id<"groups"> | null>(null);
 
   // userId -> in-group membership (for the cross-reference against the user
-  // list); group agents keyed `${instanceName}/${agentId}` for assignment.
+  // list); group agents keyed by agentPairKey for assignment.
   const memberIds = useMemo(
     () => new Set((detail?.members ?? []).map((mm) => mm.userId)),
     [detail],
@@ -422,15 +464,26 @@ function GroupManageDialog({
       ),
     [detail],
   );
-  // Promote/demote a manager is ADMIN-ONLY (server-enforced; the UI hides the toggle).
-  const viewerIsAdmin = detail?.viewerIsAdmin === true;
-  const groupAgentKeys = useMemo(
+  const restrictedIds = useMemo(
     () =>
       new Set(
-        (detail?.agents ?? []).map((a) => `${a.instanceName}/${a.agentId}`),
+        (detail?.members ?? [])
+          .filter((mm) => mm.restricted)
+          .map((mm) => mm.userId),
       ),
     [detail],
   );
+  const groupAgentKeys = useMemo(
+    () =>
+      new Set(
+        (detail?.agents ?? []).map((a) => agentPairKey(a.instanceName, a.agentId)),
+      ),
+    [detail],
+  );
+  const defaultKey = useMemo(() => {
+    const d = (detail?.agents ?? []).find((a) => a.isDefault);
+    return d ? agentPairKey(d.instanceName, d.agentId) : null;
+  }, [detail]);
 
   // Reset per-session filters + tab + page + clear the ordering seed on open /
   // group change.
@@ -439,6 +492,7 @@ function GroupManageDialog({
     setAgentQuery("");
     setTab("members");
     setMemberPage(1);
+    setAgentsFor(null);
     seededFor.current = null;
   }, [open, groupId]);
 
@@ -470,7 +524,7 @@ function GroupManageDialog({
       if (isMember) await removeMember({ groupId, userId });
       else await addMember({ groupId, userId });
     } catch (err) {
-      toast.error(m.groups_toast_member_error(), err);
+      toast.error(m.groups_toast_member_error(), groupErrorDetail(err));
     }
   }
 
@@ -502,16 +556,35 @@ function GroupManageDialog({
     try {
       await bulkSetMembers({ groupId, userIds, member: memberSel !== "all" });
     } catch (err) {
-      toast.error(m.groups_toast_member_error(), err);
+      toast.error(m.groups_toast_member_error(), groupErrorDetail(err));
     }
   }
+
+  const memberAgentsButton = (userId: Id<"users">, label: string) => (
+    <Button
+      type="button"
+      variant="ghost"
+      size="sm"
+      className="h-7"
+      aria-label={m.groups_member_agents_aria({ user: label })}
+      title={m.groups_member_agents_aria({ user: label })}
+      onClick={() => setAgentsFor({ userId, label })}
+    >
+      <SlidersHorizontal size={13} aria-hidden />
+      {m.groups_member_agents()}
+    </Button>
+  );
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="oc-access">
         <DialogHeader>
           <DialogTitle>{m.groups_manage_title({ name: groupName })}</DialogTitle>
-          <DialogDescription>{m.groups_manage_desc()}</DialogDescription>
+          <DialogDescription>
+            {detail && !viewerIsAdmin
+              ? m.groups_manage_desc_manager()
+              : m.groups_manage_desc()}
+          </DialogDescription>
         </DialogHeader>
 
         {/* Members and agents are split into tabs: only one list is visible at a
@@ -549,7 +622,17 @@ function GroupManageDialog({
 
           {/* Members ------------------------------------------------------- */}
           <TabsContent value="members">
-            {users === undefined || detail === undefined ? (
+            {detail === undefined ? (
+              <p className="oc-access__hint">{m.groups_loading()}</p>
+            ) : !viewerIsAdmin ? (
+              groupId ? (
+                <ManagerMembers
+                  groupId={groupId}
+                  members={detail.members}
+                  agentsButton={memberAgentsButton}
+                />
+              ) : null
+            ) : users === undefined ? (
               <p className="oc-access__hint">{m.groups_loading()}</p>
             ) : users.length === 0 ? (
               <p className="oc-access__hint">{m.groups_no_users()}</p>
@@ -618,12 +701,20 @@ function GroupManageDialog({
                                 </span>
                               ) : null}
                             </span>
+                            {isMember && restrictedIds.has(u.userId) ? (
+                              <Badge variant="outline" className="oc-access__role">
+                                {m.groups_member_restricted_badge()}
+                              </Badge>
+                            ) : null}
                             <Badge
                               variant="outline"
                               className="oc-access__role"
                             >
                               {roleLabel(u.role)}
                             </Badge>
+                            {isMember
+                              ? memberAgentsButton(u.userId, parts.primary)
+                              : null}
                             {/* Manager = a COMPACT shield (coloured per the active
                                 charte via --primary) in a fixed slot at the FAR RIGHT
                                 so every row's controls stay aligned and nothing
@@ -631,7 +722,7 @@ function GroupManageDialog({
                                 for everyone else a read-only indicator shown only when
                                 the member manages. */}
                             <span className="oc-access__mgrslot">
-                              {isMember && viewerIsAdmin ? (
+                              {isMember ? (
                                 <Button
                                   type="button"
                                   variant="ghost"
@@ -656,15 +747,6 @@ function GroupManageDialog({
                                 >
                                   <ShieldCheck size={15} aria-hidden />
                                 </Button>
-                              ) : isMember && isManager ? (
-                                <span
-                                  className="oc-access__mgr oc-access__mgr--on"
-                                  role="img"
-                                  aria-label={m.groups_manager_badge()}
-                                  title={m.groups_manager_badge()}
-                                >
-                                  <ShieldCheck size={15} aria-hidden />
-                                </span>
                               ) : null}
                             </span>
                           </div>
@@ -684,6 +766,9 @@ function GroupManageDialog({
 
           {/* Shared agents ------------------------------------------------- */}
           <TabsContent value="agents">
+            {detail && !viewerIsAdmin ? (
+              <p className="oc-access__hint">{m.groups_agents_manager_hint()}</p>
+            ) : null}
             {instances === undefined ? (
               <p className="oc-access__hint">{m.groups_loading()}</p>
             ) : instances.length === 0 ? (
@@ -707,6 +792,8 @@ function GroupManageDialog({
                       instanceName={inst.name}
                       kind={inst.kind ?? "openclaw"}
                       assigned={groupAgentKeys}
+                      defaultKey={defaultKey}
+                      viewerIsAdmin={viewerIsAdmin}
                       query={agentQuery}
                     />
                   ))}
@@ -720,36 +807,400 @@ function GroupManageDialog({
             <GroupCharts groupId={groupId} />
           </TabsContent>
         </Tabs>
+        <MemberAgentsDialog
+          groupId={groupId}
+          member={agentsFor}
+          onOpenChange={(o) => {
+            if (!o) setAgentsFor(null);
+          }}
+        />
       </DialogContent>
     </Dialog>
   );
 }
 
-// The DISCOVERED, present agents of one instance, each toggling membership in
-// the group's shared-agent set. Mirrors UserAccessSheet's InstanceAgents:
-// assignAgentToGroup REJECTS a non-discovered / absent agent server-side, so we
-// only ever offer discovered ones and surface the rejection via a toast. There
-// is NO per-group "make default" action in P2 (no mutation exists) — the
-// default star is shown read-only when the backend marks one.
+// A MANAGER's view of the members: no user directory. They see the group's
+// members (remove a plain member — a co-manager is listed but greyed, only an
+// admin removes one), open a member's agents, and REQUEST an invitation by exact
+// email, which an admin approves.
+function ManagerMembers({
+  groupId,
+  members,
+  agentsButton,
+}: {
+  groupId: Id<"groups">;
+  members: Array<{
+    userId: Id<"users">;
+    label: string;
+    manager: boolean;
+    restricted: boolean;
+    lastGroup: boolean;
+  }>;
+  agentsButton: (userId: Id<"users">, label: string) => ReactNode;
+}) {
+  const requests = useQuery(api.groupInvites.listGroupInviteRequests, {
+    groupId,
+  });
+  const requestInvite = useMutation(api.groupInvites.requestGroupInvite);
+  const removeMember = useMutation(api.groups.removeMember);
+  const confirm = useConfirm();
+  const toast = useToast();
+  const [email, setEmail] = useState("");
+  const [page, setPage] = useState(1);
+  const paged = paginate(members, page, PAGE_SIZE);
+
+  async function submit(e: FormEvent) {
+    e.preventDefault();
+    const value = email.trim();
+    if (!value) return;
+    try {
+      await requestInvite({ groupId, email: value });
+      setEmail("");
+      toast.success(m.groups_invite_sent());
+    } catch (err) {
+      toast.error(m.groups_toast_invite_error(), err);
+    }
+  }
+
+  async function remove(userId: Id<"users">, label: string) {
+    const ok = await confirm({
+      title: m.groups_member_remove({ user: label }),
+      description: m.groups_member_remove_confirm({ user: label }),
+      confirmLabel: m.groups_member_remove_action(),
+      cancelLabel: m.groups_cancel(),
+      destructive: true,
+    });
+    if (!ok) return;
+    try {
+      await removeMember({ groupId, userId });
+    } catch (err) {
+      toast.error(m.groups_toast_member_error(), groupErrorDetail(err));
+    }
+  }
+
+  return (
+    <>
+      <form className="oc-access__invite" onSubmit={(e) => void submit(e)}>
+        <Input
+          type="email"
+          value={email}
+          onChange={(e) => setEmail(e.target.value)}
+          placeholder={m.groups_invite_placeholder()}
+          aria-label={m.groups_invite_title()}
+        />
+        <Button type="submit" size="sm" disabled={!email.trim()}>
+          <UserPlus size={14} aria-hidden />
+          {m.groups_invite_submit()}
+        </Button>
+      </form>
+      <p className="oc-access__hint">{m.groups_invite_hint()}</p>
+      {members.length === 0 ? (
+        <p className="oc-access__hint">{m.groups_no_members()}</p>
+      ) : (
+        <>
+          <div className="oc-access__list">
+            {paged.pageItems.map((mb) => (
+              <div key={mb.userId} className="oc-access__row">
+                <span className="oc-access__label" title={mb.label}>
+                  {mb.label}
+                </span>
+                {mb.restricted ? (
+                  <Badge variant="outline" className="oc-access__role">
+                    {m.groups_member_restricted_badge()}
+                  </Badge>
+                ) : null}
+                {agentsButton(mb.userId, mb.label)}
+                <span className="oc-access__mgrslot">
+                  {mb.manager ? (
+                    <span
+                      className="oc-access__mgr oc-access__mgr--on"
+                      role="img"
+                      aria-label={m.groups_manager_badge()}
+                      title={m.groups_manager_badge()}
+                    >
+                      <ShieldCheck size={15} aria-hidden />
+                    </span>
+                  ) : null}
+                </span>
+                {/* Listed but greyed: a co-manager, or someone for whom this is
+                    their LAST group (removal would widen them to every agent) —
+                    both are an admin's call. */}
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon-sm"
+                  disabled={mb.manager || mb.lastGroup}
+                  aria-label={m.groups_member_remove({ user: mb.label })}
+                  title={
+                    mb.manager
+                      ? m.groups_member_remove_manager_hint()
+                      : mb.lastGroup
+                        ? m.groups_member_remove_last_group_hint()
+                        : m.groups_member_remove({ user: mb.label })
+                  }
+                  onClick={() => void remove(mb.userId, mb.label)}
+                >
+                  <X size={14} aria-hidden />
+                </Button>
+              </div>
+            ))}
+          </div>
+          <Pager page={paged.page} pageCount={paged.pageCount} onPage={setPage} />
+        </>
+      )}
+      {requests !== undefined && requests.length > 0 ? (
+        <>
+          <p className="oc-access__subhead">{m.groups_invite_requests()}</p>
+          <div className="oc-access__list">
+            {requests.map((r) => (
+              <div key={r._id} className="oc-access__row">
+                <span className="oc-access__label" title={r.email}>
+                  {r.email}
+                </span>
+                <Badge
+                  variant={r.status === "pending" ? "secondary" : "outline"}
+                  className="oc-access__role"
+                >
+                  {inviteStatusLabel(r.status)}
+                </Badge>
+              </div>
+            ))}
+          </div>
+        </>
+      ) : null}
+    </>
+  );
+}
+
+// ONE member's agents within THIS group: which of the group's agents they receive
+// (all of them, or a manager-chosen subset) and their default among them. Only the
+// group's own agents are offered — nothing outside the group can be granted here,
+// and the member's other groups are untouched (server-enforced).
+function MemberAgentsDialog({
+  groupId,
+  member,
+  onOpenChange,
+}: {
+  groupId: Id<"groups"> | null;
+  member: { userId: Id<"users">; label: string } | null;
+  onOpenChange: (open: boolean) => void;
+}) {
+  const data = useQuery(
+    api.groups.getMemberAgentSettings,
+    groupId && member ? { groupId, userId: member.userId } : "skip",
+  );
+  const setAgents = useMutation(api.groups.setMemberAgents);
+  const setDefault = useMutation(api.groups.setMemberDefaultAgent);
+  const toast = useToast();
+
+  async function apply(
+    run: () => Promise<unknown>,
+  ): Promise<void> {
+    try {
+      await run();
+    } catch (err) {
+      toast.error(m.groups_toast_member_agents_error(), err);
+    }
+  }
+
+  const agents = data?.agents ?? [];
+  const byKey = new Map(
+    agents.map((a) => [agentPairKey(a.instanceName, a.agentId), a]),
+  );
+  const groupKeys = [...byKey.keys()];
+  const allowed = new Set(
+    agents
+      .filter((a) => a.allowed)
+      .map((a) => agentPairKey(a.instanceName, a.agentId)),
+  );
+
+  function toggle(key: string) {
+    if (!groupId || !member || !data) return;
+    const next = nextMemberAllowance(groupKeys, allowed, data.restricted, key).map(
+      (k) => {
+        const a = byKey.get(k)!;
+        return { instanceName: a.instanceName, agentId: a.agentId };
+      },
+    );
+    void apply(() => setAgents({ groupId, userId: member.userId, agents: next }));
+  }
+
+  return (
+    <Dialog open={member !== null} onOpenChange={onOpenChange}>
+      <DialogContent className="oc-access">
+        <DialogHeader>
+          <DialogTitle>
+            {m.groups_member_agents_title({ user: member?.label ?? "" })}
+          </DialogTitle>
+          <DialogDescription>{m.groups_member_agents_desc()}</DialogDescription>
+        </DialogHeader>
+        {data === undefined ? (
+          <p className="oc-access__hint">{m.groups_loading()}</p>
+        ) : data === null || agents.length === 0 ? (
+          <p className="oc-access__hint">{m.groups_member_agents_empty()}</p>
+        ) : (
+          <>
+            {!data.settable ? (
+              <p className="oc-access__hint">{m.groups_member_agents_readonly()}</p>
+            ) : null}
+            {data.adminNarrowed ? (
+              <p className="oc-access__hint">
+                {m.groups_member_agents_admin_narrowed()}
+              </p>
+            ) : null}
+            {data.restrictedByAdmin && !data.viewerIsAdmin ? (
+              <p className="oc-access__hint">{m.groups_member_agents_admin_set()}</p>
+            ) : null}
+            <div className="oc-access__row oc-access__selectall">
+              <span className="oc-access__label">
+                {data.restricted
+                  ? m.groups_member_agents_restricted()
+                  : m.groups_member_agents_all()}
+              </span>
+              {data.restricted ? (
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  // Lifting an admin-set restriction is the admin's call.
+                  disabled={
+                    !data.settable ||
+                    (data.restrictedByAdmin && !data.viewerIsAdmin)
+                  }
+                  onClick={() =>
+                    groupId && member
+                      ? void apply(() =>
+                          setAgents({ groupId, userId: member.userId, agents: null }),
+                        )
+                      : undefined
+                  }
+                >
+                  {m.groups_member_agents_reset()}
+                </Button>
+              ) : null}
+            </div>
+            <div className="oc-access__list">
+              {agents.map((a) => {
+                const key = agentPairKey(a.instanceName, a.agentId);
+                const label = a.displayName ?? a.agentId;
+                return (
+                  <div key={key} className="oc-access__row">
+                    <Checkbox
+                      checked={a.allowed}
+                      // An admin-set restriction only narrows for a manager.
+                      disabled={
+                        !data.settable ||
+                        (data.restrictedByAdmin && !data.viewerIsAdmin && !a.allowed)
+                      }
+                      onCheckedChange={() => toggle(key)}
+                      aria-label={m.groups_member_agents_toggle_aria({ name: label })}
+                    />
+                    <span className="oc-access__label" title={label}>
+                      {label}
+                    </span>
+                    {a.limitedByAdmin ? (
+                      <Badge variant="outline" className="oc-access__role">
+                        {m.groups_member_agents_limited_by_admin()}
+                      </Badge>
+                    ) : null}
+                    {a.state === "deleted" ? (
+                      <Badge variant="outline" className="oc-access__gone">
+                        {m.groups_badge_removed()}
+                      </Badge>
+                    ) : null}
+                    {a.allowed ? (
+                      a.isMemberDefault ? (
+                        <Button
+                          type="button"
+                          size="icon-sm"
+                          variant="ghost"
+                          className="oc-access__fav"
+                          disabled={!data.settable}
+                          aria-label={m.groups_member_default()}
+                          title={m.groups_member_default()}
+                          onClick={() =>
+                            groupId && member
+                              ? void apply(() =>
+                                  setDefault({
+                                    groupId,
+                                    userId: member.userId,
+                                    agent: null,
+                                  }),
+                                )
+                              : undefined
+                          }
+                        >
+                          <Star size={14} fill="currentColor" />
+                        </Button>
+                      ) : (
+                        <Button
+                          type="button"
+                          size="icon-sm"
+                          variant="ghost"
+                          className="oc-access__setdefault"
+                          disabled={!data.settable}
+                          aria-label={m.groups_member_set_default()}
+                          title={m.groups_member_set_default()}
+                          onClick={() =>
+                            groupId && member
+                              ? void apply(() =>
+                                  setDefault({
+                                    groupId,
+                                    userId: member.userId,
+                                    agent: {
+                                      instanceName: a.instanceName,
+                                      agentId: a.agentId,
+                                    },
+                                  }),
+                                )
+                              : undefined
+                          }
+                        >
+                          <Star size={14} />
+                        </Button>
+                      )
+                    ) : null}
+                  </div>
+                );
+              })}
+            </div>
+          </>
+        )}
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+// The agents of one instance for this group. An ADMIN sees every discovered agent
+// and shares any enabled one; a MANAGER sees exactly the group's agents, the ones
+// reserved for it, and the new agents they may claim (server-scoped). A row the
+// viewer cannot act on stays listed but greyed. The star is the GROUP default.
 function GroupInstanceAgents({
   groupId,
   instanceName,
   kind,
   assigned,
+  defaultKey,
+  viewerIsAdmin,
   query,
 }: {
   groupId: Id<"groups"> | null;
   instanceName: string;
   kind: "openclaw" | "hermes";
   assigned: Set<string>;
+  defaultKey: string | null;
+  viewerIsAdmin: boolean;
   query: string;
 }) {
-  // Delegation-safe (GROUPS_MANAGE-gated, label-only): the admin
-  // listAgentsForInstance is requireAdmin + carries agent CURATION state.
-  const data = useQuery(api.groups.listAssignableAgents, { instanceName });
+  const data = useQuery(
+    api.groups.listAssignableAgents,
+    groupId ? { instanceName, groupId } : "skip",
+  );
   const assign = useMutation(api.groups.assignAgentToGroup);
   const remove = useMutation(api.groups.removeAgentFromGroup);
   const bulkSetGroupAgents = useMutation(api.groups.bulkSetGroupAgents);
+  const claim = useMutation(api.groups.claimAgentForGroup);
+  const setDefault = useMutation(api.groups.setGroupDefaultAgent);
   const toast = useToast();
   // Page state lives ABOVE the early returns so the hook count is constant even
   // when this instance is hidden (search miss) or groupId is null.
@@ -759,20 +1210,36 @@ function GroupInstanceAgents({
   }, [query]);
 
   if (!groupId) return null;
-  const agents = filterInstanceAgents(data?.agents ?? [], query);
+  const all = filterInstanceAgents(data?.agents ?? [], query);
   const stale = data?.discovery && !data.discovery.lastPollOk;
+  const controlOf = (a: (typeof all)[number]) =>
+    agentRowControl(
+      {
+        assigned: assigned.has(agentPairKey(instanceName, a.agentId)),
+        claimable: a.claimable,
+        reservedForGroup: a.reservedForGroup,
+        enabled: a.enabled,
+        present: a.presentInLastOk !== false,
+      },
+      viewerIsAdmin,
+    );
+  const agents = all.filter((a) => controlOf(a) !== "claim");
+  const claimables = all.filter((a) => controlOf(a) === "claim");
 
   // Hide the whole instance block when a search is active and nothing matches,
   // so the agents list collapses to just the instances that have a hit.
-  if (query.trim() && agents.length === 0) return null;
+  if (query.trim() && all.length === 0) return null;
 
-  // "Select all" only ever targets ASSIGNABLE agents — a gone OR admin-disabled
-  // agent can't be shared, so it must not be force-assigned by the bulk toggle.
+  // "Select all" only ever targets agents the viewer may SHARE — a gone, disabled
+  // or (for a manager) out-of-scope agent must not be force-assigned in bulk.
   const selectable = agents.filter(
-    (a) => a.presentInLastOk !== false && a.enabled !== false,
+    (a) =>
+      controlOf(a) === "toggle" &&
+      a.presentInLastOk !== false &&
+      a.enabled !== false,
   );
   const agentSel = selectionState(selectable, (a) =>
-    assigned.has(`${instanceName}/${a.agentId}`),
+    assigned.has(agentPairKey(instanceName, a.agentId)),
   );
   // Pagination is a pure rendering slice; select-all still acts on all present.
   const agentPaged = paginate(agents, page, PAGE_SIZE);
@@ -782,7 +1249,7 @@ function GroupInstanceAgents({
       if (isAssigned) await remove({ groupId: groupId!, instanceName, agentId });
       else await assign({ groupId: groupId!, instanceName, agentId });
     } catch (err) {
-      toast.error(m.groups_toast_agent_error(), err);
+      toast.error(m.groups_toast_agent_error(), groupErrorDetail(err));
     }
   }
 
@@ -797,9 +1264,41 @@ function GroupInstanceAgents({
         assigned: agentSel !== "all",
       });
     } catch (err) {
-      toast.error(m.groups_toast_agent_error(), err);
+      toast.error(m.groups_toast_agent_error(), groupErrorDetail(err));
     }
   }
+
+  async function doClaim(agentId: string) {
+    try {
+      await claim({ groupId: groupId!, instanceName, agentId });
+    } catch (err) {
+      toast.error(m.groups_toast_claim_error(), err);
+    }
+  }
+
+  async function makeDefault(agentId: string | null) {
+    try {
+      await setDefault({
+        groupId: groupId!,
+        agent: agentId === null ? null : { instanceName, agentId },
+      });
+    } catch (err) {
+      toast.error(m.groups_toast_default_error(), err);
+    }
+  }
+
+  const reservedBadge = (a: (typeof all)[number]) =>
+    a.reservedForGroup ? (
+      <Badge variant="outline" className="oc-access__role">
+        {m.groups_badge_reserved_here()}
+      </Badge>
+    ) : a.reserved ? (
+      <Badge variant="outline" className="oc-access__role">
+        {a.reservedGroupName !== null
+          ? m.groups_badge_reserved_other({ group: a.reservedGroupName })
+          : m.groups_badge_reserved_deleted()}
+      </Badge>
+    ) : null;
 
   return (
     <div className="oc-access__group">
@@ -817,7 +1316,7 @@ function GroupInstanceAgents({
       </div>
       {data === undefined ? (
         <p className="oc-access__hint">{m.groups_loading_agents()}</p>
-      ) : agents.length === 0 ? (
+      ) : all.length === 0 ? (
         <p className="oc-access__hint">
           {stale ? m.groups_no_agents_offline() : m.groups_no_agents()}
         </p>
@@ -840,21 +1339,21 @@ function GroupInstanceAgents({
             </div>
           ) : null}
           {agentPaged.pageItems.map((a) => {
-          const key = `${instanceName}/${a.agentId}`;
+          const key = agentPairKey(instanceName, a.agentId);
           const isAssigned = assigned.has(key);
           const gone = a.presentInLastOk === false;
-          // Only ENABLED agents can be shared (opt-in; server rejects the rest).
-          // A not-enabled agent (disabled OR un-curated) is greyed and
-          // non-addable, but an already-shared one stays removable.
-          const disabledAgent = !a.enabled;
+          // Listed but greyed when the viewer cannot share it (not enabled, gone,
+          // or — for a manager — outside the group's scope); an already-shared
+          // agent always stays removable.
+          const locked = controlOf(a) === "locked";
           return (
             <div
               key={a.agentId}
-              className={`oc-access__row${disabledAgent ? " is-disabled" : ""}`}
+              className={`oc-access__row${locked ? " is-disabled" : ""}`}
             >
               <Checkbox
                 checked={isAssigned}
-                disabled={(gone || disabledAgent) && !isAssigned}
+                disabled={locked && !isAssigned}
                 onCheckedChange={() => void toggle(a.agentId, isAssigned)}
                 aria-label={m.groups_agent_toggle_aria({
                   name: a.displayName ?? a.agentId,
@@ -870,20 +1369,38 @@ function GroupInstanceAgents({
               {a.model ? (
                 <span className="oc-access__model">{a.model}</span>
               ) : null}
-              {a.isDefaultOnInstance ? (
-                <span
-                  className="oc-access__fav"
-                  role="img"
-                  aria-label={m.groups_default_on_instance()}
-                  title={m.groups_default_on_instance()}
-                >
-                  <Star size={14} fill="currentColor" />
-                </span>
-              ) : null}
+              {reservedBadge(a)}
               {gone ? (
                 <Badge variant="outline" className="oc-access__gone">
                   {m.groups_badge_removed()}
                 </Badge>
+              ) : null}
+              {isAssigned ? (
+                defaultKey === key ? (
+                  <Button
+                    type="button"
+                    size="icon-sm"
+                    variant="ghost"
+                    className="oc-access__fav"
+                    aria-label={m.groups_default_agent()}
+                    title={m.groups_default_agent()}
+                    onClick={() => void makeDefault(null)}
+                  >
+                    <Star size={14} fill="currentColor" />
+                  </Button>
+                ) : (
+                  <Button
+                    type="button"
+                    size="icon-sm"
+                    variant="ghost"
+                    className="oc-access__setdefault"
+                    aria-label={m.groups_set_default_agent()}
+                    title={m.groups_set_default_agent()}
+                    onClick={() => void makeDefault(a.agentId)}
+                  >
+                    <Star size={14} />
+                  </Button>
+                )
               ) : null}
             </div>
           );
@@ -893,9 +1410,108 @@ function GroupInstanceAgents({
             pageCount={agentPaged.pageCount}
             onPage={setPage}
           />
+          {claimables.length > 0 ? (
+            <>
+              <p className="oc-access__subhead">{m.groups_claimable_title()}</p>
+              <p className="oc-access__hint">{m.groups_claimable_hint()}</p>
+              {claimables.map((a) => {
+                const label = a.displayName ?? a.agentId;
+                return (
+                  <div key={a.agentId} className="oc-access__row">
+                    <span className="oc-access__label" title={label}>
+                      {a.emoji ? `${a.emoji} ` : ""}
+                      {label}
+                    </span>
+                    {a.model ? (
+                      <span className="oc-access__model">{a.model}</span>
+                    ) : null}
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      className="h-7"
+                      aria-label={m.groups_claim_aria({ name: label })}
+                      onClick={() => void doClaim(a.agentId)}
+                    >
+                      {m.groups_claim()}
+                    </Button>
+                  </div>
+                );
+              })}
+            </>
+          ) : null}
         </>
       )}
     </div>
+  );
+}
+
+// Pending invitation requests from group managers (ADMIN only). Approve adds the
+// account to the group — possible only for an existing, approved account, so the
+// button is listed but greyed otherwise (with the reason as a badge).
+function InviteRequestsPanel() {
+  const rows = useQuery(api.groupInvites.listPendingInviteRequests, {});
+  const decide = useMutation(api.groupInvites.decideGroupInvite);
+  const toast = useToast();
+  if (rows === undefined || rows.length === 0) return null;
+
+  async function run(requestId: Id<"groupInviteRequests">, approve: boolean) {
+    try {
+      await decide({ requestId, approve });
+    } catch (err) {
+      toast.error(m.groups_toast_invite_decide_error(), err);
+    }
+  }
+
+  return (
+    <section className="oc-invites" aria-label={m.groups_invites_admin_title()}>
+      <h3 className="oc-invites__title">
+        <UserPlus size={14} aria-hidden />
+        {m.groups_invites_admin_title()}
+        <Badge variant="secondary">{rows.length}</Badge>
+      </h3>
+      <div className="oc-access__list">
+        {rows.map((r) => (
+          <div key={r._id} className="oc-access__row">
+            <span className="oc-access__who">
+              <span className="oc-access__label" title={r.email}>
+                {r.email}
+              </span>
+              <span className="oc-access__sub">
+                {r.groupName ?? "?"} ·{" "}
+                {m.groups_invites_admin_requested_by({ by: r.requestedBy })}
+              </span>
+            </span>
+            {r.account !== "ready" ? (
+              <Badge variant="outline" className="oc-access__role">
+                {r.account === "none"
+                  ? m.groups_invite_account_none()
+                  : m.groups_invite_account_pending()}
+              </Badge>
+            ) : null}
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              className="h-7"
+              disabled={r.account !== "ready"}
+              onClick={() => void run(r._id, true)}
+            >
+              {m.groups_invite_approve()}
+            </Button>
+            <Button
+              type="button"
+              size="sm"
+              variant="ghost"
+              className="h-7"
+              onClick={() => void run(r._id, false)}
+            >
+              {m.groups_invite_reject()}
+            </Button>
+          </div>
+        ))}
+      </div>
+    </section>
   );
 }
 

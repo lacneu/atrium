@@ -19,7 +19,10 @@ import {
 import { internal } from "./_generated/api";
 import { Doc, Id } from "./_generated/dataModel";
 import { resolveChatAccess } from "./lib/chatAccess";
-import { requireActive, requireAdmin } from "./lib/access";
+import { getActor, requireActive, requireAdmin } from "./lib/access";
+import { recordAudit } from "./lib/audit";
+import { agentClaimEpoch, isReserved } from "./lib/agentClaim";
+import { clearMemberDefaults, unshareAgentFromMembers } from "./lib/groupMembers";
 import { resolvePollTargets } from "./lib/bridgeRouting";
 import { resolveTargetForTurn } from "./routing";
 import { chatAgentRows } from "./chatAgents";
@@ -282,14 +285,26 @@ export const applyDiscovery = internalMutation({
         // the ≤1-tick window before the first backfill run — is `false` and so is
         // skipped by the backfill (which only grandfathers `undefined`), never
         // auto-enabled. See backfillEnabledOnce.
+        // An agent an admin PURGED after deciding on it comes back carrying that
+        // decision (agentDecisionTombstones) — never as a fresh, claimable agent.
+        const tombstone = await ctx.db
+          .query("agentDecisionTombstones")
+          .withIndex("by_instance_agent", (q) =>
+            q.eq("instanceName", instanceName).eq("agentId", a.agentId),
+          )
+          .first();
         await ctx.db.insert("agents", {
           instanceName,
           agentId: a.agentId,
           firstSeenAt: now,
           lastSeenAt: now,
           enabled: false,
+          ...(tombstone !== null
+            ? { enablementDecidedAt: tombstone.enablementDecidedAt }
+            : {}),
           ...next,
         });
+        if (tombstone !== null) await ctx.db.delete(tombstone._id);
       }
     }
     // Discovered rows absent from this successful poll => deleted on the gateway.
@@ -572,6 +587,15 @@ export const listAgentsForInstance = query({
       .query("instances")
       .withIndex("by_name", (q) => q.eq("name", instanceName))
       .first();
+    // The group each RESERVED agent is held for (a deleted group reads as null —
+    // the reservation stands, fail-closed, until an admin lifts or moves it).
+    const reservedNames = new Map<Id<"groups">, string | null>();
+    for (const a of agents) {
+      const gid = a.reservedForGroupId;
+      if (gid !== undefined && !reservedNames.has(gid)) {
+        reservedNames.set(gid, (await ctx.db.get(gid))?.name ?? null);
+      }
+    }
     return {
       agents: agents.map((a) => ({
         agentId: a.agentId,
@@ -581,6 +605,13 @@ export const listAgentsForInstance = query({
         description: a.description ?? null,
         isDefaultOnInstance: a.isDefaultOnInstance ?? false,
         enabled: a.enabled === true,
+        reserved:
+          a.reservedForGroupId !== undefined
+            ? {
+                groupId: a.reservedForGroupId,
+                groupName: reservedNames.get(a.reservedForGroupId) ?? null,
+              }
+            : null,
         // Effective agent TYPE(s) — never empty (conversational by default).
         types: resolveAgentTypes(a.types),
         source: a.source,
@@ -662,8 +693,12 @@ async function eligibleDefaultAgentIds(
     .query("agents")
     .withIndex("by_instance", (q) => q.eq("instanceName", instanceName))
     .collect();
+  // A RESERVED agent (claimed for one group) is never the instance default: the
+  // default is what reaches users outside any group, which a reservation excludes.
   return agents
-    .filter((a) => a.enabled === true && a.presentInLastOk !== false)
+    .filter(
+      (a) => a.enabled === true && a.presentInLastOk !== false && !isReserved(a),
+    )
     .map((a) => a.agentId)
     .sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
 }
@@ -685,26 +720,134 @@ export const setAgentEnabled = mutation({
   },
   handler: async (ctx, { instanceName, agentId, enabled }) => {
     await requireAdmin(ctx);
+    const actor = await getActor(ctx);
     const agent = await agentRow(ctx, instanceName, agentId);
     if (agent === null) throw new Error("Not found: agent");
-    await ctx.db.patch(agent._id, { enabled });
+    // Either way this is an admin DECISION: the agent stops being claimable by a
+    // group manager (lib/agentClaim), even when it was already disabled.
+    await ctx.db.patch(agent._id, { enabled, enablementDecidedAt: Date.now() });
+    await healInstanceDefault(ctx, instanceName, enabled ? agentId : null);
+    await recordAudit(ctx, actor, enabled ? "agent.enable" : "agent.disable", {
+      resource: "agent",
+      resourceId: agentRef(instanceName, agentId),
+    });
+  },
+});
 
-    const inst = await instanceByName(ctx, instanceName);
-    if (inst === null) return;
-    const ids = await eligibleDefaultAgentIds(ctx, instanceName);
+/** Audit resource id of one agent. */
+export function agentRef(instanceName: string, agentId: string): string {
+  return `${instanceName}/${agentId}`;
+}
 
-    // Heal the default on EVERY toggle: if the current default is no longer ELIGIBLE
-    // (disabled OR gone absent — including a default that was already absent before
-    // this toggle of a DIFFERENT agent), re-elect. Prefer the just-enabled agent when
-    // it is itself eligible (a single new selection becomes the default); else the
-    // first eligible; else clear (ids[0] is undefined for an empty set → 0 eligible =
-    // no default, which is allowed).
-    const valid =
-      inst.defaultAgentId != null && ids.includes(inst.defaultAgentId);
-    if (!valid) {
-      const next = enabled && ids.includes(agentId) ? agentId : ids[0];
-      await ctx.db.patch(inst._id, { defaultAgentId: next });
+/** Heal the instance default after any change to eligibility (enable/disable, a
+ *  reservation set or lifted): if the current default is no longer ELIGIBLE
+ *  (disabled, gone absent, or reserved — including a default that was already
+ *  invalid before this change), re-elect. Prefer `prefer` when it is itself
+ *  eligible (a single new selection becomes the default); else the first eligible;
+ *  else clear (ids[0] is undefined for an empty set → 0 eligible = no default,
+ *  which is allowed). A valid default is never touched. */
+async function healInstanceDefault(
+  ctx: MutationCtx,
+  instanceName: string,
+  prefer: string | null,
+): Promise<void> {
+  const inst = await instanceByName(ctx, instanceName);
+  if (inst === null) return;
+  const ids = await eligibleDefaultAgentIds(ctx, instanceName);
+  const valid =
+    inst.defaultAgentId != null && ids.includes(inst.defaultAgentId);
+  if (!valid) {
+    const next = prefer !== null && ids.includes(prefer) ? prefer : ids[0];
+    await ctx.db.patch(inst._id, { defaultAgentId: next });
+  }
+}
+
+/** Admin: reserve an agent for ONE group (or move its reservation), or LIFT it
+ *  (`groupId: null`). The only way to widen a claimed agent beyond its group.
+ *  Reserving also shares the agent with the target group (the reservation is what
+ *  lets that group's manager keep it) and takes it out of the instance default;
+ *  lifting returns it to the all-pool when enabled and heals the default. Audited. */
+export const setAgentReservation = mutation({
+  args: {
+    instanceName: v.string(),
+    agentId: v.string(),
+    groupId: v.union(v.id("groups"), v.null()),
+  },
+  handler: async (ctx, { instanceName, agentId, groupId }) => {
+    await requireAdmin(ctx);
+    const actor = await getActor(ctx);
+    const agent = await agentRow(ctx, instanceName, agentId);
+    if (agent === null) throw new Error("Not found: agent");
+    if (groupId === null) {
+      if (agent.reservedForGroupId === undefined) return; // idempotent
+      await ctx.db.patch(agent._id, {
+        reservedForGroupId: undefined,
+        reservedAt: undefined,
+      });
+      await healInstanceDefault(ctx, instanceName, null);
+      await recordAudit(ctx, actor, "agent.reservation.lift", {
+        resource: "agent",
+        resourceId: agentRef(instanceName, agentId),
+      });
+      return;
     }
+    if ((await ctx.db.get(groupId)) === null) throw new Error("Not found: group");
+    // Reserving SHARES the agent with the group: the same gate as every share path
+    // (discovered + present + enabled under the current enforcement mode).
+    const strict = await agentEnablementStrict(ctx);
+    if (
+      agent.source !== "discovered" ||
+      !agent.presentInLastOk ||
+      (strict ? agent.enabled !== true : agent.enabled === false)
+    ) {
+      throw new Error(
+        `Agent not assignable: ${instanceName}/${agentId} is not a discovered, present, enabled agent`,
+      );
+    }
+    // A MOVE takes the agent away from the group it was reserved for: the
+    // reservation moves to ONE group; an admin's shares with other groups stay.
+    const previous = agent.reservedForGroupId;
+    if (previous !== undefined && previous !== groupId) {
+      const old = await ctx.db
+        .query("groupAgents")
+        .withIndex("by_group_instance_agent", (q) =>
+          q.eq("groupId", previous).eq("instanceName", instanceName).eq("agentId", agentId),
+        )
+        .unique();
+      // Only a group that still HAD it loses it (its manager may have unshared it
+      // already — that unshare was audited then).
+      if (old !== null) {
+        await ctx.db.delete(old._id);
+        await unshareAgentFromMembers(ctx, previous, instanceName, agentId);
+        await recordAudit(ctx, actor, "group.removeAgent", {
+          resource: "groupAgent",
+          resourceId: `${previous}:${agentRef(instanceName, agentId)}`,
+        });
+      }
+    }
+    await ctx.db.patch(agent._id, {
+      reservedForGroupId: groupId,
+      reservedAt: Date.now(),
+    });
+    const shared = await ctx.db
+      .query("groupAgents")
+      .withIndex("by_group_instance_agent", (q) =>
+        q.eq("groupId", groupId).eq("instanceName", instanceName).eq("agentId", agentId),
+      )
+      .unique();
+    if (shared === null) {
+      await ctx.db.insert("groupAgents", {
+        groupId,
+        instanceName,
+        agentId,
+        createdAt: Date.now(),
+      });
+    }
+    await healInstanceDefault(ctx, instanceName, null);
+    await recordAudit(ctx, actor, "agent.reservation.set", {
+      resource: "agent",
+      resourceId: `${agentRef(instanceName, agentId)}@${groupId}`,
+    });
   },
 });
 
@@ -756,6 +899,9 @@ export const setInstanceDefaultAgent = mutation({
     // default would render as "no default" — refuse it (mirror the election filter).
     if (agent.presentInLastOk === false) {
       throw new Error("Refused: the default agent is absent from the gateway");
+    }
+    if (isReserved(agent)) {
+      throw new Error("Refused: a reserved agent cannot be the instance default");
     }
     await ctx.db.patch(inst._id, { defaultAgentId: agentId });
   },
@@ -836,6 +982,7 @@ export const removeInstanceAgent = mutation({
   args: { instanceName: v.string(), agentId: v.string() },
   handler: async (ctx, { instanceName, agentId }) => {
     await requireAdmin(ctx);
+    const actor = await getActor(ctx);
     const agent = await agentRow(ctx, instanceName, agentId);
     if (agent === null) return; // idempotent — already gone
     if (agent.presentInLastOk) {
@@ -844,6 +991,39 @@ export const removeInstanceAgent = mutation({
       );
     }
     await ctx.db.delete(agent._id);
+    // An access decision: it drops the reservation, every grant, allowance and
+    // member default naming the agent (and keeps its enablement decision below).
+    await recordAudit(ctx, actor, "agent.purge", {
+      resource: "agent",
+      resourceId: agentRef(instanceName, agentId),
+    });
+    // Keep the enablement DECISION past the purge: a re-discovery under the same id
+    // inherits it (applyDiscovery), so it never comes back claimable. Only a row
+    // that is itself claimable-shaped (post-epoch, never enabled, never decided)
+    // goes without one: a row that PREDATES the epoch (or any row while no epoch
+    // is stamped) carries no marker yet was out of reach of a claim, and an
+    // enabled one was an admin's (or a claim's) decision — both keep that status.
+    const epoch = await agentClaimEpoch(ctx);
+    const keepsDecision =
+      agent.enablementDecidedAt !== undefined ||
+      epoch === null ||
+      agent._creationTime <= epoch ||
+      agent.enabled !== false;
+    if (keepsDecision) {
+      const prior = await ctx.db
+        .query("agentDecisionTombstones")
+        .withIndex("by_instance_agent", (q) =>
+          q.eq("instanceName", instanceName).eq("agentId", agentId),
+        )
+        .first();
+      if (prior === null) {
+        await ctx.db.insert("agentDecisionTombstones", {
+          instanceName,
+          agentId,
+          enablementDecidedAt: agent.enablementDecidedAt ?? Date.now(),
+        });
+      }
+    }
 
     // Cascade — every user's grant of this agent (paginated via by_instance_agent).
     // Maintain the per-user "exactly one default" invariant (like removeAgent /
@@ -875,10 +1055,27 @@ export const removeInstanceAgent = mutation({
     // Cascade — every group's share of this agent (per-instance set is small).
     const groupRows = await ctx.db
       .query("groupAgents")
-      .withIndex("by_instance", (q) => q.eq("instanceName", instanceName))
+      .withIndex("by_instance_agent", (q) =>
+        q.eq("instanceName", instanceName).eq("agentId", agentId),
+      )
       .collect();
     for (const r of groupRows) {
-      if (r.agentId === agentId) await ctx.db.delete(r._id);
+      await ctx.db.delete(r._id);
+      // A member default can only point at an agent its group shares, so the
+      // groups losing it are exactly the ones whose members may name it.
+      await clearMemberDefaults(ctx, r.groupId, instanceName, agentId);
+    }
+    // …and every per-member allowance naming it (a re-discovered agent under the
+    // same id must not come back into a restricted member's share by itself).
+    for (;;) {
+      const batch = await ctx.db
+        .query("groupMemberAgents")
+        .withIndex("by_instance_agent", (q) =>
+          q.eq("instanceName", instanceName).eq("agentId", agentId),
+        )
+        .take(AGENT_CASCADE_BATCH);
+      for (const r of batch) await ctx.db.delete(r._id);
+      if (batch.length < AGENT_CASCADE_BATCH) break;
     }
     // …and every room's delegation to it: re-discovered under the same id, it must
     // not come back into rooms (the room limit counts these rows, too). ONE batch
@@ -953,7 +1150,7 @@ export type EnrichedUserAgent = {
   via: AgentVia;
 };
 
-const grantKey = (instanceName: string, agentId: string): string =>
+export const grantKey = (instanceName: string, agentId: string): string =>
   `${instanceName.length}:${instanceName}/${agentId}`;
 
 // One entry of the POOL a user may draw agents from (see getAgentPool).
@@ -988,27 +1185,55 @@ type PoolEntry = {
 async function resolveGroupPool(
   ctx: QueryCtx | MutationCtx,
   userId: Id<"users">,
-): Promise<{ existingGroups: number; pool: PoolEntry[] }> {
+): Promise<{
+  existingGroups: number;
+  pool: PoolEntry[];
+  // Every agent the user's groups share, BEFORE per-member restrictions — the
+  // boundary that decides whether an admin's direct grants narrow this user.
+  wholeKeys: Set<string>;
+}> {
   const memberships = await ctx.db
     .query("groupMembers")
     .withIndex("by_user", (q) => q.eq("userId", userId))
     .collect();
-  const groupIds = memberships
-    .map((m) => m.groupId)
-    .sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
+  const wholeKeys = new Set<string>();
+  memberships.sort((a, b) =>
+    a.groupId < b.groupId ? -1 : a.groupId > b.groupId ? 1 : 0,
+  );
   const pool: PoolEntry[] = [];
   const seen = new Set<string>();
   let rank = 0; // 0-based rank among EXISTING groups (lowest groupId first).
-  for (const groupId of groupIds) {
+  for (const membership of memberships) {
+    const groupId = membership.groupId;
     const group = await ctx.db.get(groupId);
     if (group === null) continue; // dangling membership -> ignore entirely
-    const shared = await ctx.db
+    // THIS member's share of THIS group: the whole group, or — restricted by the
+    // group's manager — only the allowed subset. Scoped per group, so a member of
+    // several groups keeps every other group's agents whole.
+    const whole = await ctx.db
       .query("groupAgents")
       .withIndex("by_group", (q) => q.eq("groupId", groupId))
       .collect();
+    for (const ga of whole) wholeKeys.add(grantKey(ga.instanceName, ga.agentId));
+    const shared = await shareOfWhole(ctx, membership, whole);
     shared.sort((a, b) =>
       a.agentId < b.agentId ? -1 : a.agentId > b.agentId ? 1 : 0,
     );
+    // The member's own default within this group (set by its manager) overrides
+    // the group's default for them — when it is still part of their share.
+    const memberDefault = membership.defaultAgent;
+    const memberDefaultInShare =
+      memberDefault !== undefined &&
+      shared.some(
+        (ga) =>
+          ga.instanceName === memberDefault.instanceName &&
+          ga.agentId === memberDefault.agentId,
+      );
+    const isDefaultHere = (ga: Doc<"groupAgents">): boolean =>
+      memberDefaultInShare
+        ? ga.instanceName === memberDefault!.instanceName &&
+          ga.agentId === memberDefault!.agentId
+        : ga.isDefault === true;
     for (const ga of shared) {
       const key = grantKey(ga.instanceName, ga.agentId);
       if (seen.has(key)) {
@@ -1016,7 +1241,7 @@ async function resolveGroupPool(
         // default ONLY if no earlier group already claimed one for this agent --
         // the LOWEST-rank default wins, so a later group can never override an
         // earlier group's own default (lowest-groupId precedence).
-        if (ga.isDefault === true) {
+        if (isDefaultHere(ga)) {
           const existing = pool.find(
             (p) =>
               p.instanceName === ga.instanceName && p.agentId === ga.agentId,
@@ -1032,12 +1257,229 @@ async function resolveGroupPool(
         instanceName: ga.instanceName,
         agentId: ga.agentId,
         via: { group: group.key },
-        defaultRank: ga.isDefault === true ? rank : null,
+        defaultRank: isDefaultHere(ga) ? rank : null,
       });
     }
     rank++;
   }
-  return { existingGroups: rank, pool };
+  return { existingGroups: rank, pool, wholeKeys };
+}
+
+/** For the per-member settings view: is this user narrowed by an admin's direct
+ *  grants (directGrantsNarrow), and which agents do those grants name? */
+export async function adminNarrowingOf(
+  ctx: QueryCtx | MutationCtx,
+  userId: Id<"users">,
+): Promise<{ narrowed: boolean; directKeys: Set<string> }> {
+  const direct = await ctx.db
+    .query("userAgents")
+    .withIndex("by_user", (q) => q.eq("userId", userId))
+    .collect();
+  const { existingGroups, wholeKeys } = await resolveGroupPool(ctx, userId);
+  return {
+    narrowed: existingGroups > 0 && directGrantsNarrow(direct, wholeKeys),
+    directKeys: new Set(direct.map((r) => grantKey(r.instanceName, r.agentId))),
+  };
+}
+
+/** Is an in-group user NARROWED by an admin's direct grants? Yes as soon as ONE
+ *  direct grant is shared by one of their groups — judged on the groups' WHOLE
+ *  share, before any per-member restriction. The effective set is then the direct
+ *  grants that survive the member's (possibly manager-restricted) share, and may be
+ *  EMPTY: a manager's restriction must never turn an admin's narrowing back into
+ *  the whole pool (fail-closed). A direct grant outside every group stays ignored,
+ *  as before. */
+export function directGrantsNarrow(
+  direct: ReadonlyArray<{ instanceName: string; agentId: string }>,
+  wholeKeys: ReadonlySet<string>,
+): boolean {
+  return direct.some((r) => wholeKeys.has(grantKey(r.instanceName, r.agentId)));
+}
+
+/** A share-SHRINKING change a group manager may attempt: agents leaving a group
+ *  (unshare), and/or the user leaving one group (member removal). */
+export type ShareShrink = {
+  unshared?: ReadonlyArray<{
+    groupId: Id<"groups">;
+    instanceName: string;
+    agentId: string;
+  }>;
+  leftGroupId?: Id<"groups">;
+};
+
+/** The user's admin-narrowing MODE (directGrantsNarrow) before and after a change
+ *  to their groups' whole share. Indexed reads: the user's direct grants,
+ *  memberships and their groups' shares. `null` when they hold no direct grant
+ *  (then no change can flip anything). */
+async function narrowingBeforeAfter(
+  ctx: QueryCtx | MutationCtx,
+  userId: Id<"users">,
+  change: ShareShrink & { shared?: ShareShrink["unshared"] },
+): Promise<{ before: boolean; after: boolean } | null> {
+  const direct = await ctx.db
+    .query("userAgents")
+    .withIndex("by_user", (q) => q.eq("userId", userId))
+    .collect();
+  if (direct.length === 0) return null;
+  const pairKey = (g: Id<"groups">, i: string, a: string) =>
+    `${g}|${grantKey(i, a)}`;
+  const dropped = new Set(
+    (change.unshared ?? []).map((u) => pairKey(u.groupId, u.instanceName, u.agentId)),
+  );
+  const memberships = await ctx.db
+    .query("groupMembers")
+    .withIndex("by_user", (q) => q.eq("userId", userId))
+    .collect();
+  const before = new Set<string>();
+  const after = new Set<string>();
+  for (const m of memberships) {
+    if ((await ctx.db.get(m.groupId)) === null) continue; // dangling
+    const rows = await ctx.db
+      .query("groupAgents")
+      .withIndex("by_group", (q) => q.eq("groupId", m.groupId))
+      .collect();
+    for (const ga of rows) {
+      const key = grantKey(ga.instanceName, ga.agentId);
+      before.add(key);
+      if (m.groupId === change.leftGroupId) continue;
+      if (dropped.has(pairKey(m.groupId, ga.instanceName, ga.agentId))) continue;
+      after.add(key);
+    }
+    if (m.groupId === change.leftGroupId) continue;
+    for (const a of change.shared ?? []) {
+      if (a.groupId === m.groupId) after.add(grantKey(a.instanceName, a.agentId));
+    }
+  }
+  return {
+    before: directGrantsNarrow(direct, before),
+    after: directGrantsNarrow(direct, after),
+  };
+}
+
+/** Would `change` LIFT an administrator's narrowing of `userId`? True when the user
+ *  is narrowed now (directGrantsNarrow on their groups' whole share) and would no
+ *  longer be once the share shrinks: their direct grants would stop meeting any
+ *  group's share, and resolution would fall back to the whole pool — widening them
+ *  past the admin's choice. Only an admin may cause that. */
+export async function shrinkLiftsAdminNarrowing(
+  ctx: QueryCtx | MutationCtx,
+  userId: Id<"users">,
+  change: ShareShrink,
+): Promise<boolean> {
+  const mode = await narrowingBeforeAfter(ctx, userId, change);
+  return mode !== null && mode.before && !mode.after;
+}
+
+/** The mirror for a SHARE: would adding these agents to a group switch `userId`
+ *  INTO an admin's narrowing? A direct grant on an agent none of their groups
+ *  shares is ignored today; sharing that agent makes it meet the share, and the
+ *  user is suddenly narrowed to their direct grants — losing the rest of the pool.
+ *  A manager's action never flips the admin-narrowing mode, in either direction. */
+export async function usersNarrowedByShare(
+  ctx: QueryCtx | MutationCtx,
+  shared: NonNullable<ShareShrink["unshared"]>,
+): Promise<Id<"users">[]> {
+  const candidates = new Set<Id<"users">>();
+  for (const a of shared) {
+    const holders = await ctx.db
+      .query("userAgents")
+      .withIndex("by_instance_agent", (q) =>
+        q.eq("instanceName", a.instanceName).eq("agentId", a.agentId),
+      )
+      .collect();
+    for (const h of holders) {
+      const member = await ctx.db
+        .query("groupMembers")
+        .withIndex("by_user_group", (q) =>
+          q.eq("userId", h.userId).eq("groupId", a.groupId),
+        )
+        .unique();
+      if (member !== null) candidates.add(h.userId);
+    }
+  }
+  const narrowed: Id<"users">[] = [];
+  for (const userId of candidates) {
+    const mode = await narrowingBeforeAfter(ctx, userId, { shared });
+    if (mode !== null && !mode.before && mode.after) narrowed.push(userId);
+  }
+  return narrowed;
+}
+
+/** Every user whose admin narrowing an UNSHARE of these agents would lift. Only a
+ *  user holding a direct grant on one of the agents can be affected (a narrowing
+ *  rests on the direct grants that meet the share), so the candidates come from
+ *  userAgents.by_instance_agent — never a scan of the group. */
+export async function usersLiftedByUnshare(
+  ctx: QueryCtx | MutationCtx,
+  unshared: NonNullable<ShareShrink["unshared"]>,
+): Promise<Id<"users">[]> {
+  const candidates = new Set<Id<"users">>();
+  for (const u of unshared) {
+    const holders = await ctx.db
+      .query("userAgents")
+      .withIndex("by_instance_agent", (q) =>
+        q.eq("instanceName", u.instanceName).eq("agentId", u.agentId),
+      )
+      .collect();
+    for (const h of holders) {
+      // Only a MEMBER of the group losing the agent can be affected — one point
+      // read bounds the full re-evaluation to them.
+      if (candidates.has(h.userId)) continue;
+      const member = await ctx.db
+        .query("groupMembers")
+        .withIndex("by_user_group", (q) =>
+          q.eq("userId", h.userId).eq("groupId", u.groupId),
+        )
+        .unique();
+      if (member !== null) candidates.add(h.userId);
+    }
+  }
+  const lifted: Id<"users">[] = [];
+  for (const userId of candidates) {
+    if (await shrinkLiftsAdminNarrowing(ctx, userId, { unshared })) {
+      lifted.push(userId);
+    }
+  }
+  return lifted;
+}
+
+/** The groupAgents rows ONE membership receives: the whole group, or — when the
+ *  member is restricted (groupMembers.agentsRestricted) — only those also listed in
+ *  groupMemberAgents for that (group, member). A restricted member with no allowed
+ *  row receives nothing from this group (never the whole group). */
+export async function memberShareOfGroup(
+  ctx: QueryCtx | MutationCtx,
+  membership: Doc<"groupMembers">,
+): Promise<Doc<"groupAgents">[]> {
+  const whole = await ctx.db
+    .query("groupAgents")
+    .withIndex("by_group", (q) => q.eq("groupId", membership.groupId))
+    .collect();
+  return await shareOfWhole(ctx, membership, whole);
+}
+
+async function shareOfWhole(
+  ctx: QueryCtx | MutationCtx,
+  membership: Doc<"groupMembers">,
+  whole: Doc<"groupAgents">[],
+): Promise<Doc<"groupAgents">[]> {
+  if (membership.agentsRestricted !== true) return whole;
+  const allowed = await memberAllowedKeys(ctx, membership);
+  return whole.filter((ga) => allowed.has(grantKey(ga.instanceName, ga.agentId)));
+}
+
+/** The (instance, agent) keys a restricted member is allowed in one group. */
+async function memberAllowedKeys(
+  ctx: QueryCtx | MutationCtx,
+  membership: Doc<"groupMembers">,
+): Promise<Set<string>> {
+  const rows = await ctx.db
+    .query("groupMemberAgents")
+    .withIndex("by_group_user", (q) =>
+      q.eq("groupId", membership.groupId).eq("userId", membership.userId),
+    )
+    .collect();
+  return new Set(rows.map((r) => grantKey(r.instanceName, r.agentId)));
 }
 
 /** The no-group ALL pool: every DISCOVERED agent (manual rows excluded -- they are
@@ -1070,7 +1512,9 @@ async function collectPresentAgents(
  *  are never mutated. NOT capped/truncated -- a cap would make agents beyond it
  *  invisible + unbindable (and could read-only existing chats). */
 function poolFromPresentAgents(all: Doc<"agents">[]): PoolEntry[] {
-  const sorted = [...all].sort((a, b) =>
+  // A RESERVED agent (claimed for one group) is never "every agent": it reaches
+  // only the groups it is assigned to — so the no-group regime never offers it.
+  const sorted = all.filter((a) => !isReserved(a)).sort((a, b) =>
     a.instanceName !== b.instanceName
       ? a.instanceName < b.instanceName
         ? -1
@@ -1141,7 +1585,7 @@ export const backfillEnabledOnce = internalMutation({
     for (const a of page.page) {
       // Only pre-rollout agents are grandfathered; a newer one stays opt-in.
       if (a.enabled === undefined && a._creationTime <= startedAt) {
-        await ctx.db.patch(a._id, { enabled: true });
+        await ctx.db.patch(a._id, { enabled: true, enablementDecidedAt: Date.now() });
         updated++;
       }
     }
@@ -1158,6 +1602,24 @@ export const backfillEnabledOnce = internalMutation({
       agentEnabledBackfillStartedAt: startedAt,
     });
     return { skipped: false, done: false, updated };
+  },
+});
+
+/** ONE-SHOT: stamp the group-manager claim epoch (appMeta.agentClaimEpoch). Only
+ *  an agent row created after it can be claimed (lib/agentClaim): every row that
+ *  exists at deploy — enabled, disabled or legacy — predates the durable
+ *  enablementDecidedAt marker, so a disabled one may be an admin's decision and is
+ *  never claimable. A no-op once stamped; skipped until the singleton exists. */
+export const stampAgentClaimEpoch = internalMutation({
+  args: {},
+  handler: async (ctx) => {
+    const meta = await ctx.db
+      .query("appMeta")
+      .withIndex("by_key", (q) => q.eq("key", APP_META_KEY))
+      .unique();
+    if (meta === null || meta.agentClaimEpoch !== undefined) return { stamped: false };
+    await ctx.db.patch(meta._id, { agentClaimEpoch: Date.now() });
+    return { stamped: true };
   },
 });
 
@@ -1281,7 +1743,11 @@ async function getEffectiveGrantsWithPool(
   // CHEAP first: only the group regime (no full agents scan). A no-group user with
   // direct grants is resolved entirely from `direct` below, so the all-pool scan is
   // deferred -- it runs ONLY for a groupless user with NO direct restriction.
-  const { existingGroups, pool: groupPool } = await resolveGroupPool(ctx, userId);
+  const {
+    existingGroups,
+    pool: groupPool,
+    wholeKeys,
+  } = await resolveGroupPool(ctx, userId);
   const inGroup = existingGroups > 0;
 
   // RESTRICTION = the user's direct grants. For an IN-GROUP user the group is the
@@ -1300,7 +1766,12 @@ async function getEffectiveGrantsWithPool(
         ),
       )
     : direct;
-  if (restricted.length > 0) {
+  // The MODE is decided on the groups' whole share (directGrantsNarrow), the SET on
+  // the member's actual share: narrowed-to-nothing stays nothing.
+  const narrowed = inGroup
+    ? directGrantsNarrow(direct, wholeKeys)
+    : restricted.length > 0;
+  if (narrowed) {
     const out = restricted.map((r) => ({
       instanceName: r.instanceName,
       agentId: r.agentId,
@@ -1308,7 +1779,7 @@ async function getEffectiveGrantsWithPool(
       source: r.source,
       via: "user" as const,
     }));
-    if (inGroup && !out.some((g) => g.isDefault)) {
+    if (inGroup && out.length > 0 && !out.some((g) => g.isDefault)) {
       out[0]!.isDefault = true;
     }
     // Enablement gate applied at the OUTPUT, never on the restricted-MODE
@@ -1438,10 +1909,11 @@ export async function userMayAccessInstance(
     .query("userAgents")
     .withIndex("by_user", (q) => q.eq("userId", userId))
     .collect();
-  const { existingGroups, pool: groupPool } = await resolveGroupPool(
-    ctx,
-    userId,
-  );
+  const {
+    existingGroups,
+    pool: groupPool,
+    wholeKeys,
+  } = await resolveGroupPool(ctx, userId);
   const inGroup = existingGroups > 0;
   // RESTRICTION mode mirrors getEffectiveGrantsWithPool: the direct grants
   // (narrowed to the group pool for an in-group user) — when ANY survive, they
@@ -1453,7 +1925,10 @@ export async function userMayAccessInstance(
         ),
       )
     : direct;
-  if (restricted.length > 0) {
+  const narrowed = inGroup
+    ? directGrantsNarrow(direct, wholeKeys)
+    : restricted.length > 0;
+  if (narrowed) {
     for (const r of restricted) {
       if (r.instanceName !== instanceName) continue;
       if (await usableByPointRead(r.agentId)) return true;
@@ -1479,7 +1954,8 @@ export async function userMayAccessInstance(
         .eq("presentInLastOk", true),
     )
     .collect();
-  return present.some((a) => agentUsable(a, strict));
+  // Mirrors poolFromPresentAgents: a reserved agent is not in the all-pool.
+  return present.some((a) => !isReserved(a) && agentUsable(a, strict));
 }
 
 /**
@@ -1542,7 +2018,9 @@ export async function effectiveAgentsForUsers(
     if (a.displayName) displayByKey.set(key, a.displayName);
     if (a.enabled === true) enabledKeys.add(key);
     if (a.enabled === false) disabledKeys.add(key);
-    allPoolKeys.push(key); // RAW (all present) — the output gate narrows below.
+    // RAW (all present) — the output gate narrows below. A reserved agent is not
+    // in the all-pool (mirrors poolFromPresentAgents).
+    if (!isReserved(a)) allPoolKeys.push(key);
   }
   // Present MANUAL agents (admin fallback) are NOT in the discovered pool above, so
   // the point-read path (agentUsable) treats them as OPT-OUT: usable unless
@@ -1578,6 +2056,9 @@ export async function effectiveAgentsForUsers(
   //    every read settles (no read-during-write).
   const directByUser = new Map<string, string[]>();
   const groupIdsByUser = new Map<string, Id<"groups">[]>();
+  // Per (user, group): the allowed keys of a RESTRICTED membership (absent = the
+  // member receives the whole group) — mirrors memberShareOfGroup.
+  const allowedByMembership = new Map<string, Set<string>>();
   await Promise.all(
     userIds.map(async (userId) => {
       const direct = await ctx.db
@@ -1599,6 +2080,13 @@ export async function effectiveAgentsForUsers(
         userId as string,
         mems.map((m) => m.groupId),
       );
+      for (const m of mems) {
+        if (m.agentsRestricted !== true) continue;
+        allowedByMembership.set(
+          `${userId}:${m.groupId}`,
+          await memberAllowedKeys(ctx, m),
+        );
+      }
     }),
   );
 
@@ -1648,10 +2136,19 @@ export async function effectiveAgentsForUsers(
       // mirrors getEffectiveGrantsWithPool, so a direct grant to a now-disabled
       // group agent does NOT widen the user to the whole pool.
       const poolSet = new Set<string>();
-      for (const g of memberGroups)
-        for (const k of agentsByGroup.get(g as string) ?? []) poolSet.add(k);
+      for (const g of memberGroups) {
+        const allowed = allowedByMembership.get(`${uid}:${g}`);
+        for (const k of agentsByGroup.get(g as string) ?? []) {
+          if (allowed === undefined || allowed.has(k)) poolSet.add(k);
+        }
+      }
       const restricted = direct.filter((k) => poolSet.has(k));
-      effective = restricted.length > 0 ? restricted : [...poolSet];
+      // Mode on the WHOLE share, set on the member's share (directGrantsNarrow).
+      const wholeSet = new Set<string>();
+      for (const g of memberGroups)
+        for (const k of agentsByGroup.get(g as string) ?? []) wholeSet.add(k);
+      const narrowed = direct.some((k) => wholeSet.has(k));
+      effective = narrowed ? restricted : [...poolSet];
     } else {
       effective = direct.length > 0 ? direct : allPoolKeys;
     }
@@ -2377,6 +2874,10 @@ export const assignAgent = mutation({
       source: "manual",
       createdAt: Date.now(),
     });
+    await recordAudit(ctx, await getActor(ctx), "userAgent.grant", {
+      resource: "userAgent",
+      resourceId: `${userId}:${agentRef(instanceName, agentId)}`,
+    });
   },
 });
 
@@ -2406,6 +2907,10 @@ export const removeAgent = mutation({
         await ctx.db.patch(remaining[0]._id, { isDefault: true });
       }
     }
+    await recordAudit(ctx, await getActor(ctx), "userAgent.revoke", {
+      resource: "userAgent",
+      resourceId: `${userId}:${agentRef(instanceName, agentId)}`,
+    });
   },
 });
 
@@ -2445,5 +2950,9 @@ export const setDefaultAgent = mutation({
         await ctx.db.patch(r._id, { isDefault: shouldBeDefault });
       }
     }
+    await recordAudit(ctx, await getActor(ctx), "userAgent.setDefault", {
+      resource: "userAgent",
+      resourceId: `${userId}:${agentRef(instanceName, agentId)}`,
+    });
   },
 });

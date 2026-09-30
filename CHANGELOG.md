@@ -1,5 +1,53 @@
 # Changelog
 
+## [0.90.0] — Group managers can bring their own agents in
+
+Feature release. No breaking changes for users; administrators should read the deployment note before upgrading.
+
+**A group manager can make a newly created agent available to their group.** An administrator
+can already name one or more members of a group as its managers (Settings › Groups, with the
+"manage groups" permission). A manager now sees, in their group, the agents that have just been
+created on an instance the group uses — for example by an agent-building agent — and can
+**reserve** one for the group: it becomes available to the group's members (subject to any
+per-member limits set by the manager or an administrator) and is offered to them only — not to
+other groups, nor to users who belong to no group (guests a member invites into one of their
+conversations reach it through that member, as with any of the member's agents) — and while it
+is reserved it never becomes an instance's default agent. Only an administrator can open it more
+widely or move it to another group. Agents that already existed before this version are never
+offered for reservation, even if they disappear and are discovered again: they stay in the
+administrators' hands. (An instance that is deleted and created again starts fresh: its agents
+count as new.)
+
+**Managers work within their group only.** A manager can share with the group only agents
+reserved for it; an agent an administrator shared, once the manager removes it, can only be
+shared again by an administrator. Managers no longer see the whole user directory or every agent
+of every instance. To bring someone into the group, a manager now sends an invitation request by
+email; an administrator approves or declines it, and the manager is told the outcome. Managers
+can still remove members (other than managers) and unshare agents, except when that would take a
+member out of their last group, or stop an administrator's direct agent grants to a member from
+limiting that member; re-sharing an agent that would start applying such grants is refused too.
+These cases need an administrator.
+
+**Per-member access and a default agent for the group.** A manager can limit a member to some of
+the group's agents and choose that member's default agent, without affecting what the member has
+in other groups. A limit set by an administrator can only be widened by an administrator, and a
+manager cannot change their own access or another manager's. Groups can now have a default agent.
+
+**Group and reservation changes are recorded.** Every change a group manager makes, every
+reservation, claim and invitation decision, agent activation and deactivation, agent removal and
+every direct agent grant to a user are now written to the audit log, whoever makes them.
+
+**Deployment note.** Deploy Convex (`npx convex deploy`) and the frontend together (the bridge is
+unchanged):
+new tables and indexes, no manual migration. An older frontend would call functions that are now
+reserved to administrators. **Before rolling Convex back below this version, disable every reserved
+agent** (Settings › Instances): older code ignores reservations and would expose those agents to everyone who
+belongs to no group. Do not lift the reservations instead — lifting one opens an enabled agent to
+everyone outside a group already. Older code also ignores the per-member limits managers and
+administrators set in a group (restricted members get the whole group back) and the rule that
+keeps a member limited to nothing when an administrator's direct grants and a manager's limit do
+not overlap (such a member would get the whole group).
+
 ## [0.89.1] — Long delegation chains stay in one answer
 
 Corrective release, from production reports on OpenClaw 2026.9.6. No breaking changes; see the

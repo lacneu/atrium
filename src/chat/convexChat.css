@@ -7098,6 +7098,21 @@ button.oc-perm__opt:disabled {
 .oc-access__poll { font-size: 0.78rem; color: var(--muted-foreground); padding: 0 0.25rem 0.4rem; }
 .oc-access__gone { color: var(--destructive); border-color: var(--destructive); }
 .oc-access__stale { color: var(--muted-foreground); }
+/* Delegated group management: the invitation form, a list sub-heading, and the
+   admin's pending-requests panel above the groups table. */
+.oc-access__invite { display: flex; gap: 0.4rem; align-items: center; margin-bottom: 0.25rem; }
+.oc-access__subhead {
+  font-size: 0.78rem; font-weight: 600; color: var(--muted-foreground);
+  margin: 0.75rem 0.25rem 0.25rem;
+}
+.oc-invites {
+  border: 1px solid var(--border); border-radius: 0.5rem;
+  padding: 0.6rem 0.75rem; margin-bottom: 1rem;
+}
+.oc-invites__title {
+  display: flex; align-items: center; gap: 0.4rem;
+  font-size: 0.85rem; font-weight: 600; margin: 0 0 0.4rem;
+}
 
 /* ── Introspection screen (Settings ▸ Accès, P5) ────────────────────────────
    Read-only "who has access to what". Its OWN `.oc-introspect` namespace, fully

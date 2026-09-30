@@ -1184,8 +1184,47 @@ function InstanceAgentsDialog({
     );
   });
   const removeAgent = useMutation(api.agents.removeInstanceAgent);
+  // Reservation (an agent claimed by — or reserved for — one group): only an
+  // admin lifts it (the agent then reaches everyone outside a group) or moves it.
+  const setReservation = useMutation(api.agents.setAgentReservation);
+  const groups = useQuery(api.groups.listGroupLabels, open ? {} : "skip");
   const confirm = useConfirm();
   const toast = useToast();
+
+  async function liftReservation(agentId: string, label: string) {
+    if (!instanceName) return;
+    const ok = await confirm({
+      title: m.settings_agent_reservation_lift_title({ name: label }),
+      description: m.settings_agent_reservation_lift_desc(),
+      confirmLabel: m.settings_agent_reservation_lift(),
+    });
+    if (!ok) return;
+    try {
+      await setReservation({ instanceName, agentId, groupId: null });
+    } catch (err) {
+      toast.error(m.settings_manage_agents_failed(), err);
+    }
+  }
+  async function moveReservation(
+    agentId: string,
+    label: string,
+    groupId: Id<"groups">,
+  ) {
+    if (!instanceName) return;
+    const group = (groups ?? []).find((g) => g._id === groupId)?.name ?? "?";
+    // A move takes the agent away from the group that held it (server-side).
+    const ok = await confirm({
+      title: m.settings_agent_reservation_move_title({ name: label, group }),
+      description: m.settings_agent_reservation_move_desc({ group }),
+      confirmLabel: m.settings_agent_reservation_move_action(),
+    });
+    if (!ok) return;
+    try {
+      await setReservation({ instanceName, agentId, groupId });
+    } catch (err) {
+      toast.error(m.settings_manage_agents_failed(), err);
+    }
+  }
 
   async function toggle(agentId: string, enabled: boolean) {
     if (!instanceName) return;
@@ -1291,6 +1330,15 @@ function InstanceAgentsDialog({
                         {a.model ? (
                           <span className="oc-access__model">{a.model}</span>
                         ) : null}
+                        {a.reserved ? (
+                          <Badge variant="outline">
+                            {a.reserved.groupName !== null
+                              ? m.settings_agent_reserved({
+                                  group: a.reserved.groupName,
+                                })
+                              : m.settings_agent_reserved_deleted()}
+                          </Badge>
+                        ) : null}
                         {absent ? (
                           <>
                             <Badge variant="outline" className="oc-access__gone">
@@ -1314,13 +1362,48 @@ function InstanceAgentsDialog({
                             size="sm"
                             variant="outline"
                             className="h-7"
-                            disabled={!a.enabled}
+                            // A reserved agent is never the instance default
+                            // (the server refuses it): listed but greyed.
+                            disabled={!a.enabled || a.reserved !== null}
                             onClick={() => void makeDefault(a.agentId)}
                           >
                             {m.settings_make_default()}
                           </Button>
                         )}
                       </div>
+                      {a.reserved ? (
+                        <div className="oc-agentcard__head">
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            className="h-7"
+                            onClick={() => void liftReservation(a.agentId, label)}
+                          >
+                            {m.settings_agent_reservation_lift()}
+                          </Button>
+                          <Select
+                            value=""
+                            onValueChange={(v) =>
+                              void moveReservation(a.agentId, label, v as Id<"groups">)
+                            }
+                          >
+                            <SelectTrigger size="sm" className="h-7">
+                              <SelectValue
+                                placeholder={m.settings_agent_reservation_move()}
+                              />
+                            </SelectTrigger>
+                            <SelectContent>
+                              {(groups ?? [])
+                                .filter((g) => g._id !== a.reserved?.groupId)
+                                .map((g) => (
+                                  <SelectItem key={g._id} value={g._id}>
+                                    {g.name}
+                                  </SelectItem>
+                                ))}
+                            </SelectContent>
+                          </Select>
+                        </div>
+                      ) : null}
                       {/* TYPE management (enabled agents only): MULTI-select; the row
                           shows selected types, the full catalogue + descriptions live
                           in the editor's popover (scales to many types). */}

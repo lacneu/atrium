@@ -96,6 +96,15 @@ crons.interval(
   {},
 );
 
+// One-shot: stamp the group-manager claim epoch. Agents discovered after it (and
+// never decided on by an admin) are the only ones a group manager may claim.
+crons.interval(
+  "stamp agent claim epoch (one-shot)",
+  { minutes: 2 },
+  internal.agents.stampAgentClaimEpoch,
+  {},
+);
+
 // Backend-latency probe: every 5 minutes, time a fixed, identity-free, content-free
 // READ and record its server-side execution latency (-> convex.probe.latency.avg_ms
 // rollup). Fixed cadence makes it traffic-independent, so the latency trend is

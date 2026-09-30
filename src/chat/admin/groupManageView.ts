@@ -5,6 +5,10 @@
 // inversion.
 
 import { m } from "@/paraglide/messages.js";
+import {
+  ADMIN_RESTRICTION_WOULD_APPLY,
+  ADMIN_RESTRICTION_WOULD_LIFT,
+} from "../../../convex/lib/groupMembers";
 
 // Minimal shapes the helpers need (kept structural so the real Convex row types
 // satisfy them without coupling to convexApi).
@@ -123,4 +127,86 @@ export function paginate<T>(
     page: clamped,
     pageCount,
   };
+}
+
+// ---------------------------------------------------------------------------
+// Delegated management (claim / reservation / per-member restriction).
+
+// What a row of the group's agent list lets the viewer do:
+//   - "claim"  : a new agent nobody decided on — reserve it for this group;
+//   - "toggle" : share / unshare (an assigned agent is always removable);
+//   - "locked" : listed but greyed (gone, not enabled, or — for a manager — an
+//                agent outside the group's scope, which the server refuses).
+export type AgentRowFlags = {
+  assigned: boolean;
+  claimable: boolean;
+  reservedForGroup: boolean;
+  enabled: boolean;
+  present: boolean;
+};
+export type AgentRowControl = "claim" | "toggle" | "locked";
+
+export function agentRowControl(
+  f: AgentRowFlags,
+  viewerIsAdmin: boolean,
+): AgentRowControl {
+  if (f.assigned) return "toggle";
+  if (f.claimable) return "claim";
+  if (!f.present || !f.enabled) return "locked";
+  return viewerIsAdmin || f.reservedForGroup ? "toggle" : "locked";
+}
+
+// A stable key for an (instance, agent) pair — length-prefixed so an instance
+// name containing "/" can never collide with another pair.
+export function agentPairKey(instanceName: string, agentId: string): string {
+  return `${instanceName.length}:${instanceName}/${agentId}`;
+}
+
+// The allowed set a member restriction becomes after toggling ONE agent. An
+// unrestricted member starts from the whole group; the result keeps the group's
+// order. Returned as keys (the caller maps them back to agent refs).
+export function nextMemberAllowance(
+  groupKeys: readonly string[],
+  allowed: ReadonlySet<string>,
+  restricted: boolean,
+  key: string,
+): string[] {
+  const next = new Set(restricted ? allowed : groupKeys);
+  if (next.has(key)) next.delete(key);
+  else next.add(key);
+  return groupKeys.filter((k) => next.has(k));
+}
+
+// Localized status of an invitation request.
+export function inviteStatusLabel(
+  status: "pending" | "approved" | "rejected",
+): string {
+  switch (status) {
+    case "pending":
+      return m.groups_invite_status_pending();
+    case "approved":
+      return m.groups_invite_status_approved();
+    case "rejected":
+      return m.groups_invite_status_rejected();
+  }
+}
+
+// The server's typed refusals (ConvexError data, convex/lib/groupMembers.ts): a
+// manager's unshare or member removal would LIFT an administrator's restriction on
+// a member, or a share would APPLY one. Localized here; any other error is passed
+// through for the toast to render as-is.
+export function groupErrorDetail(err: unknown): unknown {
+  const data = (err as { data?: unknown } | null)?.data;
+  if (typeof data !== "object" || data === null) return err;
+  const { code, agent } = data as { code?: unknown; agent?: unknown };
+  const name = typeof agent === "string" ? agent : null;
+  if (code === ADMIN_RESTRICTION_WOULD_LIFT) {
+    return name !== null
+      ? m.groups_error_admin_restriction_agent({ agent: name })
+      : m.groups_error_admin_restriction();
+  }
+  if (code === ADMIN_RESTRICTION_WOULD_APPLY) {
+    return m.groups_error_admin_restriction_apply({ agent: name ?? "?" });
+  }
+  return err;
 }

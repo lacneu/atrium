@@ -1,5 +1,6 @@
 import type { Id } from "../_generated/dataModel";
 import type { MutationCtx } from "../_generated/server";
+import { clearMemberDefaults } from "./groupMembers";
 
 /**
  * Deleting an instance touches two very different kinds of row, and they cannot
@@ -320,7 +321,37 @@ export async function sweepInstanceNameBoundBatch(
     .withIndex("by_instance", (query) => query.eq("instanceName", name))
     .take(CASCADE_BATCH);
   if (groupAgents.length > 0) {
-    for (const row of groupAgents) await ctx.db.delete(row._id);
+    // Member defaults can only name an agent their group shares: clear them in the
+    // groups losing this instance's agents, before the share goes.
+    const groups = new Set<Id<"groups">>();
+    for (const row of groupAgents) {
+      groups.add(row.groupId);
+      await ctx.db.delete(row._id);
+    }
+    for (const groupId of groups) {
+      await clearMemberDefaults(ctx, groupId, name, null);
+    }
+    return "more";
+  }
+
+  // Purge decisions kept for re-discovery: an instance re-created under this name
+  // starts fresh, like its agents.
+  const tombstones = await ctx.db
+    .query("agentDecisionTombstones")
+    .withIndex("by_instance_agent", (query) => query.eq("instanceName", name))
+    .take(CASCADE_BATCH);
+  if (tombstones.length > 0) {
+    for (const row of tombstones) await ctx.db.delete(row._id);
+    return "more";
+  }
+
+  // Per-member allowances naming this instance's agents (restricted group members).
+  const memberAgents = await ctx.db
+    .query("groupMemberAgents")
+    .withIndex("by_instance_agent", (query) => query.eq("instanceName", name))
+    .take(CASCADE_BATCH);
+  if (memberAgents.length > 0) {
+    for (const row of memberAgents) await ctx.db.delete(row._id);
     return "more";
   }
 

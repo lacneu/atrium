@@ -1,18 +1,34 @@
-import { agentEnablementStrict } from "./agents";
-// Groups (P2). Regroup users + share agents by group. Admin-managed only — see
+import {
+  adminNarrowingOf,
+  agentEnablementStrict,
+  agentRef,
+  grantKey,
+  memberShareOfGroup,
+  shrinkLiftsAdminNarrowing,
+  usersLiftedByUnshare,
+  usersNarrowedByShare,
+} from "./agents";
+// Groups (P2). Regroup users + share agents by group. See
 // docs/GROUPS_CHARTS_P2_SPEC.md. NO secrets (non-secret instance/agent NAMES
 // only). The user↔agent union driven by group membership is computed at READ
 // time in convex/agents.ts (getEffectiveGrants / enrichUserAgents); this module
-// owns only the admin CRUD + the owner-scoped membership read (listMyGroups).
+// owns the CRUD, the per-group delegation surface and the owner-scoped membership
+// read (listMyGroups).
 //
 // Authorization split (mirrors the rest of the surface):
-//   - management mutations + admin queries gate on requirePermission(GROUPS_MANAGE)
-//     against the REAL identity (admin-only; impersonation never grants it), then
-//     audit via auditImpersonated so an admin acting while impersonating is traced.
+//   - structural ops (create / rename / delete a group, promote a manager, ADD a
+//     person to a group) are ADMIN-only (requireAdmin on the REAL identity);
+//   - the per-group CONTENT surface (remove a non-manager member, the group's
+//     agents within its own scope, claiming a new agent, per-member restrictions,
+//     the group default, invitation REQUESTS) is delegated to a group MANAGER via
+//     authorizeGroupManage — scoped so a manager can never widen what their group
+//     reaches: they only re-add agents RESERVED for their group, claim agents
+//     nobody has decided on yet, and narrow members within the group's own share;
+//   - every mutation here is audited UNCONDITIONALLY (recordAudit, real actor);
 //   - listMyGroups is owner-scoped on the EFFECTIVE user (requireUserId), like the
 //     other user-data reads.
 
-import { v } from "convex/values";
+import { ConvexError, v } from "convex/values";
 import {
   mutation,
   query,
@@ -26,12 +42,19 @@ import {
   requirePermission,
   requireUserId,
   roleOf,
+  type Actor,
 } from "./lib/access";
 import { PERMISSIONS } from "./lib/rbac";
 import { resolveAgentTypes } from "./lib/agentTypes";
-import { auditImpersonated } from "./lib/audit";
+import { recordAudit } from "./lib/audit";
 import { authorizeGroupManage, isRealAdmin } from "./lib/groupAccess";
+import { agentClaimEpoch, claimRefusal, claimRefusalOfRow } from "./lib/agentClaim";
 import { chartDisplayName } from "./charts";
+import {
+  ADMIN_RESTRICTION_WOULD_APPLY,
+  ADMIN_RESTRICTION_WOULD_LIFT,
+  unshareAgentFromMembers,
+} from "./lib/groupMembers";
 
 // How many member/agent/chart names to PREVIEW inline in the groups list (the rest
 // are summarized as "+N"). Bounds the listGroups payload + reads (a group can have
@@ -70,7 +93,7 @@ async function uniqueGroupKey(
 
 /** A short, non-PHI display label for a user (email local-part / name / id tail),
  *  for the admin members list. Same idiom as admin.listAudit's labelOf. */
-async function userLabel(
+export async function userLabel(
   ctx: QueryCtx | MutationCtx,
   userId: Id<"users">,
 ): Promise<string> {
@@ -90,13 +113,9 @@ async function agentState(
 ): Promise<{
   state: "ok" | "deleted" | "stale" | "unknown";
   displayName: string | null;
+  agent: Doc<"agents"> | null;
 }> {
-  const agent = await ctx.db
-    .query("agents")
-    .withIndex("by_instance_agent", (q) =>
-      q.eq("instanceName", instanceName).eq("agentId", agentId),
-    )
-    .first();
+  const agent = await agentDoc(ctx, instanceName, agentId);
   const discovery = await ctx.db
     .query("instanceDiscovery")
     .withIndex("by_instance", (q) => q.eq("instanceName", instanceName))
@@ -106,7 +125,20 @@ async function agentState(
   else if (!discovery) state = "unknown";
   else if (!discovery.lastPollOk) state = "stale";
   else if (!agent) state = "deleted";
-  return { state, displayName: agent?.displayName ?? null };
+  return { state, displayName: agent?.displayName ?? null, agent };
+}
+
+async function agentDoc(
+  ctx: QueryCtx | MutationCtx,
+  instanceName: string,
+  agentId: string,
+): Promise<Doc<"agents"> | null> {
+  return await ctx.db
+    .query("agents")
+    .withIndex("by_instance_agent", (q) =>
+      q.eq("instanceName", instanceName).eq("agentId", agentId),
+    )
+    .first();
 }
 
 /** Read a group or throw a clean error (admin paths). */
@@ -119,9 +151,170 @@ async function getGroupOrThrow(
   return group;
 }
 
+async function membershipOf(
+  ctx: QueryCtx | MutationCtx,
+  groupId: Id<"groups">,
+  userId: Id<"users">,
+): Promise<Doc<"groupMembers"> | null> {
+  return await ctx.db
+    .query("groupMembers")
+    .withIndex("by_user_group", (q) =>
+      q.eq("userId", userId).eq("groupId", groupId),
+    )
+    .unique();
+}
+
+async function groupAgentRow(
+  ctx: QueryCtx | MutationCtx,
+  groupId: Id<"groups">,
+  instanceName: string,
+  agentId: string,
+): Promise<Doc<"groupAgents"> | null> {
+  return await ctx.db
+    .query("groupAgents")
+    .withIndex("by_group_instance_agent", (q) =>
+      q
+        .eq("groupId", groupId)
+        .eq("instanceName", instanceName)
+        .eq("agentId", agentId),
+    )
+    .unique();
+}
+
+/** Mirror agents.assignAgent EXACTLY: only DISCOVERED + currently-present +
+ *  enabled (under the current enforcement mode) agents are shareable, so a group
+ *  can never share a manual/deleted/disabled agent. */
+function agentShareable(agent: Doc<"agents"> | null, strict: boolean): boolean {
+  return (
+    agent !== null &&
+    agent.source === "discovered" &&
+    agent.presentInLastOk &&
+    (strict ? agent.enabled === true : agent.enabled !== false)
+  );
+}
+
+// Audit resource ids. The resource KIND names what was touched; the id carries
+// the group so a manager's actions are attributable to the group they manage.
+const memberRef = (groupId: Id<"groups">, userId: Id<"users">) =>
+  `${groupId}:${userId}`;
+const groupAgentRef = (
+  groupId: Id<"groups">,
+  instanceName: string,
+  agentId: string,
+) => `${groupId}:${agentRef(instanceName, agentId)}`;
+
+async function auditGroup(
+  ctx: MutationCtx,
+  actor: Actor,
+  action: string,
+  resource: "group" | "groupMember" | "groupAgent",
+  resourceId: string,
+): Promise<void> {
+  await recordAudit(ctx, actor, action, { resource, resourceId });
+}
+
+/** Drop a member's per-group allowances (removal from the group). */
+async function purgeMemberAllowances(
+  ctx: MutationCtx,
+  groupId: Id<"groups">,
+  userId: Id<"users">,
+): Promise<void> {
+  const rows = await ctx.db
+    .query("groupMemberAgents")
+    .withIndex("by_group_user", (q) =>
+      q.eq("groupId", groupId).eq("userId", userId),
+    )
+    .collect();
+  for (const r of rows) await ctx.db.delete(r._id);
+}
+
+/** Does `userId` belong to at least one EXISTING group other than `groupId`? A
+ *  user in no group falls to the no-group regime — the instance-wide rules (their
+ *  direct grants, else every non-reserved agent) instead of a group's limits — so
+ *  taking someone out of their last group is a widening only an admin decides. */
+async function inAnotherGroup(
+  ctx: QueryCtx | MutationCtx,
+  userId: Id<"users">,
+  groupId: Id<"groups">,
+): Promise<boolean> {
+  const memberships = await ctx.db
+    .query("groupMembers")
+    .withIndex("by_user", (q) => q.eq("userId", userId))
+    .collect();
+  for (const m of memberships) {
+    if (m.groupId === groupId) continue;
+    if ((await ctx.db.get(m.groupId)) !== null) return true;
+  }
+  return false;
+}
+
+/** The typed refusal for a manager's share/unshare that would flip an admin's
+ *  narrowing, naming the BLOCKING AGENT — the first changed agent the affected
+ *  member holds a direct grant on — so the manager knows which one to leave out.
+ *  Never names the member. Member removals throw the bare code (no agent). */
+async function restrictionRefusal(
+  ctx: QueryCtx | MutationCtx,
+  code: typeof ADMIN_RESTRICTION_WOULD_LIFT | typeof ADMIN_RESTRICTION_WOULD_APPLY,
+  userId: Id<"users">,
+  changed: ReadonlyArray<{ instanceName: string; agentId: string }>,
+): Promise<ConvexError<{ code: string; agent: string }>> {
+  let blocking = changed[0] ?? null;
+  for (const r of changed) {
+    const held = await ctx.db
+      .query("userAgents")
+      .withIndex("by_user_instance_agent", (q) =>
+        q.eq("userId", userId).eq("instanceName", r.instanceName).eq("agentId", r.agentId),
+      )
+      .first();
+    if (held !== null) {
+      blocking = r;
+      break;
+    }
+  }
+  const label =
+    blocking === null
+      ? "?"
+      : ((await agentDoc(ctx, blocking.instanceName, blocking.agentId))?.displayName ??
+        blocking.agentId);
+  return new ConvexError({ code, agent: label });
+}
+
+const LAST_GROUP_REFUSAL =
+  "Refused: only an admin can remove a person from their last group (without a group they would fall back to the instance-wide access rules instead of the group's limits)";
+
+/** A non-admin manager may not change the per-member settings of THEMSELVES or of a
+ *  co-manager (mirrors removeMember's co-manager rule). */
+function assertMemberSettable(
+  admin: boolean,
+  actor: Actor,
+  membership: Doc<"groupMembers">,
+): void {
+  if (admin) return;
+  if (membership.userId === actor.realUserId) {
+    throw new Error("Refused: a manager cannot change their own agents");
+  }
+  if (membership.manager === true) {
+    throw new Error("Refused: only an admin can change a group manager's agents");
+  }
+}
+
+/** The instances a group already uses (its FOOTPRINT): where its manager may
+ *  claim new agents. Deliberately the GROUP's footprint, never the manager's own
+ *  grants — those may come from other groups or admin direct grants that have
+ *  nothing to do with this group (or, for a groupless manager, the whole catalogue). */
+async function groupFootprint(
+  ctx: QueryCtx | MutationCtx,
+  groupId: Id<"groups">,
+): Promise<Set<string>> {
+  const rows = await ctx.db
+    .query("groupAgents")
+    .withIndex("by_group", (q) => q.eq("groupId", groupId))
+    .collect();
+  return new Set(rows.map((r) => r.instanceName));
+}
 
 // ===========================================================================
-// MUTATIONS (admin — requirePermission GROUPS_MANAGE on the REAL identity)
+// MUTATIONS — structural (admin-only)
 // ===========================================================================
 
 export const createGroup = mutation({
@@ -137,10 +330,7 @@ export const createGroup = mutation({
       createdBy: actor.realUserId,
       createdAt: Date.now(),
     });
-    await auditImpersonated(ctx, actor, "group.create", {
-      resource: "group",
-      resourceId: groupId,
-    });
+    await auditGroup(ctx, actor, "group.create", "group", groupId);
     return groupId;
   },
 });
@@ -153,8 +343,7 @@ export const updateGroup = mutation({
   },
   handler: async (ctx, { groupId, name, description }) => {
     // Rename / description = group metadata. Admin-only (not in the delegated
-    // manager set: membership + agents + charts). Managers manage content, not the
-    // group's identity.
+    // manager set). Managers manage content, not the group's identity.
     await requireAdmin(ctx);
     const actor = await getActor(ctx);
     await getGroupOrThrow(ctx, groupId);
@@ -167,10 +356,7 @@ export const updateGroup = mutation({
     if (name !== undefined) patch.name = name;
     if (description !== undefined) patch.description = description || undefined;
     if (Object.keys(patch).length > 0) await ctx.db.patch(groupId, patch);
-    await auditImpersonated(ctx, actor, "group.update", {
-      resource: "group",
-      resourceId: groupId,
-    });
+    await auditGroup(ctx, actor, "group.update", "group", groupId);
   },
 });
 
@@ -188,6 +374,11 @@ export const deleteGroup = mutation({
       .withIndex("by_group", (q) => q.eq("groupId", groupId))
       .collect();
     for (const m of members) await ctx.db.delete(m._id);
+    const memberAgents = await ctx.db
+      .query("groupMemberAgents")
+      .withIndex("by_group_user", (q) => q.eq("groupId", groupId))
+      .collect();
+    for (const r of memberAgents) await ctx.db.delete(r._id);
     const ga = await ctx.db
       .query("groupAgents")
       .withIndex("by_group", (q) => q.eq("groupId", groupId))
@@ -204,36 +395,35 @@ export const deleteGroup = mutation({
       .withIndex("by_group", (q) => q.eq("groupId", groupId))
       .collect();
     for (const p of gcp) await ctx.db.delete(p._id);
+    const invites = await ctx.db
+      .query("groupInviteRequests")
+      .withIndex("by_group_status", (q) => q.eq("groupId", groupId))
+      .collect();
+    for (const r of invites) await ctx.db.delete(r._id);
+    // Agents RESERVED for this group keep their reservation (fail-closed): with the
+    // group gone they reach nobody until an admin lifts or moves it.
     await ctx.db.delete(groupId);
-    await auditImpersonated(ctx, actor, "group.delete", {
-      resource: "group",
-      resourceId: groupId,
-    });
+    await auditGroup(ctx, actor, "group.delete", "group", groupId);
   },
 });
 
+/** Add a person to a group. ADMIN-only: a manager never adds anyone directly — they
+ *  REQUEST an invitation by email (groupInvites.requestGroupInvite) that an admin
+ *  approves. */
 export const addMember = mutation({
   args: { groupId: v.id("groups"), userId: v.id("users") },
   handler: async (ctx, { groupId, userId }) => {
-    const actor = await authorizeGroupManage(ctx, groupId); // admin or group manager
+    await requireAdmin(ctx);
+    const actor = await getActor(ctx);
     await getGroupOrThrow(ctx, groupId);
     // Dedup via by_user_group (membership check + idempotency in one read).
-    const existing = await ctx.db
-      .query("groupMembers")
-      .withIndex("by_user_group", (q) =>
-        q.eq("userId", userId).eq("groupId", groupId),
-      )
-      .unique();
-    if (existing !== null) return; // idempotent
+    if ((await membershipOf(ctx, groupId, userId)) !== null) return; // idempotent
     await ctx.db.insert("groupMembers", {
       groupId,
       userId,
       joinedAt: Date.now(),
     });
-    await auditImpersonated(ctx, actor, "group.addMember", {
-      resource: "group",
-      resourceId: groupId,
-    });
+    await auditGroup(ctx, actor, "group.addMember", "groupMember", memberRef(groupId, userId));
   },
 });
 
@@ -241,25 +431,28 @@ export const removeMember = mutation({
   args: { groupId: v.id("groups"), userId: v.id("users") },
   handler: async (ctx, { groupId, userId }) => {
     const actor = await authorizeGroupManage(ctx, groupId); // admin or group manager
-    const existing = await ctx.db
-      .query("groupMembers")
-      .withIndex("by_user_group", (q) =>
-        q.eq("userId", userId).eq("groupId", groupId),
-      )
-      .unique();
+    const existing = await membershipOf(ctx, groupId, userId);
     if (existing === null) return; // idempotent
     // A MANAGER membership may only be removed by an ADMIN: deleting the row also
     // strips the `manager` flag, which would let a delegated manager demote a
     // co-manager and bypass the admin-only setGroupManager. (Also blocks a manager
     // self-demoting via removal — safe; an admin does it.)
-    if (existing.manager === true && !(await isRealAdmin(ctx))) {
+    const admin = await isRealAdmin(ctx);
+    if (existing.manager === true && !admin) {
       throw new Error("Refused: only an admin can remove a group manager");
     }
+    if (!admin && !(await inAnotherGroup(ctx, userId, groupId))) {
+      throw new Error(LAST_GROUP_REFUSAL);
+    }
+    if (
+      !admin &&
+      (await shrinkLiftsAdminNarrowing(ctx, userId, { leftGroupId: groupId }))
+    ) {
+      throw new ConvexError({ code: ADMIN_RESTRICTION_WOULD_LIFT });
+    }
     await ctx.db.delete(existing._id);
-    await auditImpersonated(ctx, actor, "group.removeMember", {
-      resource: "group",
-      resourceId: groupId,
-    });
+    await purgeMemberAllowances(ctx, groupId, userId);
+    await auditGroup(ctx, actor, "group.removeMember", "groupMember", memberRef(groupId, userId));
   },
 });
 
@@ -275,25 +468,30 @@ export const setGroupManager = mutation({
   handler: async (ctx, { groupId, userId, manager }) => {
     await requireAdmin(ctx);
     const actor = await getActor(ctx);
-    const membership = await ctx.db
-      .query("groupMembers")
-      .withIndex("by_user_group", (q) =>
-        q.eq("userId", userId).eq("groupId", groupId),
-      )
-      .unique();
+    const membership = await membershipOf(ctx, groupId, userId);
     if (membership === null) {
       throw new Error("Refused: user is not a member of this group");
     }
     await ctx.db.patch(membership._id, { manager });
-    await auditImpersonated(
+    await auditGroup(
       ctx,
       actor,
       manager ? "group.promoteManager" : "group.demoteManager",
-      { resource: "group", resourceId: groupId },
+      "groupMember",
+      memberRef(groupId, userId),
     );
   },
 });
 
+// ===========================================================================
+// MUTATIONS — the group's agents (admin, or this group's manager within scope)
+// ===========================================================================
+
+/** Share an agent with a group. An ADMIN may share any discovered, present,
+ *  enabled agent. A MANAGER may only (re-)add an agent RESERVED for this group —
+ *  one they claimed, or an admin reserved for them; everything else (another
+ *  group's agent, the open catalogue) stays an admin decision. New agents come in
+ *  through claimAgentForGroup. */
 export const assignAgentToGroup = mutation({
   args: {
     groupId: v.id("groups"),
@@ -303,46 +501,42 @@ export const assignAgentToGroup = mutation({
   handler: async (ctx, { groupId, instanceName, agentId }) => {
     const actor = await authorizeGroupManage(ctx, groupId); // admin or group manager
     await getGroupOrThrow(ctx, groupId);
-    // Mirror agents.assignAgent EXACTLY: only DISCOVERED + currently-present
-    // agents are assignable, so a group can never share a manual/deleted agent.
-    const agent = await ctx.db
-      .query("agents")
-      .withIndex("by_instance_agent", (q) =>
-        q.eq("instanceName", instanceName).eq("agentId", agentId),
-      )
-      .first();
+    const agent = await agentDoc(ctx, instanceName, agentId);
     const strict = await agentEnablementStrict(ctx);
-    if (
-      agent === null ||
-      agent.source !== "discovered" ||
-      !agent.presentInLastOk ||
-      (strict ? agent.enabled !== true : agent.enabled === false)
-    ) {
+    if (!agentShareable(agent, strict)) {
       throw new Error(
         `Agent not assignable: ${instanceName}/${agentId} is not a discovered, present, enabled agent`,
       );
     }
-    // Dedup via by_group_instance_agent.
-    const existing = await ctx.db
-      .query("groupAgents")
-      .withIndex("by_group_instance_agent", (q) =>
-        q
-          .eq("groupId", groupId)
-          .eq("instanceName", instanceName)
-          .eq("agentId", agentId),
-      )
-      .unique();
-    if (existing !== null) return; // idempotent
+    if ((await groupAgentRow(ctx, groupId, instanceName, agentId)) !== null) {
+      return; // idempotent
+    }
+    const admin = await isRealAdmin(ctx);
+    if (!admin && agent!.reservedForGroupId !== groupId) {
+      throw new Error(
+        "Refused: a group manager may only add an agent reserved for this group",
+      );
+    }
+    if (!admin) {
+      const refs = [{ groupId, instanceName, agentId }];
+      const hit = await usersNarrowedByShare(ctx, refs);
+      if (hit.length > 0) {
+        throw await restrictionRefusal(ctx, ADMIN_RESTRICTION_WOULD_APPLY, hit[0]!, refs);
+      }
+    }
     await ctx.db.insert("groupAgents", {
       groupId,
       instanceName,
       agentId,
       createdAt: Date.now(),
     });
-    await auditImpersonated(ctx, actor, "group.assignAgent", {
-      resource: "group",
-      resourceId: groupId,
-    });
+    await auditGroup(
+      ctx,
+      actor,
+      "group.assignAgent",
+      "groupAgent",
+      groupAgentRef(groupId, instanceName, agentId),
+    );
   },
 });
 
@@ -354,21 +548,24 @@ export const removeAgentFromGroup = mutation({
   },
   handler: async (ctx, { groupId, instanceName, agentId }) => {
     const actor = await authorizeGroupManage(ctx, groupId); // admin or group manager
-    const existing = await ctx.db
-      .query("groupAgents")
-      .withIndex("by_group_instance_agent", (q) =>
-        q
-          .eq("groupId", groupId)
-          .eq("instanceName", instanceName)
-          .eq("agentId", agentId),
-      )
-      .unique();
+    const existing = await groupAgentRow(ctx, groupId, instanceName, agentId);
     if (existing === null) return; // idempotent
+    if (!(await isRealAdmin(ctx))) {
+      const refs = [{ groupId, instanceName, agentId }];
+      const hit = await usersLiftedByUnshare(ctx, refs);
+      if (hit.length > 0) {
+        throw await restrictionRefusal(ctx, ADMIN_RESTRICTION_WOULD_LIFT, hit[0]!, refs);
+      }
+    }
     await ctx.db.delete(existing._id);
-    await auditImpersonated(ctx, actor, "group.removeAgent", {
-      resource: "group",
-      resourceId: groupId,
-    });
+    await unshareAgentFromMembers(ctx, groupId, instanceName, agentId);
+    await auditGroup(
+      ctx,
+      actor,
+      "group.removeAgent",
+      "groupAgent",
+      groupAgentRef(groupId, instanceName, agentId),
+    );
   },
 });
 
@@ -377,9 +574,9 @@ export const removeAgentFromGroup = mutation({
 const BULK_CAP = 1000;
 
 // "Select all" / "deselect all" for members: add or remove a whole set in ONE
-// round-trip (the per-user mutations would be N requests). Each item reuses the
-// idempotent add/remove logic; a single audit row is written when anything
-// actually changed.
+// round-trip (the per-user mutations would be N requests). Adding is ADMIN-only
+// (a manager requests invitations instead); removing is delegated with the same
+// co-manager guard as removeMember. One audit row per actual change.
 export const bulkSetMembers = mutation({
   args: {
     groupId: v.id("groups"),
@@ -394,47 +591,51 @@ export const bulkSetMembers = mutation({
         `Refused: bulk membership change exceeds ${BULK_CAP} users`,
       );
     }
+    const admin = await isRealAdmin(ctx);
+    if (member && !admin) {
+      throw new Error(
+        "Refused: only an admin adds members (request an invitation instead)",
+      );
+    }
     // Same invariant as removeMember: a non-admin manager may not remove a
     // co-manager (it would strip the manager flag). The whole batch aborts on a
     // violation (Convex mutations are atomic → no partial removal persists).
-    const admin = await isRealAdmin(ctx);
-    let changed = 0;
     for (const userId of userIds) {
-      const existing = await ctx.db
-        .query("groupMembers")
-        .withIndex("by_user_group", (q) =>
-          q.eq("userId", userId).eq("groupId", groupId),
-        )
-        .unique();
+      const existing = await membershipOf(ctx, groupId, userId);
       if (member && existing === null) {
         await ctx.db.insert("groupMembers", {
           groupId,
           userId,
           joinedAt: Date.now(),
         });
-        changed++;
+        await auditGroup(ctx, actor, "group.addMember", "groupMember", memberRef(groupId, userId));
       } else if (!member && existing !== null) {
         if (existing.manager === true && !admin) {
           throw new Error("Refused: only an admin can remove a group manager");
         }
+        if (!admin && !(await inAnotherGroup(ctx, userId, groupId))) {
+          throw new Error(LAST_GROUP_REFUSAL);
+        }
+        // Judged per user (leaving THIS group only moves their own share); a
+        // refusal aborts the whole batch atomically.
+        if (
+          !admin &&
+          (await shrinkLiftsAdminNarrowing(ctx, userId, { leftGroupId: groupId }))
+        ) {
+          throw new ConvexError({ code: ADMIN_RESTRICTION_WOULD_LIFT });
+        }
         await ctx.db.delete(existing._id);
-        changed++;
+        await purgeMemberAllowances(ctx, groupId, userId);
+        await auditGroup(ctx, actor, "group.removeMember", "groupMember", memberRef(groupId, userId));
       }
-    }
-    if (changed > 0) {
-      await auditImpersonated(
-        ctx,
-        actor,
-        member ? "group.addMember" : "group.removeMember",
-        { resource: "group", resourceId: groupId },
-      );
     }
   },
 });
 
 // "Select all" / "deselect all" for the agents of ONE instance. On assign, each
-// agent is re-validated exactly like assignAgentToGroup (discovered + present);
-// anything not assignable is silently skipped so a partial set still applies.
+// agent is re-validated exactly like assignAgentToGroup (discovered + present +
+// enabled, and — for a manager — reserved for this group); anything not
+// assignable is silently skipped so a partial set still applies.
 export const bulkSetGroupAgents = mutation({
   args: {
     groupId: v.id("groups"),
@@ -451,54 +652,305 @@ export const bulkSetGroupAgents = mutation({
       );
     }
     const strict = await agentEnablementStrict(ctx);
-    let changed = 0;
+    const admin = await isRealAdmin(ctx);
+    if (!assigned && !admin) {
+      // The WHOLE batch is judged at once (removing A and B together may lift a
+      // narrowing that neither alone would) and refused atomically.
+      const unshared = [];
+      for (const agentId of agentIds) {
+        if ((await groupAgentRow(ctx, groupId, instanceName, agentId)) !== null) {
+          unshared.push({ groupId, instanceName, agentId });
+        }
+      }
+      const hit = await usersLiftedByUnshare(ctx, unshared);
+      if (hit.length > 0) {
+        throw await restrictionRefusal(ctx, ADMIN_RESTRICTION_WOULD_LIFT, hit[0]!, unshared);
+      }
+    }
+    if (assigned && !admin) {
+      // The mirror, judged on exactly what this batch would insert, refused
+      // atomically: a manager's share never switches a member into an admin's
+      // narrowing.
+      const shared = [];
+      for (const agentId of agentIds) {
+        if ((await groupAgentRow(ctx, groupId, instanceName, agentId)) !== null) continue;
+        const agent = await agentDoc(ctx, instanceName, agentId);
+        if (!agentShareable(agent, strict)) continue;
+        if (agent!.reservedForGroupId !== groupId) continue;
+        shared.push({ groupId, instanceName, agentId });
+      }
+      const hit = await usersNarrowedByShare(ctx, shared);
+      if (hit.length > 0) {
+        throw await restrictionRefusal(ctx, ADMIN_RESTRICTION_WOULD_APPLY, hit[0]!, shared);
+      }
+    }
     for (const agentId of agentIds) {
-      const existing = await ctx.db
-        .query("groupAgents")
-        .withIndex("by_group_instance_agent", (q) =>
-          q
-            .eq("groupId", groupId)
-            .eq("instanceName", instanceName)
-            .eq("agentId", agentId),
-        )
-        .unique();
+      const existing = await groupAgentRow(ctx, groupId, instanceName, agentId);
       if (assigned) {
         if (existing !== null) continue; // idempotent
-        const agent = await ctx.db
-          .query("agents")
-          .withIndex("by_instance_agent", (q) =>
-            q.eq("instanceName", instanceName).eq("agentId", agentId),
-          )
-          .first();
-        if (
-          agent === null ||
-          agent.source !== "discovered" ||
-          !agent.presentInLastOk ||
-          (strict ? agent.enabled !== true : agent.enabled === false)
-        ) {
-          continue; // not assignable under the current mode — skip, keep batch
-        }
+        const agent = await agentDoc(ctx, instanceName, agentId);
+        if (!agentShareable(agent, strict)) continue; // not assignable — skip
+        if (!admin && agent!.reservedForGroupId !== groupId) continue; // out of scope
         await ctx.db.insert("groupAgents", {
           groupId,
           instanceName,
           agentId,
           createdAt: Date.now(),
         });
-        changed++;
+        await auditGroup(
+          ctx,
+          actor,
+          "group.assignAgent",
+          "groupAgent",
+          groupAgentRef(groupId, instanceName, agentId),
+        );
       } else {
         if (existing === null) continue; // idempotent
         await ctx.db.delete(existing._id);
-        changed++;
+        await unshareAgentFromMembers(ctx, groupId, instanceName, agentId);
+        await auditGroup(
+          ctx,
+          actor,
+          "group.removeAgent",
+          "groupAgent",
+          groupAgentRef(groupId, instanceName, agentId),
+        );
       }
     }
-    if (changed > 0) {
-      await auditImpersonated(
-        ctx,
-        actor,
-        assigned ? "group.assignAgent" : "group.removeAgent",
-        { resource: "group", resourceId: groupId },
+  },
+});
+
+/** CLAIM a newly discovered agent for a group, in ONE transaction: share it with
+ *  the group, RESERVE it for that group (never in the no-group all-pool, never the
+ *  instance default — lib/agentClaim), and enable it. Only an agent nobody has made
+ *  a decision about is claimable (lib/agentClaim.claimRefusal), and — for a manager
+ *  — only on an instance the group already uses (groupFootprint). The instance
+ *  default is left strictly untouched. */
+export const claimAgentForGroup = mutation({
+  args: {
+    groupId: v.id("groups"),
+    instanceName: v.string(),
+    agentId: v.string(),
+  },
+  handler: async (ctx, { groupId, instanceName, agentId }) => {
+    const actor = await authorizeGroupManage(ctx, groupId); // admin or group manager
+    await getGroupOrThrow(ctx, groupId);
+    const agent = await agentDoc(ctx, instanceName, agentId);
+    const refusal = await claimRefusal(ctx, agent, await agentClaimEpoch(ctx));
+    if (refusal !== null) {
+      throw new Error(`Refused: agent not claimable (${refusal})`);
+    }
+    if (
+      !(await isRealAdmin(ctx)) &&
+      !(await groupFootprint(ctx, groupId)).has(instanceName)
+    ) {
+      throw new Error(
+        "Refused: this group has no agent on that instance",
       );
     }
+    const now = Date.now();
+    await ctx.db.patch(agent!._id, {
+      enabled: true,
+      enablementDecidedAt: now,
+      reservedForGroupId: groupId,
+      reservedAt: now,
+    });
+    await ctx.db.insert("groupAgents", {
+      groupId,
+      instanceName,
+      agentId,
+      createdAt: now,
+    });
+    await auditGroup(
+      ctx,
+      actor,
+      "group.claimAgent",
+      "groupAgent",
+      groupAgentRef(groupId, instanceName, agentId),
+    );
+  },
+});
+
+/** The group's DEFAULT agent (or none). The agent must be shared with the group.
+ *  Exactly one row carries isDefault afterwards (or none on clear). */
+export const setGroupDefaultAgent = mutation({
+  args: {
+    groupId: v.id("groups"),
+    agent: v.union(
+      v.null(),
+      v.object({ instanceName: v.string(), agentId: v.string() }),
+    ),
+  },
+  handler: async (ctx, { groupId, agent }) => {
+    const actor = await authorizeGroupManage(ctx, groupId); // admin or group manager
+    await getGroupOrThrow(ctx, groupId);
+    if (
+      agent !== null &&
+      (await groupAgentRow(ctx, groupId, agent.instanceName, agent.agentId)) === null
+    ) {
+      throw new Error("Refused: the default agent must be shared with this group");
+    }
+    const rows = await ctx.db
+      .query("groupAgents")
+      .withIndex("by_group", (q) => q.eq("groupId", groupId))
+      .collect();
+    for (const r of rows) {
+      const shouldBe =
+        agent !== null &&
+        r.instanceName === agent.instanceName &&
+        r.agentId === agent.agentId;
+      if ((r.isDefault === true) !== shouldBe) {
+        await ctx.db.patch(r._id, { isDefault: shouldBe ? true : undefined });
+      }
+    }
+    await auditGroup(
+      ctx,
+      actor,
+      agent === null ? "group.clearDefaultAgent" : "group.setDefaultAgent",
+      agent === null ? "group" : "groupAgent",
+      agent === null ? groupId : groupAgentRef(groupId, agent.instanceName, agent.agentId),
+    );
+  },
+});
+
+// ===========================================================================
+// MUTATIONS — per-member settings WITHIN one group
+// ===========================================================================
+
+const agentRefValidator = v.object({
+  instanceName: v.string(),
+  agentId: v.string(),
+});
+
+/** Restrict ONE member to a subset of THIS group's agents (`agents`), or lift the
+ *  restriction (`agents: null` → the member receives the whole group again). Every
+ *  listed agent must be shared with the group — a manager can never grant anything
+ *  outside it — and nothing outside this group is touched: the member's other
+ *  groups and any admin-made direct grant stay exactly as they were. */
+export const setMemberAgents = mutation({
+  args: {
+    groupId: v.id("groups"),
+    userId: v.id("users"),
+    agents: v.union(v.null(), v.array(agentRefValidator)),
+  },
+  handler: async (ctx, { groupId, userId, agents }) => {
+    const actor = await authorizeGroupManage(ctx, groupId); // admin or group manager
+    await getGroupOrThrow(ctx, groupId);
+    const membership = await membershipOf(ctx, groupId, userId);
+    if (membership === null) {
+      throw new Error("Refused: user is not a member of this group");
+    }
+    const admin = await isRealAdmin(ctx);
+    assertMemberSettable(admin, actor, membership);
+    if (agents !== null && agents.length > BULK_CAP) {
+      throw new Error(`Refused: restriction exceeds ${BULK_CAP} agents`);
+    }
+    const wanted = new Map<string, { instanceName: string; agentId: string }>();
+    for (const a of agents ?? []) {
+      if ((await groupAgentRow(ctx, groupId, a.instanceName, a.agentId)) === null) {
+        throw new Error(
+          `Refused: ${a.instanceName}/${a.agentId} is not shared with this group`,
+        );
+      }
+      wanted.set(grantKey(a.instanceName, a.agentId), a);
+    }
+    // An ADMIN-set restriction: a manager may only narrow it further — never lift
+    // it, never add an agent the admin left out.
+    const adminSet =
+      membership.agentsRestricted === true &&
+      membership.agentsRestrictedByAdmin === true;
+    if (!admin && adminSet) {
+      if (agents === null) {
+        throw new Error(
+          "Refused: only an admin can lift a restriction an admin set",
+        );
+      }
+      const current = new Set(
+        (await memberShareOfGroup(ctx, membership)).map((ga) =>
+          grantKey(ga.instanceName, ga.agentId),
+        ),
+      );
+      for (const key of wanted.keys()) {
+        if (!current.has(key)) {
+          throw new Error(
+            "Refused: only an admin can widen a restriction an admin set",
+          );
+        }
+      }
+    }
+    await purgeMemberAllowances(ctx, groupId, userId);
+    if (agents === null) {
+      await ctx.db.patch(membership._id, {
+        agentsRestricted: undefined,
+        agentsRestrictedByAdmin: undefined,
+      });
+    } else {
+      const now = Date.now();
+      for (const a of wanted.values()) {
+        await ctx.db.insert("groupMemberAgents", {
+          groupId,
+          userId,
+          instanceName: a.instanceName,
+          agentId: a.agentId,
+          createdAt: now,
+        });
+      }
+      const d = membership.defaultAgent;
+      const keepDefault =
+        d !== undefined && wanted.has(grantKey(d.instanceName, d.agentId));
+      await ctx.db.patch(membership._id, {
+        agentsRestricted: true,
+        // Stays admin-set once an admin set it (a manager's narrowing keeps it so).
+        agentsRestrictedByAdmin: admin || adminSet ? true : undefined,
+        ...(keepDefault ? {} : { defaultAgent: undefined }),
+      });
+    }
+    await auditGroup(
+      ctx,
+      actor,
+      agents === null ? "group.unrestrictMember" : "group.restrictMember",
+      "groupMember",
+      memberRef(groupId, userId),
+    );
+  },
+});
+
+/** Set (or clear) ONE member's default agent among their share of THIS group. */
+export const setMemberDefaultAgent = mutation({
+  args: {
+    groupId: v.id("groups"),
+    userId: v.id("users"),
+    agent: v.union(v.null(), agentRefValidator),
+  },
+  handler: async (ctx, { groupId, userId, agent }) => {
+    const actor = await authorizeGroupManage(ctx, groupId); // admin or group manager
+    await getGroupOrThrow(ctx, groupId);
+    const membership = await membershipOf(ctx, groupId, userId);
+    if (membership === null) {
+      throw new Error("Refused: user is not a member of this group");
+    }
+    assertMemberSettable(await isRealAdmin(ctx), actor, membership);
+    if (agent !== null) {
+      const share = await memberShareOfGroup(ctx, membership);
+      if (
+        !share.some(
+          (ga) =>
+            ga.instanceName === agent.instanceName && ga.agentId === agent.agentId,
+        )
+      ) {
+        throw new Error(
+          "Refused: the default agent must be one this member receives from the group",
+        );
+      }
+    }
+    await ctx.db.patch(membership._id, { defaultAgent: agent ?? undefined });
+    await auditGroup(
+      ctx,
+      actor,
+      agent === null ? "group.clearMemberDefault" : "group.setMemberDefault",
+      "groupMember",
+      memberRef(groupId, userId),
+    );
   },
 });
 
@@ -576,6 +1028,12 @@ export const listGroups = query({
           isDefault: c.isDefault === true,
         });
       }
+      const pendingInvites = await ctx.db
+        .query("groupInviteRequests")
+        .withIndex("by_group_status", (q) =>
+          q.eq("groupId", g._id).eq("status", "pending"),
+        )
+        .take(100);
 
       out.push({
         _id: g._id,
@@ -585,6 +1043,7 @@ export const listGroups = query({
         memberCount: memberRows.length,
         agentCount: agentRows.length,
         chartCount: chartRows.length,
+        pendingInviteCount: pendingInvites.length,
         // Bounded name previews for the list "detail" columns (rest = "+N").
         members,
         agents,
@@ -596,13 +1055,15 @@ export const listGroups = query({
   },
 });
 
-/** Admin: one group's members + shared agents (the Groups tab detail). */
+/** One group's members + shared agents (the Groups tab detail), for an admin or
+ *  this group's manager. */
 export const getGroup = query({
   args: { groupId: v.id("groups") },
   handler: async (ctx, { groupId }) => {
-    await authorizeGroupManage(ctx, groupId); // admin or this group's manager
+    const actor = await authorizeGroupManage(ctx, groupId); // admin or this group's manager
     const group = await ctx.db.get(groupId);
     if (group === null) throw new Error("Not found: group");
+    const admin = await isRealAdmin(ctx);
     const memberRows = await ctx.db
       .query("groupMembers")
       .withIndex("by_group", (q) => q.eq("groupId", groupId))
@@ -613,6 +1074,14 @@ export const getGroup = query({
         userId: m.userId,
         label: await userLabel(ctx, m.userId),
         manager: m.manager === true, // promote/demote is admin-only (UI gates it)
+        // Per-member settings within THIS group (the restriction sheet).
+        restricted: m.agentsRestricted === true,
+        defaultAgent: m.defaultAgent ?? null,
+        // Only an admin takes someone out of their LAST group (removeMember).
+        lastGroup: !(await inAnotherGroup(ctx, m.userId, groupId)),
+        // A manager never edits their own or a co-manager's agents.
+        settable:
+          admin || (m.userId !== actor.realUserId && m.manager !== true),
       });
     }
     const agentRows = await ctx.db
@@ -621,7 +1090,7 @@ export const getGroup = query({
       .collect();
     const agents = [];
     for (const a of agentRows) {
-      const { state, displayName } = await agentState(
+      const { state, displayName, agent } = await agentState(
         ctx,
         a.instanceName,
         a.agentId,
@@ -632,6 +1101,8 @@ export const getGroup = query({
         displayName,
         isDefault: a.isDefault ?? false,
         state,
+        // Reserved for THIS group (claimed here, or reserved by an admin for it).
+        reservedHere: agent?.reservedForGroupId === groupId,
       });
     }
     // Count of charts the group has SELECTED (Tier 2) — feeds the Charts tab badge.
@@ -649,10 +1120,78 @@ export const getGroup = query({
       members,
       agents,
       chartCount: chartRows.length,
-      // Promote/demote a manager is ADMIN-ONLY: the Members tab shows the toggle
-      // only when this is true (a delegated manager sees the badges, not the control).
+      // Promote/demote a manager, adding people and sharing any agent are
+      // ADMIN-ONLY: the dialog shows those controls only when this is true.
       viewerIsAdmin: await isRealAdmin(ctx),
     };
+  },
+});
+
+/** One member's settings within one group: the group's agents, which of them the
+ *  member receives, and their default among them (the per-member sheet). */
+export const getMemberAgentSettings = query({
+  args: { groupId: v.id("groups"), userId: v.id("users") },
+  handler: async (ctx, { groupId, userId }) => {
+    const actor = await authorizeGroupManage(ctx, groupId); // admin or this group's manager
+    const membership = await membershipOf(ctx, groupId, userId);
+    if (membership === null) return null;
+    const admin = await isRealAdmin(ctx);
+    // An admin's direct grants may narrow this person below what the group gives
+    // (directGrantsNarrow) — shown read-only so the manager sees the real outcome.
+    const narrowing = await adminNarrowingOf(ctx, userId);
+    const groupRows = await ctx.db
+      .query("groupAgents")
+      .withIndex("by_group", (q) => q.eq("groupId", groupId))
+      .collect();
+    const share = await memberShareOfGroup(ctx, membership);
+    const inShare = new Set(share.map((ga) => grantKey(ga.instanceName, ga.agentId)));
+    const d = membership.defaultAgent;
+    const agents = [];
+    for (const a of groupRows) {
+      const { displayName, state } = await agentState(ctx, a.instanceName, a.agentId);
+      agents.push({
+        instanceName: a.instanceName,
+        agentId: a.agentId,
+        displayName,
+        state,
+        allowed: inShare.has(grantKey(a.instanceName, a.agentId)),
+        // Withheld by an administrator's own narrowing, whatever the group allows.
+        limitedByAdmin:
+          narrowing.narrowed &&
+          !narrowing.directKeys.has(grantKey(a.instanceName, a.agentId)),
+        isMemberDefault:
+          d !== undefined &&
+          d.instanceName === a.instanceName &&
+          d.agentId === a.agentId,
+        isGroupDefault: a.isDefault === true,
+      });
+    }
+    return {
+      label: await userLabel(ctx, userId),
+      restricted: membership.agentsRestricted === true,
+      // Set by an admin: a manager may only narrow it further.
+      restrictedByAdmin:
+        membership.agentsRestricted === true &&
+        membership.agentsRestrictedByAdmin === true,
+      adminNarrowed: narrowing.narrowed,
+      // False for a manager viewing themselves or a co-manager (read-only).
+      settable:
+        admin ||
+        (membership.userId !== actor.realUserId && membership.manager !== true),
+      viewerIsAdmin: admin,
+      agents,
+    };
+  },
+});
+
+/** Admin: every group as {id, name} only (bounded) — for pickers that need a group
+ *  label and nothing of listGroups' per-group member/agent/chart reads. */
+export const listGroupLabels = query({
+  args: {},
+  handler: async (ctx) => {
+    await requireAdmin(ctx);
+    const groups = await ctx.db.query("groups").order("desc").take(500);
+    return groups.map((g) => ({ _id: g._id, name: g.name }));
   },
 });
 
@@ -677,24 +1216,20 @@ export const listMyGroups = query({
 });
 
 // ===========================================================================
-// DELEGATION-SAFE DIRECTORY QUERIES (GROUPS_MANAGE-gated)
-// The Manage dialog needs the user directory + instances + an instance's agents to
-// curate a group. The admin equivalents (api.admin.listUsers / listInstances /
-// agents.listAgentsForInstance) are requireAdmin AND over-disclose (roles +
-// extraPermissions, full instance rows incl. URLs, agent curation state). These
-// BOUNDED queries return ONLY the LABELS the dialog renders, gated by GROUPS_MANAGE
-// so a delegated manager (admin-deputised) can populate the dialog. The data is
-// non-secret (names/emails/agent labels) — never extraPermissions, gateway URLs,
-// secrets or PHI. Per-GROUP data still flows through getGroup/authorizeGroupManage;
-// these are the global pickable directory, so the permission (not per-group) gate is
-// correct. NOTE: a delegated manager can now see the user directory + agent/instance
-// topology — inherent to delegation, bounded to labels.
+// DIRECTORY QUERIES for the Manage dialog
+// The admin equivalents (api.admin.listUsers / listInstances /
+// agents.listAgentsForInstance) over-disclose (roles + extraPermissions, full
+// instance rows incl. URLs, agent curation state). These return ONLY the LABELS the
+// dialog renders. The USER directory is admin-only: a manager never browses people
+// (they request an invitation by exact email). Instances and agents are scoped for
+// a manager to what THEIR group reaches or may claim — never other groups' agents,
+// never the full catalogue.
 
-/** Users a manager may add as members: id + label fields only (NO extraPermissions). */
+/** Users an ADMIN may add as members: id + label fields only (NO extraPermissions). */
 export const listAssignableUsers = query({
   args: {},
   handler: async (ctx) => {
-    await requirePermission(ctx, PERMISSIONS.GROUPS_MANAGE);
+    await requireAdmin(ctx);
     const profiles = await ctx.db.query("profiles").order("desc").take(500);
     return profiles.map((p) => ({
       _id: p._id,
@@ -707,13 +1242,27 @@ export const listAssignableUsers = query({
   },
 });
 
-/** Instances a manager may share agents from: id + names only (NO URLs/config/secrets). */
+/** Instances the dialog lists agents from: id + names only (NO URLs/config/secrets).
+ *  Admin: every instance. Manager (groupId required): the instances their group
+ *  uses, plus those holding an agent reserved for it. */
 export const listAssignableInstances = query({
-  args: {},
-  handler: async (ctx) => {
+  args: { groupId: v.optional(v.id("groups")) },
+  handler: async (ctx, { groupId }) => {
     await requirePermission(ctx, PERMISSIONS.GROUPS_MANAGE);
     const instances = await ctx.db.query("instances").order("desc").take(200);
-    return instances.map((i) => ({
+    let visible = instances;
+    if (!(await isRealAdmin(ctx))) {
+      if (groupId === undefined) throw new Error("Refused: groupId required");
+      await authorizeGroupManage(ctx, groupId);
+      const names = await groupFootprint(ctx, groupId);
+      const reserved = await ctx.db
+        .query("agents")
+        .withIndex("by_reserved_group", (q) => q.eq("reservedForGroupId", groupId))
+        .take(500);
+      for (const a of reserved) names.add(a.instanceName);
+      visible = instances.filter((i) => names.has(i.name));
+    }
+    return visible.map((i) => ({
       _id: i._id,
       name: i.name,
       displayName: i.displayName ?? null,
@@ -722,34 +1271,122 @@ export const listAssignableInstances = query({
   },
 });
 
-/** Discovered agents of ONE instance a manager may share: render labels only (NO
- *  admin-curation state — enabled / defaultAgentId are omitted). */
+type AssignableAgent = {
+  agentId: string;
+  displayName: string | null;
+  emoji: string | null;
+  model: string | null;
+  isDefaultOnInstance: boolean;
+  types: string[];
+  source: "discovered" | "manual";
+  presentInLastOk: boolean;
+  enabled: boolean;
+  // A new agent nobody decided on yet, which this group's manager may CLAIM.
+  claimable: boolean;
+  // Reserved for the group in the request (re-addable by its manager).
+  reservedForGroup: boolean;
+  // Reserved for SOME group (admin view: which one), or null.
+  reservedGroupName: string | null;
+  reserved: boolean;
+};
+
+function assignableView(
+  a: Doc<"agents">,
+  flags: { claimable: boolean; groupId: Id<"groups"> | undefined; reservedGroupName: string | null },
+): AssignableAgent {
+  return {
+    agentId: a.agentId,
+    displayName: a.displayName ?? null,
+    emoji: a.emoji ?? null,
+    model: a.model ?? null,
+    isDefaultOnInstance: a.isDefaultOnInstance ?? false,
+    types: resolveAgentTypes(a.types),
+    source: a.source,
+    presentInLastOk: a.presentInLastOk,
+    // Opt-IN: an agent must be explicitly enabled to be assignable. An
+    // un-curated (unset) or disabled agent reads as not-enabled → greyed.
+    enabled: a.enabled === true,
+    claimable: flags.claimable,
+    reservedForGroup:
+      flags.groupId !== undefined && a.reservedForGroupId === flags.groupId,
+    reservedGroupName: flags.reservedGroupName,
+    reserved: a.reservedForGroupId !== undefined,
+  };
+}
+
+/** Discovered agents of ONE instance for the dialog: render labels only (NO
+ *  admin-curation detail beyond enabled / reserved).
+ *  Admin: every agent of the instance (claimable flags when `groupId` is given).
+ *  Manager (groupId required): EXACTLY the agents shared with the group, the ones
+ *  reserved for it, and — on an instance the group already uses — the agents it
+ *  may claim. Never another group's agents, never the open catalogue. */
 export const listAssignableAgents = query({
-  args: { instanceName: v.string() },
-  handler: async (ctx, { instanceName }) => {
+  args: { instanceName: v.string(), groupId: v.optional(v.id("groups")) },
+  handler: async (ctx, { instanceName, groupId }) => {
     await requirePermission(ctx, PERMISSIONS.GROUPS_MANAGE);
-    const agents = await ctx.db
+    const admin = await isRealAdmin(ctx);
+    if (!admin) {
+      if (groupId === undefined) throw new Error("Refused: groupId required");
+      await authorizeGroupManage(ctx, groupId);
+    }
+    const all = await ctx.db
       .query("agents")
       .withIndex("by_instance", (q) => q.eq("instanceName", instanceName))
       .collect();
+    const epoch = await agentClaimEpoch(ctx);
+    const footprint =
+      groupId !== undefined ? await groupFootprint(ctx, groupId) : new Set<string>();
+    const shared =
+      groupId !== undefined
+        ? new Set(
+            (
+              await ctx.db
+                .query("groupAgents")
+                .withIndex("by_group_instance_agent", (q) =>
+                  q.eq("groupId", groupId).eq("instanceName", instanceName),
+                )
+                .collect()
+            ).map((r) => r.agentId),
+          )
+        : new Set<string>();
+    // A manager learns nothing about an instance outside their group's reach (its
+    // footprint, or an agent reserved for the group there) — not even its poll state.
+    if (
+      !admin &&
+      !footprint.has(instanceName) &&
+      !all.some((a) => a.reservedForGroupId === groupId)
+    ) {
+      return { agents: [], discovery: null };
+    }
+    const groupNames = new Map<Id<"groups">, string | null>();
+    const out: AssignableAgent[] = [];
+    for (const a of all) {
+      // Claimable only where the group already has a footprint (managers and the
+      // admin's view of the same group alike — one rule, one list).
+      const claimable =
+        groupId !== undefined &&
+        footprint.has(instanceName) &&
+        claimRefusalOfRow(a, epoch) === null &&
+        (await claimRefusal(ctx, a, epoch)) === null;
+      if (!admin) {
+        const inScope =
+          shared.has(a.agentId) || a.reservedForGroupId === groupId || claimable;
+        if (!inScope) continue;
+      }
+      let reservedGroupName: string | null = null;
+      if (admin && a.reservedForGroupId !== undefined) {
+        const gid = a.reservedForGroupId;
+        if (!groupNames.has(gid)) groupNames.set(gid, (await ctx.db.get(gid))?.name ?? null);
+        reservedGroupName = groupNames.get(gid) ?? null;
+      }
+      out.push(assignableView(a, { claimable, groupId, reservedGroupName }));
+    }
     const discovery = await ctx.db
       .query("instanceDiscovery")
       .withIndex("by_instance", (q) => q.eq("instanceName", instanceName))
       .first();
     return {
-      agents: agents.map((a) => ({
-        agentId: a.agentId,
-        displayName: a.displayName ?? null,
-        emoji: a.emoji ?? null,
-        model: a.model ?? null,
-        isDefaultOnInstance: a.isDefaultOnInstance ?? false,
-        types: resolveAgentTypes(a.types),
-        source: a.source,
-        presentInLastOk: a.presentInLastOk,
-        // Opt-IN: an agent must be explicitly enabled to be assignable. An
-        // un-curated (unset) or disabled agent reads as not-enabled → greyed.
-        enabled: a.enabled === true,
-      })),
+      agents: out,
       discovery: discovery
         ? {
             lastPollAt: discovery.lastPollAt,

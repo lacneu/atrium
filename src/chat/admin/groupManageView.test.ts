@@ -9,8 +9,12 @@
 import { describe, expect, test } from "vitest";
 import { m } from "@/paraglide/messages.js";
 import {
+  agentPairKey,
+  agentRowControl,
   filterSortMembers,
   filterInstanceAgents,
+  groupErrorDetail,
+  nextMemberAllowance,
   paginate,
   roleLabel,
   selectionState,
@@ -232,5 +236,66 @@ describe("paginate", () => {
     const copy = items.slice();
     paginate(items, 2, 3);
     expect(items).toEqual(copy);
+  });
+});
+
+describe("agentRowControl", () => {
+  const base = {
+    assigned: false,
+    claimable: false,
+    reservedForGroup: false,
+    enabled: true,
+    present: true,
+  };
+  test("an assigned agent is always removable, even gone or disabled", () => {
+    expect(agentRowControl({ ...base, assigned: true, enabled: false, present: false }, false)).toBe("toggle");
+  });
+  test("a claimable agent offers the claim", () => {
+    expect(agentRowControl({ ...base, claimable: true, enabled: false }, false)).toBe("claim");
+    expect(agentRowControl({ ...base, claimable: true, enabled: false }, true)).toBe("claim");
+  });
+  test("a manager toggles only an agent reserved for the group; an admin any enabled one", () => {
+    expect(agentRowControl(base, false)).toBe("locked");
+    expect(agentRowControl({ ...base, reservedForGroup: true }, false)).toBe("toggle");
+    expect(agentRowControl(base, true)).toBe("toggle");
+  });
+  test("gone or not enabled is locked for everyone", () => {
+    expect(agentRowControl({ ...base, present: false }, true)).toBe("locked");
+    expect(agentRowControl({ ...base, enabled: false, reservedForGroup: true }, false)).toBe("locked");
+  });
+});
+
+describe("nextMemberAllowance", () => {
+  const keys = [agentPairKey("prod", "a"), agentPairKey("prod", "b"), agentPairKey("lab", "c")];
+  test("an unrestricted member starts from the whole group", () => {
+    expect(nextMemberAllowance(keys, new Set(), false, keys[1]!)).toEqual([keys[0], keys[2]]);
+  });
+  test("a restricted member toggles within their allowance, in group order", () => {
+    expect(nextMemberAllowance(keys, new Set([keys[2]!]), true, keys[0]!)).toEqual([keys[0], keys[2]]);
+    expect(nextMemberAllowance(keys, new Set([keys[2]!]), true, keys[2]!)).toEqual([]);
+  });
+  test("pair keys never collide across a slash in the instance name", () => {
+    expect(agentPairKey("a/b", "c")).not.toBe(agentPairKey("a", "b/c"));
+  });
+});
+
+describe("groupErrorDetail", () => {
+  test("localizes the admin-restriction refusals, naming the blocking agent", () => {
+    expect(groupErrorDetail({ data: { code: "admin_restriction_would_lift" } })).toBe(
+      m.groups_error_admin_restriction(),
+    );
+    expect(
+      groupErrorDetail({ data: { code: "admin_restriction_would_lift", agent: "Forge" } }),
+    ).toBe(m.groups_error_admin_restriction_agent({ agent: "Forge" }));
+    expect(
+      groupErrorDetail({ data: { code: "admin_restriction_would_apply", agent: "Forge" } }),
+    ).toBe(m.groups_error_admin_restriction_apply({ agent: "Forge" }));
+    expect(m.groups_error_admin_restriction_apply({ agent: "Forge" })).toContain("Forge");
+  });
+  test("passes anything else through", () => {
+    const other = new Error("boom");
+    expect(groupErrorDetail(other)).toBe(other);
+    const typed = { data: { code: "something_else" } };
+    expect(groupErrorDetail(typed)).toBe(typed);
   });
 });

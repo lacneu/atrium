@@ -38,7 +38,8 @@ type NotifKind =
   | "operator_announcement"
   | "mention"
   | "agent_request"
-  | "chat_added";
+  | "chat_added"
+  | "group_invite";
 
 const FEED_LIMIT = 50;
 // Bulk read/clear process at most this many rows per transaction, then SELF-
@@ -284,6 +285,7 @@ export const fanOutAnomalyToAdmins = internalMutation({
       v.literal("anomaly_open"),
       v.literal("anomaly_resolved"),
       v.literal("feedback_new"),
+      v.literal("group_invite"),
     ),
     title: v.string(),
     body: v.string(),
@@ -325,7 +327,7 @@ export const fanOutAnomalyToAdmins = internalMutation({
 export async function notifyAdmins(
   ctx: MutationCtx,
   args: {
-    kind: "anomaly_open" | "anomaly_resolved" | "feedback_new";
+    kind: "anomaly_open" | "anomaly_resolved" | "feedback_new" | "group_invite";
     title: string;
     body: string;
     messageKey?: string;
