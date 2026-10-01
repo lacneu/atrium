@@ -66,6 +66,9 @@ spec:
     - name: http
       port: {{ .Values.webchat.servicePort }}
       targetPort: http
+    - name: widget-sandbox
+      port: {{ .Values.widgetSandbox.servicePort }}
+      targetPort: widget-sandbox
 ---
 apiVersion: v1
 kind: Service

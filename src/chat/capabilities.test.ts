@@ -76,6 +76,8 @@ describe("CAPABILITY_KEYS contract (lockstep with the bridge manifest)", () => {
       "permissionModes",
       // The composer's knowledge sources + the admin's agent default (floor 2026.9.6).
       "knowledgePolicy",
+      // The conversation's inline-widget switch (floor 2026.9.6).
+      "inlineWidgets",
     ]);
   });
 
@@ -178,6 +180,7 @@ describe("capabilityOf — capability x set matrix", () => {
         // Absent from every one of these sets -> false (fail closed).
         permissionModes: false,
         knowledgePolicy: false,
+        inlineWidgets: false,
       },
     ],
     [
@@ -199,6 +202,7 @@ describe("capabilityOf — capability x set matrix", () => {
         // Absent from every one of these sets -> false (fail closed).
         permissionModes: false,
         knowledgePolicy: false,
+        inlineWidgets: false,
       },
     ],
     [
@@ -221,6 +225,7 @@ describe("capabilityOf — capability x set matrix", () => {
         // Absent from every one of these sets -> false (fail closed).
         permissionModes: false,
         knowledgePolicy: false,
+        inlineWidgets: false,
       },
     ],
     [
@@ -242,6 +247,7 @@ describe("capabilityOf — capability x set matrix", () => {
         // Absent from every one of these sets -> false (fail closed).
         permissionModes: false,
         knowledgePolicy: false,
+        inlineWidgets: false,
       },
     ],
     [
@@ -263,6 +269,7 @@ describe("capabilityOf — capability x set matrix", () => {
         // Absent from every one of these sets -> false (fail closed).
         permissionModes: false,
         knowledgePolicy: false,
+        inlineWidgets: false,
       },
     ],
   ];

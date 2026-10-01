@@ -11,7 +11,7 @@ import {
   injectionsFromConfig,
   type ConfigForm,
 } from "./bridgeConfigForm";
-import { DEFAULT_INSTANCE_CONFIG } from "../../../convex/lib/instanceConfig";
+import { DEFAULT_INSTANCE_CONFIG, instanceConfigValidator } from "../../../convex/lib/instanceConfig";
 import { PROMPT_INJECTIONS } from "../../../convex/lib/promptInjections";
 
 const defaults: ConfigForm = {
@@ -193,5 +193,47 @@ describe("cross-tab passthrough (shared instance.config blob)", () => {
     const out = buildConfigOverride(formFromConfig(stored, "fr"), stored, "fr");
     expect("curationEnabled" in out).toBe(false);
     expect("curationBudgetChars" in out).toBe(false);
+  });
+});
+
+describe("a Bridge / Injections save keeps every key other surfaces own", () => {
+  // ONE sample holding a valid value for EVERY key the instance-config validator
+  // accepts. The first assertion makes a new key impossible to forget here — and the
+  // second then proves a Bridge save carries it through. Measured before the fix: the
+  // Voice tab's six keys and the widget switches were erased by any Bridge save.
+  const full: Record<string, unknown> = {
+    mediaMode: "shared-fs",
+    inboundMediaMode: "shared-fs",
+    rehydration: false,
+    mediaMaxMb: 200,
+    attachmentFixAttested: true,
+    summarizeThresholdChars: 9000,
+    curationEnabled: true,
+    curationBudgetChars: 16000,
+    converterAgentId: "converter",
+    voiceEnabled: true,
+    talkEnabled: true,
+    widgetsEnabled: false,
+    widgetPromptConfirm: true,
+    voiceEngine: "gateway",
+    voiceLang: "fr-FR",
+    voiceRate: 1.2,
+    voiceAutoRead: true,
+    contentLocale: "fr",
+    inboundAgentMount: "/data/in",
+    outboundAgentMount: "/data/out",
+    promptInjections: {},
+  };
+
+  test("the sample covers every key the validator accepts", () => {
+    expect(Object.keys(full).sort()).toEqual(Object.keys(instanceConfigValidator.fields).sort());
+  });
+
+  test("load + Save unchanged keeps every value", () => {
+    const out = buildConfigOverride(formFromConfig(full as never, "fr"), full as never, "fr") as Record<string, unknown>;
+    for (const [k, v] of Object.entries(full)) {
+      if (k === "promptInjections") continue; // sparse by design: {} persists as absent
+      expect(out[k], k).toEqual(v);
+    }
   });
 });

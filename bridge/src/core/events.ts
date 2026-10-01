@@ -36,6 +36,10 @@ export const EVENT_MEDIA = "media"; // {items: [{filename, path}]}
 // (G-22), already normalized into the SAME PlanPart the `update_plan` tool path
 // produces. Not a tool call: it must never touch the turn's tool counters.
 export const EVENT_PLAN = "plan";
+// {widget: {viewId, title?, preferredHeight?, sandbox}, runId} — an inline widget
+// the agent showed in its reply (OpenClaw `show_widget`, providers/openclaw/widgets.ts).
+// A DESCRIPTOR only: the document bytes never ride the event stream.
+export const EVENT_WIDGET = "widget";
 // {phase} — the turn's LIVE processing phase, when the provider normalizer is
 // the only place that knows it (e.g. the gateway's deferred terminal,
 // `post_processing`). The sink forwards it to setPhase; unknown values are

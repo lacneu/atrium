@@ -114,6 +114,10 @@ class RecordingWriter implements ConvexWriter {
     this.calls.push({ call: "addCompactionPart" });
   }
   async recordGatewayPressure(): Promise<void> {}
+  async addWidgetPart(): Promise<boolean> {
+    this.calls.push({ call: "addWidgetPart" });
+    return true;
+  }
   async addProvenancePart(): Promise<void> {
     this.calls.push({ call: "addProvenancePart" });
   }

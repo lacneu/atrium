@@ -10,7 +10,8 @@
 // timeout fires is never dropped; on timeout we `tick()` the normalizer so an
 // armed grace always finalizes (never a hung "thinking" UI).
 
-import { openClawAgentRequestsEnabled } from "./compat.js";
+import { openClawAgentRequestsEnabled, openClawInlineWidgetsEnabled } from "./compat.js";
+import { INLINE_WIDGETS_CAP } from "./providers/openclaw/widgets.js";
 import {
   holdGatewayVersion,
   trustedGatewayVersion,
@@ -138,6 +139,12 @@ export interface SessionRouting {
    *  server always sets it (from the guarded body); when omitted, a bridge serving a
    *  SINGLE instance falls back to that one. */
   instanceName?: string;
+  /** Whether this conversation WANTS inline widgets (the instance switch AND the
+   *  conversation override, decided by Convex per send). `undefined` ⇒ this route does
+   *  not know and does not care (patch, reset, abort, …): it never re-opens a socket.
+   *  The socket declares `inline-widgets` only when wanted AND the gateway version
+   *  supports it (compat.ts `inlineWidgets`). */
+  inlineWidgets?: boolean;
 }
 
 export interface BridgeSession {
@@ -148,6 +155,8 @@ export interface BridgeSession {
   readonly connection: OpenClawConnection;
   readonly runManager: RunManager;
   readonly clock: Clock;
+  /** The widget wish this socket was opened for (SessionRouting.inlineWidgets). */
+  readonly widgetsWanted: boolean;
   /** TRUE until this bridge has run its first turn on this session (set false by
    *  performSend after the first send). A session is created fresh on an agent
    *  SWITCH (the epoch re-keys → a NEW sessionKey → acquire() builds a new Session),
@@ -225,6 +234,8 @@ export interface LiveTarget {
 }
 
 class Session implements BridgeSession {
+  /** See BridgeSession.widgetsWanted — set once by the registry after the handshake. */
+  widgetsWanted = false;
   readonly chatId: string;
   readonly sessionKey: string;
   readonly agentId: string;
@@ -1735,12 +1746,33 @@ export class SessionRegistry {
     const effectiveInstance =
       routing.instanceName ??
       (this.served.size === 1 ? [...this.served.keys()][0] : undefined);
-    const matches = (s: Session): boolean =>
+    const sameIdentity = (s: Session): boolean =>
       s.sessionKey === sessionKey && s.instanceName === effectiveInstance;
+    // The widget wish is part of what the socket DECLARED at connect, so a change of
+    // it needs a new handshake — but only a route that knows the wish can ask for one.
+    const sameWidgets = (s: Session): boolean =>
+      routing.inlineWidgets === undefined || s.widgetsWanted === routing.inlineWidgets;
+    const matches = (s: Session): boolean => sameIdentity(s) && sameWidgets(s);
 
     const existing = this.sessions.get(chatId);
     if (existing && !existing.connection.isClosed && matches(existing)) {
       existing.lastActivityAt = this.clock(); // a send keeps it warm (not idle)
+      return existing;
+    }
+    // Only the widget wish changed: that is a preference, not an identity. It must
+    // never cost a live voice call (the gateway ends it with the socket) nor a turn
+    // still streaming on this socket — the socket is kept and the switch applies on
+    // the first send that finds it idle.
+    if (
+      existing &&
+      !existing.connection.isClosed &&
+      sameIdentity(existing) &&
+      (existing.holdsVoiceCall(this.clock()) || existing.runManager.turnActive)
+    ) {
+      console.log(
+        `[session] chat ${chatId}: widget switch deferred (${existing.holdsVoiceCall(this.clock()) ? "voice call live" : "turn in progress"}) — the socket keeps its capabilities until it is idle`,
+      );
+      existing.lastActivityAt = this.clock();
       return existing;
     }
     // A closed, missing, OR re-keyed (incl. re-routed) session: drop (closing if
@@ -1809,8 +1841,17 @@ export class SessionRegistry {
     // handshake: the socket opens on the version a LIVE socket to this instance
     // proves (gateway-version-hint.ts — none after a boot or a gateway restart), and
     // re-opens ONCE when the real one allows more.
-    const approvalCaps = (version: string | null): string[] =>
-      openClawAgentRequestsEnabled(version) ? ["approvals"] : [];
+    // INLINE WIDGETS: declared when the conversation wants them AND the gateway
+    // version is one Atrium renders them for — the gateway then offers `show_widget`
+    // to the agent (upstream SHOW_WIDGET_REQUIRED_CLIENT_CAPS). Same post-handshake
+    // judgement as approvals, same fail-closed end.
+    const widgetsWanted = routing.inlineWidgets === true;
+    const approvalCaps = (version: string | null): string[] => [
+      ...(openClawAgentRequestsEnabled(version) ? ["approvals"] : []),
+      ...(widgetsWanted && openClawInlineWidgetsEnabled(version) ? [INLINE_WIDGETS_CAP] : []),
+    ];
+    const sameCaps = (a: readonly string[], b: readonly string[]): boolean =>
+      a.length === b.length && a.every((cap) => b.includes(cap));
     const connectConversation = (caps: readonly string[]) =>
       OpenClawConnection.connect(
         bundle.config.openclawGatewayUrl,
@@ -1838,7 +1879,7 @@ export class SessionRegistry {
     let connection = await connectConversation(declared);
     for (let attempt = 0; ; attempt += 1) {
       const owed = approvalCaps(connection.gatewayVersion);
-      if (owed.length === declared.length) break;
+      if (sameCaps(owed, declared)) break;
       // Out of attempts and on the safe side (nothing announced): keep it.
       if (attempt >= 2 && declared.length === 0) break;
       connection.close();
@@ -1940,6 +1981,8 @@ export class SessionRegistry {
             )
         : undefined,
     );
+    session.widgetsWanted = widgetsWanted;
+    session.runManager.setWidgetsEnabled(declared.includes(INLINE_WIDGETS_CAP));
     session.startConsumer();
     this.sessions.set(chatId, session);
     {

@@ -146,6 +146,8 @@ import type * as lib_trash from "../lib/trash.js";
 import type * as lib_turnAuthors from "../lib/turnAuthors.js";
 import type * as lib_turnDifficulty from "../lib/turnDifficulty.js";
 import type * as lib_uiPrefs from "../lib/uiPrefs.js";
+import type * as lib_widgetDescriptor from "../lib/widgetDescriptor.js";
+import type * as lib_widgetView from "../lib/widgetView.js";
 import type * as me from "../me.js";
 import type * as mediaRepair from "../mediaRepair.js";
 import type * as messages from "../messages.js";
@@ -175,6 +177,7 @@ import type * as turnRetry from "../turnRetry.js";
 import type * as uploads from "../uploads.js";
 import type * as version from "../version.js";
 import type * as voice from "../voice.js";
+import type * as widgets from "../widgets.js";
 
 import type {
   ApiFromModules,
@@ -321,6 +324,8 @@ declare const fullApi: ApiFromModules<{
   "lib/turnAuthors": typeof lib_turnAuthors;
   "lib/turnDifficulty": typeof lib_turnDifficulty;
   "lib/uiPrefs": typeof lib_uiPrefs;
+  "lib/widgetDescriptor": typeof lib_widgetDescriptor;
+  "lib/widgetView": typeof lib_widgetView;
   me: typeof me;
   mediaRepair: typeof mediaRepair;
   messages: typeof messages;
@@ -350,6 +355,7 @@ declare const fullApi: ApiFromModules<{
   uploads: typeof uploads;
   version: typeof version;
   voice: typeof voice;
+  widgets: typeof widgets;
 }>;
 
 /**

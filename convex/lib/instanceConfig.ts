@@ -92,6 +92,13 @@ export const instanceConfigValidator = v.object({
   // configuration (provider/model/voice defaults, API key); this flag only
   // decides whether Atrium OFFERS the feature on this instance. DEFAULT OFF.
   talkEnabled: v.optional(v.boolean()),
+  // Inline widgets (OpenClaw `show_widget`, rendered in the reply). DEFAULT ON: only
+  // `false` turns them off for every conversation of the instance (a conversation can
+  // turn them off for itself: chats.widgetsDisabled). Never offered on Hermes.
+  widgetsEnabled: v.optional(v.boolean()),
+  // Ask the person to confirm before a widget sends a message on their behalf
+  // (`sendPrompt` from inside the widget). DEFAULT OFF.
+  widgetPromptConfirm: v.optional(v.boolean()),
   // Read-aloud ENGINE: "browser" (Web Speech, default) or "gateway" (the
   // instance gateway's own TTS — OpenClaw tts.convert; real provider voices).
   voiceEngine: v.optional(
@@ -160,6 +167,8 @@ export type InstanceConfig = {
   converterAgentId?: string;
   voiceEnabled?: boolean;
   talkEnabled?: boolean;
+  widgetsEnabled?: boolean;
+  widgetPromptConfirm?: boolean;
   voiceEngine?: "browser" | "gateway";
   voiceLang?: string;
   voiceRate?: number;
@@ -218,6 +227,8 @@ export function parseInstanceConfig(raw: unknown): InstanceConfig | "invalid" {
     "converterAgentId",
     "voiceEnabled",
     "talkEnabled",
+    "widgetsEnabled",
+    "widgetPromptConfirm",
     "voiceEngine",
     "voiceLang",
     "voiceRate",
@@ -305,6 +316,14 @@ export function parseInstanceConfig(raw: unknown): InstanceConfig | "invalid" {
   if (o.talkEnabled !== undefined) {
     if (typeof o.talkEnabled !== "boolean") return "invalid";
     out.talkEnabled = o.talkEnabled;
+  }
+  if (o.widgetsEnabled !== undefined) {
+    if (typeof o.widgetsEnabled !== "boolean") return "invalid";
+    out.widgetsEnabled = o.widgetsEnabled;
+  }
+  if (o.widgetPromptConfirm !== undefined) {
+    if (typeof o.widgetPromptConfirm !== "boolean") return "invalid";
+    out.widgetPromptConfirm = o.widgetPromptConfirm;
   }
   if (o.voiceEngine !== undefined) {
     if (o.voiceEngine !== "browser" && o.voiceEngine !== "gateway") {

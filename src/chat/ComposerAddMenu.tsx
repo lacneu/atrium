@@ -10,7 +10,7 @@
 import { useCallback, useEffect, useRef, useState, type ChangeEvent } from "react";
 import { useMutation, useQuery } from "convex/react";
 import { useComposerRuntime } from "@assistant-ui/react";
-import { Check, FileUp, ImagePlus, Lock, Plus, RotateCcw } from "lucide-react";
+import { Check, FileUp, ImagePlus, LayoutTemplate, Lock, Plus, RotateCcw } from "lucide-react";
 import { m } from "@/paraglide/messages.js";
 import {
   DropdownMenu,
@@ -26,6 +26,7 @@ import type { Id } from "./convexApi";
 import type { ConvexId } from "./convexTypes";
 import type { KnowledgeChoice } from "../../convex/lib/knowledge";
 import { IMAGE_PICKER_ACCEPT as IMAGE_ACCEPT } from "./attachmentAdapter";
+import { useConversationWidgets } from "./widgets/useConversationWidgets";
 import {
   knowledgeReasonText,
   knowledgeTargetKey,
@@ -87,6 +88,7 @@ export function ComposerAddMenu({
   }, [control, serverChoice, targetKey, pending]);
   const shown = control == null ? control : withPending(control, pendingChoice);
   const view = knowledgeView(shown);
+  const widgets = useConversationWidgets(chatId);
 
   const onFiles = useCallback(
     (e: ChangeEvent<HTMLInputElement>) => {
@@ -134,7 +136,7 @@ export function ComposerAddMenu({
     [chatId, control, setChoice, toast],
   );
 
-  if (!attachmentsSupported && view.hidden) return null;
+  if (!attachmentsSupported && view.hidden && !widgets.offered) return null;
   const editable = view.readOnlyReason === null;
   return (
     <>
@@ -271,6 +273,33 @@ export function ComposerAddMenu({
               ) : null}
             </>
           )}
+          {widgets.offered ? (
+            <>
+              {attachmentsSupported || !view.hidden ? <DropdownMenuSeparator /> : null}
+              <DropdownMenuItem
+                className={`oc-perm__opt${widgets.enabled ? " is-selected" : ""}`}
+                role="menuitemcheckbox"
+                aria-checked={widgets.enabled}
+                disabled={widgets.pending}
+                data-widgets-toggle
+                onSelect={(e) => {
+                  e.preventDefault();
+                  widgets.set(!widgets.enabled);
+                }}
+              >
+                <span className="oc-perm__opt-icon" aria-hidden>
+                  <LayoutTemplate size={14} />
+                </span>
+                <span className="oc-perm__opt-copy">
+                  <span className="oc-perm__opt-title">{m.chat_widgets_toggle()}</span>
+                  <span className="oc-perm__opt-desc">{m.chat_widgets_toggle_desc()}</span>
+                </span>
+                <span className="oc-perm__opt-state" aria-hidden>
+                  {widgets.enabled ? <Check size={14} /> : null}
+                </span>
+              </DropdownMenuItem>
+            </>
+          ) : null}
         </DropdownMenuContent>
       </DropdownMenu>
     </>

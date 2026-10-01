@@ -94,6 +94,8 @@ const NAMESPACE_MODULE: Record<string, string | null> = {
   // (docs/atrium-integration.md §3.1 there), never in gateway-protocol. Named so the
   // gap is attributable; no vendored module can ever cover it.
   knowledge: "(plugin: openclaw-knowledge)",
+  // `canvas.document.view` — one inline-widget document, relayed by `/canvas-view`.
+  canvas: "canvas.ts",
 };
 
 /** Modules vendored for the version the bridge PROMISES (`maxValidated`).
@@ -425,6 +427,8 @@ describe("RPC scope derivation (W10)", () => {
     // losing a schema, losing the vendoring, or dropping the schema check out of
     // `uncovered()` all turn it red.
     const MUST_BE_ENUMERATED = [
+      // Inline widgets: one widget document per view (providers/openclaw/canvas-view.ts).
+      "canvas.document.view",
       "chat.send",
       "chat.abort",
       "sessions.describe",

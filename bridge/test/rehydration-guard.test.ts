@@ -1,13 +1,22 @@
 // Re-hydration guard — the PROD INCIDENT fix. After a redeploy rolled the OpenClaw
 // session "fresh", the bridge re-hydrated prior turns onto a chat.send; when that
-// turn ALSO carried an attachment, the gateway stack-overflowed (RangeError ->
-// INVALID_REQUEST) assembling prepended-history + attachment. Re-hydration alone
-// and attachment alone both work — only the COMBINATION crashes. `rehydrationDecision`
-// is the pure guard: on a fresh-session attachment turn it ships the bare message
-// (a KNOWN best-effort gap, strictly better than crashing — no cross-turn debt state).
+// turn ALSO carried an attachment, the 2026.6.5 gateway stack-overflowed (RangeError
+// -> INVALID_REQUEST) in its regex base64 check. Up to 2026.6.11 `rehydrationDecision`
+// ships such a turn bare; from 2026.7.1 (a linear scan upstream, proven live on
+// 2026.9.6) the history rides with the file — otherwise a fork's first attachment
+// turn got no history at all (prod `routing.rehydrate_missed`, agent fabien).
 
 import { describe, expect, it } from "vitest";
-import { computeFreshSession, rehydrationDecision } from "../src/server.js";
+import {
+  computeFreshSession,
+  historyCharsForFrameRoom,
+  historyFitsFrame,
+  historyFrameRoomBytes,
+  jsonStringFrameBytes,
+  rehydrationDecision,
+} from "../src/server.js";
+import { REHYDRATE_WITH_ATTACHMENTS_SINCE, gatewayAtLeast } from "../src/compat.js";
+import { FRAME_ENVELOPE_OVERHEAD_BYTES } from "../src/core/attachment-limits.js";
 import { readFileSync } from "node:fs";
 import {
   CHARS_PER_TOKEN,
@@ -25,8 +34,50 @@ describe("rehydrationDecision — gateway-crash guard", () => {
     expect(D(true, false, true)).toBe("rehydrate");
   });
 
-  it("SKIPS on a fresh attachment turn (the live crash) — ships the bare message", () => {
+  it("SKIPS on a fresh attachment turn when the gateway is not proven safe — ships the bare message", () => {
     expect(D(true, true, true)).toBe("skip_attachment");
+    expect(
+      rehydrationDecision({
+        freshSession: true,
+        hasAttachments: true,
+        enabled: true,
+        attachmentsSafe: false,
+      }),
+    ).toBe("skip_attachment");
+  });
+
+  it("REHYDRATES a fresh attachment turn on an attachment-safe gateway", () => {
+    expect(
+      rehydrationDecision({
+        freshSession: true,
+        hasAttachments: true,
+        enabled: true,
+        attachmentsSafe: true,
+      }),
+    ).toBe("rehydrate");
+  });
+
+  it("gate ORDER: disabled, then warm, then attachment, then fill — safety never re-opens an earlier gate", () => {
+    const safe = { hasAttachments: true, attachmentsSafe: true } as const;
+    expect(rehydrationDecision({ ...safe, freshSession: true, enabled: false })).toBe(
+      "skip_disabled",
+    );
+    expect(rehydrationDecision({ ...safe, freshSession: false, enabled: true })).toBe(
+      "skip_warm",
+    );
+    expect(
+      rehydrationDecision({ ...safe, freshSession: true, enabled: true, fill: 0.9 }),
+    ).toBe("skip_full");
+    // Unsafe: the attachment gate answers before the fill gate.
+    expect(
+      rehydrationDecision({
+        hasAttachments: true,
+        attachmentsSafe: false,
+        freshSession: true,
+        enabled: true,
+        fill: 0.9,
+      }),
+    ).toBe("skip_attachment");
   });
 
   it("the kill-switch disables re-hydration entirely (no crash risk either way)", () => {
@@ -201,5 +252,72 @@ describe("composedPromptFits (bridge copy)", () => {
         }),
       ).toBe(true);
     }
+  });
+});
+
+// --- The version boundary: which gateway takes history beside a file --------
+describe("REHYDRATE_WITH_ATTACHMENTS_SINCE — the regex-to-scan boundary", () => {
+  const safe = (v: string | null) =>
+    gatewayAtLeast(v, REHYDRATE_WITH_ATTACHMENTS_SINCE) === true;
+  const decide = (v: string | null) =>
+    rehydrationDecision({
+      freshSession: true,
+      hasAttachments: true,
+      enabled: true,
+      attachmentsSafe: safe(v),
+    });
+
+  it("2026.6.11 still carries the regex check: bare message", () => {
+    expect(decide("2026.6.11")).toBe("skip_attachment");
+    expect(decide("2026.6.5")).toBe("skip_attachment"); // the prod incident
+  });
+
+  it("2026.7.1 (first linear scan) and 2026.9.6 (bench-proven): history rides", () => {
+    expect(decide("2026.7.1")).toBe("rehydrate");
+    expect(decide("2026.9.6")).toBe("rehydrate");
+  });
+
+  it("a PRERELEASE of the boundary is below it; one of a later version is above", () => {
+    expect(decide("2026.7.1-beta.1")).toBe("skip_attachment");
+    expect(decide("2026.9.6-beta.2")).toBe("rehydrate");
+  });
+
+  it("an unknown or unparsable version is never proof (fail closed)", () => {
+    expect(decide(null)).toBe("skip_attachment");
+    expect(decide("dev")).toBe("skip_attachment");
+  });
+});
+
+// --- The frame: history beside base64 is sized in bytes ON the wire -----------
+describe("history frame sizing", () => {
+  it("measures what JSON + UTF-8 put on the wire, not .length", () => {
+    expect(jsonStringFrameBytes("abc")).toBe(3);
+    expect(jsonStringFrameBytes("é")).toBe(2);
+    expect(jsonStringFrameBytes("€")).toBe(3);
+    expect(jsonStringFrameBytes('"\n')).toBe(4); // escaped quote + escaped newline
+    expect(jsonStringFrameBytes("\u0001")).toBe(6);
+    expect(jsonStringFrameBytes("😀")).toBe(4);
+  });
+
+  it("the room is maxPayload minus the envelope and the base64; unknown maxPayload = none", () => {
+    expect(historyFrameRoomBytes({ maxPayload: 1_000_000, base64Bytes: 500_000 })).toBe(
+      1_000_000 - FRAME_ENVELOPE_OVERHEAD_BYTES - 500_000,
+    );
+    expect(historyFrameRoomBytes({ maxPayload: 100, base64Bytes: 0 })).toBe(0);
+    expect(historyFrameRoomBytes({ maxPayload: null, base64Bytes: 0 })).toBe(0);
+  });
+
+  it("the separator is counted: a history of exactly room-4 bytes fits, one more does not", () => {
+    expect(historyFitsFrame("a".repeat(96), 100)).toBe(true);
+    expect(historyFitsFrame("a".repeat(97), 100)).toBe(false);
+  });
+
+  it("the character ceiling fits WHATEVER the text (worst case: six bytes a character)", () => {
+    for (const room of [10, 4_000, 123_457]) {
+      const chars = historyCharsForFrameRoom(room);
+      expect(historyFitsFrame("\u0001".repeat(chars), room)).toBe(true);
+      expect(historyFitsFrame("😀".repeat(Math.floor(chars / 2)), room)).toBe(true);
+    }
+    expect(historyCharsForFrameRoom(3)).toBe(0);
   });
 });

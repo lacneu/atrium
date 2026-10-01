@@ -97,7 +97,19 @@ export type ConvexMessagePartView =
     }
   | CronPartView
   | PlanPartView
-  | ProvenancePartView;
+  | ProvenancePartView
+  | WidgetPartView;
+
+/** An inline widget the agent showed (OpenClaw `show_widget`). A descriptor: the
+ *  document is fetched per view by WidgetPart (convex/widgets.ts authorizes it). */
+export interface WidgetPartView {
+  kind: "widget";
+  provider: "openclaw";
+  viewId: string;
+  title?: string;
+  preferredHeight?: number;
+  sandbox: "scripts";
+}
 
 /** A work-plan update (update_plan). WHICH part is current is decided by cause
  *  order, not position — see convex/lib/planOrder.ts. Rendered by PlanActivity. */
@@ -313,6 +325,10 @@ export function isCronPart(
   p: ConvexMessagePartView,
 ): p is CronPartView {
   return p.kind === "cron";
+}
+
+export function isWidgetPart(p: ConvexMessagePartView): p is WidgetPartView {
+  return p.kind === "widget";
 }
 
 export function isCompactionPart(

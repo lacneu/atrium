@@ -130,6 +130,16 @@ export type ConfigOverride = Partial<
   contentLocale?: string;
   converterAgentId?: string;
   attachmentFixAttested?: boolean;
+  /** Passthrough (owned by the Voice tab). */
+  voiceEnabled?: boolean;
+  talkEnabled?: boolean;
+  voiceEngine?: "browser" | "gateway";
+  voiceLang?: string;
+  voiceRate?: number;
+  voiceAutoRead?: boolean;
+  /** Passthrough (owned by the instance sheet's inline-widget switches). */
+  widgetsEnabled?: boolean;
+  widgetPromptConfirm?: boolean;
 };
 
 /** Config keys OWNED BY OTHER admin surfaces (the Chat-defaults tab's summarize
@@ -149,6 +159,17 @@ const PASSTHROUGH_KEYS = [
   "curationBudgetChars",
   "contentLocale",
   "converterAgentId",
+  // The Voice tab's settings. Missing from this list, a Bridge or Injections save
+  // erased them — read-aloud and the realtime conversation button silently turned off.
+  "voiceEnabled",
+  "talkEnabled",
+  "voiceEngine",
+  "voiceLang",
+  "voiceRate",
+  "voiceAutoRead",
+  // The instance sheet's inline-widget switches (convex/widgets.ts).
+  "widgetsEnabled",
+  "widgetPromptConfirm",
 ] as const;
 
 export function buildConfigOverride(

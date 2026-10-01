@@ -19,12 +19,18 @@ export interface RuntimeConfig {
   // origins are unrelated hosts (self-hosted reverse-proxy), where it cannot be derived
   // from convexUrl. Optional otherwise (managed Convex `.cloud`/`.site`, local +1 port).
   convexSiteUrl?: string;
+  // OPTIONAL dedicated origin for inline-widget isolation (WIDGET_SANDBOX_ORIGIN): an
+  // origin that serves Atrium's pinned copy of the widget sandbox proxy
+  // (deploy/widget-sandbox/). Absent ⇒ widgets render in an opaque `srcdoc` frame
+  // inside the page. See src/chat/widgets/widgetSandbox.ts for the checks it must pass.
+  widgetSandboxOrigin?: string;
 }
 
 // Resolved values, cached after the first resolve so the sync accessor (convexSiteUrl)
 // works post-bootstrap. main.tsx resolves them before the first render.
 let cachedConvexUrl: string | null = null;
 let cachedConvexSiteUrl: string | null = null;
+let cachedWidgetSandboxOrigin: string | null = null;
 
 export async function resolveConvexUrl(): Promise<string> {
   // 1) Runtime config (origin-agnostic image). no-store so a redeploy is picked
@@ -36,6 +42,10 @@ export async function resolveConvexUrl(): Promise<string> {
       const site = cfg?.convexSiteUrl;
       if (typeof site === "string" && site.trim()) {
         cachedConvexSiteUrl = site.trim();
+      }
+      const sandbox = cfg?.widgetSandboxOrigin;
+      if (typeof sandbox === "string" && sandbox.trim()) {
+        cachedWidgetSandboxOrigin = sandbox.trim();
       }
       const url = cfg?.convexUrl;
       if (typeof url === "string" && url.trim()) {
@@ -93,4 +103,23 @@ export function convexSiteUrl(): string | null {
   const override = import.meta.env.VITE_CONVEX_SITE_URL as string | undefined;
   if (override && override.trim()) return override.trim();
   return cachedConvexUrl ? deriveSiteUrl(cachedConvexUrl) : null;
+}
+
+// The resolved Convex API (`.cloud`) origin, synchronously (null before the bootstrap
+// resolve). The widget sandbox check refuses it as a sandbox origin.
+export function convexCloudUrl(): string | null {
+  if (cachedConvexUrl) return cachedConvexUrl;
+  const fromEnv = import.meta.env.VITE_CONVEX_URL as string | undefined;
+  return fromEnv && fromEnv.trim() ? fromEnv.trim() : null;
+}
+
+// The configured dedicated widget-sandbox origin, RAW (null when unset). Resolution
+// order: the runtime config.json `widgetSandboxOrigin` (production), then the
+// VITE_WIDGET_SANDBOX_ORIGIN build override (local dev). The value is only a CANDIDATE:
+// src/chat/widgets/widgetSandbox.ts `resolveWidgetSandboxOrigin` refuses anything that
+// is not a distinct, well-formed origin and falls back to the in-page opaque frame.
+export function widgetSandboxOriginSetting(): string | null {
+  if (cachedWidgetSandboxOrigin) return cachedWidgetSandboxOrigin;
+  const override = import.meta.env.VITE_WIDGET_SANDBOX_ORIGIN as string | undefined;
+  return override && override.trim() ? override.trim() : null;
 }

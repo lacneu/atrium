@@ -47,6 +47,9 @@ export const CAPABILITY_KEYS = [
   // composer's "Connaissances" section and the admin's agent-default card. From 2026.9.6;
   // never on Hermes. Whether the plugin is INSTALLED is per-agent discovery, not this.
   "knowledgePolicy",
+  // Inline widgets (OpenClaw `show_widget`): the conversation's widget switch in the
+  // composer and the sidebar menu. From 2026.9.6 (proven live); never on Hermes.
+  "inlineWidgets",
 ] as const;
 
 export type CapabilityKey = (typeof CAPABILITY_KEYS)[number];

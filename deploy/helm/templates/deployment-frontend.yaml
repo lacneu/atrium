@@ -36,6 +36,9 @@ spec:
           ports:
             - name: http
               containerPort: {{ .Values.webchat.containerPort }}
+            # The inline-widget sandbox proxy (served by the same Caddy, docs/WIDGETS.md).
+            - name: widget-sandbox
+              containerPort: {{ .Values.widgetSandbox.containerPort }}
           env:
             # PUBLIC Convex cloud origin the BROWSER reaches (== convex.cloudOrigin).
             - name: CONVEX_URL
@@ -45,6 +48,11 @@ spec:
             # site are unrelated origins (as in the values defaults).
             - name: CONVEX_SITE_ORIGIN
               value: {{ .Values.convex.siteOrigin | quote }}
+            {{- if .Values.widgetSandbox.origin }}
+            # Dedicated origin of the inline-widget sandbox proxy (optional).
+            - name: WIDGET_SANDBOX_ORIGIN
+              value: {{ .Values.widgetSandbox.origin | quote }}
+            {{- end }}
           readinessProbe:
             httpGet:
               path: /

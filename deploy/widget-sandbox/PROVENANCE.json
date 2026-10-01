@@ -1,0 +1,17 @@
+{
+  "$comment": "Atrium's copy of the OpenClaw widget sandbox proxy (the trusted outer document that hosts an inline widget in an inner opaque srcdoc frame). index.html + headers.json are the gateway's own response to the widget sandbox URL that canvas.document.view returns, fetched from a live gateway of the pinned version; `version` is upstream's sha256(JSON.stringify([headers, html])) — the `v` query parameter of that URL — so a copy that drifts from the pinned upstream no longer matches it (src/chat/widgets/widgetSandbox.test.ts). Re-vendor with scripts/vendor-widget-sandbox.mjs.",
+  "upstreamRepo": "openclaw/openclaw",
+  "upstreamTag": "v2026.9.6",
+  "upstreamSha": "eb377ac59e6c9fd6c7705028034812becf00271b",
+  "sandboxPath": "/mcp-app-sandbox?csp=eyJyZXNvdXJjZURvbWFpbnMiOlsiaHR0cHM6Ly9jZG5qcy5jbG91ZGZsYXJlLmNvbSIsImh0dHBzOi8vY2RuLmpzZGVsaXZyLm5ldCIsImh0dHBzOi8vZXNtLnNoIiwiaHR0cHM6Ly91bnBrZy5jb20iLCJodHRwczovL2ZvbnRzLmdvb2dsZWFwaXMuY29tIiwiaHR0cHM6Ly9mb250cy5nc3RhdGljLmNvbSIsImh0dHBzOi8vZm9udHMuYnVubnkubmV0Il0sIm1lZGlhRG9tYWlucyI6WyJodHRwczoiLCJibG9iOiJdLCJibG9ja0Rlc2NlbmRhbnRGcmFtZXMiOnRydWV9&v=1cdfe67bd67e7990c9eaafa189866ee4fa449f9692071868d746cf1747f7fb7c",
+  "version": "1cdfe67bd67e7990c9eaafa189866ee4fa449f9692071868d746cf1747f7fb7c",
+  "sources": {
+    "src/agents/sandbox-host.ts": "80f5f33b24a114bcae2a863e2c0cd45f32884b11a88e5702c02e74be51495cb1",
+    "src/gateway/board-sandbox.ts": "005d8876bc40ed681e03ca96e87416f3b6de155dc0aafbcf75fe7d208ec552fe",
+    "src/plugin-sdk/widget-html.ts": "d721d07e598f48acc29478c6d479801cef360981eca621c21524f05bce894b0f",
+    "src/shared/widget-media.ts": "2b34d5c04c89ce8208aa4c2783d20df8980af3f2d7716fccc15209c9ce046c34"
+  },
+  "files": {
+    "index.html": "dfb6ffa09725f56c792153bbad8f3658702a70f113f49f591060971e3ac2714a"
+  }
+}

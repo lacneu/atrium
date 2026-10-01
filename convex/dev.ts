@@ -1299,6 +1299,9 @@ export const inspectChat = query({
           // memory AND documents reports reached the reply, not merely two parts.
           pluginId: p.part.kind === "provenance" ? p.part.pluginId : undefined,
           group: p.part.kind === "provenance" ? p.part.group : undefined,
+          // An inline widget's view id (additive): the bench fetches its document through
+          // the real reader path to prove the chain end to end.
+          viewId: p.part.kind === "widget" ? p.part.viewId : undefined,
         })),
       });
     }

@@ -87,6 +87,9 @@ services:
     restart: unless-stopped
     ports:
       - "${WEBCHAT_PORT:-8788}:80"
+      # Inline-widget sandbox proxy (optional, docs/WIDGETS.md): route a DEDICATED
+      # https hostname here and set WIDGET_SANDBOX_ORIGIN to it.
+      - "${WIDGET_SANDBOX_PORT:-8789}:8081"
     environment:
       # Public Convex cloud origin the BROWSER reaches; written into /config.json
       # at boot (the image is origin-agnostic).
@@ -95,6 +98,9 @@ services:
       # the browser's SSE stream fetch (Plan B) targets the right host when cloud + site are
       # unrelated origins (already validated above by the convex service).
       - CONVEX_SITE_ORIGIN=${CONVEX_SITE_ORIGIN}
+      # Optional dedicated origin for inline-widget isolation (docs/WIDGETS.md). Empty =
+      # widgets render in an opaque frame inside the page.
+      - WIDGET_SANDBOX_ORIGIN=${WIDGET_SANDBOX_ORIGIN:-}
 
   bridge:
     image: ${BRIDGE_IMAGE:-ghcr.io/lacneu/atrium-bridge}:${BRIDGE_TAG:-latest}

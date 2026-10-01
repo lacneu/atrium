@@ -21,7 +21,7 @@
 // aborted->aborted). Every other run.status is intermediate and dropped.
 
 import type { SessionFillSource } from "./context-budget.js";
-import type { NormalizedEvent } from "./events.js";
+import { EVENT_WIDGET, type NormalizedEvent } from "./events.js";
 import type { ConvexWriter, FinalizeStatus, ToolPart } from "../convex-writer.js";
 import { announcedChildKey } from "../providers/openclaw/run-families.js";
 import { cronPartFromTool } from "./cron-part.js";
@@ -40,6 +40,13 @@ import {
   MAX_PROVENANCE_PARTS_PER_TURN,
   type ProvenancePart,
 } from "./provenance.js";
+
+/** The `widget` event's payload as the sink reads it (structurally). */
+interface WidgetDescriptorEvent {
+  viewId?: unknown;
+  title?: unknown;
+  preferredHeight?: unknown;
+}
 
 // Bound on events buffered before a deferred open. Tiny in practice: the first
 // tool/media/meaningful-text event OPENS the message, so only provenance +
@@ -240,6 +247,9 @@ export class TurnSink {
   // skip ones already delivered.
   private turnStartMs = 0;
   private hostedThisTurn = new Set<string>();
+  /** Widgets that LANDED on this turn's message (Convex accepted them; see the
+   *  EVENT_WIDGET case). */
+  private widgetsLandedThisTurn = 0;
   // Media uploads run in a SEQUENTIAL background chain (not concurrent): part
   // order = item order (a small file can't overtake a big one), and dedup +
   // attach happen at EXECUTION time exactly as the old per-item await did (an
@@ -669,6 +679,7 @@ export class TurnSink {
     this.turnArtifactBytes = 0;
     this.turnStartMs = Date.now();
     this.hostedThisTurn = new Set<string>();
+    this.widgetsLandedThisTurn = 0;
     this.overflowLogged.clear();
     this.mediaChain = Promise.resolve();
     this.hasPendingMedia = false;
@@ -1434,6 +1445,33 @@ export class TurnSink {
               }
             }
           }
+          break;
+        }
+        case EVENT_WIDGET: {
+          // Already validated, bounded and deduplicated per view by the normalizer
+          // (providers/openclaw/widgets.ts is its only producer).
+          const widget = (event as { widget?: WidgetDescriptorEvent }).widget;
+          if (!widget || typeof widget.viewId !== "string") break;
+          const origin = (event as { origin?: unknown }).origin;
+          const widgetOrigin =
+            origin === "tool" || origin === "canvas" ? origin : ("shortcode" as const);
+          // A widget that LANDED is the reply: the empty-response guard must not paint
+          // a widget-only turn as a failure. Only Convex's verdict counts — it refuses
+          // a view this conversation does not own (a forged canvas part or shortcode),
+          // widgets switched off, a stale generation — so a refused widget leaves an
+          // empty turn empty, whatever carrier named it.
+          const landed = await this.writer.addWidgetPart?.(messageId, {
+            kind: "widget",
+            provider: "openclaw",
+            origin: widgetOrigin,
+            viewId: widget.viewId,
+            ...(typeof widget.title === "string" ? { title: widget.title } : {}),
+            ...(typeof widget.preferredHeight === "number"
+              ? { preferredHeight: widget.preferredHeight }
+              : {}),
+            sandbox: "scripts",
+          });
+          if (landed === true) this.widgetsLandedThisTurn++;
           break;
         }
         case "provenance": {
@@ -2203,7 +2241,8 @@ export class TurnSink {
           this.spawnedChildKeysThisTurn.size === 0 &&
           this.pendingObservedChildKeys.length > 0)
       ) &&
-      this.hostedThisTurn.size === 0
+      this.hostedThisTurn.size === 0 &&
+      this.widgetsLandedThisTurn === 0
       // No "the agent WORKED" requirement anymore: a top-level turn the
       // gateway closes CLEANLY with zero content and zero activity (a silent
       // NO_REPLY reply, an end-of-run grace with nothing) rendered as a
@@ -2549,6 +2588,9 @@ function eventIsVisible(event: NormalizedEvent): boolean {
       // completed/error card keeps the historic open-on-activity behavior.
       return asString((event as { phase?: unknown }).phase) !== "start";
     case "media":
+      return true;
+    // An inline widget is shown in the bubble exactly like media.
+    case EVENT_WIDGET:
       return true;
     case "plan":
       // The NATIVE plan stream (G-22) is user-visible work, exactly like the

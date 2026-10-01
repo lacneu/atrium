@@ -25,6 +25,12 @@ import { langfuseConfig, opikConfig } from "./integrations/config";
 import { assessChat } from "./lib/diagnose";
 import { listSchemas, getSchema } from "./lib/schemaRegistry";
 import { DEPLOYED_VERSION } from "./version";
+import type { WidgetViewAuthorization } from "./widgets";
+import {
+  WIDGET_VIEW_DOCUMENT_HEADERS,
+  WIDGET_VIEW_RATE_PER_MINUTE,
+  relayWidgetView,
+} from "./lib/widgetView";
 
 const http = httpRouter();
 
@@ -3051,6 +3057,77 @@ http.route({
         "X-Content-Type-Options": "nosniff",
         Connection: "keep-alive",
       },
+    });
+  }),
+});
+
+// INLINE WIDGETS — one widget document, for a reader who may read it
+// (convex/widgets.ts authorizeWidgetView: the chat is reachable AND the view is one of
+// that message's widget parts; the gateway's own RPC scopes nothing). Same cross-origin
+// shape as the message stream: Bearer token, no cookies, preflighted.
+function widgetCors(request: Request): Record<string, string> {
+  return {
+    "Access-Control-Allow-Origin": request.headers.get("Origin") ?? "*",
+    "Access-Control-Allow-Methods": "GET, OPTIONS",
+    "Access-Control-Allow-Headers": "Authorization, Content-Type",
+    "Access-Control-Max-Age": "86400",
+    Vary: "Origin",
+  };
+}
+http.route({
+  path: "/api/v1/widget-view",
+  method: "OPTIONS",
+  handler: httpAction(
+    async (_ctx, request) =>
+      new Response(null, { status: 204, headers: widgetCors(request) }),
+  ),
+});
+http.route({
+  path: "/api/v1/widget-view",
+  method: "GET",
+  handler: httpAction(async (ctx, request) => {
+    const cors = widgetCors(request);
+    const fail = (status: number, code: string) =>
+      new Response(JSON.stringify({ error: { code } }), {
+        status,
+        headers: { ...cors, "Content-Type": "application/json", "Cache-Control": "no-store" },
+      });
+    const url = new URL(request.url);
+    const chatId = url.searchParams.get("chatId");
+    const messageId = url.searchParams.get("messageId");
+    const viewId = url.searchParams.get("viewId");
+    if (!chatId || !messageId || !viewId) return fail(400, "invalid");
+    let auth: WidgetViewAuthorization;
+    try {
+      auth = await ctx.runQuery(internal.widgets.authorizeWidgetView, {
+        chatId,
+        messageId,
+        viewId,
+      });
+    } catch {
+      // Not signed in, inactive, or the chat is not theirs to read.
+      return fail(403, "forbidden");
+    }
+    if (!auth.ok) return fail(auth.reason === "invalid" ? 400 : 404, auth.reason);
+    // Per reader, per minute: every render of a conversation fetches each of its
+    // widgets, and each miss costs the gateway a read (the bridge also caches and
+    // bounds concurrency — providers/openclaw/canvas-view.ts).
+    const rate = await ctx.runMutation(internal.apiRateLimit.checkApiRateLimit, {
+      principalId: `widget-view:${auth.userId}`,
+      limit: WIDGET_VIEW_RATE_PER_MINUTE,
+    });
+    if (!rate.allowed) return fail(429, "rate_limited");
+    const out = await relayWidgetView({
+      bridgeUrl: auth.bridgeUrl,
+      sharedSecret: process.env.BRIDGE_SHARED_SECRET,
+      instanceName: auth.instanceName,
+      viewId,
+      fetchImpl: fetch,
+    });
+    if (!out.ok) return fail(out.status, out.code);
+    return new Response(out.html, {
+      status: 200,
+      headers: { ...cors, ...WIDGET_VIEW_DOCUMENT_HEADERS },
     });
   }),
 });

@@ -389,8 +389,8 @@
           "by": "handleChat terminalizes aborted -> finalize(aborted)"
         },
         "message": {
-          "status": "ignored",
-          "why": "an aborted turn carries no reply to persist"
+          "status": "handled",
+          "by": "handleChat collectCanvasParts: an inline widget the aborted turn had already shown is kept as a `widget` part; the aborted turn's text is still not persisted"
         },
         "stopReason": {
           "status": "handled",
@@ -466,7 +466,7 @@
         },
         "message": {
           "status": "handled",
-          "by": "handleChat textFromMessage (snapshot precedence)"
+          "by": "handleChat textFromMessage (snapshot precedence); `canvas` content parts -> `widget` events (widgets.ts previewFromChatPart via collectCanvasParts; `[embed]` shortcodes in the text -> widgets, stripped, held back while being written)"
         },
         "deltaText": {
           "status": "handled",
@@ -510,7 +510,7 @@
         },
         "message": {
           "status": "handled",
-          "by": "handleChat error-reason fallback (textFromMessage)"
+          "by": "handleChat error-reason fallback (textFromMessage); `canvas` content parts -> `widget` events (collectCanvasParts)"
         },
         "errorMessage": {
           "status": "handled",
@@ -567,7 +567,7 @@
         },
         "message": {
           "status": "handled",
-          "by": "handleChat textFromMessage -> finalize"
+          "by": "handleChat textFromMessage -> finalize; `canvas` content parts -> `widget` events before the terminal (collectCanvasParts), `[embed]` shortcodes stripped"
         },
         "usage": {
           "status": "ignored",
@@ -976,8 +976,20 @@
           "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
         },
         "caps": {
-          "status": "gap",
-          "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+          "status": "handled",
+          "by": "openclaw-client.ts connect: `agent-events` + `tool-events` always, plus the per-conversation socket's extras decided in session.ts after the handshake — `approvals` from AGENT_REQUESTS_MIN_VERSION, `inline-widgets` when the conversation wants widgets (instance switch AND conversation override, from Convex) AND the version is at or above INLINE_WIDGETS_MIN_VERSION; re-opened (bounded, fail-closed) when the handshake version owes a different set.",
+          "anchor": {
+            "file": "src/providers/openclaw/openclaw-client.ts",
+            "token": "...extraCaps"
+          },
+          "proof": {
+            "kind": "deterministic-test",
+            "ref": "bridge/test/widget-socket-caps.test.ts",
+            "note": "Upstream gate read in v2026.9.6 (src/canvas/widget-tool.ts SHOW_WIDGET_REQUIRED_CLIENT_CAPS, src/agents/openclaw-tools.ts clientCaps) and captured live on the 2026.9.6 bench (probe-widgets: tool catalogue 56 without the capability, 57 with it); the socket decision is replayed by the deterministic test and proven by neutralization. The full-catalogue scenario `widget-inline` carries the live proof."
+          },
+          "verifiedVersions": [
+            "2026.9.6"
+          ]
         },
         "client": {
           "status": "gap",
@@ -9618,6 +9630,62 @@
           "note": "new in 2026.9.6 — not yet instructed (frame-discovery queue)"
         }
       }
+    },
+    "CanvasDocumentViewParams": {
+      "fields": {
+        "docId": {
+          "status": "handled",
+          "by": "providers/openclaw/canvas-view.ts fetchCanvasView: the view id of a `widget` part, re-checked against WIDGET_VIEW_ID_RE (the docId pattern narrowed to managed `cv_` documents); Convex authorizes it first (reader may read the chat AND the view is one of its widget parts)",
+          "anchor": {
+            "file": "src/providers/openclaw/canvas-view.ts",
+            "token": "\"canvas.document.view\", { docId }"
+          },
+          "proof": {
+            "kind": "deterministic-test",
+            "ref": "bridge/test/canvas-view.test.ts",
+            "note": "Shape read in v2026.9.6 (packages/gateway-protocol/src/schema/canvas.ts, src/gateway/server-methods/canvas.ts) and captured live on the 2026.9.6 bench (probe-widgets view-B: {html, sandboxUrl, sandboxPort}; unknown or pruned docId and an unbindable sandbox port both answer UNAVAILABLE); the relay is replayed by the deterministic test. The full-catalogue scenario `widget-inline` fetches a document through the real Convex -> bridge path."
+          },
+          "verifiedVersions": [
+            "2026.9.6"
+          ]
+        }
+      }
+    },
+    "CanvasDocumentViewResult": {
+      "fields": {
+        "html": {
+          "status": "handled",
+          "by": "providers/openclaw/canvas-view.ts fetchCanvasView: relayed to Convex (bounded to WIDGET_HTML_MAX_UTF8_BYTES), served to the reader by convex/http.ts /api/v1/widget-view, never stored",
+          "anchor": {
+            "file": "src/providers/openclaw/canvas-view.ts",
+            "token": "(payload as { html?: unknown }).html"
+          },
+          "proof": {
+            "kind": "deterministic-test",
+            "ref": "bridge/test/canvas-view.test.ts",
+            "note": "Shape read in v2026.9.6 (packages/gateway-protocol/src/schema/canvas.ts, src/gateway/server-methods/canvas.ts) and captured live on the 2026.9.6 bench (probe-widgets view-B: {html, sandboxUrl, sandboxPort}; unknown or pruned docId and an unbindable sandbox port both answer UNAVAILABLE); the relay is replayed by the deterministic test. The full-catalogue scenario `widget-inline` fetches a document through the real Convex -> bridge path."
+          },
+          "verifiedVersions": [
+            "2026.9.6"
+          ]
+        },
+        "sandboxUrl": {
+          "status": "ignored",
+          "why": "the browser never loads the gateway's sandbox listener: Atrium renders the document in an opaque srcdoc frame, or through its OWN pinned copy of the same proxy on a deployment-configured origin (WIDGET_SANDBOX_ORIGIN)"
+        },
+        "sandboxPort": {
+          "status": "ignored",
+          "why": "same as sandboxUrl — the gateway's sandbox listener is never exposed to the browser by Atrium"
+        },
+        "sandboxOrigin": {
+          "status": "ignored",
+          "why": "same as sandboxUrl — Atrium's dedicated sandbox origin is its own deployment setting, not the gateway's"
+        }
+      }
+    },
+    "CanvasDocumentPreviewParams": {
+      "status": "ignored",
+      "why": "`canvas.document.preview` renders caller-owned HTML for the Control UI's file preview; Atrium never sends it"
     }
   }
 }

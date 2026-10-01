@@ -70,6 +70,7 @@ called (and answers with a non-secret refusal if it is).
 | `/subagent-send` | POST | Dispatch a user message to a running sub-agent session. |
 | `/tts` | POST | Gateway text-to-speech: synthesize text and return the audio (backs the gateway read-aloud engine). OpenClaw only. |
 | `/query` | POST | Forward an operator query to the gateway (backs `/api/v1/openclaw/query`). OpenClaw only. |
+| `/canvas-view` | POST | The document of ONE inline widget (`{instanceName, viewId}` → `canvas.document.view`), for a reader Convex has already authorized ([WIDGETS.md](WIDGETS.md)). `404 widget_unavailable` when the gateway answers `UNAVAILABLE`. OpenClaw only. |
 
 ### `POST /send`
 
@@ -87,6 +88,7 @@ routing names and the turn payload:
   "clientMessageId": "<client-generated id, used as the idempotency key>",
   "messageId": "<this turn's user message id>",
   "sessionSettings": { "thinkingLevel": "…", "model": "…" },
+  "inlineWidgets": true,
   "attachments": [
     { "type": "file", "mimeType": "image/png", "fileName": "x.png", "content": "<base64>" }
   ]
@@ -102,6 +104,13 @@ payload limit). The bridge builds an idempotency key from `clientMessageId`, so
 an at-least-once delivery is safe. On a gateway refusal the bridge responds with
 a `502` carrying a curated, non-secret error `code`; Convex surfaces that to the
 user as a failed turn without leaking the gateway's raw message.
+
+`inlineWidgets` is the conversation's widget decision (the instance switch AND the
+conversation override, taken at the last gate before the POST). The bridge declares
+the `inline-widgets` connect capability on the conversation's socket only when it is
+`true` and the gateway version supports widgets, and re-opens the socket when it
+changes — never while a turn streams on it or a voice call is live
+([WIDGETS.md](WIDGETS.md)).
 
 `/patch` and `/reset` take the same routing fields (`chatId`, `openclawChatId`,
 `instanceName`, `agentId`, `canonical`). Convex also drives `/reset` itself for
@@ -122,7 +131,7 @@ reactively. The op union (the canonical shape lives in
 | `startAssistant` | Create the in-progress assistant message for a run; returns its `messageId`. |
 | `appendDelta` | Append streamed `text` to the message. |
 | `setSnapshot` | Replace the message text with an authoritative snapshot. |
-| `addPart` | Add a structural part (tool / reasoning) to the message. |
+| `addPart` | Add a structural part (tool / reasoning / plan / cron / provenance / inline `widget` descriptor) to the message. |
 | `getUploadUrl` | Get a short-lived Convex storage upload URL for outbound media. |
 | `addMediaPart` | Persist an already-uploaded media blob (`storageId`) as a media part. |
 | `finalize` | Commit the turn with a terminal status (`complete` / `error` / `aborted`). |

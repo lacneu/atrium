@@ -94,6 +94,10 @@ const FROZEN_TRUTH_FLOOR = [
   "ConfigPatchParams.replacePaths",
   // The agent-database admission refusal's code, read from a refused request's details (2026-09-28).
   "AgentDatabaseAdmissionRefusal.code",
+  // Inline widgets: the connect capability and the one widget-document RPC (2026-09-30).
+  "ConnectParams.caps",
+  "CanvasDocumentViewParams.docId",
+  "CanvasDocumentViewResult.html",
 ];
 
 const ratchet = JSON.parse(

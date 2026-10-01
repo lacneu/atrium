@@ -17,6 +17,9 @@ mcp
 local-openclaw
 docs
 deploy
+# …except the inline-widget sandbox proxy: served by the image (:8081) and read by
+# the SPA build (src/chat/widgets/widgetSandbox.ts imports its guard and headers).
+!deploy/widget-sandbox
 backend
 frontend
 nanobanana-output

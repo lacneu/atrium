@@ -102,6 +102,7 @@ import { compareOrder } from "./lib/messageOrder";
 import { composeChainedPrompt } from "./lib/rehydration";
 import { safeAuthorLabel } from "./lib/turnAuthors";
 import { isTrashed } from "./lib/trash";
+import { conversationWantsWidgets } from "./widgets";
 
 // OpenClaw's default WS frame limit (policy.maxPayload), observed live on every
 // 2026.x hello-ok. The conservative inbound-attachment fallback (DEFAULT_GATEWAY_MAX_PAYLOAD)
@@ -1841,6 +1842,7 @@ export const lastGateBeforeSend = internalMutation({
         mentionCanonicals: Record<string, string>;
         permission: TurnPermission;
         knowledge: TurnKnowledge;
+        inlineWidgets: boolean;
       }
   > => {
     const row = await ctx.db.get(outboxId);
@@ -1889,8 +1891,17 @@ export const lastGateBeforeSend = internalMutation({
     // or once sent) its bridge may read this chat's history and open the reply — and
     // not before (lib/ingestAuthz.chatAllowsInstance).
     await ctx.db.patch(outboxId, { sentToInstance: target.instanceName });
+    // INLINE WIDGETS, decided in this same transaction as the permission and knowledge
+    // choices: the instance switch AND the conversation override (convex/widgets.ts).
+    // The bridge adds the gateway-version judgement and re-opens the socket on change.
+    const widgetInstance = await ctx.db
+      .query("instances")
+      .withIndex("by_name", (q) => q.eq("name", target.instanceName))
+      .first();
+    const inlineWidgets = conversationWantsWidgets(widgetInstance, chat);
     return {
       kind: "send",
+      inlineWidgets,
       speakerGatewayUser: speaker.name,
       speakerCanonical: speaker.name === null ? null : (speaker.canonical ?? null),
       mentionCanonicals: await mentionCanonicalsStillInRoom(ctx, chat, row),
@@ -2945,6 +2956,9 @@ export const dispatch = internalAction({
                   knowledgeChoice: knowledgeChoice.choice,
                   knowledgeRevision: knowledgeChoice.revision,
                 }),
+            // Inline widgets for THIS turn (instance switch AND conversation override,
+            // decided at the last gate). An old bridge ignores the field.
+            inlineWidgets: gate.inlineWidgets,
             attachments: resolvedAttachments,
             // Tool-read files streamed by reference (shared-fs). An old bridge
             // ignores this unknown field (those files simply won't reach the agent
@@ -3035,10 +3049,16 @@ export const dispatch = internalAction({
       // approximate delivery: a Hermes WS submit-failure finalizes an error
       // row though nothing was delivered, and the stuck-stream watchdog
       // terminates rows without stream.finalize. An INLINE-attachment first
-      // send consumes too: the gateway-crash guard shipped it bare AND warmed
-      // the session, so no later turn of this session can carry the history —
-      // the SAME documented known-gap as an attachment turn right after a
-      // session reset (the fork re-grounds when the session next rolls).
+      // send carries the history too on a gateway from 2026.7.1 (the bridge's
+      // REHYDRATE_WITH_ATTACHMENTS_SINCE). The first send still goes bare — and
+      // still consumes, since it warmed the session and no later turn of it can
+      // carry the history — in these residual cases: an older or unidentified
+      // gateway (the crash guard); no history fits the frame beside the base64,
+      // or the gateway announced no maxPayload to size it against (`frame`); the
+      // history does not fit the session's live window (`window`). The SAME known
+      // gap as an attachment turn right after a session reset; the fork re-grounds
+      // when its session next rolls. The bridge's `openclaw.rehydrate` trace
+      // (`historyWithheld`) and `routing.rehydrate_missed` say which.
       if (routing.forkFresh) {
         await ctx.runMutation(internal.bridge.consumeForkRehydration, {
           chatId: row.chatId as Id<"chats">,

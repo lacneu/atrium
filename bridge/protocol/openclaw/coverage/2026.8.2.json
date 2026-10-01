@@ -3490,8 +3490,17 @@
           "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
         },
         "caps": {
-          "status": "gap",
-          "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
+          "status": "handled",
+          "by": "openclaw-client.ts connect: `agent-events` + `tool-events` always, plus the per-conversation socket's extras decided in session.ts after the handshake — `approvals` from AGENT_REQUESTS_MIN_VERSION, `inline-widgets` when the conversation wants widgets (instance switch AND conversation override, from Convex) AND the version is at or above INLINE_WIDGETS_MIN_VERSION; re-opened (bounded, fail-closed) when the handshake version owes a different set.",
+          "anchor": {
+            "file": "src/providers/openclaw/openclaw-client.ts",
+            "token": "...extraCaps"
+          },
+          "proof": {
+            "kind": "deterministic-test",
+            "ref": "bridge/test/widget-socket-caps.test.ts",
+            "note": "Upstream gate read in v2026.9.6 (src/canvas/widget-tool.ts SHOW_WIDGET_REQUIRED_CLIENT_CAPS, src/agents/openclaw-tools.ts clientCaps) and captured live on the 2026.9.6 bench (probe-widgets: tool catalogue 56 without the capability, 57 with it); the socket decision is replayed by the deterministic test and proven by neutralization. The full-catalogue scenario `widget-inline` carries the live proof."
+          }
         },
         "client": {
           "status": "gap",

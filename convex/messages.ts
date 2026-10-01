@@ -173,6 +173,16 @@ type ClientPart =
     }
   // `text` elided when oversized (same rationale as tool fields).
   | { kind: "reasoning"; text?: string; textOmitted?: boolean; textBytes?: number }
+  // An inline widget the agent showed (descriptor only; the reader fetches the
+  // document per view through /api/v1/widget-view, convex/widgets.ts).
+  | {
+      kind: "widget";
+      provider: "openclaw";
+      viewId: string;
+      title?: string;
+      preferredHeight?: number;
+      sandbox: "scripts";
+    }
   // Provenance reports (docs/PROVENANCE_CONTRACT.md). The REACTIVE projection
   // is COMPACT: item texts are stripped (Codex review P2 — the window-wide
   // stream must never carry megabytes of excerpts); `hasExcerpts` flags that
@@ -466,6 +476,10 @@ async function loadChatView(
               // should fetch the bounded per-message detail
               // (getProvenanceParts) on demand.
               parts.push(compactProvenancePart(part));
+              break;
+            case "widget":
+              // A descriptor — bounded at write time (stream.addPart) — ship as-is.
+              parts.push(part);
               break;
             case "compaction":
               // Gateway context-compaction marker (content-free by construction:
@@ -1128,6 +1142,10 @@ export const chatStateInternal = internalQuery({
             // Content-free by construction (phase + timestamp): the gateway
             // compacted this turn — pairs with the chat.gateway_pressure trace.
             return { kind: "compaction" as const, phase: p.phase };
+          case "widget":
+            // Structure only: an inline widget is present — never its title (user
+            // content) nor its view id (a document address).
+            return { kind: "widget" as const, hasPreferredHeight: p.preferredHeight !== undefined };
           case "cron":
             // Structure only: the op + presence booleans — never the job's
             // name/message/schedule values (user content).

@@ -105,6 +105,21 @@ development `npx convex dev` writes them into `.env.local` for you.
 | `VITE_CONVEX_URL`      | yes (build) |           | Convex **API** origin the browser client talks to.                                                                                   | `https://convex.<host>`      |
 | `VITE_CONVEX_SITE_URL` | no          | _derived_ | Convex **HTTP-actions** origin, when it cannot be derived from the API origin. Self-hosted deployments generally need it explicitly. | `https://convex.<host>/http` |
 
+### Front end — runtime, read at container start
+
+The front-end image is origin-agnostic: its entrypoint writes these into
+`/config.json`, which the SPA reads before its first render
+(`src/lib/runtimeConfig.ts`). Changing one takes a container restart, not a rebuild.
+
+| Variable                | Required | Default   | What it is, and why it exists                                                                                                                                                                                                                                                  | Example                       |
+| ----------------------- | -------- | --------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ----------------------------- |
+| `CONVEX_URL`            | yes      |           | Public Convex **API** origin the browser reaches. The entrypoint refuses to start without it.                                                                                                                                                                                 | `https://convex.<host>`       |
+| `CONVEX_SITE_ORIGIN`    | no       | _derived_ | Public Convex **HTTP-actions** origin, when it cannot be derived from `CONVEX_URL` (unrelated self-hosted hosts). The message stream and the widget document fetch use it.                                                                                                   | `https://convex-site.<host>`  |
+| `WIDGET_SANDBOX_ORIGIN` | no       | unset     | Dedicated origin that serves Atrium's copy of the inline-widget sandbox proxy (the image serves it on port `8081`). Unset: widgets render in an opaque frame inside the page. Must be a bare origin that differs from Atrium's and from both Convex origins (API and HTTP actions), and be `https:` when Atrium is served over `https:` — otherwise it is ignored. The image's entrypoint checks the shape first (`http(s)://host[:port]`, nothing else) and skips any other value with a warning in the container log. See [WIDGETS.md](WIDGETS.md#dedicated-sandbox-host-optional). | `https://widgets.<host>`      |
+
+In local development there is no `/config.json`; `VITE_WIDGET_SANDBOX_ORIGIN` in
+`.env.local` plays the part of `WIDGET_SANDBOX_ORIGIN`.
+
 ### Compose-only — images, ports, paths, identity
 
 Consumed by `docker-compose.yml`, never by application code. They are how the
@@ -115,6 +130,7 @@ stack is placed on a host, not how Atrium behaves.
 | `COMPOSE_PROJECT_NAME`                            | no                | directory name                            | Isolates this stack's containers, volumes and network from another on the same host.                                                                                                                                                             | `atrium`                                          |
 | `WEBCHAT_IMAGE` / `WEBCHAT_TAG`                   | no                | `ghcr.io/lacneu/atrium` / `latest`        | Front-end image and tag. Pin the tag in production; `latest` makes a redeploy non-reproducible.                                                                                                                                                  | `ghcr.io/lacneu/atrium` / `0.74.4`                |
 | `BRIDGE_IMAGE` / `BRIDGE_TAG`                     | no                | `ghcr.io/lacneu/atrium-bridge` / `latest` | Bridge image and tag. Keep it in lockstep with the front end — Atrium ships as one version across all artifacts.                                                                                                                                 | `ghcr.io/lacneu/atrium-bridge` / `0.74.4`         |
+| `WIDGET_SANDBOX_PORT`                             | no                | `8789`                                    | Host port of the front end's inline-widget sandbox proxy (container port `8081`). Route a dedicated https hostname to it — see [WIDGETS.md](WIDGETS.md). | `8789`                                        |
 | `WEBCHAT_PORT`                                    | no                |                                           | Host port for the front end.                                                                                                                                                                                                                     | `8080`                                            |
 | `CONVEX_CLOUD_PORT` / `CONVEX_SITE_PORT`          | no                |                                           | Host ports for the Convex **API** and **HTTP-actions** origins. The second is what `CONVEX_HTTP_ACTIONS_URL` must point at.                                                                                                                      | `3210` / `3211`                                   |
 | `CONVEX_DASHBOARD_PORT` / `CONVEX_DASHBOARD_BIND` | no                |                                           | Convex dashboard port, and the interface it binds to. Bind it to loopback unless you have put an authenticating proxy in front.                                                                                                                  | `6791` / `127.0.0.1`                              |
@@ -258,8 +274,9 @@ example and a verification procedure. Read it before touching a media path.
 
 ## Per-instance settings — admin UI, not env
 
-Gateway URL, credentials, per-bridge secret, media mode and enablement are held
-**per instance in Convex**, set through Settings → Agents, not in `.env`. That is
+Gateway URL, credentials, per-bridge secret, media mode, enablement and the
+inline-widget switches ([WIDGETS.md](WIDGETS.md#switches)) are held **per instance
+in Convex**, set through Settings → Agents, not in `.env`. That is
 deliberate: they differ per instance, and a bridge serving several gateways
 cannot express them as process-global variables.
 

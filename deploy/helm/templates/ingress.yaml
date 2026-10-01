@@ -41,3 +41,40 @@ spec:
           {{- end }}
     {{- end }}
 {{- end }}
+{{- if .Values.widgetSandbox.ingress.enabled }}
+---
+{{- /*
+The inline-widget sandbox origin (docs/WIDGETS.md): a DEDICATED host routed to the
+frontend Service's sandbox port. Serves one static page; everything else is 404.
+*/}}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ include "atrium.componentName" (dict "ctx" . "component" "widget-sandbox") }}
+  labels:
+    {{- include "atrium.labels" . | nindent 4 }}
+    app.kubernetes.io/component: widget-sandbox
+  {{- with .Values.widgetSandbox.ingress.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  {{- if .Values.ingress.className }}
+  ingressClassName: {{ .Values.ingress.className }}
+  {{- end }}
+  {{- with .Values.widgetSandbox.ingress.tls }}
+  tls:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  rules:
+    - host: {{ .Values.widgetSandbox.ingress.host | quote }}
+      http:
+        paths:
+          - path: /
+            pathType: Exact
+            backend:
+              service:
+                name: {{ include "atrium.componentName" (dict "ctx" . "component" "frontend") }}
+                port:
+                  number: {{ .Values.widgetSandbox.servicePort }}
+{{- end }}

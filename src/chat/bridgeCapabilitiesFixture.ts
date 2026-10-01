@@ -18,7 +18,7 @@
 // The live bench does it as part of a validation run, so the anchor tracks the version
 // the bench actually validated rather than whichever one somebody last pasted.
 //
-// Source: bridge 0.87.1 / gateway 2026.9.6 — captured 2026-09-28
+// Source: bridge 0.89.1 / gateway 2026.9.6 — captured 2026-09-30
 //
 // Imported by TESTS ONLY (src + convex test suites) — never by app or deployed
 // Convex code, so it adds zero runtime weight.
@@ -35,7 +35,7 @@ export const LIVE_CAPABILITIES_BODY = {
     "media": true,
     "streaming": "both"
   },
-  "bridgeVersion": "0.87.1",
+  "bridgeVersion": "0.89.1",
   "buildVersion": null,
   "buildRevision": null,
   "rehydrationDefault": true,
@@ -43,7 +43,7 @@ export const LIVE_CAPABILITIES_BODY = {
   "inboundPrivateStaging": true,
   "protocolVersion": 2,
   "compat": {
-    "bridgeVersion": "0.87.1",
+    "bridgeVersion": "0.89.1",
     "protocolVersion": 2,
     "providers": {
       "openclaw": {
@@ -93,7 +93,8 @@ export const LIVE_CAPABILITIES_BODY = {
           "cronManage": "2026.7.1-beta.2",
           "talk": "2026.7.1",
           "permissionModes": "2026.8.2",
-          "knowledgePolicy": "2026.9.6"
+          "knowledgePolicy": "2026.9.6",
+          "inlineWidgets": "2026.9.6"
         }
       },
       "hermes": {
@@ -119,9 +120,9 @@ export const LIVE_CAPABILITIES_BODY = {
   "protocol": {
     "vendoredVersion": "2026.9.6",
     "coverage": {
-      "handled": 323,
-      "ignored": 777,
-      "gaps": 907,
+      "handled": 343,
+      "ignored": 817,
+      "gaps": 905,
       "gapList": [
         "AgentActivityItem.approvalId",
         "AgentActivityItem.approvalSlug",
@@ -142,7 +143,6 @@ export const LIVE_CAPABILITIES_BODY = {
         "AgentActivityItem.title",
         "AgentActivityItem.toolCallId",
         "AgentDatabaseAdmissionRefusal.agentId",
-        "AgentDatabaseAdmissionRefusal.code",
         "AgentDatabaseAdmissionRefusal.embeddedOwnerId",
         "AgentDatabaseAdmissionRefusal.paths",
         "AgentDatabaseAdmissionRefusal.reason",
@@ -183,7 +183,6 @@ export const LIVE_CAPABILITIES_BODY = {
         "ChatToolTitlesResult.disabled",
         "ChatToolTitlesResult.titles",
         "ConnectParams.auth",
-        "ConnectParams.caps",
         "ConnectParams.client",
         "ConnectParams.commands",
         "ConnectParams.device",
@@ -1061,7 +1060,8 @@ export const LIVE_CAPABILITIES_BODY = {
         "cronManage": true,
         "talk": true,
         "permissionModes": true,
-        "knowledgePolicy": true
+        "knowledgePolicy": true,
+        "inlineWidgets": true
       }
     },
     {

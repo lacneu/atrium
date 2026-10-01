@@ -1910,3 +1910,25 @@ describe("upsertSubAgent carries the spawn's declared run limit, OUTSIDE session
     expect("runTimeoutSeconds" in (subs[1] ?? {})).toBe(false);
   });
 });
+
+describe("addWidgetPart reports whether the widget LANDED", () => {
+  const answering = (body: unknown) =>
+    (async () => ({ ok: true, json: async () => body }) as unknown as Response) as unknown as typeof fetch;
+  const part = {
+    kind: "widget" as const,
+    provider: "openclaw" as const,
+    origin: "tool" as const,
+    viewId: "cv_x",
+    sandbox: "scripts" as const,
+  };
+
+  test("Convex's refusal is false: the sink must not count a widget that is not there", async () => {
+    const writer = writerWith(answering({ ok: true, accepted: false, reason: "widget_not_registered" }));
+    await expect(writer.addWidgetPart("m1", part)).resolves.toBe(false);
+  });
+
+  test("an accepted widget, or an older Convex with no verdict, is true", async () => {
+    await expect(writerWith(answering({ ok: true, accepted: true })).addWidgetPart("m1", part)).resolves.toBe(true);
+    await expect(writerWith(answering({ ok: true })).addWidgetPart("m1", part)).resolves.toBe(true);
+  });
+});

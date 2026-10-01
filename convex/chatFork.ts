@@ -28,7 +28,7 @@ import { quoteFieldsFor, quotedRefsOf } from "./lib/quoteReply";
 import { maskCredentialId } from "./lib/chatRenderState";
 import { ConvexError, v } from "convex/values";
 import { mutation } from "./_generated/server";
-import { Id } from "./_generated/dataModel";
+import { Doc, Id } from "./_generated/dataModel";
 import { requireActive } from "./lib/access";
 import { writtenAtOf } from "./lib/chatAccess";
 import { auditImpersonated } from "./lib/audit";
@@ -38,6 +38,7 @@ import { partStorageField } from "./lib/blobs";
 import { minChatSortKey } from "./chats";
 import { MAX_KNOWLEDGE_CHOICES_PER_CHAT } from "./lib/knowledge";
 import { isTrashed } from "./lib/trash";
+import { widgetInstanceForViews } from "./widgets";
 
 /** Copy bound = the visible window (loadChatView's MESSAGE_WINDOW): the fork
  *  shows exactly what the user sees in the source. Older context still reaches
@@ -159,6 +160,8 @@ export const forkChat = mutation({
       ...(source.permissionModeChoice !== undefined
         ? { permissionModeChoice: source.permissionModeChoice }
         : {}),
+      // A branch of a conversation with widgets turned off keeps them off.
+      ...(source.widgetsDisabled === true ? { widgetsDisabled: true } : {}),
       // The gateway session meta rides too — the header chips show the real
       // model immediately, and above all `sessionMeta.contextTokens` (the
       // context WINDOW size) is the BUDGET rehydrationContext sizes the
@@ -251,11 +254,17 @@ export const forkChat = mutation({
       // session, which is what triggers the rehydration re-grounding. The
       // one-shot flag makes that explicit for OpenClaw, whose gateway creates
       // the session row (systemSent truthy) before the bridge's freshness
-      // check — see getChatRouting; consumed by stream.finalize.
+      // check — see getChatRouting; consumed at the gateway ACK of the first
+      // dispatch (bridge.consumeForkRehydration), attachment or not. That send
+      // can still go bare (an attachment on a gateway before 2026.7.1, history
+      // over the frame or the live window): see the residual cases at the
+      // consumption point.
       forkPendingRehydration: true,
     });
 
     const idMap = new Map<Id<"messages">, Id<"messages">>();
+    // Widget parts copied into the fork, for the ownership inheritance below.
+    const copiedWidgets: Array<{ source: Doc<"messages">; copy: Id<"messages">; viewId: string }> = [];
     for (const msg of slice) {
       const newMsgId = await ctx.db.insert("messages", {
         chatId: forkId,
@@ -322,6 +331,17 @@ export const forkChat = mutation({
         // Delegation MARKER tool parts ride (they gate the in-context sub-agent
         // cards — see SPAWN_TOOL_NAMES); every other tool/provenance/reasoning
         // part stays in the original (analysis metadata, not conversation).
+        // Inline widgets ride: they are the reply, and their registration is
+        // inherited below so the branch can still open them.
+        if (p.part.kind === "widget") {
+          await ctx.db.insert("messageParts", {
+            messageId: newMsgId,
+            order: p.order,
+            part: p.part,
+          });
+          copiedWidgets.push({ source: msg, copy: newMsgId, viewId: p.part.viewId });
+          continue;
+        }
         if (p.part.kind === "tool" && SPAWN_TOOL_NAMES.has(p.part.name)) {
           await ctx.db.insert("messageParts", {
             messageId: newMsgId,
@@ -360,6 +380,41 @@ export const forkChat = mutation({
           ...(srcRow?.origin !== undefined ? { origin: srcRow.origin } : {}),
         });
       }
+    }
+
+    // Inline-widget OWNERSHIP rides with the copied replies (convex/widgets.ts): the
+    // fork may open the documents its copied messages show, and nothing else. Read per
+    // COPIED widget part, by the exact (instance, view, source conversation) row —
+    // never the source's whole registry, which grows without bound. The row may have
+    // been written by an earlier reply the fork does not copy: what the fork inherits
+    // is the right to open what it shows.
+    // The instance is resolved exactly as the reader's authorization resolves it
+    // (`widgetInstanceForViews`): a reply this conversation itself COPIED from a fork
+    // names no instance, and its registration — this conversation's own row for the
+    // view — is what carries it. Resolved from the message alone, a fork of a fork of
+    // a per-turn routed conversation inherited nothing and its widgets were unavailable.
+    const inherited = new Set<string>();
+    for (const w of copiedWidgets) {
+      const instance = await widgetInstanceForViews(ctx, w.source, source, async () => [w.viewId]);
+      if (instance === null) continue;
+      const key = `${instance.name}\u0000${w.viewId}`;
+      if (inherited.has(key)) continue;
+      const row = await ctx.db
+        .query("widgetViews")
+        .withIndex("by_instanceName_and_viewId_and_chatId", (q) =>
+          q.eq("instanceName", instance.name).eq("viewId", w.viewId).eq("chatId", sourceChatId),
+        )
+        .first();
+      if (row === null) continue;
+      inherited.add(key);
+      await ctx.db.insert("widgetViews", {
+        instanceName: row.instanceName,
+        viewId: row.viewId,
+        chatId: forkId,
+        messageId: w.copy,
+        source: "fork",
+        createdAt: Date.now(),
+      });
     }
 
     // Sub-agent result cards: a delegated turn's visible ANSWER can live in a

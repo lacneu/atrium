@@ -217,6 +217,23 @@ export const messagePart = v.union(
       }),
     ),
   }),
+  // Inline widget (OpenClaw `show_widget`): a DESCRIPTOR of a document the gateway
+  // stores — never its bytes (a widget may weigh 10 MiB from 2026.9.7, ten times a
+  // document). The bytes are fetched per view by the reader (convex/widgets.ts), after
+  // checking that the view id is one of THIS chat's widget parts. Assistant-only
+  // (stream.addPart). Validated by the bridge (providers/openclaw/widgets.ts) and
+  // re-bounded here: `viewId` follows the gateway's managed-document grammar.
+  v.object({
+    kind: v.literal("widget"),
+    provider: v.literal("openclaw"),
+    // Which carrier named it, on the WAY IN only (bridge `WidgetOrigin`): addPart
+    // registers a view from `tool` and strips the field before storing.
+    origin: v.optional(v.union(v.literal("tool"), v.literal("canvas"), v.literal("shortcode"))),
+    viewId: v.string(),
+    title: v.optional(v.string()),
+    preferredHeight: v.optional(v.number()),
+    sandbox: v.literal("scripts"),
+  }),
 );
 
 // One target's health, flattened from the bridge's /health snapshot. Non-PHI:
@@ -1716,10 +1733,13 @@ export default defineSchema({
     // so without this signal the fork's first OpenClaw turn would be misread
     // as warm and start COLD. The rehydration ENABLE knob is deliberately NOT
     // forced: operator kill-switches still win (a fork on a rehydration-
-    // disabled instance starts cold by configuration). KNOWN GAP (same as the
-    // post-reset one): an inline-ATTACHMENT first send ships bare (gateway-
-    // crash guard) and still consumes — that fork carries no history until its
-    // session next rolls.
+    // disabled instance starts cold by configuration). An inline-ATTACHMENT
+    // first send carries the history beside the file on a gateway from
+    // 2026.7.1. KNOWN GAP (same as the post-reset one): the first send ships
+    // bare and still consumes — that fork carries no history until its session
+    // next rolls — on an older or unidentified gateway (gateway-crash guard),
+    // when no history fits the frame beside the base64 or the gateway announced
+    // no maxPayload, and when the history does not fit the live window.
     forkPendingRehydration: v.optional(v.boolean()),
     // Provider-session RESET epoch: bumped by clearProviderChat (the Hermes
     // reset path) even when the slot was already empty. A turn's post-ACK
@@ -1911,6 +1931,11 @@ export default defineSchema({
     // Bumped by every choice: an on-the-spot apply carries the revision it was made
     // for, and an outcome of an older one is never recorded as the current one's.
     permissionModeRevision: v.optional(v.number()),
+    // The conversation's inline-widget override (convex/widgets.ts setChatWidgets):
+    // `true` = widgets OFF in this conversation even where the instance allows them.
+    // ABSENT = follow the instance (on by default). Read at dispatch
+    // (bridge.ts lastGateBeforeSend), so a change applies from the next turn.
+    widgetsDisabled: v.optional(v.boolean()),
     permissionModeChoice: v.optional(
       v.union(
         v.literal("default"),
@@ -2403,6 +2428,30 @@ export default defineSchema({
      *  or malformed bridge is UNOBSERVED, not clean, and the indicator must say so. */
     reporting: v.optional(v.boolean()),
   }).index("by_key", ["key"]),
+
+  // INLINE WIDGET OWNERSHIP (convex/widgets.ts). A gateway serves any widget document
+  // to any operator connection by id, so which CONVERSATION a document belongs to is
+  // recorded here — written when the conversation's own `show_widget` result reports it
+  // (first writer wins), inherited by forks. A widget part alone proves nothing: model
+  // text and imported archives can name any id. The reader's fetch is authorized
+  // against this row, never against the part.
+  widgetViews: defineTable({
+    instanceName: v.string(),
+    viewId: v.string(),
+    chatId: v.id("chats"),
+    messageId: v.id("messages"),
+    source: v.union(v.literal("gateway"), v.literal("fork")),
+    createdAt: v.number(),
+  })
+    .index("by_instanceName_and_viewId", ["instanceName", "viewId"])
+    // The exact (instance, view, conversation) answer: one row or none, however
+    // many forks inherited the view.
+    .index("by_instanceName_and_viewId_and_chatId", ["instanceName", "viewId", "chatId"])
+    .index("by_chatId", ["chatId"])
+    // A conversation's own row(s) for one view, WHATEVER the instance: how a copy that
+    // names no instance (a fork's copy of a per-turn routed reply) finds the instance
+    // its registration was made for (widgets.ts widgetInstanceForViews).
+    .index("by_chatId_and_viewId", ["chatId", "viewId"]),
 
   messageParts: defineTable({
     messageId: v.id("messages"),

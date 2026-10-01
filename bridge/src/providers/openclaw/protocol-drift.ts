@@ -438,10 +438,16 @@ export const KNOWN_AGENT_FIELDS: ReadonlySet<string> = new Set([
  * matrix instead of being invisible omissions.
  */
 export const COVERAGE_SUMMARY = {
-  handled: 339,
-  ignored: 814,
-  gaps: 906,
+  handled: 343,
+  ignored: 817,
+  gaps: 905,
   /** The declared gaps, by schema path — the actionable part of the matrix.
+   *
+   *  INLINE WIDGETS (2026-09-30): `ConnectParams.caps` is handled — the conversation
+   *  socket declares `inline-widgets` when the conversation wants widgets — and the
+   *  one widget-document RPC is classified (`CanvasDocumentViewParams.docId` and
+   *  `CanvasDocumentViewResult.html` handled; the result's sandbox listener fields and
+   *  `canvas.document.preview` ignored: Atrium never exposes the gateway's sandbox).
    *
    *  AGENT-DATABASE REFUSALS (2026-09-28): `AgentDatabaseAdmissionRefusal.code` is handled —
    *  read from a refused request's `details` so a send to an agent the gateway will not admit
@@ -556,7 +562,6 @@ export const COVERAGE_SUMMARY = {
     "ChatToolTitlesResult.disabled",
     "ChatToolTitlesResult.titles",
     "ConnectParams.auth",
-    "ConnectParams.caps",
     "ConnectParams.client",
     "ConnectParams.commands",
     "ConnectParams.device",
@@ -1523,6 +1528,46 @@ export type ExceptionSite =
  *  NEVER logged, never reported, never persisted. */
 const UNKNOWN_STATE_SALT = randomBytes(16).toString("hex");
 
+/** Chat `message.content[].type` values the gateway's display projection emits
+ *  (v2026.9.6 src/gateway/chat-display-projection*.ts). `canvas` is the inline-widget
+ *  preview (providers/openclaw/widgets.ts); the others are read as text or ignored. */
+export const KNOWN_CHAT_CONTENT_PART_TYPES: ReadonlySet<string> = new Set([
+  "text",
+  "canvas",
+  "image",
+  "audio",
+  "video",
+  "attachment",
+  "thinking",
+  "redacted_thinking",
+  "reasoning",
+  "toolCall",
+  "toolResult",
+]);
+
+/** Agent event `stream` values: upstream `AgentEventStream` (v2026.9.6
+ *  src/infra/agent-events.ts) plus `run_status`, which the gateway emits under the
+ *  open `string` arm (captured live on 2026.9.6). */
+export const KNOWN_AGENT_STREAMS: ReadonlySet<string> = new Set([
+  "lifecycle",
+  "tool",
+  "assistant",
+  "usage",
+  "error",
+  "item",
+  "plan",
+  "approval",
+  "command_output",
+  "patch",
+  "compaction",
+  "thinking",
+  "run_status",
+]);
+
+function isRecord(v: unknown): v is Record<string, unknown> {
+  return typeof v === "object" && v !== null && !Array.isArray(v);
+}
+
 /** FNV-1a, 32 bits, hex, over the SALTED value — for wire values that must be
  *  DISTINGUISHED without being disclosed or guessed. */
 function shortDigest(s: string): string {
@@ -1729,6 +1774,33 @@ class ProtocolDriftRegistry {
       for (const key of Object.keys(p)) {
         if (known.has(key)) continue;
         this.bump(`${prefix}.${key}`);
+      }
+      // One level INSIDE the two fields the key check above calls "known": a chat
+      // message's content-part `type` and an agent event's `stream`. Both are open
+      // vocabularies the normalizer reads by value, so a new value is dropped unread —
+      // the silence the `canvas` part lived in until widgets were instructed.
+      // Digested like an unknown state: a wire value nobody has vouched for.
+      if (f.event === "chat") {
+        const content = isRecord(p.message) ? p.message.content : undefined;
+        if (Array.isArray(content)) {
+          for (const part of content) {
+            const type = isRecord(part) ? part.type : undefined;
+            if (typeof type === "string" && !KNOWN_CHAT_CONTENT_PART_TYPES.has(type)) {
+              this.bump(`${prefix}.contentpart_${shortDigest(type)}`);
+            }
+          }
+        }
+      } else {
+        const stream = p.stream;
+        // A plugin stream is `<pluginId>.<suffix>` — plugin-scoped, and only its
+        // `.provenance` suffix is contract; anything else of it is the plugin's own.
+        if (
+          typeof stream === "string" &&
+          !stream.includes(".") &&
+          !KNOWN_AGENT_STREAMS.has(stream)
+        ) {
+          this.bump(`agent.stream_${shortDigest(stream)}`);
+        }
       }
     } catch (err) {
       // Observe-only: a malformed frame must never break the feed path — but a detector

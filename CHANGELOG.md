@@ -1,5 +1,47 @@
 # Changelog
 
+## [0.91.0] — Agents can show interactive widgets in their answers
+
+Feature release for OpenClaw instances (gateway 2026.9.6 or later). No breaking changes; operators
+should read the deployment note.
+
+**Agents can answer with interactive widgets.** An OpenClaw agent can now show a small interactive
+page — a chart, a calculator, a form — right inside its answer, as it does in the OpenClaw Control
+UI. The widget stays in the conversation after a reload. A button in a widget can send a message to
+the agent, which appears as a normal message from you. Widgets are written by the agent, so Atrium
+runs them in an isolated frame: they have no access to your session or your other conversations,
+and no network access beyond loading scripts, styles and fonts from a few public libraries.
+
+**Widgets are on by default and can be turned off.** Administrators switch widgets on or off per
+instance (Settings › Instances) and can require a confirmation before a widget sends a message.
+The owner of a conversation can turn widgets off for it from the composer's **+** menu or the
+conversation menu; the change applies from the next message. Hermes instances have no widgets.
+
+**A widget is only shown in the conversation it was made in.** Its content is served only to people
+who can read that conversation. A widget referred to from another conversation, or carried by an
+imported archive, is not shown, and neither is a widget made from another client (such as the
+OpenClaw Control UI) in the same agent session.
+
+**A branch whose first message carries a file keeps the conversation.** On OpenClaw 2026.7.1 or
+later, the first message of a branched conversation — or of an agent switch — now gives the agent
+the earlier conversation together with the attached file. Before, the agent answered that message
+without any of it, and the branch never got its history afterwards. Older gateways still receive
+the file alone, as before.
+
+**A widget copied into a branch of a multi-instance conversation opens.** It showed as unavailable.
+
+**Saving the Bridge or Prompt injections settings no longer resets voice settings.** Saving either
+tab silently put the instance's voice and talk settings back to their defaults.
+
+**New kinds of gateway content are recorded instead of silently dropped.** Content types and agent
+streams Atrium does not know yet now show up in the protocol drift report of the operator tools.
+
+**Deployment note.** Deploy the bridge, Convex and the frontend together. Widgets work with no extra
+setup. An optional hardened mode serves the sandbox page bundled in the frontend image on a dedicated
+hostname — set `WIDGET_SANDBOX_ORIGIN` (see `docs/WIDGETS.md`). On every OpenClaw gateway, the widget
+sandbox port (gateway port + 1, or `mcp.apps.sandboxPort`) must be free inside the gateway's
+container network: if something else holds it, every widget shows as unavailable.
+
 ## [0.90.0] — Group managers can bring their own agents in
 
 Feature release. No breaking changes for users; administrators should read the deployment note before upgrading.

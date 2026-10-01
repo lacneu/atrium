@@ -68,6 +68,7 @@ import {
   EVENT_FRAME_GAP,
   EVENT_PLAN_ADVANCE,
   EVENT_PLAN,
+  EVENT_WIDGET,
   EVENT_TURN_PHASE,
   EVENT_SESSION_OVERFULL,
   EVENT_COMPACTION_CAUSE,
@@ -80,6 +81,16 @@ import {
   isProvenanceStream,
   parseProvenanceReport,
 } from "../../core/provenance.js";
+import {
+  MAX_WIDGET_PARTS_PER_TURN,
+  SHOW_WIDGET_TOOL,
+  extractCanvasShortcodes,
+  previewFromChatPart,
+  widgetFromPreview,
+  widgetFromShowWidgetResult,
+  type WidgetDescriptor,
+  type WidgetOrigin,
+} from "./widgets.js";
 import {
   childChatTerminalStatus,
   childLifecycleStatus,
@@ -774,6 +785,25 @@ export class Normalizer {
   // item). It carries no path/url/bytes — if the turn then delivers no media
   // (no MEDIA:/mediaUrls), finalize emits a diagnostic so the gap is visible.
   sawMediaGeneration: boolean;
+  /** This conversation's socket declared `inline-widgets` (session.ts decides it per
+   *  handshake). Only then are widget carriers turned into `widget` events: a
+   *  conversation with widgets off shows none, even when another client of the same
+   *  session produced one (the canvas part is broadcast to every operator socket).
+   *  The text is never rewritten either way; `[embed]` shortcodes are hidden by the SPA
+   *  beside the widget they name. */
+  widgetsEnabled = false;
+  /** View ids already emitted as `widget` events THIS turn, with the carrier that named
+   *  them. One event per view — except that the AUTHORITATIVE carrier (the `show_widget`
+   *  result) is always emitted once, even after a non-authoritative one named the view
+   *  first: only it can register the view to this conversation (widgets.ts
+   *  `WidgetOrigin`). */
+  private widgetViewIds = new Map<string, WidgetOrigin>();
+  /** Widgets THIS turn proved it produced (tool origin). A widget-only turn closes on
+   *  them; they are deliberately NOT `hasRealContent()`, which gates the transcript
+   *  recovery of a message-tool reply — a widget beside it must not cost the text. */
+  private toolWidgets = 0;
+  /** Widget events from the other carriers THIS turn (their own per-turn budget). */
+  private otherWidgets = 0;
   /** This turn IS the delivery run of a media-generation background task.
    *
    *  Upstream runs `image_generate` / `music_generate` / `video_generate` as background
@@ -1044,6 +1074,9 @@ export class Normalizer {
     this.hasVisibleToolText = false;
     this.pendingAckText = "";
     this.mediaPaths = new Map();
+    this.widgetViewIds = new Map();
+    this.toolWidgets = 0;
+    this.otherWidgets = 0;
     this.seenDedupKeys = new Set();
     this.lastDedupKey = null;
     this.sawMessageToolItem = false;
@@ -1800,6 +1833,18 @@ export class Normalizer {
     }
     this.lastDedupKey = dedupKey;
 
+    // Inline widgets ride `message.content` of every delta and of the terminal
+    // (chat-display-projection.canvas.ts). Emitted BEFORE any terminal handling below
+    // so a widget carried only by the final is stored before the turn closes.
+    if (
+      state === "delta" ||
+      state === "final" ||
+      state === "error" ||
+      state === "aborted"
+    ) {
+      this.collectCanvasParts(message, events);
+    }
+
     // PROVIDER BACK-OFF (2026.9.4 `ChatStatusEvent.retry`). The run loop
     // re-enters the attempt (upstream run-loop.ts `while (true)`), and each
     // attempt's terminal re-emits lifecycle `finishing` — which this normalizer
@@ -1982,6 +2027,7 @@ export class Normalizer {
       this.diagStopReason = bucketStopReason(payload.stopReason);
     }
     const snapshotText = textFromMessage(message);
+    this.collectShortcodeWidgets(snapshotText, events);
     if (snapshotText) {
       if (
         isFinal &&
@@ -2033,7 +2079,14 @@ export class Normalizer {
     // No usable text. A final with no deliverable is an empty final: wait for
     // follow-on content instead of ending the turn blank.
     if (isFinal && !this.finalized) {
-      if (this.hasRealContent()) {
+      // A widget the turn's own `show_widget` produced IS the reply of a widget-only
+      // turn. Without it, the first final of such a turn (canvas part, no text) armed
+      // the empty-final grace, and the delivery-mirror fallback final that follows
+      // 28 ms later ("The tool run finished, but no final summary…") became the answer.
+      // …unless the reply's TEXT went through the message tool: it then sits in the
+      // transcript, and closing on the widget would skip the recovery that fetches it.
+      const textInTranscript = this.sawMessageToolItem || this.msgtoolUnreadableArgs > 0;
+      if (this.hasRealContent() || (this.toolWidgets > 0 && !textInTranscript)) {
         this.finalizeOrHold(now, "gateway_final", events);
       } else if (this.sawYielded) {
         // A HAND-OFF, not a silence. The gateway said this turn passed the work on, so
@@ -2136,6 +2189,7 @@ export class Normalizer {
       const replace = data.replace === true;
       if (isString(text) && text) {
         // Full snapshot: replace and lock out later deltas/acks.
+        this.collectShortcodeWidgets(text, events);
         this.applyVisible(text, true, false, now, events, replace);
         if (replace) this.hasSnapshot = false;
       } else if (isString(delta) && delta) {
@@ -2608,6 +2662,9 @@ export class Normalizer {
       this.pendingFinal !== null && this.pendingFinalMark === this.workResumeCount;
     if (mayClose) {
       this.hasVisibleToolText = true;
+      // A transcript reply carries the `[embed]` shortcode the live chat part stood
+      // for (chat.history projects no canvas part in code mode, captured on 2026.9.6).
+      this.collectShortcodeWidgets(text, events);
       this.applyVisible(text, true, !heldTerminal && !othersInFlight, now, events);
       return this.runHeldTerminal(now, events, othersInFlight, heldTerminal);
     }
@@ -2836,6 +2893,15 @@ export class Normalizer {
           runId: this.currentRunId,
         });
       }
+    }
+
+    // An inline widget from the `show_widget` RESULT — also when the tool ran nested in
+    // code mode: the frame then carries the inner tool's own name, with a
+    // `tool_search_code:…:show_widget:<n>` call id (captured live on 2026.9.6). Only the
+    // socket that sent the turn receives these frames; the chat part covers the others.
+    if (name === SHOW_WIDGET_TOOL && phase === "result" && data.isError !== true) {
+      const verdict = widgetFromShowWidgetResult(data.result);
+      if (verdict?.ok) this.noteWidget(verdict.widget, "tool", events);
     }
 
     // Outbound media discovery from the tool RESULT. The result may be a bare
@@ -4071,6 +4137,10 @@ export class Normalizer {
     this.hasVisibleToolText = false;
     this.pendingAckText = "";
     this.mediaPaths = new Map();
+    // The replay re-emits its widgets; Convex keeps one part per view per message.
+    this.widgetViewIds = new Map();
+    this.toolWidgets = 0;
+    this.otherWidgets = 0;
     this.seenDedupKeys = new Set();
     this.lastDedupKey = null;
     this.deadlines.delete("empty_final");
@@ -4127,6 +4197,45 @@ export class Normalizer {
 
   private clearWait(name: string): void {
     this.deadlines.delete(name);
+  }
+
+  /** Emit one `widget` event per view per turn, when this socket declared widgets. */
+  private noteWidget(widget: WidgetDescriptor, origin: WidgetOrigin, events: BridgeEvent[]): void {
+    if (!this.widgetsEnabled) return;
+    const seen = this.widgetViewIds.get(widget.viewId);
+    if (seen === "tool" || (seen !== undefined && origin !== "tool")) return;
+    // Separate budgets: model-written carriers can never crowd out the turn's own
+    // `show_widget` results (the only ones that register a view).
+    const spent = origin === "tool" ? this.toolWidgets : this.otherWidgets;
+    if (spent >= MAX_WIDGET_PARTS_PER_TURN) return;
+    this.widgetViewIds.set(widget.viewId, origin);
+    if (origin === "tool") this.toolWidgets++;
+    else if (seen === undefined) this.otherWidgets++;
+    events.push({ type: EVENT_WIDGET, widget, origin, runId: this.currentRunId });
+  }
+
+  /** The `{type:"canvas"}` parts of a chat message. MCP-App, node-panel, strict and
+   *  unmanaged previews are refused by `widgetFromPreview` (named reasons, tested). */
+  private collectCanvasParts(message: Json, events: BridgeEvent[]): void {
+    if (!this.widgetsEnabled || !isObject(message) || !Array.isArray(message.content)) return;
+    for (const part of message.content) {
+      if (!isObject(part) || part.type !== "canvas") continue;
+      const verdict = widgetFromPreview(previewFromChatPart(part));
+      if (verdict.ok) this.noteWidget(verdict.widget, "canvas", events);
+    }
+  }
+
+  /** The `[embed]` shortcodes of the reply text, as widget carriers. The TEXT is left
+   *  exactly as the gateway sent it: the stored reply keeps its shortcodes, so a reply
+   *  made only of one is not an empty reply, and one Atrium will not render stays
+   *  readable. The SPA hides a shortcode at render time only when the message carries
+   *  the widget it names (src/chat/widgets/shortcodes.ts). */
+  private collectShortcodeWidgets(text: string, events: BridgeEvent[]): void {
+    if (!this.widgetsEnabled || !text) return;
+    for (const preview of extractCanvasShortcodes(text).previews) {
+      const verdict = widgetFromPreview(preview);
+      if (verdict.ok) this.noteWidget(verdict.widget, "shortcode", events);
+    }
   }
 
   private hasRealContent(): boolean {

@@ -1792,6 +1792,9 @@ describe("the last gate before the send leaves is one transaction", () => {
     const outboxId = await pendingTurn(t, guest, chatId);
     expect(await gate(t, outboxId)).toEqual({
       kind: "send",
+      // Inline widgets: the instance allows them by default and the conversation did
+      // not turn them off (convex/widgets.ts).
+      inlineWidgets: true,
       speakerGatewayUser: null,
       speakerCanonical: null,
       mentionCanonicals: {},

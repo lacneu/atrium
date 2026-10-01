@@ -70,6 +70,8 @@ COPY --from=caddy-builder /out/caddy /usr/bin/caddy
 COPY --from=caddy-builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
 COPY --from=build /app/dist /srv
 COPY docker/Caddyfile /etc/caddy/Caddyfile
+# The inline-widget sandbox proxy, served on :8081 (docker/Caddyfile, docs/WIDGETS.md).
+COPY deploy/widget-sandbox/index.html /srv-widget-sandbox/index.html
 COPY docker/docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 RUN chmod +x /usr/local/bin/docker-entrypoint.sh
 ENV XDG_CONFIG_HOME=/config
@@ -86,5 +88,7 @@ ENV ATRIUM_REVISION=${ATRIUM_REVISION}
 # reaches, e.g. https://api.example.com). The entrypoint fails fast if unset.
 ENV CONVEX_URL=""
 EXPOSE 80
+# Optional dedicated widget-sandbox origin (route a separate hostname here).
+EXPOSE 8081
 ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
 CMD ["caddy", "run", "--config", "/etc/caddy/Caddyfile", "--adapter", "caddyfile"]

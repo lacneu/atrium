@@ -1,0 +1,119 @@
+<!doctype html>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>MCP App sandbox</title>
+<style>html,body{height:100%;margin:0;background:transparent}iframe{display:block;width:100%;height:100%;border:0;background:transparent}</style>
+<body>
+<script>
+(() => {
+  if (window.self === window.top) throw new Error("invalid MCP App sandbox host");
+  let hostOrigin;
+  try {
+    const referrer = new URL(document.referrer);
+    if (referrer.protocol !== "http:" && referrer.protocol !== "https:") throw new Error();
+    hostOrigin = referrer.origin;
+  } catch { throw new Error("invalid MCP App sandbox parent"); }
+  try { void window.top.document; throw new Error("MCP App sandbox isolation failed"); } catch (error) {
+    if (error instanceof Error && error.message === "MCP App sandbox isolation failed") throw error;
+  }
+  const createInner = (allowScripts = true) => {
+    const frame = document.createElement("iframe");
+    // Block native popups here without reserving widget globals such as open.
+    frame.setAttribute("sandbox", allowScripts ? "allow-scripts allow-forms" : "");
+    return frame;
+  };
+  let inner = createInner();
+  document.body.appendChild(inner);
+  const widgetPortsOffered = new Set();
+  const blockDescendantFrames = true;
+  const descendantSelector = "iframe,frame,object,embed,portal,fencedframe,webview,browser";
+  const hasBlockedDescendant = root => {
+    if (root.querySelector(descendantSelector)) return true;
+    for (const template of root.querySelectorAll("template")) {
+      if (hasBlockedDescendant(template.content)) return true;
+    }
+    return false;
+  };
+  const documentGuard = "\u003cscript>(()=>{\n  const blocked=[\"iframe\",\"frame\",\"object\",\"embed\",\"portal\",\"fencedframe\",\"webview\",\"browser\"];\n  const apply=Reflect.apply;\n  const defineProperty=Object.defineProperty;\n  const getOwnPropertyDescriptor=Object.getOwnPropertyDescriptor;\n  const toString=String;\n  const toLowerCase=String.prototype.toLowerCase;\n  const lastIndexOf=String.prototype.lastIndexOf;\n  const slice=String.prototype.slice;\n  const includes=Array.prototype.includes;\n  const regexpTest=RegExp.prototype.test;\n  const descendantMarkup=/\u003c\\s*(?:iframe|frame|object|embed|portal|fencedframe|webview|browser)\\b/iu;\n  const reject=()=>{throw new Error(\"sandbox descendant browsing contexts are disabled\");};\n  const assertName=name=>{const value=apply(toLowerCase,toString(name),[]);const separator=apply(lastIndexOf,value,[\":\"]);const localName=separator\u003c0?value:apply(slice,value,[separator+1]);if(apply(includes,blocked,[localName]))reject();};\n  const assertMarkup=value=>{if(apply(regexpTest,descendantMarkup,[toString(value)]))reject();};\n  const lock=(target,name,value)=>{try{defineProperty(target,name,{value,writable:false,configurable:false});}catch{}};\n  for(const name of [\"RTCPeerConnection\",\"webkitRTCPeerConnection\",\"RTCIceGatherer\",\"RTCIceTransport\",\"RTCDtlsTransport\",\"RTCSctpTransport\",\"RTCDataChannel\"])lock(globalThis,name,undefined);\n  const createElement=Document.prototype.createElement;\n  lock(Document.prototype,\"createElement\",function(name,...args){assertName(name);return Reflect.apply(createElement,this,[name,...args]);});\n  const createElementNS=Document.prototype.createElementNS;\n  lock(Document.prototype,\"createElementNS\",function(namespace,name,...args){assertName(name);return Reflect.apply(createElementNS,this,[namespace,name,...args]);});\n  const wrapSetter=(target,name)=>{const descriptor=getOwnPropertyDescriptor(target,name);if(!descriptor?.set)return;try{defineProperty(target,name,{get:descriptor.get,set(value){assertMarkup(value);return apply(descriptor.set,this,[value]);},enumerable:descriptor.enumerable,configurable:false});}catch{}};\n  wrapSetter(Element.prototype,\"innerHTML\");wrapSetter(Element.prototype,\"outerHTML\");\n  if(globalThis.ShadowRoot)wrapSetter(ShadowRoot.prototype,\"innerHTML\");\n  const wrapMethod=(target,name,indexes)=>{const original=target?.[name];if(typeof original!==\"function\")return;lock(target,name,function(...args){if(indexes){for(let index=0;index\u003cindexes.length;index+=1)assertMarkup(args[indexes[index]]);}else{for(let index=0;index\u003cargs.length;index+=1)assertMarkup(args[index]);}return apply(original,this,args);});};\n  wrapMethod(Element.prototype,\"insertAdjacentHTML\",[1]);wrapMethod(Document.prototype,\"write\");wrapMethod(Document.prototype,\"writeln\");wrapMethod(Range.prototype,\"createContextualFragment\",[0]);wrapMethod(DOMParser.prototype,\"parseFromString\",[0]);\n  wrapMethod(Element.prototype,\"setHTMLUnsafe\",[0]);wrapMethod(Element.prototype,\"setHTML\",[0]);\n  if(globalThis.ShadowRoot){wrapMethod(ShadowRoot.prototype,\"setHTMLUnsafe\",[0]);wrapMethod(ShadowRoot.prototype,\"setHTML\",[0]);}\n})();\u003c/script>";
+  const resolveLeadingDoctypeEnd = (html) => {
+  let index = html.charCodeAt(0) === 0xfeff ? 1 : 0;
+  const whitespace = new Set([9, 10, 12, 13, 32]);
+  while (true) {
+    while (index < html.length && whitespace.has(html.charCodeAt(index))) index += 1;
+    if (html.slice(index, index + 4) !== "<!--") break;
+    const commentEnd = html.indexOf("-->", index + 4);
+    if (commentEnd < 0) return 0;
+    index = commentEnd + 3;
+  }
+  if (html.slice(index, index + 9).toLowerCase() !== "<!doctype") return 0;
+  let quote = "";
+  for (let cursor = index + 9; cursor < html.length; cursor += 1) {
+    const char = html[cursor];
+    if (quote) { if (char === quote) quote = ""; continue; }
+    if (char === '"' || char === "'") { quote = char; continue; }
+    if (char === ">") return cursor + 1;
+  }
+  return 0;
+};
+  const guardDocument = html => {
+    if (!blockDescendantFrames) return html;
+    if (hasBlockedDescendant(new DOMParser().parseFromString(html, "text/html"))) {
+      throw new Error("sandbox descendant browsing contexts are disabled");
+    }
+    const doctypeEnd = resolveLeadingDoctypeEnd(html);
+    return html.slice(0, doctypeEnd) + documentGuard + html.slice(doctypeEnd);
+  };
+  window.addEventListener("message", (event) => {
+    if (event.source === window.parent) {
+      if (event.origin !== hostOrigin) return;
+      if (event.data?.method === "ui/notifications/sandbox-resource-ready") {
+        const params = event.data.params ?? {};
+        if (typeof params.html === "string") {
+          const guardedHtml = guardDocument(params.html);
+          // Replace the browsing context so a superseded document cannot race
+          // the new wrapper's first private bridge-port offer.
+          const nextInner = createInner(params.allowScripts !== false);
+          nextInner.addEventListener("load", () => {
+            if (inner !== nextInner || typeof params.renderId !== "string") return;
+            window.parent.postMessage({
+              jsonrpc: "2.0",
+              method: "ui/notifications/sandbox-resource-loaded",
+              params: { renderId: params.renderId },
+            }, hostOrigin);
+          }, { once: true });
+          widgetPortsOffered.clear();
+          nextInner.srcdoc = guardedHtml;
+          inner.replaceWith(nextInner);
+          inner = nextInner;
+        }
+        return;
+      }
+      if (typeof event.data?.method === "string" && event.data.method.startsWith("ui/notifications/sandbox-")) return;
+      inner.contentWindow?.postMessage(event.data, "*");
+      return;
+    }
+    if (event.source === inner.contentWindow) {
+      if (typeof event.data?.method === "string" && event.data.method.startsWith("ui/notifications/sandbox-")) return;
+      if (event.data?.type === "openclaw:widget-bridge-port-offer" || event.data?.type === "openclaw:widget-prompt-offer") {
+        const port = event.ports[0];
+        // Each wrapper offers its private channels before untrusted code runs.
+        // Only the first offer of each kind belongs to this document instance.
+        if (!widgetPortsOffered.has(event.data.type) && port) {
+          widgetPortsOffered.add(event.data.type);
+          window.parent.postMessage(event.data, hostOrigin, [port]);
+        } else {
+          port?.close();
+        }
+        return;
+      }
+      window.parent.postMessage(event.data, hostOrigin);
+    }
+  });
+  window.parent.postMessage({
+    jsonrpc: "2.0",
+    method: "ui/notifications/sandbox-proxy-ready",
+    params: { sandboxUrl: window.location.href },
+  }, hostOrigin);
+})();
+</script>
+</body>

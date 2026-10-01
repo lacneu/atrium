@@ -12,6 +12,7 @@ import {
   useMessage,
   useThread,
 } from "@assistant-ui/react";
+import { WidgetPart } from "./widgets/WidgetPart";
 import {
   createContext,
   type CSSProperties,
@@ -3041,6 +3042,13 @@ const assistantComponents = {
   // plan): the Tools toggle gates the inline activity rows TOO. OFF = the
   // clean view, narrative only (the working label under the bubble keeps the
   // in-progress signal); ON = the ChatGPT-style interleaved activity.
+  // Inline widgets (OpenClaw `show_widget`): in the BODY, never behind the Tools
+  // toggle — a widget is the reply, not its work. Assistant-only like Reasoning.
+  data: {
+    by_name: {
+      widget: WidgetPart as never,
+    },
+  },
   tools: {
     by_name: {
       __turn_flow__: InlineTurnActivity as never,
@@ -3543,9 +3551,10 @@ function AssistantEmptyState({ show }: { show: boolean }) {
       msg.content as ReadonlyArray<{ type?: string; text?: unknown }>,
     ),
   );
+  // An inline widget is a visible answer too (a widget-only turn has no text).
   const hasMedia = useMessage((msg) =>
-    (msg.content as ReadonlyArray<{ type?: string }>).some(
-      (p) => p?.type === "file",
+    (msg.content as ReadonlyArray<{ type?: string; name?: string }>).some(
+      (p) => p?.type === "file" || (p?.type === "data" && p.name === "widget"),
     ),
   );
   const toolParts = useMessage(

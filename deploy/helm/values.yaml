@@ -156,6 +156,32 @@ webchat:
   podAnnotations: {}
 
 # =============================================================================
+# Inline-widget sandbox origin (OPTIONAL — docs/WIDGETS.md). Empty origin = widgets
+# render in an opaque frame inside the page (no extra host). Set `origin` to a
+# DEDICATED https origin (never the frontend's, never Convex's, never the
+# gateway's): the frontend container serves Atrium's pinned copy of the widget
+# sandbox proxy on `containerPort` (Caddy, docker/Caddyfile), exposed on the
+# frontend Service as `servicePort`, and routed by the optional Ingress below.
+# =============================================================================
+widgetSandbox:
+  # -- Public origin, e.g. "https://widgets.example.com". Written into the SPA's
+  #    runtime config as WIDGET_SANDBOX_ORIGIN.
+  origin: ""
+  containerPort: 8081
+  servicePort: 8081
+  ingress:
+    # -- Route `host` to the sandbox port (same className as `ingress`).
+    enabled: false
+    host: widgets.example.com
+    # -- Annotations of THIS ingress only. Do not add header-rewriting ones: the proxy's
+    #    own security headers must reach the browser untouched (docs/WIDGETS.md).
+    annotations: {}
+    tls: []
+    #  - hosts:
+    #      - widgets.example.com
+    #    secretName: widgets-tls
+
+# =============================================================================
 # Bridge — connects to your EXTERNAL OpenClaw gateway and POSTs to Convex.
 # Reaches convex-backend by SERVICE DNS (no host IP). ClusterIP Service.
 # =============================================================================

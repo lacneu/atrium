@@ -5,6 +5,7 @@ import {
   isCompactionPart,
   isFilePart,
   isMediaPart,
+  isWidgetPart,
   isReasoningPart,
   isToolPart,
   type ProvenancePartView,
@@ -22,6 +23,7 @@ import {
 import { activeToolFromParts } from "./runStatusView";
 import type { DelegatedSlot } from "./assistantEmptyState";
 import { stripGatewayMediaId } from "../../convex/lib/mediaName";
+import { renderableText } from "./widgets/shortcodes";
 import { m } from "@/paraglide/messages.js";
 
 // A localized "(N KB, not shown here)" note for a part field ELIDED from the window
@@ -336,9 +338,27 @@ export function convertConvexMessage(
         : message.text && message.text.length > 0
           ? [{ kind: "text", text: message.text }]
           : [];
-  withReplies.forEach((seg) => {
+  // `[embed]` shortcodes are stored as sent; one is hidden only beside the widget part
+  // it names (widgets/shortcodes.ts). The growing end of a streaming reply also holds
+  // back a half-typed tag so it never flashes.
+  const renderedViewIds = new Set<string>(
+    message.role === "assistant"
+      ? message.parts.filter(isWidgetPart).map((p) => p.viewId)
+      : [],
+  );
+  const streamingTailAt =
+    message.role === "assistant" && !settledBody && withReplies[withReplies.length - 1]?.kind === "text"
+      ? withReplies.length - 1
+      : -1;
+  withReplies.forEach((seg, segIndex) => {
     if (seg.kind === "text") {
-      content.push({ type: "text", text: seg.text });
+      content.push({
+        type: "text",
+        text:
+          message.role === "assistant"
+            ? renderableText(seg.text, renderedViewIds, segIndex === streamingTailAt)
+            : seg.text,
+      });
     } else if (seg.kind === "delegated") {
       content.push({
         type: "tool-call",
@@ -363,7 +383,23 @@ export function convertConvexMessage(
     }
   });
 
-  // 3) Media/file attachments stay AFTER the text.
+  // 3) Inline widgets, then media/file attachments, stay AFTER the text. A widget is
+  // an assistant-ui DATA part (`data-widget`), rendered in the message BODY by
+  // WidgetPart — never behind the tools toggle: it is the reply, not its work.
+  if (message.role === "assistant") {
+    message.parts.forEach((p) => {
+      if (isWidgetPart(p)) {
+        content.push({
+          type: "data-widget",
+          data: {
+            viewId: p.viewId,
+            ...(p.title !== undefined ? { title: p.title } : {}),
+            ...(p.preferredHeight !== undefined ? { preferredHeight: p.preferredHeight } : {}),
+          },
+        } as unknown as ContentPart);
+      }
+    });
+  }
   message.parts.forEach((p) => {
     if (isMediaPart(p) || isFilePart(p)) {
       const fileContent = filePartToContent(p);
@@ -514,6 +550,9 @@ export function convertConvexMessage(
         // panel targets THIS gateway.
         routedInstanceName:
           resolvedAgent?.instanceName ?? message.routedInstanceName ?? null,
+        // …and which agent there (same inheritance). A widget's message is sent back
+        // to THIS agent (widgets/WidgetPart.tsx), never re-routed by its text.
+        routedAgentId: resolvedAgent?.agentId ?? message.routedAgentId ?? null,
         // Gateway context-compaction marker for this turn (null = none) —
         // rendered by CompactionNotice above the reply body.
         compaction,

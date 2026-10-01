@@ -1,0 +1,3457 @@
+{
+ "_about": "Captured LIVE on the local 2026.9.6 bench (probe-widgets, 2026-09-30), socket declaring inline-widgets: every frame of two runs, in arrival order. `cap`: show_widget nested in code-mode exec, canvas part on every delta and the final, [embed] shortcode in the text. `widgetOnly`: canvas-only final followed 28 ms later by a delivery-mirror fallback final for the same runId. Anonymized: session key and run ids replaced, session snapshots and the widget source elided; t = ms since the probe started.",
+ "session_key": "agent:main:atrium:chat:u-testuser01:widget-chat",
+ "runs": {
+  "cap": "run-widget-cap",
+  "widgetOnly": "run-widget-only"
+ },
+ "cap": [
+  {
+   "t": 144774,
+   "event": "chat",
+   "payload": {
+    "runId": "run-widget-cap",
+    "sessionKey": "agent:main:atrium:chat:u-testuser01:widget-chat",
+    "agentId": "alice",
+    "seq": 1,
+    "state": "status",
+    "phase": "preparing_workspace"
+   }
+  },
+  {
+   "t": 144774,
+   "event": "agent",
+   "payload": {
+    "runId": "run-widget-cap",
+    "stream": "run_status",
+    "data": {
+     "phase": "preparing_workspace"
+    },
+    "sessionKey": "agent:main:atrium:chat:u-testuser01:widget-chat",
+    "agentId": "alice",
+    "seq": 1,
+    "ts": 1790792469184,
+    "isHeartbeat": false
+   }
+  },
+  {
+   "t": 144977,
+   "event": "chat",
+   "payload": {
+    "runId": "run-widget-cap",
+    "sessionKey": "agent:main:atrium:chat:u-testuser01:widget-chat",
+    "agentId": "alice",
+    "seq": 2,
+    "state": "status",
+    "phase": "preparing_context"
+   }
+  },
+  {
+   "t": 144977,
+   "event": "agent",
+   "payload": {
+    "runId": "run-widget-cap",
+    "stream": "run_status",
+    "data": {
+     "phase": "preparing_context"
+    },
+    "sessionKey": "agent:main:atrium:chat:u-testuser01:widget-chat",
+    "agentId": "alice",
+    "seq": 2,
+    "ts": 1790792469382,
+    "isHeartbeat": false
+   }
+  },
+  {
+   "t": 146249,
+   "event": "agent",
+   "payload": {
+    "runId": "run-widget-cap",
+    "stream": "provenance-probe.provenance",
+    "sessionKey": "agent:main:atrium:chat:u-testuser01:widget-chat",
+    "data": {
+     "v": 1,
+     "source": "hindsight",
+     "kind": "memory",
+     "injected": {
+      "chars": 420,
+      "position": "system_prepend",
+      "truncated": false
+     },
+     "retrieval": {
+      "route": "ALL",
+      "bank": "bench::probe::user"
+     },
+     "items": [
+      {
+       "id": "mem_bench_001",
+       "type": "observation",
+       "date": "2026-06-01",
+       "score": 0.91,
+       "text": "Bench observation: the user prefers concise answers."
+      },
+      {
+       "id": "mem_bench_002",
+       "type": "world",
+       "date": "2026-05-20",
+       "score": 0.84,
+       "text": "Bench fact: the validation bench runs a pinned gateway."
+      }
+     ],
+     "pluginId": "provenance-probe",
+     "pluginName": "Provenance Contract Probe"
+    },
+    "agentId": "alice",
+    "seq": 3,
+    "ts": 1790792470657,
+    "isHeartbeat": false
+   }
+  },
+  {
+   "t": 146249,
+   "event": "agent",
+   "payload": {
+    "runId": "run-widget-cap",
+    "stream": "provenance-probe.provenance",
+    "sessionKey": "agent:main:atrium:chat:u-testuser01:widget-chat",
+    "data": {
+     "v": 1,
+     "source": "knowledge",
+     "kind": "documents",
+     "injected": {
+      "chars": 1300,
+      "position": "system_append",
+      "truncated": false
+     },
+     "retrieval": {
+      "route": "pgvector",
+      "collections": [
+       "knowledge_bench"
+      ],
+      "lightrag": {
+       "mode": "mix",
+       "contextChars": 0
+      }
+     },
+     "items": [
+      {
+       "file_name": "bench-compliance-report.pdf",
+       "collection": "knowledge_bench",
+       "score": 0.93,
+       "text": "Bench chunk: section 4.2 defines the retention policy."
+      }
+     ],
+     "pluginId": "provenance-probe",
+     "pluginName": "Provenance Contract Probe"
+    },
+    "agentId": "alice",
+    "seq": 4,
+    "ts": 1790792470657,
+    "isHeartbeat": false
+   }
+  },
+  {
+   "t": 146298,
+   "event": "agent",
+   "payload": {
+    "runId": "run-widget-cap",
+    "sessionKey": "agent:main:atrium:chat:u-testuser01:widget-chat",
+    "sessionId": "39034865-8e00-45b2-a26b-e71d8576b8d6",
+    "agentId": "alice",
+    "stream": "lifecycle",
+    "data": {
+     "phase": "start",
+     "startedAt": 1790792470704
+    },
+    "seq": 5,
+    "ts": 1790792470704,
+    "isHeartbeat": false
+   }
+  },
+  {
+   "t": 146304,
+   "event": "chat",
+   "payload": {
+    "runId": "run-widget-cap",
+    "sessionKey": "agent:main:atrium:chat:u-testuser01:widget-chat",
+    "agentId": "alice",
+    "seq": 6,
+    "state": "status",
+    "phase": "starting_model"
+   }
+  },
+  {
+   "t": 146304,
+   "event": "agent",
+   "payload": {
+    "runId": "run-widget-cap",
+    "stream": "run_status",
+    "data": {
+     "phase": "starting_model"
+    },
+    "sessionKey": "agent:main:atrium:chat:u-testuser01:widget-chat",
+    "agentId": "alice",
+    "seq": 6,
+    "ts": 1790792470712,
+    "isHeartbeat": false
+   }
+  },
+  {
+   "t": 147007,
+   "event": "agent",
+   "payload": {
+    "runId": "run-widget-cap",
+    "sessionKey": "agent:main:atrium:chat:u-testuser01:widget-chat",
+    "sessionId": "39034865-8e00-45b2-a26b-e71d8576b8d6",
+    "agentId": "alice",
+    "stream": "lifecycle",
+    "data": {
+     "phase": "model",
+     "provider": "openai",
+     "model": "gpt-5.5"
+    },
+    "seq": 7,
+    "ts": 1790792471417,
+    "isHeartbeat": false
+   }
+  },
+  {
+   "t": 150925,
+   "event": "agent",
+   "payload": {
+    "runId": "run-widget-cap",
+    "stream": "thinking",
+    "data": {
+     "text": "**Investigating available widget tools**",
+     "delta": "**Investigating available widget tools**"
+    },
+    "sessionKey": "agent:main:atrium:chat:u-testuser01:widget-chat",
+    "agentId": "alice",
+    "seq": 8,
+    "ts": 1790792475336,
+    "isHeartbeat": false
+   }
+  },
+  {
+   "t": 154770,
+   "event": "agent",
+   "payload": {
+    "runId": "run-widget-cap",
+    "stream": "thinking",
+    "data": {
+     "text": "**Investigating available widget tools**\n\n**Searching catalog for widget tools**",
+     "delta": "\n\n**Searching catalog for widget tools**"
+    },
+    "sessionKey": "agent:main:atrium:chat:u-testuser01:widget-chat",
+    "agentId": "alice",
+    "seq": 9,
+    "ts": 1790792479179,
+    "isHeartbeat": false
+   }
+  },
+  {
+   "t": 157826,
+   "event": "agent",
+   "payload": {
+    "runId": "run-widget-cap",
+    "sessionKey": "agent:main:atrium:chat:u-testuser01:widget-chat",
+    "stream": "usage",
+    "data": {
+     "outputTokens": 523
+    },
+    "agentId": "alice",
+    "seq": 10,
+    "ts": 1790792482236,
+    "isHeartbeat": false
+   }
+  },
+  {
+   "t": 157843,
+   "event": "agent",
+   "payload": {
+    "runId": "run-widget-cap",
+    "stream": "item",
+    "data": {
+     "itemId": "tool:call_BFTYNZRnC2f4ntUb7ILsB9Dp|fc_0a41d4d143e14e10016abd531f200887d1a2ca95fc80d16a08",
+     "toolCallId": "call_BFTYNZRnC2f4ntUb7ILsB9Dp|fc_0a41d4d143e14e10016abd531f200887d1a2ca95fc80d16a08",
+     "name": "exec",
+     "kind": "tool",
+     "phase": "start",
+     "title": "Exec Find inline widget tool and matching tool names",
+     "status": "running",
+     "meta": "Find inline widget tool and matching tool names",
+     "commandBearing": true,
+     "startedAt": 1790792482252
+    },
+    "sessionKey": "agent:main:atrium:chat:u-testuser01:widget-chat",
+    "agentId": "alice",
+    "seq": 11,
+    "ts": 1790792482252,
+    "isHeartbeat": false
+   }
+  },
+  {
+   "t": 157843,
+   "event": "agent",
+   "payload": {
+    "runId": "run-widget-cap",
+    "stream": "tool",
+    "data": {
+     "phase": "start",
+     "name": "exec",
+     "toolCallId": "call_BFTYNZRnC2f4ntUb7ILsB9Dp|fc_0a41d4d143e14e10016abd531f200887d1a2ca95fc80d16a08",
+     "args": {
+      "title": "Find inline widget tool and matching tool names",
+      "code": "const queries = ['show_widget widget inline', 'canvas', 'embed'];\nconst all = [];\nfor (const q of queries) {\n  try {\n    const found = await catalog.search(q);\n    for (const f of found) {\n      let name = String(f && (f.name || f.id || f));\n      let desc = '';\n      try { desc = JSON.stringify(await f.describe()).slice(0, 1200); } catch (e) { desc = 'describe failed: ' + e.message; }\n      all.push({query:q, name, desc});\n    }\n  } catch (e) { all.push({query:q, error:e.message}); }\n}\nreturn all;"
+     }
+    },
+    "sessionKey": "agent:main:atrium:chat:u-testuser01:widget-chat",
+    "agentId": "alice",
+    "seq": 12,
+    "ts": 1790792482253,
+    "isHeartbeat": false,
+    "updatedAt": 1790792470707,
+    "sessionId": "39034865-8e00-45b2-a26b-e71d8576b8d6",
+    "createdActor": null,
+    "owner": null,
+    "participants": [
+     {
+      "identity": {
+       "type": "observation",
+       "pluginId": null,
+       "accountId": null,
+       "senderKind": "unknown",
+       "id": "cli"
+      }
+     }
+    ],
+    "participantCount": 1,
+    "kind": "direct",
+    "visibility": "shared",
+    "chatType": "direct",
+    "archived": false,
+    "archivedAt": null,
+    "archivedBy": null,
+    "archiveReason": null,
+    "pinned": false,
+    "pinnedAt": null,
+    "unread": true,
+    "markedUnreadAt": null,
+    "agentStatus": null,
+    "observerDigest": null,
+    "activitySummary": {
+     "state": "unavailable"
+    },
+    "controlOwnerSessionKey": null,
+    "swarm": null,
+    "permissionMode": null,
+    "permissionModePending": false,
+    "createdVia": "operator",
+    "createdAt": 1790792324482,
+    "label": null,
+    "autoLabel": null,
+    "icon": null,
+    "color": null,
+    "channelAvatarUrl": null,
+    "category": null,
+    "boardPresentation": null,
+    "displayName": null,
+    "thinkingLevel": null,
+    "effectiveFastMode": false,
+    "effectiveFastModeSource": "default",
+    "fastAutoOnSeconds": 60,
+    "toolOverrides": null,
+    "verboseLevel": "full",
+    "systemSent": true,
+    "abortedLastRun": false,
+    "restartRecoveryStatus": null,
+    "totalTokensFresh": false,
+    "goal": null,
+    "contextTokens": 272000,
+    "contextBudgetStatus": null,
+    "effectiveResponseUsage": "off",
+    "modelProvider": "openai",
+    "model": "gpt-5.5",
+    "activeModelProvider": "openai",
+    "activeModel": "gpt-5.5",
+    "modelOverrideSource": null,
+    "agentRuntime": {
+     "id": "openclaw",
+     "cloudPlacementSupported": true,
+     "cloudPlacementExecutionMode": "worker-turn",
+     "devicePlacement": {
+      "requiredNodeCommands": [],
+      "consumesWorkerSlot": true
+     },
+     "devicePlacementSupported": true,
+     "source": "model"
+    },
+    "runtimeSelectionLocked": false,
+    "status": "running",
+    "lastRunError": null,
+    "providerReview": null,
+    "lastRunId": null,
+    "hasAutomation": false,
+    "startedAt": 1790792470704,
+    "endedAt": null,
+    "runtimeMs": null
+   }
+  },
+  {
+   "t": 157896,
+   "event": "agent",
+   "payload": {
+    "runId": "run-widget-cap",
+    "stream": "tool",
+    "data": {
+     "phase": "result",
+     "name": "exec",
+     "toolCallId": "call_BFTYNZRnC2f4ntUb7ILsB9Dp|fc_0a41d4d143e14e10016abd531f200887d1a2ca95fc80d16a08",
+     "meta": "Find inline widget tool and matching tool names",
+     "isError": false,
+     "commandBearing": true,
+     "result": {
+      "content": [
+       {
+        "type": "text",
+        "text": "{\"status\":\"completed\",\"replaySafe\":false,\"telemetry\":{\"catalogSize\":57,\"sources\":{\"openclaw\":57,\"mcp\":0,\"client\":0},\"counterScope\":\"303a4dc4ac1d9201593792a2\",\"searchCount\":3,\"describeCount\":12,\"callCount\":0,\"visibleTools\":[\"exec\",\"wait\"]},\"output\":[],\"value\":[{\"query\":\"show_widget widget inline\",\"name\":\"show_widget\",\"desc\":\"{\\\"source\\\":\\\"openclaw\\\",\\\"name\\\":\\\"show_widget\\\",\\\"label\\\":\\\"Show Widget\\\",\\\"description\\\":\\\"Visual helps? Make widget. Do not wait for ask. Keep one-off visualizations inline; pin for explicit dashboard requests or multiple non-code visualizations. Update pinned HTML by name. Use for code architecture, execution traces, performance comparisons, interactive explanations, UI mockups, and dashboards. Text clearer? Skip. Load the visualize skill when available for composition and dashboard authoring. The source kind defaults to html and registered kinds are a2ui. Send markup directly in widget_code. Scripts, stylesheets, and fonts may load from https://cdnjs.cloudflare.com, https://cdn.jsdelivr.net, https://esm.sh, https://unpkg.com, https://fonts.googleapis.com, https://fonts.gstatic.com, https://fonts.bunny.net; pin library versions. Use direct HTTPS URLs for audio/video, or data/blob URLs for embedded/generated clips. Images must be data URLs; media playback does not grant fetch access. Inline widgets cannot fetch APIs. Pinned data access needs declared and granted capabilities.netOrigins or capabilities.tools; inline previews never inherit those grants. Keep filters and controls local; user-cli\"},{\"query\":\"show_widget widget inline\",\"name\":\"dashboard\",\"desc\":\"{\\\"source\\\":\\\"openclaw\\\",\\\"name\\\":\\\"dashboard\\\",\\\"label\\\":\\\"Dashboard\\\",\\\"description\\\":\\\"Read and arrange this session dashboard; widget_put updates plugin widgets only. Follow the widget authoring tool's current placement guidance. Actions: read snapshot; tab_create/tab_update/tab_delete/tabs_reorder; widget_put/widget_move/widget_resize/widget_remove; focus_tab opens the dashboard side panel; set_presentation shows the dashboard alongside chat (split) or across the task area (expanded). focus_tab and set_presentation require a connected Control UI and do not save a default. set_default_presentation saves split or expanded for subsequent opens without requiring a connected UI; read returns the effective defaultPresentation (split when unset). Personal viewer overrides still take precedence. Widgets use stable names. widget_put creates or updates trusted plugin widgets only; update other content through its owning authoring capability discovered in the tool catalog. Prefer session:report for data reports with text, metrics, tables, charts, and links; it renders directly without a document frame. Use session:progress props {sessionKey?} for live session progress (omit sessionKey for the current s\"},{\"query\":\"show_widget widget inline\",\"name\":\"browser\",\"desc\":\"{\\\"source\\\":\\\"openclaw\\\",\\\"name\\\":\\\"browser\\\",\\\"label\\\":\\\"Browser\\\",\\\"description\\\":\\\"Control the browser via OpenClaw's browser control server. Available actions: doctor, status, start, stop, profiles, importprofile, tabs, open, focus, close, snapshot, screenshot, navigate, console, requests, errors, text, emulate, pdf, download, waitfordownload, upload, dialog, act. Browser choice: omit profile to use the configured default (normally the isolated OpenClaw-managed `openclaw` browser). When existing logins/cookies matter, use action=profiles to inspect available profiles, then select the appropriate profile by name. Do not assume a profile name. Use only when the task requires an existing session and the user has authorized it. Use action=importprofile on macOS to copy cookies from an authorized Chrome-family system profile into a fresh managed profile; this may show a Keychain consent prompt. For Chrome MCP existing-session profiles, omit timeoutMs on act:type, hover, scrollIntoView, drag, select, and fill; that driver rejects per-call timeout overrides for those actions. act:evaluate supports timeoutMs. Prefer the host browser; auto-route to a connected browser node only when the host has no us\"},{\"query\":\"show_widget widget inline\",\"name\":\"canvas\",\"desc\":\"{\\\"source\\\":\\\"openclaw\\\",\\\"name\\\":\\\"canvas\\\",\\\"label\\\":\\\"Canvas\\\",\\\"description\\\":\\\"Present, hide, or navigate the widget panel on a paired macOS node.\\\",\\\"input\\\":\\\"{ action: \\\\\\\"present\\\\\\\" | \\\\\\\"hide\\\\\\\" | \\\\\\\"navigate\\\\\\\"; gatewayToken?: string; gatewayUrl?: string; height?: number; node?: string; target?: string; timeoutMs?: number /* integer, >= 1 */; url?: string; width?: number; x?: number; y?: number }\\\",\\\"parameters\\\":{\\\"type\\\":\\\"object\\\",\\\"required\\\":[\\\"action\\\"],\\\"properties\\\":{\\\"action\\\":{\\\"enum\\\":[\\\"present\\\",\\\"hide\\\",\\\"navigate\\\"],\\\"type\\\":\\\"string\\\"},\\\"gatewayUrl\\\":{\\\"type\\\":\\\"string\\\"},\\\"gatewayToken\\\":{\\\"type\\\":\\\"string\\\"},\\\"timeoutMs\\\":{\\\"type\\\":\\\"integer\\\",\\\"minimum\\\":1},\\\"node\\\":{\\\"type\\\":\\\"string\\\"},\\\"target\\\":{\\\"type\\\":\\\"string\\\"},\\\"x\\\":{\\\"type\\\":\\\"number\\\"},\\\"y\\\":{\\\"type\\\":\\\"number\\\"},\\\"width\\\":{\\\"type\\\":\\\"number\\\"},\\\"height\\\":{\\\"type\\\":\\\"number\\\"},\\\"url\\\":{\\\"type\\\":\\\"string\\\"}}},\\\"callableName\\\":\\\"canvas\\\"}\"},{\"query\":\"show_widget widget inline\",\"name\":\"transcripts\",\"desc\":\"{\\\"source\\\":\\\"openclaw\\\",\\\"name\\\":\\\"transcripts\\\",\\\"label\\\":\\\"Transcripts\\\",\\\"description\\\":\\\"Start, stop, import, summarize, or inspect meeting transcript captures; list past meetings and read their notes.\\\",\\\"input\\\":\\\"{ action: string; accountId?: string; channelId?: string; guildId?: string; limit?: number /* integer, >= 1, <= 50 */; meetingUrl?: string; providerId?: string; selector?: string; sessionId?: string; speakerLabel?: string; title?: string; transcript?: string }\\\",\\\"parameters\\\":{\\\"type\\\":\\\"object\\\",\\\"required\\\":[\\\"action\\\"],\\\"properties\\\":{\\\"action\\\":{\\\"type\\\":\\\"string\\\",\\\"description\\\":\\\"start, stop, status, import, summarize, list, or show.\\\"},\\\"sessionId\\\":{\\\"type\\\":\\\"string\\\",\\\"minLength\\\":1,\\\"description\\\":\\\"Raw ID for start/import. Legacy stop/summarize/show handle; prefer selector for an exact capture. Cannot be combined with selector.\\\"},\\\"selector\\\":{\\\"type\\\":\\\"string\\\",\\\"minLength\\\":1,\\\"description\\\":\\\"Exact dated capture selector returned by start/import/status. Only for stop/summarize/show; supply this or sessionId, never both. No raw-ID fallback.\\\"},\\\"limit\\\":{\\\"type\\\":\\\"integer\\\",\\\"minimum\\\":1,\\\"maximum\\\":50,\\\"default\\\":20},\\\"title\\\":{\\\"type\\\":\\\"string\\\",\\\"minLength\\\":1},\\\"providerId\\\":{\\\"type\\\":\\\"string\\\",\\\"minLength\\\":1},\\\"accountId\\\":{\\\"type\\\":\\\"\"},{\"query\":\"show_widget widget inline\",\"name\":\"session_status\",\"desc\":\"{\\\"source\\\":\\\"openclaw\\\",\\\"name\\\":\\\"session_status\\\",\\\"label\\\":\\\"Session Status\\\",\\\"description\\\":\\\"Show visible-session model/usage/time/cost/tasks. `sessionKey=\\\\\\\"current\\\\\\\"` for current; UI labels are not keys. `model` overrides; `model=default` resets. Use for active model/session questions.\\\",\\\"input\\\":\\\"{ changesSince?: number /* integer, >= 0 */; model?: string; sessionKey?: string }\\\",\\\"parameters\\\":{\\\"type\\\":\\\"object\\\",\\\"properties\\\":{\\\"sessionKey\\\":{\\\"type\\\":\\\"string\\\"},\\\"model\\\":{\\\"type\\\":\\\"string\\\"},\\\"changesSince\\\":{\\\"type\\\":\\\"integer\\\",\\\"minimum\\\":0}}},\\\"outputSchema\\\":{\\\"type\\\":\\\"object\\\",\\\"required\\\":[\\\"ok\\\",\\\"sessionKey\\\",\\\"agentId\\\",\\\"changedModel\\\",\\\"stateVersion\\\",\\\"statusText\\\"],\\\"properties\\\":{\\\"ok\\\":{\\\"type\\\":\\\"boolean\\\",\\\"const\\\":true},\\\"sessionKey\\\":{\\\"type\\\":\\\"string\\\"},\\\"agentId\\\":{\\\"type\\\":\\\"string\\\"},\\\"changedModel\\\":{\\\"type\\\":\\\"boolean\\\"},\\\"stateVersion\\\":{\\\"type\\\":\\\"integer\\\"},\\\"statusText\\\":{\\\"type\\\":\\\"string\\\"},\\\"stateChanges\\\":{\\\"type\\\":\\\"object\\\",\\\"required\\\":[\\\"events\\\",\\\"truncated\\\",\\\"earliestAvailableSequence\\\",\\\"historyGap\\\"],\\\"properties\\\":{\\\"events\\\":{\\\"type\\\":\\\"array\\\",\\\"items\\\":{\\\"type\\\":\\\"object\\\",\\\"required\\\":[\\\"sequence\\\",\\\"kind\\\",\\\"actorType\\\",\\\"occurredAt\\\",\\\"summary\\\"],\\\"properties\\\":{\\\"sequence\\\":{\\\"type\\\":\\\"integer\\\"},\\\"kind\\\":{\\\"type\\\":\\\"string\\\"},\\\"actorType\\\":{\\\"anyOf\\\":[{\\\"type\\\":\\\"string\\\",\\\"const\\\"\"},{\"query\":\"show_widget widget inline\",\"name\":\"file_fetch\",\"desc\":\"{\\\n…(truncated)…"
+       }
+      ],
+      "details": {
+       "status": "completed",
+       "replaySafe": false,
+       "telemetry": {
+        "catalogSize": 57,
+        "sources": {
+         "openclaw": 57,
+         "mcp": 0,
+         "client": 0
+        },
+        "counterScope": "303a4dc4ac1d9201593792a2",
+        "searchCount": 3,
+        "describeCount": 12,
+        "callCount": 0,
+        "visibleTools": [
+         "exec",
+         "wait"
+        ]
+       },
+       "output": [],
+       "value": [
+        {
+         "query": "show_widget widget inline",
+         "name": "show_widget",
+         "desc": "{\"source\":\"openclaw\",\"name\":\"show_widget\",\"label\":\"Show Widget\",\"description\":\"Visual helps? Make widget. Do not wait for ask. Keep one-off visualizations inline; pin for explicit dashboard requests or multiple non-code visualizations. Update pinned HTML by name. Use for code architecture, execution traces, performance comparisons, interactive explanations, UI mockups, and dashboards. Text clearer? Skip. Load the visualize skill when available for composition and dashboard authoring. The source kind defaults to html and registered kinds are a2ui. Send markup directly in widget_code. Scripts, stylesheets, and fonts may load from https://cdnjs.cloudflare.com, https://cdn.jsdelivr.net, https://esm.sh, https://unpkg.com, https://fonts.googleapis.com, https://fonts.gstatic.com, https://fonts.bunny.net; pin library versions. Use direct HTTPS URLs for audio/video, or data/blob URLs for embedded/generated clips. Images must be data URLs; media playback does not grant fetch access. Inline widgets cannot fetch APIs. Pinned data access needs declared and granted capabilities.netOrigins or capabilities.tools; inline previews never inherit those grants. Keep filters and controls local; user-cli"
+        },
+        {
+         "query": "show_widget widget inline",
+         "name": "dashboard",
+         "desc": "{\"source\":\"openclaw\",\"name\":\"dashboard\",\"label\":\"Dashboard\",\"description\":\"Read and arrange this session dashboard; widget_put updates plugin widgets only. Follow the widget authoring tool's current placement guidance. Actions: read snapshot; tab_create/tab_update/tab_delete/tabs_reorder; widget_put/widget_move/widget_resize/widget_remove; focus_tab opens the dashboard side panel; set_presentation shows the dashboard alongside chat (split) or across the task area (expanded). focus_tab and set_presentation require a connected Control UI and do not save a default. set_default_presentation saves split or expanded for subsequent opens without requiring a connected UI; read returns the effective defaultPresentation (split when unset). Personal viewer overrides still take precedence. Widgets use stable names. widget_put creates or updates trusted plugin widgets only; update other content through its owning authoring capability discovered in the tool catalog. Prefer session:report for data reports with text, metrics, tables, charts, and links; it renders directly without a document frame. Use session:progress props {sessionKey?} for live session progress (omit sessionKey for the current s"
+        },
+        {
+         "query": "show_widget widget inline",
+         "name": "browser",
+         "desc": "{\"source\":\"openclaw\",\"name\":\"browser\",\"label\":\"Browser\",\"description\":\"Control the browser via OpenClaw's browser control server. Available actions: doctor, status, start, stop, profiles, importprofile, tabs, open, focus, close, snapshot, screenshot, navigate, console, requests, errors, text, emulate, pdf, download, waitfordownload, upload, dialog, act. Browser choice: omit profile to use the configured default (normally the isolated OpenClaw-managed `openclaw` browser). When existing logins/cookies matter, use action=profiles to inspect available profiles, then select the appropriate profile by name. Do not assume a profile name. Use only when the task requires an existing session and the user has authorized it. Use action=importprofile on macOS to copy cookies from an authorized Chrome-family system profile into a fresh managed profile; this may show a Keychain consent prompt. For Chrome MCP existing-session profiles, omit timeoutMs on act:type, hover, scrollIntoView, drag, select, and fill; that driver rejects per-call timeout overrides for those actions. act:evaluate supports timeoutMs. Prefer the host browser; auto-route to a connected browser node only when the host has no us"
+        },
+        {
+         "query": "show_widget widget inline",
+         "name": "canvas",
+         "desc": "{\"source\":\"openclaw\",\"name\":\"canvas\",\"label\":\"Canvas\",\"description\":\"Present, hide, or navigate the widget panel on a paired macOS node.\",\"input\":\"{ action: \\\"present\\\" | \\\"hide\\\" | \\\"navigate\\\"; gatewayToken?: string; gatewayUrl?: string; height?: number; node?: string; target?: string; timeoutMs?: number /* integer, >= 1 */; url?: string; width?: number; x?: number; y?: number }\",\"parameters\":{\"type\":\"object\",\"required\":[\"action\"],\"properties\":{\"action\":{\"enum\":[\"present\",\"hide\",\"navigate\"],\"type\":\"string\"},\"gatewayUrl\":{\"type\":\"string\"},\"gatewayToken\":{\"type\":\"string\"},\"timeoutMs\":{\"type\":\"integer\",\"minimum\":1},\"node\":{\"type\":\"string\"},\"target\":{\"type\":\"string\"},\"x\":{\"type\":\"number\"},\"y\":{\"type\":\"number\"},\"width\":{\"type\":\"number\"},\"height\":{\"type\":\"number\"},\"url\":{\"type\":\"string\"}}},\"callableName\":\"canvas\"}"
+        },
+        {
+         "query": "show_widget widget inline",
+         "name": "transcripts",
+         "desc": "{\"source\":\"openclaw\",\"name\":\"transcripts\",\"label\":\"Transcripts\",\"description\":\"Start, stop, import, summarize, or inspect meeting transcript captures; list past meetings and read their notes.\",\"input\":\"{ action: string; accountId?: string; channelId?: string; guildId?: string; limit?: number /* integer, >= 1, <= 50 */; meetingUrl?: string; providerId?: string; selector?: string; sessionId?: string; speakerLabel?: string; title?: string; transcript?: string }\",\"parameters\":{\"type\":\"object\",\"required\":[\"action\"],\"properties\":{\"action\":{\"type\":\"string\",\"description\":\"start, stop, status, import, summarize, list, or show.\"},\"sessionId\":{\"type\":\"string\",\"minLength\":1,\"description\":\"Raw ID for start/import. Legacy stop/summarize/show handle; prefer selector for an exact capture. Cannot be combined with selector.\"},\"selector\":{\"type\":\"string\",\"minLength\":1,\"description\":\"Exact dated capture selector returned by start/import/status. Only for stop/summarize/show; supply this or sessionId, never both. No raw-ID fallback.\"},\"limit\":{\"type\":\"integer\",\"minimum\":1,\"maximum\":50,\"default\":20},\"title\":{\"type\":\"string\",\"minLength\":1},\"providerId\":{\"type\":\"string\",\"minLength\":1},\"accountId\":{\"type\":\""
+        },
+        {
+         "query": "show_widget widget inline",
+         "name": "session_status",
+         "desc": "{\"source\":\"openclaw\",\"name\":\"session_status\",\"label\":\"Session Status\",\"description\":\"Show visible-session model/usage/time/cost/tasks. `sessionKey=\\\"current\\\"` for current; UI labels are not keys. `model` overrides; `model=default` resets. Use for active model/session questions.\",\"input\":\"{ changesSince?: number /* integer, >= 0 */; model?: string; sessionKey?: string }\",\"parameters\":{\"type\":\"object\",\"properties\":{\"sessionKey\":{\"type\":\"string\"},\"model\":{\"type\":\"string\"},\"changesSince\":{\"type\":\"integer\",\"minimum\":0}}},\"outputSchema\":{\"type\":\"object\",\"required\":[\"ok\",\"sessionKey\",\"agentId\",\"changedModel\",\"stateVersion\",\"statusText\"],\"properties\":{\"ok\":{\"type\":\"boolean\",\"const\":true},\"sessionKey\":{\"type\":\"string\"},\"agentId\":{\"type\":\"string\"},\"changedModel\":{\"type\":\"boolean\"},\"stateVersion\":{\"type\":\"integer\"},\"statusText\":{\"type\":\"string\"},\"stateChanges\":{\"type\":\"object\",\"required\":[\"events\",\"truncated\",\"earliestAvailableSequence\",\"historyGap\"],\"properties\":{\"events\":{\"type\":\"array\",\"items\":{\"type\":\"object\",\"required\":[\"sequence\",\"kind\",\"actorType\",\"occurredAt\",\"summary\"],\"properties\":{\"sequence\":{\"type\":\"integer\"},\"kind\":{\"type\":\"string\"},\"actorType\":{\"anyOf\":[{\"type\":\"string\",\"const\""
+        },
+        {
+         "query": "show_widget widget inline",
+         "name": "file_fetch",
+         "desc": "{\"source\":\"openclaw\",\"name\":\"file_fetch\",\"label\":\"File Fetch\",\"description\":\"Retrieve a file from a paired node by absolute path. Saves all fetched bytes in the gateway's file-transfer media store and returns localPath and mediaId. Returns supported images as image content blocks and inlines small text files (≤8 KB). Use this for screenshots, photos, receipts, logs, source files. The mediaId can be reused as sourceMediaId for binary copies when node-write capability is available. Requires operator opt-in: gateway.nodes.commands.allow must include 'file.fetch', and file-transfer policy must authorize the path through allowReadPaths or a remembered exact approval. Without policy configured, every call is denied.\",\"input\":\"{ node: string; path: string; gatewayToken?: string; gatewayUrl?: string; maxBytes?: number /* integer, >= 1 */; timeoutMs?: number /* integer, >= 1 */ }\",\"parameters\":{\"type\":\"object\",\"required\":[\"node\",\"path\"],\"properties\":{\"node\":{\"type\":\"string\",\"description\":\"Existing paired node id, display name, or IP shown by nodes status. Do not use local, host, gateway, or auto; use local file/exec tools for local workspace paths.\"},\"path\":{\"type\":\"string\",\"description\":\"A"
+        },
+        {
+         "query": "show_widget widget inline",
+         "name": "sessions_list",
+         "desc": "{\"source\":\"openclaw\",\"name\":\"sessions_list\",\"label\":\"Sessions\",\"description\":\"List visible session metadata and groups; filter ownerId/creatorId, projectId/workspaceDir, group/pinned, kind/agent/activity/archive. relationship=owned|created|involving selects the authenticated requesting user's sessions, not the agent's owner. Metadata-only by default. limit defaults to 100; larger requests stay valid but limitApplied never exceeds 200. count is this page, not an inventory total. Continue with nextOffset and identical filters while hasMore; truncationReason names a scan/byte budget. Pages are live: deduplicate by agentId/key/sessionId or restart for a fresh inventory. archived=all includes active and archived rows. Preview recent messages inline via includeLastMessage/messageLimit; includeDerivedTitles adds derived titles. enrichmentOmitted means previews exceeded the byte budget; read history separately. Use before history/send target selection.\",\"input\":\"{ activeMinutes?: number /* integer, >= 1 */; activeOnly?: boolean; agentId?: string; archived?: boolean | \\\"all\\\"; creatorId?: string; excludeSubagents?: boolean; group?: string; includeDerivedTitles?: boolean; includeLastMessage?"
+        },
+        {
+         "query": "canvas",
+         "name": "canvas",
+         "desc": "{\"source\":\"openclaw\",\"name\":\"canvas\",\"label\":\"Canvas\",\"description\":\"Present, hide, or navigate the widget panel on a paired macOS node.\",\"input\":\"{ action: \\\"present\\\" | \\\"hide\\\" | \\\"navigate\\\"; gatewayToken?: string; gatewayUrl?: string; height?: number; node?: string; target?: string; timeoutMs?: number /* integer, >= 1 */; url?: string; width?: number; x?: number; y?: number }\",\"parameters\":{\"type\":\"object\",\"required\":[\"action\"],\"properties\":{\"action\":{\"enum\":[\"present\",\"hide\",\"navigate\"],\"type\":\"string\"},\"gatewayUrl\":{\"type\":\"string\"},\"gatewayToken\":{\"type\":\"string\"},\"timeoutMs\":{\"type\":\"integer\",\"minimum\":1},\"node\":{\"type\":\"string\"},\"target\":{\"type\":\"string\"},\"x\":{\"type\":\"number\"},\"y\":{\"type\":\"number\"},\"width\":{\"type\":\"number\"},\"height\":{\"type\":\"number\"},\"url\":{\"type\":\"string\"}}},\"callableName\":\"canvas\"}"
+        },
+        {
+         "query": "embed",
+         "name": "dashboard",
+         "desc": "{\"source\":\"openclaw\",\"name\":\"dashboard\",\"label\":\"Dashboard\",\"description\":\"Read and arrange this session dashboard; widget_put updates plugin widgets only. Follow the widget authoring tool's current placement guidance. Actions: read snapshot; tab_create/tab_update/tab_delete/tabs_reorder; widget_put/widget_move/widget_resize/widget_remove; focus_tab opens the dashboard side panel; set_presentation shows the dashboard alongside chat (split) or across the task area (expanded). focus_tab and set_presentation require a connected Control UI and do not save a default. set_default_presentation saves split or expanded for subsequent opens without requiring a connected UI; read returns the effective defaultPresentation (split when unset). Personal viewer overrides still take precedence. Widgets use stable names. widget_put creates or updates trusted plugin widgets only; update other content through its owning authoring capability discovered in the tool catalog. Prefer session:report for data reports with text, metrics, tables, charts, and links; it renders directly without a document frame. Use session:progress props {sessionKey?} for live session progress (omit sessionKey for the current s"
+        },
+        {
+         "query": "embed",
+         "name": "show_widget",
+         "desc": "{\"source\":\"openclaw\",\"name\":\"show_widget\",\"label\":\"Show Widget\",\"description\":\"Visual helps? Make widget. Do not wait for ask. Keep one-off visualizations inline; pin for explicit dashboard requests or multiple non-code visualizations. Update pinned HTML by name. Use for code architecture, execution traces, performance comparisons, interactive explanations, UI mockups, and dashboards. Text clearer? Skip. Load the visualize skill when available for composition and dashboard authoring. The source kind defaults to html and registered kinds are a2ui. Send markup directly in widget_code. Scripts, stylesheets, and fonts may load from https://cdnjs.cloudflare.com, https://cdn.jsdelivr.net, https://esm.sh, https://unpkg.com, https://fonts.googleapis.com, https://fonts.gstatic.com, https://fonts.bunny.net; pin library versions. Use direct HTTPS URLs for audio/video, or data/blob URLs for embedded/generated clips. Images must be data URLs; media playback does not grant fetch access. Inline widgets cannot fetch APIs. Pinned data access needs declared and granted capabilities.netOrigins or capabilities.tools; inline previews never inherit those grants. Keep filters and controls local; user-cli"
+        },
+        {
+         "query": "embed",
+         "name": "automations",
+         "desc": "{\"source\":\"openclaw\",\"name\":\"automations\",\"label\":\"Automations\",\"description\":\"Gateway scheduler: reminders, delayed self-wakeups, loops, recurring work, event watchers. Never exec sleep/poll as timer.\\n\\nACTIONS: status | list [includeDisabled,limit?,offset?] (compact summaries with timing; use nextOffset for the next page) | get jobId (full schedule, payload, and delivery details) | add job | update jobId job (partial: only supplied fields change; null clears) | remove jobId | run jobId (runMode \\\"force\\\"=now) | runs jobId = history | next_check in:\\\"30m\\\" (own paced run only) | wake text mode?:\\\"now\\\"|\\\"next-heartbeat\\\"(default) nudges a caller-owned lane (sessionKey/agentId to pick another).\\n\\nSCOPE: Authenticated configured channel owner and Control UI administrator turns can list/get/update/run/remove any Gateway automation. Other turns see only caller-visible jobs; totals/counts and hasMore describe that scoped view, not global inventory. In that restricted view, an empty list or failed list/get/update/remove (including not-found) does not establish global absence, whatever the source of a known job id (including your own history). Never recreate or replace a known automati"
+        }
+       ]
+      }
+     }
+    },
+    "sessionKey": "agent:main:atrium:chat:u-testuser01:widget-chat",
+    "agentId": "alice",
+    "seq": 13,
+    "ts": 1790792482304,
+    "isHeartbeat": false,
+    "updatedAt": 1790792470707,
+    "sessionId": "39034865-8e00-45b2-a26b-e71d8576b8d6",
+    "createdActor": null,
+    "owner": null,
+    "participants": [
+     {
+      "identity": {
+       "type": "observation",
+       "pluginId": null,
+       "accountId": null,
+       "senderKind": "unknown",
+       "id": "cli"
+      }
+     }
+    ],
+    "participantCount": 1,
+    "kind": "direct",
+    "visibility": "shared",
+    "chatType": "direct",
+    "archived": false,
+    "archivedAt": null,
+    "archivedBy": null,
+    "archiveReason": null,
+    "pinned": false,
+    "pinnedAt": null,
+    "unread": true,
+    "markedUnreadAt": null,
+    "agentStatus": null,
+    "observerDigest": null,
+    "activitySummary": {
+     "state": "unavailable"
+    },
+    "controlOwnerSessionKey": null,
+    "swarm": null,
+    "permissionMode": null,
+    "permissionModePending": false,
+    "createdVia": "operator",
+    "createdAt": 1790792324482,
+    "label": null,
+    "autoLabel": null,
+    "icon": null,
+    "color": null,
+    "channelAvatarUrl": null,
+    "category": null,
+    "boardPresentation": null,
+    "displayName": null,
+    "thinkingLevel": null,
+    "effectiveFastMode": false,
+    "effectiveFastModeSource": "default",
+    "fastAutoOnSeconds": 60,
+    "toolOverrides": null,
+    "verboseLevel": "full",
+    "systemSent": true,
+    "abortedLastRun": false,
+    "restartRecoveryStatus": null,
+    "totalTokensFresh": false,
+    "goal": null,
+    "contextTokens": 272000,
+    "contextBudgetStatus": null,
+    "effectiveResponseUsage": "off",
+    "modelProvider": "openai",
+    "model": "gpt-5.5",
+    "activeModelProvider": "openai",
+    "activeModel": "gpt-5.5",
+    "modelOverrideSource": null,
+    "agentRuntime": {
+     "id": "openclaw",
+     "cloudPlacementSupported": true,
+     "cloudPlacementExecutionMode": "worker-turn",
+     "devicePlacement": {
+      "requiredNodeCommands": [],
+      "consumesWorkerSlot": true
+     },
+     "devicePlacementSupported": true,
+     "source": "model"
+    },
+    "runtimeSelectionLocked": false,
+    "status": "running",
+    "lastRunError": null,
+    "providerReview": null,
+    "lastRunId": null,
+    "hasAutomation": false,
+    "startedAt": 1790792470704,
+    "endedAt": null,
+    "runtimeMs": null
+   }
+  },
+  {
+   "t": 157897,
+   "event": "agent",
+   "payload": {
+    "runId": "run-widget-cap",
+    "stream": "item",
+    "data": {
+     "itemId": "tool:call_BFTYNZRnC2f4ntUb7ILsB9Dp|fc_0a41d4d143e14e10016abd531f200887d1a2ca95fc80d16a08",
+     "toolCallId": "call_BFTYNZRnC2f4ntUb7ILsB9Dp|fc_0a41d4d143e14e10016abd531f200887d1a2ca95fc80d16a08",
+     "name": "exec",
+     "kind": "tool",
+     "phase": "end",
+     "title": "Exec Find inline widget tool and matching tool names",
+     "status": "completed",
+     "meta": "Find inline widget tool and matching tool names",
+     "commandBearing": true,
+     "startedAt": 1790792482252,
+     "endedAt": 1790792482304
+    },
+    "sessionKey": "agent:main:atrium:chat:u-testuser01:widget-chat",
+    "agentId": "alice",
+    "seq": 14,
+    "ts": 1790792482304,
+    "isHeartbeat": false
+   }
+  },
+  {
+   "t": 157897,
+   "event": "agent",
+   "payload": {
+    "runId": "run-widget-cap",
+    "stream": "command_output",
+    "data": {
+     "itemId": "command:call_BFTYNZRnC2f4ntUb7ILsB9Dp|fc_0a41d4d143e14e10016abd531f200887d1a2ca95fc80d16a08",
+     "phase": "end",
+     "title": "command Find inline widget tool and matching tool names",
+     "toolCallId": "call_BFTYNZRnC2f4ntUb7ILsB9Dp|fc_0a41d4d143e14e10016abd531f200887d1a2ca95fc80d16a08",
+     "name": "exec",
+     "output": "{\"status\":\"completed\",\"replaySafe\":false,\"telemetry\":{\"catalogSize\":57,\"sources\":{\"openclaw\":57,\"mcp\":0,\"client\":0},\"counterScope\":\"303a4dc4ac1d9201593792a2\",\"searchCount\":3,\"describeCount\":12,\"callCount\":0,\"visibleTools\":[\"exec\",\"wait\"]},\"output\":[],\"value\":[{\"query\":\"show_widget widget inline\",\"name\":\"show_widget\",\"desc\":\"{\\\"source\\\":\\\"openclaw\\\",\\\"name\\\":\\\"show_widget\\\",\\\"label\\\":\\\"Show Widget\\\",\\\"description\\\":\\\"Visual helps? Make widget. Do not wait for ask. Keep one-off visualizations inline; pin for explicit dashboard requests or multiple non-code visualizations. Update pinned HTML by name. Use for code architecture, execution traces, performance comparisons, interactive explanations, UI mockups, and dashboards. Text clearer? Skip. Load the visualize skill when available for composition and dashboard authoring. The source kind defaults to html and registered kinds are a2ui. Send markup directly in widget_code. Scripts, stylesheets, and fonts may load from https://cdnjs.cloudflare.com, https://cdn.jsdelivr.net, https://esm.sh, https://unpkg.com, https://fonts.googleapis.com, https://fonts.gstatic.com, https://fonts.bunny.net; pin library versions. Use direct HTTPS URLs for audio/video, or data/blob URLs for embedded/generated clips. Images must be data URLs; media playback does not grant fetch access. Inline widgets cannot fetch APIs. Pinned data access needs declared and granted capabilities.netOrigins or capabilities.tools; inline previews never inherit those grants. Keep filters and controls local; user-cli\"},{\"query\":\"show_widget widget inline\",\"name\":\"dashboard\",\"desc\":\"{\\\"source\\\":\\\"openclaw\\\",\\\"name\\\":\\\"dashboard\\\",\\\"label\\\":\\\"Dashboard\\\",\\\"description\\\":\\\"Read and arrange this session dashboard; widget_put updates plugin widgets only. Follow the widget authoring tool's current placement guidance. Actions: read snapshot; tab_create/tab_update/tab_delete/tabs_reorder; widget_put/widget_move/widget_resize/widget_remove; focus_tab opens the dashboard side panel; set_presentation shows the dashboard alongside chat (split) or across the task area (expanded). focus_tab and set_presentation require a connected Control UI and do not save a default. set_default_presentation saves split or expanded for subsequent opens without requiring a connected UI; read returns the effective defaultPresentation (split when unset). Personal viewer overrides still take precedence. Widgets use stable names. widget_put creates or updates trusted plugin widgets only; update other content through its owning authoring capability discovered in the tool catalog. Prefer session:report for data reports with text, metrics, tables, charts, and links; it renders directly without a document frame. Use session:progress props {sessionKey?} for live session progress (omit sessionKey for the current s\"},{\"query\":\"show_widget widget inline\",\"name\":\"browser\",\"desc\":\"{\\\"source\\\":\\\"openclaw\\\",\\\"name\\\":\\\"browser\\\",\\\"label\\\":\\\"Browser\\\",\\\"description\\\":\\\"Control the browser via OpenClaw's browser control server. Available actions: doctor, status, start, stop, profiles, importprofile, tabs, open, focus, close, snapshot, screenshot, navigate, console, requests, errors, text, emulate, pdf, download, waitfordownload, upload, dialog, act. Browser choice: omit profile to use the configured default (normally the isolated OpenClaw-managed `openclaw` browser). When existing logins/cookies matter, use action=profiles to inspect available profiles, then select the appropriate profile by name. Do not assume a profile name. Use only when the task requires an existing session and the user has authorized it. Use action=importprofile on macOS to copy cookies from an authorized Chrome-family system profile into a fresh managed profile; this may show a Keychain consent prompt. For Chrome MCP existing-session profiles, omit timeoutMs on act:type, hover, scrollIntoView, drag, select, and fill; that driver rejects per-call timeout overrides for those actions. act:evaluate supports timeoutMs. Prefer the host browser; auto-route to a connected browser node only when the host has no us\"},{\"query\":\"show_widget widget inline\",\"name\":\"canvas\",\"desc\":\"{\\\"source\\\":\\\"openclaw\\\",\\\"name\\\":\\\"canvas\\\",\\\"label\\\":\\\"Canvas\\\",\\\"description\\\":\\\"Present, hide, or navigate the widget panel on a paired macOS node.\\\",\\\"input\\\":\\\"{ action: \\\\\\\"present\\\\\\\" | \\\\\\\"hide\\\\\\\" | \\\\\\\"navigate\\\\\\\"; gatewayToken?: string; gatewayUrl?: string; height?: number; node?: string; target?: string; timeoutMs?: number /* integer, >= 1 */; url?: string; width?: number; x?: number; y?: number }\\\",\\\"parameters\\\":{\\\"type\\\":\\\"object\\\",\\\"required\\\":[\\\"action\\\"],\\\"properties\\\":{\\\"action\\\":{\\\"enum\\\":[\\\"present\\\",\\\"hide\\\",\\\"navigate\\\"],\\\"type\\\":\\\"string\\\"},\\\"gatewayUrl\\\":{\\\"type\\\":\\\"string\\\"},\\\"gatewayToken\\\":{\\\"type\\\":\\\"string\\\"},\\\"timeoutMs\\\":{\\\"type\\\":\\\"integer\\\",\\\"minimum\\\":1},\\\"node\\\":{\\\"type\\\":\\\"string\\\"},\\\"target\\\":{\\\"type\\\":\\\"string\\\"},\\\"x\\\":{\\\"type\\\":\\\"number\\\"},\\\"y\\\":{\\\"type\\\":\\\"number\\\"},\\\"width\\\":{\\\"type\\\":\\\"number\\\"},\\\"height\\\":{\\\"type\\\":\\\"number\\\"},\\\"url\\\":{\\\"type\\\":\\\"string\\\"}}},\\\"callableName\\\":\\\"canvas\\\"}\"},{\"query\":\"show_widget widget inline\",\"name\":\"transcripts\",\"desc\":\"{\\\"source\\\":\\\"openclaw\\\",\\\"name\\\":\\\"transcripts\\\",\\\"label\\\":\\\"Transcripts\\\",\\\"description\\\":\\\"Start, stop, import, summarize, or inspect meeting transcript captures; list past meetings and read their notes.\\\",\\\"input\\\":\\\"{ action: string; accountId?: string; channelId?: string; guildId?: string; limit?: number /* integer, >= 1, <= 50 */; meetingUrl?: string; providerId?: string; selector?: string; sessionId?: string; speakerLabel?: string; title?: string; transcript?: string }\\\",\\\"parameters\\\":{\\\"type\\\":\\\"object\\\",\\\"required\\\":[\\\"action\\\"],\\\"properties\\\":{\\\"action\\\":{\\\"type\\\":\\\"string\\\",\\\"description\\\":\\\"start, stop, status, import, summarize, list, or show.\\\"},\\\"sessionId\\\":{\\\"type\\\":\\\"string\\\",\\\"minLength\\\":1,\\\"description\\\":\\\"Raw ID for start/import. Legacy stop/summarize/show handle; prefer selector for an exact capture. Cannot be combined with selector.\\\"},\\\"selector\\\":{\\\"type\\\":\\\"string\\\",\\\"minLength\\\":1,\\\"description\\\":\\\"Exact dated capture selector returned by start/import/status. Only for stop/summarize/show; supply this or sessionId, never both. No raw-ID fallback.\\\"},\\\"limit\\\":{\\\"type\\\":\\\"integer\\\",\\\"minimum\\\":1,\\\"maximum\\\":50,\\\"default\\\":20},\\\"title\\\":{\\\"type\\\":\\\"string\\\",\\\"minLength\\\":1},\\\"providerId\\\":{\\\"type\\\":\\\"string\\\",\\\"minLength\\\":1},\\\"accountId\\\":{\\\"type\\\":\\\"\"},{\"query\":\"show_widget widget inline\",\"name\":\"session_status\",\"desc\":\"{\\\"source\\\":\\\"openclaw\\\",\\\"name\\\":\\\"session_status\\\",\\\"label\\\":\\\"Session Status\\\",\\\"description\\\":\\\"Show visible-session model/usage/time/cost/tasks. `sessionKey=\\\\\\\"current\\\\\\\"` for current; UI labels are not keys. `model` overrides; `model=default` resets. Use for active model/session questions.\\\",\\\"input\\\":\\\"{ changesSince?: number /* integer, >= 0 */; model?: string; sessionKey?: string }\\\",\\\"parameters\\\":{\\\"type\\\":\\\"object\\\",\\\"properties\\\":{\\\"sessionKey\\\":{\\\"type\\\":\\\"string\\\"},\\\"model\\\":{\\\"type\\\":\\\"string\\\"},\\\"changesSince\\\":{\\\"type\\\":\\\"integer\\\",\\\"minimum\\\":0}}},\\\"outputSchema\\\":{\\\"type\\\":\\\"object\\\",\\\"required\\\":[\\\"ok\\\",\\\"sessionKey\\\",\\\"agentId\\\",\\\"changedModel\\\",\\\"stateVersion\\\",\\\"statusText\\\"],\\\"properties\\\":{\\\"ok\\\":{\\\"type\\\":\\\"boolean\\\",\\\"const\\\":true},\\\"sessionKey\\\":{\\\"type\\\":\\\"string\\\"},\\\"agentId\\\":{\\\"type\\\":\\\"string\\\"},\\\"changedModel\\\":{\\\"type\\\":\\\"boolean\\\"},\\\"stateVersion\\\":{\\\"type\\\":\\\"integer\\\"},\\\"statusText\\\":{\\\"type\\\":\\\"string\\\"},\\\"stateChanges\\\":{\\\"type\\\":\\\"object\\\",\\\"required\\\":[\\\"events\\\",\\\"truncated\\\",\\\"earliestAvailableSequence\\\",\\\"historyGap\\\"],\\\"properties\\\":{\\\"events\\\":{\\\"type\\\":\\\"array\\\",\\\"items\\\":{\\\"type\\\":\\\"object\\\",\\\"required\\\":[\\\"sequence\\\",\\\"kind\\\",\\\"actorType\\\",\\\"occurredAt\\\",\\\"summary\\\"],\\\"properties\\\":{\\\"sequence\\\":{\\\"type\\\":\\\"integer\\\"},\\\"kind\\\":{\\\"type\\\":\\\"string\\\"},\\\"actorType\\\":{\\\"anyOf\\\":[{\\\"type\\\":\\\"string\\\",\\\"const\\\"\"},{\"query\":\"show_widget widget inline\",\"name\":\"file_fetch\",\"desc\":\"{\\\n...(live output truncated)...",
+     "status": "completed"
+    },
+    "sessionKey": "agent:main:atrium:chat:u-testuser01:widget-chat",
+    "agentId": "alice",
+    "seq": 15,
+    "ts": 1790792482304,
+    "isHeartbeat": false
+   }
+  },
+  {
+   "t": 158181,
+   "event": "agent",
+   "payload": {
+    "runId": "run-widget-cap",
+    "sessionKey": "agent:main:atrium:chat:u-testuser01:widget-chat",
+    "sessionId": "39034865-8e00-45b2-a26b-e71d8576b8d6",
+    "agentId": "alice",
+    "stream": "lifecycle",
+    "data": {
+     "phase": "model",
+     "provider": "openai",
+     "model": "gpt-5.5"
+    },
+    "seq": 16,
+    "ts": 1790792482591,
+    "isHeartbeat": false
+   }
+  },
+  {
+   "t": 166316,
+   "event": "agent",
+   "payload": {
+    "runId": "run-widget-cap",
+    "stream": "thinking",
+    "data": {
+     "text": "**Listing available widget and canvas tools**",
+     "delta": "**Listing available widget and canvas tools**"
+    },
+    "sessionKey": "agent:main:atrium:chat:u-testuser01:widget-chat",
+    "agentId": "alice",
+    "seq": 17,
+    "ts": 1790792490724,
+    "isHeartbeat": false
+   }
+  },
+  {
+   "t": 174094,
+   "event": "agent",
+   "payload": {
+    "runId": "run-widget-cap",
+    "stream": "thinking",
+    "data": {
+     "text": "**Listing available widget and canvas tools**\n\n**Investigating show_widget call schema**",
+     "delta": "\n\n**Investigating show_widget call schema**"
+    },
+    "sessionKey": "agent:main:atrium:chat:u-testuser01:widget-chat",
+    "agentId": "alice",
+    "seq": 18,
+    "ts": 1790792498503,
+    "isHeartbeat": false
+   }
+  },
+  {
+   "t": 182465,
+   "event": "agent",
+   "payload": {
+    "runId": "run-widget-cap",
+    "sessionKey": "agent:main:atrium:chat:u-testuser01:widget-chat",
+    "stream": "usage",
+    "data": {
+     "outputTokens": 1188
+    },
+    "agentId": "alice",
+    "seq": 19,
+    "ts": 1790792506873,
+    "isHeartbeat": false
+   }
+  },
+  {
+   "t": 182486,
+   "event": "agent",
+   "payload": {
+    "runId": "run-widget-cap",
+    "stream": "item",
+    "data": {
+     "itemId": "tool:call_dSwx0NXDWBAnWUcGs47lHl9d|fc_0a41d4d143e14e10016abd5332974887d1b362d05afa48fbcd",
+     "toolCallId": "call_dSwx0NXDWBAnWUcGs47lHl9d|fc_0a41d4d143e14e10016abd5332974887d1b362d05afa48fbcd",
+     "name": "exec",
+     "kind": "tool",
+     "phase": "start",
+     "title": "Exec Render tiny counter widget inline",
+     "status": "running",
+     "meta": "Render tiny counter widget inline",
+     "commandBearing": true,
+     "startedAt": 1790792506895
+    },
+    "sessionKey": "agent:main:atrium:chat:u-testuser01:widget-chat",
+    "agentId": "alice",
+    "seq": 20,
+    "ts": 1790792506895,
+    "isHeartbeat": false
+   }
+  },
+  {
+   "t": 182486,
+   "event": "agent",
+   "payload": {
+    "runId": "run-widget-cap",
+    "stream": "tool",
+    "data": {
+     "phase": "start",
+     "name": "exec",
+     "toolCallId": "call_dSwx0NXDWBAnWUcGs47lHl9d|fc_0a41d4d143e14e10016abd5332974887d1b362d05afa48fbcd",
+     "args": {
+      "title": "Render tiny counter widget inline",
+      "code": "const [showWidget] = await catalog.search('show_widget');\nconst widget_code = `<!doctype html>\n<html><head><meta charset=\"utf-8\"><style>\n  body{margin:0;font:14px system-ui,-apple-system,Segoe UI,sans-serif;background:transparent}\n  .box{display:inline-flex;align-items:center;gap:8px;padding:8px;border:1px solid #ddd;border-radius:10px;background:#fff;color:#111}\n  #n{min-width:1.5em;text-align:center;font-weight:700}\n  button{border:1px solid #bbb;border-radius:8px;background:#f7f7f7;padding:4px 8px;cursor:pointer}\n  button:active{transform:translateY(1px)}\n</style></head><body>\n  <div class=\"box\"><span>Count:</span><span id=\"n\">0</span><button id=\"inc\">+1</button><button id=\"report\">Report</button></div>\n<script>\nlet count = 0;\nconst n = document.getElementById('n');\ndocument.getElementById('inc').onclick = () => { count += 1; n.textContent = count; };\ndocument.getElementById('report').onclick = () => {\n  const text = 'Counter report: ' + count;\n  const api = window.openclaw && window.openclaw.prompt;\n  if (api && typeof api.send === 'function') api.send(text);\n  else if (typeof window.sendPrompt === 'function') window.sendPrompt(text);\n  else if (window.parent) window.parent.postMessage({type:'openclaw.prompt.send', text}, '*');\n};\n</script></body></html>`;\nreturn await showWidget({title:'Counter', widget_code, height:70});"
+     }
+    },
+    "sessionKey": "agent:main:atrium:chat:u-testuser01:widget-chat",
+    "agentId": "alice",
+    "seq": 21,
+    "ts": 1790792506896,
+    "isHeartbeat": false,
+    "updatedAt": 1790792470707,
+    "sessionId": "39034865-8e00-45b2-a26b-e71d8576b8d6",
+    "createdActor": null,
+    "owner": null,
+    "participants": [
+     {
+      "identity": {
+       "type": "observation",
+       "pluginId": null,
+       "accountId": null,
+       "senderKind": "unknown",
+       "id": "cli"
+      }
+     }
+    ],
+    "participantCount": 1,
+    "kind": "direct",
+    "visibility": "shared",
+    "chatType": "direct",
+    "archived": false,
+    "archivedAt": null,
+    "archivedBy": null,
+    "archiveReason": null,
+    "pinned": false,
+    "pinnedAt": null,
+    "unread": true,
+    "markedUnreadAt": null,
+    "agentStatus": null,
+    "observerDigest": null,
+    "activitySummary": {
+     "state": "unavailable"
+    },
+    "controlOwnerSessionKey": null,
+    "swarm": null,
+    "permissionMode": null,
+    "permissionModePending": false,
+    "createdVia": "operator",
+    "createdAt": 1790792324482,
+    "label": null,
+    "autoLabel": null,
+    "icon": null,
+    "color": null,
+    "channelAvatarUrl": null,
+    "category": null,
+    "boardPresentation": null,
+    "displayName": null,
+    "thinkingLevel": null,
+    "effectiveFastMode": false,
+    "effectiveFastModeSource": "default",
+    "fastAutoOnSeconds": 60,
+    "toolOverrides": null,
+    "verboseLevel": "full",
+    "systemSent": true,
+    "abortedLastRun": false,
+    "restartRecoveryStatus": null,
+    "totalTokensFresh": false,
+    "goal": null,
+    "contextTokens": 272000,
+    "contextBudgetStatus": null,
+    "effectiveResponseUsage": "off",
+    "modelProvider": "openai",
+    "model": "gpt-5.5",
+    "activeModelProvider": "openai",
+    "activeModel": "gpt-5.5",
+    "modelOverrideSource": null,
+    "agentRuntime": {
+     "id": "openclaw",
+     "cloudPlacementSupported": true,
+     "cloudPlacementExecutionMode": "worker-turn",
+     "devicePlacement": {
+      "requiredNodeCommands": [],
+      "consumesWorkerSlot": true
+     },
+     "devicePlacementSupported": true,
+     "source": "model"
+    },
+    "runtimeSelectionLocked": false,
+    "status": "running",
+    "lastRunError": null,
+    "providerReview": null,
+    "lastRunId": null,
+    "hasAutomation": false,
+    "startedAt": 1790792470704,
+    "endedAt": null,
+    "runtimeMs": null
+   }
+  },
+  {
+   "t": 182515,
+   "event": "agent",
+   "payload": {
+    "runId": "run-widget-cap",
+    "stream": "item",
+    "data": {
+     "itemId": "tool:tool_search_code:call_dSwx0NXDWBAnWUcGs47lHl9d_fc_0a41d4d143e14e10016abd5332974887d1b362d05afa48fbcd:show_widget:1",
+     "toolCallId": "tool_search_code:call_dSwx0NXDWBAnWUcGs47lHl9d_fc_0a41d4d143e14e10016abd5332974887d1b362d05afa48fbcd:show_widget:1",
+     "name": "show_widget",
+     "kind": "tool",
+     "phase": "start",
+     "title": "Show Widget",
+     "status": "running",
+     "commandBearing": false,
+     "startedAt": 1790792506925
+    },
+    "sessionKey": "agent:main:atrium:chat:u-testuser01:widget-chat",
+    "agentId": "alice",
+    "seq": 22,
+    "ts": 1790792506925,
+    "isHeartbeat": false
+   }
+  },
+  {
+   "t": 182515,
+   "event": "agent",
+   "payload": {
+    "runId": "run-widget-cap",
+    "stream": "tool",
+    "data": {
+     "phase": "start",
+     "name": "show_widget",
+     "toolCallId": "tool_search_code:call_dSwx0NXDWBAnWUcGs47lHl9d_fc_0a41d4d143e14e10016abd5332974887d1b362d05afa48fbcd:show_widget:1",
+     "parentToolCallId": "call_dSwx0NXDWBAnWUcGs47lHl9d|fc_0a41d4d143e14e10016abd5332974887d1b362d05afa48fbcd",
+     "args": {
+      "title": "Counter",
+      "widget_code": "<widget code elided>",
+      "height": 70
+     }
+    },
+    "sessionKey": "agent:main:atrium:chat:u-testuser01:widget-chat",
+    "agentId": "alice",
+    "seq": 23,
+    "ts": 1790792506925,
+    "isHeartbeat": false,
+    "updatedAt": 1790792470707,
+    "sessionId": "39034865-8e00-45b2-a26b-e71d8576b8d6",
+    "createdActor": null,
+    "owner": null,
+    "participants": [
+     {
+      "identity": {
+       "type": "observation",
+       "pluginId": null,
+       "accountId": null,
+       "senderKind": "unknown",
+       "id": "cli"
+      }
+     }
+    ],
+    "participantCount": 1,
+    "kind": "direct",
+    "visibility": "shared",
+    "chatType": "direct",
+    "archived": false,
+    "archivedAt": null,
+    "archivedBy": null,
+    "archiveReason": null,
+    "pinned": false,
+    "pinnedAt": null,
+    "unread": true,
+    "markedUnreadAt": null,
+    "agentStatus": null,
+    "observerDigest": null,
+    "activitySummary": {
+     "state": "unavailable"
+    },
+    "controlOwnerSessionKey": null,
+    "swarm": null,
+    "permissionMode": null,
+    "permissionModePending": false,
+    "createdVia": "operator",
+    "createdAt": 1790792324482,
+    "label": null,
+    "autoLabel": null,
+    "icon": null,
+    "color": null,
+    "channelAvatarUrl": null,
+    "category": null,
+    "boardPresentation": null,
+    "displayName": null,
+    "thinkingLevel": null,
+    "effectiveFastMode": false,
+    "effectiveFastModeSource": "default",
+    "fastAutoOnSeconds": 60,
+    "toolOverrides": null,
+    "verboseLevel": "full",
+    "systemSent": true,
+    "abortedLastRun": false,
+    "restartRecoveryStatus": null,
+    "totalTokensFresh": false,
+    "goal": null,
+    "contextTokens": 272000,
+    "contextBudgetStatus": null,
+    "effectiveResponseUsage": "off",
+    "modelProvider": "openai",
+    "model": "gpt-5.5",
+    "activeModelProvider": "openai",
+    "activeModel": "gpt-5.5",
+    "modelOverrideSource": null,
+    "agentRuntime": {
+     "id": "openclaw",
+     "cloudPlacementSupported": true,
+     "cloudPlacementExecutionMode": "worker-turn",
+     "devicePlacement": {
+      "requiredNodeCommands": [],
+      "consumesWorkerSlot": true
+     },
+     "devicePlacementSupported": true,
+     "source": "model"
+    },
+    "runtimeSelectionLocked": false,
+    "status": "running",
+    "lastRunError": null,
+    "providerReview": null,
+    "lastRunId": null,
+    "hasAutomation": false,
+    "startedAt": 1790792470704,
+    "endedAt": null,
+    "runtimeMs": null
+   }
+  },
+  {
+   "t": 182542,
+   "event": "agent",
+   "payload": {
+    "runId": "run-widget-cap",
+    "stream": "tool",
+    "data": {
+     "phase": "result",
+     "name": "show_widget",
+     "toolCallId": "tool_search_code:call_dSwx0NXDWBAnWUcGs47lHl9d_fc_0a41d4d143e14e10016abd5332974887d1b362d05afa48fbcd:show_widget:1",
+     "parentToolCallId": "call_dSwx0NXDWBAnWUcGs47lHl9d|fc_0a41d4d143e14e10016abd5332974887d1b362d05afa48fbcd",
+     "isError": false,
+     "commandBearing": false,
+     "result": {
+      "content": [
+       {
+        "type": "text",
+        "text": "{\n  \"kind\": \"canvas\",\n  \"presentation\": {\n    \"target\": \"assistant_message\",\n    \"title\": \"Counter\",\n    \"sandbox\": \"scripts\"\n  },\n  \"view\": {\n    \"id\": \"cv_87c3b1326a2c47028d93b4c38e242832\",\n    \"url\": \"/__openclaw__/canvas/documents/cv_87c3b1326a2c47028d93b4c38e242832/index.html\"\n  },\n  \"text\": \"Widget hosted at /__openclaw__/canvas/documents/cv_87c3b1326a2c47028d93b4c38e242832/index.html\"\n}"
+       }
+      ],
+      "details": {
+       "kind": "canvas",
+       "presentation": {
+        "target": "assistant_message",
+        "title": "Counter",
+        "sandbox": "scripts"
+       },
+       "view": {
+        "id": "cv_87c3b1326a2c47028d93b4c38e242832",
+        "url": "/__openclaw__/canvas/documents/cv_87c3b1326a2c47028d93b4c38e242832/index.html"
+       },
+       "text": "Widget hosted at /__openclaw__/canvas/documents/cv_87c3b1326a2c47028d93b4c38e242832/index.html"
+      }
+     }
+    },
+    "sessionKey": "agent:main:atrium:chat:u-testuser01:widget-chat",
+    "agentId": "alice",
+    "seq": 24,
+    "ts": 1790792506951,
+    "isHeartbeat": false,
+    "updatedAt": 1790792470707,
+    "sessionId": "39034865-8e00-45b2-a26b-e71d8576b8d6",
+    "createdActor": null,
+    "owner": null,
+    "participants": [
+     {
+      "identity": {
+       "type": "observation",
+       "pluginId": null,
+       "accountId": null,
+       "senderKind": "unknown",
+       "id": "cli"
+      }
+     }
+    ],
+    "participantCount": 1,
+    "kind": "direct",
+    "visibility": "shared",
+    "chatType": "direct",
+    "archived": false,
+    "archivedAt": null,
+    "archivedBy": null,
+    "archiveReason": null,
+    "pinned": false,
+    "pinnedAt": null,
+    "unread": true,
+    "markedUnreadAt": null,
+    "agentStatus": null,
+    "observerDigest": null,
+    "activitySummary": {
+     "state": "unavailable"
+    },
+    "controlOwnerSessionKey": null,
+    "swarm": null,
+    "permissionMode": null,
+    "permissionModePending": false,
+    "createdVia": "operator",
+    "createdAt": 1790792324482,
+    "label": null,
+    "autoLabel": null,
+    "icon": null,
+    "color": null,
+    "channelAvatarUrl": null,
+    "category": null,
+    "boardPresentation": null,
+    "displayName": null,
+    "thinkingLevel": null,
+    "effectiveFastMode": false,
+    "effectiveFastModeSource": "default",
+    "fastAutoOnSeconds": 60,
+    "toolOverrides": null,
+    "verboseLevel": "full",
+    "systemSent": true,
+    "abortedLastRun": false,
+    "restartRecoveryStatus": null,
+    "totalTokensFresh": false,
+    "goal": null,
+    "contextTokens": 272000,
+    "contextBudgetStatus": null,
+    "effectiveResponseUsage": "off",
+    "modelProvider": "openai",
+    "model": "gpt-5.5",
+    "activeModelProvider": "openai",
+    "activeModel": "gpt-5.5",
+    "modelOverrideSource": null,
+    "agentRuntime": {
+     "id": "openclaw",
+     "cloudPlacementSupported": true,
+     "cloudPlacementExecutionMode": "worker-turn",
+     "devicePlacement": {
+      "requiredNodeCommands": [],
+      "consumesWorkerSlot": true
+     },
+     "devicePlacementSupported": true,
+     "source": "model"
+    },
+    "runtimeSelectionLocked": false,
+    "status": "running",
+    "lastRunError": null,
+    "providerReview": null,
+    "lastRunId": null,
+    "hasAutomation": false,
+    "startedAt": 1790792470704,
+    "endedAt": null,
+    "runtimeMs": null
+   }
+  },
+  {
+   "t": 182554,
+   "event": "agent",
+   "payload": {
+    "runId": "run-widget-cap",
+    "stream": "item",
+    "data": {
+     "itemId": "tool:tool_search_code:call_dSwx0NXDWBAnWUcGs47lHl9d_fc_0a41d4d143e14e10016abd5332974887d1b362d05afa48fbcd:show_widget:1",
+     "toolCallId": "tool_search_code:call_dSwx0NXDWBAnWUcGs47lHl9d_fc_0a41d4d143e14e10016abd5332974887d1b362d05afa48fbcd:show_widget:1",
+     "name": "show_widget",
+     "kind": "tool",
+     "phase": "end",
+     "title": "Show Widget",
+     "status": "completed",
+     "commandBearing": false,
+     "startedAt": 1790792506925,
+     "endedAt": 1790792506951
+    },
+    "sessionKey": "agent:main:atrium:chat:u-testuser01:widget-chat",
+    "agentId": "alice",
+    "seq": 25,
+    "ts": 1790792506951,
+    "isHeartbeat": false
+   }
+  },
+  {
+   "t": 182554,
+   "event": "agent",
+   "payload": {
+    "runId": "run-widget-cap",
+    "stream": "tool",
+    "data": {
+     "phase": "result",
+     "name": "exec",
+     "toolCallId": "call_dSwx0NXDWBAnWUcGs47lHl9d|fc_0a41d4d143e14e10016abd5332974887d1b362d05afa48fbcd",
+     "meta": "Render tiny counter widget inline",
+     "isError": false,
+     "commandBearing": true,
+     "result": {
+      "content": [
+       {
+        "type": "text",
+        "text": "{\"status\":\"completed\",\"replaySafe\":false,\"telemetry\":{\"catalogSize\":57,\"sources\":{\"openclaw\":57,\"mcp\":0,\"client\":0},\"counterScope\":\"303a4dc4ac1d9201593792a2\",\"searchCount\":4,\"describeCount\":12,\"callCount\":1,\"visibleTools\":[\"exec\",\"wait\"]},\"output\":[],\"value\":{\"kind\":\"canvas\",\"presentation\":{\"target\":\"assistant_message\",\"title\":\"Counter\",\"sandbox\":\"scripts\"},\"view\":{\"id\":\"cv_87c3b1326a2c47028d93b4c38e242832\",\"url\":\"/__openclaw__/canvas/documents/cv_87c3b1326a2c47028d93b4c38e242832/index.html\"},\"text\":\"Widget hosted at /__openclaw__/canvas/documents/cv_87c3b1326a2c47028d93b4c38e242832/index.html\"}}"
+       }
+      ],
+      "details": {
+       "status": "completed",
+       "replaySafe": false,
+       "telemetry": {
+        "catalogSize": 57,
+        "sources": {
+         "openclaw": 57,
+         "mcp": 0,
+         "client": 0
+        },
+        "counterScope": "303a4dc4ac1d9201593792a2",
+        "searchCount": 4,
+        "describeCount": 12,
+        "callCount": 1,
+        "visibleTools": [
+         "exec",
+         "wait"
+        ]
+       },
+       "output": [],
+       "value": {
+        "kind": "canvas",
+        "presentation": {
+         "target": "assistant_message",
+         "title": "Counter",
+         "sandbox": "scripts"
+        },
+        "view": {
+         "id": "cv_87c3b1326a2c47028d93b4c38e242832",
+         "url": "/__openclaw__/canvas/documents/cv_87c3b1326a2c47028d93b4c38e242832/index.html"
+        },
+        "text": "Widget hosted at /__openclaw__/canvas/documents/cv_87c3b1326a2c47028d93b4c38e242832/index.html"
+       }
+      }
+     }
+    },
+    "sessionKey": "agent:main:atrium:chat:u-testuser01:widget-chat",
+    "agentId": "alice",
+    "seq": 26,
+    "ts": 1790792506964,
+    "isHeartbeat": false,
+    "updatedAt": 1790792470707,
+    "sessionId": "39034865-8e00-45b2-a26b-e71d8576b8d6",
+    "createdActor": null,
+    "owner": null,
+    "participants": [
+     {
+      "identity": {
+       "type": "observation",
+       "pluginId": null,
+       "accountId": null,
+       "senderKind": "unknown",
+       "id": "cli"
+      }
+     }
+    ],
+    "participantCount": 1,
+    "kind": "direct",
+    "visibility": "shared",
+    "chatType": "direct",
+    "archived": false,
+    "archivedAt": null,
+    "archivedBy": null,
+    "archiveReason": null,
+    "pinned": false,
+    "pinnedAt": null,
+    "unread": true,
+    "markedUnreadAt": null,
+    "agentStatus": null,
+    "observerDigest": null,
+    "activitySummary": {
+     "state": "unavailable"
+    },
+    "controlOwnerSessionKey": null,
+    "swarm": null,
+    "permissionMode": null,
+    "permissionModePending": false,
+    "createdVia": "operator",
+    "createdAt": 1790792324482,
+    "label": null,
+    "autoLabel": null,
+    "icon": null,
+    "color": null,
+    "channelAvatarUrl": null,
+    "category": null,
+    "boardPresentation": null,
+    "displayName": null,
+    "thinkingLevel": null,
+    "effectiveFastMode": false,
+    "effectiveFastModeSource": "default",
+    "fastAutoOnSeconds": 60,
+    "toolOverrides": null,
+    "verboseLevel": "full",
+    "systemSent": true,
+    "abortedLastRun": false,
+    "restartRecoveryStatus": null,
+    "totalTokensFresh": false,
+    "goal": null,
+    "contextTokens": 272000,
+    "contextBudgetStatus": null,
+    "effectiveResponseUsage": "off",
+    "modelProvider": "openai",
+    "model": "gpt-5.5",
+    "activeModelProvider": "openai",
+    "activeModel": "gpt-5.5",
+    "modelOverrideSource": null,
+    "agentRuntime": {
+     "id": "openclaw",
+     "cloudPlacementSupported": true,
+     "cloudPlacementExecutionMode": "worker-turn",
+     "devicePlacement": {
+      "requiredNodeCommands": [],
+      "consumesWorkerSlot": true
+     },
+     "devicePlacementSupported": true,
+     "source": "model"
+    },
+    "runtimeSelectionLocked": false,
+    "status": "running",
+    "lastRunError": null,
+    "providerReview": null,
+    "lastRunId": null,
+    "hasAutomation": false,
+    "startedAt": 1790792470704,
+    "endedAt": null,
+    "runtimeMs": null
+   }
+  },
+  {
+   "t": 182555,
+   "event": "agent",
+   "payload": {
+    "runId": "run-widget-cap",
+    "stream": "item",
+    "data": {
+     "itemId": "tool:call_dSwx0NXDWBAnWUcGs47lHl9d|fc_0a41d4d143e14e10016abd5332974887d1b362d05afa48fbcd",
+     "toolCallId": "call_dSwx0NXDWBAnWUcGs47lHl9d|fc_0a41d4d143e14e10016abd5332974887d1b362d05afa48fbcd",
+     "name": "exec",
+     "kind": "tool",
+     "phase": "end",
+     "title": "Exec Render tiny counter widget inline",
+     "status": "completed",
+     "meta": "Render tiny counter widget inline",
+     "commandBearing": true,
+     "startedAt": 1790792506895,
+     "endedAt": 1790792506964
+    },
+    "sessionKey": "agent:main:atrium:chat:u-testuser01:widget-chat",
+    "agentId": "alice",
+    "seq": 27,
+    "ts": 1790792506964,
+    "isHeartbeat": false
+   }
+  },
+  {
+   "t": 182555,
+   "event": "agent",
+   "payload": {
+    "runId": "run-widget-cap",
+    "stream": "command_output",
+    "data": {
+     "itemId": "command:call_dSwx0NXDWBAnWUcGs47lHl9d|fc_0a41d4d143e14e10016abd5332974887d1b362d05afa48fbcd",
+     "phase": "end",
+     "title": "command Render tiny counter widget inline",
+     "toolCallId": "call_dSwx0NXDWBAnWUcGs47lHl9d|fc_0a41d4d143e14e10016abd5332974887d1b362d05afa48fbcd",
+     "name": "exec",
+     "output": "{\"status\":\"completed\",\"replaySafe\":false,\"telemetry\":{\"catalogSize\":57,\"sources\":{\"openclaw\":57,\"mcp\":0,\"client\":0},\"counterScope\":\"303a4dc4ac1d9201593792a2\",\"searchCount\":4,\"describeCount\":12,\"callCount\":1,\"visibleTools\":[\"exec\",\"wait\"]},\"output\":[],\"value\":{\"kind\":\"canvas\",\"presentation\":{\"target\":\"assistant_message\",\"title\":\"Counter\",\"sandbox\":\"scripts\"},\"view\":{\"id\":\"cv_87c3b1326a2c47028d93b4c38e242832\",\"url\":\"/__openclaw__/canvas/documents/cv_87c3b1326a2c47028d93b4c38e242832/index.html\"},\"text\":\"Widget hosted at /__openclaw__/canvas/documents/cv_87c3b1326a2c47028d93b4c38e242832/index.html\"}}",
+     "status": "completed"
+    },
+    "sessionKey": "agent:main:atrium:chat:u-testuser01:widget-chat",
+    "agentId": "alice",
+    "seq": 28,
+    "ts": 1790792506964,
+    "isHeartbeat": false
+   }
+  },
+  {
+   "t": 182832,
+   "event": "agent",
+   "payload": {
+    "runId": "run-widget-cap",
+    "sessionKey": "agent:main:atrium:chat:u-testuser01:widget-chat",
+    "sessionId": "39034865-8e00-45b2-a26b-e71d8576b8d6",
+    "agentId": "alice",
+    "stream": "lifecycle",
+    "data": {
+     "phase": "model",
+     "provider": "openai",
+     "model": "gpt-5.5"
+    },
+    "seq": 29,
+    "ts": 1790792507242,
+    "isHeartbeat": false
+   }
+  },
+  {
+   "t": 189825,
+   "event": "agent",
+   "payload": {
+    "runId": "run-widget-cap",
+    "stream": "thinking",
+    "data": {
+     "text": "**Planning final embed inclusion**",
+     "delta": "**Planning final embed inclusion**"
+    },
+    "sessionKey": "agent:main:atrium:chat:u-testuser01:widget-chat",
+    "agentId": "alice",
+    "seq": 30,
+    "ts": 1790792514230,
+    "isHeartbeat": false
+   }
+  },
+  {
+   "t": 190590,
+   "event": "agent",
+   "payload": {
+    "runId": "run-widget-cap",
+    "stream": "thinking",
+    "data": {
+     "text": "**Planning final embed inclusion**\n\n**Confirming available tools and embed usage**",
+     "delta": "\n\n**Confirming available tools and embed usage**"
+    },
+    "sessionKey": "agent:main:atrium:chat:u-testuser01:widget-chat",
+    "agentId": "alice",
+    "seq": 31,
+    "ts": 1790792514999,
+    "isHeartbeat": false
+   }
+  },
+  {
+   "t": 190629,
+   "event": "agent",
+   "payload": {
+    "runId": "run-widget-cap",
+    "stream": "assistant",
+    "data": {
+     "text": "Tiny",
+     "delta": "Tiny",
+     "phase": "final_answer",
+     "itemId": "d68cd9c9-52d3-4e4d-9fcd-33f380e1745a:3"
+    },
+    "sessionKey": "agent:main:atrium:chat:u-testuser01:widget-chat",
+    "agentId": "alice",
+    "seq": 32,
+    "ts": 1790792515038,
+    "isHeartbeat": false
+   }
+  },
+  {
+   "t": 190629,
+   "event": "chat",
+   "payload": {
+    "runId": "run-widget-cap",
+    "sessionKey": "agent:main:atrium:chat:u-testuser01:widget-chat",
+    "agentId": "alice",
+    "seq": 32,
+    "state": "delta",
+    "deltaText": "Tiny",
+    "message": {
+     "role": "assistant",
+     "content": [
+      {
+       "type": "text",
+       "text": "Tiny"
+      },
+      {
+       "type": "canvas",
+       "preview": {
+        "kind": "canvas",
+        "surface": "assistant_message",
+        "render": "url",
+        "url": "/__openclaw__/canvas/documents/cv_87c3b1326a2c47028d93b4c38e242832/index.html",
+        "viewId": "cv_87c3b1326a2c47028d93b4c38e242832",
+        "title": "Counter",
+        "sandbox": "scripts"
+       },
+       "rawText": null
+      }
+     ],
+     "timestamp": 1790792515038
+    }
+   }
+  },
+  {
+   "t": 190705,
+   "event": "agent",
+   "payload": {
+    "runId": "run-widget-cap",
+    "stream": "assistant",
+    "data": {
+     "text": "Tiny counter:\n\n[embed ref=\"cv",
+     "delta": " counter:\n\n[embed ref=\"cv",
+     "phase": "final_answer",
+     "itemId": "d68cd9c9-52d3-4e4d-9fcd-33f380e1745a:3"
+    },
+    "sessionKey": "agent:main:atrium:chat:u-testuser01:widget-chat",
+    "agentId": "alice",
+    "seq": 38,
+    "ts": 1790792515096,
+    "isHeartbeat": false
+   }
+  },
+  {
+   "t": 190706,
+   "event": "chat",
+   "payload": {
+    "runId": "run-widget-cap",
+    "sessionKey": "agent:main:atrium:chat:u-testuser01:widget-chat",
+    "agentId": "alice",
+    "seq": 38,
+    "state": "delta",
+    "deltaText": " counter:\n\n[embed ref=\"cv",
+    "message": {
+     "role": "assistant",
+     "content": [
+      {
+       "type": "text",
+       "text": "Tiny counter:\n\n[embed ref=\"cv"
+      },
+      {
+       "type": "canvas",
+       "preview": {
+        "kind": "canvas",
+        "surface": "assistant_message",
+        "render": "url",
+        "url": "/__openclaw__/canvas/documents/cv_87c3b1326a2c47028d93b4c38e242832/index.html",
+        "viewId": "cv_87c3b1326a2c47028d93b4c38e242832",
+        "title": "Counter",
+        "sandbox": "scripts"
+       },
+       "rawText": null
+      }
+     ],
+     "timestamp": 1790792515116
+    }
+   }
+  },
+  {
+   "t": 190783,
+   "event": "agent",
+   "payload": {
+    "runId": "run-widget-cap",
+    "stream": "assistant",
+    "data": {
+     "text": "Tiny counter:\n\n[embed ref=\"cv_87c3b1326a2",
+     "delta": "_87c3b1326a2",
+     "phase": "final_answer",
+     "itemId": "d68cd9c9-52d3-4e4d-9fcd-33f380e1745a:3"
+    },
+    "sessionKey": "agent:main:atrium:chat:u-testuser01:widget-chat",
+    "agentId": "alice",
+    "seq": 47,
+    "ts": 1790792515184,
+    "isHeartbeat": false
+   }
+  },
+  {
+   "t": 190784,
+   "event": "chat",
+   "payload": {
+    "runId": "run-widget-cap",
+    "sessionKey": "agent:main:atrium:chat:u-testuser01:widget-chat",
+    "agentId": "alice",
+    "seq": 47,
+    "state": "delta",
+    "deltaText": "_87c3b1326a2",
+    "message": {
+     "role": "assistant",
+     "content": [
+      {
+       "type": "text",
+       "text": "Tiny counter:\n\n[embed ref=\"cv_87c3b1326a2"
+      },
+      {
+       "type": "canvas",
+       "preview": {
+        "kind": "canvas",
+        "surface": "assistant_message",
+        "render": "url",
+        "url": "/__openclaw__/canvas/documents/cv_87c3b1326a2c47028d93b4c38e242832/index.html",
+        "viewId": "cv_87c3b1326a2c47028d93b4c38e242832",
+        "title": "Counter",
+        "sandbox": "scripts"
+       },
+       "rawText": null
+      }
+     ],
+     "timestamp": 1790792515192
+    }
+   }
+  },
+  {
+   "t": 190867,
+   "event": "agent",
+   "payload": {
+    "runId": "run-widget-cap",
+    "stream": "assistant",
+    "data": {
+     "text": "Tiny counter:\n\n[embed ref=\"cv_87c3b1326a2c47028d93",
+     "delta": "c47028d93",
+     "phase": "final_answer",
+     "itemId": "d68cd9c9-52d3-4e4d-9fcd-33f380e1745a:3"
+    },
+    "sessionKey": "agent:main:atrium:chat:u-testuser01:widget-chat",
+    "agentId": "alice",
+    "seq": 52,
+    "ts": 1790792515256,
+    "isHeartbeat": false
+   }
+  },
+  {
+   "t": 190867,
+   "event": "chat",
+   "payload": {
+    "runId": "run-widget-cap",
+    "sessionKey": "agent:main:atrium:chat:u-testuser01:widget-chat",
+    "agentId": "alice",
+    "seq": 52,
+    "state": "delta",
+    "deltaText": "c47028d93",
+    "message": {
+     "role": "assistant",
+     "content": [
+      {
+       "type": "text",
+       "text": "Tiny counter:\n\n[embed ref=\"cv_87c3b1326a2c47028d93"
+      },
+      {
+       "type": "canvas",
+       "preview": {
+        "kind": "canvas",
+        "surface": "assistant_message",
+        "render": "url",
+        "url": "/__openclaw__/canvas/documents/cv_87c3b1326a2c47028d93b4c38e242832/index.html",
+        "viewId": "cv_87c3b1326a2c47028d93b4c38e242832",
+        "title": "Counter",
+        "sandbox": "scripts"
+       },
+       "rawText": null
+      }
+     ],
+     "timestamp": 1790792515268
+    }
+   }
+  },
+  {
+   "t": 190938,
+   "event": "agent",
+   "payload": {
+    "runId": "run-widget-cap",
+    "stream": "assistant",
+    "data": {
+     "text": "Tiny counter:\n\n[embed ref=\"cv_87c3b1326a2c47028d93b4c38e242832",
+     "delta": "b4c38e242832",
+     "phase": "final_answer",
+     "itemId": "d68cd9c9-52d3-4e4d-9fcd-33f380e1745a:3"
+    },
+    "sessionKey": "agent:main:atrium:chat:u-testuser01:widget-chat",
+    "agentId": "alice",
+    "seq": 59,
+    "ts": 1790792515324,
+    "isHeartbeat": false
+   }
+  },
+  {
+   "t": 190938,
+   "event": "chat",
+   "payload": {
+    "runId": "run-widget-cap",
+    "sessionKey": "agent:main:atrium:chat:u-testuser01:widget-chat",
+    "agentId": "alice",
+    "seq": 59,
+    "state": "delta",
+    "deltaText": "b4c38e242832",
+    "message": {
+     "role": "assistant",
+     "content": [
+      {
+       "type": "text",
+       "text": "Tiny counter:\n\n[embed ref=\"cv_87c3b1326a2c47028d93b4c38e242832"
+      },
+      {
+       "type": "canvas",
+       "preview": {
+        "kind": "canvas",
+        "surface": "assistant_message",
+        "render": "url",
+        "url": "/__openclaw__/canvas/documents/cv_87c3b1326a2c47028d93b4c38e242832/index.html",
+        "viewId": "cv_87c3b1326a2c47028d93b4c38e242832",
+        "title": "Counter",
+        "sandbox": "scripts"
+       },
+       "rawText": null
+      }
+     ],
+     "timestamp": 1790792515344
+    }
+   }
+  },
+  {
+   "t": 191010,
+   "event": "agent",
+   "payload": {
+    "runId": "run-widget-cap",
+    "stream": "assistant",
+    "data": {
+     "text": "Tiny counter:\n\n[embed ref=\"cv_87c3b1326a2c47028d93b4c38e242832\" title=\"Counter",
+     "delta": "\" title=\"Counter",
+     "phase": "final_answer",
+     "itemId": "d68cd9c9-52d3-4e4d-9fcd-33f380e1745a:3"
+    },
+    "sessionKey": "agent:main:atrium:chat:u-testuser01:widget-chat",
+    "agentId": "alice",
+    "seq": 63,
+    "ts": 1790792515419,
+    "isHeartbeat": false
+   }
+  },
+  {
+   "t": 191010,
+   "event": "chat",
+   "payload": {
+    "runId": "run-widget-cap",
+    "sessionKey": "agent:main:atrium:chat:u-testuser01:widget-chat",
+    "agentId": "alice",
+    "seq": 63,
+    "state": "delta",
+    "deltaText": "\" title=\"Counter",
+    "message": {
+     "role": "assistant",
+     "content": [
+      {
+       "type": "text",
+       "text": "Tiny counter:\n\n[embed ref=\"cv_87c3b1326a2c47028d93b4c38e242832\" title=\"Counter"
+      },
+      {
+       "type": "canvas",
+       "preview": {
+        "kind": "canvas",
+        "surface": "assistant_message",
+        "render": "url",
+        "url": "/__openclaw__/canvas/documents/cv_87c3b1326a2c47028d93b4c38e242832/index.html",
+        "viewId": "cv_87c3b1326a2c47028d93b4c38e242832",
+        "title": "Counter",
+        "sandbox": "scripts"
+       },
+       "rawText": null
+      }
+     ],
+     "timestamp": 1790792515420
+    }
+   }
+  },
+  {
+   "t": 191091,
+   "event": "agent",
+   "payload": {
+    "runId": "run-widget-cap",
+    "stream": "assistant",
+    "data": {
+     "text": "Tiny counter:\n\n[embed ref=\"cv_87c3b1326a2c47028d93b4c38e242832\" title=\"Counter\" height=\"",
+     "delta": "\" height=\"",
+     "phase": "final_answer",
+     "itemId": "d68cd9c9-52d3-4e4d-9fcd-33f380e1745a:3"
+    },
+    "sessionKey": "agent:main:atrium:chat:u-testuser01:widget-chat",
+    "agentId": "alice",
+    "seq": 66,
+    "ts": 1790792515482,
+    "isHeartbeat": false
+   }
+  },
+  {
+   "t": 191091,
+   "event": "chat",
+   "payload": {
+    "runId": "run-widget-cap",
+    "sessionKey": "agent:main:atrium:chat:u-testuser01:widget-chat",
+    "agentId": "alice",
+    "seq": 66,
+    "state": "delta",
+    "deltaText": "\" height=\"",
+    "message": {
+     "role": "assistant",
+     "content": [
+      {
+       "type": "text",
+       "text": "Tiny counter:\n\n[embed ref=\"cv_87c3b1326a2c47028d93b4c38e242832\" title=\"Counter\" height=\""
+      },
+      {
+       "type": "canvas",
+       "preview": {
+        "kind": "canvas",
+        "surface": "assistant_message",
+        "render": "url",
+        "url": "/__openclaw__/canvas/documents/cv_87c3b1326a2c47028d93b4c38e242832/index.html",
+        "viewId": "cv_87c3b1326a2c47028d93b4c38e242832",
+        "title": "Counter",
+        "sandbox": "scripts"
+       },
+       "rawText": null
+      }
+     ],
+     "timestamp": 1790792515500
+    }
+   }
+  },
+  {
+   "t": 191164,
+   "event": "agent",
+   "payload": {
+    "runId": "run-widget-cap",
+    "stream": "assistant",
+    "data": {
+     "text": "Tiny counter:\n\n[embed ref=\"cv_87c3b1326a2c47028d93b4c38e242832\" title=\"Counter\" height=\"90\" /]\n\nTOOLS: show",
+     "delta": "90\" /]\n\nTOOLS: show",
+     "phase": "final_answer",
+     "itemId": "d68cd9c9-52d3-4e4d-9fcd-33f380e1745a:3"
+    },
+    "sessionKey": "agent:main:atrium:chat:u-testuser01:widget-chat",
+    "agentId": "alice",
+    "seq": 73,
+    "ts": 1790792515562,
+    "isHeartbeat": false
+   }
+  },
+  {
+   "t": 191165,
+   "event": "chat",
+   "payload": {
+    "runId": "run-widget-cap",
+    "sessionKey": "agent:main:atrium:chat:u-testuser01:widget-chat",
+    "agentId": "alice",
+    "seq": 73,
+    "state": "delta",
+    "deltaText": "90\" /]\n\nTOOLS: show",
+    "message": {
+     "role": "assistant",
+     "content": [
+      {
+       "type": "text",
+       "text": "Tiny counter:\n\n[embed ref=\"cv_87c3b1326a2c47028d93b4c38e242832\" title=\"Counter\" height=\"90\" /]\n\nTOOLS: show"
+      },
+      {
+       "type": "canvas",
+       "preview": {
+        "kind": "canvas",
+        "surface": "assistant_message",
+        "render": "url",
+        "url": "/__openclaw__/canvas/documents/cv_87c3b1326a2c47028d93b4c38e242832/index.html",
+        "viewId": "cv_87c3b1326a2c47028d93b4c38e242832",
+        "title": "Counter",
+        "sandbox": "scripts"
+       },
+       "rawText": null
+      }
+     ],
+     "timestamp": 1790792515576
+    }
+   }
+  },
+  {
+   "t": 191241,
+   "event": "agent",
+   "payload": {
+    "runId": "run-widget-cap",
+    "stream": "assistant",
+    "data": {
+     "text": "Tiny counter:\n\n[embed ref=\"cv_87c3b1326a2c47028d93b4c38e242832\" title=\"Counter\" height=\"90\" /]\n\nTOOLS: show_widget, canvas",
+     "delta": "_widget, canvas",
+     "phase": "final_answer",
+     "itemId": "d68cd9c9-52d3-4e4d-9fcd-33f380e1745a:3"
+    },
+    "sessionKey": "agent:main:atrium:chat:u-testuser01:widget-chat",
+    "agentId": "alice",
+    "seq": 76,
+    "ts": 1790792515579,
+    "isHeartbeat": false
+   }
+  },
+  {
+   "t": 191242,
+   "event": "chat",
+   "payload": {
+    "runId": "run-widget-cap",
+    "sessionKey": "agent:main:atrium:chat:u-testuser01:widget-chat",
+    "agentId": "alice",
+    "seq": 76,
+    "state": "delta",
+    "deltaText": "_widget, canvas",
+    "message": {
+     "role": "assistant",
+     "content": [
+      {
+       "type": "text",
+       "text": "Tiny counter:\n\n[embed ref=\"cv_87c3b1326a2c47028d93b4c38e242832\" title=\"Counter\" height=\"90\" /]\n\nTOOLS: show_widget, canvas"
+      },
+      {
+       "type": "canvas",
+       "preview": {
+        "kind": "canvas",
+        "surface": "assistant_message",
+        "render": "url",
+        "url": "/__openclaw__/canvas/documents/cv_87c3b1326a2c47028d93b4c38e242832/index.html",
+        "viewId": "cv_87c3b1326a2c47028d93b4c38e242832",
+        "title": "Counter",
+        "sandbox": "scripts"
+       },
+       "rawText": null
+      }
+     ],
+     "timestamp": 1790792515651
+    }
+   }
+  },
+  {
+   "t": 191447,
+   "event": "agent",
+   "payload": {
+    "runId": "run-widget-cap",
+    "sessionKey": "agent:main:atrium:chat:u-testuser01:widget-chat",
+    "stream": "usage",
+    "data": {
+     "outputTokens": 1470
+    },
+    "agentId": "alice",
+    "seq": 77,
+    "ts": 1790792515854,
+    "isHeartbeat": false
+   }
+  },
+  {
+   "t": 191455,
+   "event": "agent",
+   "payload": {
+    "runId": "run-widget-cap",
+    "sessionKey": "agent:main:atrium:chat:u-testuser01:widget-chat",
+    "sessionId": "39034865-8e00-45b2-a26b-e71d8576b8d6",
+    "agentId": "alice",
+    "stream": "lifecycle",
+    "data": {
+     "phase": "finishing",
+     "stopReason": "stop",
+     "aborted": false,
+     "livenessState": "working",
+     "replayInvalid": true,
+     "endedAt": 1790792515866
+    },
+    "seq": 78,
+    "ts": 1790792515866,
+    "isHeartbeat": false
+   }
+  },
+  {
+   "t": 191483,
+   "event": "agent",
+   "payload": {
+    "runId": "run-widget-cap",
+    "agentId": "alice",
+    "sessionId": "39034865-8e00-45b2-a26b-e71d8576b8d6",
+    "sessionKey": "agent:main:atrium:chat:u-testuser01:widget-chat",
+    "lane": "main",
+    "stream": "lifecycle",
+    "data": {
+     "phase": "model",
+     "provider": null,
+     "model": null
+    },
+    "seq": 79,
+    "ts": 1790792515893,
+    "isHeartbeat": false
+   }
+  },
+  {
+   "t": 191488,
+   "event": "agent",
+   "payload": {
+    "runId": "run-widget-cap",
+    "sessionKey": "agent:main:atrium:chat:u-testuser01:widget-chat",
+    "stream": "lifecycle",
+    "data": {
+     "stopReason": "stop",
+     "aborted": false,
+     "livenessState": "working",
+     "replayInvalid": true,
+     "phase": "end",
+     "endedAt": 1790792515895,
+     "startedAt": 1790792470704,
+     "terminalReply": {
+      "disposition": "visible",
+      "text": "Tiny counter:\n\n[embed ref=\"cv_87c3b1326a2c47028d93b4c38e242832\" title=\"Counter\" height=\"90\" /]\n\nTOOLS: show_widget, canvas"
+     },
+     "terminalReceipt": {
+      "runId": "run-widget-cap",
+      "sessionId": "39034865-8e00-45b2-a26b-e71d8576b8d6",
+      "turnId": "run-widget-cap",
+      "requested": {
+       "provider": "openai",
+       "model": "gpt-5.5"
+      },
+      "effective": {
+       "provider": "openai",
+       "model": "gpt-5.5",
+       "responseModel": "gpt-5.5"
+      },
+      "successfulToolNames": [
+       "exec",
+       "show_widget"
+      ],
+      "rerouted": false,
+      "terminalDisposition": "visible"
+     },
+     "executionSettled": true
+    },
+    "sessionId": "39034865-8e00-45b2-a26b-e71d8576b8d6",
+    "agentId": "alice",
+    "seq": 80,
+    "ts": 1790792515895,
+    "isHeartbeat": false
+   }
+  },
+  {
+   "t": 191489,
+   "event": "chat",
+   "payload": {
+    "runId": "run-widget-cap",
+    "sessionKey": "agent:main:atrium:chat:u-testuser01:widget-chat",
+    "agentId": "alice",
+    "seq": 80,
+    "state": "final",
+    "stopReason": "stop",
+    "message": {
+     "role": "assistant",
+     "content": [
+      {
+       "type": "text",
+       "text": "Tiny counter:\n\n[embed ref=\"cv_87c3b1326a2c47028d93b4c38e242832\" title=\"Counter\" height=\"90\" /]\n\nTOOLS: show_widget, canvas"
+      },
+      {
+       "type": "canvas",
+       "preview": {
+        "kind": "canvas",
+        "surface": "assistant_message",
+        "render": "url",
+        "url": "/__openclaw__/canvas/documents/cv_87c3b1326a2c47028d93b4c38e242832/index.html",
+        "viewId": "cv_87c3b1326a2c47028d93b4c38e242832",
+        "title": "Counter",
+        "sandbox": "scripts"
+       },
+       "rawText": null
+      }
+     ],
+     "timestamp": 1790792515900
+    }
+   }
+  }
+ ],
+ "widgetOnly": [
+  {
+   "t": 196609,
+   "event": "chat",
+   "payload": {
+    "runId": "run-widget-only",
+    "sessionKey": "agent:main:atrium:chat:u-testuser01:widget-chat",
+    "agentId": "alice",
+    "seq": 1,
+    "state": "status",
+    "phase": "preparing_workspace"
+   }
+  },
+  {
+   "t": 196609,
+   "event": "agent",
+   "payload": {
+    "runId": "run-widget-only",
+    "stream": "run_status",
+    "data": {
+     "phase": "preparing_workspace"
+    },
+    "sessionKey": "agent:main:atrium:chat:u-testuser01:widget-chat",
+    "agentId": "alice",
+    "seq": 1,
+    "ts": 1790792521019,
+    "isHeartbeat": false
+   }
+  },
+  {
+   "t": 196792,
+   "event": "chat",
+   "payload": {
+    "runId": "run-widget-only",
+    "sessionKey": "agent:main:atrium:chat:u-testuser01:widget-chat",
+    "agentId": "alice",
+    "seq": 2,
+    "state": "status",
+    "phase": "preparing_context"
+   }
+  },
+  {
+   "t": 196792,
+   "event": "agent",
+   "payload": {
+    "runId": "run-widget-only",
+    "stream": "run_status",
+    "data": {
+     "phase": "preparing_context"
+    },
+    "sessionKey": "agent:main:atrium:chat:u-testuser01:widget-chat",
+    "agentId": "alice",
+    "seq": 2,
+    "ts": 1790792521199,
+    "isHeartbeat": false
+   }
+  },
+  {
+   "t": 196895,
+   "event": "agent",
+   "payload": {
+    "runId": "run-widget-only",
+    "stream": "provenance-probe.provenance",
+    "sessionKey": "agent:main:atrium:chat:u-testuser01:widget-chat",
+    "data": {
+     "v": 1,
+     "source": "hindsight",
+     "kind": "memory",
+     "injected": {
+      "chars": 420,
+      "position": "system_prepend",
+      "truncated": false
+     },
+     "retrieval": {
+      "route": "ALL",
+      "bank": "bench::probe::user"
+     },
+     "items": [
+      {
+       "id": "mem_bench_001",
+       "type": "observation",
+       "date": "2026-06-01",
+       "score": 0.91,
+       "text": "Bench observation: the user prefers concise answers."
+      },
+      {
+       "id": "mem_bench_002",
+       "type": "world",
+       "date": "2026-05-20",
+       "score": 0.84,
+       "text": "Bench fact: the validation bench runs a pinned gateway."
+      }
+     ],
+     "pluginId": "provenance-probe",
+     "pluginName": "Provenance Contract Probe"
+    },
+    "agentId": "alice",
+    "seq": 3,
+    "ts": 1790792521304,
+    "isHeartbeat": false
+   }
+  },
+  {
+   "t": 196895,
+   "event": "agent",
+   "payload": {
+    "runId": "run-widget-only",
+    "stream": "provenance-probe.provenance",
+    "sessionKey": "agent:main:atrium:chat:u-testuser01:widget-chat",
+    "data": {
+     "v": 1,
+     "source": "knowledge",
+     "kind": "documents",
+     "injected": {
+      "chars": 1300,
+      "position": "system_append",
+      "truncated": false
+     },
+     "retrieval": {
+      "route": "pgvector",
+      "collections": [
+       "knowledge_bench"
+      ],
+      "lightrag": {
+       "mode": "mix",
+       "contextChars": 0
+      }
+     },
+     "items": [
+      {
+       "file_name": "bench-compliance-report.pdf",
+       "collection": "knowledge_bench",
+       "score": 0.93,
+       "text": "Bench chunk: section 4.2 defines the retention policy."
+      }
+     ],
+     "pluginId": "provenance-probe",
+     "pluginName": "Provenance Contract Probe"
+    },
+    "agentId": "alice",
+    "seq": 4,
+    "ts": 1790792521304,
+    "isHeartbeat": false
+   }
+  },
+  {
+   "t": 196954,
+   "event": "agent",
+   "payload": {
+    "runId": "run-widget-only",
+    "sessionKey": "agent:main:atrium:chat:u-testuser01:widget-chat",
+    "sessionId": "39034865-8e00-45b2-a26b-e71d8576b8d6",
+    "agentId": "alice",
+    "stream": "lifecycle",
+    "data": {
+     "phase": "start",
+     "startedAt": 1790792521362
+    },
+    "seq": 5,
+    "ts": 1790792521362,
+    "isHeartbeat": false
+   }
+  },
+  {
+   "t": 196962,
+   "event": "chat",
+   "payload": {
+    "runId": "run-widget-only",
+    "sessionKey": "agent:main:atrium:chat:u-testuser01:widget-chat",
+    "agentId": "alice",
+    "seq": 6,
+    "state": "status",
+    "phase": "starting_model"
+   }
+  },
+  {
+   "t": 196962,
+   "event": "agent",
+   "payload": {
+    "runId": "run-widget-only",
+    "stream": "run_status",
+    "data": {
+     "phase": "starting_model"
+    },
+    "sessionKey": "agent:main:atrium:chat:u-testuser01:widget-chat",
+    "agentId": "alice",
+    "seq": 6,
+    "ts": 1790792521372,
+    "isHeartbeat": false
+   }
+  },
+  {
+   "t": 197191,
+   "event": "agent",
+   "payload": {
+    "runId": "run-widget-only",
+    "sessionKey": "agent:main:atrium:chat:u-testuser01:widget-chat",
+    "sessionId": "39034865-8e00-45b2-a26b-e71d8576b8d6",
+    "agentId": "alice",
+    "stream": "lifecycle",
+    "data": {
+     "phase": "model",
+     "provider": "openai",
+     "model": "gpt-5.5"
+    },
+    "seq": 7,
+    "ts": 1790792521601,
+    "isHeartbeat": false
+   }
+  },
+  {
+   "t": 203230,
+   "event": "agent",
+   "payload": {
+    "runId": "run-widget-only",
+    "stream": "thinking",
+    "data": {
+     "text": "**Planning single exec call to show_widget**",
+     "delta": "**Planning single exec call to show_widget**"
+    },
+    "sessionKey": "agent:main:atrium:chat:u-testuser01:widget-chat",
+    "agentId": "alice",
+    "seq": 8,
+    "ts": 1790792527639,
+    "isHeartbeat": false
+   }
+  },
+  {
+   "t": 204472,
+   "event": "agent",
+   "payload": {
+    "runId": "run-widget-only",
+    "sessionKey": "agent:main:atrium:chat:u-testuser01:widget-chat",
+    "stream": "usage",
+    "data": {
+     "outputTokens": 208
+    },
+    "agentId": "alice",
+    "seq": 9,
+    "ts": 1790792528876,
+    "isHeartbeat": false
+   }
+  },
+  {
+   "t": 204489,
+   "event": "agent",
+   "payload": {
+    "runId": "run-widget-only",
+    "stream": "item",
+    "data": {
+     "itemId": "tool:call_KCBkE7dTYLTcCQblONfWVjQh|fc_01fa98f879c55b50016abd534fac5087d1999fe510231d974e",
+     "toolCallId": "call_KCBkE7dTYLTcCQblONfWVjQh|fc_01fa98f879c55b50016abd534fac5087d1999fe510231d974e",
+     "name": "exec",
+     "kind": "tool",
+     "phase": "start",
+     "title": "Exec Render canvas-only probe widget",
+     "status": "running",
+     "meta": "Render canvas-only probe widget",
+     "commandBearing": true,
+     "startedAt": 1790792528898
+    },
+    "sessionKey": "agent:main:atrium:chat:u-testuser01:widget-chat",
+    "agentId": "alice",
+    "seq": 10,
+    "ts": 1790792528899,
+    "isHeartbeat": false
+   }
+  },
+  {
+   "t": 204490,
+   "event": "agent",
+   "payload": {
+    "runId": "run-widget-only",
+    "stream": "tool",
+    "data": {
+     "phase": "start",
+     "name": "exec",
+     "toolCallId": "call_KCBkE7dTYLTcCQblONfWVjQh|fc_01fa98f879c55b50016abd534fac5087d1999fe510231d974e",
+     "args": {
+      "title": "Render canvas-only probe widget",
+      "code": "const [showWidget] = await catalog.search('show_widget');\nreturn await showWidget({title:'canvas-only probe', widget_code:'<!doctype html><meta charset=\"utf-8\"><div style=\"font:14px system-ui;padding:8px\">canvas-only probe</div>', height:48});"
+     }
+    },
+    "sessionKey": "agent:main:atrium:chat:u-testuser01:widget-chat",
+    "agentId": "alice",
+    "seq": 11,
+    "ts": 1790792528899,
+    "isHeartbeat": false,
+    "updatedAt": 1790792521365,
+    "sessionId": "39034865-8e00-45b2-a26b-e71d8576b8d6",
+    "createdActor": null,
+    "owner": null,
+    "participants": [
+     {
+      "identity": {
+       "type": "observation",
+       "pluginId": null,
+       "accountId": null,
+       "senderKind": "unknown",
+       "id": "cli"
+      }
+     }
+    ],
+    "participantCount": 1,
+    "kind": "direct",
+    "visibility": "shared",
+    "chatType": "direct",
+    "archived": false,
+    "archivedAt": null,
+    "archivedBy": null,
+    "archiveReason": null,
+    "pinned": false,
+    "pinnedAt": null,
+    "unread": true,
+    "markedUnreadAt": null,
+    "agentStatus": null,
+    "observerDigest": null,
+    "activitySummary": {
+     "state": "unavailable"
+    },
+    "controlOwnerSessionKey": null,
+    "swarm": null,
+    "permissionMode": null,
+    "permissionModePending": false,
+    "createdVia": "operator",
+    "createdAt": 1790792324482,
+    "label": null,
+    "autoLabel": null,
+    "icon": null,
+    "color": null,
+    "channelAvatarUrl": null,
+    "category": null,
+    "boardPresentation": null,
+    "displayName": null,
+    "thinkingLevel": null,
+    "effectiveFastMode": false,
+    "effectiveFastModeSource": "default",
+    "fastAutoOnSeconds": 60,
+    "toolOverrides": null,
+    "verboseLevel": "full",
+    "systemSent": true,
+    "abortedLastRun": false,
+    "restartRecoveryStatus": null,
+    "inputTokens": 19022,
+    "outputTokens": 1470,
+    "totalTokens": 17770,
+    "totalTokensFresh": true,
+    "goal": null,
+    "contextTokens": 272000,
+    "contextBudgetStatus": {
+     "schemaVersion": 1,
+     "source": "pre-prompt-estimate",
+     "updatedAt": 1790792470699,
+     "provider": "openai",
+     "model": "gpt-5.5",
+     "route": "fits",
+     "shouldCompact": false,
+     "estimatedPromptTokens": 19325,
+     "contextTokenBudget": 272000,
+     "promptBudgetBeforeReserve": 252000,
+     "reserveTokens": 20000,
+     "effectiveReserveTokens": 20000,
+     "remainingPromptBudgetTokens": 232675,
+     "overflowTokens": 0,
+     "toolResultReducibleChars": 0,
+     "messageCount": 0,
+     "unwindowedMessageCount": 0,
+     "sessionId": "39034865-8e00-45b2-a26b-e71d8576b8d6"
+    },
+    "estimatedCostUsd": 0.153546,
+    "effectiveResponseUsage": "off",
+    "modelProvider": "openai",
+    "model": "gpt-5.5",
+    "activeModelProvider": "openai",
+    "activeModel": "gpt-5.5",
+    "modelOverrideSource": null,
+    "agentRuntime": {
+     "id": "openclaw",
+     "cloudPlacementSupported": true,
+     "cloudPlacementExecutionMode": "worker-turn",
+     "devicePlacement": {
+      "requiredNodeCommands": [],
+      "consumesWorkerSlot": true
+     },
+     "devicePlacementSupported": true,
+     "source": "model"
+    },
+    "runtimeSelectionLocked": false,
+    "status": "running",
+    "lastRunError": null,
+    "providerReview": null,
+    "lastRunId": null,
+    "hasAutomation": false,
+    "startedAt": 1790792521362,
+    "endedAt": null,
+    "runtimeMs": null
+   }
+  },
+  {
+   "t": 204514,
+   "event": "agent",
+   "payload": {
+    "runId": "run-widget-only",
+    "stream": "item",
+    "data": {
+     "itemId": "tool:tool_search_code:call_KCBkE7dTYLTcCQblONfWVjQh_fc_01fa98f879c55b50016abd534fac5087d1999fe510231d974e:show_widget:1",
+     "toolCallId": "tool_search_code:call_KCBkE7dTYLTcCQblONfWVjQh_fc_01fa98f879c55b50016abd534fac5087d1999fe510231d974e:show_widget:1",
+     "name": "show_widget",
+     "kind": "tool",
+     "phase": "start",
+     "title": "Show Widget",
+     "status": "running",
+     "commandBearing": false,
+     "startedAt": 1790792528924
+    },
+    "sessionKey": "agent:main:atrium:chat:u-testuser01:widget-chat",
+    "agentId": "alice",
+    "seq": 12,
+    "ts": 1790792528924,
+    "isHeartbeat": false
+   }
+  },
+  {
+   "t": 204514,
+   "event": "agent",
+   "payload": {
+    "runId": "run-widget-only",
+    "stream": "tool",
+    "data": {
+     "phase": "start",
+     "name": "show_widget",
+     "toolCallId": "tool_search_code:call_KCBkE7dTYLTcCQblONfWVjQh_fc_01fa98f879c55b50016abd534fac5087d1999fe510231d974e:show_widget:1",
+     "parentToolCallId": "call_KCBkE7dTYLTcCQblONfWVjQh|fc_01fa98f879c55b50016abd534fac5087d1999fe510231d974e",
+     "args": {
+      "title": "canvas-only probe",
+      "widget_code": "<widget code elided>",
+      "height": 48
+     }
+    },
+    "sessionKey": "agent:main:atrium:chat:u-testuser01:widget-chat",
+    "agentId": "alice",
+    "seq": 13,
+    "ts": 1790792528924,
+    "isHeartbeat": false,
+    "updatedAt": 1790792521365,
+    "sessionId": "39034865-8e00-45b2-a26b-e71d8576b8d6",
+    "createdActor": null,
+    "owner": null,
+    "participants": [
+     {
+      "identity": {
+       "type": "observation",
+       "pluginId": null,
+       "accountId": null,
+       "senderKind": "unknown",
+       "id": "cli"
+      }
+     }
+    ],
+    "participantCount": 1,
+    "kind": "direct",
+    "visibility": "shared",
+    "chatType": "direct",
+    "archived": false,
+    "archivedAt": null,
+    "archivedBy": null,
+    "archiveReason": null,
+    "pinned": false,
+    "pinnedAt": null,
+    "unread": true,
+    "markedUnreadAt": null,
+    "agentStatus": null,
+    "observerDigest": null,
+    "activitySummary": {
+     "state": "unavailable"
+    },
+    "controlOwnerSessionKey": null,
+    "swarm": null,
+    "permissionMode": null,
+    "permissionModePending": false,
+    "createdVia": "operator",
+    "createdAt": 1790792324482,
+    "label": null,
+    "autoLabel": null,
+    "icon": null,
+    "color": null,
+    "channelAvatarUrl": null,
+    "category": null,
+    "boardPresentation": null,
+    "displayName": null,
+    "thinkingLevel": null,
+    "effectiveFastMode": false,
+    "effectiveFastModeSource": "default",
+    "fastAutoOnSeconds": 60,
+    "toolOverrides": null,
+    "verboseLevel": "full",
+    "systemSent": true,
+    "abortedLastRun": false,
+    "restartRecoveryStatus": null,
+    "inputTokens": 19022,
+    "outputTokens": 1470,
+    "totalTokens": 17770,
+    "totalTokensFresh": true,
+    "goal": null,
+    "contextTokens": 272000,
+    "contextBudgetStatus": {
+     "schemaVersion": 1,
+     "source": "pre-prompt-estimate",
+     "updatedAt": 1790792470699,
+     "provider": "openai",
+     "model": "gpt-5.5",
+     "route": "fits",
+     "shouldCompact": false,
+     "estimatedPromptTokens": 19325,
+     "contextTokenBudget": 272000,
+     "promptBudgetBeforeReserve": 252000,
+     "reserveTokens": 20000,
+     "effectiveReserveTokens": 20000,
+     "remainingPromptBudgetTokens": 232675,
+     "overflowTokens": 0,
+     "toolResultReducibleChars": 0,
+     "messageCount": 0,
+     "unwindowedMessageCount": 0,
+     "sessionId": "39034865-8e00-45b2-a26b-e71d8576b8d6"
+    },
+    "estimatedCostUsd": 0.153546,
+    "effectiveResponseUsage": "off",
+    "modelProvider": "openai",
+    "model": "gpt-5.5",
+    "activeModelProvider": "openai",
+    "activeModel": "gpt-5.5",
+    "modelOverrideSource": null,
+    "agentRuntime": {
+     "id": "openclaw",
+     "cloudPlacementSupported": true,
+     "cloudPlacementExecutionMode": "worker-turn",
+     "devicePlacement": {
+      "requiredNodeCommands": [],
+      "consumesWorkerSlot": true
+     },
+     "devicePlacementSupported": true,
+     "source": "model"
+    },
+    "runtimeSelectionLocked": false,
+    "status": "running",
+    "lastRunError": null,
+    "providerReview": null,
+    "lastRunId": null,
+    "hasAutomation": false,
+    "startedAt": 1790792521362,
+    "endedAt": null,
+    "runtimeMs": null
+   }
+  },
+  {
+   "t": 204527,
+   "event": "agent",
+   "payload": {
+    "runId": "run-widget-only",
+    "stream": "tool",
+    "data": {
+     "phase": "result",
+     "name": "show_widget",
+     "toolCallId": "tool_search_code:call_KCBkE7dTYLTcCQblONfWVjQh_fc_01fa98f879c55b50016abd534fac5087d1999fe510231d974e:show_widget:1",
+     "parentToolCallId": "call_KCBkE7dTYLTcCQblONfWVjQh|fc_01fa98f879c55b50016abd534fac5087d1999fe510231d974e",
+     "isError": false,
+     "commandBearing": false,
+     "result": {
+      "content": [
+       {
+        "type": "text",
+        "text": "{\n  \"kind\": \"canvas\",\n  \"presentation\": {\n    \"target\": \"assistant_message\",\n    \"title\": \"canvas-only probe\",\n    \"sandbox\": \"scripts\"\n  },\n  \"view\": {\n    \"id\": \"cv_3eca04c48b4847638952336f6b09bdc2\",\n    \"url\": \"/__openclaw__/canvas/documents/cv_3eca04c48b4847638952336f6b09bdc2/index.html\"\n  },\n  \"text\": \"Widget hosted at /__openclaw__/canvas/documents/cv_3eca04c48b4847638952336f6b09bdc2/index.html\"\n}"
+       }
+      ],
+      "details": {
+       "kind": "canvas",
+       "presentation": {
+        "target": "assistant_message",
+        "title": "canvas-only probe",
+        "sandbox": "scripts"
+       },
+       "view": {
+        "id": "cv_3eca04c48b4847638952336f6b09bdc2",
+        "url": "/__openclaw__/canvas/documents/cv_3eca04c48b4847638952336f6b09bdc2/index.html"
+       },
+       "text": "Widget hosted at /__openclaw__/canvas/documents/cv_3eca04c48b4847638952336f6b09bdc2/index.html"
+      }
+     }
+    },
+    "sessionKey": "agent:main:atrium:chat:u-testuser01:widget-chat",
+    "agentId": "alice",
+    "seq": 14,
+    "ts": 1790792528936,
+    "isHeartbeat": false,
+    "updatedAt": 1790792521365,
+    "sessionId": "39034865-8e00-45b2-a26b-e71d8576b8d6",
+    "createdActor": null,
+    "owner": null,
+    "participants": [
+     {
+      "identity": {
+       "type": "observation",
+       "pluginId": null,
+       "accountId": null,
+       "senderKind": "unknown",
+       "id": "cli"
+      }
+     }
+    ],
+    "participantCount": 1,
+    "kind": "direct",
+    "visibility": "shared",
+    "chatType": "direct",
+    "archived": false,
+    "archivedAt": null,
+    "archivedBy": null,
+    "archiveReason": null,
+    "pinned": false,
+    "pinnedAt": null,
+    "unread": true,
+    "markedUnreadAt": null,
+    "agentStatus": null,
+    "observerDigest": null,
+    "activitySummary": {
+     "state": "unavailable"
+    },
+    "controlOwnerSessionKey": null,
+    "swarm": null,
+    "permissionMode": null,
+    "permissionModePending": false,
+    "createdVia": "operator",
+    "createdAt": 1790792324482,
+    "label": null,
+    "autoLabel": null,
+    "icon": null,
+    "color": null,
+    "channelAvatarUrl": null,
+    "category": null,
+    "boardPresentation": null,
+    "displayName": null,
+    "thinkingLevel": null,
+    "effectiveFastMode": false,
+    "effectiveFastModeSource": "default",
+    "fastAutoOnSeconds": 60,
+    "toolOverrides": null,
+    "verboseLevel": "full",
+    "systemSent": true,
+    "abortedLastRun": false,
+    "restartRecoveryStatus": null,
+    "inputTokens": 19022,
+    "outputTokens": 1470,
+    "totalTokens": 17770,
+    "totalTokensFresh": true,
+    "goal": null,
+    "contextTokens": 272000,
+    "contextBudgetStatus": {
+     "schemaVersion": 1,
+     "source": "pre-prompt-estimate",
+     "updatedAt": 1790792470699,
+     "provider": "openai",
+     "model": "gpt-5.5",
+     "route": "fits",
+     "shouldCompact": false,
+     "estimatedPromptTokens": 19325,
+     "contextTokenBudget": 272000,
+     "promptBudgetBeforeReserve": 252000,
+     "reserveTokens": 20000,
+     "effectiveReserveTokens": 20000,
+     "remainingPromptBudgetTokens": 232675,
+     "overflowTokens": 0,
+     "toolResultReducibleChars": 0,
+     "messageCount": 0,
+     "unwindowedMessageCount": 0,
+     "sessionId": "39034865-8e00-45b2-a26b-e71d8576b8d6"
+    },
+    "estimatedCostUsd": 0.153546,
+    "effectiveResponseUsage": "off",
+    "modelProvider": "openai",
+    "model": "gpt-5.5",
+    "activeModelProvider": "openai",
+    "activeModel": "gpt-5.5",
+    "modelOverrideSource": null,
+    "agentRuntime": {
+     "id": "openclaw",
+     "cloudPlacementSupported": true,
+     "cloudPlacementExecutionMode": "worker-turn",
+     "devicePlacement": {
+      "requiredNodeCommands": [],
+      "consumesWorkerSlot": true
+     },
+     "devicePlacementSupported": true,
+     "source": "model"
+    },
+    "runtimeSelectionLocked": false,
+    "status": "running",
+    "lastRunError": null,
+    "providerReview": null,
+    "lastRunId": null,
+    "hasAutomation": false,
+    "startedAt": 1790792521362,
+    "endedAt": null,
+    "runtimeMs": null
+   }
+  },
+  {
+   "t": 204528,
+   "event": "agent",
+   "payload": {
+    "runId": "run-widget-only",
+    "stream": "item",
+    "data": {
+     "itemId": "tool:tool_search_code:call_KCBkE7dTYLTcCQblONfWVjQh_fc_01fa98f879c55b50016abd534fac5087d1999fe510231d974e:show_widget:1",
+     "toolCallId": "tool_search_code:call_KCBkE7dTYLTcCQblONfWVjQh_fc_01fa98f879c55b50016abd534fac5087d1999fe510231d974e:show_widget:1",
+     "name": "show_widget",
+     "kind": "tool",
+     "phase": "end",
+     "title": "Show Widget",
+     "status": "completed",
+     "commandBearing": false,
+     "startedAt": 1790792528924,
+     "endedAt": 1790792528936
+    },
+    "sessionKey": "agent:main:atrium:chat:u-testuser01:widget-chat",
+    "agentId": "alice",
+    "seq": 15,
+    "ts": 1790792528936,
+    "isHeartbeat": false
+   }
+  },
+  {
+   "t": 204538,
+   "event": "agent",
+   "payload": {
+    "runId": "run-widget-only",
+    "stream": "tool",
+    "data": {
+     "phase": "result",
+     "name": "exec",
+     "toolCallId": "call_KCBkE7dTYLTcCQblONfWVjQh|fc_01fa98f879c55b50016abd534fac5087d1999fe510231d974e",
+     "meta": "Render canvas-only probe widget",
+     "isError": false,
+     "commandBearing": true,
+     "result": {
+      "content": [
+       {
+        "type": "text",
+        "text": "{\"status\":\"completed\",\"replaySafe\":false,\"telemetry\":{\"catalogSize\":57,\"sources\":{\"openclaw\":57,\"mcp\":0,\"client\":0},\"counterScope\":\"eb7460082c215be5bdbb5548\",\"searchCount\":1,\"describeCount\":0,\"callCount\":1,\"visibleTools\":[\"exec\",\"wait\"]},\"output\":[],\"value\":{\"kind\":\"canvas\",\"presentation\":{\"target\":\"assistant_message\",\"title\":\"canvas-only probe\",\"sandbox\":\"scripts\"},\"view\":{\"id\":\"cv_3eca04c48b4847638952336f6b09bdc2\",\"url\":\"/__openclaw__/canvas/documents/cv_3eca04c48b4847638952336f6b09bdc2/index.html\"},\"text\":\"Widget hosted at /__openclaw__/canvas/documents/cv_3eca04c48b4847638952336f6b09bdc2/index.html\"}}"
+       }
+      ],
+      "details": {
+       "status": "completed",
+       "replaySafe": false,
+       "telemetry": {
+        "catalogSize": 57,
+        "sources": {
+         "openclaw": 57,
+         "mcp": 0,
+         "client": 0
+        },
+        "counterScope": "eb7460082c215be5bdbb5548",
+        "searchCount": 1,
+        "describeCount": 0,
+        "callCount": 1,
+        "visibleTools": [
+         "exec",
+         "wait"
+        ]
+       },
+       "output": [],
+       "value": {
+        "kind": "canvas",
+        "presentation": {
+         "target": "assistant_message",
+         "title": "canvas-only probe",
+         "sandbox": "scripts"
+        },
+        "view": {
+         "id": "cv_3eca04c48b4847638952336f6b09bdc2",
+         "url": "/__openclaw__/canvas/documents/cv_3eca04c48b4847638952336f6b09bdc2/index.html"
+        },
+        "text": "Widget hosted at /__openclaw__/canvas/documents/cv_3eca04c48b4847638952336f6b09bdc2/index.html"
+       }
+      }
+     }
+    },
+    "sessionKey": "agent:main:atrium:chat:u-testuser01:widget-chat",
+    "agentId": "alice",
+    "seq": 16,
+    "ts": 1790792528948,
+    "isHeartbeat": false,
+    "updatedAt": 1790792521365,
+    "sessionId": "39034865-8e00-45b2-a26b-e71d8576b8d6",
+    "createdActor": null,
+    "owner": null,
+    "participants": [
+     {
+      "identity": {
+       "type": "observation",
+       "pluginId": null,
+       "accountId": null,
+       "senderKind": "unknown",
+       "id": "cli"
+      }
+     }
+    ],
+    "participantCount": 1,
+    "kind": "direct",
+    "visibility": "shared",
+    "chatType": "direct",
+    "archived": false,
+    "archivedAt": null,
+    "archivedBy": null,
+    "archiveReason": null,
+    "pinned": false,
+    "pinnedAt": null,
+    "unread": true,
+    "markedUnreadAt": null,
+    "agentStatus": null,
+    "observerDigest": null,
+    "activitySummary": {
+     "state": "unavailable"
+    },
+    "controlOwnerSessionKey": null,
+    "swarm": null,
+    "permissionMode": null,
+    "permissionModePending": false,
+    "createdVia": "operator",
+    "createdAt": 1790792324482,
+    "label": null,
+    "autoLabel": null,
+    "icon": null,
+    "color": null,
+    "channelAvatarUrl": null,
+    "category": null,
+    "boardPresentation": null,
+    "displayName": null,
+    "thinkingLevel": null,
+    "effectiveFastMode": false,
+    "effectiveFastModeSource": "default",
+    "fastAutoOnSeconds": 60,
+    "toolOverrides": null,
+    "verboseLevel": "full",
+    "systemSent": true,
+    "abortedLastRun": false,
+    "restartRecoveryStatus": null,
+    "inputTokens": 19022,
+    "outputTokens": 1470,
+    "totalTokens": 17770,
+    "totalTokensFresh": true,
+    "goal": null,
+    "contextTokens": 272000,
+    "contextBudgetStatus": {
+     "schemaVersion": 1,
+     "source": "pre-prompt-estimate",
+     "updatedAt": 1790792470699,
+     "provider": "openai",
+     "model": "gpt-5.5",
+     "route": "fits",
+     "shouldCompact": false,
+     "estimatedPromptTokens": 19325,
+     "contextTokenBudget": 272000,
+     "promptBudgetBeforeReserve": 252000,
+     "reserveTokens": 20000,
+     "effectiveReserveTokens": 20000,
+     "remainingPromptBudgetTokens": 232675,
+     "overflowTokens": 0,
+     "toolResultReducibleChars": 0,
+     "messageCount": 0,
+     "unwindowedMessageCount": 0,
+     "sessionId": "39034865-8e00-45b2-a26b-e71d8576b8d6"
+    },
+    "estimatedCostUsd": 0.153546,
+    "effectiveResponseUsage": "off",
+    "modelProvider": "openai",
+    "model": "gpt-5.5",
+    "activeModelProvider": "openai",
+    "activeModel": "gpt-5.5",
+    "modelOverrideSource": null,
+    "agentRuntime": {
+     "id": "openclaw",
+     "cloudPlacementSupported": true,
+     "cloudPlacementExecutionMode": "worker-turn",
+     "devicePlacement": {
+      "requiredNodeCommands": [],
+      "consumesWorkerSlot": true
+     },
+     "devicePlacementSupported": true,
+     "source": "model"
+    },
+    "runtimeSelectionLocked": false,
+    "status": "running",
+    "lastRunError": null,
+    "providerReview": null,
+    "lastRunId": null,
+    "hasAutomation": false,
+    "startedAt": 1790792521362,
+    "endedAt": null,
+    "runtimeMs": null
+   }
+  },
+  {
+   "t": 204539,
+   "event": "agent",
+   "payload": {
+    "runId": "run-widget-only",
+    "stream": "item",
+    "data": {
+     "itemId": "tool:call_KCBkE7dTYLTcCQblONfWVjQh|fc_01fa98f879c55b50016abd534fac5087d1999fe510231d974e",
+     "toolCallId": "call_KCBkE7dTYLTcCQblONfWVjQh|fc_01fa98f879c55b50016abd534fac5087d1999fe510231d974e",
+     "name": "exec",
+     "kind": "tool",
+     "phase": "end",
+     "title": "Exec Render canvas-only probe widget",
+     "status": "completed",
+     "meta": "Render canvas-only probe widget",
+     "commandBearing": true,
+     "startedAt": 1790792528898,
+     "endedAt": 1790792528948
+    },
+    "sessionKey": "agent:main:atrium:chat:u-testuser01:widget-chat",
+    "agentId": "alice",
+    "seq": 17,
+    "ts": 1790792528948,
+    "isHeartbeat": false
+   }
+  },
+  {
+   "t": 204539,
+   "event": "agent",
+   "payload": {
+    "runId": "run-widget-only",
+    "stream": "command_output",
+    "data": {
+     "itemId": "command:call_KCBkE7dTYLTcCQblONfWVjQh|fc_01fa98f879c55b50016abd534fac5087d1999fe510231d974e",
+     "phase": "end",
+     "title": "command Render canvas-only probe widget",
+     "toolCallId": "call_KCBkE7dTYLTcCQblONfWVjQh|fc_01fa98f879c55b50016abd534fac5087d1999fe510231d974e",
+     "name": "exec",
+     "output": "{\"status\":\"completed\",\"replaySafe\":false,\"telemetry\":{\"catalogSize\":57,\"sources\":{\"openclaw\":57,\"mcp\":0,\"client\":0},\"counterScope\":\"eb7460082c215be5bdbb5548\",\"searchCount\":1,\"describeCount\":0,\"callCount\":1,\"visibleTools\":[\"exec\",\"wait\"]},\"output\":[],\"value\":{\"kind\":\"canvas\",\"presentation\":{\"target\":\"assistant_message\",\"title\":\"canvas-only probe\",\"sandbox\":\"scripts\"},\"view\":{\"id\":\"cv_3eca04c48b4847638952336f6b09bdc2\",\"url\":\"/__openclaw__/canvas/documents/cv_3eca04c48b4847638952336f6b09bdc2/index.html\"},\"text\":\"Widget hosted at /__openclaw__/canvas/documents/cv_3eca04c48b4847638952336f6b09bdc2/index.html\"}}",
+     "status": "completed"
+    },
+    "sessionKey": "agent:main:atrium:chat:u-testuser01:widget-chat",
+    "agentId": "alice",
+    "seq": 18,
+    "ts": 1790792528948,
+    "isHeartbeat": false
+   }
+  },
+  {
+   "t": 204781,
+   "event": "agent",
+   "payload": {
+    "runId": "run-widget-only",
+    "sessionKey": "agent:main:atrium:chat:u-testuser01:widget-chat",
+    "sessionId": "39034865-8e00-45b2-a26b-e71d8576b8d6",
+    "agentId": "alice",
+    "stream": "lifecycle",
+    "data": {
+     "phase": "model",
+     "provider": "openai",
+     "model": "gpt-5.5"
+    },
+    "seq": 19,
+    "ts": 1790792529190,
+    "isHeartbeat": false
+   }
+  },
+  {
+   "t": 208560,
+   "event": "agent",
+   "payload": {
+    "runId": "run-widget-only",
+    "sessionKey": "agent:main:atrium:chat:u-testuser01:widget-chat",
+    "stream": "usage",
+    "data": {
+     "outputTokens": 212
+    },
+    "agentId": "alice",
+    "seq": 20,
+    "ts": 1790792532969,
+    "isHeartbeat": false
+   }
+  },
+  {
+   "t": 208569,
+   "event": "agent",
+   "payload": {
+    "runId": "run-widget-only",
+    "sessionKey": "agent:main:atrium:chat:u-testuser01:widget-chat",
+    "sessionId": "39034865-8e00-45b2-a26b-e71d8576b8d6",
+    "agentId": "alice",
+    "stream": "lifecycle",
+    "data": {
+     "phase": "finishing",
+     "stopReason": "stop",
+     "aborted": false,
+     "livenessState": "abandoned",
+     "replayInvalid": true,
+     "endedAt": 1790792532979
+    },
+    "seq": 21,
+    "ts": 1790792532979,
+    "isHeartbeat": false
+   }
+  },
+  {
+   "t": 208615,
+   "event": "chat",
+   "payload": {
+    "runId": "run-widget-only",
+    "sessionKey": "agent:main:atrium:chat:u-testuser01:widget-chat",
+    "agentId": "alice",
+    "seq": 22,
+    "state": "status",
+    "phase": "preparing_context"
+   }
+  },
+  {
+   "t": 208615,
+   "event": "agent",
+   "payload": {
+    "runId": "run-widget-only",
+    "stream": "run_status",
+    "data": {
+     "phase": "preparing_context"
+    },
+    "sessionKey": "agent:main:atrium:chat:u-testuser01:widget-chat",
+    "agentId": "alice",
+    "seq": 22,
+    "ts": 1790792533023,
+    "isHeartbeat": false
+   }
+  },
+  {
+   "t": 208617,
+   "event": "agent",
+   "payload": {
+    "runId": "run-widget-only",
+    "sessionKey": "agent:main:atrium:chat:u-testuser01:widget-chat",
+    "sessionId": "39034865-8e00-45b2-a26b-e71d8576b8d6",
+    "agentId": "alice",
+    "stream": "lifecycle",
+    "data": {
+     "phase": "start",
+     "startedAt": 1790792533026
+    },
+    "seq": 23,
+    "ts": 1790792533026,
+    "isHeartbeat": false
+   }
+  },
+  {
+   "t": 208624,
+   "event": "chat",
+   "payload": {
+    "runId": "run-widget-only",
+    "sessionKey": "agent:main:atrium:chat:u-testuser01:widget-chat",
+    "agentId": "alice",
+    "seq": 24,
+    "state": "status",
+    "phase": "starting_model"
+   }
+  },
+  {
+   "t": 208625,
+   "event": "agent",
+   "payload": {
+    "runId": "run-widget-only",
+    "stream": "run_status",
+    "data": {
+     "phase": "starting_model"
+    },
+    "sessionKey": "agent:main:atrium:chat:u-testuser01:widget-chat",
+    "agentId": "alice",
+    "seq": 24,
+    "ts": 1790792533033,
+    "isHeartbeat": false
+   }
+  },
+  {
+   "t": 208938,
+   "event": "agent",
+   "payload": {
+    "runId": "run-widget-only",
+    "sessionKey": "agent:main:atrium:chat:u-testuser01:widget-chat",
+    "sessionId": "39034865-8e00-45b2-a26b-e71d8576b8d6",
+    "agentId": "alice",
+    "stream": "lifecycle",
+    "data": {
+     "phase": "model",
+     "provider": "openai",
+     "model": "gpt-5.5"
+    },
+    "seq": 25,
+    "ts": 1790792533347,
+    "isHeartbeat": false
+   }
+  },
+  {
+   "t": 210390,
+   "event": "agent",
+   "payload": {
+    "runId": "run-widget-only",
+    "sessionKey": "agent:main:atrium:chat:u-testuser01:widget-chat",
+    "stream": "usage",
+    "data": {
+     "outputTokens": 216
+    },
+    "agentId": "alice",
+    "seq": 26,
+    "ts": 1790792534799,
+    "isHeartbeat": false
+   }
+  },
+  {
+   "t": 210402,
+   "event": "agent",
+   "payload": {
+    "runId": "run-widget-only",
+    "sessionKey": "agent:main:atrium:chat:u-testuser01:widget-chat",
+    "sessionId": "39034865-8e00-45b2-a26b-e71d8576b8d6",
+    "agentId": "alice",
+    "stream": "lifecycle",
+    "data": {
+     "phase": "finishing",
+     "stopReason": "stop",
+     "aborted": false,
+     "livenessState": "working",
+     "endedAt": 1790792534812
+    },
+    "seq": 27,
+    "ts": 1790792534812,
+    "isHeartbeat": false
+   }
+  },
+  {
+   "t": 210421,
+   "event": "chat",
+   "payload": {
+    "runId": "run-widget-only",
+    "sessionKey": "agent:main:atrium:chat:u-testuser01:widget-chat",
+    "agentId": "alice",
+    "seq": 28,
+    "state": "status",
+    "phase": "preparing_context"
+   }
+  },
+  {
+   "t": 210421,
+   "event": "agent",
+   "payload": {
+    "runId": "run-widget-only",
+    "stream": "run_status",
+    "data": {
+     "phase": "preparing_context"
+    },
+    "sessionKey": "agent:main:atrium:chat:u-testuser01:widget-chat",
+    "agentId": "alice",
+    "seq": 28,
+    "ts": 1790792534830,
+    "isHeartbeat": false
+   }
+  },
+  {
+   "t": 210422,
+   "event": "agent",
+   "payload": {
+    "runId": "run-widget-only",
+    "sessionKey": "agent:main:atrium:chat:u-testuser01:widget-chat",
+    "sessionId": "39034865-8e00-45b2-a26b-e71d8576b8d6",
+    "agentId": "alice",
+    "stream": "lifecycle",
+    "data": {
+     "phase": "start",
+     "startedAt": 1790792534832
+    },
+    "seq": 29,
+    "ts": 1790792534832,
+    "isHeartbeat": false
+   }
+  },
+  {
+   "t": 210430,
+   "event": "chat",
+   "payload": {
+    "runId": "run-widget-only",
+    "sessionKey": "agent:main:atrium:chat:u-testuser01:widget-chat",
+    "agentId": "alice",
+    "seq": 30,
+    "state": "status",
+    "phase": "starting_model"
+   }
+  },
+  {
+   "t": 210430,
+   "event": "agent",
+   "payload": {
+    "runId": "run-widget-only",
+    "stream": "run_status",
+    "data": {
+     "phase": "starting_model"
+    },
+    "sessionKey": "agent:main:atrium:chat:u-testuser01:widget-chat",
+    "agentId": "alice",
+    "seq": 30,
+    "ts": 1790792534838,
+    "isHeartbeat": false
+   }
+  },
+  {
+   "t": 211735,
+   "event": "agent",
+   "payload": {
+    "runId": "run-widget-only",
+    "sessionKey": "agent:main:atrium:chat:u-testuser01:widget-chat",
+    "sessionId": "39034865-8e00-45b2-a26b-e71d8576b8d6",
+    "agentId": "alice",
+    "stream": "lifecycle",
+    "data": {
+     "phase": "model",
+     "provider": "openai",
+     "model": "gpt-5.5"
+    },
+    "seq": 31,
+    "ts": 1790792536144,
+    "isHeartbeat": false
+   }
+  },
+  {
+   "t": 217557,
+   "event": "agent",
+   "payload": {
+    "runId": "run-widget-only",
+    "stream": "thinking",
+    "data": {
+     "text": "**Clarifying final answer requirements**",
+     "delta": "**Clarifying final answer requirements**"
+    },
+    "sessionKey": "agent:main:atrium:chat:u-testuser01:widget-chat",
+    "agentId": "alice",
+    "seq": 32,
+    "ts": 1790792541963,
+    "isHeartbeat": false
+   }
+  },
+  {
+   "t": 222200,
+   "event": "agent",
+   "payload": {
+    "runId": "run-widget-only",
+    "stream": "thinking",
+    "data": {
+     "text": "**Clarifying final answer requirements**\n\n**Confirming empty final answer output**",
+     "delta": "\n\n**Confirming empty final answer output**"
+    },
+    "sessionKey": "agent:main:atrium:chat:u-testuser01:widget-chat",
+    "agentId": "alice",
+    "seq": 33,
+    "ts": 1790792546607,
+    "isHeartbeat": false
+   }
+  },
+  {
+   "t": 222548,
+   "event": "agent",
+   "payload": {
+    "runId": "run-widget-only",
+    "stream": "thinking",
+    "data": {
+     "text": "**Clarifying final answer requirements**\n\n**Confirming empty final answer output**\n\n**Preparing empty final response**",
+     "delta": "\n\n**Preparing empty final response**"
+    },
+    "sessionKey": "agent:main:atrium:chat:u-testuser01:widget-chat",
+    "agentId": "alice",
+    "seq": 34,
+    "ts": 1790792546954,
+    "isHeartbeat": false
+   }
+  },
+  {
+   "t": 222676,
+   "event": "agent",
+   "payload": {
+    "runId": "run-widget-only",
+    "sessionKey": "agent:main:atrium:chat:u-testuser01:widget-chat",
+    "stream": "usage",
+    "data": {
+     "outputTokens": 619
+    },
+    "agentId": "alice",
+    "seq": 35,
+    "ts": 1790792547083,
+    "isHeartbeat": false
+   }
+  },
+  {
+   "t": 222696,
+   "event": "agent",
+   "payload": {
+    "runId": "run-widget-only",
+    "sessionKey": "agent:main:atrium:chat:u-testuser01:widget-chat",
+    "sessionId": "39034865-8e00-45b2-a26b-e71d8576b8d6",
+    "agentId": "alice",
+    "stream": "lifecycle",
+    "data": {
+     "phase": "finishing",
+     "stopReason": "stop",
+     "aborted": false,
+     "livenessState": "working",
+     "endedAt": 1790792547106
+    },
+    "seq": 36,
+    "ts": 1790792547106,
+    "isHeartbeat": false
+   }
+  },
+  {
+   "t": 222732,
+   "event": "agent",
+   "payload": {
+    "runId": "run-widget-only",
+    "agentId": "alice",
+    "sessionId": "39034865-8e00-45b2-a26b-e71d8576b8d6",
+    "sessionKey": "agent:main:atrium:chat:u-testuser01:widget-chat",
+    "lane": "main",
+    "stream": "lifecycle",
+    "data": {
+     "phase": "model",
+     "provider": null,
+     "model": null
+    },
+    "seq": 37,
+    "ts": 1790792547141,
+    "isHeartbeat": false
+   }
+  },
+  {
+   "t": 222739,
+   "event": "agent",
+   "payload": {
+    "runId": "run-widget-only",
+    "sessionKey": "agent:main:atrium:chat:u-testuser01:widget-chat",
+    "stream": "lifecycle",
+    "data": {
+     "stopReason": "stop",
+     "aborted": false,
+     "livenessState": "working",
+     "phase": "end",
+     "endedAt": 1790792547143,
+     "startedAt": 1790792534832,
+     "replayInvalid": true,
+     "terminalReply": {
+      "disposition": "visible",
+      "text": "The tool run finished, but no final summary was produced. I did not repeat any completed actions."
+     },
+     "terminalReceipt": {
+      "runId": "run-widget-only",
+      "sessionId": "39034865-8e00-45b2-a26b-e71d8576b8d6",
+      "turnId": "run-widget-only",
+      "requested": {
+       "provider": "openai",
+       "model": "gpt-5.5"
+      },
+      "effective": {
+       "provider": "openai",
+       "model": "gpt-5.5",
+       "responseModel": "gpt-5.5"
+      },
+      "successfulToolNames": [
+       "show_widget",
+       "exec"
+      ],
+      "assistantTranscriptIdempotencyKey": "run-widget-only:settled-finalization-fallback",
+      "rerouted": false,
+      "terminalDisposition": "visible"
+     },
+     "assistantTranscriptIdempotencyKey": "run-widget-only:settled-finalization-fallback",
+     "executionSettled": true
+    },
+    "sessionId": "39034865-8e00-45b2-a26b-e71d8576b8d6",
+    "agentId": "alice",
+    "seq": 38,
+    "ts": 1790792547143,
+    "isHeartbeat": false
+   }
+  },
+  {
+   "t": 222739,
+   "event": "chat",
+   "payload": {
+    "runId": "run-widget-only",
+    "sessionKey": "agent:main:atrium:chat:u-testuser01:widget-chat",
+    "agentId": "alice",
+    "seq": 38,
+    "state": "final",
+    "stopReason": "stop",
+    "message": {
+     "role": "assistant",
+     "content": [
+      {
+       "type": "canvas",
+       "preview": {
+        "kind": "canvas",
+        "surface": "assistant_message",
+        "render": "url",
+        "url": "/__openclaw__/canvas/documents/cv_3eca04c48b4847638952336f6b09bdc2/index.html",
+        "viewId": "cv_3eca04c48b4847638952336f6b09bdc2",
+        "title": "canvas-only probe",
+        "sandbox": "scripts"
+       },
+       "rawText": null
+      }
+     ],
+     "timestamp": 1790792547147,
+     "__openclaw": {
+      "runId": "run-widget-only",
+      "idempotencyKey": "run-widget-only:settled-finalization-fallback"
+     }
+    }
+   }
+  },
+  {
+   "t": 222767,
+   "event": "chat",
+   "payload": {
+    "runId": "run-widget-only",
+    "sessionKey": "agent:main:atrium:chat:u-testuser01:widget-chat",
+    "seq": 1,
+    "state": "final",
+    "message": {
+     "role": "assistant",
+     "content": [
+      {
+       "type": "text",
+       "text": "The tool run finished, but no final summary was produced. I did not repeat any completed actions."
+      }
+     ],
+     "text": "The tool run finished, but no final summary was produced. I did not repeat any completed actions.",
+     "timestamp": 1790792547177,
+     "stopReason": "stop",
+     "usage": {
+      "input": 0,
+      "output": 0,
+      "totalTokens": 0
+     }
+    }
+   }
+  }
+ ]
+}

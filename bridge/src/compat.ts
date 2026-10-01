@@ -78,6 +78,10 @@ export const EXPECTED_PERMISSION_MODE_SINCE = "2026.8.2";
  *  applied (the `permissionModes` capability): the guard's floor, see above. */
 export const PERMISSION_MODES_SINCE = EXPECTED_PERMISSION_MODE_SINCE;
 
+/** First gateway version whose inline-widget chain Atrium proved live (see the
+ *  `inlineWidgets` capability below). Exported for the socket-caps decision. */
+export const INLINE_WIDGETS_MIN_VERSION = "2026.9.6";
+
 /**
  * Capability -> minVersion, straight from the bench-validation ledger:
  *  - knobThinkingLevel / knobModel: sessions.patch knobs work since 5.19.
@@ -157,6 +161,14 @@ const OPENCLAW_CAPABILITIES: Record<string, string> = {
   // gateway state, detected per agent at discovery (`knowledge.sources`), the same
   // split as `talk`. Never on Hermes.
   knowledgePolicy: "2026.9.6",
+  // INLINE WIDGETS (OpenClaw `show_widget`): the conversation's socket declares the
+  // `inline-widgets` connect capability so the gateway offers the tool, the bridge
+  // turns its canvas previews into `widget` parts, and `/canvas-view` relays the
+  // document bytes (`canvas.document.view`). The RPC exists from 2026.9.2 (upstream
+  // src/gateway/server-methods/canvas.ts); the floor is the version the live bench
+  // exercised the whole chain on (probe + `widget-inline` scenario), like
+  // `knowledgePolicy`. Never on Hermes: it has no widgets.
+  inlineWidgets: INLINE_WIDGETS_MIN_VERSION,
 };
 
 // Hermes exposes a DELIBERATELY SMALL surface via its OpenAI-compatible API
@@ -292,6 +304,20 @@ export const MODELS_LIST_OWNER_SINCE = "2026.8.1";
  *  method needs admin before it is found missing), and an empty list would claim the
  *  session never compacted. */
 export const COMPACTION_CHECKPOINTS_RETIRED_IN = "2026.9.6";
+
+/** The generation whose gateway takes re-hydrated history TOGETHER with an inline
+ *  attachment. Up to v2026.6.11 the attachment check was a regex over the whole base64
+ *  (`src/gateway/chat-attachments.ts` `isValidBase64`, `/^[A-Za-z0-9+/]+={0,2}$/.test`),
+ *  which overflowed the native stack on a multi-MB file inside a deep plugin chain —
+ *  the 2026.6.5 production RangeError surfaced as INVALID_REQUEST. From v2026.7.1 the
+ *  same function is a linear `charCodeAt` scan (`src/gateway/chat-attachments.ts`
+ *  ~211-231 at v2026.7.1; moved to `packages/media-core/src/base64.ts` `isValidBase64`
+ *  at v2026.9.6). Live proof on 2026.9.6 (bench run
+ *  `probe-rehydrate-attachment-20261001T031258Z`, 13/13 GO): history up to 62.6K chars
+ *  with a text file, a 3 MB PNG and a 4.18 MB PDF, the agent quoting a canary planted
+ *  in the history. Below this version (or on an unknown one) an attachment turn still
+ *  ships the bare message. */
+export const REHYDRATE_WITH_ATTACHMENTS_SINCE = "2026.7.1";
 
 const parsedVersions = new Map<string, ParsedVersion | null>();
 /** `version >= min`, on the RAW gateway version (not the capped capability table);
@@ -725,6 +751,13 @@ export function mediaDeliveryPoisonReason(
  * FROZEN at the validated profile, like every capability.
  */
 export const AGENT_REQUESTS_MIN_VERSION = "2026.9.5";
+
+/** May this gateway version be offered `inline-widgets` on a conversation socket?
+ *  The manifest capability, resolved like every other (frozen at `maxValidated`
+ *  beyond it; an unknown version gets floor capabilities only — fail closed). */
+export function openClawInlineWidgetsEnabled(gatewayVersion: string | null): boolean {
+  return resolveCapabilities("openclaw", gatewayVersion).capabilities.inlineWidgets === true;
+}
 
 export function openClawAgentRequestsEnabled(gatewayVersion: string | null): boolean {
   const range = COMPAT_MANIFEST.providers.openclaw?.supportedRange ?? null;

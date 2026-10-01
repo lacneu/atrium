@@ -831,6 +831,16 @@ async function sweepChatDependents(
     if (!(await drain(rows, asked)) || budget <= 0) return more();
   }
 
+  // 6c. Its inline-widget ownership rows (convex/widgets.ts).
+  {
+    const asked = Math.max(budget, 0);
+    const rows = await ctx.db
+      .query("widgetViews")
+      .withIndex("by_chatId", (q) => q.eq("chatId", chatId))
+      .take(asked);
+    if (!(await drain(rows, asked)) || budget <= 0) return more();
+  }
+
   // 7. What the agent asked and what was answered, with their bell entries.
   {
     const limit = Math.floor(budget / AGENT_REQUEST_DELETE_READS);

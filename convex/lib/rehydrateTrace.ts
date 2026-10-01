@@ -22,6 +22,10 @@ export interface RehydrateTraceInput {
    *  size). Optional (absent on skips / pre-feature bridges) — still content-free. */
   summaryUsed?: boolean;
   summaryChars?: number;
+  /** A `rehydrate` decision whose existing history did not ride the turn: over the
+   *  live window (`window`) or over the frame beside inline attachments (`frame`).
+   *  Allowlisted below; anything else is dropped. */
+  historyWithheld?: string;
   /** Pre-send guard (W2): what the bridge decided BEFORE the send, on the figures
    *  the gateway's own describe carried. `presendBlocked` is the one that means the
    *  turn never left. Enums + an integer percent; the compaction reason arrives
@@ -60,6 +64,19 @@ const PRESEND_FILL_SOURCES: ReadonlySet<string> = new Set([
   "gateway_estimate",
   "counter",
 ]);
+const HISTORY_WITHHELD_REASONS: ReadonlySet<string> = new Set([
+  "window",
+  "frame",
+]);
+
+/** The withheld reason when it is one the bridge can state, else undefined. */
+function historyWithheldReason(
+  value: unknown,
+): "window" | "frame" | undefined {
+  return typeof value === "string" && HISTORY_WITHHELD_REASONS.has(value)
+    ? (value as "window" | "frame")
+    : undefined;
+}
 
 /** Content-free projection of the pre-send guard's report. Anything unrecognized is
  *  DROPPED (never coerced to a default that would read as a real measurement). */
@@ -124,19 +141,34 @@ export function rehydrateTraceMeta(
     ...(b.summaryUsed === true
       ? { summaryUsed: true, summaryChars: b.summaryChars ?? 0 }
       : {}),
+    ...(historyWithheldReason(b.historyWithheld) !== undefined
+      ? { historyWithheld: historyWithheldReason(b.historyWithheld) }
+      : {}),
     ...presendTraceMeta(b),
   };
 }
 
 /** The `routing.rehydrate_missed` anomaly fire condition: a per-turn ROUTED switch
- *  whose session was FRESH but that still did NOT re-inject history — i.e. the
- *  switched agent got no conversation context (the bug this fix closes). After the
- *  fix it should not fire on a normal switch; it remains a regression/gap detector
- *  (e.g. an attachment-on-switch turn, where history can't be prepended). */
+ *  (or a fork's first turn, which carries the same re-key signal) whose session was
+ *  FRESH but that still did NOT re-inject history — i.e. the agent got no
+ *  conversation context. Two shapes: a non-`rehydrate` decision (e.g. an attachment
+ *  turn on a gateway that cannot take history beside a file), and a `rehydrate`
+ *  decision whose history EXISTED but was withheld (over the window, or over the
+ *  frame beside the attachments) — prepending nothing. An empty history is not a
+ *  miss (nothing to carry), so the second shape needs the bridge's stated reason. */
 export function shouldReportRehydrateMissed(b: {
   routedSwitch: boolean;
   freshSession: boolean;
   decision: string;
+  prependedTurns?: number;
+  summaryUsed?: boolean;
+  historyWithheld?: string;
 }): boolean {
-  return b.routedSwitch && b.freshSession && b.decision !== "rehydrate";
+  if (!b.routedSwitch || !b.freshSession) return false;
+  if (b.decision !== "rehydrate") return true;
+  return (
+    historyWithheldReason(b.historyWithheld) !== undefined &&
+    (b.prependedTurns ?? 0) === 0 &&
+    b.summaryUsed !== true
+  );
 }

@@ -157,6 +157,18 @@
     {
       "path": "AgentDatabaseAdmissionRefusal.code",
       "scan": false
+    },
+    {
+      "path": "ConnectParams.caps",
+      "scan": false
+    },
+    {
+      "path": "CanvasDocumentViewParams.docId",
+      "scan": false
+    },
+    {
+      "path": "CanvasDocumentViewResult.html",
+      "scan": false
     }
   ]
 }

@@ -331,6 +331,7 @@ type IngestOp =
       routedInstanceName: string | null;
       switchedFromAgentId: string | null;
       switchedFromInstanceName: string | null;
+      historyWithheld?: string;
       // Pre-send guard (W2). Every field is re-validated against an allowlist in
       // rehydrateTraceMeta — this union documents the wire, it does not trust it.
       presendAction?: string;
@@ -868,7 +869,7 @@ export const ingest = httpAction(async (ctx, request) => {
       return json({ ok: true, applied: snap.applied });
     }
     case "addPart": {
-      await ctx.runMutation(internal.stream.addPart, {
+      const partOutcome = await ctx.runMutation(internal.stream.addPart, {
         messageId: body.messageId as Id<"messages">,
         // The bridge only sends tool/reasoning parts through `addPart`; media
         // goes through `addMedia` (needs a storage round-trip).
@@ -888,10 +889,17 @@ export const ingest = httpAction(async (ctx, request) => {
           // `part.kind` is a structural label (tool/reasoning) — non-PHI.
           partKind:
             typeof body.part.kind === "string" ? body.part.kind : undefined,
-          ok: true,
+          ok: partOutcome?.accepted !== false,
+          ...(partOutcome?.accepted === false ? { reason: partOutcome.reason } : {}),
         },
       });
-      return json({ ok: true });
+      // The outcome rides back (as for addMedia): a widget the mutation refused is
+      // not a reply, and only the bridge's sink can act on that.
+      return json(
+        partOutcome?.accepted === false
+          ? { ok: true, accepted: false, reason: partOutcome.reason }
+          : { ok: true, accepted: true },
+      );
     }
     case "clearPlan": {
       // An empty plan from a silent delivery run: supersede the anchored
@@ -1115,17 +1123,18 @@ export const ingest = httpAction(async (ctx, request) => {
       const rehydrateCorrelationId = body.outboxId
         ? `${body.chatId}:${body.outboxId}`
         : body.chatId;
+      const rehydrateMeta = rehydrateTraceMeta(body);
       await traceIngest(ctx, {
         kind: "openclaw.rehydrate",
         chatId: body.chatId,
         correlationId: rehydrateCorrelationId,
-        meta: rehydrateTraceMeta(body),
+        meta: rehydrateMeta,
       });
-      // EXCEPTION anomaly: a per-turn ROUTED switch whose session was FRESH but that
-      // still did NOT re-inject history — i.e. the switched agent got no context (the
-      // bug this whole fix closes). After the fix this should not fire on a normal
-      // switch; it remains as a regression/gap detector (e.g. an attachment turn on a
-      // switch, where history can't be prepended). Content-free evidence only.
+      // EXCEPTION anomaly: a per-turn ROUTED switch (or a fork's first turn) whose
+      // session was FRESH but that still did NOT re-inject history — i.e. the agent
+      // got no context. A regression/gap detector: an attachment turn on a gateway
+      // that cannot take history beside a file, or history withheld for the window
+      // or the frame. Content-free evidence only.
       if (shouldReportRehydrateMissed(body)) {
         await ctx.runMutation(internal.anomalies.reportAnomalyInternal, {
           kind: "routing.rehydrate_missed",
@@ -1140,6 +1149,9 @@ export const ingest = httpAction(async (ctx, request) => {
             switchedFromInstanceName: body.switchedFromInstanceName,
             decision: body.decision,
             freshSession: body.freshSession,
+            ...(rehydrateMeta.historyWithheld !== undefined
+              ? { historyWithheld: rehydrateMeta.historyWithheld }
+              : {}),
           }),
         });
       }

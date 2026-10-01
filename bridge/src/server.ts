@@ -16,6 +16,12 @@
 // limited before parsing. We never echo gateway/filesystem detail to the caller.
 
 import {
+  CanvasViewCache,
+  fetchCanvasView,
+  isWidgetViewId,
+} from "./providers/openclaw/canvas-view.js";
+
+import {
   createServer,
   type IncomingMessage,
   type Server,
@@ -160,7 +166,10 @@ import {
 } from "./core/dispatch-errors.js";
 import { claimTalkRun, observeFinalize } from "./core/talk-consult.js";
 import { RunManager } from "./providers/openclaw/run-manager.js";
-import { base64FitsFrame } from "./core/attachment-limits.js";
+import {
+  FRAME_ENVELOPE_OVERHEAD_BYTES,
+  base64FitsFrame,
+} from "./core/attachment-limits.js";
 import {
   parseInboundConfig,
   type InboundInstanceConfig,
@@ -229,13 +238,14 @@ import {
   EXPECTED_PERMISSION_MODE_SINCE,
   gatewayAtLeast,
   COMPACTION_CHECKPOINTS_RETIRED_IN,
+  REHYDRATE_WITH_ATTACHMENTS_SINCE,
 } from "./compat.js";
 import {
   COVERAGE_SUMMARY,
   DRIFT_VENDORED_VERSION,
   protocolDrift,
 } from "./providers/openclaw/protocol-drift.js";
-import type { ConvexWriter } from "./convex-writer.js";
+import type { ConvexWriter, RehydrateTraceArgs } from "./convex-writer.js";
 import type { ConfigIssue } from "./core/credential-resolver.js";
 import type {
   BridgeSession,
@@ -272,6 +282,9 @@ import {
   respondOpenClaw,
   type RespondOutcome,
 } from "./agent-request-respond.js";
+
+/** The widget-document relay's cache and concurrency bound (one per bridge process). */
+const canvasViewCache = new CanvasViewCache();
 
 /** Per-chat OpenClaw knob intent (reasoning/model/speed). Non-secret. */
 interface SessionSettings {
@@ -367,6 +380,11 @@ interface SendBody extends BodyRouting {
    *  re-read by Convex at THIS dispatch). Anything but `true`: nothing is applied — the
    *  gateway's operator decides, and the guard is Convex's, exactly as before. */
   permissionModesManaged?: boolean;
+  /** Inline widgets for THIS turn: the instance switch AND the conversation override,
+   *  decided by Convex at dispatch (`lastGateBeforeSend`). `true`/`false` only; absent
+   *  (an older Convex) ⇒ `false` — the socket then declares no `inline-widgets`, which
+   *  is the behaviour before widgets existed. */
+  inlineWidgets?: boolean;
   /**
    * The conversation OWNER's knowledge choice for THIS turn's agent (Convex
    * `chatKnowledgeChoices`), put on the session before `chat.send`
@@ -651,6 +669,7 @@ export function parseSendBody(raw: string): SendBody | null {
       ? { permissionModeFullAuthorized: true }
       : {}),
     ...(obj.permissionModesManaged === true ? { permissionModesManaged: true } : {}),
+    inlineWidgets: obj.inlineWidgets === true,
     ...(knowledgeChoice === undefined ? {} : { knowledgeChoice }),
     ...(typeof obj.knowledgeRevision === "number" && Number.isInteger(obj.knowledgeRevision)
       ? { knowledgeRevision: obj.knowledgeRevision }
@@ -806,16 +825,18 @@ export function projectTaskProbe(task: Record<string, unknown> | undefined): {
 /**
  * Whether to re-hydrate prior turns onto a chat.send, as a pure (testable)
  * decision. Off entirely under `OPENCLAW_REHYDRATION=off`; otherwise needed only on
- * a fresh/rolled session, and only SAFE without an attachment:
+ * a fresh/rolled session:
  *   - `skip_disabled`   — operator kill-switch (no re-hydration, so no crash risk).
  *   - `skip_warm`       — warm session already holds the context.
- *   - `skip_attachment` — fresh session but the turn carries an attachment:
- *     prepended-history + attachment stack-overflows the gateway (live-confirmed),
- *     so we ship the bare message. KNOWN GAP: that turn (and that chat, until the
- *     session next rolls) lacks pre-attachment context — accepted, best-effort, and
- *     strictly better than crashing. No cross-turn debt state (it duplicates already
- *     -warmed turns and dies on a bridge restart for marginal value — see history).
- *   - `rehydrate`       — fresh, attachment-free, enabled.
+ *   - `skip_attachment` — fresh session, the turn carries an inline attachment, AND
+ *     the gateway is not known to take both (`attachmentsSafe` false): up to
+ *     2026.6.11 its regex base64 check stack-overflowed on prepended-history +
+ *     attachment (prod 2026.6.5), so we ship the bare message. From
+ *     REHYDRATE_WITH_ATTACHMENTS_SINCE (2026.7.1, a linear scan upstream, proven
+ *     live on 2026.9.6) the history rides with the file. An UNKNOWN version is
+ *     unsafe (fail closed). KNOWN GAP on those gateways only: that turn (and that
+ *     chat, until the session next rolls) lacks pre-attachment context.
+ *   - `rehydrate`       — fresh, enabled, and attachment-free or attachment-safe.
  */
 export type RehydrationDecision =
   | "rehydrate"
@@ -828,6 +849,10 @@ export function rehydrationDecision(opts: {
   freshSession: boolean;
   hasAttachments: boolean;
   enabled: boolean;
+  /** The gateway takes re-hydrated history together with an inline attachment
+   *  (`gatewayAtLeast(version, REHYDRATE_WITH_ATTACHMENTS_SINCE) === true`). Absent
+   *  or false keeps the bare-message guard — an unknown version is never proof. */
+  attachmentsSafe?: boolean;
   /** LIVE fill of the session, 0..1+, or null when unknown. Beyond
    *  REHYDRATION_MAX_FILL the injection is REFUSED: the gateway already holds
    *  this history, so adding it is the one action guaranteed to make an
@@ -837,7 +862,9 @@ export function rehydrationDecision(opts: {
 }): RehydrationDecision {
   if (!opts.enabled) return "skip_disabled";
   if (!opts.freshSession) return "skip_warm";
-  if (opts.hasAttachments) return "skip_attachment"; // can't prepend history here
+  if (opts.hasAttachments && opts.attachmentsSafe !== true) {
+    return "skip_attachment"; // this gateway can't take history + attachment
+  }
   if (
     opts.fill != null &&
     Number.isFinite(opts.fill) &&
@@ -846,6 +873,83 @@ export function rehydrationDecision(opts: {
     return "skip_full";
   }
   return "rehydrate";
+}
+
+/** The separator between prepended history and the user's text (`"\n\n"`), as it
+ *  rides the frame: each newline is escaped to two bytes. */
+const HISTORY_SEPARATOR_FRAME_BYTES = 4;
+/** Worst-case frame bytes of ONE UTF-16 code unit after JSON escaping + UTF-8: a
+ *  control character or a lone surrogate becomes `\uXXXX`. A pair of surrogates is
+ *  four bytes for two units, a BMP character at most three, so six bounds them all. */
+const MAX_FRAME_BYTES_PER_CHAR = 6;
+
+/** Bytes a string occupies INSIDE a JSON frame: UTF-8 after escaping, quotes not
+ *  counted. What `JSON.stringify` puts on the wire, not `.length`. */
+export function jsonStringFrameBytes(text: string): number {
+  return Buffer.byteLength(JSON.stringify(text), "utf8") - 2;
+}
+
+/** Room the frame leaves for re-hydrated history beside inline attachments. The
+ *  attachments' base64 and the fixed envelope (which already carries the user's own
+ *  text, the session key and the JSON structure — `FRAME_ENVELOPE_OVERHEAD_BYTES`)
+ *  are what the frame guard sizes; the history is the one term re-hydration adds.
+ *  An unknown `maxPayload` proves no room at all (0): the turn then goes bare. */
+export function historyFrameRoomBytes(opts: {
+  maxPayload: number | null;
+  base64Bytes: number;
+}): number {
+  if (opts.maxPayload === null || !Number.isFinite(opts.maxPayload)) return 0;
+  return Math.max(
+    0,
+    opts.maxPayload - FRAME_ENVELOPE_OVERHEAD_BYTES - opts.base64Bytes,
+  );
+}
+
+/** Does `history` (plus its separator) fit `roomBytes` on the frame? */
+export function historyFitsFrame(history: string, roomBytes: number): boolean {
+  return (
+    jsonStringFrameBytes(history) + HISTORY_SEPARATOR_FRAME_BYTES <= roomBytes
+  );
+}
+
+/** A character ceiling that is guaranteed to fit `roomBytes` whatever the text —
+ *  for the re-ask, which bounds the history in characters. Re-measured after the
+ *  re-ask anyway: the ceiling is an upper bound, never the proof. */
+export function historyCharsForFrameRoom(roomBytes: number): number {
+  return Math.max(
+    0,
+    Math.floor(
+      (roomBytes - HISTORY_SEPARATOR_FRAME_BYTES) / MAX_FRAME_BYTES_PER_CHAR,
+    ),
+  );
+}
+
+/** What the final frame check reserves for the chat.send envelope OUTSIDE the
+ *  message and the attachments (session key, idempotency key, permission guard, the
+ *  request wrapper): small fields, bounded well below this. */
+export const FRAME_FIXED_RESERVE_BYTES = 16 * 1024;
+
+/** Does the chat.send frame, as composed, fit `maxPayload`? The message measured as
+ *  it rides (`jsonStringFrameBytes`), the attachments' base64 and their metadata, plus
+ *  the fixed reserve. An unknown `maxPayload` proves nothing fits. */
+export function finalFrameFits(opts: {
+  message: string;
+  attachments: ReadonlyArray<Record<string, unknown>>;
+  base64Bytes: number;
+  maxPayload: number | null;
+}): boolean {
+  if (opts.maxPayload === null || !Number.isFinite(opts.maxPayload)) return false;
+  const metadataBytes = Buffer.byteLength(
+    JSON.stringify(opts.attachments.map((a) => ({ ...a, content: "" }))),
+    "utf8",
+  );
+  return (
+    jsonStringFrameBytes(opts.message) +
+      opts.base64Bytes +
+      metadataBytes +
+      FRAME_FIXED_RESERVE_BYTES <=
+    opts.maxPayload
+  );
 }
 
 /**
@@ -1426,6 +1530,65 @@ export async function performSend(
   body: SendBody,
   writer: ConvexWriter,
   inbound: InboundMediaConfig | null,
+  deliveryDir: string | null,
+  mediaGuard: {
+    gatewayVersionFallback?: string | null;
+    attachmentFixAttested?: boolean;
+  } | null = null,
+  sendReceivedMs: number = Date.now(),
+  presendConfig?: BridgeConfig,
+  speakers: SpeakerSource = defaultSpeakers,
+  report: SendReport = {},
+): Promise<void> {
+  // The re-hydration trace may have to wait for the FINAL frame check (history beside
+  // inline attachments can still be withdrawn there); whatever path leaves the send,
+  // the trace is written exactly once.
+  const rehydrateTrace = new DeferredRehydrateTrace(writer);
+  try {
+    await performSendComposed(
+      session,
+      body,
+      writer,
+      inbound,
+      deliveryDir,
+      mediaGuard,
+      sendReceivedMs,
+      presendConfig,
+      speakers,
+      report,
+      rehydrateTrace,
+    );
+  } finally {
+    rehydrateTrace.flush();
+  }
+}
+
+/** The `openclaw.rehydrate` trace of one dispatch, held until its facts are final. */
+class DeferredRehydrateTrace {
+  private args: RehydrateTraceArgs | null = null;
+  constructor(private readonly writer: ConvexWriter) {}
+  hold(args: RehydrateTraceArgs): void {
+    this.args = args;
+  }
+  /** The history was taken back off the frame after the trace was composed. */
+  historyWithdrawn(reason: "frame"): void {
+    if (this.args === null) return;
+    const { summaryUsed: _used, summaryChars: _chars, ...rest } = this.args;
+    this.args = { ...rest, prependedTurns: 0, historyWithheld: reason };
+  }
+  flush(): void {
+    if (this.args === null) return;
+    const args = this.args;
+    this.args = null;
+    this.writer.emitRehydrateTrace(args);
+  }
+}
+
+async function performSendComposed(
+  session: BridgeSession,
+  body: SendBody,
+  writer: ConvexWriter,
+  inbound: InboundMediaConfig | null,
   // Outbound media dir for the delivery instruction (how the agent makes a
   // generated file downloadable: write it here + emit `MEDIA:<path>`). Null when
   // outbound media is disabled (mode "off") — then no instruction is injected.
@@ -1451,6 +1614,7 @@ export async function performSend(
   /** Filled with what this send did that Convex records (the knowledge choice's
    *  outcome). The route answers it; tests read it. */
   report: SendReport = {},
+  rehydrateTrace: DeferredRehydrateTrace = new DeferredRehydrateTrace(writer),
 ): Promise<void> {
   const conn = session.connection;
   const sessionKey = session.sessionKey;
@@ -1515,17 +1679,29 @@ export async function performSend(
   // message in Convex stays `body.text` (we only enrich what the gateway sees), so
   // re-hydration never leaks into the UI. NON-FATAL: any failure falls back to the
   // bare message — re-hydration must never break a send.
-  // A turn carrying an attachment must NOT be re-hydrated: the OpenClaw gateway
-  // stack-overflows (RangeError) assembling a prepended-history message TOGETHER
-  // with an attachment — confirmed live in prod (re-hydration alone OK, attachment
-  // alone OK, the COMBINATION crashes -> INVALID_REQUEST). The attachment turn is
-  // self-contained anyway ("convert this file"). `OPENCLAW_REHYDRATION=off` is a
-  // kill-switch to disable re-hydration entirely without a redeploy.
+  // A turn carrying an inline attachment is re-hydrated only on a gateway known to
+  // take both: up to 2026.6.11 the gateway's regex base64 check stack-overflowed
+  // (RangeError -> INVALID_REQUEST, prod 2026.6.5) on a prepended-history message
+  // TOGETHER with an attachment. From REHYDRATE_WITH_ATTACHMENTS_SINCE the check is
+  // a linear scan and the combination is proven live (compat.ts); below it, or on an
+  // unknown version, the attachment turn ships bare. Without the history a fork's
+  // (or a routed switch's) first turn answered with no context at all. The history
+  // then also has to fit the frame beside the base64 (the frame guard below).
+  // `OPENCLAW_REHYDRATION=off` is a kill-switch to disable re-hydration entirely.
   // D-D two-axis: ONLY inline base64 attachments trip the frame guard + the
   // rehydration crash-guard. Reference (shared-fs) files carry no base64 and ride
   // as injected PATH text, so they must NOT count here.
   const hasInlineAttachments =
     Array.isArray(body.attachments) && body.attachments.length > 0;
+  // The base64 these attachments put on the frame: what the frame guard sizes, and
+  // what re-hydrated history has to share the frame with.
+  const inlineBase64Bytes = hasInlineAttachments
+    ? (body.attachments as Array<{ content?: unknown }>).reduce(
+        (sum, a) =>
+          sum + (typeof a?.content === "string" ? a.content.length : 0),
+        0,
+      )
+    : 0;
   // Per-instance `rehydration` (in-band, hot) wins; absent (old Convex / no config)
   // → the OPENCLAW_REHYDRATION env kill-switch. Either source can disable it.
   const rehydrationEnabled =
@@ -2029,12 +2205,18 @@ export async function performSend(
     const decision = rehydrationDecision({
       freshSession,
       hasAttachments: hasInlineAttachments,
+      attachmentsSafe:
+        gatewayAtLeast(conn.gatewayVersion, REHYDRATE_WITH_ATTACHMENTS_SINCE) ===
+        true,
       enabled: rehydrationEnabled,
       fill: liveFill,
     });
     let prependedTurns = 0;
     let summaryUsed = false;
     let summaryChars = 0;
+    // History that existed but did NOT ride this fresh turn, and why — the one
+    // `rehydrate` outcome that leaves the agent as context-less as a skip.
+    let historyWithheld: "window" | "frame" | undefined;
     if (decision === "skip_full") {
       // REFUSED, and said so: a chat that silently gets no context is
       // indistinguishable from a rehydration bug. Counts + chatId only (no PHI).
@@ -2042,12 +2224,12 @@ export async function performSend(
         `[rehydrate] chat=${body.chatId} SKIPPED — session already ${Math.round((liveFill ?? 0) * 100)}% full (>${Math.round(REHYDRATION_MAX_FILL * 100)}%); the gateway already holds this history`,
       );
     } else if (decision === "skip_attachment") {
-      // Ship the bare message — prepending history to an attachment turn crashes the
-      // gateway. KNOWN GAP (best-effort, strictly better than crashing): this chat
-      // lacks pre-attachment context until the session next rolls. Counts/chatId
-      // only (no PHI).
+      // Ship the bare message — on a gateway before REHYDRATE_WITH_ATTACHMENTS_SINCE
+      // (or an unidentified one) prepending history to an attachment turn crashes it.
+      // KNOWN GAP there (best-effort, strictly better than crashing): this chat lacks
+      // pre-attachment context until the session next rolls. Counts/chatId only.
       console.error(
-        `[rehydrate] chat=${body.chatId} SKIPPED — attachment present (gateway-crash guard)`,
+        `[rehydrate] chat=${body.chatId} SKIPPED — attachment present on gateway ${conn.gatewayVersion ?? "<unknown>"} (gateway-crash guard)`,
       );
     } else if (decision === "rehydrate") {
       // FOR this agent: in a room several agents answer, and each reply must say who
@@ -2064,6 +2246,9 @@ export async function performSend(
       // Too long for THIS session: asked again, CUT to what fits, rather than the
       // agent getting no history at all (an agent switch can land on a narrower
       // window than the one the history was budgeted for).
+      let askedWithin: number | undefined;
+      // The composer answers `null` below its floor (MIN_REHYDRATION_CHARS): a re-ask
+      // that comes back empty WITHHELD the history the first answer had.
       if (
         ctx.history &&
         !composedPromptFits({
@@ -2082,10 +2267,52 @@ export async function performSend(
           console.error(
             `[rehydrate] chat=${body.chatId} history ${ctx.history.length}c over the live window — asked again within ${room}c`,
           );
+          askedWithin = room;
           ctx = await writer.getRehydrationContext(body.chatId, body.messageId, {
             ...(forAgent ? { forAgent } : {}),
             maxChars: room,
           });
+        }
+        if (!ctx.history) historyWithheld = "window";
+      }
+      // The FRAME, beside inline attachments: the history rides the same chat.send
+      // as the base64, and an oversized frame makes the gateway close the socket.
+      // The guard below sizes the base64 against what the envelope leaves; the
+      // history is the term this adds, measured in the bytes it takes ON the frame
+      // (UTF-8 after JSON escaping — a character can cost up to six). Too big: asked
+      // again within what the frame leaves, and if even that does not fit, the turn
+      // goes bare rather than over the limit. An unknown maxPayload leaves no proven
+      // room, so it goes bare too.
+      if (ctx.history && hasInlineAttachments) {
+        const roomBytes = historyFrameRoomBytes({
+          maxPayload: conn.maxPayload,
+          base64Bytes: inlineBase64Bytes,
+        });
+        if (!historyFitsFrame(ctx.history, roomBytes)) {
+          const roomChars = historyCharsForFrameRoom(roomBytes);
+          const within =
+            askedWithin === undefined ? roomChars : Math.min(askedWithin, roomChars);
+          if (within > 0) {
+            console.error(
+              `[rehydrate] chat=${body.chatId} history over the frame beside ${inlineBase64Bytes}B of attachments — asked again within ${within}c`,
+            );
+            ctx = await writer.getRehydrationContext(body.chatId, body.messageId, {
+              ...(forAgent ? { forAgent } : {}),
+              maxChars: within,
+            });
+          }
+          if (!ctx.history) {
+            console.error(
+              `[rehydrate] chat=${body.chatId} SKIPPED — the history asked within the frame came back empty (below the composer's floor)`,
+            );
+            historyWithheld = "frame";
+          } else if (!historyFitsFrame(ctx.history, roomBytes)) {
+            console.error(
+              `[rehydrate] chat=${body.chatId} SKIPPED — no history fits the frame beside ${inlineBase64Bytes}B of attachments (maxPayload ${conn.maxPayload ?? "unknown"})`,
+            );
+            ctx = { ...ctx, history: null, turnCount: 0 };
+            historyWithheld = "frame";
+          }
         }
       }
       // The COMPOSED prompt — history + separator + the user's own text — bounded
@@ -2102,6 +2329,7 @@ export async function performSend(
           windowTokens: preTurnContextTokens,
         });
       if (ctx.history && !composedFits) {
+        historyWithheld = "window";
         console.error(
           `[rehydrate] chat=${body.chatId} SKIPPED — composed prompt exceeds the live window (history=${ctx.history.length}c + text=${String(body.text ?? "").length}c vs window=${preTurnContextTokens ?? "?"}tok)`,
         );
@@ -2139,7 +2367,10 @@ export async function performSend(
     // Content-free reconstruction trace of the decision (keyed chatId:outboxId in
     // Convex) so the obs MCP can show WHY a (cross-agent) turn re-injected history or
     // not — no local repro needed next time. Fire-and-forget; routed agent NAMES only.
-    writer.emitRehydrateTrace({
+    // History riding beside inline attachments can still be taken back by the FINAL
+    // frame check below, so that trace waits for it (performSend flushes it on every
+    // exit); every other one leaves now, as before.
+    rehydrateTrace.hold({
       chatId: body.chatId,
       outboxId: body.outboxId,
       decision,
@@ -2151,6 +2382,7 @@ export async function performSend(
       switchedFromAgentId: body.switchedFromAgentId,
       switchedFromInstanceName: body.switchedFromInstanceName,
       ...(summaryUsed ? { summaryUsed, summaryChars } : {}),
+      ...(historyWithheld !== undefined ? { historyWithheld } : {}),
       // Pre-send guard (W2): WHY this turn was informed / compacted / withheld.
       // Enums + one integer percent — the reason class is bucketed, never raw.
       presendAction: presend.action,
@@ -2162,6 +2394,7 @@ export async function performSend(
         ? { presendCompactReasonClass: presend.compactReasonClass }
         : {}),
     });
+    if (!(hasInlineAttachments && mentionPrefix > 0)) rehydrateTrace.flush();
   } catch (err) {
     console.error(
       "[rehydrate] skipped (non-fatal):",
@@ -2482,11 +2715,10 @@ export async function performSend(
     // Derived from the gateway-announced maxPayload (no hardcoded size); only
     // skipped when maxPayload is not yet known (the composer + Convex are the
     // earlier gates).
-    const atts = body.attachments as Array<{ content?: unknown }>;
-    const base64Bytes = atts.reduce(
-      (sum, a) => sum + (typeof a?.content === "string" ? a.content.length : 0),
-      0,
-    );
+    // Re-hydrated history, when it rides, was sized against what this check leaves
+    // (`historyFrameRoomBytes` above): it is the one term added to what the
+    // envelope already reserves.
+    const base64Bytes = inlineBase64Bytes;
     if (
       conn.maxPayload !== null &&
       !base64FitsFrame(base64Bytes, conn.maxPayload)
@@ -2497,6 +2729,31 @@ export async function performSend(
       );
     }
     params.attachments = body.attachments;
+    // THE FINAL FRAME, measured as it will be sent — when it carries history. The
+    // room the history was sized against assumed the rest of the message fits the
+    // fixed envelope, but the user's text is not capped and the received-files block
+    // and the delivery instruction were appended after. A frame over `maxPayload`
+    // makes the gateway close the socket, on a turn that went through bare: the
+    // history is taken back off, never the user's message.
+    if (
+      mentionPrefix > 0 &&
+      !finalFrameFits({
+        message,
+        attachments: body.attachments as Array<Record<string, unknown>>,
+        base64Bytes,
+        maxPayload: conn.maxPayload,
+      })
+    ) {
+      console.error(
+        `[rehydrate] chat=${body.chatId} history WITHDRAWN — the composed frame would exceed maxPayload ${conn.maxPayload ?? "unknown"}`,
+      );
+      message = message.slice(mentionPrefix);
+      params.message = message;
+      mentionPrefix = 0;
+      turnWasRehydrated = false;
+      rehydrateTrace.historyWithdrawn("frame");
+    }
+    rehydrateTrace.flush();
   }
   // Response frames can race ahead of the chat.send `res` ack on the shared
   // socket. ARM the pre-ack buffer just before the request so the RunManager
@@ -5253,6 +5510,10 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
       // A person ANSWERS what an agent asked (question / approval / credential).
       // Convex owns who may answer and what is well formed (agentRequests.ts).
       "/agent-request/respond",
+      // Inline widgets: the document bytes of ONE widget view (canvas.document.view).
+      // Convex owns the authorization — the reader may read the chat AND the view is
+      // one of that chat's own widget parts (convex/widgets.ts).
+      "/canvas-view",
     ];
     if (req.method !== "POST" || !POST_ROUTES.includes(req.url ?? "")) {
       sendJson(res, 404, { ok: false, error: "not found" });
@@ -5660,6 +5921,55 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
         console.error("bridge /reset failed:", (err as Error)?.message ?? err);
         sendJson(res, 502, { ok: false, error: "upstream reset failed" });
       }
+      return;
+    }
+
+    if (req.url === "/canvas-view") {
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(raw || "{}");
+      } catch {
+        parsed = null;
+      }
+      const obj = typeof parsed === "object" && parsed !== null ? (parsed as Record<string, unknown>) : null;
+      const instanceName = typeof obj?.instanceName === "string" ? obj.instanceName : null;
+      if (obj === null || instanceName === null) {
+        sendJson(res, 400, { ok: false, error: { code: "invalid_body" } });
+        return;
+      }
+      const bundle = served.get(instanceName);
+      if (!bundle) {
+        sendJson(res, 409, { ok: false, error: { code: "instance_not_served" } });
+        return;
+      }
+      if (bundle.config.kind === "hermes") {
+        sendJson(res, 400, { ok: false, error: { code: "provider_mismatch" } });
+        return;
+      }
+      const viewId = obj.viewId;
+      if (!isWidgetViewId(viewId)) {
+        sendJson(res, 400, { ok: false, error: { code: "invalid_view_id" } });
+        return;
+      }
+      const outcome = await canvasViewCache.get(`${instanceName}\u0000${viewId}`, async () => {
+        try {
+          return await withOperatorConnection(
+            bundle.config,
+            (conn) => fetchCanvasView(conn, viewId),
+            noteHandshakeFor(instanceName),
+          );
+        } catch (err) {
+          console.error(
+            `bridge /canvas-view connect failed [${classifyGatewayError(err)}]:`,
+            (err as Error)?.message ?? err,
+          );
+          return { ok: false as const, httpStatus: 502, code: "gateway_error" as const };
+        }
+      });
+      // Structural only: never the document.
+      console.log(`[widget] view instance=${instanceName} -> ${outcome.ok ? "ok" : outcome.code}`);
+      if (outcome.ok) sendJson(res, 200, { ok: true, html: outcome.html });
+      else sendJson(res, outcome.httpStatus, { ok: false, error: { code: outcome.code } });
       return;
     }
 
@@ -7768,7 +8078,10 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
         sendJson(res, 200, { ok: true });
         return;
       }
-      const session = await registry.acquire(toRouting(body, sendInstance));
+      const session = await registry.acquire({
+        ...toRouting(body, sendInstance),
+        inlineWidgets: body.inlineWidgets === true,
+      });
       // The mount the AGENT is being told to write to on THIS turn. A delegated
       // child's `MEDIA:` directive names a path under it, and its frames are
       // observation-only — so the observer has to be told, or an instance with a

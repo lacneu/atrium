@@ -6,76 +6,91 @@
     {
       "id": "announce-reverse-hold",
       "ok": true,
-      "chat": "59803d011e80f8bb"
+      "chat": "ed4c85a945aae130"
     },
     {
       "id": "basic-turn",
       "ok": true,
-      "chat": "59803d011e80f8bb"
+      "chat": "ed4c85a945aae130"
     },
     {
       "id": "tool-exec",
       "ok": true,
-      "chat": "59803d011e80f8bb"
+      "chat": "ed4c85a945aae130"
     },
     {
       "id": "update-plan",
       "ok": true,
-      "chat": "59803d011e80f8bb"
+      "chat": "ed4c85a945aae130"
     },
     {
       "id": "media-outbound",
       "ok": true,
-      "chat": "59803d011e80f8bb"
+      "chat": "ed4c85a945aae130"
     },
     {
       "id": "inbound-attachment",
       "ok": true,
-      "chat": "59803d011e80f8bb"
+      "chat": "ed4c85a945aae130"
+    },
+    {
+      "id": "fork-attachment-rehydrate",
+      "ok": true,
+      "chat": "ed4c85a945aae130"
     },
     {
       "id": "talk-session",
       "ok": true,
-      "chat": "59803d011e80f8bb"
+      "chat": "ed4c85a945aae130"
     },
     {
       "id": "spawn-announce-merge",
       "ok": true,
-      "chat": "59803d011e80f8bb"
+      "chat": "ed4c85a945aae130"
     },
     {
       "id": "spawn-chain-merge",
       "ok": true,
-      "chat": "59803d011e80f8bb"
+      "chat": "ed4c85a945aae130"
     },
     {
       "id": "spawn-parallel-merge",
       "ok": true,
-      "chat": "59803d011e80f8bb"
+      "chat": "ed4c85a945aae130"
     },
     {
       "id": "async-task",
       "ok": true,
-      "chat": "59803d011e80f8bb"
+      "chat": "ed4c85a945aae130"
     },
     {
       "id": "cron-tool",
       "ok": true,
-      "chat": "59803d011e80f8bb"
+      "chat": "ed4c85a945aae130"
     },
     {
       "id": "agent-request-question",
       "ok": true,
-      "chat": "59803d011e80f8bb"
+      "chat": "ed4c85a945aae130"
     },
     {
       "id": "agent-request-exec-approval",
       "ok": true,
-      "chat": "59803d011e80f8bb"
+      "chat": "ed4c85a945aae130"
+    },
+    {
+      "id": "widget-inline",
+      "ok": true,
+      "chat": "ed4c85a945aae130"
+    },
+    {
+      "id": "widget-off",
+      "ok": true,
+      "chat": "ed4c85a945aae130"
     }
   ],
   "verdict": "GO",
-  "at": "2026-09-30T05:36:01.930Z",
+  "at": "2026-10-01T04:41:59.308Z",
   "scenarios": [
     "agent-request-exec-approval",
     "agent-request-question",
@@ -83,6 +98,7 @@
     "async-task",
     "basic-turn",
     "cron-tool",
+    "fork-attachment-rehydrate",
     "hermes-basic-turn",
     "hermes-clarify",
     "hermes-cron-list",
@@ -93,7 +109,9 @@
     "spawn-parallel-merge",
     "talk-session",
     "tool-exec",
-    "update-plan"
+    "update-plan",
+    "widget-inline",
+    "widget-off"
   ],
   "providers": {
     "announce-reverse-hold": "openclaw",
@@ -102,6 +120,7 @@
     "update-plan": "openclaw",
     "media-outbound": "openclaw",
     "inbound-attachment": "openclaw",
+    "fork-attachment-rehydrate": "openclaw",
     "talk-session": "openclaw",
     "spawn-announce-merge": "openclaw",
     "spawn-chain-merge": "openclaw",
@@ -110,18 +129,20 @@
     "cron-tool": "openclaw",
     "agent-request-question": "openclaw",
     "agent-request-exec-approval": "openclaw",
+    "widget-inline": "openclaw",
+    "widget-off": "openclaw",
     "hermes-basic-turn": "hermes",
     "hermes-cron-list": "hermes",
     "hermes-clarify": "hermes"
   },
   "flags": [],
-  "atriumSha": "41e95981361153b87f21f12ee9bc1a432f339c83",
+  "atriumSha": "4ce3dc5321e3038a6f6fcb1c1c590cdd3f979c76",
   "worktree": {
     "dirty": true,
-    "deltaSha256": "31bdb5161e2f1af13f3fc353087645acc6ba7216b0536ef54318f16e73603f99"
+    "deltaSha256": "c5436ee35cc0a5b8e6fca9fbe62f536913072b42f57db86506640cc0d0d3b68f"
   },
-  "supportDigest": "3e5c82be470e704de24ba053a6e8f4a397a4eb62e784be5dd828b6dfaa452abc",
+  "supportDigest": "4cbc39808f5013d93fba09d4b9298f8d2bd9e7c133b93f3c5552594effb0937c",
   "authMode": "token",
-  "bridgeVersion": "0.89.1",
-  "vendoredSha256": "2beff1ac117eb6634c448a29fff4161dbc2371491e7fd884c02db0c80c4acf52"
+  "bridgeVersion": "0.90.0",
+  "vendoredSha256": "935be3cda241fe35a508530b5c8d5c8cfb9def4d32b2a9514e8ce7973d227303"
 }

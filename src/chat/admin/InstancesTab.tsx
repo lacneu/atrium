@@ -67,6 +67,10 @@ type InstanceForm = {
   systemIdentity: string;
   // FRONTEND live-stream transport (reactive | sse) — an instance property, NOT bridge config.
   streamTransport: StreamTransport;
+  // Inline widgets (OpenClaw only): offered to this instance's agents (default on), and
+  // whether a widget must ask before sending a message on the person's behalf.
+  widgetsEnabled: boolean;
+  widgetPromptConfirm: boolean;
 };
 const EMPTY_INSTANCE: InstanceForm = {
   name: "",
@@ -84,6 +88,8 @@ const EMPTY_INSTANCE: InstanceForm = {
   managePermissionModes: false,
   systemIdentity: "",
   streamTransport: DEFAULT_STREAM_TRANSPORT,
+  widgetsEnabled: true,
+  widgetPromptConfirm: false,
 };
 
 // Which encrypted credential fields apply per provider kind (UI guidance; the
@@ -115,6 +121,8 @@ function formFromInstance(i: Instance): InstanceForm {
     managePermissionModes: i.managePermissionModes === true,
     systemIdentity: i.systemIdentity ?? "",
     streamTransport: i.streamTransport ?? DEFAULT_STREAM_TRANSPORT,
+    widgetsEnabled: i.config?.widgetsEnabled !== false,
+    widgetPromptConfirm: i.config?.widgetPromptConfirm === true,
   };
 }
 
@@ -124,6 +132,7 @@ export function InstancesTab() {
   // so the associated agents are visible at a glance (one read for the table).
   const agentsByInstance = useQuery(api.agents.listAllInstanceAgents, {});
   const upsert = useMutation(api.admin.upsertInstance);
+  const setWidgets = useMutation(api.widgets.setInstanceWidgets);
   const del = useMutation(api.admin.deleteInstance);
   const toast = useToast();
   const [sheetOpen, setSheetOpen] = useState(false);
@@ -140,7 +149,7 @@ export function InstancesTab() {
 
   async function submit() {
     try {
-      await upsert({
+      const savedId = await upsert({
         instanceId: editId ?? undefined,
         name: form.name,
         gatewayUrl: form.gatewayUrl,
@@ -164,6 +173,22 @@ export function InstancesTab() {
           : {}),
         streamTransport: form.streamTransport,
       });
+      // The widget switches live in the instance's config blob, written by their own
+      // audited mutation (convex/widgets.ts). OpenClaw only: Hermes has no widgets.
+      // Only when a switch actually moved: each write is an audited admin action.
+      const before = editId === null ? null : instances?.find((i) => i._id === editId);
+      const widgetsBefore = before?.config?.widgetsEnabled !== false;
+      const confirmBefore = before?.config?.widgetPromptConfirm === true;
+      if (
+        form.kind === "openclaw" &&
+        (form.widgetsEnabled !== widgetsBefore || form.widgetPromptConfirm !== confirmBefore)
+      ) {
+        await setWidgets({
+          instanceId: savedId,
+          enabled: form.widgetsEnabled,
+          promptConfirm: form.widgetPromptConfirm,
+        });
+      }
       setForm(EMPTY_INSTANCE);
       setEditId(null);
       setSheetOpen(false);
@@ -538,6 +563,42 @@ export function InstancesTab() {
                       ? m.settings_manage_permissions_on_hint()
                       : m.settings_manage_permissions_off_hint()}
                   </p>
+                </Field>
+              ) : null}
+              {form.kind === "openclaw" ? (
+                <Field label={m.settings_field_widgets()}>
+                  <Select
+                    value={form.widgetsEnabled ? "on" : "off"}
+                    onValueChange={(v) => setForm({ ...form, widgetsEnabled: v === "on" })}
+                  >
+                    <SelectTrigger size="sm" className="w-full">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="on">{m.settings_widgets_on()}</SelectItem>
+                      <SelectItem value="off">{m.settings_widgets_off()}</SelectItem>
+                    </SelectContent>
+                  </Select>
+                  <p className="oc-field__hint">
+                    {form.widgetsEnabled ? m.settings_widgets_on_hint() : m.settings_widgets_off_hint()}
+                  </p>
+                </Field>
+              ) : null}
+              {form.kind === "openclaw" && form.widgetsEnabled ? (
+                <Field label={m.settings_field_widget_prompt_confirm()}>
+                  <Select
+                    value={form.widgetPromptConfirm ? "on" : "off"}
+                    onValueChange={(v) => setForm({ ...form, widgetPromptConfirm: v === "on" })}
+                  >
+                    <SelectTrigger size="sm" className="w-full">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="off">{m.settings_widget_prompt_confirm_off()}</SelectItem>
+                      <SelectItem value="on">{m.settings_widget_prompt_confirm_on()}</SelectItem>
+                    </SelectContent>
+                  </Select>
+                  <p className="oc-field__hint">{m.settings_widget_prompt_confirm_hint()}</p>
                 </Field>
               ) : null}
               {form.authMode === "trusted-proxy" ? (

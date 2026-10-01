@@ -1,4 +1,5 @@
 import { createContext, memo, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { ChatWidgetsMenuItem } from "./widgets/ChatWidgetsMenuItem";
 import { APP_HOST } from "@/lib/appHost";
 import { clearSidebarFlash, useSidebarFlash } from "./sidebarFlash";
 import { formatDateTime } from "@/lib/format";
@@ -1686,6 +1687,8 @@ const ChatItem = memo(function ChatItem({
               {chat.pinned ? <PinOff /> : <Pin />}
               {chat.pinned ? m.sidebar_unpin() : m.sidebar_pin()}
             </DropdownMenuItem>
+            {/* Inline widgets in this conversation: the owner's switch. */}
+            {isGuest ? null : <ChatWidgetsMenuItem chatId={chat._id} />}
             {/* A reference resolves only for the conversation's OWNER
                 (chatExport.exportByReference): a guest pasting it would get
                 raw text, not the conversation. */}

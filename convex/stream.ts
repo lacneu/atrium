@@ -16,6 +16,8 @@
 // still gated per-user in messages.ts, so a user can never read another user's
 // streamed message.
 
+import { WIDGET_TITLE_MAX_CHARS, WIDGET_VIEW_ID_RE } from "./lib/widgetDescriptor";
+import { conversationWantsWidgets, viewRegisteredTo, widgetInstanceFor } from "./widgets";
 import { v } from "convex/values";
 import { boundPartDepth } from "./lib/partDepth";
 import { contentLocaleForInstance } from "./lib/serverLocale";
@@ -774,7 +776,7 @@ async function retractPrematureSilenceVerdict(
 /**
  * Does this bubble carry a part the READER gets something out of?
  *
- * `plan` and `cron` are visible cards in their own right — a delivery turn whose
+ * `plan`, `cron` and `widget` are visible in their own right — a delivery turn whose
  * only act was an `update_plan` has its estimated plan part inserted BEFORE the
  * finalize (`advancePlanPart`), and the reader watches the checklist move.
  * `tool`, `reasoning`, `compaction` and `provenance` deliberately do NOT count:
@@ -822,6 +824,8 @@ async function carriesDeliveredContent(
   for (const row of parts) {
     const part = row.part;
     if (part.kind === "cron") return true;
+    // An inline widget is shown in the bubble like media: the reader gets it.
+    if (part.kind === "widget") return true;
     if (part.kind === "file" || part.kind === "media") {
       // A part whose blob is gone renders NOTHING: the client drops a media
       // part with no resolved url (src/chat/convertMessage.ts `filePartToContent`).
@@ -1183,6 +1187,8 @@ async function batchAnswered(
   for (const row of parts) {
     const part = row.part;
     if (part.kind === "cron") return true;
+    // A widget the batch showed is an answer; a rerun would show it again.
+    if (part.kind === "widget") return true;
     if (
       (part.kind === "file" || part.kind === "media") &&
       (await blobStillResolves(ctx, part.storageId, true))
@@ -2402,6 +2408,61 @@ export const addPart = internalMutation({
       );
       return;
     }
+    // An inline widget is something the AGENT showed: it may only sit on an assistant
+    // message (the reader's fetch authorization reads assistant parts only), and its
+    // view id must follow the gateway's managed-document grammar — never a string
+    // that could be forwarded as an arbitrary document id.
+    // Every widget answer is REPORTED (`accepted`), like a media part's: the bridge
+    // counts only a widget that landed when it decides a turn that showed nothing
+    // else is still a reply (turn-sink.ts, the empty-response guard).
+    let registerView: { instanceName: string; chatId: Id<"chats"> } | null = null;
+    if (part.kind === "widget") {
+      if (message.role !== "assistant" || !WIDGET_VIEW_ID_RE.test(part.viewId)) {
+        console.log(
+          `[stream] addPart dropped: widget part refused (role=${message.role})`,
+        );
+        return { accepted: false as const, reason: "widget_refused" as const };
+      }
+      const widgetChat = await ctx.db.get(message.chatId);
+      const widgetInstance =
+        widgetChat === null ? null : await widgetInstanceFor(ctx, message, widgetChat);
+      // Widgets OFF for this conversation now (a switch flipped while a voice call kept
+      // the old socket open): nothing is stored, so nothing is shown or fetched.
+      if (
+        widgetChat === null ||
+        widgetInstance === null ||
+        !conversationWantsWidgets(widgetInstance, widgetChat)
+      ) {
+        console.log("[stream] addPart dropped: widgets are off for this conversation");
+        return { accepted: false as const, reason: "widgets_off" as const };
+      }
+      // OWNERSHIP (convex/widgets.ts): only the conversation's own `show_widget` result
+      // registers a view to it, and only if no other conversation did first. Any other
+      // carrier is stored only for a view already registered here.
+      const reg = await viewRegisteredTo(ctx, widgetInstance.name, part.viewId, widgetChat._id);
+      // The registration itself is written with the part, AFTER the generation guard
+      // below: a stale run's result must not claim a view for the conversation.
+      if (part.origin === "tool" && !reg.anyone) {
+        registerView = { instanceName: widgetInstance.name, chatId: widgetChat._id };
+      } else if (!reg.mine) {
+        console.log(
+          `[stream] addPart dropped: widget view not registered to this conversation (origin=${part.origin ?? "none"})`,
+        );
+        return { accepted: false as const, reason: "widget_not_registered" as const };
+      }
+      const { origin: _origin, ...descriptor } = part;
+      part = {
+        ...descriptor,
+        ...(part.title !== undefined ? { title: part.title.slice(0, WIDGET_TITLE_MAX_CHARS) } : {}),
+        ...(part.preferredHeight !== undefined
+          ? {
+              preferredHeight: Number.isFinite(part.preferredHeight)
+                ? Math.min(Math.max(Math.trunc(part.preferredHeight), 160), 1200)
+                : undefined,
+            }
+          : {}),
+      };
+    }
     // A MERGED GENERATION ANCHORS IN ITS OWN COORDINATES. The sink stamps a tool's
     // `textOffset` against the text IT has streamed (turn-sink.ts
     // `visibleLineStart`), which for a reopened bubble starts at zero — while the
@@ -2646,6 +2707,25 @@ export const addPart = internalMutation({
         return;
       }
     }
+    // One widget part per view per message: a re-emission (a replayed frame, a bridge
+    // retry) is the same widget, never a second frame of it.
+    if (
+      part.kind === "widget" &&
+      existing.some((e) => e.part.kind === "widget" && e.part.viewId === (part as { viewId: string }).viewId)
+    ) {
+      // The widget IS on the message: the desired state holds.
+      return { accepted: true as const, reason: "duplicate" as const };
+    }
+    if (registerView !== null && part.kind === "widget") {
+      await ctx.db.insert("widgetViews", {
+        instanceName: registerView.instanceName,
+        viewId: part.viewId,
+        chatId: registerView.chatId,
+        messageId,
+        source: "gateway",
+        createdAt: Date.now(),
+      });
+    }
     // MAX+1, not `existing.length`: a dead-twin replacement (above) deletes rows
     // from `existing`, and a length-derived order would then collide with a row
     // that is still there — loadChatView orders the bubble on this number alone,
@@ -2679,6 +2759,7 @@ export const addPart = internalMutation({
       await reconcileContentlessDelivery(ctx, message, messageId, part.storageId);
     }
     await ctx.db.patch(messageId, { updatedAt: Date.now() });
+    if (part.kind === "widget") return { accepted: true as const };
   },
 });
 

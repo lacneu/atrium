@@ -141,6 +141,16 @@ export class RunManager {
     this.sink = new TurnSink(chatId, writer, outboundScan, sessionKey, onTurnError);
   }
 
+  /** Whether this session's socket declared `inline-widgets` (decided per handshake
+   *  in session.ts). The normalizer emits widget parts only then. */
+  setWidgetsEnabled(enabled: boolean): void {
+    this.normalizer.widgetsEnabled = enabled;
+  }
+
+  get widgetsEnabled(): boolean {
+    return this.normalizer.widgetsEnabled;
+  }
+
   private tallyFrame(frame: unknown): void {
     if (typeof frame !== "object" || frame === null) return;
     const f = frame as Record<string, unknown>;

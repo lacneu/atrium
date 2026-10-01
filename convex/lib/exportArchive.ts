@@ -264,6 +264,9 @@ export const CHAT_FIELDS_DROPPED: ReadonlyArray<string> = [
   "permissionModeChoice",
   "permissionModeRevision",
   "permissionModeApply",
+  // The inline-widget override: what this deployment offers its own gateway's agent
+  // (the `inline-widgets` connect capability). A deployment decides that for itself.
+  "widgetsDisabled",
   // Per-turn routing with no routing history left (the segment and the last
   // routed target are dropped above) is simply false — and it also stops the
   // imported conversation from ever binding a target.

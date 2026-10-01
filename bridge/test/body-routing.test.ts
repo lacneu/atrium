@@ -108,3 +108,16 @@ describe("isInstanceMismatch (M2 guard, opt-in)", () => {
     expect(isInstanceMismatch("admin", "family")).toBe(true);
   });
 });
+
+describe("parseSendBody — inline widgets (instance switch AND conversation override, decided by Convex)", () => {
+  it("true only when Convex said exactly true", () => {
+    const parse = (inlineWidgets: unknown) =>
+      parseSendBody(JSON.stringify({ ...baseSend, ...R, inlineWidgets }))?.inlineWidgets;
+    expect(parse(true)).toBe(true);
+    expect(parse(false)).toBe(false);
+    expect(parse("true")).toBe(false);
+    expect(parse(1)).toBe(false);
+    // An older Convex sends nothing: the socket declares no widgets, as before.
+    expect(parseSendBody(JSON.stringify({ ...baseSend, ...R }))?.inlineWidgets).toBe(false);
+  });
+});

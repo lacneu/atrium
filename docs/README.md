@@ -18,6 +18,7 @@ to do — each one is ordered, and the first entry is the one to read first.
 | [INSTANCE_PROVISIONING.md](INSTANCE_PROVISIONING.md) | Registering a gateway with Atrium from an installer, with no administrator in a browser — the unattended counterpart of the admin form. |
 | [INSTALL_SSO_TRUSTED_PROXY.md](INSTALL_SSO_TRUSTED_PROXY.md) | Installing Atrium, a gateway and an identity provider together: what to set on each of the three sides, in which order, and what the arrangement does not solve yet. |
 | [GATEWAY_IDENTITY.md](GATEWAY_IDENTITY.md) | Making a gateway see one profile per user instead of one shared operator: what the bridge sends, what the gateway must be configured with, and the two behaviours that change when you switch. |
+| [WIDGETS.md](WIDGETS.md) | Inline widgets: what they are, the instance and conversation switches, widgets that send a message, the two isolation modes, and how to deploy the optional dedicated sandbox host. |
 | [OPENCLAW_VERSION_COMPAT.md](OPENCLAW_VERSION_COMPAT.md) | What to replay when a new OpenClaw version comes out, and why the harness needs no per-version branch. |
 
 ## I want to work on Atrium

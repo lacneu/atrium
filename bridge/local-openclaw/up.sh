@@ -80,6 +80,17 @@ if docker ps -a --format '{{.Names}}' | grep -q '^oc-local-loopback$'; then
   echo "✅ loopback forwarder ready (trusted-transport path for the host bridge)"
 fi
 
+# 4c) Inline-widget sandbox listener. The gateway binds it on its port + 1 unless
+# `mcp.apps.sandboxPort` says otherwise — and inside this gateway's network namespace
+# that port is the loopback sidecar's, so `canvas.document.view` would answer
+# UNAVAILABLE for every widget. Moved through the native validating CLI (the gateway
+# restarts in-process: `mcp.apps` is restart-class).
+docker exec oc-local-gateway node /app/openclaw.mjs config set mcp.apps.sandboxPort "${OPENCLAW_SANDBOX_PORT:-18791}" >/dev/null 2>&1 \
+  && echo "▶ widget sandbox listener moved to :${OPENCLAW_SANDBOX_PORT:-18791} (in-container)" \
+  || echo "ℹ could not set mcp.apps.sandboxPort (gateway unconfigured?) — widgets stay UNAVAILABLE"
+sleep 5
+until [[ "$(curl -s -o /dev/null -w '%{http_code}' --max-time 3 "http://127.0.0.1:${OPENCLAW_LOOPBACK_PORT:-18790}/health" 2>/dev/null)" == "200" ]]; do sleep 2; done
+
 # 5) Auto-pair the bridge's device (token auth still needs device approval).
 ./pair.sh
 

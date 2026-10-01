@@ -272,8 +272,8 @@ describe("the '+' is a menu", () => {
     expect(MENU).toMatch(/onSelect=\{\(\) => pick\(\{ kind: "default" \}\)\}/);
   });
 
-  test("nothing at all when there is neither an attachment nor a knowledge section to offer", () => {
-    expect(MENU).toMatch(/if \(!attachmentsSupported && view\.hidden\) return null;/);
+  test("nothing at all when there is neither an attachment, a knowledge section nor a widget switch to offer", () => {
+    expect(MENU).toMatch(/if \(!attachmentsSupported && view\.hidden && !widgets\.offered\) return null;/);
   });
 });
 

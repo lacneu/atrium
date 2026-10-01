@@ -553,6 +553,12 @@
       "upstream": "13662fb659f1b8fd074d2723ce823cf45a0d82ab702ea82dc36a90ea3cc297aa",
       "rewrites": []
     },
+    "canvas.ts": {
+      "upstreamPath": "packages/gateway-protocol/src/schema/canvas.ts",
+      "vendored": "43c14237b73a140aa38ee03e50e39240f37d503fefe046d6d2ba933f010f84c2",
+      "upstream": "e5c9f04c700dd2515700aa5d427853fcac8cea9568c0c43cd6ec935f3ae13e2f",
+      "rewrites": []
+    },
     "questions.ts": {
       "upstreamPath": "packages/gateway-protocol/src/schema/questions.ts",
       "vendored": "43d0577831801a1b7744f02d3faccaf03b4459834aecb840b94dcf4c6e4731db",

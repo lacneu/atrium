@@ -232,6 +232,11 @@ const FILES = [
     "schema/ui-appearance-typefaces.ts",
   ]),
 
+  // INLINE WIDGETS: `canvas.document.view` — the bridge relays one widget document
+  // per view (providers/openclaw/canvas-view.ts), named by rpc-scope.test.ts. The
+  // module exists upstream from 2026.9.2; only the promised version is re-vendored.
+  ...since("2026.9.2", ["schema/canvas.ts"]),
+
   // AGENT REQUESTS: `question.get|list|resolve` and `approval.get|resolve`, named by
   // rpc-scope.test.ts once the bridge answered agents' questions and approvals.
   // Upstream publishes these modules from 2026.8.1 (verified per tag); the bridge only

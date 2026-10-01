@@ -99,6 +99,62 @@ describe("shouldReportRehydrateMissed — fires ONLY on the bug condition", () =
   });
 });
 
+describe("rehydrate_missed — history that existed but did not ride a `rehydrate` turn", () => {
+  const fresh = { routedSwitch: true, freshSession: true, decision: "rehydrate" };
+
+  it("fires when the bridge states the history was withheld (frame or window) and nothing rode", () => {
+    for (const historyWithheld of ["frame", "window"]) {
+      expect(
+        shouldReportRehydrateMissed({ ...fresh, prependedTurns: 0, historyWithheld }),
+      ).toBe(true);
+    }
+  });
+
+  it("does NOT fire on an EMPTY history (nothing to carry) — no reason stated", () => {
+    expect(shouldReportRehydrateMissed({ ...fresh, prependedTurns: 0 })).toBe(false);
+  });
+
+  it("does NOT fire when turns or a summary rode", () => {
+    expect(
+      shouldReportRehydrateMissed({ ...fresh, prependedTurns: 3, historyWithheld: "frame" }),
+    ).toBe(false);
+    expect(
+      shouldReportRehydrateMissed({
+        ...fresh,
+        prependedTurns: 0,
+        summaryUsed: true,
+        historyWithheld: "frame",
+      }),
+    ).toBe(false);
+  });
+
+  it("an unknown reason from a divergent bridge is not a reason", () => {
+    expect(
+      shouldReportRehydrateMissed({ ...fresh, prependedTurns: 0, historyWithheld: "because" }),
+    ).toBe(false);
+  });
+
+  it("never on a non-routed or warm turn", () => {
+    expect(
+      shouldReportRehydrateMissed({
+        ...fresh,
+        routedSwitch: false,
+        prependedTurns: 0,
+        historyWithheld: "frame",
+      }),
+    ).toBe(false);
+  });
+
+  it("the trace carries the allowlisted reason, and drops anything else", () => {
+    expect(rehydrateTraceMeta({ ...base, prependedTurns: 0, historyWithheld: "frame" }).historyWithheld).toBe(
+      "frame",
+    );
+    expect(
+      "historyWithheld" in rehydrateTraceMeta({ ...base, historyWithheld: "<script>" }),
+    ).toBe(false);
+  });
+});
+
 // ── The pre-send guard's report on the trace (W2) ───────────────────────────
 //
 // This projection is the INGEST trust boundary. The bridge already buckets the

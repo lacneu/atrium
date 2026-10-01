@@ -518,3 +518,34 @@ describe("several continuations: each batch's replies before its own conclusion"
     ).toEqual(["run-c1"]);
   });
 });
+
+describe("inline widgets", () => {
+  const widget: ConvexMessagePartView = {
+    kind: "widget",
+    provider: "openclaw",
+    viewId: "cv_87c3b1326a2c47028d93b4c38e242832",
+    title: "Counter",
+    sandbox: "scripts",
+  };
+
+  it("an assistant widget is a BODY data part after the text, before media", () => {
+    const message = makeMessage({
+      text: "Tiny counter:",
+      parts: [
+        { kind: "media", url: "https://x/y.png", storageId: "s1", filename: "y.png", mimeType: "image/png" },
+        widget,
+      ],
+    });
+    expect(contentTypes(message)).toEqual(["text", "data-widget", "file"]);
+    const part = (convertConvexMessage(message).content as ReadonlyArray<{ type: string; data?: unknown }>)[1]!;
+    expect(part.data).toEqual({ viewId: widget.kind === "widget" ? widget.viewId : "", title: "Counter" });
+  });
+
+  it("a widget-only turn still renders (no empty-text placeholder needed)", () => {
+    expect(contentTypes(makeMessage({ parts: [widget] }))).toEqual(["data-widget"]);
+  });
+
+  it("never on a user message", () => {
+    expect(contentTypes(makeMessage({ role: "user", text: "hi", parts: [widget] }))).toEqual(["text"]);
+  });
+});

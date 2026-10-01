@@ -35,6 +35,21 @@ export interface ToolPart {
   risk?: { level: string; findings: string[]; redacted: boolean };
 }
 
+/** Mirrors convex/schema.ts messagePart `widget` variant: an inline widget the agent
+ *  showed in its reply. A DESCRIPTOR — the document bytes are fetched per view,
+ *  after an access check, and never stored (providers/openclaw/widgets.ts). */
+export interface WidgetPart {
+  kind: "widget";
+  provider: "openclaw";
+  /** Which carrier named it (providers/openclaw/widgets.ts `WidgetOrigin`): Convex
+   *  registers a view to the conversation from `tool` only. */
+  origin: "tool" | "canvas" | "shortcode";
+  viewId: string;
+  title?: string;
+  preferredHeight?: number;
+  sandbox: "scripts";
+}
+
 /** Mirrors convex/schema.ts messagePart `reasoning` variant. */
 export interface ReasoningPart {
   kind: "reasoning";
@@ -375,6 +390,10 @@ export interface ConvexWriter {
   ): void | Promise<void | boolean>;
   /** Boot-time orphan sweep for this writer's instance (best-effort). */
   sweepStreams?(): Promise<void>;
+  /** inline widget descriptor -> internal.stream.addPart(kind:widget). Resolves to
+   *  whether the widget LANDED on the message (Convex refuses a view this
+   *  conversation does not own, widgets switched off, a stale generation). */
+  addWidgetPart?(messageId: string, part: WidgetPart): Promise<boolean>;
   /** plugin provenance report -> internal.stream.addPart(kind:provenance). */
   addProvenancePart(
     messageId: string,
@@ -595,6 +614,10 @@ export interface RehydrateTraceArgs {
    *  bounded size) — content-free counters, absent on skip decisions. */
   summaryUsed?: boolean;
   summaryChars?: number;
+  /** A `rehydrate` decision whose history existed but did NOT ride the turn: it did
+   *  not fit the live context window (`window`) or the frame beside the turn's
+   *  inline attachments (`frame`). Absent when the history rode or there was none. */
+  historyWithheld?: "window" | "frame";
   /** Pre-send guard (W2): the graduated action taken, the measured fill and where
    *  it came from, what the compaction attempt did, and whether the send was
    *  WITHHELD. Content-free by construction (enums + an integer percent). */
@@ -788,6 +811,7 @@ type IngestOp =
         | CronPart
         | PlanPart
         | CompactionPart
+        | WidgetPart
         | import("./core/provenance.js").ProvenancePart;
       runId?: string | null;
     }
@@ -1883,6 +1907,18 @@ export class HttpConvexWriter implements ConvexWriter {
         // Losing the hint still never fails the turn — it is reported, not thrown.
         return false;
       });
+  }
+
+  async addWidgetPart(messageId: string, part: WidgetPart): Promise<boolean> {
+    await this.flushDelta(messageId);
+    const ack = await this.post<{ ok?: boolean; accepted?: boolean; reason?: string }>({
+      op: "addPart",
+      messageId,
+      part,
+      ...this.genTag(messageId),
+    });
+    // An older Convex answers `{ok:true}` with no verdict: it stored the part.
+    return ack?.accepted !== false;
   }
 
   async addProvenancePart(
