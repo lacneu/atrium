@@ -130,6 +130,22 @@ const INFO: Record<string, (ctx: DispatchErrorContext) => DispatchErrorInfo> = {
       provider: ctx.provider ?? "<provider>",
     }),
   }),
+  // The two other credential refusals (0.91.3), same read-only diagnosis, filled the same way.
+  // A permission refusal is not fixed by reconnecting the same account; the hint says so.
+  provider_permission_denied: (ctx) => ({
+    label: m.error_provider_permission_denied_label(),
+    hint: m.error_provider_permission_denied_hint({
+      agentId: ctx.agentId ?? "<agentId>",
+      provider: ctx.provider ?? "<provider>",
+    }),
+  }),
+  provider_auth_failed: (ctx) => ({
+    label: m.error_provider_auth_failed_label(),
+    hint: m.error_provider_auth_failed_hint({
+      agentId: ctx.agentId ?? "<agentId>",
+      provider: ctx.provider ?? "<provider>",
+    }),
+  }),
   UPSTREAM_ERROR: () => ({
     label: m.error_upstream_error_label(),
     hint: m.error_upstream_error_hint(),

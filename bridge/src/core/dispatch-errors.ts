@@ -29,7 +29,7 @@ import { PermissionModeNotAppliedError } from "../providers/openclaw/permission-
 import { KnowledgePolicyNotAppliedError } from "../providers/openclaw/knowledge-policy.js";
 import {
   gatewayOwnRefusal,
-  isProviderAuthRevokedText,
+  providerCredentialTextClass,
   isProviderReviewPausedText,
   isSessionArchivedText,
   isSessionInitConflictText,
@@ -184,6 +184,13 @@ export type DispatchErrorCode =
   // (`AUTH_TOKEN_MISMATCH` would paint the bridge red for a provider's revocation). Never
   // retried: every attempt fails the same way until an operator fixes the agent's credential.
   | "provider_auth_revoked"
+  // The SAME door for the two other credential classes (core/failure-classifier.ts
+  // `providerCredentialTextClass`): the provider refused the account's PERMISSION (a 403,
+  // `auth_permanent` — reconnecting the same account does not help), or refused the
+  // credential without saying how (the gateway's `Re-authenticate with:` hint alone, which
+  // upstream appends for both). Never retried, for the same reason.
+  | "provider_permission_denied"
+  | "provider_auth_failed"
   | "UPSTREAM_ERROR"; // anything else (fallback)
 
 /**
@@ -282,6 +289,8 @@ const DOWNSTREAM_REJECTION_CODES: ReadonlySet<DispatchErrorCode> = new Set([
   // The gateway reached the MODEL PROVIDER, which refused the agent's credential: the
   // bridge's link and its own credentials worked.
   "provider_auth_revoked",
+  "provider_permission_denied",
+  "provider_auth_failed",
 ]);
 
 /**
@@ -407,8 +416,13 @@ export function classifyGatewayError(
   // BEFORE the gateway-credential rule just below: a provider's refusal can say
   // "unauthorized", and read there it blamed the bridge's own pairing for an agent
   // credential the PROVIDER revoked.
-  if (isProviderAuthRevokedText(msg)) {
-    return "provider_auth_revoked";
+  const credential = providerCredentialTextClass(msg, { requireProviderEvidence: true });
+  if (
+    credential === "provider_auth_revoked" ||
+    credential === "provider_permission_denied" ||
+    credential === "provider_auth_failed"
+  ) {
+    return credential;
   }
   if (
     /no longer exists|agent[^.]*not found|unknown agent|no such agent/.test(msg)

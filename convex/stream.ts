@@ -24,6 +24,7 @@ import { contentLocaleForInstance } from "./lib/serverLocale";
 import {
   KNOWN_ERROR_CODES,
   maskCredentialId,
+  PER_AGENT_FAILURE_CAUSES,
   reauthProviderFromText,
 } from "./lib/chatRenderState";
 import { SESSION_ACCESS_FIELDS } from "./lib/sessionAccess";
@@ -204,7 +205,8 @@ async function traceStream(
      *  named a number instead of a cause (C-01). */
     errorCode?: string;
     /** WHICH AGENT failed, for a cause whose remedy is per agent
-     *  (`provider_auth_revoked`): ids only, never text. */
+     *  (PER_AGENT_FAILURE_CAUSES — a provider credential, permission, billing or model):
+     *  ids only, never text. */
     failedAgent?: { agentId: string; instanceName?: string };
     /** The provider id the gateway's re-authentication hint names (an operator
      *  configuration value, shape-checked by `reauthProviderFromText`). */
@@ -3912,13 +3914,15 @@ export const finalize = internalMutation({
         ? code
         : undefined;
     })();
-    // A REVOKED CREDENTIAL is fixed per agent, on the gateway, by an operator: the anomaly
+    // A REVOKED CREDENTIAL — and every other provider-account refusal in
+    // PER_AGENT_FAILURE_CAUSES (a permission, billing, an unknown model) — is fixed per agent,
+    // on the gateway, by an operator: the anomaly
     // must say WHICH agent and which provider, or it names a cause nobody can act on. The
     // agent is the one that ran this turn (a room's routed agent, else the chat's own);
     // the provider is the one the gateway's re-authentication hint names, read from the
     // raw `error` before anything else — ids only, the sentence never leaves this mutation.
     const failedAgent =
-      traceCode === "provider_auth_revoked"
+      traceCode !== undefined && PER_AGENT_FAILURE_CAUSES.has(traceCode)
         ? await (async () => {
             if (message.routedAgentId) {
               return {
@@ -3938,7 +3942,7 @@ export const finalize = internalMutation({
           })()
         : undefined;
     const authProvider =
-      traceCode === "provider_auth_revoked"
+      traceCode !== undefined && PER_AGENT_FAILURE_CAUSES.has(traceCode)
         ? (reauthProviderFromText(error) ?? undefined)
         : undefined;
     await traceStream(ctx, {

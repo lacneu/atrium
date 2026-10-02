@@ -2712,7 +2712,7 @@ function CopyAssistantButton() {
   const detail = errorDetailView(error, errorCode);
   const payload =
     text.trim() ||
-    [detail.headline, detail.detail].filter(Boolean).join("\n");
+    [detail.headline, detail.detail, detail.rawDetail].filter(Boolean).join("\n");
   const disabled = payload.length === 0;
   return (
     <button

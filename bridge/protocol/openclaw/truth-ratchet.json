@@ -169,6 +169,10 @@
     {
       "path": "CanvasDocumentViewResult.html",
       "scan": false
+    },
+    {
+      "path": "ChatErrorEvent.errorDetail",
+      "scan": false
     }
   ]
 }

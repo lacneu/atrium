@@ -100,6 +100,7 @@ import type * as lib_diagnose from "../lib/diagnose.js";
 import type * as lib_domains from "../lib/domains.js";
 import type * as lib_envLabel from "../lib/envLabel.js";
 import type * as lib_exportArchive from "../lib/exportArchive.js";
+import type * as lib_failureText from "../lib/failureText.js";
 import type * as lib_files from "../lib/files.js";
 import type * as lib_filters from "../lib/filters.js";
 import type * as lib_finalizeCause from "../lib/finalizeCause.js";
@@ -281,6 +282,7 @@ declare const fullApi: ApiFromModules<{
   "lib/domains": typeof lib_domains;
   "lib/envLabel": typeof lib_envLabel;
   "lib/exportArchive": typeof lib_exportArchive;
+  "lib/failureText": typeof lib_failureText;
   "lib/files": typeof lib_files;
   "lib/filters": typeof lib_filters;
   "lib/finalizeCause": typeof lib_finalizeCause;

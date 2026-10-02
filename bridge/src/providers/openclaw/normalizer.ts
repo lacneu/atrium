@@ -44,7 +44,7 @@ import { isGatewayInitiatedRunId } from "./run-families.js";
 import { planPartFromPlanStream } from "../../core/plan-part.js";
 import {
   classifyFailureText,
-  GATEWAY_CHAT_ERROR_KINDS,
+  classifyStructuredFailure,
   withoutOperatorData,
 } from "../../core/failure-classifier.js";
 import {
@@ -260,10 +260,9 @@ const VISIBLE_TEXT_KEYS = ["message", "caption", "text", "body", "content", "mar
 //   ^\s*(?:envoy[éè]+|message\s+envoy[éè]+|réponse\s+envoy[éè]+|done|ok|fait)
 //   (?:\s+dans\s+le\s+(?:canal|webchat)[^.\n]*)?[\s.!…]*$
 // JS \s matches Unicode whitespace by default; `i` and `u` flags applied.
-// ChatErrorEventSchema.errorKind enum (gateway-protocol logs-chat.ts), minus
-// "unknown" (nothing actionable to classify). These are the values the GATEWAY may
-// send; the stable errorCode also carries classes this build mints from the sentence
-// when the gateway sends none (auth_profile_cooldown, the storage classes).
+// A failure's stable class is read by core/failure-classifier.ts: the gateway's
+// `errorKind` and `errorDetail` first (`classifyStructuredFailure`), the sentence last
+// (`classifyFailureText`).
 // Known gateway overflow phrasings (live capture: "Context overflow: prompt
 // too large for the model. Try /reset (or /new) ...").
 // Every context-overflow phrasing a supported gateway can surface as BARE TEXT
@@ -361,7 +360,11 @@ const KNOWN_STOP_REASONS = new Set([
 const bucketStopReason = (v: string): string =>
   KNOWN_STOP_REASONS.has(v) ? v : "other";
 
-const CHAT_ERROR_KINDS = GATEWAY_CHAT_ERROR_KINDS;
+/** The stopReason upstream stamps on every run it aborts because an operator logged the
+ *  provider out (src/gateway/server-methods/models-auth-status.ts:538). */
+const PROVIDER_ACCESS_REMOVED_STOP_REASON = "auth-revoked";
+/** The class (and error string) a turn aborted that way is stored under. */
+const PROVIDER_ACCESS_REMOVED_CODE = "provider_access_removed";
 
 /**
  * PROGRESS phases on `stream:"tool"` — a tool is still RUNNING. Enumerated from
@@ -1946,6 +1949,25 @@ export class Normalizer {
       if (isString(payload.stopReason)) {
         this.diagStopReason = bucketStopReason(payload.stopReason);
       }
+      if (state === "aborted" && payload.stopReason === PROVIDER_ACCESS_REMOVED_STOP_REASON) {
+        // The ONE stopReason that is not a Stop: an operator logged the provider out on the
+        // gateway (`models.auth.logout` of a whole provider), which aborts every run using it
+        // with `stopReason: "auth-revoked"` (src/gateway/server-methods/models-auth-status.ts:
+        // 528-539 → abortChatRunsForProvider). Upstream's own UI rewrites exactly this frame
+        // to "provider access removed" (ui/src/pages/chat/chat-gateway.ts:150-153). Shown as
+        // "Interrompu" it read as if the reader had pressed Stop. A labelled error instead,
+        // never retried: the provider stays logged out until an operator reconnects it.
+        this.finalizeOrHoldWith(now, events, (at) =>
+          this.finalize(
+            at,
+            "error",
+            PROVIDER_ACCESS_REMOVED_CODE,
+            PROVIDER_ACCESS_REMOVED_CODE,
+            "gateway_abort",
+          ),
+        );
+        return;
+      }
       if (state === "aborted") {
         // A chat:aborted terminalizes as aborted ("Interrompu"). We do NOT try to
         // reclassify it by stopReason: the field is optional in the protocol
@@ -1983,13 +2005,15 @@ export class Normalizer {
       // an error card on a successful reply).
       if (this.hasRealContent() && this.deadlines.has("lifecycle_end")) {
         const diagKind =
-          isString(payload.errorKind) && CHAT_ERROR_KINDS.has(payload.errorKind)
-            ? payload.errorKind
-            : // The SHARED classifier (W2 / G-11) — the same one the sub-agent
-              // path now uses. `provider_internal` is deliberately possible here
-              // too: this is a DIAGNOSTIC field on a turn already closing
-              // `complete`, so it cannot trigger a retry.
-              classifyFailureText(reason ?? null);
+          classifyStructuredFailure({
+            errorKind: payload.errorKind,
+            errorDetail: payload.errorDetail,
+          }) ??
+          // The SHARED classifier (W2 / G-11) — the same one the sub-agent
+          // path now uses. `provider_internal` is deliberately possible here
+          // too: this is a DIAGNOSTIC field on a turn already closing
+          // `complete`, so it cannot trigger a retry.
+          classifyFailureText(reason ?? null);
         console.log(
           "[normalizer] chat:error AFTER the run ended — finalizing complete (post-reply gateway failure, see gateway_pressure trace)",
         );
@@ -2005,13 +2029,15 @@ export class Normalizer {
         });
         return;
       }
-      // ALLOWLIST the wire value against the schema enum before persisting it
-      // as a trusted stable code (never a raw network string as errorCode).
-      const kind =
-        isString(payload.errorKind) &&
-        CHAT_ERROR_KINDS.has(payload.errorKind)
-          ? payload.errorKind
-          : null;
+      // STRUCTURED FIRST: the gateway's `errorKind` (allowlisted against the schema enum,
+      // never a raw network string as errorCode) and the provider observation it ships
+      // beside it, `errorDetail` (logs-chat.ts ChatErrorDetailSchema, projected from the
+      // lifecycle `errorObservation` by server-chat.ts:1219-1245). The prose is read only
+      // when neither names a class — inside finalize, as before.
+      const kind = classifyStructuredFailure({
+        errorKind: payload.errorKind,
+        errorDetail: payload.errorDetail,
+      });
       // Through the arbitration like the successes: an error terminal closes the
       // sink exactly as hard, and a reply the user was really sent — still being read
       // out of the transcript — was lost to it. Held, the error still arrives; it
@@ -3386,8 +3412,15 @@ export class Normalizer {
           ? (data.error as JsonObject)
           : null;
       const rawKind = errObj?.errorKind ?? data.errorKind;
-      const kind =
-        isString(rawKind) && CHAT_ERROR_KINDS.has(rawKind) ? rawKind : null;
+      // …and the structured provider observation the gateway attaches to it,
+      // `data.errorObservation` (src/agents/embedded-agent-subscribe.handlers.lifecycle.ts:
+      // 168-174, :219; the OAuth-refresh backstop's own one, src/auto-reply/reply/
+      // agent-lifecycle-terminal.ts:126-136) — the same closed shape the chat error
+      // later carries as `errorDetail`, read BEFORE the text.
+      const kind = classifyStructuredFailure({
+        errorKind: rawKind,
+        errorDetail: data.errorObservation,
+      });
       // Through the arbitration, like `chat:error`: this terminal closes the sink
       // just as hard, and the message-tool reply still being read out of the
       // transcript was lost to it. The error survives; so does the delivery.

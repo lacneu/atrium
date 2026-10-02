@@ -128,6 +128,28 @@ export const KNOWN_ERROR_CODES = [
   // invalidated OAuth token). Named so the card says an administrator must reconnect the
   // agent, and so the per-cause plane raises it on the first occurrence.
   "provider_auth_revoked",
+  // The two other credential refusals (0.91.3). Upstream's `Re-authenticate with:` hint and
+  // its `auth` reason cover a 403, a region, a deactivated workspace as well as a 401, and
+  // telling the reader "your access expired, reconnect" is true for only one of them:
+  // `provider_permission_denied` = the provider refuses this account's RIGHTS (403,
+  // `auth_permanent`); `provider_auth_failed` = it refused the credential and nothing says how.
+  "provider_permission_denied",
+  "provider_auth_failed",
+  // The provider account is out of credit or quota (failoverReason `billing`), and the
+  // configured model does not exist for it (`model_not_found`): every turn of the agent fails
+  // the same way until an operator acts, so each is named rather than folded into `unknown`.
+  "provider_billing",
+  "model_not_found",
+  // An operator logged the provider out on the gateway, which aborted the run
+  // (`stopReason: "auth-revoked"`): named, so it never reads as the reader's own Stop.
+  "provider_access_removed",
+  // Upstream's GENERIC wrappers with no cause inside — "Context is too large and
+  // auto-compaction could not recover this turn" without its verbose `Reason:`, "Something
+  // went wrong while processing your request", "Agent failed before reply: <unrecognized>".
+  // Named for what they are: the gateway withheld the cause. Neither is `unclassified_error`,
+  // which says WE recognized nothing; here we recognized the wrapper and it carried nothing.
+  "compaction_failed_no_cause",
+  "run_failed_no_cause",
   // The gateway DROPPED the user's admitted input: a concurrent run (a requester-settle
   // wake, prod 2026-09-28) replaced the conversation's active branch before the input
   // was promoted, so nothing was processed. Named, so the card can say "send it again"
@@ -207,6 +229,18 @@ export const KNOWN_ERROR_CODES = [
   "ATTACHMENT_TOO_LARGE",
   "ATTACHMENT_REJECTED",
 ] as const;
+
+/** The failure classes whose remedy is per AGENT and per PROVIDER account: every turn of that
+ *  agent fails the same way until an operator acts on the gateway. The finalize names the agent
+ *  (and the provider the re-authentication hint names) on the trace for these only, so the
+ *  anomaly says where to look — ids, never text. */
+export const PER_AGENT_FAILURE_CAUSES: ReadonlySet<string> = new Set([
+  "provider_auth_revoked",
+  "provider_permission_denied",
+  "provider_auth_failed",
+  "provider_billing",
+  "model_not_found",
+]);
 
 export function normalizeMessageErrorCode(
   error: string | null | undefined,
@@ -407,50 +441,6 @@ export function maskCredentialId<T extends string | undefined | null>(text: T): 
   // cutting there left it stored, served and exported (codex).
   const firstQuote = text.indexOf('"');
   return (firstQuote === -1 ? text : `${text.slice(0, firstQuote + 1)}…`) as T;
-}
-
-// THE PROVIDER REFUSED THE AGENT'S CREDENTIAL (revoked or expired), read from a stored
-// failure TEXT. Mirrors the bridge's `isProviderAuthRevokedText`
-// (bridge/src/core/failure-classifier.ts), which carries the upstream citations: the
-// gateway's `Re-authenticate with:` hint (emitted only for the failover reasons `auth` and
-// `auth_permanent`) or a `401` status followed by `invalidated|expired|revoked … token`.
-// Two readers, one sentence — the bridge for new rows, this one for rows stored before the
-// class existed (prod 2026-10-02 stored three as `unclassified_error`) and for a child row
-// the bridge did not class. They must stay in step.
-const REAUTHENTICATE_HINT_TEXT_RE = /\bre-authenticate with:\s/i;
-const AUTH_401_TOKEN_REVOKED_TEXT_RE =
-  /(?:^|[\s:(\[])401[:)\s][^|\n]{0,120}?(?:\b(?:invalidated|expired|revoked)\b[^|\n]{0,60}?\btokens?\b|\btokens?\s+(?:has|have)\s+been\s+(?:invalidated|expired|revoked)\b|\btokens?\s+(?:was|were|is|are)\s+(?:invalidated|expired|revoked)\b)/i;
-const PREFLIGHT_WRAPPER_HEAD_TEXT_RE =
-  /^[\s⚠️]*context is too large and auto-compaction (?:could not recover this turn|timed out before it could finish)\.\s+reason:\s*/i;
-const FALLBACK_SUMMARY_HEAD_TEXT_RE = /^\s*all (?:[a-z][\w -]{0,60}? )?models failed \(\d+\):\s*/i;
-const FALLBACK_ATTEMPT_PREFIX_RE = /^[^\s/|]+\/\S+?:\s+/;
-
-/** The words the GATEWAY wrote, with every operator value out of a rule's reach: quoted
- *  values removed (`withoutOperatorValues`) and, in a model-fallback summary — bare, or as
- *  the reason of the preflight-compaction wrapper — each candidate's `<provider>/<model>: `
- *  prefix dropped. The bridge reads the same text the same way (`fallbackSummaryCauses`,
- *  `preflightWrappedReason`). */
-function gatewayFailureWords(raw: string): string {
-  const text = withoutOperatorValues(raw);
-  const wrapped = PREFLIGHT_WRAPPER_HEAD_TEXT_RE.exec(text);
-  const inner = wrapped === null ? text : text.slice(wrapped[0].length);
-  const head = FALLBACK_SUMMARY_HEAD_TEXT_RE.exec(inner);
-  if (head === null) return text;
-  return inner
-    .slice(head[0].length)
-    .split(" | ")
-    .map((segment) => segment.trim().replace(FALLBACK_ATTEMPT_PREFIX_RE, ""))
-    .join(" | ");
-}
-
-export function isProviderAuthRevokedFailureText(
-  text: string | null | undefined,
-): boolean {
-  if (!text) return false;
-  const words = gatewayFailureWords(text);
-  return (
-    REAUTHENTICATE_HINT_TEXT_RE.test(words) || AUTH_401_TOKEN_REVOKED_TEXT_RE.test(words)
-  );
 }
 
 /** A provider id as upstream spells one — the only shape `reauthProviderFromText` returns. */

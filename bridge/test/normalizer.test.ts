@@ -1290,8 +1290,23 @@ describe("main-lane chat error/aborted terminalization (ChatErrorEventSchema)", 
       "invalid_api_key: Incorrect API key provided",
       "HTTP 404: model not found",
       "insufficient_quota: You exceeded your current quota",
-      "All models failed (1): openai/gpt-5.5: 403 Forbidden",
     ];
+    // A provider 403 is a PERMISSION refusal now (0.91.3): named, and still never retried.
+    {
+      const n = newNormalizer();
+      const c = new Clock();
+      n.beginTurn(c.now);
+      n.noteRunStarted(OWN_RUN, c.now);
+      const events = n.feed(
+        chatFrame({
+          state: "error",
+          errorMessage: "All models failed (1): openai/gpt-5.5: 403 Forbidden",
+        }),
+        c.tick(),
+      );
+      const final = events.find((e) => e.type === "message.final");
+      expect(final?.errorKind).toBe("provider_permission_denied");
+    }
     for (const error of nonTransient) {
       const n = newNormalizer();
       const c = new Clock();

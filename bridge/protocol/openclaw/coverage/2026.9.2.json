@@ -510,8 +510,27 @@
           "why": "recorded for DIAGNOSIS only, never for classification: the field is optional in the schema and unreliable across gateways — the user Stop is detected via the chat.abort RPC path, not stopReason"
         },
         "errorDetail": {
-          "status": "gap",
-          "note": "NEW in 2026.9.1 (logs-chat.ts:337-391, producer server-chat.ts:1166 projectChatErrorDetail): STRUCTURED error detail {provider, model, failoverReason, providerRuntimeFailureKind, providerErrorType, httpStatus, providerErrorMessagePreview}, strings ≤300, only on state:\"error\". Purely ADDITIVE: `errorMessage` is still emitted (server-chat.ts:1174), so nothing Atrium reads today changes (zone-1 comparison 2026-09-03). Not read yet: the failure classifier (bridge/src/core/failure-classifier.ts) still works from the error TEXT; `providerRuntimeFailureKind` (vocabulary provider-runtime-failure.ts:15-38, a free string on the wire) and `httpStatus` are the facts the retry gate and the error banner should prefer once instructed. The Control UI reads it only for providerRuntimeFailureKind === \"auth_refresh\" (chat-gateway.ts:156-168). frame-discovery queue."
+          "status": "handled",
+          "by": "STRUCTURED FIRST (0.91.3): normalizer handleChat state:\"error\" and the post-reply diagnostic -> classifyStructuredFailure({errorKind, errorDetail}) (src/core/failure-classifier.ts classifyErrorDetail) -> finalize errorKind -> messages.errorCode; the same read on the lifecycle twin (`data.errorObservation`, phase:\"error\") and on a child's chat:error in the SubAgentObserver -> subAgents.errorCode. Only the enums and the status choose a class (failoverReason, providerRuntimeFailureKind, httpStatus); provider/model are operator configuration and providerErrorMessagePreview is provider prose — none of them is read. The gateway's own terminal facts (errorKind timeout/refusal) still outrank it; the text classifier runs only when neither names a class.",
+          "anchor": {
+            "file": "src/providers/openclaw/normalizer.ts",
+            "token": "payload.errorDetail"
+          },
+          "proof": {
+            "kind": "deterministic-test",
+            "ref": "bridge/test/structured-failure-frames.test.ts",
+            "note": "Not elicitable on the bench: it takes a provider that really refuses (401/403/billing/429), which the volatile bench cannot provoke on demand with its single real account. The frames are replayed field for field from the vendored ChatErrorDetailSchema (identical 2026.9.1 -> 2026.9.6) and the upstream producers cited in the dossier; the hops are proven separately: classifier (bridge/test/failure-labels.test.ts), normalizer chat + lifecycle + sub-agent observer (the ref), Convex finalize/anomaly (convex/providerCredentialClasses.test.ts), card (src/chat/runStatusView.test.ts). Live proof stays owed."
+          },
+          "verifiedVersions": [
+            "2026.9.6"
+          ],
+          "dossier": {
+            "writers": "Read at v2026.9.6. The ONLY publisher is emitChatTerminal (src/gateway/server-chat.ts:1219 `projectChatErrorDetail(opts?.errorObservation)`, spread at :1245, state:\"error\" only). Its input is the lifecycle terminal's `data.errorObservation` (server-chat.ts:738), written by (1) the embedded run's agent_end on an assistant error (src/agents/embedded-agent-subscribe.handlers.lifecycle.ts:168-174, emitted :219: provider, model, failoverReason = classifyAssistantFailoverReason, providerRuntimeFailureKind/providerErrorType/httpStatus from buildApiErrorObservationFields) and (2) the lifecycle backstop on an OAuth refresh failure (src/auto-reply/reply/agent-lifecycle-terminal.ts:126-136: providerRuntimeFailureKind \"auth_refresh\", and an OAuthRefreshFailureReason — NOT a FailoverReason — in failoverReason). Carried through deferral by DEFERRED_TERMINAL_METADATA_KEYS (agent-lifecycle-terminal.ts:33-43).",
+            "resets": "None: a per-terminal field, absent on the next run. The chat.send path's own terminal (src/gateway/server-methods/chat-broadcast.ts:98-136 ChatTerminal) never carries it, so a failure answered by chat.send's reply dispatch — upstream's preflight-compaction wrapper among them — arrives with errorMessage only; the cause is lost before that, where src/auto-reply/reply/agent-runner-memory.ts:1096-1098 rethrows the compaction failure as a bare string.",
+            "upstreamUse": "The Control UI reads it for providerRuntimeFailureKind === \"auth_refresh\" and renders Provider / HTTP status / Reason / Type lines under the error (ui/src/pages/chat/chat-gateway.ts:97-125). The protocol doc names it the structured route, \"not from reparsing the user-facing message\" (docs/gateway/protocol/rpc-bootstrap-and-events.md:68-79). Vocabulary: FailoverReason (packages/gateway-protocol/src/failover-reasons.ts), ProviderRuntimeFailureKind (src/agents/embedded-agent-helpers/provider-runtime-failure.ts:16-39), a free string on the wire capped at 300 characters.",
+            "wire": "Event `chat`, server->client, state:\"error\" only (ChatErrorEventSchema, logs-chat.ts); the lifecycle twin is event `agent` stream:\"lifecycle\" phase:\"error\" `data.errorObservation`.",
+            "atriumValue": "The class decides the card, the retry and the anomaly: auth+401 / auth_invalid_token / auth_refresh with a reason -> provider_auth_revoked; auth+403 / auth_permanent / auth_scope -> provider_permission_denied; auth without a status -> provider_auth_failed; billing -> provider_billing; rate_limit -> rate_limit; overloaded/server_error/timeout -> provider_internal; context_overflow -> context_length; model_not_found -> model_not_found. Before, the text alone decided and a 403 behind a `Re-authenticate with:` hint read as an expired credential."
+          }
         }
       }
     },

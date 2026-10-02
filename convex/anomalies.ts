@@ -238,6 +238,24 @@ export const CAUSE_ANOMALY_KINDS: Record<string, string> = {
   // turns of one agent to it, each shown as "context too large". CRITICAL from the first
   // occurrence (CRITICAL_ON_FIRST_CAUSES), with the agent and the provider in the evidence.
   provider_auth_revoked: "assistant.cause.provider_auth_revoked",
+  // The other provider-account refusals (0.91.3), each its own class because the operator's
+  // answer differs: a PERMISSION the provider refuses (a 403, `auth_permanent` — reconnecting
+  // the same account does not help), a credential refused without saying how, an account out
+  // of credit, a model the provider does not know. Like the revoked credential, every turn of
+  // the agent fails until an operator acts — critical on the first occurrence, with the agent
+  // in the evidence.
+  provider_permission_denied: "assistant.cause.provider_permission_denied",
+  provider_auth_failed: "assistant.cause.provider_auth_failed",
+  provider_billing: "assistant.cause.provider_billing",
+  model_not_found: "assistant.cause.model_not_found",
+  // An operator logged the provider out on the gateway and the run was aborted for it. Not a
+  // fault — a deliberate act — but counted under its own name rather than as a stream error.
+  provider_access_removed: "assistant.cause.provider_access_removed",
+  // Upstream's generic wrapper carried no cause (verbose details off, or its generic copy).
+  // Counted apart from `unclassified_error`: here the gap is the GATEWAY's, which withheld the
+  // cause, and a run of them says to turn on the gateway's failure details or read its logs.
+  compaction_failed_no_cause: "assistant.cause.compaction_failed_no_cause",
+  run_failed_no_cause: "assistant.cause.run_failed_no_cause",
   // The gateway dropped the user's input because a concurrent run replaced the active
   // branch under it. The send SUCCEEDED and the refusal came back on the stream, so a
   // finalize row carries it. A run of them is a race the gateway keeps losing on that
@@ -294,7 +312,13 @@ export const CAUSE_ANOMALY_KINDS: Record<string, string> = {
 /** Causes raised CRITICAL on their FIRST occurrence instead of after a burst: a single
  *  one proves the agent cannot answer anyone until an operator acts, so waiting for a
  *  second lost turn only delays the one fix there is. */
-const CRITICAL_ON_FIRST_CAUSES: ReadonlySet<string> = new Set(["provider_auth_revoked"]);
+const CRITICAL_ON_FIRST_CAUSES: ReadonlySet<string> = new Set([
+  "provider_auth_revoked",
+  "provider_permission_denied",
+  "provider_auth_failed",
+  "provider_billing",
+  "model_not_found",
+]);
 
 /** WHICH AGENT a finalize row failed on, for the causes whose remedy is per agent. Read
  *  from the trace meta `stream.finalize` writes for those causes only (content-free: the

@@ -15,7 +15,11 @@ const DRILLABLE_KINDS = new Set([
 /** Per-cause classes whose evidence names its cause (`cause`) AND where it sits
  *  (`agents`, `providers`): the cause column shows the fix, filled with them. Only the
  *  causes whose remedy is a command for one agent are listed. */
-const CAUSE_WITH_FIX_KINDS = new Set(["assistant.cause.provider_auth_revoked"]);
+const CAUSE_WITH_FIX_KINDS = new Set([
+  "assistant.cause.provider_auth_revoked",
+  "assistant.cause.provider_permission_denied",
+  "assistant.cause.provider_auth_failed",
+]);
 export function parseDispatchEvidence(r: { kind: string; evidence?: string | null }): {
   dominantCode?: string;
   sampleCorrelationId?: string;

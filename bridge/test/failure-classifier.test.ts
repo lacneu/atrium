@@ -686,9 +686,11 @@ describe("provider_auth_revoked — the credential the provider refused", () => 
     expect(classifyFailureText(capped)).toBe("provider_auth_revoked");
   });
 
-  it("either fixed phrase is enough, bare or in a fallback summary", () => {
+  it("the 401 refusal is enough, bare or in a fallback summary", () => {
     expect(classifyFailureText(REVOKED_CAUSE)).toBe("provider_auth_revoked");
-    expect(classifyFailureText(`${REAUTH_HINT}.`)).toBe("provider_auth_revoked");
+    // The hint ALONE is not (0.91.3): upstream appends it for `auth` and `auth_permanent`
+    // alike — a 403, a region, a deactivated workspace (failover-error.ts:486-502).
+    expect(classifyFailureText(`${REAUTH_HINT}.`)).toBe("provider_auth_failed");
     expect(
       classifyFailureText(
         `All models failed (2): openai/a: ${REVOKED_CAUSE} (auth) | openai/b: ${REVOKED_CAUSE} (auth). ${REAUTH_HINT}`,
@@ -708,7 +710,7 @@ describe("provider_auth_revoked — the credential the provider refused", () => 
       classifyFailureText(
         `CLI backend "codex" could not resolve its login. ${REAUTH_HINT}. OpenClaw did not start the run.`,
       ),
-    ).toBe("provider_auth_revoked");
+    ).toBe("provider_auth_failed");
   });
 
   it("is never one of the classes the automatic retry or the overflow card keys on", () => {

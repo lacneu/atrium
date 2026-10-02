@@ -1,5 +1,55 @@
 # Changelog
 
+## [0.91.3] — Error labels from the gateway's structured facts, and no generic wrapper as a headline
+
+Corrective release. No breaking changes. Deploy the bridge, Convex and the frontend together.
+
+**A failure is named from what the gateway structured before what it wrote.** When a turn fails,
+the gateway can say why in structured fields beside its message — the failure reason, the HTTP
+status, the kind of provider failure — and, in a summary of every model it tried, a reason after
+each attempt. Atrium read only the sentences. It now reads those fields first and the wording only
+when they say nothing, so a rate limit, a billing refusal, an unknown model, a provider error, a
+context overflow or a refused credential is named the same way however the gateway phrased it, and
+a summary is read attempt by attempt — a paused credential on one model no longer hides a refused
+one on the next.
+
+**A refused credential is no longer always "access expired".** The gateway's re-authentication hint
+follows any credential refusal: an expired or revoked token, but also a missing permission, an
+unsupported region or a deactivated workspace or key. The card now tells them apart. A refused
+**permission** says that the provider blocks this agent's account, that reconnecting the same
+account will not help, and that an administrator needs to check its rights with the provider. A
+refusal that names neither says the credential was refused without a reason and that an
+administrator needs to look. The "access expired, reconnect" card is kept for an expired or revoked
+token, including an expired OAuth login (the gateway's "Model login expired"). Messages stored by
+0.91.2 under the expired card with a permission refusal in their text now show the right one. Each
+of these, a billing refusal and an unknown model raises a critical anomaly on the first occurrence,
+naming the agent; the Anomalies tab shows read-only commands for the two new credential cases.
+
+**A generic gateway message is never the headline.** The gateway wraps any failed compaction in
+"Context is too large and auto-compaction could not recover this turn", whatever the real cause,
+and keeps the cause only when its verbose failure details are on; it has other generic sentences
+("Something went wrong while processing your request", "Agent failed before reply: …"). When the
+cause inside is recognised, the card names it and the wrapper's advice to compact or start over is
+no longer shown under it. When there is none, the card says so — "Compaction failed; the gateway did
+not pass on an identifiable cause", or the same for the turn — with no compaction or branching
+action. In both cases the gateway's full text sits behind a "Details" disclosure with a copy
+button, as in the gateway's own Control UI. Messages already stored render the same way.
+
+**A rate limit is no longer offered compaction.** Some providers report a rate limit in words that
+read like an overflow ("too many tokens, please wait", a tokens-per-minute limit). Atrium now applies
+the gateway's own exclusions — tokens per minute or per day, rate limits, quotas, billing — before
+calling a failure a context overflow, on new turns and on stored messages alike.
+
+**A provider logged out on the gateway ends the turn with that reason.** When an operator removes a
+provider's login on the gateway, the runs using it are stopped. Atrium showed them as "Stopped",
+as if the reader had pressed Stop; the card now says the agent's access to the provider was removed
+and that an administrator needs to reconnect it.
+
+**Smaller corrections.** A provider error body that quotes its own message (`401 {"message": "…token
+has been revoked"}`) is read for that message instead of being discarded with operator-chosen
+values. A delegated sub-agent whose token or session "expired" is no longer counted as a timeout.
+A proxy's 403 on the bridge's own connection is not mistaken for a provider refusal.
+
 ## [0.91.2] — A revoked provider credential named as such, slash commands sent as typed
 
 Corrective release. No breaking changes. Deploy the bridge, Convex and the frontend together.

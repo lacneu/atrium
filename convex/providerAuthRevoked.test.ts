@@ -13,11 +13,8 @@ import { convexTest } from "convex-test";
 import { describe, expect, test } from "vitest";
 import { internal } from "./_generated/api";
 import schema from "./schema";
-import {
-  isProviderAuthRevokedFailureText,
-  normalizeMessageErrorCode,
-  reauthProviderFromText,
-} from "./lib/chatRenderState";
+import { normalizeMessageErrorCode, reauthProviderFromText } from "./lib/chatRenderState";
+import { classifyStoredFailureText } from "./lib/failureText";
 import { RETRYABLE_KINDS, retryDecision } from "./turnRetry";
 import { actionForErrorCode } from "./lib/diagnose";
 import { classifySubAgentError } from "./lib/subAgentFailure";
@@ -170,6 +167,10 @@ describe("provider_auth_revoked in Convex", () => {
     ).toBeNull();
   });
 });
+
+/** The stored-text mirror's verdict (convex/lib/failureText.ts) is the revoked credential. */
+const isProviderAuthRevokedFailureText = (text: string) =>
+  classifyStoredFailureText(text) === "provider_auth_revoked";
 
 describe("the stored-text mirror (rows written before the class existed)", () => {
   test("recognizes the production text and names its provider", () => {

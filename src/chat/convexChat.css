@@ -6240,6 +6240,24 @@ button.oc-perm__opt:disabled {
   font-size: 0.76rem;
   color: var(--muted-foreground);
 }
+/* The gateway's raw text behind a disclosure (generic wrappers, explained causes). */
+.oc-error-card__details {
+  margin-top: 0.2rem;
+}
+.oc-error-card__details summary {
+  cursor: pointer;
+  font-size: 0.76rem;
+  color: var(--muted-foreground);
+}
+.oc-error-card__details pre {
+  margin: 0.3rem 0 0.2rem;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-size: 0.76rem;
+  max-height: 12rem;
+  overflow-y: auto;
+  color: var(--muted-foreground);
+}
 .oc-error-card__retry {
   display: inline-flex;
   align-items: center;

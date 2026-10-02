@@ -98,6 +98,8 @@ const FROZEN_TRUTH_FLOOR = [
   "ConnectParams.caps",
   "CanvasDocumentViewParams.docId",
   "CanvasDocumentViewResult.html",
+  // The structured provider observation on a failed chat, read before the prose (2026-10-02).
+  "ChatErrorEvent.errorDetail",
 ];
 
 const ratchet = JSON.parse(

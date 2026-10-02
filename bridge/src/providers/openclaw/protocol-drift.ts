@@ -439,10 +439,14 @@ export const KNOWN_AGENT_FIELDS: ReadonlySet<string> = new Set([
  * matrix instead of being invisible omissions.
  */
 export const COVERAGE_SUMMARY = {
-  handled: 343,
+  handled: 344,
   ignored: 817,
-  gaps: 905,
+  gaps: 904,
   /** The declared gaps, by schema path — the actionable part of the matrix.
+   *
+   *  ERROR LABELS (2026-10-02): `ChatErrorEvent.errorDetail` is handled — the provider
+   *  observation a failed chat carries (failoverReason, providerRuntimeFailureKind,
+   *  httpStatus) decides the failure class before the error text is read.
    *
    *  INLINE WIDGETS (2026-09-30): `ConnectParams.caps` is handled — the conversation
    *  socket declares `inline-widgets` when the conversation wants widgets — and the
@@ -544,7 +548,6 @@ export const COVERAGE_SUMMARY = {
     "ChatAccountSelection.label",
     "ChatAccountSelection.source",
     "ChatAttachments",
-    "ChatErrorEvent.errorDetail",
     "ChatHistoryActivity.items",
     "ChatHistoryActivity.messageId",
     "ChatRunStartupPhase",
