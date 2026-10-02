@@ -85,7 +85,7 @@ import {
   quotedRefsOf,
   resolveQuoteTemplates,
 } from "./lib/quoteReply";
-import { classifyAttachment } from "./lib/mediaTransport";
+import { planAttachmentTransports } from "./lib/mediaTransport";
 import {
   chatHasActivityBlockers,
   drainNextQueued,
@@ -330,6 +330,21 @@ export const getOutbox = internalQuery({
   args: { outboxId: v.id("outbox") },
   handler: async (ctx, { outboxId }): Promise<Doc<"outbox"> | null> => {
     return await ctx.db.get(outboxId);
+  },
+});
+
+// Byte size of each stored inbound blob, in order (null for a blob that is gone),
+// read from the `_storage` metadata so the dispatch can plan a transport without
+// loading a file it may only ever reference.
+export const storageSizesInternal = internalQuery({
+  args: { storageIds: v.array(v.id("_storage")) },
+  handler: async (ctx, { storageIds }): Promise<Array<number | null>> => {
+    const sizes: Array<number | null> = [];
+    for (const id of storageIds) {
+      const meta = await ctx.db.system.get("_storage", id);
+      sizes.push(meta?.size ?? null);
+    }
+    return sizes;
   },
 });
 
@@ -1062,7 +1077,7 @@ export const getChatRouting = internalQuery({
         isSole,
       }),
       // `config` is the RESOLVED (defaults-filled) view for Convex's OWN inbound
-      // transport decision (classifyAttachment). `configOverrides` is the RAW stored
+      // transport decision (planAttachmentTransports). `configOverrides` is the RAW stored
       // partial sent to the bridge — only fields the admin explicitly set, so an
       // UNSET field lets the bridge keep its OWN env default (D-F-b) instead of being
       // shadowed by a Convex default on every /send (which would force e.g. an
@@ -2613,17 +2628,37 @@ export const dispatch = internalAction({
       fileName: string;
       content: string;
     }> = [];
-    // Phase 3 (shared-fs): TOOL-READ files in shared-fs mode ride BY REFERENCE — a
-    // short-lived Convex getUrl the bridge STREAMS to a shared volume (no base64, no
-    // frame ceiling → videos/audio of any size). The storageId is server-minted from
-    // the outbox (never client-supplied — IDOR lesson). References are NOT counted
-    // toward the maxPayload frame guard (only inline base64 is).
+    // Phase 3 (shared-fs): a TOOL-READ file the frame cannot carry rides BY REFERENCE
+    // — a short-lived Convex getUrl the bridge STREAMS to a shared volume (no base64,
+    // no frame ceiling → videos/audio of any size). One the frame CAN carry rides as
+    // a native gateway attachment instead (see planAttachmentTransports for why). The
+    // storageId is server-minted from the outbox (never client-supplied — IDOR
+    // lesson). References are NOT counted toward the maxPayload frame guard (only
+    // inline base64 is).
     const referenceAttachments: Array<{
       url: string;
       mimeType: string;
       fileName: string;
     }> = [];
     const inboundMediaMode = routing.config.inboundMediaMode;
+    const rowAttachments = row.attachments ?? [];
+    // Sizes come from the storage METADATA: a shared-fs file may be far larger than
+    // an action should ever load just to learn that it does not fit. Only shared-fs
+    // needs them — inline mode sends everything inline and sizes it as it reads.
+    const sizes: Array<number | null> =
+      inboundMediaMode === "shared-fs" && rowAttachments.length > 0
+        ? await ctx.runQuery(internal.bridge.storageSizesInternal, {
+            storageIds: rowAttachments.map((a) => a.storageId),
+          })
+        : rowAttachments.map(() => null);
+    const transports = planAttachmentTransports({
+      inboundMediaMode,
+      maxPayload,
+      attachments: rowAttachments.map((a, i) => ({
+        mimeType: a.mimeType,
+        size: sizes[i] ?? null,
+      })),
+    });
     let attachmentTooLarge = false;
     // We size the frame by the SUM of the attachments' base64 only. The message
     // text + JSON structure ride the fixed envelope reserved inside base64FitsFrame
@@ -2634,14 +2669,11 @@ export const dispatch = internalAction({
     // the bridge frame guard. A pathological prompt larger than the envelope is the
     // only residual, backstopped by the bridge body cap (413) + the gateway.
     let base64Total = 0;
-    for (const a of row.attachments ?? []) {
+    for (const [index, a] of rowAttachments.entries()) {
       try {
-        // Model-native (Vision) → inline base64 (size-bounded). Tool-read in
-        // shared-fs mode → reference (streamed by the bridge, any size).
-        if (
-          classifyAttachment({ mimeType: a.mimeType, inboundMediaMode }) ===
-          "reference"
-        ) {
+        // Inline → base64 in the frame (size-bounded, checked below). Reference →
+        // streamed by the bridge to the shared volume (any size).
+        if (transports[index] === "reference") {
           const url = await ctx.storage.getUrl(a.storageId);
           if (url === null) continue; // blob gone — skip (never fail the whole turn)
           referenceAttachments.push({

@@ -6,91 +6,96 @@
     {
       "id": "announce-reverse-hold",
       "ok": true,
-      "chat": "28a5620d0059a8c2"
+      "chat": "e18d8747ceb912d5"
     },
     {
       "id": "basic-turn",
       "ok": true,
-      "chat": "28a5620d0059a8c2"
+      "chat": "e18d8747ceb912d5"
     },
     {
       "id": "tool-exec",
       "ok": true,
-      "chat": "28a5620d0059a8c2"
+      "chat": "e18d8747ceb912d5"
     },
     {
       "id": "update-plan",
       "ok": true,
-      "chat": "28a5620d0059a8c2"
+      "chat": "e18d8747ceb912d5"
     },
     {
       "id": "media-outbound",
       "ok": true,
-      "chat": "28a5620d0059a8c2"
+      "chat": "e18d8747ceb912d5"
     },
     {
       "id": "inbound-attachment",
       "ok": true,
-      "chat": "28a5620d0059a8c2"
+      "chat": "e18d8747ceb912d5"
+    },
+    {
+      "id": "inbound-attachment-large",
+      "ok": true,
+      "chat": "e18d8747ceb912d5"
     },
     {
       "id": "fork-attachment-rehydrate",
       "ok": true,
-      "chat": "28a5620d0059a8c2"
+      "chat": "e18d8747ceb912d5"
     },
     {
       "id": "talk-session",
       "ok": true,
-      "chat": "28a5620d0059a8c2"
+      "chat": "e18d8747ceb912d5"
     },
     {
       "id": "spawn-announce-merge",
       "ok": true,
-      "chat": "28a5620d0059a8c2"
+      "chat": "e18d8747ceb912d5"
     },
     {
       "id": "spawn-chain-merge",
       "ok": true,
-      "chat": "28a5620d0059a8c2"
+      "chat": "e18d8747ceb912d5"
     },
     {
       "id": "spawn-parallel-merge",
       "ok": true,
-      "chat": "28a5620d0059a8c2"
+      "chat": "e18d8747ceb912d5"
     },
     {
       "id": "async-task",
       "ok": true,
-      "chat": "28a5620d0059a8c2"
+      "chat": "e18d8747ceb912d5"
     },
     {
       "id": "cron-tool",
       "ok": true,
-      "chat": "28a5620d0059a8c2"
+      "chat": "e18d8747ceb912d5"
     },
     {
       "id": "agent-request-question",
       "ok": true,
-      "chat": "28a5620d0059a8c2"
+      "chat": "e18d8747ceb912d5"
     },
     {
       "id": "agent-request-exec-approval",
       "ok": true,
-      "chat": "28a5620d0059a8c2"
+      "chat": "e18d8747ceb912d5"
     },
     {
       "id": "widget-inline",
       "ok": true,
-      "chat": "28a5620d0059a8c2"
+      "chat": "e18d8747ceb912d5"
     },
     {
       "id": "widget-off",
       "ok": true,
-      "chat": "28a5620d0059a8c2"
+      "chat": "e18d8747ceb912d5"
     }
   ],
   "verdict": "GO",
-  "at": "2026-10-02T17:02:26.689Z",
+  "at": "2026-10-02T20:18:20.024Z",
   "scenarios": [
     "agent-request-exec-approval",
     "agent-request-question",
@@ -103,6 +108,7 @@
     "hermes-clarify",
     "hermes-cron-list",
     "inbound-attachment",
+    "inbound-attachment-large",
     "media-outbound",
     "spawn-announce-merge",
     "spawn-chain-merge",
@@ -120,6 +126,7 @@
     "update-plan": "openclaw",
     "media-outbound": "openclaw",
     "inbound-attachment": "openclaw",
+    "inbound-attachment-large": "openclaw",
     "fork-attachment-rehydrate": "openclaw",
     "talk-session": "openclaw",
     "spawn-announce-merge": "openclaw",
@@ -136,13 +143,13 @@
     "hermes-clarify": "hermes"
   },
   "flags": [],
-  "atriumSha": "9d351bb1d4cd0f357fdc580823baf5e5bbe6af49",
+  "atriumSha": "9f402ae16fabadd5e7479935cc28f82ddb321d36",
   "worktree": {
     "dirty": true,
-    "deltaSha256": "cfce587d4c5d5d23a8d12c4fa7f03940f45332c5f31715f6ab1350accfc280fa"
+    "deltaSha256": "e2d52014fa8b22ec4265f58abb6bd92a7de6a8c2c61e0f7adfae25b3335c7a55"
   },
   "supportDigest": "014aff435b296918d756a4a4f5ce090e6bee86830f000eb4e8104f7173c0db25",
   "authMode": "token",
-  "bridgeVersion": "0.91.2",
+  "bridgeVersion": "0.91.3",
   "vendoredSha256": "935be3cda241fe35a508530b5c8d5c8cfb9def4d32b2a9514e8ce7973d227303"
 }

@@ -1,5 +1,34 @@
 # Changelog
 
+## [0.91.4] — Attachments a sandboxed agent can read on shared-fs instances
+
+Corrective release. No breaking changes, one deployment check (below). Deploy Convex and the
+frontend; the bridge is unchanged.
+
+**A file the gateway can carry is sent as a native attachment, even in shared-fs mode.** On an
+instance whose inbound media mode is `shared-fs`, every document, recording or other non-image file
+used to be written by the bridge to the shared volume and quoted to the agent as a path. That path
+is not an attachment to the gateway: it records no media for the turn, stages nothing into a
+sandbox, extracts nothing for the model. An agent whose file tools are confined — a Docker sandbox,
+or `tools.fs.workspaceOnly` — was refused by its own `read` tool ("Path escapes sandbox root") and
+reached the file only if it thought of a shell. Such a file now rides the gateway's own attachment
+path whenever the WebSocket frame can carry it, beside any photos (which keep their room first): the
+gateway stores it, copies it into the sandbox workspace when the agent has one, and puts the text of
+a text or PDF file straight into the prompt. Only a file the frame cannot carry (above ~18 MiB at
+the default 25 MiB frame) is still streamed to the shared volume and referenced by path, as is an
+image format no model decodes (SVG, TIFF, HEIC…), which the gateway would otherwise hand to the
+model as an image. Inline instances are unchanged. On a Hermes instance in `shared-fs` mode, a small
+file now reaches the agent through Hermes' own attachment staging (WebSocket transport) instead of
+being refused; the REST transport still refuses attachments, as before.
+
+**Deployment check: nothing read-only over the gateway's `media/inbound`.** That directory is
+OpenClaw's own attachment store; every native upload is saved there first. The shared-fs guide used
+to suggest mounting Atrium's `published/` directory read-only over it, which makes every native
+upload fail (`Failed to save intercepted media to disk`) — Control UI uploads included, and now
+Atrium's small files on shared-fs instances. If your gateway has that mount, replace it: the agent
+reads Atrium's files at `/home/node/.openclaw/media/inbound/published` (the bridge's default
+received-files path), and the guide now shows how to harden that child alone.
+
 ## [0.91.3] — Error labels from the gateway's structured facts, and no generic wrapper as a headline
 
 Corrective release. No breaking changes. Deploy the bridge, Convex and the frontend together.

@@ -1169,7 +1169,65 @@ describe("bridge.dispatch — per-instance bridgeUrl + in-band config (Model M)"
     }
   });
 
-  test("shared-fs: a tool-read file rides BY REFERENCE (getUrl, not base64); an image stays inline", async () => {
+  // Seeds a shared-fs instance, a chat and an outbox row carrying `files` (bytes +
+  // name + type), plus — when `maxPayload` is given — the bridge's reported frame.
+  async function seedSharedFsAttachments(
+    t: ReturnType<typeof convexTest>,
+    files: Array<{ bytes: number[]; filename: string; mimeType: string }>,
+    maxPayload?: number,
+  ) {
+    return await t.run(async (ctx) => {
+      const userId = await ctx.db.insert("users", {});
+      const now = Date.now();
+      await ctx.db.insert("userAgents", {
+        userId,
+        instanceName: "primary",
+        agentId: "alice",
+        isDefault: true,
+        source: "manual",
+        createdAt: now,
+      });
+      await ctx.db.insert("instances", {
+        name: "primary",
+        gatewayUrl: "ws://gw:18790",
+        bridgeUrl: "http://b:9",
+        config: { inboundMediaMode: "shared-fs" },
+      });
+      const chatId = await ctx.db.insert("chats", {
+        userId,
+        archived: false,
+        updatedAt: now,
+      });
+      const stored = [];
+      for (const f of files) {
+        const storageId = await ctx.storage.store(new Blob([new Uint8Array(f.bytes)]));
+        stored.push({ storageId, filename: f.filename, mimeType: f.mimeType });
+      }
+      if (maxPayload !== undefined) {
+        await ctx.db.insert("bridgeHealth", {
+          key: "singleton",
+          reachable: true,
+          checkedAt: now,
+          maxPayload,
+          targets: [],
+        });
+      }
+      return await ctx.db.insert("outbox", {
+        chatId,
+        userId,
+        clientMessageId: "cmid-ref",
+        text: "transcribe this",
+        attachmentIds: stored.map((f) => f.storageId),
+        attachments: stored,
+        status: "pending",
+      });
+    });
+  }
+
+  async function dispatchSharedFs(
+    files: Array<{ bytes: number[]; filename: string; mimeType: string }>,
+    maxPayload?: number,
+  ) {
     const t = convexTest(schema, modules);
     const prevSecret = process.env.BRIDGE_SHARED_SECRET;
     process.env.BRIDGE_SHARED_SECRET = "test-secret";
@@ -1177,67 +1235,58 @@ describe("bridge.dispatch — per-instance bridgeUrl + in-band config (Model M)"
     const origFetch = globalThis.fetch;
     globalThis.fetch = fetchSpy as unknown as typeof fetch;
     try {
-      const outboxId = await t.run(async (ctx) => {
-        const userId = await ctx.db.insert("users", {});
-        const now = Date.now();
-        await ctx.db.insert("userAgents", {
-          userId,
-          instanceName: "primary",
-          agentId: "alice",
-          isDefault: true,
-          source: "manual",
-          createdAt: now,
-        });
-        await ctx.db.insert("instances", {
-          name: "primary",
-          gatewayUrl: "ws://gw:18790",
-          bridgeUrl: "http://b:9",
-          config: { inboundMediaMode: "shared-fs" },
-        });
-        const chatId = await ctx.db.insert("chats", {
-          userId,
-          archived: false,
-          updatedAt: now,
-        });
-        const videoId = await ctx.storage.store(
-          new Blob([new Uint8Array([1, 2, 3, 4])]),
-        );
-        const imageId = await ctx.storage.store(
-          new Blob([new Uint8Array([5, 6, 7, 8])]),
-        );
-        return await ctx.db.insert("outbox", {
-          chatId,
-          userId,
-          clientMessageId: "cmid-ref",
-          text: "transcribe this",
-          attachmentIds: [videoId, imageId],
-          attachments: [
-            { storageId: videoId, filename: "clip.mp4", mimeType: "video/mp4" },
-            { storageId: imageId, filename: "pic.png", mimeType: "image/png" },
-          ],
-          status: "pending",
-        });
-      });
-
+      const outboxId = await seedSharedFsAttachments(t, files, maxPayload);
       await t.action(internal.bridge.dispatch, { outboxId });
-
       expect(fetchSpy).toHaveBeenCalledTimes(1);
       const [, init] = fetchSpy.mock.calls[0] as unknown as [string, RequestInit];
-      const body = JSON.parse(init.body as string);
-      // The video → reference (a getUrl, NO base64 content).
-      expect(body.referenceAttachments).toHaveLength(1);
-      expect(body.referenceAttachments[0].fileName).toBe("clip.mp4");
-      expect(typeof body.referenceAttachments[0].url).toBe("string");
-      expect(body.referenceAttachments[0].content).toBeUndefined();
-      // The image (model-native) stays inline base64.
-      expect(body.attachments).toHaveLength(1);
-      expect(body.attachments[0].fileName).toBe("pic.png");
-      expect(typeof body.attachments[0].content).toBe("string");
+      return JSON.parse(init.body as string) as {
+        attachments?: Array<{ fileName: string; content?: string }>;
+        referenceAttachments: Array<{ fileName: string; url: string; content?: string }>;
+      };
     } finally {
       globalThis.fetch = origFetch;
       if (prevSecret === undefined) delete process.env.BRIDGE_SHARED_SECRET;
       else process.env.BRIDGE_SHARED_SECRET = prevSecret;
     }
+  }
+
+  // THE DEFECT (2026-10-02): a tool-read file on a shared-fs instance was ALWAYS
+  // staged by the bridge and quoted as a path — which a sandboxed / workspace-only
+  // agent's `read` tool refuses ("Path escapes sandbox root", measured on OpenClaw
+  // 2026.9.6). One the frame can carry now rides as a native chat.send attachment,
+  // the path the gateway itself stages into the sandbox.
+  test("shared-fs: a tool-read file the frame CAN carry rides as a native attachment (base64), beside the image", async () => {
+    const body = await dispatchSharedFs([
+      { bytes: [1, 2, 3, 4], filename: "clip.mp4", mimeType: "video/mp4" },
+      { bytes: [5, 6, 7, 8], filename: "pic.png", mimeType: "image/png" },
+    ]);
+    expect(body.referenceAttachments).toEqual([]);
+    expect(body.attachments?.map((a) => a.fileName)).toEqual(["clip.mp4", "pic.png"]);
+    for (const a of body.attachments ?? []) expect(typeof a.content).toBe("string");
+  });
+
+  test("shared-fs: a tool-read file the frame CANNOT carry rides BY REFERENCE (getUrl, not base64); the image stays inline", async () => {
+    // envelope + 8 base64 bytes: a 4-byte image fits (8), a 9-byte document (12) cannot.
+    const body = await dispatchSharedFs(
+      [
+        { bytes: [1, 2, 3, 4, 5, 6, 7, 8, 9], filename: "big.pdf", mimeType: "application/pdf" },
+        { bytes: [5, 6, 7, 8], filename: "pic.png", mimeType: "image/png" },
+      ],
+      131072 + 8,
+    );
+    expect(body.referenceAttachments).toHaveLength(1);
+    expect(body.referenceAttachments[0].fileName).toBe("big.pdf");
+    expect(typeof body.referenceAttachments[0].url).toBe("string");
+    expect(body.referenceAttachments[0].content).toBeUndefined();
+    expect(body.attachments?.map((a) => a.fileName)).toEqual(["pic.png"]);
+  });
+
+  test("shared-fs: an undecodable image (svg) stays a REFERENCE however small — the gateway would hand it to the model as an image", async () => {
+    const body = await dispatchSharedFs([
+      { bytes: [60, 115, 118, 103, 62], filename: "logo.svg", mimeType: "image/svg+xml" },
+    ]);
+    expect(body.referenceAttachments.map((a) => a.fileName)).toEqual(["logo.svg"]);
+    expect(body.attachments ?? []).toEqual([]);
   });
 
   test("a stored injection DISABLE reaches the wire (resolve → route → dispatch)", async () => {

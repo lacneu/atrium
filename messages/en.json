@@ -1145,7 +1145,7 @@
   "bridge_config_save": "Save",
   "bridge_config_save_failed": "Could not save the configuration",
   "bridge_config_media_mode_help": "How the bridge fetches OUTBOUND (agent-generated) files to host them: gateway-http (over HTTP from the gateway — no shared filesystem needed, the portable default), shared-fs (read a mounted shared volume), or off (no outbound attachments).",
-  "bridge_config_inbound_mode_help": "How user-uploaded files reach the agent: inline (base64 in the chat frame — capped by the gateway frame size), or shared-fs (streamed to a shared volume and referenced by path — any size, for large videos/audio/docs).",
+  "bridge_config_inbound_mode_help": "How user-uploaded files reach the agent: inline (base64 in the chat frame — capped by the gateway frame size), or shared-fs (any size: a file the frame can carry is still sent as a native gateway attachment, which a sandboxed agent can read; a bigger one is streamed to a shared volume and referenced by path).",
   "instance_transport": "Live-stream transport",
   "instance_transport_hint": "How the browser receives the live reply for this instance's chats (frontend↔Convex — not a bridge setting): reactive (Convex's native push — best concurrency, the default) or sse (standard Server-Sent-Events / streamable-HTTP — multi-device, but on managed Convex Cloud each stream holds a concurrent-action slot, capped at 64/512).",
   "bridge_config_media_max_mb_help": "Per-file size cap (MB). In shared-fs mode this can be large (files stream to disk); for inline files the gateway frame size is the real limit.",

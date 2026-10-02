@@ -1469,10 +1469,14 @@ export const seedImageAttachment = action({
     // resolved instance, so a scenario must be able to say which one stages.
     instanceName: v.optional(v.string()),
     agentId: v.optional(v.string()),
+    // Grow the file to this many bytes with filler LINES after the given content —
+    // for a scenario that needs a file larger than the gateway frame can carry, which
+    // no command line could pass as base64.
+    padToBytes: v.optional(v.number()),
   },
   handler: async (
     ctx,
-    { base64, filename, mimeType, text, chatId, instanceName, agentId },
+    { base64, filename, mimeType, text, chatId, instanceName, agentId, padToBytes },
   ): Promise<
     | { ok: true; chatId: Id<"chats">; outboxId: Id<"outbox">; storageId: Id<"_storage"> }
     | { ok: false; reason: string }
@@ -1483,7 +1487,14 @@ export const seedImageAttachment = action({
     const binary = atob(base64);
     const bytes = new Uint8Array(binary.length);
     for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-    const blob = new Blob([bytes], { type: mimeType });
+    const parts: BlobPart[] = [bytes];
+    if (padToBytes !== undefined && padToBytes > bytes.length) {
+      const filler = new Uint8Array(padToBytes - bytes.length);
+      const line = new TextEncoder().encode("filler line, nothing to read here\n");
+      for (let i = 0; i < filler.length; i++) filler[i] = line[i % line.length];
+      parts.push(filler);
+    }
+    const blob = new Blob(parts, { type: mimeType });
     const storageId = await ctx.storage.store(blob);
     const res = await ctx.runMutation(internal.dev.enqueueAttachmentTurn, {
       storageId,
