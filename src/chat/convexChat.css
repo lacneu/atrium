@@ -3224,6 +3224,13 @@ button.oc-bmk-rail__count:hover {
   background: var(--muted);
   color: var(--foreground);
 }
+/* A widget the sub-agent showed cannot be displayed here: said, below the text. */
+.oc-subpanel__note {
+  margin: 0.35rem 0 0;
+  font-size: 0.75rem;
+  font-style: italic;
+  color: var(--muted-foreground);
+}
 .oc-subpanel__msg--pending {
   display: inline-flex;
   align-items: center;

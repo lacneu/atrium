@@ -120,11 +120,29 @@ it, a `srcdoc` frame would share Atrium's origin.
 Before rendering, Atrium applies to the document what the OpenClaw sandbox proxy
 applies to it: a document that embeds another browsing context (`iframe`,
 `object`, `embed`, …) is refused, and the proxy's guard script and content
-security policy (no network connections, no WebRTC, no frames, no form
-submission; scripts, styles and fonts only from the proxy's allow-listed public
-CDNs) are inserted at the top of the document. Messages from the frame are
+security policy are inserted at the top of the document. That policy allows no
+network connections, no WebRTC, no frames and no form submission. Audio and video
+load only from inline data (`data:`, `blob:`). Images load from inline data
+(`data:`) and the allow-listed public CDNs; scripts, styles and fonts load only
+from those CDNs. Atrium's policy comes before anything the widget declares, and a
+browser enforces every policy present, so a widget cannot loosen it with its own
+`<meta>`. The Atrium page itself allows its frames to navigate nowhere
+(`frame-src 'none'`, or only the sandbox origin in dedicated mode), so a widget
+cannot send itself to another address either. Messages from the frame are
 accepted only when they come from that frame's window with the opaque origin
 (`"null"`).
+
+### What a widget can still send out
+
+The allow-listed CDNs are reachable on purpose: widgets load their charting,
+mapping and UI libraries from them, as in the OpenClaw Control UI. A request to a
+CDN carries whatever path and query string the widget puts in it, so a widget
+can make the operator of one of those CDNs (cdnjs.cloudflare.com, cdn.jsdelivr.net,
+esm.sh, unpkg.com, fonts.googleapis.com, fonts.gstatic.com, fonts.bunny.net) receive
+text it has read — through an image, script, style or font URL. Nothing else is
+reachable: no other host, no connection API, no media URL, no navigation. A strict
+mode with no CDN at all (widgets limited to inline code and data) is a possible
+follow-up for deployments that need it.
 
 ### Dedicated sandbox host (optional)
 
@@ -137,9 +155,16 @@ of that proxy, pinned to the OpenClaw version it is validated against:
 | File | What it is |
 |---|---|
 | [`deploy/widget-sandbox/index.html`](../deploy/widget-sandbox/index.html) | The proxy page, byte for byte as the pinned gateway serves it. |
-| [`deploy/widget-sandbox/headers.json`](../deploy/widget-sandbox/headers.json) | The response headers it must be served with. |
+| [`deploy/widget-sandbox/headers.json`](../deploy/widget-sandbox/headers.json) | The response headers the pinned gateway sends with it. Atrium serves them with one directive hardened (below). |
 | [`deploy/widget-sandbox/PROVENANCE.json`](../deploy/widget-sandbox/PROVENANCE.json) | Upstream tag and commit, the source files' hashes, and the proxy **version** — upstream's own `sha256(JSON.stringify([headers, html]))`, which a test recomputes. |
 | [`deploy/widget-sandbox/Caddyfile`](../deploy/widget-sandbox/Caddyfile) | A standalone Caddy site serving it. |
+
+**One deliberate difference from upstream.** OpenClaw lets a widget play HTTPS
+audio and video (`media-src 'self' data: https: blob:`). A media request is not a
+"connection" to the policy, so it would let a widget send what it has read to any
+HTTPS server in a media URL. Atrium serves the proxy with
+`media-src 'self' data: blob:` instead, and the simple mode uses the same policy.
+The proxy page itself is unchanged, and so is its version hash.
 
 The frontend image already serves the proxy on its second port, **8081**
 (`docker/Caddyfile`): `/` answers the proxy with its headers, every other path
@@ -169,7 +194,8 @@ Reverse-proxy notes:
   `Cross-Origin-Embedder-Policy` or `Cross-Origin-Opener-Policy` of your own on
   the sandbox host, and do not strip or rewrite the proxy's: its
   `frame-ancestors http: https:` is what lets Atrium frame it, and its
-  `connect-src 'none'` is what keeps a widget offline.
+  `connect-src 'none'` and `media-src 'self' data: blob:` are what keep a widget
+  offline.
 - The proxy identifies its parent from the `Referer` (Atrium frames it with
   `referrerpolicy="origin"`). A proxy that removes the `Referer` on the way in
   breaks it.
@@ -184,7 +210,7 @@ What breaks when it is misconfigured:
 |---|---|
 | Widgets render in simple mode although an origin is set | The value is not a bare `https://host[:port]` origin, or it equals Atrium's or the Convex HTTP origin. |
 | Skeleton, then "could not be loaded" | The sandbox host is unreachable, answers something other than the proxy at `/`, or a proxy in front removed the `Referer` or added a framing policy. |
-| Widget visible but unstyled or offline | Expected: a widget has no network access; only the listed CDNs serve scripts, styles and fonts. |
+| Widget visible but unstyled or offline | Expected: a widget has no network access; only the listed CDNs serve scripts, styles, fonts and images. |
 
 ## Operating notes
 

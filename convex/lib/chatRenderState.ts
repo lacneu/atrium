@@ -142,6 +142,11 @@ export const KNOWN_ERROR_CODES = [
   "attachment_name_too_long",
   "attachment_staging_failed",
   "attachment_cleanup_unconfirmed",
+  // The bridge refused a send whose message plus inline files make a frame over the
+  // gateway's maxPayload (the gateway would have closed the connection).
+  "message_too_large",
+  // The bridge refused to re-key the socket while a sub-agent reply is owed on it.
+  "subagent_reply_pending",
   // The dispatch never reported back and the reconciler settled the row to unlock
   // the conversation. Delivery is UNKNOWN (the bridge can execute a send and lose
   // only its response), which is what its message says.

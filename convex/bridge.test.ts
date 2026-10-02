@@ -75,6 +75,21 @@ describe("bridge.failDispatch", () => {
     expect(msgs[0]!.errorCode).toBe("no_agent");
   });
 
+  test("a turn the bridge withheld for a sub-agent reply still owed is shown as its own code", async () => {
+    // codex pass 13: the card must say "a sub-agent is still answering — send again",
+    // not the generic "send failed", so the code is stored as the shown error.
+    const t = convexTest(schema, modules);
+    const { chatId, outboxId } = await seed(t);
+    await t.mutation(internal.bridge.failDispatch, {
+      outboxId,
+      reason: "send_failed",
+      errorCode: "subagent_reply_pending",
+    });
+    const msgs = await messagesOf(t, chatId);
+    expect(msgs[0]!.error).toBe("subagent_reply_pending");
+    expect(msgs[0]!.errorCode).toBe("subagent_reply_pending");
+  });
+
   test("is idempotent — a retry inserts NO second error bubble", async () => {
     const t = convexTest(schema, modules);
     const { chatId, outboxId } = await seed(t);

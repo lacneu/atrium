@@ -40,6 +40,9 @@ export interface WsFakeGateway {
   push(frame: unknown): void;
   /** Every request received, in order: `{method, params}`. */
   requests: { method: string; params: unknown }[];
+  /** The params of every `connect` frame, in order — what each socket DECLARED
+   *  (client caps, scopes) at the handshake. */
+  connects: unknown[];
   stop(): Promise<void>;
 }
 
@@ -58,6 +61,7 @@ export function startWsFakeGateway(opts: {
 } = {}): WsFakeGateway {
   const wss = new WebSocketServer({ port: 0, host: "127.0.0.1" });
   const requests: { method: string; params: unknown }[] = [];
+  const connects: unknown[] = [];
   const gw: WsFakeGateway = {
     ready: new Promise<void>((resolve) => wss.once("listening", () => resolve())),
     get url() {
@@ -70,6 +74,7 @@ export function startWsFakeGateway(opts: {
       gw.socket?.send(JSON.stringify(frame));
     },
     requests,
+    connects,
     async stop() {
       await new Promise<void>((resolve) => wss.close(() => resolve()));
     },
@@ -88,6 +93,7 @@ export function startWsFakeGateway(opts: {
       void (async () => {
       const frame = JSON.parse(raw.toString()) as { id: string; method?: string; params?: unknown };
       if (frame.method === "connect") {
+        connects.push(frame.params);
         socket.send(
           JSON.stringify({
             type: "res",

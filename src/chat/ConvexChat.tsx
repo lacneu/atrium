@@ -322,6 +322,7 @@ import {
 import { visibilityChipView } from "./sessionAccessView";
 import { PermissionModePicker, PermissionModeSection } from "./PermissionModePicker";
 import { ComposerAddMenu } from "./ComposerAddMenu";
+import { isAgentPurgePending } from "./admin/groupManageView";
 import {
   AgentRequestDock,
   AgentRequestsHeaderButton,
@@ -4473,7 +4474,9 @@ function ComposerAgentSelect({
       toast.error(
         limit !== null
           ? m.conversation_agents_limit({ count: Number(limit[1]) })
-          : m.conversation_agent_add_failed(),
+          : isAgentPurgePending(err)
+            ? m.agents_error_purge_pending()
+            : m.conversation_agent_add_failed(),
       );
     });
   };

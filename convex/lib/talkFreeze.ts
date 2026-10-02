@@ -261,13 +261,26 @@ export async function turnInFlightForOtherAgent(
   //    PARENT's socket, which during a call already matches and is never checked
   //    against the hold (codex P1, pass 20). Reading this range is also what makes
   //    the two writes conflict rather than interleave.
-  const interactions = await ctx.db
+  const pendingInteractions = await ctx.db
     .query("subAgentInteractions")
     .withIndex("by_chat_status", (q) =>
       q.eq("chatId", chat._id).eq("status", "pending"),
     )
     .take(PAGE);
-  if (interactions.length >= PAGE) return true;
+  if (pendingInteractions.length >= PAGE) return true;
+  // …and one whose ERROR the gateway may still recover (recoveringUntil): its reply
+  // can still arrive on the conversation's socket, which a call on another agent
+  // would close (codex pass 13). Same rule as a pending one, bounded by the grace.
+  const erroredInteractions = await ctx.db
+    .query("subAgentInteractions")
+    .withIndex("by_chat_status", (q) =>
+      q.eq("chatId", chat._id).eq("status", "error"),
+    )
+    .order("desc")
+    .take(PAGE);
+  const now = Date.now();
+  const recovering = erroredInteractions.filter((r) => (r.recoveringUntil ?? 0) > now);
+  const interactions = [...pendingInteractions, ...recovering];
   for (const interacting of interactions) {
     // Instance first, from what the row CAPTURED — the action POSTs to that gateway
     // whatever the chat resolves to now. Comparing ids alone let a child on one

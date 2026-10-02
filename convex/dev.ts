@@ -27,6 +27,7 @@ import {
 } from "./routing";
 import { resolveBridgeUrlForDispatch } from "./lib/bridgeRouting";
 import { enrichUserAgents } from "./agents";
+import { conversationWantsWidgets } from "./widgets";
 import { requireRealUserId, getProfile } from "./lib/access";
 import { loadLocalCrypto } from "./lib/crypto/keyProvider";
 import { encryptedSecretValidator } from "./lib/crypto/convexValidator";
@@ -1192,7 +1193,14 @@ export const testTalkIngredients = query({
     ctx,
     { chatId },
   ): Promise<
-    | { ok: true; instanceName: string; agentId: string; canonical: string; openclawChatId: string | null }
+    | {
+        ok: true;
+        instanceName: string;
+        agentId: string;
+        canonical: string;
+        openclawChatId: string | null;
+        inlineWidgets: boolean;
+      }
     | { ok: false; code: string }
   > => {
     assertDev();
@@ -1204,12 +1212,19 @@ export const testTalkIngredients = query({
     const current = await currentTurnRouting(ctx, chat);
     const res = await resolveTargetForTurn(ctx, chat, chat.userId, current.agent);
     if (!res.target) return { ok: false as const, code: "no_agent" };
+    const target = res.target;
+    const instance = await ctx.db
+      .query("instances")
+      .withIndex("by_name", (q) => q.eq("name", target.instanceName))
+      .first();
     return {
       ok: true as const,
-      instanceName: res.target.instanceName,
-      agentId: res.target.agentId,
-      canonical: res.target.canonical,
+      instanceName: target.instanceName,
+      agentId: target.agentId,
+      canonical: target.canonical,
       openclawChatId: res.rebind ? null : current.conversation,
+      // The product's own decision (prepareTalkSession), not a copy of it.
+      inlineWidgets: conversationWantsWidgets(instance, chat),
     };
   },
 });
@@ -3146,8 +3161,23 @@ export const devPrepareInteraction = internalMutation({
         canonical: target.canonical,
         instanceName: target.instanceName,
         ...(gatewayUser === undefined ? {} : { gatewayUser }),
+        // The product's own wish (prepareInteraction), should this open the socket.
+        inlineWidgets: conversationWantsWidgets(instance, chat),
       },
     };
+  },
+});
+
+/** DEV probe: where one sub-agent interaction stands — the live bench waits on it. */
+export const peekSubAgentInteraction = query({
+  args: { interactionId: v.string() },
+  handler: async (ctx, { interactionId }) => {
+    assertDev();
+    const id = ctx.db.normalizeId("subAgentInteractions", interactionId);
+    if (id === null) return null;
+    const row = await ctx.db.get(id);
+    if (row === null) return null;
+    return { status: row.status, replyText: row.replyText ?? null };
   },
 });
 

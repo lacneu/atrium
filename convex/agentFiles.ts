@@ -659,6 +659,8 @@ export const compactSession = action({
         ...(routing.gatewayUser === undefined
           ? {}
           : { gatewayUser: routing.gatewayUser }),
+        // The widget wish, should this route open the socket (see dispatchPatch).
+        inlineWidgets: routing.inlineWidgets,
       },
       COMPACT_TIMEOUT_MS,
       // The dispatch routing already resolved this instance's bridge (Model M).

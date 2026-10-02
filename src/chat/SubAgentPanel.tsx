@@ -67,6 +67,7 @@ import {
   type SubAgentRow,
   type SubAgentSessionMeta,
   type SubAgentTelemetry,
+  subAgentInteractionErrorText,
 } from "./subAgentActivityView";
 
 /** Scroll the PRIMARY thread to the assistant message that spawned this sub-agent
@@ -164,6 +165,8 @@ type SubAgentInteractionRow = {
   userText: string;
   attachments?: Array<{ filename: string; mimeType: string }>;
   replyText?: string;
+  /** The reply carried a widget this panel cannot show. */
+  widgetOmitted?: boolean;
   status: "pending" | "done" | "error";
   errorMessage?: string;
 };
@@ -743,10 +746,13 @@ export function SubAgentPanelContent({
       // `finally` the rejection died silently: the draft stayed, nothing happened,
       // and the reader had no idea why (codex P3, pass 21). The draft is deliberately
       // KEPT so the message is not lost.
+      const said = String((e as Error)?.message ?? "");
       toast.error(
-        String((e as Error)?.message ?? "").includes("TALK_CALL_ACTIVE")
+        said.includes("TALK_CALL_ACTIVE")
           ? m.chat_send_call_active()
-          : m.chat_queue_failed(),
+          : said.includes("SUBAGENT_RECOVERING")
+            ? m.subagent_interact_recovering()
+            : m.chat_queue_failed(),
       );
     } finally {
       setSending(false);
@@ -958,11 +964,16 @@ export function SubAgentPanelContent({
                         </div>
                       ) : it.status === "error" ? (
                         <div className="oc-subpanel__msg oc-subpanel__msg--err">
-                          {it.errorMessage ?? m.subagent_interact_error()}
+                          {subAgentInteractionErrorText(it.errorMessage)}
                         </div>
                       ) : (
                         <div className="oc-subpanel__msg oc-subpanel__msg--reply">
                           <AgentMarkdown text={it.replyText ?? ""} />
+                          {it.widgetOmitted === true ? (
+                            <p className="oc-subpanel__note">
+                              {m.subagent_interact_widget_omitted()}
+                            </p>
+                          ) : null}
                         </div>
                       )}
                     </div>

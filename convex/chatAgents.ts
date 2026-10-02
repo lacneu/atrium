@@ -32,6 +32,7 @@ import { enrichUserAgents, type EnrichedUserAgent } from "./agents";
 import { requireAgentMembership } from "./chats";
 import { requireActive, requireOwnedChat } from "./lib/access";
 import { auditImpersonated } from "./lib/audit";
+import { assertNoPendingPurge, deadAccessRow, liveAccessRows } from "./lib/agentPurge";
 import { isChatBusy } from "./lib/outboxQueue";
 import { liveTalkCall } from "./talk";
 import {
@@ -65,8 +66,10 @@ export interface ChatAgentView {
   addedAt: number | null;
 }
 
-/** The roster of agents, bounded. Oldest first. */
-export async function chatAgentRows(
+/** Every roster row, bounded, oldest first — including one a pending agent purge
+ *  revoked: what the room's LIMIT counts (the row still occupies its place until
+ *  the sweep deletes it, and the bounded read must still see every live row). */
+async function chatAgentRowsRaw(
   ctx: QueryCtx | MutationCtx,
   chatId: Id<"chats">,
 ): Promise<Doc<"chatAgents">[]> {
@@ -74,6 +77,16 @@ export async function chatAgentRows(
     .query("chatAgents")
     .withIndex("by_chat", (q) => q.eq("chatId", chatId))
     .take(MAX_CHAT_AGENTS);
+}
+
+/** The roster of agents, bounded. Oldest first. A delegation a pending agent purge
+ *  revoked is not part of it (lib/agentPurge): every room read and gate goes
+ *  through here or isConversationAgent. */
+export async function chatAgentRows(
+  ctx: QueryCtx | MutationCtx,
+  chatId: Id<"chats">,
+): Promise<Doc<"chatAgents">[]> {
+  return await liveAccessRows(ctx, "rooms", await chatAgentRowsRaw(ctx, chatId));
 }
 
 /** Is this agent one a PARTICIPANT may address in this chat: the primary, or a
@@ -95,7 +108,9 @@ export async function isConversationAgent(
         .eq("agentId", ref.agentId),
     )
     .first();
-  return row !== null;
+  // A delegation the purge revoked is not one: the agent may already be back
+  // (re-discovered, re-enabled) on the owner's grants (codex pass 8).
+  return row !== null && !(await deadAccessRow(ctx, "rooms", row));
 }
 
 /**
@@ -363,6 +378,9 @@ export const addChatAgent = mutation({
     if (target?.state === "deleted") {
       throw new Error("Invalid: agent is deleted on its gateway");
     }
+    // Never "already a member" on an old delegation the purge sweep is about to
+    // delete: refused (retryable) until it is gone (lib/agentPurge).
+    await assertNoPendingPurge(ctx, instanceName, agentId);
     const { chat } = access;
     if (chat.instanceName === instanceName && chat.agentId === agentId) {
       return { added: false as const, reason: "already-primary" as const };
@@ -379,7 +397,7 @@ export const addChatAgent = mutation({
     if (existing !== null) {
       return { added: false as const, reason: "already-member" as const };
     }
-    const rows = await chatAgentRows(ctx, chatId);
+    const rows = await chatAgentRowsRaw(ctx, chatId);
     if (rows.length >= MAX_CHAT_AGENTS) {
       // A CODE the panel localizes, like `participants_limit`.
       throw new Error(`chat_agents_limit:${MAX_CHAT_AGENTS}`);
@@ -604,6 +622,8 @@ export const setPrimaryAgent = mutation({
     if (member === null) {
       throw new Error("Invalid: agent is not part of this conversation");
     }
+    // Not on a delegation a pending purge revoked (lib/agentPurge).
+    await assertNoPendingPurge(ctx, instanceName, agentId);
     // The same gates as putting it in the room: every turn to it runs under the
     // owner's identity.
     await requireAgentMembership(ctx, userId, instanceName, agentId);

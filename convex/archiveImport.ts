@@ -44,6 +44,7 @@ import {
 } from "./lib/importArchive";
 import { assertOwnsUpload } from "./uploads";
 import { IMPORT_BLOB_KIND, releaseBlob } from "./lib/blobs";
+import { partWidgetField } from "./lib/widgetDescriptor";
 import {
   normalizeQuoteRefs,
   quoteFieldsFor,
@@ -915,6 +916,10 @@ async function prepareRow(
   }
 
   if (section === "messageParts") {
+    // A widget part is found by its view (schema `widgetViewId`): denormalized from
+    // the part itself, never trusted from the archive row.
+    delete out.widgetViewId;
+    Object.assign(out, partWidgetField((out.part ?? {}) as { kind: string; viewId?: unknown }));
     // The export removed the pointer NESTED in the part and recorded the archive
     // key instead. Dropping that key without putting the new bytes back left a
     // media part with no storage at all — which the schema refuses, so every

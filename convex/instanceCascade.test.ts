@@ -253,6 +253,46 @@ describe("instance deletion at scale", () => {
     }
   });
 
+  test("its inline-widget registrations go with it (and another instance's stay)", async () => {
+    const t = convexTest(schema, modules);
+    await seed(t);
+    await seedLargeInstance(t, 3, 1);
+    await t.run(async (ctx) => {
+      const userId = await ctx.db.insert("users", {});
+      const chatId = await ctx.db.insert("chats", { userId, updatedAt: 1 });
+      const messageId = await ctx.db.insert("messages", {
+        chatId,
+        userId,
+        role: "assistant",
+        status: "complete" as const,
+        text: "",
+        updatedAt: 1,
+      });
+      for (let i = 0; i < CASCADE_TUNING.CASCADE_BATCH * 2 + 3; i++) {
+        await ctx.db.insert("widgetViews", {
+          instanceName: NAME,
+          viewId: `cv_${String(i).padStart(32, "0")}`,
+          chatId,
+          messageId,
+          source: "gateway" as const,
+          createdAt: 1,
+        });
+      }
+      await ctx.db.insert("widgetViews", {
+        instanceName: "survivor",
+        viewId: `cv_${"f".repeat(32)}`,
+        chatId,
+        messageId,
+        source: "gateway" as const,
+        createdAt: 1,
+      });
+    });
+    await deprovision(t);
+    await drain(t);
+    const left = await t.run(async (ctx) => (await ctx.db.query("widgetViews").collect()).map((r) => r.instanceName));
+    expect(left).toEqual(["survivor"]);
+  });
+
   test("a dropped chain is re-armed by the reaper, and a live one is left alone", async () => {
     const t = convexTest(schema, modules);
     await seed(t);

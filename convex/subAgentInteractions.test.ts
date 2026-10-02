@@ -55,6 +55,31 @@ describe("subAgentInteractions.recordInteractionReply", () => {
     expect(row).toMatchObject({ status: "done", replyText: "INTERACTOK" });
   });
 
+  test("a reply that carried a widget: kept as widgetOmitted, read back by the panel", async () => {
+    // The sub-agent panel renders text and cannot show a widget: the bridge removes the
+    // shortcode from the text and flags the reply, and the panel says a widget was shown.
+    const t = convexTest(schema, modules);
+    const { userId, chatId } = await seed(t);
+    const id = await insertInteraction(t, chatId);
+    await t.mutation(internal.subAgentInteractions.recordInteractionReply, {
+      interactionId: id,
+      status: "done" as const,
+      replyText: "Voici le compteur.",
+      widgetOmitted: true,
+    });
+    const rows = await t
+      .withIdentity({ subject: `${userId}|session` })
+      .query(api.subAgentInteractions.listSubAgentInteractions, { chatId, childSessionKey: CHILD });
+    expect(rows[0]).toMatchObject({ replyText: "Voici le compteur.", widgetOmitted: true });
+    // A later reply without one clears it.
+    await t.mutation(internal.subAgentInteractions.recordInteractionReply, {
+      interactionId: id,
+      status: "done" as const,
+      replyText: "ok",
+    });
+    expect((await t.run((ctx) => ctx.db.get(id)))?.widgetOmitted).toBeUndefined();
+  });
+
   test("records an error reply (status error + message)", async () => {
     const t = convexTest(schema, modules);
     const { chatId } = await seed(t);
@@ -199,5 +224,73 @@ describe("prepareInteraction — attachment IDOR gate", () => {
           ],
         }),
     ).rejects.toThrow(/not owned/i);
+  });
+});
+
+// codex pass 12: interaction A got a PROVISIONAL chat error (the gateway's overflow
+// recovery may still resume its run). A new interaction B allowed meanwhile took A's
+// place on the bridge — and A's recovered reply went to the sub-agent's result.
+// Convex now holds new interactions with that child for the recovery grace.
+describe("a provisional interaction error holds new interactions for the grace", () => {
+  const prepare = (t: ReturnType<typeof convexTest>, userId: Id<"users">, chatId: Id<"chats">) =>
+    t
+      .withIdentity({ subject: `${userId}|session` })
+      .mutation(internal.subAgentInteractions.prepareInteraction, {
+        chatId,
+        childSessionKey: CHILD,
+        userText: "B",
+      });
+
+  test("provisional error: refused with SUBAGENT_RECOVERING until the grace is over", async () => {
+    const t = convexTest(schema, modules);
+    const { userId, chatId } = await seed(t);
+    const a = await insertInteraction(t, chatId);
+    await t.mutation(internal.subAgentInteractions.recordInteractionReply, {
+      interactionId: a,
+      status: "error" as const,
+      errorMessage: "context overflow",
+      provisional: true,
+    });
+    await expect(prepare(t, userId, chatId)).rejects.toThrow(/SUBAGENT_RECOVERING/);
+    // The grace is over: the hold goes (the seed has no agent, so the next gate speaks).
+    await t.run(async (ctx) => ctx.db.patch(a, { recoveringUntil: Date.now() - 1 }));
+    await expect(prepare(t, userId, chatId)).rejects.toThrow(/no resolvable agent/);
+  });
+
+  test("the recovered reply settles it at once", async () => {
+    const t = convexTest(schema, modules);
+    const { userId, chatId } = await seed(t);
+    const a = await insertInteraction(t, chatId);
+    await t.mutation(internal.subAgentInteractions.recordInteractionReply, {
+      interactionId: a,
+      status: "error" as const,
+      provisional: true,
+    });
+    await t.mutation(internal.subAgentInteractions.recordInteractionReply, {
+      interactionId: a,
+      status: "done" as const,
+      replyText: "recovered",
+    });
+    expect((await t.run((ctx) => ctx.db.get(a)))?.recoveringUntil).toBeUndefined();
+    await expect(prepare(t, userId, chatId)).rejects.toThrow(/no resolvable agent/);
+  });
+
+  test("a DEFINITIVE error (timeout, a send that never left) holds nothing", async () => {
+    const t = convexTest(schema, modules);
+    const { userId, chatId } = await seed(t);
+    const a = await insertInteraction(t, chatId);
+    await t.mutation(internal.subAgentInteractions.recordInteractionReply, {
+      interactionId: a,
+      status: "error" as const,
+    });
+    await expect(prepare(t, userId, chatId)).rejects.toThrow(/no resolvable agent/);
+  });
+
+  test("the grace is the bridge's own", async () => {
+    const { INTERACTION_RECOVERY_GRACE_MS } = await import("./subAgentInteractions");
+    const { INTERACTION_RECOVERY_GRACE_SECONDS } = await import(
+      "../bridge/src/providers/openclaw/sub-agent-observer"
+    );
+    expect(INTERACTION_RECOVERY_GRACE_MS).toBe(INTERACTION_RECOVERY_GRACE_SECONDS * 1000);
   });
 });

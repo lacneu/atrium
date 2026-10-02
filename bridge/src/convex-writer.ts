@@ -175,6 +175,12 @@ export interface SubAgentInteractionReply {
   status: "done" | "error";
   replyText?: string;
   errorMessage?: string;
+  /** The reply carried a widget the sub-agent panel cannot show (it renders text):
+   *  its shortcode is removed from `replyText` and the panel says a widget was shown. */
+  widgetOmitted?: true;
+  /** A chat ERROR that may still be recovered (the gateway's overflow recovery can
+   *  resume the same run): Convex holds new interactions for the recovery grace. */
+  provisional?: true;
 }
 
 /** The child's STATIC session config for the panel session bar. CONFIG (SOC2-safe);
@@ -2557,6 +2563,8 @@ export class HttpConvexWriter implements ConvexWriter {
       status: reply.status,
       replyText: reply.replyText,
       errorMessage: reply.errorMessage,
+      ...(reply.widgetOmitted === true ? { widgetOmitted: true } : {}),
+      ...(reply.provisional === true ? { provisional: true } : {}),
     });
   }
 

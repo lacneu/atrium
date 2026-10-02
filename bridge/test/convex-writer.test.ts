@@ -1932,3 +1932,41 @@ describe("addWidgetPart reports whether the widget LANDED", () => {
     await expect(writerWith(answering({ ok: true })).addWidgetPart("m1", part)).resolves.toBe(true);
   });
 });
+
+// codex pass 11: an interaction reply that carried a widget the sub-agent panel cannot
+// show is flagged — the writer must carry the flag, and only when set.
+describe("recordInteractionReply carries widgetOmitted", () => {
+  test("set → sent; unset → absent from the body", async () => {
+    const bodies: Array<Record<string, unknown>> = [];
+    const w = new HttpConvexWriter({
+      convexHttpActionsUrl: "http://test.invalid",
+      ingestSecret: "s",
+      fetchImpl: (async (_url: unknown, init: { body: string }) => {
+        bodies.push(JSON.parse(init.body) as Record<string, unknown>);
+        return new Response(JSON.stringify({ ok: true }), { status: 200 });
+      }) as never,
+    });
+    await w.recordInteractionReply({ interactionId: "ix1", status: "done", replyText: "Voici.", widgetOmitted: true });
+    await w.recordInteractionReply({ interactionId: "ix2", status: "done", replyText: "ok" });
+    expect(bodies[0]).toMatchObject({ op: "recordSubAgentInteractionReply", interactionId: "ix1", widgetOmitted: true });
+    expect("widgetOmitted" in bodies[1]!).toBe(false);
+  });
+});
+
+describe("recordInteractionReply carries provisional", () => {
+  test("set → sent; unset → absent", async () => {
+    const bodies: Array<Record<string, unknown>> = [];
+    const w = new HttpConvexWriter({
+      convexHttpActionsUrl: "http://test.invalid",
+      ingestSecret: "s",
+      fetchImpl: (async (_url: unknown, init: { body: string }) => {
+        bodies.push(JSON.parse(init.body) as Record<string, unknown>);
+        return new Response(JSON.stringify({ ok: true }), { status: 200 });
+      }) as never,
+    });
+    await w.recordInteractionReply({ interactionId: "ix1", status: "error", provisional: true });
+    await w.recordInteractionReply({ interactionId: "ix2", status: "error" });
+    expect(bodies[0]).toMatchObject({ interactionId: "ix1", provisional: true });
+    expect("provisional" in bodies[1]!).toBe(false);
+  });
+});

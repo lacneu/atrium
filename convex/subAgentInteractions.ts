@@ -23,6 +23,7 @@ import { assertOwnsUpload } from "./uploads";
 import { SUBAGENT_STALE_TTL_MS } from "./lib/outboxQueue";
 import { liveTalkCall } from "./talk";
 import { subAgentOwnerAgentId } from "./lib/talkFreeze";
+import { conversationWantsWidgets } from "./widgets";
 import type { Id } from "./_generated/dataModel";
 
 const MAX_INTERACTION_CHARS = 8000;
@@ -201,6 +202,18 @@ export const prepareInteraction = internalMutation({
     if (pending.some((r) => r.chatId === chatId && r.status === "pending")) {
       throw new Error("an interaction is already pending for this sub-agent");
     }
+    // …nor while the last one's ERROR may still be recovered: the gateway's overflow
+    // recovery can resume that run and answer it, and the bridge tracks one interaction
+    // per child — a second one sent now would take its reply (codex pass 12). Bounded
+    // by the grace; the panel says to try again in a moment.
+    const askedAt = Date.now();
+    if (
+      pending.some(
+        (r) => r.chatId === chatId && r.status === "error" && (r.recoveringUntil ?? 0) > askedAt,
+      )
+    ) {
+      throw new Error(`${SUBAGENT_RECOVERING}: the last message to this sub-agent may still be recovered`);
+    }
     const res = await resolveTargetForChat(ctx, chat, userId);
     if (!res.target) throw new Error("no resolvable agent for this chat");
     const target = res.target;
@@ -268,6 +281,9 @@ export const prepareInteraction = internalMutation({
         // Interacting with a sub-agent acquires the PARENT's socket, so this door
         // names the owner exactly as the send path does. Absent ⇒ the canonical.
         ...(gatewayUser === undefined ? {} : { gatewayUser }),
+        // …and with the conversation's widget wish, should it have to OPEN that
+        // socket (the send's own decision, conversationWantsWidgets).
+        inlineWidgets: conversationWantsWidgets(instance, chat),
       },
     };
   },
@@ -284,11 +300,25 @@ export const recordInteractionReply = internalMutation({
     replyText: v.optional(v.string()),
     errorMessage: v.optional(v.string()),
     status: v.union(v.literal("done"), v.literal("error")),
+    // The reply carried a widget the panel cannot show (the bridge removed its
+    // shortcode from replyText): the panel says so.
+    widgetOmitted: v.optional(v.boolean()),
+    // A chat ERROR the gateway may still recover (bridge: the error frame of a run
+    // its overflow recovery can resume): hold new interactions for the grace.
+    provisional: v.optional(v.boolean()),
     boundInstanceName: v.optional(v.string()),
   },
   handler: async (
     ctx,
-    { interactionId, replyText, errorMessage, status, boundInstanceName },
+    {
+      interactionId,
+      replyText,
+      errorMessage,
+      status,
+      widgetOmitted,
+      provisional,
+      boundInstanceName,
+    },
   ) => {
     const row = await ctx.db.get(interactionId);
     if (row === null) return null;
@@ -302,6 +332,12 @@ export const recordInteractionReply = internalMutation({
     }
     await ctx.db.patch(interactionId, {
       replyText,
+      widgetOmitted: widgetOmitted === true ? true : undefined,
+      // Any later reply (the recovered one, a timeout) settles it.
+      recoveringUntil:
+        status === "error" && provisional === true
+          ? Date.now() + INTERACTION_RECOVERY_GRACE_MS
+          : undefined,
       // The interaction's failure sentence is shown in the sub-agent panel, and this
       // path does not go through `stream.finalize` (codex).
       errorMessage: maskCredentialId(errorMessage),
@@ -311,6 +347,20 @@ export const recordInteractionReply = internalMutation({
     return interactionId;
   },
 });
+
+/** How long a provisional interaction ERROR holds new interactions with the same child.
+ *  Mirrors the bridge's INTERACTION_RECOVERY_GRACE_SECONDS (a test pins the two). */
+export const INTERACTION_RECOVERY_GRACE_MS = 120_000;
+
+/** Refusal code (in the error message) the panel localizes. */
+export const SUBAGENT_RECOVERING = "SUBAGENT_RECOVERING";
+
+/** `/subagent-send` refusal codes the panel names to the reader (the rest show the
+ *  generic failure). */
+const READER_ACTIONABLE_SEND_CODES: ReadonlySet<string> = new Set([
+  "message_too_large",
+  "attachment_too_large",
+]);
 
 /** Mark a still-pending interaction failed (the dispatch POST never reached the child). */
 export const failInteraction = internalMutation({
@@ -432,11 +482,22 @@ export const sendToSubAgent = action({
         },
       );
       if (!httpRes.ok) {
+        // The bridge NAMES the refusals the reader can act on (a message or file too
+        // large for the gateway): kept as the row's code so the panel can say so.
+        // Anything else stays the bare HTTP status (never the bridge's prose).
+        const named = await httpRes
+          .json()
+          .then((b: { error?: { code?: unknown } } | null) => b?.error?.code)
+          .catch(() => undefined);
+        const reason =
+          typeof named === "string" && READER_ACTIONABLE_SEND_CODES.has(named)
+            ? named
+            : `http_${httpRes.status}`;
         await ctx.runMutation(internal.subAgentInteractions.failInteraction, {
           interactionId: prep.interactionId,
-          errorMessage: `http_${httpRes.status}`,
+          errorMessage: reason,
         });
-        return { ok: false, reason: `http_${httpRes.status}` };
+        return { ok: false, reason };
       }
       return { ok: true, interactionId: prep.interactionId as string };
     } catch {

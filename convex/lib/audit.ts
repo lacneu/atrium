@@ -9,7 +9,18 @@ import type { Id } from "../_generated/dataModel";
 import type { MutationCtx } from "../_generated/server";
 import type { Actor } from "./access";
 
-type AuditTarget = { resource?: string; resourceId?: string };
+type AgentRef = { instanceName: string; agentId: string };
+
+/** References only (see the PHI rule above): which agents, never any content. */
+export type AuditDetails = {
+  agentsAdded?: AgentRef[];
+  agentsRemoved?: AgentRef[];
+  defaultAgent?: AgentRef | null;
+  previousDefaultAgent?: AgentRef | null;
+  chunk?: { index: number; of: number };
+};
+
+type AuditTarget = { resource?: string; resourceId?: string; details?: AuditDetails };
 
 /** Unconditionally write an audit row (used for impersonation start/stop). Returns
  *  its id: the row's `_creationTime` is the writing transaction's own place in
@@ -28,6 +39,7 @@ export async function recordAudit(
     impersonated: actor.impersonating,
     resource: target?.resource,
     resourceId: target?.resourceId,
+    ...(target?.details !== undefined ? { details: target.details } : {}),
   });
 }
 

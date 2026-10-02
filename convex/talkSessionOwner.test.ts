@@ -2871,6 +2871,44 @@ describe("every way of switching agent is covered, not just the declared one", (
     ).rejects.toThrow(/already on its way to another agent/);
   });
 
+  test("a sub-agent reply still being RECOVERED blocks a call on another agent; past the grace it does not", async () => {
+    // codex pass 13: Alice's child answered an interaction with a PROVISIONAL error
+    // (the gateway may still recover the run); a call on Bob would close the socket
+    // that recovered reply arrives on.
+    const t = convexTest(schema, modules);
+    const { userId, chatId } = await seedTalkChat(t, { extraAgents: ["bob"] });
+    const row = await t.run((ctx) =>
+      ctx.db.insert("subAgentInteractions", {
+        chatId,
+        childSessionKey: "agent:alice:subagent:abc",
+        instanceName: "lacneu",
+        userText: "hello",
+        status: "error" as const,
+        recoveringUntil: Date.now() + 60_000,
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      }),
+    );
+    const callOnBob = () =>
+      asOwner(t, userId).mutation(internal.talk.recordTalkSession, {
+        chatId,
+        instanceName: "lacneu",
+        agentId: "bob",
+        canonical: "olivier",
+        conversation: String(chatId),
+      });
+    await expect(callOnBob()).rejects.toThrow(/already on its way to another agent/);
+    // The grace is over: a definitive error holds nothing.
+    await t.run((ctx) => ctx.db.patch(row, { recoveringUntil: Date.now() - 1 }));
+    let said = "";
+    try {
+      await callOnBob();
+    } catch (e) {
+      said = String((e as Error)?.message ?? e);
+    }
+    expect(said).not.toMatch(/already on its way to another agent/);
+  });
+
   test("the same agent id on another GATEWAY is caught for every shape", async () => {
     // An agent id is not an identity. Each shape must compare the gateway too, from
     // what the row CAPTURED — the interaction's own `instanceName`, the reply's proven
@@ -2970,6 +3008,62 @@ describe("every way of switching agent is covered, not just the declared one", (
           conversation: String(chatId),
         }),
       ).resolves.toBeDefined();
+    } finally {
+      vi.unstubAllGlobals();
+      if (prevUrl === undefined) delete process.env.BRIDGE_URL;
+      else process.env.BRIDGE_URL = prevUrl;
+      if (prevSecret === undefined) delete process.env.BRIDGE_SHARED_SECRET;
+      else process.env.BRIDGE_SHARED_SECRET = prevSecret;
+    }
+  });
+
+  test("a refusal the bridge NAMES (message_too_large) is kept on the row; any other stays the bare status", async () => {
+    const t = convexTest(schema, modules);
+    const { userId, chatId } = await seedTalkChat(t, { extraAgents: ["bob"] });
+    const prevUrl = process.env.BRIDGE_URL;
+    const prevSecret = process.env.BRIDGE_SHARED_SECRET;
+    process.env.BRIDGE_URL = "http://bridge.test";
+    process.env.BRIDGE_SHARED_SECRET = "s3cret";
+    await t.run((ctx) =>
+      ctx.db.insert("subAgents", {
+        chatId,
+        userId,
+        instanceName: "lacneu",
+        childSessionKey: "agent:alice:subagent:abc",
+        status: "done" as const,
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      }),
+    );
+    const rowsOf = () =>
+      t.run((ctx) =>
+        ctx.db
+          .query("subAgentInteractions")
+          .withIndex("by_chat_status", (q) => q.eq("chatId", chatId).eq("status", "error"))
+          .collect(),
+      );
+    try {
+      for (const [code, expected] of [
+        ["message_too_large", "message_too_large"],
+        ["UPSTREAM_ERROR", "http_502"],
+      ] as const) {
+        vi.stubGlobal(
+          "fetch",
+          async () =>
+            new Response(JSON.stringify({ ok: false, error: { code } }), {
+              status: 502,
+              headers: { "Content-Type": "application/json" },
+            }),
+        );
+        const res = await asOwner(t, userId).action(api.subAgentInteractions.sendToSubAgent, {
+          chatId,
+          childSessionKey: "agent:alice:subagent:abc",
+          text: "hello",
+        });
+        expect(res).toEqual({ ok: false, reason: expected });
+        expect((await rowsOf()).map((r) => r.errorMessage)).toContain(expected);
+        vi.unstubAllGlobals();
+      }
     } finally {
       vi.unstubAllGlobals();
       if (prevUrl === undefined) delete process.env.BRIDGE_URL;
@@ -3849,4 +3943,70 @@ describe("a rebind is refused while a call is in progress", () => {
       bridge.restore();
     }
   });
+});
+
+// PROD 0.91.0 (chat mh77m9e7): a Talk mint opened the conversation's socket WITHOUT
+// inline-widgets — the body named no wish. Every body that can make the bridge open
+// that socket now carries the conversation's wish, decided as the send decides it
+// (conversationWantsWidgets: the instance switch AND the conversation override).
+describe("every door that can open the conversation's socket carries its widget wish", () => {
+  async function capture<T>(run: () => Promise<T>) {
+    const prevUrl = process.env.BRIDGE_URL;
+    const prevSecret = process.env.BRIDGE_SHARED_SECRET;
+    process.env.BRIDGE_URL = "http://bridge.test";
+    process.env.BRIDGE_SHARED_SECRET = "s3cret";
+    const posts: { path: string; body: Record<string, unknown> }[] = [];
+    vi.stubGlobal("fetch", async (input: unknown, init?: RequestInit) => {
+      posts.push({
+        path: new URL(String(input)).pathname,
+        body: JSON.parse(String(init?.body)) as Record<string, unknown>,
+      });
+      return new Response(JSON.stringify({ ok: true }), { status: 200 });
+    });
+    try {
+      await run().catch(() => undefined);
+      return posts;
+    } finally {
+      vi.unstubAllGlobals();
+      if (prevUrl === undefined) delete process.env.BRIDGE_URL;
+      else process.env.BRIDGE_URL = prevUrl;
+      if (prevSecret === undefined) delete process.env.BRIDGE_SHARED_SECRET;
+      else process.env.BRIDGE_SHARED_SECRET = prevSecret;
+    }
+  }
+
+  const setup = async (wish: "on" | "chat_off" | "instance_off") => {
+    const t = convexTest(schema, modules);
+    const seeded = await seedTalkChat(t);
+    await t.run(async (ctx) => {
+      if (wish === "chat_off") await ctx.db.patch(seeded.chatId, { widgetsDisabled: true });
+      if (wish === "instance_off") {
+        const inst = await ctx.db.query("instances").first();
+        await ctx.db.patch(inst!._id, { config: { talkEnabled: true, widgetsEnabled: false } });
+      }
+      await ctx.db.patch(seeded.chatId, { sessionSettings: { thinkingLevel: "low" } });
+    });
+    return { t, ...seeded };
+  };
+
+  for (const [wish, expected] of [
+    ["on", true],
+    ["chat_off", false],
+    ["instance_off", false],
+  ] as const) {
+    test(`widgets ${wish}: the Talk mint, the routing and the session operations all say ${expected}`, async () => {
+      const { t, userId, chatId } = await setup(wish);
+      const { res, bodies } = await mintFor(t, userId, chatId);
+      expect(res.ok, JSON.stringify(res)).toBe(true);
+      expect(bodies[0]?.inlineWidgets).toBe(expected);
+      const routing = await t.query(internal.bridge.getChatRouting, { chatId, userId, currentSession: true });
+      expect(routing?.inlineWidgets).toBe(expected);
+      const patch = await capture(() => t.action(internal.bridge.dispatchPatch, { chatId, userId }));
+      expect(patch.find((p) => p.path === "/patch")?.body.inlineWidgets).toBe(expected);
+      const compact = await capture(() => asOwner(t, userId).action(api.agentFiles.compactSession, { chatId }));
+      expect(compact.find((p) => p.path === "/compact")?.body.inlineWidgets).toBe(expected);
+      const reset = await capture(() => t.action(internal.bridge.dispatchReset, { chatId, userId }));
+      expect(reset.find((p) => p.path === "/reset")?.body.inlineWidgets).toBe(expected);
+    });
+  }
 });

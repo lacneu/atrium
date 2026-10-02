@@ -30,6 +30,11 @@
 // from resurrecting a reaped child.
 
 import { outboundMediaDeliveries, sanitizeText } from "./sanitize.js";
+import {
+  SHOW_WIDGET_TOOL,
+  extractCanvasShortcodes,
+  previewFromChatPart,
+} from "./widgets.js";
 import { isDeliveryRunId } from "../../core/async-task.js";
 import {
   classifyFailureText,
@@ -127,6 +132,26 @@ interface Observation {
    *  "Interagir"); its NEXT terminal frame is that interaction's reply (routed to the
    *  interaction record, not the subAgents.resultText). Cleared on that terminal. */
   interactionId?: string;
+  /** The child showed a WIDGET while answering the armed interaction (a `show_widget`
+   *  tool call). The sub-agent panel renders a reply as text and cannot show one: the
+   *  reply then says so (`widgetOmitted`) instead of losing it in silence. */
+  interactionWidget?: boolean;
+  /** What arming the interaction changed, so a send refused for certain can undo it
+   *  exactly (disarmInteraction): whether the observation was created by the arm, its
+   *  status and last frame before, and the resurrection guard it cleared. */
+  armedPrior?: {
+    created: boolean;
+    status: SubAgentStatus;
+    lastFrameAt: number;
+    wasFinal: SubAgentStatus | undefined;
+    /** The arming this one REPLACED, whole: an interaction still in its recovery
+     *  grace keeps its id, its widget flag and its own snapshot when a later send is
+     *  refused — clearing them sent its recovered reply to the sub-agent's result and
+     *  dropped the socket's protection early (codex pass 12). */
+    interactionId: string | undefined;
+    interactionWidget: boolean | undefined;
+    armedPrior: Observation["armedPrior"];
+  };
   // When this observation was registered — bounds the late re-anchor window.
   registeredAt: number;
   // The run that spawned this child (from its item sighting) — gates the
@@ -155,6 +180,11 @@ const DEFAULT_MAX_CONCURRENT = 64;
 // sub-agent run can be long (a captured dependent run waited ~210s); aligned with
 // the idle-session TTL so the whole session is reaped around the same horizon.
 const DEFAULT_TTL_SECONDS = 15 * 60;
+/** How long an interaction whose child reported a chat ERROR still counts as pending:
+ *  that error can be the provisional one the gateway's overflow recovery emits before
+ *  resuming the same run (live-pinned 2026-07-03: error, then a clean end 43 s later).
+ *  Bounded, so a real failure does not hold the socket for the whole TTL. */
+export const INTERACTION_RECOVERY_GRACE_SECONDS = 120;
 // Keep-alive HEARTBEAT throttle (seconds): a still-RUNNING child re-asserts `running`
 // (bumping the Convex row's updatedAt) at most once this often on ANY child frame, so
 // a long-running child that only streams deltas keeps a FRESH updatedAt and is never
@@ -559,16 +589,36 @@ export class SubAgentObserver {
             status: term === "done" ? "done" : "error",
           };
           if (term === "done") {
+            // A widget the child produced cannot be shown in the panel (it renders
+            // text): say so, and never show its shortcode raw. Detected by the same
+            // parsers the conversation uses — a `show_widget` call, a canvas block,
+            // an `[embed …]` shortcode (removed from the text).
+            const message = readField(payload, "message");
+            const { text: withoutShortcodes, previews } = extractCanvasShortcodes(
+              textFromMessage(message),
+            );
+            // The space a removed shortcode leaves at either end is not the reply's.
             const text = this.sanitizeResult(
-              textFromMessage(readField(payload, "message")),
+              previews.length > 0 ? withoutShortcodes.trim() : withoutShortcodes,
             );
             if (text) reply.replyText = text;
+            if (
+              obs.interactionWidget === true ||
+              previews.length > 0 ||
+              hasCanvasPart(message)
+            ) {
+              reply.widgetOmitted = true;
+            }
           } else {
             const reason =
               readString(payload, "errorMessage") ??
               textFromMessage(readField(payload, "message"));
             const errMsg = this.sanitizeResult(reason);
             if (errMsg) reply.errorMessage = errMsg;
+            // A chat ERROR may be the provisional one the gateway's overflow recovery
+            // emits before resuming the same run (INTERACTION_RECOVERY_GRACE_SECONDS):
+            // said, so Convex refuses a new interaction until the grace is over.
+            if (term === "error") reply.provisional = true;
           }
           return [
             ...meta,
@@ -738,17 +788,80 @@ export class SubAgentObserver {
    * interaction's reply, routed (in the chat-terminal branch) to the interaction
    * record, NOT the subAgents.resultText. A second arm just re-points the id.
    */
+  /** A user INTERACTION sent to a child whose reply has not come back yet: its run
+   *  streams on the socket that sent it (the `tool` stream reaches that socket only),
+   *  so that socket must not be closed for a preference. Still pending after a chat
+   *  ERROR for INTERACTION_RECOVERY_GRACE_SECONDS (the gateway may be recovering the
+   *  same run); released by a definitive end (the observation is reaped) or the TTL. */
+  interactionPending(now: number): boolean {
+    for (const obs of this.observations.values()) {
+      if (obs.interactionId === undefined) continue;
+      if (obs.status === "running") return true;
+      if (obs.status === "error" && now - obs.lastFrameAt < INTERACTION_RECOVERY_GRACE_SECONDS) {
+        return true;
+      }
+    }
+    return false;
+  }
+
   armInteraction(childKey: string, interactionId: string, now: number): void {
+    const wasFinal = this.recentlyFinal.get(childKey);
     this.recentlyFinal.delete(childKey);
     let obs = this.observations.get(childKey);
+    let created = false;
     if (obs === undefined) {
-      const created = this.register(childKey, now, {});
-      if (created === null) return; // cap reached -> not tracked
-      obs = created;
+      const fresh = this.register(childKey, now, {});
+      if (fresh === null) {
+        // Cap reached -> not tracked; the guard goes back as it was.
+        if (wasFinal !== undefined) this.recentlyFinal.set(childKey, wasFinal);
+        return;
+      }
+      obs = fresh;
+      created = true;
     }
+    obs.armedPrior = {
+      created,
+      status: obs.status,
+      lastFrameAt: obs.lastFrameAt,
+      wasFinal,
+      interactionId: obs.interactionId,
+      interactionWidget: obs.interactionWidget,
+      armedPrior: obs.armedPrior,
+    };
     obs.status = "running";
     obs.lastFrameAt = now;
     obs.interactionId = interactionId;
+    obs.interactionWidget = false;
+  }
+
+  /**
+   * Undo `armInteraction` for a send that certainly never reached the child (refused
+   * by size before the request, or answered with a refusal by the gateway): left
+   * armed, the observation stayed `running` until the TTL, holding the socket "busy"
+   * and waiting for a reply that cannot come (codex pass 11). Only the arming it
+   * names is undone; a later re-arm wins. True when something was undone.
+   */
+  disarmInteraction(childKey: string, interactionId: string): boolean {
+    const obs = this.observations.get(childKey);
+    if (obs === undefined || obs.interactionId !== interactionId) return false;
+    const prior = obs.armedPrior;
+    if (prior === undefined) {
+      obs.interactionId = undefined;
+      obs.interactionWidget = undefined;
+      return true;
+    }
+    if (prior.created) this.observations.delete(childKey);
+    else {
+      // The WHOLE state the arm replaced comes back — an earlier interaction still
+      // awaiting its (recovering) reply keeps its id, flag and snapshot.
+      obs.status = prior.status;
+      obs.lastFrameAt = prior.lastFrameAt;
+      obs.interactionId = prior.interactionId;
+      obs.interactionWidget = prior.interactionWidget;
+      obs.armedPrior = prior.armedPrior;
+    }
+    if (prior.wasFinal !== undefined) this.recentlyFinal.set(childKey, prior.wasFinal);
+    return true;
   }
 
   /**
@@ -767,6 +880,9 @@ export class SubAgentObserver {
     if (name === null || name === "" || phase === null) return null;
     // A child cannot spawn (anti-recursion); ignore a stray sessions_spawn defensively.
     if (name === "sessions_spawn") return null;
+    if (name === SHOW_WIDGET_TOOL && obs.interactionId !== undefined) {
+      obs.interactionWidget = true;
+    }
     const rawId = readString(data, "toolCallId");
     const toolCallId =
       rawId === null || rawId === ""
@@ -1909,6 +2025,18 @@ function pathTail(path: string | null): string | undefined {
 }
 
 /** Extract visible text from a chat `message` (content array | string | text). */
+/** A canvas (widget) block in a chat message's content — the projection's
+ *  `{type:"canvas", preview}` part (widgets.ts previewFromChatPart). */
+function hasCanvasPart(message: Record<string, unknown> | null): boolean {
+  const content = message?.content;
+  if (!Array.isArray(content)) return false;
+  return content.some(
+    (part) =>
+      isObject(part) &&
+      (part.type === "canvas" || previewFromChatPart(part) !== undefined),
+  );
+}
+
 function textFromMessage(message: Record<string, unknown> | null): string {
   if (message === null) return "";
   const fromContent = textFromContent(message.content);

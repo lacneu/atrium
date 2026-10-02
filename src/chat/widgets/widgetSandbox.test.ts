@@ -10,7 +10,10 @@ import { describe, expect, it } from "vitest";
 
 import {
   DOCUMENT_GUARD_HTML,
+  HARDENED_MEDIA_SRC,
+  PAGE_FRAME_POLICY_MARKER,
   PROXY_FRAME_SANDBOX,
+  SERVED_PROXY_HEADERS,
   PromptPortGate,
   SIMPLE_FRAME_SANDBOX,
   SIMPLE_MODE_CSP,
@@ -21,6 +24,9 @@ import {
   admitWidgetPrompt,
   buildWidgetThemeMessage,
   clampReportedHeight,
+  hardenWidgetCsp,
+  installPageFramePolicy,
+  pageFramePolicy,
   isFromWidgetFrame,
   isProxyReady,
   prepareSimpleModeDocument,
@@ -61,15 +67,77 @@ describe("the vendored sandbox proxy is the pinned upstream one", () => {
     expect(createHash("sha256").update(html).digest("hex")).toBe(provenance.files["index.html"]);
   });
 
-  it("both Caddy configurations send exactly the vendored headers, and nothing but the proxy", () => {
+  it("both Caddy configurations send upstream's headers EXCEPT media-src, hardened — and nothing but the proxy", () => {
     const snippet = read("deploy/widget-sandbox/Caddyfile");
     const image = read("docker/Caddyfile");
     const block = (s: string) => s.slice(s.indexOf(":8081 {"));
     expect(block(image)).toBe(block(snippet));
-    for (const [name, value] of Object.entries(headers)) {
+    // The ONE difference from the vendored headers, stated directive by directive.
+    const directives = (csp: string) => csp.split(";").map((d) => d.trim()).filter(Boolean);
+    const upstream = directives(headers["Content-Security-Policy"]!);
+    const served = directives(SERVED_PROXY_HEADERS["Content-Security-Policy"]!);
+    expect(upstream).toContain("media-src 'self' data: https: blob:");
+    expect(served).toEqual(
+      upstream.map((d) => (d.startsWith("media-src") ? "media-src 'self' data: blob:" : d)),
+    );
+    expect({ ...SERVED_PROXY_HEADERS, "Content-Security-Policy": "" }).toEqual({
+      ...headers,
+      "Content-Security-Policy": "",
+    });
+    for (const [name, value] of Object.entries(SERVED_PROXY_HEADERS)) {
       expect(block(snippet)).toContain(`${name} "${value}"`);
     }
+    expect(block(snippet)).not.toContain("https: blob:");
     expect(block(snippet)).toContain('respond "Not Found" 404');
+  });
+});
+
+/** Every `Content-Security-Policy` a composed srcdoc carries (its `<meta>` tags). */
+function metaPolicies(doc: string): string[] {
+  return [...doc.matchAll(/<meta http-equiv="Content-Security-Policy" content="([^"]*)">/gi)].map((m) =>
+    m[1]!.replaceAll("&quot;", '"'),
+  );
+}
+/** Does ONE policy let media load from `source`? (`media-src`, else `default-src`.) */
+function policyAllowsMedia(policy: string, source: string): boolean {
+  const directives = policy.split(";").map((d) => d.trim().split(/\s+/));
+  const pick = directives.find((d) => d[0] === "media-src") ?? directives.find((d) => d[0] === "default-src");
+  if (!pick) return true;
+  const sources = pick.slice(1);
+  return sources.includes(source) || sources.includes(new URL(source).protocol);
+}
+
+describe("HTTPS media is blocked in BOTH modes (no exfiltration through a media URL)", () => {
+  const EXFIL = "https://attacker.example/?d=secret";
+
+  it("the dedicated proxy's served policy refuses https media", () => {
+    expect(policyAllowsMedia(SERVED_PROXY_HEADERS["Content-Security-Policy"]!, EXFIL)).toBe(false);
+    expect(policyAllowsMedia(SERVED_PROXY_HEADERS["Content-Security-Policy"]!, "blob:x")).toBe(true);
+  });
+
+  it("the simple-mode srcdoc refuses it even when the widget's OWN meta allows it (strictest policy wins)", () => {
+    // Upstream's wrapper (src/canvas/wrap.ts) puts its own meta in the document,
+    // allowing https media.
+    const doc =
+      '<!doctype html><html><head><meta http-equiv="Content-Security-Policy" content="default-src \'none\'; media-src data: https: blob:"></head><body></body></html>';
+    const none: ParsedDocumentLike = { querySelector: () => null, querySelectorAll: () => [] };
+    const out = prepareSimpleModeDocument(doc, () => none);
+    const policies = metaPolicies(out);
+    expect(policies.length).toBe(2);
+    // Atrium's policy comes first, before anything of the document's.
+    expect(policies[0]).toBe(SIMPLE_MODE_CSP);
+    expect(out.indexOf(SIMPLE_MODE_CSP.replaceAll('"', "&quot;"))).toBeLessThan(out.indexOf("media-src data: https:"));
+    // Every policy is enforced: media loads only if ALL allow it.
+    expect(policies.every((p) => policyAllowsMedia(p, EXFIL))).toBe(false);
+    expect(policyAllowsMedia(SIMPLE_MODE_CSP, EXFIL)).toBe(false);
+  });
+
+  it("hardenWidgetCsp replaces media-src, or adds it, and touches nothing else", () => {
+    expect(hardenWidgetCsp("default-src 'none'; media-src https: data:; connect-src 'none'")).toBe(
+      `default-src 'none'; ${HARDENED_MEDIA_SRC}; connect-src 'none'`,
+    );
+    expect(hardenWidgetCsp("default-src 'none'")).toBe(`default-src 'none'; ${HARDENED_MEDIA_SRC}`);
+    expect(HARDENED_MEDIA_SRC).not.toContain("https");
   });
 });
 
@@ -142,7 +210,7 @@ describe("the simple-mode document (the proxy's transform, carried in-page)", ()
     expect(DOCUMENT_GUARD_HTML).toContain("RTCPeerConnection");
     expect(SIMPLE_MODE_CSP).toContain("connect-src 'none'");
     expect(SIMPLE_MODE_CSP).not.toContain("frame-ancestors");
-    expect(headers["Content-Security-Policy"]!.startsWith(SIMPLE_MODE_CSP)).toBe(true);
+    expect(SERVED_PROXY_HEADERS["Content-Security-Policy"]!.startsWith(SIMPLE_MODE_CSP)).toBe(true);
   });
 
   it("refuses a document that embeds a browsing context (also inside a template)", () => {
@@ -339,5 +407,59 @@ describe("a widget's message is its own send, never the composer's", () => {
     expect(src).toContain("const token = tokenRef.current;");
     expect(src).toContain("}, [effective, hasToken, chatId, messageId, viewId, attempt]);");
     expect(src).toContain("widgetPromptSendArgs(");
+  });
+});
+
+describe("the page's frame-src: a widget cannot navigate itself to a server", () => {
+  it("simple mode: no frame may navigate anywhere (srcdoc widgets are not fetched, so they still render)", () => {
+    expect(pageFramePolicy({ mode: "simple", reason: "unset" })).toBe("frame-src 'none'");
+    expect(pageFramePolicy({ mode: "simple", reason: "same-origin" })).toBe("frame-src 'none'");
+  });
+
+  it("dedicated mode: the sandbox origin, and nothing else", () => {
+    expect(pageFramePolicy({ mode: "dedicated", origin: "https://widgets.example.com" })).toBe(
+      "frame-src https://widgets.example.com",
+    );
+  });
+
+  it("only frame-src is set — the policy must not restrict anything else the app loads", () => {
+    for (const policy of [
+      pageFramePolicy({ mode: "simple", reason: "unset" }),
+      pageFramePolicy({ mode: "dedicated", origin: "https://w.example.com" }),
+    ]) {
+      expect(policy.split(";").map((d) => d.trim().split(/\s+/)[0])).toEqual(["frame-src"]);
+    }
+  });
+
+  /** The few DOM members the installer touches. */
+  function fakeDocument() {
+    const head: { children: Array<Record<string, unknown>> } & Record<string, unknown> = { children: [] };
+    head.querySelector = (sel: string) =>
+      head.children.find((c) => sel.includes(PAGE_FRAME_POLICY_MARKER) && (c.attrs as Record<string, string>)[PAGE_FRAME_POLICY_MARKER] !== undefined) ?? null;
+    head.prepend = (el: Record<string, unknown>) => head.children.unshift(el);
+    const doc = {
+      head,
+      createElement: () => {
+        const attrs: Record<string, string> = {};
+        return { attrs, setAttribute: (k: string, v: string) => (attrs[k] = v) } as Record<string, unknown>;
+      },
+    };
+    return doc as unknown as Document & { head: typeof head };
+  }
+
+  it("installed as a CSP meta, FIRST in <head>, exactly once", () => {
+    const doc = fakeDocument();
+    installPageFramePolicy(doc, "frame-src 'none'");
+    installPageFramePolicy(doc, "frame-src https://other.example.com");
+    expect(doc.head.children).toHaveLength(1);
+    expect(doc.head.children[0]).toMatchObject({ httpEquiv: "Content-Security-Policy", content: "frame-src 'none'" });
+  });
+
+  it("the app installs it at boot, BEFORE the app (and so any widget) can render", () => {
+    const main = read("src/main.tsx");
+    const install = main.indexOf("installPageFramePolicy(");
+    expect(install).toBeGreaterThan(0);
+    expect(install).toBeLessThan(main.indexOf("<RouterProvider"));
+    expect(install).toBeLessThan(main.indexOf("new ConvexReactClient"));
   });
 });

@@ -756,3 +756,58 @@ describe("a claimed session replaced under its key is not ours any more", () => 
     expect(traces[0]?.freshSession).toBe(false);
   });
 });
+
+describe("a participant's socket declares what the conversation's socket ACTUALLY holds", () => {
+  // A widget switch deferred by a live call keeps the conversation socket — and its
+  // normalizer — on the old declaration. The participant's socket must follow THAT,
+  // not the body's wish: otherwise the gateway answers with widgets the receiving
+  // normalizer drops, and a widget-only answer is lost (codex pass 4).
+  const human = (id: string) => ({ type: "human", id, identity: { type: "profile", id }, label: id });
+  const self = { "users.self": { payload: { profile: { id: "p-owner" } } } };
+  const writer = {
+    startAssistant: async () => "msg-1",
+    appendDelta: async () => {},
+    setSnapshot: async () => true,
+    addToolPart: async () => {},
+    addMedia: async () => {},
+    finalize: async () => {},
+    reportSessionMeta: async () => {},
+    recordGatewayPressure: async () => {},
+    clearSessionState: async () => {},
+    getRehydrationContext: async () => ({ history: null, turnCount: 0 }),
+    emitRehydrateTrace: () => {},
+  } as unknown as ConvexWriter;
+
+  for (const [kept, wish] of [
+    [false, true],
+    [true, false],
+  ] as const) {
+    it(`kept socket widgets=${kept}, body wish=${wish}: the participant's socket is asked with widgets=${kept}`, async () => {
+      const gw = fakeGateway({
+        describe: [{ sessionId: "s-1", createdActor: human("p-owner") }],
+        answers: self,
+      });
+      (gw as unknown as { gatewayVersion: string }).gatewayVersion = "2026.9.6";
+      vi.spyOn(OpenClawConnection, "connect").mockImplementation(async () => gw as never);
+      const reg = new SessionRegistry(servedMap(config, writer), () => 1000);
+      const session = await reg.acquire(ROUTING);
+      await sleep(5);
+      // The conversation's socket as it actually stands after a deferred switch.
+      session.runManager.setWidgetsEnabled(kept);
+      const bob = fakeGateway({ answers: self });
+      const acquire = vi.fn(async () => bob as never);
+      await performSend(
+        session,
+        { ...body, speakerGatewayUser: "bob", inlineWidgets: wish } as typeof body,
+        writer,
+        null,
+        null,
+        null,
+        Date.now(),
+        config,
+        { acquire, route: () => true, unroute: () => {}, abandon: () => {} },
+      ).catch(() => {});
+      expect(acquire).toHaveBeenCalledWith(config, "bob", { inlineWidgets: kept });
+    });
+  }
+});

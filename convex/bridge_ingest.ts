@@ -610,6 +610,8 @@ type IngestOp =
       status: "done" | "error";
       replyText?: string;
       errorMessage?: string;
+      widgetOmitted?: boolean;
+      provisional?: boolean;
     }
   // An agent ASKS the person something (question / approval / credential) — see
   // convex/agentRequests.ts. The presentation is bounded again inside the mutation.
@@ -1628,6 +1630,8 @@ export const ingest = httpAction(async (ctx, request) => {
           status: body.status,
           replyText: body.replyText,
           errorMessage: body.errorMessage,
+          ...(body.widgetOmitted === true ? { widgetOmitted: true } : {}),
+          ...(body.provisional === true ? { provisional: true } : {}),
           boundInstanceName,
         },
       );

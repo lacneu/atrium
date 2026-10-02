@@ -3,6 +3,7 @@ import {
   agentEnablementStrict,
   agentRef,
   grantKey,
+  liveGroupShares,
   memberShareOfGroup,
   shrinkLiftsAdminNarrowing,
   usersLiftedByUnshare,
@@ -46,13 +47,16 @@ import {
 } from "./lib/access";
 import { PERMISSIONS } from "./lib/rbac";
 import { resolveAgentTypes } from "./lib/agentTypes";
-import { recordAudit } from "./lib/audit";
+import { recordAudit, type AuditDetails } from "./lib/audit";
 import { authorizeGroupManage, isRealAdmin } from "./lib/groupAccess";
 import { agentClaimEpoch, claimRefusal, claimRefusalOfRow } from "./lib/agentClaim";
+import { assertNoPendingPurge, liveAccessRows } from "./lib/agentPurge";
 import { chartDisplayName } from "./charts";
 import {
   ADMIN_RESTRICTION_WOULD_APPLY,
   ADMIN_RESTRICTION_WOULD_LIFT,
+  assertNoPendingMemberCleanup,
+  newCleanupBudget,
   unshareAgentFromMembers,
 } from "./lib/groupMembers";
 
@@ -209,8 +213,52 @@ async function auditGroup(
   action: string,
   resource: "group" | "groupMember" | "groupAgent",
   resourceId: string,
+  details?: AuditDetails,
 ): Promise<void> {
-  await recordAudit(ctx, actor, action, { resource, resourceId });
+  for (const part of splitAuditDetails(details)) {
+    await recordAudit(ctx, actor, action, {
+      resource,
+      resourceId,
+      ...(part !== undefined ? { details: part } : {}),
+    });
+  }
+}
+
+/** Agent references one audit row carries at most. A group may share thousands of
+ *  agents, and lifting a restriction names every one of them: an array past the
+ *  document limit (8192 items) would fail the audit insert — and roll back the
+ *  change it records (codex pass 6). */
+export const AUDIT_REFS_PER_ROW = 500;
+
+/** `details` as one row, or — when it names more agents than AUDIT_REFS_PER_ROW —
+ *  as several bounded rows, each tagged `chunk {index, of}`; the defaults ride the
+ *  first. Every reference is kept: nothing is sampled away. */
+export function splitAuditDetails(details: AuditDetails | undefined): Array<AuditDetails | undefined> {
+  const added = details?.agentsAdded ?? [];
+  const removed = details?.agentsRemoved ?? [];
+  if (details === undefined || added.length + removed.length <= AUDIT_REFS_PER_ROW) return [details];
+  const refs: Array<{ added: boolean; ref: { instanceName: string; agentId: string } }> = [
+    ...added.map((ref) => ({ added: true, ref })),
+    ...removed.map((ref) => ({ added: false, ref })),
+  ];
+  const of = Math.ceil(refs.length / AUDIT_REFS_PER_ROW);
+  const rows: AuditDetails[] = [];
+  for (let i = 0; i < of; i++) {
+    const slice = refs.slice(i * AUDIT_REFS_PER_ROW, (i + 1) * AUDIT_REFS_PER_ROW);
+    const { agentsAdded: _a, agentsRemoved: _r, ...rest } = details;
+    rows.push({
+      ...(i === 0 ? rest : {}),
+      agentsAdded: slice.filter((x) => x.added).map((x) => x.ref),
+      agentsRemoved: slice.filter((x) => !x.added).map((x) => x.ref),
+      chunk: { index: i + 1, of },
+    });
+  }
+  return rows;
+}
+
+/** An agent reference as the audit stores it (refs only). */
+function agentRefOf(a: { instanceName: string; agentId: string }) {
+  return { instanceName: a.instanceName, agentId: a.agentId };
 }
 
 /** Drop a member's per-group allowances (removal from the group). */
@@ -306,10 +354,7 @@ async function groupFootprint(
   ctx: QueryCtx | MutationCtx,
   groupId: Id<"groups">,
 ): Promise<Set<string>> {
-  const rows = await ctx.db
-    .query("groupAgents")
-    .withIndex("by_group", (q) => q.eq("groupId", groupId))
-    .collect();
+  const rows = await liveGroupShares(ctx, groupId);
   return new Set(rows.map((r) => r.instanceName));
 }
 
@@ -508,6 +553,9 @@ export const assignAgentToGroup = mutation({
         `Agent not assignable: ${instanceName}/${agentId} is not a discovered, present, enabled agent`,
       );
     }
+    // Before the idempotent check: an old share the purge sweep is about to delete
+    // is not "already shared" (lib/agentPurge, codex pass 7).
+    await assertNoPendingPurge(ctx, instanceName, agentId);
     if ((await groupAgentRow(ctx, groupId, instanceName, agentId)) !== null) {
       return; // idempotent
     }
@@ -524,6 +572,7 @@ export const assignAgentToGroup = mutation({
         throw await restrictionRefusal(ctx, ADMIN_RESTRICTION_WOULD_APPLY, hit[0]!, refs);
       }
     }
+    await assertNoPendingMemberCleanup(ctx, groupId, instanceName, agentId);
     await ctx.db.insert("groupAgents", {
       groupId,
       instanceName,
@@ -684,13 +733,19 @@ export const bulkSetGroupAgents = mutation({
         throw await restrictionRefusal(ctx, ADMIN_RESTRICTION_WOULD_APPLY, hit[0]!, shared);
       }
     }
+    // ONE cleanup budget for the whole bulk change (see newCleanupBudget).
+    const cleanupBudget = newCleanupBudget();
     for (const agentId of agentIds) {
+      // An agent still being purged is refused, not skipped: its old share is not
+      // "already shared", and a silent skip would read as success.
+      if (assigned) await assertNoPendingPurge(ctx, instanceName, agentId);
       const existing = await groupAgentRow(ctx, groupId, instanceName, agentId);
       if (assigned) {
         if (existing !== null) continue; // idempotent
         const agent = await agentDoc(ctx, instanceName, agentId);
         if (!agentShareable(agent, strict)) continue; // not assignable — skip
         if (!admin && agent!.reservedForGroupId !== groupId) continue; // out of scope
+        await assertNoPendingMemberCleanup(ctx, groupId, instanceName, agentId, cleanupBudget);
         await ctx.db.insert("groupAgents", {
           groupId,
           instanceName,
@@ -735,6 +790,7 @@ export const claimAgentForGroup = mutation({
   handler: async (ctx, { groupId, instanceName, agentId }) => {
     const actor = await authorizeGroupManage(ctx, groupId); // admin or group manager
     await getGroupOrThrow(ctx, groupId);
+    await assertNoPendingPurge(ctx, instanceName, agentId);
     const agent = await agentDoc(ctx, instanceName, agentId);
     const refusal = await claimRefusal(ctx, agent, await agentClaimEpoch(ctx));
     if (refusal !== null) {
@@ -755,6 +811,7 @@ export const claimAgentForGroup = mutation({
       reservedForGroupId: groupId,
       reservedAt: now,
     });
+    await assertNoPendingMemberCleanup(ctx, groupId, instanceName, agentId);
     await ctx.db.insert("groupAgents", {
       groupId,
       instanceName,
@@ -784,6 +841,7 @@ export const setGroupDefaultAgent = mutation({
   handler: async (ctx, { groupId, agent }) => {
     const actor = await authorizeGroupManage(ctx, groupId); // admin or group manager
     await getGroupOrThrow(ctx, groupId);
+    if (agent !== null) await assertNoPendingPurge(ctx, agent.instanceName, agent.agentId);
     if (
       agent !== null &&
       (await groupAgentRow(ctx, groupId, agent.instanceName, agent.agentId)) === null
@@ -847,6 +905,8 @@ export const setMemberAgents = mutation({
     }
     const wanted = new Map<string, { instanceName: string; agentId: string }>();
     for (const a of agents ?? []) {
+      // A fresh allowance must not ride an old share the purge sweep will delete.
+      await assertNoPendingPurge(ctx, a.instanceName, a.agentId);
       if ((await groupAgentRow(ctx, groupId, a.instanceName, a.agentId)) === null) {
         throw new Error(
           `Refused: ${a.instanceName}/${a.agentId} is not shared with this group`,
@@ -878,6 +938,8 @@ export const setMemberAgents = mutation({
         }
       }
     }
+    // The member's share BEFORE the change, for the audit's added/removed refs.
+    const shareBefore = await memberShareOfGroup(ctx, membership);
     await purgeMemberAllowances(ctx, groupId, userId);
     if (agents === null) {
       await ctx.db.patch(membership._id, {
@@ -905,12 +967,30 @@ export const setMemberAgents = mutation({
         ...(keepDefault ? {} : { defaultAgent: undefined }),
       });
     }
+    const after = await ctx.db.get(membership._id);
+    const shareAfter = after === null ? [] : await memberShareOfGroup(ctx, after);
+    const keysBefore = new Set(shareBefore.map((ga) => grantKey(ga.instanceName, ga.agentId)));
+    const keysAfter = new Set(shareAfter.map((ga) => grantKey(ga.instanceName, ga.agentId)));
+    const defaultBefore = membership.defaultAgent ?? null;
+    const defaultAfter = after?.defaultAgent ?? null;
     await auditGroup(
       ctx,
       actor,
       agents === null ? "group.unrestrictMember" : "group.restrictMember",
       "groupMember",
       memberRef(groupId, userId),
+      {
+        agentsAdded: shareAfter
+          .filter((ga) => !keysBefore.has(grantKey(ga.instanceName, ga.agentId)))
+          .map(agentRefOf),
+        agentsRemoved: shareBefore
+          .filter((ga) => !keysAfter.has(grantKey(ga.instanceName, ga.agentId)))
+          .map(agentRefOf),
+        // A restriction can drop the member's default: said when it does.
+        ...(defaultBefore !== null && defaultAfter === null
+          ? { previousDefaultAgent: agentRefOf(defaultBefore), defaultAgent: null }
+          : {}),
+      },
     );
   },
 });
@@ -931,6 +1011,7 @@ export const setMemberDefaultAgent = mutation({
     }
     assertMemberSettable(await isRealAdmin(ctx), actor, membership);
     if (agent !== null) {
+      await assertNoPendingPurge(ctx, agent.instanceName, agent.agentId);
       const share = await memberShareOfGroup(ctx, membership);
       if (
         !share.some(
@@ -943,6 +1024,7 @@ export const setMemberDefaultAgent = mutation({
         );
       }
     }
+    const previous = membership.defaultAgent ?? null;
     await ctx.db.patch(membership._id, { defaultAgent: agent ?? undefined });
     await auditGroup(
       ctx,
@@ -950,6 +1032,10 @@ export const setMemberDefaultAgent = mutation({
       agent === null ? "group.clearMemberDefault" : "group.setMemberDefault",
       "groupMember",
       memberRef(groupId, userId),
+      {
+        defaultAgent: agent === null ? null : agentRefOf(agent),
+        previousDefaultAgent: previous === null ? null : agentRefOf(previous),
+      },
     );
   },
 });
@@ -989,10 +1075,7 @@ export const listGroups = query({
         .query("groupMembers")
         .withIndex("by_group", (q) => q.eq("groupId", g._id))
         .collect();
-      const agentRows = await ctx.db
-        .query("groupAgents")
-        .withIndex("by_group", (q) => q.eq("groupId", g._id))
-        .collect();
+      const agentRows = await liveGroupShares(ctx, g._id);
       // Charts SELECTED by the group (Tier 2 — groupCharts); the pool (Tier 1) is
       // admin-internal and not surfaced in the list.
       const chartRows = await ctx.db
@@ -1084,10 +1167,8 @@ export const getGroup = query({
           admin || (m.userId !== actor.realUserId && m.manager !== true),
       });
     }
-    const agentRows = await ctx.db
-      .query("groupAgents")
-      .withIndex("by_group", (q) => q.eq("groupId", groupId))
-      .collect();
+    // A share a pending purge revoked is not shown (lib/agentPurge).
+    const agentRows = await liveGroupShares(ctx, groupId);
     const agents = [];
     for (const a of agentRows) {
       const { state, displayName, agent } = await agentState(
@@ -1139,10 +1220,7 @@ export const getMemberAgentSettings = query({
     // An admin's direct grants may narrow this person below what the group gives
     // (directGrantsNarrow) — shown read-only so the manager sees the real outcome.
     const narrowing = await adminNarrowingOf(ctx, userId);
-    const groupRows = await ctx.db
-      .query("groupAgents")
-      .withIndex("by_group", (q) => q.eq("groupId", groupId))
-      .collect();
+    const groupRows = await liveGroupShares(ctx, groupId);
     const share = await memberShareOfGroup(ctx, membership);
     const inShare = new Set(share.map((ga) => grantKey(ga.instanceName, ga.agentId)));
     const d = membership.defaultAgent;
@@ -1340,12 +1418,16 @@ export const listAssignableAgents = query({
       groupId !== undefined
         ? new Set(
             (
-              await ctx.db
-                .query("groupAgents")
-                .withIndex("by_group_instance_agent", (q) =>
-                  q.eq("groupId", groupId).eq("instanceName", instanceName),
-                )
-                .collect()
+              await liveAccessRows(
+                ctx,
+                "shares",
+                await ctx.db
+                  .query("groupAgents")
+                  .withIndex("by_group_instance_agent", (q) =>
+                    q.eq("groupId", groupId).eq("instanceName", instanceName),
+                  )
+                  .collect(),
+              )
             ).map((r) => r.agentId),
           )
         : new Set<string>();

@@ -921,7 +921,24 @@ export default defineSchema({
   })
     .index("by_group", ["groupId"])
     .index("by_user", ["userId"])
-    .index("by_user_group", ["userId", "groupId"]),
+    .index("by_user_group", ["userId", "groupId"])
+    // The members whose default names a given agent — so a cleanup reads exactly the
+    // rows it changes, in bounded batches, never the whole group
+    // (lib/groupMembers.memberCleanupBatch).
+    .index("by_group_and_default", ["groupId", "defaultAgent.instanceName", "defaultAgent.agentId"])
+    .index("by_default", ["defaultAgent.instanceName", "defaultAgent.agentId"]),
+
+  // A per-member cleanup still owing batches after an agent left a group (its members'
+  // defaults and allowances naming it): the durable continuation of
+  // lib/groupMembers.scheduleMemberCleanup. `agentId` absent = every agent of the
+  // instance. A share of that agent with that group is refused while a row is here, so
+  // re-sharing never brings an old per-member choice back.
+  groupMemberCleanups: defineTable({
+    groupId: v.id("groups"),
+    instanceName: v.string(),
+    agentId: v.optional(v.string()),
+    createdAt: v.number(),
+  }).index("by_group_instance_agent", ["groupId", "instanceName", "agentId"]),
 
   // The agents a RESTRICTED member (groupMembers.agentsRestricted) receives from
   // one group. Read only in combination with the group's own groupAgents (an entry
@@ -946,6 +963,23 @@ export default defineSchema({
     instanceName: v.string(),
     agentId: v.string(),
     enablementDecidedAt: v.number(),
+  }).index("by_instance_agent", ["instanceName", "agentId"]),
+
+  // A PENDING agent purge (agents.removeInstanceAgent → sweepAgentAccess and
+  // sweepRoomDelegations): each access table's generation boundary. While it exists, every access row of the
+  // agent at or below its table's boundary grants nothing (lib/agentPurge), and
+  // access changes for the agent are refused (retryable). Deleted by the sweep once
+  // no such row is left. A tombstone (agentDecisionTombstones) is a different
+  // fact — the enablement decision, kept until a re-discovery consumes it.
+  agentPurges: defineTable({
+    instanceName: v.string(),
+    agentId: v.string(),
+    grantsCutoff: v.union(v.number(), v.null()),
+    sharesCutoff: v.union(v.number(), v.null()),
+    allowancesCutoff: v.union(v.number(), v.null()),
+    // Room delegations (chatAgents). Optional: markers written before it existed.
+    roomsCutoff: v.optional(v.union(v.number(), v.null())),
+    purgedAt: v.number(),
   }).index("by_instance_agent", ["instanceName", "agentId"]),
 
   // A group manager's REQUEST that a person (by exact email) join their group.
@@ -1290,6 +1324,28 @@ export default defineSchema({
     impersonated: v.boolean(), // realUserId !== effectiveUserId
     resource: v.optional(v.string()), // resource kind, e.g. "chat", "project", "message"
     resourceId: v.optional(v.string()),
+    // WHAT changed, as references only (never conversation content): the agents a
+    // member's restriction added or removed, and a member default before/after.
+    // Bounded by the mutation's own cap (BULK_CAP agents).
+    details: v.optional(
+      v.object({
+        agentsAdded: v.optional(
+          v.array(v.object({ instanceName: v.string(), agentId: v.string() })),
+        ),
+        agentsRemoved: v.optional(
+          v.array(v.object({ instanceName: v.string(), agentId: v.string() })),
+        ),
+        defaultAgent: v.optional(
+          v.union(v.null(), v.object({ instanceName: v.string(), agentId: v.string() })),
+        ),
+        previousDefaultAgent: v.optional(
+          v.union(v.null(), v.object({ instanceName: v.string(), agentId: v.string() })),
+        ),
+        // A change naming more agents than one row carries is split across several
+        // rows of the same action: this is row `index` of `of` (1-based).
+        chunk: v.optional(v.object({ index: v.number(), of: v.number() })),
+      }),
+    ),
   })
     .index("by_time", ["at"])
     .index("by_real", ["realUserId"]),
@@ -2468,9 +2524,16 @@ export default defineSchema({
     // (lib/blobs.partStorageField); older rows are backfilled
     // (blobQuarantine.backfillPartStorage). Absent on every other kind of part.
     storageId: v.optional(v.id("_storage")),
+    // The view a WIDGET part shows, DENORMALIZED from `part.viewId` (inside a union,
+    // not indexable) so a message's widget is found by its view directly — however
+    // many other parts the message carries (lib/widgetDescriptor.partWidgetField).
+    // Written by every widget-part writer; older rows are backfilled from the widget
+    // registry (widgets.backfillWidgetPartViewIds). Absent on every other kind.
+    widgetViewId: v.optional(v.string()),
   })
     .index("by_message", ["messageId"])
-    .index("by_storage", ["storageId"]),
+    .index("by_storage", ["storageId"])
+    .index("by_messageId_and_widgetViewId", ["messageId", "widgetViewId"]),
 
   // SUB-AGENT observation store (increment 1 of the sub-agent monitor). A chat's
   // agent can spawn an isolated child via the gateway `sessions_spawn` tool; the
@@ -2791,6 +2854,12 @@ export default defineSchema({
       v.array(v.object({ filename: v.string(), mimeType: v.string() })),
     ),
     replyText: v.optional(v.string()), // the sub-agent's answer (paths stripped)
+    // The answer carried a widget the sub-agent panel cannot show (its shortcode is
+    // removed from replyText); the panel says a widget was shown.
+    widgetOmitted: v.optional(v.boolean()),
+    // An `error` the gateway may still recover (its overflow recovery resumes the same
+    // run): no new interaction with this child before this instant (ms).
+    recoveringUntil: v.optional(v.number()),
     status: v.union(
       v.literal("pending"),
       v.literal("done"),

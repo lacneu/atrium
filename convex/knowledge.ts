@@ -48,7 +48,7 @@ import {
 import { capabilitiesForInstance } from "./lib/compat";
 import { readDoc as readCompatDoc } from "./compat";
 import { capabilityOf } from "../src/chat/capabilities";
-import { roomProjection, isConversationAgent } from "./chatAgents";
+import { roomProjection } from "./chatAgents";
 import { postBridge } from "./agentFiles";
 import { getEffectiveGrants } from "./agents";
 
@@ -174,21 +174,23 @@ function currentAgentRef(chat: Doc<"chats">): { instanceName: string; agentId: s
 }
 
 /**
- * May THIS conversation reach this agent for its knowledge choice (codex pass 17)? One of
- * its own — the bound agent, a room agent, the last one a per-turn chat routed to — or
- * one its OWNER may address (the dispatch resolves every turn on the owner's grants).
- * ONE rule for the composer's read (knowledgeControl) and the owner's write
- * (setKnowledgeChoice): an agent outside it is neither shown nor chosen for.
+ * May THIS conversation reach this agent for its knowledge choice (codex pass 17)?
+ *
+ * ONLY when its OWNER may address the agent NOW: the dispatch resolves every turn on the
+ * owner's current grants (bridge.ts passes the chat owner), so an agent outside them is
+ * one no message of this conversation can reach any more — and its sources and defaults
+ * are not this conversation's to read or change. What the conversation once held (the
+ * bound agent, a room agent, the last one a per-turn chat routed to) is NOT a right:
+ * after an agent's reservation moved to another group, an ex-member's old conversation
+ * still named it, and read the sources configured for the group it moved to (codex
+ * pass 5). ONE rule for the composer's read (knowledgeControl) and the owner's write
+ * (setKnowledgeChoice); the same rights resolver as routing (getEffectiveGrants).
  */
 export async function knowledgeAgentReachable(
   ctx: QueryCtx,
   chat: Doc<"chats">,
   ref: { instanceName: string; agentId: string },
 ): Promise<boolean> {
-  if (await isConversationAgent(ctx, chat, ref)) return true;
-  if (chat.lastRoutedInstanceName === ref.instanceName && chat.lastRoutedAgentId === ref.agentId) {
-    return true;
-  }
   return (await getEffectiveGrants(ctx, chat.userId)).some(
     (g) => g.instanceName === ref.instanceName && g.agentId === ref.agentId,
   );
@@ -540,6 +542,8 @@ export const dispatchKnowledgeChoice = internalAction({
           canonical: routing.target.canonical,
           // Same person, same gateway name: the SAME per-conversation socket as /send.
           ...(routing.gatewayUser === undefined ? {} : { gatewayUser: routing.gatewayUser }),
+          // The widget wish, should this route open the socket (see dispatchPatch).
+          inlineWidgets: routing.inlineWidgets,
           choice: claim.choice,
           revision,
         }),

@@ -18,6 +18,7 @@ import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
 import {
+  INTERACTION_RECOVERY_GRACE_SECONDS,
   SubAgentObserver,
   extractTaskName,
 } from "../src/providers/openclaw/sub-agent-observer.js";
@@ -2170,5 +2171,149 @@ describe("SubAgentObserver — announce-run item-spawn backfill", () => {
         "task OBJECTIF: Faire X., agent files, model openai/gpt-5.6-sol, cleanup keep",
       ),
     ).toBe("OBJECTIF: Faire X.");
+  });
+});
+
+// CODEX PASS 11. A widget the child shows while answering an interaction cannot be
+// rendered in the sub-agent panel (it shows text): the reply says so (widgetOmitted)
+// and never shows the shortcode raw. A send refused for certain undoes its arming;
+// a provisional chat error keeps the interaction pending for a bounded window.
+describe("SubAgentObserver — an interaction reply with a widget, and an arming undone", () => {
+  const PARENT = "agent:alice:atrium:chat:olivier:cap_ixw";
+  const CHILD = "agent:alice:subagent:ixw-child";
+  const final = (state: string, content: unknown[]): Record<string, unknown> => ({
+    event: "chat",
+    payload: { sessionKey: CHILD, spawnedBy: PARENT, state, message: { content } },
+  });
+  const tool = (name: string): Record<string, unknown> => ({
+    event: "agent",
+    payload: {
+      stream: "tool",
+      sessionKey: CHILD,
+      spawnedBy: PARENT,
+      data: { phase: "start", name, toolCallId: `call-${name}` },
+    },
+  });
+
+  it("an [embed] shortcode: removed from the text, the reply flagged", () => {
+    const obs = new SubAgentObserver(PARENT, "chat1");
+    obs.armInteraction(CHILD, "ix1", 100);
+    const rec = obs
+      .observe(final("final", [{ type: "text", text: 'Voici le compteur. [embed ref="cv_abc123" /]' }]), 101)
+      .at(-1);
+    expect(rec?.interactionReply).toEqual({
+      interactionId: "ix1",
+      status: "done",
+      replyText: "Voici le compteur.",
+      widgetOmitted: true,
+    });
+  });
+
+  it("a show_widget call during the interaction: flagged, the text kept whole", () => {
+    const obs = new SubAgentObserver(PARENT, "chat1");
+    obs.armInteraction(CHILD, "ix2", 100);
+    obs.observe(tool("show_widget"), 101);
+    const rec = obs.observe(final("final", [{ type: "text", text: "Fait." }]), 102).at(-1);
+    expect(rec?.interactionReply).toEqual({
+      interactionId: "ix2",
+      status: "done",
+      replyText: "Fait.",
+      widgetOmitted: true,
+    });
+  });
+
+  it("a canvas block in the final: flagged", () => {
+    const obs = new SubAgentObserver(PARENT, "chat1");
+    obs.armInteraction(CHILD, "ix3", 100);
+    const rec = obs
+      .observe(
+        final("final", [
+          { type: "text", text: "Le voici." },
+          { type: "canvas", preview: { kind: "canvas", surface: "assistant_message", url: "/__openclaw__/canvas/documents/cv_x/index.html" } },
+        ]),
+        101,
+      )
+      .at(-1);
+    expect(rec?.interactionReply?.widgetOmitted).toBe(true);
+    expect(rec?.interactionReply?.replyText).toBe("Le voici.");
+  });
+
+  it("no widget: no flag", () => {
+    const obs = new SubAgentObserver(PARENT, "chat1");
+    obs.armInteraction(CHILD, "ix4", 100);
+    obs.observe(tool("exec"), 101);
+    const rec = obs.observe(final("final", [{ type: "text", text: "ok" }]), 102).at(-1);
+    expect(rec?.interactionReply).toEqual({ interactionId: "ix4", status: "done", replyText: "ok" });
+  });
+
+  it("disarm undoes exactly what the arm did: the reaped child stays reaped, nothing pending", () => {
+    const obs = new SubAgentObserver(PARENT, "chat1");
+    obs.observe(final("final", [{ type: "text", text: "original" }]), 100); // reaped
+    expect(obs.size).toBe(0);
+    obs.armInteraction(CHILD, "ix5", 101);
+    expect(obs.interactionPending(101)).toBe(true);
+    expect(obs.disarmInteraction(CHILD, "ix5")).toBe(true);
+    expect(obs.size).toBe(0);
+    expect(obs.interactionPending(101)).toBe(false);
+    // The resurrection guard is back: a stray late frame does not re-open it.
+    obs.observe(final("final", [{ type: "text", text: "stray" }]), 102);
+    expect(obs.size).toBe(0);
+    // Only the arming named is undone.
+    obs.armInteraction(CHILD, "ix6", 103);
+    expect(obs.disarmInteraction(CHILD, "ix5")).toBe(false);
+    expect(obs.interactionPending(103)).toBe(true);
+  });
+
+  it("a provisional chat ERROR keeps it pending for a bounded window; a clean end releases it", () => {
+    const obs = new SubAgentObserver(PARENT, "chat1");
+    obs.armInteraction(CHILD, "ix7", 100);
+    obs.observe(final("error", [{ type: "text", text: "overflow" }]), 110);
+    expect(obs.interactionPending(110 + INTERACTION_RECOVERY_GRACE_SECONDS - 1)).toBe(true);
+    expect(obs.interactionPending(110 + INTERACTION_RECOVERY_GRACE_SECONDS)).toBe(false);
+    // …and the recovery's clean end reaps it at once.
+    obs.observe(final("final", [{ type: "text", text: "recovered" }]), 130);
+    expect(obs.interactionPending(130)).toBe(false);
+  });
+});
+
+// codex pass 12, reproduced: A gets a provisional chat error, B is armed and then
+// refused. Undoing B must give A back WHOLE — its id, its widget flag, its snapshot —
+// or A's recovered reply lands in the sub-agent's result and the socket's protection
+// drops early.
+describe("SubAgentObserver — undoing a refused arming gives the previous interaction back whole", () => {
+  const PARENT = "agent:alice:atrium:chat:olivier:cap_ixr";
+  const CHILD = "agent:alice:subagent:ixr-child";
+  const final = (state: string, text: string): Record<string, unknown> => ({
+    event: "chat",
+    payload: { sessionKey: CHILD, spawnedBy: PARENT, state, message: { content: [{ type: "text", text }] } },
+  });
+  const showWidget = (): Record<string, unknown> => ({
+    event: "agent",
+    payload: {
+      stream: "tool",
+      sessionKey: CHILD,
+      spawnedBy: PARENT,
+      data: { phase: "start", name: "show_widget", toolCallId: "call-w" },
+    },
+  });
+
+  it("A provisional error → B armed → B refused: A's recovered reply still goes to A", () => {
+    const obs = new SubAgentObserver(PARENT, "chat1");
+    obs.armInteraction(CHILD, "A", 100);
+    obs.observe(showWidget(), 101);
+    const err = obs.observe(final("error", "context overflow"), 102).at(-1);
+    expect(err?.interactionReply).toMatchObject({ interactionId: "A", status: "error", provisional: true });
+    obs.armInteraction(CHILD, "B", 105);
+    expect(obs.disarmInteraction(CHILD, "B")).toBe(true);
+    // Still A's, still pending within the grace.
+    expect(obs.interactionPending(110)).toBe(true);
+    const rec = obs.observe(final("final", "recovered answer"), 140).at(-1);
+    expect(rec?.interactionReply).toEqual({
+      interactionId: "A",
+      status: "done",
+      replyText: "recovered answer",
+      widgetOmitted: true, // A's own widget flag came back with it
+    });
+    expect(rec?.resultText).toBeUndefined();
   });
 });

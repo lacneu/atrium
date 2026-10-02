@@ -672,6 +672,76 @@ describe("the owner chooses; everyone sees", () => {
   });
 });
 
+describe("only the owner's CURRENT rights reach an agent's knowledge (codex pass 5)", () => {
+  test("a revoked bound agent: no sources shown, no choice accepted — to anyone", async () => {
+    const t = convexTest(schema, modules);
+    const { owner, guest, chatId } = await seed(t);
+    await t.run(async (ctx) => {
+      const grant = (await ctx.db.query("userAgents").collect()).find(
+        (g) => g.userId === owner && g.agentId === "alice",
+      )!;
+      await ctx.db.delete(grant._id);
+    });
+    // The chat is still BOUND to alice: that binding is not a right.
+    for (const who of [owner, guest]) {
+      expect(await t.withIdentity({ subject: who }).query(api.knowledge.knowledgeControl, { chatId })).toBeNull();
+    }
+    await expect(
+      t.withIdentity({ subject: owner }).mutation(api.knowledge.setKnowledgeChoice, {
+        chatId,
+        instanceName: "alpha",
+        agentId: "alice",
+        choice: { kind: "off" },
+      }),
+    ).rejects.toThrow(/agent_not_in_conversation/);
+    // The last routed agent of a per-turn chat is no right either.
+    await t.run((ctx) =>
+      ctx.db.patch(chatId, { perTurnRouting: true, lastRoutedInstanceName: "alpha", lastRoutedAgentId: "alice" }),
+    );
+    expect(await t.withIdentity({ subject: owner }).query(api.knowledge.knowledgeControl, { chatId })).toBeNull();
+  });
+
+  test("the reservation MOVES from group G to group H: the ex-member's chat no longer reads its sources", async () => {
+    const t = convexTest(schema, modules);
+    const { owner, chatId } = await seed(t);
+    const { h } = await t.run(async (ctx) => {
+      // alice reaches the owner through group G only.
+      for (const g of await ctx.db.query("userAgents").collect()) {
+        if (g.userId === owner && g.agentId === "alice") await ctx.db.delete(g._id);
+      }
+      const g = await ctx.db.insert("groups", { key: "g", name: "G", createdBy: owner, createdAt: 1 });
+      const h = await ctx.db.insert("groups", { key: "h", name: "H", createdBy: owner, createdAt: 1 });
+      await ctx.db.insert("groupMembers", { groupId: g, userId: owner, joinedAt: 1 });
+      await ctx.db.insert("groupAgents", { groupId: g, instanceName: "alpha", agentId: "alice", createdAt: 1 });
+      return { g, h };
+    });
+    expect(
+      (await t.withIdentity({ subject: owner }).query(api.knowledge.knowledgeControl, { chatId }))?.facts?.available,
+    ).toBe(true);
+    // The move: G no longer shares alice, H does — with sources configured for H.
+    await t.run(async (ctx) => {
+      for (const r of await ctx.db.query("groupAgents").collect()) await ctx.db.delete(r._id);
+      await ctx.db.insert("groupAgents", { groupId: h, instanceName: "alpha", agentId: "alice", createdAt: 2 });
+      const facts = (await ctx.db.query("agentKnowledge").collect()).find((f) => f.agentId === "alice")!;
+      await ctx.db.patch(facts._id, {
+        sources: [{ id: "h-only", type: "pgvector", label: "Dossiers de H", description: "réservé au groupe H", default: true }],
+        defaultSources: ["h-only"],
+      });
+    });
+    const seen = await t.withIdentity({ subject: owner }).query(api.knowledge.knowledgeControl, { chatId });
+    expect(seen).toBeNull();
+    expect(JSON.stringify(seen ?? null)).not.toMatch(/Dossiers de H|h-only/);
+    await expect(
+      t.withIdentity({ subject: owner }).mutation(api.knowledge.setKnowledgeChoice, {
+        chatId,
+        instanceName: "alpha",
+        agentId: "alice",
+        choice: { kind: "default" },
+      }),
+    ).rejects.toThrow(/agent_not_in_conversation/);
+  });
+});
+
 describe("applied at once when that agent's session is the current one", () => {
   const choose = async (t: T, owner: Id<"users">, chatId: Id<"chats">, agentId: string, choice: Record<string, unknown>) => {
     await t.withIdentity({ subject: owner }).mutation(api.knowledge.setKnowledgeChoice, {

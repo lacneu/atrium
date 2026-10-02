@@ -7,7 +7,17 @@ import { m } from "@/paraglide/messages.js";
 import { router } from "./router";
 import { DialogsProvider } from "@/components/ConfirmDialog";
 import { FeedbackProvider } from "./chat/FeedbackDialog";
-import { resolveConvexUrl } from "@/lib/runtimeConfig";
+import {
+  convexCloudUrl,
+  convexSiteUrl,
+  resolveConvexUrl,
+  widgetSandboxOriginSetting,
+} from "@/lib/runtimeConfig";
+import {
+  installPageFramePolicy,
+  pageFramePolicy,
+  resolveWidgetSandboxOrigin,
+} from "./chat/widgets/widgetSandbox";
 import "./index.css";
 import "./chat/convexChat.css";
 
@@ -63,6 +73,18 @@ root.render(
 // keeps its WebSocket alive across client-side navigations.
 resolveConvexUrl()
   .then((convexUrl) => {
+    // Where the page's frames may navigate, decided by the same verdict the widget
+    // frames use, and installed BEFORE anything can render one (widgetSandbox.ts
+    // pageFramePolicy: a widget could otherwise navigate itself to any server).
+    installPageFramePolicy(
+      document,
+      pageFramePolicy(
+        resolveWidgetSandboxOrigin(widgetSandboxOriginSetting(), window.location.origin, [
+          convexSiteUrl(),
+          convexCloudUrl(),
+        ]),
+      ),
+    );
     const convex = new ConvexReactClient(convexUrl);
     root.render(
       <React.StrictMode>

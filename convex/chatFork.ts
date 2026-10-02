@@ -39,6 +39,7 @@ import { minChatSortKey } from "./chats";
 import { MAX_KNOWLEDGE_CHOICES_PER_CHAT } from "./lib/knowledge";
 import { isTrashed } from "./lib/trash";
 import { widgetInstanceForViews } from "./widgets";
+import { partWidgetField } from "./lib/widgetDescriptor";
 
 /** Copy bound = the visible window (loadChatView's MESSAGE_WINDOW): the fork
  *  shows exactly what the user sees in the source. Older context still reaches
@@ -338,6 +339,7 @@ export const forkChat = mutation({
             messageId: newMsgId,
             order: p.order,
             part: p.part,
+            ...partWidgetField(p.part),
           });
           copiedWidgets.push({ source: msg, copy: newMsgId, viewId: p.part.viewId });
           continue;

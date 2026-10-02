@@ -215,6 +215,25 @@ describe("/subagent-send — the same door, over HTTP", () => {
     expect(headers["x-forwarded-user"]).toBe("olivier@example.org");
   });
 
+  it("a message + files over the socket's maxPayload is refused by name, and nothing is sent", async () => {
+    const conn = { ...fakeConn(), maxPayload: 4_096, request: vi.fn(async (_method: string) => ({ payload: {} })) };
+    vi.spyOn(OpenClawConnection, "connect").mockImplementation(async () => conn as never);
+    await boot();
+    const res = await post({
+      instanceName: "primary",
+      chatId: "c1",
+      openclawChatId: "oc1",
+      agentId: "main",
+      canonical: "u-olivier",
+      childSessionKey: "agent:main:subagent:ix",
+      interactionId: "ix-1",
+      message: "é".repeat(5_000),
+    });
+    expect(res.status).toBe(502);
+    expect(await res.json()).toEqual({ ok: false, error: { code: "message_too_large" } });
+    expect(conn.request.mock.calls.filter(([m]) => m === "chat.send")).toEqual([]);
+  });
+
   it("REFUSES a body with no routing key instead of connecting as nobody", async () => {
     // It used to substitute empty strings, which builds a session key whose
     // person segment is the literal "unknown" — a session belonging to no one,

@@ -26,6 +26,9 @@ import type {
 } from "../src/convex-writer.js";
 import { FRAME_ENVELOPE_OVERHEAD_BYTES } from "../src/core/attachment-limits.js";
 import { historyCharsThatFit } from "../src/core/context-budget.js";
+import { FrameTooLargeError } from "../src/core/frame-size.js";
+import { chatSendFrameBytes } from "../src/providers/openclaw/chat-send.js";
+import { classifyGatewayError, faultDomain } from "../src/core/dispatch-errors.js";
 import { OpenClawConnection } from "../src/providers/openclaw/openclaw-client.js";
 import { fakeGateway } from "./helpers/fake-gateway.js";
 import { servedMap } from "./helpers/served.js";
@@ -373,5 +376,83 @@ describe("the WINDOW re-ask that comes back empty", () => {
       prependedTurns: 0,
       historyWithheld: "window",
     });
+  });
+});
+
+describe("EVERY send's frame is measured as it goes on the wire", () => {
+  const ROOM = 40_000;
+  const file = {
+    content: "D".repeat(Math.floor((MAX_PAYLOAD - FRAME_ENVELOPE_OVERHEAD_BYTES - ROOM) / 4) * 4),
+    mimeType: "image/png",
+    fileName: "scan.png",
+  };
+  // ~200 KiB of pasted text: the composer and Convex bound the FILE, nothing bounds this.
+  const PASTED = "é€ ".repeat(36_000); // 216 000 bytes of UTF-8
+
+  async function sendRaw(h: ReturnType<typeof harness>, body: Parameters<typeof performSend>[1]) {
+    const reg = new SessionRegistry(servedMap(config, h.w), () => 1000);
+    const session = await reg.acquire(ROUTING);
+    await sleep(5);
+    return performSend(session, body, h.w, null, null, null, Date.now(), config).then(
+      () => null,
+      (e: unknown) => e,
+    );
+  }
+
+  it("a file at the cap plus a long pasted text overflows EVEN BARE: refused by name, nothing sent", async () => {
+    const h = harness({
+      gatewayVersion: "2026.9.6",
+      maxPayload: MAX_PAYLOAD,
+      answer: () => ({ history: null, turnCount: 0 }),
+    });
+    const err = await sendRaw(h, forkBody([file], PASTED));
+    expect(err).toBeInstanceOf(FrameTooLargeError);
+    expect(classifyGatewayError(err)).toBe("message_too_large");
+    expect(faultDomain("message_too_large")).toBe("local");
+    expect(h.gw.countOf("chat.send")).toBe(0);
+  });
+
+  it("a text-only send over the frame is refused too (the check is not tied to attachments)", async () => {
+    const h = harness({
+      gatewayVersion: "2026.9.6",
+      maxPayload: 64 * 1024,
+      answer: () => ({ history: null, turnCount: 0 }),
+    });
+    const err = await sendRaw(h, forkBody([], PASTED));
+    expect(err).toBeInstanceOf(FrameTooLargeError);
+    expect(h.gw.countOf("chat.send")).toBe(0);
+  });
+
+  it("the same file with a normal text goes out unchanged", async () => {
+    const h = harness({
+      gatewayVersion: "2026.9.6",
+      maxPayload: MAX_PAYLOAD,
+      answer: () => ({ history: null, turnCount: 0 }),
+    });
+    const err = await sendRaw(h, forkBody([file], "lis ce scan"));
+    expect(err).toBeNull();
+    const sent = h.gw.calls.find(([m]) => m === "chat.send")?.[1] as Record<string, unknown>;
+    expect(sent.message).toBe("lis ce scan");
+    expect(sent.attachments).toEqual([file]);
+    expect(frameBytes(sent)).toBeLessThanOrEqual(MAX_PAYLOAD);
+  });
+
+  it("the measure is EXACT: the bytes the client serializes, escaping and multibyte included", () => {
+    const params = {
+      sessionKey: "agent:a:x",
+      message: `${PASTED}"\n\\`,
+      idempotencyKey: "webchat-1",
+      attachments: [
+        { type: "file", mimeType: "image/png", fileName: "é.png", content: "QUJD" },
+        { type: "file", mimeType: "text/plain", fileName: "t.txt", content: "not base64 — é\"\n" },
+      ],
+    };
+    const wire = JSON.stringify({
+      type: "req",
+      id: "a1b2c3d4-0000-4000-8000-000000000000",
+      method: "chat.send",
+      params,
+    });
+    expect(chatSendFrameBytes(params)).toBe(Buffer.byteLength(wire, "utf8"));
   });
 });

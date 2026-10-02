@@ -27,7 +27,8 @@
 // applies from the next turn.
 
 import { v } from "convex/values";
-import { internalQuery, mutation, query } from "./_generated/server";
+import { internalMutation, internalQuery, mutation, query } from "./_generated/server";
+import { internal } from "./_generated/api";
 import type { QueryCtx } from "./_generated/server";
 import type { Doc } from "./_generated/dataModel";
 import {
@@ -43,7 +44,7 @@ import { PERMISSIONS } from "./lib/rbac";
 import { resolveBridgeUrlForDispatch } from "./lib/bridgeRouting";
 // The gateway's managed-document grammar — re-checked so an id that could never be
 // fetched is never forwarded.
-import { WIDGET_VIEW_ID_RE } from "./lib/widgetDescriptor";
+import { WIDGET_VIEW_ID_RE, partWidgetField } from "./lib/widgetDescriptor";
 
 
 /** How many parts of one message the authorization reads, at most. A reply holds a
@@ -124,15 +125,46 @@ export async function widgetInstanceForViews(
   return found === null ? null : await chatInstance(ctx, found);
 }
 
-/** The distinct widget view ids among a message's parts (bounded read). */
+/** The distinct widget view ids a message shows — read through the widget index, so
+ *  a widget after any number of other parts is found. Rows written before the field
+ *  existed (until the backfill has stamped them) are found by the bounded scan. */
 async function widgetViewIdsOf(ctx: QueryCtx, messageId: Doc<"messages">["_id"]): Promise<string[]> {
-  const parts = await ctx.db
+  const ids = new Set<string>();
+  const indexed = await ctx.db
+    .query("messageParts")
+    .withIndex("by_messageId_and_widgetViewId", (q) =>
+      q.eq("messageId", messageId).gt("widgetViewId", ""),
+    )
+    .take(MAX_PARTS_READ);
+  for (const row of indexed) if (row.part.kind === "widget") ids.add(row.part.viewId);
+  const legacy = await ctx.db
     .query("messageParts")
     .withIndex("by_message", (q) => q.eq("messageId", messageId))
     .take(MAX_PARTS_READ);
-  const ids = new Set<string>();
-  for (const row of parts) if (row.part.kind === "widget") ids.add(row.part.viewId);
+  for (const row of legacy) if (row.part.kind === "widget") ids.add(row.part.viewId);
   return [...ids];
+}
+
+/** Does this message carry a widget part for exactly `viewId`? A direct index lookup —
+ *  whatever the message's size — with the bounded scan kept for rows written before
+ *  `widgetViewId` was stamped (backfillWidgetPartViewIds). */
+export async function messageShowsWidgetView(
+  ctx: QueryCtx,
+  messageId: Doc<"messages">["_id"],
+  viewId: string,
+): Promise<boolean> {
+  const direct = await ctx.db
+    .query("messageParts")
+    .withIndex("by_messageId_and_widgetViewId", (q) =>
+      q.eq("messageId", messageId).eq("widgetViewId", viewId),
+    )
+    .first();
+  if (direct !== null && direct.part.kind === "widget" && direct.part.viewId === viewId) return true;
+  const legacy = await ctx.db
+    .query("messageParts")
+    .withIndex("by_message", (q) => q.eq("messageId", messageId))
+    .take(MAX_PARTS_READ);
+  return legacy.some((row) => row.part.kind === "widget" && row.part.viewId === viewId);
 }
 
 /** Is view `viewId` of `instanceName` registered to conversation `chatId`? */
@@ -338,14 +370,9 @@ export const authorizeWidgetView = internalQuery({
     if (message === null || message.chatId !== chatId || message.role !== "assistant") {
       return { ok: false, reason: "not_found" };
     }
-    const parts = await ctx.db
-      .query("messageParts")
-      .withIndex("by_message", (q) => q.eq("messageId", messageId))
-      .take(MAX_PARTS_READ);
-    const owned = parts.some(
-      (row) => row.part.kind === "widget" && row.part.viewId === args.viewId,
-    );
-    if (!owned) return { ok: false, reason: "not_a_widget" };
+    if (!(await messageShowsWidgetView(ctx, messageId, args.viewId))) {
+      return { ok: false, reason: "not_a_widget" };
+    }
     // The gateway that STORES the document is the one whose bridge wrote this reply —
     // the message's ingest stamp (`boundInstance`, validated at startAssistant). A
     // per-turn routed conversation carries no instance of its own; a fork's copy carries
@@ -371,3 +398,141 @@ export const authorizeWidgetView = internalQuery({
   },
 });
 
+// --- backfill: messageParts.widgetViewId on rows written before the field ----------
+
+/** The migration key of the widget-part view-id backfill. */
+export const WIDGET_PART_BACKFILL = "messageParts.widgetViewId";
+/** Parts one backfill step reads at most — and bytes (a part can carry up to a
+ *  document's worth of payload): one step stays far below a transaction's 32k reads
+ *  and 16 MiB, whatever the size of the message being walked. */
+export const WIDGET_BACKFILL_PARTS_PER_STEP = 256;
+export const WIDGET_BACKFILL_BYTES_PER_STEP = 4_000_000;
+const WIDGET_BACKFILL_STALE_MS = 10 * 60 * 1000;
+/** The registry cursor once every registry row has been taken. */
+const REGISTRY_END = "end";
+
+/** The backfill's durable position, stored as JSON in the marker's `cursor`:
+ *  `registry` = the widget-registry cursor of the NEXT message to start; `message` =
+ *  the message being walked (its part cursor, and the registry cursor that becomes
+ *  current once it is finished). */
+interface WidgetBackfillState {
+  registry: string | null;
+  lastMessageId?: string;
+  message?: { messageId: string; partCursor: string | null; registryAfter: string | null };
+}
+
+function readBackfillState(cursor: string | null | undefined): WidgetBackfillState {
+  if (!cursor) return { registry: null };
+  try {
+    const parsed = JSON.parse(cursor) as WidgetBackfillState;
+    return typeof parsed === "object" && parsed !== null ? parsed : { registry: null };
+  } catch {
+    return { registry: null };
+  }
+}
+
+/**
+ * One step: stamp `widgetViewId` on widget parts written before the field, walking
+ * the widget REGISTRY (every widget part a conversation was ever allowed to open is
+ * named there with its message). A step does ONE of two things, each bounded:
+ *  - walks one page of the CURRENT message's parts (≤ WIDGET_BACKFILL_PARTS_PER_STEP
+ *    rows, ≤ WIDGET_BACKFILL_BYTES_PER_STEP bytes), saving its part cursor — a
+ *    message of any size is finished over as many steps as it needs;
+ *  - or, with no message in progress, takes the NEXT registry row and makes its
+ *    message current. The registry cursor moves past a message only once that
+ *    message has been walked to its end.
+ * It saves its position and schedules the next step, until the registry is done.
+ * Idempotent. Parts no registry row names (an imported archive's) are never
+ * authorized anyway, and keep the bounded scan.
+ */
+export const backfillWidgetPartViewIds = internalMutation({
+  args: {},
+  handler: async (ctx) => {
+    const marker = await ctx.db
+      .query("migrationMarkers")
+      .withIndex("by_key", (q) => q.eq("key", WIDGET_PART_BACKFILL))
+      .first();
+    if (marker?.completedAt !== undefined) return { done: true, stamped: 0 };
+    const state = readBackfillState(marker?.cursor);
+    let stamped = 0;
+    let done = false;
+    if (state.message !== undefined) {
+      const current = state.message;
+      const messageId = ctx.db.normalizeId("messages", current.messageId);
+      const page =
+        messageId === null
+          ? { page: [], isDone: true, continueCursor: "" }
+          : await ctx.db
+              .query("messageParts")
+              .withIndex("by_message", (q) => q.eq("messageId", messageId))
+              .paginate({
+                cursor: current.partCursor,
+                numItems: WIDGET_BACKFILL_PARTS_PER_STEP,
+                maximumRowsRead: WIDGET_BACKFILL_PARTS_PER_STEP,
+                maximumBytesRead: WIDGET_BACKFILL_BYTES_PER_STEP,
+              });
+      for (const row of page.page) {
+        const field = partWidgetField(row.part);
+        if (field.widgetViewId !== undefined && row.widgetViewId !== field.widgetViewId) {
+          await ctx.db.patch(row._id, field);
+          stamped += 1;
+        }
+      }
+      if (page.isDone) {
+        state.registry = current.registryAfter;
+        state.lastMessageId = current.messageId;
+        delete state.message;
+      } else {
+        state.message = { ...current, partCursor: page.continueCursor };
+      }
+    } else {
+      // The next message of the registry: ONE row (a message is walked in its own
+      // steps). Several views of the same message are walked once.
+      const page = await ctx.db
+        .query("widgetViews")
+        .paginate({ cursor: state.registry, numItems: 1 });
+      const view = page.page[0];
+      // Past the last registry row, the registry cursor reads REGISTRY_END.
+      const after = page.isDone ? REGISTRY_END : page.continueCursor;
+      if (view === undefined || view.messageId === state.lastMessageId) {
+        state.registry = after;
+      } else {
+        state.message = { messageId: view.messageId, partCursor: null, registryAfter: after };
+      }
+    }
+    if (state.message === undefined && state.registry === REGISTRY_END) done = true;
+    const now = Date.now();
+    const progress = {
+      cursor: done ? null : JSON.stringify(state),
+      updatedAt: now,
+      ...(done ? { completedAt: now } : {}),
+    };
+    if (marker === null) {
+      await ctx.db.insert("migrationMarkers", { key: WIDGET_PART_BACKFILL, ...progress });
+    } else {
+      await ctx.db.patch(marker._id, progress);
+    }
+    if (!done) {
+      await ctx.scheduler.runAfter(0, internal.widgets.backfillWidgetPartViewIds, {});
+    }
+    return { done, stamped };
+  },
+});
+
+/** Start — or resume — the backfill unless it completed or a live chain runs it. Run
+ *  by a cron, so a deployment converges without anyone running anything. */
+export const ensureWidgetPartBackfill = internalMutation({
+  args: {},
+  handler: async (ctx) => {
+    const marker = await ctx.db
+      .query("migrationMarkers")
+      .withIndex("by_key", (q) => q.eq("key", WIDGET_PART_BACKFILL))
+      .first();
+    if (marker?.completedAt !== undefined) return "complete" as const;
+    if (marker !== null && marker.updatedAt > Date.now() - WIDGET_BACKFILL_STALE_MS) {
+      return "running" as const;
+    }
+    await ctx.scheduler.runAfter(0, internal.widgets.backfillWidgetPartViewIds, {});
+    return "started" as const;
+  },
+});

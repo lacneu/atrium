@@ -14,6 +14,7 @@ import {
   filterSortMembers,
   filterInstanceAgents,
   groupErrorDetail,
+  isAgentPurgePending,
   nextMemberAllowance,
   paginate,
   roleLabel,
@@ -291,6 +292,14 @@ describe("groupErrorDetail", () => {
       groupErrorDetail({ data: { code: "admin_restriction_would_apply", agent: "Forge" } }),
     ).toBe(m.groups_error_admin_restriction_apply({ agent: "Forge" }));
     expect(m.groups_error_admin_restriction_apply({ agent: "Forge" })).toContain("Forge");
+  });
+  test("localizes the retryable purge-pending refusal", () => {
+    expect(groupErrorDetail({ data: { code: "agent_purge_pending" } })).toBe(
+      m.agents_error_purge_pending(),
+    );
+    expect(isAgentPurgePending({ data: { code: "agent_purge_pending" } })).toBe(true);
+    expect(isAgentPurgePending({ data: { code: "member_cleanup_pending" } })).toBe(false);
+    expect(isAgentPurgePending(new Error("agent_purge_pending"))).toBe(false);
   });
   test("passes anything else through", () => {
     const other = new Error("boom");

@@ -377,3 +377,83 @@ describe("POST /talk-session scopes the create on the chat's agent", () => {
     expect(createParams(gw)).toBeUndefined();
   });
 });
+
+// PROD 0.91.0 (chat mh77m9e7): the socket a mint OPENS is the one the call rides for
+// its whole duration — and the one every typed turn of the conversation uses during
+// it (re-opening would end the call). It must declare what a typed turn would.
+describe("POST /talk-session opens the conversation's socket with its widget wish", () => {
+  let gateway: WsFakeGateway | null = null;
+  let server: Server | null = null;
+  let registry: SessionRegistry | null = null;
+
+  afterEach(async () => {
+    registry?.closeAll();
+    registry = null;
+    if (server) await new Promise<void>((r) => server!.close(() => r()));
+    server = null;
+    await gateway?.stop();
+    gateway = null;
+    vi.restoreAllMocks();
+  });
+
+  async function mint(inlineWidgets: boolean | undefined) {
+    const gw = startWsFakeGateway({
+      version: "2026.9.6",
+      onMethod: (method) => (method === "talk.client.create" ? MINTED : {}),
+    });
+    await gw.ready;
+    gateway = gw;
+    const config = CONFIG(gw.url);
+    const shared = sharedFromConfig(config);
+    registry = new SessionRegistry(servedMap(config));
+    const srv = createBridgeServer({
+      shared,
+      served: servedMap(config),
+      registry,
+      health: new HealthRegistry(1000, () => 2000),
+    });
+    await new Promise<void>((r) => srv.listen(0, r));
+    server = srv;
+    const res = await fetch(`http://127.0.0.1:${(srv.address() as AddressInfo).port}/talk-session`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: shared.bridgeSharedSecret },
+      body: JSON.stringify({
+        instanceName: "primary",
+        chatId: "c1",
+        openclawChatId: "oc-bound",
+        canonical: "olivier",
+        agentId: "alice",
+        ...(inlineWidgets === undefined ? {} : { inlineWidgets }),
+      }),
+    });
+    expect(res.status).toBe(200);
+    const caps = (gw.connects.at(-1) as { caps?: string[] } | undefined)?.caps ?? [];
+    return { caps, session: registry.peekByChat("c1")! };
+  }
+
+  test("widgets on (gateway 2026.9.6): declared; a typed turn during the call keeps them, no deferral", async () => {
+    const { caps, session } = await mint(true);
+    expect(caps).toContain("inline-widgets");
+    expect(session.runManager.widgetsEnabled).toBe(true);
+    expect(session.liveVoiceCallCount()).toBeGreaterThan(0);
+    const log = vi.spyOn(console, "log");
+    const warn = vi.spyOn(console, "warn");
+    const turn = await registry!.acquire({
+      chatId: "c1",
+      openclawChatId: "oc-bound",
+      agentId: "alice",
+      canonical: "olivier",
+      instanceName: "primary",
+      inlineWidgets: true,
+    });
+    expect(turn).toBe(session);
+    const said = [...log.mock.calls, ...warn.mock.calls].map((c) => String(c[0]));
+    expect(said.filter((l) => /widget switch deferred|widgets unavailable/.test(l))).toEqual([]);
+  });
+
+  test("widgets off: never declared", async () => {
+    const { caps, session } = await mint(false);
+    expect(caps).not.toContain("inline-widgets");
+    expect(session.runManager.widgetsEnabled).toBe(false);
+  });
+});

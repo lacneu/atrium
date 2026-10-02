@@ -46,6 +46,15 @@ crons.interval(
   {},
 );
 
+// Stamp messageParts.widgetViewId on widget parts written before the field (a cheap
+// no-op once complete): the widget authorization finds a part by it.
+crons.interval(
+  "backfill widget part view ids",
+  { minutes: 15 },
+  internal.widgets.ensureWidgetPartBackfill,
+  {},
+);
+
 // Hourly at minute 0. Recomputes KPI rollups for the recent hour buckets.
 crons.cron("rollup kpis", "0 * * * *", internal.kpi.rollupKpis, {});
 

@@ -13,6 +13,7 @@ import { Star, Server } from "lucide-react";
 import { useToast } from "@/components/ui/toast";
 import { m } from "@/paraglide/messages.js";
 import { api } from "../convexApi";
+import { groupErrorDetail } from "./groupManageView";
 import type { Id } from "../convexApi";
 
 // One pool agent (mirrors convex agents.listAgentPoolForUser).
@@ -166,14 +167,14 @@ function InstanceAgents({
         await assign({ profileId: profileId!, instanceName, agentId });
       }
     } catch (err) {
-      toast.error(m.useraccess_toast_access_update_denied(), err);
+      toast.error(m.useraccess_toast_access_update_denied(), groupErrorDetail(err));
     }
   }
   async function makeDefault(agentId: string) {
     try {
       await setDefault({ profileId: profileId!, instanceName, agentId });
     } catch (err) {
-      toast.error(m.useraccess_toast_set_default_denied(), err);
+      toast.error(m.useraccess_toast_set_default_denied(), groupErrorDetail(err));
     }
   }
 

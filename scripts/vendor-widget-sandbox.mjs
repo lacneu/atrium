@@ -14,8 +14,10 @@
 //     --sandbox-url '/mcp-app-sandbox?csp=…&v=…' \
 //     --tag v2026.9.6 --src <openclaw checkout at that tag>
 //
-// Writes index.html, headers.json and PROVENANCE.json. The Caddyfile headers are kept
-// in step by hand; src/chat/widgets/widgetSandbox.test.ts refuses a mismatch.
+// Writes index.html, headers.json and PROVENANCE.json — upstream's bytes. The Caddyfile
+// headers are kept in step by hand, with `media-src` HARDENED (no `https:`, see
+// src/chat/widgets/widgetSandbox.ts HARDENED_MEDIA_SRC); widgetSandbox.test.ts refuses
+// any other difference.
 
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";

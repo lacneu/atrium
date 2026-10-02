@@ -14,6 +14,7 @@ import { requireActive, requireOwnedChat, requireReachableChat } from "./lib/acc
 import { ROSTER_READ_WINDOW } from "./lib/chatAccess";
 import { liveTalkCall } from "./talk";
 import { enrichUserAgents, getEffectiveGrants } from "./agents";
+import { assertNoPendingPurge } from "./lib/agentPurge";
 import { auditImpersonated } from "./lib/audit";
 import { isChatBusy } from "./lib/outboxQueue";
 import { releaseDanglingDocumentaryFetch } from "./documentAttachments";
@@ -188,6 +189,8 @@ export const rebindChatAgent = mutation({
     const { userId, actor } = await requireActive(ctx);
     await requireOwnedChat(ctx, userId, chatId);
     await requireAgentMembership(ctx, userId, instanceName, agentId);
+    // Not while the agent's purge is still clearing its old rooms (lib/agentPurge).
+    await assertNoPendingPurge(ctx, instanceName, agentId);
     // Entitlement is not the whole predicate. `requireAgentMembership` accepts an
     // agent the gateway has DELETED — the picker renders those as disabled rows, so
     // the UI never offers one, but a stale client or a direct call would bind a chat

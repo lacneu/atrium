@@ -1,6 +1,9 @@
 # Widget sandbox origin — serves ONLY Atrium's pinned copy of the OpenClaw widget
-# sandbox proxy (index.html) with the exact response headers upstream sends with it
-# (headers.json; src/chat/widgets/widgetSandbox.test.ts holds the two together).
+# sandbox proxy (index.html) with the response headers upstream sends with it
+# (headers.json), except one directive Atrium hardens on purpose: `media-src` drops
+# `https:`, so a widget cannot carry data out through a media URL
+# (src/chat/widgets/widgetSandbox.ts HARDENED_MEDIA_SRC; widgetSandbox.test.ts holds
+# the two together).
 #
 # Standalone snippet for a dedicated host. The Atrium frontend image serves the same
 # thing on its second port (docker/Caddyfile, `:8081`). Put it behind TLS on an origin
@@ -17,7 +20,7 @@
 	handle @proxy {
 		header {
 			Content-Type "text/html; charset=utf-8"
-			Content-Security-Policy "default-src 'none'; script-src 'self' 'unsafe-inline' https://cdnjs.cloudflare.com https://cdn.jsdelivr.net https://esm.sh https://unpkg.com https://fonts.googleapis.com https://fonts.gstatic.com https://fonts.bunny.net; style-src 'self' 'unsafe-inline' https://cdnjs.cloudflare.com https://cdn.jsdelivr.net https://esm.sh https://unpkg.com https://fonts.googleapis.com https://fonts.gstatic.com https://fonts.bunny.net; img-src 'self' data: https://cdnjs.cloudflare.com https://cdn.jsdelivr.net https://esm.sh https://unpkg.com https://fonts.googleapis.com https://fonts.gstatic.com https://fonts.bunny.net; media-src 'self' data: https: blob:; font-src 'self' https://cdnjs.cloudflare.com https://cdn.jsdelivr.net https://esm.sh https://unpkg.com https://fonts.googleapis.com https://fonts.gstatic.com https://fonts.bunny.net; connect-src 'none'; webrtc 'block'; frame-src 'none'; base-uri 'self'; object-src 'none'; form-action 'none'; frame-ancestors http: https:"
+			Content-Security-Policy "default-src 'none'; script-src 'self' 'unsafe-inline' https://cdnjs.cloudflare.com https://cdn.jsdelivr.net https://esm.sh https://unpkg.com https://fonts.googleapis.com https://fonts.gstatic.com https://fonts.bunny.net; style-src 'self' 'unsafe-inline' https://cdnjs.cloudflare.com https://cdn.jsdelivr.net https://esm.sh https://unpkg.com https://fonts.googleapis.com https://fonts.gstatic.com https://fonts.bunny.net; img-src 'self' data: https://cdnjs.cloudflare.com https://cdn.jsdelivr.net https://esm.sh https://unpkg.com https://fonts.googleapis.com https://fonts.gstatic.com https://fonts.bunny.net; media-src 'self' data: blob:; font-src 'self' https://cdnjs.cloudflare.com https://cdn.jsdelivr.net https://esm.sh https://unpkg.com https://fonts.googleapis.com https://fonts.gstatic.com https://fonts.bunny.net; connect-src 'none'; webrtc 'block'; frame-src 'none'; base-uri 'self'; object-src 'none'; form-action 'none'; frame-ancestors http: https:"
 			Permissions-Policy "camera=(), microphone=(), geolocation=(), clipboard-write=()"
 			Cross-Origin-Resource-Policy "cross-origin"
 			Origin-Agent-Cluster "?1"

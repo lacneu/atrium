@@ -604,3 +604,13 @@ export function subAgentErrorDetail(
   if (text === "") return null;
   return firstMeaningfulLine(text) === null ? null : text;
 }
+
+/** The reader's sentence for a failed sub-agent interaction (`subAgentInteractions`
+ *  row `errorMessage`): a refusal the bridge named gets its own localized copy — the
+ *  reader can act on it; any other text is shown as it is (the child's own failure
+ *  sentence, already masked by Convex), and nothing at all reads as the generic line. */
+export function subAgentInteractionErrorText(errorMessage: string | null | undefined): string {
+  if (errorMessage === "message_too_large") return m.runstatus_error_message_too_large();
+  if (errorMessage === "attachment_too_large") return m.runstatus_error_attachment_too_large();
+  return errorMessage ?? m.subagent_interact_error();
+}

@@ -8,7 +8,9 @@ import { m } from "@/paraglide/messages.js";
 import {
   ADMIN_RESTRICTION_WOULD_APPLY,
   ADMIN_RESTRICTION_WOULD_LIFT,
+  MEMBER_CLEANUP_PENDING,
 } from "../../../convex/lib/groupMembers";
+import { AGENT_PURGE_PENDING } from "../../../convex/lib/agentPurge";
 
 // Minimal shapes the helpers need (kept structural so the real Convex row types
 // satisfy them without coupling to convexApi).
@@ -191,6 +193,17 @@ export function inviteStatusLabel(
   }
 }
 
+/** The retryable refusal of an access change for an agent still being purged
+ *  (convex/lib/agentPurge.ts) — raised by user, group AND conversation-room paths. */
+export function isAgentPurgePending(err: unknown): boolean {
+  const data = (err as { data?: unknown } | null)?.data;
+  return (
+    typeof data === "object" &&
+    data !== null &&
+    (data as { code?: unknown }).code === AGENT_PURGE_PENDING
+  );
+}
+
 // The server's typed refusals (ConvexError data, convex/lib/groupMembers.ts): a
 // manager's unshare or member removal would LIFT an administrator's restriction on
 // a member, or a share would APPLY one. Localized here; any other error is passed
@@ -207,6 +220,13 @@ export function groupErrorDetail(err: unknown): unknown {
   }
   if (code === ADMIN_RESTRICTION_WOULD_APPLY) {
     return m.groups_error_admin_restriction_apply({ agent: name ?? "?" });
+  }
+  if (code === MEMBER_CLEANUP_PENDING) {
+    return m.groups_error_member_cleanup_pending();
+  }
+  // Also raised by the user-access and reservation paths (convex/lib/agentPurge).
+  if (code === AGENT_PURGE_PENDING) {
+    return m.agents_error_purge_pending();
   }
   return err;
 }

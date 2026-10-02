@@ -758,6 +758,8 @@ describe("E. lifecycle after the claim", () => {
     await sync(t, w.gateways);
     await as(t, w.admin).mutation(api.agents.removeInstanceAgent, { instanceName: "prod", agentId: "scribe" });
     expect(await agentRow(t, "prod", "scribe")).toBeNull();
+    // The member-default reset is a durable cleanup job enqueued by the purge.
+    await t.finishAllScheduledFunctions(vi.runAllTimers);
     const leftovers = await t.run(async (ctx) => ({
       shares: (await ctx.db.query("groupAgents").collect()).filter((r) => r.agentId === "scribe"),
       defaults: (await ctx.db.query("groupMembers").collect()).filter((m) => m.defaultAgent?.agentId === "scribe"),

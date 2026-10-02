@@ -79,6 +79,7 @@ import {
 } from "./providers/openclaw/knowledge-policy.js";
 import {
   NO_CONVERSATION_CHOICE,
+  chatSendFrameBytes,
   issueChatSend,
   wasWithheldBeforeSend,
   type ChatSendGate,
@@ -239,7 +240,9 @@ import {
   gatewayAtLeast,
   COMPACTION_CHECKPOINTS_RETIRED_IN,
   REHYDRATE_WITH_ATTACHMENTS_SINCE,
+  openClawInlineWidgetsEnabled,
 } from "./compat.js";
+import { INLINE_WIDGETS_CAP } from "./providers/openclaw/widgets.js";
 import {
   COVERAGE_SUMMARY,
   DRIFT_VENDORED_VERSION,
@@ -334,6 +337,14 @@ interface BodyRouting {
    */
   gatewayUser?: string;
   instanceName: string | null;
+  /**
+   * The conversation's inline-widget wish as Convex decided it for this route
+   * (`getChatRouting.inlineWidgets`). On a route other than `/send` it only says what
+   * the socket must declare IF this route has to open it — it never re-keys an open
+   * socket (see SessionRouting.widgetsAtCreate). Absent ⇒ an older Convex: creation
+   * inherits the wish of the chat's previous socket.
+   */
+  widgetsWish?: boolean;
 }
 
 interface SendBody extends BodyRouting {
@@ -553,6 +564,7 @@ export function parseBodyRouting(
     canonical,
     ...(gatewayUser === null ? {} : { gatewayUser }),
     instanceName: str(obj.instanceName),
+    ...(typeof obj.inlineWidgets === "boolean" ? { widgetsWish: obj.inlineWidgets } : {}),
   };
 }
 
@@ -586,6 +598,9 @@ function toRouting(
     canonical: b.canonical,
     ...(b.gatewayUser === undefined ? {} : { gatewayUser: b.gatewayUser }),
     instanceName,
+    // Creation only: a session operation never re-keys the socket for widgets, but a
+    // socket it has to OPEN must declare what the conversation wants (prod 0.91.0).
+    ...(b.widgetsWish === undefined ? {} : { widgetsAtCreate: b.widgetsWish }),
   };
 }
 
@@ -921,34 +936,6 @@ export function historyCharsForFrameRoom(roomBytes: number): number {
     Math.floor(
       (roomBytes - HISTORY_SEPARATOR_FRAME_BYTES) / MAX_FRAME_BYTES_PER_CHAR,
     ),
-  );
-}
-
-/** What the final frame check reserves for the chat.send envelope OUTSIDE the
- *  message and the attachments (session key, idempotency key, permission guard, the
- *  request wrapper): small fields, bounded well below this. */
-export const FRAME_FIXED_RESERVE_BYTES = 16 * 1024;
-
-/** Does the chat.send frame, as composed, fit `maxPayload`? The message measured as
- *  it rides (`jsonStringFrameBytes`), the attachments' base64 and their metadata, plus
- *  the fixed reserve. An unknown `maxPayload` proves nothing fits. */
-export function finalFrameFits(opts: {
-  message: string;
-  attachments: ReadonlyArray<Record<string, unknown>>;
-  base64Bytes: number;
-  maxPayload: number | null;
-}): boolean {
-  if (opts.maxPayload === null || !Number.isFinite(opts.maxPayload)) return false;
-  const metadataBytes = Buffer.byteLength(
-    JSON.stringify(opts.attachments.map((a) => ({ ...a, content: "" }))),
-    "utf8",
-  );
-  return (
-    jsonStringFrameBytes(opts.message) +
-      opts.base64Bytes +
-      metadataBytes +
-      FRAME_FIXED_RESERVE_BYTES <=
-    opts.maxPayload
   );
 }
 
@@ -2367,9 +2354,9 @@ async function performSendComposed(
     // Content-free reconstruction trace of the decision (keyed chatId:outboxId in
     // Convex) so the obs MCP can show WHY a (cross-agent) turn re-injected history or
     // not — no local repro needed next time. Fire-and-forget; routed agent NAMES only.
-    // History riding beside inline attachments can still be taken back by the FINAL
-    // frame check below, so that trace waits for it (performSend flushes it on every
-    // exit); every other one leaves now, as before.
+    // Prepended history can still be taken back by the FINAL frame check below, so
+    // that trace waits for it (performSend flushes it on every exit); a trace with no
+    // history riding leaves now, as before.
     rehydrateTrace.hold({
       chatId: body.chatId,
       outboxId: body.outboxId,
@@ -2394,7 +2381,7 @@ async function performSendComposed(
         ? { presendCompactReasonClass: presend.compactReasonClass }
         : {}),
     });
-    if (!(hasInlineAttachments && mentionPrefix > 0)) rehydrateTrace.flush();
+    if (mentionPrefix === 0) rehydrateTrace.flush();
   } catch (err) {
     console.error(
       "[rehydrate] skipped (non-fatal):",
@@ -2729,23 +2716,21 @@ async function performSendComposed(
       );
     }
     params.attachments = body.attachments;
-    // THE FINAL FRAME, measured as it will be sent — when it carries history. The
-    // room the history was sized against assumed the rest of the message fits the
-    // fixed envelope, but the user's text is not capped and the received-files block
-    // and the delivery instruction were appended after. A frame over `maxPayload`
-    // makes the gateway close the socket, on a turn that went through bare: the
-    // history is taken back off, never the user's message.
-    if (
-      mentionPrefix > 0 &&
-      !finalFrameFits({
-        message,
-        attachments: body.attachments as Array<Record<string, unknown>>,
-        base64Bytes,
-        maxPayload: conn.maxPayload,
-      })
-    ) {
+  }
+  // THE FINAL FRAME, measured exactly as the client will write it. The checks above
+  // size parts of it — the base64 against the envelope, the history against what the
+  // envelope leaves — and the user's text is bounded by none of them: a file at the
+  // composer's cap plus a long pasted text overflows even bare, and the received-files
+  // block and the delivery instruction were appended after the history was sized. A
+  // frame over `maxPayload` makes the gateway CLOSE the socket. History is taken back
+  // off here (never the user's message); a frame that still does not fit is refused
+  // by name at the one door every chat.send goes through (issueChatSend), against the
+  // limit of the socket that actually carries it.
+  if (conn.maxPayload !== null && mentionPrefix > 0) {
+    const frameBytes = chatSendFrameBytes(params);
+    if (frameBytes > conn.maxPayload) {
       console.error(
-        `[rehydrate] chat=${body.chatId} history WITHDRAWN — the composed frame would exceed maxPayload ${conn.maxPayload ?? "unknown"}`,
+        `[rehydrate] chat=${body.chatId} history WITHDRAWN — the composed frame (${frameBytes}B) would exceed maxPayload ${conn.maxPayload}`,
       );
       message = message.slice(mentionPrefix);
       params.message = message;
@@ -2753,8 +2738,8 @@ async function performSendComposed(
       turnWasRehydrated = false;
       rehydrateTrace.historyWithdrawn("frame");
     }
-    rehydrateTrace.flush();
   }
+  rehydrateTrace.flush();
   // Response frames can race ahead of the chat.send `res` ack on the shared
   // socket. ARM the pre-ack buffer just before the request so the RunManager
   // captures any such frame while the sink is inactive and REPLAYS it in
@@ -2850,7 +2835,13 @@ async function performSendComposed(
     const response = await sendAsSpeaker(
       conn,
       params,
-      body,
+      // The widget declaration a participant's socket makes is the one the
+      // conversation's socket ACTUALLY holds, not the wish this body carries: a switch
+      // deferred by a live call (or a turn still streaming) keeps the conversation
+      // socket — and its normalizer — on the old declaration, and a participant's
+      // socket declaring otherwise would make the gateway answer with widgets the
+      // receiving normalizer drops.
+      { ...body, inlineWidgets: session.runManager.widgetsEnabled },
       presendConfig,
       speakers,
       knowledgeGate,
@@ -3216,8 +3207,16 @@ export async function performKnowledgeApply(
  */
 /** Where a participant's own socket comes from. */
 export interface SpeakerSource {
-  /** The socket that acts for `speaker` on this instance (opened on demand). */
-  acquire(config: BridgeConfig, speaker: string): Promise<OpenClawConnection>;
+  /** The socket that acts for `speaker` on this instance (opened on demand). With
+   *  `inlineWidgets`, a socket that declared `inline-widgets` — the gateway offers
+   *  `show_widget` on a turn only to the socket that SENT it. One socket per (instance,
+   *  person, widget declaration): a conversation that changes its choice gets the
+   *  other socket, and the one it leaves keeps any run it carries until it idles out. */
+  acquire(
+    config: BridgeConfig,
+    speaker: string,
+    opts?: { inlineWidgets?: boolean },
+  ): Promise<OpenClawConnection>;
   /** Carry `runId` — about to be started on `from` — to `to`, in full, from `from`
    *  alone: `to` stops consuming its own native copies of that run. False when
    *  `from` is no longer held and open: nothing was routed. */
@@ -3231,10 +3230,25 @@ export interface SpeakerSource {
 
 const speakerPool = new SpeakerPool();
 
+/** The speaker pool's key: instance, person — and what the socket declared, since a
+ *  declaration is fixed at the handshake. */
+export function speakerPoolKey(
+  config: BridgeConfig,
+  speaker: string,
+  inlineWidgets: boolean,
+): string {
+  return `${config.instanceName ?? ""}\u0000${speaker}\u0000${inlineWidgets ? "widgets" : "plain"}`;
+}
+
+/** The client caps a speaker socket declares. */
+export function speakerCaps(inlineWidgets: boolean): string[] {
+  return inlineWidgets ? [INLINE_WIDGETS_CAP] : [];
+}
+
 /** The process-wide speaker sockets: one per (instance, person). */
 export const defaultSpeakers: SpeakerSource = {
-  acquire: (config, speaker) =>
-    speakerPool.acquire(`${config.instanceName ?? ""}\u0000${speaker}`, () =>
+  acquire: (config, speaker, opts) =>
+    speakerPool.acquire(speakerPoolKey(config, speaker, opts?.inlineWidgets === true), () =>
       OpenClawConnection.connect(
         config.openclawGatewayUrl,
         // "" in trusted-proxy mode, the only mode a speaker socket is opened in.
@@ -3247,7 +3261,11 @@ export const defaultSpeakers: SpeakerSource = {
         // NOT `approvals`: approvals are routed by device, and the conversation's
         // socket (same device) is the one Atrium shows them from. Declaring it here
         // would make this socket a second reviewer surface nobody reads.
-        [],
+        // `inline-widgets` WHEN the conversation's effective choice wants them (the
+        // caller has already applied the version gate): upstream offers `show_widget`
+        // only to the socket that sent the turn, so a participant's turn on a socket
+        // without it never had widgets.
+        speakerCaps(opts?.inlineWidgets === true),
       ),
     ),
   route: (from, runId, to) => speakerPool.route(from, runId, to),
@@ -3297,6 +3315,9 @@ export async function sendAsSpeaker(
     speakerCanonical?: string;
     chatId: string;
     agentId?: string;
+    /** The conversation's effective widget choice (instance switch + conversation
+     *  override), as Convex sent it with the turn. */
+    inlineWidgets?: boolean;
   },
   config: BridgeConfig | undefined,
   speakers: SpeakerSource,
@@ -3343,7 +3364,13 @@ export async function sendAsSpeaker(
   // new one, theirs, with no history in it.
   let speakerConn: OpenClawConnection;
   try {
-    speakerConn = await speakers.acquire(config, speaker);
+    // The participant's socket declares widgets exactly when the conversation's own
+    // socket would: the choice, under the same version gate (the owner's socket has
+    // just proven the gateway's version).
+    speakerConn = await speakers.acquire(config, speaker, {
+      inlineWidgets:
+        body.inlineWidgets === true && openClawInlineWidgetsEnabled(conn.gatewayVersion),
+    });
   } catch (err) {
     // The owner's socket takes the turn — but only into the session the send was
     // prepared for: the failed open may have taken as long as a successful one.
@@ -6830,6 +6857,8 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
         });
         return;
       }
+      let armed: { session: BridgeSession; childKey: string; interactionId: string } | null =
+        null;
       try {
         const session = await registry.acquire(
           toRouting(
@@ -6848,12 +6877,6 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
         // limit — but the path must still be stripped.
         session.noteOutboundMount(
           served.get(saInstance)?.config.mediaOutboundAgentMount ?? null,
-        );
-        // Arm BEFORE the send so a re-woken child's terminal is recognized as this
-        // interaction's reply (the child is usually already reaped after its spawn).
-        session.armSubAgentInteraction(
-          body.childSessionKey,
-          body.interactionId,
         );
         const saAtts = body.attachments;
         if (Array.isArray(saAtts) && saAtts.length > 0) {
@@ -6877,17 +6900,31 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
             return;
           }
         }
+        // The text and the files together are measured by issueChatSend, exactly,
+        // against this socket's limit: over it, `message_too_large` below.
         const saParams = subAgentSendParams(
           body.childSessionKey,
           body.message,
           body.interactionId,
           saAtts,
         );
+        // Arm RIGHT BEFORE the send — after every check that can refuse it here — so a
+        // re-woken child's terminal is recognized as this interaction's reply (the child
+        // is usually already reaped after its spawn). Armed earlier, a refused send left
+        // the observation `running` until its TTL (codex pass 11).
+        session.armSubAgentInteraction(body.childSessionKey, body.interactionId);
+        armed = { session, childKey: body.childSessionKey, interactionId: body.interactionId };
         // A sub-agent's CHILD session: the conversation's knowledge choice governs the
         // conversation's own sessions, not a child the agent spawned.
         await issueChatSend(session.connection, saParams, 20_000, NO_CONVERSATION_CHOICE);
         sendJson(res, 200, { ok: true });
       } catch (err) {
+        // CERTAINLY never reached the child — withheld before the request (its size,
+        // measured by issueChatSend) or refused by the gateway: the arming goes. An
+        // UNANSWERED send may have started the run: it stays armed (TTL-bounded).
+        if (armed !== null && (wasWithheldBeforeSend(err) || err instanceof GatewayAnsweredError)) {
+          armed.session.disarmSubAgentInteraction(armed.childKey, armed.interactionId);
+        }
         const code = classifyGatewayError(err);
         console.error(
           `bridge /subagent-send failed [${code}]:`,
@@ -7035,6 +7072,8 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
         // What the gateway calls this person (instances.identitySource), the SAME
         // value `/send` routes with — the conversation's socket presents it.
         gatewayUser?: unknown;
+        // The conversation's inline-widget wish (Convex conversationWantsWidgets).
+        inlineWidgets?: unknown;
       } = {};
       try {
         talkBody = JSON.parse(raw || "{}") as typeof talkBody;
@@ -7179,6 +7218,17 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
               ? { gatewayUser: talkStr(talkBody.gatewayUser)! }
               : {}),
             instanceName: talkInstance,
+            // The call lives on THIS socket for its whole duration, and the gateway
+            // runs the call's agent consults with this socket's capabilities
+            // (upstream resolveTalkAgentConsultAuthority): it must declare what a
+            // typed turn would. Without it a mint on a chat with no socket opened
+            // one WITHOUT inline-widgets, and every typed turn during the call then
+            // ran without show_widget — the deferral below keeps the call alive by
+            // keeping the socket (prod 0.91.0, chat mh77m9e7). Same semantics as
+            // /send: an idle socket with another wish is re-opened before the mint.
+            ...(typeof talkBody.inlineWidgets === "boolean"
+              ? { inlineWidgets: talkBody.inlineWidgets }
+              : {}),
           });
           if (ownerSession.sessionKey !== talkSessionKey) {
             console.error(

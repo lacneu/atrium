@@ -409,6 +409,11 @@ const ATTACHMENT_FAILURE_CODES = new Set([
   "attachment_name_too_long",
   "attachment_staging_failed",
   "attachment_cleanup_unconfirmed",
+  // The bridge refused a send whose message plus files exceed the gateway's frame.
+  "message_too_large",
+  // The bridge refused to re-key the socket while a sub-agent's reply is still owed
+  // on it: the reader is told to send again in a moment (shown as its own code).
+  "subagent_reply_pending",
 ]);
 
 // Terminal FAILURE transition for a dispatch, in ONE transaction: mark the outbox
@@ -922,6 +927,14 @@ export const getChatRouting = internalQuery({
         ? null
         : await decideTurnPermission(ctx, chat, routedTarget.instanceName);
     return {
+      // INLINE WIDGETS for whatever socket this routing opens: the instance switch
+      // AND the conversation override (conversationWantsWidgets) — a PREVIEW for a
+      // turn (the /send carries lastGateBeforeSend's decision), and THE wish for
+      // every other route that may create the conversation's socket (/patch, /reset,
+      // /compact, /knowledge, /permission-mode): a socket born there must not
+      // silently lack widgets the conversation has on (prod 0.91.0, Talk).
+      inlineWidgets:
+        routedTarget === null ? false : conversationWantsWidgets(instance, chat),
       // HOW this instance authenticates to its gateway. An ENUM, non-secret, and
       // the one fact that says whether the gateway saw a named person or a single
       // shared operator behind this turn — which is exactly what an operator needs
@@ -3204,6 +3217,11 @@ export const dispatchPatch = internalAction({
           ...(routing.gatewayUser === undefined
             ? {}
             : { gatewayUser: routing.gatewayUser }),
+          // The conversation's widget wish, for the case this route has to OPEN the
+          // conversation's socket: the bridge declares inline-widgets at creation
+          // from it (never re-keys an open socket for it). Same decision as the
+          // send's (lastGateBeforeSend), so a socket born here is the one a turn wants.
+          inlineWidgets: routing.inlineWidgets,
           // The COMPLETE persisted intent (sets + clears) — the exact object the
           // per-turn /send re-apply consumes; ONE bridge call both clears the
           // removed knobs and re-asserts the rest. Single source of truth (P2-4).
@@ -3737,6 +3755,11 @@ export const dispatchReset = internalAction({
           ...(routing.gatewayUser === undefined
             ? {}
             : { gatewayUser: routing.gatewayUser }),
+          // The conversation's widget wish, for the case this route has to OPEN the
+          // conversation's socket: the bridge declares inline-widgets at creation
+          // from it (never re-keys an open socket for it). Same decision as the
+          // send's (lastGateBeforeSend), so a socket born here is the one a turn wants.
+          inlineWidgets: routing.inlineWidgets,
           // PANEL resets only: the bridge refuses (409 turn_active) when a
           // turn is LIVE at execution time — the atomic close of the
           // schedule→execute race (codex P1, pass 8). Regenerate resets never

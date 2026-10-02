@@ -12,6 +12,7 @@
 // it (`errorChainText`) -> unit-tested offline.
 
 import { ContextBlockedError } from "./presend-guard.js";
+import { FrameTooLargeError } from "./frame-size.js";
 import {
   INBOUND_CLEANUP_FAILED,
   INBOUND_NAME_TOO_LONG,
@@ -23,7 +24,7 @@ import {
   InboundMediaRefusal,
 } from "./inbound-media.js";
 import { HermesDashboardAbsentError } from "../providers/hermes/files-fetcher.js";
-import { TalkCallActiveError } from "../session.js";
+import { SubAgentReplyPendingError, TalkCallActiveError } from "../session.js";
 import { PermissionModeNotAppliedError } from "../providers/openclaw/permission-mode.js";
 import { KnowledgePolicyNotAppliedError } from "../providers/openclaw/knowledge-policy.js";
 import {
@@ -108,6 +109,12 @@ export type DispatchErrorCode =
   // The composed on-disk name does not fit a filesystem leaf: the user's filename
   // is too long. The ONLY member of this family the reader can act on.
   | "attachment_name_too_long"
+  // THE BRIDGE refused the send: the message and its inline files make a chat.send
+  // frame over the gateway's `maxPayload`, even with no history to take back off.
+  // Sent, the gateway would have closed the socket. The reader can act on it (a
+  // shorter text, fewer or smaller files); never retried — the same frame would not
+  // fit the second time either.
+  | "message_too_large"
   | "attachment_staging_failed"
   | "attachment_cleanup_unconfirmed"
   // THE BRIDGE ITSELF refused to re-key the chat's socket, because a gateway-owned
@@ -121,6 +128,11 @@ export type DispatchErrorCode =
   // the turn is not failed, it is put BACK in the queue and dispatched when the call
   // ends. Lower-case like the other codes Convex reads.
   | "talk_call_active"
+  // THE BRIDGE ITSELF refused to re-key the chat's socket (another agent, another
+  // conversation key) because a sub-agent's reply is still owed on it — the child's
+  // run streams to that socket only, so re-keying loses the reply. THE TURN WAS NEVER
+  // SENT. The reader is told to send again in a moment. Lower-case like the others.
+  | "subagent_reply_pending"
   // The gateway PAUSED the session after a provider refusal it wants reviewed
   // (2026.9.6, see isProviderReviewPausedText). Every send is refused the same way
   // until the review is continued, which Atrium does not offer: NOT retryable, and
@@ -199,12 +211,16 @@ export type FaultDomain = "bridge" | "downstream" | "local";
 const LOCAL_REFUSAL_CODES: ReadonlySet<DispatchErrorCode> = new Set([
   "attachment_path_refused",
   "attachment_name_too_long",
+  // We refused a frame the gateway would have closed the socket on: the link is fine.
+  "message_too_large",
   "attachment_staging_failed",
   "attachment_cleanup_unconfirmed",
   // We refused to cut a live call. The link and the credentials are fine — painting
   // the bridge red for honouring its own invariant is the exact lie this class exists
   // to prevent.
   "talk_call_active",
+  // Same, for a sub-agent reply still owed on the socket.
+  "subagent_reply_pending",
   // We withheld the turn because the chosen mode could not be put on the session. What
   // the gateway said (if anything) is in the log; the link is not in question.
   "permission_mode_not_applied",
@@ -336,11 +352,15 @@ export function classifyGatewayError(
   // The bridge's own withheld send, recognised by TYPE before any text rule: a
   // decision we made cannot be left to depend on how we phrased it.
   if (err instanceof ContextBlockedError) return "context_length_presend";
+  // Our own refusal of a frame over `maxPayload`, by TYPE: no gateway text names it.
+  if (err instanceof FrameTooLargeError) return "message_too_large";
   // Same rule, same reason: a surface the fetcher PROVED absent is recognised by type, so
   // the class survives any rewording of the message.
   if (err instanceof HermesDashboardAbsentError) return "DASHBOARD_NOT_DEPLOYED";
   // Our own refusal to cut a live voice call, by TYPE for the same reason.
   if (err instanceof TalkCallActiveError) return "talk_call_active";
+  // …and to lose a sub-agent reply still owed on the socket, by TYPE too.
+  if (err instanceof SubAgentReplyPendingError) return "subagent_reply_pending";
   // Our own refusal to send under a mode the owner did not choose, by TYPE.
   if (err instanceof PermissionModeNotAppliedError) return "permission_mode_not_applied";
   // …and the conversation's knowledge choice, by TYPE.

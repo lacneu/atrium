@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { m } from "@/paraglide/messages.js";
 import {
+  subAgentInteractionErrorText,
   subAgentKindLabel,
   buildSubAgentActivityView,
   childAgentIdFromKey,
@@ -674,5 +675,18 @@ describe("a sub-agent cut off by its time limit (prod 2026-09-27)", () => {
       row({ status: "error", errorCode: "timeout", runTimeoutSeconds: 900 }),
     ]);
     expect(view.cards[0]?.runTimeoutSeconds).toBe(900);
+  });
+});
+
+describe("subAgentInteractionErrorText — a refusal the reader can act on is named", () => {
+  it("message_too_large and attachment_too_large get their own sentence, never the code", () => {
+    expect(subAgentInteractionErrorText("message_too_large")).toBe(m.runstatus_error_message_too_large());
+    expect(subAgentInteractionErrorText("attachment_too_large")).toBe(m.runstatus_error_attachment_too_large());
+  });
+  it("the child's own failure text is shown as it is; nothing reads as the generic line", () => {
+    expect(subAgentInteractionErrorText("no reply: the sub-agent session was lost")).toBe(
+      "no reply: the sub-agent session was lost",
+    );
+    expect(subAgentInteractionErrorText(undefined)).toBe(m.subagent_interact_error());
   });
 });

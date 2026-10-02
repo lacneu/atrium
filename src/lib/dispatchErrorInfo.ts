@@ -85,6 +85,14 @@ const INFO: Record<string, () => DispatchErrorInfo> = {
     label: m.error_unrouted_label(),
     hint: m.error_unrouted_hint(),
   }),
+  message_too_large: () => ({
+    label: m.error_message_too_large_label(),
+    hint: m.error_message_too_large_hint(),
+  }),
+  subagent_reply_pending: () => ({
+    label: m.error_subagent_reply_pending_label(),
+    hint: m.error_subagent_reply_pending_hint(),
+  }),
   attachment_name_too_long: () => ({
     label: m.error_attachment_name_too_long_label(),
     hint: m.error_attachment_name_too_long_hint(),

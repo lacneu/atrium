@@ -11,6 +11,7 @@ import { api, internal } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
 import schema from "./schema";
 import { relayWidgetView, WIDGET_VIEW_DOCUMENT_HEADERS, WIDGET_VIEW_MAX_BYTES } from "./lib/widgetView";
+import { WIDGET_BACKFILL_PARTS_PER_STEP } from "./widgets";
 
 const modules = import.meta.glob("./**/*.ts");
 type T = TestConvex<typeof schema>;
@@ -187,6 +188,127 @@ describe("who may read a widget document (the gateway scopes nothing)", () => {
         ok: true,
         instanceName: "alpha",
       });
+    }
+  });
+
+  test("a widget AFTER more than 512 other parts is still found (the index, not a scan)", async () => {
+    const t = convexTest(schema, modules);
+    const s = await seed(t);
+    await t.run(async (ctx) => {
+      for (let i = 0; i < 600; i++) {
+        await ctx.db.insert("messageParts", {
+          messageId: s.assistant,
+          order: i,
+          part: { kind: "tool", name: `step-${i}`, phase: "done" } as never,
+        });
+      }
+    });
+    await t.mutation(internal.stream.addPart, { messageId: s.assistant, part: widgetPart() });
+    const row = await t.run(async (ctx) =>
+      (await ctx.db.query("messageParts").collect()).find((r) => r.part.kind === "widget"),
+    );
+    expect(row?.widgetViewId).toBe(VIEW);
+    expect(await authorize(t, s.owner, { chatId: s.chatId, messageId: s.assistant, viewId: VIEW })).toMatchObject({
+      ok: true,
+    });
+    expect(
+      await t.withIdentity({ subject: s.owner }).query(api.widgets.widgetConfigForMessage, {
+        chatId: s.chatId,
+        messageId: s.assistant,
+      }),
+    ).toMatchObject({ effective: true });
+  });
+
+  test("a row written BEFORE the field: found by the scan, then stamped by the backfill", async () => {
+    vi.useFakeTimers();
+    try {
+      const t = convexTest(schema, modules);
+      const s = await seed(t);
+      await t.mutation(internal.stream.addPart, { messageId: s.assistant, part: widgetPart() });
+      await t.run(async (ctx) => {
+        const row = (await ctx.db.query("messageParts").collect()).find((r) => r.part.kind === "widget")!;
+        await ctx.db.patch(row._id, { widgetViewId: undefined });
+      });
+      expect(await authorize(t, s.owner, { chatId: s.chatId, messageId: s.assistant, viewId: VIEW })).toMatchObject({
+        ok: true,
+      });
+      await t.mutation(internal.widgets.ensureWidgetPartBackfill, {});
+      await t.finishAllScheduledFunctions(vi.runAllTimers);
+      const stamped = await t.run(async (ctx) =>
+        (await ctx.db.query("messageParts").collect()).find((r) => r.part.kind === "widget")?.widgetViewId,
+      );
+      expect(stamped).toBe(VIEW);
+      expect(await t.mutation(internal.widgets.ensureWidgetPartBackfill, {})).toBe("complete");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test("the backfill finishes a message of 2,048+ parts in bounded steps, then the next message", async () => {
+    vi.useFakeTimers();
+    try {
+      const t = convexTest(schema, modules);
+      const s = await seed(t);
+      // A second widget message in the same chat, after the big one.
+      const second = await t.run((ctx) =>
+        ctx.db.insert("messages", {
+          chatId: s.chatId,
+          userId: s.owner,
+          role: "assistant",
+          status: "complete" as const,
+          text: "",
+          updatedAt: 3,
+        }),
+      );
+      await t.run(async (ctx) => {
+        for (let i = 0; i < 2100; i++) {
+          await ctx.db.insert("messageParts", {
+            messageId: s.assistant,
+            order: i,
+            part: { kind: "tool", name: `step-${i}`, phase: "done" } as never,
+          });
+        }
+      });
+      await t.mutation(internal.stream.addPart, { messageId: s.assistant, part: widgetPart() });
+      await t.mutation(internal.stream.addPart, { messageId: second, part: widgetPart(OTHER_VIEW) });
+      await t.run(async (ctx) => {
+        // Both rows predate the field.
+        for (const r of await ctx.db.query("messageParts").collect()) {
+          if (r.part.kind === "widget") await ctx.db.patch(r._id, { widgetViewId: undefined });
+        }
+        for (const [messageId, viewId] of [
+          [second, OTHER_VIEW],
+        ] as const) {
+          await ctx.db.insert("widgetViews", {
+            instanceName: "alpha",
+            viewId,
+            chatId: s.chatId,
+            messageId,
+            source: "gateway" as const,
+            createdAt: 5,
+          });
+        }
+      });
+      // Step by step: every step stamps (and reads) at most one bounded page.
+      let steps = 0;
+      for (;;) {
+        const r = await t.mutation(internal.widgets.backfillWidgetPartViewIds, {});
+        steps += 1;
+        expect(r.stamped).toBeLessThanOrEqual(WIDGET_BACKFILL_PARTS_PER_STEP);
+        if (r.done) break;
+        if (steps > 100) throw new Error("backfill never completed");
+      }
+      // The big message alone needs ⌈2,101 / 256⌉ part steps: it was not cut short.
+      expect(steps).toBeGreaterThanOrEqual(Math.ceil(2101 / WIDGET_BACKFILL_PARTS_PER_STEP));
+      const views = await t.run(async (ctx) =>
+        (await ctx.db.query("messageParts").collect())
+          .filter((r) => r.part.kind === "widget")
+          .map((r) => r.widgetViewId)
+          .sort(),
+      );
+      expect(views).toEqual([OTHER_VIEW, VIEW].sort());
+    } finally {
+      vi.useRealTimers();
     }
   });
 

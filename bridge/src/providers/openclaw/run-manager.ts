@@ -267,6 +267,21 @@ export class RunManager {
   }
 
   /**
+   * Why this socket still carries work the bridge owes a reply for — null when none.
+   * A turn driving the sink, or still finalizing its tail (media, finalize POST); a
+   * `chat.send` awaiting its ACK (the gateway may already have accepted the turn —
+   * closing the socket now loses its ACK and every frame of the answer, codex pass
+   * 10); delivery frames stashed to open a turn as soon as the sink is free. A
+   * history recovery runs INSIDE an active turn, so it is covered by the first.
+   */
+  get liveWork(): "turn in progress" | "dispatch in flight" | "delivery pending" | null {
+    if (this.sink.active || this.sink.finalizing) return "turn in progress";
+    if (this.replayArmed) return "dispatch in flight";
+    if (this.pendingAnnounce.length > 0) return "delivery pending";
+    return null;
+  }
+
+  /**
    * A gateway-initiated DELIVERY run (announce, background-task delivery, talk
    * consult — see announceRunIdFor) is live on this session as far as the bridge
    * has seen: its spontaneous turn still drives the sink, or its frames wait in

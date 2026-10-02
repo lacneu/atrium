@@ -6,3 +6,10 @@
  *  narrowed to the `cv_` documents `show_widget` mints). */
 export const WIDGET_VIEW_ID_RE = /^cv_[A-Za-z0-9._-]{1,253}$/;
 export const WIDGET_TITLE_MAX_CHARS = 200;
+
+/** The view id to denormalize onto a messageParts row (its `widgetViewId` field,
+ *  indexed with the message): the part's own, for a widget part. EVERY writer of a
+ *  widget part spreads this. */
+export function partWidgetField(part: { kind: string; viewId?: unknown }): { widgetViewId?: string } {
+  return part.kind === "widget" && typeof part.viewId === "string" ? { widgetViewId: part.viewId } : {};
+}

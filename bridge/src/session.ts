@@ -145,6 +145,13 @@ export interface SessionRouting {
    *  The socket declares `inline-widgets` only when wanted AND the gateway version
    *  supports it (compat.ts `inlineWidgets`). */
   inlineWidgets?: boolean;
+  /** The conversation's widget wish for a route that does NOT re-key on it (patch,
+   *  reset, compact, knowledge, permission mode, sub-agent interaction): used ONLY if
+   *  this acquire has to CREATE the socket, so a socket born from a session operation
+   *  declares what the next turn wants instead of nothing. Ignored when
+   *  `inlineWidgets` is given. When neither is, creation inherits the wish of the
+   *  chat's previous socket (closed or re-keyed), and only then falls back to off. */
+  widgetsAtCreate?: boolean;
 }
 
 export interface BridgeSession {
@@ -210,6 +217,8 @@ export interface BridgeSession {
   /** Phase 2c: arm the sub-agent observer to capture the reply to a user INTERACTION
    *  before the /subagent-send endpoint dispatches the chat.send to the child. */
   armSubAgentInteraction(childKey: string, interactionId: string): void;
+  /** Undo that arming for a send refused for certain (see SubAgentObserver). */
+  disarmSubAgentInteraction(childKey: string, interactionId: string): void;
   /** Record the outbound mount `/send` just instructed the agent to use, so a
    *  delegated child's `MEDIA:` directive is recognised on a custom mount. */
   noteOutboundMount(dir: string | null): void;
@@ -469,6 +478,30 @@ class Session implements BridgeSession {
    *  interaction reply and routed to the interaction store). */
   armSubAgentInteraction(childKey: string, interactionId: string): void {
     this.observer.armInteraction(childKey, interactionId, this.clock());
+    // A deadline moved (a resurrected observation's TTL): the consume loop blocks on
+    // the one it computed before, so it must re-read it.
+    this.wake();
+  }
+
+  disarmSubAgentInteraction(childKey: string, interactionId: string): void {
+    if (this.observer.disarmInteraction(childKey, interactionId)) this.wake();
+  }
+
+  /** Why this socket must not be closed for a mere preference (the widget wish), or
+   *  null: a gateway-owned voice call rides it, or it still carries work the bridge
+   *  owes a reply for (RunManager.liveWork, a pending sub-agent interaction). */
+  /** A sub-agent interaction's reply is still owed on this socket (pending, or in its
+   *  recovery grace after a provisional error). */
+  subAgentReplyPending(now: number): boolean {
+    return this.observer.interactionPending(now);
+  }
+
+  busyReason(now: number): string | null {
+    if (this.holdsVoiceCall(now)) return "voice call live";
+    const work = this.runManager.liveWork;
+    if (work !== null) return work;
+    if (this.observer.interactionPending(now)) return "sub-agent interaction pending";
+    return null;
   }
 
   /**
@@ -1604,6 +1637,18 @@ function gatewayNameFor(routing: SessionRouting): string {
  *
  * Carries no chat content, only the chat id the bridge already logs.
  */
+/**
+ * The registry refused to re-key a chat's socket: a sub-agent's reply is still owed on
+ * it (an interaction pending, or in its recovery grace). THE TURN WAS NEVER SENT —
+ * thrown before any gateway RPC. Chat id only.
+ */
+export class SubAgentReplyPendingError extends Error {
+  constructor(readonly chatId: string) {
+    super(`send withheld: a sub-agent reply is still owed on chat ${chatId}'s socket`);
+    this.name = "SubAgentReplyPendingError";
+  }
+}
+
 export class TalkCallActiveError extends Error {
   constructor(readonly chatId: string) {
     super(
@@ -1760,18 +1805,29 @@ export class SessionRegistry {
       return existing;
     }
     // Only the widget wish changed: that is a preference, not an identity. It must
-    // never cost a live voice call (the gateway ends it with the socket) nor a turn
-    // still streaming on this socket — the socket is kept and the switch applies on
-    // the first send that finds it idle.
-    if (
-      existing &&
-      !existing.connection.isClosed &&
-      sameIdentity(existing) &&
-      (existing.holdsVoiceCall(this.clock()) || existing.runManager.turnActive)
-    ) {
+    // never cost a live voice call (the gateway ends it with the socket) nor any work
+    // the socket still carries — a turn, a `chat.send` awaiting its ACK, a stashed
+    // delivery, a sub-agent interaction (busyReason; codex pass 10: a send in its ACK
+    // window was closed under the gateway that had accepted it). The socket is kept
+    // and the switch applies on the first acquire that finds it idle.
+    const busy =
+      existing && !existing.connection.isClosed && sameIdentity(existing)
+        ? existing.busyReason(this.clock())
+        : null;
+    if (existing && busy !== null) {
+      const why = busy;
       console.log(
-        `[session] chat ${chatId}: widget switch deferred (${existing.holdsVoiceCall(this.clock()) ? "voice call live" : "turn in progress"}) — the socket keeps its capabilities until it is idle`,
+        `[session] chat ${chatId}: widget switch deferred (${why}) — the socket keeps its capabilities until it is idle`,
       );
+      // The case that costs the person something: widgets are ON for the
+      // conversation and this turn runs on a socket that never declared them — the
+      // agent gets no show_widget. Only a wish CHANGED mid-call can lead here now
+      // (every socket-opening route carries the wish), so it is named on its own.
+      if (routing.inlineWidgets === true && !existing.widgetsWanted) {
+        console.warn(
+          `[widgets] chat ${chatId}: inline widgets unavailable for this turn (${why}) — the socket was opened without them; they apply once it is idle`,
+        );
+      }
       existing.lastActivityAt = this.clock();
       return existing;
     }
@@ -1795,6 +1851,16 @@ export class SessionRegistry {
         if (existing.holdsVoiceCall(this.clock())) {
           throw new TalkCallActiveError(chatId);
         }
+        // …and the same REFUSAL, for the same reason, while a sub-agent's reply is
+        // still owed on this socket: the child's run streams to the socket that sent
+        // the interaction (its `tool` stream reaches that socket only), so closing it
+        // loses the reply — including one the gateway is still RECOVERING after a
+        // provisional error (codex pass 13: Alice's child recovering, a call or a
+        // turn on Bob re-keyed the socket). Refused, not deferred, exactly like a live
+        // call: a re-key cannot be half-applied.
+        if (existing.subAgentReplyPending(this.clock())) {
+          throw new SubAgentReplyPendingError(chatId);
+        }
         existing.close();
       }
       this.sessions.delete(chatId);
@@ -1805,7 +1871,10 @@ export class SessionRegistry {
       // otherwise wait for it to settle, then recurse so the re-key is applied.
       return pending.then((s) => (matches(s) ? s : this.acquire(routing)));
     }
-    const promise = this.create(chatId, sessionKey, routing).finally(() => {
+    // What the chat's previous socket was opened for: a route that names no wish
+    // creates the new one with the same (never silently off when it was on).
+    const inheritedWish = existing?.widgetsWanted;
+    const promise = this.create(chatId, sessionKey, routing, inheritedWish).finally(() => {
       this.inflight.delete(chatId);
     });
     this.inflight.set(chatId, promise);
@@ -1816,6 +1885,7 @@ export class SessionRegistry {
     chatId: string,
     sessionKey: string,
     routing: SessionRouting,
+    inheritedWish?: boolean,
   ): Promise<Session> {
     // Pick the bundle for THIS turn's routed instance (selects the gateway + creds +
     // writer + outbound scan). The server's membership guard ran first, so the bundle
@@ -1845,7 +1915,10 @@ export class SessionRegistry {
     // version is one Atrium renders them for — the gateway then offers `show_widget`
     // to the agent (upstream SHOW_WIDGET_REQUIRED_CLIENT_CAPS). Same post-handshake
     // judgement as approvals, same fail-closed end.
-    const widgetsWanted = routing.inlineWidgets === true;
+    // THE WISH, most specific first: the turn's own (send, talk mint), then the one
+    // a session operation carries for creation, then the chat's previous socket's.
+    const widgetsWanted =
+      routing.inlineWidgets ?? routing.widgetsAtCreate ?? inheritedWish ?? false;
     const approvalCaps = (version: string | null): string[] => [
       ...(openClawAgentRequestsEnabled(version) ? ["approvals"] : []),
       ...(widgetsWanted && openClawInlineWidgetsEnabled(version) ? [INLINE_WIDGETS_CAP] : []),
@@ -1887,6 +1960,13 @@ export class SessionRegistry {
       connection = await connectConversation(declared);
     }
     connection.onClosed(holdGatewayVersion(instanceName, connection.gatewayVersion));
+    // WHAT THIS SOCKET DECLARED, and the wish behind it: the one fact a report of
+    // "the agent had no show_widget" needs, and that nothing recorded — prod 0.91.0
+    // (a Talk mint opening the socket without inline-widgets) had to be inferred from
+    // which route opened it. Ids and capability names only.
+    console.log(
+      `[session] chat ${chatId}: socket opened (gateway ${connection.gatewayVersion ?? "?"}, caps: ${declared.join(",") || "none"}; widgets ${widgetsWanted ? "wanted" : "not wanted"})`,
+    );
     // SUBSCRIBE to session events (W2 / G-09). `session.operation` is the
     // gateway's own account of a compaction — it carries the CAUSE (`overflow` vs
     // a threshold vs `manual`), which Atrium could only infer until now, and it is

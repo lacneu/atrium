@@ -1,5 +1,76 @@
 # Changelog
 
+## [0.91.1] — Widgets locked to their own frame, agent access revoked at once, oversized messages refused cleanly
+
+Corrective release. No breaking changes. Deploy the bridge, Convex and the frontend together.
+
+**A message too large for the gateway is refused with a clear reason.** A file at the size
+limit together with a long pasted text could exceed what the gateway accepts in one request, and
+the gateway then closed the connection, so the turn failed for no stated reason. Atrium now
+measures every request before sending it — a turn, a participant's message, a message to a
+sub-agent. If conversation history was added, it is dropped first. If the message and its files are
+still too large, nothing is sent and the card (or the sub-agent panel) says so: shorten the text, or
+send fewer or smaller files.
+
+**Widgets can no longer reach other addresses through media or navigation.** A widget could start an
+audio or video download from any HTTPS address, or send its own frame to another address, and put
+data it had read into that address. Widgets now play only media they carry themselves, and Atrium no
+longer lets a widget frame leave its page, in both isolation modes. Images, scripts, styles and fonts
+still load from the same public libraries as before — a widget can still put text in those requests;
+docs/WIDGETS.md says exactly what remains reachable.
+
+**Participants in a shared conversation get widgets too.** When a participant speaks under their own
+name, the agent can now answer them with a widget, as it does for the conversation's owner — and
+the widget is kept even if the conversation's widget setting changed during a voice call.
+
+**Widgets keep working during a voice call.** Starting a voice call in a conversation that had
+not sent anything yet in this session opened the conversation's connection without widgets. Every
+message typed during the call then ran without them, and the agent pinned a board to the gateway's
+own dashboard instead, which Atrium cannot show. The call, and every other operation that can open
+that connection (session settings, reset, compaction, knowledge and permission choices, messages
+to a sub-agent), now opens it with the conversation's widget setting. If the setting is changed
+during a call, the change still waits for the call to end, and the bridge log now says when a
+message ran without widgets for that reason. A message sent at the very moment a call starts, or
+while a sub-agent is still answering a question, is no longer cut off by that change.
+
+**A widget shown by a sub-agent is announced in its panel.** When a sub-agent answers a message
+sent from its panel (Interact) with a widget, the panel — which shows text only — now displays the
+answer's text with a note that a widget was shown, instead of raw code or nothing. A message to a
+sub-agent that could not be sent no longer leaves the conversation waiting for its reply. After a
+sub-agent's answer fails with an error it may still recover from, a new message to it waits up to
+two minutes (the panel says to try again in a moment), so the recovered answer is not lost. For
+the same reason, a voice call or a message to another agent waits while a sub-agent is still
+answering: the message card says to send again once it has answered.
+
+**A widget at the end of a very long answer opens.** In an answer with many steps, a widget could
+show as unavailable. Widgets already shown are fixed automatically in the background.
+
+**Knowledge settings follow the owner's current access.** A conversation could still show — and
+change — the knowledge sources of an agent its owner no longer has access to, for example after
+the agent was moved to another group. It now shows nothing for such an agent, like the rest of the
+conversation.
+
+**Removing agents no longer stalls on large groups or many users.** Clearing the members' settings
+for an agent removed from a group — one agent or hundreds at once — now happens in small steps in the
+background, and so does removing an agent that many people or group members had access to. Deleting
+an instance used by a large group completes. Adding an agent back to a group waits a few seconds until
+its cleanup is done. A change that names thousands of agents is recorded in the audit log in full,
+over several entries.
+
+**Removing an agent takes effect at once, for everyone.** While its former access was still being
+cleared in the background, some users and group members could keep using the removed agent, and an
+agent rediscovered and enabled during that time took the old access back with it — including in the
+conversations it had been added to, where participants could still address it. Removal now revokes
+all of it immediately. Giving the agent to someone again, or adding it back to a conversation, waits
+a few seconds until the clearing is done (the message says so): before, such an assignment could look
+successful and then silently disappear.
+
+**The audit log says which agents changed.** Restricting a group member's agents, or changing their
+default agent, now records which agents were added or removed and the default before and after.
+
+**Deleting an instance also removes its widgets' registrations**, so an instance re-created under
+the same name starts clean.
+
 ## [0.91.0] — Agents can show interactive widgets in their answers
 
 Feature release for OpenClaw instances (gateway 2026.9.6 or later). No breaking changes; operators

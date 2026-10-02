@@ -22,7 +22,19 @@ import { resolveChatAccess } from "./lib/chatAccess";
 import { getActor, requireActive, requireAdmin } from "./lib/access";
 import { recordAudit } from "./lib/audit";
 import { agentClaimEpoch, isReserved } from "./lib/agentClaim";
-import { clearMemberDefaults, unshareAgentFromMembers } from "./lib/groupMembers";
+import {
+  assertNoPendingPurge,
+  liveAccessRows,
+  newPurgeReader,
+  recordPurge,
+  settlePurge,
+  type PurgeReader,
+} from "./lib/agentPurge";
+import {
+  assertNoPendingMemberCleanup,
+  scheduleMemberCleanup,
+  unshareAgentFromMembers,
+} from "./lib/groupMembers";
 import { resolvePollTargets } from "./lib/bridgeRouting";
 import { resolveTargetForTurn } from "./routing";
 import { chatAgentRows } from "./chatAgents";
@@ -792,6 +804,8 @@ export const setAgentReservation = mutation({
       return;
     }
     if ((await ctx.db.get(groupId)) === null) throw new Error("Not found: group");
+    // Reserving shares it: never onto an old share the purge sweep will delete.
+    await assertNoPendingPurge(ctx, instanceName, agentId);
     // Reserving SHARES the agent with the group: the same gate as every share path
     // (discovered + present + enabled under the current enforcement mode).
     const strict = await agentEnablementStrict(ctx);
@@ -836,6 +850,7 @@ export const setAgentReservation = mutation({
       )
       .unique();
     if (shared === null) {
+      await assertNoPendingMemberCleanup(ctx, groupId, instanceName, agentId);
       await ctx.db.insert("groupAgents", {
         groupId,
         instanceName,
@@ -928,8 +943,6 @@ export const setAgentTypes = mutation({
   },
 });
 
-const AGENT_CASCADE_BATCH = 500;
-
 /** Admin: PERMANENTLY remove a now-ABSENT agent (gateway no longer reports it)
  *  from an instance's list, CASCADING to every group's and user's selection of it.
  *  Only a gateway-absent agent can be removed — a still-present one would just be
@@ -969,6 +982,10 @@ async function sweepRoomDelegationsBatch(
       agentId,
       cutoff,
     });
+  } else {
+    // The purge marker covers these rows too (lib/agentPurge): it goes once neither
+    // chain has an older row left.
+    await settlePurge(ctx, instanceName, agentId);
   }
 }
 
@@ -976,6 +993,101 @@ export const sweepRoomDelegations = internalMutation({
   args: { instanceName: v.string(), agentId: v.string(), cutoff: v.number() },
   handler: async (ctx, { instanceName, agentId, cutoff }) =>
     sweepRoomDelegationsBatch(ctx, instanceName, agentId, cutoff),
+});
+
+/** Rows of each kind one access-sweep batch removes (each grant may cost one
+ *  re-election read; each share one enqueued member cleanup). */
+export const AGENT_ACCESS_BATCH = 100;
+
+type AgentAccessSweep = {
+  instanceName: string;
+  agentId: string;
+  /** Each table's generation boundary (see removeInstanceAgent); null = nothing to do. */
+  grantsCutoff: number | null;
+  sharesCutoff: number | null;
+  allowancesCutoff: number | null;
+};
+
+/**
+ * ONE bounded batch of a purged agent's access rows — at most AGENT_ACCESS_BATCH each of
+ * user grants, group shares and per-member allowances, all at or below their cutoff —
+ * then the continuation is scheduled if any kind may have more. Shares hand their
+ * members' defaults and allowances to the durable member cleanup (enqueue only).
+ */
+async function sweepAgentAccessBatch(ctx: MutationCtx, sweep: AgentAccessSweep): Promise<void> {
+  const { instanceName, agentId } = sweep;
+  let more = false;
+  if (sweep.grantsCutoff !== null) {
+    const cutoff = sweep.grantsCutoff;
+    const grants = await ctx.db
+      .query("userAgents")
+      .withIndex("by_instance_agent", (q) =>
+        q.eq("instanceName", instanceName).eq("agentId", agentId).lte("_creationTime", cutoff),
+      )
+      .take(AGENT_ACCESS_BATCH);
+    for (const r of grants) {
+      await ctx.db.delete(r._id);
+      // "Exactly one default": the grant just deleted WAS the user's default, so no
+      // other is — the first remaining one becomes it (one indexed read).
+      if (r.isDefault === true) {
+        const survivor = await ctx.db
+          .query("userAgents")
+          .withIndex("by_user", (q) => q.eq("userId", r.userId))
+          .first();
+        if (survivor !== null && survivor.isDefault !== true) {
+          await ctx.db.patch(survivor._id, { isDefault: true });
+        }
+      }
+    }
+    if (grants.length === AGENT_ACCESS_BATCH) more = true;
+  }
+  if (sweep.sharesCutoff !== null) {
+    const cutoff = sweep.sharesCutoff;
+    const shares = await ctx.db
+      .query("groupAgents")
+      .withIndex("by_instance_agent", (q) =>
+        q.eq("instanceName", instanceName).eq("agentId", agentId).lte("_creationTime", cutoff),
+      )
+      .take(AGENT_ACCESS_BATCH);
+    for (const r of shares) {
+      await ctx.db.delete(r._id);
+      // A member default can only point at an agent its group shares, so the groups
+      // losing it are exactly the ones whose members may name it.
+      await scheduleMemberCleanup(ctx, r.groupId, instanceName, agentId);
+    }
+    if (shares.length === AGENT_ACCESS_BATCH) more = true;
+  }
+  if (sweep.allowancesCutoff !== null) {
+    // Every per-member allowance naming it (a re-discovered agent under the same id
+    // must not come back into a restricted member's share by itself).
+    const cutoff = sweep.allowancesCutoff;
+    const allowances = await ctx.db
+      .query("groupMemberAgents")
+      .withIndex("by_instance_agent", (q) =>
+        q.eq("instanceName", instanceName).eq("agentId", agentId).lte("_creationTime", cutoff),
+      )
+      .take(AGENT_ACCESS_BATCH);
+    for (const r of allowances) await ctx.db.delete(r._id);
+    if (allowances.length === AGENT_ACCESS_BATCH) more = true;
+  }
+  if (more) {
+    await ctx.scheduler.runAfter(0, internal.agents.sweepAgentAccess, sweep);
+  } else {
+    // This chain is done; the marker goes once no older row is left (another
+    // purge's chain may still be running under a later boundary).
+    await settlePurge(ctx, instanceName, agentId);
+  }
+}
+
+export const sweepAgentAccess = internalMutation({
+  args: {
+    instanceName: v.string(),
+    agentId: v.string(),
+    grantsCutoff: v.union(v.number(), v.null()),
+    sharesCutoff: v.union(v.number(), v.null()),
+    allowancesCutoff: v.union(v.number(), v.null()),
+  },
+  handler: async (ctx, sweep) => sweepAgentAccessBatch(ctx, sweep),
 });
 
 export const removeInstanceAgent = mutation({
@@ -1025,76 +1137,61 @@ export const removeInstanceAgent = mutation({
       }
     }
 
-    // Cascade — every user's grant of this agent (paginated via by_instance_agent).
-    // Maintain the per-user "exactly one default" invariant (like removeAgent /
-    // deleteInstance): if the purged grant was a user's DIRECT default and they still
-    // have other agents, re-elect the first remaining as their default — else the user
-    // would be left with agents but no default (UI/effective-resolution would drift to
-    // an implicit pick or a group default instead of a real direct default).
-    for (;;) {
-      const batch = await ctx.db
-        .query("userAgents")
-        .withIndex("by_instance_agent", (q) =>
-          q.eq("instanceName", instanceName).eq("agentId", agentId),
-        )
-        .take(AGENT_CASCADE_BATCH);
-      for (const r of batch) {
-        await ctx.db.delete(r._id);
-        if (r.isDefault === true) {
-          const remaining = await ctx.db
-            .query("userAgents")
-            .withIndex("by_user", (q) => q.eq("userId", r.userId))
-            .collect();
-          if (remaining.length > 0 && !remaining.some((x) => x.isDefault === true)) {
-            await ctx.db.patch(remaining[0]._id, { isDefault: true });
-          }
-        }
-      }
-      if (batch.length < AGENT_CASCADE_BATCH) break;
+    // Cascade — every user's grant of this agent, every group's share of it (each
+    // group's members' defaults and allowances through the durable member cleanup),
+    // and every per-member allowance naming it. BOUNDED: one batch of each here, the
+    // rest through the scheduled continuation (sweepAgentAccess) — an agent granted
+    // to thousands of users or allowed to thousands of members used to be swept in one
+    // transaction, and the whole purge rolled back (codex pass 6).
+    //
+    // THE CUTOFFS are each table's newest row's `_creationTime`, read in this
+    // transaction: every row that exists now is at or below it, and any made later
+    // (for a re-discovered agent under the same id) strictly above — the same exact
+    // generation boundary as the room sweep below.
+    const newestOf = async (
+      table: "userAgents" | "groupAgents" | "groupMemberAgents" | "chatAgents",
+    ) =>
+      (
+        await ctx.db
+          .query(table)
+          .withIndex("by_instance_agent", (q) =>
+            q.eq("instanceName", instanceName).eq("agentId", agentId),
+          )
+          .order("desc")
+          .first()
+      )?._creationTime ?? null;
+    const cutoffs = {
+      grantsCutoff: await newestOf("userAgents"),
+      sharesCutoff: await newestOf("groupAgents"),
+      allowancesCutoff: await newestOf("groupMemberAgents"),
+      // Room delegations: a participant addresses a room's agent on the owner's
+      // delegation, so an old row must not outlive the purge either (codex pass 8).
+      roomsCutoff: await newestOf("chatAgents"),
+    };
+    // The purge takes effect HERE, not when the last batch runs: the marker makes
+    // every row at or below these boundaries grant nothing from this transaction
+    // on — even if the agent is re-discovered and enabled before the sweep ends —
+    // and refuses new access for it until the old rows are gone (lib/agentPurge,
+    // codex pass 7).
+    if (
+      cutoffs.grantsCutoff !== null ||
+      cutoffs.sharesCutoff !== null ||
+      cutoffs.allowancesCutoff !== null ||
+      cutoffs.roomsCutoff !== null
+    ) {
+      await recordPurge(ctx, instanceName, agentId, cutoffs);
     }
-    // Cascade — every group's share of this agent (per-instance set is small).
-    const groupRows = await ctx.db
-      .query("groupAgents")
-      .withIndex("by_instance_agent", (q) =>
-        q.eq("instanceName", instanceName).eq("agentId", agentId),
-      )
-      .collect();
-    for (const r of groupRows) {
-      await ctx.db.delete(r._id);
-      // A member default can only point at an agent its group shares, so the
-      // groups losing it are exactly the ones whose members may name it.
-      await clearMemberDefaults(ctx, r.groupId, instanceName, agentId);
-    }
-    // …and every per-member allowance naming it (a re-discovered agent under the
-    // same id must not come back into a restricted member's share by itself).
-    for (;;) {
-      const batch = await ctx.db
-        .query("groupMemberAgents")
-        .withIndex("by_instance_agent", (q) =>
-          q.eq("instanceName", instanceName).eq("agentId", agentId),
-        )
-        .take(AGENT_CASCADE_BATCH);
-      for (const r of batch) await ctx.db.delete(r._id);
-      if (batch.length < AGENT_CASCADE_BATCH) break;
-    }
+    const { roomsCutoff, ...accessCutoffs } = cutoffs;
+    await sweepAgentAccessBatch(ctx, { instanceName, agentId, ...accessCutoffs });
     // …and every room's delegation to it: re-discovered under the same id, it must
     // not come back into rooms (the room limit counts these rows, too). ONE batch
     // per transaction — an agent shared in many rooms would otherwise exceed the
-    // mutation's budget and make it impossible to remove at all.
-    //
-    // THE CUTOFF IS THE NEWEST ROW'S `_creationTime`, read in this transaction —
-    // an exact generation boundary: every delegation that exists now is at or
-    // below it, and any made later (to a re-discovered agent) is strictly above.
-    // A wall-clock cutoff could tie with a re-add in the same millisecond.
-    const newest = await ctx.db
-      .query("chatAgents")
-      .withIndex("by_instance_agent", (q) =>
-        q.eq("instanceName", instanceName).eq("agentId", agentId),
-      )
-      .order("desc")
-      .first();
-    if (newest !== null) {
-      await sweepRoomDelegationsBatch(ctx, instanceName, agentId, newest._creationTime);
+    // mutation's budget and make it impossible to remove at all. THE CUTOFF is the
+    // newest row's `_creationTime` read above (an exact generation boundary; a
+    // wall-clock one could tie with a re-add in the same millisecond); until the
+    // last batch, the marker keeps the rows left inert.
+    if (roomsCutoff !== null) {
+      await sweepRoomDelegationsBatch(ctx, instanceName, agentId, roomsCutoff);
     }
     // Re-elect / clear the instance default if it pointed at the removed agent —
     // to an ELIGIBLE (present + enabled) agent, never an absent one (or clear).
@@ -1185,6 +1282,7 @@ type PoolEntry = {
 async function resolveGroupPool(
   ctx: QueryCtx | MutationCtx,
   userId: Id<"users">,
+  reader: PurgeReader = newPurgeReader(),
 ): Promise<{
   existingGroups: number;
   pool: PoolEntry[];
@@ -1210,12 +1308,18 @@ async function resolveGroupPool(
     // THIS member's share of THIS group: the whole group, or — restricted by the
     // group's manager — only the allowed subset. Scoped per group, so a member of
     // several groups keeps every other group's agents whole.
-    const whole = await ctx.db
-      .query("groupAgents")
-      .withIndex("by_group", (q) => q.eq("groupId", groupId))
-      .collect();
+    // A share a pending purge revoked grants nothing (lib/agentPurge).
+    const whole = await liveAccessRows(
+      ctx,
+      "shares",
+      await ctx.db
+        .query("groupAgents")
+        .withIndex("by_group", (q) => q.eq("groupId", groupId))
+        .collect(),
+      reader,
+    );
     for (const ga of whole) wholeKeys.add(grantKey(ga.instanceName, ga.agentId));
-    const shared = await shareOfWhole(ctx, membership, whole);
+    const shared = await shareOfWhole(ctx, membership, whole, reader);
     shared.sort((a, b) =>
       a.agentId < b.agentId ? -1 : a.agentId > b.agentId ? 1 : 0,
     );
@@ -1271,11 +1375,9 @@ export async function adminNarrowingOf(
   ctx: QueryCtx | MutationCtx,
   userId: Id<"users">,
 ): Promise<{ narrowed: boolean; directKeys: Set<string> }> {
-  const direct = await ctx.db
-    .query("userAgents")
-    .withIndex("by_user", (q) => q.eq("userId", userId))
-    .collect();
-  const { existingGroups, wholeKeys } = await resolveGroupPool(ctx, userId);
+  const reader = newPurgeReader();
+  const direct = await liveDirectGrants(ctx, userId, reader);
+  const { existingGroups, wholeKeys } = await resolveGroupPool(ctx, userId, reader);
   return {
     narrowed: existingGroups > 0 && directGrantsNarrow(direct, wholeKeys),
     directKeys: new Set(direct.map((r) => grantKey(r.instanceName, r.agentId))),
@@ -1316,10 +1418,8 @@ async function narrowingBeforeAfter(
   userId: Id<"users">,
   change: ShareShrink & { shared?: ShareShrink["unshared"] },
 ): Promise<{ before: boolean; after: boolean } | null> {
-  const direct = await ctx.db
-    .query("userAgents")
-    .withIndex("by_user", (q) => q.eq("userId", userId))
-    .collect();
+  const reader = newPurgeReader();
+  const direct = await liveDirectGrants(ctx, userId, reader);
   if (direct.length === 0) return null;
   const pairKey = (g: Id<"groups">, i: string, a: string) =>
     `${g}|${grantKey(i, a)}`;
@@ -1334,10 +1434,15 @@ async function narrowingBeforeAfter(
   const after = new Set<string>();
   for (const m of memberships) {
     if ((await ctx.db.get(m.groupId)) === null) continue; // dangling
-    const rows = await ctx.db
-      .query("groupAgents")
-      .withIndex("by_group", (q) => q.eq("groupId", m.groupId))
-      .collect();
+    const rows = await liveAccessRows(
+      ctx,
+      "shares",
+      await ctx.db
+        .query("groupAgents")
+        .withIndex("by_group", (q) => q.eq("groupId", m.groupId))
+        .collect(),
+      reader,
+    );
     for (const ga of rows) {
       const key = grantKey(ga.instanceName, ga.agentId);
       before.add(key);
@@ -1451,20 +1556,53 @@ export async function memberShareOfGroup(
   ctx: QueryCtx | MutationCtx,
   membership: Doc<"groupMembers">,
 ): Promise<Doc<"groupAgents">[]> {
-  const whole = await ctx.db
-    .query("groupAgents")
-    .withIndex("by_group", (q) => q.eq("groupId", membership.groupId))
-    .collect();
-  return await shareOfWhole(ctx, membership, whole);
+  const reader = newPurgeReader();
+  const whole = await liveGroupShares(ctx, membership.groupId, reader);
+  return await shareOfWhole(ctx, membership, whole, reader);
+}
+
+/** A group's shares, without those a pending agent purge revoked (lib/agentPurge). */
+export async function liveGroupShares(
+  ctx: QueryCtx | MutationCtx,
+  groupId: Id<"groups">,
+  reader: PurgeReader = newPurgeReader(),
+): Promise<Doc<"groupAgents">[]> {
+  return await liveAccessRows(
+    ctx,
+    "shares",
+    await ctx.db
+      .query("groupAgents")
+      .withIndex("by_group", (q) => q.eq("groupId", groupId))
+      .collect(),
+    reader,
+  );
+}
+
+/** A user's direct grants, without those a pending agent purge revoked. */
+export async function liveDirectGrants(
+  ctx: QueryCtx | MutationCtx,
+  userId: Id<"users">,
+  reader: PurgeReader = newPurgeReader(),
+): Promise<Doc<"userAgents">[]> {
+  return await liveAccessRows(
+    ctx,
+    "grants",
+    await ctx.db
+      .query("userAgents")
+      .withIndex("by_user", (q) => q.eq("userId", userId))
+      .collect(),
+    reader,
+  );
 }
 
 async function shareOfWhole(
   ctx: QueryCtx | MutationCtx,
   membership: Doc<"groupMembers">,
   whole: Doc<"groupAgents">[],
+  reader: PurgeReader = newPurgeReader(),
 ): Promise<Doc<"groupAgents">[]> {
   if (membership.agentsRestricted !== true) return whole;
-  const allowed = await memberAllowedKeys(ctx, membership);
+  const allowed = await memberAllowedKeys(ctx, membership, reader);
   return whole.filter((ga) => allowed.has(grantKey(ga.instanceName, ga.agentId)));
 }
 
@@ -1472,13 +1610,20 @@ async function shareOfWhole(
 async function memberAllowedKeys(
   ctx: QueryCtx | MutationCtx,
   membership: Doc<"groupMembers">,
+  reader: PurgeReader = newPurgeReader(),
 ): Promise<Set<string>> {
-  const rows = await ctx.db
-    .query("groupMemberAgents")
-    .withIndex("by_group_user", (q) =>
-      q.eq("groupId", membership.groupId).eq("userId", membership.userId),
-    )
-    .collect();
+  // An allowance a pending purge revoked allows nothing (lib/agentPurge).
+  const rows = await liveAccessRows(
+    ctx,
+    "allowances",
+    await ctx.db
+      .query("groupMemberAgents")
+      .withIndex("by_group_user", (q) =>
+        q.eq("groupId", membership.groupId).eq("userId", membership.userId),
+      )
+      .collect(),
+    reader,
+  );
   return new Set(rows.map((r) => grantKey(r.instanceName, r.agentId)));
 }
 
@@ -1736,10 +1881,10 @@ async function getEffectiveGrantsWithPool(
   presentCache?: PresentAgentsCache,
 ): Promise<{ grants: EffectiveGrant[]; presentDocs: Doc<"agents">[] | null }> {
   const strict = await agentEnablementStrict(ctx);
-  const direct = await ctx.db
-    .query("userAgents")
-    .withIndex("by_user", (q) => q.eq("userId", userId))
-    .collect();
+  // Rows a pending agent purge revoked are not access, from the purge's own
+  // transaction on (lib/agentPurge) — in every read below.
+  const reader = newPurgeReader();
+  const direct = await liveDirectGrants(ctx, userId, reader);
   // CHEAP first: only the group regime (no full agents scan). A no-group user with
   // direct grants is resolved entirely from `direct` below, so the all-pool scan is
   // deferred -- it runs ONLY for a groupless user with NO direct restriction.
@@ -1747,7 +1892,7 @@ async function getEffectiveGrantsWithPool(
     existingGroups,
     pool: groupPool,
     wholeKeys,
-  } = await resolveGroupPool(ctx, userId);
+  } = await resolveGroupPool(ctx, userId, reader);
   const inGroup = existingGroups > 0;
 
   // RESTRICTION = the user's direct grants. For an IN-GROUP user the group is the
@@ -1905,15 +2050,13 @@ export async function userMayAccessInstance(
       .first();
     return agentUsable(agent, strict);
   };
-  const direct = await ctx.db
-    .query("userAgents")
-    .withIndex("by_user", (q) => q.eq("userId", userId))
-    .collect();
+  const reader = newPurgeReader();
+  const direct = await liveDirectGrants(ctx, userId, reader);
   const {
     existingGroups,
     pool: groupPool,
     wholeKeys,
-  } = await resolveGroupPool(ctx, userId);
+  } = await resolveGroupPool(ctx, userId, reader);
   const inGroup = existingGroups > 0;
   // RESTRICTION mode mirrors getEffectiveGrantsWithPool: the direct grants
   // (narrowed to the group pool for an in-group user) — when ANY survive, they
@@ -2059,12 +2202,11 @@ export async function effectiveAgentsForUsers(
   // Per (user, group): the allowed keys of a RESTRICTED membership (absent = the
   // member receives the whole group) — mirrors memberShareOfGroup.
   const allowedByMembership = new Map<string, Set<string>>();
+  // Mirrors the purge filter of getEffectiveGrantsWithPool (lib/agentPurge).
+  const reader = newPurgeReader();
   await Promise.all(
     userIds.map(async (userId) => {
-      const direct = await ctx.db
-        .query("userAgents")
-        .withIndex("by_user", (q) => q.eq("userId", userId))
-        .collect();
+      const direct = await liveDirectGrants(ctx, userId, reader);
       const keys: string[] = [];
       for (const ua of direct) {
         const key = grantKey(ua.instanceName, ua.agentId);
@@ -2084,7 +2226,7 @@ export async function effectiveAgentsForUsers(
         if (m.agentsRestricted !== true) continue;
         allowedByMembership.set(
           `${userId}:${m.groupId}`,
-          await memberAllowedKeys(ctx, m),
+          await memberAllowedKeys(ctx, m, reader),
         );
       }
     }),
@@ -2102,10 +2244,7 @@ export async function effectiveAgentsForUsers(
       const group = await ctx.db.get(groupId);
       if (group === null) return; // dangling membership -> group not existing
       existingGroupIds.add(groupId as string);
-      const shared = await ctx.db
-        .query("groupAgents")
-        .withIndex("by_group", (q) => q.eq("groupId", groupId))
-        .collect();
+      const shared = await liveGroupShares(ctx, groupId, reader);
       const keys: string[] = [];
       for (const ga of shared) {
         const key = grantKey(ga.instanceName, ga.agentId);
@@ -2757,11 +2896,9 @@ export const listUserAgents = query({
     // exactly the rows those mutations act on -- read STRAIGHT from userAgents, NOT
     // via the effective cascade (which may narrow a direct grant OUT of the
     // effective set for an in-group user; the admin must still be able to manage
-    // it). Each keeps its own isDefault (the star). Enriched for display.
-    const direct = await ctx.db
-      .query("userAgents")
-      .withIndex("by_user", (q) => q.eq("userId", profile.userId))
-      .collect();
+    // it). Each keeps its own isDefault (the star). Enriched for display. A grant a
+    // pending purge revoked is not shown: it is no longer access (lib/agentPurge).
+    const direct = await liveDirectGrants(ctx, profile.userId);
     const cx = await loadAgentContext(ctx);
     const out: EnrichedUserAgent[] = [];
     for (const r of direct) {
@@ -2856,6 +2993,9 @@ export const assignAgent = mutation({
         `Agent not assignable: ${instanceName}/${agentId} is not a discovered, present, enabled agent`,
       );
     }
+    // Never on, nor mistaken for, an old grant the purge sweep is about to delete:
+    // "already assigned" would be a confirmed assignment silently lost (codex pass 7).
+    await assertNoPendingPurge(ctx, instanceName, agentId);
     const userId = await userIdOfProfile(ctx, profileId);
     // RANGE READ over by_user (H3) — also serves as the dedupe + first-agent check.
     const existing = await ctx.db
@@ -2933,6 +3073,7 @@ export const setDefaultAgent = mutation({
       (r) => r.instanceName === instanceName && r.agentId === agentId,
     );
     if (!target) throw new Error("Not found: userAgent (assign it first)");
+    await assertNoPendingPurge(ctx, instanceName, agentId);
     // Defense in depth (the UI already greys the star): a present-but-disabled
     // agent must never be promoted to default — it is not routable, so a filled
     // star on it is a dead end. A stale client or a direct admin API call is

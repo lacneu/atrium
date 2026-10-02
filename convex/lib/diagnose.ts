@@ -196,6 +196,10 @@ export function actionForErrorCode(code: string | null): string {
     // remediations because the operator looks in three different places.
     case "attachment_name_too_long":
       return "The file name is too long once the bridge composes its on-disk name (the turn id, an index and the name itself must fit one filesystem leaf, 255 bytes). Nothing is wrong with the instance's volumes. The reader fixes this themselves: rename the file shorter and send again.";
+    case "message_too_large":
+      return "The bridge refused the send: the message and its inline files make a chat.send frame larger than the gateway's maxPayload, even with no conversation history added. Sent, the gateway would have closed the connection. Nothing is wrong with the link or the instance. The reader shortens the text or sends fewer or smaller files.";
+    case "subagent_reply_pending":
+      return "The bridge refused to re-key the conversation's socket (another agent or conversation key) because a sub-agent's reply is still owed on it — pending, or in the two-minute grace after an error the gateway may still recover. Re-keying would lose that reply. The turn was never sent; nothing is wrong with the link. The reader sends again once the sub-agent has answered.";
     case "attachment_path_refused":
       return "The bridge refused the target path for this instance's inbound directory. That covers the whole path contract, not one fault: a path outside the allowed root, a staging directory equal to or nested inside the published one, the two on different filesystems, a non-canonical path or a symlink, a wrong owner, or group/world-writable permissions — and the bridge log records the class, not which rule gave way. The turn was never sent, and this refusal alone proves nothing about the link. Check that pair of directories on the bridge host — distinct, same filesystem, canonical, owned by the bridge user, not group/world-writable — and that they match what the instance is configured with. A retry fails identically until it is fixed.";
     case "attachment_staging_failed":
@@ -253,6 +257,8 @@ const ATTACHMENT_CODES = new Set([
   "attachment_name_too_long",
   "attachment_staging_failed",
   "attachment_cleanup_unconfirmed",
+  "message_too_large",
+  "subagent_reply_pending",
 ]);
 
 /**

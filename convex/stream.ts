@@ -16,7 +16,7 @@
 // still gated per-user in messages.ts, so a user can never read another user's
 // streamed message.
 
-import { WIDGET_TITLE_MAX_CHARS, WIDGET_VIEW_ID_RE } from "./lib/widgetDescriptor";
+import { WIDGET_TITLE_MAX_CHARS, WIDGET_VIEW_ID_RE, partWidgetField } from "./lib/widgetDescriptor";
 import { conversationWantsWidgets, viewRegisteredTo, widgetInstanceFor } from "./widgets";
 import { v } from "convex/values";
 import { boundPartDepth } from "./lib/partDepth";
@@ -2737,6 +2737,7 @@ export const addPart = internalMutation({
       order,
       part,
       ...partStorageField(part),
+      ...partWidgetField(part),
       ...(announceRun !== undefined ? { announceRun } : {}),
     });
     // Paired files-row write (invariant): a file/media part gets an owner-scoped

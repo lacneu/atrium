@@ -1997,3 +1997,57 @@ describe("the turn's VERDICT is stored with the turn, not only on a trace", () =
     expect(stored ?? null).toBeNull();
   });
 });
+
+// codex pass 11: a sub-agent's interaction reply that carried a widget reaches the row
+// with its flag — the ingest names the field, so dropping it there would leave the
+// panel with a reply whose widget vanished without a word.
+describe("recordSubAgentInteractionReply carries widgetOmitted", () => {
+  test("the flag reaches the interaction row; absent stays absent", async () => {
+    const t = convexTest(schema, modules);
+    const { userId, chatId } = await seedAssistantMessage(t);
+    const ids = await t.run(async (ctx) => {
+      const mk = () =>
+        ctx.db.insert("subAgentInteractions", {
+          chatId,
+          childSessionKey: "agent:main:subagent:ix",
+          userText: "hello",
+          status: "pending" as const,
+          createdAt: 1,
+          updatedAt: 1,
+        });
+      return [await mk(), await mk()];
+    });
+    void userId;
+    const r1 = await post(t, {
+      op: "recordSubAgentInteractionReply",
+      interactionId: ids[0],
+      status: "done",
+      replyText: "Voici.",
+      widgetOmitted: true,
+    });
+    expect(r1.status).toBe(200);
+    await post(t, { op: "recordSubAgentInteractionReply", interactionId: ids[1], status: "done", replyText: "ok" });
+    const rows = await t.run(async (ctx) => [await ctx.db.get(ids[0]!), await ctx.db.get(ids[1]!)]);
+    expect(rows[0]).toMatchObject({ status: "done", replyText: "Voici.", widgetOmitted: true });
+    expect(rows[1]?.widgetOmitted).toBeUndefined();
+  });
+
+  test("a provisional error reaches the row as a recovery hold", async () => {
+    const t = convexTest(schema, modules);
+    const { chatId } = await seedAssistantMessage(t);
+    const id = await t.run((ctx) =>
+      ctx.db.insert("subAgentInteractions", {
+        chatId,
+        childSessionKey: "agent:main:subagent:ix",
+        userText: "hello",
+        status: "pending" as const,
+        createdAt: 1,
+        updatedAt: 1,
+      }),
+    );
+    await post(t, { op: "recordSubAgentInteractionReply", interactionId: id, status: "error", provisional: true });
+    const row = await t.run((ctx) => ctx.db.get(id));
+    expect(row?.status).toBe("error");
+    expect(row?.recoveringUntil ?? 0).toBeGreaterThan(Date.now());
+  });
+});

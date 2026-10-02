@@ -406,6 +406,11 @@ export const ERROR_CODE_LABEL: Record<string, () => string> = {
   attachment_path_refused: m.runstatus_error_attachment_staging,
   attachment_staging_failed: m.runstatus_error_attachment_staging,
   attachment_cleanup_unconfirmed: m.runstatus_error_attachment_staging,
+  // The bridge refused a send too large for the gateway's frame: the reader shortens
+  // the text or sends fewer or smaller files.
+  message_too_large: m.runstatus_error_message_too_large,
+  // A sub-agent's reply is still owed on the conversation's socket: send again soon.
+  subagent_reply_pending: m.runstatus_error_subagent_reply_pending,
 };
 
 // Defense-in-depth: overflow phrasings the UI recognizes CLIENT-side, so a bare
@@ -530,6 +535,8 @@ const ERROR_STRING_CODES = new Set([
   "attachment_name_too_long",
   "attachment_staging_failed",
   "attachment_cleanup_unconfirmed",
+  "message_too_large",
+  "subagent_reply_pending",
 ]);
 
 export function errorDetailView(

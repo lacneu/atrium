@@ -11,7 +11,13 @@ import { readFileSync, readdirSync, statSync } from "node:fs";
 import ts from "typescript";
 import { describe, expect, it, vi } from "vitest";
 
-import { issueChatSend, NO_CONVERSATION_CHOICE, wasWithheldBeforeSend } from "../src/providers/openclaw/chat-send.js";
+import {
+  chatSendFrameBytes,
+  issueChatSend,
+  NO_CONVERSATION_CHOICE,
+  wasWithheldBeforeSend,
+} from "../src/providers/openclaw/chat-send.js";
+import { FrameTooLargeError } from "../src/core/frame-size.js";
 
 const SRC = new URL("../src/", import.meta.url);
 
@@ -46,8 +52,9 @@ describe("one door for chat.send", () => {
       .filter((p) => chatSendLiterals(p) > 0)
       .map((p) => p.slice(p.indexOf("/src/") + 1));
     expect(offenders, "send through issueChatSend, with the gate that applies").toEqual([]);
-    // …and the door itself is found (the scan is not vacuous).
-    expect(chatSendLiterals(new URL("providers/openclaw/chat-send.ts", SRC).pathname)).toBe(1);
+    // …and the door itself is found (the scan is not vacuous): the request it issues,
+    // and the measure of the frame that request writes (`chatSendFrameBytes`).
+    expect(chatSendLiterals(new URL("providers/openclaw/chat-send.ts", SRC).pathname)).toBe(2);
   });
 
   it("the gate runs before the request and a refusal issues nothing, marked as never sent", async () => {
@@ -93,7 +100,38 @@ describe("one door for chat.send", () => {
 
   it("performSend hands its knowledge gate to the send, whichever socket carries it", () => {
     const src = readFileSync(new URL("server.ts", SRC), "utf-8");
-    expect(src).toMatch(/sendAsSpeaker\(\s*conn,\s*params,\s*body,\s*presendConfig,\s*speakers,\s*knowledgeGate,\s*\)/);
+    // The third argument is the body with the widget declaration the conversation's
+    // socket actually holds (see performSend); what this test pins is the gate.
+    expect(src).toMatch(
+      /sendAsSpeaker\(\s*conn,\s*params,[^;]*?\{ \.\.\.body, inlineWidgets: session\.runManager\.widgetsEnabled \},\s*presendConfig,\s*speakers,\s*knowledgeGate,\s*\)/,
+    );
     expect(src).toMatch(/const send = \(via: OpenClawConnection\) => issueChatSend\(via, params, 20_000, gate\);/);
+  });
+});
+
+describe("the door measures the frame against the socket that carries it", () => {
+  const params = { sessionKey: "k", message: "é".repeat(1_000), idempotencyKey: "webchat-1" };
+
+  it("over the socket's maxPayload: withheld by name, NO request issued", async () => {
+    const request = vi.fn(async () => ({ payload: {} }));
+    const err = await issueChatSend({ request, maxPayload: 1_024 }, params, 1_000, NO_CONVERSATION_CHOICE).catch(
+      (e: unknown) => e,
+    );
+    expect(err).toBeInstanceOf(FrameTooLargeError);
+    expect(wasWithheldBeforeSend(err)).toBe(true);
+    expect(request).not.toHaveBeenCalled();
+  });
+
+  it("a frame of EXACTLY the limit goes out; an unknown limit is not a refusal", async () => {
+    const exact = chatSendFrameBytes(params);
+    const request = vi.fn(async () => ({ payload: {} }));
+    await issueChatSend({ request, maxPayload: exact }, params, 1_000, NO_CONVERSATION_CHOICE);
+    await issueChatSend({ request, maxPayload: null }, params, 1_000, NO_CONVERSATION_CHOICE);
+    await issueChatSend({ request }, params, 1_000, NO_CONVERSATION_CHOICE);
+    expect(request).toHaveBeenCalledTimes(3);
+    const err = await issueChatSend({ request, maxPayload: exact - 1 }, params, 1_000, NO_CONVERSATION_CHOICE).catch(
+      (e: unknown) => e,
+    );
+    expect(err).toBeInstanceOf(FrameTooLargeError);
   });
 });

@@ -40,7 +40,10 @@ import {
 import {
   isSpeakerRefusal,
   parseSendBody,
+  defaultSpeakers,
   sendAsSpeaker,
+  speakerCaps,
+  speakerPoolKey,
   SessionVanishedBeforeSend,
   withOneRePreparation,
   type SpeakerSource,
@@ -801,7 +804,7 @@ describe("a participant's address the identity header cannot carry", () => {
       proxyConfig,
       src,
     );
-    expect(src.acquire).toHaveBeenCalledWith(proxyConfig, "jose");
+    expect(src.acquire).toHaveBeenCalledWith(proxyConfig, "jose", { inlineWidgets: false });
     expect(sends(bob)).toBe(1);
     expect(sends(owner)).toBe(0);
   });
@@ -816,7 +819,7 @@ describe("a participant's address the identity header cannot carry", () => {
       proxyConfig,
       src,
     );
-    expect(src.acquire).toHaveBeenLastCalledWith(proxyConfig, "bob@example.com");
+    expect(src.acquire).toHaveBeenLastCalledWith(proxyConfig, "bob@example.com", { inlineWidgets: false });
     await sendAsSpeaker(
       owner,
       params,
@@ -824,7 +827,7 @@ describe("a participant's address the identity header cannot carry", () => {
       proxyConfig,
       src,
     );
-    expect(src.acquire).toHaveBeenLastCalledWith(proxyConfig, "josé@example.com");
+    expect(src.acquire).toHaveBeenLastCalledWith(proxyConfig, "josé@example.com", { inlineWidgets: false });
   });
 
   it("the send body carries the key across the HTTP boundary", () => {
@@ -962,5 +965,70 @@ describe("a newer knowledge choice announced while the participant's socket open
     ).rejects.toBeInstanceOf(KnowledgePolicyNotAppliedError);
     expect(sends(owner)).toBe(0);
     clearKnowledgeGuards();
+  });
+});
+
+describe("a participant's socket declares widgets exactly when the conversation's would", () => {
+  // Upstream offers `show_widget` on a turn only to the socket that SENT it: a
+  // participant's socket without `inline-widgets` gave their turns no widgets.
+  const withVersion = (v: string | null) => Object.assign(ownerConn(), { gatewayVersion: v });
+
+  it("widgets on + a gateway that renders them: the participant's socket is asked WITH widgets", async () => {
+    const bob = fakeConn();
+    const { src } = source(bob);
+    await sendAsSpeaker(
+      withVersion("2026.9.6"),
+      params,
+      { speakerGatewayUser: "bob", chatId: "c1", inlineWidgets: true },
+      proxyConfig,
+      src,
+    );
+    expect(src.acquire).toHaveBeenCalledWith(proxyConfig, "bob", { inlineWidgets: true });
+  });
+
+  it("widgets off, or a gateway before the widget generation (or unknown): WITHOUT", async () => {
+    for (const [inlineWidgets, version] of [
+      [false, "2026.9.6"],
+      [true, "2026.9.5"],
+      [true, null],
+    ] as const) {
+      const bob = fakeConn();
+      const { src } = source(bob);
+      await sendAsSpeaker(
+        withVersion(version),
+        params,
+        { speakerGatewayUser: "bob", chatId: "c1", inlineWidgets },
+        proxyConfig,
+        src,
+      );
+      expect(src.acquire).toHaveBeenCalledWith(proxyConfig, "bob", { inlineWidgets: false });
+    }
+  });
+
+  it("the declaration is part of the socket's identity: one socket per (instance, person, declaration)", () => {
+    expect(speakerPoolKey(proxyConfig, "bob", true)).not.toBe(speakerPoolKey(proxyConfig, "bob", false));
+    expect(speakerPoolKey(proxyConfig, "bob", true)).toBe(speakerPoolKey(proxyConfig, "bob", true));
+    expect(speakerCaps(true)).toEqual(["inline-widgets"]);
+    expect(speakerCaps(false)).toEqual([]);
+  });
+
+  it("the pooled socket is opened with those caps", async () => {
+    const connect = vi
+      .spyOn(OpenClawConnection, "connect")
+      .mockImplementation(async () => fakeConn() as never);
+    const cfg = {
+      ...(proxyConfig as unknown as Record<string, unknown>),
+      instanceName: "widgets-caps-test",
+      openclawGatewayUrl: "wss://gw.test",
+      deviceIdentity: { id: "i", publicKey: "p", privateKey: "k" },
+    } as unknown as BridgeConfig;
+    const on = await defaultSpeakers.acquire(cfg, "carol", { inlineWidgets: true });
+    const off = await defaultSpeakers.acquire(cfg, "carol", { inlineWidgets: false });
+    expect(on).not.toBe(off);
+    const caps = connect.mock.calls.map((c) => c[7]);
+    expect(caps).toEqual([["inline-widgets"], []]);
+    on.close();
+    off.close();
+    connect.mockRestore();
   });
 });

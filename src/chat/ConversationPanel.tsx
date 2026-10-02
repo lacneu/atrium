@@ -82,6 +82,7 @@ import { agentRefEquals, presenceRoster } from "./perTurnAgent";
 import { dockFocus, dockOffsets, dockScales } from "./presenceDock";
 import type { SessionMetaView, SessionSettingsView } from "./sessionKnobs";
 import type { ChatRouting } from "./useConvexChatRuntime";
+import { isAgentPurgePending } from "./admin/groupManageView";
 
 import "./chatParticipants.css";
 
@@ -528,7 +529,9 @@ function AgentsTab({
         toast.error(
           raw.includes("TALK_CALL_ACTIVE")
             ? m.chat_agent_select_call_hint()
-            : m.conversation_failed(),
+            : isAgentPurgePending(err)
+              ? m.agents_error_purge_pending()
+              : m.conversation_failed(),
         );
       });
   const meta = useQuery(
@@ -552,7 +555,9 @@ function AgentsTab({
     toast.error(
       limit !== null
         ? m.conversation_agents_limit({ count: Number(limit[1]) })
-        : m.conversation_failed(),
+        : isAgentPurgePending(err)
+          ? m.agents_error_purge_pending()
+          : m.conversation_failed(),
     );
     throw err;
   };
@@ -754,7 +759,11 @@ function AgentsTab({
             instanceName: a.instanceName,
             agentId: a.agentId,
           }).catch((err: unknown) => {
-            toast.error(m.chat_agent_rebind_failed());
+            toast.error(
+              isAgentPurgePending(err)
+                ? m.agents_error_purge_pending()
+                : m.chat_agent_rebind_failed(),
+            );
             throw err;
           })
         }

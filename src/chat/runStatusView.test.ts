@@ -135,6 +135,16 @@ describe("errorDetailView (actionable error classification)", () => {
     }
   });
 
+  it("a turn the bridge withheld for a sub-agent reply still owed says so, by code and by string", () => {
+    // codex pass 13: the bridge refuses to re-key the socket a sub-agent reply is owed
+    // on; failDispatch stores the code in both fields (it is a shown-as-such code).
+    const byCode = errorDetailView("", "subagent_reply_pending");
+    expect(byCode.headline).toBe(m.runstatus_error_subagent_reply_pending());
+    const byString = errorDetailView("subagent_reply_pending", null);
+    expect(byString.headline).toBe(byCode.headline);
+    expect(byString.detail).toBeNull();
+  });
+
   it("an agent taken out of the room is named as such, not as a change of access", () => {
     // failDispatch stores the reason in `error` and the finer code in `errorCode`.
     const v = errorDetailView("agent_restricted", "AGENT_LEFT_ROOM");

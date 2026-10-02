@@ -1,6 +1,5 @@
 import type { Id } from "../_generated/dataModel";
 import type { MutationCtx } from "../_generated/server";
-import { clearMemberDefaults } from "./groupMembers";
 
 /**
  * Deleting an instance touches two very different kinds of row, and they cannot
@@ -296,6 +295,18 @@ export async function sweepInstanceNameBoundBatch(
     return "more";
   }
 
+  // Inline-widget registrations of this instance's views: a gateway re-created under
+  // the same name must not inherit "this conversation may open that view" for ids
+  // its predecessor minted. Swept on the instance-prefixed index, bounded.
+  const widgetViews = await ctx.db
+    .query("widgetViews")
+    .withIndex("by_instanceName_and_viewId", (query) => query.eq("instanceName", name))
+    .take(CASCADE_BATCH);
+  if (widgetViews.length > 0) {
+    for (const row of widgetViews) await ctx.db.delete(row._id);
+    return "more";
+  }
+
   const agents = await ctx.db
     .query("agents")
     .withIndex("by_instance", (query) => query.eq("instanceName", name))
@@ -316,21 +327,26 @@ export async function sweepInstanceNameBoundBatch(
     return "more";
   }
 
+  // Member defaults naming this instance's agents, in EVERY group — read through the
+  // default's own index, so a batch reads only the rows it clears, whatever a
+  // group's size (a whole-group read per batch exceeded a transaction's limits and
+  // failed the cascade for good, holding the instance name). BEFORE the shares go,
+  // and re-checked on every pass, so a default set meanwhile is cleared too.
+  const namedDefaults = await ctx.db
+    .query("groupMembers")
+    .withIndex("by_default", (query) => query.eq("defaultAgent.instanceName", name))
+    .take(CASCADE_BATCH);
+  if (namedDefaults.length > 0) {
+    for (const row of namedDefaults) await ctx.db.patch(row._id, { defaultAgent: undefined });
+    return "more";
+  }
+
   const groupAgents = await ctx.db
     .query("groupAgents")
     .withIndex("by_instance", (query) => query.eq("instanceName", name))
     .take(CASCADE_BATCH);
   if (groupAgents.length > 0) {
-    // Member defaults can only name an agent their group shares: clear them in the
-    // groups losing this instance's agents, before the share goes.
-    const groups = new Set<Id<"groups">>();
-    for (const row of groupAgents) {
-      groups.add(row.groupId);
-      await ctx.db.delete(row._id);
-    }
-    for (const groupId of groups) {
-      await clearMemberDefaults(ctx, groupId, name, null);
-    }
+    for (const row of groupAgents) await ctx.db.delete(row._id);
     return "more";
   }
 
@@ -384,6 +400,17 @@ export async function sweepInstanceNameBoundBatch(
         await ctx.db.patch(survivor._id, { isDefault: true });
       }
     }
+    return "more";
+  }
+
+  // Pending agent-purge markers (lib/agentPurge) LAST: they keep the old access rows
+  // inert, so they go only once every such row above is gone.
+  const purges = await ctx.db
+    .query("agentPurges")
+    .withIndex("by_instance_agent", (query) => query.eq("instanceName", name))
+    .take(CASCADE_BATCH);
+  if (purges.length > 0) {
+    for (const row of purges) await ctx.db.delete(row._id);
     return "more";
   }
 

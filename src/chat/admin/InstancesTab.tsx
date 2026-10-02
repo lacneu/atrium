@@ -37,6 +37,7 @@ import { DataTableShell } from "./DataTableShell";
 import { InstanceConfigDialog, type Instance } from "./BridgeTab";
 import { EntitySheet } from "./EntitySheet";
 import { useToast } from "@/components/ui/toast";
+import { groupErrorDetail } from "./groupManageView";
 import { useConfirm } from "@/components/ConfirmDialog";
 import {
   STREAM_TRANSPORTS,
@@ -1263,7 +1264,7 @@ function InstanceAgentsDialog({
     try {
       await setReservation({ instanceName, agentId, groupId: null });
     } catch (err) {
-      toast.error(m.settings_manage_agents_failed(), err);
+      toast.error(m.settings_manage_agents_failed(), groupErrorDetail(err));
     }
   }
   async function moveReservation(
@@ -1283,7 +1284,7 @@ function InstanceAgentsDialog({
     try {
       await setReservation({ instanceName, agentId, groupId });
     } catch (err) {
-      toast.error(m.settings_manage_agents_failed(), err);
+      toast.error(m.settings_manage_agents_failed(), groupErrorDetail(err));
     }
   }
 

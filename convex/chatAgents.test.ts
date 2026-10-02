@@ -9,6 +9,7 @@ import { sweepInstanceNameBoundBatch } from "./lib/instanceCascade";
 import { MAX_AUTHOR_LABEL_CHARS, safeAuthorLabel } from "./lib/turnAuthors";
 import { chatParticipantRows, resolveChatAccess } from "./lib/chatAccess";
 import { userTurnAuthorLabels } from "./lib/turnAuthors";
+import { isConversationAgent } from "./chatAgents";
 
 const modules = import.meta.glob("./**/*.ts");
 type T = ReturnType<typeof convexTest>;
@@ -2252,7 +2253,7 @@ describe("a turn's routing is not written for an author who lost the right to se
 });
 
 describe("purging an agent re-discovered while its rooms are still being swept", () => {
-  test("every delegation that predates the purge goes; one made after it stays", async () => {
+  test("every delegation that predates the purge goes; one made after it stays (re-adding waits for the sweep)", async () => {
     vi.useFakeTimers();
     try {
       const t = convexTest(schema, modules);
@@ -2290,17 +2291,41 @@ describe("purging an agent re-discovered while its rooms are still being swept",
       });
       // One batch gone, the rest waits for the scheduled continuation.
       expect((await t.run(async (ctx) => ctx.db.query("chatAgents").collect())).length).toBe(44);
-      // Meanwhile the gateway reports bob again, and an owner adds him to a room.
+      // Meanwhile the gateway reports bob again, and an owner tries to add him to a
+      // room: refused (retryable) while the old rows are still being swept — the
+      // purge marker would otherwise be the only thing telling the two apart
+      // (codex pass 8). A row any other door writes meanwhile is the new
+      // generation, and stays.
       await seedAgent(t, "alpha", "bob");
       vi.setSystemTime(Date.now() + 60_000);
-      await as(t, owner).mutation(api.chatAgents.addChatAgent, {
-        chatId,
-        instanceName: "alpha",
-        agentId: "bob",
-      });
+      await expect(
+        as(t, owner).mutation(api.chatAgents.addChatAgent, {
+          chatId,
+          instanceName: "alpha",
+          agentId: "bob",
+        }),
+      ).rejects.toThrow(/agent_purge_pending/);
+      await t.run(async (ctx) =>
+        ctx.db.insert("chatAgents", {
+          chatId,
+          instanceName: "alpha",
+          agentId: "bob",
+          addedBy: owner,
+          addedAt: Date.now(),
+        }),
+      );
       await t.finishAllScheduledFunctions(vi.runAllTimers);
       const left = await t.run(async (ctx) => ctx.db.query("chatAgents").collect());
       expect(left.map((r) => r.chatId)).toEqual([chatId]);
+      expect(await t.run((ctx) => ctx.db.query("agentPurges").collect())).toEqual([]);
+      // Once swept, adding works again (idempotent here: already a member).
+      await expect(
+        as(t, owner).mutation(api.chatAgents.addChatAgent, {
+          chatId,
+          instanceName: "alpha",
+          agentId: "bob",
+        }),
+      ).resolves.toEqual({ added: false, reason: "already-member" });
     } finally {
       vi.useRealTimers();
     }
@@ -4833,4 +4858,115 @@ describe("a branch of a group conversation keeps who wrote what, and when", () =
       vi.useRealTimers();
     }
   });
+});
+
+// codex pass 8 — a purged agent's old room delegations are swept in batches. If the
+// agent is re-discovered and re-enabled before the sweep ends, a groupless owner
+// holds it again (the all-pool), and an old row must not hand it to a guest.
+describe("a purged agent's old room delegations grant nothing, whatever is left to sweep", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  test("bob in 300 rooms, re-discovered and re-enabled mid-purge: the guest cannot address him; re-adding waits for the sweep", async () => {
+    vi.useFakeTimers();
+    const t = convexTest(schema, modules);
+    const { owner, guest, chatId } = await room(t);
+    const admin = await seedUser(t, "admin");
+    await t.run(async (ctx) => {
+      const p = await ctx.db.query("profiles").withIndex("by_user", (q) => q.eq("userId", admin)).unique();
+      await ctx.db.patch(p!._id, { role: "admin" });
+      for (let i = 0; i < 299; i++) {
+        const c = await ctx.db.insert("chats", {
+          userId: owner,
+          updatedAt: 1,
+          title: `r${i}`,
+          instanceName: "alpha",
+          agentId: "alice",
+        });
+        await ctx.db.insert("chatAgents", { chatId: c, instanceName: "alpha", agentId: "bob", addedBy: owner, addedAt: 1 });
+      }
+      // The guest's room is the newest delegation: still there after the first batch.
+      await ctx.db.insert("chatAgents", { chatId, instanceName: "alpha", agentId: "bob", addedBy: owner, addedAt: 1 });
+    });
+    const bob = { instanceName: "alpha", agentId: "bob" };
+    const isMember = () =>
+      t.run(async (ctx) => isConversationAgent(ctx, (await ctx.db.get(chatId))!, bob));
+    expect(await isMember()).toBe(true);
+
+    await t.run(async (ctx) => {
+      const row = await ctx.db
+        .query("agents")
+        .withIndex("by_instance_agent", (q) => q.eq("instanceName", "alpha").eq("agentId", "bob"))
+        .first();
+      await ctx.db.patch(row!._id, { presentInLastOk: false });
+    });
+    await as(t, admin).mutation(api.agents.removeInstanceAgent, bob);
+    await t.mutation(internal.agents.applyDiscovery, {
+      instanceName: "alpha",
+      agents: ["alice", "bob", "carol"].map((agentId) => ({
+        agentId,
+        displayName: null,
+        emoji: null,
+        model: null,
+        isDefaultOnInstance: false,
+      })),
+    });
+    await as(t, admin).mutation(api.agents.setAgentEnabled, { ...bob, enabled: true });
+
+    const left = () =>
+      t.run(async (ctx) => ({
+        rows: (
+          await ctx.db
+            .query("chatAgents")
+            .withIndex("by_instance_agent", (q) => q.eq("instanceName", "alpha").eq("agentId", "bob"))
+            .collect()
+        ).map((r) => r.chatId),
+        marker: (await ctx.db.query("agentPurges").collect()).length,
+      }));
+    const mid = await left();
+    // The window exists: the guest's room still holds its old row.
+    expect(mid.rows).toContain(chatId);
+    expect(mid.marker).toBe(1);
+
+    // Not addressable by the guest — the send gate (routed and mentioned alike go
+    // through isConversationAgent), the dispatch-time gate, the panel.
+    await expect(
+      as(t, guest).mutation(api.send.sendMessage, {
+        chatId,
+        text: "bob ?",
+        clientMessageId: "p8-1",
+        routedAgent: bob,
+      }),
+    ).rejects.toThrow(/not part of this conversation/);
+    expect(await isMember()).toBe(false);
+    const panel = await as(t, guest).query(api.chatAgents.listChatAgents, { chatId });
+    expect(panel?.agents.map((a) => a.agentId)).toEqual([]);
+    // Nor put back on the old row, nor promoted from it.
+    await expect(
+      as(t, owner).mutation(api.chatAgents.addChatAgent, { chatId, ...bob }),
+    ).rejects.toThrow(/agent_purge_pending/);
+    await expect(
+      as(t, owner).mutation(api.chatAgents.setPrimaryAgent, { chatId, ...bob }),
+    ).rejects.toThrow(/agent_purge_pending/);
+    await expect(
+      as(t, owner).mutation(api.chats.rebindChatAgent, { chatId, ...bob }),
+    ).rejects.toThrow(/agent_purge_pending/);
+
+    await t.finishAllScheduledFunctions(vi.runAllTimers);
+    expect(await left()).toEqual({ rows: [], marker: 0 });
+    // After the sweep: the owner adds him back, and the guest may address him.
+    await expect(
+      as(t, owner).mutation(api.chatAgents.addChatAgent, { chatId, ...bob }),
+    ).resolves.toEqual({ added: true });
+    expect(await isMember()).toBe(true);
+    await expect(
+      as(t, guest).mutation(api.send.sendMessage, {
+        chatId,
+        text: "bob ?",
+        clientMessageId: "p8-2",
+        routedAgent: bob,
+      }),
+    ).resolves.toMatchObject({ deduped: false });
+  }, 120_000);
 });

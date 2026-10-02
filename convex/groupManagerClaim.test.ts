@@ -15,6 +15,10 @@
 //   - unconditional audit rows with the real actor.
 
 import { convexTest, type TestConvex } from "convex-test";
+import { MEMBER_CLEANUP_BATCH, assertNoPendingMemberCleanup, memberCleanupBatch } from "./lib/groupMembers";
+import { sweepInstanceNameBoundBatch } from "./lib/instanceCascade";
+import { AGENT_ACCESS_BATCH } from "./agents";
+import { AUDIT_REFS_PER_ROW, splitAuditDetails } from "./groups";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import { api, internal } from "./_generated/api";
 import schema from "./schema";
@@ -25,6 +29,8 @@ import {
   getEffectiveGrants,
   userMayAccessInstance,
 } from "./agents";
+import { resolveTargetForTurn } from "./routing";
+import { knowledgeAgentReachable } from "./knowledge";
 
 const modules = import.meta.glob("./**/*.ts");
 type T = TestConvex<typeof schema>;
@@ -605,6 +611,41 @@ describe("per-member restriction within ONE group", () => {
     expect(await ids(t, member)).toEqual(["prod/base", "prod/other", "prod/second"]);
   });
 
+  test("the audit names WHICH agents a restriction added or removed, and the default before/after (refs only)", async () => {
+    const t = convexTest(schema, modules);
+    const { mgr, member, G } = await twoGroups(t);
+    await as(t, mgr).mutation(api.groups.setMemberDefaultAgent, {
+      groupId: G,
+      userId: member,
+      agent: { instanceName: "prod", agentId: "base" },
+    });
+    await as(t, mgr).mutation(api.groups.setMemberAgents, {
+      groupId: G,
+      userId: member,
+      agents: [{ instanceName: "prod", agentId: "second" }],
+    });
+    await as(t, mgr).mutation(api.groups.setMemberAgents, { groupId: G, userId: member, agents: null });
+    const rows = await t.run((ctx) => ctx.db.query("auditLog").order("asc").collect());
+    const lastOf = (a: string) => rows.filter((r) => r.action === a).slice(-1)[0];
+    expect(lastOf("group.setMemberDefault")?.details).toEqual({
+      defaultAgent: { instanceName: "prod", agentId: "base" },
+      previousDefaultAgent: null,
+    });
+    expect(lastOf("group.restrictMember")?.details).toEqual({
+      agentsAdded: [],
+      agentsRemoved: [{ instanceName: "prod", agentId: "base" }],
+      // The restriction dropped the member's default: said so.
+      previousDefaultAgent: { instanceName: "prod", agentId: "base" },
+      defaultAgent: null,
+    });
+    expect(lastOf("group.unrestrictMember")?.details).toEqual({
+      agentsAdded: [{ instanceName: "prod", agentId: "base" }],
+      agentsRemoved: [],
+    });
+    // Refs only: nothing but instance/agent names in what the audit carries.
+    expect(JSON.stringify(rows.map((r) => r.details ?? null))).not.toMatch(/text|title|message/i);
+  });
+
   test("an empty restriction gives nothing from G — and removing the last allowed agent never widens", async () => {
     const t = convexTest(schema, modules);
     const { mgr, member, G } = await twoGroups(t);
@@ -821,14 +862,18 @@ describe("cascades never leave a per-member allowance behind", () => {
     const t = convexTest(schema, modules);
     const { admin, mgr, member, G } = await restricted(t);
     await as(t, mgr).mutation(api.groups.removeAgentFromGroup, { groupId: G, instanceName: "prod", agentId: "second" });
+    // The cleanup is ENQUEUED (never run per agent inside the unshare)…
+    expect(await t.run((ctx) => ctx.db.query("groupMemberCleanups").collect())).toHaveLength(1);
+    // …and a re-share right away finishes it first (a small group fits one batch):
+    // the member's old choice does NOT come back by itself.
+    await as(t, admin).mutation(api.groups.assignAgentToGroup, { groupId: G, instanceName: "prod", agentId: "second" });
     expect(await allowances(t)).toEqual([]);
     const m = await t.run((ctx) =>
       ctx.db.query("groupMembers").withIndex("by_user_group", (q) => q.eq("userId", member).eq("groupId", G)).unique(),
     );
     expect(m?.defaultAgent).toBeUndefined();
-    // Re-shared later: the member's old choice does NOT come back by itself.
-    await as(t, admin).mutation(api.groups.assignAgentToGroup, { groupId: G, instanceName: "prod", agentId: "second" });
     expect(await ids(t, member)).toEqual([]);
+    expect(await t.run((ctx) => ctx.db.query("groupMemberCleanups").collect())).toEqual([]);
   });
 
   test("deleting the group purges allowances and invitation requests; a reservation stays", async () => {
@@ -844,6 +889,7 @@ describe("cascades never leave a per-member allowance behind", () => {
   });
 
   test("purging an absent agent, deleting the member's account, deleting the instance", async () => {
+    vi.useFakeTimers();
     const t = convexTest(schema, modules);
     const { admin } = await restricted(t);
     await t.run(async (ctx) => {
@@ -854,6 +900,8 @@ describe("cascades never leave a per-member allowance behind", () => {
       await ctx.db.patch(row!._id, { presentInLastOk: false });
     });
     await as(t, admin).mutation(api.agents.removeInstanceAgent, { instanceName: "prod", agentId: "second" });
+    // The member defaults go through the durable member cleanup it enqueued.
+    await t.finishAllScheduledFunctions(vi.runAllTimers);
     expect(await allowances(t)).toEqual([]);
     expect(await memberDefaults(t)).toEqual([]);
 
@@ -865,7 +913,6 @@ describe("cascades never leave a per-member allowance behind", () => {
     await as(t2, s2.admin).mutation(api.admin.deleteUser, { profileId });
     expect(await allowances(t2)).toEqual([]);
 
-    vi.useFakeTimers();
     const t3 = convexTest(schema, modules);
     const s3 = await restricted(t3);
     const instanceId = await t3.run(async (ctx) =>
@@ -1397,4 +1444,666 @@ describe("review pass 4", () => {
     await as(t, mgr).mutation(api.groups.removeAgentFromGroup, { groupId: G, instanceName: "prod", agentId: "base" });
     expect(await ids(t, hMember)).toEqual(["prod/base"]);
   });
+});
+
+// ===========================================================================
+describe("an agent leaving a LARGE group: bounded batches, durable continuation", () => {
+  const MEMBERS = 350; // > 3 batches of MEMBER_CLEANUP_BATCH (100)
+
+  async function bigGroup(t: T) {
+    const s = await seed(t);
+    await t.run(async (ctx) => {
+      for (let i = 0; i < MEMBERS; i++) {
+        const uid = await ctx.db.insert("users", {});
+        await ctx.db.insert("profiles", { userId: uid, role: "user" });
+        await ctx.db.insert("groupMembers", {
+          groupId: s.G,
+          userId: uid,
+          joinedAt: 1,
+          defaultAgent: { instanceName: "prod", agentId: "base" },
+          ...(i % 2 === 0 ? { agentsRestricted: true } : {}),
+        });
+        if (i % 2 === 0) {
+          await ctx.db.insert("groupMemberAgents", {
+            groupId: s.G,
+            userId: uid,
+            instanceName: "prod",
+            agentId: "base",
+            createdAt: 1,
+          });
+        }
+      }
+    });
+    return s;
+  }
+  const leftovers = (t: T, G: Id<"groups">) =>
+    t.run(async (ctx) => ({
+      defaults: (await ctx.db.query("groupMembers").withIndex("by_group", (q) => q.eq("groupId", G)).collect()).filter(
+        (m) => m.defaultAgent?.agentId === "base",
+      ).length,
+      allowances: (
+        await ctx.db
+          .query("groupMemberAgents")
+          .withIndex("by_group_instance_agent", (q) => q.eq("groupId", G).eq("instanceName", "prod").eq("agentId", "base"))
+          .collect()
+      ).length,
+      pending: (await ctx.db.query("groupMemberCleanups").collect()).length,
+    }));
+
+  test("the unshare only ENQUEUES the cleanup; it runs in bounded batches on its own; a re-share waits for it", async () => {
+    vi.useFakeTimers();
+    const t = convexTest(schema, modules);
+    const { admin, G } = await bigGroup(t);
+    await as(t, admin).mutation(api.groups.removeAgentFromGroup, { groupId: G, instanceName: "prod", agentId: "base" });
+    // Nothing cleared inside the unshare: one durable job.
+    expect(await leftovers(t, G)).toEqual({ defaults: MEMBERS, allowances: MEMBERS / 2, pending: 1 });
+    // One worker run = one bounded batch.
+    await t.run((ctx) => memberCleanupBatch(ctx, G, "prod", "base"));
+    expect(await leftovers(t, G)).toEqual({ defaults: MEMBERS - 100, allowances: MEMBERS / 2 - 100, pending: 1 });
+    // Sharing it back NOW would bring the old per-member choices back: refused.
+    await expect(
+      as(t, admin).mutation(api.groups.assignAgentToGroup, { groupId: G, instanceName: "prod", agentId: "base" }),
+    ).rejects.toThrow(/member_cleanup_pending/);
+    // The continuation finishes on its own, batch by batch, and releases the share.
+    await t.finishAllScheduledFunctions(vi.runAllTimers);
+    expect(await leftovers(t, G)).toEqual({ defaults: 0, allowances: 0, pending: 0 });
+    await as(t, admin).mutation(api.groups.assignAgentToGroup, { groupId: G, instanceName: "prod", agentId: "base" });
+  });
+
+  test("a batch reads only the rows it changes: other members' defaults are never touched", async () => {
+    const t = convexTest(schema, modules);
+    const { G } = await bigGroup(t);
+    await t.run(async (ctx) => {
+      for (let i = 0; i < 50; i++) {
+        const uid = await ctx.db.insert("users", {});
+        await ctx.db.insert("groupMembers", {
+          groupId: G,
+          userId: uid,
+          joinedAt: 1,
+          defaultAgent: { instanceName: "prod", agentId: "second" },
+        });
+      }
+    });
+    expect(await t.run((ctx) => memberCleanupBatch(ctx, G, "prod", "base"))).toBe(false);
+    const after = await t.run(async (ctx) =>
+      (await ctx.db.query("groupMembers").withIndex("by_group", (q) => q.eq("groupId", G)).collect()).filter(
+        (m) => m.defaultAgent?.agentId === "second",
+      ).length,
+    );
+    expect(after).toBe(50);
+    expect((await leftovers(t, G)).defaults).toBe(MEMBERS - MEMBER_CLEANUP_BATCH);
+  });
+
+  test("the instance purge clears a large group's defaults in cascade batches and completes", async () => {
+    const t = convexTest(schema, modules);
+    const { G } = await bigGroup(t);
+    // The instance row is gone (deleteInstanceCascade removes it first; the sweep
+    // stops on a live name).
+    await t.run(async (ctx) => {
+      const inst = await ctx.db.query("instances").withIndex("by_name", (q) => q.eq("name", "prod")).first();
+      await ctx.db.delete(inst!._id);
+    });
+    let passes = 0;
+    for (;;) {
+      const r = await t.run((ctx) => sweepInstanceNameBoundBatch(ctx, "prod"));
+      passes += 1;
+      if (r === "done") break;
+      if (passes > 200) throw new Error("cascade never completed");
+    }
+    expect((await leftovers(t, G)).defaults).toBe(0);
+    expect(passes).toBeGreaterThan(1);
+  });
+
+  test("a BULK unshare of 200 agents enqueues one job each — no cleanup batch inside the mutation", async () => {
+    vi.useFakeTimers();
+    const t = convexTest(schema, modules);
+    const { admin, G } = await bigGroup(t);
+    const AGENTS = 200;
+    await t.run(async (ctx) => {
+      for (let i = 0; i < AGENTS; i++) {
+        await ctx.db.insert("agents", {
+          instanceName: "prod",
+          agentId: `bulk-${i}`,
+          source: "discovered",
+          presentInLastOk: true,
+          enabled: true,
+          firstSeenAt: 1,
+          lastSeenAt: 1,
+        });
+        await ctx.db.insert("groupAgents", { groupId: G, instanceName: "prod", agentId: `bulk-${i}`, createdAt: 1 });
+      }
+      // 100 restricted members allowed EVERY bulk agent: 20,000 allowances.
+      const restricted = (await ctx.db.query("groupMembers").withIndex("by_group", (q) => q.eq("groupId", G)).collect())
+        .filter((m) => m.agentsRestricted === true)
+        .slice(0, 100);
+      for (const m of restricted) {
+        for (let i = 0; i < AGENTS; i++) {
+          await ctx.db.insert("groupMemberAgents", {
+            groupId: G,
+            userId: m.userId,
+            instanceName: "prod",
+            agentId: `bulk-${i}`,
+            createdAt: 1,
+          });
+        }
+      }
+    });
+    const countBulkAllowances = () =>
+      t.run(async (ctx) =>
+        (await ctx.db.query("groupMemberAgents").collect()).filter((r) => r.agentId.startsWith("bulk-")).length,
+      );
+    expect(await countBulkAllowances()).toBe(20_000);
+    await as(t, admin).mutation(api.groups.bulkSetGroupAgents, {
+      groupId: G,
+      instanceName: "prod",
+      agentIds: Array.from({ length: AGENTS }, (_, i) => `bulk-${i}`),
+      assigned: false,
+    });
+    // The mutation deleted NONE of them: it enqueued one job per agent.
+    expect(await countBulkAllowances()).toBe(20_000);
+    expect(await t.run((ctx) => ctx.db.query("groupMemberCleanups").collect())).toHaveLength(AGENTS);
+    await t.finishAllScheduledFunctions(vi.runAllTimers);
+    expect(await countBulkAllowances()).toBe(0);
+    expect(await t.run((ctx) => ctx.db.query("groupMemberCleanups").collect())).toEqual([]);
+  }, 180_000);
+
+  test("purging an agent granted and allowed far beyond one batch completes through its continuation", async () => {
+    vi.useFakeTimers();
+    const t = convexTest(schema, modules);
+    const { admin, G } = await bigGroup(t);
+    const USERS = AGENT_ACCESS_BATCH * 3 + 7;
+    await t.run(async (ctx) => {
+      const row = await ctx.db
+        .query("agents")
+        .withIndex("by_instance_agent", (q) => q.eq("instanceName", "prod").eq("agentId", "base"))
+        .first();
+      await ctx.db.patch(row!._id, { presentInLastOk: false });
+      for (let i = 0; i < USERS; i++) {
+        const uid = await ctx.db.insert("users", {});
+        await ctx.db.insert("userAgents", {
+          userId: uid,
+          instanceName: "prod",
+          agentId: "base",
+          isDefault: true,
+          source: "manual",
+          createdAt: 1,
+        } as never);
+        await ctx.db.insert("userAgents", {
+          userId: uid,
+          instanceName: "prod",
+          agentId: "other",
+          isDefault: false,
+          source: "manual",
+          createdAt: 1,
+        } as never);
+      }
+    });
+    const left = () =>
+      t.run(async (ctx) => ({
+        grants: (
+          await ctx.db
+            .query("userAgents")
+            .withIndex("by_instance_agent", (q) => q.eq("instanceName", "prod").eq("agentId", "base"))
+            .collect()
+        ).length,
+        allowances: (
+          await ctx.db
+            .query("groupMemberAgents")
+            .withIndex("by_instance_agent", (q) => q.eq("instanceName", "prod").eq("agentId", "base"))
+            .collect()
+        ).length,
+      }));
+    await as(t, admin).mutation(api.agents.removeInstanceAgent, { instanceName: "prod", agentId: "base" });
+    // ONE bounded batch of each kind in the purge's own transaction.
+    expect(await left()).toEqual({ grants: USERS - AGENT_ACCESS_BATCH, allowances: MEMBERS / 2 - AGENT_ACCESS_BATCH });
+    await t.finishAllScheduledFunctions(vi.runAllTimers);
+    expect(await left()).toEqual({ grants: 0, allowances: 0 });
+    expect((await leftovers(t, G)).defaults).toBe(0);
+    // Every user who lost their default got the one they had left.
+    const defaults = await t.run(async (ctx) =>
+      (await ctx.db.query("userAgents").collect()).filter((g) => g.agentId === "other" && g.isDefault).length,
+    );
+    expect(defaults).toBe(USERS);
+  }, 60_000);
+});
+
+describe("audit references are bounded per row (a group may share thousands of agents)", () => {
+  const ref = (i: number) => ({ instanceName: "prod", agentId: `a-${i}` });
+
+  test("8,193 added + 8,193 removed: every reference kept, never more than AUDIT_REFS_PER_ROW per row", () => {
+    const added = Array.from({ length: 8193 }, (_, i) => ref(i));
+    const removed = Array.from({ length: 8193 }, (_, i) => ref(100_000 + i));
+    const rows = splitAuditDetails({ agentsAdded: added, agentsRemoved: removed, previousDefaultAgent: ref(1), defaultAgent: null });
+    expect(rows.length).toBe(Math.ceil(16386 / AUDIT_REFS_PER_ROW));
+    for (const [i, r] of rows.entries()) {
+      expect((r!.agentsAdded?.length ?? 0) + (r!.agentsRemoved?.length ?? 0)).toBeLessThanOrEqual(AUDIT_REFS_PER_ROW);
+      expect(r!.chunk).toEqual({ index: i + 1, of: rows.length });
+    }
+    expect(rows.flatMap((r) => r!.agentsAdded ?? [])).toEqual(added);
+    expect(rows.flatMap((r) => r!.agentsRemoved ?? [])).toEqual(removed);
+    // The default change rides the first row only.
+    expect(rows[0]!.previousDefaultAgent).toEqual(ref(1));
+    expect(rows.slice(1).every((r) => r!.previousDefaultAgent === undefined)).toBe(true);
+    // A small change stays one row, untouched.
+    expect(splitAuditDetails({ agentsAdded: [ref(1)], agentsRemoved: [] })).toEqual([{ agentsAdded: [ref(1)], agentsRemoved: [] }]);
+  });
+
+  test("lifting a restriction in a group of 1,200 agents audits every one, in bounded rows", async () => {
+    const t = convexTest(schema, modules);
+    const s = await seed(t);
+    await t.run(async (ctx) => {
+      for (let i = 0; i < 1200; i++) {
+        await ctx.db.insert("agents", {
+          instanceName: "prod",
+          agentId: `many-${i}`,
+          source: "discovered",
+          presentInLastOk: true,
+          enabled: true,
+          firstSeenAt: 1,
+          lastSeenAt: 1,
+        });
+        await ctx.db.insert("groupAgents", { groupId: s.G, instanceName: "prod", agentId: `many-${i}`, createdAt: 1 });
+      }
+    });
+    await as(t, s.mgr).mutation(api.groups.setMemberAgents, { groupId: s.G, userId: s.member, agents: [] });
+    await as(t, s.mgr).mutation(api.groups.setMemberAgents, { groupId: s.G, userId: s.member, agents: null });
+    const rows = await t.run(async (ctx) =>
+      (await ctx.db.query("auditLog").collect()).filter((r) => r.action === "group.unrestrictMember"),
+    );
+    expect(rows.length).toBe(Math.ceil(1201 / AUDIT_REFS_PER_ROW));
+    expect(rows.flatMap((r) => r.details?.agentsAdded ?? []).length).toBe(1201); // 1,200 + base
+    for (const r of rows) expect((r.details?.agentsAdded ?? []).length).toBeLessThanOrEqual(AUDIT_REFS_PER_ROW);
+  }, 60_000);
+});
+
+describe("a share finishing pending cleanups spends ONE budget per mutation", () => {
+  test("with the budget spent, a pending cleanup is refused WITHOUT running another batch", async () => {
+    const t = convexTest(schema, modules);
+    const s = await seed(t);
+    await t.run(async (ctx) => {
+      await ctx.db.insert("groupMembers", {
+        groupId: s.G,
+        userId: s.loner,
+        joinedAt: 1,
+        defaultAgent: { instanceName: "prod", agentId: "open" },
+      });
+      await ctx.db.insert("groupMemberCleanups", { groupId: s.G, instanceName: "prod", agentId: "open", createdAt: 1 });
+    });
+    const budget = { batches: 0 };
+    await expect(
+      t.run((ctx) => assertNoPendingMemberCleanup(ctx, s.G, "prod", "open", budget)),
+    ).rejects.toThrow(/member_cleanup_pending/);
+    // Untouched: no batch ran on a spent budget.
+    const d = await t.run(async (ctx) =>
+      (await ctx.db.query("groupMembers").withIndex("by_user_group", (q) => q.eq("userId", s.loner).eq("groupId", s.G)).unique())
+        ?.defaultAgent,
+    );
+    expect(d).toEqual({ instanceName: "prod", agentId: "open" });
+    // With budget left, the same small cleanup is finished and the share may go.
+    const fresh = { batches: 2 };
+    await t.run((ctx) => assertNoPendingMemberCleanup(ctx, s.G, "prod", "open", fresh));
+    expect(fresh.batches).toBe(1);
+    expect(await t.run((ctx) => ctx.db.query("groupMemberCleanups").collect())).toEqual([]);
+  });
+});
+
+// ===========================================================================
+// codex pass 7 — a purge takes effect in its own transaction, not when the last
+// sweep batch runs: no resolver lets an old row through, a re-discovered agent does
+// not revive one, and no assignment lands on (or is mistaken for) a row the sweep
+// is about to delete.
+describe("an agent purge takes effect immediately, whatever is left to sweep", () => {
+  const USERS = 250;
+  const GROUPS = 150;
+  const GHOST = { instanceName: "lab", agentId: "ghost" } as const;
+
+  // 250 groupless users holding ghost (their default) + prod/base; 150 groups each
+  // sharing ghost + base with one member who defaults to ghost, three in four of them
+  // restricted to both. Every kind of access row is more than one sweep batch.
+  async function purgeWorld(t: T) {
+    const s = await seed(t);
+    await agent(t, "lab", "ghost");
+    const built = await t.run(async (ctx) => {
+      const person = async () => {
+        const uid = await ctx.db.insert("users", {});
+        await ctx.db.insert("profiles", { userId: uid, role: "user", extraPermissions: ["agents.files.read"] });
+        return uid;
+      };
+      const users: Id<"users">[] = [];
+      for (let i = 0; i < USERS; i++) {
+        const uid = await person();
+        await ctx.db.insert("userAgents", { userId: uid, ...GHOST, isDefault: true, source: "manual", createdAt: 1 });
+        await ctx.db.insert("userAgents", {
+          userId: uid,
+          instanceName: "prod",
+          agentId: "base",
+          isDefault: false,
+          source: "manual",
+          createdAt: 1,
+        });
+        users.push(uid);
+      }
+      const members: Id<"users">[] = [];
+      const groups: Id<"groups">[] = [];
+      for (let i = 0; i < GROUPS; i++) {
+        const g = await ctx.db.insert("groups", { key: `pg-${i}`, name: `PG ${i}`, createdBy: s.admin, createdAt: 10 + i });
+        await ctx.db.insert("groupAgents", { groupId: g, ...GHOST, createdAt: 1 });
+        await ctx.db.insert("groupAgents", { groupId: g, instanceName: "prod", agentId: "base", createdAt: 1 });
+        const uid = await person();
+        const restricted = i % 4 !== 0;
+        await ctx.db.insert("groupMembers", {
+          groupId: g,
+          userId: uid,
+          joinedAt: 1,
+          defaultAgent: { ...GHOST },
+          ...(restricted ? { agentsRestricted: true } : {}),
+        });
+        if (restricted) {
+          await ctx.db.insert("groupMemberAgents", { groupId: g, userId: uid, ...GHOST, createdAt: 1 });
+          await ctx.db.insert("groupMemberAgents", { groupId: g, userId: uid, instanceName: "prod", agentId: "base", createdAt: 1 });
+        }
+        members.push(uid);
+        groups.push(g);
+      }
+      return { users, members, groups };
+    });
+    return { ...s, ...built };
+  }
+
+  const purgeGhost = async (t: T, admin: Id<"users">) => {
+    await t.run(async (ctx) => {
+      const row = await ctx.db
+        .query("agents")
+        .withIndex("by_instance_agent", (q) => q.eq("instanceName", "lab").eq("agentId", "ghost"))
+        .first();
+      await ctx.db.patch(row!._id, { presentInLastOk: false });
+    });
+    await as(t, admin).mutation(api.agents.removeInstanceAgent, { ...GHOST });
+  };
+
+  const rediscoverAndEnable = async (t: T, admin: Id<"users">) => {
+    await t.mutation(internal.agents.applyDiscovery, {
+      instanceName: "lab",
+      agents: [{ agentId: "ghost", displayName: null, emoji: null, model: null, isDefaultOnInstance: false }],
+    });
+    await as(t, admin).mutation(api.agents.setAgentEnabled, { ...GHOST, enabled: true });
+  };
+
+  const remaining = (t: T) =>
+    t.run(async (ctx) => {
+      const grants = await ctx.db
+        .query("userAgents")
+        .withIndex("by_instance_agent", (q) => q.eq("instanceName", "lab").eq("agentId", "ghost"))
+        .collect();
+      const shares = await ctx.db
+        .query("groupAgents")
+        .withIndex("by_instance_agent", (q) => q.eq("instanceName", "lab").eq("agentId", "ghost"))
+        .collect();
+      const allowances = await ctx.db
+        .query("groupMemberAgents")
+        .withIndex("by_instance_agent", (q) => q.eq("instanceName", "lab").eq("agentId", "ghost"))
+        .collect();
+      return {
+        grantUsers: grants.map((r) => r.userId),
+        shareGroups: shares.map((r) => r.groupId),
+        allowanceUsers: allowances.map((r) => r.userId),
+        marker: (await ctx.db.query("agentPurges").collect()).length,
+      };
+    });
+
+  /** Who still reaches ghost, through ANY resolver: the effective set, the
+   *  instance gate of the ingest path, routing a turn to it, knowledge. */
+  const reachesGhost = (t: T, uids: Id<"users">[]) =>
+    t.run(async (ctx) => {
+      const out: Id<"users">[] = [];
+      for (const uid of uids) {
+        const chat = { userId: uid } as Doc<"chats">;
+        const grants = await getEffectiveGrants(ctx, uid);
+        const routed = await resolveTargetForTurn(ctx, chat, uid, { ...GHOST });
+        if (
+          grants.some((g) => g.instanceName === "lab" && g.agentId === "ghost") ||
+          (await userMayAccessInstance(ctx, uid, "lab")) ||
+          (await knowledgeAgentReachable(ctx, chat, GHOST)) ||
+          routed.target !== null
+        ) {
+          out.push(uid);
+        }
+      }
+      return out;
+    });
+
+  const filesOpen = async (t: T, uid: Id<"users">) => {
+    try {
+      await as(t, uid).query(internal.agentFiles.checkFilesReadAccess, { ...GHOST });
+      return true;
+    } catch (e) {
+      expect(String(e)).toMatch(/forbidden/);
+      return false;
+    }
+  };
+
+  const profileOf = (t: T, uid: Id<"users">) =>
+    t.run(async (ctx) =>
+      (await ctx.db.query("profiles").withIndex("by_user", (q) => q.eq("userId", uid)).unique())!._id,
+    );
+
+  test("250 grants, 150 groups: nobody reaches it between batches — nor after a re-discovery and re-enable", async () => {
+    vi.useFakeTimers();
+    const t = convexTest(schema, modules);
+    const w = await purgeWorld(t);
+    // The fixture means something: before the purge they all reach it.
+    expect(await reachesGhost(t, [w.users[0]!, w.members[1]!, w.members[4]!])).toHaveLength(3);
+    expect(await filesOpen(t, w.users[0]!)).toBe(true);
+
+    await purgeGhost(t, w.admin);
+    const mid = await remaining(t);
+    // The window exists: rows of every kind are still there, and so is the marker.
+    expect(mid.grantUsers).toHaveLength(USERS - AGENT_ACCESS_BATCH);
+    expect(mid.shareGroups).toHaveLength(GROUPS - AGENT_ACCESS_BATCH);
+    expect(mid.allowanceUsers.length).toBeGreaterThan(0);
+    expect(mid.marker).toBe(1);
+    const inShare = new Set(mid.shareGroups);
+    const sharedMembers = w.members.filter((_, i) => inShare.has(w.groups[i]!));
+    expect(sharedMembers).toHaveLength(GROUPS - AGENT_ACCESS_BATCH);
+    const subjects = [...mid.grantUsers, ...sharedMembers];
+
+    const assertNobody = async () => {
+      expect(await reachesGhost(t, subjects)).toEqual([]);
+      // The batched admin summary mirrors it: base only, for everyone.
+      expect(new Set(Object.values(await counts(t, subjects)))).toEqual(new Set([1]));
+      expect(await filesOpen(t, mid.grantUsers[0]!)).toBe(false);
+      expect(await filesOpen(t, sharedMembers[0]!)).toBe(false);
+    };
+    await assertNobody();
+    // Re-discovered and re-enabled before the sweep ends: still nobody.
+    await rediscoverAndEnable(t, w.admin);
+    await assertNobody();
+
+    await t.finishAllScheduledFunctions(vi.runAllTimers);
+    expect(await remaining(t)).toEqual({ grantUsers: [], shareGroups: [], allowanceUsers: [], marker: 0 });
+    await assertNobody();
+    // The members' defaults naming it went with the shares (durable member cleanup).
+    const namedDefaults = await t.run(async (ctx) =>
+      (await ctx.db.query("groupMembers").collect()).filter((m) => m.defaultAgent?.agentId === "ghost").length,
+    );
+    expect(namedDefaults).toBe(0);
+  }, 300_000);
+
+  test("re-assigning a user mid-purge is refused (retryable), never a silent no-op; after the sweep it sticks", async () => {
+    vi.useFakeTimers();
+    const t = convexTest(schema, modules);
+    const w = await purgeWorld(t);
+    await purgeGhost(t, w.admin);
+    await rediscoverAndEnable(t, w.admin);
+    const victim = (await remaining(t)).grantUsers[0]!;
+    const profileId = await profileOf(t, victim);
+    await expect(
+      as(t, w.admin).mutation(api.agents.assignAgent, { profileId, ...GHOST }),
+    ).rejects.toThrow(/agent_purge_pending/);
+    await expect(
+      as(t, w.admin).mutation(api.agents.setDefaultAgent, { profileId, ...GHOST }),
+    ).rejects.toThrow(/agent_purge_pending/);
+    // A row written mid-purge by any other door is the NEW generation: live at once,
+    // and never swept.
+    const newcomer = await user(t);
+    await t.run((ctx) =>
+      ctx.db.insert("userAgents", { userId: newcomer, ...GHOST, isDefault: true, source: "manual", createdAt: 2 }),
+    );
+    expect(await reachesGhost(t, [newcomer])).toEqual([newcomer]);
+
+    await t.finishAllScheduledFunctions(vi.runAllTimers);
+    expect(await reachesGhost(t, [newcomer])).toEqual([newcomer]);
+    // The retry once the purge is done: a real row, and it survives.
+    await as(t, w.admin).mutation(api.agents.assignAgent, { profileId, ...GHOST });
+    await t.finishAllScheduledFunctions(vi.runAllTimers);
+    expect(await reachesGhost(t, [victim])).toEqual([victim]);
+    expect((await remaining(t)).grantUsers.sort()).toEqual([newcomer, victim].sort());
+  }, 300_000);
+
+  test("every group path refuses mid-purge; a share and member default made after it survive", async () => {
+    vi.useFakeTimers();
+    const t = convexTest(schema, modules);
+    const w = await purgeWorld(t);
+    await purgeGhost(t, w.admin);
+    await rediscoverAndEnable(t, w.admin);
+    const mid = await remaining(t);
+    // An unrestricted member whose group's old share is still there.
+    const idx = w.groups.findIndex((g, i) => mid.shareGroups.includes(g) && i % 4 === 0);
+    const G = w.groups[idx]!;
+    const m = w.members[idx]!;
+    const pending = /agent_purge_pending/;
+    const admin = as(t, w.admin);
+    await expect(admin.mutation(api.groups.assignAgentToGroup, { groupId: G, ...GHOST })).rejects.toThrow(pending);
+    await expect(
+      admin.mutation(api.groups.bulkSetGroupAgents, { groupId: G, instanceName: "lab", agentIds: ["ghost"], assigned: true }),
+    ).rejects.toThrow(pending);
+    await expect(admin.mutation(api.groups.setGroupDefaultAgent, { groupId: G, agent: { ...GHOST } })).rejects.toThrow(pending);
+    await expect(
+      admin.mutation(api.groups.setMemberAgents, { groupId: G, userId: m, agents: [{ ...GHOST }] }),
+    ).rejects.toThrow(pending);
+    await expect(
+      admin.mutation(api.groups.setMemberDefaultAgent, { groupId: G, userId: m, agent: { ...GHOST } }),
+    ).rejects.toThrow(pending);
+    await expect(admin.mutation(api.groups.claimAgentForGroup, { groupId: G, ...GHOST })).rejects.toThrow(pending);
+    await expect(admin.mutation(api.agents.setAgentReservation, { ...GHOST, groupId: G })).rejects.toThrow(pending);
+    // The group views no longer list the revoked share.
+    const view = await admin.query(api.groups.getGroup, { groupId: G });
+    expect(view!.agents.map((a) => a.agentId)).toEqual(["base"]);
+
+    await t.finishAllScheduledFunctions(vi.runAllTimers);
+    await admin.mutation(api.groups.assignAgentToGroup, { groupId: G, ...GHOST });
+    await admin.mutation(api.groups.setMemberDefaultAgent, { groupId: G, userId: m, agent: { ...GHOST } });
+    await t.finishAllScheduledFunctions(vi.runAllTimers);
+    expect((await remaining(t)).shareGroups).toEqual([G]);
+    const d = await t.run(async (ctx) =>
+      (await ctx.db.query("groupMembers").withIndex("by_user_group", (q) => q.eq("userId", m).eq("groupId", G)).unique())!
+        .defaultAgent,
+    );
+    expect(d).toEqual({ ...GHOST });
+    expect(await reachesGhost(t, [m])).toEqual([m]);
+  }, 300_000);
+
+  test("a purge swept in one batch leaves no marker; deleting the instance mid-purge sweeps it", async () => {
+    vi.useFakeTimers();
+    const t = convexTest(schema, modules);
+    const s = await seed(t);
+    await agent(t, "lab", "small");
+    await t.run(async (ctx) => {
+      await ctx.db.insert("userAgents", {
+        userId: s.loner,
+        instanceName: "lab",
+        agentId: "small",
+        isDefault: true,
+        source: "manual",
+        createdAt: 1,
+      });
+      const row = await ctx.db
+        .query("agents")
+        .withIndex("by_instance_agent", (q) => q.eq("instanceName", "lab").eq("agentId", "small"))
+        .first();
+      await ctx.db.patch(row!._id, { presentInLastOk: false });
+    });
+    await as(t, s.admin).mutation(api.agents.removeInstanceAgent, { instanceName: "lab", agentId: "small" });
+    expect(await t.run((ctx) => ctx.db.query("agentPurges").collect())).toEqual([]);
+
+    const t2 = convexTest(schema, modules);
+    const w = await purgeWorld(t2);
+    await purgeGhost(t2, w.admin);
+    expect((await remaining(t2)).marker).toBe(1);
+    await t2.run(async (ctx) => {
+      const inst = await ctx.db.query("instances").withIndex("by_name", (q) => q.eq("name", "lab")).first();
+      await ctx.db.delete(inst!._id);
+    });
+    for (let passes = 0; ; passes++) {
+      if ((await t2.run((ctx) => sweepInstanceNameBoundBatch(ctx, "lab"))) === "done") break;
+      if (passes > 200) throw new Error("cascade never completed");
+    }
+    expect(await remaining(t2)).toEqual({ grantUsers: [], shareGroups: [], allowanceUsers: [], marker: 0 });
+  }, 300_000);
+});
+
+// codex pass 8 — the purge filter's memo under CONCURRENT resolution: the batched
+// admin list resolves a page of users in parallel, and every one of them asks for
+// the same agents' markers.
+describe("the purge marker is read once per agent, however many users share it", () => {
+  test("300 users × the same 15 direct grants: 15 marker reads, and the admin list succeeds", async () => {
+    const t = convexTest(schema, modules);
+    const s = await seed(t);
+    const AGENTS = 15;
+    const USERS = 300;
+    const users = await t.run(async (ctx) => {
+      for (let a = 0; a < AGENTS; a++) {
+        await ctx.db.insert("agents", {
+          instanceName: "prod",
+          agentId: `shared-${a}`,
+          source: "discovered",
+          presentInLastOk: true,
+          enabled: true,
+          firstSeenAt: 1,
+          lastSeenAt: 1,
+        });
+      }
+      const out: Id<"users">[] = [];
+      for (let i = 0; i < USERS; i++) {
+        const uid = await ctx.db.insert("users", {});
+        await ctx.db.insert("profiles", { userId: uid, role: "user" });
+        for (let a = 0; a < AGENTS; a++) {
+          await ctx.db.insert("userAgents", {
+            userId: uid,
+            instanceName: "prod",
+            agentId: `shared-${a}`,
+            isDefault: a === 0,
+            source: "manual",
+            createdAt: 1,
+          });
+        }
+        out.push(uid);
+      }
+      return out;
+    });
+    const measured = await t.run(async (ctx) => {
+      let markerReads = 0;
+      const db = new Proxy(ctx.db, {
+        get(target, prop) {
+          if (prop === "query") {
+            return (table: string) => {
+              if (table === "agentPurges") markerReads += 1;
+              return target.query(table as never);
+            };
+          }
+          const value = Reflect.get(target, prop, target);
+          return typeof value === "function" ? value.bind(target) : value;
+        },
+      });
+      const map = await effectiveAgentsForUsers({ ...ctx, db } as typeof ctx, users);
+      return { markerReads, counts: [...new Set(users.map((u) => map.get(u)?.count ?? -1))] };
+    });
+    // O(distinct agents), not O(users × grants) = 4,500.
+    expect(measured.markerReads).toBe(AGENTS);
+    expect(measured.counts).toEqual([AGENTS]);
+    const list = await as(t, s.admin).query(api.admin.listUsers, { withAgents: true });
+    const shown = list.filter((u: { userId: Id<"users"> }) => users.includes(u.userId));
+    expect(shown).toHaveLength(USERS);
+    expect(new Set(shown.map((u: { agentCount: number | null }) => u.agentCount))).toEqual(new Set([AGENTS]));
+  }, 120_000);
 });

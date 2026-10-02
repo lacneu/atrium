@@ -481,6 +481,8 @@ export const listAudit = query({
       impersonated: r.impersonated,
       resource: r.resource ?? null,
       resourceId: r.resourceId ?? null,
+      // Which agents changed (refs only), when the action records it.
+      details: r.details ?? null,
     }));
     // Filter in-memory over the VIEW objects (so q can search the COMPUTED
     // realLabel/targetLabel, which do not exist on the raw auditLog row). NOTE

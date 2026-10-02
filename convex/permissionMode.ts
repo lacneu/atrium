@@ -29,7 +29,7 @@ import {
   storedChoice,
 } from "./lib/permissionMode";
 import { isSessionPermissionMode } from "./lib/sessionAccess";
-import { roomProjection } from "./chatAgents";
+import { chatAgentRows, roomProjection } from "./chatAgents";
 import { decideTurnPermission, type TurnPermission } from "./bridge";
 
 const choiceValidator = v.union(
@@ -100,11 +100,8 @@ async function conversationInstances(
   const names = new Set<string>();
   if (chat.instanceName !== undefined) names.add(chat.instanceName);
   if (chat.lastRoutedInstanceName !== undefined) names.add(chat.lastRoutedInstanceName);
-  const room = await ctx.db
-    .query("chatAgents")
-    .withIndex("by_chat", (q) => q.eq("chatId", chat._id))
-    .take(50);
-  for (const a of room) names.add(a.instanceName);
+  // The live roster only: a delegation a pending purge revoked reaches nothing.
+  for (const a of await chatAgentRows(ctx, chat._id)) names.add(a.instanceName);
   return names;
 }
 
@@ -384,6 +381,8 @@ export const dispatchPermissionMode = internalAction({
             // Same person, same gateway name: reach the SAME per-conversation socket
             // as /send and /patch (see dispatchPatch).
             ...(routing.gatewayUser === undefined ? {} : { gatewayUser: routing.gatewayUser }),
+            // The widget wish, should this route open the socket (see dispatchPatch).
+            inlineWidgets: routing.inlineWidgets,
             choice: choice.choice,
             fullAuthorized: choice.fullAuthorized,
             // Re-read at the claim: the bridge refuses without it.

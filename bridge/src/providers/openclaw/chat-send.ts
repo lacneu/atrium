@@ -13,6 +13,8 @@
 // The permission mode needs no gate of this kind: its "still current" check is the
 // gateway's own, atomic with the send (`chat.send.expectedPermissionMode`).
 
+import { FrameTooLargeError, requestFrameBytes } from "../../core/frame-size.js";
+
 /**
  * What a send must still hold, re-checked right before the request.
  *  - `refresh` (optional): the LAST await before the send — a fresh read of what the
@@ -43,6 +45,9 @@ interface ChatSendTransport {
     params: Record<string, unknown>,
     timeoutMs?: number,
   ): Promise<{ payload?: Record<string, unknown> }>;
+  /** The frame limit THIS socket's gateway announced (`policy.maxPayload`); null or
+   *  absent when unknown. */
+  readonly maxPayload?: number | null;
 }
 
 function withheld(err: unknown): unknown {
@@ -58,6 +63,17 @@ export async function issueChatSend(
   timeoutMs: number,
   gate: ChatSendGate,
 ): Promise<{ payload?: Record<string, unknown> }> {
+  // THE FRAME, measured exactly as `request()` will write it, against the limit of
+  // the socket that will carry it — on every send, whichever path built it (a turn, a
+  // participant's socket, a sub-agent interaction, a lossless-claw command). Over the
+  // limit, the gateway would close the connection: the send is withheld by name
+  // instead. A caller that can make the message smaller (performSend drops
+  // re-hydrated history) does so BEFORE calling here.
+  const limit = via.maxPayload;
+  if (typeof limit === "number" && Number.isFinite(limit)) {
+    const frameBytes = chatSendFrameBytes(params);
+    if (frameBytes > limit) throw withheld(new FrameTooLargeError(frameBytes, limit));
+  }
   if (gate.refresh !== undefined) {
     try {
       await gate.refresh();
@@ -73,4 +89,10 @@ export async function issueChatSend(
     throw withheld(err);
   }
   return via.request("chat.send", params, timeoutMs);
+}
+
+/** The exact byte size of the frame `issueChatSend` writes for `params` — measured
+ *  here, at the one door that names the method, so the two cannot disagree. */
+export function chatSendFrameBytes(params: Record<string, unknown>): number {
+  return requestFrameBytes("chat.send", params);
 }
