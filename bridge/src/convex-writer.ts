@@ -347,6 +347,15 @@ export interface ConvexWriter {
       costUsd?: number | null;
       toolCalls?: number;
       compaction: string | null;
+      /** Whether this turn HAD a pre-send describe to read its pressure from
+       *  (`presend_describe`), or none at all (`absent` — a gateway-initiated run
+       *  opens without one, and the gateway stamps no usage on its agent events). The
+       *  null counters then mean "never measured", not "telemetry lost". */
+      pressureSource?: "presend_describe" | "absent";
+      /** Who started this turn: an Atrium dispatch (an outbox row), or the gateway
+       *  itself (an announce/requester-settle delivery, a talk consult, any other
+       *  spontaneous run). */
+      turnOrigin?: "dispatch" | "gateway_initiated";
       /** The send path's fill reading AND the figure it came from. Sent rather
        *  than recomputed in Convex: a percentage stripped of its provenance
        *  cannot be told apart from a gateway-measured one. */
@@ -660,11 +669,16 @@ export interface SessionRosterReport {
  * the error's class name and the frame's shape — never the message, which can quote
  * content. As a plain `Error` a refused write read exactly like a bug in the bridge's own
  * reader: production showed `«exception».Error@feed.agent` and nothing said which side
- * failed. The class says it; the op and status stay on the instance for the log line.
+ * failed. The class says it, and the sensor adds the op and the status — both structural
+ * (`ConvexIngestError.<op>.<status|timeout>`), so the sample says WHICH write Convex
+ * refused, and how.
  */
 export class ConvexIngestError extends Error {
   constructor(
-    readonly op: string,
+    /** The ingest op — a compile-time literal of `IngestOp`, never wire text: the
+     *  reader-exception sensor names it in the drift report. */
+    readonly op: IngestOp["op"],
+    /** Convex's HTTP status, or null when it never answered (the write timed out). */
     readonly status: number | null,
     message: string,
   ) {

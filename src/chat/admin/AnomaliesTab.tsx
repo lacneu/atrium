@@ -20,6 +20,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { dispatchErrorInfo } from "@/lib/dispatchErrorInfo";
+import { parseDispatchEvidence } from "./anomalyEvidence";
 import {
   Select,
   SelectContent,
@@ -398,34 +399,6 @@ export function AnomaliesTab() {
   );
 }
 
-// Parse the drill-down evidence (root cause + failing-run anchor). Two detectors
-// carry it: dispatch_failures (code + sample) and the lost-report alarm (sample
-// only — a delivery has no dominant error code, and gating on one left its rows
-// showing "—" with no way to reach the very runs the alarm exists to have
-// investigated). Other kinds return empty -> "—".
-const DRILLABLE_KINDS = new Set([
-  "openclaw.dispatch_failures",
-  "assistant.announce_errors",
-]);
-function parseDispatchEvidence(r: AnomalyView): {
-  dominantCode?: string;
-  sampleCorrelationId?: string;
-} {
-  if (!DRILLABLE_KINDS.has(r.kind) || !r.evidence) return {};
-  try {
-    const e = JSON.parse(r.evidence) as {
-      dominantCode?: string;
-      sampleCorrelationId?: string;
-    };
-    return {
-      dominantCode: e.dominantCode,
-      sampleCorrelationId: e.sampleCorrelationId,
-    };
-  } catch {
-    return {};
-  }
-}
-
 // Parse the content-free sub-agent failure evidence (a user-flagged report). The
 // categories are an allowlist enum (lib/subAgentFailure) — never raw error text.
 function parseSubAgentEvidence(r: AnomalyView): {
@@ -516,7 +489,7 @@ function CauseCell({ row }: { row: AnomalyView }) {
       </div>
     );
   }
-  const info = dispatchErrorInfo(ev.dominantCode);
+  const info = dispatchErrorInfo(ev.dominantCode, ev.context);
   const corr = ev.sampleCorrelationId;
   return (
     <div className="oc-anomaly__cause">

@@ -128,7 +128,7 @@ const KNOWN_OFFENDERS: ReadonlyArray<string> = [
   // itself is untouched: same file, same
   // call, and the list still holds exactly two entries — the ratchet counts offenders, and this
   // record is what keeps a line shift from reading as one.
-  "anomalies.ts:1856",
+  "anomalies.ts:1926",
   // Moved 926 -> 930 by the snapshot credential mask, then -> 939 by the masked reads.
   // Same file,
   // same call: the ratchet counts offenders, and this record is what keeps a line shift

@@ -12,6 +12,7 @@
 //   - REQUIRES A LIVE DEPLOYMENT + a reachable bridge to actually send; the
 //     `fetch` here only runs server-side on Convex.
 
+import { isGatewayCommandText } from "./lib/gatewayCommand";
 import { v } from "convex/values";
 import { chatAllowsInstance } from "./lib/ingestAuthz";
 import {
@@ -2047,6 +2048,9 @@ export const chainedPrompt = internalQuery({
     if (row === null || row.chainStep === undefined || row.messageId === undefined) {
       return null;
     }
+    // A gateway COMMAND goes to every agent of the chain exactly as typed: the earlier
+    // replies appended to it would become its arguments (lib/gatewayCommand.ts).
+    if (isGatewayCommandText(row.text)) return row.text;
     const question = await ctx.db.get(row.messageId);
     const chat = await ctx.db.get(row.chatId);
     if (question === null || chat === null) return null;
@@ -2711,13 +2715,18 @@ export const dispatch = internalAction({
       // measured against the exact string that ships.
       // A CHAINED reply is asked the question WITH the replies already given to it
       // (chainedPrompt); every other row sends its text as is.
+      // A GATEWAY COMMAND (`/…`) is sent EXACTLY as typed — no quoted-reply preamble in
+      // front of it (nor, in `chainedPrompt`, earlier replies behind it): the gateway
+      // reads a command from the text's first word and takes everything after it as
+      // arguments (lib/gatewayCommand.ts).
+      const verbatimCommand = isGatewayCommandText(row.text);
       const promptText =
         row.chainStep === undefined
           ? row.text
           : ((await ctx.runQuery(internal.bridge.chainedPrompt, { outboxId })) ?? row.text);
       const composedText = (() => {
         const excerpts = outboxExcerpts(row);
-        return excerpts.length === 0
+        return excerpts.length === 0 || verbatimCommand
           ? promptText
           : composeQuotedText(
               fillQuoteTemplate(

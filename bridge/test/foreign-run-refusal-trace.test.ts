@@ -111,3 +111,55 @@ describe("the gateway-pressure trace carries WHY a foreign run was refused", () 
     expect(writer.pressures).toEqual([]);
   });
 });
+
+// WHY the counters are null (prod 2026-10-01: 3 of 4 `chat.gateway_pressure` traces with
+// null pressure, read by the watcher agent as lost telemetry). A gateway-initiated run —
+// requester-settle, a talk consult — opens with no pre-send describe and the gateway
+// stamps no usage on its agent events: its counters are null by construction, and the
+// trace now says so, with who started the turn.
+describe("the gateway-pressure trace says where its counters came from", () => {
+  const finalWithStop = (runId: string) => ({
+    type: "event" as const,
+    event: "chat",
+    payload: {
+      runId,
+      sessionKey: SK,
+      state: "final",
+      stopReason: "stop",
+      message: { role: "assistant", content: [{ type: "text", text: "delivered" }] },
+    },
+  });
+
+  it("a gateway-initiated turn: no describe, so `absent` / `gateway_initiated` — never backfilled", async () => {
+    const writer = new TraceWriter();
+    const manager = new RunManager("chat-3", SK, writer);
+    // A dispatched turn first, WITH pressure: its figures must not leak into the next.
+    await manager.beginTurn(1000, OWN, {
+      expectedSessionId: null,
+      pressure: { totalTokens: 5_000, contextTokens: 100_000, fillPct: 5, fillSource: "counter" },
+      dispatchOutboxId: "ob-1",
+    });
+    await manager.feed(finalWithStop(OWN), 1100);
+    const settle = "announce:requester-settle:abc";
+    // No turn is active: the run manager opens the SPONTANEOUS turn itself, as it
+    // does for a requester-settle delivery in production.
+    await manager.feed(finalWithStop(settle), 2100);
+    for (let i = 0; i < 20 && writer.pressures.length < 2; i++) {
+      await new Promise((r) => setTimeout(r, 5));
+    }
+
+    expect(writer.pressures).toHaveLength(2);
+    expect(writer.pressures[0]).toMatchObject({
+      pressureSource: "presend_describe",
+      turnOrigin: "dispatch",
+      totalTokens: 5_000,
+    });
+    expect(writer.pressures[1]).toMatchObject({
+      pressureSource: "absent",
+      turnOrigin: "gateway_initiated",
+      totalTokens: null,
+      contextTokens: null,
+    });
+    expect(writer.pressures[1]?.fillPct).toBeUndefined();
+  });
+});

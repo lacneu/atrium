@@ -9,6 +9,7 @@ import { describe, expect, it } from "vitest";
 import {
   classifyFailureText,
   fallbackSummaryCauses,
+  isProviderAuthRevokedText,
 } from "../src/core/failure-classifier.js";
 
 describe("classifyFailureText", () => {
@@ -656,5 +657,117 @@ describe("classifyFailureText", () => {
     expect(fallbackSummaryCauses("prompt too large for the model")).toBeNull();
     expect(fallbackSummaryCauses("All models failed (2): no attempt segment here")).toBeNull();
     expect(classifyFailureText("All models failed (2): no attempt segment here")).toBeNull();
+  });
+});
+
+// THE PROVIDER REVOKED THE AGENT'S CREDENTIAL (prod 2026-10-02, agent `jerome`). Three turns
+// failed under upstream's preflight-compaction headline, "Context is too large …", while the
+// cause inside was a 401 on an invalidated OAuth token and the gateway's own
+// re-authentication hint. Composed exactly as v2026.9.6 composes it:
+// agent-runner-failure-reply.ts:198-218 (wrapper, ` Reason: <reason>.`, fixed tail),
+// model-fallback-runner.ts:698-701 (`<provider>/<model>: <error> (<reason>)`, " | ") and
+// model-fallback-attempt.ts:627-628 (`. Re-authenticate with: <command>`). Gateway text only.
+const REVOKED_CAUSE = "401: Encountered invalidated oauth token for user";
+const REAUTH_HINT =
+  "Re-authenticate with: openclaw models auth login --provider 'openai' --force";
+const PROD_REVOKED_TEXT =
+  "⚠️ Context is too large and auto-compaction could not recover this turn. Reason: " +
+  `All models failed (2): openai/gpt-5.6-sol: ${REVOKED_CAUSE} (auth) | ` +
+  `openai/gpt-5.6-terra: ${REVOKED_CAUSE} (auth). ${REAUTH_HINT}. ` +
+  "Try again, use /compact, or use /new to start a fresh session.";
+
+describe("provider_auth_revoked — the credential the provider refused", () => {
+  it("names the production text, not the 'context too large' headline around it", () => {
+    expect(classifyFailureText(PROD_REVOKED_TEXT)).toBe("provider_auth_revoked");
+    // The chat error frame caps `errorMessage` at 240 characters (server-chat.ts): the hint
+    // is cut off, and the 401 refusal alone still names it.
+    const capped = PROD_REVOKED_TEXT.slice(0, 240);
+    expect(capped).not.toContain("Re-authenticate");
+    expect(classifyFailureText(capped)).toBe("provider_auth_revoked");
+  });
+
+  it("either fixed phrase is enough, bare or in a fallback summary", () => {
+    expect(classifyFailureText(REVOKED_CAUSE)).toBe("provider_auth_revoked");
+    expect(classifyFailureText(`${REAUTH_HINT}.`)).toBe("provider_auth_revoked");
+    expect(
+      classifyFailureText(
+        `All models failed (2): openai/a: ${REVOKED_CAUSE} (auth) | openai/b: ${REVOKED_CAUSE} (auth). ${REAUTH_HINT}`,
+      ),
+    ).toBe("provider_auth_revoked");
+    for (const t of [
+      "HTTP 401: the access token has been revoked",
+      "HTTP 401: Your authentication token has been invalidated. Please try signing in again.",
+      "401 Unauthorized: expired OAuth token",
+      "(401) revoked refresh token",
+    ]) {
+      expect(classifyFailureText(t), t).toBe("provider_auth_revoked");
+    }
+    // The CLI-backend producer (src/agents/cli-runner/prepare.ts:484), quoted backend id
+    // blanked, fixed words kept.
+    expect(
+      classifyFailureText(
+        `CLI backend "codex" could not resolve its login. ${REAUTH_HINT}. OpenClaw did not start the run.`,
+      ),
+    ).toBe("provider_auth_revoked");
+  });
+
+  it("is never one of the classes the automatic retry or the overflow card keys on", () => {
+    const cls = classifyFailureText(PROD_REVOKED_TEXT);
+    expect(cls).not.toBe("provider_internal");
+    expect(cls).not.toBe("context_length");
+    expect(cls).not.toBe("session_init_conflict");
+    expect(cls).not.toBe("session_gone");
+  });
+
+  it("the COOLDOWN keeps its own class, re-authentication hint included", () => {
+    // The cooldown's hint (oauth-refresh-failure.ts:560) is spelled with a backtick, no
+    // colon — and the cooldown rule comes first anyway.
+    expect(
+      classifyFailureText(
+        'Auth profile "openai:someone" is temporarily unavailable for openai/gpt-5.6-sol. Re-authenticate with `openclaw models auth login --provider openai`.',
+      ),
+    ).toBe("auth_profile_cooldown");
+  });
+
+  it("a graver class in the same text still wins", () => {
+    expect(
+      classifyFailureText(`database or disk is full | ${REVOKED_CAUSE} (auth)`),
+    ).toBe("gateway_storage_unavailable");
+  });
+
+  it("upstream's HEDGED 401 copy stays unclassified — it says the failure may pass", () => {
+    expect(
+      classifyFailureText(
+        "Authentication failed (provider returned HTTP 401). Your provider token may have expired — try the request again in a moment. If the failure persists, re-authenticate this provider.",
+      ),
+    ).not.toBe("provider_auth_revoked");
+  });
+
+  it("NO operator value can carry it — quoted, a model id, inside the wrapper", () => {
+    // A session key carrying the refusal: blanked, and the sentence keeps its own class.
+    expect(
+      classifyFailureText(
+        `Session "${REVOKED_CAUSE}" changed while starting work. Retry.`,
+      ),
+    ).toBe("session_init_conflict");
+    expect(classifyFailureText(`MCP server "${REAUTH_HINT}" failed to start.`)).toBeNull();
+    expect(
+      classifyFailureText(`Auth profile "${REVOKED_CAUSE}" type mismatch for x.`),
+    ).toBeNull();
+    // A MODEL ID inside the wrapped summary: before the wrapper's reason went through
+    // `fallbackSummaryCauses`, this id chose the class. Now its cause decides.
+    expect(
+      classifyFailureText(
+        "⚠️ Context is too large and auto-compaction could not recover this turn. Reason: " +
+          "All models failed (2): acme/(401:revoked-token): fetch failed (unknown) | " +
+          "acme/(401:revoked-token)-b: fetch failed (unknown). " +
+          "Try again, use /compact, or use /new to start a fresh session.",
+      ),
+    ).toBe("provider_internal");
+    // The exported predicate (the dispatch door's) strips on its own, too.
+    expect(isProviderAuthRevokedText(`Session "${REVOKED_CAUSE}" was deleted.`)).toBe(false);
+    expect(isProviderAuthRevokedText(`MCP server "${REAUTH_HINT}" failed.`)).toBe(false);
+    // …and a status-less number in a model id never stands as the status.
+    expect(classifyFailureText("model acme/x-401-expired-token is unavailable")).toBeNull();
   });
 });

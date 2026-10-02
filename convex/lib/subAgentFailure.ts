@@ -17,7 +17,7 @@
 // and using it would leak content into the anomaly/MCP plane.
 
 /** The four lifecycle states the bridge writes (mirrors the schema union). */
-import { withoutOperatorValues } from "./chatRenderState";
+import { isProviderAuthRevokedFailureText, withoutOperatorValues } from "./chatRenderState";
 export type SubAgentStatus = "running" | "done" | "error" | "aborted";
 
 /**
@@ -39,6 +39,11 @@ export const SUBAGENT_ERROR_CATEGORIES = [
   // The gateway closed the agent's database to new work (OpenClaw 2026.9.5+): the child
   // was refused or retired by the gateway, not failed by its own task.
   "gateway_agent_db_closed",
+  // The model provider refused the agent's credential as revoked or expired: the child
+  // did not fail its task, its agent cannot reach the model until an operator
+  // fixes its credential. Before the text patterns — its `401` would read as `api_error`,
+  // and an "expired" token as a `timeout`.
+  "provider_auth_revoked",
   // OUR verdict, not the gateway's: a reaper gave up on a child it saw no activity from
   // (Convex's stale-row reaper, 20 min; the bridge's no-frame sweep, 15 min). The child
   // may have run unseen — a frozen bridge, a reconnect — or never started. Decided from
@@ -97,6 +102,7 @@ const GATEWAY_AGENT_DB_CLOSED_TEXT_RE =
 const CATEGORY_BY_CODE: Readonly<Record<string, SubAgentErrorCategory>> = {
   gateway_storage_unavailable: "gateway_storage_unavailable",
   gateway_agent_db_closed: "gateway_agent_db_closed",
+  provider_auth_revoked: "provider_auth_revoked",
   [SUBAGENT_NO_ACTIVITY_CODE]: "no_activity",
 };
 
@@ -127,6 +133,9 @@ export function classifySubAgentError(
   // Storage first, as in the bridge: an admission refusal can carry a full disk as its reason.
   if (GATEWAY_STORAGE_UNAVAILABLE_TEXT_RE.test(text)) return "gateway_storage_unavailable";
   if (GATEWAY_AGENT_DB_CLOSED_TEXT_RE.test(text)) return "gateway_agent_db_closed";
+  // The shared mirror of the bridge rule (chatRenderState), on the RAW message: it does its
+  // own operator-value stripping, model ids of a fallback summary included.
+  if (isProviderAuthRevokedFailureText(errorMessage)) return "provider_auth_revoked";
   if (TIMEOUT_RE.test(text)) return "timeout";
   if (API_ERROR_RE.test(text)) return "api_error";
   if (TOOL_FAILED_RE.test(text)) return "tool_failed";

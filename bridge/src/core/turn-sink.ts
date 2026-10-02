@@ -2487,6 +2487,14 @@ export class TurnSink {
               }
             : {}),
           toolCalls: this.toolCallCount,
+          // WHERE the counters above came from, and WHO started the turn. A
+          // gateway-initiated run (an announce/requester-settle delivery, a talk
+          // consult) opens with no pre-send describe and the gateway stamps no usage
+          // on its agent events, so its counters are null BY CONSTRUCTION — said so,
+          // rather than left to read as lost telemetry. Never backfilled from an older
+          // describe: that would be another session state presented as this turn's.
+          pressureSource: this.pressure !== null ? "presend_describe" : "absent",
+          turnOrigin: this.dispatchOutboxId !== null ? "dispatch" : "gateway_initiated",
           // Frames LOST during this turn (0 on the overwhelming majority). A
           // non-zero value is the honest answer to "why does this reply look
           // truncated" — the measure did not exist before this lot.

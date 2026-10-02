@@ -122,6 +122,14 @@ export function agentAddressFailure(error: unknown): "too_many" | "invalid" | nu
   return null;
 }
 
+/** The server refused a COMMAND (`/…`) sent with files: a command leaves exactly as
+ *  typed, and files can only reach the agent as text added to the message
+ *  (convex/lib/gatewayCommand.ts `COMMAND_WITH_ATTACHMENTS`). */
+export function commandWithFilesRefused(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error ?? "");
+  return message.includes("COMMAND_WITH_ATTACHMENTS");
+}
+
 export function useConvexChatRuntime({ chatId }: UseConvexChatRuntimeArgs) {
   const convex = useConvex();
   // Surface attachment rejections (e.g. too large) as a visible toast — assistant-ui
@@ -868,6 +876,9 @@ export function useConvexChatRuntime({ chatId }: UseConvexChatRuntimeArgs) {
                 : m.chat_send_agents_invalid(),
             );
           }
+          // A command (`/…`) is sent exactly as typed and cannot carry files: said, so
+          // the writer removes them or sends them apart (convex/lib/gatewayCommand.ts).
+          if (commandWithFilesRefused(e)) toast.error(m.chat_send_command_with_files());
           // The mutation rejected BEFORE the server accepted the turn (validation,
           // auth, transient client failure). No assistant reply will arrive, so
           // the reactive clear can't fire — release the in-flight gate now instead
@@ -991,6 +1002,8 @@ export function useConvexChatRuntime({ chatId }: UseConvexChatRuntimeArgs) {
             ? m.chat_send_agents_invalid()
             : failure.includes("QUEUE_FULL")
             ? m.chat_queue_full()
+            : commandWithFilesRefused(e)
+            ? m.chat_send_command_with_files()
             : // A voice call pins this chat's agent. The selector normally says so
               // BEFORE the click — but not for a reader who has no selector: a
               // single-agent participant sees no picker and no voice control, so the

@@ -271,7 +271,9 @@ function main(): void {
         "`deliveredFileCount` (files in the bubble, a count) says a file answered. " +
         "`subAgents` samples carry `errorCategory` (tool_failed | timeout | aborted | " +
         "api_error | spawn_refused | gateway_storage_unavailable | " +
-        "gateway_agent_db_closed | no_activity | unknown): `timeout` is a limit the " +
+        "gateway_agent_db_closed | provider_auth_revoked | no_activity | unknown): " +
+        "`provider_auth_revoked` = the model provider refused the agent's credential " +
+        "(check which profile that agent or its session uses on the gateway); `timeout` is a limit the " +
         "GATEWAY enforced; `no_activity` is ATRIUM's reaper giving up on a child it saw " +
         "nothing from (it may have run unseen — a frozen bridge, a reconnect — or never " +
         "started); rows reaped before that code existed still read `timeout`. " +

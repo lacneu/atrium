@@ -16,8 +16,15 @@ export interface DispatchErrorInfo {
   hint: string;
 }
 
+/** What an anomaly's evidence can say about WHERE the cause sits, for the hints whose
+ *  fix names an agent or a provider. Ids only. */
+export interface DispatchErrorContext {
+  agentId?: string;
+  provider?: string;
+}
+
 // code → resolver (re-localizes FR↔EN at call time via Paraglide).
-const INFO: Record<string, () => DispatchErrorInfo> = {
+const INFO: Record<string, (ctx: DispatchErrorContext) => DispatchErrorInfo> = {
   AGENT_NOT_FOUND: () => ({
     label: m.error_agent_not_found_label(),
     hint: m.error_agent_not_found_hint(),
@@ -109,6 +116,20 @@ const INFO: Record<string, () => DispatchErrorInfo> = {
     label: m.error_attachment_cleanup_unconfirmed_label(),
     hint: m.error_attachment_cleanup_unconfirmed_hint(),
   }),
+  // The provider refused the credential this AGENT used. The hint is READ-ONLY diagnosis:
+  // a per-agent login would write a separate copy into that agent's own store
+  // (upstream src/agents/auth-profiles/shared-store-bootstrap.ts:229-245) and mask the
+  // instance's shared login, which is not a fix. The commands exist in v2026.9.6
+  // (src/cli/models-cli.ts:331-336 `models auth list`, :524-531 `models auth order get`).
+  // Filled from the anomaly when it names exactly one agent and one provider; the
+  // placeholders stay otherwise, so a command never aims at a guess.
+  provider_auth_revoked: (ctx) => ({
+    label: m.error_provider_auth_revoked_label(),
+    hint: m.error_provider_auth_revoked_hint({
+      agentId: ctx.agentId ?? "<agentId>",
+      provider: ctx.provider ?? "<provider>",
+    }),
+  }),
   UPSTREAM_ERROR: () => ({
     label: m.error_upstream_error_label(),
     hint: m.error_upstream_error_hint(),
@@ -122,7 +143,8 @@ const INFO: Record<string, () => DispatchErrorInfo> = {
 /** Look up the admin info for a dispatch error code; falls back to the raw code. */
 export function dispatchErrorInfo(
   code: string | undefined | null,
+  ctx: DispatchErrorContext = {},
 ): DispatchErrorInfo {
-  if (!code) return INFO.UNKNOWN!();
-  return INFO[code]?.() ?? { label: code, hint: m.error_uncategorized_hint() };
+  if (!code) return INFO.UNKNOWN!(ctx);
+  return INFO[code]?.(ctx) ?? { label: code, hint: m.error_uncategorized_hint() };
 }

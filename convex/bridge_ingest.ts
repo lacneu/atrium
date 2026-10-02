@@ -64,6 +64,11 @@ import {
  * a metadata-ONLY record exposed through the diagnostic surface (codex P1, SOC2).
  */
 const TIMEOUT_PHASES = new Set(["provider", "queue", "gateway_draining"]);
+/** `chat.gateway_pressure`: where the pre-turn counters came from, and who started the
+ *  turn (bridge core/turn-sink.ts). Closed lists — the boundary does not store an
+ *  unreviewed label. */
+const PRESSURE_SOURCES: ReadonlySet<string> = new Set(["presend_describe", "absent"]);
+const TURN_ORIGINS: ReadonlySet<string> = new Set(["dispatch", "gateway_initiated"]);
 function bucketTimeoutPhase(phase: string): string {
   return TIMEOUT_PHASES.has(phase) ? phase : "other";
 }
@@ -365,6 +370,10 @@ type IngestOp =
        *  turns and 272000 on others of the same chat looked like a contradiction
        *  until the model explained it (prod 2026-08-08). */
       model?: string | null;
+      /** Whether the turn had a pre-send describe to read its pressure from, and
+       *  who started it. Closed vocabularies: anything else is dropped. */
+      pressureSource?: string;
+      turnOrigin?: string;
       /** WHY it compacted — bucketed by the bridge, re-bucketed on arrival. */
       compactionReason?: string;
       /** The gateway REFUSED to compact rather than failing at it. */
@@ -740,6 +749,7 @@ export const ingest = httpAction(async (ctx, request) => {
   try {
     body = (await request.json()) as IngestOp;
   } catch {
+    await traceIngestRejected(ctx, null, 400, "invalid_body");
     return new Response(JSON.stringify({ ok: false, error: "invalid body" }), {
       status: 400,
       headers: { "Content-Type": "application/json" },
@@ -1228,6 +1238,14 @@ export const ingest = httpAction(async (ctx, request) => {
           ...(typeof body.model === "string" && body.model
             ? { model: body.model.slice(0, 64) }
             : {}),
+          // WHY the counters may be null, and WHO started the turn: a
+          // gateway-initiated run (announce/requester-settle, talk consult) has no
+          // pre-send describe, so `absent` is its honest reading — not lost
+          // telemetry. Closed vocabularies: an unknown value is dropped, never stored.
+          ...(PRESSURE_SOURCES.has(String(body.pressureSource))
+            ? { pressureSource: body.pressureSource }
+            : {}),
+          ...(TURN_ORIGINS.has(String(body.turnOrigin)) ? { turnOrigin: body.turnOrigin } : {}),
           // Session-cumulative cost BEFORE the turn (per-turn cost = the delta
           // between consecutive gateway_pressure traces of the chat).
           ...(typeof body.costUsd === "number" ? { costUsd: body.costUsd } : {}),
@@ -1760,6 +1778,7 @@ export const ingest = httpAction(async (ctx, request) => {
       return json({ ok: true, settled: res.settled });
     }
     default:
+      await traceIngestRejected(ctx, (body as { op?: unknown }).op, 400, "unknown_op");
       return json({ ok: false, error: "unknown op" }, 400);
   }
   } catch (e) {
@@ -1767,10 +1786,40 @@ export const ingest = httpAction(async (ctx, request) => {
     // chatAllowsInstance re-check) → 403. Any other error re-throws — a real
     // failure must never read as a cross-instance denial.
     const msg = e instanceof Error ? e.message : String(e);
-    if (!msg.includes("forbidden: cross-instance")) throw e;
+    if (!msg.includes("forbidden: cross-instance")) {
+      // The 500 the bridge reports as `ConvexIngestError.<op>.500`: traced HERE too, so
+      // the drift sample on the bridge and a row on this side name the same write.
+      // Content-free — the op and the status, never the message.
+      await traceIngestRejected(ctx, body.op, 500, "handler_threw");
+      throw e;
+    }
     return await forbiddenResponse(ctx, body.op, boundInstanceName, true);
   }
 });
+
+/** An ingest op as it may be STORED: the bridge's literal (`IngestOp["op"]`), or a
+ *  sentinel — a 400 can carry anything, and a trace never stores wire text. */
+const INGEST_OP_LABEL = /^[A-Za-z][A-Za-z0-9]{0,39}$/;
+
+/** `openclaw.ingest.rejected`: Convex refused a bridge write with a 400 or a 500. The
+ *  bridge sees the same refusal as `ConvexIngestError.<op>.<status>` in its drift report;
+ *  this row is the Convex side of it, so the two can be matched. Structural only. */
+async function traceIngestRejected(
+  ctx: ActionCtx,
+  op: unknown,
+  status: 400 | 500,
+  reason: "invalid_body" | "unknown_op" | "handler_threw",
+): Promise<void> {
+  await traceIngest(ctx, {
+    kind: "openclaw.ingest.rejected",
+    status,
+    meta: {
+      op: typeof op === "string" && INGEST_OP_LABEL.test(op) ? op : op == null ? "«none»" : "«unprintable»",
+      status,
+      reason,
+    },
+  });
+}
 
 function json(value: unknown, status = 200): Response {
   return new Response(JSON.stringify(value), {

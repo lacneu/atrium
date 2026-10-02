@@ -29,6 +29,7 @@ import { PermissionModeNotAppliedError } from "../providers/openclaw/permission-
 import { KnowledgePolicyNotAppliedError } from "../providers/openclaw/knowledge-policy.js";
 import {
   gatewayOwnRefusal,
+  isProviderAuthRevokedText,
   isProviderReviewPausedText,
   isSessionArchivedText,
   isSessionInitConflictText,
@@ -173,6 +174,16 @@ export type DispatchErrorCode =
   // request the gateway had plainly answered. Not retried: the refusal lasts until the
   // gateway's operator acts (or its startup inspection finishes).
   | "gateway_agent_db_closed"
+  // The MODEL PROVIDER refused this agent's credential as revoked or expired (the
+  // gateway's `Re-authenticate with:` hint, or a `401 … invalidated|expired|revoked …
+  // token` refusal — core/failure-classifier.ts `isProviderAuthRevokedText`). The same
+  // class, spelled the same way, as the turn-level one, so the card, the anomaly plane and
+  // the retry policy key on one string whichever door it came through. Normally it comes
+  // back on the STREAM — the provider is called after `chat.send` is admitted — and this
+  // door exists so a refusal surfaced by the RPC itself is not read as OUR credentials
+  // (`AUTH_TOKEN_MISMATCH` would paint the bridge red for a provider's revocation). Never
+  // retried: every attempt fails the same way until an operator fixes the agent's credential.
+  | "provider_auth_revoked"
   | "UPSTREAM_ERROR"; // anything else (fallback)
 
 /**
@@ -268,6 +279,9 @@ const DOWNSTREAM_REJECTION_CODES: ReadonlySet<DispatchErrorCode> = new Set([
   // gateway host must never paint the bridge red.
   "gateway_storage_unavailable",
   "gateway_agent_db_closed",
+  // The gateway reached the MODEL PROVIDER, which refused the agent's credential: the
+  // bridge's link and its own credentials worked.
+  "provider_auth_revoked",
 ]);
 
 /**
@@ -390,6 +404,12 @@ export function classifyGatewayError(
   // retry and blaming the bridge (codex).
   const msg = withoutOperatorData(errorChainText(err)).toLowerCase();
 
+  // BEFORE the gateway-credential rule just below: a provider's refusal can say
+  // "unauthorized", and read there it blamed the bridge's own pairing for an agent
+  // credential the PROVIDER revoked.
+  if (isProviderAuthRevokedText(msg)) {
+    return "provider_auth_revoked";
+  }
   if (
     /no longer exists|agent[^.]*not found|unknown agent|no such agent/.test(msg)
   ) {

@@ -184,6 +184,7 @@ import {
   type InboundReference,
 } from "./core/inbound-media.js";
 import { applyMediaDeliveryInjection } from "./core/outbound-delivery.js";
+import { isGatewayCommandText } from "./core/gateway-command.js";
 import {
   buildSessionKey,
   talkSessionOwner,
@@ -852,9 +853,13 @@ export function projectTaskProbe(task: Record<string, unknown> | undefined): {
  *     unsafe (fail closed). KNOWN GAP on those gateways only: that turn (and that
  *     chat, until the session next rolls) lacks pre-attachment context.
  *   - `rehydrate`       — fresh, enabled, and attachment-free or attachment-safe.
+ *   - `skip_command`    — the turn is a GATEWAY COMMAND (`/…`, core/gateway-command.ts):
+ *     history in front of it would make it arguments, or no command at all. The
+ *     freshness flags are left unconsumed, so the next ordinary turn re-hydrates.
  */
 export type RehydrationDecision =
   | "rehydrate"
+  | "skip_command"
   | "skip_attachment"
   | "skip_disabled"
   | "skip_warm"
@@ -874,7 +879,10 @@ export function rehydrationDecision(opts: {
    *  almost-full session worse. `null` never refuses — a guard must not cost a
    *  turn on an absent measure (P6). */
   fill?: number | null;
+  /** The turn is a gateway command, sent exactly as typed. */
+  command?: boolean;
 }): RehydrationDecision {
+  if (opts.command === true) return "skip_command";
   if (!opts.enabled) return "skip_disabled";
   if (!opts.freshSession) return "skip_warm";
   if (opts.hasAttachments && opts.attachmentsSafe !== true) {
@@ -1694,6 +1702,13 @@ async function performSendComposed(
   const rehydrationEnabled =
     body.config?.rehydration ?? process.env.OPENCLAW_REHYDRATION !== "off";
   let message = body.text;
+  // A GATEWAY COMMAND (`/knowledge once graph`, `/new`, …) leaves EXACTLY as typed: no
+  // re-hydrated history in front, no received-files block or delivery instruction behind
+  // — each became the command's arguments (prod 2026-09-27: "unknown subcommand:
+  // [livraison]"). See core/gateway-command.ts. Inline attachments still ride
+  // `params.attachments`, which is not the text; what a command does with them is the
+  // gateway's to decide.
+  const verbatimCommand = isGatewayCommandText(body.text);
   // How much was PREPENDED to the user's own text, so mention offsets can follow
   // it. Only re-hydration prepends here (the received-files block and the media
   // delivery instruction are appended), and Convex has already accounted for the
@@ -1912,11 +1927,16 @@ async function performSendComposed(
         contextTokens: preTurnContextTokens,
         totalTokensFresh: preTurnTotalTokensFresh,
       });
-      const action = presendAction({
-        fill: fill0.fill,
-        overflowTokens: preTurnOverflowTokens,
-        alreadyCompacted: false,
-      });
+      // A GATEWAY COMMAND is neither compacted before nor withheld: `/compact` and
+      // `/new` are precisely what a full session needs, and a command is run by the
+      // gateway, not submitted to the model as this prompt.
+      const action = verbatimCommand
+        ? "send"
+        : presendAction({
+            fill: fill0.fill,
+            overflowTokens: preTurnOverflowTokens,
+            alreadyCompacted: false,
+          });
       presend = {
         action,
         fillPct: fill0.fill === null ? null : Math.round(fill0.fill * 100),
@@ -2197,6 +2217,7 @@ async function performSendComposed(
         true,
       enabled: rehydrationEnabled,
       fill: liveFill,
+      command: verbatimCommand,
     });
     let prependedTurns = 0;
     let summaryUsed = false;
@@ -2552,7 +2573,15 @@ async function performSendComposed(
   // drop one file; an unsafe path or uncertain cleanup rolls back the batch and
   // fails the turn. Reference files do
   // NOT set hasInlineAttachments, so they bypass the frame guard + rehydration guard.
-  if (body.referenceAttachments.length > 0 && inbound !== null) {
+  if (body.referenceAttachments.length > 0 && inbound !== null && verbatimCommand) {
+    // A shared-fs file reaches the agent only as PATH TEXT appended to the message, and
+    // a command's text is never extended. Convex refuses a command with files at the
+    // send (convex/send.ts), so only an older Convex or a direct caller gets here: the
+    // command goes out as typed, the files are not staged, and the log says so.
+    console.error(
+      `[inbound-media] chat=${body.chatId} ${body.referenceAttachments.length} file(s) NOT staged — the message is a gateway command, sent exactly as typed`,
+    );
+  } else if (body.referenceAttachments.length > 0 && inbound !== null) {
     const staged = await stageInboundReferences(
       body.referenceAttachments,
       body.clientMessageId,
@@ -2608,7 +2637,10 @@ async function performSendComposed(
         // is positive: attest the instance. The turn still goes through either way.
         "the gateway version is unknown, so a delivered file cannot be proven safe"
       : mediaDeliveryPoisonReason("openclaw", effectiveGatewayVersion);
-  if (deliveryDir !== null && poisonReason === null) {
+  if (verbatimCommand) {
+    // A command is never extended (see `verbatimCommand`): the instruction would become
+    // its arguments.
+  } else if (deliveryDir !== null && poisonReason === null) {
     // `media_delivery` injection: the admin's resolved text, the bridge's own default
     // (pre-feature Convex), or NOTHING when the admin disabled it. See the function.
     message = applyMediaDeliveryInjection(
@@ -2850,15 +2882,19 @@ async function performSendComposed(
     // now consume firstSendPending (codex P2.A). A failed send above leaves it true so a
     // retry of this freshly-routed session re-hydrates again; a post-ack beginTurn throw
     // is fine to consume past (the gateway already has the re-grounded message).
-    session.firstSendPending = false;
+    // …EXCEPT for a gateway command, which carried no history (`skip_command`): the
+    // flags stay set, so the next ordinary turn on this session is still re-grounded.
+    if (!verbatimCommand) session.firstSendPending = false;
     // CONSUMED with the send that carried the history, like firstSendPending. Left
     // set, the claim's "I created this session" verdict made EVERY later turn on this
     // socket read as fresh and re-prepend the whole thread (measured live on the
     // trusted-proxy bench, 2026-09-25: a second turn logged `fresh session ->
     // prepended 2 prior turn(s)`). A failed send above keeps it, so a retry of that
     // first turn still re-hydrates.
-    conn.claimCreatedSession = false;
-    conn.sessionReplaced = false;
+    if (!verbatimCommand) {
+      conn.claimCreatedSession = false;
+      conn.sessionReplaced = false;
+    }
     const ackRunId = extractRunId(response);
     // Anchor the RAW user text for orphan-recovery boundary validation — NOT
     // params.message: the enriched message can END with static injections (the

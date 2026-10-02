@@ -5,6 +5,7 @@
 // can cancel it (signal + server-side stopRun). Lost on restart = fine: an
 // abort only means anything for a turn live in THIS process.
 
+import { isGatewayCommandText } from "../../core/gateway-command.js";
 import type { BridgeConfig } from "../../config.js";
 import { CLASSIFIED_HERMES_CAPABILITIES } from "./classified-capabilities.js";
 import type { ConvexWriter } from "../../convex-writer.js";
@@ -92,6 +93,9 @@ export async function promptWithFreshSessionHistory(
   // A WARM session keeps its own history on the Hermes side — but in a room of
   // several agents, what OTHERS said since this agent's last reply is not in it.
   // On a turn that switches agent, those turns (and only those) are carried.
+  // A command (`/…`) leaves exactly as typed: history in front of it would make it an
+  // ordinary prompt (core/gateway-command.ts).
+  if (isGatewayCommandText(body.text)) return body.text;
   const catchUp = !freshSession && body.config?.routedSwitch === true;
   if (!freshSession && !catchUp) return body.text;
   const enabled =

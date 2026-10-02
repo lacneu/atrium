@@ -1,4 +1,5 @@
 import { randomBytes } from "node:crypto";
+import { ConvexIngestError } from "../../convex-writer.js";
 
 // Protocol DRIFT detector (Inc 2 of docs/PROTOCOL_CONTRACT.md).
 //
@@ -1415,6 +1416,12 @@ export interface DriftEntry {
   /** `chat.<field>` or `agent.<field>` — schema vocabulary only. */
   shape: string;
   count: number;
+  /** When this process FIRST and LAST observed the shape (epoch ms). A count alone could
+   *  not say whether a sample is still happening or a leftover from hours ago — the
+   *  question an operator asks first, and the one a restart-scoped counter cannot answer
+   *  by itself. Timestamps only: no frame content. */
+  firstAt: number;
+  lastAt: number;
 }
 
 // Bounds: a pathological gateway must not grow memory or spam logs.
@@ -1462,6 +1469,30 @@ export const SAFE_CLASS_MAX = 48;
 const SAFE_NAME_CHARS = /^[a-zA-Z][a-zA-Z0-9._-]*$/; // compiled once: this sits on the frame path
 export function containName(raw: string, max: number = SAFE_NAME_MAX): string {
   return raw.length <= max && SAFE_NAME_CHARS.test(raw) ? raw : "«unprintable»";
+}
+
+/** An ingest op name as `ConvexIngestError` carries it (an `IngestOp` literal). Checked
+ *  anyway: this string is stored, and a class name must never become free text. */
+const INGEST_OP_NAME = /^[A-Za-z][A-Za-z0-9]{0,39}$/;
+
+/** The class a reader exception is filed under. For a write CONVEX refused it says which
+ *  write and how — `ConvexIngestError.<op>.<status|timeout>` — because the bare class told
+ *  an operator only that "some ingest failed" (prod 2026-10-01: a drift sample nobody
+ *  could attribute). Both parts are structural: the op is a compile-time literal, the
+ *  status an HTTP code or `timeout` (Convex never answered); the message stays out. The
+ *  Convex grammar accepts exactly this form (convex/compat.ts, INGEST_CLASS_NAME). */
+export function exceptionClassName(err: unknown): string {
+  if (err instanceof ConvexIngestError && INGEST_OP_NAME.test(err.op)) {
+    const status =
+      err.status === null
+        ? "timeout"
+        : Number.isInteger(err.status) && err.status >= 100 && err.status <= 599
+          ? String(err.status)
+          : "other";
+    return `ConvexIngestError.${err.op}.${status}`;
+  }
+  const cls = err instanceof Error ? err.constructor.name : typeof err;
+  return containName(cls, SAFE_CLASS_MAX);
 }
 const UNANTICIPATED_PREFIX = "«unanticipated-event».";
 /** A broadcast family RECEIVED on the wire that neither vocabulary classifies — the
@@ -1724,6 +1755,11 @@ class ProtocolDriftRegistry {
   private countersOf(kind: ShapeKind): Map<string, number> {
     return this.byKind.get(kind)!;
   }
+  /** First and last observation of each NAMED shape (see `DriftEntry`). Bounded by the
+   *  counters: a shape enters here only when it gets a counter. */
+  private readonly seenAt = new Map<string, { firstAt: number; lastAt: number }>();
+  /** The clock the timestamps read; a test seam. */
+  private clock: () => number = Date.now;
   /** Errors already reported, by IDENTITY. A `WeakSet` so a long-lived registry never
    *  holds an error alive; primitives thrown (`throw "x"`) cannot be tracked and are the
    *  one case that could still double-count — vanishingly rare, and over-reporting a
@@ -1852,11 +1888,10 @@ class ProtocolDriftRegistry {
         if (this.observedErrors.has(err)) return;
         this.observedErrors.add(err);
       }
-      const cls = err instanceof Error ? err.constructor.name : typeof err;
       // Same guard the detector-failure path uses: a class name is normally an
       // identifier, but `constructor.name` is attacker-influenceable in principle
       // (a thrown object from a dynamically named class), and this string is stored.
-      const safeClass = containName(cls, SAFE_CLASS_MAX);
+      const safeClass = exceptionClassName(err);
       this.bump(`${EXCEPTION_PREFIX}${safeClass}@${site}.${exceptionFrameShape(frame, site)}`);
     } catch {
       // The sensor itself failed. Count it as a detector failure rather than losing it,
@@ -1947,6 +1982,8 @@ class ProtocolDriftRegistry {
     const current = map.get(shape);
     if (current !== undefined) {
       map.set(shape, current + 1);
+      const seen = this.seenAt.get(shape);
+      if (seen !== undefined) seen.lastAt = this.clock();
       return;
     }
     if (map.size >= cap) {
@@ -1966,6 +2003,8 @@ class ProtocolDriftRegistry {
     // received; a broadcast is one that arrived and was dropped.
     console.log(`[protocol-drift] ${row.wording(shape)}`);
     map.set(shape, 1);
+    const at = this.clock();
+    this.seenAt.set(shape, { firstAt: at, lastAt: at });
   }
 
   /** How many observations fell past the tracked-shape cap. Reported, not just logged. */
@@ -1983,13 +2022,21 @@ class ProtocolDriftRegistry {
     // exception is a count of 1 on the day it matters most.
     const byCount = (a: DriftEntry, b: DriftEntry): number => b.count - a.count;
     return SENSOR_KINDS.flatMap((row) =>
-      [...this.countersOf(row.kind).entries()].map(([shape, count]) => ({ shape, count })).sort(byCount),
+      [...this.countersOf(row.kind).entries()]
+        .map(([shape, count]) => {
+          const at = this.clock();
+          const seen = this.seenAt.get(shape) ?? { firstAt: at, lastAt: at };
+          return { shape, count, firstAt: seen.firstAt, lastAt: seen.lastAt };
+        })
+        .sort(byCount),
     );
   }
 
   /** Test seam. */
-  resetForTests(): void {
+  resetForTests(clock: () => number = Date.now): void {
     for (const map of this.byKind.values()) map.clear();
+    this.seenAt.clear();
+    this.clock = clock;
     this.overflowed = false;
     this.overflowCounter = 0;
   }

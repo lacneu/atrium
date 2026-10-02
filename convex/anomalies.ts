@@ -231,6 +231,13 @@ export const CAUSE_ANOMALY_KINDS: Record<string, string> = {
   // profiles raise one signal (codex). (What the reader is told about retrying is deliberately hedged; see the
   // probe allowance documented in the bridge classifier.)
   auth_profile_cooldown: "assistant.cause.auth_profile_cooldown",
+  // The MODEL PROVIDER refused the agent's credential as revoked or expired. Its own class
+  // because the answer is one only an operator can give — find which profile THAT agent
+  // (or its session) is pointed at on the gateway — and every turn of the agent fails
+  // until then; prod 2026-10-02 lost three
+  // turns of one agent to it, each shown as "context too large". CRITICAL from the first
+  // occurrence (CRITICAL_ON_FIRST_CAUSES), with the agent and the provider in the evidence.
+  provider_auth_revoked: "assistant.cause.provider_auth_revoked",
   // The gateway dropped the user's input because a concurrent run replaced the active
   // branch under it. The send SUCCEEDED and the refusal came back on the stream, so a
   // finalize row carries it. A run of them is a race the gateway keeps losing on that
@@ -283,6 +290,44 @@ export const CAUSE_ANOMALY_KINDS: Record<string, string> = {
   // signal that the resolution path is the missing feature.
   awaiting_approval: "assistant.cause.awaiting_approval",
 };
+
+/** Causes raised CRITICAL on their FIRST occurrence instead of after a burst: a single
+ *  one proves the agent cannot answer anyone until an operator acts, so waiting for a
+ *  second lost turn only delays the one fix there is. */
+const CRITICAL_ON_FIRST_CAUSES: ReadonlySet<string> = new Set(["provider_auth_revoked"]);
+
+/** WHICH AGENT a finalize row failed on, for the causes whose remedy is per agent. Read
+ *  from the trace meta `stream.finalize` writes for those causes only (content-free: the
+ *  agent and instance ids, and the provider id the gateway's re-authentication hint
+ *  names). Undefined for every other row. */
+function streamFailureAgent(
+  row: Doc<"traceEvents">,
+): { agent?: string; provider?: string } | undefined {
+  if (row.meta === undefined) return undefined;
+  try {
+    const m = JSON.parse(row.meta) as {
+      agentId?: unknown;
+      instanceName?: unknown;
+      authProvider?: unknown;
+    };
+    const agent =
+      typeof m.agentId === "string" && m.agentId.length > 0
+        ? typeof m.instanceName === "string" && m.instanceName.length > 0
+          ? `${m.instanceName}/${m.agentId}`
+          : m.agentId
+        : undefined;
+    const provider =
+      typeof m.authProvider === "string" && m.authProvider.length > 0
+        ? m.authProvider
+        : undefined;
+    return agent === undefined && provider === undefined ? undefined : { agent, provider };
+  } catch {
+    return undefined;
+  }
+}
+
+/** At most this many agents / providers named in one anomaly's evidence. */
+const MAX_CAUSE_AGENTS = 10;
 
 /**
  * Classes that COST A USER A TURN — never auto-resolved (see
@@ -543,6 +588,10 @@ type WindowAgg = {
   // correlationId per cause: what turns "2 errors" into "2 context overflows".
   streamCauses: Record<string, number>;
   streamCauseCorrelation: Record<string, string>;
+  /** Per cause, the agents (`instance/agent`) and providers the finalize rows named —
+   *  only for the causes whose remedy is per agent (see `streamFailureAgent`). */
+  streamCauseAgents: Record<string, Set<string>>;
+  streamCauseProviders: Record<string, Set<string>>;
   // NEWEST contributing trace per detector — the watermark that tells a genuinely
   // new observation from the same one re-read on the next cron tick.
   /** IDENTITY of the newest contributing trace per detector (its row id), paired
@@ -892,6 +941,8 @@ export const detectAnomalies = internalMutation({
       announceCauses: {},
       announceCauseCorrelation: {},
       streamCauseCorrelation: {},
+      streamCauseAgents: {},
+      streamCauseProviders: {},
       latestAt: { cause: {}, accessByPrincipal: new Map() },
       latestKey: { cause: {}, accessByPrincipal: new Map() },
       streamAborts: 0,
@@ -1001,6 +1052,13 @@ export const detectAnomalies = internalMutation({
                 agg.streamCauseCorrelation[cause] = row.correlationId;
               agg.latestAt.cause[cause] = row.at;
               agg.latestKey.cause[cause] = row._id;
+              const named = streamFailureAgent(row);
+              if (named?.agent !== undefined) {
+                (agg.streamCauseAgents[cause] ??= new Set()).add(named.agent);
+              }
+              if (named?.provider !== undefined) {
+                (agg.streamCauseProviders[cause] ??= new Set()).add(named.provider);
+              }
             }
           } else if (cls === "aborted") {
             // NOT split by correlation, and that is deliberate. A Stop finalizes
@@ -1262,15 +1320,27 @@ export const detectAnomalies = internalMutation({
     for (const [cause, count] of Object.entries(agg.streamCauses)) {
       const kind = CAUSE_ANOMALY_KINDS[cause];
       if (kind === undefined) continue; // unknown cause: the generic class has it
+      const agents = [...(agg.streamCauseAgents[cause] ?? [])].sort().slice(0, MAX_CAUSE_AGENTS);
+      const providers = [...(agg.streamCauseProviders[cause] ?? [])]
+        .sort()
+        .slice(0, MAX_CAUSE_AGENTS);
       await upsertDetectorAnomaly(ctx, {
         kind,
-        severity: count >= STREAM_ERROR_WARN ? "critical" : "warn",
-        message: `Failed turns — cause ${cause}: ${count} over ${windowMin}m`,
+        severity:
+          count >= STREAM_ERROR_WARN || CRITICAL_ON_FIRST_CAUSES.has(cause)
+            ? "critical"
+            : "warn",
+        message:
+          agents.length > 0
+            ? `Failed turns — cause ${cause}: ${count} over ${windowMin}m — agent(s): ${agents.join(", ")}`
+            : `Failed turns — cause ${cause}: ${count} over ${windowMin}m`,
         evidence: {
           cause,
           count,
           sampleCorrelationId: agg.streamCauseCorrelation[cause],
           windowMs: DETECT_WINDOW_MS,
+          ...(agents.length > 0 ? { agents } : {}),
+          ...(providers.length > 0 ? { providers } : {}),
         },
         correlationId: agg.streamCauseCorrelation[cause],
         latestEventAt: agg.latestAt.cause[cause],

@@ -2064,3 +2064,57 @@ describe("the bridge's reserved prefixes are all known to this boundary (its own
   }
 });
 
+
+describe("a refused Convex write is attributable in the drift sample", () => {
+  test("the grammar names `ConvexIngestError.<op>.<status>`, even past 48 characters — and no free text", () => {
+    for (const shape of [
+      "«exception».ConvexIngestError.addPart.500@feed.agent.«no-payload»",
+      "«exception».ConvexIngestError.recordSubAgentInteractionReply.timeout@feed.agent.«no-payload»",
+      "«exception».ConvexIngestError.finalize.400@feed.chat.final",
+      // The bare class, from a bridge that predates the enrichment, still reads.
+      "«exception».ConvexIngestError@feed.agent.«no-payload»",
+    ]) {
+      expect(isKnownShapeGrammar(shape), shape).toBe(true);
+    }
+    for (const shape of [
+      "«exception».ConvexIngestError.add Part.500@feed.agent.«no-payload»",
+      "«exception».ConvexIngestError.addPart.HTTP 500 Document too nested@feed.agent.«no-payload»",
+      `«exception».ConvexIngestError.${"a".repeat(41)}.500@feed.agent.«no-payload»`,
+    ]) {
+      expect(isKnownShapeGrammar(shape), shape).toBe(false);
+    }
+  });
+
+  test("first/last sightings survive the boundary and the multi-bridge fold", () => {
+    const now = Date.now();
+    const one = boundProtocolInfo({
+      vendoredVersion: "2026.9.6",
+      drift: [
+        { shape: "chat.x", count: 2, firstAt: now - 5_000, lastAt: now - 1_000 },
+        // Reversed, or half a window: dropped as a PAIR, the shape kept.
+        { shape: "chat.y", count: 1, firstAt: now, lastAt: now - 10 },
+        { shape: "chat.z", count: 1, firstAt: now },
+      ],
+    })!;
+    const byShape = new Map(one.drift.map((d) => [d.shape, d]));
+    expect(byShape.get("chat.x")).toEqual({
+      shape: "chat.x",
+      count: 2,
+      firstAt: now - 5_000,
+      lastAt: now - 1_000,
+    });
+    expect(byShape.get("chat.y")).toEqual({ shape: "chat.y", count: 1 });
+    expect(byShape.get("chat.z")).toEqual({ shape: "chat.z", count: 1 });
+    const two = boundProtocolInfo({
+      vendoredVersion: "2026.9.6",
+      drift: [{ shape: "chat.x", count: 1, firstAt: now - 9_000, lastAt: now - 3_000 }],
+    })!;
+    const folded = foldProtocolInfo([one, two])!;
+    expect(folded.drift.find((d) => d.shape === "chat.x")).toEqual({
+      shape: "chat.x",
+      count: 3,
+      firstAt: now - 9_000,
+      lastAt: now - 1_000,
+    });
+  });
+});

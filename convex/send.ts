@@ -14,6 +14,7 @@
 // (`convex/bridge.ts`) because mutations cannot do `fetch`. Secrets used to
 // reach the bridge live only in deployment env, never here or in the browser.
 
+import { COMMAND_WITH_ATTACHMENTS, isGatewayCommandText } from "./lib/gatewayCommand";
 import { v } from "convex/values";
 import { mutation, MutationCtx } from "./_generated/server";
 import { internal } from "./_generated/api";
@@ -190,6 +191,13 @@ export const sendMessage = mutation({
 
     const now = Date.now();
     const attachments = args.attachments ?? [];
+    // A GATEWAY COMMAND leaves exactly as typed (lib/gatewayCommand.ts), and a file can
+    // only reach the agent as text added to the message on a shared-fs instance — so the
+    // two are refused together, visibly, before anything is written or sent. Sending the
+    // command and dropping the file would lose it without a word.
+    if (attachments.length > 0 && isGatewayCommandText(args.text)) {
+      throw new Error(COMMAND_WITH_ATTACHMENTS);
+    }
 
     // 2a. WHO THE TURN IS FOR. The agent mentions, when there are any, decide it —
     //     spans checked with the people's (one text, one set of disjoint spans),
@@ -748,6 +756,11 @@ export const updateQueuedMessage = mutation({
     // somebody else's mouth. The owner may still withdraw it (cancelQueuedMessage).
     if (row.userId !== userId) {
       throw new Error("Forbidden: not your queued message");
+    }
+    // Rewritten INTO a command, a turn carrying files would be sent without them (see
+    // sendMessage).
+    if ((row.attachmentIds?.length ?? 0) > 0 && isGatewayCommandText(trimmed)) {
+      throw new Error(COMMAND_WITH_ATTACHMENTS);
     }
     // …and only the account that wrote it: the same person provisioned again after
     // a deletion has the same user id, not the deleted account's pen (the same

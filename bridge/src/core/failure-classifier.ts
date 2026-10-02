@@ -216,6 +216,27 @@ export function fallbackSummaryCauses(raw: string): string[] | null {
   return causes.length > 0 ? causes : null;
 }
 
+/** Upstream's PREFLIGHT-COMPACTION wrapper with its details on (v2026.9.6,
+ *  src/auto-reply/reply/agent-runner-failure-reply.ts:198-218
+ *  `buildPreflightCompactionFailureText`): a fixed headline, ` Reason: <reason>.`, then a
+ *  fixed tail. */
+const PREFLIGHT_WRAPPER_HEAD_RE =
+  /^[\s⚠️]*context is too large and auto-compaction (?:could not recover this turn|timed out before it could finish)\.\s+reason:\s*/i;
+const PREFLIGHT_WRAPPER_TAIL_RE =
+  /\.?\s*try again, use \/compact, or use \/new to start a fresh session\.?\s*$/i;
+
+/** The REASON inside the preflight-compaction wrapper, or null when the text is not one.
+ *
+ *  The wrapper's reason is often a model-fallback summary (prod 2026-10-02: every candidate
+ *  refused the credential while compacting), and a summary is only stripped of its model ids
+ *  by `fallbackSummaryCauses` when it OPENS the text. Wrapped, the ids stayed in what every
+ *  rule read — operator values choosing a class, the hazard `withoutOperatorData` exists for. */
+export function preflightWrappedReason(raw: string): string | null {
+  const head = PREFLIGHT_WRAPPER_HEAD_RE.exec(raw);
+  if (head === null) return null;
+  return raw.slice(head[0].length).replace(PREFLIGHT_WRAPPER_TAIL_RE, "");
+}
+
 export function isAgentDatabaseClosedText(text: string | null | undefined): boolean {
   if (!text) return false;
   return AGENT_DATABASE_CLOSED_RE.test(withoutOperatorData(text));
@@ -444,6 +465,41 @@ export function namesACredential(text: string): boolean {
 const COOLDOWN_SENTENCE_RE =
   /\bauth profile\s+"[\s\S]*?"\s+is temporarily unavailable\s+for\b/i;
 
+/** The PROVIDER refused the agent's credential as revoked or expired (v2026.9.6).
+ *
+ *  Two fixed gateway phrases, either of which is enough:
+ *   - `Re-authenticate with: <command>` — emitted ONLY for the failover reasons `auth` and
+ *     `auth_permanent` (src/agents/failover-error.ts:486-502 `buildFailoverRemediationHint`,
+ *     appended to the model-fallback summary by src/agents/model-fallback-attempt.ts:627-628;
+ *     same words in src/agents/cli-runner/prepare.ts:484 for a CLI backend whose profile
+ *     could not be resolved). The cooldown's own hint is spelled `Re-authenticate with \``
+ *     — no colon — and that sentence is classified by the rule before this one.
+ *   - a `401` status followed by `invalidated|expired|revoked` and then `token`, the
+ *     provider's own refusal as the summary carries it — prod 2026-10-02, agent `jerome`:
+ *     `401: Encountered invalidated oauth token for user (auth)`. The `401` must stand as a
+ *     STATUS (`401:`, `401)` or `401 `), so a model id such as `x-401-expired-token` cannot carry it.
+ *     The provider's own wording in the OTHER order is taken too when it ASSERTS the fact —
+ *     `HTTP 401: Your authentication token has been invalidated.` (OpenAI/Codex) — but not
+ *     a token that "may have expired", which is upstream's hedge (below).
+ *
+ *  Upstream's own hedged copy for a bare 401 — "Authentication failed (provider returned
+ *  HTTP 401). Your provider token may have expired — try the request again in a moment."
+ *  (src/agents/failover/user-copy.ts:40-43) — is deliberately NOT matched: it puts `token`
+ *  before `expired` and says the failure may pass, so it stays unclassified.
+ *
+ *  Read through `withoutOperatorData` like every rule here, so a quoted value cannot carry
+ *  either phrase; the provider id in the command is single-quoted shell, not operator
+ *  prose, and is never read by the rule (only by Convex, to name it in the anomaly). */
+const REAUTHENTICATE_HINT_RE = /\bre-authenticate with:\s/i;
+const AUTH_401_TOKEN_REVOKED_RE =
+  /(?:^|[\s:(\[])401[:)\s][^|\n]{0,120}?(?:\b(?:invalidated|expired|revoked)\b[^|\n]{0,60}?\btokens?\b|\btokens?\s+(?:has|have)\s+been\s+(?:invalidated|expired|revoked)\b|\btokens?\s+(?:was|were|is|are)\s+(?:invalidated|expired|revoked)\b)/i;
+
+export function isProviderAuthRevokedText(text: string | null | undefined): boolean {
+  if (!text) return false;
+  const t = withoutOperatorData(text);
+  return REAUTHENTICATE_HINT_RE.test(t) || AUTH_401_TOKEN_REVOKED_RE.test(t);
+}
+
 /** The text with every operator-chosen segment removed, leaving only what the GATEWAY
  *  itself wrote — which is the only thing any rule below may read.
  *
@@ -568,7 +624,9 @@ export function classifyFailureText(raw: string | null | undefined): string | nu
   // A model-fallback summary is classified by the causes INSIDE it, never by its wrapper
   // or the model ids it lists (see `fallbackSummaryCauses`). The causes are read together,
   // through the same precedence as a single text: the graver class still wins.
-  const causes = fallbackSummaryCauses(raw);
+  const wrapped = preflightWrappedReason(raw);
+  const causes =
+    fallbackSummaryCauses(raw) ?? (wrapped === null ? null : fallbackSummaryCauses(wrapped));
   if (causes === null) return classifySingleFailureText(raw);
   const perAttempt = causes.map((cause) => classifySingleFailureText(cause));
   if (!perAttempt.includes("pending_input_dropped")) {
@@ -671,6 +729,16 @@ function classifySingleFailureText(raw: string): string | null {
   // graver class wins, and a gateway whose disk is full can report both facts in one
   // text (codex).
   if (COOLDOWN_SENTENCE_RE.test(text)) return "auth_profile_cooldown";
+  // AFTER the cooldown (a paused profile is its own, time-bounded fact, and its hint names
+  // re-authentication too) and BEFORE everything that can be retried: a credential the
+  // provider revoked fails every attempt the same way until an operator fixes the
+  // agent's credential, so it is never `provider_internal` (auto-retried) nor a session conflict.
+  // It also outranks the preflight-compaction wrapper the gateway puts around it —
+  // "Context is too large and auto-compaction could not recover this turn" — whose
+  // headline is upstream's generic copy for ANY compaction failure
+  // (src/auto-reply/reply/agent-runner-failure-reply.ts:198-218): compaction failed
+  // because the model refused the credential, not because of the context.
+  if (isProviderAuthRevokedText(text)) return "provider_auth_revoked";
   if (isSessionInitConflictText(text)) return "session_init_conflict";
   // THE SECOND DOOR. The same refusal reaches Atrium two ways: as a dispatch
   // rejection (classified in dispatch-errors.ts:423) and as the FAILURE TEXT of a

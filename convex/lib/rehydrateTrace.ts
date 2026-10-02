@@ -165,6 +165,9 @@ export function shouldReportRehydrateMissed(b: {
   historyWithheld?: string;
 }): boolean {
   if (!b.routedSwitch || !b.freshSession) return false;
+  // A gateway COMMAND is sent exactly as typed and needs no context; the bridge leaves
+  // the session fresh, so the next ordinary turn carries the history. Not a miss.
+  if (b.decision === "skip_command") return false;
   if (b.decision !== "rehydrate") return true;
   return (
     historyWithheldReason(b.historyWithheld) !== undefined &&

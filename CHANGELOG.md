@@ -1,5 +1,57 @@
 # Changelog
 
+## [0.91.2] — A revoked provider credential named as such, slash commands sent as typed
+
+Corrective release. No breaking changes. Deploy the bridge, Convex and the frontend together.
+
+**A revoked or expired provider credential is no longer shown as "context too large".** When the
+model provider refuses an agent's credential (an HTTP 401 on a revoked or expired token), the
+gateway wraps the failure in its generic headline for a failed compaction — "Context is too large
+and auto-compaction could not recover this turn" — and adds a re-authentication hint. Atrium
+recorded these turns with no cause, so the reader saw advice to compact or start over that could not
+help, and nothing told an administrator what to fix. Atrium now recognises the gateway's own
+re-authentication hint and the provider's 401 refusal (never a value an operator chose, such as a
+model name or a session key) and names the failure. The message card says that the agent's access to
+the model provider has expired, that an administrator needs to reconnect it, and that sending the
+message again will not change anything until then; the gateway's sentence and its commands are kept
+off the card. Messages already stored with that text get the same card. The failure is never retried
+automatically. The first occurrence raises a critical anomaly that names the agent, its instance and
+the provider. The Anomalies tab shows read-only commands to see which profiles that agent uses and in
+which order (`openclaw models auth list --provider <provider> --agent <agent>` and
+`openclaw models auth order get --provider <provider> --agent <agent>`), asks to check that neither
+the agent nor the conversation's session points to an expired profile, and to reconnect the shared
+login only if that shared profile itself has expired. It never suggests logging in for one agent
+alone, which would give that agent a separate copy of the credential. A sub-agent that
+fails this way is classed the same way instead of as an API error or a timeout. A credential that
+is only temporarily paused by the gateway keeps its own, separate message.
+
+**Slash commands reach the gateway exactly as typed.** Atrium added its own text to every message —
+instructions for delivering files, the list of files received, the earlier conversation when a
+session was new, the quoted passage of a reply, earlier agents' answers in a chain — and the
+gateway read all of it as the command's arguments: `/knowledge` answered "unknown subcommand", and
+`/knowledge once graph` received dozens of extra words. A command — a message that opens with a
+command name the way the gateway reads one (`/new`, `/knowledge once graph`, `/compact: …`) — is now
+sent unchanged, by the bridge and by Convex, with OpenClaw and with Hermes. A message that merely
+opens with a path (`/tmp/report.txt, what is in it?`) is an ordinary message and keeps everything,
+files included. A command is never compacted first nor withheld for a full session — `/compact`
+and `/new` are what a full session needs — and the next ordinary message still receives the
+conversation history. Because a file can
+only reach the agent as text added to the message on some instances, a command sent with files is
+refused before anything is sent, and the composer says to remove the files or send them separately.
+
+**Gateway pressure telemetry says why it is empty.** A turn the gateway starts on its own — a
+report from a delegated task, a voice consultation — has no measurement of the session taken before
+it, so its pressure figures are empty. The trace now says where its figures come from (a
+measurement before the send, or none) and who started the turn (Atrium or the gateway), so an empty
+figure no longer reads as lost data. Earlier measurements are never reused for such a turn.
+
+**A write refused by Convex can be traced to its cause.** When Convex refused or did not answer a
+write the bridge made while reading the gateway, the bridge's protocol report filed it under a bare
+error name. It now records which write it was and how it failed (an HTTP status, or a timeout),
+without its content, and every entry of the report says when it was first and last seen. Convex
+records the same refusals on its side (`openclaw.ingest.rejected`: the write and the status), so
+the two can be matched.
+
 ## [0.91.1] — Widgets locked to their own frame, agent access revoked at once, oversized messages refused cleanly
 
 Corrective release. No breaking changes. Deploy the bridge, Convex and the frontend together.

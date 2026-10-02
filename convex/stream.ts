@@ -21,7 +21,11 @@ import { conversationWantsWidgets, viewRegisteredTo, widgetInstanceFor } from ".
 import { v } from "convex/values";
 import { boundPartDepth } from "./lib/partDepth";
 import { contentLocaleForInstance } from "./lib/serverLocale";
-import { KNOWN_ERROR_CODES, maskCredentialId } from "./lib/chatRenderState";
+import {
+  KNOWN_ERROR_CODES,
+  maskCredentialId,
+  reauthProviderFromText,
+} from "./lib/chatRenderState";
 import { SESSION_ACCESS_FIELDS } from "./lib/sessionAccess";
 import { internalMutation, internalQuery, MutationCtx, type QueryCtx } from "./_generated/server";
 import { internal } from "./_generated/api";
@@ -199,6 +203,12 @@ async function traceStream(
      *  a context overflow and two unrelated blips looked identical, so the signal
      *  named a number instead of a cause (C-01). */
     errorCode?: string;
+    /** WHICH AGENT failed, for a cause whose remedy is per agent
+     *  (`provider_auth_revoked`): ids only, never text. */
+    failedAgent?: { agentId: string; instanceName?: string };
+    /** The provider id the gateway's re-authentication hint names (an operator
+     *  configuration value, shape-checked by `reauthProviderFromText`). */
+    authProvider?: string;
   },
 ): Promise<void> {
   try {
@@ -219,6 +229,15 @@ async function traceStream(
         ...(args.oldLen !== undefined ? { oldLen: args.oldLen } : {}),
         ...(args.newLen !== undefined ? { newLen: args.newLen } : {}),
         ...(args.errorCode !== undefined ? { errorCode: args.errorCode } : {}),
+        ...(args.failedAgent !== undefined
+          ? {
+              agentId: args.failedAgent.agentId,
+              ...(args.failedAgent.instanceName !== undefined
+                ? { instanceName: args.failedAgent.instanceName }
+                : {}),
+            }
+          : {}),
+        ...(args.authProvider !== undefined ? { authProvider: args.authProvider } : {}),
       }),
     });
   } catch {
@@ -3882,6 +3901,46 @@ export const finalize = internalMutation({
     });
     // The finalized text length — never the text itself.
     const finalLen = finalText.length;
+    // The class this turn failed with — filtered through the platform's non-PHI
+    // ALLOWLIST. `error` can carry raw gateway text (the schema says so), and a
+    // trace must never contain content: an unrecognized value is dropped, and the
+    // generic class still surfaces the failure. `errorKind` is curated but goes
+    // through the same gate, so one contract governs both.
+    const traceCode = (() => {
+      const code = finalErrorKind ?? error ?? null;
+      return code !== null && (KNOWN_ERROR_CODES as readonly string[]).includes(code)
+        ? code
+        : undefined;
+    })();
+    // A REVOKED CREDENTIAL is fixed per agent, on the gateway, by an operator: the anomaly
+    // must say WHICH agent and which provider, or it names a cause nobody can act on. The
+    // agent is the one that ran this turn (a room's routed agent, else the chat's own);
+    // the provider is the one the gateway's re-authentication hint names, read from the
+    // raw `error` before anything else — ids only, the sentence never leaves this mutation.
+    const failedAgent =
+      traceCode === "provider_auth_revoked"
+        ? await (async () => {
+            if (message.routedAgentId) {
+              return {
+                agentId: message.routedAgentId,
+                ...(message.routedInstanceName
+                  ? { instanceName: message.routedInstanceName }
+                  : {}),
+              };
+            }
+            const owner = await ctx.db.get(message.chatId);
+            return owner?.agentId
+              ? {
+                  agentId: owner.agentId,
+                  ...(owner.instanceName ? { instanceName: owner.instanceName } : {}),
+                }
+              : undefined;
+          })()
+        : undefined;
+    const authProvider =
+      traceCode === "provider_auth_revoked"
+        ? (reauthProviderFromText(error) ?? undefined)
+        : undefined;
     await traceStream(ctx, {
       phase: "finalize",
       chatId: message.chatId,
@@ -3889,18 +3948,9 @@ export const finalize = internalMutation({
       messageId,
       streamStatus: finalStatus,
       textLen: finalLen,
-      // The class this turn failed with — filtered through the platform's non-PHI
-      // ALLOWLIST. `error` can carry raw gateway text (the schema says so), and a
-      // trace must never contain content: an unrecognized value is dropped, and the
-      // generic class still surfaces the failure. `errorKind` is curated but goes
-      // through the same gate, so one contract governs both.
-      ...(() => {
-        const code = finalErrorKind ?? error ?? null;
-        return code !== null &&
-          (KNOWN_ERROR_CODES as readonly string[]).includes(code)
-          ? { errorCode: code }
-          : {};
-      })(),
+      ...(traceCode !== undefined ? { errorCode: traceCode } : {}),
+      ...(failedAgent !== undefined ? { failedAgent } : {}),
+      ...(authProvider !== undefined ? { authProvider } : {}),
     });
     // LEGACY "gateway-preempted" turn (a zero-content real turn once ATTRIBUTED to a
     // delivery claiming the session — never proven; no production caller sets the flag

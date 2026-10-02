@@ -4,6 +4,7 @@ import {
   messageHasText as sharedMessageHasText,
   maskCredentialId,
   type RunStatusKind,
+  isProviderAuthRevokedFailureText,
   withoutOperatorValues,
 } from "../../convex/lib/chatRenderState";
 import { turnDifficultyLabel, type TurnDifficulty } from "./turnDifficultyView";
@@ -276,6 +277,11 @@ export const HEADLINE_REPLACES_DETAIL: ReadonlySet<string> = new Set([
   // host (src/state/agent-database-admission.ts:56-57 and :81 at v2026.9.6). Neither
   // belongs on the reader's card; the sentence stays on the row for the operator.
   "gateway_agent_db_closed",
+  // A revoked provider credential arrives wrapped in upstream's "Context is too large …
+  // Try again, use /compact, or use /new" — three instructions that cannot help, under a
+  // headline that says only an administrator can — plus the gateway's re-authentication
+  // command. Neither belongs on the reader's card; the sentence stays on the row.
+  "provider_auth_revoked",
 ]);
 
 export const ERROR_CODE_LABEL: Record<string, () => string> = {
@@ -372,6 +378,10 @@ export const ERROR_CODE_LABEL: Record<string, () => string> = {
   // cannot apply it). Stored as a dispatch code; never retried.
   knowledge_policy_not_applied: m.runstatus_error_knowledge_policy_not_applied,
   auth_profile_cooldown: m.runstatus_error_auth_profile_cooldown,
+  // The model provider refused the agent's credential (revoked or expired). Nothing is
+  // retried (convex/turnRetry.ts) and nothing the reader does helps: the copy says an
+  // administrator must reconnect the agent, and that resending changes nothing until then.
+  provider_auth_revoked: m.runstatus_error_provider_auth_revoked,
   // The gateway dropped the admitted input: another reply was being written at the same
   // moment. Nothing ran, and no retry is scheduled (convex/turnRetry.ts) — the copy says
   // so by asking the reader to send again, and claims no attempt of its own. It holds
@@ -576,7 +586,14 @@ export function errorDetailView(
               ? "session_paused_review"
               : droppedInputWithNothingRun(shown)
               ? "pending_input_dropped"
-              : OVERFLOW_TEXT_RE.test(raw0)
+              : // A revoked credential, recognized from the text for a row stored before
+                // the class existed (prod 2026-10-02: three, `unclassified_error`). BEFORE
+                // the overflow test: upstream wraps it in "Context is too large", and an
+                // overflow card would offer to compact a session whose model refuses the
+                // agent's credential. Mirrors the bridge rule (shared helper).
+                isProviderAuthRevokedFailureText(shown)
+                ? "provider_auth_revoked"
+                : OVERFLOW_TEXT_RE.test(raw0)
               ? "context_length"
               : (errorCode ?? null);
   const headline = code !== null ? (ERROR_CODE_LABEL[code]?.() ?? null) : null;

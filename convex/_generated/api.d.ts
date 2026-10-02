@@ -105,6 +105,7 @@ import type * as lib_filters from "../lib/filters.js";
 import type * as lib_finalizeCause from "../lib/finalizeCause.js";
 import type * as lib_folderTree from "../lib/folderTree.js";
 import type * as lib_foreignRunRefusals from "../lib/foreignRunRefusals.js";
+import type * as lib_gatewayCommand from "../lib/gatewayCommand.js";
 import type * as lib_groupAccess from "../lib/groupAccess.js";
 import type * as lib_groupMembers from "../lib/groupMembers.js";
 import type * as lib_importArchive from "../lib/importArchive.js";
@@ -285,6 +286,7 @@ declare const fullApi: ApiFromModules<{
   "lib/finalizeCause": typeof lib_finalizeCause;
   "lib/folderTree": typeof lib_folderTree;
   "lib/foreignRunRefusals": typeof lib_foreignRunRefusals;
+  "lib/gatewayCommand": typeof lib_gatewayCommand;
   "lib/groupAccess": typeof lib_groupAccess;
   "lib/groupMembers": typeof lib_groupMembers;
   "lib/importArchive": typeof lib_importArchive;

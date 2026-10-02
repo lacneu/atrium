@@ -1181,6 +1181,38 @@ describe("a chained reply is asked the question once, with the earlier answers",
     }
   });
 
+  test("a gateway COMMAND goes to the next agent exactly as typed, earlier replies left off", async () => {
+    const t = convexTest(schema, modules);
+    const { owner, chatId } = await room(t, { perTurnRouting: true });
+    const text = "/knowledge @Bob puis @Nova";
+    const { messageId } = await as(t, owner).mutation(api.send.sendMessage, {
+      chatId,
+      text,
+      clientMessageId: "c1",
+      agentMentions: spans(text, [
+        ["@Bob", bob],
+        ["@Nova", nova],
+      ]),
+    });
+    const [head, second] = await rowsOf(t, messageId!);
+    const replyId = await t.mutation(internal.stream.startAssistant, {
+      chatId,
+      runId: "r1",
+      dispatchOutboxId: head!._id,
+    });
+    await t.run(async (ctx) => {
+      await ctx.db.patch(replyId!, { status: "complete", text: "BOB-ANSWERED" });
+      const live = await ctx.db
+        .query("streamingText")
+        .withIndex("by_message", (q) => q.eq("messageId", replyId!))
+        .collect();
+      for (const row of live) await ctx.db.delete(row._id);
+      await ctx.db.patch(head!._id, { status: "sent" });
+      await ctx.db.patch(second!._id, { status: "pending" });
+    });
+    expect(await t.query(internal.bridge.chainedPrompt, { outboxId: second!._id })).toBe(text);
+  });
+
   test("the first agent failed: the next one is asked the bare question", async () => {
     const t = convexTest(schema, modules);
     const { owner, chatId } = await room(t);

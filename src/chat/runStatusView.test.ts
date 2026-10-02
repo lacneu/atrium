@@ -986,3 +986,52 @@ describe("runStatusView — the agent is struggling (live-turn difficulty)", () 
       .toBeUndefined();
   });
 });
+
+describe("a REVOKED provider credential (prod 2026-10-02)", () => {
+  // Upstream's preflight-compaction wrapper around a model-fallback summary of 401s on an
+  // invalidated OAuth token and the gateway's re-authentication hint (v2026.9.6). Gateway
+  // text only.
+  const PROD_REVOKED_TEXT =
+    "⚠️ Context is too large and auto-compaction could not recover this turn. Reason: " +
+    "All models failed (2): openai/gpt-5.6-sol: 401: Encountered invalidated oauth token for user (auth) | " +
+    "openai/gpt-5.6-terra: 401: Encountered invalidated oauth token for user (auth). " +
+    "Re-authenticate with: openclaw models auth login --provider 'openai' --force. " +
+    "Try again, use /compact, or use /new to start a fresh session.";
+
+  it("the card says an administrator must reconnect the agent — and nothing else", () => {
+    const v = errorDetailView(PROD_REVOKED_TEXT, "provider_auth_revoked");
+    expect(v.code).toBe("provider_auth_revoked");
+    expect(v.headline).toBe(m.runstatus_error_provider_auth_revoked());
+    // No raw detail: neither upstream's /compact and /new nor the operator's command.
+    expect(v.detail).toBeNull();
+    expect(`${v.headline}`).not.toMatch(/\/new|\/compact|openclaw models/);
+    expect(m.runstatus_error_provider_auth_revoked({}, { locale: "fr" })).toBe(
+      "L’accès de l’agent au fournisseur de modèle a expiré. Un administrateur doit le reconnecter ; renvoyer le message ne changera rien d’ici là.",
+    );
+    expect(m.runstatus_error_provider_auth_revoked({}, { locale: "en" })).not.toMatch(
+      /\/new|\/compact|try again/i,
+    );
+  });
+
+  it("a row stored BEFORE the class existed gets the same card from its text", () => {
+    // The three production rows were stored `unclassified_error` — the one stored code
+    // that yields to the text — and older ones carry no code at all.
+    for (const stored of ["unclassified_error", null, undefined]) {
+      const v = errorDetailView(PROD_REVOKED_TEXT, stored);
+      expect(v.code, String(stored)).toBe("provider_auth_revoked");
+      expect(v.detail, String(stored)).toBeNull();
+    }
+    // …never the overflow card (compacting cannot help a refused credential).
+    expect(errorDetailView(PROD_REVOKED_TEXT, null).code).not.toBe("context_length");
+  });
+
+  it("a code that names another cause still wins, and a quoted value cannot mint it", () => {
+    expect(errorDetailView(PROD_REVOKED_TEXT, "rate_limit").code).toBe("rate_limit");
+    expect(
+      errorDetailView(
+        'Session "401: Encountered invalidated oauth token" changed while starting work. Retry.',
+        null,
+      ).code,
+    ).not.toBe("provider_auth_revoked");
+  });
+});

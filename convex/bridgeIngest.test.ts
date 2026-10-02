@@ -420,6 +420,90 @@ describe("bridge_ingest httpAction: addMediaPart dispatch", () => {
     expect(JSON.stringify(traces)).not.toContain("transférer");
   });
 
+  test("WHY the counters are null, and WHO started the turn, reach the trace — closed lists only", async () => {
+    // Gateway-initiated runs (announce/requester-settle, talk consult) open with no
+    // pre-send describe: their null counters were read as LOST telemetry (prod
+    // 2026-10-01, 3 of 4 traces). The bridge now says which it is.
+    const t = convexTest(schema, modules);
+    const { chatId, messageId } = await seedAssistantMessage(t);
+    await post(t, {
+      op: "gatewayPressure",
+      chatId,
+      messageId,
+      totalTokens: null,
+      contextTokens: null,
+      compaction: null,
+      pressureSource: "absent",
+      turnOrigin: "gateway_initiated",
+    });
+    await post(t, {
+      op: "gatewayPressure",
+      chatId,
+      messageId,
+      totalTokens: 10,
+      contextTokens: 100,
+      compaction: null,
+      pressureSource: "presend_describe",
+      turnOrigin: "dispatch",
+    });
+    // A divergent bridge's label is DROPPED, never stored.
+    await post(t, {
+      op: "gatewayPressure",
+      chatId,
+      messageId,
+      totalTokens: null,
+      contextTokens: null,
+      compaction: null,
+      pressureSource: "lost: see user note about 4000 EUR",
+      turnOrigin: "cron",
+    });
+    const traces = (await tracesByKind(t, "chat.gateway_pressure")).map((tr) =>
+      JSON.parse(tr.meta ?? "{}") as Record<string, unknown>,
+    );
+    expect(traces).toHaveLength(3);
+    expect(traces[0]).toMatchObject({ pressureSource: "absent", turnOrigin: "gateway_initiated" });
+    expect(traces[1]).toMatchObject({ pressureSource: "presend_describe", turnOrigin: "dispatch" });
+    expect(traces[2]?.pressureSource).toBeUndefined();
+    expect(traces[2]?.turnOrigin).toBeUndefined();
+    expect(JSON.stringify(traces)).not.toContain("EUR");
+  });
+
+  test("a write Convex REFUSES is traced with its op and status — never its body", async () => {
+    // The bridge files the same refusal as `ConvexIngestError.<op>.<status>`; this row is
+    // the Convex side of it.
+    const t = convexTest(schema, modules);
+    await seedAssistantMessage(t);
+    // 400: a body that is not JSON at all.
+    const bad = await t.fetch(URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${SECRET}` },
+      body: "{not json: transférer 4000 EUR",
+    });
+    expect(bad.status).toBe(400);
+    // 400: an op this build does not know, spelled as free text.
+    const unknown = await post(t, { op: "drop everything; 4000 EUR" });
+    expect(unknown.status).toBe(400);
+    // 500: a known op whose mutation throws (the message does not exist).
+    const threw = await post(t, {
+      op: "finalize",
+      messageId: "jd7000000000000000000000000000000",
+      status: "complete",
+      text: "secret reply text",
+      error: null,
+    }).catch(() => null);
+    expect(threw === null || threw.status >= 500).toBe(true);
+    const rejected = (await tracesByKind(t, "openclaw.ingest.rejected")).map(
+      (tr): Record<string, unknown> => ({
+        status: tr.status,
+        ...(JSON.parse(tr.meta ?? "{}") as Record<string, unknown>),
+      }),
+    );
+    expect(rejected).toContainEqual({ status: 400, op: "«none»", reason: "invalid_body" });
+    expect(rejected).toContainEqual({ status: 400, op: "«unprintable»", reason: "unknown_op" });
+    expect(rejected.some((r) => r.status === 500 && r.op === "finalize" && r.reason === "handler_threw")).toBe(true);
+    expect(JSON.stringify(rejected)).not.toMatch(/EUR|secret reply/);
+  });
+
   test("the compaction CAUSE reaches the trace (it was computed and dropped)", async () => {
     // G-09 exists to answer "why did the gateway compact". The bridge derived the
     // cause and POSTed it; the ingest projected every OTHER field and silently

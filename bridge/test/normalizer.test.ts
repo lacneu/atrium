@@ -1157,6 +1157,32 @@ describe("main-lane chat error/aborted terminalization (ChatErrorEventSchema)", 
     expect(final?.errorKind).toBe("pending_input_dropped");
   });
 
+  it("a REVOKED provider credential leaves the normalizer named, not as an overflow (prod 2026-10-02)", () => {
+    // The production frame: upstream's preflight-compaction headline around a 401 on an
+    // invalidated OAuth token, capped at the chat error's 240 characters (server-chat.ts).
+    const normalizer = newNormalizer();
+    const clock = new Clock();
+    normalizer.beginTurn(clock.now);
+    normalizer.noteRunStarted(OWN_RUN, clock.now);
+    const errorMessage = (
+      "⚠️ Context is too large and auto-compaction could not recover this turn. Reason: " +
+      "All models failed (2): openai/gpt-5.6-sol: 401: Encountered invalidated oauth token for user (auth) | " +
+      "openai/gpt-5.6-terra: 401: Encountered invalidated oauth token for user (auth). " +
+      "Re-authenticate with: openclaw models auth login --provider 'openai' --force. " +
+      "Try again, use /compact, or use /new to start a fresh session."
+    ).slice(0, 240);
+    const events = normalizer.feed(
+      {
+        type: "event",
+        event: "chat",
+        payload: { runId: OWN_RUN, sessionKey: SESSION_KEY, state: "error", errorMessage },
+      },
+      clock.tick(),
+    );
+    const final = events.find((e) => e.type === "message.final");
+    expect(final?.errorKind).toBe("provider_auth_revoked");
+  });
+
   it("the auth-profile COOLDOWN sentence classifies from bare text, as production sent it", () => {
     // The production frame carried NO errorKind — which is why the reader got an empty
     // bubble (feedback prod-ms7ed3bn…). This is the hop the per-hop tests do not cover
