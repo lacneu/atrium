@@ -15,6 +15,7 @@
 // SECURITY: the shared secret is compared in CONSTANT TIME; the body is size-
 // limited before parsing. We never echo gateway/filesystem detail to the caller.
 
+import { assertSupportedGateway } from "./providers/openclaw/version-floor.js";
 import {
   CanvasViewCache,
   fetchCanvasView,
@@ -94,6 +95,7 @@ import {
 import { buildMediaFetcher } from "./core/media-fetcher-provider.js";
 import {
   chatAbortParams,
+  chatHistoryParams,
   sessionsGetParams,
   talkClientCloseParams,
   talkClientCreateParams,
@@ -241,6 +243,7 @@ import {
   gatewayAtLeast,
   COMPACTION_CHECKPOINTS_RETIRED_IN,
   REHYDRATE_WITH_ATTACHMENTS_SINCE,
+  TRANSCRIPT_PROJECTION_SINCE,
   openClawInlineWidgetsEnabled,
 } from "./compat.js";
 import { INLINE_WIDGETS_CAP } from "./providers/openclaw/widgets.js";
@@ -416,6 +419,12 @@ interface SendBody extends BodyRouting {
   } | null;
   text: string;
   clientMessageId: string;
+  /** THE SEND IDENTITY Convex computed for this dispatch (convex/lib/sendIdentity.ts):
+   *  used as the gateway `idempotencyKey` when this bridge's own derivation from the
+   *  session it actually sends to agrees. Absent on an older Convex. */
+  sendId?: string;
+  /** Where this session's last transcript read stopped (redesign phase 1, shadow). */
+  transcriptCursor?: { sessionId: string; deltaCursor: string };
   /** The user message id for this turn (excluded from re-hydration history). */
   messageId: string | null;
   /** Provider-session reset epoch (chats.providerResetCount at dispatch) —
@@ -714,6 +723,14 @@ export function parseSendBody(raw: string): SendBody | null {
     })(),
     text: obj.text,
     clientMessageId: obj.clientMessageId,
+    // Named explicitly (this parser rebuilds the body). Bounded like an upstream run id
+    // (`chat-send-request.ts` caps `idempotencyKey` at 128 for goal starts; 256 in
+    // `inputRunIds`); anything else is dropped and the key is derived as before.
+    ...(typeof obj.sendId === "string" && obj.sendId.length > 0 && obj.sendId.length <= 128
+      ? { sendId: obj.sendId }
+      : {}),
+    ...((c) =>
+      c === null ? {} : { transcriptCursor: c })(parseTranscriptCursor(obj.transcriptCursor)),
     messageId: typeof obj.messageId === "string" ? obj.messageId : null,
     providerResetCount:
       typeof obj.providerResetCount === "number"
@@ -750,6 +767,20 @@ export function parseSendBody(raw: string): SendBody | null {
     // field is dropped, never fails the send (parseInboundConfig never throws).
     config: parseInboundConfig(obj.config),
   };
+}
+
+/** Defensive parse of the transcript cursor Convex stored (bounded strings, both
+ *  present); null otherwise — the reconciler then starts from a fresh tail page. */
+export function parseTranscriptCursor(
+  raw: unknown,
+): { sessionId: string; deltaCursor: string } | null {
+  if (typeof raw !== "object" || raw === null) return null;
+  const c = raw as { sessionId?: unknown; deltaCursor?: unknown };
+  if (typeof c.sessionId !== "string" || c.sessionId.length > 128) return null;
+  if (typeof c.deltaCursor !== "string" || c.deltaCursor === "" || c.deltaCursor.length > 1024) {
+    return null;
+  }
+  return { sessionId: c.sessionId, deltaCursor: c.deltaCursor };
 }
 
 /** Defensive parse of the optional `referenceAttachments` array (Phase 3). A
@@ -1473,13 +1504,13 @@ async function pollGatewayRunRelease(
       }
       let active: boolean;
       try {
+        // `limit: 1` + `maxChars: 1` bound the page nobody reads, on every vendored
+        // version. Not `maxBytes`: it exists only from 2026.9.2 and the params schema
+        // is CLOSED, so an older gateway would refuse the call and the check would
+        // never run there (no version given: the builder then never adds it).
         const res = await session.connection.request(
           "chat.history",
-          // `limit: 1` + `maxChars: 1` bound the page nobody reads, on every vendored
-          // version. Not `maxBytes`: it exists only from 2026.9.2 and the params
-          // schema is CLOSED, so an older gateway would refuse the call and the check
-          // would never run there.
-          { sessionKey: session.sessionKey, limit: 1, maxChars: 1 },
+          chatHistoryParams({ sessionKey: session.sessionKey, limit: 1, maxChars: 1 }, null),
           Math.max(1, Math.min(GATEWAY_RELEASE_RPC_TIMEOUT_MS, Math.ceil(left()))),
         );
         const info = (res as { payload?: { sessionInfo?: { hasActiveRun?: unknown } } })
@@ -1613,6 +1644,20 @@ async function performSendComposed(
 ): Promise<void> {
   const conn = session.connection;
   const sessionKey = session.sessionKey;
+  // BEFORE EVERYTHING: a gateway known to be below the supported floor (2026.8.2) is
+  // not driven at all — no hold, no describe, no patch, no send (version-floor.ts).
+  assertSupportedGateway(conn.gatewayVersion);
+  // THE TRANSCRIPT PROJECTION (redesign phase 1, SHADOW): the instance switch and the
+  // cursor Convex stored, applied to this session's reconciler. Only on a gateway known
+  // to carry the transcript identities (TRANSCRIPT_PROJECTION_SINCE); otherwise off. The
+  // first switch-on reads the transcript in the background — nothing here waits on it.
+  session.transcriptShadow?.configure({
+    mode:
+      gatewayAtLeast(conn.gatewayVersion, TRANSCRIPT_PROJECTION_SINCE) === true
+        ? body.config?.transcriptProjection
+        : "off",
+    cursor: body.transcriptCursor ?? null,
+  });
   // FIRST, before anything reads the session: the describe, the pre-send guard and
   // its compaction below must see the session the send will actually run on — not
   // one a delivery run is still writing to (and compacting would interrupt it).
@@ -2664,10 +2709,12 @@ async function performSendComposed(
     );
   }
 
+  const sendKey = await resolveSendIdentity(sessionKey, body.clientMessageId, body.sendId, body.chatId);
+  report.sendId = sendKey;
   const params: Record<string, unknown> = {
     sessionKey,
     message,
-    idempotencyKey: await idempotencyKey(sessionKey, body.clientMessageId),
+    idempotencyKey: sendKey,
   };
   // THE PERMISSIONS THE READER SAW. The gateway compares this with the mode STORED
   // on the session (`entry.permissionMode ?? null`, chat-send-session-settings.ts)
@@ -2860,6 +2907,8 @@ async function performSendComposed(
           },
         );
   session.runManager.armReplayBuffer();
+  // The ACK's status, for the transcript reconciler (`ok` ⇒ read the transcript back).
+  let ackStatus: unknown = undefined;
   try {
     // WHO SENDS. The conversation's socket (the owner's), unless this turn is a
     // participant's on an instance that lets them speak as themselves — then their
@@ -2896,6 +2945,7 @@ async function performSendComposed(
       conn.sessionReplaced = false;
     }
     const ackRunId = extractRunId(response);
+    ackStatus = (response as { payload?: { status?: unknown } } | undefined)?.payload?.status;
     // Anchor the RAW user text for orphan-recovery boundary validation — NOT
     // params.message: the enriched message can END with static injections (the
     // [LIVRAISON] media-delivery block) identical on every turn, which would
@@ -2969,6 +3019,7 @@ async function performSendComposed(
   // its deadline and the turn would hang in "streaming" forever — wake it so the
   // recv guard is installed and fires.
   session.wake();
+  session.transcriptShadow?.noteAck(ackStatus);
 }
 
 /**
@@ -3014,8 +3065,35 @@ export async function performPatch(
   );
 }
 
+/**
+ * THE SEND IDENTITY this turn's `chat.send` carries. The bridge's derivation
+ * (`webchat-` + sha256 of the session key it ACTUALLY sends to and the dispatch key) is
+ * the truth the gateway will see; Convex computes the same value to know it in advance
+ * (convex/lib/sendIdentity.ts). Agreement ⇒ Convex's string is used verbatim. A
+ * disagreement means Convex derived another session key: the bridge keeps its own (a key
+ * bound to the wrong session could be answered from another session's dedupe entry —
+ * upstream `chat-send-pre-admission.ts` keys it `chat:${clientRunId}`, process-wide),
+ * says so, and reports the key it used so Convex corrects its record.
+ */
+export async function resolveSendIdentity(
+  sessionKey: string,
+  clientMessageId: string,
+  convexSendId: string | undefined,
+  chatId: string,
+): Promise<string> {
+  const derived = await idempotencyKey(sessionKey, clientMessageId);
+  if (convexSendId !== undefined && convexSendId !== derived) {
+    console.error(
+      `[identity] chat=${chatId} Convex named send ${convexSendId.slice(0, 20)}…, the session derives ${derived.slice(0, 20)}… — sending the derived key`,
+    );
+  }
+  return derived;
+}
+
 /** What a send reports back beside its acceptance (see performSend `report`). */
 export interface SendReport {
+  /** The `idempotencyKey` this send carried (the send identity), answered to Convex. */
+  sendId?: string;
   knowledge?: {
     /** `clamped`: sent, but searching fewer of the chosen sources — the operator took
      *  `dropped` out of the agent's allowlist since (codex pass 15). */
@@ -8198,6 +8276,8 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
       sendJson(res, 200, {
         ok: true,
         ...(sendReport.knowledge === undefined ? {} : { knowledge: sendReport.knowledge }),
+        // The send identity actually used (Convex corrects its record if it differs).
+        ...(sendReport.sendId === undefined ? {} : { sendId: sendReport.sendId }),
       });
     } catch (err) {
       // A per-send upstream failure is reported but does not crash the bridge.

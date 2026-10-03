@@ -48,6 +48,8 @@ import { readDoc as readCompatDoc } from "./compat";
 import { decideTurnKnowledge, type TurnKnowledge } from "./knowledge";
 import { PERMISSIONS } from "./lib/rbac";
 import { buildOpenClawThreadId } from "./lib/openclawThread";
+import { sendIdentityFor } from "./lib/sendIdentity";
+import { transcriptRoutingFor } from "./lib/transcriptProjection";
 import {
   expectedPermissionModeFor,
   withoutSessionAccess,
@@ -238,17 +240,27 @@ export async function readErrorCode(
  *  knowledge choice's outcome (`knowledge`, a new bridge only). Never throws. */
 export async function readSendAnswer(
   response: Response,
-): Promise<{ errorCode?: string; knowledge?: unknown }> {
+): Promise<{ errorCode?: string; knowledge?: unknown; sendId?: string }> {
   try {
-    const body = (await response.json()) as { error?: unknown; knowledge?: unknown };
+    const body = (await response.json()) as {
+      error?: unknown;
+      knowledge?: unknown;
+      sendId?: unknown;
+    };
     const err = body?.error;
     const errorCode =
       err !== null && typeof err === "object" && typeof (err as { code?: unknown }).code === "string"
         ? (err as { code: string }).code
         : undefined;
+    // The key the bridge ACTUALLY sent (bounded like an upstream run id).
+    const sendId =
+      typeof body?.sendId === "string" && body.sendId.length > 0 && body.sendId.length <= 256
+        ? body.sendId
+        : undefined;
     return {
       ...(errorCode === undefined ? {} : { errorCode }),
       ...(body?.knowledge === undefined ? {} : { knowledge: body.knowledge }),
+      ...(sendId === undefined ? {} : { sendId }),
     };
   } catch {
     return {};
@@ -362,8 +374,11 @@ export const markOutbox = internalMutation({
     // user's turn with its card already deleted. Optional: legacy/other
     // callers keep the unbound behavior.
     expectedClientMessageId: v.optional(v.string()),
+    /** The gateway key the bridge reported it sent. Corrects the stamped send identity
+     *  when the bridge's derivation (from the session it actually used) disagrees. */
+    sendId: v.optional(v.string()),
   },
-  handler: async (ctx, { outboxId, status, expectedClientMessageId }) => {
+  handler: async (ctx, { outboxId, status, expectedClientMessageId, sendId }) => {
     const row = await ctx.db.get(outboxId);
     if (row === null) {
       return; // row gone; nothing to do
@@ -397,7 +412,20 @@ export const markOutbox = internalMutation({
     if (row.preemptHold === true && row.status === "pending") {
       return;
     }
-    await ctx.db.patch(outboxId, { status });
+    const restamp =
+      status === "sent" && sendId !== undefined && sendId !== row.sendId ? sendId : undefined;
+    await ctx.db.patch(outboxId, { status, ...(restamp === undefined ? {} : { sendId: restamp }) });
+    if (restamp !== undefined) {
+      // The bridge derived the key from the session it ACTUALLY sent to: that is the
+      // identity the transcript will carry, so the user bubble follows it (I3).
+      console.warn("bridge.markOutbox: send identity corrected from the bridge's answer");
+      if (row.messageId !== undefined && row.chainStep === undefined) {
+        const message = await ctx.db.get(row.messageId);
+        if (message !== null && message.role === "user") {
+          await ctx.db.patch(row.messageId, { sendId: restamp });
+        }
+      }
+    }
     // Drain the next queued send on BOTH terminal statuses. `drainNextQueued` is
     // idempotent and isChatBusy-guarded, so this is safe in every ordering:
     //   - failed: the turn never streamed → chat idle → drains now.
@@ -942,7 +970,33 @@ export const getChatRouting = internalQuery({
       routedTarget === null
         ? null
         : await decideTurnPermission(ctx, chat, routedTarget.instanceName);
+    // The provider-side conversation id this routing keys the gateway session on (see
+    // `openclawChatId` below — computed once, because the transcript cursor and the send
+    // identity derive the SAME session key from it).
+    const providerConversationId =
+      chat.perTurnRouting && routedAgent
+        ? (routingSegment ?? chat.routingSegment ?? null)
+        : res.rebind
+          ? null
+          : (chat.openclawChatId ?? null);
+    // THE TRANSCRIPT PROJECTION (redesign phase 1): the instance switch, and where this
+    // session's last transcript read stopped, so the bridge resumes with a delta.
+    const projectionMode = instance?.config?.transcriptProjection ?? "off";
+    const transcript =
+      routedTarget === null || provider !== "openclaw" || projectionMode === "off"
+        ? null
+        : await transcriptRoutingFor(ctx, chat._id, {
+            mode: projectionMode,
+            // Never null here: all three ingredients are present.
+            sessionKey: buildOpenClawThreadId({
+              agentId: routedTarget.agentId,
+              canonical: routedTarget.canonical,
+              chatId: providerConversationId ?? chat._id,
+            }) as string,
+          });
     return {
+      provider,
+      transcript,
       // INLINE WIDGETS for whatever socket this routing opens: the instance switch
       // AND the conversation override (conversationWantsWidgets) — a PREVIEW for a
       // turn (the /send carries lastGateBeforeSend's decision), and THE wish for
@@ -981,12 +1035,7 @@ export const getChatRouting = internalQuery({
       // beginTurnRouting. ONLY when a routed agent is in play — a routed send, or a
       // session operation (dispatchPatch/Reset/compact) asking for `currentSession`
       // on a chat with a confirmed route; otherwise the legacy session id.
-      openclawChatId:
-        chat.perTurnRouting && routedAgent
-          ? (routingSegment ?? chat.routingSegment ?? null)
-          : res.rebind
-            ? null
-            : (chat.openclawChatId ?? null),
+      openclawChatId: providerConversationId,
       // WHAT IS STORED, as opposed to what this send may use. The field above is
       // nulled on a rebind — it means "do not reuse this" — so a caller that needs
       // to NAME the binding (to quarantine it after a kill it cannot vouch for)
@@ -1854,10 +1903,14 @@ export const lastGateBeforeSend = internalMutation({
   args: {
     outboxId: v.id("outbox"),
     target: v.object({ instanceName: v.string(), agentId: v.string() }),
+    /** The send identity this dispatch carries (lib/sendIdentity.ts), stamped on the
+     *  row and on its user message in the transaction that lets the send leave. Absent
+     *  for a provider without transcript identities (Hermes). */
+    sendId: v.optional(v.string()),
   },
   handler: async (
     ctx,
-    { outboxId, target },
+    { outboxId, target, sendId },
   ): Promise<
     | { kind: "gone" }
     | { kind: "reparked" }
@@ -1919,7 +1972,19 @@ export const lastGateBeforeSend = internalMutation({
     // The send leaves for this instance NOW: from here on (while the row is in flight
     // or once sent) its bridge may read this chat's history and open the reply — and
     // not before (lib/ingestAuthz.chatAllowsInstance).
-    await ctx.db.patch(outboxId, { sentToInstance: target.instanceName });
+    await ctx.db.patch(outboxId, {
+      sentToInstance: target.instanceName,
+      ...(sendId === undefined ? {} : { sendId, dispatchedAt: Date.now() }),
+    });
+    // The user bubble carries the identity of the send that delivered it (I3). Only the
+    // HEAD row of a turn: a chained row re-asks another agent with a prompt of its own,
+    // and the bubble keeps the identity of the turn the person sent.
+    if (sendId !== undefined && row.messageId !== undefined && row.chainStep === undefined) {
+      const message = await ctx.db.get(row.messageId);
+      if (message !== null && message.role === "user" && message.sendId !== sendId) {
+        await ctx.db.patch(row.messageId, { sendId });
+      }
+    }
     // INLINE WIDGETS, decided in this same transaction as the permission and knowledge
     // choices: the instance switch AND the conversation override (convex/widgets.ts).
     // The bridge adds the gateway-version judgement and re-opens the socket on change.
@@ -2719,6 +2784,9 @@ export const dispatch = internalAction({
     // What the bridge reported of the knowledge choice this turn carried (its /send
     // answer's `knowledge`), and for which agent — recorded for the composer below.
     let knowledgeReport: unknown = undefined;
+    // The gateway key the bridge reported sending (a newer bridge), to correct the
+    // stamped send identity if the two derivations ever disagree.
+    let sentKey: string | undefined = undefined;
     let knowledgeTarget: { instanceName: string; agentId: string } | null = null;
     // The meta-derived guard that actually rode this send (decided at the last gate),
     // for the refusal handler below — null when none did.
@@ -2788,12 +2856,27 @@ export const dispatch = internalAction({
       // who speaks. WHO SPEAKS: a participant's gateway name when the instance lets
       // participants speak in their own name; null ⇒ the owner's socket sends,
       // byte-identical to before. A refusal is never downgraded to the owner.
+      // THE SEND IDENTITY: the very `idempotencyKey` the bridge sends, bound to the
+      // gateway session this turn runs on (lib/sendIdentity.ts). OpenClaw only — Hermes
+      // has no transcript identity to reconcile it against.
+      const sendId =
+        routing.provider === "openclaw"
+          ? await sendIdentityFor(
+              buildOpenClawThreadId({
+                agentId: routing.target.agentId,
+                canonical: routing.target.canonical,
+                chatId: routing.openclawChatId ?? row.chatId,
+              }) as string,
+              row.dispatchKey ?? row.clientMessageId,
+            )
+          : null;
       const gate = await ctx.runMutation(internal.bridge.lastGateBeforeSend, {
         outboxId,
         target: {
           instanceName: routing.target.instanceName,
           agentId: routing.target.agentId,
         },
+        ...(sendId === null ? {} : { sendId }),
       });
       if (gate.kind === "gone" || gate.kind === "reparked") return;
       if (gate.kind === "permission_refused") {
@@ -2957,6 +3040,15 @@ export const dispatch = internalAction({
             // key) while the browser's own clientMessageId stays intact for
             // send.sendMessage's retry dedup (preemptRepark.ts).
             clientMessageId: row.dispatchKey ?? row.clientMessageId,
+            // The send identity (lib/sendIdentity.ts): the bridge uses it as the
+            // gateway `idempotencyKey` when its own derivation agrees, and answers the
+            // key it actually used. An old bridge ignores the field and derives the very
+            // same key from `clientMessageId`.
+            ...(sendId === null ? {} : { sendId }),
+            // THE TRANSCRIPT PROJECTION (phase 1, shadow): where this session's last
+            // `chat.history` read stopped, so the bridge resumes with a delta. The mode
+            // itself rides `config.transcriptProjection`.
+            ...(routing.transcript?.cursor ? { transcriptCursor: routing.transcript.cursor } : {}),
             // How long this row has ALREADY been `pending` — a DURATION, so no clock
             // is shared. The bridge adds its own elapsed time and refuses to submit a
             // prompt whose dispatch is past the deadline: otherwise a POST arriving
@@ -3030,6 +3122,7 @@ export const dispatch = internalAction({
         // choice's outcome either way (tolerant of old/new bridge).
         const answer = await readSendAnswer(response);
         knowledgeReport = answer.knowledge;
+        sentKey = answer.sendId;
         if (!ok) {
           console.error(`bridge POST /send -> HTTP ${response.status}`);
           errorCode = answer.errorCode;
@@ -3082,6 +3175,7 @@ export const dispatch = internalAction({
         // a fresh dispatchKey at its flip, so a straggler ack from the killed
         // dispatch can never flip the re-queued row (codex P1).
         expectedClientMessageId: row.dispatchKey ?? row.clientMessageId,
+        ...(sentKey === undefined ? {} : { sendId: sentKey }),
       });
       // CONFIRM the WHOLE routing tuple {segment, lastRoutedAgent*} ONLY now that the
       // gateway accepted the send — so a FAILED routed dispatch advances NOTHING and a

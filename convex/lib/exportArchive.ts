@@ -78,6 +78,10 @@ export const IDENTITY_KEYS: ReadonlyArray<string> = [
 export const MESSAGE_FIELDS_DROPPED: ReadonlyArray<string> = [
   "turnSessionKey",
   "dispatchOutboxId",
+  // The SEND identity of the dispatch that carried a user message (the gateway's
+  // idempotency key, bound to a gateway session of the SOURCE deployment). Same reason
+  // as `turnSessionKey`: session state, not the exchange.
+  "sendId",
   // Correlation with the SOURCE deployment's live run. The fork path excludes
   // the same fields for the same reason: they belong to sessions that are not
   // ours.

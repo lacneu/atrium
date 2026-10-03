@@ -10884,10 +10884,3 @@ button.oc-perm__opt:disabled {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
-
-/* The sidebar's way into the trash (TrashPage.tsx), under the conversation list. */
-.oc-sidebar__trash {
-  margin-top: 0.25rem;
-  justify-content: flex-start;
-  color: var(--muted-foreground);
-}

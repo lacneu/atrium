@@ -10,7 +10,13 @@
     "matters — a capability declared for a version we have never benched — because every",
     "real minVersion sits at or below maxValidated. On every other input, freezing at the",
     "validated profile and failing open give the same answer, which is exactly why the",
-    "fail-open survived unnoticed."
+    "fail-open survived unnoticed.",
+    "",
+    "`historyCap` sits BELOW the floor: a capability first seen in a generation the floor",
+    "has since retired (0.92.0 raised the OpenClaw floor to 2026.8.2 over entries dating",
+    "from 2026.5.19). It discriminates the two floor rules: below the floor, nothing at",
+    "all; an unknown version gets every capability AT OR BELOW the floor, not only those",
+    "equal to it."
   ],
   "manifest": {
     "providers": {
@@ -18,6 +24,7 @@
         "supportedRange": { "min": "1.0.0", "maxValidated": "2.0.0" },
         "validatedVersions": ["1.0.0", "1.5.0", "2.0.0"],
         "capabilities": {
+          "historyCap": "0.5.0",
           "floorCap": "1.0.0",
           "midCap": "1.5.0",
           "maxCap": "2.0.0",
@@ -38,6 +45,7 @@
       "version": "1.0.0",
       "beyond": false,
       "capabilities": {
+        "historyCap": true,
         "floorCap": true,
         "midCap": false,
         "maxCap": false,
@@ -50,6 +58,7 @@
       "version": "1.5.0",
       "beyond": false,
       "capabilities": {
+        "historyCap": true,
         "floorCap": true,
         "midCap": true,
         "maxCap": false,
@@ -62,6 +71,7 @@
       "version": "2.0.0",
       "beyond": false,
       "capabilities": {
+        "historyCap": true,
         "floorCap": true,
         "midCap": true,
         "maxCap": true,
@@ -74,6 +84,7 @@
       "version": "2.5.0",
       "beyond": true,
       "capabilities": {
+        "historyCap": true,
         "floorCap": true,
         "midCap": true,
         "maxCap": true,
@@ -86,6 +97,7 @@
       "version": "9.9.9",
       "beyond": true,
       "capabilities": {
+        "historyCap": true,
         "floorCap": true,
         "midCap": true,
         "maxCap": true,
@@ -98,6 +110,20 @@
       "version": "0.9.0",
       "beyond": false,
       "capabilities": {
+        "historyCap": false,
+        "floorCap": false,
+        "midCap": false,
+        "maxCap": false,
+        "unbenchedCap": false
+      }
+    },
+    {
+      "name": "below the floor yet above an older capability's minVersion: STILL nothing — the floor retires the whole generation, not only what it lacked",
+      "provider": "demo",
+      "version": "0.7.0",
+      "beyond": false,
+      "capabilities": {
+        "historyCap": false,
         "floorCap": false,
         "midCap": false,
         "maxCap": false,
@@ -110,6 +136,7 @@
       "version": "not-a-version",
       "beyond": false,
       "capabilities": {
+        "historyCap": true,
         "floorCap": true,
         "midCap": false,
         "maxCap": false,
@@ -122,6 +149,7 @@
       "version": null,
       "beyond": false,
       "capabilities": {
+        "historyCap": true,
         "floorCap": true,
         "midCap": false,
         "maxCap": false,

@@ -32,6 +32,7 @@ import { requireRealUserId, getProfile } from "./lib/access";
 import { loadLocalCrypto } from "./lib/crypto/keyProvider";
 import { encryptedSecretValidator } from "./lib/crypto/convexValidator";
 import { maskCredentialId } from "./lib/chatRenderState";
+import { loadProjectionReport } from "./lib/transcriptProjection";
 
 function assertDev() {
   if (process.env.OPENCLAW_ENABLE_ANON_AUTH !== "1") {
@@ -1262,6 +1263,43 @@ export const testSetInboundMediaMode = mutation({
       config: { ...(inst.config ?? {}), inboundMediaMode: mode },
     });
     return { ok: true as const, previous };
+  },
+});
+
+/**
+ * Bench-only: switch an instance's TRANSCRIPT PROJECTION (redesign phase 1) — `shadow`
+ * to measure the projection ↔ bubble gaps during a run, back to the reported previous
+ * value afterwards. Same contract as `testSetInboundMediaMode`: the previous value is
+ * returned so the runner can restore it (`null` = never set = `off`).
+ */
+export const testSetTranscriptProjection = mutation({
+  args: {
+    instanceName: v.string(),
+    mode: v.union(v.literal("off"), v.literal("shadow"), v.literal("on")),
+  },
+  handler: async (ctx, { instanceName, mode }) => {
+    assertDev();
+    assertDevInstance(instanceName);
+    const inst = await ctx.db
+      .query("instances")
+      .withIndex("by_name", (q) => q.eq("name", instanceName))
+      .first();
+    if (!inst) return { ok: false as const, reason: "instance not found" };
+    const previous = inst.config?.transcriptProjection ?? null;
+    await ctx.db.patch(inst._id, {
+      config: { ...(inst.config ?? {}), transcriptProjection: mode },
+    });
+    return { ok: true as const, previous };
+  },
+});
+
+/** Bench-only: the projection ↔ bubble measurement of one chat (invariants I1–I3), the
+ *  same report `diagnose_chat` carries — metadata only. */
+export const testProjectionReport = query({
+  args: { chatId: v.id("chats") },
+  handler: async (ctx, { chatId }) => {
+    assertDev();
+    return await loadProjectionReport(ctx, chatId);
   },
 });
 

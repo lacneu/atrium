@@ -77,6 +77,10 @@ export const NOT_CONSUMED_CAPABILITIES: ReadonlySet<string> = new Set([
   // A normalizer recovery path (message-tool args unreadable → transcript recovery). It
   // changes what the bridge does, never what the UI offers.
   "messageToolRecovery",
+  // The bridge's transcript reconciler (redesign phase 1, SHADOW): it records the
+  // session transcript's identity rows beside the bubbles and changes nothing on
+  // screen. Moves to the consumed half when a phase gates a control on it.
+  "transcriptProjection",
 ]);
 
 const CAPABILITY_KEY_SET: ReadonlySet<string> = new Set(CAPABILITY_KEYS);

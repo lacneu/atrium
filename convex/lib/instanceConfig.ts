@@ -26,6 +26,10 @@ export type MediaMode = (typeof MEDIA_MODES)[number];
 export const INBOUND_MEDIA_MODES = ["inline", "shared-fs"] as const;
 export type InboundMediaMode = (typeof INBOUND_MEDIA_MODES)[number];
 
+/** The transcript projection switch (design §10.4): see `instanceConfigValidator`. */
+export const TRANSCRIPT_PROJECTION_MODES = ["off", "shadow", "on"] as const;
+export type TranscriptProjectionMode = (typeof TRANSCRIPT_PROJECTION_MODES)[number];
+
 /** Live-stream transport (frontend↔Convex) for an instance's chats: the reactive query
  *  push (default) or the SSE / streamable-HTTP endpoint. A FRONTEND display choice — it is
  *  a TOP-LEVEL instance property (`instances.streamTransport`), NOT part of this bridge
@@ -117,6 +121,14 @@ export const instanceConfigValidator = v.object({
   // volume). Used only in shared-fs mode. Non-secret.
   inboundAgentMount: v.optional(v.string()),
   outboundAgentMount: v.optional(v.string()),
+  // THE SESSION TRANSCRIPT AS THE TRUTH (redesign): `off` (default) = the bridge does not
+  // read the transcript back; `shadow` = it records the transcript's identity rows beside
+  // the bubbles (convex/transcriptProjection.ts) and changes nothing on screen; `on` is
+  // reserved for the phases that let the projection place replies (inert in phase 1,
+  // behaves as `shadow`). Carried to the bridge in the dispatch config like `mediaMode`.
+  transcriptProjection: v.optional(
+    v.union(v.literal("off"), v.literal("shadow"), v.literal("on")),
+  ),
   // Per-injection admin overrides (disable / customize the standing instructions Atrium
   // splices into a turn — see lib/promptInjections). Sparse: only configured keys. The
   // key set is validated against the registry in parseInstanceConfig.
@@ -176,6 +188,7 @@ export type InstanceConfig = {
   contentLocale?: string;
   inboundAgentMount?: string;
   outboundAgentMount?: string;
+  transcriptProjection?: TranscriptProjectionMode;
   promptInjections?: PromptInjectionConfig;
 };
 
@@ -236,6 +249,7 @@ export function parseInstanceConfig(raw: unknown): InstanceConfig | "invalid" {
     "contentLocale",
     "inboundAgentMount",
     "outboundAgentMount",
+    "transcriptProjection",
     "promptInjections",
   ]);
   for (const k of Object.keys(o)) {
@@ -372,6 +386,16 @@ export function parseInstanceConfig(raw: unknown): InstanceConfig | "invalid" {
       }
       out[key] = (o[key] as string).trim();
     }
+  }
+  if (o.transcriptProjection !== undefined) {
+    if (
+      !(TRANSCRIPT_PROJECTION_MODES as readonly string[]).includes(
+        o.transcriptProjection as string,
+      )
+    ) {
+      return "invalid";
+    }
+    out.transcriptProjection = o.transcriptProjection as TranscriptProjectionMode;
   }
   if (o.promptInjections !== undefined) {
     const parsed = parsePromptInjections(o.promptInjections);

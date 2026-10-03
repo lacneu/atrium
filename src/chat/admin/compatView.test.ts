@@ -44,6 +44,11 @@ describe("aggregateBadgeState (the provider card header)", () => {
     expect(aggregateBadgeState(["beyond", "defective"])).toBe("defective");
     expect(aggregateBadgeState(["unknown", "defective"])).toBe("defective");
   });
+  test("UNSUPPORTED (below the floor) outranks beyond, never defective", () => {
+    expect(aggregateBadgeState(["supported", "unsupported"])).toBe("unsupported");
+    expect(aggregateBadgeState(["beyond", "unsupported"])).toBe("unsupported");
+    expect(aggregateBadgeState(["unsupported", "defective"])).toBe("defective");
+  });
   test("then beyond, then all-supported, else no badge", () => {
     expect(aggregateBadgeState(["supported", "beyond"])).toBe("beyond");
     expect(aggregateBadgeState(["supported", "supported"])).toBe("supported");
@@ -132,8 +137,10 @@ describe("targetBadgeState", () => {
     expect(targetBadgeState(target("2026.5.19"), MANIFEST)).toBe("supported");
   });
 
-  test("below the support window -> unknown (never an unbacked check)", () => {
-    expect(targetBadgeState(target("2026.4.1"), MANIFEST)).toBe("unknown");
+  test("below the support window -> UNSUPPORTED (a stated refusal, not an unknown)", () => {
+    expect(targetBadgeState(target("2026.4.1"), MANIFEST)).toBe("unsupported");
+    // A pre-release of the floor sorts below it.
+    expect(targetBadgeState(target("2026.5.19-beta.1"), MANIFEST)).toBe("unsupported");
   });
 
   test("provider without a published range (hermes today) -> unknown", () => {
@@ -158,8 +165,12 @@ describe("badgeStateFromVersion (per-instance verdict from a RAW version)", () =
   test("above the validated ceiling -> beyond (computed from the range here)", () => {
     expect(badgeStateFromVersion("2026.7.1", "openclaw", MANIFEST)).toBe("beyond");
   });
-  test("below the support window -> unknown", () => {
-    expect(badgeStateFromVersion("2026.4.1", "openclaw", MANIFEST)).toBe("unknown");
+  test("below the support window -> unsupported", () => {
+    expect(badgeStateFromVersion("2026.4.1", "openclaw", MANIFEST)).toBe("unsupported");
+  });
+  test("an UNREADABLE version is never called unsupported (no evidence of an old gateway)", () => {
+    expect(badgeStateFromVersion("garbage", "openclaw", MANIFEST)).toBe("unknown");
+    expect(targetBadgeState(target("garbage"), MANIFEST)).toBe("unknown");
   });
   test("legacy bridge (manifest null) -> unknown", () => {
     expect(badgeStateFromVersion("2026.6.5", "openclaw", null)).toBe("unknown");
@@ -167,17 +178,20 @@ describe("badgeStateFromVersion (per-instance verdict from a RAW version)", () =
 });
 
 describe("targetBadgeLabel — every badge maps to a DISTINCT label", () => {
-  test("all three branches", () => {
+  test("all branches", () => {
     expect(targetBadgeLabel("supported")).toBe(m.compat_badge_supported());
     expect(targetBadgeLabel("beyond")).toBe(m.compat_badge_beyond());
+    expect(targetBadgeLabel("unsupported")).toBe(m.compat_badge_unsupported());
     expect(targetBadgeLabel("unknown")).toBe(m.compat_badge_unknown());
     expect(
       new Set([
         targetBadgeLabel("supported"),
         targetBadgeLabel("beyond"),
+        targetBadgeLabel("defective"),
+        targetBadgeLabel("unsupported"),
         targetBadgeLabel("unknown"),
       ]).size,
-    ).toBe(3);
+    ).toBe(5);
   });
 });
 

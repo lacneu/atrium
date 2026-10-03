@@ -19,6 +19,8 @@ import { sleep } from "./helpers/sleep.js";
 
 import { performSend, setGatewayReleaseBudgetForTests } from "../src/server.js";
 import { PRE_SEND_DEADLINE_MS } from "../src/core/dispatch-deadline.js";
+import { classifyGatewayError, faultDomain } from "../src/core/dispatch-errors.js";
+import { GatewayVersionUnsupportedError } from "../src/providers/openclaw/version-floor.js";
 import { SessionRegistry } from "../src/session.js";
 import type { BridgeConfig } from "../src/config.js";
 import type { ConvexWriter } from "../src/convex-writer.js";
@@ -1345,10 +1347,12 @@ describe("the outbound delivery instruction is WITHHELD on a poisoning gateway",
     expect(sentMessage(gw)).toContain(DIR);
   });
 
-  it("2026.8.1 does NOT: a delivered file would poison the session", async () => {
+  it("2026.8.2 does NOT: a delivered file would poison the session", async () => {
+    // 2026.8.2 = the supported floor AND a poisoning release: still driven (badged
+    // defective), never asked to deliver a file. 2026.8.1 is below the floor now.
     const { gw, session, writer } = await harness({ describe: [at(10)] });
     (session.connection as unknown as { gatewayVersion: string }).gatewayVersion =
-      "2026.8.1";
+      "2026.8.2";
     await performSend(session, body, writer, null, DIR);
     expect(gw.countOf("chat.send"), "the turn still goes through").toBe(1);
     expect(sentMessage(gw), "the agent is not asked to deliver a file").not.toContain(DIR);
@@ -1357,7 +1361,7 @@ describe("the outbound delivery instruction is WITHHELD on a poisoning gateway",
   it("…unless THIS instance's image is attested to carry the fix", async () => {
     const { gw, session, writer } = await harness({ describe: [at(10)] });
     (session.connection as unknown as { gatewayVersion: string }).gatewayVersion =
-      "2026.8.1";
+      "2026.8.2";
     await performSend(session, body, writer, null, DIR, {
       attachmentFixAttested: true,
     });
@@ -1415,10 +1419,39 @@ describe("the outbound delivery instruction is WITHHELD on a poisoning gateway",
     // patched image next door cannot speak for a stock one.
     const { gw, session, writer } = await harness({ describe: [at(10)] });
     (session.connection as unknown as { gatewayVersion: string }).gatewayVersion =
-      "2026.8.1";
+      "2026.8.2";
     await performSend(session, body, writer, null, DIR, {
       attachmentFixAttested: false,
     });
     expect(sentMessage(gw)).not.toContain(DIR);
+  });
+});
+
+describe("a gateway BELOW the supported floor (2026.8.2) is refused by name", () => {
+  it.each(["2026.8.1", "2026.7.1", "2026.5.19"])(
+    "%s: nothing is sent — no hold, no describe, no patch, no chat.send",
+    async (version) => {
+      const { gw, session, writer } = await harness({ describe: [at(10)] });
+      (session.connection as unknown as { gatewayVersion: string }).gatewayVersion = version;
+      const err = await performSend(session, body, writer, null, null).then(
+        () => null,
+        (e: unknown) => e,
+      );
+      expect(err).toBeInstanceOf(GatewayVersionUnsupportedError);
+      // The code Convex stores and the card names; a refusal of OUR making (local).
+      expect(classifyGatewayError(err)).toBe("gateway_version_unsupported");
+      expect(faultDomain("gateway_version_unsupported")).toBe("local");
+      expect(gw.calls.map(([m]) => m), "not one RPC reached the gateway").toEqual([]);
+    },
+  );
+
+  it("the floor itself and an UNKNOWN version are driven as before", async () => {
+    for (const version of ["2026.8.2", null]) {
+      const { gw, session, writer } = await harness({ describe: [at(10)] });
+      (session.connection as unknown as { gatewayVersion: string | null }).gatewayVersion =
+        version;
+      await performSend(session, body, writer, null, null);
+      expect(gw.countOf("chat.send"), `version ${version}`).toBe(1);
+    }
   });
 });

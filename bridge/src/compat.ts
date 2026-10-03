@@ -78,6 +78,43 @@ export const EXPECTED_PERMISSION_MODE_SINCE = "2026.8.2";
  *  applied (the `permissionModes` capability): the guard's floor, see above. */
 export const PERMISSION_MODES_SINCE = EXPECTED_PERMISSION_MODE_SINCE;
 
+/**
+ * The OLDEST OpenClaw gateway Atrium supports (operator decision, 2026-10-01: the
+ * "session transcript is the truth" redesign raises the floor instead of keeping a
+ * frozen legacy pipeline for older generations).
+ *
+ * 2026.8.2 is the first tag carrying every transcript fact the redesign reconciles on
+ * (design §9.1): `__openclaw.runId` on assistant/toolResult rows and
+ * `__openclaw.steerTargetRunId` on steered user rows (upstream
+ * `src/sessions/transcript-events.ts`, `src/sessions/user-turn-transcript.metadata.ts`,
+ * both from 2026.8.1), the `chat.history` cursor/delta reply
+ * (`packages/gateway-protocol/src/schema/logs-chat.ts` `ChatHistoryDeltaResultSchema`,
+ * 2026.8.1) and `inputRunIds`/`inputReceipts` (`ChatHistoryParamsSchema.inputRunIds`,
+ * present at v2026.8.2, absent at v2026.8.1). Below it a reply cannot be placed by
+ * identity, only guessed — so a gateway below the floor is refused by name
+ * (`gateway_version_unsupported`), never driven through the old heuristics.
+ */
+export const OPENCLAW_MIN_SUPPORTED = "2026.8.2";
+
+/** First gateway version the shadow transcript projection runs against (the
+ *  `transcriptProjection` capability): the floor itself, for the reasons above. */
+export const TRANSCRIPT_PROJECTION_SINCE = OPENCLAW_MIN_SUPPORTED;
+
+/** First gateway version whose `chat.history` params accept `maxBytes` (the params
+ *  object is CLOSED upstream: `ChatHistoryParamsSchema` carries it at v2026.9.2, not at
+ *  v2026.9.1), so an older gateway would refuse the whole read over the unknown key. */
+export const CHAT_HISTORY_MAX_BYTES_SINCE = "2026.9.2";
+
+/** Is this LIVE gateway version known to be BELOW the supported floor?
+ *
+ *  Only a version that parses and compares below the floor answers true. An absent or
+ *  unreadable version is not evidence of an old gateway — the handshake can degrade —
+ *  so it answers false and the capability policy stays conservative instead. */
+export function openClawBelowFloor(gatewayVersion: string | null | undefined): boolean {
+  if (gatewayVersion === null || gatewayVersion === undefined) return false;
+  return gatewayAtLeast(gatewayVersion, OPENCLAW_MIN_SUPPORTED) === false;
+}
+
 /** First gateway version whose inline-widget chain Atrium proved live (see the
  *  `inlineWidgets` capability below). Exported for the socket-caps decision. */
 export const INLINE_WIDGETS_MIN_VERSION = "2026.9.6";
@@ -169,6 +206,14 @@ const OPENCLAW_CAPABILITIES: Record<string, string> = {
   // exercised the whole chain on (probe + `widget-inline` scenario), like
   // `knowledgePolicy`. Never on Hermes: it has no widgets.
   inlineWidgets: INLINE_WIDGETS_MIN_VERSION,
+  // THE SESSION TRANSCRIPT AS THE TRUTH (redesign phase 1): the bridge reads
+  // `chat.history` with a delta cursor at the Control UI's own triggers and records the
+  // transcript's identity rows (`__openclaw.id`/`seq`/`runId`/`idempotencyKey`/
+  // `steerTargetRunId`) in Convex, in SHADOW — it never creates, edits or finalizes a
+  // bubble. The floor is the supported floor (OPENCLAW_MIN_SUPPORTED): every fact it
+  // reads exists from there. Bridge-internal: no UI control is gated on it yet. Never on
+  // Hermes: it has no transcript with these identities.
+  transcriptProjection: TRANSCRIPT_PROJECTION_SINCE,
 };
 
 // Hermes exposes a DELIBERATELY SMALL surface via its OpenAI-compatible API
@@ -239,7 +284,7 @@ const HERMES_WS_CAPABILITIES: Record<string, string> = {
  *   * `maxValidated`, and every version added from now on, MUST have a
  *     `bridge/protocol/openclaw/<version>/BENCH.json` recording a GO run over the
  *     complete catalogue.
- *   * The six entries below `maxValidated` that predate this rule are GRANDFATHERED —
+ *   * The entries below `maxValidated` that predated this rule were GRANDFATHERED —
  *     listed here, explicitly and dated. Re-running those gateways today would not tell
  *     us whether the claim was true when it was made; it would manufacture evidence for a
  *     past we cannot re-enter. What matters is that the exemption is finite, visible, and
@@ -256,15 +301,10 @@ const HERMES_WS_CAPABILITIES: Record<string, string> = {
 export const BENCH_GRANDFATHERED: Readonly<Record<string, readonly string[]>> = {
   // Validated on the standing bench before BENCH.json existed (dates are the runs
   // recorded in the release notes and the version-validation memory).
-  openclaw: [
-    "2026.5.19", // 2026-05 — first validated range floor
-    "2026.6.1",
-    "2026.6.5", // 2026-06-19 — full suite
-    "2026.6.10", // 2026-06-28 — full suite
-    "2026.6.11", // 2026-07-03 — full suite (announce fixtures captured here)
-    "2026.7.1-beta.2", // 2026-07-09 — RC bench
-    "2026.7.1-beta.5", // 2026-07-12 — GO 9/9
-  ],
+  // EMPTY since 0.92.0: every grandfathered version (2026.5.19 → 2026.7.1-beta.5) sat
+  // below the 2026.8.2 floor and left `validatedVersions` with it. The exemption could
+  // only ever shrink; it has now shrunk to nothing, and every OpenClaw claim is earned.
+  openclaw: [],
   // Hermes: these TWO stand on their 2026-07-11 WS-transport run, from before any
   // attestation existed. The note that used to sit here — "Hermes has no BENCH.json and
   // will not get one in this program" — rested on a premise that is now dead: the wave was
@@ -384,7 +424,10 @@ export const COMPAT_MANIFEST: CompatManifest = {
       // hashes). It had previously been declared through its beta.2 RC
       // (release-day upgrades stay in support with no banner) — that proxy
       // note is now history, the row stands on its own run.
-      supportedRange: { min: "2026.5.19", maxValidated: "2026.9.6" },
+      // FLOOR 2026.8.2 (OPENCLAW_MIN_SUPPORTED, release 0.92.0): the versions below it
+      // were retired from support — their validation runs stay in the release notes, but
+      // the redesigned turn model cannot run on them, and a claim nobody keeps is not one.
+      supportedRange: { min: OPENCLAW_MIN_SUPPORTED, maxValidated: "2026.9.6" },
       // Inside the range, and BROKEN on a stock gateway: a managed-media
       // `attachment` block persisted by the gateway's own path crashes
       // `transcript-transform` on every later turn of that session (upstream
@@ -415,21 +458,10 @@ export const COMPAT_MANIFEST: CompatManifest = {
           "a delivered file poisons the session: every later turn fails in transcript-transform (upstream #135747)",
       },
       validatedVersions: [
-        "2026.5.19",
-        "2026.6.1",
-        "2026.6.5",
-        "2026.6.10",
-        "2026.6.11",
-        "2026.7.1-beta.2",
-        // beta.5: full live suite GO 2026-07-12 (9/9 — wire contracts, SSE,
-        // plan, media, spawn/announce, async tasks, cron, Hermes co-run).
-        // Upgrade notes: startup migrations refuse to boot on codex binding
-        // sidecars with an unresolvable session owner (move them aside), and
-        // containerized gateways now REQUIRE auth for non-loopback binds.
-        "2026.7.1-beta.5",
-        // Shipped release, re-validated directly (GO 9/9, 2026-07-13) after
-        // the beta.2-proxy declaration. Standing bench.
-        "2026.7.1",
+        // 2026.5.19 → 2026.7.1 (incl. 2026.7.1-beta.2/-beta.5) were validated on the
+        // standing bench and are RETIRED with the 2026.8.2 floor (0.92.0): below it a
+        // reply cannot be placed by transcript identity. Their runs are recorded in the
+        // release notes of the versions that validated them.
         // 2026.8.1 / 2026.8.2 were NOT validated: both refused the catalogue on a
         // gateway defect (an `attachment` block persisted by the gateway's own
         // managed-media path crashes `transcript-transform` on every later turn of
@@ -649,8 +681,9 @@ export interface ResolvedCapabilities {
  *  - unknown provider, or a provider with no validated range (hermes
  *    placeholder): zero capabilities;
  *  - null/malformed gateway version: CONSERVATIVE — only the capabilities
- *    whose minVersion IS the supported floor (`supportedRange.min`) are true
- *    (the floor is the weakest gateway we ever talk to);
+ *    whose minVersion is AT OR BELOW the supported floor (`supportedRange.min`) are
+ *    true (the floor is the weakest gateway we ever talk to);
+ *  - version below the floor: zero capabilities (unsupported, not "older");
  *  - version within range: capability true iff version >= its minVersion;
  *  - version beyond `maxValidated`: FROZEN at the maxValidated profile — the
  *    capabilities we have actually exercised, and no more — plus the
@@ -833,15 +866,29 @@ export function resolveCapabilitiesFor(
   if (range === null) return { capabilities: {}, versionBeyondValidated: false };
   const capabilities: Record<string, boolean> = {};
   const parsed = gatewayVersion === null ? null : parseVersion(gatewayVersion);
+  const floor = parseVersion(range.min);
   if (parsed === null) {
-    // Unknown gateway version -> conservative floor.
+    // Unknown gateway version -> conservative floor: what the WEAKEST supported gateway
+    // has, i.e. every capability whose minVersion is at or below the floor. Equality
+    // alone was the same rule while the floor was the lowest minVersion of the table;
+    // raising the floor above older entries (2026.8.2) would have stripped an unknown
+    // gateway of everything the floor gateway has.
     for (const [cap, minVersion] of Object.entries(table)) {
-      capabilities[cap] = minVersion === range.min;
+      const min = parseVersion(minVersion);
+      capabilities[cap] = min !== null && floor !== null && compareVersions(min, floor) <= 0;
     }
     return {
       capabilities: applyAuthModeGate(capabilities, authMode, gate),
       versionBeyondValidated: false,
     };
+  }
+  if (floor !== null && compareVersions(parsed, floor) < 0) {
+    // BELOW THE SUPPORTED FLOOR: nothing, whatever the table says about older versions.
+    // The table keeps the generation each capability first appeared in (history), but a
+    // gateway under the floor is unsupported as a whole — offering it a control would
+    // drive it through the pipeline the floor retired.
+    for (const cap of Object.keys(table)) capabilities[cap] = false;
+    return { capabilities, versionBeyondValidated: false };
   }
   const maxValidated = parseVersion(range.maxValidated);
   const beyond = maxValidated !== null && compareVersions(parsed, maxValidated) > 0;

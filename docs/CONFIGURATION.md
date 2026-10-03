@@ -284,6 +284,15 @@ One consequence worth knowing before you install: **enabling an agent is what
 exposes it**. Visibility is authorisation by default; attribution is not a second
 lock.
 
+One per-instance setting has no control in the UI on purpose, because it is a rollout
+lever rather than a preference: `transcriptProjection` (`off` by default, `shadow`, or
+`on`, which behaves as `shadow` for now). In `shadow` the bridge reads the gateway's
+session transcript back after each run (`chat.history`, delta cursor) and Convex records
+its identities beside the bubbles; nothing on screen changes, and `diagnose_chat` reports
+how far the bubbles are from the transcript. It needs OpenClaw 2026.8.2 or later and is
+set through the admin API (`admin.upsertInstanceConfig`); the Bridge and Injections tabs
+carry it through their saves unchanged.
+
 ## Secrets discipline
 
 Generate each shared secret with `openssl rand -hex 32`. Never commit a `.env`

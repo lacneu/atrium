@@ -24,6 +24,7 @@ import {
   listDeliverySessions,
   deleteDeliverySessions,
   deleteDeliverySessionsInput,
+  diagnoseChat,
 } from "../src/tools.js";
 import { type Config } from "../src/config.js";
 
@@ -564,5 +565,29 @@ describe("getChatState parts mode reaches the wire", () => {
     expect(schema.safeParse({ chatId: "abc", parts: "sumary" }).success).toBe(
       false,
     );
+  });
+});
+
+describe("diagnose_chat carries the transcript projection report", () => {
+  it("GETs /diagnose?chatId and hands `projection` back untouched (metadata only)", async () => {
+    const projection = {
+      mode: "shadow",
+      verdict: "gaps",
+      gapTotal: 1,
+      gaps: { i1: { transcriptOnly: 1, samples: [{ runId: "r", firstSeq: 4, bubbles: 0 }] } },
+    };
+    const calls: string[] = [];
+    const impl = (async (input: unknown) => {
+      calls.push(String(input));
+      return new Response(JSON.stringify({ ok: true, assessment: {}, projection }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    }) as unknown as typeof fetch;
+    const out = (await diagnoseChat(CONFIG, { chatId: "c 1" }, { fetchImpl: impl })) as {
+      projection?: unknown;
+    };
+    expect(calls).toEqual(["http://127.0.0.1:3213/api/v1/diagnose?chatId=c+1"]);
+    expect(out.projection).toEqual(projection);
   });
 });

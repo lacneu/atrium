@@ -119,14 +119,10 @@ const ENFORCED = OPENCLAW.validatedVersions.filter((v) => !GRANDFATHERED.has(v))
  *  adding a name to the exemption silently removed the obligation with it (raised in
  *  review). The only thing that actually freezes the list is a second copy, here, that a
  *  reviewer sees change. */
-const FROZEN_GRANDFATHER = [
-  "2026.5.19",
-  "2026.6.1",
-  "2026.6.5",
-  "2026.6.10",
-  "2026.6.11",
-  "2026.7.1-beta.2",
-  "2026.7.1-beta.5",
+const FROZEN_GRANDFATHER: string[] = [
+  // EMPTIED in 0.92.0: the seven grandfathered versions (2026.5.19 → 2026.7.1-beta.5) all
+  // sat below the 2026.8.2 floor and left `validatedVersions` with it. Narrowing the
+  // exemption is a claim too, which is why it lands here as an edit and not by default.
 ];
 
 describe("the support digest covers what a version claim depends on", () => {

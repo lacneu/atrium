@@ -1024,7 +1024,8 @@ export function providerCapabilityTable(
  *  when the bridge reports no per-session target. Policy (identical to the bridge):
  *   - provider with no published range: zero capabilities;
  *   - null/unparseable version: CONSERVATIVE floor — a capability is true only
- *     when its minVersion IS the supported floor (`range.min`);
+ *     when its minVersion is AT OR BELOW the supported floor (`range.min`);
+ *   - version below the floor: zero capabilities (unsupported as a whole);
  *   - version within range: true iff version >= its minVersion;
  *   - version beyond `maxValidated`: FROZEN at the maxValidated profile (the
  *     capabilities actually exercised, and no more) + `versionBeyondValidated`, which
@@ -1045,9 +1046,18 @@ export function resolveCapabilitiesFromManifest(
   const capabilities: Record<string, boolean> = {};
   const parsed = gatewayVersion === null ? null : parseVersion(gatewayVersion);
   if (parsed === null) {
+    // Conservative floor: every capability the WEAKEST supported gateway has (minVersion
+    // at or below the floor) — identical to the bridge's resolveCapabilitiesFor.
     for (const [cap, minVersion] of Object.entries(table)) {
-      capabilities[cap] = minVersion === range.min;
+      const cmp = compareVersions(minVersion, range.min);
+      capabilities[cap] = cmp !== null && cmp <= 0;
     }
+    return { capabilities, versionBeyondValidated: false };
+  }
+  const floorCmp = compareVersions(gatewayVersion as string, range.min);
+  if (floorCmp !== null && floorCmp < 0) {
+    // Below the supported floor: unsupported as a whole, zero capabilities.
+    for (const cap of Object.keys(table)) capabilities[cap] = false;
     return { capabilities, versionBeyondValidated: false };
   }
   const beyondCmp = compareVersions(gatewayVersion as string, range.maxValidated);

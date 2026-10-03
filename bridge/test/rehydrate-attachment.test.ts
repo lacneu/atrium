@@ -172,9 +172,9 @@ describe("fork first turn with an inline attachment", () => {
     expect(h.traces[0]?.historyWithheld).toBeUndefined();
   });
 
-  it("on 2026.7.1 (the first linear-scan generation): history rides", async () => {
+  it("on 2026.8.2 (the supported floor, a linear-scan generation): history rides", async () => {
     const h = harness({
-      gatewayVersion: "2026.7.1",
+      gatewayVersion: "2026.8.2",
       maxPayload: MAX_PAYLOAD,
       answer: () => ({ history: HISTORY, turnCount: 2 }),
     });
@@ -182,17 +182,18 @@ describe("fork first turn with an inline attachment", () => {
     expect(sent?.message).toBe(`${HISTORY}\n\nrésume ce fichier`);
   });
 
-  it("on 2026.6.11 (regex base64 check): bare text, history never asked, skip_attachment", async () => {
+  it("on 2026.6.11 (regex base64 check, BELOW the floor): refused before anything is sent", async () => {
+    // The regex generation is unsupported since 0.92.0: the turn is refused by name
+    // (`gateway_version_unsupported`) before history is even asked for.
     const h = harness({
       gatewayVersion: "2026.6.11",
       maxPayload: MAX_PAYLOAD,
       answer: () => ({ history: HISTORY, turnCount: 2 }),
     });
     const sent = await send(h, forkBody([PDF]));
-    expect(sent?.message).toBe("résume ce fichier");
-    expect(sent?.attachments).toEqual([PDF]);
+    expect(sent).toBeUndefined();
     expect(h.asked).toEqual([]);
-    expect(h.traces[0]).toMatchObject({ decision: "skip_attachment", prependedTurns: 0 });
+    expect(h.gw.calls).toEqual([]);
   });
 
   it("on an UNIDENTIFIED gateway (no version): fail closed, bare text", async () => {

@@ -27,6 +27,7 @@ import { HermesDashboardAbsentError } from "../providers/hermes/files-fetcher.js
 import { SubAgentReplyPendingError, TalkCallActiveError } from "../session.js";
 import { PermissionModeNotAppliedError } from "../providers/openclaw/permission-mode.js";
 import { KnowledgePolicyNotAppliedError } from "../providers/openclaw/knowledge-policy.js";
+import { GatewayVersionUnsupportedError } from "../providers/openclaw/version-floor.js";
 import {
   gatewayOwnRefusal,
   providerCredentialTextClass,
@@ -158,6 +159,11 @@ export type DispatchErrorCode =
   // turn never searches sources the owner turned off. Not retried: the same refusal
   // would repeat. Lower-case like the other codes Convex reads.
   | "knowledge_policy_not_applied"
+  // THE BRIDGE refused to send: the gateway's live version is below the supported floor
+  // (2026.8.2, OPENCLAW_MIN_SUPPORTED). Nothing was sent; the gateway must be upgraded.
+  // Not retried: the same gateway refuses the same way until it is upgraded. Lower-case
+  // like the other codes Convex reads.
+  | "gateway_version_unsupported"
   // The gateway's HOST storage refused the work (a full disk, a read-only database, an I/O
   // failure) — the same class, spelled the same way, as the turn-level one the frame
   // classifier mints (core/failure-classifier.ts), so the card, the anomaly plane and the
@@ -244,6 +250,9 @@ const LOCAL_REFUSAL_CODES: ReadonlySet<DispatchErrorCode> = new Set([
   "permission_mode_not_applied",
   // Same, for the conversation's knowledge choice.
   "knowledge_policy_not_applied",
+  // We refused a gateway below the supported floor. Its link answered (the version came
+  // from its own handshake); its age is not a health fault of the bridge.
+  "gateway_version_unsupported",
 ]);
 
 // Codes where the gateway DEMONSTRABLY responded and refused this specific request
@@ -388,6 +397,8 @@ export function classifyGatewayError(
   if (err instanceof PermissionModeNotAppliedError) return "permission_mode_not_applied";
   // …and the conversation's knowledge choice, by TYPE.
   if (err instanceof KnowledgePolicyNotAppliedError) return "knowledge_policy_not_applied";
+  // …and a gateway below the supported floor, by TYPE.
+  if (err instanceof GatewayVersionUnsupportedError) return "gateway_version_unsupported";
   // OUR OWN inbound-media refusal, by TYPE for the same reason. Only the BATCH
   // failures reach here — a size/collision/fetch failure drops that one file and
   // the send continues (`RECOVERABLE_DROP_FAILURES`) — but the size class is

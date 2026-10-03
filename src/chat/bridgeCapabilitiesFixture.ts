@@ -18,7 +18,7 @@
 // The live bench does it as part of a validation run, so the anchor tracks the version
 // the bench actually validated rather than whichever one somebody last pasted.
 //
-// Source: bridge 0.89.1 / gateway 2026.9.6 — captured 2026-09-30
+// Source: bridge 0.91.4 / gateway 2026.9.6 — captured 2026-10-02
 //
 // Imported by TESTS ONLY (src + convex test suites) — never by app or deployed
 // Convex code, so it adds zero runtime weight.
@@ -35,7 +35,7 @@ export const LIVE_CAPABILITIES_BODY = {
     "media": true,
     "streaming": "both"
   },
-  "bridgeVersion": "0.89.1",
+  "bridgeVersion": "0.91.4",
   "buildVersion": null,
   "buildRevision": null,
   "rehydrationDefault": true,
@@ -43,12 +43,12 @@ export const LIVE_CAPABILITIES_BODY = {
   "inboundPrivateStaging": true,
   "protocolVersion": 2,
   "compat": {
-    "bridgeVersion": "0.89.1",
+    "bridgeVersion": "0.91.4",
     "protocolVersion": 2,
     "providers": {
       "openclaw": {
         "supportedRange": {
-          "min": "2026.5.19",
+          "min": "2026.8.2",
           "maxValidated": "2026.9.6"
         },
         "brokenVersionWindow": {
@@ -61,14 +61,6 @@ export const LIVE_CAPABILITIES_BODY = {
           "2026.8.2": "a delivered file poisons the session: every later turn fails in transcript-transform (upstream #135747)"
         },
         "validatedVersions": [
-          "2026.5.19",
-          "2026.6.1",
-          "2026.6.5",
-          "2026.6.10",
-          "2026.6.11",
-          "2026.7.1-beta.2",
-          "2026.7.1-beta.5",
-          "2026.7.1",
           "2026.9.1",
           "2026.9.2",
           "2026.9.4",
@@ -94,7 +86,8 @@ export const LIVE_CAPABILITIES_BODY = {
           "talk": "2026.7.1",
           "permissionModes": "2026.8.2",
           "knowledgePolicy": "2026.9.6",
-          "inlineWidgets": "2026.9.6"
+          "inlineWidgets": "2026.9.6",
+          "transcriptProjection": "2026.8.2"
         }
       },
       "hermes": {
@@ -120,9 +113,9 @@ export const LIVE_CAPABILITIES_BODY = {
   "protocol": {
     "vendoredVersion": "2026.9.6",
     "coverage": {
-      "handled": 343,
+      "handled": 344,
       "ignored": 817,
-      "gaps": 905,
+      "gaps": 904,
       "gapList": [
         "AgentActivityItem.approvalId",
         "AgentActivityItem.approvalSlug",
@@ -164,7 +157,6 @@ export const LIVE_CAPABILITIES_BODY = {
         "ChatAccountSelection.label",
         "ChatAccountSelection.source",
         "ChatAttachments",
-        "ChatErrorEvent.errorDetail",
         "ChatHistoryActivity.items",
         "ChatHistoryActivity.messageId",
         "ChatRunStartupPhase",
@@ -1061,7 +1053,8 @@ export const LIVE_CAPABILITIES_BODY = {
         "talk": true,
         "permissionModes": true,
         "knowledgePolicy": true,
-        "inlineWidgets": true
+        "inlineWidgets": true,
+        "transcriptProjection": true
       }
     },
     {

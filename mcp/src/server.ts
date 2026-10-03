@@ -367,6 +367,28 @@ function main(): void {
         "`subagent_failure` also covers a LAST turn that handed off and got no answer — " +
         "a bubble with no text or only its hand-off acknowledgment, whose child " +
         "(anchored to it, or born in its run) failed, with nothing after it. " +
+        "Also carries `projection` (transcript redesign, metadata only): for a chat whose " +
+        "instance reads the session transcript back (`transcriptProjection: shadow`), the " +
+        "gaps between the transcript and the bubbles — I1 a visible run with no bubble " +
+        "(`transcriptOnly`) or two (`duplicated`), I2 a settled bubble whose runs wrote no " +
+        "durable row (`bubbleWithoutRow`), I3 a user row `<sendId>:user` with no user bubble " +
+        "or two — with counts, run/send ids and seqs, never text; `verdict` is " +
+        "`not_projected` | `consistent` | `consistent_in_window` | `gaps`. The measure " +
+        "covers the most recently read sessions (at most 10, `window.sessionsTruncated`), " +
+        "the NEWEST rows of each (`sessions[].windowStartSeq`, `rowsTruncated`) and the " +
+        "bubbles of that same window; when anything was cut " +
+        "(`window.truncated`), when a gateway cursor reset left a hole no read returned " +
+        "(`window.coverageGaps`, `sessions[].coverageGaps` — bubbles written while it was " +
+        "open are not judged, `gaps.i2.inCoverageGap`), or when a session's bubble boundary " +
+        "rests on a read time rather than a proven dispatch (`window.boundaryUnproven`), " +
+        "`window.qualified` is set and a clean result reads `consistent_in_window`, never " +
+        "`consistent`. `window.incompleteReasons` lists EVERY reason the measurement is " +
+        "incomplete (cut sessions/rows/bubbles, coverage holes, unproven boundary, rows " +
+        "it could not identify or attribute, bubbles naming no run or not yet settled); " +
+        "`consistent` means that list is empty. The measurement reads a bounded volume " +
+        "of messages (`window.readBudgetExhausted` when it stops early); if it cannot be " +
+        "computed at all, `projection` is `{verdict: \"unavailable\"}` and the rest of " +
+        "the diagnosis is unaffected. In shadow mode it measures, it decides nothing. " +
         "Also states `participantCount` (people sharing the chat besides its owner) " +
         "and `authMode` (`token` = the gateway sees one shared operator for every " +
         "conversation; `trusted-proxy` = it sees one profile per person) — start " +

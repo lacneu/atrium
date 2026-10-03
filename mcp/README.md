@@ -68,7 +68,7 @@ Other scripts: `npm run typecheck`, `npm test`.
 | `get_integrations`     | —                | `GET  /api/v1/integrations`   | `traces.read`      | Opik/Langfuse configured/enabled + shipping cursors. No keys. |
 | `get_chat_state`       | —                | `GET  /api/v1/chat-state`     | `traces.read`      | Per-message lifecycle of one chat (metadata only). |
 | `get_trace_enrichment` | —                | `GET  /api/v1/trace-enrichment` | `traces.read`    | SOC2-safe span structure from Opik/Langfuse, keyed by `correlationId`. |
-| `diagnose_chat`        | —                | `GET  /api/v1/diagnose`       | `traces.read`      | One assessment of a chat + a suggested action/tool. |
+| `diagnose_chat`        | —                | `GET  /api/v1/diagnose`       | `traces.read`      | One assessment of a chat + a suggested action/tool, plus the transcript projection gaps (`projection`) when the instance reads the transcript back. |
 | `reconcile_chat`       | —                | `POST /api/v1/reconcile-chat` | `selfheal`         | Release a chat's stuck `streaming` message (text preserved). Audited. |
 | `list_traces`          | `traces`         | `GET  /api/v1/traces`         | `traces.read`      | Recent trace events, with filtering. |
 | `get_kpi`              | `kpi`            | `GET  /api/v1/kpi`            | `kpi.read`         | KPI rollups. |

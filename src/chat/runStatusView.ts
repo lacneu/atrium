@@ -397,6 +397,10 @@ export const ERROR_CODE_LABEL: Record<string, () => string> = {
   // could not be put on the session (the plugin refused it or is gone, or the bridge
   // cannot apply it). Stored as a dispatch code; never retried.
   knowledge_policy_not_applied: m.runstatus_error_knowledge_policy_not_applied,
+  // The BRIDGE refused the turn: the instance's gateway runs a version below the
+  // supported minimum (2026.8.2). Only an administrator can act (upgrade the gateway);
+  // stored as a dispatch code, never retried.
+  gateway_version_unsupported: m.runstatus_error_gateway_version_unsupported,
   auth_profile_cooldown: m.runstatus_error_auth_profile_cooldown,
   // The model provider refused the agent's credential (revoked or expired). Nothing is
   // retried (convex/turnRetry.ts) and nothing the reader does helps: the copy says an

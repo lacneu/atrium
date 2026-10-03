@@ -249,7 +249,48 @@ export interface SubAgentToolPartRecord {
  * internal stream mutation (see convex/stream.ts). All calls MUST be awaited in
  * order by the run-manager so appendDelta ordering is deterministic.
  */
+/** One transcript row, as identities (transcript redesign, phase 1). Provider-neutral:
+ *  the OpenClaw reader fills it (providers/openclaw/transcript-rows.ts). */
+export interface TranscriptRowReport {
+  entryId: string;
+  seq: number;
+  role: string;
+  runId?: string;
+  sendId?: string;
+  steerTargetRunId?: string;
+  mirrorOrigin?: string;
+  runTerminal?: boolean;
+  hidden: boolean;
+  visible: boolean;
+  toolCallIds?: string[];
+}
+
+/** What one transcript read posts (convex/transcriptProjection.ts `applyTranscript`). */
+export interface TranscriptApplyReport {
+  chatId: string;
+  sessionKey: string;
+  sessionId: string;
+  kind: "page" | "delta" | "reset";
+  deltaCursor?: string;
+  rows: TranscriptRowReport[];
+  terminals: Array<{
+    runId: string;
+    status: "completed" | "error" | "aborted" | "timeout" | "yielded";
+    emptyFinal?: true;
+    at: number;
+  }>;
+  activeRunIds?: string[];
+  hasActiveRun?: boolean;
+  unidentified: number;
+  /** When the read was ISSUED (epoch ms, strictly increasing per reconciler): Convex
+   *  never lets an older read replace the cursor or the session. */
+  readAt: number;
+}
+
 export interface ConvexWriter {
+  /** THE TRANSCRIPT PROJECTION (phase 1, shadow): record one `chat.history` read as
+   *  identities. Never touches a message. Optional: fakes that predate it skip it. */
+  applyTranscript?(report: TranscriptApplyReport): Promise<void>;
   /** run start -> internal.stream.startAssistant; returns the new message id,
    *  or NULL when the run has nowhere to land — the user stopped the work this
    *  delivery carries, so it is dropped whole and nothing that follows it
@@ -1019,7 +1060,8 @@ type IngestOp =
       errorMessage?: string;
     }
   | ({ op: "upsertAgentRequest" } & AgentRequestRecord)
-  | ({ op: "settleAgentRequest" } & AgentRequestSettle);
+  | ({ op: "settleAgentRequest" } & AgentRequestSettle)
+  | ({ op: "applyTranscript" } & TranscriptApplyReport);
 
 export interface HttpConvexWriterOptions {
   /** Convex httpActions base URL (the `.site` origin). */
@@ -2592,5 +2634,11 @@ export class HttpConvexWriter implements ConvexWriter {
 
   async settleAgentRequest(settle: AgentRequestSettle): Promise<void> {
     await this.doPostWithRetry({ op: "settleAgentRequest", ...settle });
+  }
+
+  async applyTranscript(report: TranscriptApplyReport): Promise<void> {
+    // OFF the per-message chain, like the session meta: a transcript read is keyed by
+    // session, not message, and a slow one must never delay a turn's ordered writes.
+    await this.doPost({ op: "applyTranscript", ...report });
   }
 }

@@ -35,6 +35,7 @@ export const TABS = [
   "subagentReports",
   "voice",
   "trash",
+  "deletedChats",
 ] as const;
 export type Tab = (typeof TABS)[number];
 
@@ -55,6 +56,7 @@ export const PARAMLESS_TABS = [
   "preferences",
   "chatDefaults",
   "trash",
+  "deletedChats",
 ] as const;
 export type ParamlessTab = (typeof PARAMLESS_TABS)[number];
 
@@ -87,6 +89,7 @@ export const TAB_I18N: Record<Tab, () => string> = {
   subagentReports: () => m.settings_tab_subagentreports(),
   voice: () => m.voice_tab_label(),
   trash: () => m.settings_tab_trash(),
+  deletedChats: () => m.settings_tab_deleted_chats(),
 };
 
 // --- Per-tab RBAC ----------------------------------------------------------
@@ -143,8 +146,13 @@ export const TAB_PERMISSION: Record<Tab, string> = {
   voice: "admin.manage",
   // Every user's trash: restoring or purging someone else's conversation is an
   // admin act (trash.adminRestoreChat / adminPurgeChat re-check it, audit-logged).
-  // A user's OWN trash is not a Settings tab — it is the sidebar's /trash page.
+  // A user's OWN trash is the separate `deletedChats` tab below.
   trash: "admin.manage",
+  // The caller's OWN trash (deleted conversations, restorable until their purge
+  // date) — owner-scoped like Files (convex/trash.ts listMyTrash / restoreChat /
+  // purgeChat / emptyTrash act only on the caller's chats), gated on the base
+  // `chats.read` every approved user holds -> visible to ALL, not grantable.
+  deletedChats: "chats.read",
 };
 
 // The Settings tabs an admin may grant to a NON-admin. Mirrors the server-side

@@ -814,6 +814,33 @@ async function sweepChatDependents(
     if (!(await drain(rows, asked)) || budget <= 0) return more();
   }
 
+  // 5b. The transcript projection (redesign phase 1): identities, run states and the
+  //     read cursors of this conversation's gateway sessions — meaningless without it.
+  {
+    const asked = Math.max(budget, 0);
+    const rows = await ctx.db
+      .query("transcriptRows")
+      .withIndex("by_chat_run", (q) => q.eq("chatId", chatId))
+      .take(asked);
+    if (!(await drain(rows, asked)) || budget <= 0) return more();
+  }
+  {
+    const asked = Math.max(budget, 0);
+    const rows = await ctx.db
+      .query("transcriptRuns")
+      .withIndex("by_chat_run", (q) => q.eq("chatId", chatId))
+      .take(asked);
+    if (!(await drain(rows, asked)) || budget <= 0) return more();
+  }
+  {
+    const asked = Math.max(budget, 0);
+    const rows = await ctx.db
+      .query("transcriptCursors")
+      .withIndex("by_chat", (q) => q.eq("chatId", chatId))
+      .take(asked);
+    if (!(await drain(rows, asked)) || budget <= 0) return more();
+  }
+
   // 6. The conversation's added agents.
   {
     const asked = Math.max(budget, 0);

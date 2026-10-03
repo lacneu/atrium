@@ -122,6 +122,8 @@ export const KNOWN_ERROR_CODES = [
   "permission_mode_not_applied",
   // Same, for the owner's knowledge-source choice (convex/knowledge.ts).
   "knowledge_policy_not_applied",
+  // The bridge refused a gateway below the supported floor (2026.8.2, release 0.92.0).
+  "gateway_version_unsupported",
   "auth_profile_cooldown",
   // The MODEL PROVIDER refused the agent's credential as revoked or expired (prod
   // 2026-10-02: three turns shown as "context too large", the cause a 401 on an

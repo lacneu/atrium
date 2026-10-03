@@ -285,34 +285,38 @@ describe("resolveCapabilitiesFromManifest (Convex mirrors the bridge)", () => {
     expect(providerCapabilityTable({ providers: 7 }, "openclaw")).toEqual({});
   });
 
-  test("a within-range version: 6.5 unlocks the 6.5-only caps", () => {
-    const r = resolveCapabilitiesFromManifest(MANIFEST, "openclaw", "2026.6.5");
+  test("a within-range version resolves every capability it clears (9.1)", () => {
+    const r = resolveCapabilitiesFromManifest(MANIFEST, "openclaw", "2026.9.1");
     expect(r.versionBeyondValidated).toBe(false);
     expect(r.capabilities.agentFiles).toBe(true);
     expect(r.capabilities.configDefaults).toBe(true);
     expect(r.capabilities.knobThinkingLevel).toBe(true);
+    // Floored at 2026.9.6: not yet.
+    expect(r.capabilities.knowledgePolicy).toBe(false);
   });
 
-  test("6.1: the 6.5-only caps stay OFF, the 6.1 cap is ON", () => {
-    const r = resolveCapabilitiesFromManifest(MANIFEST, "openclaw", "2026.6.1");
-    expect(r.capabilities.agentFiles).toBe(false);
-    expect(r.capabilities.configDefaults).toBe(false);
-    expect(r.capabilities.inboundAttachments).toBe(true);
-    expect(r.capabilities.knobThinkingLevel).toBe(true);
+  test("a version BELOW the 2026.8.2 floor resolves NOTHING, whatever the table's history says", () => {
+    for (const v of ["2026.6.1", "2026.6.5", "2026.5.19", "2026.8.1"]) {
+      const r = resolveCapabilitiesFromManifest(MANIFEST, "openclaw", v);
+      expect(Object.values(r.capabilities).every((x) => x === false), v).toBe(true);
+      expect(r.versionBeyondValidated).toBe(false);
+    }
   });
 
-  test("the floor (5.19): only floor-min caps are on", () => {
-    const r = resolveCapabilitiesFromManifest(MANIFEST, "openclaw", "2026.5.19");
-    expect(r.capabilities.agentFiles).toBe(false);
-    expect(r.capabilities.inboundAttachments).toBe(false);
-    expect(r.capabilities.knobThinkingLevel).toBe(true);
+  test("the floor (8.2): everything at or below it, nothing floored above it", () => {
+    const r = resolveCapabilitiesFromManifest(MANIFEST, "openclaw", "2026.8.2");
+    expect(r.capabilities.agentFiles).toBe(true);
+    expect(r.capabilities.permissionModes).toBe(true);
+    expect(r.capabilities.transcriptProjection).toBe(true);
+    expect(r.capabilities.inlineWidgets).toBe(false);
   });
 
-  test("null/unparseable version -> CONSERVATIVE floor (minVersion === range.min)", () => {
+  test("null/unparseable version -> CONSERVATIVE floor (minVersion at or below range.min)", () => {
     for (const v of [null, "v2026.6.5", "garbage"]) {
       const r = resolveCapabilitiesFromManifest(MANIFEST, "openclaw", v);
-      expect(r.capabilities.agentFiles).toBe(false); // min 6.5 != floor
-      expect(r.capabilities.knobThinkingLevel).toBe(true); // min == floor
+      expect(r.capabilities.agentFiles).toBe(true); // min 6.5 <= floor 8.2
+      expect(r.capabilities.knobThinkingLevel).toBe(true);
+      expect(r.capabilities.inlineWidgets).toBe(false); // min 9.6 > floor
       expect(r.versionBeyondValidated).toBe(false);
     }
   });
@@ -339,7 +343,7 @@ describe("normalizeCapabilitiesBody — Convex attributes the served instance", 
   // env on the bridge and no chat open.
   const IDLE_BODY = {
     instanceName: null,
-    gatewayVersion: "2026.6.5",
+    gatewayVersion: "2026.9.2",
     bridgeVersion: "0.1.0",
     protocolVersion: 2,
     compat: MANIFEST,
@@ -352,7 +356,7 @@ describe("normalizeCapabilitiesBody — Convex attributes the served instance", 
     const t = n.targets[0]!;
     expect(t.instanceName).toBe("primary");
     expect(t.provider).toBe("openclaw");
-    expect(t.gatewayVersion).toBe("2026.6.5");
+    expect(t.gatewayVersion).toBe("2026.9.2");
     expect(t.capabilities.agentFiles).toBe(true);
     expect(t.capabilities.configDefaults).toBe(true);
     // End-to-end through the projection the frontend reads:
@@ -439,16 +443,8 @@ describe("providerSupport + summarizeCompat (the /api/v1/compat payload)", () =>
     // it has had a published window since 0.18.0 was validated, so the example moved to
     // a provider the manifest genuinely does not declare.)
     expect(providerSupport(MANIFEST, "openclaw")).toEqual({
-      range: { min: "2026.5.19", maxValidated: "2026.9.6" },
+      range: { min: "2026.8.2", maxValidated: "2026.9.6" },
       validatedVersions: [
-        "2026.5.19",
-        "2026.6.1",
-        "2026.6.5",
-        "2026.6.10",
-        "2026.6.11",
-        "2026.7.1-beta.2",
-        "2026.7.1-beta.5",
-        "2026.7.1",
         "2026.9.1",
         "2026.9.2",
         "2026.9.4",
@@ -521,14 +517,14 @@ describe("providerSupport + summarizeCompat (the /api/v1/compat payload)", () =>
         {
           instanceName: "main",
           provider: "openclaw",
-          gatewayVersion: "2026.6.5",
+          gatewayVersion: "2026.9.2",
           capabilities: { abort: true },
           versionBeyondValidated: false,
         },
         {
           instanceName: "edge",
           provider: "openclaw",
-          gatewayVersion: "2026.7.1",
+          gatewayVersion: "2027.1.1",
           capabilities: {},
           versionBeyondValidated: true,
         },
@@ -543,12 +539,12 @@ describe("providerSupport + summarizeCompat (the /api/v1/compat payload)", () =>
     });
     expect(summary.bridge.version).toBe("1.4.0");
     expect(summary.bridge.protocolVersion).toBe(2);
-    expect(summary.bridge.supported.openclaw.range?.min).toBe("2026.5.19");
+    expect(summary.bridge.supported.openclaw.range?.min).toBe("2026.8.2");
     expect(summary.instances).toEqual([
       {
         instanceName: "main",
         provider: "openclaw",
-        gatewayVersion: "2026.6.5",
+        gatewayVersion: "2026.9.2",
         withinSupport: true,
         versionBeyondValidated: false,
         // These fixtures predate the field, so the served view says UNKNOWN. That null is
@@ -558,7 +554,7 @@ describe("providerSupport + summarizeCompat (the /api/v1/compat payload)", () =>
       {
         instanceName: "edge",
         provider: "openclaw",
-        gatewayVersion: "2026.7.1",
+        gatewayVersion: "2027.1.1",
         withinSupport: true, // supported (>= min) even beyond validated
         versionBeyondValidated: true,
         configuredMediaMode: null,
@@ -823,7 +819,7 @@ describe("pollBridgeCompat (cron storage, both endpoints mocked)", () => {
     process.env.BRIDGE_INSTANCE_NAME = "primary";
     const IDLE_BODY = {
       instanceName: null,
-      gatewayVersion: "2026.6.5",
+      gatewayVersion: "2026.9.2",
       bridgeVersion: "0.1.0",
       protocolVersion: 2,
       compat: MANIFEST,
@@ -844,7 +840,7 @@ describe("pollBridgeCompat (cron storage, both endpoints mocked)", () => {
     expect(doc?.targets[0]).toMatchObject({
       instanceName: "primary",
       provider: "openclaw",
-      gatewayVersion: "2026.6.5",
+      gatewayVersion: "2026.9.2",
     });
     expect(doc?.targets[0]?.capabilities.agentFiles).toBe(true);
     expect(doc?.targets[0]?.capabilities.configDefaults).toBe(true);
@@ -855,7 +851,7 @@ describe("pollBridgeCompat (cron storage, both endpoints mocked)", () => {
       {
         instanceName: "primary",
         provider: "openclaw",
-        gatewayVersion: "2026.6.5",
+        gatewayVersion: "2026.9.2",
         withinSupport: true,
         versionBeyondValidated: false,
         configuredMediaMode: null,

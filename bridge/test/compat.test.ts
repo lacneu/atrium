@@ -18,6 +18,8 @@ import {
   resolveCapabilities,
   resolveCapabilitiesFor,
   CAPABILITIES_REQUIRING_AUTH_MODE,
+  OPENCLAW_MIN_SUPPORTED,
+  openClawBelowFloor,
 } from "../src/compat.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -46,113 +48,18 @@ const ALL_CAPS = [
   "permissionModes",
   "knowledgePolicy",
   "inlineWidgets",
+  "transcriptProjection",
 ] as const;
 
 /**
- * The FULL expected matrix: validated version -> capability -> boolean.
- * Mirrors the bench ledger (5.19 baseline; inbound vision reliable from 6.1;
- * fastMode/unset/agent-files/compact/config-defaults verified on 6.5).
+ * The FULL expected matrix: supported version -> capability -> boolean.
+ * Mirrors the bench ledger from the 2026.8.2 floor (0.92.0); the rows for the retired
+ * generations (2026.5.19 → 2026.7.1) left with them — below the floor nothing resolves.
  */
 const MATRIX: Record<string, Record<(typeof ALL_CAPS)[number], boolean>> = {
-  "2026.5.19": {
-    knobThinkingLevel: true,
-    knobModel: true,
-    knobFastMode: false,
-    knobUnset: false,
-    agentFiles: false,
-    sessionCompact: false,
-    configDefaults: false,
-    messageToolRecovery: true,
-    agentsDiscovery: true,
-    abort: true,
-    mediaOutbound: true,
-    inboundAttachments: false,
-    subagents: true,
-    cronList: true,
-    cronManage: false,
-    talk: false,
-    permissionModes: false,
-    // The knowledge plugin's policy control floors at 2026.9.6.
-    knowledgePolicy: false,
-    // Inline widgets floor at 2026.9.6 (the version the chain was proven live on).
-    inlineWidgets: false,
-  },
-  "2026.6.1": {
-    knobThinkingLevel: true,
-    knobModel: true,
-    knobFastMode: false,
-    knobUnset: false,
-    agentFiles: false,
-    sessionCompact: false,
-    configDefaults: false,
-    messageToolRecovery: true,
-    agentsDiscovery: true,
-    abort: true,
-    mediaOutbound: true,
-    inboundAttachments: true,
-    subagents: true,
-    cronList: true,
-    cronManage: false,
-    talk: false,
-    permissionModes: false,
-    // The knowledge plugin's policy control floors at 2026.9.6.
-    knowledgePolicy: false,
-    // Inline widgets floor at 2026.9.6 (the version the chain was proven live on).
-    inlineWidgets: false,
-  },
-  "2026.6.5": {
-    knobThinkingLevel: true,
-    knobModel: true,
-    knobFastMode: true,
-    knobUnset: true,
-    agentFiles: true,
-    sessionCompact: true,
-    configDefaults: true,
-    messageToolRecovery: true,
-    agentsDiscovery: true,
-    abort: true,
-    mediaOutbound: true,
-    inboundAttachments: true,
-    subagents: true,
-    cronList: true,
-    cronManage: false,
-    talk: false,
-    permissionModes: false,
-    // The knowledge plugin's policy control floors at 2026.9.6.
-    knowledgePolicy: false,
-    // Inline widgets floor at 2026.9.6 (the version the chain was proven live on).
-    inlineWidgets: false,
-  },
-  // 2026.6.10 — live-validated 2026-06-28 (chat round-trip/stream/tool, multi-agent
-  // alice+bob, subagent spawn→CHILD_OK). All existing capabilities resolve; 6.10
-  // adds NO new capability (its only behavioral change is SCOPED device pairing,
-  // handled by the bridge already requesting operator.read/write — not a feature gate).
-  "2026.6.10": {
-    knobThinkingLevel: true,
-    knobModel: true,
-    knobFastMode: true,
-    knobUnset: true,
-    agentFiles: true,
-    sessionCompact: true,
-    configDefaults: true,
-    messageToolRecovery: true,
-    agentsDiscovery: true,
-    abort: true,
-    mediaOutbound: true,
-    inboundAttachments: true,
-    subagents: true,
-    cronList: true,
-    cronManage: false,
-    talk: false,
-    permissionModes: false,
-    // The knowledge plugin's policy control floors at 2026.9.6.
-    knowledgePolicy: false,
-    // Inline widgets floor at 2026.9.6 (the version the chain was proven live on).
-    inlineWidgets: false,
-  },
-  // 2026.7.1 (incl. the validated -beta.2 bench) — adds the cron MANAGEMENT
-  // surface (cron.get/update/remove/run/runs), live-verified 2026-07-12.
-  "2026.7.1": {
+  // 2026.8.2 — the supported FLOOR (never validated on a stock image: it is a known
+  // broken release, badged "defective"). Its profile is what an unknown version gets.
+  "2026.8.2": {
     knobThinkingLevel: true,
     knobModel: true,
     knobFastMode: true,
@@ -168,14 +75,12 @@ const MATRIX: Record<string, Record<(typeof ALL_CAPS)[number], boolean>> = {
     subagents: true,
     cronList: true,
     cronManage: true,
-    // Realtime voice surface (talk.catalog / talk.client.create) — live-probed
-    // on the 2026.7.1 bench (2026-07-16).
     talk: true,
-    permissionModes: false,
-    // The knowledge plugin's policy control floors at 2026.9.6.
+    permissionModes: true,
     knowledgePolicy: false,
-    // Inline widgets floor at 2026.9.6 (the version the chain was proven live on).
     inlineWidgets: false,
+    // The shadow transcript projection floors at the supported floor itself.
+    transcriptProjection: true,
   },
   // 2026.9.1 — live GO 11/11 (2026-09-03). It adds NO capability gate: the new
   // surface (gateway suspension, user profiles, errorDetail) is vendored and
@@ -206,6 +111,7 @@ const MATRIX: Record<string, Record<(typeof ALL_CAPS)[number], boolean>> = {
     knowledgePolicy: false,
     // Inline widgets floor at 2026.9.6 (the version the chain was proven live on).
     inlineWidgets: false,
+    transcriptProjection: true,
   },
   // 2026.9.2 — live GO 11/11 (2026-09-06). Adds NO capability gate either: the
   // new surface (multi-user mentions/participants, per-person model accounts,
@@ -235,6 +141,7 @@ const MATRIX: Record<string, Record<(typeof ALL_CAPS)[number], boolean>> = {
     knowledgePolicy: false,
     // Inline widgets floor at 2026.9.6 (the version the chain was proven live on).
     inlineWidgets: false,
+    transcriptProjection: true,
   },
 };
 
@@ -251,16 +158,10 @@ describe("COMPAT_MANIFEST shape", () => {
 
   test("openclaw provider pins the validated range + versions", () => {
     const oc = COMPAT_MANIFEST.providers.openclaw!;
-    expect(oc.supportedRange).toEqual({ min: "2026.5.19", maxValidated: "2026.9.6" });
+    expect(oc.supportedRange).toEqual({ min: "2026.8.2", maxValidated: "2026.9.6" });
+    // The floor is the operator-facing constant, not a second copy of a string.
+    expect(oc.supportedRange?.min).toBe(OPENCLAW_MIN_SUPPORTED);
     expect(oc.validatedVersions).toEqual([
-      "2026.5.19",
-      "2026.6.1",
-      "2026.6.5",
-      "2026.6.10",
-      "2026.6.11",
-      "2026.7.1-beta.2",
-      "2026.7.1-beta.5",
-      "2026.7.1",
       "2026.9.1",
       "2026.9.2",
       "2026.9.4",
@@ -393,9 +294,9 @@ describe("resolveCapabilities — full validated matrix", () => {
 });
 
 describe("resolveCapabilities — conservative policy (unknown version)", () => {
-  test("null gateway version enables ONLY the supportedRange.min capabilities", () => {
+  test("null gateway version enables the FLOOR profile (every capability at or below supportedRange.min)", () => {
     const resolved = resolveCapabilities("openclaw", null);
-    expect(resolved.capabilities).toEqual(MATRIX["2026.5.19"]);
+    expect(resolved.capabilities).toEqual(MATRIX["2026.8.2"]);
     expect(resolved.versionBeyondValidated).toBe(false);
   });
 
@@ -403,15 +304,16 @@ describe("resolveCapabilities — conservative policy (unknown version)", () => 
     "malformed version %j falls back to the same conservative floor",
     (raw) => {
       const resolved = resolveCapabilities("openclaw", raw);
-      expect(resolved.capabilities).toEqual(MATRIX["2026.5.19"]);
+      expect(resolved.capabilities).toEqual(MATRIX["2026.8.2"]);
       expect(resolved.versionBeyondValidated).toBe(false);
     },
   );
 
-  test("a PRE-RELEASE resolves as ordered BELOW its release (2026.6.5-rc1 lacks the 6.5 capabilities)", () => {
-    const resolved = resolveCapabilities("openclaw", "2026.6.5-rc1");
-    // 2026.6.5-rc1 >= 2026.6.1 but < 2026.6.5 → the 6.1 row, not the 6.5 one.
-    expect(resolved.capabilities).toEqual(MATRIX["2026.6.1"]);
+  test("a PRE-RELEASE resolves as ordered BELOW its release (2026.9.6-rc1 lacks the 9.6 capabilities)", () => {
+    const resolved = resolveCapabilities("openclaw", "2026.9.6-rc1");
+    // 2026.9.6-rc1 >= 2026.9.5 but < 2026.9.6 → the 9.5 profile, not the 9.6 one.
+    expect(resolved.capabilities).toEqual(resolveCapabilities("openclaw", "2026.9.5").capabilities);
+    expect(resolved.capabilities.knowledgePolicy).toBe(false);
     expect(resolved.versionBeyondValidated).toBe(false);
   });
 });
@@ -471,43 +373,26 @@ describe("resolveCapabilities — beyond maxValidated", () => {
 
   test("exactly maxValidated is NOT beyond", () => {
     expect(
-      resolveCapabilities("openclaw", "2026.6.5").versionBeyondValidated,
+      resolveCapabilities("openclaw", "2026.9.6").versionBeyondValidated,
     ).toBe(false);
   });
 
-  test("the VALIDATED pre-release bench (2026.7.1-beta.2) is within range, no flag", () => {
-    const resolved = resolveCapabilities("openclaw", "2026.7.1-beta.2");
-    // beta.2 > every 2026.6.x minVersion AND >= the cronManage floor (the
-    // bench it was validated on) → the 7.1 capability row EXCEPT talk (its
-    // floor is the 2026.7.1 RELEASE, and a pre-release sorts below it).
-    expect(resolved.capabilities).toEqual({
-      ...MATRIX["2026.7.1"],
-      talk: false,
-    });
-    expect(resolved.versionBeyondValidated).toBe(false);
-  });
-
-  test("the VALIDATED pre-release bench (2026.7.1-beta.5) is within range, no flag", () => {
-    // Live suite GO 2026-07-12 (9/9). Same capability row as the release:
-    // beta.5 sorts above the cronManage floor (beta.2) and below 2026.7.1.
-    const resolved = resolveCapabilities("openclaw", "2026.7.1-beta.5");
-    // Same talk exception as beta.2: the talk floor is the 7.1 RELEASE.
-    expect(resolved.capabilities).toEqual({
-      ...MATRIX["2026.7.1"],
-      talk: false,
-    });
-    expect(resolved.versionBeyondValidated).toBe(false);
-  });
-
-  test("the 2026.7.1 RELEASE resolves within range, no flag (prepared support)", () => {
-    const resolved = resolveCapabilities("openclaw", "2026.7.1");
-    expect(resolved.capabilities).toEqual(MATRIX["2026.7.1"]);
-    expect(resolved.versionBeyondValidated).toBe(false);
-  });
+  test.each(["2026.7.1-beta.2", "2026.7.1-beta.5", "2026.7.1", "2026.6.5", "2026.5.19"])(
+    "the RETIRED validated generation %s resolves NOTHING (below the 2026.8.2 floor)",
+    (raw) => {
+      // These versions passed the bench in their day, which is exactly why this is a
+      // decision and not an accident: the redesigned turn model places a reply by
+      // transcript identity, and these gateways do not carry it.
+      const resolved = resolveCapabilities("openclaw", raw);
+      expect(Object.values(resolved.capabilities).every((v) => v === false)).toBe(true);
+      expect(resolved.versionBeyondValidated).toBe(false);
+      expect(openClawBelowFloor(raw)).toBe(true);
+    },
+  );
 });
 
 describe("resolveCapabilities — edges", () => {
-  test.each(["2026.5.18", "2025.12.31"])(
+  test.each(["2026.5.18", "2025.12.31", "2026.8.1", "2026.8.2-beta.1"])(
     "a parseable version BELOW the floor (%s) enables nothing",
     (raw) => {
       const resolved = resolveCapabilities("openclaw", raw);
@@ -530,6 +415,20 @@ describe("resolveCapabilities — edges", () => {
       },
       versionBeyondValidated: false,
     });
+  });
+
+  test("openClawBelowFloor answers only for a version KNOWN to be below 2026.8.2", () => {
+    expect(openClawBelowFloor("2026.8.1")).toBe(true);
+    expect(openClawBelowFloor("2026.8.2-beta.3")).toBe(true);
+    // The floor itself and everything above it are supported.
+    expect(openClawBelowFloor("2026.8.2")).toBe(false);
+    expect(openClawBelowFloor("2026.9.6")).toBe(false);
+    expect(openClawBelowFloor("2027.1.1")).toBe(false);
+    // An absent or unreadable version is not evidence of an old gateway: a degraded
+    // handshake must not refuse every turn of a supported one.
+    expect(openClawBelowFloor(null)).toBe(false);
+    expect(openClawBelowFloor(undefined)).toBe(false);
+    expect(openClawBelowFloor("garbage")).toBe(false);
   });
 
   test("an unknown provider resolves to zero capabilities", () => {

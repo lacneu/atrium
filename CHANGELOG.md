@@ -1,5 +1,50 @@
 # Changelog
 
+## [0.92.0] — OpenClaw 2026.8.2 minimum, and the session transcript read back in shadow
+
+**Operator-facing change: the minimum supported OpenClaw is now 2026.8.2.** It is the first
+release whose session transcript says which run produced each reply and which running turn
+a message was steered into, and whose `chat.history` resumes from a cursor — the facts the
+redesign of how replies are attached to bubbles rests on. Below it a reply can only be placed
+by timing and wording guesses, and those guesses are what this redesign retires; keeping a
+frozen copy of them for older gateways was declined. What changes for a gateway older than
+2026.8.2: its turns are refused before anything is sent, with a card that says the gateway
+must be upgraded (`gateway_version_unsupported`); no version-gated control is offered; and
+Settings ▸ Bridge badges the connection "below the supported minimum". A gateway whose
+version could not be read is not refused. 2026.5.19 → 2026.7.1 leave the validated list
+(production runs 2026.9.6). **Check every instance's gateway version before deploying.**
+Deploy Convex, the bridge and the frontend together.
+
+**The session transcript, read back in shadow.** A new per-instance setting,
+`transcriptProjection` (`off` by default), lets the bridge read the gateway's own transcript
+after each run, the way OpenClaw's Control UI does: on every run that ends in the
+conversation's session, on a `chat.send` acknowledged `ok`, and — for a run that ended with
+no message — again at 100, 400, 1500 and 3000 ms. Each read resumes from where the previous
+one stopped (one tail page of 80 rows the first time, then only what changed), at most one
+read runs per conversation with one queued behind it, and what was read is stored as
+identities only: the transcript row's id and order, the run that wrote it, the send that
+started it, never its text. In `shadow` nothing on screen changes. It is set through the
+admin API and needs OpenClaw 2026.8.2 or later.
+
+**Every send now has one identity, known before the gateway answers.** Convex computes the
+key each `chat.send` carries — the same value the bridge always derived from the gateway
+session and the message — stores it on the queued send and on the user's message, and the
+bridge confirms the key it actually sent. It stays bound to the gateway session on purpose:
+the gateway deduplicates sends by key across all its sessions, so one key reused on another
+session would be answered from the first.
+
+**`diagnose_chat` measures the distance between the bubbles and the transcript.** For a
+conversation read back in shadow, the report now carries `projection`: a run with visible
+output that has no bubble, or two; a finished bubble whose run wrote nothing durable; a user
+message of the transcript with no user bubble, or two — as counts with run ids, send ids and
+positions, never text. It is the measurement the next steps of the redesign are judged on.
+
+**The trash moves to your personal settings.** The rarely used Trash link no longer takes room
+at the bottom of the conversation list: deleted conversations are now under **Settings ›
+Personal › Deleted conversations**, with the same 30-day notice, restore, permanent delete and
+empty actions. Old `/trash` links open the new tab. The administrators' view of every user's
+trash is unchanged.
+
 ## [0.91.4] — Attachments a sandboxed agent can read on shared-fs instances
 
 Corrective release. No breaking changes, one deployment check (below). Deploy Convex and the

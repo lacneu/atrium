@@ -1,17 +1,15 @@
-// THE TRASH (route /trash): the caller's deleted conversations, each restorable
-// until its purge date, then gone for good with their files (convex/trash.ts).
-// The admin's view of every trash (Settings › Trash) reuses TrashList.
+// The conversation trash listing, shared by the user's own trash (Settings ›
+// Deleted conversations, DeletedChatsTab.tsx) and the admin's view of every
+// trash (Settings › Trash, TrashTab.tsx). Each row is restorable until its purge
+// date, then gone for good with its files (convex/trash.ts).
 
-import { useMutation, usePaginatedQuery } from "convex/react";
 import { RotateCcw, Trash2 } from "lucide-react";
-import { api } from "./convexApi";
 import type { Id } from "./convexApi";
 import { Button } from "@/components/ui/button";
 import { useConfirm } from "@/components/ConfirmDialog";
 import { formatDate } from "@/lib/format";
 import { m } from "@/paraglide/messages.js";
-import { formatTrashDay, useTrashRetentionDays } from "./trashView";
-import "./trashPage.css";
+import { formatTrashDay } from "./trashView";
 
 export type TrashItem = {
   _id: Id<"chats">;
@@ -98,59 +96,5 @@ export function TrashList({
         </li>
       ))}
     </ul>
-  );
-}
-
-export function TrashPage() {
-  const { results: items, status, loadMore } = usePaginatedQuery(
-    api.trash.listMyTrash,
-    {},
-    { initialNumItems: TRASH_PAGE },
-  );
-  const days = useTrashRetentionDays();
-  const restore = useMutation(api.trash.restoreChat);
-  const purge = useMutation(api.trash.purgeChat);
-  const empty = useMutation(api.trash.emptyTrash);
-  const confirm = useConfirm();
-  return (
-    <div className="oc-trash">
-      <div className="oc-trash__body">
-        <header className="oc-trash__head">
-          <h1 className="oc-trash__heading">
-            <Trash2 className="size-5" aria-hidden /> {m.trash_title()}
-          </h1>
-          {items.length > 0 ? (
-            <Button
-              variant="destructive"
-              size="sm"
-              onClick={async () => {
-                const ok = await confirm({
-                  title: m.trash_empty_confirm_title(),
-                  description: m.trash_empty_confirm_desc(),
-                  confirmLabel: m.trash_empty(),
-                  destructive: true,
-                });
-                if (ok) await empty({});
-              }}
-            >
-              {m.trash_empty()}
-            </Button>
-          ) : null}
-        </header>
-        <p className="oc-trash__hint">{m.trash_intro({ days })}</p>
-        {status === "LoadingFirstPage" ? (
-          <p className="oc-trash__hint">{m.app_loading()}</p>
-        ) : items.length === 0 ? (
-          <p className="oc-trash__empty">{m.trash_is_empty()}</p>
-        ) : (
-          <TrashList
-            items={items}
-            onRestore={(chatId) => restore({ chatId })}
-            onPurge={(chatId) => purge({ chatId })}
-          />
-        )}
-        <TrashLoadMore status={status} loadMore={loadMore} />
-      </div>
-    </div>
   );
 }

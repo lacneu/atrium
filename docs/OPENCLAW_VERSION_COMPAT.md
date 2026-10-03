@@ -6,6 +6,31 @@ add per-version handling only where the protocol actually differs. Run any
 version on the fly: `OPENCLAW_VERSION=<tag> ./local-openclaw/up.sh` (image
 `<your-dockerhub-user>/openclaw-docker`).
 
+## Supported range
+
+**Minimum supported OpenClaw: 2026.8.2** (since Atrium 0.92.0). It is the first release
+whose session transcript carries everything Atrium reconciles a reply on: the run that
+produced each reply (`__openclaw.runId`), the run a steered message was injected into
+(`__openclaw.steerTargetRunId`), the `chat.history` delta cursor, and the input receipts
+(`inputRunIds`/`inputReceipts`). Below it a reply can only be placed by timing and wording
+heuristics, which the transcript redesign retires instead of keeping a frozen copy for old
+gateways.
+
+What an older gateway gets:
+
+- **Its turns are refused by name** (`gateway_version_unsupported`) before anything is sent
+  — no session patch, no describe, no `chat.send`. The reader's card says the gateway must
+  be upgraded.
+- **No capability resolves**, so every version-gated control stays hidden.
+- **Settings ▸ Bridge** badges the connection "below the supported minimum".
+
+A gateway whose version is unknown (a degraded handshake) is not refused: it gets the floor
+profile. `2026.8.2` itself is inside the range but stays badged *defective* on a stock image
+(the attachment defect, upstream #135747); the validated versions are listed in
+`bridge/src/compat.ts`.
+
+The validation runs recorded below predate the floor and are kept as history.
+
 ## Tested matrix
 
 | Concern | 2026.5.19 | 2026.6.1 | 2026.6.5 | Verdict |

@@ -10,6 +10,8 @@
 // these objects makes the call fail INVALID_REQUEST on every gateway that predates it —
 // which is exactly why they are worth a module and a gate of their own.
 
+import { CHAT_HISTORY_MAX_BYTES_SINCE, gatewayAtLeast } from "../compat.js";
+
 /** `sessions.get` params: read one session's transcript. Upstream parses this by hand
  *  and publishes NO schema for it, so the outbound ratchet cannot validate the body —
  *  but it captures it, so a change here is at least VISIBLE. */
@@ -96,4 +98,30 @@ export function taskGetParams(taskId: string): Record<string, unknown> {
  *  business here, and the cap bounds a session with a long task history. */
 export function taskListParams(sessionKey: string): Record<string, unknown> {
   return { sessionKey, status: ["queued", "running"], limit: 50 };
+}
+
+/** The page the Control UI reads (ui/src/pages/chat/chat-history-request.ts:35-36:
+ *  `CHAT_HISTORY_REQUEST_LIMIT = 80`, `CHAT_HISTORY_REQUEST_MAX_BYTES = 256 * 1024`). */
+export const CHAT_HISTORY_PAGE_LIMIT = 80;
+export const CHAT_HISTORY_PAGE_MAX_BYTES = 256 * 1024;
+
+/** `chat.history` params (`ChatHistoryParamsSchema`, CLOSED upstream). `cursor` resumes a
+ *  delta read (2026.8.1+; incompatible with `offset`/`messageId`, chat-history-handler.ts
+ *  :123); `maxBytes` exists only from 2026.9.2, so it is sent ONLY to a gateway KNOWN to
+ *  be at least that version — an older one would refuse the whole read over the key, and
+ *  an unknown version gets the conservative body. */
+export function chatHistoryParams(
+  p: { sessionKey: string; cursor?: string | null; limit: number; maxChars?: number; maxBytes?: number },
+  gatewayVersion: string | null,
+): Record<string, unknown> {
+  return {
+    sessionKey: p.sessionKey,
+    ...(p.cursor ? { cursor: p.cursor } : {}),
+    limit: p.limit,
+    ...(p.maxChars === undefined ? {} : { maxChars: p.maxChars }),
+    ...(p.maxBytes !== undefined &&
+    gatewayAtLeast(gatewayVersion, CHAT_HISTORY_MAX_BYTES_SINCE) === true
+      ? { maxBytes: p.maxBytes }
+      : {}),
+  };
 }

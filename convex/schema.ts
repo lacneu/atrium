@@ -2168,6 +2168,11 @@ export default defineSchema({
       v.literal("system"),
     ),
     runId: v.optional(v.string()),
+    // USER rows only: the send identity of the dispatch that carried this message (the
+    // outbox row's `sendId`, see there) — the key the transcript's `"<sendId>:user"` row
+    // is reconciled on (invariant I3). The LAST dispatch wins (a regenerate re-sends the
+    // same message under a new key). Absent before 0.92.0 and on Hermes targets.
+    sendId: v.optional(v.string()),
     // The OUTBOX row whose dispatch produced this turn — the only CORRELATION
 
     // between a queued send and the assistant reply it caused. Written by
@@ -2380,6 +2385,9 @@ export default defineSchema({
     // bubble in one point read (stream.ts `bubbleWrittenByRun`), whether the run
     // merged into a turn's bubble or opened its own.
     .index("by_chat_run", ["chatId", "runId"])
+    // (chatId, sendId): "how many bubbles carry THIS send?" — the transcript projection's
+    // invariant I3 (exactly one user bubble per `<sendId>:user` row), one point range.
+    .index("by_chat_send_id", ["chatId", "sendId"])
     // Bounded scan for the stuck-stream watchdog: a message left `status:
     // "streaming"` whose `updatedAt` is far in the past = the bridge lost the
     // run's WS subscription and never relayed the finalize frame (the UI then
@@ -2435,6 +2443,140 @@ export default defineSchema({
   })
     .index("by_chat", ["chatId"])
     .index("by_chat_run", ["chatId", "runId"]),
+
+  // THE SESSION TRANSCRIPT, AS IDENTITIES (transcript redesign, phase 1 — SHADOW).
+  //
+  // One row per durable transcript entry the bridge read back from the gateway's
+  // `chat.history` (convex/transcriptProjection.ts). IDENTITY ONLY: no text, no content —
+  // the display source stays `messages.text`/`messageParts`. In shadow mode nothing reads
+  // these rows to build a bubble; they exist so the projection can be compared with the
+  // bubbles (invariants I1–I3, `diagnose_chat`) before any phase lets it decide.
+  // Upserted by (chatId, sessionKey, entryId): a replayed read or a bridge restart
+  // re-writes nothing. `seq` is per gateway SESSION (sessionId): a reset restarts it.
+  transcriptRows: defineTable({
+    chatId: v.id("chats"),
+    instanceName: v.string(),
+    sessionKey: v.string(),
+    // The gateway transcript this row belongs to ("" when the reply did not say).
+    sessionId: v.string(),
+    // `__openclaw.id` (upstream session-transcript-entry-message.ts).
+    entryId: v.string(),
+    // `__openclaw.seq`: transcript order within `sessionId` (positive integer).
+    seq: v.number(),
+    role: v.string(),
+    // The run that PRODUCED the row (`__openclaw.runId`; for a user row, its send key).
+    runId: v.optional(v.string()),
+    // User rows: the send identity (`idempotencyKey` minus the `:user` suffix).
+    sendId: v.optional(v.string()),
+    // User rows injected into a running turn (`__openclaw.steerTargetRunId`).
+    steerTargetRunId: v.optional(v.string()),
+    mirrorOrigin: v.optional(v.string()),
+    runTerminal: v.optional(v.boolean()),
+    // Hidden by the Control UI's display rules (exact `NO_REPLY`, heartbeat ack).
+    hidden: v.boolean(),
+    // Carries something a reader sees (text or a non-tool, non-thinking block), or is a
+    // tool result — the rows a bubble must exist for (I1).
+    visible: v.boolean(),
+    // The bubble this row is projected into. UNSET in shadow mode by construction.
+    messageId: v.optional(v.id("messages")),
+    // Tool calls/results the row carries (bounded), for the tool-card join of later phases.
+    toolCallIds: v.optional(v.array(v.string())),
+    updatedAt: v.number(),
+  })
+    .index("by_chat_session_entry", ["chatId", "sessionKey", "entryId"])
+    .index("by_chat_session_seq", ["chatId", "sessionKey", "sessionId", "seq"])
+    .index("by_chat_run", ["chatId", "runId"])
+    .index("by_chat_send", ["chatId", "sendId"]),
+
+  // Per-run state of the projected sessions (design §10.1): the Control UI's run table
+  // (`streaming/completed/error/aborted/timeout/yielded`), plus `persisted` for a run
+  // known only from its durable rows (no terminal frame observed, not active). A terminal
+  // status never returns to `streaming` (upstream session-projection.ts run reducer).
+  transcriptRuns: defineTable({
+    chatId: v.id("chats"),
+    sessionKey: v.string(),
+    runId: v.string(),
+    status: v.union(
+      v.literal("streaming"),
+      v.literal("completed"),
+      v.literal("error"),
+      v.literal("aborted"),
+      v.literal("timeout"),
+      v.literal("yielded"),
+      v.literal("persisted"),
+    ),
+    // A terminal frame came for this run carrying no message (Control UI recovery case).
+    emptyFinal: v.optional(v.boolean()),
+    terminalAt: v.optional(v.number()),
+    // Proof of the delegation chain (later phases); unset in phase 1.
+    parentRunId: v.optional(v.string()),
+    firstSeq: v.optional(v.number()),
+    lastSeq: v.optional(v.number()),
+    updatedAt: v.number(),
+  })
+    .index("by_chat_session_run", ["chatId", "sessionKey", "runId"])
+    .index("by_chat_run", ["chatId", "runId"]),
+
+  // Where the bridge's next `chat.history` read resumes, per (chat, gateway session key),
+  // and the FLOOR under which transcript rows predate the projection (design §10.2:
+  // rows at or below `floorSeq` are already shown by legacy bubbles and are never
+  // compared). A new gateway `sessionId` (reset, rotation) drops the cursor and sets the
+  // floor of the new transcript to 0 — it was written entirely under the projection.
+  transcriptCursors: defineTable({
+    chatId: v.id("chats"),
+    instanceName: v.string(),
+    sessionKey: v.string(),
+    sessionId: v.string(),
+    deltaCursor: v.optional(v.string()),
+    floorSeq: v.number(),
+    // When the floor was set (epoch ms): bubbles older than this are legacy (I2).
+    floorAt: v.number(),
+    // `floorAt` comes from a dispatch PROVEN in the session's rows (the outbox row of a
+    // send whose `<sendId>:user` row was read). False ⇒ only the read time was known: the
+    // bubble boundary is a guess, and the report qualifies its verdict until a proven
+    // send replaces it. Absent on cursors written before this field (read as proven).
+    floorAtProven: v.optional(v.boolean()),
+    // COVERAGE GAPS: seq ranges of the current gateway session that no read returned. A
+    // `reset` (more than 200 events, or the byte budget, since the cursor —
+    // gateway-protocol logs-chat.ts `ChatHistoryDeltaResultSchema`) is answered by a
+    // fresh TAIL page, exactly as the Control UI does, so whatever lay between the last
+    // delta and that page was never read. Recorded, never guessed; the report qualifies
+    // its verdict and suspends I2 for bubbles written while the gap was open. Bounded
+    // (newest kept); `gapsDropped` counts the evicted ones.
+    gaps: v.optional(
+      v.array(
+        v.object({
+          fromSeq: v.number(),
+          toSeq: v.number(),
+          // The previous read (epoch ms) and the read that found the hole.
+          sinceAt: v.number(),
+          detectedAt: v.number(),
+        }),
+      ),
+    ),
+    gapsDropped: v.optional(v.number()),
+    // When the last read that RETURNED rows (a page or a delta, never a reset) landed:
+    // the start of whatever hole the next page may reveal.
+    coveredAt: v.optional(v.number()),
+    // The bridge's issue time of the newest read this cursor reflects. An older read that
+    // lands later merges its rows and changes nothing else; `staleReads` counts them.
+    lastReadAt: v.optional(v.number()),
+    staleReads: v.optional(v.number()),
+    lastSeq: v.optional(v.number()),
+    lastKind: v.union(v.literal("page"), v.literal("delta"), v.literal("reset")),
+    // The gateway's active runs at the last read (`sessionInfo.activeRunIds`, bounded).
+    activeRunIds: v.optional(v.array(v.string())),
+    hasActiveRun: v.optional(v.boolean()),
+    reads: v.number(),
+    resets: v.number(),
+    // Durable rows the reads could not identify (no `__openclaw.id` or `seq`).
+    unidentified: v.number(),
+    updatedAt: v.number(),
+  })
+    .index("by_chat_session", ["chatId", "sessionKey"])
+    .index("by_chat", ["chatId"])
+    // The MOST RECENTLY read sessions of a chat first (the report's bounded window).
+    .index("by_chat_updated", ["chatId", "updatedAt"]),
 
   // Structured non-text content attached to a message, ordered for rendering.
   // DURABLE protocol drift — the shapes a gateway emits that this build does not know.
@@ -3481,6 +3623,20 @@ export default defineSchema({
     // stays untouched (it is the BROWSER retry dedup key in send.sendMessage;
     // rewriting it would let a network-retried send duplicate the message).
     dispatchKey: v.optional(v.string()),
+    // THE SEND IDENTITY (transcript redesign, phase 1): the exact `idempotencyKey` this
+    // row's LAST dispatch carried to the gateway, which the gateway turns into the run id
+    // of the send (upstream `chat-send-session.ts` `clientRunId = p.idempotencyKey`) and
+    // into the user row's `__openclaw.idempotencyKey = "<sendId>:user"`. Stamped by the
+    // last gate before the POST (bridge.lastGateBeforeSend). It stays bound to the gateway
+    // SESSION (lib/sendIdentity.ts): the gateway's send dedupe is process-global, not
+    // per session, so a key reused on another session would be answered from the first.
+    // Absent on rows dispatched before 0.92.0 and on Hermes targets.
+    sendId: v.optional(v.string()),
+    // WHEN this row's send LEFT for the gateway (stamped with `sendId` by the last gate).
+    // Not `_creationTime`: a send queued behind a running turn is created long before it
+    // is dispatched, and the transcript projection bounds the bubbles of a session by the
+    // dispatch its rows prove (convex/lib/transcriptProjection.ts `dispatchTimeOf`).
+    dispatchedAt: v.optional(v.number()),
     // WHEN this row entered `pending` — the dispatch-in-flight window. NOT
     // derivable from `_creationTime`: a mid-turn send can sit `queued` for hours
     // before the drain promotes it, so creation time would read as "stuck for
@@ -3530,6 +3686,9 @@ export default defineSchema({
     // unique because clientMessageId is a client-generated UUID; scoping by
     // userId keeps one user's id space from colliding with another's.
     .index("by_client_message", ["userId", "clientMessageId"])
+    // Transcript row -> send: "which outbox row sent the user row `<sendId>:user`?"
+    // (convex/transcriptProjection.ts). One point read per transcript user row.
+    .index("by_send_id", ["sendId"])
     // Sidebar busy signal (chatReads.myBusyChats): the caller's (user, "pending")
     // and (user, "queued") slices — the dispatch→ack window and the parked
     // follow-ups, both transient and tiny. Bounded per-user range, never a scan.

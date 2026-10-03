@@ -657,6 +657,22 @@ type IngestOp =
       status: string;
       answers?: Array<{ id: string; values: string[] }>;
       decision?: string;
+    }
+  // THE TRANSCRIPT PROJECTION (redesign phase 1, shadow): what one `chat.history` read
+  // returned, as identities. Never touches a message (convex/transcriptProjection.ts).
+  | {
+      op: "applyTranscript";
+      chatId: string;
+      sessionKey: string;
+      sessionId?: string;
+      kind: "page" | "delta" | "reset";
+      deltaCursor?: string;
+      rows: unknown[];
+      terminals: unknown[];
+      activeRunIds?: unknown[];
+      hasActiveRun?: boolean;
+      unidentified?: number;
+      readAt?: number;
     };
 
 /** The target id(s) an op writes against — what ingest authorization resolves to
@@ -1776,6 +1792,38 @@ export const ingest = httpAction(async (ctx, request) => {
         meta: { op: body.op, status, settled: res.settled },
       });
       return json({ ok: true, settled: res.settled });
+    }
+    case "applyTranscript": {
+      // Shape is re-validated by the mutation's validators (a malformed body is a 500
+      // traced as `handler_threw`, never a partial write); the barrier is atomic inside.
+      const res = await ctx.runMutation(internal.transcriptProjection.applyTranscript, {
+        chatId: body.chatId as Id<"chats">,
+        boundInstanceName,
+        sessionKey: body.sessionKey,
+        sessionId: typeof body.sessionId === "string" ? body.sessionId : "",
+        kind: body.kind,
+        ...(typeof body.deltaCursor === "string" ? { deltaCursor: body.deltaCursor } : {}),
+        rows: body.rows as never,
+        terminals: body.terminals as never,
+        ...(Array.isArray(body.activeRunIds)
+          ? {
+              activeRunIds: body.activeRunIds.filter(
+                (x): x is string => typeof x === "string",
+              ),
+            }
+          : {}),
+        ...(typeof body.hasActiveRun === "boolean" ? { hasActiveRun: body.hasActiveRun } : {}),
+        unidentified:
+          typeof body.unidentified === "number" && Number.isFinite(body.unidentified)
+            ? body.unidentified
+            : 0,
+        ...(typeof body.readAt === "number" && Number.isFinite(body.readAt)
+          ? { readAt: body.readAt }
+          : {}),
+      });
+      // NO per-apply trace row: reads follow every run terminal, and the cursor doc
+      // already carries the counters an operator needs (reads, resets, unidentified).
+      return json(res);
     }
     default:
       await traceIngestRejected(ctx, (body as { op?: unknown }).op, 400, "unknown_op");

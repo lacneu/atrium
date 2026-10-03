@@ -37,7 +37,6 @@ import type { ConvexWriter, SubAgentRecord } from "./convex-writer.js";
 import { attachRosterPolicy, attachSharingRefresh } from "./providers/openclaw/models-roster.js";
 import type { OutboundScan } from "./core/turn-sink.js";
 import { gatewayHostOf } from "./core/health.js";
-import { sessionsGetParams } from "./core/rpc-params.js";
 import { deviceTokenPromotion } from "./core/device-token-promotion.js";
 import type { BridgeConfig } from "./config.js";
 import type { MediaFetcherProvider } from "./core/media-fetcher-provider.js";
@@ -45,6 +44,13 @@ import { buildSessionKey } from "./providers/openclaw/session-keys.js";
 import { protocolDrift } from "./providers/openclaw/protocol-drift.js";
 import type { FinalizeCause } from "./core/finalize-causes.js";
 import { OpenClawAgentRequestObserver } from "./providers/openclaw/agent-request-observer.js";
+import { TranscriptShadow } from "./providers/openclaw/transcript-shadow.js";
+import {
+  CHAT_HISTORY_PAGE_LIMIT,
+  CHAT_HISTORY_PAGE_MAX_BYTES,
+  chatHistoryParams,
+  sessionsGetParams,
+} from "./core/rpc-params.js";
 
 // Stable errorCode for a bridge-side infrastructure end (socket drop / crash
 // mid-turn): the UI maps it to "connection lost — retry", never the user
@@ -157,6 +163,10 @@ export interface SessionRouting {
 export interface BridgeSession {
   readonly chatId: string;
   readonly sessionKey: string;
+  /** The SHADOW transcript reconciler of this conversation session (redesign phase 1):
+   *  reads `chat.history` back at the Control UI's triggers, never touches a bubble.
+   *  Optional so test doubles that predate it keep compiling. */
+  readonly transcriptShadow?: TranscriptShadow;
   /** The served instance (gateway) this session is bound to (one bridge, N gateways). */
   readonly instanceName: string;
   readonly connection: OpenClawConnection;
@@ -258,6 +268,8 @@ class Session implements BridgeSession {
   // Decoupled from the parent-turn lifecycle so a child frame arriving AFTER the
   // parent turn finalized still records (the whole reason the monitor exists).
   readonly observer: SubAgentObserver;
+  /** See BridgeSession.transcriptShadow. */
+  readonly transcriptShadow: TranscriptShadow;
   /** What the agent ASKS the person on this session (questions, approvals) — see
    *  providers/openclaw/agent-request-observer.ts. Inbound-only, like the sub-agent
    *  observer; its one effect on the turn is to say that a human now holds it. */
@@ -420,6 +432,29 @@ class Session implements BridgeSession {
     this.clock = clock;
     this.lastActivityAt = clock();
     this.transcriptFetcher = transcriptFetcher;
+    // SHADOW transcript reconciler: off until a /send carries the instance switch.
+    this.transcriptShadow = new TranscriptShadow({
+      chatId,
+      sessionKey,
+      readHistory: async (cursor) =>
+        (
+          await connection.request(
+            "chat.history",
+            chatHistoryParams(
+              {
+                sessionKey,
+                cursor,
+                limit: CHAT_HISTORY_PAGE_LIMIT,
+                maxBytes: CHAT_HISTORY_PAGE_MAX_BYTES,
+              },
+              connection.gatewayVersion,
+            ),
+          )
+        ).payload,
+      apply: async (report) => {
+        await writer.applyTranscript?.(report);
+      },
+    });
   }
 
   /** The outbound mount the AGENT was instructed to write to on the last send.
@@ -888,6 +923,8 @@ class Session implements BridgeSession {
           // set so a reconnect re-orders the first running-row write for each child.
           this.observer.clear();
           this.registeredChildren.clear();
+          // No more frames, no more reads on a closed socket (the next session reads).
+          this.transcriptShadow.close();
           break;
         }
         nextFrame = iterator.next();
@@ -912,6 +949,16 @@ class Session implements BridgeSession {
           // (C4 lives on the reader, so the voice relay and the pre-ack replay are
           // covered too). Reporting again would count one unreadable frame twice.
           console.error("session feed error:", (err as Error)?.message ?? err);
+        }
+        // THE TRANSCRIPT PROJECTION (shadow): a terminal chat frame of any run of this
+        // session asks for a read. Read-only — the frame went through the feed above
+        // untouched, and nothing here can change what it did.
+        try {
+          this.transcriptShadow.observeFrame(winner.value);
+        } catch (err) {
+          // Shadow-only: a failure here loses a READ trigger, never a frame (the feed
+          // above already consumed it), so it is logged rather than sensed.
+          console.error("session transcript observe error:", (err as Error)?.message ?? err);
         }
         // AGENT REQUESTS ride broadcasts, not the turn's frames: the feed above drops
         // them. Awaited because the one local effect — a human now holds the turn —
