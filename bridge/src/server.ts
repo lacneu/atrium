@@ -242,6 +242,7 @@ import {
   EXPECTED_PERMISSION_MODE_SINCE,
   gatewayAtLeast,
   COMPACTION_CHECKPOINTS_RETIRED_IN,
+  TASKS_RPC_RETIRED_IN,
   REHYDRATE_WITH_ATTACHMENTS_SINCE,
   TRANSCRIPT_PROJECTION_SINCE,
   openClawInlineWidgetsEnabled,
@@ -4114,6 +4115,163 @@ export class CompactionHistoryRetiredError extends Error {
   }
 }
 
+/** The gateway half of `/tasks-probe`: the per-id `tasks.get` batch plus the
+ *  session-scoped `tasks.list` discovery, over one operator connection. Exported so
+ *  the outbound ratchet captures what it really sends to each vendored version.
+ *
+ *  Nothing is sent to a gateway that retired the `tasks.*` RPCs
+ *  (TASKS_RPC_RETIRED_IN): the honest answer there is the empty one, the same as a
+ *  provider with no task registry, and the caller keeps its local expiry. */
+export async function probeOpenClawTasks(
+  conn: Pick<OpenClawConnection, "request" | "gatewayVersion">,
+  pIds: readonly string[],
+  discoverKeys: readonly string[],
+): Promise<{
+  tasks: ({ taskId: string } & Record<string, unknown>)[];
+  discovered: { taskId: string; status: string; toolName: string | null }[];
+  discoveryMeta: { sessions: number; listed: number } | null;
+}> {
+  if (gatewayAtLeast(conn.gatewayVersion, TASKS_RPC_RETIRED_IN) === true) {
+    return { tasks: [], discovered: [], discoveryMeta: null };
+  }
+
+  // PARALLEL lookups on the multiplexed socket: a sequential batch
+  // (10 ids x 10s worst case + a cold 30s connect) would blow past
+  // the Convex client's 50s budget and lose EVERY already-fetched
+  // status. Worst case here: connect + one 8s window.
+  const settled = await Promise.all(
+    pIds.map(async (taskId) => {
+      try {
+        const r = await conn.request(
+          "tasks.get",
+          taskGetParams(taskId),
+          8_000,
+        );
+        const task = (
+          r.payload as { task?: Record<string, unknown> }
+        )?.task;
+        return { taskId, ...projectTaskProbe(task) };
+      } catch (err) {
+        // DISTINGUISH the registry's explicit "task not found"
+        // (pinned: INVALID_REQUEST `task not found: <id>`) from a
+        // transient failure (timeout, drop, missing RPC on an old
+        // gateway): only the former may ever settle a row as lost —
+        // a transient error must leave the local state untouched,
+        // so the entry is OMITTED from the batch.
+        const msg = (err as Error)?.message ?? "";
+        if (/task not found/i.test(msg)) {
+          return {
+            taskId,
+            status: "not_found",
+            summary: null,
+            error: null,
+          };
+        }
+        return null;
+      }
+    }),
+  );
+  const gets = settled.filter(
+    (t): t is NonNullable<typeof t> => t !== null,
+  );
+  // Session-scoped discovery (best-effort: a gateway without the
+  // RPC, or a transient failure, yields an empty list — the local
+  // state stays untouched).
+  let found: {
+    taskId: string;
+    status: string;
+    toolName: string | null;
+  }[] = [];
+  // COUNTS-only diagnostics (no keys/content — SOC2): how many live
+  // sessions matched the chat and how many records the registry
+  // listed. A persistent {sessions:0} explains an empty discovery.
+  let discoveryMeta: { sessions: number; listed: number } | null =
+    null;
+  if (discoverKeys.length > 0) {
+    try {
+      // SERVER-side filters (TasksListParamsSchema, pinned from the
+      // gateway dist: sessionKey + status[] + limit): an unfiltered
+      // list is paginated (~100 oldest records) and NEVER contains
+      // the live link — the very task this discovery exists for.
+      // One request per live session key (normally exactly one).
+      let listedTotal = 0;
+      const records: Record<string, unknown>[] = [];
+      // FOUR, matching what the registry keeps (`recentChatKeys`, capped
+      // at 4 in session.ts): asking three left the oldest retained key
+      // unqueried, and after four re-keys that is exactly where a chain
+      // still producing invisible links can live — its next link was never
+      // adopted, so the indicator went dark and the delivery lost its
+      // anchor (codex). The cap belongs to the registry; this only has to
+      // agree with it.
+      // IN PARALLEL, each key isolated. Sequentially, four 10s lookups
+      // plus the connect and the per-task gets could exceed the 50s budget
+      // Convex gives this probe — and one failing key aborted the loop, so
+      // the very key this widening was for was never asked (codex).
+      const settled = await Promise.allSettled(
+        discoverKeys
+          .slice(0, MAX_DISCOVERY_KEYS)
+          .map((key) =>
+            conn.request("tasks.list", taskListParams(key), 10_000),
+          ),
+      );
+      for (const outcome of settled) {
+        if (outcome.status !== "fulfilled") continue; // one key's failure is its own
+        const payload = outcome.value.payload as {
+          tasks?: unknown[];
+        } | null;
+        const list = Array.isArray(payload?.tasks)
+          ? payload.tasks
+          : [];
+        listedTotal += list.length;
+        for (const t of list) {
+          if (typeof t === "object" && t !== null) {
+            records.push(t as Record<string, unknown>);
+          }
+        }
+      }
+      discoveryMeta = {
+        sessions: discoverKeys.length,
+        listed: listedTotal,
+      };
+      // Known ids are excluded BEFORE the cap: with 10+ live tasks
+      // a stable-ordered list would otherwise return the same known
+      // entries forever and starve the new invisible link behind
+      // them (the gets batch already refreshes the known ones).
+      const known = new Set(pIds);
+      found = records
+        .filter((rec) => {
+          const id = rec.taskId ?? rec.id;
+          return (
+            (rec.status === "queued" || rec.status === "running") &&
+            typeof id === "string" &&
+            id !== "" &&
+            !known.has(id)
+          );
+        })
+        .slice(0, 10)
+        .map((rec) => ({
+          taskId: ((rec.taskId ?? rec.id) as string).slice(0, 80),
+          status: (rec.status as string).slice(0, 40),
+          // The chain key: the tool family. Pinned live shape:
+          // sourceId "image_generate:openai" (tool before ':'),
+          // summary `kind` ("image_generation") as the fallback.
+          toolName:
+            typeof rec.sourceId === "string" && rec.sourceId !== ""
+              ? rec.sourceId.split(":")[0]!.slice(0, 60)
+              : typeof rec.kind === "string" && rec.kind !== ""
+                ? rec.kind.slice(0, 60)
+                : null,
+        }));
+    } catch (err) {
+      console.error(
+        "tasks-probe discovery failed (non-fatal):",
+        (err as Error)?.message ?? err,
+      );
+    }
+  }
+  return { tasks: gets, discovered: found, discoveryMeta };
+}
+
 export async function fetchCompactionHistory(
   conn: OpenClawConnection,
   sessionKey: string,
@@ -6626,143 +6784,7 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
         const { tasks, discovered, discoveryMeta } =
           await withOperatorConnection(
             pBundle.config,
-            async (conn) => {
-              // PARALLEL lookups on the multiplexed socket: a sequential batch
-              // (10 ids x 10s worst case + a cold 30s connect) would blow past
-              // the Convex client's 50s budget and lose EVERY already-fetched
-              // status. Worst case here: connect + one 8s window.
-              const settled = await Promise.all(
-                pIds.map(async (taskId) => {
-                  try {
-                    const r = await conn.request(
-                      "tasks.get",
-                      taskGetParams(taskId),
-                      8_000,
-                    );
-                    const task = (
-                      r.payload as { task?: Record<string, unknown> }
-                    )?.task;
-                    return { taskId, ...projectTaskProbe(task) };
-                  } catch (err) {
-                    // DISTINGUISH the registry's explicit "task not found"
-                    // (pinned: INVALID_REQUEST `task not found: <id>`) from a
-                    // transient failure (timeout, drop, missing RPC on an old
-                    // gateway): only the former may ever settle a row as lost —
-                    // a transient error must leave the local state untouched,
-                    // so the entry is OMITTED from the batch.
-                    const msg = (err as Error)?.message ?? "";
-                    if (/task not found/i.test(msg)) {
-                      return {
-                        taskId,
-                        status: "not_found",
-                        summary: null,
-                        error: null,
-                      };
-                    }
-                    return null;
-                  }
-                }),
-              );
-              const gets = settled.filter(
-                (t): t is NonNullable<typeof t> => t !== null,
-              );
-              // Session-scoped discovery (best-effort: a gateway without the
-              // RPC, or a transient failure, yields an empty list — the local
-              // state stays untouched).
-              let found: {
-                taskId: string;
-                status: string;
-                toolName: string | null;
-              }[] = [];
-              // COUNTS-only diagnostics (no keys/content — SOC2): how many live
-              // sessions matched the chat and how many records the registry
-              // listed. A persistent {sessions:0} explains an empty discovery.
-              let discoveryMeta: { sessions: number; listed: number } | null =
-                null;
-              if (discoverKeys.length > 0) {
-                try {
-                  // SERVER-side filters (TasksListParamsSchema, pinned from the
-                  // gateway dist: sessionKey + status[] + limit): an unfiltered
-                  // list is paginated (~100 oldest records) and NEVER contains
-                  // the live link — the very task this discovery exists for.
-                  // One request per live session key (normally exactly one).
-                  let listedTotal = 0;
-                  const records: Record<string, unknown>[] = [];
-                  // FOUR, matching what the registry keeps (`recentChatKeys`, capped
-                  // at 4 in session.ts): asking three left the oldest retained key
-                  // unqueried, and after four re-keys that is exactly where a chain
-                  // still producing invisible links can live — its next link was never
-                  // adopted, so the indicator went dark and the delivery lost its
-                  // anchor (codex). The cap belongs to the registry; this only has to
-                  // agree with it.
-                  // IN PARALLEL, each key isolated. Sequentially, four 10s lookups
-                  // plus the connect and the per-task gets could exceed the 50s budget
-                  // Convex gives this probe — and one failing key aborted the loop, so
-                  // the very key this widening was for was never asked (codex).
-                  const settled = await Promise.allSettled(
-                    discoverKeys
-                      .slice(0, MAX_DISCOVERY_KEYS)
-                      .map((key) =>
-                        conn.request("tasks.list", taskListParams(key), 10_000),
-                      ),
-                  );
-                  for (const outcome of settled) {
-                    if (outcome.status !== "fulfilled") continue; // one key's failure is its own
-                    const payload = outcome.value.payload as {
-                      tasks?: unknown[];
-                    } | null;
-                    const list = Array.isArray(payload?.tasks)
-                      ? payload.tasks
-                      : [];
-                    listedTotal += list.length;
-                    for (const t of list) {
-                      if (typeof t === "object" && t !== null) {
-                        records.push(t as Record<string, unknown>);
-                      }
-                    }
-                  }
-                  discoveryMeta = {
-                    sessions: discoverKeys.length,
-                    listed: listedTotal,
-                  };
-                  // Known ids are excluded BEFORE the cap: with 10+ live tasks
-                  // a stable-ordered list would otherwise return the same known
-                  // entries forever and starve the new invisible link behind
-                  // them (the gets batch already refreshes the known ones).
-                  const known = new Set(pIds);
-                  found = records
-                    .filter((rec) => {
-                      const id = rec.taskId ?? rec.id;
-                      return (
-                        (rec.status === "queued" || rec.status === "running") &&
-                        typeof id === "string" &&
-                        id !== "" &&
-                        !known.has(id)
-                      );
-                    })
-                    .slice(0, 10)
-                    .map((rec) => ({
-                      taskId: ((rec.taskId ?? rec.id) as string).slice(0, 80),
-                      status: (rec.status as string).slice(0, 40),
-                      // The chain key: the tool family. Pinned live shape:
-                      // sourceId "image_generate:openai" (tool before ':'),
-                      // summary `kind` ("image_generation") as the fallback.
-                      toolName:
-                        typeof rec.sourceId === "string" && rec.sourceId !== ""
-                          ? rec.sourceId.split(":")[0]!.slice(0, 60)
-                          : typeof rec.kind === "string" && rec.kind !== ""
-                            ? rec.kind.slice(0, 60)
-                            : null,
-                    }));
-                } catch (err) {
-                  console.error(
-                    "tasks-probe discovery failed (non-fatal):",
-                    (err as Error)?.message ?? err,
-                  );
-                }
-              }
-              return { tasks: gets, discovered: found, discoveryMeta };
-            },
+            (conn) => probeOpenClawTasks(conn, pIds, discoverKeys),
             noteHandshakeFor(pInstance),
           );
         sendJson(res, 200, { ok: true, tasks, discovered, discoveryMeta });

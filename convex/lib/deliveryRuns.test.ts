@@ -25,6 +25,15 @@ describe("task-delivery run ids across gateway generations", () => {
     expect(isDeliveryRun(rid)).toBe(true);
     expect(taskDeliveryOutcome(`image_generate:${TASK}:ok:agent-loop`)).toBe("ok");
   });
+  it("2026.9.7 shape (captured 2026-10-03): the task id is the media run id `tool:<tool>:<uuid>`", () => {
+    const id = `tool:image_generate:${TASK}`;
+    const rid = `image_generate:${id}:ok:agent-loop`;
+    expect(deliveryChildKey(rid)).toBe(`task:${id}`);
+    expect(taskDeliveryOutcome(rid)).toBe("ok");
+    expect(taskDeliveryIdentity(rid)).toEqual({ toolName: "image_generate", taskId: id });
+    expect(isDeliveryRun(rid)).toBe(true);
+    expect(isDeliveryRun("image_generate:tool:image_generate:not-a-uuid:ok")).toBe(false);
+  });
   it("2026.8.1+ requester-settle wake: gateway-initiated, but NO child key (captured 2026-09-02)", () => {
     const rid =
       "announce:requester-settle:alice:agent:alice:atrium:chat:u-repro:turn-nx77:5f36a848-c5f1-41f3-811e-fd5796c0c531";

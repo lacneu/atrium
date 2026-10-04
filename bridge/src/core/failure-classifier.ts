@@ -26,6 +26,24 @@ export const GATEWAY_CHAT_ERROR_KINDS: ReadonlySet<string> = new Set([
   "context_length",
 ]);
 
+/** Gateway `errorKind` values that name a fact Atrium already has its OWN class for.
+ *
+ *  `state_contention` is NEW at v2026.9.7 (logs-chat.ts:363-370): the `chat.send`
+ *  setup/dispatch path emits it for a TYPED SQLite BUSY/LOCKED only
+ *  (src/sessions/session-run-error-presentation.ts:10-17, `isSqliteLockError` in
+ *  src/infra/sqlite-error-diagnostics.ts:158-165; frame built by
+ *  src/gateway/server-methods/chat-broadcast.ts:142-154), and REPLACES the raw
+ *  "database is locked" text the storage-busy pattern read on 9.6 with fixed copy that
+ *  names no storage fact. It is the same fact — contention, the run may already have
+ *  executed — so it is the same class, terminal and never auto-retried (upstream:
+ *  "Execution may have occurred; check the recorded outcome before resending"). */
+//
+// A Map, not an object literal: the key is a WIRE string, and an object lookup answers
+// `constructor`, `toString` or `__proto__` with an inherited function or prototype.
+const GATEWAY_ERROR_KIND_CLASSES: ReadonlyMap<string, string> = new Map([
+  ["state_contention", "gateway_storage_busy"],
+]);
+
 /** `FailoverReason` — the gateway's own vocabulary for WHY a provider attempt failed
  *  (packages/gateway-protocol/src/failover-reasons.ts at v2026.9.6, sixteen values). It
  *  rides three carriers Atrium reads: `ChatErrorEvent.errorDetail.failoverReason`
@@ -217,6 +235,13 @@ export function classifyStructuredFailure(fields: {
   errorKind?: unknown;
   errorDetail?: unknown;
 }): string | null {
+  // A storage fact the gateway itself classified outranks a provider observation, as
+  // `timeout` does: the failure is the gateway's state, not the model's.
+  const mapped =
+    typeof fields.errorKind === "string"
+      ? GATEWAY_ERROR_KIND_CLASSES.get(fields.errorKind)
+      : undefined;
+  if (mapped !== undefined) return mapped;
   const kind =
     typeof fields.errorKind === "string" && GATEWAY_CHAT_ERROR_KINDS.has(fields.errorKind)
       ? fields.errorKind
@@ -325,15 +350,21 @@ const SESSION_INITIALIZING_RE = /is still initializing\.?\s*retry after initiali
 // (src/agents/failover/assistant-request-failure-copy.ts:13-26,52), from the classification in
 // src/infra/sqlite-error-diagnostics.ts:4-11. They reach us as TEXT and nothing else: the chat
 // error frame declares no errorCode field (packages/gateway-protocol/src/schema/logs-chat.ts:418-432)
-// and its errorKind enum has no storage member (:313-319), so no structured fact survives.
+// and its errorKind enum had no storage member up to v2026.9.6 (:313-319), so no structured
+// fact survived. v2026.9.7 adds `state_contention` for the busy half on the chat.send path
+// (GATEWAY_ERROR_KIND_CLASSES); the text below stays the reading for every other carrier.
 // SPLIT IN TWO, by what the event asks of the reader — one label for both would be half wrong
 // in each case. Busy/locked is contention: the same send can succeed. Full, read-only and I/O
 // are the gateway's host: no resend helps until an operator acts. The raw sentence is still
 // shown under the localized headline (errorDetailView), so the exact cause stays readable.
 // NEITHER is retryable: the write failed with the run already working, exactly like the writer
 // rebound, so an automatic re-dispatch could repeat work whose effects already happened.
+// v2026.9.7 replaces the SQLite sentence with fixed copy on the chat.send path
+// (src/sessions/session-run-error-presentation.ts:3-7,14) and on chat.abort
+// (src/gateway/server-methods/chat-abort-handler.ts:691-692); both name the admission
+// that stayed busy, which is the one storage fact left in the text.
 const GATEWAY_STORAGE_BUSY_RE =
-  /database is locked|database table is locked|state database was (?:busy|locked)\b/i;
+  /database is locked|database table is locked|state database was (?:busy|locked)\b|sqlite transaction admission remained busy/i;
 const GATEWAY_STORAGE_UNAVAILABLE_RE =
   /database or disk is full|attempt to write a readonly database|disk i\/o error|state database was (?:full|read-only)|state database had an i\/o error/i;
 // The SAME host fact when the full filesystem is not the SQLite file itself but the scratch

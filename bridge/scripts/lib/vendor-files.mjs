@@ -13,6 +13,14 @@ export function since(version, paths) {
   return paths.map((p) => ({ since: version, candidates: Array.isArray(p) ? p : [p] }));
 }
 
+/** Mark `paths` as RETIRED from `version` on: required below it, skipped at or
+ *  above it. Upstream deletes modules too — v2026.9.7 removed the `tasks.*` RPCs
+ *  and their `schema/tasks.ts` — and a plain entry made vendoring the new tag fail
+ *  with "module renamed?" while every older tag still needs the module. */
+export function until(version, paths) {
+  return paths.map((p) => ({ until: version, candidates: Array.isArray(p) ? p : [p] }));
+}
+
 /** Upstream tags: `YYYY.M.P[-beta.N]`. A pre-release sorts before its release. */
 export function compareUpstreamVersions(a, b) {
   const parse = (v) => {
@@ -35,8 +43,12 @@ export function resolveVendorEntries(files, version) {
   const skipped = [];
   for (const entry of files) {
     if (entry !== null && typeof entry === "object" && !Array.isArray(entry)) {
-      if (compareUpstreamVersions(version, entry.since) < 0) {
+      if (entry.since !== undefined && compareUpstreamVersions(version, entry.since) < 0) {
         skipped.push({ candidates: entry.candidates, since: entry.since });
+        continue;
+      }
+      if (entry.until !== undefined && compareUpstreamVersions(version, entry.until) >= 0) {
+        skipped.push({ candidates: entry.candidates, until: entry.until });
         continue;
       }
       entries.push({ candidates: entry.candidates });

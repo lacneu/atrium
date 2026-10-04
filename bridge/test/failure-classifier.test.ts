@@ -138,6 +138,14 @@ describe("classifyFailureText", () => {
     // and it names the same event.
     expect(classifyFailureText("SqliteError: database is locked")).toBe("gateway_storage_busy");
     expect(classifyFailureText("database table is locked")).toBe("gateway_storage_busy");
+    // v2026.9.7 replaces the SQLite sentence with fixed copy on chat.send and chat.abort
+    // (session-run-error-presentation.ts:3-7,14; chat-abort-handler.ts:691-692).
+    for (const copy of [
+      "The turn was interrupted while the server was busy. Check its status before trying again.\n\nSQLite transaction admission remained busy. Execution may have occurred; check the recorded outcome before resending.",
+      "The server is busy. Check this turn's status before trying Stop again.\n\nSQLite transaction admission remained busy. Stopping may already have taken effect.",
+    ]) {
+      expect(classifyFailureText(copy), copy).toBe("gateway_storage_busy");
+    }
     expect(classifyFailureText("SqliteError: database or disk is full")).toBe(
       "gateway_storage_unavailable",
     );

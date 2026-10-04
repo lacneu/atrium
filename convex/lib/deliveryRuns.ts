@@ -14,8 +14,11 @@ const UUID_RE =
 // 2026.8.x suffixes the delivery LANE (`…:ok:agent-loop`, see
 // bridge/src/core/async-task.ts DELIVERY_RE for the upstream anchor); only that
 // documented lane is accepted, the anchor stays.
+// 2026.9.7 mints the task id as `tool:<toolName>:<uuid>` (the media task's own run id;
+// see bridge/src/core/async-task.ts TASK_ID_RE for the upstream anchor). Both shapes.
+const TASK_ID_RE = `(?:tool:[a-z][a-z0-9_]*:)?${UUID_RE}`;
 const TASK_DELIVERY_RE = new RegExp(
-  `^([a-z][a-z0-9_]*):(${UUID_RE}):(ok|error)(?::agent-loop)?$`,
+  `^([a-z][a-z0-9_]*):(${TASK_ID_RE}):(ok|error)(?::agent-loop)?$`,
 );
 
 /** The delivery LANES upstream appends to an ANNOUNCE identity. Both compose ON

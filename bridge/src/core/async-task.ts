@@ -20,8 +20,15 @@ const UUID_RE = "[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-
 // subagent-announce-delivery.ts:219,230 — absent from 2026.7.1). Pinned live on
 // 2026.8.2 (2026-09-02): `image_generate:85dce36f-…:error:agent-loop`. Only that
 // documented lane is accepted, still anchored: an unknown suffix stays a non-match.
+//
+// v2026.9.7 changed the TASK ID itself: with the task registry RPCs gone, a media
+// generation's id is its own run id, `tool:<toolName>:<uuid>`
+// (src/agents/tools/media-generate-background-shared.ts:220,280, `taskId: runId`), so the
+// delivery run reads `image_generate:tool:image_generate:<uuid>:ok:agent-loop` — measured
+// on the 2026.9.7 bench. Both id shapes are accepted, each still anchored on a uuid.
+const TASK_ID_RE = `(?:tool:[a-z][a-z0-9_]*:)?${UUID_RE}`;
 const DELIVERY_RE = new RegExp(
-  `^([a-z][a-z0-9_]*):(${UUID_RE}):(ok|error)(?::agent-loop)?$`,
+  `^([a-z][a-z0-9_]*):(${TASK_ID_RE}):(ok|error)(?::agent-loop)?$`,
 );
 
 export interface AsyncTaskStart {

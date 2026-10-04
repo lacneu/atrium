@@ -158,7 +158,7 @@ describe("COMPAT_MANIFEST shape", () => {
 
   test("openclaw provider pins the validated range + versions", () => {
     const oc = COMPAT_MANIFEST.providers.openclaw!;
-    expect(oc.supportedRange).toEqual({ min: "2026.8.2", maxValidated: "2026.9.6" });
+    expect(oc.supportedRange).toEqual({ min: "2026.8.2", maxValidated: "2026.9.8" });
     // The floor is the operator-facing constant, not a second copy of a string.
     expect(oc.supportedRange?.min).toBe(OPENCLAW_MIN_SUPPORTED);
     expect(oc.validatedVersions).toEqual([
@@ -167,6 +167,8 @@ describe("COMPAT_MANIFEST shape", () => {
       "2026.9.4",
       "2026.9.5",
       "2026.9.6",
+      "2026.9.7",
+      "2026.9.8",
     ]);
     expect(Object.keys(oc.capabilities).sort()).toEqual([...ALL_CAPS].sort());
     // The two releases inside the range that a STOCK gateway cannot be trusted on:
@@ -319,14 +321,14 @@ describe("resolveCapabilities — conservative policy (unknown version)", () => 
 });
 
 describe("resolveCapabilities — beyond maxValidated", () => {
-  // All STRICTLY above maxValidated, which is 2026.9.6 since 2026-09-25 — so
-  // 2026.9.6 left this list, as 2026.9.5 and 2026.9.3 did before it: a version that
-  // earns a GO stops being "beyond" and resolves normally.
+  // All STRICTLY above maxValidated, which is 2026.9.8 since 2026-10-04 — so
+  // 2026.9.8 left this list, as 2026.9.7, 2026.9.6, 2026.9.5 and 2026.9.3 did before it: a version
+  // that earns a GO stops being "beyond" and resolves normally.
   // The assertion below was already the frozen profile; only the NAME claimed
   // otherwise ("enables all validated capabilities" read as a grant). On the shipped
   // table the two rules coincide — see the shared-table suite for the input where
   // they do not.
-  test.each(["2026.9.7", "2026.10.0", "2027.1.1"])(
+  test.each(["2026.9.9", "2026.10.0", "2027.1.1"])(
     "%s is FROZEN at the maxValidated profile + flags versionBeyondValidated",
     (raw) => {
       const resolved = resolveCapabilities("openclaw", raw);
@@ -371,9 +373,30 @@ describe("resolveCapabilities — beyond maxValidated", () => {
     expect(resolved.versionBeyondValidated).toBe(false);
   });
 
+  test("2026.9.7 stays inside the range, no flag", () => {
+    const resolved = resolveCapabilities("openclaw", "2026.9.7");
+    // Identical to 2026.9.6's profile: no capability carries a 2026.9.7 floor. The GO
+    // changes the CLAIM, not the surface; the 9.7 adaptations (append-only live text,
+    // the retired task registry) are raw-version or wire facts, not capabilities.
+    expect(resolved.capabilities).toEqual(
+      resolveCapabilities("openclaw", "2026.9.6").capabilities,
+    );
+    expect(resolved.versionBeyondValidated).toBe(false);
+  });
+
+  test("2026.9.8 is the new ceiling: inside the range, no flag", () => {
+    const resolved = resolveCapabilities("openclaw", "2026.9.8");
+    // A reliability hotfix of 2026.9.7 with a byte-identical vendored contract: same
+    // profile, no capability carries a 2026.9.8 floor.
+    expect(resolved.capabilities).toEqual(
+      resolveCapabilities("openclaw", "2026.9.7").capabilities,
+    );
+    expect(resolved.versionBeyondValidated).toBe(false);
+  });
+
   test("exactly maxValidated is NOT beyond", () => {
     expect(
-      resolveCapabilities("openclaw", "2026.9.6").versionBeyondValidated,
+      resolveCapabilities("openclaw", "2026.9.8").versionBeyondValidated,
     ).toBe(false);
   });
 

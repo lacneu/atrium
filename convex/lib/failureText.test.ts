@@ -67,6 +67,7 @@ const EXTRA_TEXTS = [
   "HTTP 429: Too Many Requests",
   "fetch failed",
   "database is locked",
+  "The turn was interrupted while the server was busy. Check its status before trying again.\n\nSQLite transaction admission remained busy. Execution may have occurred; check the recorded outcome before resending.",
   "Session \"agent:alice:x\" changed while starting work. Retry.",
   'Session "agent:alice:x" is archived. Restore it before starting new work.',
   'Session "agent:alice:x" is paused as a precaution. Review the provider findings in chat before continuing.',

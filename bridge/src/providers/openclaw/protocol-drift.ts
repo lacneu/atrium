@@ -30,7 +30,7 @@ import { ConvexIngestError } from "../../convex-writer.js";
 // to exercise; it cannot enumerate a contract. That is what the vendored schema is
 // for, and inferring "the surface" from a bench run is the exact mistake the ratchet
 // exists to make impossible.
-export const DRIFT_VENDORED_VERSION = "2026.9.6";
+export const DRIFT_VENDORED_VERSION = "2026.9.8";
 
 /** Chat payload fields PER STATE, not their union.
  *
@@ -222,6 +222,9 @@ export const CLASSIFIED_EVENTS: ReadonlySet<string> = new Set([
   "session.message",
   "session.observer",
   "session.operation",
+  // NEW in 2026.9.7, classified `gap`: the bounded digest a narration-mode
+  // `sessions.messages.subscribe` receives. Atrium never subscribes in that mode.
+  "session.narration",
   "session.sharing",
   "session.sharing.evidence",
   "session.suggestion",
@@ -235,7 +238,6 @@ export const CLASSIFIED_EVENTS: ReadonlySet<string> = new Set([
   // NEW in 2026.9.5, classified `gap`: acknowledges a realtime voice switch, to the
   // CALLER connection only. Atrium never changes voice mid-session today.
   "talk.voice.change",
-  "task",
   "task.suggestion",
   "terminal.data",
   "terminal.exit",
@@ -266,6 +268,9 @@ export const BROADCAST_ONLY_EVENTS: ReadonlySet<string> = new Set([
   "chat.side_result",
   "config.changed",
   "sessions.catalog.host",
+  // No longer ANNOUNCED from 2026.9.7 (it left GATEWAY_EVENTS with the `tasks.*` RPCs),
+  // still a key of the scope-guard table, so a gateway can still broadcast it.
+  "task",
 ]);
 
 export const AGENT_ROUTING_ENVELOPE_FIELDS: readonly string[] = [
@@ -439,9 +444,9 @@ export const KNOWN_AGENT_FIELDS: ReadonlySet<string> = new Set([
  * matrix instead of being invisible omissions.
  */
 export const COVERAGE_SUMMARY = {
-  handled: 344,
-  ignored: 817,
-  gaps: 904,
+  handled: 328,
+  ignored: 811,
+  gaps: 920,
   /** The declared gaps, by schema path — the actionable part of the matrix.
    *
    *  ERROR LABELS (2026-10-02): `ChatErrorEvent.errorDetail` is handled — the provider
@@ -506,7 +511,12 @@ export const COVERAGE_SUMMARY = {
    *  the history read is refused by name there) and added 25 schemas and 16 fields, all
    *  gaps by construction. The actionable one is `SessionRow.providerReview` /
    *  `SessionsProviderReviewContinueParams`: a session paused after a provider refusal,
-   *  which Atrium names (`session_paused_review`) but cannot continue. */
+   *  which Atrium names (`session_paused_review`) but cannot continue.
+   *  2026.9.7 retired the `tasks.*` RPCs (12 schemas, 16 handled fields among them — the
+   *  task probe answers empty there, TASKS_RPC_RETIRED_IN) and added 21 schemas and 13
+   *  fields; among the 21 new gaps, the ones that matter are the session-event ancestors
+   *  and the narration event (phases 2 and 6 of the transcript refonte) and the queue
+   *  cancellation `ChatAbortParams.discardPendingInput` (phase 6). */
   gapList: [
     "AgentActivityItem.approvalId",
     "AgentActivityItem.approvalSlug",
@@ -539,8 +549,10 @@ export const COVERAGE_SUMMARY = {
     "AgentsFileEntry.expectedAbsent",
     "AgentsFileEntry.hash",
     "AgentsFilesSetParams.expectedHash",
+    "AgentsFilesSetParams.expectedMissing",
     "ApprovalPresentation.externalResolution",
     "AuthProbeStatus",
+    "ChatAbortParams.discardPendingInput",
     "ChatAbortParams.preserveSideRuns",
     "ChatAbortedEvent.errorMessage",
     "ChatAccountSelection.authProfileId",
@@ -656,6 +668,7 @@ export const COVERAGE_SUMMARY = {
     "CronJob.scheduledToolPolicy",
     "CronJobState.consecutiveErrors",
     "CronJobState.deliverySuppressionReason",
+    "CronJobState.scheduleErrorCount",
     "CronJobState.streamCoalescedBatches",
     "CronJobState.streamConsecutiveFailures",
     "CronJobState.streamDroppedBatches",
@@ -871,6 +884,7 @@ export const COVERAGE_SUMMARY = {
     "PluginCatalogClawHubInstall.packageName",
     "PluginCatalogClawHubInstall.source",
     "PluginCatalogEntry.activityIconTools",
+    "PluginCatalogEntry.capabilityCategories",
     "PluginCatalogEntry.catalogId",
     "PluginCatalogEntry.categories",
     "PluginCatalogEntry.category",
@@ -932,6 +946,7 @@ export const COVERAGE_SUMMARY = {
     "PluginRuntimeApplication.generation",
     "PluginRuntimeApplication.operationId",
     "PluginRuntimeApplication.pluginIds",
+    "PluginRuntimeApplication.selectedEntries",
     "PluginRuntimeApplication.sourceDigests",
     "PluginRuntimeStatus.error",
     "PluginRuntimeStatus.state",
@@ -955,6 +970,7 @@ export const COVERAGE_SUMMARY = {
     "PluginsCredentialsInspectResult.baseHash",
     "PluginsCredentialsInspectResult.credential",
     "PluginsInstallParams.archivePath",
+    "PluginsInstallParams.enable",
     "PluginsInstallParams.expectedIntegrity",
     "PluginsInstallParams.expectedPluginId",
     "PluginsInstallParams.link",
@@ -989,6 +1005,7 @@ export const COVERAGE_SUMMARY = {
     "PluginsRefreshResult.warnings",
     "PluginsReloadParams.acknowledgeCapabilities",
     "PluginsReloadParams.plugins",
+    "PluginsReloadParams.waitForDrain",
     "PluginsReloadResult.ok",
     "PluginsReloadResult.pluginIds",
     "PluginsReloadResult.restartRequired",
@@ -1014,6 +1031,8 @@ export const COVERAGE_SUMMARY = {
     "PluginsUninstallResult.runtime",
     "PluginsUninstallResult.warnings",
     "PresenceEntry.clientId",
+    "PresenceEntry.connectionId",
+    "PresenceEntry.connectionLastActivityAt",
     "PresenceEntry.deviceFamily",
     "PresenceEntry.deviceId",
     "PresenceEntry.host",
@@ -1047,6 +1066,11 @@ export const COVERAGE_SUMMARY = {
     "SessionActivitySummary.state",
     "SessionActivitySummary.text",
     "SessionActivitySummary.updatedAt",
+    "SessionAncestorRef.agentId",
+    "SessionAncestorRef.key",
+    "SessionAncestorRef.revision",
+    "SessionAncestorRef.sessionId",
+    "SessionAncestorRef.snapshotAt",
     "SessionBranch.active",
     "SessionBranch.headline",
     "SessionBranch.leafEntryId",
@@ -1069,8 +1093,14 @@ export const COVERAGE_SUMMARY = {
     "SessionDiffFile.untracked",
     "SessionDiffFileStatus",
     "SessionEntryArchiveReason",
+    "SessionEventAncestors.ancestorSessionRefs",
+    "SessionEventAncestors.ancestorSessions",
     "SessionGroup.name",
     "SessionGroup.position",
+    "SessionNarrationEvent.agentId",
+    "SessionNarrationEvent.runId",
+    "SessionNarrationEvent.sessionKey",
+    "SessionNarrationEvent.text",
     "SessionObserverDigest.agentId",
     "SessionObserverDigest.assessment",
     "SessionObserverDigest.headline",
@@ -1102,6 +1132,7 @@ export const COVERAGE_SUMMARY = {
     "SessionRow.activeModel",
     "SessionRow.activeModelProvider",
     "SessionRow.activitySummary",
+    "SessionRow.ancestorRevision",
     "SessionRow.archiveReason",
     "SessionRow.archived",
     "SessionRow.archivedAt",
@@ -1327,11 +1358,6 @@ export const COVERAGE_SUMMARY = {
     "TalkClientTranscriptParams.text",
     "TalkClientTranscriptParams.timestamp",
     "TalkClientTranscriptParams.voiceSessionId",
-    "TaskSummary.execution",
-    "TaskSummary.hasTranscript",
-    "TaskSummary.lastToolName",
-    "TaskSummary.prompt",
-    "TaskSummary.toolUseCount",
     "TickEvent.ts",
     "UserChannelIdentity.accountId",
     "UserChannelIdentity.channelId",

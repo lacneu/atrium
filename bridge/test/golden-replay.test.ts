@@ -30,6 +30,8 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
 import { RunManager } from "../src/providers/openclaw/run-manager.js";
+import { LiveTextBaselines } from "../src/providers/openclaw/live-text-baseline.js";
+import type { GatewayFrame } from "../src/providers/openclaw/openclaw-client.js";
 import { protocolDrift } from "../src/providers/openclaw/protocol-drift.js";
 import type {
   ConvexWriter,
@@ -235,6 +237,7 @@ async function replay(fx: Fixture): Promise<RecordingWriter> {
     fx.header.sessionKey,
   ) as Array<{ runId: string; armIndex: number; ackIndex: number }>;
   manager.armReplayBuffer();
+  const baselines = new LiveTextBaselines();
   const first = openings[0];
   if (first === undefined || first.ackIndex < 0) await manager.beginTurn(t0, first?.runId ?? null);
   let now = t0;
@@ -251,7 +254,10 @@ async function replay(fx: Fixture): Promise<RecordingWriter> {
     // fixtures exist for (raised in review).
     now = await drainDeadlines(manager, now, 64, arrival);
     now = arrival;
-    await manager.feed(fx.entries[i]!.frame, now);
+    // The capture is the RAW wire; production restores append-only live text at the
+    // connection before the run manager sees a frame (live-text-baseline.ts). Identity on
+    // a capture whose deltas all carry their base (every version before 2026.9.7).
+    await manager.feed(baselines.project(fx.entries[i]!.frame as GatewayFrame).frame, now);
   }
   // THE DEADLINES, after the last frame. A capture whose turn ends on a grace rather than
   // on a terminal frame (`lifecycle:end`, an empty final, plain recv silence) never

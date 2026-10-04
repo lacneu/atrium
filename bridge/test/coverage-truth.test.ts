@@ -227,9 +227,21 @@ describe("coverage-truth — the manifest may not lie about the code", () => {
     const latestName = versions[versions.length - 1];
     expect(latestName, "no vendored version at all").toBeDefined();
     const latest = manifestOf(latestName as string);
+    // A path whose WHOLE schema left the latest contract is a retirement, not a typo:
+    // 2026.9.7 removed the `tasks.*` RPCs and `TaskSummary` with them. It still has to
+    // be a real path of an older vendored version, where V1/V2 keep enforcing it — a
+    // typo exists in none. A field gone from a schema that still exists stays a failure.
+    const retired = (p: string): boolean => {
+      const [schema] = p.split(".");
+      return (
+        schema !== undefined &&
+        latest.schemas[schema] === undefined &&
+        versions.some((v) => entryOf(manifestOf(v), p) !== undefined)
+      );
+    };
     const missing = ratchet.fields
       .map((f) => f.path)
-      .filter((p) => entryOf(latest, p) === undefined);
+      .filter((p) => entryOf(latest, p) === undefined && !retired(p));
     expect(missing).toEqual([]);
   });
 

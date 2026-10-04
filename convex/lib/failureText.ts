@@ -46,7 +46,7 @@ const TRANSCRIPT_REBUILDING_RE =
 const SESSION_INITIALIZING_RE =
   /is still initializing\.?\s*retry after initialization completes/i;
 const GATEWAY_STORAGE_BUSY_RE =
-  /database is locked|database table is locked|state database was (?:busy|locked)\b/i;
+  /database is locked|database table is locked|state database was (?:busy|locked)\b|sqlite transaction admission remained busy/i;
 const GATEWAY_STORAGE_UNAVAILABLE_RE =
   /database or disk is full|attempt to write a readonly database|disk i\/o error|state database was (?:full|read-only)|state database had an i\/o error/i;
 const GATEWAY_HOST_STORAGE_FULL_RE =

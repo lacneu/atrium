@@ -82,6 +82,22 @@ describe("taskDeliveryRunFromRunId (real captured run id)", () => {
       )?.outcome,
     ).toBe("error");
   });
+  it("parses the 2026.9.7 delivery, whose task id is the media run id (captured 2026-10-03)", () => {
+    // 2026.9.7 mints the task id as `tool:<toolName>:<uuid>`
+    // (media-generate-background-shared.ts:220,280); the delivery run embeds it whole.
+    expect(
+      taskDeliveryRunFromRunId(
+        "image_generate:tool:image_generate:c0db0a8a-80b0-4073-b00c-af5148c8ac09:ok:agent-loop",
+      ),
+    ).toEqual({
+      toolName: "image_generate",
+      taskId: "tool:image_generate:c0db0a8a-80b0-4073-b00c-af5148c8ac09",
+      outcome: "ok",
+    });
+    // Still anchored on a uuid: a free-form id is not a task.
+    expect(taskDeliveryRunFromRunId("image_generate:tool:image_generate:abc:ok")).toBeNull();
+    expect(taskDeliveryRunFromRunId("image_generate:tool:x:y:c0db0a8a-80b0-4073-b00c-af5148c8ac09:ok")).toBeNull();
+  });
   it("parses the 2026.8.x lane-suffixed delivery (captured 2026-09-02 on 2026.8.2)", () => {
     // Gateway 2026.8.x keys the delivery as `${announceId}:agent-loop`
     // (subagent-announce-delivery.ts:219,230); 2026.7.1 had no suffix.

@@ -301,6 +301,11 @@ const STRUCTURAL_KEYS = new Set([
   "input",
   "meta",
   "text",
+  // The append-only half of an `agent` `assistant` event (`data.delta`). On a gateway
+  // that still sends `data.text` beside it the delta is redundant; from 2026.9.7 the
+  // gateway drops `data.text` after the first frame of a socket, and `delta` IS the text
+  // (server-chat-live-text.ts `projectAssistantWireDelta`). Masked as prose like `text`.
+  "delta",
   "parts",
   "items",
   "steps",
@@ -683,11 +688,21 @@ export function createPseudonymiser(literals = [], renamed = new Map(), reserved
       // promotion, and the fidelity gate refused the capture — the same lane
       // blindness the bridge and Convex readers carried (found by that gate,
       // 2026-09-04). Only the documented lane is kept; anything else stays opaque.
-      m = /^([A-Za-z][A-Za-z0-9_.-]*):([0-9a-fA-F-]{36}):(ok|error)(:agent-loop)?$/.exec(
+      //
+      // 2026.9.7: the task id is the media run id `tool:<toolName>:<uuid>`
+      // (media-generate-background-shared.ts:220,280), so the delivery reads
+      // `<tool>:tool:<tool>:<uuid>:ok:agent-loop`. Both shapes keep their grammar, and the
+      // standalone task id (the ack's `details.taskId`) is pseudonymised by the SAME rule
+      // just below, so the two ends of the join still meet.
+      m = /^([A-Za-z][A-Za-z0-9_.-]*):(?:tool:([A-Za-z][A-Za-z0-9_.-]*):)?([0-9a-fA-F-]{36}):(ok|error)(:agent-loop)?$/.exec(
         value,
       );
-      if (m && UUID_RE.test(m[2]))
-        return `${tool(m[1])}:${uuid(m[2])}:${m[3]}${m[4] ?? ""}`;
+      if (m && UUID_RE.test(m[3]))
+        return `${tool(m[1])}:${m[2] !== undefined ? `tool:${tool(m[2])}:` : ""}${uuid(m[3])}:${m[4]}${m[5] ?? ""}`;
+
+      // `tool:<toolName>:<uuid>` — a 2026.9.7 media task id, standalone.
+      m = /^tool:([A-Za-z][A-Za-z0-9_.-]*):([0-9a-fA-F-]{36})$/.exec(value);
+      if (m && UUID_RE.test(m[2])) return `tool:${tool(m[1])}:${uuid(m[2])}`;
 
       // `inject-<messageId>` / `webchat-<hex>` / `talk-<callId>-…`
       m = /^(inject|webchat|talk)-(.+)$/.exec(value);

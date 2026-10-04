@@ -3,7 +3,7 @@
 // version and required at or above it.
 import { describe, expect, it } from "vitest";
 // @ts-expect-error — plain .mjs helper, no types (it runs under node, not tsc)
-import { compareUpstreamVersions, resolveVendorEntries, since } from "../scripts/lib/vendor-files.mjs";
+import { compareUpstreamVersions, resolveVendorEntries, since, until } from "../scripts/lib/vendor-files.mjs";
 
 const FILES = [
   "schema/agent.ts",
@@ -28,6 +28,22 @@ describe("resolveVendorEntries", () => {
       const { entries, skipped } = resolveVendorEntries(FILES, v);
       expect(skipped).toEqual([]);
       expect(entries).toHaveLength(4);
+    }
+  });
+  it("skips a RETIRED entry at and after its version, and requires it before", () => {
+    const files = ["schema/agent.ts", ...until("2026.9.7", ["schema/tasks.ts"])];
+    for (const v of ["2026.9.6", "2026.9.7-beta.1"]) {
+      const { entries, skipped } = resolveVendorEntries(files, v);
+      expect(skipped).toEqual([]);
+      expect(entries.map((e: { candidates: string[] }) => e.candidates)).toEqual([
+        ["schema/agent.ts"],
+        ["schema/tasks.ts"],
+      ]);
+    }
+    for (const v of ["2026.9.7", "2026.9.8"]) {
+      const { entries, skipped } = resolveVendorEntries(files, v);
+      expect(entries).toHaveLength(1);
+      expect(skipped).toEqual([{ candidates: ["schema/tasks.ts"], until: "2026.9.7" }]);
     }
   });
   it("orders upstream tags with pre-releases before their release", () => {

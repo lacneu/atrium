@@ -168,6 +168,30 @@ describe("structured facts — errorDetail / errorObservation — decide before 
     expect(classifyStructuredFailure({ errorKind: "rate_limit" })).toBe("rate_limit");
     expect(classifyStructuredFailure({ errorKind: "unknown", errorDetail: {} })).toBeNull();
   });
+
+  it("v2026.9.7 `state_contention` is the storage-busy class, ahead of any observation", () => {
+    // The gateway's own classification of a typed SQLite BUSY/LOCKED on the chat.send
+    // path (session-run-error-presentation.ts:10-17); its text names no storage fact.
+    expect(classifyStructuredFailure({ errorKind: "state_contention" })).toBe(
+      "gateway_storage_busy",
+    );
+    expect(
+      classifyStructuredFailure({
+        errorKind: "state_contention",
+        errorDetail: { failoverReason: "overloaded", httpStatus: 503 },
+      }),
+    ).toBe("gateway_storage_busy");
+  });
+
+  it("an errorKind naming an inherited object property is no class (falls back, never a function)", () => {
+    for (const errorKind of ["constructor", "toString", "__proto__", "hasOwnProperty", "valueOf"]) {
+      expect(classifyStructuredFailure({ errorKind }), errorKind).toBeNull();
+      expect(
+        classifyStructuredFailure({ errorKind, errorDetail: { httpStatus: 429 } }),
+        errorKind,
+      ).toBe("rate_limit");
+    }
+  });
 });
 
 describe("the fallback summary's machine-written parts", () => {

@@ -1,5 +1,68 @@
 # Changelog
 
+## [0.93.0] — OpenClaw 2026.9.7 and 2026.9.8 supported
+
+Support release, corrective throughout. No breaking changes in Atrium — but read the upgrade
+notes at the end of this entry before moving a gateway: 2026.9.7 refuses every conversation
+until its agent databases are migrated. OpenClaw 2026.9.7 and 2026.9.8 enter the validated
+range, each proved on the live bench, and 2026.9.8 becomes the validated ceiling; 2026.9.6
+stays validated and was proved again with the same gateway-reading code. Everything below was
+needed for 2026.9.7; 2026.9.8, a reliability hotfix of 2026.9.7 with the same wire contract,
+needed nothing more. The bridge changes, Convex receives two shared patterns (below), the
+frontend is unchanged. Deploy the bridge and Convex together.
+
+**Replies stream again on 2026.9.7.** 2026.9.7 changed how it streams a reply, without any
+negotiation: a connection now receives the reply's whole text once, then only what was added
+to it. Read the old way, the live reply froze on its first words until the turn ended. The
+bridge now rebuilds the full text on each connection before anything reads it, exactly as
+OpenClaw's own Control UI does, so every reply grows as it did on 2026.9.6 — and nothing
+changes on 2026.9.6, where every frame still carries the whole text. If a piece of the stream
+is ever missing, the bridge does not paste the next fragment onto the wrong text: it re-reads
+the reply in progress from the gateway, and the final answer, which always arrives whole,
+replaces it.
+
+**A busy gateway is named again.** 2026.9.7 reports a turn interrupted by contention on its
+own database with a new structured class and a fixed sentence that no longer mentions the
+database. Atrium read neither, so the card fell back to an unexplained error. It is now the
+"gateway storage busy" card, as on 2026.9.6, and it is still never retried automatically —
+the gateway itself says the turn may already have run.
+
+**Generated images are delivered into their answer again on 2026.9.7.** 2026.9.7 names a
+background media task differently — the task's id is now the generation's own run id — so the
+run that delivers the finished image was no longer recognised as that task's delivery: the
+"working in the background" indicator never settled and the delivery was not merged into the
+answer that asked for it. Both id shapes are now recognised, by the bridge and
+by Convex.
+
+**Background-task checks no longer ask a gateway that cannot answer.** 2026.9.7 removed its
+task registry calls. On such a gateway the bridge no longer sends them and answers that there
+is nothing to report, as it does for a provider with no registry; a background task's
+indicator settles from its delivery or its time limit, as before. Older gateways are asked as
+before.
+
+**Upgrade note — one-way, and not automatic.** 2026.9.7 moves each agent's database from
+schema 23 to 24 and, unlike 2026.9.6, does not migrate it at startup: the gateway refuses to
+open any conversation ("…uses schema version 23; stop active agents and run openclaw doctor
+--fix…") until `openclaw doctor --fix` has run with the gateway stopped. Going back to
+2026.9.6 afterwards needs a snapshot of the gateway's state taken before the upgrade. A
+distribution image that drops the database file's birth time from its identity (a workaround
+for kernels without `statx`) cannot run 2026.9.7: 2026.9.7 requires that field, and every
+conversation setting then fails with "Agent database operation belongs to another native
+owner". The bench validation ran on a build without that workaround.
+
+**Upgrade note for 2026.9.8 — one-way, automatic.** 2026.9.8 keeps schema 24, so it is the
+same migration, and on an image whose entrypoint runs `openclaw doctor --fix` before every
+start (the official image, and the distribution image built for 2026.9.8) a 2026.9.6
+gateway migrates at its first start, keeping a backup of each database beside it. Take a
+snapshot of the state first all the same: going back still needs it. Stop the old container
+gracefully and give it time (its own stop budget is 330 seconds): a gateway that is killed
+keeps its ownership lease, and the new one is refused ("Another Gateway owner lease is still
+active") for up to five minutes. The distribution image's reworked birth-time workaround for
+kernels without `statx` was exercised on the bench with `statx` denied to the gateway, and
+every scenario passed. One gateway behaviour changes with no change in Atrium: a
+sub-agent, delivery or follow-up run that produces no answer no longer ends silently — the
+gateway asks again, then reports an incomplete turn.
+
 ## [0.92.0] — OpenClaw 2026.8.2 minimum, and the session transcript read back in shadow
 
 **Operator-facing change: the minimum supported OpenClaw is now 2026.8.2.** It is the first

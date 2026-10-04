@@ -345,6 +345,16 @@ export const MODELS_LIST_OWNER_SINCE = "2026.8.1";
  *  session never compacted. */
 export const COMPACTION_CHECKPOINTS_RETIRED_IN = "2026.9.6";
 
+/** The generation without a task registry RPC: 2026.9.7 removed `tasks.list`,
+ *  `tasks.get`, `tasks.cancel` and `tasks.history` together with their schema module
+ *  (no `tasks.` descriptor in src/gateway/methods/core-descriptors.ts and no
+ *  `packages/gateway-protocol/src/schema/tasks.ts` at that tag; the Control UI's own
+ *  run-transcript test asserts it sends none of them, ui/src/pages/cron/
+ *  run-transcript.e2e.test.ts:130). The background-task probe answers empty there, as
+ *  for a provider with no registry, instead of sending calls a missing method refuses —
+ *  by scope first, so the refusal would not even name the fact. */
+export const TASKS_RPC_RETIRED_IN = "2026.9.7";
+
 /** The generation whose gateway takes re-hydrated history TOGETHER with an inline
  *  attachment. Up to v2026.6.11 the attachment check was a regex over the whole base64
  *  (`src/gateway/chat-attachments.ts` `isValidBase64`, `/^[A-Za-z0-9+/]+={0,2}$/.test`),
@@ -427,7 +437,7 @@ export const COMPAT_MANIFEST: CompatManifest = {
       // FLOOR 2026.8.2 (OPENCLAW_MIN_SUPPORTED, release 0.92.0): the versions below it
       // were retired from support — their validation runs stay in the release notes, but
       // the redesigned turn model cannot run on them, and a claim nobody keeps is not one.
-      supportedRange: { min: OPENCLAW_MIN_SUPPORTED, maxValidated: "2026.9.6" },
+      supportedRange: { min: OPENCLAW_MIN_SUPPORTED, maxValidated: "2026.9.8" },
       // Inside the range, and BROKEN on a stock gateway: a managed-media
       // `attachment` block persisted by the gateway's own path crashes
       // `transcript-transform` on every later turn of that session (upstream
@@ -573,6 +583,54 @@ export const COMPAT_MANIFEST: CompatManifest = {
         // automatically at the first boot on the bench. Going back to 2026.9.5 needs a
         // state snapshot taken before the upgrade.
         "2026.9.6",
+        // 2026.9.7: full live suite GO (proof run 2026-10-03T17-30-21-704Z, then the attestation run on the
+        // final tree), Hermes co-run on 0.21.5. Zones 1 to 5 re-verified: no preemption
+        // policy, no `status:"queued"` ack, the announce identity, the dedup window and
+        // the lock sentences hold.
+        //
+        // What changed for Atrium, and was adapted before the run:
+        //  - APPEND-ONLY LIVE TEXT, with no negotiation: after the first frame a socket
+        //    receives, `chat` deltas lose `message` and `agent` assistant events lose
+        //    `data.text`. The connection rebuilds both before any reader
+        //    (providers/openclaw/live-text-baseline.ts), as the Control UI does.
+        //  - The `tasks.*` RPCs are RETIRED upstream: the background-task probe answers
+        //    empty from this version on (TASKS_RPC_RETIRED_IN), never sent.
+        //  - `errorKind:"state_contention"` (typed SQLite contention on chat.send) is
+        //    read as `gateway_storage_busy`, never retried.
+        //
+        // THE IMAGE THIS ROW STANDS ON: the distribution image WITHOUT its agent-database
+        // birthtime patch. 2026.9.7 requires the identity's `birthtime` to be a string
+        // (src/state/openclaw-agent-execution-native.ts:276-282), so the patch that blanks
+        // it for kernels without statx makes every agent-database operation fail
+        // ("belongs to another native owner"). The patch must be reworked before a 9.7
+        // image reaches a host that needs it.
+        //
+        // UPGRADE NOTE, one-way and NOT automatic: the agent database schema moves
+        // 23 -> 24 and the gateway refuses every session until `openclaw doctor --fix`
+        // has run with the gateway stopped. Going back to 2026.9.6 needs a state
+        // snapshot taken before the upgrade.
+        "2026.9.7",
+        // 2026.9.8: full live suite GO 21/21 (proof run 2026-10-04T04-19-09-224Z, then the
+        // attestation run on the final tree) on the PUBLISHED distribution image r5 — the
+        // one with the reworked birthtime patch — Hermes co-run on 0.21.5. A reliability
+        // hotfix of 2026.9.7: the 86 vendored schema modules and both event catalogues are
+        // byte-identical, the 140 watched interpretation files unchanged, every anchor
+        // held. Nothing was adapted in the bridge.
+        //
+        // One behaviour moved WITHOUT a wire change: a silent reply (`NO_REPLY` or empty)
+        // is allowed only in a channel GROUP (src/shared/silent-reply-policy.ts:33-42), so
+        // announce, settle and sub-agent runs started through the `agent` method now
+        // require a reply (attempt-execution.helpers.ts:44-71): an empty one is retried
+        // once, then ends as an incomplete turn. The frames, run ids and the `NO_REPLY`
+        // token Atrium reads are unchanged; the sub-agent scenarios stayed green.
+        //
+        // UPGRADE NOTE, one-way, now AUTOMATIC: the schema is still 24 (as 2026.9.7); the
+        // distribution image r5 delegates to the official entrypoint, which runs `openclaw
+        // doctor --fix` before every start, so a 2026.9.6 state migrated 23 -> 24 at the
+        // first boot on the bench (a `.bak` per database). Stop the old
+        // gateway GRACEFULLY: a killed one keeps its owner lease, and the next container is
+        // refused for up to 5 min ("Another Gateway owner lease is still active").
+        "2026.9.8",
       ],
       capabilities: OPENCLAW_CAPABILITIES,
     },

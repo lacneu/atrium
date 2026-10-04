@@ -34,6 +34,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   COMPACTION_CHECKPOINTS_RETIRED_IN,
+  TASKS_RPC_RETIRED_IN,
   compareVersions,
   gatewayAtLeast,
   parseVersion,
@@ -50,6 +51,7 @@ import {
   fetchCompactionHistory,
   fetchCronJobs,
   lcmSendParams,
+  probeOpenClawTasks,
   performOpenClawCronManage,
   performSend,
   subAgentSendParams,
@@ -64,8 +66,6 @@ import {
   talkClientCloseParams,
   talkClientCreateParams,
   talkToolCallParams,
-  taskGetParams,
-  taskListParams,
   ttsParams,
 } from "../src/core/rpc-params.js";
 import {
@@ -202,6 +202,18 @@ async function captureCronBodies(
     if (!(err instanceof CompactionHistoryRetiredError)) throw err;
   }
   out.push(...hist.calls);
+
+  // `tasks.get` + `tasks.list`: the background-task probe, through the real function,
+  // so a gateway that retired the RPCs (2026.9.7) is shown to receive neither.
+  const probe = recorder((method) =>
+    method === "tasks.get" ? { task: { status: "running" } } : { tasks: [] },
+  );
+  await probeOpenClawTasks(
+    { ...probe.conn, gatewayVersion } as never,
+    ["task-7"],
+    ["agent:alice:atrium:chat:olivier:c1"],
+  );
+  out.push(...probe.calls);
   return out;
 }
 
@@ -259,8 +271,6 @@ function builtBodies(): [string, Record<string, unknown>][] {
     ["tts.convert", ttsParams("convert", "bonjour")],
     ["tts.status", ttsParams("status", "")],
     ["tts.providers", ttsParams("providers", "")],
-    ["tasks.get", taskGetParams("task-7")],
-    ["tasks.list", taskListParams("agent:alice:atrium:chat:olivier:c1")],
     // EVERY talk create shape. The three optionals are built independently, so each
     // combination is really sendable — capturing only the empty and the all-set cases
     // left valid bodies unvalidated (raised in review). `sessionKey` joined them when
@@ -946,6 +956,8 @@ describe("outbound ratchet — what the bridge SENDS fits the vendored contract"
       // The compaction history is read only from a gateway that still keeps it.
       const keepsCheckpoints =
         gatewayAtLeast(version, COMPACTION_CHECKPOINTS_RETIRED_IN) !== true;
+      // …and the task registry only from one that still serves it.
+      const keepsTasks = gatewayAtLeast(version, TASKS_RPC_RETIRED_IN) !== true;
       // The WRITE bodies, named: an incidental read would otherwise satisfy the loop.
       for (const m of [
         "config.patch",
@@ -953,6 +965,7 @@ describe("outbound ratchet — what the bridge SENDS fits the vendored contract"
         "agents.files.set",
         "talk.client.create",
         ...(keepsCheckpoints ? ["sessions.compaction.list"] : []),
+        ...(keepsTasks ? ["tasks.get", "tasks.list"] : []),
       ]) {
         expect(
           bodies.map(([x]) => x),
@@ -964,6 +977,12 @@ describe("outbound ratchet — what the bridge SENDS fits the vendored contract"
         expect(bodies.map(([x]) => x), `sessions.compaction.list sent to ${version}`).not.toContain(
           "sessions.compaction.list",
         );
+      }
+      if (!keepsTasks) {
+        expect(
+          bodies.map(([x]) => x).filter((x) => x.startsWith("tasks.")),
+          `tasks.* sent to ${version}`,
+        ).toEqual([]);
       }
       await expectBodiesValid(version, bodies, "operator/cron/built");
     });
