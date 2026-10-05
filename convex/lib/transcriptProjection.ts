@@ -11,6 +11,16 @@
 //   I2  after a run ended, no bubble of that run is left without a durable row;
 //   I3  every user row `"<sendId>:user"` has exactly one user bubble.
 //
+// PHASE 2 adds two measures (still shadow, still metadata only):
+//
+//   I4  an ERROR CARD whose run has durable, visible assistant rows in the transcript
+//       — Atrium told the person the turn failed while the gateway holds its answer
+//       (the Denis case, 2026-09-30) — unless the gateway itself says that run failed;
+//   G   the INPUT GUARD against Atrium's outbox: an input the gateway holds (a receipt,
+//       a pending-input entry or its `<sendId>:user` row) while Atrium's outbox calls
+//       the send failed or never sent, and a sent input the gateway — asked after its
+//       ACK — holds no receipt for.
+//
 // Identity only — no text, no content: a row is (entry id, seq, role, run, send) plus
 // two display facts (hidden, visible) the bridge computed with the Control UI's own
 // predicates. The pure functions below are the whole policy; the mutation and the query
@@ -154,6 +164,243 @@ export function floorForFirstRead(
   return firstKnown === null ? max : firstKnown - 1;
 }
 
+// ── The input guard (phase 2): what the gateway says it holds ──────────────────────────
+
+/** Upstream bounds of one read's guard facts (chat-history-constants.ts / logs-chat.ts). */
+export const MAX_INPUT_RUN_IDS = 50;
+export const MAX_PENDING_INPUT_ITEMS = 20;
+
+export type PendingInputState = "queued" | "cancelled" | "interrupted";
+
+/** What ONE read says about ONE send identity. */
+export type InputObservation = {
+  sendId: string;
+  asked: boolean;
+  receipt?: { state: "pending" | "consumed"; queued?: boolean; cancelled?: boolean };
+  pending?: { state: PendingInputState; queued?: boolean };
+  absent?: boolean;
+  /** The reply carried a receipt for it that could not be interpreted. */
+  unreadable?: boolean;
+};
+
+/** The stored fact (convex/schema.ts `transcriptInputs`), minus its keys. */
+export type InputFact = {
+  receipt?: "pending" | "consumed";
+  receiptQueued?: boolean;
+  receiptCancelled?: boolean;
+  pendingState?: PendingInputState;
+  pendingQueued?: boolean;
+  askedAt?: number;
+  absentAt?: number;
+  /** HISTORICAL: when a read first proved the gateway received it (receipt or pending
+   *  entry). Never cleared — unlike `pendingState`, which is the CURRENT custody. */
+  heldAt?: number;
+  /** CURRENT: the last read's receipt for it could not be interpreted (protocol drift).
+   *  Cleared by the next readable receipt or a proven absence. */
+  receiptUnreadable?: boolean;
+};
+
+/** Collect one read's guard facts per send, sanitized and bounded (the body came over the
+ *  network). A send named nowhere is absent from the map. */
+export function collectInputObservations(args: {
+  inputRunIds?: readonly string[];
+  pendingInputs?: {
+    items: ReadonlyArray<{ runId?: string; state: string; queued?: boolean }>;
+    complete?: boolean;
+  };
+  inputReceipts?: ReadonlyArray<{ runId: string; state: string; queued?: boolean; cancelled?: boolean }>;
+  inputAbsent?: readonly string[];
+  inputUnreadable?: readonly string[];
+}): Map<string, InputObservation> {
+  const out = new Map<string, InputObservation>();
+  const ok = (id: unknown): id is string =>
+    typeof id === "string" && id.length > 0 && id.length <= MAX_RUN_ID_CHARS;
+  const get = (sendId: string): InputObservation => {
+    let o = out.get(sendId);
+    if (o === undefined) {
+      o = { sendId, asked: false };
+      out.set(sendId, o);
+    }
+    return o;
+  };
+  for (const id of (args.inputRunIds ?? []).slice(0, MAX_INPUT_RUN_IDS)) if (ok(id)) get(id).asked = true;
+  for (const r of (args.inputReceipts ?? []).slice(0, MAX_INPUT_RUN_IDS)) {
+    if (!ok(r.runId) || (r.state !== "pending" && r.state !== "consumed")) continue;
+    get(r.runId).receipt = {
+      state: r.state,
+      ...(r.queued === true ? { queued: true } : {}),
+      ...(r.cancelled === true ? { cancelled: true } : {}),
+    };
+  }
+  for (const item of (args.pendingInputs?.items ?? []).slice(0, MAX_PENDING_INPUT_ITEMS)) {
+    if (!ok(item.runId)) continue;
+    if (item.state !== "queued" && item.state !== "cancelled" && item.state !== "interrupted") continue;
+    get(item.runId).pending = { state: item.state, ...(item.queued === true ? { queued: true } : {}) };
+  }
+  for (const id of (args.inputAbsent ?? []).slice(0, MAX_INPUT_RUN_IDS)) {
+    // Absence is only meaningful for a send this very read asked about.
+    const o = ok(id) ? out.get(id) : undefined;
+    if (o?.asked === true && o.receipt === undefined && o.pending === undefined) o.absent = true;
+  }
+  for (const id of (args.inputUnreadable ?? []).slice(0, MAX_INPUT_RUN_IDS)) {
+    const o = ok(id) ? out.get(id) : undefined;
+    if (o?.asked === true && o.receipt === undefined) {
+      o.unreadable = true;
+      // Observed: an uninterpretable receipt is never an absence.
+      o.absent = undefined;
+    }
+  }
+  return out;
+}
+
+// ── THE CUSTODY STATE MODEL (phase 2, review pass 4) ──────────────────────────────────
+//
+// Two separate things are recorded per send, and must never be confused:
+//
+//   HISTORICAL — did the gateway EVER hold this input? `heldAt` (first receipt or pending
+//     entry seen), the sticky `consumed` receipt, `absentAt`. Never cleared: once proven,
+//     a re-execution of the input is a re-execution (G `retriedWhileHeld`, retryOutcome).
+//
+//   CURRENT — what the gateway's custody is NOW: `pendingState` (the pending-input item's
+//     state), `pendingQueued` / `receiptQueued` (the explicit "waits in the gateway's own
+//     queue" flags), `receiptCancelled`. Replaced by every AUTHORITATIVE read: a
+//     consumed or cancelled receipt, a proven absence, or a complete pending list that
+//     no longer names the input. A partial list proves nothing (the report qualifies).
+//
+// "Queued at the gateway" is read ONLY from the explicit flags. `state:"queued"` on a
+// pending item is the custody state of an ACCEPTED input, not the gateway queue: 2026.9.7
+// added `queued: Type.Optional(Type.Literal(true))` on items and receipts, plus
+// `queuedCount` (packages/gateway-protocol/src/schema/logs-chat.ts
+// `ChatPendingInputsPageSchema` / `ChatInputReceiptsSchema` at v2026.9.7/v2026.9.8;
+// absent at v2026.9.6 and v2026.8.2, where no reply can say it). The captured 9.8 reply
+// (bridge/test/fixtures/session-events-2026.9.8.json) carries `state:"queued"` with
+// `queuedCount: 0` and no flag. So on 9.6 nothing ever counts as queued.
+
+export type InputEvent =
+  | { kind: "asked" }
+  | { kind: "pendingItem"; state: PendingInputState; queued: boolean }
+  | { kind: "receipt"; state: "pending" | "consumed"; queued: boolean; cancelled: boolean }
+  /** Asked after its ACK, the gateway answered no receipt and no pending item. */
+  | { kind: "absent" }
+  /** A COMPLETE pending-input list did not name it. */
+  | { kind: "listMissing" }
+  /** A PARTIAL pending-input list did not name it: proves nothing. */
+  | { kind: "partialList" }
+  /** The reply carried a receipt for it Atrium could not interpret: observed, unproven. */
+  | { kind: "receiptUnreadable" };
+
+/** Every CURRENT custody field cleared; history kept. */
+function clearCurrent(f: InputFact): InputFact {
+  return {
+    ...f,
+    pendingState: undefined,
+    pendingQueued: undefined,
+    receiptQueued: undefined,
+  };
+}
+
+/** THE transition function. PURE; every custody write goes through it. */
+export function applyInputEvent(prev: InputFact, ev: InputEvent, at: number): InputFact {
+  const held = (f: InputFact): InputFact => (f.heldAt === undefined ? { ...f, heldAt: at } : f);
+  switch (ev.kind) {
+    case "asked":
+      return prev.askedAt === undefined ? { ...prev, askedAt: at } : prev;
+    case "pendingItem":
+      // A newer item observation is AUTHORITATIVE for current custody: it also replaces
+      // the receipt-derived queued flag (a reread may return the item without asking for
+      // its receipt again). History stays.
+      return held({
+        ...prev,
+        pendingState: ev.state,
+        pendingQueued: ev.queued ? true : undefined,
+        receiptQueued: undefined,
+      });
+    case "receipt": {
+      const readable = { ...prev, receiptUnreadable: undefined };
+      if (ev.state === "consumed") {
+        // Consumed: in no queue, never again pending (sticky).
+        return held({ ...clearCurrent(readable), receipt: "consumed", receiptCancelled: undefined });
+      }
+      if (prev.receipt === "consumed") return held(readable);
+      if (ev.cancelled) {
+        return held({ ...clearCurrent(readable), receipt: "pending", receiptCancelled: true });
+      }
+      return held({
+        ...readable,
+        receipt: "pending",
+        receiptQueued: ev.queued ? true : undefined,
+        receiptCancelled: undefined,
+      });
+    }
+    case "absent":
+      return { ...clearCurrent(prev), receiptUnreadable: undefined, absentAt: prev.absentAt ?? at };
+    case "receiptUnreadable":
+      return { ...prev, receiptUnreadable: true };
+    case "listMissing":
+      return clearCurrent(prev);
+    case "partialList":
+      return prev;
+  }
+}
+
+/** One read's observation as events, in the order a read proves them: the ask, the
+ *  receipt, then the pending item (which states the current custody precisely), then a
+ *  proven absence (only when neither a receipt nor an item named it). */
+export function mergeInputFact(prev: InputFact | null, o: InputObservation, at: number): InputFact {
+  let f: InputFact = { ...(prev ?? {}) };
+  if (o.asked) f = applyInputEvent(f, { kind: "asked" }, at);
+  if (o.receipt !== undefined) {
+    f = applyInputEvent(
+      f,
+      {
+        kind: "receipt",
+        state: o.receipt.state,
+        queued: o.receipt.queued === true,
+        cancelled: o.receipt.cancelled === true,
+      },
+      at,
+    );
+  }
+  if (o.pending !== undefined) {
+    f = applyInputEvent(
+      f,
+      { kind: "pendingItem", state: o.pending.state, queued: o.pending.queued === true },
+      at,
+    );
+  }
+  if (o.absent === true && o.receipt === undefined && o.pending === undefined) {
+    f = applyInputEvent(f, { kind: "absent" }, at);
+  }
+  if (o.unreadable === true && o.receipt === undefined) {
+    f = applyInputEvent(f, { kind: "receiptUnreadable" }, at);
+  }
+  return f;
+}
+
+/** The CURRENT custody a complete pending-input list no longer names is gone. */
+export function clearCurrentPending(f: InputFact, at: number): InputFact {
+  return applyInputEvent(f, { kind: "listMissing" }, at);
+}
+
+/** CURRENT custody, as the gateway states it now. `queued` only from the explicit flags. */
+export function currentCustody(f: InputFact): "none" | "pending" | "queued" {
+  if (f.pendingQueued === true) return "queued";
+  if (f.receipt === "pending" && f.receiptQueued === true && f.receiptCancelled !== true) {
+    return "queued";
+  }
+  if (f.pendingState === "queued" || f.pendingState === "interrupted") return "pending";
+  if (f.receipt === "pending" && f.receiptCancelled !== true && f.absentAt === undefined) {
+    return "pending";
+  }
+  return "none";
+}
+
+/** Did the gateway, at any point, hold this input? HISTORICAL — the ONE definition, used
+ *  by G and by the retry evidence alike. */
+export function gatewayHeldInput(f: InputFact): boolean {
+  return f.heldAt !== undefined || f.receipt !== undefined || f.pendingState !== undefined;
+}
+
 /** Is this row one a bubble must exist for (I1)? */
 export function rowNeedsBubble(r: Pick<TranscriptRowInput, "role" | "hidden" | "visible">): boolean {
   if (r.hidden) return false;
@@ -227,6 +474,57 @@ export type ProjectionGaps = {
     errorCardWithoutRow: number;
     samples: Array<{ messageId: string; runId: string; status: string; hasText: boolean }>;
   };
+  i4: {
+    /** Settled error cards (status `error`) of the window whose runs have durable,
+     *  visible ASSISTANT rows — the ones I4 judges. */
+    judged: number;
+    /** GAP: the gateway holds the answer and does not say the run failed. */
+    errorCardWithAnswer: number;
+    /** The gateway's own run status is `error`/`timeout`: the card is its verdict. */
+    errorCardRunFailed: number;
+    /** Error cards whose answer lookup was cut by its bound: not judged. */
+    unmeasured: number;
+    samples: Array<{ messageId: string; runId: string; runStatus: string | null }>;
+  };
+  guard: {
+    /** Atrium sends of the measured sessions the gateway was asked about. */
+    inputs: number;
+    /** The gateway holds or held it (a receipt, a pending-input entry, its user row). */
+    held: number;
+    queuedAtGateway: number;
+    interrupted: number;
+    cancelled: number;
+    /** Inputs whose send is not Atrium's (no outbox row in this chat). */
+    foreignInputs: number;
+    /** GAP: the gateway holds it while Atrium's outbox says the send FAILED (a retry
+     *  would execute it twice). */
+    heldButFailed: number;
+    /** GAP: the gateway holds it while Atrium's outbox never dispatched it. */
+    heldButQueuedLocal: number;
+    /** GAP: the outbox says sent, the gateway — asked after the ACK — had no receipt,
+     *  and no user row of it was ever read. */
+    sentButAbsent: number;
+    /** GAP: Atrium auto-retried a message whose earlier send the gateway HOLDS — the
+     *  same input submitted twice (design §4.4 I4, the double execution of 2026-09-30). */
+    retriedWhileHeld: number;
+    /** An auto-retry of a held input passed the last gate, and nothing proves whether the
+     *  gateway accepted it: neither counted as a re-execution nor as clean. */
+    retryOutcomeUnknown: number;
+    /** Dispatched Atrium sends (outbox sent/failed) the gateway has NOT confirmed either
+     *  way after their ACK: no receipt, no pending entry, no durable user row, no proven
+     *  absence (e.g. only a read issued before the ACK asked about them). Unmeasured. */
+    custodyUnconfirmed: number;
+    /** Inputs whose last receipt could not be interpreted (protocol drift): unproven. */
+    receiptUnreadable: number;
+    /** Inputs with a current pending state in a session whose last pending-input list was
+     *  partial: that state may be stale. */
+    pendingUnconfirmed: number;
+    /** The dispatch is still in flight (outbox `pending`): nothing to judge yet. */
+    unsettled: number;
+    /** The outbox lookup did not run (read budget spent). */
+    unmeasured: number;
+    samples: Array<{ send: string; kind: string; outbox: string }>;
+  };
   i3: {
     userRows: number;
     /** User rows carrying no send key: no send to verify them against. */
@@ -260,6 +558,16 @@ export function assessProjection(input: {
   /** A run whose bounded lookup outside the window was cut before it found a durable
    *  row: neither found nor proven absent. Absent ⇒ none. */
   runRowsUnmeasured?: (runId: string) => boolean;
+  /** A run with a durable visible ASSISTANT row outside the window (I4). */
+  runAnsweredOutsideWindow?: (runId: string) => boolean;
+  /** A run whose answer lookup was cut by its bound (I4 unmeasured). */
+  runAnswerUnmeasured?: (runId: string) => boolean;
+  /** The gateway's status of a run (`transcriptRuns`), null when none is recorded. */
+  runStatus?: (runId: string) => RunStatus | null;
+  /** The input guard facts of the measured sessions (G). */
+  guardInputs?: readonly GuardInput[];
+  /** Sessions whose last read carried a PARTIAL pending-input list (more than a page). */
+  partialPendingSessions?: ReadonlySet<string>;
 }): ProjectionGaps {
   const gaps: ProjectionGaps = {
     i1: {
@@ -278,6 +586,26 @@ export function assessProjection(input: {
       unmeasuredBubbles: 0,
       bubbleWithoutRow: 0,
       errorCardWithoutRow: 0,
+      samples: [],
+    },
+    i4: { judged: 0, errorCardWithAnswer: 0, errorCardRunFailed: 0, unmeasured: 0, samples: [] },
+    guard: {
+      inputs: 0,
+      held: 0,
+      queuedAtGateway: 0,
+      interrupted: 0,
+      cancelled: 0,
+      foreignInputs: 0,
+      heldButFailed: 0,
+      heldButQueuedLocal: 0,
+      sentButAbsent: 0,
+      retriedWhileHeld: 0,
+      retryOutcomeUnknown: 0,
+      custodyUnconfirmed: 0,
+      receiptUnreadable: 0,
+      pendingUnconfirmed: 0,
+      unsettled: 0,
+      unmeasured: 0,
       samples: [],
     },
     i3: {
@@ -304,9 +632,13 @@ export function assessProjection(input: {
     return true;
   });
 
-  // I1 — per visible run.
+  // I1 — per visible run. (I4 needs the runs with a visible ASSISTANT row: an answer.)
   const firstSeqByRun = new Map<string, number>();
+  const answeredRuns = new Set<string>();
   for (const r of rows) {
+    if (r.runId !== undefined && !r.hidden && r.visible && r.role.toLowerCase() === "assistant") {
+      answeredRuns.add(r.runId);
+    }
     if (!rowNeedsBubble(r)) continue;
     if (r.runId === undefined) {
       gaps.i1.unattributedRows++;
@@ -357,7 +689,33 @@ export function assessProjection(input: {
       continue;
     }
     gaps.i2.judged++;
-    if (durable) continue;
+    if (durable) {
+      // I4 — an error card over a run the transcript ANSWERED.
+      if (b.status === "error") {
+        const answered = b.runIds.filter(
+          (id) => answeredRuns.has(id) || input.runAnsweredOutsideWindow?.(id) === true,
+        );
+        if (answered.length === 0) {
+          if (b.runIds.some((id) => input.runAnswerUnmeasured?.(id) === true)) gaps.i4.unmeasured++;
+        } else {
+          gaps.i4.judged++;
+          const statuses = answered.map((id) => input.runStatus?.(id) ?? null);
+          if (statuses.some((st) => st === "error" || st === "timeout")) {
+            gaps.i4.errorCardRunFailed++;
+          } else {
+            gaps.i4.errorCardWithAnswer++;
+            if (gaps.i4.samples.length < SAMPLE) {
+              gaps.i4.samples.push({
+                messageId: b.messageId,
+                runId: answered[0] as string,
+                runStatus: statuses[0] ?? null,
+              });
+            }
+          }
+        }
+      }
+      continue;
+    }
     if (b.status === "error" || b.status === "aborted") gaps.i2.errorCardWithoutRow++;
     else gaps.i2.bubbleWithoutRow++;
     if (gaps.i2.samples.length < SAMPLE) {
@@ -410,8 +768,89 @@ export function assessProjection(input: {
       gaps.i3.samples.push({ seq: r.seq, kind, bubbles });
     }
   }
+
+  // G — the input guard against Atrium's outbox.
+  for (const g of input.guardInputs ?? []) {
+    if (g.outbox === "unmeasured") {
+      gaps.guard.unmeasured++;
+      continue;
+    }
+    if (g.outbox === "unknown") {
+      gaps.guard.foreignInputs++;
+      continue;
+    }
+    gaps.guard.inputs++;
+    const held = gatewayHeldInput(g.fact) || g.userRow;
+    if (held) gaps.guard.held++;
+    // CURRENT custody (the state model above): queued only from the explicit flags.
+    const now = currentCustody(g.fact);
+    if (now === "queued") gaps.guard.queuedAtGateway++;
+    // A current custody the last read could not confirm (its pending list was a partial
+    // page): reported, never trusted as now.
+    const hasCurrentFlags =
+      g.fact.pendingState !== undefined || g.fact.pendingQueued === true || g.fact.receiptQueued === true;
+    if (hasCurrentFlags && input.partialPendingSessions?.has(g.sessionKey) === true) {
+      gaps.guard.pendingUnconfirmed++;
+    }
+    if (g.fact.receiptUnreadable === true) gaps.guard.receiptUnreadable++;
+    if (g.fact.pendingState === "interrupted") gaps.guard.interrupted++;
+    if (g.fact.pendingState === "cancelled" || g.fact.receiptCancelled === true) gaps.guard.cancelled++;
+    let kind: string | null = null;
+    if (held && g.retryUnknown === true && g.retriedAfter !== true) {
+      // A retry passed the last gate, and nothing says whether the gateway got it.
+      gaps.guard.retryOutcomeUnknown++;
+    }
+    if (held && g.retriedAfter === true) {
+      // Whatever this row's own status says: the input reached the gateway, and a later
+      // auto-retry of the same message sent it again.
+      gaps.guard.retriedWhileHeld++;
+      if (gaps.guard.samples.length < SAMPLE) {
+        gaps.guard.samples.push({ send: g.sendId.slice(-12), kind: "retried_while_held", outbox: g.outbox.status });
+      }
+      continue;
+    }
+    if (g.outbox.status === "pending") {
+      gaps.guard.unsettled++;
+      continue;
+    }
+    if (held && g.outbox.status === "failed") {
+      gaps.guard.heldButFailed++;
+      kind = "held_but_failed";
+    } else if (held && g.outbox.status === "queued") {
+      gaps.guard.heldButQueuedLocal++;
+      kind = "held_but_queued_local";
+    } else if (
+      !held &&
+      g.fact.absentAt === undefined &&
+      (g.outbox.status === "sent" || g.outbox.status === "failed")
+    ) {
+      // Neither proof nor disproof: never `consistent` on it.
+      gaps.guard.custodyUnconfirmed++;
+    } else if (!held && g.fact.absentAt !== undefined && g.outbox.status === "sent") {
+      gaps.guard.sentButAbsent++;
+      kind = "sent_but_absent";
+    }
+    if (kind !== null && gaps.guard.samples.length < SAMPLE) {
+      gaps.guard.samples.push({ send: g.sendId.slice(-12), kind, outbox: g.outbox.status });
+    }
+  }
   return gaps;
 }
+
+/** One send of the measured sessions, with what the gateway said and what Atrium's outbox
+ *  says (G). `unknown`: no outbox row of this chat; `unmeasured`: not looked up. */
+export type GuardInput = {
+  sendId: string;
+  sessionKey: string;
+  fact: InputFact;
+  /** A `<sendId>:user` row of this chat was read. */
+  userRow: boolean;
+  outbox: { status: "queued" | "pending" | "sent" | "failed" } | "unknown" | "unmeasured";
+  /** A LATER auto-retry outbox row of the same user message exists. */
+  retriedAfter?: boolean;
+  /** A later auto-retry passed the last gate but its acceptance is not proven. */
+  retryUnknown?: boolean;
+};
 
 /**
  * Every reason a measurement can be INCOMPLETE — something in scope that it could not
@@ -437,6 +876,15 @@ export const INCOMPLETENESS_REASONS = [
   "unmeasured_runs",
   "unmeasured_bubbles",
   "unmeasured_sends",
+  "unmeasured_error_cards",
+  "unmeasured_inputs",
+  "unproven_retries",
+  "pending_inputs_partial",
+  "unconfirmed_inputs",
+  "pending_cleanup_in_progress",
+  "guard_receipt_unreadable",
+  "unsettled_inputs",
+  "inputs_truncated",
 ] as const;
 export type IncompletenessReason = (typeof INCOMPLETENESS_REASONS)[number];
 
@@ -449,6 +897,10 @@ export type CompletenessFacts = {
   boundaryUnproven: boolean;
   unidentifiedRows: number;
   readBudgetExhausted: boolean;
+  /** More guard inputs than the report reads: the oldest were not measured. */
+  inputsTruncated: boolean;
+  /** A complete pending list's cleanup is still running for a measured session. */
+  pendingCleanupInProgress: boolean;
   gaps: ProjectionGaps;
 };
 
@@ -471,6 +923,15 @@ export function incompletenessReasons(f: CompletenessFacts): IncompletenessReaso
     unmeasured_runs: f.gaps.i1.unmeasuredRuns > 0,
     unmeasured_bubbles: f.gaps.i2.unmeasuredBubbles > 0,
     unmeasured_sends: f.gaps.i3.unmeasuredSends > 0,
+    unmeasured_error_cards: f.gaps.i4.unmeasured > 0,
+    unmeasured_inputs: f.gaps.guard.unmeasured > 0,
+    unproven_retries: f.gaps.guard.retryOutcomeUnknown > 0,
+    pending_inputs_partial: f.gaps.guard.pendingUnconfirmed > 0,
+    unconfirmed_inputs: f.gaps.guard.custodyUnconfirmed > 0,
+    pending_cleanup_in_progress: f.pendingCleanupInProgress,
+    guard_receipt_unreadable: f.gaps.guard.receiptUnreadable > 0,
+    unsettled_inputs: f.gaps.guard.unsettled > 0,
+    inputs_truncated: f.inputsTruncated,
   };
   return INCOMPLETENESS_REASONS.filter((r) => applies[r]);
 }
@@ -491,7 +952,12 @@ export function gapTotal(g: ProjectionGaps): number {
     g.i2.bubbleWithoutRow +
     g.i3.missingBubble +
     g.i3.duplicated +
-    g.i3.unmatchedAtriumSend
+    g.i3.unmatchedAtriumSend +
+    g.i4.errorCardWithAnswer +
+    g.guard.heldButFailed +
+    g.guard.heldButQueuedLocal +
+    g.guard.sentButAbsent +
+    g.guard.retriedWhileHeld
   );
 }
 
@@ -539,6 +1005,34 @@ const MAX_SESSIONS = 10;
 export const MAX_ROWS_PER_SESSION = 600;
 export const MAX_BUBBLES = 200;
 const MAX_ROWS_PER_RUN_LOOKUP = 50;
+/**
+ * What is PROVEN about an auto-retry row's execution. `autoRetryTurn` inserts the row
+ * `pending` before its session reset (which can fail with no `chat.send`), and
+ * `lastGateBeforeSend` stamps `sentToInstance` / `sendId` / `dispatchedAt` BEFORE the
+ * bridge sends — a dispatch can still die after the gate (bridge unreachable, the send
+ * deadline). So only the GATEWAY's acceptance proves a re-execution:
+ *   - the row marked `sent` (the bridge's `/send` returned, i.e. `chat.send` was ACKed —
+ *     convex/bridge.ts markOutbox; or outboxReconcile saw the late turn);
+ *   - a durable `<sendId>:user` row of the retry's send identity;
+ *   - a receipt / pending input the gateway reported for that identity.
+ * Gate-stamped without any of these: `unknown` (never a gap, an incompleteness reason).
+ * Neither: `none` — it never left.
+ */
+export function retryOutcome(
+  o: { status: string; dispatchedAt?: number; sentToInstance?: string },
+  evidence: { userRow: boolean; gatewayHeld: boolean },
+): "accepted" | "unknown" | "none" {
+  if (o.status === "sent" || evidence.userRow || evidence.gatewayHeld) return "accepted";
+  if (o.dispatchedAt !== undefined || o.sentToInstance !== undefined) return "unknown";
+  return "none";
+}
+
+/** Guard inputs one report reads (the newest; one more is read so a cut is KNOWN). */
+export const MAX_GUARD_INPUTS = 100;
+/** Outbox rows read for dispatched-send candidates (newest dispatch first). */
+const MAX_OUTBOX_CANDIDATES = 100;
+/** Outbox rows of one user message read for its auto-retries (a retry chain is ≤ 2). */
+const MAX_RETRY_SIBLINGS = 10;
 
 export type ProjectionReport = {
   mode: TranscriptProjectionMode | null;
@@ -941,28 +1435,266 @@ export async function loadProjectionReport(
   // its bound without finding one proves nothing — the run is unmeasured, never row-less.
   const outsideWindow = new Set<string>();
   const outsideUnmeasured = new Set<string>();
+  /** Runs with a visible ASSISTANT row outside the window (I4: the transcript answered). */
+  const outsideAnswered = new Set<string>();
+  /** Runs whose answer lookup was cut by its bound (I4: neither found nor disproven). */
+  const answerUnmeasured = new Set<string>();
+  const isAnswer = (r: { role: string; hidden: boolean; visible: boolean }) =>
+    !r.hidden && r.visible && r.role.toLowerCase() === "assistant";
   for (const b of bubbles) {
     if (!b.settled || b.status === "streaming") continue;
+    // An error card is also judged by I4, which needs an ANSWER row, not just any
+    // durable one: its lookup continues past tool results to the bound.
+    const wantsAnswer = b.status === "error";
     for (const runId of b.runIds) {
-      if (runsNeeded.has(runId) || outsideWindow.has(runId) || outsideUnmeasured.has(runId)) {
-        continue;
-      }
+      if (runsNeeded.has(runId) && !wantsAnswer) continue;
+      if (outsideAnswered.has(runId) || outsideUnmeasured.has(runId)) continue;
+      if (outsideWindow.has(runId) && !wantsAnswer) continue;
       let seen = 0;
       for await (const r of ctx.db
         .query("transcriptRows")
         .withIndex("by_chat_run", (q) => q.eq("chatId", chatId).eq("runId", runId))
         .order("desc")) {
         if (seen === MAX_ROWS_PER_RUN_LOOKUP) {
-          outsideUnmeasured.add(runId);
+          if (!runsNeeded.has(runId) && !outsideWindow.has(runId)) outsideUnmeasured.add(runId);
+          // Cut before an answer was found: I4 cannot say this card has none.
+          if (wantsAnswer) answerUnmeasured.add(runId);
           break;
         }
         seen++;
-        if (rowNeedsBubble(r)) {
-          outsideWindow.add(runId);
+        if (rowNeedsBubble(r) && !runsNeeded.has(runId)) outsideWindow.add(runId);
+        if (isAnswer(r)) {
+          outsideAnswered.add(runId);
           break;
+        }
+        if (!wantsAnswer && outsideWindow.has(runId)) break;
+      }
+    }
+  }
+  // The gateway's status of the runs I4 judges (one indexed lookup per run).
+  const runStatusCache = new Map<string, RunStatus | null>();
+  for (const b of bubbles) {
+    if (b.status !== "error") continue;
+    for (const runId of b.runIds) {
+      if (runStatusCache.has(runId)) continue;
+      const doc = await ctx.db
+        .query("transcriptRuns")
+        .withIndex("by_chat_run", (q) => q.eq("chatId", chatId).eq("runId", runId))
+        .first();
+      runStatusCache.set(runId, doc?.status ?? null);
+    }
+  }
+
+  // G — the input guard of the measured sessions, newest first, bounded. Candidates are
+  // the sends the gateway was asked about (`transcriptInputs`) AND every send whose
+  // durable `<sendId>:user` row the window holds: a read that started before the send was
+  // registered asked nothing about it, yet the row it returned is the gateway's proof of
+  // custody all the same — and the bridge then retires the send without any fact row.
+  const inputsPlus = await ctx.db
+    .query("transcriptInputs")
+    .withIndex("by_chat_updated", (q) => q.eq("chatId", chatId))
+    .order("desc")
+    .take(MAX_GUARD_INPUTS + 1);
+  let inputsTruncated = inputsPlus.length > MAX_GUARD_INPUTS;
+  const candidates = new Map<
+    string,
+    { fact: InputFact; userRow: boolean | null; sessionKey: string }
+  >();
+  for (const doc of inputsPlus.slice(0, MAX_GUARD_INPUTS)) {
+    if (!projectedKeys.has(doc.sessionKey)) continue;
+    candidates.set(doc.sendId, {
+      fact: {
+        receipt: doc.receipt,
+        receiptQueued: doc.receiptQueued,
+        receiptCancelled: doc.receiptCancelled,
+        pendingState: doc.pendingState,
+        pendingQueued: doc.pendingQueued,
+        askedAt: doc.askedAt,
+        absentAt: doc.absentAt,
+        heldAt: doc.heldAt,
+        receiptUnreadable: doc.receiptUnreadable,
+      },
+      userRow: null,
+      sessionKey: doc.sessionKey,
+    });
+  }
+  // `rows` is newest first per session: the most recent sends are kept when bounded.
+  for (const r of rows) {
+    if (r.role !== "user" || r.sendId === undefined) continue;
+    const known = candidates.get(r.sendId);
+    if (known !== undefined) {
+      known.userRow = true;
+      continue;
+    }
+    if (candidates.size >= MAX_GUARD_INPUTS) {
+      inputsTruncated = true;
+      continue;
+    }
+    candidates.set(r.sendId, { fact: {}, userRow: true, sessionKey: r.sessionKey });
+  }
+  /** One candidate, measured: what the gateway said, what the outbox says. */
+  const measureCandidate = async (
+    sendId: string,
+    c: { fact: InputFact; userRow: boolean | null; sessionKey: string },
+  ): Promise<GuardInput> => {
+    const fact = c.fact;
+    const sessionKey = c.sessionKey;
+    const userRow =
+      c.userRow ??
+      (
+        await ctx.db
+          .query("transcriptRows")
+          .withIndex("by_chat_send", (q) => q.eq("chatId", chatId).eq("sendId", sendId))
+          .take(5)
+      ).some((r) => r.role === "user");
+    if (budget.exhausted) {
+      return { sendId, sessionKey, fact, userRow, outbox: "unmeasured" };
+    }
+    const ob = await ctx.db
+      .query("outbox")
+      .withIndex("by_send_id", (q) => q.eq("sendId", sendId))
+      .first();
+    // Charged whoever it belongs to: it was read.
+    if (ob !== null) budget.charge(ob);
+    if (ob === null || ob.chatId !== chatId) {
+      return { sendId, sessionKey, fact, userRow, outbox: "unknown" };
+    }
+    // A later, DISPATCHED auto-retry of the same user message (convex/turnRetry.ts inserts
+    // it with the message's id and a higher `autoRetryAttempt`). Read ONE document at a
+    // time, newest first, charged as it is read: a conversation of large messages
+    // regenerated several times must not load a page past the budget. A lookup cut by
+    // the bound or the budget proves nothing either way: unmeasured.
+    let retriedAfter = false;
+    let retryUnknown = false;
+    let interrupted = false;
+    const messageId = ob.messageId;
+    if (messageId !== undefined && budget.exhausted) {
+      // The send's own row may have spent the budget: the attempts query is never
+      // opened past it (an async iteration fetches ahead of the loop body).
+      interrupted = true;
+    } else if (messageId !== undefined) {
+      let seen = 0;
+      for await (const sibling of ctx.db
+        .query("outbox")
+        .withIndex("by_message", (q) => q.eq("messageId", messageId))
+        .order("desc")) {
+        if (sibling._id === ob._id) continue;
+        if (seen === MAX_RETRY_SIBLINGS || budget.exhausted) {
+          interrupted = true;
+          break;
+        }
+        seen++;
+        budget.charge(sibling);
+        if (
+          sibling._creationTime > ob._creationTime &&
+          (sibling.autoRetryAttempt ?? 0) > (ob.autoRetryAttempt ?? 0)
+        ) {
+          const retrySend = sibling.sendId;
+          let userRowOfRetry = false;
+          let heldRetry = false;
+          if (sibling.status !== "sent" && retrySend !== undefined) {
+            userRowOfRetry = (
+              await ctx.db
+                .query("transcriptRows")
+                .withIndex("by_chat_send", (q) => q.eq("chatId", chatId).eq("sendId", retrySend))
+                .take(5)
+            ).some((r) => r.role === "user");
+            if (!userRowOfRetry) {
+              const fact = await ctx.db
+                .query("transcriptInputs")
+                .withIndex("by_chat_send", (q) => q.eq("chatId", chatId).eq("sendId", retrySend))
+                .first();
+              // The same HISTORICAL definition as G: a retry the gateway held once (even
+              // one a later complete list no longer names) was accepted.
+              heldRetry =
+                fact !== null &&
+                gatewayHeldInput({
+                  receipt: fact.receipt,
+                  pendingState: fact.pendingState,
+                  heldAt: fact.heldAt,
+                });
+            }
+          }
+          const outcome = retryOutcome(sibling, { userRow: userRowOfRetry, gatewayHeld: heldRetry });
+          if (outcome === "accepted") {
+            retriedAfter = true;
+            break;
+          }
+          if (outcome === "unknown") retryUnknown = true;
         }
       }
     }
+    if (interrupted && !retriedAfter) {
+      return { sendId, sessionKey, fact, userRow, outbox: "unmeasured" };
+    }
+    return {
+      sendId,
+      sessionKey,
+      fact,
+      userRow,
+      outbox: { status: ob.status },
+      retriedAfter,
+      ...(retryUnknown ? { retryUnknown } : {}),
+    };
+    };
+  const guardInputs: GuardInput[] = [];
+  // The observed candidates first — before the dispatched-send scan below spends any of
+  // the byte budget on rows that may add nothing.
+  for (const [sendId, c] of candidates) guardInputs.push(await measureCandidate(sendId, c));
+  // …and every send of the window Atrium DISPATCHED (stamped by `lastGateBeforeSend`:
+  // `sendId` plus `dispatchedAt` / `sentToInstance`), whether or not anything was ever
+  // observed about it: a send whose only read preceded it and whose connection closed
+  // before any other read has neither a fact row nor a user row, and must still be owed a
+  // confirmation (`custodyUnconfirmed`) rather than vanish. User-visible sends only
+  // (`messageId`): Atrium's hidden work runs in sessions of its own. Newest first, read
+  // one document at a time under the byte budget; a cut list qualifies the verdict.
+  const added: string[] = [];
+  // Only sends to an instance whose sessions are PROJECTED (switch shadow/on, and a read
+  // cursor of that instance in this report): `lastGateBeforeSend` stamps a send identity
+  // whatever the switch, and a send to an unprojected instance has nobody to confirm it.
+  const projectedInstances = new Set<string>();
+  for (const name of new Set(cursors.map((c) => c.instanceName))) {
+    const inst = await ctx.db
+      .query("instances")
+      .withIndex("by_name", (q) => q.eq("name", name))
+      .first();
+    const m = inst?.config?.transcriptProjection;
+    if (m === "shadow" || m === "on") projectedInstances.add(name);
+  }
+  if (Number.isFinite(earliestBoundary) && projectedInstances.size > 0) {
+    // ONE stream in DISPATCH order (`dispatchedAt` is stamped only by the last gate before
+    // the send), newest first, the window's boundary as the index range: creation order
+    // says nothing about when a queued row left, so it cannot bound this scan.
+    let seen = 0;
+    for await (const ob of ctx.db
+      .query("outbox")
+      .withIndex("by_chat_dispatched", (q) =>
+        q.eq("chatId", chatId).gte("dispatchedAt", earliestBoundary),
+      )
+      .order("desc")) {
+      if (seen === MAX_OUTBOX_CANDIDATES || budget.exhausted) {
+        inputsTruncated = true;
+        break;
+      }
+      seen++;
+      budget.charge(ob);
+      // Sent, failed, or still in flight (`pending` → counted unsettled, never skipped).
+      if (ob.status === "queued") continue;
+      const sendId = ob.sendId;
+      if (sendId === undefined || ob.messageId === undefined) continue;
+      const destination = ob.sentToInstance ?? ob.routedAgent?.instanceName;
+      if (destination === undefined || !projectedInstances.has(destination)) continue;
+      if (candidates.has(sendId)) continue;
+      if (candidates.size >= MAX_GUARD_INPUTS) {
+        inputsTruncated = true;
+        break;
+      }
+      candidates.set(sendId, { fact: {}, userRow: null, sessionKey: "" });
+      added.push(sendId);
+    }
+  }
+  for (const sendId of added) {
+    guardInputs.push(await measureCandidate(sendId, candidates.get(sendId)!));
   }
 
   // Send → outbox → bubble.
@@ -1026,6 +1758,13 @@ export async function loadProjectionReport(
     resolveSend: (sendId) => sendCache.get(sendId) ?? { kind: "unknown" },
     runHasRowsOutsideWindow: (runId) => outsideWindow.has(runId),
     runRowsUnmeasured: (runId) => outsideUnmeasured.has(runId),
+    runAnsweredOutsideWindow: (runId) => outsideAnswered.has(runId),
+    runAnswerUnmeasured: (runId) => answerUnmeasured.has(runId),
+    runStatus: (runId) => runStatusCache.get(runId) ?? null,
+    guardInputs,
+    partialPendingSessions: new Set(
+      cursors.filter((c) => c.pendingInputsComplete === false).map((c) => c.sessionKey),
+    ),
   });
   const total = gapTotal(gaps);
   const truncated = rowsTruncated || bubblesTruncated || sessionsTruncated;
@@ -1038,6 +1777,8 @@ export async function loadProjectionReport(
     coverageGapsEvicted,
     boundaryUnproven,
     unidentifiedRows,
+    inputsTruncated,
+    pendingCleanupInProgress: cursors.some((c) => c.pendingCleanupInProgress === true),
     gaps,
   });
   const qualified = incompleteReasons.length > 0;

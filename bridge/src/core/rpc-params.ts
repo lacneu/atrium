@@ -10,7 +10,11 @@
 // these objects makes the call fail INVALID_REQUEST on every gateway that predates it —
 // which is exactly why they are worth a module and a gate of their own.
 
-import { CHAT_HISTORY_MAX_BYTES_SINCE, gatewayAtLeast } from "../compat.js";
+import {
+  CHAT_HISTORY_INPUT_RUN_IDS_SINCE,
+  CHAT_HISTORY_MAX_BYTES_SINCE,
+  gatewayAtLeast,
+} from "../compat.js";
 
 /** `sessions.get` params: read one session's transcript. Upstream parses this by hand
  *  and publishes NO schema for it, so the outbound ratchet cannot validate the body —
@@ -111,7 +115,16 @@ export const CHAT_HISTORY_PAGE_MAX_BYTES = 256 * 1024;
  *  be at least that version — an older one would refuse the whole read over the key, and
  *  an unknown version gets the conservative body. */
 export function chatHistoryParams(
-  p: { sessionKey: string; cursor?: string | null; limit: number; maxChars?: number; maxBytes?: number },
+  p: {
+    sessionKey: string;
+    cursor?: string | null;
+    limit: number;
+    maxChars?: number;
+    maxBytes?: number;
+    /** Send identities whose custody the reply should report (`inputReceipts`). The
+     *  upstream array is `minItems: 1`, so an empty list is omitted, never sent. */
+    inputRunIds?: readonly string[];
+  },
   gatewayVersion: string | null,
 ): Record<string, unknown> {
   return {
@@ -122,6 +135,11 @@ export function chatHistoryParams(
     ...(p.maxBytes !== undefined &&
     gatewayAtLeast(gatewayVersion, CHAT_HISTORY_MAX_BYTES_SINCE) === true
       ? { maxBytes: p.maxBytes }
+      : {}),
+    ...(p.inputRunIds !== undefined &&
+    p.inputRunIds.length > 0 &&
+    gatewayAtLeast(gatewayVersion, CHAT_HISTORY_INPUT_RUN_IDS_SINCE) === true
+      ? { inputRunIds: [...p.inputRunIds] }
       : {}),
   };
 }

@@ -105,6 +105,20 @@ export const TRANSCRIPT_PROJECTION_SINCE = OPENCLAW_MIN_SUPPORTED;
  *  v2026.9.1), so an older gateway would refuse the whole read over the unknown key. */
 export const CHAT_HISTORY_MAX_BYTES_SINCE = "2026.9.2";
 
+/** First gateway version whose `chat.history` params accept `inputRunIds` and whose
+ *  reply carries `inputReceipts` (upstream `ChatHistoryParamsSchema.inputRunIds`,
+ *  packages/gateway-protocol/src/schema/logs-chat.ts — present at v2026.8.2, absent at
+ *  v2026.8.1): the floor, stated on its own so the builder's gate names its reason. */
+export const CHAT_HISTORY_INPUT_RUN_IDS_SINCE = OPENCLAW_MIN_SUPPORTED;
+
+/** First gateway version the dedicated session-events connection runs against: the
+ *  `session-scoped-events` client capability (packages/gateway-protocol/src/
+ *  client-info.ts `SESSION_SCOPED_EVENTS`, v2026.8.1) keeps the cross-session
+ *  `chat`/`agent`/`session.tool` fanout off that socket, and `sessions.subscribe`
+ *  (src/gateway/server-methods/sessions-subscriptions.ts, ≤ v2026.5.19) delivers
+ *  `session.message` / `sessions.changed`. Both exist at the floor. */
+export const SESSION_EVENTS_SINCE = OPENCLAW_MIN_SUPPORTED;
+
 /** Is this LIVE gateway version known to be BELOW the supported floor?
  *
  *  Only a version that parses and compares below the floor answers true. An absent or

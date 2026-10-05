@@ -173,6 +173,30 @@
     {
       "path": "ChatErrorEvent.errorDetail",
       "scan": false
+    },
+    {
+      "path": "ChatHistoryParams.inputRunIds",
+      "scan": true
+    },
+    {
+      "path": "ChatHistoryParams.cursor",
+      "scan": false
+    },
+    {
+      "path": "ChatHistoryDeltaResult.deltaCursor",
+      "scan": false
+    },
+    {
+      "path": "ChatHistoryDeltaResult.pendingInputs",
+      "scan": true
+    },
+    {
+      "path": "ChatHistoryDeltaResult.inputReceipts",
+      "scan": true
+    },
+    {
+      "path": "ChatPendingInputsPage.queuedCount",
+      "scan": true
     }
   ]
 }

@@ -14,9 +14,10 @@
 //   6. reportAnomalyInternal inserts a source:"agent" row.
 
 import { convexTest } from "convex-test";
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 import { api, internal } from "./_generated/api";
 import schema from "./schema";
+import crons from "./crons";
 import { Id } from "./_generated/dataModel";
 import { BUILTIN_ROLES, PERMISSIONS, WILDCARD } from "./lib/rbac";
 
@@ -2095,5 +2096,197 @@ describe("a delivery failure the platform REPAIRED", () => {
     });
     const r = await t.mutation(internal.anomalies.detectAnomalies, {});
     expect(r.detected).toContain("assistant.announce_errors");
+  });
+});
+
+// THE CRON PATH (2026-10-04). As one mutation, the detector held the trace window's
+// index range in its read set — open at its newest end — so every trace written while
+// it ran invalidated it, and under steady traffic it failed "on every subsequent retry"
+// and was re-run in a loop by the scheduler. The cron now plans in a QUERY and writes
+// only `anomalies` rows; these tests pin that it decides exactly what the one-shot
+// mutation decides, and that it is what the cron runs.
+describe("the scheduled detector: scan in a query, write in a mutation", () => {
+  const seedMixedWindow = async (t: ReturnType<typeof convexTest>) => {
+    const now = Date.now();
+    await t.run(async (ctx) => {
+      await seedTrace(ctx, {
+        kind: "openclaw.dispatch",
+        at: now - 1000,
+        correlationId: "chat123:outbox456",
+        meta: { dispatchStatus: "failed", errorCode: "AGENT_NOT_FOUND" },
+      });
+      for (let i = 0; i < 12; i++) {
+        await seedTrace(ctx, { kind: "api.call", at: now - i * 1000, status: i < 8 ? 500 : 200 });
+      }
+    });
+  };
+  const openRows = (t: ReturnType<typeof convexTest>) =>
+    t.run(async (ctx) =>
+      (await ctx.db.query("anomalies").collect())
+        .filter((a) => a.status === "open")
+        .map((a) => ({ kind: a.kind, severity: a.severity, message: a.message, evidence: a.evidence }))
+        .sort((a, b) => a.kind.localeCompare(b.kind)),
+    );
+
+  test("decides exactly what the one-transaction detector decides", async () => {
+    const a = convexTest(schema, modules);
+    const b = convexTest(schema, modules);
+    await seedMixedWindow(a);
+    await seedMixedWindow(b);
+    const one = await a.mutation(internal.anomalies.detectAnomalies, {});
+    const two = await b.action(internal.anomalies.detectAnomaliesScheduled, {});
+    expect(two.detected.sort()).toEqual(one.detected.sort());
+    expect(two.detected).toEqual(
+      expect.arrayContaining(["api.error_ratio", "openclaw.dispatch_failures"]),
+    );
+    expect(two.scanned).toBe(one.scanned);
+    expect(await openRows(b)).toEqual(await openRows(a));
+  });
+
+  test("re-running it upserts — one open row per kind, as before", async () => {
+    const t = convexTest(schema, modules);
+    await seedMixedWindow(t);
+    await t.action(internal.anomalies.detectAnomaliesScheduled, {});
+    await t.action(internal.anomalies.detectAnomaliesScheduled, {});
+    const rows = await openRows(t);
+    expect(new Set(rows.map((r) => r.kind)).size).toBe(rows.length);
+  });
+
+  test("a cleared condition is auto-resolved through the scheduled path too", async () => {
+    const t = convexTest(schema, modules);
+    await t.run(async (ctx) => {
+      await ctx.db.insert("anomalies", {
+        kind: "api.error_ratio",
+        severity: "warn",
+        status: "open",
+        source: "detector",
+        message: "stale",
+        at: Date.now() - 60_000,
+      });
+    });
+    const r = await t.action(internal.anomalies.detectAnomaliesScheduled, {});
+    expect(r.autoResolved).toContain("api.error_ratio");
+  });
+
+  test("the cron runs the scheduled detector, not the one-transaction mutation", async () => {
+    const def = (crons as unknown as { crons: Record<string, { name: string }> }).crons[
+      "detect anomalies"
+    ];
+    expect(def?.name).toBe("anomalies:detectAnomaliesScheduled");
+  });
+});
+
+// THE APPLY GENERATION (review pass 10): a plan scanned BEFORE the newest applied one is
+// refused whole — before any upsert and any auto-resolution.
+describe("the detector's apply generation", () => {
+  const seedRatio = async (t: ReturnType<typeof convexTest>) => {
+    const now = Date.now();
+    await t.run(async (ctx) => {
+      for (let i = 0; i < 12; i++) {
+        await seedTrace(ctx, { kind: "api.call", at: now - i * 1000, status: i < 8 ? 500 : 200 });
+      }
+    });
+  };
+  const ratioRow = (t: ReturnType<typeof convexTest>) =>
+    t.run(async (ctx) =>
+      (await ctx.db.query("anomalies").collect()).find((a) => a.kind === "api.error_ratio") ?? null,
+    );
+
+  test("an OLDER empty plan landing after a newer alert plan leaves the alert open", async () => {
+    const t = convexTest(schema, modules);
+    await seedRatio(t);
+    const fresh = await t.query(internal.anomalies.planAnomalyDetections, {});
+    expect(fresh.detected).toContain("api.error_ratio");
+    await t.mutation(internal.anomalies.applyAnomalyDetections, {
+      planJson: fresh.planJson,
+      detected: fresh.detected,
+      generation: fresh.generation,
+    });
+    const resolved = await t.mutation(internal.anomalies.applyAnomalyDetections, {
+      planJson: "[]",
+      detected: [],
+      generation: fresh.generation - 60_000,
+    });
+    expect(resolved).toEqual([]);
+    expect((await ratioRow(t))?.status).toBe("open");
+  });
+
+  test("an older plan cannot downgrade a newer severity", async () => {
+    const t = convexTest(schema, modules);
+    await seedRatio(t);
+    const fresh = await t.query(internal.anomalies.planAnomalyDetections, {});
+    await t.mutation(internal.anomalies.applyAnomalyDetections, {
+      planJson: fresh.planJson,
+      detected: fresh.detected,
+      generation: fresh.generation,
+    });
+    const severity = (await ratioRow(t))!.severity;
+    const older = (JSON.parse(fresh.planJson) as Array<{ kind: string; severity: string }>).map((p) =>
+      p.kind === "api.error_ratio" ? { ...p, severity: severity === "critical" ? "warn" : "critical" } : p,
+    );
+    await t.mutation(internal.anomalies.applyAnomalyDetections, {
+      planJson: JSON.stringify(older),
+      detected: fresh.detected,
+      generation: fresh.generation - 60_000,
+    });
+    expect((await ratioRow(t))!.severity).toBe(severity);
+  });
+
+  test("each applied plan ADVANCES the generation: one scanned between two applied plans is refused", async () => {
+    const t = convexTest(schema, modules);
+    await seedRatio(t);
+    const fresh = await t.query(internal.anomalies.planAnomalyDetections, {});
+    const G = fresh.generation;
+    await t.mutation(internal.anomalies.applyAnomalyDetections, { planJson: "[]", detected: [], generation: G - 120_000 });
+    await t.mutation(internal.anomalies.applyAnomalyDetections, { planJson: fresh.planJson, detected: fresh.detected, generation: G });
+    const between = await t.mutation(internal.anomalies.applyAnomalyDetections, { planJson: "[]", detected: [], generation: G - 60_000 });
+    expect(between).toEqual([]);
+    expect((await ratioRow(t))?.status).toBe("open");
+  });
+
+  test("two scans in the SAME millisecond: the one applied second is refused (no unordered resolution)", async () => {
+    const t = convexTest(schema, modules);
+    await seedRatio(t);
+    const fresh = await t.query(internal.anomalies.planAnomalyDetections, {});
+    await t.mutation(internal.anomalies.applyAnomalyDetections, { planJson: fresh.planJson, detected: fresh.detected, generation: fresh.generation });
+    // An empty plan scanned in the same millisecond, landing after.
+    const resolved = await t.mutation(internal.anomalies.applyAnomalyDetections, { planJson: "[]", detected: [], generation: fresh.generation });
+    expect(resolved).toEqual([]);
+    expect((await ratioRow(t))?.status).toBe("open");
+  });
+
+  test("the one-transaction detector is fresh by construction: it applies even at an equal generation", async () => {
+    vi.useFakeTimers({ now: Date.now(), toFake: ["Date"] });
+    try {
+      const t = convexTest(schema, modules);
+      await seedRatio(t);
+      // Frozen clock: both runs scan at the very same generation.
+      const r1 = await t.mutation(internal.anomalies.detectAnomalies, {});
+      const r2 = await t.mutation(internal.anomalies.detectAnomalies, {});
+      expect(r1.detected).toContain("api.error_ratio");
+      expect(r2.detected).toContain("api.error_ratio");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test("newer plans apply normally — including the one that clears the condition", async () => {
+    const t = convexTest(schema, modules);
+    await seedRatio(t);
+    const fresh = await t.query(internal.anomalies.planAnomalyDetections, {});
+    // An older plan first (nothing applied yet: it applies), then the fresh one.
+    await t.mutation(internal.anomalies.applyAnomalyDetections, { planJson: "[]", detected: [], generation: fresh.generation - 60_000 });
+    await t.mutation(internal.anomalies.applyAnomalyDetections, {
+      planJson: fresh.planJson,
+      detected: fresh.detected,
+      generation: fresh.generation,
+    });
+    expect((await ratioRow(t))?.status).toBe("open");
+    const cleared = await t.mutation(internal.anomalies.applyAnomalyDetections, {
+      planJson: "[]",
+      detected: [],
+      generation: fresh.generation + 60_000,
+    });
+    expect(cleared).toContain("api.error_ratio");
   });
 });

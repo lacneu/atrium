@@ -10,7 +10,12 @@
 // timeout fires is never dropped; on timeout we `tick()` the normalizer so an
 // armed grace always finalizes (never a hung "thinking" UI).
 
-import { openClawAgentRequestsEnabled, openClawInlineWidgetsEnabled } from "./compat.js";
+import {
+  gatewayAtLeast,
+  openClawAgentRequestsEnabled,
+  openClawInlineWidgetsEnabled,
+  SESSION_EVENTS_SINCE,
+} from "./compat.js";
 import { INLINE_WIDGETS_CAP } from "./providers/openclaw/widgets.js";
 import {
   holdGatewayVersion,
@@ -44,7 +49,14 @@ import { buildSessionKey } from "./providers/openclaw/session-keys.js";
 import { protocolDrift } from "./providers/openclaw/protocol-drift.js";
 import type { FinalizeCause } from "./core/finalize-causes.js";
 import { OpenClawAgentRequestObserver } from "./providers/openclaw/agent-request-observer.js";
-import { TranscriptShadow } from "./providers/openclaw/transcript-shadow.js";
+import {
+  TranscriptShadow,
+  type SessionEventSource,
+} from "./providers/openclaw/transcript-shadow.js";
+import {
+  SESSION_SCOPED_EVENTS_CAP,
+  SessionEventsHub,
+} from "./providers/openclaw/session-events.js";
 import {
   CHAT_HISTORY_PAGE_LIMIT,
   CHAT_HISTORY_PAGE_MAX_BYTES,
@@ -359,6 +371,10 @@ class Session implements BridgeSession {
     // Health-stats hook: a turn of THIS session finalizing in error is a
     // downstream failure on its target (HealthRegistry.recordTurnError).
     onTurnError?: (code: string) => void,
+    // The instance's session-events connection (transcript redesign, phase 2): what
+    // feeds this session's reconciler with `session.message` / `sessions.changed`.
+    // Never this conversation's socket (session-events.ts).
+    sessionEvents?: SessionEventSource,
   ) {
     this.chatId = chatId;
     this.sessionKey = sessionKey;
@@ -436,7 +452,7 @@ class Session implements BridgeSession {
     this.transcriptShadow = new TranscriptShadow({
       chatId,
       sessionKey,
-      readHistory: async (cursor) =>
+      readHistory: async (cursor, opts) =>
         (
           await connection.request(
             "chat.history",
@@ -446,6 +462,7 @@ class Session implements BridgeSession {
                 cursor,
                 limit: CHAT_HISTORY_PAGE_LIMIT,
                 maxBytes: CHAT_HISTORY_PAGE_MAX_BYTES,
+                ...(opts?.inputRunIds === undefined ? {} : { inputRunIds: opts.inputRunIds }),
               },
               connection.gatewayVersion,
             ),
@@ -454,7 +471,17 @@ class Session implements BridgeSession {
       apply: async (report) => {
         await writer.applyTranscript?.(report);
       },
+      ...(sessionEvents === undefined ? {} : { events: sessionEvents }),
+      // READ-ONLY view of the turn: the run in the foreground, for CU-16's admission.
+      foregroundRunId: () =>
+        this.runManager.turnActive ? (this.runManager.activeRunIds[0] ?? null) : null,
     });
+    // The reconciler lives exactly as long as this socket, whichever path closes it (the
+    // consume loop's end, a crash recovery, the reaper, a re-key): otherwise its
+    // session-events attachment would keep it — and reads on a dead socket — alive.
+    if (typeof connection.onClosed === "function") {
+      connection.onClosed(() => this.transcriptShadow.close());
+    }
   }
 
   /** The outbound mount the AGENT was instructed to write to on the last send.
@@ -714,6 +741,9 @@ class Session implements BridgeSession {
     } catch {
       /* already gone */
     }
+    // …and the reconciler with it (detaches from the session-events connection), even
+    // on a connection double that has no close listeners.
+    this.transcriptShadow.close();
     // The connection is gone -> no more child frames; drop observations AND the
     // registration-ordering set so the crash-recovery path can't leak the registry
     // (keep registeredChildren in lockstep with the observer — invariant: it only ever
@@ -1723,6 +1753,10 @@ export class SessionRegistry {
     { key: string; at: number }[]
   >();
   private sweepTimer: ReturnType<typeof setInterval> | null = null;
+  /** ONE session-events connection per served instance (transcript redesign, phase 2),
+   *  opened lazily by the first session whose projection is on, closed after the last
+   *  detaches. See providers/openclaw/session-events.ts. */
+  private readonly sessionEventHubs = new Map<string, SessionEventsHub>();
 
   constructor(
     // The instances this bridge serves, keyed by instanceName. Each bundle carries
@@ -2107,6 +2141,7 @@ export class SessionRegistry {
               code,
             )
         : undefined,
+      this.sessionEventsFor(instanceName, cfg),
     );
     session.widgetsWanted = widgetsWanted;
     session.runManager.setWidgetsEnabled(declared.includes(INLINE_WIDGETS_CAP));
@@ -2179,5 +2214,35 @@ export class SessionRegistry {
       session.close();
     }
     this.sessions.clear();
+    for (const hub of this.sessionEventHubs.values()) hub.stop();
+    this.sessionEventHubs.clear();
+  }
+
+  /** The session-events connection of one served instance (created on first use; it
+   *  connects only when a session attaches). Its socket is NOT a conversation socket:
+   *  it declares `session-scoped-events`, so no turn frame of any session reaches it, and
+   *  its frames are read by the hub alone — never by a RunManager. */
+  sessionEventsFor(instanceName: string, cfg: BridgeConfig): SessionEventsHub {
+    const existing = this.sessionEventHubs.get(instanceName);
+    if (existing !== undefined) return existing;
+    const hub = new SessionEventsHub({
+      instanceName,
+      versionSupported: (v) => gatewayAtLeast(v, SESSION_EVENTS_SINCE) !== false,
+      connect: () =>
+        OpenClawConnection.connect(
+          cfg.openclawGatewayUrl,
+          cfg.openclawToken ?? "",
+          cfg.deviceIdentity!,
+          deviceTokenPromotion(cfg),
+          0,
+          // SYSTEM, like the transcript fetcher: the hub serves every conversation of
+          // the instance, whoever owns it.
+          systemConnectIdentity(cfg),
+          connectUserHeader(cfg),
+          [SESSION_SCOPED_EVENTS_CAP],
+        ),
+    });
+    this.sessionEventHubs.set(instanceName, hub);
+    return hub;
   }
 }

@@ -2908,6 +2908,9 @@ async function performSendComposed(
           },
         );
   session.runManager.armReplayBuffer();
+  // The send enters the reconciler's input guard: until the gateway settles it, every
+  // read asks about it (`inputRunIds`). Shadow-only — nothing here decides the send.
+  session.transcriptShadow?.noteSend(sendKey);
   // The ACK's status, for the transcript reconciler (`ok` ⇒ read the transcript back).
   let ackStatus: unknown = undefined;
   try {
@@ -3012,6 +3015,9 @@ async function performSendComposed(
     session.runManager.disarmReplayBuffer(session.clock(), () =>
       session.wake(),
     );
+    // A refused send stays in the guard as FAILED: whether the gateway holds it anyway
+    // is what the guard measure checks (a post-ACK failure keeps its ACK status).
+    session.transcriptShadow?.noteAck(ackStatus ?? "error", sendKey);
     throw err;
   }
   // beginTurn armed the recv/grace deadline from OUTSIDE the consume loop. If
@@ -3020,7 +3026,7 @@ async function performSendComposed(
   // its deadline and the turn would hang in "streaming" forever — wake it so the
   // recv guard is installed and fires.
   session.wake();
-  session.transcriptShadow?.noteAck(ackStatus);
+  session.transcriptShadow?.noteAck(ackStatus, sendKey);
 }
 
 /**

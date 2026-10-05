@@ -444,10 +444,17 @@ export const KNOWN_AGENT_FIELDS: ReadonlySet<string> = new Set([
  * matrix instead of being invisible omissions.
  */
 export const COVERAGE_SUMMARY = {
-  handled: 328,
-  ignored: 811,
+  handled: 348,
+  ignored: 814,
   gaps: 920,
   /** The declared gaps, by schema path — the actionable part of the matrix.
+   *
+   *  TRANSCRIPT PROJECTION (2026-10-04, phases 1-2): the cursor reads of `chat.history`
+   *  are classified for what phase 1 already did (`ChatHistoryParams.cursor`/`maxBytes`,
+   *  the delta, reset and cursor results field by field), and phase 2's input guard is
+   *  handled: `ChatHistoryParams.inputRunIds`, the reply's `pendingInputs` (with the 9.7+
+   *  `queuedCount`) and `inputReceipts`. `session.message` / `sessions.changed` are
+   *  handled in the event manifest (the dedicated session-events connection).
    *
    *  ERROR LABELS (2026-10-02): `ChatErrorEvent.errorDetail` is handled — the provider
    *  observation a failed chat carries (failoverReason, providerRuntimeFailureKind,
@@ -2004,6 +2011,19 @@ class ProtocolDriftRegistry {
    *  stdout and nothing else: the report said "here is the drift" while silently omitting
    *  everything past 512 shapes. A bound is legitimate; a bound nobody downstream can see
    *  is the same silence the bound was supposed to replace. */
+  /** An open-vocabulary VALUE a reader met and could not interpret — e.g. the `state` of
+   *  a `chat.history` input receipt. Digested like every value nobody has vouched for
+   *  (see `observe` above): the counter says which reader and tells unknown values apart,
+   *  without publishing the wire string. Never throws. */
+  observeUnknownValue(site: string, value: unknown): void {
+    try {
+      const raw = typeof value === "string" ? value : `<${typeof value}>`;
+      this.bump(`${containName(site, SAFE_NAME_MAX)}_${shortDigest(raw)}`);
+    } catch {
+      // A sensor must never break the reader it observes.
+    }
+  }
+
   private bump(shape: string): void {
     const row = rowOfShape(shape);
     const map = this.countersOf(row.kind);

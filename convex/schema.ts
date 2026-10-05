@@ -2571,11 +2571,70 @@ export default defineSchema({
     resets: v.number(),
     // Durable rows the reads could not identify (no `__openclaw.id` or `seq`).
     unidentified: v.number(),
+    // PHASE 2 — the gateway's input custody at the last read (`pendingInputs.total` and,
+    // 2026.9.7+, `queuedCount`), and the rows applied directly from `session.message`
+    // (CU-16): how many posts, and the last one. Absent on cursors written before.
+    pendingInputsTotal: v.optional(v.number()),
+    pendingQueuedCount: v.optional(v.number()),
+    // The last read's pending-input list was the WHOLE list (no older page): only then
+    // does an input's absence from it clear its current pending state.
+    pendingInputsComplete: v.optional(v.boolean()),
+    // A complete list's cleanup is still running in scheduled batches: until it ends, the
+    // current custody of this session is not yet what the list says (report qualified).
+    pendingCleanupInProgress: v.optional(v.boolean()),
+    // The read (`readAt`) whose complete list started the current cleanup: a scheduled
+    // continuation of an older one stands down.
+    pendingCleanupEpoch: v.optional(v.number()),
+    liveApplies: v.optional(v.number()),
+    lastLiveAt: v.optional(v.number()),
     updatedAt: v.number(),
   })
     .index("by_chat_session", ["chatId", "sessionKey"])
     .index("by_chat", ["chatId"])
     // The MOST RECENTLY read sessions of a chat first (the report's bounded window).
+    .index("by_chat_updated", ["chatId", "updatedAt"]),
+
+  // THE INPUT GUARD, AS THE GATEWAY STATES IT (transcript redesign, phase 2 — SHADOW).
+  //
+  // One row per send identity a read asked about (`chat.history` `inputRunIds`) or that
+  // the gateway listed in `pendingInputs`: what the gateway said it holds — a receipt
+  // (`pending`/`consumed`, 9.7+ `queued`/`cancelled` flags), a pending-input state
+  // (`queued`/`cancelled`/`interrupted`), or NOTHING when asked after the ACK
+  // (`absentAt`). Identity only (never the input's text). Compared with Atrium's own
+  // outbox state by the projection report (the guard measure); nothing reads it to
+  // decide anything in shadow mode. Bounded per read (50 receipts, 20 items, 50 ids).
+  transcriptInputs: defineTable({
+    chatId: v.id("chats"),
+    sessionKey: v.string(),
+    sendId: v.string(),
+    receipt: v.optional(v.union(v.literal("pending"), v.literal("consumed"))),
+    receiptQueued: v.optional(v.boolean()),
+    receiptCancelled: v.optional(v.boolean()),
+    pendingState: v.optional(
+      v.union(v.literal("queued"), v.literal("cancelled"), v.literal("interrupted")),
+    ),
+    pendingQueued: v.optional(v.boolean()),
+    // The first read that asked about this send.
+    askedAt: v.optional(v.number()),
+    // A read asked about it after its ACK and the gateway answered no receipt at all.
+    absentAt: v.optional(v.number()),
+    // HISTORICAL proof the gateway received it (first receipt or pending entry). Never
+    // cleared: `pendingState` is the CURRENT custody, replaced by each authoritative read.
+    heldAt: v.optional(v.number()),
+    // The issue time of the last read that CONFIRMED this input (a receipt or a pending
+    // item naming it), even with nothing else changed.
+    confirmedAt: v.optional(v.number()),
+    // CURRENT: the last read's receipt for it carried a state Atrium does not know.
+    receiptUnreadable: v.optional(v.boolean()),
+    updatedAt: v.number(),
+  })
+    .index("by_chat_session_send", ["chatId", "sessionKey", "sendId"])
+    // One send's facts whatever its session (the guard measure's retry evidence).
+    .index("by_chat_send", ["chatId", "sendId"])
+    // The inputs a session's queue currently holds (cleared by a complete pending list).
+    .index("by_chat_session_pending", ["chatId", "sessionKey", "pendingState"])
+    // …and the receipt-only queued flag (a receipt seen without its pending item).
+    .index("by_chat_session_receipt_queued", ["chatId", "sessionKey", "receiptQueued"])
     .index("by_chat_updated", ["chatId", "updatedAt"]),
 
   // Structured non-text content attached to a message, ordered for rendering.
@@ -3704,7 +3763,10 @@ export default defineSchema({
     .index("by_chat_routed_instance_status", ["chatId", "routedAgent.instanceName", "status"])
     // …and a row whose send LEFT for an instance (the last gate's stamp), in flight
     // or sent — point lookups by status, never a scan of the chat's rows.
-    .index("by_chat_sent_instance_status", ["chatId", "sentToInstance", "status"]),
+    .index("by_chat_sent_instance_status", ["chatId", "sentToInstance", "status"])
+    // A chat's sends in DISPATCH order (`dispatchedAt` is set only by lastGateBeforeSend):
+    // the projection report's dispatched-send scan, bounded by the window's boundary.
+    .index("by_chat_dispatched", ["chatId", "dispatchedAt"]),
 
   // L2 "Joindre les documents": per (source assistant message, document reference)
   // attachment lifecycle. The user asks a DOCUMENTARY agent to fetch the real file
@@ -4314,6 +4376,16 @@ export default defineSchema({
   //     so an OpenClaw agent can report an anomaly OR a self-repair action taken.
   // D2 PHI: METADATA ONLY. `evidence` is a JSON string of NON-PHI signals
   // (counts/ratios/thresholds/window) — never message text, tokens, or paths.
+  // The anomaly detector's APPLY generation (one row, key "detector"): the scan start time
+  // of the newest plan applied. A plan scanned earlier that lands later (a cron overlapping
+  // a manual run) is refused whole — it would auto-resolve an alert a newer scan opened, or
+  // downgrade its severity. Read and written in the apply transaction (OCC serializes them).
+  anomalyDetectorState: defineTable({
+    key: v.string(),
+    lastAppliedGeneration: v.number(),
+    updatedAt: v.number(),
+  }).index("by_key", ["key"]),
+
   anomalies: defineTable({
     at: v.number(), // first-seen (insert) / last-seen (patch) timestamp
     // AGGREGATE of the append-only `anomalyOccurrences` history: how many times

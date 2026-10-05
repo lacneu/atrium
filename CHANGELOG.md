@@ -1,5 +1,52 @@
 # Changelog
 
+## [0.94.0] — Session events and the input guard, in shadow
+
+Minor release. Nothing on screen changes. Apart from the anomaly detector fix at the end,
+everything new here runs only for an instance whose `transcriptProjection` is `shadow` (or
+`on`, which still behaves as `shadow`), and it never creates, edits or finishes a bubble.
+Deploy Convex before the bridge — the bridge posts new fields and a new kind of transcript
+write that an older Convex refuses (the bridge logs the refusal and carries on). The frontend
+is unchanged.
+
+**The transcript is now also read when the gateway says it changed.** For a projected instance
+the bridge opens one extra gateway connection — one per instance, only while a projected
+conversation is open, closed shortly after the last one — that subscribes to the gateway's
+session events, as OpenClaw's Control UI does. A new message in a conversation's session, a
+reset, a compaction, a change in what the gateway holds for that session, or the end of a run,
+now triggers the same bounded transcript read that the end of a turn already did, and a message
+the Control UI would apply directly is recorded at once. This connection declares the
+`session-scoped-events` capability, so the gateway sends it none of the turn traffic (replies,
+tool activity) it fans out to the conversation sockets, and nothing it receives ever reaches
+the code that builds bubbles. The previous refusal to subscribe was about subscribing the
+conversation's own socket, which mixed these events into a turn's frames; that socket still
+does not subscribe. If the connection drops, it reconnects with a backoff and every open
+conversation reads its transcript again.
+
+**What the gateway holds for each send is recorded.** Every transcript read now asks the
+gateway about the sends whose fate is not settled yet, and records its answer: an input it has
+received but not yet run (and, from 2026.9.7, whether it waits in the gateway's own queue), one
+cancelled or interrupted, one consumed — or none at all for a send it acknowledged. Identities
+only, never the text of a message.
+
+**`diagnose_chat` measures two more things.** The projection report adds I4 — an error card on
+a turn whose run left a visible answer in the transcript (the case of a reply that existed
+while Atrium showed a failure), not counted when the gateway itself says that run failed — and
+a guard measure: an input the gateway holds while Atrium's queue says the send failed (a retry
+would run it twice) or was never sent, an automatic retry of a message whose first send the
+gateway already holds (the same input run twice), and a sent input the gateway, asked after
+acknowledging it, holds no trace of. Both enter the verdict like the other gaps, and every
+lookup they cannot complete makes the result "consistent in window", never "consistent".
+
+**The anomaly detector no longer fights the traces it reads.** Every five minutes the detector
+scanned the recent trace window inside a database transaction that any new trace invalidated.
+Under steady traffic it failed repeatedly and was retried in a loop, re-reading up to 5,000
+traces each time; on a busy backend this coincided with other requests timing out. The window
+is now read without a transaction that can be invalidated, and only the anomaly records are
+written in one. A detection scanned before a newer one has been applied is discarded whole, so
+an overlapping run can neither close an alert whose condition still holds nor lower its
+severity. What it detects is unchanged.
+
 ## [0.93.0] — OpenClaw 2026.9.7 and 2026.9.8 supported
 
 Support release, corrective throughout. No breaking changes in Atrium — but read the upgrade

@@ -100,6 +100,13 @@ const FROZEN_TRUTH_FLOOR = [
   "CanvasDocumentViewResult.html",
   // The structured provider observation on a failed chat, read before the prose (2026-10-02).
   "ChatErrorEvent.errorDetail",
+  // The transcript projection's reads and its input guard (redesign phase 2, 2026-10-04).
+  "ChatHistoryParams.inputRunIds",
+  "ChatHistoryParams.cursor",
+  "ChatHistoryDeltaResult.deltaCursor",
+  "ChatHistoryDeltaResult.pendingInputs",
+  "ChatHistoryDeltaResult.inputReceipts",
+  "ChatPendingInputsPage.queuedCount",
 ];
 
 const ratchet = JSON.parse(

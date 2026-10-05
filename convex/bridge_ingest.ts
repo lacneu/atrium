@@ -665,7 +665,7 @@ type IngestOp =
       chatId: string;
       sessionKey: string;
       sessionId?: string;
-      kind: "page" | "delta" | "reset";
+      kind: "page" | "delta" | "reset" | "live";
       deltaCursor?: string;
       rows: unknown[];
       terminals: unknown[];
@@ -673,6 +673,12 @@ type IngestOp =
       hasActiveRun?: boolean;
       unidentified?: number;
       readAt?: number;
+      // Phase 2 — the input guard (shapes re-validated by the mutation).
+      inputRunIds?: unknown[];
+      pendingInputs?: unknown;
+      inputReceipts?: unknown[];
+      inputAbsent?: unknown[];
+      inputUnreadable?: unknown[];
     };
 
 /** The target id(s) an op writes against — what ingest authorization resolves to
@@ -1819,6 +1825,23 @@ export const ingest = httpAction(async (ctx, request) => {
             : 0,
         ...(typeof body.readAt === "number" && Number.isFinite(body.readAt)
           ? { readAt: body.readAt }
+          : {}),
+        ...(Array.isArray(body.inputRunIds)
+          ? { inputRunIds: body.inputRunIds.filter((x): x is string => typeof x === "string") }
+          : {}),
+        ...(body.pendingInputs !== undefined && body.pendingInputs !== null
+          ? { pendingInputs: body.pendingInputs as never }
+          : {}),
+        ...(Array.isArray(body.inputReceipts) ? { inputReceipts: body.inputReceipts as never } : {}),
+        ...(Array.isArray(body.inputAbsent)
+          ? { inputAbsent: body.inputAbsent.filter((x): x is string => typeof x === "string") }
+          : {}),
+        ...(Array.isArray(body.inputUnreadable)
+          ? {
+              inputUnreadable: body.inputUnreadable.filter(
+                (x): x is string => typeof x === "string",
+              ),
+            }
           : {}),
       });
       // NO per-apply trace row: reads follow every run terminal, and the cursor doc

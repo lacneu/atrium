@@ -4,9 +4,9 @@
   "catalogue": "event-catalogue.json",
   "counts": {
     "total": 64,
-    "handled": 14,
+    "handled": 16,
     "gap": 19,
-    "ignored": 31
+    "ignored": 29
   },
   "events": {
     "agent": {
@@ -210,8 +210,12 @@
       "why": "delivered only to a `sessions.messages.subscribe` stream opened with includeApprovals; Atrium deliberately opens no such subscription on a conversation socket (one broke the bench before) and reads the operator broadcasts `*.approval.requested|resolved` instead"
     },
     "session.message": {
-      "status": "ignored",
-      "why": "Message history is Convex-authoritative in Atrium; the reply content a turn depends on arrives on the `chat` stream. Reading this too would duplicate a record Atrium already owns."
+      "status": "handled",
+      "by": "session-events.ts (redesign phase 2, SHADOW): delivered by `sessions.subscribe` on a DEDICATED, scoped per-instance connection (never a conversation socket) and demultiplexed by sessionKey to the session's reconciler: the row is applied directly when CU-16 admits it (transcript-rows.ts admitLiveRow) and the transcript is read back; identity only, never content. Reaches no RunManager.",
+      "anchor": {
+        "file": "src/providers/openclaw/session-events.ts",
+        "token": "listener.onSessionMessage(record)"
+      }
     },
     "session.narration": {
       "status": "gap",
@@ -254,8 +258,12 @@
       "note": "new in 2026.7.2-beta.5 — not yet instructed (frame-discovery queue)"
     },
     "sessions.changed": {
-      "status": "ignored",
-      "why": "Session-list housekeeping for the upstream client's own list. Atrium drives its chat list from Convex and never renders the gateway's."
+      "status": "handled",
+      "by": "session-events.ts -> transcript-shadow.ts onSessionsChanged (phase 2, SHADOW): reset/new drop the cursor (fresh tail page), compact / a batch write / custody reasons (send, agent.run.started, agent.input.settled) / a run end read the transcript back — the Control UI's handleSessionsChangedEvent (transcript-rows.ts classifySessionsChanged). The conversation sockets still ignore it.",
+      "anchor": {
+        "file": "src/providers/openclaw/session-events.ts",
+        "token": "listener.onSessionsChanged(record)"
+      }
     },
     "shutdown": {
       "status": "handled",

@@ -372,7 +372,18 @@ function main(): void {
         "gaps between the transcript and the bubbles — I1 a visible run with no bubble " +
         "(`transcriptOnly`) or two (`duplicated`), I2 a settled bubble whose runs wrote no " +
         "durable row (`bubbleWithoutRow`), I3 a user row `<sendId>:user` with no user bubble " +
-        "or two — with counts, run/send ids and seqs, never text; `verdict` is " +
+        "or two, I4 an error card (`status:error`) whose run the transcript ANSWERED " +
+        "(`gaps.i4.errorCardWithAnswer` — not counted when the gateway's own run status is " +
+        "error/timeout, `errorCardRunFailed`), and G the input guard against Atrium's " +
+        "outbox (`gaps.guard`: an input the gateway holds — receipt, pending input or its " +
+        "user row — while the outbox says `failed` (`heldButFailed`, a retry would run it " +
+        "twice) or never sent (`heldButQueuedLocal`), an auto-retry of a message whose " +
+        "earlier send the gateway holds and that the gateway accepted (`retriedWhileHeld`, the " +
+        "same input run twice; a retry that passed Atrium's last gate with no proof of " +
+        "acceptance is `retryOutcomeUnknown`, an incompleteness reason, not a gap), and " +
+        "a sent input the gateway, asked after its ACK, has no receipt for " +
+        "(`sentButAbsent`)) — with counts, run/send ids " +
+        "and seqs, never text; `verdict` is " +
         "`not_projected` | `consistent` | `consistent_in_window` | `gaps`. The measure " +
         "covers the most recently read sessions (at most 10, `window.sessionsTruncated`), " +
         "the NEWEST rows of each (`sessions[].windowStartSeq`, `rowsTruncated`) and the " +
@@ -384,7 +395,11 @@ function main(): void {
         "`window.qualified` is set and a clean result reads `consistent_in_window`, never " +
         "`consistent`. `window.incompleteReasons` lists EVERY reason the measurement is " +
         "incomplete (cut sessions/rows/bubbles, coverage holes, unproven boundary, rows " +
-        "it could not identify or attribute, bubbles naming no run or not yet settled); " +
+        "it could not identify or attribute, bubbles naming no run or not yet settled, " +
+        "error cards or guard inputs it could not look up, sends still in flight, a pending " +
+        "state the last partial pending-input page could not confirm, a dispatched send the " +
+        "gateway has not confirmed or denied since its ACK, a receipt in a state Atrium " +
+        "cannot interpret); " +
         "`consistent` means that list is empty. The measurement reads a bounded volume " +
         "of messages (`window.readBudgetExhausted` when it stops early); if it cannot be " +
         "computed at all, `projection` is `{verdict: \"unavailable\"}` and the rest of " +

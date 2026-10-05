@@ -270,7 +270,9 @@ export interface TranscriptApplyReport {
   chatId: string;
   sessionKey: string;
   sessionId: string;
-  kind: "page" | "delta" | "reset";
+  /** `live`: rows CU-16 admitted from `session.message` (phase 2) — rows only, never a
+   *  cursor, a floor or session state. */
+  kind: "page" | "delta" | "reset" | "live";
   deltaCursor?: string;
   rows: TranscriptRowReport[];
   terminals: Array<{
@@ -285,6 +287,33 @@ export interface TranscriptApplyReport {
   /** When the read was ISSUED (epoch ms, strictly increasing per reconciler): Convex
    *  never lets an older read replace the cursor or the session. */
   readAt: number;
+  /** The sends this read asked the gateway about (`chat.history` `inputRunIds`). */
+  inputRunIds?: string[];
+  /** The gateway's custody of accepted inputs (`pendingInputs`), identity only. */
+  pendingInputs?: {
+    total: number;
+    queuedCount?: number;
+    /** The page was the whole list (see transcript-rows.ts PendingInputsFacts). */
+    complete?: true;
+    items: Array<{
+      runId?: string;
+      state: "queued" | "cancelled" | "interrupted";
+      queued?: true;
+    }>;
+  };
+  /** Receipts for the asked sends (`inputReceipts`). */
+  inputReceipts?: Array<{
+    runId: string;
+    state: "pending" | "consumed";
+    queued?: true;
+    cancelled?: true;
+  }>;
+  /** Asked sends, ACKed before the read was issued, for which the gateway answered NO
+   *  receipt at all (an exact queried absence). */
+  inputAbsent?: string[];
+  /** Asked sends whose receipt the reply carried but Atrium could not interpret (an
+   *  unknown state): observed, never absent. */
+  inputUnreadable?: string[];
 }
 
 export interface ConvexWriter {

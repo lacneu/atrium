@@ -814,8 +814,9 @@ async function sweepChatDependents(
     if (!(await drain(rows, asked)) || budget <= 0) return more();
   }
 
-  // 5b. The transcript projection (redesign phase 1): identities, run states and the
-  //     read cursors of this conversation's gateway sessions — meaningless without it.
+  // 5b. The transcript projection (redesign phases 1-2): identities, run states, the
+  //     read cursors and the input guard of this conversation's gateway sessions —
+  //     meaningless without it.
   {
     const asked = Math.max(budget, 0);
     const rows = await ctx.db
@@ -837,6 +838,15 @@ async function sweepChatDependents(
     const rows = await ctx.db
       .query("transcriptCursors")
       .withIndex("by_chat", (q) => q.eq("chatId", chatId))
+      .take(asked);
+    if (!(await drain(rows, asked)) || budget <= 0) return more();
+  }
+  {
+    // Phase 2: what the gateway said it held for this conversation's sends.
+    const asked = Math.max(budget, 0);
+    const rows = await ctx.db
+      .query("transcriptInputs")
+      .withIndex("by_chat_updated", (q) => q.eq("chatId", chatId))
       .take(asked);
     if (!(await drain(rows, asked)) || budget <= 0) return more();
   }

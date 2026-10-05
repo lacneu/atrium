@@ -165,6 +165,13 @@ const UNCOVERED_SNAPSHOT = [
   // parsed defensively (knowledge-policy.ts parseKnowledgeSources) and an `unknown
   // method` answer is the feature detection itself.
   "knowledge.sources",
+  // `sessions.subscribe` (transcript redesign, phase 2 — the session-events connection)
+  // has no params schema of its OWN: upstream validates it with the `sessions.list`
+  // one (`validateSessionsListParams`, src/gateway/server-methods/sessions-subscriptions.ts
+  // :29 at v2026.9.8, :26 at v2026.9.6 and v2026.8.2), and Atrium sends `{}` — no list
+  // snapshot, just the registration. `SessionsListParams` is vendored and classified;
+  // there is no `SessionsSubscribeParamsSchema` to name. Uncovered by CONSTRUCTION.
+  "sessions.subscribe",
 ];
 
 /** The methods mapped to `null` — "no params on the wire" — whose claim is now

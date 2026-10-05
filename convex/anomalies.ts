@@ -24,6 +24,7 @@
 import { v } from "convex/values";
 import { isDeliveryRun } from "./lib/deliveryRuns";
 import {
+  internalAction,
   internalMutation,
   internalQuery,
   mutation,
@@ -31,6 +32,7 @@ import {
   MutationCtx,
   QueryCtx,
 } from "./_generated/server";
+import { internal } from "./_generated/api";
 import { Doc, Id } from "./_generated/dataModel";
 import { getActor, requireAdmin, requirePermission } from "./lib/access";
 import { PERMISSIONS } from "./lib/rbac";
@@ -930,17 +932,31 @@ async function autoResolveClearedDetectors(
  * assistant.stream error/aborted bursts, and ingest auth-denied spikes. Bounded
  * scan; de-dupes to one OPEN row per kind. Returns a small summary for logs.
  */
-export const detectAnomalies = internalMutation({
-  args: {},
-  handler: async (
-    ctx,
-  ): Promise<{ scanned: number; detected: string[]; autoResolved: string[] }> => {
-    const cutoff = Date.now() - DETECT_WINDOW_MS;
-    const rows = await ctx.db
-      .query("traceEvents")
-      .withIndex("by_at", (q) => q.gte("at", cutoff))
-      .order("asc")
-      .take(MAX_SCAN);
+/** One detection the scan decided on: what `upsertDetectorAnomaly` writes. */
+type DetectionPlan = Parameters<typeof upsertDetectorAnomaly>[1];
+
+/** The ROWS the detector judges: the bounded recent window of `traceEvents`. */
+async function scanDetectionWindow(
+  ctx: QueryCtx,
+  now: number,
+): Promise<Doc<"traceEvents">[]> {
+  const cutoff = now - DETECT_WINDOW_MS;
+  return await ctx.db
+    .query("traceEvents")
+    .withIndex("by_at", (q) => q.gte("at", cutoff))
+    .order("asc")
+    .take(MAX_SCAN);
+}
+
+/**
+ * The detection itself — PURE over the scanned rows: which detector anomalies the
+ * window raises (and what each one records). Writes nothing: the caller applies the
+ * plan (`applyDetectionPlan`).
+ */
+function planDetections(
+  rows: Doc<"traceEvents">[],
+): { plan: DetectionPlan[]; detected: string[] } {
+  const plan: DetectionPlan[] = [];
 
     // A delivery failure the platform REPAIRED (its file landed after the
     // verdict — stream.ts addPart) is not an observation an operator can act on:
@@ -1129,7 +1145,7 @@ export const detectAnomalies = internalMutation({
       if (ratio >= API_ERROR_RATIO_WARN) {
         const severity: Severity =
           ratio >= API_ERROR_RATIO_CRITICAL ? "critical" : "warn";
-        await upsertDetectorAnomaly(ctx, {
+        plan.push({
           kind: ANOMALY_KINDS.API_ERROR_RATIO,
           severity,
           message: `High API error ratio: ${agg.apiErrors}/${agg.apiCalls} (${(
@@ -1158,7 +1174,7 @@ export const detectAnomalies = internalMutation({
       const severity: Severity =
         agg.dispatchFailures >= DISPATCH_FAIL_CRITICAL ? "critical" : "warn";
       const dominantCode = topKey(agg.dispatchCodes);
-      await upsertDetectorAnomaly(ctx, {
+      plan.push({
         kind: ANOMALY_KINDS.DISPATCH_FAILURES,
         severity,
         message: dominantCode
@@ -1188,7 +1204,7 @@ export const detectAnomalies = internalMutation({
         agg.internalFailures >= INTERNAL_WORK_CRITICAL ? "critical" : "warn";
       const dominantJob = topKey(agg.internalJobs);
       const dominantCode = topKey(agg.internalCodes);
-      await upsertDetectorAnomaly(ctx, {
+      plan.push({
         kind: ANOMALY_KINDS.INTERNAL_WORK_FAILURES,
         severity,
         message: `Atrium internal work failing: ${agg.internalFailures} over ${windowMin}m${
@@ -1224,7 +1240,7 @@ export const detectAnomalies = internalMutation({
       agg.streamErrors >= STREAM_ERROR_WARN ||
       (agg.streamErrors > 0 && streamCombined >= STREAM_ERROR_CRITICAL)
     ) {
-      await upsertDetectorAnomaly(ctx, {
+      plan.push({
         kind: ANOMALY_KINDS.STREAM_ERRORS,
         // The COMBINED escalation is kept here (codex P1): 2 errors alongside 8
         // stops is a critical situation, and splitting the burst class out must not
@@ -1257,7 +1273,7 @@ export const detectAnomalies = internalMutation({
     // answered: raising it as "assistant stream errors" pointed every reader at
     // a reply that was in fact fine.
     if (agg.taskOverruns > 0) {
-      await upsertDetectorAnomaly(ctx, {
+      plan.push({
         kind: ANOMALY_KINDS.TASK_OVERRUNS,
         severity: "warn",
         message: `Background tasks past their own declared deadline: ${agg.taskOverruns} over ${windowMin}m`,
@@ -1287,7 +1303,7 @@ export const detectAnomalies = internalMutation({
         (announceDominant !== undefined
           ? agg.announceCauseCorrelation[announceDominant]
           : undefined) ?? agg.announceSampleCorrelation;
-      await upsertDetectorAnomaly(ctx, {
+      plan.push({
         kind: ANOMALY_KINDS.ANNOUNCE_ERRORS,
         severity:
           agg.announceErrors >= ANNOUNCE_ERROR_CRITICAL ? "critical" : "warn",
@@ -1318,7 +1334,7 @@ export const detectAnomalies = internalMutation({
       // CONDITION class and clears by itself (codex P2). Folding it into the
       // turn-costing class would have left an alert open forever for a burst of
       // people changing their minds.
-      await upsertDetectorAnomaly(ctx, {
+      plan.push({
         kind: ANOMALY_KINDS.STOP_BURSTS,
         severity: "critical",
         message: `User stops: ${agg.streamAborts} over ${windowMin}m (no errors)`,
@@ -1348,7 +1364,7 @@ export const detectAnomalies = internalMutation({
       const providers = [...(agg.streamCauseProviders[cause] ?? [])]
         .sort()
         .slice(0, MAX_CAUSE_AGENTS);
-      await upsertDetectorAnomaly(ctx, {
+      plan.push({
         kind,
         severity:
           count >= STREAM_ERROR_WARN || CRITICAL_ON_FIRST_CAUSES.has(cause)
@@ -1377,7 +1393,7 @@ export const detectAnomalies = internalMutation({
     if (agg.ingestDenied >= INGEST_DENIED_WARN) {
       const severity: Severity =
         agg.ingestDenied >= INGEST_DENIED_CRITICAL ? "critical" : "warn";
-      await upsertDetectorAnomaly(ctx, {
+      plan.push({
         kind: ANOMALY_KINDS.INGEST_DENIED,
         severity,
         message: `Ingest auth-denied spike: ${agg.ingestDenied} over ${windowMin}m`,
@@ -1408,7 +1424,7 @@ export const detectAnomalies = internalMutation({
     if (scanDistinct >= ACCESS_SCAN_DISTINCT_WARN && scanPrincipal !== undefined) {
       const severity: Severity =
         scanDistinct >= ACCESS_SCAN_DISTINCT_CRITICAL ? "critical" : "warn";
-      await upsertDetectorAnomaly(ctx, {
+      plan.push({
         kind: ANOMALY_KINDS.ACCESS_SCAN,
         severity,
         message: `API key reading many distinct chats: ${scanDistinct} in ${windowMin}m (possible chatId scan)`,
@@ -1428,11 +1444,133 @@ export const detectAnomalies = internalMutation({
       detected.push(ANOMALY_KINDS.ACCESS_SCAN);
     }
 
-    // Auto-resolve detector anomalies whose condition cleared this run, so the
-    // heartbeat openCount returns to 0 (the self-repair signal un-trips).
-    const autoResolved = await autoResolveClearedDetectors(ctx, detected);
+    return { plan, detected };
+}
 
+/** Write a plan: upsert each detection, then auto-resolve the detectors that cleared. */
+async function applyDetectionPlan(
+  ctx: MutationCtx,
+  plan: readonly DetectionPlan[],
+  detected: string[],
+): Promise<string[]> {
+  for (const p of plan) await upsertDetectorAnomaly(ctx, p);
+  // Auto-resolve detector anomalies whose condition cleared this run, so the
+  // heartbeat openCount returns to 0 (the self-repair signal un-trips).
+  return await autoResolveClearedDetectors(ctx, detected);
+}
+
+/**
+ * The detector in ONE transaction (tests, `npx convex run`). NOT what the cron runs:
+ * a mutation that reads the trace window holds that index range in its read set, and
+ * the window is open at its newest end whenever it holds fewer than MAX_SCAN rows — so
+ * EVERY trace written while it runs (each bridge op writes one) invalidates it. Under
+ * steady traffic it fails "on every subsequent retry" and the scheduler re-runs it with
+ * backoff, re-reading up to MAX_SCAN rows each time (observed on the local backend,
+ * 2026-10-04: `detect anomalies` OCC against `observability:recordEvent`). The cron runs
+ * `detectAnomaliesScheduled` instead: the scan is a QUERY, which never conflicts.
+ */
+export const detectAnomalies = internalMutation({
+  args: {},
+  handler: async (
+    ctx,
+  ): Promise<{ scanned: number; detected: string[]; autoResolved: string[] }> => {
+    const generation = Date.now();
+    const rows = await scanDetectionWindow(ctx, generation);
+    const { plan, detected } = planDetections(rows);
+    // Fresh by construction (scan and apply in one serializable transaction): it always
+    // applies, and advances the generation so a cron plan scanned before it — even in
+    // the same millisecond — can no longer apply.
+    await claimDetectionGeneration(ctx, generation, { fresh: true });
+    const autoResolved = await applyDetectionPlan(ctx, plan, detected);
     return { scanned: rows.length, detected, autoResolved };
+  },
+});
+
+const DETECTOR_STATE_KEY = "detector";
+
+/**
+ * May a plan SCANNED at `generation` apply? Only when it is STRICTLY newer than every plan
+ * applied so far: the detector's verdict is a summary of a window, and an older window's
+ * verdict landing after a newer one would close an alert whose condition still holds (its
+ * empty `detected` auto-resolves it) or overwrite a newer severity. An EQUAL generation is
+ * refused too — two scans in one millisecond cannot be ordered, and a dropped duplicate is
+ * caught by the next tick. A `fresh` plan (scanned in the applying transaction itself) is
+ * never stale and always applies. Claims the generation when it applies.
+ */
+async function claimDetectionGeneration(
+  ctx: MutationCtx,
+  generation: number,
+  opts: { fresh?: boolean } = {},
+): Promise<boolean> {
+  const state = await ctx.db
+    .query("anomalyDetectorState")
+    .withIndex("by_key", (q) => q.eq("key", DETECTOR_STATE_KEY))
+    .first();
+  if (state !== null && opts.fresh !== true && generation <= state.lastAppliedGeneration) {
+    console.warn(
+      `[anomalies] stale detection plan refused: scanned at ${generation}, a plan scanned at ${state.lastAppliedGeneration} was already applied`,
+    );
+    return false;
+  }
+  if (state === null) {
+    await ctx.db.insert("anomalyDetectorState", {
+      key: DETECTOR_STATE_KEY,
+      lastAppliedGeneration: generation,
+      updatedAt: Date.now(),
+    });
+  } else if (generation > state.lastAppliedGeneration) {
+    await ctx.db.patch(state._id, { lastAppliedGeneration: generation, updatedAt: Date.now() });
+  }
+  return true;
+}
+
+/** The scan half of the cron: read the window and plan, in a query (no OCC). The plan
+ *  crosses to the mutation as JSON — evidence objects may hold `undefined` fields, which
+ *  are not Convex values. */
+export const planAnomalyDetections = internalQuery({
+  args: {},
+  handler: async (
+    ctx,
+  ): Promise<{ scanned: number; planJson: string; detected: string[]; generation: number }> => {
+    // The scan's GENERATION: when it read the window. The apply refuses any plan older
+    // than the newest one applied (claimDetectionGeneration).
+    const generation = Date.now();
+    const rows = await scanDetectionWindow(ctx, generation);
+    const { plan, detected } = planDetections(rows);
+    return { scanned: rows.length, planJson: JSON.stringify(plan), detected, generation };
+  },
+});
+
+/** The write half of the cron: touches `anomalies` rows only — never the trace window,
+ *  so a trace written meanwhile cannot invalidate it. */
+export const applyAnomalyDetections = internalMutation({
+  args: { planJson: v.string(), detected: v.array(v.string()), generation: v.number() },
+  handler: async (ctx, { planJson, detected, generation }): Promise<string[]> => {
+    // BEFORE any upsert and any auto-resolution: a stale plan changes nothing at all.
+    if (!(await claimDetectionGeneration(ctx, generation))) return [];
+    const plan = JSON.parse(planJson) as DetectionPlan[];
+    return await applyDetectionPlan(ctx, plan, detected);
+  },
+});
+
+/** THE CRON: plan in a query, apply in a mutation. Two transactions on purpose: an
+ *  anomaly is a summary of a window, and the window moving between the two only shifts
+ *  what the NEXT tick sees (upserts carry their own newest-event watermark). */
+export const detectAnomaliesScheduled = internalAction({
+  args: {},
+  handler: async (
+    ctx,
+  ): Promise<{ scanned: number; detected: string[]; autoResolved: string[] }> => {
+    const { scanned, planJson, detected, generation } = await ctx.runQuery(
+      internal.anomalies.planAnomalyDetections,
+      {},
+    );
+    const autoResolved = await ctx.runMutation(internal.anomalies.applyAnomalyDetections, {
+      planJson,
+      detected,
+      generation,
+    });
+    return { scanned, detected, autoResolved };
   },
 });
 

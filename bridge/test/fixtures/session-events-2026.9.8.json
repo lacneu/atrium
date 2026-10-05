@@ -1,0 +1,404 @@
+{
+ "$comment": "REAL session-event and chat.history reply shapes captured on the live bench (OpenClaw 2026.9.8, run 2026-10-04T17-59-21-910Z), MINIMISED by allowlist: identity fields only (ids, seqs, run ids, send keys, reasons, phases, custody states), every text replaced by '<text>', session keys pseudonymised. Pinned by bridge/test/transcript-events.test.ts.",
+ "version": "2026.9.8",
+ "frames": [
+  {
+   "type": "event",
+   "event": "sessions.changed",
+   "payload": {
+    "sessionKey": "agent:alice:atrium:chat:user-1:session-1",
+    "reason": "activity-summary",
+    "sessionId": "182abff4-0305-4629-978c-4d847926ef2d"
+   }
+  },
+  {
+   "type": "event",
+   "event": "session.message",
+   "payload": {
+    "sessionKey": "agent:alice:atrium:chat:user-1:session-1",
+    "messageId": "5f50c197-361e-43dd-b7a2-877b7a9e9e8c",
+    "messageSeq": 2,
+    "hasActiveRun": true,
+    "sessionId": "182abff4-0305-4629-978c-4d847926ef2d",
+    "message": {
+     "role": "assistant",
+     "__openclaw": {
+      "id": "5f50c197-361e-43dd-b7a2-877b7a9e9e8c",
+      "seq": 2,
+      "runId": "webchat-b88ce2864f7626cda71a1a5ffbe01052722ab7910e0bf83c48ea6ad97048944c"
+     },
+     "content": [
+      {
+       "type": "thinking"
+      },
+      {
+       "type": "toolCall",
+       "id": "call_663aef551da84952b54d3267a0a47f7f|fc_028b9dcd3a6ef61e016ac29412edf4819398a95e58184f9a83"
+      }
+     ]
+    }
+   }
+  },
+  {
+   "type": "event",
+   "event": "session.message",
+   "payload": {
+    "sessionKey": "agent:alice:atrium:chat:user-1:session-1",
+    "messageId": "f2d8d2b0-918f-47bf-8c44-28d1667aa9e8",
+    "messageSeq": 4,
+    "hasActiveRun": true,
+    "sessionId": "182abff4-0305-4629-978c-4d847926ef2d",
+    "message": {
+     "role": "assistant",
+     "__openclaw": {
+      "id": "f2d8d2b0-918f-47bf-8c44-28d1667aa9e8",
+      "seq": 4,
+      "runId": "webchat-b88ce2864f7626cda71a1a5ffbe01052722ab7910e0bf83c48ea6ad97048944c"
+     },
+     "content": [
+      {
+       "type": "thinking"
+      },
+      {
+       "type": "toolCall",
+       "id": "call_0452b64c8d9c40aeb9277ce5accdd8f4|fc_028b9dcd3a6ef61e016ac29415acac819383e804ab15bca61f"
+      }
+     ]
+    }
+   }
+  },
+  {
+   "type": "event",
+   "event": "session.message",
+   "payload": {
+    "sessionKey": "agent:alice:atrium:chat:user-1:session-1",
+    "messageId": "2b563289-08e4-45a3-87b9-0f23759a4b46",
+    "messageSeq": 5,
+    "hasActiveRun": true,
+    "sessionId": "182abff4-0305-4629-978c-4d847926ef2d",
+    "message": {
+     "role": "custom",
+     "__openclaw": {
+      "id": "2b563289-08e4-45a3-87b9-0f23759a4b46",
+      "seq": 5,
+      "runId": "webchat-b88ce2864f7626cda71a1a5ffbe01052722ab7910e0bf83c48ea6ad97048944c",
+      "idempotencyKey": "3b26adf9-587e-4c29-a56e-3497a5888006:tool_call:call_0452b64c8d9c40aeb9277ce5accdd8f4_fc_028b9dcd3a6ef61e016ac29415acac819383e804ab15bca61f:agents_list:1"
+     },
+     "content": [
+      {
+       "type": "toolCall",
+       "id": "tool_call:call_0452b64c8d9c40aeb9277ce5accdd8f4_fc_028b9dcd3a6ef61e016ac29415acac819383e804ab15bca61f:agents_list:1"
+      },
+      {
+       "type": "toolResult",
+       "toolCallId": "tool_call:call_0452b64c8d9c40aeb9277ce5accdd8f4_fc_028b9dcd3a6ef61e016ac29415acac819383e804ab15bca61f:agents_list:1"
+      }
+     ]
+    }
+   }
+  },
+  {
+   "type": "event",
+   "event": "session.message",
+   "payload": {
+    "sessionKey": "agent:alice:atrium:chat:user-1:session-1",
+    "messageId": "f93a0f86-849b-4bbe-af15-06c443f0e785",
+    "messageSeq": 6,
+    "hasActiveRun": true,
+    "sessionId": "182abff4-0305-4629-978c-4d847926ef2d",
+    "message": {
+     "role": "custom",
+     "__openclaw": {
+      "id": "f93a0f86-849b-4bbe-af15-06c443f0e785",
+      "seq": 6,
+      "runId": "webchat-b88ce2864f7626cda71a1a5ffbe01052722ab7910e0bf83c48ea6ad97048944c",
+      "idempotencyKey": "3b26adf9-587e-4c29-a56e-3497a5888006:tool_call:call_0452b64c8d9c40aeb9277ce5accdd8f4_fc_028b9dcd3a6ef61e016ac29415acac819383e804ab15bca61f:sessions_spawn:2"
+     },
+     "content": [
+      {
+       "type": "toolCall",
+       "id": "tool_call:call_0452b64c8d9c40aeb9277ce5accdd8f4_fc_028b9dcd3a6ef61e016ac29415acac819383e804ab15bca61f:sessions_spawn:2"
+      },
+      {
+       "type": "toolResult",
+       "toolCallId": "tool_call:call_0452b64c8d9c40aeb9277ce5accdd8f4_fc_028b9dcd3a6ef61e016ac29415acac819383e804ab15bca61f:sessions_spawn:2"
+      }
+     ]
+    }
+   }
+  },
+  {
+   "type": "event",
+   "event": "sessions.changed",
+   "payload": {
+    "sessionKey": "agent:alice:atrium:chat:user-1:session-2",
+    "reason": "send",
+    "hasActiveRun": true,
+    "sessionId": "b37e67a5-cab9-4c0c-a287-d89623ca5d0c"
+   }
+  },
+  {
+   "type": "event",
+   "event": "sessions.changed",
+   "payload": {
+    "sessionKey": "agent:alice:atrium:chat:user-1:session-2",
+    "reason": "create",
+    "hasActiveRun": true,
+    "sessionId": "b37e67a5-cab9-4c0c-a287-d89623ca5d0c"
+   }
+  },
+  {
+   "type": "event",
+   "event": "sessions.changed",
+   "payload": {
+    "sessionKey": "agent:alice:atrium:chat:user-1:session-2",
+    "reason": "participants",
+    "hasActiveRun": true,
+    "sessionId": "b37e67a5-cab9-4c0c-a287-d89623ca5d0c"
+   }
+  },
+  {
+   "type": "event",
+   "event": "sessions.changed",
+   "payload": {
+    "sessionKey": "agent:alice:atrium:chat:user-1:session-2",
+    "reason": "agent.run.started",
+    "hasActiveRun": true,
+    "sessionId": "b37e67a5-cab9-4c0c-a287-d89623ca5d0c"
+   }
+  },
+  {
+   "type": "event",
+   "event": "sessions.changed",
+   "payload": {
+    "sessionKey": "agent:alice:atrium:chat:user-1:session-2",
+    "phase": "start",
+    "runId": "560220ab-7b96-41a3-be91-72a767ba1669",
+    "hasActiveRun": true,
+    "sessionId": "b37e67a5-cab9-4c0c-a287-d89623ca5d0c"
+   }
+  },
+  {
+   "type": "event",
+   "event": "session.message",
+   "payload": {
+    "sessionKey": "agent:alice:atrium:chat:user-1:session-2",
+    "messageId": "e2a1a42a-69fa-4ffb-bc5a-89f54a052b5b",
+    "messageSeq": 1,
+    "hasActiveRun": true,
+    "sessionId": "b37e67a5-cab9-4c0c-a287-d89623ca5d0c",
+    "message": {
+     "role": "user",
+     "__openclaw": {
+      "id": "e2a1a42a-69fa-4ffb-bc5a-89f54a052b5b",
+      "seq": 1,
+      "idempotencyKey": "560220ab-7b96-41a3-be91-72a767ba1669:user"
+     },
+     "content": "<text>"
+    }
+   }
+  },
+  {
+   "type": "event",
+   "event": "sessions.changed",
+   "payload": {
+    "sessionKey": "agent:alice:atrium:chat:user-1:session-2",
+    "phase": "model",
+    "runId": "560220ab-7b96-41a3-be91-72a767ba1669",
+    "hasActiveRun": true,
+    "sessionId": "b37e67a5-cab9-4c0c-a287-d89623ca5d0c"
+   }
+  },
+  {
+   "type": "event",
+   "event": "session.message",
+   "payload": {
+    "sessionKey": "agent:alice:atrium:chat:user-1:session-1",
+    "messageId": "b760cac6-47bd-4162-a07d-9c7e0525d6d7",
+    "messageSeq": 12,
+    "runId": "webchat-b88ce2864f7626cda71a1a5ffbe01052722ab7910e0bf83c48ea6ad97048944c",
+    "hasActiveRun": true,
+    "sessionId": "182abff4-0305-4629-978c-4d847926ef2d",
+    "message": {
+     "role": "assistant",
+     "__openclaw": {
+      "id": "b760cac6-47bd-4162-a07d-9c7e0525d6d7",
+      "seq": 12,
+      "runId": "webchat-b88ce2864f7626cda71a1a5ffbe01052722ab7910e0bf83c48ea6ad97048944c"
+     },
+     "content": [
+      {
+       "type": "text",
+       "text": "<text>"
+      }
+     ]
+    }
+   }
+  },
+  {
+   "type": "event",
+   "event": "sessions.changed",
+   "payload": {
+    "sessionKey": "agent:alice:atrium:chat:user-1:session-1",
+    "phase": "end",
+    "runId": "webchat-b88ce2864f7626cda71a1a5ffbe01052722ab7910e0bf83c48ea6ad97048944c",
+    "hasActiveRun": true,
+    "sessionId": "182abff4-0305-4629-978c-4d847926ef2d"
+   }
+  },
+  {
+   "type": "event",
+   "event": "sessions.changed",
+   "payload": {
+    "sessionKey": "agent:alice:atrium:chat:user-1:session-1",
+    "reason": "agent.input.settled",
+    "hasActiveRun": false,
+    "sessionId": "182abff4-0305-4629-978c-4d847926ef2d"
+   }
+  },
+  {
+   "type": "event",
+   "event": "session.message",
+   "payload": {
+    "sessionKey": "agent:alice:atrium:chat:user-1:session-2",
+    "messageId": "6c4172b9-a889-4973-b693-92c03c80c123",
+    "messageSeq": 8,
+    "runId": "560220ab-7b96-41a3-be91-72a767ba1669",
+    "hasActiveRun": true,
+    "sessionId": "b37e67a5-cab9-4c0c-a287-d89623ca5d0c",
+    "message": {
+     "role": "assistant",
+     "__openclaw": {
+      "id": "6c4172b9-a889-4973-b693-92c03c80c123",
+      "seq": 8,
+      "runId": "560220ab-7b96-41a3-be91-72a767ba1669"
+     },
+     "content": [
+      {
+       "type": "text",
+       "text": "<text>"
+      }
+     ]
+    }
+   }
+  },
+  {
+   "type": "event",
+   "event": "session.message",
+   "payload": {
+    "sessionKey": "agent:alice:atrium:chat:user-1:session-1",
+    "messageId": "2bfb5490-b1d0-49bf-af6b-9db72df88d63",
+    "messageSeq": 26,
+    "hasActiveRun": true,
+    "sessionId": "182abff4-0305-4629-978c-4d847926ef2d",
+    "message": {
+     "role": "user",
+     "__openclaw": {
+      "id": "2bfb5490-b1d0-49bf-af6b-9db72df88d63",
+      "seq": 26,
+      "idempotencyKey": "webchat-a085b2ede1bc669d6600f405fa59928555405125fc383bee1479ecc2d6c272b0:user"
+     },
+     "content": "<text>"
+    }
+   }
+  },
+  {
+   "type": "event",
+   "event": "sessions.changed",
+   "payload": {
+    "sessionKey": "agent:alice:atrium:chat:user-1:session-1",
+    "phase": "message",
+    "hasActiveRun": false,
+    "sessionId": "182abff4-0305-4629-978c-4d847926ef2d"
+   }
+  },
+  {
+   "type": "event",
+   "event": "sessions.changed",
+   "payload": {
+    "sessionKey": "agent:alice:atrium:chat:user-1:session-3",
+    "reason": "patch",
+    "hasActiveRun": false,
+    "sessionId": "8b585f87-88ba-4ceb-9b4f-6496ce735398"
+   }
+  },
+  {
+   "type": "event",
+   "event": "sessions.changed",
+   "payload": {
+    "sessionKey": "agent:alice:atrium:chat:user-1:session-4",
+    "reason": "cron-binding",
+    "sessionId": "98c7f12b-6ce2-4f27-841d-fb73cbd83918"
+   }
+  },
+  {
+   "type": "event",
+   "event": "sessions.changed",
+   "payload": {
+    "sessionKey": null,
+    "reason": "profile-identity"
+   }
+  }
+ ],
+ "historyReplies": [
+  {
+   "kind": "delta",
+   "deltaCursor": "eyJhZ2VudElkIjoiYWxpY2UiLCJnZW5lcmF0aW9uIjoiMDQzOTg2NjhhNTYwNDY4OTk4MjQwMWU1YWJlYjc3MTEiLCJsYXN0U2VxIjozOSwic2Vzc2lvbklkIjoiMTgyYWJmZjQtMDMwNS00NjI5LTk3OGMtNGQ4NDc5MjZlZjJkIiwidmVyc2lvbiI6MX0",
+   "pendingInputs": {
+    "items": [
+     {
+      "id": "2bfb5490-b1d0-49bf-af6b-9db72df88d63",
+      "runId": "webchat-a085b2ede1bc669d6600f405fa59928555405125fc383bee1479ecc2d6c272b0",
+      "state": "queued",
+      "acceptedAt": 1791136858230
+     }
+    ],
+    "total": 1,
+    "queuedCount": 0
+   },
+   "inputReceipts": [
+    {
+     "runId": "webchat-a085b2ede1bc669d6600f405fa59928555405125fc383bee1479ecc2d6c272b0",
+     "state": "pending"
+    }
+   ],
+   "sessionInfo": {
+    "sessionId": "182abff4-0305-4629-978c-4d847926ef2d",
+    "hasActiveRun": true,
+    "activeRunIds": [
+     "webchat-a085b2ede1bc669d6600f405fa59928555405125fc383bee1479ecc2d6c272b0"
+    ]
+   },
+   "messages": []
+  },
+  {
+   "pendingInputs": {
+    "items": [
+     {
+      "id": "c3ecc063-693d-4386-9bf5-ae51d6173114",
+      "runId": "webchat-77af9f20a065e0c0acaa1219901cf94e5c06253bd3e737ba006438d9cb6d5e5d",
+      "state": "queued",
+      "acceptedAt": 1791137020543
+     }
+    ],
+    "total": 1,
+    "queuedCount": 0
+   },
+   "inputReceipts": [
+    {
+     "runId": "webchat-77af9f20a065e0c0acaa1219901cf94e5c06253bd3e737ba006438d9cb6d5e5d",
+     "state": "pending"
+    }
+   ],
+   "sessionInfo": {
+    "sessionId": "8b585f87-88ba-4ceb-9b4f-6496ce735398",
+    "hasActiveRun": true,
+    "activeRunIds": [
+     "webchat-77af9f20a065e0c0acaa1219901cf94e5c06253bd3e737ba006438d9cb6d5e5d"
+    ]
+   },
+   "sessionId": "8b585f87-88ba-4ceb-9b4f-6496ce735398",
+   "messages": []
+  }
+ ]
+}

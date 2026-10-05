@@ -349,7 +349,152 @@ export type HistoryRead = {
   sessionId: string | null;
   activeRunIds: string[] | null;
   hasActiveRun: boolean | null;
+  /** The gateway's custody of accepted inputs (null when the reply carried none). */
+  pendingInputs: PendingInputsFacts | null;
+  /** Receipts for the `inputRunIds` the read asked about (null when absent: the read
+   *  asked nothing, or the gateway answers none for this session). */
+  inputReceipts: InputReceipt[] | null;
+  /** Receipts the reply carried but Atrium could not interpret (an unknown `state`,
+   *  protocol drift): the ids are OBSERVED, never absent. */
+  unreadableReceipts: UnreadableReceipts;
 };
+
+export type UnreadableReceipts = {
+  /** Ids of receipts whose state is not one Atrium knows. */
+  ids: string[];
+  /** Receipts with no readable id at all: no asked id can be proven absent then. */
+  unattributed: number;
+  /** The unknown state values (for the drift sensor, bounded). */
+  states: string[];
+};
+
+const NO_UNREADABLE: UnreadableReceipts = { ids: [], unattributed: 0, states: [] };
+
+/** The receipts `readInputReceipts` could not keep: an entry whose `state` is neither
+ *  `pending` nor `consumed` (`ChatInputReceiptsSchema`, logs-chat.ts — a new state is
+ *  protocol drift), or an entry that is not a record with a usable id. */
+export function readUnreadableReceipts(value: unknown): UnreadableReceipts {
+  if (!Array.isArray(value)) return NO_UNREADABLE;
+  const ids: string[] = [];
+  const states: string[] = [];
+  let unattributed = 0;
+  for (const raw of value.slice(0, INPUT_RUN_IDS_MAX)) {
+    const r = asRecord(raw);
+    const state = r?.state;
+    if (state === "pending" || state === "consumed") {
+      if (boundedRunId(r?.runId) === null) unattributed++;
+      continue;
+    }
+    const runId = boundedRunId(r?.runId);
+    if (runId === null) unattributed++;
+    else ids.push(runId);
+    if (states.length < 10) states.push(typeof state === "string" ? state : `<${typeof state}>`);
+  }
+  return { ids, unattributed, states };
+}
+
+// ── The input guard (custody), as identities ──────────────────────────────────────────
+
+/** Upstream bounds (packages/gateway-protocol/src/schema/chat-history-constants.ts:
+ *  `CHAT_INPUT_RECEIPT_MAX_RUN_IDS` = 50, `CHAT_INPUT_RUN_ID_MAX_CHARS` = 256) and the
+ *  pending-inputs page cap (`ChatPendingInputsPageSchema.items` maxItems 20,
+ *  logs-chat.ts; `readChatPendingInputs` limit, chat-pending-inputs.ts). */
+export const INPUT_RUN_IDS_MAX = 50;
+export const INPUT_RUN_ID_MAX_CHARS = 256;
+export const PENDING_INPUT_ITEMS_MAX = 20;
+
+export type PendingInputState = "queued" | "cancelled" | "interrupted";
+
+/** One `pendingInputs.items[]` entry, identity only (never its `message`). */
+export type PendingInputItem = {
+  runId?: string;
+  state: PendingInputState;
+  /** 2026.9.7+: the input waits in the gateway's own queue (`queued: true`). */
+  queued?: true;
+};
+
+export type PendingInputsFacts = {
+  total: number;
+  /** 2026.9.7+ (`ChatPendingInputsPageSchema.queuedCount`). */
+  queuedCount?: number;
+  items: PendingInputItem[];
+  /** The page is the WHOLE list — no older page (`nextBefore` absent) and every item
+   *  kept — the Control UI's `completePage` (ui/src/pages/chat/chat-pending-inputs.ts:62
+   *  at v2026.9.8). Only then does an input's absence from it say it is in no queue. */
+  complete?: true;
+};
+
+/** `ChatInputReceiptsSchema` (logs-chat.ts): `pending` (with the 9.7+ `queued` /
+ *  `cancelled` flags) or `consumed`. */
+export type InputReceipt = {
+  runId: string;
+  state: "pending" | "consumed";
+  queued?: true;
+  cancelled?: true;
+};
+
+const boundedRunId = (x: unknown): string | null =>
+  typeof x === "string" && x.length > 0 && x.length <= INPUT_RUN_ID_MAX_CHARS ? x : null;
+
+const nonNegativeInt = (x: unknown): number | null =>
+  typeof x === "number" && Number.isSafeInteger(x) && x >= 0 ? x : null;
+
+/** `pendingInputs` of a `chat.history` reply (chat-history-handler.ts builds it for the
+ *  current session; `readChatPendingInputs`, chat-pending-inputs.ts). Identity only. */
+export function readPendingInputs(value: unknown): PendingInputsFacts | null {
+  const page = asRecord(value);
+  if (page === null || !Array.isArray(page.items)) return null;
+  const items: PendingInputItem[] = [];
+  let dropped = Math.max(0, page.items.length - PENDING_INPUT_ITEMS_MAX);
+  for (const raw of page.items.slice(0, PENDING_INPUT_ITEMS_MAX)) {
+    const item = asRecord(raw);
+    const state = item?.state;
+    if (state !== "queued" && state !== "cancelled" && state !== "interrupted") {
+      dropped++;
+      continue;
+    }
+    const runId = boundedRunId(item?.runId);
+    // An item whose identity was dropped cannot be matched: the page names it unseen.
+    if (item?.runId !== undefined && runId === null) dropped++;
+    items.push({
+      ...(runId === null ? {} : { runId }),
+      state,
+      ...(item?.queued === true ? { queued: true as const } : {}),
+    });
+  }
+  const total = nonNegativeInt(page.total) ?? items.length;
+  const queuedCount = nonNegativeInt(page.queuedCount);
+  const complete =
+    page.nextBefore === undefined && dropped === 0 && nonNegativeInt(page.total) === page.items.length;
+  return {
+    total,
+    ...(queuedCount === null ? {} : { queuedCount }),
+    items,
+    ...(complete ? { complete: true as const } : {}),
+  };
+}
+
+/** `inputReceipts` of a `chat.history` reply (present only when the read sent
+ *  `inputRunIds`, chat-history-handler.ts). */
+export function readInputReceipts(value: unknown): InputReceipt[] | null {
+  if (!Array.isArray(value)) return null;
+  const out: InputReceipt[] = [];
+  for (const raw of value.slice(0, INPUT_RUN_IDS_MAX)) {
+    const r = asRecord(raw);
+    const runId = boundedRunId(r?.runId);
+    if (runId === null) continue;
+    if (r?.state === "consumed") out.push({ runId, state: "consumed" });
+    else if (r?.state === "pending") {
+      out.push({
+        runId,
+        state: "pending",
+        ...(r.queued === true ? { queued: true as const } : {}),
+        ...(r.cancelled === true ? { cancelled: true as const } : {}),
+      });
+    }
+  }
+  return out;
+}
 
 function readSessionInfo(payload: Record<string, unknown>): {
   sessionId: string | null;
@@ -389,6 +534,9 @@ export function parseHistoryReply(payload: unknown): HistoryRead | null {
       sessionId: null,
       activeRunIds: null,
       hasActiveRun: null,
+      pendingInputs: null,
+      inputReceipts: null,
+      unreadableReceipts: NO_UNREADABLE,
     };
   }
   if (!Array.isArray(p.messages)) return null;
@@ -413,6 +561,9 @@ export function parseHistoryReply(payload: unknown): HistoryRead | null {
     unidentified,
     deltaCursor: typeof p.deltaCursor === "string" && p.deltaCursor !== "" ? p.deltaCursor : null,
     ...info,
+    pendingInputs: readPendingInputs(p.pendingInputs),
+    inputReceipts: readInputReceipts(p.inputReceipts),
+    unreadableReceipts: readUnreadableReceipts(p.inputReceipts),
   };
 }
 
@@ -436,4 +587,173 @@ export function runTerminalStatus(event: {
   if (event.state === "error") return errorKind === "timeout" ? "timeout" : "error";
   if (event.yielded === true && stopReason === "end_turn") return "yielded";
   return stopReason === "error" ? "error" : "completed";
+}
+
+// ── Session events (redesign phase 2): what a `session.message` / `sessions.changed`
+//    asks of the reconciler ─────────────────────────────────────────────────────────────
+
+/** Does a content block carry a gateway-stored image (`artifactId`)? */
+function hasArtifactImage(message: Record<string, unknown>): boolean {
+  if (!Array.isArray(message.content)) return false;
+  return message.content.some((part) => {
+    const block = asRecord(part);
+    return (
+      block?.type === "image" && typeof block.artifactId === "string" && block.artifactId.trim() !== ""
+    );
+  });
+}
+
+export type LiveAdmission = {
+  /** The row, when it is identified (entry id + seq) — null otherwise. */
+  row: TranscriptRow | null;
+  /** The Control UI applies it now (CU-16); otherwise only a read brings it. */
+  admitted: boolean;
+  why:
+    | "user"
+    | "previous_run"
+    | "producer"
+    | "tool_image"
+    | "unadmitted"
+    | "unidentified"
+    | "imported"
+    | "unreadable";
+  role: string | null;
+  /** `hasActiveRun` of the session snapshot the event carries (null: absent). */
+  hasActiveRun: boolean | null;
+};
+
+/**
+ * CU-16, the admission of a LIVE `session.message` — mirror of upstream
+ * `applySessionMessagePayload` with `source.kind === "live"`
+ * (ui/src/pages/chat/session-message-apply.ts:65-130 at v2026.9.8; same rule at
+ * v2026.9.6 :82-133; v2026.8.2 lacks only the tool-image admission, :98-105):
+ *   - a user row is always admitted;
+ *   - a non-user row only when it is a sequenced assistant row of a run other than the
+ *     foreground one (`isPreviousRunAssistant`), or its producer is PROVEN by the event
+ *     (`incoming.runId === event.runId`) and that run is the one the pane is finishing
+ *     (`finishingChatRunId`), or it is a sequenced tool row of a proven producer with a
+ *     stored image;
+ *   - a row with neither id, key nor seq is dropped (:130), and so is an imported row
+ *     (its identity lives in another namespace — `toTranscriptRow` skips it anyway).
+ * NOT mirrored: `finishingChatRunId`'s last branch, which admits a producer-less legacy
+ * row when its TEXT equals the projected reply of the finished run — the shadow holds no
+ * text; such a row reaches the store through the read the same event triggers.
+ */
+export function admitLiveRow(
+  payload: unknown,
+  ctx: {
+    /** The run in the foreground of this session's turn (the pane's `chatRunId`). */
+    activeRunId: string | null;
+    /** The last foreground run whose terminal was observed (`lastLocalTerminalReconcile`). */
+    recentTerminalRunId: string | null;
+  },
+): LiveAdmission {
+  const event = asRecord(payload);
+  const message = asRecord(event?.message);
+  const hasActiveRun = typeof event?.hasActiveRun === "boolean" ? event.hasActiveRun : null;
+  if (event === null || message === null) {
+    return { row: null, admitted: false, why: "unreadable", role: null, hasActiveRun };
+  }
+  const id = readTranscriptIdentity(message, event as TranscriptEnvelope);
+  if (id === null) {
+    return { row: null, admitted: false, why: "unreadable", role: null, hasActiveRun };
+  }
+  const base = { role: id.role, hasActiveRun };
+  if (id.isImported) return { ...base, row: null, admitted: false, why: "imported" };
+  if (id.id === null && id.idempotencyKey === null && id.seq === null) {
+    return { ...base, row: null, admitted: false, why: "unidentified" };
+  }
+  const row = toTranscriptRow(message, event as TranscriptEnvelope);
+  if (id.role === "user") return { ...base, row, admitted: true, why: "user" };
+  const eventRunId = projString(event.runId);
+  const producerRunId = id.runId !== null && id.runId === eventRunId ? id.runId : null;
+  const finishing = (producer: string | null): string | null => {
+    if (ctx.activeRunId !== null) {
+      return producer !== null && producer !== ctx.activeRunId ? null : ctx.activeRunId;
+    }
+    const recent = ctx.recentTerminalRunId;
+    if (recent === null || producer === null) return null;
+    return producer === recent ? recent : null;
+  };
+  const previousRun =
+    id.role === "assistant" &&
+    id.seq !== null &&
+    id.runId !== null &&
+    ctx.activeRunId !== null &&
+    id.runId !== ctx.activeRunId;
+  if (previousRun) return { ...base, row, admitted: true, why: "previous_run" };
+  const runActive = hasActiveRun;
+  const owner =
+    id.role === "assistant" &&
+    id.id !== null &&
+    (producerRunId !== null || (id.runId === null && runActive !== true))
+      ? finishing(producerRunId)
+      : null;
+  if (owner !== null) return { ...base, row, admitted: true, why: "producer" };
+  const isTool = id.role === "toolresult" || id.role === "tool";
+  const toolImage =
+    isTool && id.id !== null && id.seq !== null && producerRunId !== null && hasArtifactImage(message)
+      ? finishing(producerRunId)
+      : null;
+  if (toolImage !== null) return { ...base, row, admitted: true, why: "tool_image" };
+  return { ...base, row, admitted: false, why: "unadmitted" };
+}
+
+/** What a `sessions.changed` asks of the reconciler. */
+export type SessionsChangedAction = {
+  /** The transcript of the session was replaced: drop the cursor, read a fresh page. */
+  reset: boolean;
+  /** Read the transcript back (coalesced like every read). */
+  read: boolean;
+  why: "reset" | "new" | "compact" | "message_batch" | "custody" | "run_end" | null;
+};
+
+/** `sessions.changed` reasons after which custody may have changed without a transcript
+ *  append (upstream `PENDING_INPUT_REASONS`, ui/src/pages/chat/chat-state-events.ts:71
+ *  at v2026.9.8; :72 at v2026.9.6). */
+const PENDING_INPUT_REASONS = new Set(["send", "agent.run.started", "agent.input.settled"]);
+
+/**
+ * The Control UI's `handleSessionsChangedEvent` (chat-state-events.ts:343-457 at
+ * v2026.9.8), reduced to what a reconciler that holds no display state needs:
+ *   - `reason:"reset"` / `phase:"reset"` → `sessionReset`, then a read (:356, :372-377,
+ *     :412-416);
+ *   - `reason:"new"` → the same (DESIGN §4.1, literal: the Control UI only retires its
+ *     companion there, :357-366 — a new session restarts `seq`, so the old cursor names
+ *     nothing in it);
+ *   - `reason:"compact"` → a read (:412);
+ *   - `phase:"message"` with no `message`/`messageId`/`messageSeq` → a read (a batch
+ *     write that proves no individual cursor, :418-431);
+ *   - `reason` ∈ `send` / `agent.run.started` / `agent.input.settled` → a read (custody
+ *     changed, :433-444);
+ *   - `phase` ∈ `end` / `error` (run lifecycle, src/gateway/server-chat.ts:683-703) → a
+ *     read: the Control UI reconciles a finished run from its row
+ *     (`finishSessionMessageRunReconcile`, :447-455), which reads history.
+ * Anything else (patch, title, archive, …) asks nothing.
+ */
+export function classifySessionsChanged(payload: unknown): SessionsChangedAction {
+  const p = asRecord(payload);
+  const reason = typeof p?.reason === "string" ? p.reason : null;
+  const phase = typeof p?.phase === "string" ? p.phase : null;
+  if (reason === "reset" || phase === "reset") return { reset: true, read: true, why: "reset" };
+  if (reason === "new") return { reset: true, read: true, why: "new" };
+  if (reason === "compact") return { reset: false, read: true, why: "compact" };
+  if (
+    phase === "message" &&
+    p?.message === undefined &&
+    p?.messageId === undefined &&
+    p?.messageSeq === undefined
+  ) {
+    return { reset: false, read: true, why: "message_batch" };
+  }
+  if (reason !== null && PENDING_INPUT_REASONS.has(reason)) {
+    return { reset: false, read: true, why: "custody" };
+  }
+  if (phase === "end" || phase === "error") return { reset: false, read: true, why: "run_end" };
+  return { reset: false, read: false, why: null };
+}
+
+/** The session key a session event names (`sessionKey`, a trimmed non-empty string). */
+export function sessionEventKey(payload: unknown): string | null {
+  return projString(asRecord(payload)?.sessionKey);
 }

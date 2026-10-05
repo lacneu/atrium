@@ -1,4 +1,5 @@
-// THE SESSION TRANSCRIPT AS THE TRUTH — the projection's store (redesign phase 1, SHADOW).
+// THE SESSION TRANSCRIPT AS THE TRUTH — the projection's store (redesign phases 1–2,
+// SHADOW).
 //
 // `applyTranscript` records what one `chat.history` read returned: identity rows, run
 // statuses, the cursor to resume from. It is IDEMPOTENT by construction (upsert by
@@ -8,9 +9,13 @@
 // lib/transcriptProjection.ts (pure, tested); this file loads and stores.
 
 import { v } from "convex/values";
-import { internalMutation, internalQuery } from "./_generated/server";
+import { internalMutation, internalQuery, type MutationCtx } from "./_generated/server";
+import { internal } from "./_generated/api";
+import type { Doc, Id } from "./_generated/dataModel";
 import { chatAllowsInstance } from "./lib/ingestAuthz";
 import {
+  clearCurrentPending,
+  collectInputObservations,
   dispatchTimeOf,
   floorForFirstRead,
   loadProjectionReport,
@@ -20,8 +25,10 @@ import {
   MAX_ROWS_PER_APPLY,
   MAX_RUN_ID_CHARS,
   MAX_TERMINALS_PER_APPLY,
+  mergeInputFact,
   sameRow,
   sanitizeRow,
+  type InputFact,
   type RunStatus,
   type TranscriptRowInput,
 } from "./lib/transcriptProjection";
@@ -53,6 +60,371 @@ const terminalValidator = v.object({
   at: v.number(),
 });
 
+const pendingInputsValidator = v.object({
+  total: v.number(),
+  queuedCount: v.optional(v.number()),
+  /** The page was the WHOLE list (no older page, every item kept): an input it does not
+   *  name is in no queue now. Absent (an older bridge, a partial page) ⇒ not proven. */
+  complete: v.optional(v.boolean()),
+  items: v.array(
+    v.object({
+      runId: v.optional(v.string()),
+      state: v.union(v.literal("queued"), v.literal("cancelled"), v.literal("interrupted")),
+      queued: v.optional(v.boolean()),
+    }),
+  ),
+});
+
+const inputReceiptValidator = v.object({
+  runId: v.string(),
+  state: v.union(v.literal("pending"), v.literal("consumed")),
+  queued: v.optional(v.boolean()),
+  cancelled: v.optional(v.boolean()),
+});
+
+type RunObservation = { status: RunStatus; emptyFinal?: boolean; at?: number };
+
+/** Upsert identity rows by (chat, session key, entry id). */
+async function upsertRows(
+  ctx: MutationCtx,
+  a: { chatId: Id<"chats">; instanceName: string; sessionKey: string; sessionId: string; now: number },
+  rows: readonly TranscriptRowInput[],
+): Promise<{
+  inserted: number;
+  updated: number;
+  maxSeq: number;
+  seqByRun: Map<string, { first: number; last: number }>;
+}> {
+  let inserted = 0;
+  let updated = 0;
+  let maxSeq = 0;
+  const seqByRun = new Map<string, { first: number; last: number }>();
+  for (const r of rows) {
+    if (r.seq > maxSeq) maxSeq = r.seq;
+    if (r.runId !== undefined && r.role !== "user") {
+      const span = seqByRun.get(r.runId);
+      seqByRun.set(r.runId, {
+        first: Math.min(span?.first ?? r.seq, r.seq),
+        last: Math.max(span?.last ?? r.seq, r.seq),
+      });
+    }
+    const next = { ...r, sessionId: a.sessionId };
+    const stored = await ctx.db
+      .query("transcriptRows")
+      .withIndex("by_chat_session_entry", (q) =>
+        q.eq("chatId", a.chatId).eq("sessionKey", a.sessionKey).eq("entryId", r.entryId),
+      )
+      .first();
+    if (stored === null) {
+      await ctx.db.insert("transcriptRows", {
+        chatId: a.chatId,
+        instanceName: a.instanceName,
+        sessionKey: a.sessionKey,
+        ...next,
+        updatedAt: a.now,
+      });
+      inserted++;
+    } else if (!sameRow(stored, next)) {
+      await ctx.db.patch(stored._id, {
+        sessionId: next.sessionId,
+        seq: next.seq,
+        role: next.role,
+        runId: next.runId,
+        sendId: next.sendId,
+        steerTargetRunId: next.steerTargetRunId,
+        mirrorOrigin: next.mirrorOrigin,
+        runTerminal: next.runTerminal,
+        hidden: next.hidden,
+        visible: next.visible,
+        toolCallIds: next.toolCallIds,
+        updatedAt: a.now,
+      });
+      updated++;
+    }
+  }
+  return { inserted, updated, maxSeq, seqByRun };
+}
+
+/** Upsert run statuses: sticky terminals (`mergeRunStatus`), seq spans widened. */
+async function upsertRuns(
+  ctx: MutationCtx,
+  a: { chatId: Id<"chats">; sessionKey: string; now: number },
+  observations: Map<string, RunObservation[]>,
+  seqByRun: Map<string, { first: number; last: number }>,
+): Promise<void> {
+  for (const [runId, list] of observations) {
+    const stored = await ctx.db
+      .query("transcriptRuns")
+      .withIndex("by_chat_session_run", (q) =>
+        q.eq("chatId", a.chatId).eq("sessionKey", a.sessionKey).eq("runId", runId),
+      )
+      .first();
+    let status: RunStatus | undefined = stored?.status;
+    let terminalAt = stored?.terminalAt;
+    let emptyFinal = stored?.emptyFinal;
+    for (const o of list) {
+      const before = status;
+      status = mergeRunStatus(status, o.status);
+      if (before !== status && o.at !== undefined) terminalAt = o.at;
+      if (o.emptyFinal === true && before !== status) emptyFinal = true;
+    }
+    const span = seqByRun.get(runId);
+    const firstSeq =
+      span === undefined ? stored?.firstSeq : Math.min(stored?.firstSeq ?? span.first, span.first);
+    const lastRunSeq =
+      span === undefined ? stored?.lastSeq : Math.max(stored?.lastSeq ?? span.last, span.last);
+    if (stored === null) {
+      await ctx.db.insert("transcriptRuns", {
+        chatId: a.chatId,
+        sessionKey: a.sessionKey,
+        runId,
+        status: status as RunStatus,
+        ...(emptyFinal === true ? { emptyFinal: true } : {}),
+        ...(terminalAt === undefined ? {} : { terminalAt }),
+        ...(firstSeq === undefined ? {} : { firstSeq }),
+        ...(lastRunSeq === undefined ? {} : { lastSeq: lastRunSeq }),
+        updatedAt: a.now,
+      });
+    } else if (
+      stored.status !== status ||
+      stored.terminalAt !== terminalAt ||
+      stored.emptyFinal !== emptyFinal ||
+      stored.firstSeq !== firstSeq ||
+      stored.lastSeq !== lastRunSeq
+    ) {
+      await ctx.db.patch(stored._id, {
+        status: status as RunStatus,
+        emptyFinal,
+        terminalAt,
+        firstSeq,
+        lastSeq: lastRunSeq,
+        updatedAt: a.now,
+      });
+    }
+  }
+}
+
+/** Record what a read says about the sends it asked about (phase 2 input guard). */
+async function upsertInputs(
+  ctx: MutationCtx,
+  a: { chatId: Id<"chats">; sessionKey: string; at: number; now: number },
+  args: Parameters<typeof collectInputObservations>[0],
+): Promise<{ written: number; cleanupPending: boolean }> {
+  let written = 0;
+  for (const o of collectInputObservations(args).values()) {
+    const stored = await ctx.db
+      .query("transcriptInputs")
+      .withIndex("by_chat_session_send", (q) =>
+        q.eq("chatId", a.chatId).eq("sessionKey", a.sessionKey).eq("sendId", o.sendId),
+      )
+      .first();
+    const prev: InputFact | null =
+      stored === null
+        ? null
+        : {
+            receipt: stored.receipt,
+            receiptQueued: stored.receiptQueued,
+            receiptCancelled: stored.receiptCancelled,
+            pendingState: stored.pendingState,
+            pendingQueued: stored.pendingQueued,
+            askedAt: stored.askedAt,
+            absentAt: stored.absentAt,
+            heldAt: stored.heldAt,
+            receiptUnreadable: stored.receiptUnreadable,
+          };
+    const next = mergeInputFact(prev, o, a.at);
+    const same =
+      prev !== null &&
+      (Object.keys({ ...prev, ...next }) as Array<keyof InputFact>).every((k) => prev[k] === next[k]);
+    // What this read CONFIRMED (a receipt or a pending item named it): its freshness is
+    // this read's, even when nothing else changed — a cleanup started before it must see
+    // the entry as newer (`clearUnlistedPending` spares what was written since it began).
+    const confirmed = o.receipt !== undefined || o.pending !== undefined;
+    if (same) {
+      if (confirmed && stored !== null) {
+        await ctx.db.patch(stored._id, { confirmedAt: a.at, updatedAt: a.now });
+        written++;
+      }
+      continue;
+    }
+    // Absent fields are left out of an insert and cleared by a patch.
+    const defined = Object.fromEntries(
+      Object.entries(next).filter(([, value]) => value !== undefined),
+    ) as InputFact;
+    if (stored === null) {
+      await ctx.db.insert("transcriptInputs", {
+        chatId: a.chatId,
+        sessionKey: a.sessionKey,
+        sendId: o.sendId,
+        ...defined,
+        ...(confirmed ? { confirmedAt: a.at } : {}),
+        updatedAt: a.now,
+      });
+    } else {
+      await ctx.db.patch(stored._id, {
+        ...next,
+        ...(confirmed ? { confirmedAt: a.at } : {}),
+        updatedAt: a.now,
+      });
+    }
+    written++;
+  }
+  // A COMPLETE pending-input list is authoritative about the current queue: an input of
+  // this session it no longer names holds no pending state now. Bounded per mutation;
+  // what one batch cannot reach continues in a scheduled one (`continuePendingCleanup`).
+  let cleanupPending = false;
+  if (args.pendingInputs?.complete === true) {
+    const listed = args.pendingInputs.items
+      .map((i) => i.runId)
+      .filter((id): id is string => typeof id === "string");
+    const res = await clearUnlistedPending(ctx, {
+      chatId: a.chatId,
+      sessionKey: a.sessionKey,
+      listed,
+      at: a.at,
+      startedAt: a.now,
+      now: a.now,
+    });
+    written += res.cleared;
+    if (res.more) {
+      cleanupPending = true;
+      // The cleanup's GENERATION is this read: a continuation stands down as soon as a
+      // newer read of the session has advanced the cursor (that read is the newer truth,
+      // and starts its own cleanup when its list is complete).
+      await ctx.scheduler.runAfter(0, internal.transcriptProjection.continuePendingCleanup, {
+        chatId: a.chatId,
+        sessionKey: a.sessionKey,
+        listed,
+        at: a.at,
+        startedAt: a.now,
+        epoch: a.at,
+      });
+    }
+  }
+  return { written, cleanupPending };
+}
+
+/**
+ * One bounded batch of the complete-list cleanup: every doc of the session that still
+ * holds a CURRENT custody flag — a pending item's state, or a receipt-only queued flag —
+ * and that the list did not name. Only docs not written since the cleanup started are
+ * touched: a newer read is a newer truth. `more` ⇔ a page came back full AND this batch
+ * cleared something (a page of only skipped docs cannot progress, and stops).
+ */
+async function clearUnlistedPending(
+  ctx: MutationCtx,
+  a: {
+    chatId: Id<"chats">;
+    sessionKey: string;
+    listed: readonly string[];
+    at: number;
+    startedAt: number;
+    now: number;
+  },
+): Promise<{ cleared: number; more: boolean }> {
+  const listed = new Set(a.listed);
+  const holders = new Map<string, Doc<"transcriptInputs">>();
+  let full = false;
+  for (const state of ["queued", "cancelled", "interrupted"] as const) {
+    const page = await ctx.db
+      .query("transcriptInputs")
+      .withIndex("by_chat_session_pending", (q) =>
+        q.eq("chatId", a.chatId).eq("sessionKey", a.sessionKey).eq("pendingState", state),
+      )
+      .take(MAX_PENDING_CLEAR_PER_STATE);
+    if (page.length === MAX_PENDING_CLEAR_PER_STATE) full = true;
+    for (const doc of page) holders.set(doc._id, doc);
+  }
+  const receiptPage = await ctx.db
+    .query("transcriptInputs")
+    .withIndex("by_chat_session_receipt_queued", (q) =>
+      q.eq("chatId", a.chatId).eq("sessionKey", a.sessionKey).eq("receiptQueued", true),
+    )
+    .take(MAX_PENDING_CLEAR_PER_STATE);
+  if (receiptPage.length === MAX_PENDING_CLEAR_PER_STATE) full = true;
+  for (const doc of receiptPage) holders.set(doc._id, doc);
+  let cleared = 0;
+  for (const doc of holders.values()) {
+    if (listed.has(doc.sendId) || doc.updatedAt > a.startedAt) continue;
+    const next = clearCurrentPending(
+      {
+        pendingState: doc.pendingState,
+        pendingQueued: doc.pendingQueued,
+        receiptQueued: doc.receiptQueued,
+        heldAt: doc.heldAt,
+      },
+      a.at,
+    );
+    await ctx.db.patch(doc._id, {
+      pendingState: next.pendingState,
+      pendingQueued: next.pendingQueued,
+      receiptQueued: next.receiptQueued,
+      // The cleanup is not a newer read: the doc keeps its own time, so a later batch of
+      // the SAME cleanup still recognises it (and a newer read's write is still newer).
+      updatedAt: doc.updatedAt,
+    });
+    cleared++;
+  }
+  return { cleared, more: full && cleared > 0 };
+}
+
+/** The continuation of a complete-list cleanup a single mutation could not finish. Clears
+ *  the cursor's in-progress flag (which qualifies the report) once nothing is left. */
+export const continuePendingCleanup = internalMutation({
+  args: {
+    chatId: v.id("chats"),
+    sessionKey: v.string(),
+    listed: v.array(v.string()),
+    at: v.number(),
+    startedAt: v.number(),
+    /** The read that started this cleanup (its `readAt`). Absent ⇒ never stale. */
+    epoch: v.optional(v.number()),
+  },
+  handler: async (ctx, args) => {
+    const cursorNow = await ctx.db
+      .query("transcriptCursors")
+      .withIndex("by_chat_session", (q) =>
+        q.eq("chatId", args.chatId).eq("sessionKey", args.sessionKey),
+      )
+      .first();
+    if (
+      args.epoch !== undefined &&
+      cursorNow !== null &&
+      (cursorNow.lastReadAt ?? Number.NEGATIVE_INFINITY) > args.epoch
+    ) {
+      // A newer read owns the session's custody now. The in-progress flag is left to it:
+      // a complete list resets it with its own cleanup; anything else keeps the report
+      // qualified until one does.
+      return { cleared: 0, done: false, aborted: true };
+    }
+    const res = await clearUnlistedPending(ctx, {
+      chatId: args.chatId,
+      sessionKey: args.sessionKey,
+      listed: args.listed,
+      at: args.at,
+      startedAt: args.startedAt,
+      now: Date.now(),
+    });
+    if (res.more) {
+      await ctx.scheduler.runAfter(0, internal.transcriptProjection.continuePendingCleanup, args);
+      return { cleared: res.cleared, done: false, aborted: false };
+    }
+    const cursor = await ctx.db
+      .query("transcriptCursors")
+      .withIndex("by_chat_session", (q) =>
+        q.eq("chatId", args.chatId).eq("sessionKey", args.sessionKey),
+      )
+      .first();
+    if (cursor !== null && cursor.pendingCleanupInProgress === true) {
+      await ctx.db.patch(cursor._id, { pendingCleanupInProgress: false });
+    }
+    return { cleared: res.cleared, done: true, aborted: false };
+  },
+});
+
+/** Inputs per pending state one read may clear (a session's queue is far smaller). */
+const MAX_PENDING_CLEAR_PER_STATE = 50;
+
 export const applyTranscript = internalMutation({
   args: {
     chatId: v.id("chats"),
@@ -60,7 +432,9 @@ export const applyTranscript = internalMutation({
     sessionKey: v.string(),
     /** The gateway transcript the read came from ("" when the reply named none). */
     sessionId: v.string(),
-    kind: v.union(v.literal("page"), v.literal("delta"), v.literal("reset")),
+    /** `live`: rows CU-16 admitted from a `session.message` (phase 2). Rows and their
+     *  runs only — never a cursor, a floor, a gap or session state. */
+    kind: v.union(v.literal("page"), v.literal("delta"), v.literal("reset"), v.literal("live")),
     /** Where the next read resumes; absent on a reset or a page without one. */
     deltaCursor: v.optional(v.string()),
     rows: v.array(rowValidator),
@@ -75,6 +449,12 @@ export const applyTranscript = internalMutation({
      *  committed here): an older read never replaces the cursor or the session. Absent on
      *  an older bridge ⇒ the time it lands here. */
     readAt: v.optional(v.number()),
+    // PHASE 2 — the input guard this read carried (identity only, bounded on use).
+    inputRunIds: v.optional(v.array(v.string())),
+    pendingInputs: v.optional(pendingInputsValidator),
+    inputReceipts: v.optional(v.array(inputReceiptValidator)),
+    inputAbsent: v.optional(v.array(v.string())),
+    inputUnreadable: v.optional(v.array(v.string())),
   },
   handler: async (ctx, args) => {
     // The cross-gateway write barrier, atomic with the write (lib/ingestAuthz).
@@ -103,6 +483,42 @@ export const applyTranscript = internalMutation({
         q.eq("chatId", args.chatId).eq("sessionKey", args.sessionKey),
       )
       .first();
+    // A DIRECT row post (CU-16, phase 2): its rows and their runs, nothing else. The read
+    // the same event asked for carries the session state; this never moves it.
+    if (args.kind === "live") {
+      const liveSessionId = sessionId !== "" ? sessionId : (cursor?.sessionId ?? "");
+      const res = await upsertRows(
+        ctx,
+        {
+          chatId: args.chatId,
+          instanceName: args.boundInstanceName,
+          sessionKey: args.sessionKey,
+          sessionId: liveSessionId,
+          now,
+        },
+        rows,
+      );
+      const persisted = new Map<string, RunObservation[]>(
+        [...res.seqByRun.keys()].map((runId) => [runId, [{ status: "persisted" as const }]]),
+      );
+      await upsertRuns(ctx, { chatId: args.chatId, sessionKey: args.sessionKey, now }, persisted, res.seqByRun);
+      if (cursor !== null) {
+        await ctx.db.patch(cursor._id, {
+          liveApplies: (cursor.liveApplies ?? 0) + 1,
+          lastLiveAt: now,
+          unidentified: cursor.unidentified + unidentified,
+        });
+      }
+      return {
+        ok: true as const,
+        inserted: res.inserted,
+        updated: res.updated,
+        floorSeq: cursor?.floorSeq ?? null,
+        sessionChanged: false,
+        stale: false,
+        live: true,
+      };
+    }
     // FRESHNESS: a read OLDER than the one the cursor already reflects merges its rows
     // (idempotent upserts) and nothing else — no cursor, no session, no floor, no hole,
     // no active-run state. Otherwise a late stale POST would rewind the delta cursor or,
@@ -196,53 +612,20 @@ export const applyTranscript = internalMutation({
     const effectiveSessionId = sessionId !== "" ? sessionId : (cursor?.sessionId ?? "");
 
     // Rows: upsert by (chat, session key, entry id).
-    let inserted = 0;
-    let updated = 0;
+    const upserted = await upsertRows(
+      ctx,
+      {
+        chatId: args.chatId,
+        instanceName: args.boundInstanceName,
+        sessionKey: args.sessionKey,
+        sessionId: effectiveSessionId,
+        now,
+      },
+      rows,
+    );
+    const { inserted, updated, seqByRun } = upserted;
     let lastSeq = sessionChanged ? 0 : (cursor?.lastSeq ?? 0);
-    const seqByRun = new Map<string, { first: number; last: number }>();
-    for (const r of rows) {
-      if (r.seq > lastSeq) lastSeq = r.seq;
-      if (r.runId !== undefined && r.role !== "user") {
-        const span = seqByRun.get(r.runId);
-        seqByRun.set(r.runId, {
-          first: Math.min(span?.first ?? r.seq, r.seq),
-          last: Math.max(span?.last ?? r.seq, r.seq),
-        });
-      }
-      const next = { ...r, sessionId: effectiveSessionId };
-      const stored = await ctx.db
-        .query("transcriptRows")
-        .withIndex("by_chat_session_entry", (q) =>
-          q.eq("chatId", args.chatId).eq("sessionKey", args.sessionKey).eq("entryId", r.entryId),
-        )
-        .first();
-      if (stored === null) {
-        await ctx.db.insert("transcriptRows", {
-          chatId: args.chatId,
-          instanceName: args.boundInstanceName,
-          sessionKey: args.sessionKey,
-          ...next,
-          updatedAt: now,
-        });
-        inserted++;
-      } else if (!sameRow(stored, next)) {
-        await ctx.db.patch(stored._id, {
-          sessionId: next.sessionId,
-          seq: next.seq,
-          role: next.role,
-          runId: next.runId,
-          sendId: next.sendId,
-          steerTargetRunId: next.steerTargetRunId,
-          mirrorOrigin: next.mirrorOrigin,
-          runTerminal: next.runTerminal,
-          hidden: next.hidden,
-          visible: next.visible,
-          toolCallIds: next.toolCallIds,
-          updatedAt: now,
-        });
-        updated++;
-      }
-    }
+    if (upserted.maxSeq > lastSeq) lastSeq = upserted.maxSeq;
 
     // Runs: producers seen in rows (persisted / streaming) and terminal frames observed.
     // A stale read's view of the active runs is not the session's state any more, and a
@@ -254,8 +637,8 @@ export const applyTranscript = internalMutation({
             .filter((id) => id.length > 0 && id.length <= MAX_RUN_ID_CHARS)
             .slice(0, MAX_ACTIVE_RUN_IDS),
     );
-    const observations = new Map<string, Array<{ status: RunStatus; emptyFinal?: boolean; at?: number }>>();
-    const observe = (runId: string, o: { status: RunStatus; emptyFinal?: boolean; at?: number }) => {
+    const observations = new Map<string, RunObservation[]>();
+    const observe = (runId: string, o: RunObservation) => {
       const list = observations.get(runId) ?? [];
       list.push(o);
       observations.set(runId, list);
@@ -277,57 +660,24 @@ export const applyTranscript = internalMutation({
         at: t.at,
       });
     }
-    for (const [runId, list] of observations) {
-      const stored = await ctx.db
-        .query("transcriptRuns")
-        .withIndex("by_chat_session_run", (q) =>
-          q.eq("chatId", args.chatId).eq("sessionKey", args.sessionKey).eq("runId", runId),
-        )
-        .first();
-      let status: RunStatus | undefined = stored?.status;
-      let terminalAt = stored?.terminalAt;
-      let emptyFinal = stored?.emptyFinal;
-      for (const o of list) {
-        const before = status;
-        status = mergeRunStatus(status, o.status);
-        if (before !== status && o.at !== undefined) terminalAt = o.at;
-        if (o.emptyFinal === true && before !== status) emptyFinal = true;
-      }
-      const span = seqByRun.get(runId);
-      const firstSeq =
-        span === undefined
-          ? stored?.firstSeq
-          : Math.min(stored?.firstSeq ?? span.first, span.first);
-      const lastRunSeq =
-        span === undefined ? stored?.lastSeq : Math.max(stored?.lastSeq ?? span.last, span.last);
-      if (stored === null) {
-        await ctx.db.insert("transcriptRuns", {
-          chatId: args.chatId,
-          sessionKey: args.sessionKey,
-          runId,
-          status: status as RunStatus,
-          ...(emptyFinal === true ? { emptyFinal: true } : {}),
-          ...(terminalAt === undefined ? {} : { terminalAt }),
-          ...(firstSeq === undefined ? {} : { firstSeq }),
-          ...(lastRunSeq === undefined ? {} : { lastSeq: lastRunSeq }),
-          updatedAt: now,
-        });
-      } else if (
-        stored.status !== status ||
-        stored.terminalAt !== terminalAt ||
-        stored.emptyFinal !== emptyFinal ||
-        stored.firstSeq !== firstSeq ||
-        stored.lastSeq !== lastRunSeq
-      ) {
-        await ctx.db.patch(stored._id, {
-          status: status as RunStatus,
-          emptyFinal,
-          terminalAt,
-          firstSeq,
-          lastSeq: lastRunSeq,
-          updatedAt: now,
-        });
-      }
+    await upsertRuns(ctx, { chatId: args.chatId, sessionKey: args.sessionKey, now }, observations, seqByRun);
+
+    // The input guard: what the gateway says it holds, per asked send. A stale read's
+    // view of custody is older than the stored one: it is not recorded.
+    let cleanupPending: boolean | null = null;
+    if (!stale && args.kind !== "reset") {
+      const res = await upsertInputs(
+        ctx,
+        { chatId: args.chatId, sessionKey: args.sessionKey, at: readAt, now },
+        {
+          ...(args.inputRunIds === undefined ? {} : { inputRunIds: args.inputRunIds }),
+          ...(args.pendingInputs === undefined ? {} : { pendingInputs: args.pendingInputs }),
+          ...(args.inputReceipts === undefined ? {} : { inputReceipts: args.inputReceipts }),
+          ...(args.inputAbsent === undefined ? {} : { inputAbsent: args.inputAbsent }),
+          ...(args.inputUnreadable === undefined ? {} : { inputUnreadable: args.inputUnreadable }),
+        },
+      );
+      if (args.pendingInputs?.complete === true) cleanupPending = res.cleanupPending;
     }
 
     if (stale && cursor !== null) {
@@ -362,6 +712,18 @@ export const applyTranscript = internalMutation({
       ...(args.kind === "reset" || args.hasActiveRun === undefined
         ? {}
         : { hasActiveRun: args.hasActiveRun }),
+      ...(args.kind === "reset" || args.pendingInputs === undefined
+        ? {}
+        : {
+            pendingInputsTotal: Math.max(0, Math.floor(args.pendingInputs.total)),
+            pendingInputsComplete: args.pendingInputs.complete === true,
+            ...(cleanupPending === null
+              ? {}
+              : { pendingCleanupInProgress: cleanupPending, pendingCleanupEpoch: readAt }),
+            ...(args.pendingInputs.queuedCount === undefined
+              ? {}
+              : { pendingQueuedCount: Math.max(0, Math.floor(args.pendingInputs.queuedCount)) }),
+          }),
       updatedAt: now,
     };
     if (cursor === null) {

@@ -25,6 +25,11 @@ import {
   floorForFirstRead,
   gapTotal,
   mergeRunStatus,
+  applyInputEvent,
+  currentCustody,
+  gatewayHeldInput,
+  type InputEvent,
+  type InputFact,
   sanitizeRow,
   type ProjectionBubble,
   type ProjectionRow,
@@ -1305,6 +1310,8 @@ describe("ONE completeness predicate: nothing unmeasured can read `consistent`",
     boundaryUnproven: false,
     unidentifiedRows: 0,
     readBudgetExhausted: false,
+    inputsTruncated: false,
+    pendingCleanupInProgress: false,
     gaps: cleanGaps(),
   });
   /** One way to make each reason true — and ONLY that one. A reason added to the registry
@@ -1326,6 +1333,15 @@ describe("ONE completeness predicate: nothing unmeasured can read `consistent`",
     unmeasured_runs: (f) => void (f.gaps.i1.unmeasuredRuns = 1),
     unmeasured_bubbles: (f) => void (f.gaps.i2.unmeasuredBubbles = 1),
     unmeasured_sends: (f) => void (f.gaps.i3.unmeasuredSends = 1),
+    unmeasured_error_cards: (f) => void (f.gaps.i4.unmeasured = 1),
+    unmeasured_inputs: (f) => void (f.gaps.guard.unmeasured = 1),
+    unsettled_inputs: (f) => void (f.gaps.guard.unsettled = 1),
+    unproven_retries: (f) => void (f.gaps.guard.retryOutcomeUnknown = 1),
+    pending_inputs_partial: (f) => void (f.gaps.guard.pendingUnconfirmed = 1),
+    unconfirmed_inputs: (f) => void (f.gaps.guard.custodyUnconfirmed = 1),
+    pending_cleanup_in_progress: (f) => void (f.pendingCleanupInProgress = true),
+    guard_receipt_unreadable: (f) => void (f.gaps.guard.receiptUnreadable = 1),
+    inputs_truncated: (f) => void (f.inputsTruncated = true),
   };
 
   test("a bubble naming no run, and a streaming one, are COUNTED (not silently skipped)", () => {
@@ -1394,8 +1410,22 @@ describe("ONE completeness predicate: nothing unmeasured can read `consistent`",
       ...Object.keys(g.i1).map((k) => `i1.${k}`),
       ...Object.keys(g.i2).map((k) => `i2.${k}`),
       ...Object.keys(g.i3).map((k) => `i3.${k}`),
+      ...Object.keys(g.i4).map((k) => `i4.${k}`),
+      ...Object.keys(g.guard).map((k) => `guard.${k}`),
     ].sort();
-    const GAPS = ["i1.transcriptOnly", "i1.duplicated", "i2.bubbleWithoutRow", "i3.missingBubble", "i3.duplicated", "i3.unmatchedAtriumSend"];
+    const GAPS = [
+      "i1.transcriptOnly",
+      "i1.duplicated",
+      "i2.bubbleWithoutRow",
+      "i3.missingBubble",
+      "i3.duplicated",
+      "i3.unmatchedAtriumSend",
+      "i4.errorCardWithAnswer",
+      "guard.heldButFailed",
+      "guard.heldButQueuedLocal",
+      "guard.sentButAbsent",
+      "guard.retriedWhileHeld",
+    ];
     const VERIFIED = [
       "i1.visibleRuns",
       "i1.samples",
@@ -1407,6 +1437,16 @@ describe("ONE completeness predicate: nothing unmeasured can read `consistent`",
       "i3.foreignInputs",
       "i3.steeredInputs",
       "i3.samples",
+      "i4.judged",
+      "i4.errorCardRunFailed",
+      "i4.samples",
+      "guard.inputs",
+      "guard.held",
+      "guard.queuedAtGateway",
+      "guard.interrupted",
+      "guard.cancelled",
+      "guard.foreignInputs",
+      "guard.samples",
     ];
     const UNMEASURED = [
       "i1.unattributedRows",
@@ -1417,13 +1457,28 @@ describe("ONE completeness predicate: nothing unmeasured can read `consistent`",
       "i2.unmeasuredBubbles",
       "i3.unattributedUserRows",
       "i3.unmeasuredSends",
+      "i4.unmeasured",
+      "guard.unmeasured",
+      "guard.unsettled",
+      "guard.retryOutcomeUnknown",
+      "guard.pendingUnconfirmed",
+      "guard.custodyUnconfirmed",
+      "guard.receiptUnreadable",
     ];
     expect(counters).toEqual([...GAPS, ...VERIFIED, ...UNMEASURED].sort());
     for (const path of UNMEASURED) {
       const f = clean();
-      const [section, key] = path.split(".") as ["i1" | "i2" | "i3", string];
+      const [section, key] = path.split(".") as ["i1" | "i2" | "i3" | "i4" | "guard", string];
       (f.gaps[section] as unknown as Record<string, number>)[key] = 1;
       expect(incompletenessReasons(f), path).toHaveLength(1);
+    }
+    // …and every GAP counter is one the verdict counts: a gap the total ignores would
+    // read `consistent` over a measured defect.
+    for (const path of GAPS) {
+      const gaps = cleanGaps();
+      const [section, key] = path.split(".") as ["i1" | "i2" | "i3" | "i4" | "guard", string];
+      (gaps[section] as unknown as Record<string, number>)[key] = 1;
+      expect(gapTotal(gaps), path).toBe(1);
     }
   });
 
@@ -2143,5 +2198,1189 @@ describe("I3 counts DISTINCT bubbles; the report is bounded by volume; diagnose 
       ["assessment", "availability", "chatState", "ok", "projection"].sort(),
     );
     expect((body.projection as { verdict: string }).verdict).not.toBe("unavailable");
+  });
+});
+
+// ── PHASE 2: directly applied rows, the input guard, I4 and G ───────────────────────────
+
+describe("phase 2 — `live` rows (CU-16): rows and their runs, nothing else", () => {
+  const live = (t: T, chatId: Id<"chats">, rows: Row[], sessionId = "s-1") =>
+    t.mutation(internal.transcriptProjection.applyTranscript, {
+      chatId,
+      boundInstanceName: "alpha",
+      sessionKey: SK,
+      sessionId,
+      kind: "live",
+      rows,
+      terminals: [],
+      unidentified: 0,
+      readAt: Date.now(),
+    });
+
+  test("upserts the rows and marks their runs persisted; moves no cursor, floor or session state", async () => {
+    const t = convexTest(schema, modules);
+    const s = await seed(t);
+    await apply(t, s.chatId, [user(1, "webchat-a")], { deltaCursor: "c:1" });
+    const before = await t.run(async (ctx) => (await ctx.db.query("transcriptCursors").collect())[0]!);
+    await live(t, s.chatId, [reply(2, "run-b")]);
+    const after = await t.run(async (ctx) => (await ctx.db.query("transcriptCursors").collect())[0]!);
+    const { liveApplies, lastLiveAt, ...rest } = after;
+    expect(liveApplies).toBe(1);
+    expect(typeof lastLiveAt).toBe("number");
+    const { liveApplies: _l, lastLiveAt: _a, ...restBefore } = before;
+    void _l;
+    void _a;
+    expect(rest).toEqual(restBefore);
+    const st = await stored(t);
+    expect(st.rows.map((r) => r.entryId)).toEqual(["a2", "u1"]);
+    expect(st.runs.find((r) => r.runId === "run-b")?.status).toBe("persisted");
+  });
+
+  test("before any read: rows are kept, no cursor is created; replaying is a no-op", async () => {
+    const t = convexTest(schema, modules);
+    const s = await seed(t);
+    await live(t, s.chatId, [user(1, "webchat-a")]);
+    const first = await stored(t);
+    expect(first.cursors).toEqual([]);
+    await live(t, s.chatId, [user(1, "webchat-a")]);
+    expect(await stored(t)).toEqual(first);
+  });
+
+  test("a live row never downgrades a terminal run", async () => {
+    const t = convexTest(schema, modules);
+    const s = await seed(t);
+    await apply(t, s.chatId, [reply(2, "run-b")], { terminals: [{ runId: "run-b", status: "error", at: 5 }] });
+    await live(t, s.chatId, [reply(3, "run-b")]);
+    expect((await stored(t)).runs.find((r) => r.runId === "run-b")?.status).toBe("error");
+  });
+});
+
+describe("phase 2 — the input guard as the gateway states it", () => {
+  const guardApply = (
+    t: T,
+    chatId: Id<"chats">,
+    g: {
+      inputRunIds?: string[];
+      pendingInputs?: { total: number; queuedCount?: number; items: Array<{ runId?: string; state: "queued" | "cancelled" | "interrupted"; queued?: boolean }> };
+      inputReceipts?: Array<{ runId: string; state: "pending" | "consumed"; queued?: boolean; cancelled?: boolean }>;
+      inputAbsent?: string[];
+      readAt?: number;
+      kind?: "page" | "delta" | "reset";
+    },
+  ) =>
+    t.mutation(internal.transcriptProjection.applyTranscript, {
+      chatId,
+      boundInstanceName: "alpha",
+      sessionKey: SK,
+      sessionId: "s-1",
+      kind: g.kind ?? "delta",
+      deltaCursor: "c:x",
+      rows: [],
+      terminals: [],
+      unidentified: 0,
+      readAt: g.readAt ?? Date.now(),
+      ...(g.inputRunIds ? { inputRunIds: g.inputRunIds } : {}),
+      ...(g.pendingInputs ? { pendingInputs: g.pendingInputs } : {}),
+      ...(g.inputReceipts ? { inputReceipts: g.inputReceipts } : {}),
+      ...(g.inputAbsent ? { inputAbsent: g.inputAbsent } : {}),
+    });
+  const inputs = (t: T) =>
+    t.run(async (ctx) =>
+      (await ctx.db.query("transcriptInputs").collect())
+        .map(({ _id, _creationTime, updatedAt, askedAt, absentAt, heldAt, confirmedAt, chatId, ...rest }) => {
+          void heldAt;
+          void confirmedAt;
+          void _id;
+          void _creationTime;
+          void updatedAt;
+          void chatId;
+          return { ...rest, asked: askedAt !== undefined, absent: absentAt !== undefined };
+        })
+        .sort((a, b) => a.sendId.localeCompare(b.sendId)),
+    );
+
+  test("receipts, pending items and absences become one fact per send", async () => {
+    const t = convexTest(schema, modules);
+    const s = await seed(t);
+    await apply(t, s.chatId, [], { readAt: 1 });
+    await guardApply(t, s.chatId, {
+      inputRunIds: ["webchat-a", "webchat-b", "webchat-c", "webchat-d"],
+      inputReceipts: [
+        { runId: "webchat-a", state: "consumed" },
+        { runId: "webchat-b", state: "pending", queued: true },
+      ],
+      pendingInputs: { total: 2, queuedCount: 1, items: [{ runId: "webchat-b", state: "queued", queued: true }, { runId: "webchat-x", state: "interrupted" }] },
+      inputAbsent: ["webchat-c", "webchat-not-asked"],
+    });
+    expect(await inputs(t)).toEqual([
+      { sessionKey: SK, sendId: "webchat-a", receipt: "consumed", asked: true, absent: false },
+      // The item read in the same reply is authoritative for the current custody: its own
+      // queued flag replaces the receipt's (review 5).
+      { sessionKey: SK, sendId: "webchat-b", receipt: "pending", pendingState: "queued", pendingQueued: true, asked: true, absent: false },
+      { sessionKey: SK, sendId: "webchat-c", asked: true, absent: true },
+      { sessionKey: SK, sendId: "webchat-d", asked: true, absent: false },
+      { sessionKey: SK, sendId: "webchat-x", pendingState: "interrupted", asked: false, absent: false },
+    ]);
+    const c = await t.run(async (ctx) => (await ctx.db.query("transcriptCursors").collect())[0]!);
+    expect([c.pendingInputsTotal, c.pendingQueuedCount]).toEqual([2, 1]);
+  });
+
+  test("a consumed receipt is sticky; a pending state follows the newest read", async () => {
+    const t = convexTest(schema, modules);
+    const s = await seed(t);
+    await apply(t, s.chatId, [], { readAt: 1 });
+    await guardApply(t, s.chatId, { inputRunIds: ["webchat-a"], inputReceipts: [{ runId: "webchat-a", state: "consumed" }], pendingInputs: { total: 1, items: [{ runId: "webchat-a", state: "queued" }] }, readAt: 10 });
+    await guardApply(t, s.chatId, { inputRunIds: ["webchat-a"], inputReceipts: [{ runId: "webchat-a", state: "pending" }], pendingInputs: { total: 1, items: [{ runId: "webchat-a", state: "cancelled" }] }, readAt: 20 });
+    expect((await inputs(t))[0]).toMatchObject({ receipt: "consumed", pendingState: "cancelled" });
+  });
+
+  test("a STALE read and a reset reply record no custody", async () => {
+    const t = convexTest(schema, modules);
+    const s = await seed(t);
+    await apply(t, s.chatId, [], { readAt: 100 });
+    await guardApply(t, s.chatId, { inputRunIds: ["webchat-a"], inputReceipts: [{ runId: "webchat-a", state: "pending" }], readAt: 50 });
+    await guardApply(t, s.chatId, { inputRunIds: ["webchat-b"], inputReceipts: [{ runId: "webchat-b", state: "pending" }], readAt: 200, kind: "reset" });
+    expect(await inputs(t)).toEqual([]);
+  });
+
+  test("bounded: at most 50 asked ids and 50 receipts, 20 pending items per read", async () => {
+    const t = convexTest(schema, modules);
+    const s = await seed(t);
+    await apply(t, s.chatId, [], { readAt: 1 });
+    const ids = Array.from({ length: 80 }, (_, i) => `webchat-${String(i).padStart(2, "0")}`);
+    await guardApply(t, s.chatId, {
+      inputRunIds: ids,
+      inputReceipts: ids.map((runId) => ({ runId, state: "pending" as const })),
+      pendingInputs: { total: 80, items: ids.map((runId) => ({ runId: `p-${runId}`, state: "queued" as const })) },
+    });
+    const all = await inputs(t);
+    expect(all.filter((x) => x.sendId.startsWith("webchat-"))).toHaveLength(50);
+    expect(all.filter((x) => x.sendId.startsWith("p-"))).toHaveLength(20);
+  });
+});
+
+describe("phase 2 — SHADOW: the projection writes no message, part, outbox or chat", () => {
+  test("a battery of reads, live rows and guard facts leaves every other table byte-identical", async () => {
+    const t = convexTest(schema, modules);
+    const s = await seed(t);
+    const X = "webchat-" + "9".repeat(64);
+    await t.run(async (ctx) => {
+      const um = await ctx.db.insert("messages", { chatId: s.chatId, userId: s.owner, role: "user", status: "complete" as const, text: "q", sendId: X, updatedAt: 1 });
+      await ctx.db.insert("outbox", { chatId: s.chatId, userId: s.owner, clientMessageId: "cm", text: "q", attachmentIds: [], status: "failed", messageId: um, sendId: X });
+      await ctx.db.insert("messages", { chatId: s.chatId, userId: s.owner, role: "assistant", status: "error" as const, text: "", runId: X, turnSessionKey: SK, updatedAt: 1 });
+    });
+    const snapshot = () =>
+      t.run(async (ctx) => ({
+        messages: await ctx.db.query("messages").collect(),
+        outbox: await ctx.db.query("outbox").collect(),
+        messageParts: await ctx.db.query("messageParts").collect(),
+        chats: await ctx.db.query("chats").collect(),
+        subAgents: await ctx.db.query("subAgents").collect(),
+      }));
+    const before = await snapshot();
+    await apply(t, s.chatId, [user(1, X), reply(2, X)], { deltaCursor: "c:1" });
+    await t.mutation(internal.transcriptProjection.applyTranscript, {
+      chatId: s.chatId,
+      boundInstanceName: "alpha",
+      sessionKey: SK,
+      sessionId: "s-1",
+      kind: "live",
+      rows: [reply(3, X)],
+      terminals: [],
+      unidentified: 0,
+      readAt: Date.now(),
+    });
+    await t.mutation(internal.transcriptProjection.applyTranscript, {
+      chatId: s.chatId,
+      boundInstanceName: "alpha",
+      sessionKey: SK,
+      sessionId: "s-1",
+      kind: "delta",
+      deltaCursor: "c:2",
+      rows: [],
+      terminals: [{ runId: X, status: "completed", at: 3 }],
+      unidentified: 0,
+      readAt: Date.now() + 1,
+      inputRunIds: [X],
+      inputReceipts: [{ runId: X, state: "consumed" }],
+      pendingInputs: { total: 0, items: [] },
+    });
+    await t.query(internal.transcriptProjection.projectionReportInternal, { chatId: s.chatId });
+    expect(await snapshot()).toEqual(before);
+  });
+});
+
+describe("phase 2 — I4 (an error card over an answered run) and G (the guard vs the outbox)", () => {
+  const report = (t: T, chatId: Id<"chats">) =>
+    t.query(internal.transcriptProjection.projectionReportInternal, { chatId });
+  const X = "webchat-" + "4".repeat(64);
+  /** One send, its user bubble, its outbox row (status given), and its assistant bubble. */
+  const turn = async (
+    t: T,
+    s: Awaited<ReturnType<typeof seed>>,
+    o: { outbox: "queued" | "pending" | "sent" | "failed"; bubble: "complete" | "error" | "aborted" },
+  ) =>
+    t.run(async (ctx) => {
+      const um = await ctx.db.insert("messages", { chatId: s.chatId, userId: s.owner, role: "user", status: "complete" as const, text: "q", sendId: X, updatedAt: 1 });
+      await ctx.db.insert("outbox", { chatId: s.chatId, userId: s.owner, clientMessageId: "cm-4", text: "q", attachmentIds: [], status: o.outbox, messageId: um, sendId: X });
+      await ctx.db.insert("messages", { chatId: s.chatId, userId: s.owner, role: "assistant", status: o.bubble, text: o.bubble === "error" ? "" : "a", runId: X, turnSessionKey: SK, updatedAt: 1 });
+    });
+
+  test("THE DENIS CASE: an error card whose run the transcript answered is a gap (I4)", async () => {
+    const t = convexTest(schema, modules);
+    const s = await seed(t);
+    await turn(t, s, { outbox: "sent", bubble: "error" });
+    await apply(t, s.chatId, [user(1, X), reply(2, X)]);
+    const r = (await report(t, s.chatId))!;
+    expect(r.gaps!.i4).toMatchObject({ judged: 1, errorCardWithAnswer: 1, errorCardRunFailed: 0 });
+    expect(r.gaps!.i4.samples[0]).toMatchObject({ runId: X, runStatus: "persisted" });
+    expect(r.verdict).toBe("gaps");
+  });
+
+  test("…unless the gateway itself says that run failed: the card is its verdict", async () => {
+    const t = convexTest(schema, modules);
+    const s = await seed(t);
+    await turn(t, s, { outbox: "sent", bubble: "error" });
+    await apply(t, s.chatId, [user(1, X), reply(2, X)], { terminals: [{ runId: X, status: "error", at: 2 }] });
+    const r = (await report(t, s.chatId))!;
+    expect(r.gaps!.i4).toMatchObject({ judged: 1, errorCardWithAnswer: 0, errorCardRunFailed: 1 });
+    expect(r.verdict).toBe("consistent");
+  });
+
+  test("a run with only tool results is no ANSWER: an error card over it is not I4's", async () => {
+    const t = convexTest(schema, modules);
+    const s = await seed(t);
+    await turn(t, s, { outbox: "sent", bubble: "error" });
+    await apply(t, s.chatId, [user(1, X), { entryId: "t2", seq: 2, role: "toolresult", runId: X, hidden: false, visible: true }]);
+    const r = (await report(t, s.chatId))!;
+    expect(r.gaps!.i4.judged).toBe(0);
+  });
+
+  test("a STOPPED (aborted) card is not an error card: I4 judges nothing", async () => {
+    const t = convexTest(schema, modules);
+    const s = await seed(t);
+    await turn(t, s, { outbox: "sent", bubble: "aborted" });
+    await apply(t, s.chatId, [user(1, X), reply(2, X)]);
+    expect((await report(t, s.chatId))!.gaps!.i4.judged).toBe(0);
+  });
+
+  test("G: the gateway HOLDS an input Atrium's outbox calls failed — a retry would run it twice", async () => {
+    const t = convexTest(schema, modules);
+    const s = await seed(t);
+    await turn(t, s, { outbox: "failed", bubble: "complete" });
+    await apply(t, s.chatId, [user(1, X), reply(2, X)]);
+    await t.mutation(internal.transcriptProjection.applyTranscript, {
+      chatId: s.chatId, boundInstanceName: "alpha", sessionKey: SK, sessionId: "s-1", kind: "delta",
+      deltaCursor: "c:2", rows: [], terminals: [], unidentified: 0, readAt: Date.now() + 5,
+      inputRunIds: [X], inputReceipts: [{ runId: X, state: "consumed" }],
+    });
+    const r = (await report(t, s.chatId))!;
+    expect(r.gaps!.guard).toMatchObject({ inputs: 1, held: 1, heldButFailed: 1 });
+    expect(r.verdict).toBe("gaps");
+  });
+
+  test("G: a sent input the gateway, asked after its ACK, holds no receipt for — and no row", async () => {
+    const t = convexTest(schema, modules);
+    const s = await seed(t);
+    await turn(t, s, { outbox: "sent", bubble: "complete" });
+    await apply(t, s.chatId, [reply(2, X)], { readAt: Date.now() });
+    await t.mutation(internal.transcriptProjection.applyTranscript, {
+      chatId: s.chatId, boundInstanceName: "alpha", sessionKey: SK, sessionId: "s-1", kind: "delta",
+      deltaCursor: "c:2", rows: [], terminals: [], unidentified: 0, readAt: Date.now() + 5,
+      inputRunIds: [X], inputReceipts: [], inputAbsent: [X],
+    });
+    expect((await report(t, s.chatId))!.gaps!.guard.sentButAbsent).toBe(1);
+  });
+
+  test("G: consistent custody is counted, not flagged; a dispatch in flight is unsettled", async () => {
+    const t = convexTest(schema, modules);
+    const s = await seed(t);
+    await turn(t, s, { outbox: "sent", bubble: "complete" });
+    await apply(t, s.chatId, [user(1, X), reply(2, X)]);
+    await t.mutation(internal.transcriptProjection.applyTranscript, {
+      chatId: s.chatId, boundInstanceName: "alpha", sessionKey: SK, sessionId: "s-1", kind: "delta",
+      deltaCursor: "c:2", rows: [], terminals: [], unidentified: 0, readAt: Date.now() + 5,
+      inputRunIds: [X], inputReceipts: [{ runId: X, state: "consumed" }],
+    });
+    let r = (await report(t, s.chatId))!;
+    expect(r.gaps!.guard).toMatchObject({ inputs: 1, held: 1, heldButFailed: 0, sentButAbsent: 0 });
+    expect(r.verdict).toBe("consistent");
+    await t.run(async (ctx) => {
+      const ob = (await ctx.db.query("outbox").collect())[0]!;
+      await ctx.db.patch(ob._id, { status: "pending" });
+    });
+    r = (await report(t, s.chatId))!;
+    expect(r.gaps!.guard.unsettled).toBe(1);
+    expect(r.window.incompleteReasons).toContain("unsettled_inputs");
+  });
+
+  test("G: an input whose send is not Atrium's is foreign, never a gap", async () => {
+    const t = convexTest(schema, modules);
+    const s = await seed(t);
+    await apply(t, s.chatId, [], { readAt: 1 });
+    await t.mutation(internal.transcriptProjection.applyTranscript, {
+      chatId: s.chatId, boundInstanceName: "alpha", sessionKey: SK, sessionId: "s-1", kind: "delta",
+      deltaCursor: "c:2", rows: [], terminals: [], unidentified: 0, readAt: 50,
+      pendingInputs: { total: 1, items: [{ runId: "control-ui-xyz", state: "queued" }] },
+    });
+    const r = (await report(t, s.chatId))!;
+    expect(r.gaps!.guard).toMatchObject({ foreignInputs: 1, inputs: 0 });
+  });
+});
+
+describe("phase 2 — G: an auto-retry of an input the gateway holds (the double execution)", () => {
+  const report = (t: T, chatId: Id<"chats">) =>
+    t.query(internal.transcriptProjection.projectionReportInternal, { chatId });
+  const A = "webchat-" + "a".repeat(64);
+
+  const world = async (t: T, s: Awaited<ReturnType<typeof seed>>, retried: boolean) => {
+    await t.run(async (ctx) => {
+      const um = await ctx.db.insert("messages", { chatId: s.chatId, userId: s.owner, role: "user", status: "complete" as const, text: "q", sendId: A, updatedAt: 1 });
+      await ctx.db.insert("outbox", { chatId: s.chatId, userId: s.owner, clientMessageId: "cm-a", text: "q", attachmentIds: [], status: "sent", messageId: um, sendId: A });
+      if (retried) {
+        await ctx.db.insert("outbox", { chatId: s.chatId, userId: s.owner, clientMessageId: `autoretry-${um}-1-1`, text: "q", attachmentIds: [], status: "sent", messageId: um, autoRetryAttempt: 1 });
+      }
+      await ctx.db.insert("messages", { chatId: s.chatId, userId: s.owner, role: "assistant", status: "complete" as const, text: "a", runId: A, turnSessionKey: SK, updatedAt: 1 });
+    });
+    await apply(t, s.chatId, [user(1, A), reply(2, A)]);
+    await t.mutation(internal.transcriptProjection.applyTranscript, {
+      chatId: s.chatId, boundInstanceName: "alpha", sessionKey: SK, sessionId: "s-1", kind: "delta",
+      deltaCursor: "c:2", rows: [], terminals: [], unidentified: 0, readAt: Date.now() + 5,
+      inputRunIds: [A], inputReceipts: [{ runId: A, state: "consumed" }],
+    });
+  };
+
+  test("the gateway consumed the send, and Atrium sent the same message again: a gap", async () => {
+    const t = convexTest(schema, modules);
+    const s = await seed(t);
+    await world(t, s, true);
+    const r = (await report(t, s.chatId))!;
+    expect(r.gaps!.guard.retriedWhileHeld).toBe(1);
+    expect(r.gaps!.guard.samples[0]).toMatchObject({ kind: "retried_while_held" });
+    expect(r.verdict).toBe("gaps");
+  });
+
+  test("control: the same world with no retry is consistent", async () => {
+    const t = convexTest(schema, modules);
+    const s = await seed(t);
+    await world(t, s, false);
+    const r = (await report(t, s.chatId))!;
+    expect(r.gaps!.guard.retriedWhileHeld).toBe(0);
+    expect(r.verdict).toBe("consistent");
+  });
+});
+
+// ── Review pass 1 (phase 2) ────────────────────────────────────────────────────────────
+
+describe("review 1 — the chat purge takes the input guard with it", () => {
+  test("transcriptRows, Runs, Cursors AND Inputs of a deleted chat are swept", async () => {
+    const t = convexTest(schema, modules);
+    const s = await seed(t);
+    await apply(t, s.chatId, [user(1, "webchat-a"), reply(2, "webchat-a")], { deltaCursor: "c:1" });
+    await t.mutation(internal.transcriptProjection.applyTranscript, {
+      chatId: s.chatId, boundInstanceName: "alpha", sessionKey: SK, sessionId: "s-1", kind: "delta",
+      deltaCursor: "c:2", rows: [], terminals: [], unidentified: 0, readAt: Date.now() + 5,
+      inputRunIds: ["webchat-b"], inputReceipts: [{ runId: "webchat-b", state: "pending" }],
+    });
+    const count = () =>
+      t.run(async (ctx) => ({
+        rows: (await ctx.db.query("transcriptRows").collect()).length,
+        runs: (await ctx.db.query("transcriptRuns").collect()).length,
+        cursors: (await ctx.db.query("transcriptCursors").collect()).length,
+        inputs: (await ctx.db.query("transcriptInputs").collect()).length,
+      }));
+    expect(await count()).toEqual({ rows: 2, runs: 1, cursors: 1, inputs: 1 });
+    await t.mutation(internal.chats.sweepDeletedChat, { chatId: s.chatId, ownerId: s.owner });
+    expect(await count()).toEqual({ rows: 0, runs: 0, cursors: 0, inputs: 0 });
+  });
+});
+
+describe("review 1 — G: a durable user row is guard evidence even when nobody asked about it", () => {
+  test("a FAILED outbox whose user row the transcript holds, with no transcriptInputs row: heldButFailed", async () => {
+    const t = convexTest(schema, modules);
+    const s = await seed(t);
+    const F = "webchat-" + "f".repeat(64);
+    await t.run(async (ctx) => {
+      const um = await ctx.db.insert("messages", { chatId: s.chatId, userId: s.owner, role: "user", status: "complete" as const, text: "q", sendId: F, updatedAt: 1 });
+      await ctx.db.insert("outbox", { chatId: s.chatId, userId: s.owner, clientMessageId: "cm-f", text: "q", attachmentIds: [], status: "failed", messageId: um, sendId: F });
+      await ctx.db.insert("messages", { chatId: s.chatId, userId: s.owner, role: "assistant", status: "complete" as const, text: "a", runId: F, turnSessionKey: SK, updatedAt: 1 });
+    });
+    // The activation read: no inputRunIds asked, but the row is there.
+    await apply(t, s.chatId, [user(1, F), reply(2, F)]);
+    expect(await t.run(async (ctx) => (await ctx.db.query("transcriptInputs").collect()).length)).toBe(0);
+    const r = (await t.query(internal.transcriptProjection.projectionReportInternal, { chatId: s.chatId }))!;
+    expect(r.gaps!.guard).toMatchObject({ inputs: 1, held: 1, heldButFailed: 1 });
+    expect(r.verdict).toBe("gaps");
+  });
+});
+
+describe("review 1 — G: an auto-retry counts only when it was DISPATCHED", () => {
+  const A = "webchat-" + "d".repeat(64);
+  const world = async (t: T, s: Awaited<ReturnType<typeof seed>>, retry: Record<string, unknown>) => {
+    await t.run(async (ctx) => {
+      const um = await ctx.db.insert("messages", { chatId: s.chatId, userId: s.owner, role: "user", status: "complete" as const, text: "q", sendId: A, updatedAt: 1 });
+      await ctx.db.insert("outbox", { chatId: s.chatId, userId: s.owner, clientMessageId: "cm-d", text: "q", attachmentIds: [], status: "sent", messageId: um, sendId: A });
+      await ctx.db.insert("outbox", { chatId: s.chatId, userId: s.owner, clientMessageId: `autoretry-${um}-1-1`, text: "q", attachmentIds: [], messageId: um, autoRetryAttempt: 1, ...retry } as never);
+      await ctx.db.insert("messages", { chatId: s.chatId, userId: s.owner, role: "assistant", status: "complete" as const, text: "a", runId: A, turnSessionKey: SK, updatedAt: 1 });
+    });
+    await apply(t, s.chatId, [user(1, A), reply(2, A)]);
+    return (await t.query(internal.transcriptProjection.projectionReportInternal, { chatId: s.chatId }))!;
+  };
+
+  test("a retry row that failed BEFORE its chat.send (reset failed): no re-execution", async () => {
+    const t = convexTest(schema, modules);
+    const s = await seed(t);
+    const r = await world(t, s, { status: "failed" });
+    expect(r.gaps!.guard.retriedWhileHeld).toBe(0);
+  });
+
+  test("GATE-THEN-FAIL: stamped by the last gate, failed before the gateway — unknown, never a gap", async () => {
+    const t = convexTest(schema, modules);
+    const s = await seed(t);
+    const r = await world(t, s, { status: "failed", sentToInstance: "alpha", sendId: "webchat-" + "e".repeat(64), dispatchedAt: Date.now() });
+    expect(r.gaps!.guard).toMatchObject({ retriedWhileHeld: 0, retryOutcomeUnknown: 1 });
+    expect(r.window.incompleteReasons).toContain("unproven_retries");
+    expect(r.verdict).toBe("consistent_in_window");
+  });
+
+  test("ACCEPTED: a gate-stamped retry whose own user row the transcript holds is a re-execution", async () => {
+    const t = convexTest(schema, modules);
+    const s = await seed(t);
+    const E = "webchat-" + "e".repeat(64);
+    const r0 = await world(t, s, { status: "failed", sentToInstance: "alpha", sendId: E, dispatchedAt: Date.now() });
+    expect(r0.gaps!.guard.retriedWhileHeld).toBe(0);
+    await apply(t, s.chatId, [user(3, E)], { kind: "delta", readAt: Date.now() + 10 });
+    const r = (await t.query(internal.transcriptProjection.projectionReportInternal, { chatId: s.chatId }))!;
+    expect(r.gaps!.guard).toMatchObject({ retriedWhileHeld: 1, retryOutcomeUnknown: 0 });
+    expect(r.verdict).toBe("gaps");
+  });
+
+  test("ACCEPTED: a receipt for the retry's identity, too", async () => {
+    const t = convexTest(schema, modules);
+    const s = await seed(t);
+    const E = "webchat-" + "c".repeat(64);
+    await world(t, s, { status: "pending", sentToInstance: "alpha", sendId: E, dispatchedAt: Date.now() });
+    await t.mutation(internal.transcriptProjection.applyTranscript, {
+      chatId: s.chatId, boundInstanceName: "alpha", sessionKey: SK, sessionId: "s-1", kind: "delta",
+      deltaCursor: "c:9", rows: [], terminals: [], unidentified: 0, readAt: Date.now() + 20,
+      inputRunIds: [E], inputReceipts: [{ runId: E, state: "pending" }],
+    });
+    const r = (await t.query(internal.transcriptProjection.projectionReportInternal, { chatId: s.chatId }))!;
+    expect(r.gaps!.guard.retriedWhileHeld).toBe(1);
+  });
+
+  test("ACCEPTED: a retry row marked sent (its chat.send was ACKed)", async () => {
+    const t = convexTest(schema, modules);
+    const s = await seed(t);
+    const r = await world(t, s, { status: "sent", sentToInstance: "alpha" });
+    expect(r.gaps!.guard).toMatchObject({ retriedWhileHeld: 1, retryOutcomeUnknown: 0 });
+  });
+});
+
+describe("review 1 — G reads within the byte budget (large messages, several regenerations)", () => {
+  const BIG = "x".repeat(1024 * 1024);
+  const B = "webchat-" + "b".repeat(64);
+  const world = async (t: T, s: Awaited<ReturnType<typeof seed>>, o: { bigHead: boolean; regenerations: number }) => {
+    await t.run(async (ctx) => {
+      const um = await ctx.db.insert("messages", { chatId: s.chatId, userId: s.owner, role: "user", status: "complete" as const, text: "q", sendId: B, updatedAt: 1 });
+      await ctx.db.insert("outbox", { chatId: s.chatId, userId: s.owner, clientMessageId: "cm-b", text: o.bigHead ? BIG : "q", attachmentIds: [], status: "sent", messageId: um, sendId: B });
+      // A dispatched auto-retry, then large regenerations of the same message (newest).
+      await ctx.db.insert("outbox", { chatId: s.chatId, userId: s.owner, clientMessageId: `autoretry-${um}-1-1`, text: "q", attachmentIds: [], status: "sent", messageId: um, autoRetryAttempt: 1, sentToInstance: "alpha" });
+      for (let i = 0; i < o.regenerations; i++) {
+        await ctx.db.insert("outbox", { chatId: s.chatId, userId: s.owner, clientMessageId: `regen-${i}`, text: BIG, attachmentIds: [], status: "sent", messageId: um });
+      }
+      await ctx.db.insert("messages", { chatId: s.chatId, userId: s.owner, role: "assistant", status: "complete" as const, text: "a", runId: B, turnSessionKey: SK, updatedAt: 1 });
+    });
+    await apply(t, s.chatId, [user(1, B), reply(2, B)]);
+  };
+  const report = (t: T, chatId: Id<"chats">, readBudgetBytes: number) =>
+    t.query(internal.transcriptProjection.projectionReportInternal, { chatId, readBudgetBytes });
+
+  test("the send's own row spends the budget: nothing more is read, the input is unmeasured", async () => {
+    const t = convexTest(schema, modules);
+    const s = await seed(t);
+    await world(t, s, { bigHead: true, regenerations: 0 });
+    const r = (await report(t, s.chatId, 512 * 1024))!;
+    expect(r.gaps!.guard).toMatchObject({ unmeasured: 1, retriedWhileHeld: 0 });
+    expect(r.window.incompleteReasons).toEqual(expect.arrayContaining(["unmeasured_inputs", "read_budget_exhausted"]));
+    expect(r.verdict).toBe("consistent_in_window");
+  });
+
+  test("…but a send with no message (internal work) needs no attempts lookup: still measured", async () => {
+    const t = convexTest(schema, modules);
+    const s = await seed(t);
+    await t.run(async (ctx) => {
+      await ctx.db.insert("outbox", { chatId: s.chatId, userId: s.owner, clientMessageId: "cm-i", text: BIG, attachmentIds: [], status: "failed", sendId: B });
+    });
+    await apply(t, s.chatId, [user(1, B), reply(2, B)]);
+    const r = (await report(t, s.chatId, 512 * 1024))!;
+    expect(r.gaps!.guard).toMatchObject({ unmeasured: 0, heldButFailed: 1 });
+  });
+
+  test("large regenerations are read one at a time and the lookup stops at the budget", async () => {
+    const t = convexTest(schema, modules);
+    const s = await seed(t);
+    await world(t, s, { bigHead: false, regenerations: 4 });
+    const r = (await report(t, s.chatId, Math.floor(1.5 * 1024 * 1024)))!;
+    // The dispatched retry sits behind the regenerations: the cut lookup proves nothing.
+    expect(r.gaps!.guard).toMatchObject({ unmeasured: 1, retriedWhileHeld: 0 });
+    expect(r.verdict).toBe("consistent_in_window");
+    // Control: with the default budget the retry is found.
+    const full = (await t.query(internal.transcriptProjection.projectionReportInternal, { chatId: s.chatId }))!;
+    expect(full.gaps!.guard.retriedWhileHeld).toBe(1);
+  });
+});
+
+describe("review 3 — current custody is replaced by each authoritative read; the proof of receipt stays", () => {
+  const Q = "webchat-" + "9".repeat(63) + "q";
+  const world = async (t: T, s: Awaited<ReturnType<typeof seed>>) => {
+    await t.run(async (ctx) => {
+      const um = await ctx.db.insert("messages", { chatId: s.chatId, userId: s.owner, role: "user", status: "complete" as const, text: "q", sendId: Q, updatedAt: 1 });
+      await ctx.db.insert("outbox", { chatId: s.chatId, userId: s.owner, clientMessageId: "cm-q", text: "q", attachmentIds: [], status: "sent", messageId: um, sendId: Q });
+    });
+    await apply(t, s.chatId, [], { readAt: 1 });
+  };
+  const read = (
+    t: T,
+    chatId: Id<"chats">,
+    readAt: number,
+    g: {
+      inputRunIds?: string[];
+      pendingInputs?: { total: number; items: Array<{ runId?: string; state: "queued" | "cancelled" | "interrupted"; queued?: boolean }>; complete?: boolean };
+      inputReceipts?: Array<{ runId: string; state: "pending" | "consumed"; queued?: boolean; cancelled?: boolean }>;
+    },
+  ) =>
+    t.mutation(internal.transcriptProjection.applyTranscript, {
+      chatId, boundInstanceName: "alpha", sessionKey: SK, sessionId: "s-1", kind: "delta",
+      deltaCursor: `c:${readAt}`, rows: [], terminals: [], unidentified: 0, readAt, ...g,
+    });
+  const guard = async (t: T, chatId: Id<"chats">) =>
+    (await t.query(internal.transcriptProjection.projectionReportInternal, { chatId }))!;
+  const queuedFirst = (t: T, chatId: Id<"chats">) =>
+    read(t, chatId, 10, {
+      inputRunIds: [Q],
+      pendingInputs: { total: 1, items: [{ runId: Q, state: "queued", queued: true }], complete: true },
+      inputReceipts: [{ runId: Q, state: "pending", queued: true }],
+    });
+
+  test("queued → consumed (with an empty pending list): no longer queued at the gateway, still held", async () => {
+    const t = convexTest(schema, modules);
+    const s = await seed(t);
+    await world(t, s);
+    await queuedFirst(t, s.chatId);
+    expect((await guard(t, s.chatId)).gaps!.guard.queuedAtGateway).toBe(1);
+    await read(t, s.chatId, 20, {
+      inputRunIds: [Q],
+      pendingInputs: { total: 0, items: [], complete: true },
+      inputReceipts: [{ runId: Q, state: "consumed" }],
+    });
+    const r = await guard(t, s.chatId);
+    expect(r.gaps!.guard).toMatchObject({ queuedAtGateway: 0, held: 1, pendingUnconfirmed: 0 });
+    expect(r.verdict).not.toBe("gaps");
+    expect(r.window.incompleteReasons).not.toContain("pending_inputs_partial");
+  });
+
+  test("queued → cancelled receipt: no longer queued, counted cancelled", async () => {
+    const t = convexTest(schema, modules);
+    const s = await seed(t);
+    await world(t, s);
+    await queuedFirst(t, s.chatId);
+    await read(t, s.chatId, 20, {
+      inputRunIds: [Q],
+      inputReceipts: [{ runId: Q, state: "pending", queued: true, cancelled: true }],
+    });
+    expect((await guard(t, s.chatId)).gaps!.guard).toMatchObject({ queuedAtGateway: 0, cancelled: 1, held: 1 });
+  });
+
+  test("absent from a COMPLETE pending list — no receipt asked for it — clears the queue state", async () => {
+    const t = convexTest(schema, modules);
+    const s = await seed(t);
+    await world(t, s);
+    await queuedFirst(t, s.chatId);
+    await read(t, s.chatId, 20, { pendingInputs: { total: 0, items: [], complete: true } });
+    expect((await guard(t, s.chatId)).gaps!.guard).toMatchObject({ queuedAtGateway: 0, held: 1 });
+  });
+
+  test("seen only in the pending list, then gone from a complete one: still proven received (heldAt)", async () => {
+    const t = convexTest(schema, modules);
+    const s = await seed(t);
+    await world(t, s);
+    await read(t, s.chatId, 10, { pendingInputs: { total: 1, items: [{ runId: Q, state: "queued" }], complete: true } });
+    await read(t, s.chatId, 20, { pendingInputs: { total: 0, items: [], complete: true } });
+    expect((await guard(t, s.chatId)).gaps!.guard).toMatchObject({ queuedAtGateway: 0, held: 1, inputs: 1 });
+  });
+
+  test("a PARTIAL pending list clears nothing, and the stale-able state qualifies the verdict", async () => {
+    const t = convexTest(schema, modules);
+    const s = await seed(t);
+    await world(t, s);
+    await queuedFirst(t, s.chatId);
+    await read(t, s.chatId, 20, { pendingInputs: { total: 25, items: [] } });
+    const r = await guard(t, s.chatId);
+    expect(r.gaps!.guard).toMatchObject({ queuedAtGateway: 1, pendingUnconfirmed: 1 });
+    expect(r.window.incompleteReasons).toContain("pending_inputs_partial");
+    expect(r.verdict).toBe("consistent_in_window");
+  });
+});
+
+// ── Review pass 4: THE custody state model — its transition table is the regression net ──
+
+describe("review 4 — custody state model: every event from every state", () => {
+  const AT = 100;
+  const STATES: Record<string, InputFact> = {
+    none: {},
+    pendingItem: { pendingState: "queued", heldAt: 1 },
+    queuedItem: { pendingState: "queued", pendingQueued: true, heldAt: 1 },
+    receiptQueuedOnly: { receipt: "pending", receiptQueued: true, heldAt: 1 },
+    consumed: { receipt: "consumed", heldAt: 1 },
+  };
+  const EVENTS: Record<string, InputEvent> = {
+    pendingItem: { kind: "pendingItem", state: "queued", queued: false },
+    queuedFlagItem: { kind: "pendingItem", state: "queued", queued: true },
+    receiptPending: { kind: "receipt", state: "pending", queued: false, cancelled: false },
+    receiptQueued: { kind: "receipt", state: "pending", queued: true, cancelled: false },
+    receiptConsumed: { kind: "receipt", state: "consumed", queued: false, cancelled: false },
+    receiptCancelled: { kind: "receipt", state: "pending", queued: false, cancelled: true },
+    inputAbsent: { kind: "absent" },
+    completeListMissing: { kind: "listMissing" },
+    partialList: { kind: "partialList" },
+    receiptUnreadable: { kind: "receiptUnreadable" },
+  };
+  /** Expected [current custody, gateway held (historical)] after each event. */
+  const TABLE: Record<string, Record<string, ["none" | "pending" | "queued", boolean]>> = {
+    none: {
+      pendingItem: ["pending", true],
+      queuedFlagItem: ["queued", true],
+      receiptPending: ["pending", true],
+      receiptQueued: ["queued", true],
+      receiptConsumed: ["none", true],
+      receiptCancelled: ["none", true],
+      inputAbsent: ["none", false],
+      completeListMissing: ["none", false],
+      partialList: ["none", false],
+      receiptUnreadable: ["none", false],
+    },
+    pendingItem: {
+      pendingItem: ["pending", true],
+      queuedFlagItem: ["queued", true],
+      receiptPending: ["pending", true],
+      receiptQueued: ["queued", true],
+      receiptConsumed: ["none", true],
+      receiptCancelled: ["none", true],
+      inputAbsent: ["none", true],
+      completeListMissing: ["none", true],
+      partialList: ["pending", true],
+      receiptUnreadable: ["pending", true],
+    },
+    queuedItem: {
+      pendingItem: ["pending", true],
+      queuedFlagItem: ["queued", true],
+      receiptPending: ["queued", true],
+      receiptQueued: ["queued", true],
+      receiptConsumed: ["none", true],
+      receiptCancelled: ["none", true],
+      inputAbsent: ["none", true],
+      completeListMissing: ["none", true],
+      partialList: ["queued", true],
+      receiptUnreadable: ["queued", true],
+    },
+    receiptQueuedOnly: {
+      // A newer item WITHOUT the flag replaces the receipt's old queued flag (review 5).
+      pendingItem: ["pending", true],
+      queuedFlagItem: ["queued", true],
+      receiptPending: ["pending", true],
+      receiptQueued: ["queued", true],
+      receiptConsumed: ["none", true],
+      receiptCancelled: ["none", true],
+      inputAbsent: ["none", true],
+      completeListMissing: ["pending", true],
+      partialList: ["queued", true],
+      receiptUnreadable: ["queued", true],
+    },
+    consumed: {
+      pendingItem: ["pending", true],
+      queuedFlagItem: ["queued", true],
+      receiptPending: ["none", true],
+      receiptQueued: ["none", true],
+      receiptConsumed: ["none", true],
+      receiptCancelled: ["none", true],
+      inputAbsent: ["none", true],
+      completeListMissing: ["none", true],
+      partialList: ["none", true],
+      receiptUnreadable: ["none", true],
+    },
+  };
+  test("the table covers every state × every event", () => {
+    for (const st of Object.keys(STATES)) expect(Object.keys(TABLE[st]!).sort()).toEqual(Object.keys(EVENTS).sort());
+    expect(Object.keys(TABLE).sort()).toEqual(Object.keys(STATES).sort());
+  });
+  for (const [st, from] of Object.entries(STATES)) {
+    for (const [evName, ev] of Object.entries(EVENTS)) {
+      test(`${st} --${evName}-->`, () => {
+        const to = applyInputEvent(from, ev, AT);
+        const [custody, held] = TABLE[st]![evName]!;
+        expect(currentCustody(to), "current custody").toBe(custody);
+        expect(gatewayHeldInput(to), "historical").toBe(held);
+        // History is never lost.
+        if (from.heldAt !== undefined) expect(to.heldAt).toBe(from.heldAt);
+        if (from.receipt === "consumed") expect(to.receipt).toBe("consumed");
+      });
+    }
+  }
+  test("`state:\"queued\"` alone is accepted custody, NOT the gateway queue (9.8 capture: queuedCount 0, no flag)", () => {
+    expect(currentCustody({ pendingState: "queued" })).toBe("pending");
+    expect(currentCustody({ pendingState: "queued", pendingQueued: true })).toBe("queued");
+  });
+});
+
+describe("review 4 — the four findings, end to end through applyTranscript and the report", () => {
+  const Q = "webchat-" + "4".repeat(63) + "q";
+  const world = async (t: T, s: Awaited<ReturnType<typeof seed>>) => {
+    await t.run(async (ctx) => {
+      const um = await ctx.db.insert("messages", { chatId: s.chatId, userId: s.owner, role: "user", status: "complete" as const, text: "q", sendId: Q, updatedAt: 1 });
+      await ctx.db.insert("outbox", { chatId: s.chatId, userId: s.owner, clientMessageId: "cm-4q", text: "q", attachmentIds: [], status: "sent", messageId: um, sendId: Q });
+    });
+    await apply(t, s.chatId, [], { readAt: 1 });
+  };
+  const read = (t: T, chatId: Id<"chats">, readAt: number, g: Record<string, unknown>) =>
+    t.mutation(internal.transcriptProjection.applyTranscript, {
+      chatId, boundInstanceName: "alpha", sessionKey: SK, sessionId: "s-1", kind: "delta",
+      deltaCursor: `c:${readAt}`, rows: [], terminals: [], unidentified: 0, readAt, ...(g as object),
+    } as never);
+  const report = async (t: T, chatId: Id<"chats">) =>
+    (await t.query(internal.transcriptProjection.projectionReportInternal, { chatId }))!;
+
+  test("1) the captured 9.8 shape — state queued, queuedCount 0, no flag — is NOT queued at the gateway", async () => {
+    const t = convexTest(schema, modules);
+    const s = await seed(t);
+    await world(t, s);
+    await read(t, s.chatId, 10, {
+      inputRunIds: [Q],
+      pendingInputs: { total: 1, queuedCount: 0, items: [{ runId: Q, state: "queued" }], complete: true },
+      inputReceipts: [{ runId: Q, state: "pending" }],
+    });
+    const r = await report(t, s.chatId);
+    expect(r.gaps!.guard).toMatchObject({ queuedAtGateway: 0, held: 1 });
+  });
+
+  test("2) a proven absence after a pending observation clears the current state — no phantom with a partial list", async () => {
+    const t = convexTest(schema, modules);
+    const s = await seed(t);
+    await world(t, s);
+    await read(t, s.chatId, 10, {
+      inputRunIds: [Q],
+      pendingInputs: { total: 1, items: [{ runId: Q, state: "queued", queued: true }], complete: true },
+      inputReceipts: [{ runId: Q, state: "pending", queued: true }],
+    });
+    await read(t, s.chatId, 20, { inputRunIds: [Q], inputReceipts: [], inputAbsent: [Q], pendingInputs: { total: 30, items: [] } });
+    const r = await report(t, s.chatId);
+    expect(r.gaps!.guard).toMatchObject({ queuedAtGateway: 0, pendingUnconfirmed: 0, held: 1 });
+    expect(r.window.incompleteReasons).not.toContain("pending_inputs_partial");
+  });
+
+  test("3) a receipt-only queued flag is cleared by a later complete empty list", async () => {
+    const t = convexTest(schema, modules);
+    const s = await seed(t);
+    await world(t, s);
+    // A paginated reply: the receipt says queued, its item is on another page.
+    await read(t, s.chatId, 10, {
+      inputRunIds: [Q],
+      pendingInputs: { total: 25, items: [] },
+      inputReceipts: [{ runId: Q, state: "pending", queued: true }],
+    });
+    expect((await report(t, s.chatId)).gaps!.guard.queuedAtGateway).toBe(1);
+    await read(t, s.chatId, 20, { pendingInputs: { total: 0, items: [], complete: true } });
+    expect((await report(t, s.chatId)).gaps!.guard).toMatchObject({ queuedAtGateway: 0, held: 1 });
+  });
+
+  test("4) a retry seen only in the pending list, later gone from a complete list, is still an ACCEPTED retry", async () => {
+    const t = convexTest(schema, modules);
+    const s = await seed(t);
+    const R = "webchat-" + "r".repeat(64);
+    await t.run(async (ctx) => {
+      const um = await ctx.db.insert("messages", { chatId: s.chatId, userId: s.owner, role: "user", status: "complete" as const, text: "q", sendId: Q, updatedAt: 1 });
+      await ctx.db.insert("outbox", { chatId: s.chatId, userId: s.owner, clientMessageId: "cm-4q", text: "q", attachmentIds: [], status: "sent", messageId: um, sendId: Q });
+      await ctx.db.insert("outbox", { chatId: s.chatId, userId: s.owner, clientMessageId: `autoretry-${um}-1-1`, text: "q", attachmentIds: [], status: "failed", messageId: um, autoRetryAttempt: 1, sentToInstance: "alpha", sendId: R, dispatchedAt: 5 });
+    });
+    await apply(t, s.chatId, [user(1, Q), reply(2, Q)], { readAt: 1 });
+    await read(t, s.chatId, 10, { pendingInputs: { total: 1, items: [{ runId: R, state: "queued" }], complete: true } });
+    await read(t, s.chatId, 20, { pendingInputs: { total: 0, items: [], complete: true } });
+    const r = await report(t, s.chatId);
+    expect(r.gaps!.guard).toMatchObject({ retriedWhileHeld: 1, retryOutcomeUnknown: 0 });
+  });
+});
+
+describe("review 5 — sends never confirmed after their ACK; a reread item replaces the receipt's queued flag", () => {
+  const Q = "webchat-" + "5".repeat(63) + "q";
+  const world = async (t: T, s: Awaited<ReturnType<typeof seed>>, status: "sent" | "failed" | "queued") => {
+    await t.run(async (ctx) => {
+      const um = await ctx.db.insert("messages", { chatId: s.chatId, userId: s.owner, role: "user", status: "complete" as const, text: "q", sendId: Q, updatedAt: 1 });
+      await ctx.db.insert("outbox", { chatId: s.chatId, userId: s.owner, clientMessageId: "cm-5q", text: "q", attachmentIds: [], status, messageId: um, sendId: Q });
+    });
+    await apply(t, s.chatId, [], { readAt: 1 });
+  };
+  const read = (t: T, chatId: Id<"chats">, readAt: number, g: Record<string, unknown>) =>
+    t.mutation(internal.transcriptProjection.applyTranscript, {
+      chatId, boundInstanceName: "alpha", sessionKey: SK, sessionId: "s-1", kind: "delta",
+      deltaCursor: `c:${readAt}`, rows: [], terminals: [], unidentified: 0, readAt, ...(g as object),
+    } as never);
+  const report = async (t: T, chatId: Id<"chats">) =>
+    (await t.query(internal.transcriptProjection.projectionReportInternal, { chatId }))!;
+
+  test("asked only BEFORE its ACK (no receipt, no absence) and now `sent`: unmeasured, never `consistent`", async () => {
+    const t = convexTest(schema, modules);
+    const s = await seed(t);
+    await world(t, s, "sent");
+    await read(t, s.chatId, 10, { inputRunIds: [Q], inputReceipts: [] });
+    const r = await report(t, s.chatId);
+    expect(r.gaps!.guard).toMatchObject({ custodyUnconfirmed: 1, sentButAbsent: 0, held: 0 });
+    expect(r.window.incompleteReasons).toContain("unconfirmed_inputs");
+    expect(r.verdict).not.toBe("consistent");
+  });
+
+  test("…until a receipt, a durable user row or a proven absence settles it", async () => {
+    for (const settle of ["receipt", "row", "absent"] as const) {
+      const t = convexTest(schema, modules);
+      const s = await seed(t);
+      await world(t, s, "sent");
+      await read(t, s.chatId, 10, { inputRunIds: [Q], inputReceipts: [] });
+      if (settle === "receipt") await read(t, s.chatId, 20, { inputRunIds: [Q], inputReceipts: [{ runId: Q, state: "consumed" }] });
+      if (settle === "row") await apply(t, s.chatId, [user(1, Q)], { kind: "delta", readAt: 20 });
+      if (settle === "absent") await read(t, s.chatId, 20, { inputRunIds: [Q], inputReceipts: [], inputAbsent: [Q] });
+      const r = await report(t, s.chatId);
+      expect(r.gaps!.guard.custodyUnconfirmed, settle).toBe(0);
+      expect(r.window.incompleteReasons, settle).not.toContain("unconfirmed_inputs");
+    }
+  });
+
+  test("a send never dispatched (outbox queued) is not owed a confirmation", async () => {
+    const t = convexTest(schema, modules);
+    const s = await seed(t);
+    await world(t, s, "queued");
+    await read(t, s.chatId, 10, { inputRunIds: [Q], inputReceipts: [] });
+    expect((await report(t, s.chatId)).gaps!.guard.custodyUnconfirmed).toBe(0);
+  });
+
+  test("receipt said queued; a reread returns the item WITHOUT the flag (complete page, queuedCount 0): not queued", async () => {
+    const t = convexTest(schema, modules);
+    const s = await seed(t);
+    await world(t, s, "sent");
+    await read(t, s.chatId, 10, { inputRunIds: [Q], inputReceipts: [{ runId: Q, state: "pending", queued: true }], pendingInputs: { total: 1, queuedCount: 1, items: [{ runId: Q, state: "queued", queued: true }], complete: true } });
+    expect((await report(t, s.chatId)).gaps!.guard.queuedAtGateway).toBe(1);
+    await read(t, s.chatId, 20, { pendingInputs: { total: 1, queuedCount: 0, items: [{ runId: Q, state: "queued" }], complete: true } });
+    expect((await report(t, s.chatId)).gaps!.guard).toMatchObject({ queuedAtGateway: 0, held: 1 });
+  });
+});
+
+describe("review 6 — a dispatched send nothing was ever observed about is still owed a confirmation", () => {
+  const A1 = "webchat-" + "6".repeat(63) + "a";
+  const A2 = "webchat-" + "6".repeat(63) + "b";
+  const world = async (t: T, s: Awaited<ReturnType<typeof seed>>, second: Record<string, unknown> | null) => {
+    await t.run(async (ctx) => {
+      const u1 = await ctx.db.insert("messages", { chatId: s.chatId, userId: s.owner, role: "user", status: "complete" as const, text: "q1", sendId: A1, updatedAt: 1 });
+      await ctx.db.insert("outbox", { chatId: s.chatId, userId: s.owner, clientMessageId: "cm-6a", text: "q1", attachmentIds: [], status: "sent", messageId: u1, sendId: A1, sentToInstance: "alpha", dispatchedAt: Date.now() });
+      await ctx.db.insert("messages", { chatId: s.chatId, userId: s.owner, role: "assistant", status: "complete" as const, text: "a1", runId: A1, turnSessionKey: SK, updatedAt: 1 });
+      if (second !== null) {
+        const u2 = await ctx.db.insert("messages", { chatId: s.chatId, userId: s.owner, role: "user", status: "complete" as const, text: "q2", sendId: A2, updatedAt: 1 });
+        await ctx.db.insert("outbox", { chatId: s.chatId, userId: s.owner, clientMessageId: "cm-6b", text: "q2", attachmentIds: [], messageId: u2, sendId: A2, ...second } as never);
+      }
+    });
+    // The coherent first turn: its user row and reply were read.
+    await apply(t, s.chatId, [user(1, A1), reply(2, A1)]);
+    return (await t.query(internal.transcriptProjection.projectionReportInternal, { chatId: s.chatId }))!;
+  };
+
+  test("control: the coherent first turn alone is consistent", async () => {
+    const t = convexTest(schema, modules);
+    const s = await seed(t);
+    const r = await world(t, s, null);
+    expect(r.verdict).toBe("consistent");
+  });
+
+  test("a second send DISPATCHED then failed, with no fact row and no user row: unconfirmed, never `consistent`", async () => {
+    const t = convexTest(schema, modules);
+    const s = await seed(t);
+    const r = await world(t, s, { status: "failed", sentToInstance: "alpha", dispatchedAt: Date.now() });
+    expect(r.gaps!.guard).toMatchObject({ inputs: 2, custodyUnconfirmed: 1 });
+    expect(r.window.incompleteReasons).toContain("unconfirmed_inputs");
+    expect(r.verdict).not.toBe("consistent");
+  });
+
+  test("a second send that never passed the last gate (no stamp) is not a candidate", async () => {
+    const t = convexTest(schema, modules);
+    const s = await seed(t);
+    const r = await world(t, s, { status: "failed" });
+    expect(r.gaps!.guard).toMatchObject({ inputs: 1, custodyUnconfirmed: 0 });
+    expect(r.verdict).toBe("consistent");
+  });
+});
+
+describe("review 7 — multi-instance chats: only sends to a PROJECTED instance are owed a confirmation", () => {
+  test("alpha shadow + beta off: a dispatched send to beta is not a guard candidate", async () => {
+    const t = convexTest(schema, modules);
+    const s = await seed(t);
+    const A1 = "webchat-" + "7".repeat(63) + "a";
+    const B1 = "webchat-" + "7".repeat(63) + "b";
+    await t.run(async (ctx) => {
+      await ctx.db.insert("instances", { name: "beta", gatewayUrl: "ws://gw-b", config: { transcriptProjection: "off" } as never });
+      const u1 = await ctx.db.insert("messages", { chatId: s.chatId, userId: s.owner, role: "user", status: "complete" as const, text: "q1", sendId: A1, updatedAt: 1 });
+      await ctx.db.insert("outbox", { chatId: s.chatId, userId: s.owner, clientMessageId: "cm-7a", text: "q1", attachmentIds: [], status: "sent", messageId: u1, sendId: A1, sentToInstance: "alpha", dispatchedAt: Date.now() });
+      await ctx.db.insert("messages", { chatId: s.chatId, userId: s.owner, role: "assistant", status: "complete" as const, text: "a1", runId: A1, turnSessionKey: SK, updatedAt: 1 });
+      const u2 = await ctx.db.insert("messages", { chatId: s.chatId, userId: s.owner, role: "user", status: "complete" as const, text: "q2", sendId: B1, updatedAt: 1 });
+      await ctx.db.insert("outbox", { chatId: s.chatId, userId: s.owner, clientMessageId: "cm-7b", text: "q2", attachmentIds: [], status: "sent", messageId: u2, sendId: B1, sentToInstance: "beta", dispatchedAt: Date.now(), routedAgent: { instanceName: "beta", agentId: "bob" } });
+    });
+    await apply(t, s.chatId, [user(1, A1), reply(2, A1)]);
+    const r = (await t.query(internal.transcriptProjection.projectionReportInternal, { chatId: s.chatId }))!;
+    expect(r.gaps!.guard).toMatchObject({ inputs: 1, custodyUnconfirmed: 0 });
+    expect(r.verdict).toBe("consistent");
+  });
+});
+
+describe("review 7 — a complete list's cleanup runs to the end, in bounded batches, and qualifies the report meanwhile", () => {
+  test("60 queued entries + a complete EMPTY list: qualified mid-way, nothing left after the continuations", async () => {
+    vi.useFakeTimers();
+    const t = convexTest(schema, modules);
+    const s = await seed(t);
+    await apply(t, s.chatId, [], { readAt: 1 });
+    await t.run(async (ctx) => {
+      for (let i = 0; i < 60; i++) {
+        await ctx.db.insert("transcriptInputs", {
+          chatId: s.chatId,
+          sessionKey: SK,
+          sendId: `foreign-${String(i).padStart(2, "0")}`,
+          pendingState: "queued",
+          heldAt: 1,
+          updatedAt: 1,
+        });
+      }
+    });
+    const left = () =>
+      t.run(async (ctx) => (await ctx.db.query("transcriptInputs").collect()).filter((d) => d.pendingState !== undefined).length);
+    await t.mutation(internal.transcriptProjection.applyTranscript, {
+      chatId: s.chatId, boundInstanceName: "alpha", sessionKey: SK, sessionId: "s-1", kind: "delta",
+      deltaCursor: "c:2", rows: [], terminals: [], unidentified: 0, readAt: Date.now(),
+      pendingInputs: { total: 0, queuedCount: 0, items: [], complete: true },
+    });
+    expect(await left()).toBe(10);
+    const mid = (await t.query(internal.transcriptProjection.projectionReportInternal, { chatId: s.chatId }))!;
+    expect(mid.window.incompleteReasons).toContain("pending_cleanup_in_progress");
+    expect(mid.verdict).not.toBe("consistent");
+    await t.finishAllScheduledFunctions(vi.runAllTimers);
+    expect(await left()).toBe(0);
+    const after = (await t.query(internal.transcriptProjection.projectionReportInternal, { chatId: s.chatId }))!;
+    expect(after.window.incompleteReasons).not.toContain("pending_cleanup_in_progress");
+    // History survives the cleanup.
+    expect((await t.run((ctx) => ctx.db.query("transcriptInputs").collect())).every((d) => d.heldAt === 1)).toBe(true);
+    vi.useRealTimers();
+  });
+
+  test("an entry a NEWER read wrote while the cleanup ran is left alone", async () => {
+    vi.useFakeTimers();
+    const t = convexTest(schema, modules);
+    const s = await seed(t);
+    await apply(t, s.chatId, [], { readAt: 1 });
+    await t.run(async (ctx) => {
+      for (let i = 0; i < 55; i++) {
+        await ctx.db.insert("transcriptInputs", { chatId: s.chatId, sessionKey: SK, sendId: `f-${String(i).padStart(2, "0")}`, pendingState: "queued", heldAt: 1, updatedAt: 1 });
+      }
+    });
+    await t.mutation(internal.transcriptProjection.applyTranscript, {
+      chatId: s.chatId, boundInstanceName: "alpha", sessionKey: SK, sessionId: "s-1", kind: "delta",
+      deltaCursor: "c:2", rows: [], terminals: [], unidentified: 0, readAt: Date.now(),
+      pendingInputs: { total: 0, items: [], complete: true },
+    });
+    // A newer read re-asserts one remaining entry before the continuation runs.
+    await t.run(async (ctx) => {
+      const still = (await ctx.db.query("transcriptInputs").collect()).find((d) => d.pendingState !== undefined)!;
+      await ctx.db.patch(still._id, { updatedAt: Date.now() + 60_000 });
+    });
+    await t.finishAllScheduledFunctions(vi.runAllTimers);
+    const remaining = (await t.run((ctx) => ctx.db.query("transcriptInputs").collect())).filter((d) => d.pendingState !== undefined);
+    expect(remaining).toHaveLength(1);
+    vi.useRealTimers();
+  });
+});
+
+describe("review 7 — the continuation reschedules itself as long as it has work", () => {
+  test("130 queued entries: three batches, nothing left, flag cleared", async () => {
+    vi.useFakeTimers();
+    const t = convexTest(schema, modules);
+    const s = await seed(t);
+    await apply(t, s.chatId, [], { readAt: 1 });
+    await t.run(async (ctx) => {
+      for (let i = 0; i < 130; i++) {
+        await ctx.db.insert("transcriptInputs", { chatId: s.chatId, sessionKey: SK, sendId: `g-${String(i).padStart(3, "0")}`, pendingState: "queued", heldAt: 1, updatedAt: 1 });
+      }
+    });
+    await t.mutation(internal.transcriptProjection.applyTranscript, {
+      chatId: s.chatId, boundInstanceName: "alpha", sessionKey: SK, sessionId: "s-1", kind: "delta",
+      deltaCursor: "c:2", rows: [], terminals: [], unidentified: 0, readAt: Date.now(),
+      pendingInputs: { total: 0, items: [], complete: true },
+    });
+    await t.finishAllScheduledFunctions(vi.runAllTimers);
+    const docs = await t.run((ctx) => ctx.db.query("transcriptInputs").collect());
+    expect(docs.filter((d) => d.pendingState !== undefined)).toHaveLength(0);
+    const c = (await t.run((ctx) => ctx.db.query("transcriptCursors").collect()))[0]!;
+    expect(c.pendingCleanupInProgress).toBe(false);
+    vi.useRealTimers();
+  });
+});
+
+describe("review 8 — a cleanup has a generation; a reconfirmation is fresh", () => {
+  const seed60 = async (t: T, s: Awaited<ReturnType<typeof seed>>) => {
+    await apply(t, s.chatId, [], { readAt: 1 });
+    await t.run(async (ctx) => {
+      for (let i = 0; i < 60; i++) {
+        await ctx.db.insert("transcriptInputs", { chatId: s.chatId, sessionKey: SK, sendId: `h-${String(i).padStart(2, "0")}`, pendingState: "queued", heldAt: 1, updatedAt: 1 });
+      }
+    });
+  };
+  const readAt = (t: T, chatId: Id<"chats">, at: number, pendingInputs: Record<string, unknown>) =>
+    t.mutation(internal.transcriptProjection.applyTranscript, {
+      chatId, boundInstanceName: "alpha", sessionKey: SK, sessionId: "s-1", kind: "delta",
+      deltaCursor: `c:${at}`, rows: [], terminals: [], unidentified: 0, readAt: at, pendingInputs,
+    } as never);
+  const pending = (t: T) =>
+    t.run(async (ctx) => (await ctx.db.query("transcriptInputs").collect()).filter((d) => d.pendingState !== undefined));
+
+  test("an UNCHANGED reconfirmation is stamped with the reading's time", async () => {
+    const t = convexTest(schema, modules);
+    const s = await seed(t);
+    await apply(t, s.chatId, [], { readAt: 1 });
+    await readAt(t, s.chatId, 10, { total: 1, items: [{ runId: "x-1", state: "queued" }], complete: true });
+    const before = (await t.run((ctx) => ctx.db.query("transcriptInputs").collect()))[0]!;
+    expect(before.confirmedAt).toBe(10);
+    await readAt(t, s.chatId, 20, { total: 1, items: [{ runId: "x-1", state: "queued" }], complete: true });
+    const after = (await t.run((ctx) => ctx.db.query("transcriptInputs").collect()))[0]!;
+    expect(after.confirmedAt).toBe(20);
+    expect(after.updatedAt).toBeGreaterThanOrEqual(before.updatedAt);
+  });
+
+  test("a STALE continuation stands down once a newer read advanced the cursor", async () => {
+    vi.useFakeTimers();
+    const t = convexTest(schema, modules);
+    const s = await seed(t);
+    await seed60(t, s);
+    const t1 = Date.now();
+    await readAt(t, s.chatId, t1, { total: 0, items: [], complete: true });
+    expect(await pending(t)).toHaveLength(10);
+    // A newer read (a partial list: it starts no cleanup of its own).
+    await readAt(t, s.chatId, t1 + 1000, { total: 40, items: [] });
+    await t.finishAllScheduledFunctions(vi.runAllTimers);
+    expect(await pending(t)).toHaveLength(10);
+    const r = (await t.query(internal.transcriptProjection.projectionReportInternal, { chatId: s.chatId }))!;
+    expect(r.verdict).not.toBe("consistent");
+    vi.useRealTimers();
+  });
+
+  test("a reconfirmation DURING the cleanup keeps the entry; the newer complete list cleans the rest", async () => {
+    vi.useFakeTimers();
+    const t = convexTest(schema, modules);
+    const s = await seed(t);
+    await seed60(t, s);
+    const t1 = Date.now();
+    await readAt(t, s.chatId, t1, { total: 0, items: [], complete: true });
+    const survivor = (await pending(t))[0]!.sendId;
+    // The newer complete list names one of the remaining ten, unchanged.
+    await readAt(t, s.chatId, t1 + 1000, { total: 1, items: [{ runId: survivor, state: "queued" }], complete: true });
+    await t.finishAllScheduledFunctions(vi.runAllTimers);
+    const left = await pending(t);
+    expect(left.map((d) => d.sendId)).toEqual([survivor]);
+    const c = (await t.run((ctx) => ctx.db.query("transcriptCursors").collect()))[0]!;
+    expect(c.pendingCleanupInProgress).toBe(false);
+    vi.useRealTimers();
+  });
+});
+
+describe("review 9 — the dispatched-send scan runs in DISPATCH order, bounded by the window", () => {
+  const A1 = "webchat-" + "9".repeat(63) + "a";
+  /** A coherent first turn whose proven dispatch D1 sets the window's boundary. */
+  const firstTurn = async (t: T, s: Awaited<ReturnType<typeof seed>>, D1: number) => {
+    await t.run(async (ctx) => {
+      const u1 = await ctx.db.insert("messages", { chatId: s.chatId, userId: s.owner, role: "user", status: "complete" as const, text: "q1", sendId: A1, updatedAt: 1 });
+      await ctx.db.insert("outbox", { chatId: s.chatId, userId: s.owner, clientMessageId: "cm-9a", text: "q1", attachmentIds: [], status: "sent", messageId: u1, sendId: A1, sentToInstance: "alpha", dispatchedAt: D1 });
+    });
+  };
+  const other = (t: T, s: Awaited<ReturnType<typeof seed>>, tag: string, fields: Record<string, unknown>) =>
+    t.run(async (ctx) => {
+      const u = await ctx.db.insert("messages", { chatId: s.chatId, userId: s.owner, role: "user", status: "complete" as const, text: tag, updatedAt: 1 });
+      await ctx.db.insert("outbox", { chatId: s.chatId, userId: s.owner, clientMessageId: `cm-${tag}`, text: tag, attachmentIds: [], messageId: u, sendId: "webchat-" + tag.padEnd(64, "0"), sentToInstance: "alpha", ...fields } as never);
+    });
+  const report = async (t: T, s: Awaited<ReturnType<typeof seed>>) => {
+    await apply(t, s.chatId, [user(1, A1), reply(2, A1)]);
+    return (await t.query(internal.transcriptProjection.projectionReportInternal, { chatId: s.chatId }))!;
+  };
+
+  test("a dispatched send still IN FLIGHT (pending, nothing observed) is counted unsettled — never zero inputs", async () => {
+    const t = convexTest(schema, modules);
+    const s = await seed(t);
+    const D1 = Date.now() + 5_000;
+    await firstTurn(t, s, D1);
+    await other(t, s, "p", { status: "pending", dispatchedAt: D1 + 10 });
+    const r = await report(t, s);
+    expect(r.gaps!.guard).toMatchObject({ inputs: 2, unsettled: 1 });
+    expect(r.window.incompleteReasons).toContain("unsettled_inputs");
+    expect(r.verdict).not.toBe("consistent");
+  });
+
+  test("CREATED earlier but dispatched later than a row dispatched before the window: still found", async () => {
+    const t = convexTest(schema, modules);
+    const s = await seed(t);
+    const D1 = Date.now() + 5_000;
+    // Y: created FIRST, dispatched AFTER the boundary (failed, nothing observed).
+    await other(t, s, "y", { status: "failed", dispatchedAt: D1 + 50 });
+    // X: created after Y, dispatched BEFORE the boundary — the row a creation-ordered
+    // scan stopped at.
+    await other(t, s, "x", { status: "failed", dispatchedAt: D1 - 1_000 });
+    await firstTurn(t, s, D1);
+    const r = await report(t, s);
+    expect(r.gaps!.guard).toMatchObject({ inputs: 2, custodyUnconfirmed: 1 });
+  });
+
+  test("the boundary is exact: dispatched AT it is in the window, one millisecond before is not", async () => {
+    const t = convexTest(schema, modules);
+    const s = await seed(t);
+    const D1 = Date.now() + 5_000;
+    await other(t, s, "w", { status: "failed", dispatchedAt: D1 - 1 });
+    await firstTurn(t, s, D1);
+    await other(t, s, "z", { status: "failed", dispatchedAt: D1 });
+    const r = await report(t, s);
+    expect(r.gaps!.guard).toMatchObject({ inputs: 2, custodyUnconfirmed: 1 });
+  });
+});
+
+describe("review 11 — an uninterpretable receipt keeps the guard unproven", () => {
+  const U = "webchat-" + "u".repeat(64);
+  const read = (t: T, chatId: Id<"chats">, at: number, g: Record<string, unknown>) =>
+    t.mutation(internal.transcriptProjection.applyTranscript, {
+      chatId, boundInstanceName: "alpha", sessionKey: SK, sessionId: "s-1", kind: "delta",
+      deltaCursor: `c:${at}`, rows: [], terminals: [], unidentified: 0, readAt: at, ...(g as object),
+    } as never);
+  const world = async (t: T, s: Awaited<ReturnType<typeof seed>>) => {
+    await t.run(async (ctx) => {
+      const um = await ctx.db.insert("messages", { chatId: s.chatId, userId: s.owner, role: "user", status: "complete" as const, text: "q", sendId: U, updatedAt: 1 });
+      await ctx.db.insert("outbox", { chatId: s.chatId, userId: s.owner, clientMessageId: "cm-u", text: "q", attachmentIds: [], status: "sent", messageId: um, sendId: U });
+    });
+    await apply(t, s.chatId, [], { readAt: 1 });
+  };
+  const report = async (t: T, chatId: Id<"chats">) =>
+    (await t.query(internal.transcriptProjection.projectionReportInternal, { chatId }))!;
+
+  test("observed but unreadable: no absence, the verdict is qualified — and a readable receipt settles it", async () => {
+    const t = convexTest(schema, modules);
+    const s = await seed(t);
+    await world(t, s);
+    // Even if a (buggy) body also claims absence for it, the unreadable receipt wins.
+    await read(t, s.chatId, 10, { inputRunIds: [U], inputReceipts: [], inputUnreadable: [U], inputAbsent: [U] });
+    let r = await report(t, s.chatId);
+    expect(r.gaps!.guard).toMatchObject({ receiptUnreadable: 1, sentButAbsent: 0 });
+    expect(r.window.incompleteReasons).toContain("guard_receipt_unreadable");
+    expect(r.verdict).not.toBe("consistent");
+    const f = (await t.run((ctx) => ctx.db.query("transcriptInputs").collect()))[0]!;
+    expect(f.absentAt).toBeUndefined();
+    await read(t, s.chatId, 20, { inputRunIds: [U], inputReceipts: [{ runId: U, state: "consumed" }] });
+    r = await report(t, s.chatId);
+    expect(r.gaps!.guard.receiptUnreadable).toBe(0);
+    expect(r.window.incompleteReasons).not.toContain("guard_receipt_unreadable");
   });
 });
