@@ -29,6 +29,7 @@ import type { MutationCtx, QueryCtx } from "../_generated/server";
 import { effectiveOrder, QUEUED_ORDER_SENTINEL } from "./messageOrder";
 import { yieldHandedOff } from "./toolOutcome";
 import { isTrashed } from "./trash";
+import { projectionModeOfChat, type ProjectionMode } from "./followUp";
 
 /** Most a single chat may hold queued behind the in-flight turn (anti-runaway). */
 export const MAX_QUEUED_PER_CHAT = 20;
@@ -100,6 +101,9 @@ export const SUBAGENT_STALE_TTL_MS = 20 * 60 * 1000; // 20 min = 15-min observer
 export async function isChatBusy(
   ctx: QueryCtx,
   chatId: Id<"chats">,
+  /** The projection switch, when the caller already resolved it (one resolution per
+   *  send); absent ⇒ resolved here, and only if a sub-agent works. */
+  projection?: ProjectionMode,
 ): Promise<boolean> {
   const pending = await ctx.db
     .query("outbox")
@@ -108,7 +112,7 @@ export async function isChatBusy(
     )
     .first();
   if (pending !== null) return true;
-  return await chatHasActivityBlockers(ctx, chatId);
+  return await chatHasActivityBlockers(ctx, chatId, projection);
 }
 
 /**
@@ -120,6 +124,7 @@ export async function isChatBusy(
 export async function chatHasActivityBlockers(
   ctx: QueryCtx,
   chatId: Id<"chats">,
+  projection?: ProjectionMode,
 ): Promise<boolean> {
   const streaming = await ctx.db
     .query("messages")
@@ -128,6 +133,11 @@ export async function chatHasActivityBlockers(
     )
     .first();
   if (streaming !== null) return true;
+  // TRANSCRIPT PROJECTION `on` (phase 3, decided 2026-10-01): no hold while a sub-agent
+  // works. The Control UI counts a delegated run only for Stop (`hasAbortableSessionRun`,
+  // ui/src/pages/chat/run-lifecycle.ts:212-224 at v2026.9.8), never for "busy"
+  // (`isChatBusy` :140-142 = sending ∨ a run in the foreground); the gateway places the
+  // reply by its own transcript.
   // A `running` sub-agent row holds the chat. Read ONLY the (chat, "running") slice
   // via the by_chat_status index — bounded regardless of how many TERMINATED sub-agents
   // the chat has accumulated (a by_chat scan + JS status filter would read the whole
@@ -147,14 +157,17 @@ export async function chatHasActivityBlockers(
       q.eq("chatId", chatId).eq("status", "running").eq("kind", undefined),
     )
     .first();
-  if (legacyRunning !== null) return true;
-  const subagentRunning = await ctx.db
-    .query("subAgents")
-    .withIndex("by_chat_status_kind", (q) =>
-      q.eq("chatId", chatId).eq("status", "running").eq("kind", "subagent"),
-    )
-    .first();
-  return subagentRunning !== null;
+  const subagentRunning =
+    legacyRunning ??
+    (await ctx.db
+      .query("subAgents")
+      .withIndex("by_chat_status_kind", (q) =>
+        q.eq("chatId", chatId).eq("status", "running").eq("kind", "subagent"),
+      )
+      .first());
+  if (subagentRunning === null) return false;
+  // Asked only when a sub-agent actually works (the switch costs reads of its own).
+  return (projection ?? (await projectionModeOfChat(ctx, await ctx.db.get(chatId)))) !== "on";
 }
 
 /** How many sends are currently parked behind the in-flight turn for a chat. */
@@ -280,9 +293,14 @@ export async function drainNextQueued(
   // prompt lock was released" — the run crashes (observed live, 2026-07-19).
   // A short fixed delay lets the lock settle; the bounded auto-retry remains
   // the net for the residual race.
-  await ctx.scheduler.runAfter(QUEUE_DRAIN_DELAY_MS, internal.bridge.dispatch, {
-    outboxId: next._id,
-  });
+  // Projection `on`: no delay. The pause stood in for "is the gateway done with the run"
+  // (§8.1); a send landing in that window is now an explicit follow-up the gateway
+  // places itself, never a race the bridge loses.
+  await ctx.scheduler.runAfter(
+    (await projectionModeOfChat(ctx, chat)) === "on" ? 0 : QUEUE_DRAIN_DELAY_MS,
+    internal.bridge.dispatch,
+    { outboxId: next._id },
+  );
 }
 
 /** How many messages after a question are read for the replies its chain gave. */

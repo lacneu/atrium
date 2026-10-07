@@ -1,5 +1,87 @@
 # Changelog
 
+## [0.95.0] — Send while the agent works, like OpenClaw's Control UI
+
+Minor release, and the first step of the transcript redesign you can see.
+
+**The new way of sending is opt-in, per instance, and we recommend leaving it off for now.** It
+runs only for a conversation whose turns go to an OpenClaw instance whose `transcriptProjection`
+is `on` (for a conversation that picks the agent turn by turn, the instance of its current
+route; for an older conversation bound to nothing, its owner's default agent). Nothing turns it
+on by itself: an instance left at `off` or `shadow` sends exactly as in 0.94.0. **Keep production
+instances at `off` (or `shadow`) until the next step of the redesign**; use `on` only on an
+instance you are evaluating. In this version the bubbles of a
+turn that receives messages while it works are still cut and placed live, as the frames arrive;
+the next step of the redesign builds them from the session transcript itself, which is what
+makes this mode dependable across bridge restarts and repeated interruptions. Deploy Convex before the bridge — the bridge sends new
+fields and calls new writes that an older Convex refuses — and the frontend with Convex. To
+roll back, set the instance back to `shadow`: nothing new is used, and the bubbles already
+written stay ordinary messages.
+
+**A message sent while the agent works goes to the agent at once.** Until now Atrium held it
+until the turn ended and the agent was free, then sent it as a new turn. On a projected
+instance it now goes immediately, the way OpenClaw's own Control UI sends it: with the
+session's queue mode, which by default injects it into the turn in progress ("steer"), so the
+agent takes it into account without finishing first. A gateway configured otherwise (follow-up,
+collect, interrupt) is followed. The composer shows what Enter will do while the agent works
+and offers the three choices explicitly — steer now, queue it until the agent is free, or
+interrupt the agent and send — plus a personal default (the agent's mode, steer or queue);
+⌘/Ctrl+Enter does the other of queue and steer. Queued messages wait in Atrium's queue as
+before and can still be edited or withdrawn there.
+
+**The answer lands where it belongs.** When a message is steered into the turn in progress, the
+agent's bubble is cut at that point: what the agent did before stays above your message, and
+what it answers comes below it — instead of an answer appearing above the question it
+answers. When the gateway queues a message behind the turn, the run that answers it gets its own
+bubble, after it, instead of being folded into the previous answer. A run that ends with
+nothing to show leaves no bubble, as in the Control UI, instead of an "empty response" error.
+When the gateway adds a final sentence after a run's first terminal (OpenClaw 2026.9.8 writes
+"The tool run finished, but no final summary was produced…" for a tool-only run), it is shown in
+that run's bubble.
+
+**Each message says what the agent did with it.** A discreet line under your message tells you
+when the agent added it to the turn in progress, when it waits in the agent's own queue, and when
+the agent cancelled or interrupted it. On OpenClaw 2026.9.7 and later, a message waiting in the
+agent's queue can be withdrawn from there.
+
+**No message runs twice.** Atrium no longer re-sends a message by itself after a turn that ended
+without a reply — the gateway had received that message, and re-sending it ran it a second time
+(the case reported on 2026-09-30). On a projected instance an automatic retry now happens only
+when the gateway refused the message before accepting it (a session gone, archived, or still
+initializing), and never when Atrium has any trace that the gateway received it. The other
+mechanisms that held or delayed a send to work around the same problem are off on a projected
+instance: the wait while a sub-agent works, the wait for a delivery run to end, the pause before
+a queued message leaves, and the re-parking of a send that found the conversation busy.
+
+**A bridge restart no longer loses the turn in progress.** When the bridge restarts during a
+turn, the bubble used to stay frozen and, five minutes later, end as "connection lost" — even
+when the agent went on and answered. On a projected instance Atrium first asks the bridge
+whether the agent is still working on it; if so, the bubble resumes and receives the rest of the
+answer. The same happens when you send a message into that conversation right after a restart.
+
+**Stop works like the Control UI's.** Stop now targets the run that is actually working, and
+when no run of the conversation is in progress here it stops the session and clears what the
+gateway still had queued for it.
+
+**Known limitation, with `on` as with `off`.** When the agent waits for a sub-agent
+(`sessions_yield`) and, once its result is in, sends the answer with its `message` tool and then
+ends with a sentence of its own, the bubble shows only that last sentence. The text sent with the
+tool is in the session transcript, and OpenClaw's Control UI shows it, but Atrium does not: the
+gateway runs that resumption itself without sending Atrium the tool's arguments, and Atrium only
+looks a delivered text up in the transcript when the run ends with nothing else to show. This is
+not new in 0.95.0 (an `off` instance reads that run the same way); building the bubbles from the
+transcript, the next step, removes it.
+
+**Known limitations of `on` in this version.** These are why `on` stays off in production until
+the next step, which replaces live bubble placement with bubbles built from the transcript:
+- If the gateway accepts a message sent while the agent works but its acknowledgement is lost,
+  and the gateway still cannot confirm the message after three checks, the bridge stops waiting
+  for it. The answer may then not appear, although the agent did the work.
+- After a bridge restart in a turn whose bubble was cut (by a steered message, or by more than
+  50 cuts in a single run), the resumed bubble may show part of the earlier answer again.
+- When two instances expose the same agent id and therefore share a session key for one
+  conversation, only the first instance that writes that session gets it projected.
+
 ## [0.94.0] — Session events and the input guard, in shadow
 
 Minor release. Nothing on screen changes. Apart from the anomaly detector fix at the end,

@@ -1385,7 +1385,9 @@ export async function loadProjectionReport(
       }
       seen++;
       budget.charge(m);
-      if (m.role === "assistant") set.add(m._id);
+      // A run cut at a steered input (phase 3, CU-20) is ONE bubble in several segments:
+      // the segments after the first (`runSegment`) are the same run's continuation.
+      if (m.role === "assistant" && m.runSegment === undefined) set.add(m._id);
     }
     const mergedPlus = await ctx.db
       .query("runBubbles")
@@ -1421,7 +1423,9 @@ export async function loadProjectionReport(
         }
         opened++;
         budget.charge(m);
-        if (m.role === "assistant" && m.chatId === chatId) set.add(m._id);
+        if (m.role === "assistant" && m.chatId === chatId && m.runSegment === undefined) {
+          set.add(m._id);
+        }
       }
     }
     // One bubble found proves the run HAS a bubble, not that it has only one: a cut

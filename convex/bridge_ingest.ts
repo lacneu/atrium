@@ -414,6 +414,9 @@ type IngestOp =
       /** WHY the turn closed, from the bridge's own account. Allowlisted below
        *  before it reaches storage — the wire never writes its own vocabulary. */
       finalizeCause?: string | null;
+      /** Projection `on` (phase 3): a COMPLETE terminal with nothing visible leaves no
+       *  bubble (stream.finalize `dropIfEmpty`). */
+      dropIfEmpty?: boolean;
       /** TRUE = the streamed text is protocol NOISE (a NO_REPLY sentinel that
        *  reached the live row): the finalize must NOT fall back to it. Carried
        *  ON the finalize so the discard is atomic with it — a separate purge
@@ -448,6 +451,23 @@ type IngestOp =
       providerChatId: string;
       // The reset epoch the turn started under (see bindProviderChat).
       resetCount?: number;
+    }
+  // Projection `on` (phase 3): cut a run's bubble at a steered input (CU-20), and add a
+  // distinct late final of a settled run to its bubble (CU-8). See stream.ts.
+  | {
+      op: "splitSegment";
+      messageId: string;
+      afterMessageId?: string | null;
+      /** The settling segment's whole text (authoritative). */
+      text?: string;
+    }
+  | {
+      op: "appendLateFinal";
+      chatId: string;
+      runId: string;
+      messageId?: string | null;
+      text: string;
+      sessionKey?: string | null;
     }
   | {
       op: "recoverLostReply";
@@ -671,6 +691,8 @@ type IngestOp =
       terminals: unknown[];
       activeRunIds?: unknown[];
       hasActiveRun?: boolean;
+      queueMode?: unknown;
+      effectiveQueueMode?: unknown;
       unidentified?: number;
       readAt?: number;
       // Phase 2 — the input guard (shapes re-validated by the mutation).
@@ -1389,6 +1411,7 @@ export const ingest = httpAction(async (ctx, request) => {
         boundInstanceName,
         ...(body.runId !== undefined ? { expectedRunId: body.runId } : {}),
         ...(body.discardStreamText === true ? { discardStreamText: true } : {}),
+        ...(body.dropIfEmpty === true ? { dropIfEmpty: true } : {}),
         // `body.gatewayPreempted` is deliberately NOT relayed: the current bridge never
         // mints it, and an older bridge still running during a rolling deploy must
         // not trigger the supposition-based re-dispatch either (see preemptRepark.ts).
@@ -1447,6 +1470,41 @@ export const ingest = httpAction(async (ctx, request) => {
           : {}),
       });
       return json({ ok: true });
+    }
+    case "splitSegment": {
+      if (typeof body.messageId !== "string") return json({ error: "invalid body" }, 400);
+      const afterId = typeof body.afterMessageId === "string" ? body.afterMessageId : null;
+      const next = await ctx.runMutation(internal.stream.splitSegment, {
+        messageId: body.messageId as Id<"messages">,
+        ...(afterId !== null ? { afterMessageId: afterId as Id<"messages"> } : {}),
+        ...(typeof body.text === "string" ? { text: body.text } : {}),
+        boundInstanceName,
+      });
+      return json({ messageId: next });
+    }
+    case "appendLateFinal": {
+      if (
+        typeof body.chatId !== "string" ||
+        typeof body.runId !== "string" ||
+        body.runId === "" ||
+        body.runId.length > 256 ||
+        typeof body.text !== "string"
+      ) {
+        return json({ error: "invalid body" }, 400);
+      }
+      const id = await ctx.runMutation(internal.stream.appendLateFinal, {
+        chatId: body.chatId as Id<"chats">,
+        runId: body.runId,
+        ...(typeof body.messageId === "string"
+          ? { messageId: body.messageId as Id<"messages"> }
+          : {}),
+        text: body.text,
+        ...(typeof body.sessionKey === "string" && body.sessionKey !== ""
+          ? { turnSessionKey: body.sessionKey }
+          : {}),
+        boundInstanceName,
+      });
+      return json({ messageId: id });
     }
     case "recoverLostReply": {
       await ctx.runMutation(internal.stream.recoverLostReply, {
@@ -1819,6 +1877,12 @@ export const ingest = httpAction(async (ctx, request) => {
             }
           : {}),
         ...(typeof body.hasActiveRun === "boolean" ? { hasActiveRun: body.hasActiveRun } : {}),
+        ...(typeof body.queueMode === "string" && body.queueMode.length <= 32
+          ? { queueMode: body.queueMode }
+          : {}),
+        ...(typeof body.effectiveQueueMode === "string" && body.effectiveQueueMode.length <= 32
+          ? { effectiveQueueMode: body.effectiveQueueMode }
+          : {}),
         unidentified:
           typeof body.unidentified === "number" && Number.isFinite(body.unidentified)
             ? body.unidentified

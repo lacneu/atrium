@@ -235,6 +235,17 @@ import {
 import { InlineTurnActivity } from "./InlineTurnActivity";
 import { QueuedDock } from "./QueuedDock";
 import { QueuedTurnContext } from "./queuedTurnContext";
+import {
+  CustodyBadge,
+  FollowUpSendControl,
+  useFollowUpState,
+} from "./FollowUpSendControl";
+import {
+  alternateFollowUp,
+  custodyBadge,
+  primaryFollowUp,
+  type FollowUpSendMode,
+} from "./followUpComposer";
 import { GatewayDegradedContext } from "./gatewayDegradedContext";
 import {
   BookmarkGutter,
@@ -425,7 +436,11 @@ const TurnGateContext = createContext<TurnGate | null>(null);
 // turn is in flight. Null when no chat is mounted. Provided by ConvexChat from the
 // runtime hook; consumed by the composer's while-running send button.
 const QueueSendContext = createContext<
-  ((text: string) => Promise<boolean>) | null
+  | ((
+      text: string,
+      opts?: { mode?: FollowUpSendMode; immediate?: boolean },
+    ) => Promise<boolean>)
+  | null
 >(null);
 
 // Codex-style QUEUE DOCK: the mid-turn messages parked in the outbox, surfaced
@@ -3280,6 +3295,17 @@ function UserMessage() {
       true,
   );
   const messageId = useMessage((msg) => msg.id);
+  // TRANSCRIPT PROJECTION `on` (phase 3): what the gateway does with this input.
+  const custody = useMessage(
+    (msg) =>
+      (msg.metadata?.custom as { custody?: string | null } | undefined)?.custody ?? null,
+  );
+  const custodyChatId = useMessage(
+    (msg) => (msg.metadata?.custom as { chatId?: string } | undefined)?.chatId ?? null,
+  );
+  const { can: custodyCan } = useInstanceCapabilities(
+    custody === "queued" ? (custodyChatId as ConvexId<"chats"> | null) : null,
+  );
   // QUOTE-REPLY: this turn replied to one or more blocks of previous answers —
   // show each collapsed excerpt above the bubble, in the order the user picked
   // them; clicking one scrolls to (and flashes) that block. A deleted quoted
@@ -3359,6 +3385,14 @@ function UserMessage() {
             {m.chat_message_queued()}
           </span>
         ) : (
+          <>
+          {custodyBadge(custody) !== null ? (
+            <CustodyBadge
+              custody={custody}
+              messageId={messageId}
+              canWithdraw={custodyCan("discardPendingInput")}
+            />
+          ) : null}
           <ActionBarPrimitive.Root
             className="oc-msg__actions oc-msg__actions--user"
             autohide="not-last"
@@ -3383,6 +3417,7 @@ function UserMessage() {
           {ui.showReport ? <FeedbackButton /> : null}
           {ui.showDelete ? <DeleteMessageButton kind="user" /> : null}
           </ActionBarPrimitive.Root>
+          </>
         )}
       </div>
     </MessagePrimitive.Root>
@@ -3542,6 +3577,11 @@ function AssistantEmptyState({ show }: { show: boolean }) {
   const status = useMessage(
     (msg) => (msg.metadata?.custom as { status?: string } | undefined)?.status,
   );
+  // A steer segment answers nothing by itself: no empty-state verdict on it.
+  const steerSegment = useMessage(
+    (msg) =>
+      (msg.metadata?.custom as { steerSegment?: boolean } | undefined)?.steerSegment === true,
+  );
   const chatId = useMessage(
     (msg) => (msg.metadata?.custom as { chatId?: string } | undefined)?.chatId,
   );
@@ -3628,7 +3668,7 @@ function AssistantEmptyState({ show }: { show: boolean }) {
     );
     return () => window.clearTimeout(t);
   }, [recheckAt]);
-  if (state.kind === "none") return null;
+  if (state.kind === "none" || steerSegment) return null;
 
   if (state.kind === "composing") {
     // The child finished; the parent's merged reply is on its way. Same pill
@@ -3832,6 +3872,16 @@ function AssistantMessage() {
     (m) => (m.metadata?.custom as { status?: string } | undefined)?.status,
   );
   const lastUserTurnQueued = useContext(QueuedTurnContext);
+  // A steer segment with no text and no file/widget (projection `on`, CU-20).
+  const steerSegmentSilent = useMessage(
+    (msg) =>
+      (msg.metadata?.custom as { steerSegment?: boolean } | undefined)?.steerSegment ===
+        true &&
+      !messageHasText(msg.content as ReadonlyArray<{ type?: string; text?: unknown }>) &&
+      !(msg.content as ReadonlyArray<{ type?: string; name?: string }>).some(
+        (p) => p?.type === "file" || (p?.type === "data" && p.name === "widget"),
+      ),
+  );
   // Auto read-aloud (per-instance opt-in): speaks a reply that completes live.
   const autoReadText = useMessage((msg) =>
     msg.content
@@ -3885,6 +3935,10 @@ function AssistantMessage() {
   // Suppress the queued synthetic placeholder entirely (its "En attente" lives on the
   // user message badge). Placed AFTER all hooks — Rules of Hooks.
   if (placeholderStatus === undefined && lastUserTurnQueued) return null;
+  // The part of a run before a steered input cut it (projection `on`, CU-20) is tool
+  // work only, and the clean view hides tool work: nothing to show there — the answer
+  // is the next segment, under the steered message.
+  if (steerSegmentSilent && !ui.showTools) return null;
   // NOTE (deliberate): a COMPLETE-but-empty assistant row (the silent
   // sessions_spawn parent whose reply arrives as a later spontaneous turn) is
   // NOT suppressed — AssistantEmptyState already renders it as an explanatory
@@ -5481,9 +5535,15 @@ function Composer({
   // nothing and assistant-ui handles Enter normally. `composerQueueState` is the
   // single, tested source of the send-vs-queue decision + the hold REASON.
   const isRunning = useThread((t) => t.isRunning);
+  // TRANSCRIPT PROJECTION `on` (phase 3): a running sub-agent no longer holds a send
+  // (the Control UI counts it for Stop only), and a send made while a turn runs goes
+  // NOW in the chosen mode — only `queue` waits. Null = projection not on: the
+  // historical queue applies unchanged.
+  const followUp = useFollowUpState(chatId);
+  const followUpOn = followUp !== null && chatCan("followUpModes");
   const queueMode = composerQueueState({
     turnRunning: isRunning,
-    hasRunningSubAgent: subAgentBusy,
+    hasRunningSubAgent: followUpOn ? false : subAgentBusy,
   });
   const queued = queueMode.mode === "queue";
   const queueSend = useContext(QueueSendContext);
@@ -5785,7 +5845,21 @@ function Composer({
     e.stopPropagation();
     const t = composerRuntime.getState().text;
     if (t.trim() === "") return;
-    void queueSend(t).then((ok) => {
+    // Projection `on`: Enter does the primary action, modifier+Enter its alternate
+    // (queue <-> steer), as the Control UI's composer does.
+    const primary = followUpOn
+      ? primaryFollowUp(followUp?.preference ?? null, followUp?.serverMode ?? null)
+      : null;
+    const mode =
+      primary === null
+        ? undefined
+        : e.metaKey || e.ctrlKey
+          ? alternateFollowUp(primary)
+          : primary.mode;
+    void queueSend(
+      t,
+      primary === null ? undefined : { ...(mode ? { mode } : {}), immediate: mode !== "queue" },
+    ).then((ok) => {
       if (ok) composerRuntime.setText("");
     });
   };
@@ -6122,7 +6196,31 @@ function Composer({
                   minutes, and the person who pressed Stop to SAVE TIME had
                   nothing left to press (user report 2026-08-03). */}
               <StopTurnButton />
-              <QueueSendButton reason={queueMode.reason} />
+              {followUpOn ? (
+                <FollowUpSendControl
+                  chatId={chatId}
+                  queueSend={
+                    queueSend === null
+                      ? null
+                      : (t, mode) => queueSend(t, { ...(mode ? { mode } : {}), immediate: mode !== "queue" })
+                  }
+                />
+              ) : (
+                <QueueSendButton reason={queueMode.reason} />
+              )}
+            </>
+          ) : followUpOn && subAgentBusy ? (
+            /* Projection `on`: a sub-agent works but nothing holds the send — Stop
+               stays offered (the Control UI's `hasAbortableSessionRun`). */
+            <>
+              <StopTurnButton />
+              <ComposerPrimitive.Send
+                className="oc-composer__send"
+                aria-label={m.chat_send()}
+                disabled={pasteAttaching}
+              >
+                <ArrowUp size={18} aria-hidden />
+              </ComposerPrimitive.Send>
             </>
           ) : (
             <ComposerPrimitive.Send

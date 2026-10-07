@@ -47,7 +47,8 @@ export interface InboundInstanceConfig {
    *  present + `enabled:false` -> skip; present + `enabled:true` -> use `template`. */
   injections?: Record<string, InboundInjection>;
   /** The transcript projection switch (redesign phase 1): `off` | `shadow` | `on`.
-   *  Absent ⇒ off. `on` behaves as `shadow` until a phase gives the projection a say. */
+   *  Absent ⇒ off. `on` (phase 3) also sends like the Control UI and lets the gateway's
+   *  facts place the live bubbles (server.ts `planProjectedSend`, RunManager). */
   transcriptProjection?: TranscriptProjectionMode;
 }
 

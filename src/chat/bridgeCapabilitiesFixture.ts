@@ -87,7 +87,9 @@ export const LIVE_CAPABILITIES_BODY = {
           "permissionModes": "2026.8.2",
           "knowledgePolicy": "2026.9.6",
           "inlineWidgets": "2026.9.6",
-          "transcriptProjection": "2026.8.2"
+          "transcriptProjection": "2026.8.2",
+          "followUpModes": "2026.8.2",
+          "discardPendingInput": "2026.9.7"
         }
       },
       "hermes": {
@@ -1054,7 +1056,9 @@ export const LIVE_CAPABILITIES_BODY = {
         "permissionModes": true,
         "knowledgePolicy": true,
         "inlineWidgets": true,
-        "transcriptProjection": true
+        "transcriptProjection": true,
+        "followUpModes": true,
+        "discardPendingInput": false
       }
     },
     {

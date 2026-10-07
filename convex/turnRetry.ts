@@ -38,7 +38,9 @@ import { purgeBookmarksForMessages } from "./chatBookmarks";
 import { internalMutation } from "./_generated/server";
 import { internal } from "./_generated/api";
 import { Doc, Id } from "./_generated/dataModel";
-import type { MutationCtx } from "./_generated/server";
+import type { MutationCtx, QueryCtx } from "./_generated/server";
+import { gatewayHeldInput } from "./lib/transcriptProjection";
+import { projectionModeOfChat } from "./lib/followUp";
 import { compareOrder } from "./lib/messageOrder";
 import { writeTraceEvent } from "./observability";
 
@@ -99,6 +101,57 @@ export const RETRYABLE_KINDS: ReadonlySet<string> = new Set([
   PROVIDER_INTERNAL_CODE,
   CONTEXT_LENGTH_COMPACTED_CODE,
 ]);
+
+/** TRANSCRIPT PROJECTION `on` (phase 3, design §8.2, decided 2026-10-01): the ONLY
+ *  classes an automatic re-dispatch may follow — refusals the gateway makes BEFORE it
+ *  admits the input (session gone at preflight, archived, the session-init conflict). A
+ *  silent close, a provider failure or an overflow came after admission: the gateway
+ *  held that input, and re-sending it is a second execution (the Denis case). */
+export const PRE_ADMISSION_KINDS: ReadonlySet<string> = new Set([
+  SESSION_GONE_CODE,
+  SESSION_ARCHIVED_CODE,
+  SESSION_INIT_CONFLICT_CODE,
+]);
+
+/** The stand-down reason for a turn whose input the gateway holds (I4). */
+export const GATEWAY_HOLDS_INPUT_REASON = "gateway_holds_input";
+
+/**
+ * INVARIANT I4 (design §4.4): did the gateway, at any point, hold the input this turn
+ * was dispatched with? A receipt, a pending-input entry (`gatewayHeldInput`, the ONE
+ * definition the guard measure uses) or its `<sendId>:user` transcript row. The facts
+ * are the ones the reconciler already recorded (transcriptInputs / transcriptRows).
+ */
+export async function gatewayHoldsTurnInput(
+  ctx: QueryCtx,
+  message: Pick<Doc<"messages">, "chatId" | "dispatchOutboxId">,
+): Promise<boolean> {
+  if (message.dispatchOutboxId === undefined) return false;
+  const rowId = ctx.db.normalizeId("outbox", message.dispatchOutboxId);
+  const row = rowId === null ? null : await ctx.db.get(rowId);
+  const sendId = row?.sendId;
+  if (sendId === undefined) return false;
+  const facts = await ctx.db
+    .query("transcriptInputs")
+    .withIndex("by_chat_send", (q) => q.eq("chatId", message.chatId).eq("sendId", sendId))
+    .take(10);
+  if (
+    facts.some((f) =>
+      gatewayHeldInput({
+        receipt: f.receipt,
+        pendingState: f.pendingState,
+        heldAt: f.heldAt,
+      }),
+    )
+  ) {
+    return true;
+  }
+  const rows = await ctx.db
+    .query("transcriptRows")
+    .withIndex("by_chat_send", (q) => q.eq("chatId", message.chatId).eq("sendId", sendId))
+    .take(1);
+  return rows.length > 0;
+}
 
 /** Bounded chain: at most this many automatic re-dispatches per turn. */
 export const MAX_TURN_RETRIES = 2;
@@ -234,6 +287,9 @@ export async function maybeScheduleTurnRetry(
   // result (codex P2). Their existing error paths stay authoritative.
   const chat = await ctx.db.get(message.chatId);
   if (chat === null || chat.kind != null) return;
+  // PROJECTION `on`: only a pre-admission refusal, and never an input the gateway holds.
+  const projectionOn = (await projectionModeOfChat(ctx, chat)) === "on";
+  if (projectionOn && !PRE_ADMISSION_KINDS.has(errorKind)) return;
   const partCount = await countBlockingParts(ctx, message._id);
   // Schedule-time busy = a QUEUED follow-up only (see retryDecision.chatBusy for
   // why pending must NOT block here).
@@ -344,6 +400,38 @@ export async function maybeScheduleTurnRetry(
           phase: "not_scheduled",
           outcome: "stand_down",
           reason: CONCURRENT_WRITER_REASON,
+          attempt: decision.attempt,
+          messageId: message._id,
+        }),
+      });
+    } catch (e) {
+      console.error("[turnRetry] trace failed (non-fatal):", (e as Error)?.message ?? e);
+    }
+    return;
+  }
+  // I4: the gateway held this input — a re-send would execute it twice.
+  if (projectionOn && (await gatewayHoldsTurnInput(ctx, message))) {
+    await ctx.db.patch(message._id, {
+      autoRetryOutcome: {
+        outcome: "stood_down",
+        reason: GATEWAY_HOLDS_INPUT_REASON,
+        attempt: decision.attempt,
+        maxAttempts: limit,
+        at: Date.now(),
+      },
+    });
+    try {
+      await writeTraceEvent(ctx, {
+        kind: "chat.auto_retry",
+        direction: "internal",
+        principalType: "system",
+        principalId: "turn-retry",
+        chatId: message.chatId,
+        correlationId: `${message.chatId}:${message._id}`,
+        meta: JSON.stringify({
+          phase: "not_scheduled",
+          outcome: "stand_down",
+          reason: GATEWAY_HOLDS_INPUT_REASON,
           attempt: decision.attempt,
           messageId: message._id,
         }),
@@ -824,6 +912,19 @@ export const autoRetryTurn = internalMutation({
     if ((await countBlockingParts(ctx, messageId)) > 0) {
       await standDown("visible_parts_landed");
       return;
+    }
+    // PROJECTION `on` (I4), re-checked at fire time: a read during the backoff may have
+    // proven the gateway held the input, and a class that is not a pre-admission
+    // refusal never re-runs there.
+    if ((await projectionModeOfChat(ctx, chat)) === "on") {
+      if (!PRE_ADMISSION_KINDS.has(message.errorCode ?? "")) {
+        await standDown("projection_not_pre_admission");
+        return;
+      }
+      if (await gatewayHoldsTurnInput(ctx, message)) {
+        await standDown(GATEWAY_HOLDS_INPUT_REASON);
+        return;
+      }
     }
     // Children can register AFTER the schedule (the observer's upserts are async):
     // re-checked here, before the cascade below would delete their rows.

@@ -82,6 +82,12 @@ export const MESSAGE_FIELDS_DROPPED: ReadonlyArray<string> = [
   // idempotency key, bound to a gateway session of the SOURCE deployment). Same reason
   // as `turnSessionKey`: session state, not the exchange.
   "sendId",
+  // The gateway's custody of that send (phase 3): a fact about a session of the SOURCE
+  // deployment, display-only, meaningless once the message is copied elsewhere.
+  "custody",
+  // The run-segment index of a bubble cut at a steered input (phase 3): live placement
+  // state tied to the source's `runId`, which stays behind for the same reason.
+  "runSegment",
   // Correlation with the SOURCE deployment's live run. The fork path excludes
   // the same fields for the same reason: they belong to sessions that are not
   // ours.

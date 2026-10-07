@@ -39,6 +39,7 @@ import {
   gatewayAtLeast,
   parseVersion,
   TRANSCRIPT_PROJECTION_SINCE,
+  DISCARD_PENDING_INPUT_SINCE,
 } from "../src/compat.js";
 import { sleep } from "./helpers/sleep.js";
 import { readFileSync, readdirSync } from "node:fs";
@@ -59,6 +60,7 @@ import {
 import { ensureAvailableModels } from "../src/providers/openclaw/models-roster.js";
 import {
   chatAbortParams,
+  sessionsAbortParams,
   chatHistoryParams,
   CHAT_HISTORY_PAGE_LIMIT,
   CHAT_HISTORY_PAGE_MAX_BYTES,
@@ -776,6 +778,7 @@ describe("outbound ratchet — what the bridge SENDS fits the vendored contract"
     const BUILDER_BACKED: Record<string, string> = {
       "chat.abort": "chatAbortParams",
       "chat.history": "chatHistoryParams",
+      "sessions.abort": "sessionsAbortParams",
       "sessions.get": "sessionsGetParams",
       "tasks.get": "taskGetParams",
       "tasks.list": "taskListParams",
@@ -943,6 +946,30 @@ describe("outbound ratchet — what the bridge SENDS fits the vendored contract"
       "the enabled edit did not run",
     ).toBe(true);
   });
+
+  // THE CONTROL UI'S STOP (projection `on`, phase 3): `sessions.abort {clearQueued}` from
+  // the supported floor, `chat.abort {discardPendingInput}` only from 2026.9.7 — the
+  // route refuses the cancel below it, the schema being CLOSED.
+  for (const version of vendoredVersions().filter(
+    (v) => gatewayAtLeast(v, TRANSCRIPT_PROJECTION_SINCE) === true,
+  )) {
+    it(`the projected stop bodies validate against ${version}`, async () => {
+      const bodies: [string, Record<string, unknown>][] = [
+        ["sessions.abort", sessionsAbortParams("agent:alice:atrium:chat:olivier:c1")],
+        ...(gatewayAtLeast(version, DISCARD_PENDING_INPUT_SINCE) === true
+          ? ([
+              [
+                "chat.abort",
+                chatAbortParams("agent:alice:atrium:chat:olivier:c1", "send-1", {
+                  discardPendingInput: true,
+                }),
+              ],
+            ] as [string, Record<string, unknown>][])
+          : []),
+      ];
+      await expectBodiesValid(version, bodies, "projected stop");
+    });
+  }
 
   for (const version of vendoredVersions()) {
     it(`the operator, cron and built bodies validate against ${version}`, async () => {

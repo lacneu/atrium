@@ -49,6 +49,8 @@ const ALL_CAPS = [
   "knowledgePolicy",
   "inlineWidgets",
   "transcriptProjection",
+  "followUpModes",
+  "discardPendingInput",
 ] as const;
 
 /**
@@ -81,6 +83,10 @@ const MATRIX: Record<string, Record<(typeof ALL_CAPS)[number], boolean>> = {
     inlineWidgets: false,
     // The shadow transcript projection floors at the supported floor itself.
     transcriptProjection: true,
+    // Send like the Control UI (phase 3): `chat.send.queueMode` exists at the floor.
+    followUpModes: true,
+    // `chat.abort.discardPendingInput` exists from 2026.9.7.
+    discardPendingInput: false,
   },
   // 2026.9.1 — live GO 11/11 (2026-09-03). It adds NO capability gate: the new
   // surface (gateway suspension, user profiles, errorDetail) is vendored and
@@ -112,6 +118,8 @@ const MATRIX: Record<string, Record<(typeof ALL_CAPS)[number], boolean>> = {
     // Inline widgets floor at 2026.9.6 (the version the chain was proven live on).
     inlineWidgets: false,
     transcriptProjection: true,
+    followUpModes: true,
+    discardPendingInput: false,
   },
   // 2026.9.2 — live GO 11/11 (2026-09-06). Adds NO capability gate either: the
   // new surface (multi-user mentions/participants, per-person model accounts,
@@ -142,6 +150,8 @@ const MATRIX: Record<string, Record<(typeof ALL_CAPS)[number], boolean>> = {
     // Inline widgets floor at 2026.9.6 (the version the chain was proven live on).
     inlineWidgets: false,
     transcriptProjection: true,
+    followUpModes: true,
+    discardPendingInput: false,
   },
 };
 
@@ -332,12 +342,13 @@ describe("resolveCapabilities — beyond maxValidated", () => {
     "%s is FROZEN at the maxValidated profile + flags versionBeyondValidated",
     (raw) => {
       const resolved = resolveCapabilities("openclaw", raw);
-      // The 2026.9.6 profile: the 2026.9.2 row plus the knowledge control and the
-      // inline widgets, both floored at 2026.9.6.
+      // The 2026.9.8 profile: the 2026.9.2 row plus the knowledge control and the
+      // inline widgets (floored at 2026.9.6) and the queued-input cancel (2026.9.7).
       expect(resolved.capabilities).toEqual({
         ...MATRIX["2026.9.2"],
         knowledgePolicy: true,
         inlineWidgets: true,
+        discardPendingInput: true,
       });
       expect(resolved.versionBeyondValidated).toBe(true);
     },
@@ -375,12 +386,14 @@ describe("resolveCapabilities — beyond maxValidated", () => {
 
   test("2026.9.7 stays inside the range, no flag", () => {
     const resolved = resolveCapabilities("openclaw", "2026.9.7");
-    // Identical to 2026.9.6's profile: no capability carries a 2026.9.7 floor. The GO
-    // changes the CLAIM, not the surface; the 9.7 adaptations (append-only live text,
-    // the retired task registry) are raw-version or wire facts, not capabilities.
-    expect(resolved.capabilities).toEqual(
-      resolveCapabilities("openclaw", "2026.9.6").capabilities,
-    );
+    // 2026.9.6's profile plus ONE capability floored at 2026.9.7: the cancel of an
+    // input waiting in the gateway's queue (`chat.abort.discardPendingInput`, phase 3).
+    // The 9.7 adaptations (append-only live text, the retired task registry) are
+    // raw-version or wire facts, not capabilities.
+    expect(resolved.capabilities).toEqual({
+      ...resolveCapabilities("openclaw", "2026.9.6").capabilities,
+      discardPendingInput: true,
+    });
     expect(resolved.versionBeyondValidated).toBe(false);
   });
 

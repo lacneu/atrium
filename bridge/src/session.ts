@@ -475,6 +475,14 @@ class Session implements BridgeSession {
       // READ-ONLY view of the turn: the run in the foreground, for CU-16's admission.
       foregroundRunId: () =>
         this.runManager.turnActive ? (this.runManager.activeRunIds[0] ?? null) : null,
+      // PROJECTION `on` (phase 3): the live overlay's transcript facts. Inert when the
+      // switch is off (RunManager.setProjection).
+      onUserRow: (row) => {
+        void this.runManager.onUserRow(row).catch((e) =>
+          console.error("[send] steer split failed (non-fatal):", (e as Error)?.message ?? e),
+        );
+      },
+      onInputDropped: (sendId) => this.runManager.noteInputDropped(sendId),
     });
     // The reconciler lives exactly as long as this socket, whichever path closes it (the
     // consume loop's end, a crash recovery, the reaper, a re-key): otherwise its
@@ -1735,6 +1743,15 @@ export class TalkCallActiveError extends Error {
   }
 }
 
+/** An acquire that must never displace the chat's socket found one bound to ANOTHER
+ *  identity (session key or instance): nothing was closed. */
+export class SessionDisplaceRefusedError extends Error {
+  constructor(readonly chatId: string) {
+    super(`acquire refused: chat ${chatId}'s socket is bound to another session`);
+    this.name = "SessionDisplaceRefusedError";
+  }
+}
+
 export class SessionRegistry {
   private readonly sessions = new Map<string, Session>();
   private readonly inflight = new Map<string, Promise<Session>>();
@@ -1850,8 +1867,17 @@ export class SessionRegistry {
    * By TYPE, not by message, like every other decision the bridge takes itself — a
    * refusal must not depend on how it was phrased (`classifyGatewayError`).
    */
-  async acquire(routing: SessionRouting): Promise<BridgeSession> {
+  async acquire(
+    routing: SessionRouting,
+    opts?: {
+      /** False: an automatic caller (the CU-22 resume) that must never close a socket
+       *  bound to another identity — it may carry another agent's live turn, on an
+       *  instance whose projection is off. Throws SessionDisplaceRefusedError instead. */
+      displace?: boolean;
+    },
+  ): Promise<BridgeSession> {
     this.ensureSweeper();
+    const displace = opts?.displace !== false;
     const { chatId, openclawChatId, agentId, canonical } = routing;
     // The session key is derived from THIS turn's routed agent + canonical, so a
     // rebind (deleted agent → default = new agentId, or a changed canonical)
@@ -1915,6 +1941,9 @@ export class SessionRegistry {
     // A closed, missing, OR re-keyed (incl. re-routed) session: drop (closing if
     // still open) and (re)connect, deduping concurrent acquisitions for the same chat.
     if (existing) {
+      if (!existing.connection.isClosed && !displace && !sameIdentity(existing)) {
+        throw new SessionDisplaceRefusedError(chatId);
+      }
       if (!existing.connection.isClosed) {
         // ONE live socket per chat is this registry's invariant (the old consumer
         // loop would keep writing under the old key). A gateway-owned voice call
@@ -1950,7 +1979,11 @@ export class SessionRegistry {
     if (pending) {
       // Honor an in-flight create only if it targets the SAME key + instance;
       // otherwise wait for it to settle, then recurse so the re-key is applied.
-      return pending.then((s) => (matches(s) ? s : this.acquire(routing)));
+      return pending.then((s) => {
+        if (matches(s)) return s;
+        if (!displace && !sameIdentity(s)) throw new SessionDisplaceRefusedError(chatId);
+        return this.acquire(routing, opts);
+      });
     }
     // What the chat's previous socket was opened for: a route that names no wish
     // creates the new one with the same (never silently off when it was on).

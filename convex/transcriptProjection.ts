@@ -26,12 +26,14 @@ import {
   MAX_RUN_ID_CHARS,
   MAX_TERMINALS_PER_APPLY,
   mergeInputFact,
+  currentCustody,
   sameRow,
   sanitizeRow,
   type InputFact,
   type RunStatus,
   type TranscriptRowInput,
 } from "./lib/transcriptProjection";
+import { custodyOf, projectionModeOfChat } from "./lib/followUp";
 
 const rowValidator = v.object({
   entryId: v.string(),
@@ -100,6 +102,16 @@ async function upsertRows(
   let maxSeq = 0;
   const seqByRun = new Map<string, { first: number; last: number }>();
   for (const r of rows) {
+    const next = { ...r, sessionId: a.sessionId };
+    const stored = await ctx.db
+      .query("transcriptRows")
+      .withIndex("by_chat_session_entry", (q) =>
+        q.eq("chatId", a.chatId).eq("sessionKey", a.sessionKey).eq("entryId", r.entryId),
+      )
+      .first();
+    // Another instance's row (codex pass 5/6): never rewritten from here, and it feeds
+    // NOTHING this apply aggregates — not the session's last seq, not a run's span.
+    if (stored !== null && stored.instanceName !== a.instanceName) continue;
     if (r.seq > maxSeq) maxSeq = r.seq;
     if (r.runId !== undefined && r.role !== "user") {
       const span = seqByRun.get(r.runId);
@@ -108,13 +120,6 @@ async function upsertRows(
         last: Math.max(span?.last ?? r.seq, r.seq),
       });
     }
-    const next = { ...r, sessionId: a.sessionId };
-    const stored = await ctx.db
-      .query("transcriptRows")
-      .withIndex("by_chat_session_entry", (q) =>
-        q.eq("chatId", a.chatId).eq("sessionKey", a.sessionKey).eq("entryId", r.entryId),
-      )
-      .first();
     if (stored === null) {
       await ctx.db.insert("transcriptRows", {
         chatId: a.chatId,
@@ -200,6 +205,119 @@ async function upsertRuns(
         lastSeq: lastRunSeq,
         updatedAt: a.now,
       });
+    }
+  }
+}
+
+/** A queue-mode string from the wire, kept only when it is one of the gateway's modes
+ *  (logs-chat.ts `QUEUE_MODES`) — never free text on a stored row. */
+function boundedMode(v: string | undefined): "steer" | "followup" | "collect" | "interrupt" | undefined {
+  return v === "steer" || v === "followup" || v === "collect" || v === "interrupt" ? v : undefined;
+}
+
+/** Most outbox rows read for one send id (the id is per-session; a few at most). */
+const MAX_OUTBOX_PER_SEND = 8;
+
+/**
+ * Was the input `sendId` of this conversation sent to `instanceName`? Its durable owner
+ * is its outbox row: the instance the last gate let it leave for (`sentToInstance`), else
+ * the one it was routed to, else — a conversation bound to one instance — the binding.
+ * No outbox row of this chat for that id ⇒ not provably this instance's: false.
+ */
+async function inputSentTo(
+  ctx: MutationCtx,
+  chat: Doc<"chats">,
+  sendId: string,
+  instanceName: string,
+): Promise<boolean> {
+  const rows = await ctx.db
+    .query("outbox")
+    .withIndex("by_send_id", (q) => q.eq("sendId", sendId))
+    .take(MAX_OUTBOX_PER_SEND);
+  const own = rows.filter((r) => r.chatId === chat._id);
+  if (own.length === 0) return false;
+  return own.every((r) => {
+    const owner =
+      r.sentToInstance ??
+      r.routedAgent?.instanceName ??
+      (chat.perTurnRouting === true ? undefined : chat.instanceName);
+    return owner === instanceName;
+  });
+}
+
+/** Most user bubbles one apply updates (a read names ≤ 50 inputs and ≤ 200 rows). */
+const MAX_CUSTODY_UPDATES = 100;
+
+/**
+ * THE USER BUBBLE'S CUSTODY (projection `on`, phase 3, design §3.2): the gateway's own
+ * facts about an input — its `<sendId>:user` row (persisted, or steered into a running
+ * turn), its pending-input state, the 9.7+ "queued" flags — projected onto the bubble
+ * of the send. Display only. Never on `off`/`shadow`: those keep measuring.
+ */
+async function projectCustody(
+  ctx: MutationCtx,
+  a: { chatId: Id<"chats">; sessionKey: string; instanceName: string },
+  rows: readonly TranscriptRowInput[],
+  inputIds: readonly string[],
+): Promise<void> {
+  const chat = await ctx.db.get(a.chatId);
+  if ((await projectionModeOfChat(ctx, chat)) !== "on") return;
+  if (chat === null) return;
+  const userRows = new Map<string, TranscriptRowInput>();
+  for (const r of rows) {
+    if (r.role.toLowerCase() === "user" && r.sendId !== undefined) userRows.set(r.sendId, r);
+  }
+  const ids = [...new Set([...userRows.keys(), ...inputIds])].slice(0, MAX_CUSTODY_UPDATES);
+  for (const sendId of ids) {
+    if (sendId.length === 0 || sendId.length > MAX_RUN_ID_CHARS) continue;
+    const message = await ctx.db
+      .query("messages")
+      .withIndex("by_chat_send_id", (q) => q.eq("chatId", a.chatId).eq("sendId", sendId))
+      .first();
+    if (message === null || message.role !== "user") continue;
+    // OWNERSHIP, atomic with the write (codex pass 5): in a conversation that several
+    // instances serve, the ingest barrier admits each of their bridges — but an input
+    // belongs to the instance it was SENT to. Only that instance's bridge moves its
+    // custody; another one naming the same send id changes nothing.
+    if (!(await inputSentTo(ctx, chat, sendId, a.instanceName))) continue;
+    const fact = await ctx.db
+      .query("transcriptInputs")
+      .withIndex("by_chat_session_send", (q) =>
+        q.eq("chatId", a.chatId).eq("sessionKey", a.sessionKey).eq("sendId", sendId),
+      )
+      .first();
+    const known = userRows.get(sendId);
+    let next = custodyOf({
+      acked: message.custody !== undefined,
+      row:
+        known !== undefined
+          ? { ...(known.steerTargetRunId !== undefined ? { steerTargetRunId: known.steerTargetRunId } : {}) }
+          : null,
+      ...(fact?.pendingState !== undefined ? { pendingState: fact.pendingState } : {}),
+      queuedAtGateway:
+        fact !== null &&
+        currentCustody({
+          receipt: fact.receipt,
+          receiptQueued: fact.receiptQueued,
+          receiptCancelled: fact.receiptCancelled,
+          pendingState: fact.pendingState,
+          pendingQueued: fact.pendingQueued,
+          absentAt: fact.absentAt,
+        }) === "queued",
+      ...(fact?.receiptCancelled === true ? { receiptCancelled: true } : {}),
+    });
+    // A row read earlier stays the fact: a later read that does not carry it again (a
+    // delta) proves nothing new, unless the gateway now says the input was stopped.
+    if (
+      known === undefined &&
+      (message.custody === "persisted" || message.custody === "steered") &&
+      next !== "cancelled" &&
+      next !== "interrupted"
+    ) {
+      next = message.custody;
+    }
+    if (next !== undefined && next !== message.custody) {
+      await ctx.db.patch(message._id, { custody: next });
     }
   }
 }
@@ -442,6 +560,9 @@ export const applyTranscript = internalMutation({
     terminals: v.array(terminalValidator),
     activeRunIds: v.optional(v.array(v.string())),
     hasActiveRun: v.optional(v.boolean()),
+    /** The session's queue modes the read projected (phase 3: the composer's label). */
+    queueMode: v.optional(v.string()),
+    effectiveQueueMode: v.optional(v.string()),
     /** Durable rows the bridge could not identify (no `__openclaw.id` or `seq`). */
     unidentified: v.number(),
     /** When the bridge ISSUED this read (epoch ms, strictly increasing per reconciler).
@@ -483,6 +604,28 @@ export const applyTranscript = internalMutation({
         q.eq("chatId", args.chatId).eq("sessionKey", args.sessionKey),
       )
       .first();
+    // A session key is the instance's that projected it first (codex pass 5): another
+    // bridge admitted to the same conversation never writes into it — not its rows, its
+    // runs, its inputs nor its cursor. The owner is the cursor's instance, else — a
+    // session so far written only by LIVE applies, which create no cursor — the instance
+    // stamped on its rows: the first live write reserves the session in the very
+    // transaction that inserts them (codex pass 6).
+    const owner =
+      cursor?.instanceName ??
+      (
+        await ctx.db
+          .query("transcriptRows")
+          .withIndex("by_chat_session_entry", (q) =>
+            q.eq("chatId", args.chatId).eq("sessionKey", args.sessionKey),
+          )
+          .first()
+      )?.instanceName;
+    // Refused WITHOUT a write. Answered, not thrown: two instances exposing the same
+    // agent id derive the same key for one conversation, and the second one's reads
+    // must not fail in a loop — its session is simply not projected (stated limit).
+    if (owner !== undefined && owner !== args.boundInstanceName) {
+      return { ok: false as const, reason: "session_owned_elsewhere" };
+    }
     // A DIRECT row post (CU-16, phase 2): its rows and their runs, nothing else. The read
     // the same event asked for carries the session state; this never moves it.
     if (args.kind === "live") {
@@ -502,6 +645,12 @@ export const applyTranscript = internalMutation({
         [...res.seqByRun.keys()].map((runId) => [runId, [{ status: "persisted" as const }]]),
       );
       await upsertRuns(ctx, { chatId: args.chatId, sessionKey: args.sessionKey, now }, persisted, res.seqByRun);
+      await projectCustody(
+        ctx,
+        { chatId: args.chatId, sessionKey: args.sessionKey, instanceName: args.boundInstanceName },
+        rows,
+        [],
+      );
       if (cursor !== null) {
         await ctx.db.patch(cursor._id, {
           liveApplies: (cursor.liveApplies ?? 0) + 1,
@@ -679,6 +828,19 @@ export const applyTranscript = internalMutation({
       );
       if (args.pendingInputs?.complete === true) cleanupPending = res.cleanupPending;
     }
+    // PROJECTION `on` (phase 3): what the gateway said about each input, onto its bubble.
+    await projectCustody(
+      ctx,
+      { chatId: args.chatId, sessionKey: args.sessionKey, instanceName: args.boundInstanceName },
+      rows,
+      stale || args.kind === "reset"
+        ? []
+        : [
+            ...(args.inputRunIds ?? []),
+            ...(args.pendingInputs?.items ?? []).flatMap((i) => (i.runId ? [i.runId] : [])),
+            ...(args.inputReceipts ?? []).map((r) => r.runId),
+          ],
+    );
 
     if (stale && cursor !== null) {
       await ctx.db.patch(cursor._id, {
@@ -712,6 +874,13 @@ export const applyTranscript = internalMutation({
       ...(args.kind === "reset" || args.hasActiveRun === undefined
         ? {}
         : { hasActiveRun: args.hasActiveRun }),
+      // The session's queue modes (phase 3): what the composer says a busy send does.
+      ...(args.kind === "reset"
+        ? {}
+        : {
+            sessionQueueMode: boundedMode(args.queueMode),
+            effectiveQueueMode: boundedMode(args.effectiveQueueMode),
+          }),
       ...(args.kind === "reset" || args.pendingInputs === undefined
         ? {}
         : {

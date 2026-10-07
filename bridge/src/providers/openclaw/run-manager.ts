@@ -141,6 +141,296 @@ export class RunManager {
     this.sink = new TurnSink(chatId, writer, outboundScan, sessionKey, onTurnError);
   }
 
+  // ── TRANSCRIPT PROJECTION `on` (redesign phase 3) ─────────────────────────────────
+  //
+  // Sending like the Control UI means a send can land while a run is in the foreground:
+  // its ACK is CUSTODY, not a new turn (ui/src/pages/chat/chat-send-delivery.ts:497-502
+  // at v2026.9.8, "Accepted steering/queued custody identifies the input, not a
+  // replacement for the active model run"). The live overlay then follows the gateway's
+  // own facts, three rules of the Control UI, applied ONLY on this switch:
+  //   - CU-20: a steered input's `<sendId>:user` row (steerTargetRunId = the foreground
+  //     run) cuts the run's bubble — onUserRow → splitSegment;
+  //   - CU-9/CU-10, bounded to inputs the gateway holds for us: a run of the session that
+  //     is not the foreground one is never folded into it; while it streams it waits,
+  //     and once the sink is free it opens its own (deferred) bubble — the announce
+  //     machinery, generalised (adoptableRunFor);
+  //   - CU-8: a DISTINCT final of a settled run joins its bubble (lateFinalFor).
+  // Off ⇒ every path below is skipped and the legacy pipeline runs byte-for-byte.
+  private projection = false;
+  /** Inputs the gateway accepted while a run was in the foreground, by send identity. */
+  private readonly heldInputs = new Map<
+    string,
+    {
+      ackRunId: string | null;
+      userMessageId: string | null;
+      steered: boolean;
+      answered: boolean;
+      /** Runs already live when the gateway accepted the input: none of them is the
+       *  run that ANSWERS it (a followup's answer is a run that starts after it) —
+       *  except the one the transcript proves it was steered into (steerAdoptRuns). */
+      predating: ReadonlySet<string>;
+    }
+  >();
+  /** Runs of the session that are NOT the foreground turn's but into which the
+   *  transcript proves a held input was steered (`<sendId>:user`.steerTargetRunId):
+   *  what they write from there answers that input, in their own bubble. */
+  private readonly steerAdoptRuns = new Set<string>();
+  /** The ACK run ids of those inputs (custody runs: a bare final for steer/followup). */
+  private readonly inputAckRuns = new Map<string, string>();
+  /** The SETTLED runs of this session (bounded, insertion-ordered): the bubble each
+   *  left (null: none) and the run's whole visible text — every segment of a run cut at
+   *  steered inputs — what CU-8 joins a late final to. The runs of one turn share one
+   *  record. Kept across turns: a late final of A may follow B's settle. */
+  private readonly settledRuns = new Map<string, { messageId: string | null; text: string }>();
+  private static readonly MAX_SETTLED_RUNS = 200;
+  /** Every run a turn of this session has owned (bounded, insertion-ordered): a late
+   *  frame of one of them is that run's tail, never a new run to adopt. */
+  private readonly ownedRunHistory = new Set<string>();
+  private static readonly MAX_OWNED_RUN_HISTORY = 200;
+  private static readonly MAX_HELD_INPUTS = 50;
+
+  /** The instance's projection switch, as the last `/send` carried it. */
+  setProjection(on: boolean): void {
+    this.projection = on;
+    if (!on) {
+      this.heldInputs.clear();
+      this.inputAckRuns.clear();
+      this.steerAdoptRuns.clear();
+    }
+  }
+
+  get projectionOn(): boolean {
+    return this.projection;
+  }
+
+  /** The runs the foreground turn owns (empty when no turn is live). */
+  get foregroundRunIds(): string[] {
+    return this.sink.active || this.sink.finalizing ? [...this.normalizer.ownRunIds] : [];
+  }
+
+  /** The run the foreground turn last heard from (the one a Stop targets), or null. */
+  get foregroundRunId(): string | null {
+    return this.sink.active ? this.normalizer.currentRunId : null;
+  }
+
+  /** A send the gateway accepted while a turn was in the foreground (custody only). */
+  noteHeldInput(
+    sendId: string,
+    ackRunId: string | null,
+    userMessageId: string | null,
+    predatingRunIds: readonly string[] = [],
+  ): void {
+    if (!this.projection) return;
+    this.heldInputs.delete(sendId);
+    const predating = new Set(predatingRunIds);
+    for (const id of this.foregroundRunIds) predating.add(id);
+    if (ackRunId !== null) predating.delete(ackRunId);
+    this.heldInputs.set(sendId, { ackRunId, userMessageId, steered: false, answered: false, predating });
+    if (ackRunId !== null) this.inputAckRuns.set(ackRunId, sendId);
+    while (this.heldInputs.size > RunManager.MAX_HELD_INPUTS) {
+      const oldest = this.heldInputs.keys().next().value as string;
+      const gone = this.heldInputs.get(oldest);
+      this.heldInputs.delete(oldest);
+      if (gone?.ackRunId) this.inputAckRuns.delete(gone.ackRunId);
+    }
+  }
+
+  /** The ACK named the input's custody run: it replaces the provisional one. */
+  noteInputAckRun(sendId: string, ackRunId: string | null): void {
+    const held = this.heldInputs.get(sendId);
+    if (held === undefined || ackRunId === null || ackRunId === held.ackRunId) return;
+    if (held.ackRunId !== null) this.inputAckRuns.delete(held.ackRunId);
+    held.ackRunId = ackRunId;
+    this.inputAckRuns.set(ackRunId, sendId);
+  }
+
+  /** The send was refused (or not accepted): the input is not the gateway's. */
+  forgetHeldInput(sendId: string): void {
+    const held = this.heldInputs.get(sendId);
+    if (held === undefined) return;
+    if (held.ackRunId !== null) this.inputAckRuns.delete(held.ackRunId);
+    this.heldInputs.delete(sendId);
+  }
+
+  /** After a bridge restart (CU-22 resume): the inputs Convex still records as held by
+   *  the gateway while the resumed bubble streamed. The resumed run predates them (it
+   *  is in the foreground now); an input already known here is left as it is. Its
+   *  custody run is restored as a fresh send's is — the send identity, the gateway's
+   *  client run id: without it the input's bare custody final looked like the run that
+   *  answers it, consumed the input, and the real answer was refused as foreign (codex
+   *  pass 4). */
+  rehydrateHeldInputs(inputs: ReadonlyArray<{ sendId: string; messageId: string }>): void {
+    for (const i of inputs) {
+      if (this.heldInputs.has(i.sendId)) continue;
+      this.noteHeldInput(i.sendId, i.sendId, i.messageId);
+    }
+  }
+
+  /** Held inputs still waiting for the run that answers them. */
+  get outstandingInputs(): string[] {
+    const out: string[] = [];
+    for (const [id, h] of this.heldInputs) if (!h.steered && !h.answered) out.push(id);
+    return out;
+  }
+
+  /**
+   * A transcript USER row of this session (session.message or a read), CU-20: an input
+   * we hold that the gateway STEERED into the foreground run cuts that run's bubble —
+   * what the run writes next is the answer to the steered message.
+   */
+  async onUserRow(row: { sendId?: string; steerTargetRunId?: string }): Promise<void> {
+    if (!this.projection || row.sendId === undefined) return;
+    const held = this.heldInputs.get(row.sendId);
+    if (held === undefined || held.steered) return;
+    if (row.steerTargetRunId === undefined) return;
+    // Claimed at once (the live event and a read can deliver the same row), and released
+    // if the cut fails before Convex has it: a later delivery of the row re-arms it.
+    held.steered = true;
+    const target = row.steerTargetRunId;
+    await this.runOrdered(async () => {
+      if (!this.sink.active || !this.normalizer.ownRunIds.has(target)) {
+        // Steered into a run that is not the foreground turn here (one the gateway was
+        // already running when the input was accepted): that run now answers it — it
+        // opens its own bubble, never the bubble of another turn.
+        if (!this.ownedRunHistory.has(target)) {
+          this.steerAdoptRuns.add(target);
+          while (this.steerAdoptRuns.size > RunManager.MAX_HELD_INPUTS) {
+            this.steerAdoptRuns.delete(this.steerAdoptRuns.values().next().value as string);
+          }
+        }
+        return;
+      }
+      let split: boolean;
+      try {
+        split = await this.sink.splitSegment(
+          held.userMessageId,
+          this.normalizer.currentSegmentText,
+        );
+      } catch (err) {
+        held.steered = false;
+        console.error(
+          `[send] steered input: the cut failed, re-armed for the next delivery of its row:`,
+          (err as Error)?.message ?? err,
+        );
+        return;
+      }
+      if (split) this.normalizer.splitSegment();
+      console.log(
+        `[send] steered input ${split ? "cut the run's bubble" : "joined the run (no bubble to cut)"} run=${target.slice(0, 60)}`,
+      );
+    });
+  }
+
+  /** The gateway will never run this input (cancelled, or no receipt when asked): no run
+   *  is coming to answer it. */
+  noteInputDropped(sendId: string): void {
+    const held = this.heldInputs.get(sendId);
+    if (held !== undefined) held.answered = true;
+  }
+
+  /** The run id of a frame that must open its OWN deferred bubble rather than join the
+   *  foreground turn (projection `on`), or null. */
+  private adoptableRunFor(frame: unknown): string | null {
+    if (!this.projection) return null;
+    const rid = sessionRunIdFor(frame, this.sessionKey);
+    if (rid === null) return null;
+    if (this.normalizer.ownRunIds.has(rid) && (this.sink.active || this.sink.finalizing)) {
+      return null;
+    }
+    if (this.ownedRunHistory.has(rid)) return null;
+    if (this.inputAckRuns.has(rid)) return rid;
+    if (this.steerAdoptRuns.has(rid)) return rid;
+    // Only an input this run can answer: a run that was already live when the input
+    // was accepted is not its answer (it predates it).
+    if (this.waitingInputFor(rid) === undefined) return null;
+    // A heartbeat run is the gateway's own wake, never an answer (CU-21).
+    const p = (frame as { payload?: { isHeartbeat?: unknown } }).payload;
+    if (p?.isHeartbeat === true) return null;
+    return rid;
+  }
+
+  /** The oldest held input still waiting that run `rid` may answer (it did not predate
+   *  the input's acceptance), or undefined. */
+  private waitingInputFor(rid: string): string | undefined {
+    return this.outstandingInputs.find((id) => !this.heldInputs.get(id)!.predating.has(rid));
+  }
+
+  /** When a run is adopted for the held inputs, the oldest waiting one is its question
+   *  (ack runs answer only their own input, and only if they show something). */
+  private noteRunAdopted(runId: string): void {
+    if (this.inputAckRuns.has(runId)) return;
+    // A run proven steered-into answers the input already marked steered.
+    if (this.steerAdoptRuns.has(runId)) return;
+    const first = this.waitingInputFor(runId);
+    if (first !== undefined) this.heldInputs.get(first)!.answered = true;
+  }
+
+  /** The visible text of a DISTINCT late final of a settled run (CU-8), or null. */
+  private lateFinalFor(
+    frame: unknown,
+  ): { runId: string; text: string; settled: { messageId: string | null; text: string } } | null {
+    if (!this.projection) return null;
+    if (typeof frame !== "object" || frame === null) return null;
+    const f = frame as { event?: unknown; payload?: Record<string, unknown> };
+    if (f.event !== "chat" || f.payload?.state !== "final") return null;
+    const rid = sessionRunIdFor(frame, this.sessionKey);
+    const record = rid === null ? undefined : this.settledRuns.get(rid);
+    if (rid === null || record === undefined) return null;
+    if ((this.sink.active || this.sink.finalizing) && this.normalizer.ownRunIds.has(rid)) {
+      return null;
+    }
+    const text = visibleFinalText(f.payload?.message);
+    if (text === "") return null;
+    const settled = normText(record.text);
+    const add = normText(text);
+    if (add === "NO_REPLY" || add === "HEARTBEAT_OK") return null;
+    // An exact (or shorter) repetition of what the run showed adds nothing.
+    if (settled.includes(add)) return null;
+    // A CUMULATIVE final that repeats the shown reply (all of its segments) AND adds to
+    // it: only the addition joins the bubble (the reply is already there).
+    if (settled !== "" && add.includes(settled)) {
+      const extra = textBeyond(text, record.text);
+      return extra === "" ? null : { runId: rid, text: extra, settled: record };
+    }
+    return { runId: rid, text, settled: record };
+  }
+
+  /** A turn began and its settlement is not recorded yet (see noteIfSettled). */
+  private settleUnrecorded = false;
+
+  /** Bookkeeping after any unit that may have ENDED the turn. Idempotent: it records
+   *  a begun turn once, as soon as the sink is free — and it runs before anything can
+   *  open the NEXT turn (beginTurn, resumeTurn, the announce flush), because a feed
+   *  that finalizes A can open B before its own epilogue runs, and A's runs were then
+   *  never recorded (codex pass 4: A's distinct late final was lost). */
+  private noteIfSettled(): void {
+    if (this.settleUnrecorded && !this.sink.active && this.projection) {
+      this.settleUnrecorded = false;
+      const b = this.sink.lastSettledBubble;
+      // The run's whole visible text: the earlier segments (cut at steers) + the last.
+      const earlier = this.normalizer.segmentPrefixText;
+      const last = b?.text ?? "";
+      const record = {
+        messageId: b?.messageId ?? null,
+        text: earlier === null ? last : last === "" ? earlier : `${earlier}\n\n${last}`,
+      };
+      for (const id of this.normalizer.ownRunIds) {
+        this.settledRuns.delete(id);
+        this.settledRuns.set(id, record);
+      }
+      while (this.settledRuns.size > RunManager.MAX_SETTLED_RUNS) {
+        this.settledRuns.delete(this.settledRuns.keys().next().value as string);
+      }
+      for (const id of this.normalizer.ownRunIds) {
+        this.ownedRunHistory.delete(id);
+        this.ownedRunHistory.add(id);
+      }
+      while (this.ownedRunHistory.size > RunManager.MAX_OWNED_RUN_HISTORY) {
+        this.ownedRunHistory.delete(this.ownedRunHistory.values().next().value as string);
+      }
+    }
+  }
+
   /** Whether this session's socket declared `inline-widgets` (decided per handshake
    *  in session.ts). The normalizer emits widget parts only then. */
   setWidgetsEnabled(enabled: boolean): void {
@@ -256,6 +546,11 @@ export class RunManager {
 
   get turnActive(): boolean {
     return this.sink.active;
+  }
+
+  /** The turn's terminal is being written (media tail, finalize POST). */
+  get turnFinalizing(): boolean {
+    return this.sink.finalizing;
   }
 
   /** True in the chat.send→ack window (pre-ack buffer armed): a dispatch has
@@ -448,8 +743,19 @@ export class RunManager {
       /** The pre-send guard COMPACTED this session right before this send (W2):
        *  makes a `context_length` failure retryable exactly once. */
       compactedBeforeSend?: boolean;
+      /** Projection `on`, `interrupt` send: the foreground turn is replaced. The
+       *  gateway aborts its run; its bubble settles as stopped. */
+      interruptActive?: boolean;
     },
   ): Promise<void> {
+    if (
+      this.projection &&
+      turnContext?.interruptActive === true &&
+      turnContext.spontaneous !== true &&
+      this.sink.active
+    ) {
+      await this.runOrdered(() => this.sink.preemptOpenTurn("aborted"));
+    }
     // PREEMPTION guard: a real dispatch resetting the pipeline while a deferred
     // announce turn is still INVISIBLE (no assistant message created — the chat
     // did not look busy, so a user send slipped in) would leave that run marked
@@ -516,6 +822,8 @@ export class RunManager {
     this.spontaneousReplayCopy = [];
     this.currentSpontaneousRun =
       turnContext?.spontaneous === true ? ackRunId : null;
+    this.noteIfSettled();
+    this.settleUnrecorded = true;
     this.turnEpoch++;
     this.normalizer.beginTurn(now);
     // A frame of this run was refused by the pre-ack cap: what the normalizer reads
@@ -539,7 +847,10 @@ export class RunManager {
       turnContext?.spontaneous === true,
       turnContext?.rehydrated === true,
       turnContext?.dispatchOutboxId ?? null,
-      { compactedBeforeSend: turnContext?.compactedBeforeSend === true },
+      {
+        compactedBeforeSend: turnContext?.compactedBeforeSend === true,
+        ...(this.projection ? { projection: true } : {}),
+      },
     );
     // Flush the pre-turn provenance stash for THIS run only; entries from any
     // other run (a failed earlier dispatch, a foreign run) are dropped here.
@@ -597,6 +908,35 @@ export class RunManager {
     if (!this.sink.active) {
       await this.flushPendingAnnounce(now);
     }
+  }
+
+  /**
+   * RESUME a turn this process did not open (projection `on`, CU-22): the gateway still
+   * runs `runId`, whose bubble `messageId` is streaming in Convex — a bridge restart
+   * lost the turn, not the run. The sink goes active on that bubble; the run's frames
+   * flow into it again.
+   */
+  async resumeTurn(
+    now: number,
+    messageId: string,
+    runId: string,
+    segmentPrefix?: string,
+  ): Promise<void> {
+    if (!this.projection || this.sink.active || this.sink.finalizing) return;
+    this.spontaneousReplayCopy = [];
+    this.currentSpontaneousRun = null;
+    this.noteIfSettled();
+    this.settleUnrecorded = true;
+    this.turnEpoch++;
+    this.normalizer.beginTurn(now);
+    // A later segment of a cut run: the run's buffer still starts with the earlier
+    // segments, which their own bubbles already show.
+    if (segmentPrefix !== undefined) this.normalizer.restoreSegmentPrefix(segmentPrefix);
+    this.normalizer.noteRunStarted(runId, now);
+    this.frameTally.clear();
+    this.frameSampled.clear();
+    this.tallyDumped = false;
+    await this.sink.resumeTurn(messageId, runId);
   }
 
   /** A user /abort RPC targeted this chat's active run — see TurnSink. */
@@ -677,6 +1017,66 @@ export class RunManager {
   private async feedInner(frame: unknown, now: number): Promise<void> {
     // Observe-only protocol-drift classification (never gates the frame).
     protocolDrift.observe(frame);
+    const late = this.lateFinalFor(frame);
+    if (late !== null) {
+      const settled = late.settled;
+      const opened = settled.messageId === null;
+      try {
+        const into = await this.sink.writeLateFinal(late.runId, settled.messageId, late.text);
+        if (into !== null) {
+          settled.messageId = into;
+          settled.text = settled.text === "" ? late.text : `${settled.text}\n\n${late.text}`;
+        }
+        console.log(
+          `[final] a distinct late final joined the settled run's bubble (CU-8) run=${late.runId.slice(0, 60)}${opened ? " (new bubble)" : ""}`,
+        );
+      } catch (e) {
+        console.error("[final] late final not written (non-fatal):", (e as Error)?.message ?? e);
+      }
+      return;
+    }
+    try {
+      await this.feedRouted(frame, now);
+    } finally {
+      this.noteIfSettled();
+    }
+  }
+
+  /** A run of the session that opens a spontaneous (deferred) turn of its own: the
+   *  gateway's delivery families, and — projection `on` — the runs answering inputs it
+   *  holds for us. */
+  private spontaneousRunFor(frame: unknown): string | null {
+    return announceRunIdFor(frame, this.sessionKey) ?? this.adoptableRunFor(frame);
+  }
+
+  /**
+   * A frame of an input's CUSTODY run that says nothing (projection `on`): the run the
+   * ACK named for a steered / queued input ends with a bare `chat final` — the input
+   * went into another run (CU-4: "Accepted steering/queued custody identifies the
+   * input, not a replacement for the active model run"). Such frames open no turn:
+   * one would sit in the legacy empty-final wait and hold the sink while the run that
+   * actually answers streams. A custody run that DOES carry content (the gateway ran
+   * the input on its own) is adopted like any other run.
+   */
+  private custodyRunNoise(frame: unknown): boolean {
+    if (!this.projection) return false;
+    const rid = sessionRunIdFor(frame, this.sessionKey);
+    if (rid === null || !this.inputAckRuns.has(rid)) return false;
+    if (this.normalizer.ownRunIds.has(rid) && (this.sink.active || this.sink.finalizing)) {
+      return false;
+    }
+    const f = frame as { event?: unknown; payload?: Record<string, unknown> };
+    const p = f.payload ?? {};
+    if (f.event === "chat") return p.message === undefined && p.deltaText === undefined;
+    if (f.event === "agent") {
+      const stream = p.stream;
+      return stream === "lifecycle" || stream === "run_status" || stream === "status";
+    }
+    return false;
+  }
+
+  private async feedRouted(frame: unknown, now: number): Promise<void> {
+    if (this.custodyRunNoise(frame)) return;
     if (!this.sink.active) {
       // --- GATEWAY-INITIATED POST-TURN RUN (the "announce" delivery) ----------
       // When a sub-agent finishes AFTER its parent turn ended (sessions_yield /
@@ -692,7 +1092,7 @@ export class RunManager {
       // sessionKey (no isolation relaxation) and must not race an in-flight
       // chat.send (replayArmed) — in that rare window the pre-ack buffer keeps
       // its existing semantics.
-      const announceRun = announceRunIdFor(frame, this.sessionKey);
+      const announceRun = this.spontaneousRunFor(frame);
       if (announceRun !== null && this.handledAnnounceRuns.has(announceRun)) {
         // Stale retransmit of a finished announce: NEVER the pre-ack buffer
         // (beginTurn's replay could admit it as a follow-up during a
@@ -728,6 +1128,7 @@ export class RunManager {
         // on the first user-visible normalized event. A run that terminates
         // silent (the NO_REPLY sentinel) never creates anything — zero bubble.
         this.noteAnnounceHandled(announceRun);
+        if (this.projection) this.noteRunAdopted(announceRun);
         await this.beginTurn(now, announceRun, {
           expectedSessionId: null,
           spontaneous: true,
@@ -870,7 +1271,7 @@ export class RunManager {
         }
       }
     }
-    const activeAnnounce = announceRunIdFor(frame, this.sessionKey);
+    const activeAnnounce = this.spontaneousRunFor(frame);
     if (activeAnnounce !== null) {
       if (!this.handledAnnounceRuns.has(activeAnnounce)) {
         this.stashAnnounceFrame(frame, now);
@@ -921,6 +1322,7 @@ export class RunManager {
       return;
     }
     await this.applyOrdered(() => this.normalizer.tick(now));
+    this.noteIfSettled();
     // A deadline-driven finalize must also deliver stashed announces (same
     // no-later-tick-guaranteed rationale as feed()).
     if (!this.sink.active) {
@@ -936,6 +1338,8 @@ export class RunManager {
    * wait again (a new send armed mid-flush) simply re-stashes.
    */
   private async flushPendingAnnounce(now: number): Promise<void> {
+    // Whatever ended before this flush is recorded before it can open the next turn.
+    this.noteIfSettled();
     if (
       this.sink.active ||
       this.sink.finalizing ||
@@ -1187,6 +1591,7 @@ export class RunManager {
     await this.applyOrdered(() =>
       this.normalizer.endTurn(now, status, error, cause, errorKind),
     );
+    this.noteIfSettled();
     if (!this.sink.active) {
       await this.flushPendingAnnounce(now);
     }
@@ -1275,4 +1680,63 @@ function sessionRunIdFor(frame: unknown, sessionKey: string): string | null {
   if (p.sessionKey !== sessionKey) return null;
   const runId = p.runId;
   return typeof runId === "string" && runId ? runId : null;
+}
+
+/** Collapse whitespace (late-final comparison only). */
+function normText(t: string): string {
+  return t.replace(/\s+/g, " ").trim();
+}
+
+/** What `full` says beyond `shown` (located whitespace-insensitively, exactly as
+ *  `normText` compares them — no regex: both are model text of any size): the raw text
+ *  before and after it, or "" when nothing is added. */
+function textBeyond(full: string, shown: string): string {
+  const needle = normText(shown);
+  if (needle === "") return full.trim();
+  // normText(full), with the raw index of each normalized character.
+  let norm = "";
+  const rawAt: number[] = [];
+  let pendingSpace = -1;
+  for (let i = 0; i < full.length; i++) {
+    const ch = full[i]!;
+    if (/\s/.test(ch)) {
+      if (norm !== "" && pendingSpace === -1) pendingSpace = i;
+      continue;
+    }
+    if (pendingSpace !== -1) {
+      norm += " ";
+      rawAt.push(pendingSpace);
+      pendingSpace = -1;
+    }
+    norm += ch;
+    rawAt.push(i);
+  }
+  const at = norm.indexOf(needle);
+  if (at === -1) return full.trim();
+  const rawStart = rawAt[at]!;
+  const rawEnd = rawAt[at + needle.length - 1]! + 1;
+  const head = full.slice(0, rawStart).trim();
+  const tail = full.slice(rawEnd).trim();
+  return [head, tail].filter((x) => x !== "").join("\n\n");
+}
+
+/** The visible text of a `chat` final's message: its `text` parts (never thinking or
+ *  tool blocks), else its `text` field. */
+function visibleFinalText(message: unknown): string {
+  if (typeof message !== "object" || message === null) return "";
+  const m = message as { content?: unknown; text?: unknown };
+  if (Array.isArray(m.content)) {
+    const parts = m.content
+      .filter(
+        (c): c is { type: string; text: string } =>
+          typeof c === "object" &&
+          c !== null &&
+          (c as { type?: unknown }).type === "text" &&
+          typeof (c as { text?: unknown }).text === "string",
+      )
+      .map((c) => c.text);
+    if (parts.length > 0) return parts.join("\n").trim();
+  }
+  if (typeof m.content === "string") return m.content.trim();
+  return typeof m.text === "string" ? m.text.trim() : "";
 }

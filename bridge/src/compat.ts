@@ -119,6 +119,17 @@ export const CHAT_HISTORY_INPUT_RUN_IDS_SINCE = OPENCLAW_MIN_SUPPORTED;
  *  `session.message` / `sessions.changed`. Both exist at the floor. */
 export const SESSION_EVENTS_SINCE = OPENCLAW_MIN_SUPPORTED;
 
+/** First gateway version whose `chat.abort` takes `discardPendingInput` — the cancel of
+ *  ONE input waiting in the gateway's queue (packages/gateway-protocol/src/schema/
+ *  logs-chat.ts `ChatAbortParamsSchema`, present at v2026.9.7 and v2026.9.8, absent at
+ *  v2026.9.6; closed params object, so an older gateway refuses the whole call). */
+export const DISCARD_PENDING_INPUT_SINCE = "2026.9.7";
+
+/** First gateway version whose `chat.send` takes an explicit `queueMode` (steer /
+ *  followup / collect / interrupt; logs-chat.ts `ChatSendParamsSchema.queueMode`,
+ *  present from 2026.8.1, so at the floor). */
+export const CHAT_SEND_QUEUE_MODE_SINCE = OPENCLAW_MIN_SUPPORTED;
+
 /** Is this LIVE gateway version known to be BELOW the supported floor?
  *
  *  Only a version that parses and compares below the floor answers true. An absent or
@@ -228,6 +239,15 @@ const OPENCLAW_CAPABILITIES: Record<string, string> = {
   // reads exists from there. Bridge-internal: no UI control is gated on it yet. Never on
   // Hermes: it has no transcript with these identities.
   transcriptProjection: TRANSCRIPT_PROJECTION_SINCE,
+  // SEND LIKE THE CONTROL UI (redesign phase 3): with the projection `on`, a message
+  // sent while the agent works carries an explicit `chat.send.queueMode` (the person's
+  // choice queue/steer, or "interrupt and send"), its ACK is custody, and Stop is the
+  // Control UI's chat.abort / sessions.abort {clearQueued}. Gates the composer's mode
+  // control. Never on Hermes: it has no queue modes.
+  followUpModes: CHAT_SEND_QUEUE_MODE_SINCE,
+  // Cancel ONE input waiting in the gateway's own queue (`chat.abort
+  // {runId, discardPendingInput:true}`). Below it the action is hidden.
+  discardPendingInput: DISCARD_PENDING_INPUT_SINCE,
 };
 
 // Hermes exposes a DELIBERATELY SMALL surface via its OpenAI-compatible API

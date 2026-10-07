@@ -445,6 +445,9 @@ describe("RPC scope derivation (W10)", () => {
       "canvas.document.view",
       "chat.send",
       "chat.abort",
+      // The Control UI's key-only stop (projection `on`, phase 3): no run in the
+      // foreground here, the session's followup queue cleared with it.
+      "sessions.abort",
       "sessions.describe",
       "sessions.patch",
       "sessions.reset",

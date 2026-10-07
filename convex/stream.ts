@@ -52,6 +52,7 @@ import {
 import { drainNextQueued, MAX_QUEUED_PER_CHAT } from "./lib/outboxQueue";
 import { MAX_ADDRESSED_AGENTS } from "./lib/agentMentions";
 import { maybeScheduleTurnRetry } from "./turnRetry";
+import { projectionModeOfChat } from "./lib/followUp";
 import { maybeReparkPreemptedTurn } from "./preemptRepark";
 import { chatAllowsInstance } from "./lib/ingestAuthz";
 import { currentPlanIndex, usablePlanStamp } from "./lib/planOrder";
@@ -193,7 +194,7 @@ async function traceStream(
     chatId: Id<"chats">;
     runId: string | undefined;
     messageId: Id<"messages">;
-    streamStatus: "streaming" | "complete" | "error" | "aborted";
+    streamStatus: "streaming" | "complete" | "error" | "aborted" | "dropped_empty";
     textLen?: number;
     /** Snapshot regression only: the LENGTHS of the kept and refused texts.
      *  Lengths only — the texts themselves are conversational content (SOC2). */
@@ -1051,6 +1052,22 @@ async function recordRunBubble(
   await ctx.db.insert("runBubbles", { chatId, runId, messageId, createdAt: Date.now() });
 }
 
+/** `recordRunBubble` for a NON-delivery run whose id a merge rotated off its bubble
+ *  (projection `on` only, see the caller). The first record stands. */
+async function recordRotatedRunBubble(
+  ctx: MutationCtx,
+  chatId: Id<"chats">,
+  runId: string,
+  messageId: Id<"messages">,
+): Promise<void> {
+  const existing = await ctx.db
+    .query("runBubbles")
+    .withIndex("by_chat_run", (q) => q.eq("chatId", chatId).eq("runId", runId))
+    .first();
+  if (existing !== null) return;
+  await ctx.db.insert("runBubbles", { chatId, runId, messageId, createdAt: Date.now() });
+}
+
 /** The bubble run `run` wrote to in this chat, or null when that is not KNOWN.
  *
  *  The durable record first (`recordRunBubble`); then, for a bubble written before
@@ -1631,6 +1648,18 @@ async function reopenParentForAnnounce(
   });
   // Where this run wrote, durably: the bubble's `runId` will name a later run.
   await recordRunBubble(ctx, chatId, announceRunId, parentId);
+  // Projection `on` (phase 3, CU-9): the bridge ADOPTS the run the gateway answers a
+  // queued input under — a bare id, not a delivery run, opened under its own `runId`.
+  // The rotation above erases that id from the bubble; without a record the run →
+  // bubble join (I1, a child's birth run) would read a reply that IS shown as lost.
+  if (
+    parent.runId !== undefined &&
+    parent.runId !== announceRunId &&
+    !isDeliveryRun(parent.runId) &&
+    (await projectionModeOfChat(ctx, await ctx.db.get(chatId))) === "on"
+  ) {
+    await recordRotatedRunBubble(ctx, chatId, parent.runId, parentId);
+  }
   if (resuming) {
     await ctx.scheduler.runAfter(
       ANNOUNCE_REPLAY_WINDOW_MS,
@@ -3600,6 +3629,12 @@ export const finalize = internalMutation({
      *  and the message would then carry a terminal nobody could explain — which is
      *  the exact gap the field exists to close. */
     finalizeCause: v.optional(v.string()),
+    /** TRANSCRIPT PROJECTION `on` (redesign phase 3): a run that ended with nothing a
+     *  reader sees — no text and no part — leaves NO bubble, like the Control UI (a
+     *  hidden terminal creates no row, CU-21). Only for a COMPLETE terminal: an error
+     *  or a Stop keeps its card. The bubble is still created at the ACK until phase 4
+     *  makes bubbles from the runs themselves; this removes the empty one. */
+    dropIfEmpty: v.optional(v.boolean()),
     ...boundArg,
   },
   handler: async (
@@ -3617,6 +3652,7 @@ export const finalize = internalMutation({
       clearProviderSession,
       recoverableSession,
       finalizeCause,
+      dropIfEmpty,
     },
   ) => {
     // The gateway's own sentence is stored on the message and served to the browser
@@ -3829,6 +3865,48 @@ export const finalize = internalMutation({
     const finalErrorKind = deliveredNothing
       ? DELIVERED_NOTHING_CODE
       : errorKind;
+    if (
+      dropIfEmpty === true &&
+      finalStatus === "complete" &&
+      finalText.trim() === "" &&
+      (await ctx.db
+        .query("messageParts")
+        .withIndex("by_message", (q) => q.eq("messageId", messageId))
+        .first()) === null &&
+      // A SERVICE conversation (summarizer, curator, documentary…) is never dropped: its
+      // terminal handling below is what releases the job's lock (pendingSummarize /
+      // pendingCurate) — an empty reply must reach it like any other, and the watchdog
+      // cannot free a lock whose live row this branch deleted.
+      (await ctx.db.get(message.chatId))?.kind === undefined
+    ) {
+      // Nothing to show: the bubble goes, with its live row and live activity, in the
+      // same transaction as the turn's end — then the turn ends like any other.
+      if (stRow !== null) await ctx.db.delete(stRow._id);
+      await clearLiveActivity(ctx, messageId);
+      await ctx.db.delete(messageId);
+      await ctx.scheduler.runAfter(0, internal.stream.deleteStreamChunksStep, {
+        messageId,
+        beforeSeq: stRow?.chunkSeq ?? 1,
+      });
+      await traceStream(ctx, {
+        phase: "finalize",
+        chatId: message.chatId,
+        runId: message.runId,
+        messageId,
+        streamStatus: "dropped_empty",
+        textLen: 0,
+      });
+      await dropUntrustedProviderSession(
+        ctx,
+        message.chatId,
+        clearProviderSession,
+        false,
+        null,
+        boundInstanceName,
+      );
+      await drainNextQueued(ctx, message.chatId);
+      return { transitioned: true as const };
+    }
     await ctx.db.patch(messageId, {
       status: finalStatus,
       text: finalText,
@@ -5254,5 +5332,214 @@ export const rehydrationContext = internalQuery({
       summaryChars: composed.summaryChars,
       ...(sinceLastReplyOf !== undefined ? { sinceFound: sinceAnchor !== null } : {}),
     };
+  },
+});
+
+// ── TRANSCRIPT PROJECTION `on` (redesign phase 3): the live placement of a run that
+//    received a steered input, and of a distinct late final. ─────────────────────────
+
+/** Most text a late final may add to a closed bubble (a gateway fallback sentence is a
+ *  hundred characters; a whole reply is bounded by the stream's own caps). */
+const LATE_FINAL_MAX_CHARS = 64 * 1024;
+/** Bound on the authoritative text a steer cut settles a segment with. */
+const SEGMENT_TEXT_MAX_CHARS = 512 * 1024;
+
+/**
+ * STEER (CU-20): an input was injected into the run this bubble streams — its
+ * `<sendId>:user` row names the run as `steerTargetRunId`. The Control UI cuts the run's
+ * live stream at that row (ui/src/pages/chat/session-message-apply.ts:168-187,
+ * `rolloverChatStream`, at v2026.9.8), so what the run writes AFTER the injection sits
+ * under the steered message. Here: the current segment settles as it stands (text +
+ * parts), and a new STREAMING bubble of the same run opens after `afterMessageId` — in
+ * ONE transaction, so the reader never sees the run without a live bubble.
+ *
+ * Not a turn end: no drain, no retry, no arrival cue — the run is still working.
+ * Returns the new segment's id, or null when the bubble is no longer streaming (the run
+ * ended first: nothing to cut).
+ */
+export const splitSegment = internalMutation({
+  args: {
+    messageId: v.id("messages"),
+    /** The steered user message: the new segment is ordered after it. */
+    afterMessageId: v.optional(v.id("messages")),
+    /** The settling segment's WHOLE text as the bridge holds it — authoritative, like a
+     *  finalize's: a stream write lost or doubled before the cut never decides what the
+     *  segment says (codex pass 5). Absent (older bridge): the streamed text. */
+    text: v.optional(v.string()),
+    ...boundArg,
+  },
+  returns: v.union(v.id("messages"), v.null()),
+  handler: async (ctx, { messageId, afterMessageId, text, boundInstanceName }) => {
+    const message = await ctx.db.get(messageId);
+    if (message === null || message.role !== "assistant") return null;
+    if (message.status !== "streaming") {
+      // A REPEAT of a split that committed but whose answer was lost (the bridge retries
+      // it, or re-arms the cut at the next delivery of the steered row): hand back the
+      // segment that split opened, while it still streams — answering null left the
+      // bridge on the settled segment and the new one empty forever (codex pass 4).
+      if (message.finalizeCause !== "steer_segment" || message.runId === undefined) return null;
+      await assertMessageBound(ctx, message, boundInstanceName);
+      const runId = message.runId;
+      const want = (message.runSegment ?? 0) + 1;
+      // A point read of the successor, whatever the number of cuts (codex pass 6: a scan
+      // of the first 50 segments lost it after the 50th).
+      const opened = (
+        await ctx.db
+          .query("messages")
+          .withIndex("by_chat_run_segment", (q) =>
+            q.eq("chatId", message.chatId).eq("runId", runId).eq("runSegment", want),
+          )
+          .take(4)
+      ).find((x) => x.role === "assistant");
+      return opened !== undefined && opened.status === "streaming" ? opened._id : null;
+    }
+    await assertMessageBound(ctx, message, boundInstanceName);
+    const stRow = await streamingRow(ctx, messageId);
+    if (stRow !== null) await assertRowBound(ctx, stRow, boundInstanceName);
+    const now = Date.now();
+    // A DELIVERY that reopened this bubble (announce merge) parked the parent's reply
+    // in `announcePrefix`; the run's own text is only the delivery's. The segment is
+    // settled exactly as finalize recomposes it — the parent's reply first (codex
+    // pass 6: replacing the text with the delivery segment alone erased it).
+    const prefix = message.announcePrefix ?? "";
+    const streamed = stRow?.text ?? message.liveText ?? message.text;
+    const settledText =
+      text !== undefined
+        ? prefix !== ""
+          ? prefix + ANNOUNCE_SEP + text.slice(0, SEGMENT_TEXT_MAX_CHARS)
+          : text.slice(0, SEGMENT_TEXT_MAX_CHARS)
+        : prefix === "" || streamed.startsWith(prefix)
+          ? streamed
+          : streamed === "" || prefix.startsWith(streamed)
+            ? prefix
+            : prefix + ANNOUNCE_SEP + streamed;
+    await ctx.db.patch(messageId, {
+      status: "complete",
+      text: settledText,
+      liveText: undefined,
+      // Consumed, as a complete finalize consumes it.
+      announcePrefix: undefined,
+      announceReplayArmed: undefined,
+      announceReplayRun: undefined,
+      finalizeCause: "steer_segment",
+      updatedAt: now,
+      ...(message.finalizedAt === undefined ? { finalizedAt: now } : {}),
+    });
+    if (stRow !== null) await ctx.db.delete(stRow._id);
+    await clearLiveActivity(ctx, messageId);
+    await ctx.scheduler.runAfter(0, internal.stream.deleteStreamChunksStep, {
+      messageId,
+      beforeSeq: stRow?.chunkSeq ?? 1,
+    });
+    // Strictly after the steered message, whatever its stamp (a queued-then-drained
+    // send carries a logical orderTime later than its _creationTime).
+    let orderTime: number | undefined;
+    if (afterMessageId !== undefined) {
+      const after = await ctx.db.get(afterMessageId);
+      if (after !== null && after.chatId === message.chatId) {
+        const floor = effectiveOrder(after) + 1;
+        if (floor > now) orderTime = floor;
+      }
+    }
+    const next = await ctx.db.insert("messages", {
+      chatId: message.chatId,
+      userId: message.userId,
+      ...(message.turnSessionKey !== undefined ? { turnSessionKey: message.turnSessionKey } : {}),
+      ...(message.dispatchOutboxId !== undefined
+        ? { dispatchOutboxId: message.dispatchOutboxId }
+        : {}),
+      role: "assistant",
+      runId: message.runId,
+      status: "streaming",
+      runSegment: (message.runSegment ?? 0) + 1,
+      ...(message.routedInstanceName !== undefined
+        ? { routedInstanceName: message.routedInstanceName }
+        : {}),
+      ...(message.routedAgentId !== undefined ? { routedAgentId: message.routedAgentId } : {}),
+      ...(message.boundInstance !== undefined ? { boundInstance: message.boundInstance } : {}),
+      ...(orderTime !== undefined ? { orderTime } : {}),
+      text: "",
+      updatedAt: now,
+    });
+    await ctx.db.insert("streamingText", {
+      messageId: next,
+      chatId: message.chatId,
+      userId: message.userId,
+      generation: message.runId ?? null,
+      ...(message.boundInstance !== undefined ? { boundInstance: message.boundInstance } : {}),
+      text: "",
+      updatedAt: now,
+    });
+    await traceStream(ctx, {
+      phase: "start",
+      chatId: message.chatId,
+      runId: message.runId,
+      messageId: next,
+      streamStatus: "streaming",
+    });
+    return next;
+  },
+});
+
+/**
+ * A DISTINCT FINAL of a run whose bubble already settled (CU-8, ui/src/pages/chat/
+ * chat-gateway.ts:257-304 at v2026.9.8: a late final already accepted, empty or hidden
+ * only reconciles; a DISTINCT one is added). Measured on 2026.9.8: a run that ended
+ * with `NO_REPLY` outside a group gets a second `chat final` carrying the gateway's own
+ * fallback ("The tool run finished, but no final summary was produced…") ~100 ms after
+ * the first. The text joins the run's last bubble; when the run left none (its first
+ * terminal had nothing to show), a bubble is created for it.
+ */
+export const appendLateFinal = internalMutation({
+  args: {
+    chatId: v.id("chats"),
+    runId: v.string(),
+    /** The run's last bubble, when the bridge knows it. */
+    messageId: v.optional(v.id("messages")),
+    text: v.string(),
+    turnSessionKey: v.optional(v.string()),
+    ...boundArg,
+  },
+  returns: v.union(v.id("messages"), v.null()),
+  handler: async (ctx, { chatId, runId, messageId, text, turnSessionKey, boundInstanceName }) => {
+    const add = text.trim().slice(0, LATE_FINAL_MAX_CHARS);
+    if (add === "") return null;
+    await assertChatBound(ctx, chatId, boundInstanceName);
+    const existing = messageId === undefined ? null : await ctx.db.get(messageId);
+    const now = Date.now();
+    if (
+      existing !== null &&
+      existing.chatId === chatId &&
+      existing.role === "assistant" &&
+      existing.status !== "streaming"
+    ) {
+      // The bubble's OWN bridge only: in a conversation several instances serve, the
+      // chat check alone would let bridge A write into a bubble bridge B settled.
+      await assertMessageBound(ctx, existing, boundInstanceName);
+      // Idempotent: a retransmit of the same final finds its text already there.
+      if (existing.text.includes(add)) return existing._id;
+      await ctx.db.patch(existing._id, {
+        text: existing.text.trim() === "" ? add : `${existing.text}\n\n${add}`,
+        updatedAt: now,
+      });
+      return existing._id;
+    }
+    const chat = await ctx.db.get(chatId);
+    if (chat === null) return null;
+    const created = await ctx.db.insert("messages", {
+      chatId,
+      userId: chat.userId,
+      ...(turnSessionKey !== undefined ? { turnSessionKey } : {}),
+      role: "assistant",
+      runId,
+      status: "complete",
+      text: add,
+      finalizeCause: "gateway_final",
+      ...(boundInstanceName !== undefined ? { boundInstance: boundInstanceName } : {}),
+      updatedAt: now,
+      finalizedAt: now,
+    });
+    await ctx.db.patch(chatId, { updatedAt: now, lastAssistantAt: now });
+    return created;
   },
 });

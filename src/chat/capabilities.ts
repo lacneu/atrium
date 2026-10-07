@@ -50,6 +50,11 @@ export const CAPABILITY_KEYS = [
   // Inline widgets (OpenClaw `show_widget`): the conversation's widget switch in the
   // composer and the sidebar menu. From 2026.9.6 (proven live); never on Hermes.
   "inlineWidgets",
+  // SEND LIKE THE CONTROL UI (transcript projection `on`, phase 3): the composer's
+  // "while the agent works" control (queue / steer / interrupt and send).
+  "followUpModes",
+  // Cancel one input waiting in the gateway's own queue (2026.9.7+).
+  "discardPendingInput",
 ] as const;
 
 export type CapabilityKey = (typeof CAPABILITY_KEYS)[number];

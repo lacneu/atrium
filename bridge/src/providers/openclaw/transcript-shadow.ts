@@ -95,6 +95,12 @@ export interface TranscriptShadowDeps {
   events?: SessionEventSource;
   /** The run in the foreground of this session's turn, if any (read-only). */
   foregroundRunId?: () => string | null;
+  /** PROJECTION `on` (phase 3): every USER row read or received — the steer fact the
+   *  live overlay cuts a run's bubble on (CU-20). Never awaited by the reconciler. */
+  onUserRow?: (row: TranscriptRow) => void;
+  /** PROJECTION `on`: the gateway says it will never run this input (cancelled, or
+   *  asked after its ACK and holding no receipt for it). */
+  onInputDropped?: (sendId: string) => void;
   sleep?: (ms: number) => Promise<void>;
   now?: () => number;
   log?: (line: string) => void;
@@ -162,8 +168,9 @@ export class TranscriptShadow {
     this.log = deps.log ?? ((line) => console.log(line));
   }
 
-  /** The projection is doing something on this session. `on` behaves as `shadow`: no
-   *  phase has given the projection a decision yet. */
+  /** The projection is doing something on this session. The reconciler itself never
+   *  writes a bubble in either mode; with `on` its facts also feed the live overlay
+   *  (`onUserRow` / `onInputDropped`). */
   get active(): boolean {
     return !this.closed && this.mode !== "off";
   }
@@ -292,6 +299,7 @@ export class TranscriptShadow {
       }
     }
     const isUser = admission.role === "user";
+    if (isUser && admission.row !== null) this.emitUserRow(admission.row);
     if (foreground !== null && admission.hasActiveRun === true && !isUser) {
       // The turn is live: its rows reach the store by the read its terminal triggers.
       this.pump();
@@ -324,6 +332,15 @@ export class TranscriptShadow {
     if (!this.active) return;
     this.stats.subscribed++;
     this.requestRead("event:subscribed");
+  }
+
+  private emitUserRow(row: TranscriptRow): void {
+    if (row.sendId === undefined) return;
+    try {
+      this.deps.onUserRow?.(row);
+    } catch {
+      /* the overlay's bookkeeping never fails a read */
+    }
   }
 
   /** Stop everything: the connection is gone. */
@@ -558,6 +575,8 @@ export class TranscriptShadow {
       terminals,
       ...(read.activeRunIds === null ? {} : { activeRunIds: read.activeRunIds }),
       ...(read.hasActiveRun === null ? {} : { hasActiveRun: read.hasActiveRun }),
+      ...(read.queueMode === null ? {} : { queueMode: read.queueMode }),
+      ...(read.effectiveQueueMode === null ? {} : { effectiveQueueMode: read.effectiveQueueMode }),
       unidentified: read.unidentified,
       readAt,
       ...(asked.length > 0 ? { inputRunIds: [...asked] } : {}),
@@ -577,6 +596,7 @@ export class TranscriptShadow {
     }
     for (const id of settled) this.custody.delete(id);
     for (const row of read.rows) {
+      if (row.role === "user") this.emitUserRow(row);
       // A row the read brought needs no direct post of its own.
       this.pendingLive.delete(row.entryId);
       if (row.runId !== undefined && !row.hidden && (row.visible || row.role === "toolresult")) {
@@ -588,6 +608,19 @@ export class TranscriptShadow {
       const keep = [...this.visibleRuns].slice(-250);
       this.visibleRuns.clear();
       for (const id of keep) this.visibleRuns.add(id);
+    }
+    // Inputs the gateway will never run: no run is coming to answer them.
+    const dropped = new Set<string>(absent);
+    for (const r of read.inputReceipts ?? []) if (r.cancelled === true) dropped.add(r.runId);
+    for (const item of read.pendingInputs?.items ?? []) {
+      if (item.runId !== undefined && item.state === "cancelled") dropped.add(item.runId);
+    }
+    for (const id of dropped) {
+      try {
+        this.deps.onInputDropped?.(id);
+      } catch {
+        /* the overlay's bookkeeping never fails a read */
+      }
     }
     // A read issued before a session reset never moves the cursor of the new session.
     if (read.deltaCursor !== null && epoch === this.epoch) {

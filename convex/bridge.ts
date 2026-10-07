@@ -51,6 +51,12 @@ import { buildOpenClawThreadId } from "./lib/openclawThread";
 import { sendIdentityFor } from "./lib/sendIdentity";
 import { transcriptRoutingFor } from "./lib/transcriptProjection";
 import {
+  custodyOf,
+  heldInputsOfRun,
+  projectionModeOfChat,
+  segmentPrefixOf,
+} from "./lib/followUp";
+import {
   expectedPermissionModeFor,
   withoutSessionAccess,
   type SessionPermissionMode,
@@ -423,6 +429,20 @@ export const markOutbox = internalMutation({
         const message = await ctx.db.get(row.messageId);
         if (message !== null && message.role === "user") {
           await ctx.db.patch(row.messageId, { sendId: restamp });
+        }
+      }
+    }
+    // TRANSCRIPT PROJECTION `on` (phase 3, design §3.2): the ACK is CUSTODY — the user
+    // bubble says the gateway accepted the input. Never over a fact a transcript read
+    // already wrote (steered, persisted, …): those come later in the input's life.
+    if (status === "sent" && row.messageId !== undefined && row.chainStep === undefined) {
+      const chat = await ctx.db.get(row.chatId);
+      if ((await projectionModeOfChat(ctx, chat, row.routedAgent?.instanceName)) === "on") {
+        const message = await ctx.db.get(row.messageId);
+        if (message !== null && message.role === "user" && message.custody === undefined) {
+          await ctx.db.patch(row.messageId, {
+            custody: custodyOf({ acked: true, row: null, queuedAtGateway: false }),
+          });
         }
       }
     }
@@ -1857,6 +1877,10 @@ async function reparkRowIfBusy(ctx: MutationCtx, outboxId: Id<"outbox">): Promis
     await ctx.db.patch(outboxId, { status: "queued" });
     return true;
   }
+  // TRANSCRIPT PROJECTION `on` (phase 3, design §8.1): never re-parked. A send that finds
+  // the conversation busy is an explicit follow-up the gateway places (steer by default),
+  // and a `queue` send only left the outbox because the conversation was free.
+  if ((await projectionModeOfChat(ctx, owner, row.routedAgent?.instanceName)) === "on") return false;
   // The FULL activity predicate (streaming message OR live sub-agent) — a
   // `subagent.start` observed during the dispatch delay must hold too, or
   // the follow-up would be routed into / kill the child session (codex P1).
@@ -3049,6 +3073,21 @@ export const dispatch = internalAction({
             // `chat.history` read stopped, so the bridge resumes with a delta. The mode
             // itself rides `config.transcriptProjection`.
             ...(routing.transcript?.cursor ? { transcriptCursor: routing.transcript.cursor } : {}),
+            // TRANSCRIPT PROJECTION `on` (phase 3): the person's mode for a send made
+            // while the agent works, and the bubble still streaming on this session (a
+            // restarted bridge resumes it when the gateway still runs it, CU-22).
+            ...(routing.transcript?.mode === "on" && row.followUpMode !== undefined
+              ? { followUpMode: row.followUpMode }
+              : {}),
+            ...(routing.transcript?.mode === "on"
+              ? await (async () => {
+                  const live = await ctx.runQuery(internal.bridge.liveBubbleForSession, {
+                    chatId: row.chatId as Id<"chats">,
+                    sessionKey: routing.transcript!.sessionKey,
+                  });
+                  return live === null ? {} : { liveBubble: live };
+                })()
+              : {}),
             // How long this row has ALREADY been `pending` — a DURATION, so no clock
             // is shared. The bridge adds its own elapsed time and refuses to submit a
             // prompt whose dispatch is past the deadline: otherwise a POST arriving
@@ -3438,10 +3477,23 @@ export const dispatchAbort = internalAction({
     routedAgent: v.optional(
       v.object({ instanceName: v.string(), agentId: v.string() }),
     ),
+    /** Projection `on`, 2026.9.7+: cancel the ONE input `runId` names (its send
+     *  identity) in the gateway's queue — `chat.abort {runId, discardPendingInput}`.
+     *  Nothing is settled here: the input never became a turn. */
+    discardPendingInput: v.optional(v.boolean()),
   },
   handler: async (
     ctx,
-    { chatId, userId, sessionKey, runId, finalizeMessageId, childRowId, routedAgent },
+    {
+      chatId,
+      userId,
+      sessionKey,
+      runId,
+      finalizeMessageId,
+      childRowId,
+      routedAgent,
+      discardPendingInput,
+    },
   ) => {
     /** The provider session the bridge asked to interrupt WITHOUT being able to confirm
      *  it stopped. Set only from a verdict the bridge actually reported; it rides the
@@ -3546,6 +3598,10 @@ export const dispatchAbort = internalAction({
             : { gatewayUser: routing.gatewayUser }),
           ...(sessionKey ? { sessionKey } : {}),
           ...(runId ? { runId } : {}),
+          // TRANSCRIPT PROJECTION `on` (phase 3): the Control UI's stop — the bridge's
+          // foreground run, or a key-only stop that clears the session's queue.
+          ...(routing.transcript?.mode === "on" ? { projection: "on" } : {}),
+          ...(discardPendingInput === true ? { discardPendingInput: true } : {}),
         }),
       });
       if (!response.ok) {
@@ -3602,6 +3658,39 @@ export const dispatchAbort = internalAction({
         });
       }
     }
+  },
+});
+
+/** The assistant bubble still STREAMING on a session of this conversation, with its run
+ *  (projection `on`: what a restarted bridge resumes, CU-22). One indexed point read. */
+export const liveBubbleForSession = internalQuery({
+  args: { chatId: v.id("chats"), sessionKey: v.string() },
+  handler: async (
+    ctx,
+    { chatId, sessionKey },
+  ): Promise<{
+    messageId: string;
+    runId: string;
+    heldInputs?: Array<{ sendId: string; messageId: string }>;
+    segmentPrefix?: string;
+  } | null> => {
+    const m = await ctx.db
+      .query("messages")
+      .withIndex("by_chat_status", (q) => q.eq("chatId", chatId).eq("status", "streaming"))
+      .order("desc")
+      .first();
+    if (m === null || m.role !== "assistant" || m.runId === undefined) return null;
+    if (m.turnSessionKey !== undefined && m.turnSessionKey !== sessionKey) return null;
+    // The inputs accepted while it streamed: a restarted bridge knows them again.
+    const held = await heldInputsOfRun(ctx, m);
+    // A later segment of a cut run: the earlier segments' text, for the resumed buffer.
+    const prefix = await segmentPrefixOf(ctx, m);
+    return {
+      messageId: m._id,
+      runId: m.runId,
+      ...(held.length > 0 ? { heldInputs: held } : {}),
+      ...(prefix !== undefined ? { segmentPrefix: prefix } : {}),
+    };
   },
 });
 

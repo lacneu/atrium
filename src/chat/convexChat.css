@@ -2034,6 +2034,37 @@ button.oc-bmk-rail__count:hover {
   font-size: 0.72rem;
   color: var(--muted-foreground);
 }
+/* TRANSCRIPT PROJECTION `on` (phase 3): the gateway's custody of a user message —
+   discreet, same register as the queued badge, beside the action bar. */
+.oc-msg__custody {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  align-self: flex-end;
+  margin-top: 0.2rem;
+  font-size: 0.72rem;
+  color: var(--muted-foreground);
+}
+.oc-msg__custody--cancelled,
+.oc-msg__custody--interrupted {
+  color: color-mix(in oklab, var(--destructive) 70%, var(--muted-foreground));
+}
+.oc-msg__custody-action {
+  margin-left: 0.25rem;
+  padding: 0 0.35rem;
+  border-radius: 0.375rem;
+  font-size: 0.72rem;
+  color: var(--foreground);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.oc-msg__custody-action:hover {
+  background: var(--muted);
+}
+.oc-msg__custody-action:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 1px;
+}
 .oc-msg__body {
   min-width: 0;
   color: var(--foreground);
@@ -4469,6 +4500,24 @@ button.oc-perm__opt:disabled {
 .oc-composer__stop:focus-visible {
   outline: 2px solid var(--ring);
   outline-offset: 2px;
+}
+
+/* The send button while the agent works (projection `on`): the primary action and,
+   tucked beside it, the menu of the three explicit choices + the default. */
+.oc-composer__followup {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}
+.oc-composer__followup-menu {
+  width: 22px;
+  height: 32px;
+  border-radius: 0.5rem;
+  color: var(--muted-foreground);
+}
+.oc-composer__followup-menu:hover {
+  color: var(--foreground);
+  background: var(--muted);
 }
 
 /* --- Pending screen ----------------------------------------------------- */

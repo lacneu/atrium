@@ -930,7 +930,13 @@ export function useConvexChatRuntime({ chatId }: UseConvexChatRuntimeArgs) {
   );
 
   const queueSend = useCallback(
-    async (text: string): Promise<boolean> => {
+    async (
+      text: string,
+      /** TRANSCRIPT PROJECTION `on` (phase 3): the explicit mode of this send made
+       *  while the agent works, and whether it leaves NOW (anything but `queue`): an
+       *  immediate send echoes in the thread, not in the queue dock. */
+      opts?: { mode?: "queue" | "steer" | "interrupt"; immediate?: boolean },
+    ): Promise<boolean> => {
       const trimmed = text.trim();
       if (!chatId || trimmed === "") return false;
       const quotes = takePendingQuotes(chatId);
@@ -951,12 +957,15 @@ export function useConvexChatRuntime({ chatId }: UseConvexChatRuntimeArgs) {
       const clientMessageId = crypto.randomUUID();
       // Route the optimistic echo to the QUEUE DOCK (not the thread): the echo
       // id is deterministic (optimistic-<clientMessageId>).
-      queuedEchoIds.current.add(`optimistic-${clientMessageId}`);
+      if (opts?.immediate !== true) {
+        queuedEchoIds.current.add(`optimistic-${clientMessageId}`);
+      }
       try {
         await sendMessage({
           chatId: chatId as Id<"chats">,
           text,
           clientMessageId,
+          ...(opts?.mode !== undefined ? { followUpMode: opts.mode } : {}),
           ...address,
           ...(quotes.length > 0
             ? {

@@ -701,6 +701,15 @@ export class Normalizer {
 
   // Per-turn visible-text state.
   text: string;
+  /** PROJECTION `on`, after a STEER SPLIT (phase 3, CU-20): the run's visible text
+   *  as it stood at the cut. The gateway keeps one cumulative buffer per run
+   *  (src/gateway/server-chat.ts `emitChatDelta` → `chatRunState.updateBuffer`, at
+   *  v2026.9.8), so every later snapshot still starts with what the settled segment
+   *  shows: it is stripped, and the new segment carries only what came after. */
+  private segmentPrefix: string | null = null;
+  /** The whitespace the gateway's buffer carries between the cut and the current
+   *  segment's text (stripped from the segment, kept for the NEXT cut's prefix). */
+  private segmentLead = "";
   hasSnapshot: boolean;
   hasVisibleToolText: boolean;
   pendingAckText: string;
@@ -1016,6 +1025,8 @@ export class Normalizer {
     this.compactionPending = false;
     this.currentRunId = null;
     this.text = "";
+    this.segmentPrefix = null;
+    this.segmentLead = "";
     this.hasSnapshot = false;
     this.hasVisibleToolText = false;
     this.pendingAckText = "";
@@ -1144,6 +1155,61 @@ export class Normalizer {
 
   noteExpectedSessionId(sessionId: string | null): void {
     this.expectedSessionId = sessionId;
+  }
+
+  /**
+   * STEER SPLIT (projection `on`): the turn's bubble settled at a steered input; what
+   * the run writes from now on belongs to a new segment (TurnSink.splitSegment).
+   */
+  splitSegment(): void {
+    // The prefix must stay the EXACT head of the cumulative buffer: a second cut keeps
+    // the separators the first one stripped, or no later snapshot would match it.
+    const lead = this.segmentPrefix !== null && this.text !== "" ? this.segmentLead : "";
+    this.segmentPrefix = (this.segmentPrefix ?? "") + lead + this.text;
+    this.segmentLead = "";
+    this.text = "";
+    this.hasSnapshot = false;
+  }
+
+  /** The CURRENT segment's whole visible text (what a cut settles it with). */
+  get currentSegmentText(): string {
+    return this.text;
+  }
+
+  /** The text of the earlier segments of the current run (null: never cut). */
+  get segmentPrefixText(): string | null {
+    return this.segmentPrefix === null || this.segmentPrefix.trim() === ""
+      ? null
+      : this.segmentPrefix.trim();
+  }
+
+  /**
+   * RESUME of a later segment (CU-22 after a cut): the earlier segments' text, as
+   * Convex stores it. Their exact separators are the gateway's and are not stored, so
+   * this prefix is matched whitespace-insensitively (stripSegmentPrefix).
+   */
+  restoreSegmentPrefix(prefix: string): void {
+    if (prefix.trim() === "") return;
+    this.segmentPrefix = prefix;
+    this.segmentLead = "";
+  }
+
+  /** A cumulative candidate, minus what earlier segments already show. */
+  private stripSegmentPrefix(candidate: string): string {
+    const prefix = this.segmentPrefix;
+    if (prefix === null || prefix === "") return candidate;
+    const end = candidate.startsWith(prefix)
+      ? prefix.length
+      : prefixEndIgnoringSpace(candidate, prefix);
+    if (end !== null) {
+      const rest = candidate.slice(end);
+      const lead = /^\s*/.exec(rest)?.[0] ?? "";
+      this.segmentLead = lead;
+      return rest.slice(lead.length);
+    }
+    // A stale, shorter view of the text before the cut: nothing new.
+    if (prefix.startsWith(candidate)) return "";
+    return candidate;
   }
 
   /** Seed ownRunIds from the chat.send ack so foreign runs are filtered. */
@@ -3631,6 +3697,9 @@ export class Normalizer {
     if (this.finalized) {
       return;
     }
+    if (isSnapshot && this.segmentPrefix !== null) {
+      candidate = this.stripSegmentPrefix(candidate);
+    }
     if (isSnapshot && isPrivateAck(candidate)) {
       // A private acknowledgement must never be persisted as the answer.
       if (this.hasRealContent()) {
@@ -4332,4 +4401,29 @@ export class Normalizer {
       throw err;
     }
   }
+}
+
+/** Where `prefix` ends inside `text` when `text` starts with it up to whitespace (runs
+ *  of whitespace compare equal, as the gateway's separators may differ from a stored
+ *  copy), or null. Linear; no regex. */
+export function prefixEndIgnoringSpace(text: string, prefix: string): number | null {
+  const isSpace = (c: string): boolean => c === " " || c === "\n" || c === "\t" || c === "\r";
+  let i = 0;
+  let j = 0;
+  while (j < prefix.length && isSpace(prefix[j]!)) j++;
+  while (i < text.length && isSpace(text[i]!)) i++;
+  while (j < prefix.length) {
+    const pc = prefix[j]!;
+    if (isSpace(pc)) {
+      while (j < prefix.length && isSpace(prefix[j]!)) j++;
+      if (j === prefix.length) break;
+      if (i >= text.length || !isSpace(text[i]!)) return null;
+      while (i < text.length && isSpace(text[i]!)) i++;
+      continue;
+    }
+    if (i >= text.length || text[i] !== pc) return null;
+    i++;
+    j++;
+  }
+  return i;
 }

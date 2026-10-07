@@ -349,6 +349,11 @@ export type HistoryRead = {
   sessionId: string | null;
   activeRunIds: string[] | null;
   hasActiveRun: boolean | null;
+  /** The session's queue mode as the gateway projects it (`sessionInfo.queueMode` — the
+   *  session's own override — and `effectiveQueueMode`, session-utils-row.ts:553-557 at
+   *  v2026.9.8): what the composer shows a send made while the agent works will do. */
+  queueMode: string | null;
+  effectiveQueueMode: string | null;
   /** The gateway's custody of accepted inputs (null when the reply carried none). */
   pendingInputs: PendingInputsFacts | null;
   /** Receipts for the `inputRunIds` the read asked about (null when absent: the read
@@ -500,10 +505,16 @@ function readSessionInfo(payload: Record<string, unknown>): {
   sessionId: string | null;
   activeRunIds: string[] | null;
   hasActiveRun: boolean | null;
+  queueMode: string | null;
+  effectiveQueueMode: string | null;
 } {
   const info = asRecord(payload.sessionInfo);
   const activeRaw = info?.activeRunIds;
+  const mode = (v: unknown): string | null =>
+    typeof v === "string" && v.length > 0 && v.length <= 32 ? v : null;
   return {
+    queueMode: mode(info?.queueMode),
+    effectiveQueueMode: mode(info?.effectiveQueueMode),
     sessionId: projString(payload.sessionId) ?? projString(info?.sessionId),
     activeRunIds: Array.isArray(activeRaw)
       ? activeRaw.filter((x): x is string => typeof x === "string" && x.length > 0).slice(0, 50)
@@ -534,6 +545,8 @@ export function parseHistoryReply(payload: unknown): HistoryRead | null {
       sessionId: null,
       activeRunIds: null,
       hasActiveRun: null,
+      queueMode: null,
+      effectiveQueueMode: null,
       pendingInputs: null,
       inputReceipts: null,
       unreadableReceipts: NO_UNREADABLE,

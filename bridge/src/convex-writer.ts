@@ -283,6 +283,9 @@ export interface TranscriptApplyReport {
   }>;
   activeRunIds?: string[];
   hasActiveRun?: boolean;
+  /** The session's queue modes (`sessionInfo.queueMode` / `effectiveQueueMode`). */
+  queueMode?: string;
+  effectiveQueueMode?: string;
   unidentified: number;
   /** When the read was ISSUED (epoch ms, strictly increasing per reconciler): Convex
    *  never lets an older read replace the cursor or the session. */
@@ -334,6 +337,24 @@ export interface ConvexWriter {
      *  outboxReconcile); null on a gateway-initiated turn. */
     dispatchOutboxId?: string | null,
   ): Promise<string | null>;
+  /** PROJECTION `on` (phase 3, CU-20): settle this run's live bubble at a steered input
+   *  and open the next segment after `afterMessageId`; returns the new segment's id, or
+   *  null when the bubble was no longer streaming. Optional: fakes that predate it skip
+   *  the split (the run then keeps one bubble). */
+  splitSegment?(
+    messageId: string,
+    afterMessageId: string | null,
+    /** The settling segment's whole text (authoritative, like a finalize's). */
+    text?: string,
+  ): Promise<string | null>;
+  /** PROJECTION `on` (phase 3, CU-8): a distinct late final of a settled run. */
+  appendLateFinal?(args: {
+    chatId: string;
+    runId: string;
+    messageId: string | null;
+    text: string;
+    sessionKey: string | null;
+  }): Promise<string | null>;
   /** message.delta -> internal.stream.appendDelta. */
   appendDelta(messageId: string, text: string): Promise<void>;
   /** The compaction VERDICT (G-08): the last compaction failed for good, so the
@@ -1011,6 +1032,8 @@ type IngestOp =
        *  The ID, not a flag: it narrows the drop to the binding this turn actually had. */
       clearProviderSession?: string;
       recoverableSession?: boolean;
+      /** Projection `on`: a complete terminal with nothing visible leaves no bubble. */
+      dropIfEmpty?: boolean;
     }
   // Session re-hydration READ: fetch a bounded block of this chat's prior turns
   // (excluding the current message) to prepend when the OpenClaw session is fresh.
@@ -1044,6 +1067,15 @@ type IngestOp =
     }
   | { op: "updateRunId"; messageId: string; runId: string }
   | { op: "heartbeat"; messageId: string }
+  | { op: "splitSegment"; messageId: string; afterMessageId: string | null; text?: string }
+  | {
+      op: "appendLateFinal";
+      chatId: string;
+      runId: string;
+      messageId: string | null;
+      text: string;
+      sessionKey: string | null;
+    }
   // Sub-agent observation upsert (inbound-only). Keyed by childSessionKey; NOT
   // message-scoped (a child outlives the parent turn). resultText is server-path
   // stripped by the observer before it reaches here.
@@ -1343,6 +1375,10 @@ export class HttpConvexWriter implements ConvexWriter {
     // and the agent waited on a card nobody could see.
     "upsertAgentRequest",
     "settleAgentRequest",
+    // The steer cut (projection `on`): a repeat of a split that committed answers the
+    // segment it opened (convex/stream.ts `splitSegment`), so a lost answer is retried
+    // instead of leaving the turn on the settled segment (codex pass 4).
+    "splitSegment",
   ]);
 
   /** `doPost`, retried on TRANSIENT failures when the op is idempotent. */
@@ -2406,6 +2442,8 @@ export class HttpConvexWriter implements ConvexWriter {
        *  message it explains does not — and which fires conditionally, so an
        *  ordinary terminal was computed and written nowhere. */
       finalizeCause?: string | null;
+      /** Projection `on` (phase 3): nothing visible ⇒ no bubble (stream.finalize). */
+      dropIfEmpty?: boolean;
     },
   ): Promise<void> {
     try {
@@ -2428,6 +2466,7 @@ export class HttpConvexWriter implements ConvexWriter {
         ...(typeof opts?.finalizeCause === "string" && opts.finalizeCause !== ""
           ? { finalizeCause: opts.finalizeCause }
           : {}),
+        ...(opts?.dropIfEmpty === true ? { dropIfEmpty: true } : {}),
         ...this.genTag(messageId),
       });
       // The finalize is the LAST write (it stamps the message's updatedAt) — its
@@ -2503,6 +2542,45 @@ export class HttpConvexWriter implements ConvexWriter {
       // Best-effort liveness: a missed beat only risks the 12-min watchdog,
       // never the turn.
     });
+  }
+
+  async splitSegment(
+    messageId: string,
+    afterMessageId: string | null,
+    text?: string,
+  ): Promise<string | null> {
+    if (text === undefined) {
+      // Everything streamed so far belongs to the segment that settles.
+      await this.flushDelta(messageId);
+    } else {
+      // The cut carries the segment's whole text and settles it with that, so a stream
+      // write that failed — or committed with its answer lost — is superseded rather
+      // than replayed onto it (codex pass 5). Its ordering still holds: the flush goes
+      // first on this message's chain, and its failure no longer blocks the cut.
+      await this.flushDelta(messageId).catch(() => undefined);
+      this.pendingDelta.delete(messageId);
+    }
+    const run = this.runByMessage.get(messageId);
+    const ack = await this.post<{ messageId: string | null }>({
+      op: "splitSegment",
+      messageId,
+      afterMessageId,
+      ...(text === undefined ? {} : { text }),
+    });
+    this.forgetMessage(messageId);
+    if (ack.messageId !== null && run !== undefined) this.runByMessage.set(ack.messageId, run);
+    return ack.messageId;
+  }
+
+  async appendLateFinal(args: {
+    chatId: string;
+    runId: string;
+    messageId: string | null;
+    text: string;
+    sessionKey: string | null;
+  }): Promise<string | null> {
+    const ack = await this.post<{ messageId: string | null }>({ op: "appendLateFinal", ...args });
+    return ack.messageId ?? null;
   }
 
   async updateRunId(messageId: string, runId: string): Promise<void> {

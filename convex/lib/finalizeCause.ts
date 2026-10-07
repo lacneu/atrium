@@ -53,8 +53,11 @@ export const FINALIZE_CAUSES: ReadonlySet<string> = new Set([
   "gateway_restarting",
   "connection_saturated",
   "external",
-  // — …and the one CONVEX mints itself (see CONVEX_MINTED_CAUSES) —
+  // — …and the ones CONVEX mints itself (see CONVEX_MINTED_CAUSES) —
   "user_stop",
+  // A run's bubble settled because an input was STEERED into the run: what the run
+  // writes next goes to a new segment under the steered message (stream.splitSegment).
+  "steer_segment",
 ]);
 
 /**
@@ -70,7 +73,10 @@ export const FINALIZE_CAUSES: ReadonlySet<string> = new Set([
  * `finalizeCauseVocabulary.test.ts` asserts the two sides agree, and these have no
  * counterpart there by construction.
  */
-export const CONVEX_MINTED_CAUSES: ReadonlySet<string> = new Set(["user_stop"]);
+export const CONVEX_MINTED_CAUSES: ReadonlySet<string> = new Set([
+  "user_stop",
+  "steer_segment",
+]);
 
 /**
  * An unrecognised cause is NOT dropped.

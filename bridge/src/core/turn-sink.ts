@@ -551,6 +551,16 @@ export class TurnSink {
   // stale closure overwrite the NEW turn's messageId or replay old events
   // into it (codex P1).
   private turnEpoch = 0;
+  /** TRANSCRIPT PROJECTION `on` for this turn (redesign phase 3): no empty-response
+   *  verdict (the Control UI shows nothing for a run with nothing visible, CU-21), and
+   *  a complete terminal with nothing visible leaves no bubble. */
+  private projection = false;
+  /** Tool cards opened in an EARLIER segment of this run (a steer split): their later
+   *  phases update the card where it was written, never a twin in the new segment. */
+  private cardHome = new Map<string, string>();
+  /** The last bubble this sink settled and the reply text it holds — what a distinct
+   *  late final of the same run joins (CU-8). */
+  private lastSettled: { messageId: string; runId: string | null; text: string } | null = null;
 
   // Notifies the health registry that a TURN finalized in error AFTER its send
   // was accepted (HealthRegistry.recordTurnError) — else errored turns stay
@@ -609,8 +619,86 @@ export class TurnSink {
    *  stream_orphaned. The dispatch-side busy re-check (bridge.reparkIfBusy) makes
    *  this window rare; this is the belt. No-op when the turn is inactive or the
    *  message was never created. */
-  async preemptOpenTurn(): Promise<void> {
-    await this.flushFinal("complete");
+  async preemptOpenTurn(status: FinalizeStatus = "complete"): Promise<void> {
+    await this.flushFinal(status);
+  }
+
+  /** The bubble THIS turn settled, or null (a silent deferred turn settles none) —
+   *  projection `on`, CU-8. Reset when a turn begins. */
+  get lastSettledBubble(): { messageId: string; runId: string | null; text: string } | null {
+    return this.lastSettled;
+  }
+
+  /** A DISTINCT late final of a settled run (CU-8): joins `messageId` (that run's
+   *  bubble), or opens a settled bubble of its own when the run left none. */
+  async writeLateFinal(
+    runId: string,
+    messageId: string | null,
+    text: string,
+  ): Promise<string | null> {
+    return (await this.writer.appendLateFinal?.({
+      chatId: this.chatId,
+      runId,
+      messageId,
+      text,
+      sessionKey: this.sessionKey ?? null,
+    })) ?? null;
+  }
+
+  /**
+   * STEER SPLIT (projection `on`, CU-20): an input was injected into this turn's run.
+   * The current bubble settles as it stands and the rest of the run streams into a new
+   * segment placed after the steered message. Returns whether a split happened (no
+   * bubble yet, or a bubble no longer streaming, has nothing to cut).
+   */
+  async splitSegment(afterMessageId: string | null, segmentText?: string): Promise<boolean> {
+    const current = this.messageId;
+    if (!this.turnActive || this.pendingOpen || current === null) return false;
+    if (this.writer.splitSegment === undefined) return false;
+    let text = segmentText;
+    if (text !== undefined && text.trim() === "NO_REPLY") text = "";
+    // Without the segment's whole text, a held sentinel prefix is part of what was
+    // streamed before the cut. With it, the text says it all.
+    if (
+      text === undefined &&
+      this.sentinelGate !== null &&
+      this.sentinelGate.trim() !== "" &&
+      this.sentinelGate.trim() !== "NO_REPLY"
+    ) {
+      await this.writer.appendDelta(current, this.sentinelGate);
+    }
+    const next = await this.writer.splitSegment(current, afterMessageId, text);
+    if (next === null) return false;
+    // A card keeps the segment it was opened in: a card still open across a SECOND cut
+    // already has its home, and moving it would finish it in the wrong bubble.
+    for (const id of this.openToolCards.keys()) {
+      if (!this.cardHome.has(id)) this.cardHome.set(id, current);
+    }
+    this.messageId = next;
+    this.sawVisibleText = false;
+    this.visibleTextLen = 0;
+    this.visibleLineStart = 0;
+    this.sentinelGate = "";
+    return true;
+  }
+
+  /** The message a tool card's write goes to: the segment it was opened in. */
+  private cardMessage(toolCallId: string | undefined, fallback: string): string {
+    return (toolCallId && this.cardHome.get(toolCallId)) || fallback;
+  }
+
+  /**
+   * RESUME a bubble this process did not open (projection `on`, CU-22): after a bridge
+   * restart the gateway still runs the turn whose bubble is streaming in Convex. The
+   * Control UI adopts the in-flight run on reconnect (ui/src/pages/chat/
+   * chat-history-stream.ts, `inFlightRun`); here the sink goes active on that bubble
+   * without creating one.
+   */
+  async resumeTurn(messageId: string, runId: string): Promise<void> {
+    await this.beginTurn(runId, undefined, false, false, null, {
+      projection: true,
+      resumeMessageId: messageId,
+    });
   }
 
   /** True while a deferred (spontaneous) turn is active but its assistant
@@ -642,9 +730,18 @@ export class TurnSink {
     dispatchOutboxId: string | null = null,
     /** Further per-turn facts. An OBJECT, not another positional boolean: five
      *  trailing positionals is already one too many to read at a call site. */
-    opts: { compactedBeforeSend?: boolean } = {},
+    opts: {
+      compactedBeforeSend?: boolean;
+      /** Transcript projection `on` for this turn (see the field). */
+      projection?: boolean;
+      /** Resume this existing bubble instead of creating one (resumeTurn). */
+      resumeMessageId?: string;
+    } = {},
   ): Promise<void> {
     this.turnEpoch++;
+    this.projection = opts.projection === true;
+    this.cardHome = new Map();
+    this.lastSettled = null;
     this.dispatchOutboxId = dispatchOutboxId;
     // A REAL turn preempting a DEFERRED (announce) turn that never opened must
     // deactivate the sink BEFORE the startAssistant await below: leaving
@@ -735,6 +832,11 @@ export class TurnSink {
     // there is no active-with-null-messageId window.)
     this.pendingRehydrated = rehydrated;
     this.compactedBeforeSend = opts.compactedBeforeSend === true;
+    if (opts.resumeMessageId !== undefined) {
+      this.messageId = opts.resumeMessageId;
+      this.turnActive = true;
+      return;
+    }
     this.messageId = await this.writer.startAssistant(
       this.chatId,
       ackRunId,
@@ -1344,7 +1446,7 @@ export class TurnSink {
           if (toolCallId && part.phase === "start") {
             this.openToolCards.set(toolCallId, part);
           }
-          await this.writer.addToolPart(messageId, part);
+          await this.writer.addToolPart(this.cardMessage(toolCallId, messageId), part);
           // Forgotten only once the TERMINAL write actually landed (codex P2):
           // dropping the entry first means a transient failure leaves the `start`
           // card persisted as running with nothing left to close it — the exact
@@ -2196,6 +2298,10 @@ export class TurnSink {
     // ignores it, so an older bridge cannot trigger the re-dispatch either.
     if (
       status === "complete" &&
+      // PROJECTION `on`: no verdict at all. A run that ended with nothing visible shows
+      // nothing, like the Control UI (CU-21) — the finalize below removes an empty
+      // bubble — and is never re-run (I4: the gateway held that input).
+      !this.projection &&
       // DELIVERY runs are exempt: their tool-only turns legitimately end with
       // no text of their own (the item-derived cards ARE the content, and the
       // turn usually merged into an already-complete bubble) — the guard
@@ -2326,9 +2432,9 @@ export class TurnSink {
       console.log(
         `[sink] closing ${this.openToolCards.size} tool card(s) the gateway never finished`,
       );
-      for (const [, running] of this.openToolCards) {
+      for (const [cardId, running] of this.openToolCards) {
         try {
-          await this.writer.addToolPart(messageId, {
+          await this.writer.addToolPart(this.cardMessage(cardId, messageId), {
             ...running,
             phase: closingPhase,
           });
@@ -2401,8 +2507,10 @@ export class TurnSink {
         ...(this.pendingDiagFinalizeCause !== null
           ? { finalizeCause: this.pendingDiagFinalizeCause }
           : {}),
+        ...(this.projection && effectiveStatus === "complete" ? { dropIfEmpty: true } : {}),
       },
     );
+    this.lastSettled = { messageId, runId: this.turnRunId, text: replyText };
     // A visible task-delivery run also settles its engagement here (the
     // Convex-side settle on startAssistant covers the merge path; this one is
     // the belt for a delivery that opened its own bubble).

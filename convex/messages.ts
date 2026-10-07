@@ -559,6 +559,16 @@ async function loadChatView(
           ...(message.authorUserId === undefined
             ? {}
             : { authorName: nameAt(message.authorUserId, writtenAtOf(message)) }),
+          // TRANSCRIPT PROJECTION `on` (phase 3): what the gateway does with this input
+          // (accepted / queued / steered / persisted / cancelled / interrupted).
+          ...(message.role === "user" && message.custody !== undefined
+            ? { custody: message.custody }
+            : {}),
+          // …and the bubble of a run that settled because an input was STEERED into it:
+          // what the run wrote before the cut (often tool work only).
+          ...(message.role === "assistant" && message.finalizeCause === "steer_segment"
+            ? { steerSegment: true }
+            : {}),
           // Written by the READER — what decides who may rewrite a queued turn
           // (only its author) without handing the client anybody's user id.
           ...(message.role === "user"

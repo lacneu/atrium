@@ -35,6 +35,13 @@ import { partStorageField } from "./lib/blobs";
 import { isChatBusy, countQueued, MAX_QUEUED_PER_CHAT } from "./lib/outboxQueue";
 import { QUEUED_ORDER_SENTINEL } from "./lib/messageOrder";
 import {
+  busySendParks,
+  projectionModeOfChat,
+  sendTargetsActiveSession,
+  storedFollowUpMode,
+  type FollowUpChoice,
+} from "./lib/followUp";
+import {
   assertQuoteRefs,
   outboxQuoteFieldsFor,
   quoteFieldsFor,
@@ -127,6 +134,14 @@ export const sendMessage = mutation({
         blockIndex: v.union(v.number(), v.null()),
         excerpt: v.string(),
       }),
+    ),
+    // HOW THIS SEND LANDS IF THE AGENT IS WORKING (transcript projection `on`, phase 3):
+    // the composer's explicit choice for this one send — `queue` (wait until the agent
+    // is free), `steer` (inject into the turn in progress) or `interrupt` (stop it and
+    // answer this). Absent = the person's preference, else the gateway's own mode.
+    // Ignored on any other instance: the historical queue applies.
+    followUpMode: v.optional(
+      v.union(v.literal("queue"), v.literal("steer"), v.literal("interrupt")),
     ),
     // SEVERAL passages in one turn. Supersedes `quote` when both are sent (an
     // older client sends only `quote`); the guards below are the same, applied
@@ -347,7 +362,26 @@ export const sendMessage = mutation({
     //     `isChatBusy` itself also answers the dispatch-reset probe, where a queued
     //     row must not read as activity.
     const queuedBefore = await countQueued(ctx, chat._id);
-    const busy = (await isChatBusy(ctx, chat._id)) || queuedBefore > 0;
+    // The switch is resolved ONCE per send (bounded reads) and reused by the busy check.
+    const projectionMode = await projectionModeOfChat(ctx, chat, routedAgent?.instanceName);
+    const activityBusy =
+      (await isChatBusy(ctx, chat._id, projectionMode)) || queuedBefore > 0;
+    // TRANSCRIPT PROJECTION `on` (phase 3, design §3.5): the outbox is the Control UI's
+    // client-side `queue` mode and nothing else. A busy conversation parks the send
+    // only when the person chose `queue`; any other mode goes to the gateway NOW, with
+    // the explicit `queueMode` the bridge resolves (steer by default, like the Control
+    // UI). A chain's tail still queues (each agent answers after the one before).
+    const projectionOn = projectionMode === "on";
+    const followUpChoice: FollowUpChoice | undefined = projectionOn
+      ? (args.followUpMode ?? (await getProfile(ctx, userId))?.followUpMode)
+      : undefined;
+    // …and only to the session at work: another agent's session would take the
+    // conversation's socket from the turn in progress — that send waits its turn.
+    const busy = projectionOn
+      ? activityBusy &&
+        (busySendParks(followUpChoice) || !sendTargetsActiveSession(chat, routedAgent))
+      : activityBusy;
+    const followUpMode = projectionOn && activityBusy ? storedFollowUpMode(followUpChoice) : undefined;
     // A CHAIN QUEUES ITS TAIL whatever the chat's state: every reply after the
     // first waits for the one before it. All of them count against the bound —
     // a message addressed to five agents takes five places, as five messages would.
@@ -560,6 +594,9 @@ export const sendMessage = mutation({
       ...(busy ? {} : { pendingSince: Date.now() }),
       // Per-turn routing target, read back by the dispatch.
       ...(routedAgent ? { routedAgent } : {}),
+      // Projection `on`, sent while the agent works: the person's mode (the bridge sends
+      // it as `chat.send.queueMode` when a run is active).
+      ...(followUpMode !== undefined ? { followUpMode } : {}),
       // Quote-reply: the dispatch (and any redo) prefixes the text with the
       // resolved quote_reply injection filled with this excerpt.
       ...outboxQuoteFieldsFor(quotes.map((q) => q.excerpt)),

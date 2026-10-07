@@ -300,6 +300,15 @@ export const bridgeCompatTarget = v.object({
   turnSessionEcho: v.optional(v.union(v.boolean(), v.null())),
 });
 
+/** The gateway's queue modes (packages/gateway-protocol/src/schema/logs-chat.ts
+ *  `QUEUE_MODES`, identical at v2026.8.2, v2026.9.6 and v2026.9.8). */
+const queueModeValidator = v.union(
+  v.literal("steer"),
+  v.literal("followup"),
+  v.literal("collect"),
+  v.literal("interrupt"),
+);
+
 export default defineSchema({
   // @convex-dev/auth's own tables (authAccounts, authSessions, authRefreshTokens,
   // authVerificationCodes, ... AND its own `users` table). Spreading this is
@@ -377,6 +386,12 @@ export default defineSchema({
     // Plain string, validated at the setter (Intl round-trip) — the zone
     // database evolves, so membership is a setter concern, not a schema one.
     timezone: v.optional(v.string()),
+
+    // What a message sent WHILE THE AGENT WORKS does by default (redesign phase 3): the
+    // Control UI's `chatFollowUpMode` override (ui/src/app/settings.ts:123-130 at
+    // v2026.9.8) — `queue` (held until the agent is free) or `steer` (injected into the
+    // turn in progress). Unset = the gateway's own mode for the session.
+    followUpMode: v.optional(v.union(v.literal("queue"), v.literal("steer"))),
 
     // DEPRECATED — superseded by `uiPrefs.showTools`. No longer READ by the
     // resolver (it shadowed the admin default + mislabeled as "default"); kept as
@@ -2173,6 +2188,28 @@ export default defineSchema({
     // is reconciled on (invariant I3). The LAST dispatch wins (a regenerate re-sends the
     // same message under a new key). Absent before 0.92.0 and on Hermes targets.
     sendId: v.optional(v.string()),
+    // USER rows of a conversation whose instance runs the transcript projection `on`
+    // (redesign phase 3, design §3.2): what the GATEWAY says it does with this input —
+    // the ACK is a guard, not a reply. `accepted` (ACK started/in_flight), `queued`
+    // (the gateway's own queue, 9.7+ explicit flag), `steered` (injected into the run
+    // in progress: its `<sendId>:user` row names a `steerTargetRunId`), `persisted`
+    // (its row is in the transcript), `cancelled` / `interrupted` (pendingInputs).
+    // Absent = legacy path, or no fact yet. Display only: no decision reads it.
+    custody: v.optional(
+      v.union(
+        v.literal("accepted"),
+        v.literal("queued"),
+        v.literal("steered"),
+        v.literal("persisted"),
+        v.literal("cancelled"),
+        v.literal("interrupted"),
+      ),
+    ),
+    // ASSISTANT rows: the run's bubble was SPLIT at a steered input (phase 3, CU-20 —
+    // the Control UI cuts the run's stream at the steered user row). 1, 2, … for the
+    // segments after the first, which keeps the field absent. Same `runId` on every
+    // segment: the projection measure counts one run, not one duplicate per segment.
+    runSegment: v.optional(v.number()),
     // The OUTBOX row whose dispatch produced this turn — the only CORRELATION
 
     // between a queued send and the assistant reply it caused. Written by
@@ -2385,6 +2422,10 @@ export default defineSchema({
     // bubble in one point read (stream.ts `bubbleWrittenByRun`), whether the run
     // merged into a turn's bubble or opened its own.
     .index("by_chat_run", ["chatId", "runId"])
+    // (chatId, runId, runSegment): ONE segment of a run cut at steered inputs (phase 3,
+    // CU-20) — the successor a repeated steer cut hands back, and a run's first segment
+    // (runSegment absent), as point reads however many times the run was cut.
+    .index("by_chat_run_segment", ["chatId", "runId", "runSegment"])
     // (chatId, sendId): "how many bubbles carry THIS send?" — the transcript projection's
     // invariant I3 (exactly one user bubble per `<sendId>:user` row), one point range.
     .index("by_chat_send_id", ["chatId", "sendId"])
@@ -2435,6 +2476,8 @@ export default defineSchema({
   // only the LAST run that wrote there, so without this record a requester-settle
   // join could not find where an earlier continuation wrote once a later wave took
   // the bubble over. Ids only; purged with the chat (chats.cascadeDeleteChat).
+  // Projection `on` also records an ADOPTED (non-delivery) run when a merge rotates
+  // its id off the bubble it opened (stream.ts `recordRotatedRunBubble`).
   runBubbles: defineTable({
     chatId: v.id("chats"),
     runId: v.string(),
@@ -2567,6 +2610,11 @@ export default defineSchema({
     // The gateway's active runs at the last read (`sessionInfo.activeRunIds`, bounded).
     activeRunIds: v.optional(v.array(v.string())),
     hasActiveRun: v.optional(v.boolean()),
+    // PHASE 3 — the session's queue modes at the last read (`sessionInfo.queueMode`, the
+    // session's own override, and `effectiveQueueMode`, the gateway's resolution): what
+    // the composer says a message sent while the agent works will do.
+    sessionQueueMode: v.optional(queueModeValidator),
+    effectiveQueueMode: v.optional(queueModeValidator),
     reads: v.number(),
     resets: v.number(),
     // Durable rows the reads could not identify (no `__openclaw.id` or `seq`).
@@ -3690,6 +3738,11 @@ export default defineSchema({
     // SESSION (lib/sendIdentity.ts): the gateway's send dedupe is process-global, not
     // per session, so a key reused on another session would be answered from the first.
     // Absent on rows dispatched before 0.92.0 and on Hermes targets.
+    // HOW THIS SEND LANDS IF THE AGENT IS WORKING (redesign phase 3, design §3.1): the
+    // person's explicit choice for this send — `steer` or `interrupt`; absent = the
+    // gateway's own mode (the Control UI's "server" default). The client-side `queue`
+    // is never stored: a queued row waits here until the conversation is idle.
+    followUpMode: v.optional(v.union(v.literal("steer"), v.literal("interrupt"))),
     sendId: v.optional(v.string()),
     // WHEN this row's send LEFT for the gateway (stamped with `sendId` by the last gate).
     // Not `_creationTime`: a send queued behind a running turn is created long before it

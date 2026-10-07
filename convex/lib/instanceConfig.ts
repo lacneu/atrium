@@ -123,9 +123,14 @@ export const instanceConfigValidator = v.object({
   outboundAgentMount: v.optional(v.string()),
   // THE SESSION TRANSCRIPT AS THE TRUTH (redesign): `off` (default) = the bridge does not
   // read the transcript back; `shadow` = it records the transcript's identity rows beside
-  // the bubbles (convex/transcriptProjection.ts) and changes nothing on screen; `on` is
-  // reserved for the phases that let the projection place replies (inert in phase 1,
-  // behaves as `shadow`). Carried to the bridge in the dispatch config like `mediaMode`.
+  // the bubbles (convex/transcriptProjection.ts) and changes nothing on screen; `on`
+  // (phase 3) also SENDS like the Control UI: a message sent while the agent works goes
+  // to the gateway at once with an explicit queue mode (steer by default; only an
+  // explicit `queue` waits in the outbox), its ACK is custody shown on the user bubble,
+  // no hold while a sub-agent works, no re-send of an input the gateway held, and the
+  // live bubbles follow the gateway's facts (a steer cuts the run's bubble, a run that
+  // answers a held input opens its own). OpenClaw only. Carried to the bridge in the
+  // dispatch config like `mediaMode`.
   transcriptProjection: v.optional(
     v.union(v.literal("off"), v.literal("shadow"), v.literal("on")),
   ),
