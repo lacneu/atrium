@@ -76,6 +76,29 @@ async function harness(
   return { gw: session.connection as unknown as FakeGateway, session, writer, started };
 }
 
+/** Phase 4: on a projected session a turn begins on the ACK but its BUBBLE is born from
+ *  the run — nothing is created until the run's first visible content. */
+async function expectTurnBornFromRun(h: Awaited<ReturnType<typeof harness>>, runId: string) {
+  expect(h.session.runManager.turnActive).toBe(true);
+  expect(h.session.runManager.activeRunIds).toContain(runId);
+  const before = h.started.length;
+  expect(h.started.slice(before)).toEqual([]);
+  await h.session.runManager.feed(
+    {
+      type: "event",
+      event: "chat",
+      payload: {
+        sessionKey: h.session.sessionKey,
+        runId,
+        state: "delta",
+        message: { role: "assistant", content: [{ type: "text", text: "bonjour" }] },
+      },
+    },
+    1001,
+  );
+  expect(h.started.slice(before)).toEqual([runId]);
+}
+
 const sends = (gw: FakeGateway) =>
   gw.calls.filter(([m]) => m === "chat.send").map(([, p]) => p as Record<string, unknown>);
 
@@ -112,7 +135,20 @@ describe("on: the Control UI's send", () => {
     });
     await performSend(h.session, body("on"), h.writer, null, null);
     expect(sends(h.gw)[0]).not.toHaveProperty("queueMode");
-    expect(h.started).toEqual(["ack-1"]);
+    expect(h.started).toEqual([]);
+    await expectTurnBornFromRun(h, "ack-1");
+  });
+
+  it("phase 4: an ACK that names no run never opens the turn to ANY run — the send's identity is its run", async () => {
+    const idle = { "chat.history": { payload: { sessionInfo: { hasActiveRun: false } } } };
+    const on = await harness({ ...idle, "chat.send": { payload: { status: "started" } } });
+    await performSend(on.session, body("on"), on.writer, null, null);
+    const key = sends(on.gw)[0]!.idempotencyKey as string;
+    expect(key).toBeTruthy();
+    expect(on.session.runManager.activeRunIds).toEqual([key]);
+    const off = await harness({ ...idle, "chat.send": { payload: { status: "started" } } });
+    await performSend(off.session, body("shadow"), off.writer, null, null);
+    expect(off.session.runManager.activeRunIds).toEqual([]);
   });
 
   it("a run active at the gateway, none here: explicit queueMode, the send is a held input — that run is never its bubble", async () => {
@@ -139,8 +175,8 @@ describe("on: the Control UI's send", () => {
     });
     await performSend(h.session, body("on", { followUpMode: "interrupt" }), h.writer, null, null);
     expect(sends(h.gw)[0]).toMatchObject({ queueMode: "interrupt" });
-    expect(h.started).toEqual(["ack-1"]);
     expect(h.session.runManager.activeRunIds).toEqual(["ack-1"]);
+    await expectTurnBornFromRun(h, "ack-1");
   });
 
   it("a turn in the foreground HERE: the send is custody only — steer, no new bubble", async () => {
@@ -164,10 +200,9 @@ describe("on: the Control UI's send", () => {
   it("interrupt replaces the foreground turn: a new bubble on its ACK", async () => {
     const h = await harness(ACTIVE);
     await h.session.runManager.beginTurn(1000, "runA", { expectedSessionId: null });
-    const before = h.started.length;
     await performSend(h.session, body("on", { followUpMode: "interrupt" }), h.writer, null, null);
     expect(sends(h.gw)[0]).toMatchObject({ queueMode: "interrupt" });
-    expect(h.started.length).toBe(before + 1);
+    await expectTurnBornFromRun(h, "ack-1");
   });
 
   it("CU-22: the bubble Convex shows streaming is resumed when the gateway still runs it", async () => {
@@ -230,7 +265,8 @@ describe("on: the Control UI's send", () => {
       null,
       null,
     );
-    expect(h.started).toEqual(["ack-1"]);
+    // Not resumed: a fresh turn of the send's own run (its bubble born from the run).
+    await expectTurnBornFromRun(h, "ack-1");
   });
 });
 

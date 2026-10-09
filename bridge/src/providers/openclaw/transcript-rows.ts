@@ -10,6 +10,8 @@
 // Nothing in this module writes anything: transcript-shadow.ts orchestrates the reads
 // and posts the result to Convex, which never edits a bubble in shadow mode.
 
+import { messageDisplayText, sanitizeDisplay } from "./normalizer.js";
+
 const asRecord = (x: unknown): Record<string, unknown> | null =>
   typeof x === "object" && x !== null && !Array.isArray(x) ? (x as Record<string, unknown>) : null;
 
@@ -312,7 +314,45 @@ export type TranscriptRow = {
   hidden: boolean;
   visible: boolean;
   toolCallIds?: string[];
+  /** PROJECTION `on` (phase 4): what the row shows — set only when the read asked for it. */
+  text?: string;
+  yieldAck?: string;
 };
+
+/** PROJECTION `on` (phase 4): read what a row SAYS, for the session it belongs to. */
+export type RowDisplay = { sessionKey: string };
+
+/** Most a row may SAY, in UTF-8 bytes, text and acknowledgment together — ONE budget,
+ *  Convex's too (convex/lib/transcriptProjection.ts `MAX_ROW_TEXT_BYTES` = the largest
+ *  text a bubble is ever composed from rows with). A text over it is not sent (never
+ *  cut): it could never make or rewrite a bubble, so its bubble keeps the live text.
+ *  Bounded in BYTES, not characters (codex phase 4 pass 7: a 32 769-character answer the
+ *  live frames missed got no bubble at all under the old 32 Ki-character bound). */
+export const ROW_TEXT_MAX_BYTES = 768 * 1024;
+
+const utf8Length = (s: string): number => Buffer.byteLength(s, "utf8");
+
+/** The suffix of the row the gateway writes ON BEHALF of a run whose turn settled without
+ *  a final summary (`${runId}:settled-finalization-fallback`, upstream
+ *  src/agents/embedded-agent-runner/run/settled-turn-finalization.ts:608 at v2026.9.8). It
+ *  carries no `__openclaw.runId`: the run is read from its key. Atrium shows that sentence
+ *  in the run's own bubble (0.95.0, CU-8) — the projection keeps it there. */
+const SETTLED_FALLBACK_SUFFIX = ":settled-finalization-fallback";
+
+/** A `sessions_yield` call's acknowledgment in an assistant row (the sentence the sink
+ *  promotes into an otherwise silent bubble — core/turn-sink.ts), sanitized like text. */
+function yieldAcknowledgment(record: Record<string, unknown>, display: RowDisplay): string | null {
+  if (!Array.isArray(record.content)) return null;
+  for (const block of record.content) {
+    const b = asRecord(block);
+    if (b === null || !isToolCallType(b.type) || b.name !== "sessions_yield") continue;
+    const args = asRecord(b.arguments) ?? asRecord(b.input);
+    const ack = args?.acknowledgment;
+    if (typeof ack !== "string" || ack.trim() === "" || ack.trim() === "NO_REPLY") continue;
+    return sanitizeDisplay(ack, display.sessionKey);
+  }
+  return null;
+}
 
 /** A row the Control UI keeps: it needs an id and a sequence to be placed by identity
  *  (upstream session-message-apply.ts:65-188 drops rows without id/key/seq). Imported
@@ -320,16 +360,36 @@ export type TranscriptRow = {
 export function toTranscriptRow(
   message: unknown,
   envelope?: TranscriptEnvelope,
+  display?: RowDisplay,
 ): TranscriptRow | null {
   const id = readTranscriptIdentity(message, envelope);
   if (id === null || id.isImported || id.id === null || id.seq === null) return null;
   const facts = rowDisplayFacts(message);
   const toolCallIds = rowToolCallIds(message);
+  let runId = id.runId;
+  let shown: { text?: string; yieldAck?: string } = {};
+  if (display !== undefined && id.role === "assistant") {
+    if (runId?.endsWith(SETTLED_FALLBACK_SUFFIX)) {
+      runId = runId.slice(0, -SETTLED_FALLBACK_SUFFIX.length) || null;
+    }
+    const record = asRecord(message)!;
+    if (facts.visible && !facts.hidden) {
+      const text = messageDisplayText(record, display.sessionKey);
+      // A text over the bound is not sent at all: Convex keeps the live text then.
+      if (utf8Length(text) <= ROW_TEXT_MAX_BYTES) shown = { text };
+    }
+    const ack = yieldAcknowledgment(record, display);
+    // The acknowledgment only while it fits beside the text (shown only for a run with no
+    // text of its own: beside a text it would never be shown).
+    if (ack !== null && utf8Length(shown.text ?? "") + utf8Length(ack) <= ROW_TEXT_MAX_BYTES) {
+      shown = { ...shown, yieldAck: ack };
+    }
+  }
   return {
     entryId: id.id,
     seq: id.seq,
     role: id.role,
-    ...(id.runId === null ? {} : { runId: id.runId }),
+    ...(runId === null ? {} : { runId }),
     ...(id.sendId === null ? {} : { sendId: id.sendId }),
     ...(id.steerTargetRunId === null ? {} : { steerTargetRunId: id.steerTargetRunId }),
     ...(id.mirrorOrigin === null ? {} : { mirrorOrigin: id.mirrorOrigin }),
@@ -337,6 +397,7 @@ export function toTranscriptRow(
     hidden: facts.hidden,
     visible: facts.visible,
     ...(toolCallIds.length > 0 ? { toolCallIds } : {}),
+    ...shown,
   };
 }
 
@@ -516,9 +577,12 @@ function readSessionInfo(payload: Record<string, unknown>): {
     queueMode: mode(info?.queueMode),
     effectiveQueueMode: mode(info?.effectiveQueueMode),
     sessionId: projString(payload.sessionId) ?? projString(info?.sessionId),
-    activeRunIds: Array.isArray(activeRaw)
-      ? activeRaw.filter((x): x is string => typeof x === "string" && x.length > 0).slice(0, 50)
-      : null,
+    // A list longer than the bound is CUT, and a cut list is not the complete one the
+    // gateway sent (a run cut off would read as over): it is reported as unknown.
+    activeRunIds:
+      Array.isArray(activeRaw) && activeRaw.length <= 50
+        ? activeRaw.filter((x): x is string => typeof x === "string" && x.length > 0)
+        : null,
     hasActiveRun: typeof info?.hasActiveRun === "boolean" ? info.hasActiveRun : null,
   };
 }
@@ -533,7 +597,7 @@ function readSessionInfo(payload: Record<string, unknown>): {
  *    carrying `__openclaw`, deltaCursor?, sessionInfo, …}`.
  * Null when the reply is not one of these.
  */
-export function parseHistoryReply(payload: unknown): HistoryRead | null {
+export function parseHistoryReply(payload: unknown, display?: RowDisplay): HistoryRead | null {
   const p = asRecord(payload);
   if (p === null) return null;
   if (p.kind === "reset") {
@@ -560,9 +624,9 @@ export function parseHistoryReply(payload: unknown): HistoryRead | null {
     let row: TranscriptRow | null;
     if (delta) {
       const env = asRecord(item);
-      row = env === null ? null : toTranscriptRow(env.message, env as TranscriptEnvelope);
+      row = env === null ? null : toTranscriptRow(env.message, env as TranscriptEnvelope, display);
     } else {
-      row = toTranscriptRow(item);
+      row = toTranscriptRow(item, undefined, display);
     }
     if (row === null) unidentified++;
     else rows.push(row);
@@ -659,6 +723,8 @@ export function admitLiveRow(
     activeRunId: string | null;
     /** The last foreground run whose terminal was observed (`lastLocalTerminalReconcile`). */
     recentTerminalRunId: string | null;
+    /** PROJECTION `on`: read what the row says too. */
+    display?: RowDisplay;
   },
 ): LiveAdmission {
   const event = asRecord(payload);
@@ -676,7 +742,7 @@ export function admitLiveRow(
   if (id.id === null && id.idempotencyKey === null && id.seq === null) {
     return { ...base, row: null, admitted: false, why: "unidentified" };
   }
-  const row = toTranscriptRow(message, event as TranscriptEnvelope);
+  const row = toTranscriptRow(message, event as TranscriptEnvelope, ctx.display);
   if (id.role === "user") return { ...base, row, admitted: true, why: "user" };
   const eventRunId = projString(event.runId);
   const producerRunId = id.runId !== null && id.runId === eventRunId ? id.runId : null;

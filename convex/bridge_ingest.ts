@@ -207,6 +207,8 @@ type IngestOp =
       sessionKey?: string | null;
       /** The outbox row this turn was dispatched from (correlation, see schema). */
       dispatchOutboxId?: string | null;
+      /** Projection `on` (phase 4): the steer segment a deferred bubble opens as. */
+      runSegment?: number;
     }
   // Delivery recorder clock calibration: lightweight (no writes) so its round-trip is
   // free of server work and yields a clean bridge<->Convex skew. See deliveryTiming.ts.
@@ -283,7 +285,13 @@ type IngestOp =
   // URL, STREAMS the raw bytes straight to it (a direct binary POST, NOT through
   // this endpoint — the 20MB httpAction limit never applies), then persists the
   // returned storageId. The server-side fs path is NEVER sent to Convex.
-  | { op: "getUploadUrl" }
+  | {
+      op: "getUploadUrl";
+      // Projection `on` (phase 4, codex pass 22): an upload into this message starts.
+      messageId?: string;
+      runId?: string | null;
+      uploadWindowMs?: number;
+    }
   | {
       op: "addMediaPart";
       messageId: string;
@@ -523,6 +531,16 @@ type IngestOp =
         sessionRoot?: string;
       };
     }
+  // The bubble the transcript made for a run the bridge closed before opening one
+  // (projection `on`, phase 4 — codex pass 21). Read-only; verified against the proven
+  // instance, the chat, the session, the run and its segment.
+  | {
+      op: "projectedBubble";
+      chatId: string;
+      sessionKey: string;
+      runId: string;
+      segment: number;
+    }
   // Session re-hydration READ (see docs/SESSION_CONTINUITY_DESIGN.md). The bridge
   // asks for a bounded block of this chat's prior turns when it detects a fresh/
   // rolled OpenClaw session, then prepends it to chat.send. `excludeMessageId` is
@@ -701,6 +719,9 @@ type IngestOp =
       inputReceipts?: unknown[];
       inputAbsent?: unknown[];
       inputUnreadable?: unknown[];
+      // Phase 4 — the runs the bridge's foreground turn owns (projection `on`).
+      foregroundRunIds?: unknown[];
+      textsOnly?: boolean;
     };
 
 /** The target id(s) an op writes against — what ingest authorization resolves to
@@ -844,6 +865,12 @@ export const ingest = httpAction(async (ctx, request) => {
         runId: body.runId ?? undefined,
         turnSessionKey: body.sessionKey ?? undefined,
         dispatchOutboxId: body.dispatchOutboxId ?? undefined,
+        ...(typeof body.runSegment === "number" &&
+        Number.isSafeInteger(body.runSegment) &&
+        body.runSegment > 0 &&
+        body.runSegment <= 10_000
+          ? { runSegment: body.runSegment }
+          : {}),
         boundInstanceName,
       });
       // Delivery recorder: a ONCE-per-turn probe (not per delta) telling the bridge
@@ -1024,6 +1051,19 @@ export const ingest = httpAction(async (ctx, request) => {
       // A short-lived URL the bridge POSTs raw file bytes to (no size limit,
       // no base64). Returned to the bridge, never persisted.
       const uploadUrl = await ctx.storage.generateUploadUrl();
+      // Projection `on` only: the bridge names the destination of the upload starting
+      // now, so a file job the transcript settled waits for it (stream.noteUploadStarted
+      // — bound to the proven instance, inert for a conversation that never stored text).
+      if (typeof body.messageId === "string" && body.messageId !== "") {
+        await ctx.runMutation(internal.stream.noteUploadStarted, {
+          messageId: body.messageId as Id<"messages">,
+          boundInstanceName,
+          windowMs:
+            typeof body.uploadWindowMs === "number" && Number.isFinite(body.uploadWindowMs)
+              ? body.uploadWindowMs
+              : 0,
+        });
+      }
       await traceIngest(ctx, {
         kind: "openclaw.ingest",
         meta: { op: body.op, ok: true },
@@ -1574,6 +1614,16 @@ export const ingest = httpAction(async (ctx, request) => {
       });
       return json({ ok: true });
     }
+    case "projectedBubble": {
+      const result = await ctx.runQuery(internal.transcriptProjection.projectedBubble, {
+        chatId: body.chatId as Id<"chats">,
+        boundInstanceName,
+        sessionKey: String(body.sessionKey ?? ""),
+        runId: String(body.runId ?? ""),
+        segment: typeof body.segment === "number" && Number.isFinite(body.segment) ? body.segment : 0,
+      });
+      return json(result);
+    }
     case "getRehydrationContext": {
       // Network input: an agent reference is used only when both names are strings,
       // and a ceiling only when it is a finite number — anything else is ignored, as
@@ -1907,6 +1957,14 @@ export const ingest = httpAction(async (ctx, request) => {
               ),
             }
           : {}),
+        ...(Array.isArray(body.foregroundRunIds)
+          ? {
+              foregroundRunIds: body.foregroundRunIds
+                .filter((x): x is string => typeof x === "string")
+                .slice(0, 10),
+            }
+          : {}),
+        ...(body.textsOnly === true ? { textsOnly: true } : {}),
       });
       // NO per-apply trace row: reads follow every run terminal, and the cursor doc
       // already carries the counters an operator needs (reads, resets, unidentified).

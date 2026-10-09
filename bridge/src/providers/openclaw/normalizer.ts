@@ -207,6 +207,25 @@ const UPSTREAM_RESUME_TOOL_PHASES: ReadonlySet<string> = new Set([
 const RETRY_MAX_ATTEMPTS = 10;
 
 const LIFECYCLE_FINISHING_GRACE = 60.0;
+
+/**
+ * PROJECTION `on` (transcript redesign phase 4, design §8.1): the waits that DECIDED a
+ * turn's end from time — an empty final held 90 s, a cut final 20 s, a private ack 5 s,
+ * `finishing` 60 s, a lifecycle end's 10 s follow-on window (which also admitted an
+ * unknown run into the turn), the 12 s transcript-recovery window. On a projected session
+ * none of them is ever armed (`arm` refuses them): a turn ends on the gateway's terminal
+ * frame or on the transcript's own fact (RunManager.settleFromTranscript), and what the
+ * durable rows say replaces the live text. The waits that stay — the §8.2 nets — are the
+ * silence budget (a READ, never an end), the compaction budget and the human waits.
+ */
+export const TRANSCRIPT_DECIDED_WAITS: ReadonlySet<string> = new Set([
+  "empty_final",
+  "truncated_final",
+  "private_ack",
+  "lifecycle_finishing",
+  "lifecycle_end",
+  "history_recovery",
+]);
 // A tool asked for HUMAN approval (`stream:"approval" phase:"requested"`). The
 // run is alive and deliberately waiting, so the 240 s silence budget is the wrong
 // clock — but the wait must still be BOUNDED, or this re-creates the "Génération…"
@@ -492,6 +511,25 @@ function textFromMessage(message: Json): string {
   return textFromContent(message.text);
 }
 
+/**
+ * The text a durable transcript row SHOWS, extracted and sanitized exactly as the live
+ * stream's (`textFromMessage` + `safeSanitizeText`): the projection (redesign phase 4)
+ * recomposes a settled bubble from these, so they must read as the live text does.
+ */
+export function messageDisplayText(message: unknown, sessionKey: string): string {
+  return sanitizeDisplay(textFromMessage(message as Json), sessionKey);
+}
+
+/** `safeSanitizeText` without an instance (same media session, same fallback). */
+export function sanitizeDisplay(text: string, sessionKey: string): string {
+  try {
+    return sanitizeText(text, { mediaSessionKey: sessionKey });
+  } catch (err) {
+    if (err instanceof MediaConfigurationError) return text;
+    throw err;
+  }
+}
+
 /** True for a safe OpenClaw deliverable media path (no scheme/traversal). */
 function isOutboundMediaPath(path: Json): path is string {
   if (!isString(path) || path === "") {
@@ -691,6 +729,14 @@ const MEDIA_TASK_DELIVERY_RUN_RE =
 
 export class Normalizer {
   readonly sessionKey: string;
+
+  /** PROJECTION `on` (phase 4): the session transcript decides when a turn ended and what
+   *  it said; no time-based wait (TRANSCRIPT_DECIDED_WAITS) and no prose rule ever closes
+   *  a turn. Set by RunManager.setProjection. */
+  transcriptDecides = false;
+  /** The run's generation ENDED (lifecycle `end`), as a fact rather than a window: what
+   *  a projected turn reads where the legacy path reads the 10 s `lifecycle_end` grace. */
+  private lifecycleEnded = false;
 
   // Session-level run tracking.
   ownRunIds: Set<string>;
@@ -1062,6 +1108,7 @@ export class Normalizer {
     this.diagProviderStarted = null;
     this.diagAborted = false;
     this.sawYielded = false;
+    this.lifecycleEnded = false;
     this.inRetryingPhase = false;
     this.finishingSuspended = false;
     this.clearApprovals();
@@ -1237,6 +1284,12 @@ export class Normalizer {
     if (!this.recvSilence) return false;
     this.recvSilence = false;
     return true;
+  }
+
+  /** PROJECTED (phase 4): the silence was answered by a transcript read; the budget
+   *  restarts. Never a terminal. */
+  rearmSilence(now: number): void {
+    if (this.transcriptDecides && this.turnActive && !this.finalized) this.armRecv(now);
   }
 
   /** Finalize the active turn explicitly (e.g. on chat.abort or a send error). */
@@ -2069,7 +2122,10 @@ export class Normalizer {
       // still reaches the diagnostic trace via diagnosticErrorKind (a
       // trace-only channel — never the message's errorCode, which would paint
       // an error card on a successful reply).
-      if (this.hasRealContent() && this.deadlines.has("lifecycle_end")) {
+      if (
+        this.hasRealContent() &&
+        (this.deadlines.has("lifecycle_end") || (this.transcriptDecides && this.lifecycleEnded))
+      ) {
         const diagKind =
           classifyStructuredFailure({
             errorKind: payload.errorKind,
@@ -2123,6 +2179,9 @@ export class Normalizer {
     if (snapshotText) {
       if (
         isFinal &&
+        // Projected: the cut final is a live overlay like any other — the durable row,
+        // whole, replaces it when the run settles.
+        !this.transcriptDecides &&
         snapshotText.endsWith(TRUNCATED_FINAL_MARKER) &&
         snapshotText.length - TRUNCATED_FINAL_MARKER.length >=
           TRUNCATED_FINAL_MIN_BODY
@@ -2185,6 +2244,12 @@ export class Normalizer {
         // there is no follow-on content to wait for: arming the 90s empty-final grace
         // left the turn showing as active for a minute and a half, which is exactly the
         // frame-loss case `ChatFinalEvent.yielded` exists to cover (codex).
+        this.finalizeOrHold(now, "gateway_final", events);
+      } else if (this.transcriptDecides) {
+        // PROJECTED: the run's terminal arrived. A final with no message is the Control
+        // UI's recovery case (CU-13): the reconciler reads the transcript back
+        // (100/400/1500/3000 ms) and the run's durable rows make its bubble — the turn
+        // waits for nothing here.
         this.finalizeOrHold(now, "gateway_final", events);
       } else {
         this.arm("empty_final", now + EMPTY_FINAL_GRACE);
@@ -2561,6 +2626,9 @@ export class Normalizer {
    */
   get wantsHistoryRecovery(): boolean {
     return (
+      // Projected: the positional transcript readers are not used — the reconciler reads
+      // the transcript by identity and the rows replace the live text.
+      !this.transcriptDecides &&
       !this.finalized &&
       (this.sawMessageToolItem ||
         this.msgtoolUnreadableArgs > 0 ||
@@ -3496,6 +3564,7 @@ export class Normalizer {
       return;
     }
     if (phase === "end") {
+      this.lifecycleEnded = true;
       this.clearWait("lifecycle_finishing"); // the real terminal arrived
       // …and nothing may re-arm it — UNLESS this end is not the terminal at all. When a
       // compaction is active, the `abandoned` branch below hands the turn back to the
@@ -3574,6 +3643,7 @@ export class Normalizer {
         events.push({ type: EVENT_TURN_PHASE, phase: "generating" });
       }
       this.finishingSuspended = false; // a new run owns the turn now
+      this.lifecycleEnded = false;
       if (this.compactionPending) {
         this.compactionPending = false;
         this.armRecv(now);
@@ -3700,7 +3770,9 @@ export class Normalizer {
     if (isSnapshot && this.segmentPrefix !== null) {
       candidate = this.stripSegmentPrefix(candidate);
     }
-    if (isSnapshot && isPrivateAck(candidate)) {
+    // Projected: no prose decides anything — an acknowledgment is the run's text like
+    // any other, and the message the tool delivered is the run's own durable row.
+    if (isSnapshot && !this.transcriptDecides && isPrivateAck(candidate)) {
       // A private acknowledgement must never be persisted as the answer.
       if (this.hasRealContent()) {
         // We already have the real reply; ignore the ack but still close the
@@ -3727,6 +3799,8 @@ export class Normalizer {
     // drop those deltas outright — losing the follow-on's content entirely.
     const forcedAppend =
       this.frameRunAdopted &&
+      // Projected: one bubble per run — never two runs' texts glued by position.
+      !this.transcriptDecides &&
       this.text !== "" &&
       (isSnapshot ? !candidate.startsWith(this.text) : this.hasSnapshot);
     if (forcedAppend) {
@@ -4294,6 +4368,7 @@ export class Normalizer {
   }
 
   private arm(name: string, deadline: number): void {
+    if (this.transcriptDecides && TRANSCRIPT_DECIDED_WAITS.has(name)) return;
     this.deadlines.set(name, deadline);
   }
 
@@ -4344,21 +4419,15 @@ export class Normalizer {
     return Boolean(
       this.hasVisibleToolText ||
         this.mediaPaths.size > 0 ||
-        (this.text && !isPrivateAck(this.text)),
+        // Projected: the run's text is its text — no prose rule weighs it.
+        (this.text && (this.transcriptDecides || !isPrivateAck(this.text))),
     );
   }
 
   // -- sanitization wrappers (never leak server paths to the browser) -------
 
   private safeSanitizeText(text: string): string {
-    try {
-      return sanitizeText(text, { mediaSessionKey: this.sessionKey });
-    } catch (err) {
-      if (err instanceof MediaConfigurationError) {
-        return text;
-      }
-      throw err;
-    }
+    return sanitizeDisplay(text, this.sessionKey);
   }
 
   /**

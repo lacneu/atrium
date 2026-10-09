@@ -468,13 +468,15 @@ class Session implements BridgeSession {
             ),
           )
         ).payload,
-      apply: async (report) => {
-        await writer.applyTranscript?.(report);
-      },
+      // Convex's ANSWER is the reconciler's input (the runs it found over, a refusal to
+      // split): it was dropped here, so no settled run ever reached the turn (codex phase 4
+      // pass 6 review).
+      apply: async (report) => (await writer.applyTranscript?.(report)) ?? undefined,
       ...(sessionEvents === undefined ? {} : { events: sessionEvents }),
       // READ-ONLY view of the turn: the run in the foreground, for CU-16's admission.
       foregroundRunId: () =>
         this.runManager.turnActive ? (this.runManager.activeRunIds[0] ?? null) : null,
+      foregroundRunIds: () => (this.runManager.turnActive ? this.runManager.activeRunIds : []),
       // PROJECTION `on` (phase 3): the live overlay's transcript facts. Inert when the
       // switch is off (RunManager.setProjection).
       onUserRow: (row) => {
@@ -483,6 +485,21 @@ class Session implements BridgeSession {
         );
       },
       onInputDropped: (sendId) => this.runManager.noteInputDropped(sendId),
+      // PROJECTION `on` (phase 4): the transcript proved runs over — a foreground turn
+      // among them ends here (never on a timer).
+      onRunsSettled: (runIds) => {
+        void this.runManager
+          .settleFromTranscript(runIds, this.clock())
+          .then((ended) => {
+            if (ended) {
+              console.log(`[transcript] chat=${this.chatId} turn settled by the transcript`);
+              this.wake();
+            }
+          })
+          .catch((e) =>
+            console.error("[transcript] settle failed (non-fatal):", (e as Error)?.message ?? e),
+          );
+      },
     });
     // The reconciler lives exactly as long as this socket, whichever path closes it (the
     // consume loop's end, a crash recovery, the reaper, a re-key): otherwise its
@@ -639,6 +656,9 @@ class Session implements BridgeSession {
               // incidental mention — so no freshness gate, exactly as on the
               // owner's lane. The gate exists for paths found in prose.
               explicit: true,
+              // Projection `on` only: announced, so a file job the transcript
+              // settled waits for it (codex phase 4 pass 23).
+              ...(this.runManager.projectionOn ? { markUpload: true } : {}),
             })
             .then((attached) => {
               // Not attached (not found / upload error): release the claim so a
@@ -870,7 +890,16 @@ class Session implements BridgeSession {
             // Whatever the gateway sent between the last frame read and the close is
             // gone: from here on, an absence in this turn's stream proves nothing.
             this.runManager.noteStreamGap();
-            if (this.transcriptFetcher) {
+            if (this.runManager.projectionOn) {
+              // PROJECTION `on` (phase 4, CU-22): no transcript poll and no settle on a
+              // deadline. The bubble stays as the run left it; the next reconciler read
+              // — the resume a send or the stuck-stream net asks for (`/resume`) —
+              // settles it from the run's durable rows, or resumes it if the gateway
+              // still runs it.
+              console.log(
+                `[session] close mid-turn on a projected session — left to the transcript (resume) chat=${this.chatId}`,
+              );
+            } else if (this.transcriptFetcher) {
               // Unified orphan-turn recovery (gateway restart OR compaction
               // recreated the session and dropped this socket): the gateway's
               // restart-recovery resumes the run and the answer lands in the
@@ -1102,7 +1131,16 @@ class Session implements BridgeSession {
         // normally (recovery stops on isFinalized). No fetcher (tests) -> the
         // normalizer's own finalize path already handled it.
         if (this.runManager.takeRecvSilence() && !this.runManager.isFinalized) {
-          if (this.transcriptFetcher) {
+          if (this.runManager.projectionOn) {
+            // PROJECTION `on` (phase 4, §8.2 net): a silence asks the transcript, it never
+            // ends the turn. The read settles it if the gateway says the run is over; the
+            // silence budget restarts so a longer silence asks again, once per budget.
+            console.log(
+              `[session] recv-silence on a projected session — reading the transcript chat=${this.chatId}`,
+            );
+            this.transcriptShadow.requestRead("silence");
+            this.runManager.rearmSilence(now);
+          } else if (this.transcriptFetcher) {
             if (this.recoveryEpoch !== this.runManager.turnEpoch) {
               console.log(
                 `[session] recv-silence — querying gateway status (self-heal) chat=${this.chatId}`,

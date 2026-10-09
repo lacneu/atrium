@@ -42,6 +42,7 @@ import type { MutationCtx, QueryCtx } from "./_generated/server";
 import { gatewayHeldInput } from "./lib/transcriptProjection";
 import { projectionModeOfChat } from "./lib/followUp";
 import { compareOrder } from "./lib/messageOrder";
+import { tombstoneDeletedBubble, transcriptStoredText } from "./lib/transcriptProjection";
 import { writeTraceEvent } from "./observability";
 
 /** The stable error code the bridge classifier mints for the gateway's
@@ -733,6 +734,8 @@ export async function deleteTurnCardCascade(
   userId: Id<"users">,
   chatId: Id<"chats">,
   messageId: Id<"messages">,
+  /** The chat and the card, as the caller holds them (the transcript gate reads them). */
+  transcript?: { chat: Doc<"chats">; card: Doc<"messages"> },
 ): Promise<void> {
   await purgeBookmarksForMessages(ctx, chatId, new Set([messageId]));
   const cardParts = await ctx.db
@@ -762,6 +765,11 @@ export async function deleteTurnCardCascade(
       .collect();
     for (const d of saThreads) await ctx.db.delete(d._id);
     await ctx.db.delete(sa._id);
+  }
+  // Projection `on` (a conversation that stored row text — read on the chat the caller
+  // holds): the card is replaced by the retry; its run segment is tombstoned.
+  if (transcript !== undefined && transcriptStoredText(transcript.chat)) {
+    await tombstoneDeletedBubble(ctx, transcript.card, transcript.chat);
   }
   await ctx.db.delete(messageId);
 }
@@ -976,7 +984,7 @@ export const autoRetryTurn = internalMutation({
 
     // --- All guards passed: this is a pure re-run. -------------------------
     // 1. Drop the empty error card (nothing visible is lost — guarded above).
-    await deleteTurnCardCascade(ctx, last.userId, chatId, messageId);
+    await deleteTurnCardCascade(ctx, last.userId, chatId, messageId, { chat, card: last });
     // 2. Rebuild the outbox row from the user turn — same shape as the manual
     //    regenerate (messages.deleteMessage), incl. file attachments + per-turn
     //    routing, PLUS the attempt stamp that bounds the chain.

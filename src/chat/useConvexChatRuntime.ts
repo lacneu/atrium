@@ -46,6 +46,7 @@ import {
 import type { PickableAgent } from "./AgentPicker";
 import { useSseStreamingText, sseDevOverride } from "./useSseStreamingText";
 import { useDeliveryRecorder } from "./useDeliveryRecorder";
+import { isProjectedWorking } from "./followUpComposer";
 import type { SseTimingSample } from "./deliveryRecorder";
 import { m } from "@/paraglide/messages.js";
 
@@ -688,6 +689,10 @@ export function useConvexChatRuntime({ chatId }: UseConvexChatRuntimeArgs) {
   const lastRole =
     visibleList.length > 0 ? visibleList[visibleList.length - 1].role : null;
   const anyStreaming = visibleList.some((m) => m.status === "streaming");
+  const followUp = useQuery(
+    api.followUp.followUpState,
+    chatId ? { chatId: chatId as Id<"chats"> } : "skip",
+  );
 
   // "A turn I sent this session is awaiting its first assistant message."
   // This — NOT "the last message is a user message" — is what drives the gap
@@ -728,7 +733,27 @@ export function useConvexChatRuntime({ chatId }: UseConvexChatRuntimeArgs) {
   // the double-send hole — Nielsen heuristic #1) AND triggers assistant-ui's
   // upcoming-message placeholder, which RunStatus renders as the thinking label
   // (m.runstatus_thinking) to fill the gap (see runStatusView's `undefined` case).
-  const isRunning = pendingSince !== null || anyStreaming;
+  // TRANSCRIPT PROJECTION `on` (phase 4): a sent turn's bubble is born at its run's
+  // first visible content, not at the ACK — until then the gateway's own fact (a run is
+  // active on the session, read back by the reconciler) says the agent works. Only while
+  // the conversation still ends on the reader's message: once an answer is there, the
+  // short lag before the next read must not show a second "thinking" under it.
+  const workingUntil =
+    followUp?.projection === true && typeof followUp.workingUntil === "number"
+      ? followUp.workingUntil
+      : null;
+  const [, setWorkingTick] = useState(0);
+  // The deadline passes without any data changing: re-render at that instant so a stale
+  // fact (a connection lost before the run showed anything) stops reading "working".
+  useEffect(() => {
+    if (workingUntil === null) return;
+    const ms = workingUntil - Date.now();
+    if (ms <= 0) return;
+    const t = window.setTimeout(() => setWorkingTick((n) => n + 1), ms + 50);
+    return () => window.clearTimeout(t);
+  }, [workingUntil]);
+  const sessionWorking = isProjectedWorking(workingUntil, lastRole, Date.now());
+  const isRunning = pendingSince !== null || anyStreaming || sessionWorking;
 
   // The LAST user turn is parked in the mid-turn QUEUE (its outbox is `queued`),
   // parked BEHIND the in-flight turn. assistant-ui still shows a synthetic

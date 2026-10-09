@@ -51,6 +51,7 @@ import {
   parseHistoryReply,
   runTerminalStatus,
   type HistoryRead,
+  type RowDisplay,
   type TranscriptRow,
 } from "./transcript-rows.js";
 
@@ -65,6 +66,57 @@ export type TerminalObservation = TranscriptApplyReport["terminals"][number];
 export type TranscriptApply = TranscriptApplyReport & { rows: TranscriptRow[] };
 
 export type TranscriptCursor = { sessionId: string; deltaCursor: string };
+
+/** What Convex answers to an apply (absent on an older Convex). `ok:false` with
+ *  `reason:"too_large"`: refused WHOLE, nothing written (convex/transcriptProjection.ts
+ *  `MAX_APPLY_TEXT_*`). */
+export type TranscriptApplyResult = { ok?: boolean; reason?: string; settledRuns?: unknown };
+
+/** The row TEXT one Convex apply may carry (convex/transcriptProjection.ts
+ *  `MAX_APPLY_TEXT_ROWS` = 40, `MAX_APPLY_TEXT_BYTES` = 4 MiB), with margin. A read's texts
+ *  go ahead of it in `textsOnly` posts under these bounds, so the read itself carries
+ *  identities only and Convex never holds more than one transaction can persist (codex
+ *  phase 4 pass 6). */
+export const TEXT_CHUNK_MAX_ROWS = 32;
+export const TEXT_CHUNK_MAX_BYTES = 3 * 1024 * 1024;
+
+/** What a row's text weighs for Convex's bound: UTF-8 of text and acknowledgment, plus
+ *  the same envelope Convex charges (`textDocBytes`). */
+export function rowTextBytes(r: { text?: string; yieldAck?: string }): number {
+  return Buffer.byteLength(r.text ?? "", "utf8") + Buffer.byteLength(r.yieldAck ?? "", "utf8") + 128;
+}
+
+/** The rows that carry a text, in order, in chunks under both bounds. A single row is a
+ *  chunk of its own whatever it weighs (a row's text is already bounded at 32 KiB
+ *  characters by `toTranscriptRow`, ~196 KB at most — far under the byte bound). */
+export function chunkTextRows<R extends { text?: string; yieldAck?: string }>(
+  rows: readonly R[],
+  maxRows: number = TEXT_CHUNK_MAX_ROWS,
+  maxBytes: number = TEXT_CHUNK_MAX_BYTES,
+): R[][] {
+  const chunks: R[][] = [];
+  let chunk: R[] = [];
+  let bytes = 0;
+  for (const r of rows) {
+    if (r.text === undefined && r.yieldAck === undefined) continue;
+    const cost = rowTextBytes(r);
+    if (chunk.length > 0 && (chunk.length >= maxRows || bytes + cost > maxBytes)) {
+      chunks.push(chunk);
+      chunk = [];
+      bytes = 0;
+    }
+    chunk.push(r);
+    bytes += cost;
+  }
+  if (chunk.length > 0) chunks.push(chunk);
+  return chunks;
+}
+
+/** A row without what it shows (its identity), as a read posts it once its text went ahead. */
+export function withoutText<R extends { text?: string; yieldAck?: string }>(r: R): Omit<R, "text" | "yieldAck"> {
+  const { text: _text, yieldAck: _ack, ...identity } = r;
+  return identity;
+}
 
 /** What the session-events demultiplexer delivers for ONE session key. */
 export interface SessionEventListener {
@@ -89,22 +141,35 @@ export interface TranscriptShadowDeps {
     cursor: string | null,
     opts?: { inputRunIds?: readonly string[] },
   ) => Promise<unknown>;
-  /** Post one read to Convex. */
-  apply: (payload: TranscriptApply) => Promise<void>;
+  /** Post one read to Convex. Resolves to Convex's answer when it gives one (phase 4:
+   *  the runs the projection found over). */
+  apply: (payload: TranscriptApply) => Promise<TranscriptApplyResult | void>;
   /** The session-events demultiplexer (phase 2). Absent ⇒ event triggers are off. */
   events?: SessionEventSource;
   /** The run in the foreground of this session's turn, if any (read-only). */
   foregroundRunId?: () => string | null;
+  /** PROJECTION `on` (phase 4): every run the foreground turn owns — Convex names them
+   *  again in its answer while they are over, so a lost answer is replayed by any read. */
+  foregroundRunIds?: () => readonly string[];
   /** PROJECTION `on` (phase 3): every USER row read or received — the steer fact the
    *  live overlay cuts a run's bubble on (CU-20). Never awaited by the reconciler. */
   onUserRow?: (row: TranscriptRow) => void;
   /** PROJECTION `on`: the gateway says it will never run this input (cancelled, or
    *  asked after its ACK and holding no receipt for it). */
   onInputDropped?: (sendId: string) => void;
+  /** PROJECTION `on` (phase 4): runs the transcript proved OVER (Convex's run table — a
+   *  terminal, or a fresh read that found the session idle). A foreground turn among
+   *  them ends here: a fact, never a timer. Never awaited by the reconciler. */
+  onRunsSettled?: (runIds: readonly string[]) => void;
   sleep?: (ms: number) => Promise<void>;
   now?: () => number;
   log?: (line: string) => void;
 }
+
+/** PROJECTION `on` (phase 4): a read that FAILED is asked again after these delays —
+ *  nothing else might come to end a turn or release a queued send whose terminal read
+ *  was lost. Bounded; a successful read resets the count. */
+export const FAILED_READ_RETRY_DELAYS_MS: readonly number[] = [1_000, 5_000, 20_000];
 
 /** Pending terminal observations kept between reads (a burst of runs is bounded). */
 const MAX_PENDING_TERMINALS = 50;
@@ -147,6 +212,8 @@ export class TranscriptShadow {
   private readonly sleep: (ms: number) => Promise<void>;
   private readonly now: () => number;
   private lastReadAt = 0;
+  /** Consecutive failed reads (projection `on`: drives the bounded re-read). */
+  private failedReads = 0;
   private readonly log: (line: string) => void;
   /** Counters, for tests and the log line. */
   readonly stats = {
@@ -158,6 +225,7 @@ export class TranscriptShadow {
     sessionsChanged: 0,
     liveRows: 0,
     liveApplies: 0,
+    textChunksSplit: 0,
     eventResets: 0,
     subscribed: 0,
   };
@@ -282,6 +350,7 @@ export class TranscriptShadow {
     const admission = admitLiveRow(payload, {
       activeRunId: foreground,
       recentTerminalRunId: this.recentTerminalRunId,
+      ...this.displayOpt(),
     });
     if (admission.admitted && admission.row !== null) {
       const sessionId =
@@ -332,6 +401,31 @@ export class TranscriptShadow {
     if (!this.active) return;
     this.stats.subscribed++;
     this.requestRead("event:subscribed");
+  }
+
+  /** PROJECTION `on` (phase 4): the foreground turn's runs, for Convex to answer about. */
+  private foregroundOpt(): { foregroundRunIds?: string[] } {
+    if (this.mode !== "on") return {};
+    const ids = (this.deps.foregroundRunIds?.() ?? []).filter((x) => x !== "").slice(0, 10);
+    return ids.length > 0 ? { foregroundRunIds: [...ids] } : {};
+  }
+
+  /** PROJECTION `on` (phase 4): rows carry what they say; `off`/`shadow` identities only. */
+  private displayOpt(): { display?: RowDisplay } {
+    return this.mode === "on" ? { display: { sessionKey: this.deps.sessionKey } } : {};
+  }
+
+  private emitSettled(res: TranscriptApplyResult | void): void {
+    if (this.mode !== "on" || res === undefined || res === null) return;
+    const ids = Array.isArray(res.settledRuns)
+      ? res.settledRuns.filter((x): x is string => typeof x === "string" && x !== "").slice(0, 100)
+      : [];
+    if (ids.length === 0) return;
+    try {
+      this.deps.onRunsSettled?.(ids);
+    } catch {
+      /* the overlay's bookkeeping never fails a read */
+    }
   }
 
   private emitUserRow(row: TranscriptRow): void {
@@ -454,6 +548,7 @@ export class TranscriptShadow {
       let ackedBefore = this.ackedNow();
       read = parseHistoryReply(
         await this.deps.readHistory(this.cursor?.deltaCursor ?? null, { inputRunIds: asked }),
+        this.displayOpt().display,
       );
       if (read === null) {
         this.stats.failures++;
@@ -470,13 +565,17 @@ export class TranscriptShadow {
         readAt = this.nextReadAt();
         asked = this.inputRunIds;
         ackedBefore = this.ackedNow();
-        read = parseHistoryReply(await this.deps.readHistory(null, { inputRunIds: asked }));
+        read = parseHistoryReply(
+          await this.deps.readHistory(null, { inputRunIds: asked }),
+          this.displayOpt().display,
+        );
         if (read === null || read.kind === "reset") {
           this.stats.failures++;
           return;
         }
       }
       await this.post(read, readAt, asked, ackedBefore, epoch);
+      this.failedReads = 0;
     } catch (err) {
       this.stats.failures++;
       this.log(
@@ -484,7 +583,18 @@ export class TranscriptShadow {
           (err as Error)?.message ?? err
         }`,
       );
+      this.retryFailedRead();
     }
+  }
+
+  /** PROJECTION `on` (phase 4): ask again after a failed read, a bounded number of times
+   *  (FAILED_READ_RETRY_DELAYS_MS). Detached: the single flight is not held. */
+  private retryFailedRead(): void {
+    if (this.mode !== "on") return;
+    const delay = FAILED_READ_RETRY_DELAYS_MS[this.failedReads];
+    this.failedReads++;
+    if (delay === undefined) return;
+    void this.sleep(delay).then(() => this.requestRead("retry"));
   }
 
   /** The sends whose ACK has been observed (accepted or refused) — snapshotted when a
@@ -571,7 +681,8 @@ export class TranscriptShadow {
       sessionId,
       kind: read.kind,
       ...(read.deltaCursor === null ? {} : { deltaCursor: read.deltaCursor }),
-      rows: read.rows,
+      // Identities only: what the rows SAY went ahead in persistable chunks (below).
+      rows: read.rows.map((r) => withoutText(r) as TranscriptRow),
       terminals,
       ...(read.activeRunIds === null ? {} : { activeRunIds: read.activeRunIds }),
       ...(read.hasActiveRun === null ? {} : { hasActiveRun: read.hasActiveRun }),
@@ -580,13 +691,23 @@ export class TranscriptShadow {
       unidentified: read.unidentified,
       readAt,
       ...(asked.length > 0 ? { inputRunIds: [...asked] } : {}),
+      ...this.foregroundOpt(),
       ...(read.pendingInputs === null ? {} : { pendingInputs: read.pendingInputs }),
       ...(read.inputReceipts === null ? {} : { inputReceipts: read.inputReceipts }),
       ...(absent.length > 0 ? { inputAbsent: absent } : {}),
       ...(unreadable.length > 0 ? { inputUnreadable: unreadable } : {}),
     };
     try {
-      await this.deps.apply(payload);
+      // THE TEXTS FIRST, each chunk persisted before the next is sent, the read last: a
+      // failure anywhere throws before the read — the cursor never moves past a row whose
+      // text was not stored (codex phase 4 pass 6).
+      await this.postTexts(sessionId, read.rows, readAt);
+      const answer = await this.deps.apply(payload);
+      // A read Convex refused as too large stored NOTHING: its cursor must not be kept.
+      if (answer !== undefined && answer.ok === false && answer.reason === "too_large") {
+        throw new Error("read refused as too large");
+      }
+      this.emitSettled(answer);
       this.stats.applies++;
     } catch (err) {
       // The read is lost, not the terminals nor the custody it would have settled: the
@@ -628,24 +749,73 @@ export class TranscriptShadow {
     }
   }
 
+  /** Post what `rows` SAY, ahead of their read, in `textsOnly` chunks Convex can persist
+   *  (`chunkTextRows`). A chunk Convex still refuses as too large (a Convex with tighter
+   *  bounds than this bridge) is split in two and posted again; a single row refused alone
+   *  is left without its text — its bubble keeps the live text, never a cut or wrong one.
+   *  Any other refusal or failure throws: the caller's read is then not posted. */
+  private async postTexts(sessionId: string, rows: readonly TranscriptRow[], readAt: number): Promise<void> {
+    const queue = chunkTextRows(rows);
+    // The CUT rows (user rows steered into a run) ride the first chunk, before any text:
+    // a text's steer segment is then known when Convex stores it, so a text of a deleted
+    // segment is never stored as another segment's (codex phase 4 pass 9).
+    const cuts = rows.filter((r) => r.role === "user" && r.steerTargetRunId !== undefined);
+    if (queue.length > 0 && cuts.length > 0) queue[0] = [...cuts, ...queue[0]!];
+    while (queue.length > 0) {
+      const chunk = queue.shift()!;
+      const res = await this.deps.apply({
+        chatId: this.deps.chatId,
+        sessionKey: this.deps.sessionKey,
+        sessionId,
+        kind: "live",
+        textsOnly: true,
+        rows: chunk,
+        terminals: [],
+        unidentified: 0,
+        readAt,
+      });
+      if (res !== undefined && res.ok === false) {
+        if (res.reason !== "too_large") {
+          throw new Error(`texts refused: ${res.reason ?? "unknown"}`);
+        }
+        this.stats.textChunksSplit++;
+        if (chunk.length > 1) {
+          const half = Math.ceil(chunk.length / 2);
+          queue.unshift(chunk.slice(0, half), chunk.slice(half));
+        } else {
+          this.log(
+            `[transcript] chat=${this.deps.chatId} one row's text refused as too large — its bubble keeps the live text`,
+          );
+        }
+      }
+    }
+  }
+
   /** Post the rows CU-16 admitted (kind `live`): rows only — Convex moves no cursor, no
    *  floor and no session state for them (convex/transcriptProjection.ts). A failure
    *  drops them: the read the same event asked for brings them back. */
   private async postLive(): Promise<void> {
-    const rows = [...this.pendingLive.values()];
+    const all = [...this.pendingLive.values()];
     this.pendingLive.clear();
+    const sessionId = this.liveSessionId ?? this.cursor?.sessionId ?? "";
+    // Over one apply's text bounds: the texts go ahead in chunks, the post carries the
+    // identities (the same rule as a read's).
+    const oversized = chunkTextRows(all).length > 1;
+    const rows = oversized ? all.map((r) => withoutText(r) as TranscriptRow) : all;
     const payload: TranscriptApply = {
       chatId: this.deps.chatId,
       sessionKey: this.deps.sessionKey,
-      sessionId: this.liveSessionId ?? this.cursor?.sessionId ?? "",
+      sessionId,
       kind: "live",
       rows,
       terminals: [],
       unidentified: 0,
       readAt: this.nextReadAt(),
+      ...this.foregroundOpt(),
     };
     try {
-      await this.deps.apply(payload);
+      if (oversized) await this.postTexts(sessionId, all, payload.readAt);
+      this.emitSettled(await this.deps.apply(payload));
       this.stats.liveApplies++;
       for (const row of rows) {
         if (row.runId !== undefined && !row.hidden && (row.visible || row.role === "toolresult")) {

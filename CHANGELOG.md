@@ -1,5 +1,102 @@
 # Changelog
 
+## [0.96.0] — The bubbles come from the session transcript
+
+Minor release, the second step of the transcript redesign you can see. Like 0.95.0 it changes
+nothing unless an OpenClaw instance's `transcriptProjection` is `on`; an instance at `off` or
+`shadow` behaves exactly as in 0.95.0. **`on` stays opt-in and is not for production yet:** keep
+production instances at `off` or `shadow` until a dedicated hardening campaign for `on` has run
+(see the known limitations below). Deploy Convex before the bridge (the bridge sends rows
+carrying their text, which an older Convex refuses), and the frontend with Convex. To roll back,
+set the instance back to `shadow`: the bubbles already written stay ordinary messages, and
+nothing the projection had already planned writes after the switch (or after the conversation
+moves to another instance).
+
+**What a conversation shows is what the agent's session recorded.** On a projected instance the
+live stream is now only a preview. When a run of the session is over — its terminal arrived, or
+the gateway reports the session idle — Atrium reads the run's rows back from the session
+transcript and rewrites its bubble from them, in the same message: no flicker, no second bubble.
+Whatever the live stream missed or doubled is corrected there: a reply cut by the gateway's
+display limit shows whole, a part of an answer repeated after a bridge restart disappears, and a
+text the agent sent with its `message` tool is in the bubble of the run that sent it.
+
+**A reply appears even when nothing was streamed for it.** A run Atrium did not follow live —
+an answer to a message whose acknowledgement was lost, a run started by another client, a run
+that delivered its answer only through a tool — gets its bubble from the transcript once it is
+over, placed right after the message it follows in the session.
+
+**A bubble opens when the agent starts doing something.** Sending no longer creates an empty
+bubble that waits for the reply: the bubble appears with the run's first words or first tool
+card, and a run that ends with nothing to show leaves none. While the agent works without
+having shown anything yet, the composer still says so — it now reads the gateway's own
+"a run is active" fact — and a message you chose to queue waits until the gateway reports the
+session free, or until it reports your earlier message cancelled. If the bridge goes away and
+no report ever comes, the queued message leaves once that fact is too old to trust (15
+minutes), instead of waiting for the next reply.
+
+**A long transcript read is never half-stored.** The bridge sends what a read's rows say ahead
+of the read, in pieces Convex can store in one go, and only then the read itself; Convex refuses
+anything larger instead of keeping part of it, and the bridge splits and sends again. A read
+whose text could not all be stored is read again from the same place — no answer is lost or
+shortened, however much the agent wrote at once.
+
+**Deleting an answer deletes what Atrium kept of it.** On a projected instance Atrium keeps a
+copy of what each transcript row says, to rebuild bubbles from it. Deleting a message now deletes
+the copy of every row of that answer — including rows read while it was still streaming, and rows
+that arrive afterwards — as does the cleanup of a summarizer or curator conversation and the
+deletion of a conversation; a later read never brings it back, and the deleted answer is never
+rebuilt — not from the transcript, and not by a late or replayed live stream of the same run,
+whatever the instance's mode. Deleting your own message takes its answer with it the same
+way, even when that answer had no bubble yet — including the answer to a message you added while
+the agent was working, and the answers to every earlier attempt of a message that was sent again. A conversation the transcript was never read for
+does no extra work when you delete messages.
+
+**Work you stopped stays stopped.** A sub-agent result that arrives after you pressed Stop
+is not shown live (as before), and it is not rebuilt from the transcript afterwards either.
+
+**A turn ends when the gateway says so, never on a timer.** On a projected instance the bridge
+no longer closes a turn after waiting a fixed time for a reply that might come (the waits after
+an empty final, a cut final, a short acknowledgement, a "finishing" or an ended lifecycle), and
+no longer reads the words of a reply to decide anything. A turn ends on the run's terminal, or
+when the transcript shows the run is over. A long silence makes the bridge ask the gateway;
+it never ends the turn by itself. A bridge that loses its connection mid-turn no longer polls
+the transcript for nine minutes: the bubble is settled from the transcript the next time the
+conversation is read (on the next send, or when the stuck-stream check asks the bridge).
+
+**The three limitations of `on` listed in 0.95.0 are fixed:**
+- a delegated run that waits for a sub-agent (`sessions_yield`), then answers with its `message`
+  tool and a sentence of its own, now shows both in its bubble;
+- an input whose acknowledgement was lost no longer loses its answer: the answer's bubble comes
+  from the transcript;
+- a bubble resumed after a bridge restart no longer repeats part of the earlier answer.
+
+A bubble that holds several runs (a sub-agent's result merged into its parent's answer) is rebuilt
+from the transcript only once every one of those runs has been read back whole; until then it
+keeps what it shows. A sub-agent result that failed and that the gateway runs again resumes its
+bubble as in 0.95.0. A reply rebuilt from the transcript after its run failed shows the
+provider's reason (for example insufficient credits) once the live stream reports it.
+
+**Known limitations of `on` in this version:**
+- A run that only used tools and that Atrium did not follow live gets no bubble yet: its tool
+  cards are built from the live stream only.
+- A delegation chain is still merged into one bubble by the live path (0.95.0's rules); building
+  that grouping from the transcript is the next step.
+- When two instances expose the same agent id and therefore share a session key for one
+  conversation, only the first instance that writes that session gets it projected (unchanged).
+- Deleting is deliberately over-careful. Deleting an answer also discards what Atrium kept of the
+  rest of that run after it — including a later part the agent wrote after you deleted the
+  answer — and, when the transcript had not yet shown where the deleted part began, possibly of
+  the earlier parts of the same run too. Those earlier bubbles keep what they show but are no
+  longer rebuilt from the transcript.
+- When the transcript reveals a message you added while the agent was working only late, a part
+  of the answer rebuilt afterwards can be attached to the wrong bubble of the same run (display
+  placement only — nothing deleted comes back).
+- A run cut by more than 1 000 messages added while it worked is never rebuilt (its bubbles keep
+  what was streamed), and past 1 000 deletion marks on one run the whole run counts as deleted.
+- A file job (a document conversion, a documentary fetch, a summary, a curation) whose answer
+  the transcript closed waits for the run's own end, its uploads in flight and a bounded grace
+  before it is judged; a job can therefore take a few minutes longer to settle than with `off`.
+
 ## [0.95.0] — Send while the agent works, like OpenClaw's Control UI
 
 Minor release, and the first step of the transcript redesign you can see.

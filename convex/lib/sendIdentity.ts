@@ -44,3 +44,28 @@ export async function sendIdentityFor(
   );
   return `webchat-${hex(digest)}`;
 }
+
+/** Most earlier send identities a user message keeps (`messages.priorSendIds`); older ones
+ *  are still reached through its outbox rows by the deletion's follow-up. */
+export const MAX_PRIOR_SEND_IDS = 32;
+
+/** The patch that moves a user message to a new send identity, keeping the one it
+ *  replaces (a regenerate or a corrected key: the old send may have run at the gateway)
+ *  — ONLY in a conversation that stored transcript text (`keepPrior`, the caller's
+ *  `transcriptStoredText` on the chat it already holds): an earlier send of any other
+ *  conversation never stored anything to tombstone, and its patch stays what it was
+ *  before phase 4 (codex phase 4 pass 14). */
+export function sendIdChange(
+  message: { sendId?: string; priorSendIds?: string[] },
+  next: string,
+  keepPrior: boolean,
+): { sendId: string; priorSendIds?: string[] } {
+  if (!keepPrior || message.sendId === undefined || message.sendId === next) return { sendId: next };
+  const prior = [...(message.priorSendIds ?? []).filter((s) => s !== message.sendId && s !== next), message.sendId];
+  return { sendId: next, priorSendIds: prior.slice(-MAX_PRIOR_SEND_IDS) };
+}
+
+/** Every send identity a user message carried: its current one and the earlier ones. */
+export function sendIdsOf(message: { sendId?: string; priorSendIds?: string[] }): string[] {
+  return [...new Set([...(message.priorSendIds ?? []), ...(message.sendId !== undefined ? [message.sendId] : [])])];
+}

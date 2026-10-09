@@ -148,6 +148,9 @@ export type OutboundScan = (
    *  meanwhile: stamped explicitly, the late part is rejected by the generation
    *  guard instead of landing in the announce's reply (codex P2). */
   runId: string | null,
+  /** PROJECTION `on` only: each rescue upload announces itself to Convex (`markUpload`),
+   *  so a file job the transcript settled waits for it (codex phase 4 pass 23). */
+  markUpload?: boolean,
 ) => Promise<{ candidates: string[]; host: () => Promise<void> }>;
 
 /** A well-formed `tool.output_risk` verdict, bounded before it reaches storage.
@@ -555,6 +558,13 @@ export class TurnSink {
    *  verdict (the Control UI shows nothing for a run with nothing visible, CU-21), and
    *  a complete terminal with nothing visible leaves no bubble. */
   private projection = false;
+  /** PROJECTION `on` (phase 4): a SENT turn's bubble is born from its run, at the run's
+   *  first visible content or first tool activity (a tool card is visible in Atrium, and
+   *  the sub-agent anchor needs the bubble of the run that spawns) — never at the ACK. */
+  private openOnActivity = false;
+  /** Steered inputs that cut this run before its bubble opened (CU-20): the bubble that
+   *  opens is that segment of the run, not its first. */
+  private pendingSegment = 0;
   /** Tool cards opened in an EARLIER segment of this run (a steer split): their later
    *  phases update the card where it was written, never a twin in the new segment. */
   private cardHome = new Map<string, string>();
@@ -623,6 +633,18 @@ export class TurnSink {
     await this.flushFinal(status);
   }
 
+  /** The run segment the turn's bubble opens (or opened) as: the steer cuts seen before
+   *  it opened (CU-20). A closed run without a local bubble looks its bubble up by it. */
+  get openSegment(): number {
+    return this.pendingSegment;
+  }
+
+  /** When the current (or last) turn began (epoch ms): a reconciled late delivery of
+   *  its run keeps the same freshness gate as the turn's own (run-manager). */
+  get turnStartedAtMs(): number {
+    return this.turnStartMs;
+  }
+
   /** The bubble THIS turn settled, or null (a silent deferred turn settles none) —
    *  projection `on`, CU-8. Reset when a turn begins. */
   get lastSettledBubble(): { messageId: string; runId: string | null; text: string } | null {
@@ -653,6 +675,11 @@ export class TurnSink {
    */
   async splitSegment(afterMessageId: string | null, segmentText?: string): Promise<boolean> {
     const current = this.messageId;
+    if (this.turnActive && this.pendingOpen && this.projection) {
+      // Nothing visible yet: the cut is a fact the bubble will be born with (its segment).
+      this.pendingSegment++;
+      return true;
+    }
     if (!this.turnActive || this.pendingOpen || current === null) return false;
     if (this.writer.splitSegment === undefined) return false;
     let text = segmentText;
@@ -736,10 +763,14 @@ export class TurnSink {
       projection?: boolean;
       /** Resume this existing bubble instead of creating one (resumeTurn). */
       resumeMessageId?: string;
+      /** Projection `on`, a SENT turn: deferred, opened by a tool start too. */
+      openOnActivity?: boolean;
     } = {},
   ): Promise<void> {
     this.turnEpoch++;
     this.projection = opts.projection === true;
+    this.openOnActivity = opts.openOnActivity === true;
+    this.pendingSegment = 0;
     this.cardHome = new Map();
     this.lastSettled = null;
     this.dispatchOutboxId = dispatchOutboxId;
@@ -1081,7 +1112,7 @@ export class TurnSink {
       this.resetDeferred();
       return true;
     }
-    if (!eventIsVisible(event)) {
+    if (!eventIsVisible(event) && !(this.openOnActivity && event.type === "tool.status")) {
       this.pushDeferred(event);
       return true;
     }
@@ -1112,6 +1143,7 @@ export class TurnSink {
           this.deferredRunId,
           this.sessionKey ?? null,
           this.dispatchOutboxId,
+          ...(this.pendingSegment > 0 ? [this.pendingSegment] : []),
         );
         // GENERATION FIRST, always. A user send can call beginTurn while this
         // open is in flight: it installs its own message and bumps the epoch,
@@ -1627,6 +1659,7 @@ export class TurnSink {
             const hostedForThisTurn = this.hostedThisTurn;
             // …and THIS turn's generation, for the same reason.
             const runIdForThisTurn = this.turnRunId;
+            const projectedTurn = this.projection;
             this.mediaChain = this.mediaChain.then(async () => {
               if (hostedForThisTurn.has(filename)) return; // already attached
               // Capacity is checked BEFORE the upload (codex P2): checking after
@@ -1653,6 +1686,9 @@ export class TurnSink {
                   ...(explicit !== undefined ? { explicit } : {}),
                   turnStartMs,
                   runId: runIdForThisTurn,
+                  // Projection `on`: the transcript may settle this bubble while the
+                  // bytes travel — Convex is told an upload is under way.
+                  ...(projectedTurn ? { markUpload: true } : {}),
                 });
                 if (attached) hostedForThisTurn.add(filename);
               } catch (e) {
@@ -2104,6 +2140,7 @@ export class TurnSink {
           this.hostedThisTurn,
           (name) => this.turnNames(name),
           this.turnRunId,
+          this.projection,
         );
         scanHost = r.host;
         scanCandidates = r.candidates.length;

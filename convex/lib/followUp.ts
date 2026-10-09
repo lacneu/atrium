@@ -48,7 +48,7 @@ async function instancesOn(ctx: QueryCtx): Promise<Set<string> | null> {
  *       mutation). Unknown within the bound ⇒ null (the caller reads `off`).
  *  Reading `chats.instanceName` alone made every per-turn routed or legacy
  *  conversation read `off` while its bridge ran `on`. */
-async function instanceNameOfChat(
+export async function instanceNameOfChat(
   ctx: QueryCtx,
   chat: Doc<"chats">,
 ): Promise<string | null> {

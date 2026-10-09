@@ -15,6 +15,7 @@ import { internal } from "./_generated/api";
 import { mutation, query } from "./_generated/server";
 import { getProfile, requireActive, requireReachableChat } from "./lib/access";
 import { projectionModeOfChat } from "./lib/followUp";
+import { projectedGatewayHoldUntil } from "./lib/outboxQueue";
 
 /** What the composer needs to label and offer the busy-send actions. */
 export const followUpState = query({
@@ -36,6 +37,12 @@ export const followUpState = query({
       projection: true as const,
       preference: profile?.followUpMode ?? null,
       serverMode: cursor?.sessionQueueMode ?? cursor?.effectiveQueueMode ?? null,
+      // Phase 4: until when a gateway fact says the agent works (a run active at the last
+      // read, or a send's run admitted with no bubble yet) — the SAME bounded rule the busy
+      // check applies (lib/outboxQueue `projectedGatewayHoldUntil`). A deadline, not a
+      // boolean: a query is not re-run when time passes, so the client stops showing it
+      // at that instant on its own (`useConvexChatRuntime`). Null: nothing says so.
+      workingUntil: await projectedGatewayHoldUntil(ctx, chatId),
     };
   },
 });

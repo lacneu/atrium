@@ -19,6 +19,7 @@
 // concurrent sends/drains that race on those ranges conflict and retry, so the
 // invariant holds without an explicit lock.
 
+import { transcriptStoredText } from "./transcriptProjection";
 import { internal } from "../_generated/api";
 import {
   blockingCallForTurn,
@@ -133,6 +134,14 @@ export async function chatHasActivityBlockers(
     )
     .first();
   if (streaming !== null) return true;
+  // TRANSCRIPT PROJECTION `on` (phase 4, CU-2): a run is in the foreground of the
+  // gateway's own session — the Control UI's busy is "sending ∨ a run in the
+  // foreground" (ui/src/pages/chat/run-lifecycle.ts:176-178 / :238-246 at v2026.9.8).
+  // Asked ONLY when the caller resolved the switch to `on` (a send): any other caller —
+  // and every off/shadow conversation — reads exactly what it read before phase 4. The
+  // drain asks it itself, on the chat it already holds (`drainNextQueued`).
+  const mode: ProjectionMode | undefined = projection;
+  if (mode === "on" && (await projectedGatewayHoldUntil(ctx, chatId)) !== null) return true;
   // TRANSCRIPT PROJECTION `on` (phase 3, decided 2026-10-01): no hold while a sub-agent
   // works. The Control UI counts a delegated run only for Stop (`hasAbortableSessionRun`,
   // ui/src/pages/chat/run-lifecycle.ts:212-224 at v2026.9.8), never for "busy"
@@ -167,7 +176,88 @@ export async function chatHasActivityBlockers(
       .first());
   if (subagentRunning === null) return false;
   // Asked only when a sub-agent actually works (the switch costs reads of its own).
-  return (projection ?? (await projectionModeOfChat(ctx, await ctx.db.get(chatId)))) !== "on";
+  return (mode ?? (await projectionModeOfChat(ctx, await ctx.db.get(chatId)))) !== "on";
+}
+
+/** How long a gateway fact holds a projected chat busy (phase 4): the last read's "a run
+ *  is active", or a send's run admitted with no bubble yet. The reads that clear them
+ *  follow every run end; past this bound the fact is stale. */
+export const SESSION_ACTIVE_FRESH_MS = 15 * 60_000;
+
+/**
+ * THE PROJECTED HOLD (phase 4) — the gateway facts that say a run of the chat's session is
+ * working when no bubble streams yet, and until when each one can be believed. ONE rule,
+ * shared by the busy check, the drain re-check and the composer's "the agent works"
+ * (`followUp.followUpState`): a send's bubble is born from its run's first content, so
+ * between the ACK and that content only these facts say the agent works.
+ *   - the last read of the session said `hasActiveRun` (fresh for the bound);
+ *   - a send was ACCEPTED (ACK) and its run has shown nothing yet (`runAdmittedAt`) —
+ *     independent of any read, so a late or lost `session.message` / read cannot let a
+ *     queued send slip out while the admitted run works (codex phase 4 pass 1).
+ * Returns the instant the hold ends (the latest of the fresh facts), or null. Callers
+ * decide whether the chat is projected (`on`): the facts exist in `shadow` too.
+ */
+export async function projectedGatewayHoldUntil(
+  ctx: QueryCtx,
+  chatId: Id<"chats">,
+  now: number = Date.now(),
+): Promise<number | null> {
+  let until: number | null = null;
+  const cursor = await ctx.db
+    .query("transcriptCursors")
+    .withIndex("by_chat_updated", (q) => q.eq("chatId", chatId))
+    .order("desc")
+    .first();
+  if (cursor !== null && cursor.hasActiveRun === true) {
+    const end = cursor.updatedAt + SESSION_ACTIVE_FRESH_MS;
+    if (end > now) until = end;
+  }
+  const admitted = await ctx.db
+    .query("runAdmissions")
+    .withIndex("by_chat_admitted", (q) => q.eq("chatId", chatId).gt("admittedAt", now - SESSION_ACTIVE_FRESH_MS))
+    .order("desc")
+    .first();
+  if (admitted !== null) {
+    const end = admitted.admittedAt + SESSION_ACTIVE_FRESH_MS;
+    if (until === null || end > until) until = end;
+  }
+  return until;
+}
+
+/**
+ * A QUEUED send held only by a projected gateway fact (phase 4) would wait for a read that
+ * may never come (the terminal's read failed, the bridge went away): nothing else ends the
+ * hold, and its expiry writes nothing. Arm ONE drain re-check at the hold's end — the
+ * drain then finds the fact stale and dispatches. Idempotent per hold (`projectedHoldRecheckAt`).
+ *
+ * Called by every writer that leaves a queued row behind a hold: a blocked drain, AND the
+ * send that parks itself (`send.sendMessage`) — the drain that ran at the ACK found no queue
+ * yet, so without this the parked send would wait for a read that may never come
+ * (codex phase 4 pass 3).
+ */
+export async function armProjectedHoldRecheck(ctx: MutationCtx, chatId: Id<"chats">): Promise<void> {
+  const queued = await ctx.db
+    .query("outbox")
+    .withIndex("by_chat_status", (q) => q.eq("chatId", chatId).eq("status", "queued"))
+    .first();
+  if (queued === null) return;
+  const until = await projectedGatewayHoldUntil(ctx, chatId);
+  if (until === null) return;
+  const chat = await ctx.db.get(chatId);
+  if (chat === null) return;
+  // EXACTLY ONE pending re-check per chat: when it runs it reads the hold's current end
+  // and re-arms only if still held — the end moving with every read never adds a task.
+  if (chat.projectedHoldRecheckId !== undefined) {
+    const job = await ctx.db.system.get(chat.projectedHoldRecheckId);
+    if (job !== null && (job.state.kind === "pending" || job.state.kind === "inProgress")) return;
+  }
+  if ((await projectionModeOfChat(ctx, chat)) !== "on") return;
+  const id = await ctx.scheduler.runAfter(
+    Math.max(until - Date.now(), 0) + 1_000,
+    internal.transcriptProjection.projectedHoldRecheck,
+    { chatId },
+  );
+  await ctx.db.patch(chatId, { projectedHoldRecheckAt: until, projectedHoldRecheckId: id });
 }
 
 /** How many sends are currently parked behind the in-flight turn for a chat. */
@@ -203,6 +293,18 @@ export async function drainNextQueued(
   // dropped — they stay `queued`, and a restore drains them (chats.restoreFromTrash).
   const trashed = await ctx.db.get(chatId);
   if (trashed !== null && isTrashed(trashed)) return;
+  // PROJECTION `on` (phase 4): a gateway fact holds the queue (a run active at the last
+  // read, a run admitted with no bubble yet) — asked only of a conversation the projection
+  // wrote for (`transcriptStoredText`, on the chat just read), and then a re-check is armed
+  // at the hold's end. An off/shadow conversation reads nothing more here.
+  if (
+    transcriptStoredText(trashed) &&
+    (await projectionModeOfChat(ctx, trashed)) === "on" &&
+    (await projectedGatewayHoldUntil(ctx, chatId)) !== null
+  ) {
+    await armProjectedHoldRecheck(ctx, chatId);
+    return;
+  }
   const next = await ctx.db
     .query("outbox")
     .withIndex("by_chat_status", (q) =>

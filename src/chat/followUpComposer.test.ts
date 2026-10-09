@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { alternateFollowUp, custodyBadge, primaryFollowUp } from "./followUpComposer";
+import {
+  alternateFollowUp,
+  custodyBadge,
+  isProjectedWorking,
+  primaryFollowUp,
+} from "./followUpComposer";
 
 describe("the composer while the agent works (projection on)", () => {
   it("the preference decides the primary action and what the send carries", () => {
@@ -21,5 +26,14 @@ describe("the composer while the agent works (projection on)", () => {
     expect(custodyBadge("persisted")).toBeNull();
     expect(custodyBadge(null)).toBeNull();
     for (const c of ["queued", "steered", "cancelled", "interrupted"]) expect(custodyBadge(c)).toBe(c);
+  });
+});
+
+describe("the agent works (projection on, phase 4)", () => {
+  it("only before the deadline the gateway fact carries, and only while the thread ends on the reader", () => {
+    expect(isProjectedWorking(2_000, "user", 1_000)).toBe(true);
+    expect(isProjectedWorking(2_000, "user", 2_000)).toBe(false);
+    expect(isProjectedWorking(2_000, "assistant", 1_000)).toBe(false);
+    expect(isProjectedWorking(null, "user", 1_000)).toBe(false);
   });
 });

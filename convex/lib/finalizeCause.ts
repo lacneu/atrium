@@ -31,6 +31,9 @@ export const FINALIZE_CAUSES: ReadonlySet<string> = new Set([
   "lifecycle_final", // a private ack arrived as the terminal
   "side_result_error", // a side-channel result carried the failure
   "upstream_error", // the connection itself failed upstream
+  // The session transcript said the run was over (projection `on`, phase 4): its
+  // terminal row was read, or a fresh read found the session idle. A fact, not a wait.
+  "transcript_settled",
   // — WE ended it, on a deadline the gateway never met —
   "recv_timeout",
   "response_timeout",

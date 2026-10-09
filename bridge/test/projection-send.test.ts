@@ -19,7 +19,7 @@ import type { ConvexWriter, FinalizeStatus, ToolPart } from "../src/convex-write
 const KEY = "agent:alice:atrium:chat:u:c1";
 
 type Call =
-  | ["startAssistant", string | null]
+  | ["startAssistant", string | null, number?]
   | ["appendDelta", string, string]
   | ["setSnapshot", string, string]
   | ["finalize", string, FinalizeStatus, string, Record<string, unknown>]
@@ -32,8 +32,16 @@ class FakeWriter implements ConvexWriter {
   private n = 0;
   /** Remove `splitSegment` to model a writer that predates it. */
   supportsSplit = true;
-  async startAssistant(_chatId: string, runId: string | null): Promise<string | null> {
-    this.calls.push(["startAssistant", runId]);
+  async startAssistant(
+    _chatId: string,
+    runId: string | null,
+    _sessionKey?: string | null,
+    _dispatchOutboxId?: string | null,
+    runSegment?: number,
+  ): Promise<string | null> {
+    this.calls.push(
+      runSegment === undefined ? ["startAssistant", runId] : ["startAssistant", runId, runSegment],
+    );
     return `msg${++this.n}`;
   }
   /** Make the next `splitSegment` calls throw (a Convex write that fails). */
@@ -189,6 +197,20 @@ describe("projection on — a send while the agent works", () => {
     expect(cards.every((c) => c[1] === "msg1")).toBe(true);
   });
 
+  it("phase 4: a steer that lands before the run showed anything — the bubble is born as that segment", async () => {
+    const h = harness(true);
+    await h.rm.beginTurn(h.now(), "runA", { expectedSessionId: null });
+    await h.feed(lifecycle("runA", "start"));
+    h.rm.noteHeldInput("sendB", "ackB", "userB");
+    await h.rm.onUserRow({ sendId: "sendB", steerTargetRunId: "runA" });
+    expect(starts(h.writer)).toHaveLength(0);
+    await h.feed(chat("runA", "delta", "B_OK"), chat("runA", "final", "B_OK"));
+    // One bubble, opened AFTER the steered input, as the run's segment 1 (the rows of
+    // the run after that steered row are its segment 1 — the projection finds it).
+    expect(starts(h.writer)).toEqual([["startAssistant", "runA", 1]]);
+    expect(h.writer.calls.some((c) => c[0] === "split")).toBe(false);
+  });
+
   it("CU-20: a steered row of an input this bridge does not hold, or of another run, cuts nothing", async () => {
     const h = harness(true);
     await h.rm.beginTurn(h.now(), "runA", { expectedSessionId: null });
@@ -260,15 +282,31 @@ describe("projection on — a send while the agent works", () => {
     expect(late).toEqual([["late", "runB", "msg1", fallback]]);
   });
 
-  it("CU-21: a projected turn with nothing visible asks Convex to drop its bubble — no empty verdict", async () => {
+  it("CU-21: a projected turn with nothing visible leaves no bubble — none is even created (phase 4)", async () => {
     const h = harness(true);
     await h.rm.beginTurn(h.now(), "runA", { expectedSessionId: null });
     await h.feed(chat("runA", "final", "NO_REPLY"));
     await h.tick(200_000);
-    const f = finals(h.writer);
-    expect(f).toHaveLength(1);
-    expect(f[0]![2]).toBe("complete");
-    expect(f[0]![4]).toMatchObject({ dropIfEmpty: true });
+    expect(starts(h.writer)).toHaveLength(0);
+    expect(finals(h.writer)).toHaveLength(0);
+    expect(h.rm.turnActive).toBe(false);
+  });
+
+  it("phase 4: a projected turn's bubble is born at its run's first tool activity, not at the ACK", async () => {
+    const h = harness(true);
+    await h.rm.beginTurn(h.now(), "runA", { expectedSessionId: null });
+    expect(starts(h.writer)).toHaveLength(0);
+    await h.feed({
+      type: "event",
+      event: "agent",
+      payload: {
+        sessionKey: KEY,
+        runId: "runA",
+        stream: "tool",
+        data: { phase: "start", name: "exec", toolCallId: "t1", args: { command: "sleep 1" } },
+      },
+    });
+    expect(starts(h.writer)).toHaveLength(1);
   });
 
   it("interrupt: the foreground turn settles as stopped when the interrupting send's turn begins", async () => {

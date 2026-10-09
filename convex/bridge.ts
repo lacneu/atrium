@@ -48,8 +48,8 @@ import { readDoc as readCompatDoc } from "./compat";
 import { decideTurnKnowledge, type TurnKnowledge } from "./knowledge";
 import { PERMISSIONS } from "./lib/rbac";
 import { buildOpenClawThreadId } from "./lib/openclawThread";
-import { sendIdentityFor } from "./lib/sendIdentity";
-import { transcriptRoutingFor } from "./lib/transcriptProjection";
+import { sendIdChange, sendIdentityFor } from "./lib/sendIdentity";
+import { transcriptRoutingFor, transcriptStoredText } from "./lib/transcriptProjection";
 import {
   custodyOf,
   heldInputsOfRun,
@@ -421,6 +421,10 @@ export const markOutbox = internalMutation({
     const restamp =
       status === "sent" && sendId !== undefined && sendId !== row.sendId ? sendId : undefined;
     await ctx.db.patch(outboxId, { status, ...(restamp === undefined ? {} : { sendId: restamp }) });
+    // The ACK of a turn's head row reads its chat (the custody block below): read once,
+    // here, so the key correction can gate on it without a read of its own.
+    const turnAck = status === "sent" && row.messageId !== undefined && row.chainStep === undefined;
+    const turnChat = turnAck ? await ctx.db.get(row.chatId) : null;
     if (restamp !== undefined) {
       // The bridge derived the key from the session it ACTUALLY sent to: that is the
       // identity the transcript will carry, so the user bubble follows it (I3).
@@ -428,21 +432,75 @@ export const markOutbox = internalMutation({
       if (row.messageId !== undefined && row.chainStep === undefined) {
         const message = await ctx.db.get(row.messageId);
         if (message !== null && message.role === "user") {
-          await ctx.db.patch(row.messageId, { sendId: restamp });
+          await ctx.db.patch(row.messageId, sendIdChange(message, restamp, transcriptStoredText(turnChat)));
         }
       }
     }
     // TRANSCRIPT PROJECTION `on` (phase 3, design §3.2): the ACK is CUSTODY — the user
     // bubble says the gateway accepted the input. Never over a fact a transcript read
     // already wrote (steered, persisted, …): those come later in the input's life.
-    if (status === "sent" && row.messageId !== undefined && row.chainStep === undefined) {
-      const chat = await ctx.db.get(row.chatId);
+    if (turnAck && row.messageId !== undefined) {
+      const chat = turnChat;
       if ((await projectionModeOfChat(ctx, chat, row.routedAgent?.instanceName)) === "on") {
         const message = await ctx.db.get(row.messageId);
         if (message !== null && message.role === "user" && message.custody === undefined) {
           await ctx.db.patch(row.messageId, {
             custody: custodyOf({ acked: true, row: null, queuedAtGateway: false }),
           });
+        }
+        // PROJECTION `on` (phase 4): the run is ADMITTED and its bubble is born only with
+        // its first content — until then this durable marker is what holds the chat busy
+        // (a QUEUED send waits) and says the agent works, whatever the last read said
+        // (lib/outboxQueue `projectedGatewayHoldUntil`). Not when the bubble already
+        // opened (a fast turn whose first content beat this ACK), nor when the transcript
+        // got there first: the send's run (its identity IS the run id) already settled,
+        // or already has a bubble born from its rows (codex phase 4 pass 2). Asked here,
+        // inside the switch phase 3 already resolved: an off/shadow ACK reads nothing more.
+        const opened = await ctx.db
+          .query("messages")
+          .withIndex("by_dispatch_outbox", (q) => q.eq("dispatchOutboxId", String(outboxId)))
+          .first();
+        const effectiveSendId = restamp ?? row.sendId;
+        const ranAlready =
+          effectiveSendId !== undefined &&
+          ((
+            await ctx.db
+              .query("transcriptRuns")
+              .withIndex("by_chat_run", (q) => q.eq("chatId", row.chatId).eq("runId", effectiveSendId))
+              .take(4)
+          ).some((r) => r.settledAt !== undefined) ||
+            (
+              await ctx.db
+                .query("messages")
+                .withIndex("by_chat_run", (q) => q.eq("chatId", row.chatId).eq("runId", effectiveSendId))
+                .take(4)
+            ).some((m) => m.role === "assistant"));
+        if (opened === null && !ranAlready) {
+          // Its own small record (never the outbox row: a reader of admissions must not
+          // load prompts — codex phase 4 pass 15). One per send: a repeated ACK refreshes it.
+          const admittedAt = Date.now();
+          const known = await ctx.db
+            .query("runAdmissions")
+            .withIndex("by_outbox", (q) => q.eq("outboxId", outboxId))
+            .first();
+          if (known !== null) {
+            await ctx.db.patch(known._id, { admittedAt, ...(effectiveSendId !== undefined ? { sendId: effectiveSendId } : {}) });
+          } else {
+            await ctx.db.insert("runAdmissions", {
+              chatId: row.chatId,
+              outboxId,
+              ...(effectiveSendId !== undefined ? { sendId: effectiveSendId } : {}),
+              ...(row.sentToInstance !== undefined ? { sentToInstance: row.sentToInstance } : {}),
+              ...(row.routedAgent?.instanceName !== undefined
+                ? { routedInstanceName: row.routedAgent.instanceName }
+                : {}),
+              admittedAt,
+            });
+          }
+          // The projection now holds facts for this conversation: its drains ask them.
+          if (chat !== null && chat.transcriptSeenAt === undefined) {
+            await ctx.db.patch(chat._id, { transcriptSeenAt: Date.now() });
+          }
         }
       }
     }
@@ -2006,7 +2064,7 @@ export const lastGateBeforeSend = internalMutation({
     if (sendId !== undefined && row.messageId !== undefined && row.chainStep === undefined) {
       const message = await ctx.db.get(row.messageId);
       if (message !== null && message.role === "user" && message.sendId !== sendId) {
-        await ctx.db.patch(row.messageId, { sendId });
+        await ctx.db.patch(row.messageId, sendIdChange(message, sendId, transcriptStoredText(chat)));
       }
     }
     // INLINE WIDGETS, decided in this same transaction as the permission and knowledge

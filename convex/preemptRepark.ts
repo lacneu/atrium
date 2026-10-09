@@ -236,7 +236,7 @@ export async function maybeReparkPreemptedTurn(
   // blocker, so a user send inside the window parks `queued` behind it (FIFO
   // preserved) instead of racing the incoming delivery (codex P1). No dispatch
   // job targets the row, so the hold cannot double-fire.
-  await deleteTurnCardCascade(ctx, lastUser.userId, message.chatId, message._id);
+  await deleteTurnCardCascade(ctx, lastUser.userId, message.chatId, message._id, { chat, card: message });
   await ctx.db.patch(row._id, {
     preemptRedispatched: true, // permanent bound stamp
     preemptHold: true, // transient hold marker (cleared by flip/stand-down)

@@ -17,6 +17,7 @@ import type { Doc } from "./_generated/dataModel";
 import { internal } from "./_generated/api";
 import { resolveTargetForChat } from "./routing";
 import { maskCredentialId } from "./lib/chatRenderState";
+import { rowTextSignature } from "./lib/transcriptProjection";
 
 const BATCH = 200;
 
@@ -217,5 +218,87 @@ export const maskStoredCredentialIds = internalMutation({
       }
     }
     return { done: page.isDone, table: current, masked };
+  },
+});
+
+// moveTranscriptRowTexts — the phase 4 split of a transcript row's text out of its identity.
+//
+// Pre-release 0.96.0 development builds stored a row's display text ON the identity row
+// (`transcriptRows.text` / `yieldAck`); every identity read then loaded it, and a replay in
+// `shadow` of rows written in `on` rolled the read back past 16 MiB (codex phase 4 pass 3).
+// The text now lives in `transcriptRowTexts`. No released version wrote those fields, so
+// only such a development deployment has rows to move; this moves each into its own text
+// document, stamps the row's signature, and clears the deprecated fields. Idempotent and
+// self-chaining; pages bounded in bytes (a row could hold ~98 KB of text).
+export const moveTranscriptRowTexts = internalMutation({
+  args: { cursor: v.optional(v.union(v.string(), v.null())) },
+  handler: async (ctx, { cursor }): Promise<{ done: boolean; moved: number }> => {
+    const page = await ctx.db.query("transcriptRows").paginate({
+      numItems: BATCH,
+      maximumBytesRead: PAGE_BYTES,
+      cursor: cursor ?? null,
+    });
+    let moved = 0;
+    for (const row of page.page) {
+      if (row.text === undefined && row.yieldAck === undefined) continue;
+      const existing = await ctx.db
+        .query("transcriptRowTexts")
+        .withIndex("by_row", (q) => q.eq("rowId", row._id))
+        .first();
+      if (existing === null) {
+        await ctx.db.insert("transcriptRowTexts", {
+          chatId: row.chatId,
+          rowId: row._id,
+          ...(row.text !== undefined ? { text: row.text } : {}),
+          ...(row.yieldAck !== undefined ? { yieldAck: row.yieldAck } : {}),
+          updatedAt: Date.now(),
+        });
+      }
+      const text = existing?.text ?? row.text;
+      const yieldAck = existing?.yieldAck ?? row.yieldAck;
+      await ctx.db.patch(row._id, {
+        textSig: rowTextSignature(text, yieldAck),
+        text: undefined,
+        yieldAck: undefined,
+      });
+      moved++;
+    }
+    if (!page.isDone) {
+      await ctx.scheduler.runAfter(0, internal.migrations.moveTranscriptRowTexts, {
+        cursor: page.continueCursor,
+      });
+    }
+    return { done: page.isDone, moved };
+  },
+});
+
+// purgeUnattributedRowTexts — row texts stored before Convex refused them for rows of no
+// run (codex phase 4 pass 7): a delivery-mirror row with no producer had its text kept,
+// and no purge (by message, by run, by chat sweep of a message) could ever reach it. Every
+// text document whose row is gone or carries no run is deleted, and the row's text is
+// marked unknown. Pre-release development data only. Idempotent, self-chaining, pages
+// bounded in bytes.
+export const purgeUnattributedRowTexts = internalMutation({
+  args: { cursor: v.optional(v.union(v.string(), v.null())) },
+  handler: async (ctx, { cursor }): Promise<{ done: boolean; purged: number }> => {
+    const page = await ctx.db.query("transcriptRowTexts").paginate({
+      numItems: 50,
+      maximumBytesRead: PAGE_BYTES,
+      cursor: cursor ?? null,
+    });
+    let purged = 0;
+    for (const doc of page.page) {
+      const row = await ctx.db.get(doc.rowId);
+      if (row !== null && row.runId !== undefined) continue;
+      await ctx.db.delete(doc._id);
+      if (row !== null) await ctx.db.patch(row._id, { textSig: undefined });
+      purged++;
+    }
+    if (!page.isDone) {
+      await ctx.scheduler.runAfter(0, internal.migrations.purgeUnattributedRowTexts, {
+        cursor: page.continueCursor,
+      });
+    }
+    return { done: page.isDone, purged };
   },
 });

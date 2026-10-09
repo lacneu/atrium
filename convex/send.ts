@@ -32,7 +32,12 @@ import { assertOwnsUpload } from "./uploads";
 import { writeTraceEvent } from "./observability";
 import { recordFileForPart } from "./lib/files";
 import { partStorageField } from "./lib/blobs";
-import { isChatBusy, countQueued, MAX_QUEUED_PER_CHAT } from "./lib/outboxQueue";
+import {
+  armProjectedHoldRecheck,
+  countQueued,
+  isChatBusy,
+  MAX_QUEUED_PER_CHAT,
+} from "./lib/outboxQueue";
 import { QUEUED_ORDER_SENTINEL } from "./lib/messageOrder";
 import {
   busySendParks,
@@ -640,6 +645,10 @@ export const sendMessage = mutation({
     if (!busy) {
       await ctx.scheduler.runAfter(0, internal.bridge.dispatch, { outboxId });
     }
+    // A row parked behind a projected gateway hold (phase 4) gets the hold's re-check in
+    // this same transaction: no drain may ever run again for it otherwise (the one at the
+    // ACK ran before any queue existed). No-op off `on`, without a hold, or already armed.
+    if (projectionOn && willQueue > 0) await armProjectedHoldRecheck(ctx, chat._id);
 
     // Audit a send performed under impersonation. PHI: we log the message id
     // ONLY — never `args.text` or attachment contents.

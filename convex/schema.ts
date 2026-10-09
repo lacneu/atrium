@@ -1667,6 +1667,21 @@ export default defineSchema({
     //
     // Monotonic — a second Stop only ever moves it forward.
     stoppedAt: v.optional(v.number()),
+    // Projection `on` (phase 4): a queued send is held by a gateway FACT (a run active
+    // at the last read, or a run admitted with no bubble yet), which only a read or its
+    // expiry ends. A drain re-check is scheduled at that expiry — this is when, so one
+    // hold arms one re-check, not one per drain attempt. Absent everywhere else.
+    projectedHoldRecheckAt: v.optional(v.number()),
+    // …and the ONE scheduled re-check itself: while it is pending no other is armed; when
+    // it runs it reads the hold's CURRENT end and re-arms only if still held (each read
+    // moves the end — codex phase 4 pass 2 counted 100 rechecks for 100 reads).
+    projectedHoldRecheckId: v.optional(v.id("_scheduled_functions")),
+    // The transcript projection (phase 4) wrote something for this conversation — set by
+    // the very first transcript write, BEFORE any row text is stored. A deletion asks it
+    // (`deletionTombstones`): a conversation never projected does no transcript work at
+    // all; one that was — even by a texts-only chunk that ran before any read created a
+    // cursor — gets its tombstones (codex phase 4 pass 8).
+    transcriptSeenAt: v.optional(v.number()),
     userId: v.id("users"),
     title: v.optional(v.string()),
     // The OpenClaw-side chat identifier (used to route sends). Non-secret.
@@ -2188,6 +2203,25 @@ export default defineSchema({
     // is reconciled on (invariant I3). The LAST dispatch wins (a regenerate re-sends the
     // same message under a new key). Absent before 0.92.0 and on Hermes targets.
     sendId: v.optional(v.string()),
+    // USER rows: the send identities this message carried BEFORE its current `sendId`
+    // (newest last, at most MAX_PRIOR_SEND_IDS — lib/sendIdentity `sendIdChange`). Each
+    // may have run at the gateway: deleting the message tombstones their runs too, with
+    // no read (codex phase 4 pass 13). Written in the patch that changes `sendId`.
+    priorSendIds: v.optional(v.array(v.string())),
+    // ASSISTANT rows of a projected conversation (phase 4, codex pass 22): an upload into
+    // this message is under way until this time (the bridge's own window per upload,
+    // capped — stream.noteUploadStarted). A file job the transcript settled waits for it;
+    // cleared by the run's live terminal, else it simply expires.
+    uploadsInFlightUntil: v.optional(v.number()),
+    // ASSISTANT rows the TRANSCRIPT settled from an INFERRED outcome (an idle read, no
+    // terminal of the run's own — codex phase 4 pass 24): the run's live terminal may
+    // still correct it (complete → error). Absent once confirmed or corrected, and on
+    // every bubble an explicit terminal settled — that outcome is never overridden.
+    closeInferred: v.optional(v.boolean()),
+    // ASSISTANT rows of a service job whose status-dependent correlates (summarizer,
+    // curator) wait for the run's live terminal, the outcome being only inferred (codex
+    // phase 4 pass 25 — stream.settleStatusJobs). Removed when they run, once.
+    statusJobsDeferred: v.optional(v.boolean()),
     // USER rows of a conversation whose instance runs the transcript projection `on`
     // (redesign phase 3, design §3.2): what the GATEWAY says it does with this input —
     // the ACK is a guard, not a reply. `accepted` (ACK started/in_flight), `queued`
@@ -2485,7 +2519,10 @@ export default defineSchema({
     createdAt: v.number(),
   })
     .index("by_chat", ["chatId"])
-    .index("by_chat_run", ["chatId", "runId"]),
+    .index("by_chat_run", ["chatId", "runId"])
+    // Projection `on` (phase 4): the runs a merged bubble shows — every run whose rows a
+    // recomposition of that bubble must cover (convex/lib/bubbleProjection.ts).
+    .index("by_message", ["messageId"]),
 
   // THE SESSION TRANSCRIPT, AS IDENTITIES (transcript redesign, phase 1 — SHADOW).
   //
@@ -2520,16 +2557,110 @@ export default defineSchema({
     // Carries something a reader sees (text or a non-tool, non-thinking block), or is a
     // tool result — the rows a bubble must exist for (I1).
     visible: v.boolean(),
-    // The bubble this row is projected into. UNSET in shadow mode by construction.
+    // The bubble this row is projected into (projection `on`, phase 4): STICKY once set —
+    // a replayed read never moves a row to another bubble. UNSET in shadow mode.
     messageId: v.optional(v.id("messages")),
     // Tool calls/results the row carries (bounded), for the tool-card join of later phases.
     toolCallIds: v.optional(v.array(v.string())),
+    // Projection `on` (phase 4): the row's display text is KNOWN, and this is its
+    // signature (UTF-8 size + hash of text and acknowledgment). The text itself lives in
+    // `transcriptRowTexts`, so every identity read stays small in every mode — a row with
+    // 32 KiB of text read back by a replay in `shadow` rolled the whole read back past
+    // 16 MiB (codex phase 4 pass 3). Absent: the text is not known (an older bridge, a
+    // read in shadow) — the projection then never recomposes from the row.
+    textSig: v.optional(v.string()),
+    // DEPRECATED — never written or read since the text moved to `transcriptRowTexts`.
+    // Only pre-release 0.96.0 development builds wrote them, before the split; kept
+    // optional so such a deployment still validates, and emptied by
+    // `migrations.moveTranscriptRowTexts`. Remove once no deployment holds them.
+    text: v.optional(v.string()),
+    yieldAck: v.optional(v.string()),
     updatedAt: v.number(),
   })
     .index("by_chat_session_entry", ["chatId", "sessionKey", "entryId"])
     .index("by_chat_session_seq", ["chatId", "sessionKey", "sessionId", "seq"])
     .index("by_chat_run", ["chatId", "runId"])
-    .index("by_chat_send", ["chatId", "sendId"]),
+    .index("by_chat_send", ["chatId", "sendId"])
+    // Projection `on` (phase 4): the user rows that STEERED into a run cut its bubble
+    // into segments (CU-20) — one bounded range per run.
+    .index("by_chat_steer_target", ["chatId", "steerTargetRunId", "seq"])
+    // …and the rows a bubble shows, in transcript order (its text is recomposed from them).
+    .index("by_message_seq", ["messageId", "seq"]),
+
+  // WHAT A TRANSCRIPT ROW SAYS (projection `on`, phase 4) — kept apart from its identity
+  // (`transcriptRows`) so that identity reads (every mode: replays, measures, custody) never
+  // load text. One document per row whose display text is known (`transcriptRows.textSig`):
+  // an assistant row's text blocks, extracted and sanitized exactly as the live stream is
+  // (bridge normalizer), bounded at 32 KiB; and a `sessions_yield` row's acknowledgment,
+  // shown only when its run wrote no text of its own (TurnSink's rule). A settled bubble's
+  // text is recomposed from these. User content, like `messages.text`: never in a metadata
+  // report, purged with the chat.
+  transcriptRowTexts: defineTable({
+    chatId: v.id("chats"),
+    rowId: v.id("transcriptRows"),
+    text: v.optional(v.string()),
+    yieldAck: v.optional(v.string()),
+    updatedAt: v.number(),
+  })
+    // The text of one row (the projection reads it only for the rows it composes).
+    .index("by_row", ["rowId"])
+    // The chat purge.
+    .index("by_chat", ["chatId"]),
+
+  // DELETED BUBBLES, by what the transcript knows them as (projection `on`, phase 4): the
+  // run and steer segment a bubble showed, in its session. Written when a person deletes a
+  // bubble (or a retry replaces its card); read before ANY row text is stored and before
+  // any segment is projected — so a row of that segment, early (received while streaming,
+  // not yet assigned) or late (a replayed read), never keeps its text nor makes a bubble
+  // again (codex phase 4 pass 5). Identity only. Purged with the chat.
+  // RUN ADMISSIONS (projection `on`, phase 4): the gateway ACCEPTED a send (ACK) and its
+  // run has not shown anything yet — a projected send's bubble is born from the run's
+  // first content, so until then nothing else says the agent works. Holds the chat busy
+  // (a QUEUED send waits) and the composer "working", bounded in time; removed when the
+  // run's bubble opens, or when a read finds the session idle with this send's user row
+  // persisted, or when its run is over, or once stale. A record of its OWN, apart from
+  // the outbox row and its prompt (up to a document's 1 MiB): every reader of admissions
+  // reads identities only (codex phase 4 pass 15). Purged with the chat.
+  runAdmissions: defineTable({
+    chatId: v.id("chats"),
+    outboxId: v.id("outbox"),
+    // The send's identity (its run id) and the instance it went to, as the ACK knew them.
+    sendId: v.optional(v.string()),
+    sentToInstance: v.optional(v.string()),
+    routedInstanceName: v.optional(v.string()),
+    admittedAt: v.number(),
+  })
+    // The admissions of a chat by age: the freshest is the busy check's point range; the
+    // release walk reads them oldest first, identities only.
+    .index("by_chat_admitted", ["chatId", "admittedAt"])
+    // The admission of one send (cleared when its bubble opens).
+    .index("by_outbox", ["outboxId"]),
+
+  transcriptTombstones: defineTable({
+    chatId: v.id("chats"),
+    sessionKey: v.string(),
+    runId: v.string(),
+    // The steer segment (0: the run's first; `messages.runSegment`) — an ORDINAL, as known
+    // when the tombstone was written: informational once `fromSeq` is set.
+    segment: v.number(),
+    // THE STABLE BOUNDARY (codex phase 4 pass 27): the deleted span starts after this row
+    // `seq` of the run (a cut row's; -1: the run's start) and is open-ended. A late cut —
+    // earlier or inside — never moves it. Absent: an answer's own tombstone not yet
+    // resolved by its deletion's follow-up (read conservatively from its ordinal meanwhile).
+    fromSeq: v.optional(v.number()),
+    // The bubble that was deleted (gone — kept as the rows' sticky tombstone target).
+    messageId: v.optional(v.id("messages")),
+    createdAt: v.number(),
+  })
+    // Is this run (any segment) tombstoned? One bounded range per run, every session —
+    // the reader keeps its own session's and the session-less ones (`sessionKey` "": a
+    // deleted USER message's run, whose session no read had told yet — codex phase 4
+    // pass 12).
+    .index("by_chat_run", ["chatId", "runId", "segment"])
+    // The tombstones one deleted bubble left, walked one by one by its purge.
+    .index("by_message", ["messageId", "runId", "segment"])
+    // The chat purge.
+    .index("by_chat", ["chatId"]),
 
   // Per-run state of the projected sessions (design §10.1): the Control UI's run table
   // (`streaming/completed/error/aborted/timeout/yielded`), plus `persisted` for a run
@@ -2555,10 +2686,20 @@ export default defineSchema({
     parentRunId: v.optional(v.string()),
     firstSeq: v.optional(v.number()),
     lastSeq: v.optional(v.number()),
+    // Projection `on` (phase 4): when the run was known to be OVER — a terminal frame was
+    // observed, or a fresh read found the session idle (`hasActiveRun:false`, which the
+    // gateway reports only once the terminal row is queryable) or its complete
+    // `activeRunIds` list no longer named a run whose rows were read. Never cleared — a
+    // settled run never streams again (the run table's sticky terminal) — except for an
+    // owned delivery that ended in error and that its replay resumes (stream.startAssistant,
+    // lib/projectedRuns `reopenTranscriptRun`, codex phase 4 pass 12).
+    settledAt: v.optional(v.number()),
     updatedAt: v.number(),
   })
     .index("by_chat_session_run", ["chatId", "sessionKey", "runId"])
-    .index("by_chat_run", ["chatId", "runId"]),
+    .index("by_chat_run", ["chatId", "runId"])
+    // The runs of a session NOT yet known over (`settledAt` absent), bounded per read.
+    .index("by_chat_session_settled", ["chatId", "sessionKey", "settledAt"]),
 
   // Where the bridge's next `chat.history` read resumes, per (chat, gateway session key),
   // and the FLOOR under which transcript rows predate the projection (design §10.2:

@@ -27,10 +27,11 @@
 // in convex/transcriptProjection.ts only load and store.
 
 import type { Doc, Id } from "../_generated/dataModel";
-import type { ActionCtx, QueryCtx } from "../_generated/server";
+import type { ActionCtx, MutationCtx, QueryCtx } from "../_generated/server";
 import { internal } from "../_generated/api";
-import { ATRIUM_SEND_ID_RE } from "./sendIdentity";
+import { ATRIUM_SEND_ID_RE, sendIdsOf } from "./sendIdentity";
 import type { TranscriptProjectionMode } from "./instanceConfig";
+import { MAX_COMPOSED_TEXT_BYTES, utf8Bytes } from "./bubbleProjection";
 
 /** Per-run status: the Control UI's run table (upstream
  *  packages/gateway-client/src/session-projection-run-event.ts:50-71) plus `persisted`,
@@ -100,7 +101,594 @@ export type TranscriptRowInput = {
   hidden: boolean;
   visible: boolean;
   toolCallIds?: string[];
+  /** Projection `on` (phase 4): the row's display text / `sessions_yield` acknowledgment. */
+  text?: string;
+  yieldAck?: string;
 };
+
+/** Most a row may SAY, in UTF-8 bytes, text and acknowledgment together — ONE budget,
+ *  the bridge's too (providers/openclaw/transcript-rows.ts `ROW_TEXT_MAX_BYTES`). It IS the
+ *  largest text a bubble is ever composed from rows with (lib/bubbleProjection.ts
+ *  `MAX_COMPOSED_TEXT_BYTES`): a row over it could never make or rewrite a bubble whatever
+ *  was stored, so not storing it loses nothing the projection could show — its bubble keeps
+ *  the live text (codex phase 4 pass 7: a 32 769-character answer the live frames missed
+ *  had no bubble at all under the old 32 Ki-character bound). One row fits one document
+ *  (1 MiB) and one apply (MAX_APPLY_TEXT_BYTES). */
+export const MAX_ROW_TEXT_BYTES = MAX_COMPOSED_TEXT_BYTES;
+
+/** What every purge and sweep of row texts may READ in one transaction, and the batch
+ *  that follows from it: sized by BYTES against the worst document (a row's whole budget
+ *  plus its envelope), never by a count chosen alone — codex phase 4 pass 8: 32 texts of
+ *  768 KiB read 24 MiB and the batch failed, its continuation with it. ONE helper for the
+ *  bubble purge, the chat purge and the service-chat sweep, so this class cannot return. */
+export const TEXT_PURGE_READ_BYTES = 8 * 1024 * 1024;
+export const TEXT_PURGE_BATCH = Math.max(1, Math.floor(TEXT_PURGE_READ_BYTES / (MAX_COMPOSED_TEXT_BYTES + 256)));
+
+/** What a row keeps of what it says under MAX_ROW_TEXT_BYTES: a text over the bound is
+ *  DROPPED, never cut (a cut text would be recomposed as if it were the whole reply); the
+ *  acknowledgment only while it fits beside the text (it is shown only for a run with no
+ *  text of its own, so beside a text it was never going to be shown). */
+export function boundRowShown(
+  text: unknown,
+  yieldAck: unknown,
+): { text?: string; yieldAck?: string } {
+  const t = typeof text === "string" && utf8Bytes(text) <= MAX_ROW_TEXT_BYTES ? text : undefined;
+  const a =
+    typeof yieldAck === "string" && utf8Bytes(t ?? "") + utf8Bytes(yieldAck) <= MAX_ROW_TEXT_BYTES
+      ? yieldAck
+      : undefined;
+  return { ...(t !== undefined ? { text: t } : {}), ...(a !== undefined ? { yieldAck: a } : {}) };
+}
+
+/** 32-bit FNV-1a over UTF-16 code units, seeded (two seeds make a 64-bit signature). */
+function fnv1a(s: string, seed: number): string {
+  let h = seed >>> 0;
+  for (let i = 0; i < s.length; i++) {
+    h ^= s.charCodeAt(i);
+    h = Math.imul(h, 0x01000193) >>> 0;
+  }
+  return h.toString(16).padStart(8, "0");
+}
+
+/** The bytes a bounded step has READ so far (every document, codex phase 4 pass 14): a
+ *  step hands the rest to its continuation before Convex's 16 MiB read limit. */
+export type ReadMeter = { bytes: number };
+
+/** What one document weighs on a read (its encoded size, approximated by its JSON). */
+export function docReadBytes(doc: unknown): number {
+  return doc === null || doc === undefined ? 0 : utf8Bytes(JSON.stringify(doc));
+}
+
+const meterAll = (meter: ReadMeter | undefined, docs: readonly unknown[]): void => {
+  if (meter !== undefined) for (const d of docs) meter.bytes += docReadBytes(d);
+};
+
+/** `transcriptRows.textSig` of a row whose text was PURGED — its bubble was deleted, or its
+ *  service conversation swept: the identity stays (a tombstone, so the row is never placed
+ *  again), and no later read ever stores its text again (codex phase 4 pass 4). */
+export const TEXT_PURGED_SIG = "purged";
+
+/** Most tombstones / cut rows ONE read of a run takes. Past it, nothing is guessed: every
+ *  reader takes the CONSERVATIVE path — the whole run is treated as deleted for its texts
+ *  (purged, never stored) and never placed (codex phase 4 pass 11: cuts silently cut at 64
+ *  classified a segment-65 row as segment 64 and its tombstone was missed). */
+export const MAX_TOMBSTONES_READ = 1000;
+export const MAX_CUTS_READ = 1000;
+/** A tombstone map holding this key: the run's tombstones could not all be read — every
+ *  segment counts as deleted. */
+export const ALL_SEGMENTS = -1;
+
+/** `transcriptTombstones.sessionKey` of a tombstone that holds in EVERY session of its run:
+ *  a deleted USER message's run (its `sendId`), whose session the deletion cannot tell
+ *  without a read — and no read may have told it yet (codex phase 4 pass 12). */
+export const ANY_SESSION = "";
+
+/**
+ * A run's deletion tombstones (codex phase 4 pass 27): what was deleted is identified by a
+ * STABLE boundary, never by a segment ordinal that a later read recounts. A deleted span
+ * starts AFTER a cut row's `seq` (`transcriptTombstones.fromSeq`; RUN_START for the run's
+ * first segment) and is OPEN-ENDED: every later segment of the run belongs to a later
+ * message, which the same truncating deletion removes too. A late cut — earlier or
+ * inside — never moves nor shrinks it: it can only add a boundary the span already covers.
+ *  - `spans`: the boundaries stored (`fromSeq`).
+ *  - the map: tombstones not yet resolved to a boundary (an answer's own, written with no
+ *    read at the deletion and resolved by its follow-up), keyed by their ordinal at
+ *    deletion time — read CONSERVATIVELY against the current cuts (`deletedFromOf`);
+ *    `ALL_SEGMENTS`: the whole run.
+ */
+export class RunTombs extends Map<number, Id<"messages"> | undefined> {
+  spans: Array<{ from: number; messageId?: Id<"messages"> }> = [];
+  /** Any tombstone at all (resolved or not). */
+  get any(): boolean {
+    return this.size > 0 || this.spans.length > 0;
+  }
+}
+
+/** `fromSeq` of a span covering the whole run (before its first row). */
+export const RUN_START = -1;
+
+/** The deleted segments of a run in a session (`transcriptTombstones`). Empty for nearly
+ *  every run — one index range. The run's session-less tombstones count in every session;
+ *  `sessionKey` undefined: those only. */
+export async function tombstonedSegments(
+  ctx: QueryCtx,
+  chatId: Id<"chats">,
+  sessionKey: string | undefined,
+  runId: string,
+  meter?: ReadMeter,
+): Promise<RunTombs> {
+  const rows = await ctx.db
+    .query("transcriptTombstones")
+    .withIndex("by_chat_run", (q) => q.eq("chatId", chatId).eq("runId", runId))
+    .take(MAX_TOMBSTONES_READ + 1);
+  meterAll(meter, rows);
+  const tombs = new RunTombs();
+  for (const r of rows.slice(0, MAX_TOMBSTONES_READ)) {
+    if (r.sessionKey !== ANY_SESSION && r.sessionKey !== sessionKey) continue;
+    if (r.fromSeq !== undefined) tombs.spans.push({ from: r.fromSeq, ...(r.messageId !== undefined ? { messageId: r.messageId } : {}) });
+    else tombs.set(r.segment, r.messageId);
+  }
+  // Past the bound nothing is guessed: every segment counts as deleted.
+  if (rows.length > MAX_TOMBSTONES_READ) tombs.set(ALL_SEGMENTS, undefined);
+  return tombs;
+}
+
+/** The boundary an UNRESOLVED ordinal tombstone (segment `k` at deletion) stands for under
+ *  the CURRENT cuts — conservative: cuts only get added, so the k-th boundary known now is
+ *  at or before the one the segment started at; RUN_START when it cannot be told. */
+export function boundaryOfOrdinal(k: number, cuts: RunCuts | null): number {
+  if (k <= 0 || cuts === null || !cuts.complete || cuts.seqs.length === 0) return RUN_START;
+  return cuts.seqs[Math.min(k, cuts.seqs.length) - 1]!;
+}
+
+/** Where the run's deleted part begins (rows with a greater `seq` are deleted), with the
+ *  bubble the most specific span names; null when nothing of the run is deleted. */
+export function deletedFromOf(
+  tombs: ReadonlyMap<number, Id<"messages"> | undefined>,
+  cuts: RunCuts | null,
+): Array<{ from: number; messageId?: Id<"messages"> }> {
+  const spans: Array<{ from: number; messageId?: Id<"messages"> }> = [];
+  if (tombs instanceof RunTombs) spans.push(...tombs.spans);
+  for (const [k, messageId] of tombs) {
+    const from = k === ALL_SEGMENTS ? RUN_START : boundaryOfOrdinal(k, cuts);
+    spans.push({ from, ...(messageId !== undefined ? { messageId } : {}) });
+  }
+  return spans;
+}
+
+/** A run's cuts (the `seq` of the user rows steered into it, in its session), read in ONE
+ *  bounded range shared by storage, projection and every purge; `complete` false: there
+ *  were more than one read takes — no row's segment can be told. */
+export type RunCuts = {
+  seqs: number[];
+  /** The send each cut's row belongs to, aligned with `seqs` (the user message it is). */
+  sends: Array<string | undefined>;
+  complete: boolean;
+};
+
+export async function steerSeqsOf(
+  ctx: QueryCtx,
+  chatId: Id<"chats">,
+  sessionKey: string,
+  runId: string,
+  meter?: ReadMeter,
+): Promise<RunCuts> {
+  const docs = await ctx.db
+    .query("transcriptRows")
+    .withIndex("by_chat_steer_target", (q) => q.eq("chatId", chatId).eq("steerTargetRunId", runId))
+    .take(MAX_CUTS_READ + 1);
+  meterAll(meter, docs);
+  const cuts = docs
+    .slice(0, MAX_CUTS_READ)
+    .filter((d) => d.sessionKey === sessionKey && d.role.toLowerCase() === "user")
+    .map((d) => ({ seq: d.seq, send: d.sendId ?? d.runId }))
+    .sort((a, b) => a.seq - b.seq);
+  return {
+    seqs: cuts.map((c) => c.seq),
+    sends: cuts.map((c) => c.send),
+    complete: docs.length <= MAX_CUTS_READ,
+  };
+}
+
+/** A row's steer segment: how many of its run's steers precede it. */
+export function rowSegment(seq: number, steers: readonly number[]): number {
+  let k = 0;
+  for (const s of steers) if (s < seq) k++;
+  return k;
+}
+
+/** A row's segment under its run's cuts, or null when the cuts could not all be read. */
+export function segmentOfRow(seq: number, cuts: RunCuts): number | null {
+  return cuts.complete ? rowSegment(seq, cuts.seqs) : null;
+}
+
+/** Is the row deleted? `null`: no. Otherwise the deleted bubble its span names (the most
+ *  specific one: the latest boundary before the row). By STABLE boundaries (codex phase 4
+ *  pass 27): a row lies in a deleted span when its `seq` is past the span's start — no
+ *  ordinal is ever compared, so a late cut cannot move a row out. */
+export function tombstoneHit(
+  tombs: ReadonlyMap<number, Id<"messages"> | undefined>,
+  cuts: RunCuts | null,
+  seq: number,
+): { to?: Id<"messages"> } | null {
+  const spans = deletedFromOf(tombs, cuts);
+  let best: { from: number; messageId?: Id<"messages"> } | null = null;
+  for (const sp of spans) {
+    if (seq > sp.from && (best === null || sp.from > best.from)) best = sp;
+  }
+  if (best === null) return null;
+  return best.messageId === undefined ? {} : { to: best.messageId };
+}
+
+/** Is the CURRENT segment `k` (between its cuts) deleted, and by which bubble? It is when
+ *  a deleted span reaches into it (conservative: the whole segment). */
+export function segmentDeleted(
+  tombs: ReadonlyMap<number, Id<"messages"> | undefined>,
+  cuts: RunCuts,
+  k: number,
+): { to?: Id<"messages"> } | null {
+  const hi = k < cuts.seqs.length ? cuts.seqs[k]! : Number.POSITIVE_INFINITY;
+  // The segment's rows lie in (lo, hi): a span starting before `hi - 1` reaches it.
+  return tombstoneHit(tombs, cuts, hi === Number.POSITIVE_INFINITY ? Number.MAX_SAFE_INTEGER : hi - 0.5);
+}
+
+/**
+ * THE GATE of every piece of transcript-text protection (tombstones, purges, refusals,
+ * holds) on a path an off or shadow conversation also takes: did this conversation EVER
+ * store row text? `chats.transcriptSeenAt` is set in `on` before any text (and kept after a
+ * rollback, so the protection stays). Read on a chat document the caller already holds:
+ * a conversation never `on` costs exactly what it did before phase 4 — no read, no write,
+ * no scheduled step (codex phase 4 pass 10).
+ */
+export function transcriptStoredText(chat: { transcriptSeenAt?: number } | null | undefined): boolean {
+  return chat?.transcriptSeenAt !== undefined;
+}
+
+/** A deleted bubble, as its deletion's follow-up needs it (identifiers only). `user`: a
+ *  deleted USER message — `sends`: the send identities it carried (their runs already
+ *  tombstoned), whose steers the follow-up looks up from `steerIndex`; `sendsAfter`:
+ *  where the follow-up's walk of its outbox rows resumes (creation time; any send not
+ *  tombstoned yet is). */
+export type DeletedBubbleRef = {
+  id: Id<"messages">;
+  sessionKey?: string;
+  runId?: string;
+  user?: boolean;
+  /** An answer's own tombstone, still an ordinal: resolved by the follow-up. */
+  segment?: number;
+  sends?: string[];
+  steerIndex?: number;
+  sendsAfter?: number;
+};
+
+/** Outbox rows (sends) of a deleted user message one follow-up page reads: ONE — a row
+ *  carries its whole prompt, so the walk is paced by the call's byte budget. */
+export const MAX_SENDS_READ = 1;
+
+/** The segment of the run a steered user row was steered into that STARTS at its cut:
+ *  one past the cuts before it (`ALL_SEGMENTS` when the run's cuts cannot all be read). */
+export async function steeredSegmentOf(
+  ctx: QueryCtx,
+  row: { chatId: Id<"chats">; sessionKey: string; seq: number },
+  targetRunId: string,
+  meter?: ReadMeter,
+): Promise<number> {
+  const cuts = await steerSeqsOf(ctx, row.chatId, row.sessionKey, targetRunId, meter);
+  return cuts.complete ? rowSegment(row.seq, cuts.seqs) + 1 : ALL_SEGMENTS;
+}
+
+/** One send of a deleted USER message: its own run, tombstoned in every session and every
+ *  segment (`ANY_SESSION`). One insert, no read. */
+export async function tombstoneSendRun(
+  ctx: MutationCtx,
+  chatId: Id<"chats">,
+  messageId: Id<"messages">,
+  sendId: string,
+): Promise<void> {
+  await ctx.db.insert("transcriptTombstones", {
+    chatId,
+    sessionKey: ANY_SESSION,
+    runId: sendId,
+    segment: ALL_SEGMENTS,
+    messageId,
+    createdAt: Date.now(),
+  });
+}
+
+/**
+ * The STEER of a deleted user message's send, when its row is already read (codex phase
+ * 4 pass 13): the segment of the run it was steered into that starts at its cut is that
+ * message's answer too — tombstoned. A cut row read only later is matched by the write
+ * path (`transcriptProjection` `tombstoneLateCutRows`); until the deletion's follow-up has
+ * run, the projection refuses any segment whose cut's send is tombstoned (bubbleProjection-
+ * Store `projectRun`). Returns the index ranges it used.
+ */
+export async function tombstoneSteerOf(
+  ctx: MutationCtx,
+  chatId: Id<"chats">,
+  messageId: Id<"messages">,
+  sendId: string,
+  meter?: ReadMeter,
+): Promise<number> {
+  const now = Date.now();
+  let queries = 1;
+  const rows = await ctx.db
+    .query("transcriptRows")
+    .withIndex("by_chat_send", (q) => q.eq("chatId", chatId).eq("sendId", sendId))
+    .take(4);
+  meterAll(meter, rows);
+  for (const r of rows) {
+    if (r.role.toLowerCase() !== "user" || r.steerTargetRunId === undefined) continue;
+    // The STABLE boundary (codex phase 4 pass 27): the span starts after this cut row's
+    // own `seq` — no cut read, no ordinal. `segment` is only the purge walk's key (one per
+    // cut row: `seq` is unique in the run's session).
+    await ctx.db.insert("transcriptTombstones", {
+      chatId,
+      sessionKey: r.sessionKey,
+      runId: r.steerTargetRunId,
+      segment: r.seq,
+      fromSeq: r.seq,
+      messageId,
+      createdAt: now,
+    });
+  }
+  return queries;
+}
+
+/**
+ * The tombstoning of ONE deletion (one mutation that deletes messages): `add` each deleted
+ * message, `finish` once at the end (codex phase 4 passes 4–9).
+ *  - GATED on stored text: only a conversation that ever stored row text (`on`, or `on`
+ *    then rolled back) has anything to purge or to protect from being made again —
+ *    `chats.transcriptSeenAt`, set in `on` before any text, read on the chat document the
+ *    deletion already holds. Every other conversation (off, shadow: shadow stores no text
+ *    and makes no bubble) costs EXACTLY what it cost before: no read, no write, nothing
+ *    scheduled (codex phase 4 pass 9: one lookup per answer on top of the cascade pushed a
+ *    280-turn shadow chat's deletion past 4 096 index ranges).
+ *  - `add` writes the PRIMARY tombstone of an answer (its own run segment, its session):
+ *    ONE insert, no index read (a duplicate tombstone is harmless — every reader keys them).
+ *    A deleted USER message tombstones the WHOLE run of every send it carried (`sendId` and
+ *    `priorSendIds` — a regenerate re-sends under a new one), in every session
+ *    (`ANY_SESSION`): one insert each, no read. Its answer may not have a bubble yet, while
+ *    the rows already stored (a text chunk ahead of its read) would make it again (codex
+ *    phase 4 passes 12–13). The follow-up adds the segments its steers started and any
+ *    send only its outbox rows still name, under its query budget.
+ *  - `finish` schedules ONE step, ids only (`transcriptProjection.followUpDeletion`): the
+ *    runs merged into every deleted answer, tombstoned under a GLOBAL bound per call, then
+ *    each answer's purge. Until then a row assigned to a deleted bubble, or a run merged
+ *    into one, is refused by every write path (`deletedMergeOf`, the row's `messageId`).
+ */
+export function deletionTombstones(
+  ctx: MutationCtx,
+  chat: { _id: Id<"chats">; transcriptSeenAt?: number },
+) {
+  const stored = transcriptStoredText(chat);
+  const deleted: DeletedBubbleRef[] = [];
+  return {
+    async add(message: Doc<"messages">): Promise<void> {
+      if (!stored) return;
+      if (message.role === "user") {
+        const sends = sendIdsOf(message);
+        for (const sendId of sends) await tombstoneSendRun(ctx, chat._id, message._id, sendId);
+        deleted.push({
+          id: message._id,
+          user: true,
+          ...(message.sendId !== undefined ? { runId: message.sendId } : {}),
+          sends,
+          sendsAfter: 0,
+        });
+        return;
+      }
+      if (message.role !== "assistant") return;
+      if (message.turnSessionKey !== undefined && message.runId !== undefined) {
+        await ctx.db.insert("transcriptTombstones", {
+          chatId: chat._id,
+          sessionKey: message.turnSessionKey,
+          runId: message.runId,
+          segment: message.runSegment ?? 0,
+          messageId: message._id,
+          createdAt: Date.now(),
+        });
+      }
+      deleted.push({
+        id: message._id,
+        ...(message.turnSessionKey !== undefined ? { sessionKey: message.turnSessionKey } : {}),
+        ...(message.runId !== undefined ? { runId: message.runId } : {}),
+        // Its tombstone is written as an ORDINAL here (no read); the follow-up resolves it
+        // to the stable boundary (codex phase 4 pass 27).
+        ...(message.turnSessionKey !== undefined && message.runId !== undefined
+          ? { segment: message.runSegment ?? 0 }
+          : {}),
+      });
+    },
+    async finish(): Promise<void> {
+      if (deleted.length === 0) return;
+      await ctx.scheduler.runAfter(0, internal.transcriptProjection.followUpDeletion, {
+        chatId: chat._id,
+        deleted: deleted.splice(0),
+        index: 0,
+        after: null,
+      });
+    },
+  };
+}
+
+/** One deleted message, alone (a retry's replaced card), with its chat already in hand. */
+export async function tombstoneDeletedBubble(
+  ctx: MutationCtx,
+  message: Doc<"messages">,
+  chat: { _id: Id<"chats">; transcriptSeenAt?: number },
+): Promise<void> {
+  if (!transcriptStoredText(chat)) return;
+  const t = deletionTombstones(ctx, chat);
+  await t.add(message);
+  await t.finish();
+}
+
+/** The purge of a deleted bubble's rows, scheduled only when its conversation holds rows
+ *  that could have said something (assigned to it, or of its session). */
+export async function schedulePurgeIfAny(
+  ctx: MutationCtx,
+  chatId: Id<"chats">,
+  bubble: DeletedBubbleRef,
+  meter?: ReadMeter,
+): Promise<boolean> {
+  const assigned = await ctx.db
+    .query("transcriptRows")
+    .withIndex("by_message_seq", (q) => q.eq("messageId", bubble.id))
+    .first();
+  meterAll(meter, [assigned]);
+  const sessionKey = bubble.sessionKey;
+  // A deleted USER message always left tombstones (its sends' runs, its steers' segments):
+  // the purge walks them, whatever their session.
+  const ofSession =
+    assigned !== null || bubble.user === true || sessionKey === undefined
+      ? null
+      : await ctx.db
+          .query("transcriptRows")
+          .withIndex("by_chat_session_entry", (q) => q.eq("chatId", chatId).eq("sessionKey", sessionKey))
+          .first();
+  meterAll(meter, [ofSession]);
+  if (assigned === null && ofSession === null && bubble.user !== true) return false;
+  await ctx.scheduler.runAfter(0, internal.transcriptProjection.purgeDeletedBubbleTexts, {
+    chatId,
+    messageId: bubble.id,
+  });
+  return true;
+}
+
+/** One run segment of a deleted bubble: its tombstone, once. */
+export async function insertTombstone(
+  ctx: MutationCtx,
+  message: { _id: Id<"messages">; chatId: Id<"chats"> },
+  sessionKey: string,
+  runId: string,
+  segment: number,
+  meter?: ReadMeter,
+): Promise<void> {
+  const known = await tombstonedSegments(ctx, message.chatId, sessionKey, runId, meter);
+  // A run merged into a deleted bubble (segment 0): deleted from its start — a STABLE
+  // boundary (codex phase 4 pass 27).
+  const from = segment === 0 ? RUN_START : undefined;
+  if (from !== undefined ? known.spans.some((sp) => sp.from === from) : known.has(segment)) return;
+  await ctx.db.insert("transcriptTombstones", {
+    chatId: message.chatId,
+    sessionKey,
+    runId,
+    segment,
+    ...(from !== undefined ? { fromSeq: from } : {}),
+    messageId: message._id,
+    createdAt: Date.now(),
+  });
+}
+
+/** Merges of a deleted bubble one read takes. */
+export const TOMBSTONE_MERGE_PAGE = 50;
+/** Index queries one `followUpDeletion` call may spend (a GLOBAL bound, whatever the
+ *  number of answers the deletion removed), and purges it may schedule. */
+export const FOLLOW_UP_QUERY_BUDGET = 600;
+export const FOLLOW_UP_PURGES_PER_CALL = 50;
+/** Bytes one `followUpDeletion` call may READ — every document, outbox rows (a prompt up
+ *  to a document's 1 MiB) included. Checked before each step; no step reads more than
+ *  ~2 MiB, so a call stays far under Convex's 16 MiB (codex phase 4 pass 14). */
+export const FOLLOW_UP_BYTE_BUDGET = 8 * 1024 * 1024;
+
+/** Is this run segment one whose bubble a person deleted — by its tombstone, or by a merge
+ *  record pointing at a bubble that no longer exists? Asked before ANY live bubble is
+ *  opened or merged into, in every mode (codex phase 4 pass 7). */
+export async function deletedRunSegment(
+  ctx: QueryCtx,
+  chatId: Id<"chats">,
+  sessionKey: string | undefined,
+  runId: string,
+  segment: number,
+): Promise<boolean> {
+  const tombs = await tombstonedSegments(ctx, chatId, sessionKey, runId);
+  if (tombs.any) {
+    // By STABLE boundaries against the current cuts (codex phase 4 pass 27). Without a
+    // session the cuts cannot be read: any tombstone of the run counts (conservative).
+    if (sessionKey === undefined) return true;
+    const cuts = await steerSeqsOf(ctx, chatId, sessionKey, runId);
+    // The live door names the segment by the BRIDGE's count, which a late, earlier cut
+    // makes stale: a steered segment (k ≥ 1) may really start at any later cut, so it is
+    // deleted as soon as any span of the run is (spans are open-ended). The run's first
+    // segment ends at the first cut known now (never later than its real end).
+    if (segment === 0 ? segmentDeleted(tombs, cuts, 0) !== null : tombstoneHit(tombs, cuts, Number.MAX_SAFE_INTEGER) !== null) {
+      return true;
+    }
+  }
+  return (await deletedMergeOf(ctx, chatId, runId)) !== null;
+}
+
+/** A bubble left no content to purge (an empty bubble dropped at its terminal): only the
+ *  rows already assigned to it are marked, no segment is tombstoned — a later row of its
+ *  run may still have something to show (CU-21 removes an EMPTY bubble, not the run). */
+export async function purgeRowTextsOfMessage(
+  ctx: MutationCtx,
+  messageId: Id<"messages">,
+  chatId: Id<"chats">,
+): Promise<void> {
+  const shown = await ctx.db
+    .query("transcriptRows")
+    .withIndex("by_message_seq", (q) => q.eq("messageId", messageId))
+    .first();
+  if (shown === null) return;
+  await ctx.scheduler.runAfter(0, internal.transcriptProjection.purgeDeletedBubbleTexts, {
+    chatId,
+    messageId,
+  });
+}
+
+/** Delete one row's text and mark its identity purged. True when something was purged. */
+export async function purgeRowText(
+  ctx: MutationCtx,
+  row: { _id: Id<"transcriptRows">; textSig?: string },
+): Promise<boolean> {
+  // EVERY document of the row first, whatever its mark says — idempotent, and a purged
+  // mark never shields a copy left behind (codex phase 4 pass 6: five copies of one row,
+  // four deleted, the mark set, the fifth kept forever). One per row by construction now;
+  // the loop is what makes the purge true even for a deployment that holds more.
+  let deleted = 0;
+  for (;;) {
+    // Two at a time: one per row by construction, so this reads one document (a batch is
+    // sized by TEXT_PURGE_BATCH against exactly that).
+    const docs = await ctx.db
+      .query("transcriptRowTexts")
+      .withIndex("by_row", (q) => q.eq("rowId", row._id))
+      .take(2);
+    for (const d of docs) await ctx.db.delete(d._id);
+    deleted += docs.length;
+    if (docs.length < 2) break;
+  }
+  if (row.textSig === TEXT_PURGED_SIG) return deleted > 0;
+  await ctx.db.patch(row._id, { textSig: TEXT_PURGED_SIG });
+  return true;
+}
+
+/** While a deletion's tombstoning still paginates the merges of the deleted bubble, a run
+ *  merged into a bubble that no longer exists is already refused: the bubble it pointed at
+ *  (codex phase 4 pass 6). `runBubbles` records outlive their bubble on purpose. */
+export async function deletedMergeOf(
+  ctx: QueryCtx,
+  chatId: Id<"chats">,
+  runId: string,
+): Promise<Id<"messages"> | null> {
+  const merges = await ctx.db
+    .query("runBubbles")
+    .withIndex("by_chat_run", (q) => q.eq("chatId", chatId).eq("runId", runId))
+    .take(4);
+  for (const m of merges) if ((await ctx.db.get(m.messageId)) === null) return m.messageId;
+  return null;
+}
+
+/** The signature of what a row shows (`transcriptRows.textSig`): compared on upsert so a
+ *  replayed read never has to load the text document to know nothing changed. Undefined
+ *  when the row carries neither a text nor an acknowledgment (nothing known). */
+export function rowTextSignature(text: string | undefined, yieldAck: string | undefined): string | undefined {
+  if (text === undefined && yieldAck === undefined) return undefined;
+  const body = JSON.stringify([text ?? null, yieldAck ?? null]);
+  return `${body.length}:${fnv1a(body, 0x811c9dc5)}${fnv1a(body, 0x050c5d1f)}`;
+}
 
 const boundedId = (x: unknown, max: number): string | undefined =>
   typeof x === "string" && x.length > 0 && x.length <= max ? x : undefined;
@@ -134,6 +722,7 @@ export function sanitizeRow(raw: TranscriptRowInput): TranscriptRowInput | null 
     hidden: raw.hidden === true,
     visible: raw.visible === true,
     ...(toolCallIds.length > 0 ? { toolCallIds } : {}),
+    ...boundRowShown(raw.text, raw.yieldAck),
   };
 }
 

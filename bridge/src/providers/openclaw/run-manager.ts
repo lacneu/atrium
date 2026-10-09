@@ -54,6 +54,30 @@ const MAX_PENDING_ANNOUNCE_FRAMES = 5000;
  *   3. the normalizer emits the terminal [message.final, run.status] pair, which
  *      the sink translates into a single writer.finalize().
  */
+/** One run's serial lane (see RunManager `lanes`). */
+interface RunLane {
+  runId: string;
+  /** Where its later media and terminal go: the bubble its turn showed — or, when none
+   *  opened here, the one the transcript made (looked up in Convex). */
+  messageId: string | null;
+  /** The run segment that bubble is (the steer cuts before it opened). */
+  segment: number;
+  /** Frames waiting for the destination to be known (bounded with the lane). */
+  awaiting: Array<{ frame: unknown; now: number }>;
+  /** Destination lookups made so far (bounded). */
+  lookups: number;
+  turnStartMs: number;
+  createdAt: number;
+  /** closing: the close is queued or writing; closed: draining onto the bubble;
+   *  aborted: the close was refused — what it holds goes back to the turn; done: its
+   *  terminal is written. */
+  state: "closing" | "closed" | "aborted" | "done";
+  normalizer: Normalizer | null;
+  hosted: Set<string>;
+  tail: Promise<void>;
+  queued: number;
+}
+
 export class RunManager {
   private readonly normalizer: Normalizer;
   private readonly sink: TurnSink;
@@ -125,6 +149,35 @@ export class RunManager {
   // (startAssistant's Convex write in flight): its frames racing that write on
   // the concurrent consume loop must be stashed, not dropped-as-stale (codex P2).
 
+  /**
+   * ONE SERIAL LANE PER RUN THE TRANSCRIPT CLOSES (projection `on`, phase 4 — codex
+   * passes 17–20). The turn ends on the transcript's fact (`settleFromTranscript`) while
+   * the live run may still have things to say: the media it delivers after its rows and
+   * its own terminal. Everything of that run goes through its lane, strictly one item at
+   * a time, each awaited to completion (uploads included): the close finalize, then every
+   * frame of the run in arrival order — its media through `addMedia`, its live terminal
+   * through `finalizeClosedRun` (the terminal Convex waits for before judging a file
+   * job). So a terminal can never overtake a media, and a failed close never drops what
+   * follows: the run stays recorded, with the destination captured when the close was
+   * decided. A close the ordered unit refuses (the turn moved on) turns the lane back
+   * into the turn's own pipeline for what it holds. Frames of other runs never wait on a
+   * lane (the routing is decided synchronously — G-29). Bounded by count, by queued
+   * items and by age; removed after the run's terminal or its TTL; kept across a switch
+   * back to shadow (a run closed before it still delivers).
+   */
+  private readonly lanes = new Map<string, RunLane>();
+  static readonly MAX_TRANSCRIPT_CLOSED = 16;
+  /** In the INJECTED clock's unit — seconds (session.ts `defaultClock`): every `now` this
+   *  class receives is one (codex phase 4 pass 21: a millisecond bound made it ~7 days). */
+  static readonly TRANSCRIPT_CLOSED_TTL_S = 10 * 60;
+  static readonly MAX_LANE_ITEMS = 256;
+  /** Lookups of a closed run's projected bubble before its lane gives up (the Convex
+   *  deferred check then settles its file job). One per lane event, never on a timer. */
+  static readonly MAX_DESTINATION_LOOKUPS = 3;
+  private readonly chatId: string;
+  private readonly writer: ConvexWriter;
+  private readonly providerSessionId: string | null;
+
   constructor(
     chatId: string,
     sessionKey: string,
@@ -137,6 +190,9 @@ export class RunManager {
     providerSessionId: string | null = null,
   ) {
     this.sessionKey = sessionKey;
+    this.chatId = chatId;
+    this.writer = writer;
+    this.providerSessionId = providerSessionId;
     this.normalizer = new Normalizer(sessionKey, providerSessionId);
     this.sink = new TurnSink(chatId, writer, outboundScan, sessionKey, onTurnError);
   }
@@ -192,6 +248,8 @@ export class RunManager {
   /** The instance's projection switch, as the last `/send` carried it. */
   setProjection(on: boolean): void {
     this.projection = on;
+    // Phase 4: on a projected session the transcript decides when a turn ended.
+    this.normalizer.transcriptDecides = on;
     if (!on) {
       this.heldInputs.clear();
       this.inputAckRuns.clear();
@@ -513,6 +571,12 @@ export class RunManager {
    *  The session queries the gateway on it instead of closing the turn. */
   takeRecvSilence(): boolean {
     return this.normalizer.takeRecvSilence();
+  }
+
+  /** Projection `on`: a silence was answered by a transcript read — the silence budget
+   *  restarts (one read per budget, never an end). */
+  rearmSilence(now: number): void {
+    this.normalizer.rearmSilence(now);
   }
 
   /** TRUE when own frames RESUMED since the silence elapse (recv re-armed). */
@@ -841,15 +905,19 @@ export class RunManager {
     if (ackRunId) {
       this.normalizer.noteRunStarted(ackRunId, now);
     }
+    // PROJECTION `on` (phase 4): a sent turn's bubble is born from its run (first visible
+    // content or tool activity), never at the ACK — a run with nothing to show leaves none.
+    const bornFromRun = this.projection && turnContext?.spontaneous !== true;
     await this.sink.beginTurn(
       ackRunId,
       turnContext?.pressure,
-      turnContext?.spontaneous === true,
+      turnContext?.spontaneous === true || bornFromRun,
       turnContext?.rehydrated === true,
       turnContext?.dispatchOutboxId ?? null,
       {
         compactedBeforeSend: turnContext?.compactedBeforeSend === true,
         ...(this.projection ? { projection: true } : {}),
+        ...(bornFromRun ? { openOnActivity: true } : {}),
       },
     );
     // Flush the pre-turn provenance stash for THIS run only; entries from any
@@ -1017,6 +1085,20 @@ export class RunManager {
   private async feedInner(frame: unknown, now: number): Promise<void> {
     // Observe-only protocol-drift classification (never gates the frame).
     protocolDrift.observe(frame);
+    await this.feedObserved(frame, now);
+  }
+
+  /** A frame already observed (a held frame replays through here — counted once). */
+  private async feedObserved(frame: unknown, now: number): Promise<void> {
+    // A frame of a run with a lane (closing or closed by the transcript): onto its lane,
+    // decided SYNCHRONOUSLY and never awaited here — a frame of any other run takes no
+    // extra await, so the feed's single ordered application path (G-29) is untouched.
+    if (this.enqueueOnLane(frame, now)) return;
+    await this.feedPipeline(frame, now);
+  }
+
+  /** The turn's own pipeline for a frame (a lane hands back what it held here). */
+  private async feedPipeline(frame: unknown, now: number): Promise<void> {
     const late = this.lateFinalFor(frame);
     if (late !== null) {
       const settled = late.settled;
@@ -1577,6 +1659,271 @@ export class RunManager {
    * Force-finalize the active turn (e.g. on socket close or a send error). The
    * normalizer emits its terminal pair; the sink flushes it to Convex.
    */
+  /**
+   * THE TRANSCRIPT SAYS THE RUN IS OVER (projection `on`, phase 4): Convex's run table
+   * marked these runs settled — a terminal was observed, or a fresh `chat.history` found
+   * the session idle (`hasActiveRun:false`, which the gateway reports only once the
+   * terminal row is queryable — src/gateway/server-methods/chat-history-handler.ts:364-373
+   * at v2026.9.8; the Control UI retires its run on such a read, ui/src/pages/chat/
+   * run-lifecycle.ts:637-690). When the foreground turn's run is among them, the turn
+   * ends HERE — the fact that replaces every grace the legacy path waited on. The
+   * bubble itself was already settled from the rows, in the same Convex mutation; this
+   * write is the sink's own close (a no-op there: the first terminal wins).
+   * Returns whether a turn ended.
+   */
+  async settleFromTranscript(runIds: readonly string[], now: number): Promise<boolean> {
+    if (!this.projection || !this.sink.active || this.normalizer.finalized) return false;
+    // Only the run the turn is CURRENTLY following: a turn keeps the ids of the runs it
+    // owned before (a compaction that resumed the turn on a new run, an abandoned
+    // generation), and one of those ending says nothing about the run still writing —
+    // closing on it finalized a live answer half-written (codex phase 4 pass 2).
+    const current = this.normalizer.currentRunId;
+    if (current === null || !runIds.includes(current)) return false;
+    if (this.lanes.get(current)?.state === "closing") return false; // already under way
+    // The lane, SYNCHRONOUSLY, before any await: from here every frame of the run waits
+    // in it. Its destination is captured now (the bubble the turn shows), refined by the
+    // close itself when the bubble opened meanwhile.
+    const lane: RunLane = {
+      runId: current,
+      messageId: this.sink.currentMessageId,
+      segment: this.sink.openSegment,
+      awaiting: [],
+      lookups: 0,
+      turnStartMs: this.sink.turnStartedAtMs,
+      createdAt: now,
+      state: "closing",
+      normalizer: null,
+      hosted: new Set(),
+      tail: Promise.resolve(),
+      queued: 0,
+    };
+    this.lanes.set(current, lane);
+    this.pruneLanes(now);
+    let closed = false;
+    const done = this.onLane(lane, null, async () => {
+      // The close and the capture of ITS bubble are ONE ordered unit, before anything can
+      // open the next turn (codex phase 4 pass 18: `endTurn` flushes stashed announces,
+      // and the next turn's bubble — or none — was read as this run's).
+      try {
+        await this.runOrdered(async () => {
+          // Re-checked INSIDE the unit (codex phase 4 pass 19): units queued before this
+          // one can move the turn on a new run (a compaction resume keeps the epoch), end
+          // it, or a rollback can turn the projection off. Then this settle is not for it.
+          if (
+            !this.projection ||
+            !this.sink.active ||
+            this.normalizer.finalized ||
+            this.normalizer.currentRunId !== current
+          ) {
+            return;
+          }
+          closed = true;
+          // The destination, refreshed HERE — before the close's finalize, which can
+          // fail: a bubble that opened while the close was queued is this run's.
+          lane.messageId = this.sink.currentMessageId ?? lane.messageId;
+          lane.segment = this.sink.openSegment;
+          await this.sink.apply(this.normalizer.endTurn(now, "final", null, "transcript_settled", null));
+          const b = this.sink.lastSettledBubble;
+          if (b !== null && !this.sink.active && (b.runId === null || this.normalizer.ownRunIds.has(b.runId))) {
+            lane.messageId = b.messageId;
+          }
+        });
+      } catch (err) {
+        // A close that FAILED (Convex unreachable past its retries) still closed the turn
+        // here: the lane keeps the run with the destination it captured, and drains.
+        protocolDrift.observeException({ settle: current }, err, "feed");
+        console.error("[transcript] the close of a run failed (its lane keeps draining):", (err as Error)?.message ?? err);
+      }
+      if (closed) {
+        lane.state = "closed";
+        lane.normalizer = this.laneNormalizer(current, now);
+        this.noteIfSettled();
+        // No bubble opened here: the transcript's own (Convex made it from the rows).
+        if (lane.messageId === null) await this.lookUpDestination(lane);
+      } else {
+        lane.state = "aborted";
+      }
+    });
+    await done;
+    if (closed && !this.sink.active) await this.flushPendingAnnounce(now);
+    return closed;
+  }
+
+  /** The bubble the transcript made for a closed run that opened none here (Convex,
+   *  verified for this bridge's instance, chat, session, run and segment). Only a lane
+   *  reaches this — and a lane exists only for a run a projected turn closed. */
+  private async lookUpDestination(lane: RunLane): Promise<void> {
+    if (this.writer.findProjectedBubble === undefined) {
+      lane.lookups = RunManager.MAX_DESTINATION_LOOKUPS;
+      return;
+    }
+    lane.lookups++;
+    try {
+      const id = await this.writer.findProjectedBubble(this.chatId, this.sessionKey, lane.runId, lane.segment);
+      if (id !== null) lane.messageId = id;
+    } catch (err) {
+      protocolDrift.observeException({ closedRun: lane.runId }, err, "feed");
+      console.error("[transcript] a closed run's bubble lookup failed (will retry):", (err as Error)?.message ?? err);
+    }
+  }
+
+  /** The private normalizer that reads a closed run's later frames as its turn would. */
+  private laneNormalizer(runId: string, now: number): Normalizer {
+    const normalizer = new Normalizer(this.sessionKey, this.providerSessionId);
+    normalizer.transcriptDecides = true;
+    normalizer.beginTurn(now);
+    normalizer.noteRunStarted(runId, now);
+    return normalizer;
+  }
+
+  /** Drop the lanes past their age, then the oldest past the count. */
+  private pruneLanes(now: number): void {
+    for (const [id, lane] of this.lanes) {
+      if (now - lane.createdAt > RunManager.TRANSCRIPT_CLOSED_TTL_S) this.lanes.delete(id);
+    }
+    while (this.lanes.size > RunManager.MAX_TRANSCRIPT_CLOSED) {
+      this.lanes.delete(this.lanes.keys().next().value as string);
+    }
+  }
+
+  /** Queue `task` on the lane, strictly after everything already on it. Errors are
+   *  reported (the same sensor as `feed`) and never stop the lane. */
+  private onLane(lane: RunLane, frame: unknown, task: () => Promise<void>): Promise<void> {
+    lane.queued++;
+    const run = lane.tail.then(async () => {
+      try {
+        await task();
+      } catch (err) {
+        protocolDrift.observeException(frame, err, "feed");
+        console.error("[transcript] a run lane item failed (non-fatal):", (err as Error)?.message ?? err);
+      } finally {
+        lane.queued--;
+        // An aborted lane has handed back what it held: the run is the turn's again.
+        if (lane.state === "aborted" && lane.queued === 0 && this.lanes.get(lane.runId) === lane) {
+          this.lanes.delete(lane.runId);
+        }
+      }
+    });
+    lane.tail = run;
+    return run;
+  }
+
+  /** A frame of a run that has a lane: queued on it (true), never awaited by the caller. */
+  private enqueueOnLane(frame: unknown, now: number): boolean {
+    if (this.lanes.size === 0) return false;
+    this.pruneLanes(now);
+    const rid = sessionRunIdFor(frame, this.sessionKey);
+    const lane = rid === null ? undefined : this.lanes.get(rid);
+    if (lane === undefined) return false;
+    // A closed run followed by a live turn again (a resume): that turn owns its frames.
+    if (lane.state === "closed" && this.sink.active && this.normalizer.ownRunIds.has(lane.runId)) return false;
+    if (lane.queued >= RunManager.MAX_LANE_ITEMS) {
+      console.log("[transcript] a frame of a closed run was dropped (lane bound reached)");
+      return true;
+    }
+    void this.onLane(lane, frame, () => this.laneFrame(lane, frame, now));
+    return true;
+  }
+
+  /** One frame on its run's lane: handed back to the turn (aborted close), or its media
+   *  and terminal written onto the run's bubble (closed), each to completion. */
+  private async laneFrame(lane: RunLane, frame: unknown, now: number): Promise<void> {
+    if (lane.state === "aborted") {
+      await this.feedPipeline(frame, now);
+      return;
+    }
+    if (lane.state !== "closed" || lane.normalizer === null) return;
+    if (lane.messageId === null) {
+      // Still no destination: look again — one lookup per lane event; the lane gives up
+      // (below) once MAX_DESTINATION_LOOKUPS failed, so this is bounded. Meanwhile the
+      // frame waits, in order.
+      await this.lookUpDestination(lane);
+      if (lane.messageId === null) {
+        if (lane.lookups < RunManager.MAX_DESTINATION_LOOKUPS && lane.awaiting.length < RunManager.MAX_LANE_ITEMS) {
+          lane.awaiting.push({ frame, now });
+          return;
+        }
+        // Given up: the Convex deferred check settles the file job with what arrived.
+        protocolDrift.observeException(
+          { closedRun: lane.runId },
+          new Error("closed run: no bubble found for its late media and terminal"),
+          "feed",
+        );
+        console.error("[transcript] a closed run's bubble was not found — its late frames are dropped");
+        lane.awaiting = [];
+        lane.state = "done";
+        if (this.lanes.get(lane.runId) === lane) this.lanes.delete(lane.runId);
+        return;
+      }
+      // Found: what waited goes first, in arrival order.
+      const waited = lane.awaiting;
+      lane.awaiting = [];
+      for (const w of waited) {
+        await this.laneFrame(lane, w.frame, w.now);
+        if (lane.state !== "closed") return;
+      }
+    }
+    const messageId = lane.messageId;
+    let final: { error: string | null; errorKind: string | null; cause: string | null } | null = null;
+    for (const e of lane.normalizer.feed(frame as never, now)) {
+      const ev = e as unknown as Record<string, unknown>;
+      if (e.type === "media" && Array.isArray(ev.items)) {
+        for (const raw of ev.items as unknown[]) {
+          const item = raw as { filename?: unknown; path?: unknown; explicit?: unknown };
+          if (typeof item.filename !== "string" || typeof item.path !== "string") continue;
+          if (lane.hosted.has(item.filename)) continue;
+          // Awaited to completion — upload included — before the lane moves on.
+          const attached = await this.writer.addMedia(messageId, {
+            chatId: this.chatId,
+            filename: item.filename,
+            path: item.path,
+            ...(typeof item.explicit === "boolean" ? { explicit: item.explicit } : {}),
+            turnStartMs: lane.turnStartMs,
+            runId: lane.runId,
+            markUpload: true,
+          });
+          if (attached) lane.hosted.add(item.filename);
+        }
+      } else if (e.type === "message.final") {
+        final = {
+          error: typeof ev.error === "string" ? ev.error : null,
+          errorKind: typeof ev.errorKind === "string" && ev.errorKind !== "" ? ev.errorKind : null,
+          cause: typeof ev.diagnosticFinalizeCause === "string" ? ev.diagnosticFinalizeCause : null,
+        };
+      } else if (
+        e.type === "run.status" &&
+        (ev.status === "final" || ev.status === "complete" || ev.status === "error" || ev.status === "aborted")
+      ) {
+        const status = ev.status === "error" ? "error" : ev.status === "aborted" ? "aborted" : "complete";
+        const f = final ?? { error: null, errorKind: null, cause: null };
+        lane.state = "done";
+        if (this.lanes.get(lane.runId) === lane) this.lanes.delete(lane.runId);
+        // The run's LIVE terminal, with ITS generation (the bubble may belong to another
+        // run by now — codex phase 4 pass 18): Convex keeps the bubble's text and status
+        // and settles what waited for the run's media.
+        await this.writer.finalizeClosedRun?.(
+          messageId,
+          lane.runId,
+          status,
+          f.error,
+          f.errorKind,
+          f.cause !== null && f.cause !== "transcript_settled" ? f.cause : "gateway_final",
+        );
+        return;
+      }
+    }
+  }
+
+  /** Every lane drained (tests; a session closing down). */
+  async lanesIdle(): Promise<void> {
+    for (let i = 0; i < 8; i++) {
+      const tails = [...this.lanes.values()].map((l) => l.tail);
+      if (tails.length === 0) return;
+      await Promise.all(tails);
+      if ([...this.lanes.values()].every((l) => l.queued === 0)) return;
+    }
+  }
+
   async endTurn(
     now: number,
     status = "final",

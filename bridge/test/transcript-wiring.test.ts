@@ -148,6 +148,22 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
+describe("Convex's answer reaches the turn (codex phase 4 pass 6 review)", () => {
+  it("on: a run Convex reports over is handed to the run manager — the answer is not dropped", async () => {
+    const h = await harness("2026.9.6");
+    (h.writer as unknown as { applyTranscript: (r: TranscriptApplyReport) => Promise<unknown> }).applyTranscript =
+      async (r) => {
+        h.applies.push(r);
+        return { ok: true, settledRuns: ["webchat-x"] };
+      };
+    const spy = vi.spyOn(h.session.runManager, "settleFromTranscript");
+    await performSend(h.session, body({ config: { transcriptProjection: "on" } }), h.writer, null, null);
+    await settle(h.session);
+    expect(h.applies.length).toBeGreaterThan(0);
+    expect(spy.mock.calls.some(([ids]) => (ids as readonly string[]).includes("webchat-x"))).toBe(true);
+  });
+});
+
 describe("the instance switch reaches the reconciler — and only where the facts exist", () => {
   it("shadow on 2026.9.6: one tail page read with the page budget, posted as identities", async () => {
     const h = await harness("2026.9.6");

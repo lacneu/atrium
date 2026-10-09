@@ -625,3 +625,368 @@ describe("a participant of the conversation", () => {
   });
 });
 
+
+// codex phase 4 pass 16 #2: under the transcript projection (`on`), the converter's answer
+// can be BORN terminal from the transcript's rows before its live run delivered the PDF.
+// The conversion waits for the media: the live terminal (or, without one, a deferred
+// check) correlates it — never the birth.
+describe("a conversion answered first by the transcript waits for its PDF", () => {
+  const SK = "agent:convbot:atrium:chat:alice:conv";
+  async function bornConversion(t: ReturnType<typeof convexTest>) {
+    const { userId, storageId } = await seed(t);
+    const as = t.withIdentity({ subject: `${userId}|session` });
+    await as.mutation(api.fileRenditions.requestRendition, { sourceStorageId: storageId });
+    const hidden = await t.run(async (ctx) => {
+      const inst = (await ctx.db.query("instances").collect())[0]!;
+      await ctx.db.patch(inst._id, { config: { converterAgentId: "convbot", transcriptProjection: "on" } as never });
+      return (await ctx.db.query("chats").filter((q) => q.eq(q.field("kind"), "converter")).first())!;
+    });
+    const apply = (rows: unknown[], extra: Record<string, unknown> = {}) =>
+      t.mutation(internal.transcriptProjection.applyTranscript, {
+        chatId: hidden._id,
+        boundInstanceName: hidden.instanceName ?? "prod",
+        sessionKey: SK,
+        sessionId: "s-conv",
+        kind: "delta",
+        deltaCursor: `c:${Math.random()}`,
+        rows,
+        terminals: [],
+        unidentified: 0,
+        ...extra,
+      } as never);
+    await apply([], { kind: "page" });
+    await apply(
+      [{ entryId: "a1", seq: 2, role: "assistant", runId: "run-conv", hidden: false, visible: true, text: "Voici le PDF." }],
+      { terminals: [{ runId: "run-conv", status: "completed", at: Date.now() }], hasActiveRun: false },
+    );
+    const rendition = () => t.run(async (ctx) => (await ctx.db.query("fileRenditions").first())!);
+    return { userId, hidden, rendition };
+  }
+  const pdfPart = (t: ReturnType<typeof convexTest>) =>
+    t.run(async (ctx) => {
+      const pdfId = await ctx.storage.store(new Blob(["%PDF"], { type: "application/pdf" }));
+      return { pdfId, part: { kind: "media" as const, storageId: pdfId, filename: "IFOA.pdf", mimeType: "application/pdf" } };
+    });
+
+  test("transcript first, then the PDF part, then the live finalize: the rendition is READY", async () => {
+    const t = convexTest({ schema, modules, transactionLimits: true });
+    const { hidden, rendition } = await bornConversion(t);
+    // Born terminal: the conversion is NOT judged yet (no PDF has arrived).
+    expect((await rendition()).status).toBe("pending");
+    const landed = (await t.mutation(internal.stream.startAssistant, {
+      chatId: hidden._id,
+      runId: "run-conv",
+      turnSessionKey: SK,
+      boundInstanceName: hidden.instanceName ?? "prod",
+    })) as Id<"messages">;
+    const { pdfId, part } = await pdfPart(t);
+    await t.mutation(internal.stream.addPart, { messageId: landed, part, expectedRunId: "run-conv" } as never);
+    const res = (await t.mutation(internal.stream.finalize, {
+      messageId: landed,
+      status: "complete",
+      text: "Voici le PDF.",
+      expectedRunId: "run-conv",
+    } as never)) as { transitioned: boolean };
+    expect(res.transitioned).toBe(false);
+    const row = await rendition();
+    expect(row.status).toBe("ready");
+    expect(row.pdfStorageId).toBe(pdfId);
+    // …and once: the deferred check finds the job settled and does nothing.
+    await t.finishAllScheduledFunctions(vi.runAllTimers);
+    expect((await rendition()).status).toBe("ready");
+  });
+
+  for (const rolledBack of [false, true]) {
+    test(`transcript → the bridge's echo → the PDF → the live terminal${rolledBack ? " (rolled back to shadow before the echo)" : ""}: READY`, async () => {
+      const t = convexTest({ schema, modules, transactionLimits: true });
+      const { hidden, rendition } = await bornConversion(t);
+      const landed = (await t.mutation(internal.stream.startAssistant, {
+        chatId: hidden._id,
+        runId: "run-conv",
+        turnSessionKey: SK,
+        boundInstanceName: hidden.instanceName ?? "prod",
+      })) as Id<"messages">;
+      if (rolledBack) {
+        await t.run(async (ctx) => {
+          const inst = (await ctx.db.query("instances").collect())[0]!;
+          await ctx.db.patch(inst._id, { config: { converterAgentId: "convbot", transcriptProjection: "shadow" } as never });
+        });
+      }
+      // The bridge closes its turn on the transcript's fact: its finalize ECHO carries
+      // `transcript_settled` and arrives before the run's media — it judges nothing.
+      await t.mutation(internal.stream.finalize, {
+        messageId: landed,
+        status: "complete",
+        text: "",
+        expectedRunId: "run-conv",
+        finalizeCause: "transcript_settled",
+      } as never);
+      expect((await rendition()).status).toBe("pending");
+      const { pdfId, part } = await pdfPart(t);
+      await t.mutation(internal.stream.addPart, { messageId: landed, part, expectedRunId: "run-conv" } as never);
+      // The run's LIVE terminal (run-manager `reconcileTranscriptClosed`).
+      await t.mutation(internal.stream.finalize, {
+        messageId: landed,
+        status: "complete",
+        text: "",
+        expectedRunId: "run-conv",
+        finalizeCause: "gateway_final",
+      } as never);
+      const row = await rendition();
+      expect(row.status).toBe("ready");
+      expect(row.pdfStorageId).toBe(pdfId);
+    });
+  }
+
+  test("no live terminal ever comes: the deferred check correlates what arrived (here the PDF)", async () => {
+    const t = convexTest({ schema, modules, transactionLimits: true });
+    const { hidden, rendition } = await bornConversion(t);
+    const born = await t.run(async (ctx) =>
+      (await ctx.db.query("messages").withIndex("by_chat", (q) => q.eq("chatId", hidden._id)).collect()).find((m) => m.role === "assistant")!,
+    );
+    const { pdfId, part } = await pdfPart(t);
+    await t.mutation(internal.stream.addPart, { messageId: born._id, part, expectedRunId: "run-conv" } as never);
+    expect((await rendition()).status).toBe("pending");
+    await t.finishAllScheduledFunctions(vi.runAllTimers);
+    const row = await rendition();
+    expect(row.status).toBe("ready");
+    expect(row.pdfStorageId).toBe(pdfId);
+  });
+});
+
+// codex phase 4 pass 22: the deferred file-job check never judges a job while the run's
+// upload is in flight — and never waits past its bound or a crashed bridge's window.
+describe("a deferred conversion waits for the run's uploads in flight", () => {
+  const SK = "agent:convbot:atrium:chat:alice:conv";
+  async function born(t: ReturnType<typeof convexTest>) {
+    const { userId, storageId } = await seed(t);
+    const as = t.withIdentity({ subject: `${userId}|session` });
+    await as.mutation(api.fileRenditions.requestRendition, { sourceStorageId: storageId });
+    const hidden = await t.run(async (ctx) => {
+      const inst = (await ctx.db.query("instances").collect())[0]!;
+      await ctx.db.patch(inst._id, { config: { converterAgentId: "convbot", transcriptProjection: "on" } as never });
+      // The dispatch went out (no bridge in this test): its scheduled send is not replayed.
+      for (const f of await ctx.db.system.query("_scheduled_functions").collect()) {
+        if (f.name === "bridge:dispatch" && f.state.kind === "pending") await ctx.scheduler.cancel(f._id);
+      }
+      return (await ctx.db.query("chats").filter((q) => q.eq(q.field("kind"), "converter")).first())!;
+    });
+    const apply = (rows: unknown[], extra: Record<string, unknown> = {}) =>
+      t.mutation(internal.transcriptProjection.applyTranscript, {
+        chatId: hidden._id,
+        boundInstanceName: hidden.instanceName ?? "prod",
+        sessionKey: SK,
+        sessionId: "s-conv",
+        kind: "delta",
+        deltaCursor: `c:${Math.random()}`,
+        rows,
+        terminals: [],
+        unidentified: 0,
+        ...extra,
+      } as never);
+    await apply([], { kind: "page" });
+    await apply(
+      [{ entryId: "a1", seq: 2, role: "assistant", runId: "run-conv", hidden: false, visible: true, text: "Voici le PDF." }],
+      { terminals: [{ runId: "run-conv", status: "completed", at: Date.now() }], hasActiveRun: false },
+    );
+    const answer = await t.run(async (ctx) =>
+      (await ctx.db.query("messages").collect()).find((m) => m.chatId === hidden._id && m.role === "assistant")!,
+    );
+    const status = async () => (await t.run(async (ctx) => (await ctx.db.query("fileRenditions").first())!)).status;
+    const upload = () =>
+      t.mutation(internal.stream.noteUploadStarted, {
+        messageId: answer._id,
+        boundInstanceName: hidden.instanceName ?? "prod",
+        windowMs: 5 * 60_000 + 20_000,
+      });
+    const part = async (mimeType: string, filename: string) => {
+      const sid = await t.run((ctx) => ctx.storage.store(new Blob(["%PDF"], { type: mimeType })));
+      await t.mutation(internal.stream.addPart, {
+        messageId: answer._id,
+        part: { kind: "media", storageId: sid, filename, mimeType },
+        expectedRunId: "run-conv",
+      } as never);
+      return sid;
+    };
+    const rollback = () =>
+      t.run(async (ctx) => {
+        const inst = (await ctx.db.query("instances").collect())[0]!;
+        await ctx.db.patch(inst._id, { config: { converterAgentId: "convbot", transcriptProjection: "shadow" } as never });
+      });
+    return { hidden, answer, status, upload, part, rollback };
+  }
+  /** Move the clock to `s` seconds after birth, running what falls due. */
+  const clockTo = (t: ReturnType<typeof convexTest>, t0: number) => async (s: number) => {
+    const delta = t0 + s * 1000 - Date.now();
+    if (delta > 0) vi.advanceTimersByTime(delta);
+    await t.finishInProgressScheduledFunctions();
+  };
+
+  for (const rolledBack of [false, true]) {
+    test(`a PDF delivered at 180 s, then the live terminal: READY${rolledBack ? " (rolled back)" : ""}`, async () => {
+      const t = convexTest({ schema, modules, transactionLimits: true });
+      const t0 = Date.now();
+      const b = await born(t);
+      const at = clockTo(t, t0);
+      await at(100);
+      await b.upload();
+      if (rolledBack) await b.rollback();
+      await at(121);
+      expect(await b.status()).toBe("pending");
+      await at(180);
+      await b.part("application/pdf", "IFOA.pdf");
+      await t.mutation(internal.stream.finalize, {
+        messageId: b.answer._id,
+        status: "complete",
+        text: "",
+        expectedRunId: "run-conv",
+        finalizeCause: "gateway_final",
+      } as never);
+      expect(await b.status()).toBe("ready");
+      await t.finishAllScheduledFunctions(vi.runAllTimers);
+      expect(await b.status()).toBe("ready");
+    });
+  }
+
+  test("two successive files (the PDF second), no live terminal: the deferred check waits for both", async () => {
+    const t = convexTest({ schema, modules, transactionLimits: true });
+    const t0 = Date.now();
+    const b = await born(t);
+    const at = clockTo(t, t0);
+    await at(100);
+    await b.upload();
+    await at(150);
+    await b.part("image/png", "thumb.png");
+    await at(400);
+    await b.upload();
+    await at(421);
+    expect(await b.status()).toBe("pending");
+    await at(500);
+    await b.part("application/pdf", "IFOA.pdf");
+    await at(721);
+    expect(await b.status()).toBe("ready");
+  });
+
+  for (const rolledBack of [false, true]) {
+    test(`the stale-rendition cron at 361 s waits for the announced upload — the PDF at 380 s makes it READY${rolledBack ? " (rolled back)" : ""}`, async () => {
+      const t = convexTest({ schema, modules, transactionLimits: true });
+      const t0 = Date.now();
+      const b = await born(t);
+      const at = clockTo(t, t0);
+      await at(100);
+      await b.upload();
+      if (rolledBack) await b.rollback();
+      await at(361);
+      await t.mutation(internal.fileRenditions.timeoutStaleRenditions, {});
+      expect(await b.status()).toBe("pending");
+      await at(380);
+      await b.part("application/pdf", "IFOA.pdf");
+      await t.mutation(internal.stream.finalize, {
+        messageId: b.answer._id,
+        status: "complete",
+        text: "",
+        expectedRunId: "run-conv",
+        finalizeCause: "gateway_final",
+      } as never);
+      expect(await b.status()).toBe("ready");
+    });
+  }
+
+  test("the cron still times out a projected job whose marker expired", async () => {
+    const t = convexTest({ schema, modules, transactionLimits: true });
+    const t0 = Date.now();
+    const b = await born(t);
+    const at = clockTo(t, t0);
+    await at(100);
+    await b.upload();
+    // Past the marker (420 s) — the deferred check would settle it too; the cron does.
+    vi.setSystemTime(t0 + 430_000);
+    await t.mutation(internal.fileRenditions.timeoutStaleRenditions, {});
+    expect(await b.status()).toBe("failed");
+  });
+
+  test("a bridge that keeps announcing uploads never holds the job past FILE_JOB_MAX_DEFER_MS (40 min)", async () => {
+    const t = convexTest({ schema, modules, transactionLimits: true });
+    const t0 = Date.now();
+    const b = await born(t);
+    const at = clockTo(t, t0);
+    for (let s = 100; s < 2600; s += 250) {
+      await at(s);
+      await b.upload();
+    }
+    await at(2350);
+    expect(await b.status()).toBe("pending");
+    await at(2601);
+    expect(await b.status()).toBe("failed");
+  });
+
+  test("a bridge that crashes mid-upload: the marker expires and the job is settled", async () => {
+    const t = convexTest({ schema, modules, transactionLimits: true });
+    const t0 = Date.now();
+    const b = await born(t);
+    const at = clockTo(t, t0);
+    await at(100);
+    await b.upload();
+    await at(410);
+    expect(await b.status()).toBe("pending");
+    await at(421);
+    expect(await b.status()).toBe("failed");
+  });
+});
+
+// codex phase 4 pass 24: a page of renditions the projection's wait keeps pending never
+// makes the cron spin on it — the scan continues past it and reaches the rest.
+describe("the stale-rendition cron makes progress past rows waiting for an upload", () => {
+  test("50 deferred renditions + an expired 51st: the 51st is failed, the 50 wait, no hot loop", async () => {
+    const t = convexTest({ schema, modules, transactionLimits: true });
+    const now = Date.now();
+    const created = now - 6 * 60_000; // past the 5-minute timeout, within the wait's bound
+    const make = async (deferred: boolean) =>
+      t.run(async (ctx) => {
+        const userId = await ctx.db.insert("users", {});
+        const sourceStorageId = await ctx.storage.store(new Blob(["PPTX"]));
+        const chatId = await ctx.db.insert("chats", { userId, updatedAt: 1, instanceName: "prod", agentId: "main" } as never);
+        const renditionId = await ctx.db.insert("fileRenditions", {
+          sourceStorageId,
+          chatId,
+          userId,
+          sourceFilename: "deck.pptx",
+          sourceMimeType: "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+          status: "pending",
+          converterInstance: "prod",
+          converterAgentId: "convbot",
+          createdAt: created,
+          updatedAt: created,
+        } as never);
+        const hidden = await ctx.db.insert("chats", {
+          userId,
+          updatedAt: 1,
+          kind: "converter",
+          instanceName: "prod",
+          agentId: "convbot",
+          pendingConvert: { renditionId, createdAt: created },
+          ...(deferred ? { transcriptSeenAt: 1 } : {}),
+        } as never);
+        await ctx.db.insert("messages", {
+          chatId: hidden,
+          userId,
+          role: "assistant",
+          status: "complete",
+          text: "",
+          runId: "run-conv",
+          updatedAt: 1,
+          ...(deferred ? { uploadsInFlightUntil: now + 5 * 60_000 } : {}),
+        } as never);
+        return renditionId;
+      });
+    const waiting: string[] = [];
+    for (let i = 0; i < 50; i++) waiting.push(String(await make(true)));
+    const expired = await make(false);
+    await t.mutation(internal.fileRenditions.timeoutStaleRenditions, {});
+    // A spinning cron would never let this finish (convex-test bounds the iterations).
+    await t.finishAllScheduledFunctions(vi.runAllTimers);
+    const rows = await t.run(async (ctx) => (await ctx.db.query("fileRenditions").collect()) as Array<{ _id: string; status: string }>);
+    expect(rows.find((r) => r._id === String(expired))?.status).toBe("failed");
+    expect(rows.filter((r) => waiting.includes(r._id) && r.status === "pending")).toHaveLength(50);
+  });
+});

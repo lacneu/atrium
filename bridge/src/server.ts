@@ -3245,7 +3245,12 @@ async function performSendComposed(
       conn.claimCreatedSession = false;
       conn.sessionReplaced = false;
     }
-    const ackRunId = extractRunId(response);
+    // PROJECTION `on` (phase 4): an ACK that names no run never leaves the turn open to
+    // ANY run of the session (the legacy "everything before the run is known" admission,
+    // design §8.1): the send's identity IS the run the gateway starts for it (the
+    // `chat.send` idempotency key — `const clientRunId = p.idempotencyKey`, upstream
+    // src/gateway/server-methods/chat-send-session.ts:103 at v2026.9.8 — is the ACK's runId).
+    const ackRunId = extractRunId(response) ?? (projectionOn && sendKey !== "" ? sendKey : null);
     ackStatus = (response as { payload?: { status?: unknown } } | undefined)?.payload?.status;
     // Anchor the RAW user text for orphan-recovery boundary validation — NOT
     // params.message: the enriched message can END with static injections (the

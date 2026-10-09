@@ -47,3 +47,18 @@ export function custodyBadge(
       return null;
   }
 }
+
+/**
+ * PROJECTION `on` (phase 4): does the composer say the agent works? A sent turn's bubble is
+ * born at its run's first content; until then the gateway's fact does, until its deadline
+ * (`followUpState.workingUntil`). Only while the conversation still ends on the reader's
+ * message: once an answer is there, the short lag before the next read must not show a
+ * second "thinking" under it.
+ */
+export function isProjectedWorking(
+  workingUntil: number | null,
+  lastRole: string | null,
+  now: number,
+): boolean {
+  return workingUntil !== null && workingUntil > now && lastRole === "user";
+}

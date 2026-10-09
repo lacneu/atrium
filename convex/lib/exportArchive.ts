@@ -82,6 +82,14 @@ export const MESSAGE_FIELDS_DROPPED: ReadonlyArray<string> = [
   // idempotency key, bound to a gateway session of the SOURCE deployment). Same reason
   // as `turnSessionKey`: session state, not the exchange.
   "sendId",
+  // The send identities it carried before (same reason).
+  "priorSendIds",
+  // An upload in flight into it (projection `on`): live delivery state.
+  "uploadsInFlightUntil",
+  // Whether its outcome was inferred (projection `on`): settlement state.
+  "closeInferred",
+  // Service correlates waiting for the outcome (projection `on`): settlement state.
+  "statusJobsDeferred",
   // The gateway's custody of that send (phase 3): a fact about a session of the SOURCE
   // deployment, display-only, meaningless once the message is copied elsewhere.
   "custody",
@@ -292,6 +300,9 @@ export const CHAT_FIELDS_DROPPED: ReadonlyArray<string> = [
   "forkPendingRehydration",
   "historyPin",
   "stoppedAt",
+  "projectedHoldRecheckAt",
+  "projectedHoldRecheckId",
+  "transcriptSeenAt",
   "lastRoutedInstanceName",
   "lastRoutedAgentId",
   // THE TRASH is this deployment's lifecycle of the row, not the conversation: an
