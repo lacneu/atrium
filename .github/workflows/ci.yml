@@ -69,6 +69,12 @@ jobs:
       - name: Install dependencies
         run: npm ci || npm install
 
+      - name: Reject high and critical application dependency vulnerabilities
+        run: npm audit --omit=dev --audit-level=high
+
+      - name: Verify dependency security policy
+        run: node --test scripts/dependency-security.test.mjs
+
       # convex/_generated is committed (Convex convention) so typecheck/build run
       # without a live backend. The front↔convex contract is enforced here: a
       # mismatch between src/ and the generated API fails the typecheck.
