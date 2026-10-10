@@ -35,6 +35,7 @@ import {
   Authenticated,
   AuthLoading,
   Unauthenticated,
+  useConvexAuth,
   useMutation,
   useQuery,
 } from "convex/react";
@@ -77,6 +78,8 @@ import { ChatArrivalWatcher } from "./chat/ChatArrivalWatcher";
 import { useStartNewChat } from "./chat/useStartNewChat";
 import { DevUserSwitcher } from "./chat/DevUserSwitcher";
 import { UserMenu } from "./chat/UserMenu";
+import { LoginBoundary } from "./AutheliaLogin";
+import { autheliaBrowserLogin } from "./lib/autheliaLogin";
 import { NotificationBell } from "./chat/NotificationBell";
 import { GlobalSearch } from "./chat/GlobalSearch";
 import {
@@ -241,6 +244,10 @@ type Me = {
 // ===========================================================================
 
 function RootShell() {
+  const { isAuthenticated } = useConvexAuth();
+  useEffect(() => {
+    if (isAuthenticated) autheliaBrowserLogin().authenticated();
+  }, [isAuthenticated]);
   return (
     <>
       <AuthLoading>
@@ -341,6 +348,7 @@ function SignIn() {
     !providers.authelia &&
     !providers.anonymous;
   return (
+    <LoginBoundary providers={providers}>
     <div className="oc-signin">
       {/* Crisp line motif: the Atrium logo's CENTER pulse (heartbeat) scaled to
           span the screen, like the social-preview background. SVG strokes give the
@@ -433,6 +441,7 @@ function SignIn() {
         ) : null}
       </div>
     </div>
+    </LoginBoundary>
   );
 }
 

@@ -16,6 +16,7 @@ import {
 import { m } from "@/paraglide/messages.js";
 import { api } from "./convexApi";
 import type { ThemeMode } from "@/lib/useTheme";
+import { autheliaBrowserLogin } from "@/lib/autheliaLogin";
 
 // Single top-right account menu: identity header + theme mode (radio) + sign out.
 // Deliberately minimal — the most usual shortcuts only. Language and the detailed
@@ -35,6 +36,11 @@ export function UserMenu({
   minimal?: boolean;
 }) {
   const { signOut } = useAuthActions();
+  async function leaveAtrium() {
+    // Pause automatic SSO before invalidating the Atrium session. Other apps stay signed in.
+    autheliaBrowserLogin().signedOut();
+    await signOut();
+  }
   // OPTIMISTIC: apply the chosen mode to the local getMe cache IMMEDIATELY (the app
   // reads resolvedThemeMode from there), then persist in the background. Without it
   // the theme only flips AFTER the server round-trip + the getMe-invalidation
@@ -66,7 +72,7 @@ export function UserMenu({
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end" className="w-52">
         {minimal ? (
-          <DropdownMenuItem onClick={() => void signOut()}>
+          <DropdownMenuItem onClick={() => void leaveAtrium()}>
             <LogOut /> {m.usermenu_sign_out()}
           </DropdownMenuItem>
         ) : (
@@ -94,7 +100,7 @@ export function UserMenu({
               </DropdownMenuRadioItem>
             </DropdownMenuRadioGroup>
             <DropdownMenuSeparator />
-            <DropdownMenuItem onClick={() => void signOut()}>
+            <DropdownMenuItem onClick={() => void leaveAtrium()}>
               <LogOut /> {m.usermenu_sign_out()}
             </DropdownMenuItem>
           </>

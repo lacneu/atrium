@@ -349,6 +349,7 @@ secrets:
     AUTH_AUTHELIA_ID: ""
     AUTH_AUTHELIA_SECRET: ""
     AUTH_AUTHELIA_ISSUER: ""
+    AUTH_LOGIN_MODE: "providers"
     # @convex-dev/auth keys. JWT_PRIVATE_KEY = PEM with REAL newlines; JWKS = raw JSON.
     JWT_PRIVATE_KEY: ""
     JWKS: ""
