@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Resolve proxy-addr 2.0.8 without changing its dependency graph, fixing the
+  official critical IP-spoofing advisory GHSA-jqcg-44mw-7w3h. The function
+  deployer includes development dependencies; reject critical advisories in
+  that complete graph in both Node CI jobs as well as retaining the stricter
+  high/critical production dependency gate.
+
 - Resolve Seroval 1.6.9 and source-map-js 1.2.2 in the dependency lockfile.
   Keep the rest of the dependency graph unchanged. Reject high and critical
   application dependency advisories in both Node CI jobs before merge.

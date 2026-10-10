@@ -72,6 +72,9 @@ jobs:
       - name: Reject high and critical application dependency vulnerabilities
         run: npm audit --omit=dev --audit-level=high
 
+      - name: Reject critical vulnerabilities in deployer development dependencies
+        run: npm audit --include=dev --audit-level=critical
+
       - name: Verify dependency security policy
         run: node --test scripts/dependency-security.test.mjs
 
