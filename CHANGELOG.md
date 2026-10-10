@@ -1,5 +1,470 @@
 # Changelog
 
+## [0.96.0] — The bubbles come from the session transcript
+
+Minor release, the second step of the transcript redesign you can see. Like 0.95.0 it changes
+nothing unless an OpenClaw instance's `transcriptProjection` is `on`; an instance at `off` or
+`shadow` behaves exactly as in 0.95.0. **`on` stays opt-in and is not for production yet:** keep
+production instances at `off` or `shadow` until a dedicated hardening campaign for `on` has run
+(see the known limitations below). Deploy Convex before the bridge (the bridge sends rows
+carrying their text, which an older Convex refuses), and the frontend with Convex. To roll back,
+set the instance back to `shadow`: the bubbles already written stay ordinary messages, and
+nothing the projection had already planned writes after the switch (or after the conversation
+moves to another instance).
+
+**What a conversation shows is what the agent's session recorded.** On a projected instance the
+live stream is now only a preview. When a run of the session is over — its terminal arrived, or
+the gateway reports the session idle — Atrium reads the run's rows back from the session
+transcript and rewrites its bubble from them, in the same message: no flicker, no second bubble.
+Whatever the live stream missed or doubled is corrected there: a reply cut by the gateway's
+display limit shows whole, a part of an answer repeated after a bridge restart disappears, and a
+text the agent sent with its `message` tool is in the bubble of the run that sent it.
+
+**A reply appears even when nothing was streamed for it.** A run Atrium did not follow live —
+an answer to a message whose acknowledgement was lost, a run started by another client, a run
+that delivered its answer only through a tool — gets its bubble from the transcript once it is
+over, placed right after the message it follows in the session.
+
+**A bubble opens when the agent starts doing something.** Sending no longer creates an empty
+bubble that waits for the reply: the bubble appears with the run's first words or first tool
+card, and a run that ends with nothing to show leaves none. While the agent works without
+having shown anything yet, the composer still says so — it now reads the gateway's own
+"a run is active" fact — and a message you chose to queue waits until the gateway reports the
+session free, or until it reports your earlier message cancelled. If the bridge goes away and
+no report ever comes, the queued message leaves once that fact is too old to trust (15
+minutes), instead of waiting for the next reply.
+
+**A long transcript read is never half-stored.** The bridge sends what a read's rows say ahead
+of the read, in pieces Convex can store in one go, and only then the read itself; Convex refuses
+anything larger instead of keeping part of it, and the bridge splits and sends again. A read
+whose text could not all be stored is read again from the same place — no answer is lost or
+shortened, however much the agent wrote at once.
+
+**Deleting an answer deletes what Atrium kept of it.** On a projected instance Atrium keeps a
+copy of what each transcript row says, to rebuild bubbles from it. Deleting a message now deletes
+the copy of every row of that answer — including rows read while it was still streaming, and rows
+that arrive afterwards — as does the cleanup of a summarizer or curator conversation and the
+deletion of a conversation; a later read never brings it back, and the deleted answer is never
+rebuilt — not from the transcript, and not by a late or replayed live stream of the same run,
+whatever the instance's mode. Deleting your own message takes its answer with it the same
+way, even when that answer had no bubble yet — including the answer to a message you added while
+the agent was working, and the answers to every earlier attempt of a message that was sent again. A conversation the transcript was never read for
+does no extra work when you delete messages.
+
+**Work you stopped stays stopped.** A sub-agent result that arrives after you pressed Stop
+is not shown live (as before), and it is not rebuilt from the transcript afterwards either.
+
+**A turn ends when the gateway says so, never on a timer.** On a projected instance the bridge
+no longer closes a turn after waiting a fixed time for a reply that might come (the waits after
+an empty final, a cut final, a short acknowledgement, a "finishing" or an ended lifecycle), and
+no longer reads the words of a reply to decide anything. A turn ends on the run's terminal, or
+when the transcript shows the run is over. A long silence makes the bridge ask the gateway;
+it never ends the turn by itself. A bridge that loses its connection mid-turn no longer polls
+the transcript for nine minutes: the bubble is settled from the transcript the next time the
+conversation is read (on the next send, or when the stuck-stream check asks the bridge).
+
+**The three limitations of `on` listed in 0.95.0 are fixed:**
+- a delegated run that waits for a sub-agent (`sessions_yield`), then answers with its `message`
+  tool and a sentence of its own, now shows both in its bubble;
+- an input whose acknowledgement was lost no longer loses its answer: the answer's bubble comes
+  from the transcript;
+- a bubble resumed after a bridge restart no longer repeats part of the earlier answer.
+
+A bubble that holds several runs (a sub-agent's result merged into its parent's answer) is rebuilt
+from the transcript only once every one of those runs has been read back whole; until then it
+keeps what it shows. A sub-agent result that failed and that the gateway runs again resumes its
+bubble as in 0.95.0. A reply rebuilt from the transcript after its run failed shows the
+provider's reason (for example insufficient credits) once the live stream reports it.
+
+**Known limitations of `on` in this version:**
+- A run that only used tools and that Atrium did not follow live gets no bubble yet: its tool
+  cards are built from the live stream only.
+- A delegation chain is still merged into one bubble by the live path (0.95.0's rules); building
+  that grouping from the transcript is the next step.
+- When two instances expose the same agent id and therefore share a session key for one
+  conversation, only the first instance that writes that session gets it projected (unchanged).
+- Deleting is deliberately over-careful. Deleting an answer also discards what Atrium kept of the
+  rest of that run after it — including a later part the agent wrote after you deleted the
+  answer — and, when the transcript had not yet shown where the deleted part began, possibly of
+  the earlier parts of the same run too. Those earlier bubbles keep what they show but are no
+  longer rebuilt from the transcript.
+- When the transcript reveals a message you added while the agent was working only late, a part
+  of the answer rebuilt afterwards can be attached to the wrong bubble of the same run (display
+  placement only — nothing deleted comes back).
+- A run cut by more than 1 000 messages added while it worked is never rebuilt (its bubbles keep
+  what was streamed), and past 1 000 deletion marks on one run the whole run counts as deleted.
+- A file job (a document conversion, a documentary fetch, a summary, a curation) whose answer
+  the transcript closed waits for the run's own end, its uploads in flight and a bounded grace
+  before it is judged; a job can therefore take a few minutes longer to settle than with `off`.
+
+## [0.95.0] — Send while the agent works, like OpenClaw's Control UI
+
+Minor release, and the first step of the transcript redesign you can see.
+
+**The new way of sending is opt-in, per instance, and we recommend leaving it off for now.** It
+runs only for a conversation whose turns go to an OpenClaw instance whose `transcriptProjection`
+is `on` (for a conversation that picks the agent turn by turn, the instance of its current
+route; for an older conversation bound to nothing, its owner's default agent). Nothing turns it
+on by itself: an instance left at `off` or `shadow` sends exactly as in 0.94.0. **Keep production
+instances at `off` (or `shadow`) until the next step of the redesign**; use `on` only on an
+instance you are evaluating. In this version the bubbles of a
+turn that receives messages while it works are still cut and placed live, as the frames arrive;
+the next step of the redesign builds them from the session transcript itself, which is what
+makes this mode dependable across bridge restarts and repeated interruptions. Deploy Convex before the bridge — the bridge sends new
+fields and calls new writes that an older Convex refuses — and the frontend with Convex. To
+roll back, set the instance back to `shadow`: nothing new is used, and the bubbles already
+written stay ordinary messages.
+
+**A message sent while the agent works goes to the agent at once.** Until now Atrium held it
+until the turn ended and the agent was free, then sent it as a new turn. On a projected
+instance it now goes immediately, the way OpenClaw's own Control UI sends it: with the
+session's queue mode, which by default injects it into the turn in progress ("steer"), so the
+agent takes it into account without finishing first. A gateway configured otherwise (follow-up,
+collect, interrupt) is followed. The composer shows what Enter will do while the agent works
+and offers the three choices explicitly — steer now, queue it until the agent is free, or
+interrupt the agent and send — plus a personal default (the agent's mode, steer or queue);
+⌘/Ctrl+Enter does the other of queue and steer. Queued messages wait in Atrium's queue as
+before and can still be edited or withdrawn there.
+
+**The answer lands where it belongs.** When a message is steered into the turn in progress, the
+agent's bubble is cut at that point: what the agent did before stays above your message, and
+what it answers comes below it — instead of an answer appearing above the question it
+answers. When the gateway queues a message behind the turn, the run that answers it gets its own
+bubble, after it, instead of being folded into the previous answer. A run that ends with
+nothing to show leaves no bubble, as in the Control UI, instead of an "empty response" error.
+When the gateway adds a final sentence after a run's first terminal (OpenClaw 2026.9.8 writes
+"The tool run finished, but no final summary was produced…" for a tool-only run), it is shown in
+that run's bubble.
+
+**Each message says what the agent did with it.** A discreet line under your message tells you
+when the agent added it to the turn in progress, when it waits in the agent's own queue, and when
+the agent cancelled or interrupted it. On OpenClaw 2026.9.7 and later, a message waiting in the
+agent's queue can be withdrawn from there.
+
+**No message runs twice.** Atrium no longer re-sends a message by itself after a turn that ended
+without a reply — the gateway had received that message, and re-sending it ran it a second time
+(the case reported on 2026-09-30). On a projected instance an automatic retry now happens only
+when the gateway refused the message before accepting it (a session gone, archived, or still
+initializing), and never when Atrium has any trace that the gateway received it. The other
+mechanisms that held or delayed a send to work around the same problem are off on a projected
+instance: the wait while a sub-agent works, the wait for a delivery run to end, the pause before
+a queued message leaves, and the re-parking of a send that found the conversation busy.
+
+**A bridge restart no longer loses the turn in progress.** When the bridge restarts during a
+turn, the bubble used to stay frozen and, five minutes later, end as "connection lost" — even
+when the agent went on and answered. On a projected instance Atrium first asks the bridge
+whether the agent is still working on it; if so, the bubble resumes and receives the rest of the
+answer. The same happens when you send a message into that conversation right after a restart.
+
+**Stop works like the Control UI's.** Stop now targets the run that is actually working, and
+when no run of the conversation is in progress here it stops the session and clears what the
+gateway still had queued for it.
+
+**Known limitation, with `on` as with `off`.** When the agent waits for a sub-agent
+(`sessions_yield`) and, once its result is in, sends the answer with its `message` tool and then
+ends with a sentence of its own, the bubble shows only that last sentence. The text sent with the
+tool is in the session transcript, and OpenClaw's Control UI shows it, but Atrium does not: the
+gateway runs that resumption itself without sending Atrium the tool's arguments, and Atrium only
+looks a delivered text up in the transcript when the run ends with nothing else to show. This is
+not new in 0.95.0 (an `off` instance reads that run the same way); building the bubbles from the
+transcript, the next step, removes it.
+
+**Known limitations of `on` in this version.** These are why `on` stays off in production until
+the next step, which replaces live bubble placement with bubbles built from the transcript:
+- If the gateway accepts a message sent while the agent works but its acknowledgement is lost,
+  and the gateway still cannot confirm the message after three checks, the bridge stops waiting
+  for it. The answer may then not appear, although the agent did the work.
+- After a bridge restart in a turn whose bubble was cut (by a steered message, or by more than
+  50 cuts in a single run), the resumed bubble may show part of the earlier answer again.
+- When two instances expose the same agent id and therefore share a session key for one
+  conversation, only the first instance that writes that session gets it projected.
+
+## [0.94.0] — Session events and the input guard, in shadow
+
+Minor release. Nothing on screen changes. Apart from the anomaly detector fix at the end,
+everything new here runs only for an instance whose `transcriptProjection` is `shadow` (or
+`on`, which still behaves as `shadow`), and it never creates, edits or finishes a bubble.
+Deploy Convex before the bridge — the bridge posts new fields and a new kind of transcript
+write that an older Convex refuses (the bridge logs the refusal and carries on). The frontend
+is unchanged.
+
+**The transcript is now also read when the gateway says it changed.** For a projected instance
+the bridge opens one extra gateway connection — one per instance, only while a projected
+conversation is open, closed shortly after the last one — that subscribes to the gateway's
+session events, as OpenClaw's Control UI does. A new message in a conversation's session, a
+reset, a compaction, a change in what the gateway holds for that session, or the end of a run,
+now triggers the same bounded transcript read that the end of a turn already did, and a message
+the Control UI would apply directly is recorded at once. This connection declares the
+`session-scoped-events` capability, so the gateway sends it none of the turn traffic (replies,
+tool activity) it fans out to the conversation sockets, and nothing it receives ever reaches
+the code that builds bubbles. The previous refusal to subscribe was about subscribing the
+conversation's own socket, which mixed these events into a turn's frames; that socket still
+does not subscribe. If the connection drops, it reconnects with a backoff and every open
+conversation reads its transcript again.
+
+**What the gateway holds for each send is recorded.** Every transcript read now asks the
+gateway about the sends whose fate is not settled yet, and records its answer: an input it has
+received but not yet run (and, from 2026.9.7, whether it waits in the gateway's own queue), one
+cancelled or interrupted, one consumed — or none at all for a send it acknowledged. Identities
+only, never the text of a message.
+
+**`diagnose_chat` measures two more things.** The projection report adds I4 — an error card on
+a turn whose run left a visible answer in the transcript (the case of a reply that existed
+while Atrium showed a failure), not counted when the gateway itself says that run failed — and
+a guard measure: an input the gateway holds while Atrium's queue says the send failed (a retry
+would run it twice) or was never sent, an automatic retry of a message whose first send the
+gateway already holds (the same input run twice), and a sent input the gateway, asked after
+acknowledging it, holds no trace of. Both enter the verdict like the other gaps, and every
+lookup they cannot complete makes the result "consistent in window", never "consistent".
+
+**The anomaly detector no longer fights the traces it reads.** Every five minutes the detector
+scanned the recent trace window inside a database transaction that any new trace invalidated.
+Under steady traffic it failed repeatedly and was retried in a loop, re-reading up to 5,000
+traces each time; on a busy backend this coincided with other requests timing out. The window
+is now read without a transaction that can be invalidated, and only the anomaly records are
+written in one. A detection scanned before a newer one has been applied is discarded whole, so
+an overlapping run can neither close an alert whose condition still holds nor lower its
+severity. What it detects is unchanged.
+
+## [0.93.0] — OpenClaw 2026.9.7 and 2026.9.8 supported
+
+Support release, corrective throughout. No breaking changes in Atrium — but read the upgrade
+notes at the end of this entry before moving a gateway: 2026.9.7 refuses every conversation
+until its agent databases are migrated. OpenClaw 2026.9.7 and 2026.9.8 enter the validated
+range, each proved on the live bench, and 2026.9.8 becomes the validated ceiling; 2026.9.6
+stays validated and was proved again with the same gateway-reading code. Everything below was
+needed for 2026.9.7; 2026.9.8, a reliability hotfix of 2026.9.7 with the same wire contract,
+needed nothing more. The bridge changes, Convex receives two shared patterns (below), the
+frontend is unchanged. Deploy the bridge and Convex together.
+
+**Replies stream again on 2026.9.7.** 2026.9.7 changed how it streams a reply, without any
+negotiation: a connection now receives the reply's whole text once, then only what was added
+to it. Read the old way, the live reply froze on its first words until the turn ended. The
+bridge now rebuilds the full text on each connection before anything reads it, exactly as
+OpenClaw's own Control UI does, so every reply grows as it did on 2026.9.6 — and nothing
+changes on 2026.9.6, where every frame still carries the whole text. If a piece of the stream
+is ever missing, the bridge does not paste the next fragment onto the wrong text: it re-reads
+the reply in progress from the gateway, and the final answer, which always arrives whole,
+replaces it.
+
+**A busy gateway is named again.** 2026.9.7 reports a turn interrupted by contention on its
+own database with a new structured class and a fixed sentence that no longer mentions the
+database. Atrium read neither, so the card fell back to an unexplained error. It is now the
+"gateway storage busy" card, as on 2026.9.6, and it is still never retried automatically —
+the gateway itself says the turn may already have run.
+
+**Generated images are delivered into their answer again on 2026.9.7.** 2026.9.7 names a
+background media task differently — the task's id is now the generation's own run id — so the
+run that delivers the finished image was no longer recognised as that task's delivery: the
+"working in the background" indicator never settled and the delivery was not merged into the
+answer that asked for it. Both id shapes are now recognised, by the bridge and
+by Convex.
+
+**Background-task checks no longer ask a gateway that cannot answer.** 2026.9.7 removed its
+task registry calls. On such a gateway the bridge no longer sends them and answers that there
+is nothing to report, as it does for a provider with no registry; a background task's
+indicator settles from its delivery or its time limit, as before. Older gateways are asked as
+before.
+
+**Upgrade note — one-way, and not automatic.** 2026.9.7 moves each agent's database from
+schema 23 to 24 and, unlike 2026.9.6, does not migrate it at startup: the gateway refuses to
+open any conversation ("…uses schema version 23; stop active agents and run openclaw doctor
+--fix…") until `openclaw doctor --fix` has run with the gateway stopped. Going back to
+2026.9.6 afterwards needs a snapshot of the gateway's state taken before the upgrade. A
+distribution image that drops the database file's birth time from its identity (a workaround
+for kernels without `statx`) cannot run 2026.9.7: 2026.9.7 requires that field, and every
+conversation setting then fails with "Agent database operation belongs to another native
+owner". The bench validation ran on a build without that workaround.
+
+**Upgrade note for 2026.9.8 — one-way, automatic.** 2026.9.8 keeps schema 24, so it is the
+same migration, and on an image whose entrypoint runs `openclaw doctor --fix` before every
+start (the official image, and the distribution image built for 2026.9.8) a 2026.9.6
+gateway migrates at its first start, keeping a backup of each database beside it. Take a
+snapshot of the state first all the same: going back still needs it. Stop the old container
+gracefully and give it time (its own stop budget is 330 seconds): a gateway that is killed
+keeps its ownership lease, and the new one is refused ("Another Gateway owner lease is still
+active") for up to five minutes. The distribution image's reworked birth-time workaround for
+kernels without `statx` was exercised on the bench with `statx` denied to the gateway, and
+every scenario passed. One gateway behaviour changes with no change in Atrium: a
+sub-agent, delivery or follow-up run that produces no answer no longer ends silently — the
+gateway asks again, then reports an incomplete turn.
+
+## [0.92.0] — OpenClaw 2026.8.2 minimum, and the session transcript read back in shadow
+
+**Operator-facing change: the minimum supported OpenClaw is now 2026.8.2.** It is the first
+release whose session transcript says which run produced each reply and which running turn
+a message was steered into, and whose `chat.history` resumes from a cursor — the facts the
+redesign of how replies are attached to bubbles rests on. Below it a reply can only be placed
+by timing and wording guesses, and those guesses are what this redesign retires; keeping a
+frozen copy of them for older gateways was declined. What changes for a gateway older than
+2026.8.2: its turns are refused before anything is sent, with a card that says the gateway
+must be upgraded (`gateway_version_unsupported`); no version-gated control is offered; and
+Settings ▸ Bridge badges the connection "below the supported minimum". A gateway whose
+version could not be read is not refused. 2026.5.19 → 2026.7.1 leave the validated list
+(production runs 2026.9.6). **Check every instance's gateway version before deploying.**
+Deploy Convex, the bridge and the frontend together.
+
+**The session transcript, read back in shadow.** A new per-instance setting,
+`transcriptProjection` (`off` by default), lets the bridge read the gateway's own transcript
+after each run, the way OpenClaw's Control UI does: on every run that ends in the
+conversation's session, on a `chat.send` acknowledged `ok`, and — for a run that ended with
+no message — again at 100, 400, 1500 and 3000 ms. Each read resumes from where the previous
+one stopped (one tail page of 80 rows the first time, then only what changed), at most one
+read runs per conversation with one queued behind it, and what was read is stored as
+identities only: the transcript row's id and order, the run that wrote it, the send that
+started it, never its text. In `shadow` nothing on screen changes. It is set through the
+admin API and needs OpenClaw 2026.8.2 or later.
+
+**Every send now has one identity, known before the gateway answers.** Convex computes the
+key each `chat.send` carries — the same value the bridge always derived from the gateway
+session and the message — stores it on the queued send and on the user's message, and the
+bridge confirms the key it actually sent. It stays bound to the gateway session on purpose:
+the gateway deduplicates sends by key across all its sessions, so one key reused on another
+session would be answered from the first.
+
+**`diagnose_chat` measures the distance between the bubbles and the transcript.** For a
+conversation read back in shadow, the report now carries `projection`: a run with visible
+output that has no bubble, or two; a finished bubble whose run wrote nothing durable; a user
+message of the transcript with no user bubble, or two — as counts with run ids, send ids and
+positions, never text. It is the measurement the next steps of the redesign are judged on.
+
+**The trash moves to your personal settings.** The rarely used Trash link no longer takes room
+at the bottom of the conversation list: deleted conversations are now under **Settings ›
+Personal › Deleted conversations**, with the same 30-day notice, restore, permanent delete and
+empty actions. Old `/trash` links open the new tab. The administrators' view of every user's
+trash is unchanged.
+
+## [0.91.4] — Attachments a sandboxed agent can read on shared-fs instances
+
+Corrective release. No breaking changes, one deployment check (below). Deploy Convex and the
+frontend; the bridge is unchanged.
+
+**A file the gateway can carry is sent as a native attachment, even in shared-fs mode.** On an
+instance whose inbound media mode is `shared-fs`, every document, recording or other non-image file
+used to be written by the bridge to the shared volume and quoted to the agent as a path. That path
+is not an attachment to the gateway: it records no media for the turn, stages nothing into a
+sandbox, extracts nothing for the model. An agent whose file tools are confined — a Docker sandbox,
+or `tools.fs.workspaceOnly` — was refused by its own `read` tool ("Path escapes sandbox root") and
+reached the file only if it thought of a shell. Such a file now rides the gateway's own attachment
+path whenever the WebSocket frame can carry it, beside any photos (which keep their room first): the
+gateway stores it, copies it into the sandbox workspace when the agent has one, and puts the text of
+a text or PDF file straight into the prompt. Only a file the frame cannot carry (above ~18 MiB at
+the default 25 MiB frame) is still streamed to the shared volume and referenced by path, as is an
+image format no model decodes (SVG, TIFF, HEIC…), which the gateway would otherwise hand to the
+model as an image. Inline instances are unchanged. On a Hermes instance in `shared-fs` mode, a small
+file now reaches the agent through Hermes' own attachment staging (WebSocket transport) instead of
+being refused; the REST transport still refuses attachments, as before.
+
+**Deployment check: nothing read-only over the gateway's `media/inbound`.** That directory is
+OpenClaw's own attachment store; every native upload is saved there first. The shared-fs guide used
+to suggest mounting Atrium's `published/` directory read-only over it, which makes every native
+upload fail (`Failed to save intercepted media to disk`) — Control UI uploads included, and now
+Atrium's small files on shared-fs instances. If your gateway has that mount, replace it: the agent
+reads Atrium's files at `/home/node/.openclaw/media/inbound/published` (the bridge's default
+received-files path), and the guide now shows how to harden that child alone.
+
+## [0.91.3] — Error labels from the gateway's structured facts, and no generic wrapper as a headline
+
+Corrective release. No breaking changes. Deploy the bridge, Convex and the frontend together.
+
+**A failure is named from what the gateway structured before what it wrote.** When a turn fails,
+the gateway can say why in structured fields beside its message — the failure reason, the HTTP
+status, the kind of provider failure — and, in a summary of every model it tried, a reason after
+each attempt. Atrium read only the sentences. It now reads those fields first and the wording only
+when they say nothing, so a rate limit, a billing refusal, an unknown model, a provider error, a
+context overflow or a refused credential is named the same way however the gateway phrased it, and
+a summary is read attempt by attempt — a paused credential on one model no longer hides a refused
+one on the next.
+
+**A refused credential is no longer always "access expired".** The gateway's re-authentication hint
+follows any credential refusal: an expired or revoked token, but also a missing permission, an
+unsupported region or a deactivated workspace or key. The card now tells them apart. A refused
+**permission** says that the provider blocks this agent's account, that reconnecting the same
+account will not help, and that an administrator needs to check its rights with the provider. A
+refusal that names neither says the credential was refused without a reason and that an
+administrator needs to look. The "access expired, reconnect" card is kept for an expired or revoked
+token, including an expired OAuth login (the gateway's "Model login expired"). Messages stored by
+0.91.2 under the expired card with a permission refusal in their text now show the right one. Each
+of these, a billing refusal and an unknown model raises a critical anomaly on the first occurrence,
+naming the agent; the Anomalies tab shows read-only commands for the two new credential cases.
+
+**A generic gateway message is never the headline.** The gateway wraps any failed compaction in
+"Context is too large and auto-compaction could not recover this turn", whatever the real cause,
+and keeps the cause only when its verbose failure details are on; it has other generic sentences
+("Something went wrong while processing your request", "Agent failed before reply: …"). When the
+cause inside is recognised, the card names it and the wrapper's advice to compact or start over is
+no longer shown under it. When there is none, the card says so — "Compaction failed; the gateway did
+not pass on an identifiable cause", or the same for the turn — with no compaction or branching
+action. In both cases the gateway's full text sits behind a "Details" disclosure with a copy
+button, as in the gateway's own Control UI. Messages already stored render the same way.
+
+**A rate limit is no longer offered compaction.** Some providers report a rate limit in words that
+read like an overflow ("too many tokens, please wait", a tokens-per-minute limit). Atrium now applies
+the gateway's own exclusions — tokens per minute or per day, rate limits, quotas, billing — before
+calling a failure a context overflow, on new turns and on stored messages alike.
+
+**A provider logged out on the gateway ends the turn with that reason.** When an operator removes a
+provider's login on the gateway, the runs using it are stopped. Atrium showed them as "Stopped",
+as if the reader had pressed Stop; the card now says the agent's access to the provider was removed
+and that an administrator needs to reconnect it.
+
+**Smaller corrections.** A provider error body that quotes its own message (`401 {"message": "…token
+has been revoked"}`) is read for that message instead of being discarded with operator-chosen
+values. A delegated sub-agent whose token or session "expired" is no longer counted as a timeout.
+A proxy's 403 on the bridge's own connection is not mistaken for a provider refusal.
+
+## [0.91.2] — A revoked provider credential named as such, slash commands sent as typed
+
+Corrective release. No breaking changes. Deploy the bridge, Convex and the frontend together.
+
+**A revoked or expired provider credential is no longer shown as "context too large".** When the
+model provider refuses an agent's credential (an HTTP 401 on a revoked or expired token), the
+gateway wraps the failure in its generic headline for a failed compaction — "Context is too large
+and auto-compaction could not recover this turn" — and adds a re-authentication hint. Atrium
+recorded these turns with no cause, so the reader saw advice to compact or start over that could not
+help, and nothing told an administrator what to fix. Atrium now recognises the gateway's own
+re-authentication hint and the provider's 401 refusal (never a value an operator chose, such as a
+model name or a session key) and names the failure. The message card says that the agent's access to
+the model provider has expired, that an administrator needs to reconnect it, and that sending the
+message again will not change anything until then; the gateway's sentence and its commands are kept
+off the card. Messages already stored with that text get the same card. The failure is never retried
+automatically. The first occurrence raises a critical anomaly that names the agent, its instance and
+the provider. The Anomalies tab shows read-only commands to see which profiles that agent uses and in
+which order (`openclaw models auth list --provider <provider> --agent <agent>` and
+`openclaw models auth order get --provider <provider> --agent <agent>`), asks to check that neither
+the agent nor the conversation's session points to an expired profile, and to reconnect the shared
+login only if that shared profile itself has expired. It never suggests logging in for one agent
+alone, which would give that agent a separate copy of the credential. A sub-agent that
+fails this way is classed the same way instead of as an API error or a timeout. A credential that
+is only temporarily paused by the gateway keeps its own, separate message.
+
+**Slash commands reach the gateway exactly as typed.** Atrium added its own text to every message —
+instructions for delivering files, the list of files received, the earlier conversation when a
+session was new, the quoted passage of a reply, earlier agents' answers in a chain — and the
+gateway read all of it as the command's arguments: `/knowledge` answered "unknown subcommand", and
+`/knowledge once graph` received dozens of extra words. A command — a message that opens with a
+command name the way the gateway reads one (`/new`, `/knowledge once graph`, `/compact: …`) — is now
+sent unchanged, by the bridge and by Convex, with OpenClaw and with Hermes. A message that merely
+opens with a path (`/tmp/report.txt, what is in it?`) is an ordinary message and keeps everything,
+files included. A command is never compacted first nor withheld for a full session — `/compact`
+and `/new` are what a full session needs — and the next ordinary message still receives the
+conversation history. Because a file can
+only reach the agent as text added to the message on some instances, a command sent with files is
+refused before anything is sent, and the composer says to remove the files or send them separately.
+
+**Gateway pressure telemetry says why it is empty.** A turn the gateway starts on its own — a
+report from a delegated task, a voice consultation — has no measurement of the session taken before
+it, so its pressure figures are empty. The trace now says where its figures come from (a
+measurement before the send, or none) and who started the turn (Atrium or the gateway), so an empty
+figure no longer reads as lost data. Earlier measurements are never reused for such a turn.
+
+**A write refused by Convex can be traced to its cause.** When Convex refused or did not answer a
+write the bridge made while reading the gateway, the bridge's protocol report filed it under a bare
+error name. It now records which write it was and how it failed (an HTTP status, or a timeout),
+without its content, and every entry of the report says when it was first and last seen. Convex
+records the same refusals on its side (`openclaw.ingest.rejected`: the write and the status), so
+the two can be matched.
+
 ## [0.91.1] — Widgets locked to their own frame, agent access revoked at once, oversized messages refused cleanly
 
 Corrective release. No breaking changes. Deploy the bridge, Convex and the frontend together.

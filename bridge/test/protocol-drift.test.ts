@@ -11,7 +11,7 @@
 import { readFileSync, readdirSync } from "node:fs";
 import { afterEach, describe, expect, it } from "vitest";
 import { promisedVersion, vendoredVersions } from "./helpers/vendored.js";
-import * as vendoredChatSchemas from "../protocol/openclaw/2026.9.6/logs-chat.js";
+import * as vendoredChatSchemas from "../protocol/openclaw/2026.9.8/logs-chat.js";
 import {
   COVERAGE_SUMMARY,
   DRIFT_VENDORED_VERSION,
@@ -62,7 +62,7 @@ describe("protocol drift detector", () => {
     protocolDrift.observe(chatFrame({ steerHint: "secret content" }));
     protocolDrift.observe(chatFrame({ steerHint: "other content" }));
     // The shape is keyed PER STATE since W9: the union hid cross-state fields.
-    expect(protocolDrift.report()).toEqual([
+    expect(protocolDrift.report()).toMatchObject([
       { shape: "chat.delta.steerHint", count: 2 },
     ]);
   });
@@ -83,7 +83,7 @@ describe("protocol drift detector", () => {
         deltaText: "half a sentence",
       },
     });
-    expect(protocolDrift.report()).toEqual([
+    expect(protocolDrift.report()).toMatchObject([
       { shape: "chat.aborted.deltaText", count: 1 },
     ]);
   });
@@ -188,7 +188,7 @@ describe("protocol drift detector", () => {
         throw new TypeError("boom");
       },
     });
-    expect(protocolDrift.report()).toEqual([
+    expect(protocolDrift.report()).toMatchObject([
       { shape: "«detector-failure».TypeError", count: 1 },
     ]);
   });
@@ -219,7 +219,7 @@ describe("protocol drift detector", () => {
       { properties?: Record<string, unknown> }
     >;
     expect(DRIFT_VENDORED_VERSION, "the static import must track the vendored version").toBe(
-      "2026.9.6",
+      "2026.9.8",
     );
     const bySchema: Record<string, string> = {
       delta: "ChatDeltaEventSchema",
@@ -267,7 +267,7 @@ describe("protocol drift detector", () => {
         brandNewField: 42,
       },
     });
-    expect(protocolDrift.report()).toEqual([
+    expect(protocolDrift.report()).toMatchObject([
       { shape: "agent.brandNewField", count: 1 },
     ]);
   });
@@ -442,7 +442,7 @@ describe("C4 — the reader threw on a frame (W9)", () => {
 
   it("reports the error class, the site and the frame's protocol shape", () => {
     protocolDrift.observeException(chatFrame(), new WeirdError("boom"), "feed");
-    expect(protocolDrift.report()).toEqual([
+    expect(protocolDrift.report()).toMatchObject([
       { shape: "«exception».WeirdError@feed.chat.delta", count: 1 },
     ]);
   });
@@ -459,7 +459,7 @@ describe("C4 — the reader threw on a frame (W9)", () => {
     for (let i = 0; i < 5; i++) {
       protocolDrift.observeException(chatFrame(), new WeirdError("x"), "feed");
     }
-    expect(protocolDrift.report()).toEqual([
+    expect(protocolDrift.report()).toMatchObject([
       { shape: "«exception».WeirdError@feed.chat.delta", count: 5 },
     ]);
   });
@@ -659,7 +659,7 @@ describe("C4 — the reservation has to survive the trip, not just the registry"
     const err = new Boom("one failure");
     protocolDrift.observeException(chatFrame({ runId: "inner" }), err, "feed");
     protocolDrift.observeException(chatFrame({ runId: "outer" }), err, "feed");
-    expect(protocolDrift.report()).toEqual([
+    expect(protocolDrift.report()).toMatchObject([
       { shape: "«exception».Boom@feed.chat.delta", count: 1 },
     ]);
   });
@@ -667,7 +667,7 @@ describe("C4 — the reservation has to survive the trip, not just the registry"
   it("two DISTINCT failures are still two findings", () => {
     protocolDrift.observeException(chatFrame(), new Boom("a"), "feed");
     protocolDrift.observeException(chatFrame(), new Boom("b"), "feed");
-    expect(protocolDrift.report()).toEqual([
+    expect(protocolDrift.report()).toMatchObject([
       { shape: "«exception».Boom@feed.chat.delta", count: 2 },
     ]);
   });

@@ -134,9 +134,9 @@ describe("chat.send carries the permission mode the reader saw", () => {
       config: null,
       ...extra,
     }) as unknown as Parameters<typeof performSend>[1];
-  const sent = async (version: string, extra: Record<string, unknown>) => {
+  const sent = async (version: string | null, extra: Record<string, unknown>) => {
     const gw = fakeGateway({ describe: [{ sessionId: "s-1", systemSent: true }] });
-    (gw as unknown as { gatewayVersion: string }).gatewayVersion = version;
+    (gw as unknown as { gatewayVersion: string | null }).gatewayVersion = version;
     vi.spyOn(OpenClawConnection, "connect").mockImplementation(async () => gw as never);
     const w = {
       startAssistant: async () => "msg-1",
@@ -172,7 +172,9 @@ describe("chat.send carries the permission mode the reader saw", () => {
   });
 
   it("never to a gateway whose closed params object does not know the field", async () => {
-    const params = await sent("2026.8.1", { expectedPermissionMode: "guarded" });
+    // Every SUPPORTED gateway knows it (the field and the floor are both 2026.8.2): the
+    // gateway that may not is the one whose version is UNKNOWN — the guard is withheld.
+    const params = await sent(null, { expectedPermissionMode: "guarded" });
     expect(params).toBeDefined();
     expect("expectedPermissionMode" in params!).toBe(false);
   });
@@ -213,7 +215,7 @@ describe("a session absent under the key: no stale guard, and the meta says so",
   } as unknown as BridgeConfig;
   const ROUTING = { chatId: "c1", openclawChatId: null, agentId: "alice", canonical: "olivier", instanceName: "primary" };
   const run = async (opts: {
-    version?: string;
+    version?: string | null;
     describe: Array<Record<string, unknown> | null>;
     absentAsNull?: boolean;
     describeFails?: boolean;
@@ -224,7 +226,8 @@ describe("a session absent under the key: no stale guard, and the meta says so",
       ...(opts.absentAsNull ? { describeAbsentAsNull: true } : {}),
       ...(opts.describeFails ? { describeFailures: 5 } : {}),
     });
-    (gw as unknown as { gatewayVersion: string }).gatewayVersion = opts.version ?? "2026.9.6";
+    (gw as unknown as { gatewayVersion: string | null }).gatewayVersion =
+      opts.version === undefined ? "2026.9.6" : opts.version;
     vi.spyOn(OpenClawConnection, "connect").mockImplementation(async () => gw as never);
     const reports: Array<Record<string, unknown>> = [];
     const w = {
@@ -311,8 +314,10 @@ describe("a session absent under the key: no stale guard, and the meta says so",
     expect(access.map((m) => m.permissionMode)).toEqual(["workspace"]);
   });
 
-  it("a gateway with no modes: nothing reported, no guard sent", async () => {
-    const { send, access } = await run({ version: "2026.8.1", describe: [null], absentAsNull: true });
+  it("a gateway not known to have modes: nothing reported, no guard sent", async () => {
+    // Below 2026.8.2 a gateway is refused before this point; an UNKNOWN version is the
+    // one left that may lack the field.
+    const { send, access } = await run({ version: null, describe: [null], absentAsNull: true });
     expect(send && "expectedPermissionMode" in send).toBe(false);
     expect(access).toEqual([]);
   });

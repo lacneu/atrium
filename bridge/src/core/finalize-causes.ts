@@ -29,6 +29,9 @@ export type FinalizeCause =
   | "side_result_error"
   /** The connection itself failed upstream. */
   | "upstream_error"
+  /** The session TRANSCRIPT said the run was over (projection `on`): its terminal row
+   *  was read, or a fresh `chat.history` found the session idle. A fact, not a wait. */
+  | "transcript_settled"
   // — WE ended it, on a deadline the gateway never met —
   | "recv_timeout"
   | "response_timeout"
@@ -75,6 +78,7 @@ export const FINALIZE_CAUSES = [
   "lifecycle_final",
   "side_result_error",
   "upstream_error",
+  "transcript_settled",
   "recv_timeout",
   "response_timeout",
   "empty_final_timeout",

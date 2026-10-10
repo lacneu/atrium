@@ -28,6 +28,10 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
 import { Normalizer, type BridgeEvent } from "../src/providers/openclaw/normalizer.js";
+import {
+  LiveTextBaselines,
+  type LiveTextGap,
+} from "../src/providers/openclaw/live-text-baseline.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -165,5 +169,87 @@ describe("upstream v2026.9.4 frame contracts", () => {
     const markers = events.filter((e) => e.type === "context.compaction");
     expect(markers).toHaveLength(1);
     expect(markers[0]?.phase).toBe("midturn");
+  });
+});
+
+/** Drive a scenario through the connection's live-text projection first, as production
+ *  does (openclaw-client.ts `onMessage`): the 2026.9.7 wire is append-only. */
+function driveWire(scenario: string): {
+  events: BridgeEvent[];
+  normalizer: Normalizer;
+  gaps: LiveTextGap[];
+} {
+  const s = FIXTURES.scenarios[scenario];
+  if (!s) throw new Error(`unknown scenario: ${scenario}`);
+  const baselines = new LiveTextBaselines();
+  const normalizer = new Normalizer(SESSION_KEY);
+  const clock = new Clock();
+  const events: BridgeEvent[] = [];
+  const gaps: LiveTextGap[] = [];
+  normalizer.beginTurn(clock.now);
+  normalizer.noteRunStarted(OWN_RUN, clock.now);
+  for (const frame of s.frames) {
+    const projected = baselines.project({ type: "event", ...(frame as object) });
+    if (projected.gap !== null) gaps.push(projected.gap);
+    events.push(...normalizer.feed(projected.frame, clock.tick()));
+  }
+  return { events, normalizer, gaps };
+}
+
+const shownTexts = (events: BridgeEvent[]): string[] =>
+  events
+    .filter((e) => e.type === "message.snapshot" || e.type === "message.delta")
+    .map((e) => (e as { text?: string }).text ?? "");
+
+describe("upstream v2026.9.7 frame contracts", () => {
+  it("append-only chat deltas: projected, the live text grows and follows the replace", () => {
+    const { events, gaps } = driveWire("chat-append-only-deltas");
+    expect(gaps).toEqual([]);
+    const shown = shownTexts(events);
+    expect(shown).toContain("Hello world\n ");
+    expect(shown.at(-1)).toBe("New answer");
+  });
+
+  it("append-only chat deltas: RAW, the live text freezes on its first fragment", () => {
+    // The defect the projection exists for, kept visible: without it the normalizer locks
+    // on the first snapshot and drops every append (normalizer.ts applyVisible).
+    const { events } = drive("chat-append-only-deltas");
+    expect(shownTexts(events).at(-1)).toBe("Hello");
+  });
+
+  it("a delta after the run's terminal has no baseline: reported, fragment withheld", () => {
+    const { gaps } = driveWire("chat-delta-after-terminal-no-baseline");
+    expect(gaps).toEqual([{ stream: "chat", runId: OWN_RUN, sessionKey: SESSION_KEY }]);
+  });
+
+  it("append-only agent assistant deltas: the reply is the whole text", () => {
+    const { events, gaps } = driveWire("agent-assistant-append-only");
+    expect(gaps).toEqual([]);
+    expect(shownTexts(events)).toContain("one two");
+    const statuses = events.filter((e) => e.type === "run.status");
+    expect(statuses.at(-1)?.status).toBe("final");
+    expect(finalOf(events)?.text).toBe("one two");
+  });
+
+  for (const scenario of ["error-state-contention-schema", "error-state-contention-dispatch"]) {
+    it(`${scenario}: state_contention is gateway_storage_busy, a terminal error`, () => {
+      const { events } = drive(scenario);
+      expect(statusOf(events)?.status).toBe("error");
+      expect(finalOf(events)?.errorKind).toBe("gateway_storage_busy");
+    });
+  }
+
+  it("waiting_for_state is a quiet wait: no event, no terminal, the turn resumes", () => {
+    const { events, normalizer } = drive("status-waiting-for-state-then-resume");
+    const statuses = events.filter((e) => e.type === "run.status");
+    expect(statuses.map((e) => e.status)).toEqual(["final"]);
+    expect(normalizer.finalized).toBe(true);
+    expect(finalOf(events)?.text).toBe("Resumed");
+  });
+
+  it("the partial-save warning after an abort changes nothing: one terminal, aborted", () => {
+    const { events } = drive("aborted-then-save-warning-error");
+    const statuses = events.filter((e) => e.type === "run.status");
+    expect(statuses.map((e) => e.status)).toEqual(["aborted"]);
   });
 });

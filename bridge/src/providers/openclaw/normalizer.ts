@@ -44,7 +44,7 @@ import { isGatewayInitiatedRunId } from "./run-families.js";
 import { planPartFromPlanStream } from "../../core/plan-part.js";
 import {
   classifyFailureText,
-  GATEWAY_CHAT_ERROR_KINDS,
+  classifyStructuredFailure,
   withoutOperatorData,
 } from "../../core/failure-classifier.js";
 import {
@@ -207,6 +207,25 @@ const UPSTREAM_RESUME_TOOL_PHASES: ReadonlySet<string> = new Set([
 const RETRY_MAX_ATTEMPTS = 10;
 
 const LIFECYCLE_FINISHING_GRACE = 60.0;
+
+/**
+ * PROJECTION `on` (transcript redesign phase 4, design §8.1): the waits that DECIDED a
+ * turn's end from time — an empty final held 90 s, a cut final 20 s, a private ack 5 s,
+ * `finishing` 60 s, a lifecycle end's 10 s follow-on window (which also admitted an
+ * unknown run into the turn), the 12 s transcript-recovery window. On a projected session
+ * none of them is ever armed (`arm` refuses them): a turn ends on the gateway's terminal
+ * frame or on the transcript's own fact (RunManager.settleFromTranscript), and what the
+ * durable rows say replaces the live text. The waits that stay — the §8.2 nets — are the
+ * silence budget (a READ, never an end), the compaction budget and the human waits.
+ */
+export const TRANSCRIPT_DECIDED_WAITS: ReadonlySet<string> = new Set([
+  "empty_final",
+  "truncated_final",
+  "private_ack",
+  "lifecycle_finishing",
+  "lifecycle_end",
+  "history_recovery",
+]);
 // A tool asked for HUMAN approval (`stream:"approval" phase:"requested"`). The
 // run is alive and deliberately waiting, so the 240 s silence budget is the wrong
 // clock — but the wait must still be BOUNDED, or this re-creates the "Génération…"
@@ -260,10 +279,9 @@ const VISIBLE_TEXT_KEYS = ["message", "caption", "text", "body", "content", "mar
 //   ^\s*(?:envoy[éè]+|message\s+envoy[éè]+|réponse\s+envoy[éè]+|done|ok|fait)
 //   (?:\s+dans\s+le\s+(?:canal|webchat)[^.\n]*)?[\s.!…]*$
 // JS \s matches Unicode whitespace by default; `i` and `u` flags applied.
-// ChatErrorEventSchema.errorKind enum (gateway-protocol logs-chat.ts), minus
-// "unknown" (nothing actionable to classify). These are the values the GATEWAY may
-// send; the stable errorCode also carries classes this build mints from the sentence
-// when the gateway sends none (auth_profile_cooldown, the storage classes).
+// A failure's stable class is read by core/failure-classifier.ts: the gateway's
+// `errorKind` and `errorDetail` first (`classifyStructuredFailure`), the sentence last
+// (`classifyFailureText`).
 // Known gateway overflow phrasings (live capture: "Context overflow: prompt
 // too large for the model. Try /reset (or /new) ...").
 // Every context-overflow phrasing a supported gateway can surface as BARE TEXT
@@ -361,7 +379,11 @@ const KNOWN_STOP_REASONS = new Set([
 const bucketStopReason = (v: string): string =>
   KNOWN_STOP_REASONS.has(v) ? v : "other";
 
-const CHAT_ERROR_KINDS = GATEWAY_CHAT_ERROR_KINDS;
+/** The stopReason upstream stamps on every run it aborts because an operator logged the
+ *  provider out (src/gateway/server-methods/models-auth-status.ts:538). */
+const PROVIDER_ACCESS_REMOVED_STOP_REASON = "auth-revoked";
+/** The class (and error string) a turn aborted that way is stored under. */
+const PROVIDER_ACCESS_REMOVED_CODE = "provider_access_removed";
 
 /**
  * PROGRESS phases on `stream:"tool"` — a tool is still RUNNING. Enumerated from
@@ -487,6 +509,25 @@ function textFromMessage(message: Json): string {
     return text;
   }
   return textFromContent(message.text);
+}
+
+/**
+ * The text a durable transcript row SHOWS, extracted and sanitized exactly as the live
+ * stream's (`textFromMessage` + `safeSanitizeText`): the projection (redesign phase 4)
+ * recomposes a settled bubble from these, so they must read as the live text does.
+ */
+export function messageDisplayText(message: unknown, sessionKey: string): string {
+  return sanitizeDisplay(textFromMessage(message as Json), sessionKey);
+}
+
+/** `safeSanitizeText` without an instance (same media session, same fallback). */
+export function sanitizeDisplay(text: string, sessionKey: string): string {
+  try {
+    return sanitizeText(text, { mediaSessionKey: sessionKey });
+  } catch (err) {
+    if (err instanceof MediaConfigurationError) return text;
+    throw err;
+  }
 }
 
 /** True for a safe OpenClaw deliverable media path (no scheme/traversal). */
@@ -689,6 +730,14 @@ const MEDIA_TASK_DELIVERY_RUN_RE =
 export class Normalizer {
   readonly sessionKey: string;
 
+  /** PROJECTION `on` (phase 4): the session transcript decides when a turn ended and what
+   *  it said; no time-based wait (TRANSCRIPT_DECIDED_WAITS) and no prose rule ever closes
+   *  a turn. Set by RunManager.setProjection. */
+  transcriptDecides = false;
+  /** The run's generation ENDED (lifecycle `end`), as a fact rather than a window: what
+   *  a projected turn reads where the legacy path reads the 10 s `lifecycle_end` grace. */
+  private lifecycleEnded = false;
+
   // Session-level run tracking.
   ownRunIds: Set<string>;
   turnActive: boolean;
@@ -698,6 +747,15 @@ export class Normalizer {
 
   // Per-turn visible-text state.
   text: string;
+  /** PROJECTION `on`, after a STEER SPLIT (phase 3, CU-20): the run's visible text
+   *  as it stood at the cut. The gateway keeps one cumulative buffer per run
+   *  (src/gateway/server-chat.ts `emitChatDelta` → `chatRunState.updateBuffer`, at
+   *  v2026.9.8), so every later snapshot still starts with what the settled segment
+   *  shows: it is stripped, and the new segment carries only what came after. */
+  private segmentPrefix: string | null = null;
+  /** The whitespace the gateway's buffer carries between the cut and the current
+   *  segment's text (stripped from the segment, kept for the NEXT cut's prefix). */
+  private segmentLead = "";
   hasSnapshot: boolean;
   hasVisibleToolText: boolean;
   pendingAckText: string;
@@ -1013,6 +1071,8 @@ export class Normalizer {
     this.compactionPending = false;
     this.currentRunId = null;
     this.text = "";
+    this.segmentPrefix = null;
+    this.segmentLead = "";
     this.hasSnapshot = false;
     this.hasVisibleToolText = false;
     this.pendingAckText = "";
@@ -1048,6 +1108,7 @@ export class Normalizer {
     this.diagProviderStarted = null;
     this.diagAborted = false;
     this.sawYielded = false;
+    this.lifecycleEnded = false;
     this.inRetryingPhase = false;
     this.finishingSuspended = false;
     this.clearApprovals();
@@ -1143,6 +1204,61 @@ export class Normalizer {
     this.expectedSessionId = sessionId;
   }
 
+  /**
+   * STEER SPLIT (projection `on`): the turn's bubble settled at a steered input; what
+   * the run writes from now on belongs to a new segment (TurnSink.splitSegment).
+   */
+  splitSegment(): void {
+    // The prefix must stay the EXACT head of the cumulative buffer: a second cut keeps
+    // the separators the first one stripped, or no later snapshot would match it.
+    const lead = this.segmentPrefix !== null && this.text !== "" ? this.segmentLead : "";
+    this.segmentPrefix = (this.segmentPrefix ?? "") + lead + this.text;
+    this.segmentLead = "";
+    this.text = "";
+    this.hasSnapshot = false;
+  }
+
+  /** The CURRENT segment's whole visible text (what a cut settles it with). */
+  get currentSegmentText(): string {
+    return this.text;
+  }
+
+  /** The text of the earlier segments of the current run (null: never cut). */
+  get segmentPrefixText(): string | null {
+    return this.segmentPrefix === null || this.segmentPrefix.trim() === ""
+      ? null
+      : this.segmentPrefix.trim();
+  }
+
+  /**
+   * RESUME of a later segment (CU-22 after a cut): the earlier segments' text, as
+   * Convex stores it. Their exact separators are the gateway's and are not stored, so
+   * this prefix is matched whitespace-insensitively (stripSegmentPrefix).
+   */
+  restoreSegmentPrefix(prefix: string): void {
+    if (prefix.trim() === "") return;
+    this.segmentPrefix = prefix;
+    this.segmentLead = "";
+  }
+
+  /** A cumulative candidate, minus what earlier segments already show. */
+  private stripSegmentPrefix(candidate: string): string {
+    const prefix = this.segmentPrefix;
+    if (prefix === null || prefix === "") return candidate;
+    const end = candidate.startsWith(prefix)
+      ? prefix.length
+      : prefixEndIgnoringSpace(candidate, prefix);
+    if (end !== null) {
+      const rest = candidate.slice(end);
+      const lead = /^\s*/.exec(rest)?.[0] ?? "";
+      this.segmentLead = lead;
+      return rest.slice(lead.length);
+    }
+    // A stale, shorter view of the text before the cut: nothing new.
+    if (prefix.startsWith(candidate)) return "";
+    return candidate;
+  }
+
   /** Seed ownRunIds from the chat.send ack so foreign runs are filtered. */
   noteRunStarted(runId: string | null | undefined, now: number): void {
     if (isString(runId) && runId) {
@@ -1168,6 +1284,12 @@ export class Normalizer {
     if (!this.recvSilence) return false;
     this.recvSilence = false;
     return true;
+  }
+
+  /** PROJECTED (phase 4): the silence was answered by a transcript read; the budget
+   *  restarts. Never a terminal. */
+  rearmSilence(now: number): void {
+    if (this.transcriptDecides && this.turnActive && !this.finalized) this.armRecv(now);
   }
 
   /** Finalize the active turn explicitly (e.g. on chat.abort or a send error). */
@@ -1946,6 +2068,25 @@ export class Normalizer {
       if (isString(payload.stopReason)) {
         this.diagStopReason = bucketStopReason(payload.stopReason);
       }
+      if (state === "aborted" && payload.stopReason === PROVIDER_ACCESS_REMOVED_STOP_REASON) {
+        // The ONE stopReason that is not a Stop: an operator logged the provider out on the
+        // gateway (`models.auth.logout` of a whole provider), which aborts every run using it
+        // with `stopReason: "auth-revoked"` (src/gateway/server-methods/models-auth-status.ts:
+        // 528-539 → abortChatRunsForProvider). Upstream's own UI rewrites exactly this frame
+        // to "provider access removed" (ui/src/pages/chat/chat-gateway.ts:150-153). Shown as
+        // "Interrompu" it read as if the reader had pressed Stop. A labelled error instead,
+        // never retried: the provider stays logged out until an operator reconnects it.
+        this.finalizeOrHoldWith(now, events, (at) =>
+          this.finalize(
+            at,
+            "error",
+            PROVIDER_ACCESS_REMOVED_CODE,
+            PROVIDER_ACCESS_REMOVED_CODE,
+            "gateway_abort",
+          ),
+        );
+        return;
+      }
       if (state === "aborted") {
         // A chat:aborted terminalizes as aborted ("Interrompu"). We do NOT try to
         // reclassify it by stopReason: the field is optional in the protocol
@@ -1981,15 +2122,20 @@ export class Normalizer {
       // still reaches the diagnostic trace via diagnosticErrorKind (a
       // trace-only channel — never the message's errorCode, which would paint
       // an error card on a successful reply).
-      if (this.hasRealContent() && this.deadlines.has("lifecycle_end")) {
+      if (
+        this.hasRealContent() &&
+        (this.deadlines.has("lifecycle_end") || (this.transcriptDecides && this.lifecycleEnded))
+      ) {
         const diagKind =
-          isString(payload.errorKind) && CHAT_ERROR_KINDS.has(payload.errorKind)
-            ? payload.errorKind
-            : // The SHARED classifier (W2 / G-11) — the same one the sub-agent
-              // path now uses. `provider_internal` is deliberately possible here
-              // too: this is a DIAGNOSTIC field on a turn already closing
-              // `complete`, so it cannot trigger a retry.
-              classifyFailureText(reason ?? null);
+          classifyStructuredFailure({
+            errorKind: payload.errorKind,
+            errorDetail: payload.errorDetail,
+          }) ??
+          // The SHARED classifier (W2 / G-11) — the same one the sub-agent
+          // path now uses. `provider_internal` is deliberately possible here
+          // too: this is a DIAGNOSTIC field on a turn already closing
+          // `complete`, so it cannot trigger a retry.
+          classifyFailureText(reason ?? null);
         console.log(
           "[normalizer] chat:error AFTER the run ended — finalizing complete (post-reply gateway failure, see gateway_pressure trace)",
         );
@@ -2005,13 +2151,15 @@ export class Normalizer {
         });
         return;
       }
-      // ALLOWLIST the wire value against the schema enum before persisting it
-      // as a trusted stable code (never a raw network string as errorCode).
-      const kind =
-        isString(payload.errorKind) &&
-        CHAT_ERROR_KINDS.has(payload.errorKind)
-          ? payload.errorKind
-          : null;
+      // STRUCTURED FIRST: the gateway's `errorKind` (allowlisted against the schema enum,
+      // never a raw network string as errorCode) and the provider observation it ships
+      // beside it, `errorDetail` (logs-chat.ts ChatErrorDetailSchema, projected from the
+      // lifecycle `errorObservation` by server-chat.ts:1219-1245). The prose is read only
+      // when neither names a class — inside finalize, as before.
+      const kind = classifyStructuredFailure({
+        errorKind: payload.errorKind,
+        errorDetail: payload.errorDetail,
+      });
       // Through the arbitration like the successes: an error terminal closes the
       // sink exactly as hard, and a reply the user was really sent — still being read
       // out of the transcript — was lost to it. Held, the error still arrives; it
@@ -2031,6 +2179,9 @@ export class Normalizer {
     if (snapshotText) {
       if (
         isFinal &&
+        // Projected: the cut final is a live overlay like any other — the durable row,
+        // whole, replaces it when the run settles.
+        !this.transcriptDecides &&
         snapshotText.endsWith(TRUNCATED_FINAL_MARKER) &&
         snapshotText.length - TRUNCATED_FINAL_MARKER.length >=
           TRUNCATED_FINAL_MIN_BODY
@@ -2093,6 +2244,12 @@ export class Normalizer {
         // there is no follow-on content to wait for: arming the 90s empty-final grace
         // left the turn showing as active for a minute and a half, which is exactly the
         // frame-loss case `ChatFinalEvent.yielded` exists to cover (codex).
+        this.finalizeOrHold(now, "gateway_final", events);
+      } else if (this.transcriptDecides) {
+        // PROJECTED: the run's terminal arrived. A final with no message is the Control
+        // UI's recovery case (CU-13): the reconciler reads the transcript back
+        // (100/400/1500/3000 ms) and the run's durable rows make its bubble — the turn
+        // waits for nothing here.
         this.finalizeOrHold(now, "gateway_final", events);
       } else {
         this.arm("empty_final", now + EMPTY_FINAL_GRACE);
@@ -2469,6 +2626,9 @@ export class Normalizer {
    */
   get wantsHistoryRecovery(): boolean {
     return (
+      // Projected: the positional transcript readers are not used — the reconciler reads
+      // the transcript by identity and the rows replace the live text.
+      !this.transcriptDecides &&
       !this.finalized &&
       (this.sawMessageToolItem ||
         this.msgtoolUnreadableArgs > 0 ||
@@ -3386,8 +3546,15 @@ export class Normalizer {
           ? (data.error as JsonObject)
           : null;
       const rawKind = errObj?.errorKind ?? data.errorKind;
-      const kind =
-        isString(rawKind) && CHAT_ERROR_KINDS.has(rawKind) ? rawKind : null;
+      // …and the structured provider observation the gateway attaches to it,
+      // `data.errorObservation` (src/agents/embedded-agent-subscribe.handlers.lifecycle.ts:
+      // 168-174, :219; the OAuth-refresh backstop's own one, src/auto-reply/reply/
+      // agent-lifecycle-terminal.ts:126-136) — the same closed shape the chat error
+      // later carries as `errorDetail`, read BEFORE the text.
+      const kind = classifyStructuredFailure({
+        errorKind: rawKind,
+        errorDetail: data.errorObservation,
+      });
       // Through the arbitration, like `chat:error`: this terminal closes the sink
       // just as hard, and the message-tool reply still being read out of the
       // transcript was lost to it. The error survives; so does the delivery.
@@ -3397,6 +3564,7 @@ export class Normalizer {
       return;
     }
     if (phase === "end") {
+      this.lifecycleEnded = true;
       this.clearWait("lifecycle_finishing"); // the real terminal arrived
       // …and nothing may re-arm it — UNLESS this end is not the terminal at all. When a
       // compaction is active, the `abandoned` branch below hands the turn back to the
@@ -3475,6 +3643,7 @@ export class Normalizer {
         events.push({ type: EVENT_TURN_PHASE, phase: "generating" });
       }
       this.finishingSuspended = false; // a new run owns the turn now
+      this.lifecycleEnded = false;
       if (this.compactionPending) {
         this.compactionPending = false;
         this.armRecv(now);
@@ -3598,7 +3767,12 @@ export class Normalizer {
     if (this.finalized) {
       return;
     }
-    if (isSnapshot && isPrivateAck(candidate)) {
+    if (isSnapshot && this.segmentPrefix !== null) {
+      candidate = this.stripSegmentPrefix(candidate);
+    }
+    // Projected: no prose decides anything — an acknowledgment is the run's text like
+    // any other, and the message the tool delivered is the run's own durable row.
+    if (isSnapshot && !this.transcriptDecides && isPrivateAck(candidate)) {
       // A private acknowledgement must never be persisted as the answer.
       if (this.hasRealContent()) {
         // We already have the real reply; ignore the ack but still close the
@@ -3625,6 +3799,8 @@ export class Normalizer {
     // drop those deltas outright — losing the follow-on's content entirely.
     const forcedAppend =
       this.frameRunAdopted &&
+      // Projected: one bubble per run — never two runs' texts glued by position.
+      !this.transcriptDecides &&
       this.text !== "" &&
       (isSnapshot ? !candidate.startsWith(this.text) : this.hasSnapshot);
     if (forcedAppend) {
@@ -4192,6 +4368,7 @@ export class Normalizer {
   }
 
   private arm(name: string, deadline: number): void {
+    if (this.transcriptDecides && TRANSCRIPT_DECIDED_WAITS.has(name)) return;
     this.deadlines.set(name, deadline);
   }
 
@@ -4242,21 +4419,15 @@ export class Normalizer {
     return Boolean(
       this.hasVisibleToolText ||
         this.mediaPaths.size > 0 ||
-        (this.text && !isPrivateAck(this.text)),
+        // Projected: the run's text is its text — no prose rule weighs it.
+        (this.text && (this.transcriptDecides || !isPrivateAck(this.text))),
     );
   }
 
   // -- sanitization wrappers (never leak server paths to the browser) -------
 
   private safeSanitizeText(text: string): string {
-    try {
-      return sanitizeText(text, { mediaSessionKey: this.sessionKey });
-    } catch (err) {
-      if (err instanceof MediaConfigurationError) {
-        return text;
-      }
-      throw err;
-    }
+    return sanitizeDisplay(text, this.sessionKey);
   }
 
   /**
@@ -4299,4 +4470,29 @@ export class Normalizer {
       throw err;
     }
   }
+}
+
+/** Where `prefix` ends inside `text` when `text` starts with it up to whitespace (runs
+ *  of whitespace compare equal, as the gateway's separators may differ from a stored
+ *  copy), or null. Linear; no regex. */
+export function prefixEndIgnoringSpace(text: string, prefix: string): number | null {
+  const isSpace = (c: string): boolean => c === " " || c === "\n" || c === "\t" || c === "\r";
+  let i = 0;
+  let j = 0;
+  while (j < prefix.length && isSpace(prefix[j]!)) j++;
+  while (i < text.length && isSpace(text[i]!)) i++;
+  while (j < prefix.length) {
+    const pc = prefix[j]!;
+    if (isSpace(pc)) {
+      while (j < prefix.length && isSpace(prefix[j]!)) j++;
+      if (j === prefix.length) break;
+      if (i >= text.length || !isSpace(text[i]!)) return null;
+      while (i < text.length && isSpace(text[i]!)) i++;
+      continue;
+    }
+    if (i >= text.length || text[i] !== pc) return null;
+    i++;
+    j++;
+  }
+  return i;
 }

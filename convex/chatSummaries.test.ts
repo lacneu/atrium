@@ -2034,3 +2034,85 @@ describe("rehydrationContext with a rolling summary", () => {
     expect(r.history).toContain("m0 contenu.");
   });
 });
+
+// codex phase 4 pass 15 #1: under the transcript projection (`on`), the summarizer's
+// answer can be BORN terminal from the transcript's rows before its live stream opens.
+// That answer never sees a terminal transition of its own (a late live finalize finds it
+// terminal), so the job's correlate runs when it is born — once.
+describe("a summarize answer born from the transcript settles its job, once", () => {
+  async function bornSummary(t: Tt) {
+    const s = await setup(t);
+    await schedule(t, s.chatId);
+    const hidden = (await hiddenChat(t, s.userId))!;
+    const lock = hidden.pendingSummarize!;
+    const sessionKey = `agent:olivier:atrium:chat:u:summarize-${lock.targetChatId}-${lock.createdAt}`;
+    await t.run(async (ctx) => {
+      const inst = (await ctx.db.query("instances").collect()).find((i) => i.name === "primary")!;
+      await ctx.db.patch(inst._id, { config: { transcriptProjection: "on" } as never });
+    });
+    const apply = (rows: unknown[], extra: Record<string, unknown> = {}) =>
+      t.mutation(internal.transcriptProjection.applyTranscript, {
+        chatId: hidden._id,
+        boundInstanceName: "primary",
+        sessionKey,
+        sessionId: "s-sum",
+        kind: "delta",
+        deltaCursor: `c:${Math.random()}`,
+        rows,
+        terminals: [],
+        unidentified: 0,
+        ...extra,
+      } as never);
+    await apply([], { kind: "page" });
+    await apply(
+      [{ entryId: "a1", seq: 2, role: "assistant", runId: "run-sum", hidden: false, visible: true, text: "Résumé : le projet avance." }],
+      { terminals: [{ runId: "run-sum", status: "completed", at: Date.now() }], hasActiveRun: false },
+    );
+    return { ...s, hidden, lock, sessionKey };
+  }
+
+  for (const rolledBack of [false, true]) {
+    test(`transcript before live${rolledBack ? ", then a rollback to shadow" : ""}: summary stored, lock cleared — and the late live finalize runs nothing again`, async () => {
+      vi.useFakeTimers();
+      const t = convexTest({ schema, modules, transactionLimits: true });
+      const { chatId, userId, hidden, lock, sessionKey } = await bornSummary(t);
+      const born = await t.run(async (ctx) =>
+        (await ctx.db.query("messages").withIndex("by_chat", (q) => q.eq("chatId", hidden._id)).collect()).find(
+          (m) => m.role === "assistant",
+        ),
+      );
+      expect(born?.status).toBe("complete");
+      const row = await summaryRow(t, chatId);
+      expect(row?.summary).toBe("Résumé : le projet avance.");
+      expect(row?.watermarkOrderTime).toBe(lock.watermarkTarget);
+      expect((await hiddenChat(t, userId))?.pendingSummarize).toBeUndefined();
+      // The live run lands on the born answer…
+      const landed = await t.mutation(internal.stream.startAssistant, {
+        chatId: hidden._id,
+        runId: "run-sum",
+        turnSessionKey: sessionKey,
+        boundInstanceName: "primary",
+      });
+      expect(landed).toBe(born!._id);
+      if (rolledBack) {
+        await t.run(async (ctx) => {
+          const inst = (await ctx.db.query("instances").collect()).find((i) => i.name === "primary")!;
+          await ctx.db.patch(inst._id, { config: { transcriptProjection: "shadow" } as never });
+        });
+      }
+      const before = await t.run((ctx) => ctx.db.system.query("_scheduled_functions").collect());
+      // …and its terminal arrives: no transition, no second correlate, no second cleanup.
+      const res = (await t.mutation(internal.stream.finalize, {
+        messageId: landed as Id<"messages">,
+        status: "complete",
+        text: "Résumé : le projet avance.",
+        expectedRunId: "run-sum",
+        boundInstanceName: "primary",
+      } as never)) as { transitioned: boolean };
+      expect(res.transitioned).toBe(false);
+      const after = await t.run((ctx) => ctx.db.system.query("_scheduled_functions").collect());
+      expect(after.length).toBe(before.length);
+      expect(await summaryRow(t, chatId)).toEqual(row);
+    });
+  }
+});

@@ -1258,6 +1258,52 @@ describe("the PLAN clear is retried too (idempotent by construction)", () => {
   });
 });
 
+describe("the steer cut is retried when its answer is lost (codex pass 4)", () => {
+  test("a split whose POST dies after the commit is re-posted, and the repeat's segment is used", async () => {
+    // Convex answers a repeat of a committed split with the segment it opened
+    // (stream.ts `splitSegment`), so the retry is safe — and without it the turn stayed
+    // on the settled segment while the new one streamed nothing, forever.
+    let attempts = 0;
+    const fetchImpl = (async (_url: unknown, init: { body: string }) => {
+      const op = (JSON.parse(init.body) as { op: string }).op;
+      if (op === "splitSegment") {
+        attempts += 1;
+        if (attempts === 1) throw new Error("socket hang up");
+        return { ok: true, json: async () => ({ ok: true, messageId: "seg2" }) } as unknown as Response;
+      }
+      return { ok: true, json: async () => ({ ok: true }) } as unknown as Response;
+    }) as unknown as typeof fetch;
+    const writer = writerWith(fetchImpl);
+    expect(await writer.splitSegment("seg1", "userB")).toBe("seg2");
+    expect(attempts).toBe(2);
+  });
+});
+
+describe("the steer cut carries the segment's text (codex pass 5)", () => {
+  test("a failed append before the cut: the cut still goes, with the text, and the append is never replayed", async () => {
+    const posts: Array<{ op: string; text?: string; messageId?: string }> = [];
+    const fetchImpl = (async (_url: unknown, init: { body: string }) => {
+      const body = JSON.parse(init.body) as { op: string; text?: string; messageId?: string };
+      posts.push(body);
+      if (body.op === "appendDelta") throw new Error("socket hang up");
+      if (body.op === "splitSegment") {
+        return { ok: true, json: async () => ({ ok: true, messageId: "seg2" }) } as unknown as Response;
+      }
+      return { ok: true, json: async () => ({ ok: true }) } as unknown as Response;
+    }) as unknown as typeof fetch;
+    const writer = writerWith(fetchImpl, 60_000);
+    await writer.appendDelta("seg1", "Before.");
+    expect(await writer.splitSegment("seg1", "userB", "Before.")).toBe("seg2");
+    const split = posts.find((p) => p.op === "splitSegment");
+    expect(split?.text).toBe("Before.");
+    const appendsBefore = posts.filter((p) => p.op === "appendDelta").length;
+    await writer.finalize("seg2", "complete", "After.", null);
+    // Nothing of segment 1 is written again after the cut.
+    expect(posts.filter((p) => p.op === "appendDelta").length).toBe(appendsBefore);
+    expect(posts.filter((p) => p.messageId === "seg1" && p.op !== "splitSegment" && p.op !== "appendDelta")).toEqual([]);
+  });
+});
+
 describe("finalize is retried when the POST fails transiently (G-30)", () => {
   test("a complete reply is not left 'streaming' by one flaky POST", async () => {
     // The reply is WRITTEN; only its terminal POST failed. Without a retry the row

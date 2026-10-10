@@ -54,6 +54,30 @@ const MAX_PENDING_ANNOUNCE_FRAMES = 5000;
  *   3. the normalizer emits the terminal [message.final, run.status] pair, which
  *      the sink translates into a single writer.finalize().
  */
+/** One run's serial lane (see RunManager `lanes`). */
+interface RunLane {
+  runId: string;
+  /** Where its later media and terminal go: the bubble its turn showed — or, when none
+   *  opened here, the one the transcript made (looked up in Convex). */
+  messageId: string | null;
+  /** The run segment that bubble is (the steer cuts before it opened). */
+  segment: number;
+  /** Frames waiting for the destination to be known (bounded with the lane). */
+  awaiting: Array<{ frame: unknown; now: number }>;
+  /** Destination lookups made so far (bounded). */
+  lookups: number;
+  turnStartMs: number;
+  createdAt: number;
+  /** closing: the close is queued or writing; closed: draining onto the bubble;
+   *  aborted: the close was refused — what it holds goes back to the turn; done: its
+   *  terminal is written. */
+  state: "closing" | "closed" | "aborted" | "done";
+  normalizer: Normalizer | null;
+  hosted: Set<string>;
+  tail: Promise<void>;
+  queued: number;
+}
+
 export class RunManager {
   private readonly normalizer: Normalizer;
   private readonly sink: TurnSink;
@@ -125,6 +149,35 @@ export class RunManager {
   // (startAssistant's Convex write in flight): its frames racing that write on
   // the concurrent consume loop must be stashed, not dropped-as-stale (codex P2).
 
+  /**
+   * ONE SERIAL LANE PER RUN THE TRANSCRIPT CLOSES (projection `on`, phase 4 — codex
+   * passes 17–20). The turn ends on the transcript's fact (`settleFromTranscript`) while
+   * the live run may still have things to say: the media it delivers after its rows and
+   * its own terminal. Everything of that run goes through its lane, strictly one item at
+   * a time, each awaited to completion (uploads included): the close finalize, then every
+   * frame of the run in arrival order — its media through `addMedia`, its live terminal
+   * through `finalizeClosedRun` (the terminal Convex waits for before judging a file
+   * job). So a terminal can never overtake a media, and a failed close never drops what
+   * follows: the run stays recorded, with the destination captured when the close was
+   * decided. A close the ordered unit refuses (the turn moved on) turns the lane back
+   * into the turn's own pipeline for what it holds. Frames of other runs never wait on a
+   * lane (the routing is decided synchronously — G-29). Bounded by count, by queued
+   * items and by age; removed after the run's terminal or its TTL; kept across a switch
+   * back to shadow (a run closed before it still delivers).
+   */
+  private readonly lanes = new Map<string, RunLane>();
+  static readonly MAX_TRANSCRIPT_CLOSED = 16;
+  /** In the INJECTED clock's unit — seconds (session.ts `defaultClock`): every `now` this
+   *  class receives is one (codex phase 4 pass 21: a millisecond bound made it ~7 days). */
+  static readonly TRANSCRIPT_CLOSED_TTL_S = 10 * 60;
+  static readonly MAX_LANE_ITEMS = 256;
+  /** Lookups of a closed run's projected bubble before its lane gives up (the Convex
+   *  deferred check then settles its file job). One per lane event, never on a timer. */
+  static readonly MAX_DESTINATION_LOOKUPS = 3;
+  private readonly chatId: string;
+  private readonly writer: ConvexWriter;
+  private readonly providerSessionId: string | null;
+
   constructor(
     chatId: string,
     sessionKey: string,
@@ -137,8 +190,303 @@ export class RunManager {
     providerSessionId: string | null = null,
   ) {
     this.sessionKey = sessionKey;
+    this.chatId = chatId;
+    this.writer = writer;
+    this.providerSessionId = providerSessionId;
     this.normalizer = new Normalizer(sessionKey, providerSessionId);
     this.sink = new TurnSink(chatId, writer, outboundScan, sessionKey, onTurnError);
+  }
+
+  // ── TRANSCRIPT PROJECTION `on` (redesign phase 3) ─────────────────────────────────
+  //
+  // Sending like the Control UI means a send can land while a run is in the foreground:
+  // its ACK is CUSTODY, not a new turn (ui/src/pages/chat/chat-send-delivery.ts:497-502
+  // at v2026.9.8, "Accepted steering/queued custody identifies the input, not a
+  // replacement for the active model run"). The live overlay then follows the gateway's
+  // own facts, three rules of the Control UI, applied ONLY on this switch:
+  //   - CU-20: a steered input's `<sendId>:user` row (steerTargetRunId = the foreground
+  //     run) cuts the run's bubble — onUserRow → splitSegment;
+  //   - CU-9/CU-10, bounded to inputs the gateway holds for us: a run of the session that
+  //     is not the foreground one is never folded into it; while it streams it waits,
+  //     and once the sink is free it opens its own (deferred) bubble — the announce
+  //     machinery, generalised (adoptableRunFor);
+  //   - CU-8: a DISTINCT final of a settled run joins its bubble (lateFinalFor).
+  // Off ⇒ every path below is skipped and the legacy pipeline runs byte-for-byte.
+  private projection = false;
+  /** Inputs the gateway accepted while a run was in the foreground, by send identity. */
+  private readonly heldInputs = new Map<
+    string,
+    {
+      ackRunId: string | null;
+      userMessageId: string | null;
+      steered: boolean;
+      answered: boolean;
+      /** Runs already live when the gateway accepted the input: none of them is the
+       *  run that ANSWERS it (a followup's answer is a run that starts after it) —
+       *  except the one the transcript proves it was steered into (steerAdoptRuns). */
+      predating: ReadonlySet<string>;
+    }
+  >();
+  /** Runs of the session that are NOT the foreground turn's but into which the
+   *  transcript proves a held input was steered (`<sendId>:user`.steerTargetRunId):
+   *  what they write from there answers that input, in their own bubble. */
+  private readonly steerAdoptRuns = new Set<string>();
+  /** The ACK run ids of those inputs (custody runs: a bare final for steer/followup). */
+  private readonly inputAckRuns = new Map<string, string>();
+  /** The SETTLED runs of this session (bounded, insertion-ordered): the bubble each
+   *  left (null: none) and the run's whole visible text — every segment of a run cut at
+   *  steered inputs — what CU-8 joins a late final to. The runs of one turn share one
+   *  record. Kept across turns: a late final of A may follow B's settle. */
+  private readonly settledRuns = new Map<string, { messageId: string | null; text: string }>();
+  private static readonly MAX_SETTLED_RUNS = 200;
+  /** Every run a turn of this session has owned (bounded, insertion-ordered): a late
+   *  frame of one of them is that run's tail, never a new run to adopt. */
+  private readonly ownedRunHistory = new Set<string>();
+  private static readonly MAX_OWNED_RUN_HISTORY = 200;
+  private static readonly MAX_HELD_INPUTS = 50;
+
+  /** The instance's projection switch, as the last `/send` carried it. */
+  setProjection(on: boolean): void {
+    this.projection = on;
+    // Phase 4: on a projected session the transcript decides when a turn ended.
+    this.normalizer.transcriptDecides = on;
+    if (!on) {
+      this.heldInputs.clear();
+      this.inputAckRuns.clear();
+      this.steerAdoptRuns.clear();
+    }
+  }
+
+  get projectionOn(): boolean {
+    return this.projection;
+  }
+
+  /** The runs the foreground turn owns (empty when no turn is live). */
+  get foregroundRunIds(): string[] {
+    return this.sink.active || this.sink.finalizing ? [...this.normalizer.ownRunIds] : [];
+  }
+
+  /** The run the foreground turn last heard from (the one a Stop targets), or null. */
+  get foregroundRunId(): string | null {
+    return this.sink.active ? this.normalizer.currentRunId : null;
+  }
+
+  /** A send the gateway accepted while a turn was in the foreground (custody only). */
+  noteHeldInput(
+    sendId: string,
+    ackRunId: string | null,
+    userMessageId: string | null,
+    predatingRunIds: readonly string[] = [],
+  ): void {
+    if (!this.projection) return;
+    this.heldInputs.delete(sendId);
+    const predating = new Set(predatingRunIds);
+    for (const id of this.foregroundRunIds) predating.add(id);
+    if (ackRunId !== null) predating.delete(ackRunId);
+    this.heldInputs.set(sendId, { ackRunId, userMessageId, steered: false, answered: false, predating });
+    if (ackRunId !== null) this.inputAckRuns.set(ackRunId, sendId);
+    while (this.heldInputs.size > RunManager.MAX_HELD_INPUTS) {
+      const oldest = this.heldInputs.keys().next().value as string;
+      const gone = this.heldInputs.get(oldest);
+      this.heldInputs.delete(oldest);
+      if (gone?.ackRunId) this.inputAckRuns.delete(gone.ackRunId);
+    }
+  }
+
+  /** The ACK named the input's custody run: it replaces the provisional one. */
+  noteInputAckRun(sendId: string, ackRunId: string | null): void {
+    const held = this.heldInputs.get(sendId);
+    if (held === undefined || ackRunId === null || ackRunId === held.ackRunId) return;
+    if (held.ackRunId !== null) this.inputAckRuns.delete(held.ackRunId);
+    held.ackRunId = ackRunId;
+    this.inputAckRuns.set(ackRunId, sendId);
+  }
+
+  /** The send was refused (or not accepted): the input is not the gateway's. */
+  forgetHeldInput(sendId: string): void {
+    const held = this.heldInputs.get(sendId);
+    if (held === undefined) return;
+    if (held.ackRunId !== null) this.inputAckRuns.delete(held.ackRunId);
+    this.heldInputs.delete(sendId);
+  }
+
+  /** After a bridge restart (CU-22 resume): the inputs Convex still records as held by
+   *  the gateway while the resumed bubble streamed. The resumed run predates them (it
+   *  is in the foreground now); an input already known here is left as it is. Its
+   *  custody run is restored as a fresh send's is — the send identity, the gateway's
+   *  client run id: without it the input's bare custody final looked like the run that
+   *  answers it, consumed the input, and the real answer was refused as foreign (codex
+   *  pass 4). */
+  rehydrateHeldInputs(inputs: ReadonlyArray<{ sendId: string; messageId: string }>): void {
+    for (const i of inputs) {
+      if (this.heldInputs.has(i.sendId)) continue;
+      this.noteHeldInput(i.sendId, i.sendId, i.messageId);
+    }
+  }
+
+  /** Held inputs still waiting for the run that answers them. */
+  get outstandingInputs(): string[] {
+    const out: string[] = [];
+    for (const [id, h] of this.heldInputs) if (!h.steered && !h.answered) out.push(id);
+    return out;
+  }
+
+  /**
+   * A transcript USER row of this session (session.message or a read), CU-20: an input
+   * we hold that the gateway STEERED into the foreground run cuts that run's bubble —
+   * what the run writes next is the answer to the steered message.
+   */
+  async onUserRow(row: { sendId?: string; steerTargetRunId?: string }): Promise<void> {
+    if (!this.projection || row.sendId === undefined) return;
+    const held = this.heldInputs.get(row.sendId);
+    if (held === undefined || held.steered) return;
+    if (row.steerTargetRunId === undefined) return;
+    // Claimed at once (the live event and a read can deliver the same row), and released
+    // if the cut fails before Convex has it: a later delivery of the row re-arms it.
+    held.steered = true;
+    const target = row.steerTargetRunId;
+    await this.runOrdered(async () => {
+      if (!this.sink.active || !this.normalizer.ownRunIds.has(target)) {
+        // Steered into a run that is not the foreground turn here (one the gateway was
+        // already running when the input was accepted): that run now answers it — it
+        // opens its own bubble, never the bubble of another turn.
+        if (!this.ownedRunHistory.has(target)) {
+          this.steerAdoptRuns.add(target);
+          while (this.steerAdoptRuns.size > RunManager.MAX_HELD_INPUTS) {
+            this.steerAdoptRuns.delete(this.steerAdoptRuns.values().next().value as string);
+          }
+        }
+        return;
+      }
+      let split: boolean;
+      try {
+        split = await this.sink.splitSegment(
+          held.userMessageId,
+          this.normalizer.currentSegmentText,
+        );
+      } catch (err) {
+        held.steered = false;
+        console.error(
+          `[send] steered input: the cut failed, re-armed for the next delivery of its row:`,
+          (err as Error)?.message ?? err,
+        );
+        return;
+      }
+      if (split) this.normalizer.splitSegment();
+      console.log(
+        `[send] steered input ${split ? "cut the run's bubble" : "joined the run (no bubble to cut)"} run=${target.slice(0, 60)}`,
+      );
+    });
+  }
+
+  /** The gateway will never run this input (cancelled, or no receipt when asked): no run
+   *  is coming to answer it. */
+  noteInputDropped(sendId: string): void {
+    const held = this.heldInputs.get(sendId);
+    if (held !== undefined) held.answered = true;
+  }
+
+  /** The run id of a frame that must open its OWN deferred bubble rather than join the
+   *  foreground turn (projection `on`), or null. */
+  private adoptableRunFor(frame: unknown): string | null {
+    if (!this.projection) return null;
+    const rid = sessionRunIdFor(frame, this.sessionKey);
+    if (rid === null) return null;
+    if (this.normalizer.ownRunIds.has(rid) && (this.sink.active || this.sink.finalizing)) {
+      return null;
+    }
+    if (this.ownedRunHistory.has(rid)) return null;
+    if (this.inputAckRuns.has(rid)) return rid;
+    if (this.steerAdoptRuns.has(rid)) return rid;
+    // Only an input this run can answer: a run that was already live when the input
+    // was accepted is not its answer (it predates it).
+    if (this.waitingInputFor(rid) === undefined) return null;
+    // A heartbeat run is the gateway's own wake, never an answer (CU-21).
+    const p = (frame as { payload?: { isHeartbeat?: unknown } }).payload;
+    if (p?.isHeartbeat === true) return null;
+    return rid;
+  }
+
+  /** The oldest held input still waiting that run `rid` may answer (it did not predate
+   *  the input's acceptance), or undefined. */
+  private waitingInputFor(rid: string): string | undefined {
+    return this.outstandingInputs.find((id) => !this.heldInputs.get(id)!.predating.has(rid));
+  }
+
+  /** When a run is adopted for the held inputs, the oldest waiting one is its question
+   *  (ack runs answer only their own input, and only if they show something). */
+  private noteRunAdopted(runId: string): void {
+    if (this.inputAckRuns.has(runId)) return;
+    // A run proven steered-into answers the input already marked steered.
+    if (this.steerAdoptRuns.has(runId)) return;
+    const first = this.waitingInputFor(runId);
+    if (first !== undefined) this.heldInputs.get(first)!.answered = true;
+  }
+
+  /** The visible text of a DISTINCT late final of a settled run (CU-8), or null. */
+  private lateFinalFor(
+    frame: unknown,
+  ): { runId: string; text: string; settled: { messageId: string | null; text: string } } | null {
+    if (!this.projection) return null;
+    if (typeof frame !== "object" || frame === null) return null;
+    const f = frame as { event?: unknown; payload?: Record<string, unknown> };
+    if (f.event !== "chat" || f.payload?.state !== "final") return null;
+    const rid = sessionRunIdFor(frame, this.sessionKey);
+    const record = rid === null ? undefined : this.settledRuns.get(rid);
+    if (rid === null || record === undefined) return null;
+    if ((this.sink.active || this.sink.finalizing) && this.normalizer.ownRunIds.has(rid)) {
+      return null;
+    }
+    const text = visibleFinalText(f.payload?.message);
+    if (text === "") return null;
+    const settled = normText(record.text);
+    const add = normText(text);
+    if (add === "NO_REPLY" || add === "HEARTBEAT_OK") return null;
+    // An exact (or shorter) repetition of what the run showed adds nothing.
+    if (settled.includes(add)) return null;
+    // A CUMULATIVE final that repeats the shown reply (all of its segments) AND adds to
+    // it: only the addition joins the bubble (the reply is already there).
+    if (settled !== "" && add.includes(settled)) {
+      const extra = textBeyond(text, record.text);
+      return extra === "" ? null : { runId: rid, text: extra, settled: record };
+    }
+    return { runId: rid, text, settled: record };
+  }
+
+  /** A turn began and its settlement is not recorded yet (see noteIfSettled). */
+  private settleUnrecorded = false;
+
+  /** Bookkeeping after any unit that may have ENDED the turn. Idempotent: it records
+   *  a begun turn once, as soon as the sink is free — and it runs before anything can
+   *  open the NEXT turn (beginTurn, resumeTurn, the announce flush), because a feed
+   *  that finalizes A can open B before its own epilogue runs, and A's runs were then
+   *  never recorded (codex pass 4: A's distinct late final was lost). */
+  private noteIfSettled(): void {
+    if (this.settleUnrecorded && !this.sink.active && this.projection) {
+      this.settleUnrecorded = false;
+      const b = this.sink.lastSettledBubble;
+      // The run's whole visible text: the earlier segments (cut at steers) + the last.
+      const earlier = this.normalizer.segmentPrefixText;
+      const last = b?.text ?? "";
+      const record = {
+        messageId: b?.messageId ?? null,
+        text: earlier === null ? last : last === "" ? earlier : `${earlier}\n\n${last}`,
+      };
+      for (const id of this.normalizer.ownRunIds) {
+        this.settledRuns.delete(id);
+        this.settledRuns.set(id, record);
+      }
+      while (this.settledRuns.size > RunManager.MAX_SETTLED_RUNS) {
+        this.settledRuns.delete(this.settledRuns.keys().next().value as string);
+      }
+      for (const id of this.normalizer.ownRunIds) {
+        this.ownedRunHistory.delete(id);
+        this.ownedRunHistory.add(id);
+      }
+      while (this.ownedRunHistory.size > RunManager.MAX_OWNED_RUN_HISTORY) {
+        this.ownedRunHistory.delete(this.ownedRunHistory.values().next().value as string);
+      }
+    }
   }
 
   /** Whether this session's socket declared `inline-widgets` (decided per handshake
@@ -225,6 +573,12 @@ export class RunManager {
     return this.normalizer.takeRecvSilence();
   }
 
+  /** Projection `on`: a silence was answered by a transcript read — the silence budget
+   *  restarts (one read per budget, never an end). */
+  rearmSilence(now: number): void {
+    this.normalizer.rearmSilence(now);
+  }
+
   /** TRUE when own frames RESUMED since the silence elapse (recv re-armed). */
   get recvDeadlineArmed(): boolean {
     return this.normalizer.recvDeadlineArmed;
@@ -256,6 +610,11 @@ export class RunManager {
 
   get turnActive(): boolean {
     return this.sink.active;
+  }
+
+  /** The turn's terminal is being written (media tail, finalize POST). */
+  get turnFinalizing(): boolean {
+    return this.sink.finalizing;
   }
 
   /** True in the chat.send→ack window (pre-ack buffer armed): a dispatch has
@@ -448,8 +807,19 @@ export class RunManager {
       /** The pre-send guard COMPACTED this session right before this send (W2):
        *  makes a `context_length` failure retryable exactly once. */
       compactedBeforeSend?: boolean;
+      /** Projection `on`, `interrupt` send: the foreground turn is replaced. The
+       *  gateway aborts its run; its bubble settles as stopped. */
+      interruptActive?: boolean;
     },
   ): Promise<void> {
+    if (
+      this.projection &&
+      turnContext?.interruptActive === true &&
+      turnContext.spontaneous !== true &&
+      this.sink.active
+    ) {
+      await this.runOrdered(() => this.sink.preemptOpenTurn("aborted"));
+    }
     // PREEMPTION guard: a real dispatch resetting the pipeline while a deferred
     // announce turn is still INVISIBLE (no assistant message created — the chat
     // did not look busy, so a user send slipped in) would leave that run marked
@@ -516,6 +886,8 @@ export class RunManager {
     this.spontaneousReplayCopy = [];
     this.currentSpontaneousRun =
       turnContext?.spontaneous === true ? ackRunId : null;
+    this.noteIfSettled();
+    this.settleUnrecorded = true;
     this.turnEpoch++;
     this.normalizer.beginTurn(now);
     // A frame of this run was refused by the pre-ack cap: what the normalizer reads
@@ -533,13 +905,20 @@ export class RunManager {
     if (ackRunId) {
       this.normalizer.noteRunStarted(ackRunId, now);
     }
+    // PROJECTION `on` (phase 4): a sent turn's bubble is born from its run (first visible
+    // content or tool activity), never at the ACK — a run with nothing to show leaves none.
+    const bornFromRun = this.projection && turnContext?.spontaneous !== true;
     await this.sink.beginTurn(
       ackRunId,
       turnContext?.pressure,
-      turnContext?.spontaneous === true,
+      turnContext?.spontaneous === true || bornFromRun,
       turnContext?.rehydrated === true,
       turnContext?.dispatchOutboxId ?? null,
-      { compactedBeforeSend: turnContext?.compactedBeforeSend === true },
+      {
+        compactedBeforeSend: turnContext?.compactedBeforeSend === true,
+        ...(this.projection ? { projection: true } : {}),
+        ...(bornFromRun ? { openOnActivity: true } : {}),
+      },
     );
     // Flush the pre-turn provenance stash for THIS run only; entries from any
     // other run (a failed earlier dispatch, a foreign run) are dropped here.
@@ -597,6 +976,35 @@ export class RunManager {
     if (!this.sink.active) {
       await this.flushPendingAnnounce(now);
     }
+  }
+
+  /**
+   * RESUME a turn this process did not open (projection `on`, CU-22): the gateway still
+   * runs `runId`, whose bubble `messageId` is streaming in Convex — a bridge restart
+   * lost the turn, not the run. The sink goes active on that bubble; the run's frames
+   * flow into it again.
+   */
+  async resumeTurn(
+    now: number,
+    messageId: string,
+    runId: string,
+    segmentPrefix?: string,
+  ): Promise<void> {
+    if (!this.projection || this.sink.active || this.sink.finalizing) return;
+    this.spontaneousReplayCopy = [];
+    this.currentSpontaneousRun = null;
+    this.noteIfSettled();
+    this.settleUnrecorded = true;
+    this.turnEpoch++;
+    this.normalizer.beginTurn(now);
+    // A later segment of a cut run: the run's buffer still starts with the earlier
+    // segments, which their own bubbles already show.
+    if (segmentPrefix !== undefined) this.normalizer.restoreSegmentPrefix(segmentPrefix);
+    this.normalizer.noteRunStarted(runId, now);
+    this.frameTally.clear();
+    this.frameSampled.clear();
+    this.tallyDumped = false;
+    await this.sink.resumeTurn(messageId, runId);
   }
 
   /** A user /abort RPC targeted this chat's active run — see TurnSink. */
@@ -677,6 +1085,80 @@ export class RunManager {
   private async feedInner(frame: unknown, now: number): Promise<void> {
     // Observe-only protocol-drift classification (never gates the frame).
     protocolDrift.observe(frame);
+    await this.feedObserved(frame, now);
+  }
+
+  /** A frame already observed (a held frame replays through here — counted once). */
+  private async feedObserved(frame: unknown, now: number): Promise<void> {
+    // A frame of a run with a lane (closing or closed by the transcript): onto its lane,
+    // decided SYNCHRONOUSLY and never awaited here — a frame of any other run takes no
+    // extra await, so the feed's single ordered application path (G-29) is untouched.
+    if (this.enqueueOnLane(frame, now)) return;
+    await this.feedPipeline(frame, now);
+  }
+
+  /** The turn's own pipeline for a frame (a lane hands back what it held here). */
+  private async feedPipeline(frame: unknown, now: number): Promise<void> {
+    const late = this.lateFinalFor(frame);
+    if (late !== null) {
+      const settled = late.settled;
+      const opened = settled.messageId === null;
+      try {
+        const into = await this.sink.writeLateFinal(late.runId, settled.messageId, late.text);
+        if (into !== null) {
+          settled.messageId = into;
+          settled.text = settled.text === "" ? late.text : `${settled.text}\n\n${late.text}`;
+        }
+        console.log(
+          `[final] a distinct late final joined the settled run's bubble (CU-8) run=${late.runId.slice(0, 60)}${opened ? " (new bubble)" : ""}`,
+        );
+      } catch (e) {
+        console.error("[final] late final not written (non-fatal):", (e as Error)?.message ?? e);
+      }
+      return;
+    }
+    try {
+      await this.feedRouted(frame, now);
+    } finally {
+      this.noteIfSettled();
+    }
+  }
+
+  /** A run of the session that opens a spontaneous (deferred) turn of its own: the
+   *  gateway's delivery families, and — projection `on` — the runs answering inputs it
+   *  holds for us. */
+  private spontaneousRunFor(frame: unknown): string | null {
+    return announceRunIdFor(frame, this.sessionKey) ?? this.adoptableRunFor(frame);
+  }
+
+  /**
+   * A frame of an input's CUSTODY run that says nothing (projection `on`): the run the
+   * ACK named for a steered / queued input ends with a bare `chat final` — the input
+   * went into another run (CU-4: "Accepted steering/queued custody identifies the
+   * input, not a replacement for the active model run"). Such frames open no turn:
+   * one would sit in the legacy empty-final wait and hold the sink while the run that
+   * actually answers streams. A custody run that DOES carry content (the gateway ran
+   * the input on its own) is adopted like any other run.
+   */
+  private custodyRunNoise(frame: unknown): boolean {
+    if (!this.projection) return false;
+    const rid = sessionRunIdFor(frame, this.sessionKey);
+    if (rid === null || !this.inputAckRuns.has(rid)) return false;
+    if (this.normalizer.ownRunIds.has(rid) && (this.sink.active || this.sink.finalizing)) {
+      return false;
+    }
+    const f = frame as { event?: unknown; payload?: Record<string, unknown> };
+    const p = f.payload ?? {};
+    if (f.event === "chat") return p.message === undefined && p.deltaText === undefined;
+    if (f.event === "agent") {
+      const stream = p.stream;
+      return stream === "lifecycle" || stream === "run_status" || stream === "status";
+    }
+    return false;
+  }
+
+  private async feedRouted(frame: unknown, now: number): Promise<void> {
+    if (this.custodyRunNoise(frame)) return;
     if (!this.sink.active) {
       // --- GATEWAY-INITIATED POST-TURN RUN (the "announce" delivery) ----------
       // When a sub-agent finishes AFTER its parent turn ended (sessions_yield /
@@ -692,7 +1174,7 @@ export class RunManager {
       // sessionKey (no isolation relaxation) and must not race an in-flight
       // chat.send (replayArmed) — in that rare window the pre-ack buffer keeps
       // its existing semantics.
-      const announceRun = announceRunIdFor(frame, this.sessionKey);
+      const announceRun = this.spontaneousRunFor(frame);
       if (announceRun !== null && this.handledAnnounceRuns.has(announceRun)) {
         // Stale retransmit of a finished announce: NEVER the pre-ack buffer
         // (beginTurn's replay could admit it as a follow-up during a
@@ -728,6 +1210,7 @@ export class RunManager {
         // on the first user-visible normalized event. A run that terminates
         // silent (the NO_REPLY sentinel) never creates anything — zero bubble.
         this.noteAnnounceHandled(announceRun);
+        if (this.projection) this.noteRunAdopted(announceRun);
         await this.beginTurn(now, announceRun, {
           expectedSessionId: null,
           spontaneous: true,
@@ -870,7 +1353,7 @@ export class RunManager {
         }
       }
     }
-    const activeAnnounce = announceRunIdFor(frame, this.sessionKey);
+    const activeAnnounce = this.spontaneousRunFor(frame);
     if (activeAnnounce !== null) {
       if (!this.handledAnnounceRuns.has(activeAnnounce)) {
         this.stashAnnounceFrame(frame, now);
@@ -921,6 +1404,7 @@ export class RunManager {
       return;
     }
     await this.applyOrdered(() => this.normalizer.tick(now));
+    this.noteIfSettled();
     // A deadline-driven finalize must also deliver stashed announces (same
     // no-later-tick-guaranteed rationale as feed()).
     if (!this.sink.active) {
@@ -936,6 +1420,8 @@ export class RunManager {
    * wait again (a new send armed mid-flush) simply re-stashes.
    */
   private async flushPendingAnnounce(now: number): Promise<void> {
+    // Whatever ended before this flush is recorded before it can open the next turn.
+    this.noteIfSettled();
     if (
       this.sink.active ||
       this.sink.finalizing ||
@@ -1173,6 +1659,271 @@ export class RunManager {
    * Force-finalize the active turn (e.g. on socket close or a send error). The
    * normalizer emits its terminal pair; the sink flushes it to Convex.
    */
+  /**
+   * THE TRANSCRIPT SAYS THE RUN IS OVER (projection `on`, phase 4): Convex's run table
+   * marked these runs settled — a terminal was observed, or a fresh `chat.history` found
+   * the session idle (`hasActiveRun:false`, which the gateway reports only once the
+   * terminal row is queryable — src/gateway/server-methods/chat-history-handler.ts:364-373
+   * at v2026.9.8; the Control UI retires its run on such a read, ui/src/pages/chat/
+   * run-lifecycle.ts:637-690). When the foreground turn's run is among them, the turn
+   * ends HERE — the fact that replaces every grace the legacy path waited on. The
+   * bubble itself was already settled from the rows, in the same Convex mutation; this
+   * write is the sink's own close (a no-op there: the first terminal wins).
+   * Returns whether a turn ended.
+   */
+  async settleFromTranscript(runIds: readonly string[], now: number): Promise<boolean> {
+    if (!this.projection || !this.sink.active || this.normalizer.finalized) return false;
+    // Only the run the turn is CURRENTLY following: a turn keeps the ids of the runs it
+    // owned before (a compaction that resumed the turn on a new run, an abandoned
+    // generation), and one of those ending says nothing about the run still writing —
+    // closing on it finalized a live answer half-written (codex phase 4 pass 2).
+    const current = this.normalizer.currentRunId;
+    if (current === null || !runIds.includes(current)) return false;
+    if (this.lanes.get(current)?.state === "closing") return false; // already under way
+    // The lane, SYNCHRONOUSLY, before any await: from here every frame of the run waits
+    // in it. Its destination is captured now (the bubble the turn shows), refined by the
+    // close itself when the bubble opened meanwhile.
+    const lane: RunLane = {
+      runId: current,
+      messageId: this.sink.currentMessageId,
+      segment: this.sink.openSegment,
+      awaiting: [],
+      lookups: 0,
+      turnStartMs: this.sink.turnStartedAtMs,
+      createdAt: now,
+      state: "closing",
+      normalizer: null,
+      hosted: new Set(),
+      tail: Promise.resolve(),
+      queued: 0,
+    };
+    this.lanes.set(current, lane);
+    this.pruneLanes(now);
+    let closed = false;
+    const done = this.onLane(lane, null, async () => {
+      // The close and the capture of ITS bubble are ONE ordered unit, before anything can
+      // open the next turn (codex phase 4 pass 18: `endTurn` flushes stashed announces,
+      // and the next turn's bubble — or none — was read as this run's).
+      try {
+        await this.runOrdered(async () => {
+          // Re-checked INSIDE the unit (codex phase 4 pass 19): units queued before this
+          // one can move the turn on a new run (a compaction resume keeps the epoch), end
+          // it, or a rollback can turn the projection off. Then this settle is not for it.
+          if (
+            !this.projection ||
+            !this.sink.active ||
+            this.normalizer.finalized ||
+            this.normalizer.currentRunId !== current
+          ) {
+            return;
+          }
+          closed = true;
+          // The destination, refreshed HERE — before the close's finalize, which can
+          // fail: a bubble that opened while the close was queued is this run's.
+          lane.messageId = this.sink.currentMessageId ?? lane.messageId;
+          lane.segment = this.sink.openSegment;
+          await this.sink.apply(this.normalizer.endTurn(now, "final", null, "transcript_settled", null));
+          const b = this.sink.lastSettledBubble;
+          if (b !== null && !this.sink.active && (b.runId === null || this.normalizer.ownRunIds.has(b.runId))) {
+            lane.messageId = b.messageId;
+          }
+        });
+      } catch (err) {
+        // A close that FAILED (Convex unreachable past its retries) still closed the turn
+        // here: the lane keeps the run with the destination it captured, and drains.
+        protocolDrift.observeException({ settle: current }, err, "feed");
+        console.error("[transcript] the close of a run failed (its lane keeps draining):", (err as Error)?.message ?? err);
+      }
+      if (closed) {
+        lane.state = "closed";
+        lane.normalizer = this.laneNormalizer(current, now);
+        this.noteIfSettled();
+        // No bubble opened here: the transcript's own (Convex made it from the rows).
+        if (lane.messageId === null) await this.lookUpDestination(lane);
+      } else {
+        lane.state = "aborted";
+      }
+    });
+    await done;
+    if (closed && !this.sink.active) await this.flushPendingAnnounce(now);
+    return closed;
+  }
+
+  /** The bubble the transcript made for a closed run that opened none here (Convex,
+   *  verified for this bridge's instance, chat, session, run and segment). Only a lane
+   *  reaches this — and a lane exists only for a run a projected turn closed. */
+  private async lookUpDestination(lane: RunLane): Promise<void> {
+    if (this.writer.findProjectedBubble === undefined) {
+      lane.lookups = RunManager.MAX_DESTINATION_LOOKUPS;
+      return;
+    }
+    lane.lookups++;
+    try {
+      const id = await this.writer.findProjectedBubble(this.chatId, this.sessionKey, lane.runId, lane.segment);
+      if (id !== null) lane.messageId = id;
+    } catch (err) {
+      protocolDrift.observeException({ closedRun: lane.runId }, err, "feed");
+      console.error("[transcript] a closed run's bubble lookup failed (will retry):", (err as Error)?.message ?? err);
+    }
+  }
+
+  /** The private normalizer that reads a closed run's later frames as its turn would. */
+  private laneNormalizer(runId: string, now: number): Normalizer {
+    const normalizer = new Normalizer(this.sessionKey, this.providerSessionId);
+    normalizer.transcriptDecides = true;
+    normalizer.beginTurn(now);
+    normalizer.noteRunStarted(runId, now);
+    return normalizer;
+  }
+
+  /** Drop the lanes past their age, then the oldest past the count. */
+  private pruneLanes(now: number): void {
+    for (const [id, lane] of this.lanes) {
+      if (now - lane.createdAt > RunManager.TRANSCRIPT_CLOSED_TTL_S) this.lanes.delete(id);
+    }
+    while (this.lanes.size > RunManager.MAX_TRANSCRIPT_CLOSED) {
+      this.lanes.delete(this.lanes.keys().next().value as string);
+    }
+  }
+
+  /** Queue `task` on the lane, strictly after everything already on it. Errors are
+   *  reported (the same sensor as `feed`) and never stop the lane. */
+  private onLane(lane: RunLane, frame: unknown, task: () => Promise<void>): Promise<void> {
+    lane.queued++;
+    const run = lane.tail.then(async () => {
+      try {
+        await task();
+      } catch (err) {
+        protocolDrift.observeException(frame, err, "feed");
+        console.error("[transcript] a run lane item failed (non-fatal):", (err as Error)?.message ?? err);
+      } finally {
+        lane.queued--;
+        // An aborted lane has handed back what it held: the run is the turn's again.
+        if (lane.state === "aborted" && lane.queued === 0 && this.lanes.get(lane.runId) === lane) {
+          this.lanes.delete(lane.runId);
+        }
+      }
+    });
+    lane.tail = run;
+    return run;
+  }
+
+  /** A frame of a run that has a lane: queued on it (true), never awaited by the caller. */
+  private enqueueOnLane(frame: unknown, now: number): boolean {
+    if (this.lanes.size === 0) return false;
+    this.pruneLanes(now);
+    const rid = sessionRunIdFor(frame, this.sessionKey);
+    const lane = rid === null ? undefined : this.lanes.get(rid);
+    if (lane === undefined) return false;
+    // A closed run followed by a live turn again (a resume): that turn owns its frames.
+    if (lane.state === "closed" && this.sink.active && this.normalizer.ownRunIds.has(lane.runId)) return false;
+    if (lane.queued >= RunManager.MAX_LANE_ITEMS) {
+      console.log("[transcript] a frame of a closed run was dropped (lane bound reached)");
+      return true;
+    }
+    void this.onLane(lane, frame, () => this.laneFrame(lane, frame, now));
+    return true;
+  }
+
+  /** One frame on its run's lane: handed back to the turn (aborted close), or its media
+   *  and terminal written onto the run's bubble (closed), each to completion. */
+  private async laneFrame(lane: RunLane, frame: unknown, now: number): Promise<void> {
+    if (lane.state === "aborted") {
+      await this.feedPipeline(frame, now);
+      return;
+    }
+    if (lane.state !== "closed" || lane.normalizer === null) return;
+    if (lane.messageId === null) {
+      // Still no destination: look again — one lookup per lane event; the lane gives up
+      // (below) once MAX_DESTINATION_LOOKUPS failed, so this is bounded. Meanwhile the
+      // frame waits, in order.
+      await this.lookUpDestination(lane);
+      if (lane.messageId === null) {
+        if (lane.lookups < RunManager.MAX_DESTINATION_LOOKUPS && lane.awaiting.length < RunManager.MAX_LANE_ITEMS) {
+          lane.awaiting.push({ frame, now });
+          return;
+        }
+        // Given up: the Convex deferred check settles the file job with what arrived.
+        protocolDrift.observeException(
+          { closedRun: lane.runId },
+          new Error("closed run: no bubble found for its late media and terminal"),
+          "feed",
+        );
+        console.error("[transcript] a closed run's bubble was not found — its late frames are dropped");
+        lane.awaiting = [];
+        lane.state = "done";
+        if (this.lanes.get(lane.runId) === lane) this.lanes.delete(lane.runId);
+        return;
+      }
+      // Found: what waited goes first, in arrival order.
+      const waited = lane.awaiting;
+      lane.awaiting = [];
+      for (const w of waited) {
+        await this.laneFrame(lane, w.frame, w.now);
+        if (lane.state !== "closed") return;
+      }
+    }
+    const messageId = lane.messageId;
+    let final: { error: string | null; errorKind: string | null; cause: string | null } | null = null;
+    for (const e of lane.normalizer.feed(frame as never, now)) {
+      const ev = e as unknown as Record<string, unknown>;
+      if (e.type === "media" && Array.isArray(ev.items)) {
+        for (const raw of ev.items as unknown[]) {
+          const item = raw as { filename?: unknown; path?: unknown; explicit?: unknown };
+          if (typeof item.filename !== "string" || typeof item.path !== "string") continue;
+          if (lane.hosted.has(item.filename)) continue;
+          // Awaited to completion — upload included — before the lane moves on.
+          const attached = await this.writer.addMedia(messageId, {
+            chatId: this.chatId,
+            filename: item.filename,
+            path: item.path,
+            ...(typeof item.explicit === "boolean" ? { explicit: item.explicit } : {}),
+            turnStartMs: lane.turnStartMs,
+            runId: lane.runId,
+            markUpload: true,
+          });
+          if (attached) lane.hosted.add(item.filename);
+        }
+      } else if (e.type === "message.final") {
+        final = {
+          error: typeof ev.error === "string" ? ev.error : null,
+          errorKind: typeof ev.errorKind === "string" && ev.errorKind !== "" ? ev.errorKind : null,
+          cause: typeof ev.diagnosticFinalizeCause === "string" ? ev.diagnosticFinalizeCause : null,
+        };
+      } else if (
+        e.type === "run.status" &&
+        (ev.status === "final" || ev.status === "complete" || ev.status === "error" || ev.status === "aborted")
+      ) {
+        const status = ev.status === "error" ? "error" : ev.status === "aborted" ? "aborted" : "complete";
+        const f = final ?? { error: null, errorKind: null, cause: null };
+        lane.state = "done";
+        if (this.lanes.get(lane.runId) === lane) this.lanes.delete(lane.runId);
+        // The run's LIVE terminal, with ITS generation (the bubble may belong to another
+        // run by now — codex phase 4 pass 18): Convex keeps the bubble's text and status
+        // and settles what waited for the run's media.
+        await this.writer.finalizeClosedRun?.(
+          messageId,
+          lane.runId,
+          status,
+          f.error,
+          f.errorKind,
+          f.cause !== null && f.cause !== "transcript_settled" ? f.cause : "gateway_final",
+        );
+        return;
+      }
+    }
+  }
+
+  /** Every lane drained (tests; a session closing down). */
+  async lanesIdle(): Promise<void> {
+    for (let i = 0; i < 8; i++) {
+      const tails = [...this.lanes.values()].map((l) => l.tail);
+      if (tails.length === 0) return;
+      await Promise.all(tails);
+      if ([...this.lanes.values()].every((l) => l.queued === 0)) return;
+    }
+  }
+
   async endTurn(
     now: number,
     status = "final",
@@ -1187,6 +1938,7 @@ export class RunManager {
     await this.applyOrdered(() =>
       this.normalizer.endTurn(now, status, error, cause, errorKind),
     );
+    this.noteIfSettled();
     if (!this.sink.active) {
       await this.flushPendingAnnounce(now);
     }
@@ -1275,4 +2027,63 @@ function sessionRunIdFor(frame: unknown, sessionKey: string): string | null {
   if (p.sessionKey !== sessionKey) return null;
   const runId = p.runId;
   return typeof runId === "string" && runId ? runId : null;
+}
+
+/** Collapse whitespace (late-final comparison only). */
+function normText(t: string): string {
+  return t.replace(/\s+/g, " ").trim();
+}
+
+/** What `full` says beyond `shown` (located whitespace-insensitively, exactly as
+ *  `normText` compares them — no regex: both are model text of any size): the raw text
+ *  before and after it, or "" when nothing is added. */
+function textBeyond(full: string, shown: string): string {
+  const needle = normText(shown);
+  if (needle === "") return full.trim();
+  // normText(full), with the raw index of each normalized character.
+  let norm = "";
+  const rawAt: number[] = [];
+  let pendingSpace = -1;
+  for (let i = 0; i < full.length; i++) {
+    const ch = full[i]!;
+    if (/\s/.test(ch)) {
+      if (norm !== "" && pendingSpace === -1) pendingSpace = i;
+      continue;
+    }
+    if (pendingSpace !== -1) {
+      norm += " ";
+      rawAt.push(pendingSpace);
+      pendingSpace = -1;
+    }
+    norm += ch;
+    rawAt.push(i);
+  }
+  const at = norm.indexOf(needle);
+  if (at === -1) return full.trim();
+  const rawStart = rawAt[at]!;
+  const rawEnd = rawAt[at + needle.length - 1]! + 1;
+  const head = full.slice(0, rawStart).trim();
+  const tail = full.slice(rawEnd).trim();
+  return [head, tail].filter((x) => x !== "").join("\n\n");
+}
+
+/** The visible text of a `chat` final's message: its `text` parts (never thinking or
+ *  tool blocks), else its `text` field. */
+function visibleFinalText(message: unknown): string {
+  if (typeof message !== "object" || message === null) return "";
+  const m = message as { content?: unknown; text?: unknown };
+  if (Array.isArray(m.content)) {
+    const parts = m.content
+      .filter(
+        (c): c is { type: string; text: string } =>
+          typeof c === "object" &&
+          c !== null &&
+          (c as { type?: unknown }).type === "text" &&
+          typeof (c as { text?: unknown }).text === "string",
+      )
+      .map((c) => c.text);
+    if (parts.length > 0) return parts.join("\n").trim();
+  }
+  if (typeof m.content === "string") return m.content.trim();
+  return typeof m.text === "string" ? m.text.trim() : "";
 }

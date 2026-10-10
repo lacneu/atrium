@@ -61,6 +61,12 @@ function assertFreshBuild(bridgeDir) {
   }
 }
 
+/** The connection's live-text projection, per loaded RunManager (same build). A capture is
+ *  the RAW wire; production restores append-only live text (OpenClaw 2026.9.7+) at the
+ *  connection before the run manager sees a frame (live-text-baseline.ts), so both replays
+ *  of the comparison do the same. Identity on a capture whose deltas carry their base. */
+const LIVE_TEXT_BASELINES = new WeakMap();
+
 /** Load the built RunManager. The promoter runs from a checkout, so `dist` is the
  *  compiled bridge; a missing build is a REFUSAL, not a skipped check — a fidelity gate
  *  that quietly does nothing is the silence it exists to replace. */
@@ -74,6 +80,13 @@ export async function loadRunManager(bridgeDir) {
     if (typeof mod.RunManager !== "function") {
       throw new Error("dist exports no RunManager");
     }
+    const liveText = await import(
+      pathToFileURL(`${bridgeDir}/dist/providers/openclaw/live-text-baseline.js`).href
+    );
+    if (typeof liveText.LiveTextBaselines !== "function") {
+      throw new Error("dist exports no LiveTextBaselines");
+    }
+    LIVE_TEXT_BASELINES.set(mod.RunManager, liveText.LiveTextBaselines);
     return mod.RunManager;
   } catch (err) {
     throw new Error(
@@ -253,7 +266,13 @@ export function turnOpenings(frames, ackRunIds, sessionKey) {
 }
 
 /** Replay one capture (already parsed into `{receivedAt, frame}` entries). */
-async function replay(RunManager, entries) {
+async function replay(RunManager, rawEntries) {
+  const Baselines = LIVE_TEXT_BASELINES.get(RunManager);
+  const baselines = Baselines === undefined ? null : new Baselines();
+  const entries =
+    baselines === null
+      ? rawEntries
+      : rawEntries.map((e) => ({ ...e, frame: baselines.project(e.frame).frame }));
   const frames = entries.map((e) => e.frame);
   const acks = frames
     .filter((f) => f?.type === "res" && typeof f?.payload?.runId === "string")

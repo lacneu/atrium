@@ -15,6 +15,7 @@
 // SECURITY: the shared secret is compared in CONSTANT TIME; the body is size-
 // limited before parsing. We never echo gateway/filesystem detail to the caller.
 
+import { assertSupportedGateway } from "./providers/openclaw/version-floor.js";
 import {
   CanvasViewCache,
   fetchCanvasView,
@@ -94,6 +95,10 @@ import {
 import { buildMediaFetcher } from "./core/media-fetcher-provider.js";
 import {
   chatAbortParams,
+  projectedAbortTarget,
+  projectedStopRun,
+  sessionsAbortParams,
+  chatHistoryParams,
   sessionsGetParams,
   talkClientCloseParams,
   talkClientCreateParams,
@@ -168,6 +173,17 @@ import {
 import { claimTalkRun, observeFinalize } from "./core/talk-consult.js";
 import { RunManager } from "./providers/openclaw/run-manager.js";
 import {
+  explicitQueueMode,
+  isFollowUpChoice,
+  liveRunIds,
+  readSessionRunFacts,
+  resolveFollowUpMode,
+  resolveServerQueueMode,
+  type FollowUpChoice,
+  type GatewayQueueMode,
+  type SessionRunFacts,
+} from "./providers/openclaw/follow-up-mode.js";
+import {
   FRAME_ENVELOPE_OVERHEAD_BYTES,
   base64FitsFrame,
 } from "./core/attachment-limits.js";
@@ -184,6 +200,7 @@ import {
   type InboundReference,
 } from "./core/inbound-media.js";
 import { applyMediaDeliveryInjection } from "./core/outbound-delivery.js";
+import { isGatewayCommandText } from "./core/gateway-command.js";
 import {
   buildSessionKey,
   talkSessionOwner,
@@ -239,7 +256,10 @@ import {
   EXPECTED_PERMISSION_MODE_SINCE,
   gatewayAtLeast,
   COMPACTION_CHECKPOINTS_RETIRED_IN,
+  TASKS_RPC_RETIRED_IN,
   REHYDRATE_WITH_ATTACHMENTS_SINCE,
+  TRANSCRIPT_PROJECTION_SINCE,
+  DISCARD_PENDING_INPUT_SINCE,
   openClawInlineWidgetsEnabled,
 } from "./compat.js";
 import { INLINE_WIDGETS_CAP } from "./providers/openclaw/widgets.js";
@@ -256,7 +276,7 @@ import type {
   LiveTarget,
   InstanceBundle,
 } from "./session.js";
-import { SessionRegistry } from "./session.js";
+import { SessionDisplaceRefusedError, SessionRegistry } from "./session.js";
 import {
   describeSession,
   describeSessionAnswer,
@@ -415,6 +435,20 @@ interface SendBody extends BodyRouting {
   } | null;
   text: string;
   clientMessageId: string;
+  /** THE SEND IDENTITY Convex computed for this dispatch (convex/lib/sendIdentity.ts):
+   *  used as the gateway `idempotencyKey` when this bridge's own derivation from the
+   *  session it actually sends to agrees. Absent on an older Convex. */
+  sendId?: string;
+  /** Where this session's last transcript read stopped (redesign phase 1, shadow). */
+  transcriptCursor?: { sessionId: string; deltaCursor: string };
+  /** TRANSCRIPT PROJECTION `on` (phase 3): the person's explicit choice for a send made
+   *  while the agent works (`steer` | `interrupt`; `queue` never reaches the bridge — it
+   *  waits in Convex). Absent = the gateway's own mode. */
+  followUpMode?: FollowUpChoice;
+  /** TRANSCRIPT PROJECTION `on`: the conversation's assistant bubble Convex still shows
+   *  STREAMING on this session, and its run — what a restarted bridge resumes when the
+   *  gateway still runs it (CU-22). */
+  liveBubble?: LiveBubble;
   /** The user message id for this turn (excluded from re-hydration history). */
   messageId: string | null;
   /** Provider-session reset epoch (chats.providerResetCount at dispatch) —
@@ -586,6 +620,110 @@ export function isInstanceMismatch(
   );
 }
 
+/** What /resume needs to know about the chat's live socket (null: none, or closed). */
+export interface ResumeLiveView {
+  sessionKey: string;
+  instanceName: string;
+  turnActive: boolean;
+  turnFinalizing: boolean;
+  activeRunIds: string[];
+  currentMessageId: string | null;
+  /** The socket carries other work (a send awaiting its ACK, a stash, a call…). */
+  busy: boolean;
+}
+
+function liveSessionView(
+  s:
+    | {
+        sessionKey: string;
+        instanceName: string;
+        connection: { isClosed: boolean };
+        runManager: ResumeRunView;
+        busyReason(now: number): string | null;
+      }
+    | undefined,
+): ResumeLiveView | null {
+  if (s === undefined || s.connection.isClosed) return null;
+  return {
+    sessionKey: s.sessionKey,
+    instanceName: s.instanceName,
+    turnActive: s.runManager.turnActive,
+    turnFinalizing: s.runManager.turnFinalizing,
+    activeRunIds: s.runManager.activeRunIds,
+    currentMessageId: s.runManager.currentMessageId,
+    busy: s.busyReason(Date.now()) !== null,
+  };
+}
+
+interface ResumeRunView {
+  turnActive: boolean;
+  turnFinalizing: boolean;
+  activeRunIds: string[];
+  currentMessageId: string | null;
+}
+
+/** The turn this process drives IS the orphaned bubble's: same run, or same bubble. */
+function driveTheBubble(rm: ResumeRunView, bubble: { messageId: string; runId: string }): boolean {
+  return rm.activeRunIds.includes(bubble.runId) || rm.currentMessageId === bubble.messageId;
+}
+
+/**
+ * CU-22 /resume, decided before any acquire. "stale": the request no longer names the
+ * chat's session (Convex's key differs from the routing's, or the live socket is bound
+ * to another session/instance, or drives another run, or carries other work) — answer
+ * not-resumed and touch nothing. "resumed": this process already drives that very
+ * bubble. "proceed": no live socket, or an idle one on exactly that session. Exported
+ * for tests.
+ */
+export function resumePreflight(
+  live: ResumeLiveView | null,
+  want: { sessionKey: string; instanceName: string; requestedSessionKey: string | null },
+  bubble: { messageId: string; runId: string },
+): "stale" | "resumed" | "proceed" {
+  if (want.requestedSessionKey !== null && want.requestedSessionKey !== want.sessionKey) {
+    return "stale";
+  }
+  if (live === null) return "proceed";
+  if (live.sessionKey !== want.sessionKey || live.instanceName !== want.instanceName) {
+    return "stale";
+  }
+  if (live.turnActive || live.turnFinalizing) {
+    return driveTheBubble(live, bubble) ? "resumed" : "stale";
+  }
+  return live.busy ? "stale" : "proceed";
+}
+
+/**
+ * The CU-22 resume itself, once admitted: the projection is switched on only for the
+ * attempt, and left on only when the bubble's turn was actually resumed on a socket that
+ * is still the chat's — a not-resumed answer restores the switch as it was, so a later
+ * `off` send never inherits it (codex pass 5). Exported for tests.
+ */
+export async function admitResume(
+  session: Pick<BridgeSession, "runManager" | "transcriptShadow" | "clock"> &
+    Parameters<typeof planProjectedSend>[0],
+  chatId: string,
+  bubble: { messageId: string; runId: string },
+  stillTheChatsSocket: () => boolean,
+): Promise<boolean> {
+  const rm = session.runManager;
+  const previous = rm.projectionOn;
+  rm.setProjection(true);
+  let resumed = false;
+  try {
+    const plan = await planProjectedSend(
+      session,
+      { chatId, liveBubble: bubble } as SendBody,
+      session.clock,
+    );
+    resumed = rm.turnActive && liveRunIds(plan.facts).includes(bubble.runId) && stillTheChatsSocket();
+  } finally {
+    if (resumed) session.transcriptShadow?.configure({ mode: "on" });
+    else if (!(rm.turnActive || rm.turnFinalizing)) rm.setProjection(previous);
+  }
+  return resumed;
+}
+
 /** Project any inbound body onto the session registry's routing shape. */
 function toRouting(
   b: BodyRouting & { chatId: string; openclawChatId: string | null },
@@ -713,6 +851,18 @@ export function parseSendBody(raw: string): SendBody | null {
     })(),
     text: obj.text,
     clientMessageId: obj.clientMessageId,
+    // Named explicitly (this parser rebuilds the body). Bounded like an upstream run id
+    // (`chat-send-request.ts` caps `idempotencyKey` at 128 for goal starts; 256 in
+    // `inputRunIds`); anything else is dropped and the key is derived as before.
+    ...(typeof obj.sendId === "string" && obj.sendId.length > 0 && obj.sendId.length <= 128
+      ? { sendId: obj.sendId }
+      : {}),
+    ...((c) =>
+      c === null ? {} : { transcriptCursor: c })(parseTranscriptCursor(obj.transcriptCursor)),
+    // Named explicitly (this parser rebuilds the body): an unknown mode is dropped, so
+    // the send follows the gateway's own mode rather than one nobody chose.
+    ...(isFollowUpChoice(obj.followUpMode) ? { followUpMode: obj.followUpMode } : {}),
+    ...((b) => (b === null ? {} : { liveBubble: b }))(parseLiveBubble(obj.liveBubble)),
     messageId: typeof obj.messageId === "string" ? obj.messageId : null,
     providerResetCount:
       typeof obj.providerResetCount === "number"
@@ -749,6 +899,67 @@ export function parseSendBody(raw: string): SendBody | null {
     // field is dropped, never fails the send (parseInboundConfig never throws).
     config: parseInboundConfig(obj.config),
   };
+}
+
+/** Defensive parse of `liveBubble` (both ids bounded and present); null otherwise. */
+/** The bubble Convex still shows streaming on the session (CU-22), and the inputs the
+ *  gateway accepted while it streamed (a restarted bridge must know them again). */
+export interface LiveBubble {
+  messageId: string;
+  runId: string;
+  heldInputs?: Array<{ sendId: string; messageId: string }>;
+  /** A later segment of a cut run: the earlier segments' text. */
+  segmentPrefix?: string;
+}
+
+export function parseLiveBubble(raw: unknown): LiveBubble | null {
+  if (typeof raw !== "object" || raw === null) return null;
+  const b = raw as {
+    messageId?: unknown;
+    runId?: unknown;
+    heldInputs?: unknown;
+    segmentPrefix?: unknown;
+  };
+  if (typeof b.messageId !== "string" || b.messageId === "" || b.messageId.length > 64) return null;
+  if (typeof b.runId !== "string" || b.runId === "" || b.runId.length > 256) return null;
+  const held: Array<{ sendId: string; messageId: string }> = [];
+  if (Array.isArray(b.heldInputs)) {
+    for (const h of b.heldInputs.slice(0, 20)) {
+      const e = h as { sendId?: unknown; messageId?: unknown } | null;
+      if (
+        typeof e?.sendId === "string" &&
+        e.sendId !== "" &&
+        e.sendId.length <= 256 &&
+        typeof e.messageId === "string" &&
+        e.messageId !== "" &&
+        e.messageId.length <= 64
+      ) {
+        held.push({ sendId: e.sendId, messageId: e.messageId });
+      }
+    }
+  }
+  return {
+    messageId: b.messageId,
+    runId: b.runId,
+    ...(held.length > 0 ? { heldInputs: held } : {}),
+    ...(typeof b.segmentPrefix === "string" && b.segmentPrefix.length <= 200_000
+      ? { segmentPrefix: b.segmentPrefix }
+      : {}),
+  };
+}
+
+/** Defensive parse of the transcript cursor Convex stored (bounded strings, both
+ *  present); null otherwise — the reconciler then starts from a fresh tail page. */
+export function parseTranscriptCursor(
+  raw: unknown,
+): { sessionId: string; deltaCursor: string } | null {
+  if (typeof raw !== "object" || raw === null) return null;
+  const c = raw as { sessionId?: unknown; deltaCursor?: unknown };
+  if (typeof c.sessionId !== "string" || c.sessionId.length > 128) return null;
+  if (typeof c.deltaCursor !== "string" || c.deltaCursor === "" || c.deltaCursor.length > 1024) {
+    return null;
+  }
+  return { sessionId: c.sessionId, deltaCursor: c.deltaCursor };
 }
 
 /** Defensive parse of the optional `referenceAttachments` array (Phase 3). A
@@ -852,9 +1063,13 @@ export function projectTaskProbe(task: Record<string, unknown> | undefined): {
  *     unsafe (fail closed). KNOWN GAP on those gateways only: that turn (and that
  *     chat, until the session next rolls) lacks pre-attachment context.
  *   - `rehydrate`       — fresh, enabled, and attachment-free or attachment-safe.
+ *   - `skip_command`    — the turn is a GATEWAY COMMAND (`/…`, core/gateway-command.ts):
+ *     history in front of it would make it arguments, or no command at all. The
+ *     freshness flags are left unconsumed, so the next ordinary turn re-hydrates.
  */
 export type RehydrationDecision =
   | "rehydrate"
+  | "skip_command"
   | "skip_attachment"
   | "skip_disabled"
   | "skip_warm"
@@ -874,7 +1089,10 @@ export function rehydrationDecision(opts: {
    *  almost-full session worse. `null` never refuses — a guard must not cost a
    *  turn on an absent measure (P6). */
   fill?: number | null;
+  /** The turn is a gateway command, sent exactly as typed. */
+  command?: boolean;
 }): RehydrationDecision {
+  if (opts.command === true) return "skip_command";
   if (!opts.enabled) return "skip_disabled";
   if (!opts.freshSession) return "skip_warm";
   if (opts.hasAttachments && opts.attachmentsSafe !== true) {
@@ -1465,13 +1683,13 @@ async function pollGatewayRunRelease(
       }
       let active: boolean;
       try {
+        // `limit: 1` + `maxChars: 1` bound the page nobody reads, on every vendored
+        // version. Not `maxBytes`: it exists only from 2026.9.2 and the params schema
+        // is CLOSED, so an older gateway would refuse the call and the check would
+        // never run there (no version given: the builder then never adds it).
         const res = await session.connection.request(
           "chat.history",
-          // `limit: 1` + `maxChars: 1` bound the page nobody reads, on every vendored
-          // version. Not `maxBytes`: it exists only from 2026.9.2 and the params
-          // schema is CLOSED, so an older gateway would refuse the call and the check
-          // would never run there.
-          { sessionKey: session.sessionKey, limit: 1, maxChars: 1 },
+          chatHistoryParams({ sessionKey: session.sessionKey, limit: 1, maxChars: 1 }, null),
           Math.max(1, Math.min(GATEWAY_RELEASE_RPC_TIMEOUT_MS, Math.ceil(left()))),
         );
         const info = (res as { payload?: { sessionInfo?: { hasActiveRun?: unknown } } })
@@ -1526,6 +1744,99 @@ export async function performSend(
   presendConfig?: BridgeConfig,
   speakers: SpeakerSource = defaultSpeakers,
   report: SendReport = {},
+): Promise<void> {
+  // PROJECTION `on` (phase 3): a send may now arrive while another is being prepared on
+  // the same session (Convex no longer parks a steer). ONE at a time per session: the
+  // first one's turn begins (or its custody is recorded) before the next decides
+  // whether a run is in the foreground. Off ⇒ no lock (Convex serializes, as before).
+  if (body.config?.transcriptProjection === "on") {
+    const prev = SEND_LOCKS.get(session) ?? Promise.resolve();
+    let release!: () => void;
+    const mine = new Promise<void>((r) => (release = r));
+    const chained = prev.then(() => mine);
+    SEND_LOCKS.set(session, chained);
+    await prev;
+    try {
+      await performSendUnlocked(
+        session, body, writer, inbound, deliveryDir, mediaGuard, sendReceivedMs,
+        presendConfig, speakers, report,
+      );
+    } finally {
+      release();
+      if (SEND_LOCKS.get(session) === chained) SEND_LOCKS.delete(session);
+    }
+    return;
+  }
+  await performSendUnlocked(
+    session, body, writer, inbound, deliveryDir, mediaGuard, sendReceivedMs,
+    presendConfig, speakers, report,
+  );
+}
+
+/**
+ * The resume TRANSITION (CU-22), serialized with /send in EVERY mode, per chat (codex
+ * pass 5). A /resume flips the session's projection on and may open a turn; a /send
+ * prepared at the same moment could otherwise start under that switch — an `off` send
+ * whose empty terminal then carried `dropIfEmpty` and deleted its bubble. A resume runs
+ * only when no send is being prepared for the chat (else it answers not-resumed: the
+ * sweep closes as before, and an `on` send adopts the run itself); a send arriving
+ * during a resume waits for it to settle. Exported for tests.
+ */
+export class ChatTransitionGate {
+  private readonly preparing = new Map<string, number>();
+  private readonly resuming = new Map<string, Promise<void>>();
+
+  /** Enter a send: waits out a resume in progress, then counts the send as preparing.
+   *  Returns the release, to call when the send has left (in a `finally`). */
+  async enterSend(chatId: string): Promise<() => void> {
+    for (let r = this.resuming.get(chatId); r !== undefined; r = this.resuming.get(chatId)) {
+      await r;
+    }
+    this.preparing.set(chatId, (this.preparing.get(chatId) ?? 0) + 1);
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      const n = (this.preparing.get(chatId) ?? 1) - 1;
+      if (n <= 0) this.preparing.delete(chatId);
+      else this.preparing.set(chatId, n);
+    };
+  }
+
+  /** Begin a resume: null when a send is being prepared or another resume runs for
+   *  the chat. Otherwise the release, to call when the resume has decided. */
+  tryBeginResume(chatId: string): (() => void) | null {
+    if ((this.preparing.get(chatId) ?? 0) > 0 || this.resuming.has(chatId)) return null;
+    let release!: () => void;
+    const done = new Promise<void>((r) => (release = r));
+    this.resuming.set(chatId, done);
+    return () => {
+      if (this.resuming.get(chatId) === done) this.resuming.delete(chatId);
+      release();
+    };
+  }
+}
+
+/** The process-wide gate the HTTP routes share. */
+export const chatTransitions = new ChatTransitionGate();
+
+/** Per-session send serialization (projection `on` only — see performSend). */
+const SEND_LOCKS = new WeakMap<BridgeSession, Promise<void>>();
+
+async function performSendUnlocked(
+  session: BridgeSession,
+  body: SendBody,
+  writer: ConvexWriter,
+  inbound: InboundMediaConfig | null,
+  deliveryDir: string | null,
+  mediaGuard: {
+    gatewayVersionFallback?: string | null;
+    attachmentFixAttested?: boolean;
+  } | null,
+  sendReceivedMs: number,
+  presendConfig: BridgeConfig | undefined,
+  speakers: SpeakerSource,
+  report: SendReport,
 ): Promise<void> {
   // The re-hydration trace may have to wait for the FINAL frame check (history beside
   // inline attachments can still be withdrawn there); whatever path leaves the send,
@@ -1605,24 +1916,45 @@ async function performSendComposed(
 ): Promise<void> {
   const conn = session.connection;
   const sessionKey = session.sessionKey;
+  // BEFORE EVERYTHING: a gateway known to be below the supported floor (2026.8.2) is
+  // not driven at all — no hold, no describe, no patch, no send (version-floor.ts).
+  assertSupportedGateway(conn.gatewayVersion);
+  // THE TRANSCRIPT PROJECTION (redesign phase 1, SHADOW): the instance switch and the
+  // cursor Convex stored, applied to this session's reconciler. Only on a gateway known
+  // to carry the transcript identities (TRANSCRIPT_PROJECTION_SINCE); otherwise off. The
+  // first switch-on reads the transcript in the background — nothing here waits on it.
+  const projectionGateway =
+    gatewayAtLeast(conn.gatewayVersion, TRANSCRIPT_PROJECTION_SINCE) === true;
+  session.transcriptShadow?.configure({
+    mode: projectionGateway ? body.config?.transcriptProjection : "off",
+    cursor: body.transcriptCursor ?? null,
+  });
+  // TRANSCRIPT PROJECTION `on` (redesign phase 3, design §3): the send goes like the
+  // Control UI's — with an explicit `queueMode` while a run is active, its ACK recorded
+  // as custody — and none of the holds below: a send landing while the gateway still
+  // holds a run is a follow-up the transcript places, not a race to wait out (§8.1).
+  const projectionOn = projectionGateway && body.config?.transcriptProjection === "on";
+  session.runManager.setProjection(projectionOn);
   // FIRST, before anything reads the session: the describe, the pre-send guard and
   // its compaction below must see the session the send will actually run on — not
   // one a delivery run is still writing to (and compacting would interrupt it).
   const releaseWait: ReleaseWait = { spentMs: 0 };
-  await holdWhileDeliveryRunLive(
-    session,
-    body.chatId,
-    sendReceivedMs,
-    body.dispatchAgeMs,
-  );
-  if (session.runManager.lastTurnWasDelivery) {
-    await awaitGatewayRunRelease(
+  if (!projectionOn) {
+    await holdWhileDeliveryRunLive(
       session,
       body.chatId,
       sendReceivedMs,
       body.dispatchAgeMs,
-      releaseWait,
     );
+    if (session.runManager.lastTurnWasDelivery) {
+      await awaitGatewayRunRelease(
+        session,
+        body.chatId,
+        sendReceivedMs,
+        body.dispatchAgeMs,
+        releaseWait,
+      );
+    }
   }
   // Nothing administrative touches a session whose existence the claim could not
   // establish: an admin `sessions.patch` into an empty key CREATES it — under the
@@ -1694,6 +2026,13 @@ async function performSendComposed(
   const rehydrationEnabled =
     body.config?.rehydration ?? process.env.OPENCLAW_REHYDRATION !== "off";
   let message = body.text;
+  // A GATEWAY COMMAND (`/knowledge once graph`, `/new`, …) leaves EXACTLY as typed: no
+  // re-hydrated history in front, no received-files block or delivery instruction behind
+  // — each became the command's arguments (prod 2026-09-27: "unknown subcommand:
+  // [livraison]"). See core/gateway-command.ts. Inline attachments still ride
+  // `params.attachments`, which is not the text; what a command does with them is the
+  // gateway's to decide.
+  const verbatimCommand = isGatewayCommandText(body.text);
   // How much was PREPENDED to the user's own text, so mention offsets can follow
   // it. Only re-hydration prepends here (the received-files block and the media
   // delivery instruction are appended), and Convex has already accounted for the
@@ -1912,11 +2251,16 @@ async function performSendComposed(
         contextTokens: preTurnContextTokens,
         totalTokensFresh: preTurnTotalTokensFresh,
       });
-      const action = presendAction({
-        fill: fill0.fill,
-        overflowTokens: preTurnOverflowTokens,
-        alreadyCompacted: false,
-      });
+      // A GATEWAY COMMAND is neither compacted before nor withheld: `/compact` and
+      // `/new` are precisely what a full session needs, and a command is run by the
+      // gateway, not submitted to the model as this prompt.
+      const action = verbatimCommand
+        ? "send"
+        : presendAction({
+            fill: fill0.fill,
+            overflowTokens: preTurnOverflowTokens,
+            alreadyCompacted: false,
+          });
       presend = {
         action,
         fillPct: fill0.fill === null ? null : Math.round(fill0.fill * 100),
@@ -1928,8 +2272,12 @@ async function performSendComposed(
       // interruptSessionRunIfActive). A delivery/announce run can be live on this
       // session even though Convex considers the chat idle — compacting under it
       // would destroy a reply the user is owed. Busy ⇒ do nothing, send as before.
+      // Projection `on`: no turn here does not mean no run there — a run that outlived a
+      // bridge restart (not resumed yet), a wake. The gateway is asked before compacting.
       const busy =
-        session.runManager.turnActive || session.runManager.dispatchInFlight;
+        session.runManager.turnActive ||
+        session.runManager.dispatchInFlight ||
+        (projectionOn && requiresCompaction(action) && (await gatewayRunsOn(session, body.chatId)));
       // What is LEFT of this dispatch's pre-send deadline. Measured, not assumed:
       // Convex tells us how long the row was already pending, and everything above
       // (patch, describe, rehydration reads) has already spent some of it.
@@ -2197,6 +2545,7 @@ async function performSendComposed(
         true,
       enabled: rehydrationEnabled,
       fill: liveFill,
+      command: verbatimCommand,
     });
     let prependedTurns = 0;
     let summaryUsed = false;
@@ -2552,7 +2901,15 @@ async function performSendComposed(
   // drop one file; an unsafe path or uncertain cleanup rolls back the batch and
   // fails the turn. Reference files do
   // NOT set hasInlineAttachments, so they bypass the frame guard + rehydration guard.
-  if (body.referenceAttachments.length > 0 && inbound !== null) {
+  if (body.referenceAttachments.length > 0 && inbound !== null && verbatimCommand) {
+    // A shared-fs file reaches the agent only as PATH TEXT appended to the message, and
+    // a command's text is never extended. Convex refuses a command with files at the
+    // send (convex/send.ts), so only an older Convex or a direct caller gets here: the
+    // command goes out as typed, the files are not staged, and the log says so.
+    console.error(
+      `[inbound-media] chat=${body.chatId} ${body.referenceAttachments.length} file(s) NOT staged — the message is a gateway command, sent exactly as typed`,
+    );
+  } else if (body.referenceAttachments.length > 0 && inbound !== null) {
     const staged = await stageInboundReferences(
       body.referenceAttachments,
       body.clientMessageId,
@@ -2608,7 +2965,10 @@ async function performSendComposed(
         // is positive: attest the instance. The turn still goes through either way.
         "the gateway version is unknown, so a delivered file cannot be proven safe"
       : mediaDeliveryPoisonReason("openclaw", effectiveGatewayVersion);
-  if (deliveryDir !== null && poisonReason === null) {
+  if (verbatimCommand) {
+    // A command is never extended (see `verbatimCommand`): the instruction would become
+    // its arguments.
+  } else if (deliveryDir !== null && poisonReason === null) {
     // `media_delivery` injection: the admin's resolved text, the bridge's own default
     // (pre-feature Convex), or NOTHING when the admin disabled it. See the function.
     message = applyMediaDeliveryInjection(
@@ -2632,10 +2992,12 @@ async function performSendComposed(
     );
   }
 
+  const sendKey = await resolveSendIdentity(sessionKey, body.clientMessageId, body.sendId, body.chatId);
+  report.sendId = sendKey;
   const params: Record<string, unknown> = {
     sessionKey,
     message,
-    idempotencyKey: await idempotencyKey(sessionKey, body.clientMessageId),
+    idempotencyKey: sendKey,
   };
   // THE PERMISSIONS THE READER SAW. The gateway compares this with the mode STORED
   // on the session (`entry.permissionMode ?? null`, chat-send-session-settings.ts)
@@ -2755,8 +3117,9 @@ async function performSendComposed(
   // test is the last read, synchronous with the arm below: from the arm on, a
   // delivery frame is stashed instead of opening a turn. A delivery turn opened
   // DURING the release check (turnEpoch moved) sends the loop round again, since
-  // the check it just passed predates that run.
+  // the check it just passed predates that run. (Projection `on`: no hold at all.)
   for (;;) {
+    if (projectionOn) break;
     await holdWhileDeliveryRunLive(
       session,
       body.chatId,
@@ -2827,7 +3190,26 @@ async function performSendComposed(
             },
           },
         );
+  // PROJECTION `on`: how this send lands, decided like the Control UI's submit.
+  const plan = projectionOn
+    ? await planProjectedSend(session, body, session.clock)
+    : null;
+  if (plan !== null && plan.queueMode !== undefined) params.queueMode = plan.queueMode;
+  if (plan !== null && plan.path === "input") {
+    await sendHeldInput(session, conn, params, body, presendConfig, speakers, knowledgeGate, {
+      sendKey,
+      verbatimCommand,
+      queueMode: plan.queueMode,
+      predatingRunIds: plan.predatingRunIds,
+    });
+    return;
+  }
   session.runManager.armReplayBuffer();
+  // The send enters the reconciler's input guard: until the gateway settles it, every
+  // read asks about it (`inputRunIds`). Shadow-only — nothing here decides the send.
+  session.transcriptShadow?.noteSend(sendKey);
+  // The ACK's status, for the transcript reconciler (`ok` ⇒ read the transcript back).
+  let ackStatus: unknown = undefined;
   try {
     // WHO SENDS. The conversation's socket (the owner's), unless this turn is a
     // participant's on an instance that lets them speak as themselves — then their
@@ -2850,16 +3232,26 @@ async function performSendComposed(
     // now consume firstSendPending (codex P2.A). A failed send above leaves it true so a
     // retry of this freshly-routed session re-hydrates again; a post-ack beginTurn throw
     // is fine to consume past (the gateway already has the re-grounded message).
-    session.firstSendPending = false;
+    // …EXCEPT for a gateway command, which carried no history (`skip_command`): the
+    // flags stay set, so the next ordinary turn on this session is still re-grounded.
+    if (!verbatimCommand) session.firstSendPending = false;
     // CONSUMED with the send that carried the history, like firstSendPending. Left
     // set, the claim's "I created this session" verdict made EVERY later turn on this
     // socket read as fresh and re-prepend the whole thread (measured live on the
     // trusted-proxy bench, 2026-09-25: a second turn logged `fresh session ->
     // prepended 2 prior turn(s)`). A failed send above keeps it, so a retry of that
     // first turn still re-hydrates.
-    conn.claimCreatedSession = false;
-    conn.sessionReplaced = false;
-    const ackRunId = extractRunId(response);
+    if (!verbatimCommand) {
+      conn.claimCreatedSession = false;
+      conn.sessionReplaced = false;
+    }
+    // PROJECTION `on` (phase 4): an ACK that names no run never leaves the turn open to
+    // ANY run of the session (the legacy "everything before the run is known" admission,
+    // design §8.1): the send's identity IS the run the gateway starts for it (the
+    // `chat.send` idempotency key — `const clientRunId = p.idempotencyKey`, upstream
+    // src/gateway/server-methods/chat-send-session.ts:103 at v2026.9.8 — is the ACK's runId).
+    const ackRunId = extractRunId(response) ?? (projectionOn && sendKey !== "" ? sendKey : null);
+    ackStatus = (response as { payload?: { status?: unknown } } | undefined)?.payload?.status;
     // Anchor the RAW user text for orphan-recovery boundary validation — NOT
     // params.message: the enriched message can END with static injections (the
     // [LIVRAISON] media-delivery block) identical on every turn, which would
@@ -2905,6 +3297,11 @@ async function performSendComposed(
       // The guard shrank the session for THIS send: a `context_length` answer is
       // then transient, and Convex may re-dispatch it once.
       compactedBeforeSend: presend.compactOutcome === "compacted",
+      ...(plan !== null
+        ? {
+            interruptActive: plan.queueMode === "interrupt",
+          }
+        : {}),
     });
     // AFTER beginTurn (which bumps turnEpoch): the anchor is stamped with the
     // NEW turn's epoch, so the recovery honors it for this turn (codex R11 P2 —
@@ -2925,6 +3322,9 @@ async function performSendComposed(
     session.runManager.disarmReplayBuffer(session.clock(), () =>
       session.wake(),
     );
+    // A refused send stays in the guard as FAILED: whether the gateway holds it anyway
+    // is what the guard measure checks (a post-ACK failure keeps its ACK status).
+    session.transcriptShadow?.noteAck(ackStatus ?? "error", sendKey);
     throw err;
   }
   // beginTurn armed the recv/grace deadline from OUTSIDE the consume loop. If
@@ -2933,6 +3333,326 @@ async function performSendComposed(
   // its deadline and the turn would hang in "streaming" forever — wake it so the
   // recv guard is installed and fires.
   session.wake();
+  session.transcriptShadow?.noteAck(ackStatus, sendKey);
+}
+
+/** Projection `on`: does the gateway report a run active on this session (chat.history
+ *  `sessionInfo.hasActiveRun` / `activeRunIds` / `inFlightRun`)? An unreadable answer
+ *  counts as active: a compaction interrupts the run it would land on. */
+export async function gatewayRunsOn(session: BridgeSession, chatId: string): Promise<boolean> {
+  try {
+    const res = await session.connection.request(
+      "chat.history",
+      chatHistoryParams({ sessionKey: session.sessionKey, limit: 1, maxChars: 1 }, null),
+      GATEWAY_RELEASE_RPC_TIMEOUT_MS,
+    );
+    const facts = readSessionRunFacts((res as { payload?: unknown }).payload);
+    return facts === null || facts.hasActiveRun === true || liveRunIds(facts).length > 0;
+  } catch (err) {
+    console.error(
+      `[presend] chat=${chatId} session read before compaction failed (treated as busy):`,
+      (err as Error)?.message ?? err,
+    );
+    return true;
+  }
+}
+
+/** What a projected stop needs of the chat's live session (`/abort`). */
+export interface ProjectedStopLive {
+  sessionKey: string;
+  runManager: { projectionOn: boolean; foregroundRunId: string | null; noteUserAbort(): void };
+}
+
+/**
+ * THE CONTROL UI'S STOP, planned (projection `on`, design §3.4): which run it names
+ * (`projectedStopRun` — only the targeted session's own), and the user-abort flag set on
+ * the live session ONLY when that session is the target: flagging the parent for a
+ * sub-agent's stop would repaint the parent's next frames as the user's stop. Null: a
+ * discard without the input's run (invalid body).
+ */
+export function planProjectedStop(
+  peeked: ProjectedStopLive | undefined,
+  sessionKey: string,
+  bodyRunId: string | null,
+  discardPendingInput: boolean,
+): ReturnType<typeof projectedAbortTarget> | null {
+  const stop = projectedStopRun({
+    targetSessionKey: sessionKey,
+    live:
+      peeked === undefined
+        ? null
+        : {
+            sessionKey: peeked.sessionKey,
+            foregroundRunId: peeked.runManager.projectionOn
+              ? peeked.runManager.foregroundRunId
+              : null,
+          },
+    bodyRunId,
+    discardPendingInput,
+  });
+  if (discardPendingInput && stop.runId === null) return null;
+  if (!discardPendingInput && stop.ownsLive) peeked?.runManager.noteUserAbort();
+  return projectedAbortTarget({ runId: stop.runId, discardPendingInput });
+}
+
+/** The planned stop, on the wire (requestChatAbort, chat-abort-request.ts:58-84). */
+export async function sendProjectedStop(
+  conn: Pick<OpenClawConnection, "request" | "gatewayVersion">,
+  sessionKey: string,
+  aim: ReturnType<typeof projectedAbortTarget>,
+): Promise<unknown> {
+  if (aim.kind === "session") {
+    return conn.request("sessions.abort", sessionsAbortParams(sessionKey));
+  }
+  if (
+    aim.discardPendingInput &&
+    gatewayAtLeast(conn.gatewayVersion, DISCARD_PENDING_INPUT_SINCE) !== true
+  ) {
+    throw new Error("discardPendingInput needs gateway 2026.9.7+");
+  }
+  return conn.request(
+    "chat.abort",
+    chatAbortParams(
+      sessionKey,
+      aim.runId,
+      aim.discardPendingInput ? { discardPendingInput: true } : undefined,
+    ),
+  );
+}
+
+/** How a projected send lands (planProjectedSend). */
+export interface ProjectedSendPlan {
+  /** `turn`: a turn begins on its ACK (the legacy bubble, until phase 4). `input`: a
+   *  run is in the foreground — the ACK is custody only, no turn, no bubble. */
+  path: "turn" | "input";
+  /** The explicit `chat.send.queueMode`, when the run policy applies. */
+  queueMode?: GatewayQueueMode;
+  /** Runs live when the input is accepted: never the run that answers a held input
+   *  (a followup's answer starts after it; a steer target is proven by the transcript). */
+  predatingRunIds: string[];
+  /** The facts read (null: the read failed — the run policy then applies, as the
+   *  Control UI applies it when history is unavailable). */
+  facts: SessionRunFacts | null;
+}
+
+/**
+ * THE CONTROL UI'S SUBMIT, for a projected session (design §3.1, follow-up-mode.ts):
+ *   1. read the gateway's own view of the session (`chat.history` limit 1:
+ *      `sessionInfo.queueMode/effectiveQueueMode/hasActiveRun/activeRunIds`,
+ *      `inFlightRun`) — fields present at v2026.8.2, v2026.9.6 and v2026.9.8
+ *      (chat-history-handler.ts; session-utils-row.ts `queueMode`/`effectiveQueueMode`);
+ *   2. RESUME (CU-22): no turn here, but the bubble Convex shows streaming belongs to a
+ *      run the gateway still runs — the turn is picked up on that bubble;
+ *   3. the run policy (chat-send-submit.ts:548-562): `hasDirectSessionRun` = a run in
+ *      the foreground here ∨ a run active on the session, or history unavailable;
+ *   4. the path (chat-send-delivery.ts:497-502): with a run in the foreground the ACK
+ *      only identifies the input — except `interrupt`, which replaces the run.
+ */
+export async function planProjectedSend(
+  session: BridgeSession,
+  body: SendBody,
+  clock: () => number,
+): Promise<ProjectedSendPlan> {
+  const rm = session.runManager;
+  let facts: SessionRunFacts | null = null;
+  try {
+    const res = await session.connection.request(
+      "chat.history",
+      chatHistoryParams({ sessionKey: session.sessionKey, limit: 1, maxChars: 1 }, null),
+      GATEWAY_RELEASE_RPC_TIMEOUT_MS,
+    );
+    facts = readSessionRunFacts((res as { payload?: unknown }).payload);
+  } catch (err) {
+    console.error(
+      `[send] chat=${body.chatId} session read before send failed (run policy applies):`,
+      (err as Error)?.message ?? err,
+    );
+  }
+  const live = liveRunIds(facts);
+  let foregroundLive = rm.turnActive || rm.turnFinalizing;
+  if (
+    !foregroundLive &&
+    body.liveBubble !== undefined &&
+    live.includes(body.liveBubble.runId)
+  ) {
+    await rm.resumeTurn(
+      clock(),
+      body.liveBubble.messageId,
+      body.liveBubble.runId,
+      body.liveBubble.segmentPrefix,
+    );
+    // The inputs accepted while that bubble streamed, known again BEFORE any frame of
+    // the run that answers them is consumed (their bookkeeping died with the process).
+    rm.rehydrateHeldInputs(body.liveBubble.heldInputs ?? []);
+    session.wake();
+    foregroundLive = rm.turnActive;
+    console.log(
+      `[send] chat=${body.chatId} resumed the streaming bubble of a run the gateway still runs (CU-22)`,
+    );
+  }
+  const applyRunPolicy = foregroundLive || facts === null || facts.hasActiveRun === true;
+  const queueMode = explicitQueueMode({
+    followUpMode: resolveFollowUpMode(body.followUpMode, resolveServerQueueMode(facts)),
+    applyRunPolicy,
+  });
+  // A run the gateway runs that no turn holds here (a run started before a bridge
+  // restart, a wake): the send is an input to a busy session all the same. Its ACK is
+  // custody (CU-4) and that run is never this send's bubble — the run that answers it
+  // is the one the transcript proves (a steer target, or a run that starts after it).
+  const sessionBusy = foregroundLive || live.length > 0;
+  return {
+    path: sessionBusy && queueMode !== "interrupt" ? "input" : "turn",
+    ...(queueMode !== undefined ? { queueMode } : {}),
+    predatingRunIds: live,
+    facts,
+  };
+}
+
+/**
+ * A FOLLOW-UP INPUT (projection `on`): a run is in the foreground, so the send's ACK is
+ * custody, not a turn (CU-4): no replay buffer, no bubble. The input is recorded as held
+ * by the gateway — its answer is placed by the facts that follow (a steer cuts the
+ * foreground run's bubble at the steered row; a queued follow-up's run opens its own).
+ */
+async function sendHeldInput(
+  session: BridgeSession,
+  conn: OpenClawConnection,
+  params: Record<string, unknown>,
+  body: SendBody,
+  presendConfig: BridgeConfig | undefined,
+  speakers: SpeakerSource,
+  gate: ChatSendGate,
+  opts: {
+    sendKey: string;
+    verbatimCommand: boolean;
+    queueMode: GatewayQueueMode | undefined;
+    predatingRunIds: readonly string[];
+  },
+): Promise<void> {
+  session.transcriptShadow?.noteSend(opts.sendKey);
+  // Registered BEFORE the send: the steered `<sendId>:user` row (and its read) can
+  // arrive before the ACK returns, and an input unknown at that moment would never cut
+  // the run's bubble. Its custody run is the send identity until the ACK names another
+  // (the gateway's client run id is the idempotency key).
+  session.runManager.noteHeldInput(
+    opts.sendKey,
+    opts.sendKey,
+    body.messageId,
+    opts.predatingRunIds,
+  );
+  let ackStatus: unknown = undefined;
+  try {
+    const response = await sendAsSpeaker(
+      conn,
+      params,
+      { ...body, inlineWidgets: session.runManager.widgetsEnabled },
+      presendConfig,
+      speakers,
+      gate,
+    );
+    if (!opts.verbatimCommand) {
+      session.firstSendPending = false;
+      conn.claimCreatedSession = false;
+      conn.sessionReplaced = false;
+    }
+    ackStatus = (response as { payload?: { status?: unknown } } | undefined)?.payload?.status;
+    if (ackStatus === "started" || ackStatus === "in_flight") {
+      session.runManager.noteInputAckRun(opts.sendKey, extractRunId(response));
+    } else {
+      session.runManager.forgetHeldInput(opts.sendKey);
+    }
+    console.log(
+      `[send] chat=${body.chatId} follow-up input accepted while a run works (queueMode=${opts.queueMode ?? "gateway"}, ack=${String(ackStatus)})`,
+    );
+  } catch (err) {
+    if (err instanceof GatewayAnsweredError || wasWithheldBeforeSend(err)) {
+      // The gateway ANSWERED with a refusal, or the send never left (withheld by the
+      // gate): it holds nothing. Forgotten at once.
+      session.runManager.forgetHeldInput(opts.sendKey);
+    } else {
+      // No answer (timeout, socket closed, a frame not written): the gateway may have
+      // accepted the input. Forgetting it now would refuse its answer as foreign when it
+      // comes (codex pass 6) — it is kept, and the gateway is asked about it, bounded.
+      void reconcileUncertainInput(session, opts.sendKey).catch((e) =>
+        console.error(
+          `[send] chat=${body.chatId} uncertain input reconciliation failed (non-fatal):`,
+          (e as Error)?.message ?? e,
+        ),
+      );
+    }
+    session.transcriptShadow?.noteAck(ackStatus ?? "error", opts.sendKey);
+    throw err;
+  }
+  session.wake();
+  session.transcriptShadow?.noteAck(ackStatus, opts.sendKey);
+}
+
+/** When the gateway is asked about an input whose send got no answer (ms after the
+ *  failure, cumulative). Bounded: after the last one an input still unproven is
+ *  forgotten, as a refused one is. */
+export const UNCERTAIN_INPUT_RECHECK_MS: readonly number[] = [2_000, 5_000, 10_000];
+
+/**
+ * An input whose `chat.send` got NO answer (projection `on`): did the gateway receive
+ * it? Asked through `chat.history` with `inputRunIds` (its receipt, or its pending
+ * item). A receipt ⇒ kept (its answer will be adopted, CU-9); a cancelled one ⇒ no run
+ * will answer it; a reply that reports receipts and names none for it ⇒ never received,
+ * forgotten. An unreadable or failed read is asked again, at most
+ * `UNCERTAIN_INPUT_RECHECK_MS.length` times; then the input is forgotten. Exported for
+ * tests. Returns what it concluded.
+ */
+export async function reconcileUncertainInput(
+  session: Pick<BridgeSession, "sessionKey" | "runManager"> & {
+    connection: Pick<OpenClawConnection, "request" | "gatewayVersion" | "isClosed">;
+  },
+  sendKey: string,
+  delaysMs: readonly number[] = UNCERTAIN_INPUT_RECHECK_MS,
+  sleep: (ms: number) => Promise<void> = (ms) =>
+    new Promise((r) => setTimeout(r, ms).unref?.()),
+): Promise<"received" | "cancelled" | "absent" | "unproven"> {
+  let waited = 0;
+  for (const at of delaysMs) {
+    await sleep(Math.max(0, at - waited));
+    waited = at;
+    if (session.connection.isClosed) break;
+    let payload: unknown;
+    try {
+      const res = await session.connection.request(
+        "chat.history",
+        chatHistoryParams(
+          { sessionKey: session.sessionKey, limit: 1, maxChars: 1, inputRunIds: [sendKey] },
+          session.connection.gatewayVersion,
+        ),
+        GATEWAY_RELEASE_RPC_TIMEOUT_MS,
+      );
+      payload = (res as { payload?: unknown }).payload;
+    } catch {
+      continue;
+    }
+    const p = (payload ?? {}) as {
+      inputReceipts?: unknown;
+      pendingInputs?: { items?: unknown };
+    };
+    const receipts = Array.isArray(p.inputReceipts)
+      ? (p.inputReceipts as Array<{ runId?: unknown; state?: unknown; cancelled?: unknown }>)
+      : null;
+    const pending = Array.isArray(p.pendingInputs?.items)
+      ? (p.pendingInputs!.items as Array<{ runId?: unknown; state?: unknown }>)
+      : [];
+    const receipt = receipts?.find((r) => r.runId === sendKey);
+    const item = pending.find((i) => i.runId === sendKey);
+    if (receipt?.cancelled === true || item?.state === "cancelled") {
+      session.runManager.noteInputDropped(sendKey);
+      return "cancelled";
+    }
+    if (receipt !== undefined || item !== undefined) return "received";
+    if (receipts !== null) {
+      session.runManager.forgetHeldInput(sendKey);
+      return "absent";
+    }
+  }
+  session.runManager.forgetHeldInput(sendKey);
+  return "unproven";
 }
 
 /**
@@ -2978,8 +3698,35 @@ export async function performPatch(
   );
 }
 
+/**
+ * THE SEND IDENTITY this turn's `chat.send` carries. The bridge's derivation
+ * (`webchat-` + sha256 of the session key it ACTUALLY sends to and the dispatch key) is
+ * the truth the gateway will see; Convex computes the same value to know it in advance
+ * (convex/lib/sendIdentity.ts). Agreement ⇒ Convex's string is used verbatim. A
+ * disagreement means Convex derived another session key: the bridge keeps its own (a key
+ * bound to the wrong session could be answered from another session's dedupe entry —
+ * upstream `chat-send-pre-admission.ts` keys it `chat:${clientRunId}`, process-wide),
+ * says so, and reports the key it used so Convex corrects its record.
+ */
+export async function resolveSendIdentity(
+  sessionKey: string,
+  clientMessageId: string,
+  convexSendId: string | undefined,
+  chatId: string,
+): Promise<string> {
+  const derived = await idempotencyKey(sessionKey, clientMessageId);
+  if (convexSendId !== undefined && convexSendId !== derived) {
+    console.error(
+      `[identity] chat=${chatId} Convex named send ${convexSendId.slice(0, 20)}…, the session derives ${derived.slice(0, 20)}… — sending the derived key`,
+    );
+  }
+  return derived;
+}
+
 /** What a send reports back beside its acceptance (see performSend `report`). */
 export interface SendReport {
+  /** The `idempotencyKey` this send carried (the send identity), answered to Convex. */
+  sendId?: string;
   knowledge?: {
     /** `clamped`: sent, but searching fewer of the chosen sources — the operator took
      *  `dropped` out of the agent's allowlist since (codex pass 15). */
@@ -3998,6 +4745,163 @@ export class CompactionHistoryRetiredError extends Error {
     super(`gateway ${gatewayVersion} keeps no compaction checkpoints`);
     this.name = "CompactionHistoryRetiredError";
   }
+}
+
+/** The gateway half of `/tasks-probe`: the per-id `tasks.get` batch plus the
+ *  session-scoped `tasks.list` discovery, over one operator connection. Exported so
+ *  the outbound ratchet captures what it really sends to each vendored version.
+ *
+ *  Nothing is sent to a gateway that retired the `tasks.*` RPCs
+ *  (TASKS_RPC_RETIRED_IN): the honest answer there is the empty one, the same as a
+ *  provider with no task registry, and the caller keeps its local expiry. */
+export async function probeOpenClawTasks(
+  conn: Pick<OpenClawConnection, "request" | "gatewayVersion">,
+  pIds: readonly string[],
+  discoverKeys: readonly string[],
+): Promise<{
+  tasks: ({ taskId: string } & Record<string, unknown>)[];
+  discovered: { taskId: string; status: string; toolName: string | null }[];
+  discoveryMeta: { sessions: number; listed: number } | null;
+}> {
+  if (gatewayAtLeast(conn.gatewayVersion, TASKS_RPC_RETIRED_IN) === true) {
+    return { tasks: [], discovered: [], discoveryMeta: null };
+  }
+
+  // PARALLEL lookups on the multiplexed socket: a sequential batch
+  // (10 ids x 10s worst case + a cold 30s connect) would blow past
+  // the Convex client's 50s budget and lose EVERY already-fetched
+  // status. Worst case here: connect + one 8s window.
+  const settled = await Promise.all(
+    pIds.map(async (taskId) => {
+      try {
+        const r = await conn.request(
+          "tasks.get",
+          taskGetParams(taskId),
+          8_000,
+        );
+        const task = (
+          r.payload as { task?: Record<string, unknown> }
+        )?.task;
+        return { taskId, ...projectTaskProbe(task) };
+      } catch (err) {
+        // DISTINGUISH the registry's explicit "task not found"
+        // (pinned: INVALID_REQUEST `task not found: <id>`) from a
+        // transient failure (timeout, drop, missing RPC on an old
+        // gateway): only the former may ever settle a row as lost —
+        // a transient error must leave the local state untouched,
+        // so the entry is OMITTED from the batch.
+        const msg = (err as Error)?.message ?? "";
+        if (/task not found/i.test(msg)) {
+          return {
+            taskId,
+            status: "not_found",
+            summary: null,
+            error: null,
+          };
+        }
+        return null;
+      }
+    }),
+  );
+  const gets = settled.filter(
+    (t): t is NonNullable<typeof t> => t !== null,
+  );
+  // Session-scoped discovery (best-effort: a gateway without the
+  // RPC, or a transient failure, yields an empty list — the local
+  // state stays untouched).
+  let found: {
+    taskId: string;
+    status: string;
+    toolName: string | null;
+  }[] = [];
+  // COUNTS-only diagnostics (no keys/content — SOC2): how many live
+  // sessions matched the chat and how many records the registry
+  // listed. A persistent {sessions:0} explains an empty discovery.
+  let discoveryMeta: { sessions: number; listed: number } | null =
+    null;
+  if (discoverKeys.length > 0) {
+    try {
+      // SERVER-side filters (TasksListParamsSchema, pinned from the
+      // gateway dist: sessionKey + status[] + limit): an unfiltered
+      // list is paginated (~100 oldest records) and NEVER contains
+      // the live link — the very task this discovery exists for.
+      // One request per live session key (normally exactly one).
+      let listedTotal = 0;
+      const records: Record<string, unknown>[] = [];
+      // FOUR, matching what the registry keeps (`recentChatKeys`, capped
+      // at 4 in session.ts): asking three left the oldest retained key
+      // unqueried, and after four re-keys that is exactly where a chain
+      // still producing invisible links can live — its next link was never
+      // adopted, so the indicator went dark and the delivery lost its
+      // anchor (codex). The cap belongs to the registry; this only has to
+      // agree with it.
+      // IN PARALLEL, each key isolated. Sequentially, four 10s lookups
+      // plus the connect and the per-task gets could exceed the 50s budget
+      // Convex gives this probe — and one failing key aborted the loop, so
+      // the very key this widening was for was never asked (codex).
+      const settled = await Promise.allSettled(
+        discoverKeys
+          .slice(0, MAX_DISCOVERY_KEYS)
+          .map((key) =>
+            conn.request("tasks.list", taskListParams(key), 10_000),
+          ),
+      );
+      for (const outcome of settled) {
+        if (outcome.status !== "fulfilled") continue; // one key's failure is its own
+        const payload = outcome.value.payload as {
+          tasks?: unknown[];
+        } | null;
+        const list = Array.isArray(payload?.tasks)
+          ? payload.tasks
+          : [];
+        listedTotal += list.length;
+        for (const t of list) {
+          if (typeof t === "object" && t !== null) {
+            records.push(t as Record<string, unknown>);
+          }
+        }
+      }
+      discoveryMeta = {
+        sessions: discoverKeys.length,
+        listed: listedTotal,
+      };
+      // Known ids are excluded BEFORE the cap: with 10+ live tasks
+      // a stable-ordered list would otherwise return the same known
+      // entries forever and starve the new invisible link behind
+      // them (the gets batch already refreshes the known ones).
+      const known = new Set(pIds);
+      found = records
+        .filter((rec) => {
+          const id = rec.taskId ?? rec.id;
+          return (
+            (rec.status === "queued" || rec.status === "running") &&
+            typeof id === "string" &&
+            id !== "" &&
+            !known.has(id)
+          );
+        })
+        .slice(0, 10)
+        .map((rec) => ({
+          taskId: ((rec.taskId ?? rec.id) as string).slice(0, 80),
+          status: (rec.status as string).slice(0, 40),
+          // The chain key: the tool family. Pinned live shape:
+          // sourceId "image_generate:openai" (tool before ':'),
+          // summary `kind` ("image_generation") as the fallback.
+          toolName:
+            typeof rec.sourceId === "string" && rec.sourceId !== ""
+              ? rec.sourceId.split(":")[0]!.slice(0, 60)
+              : typeof rec.kind === "string" && rec.kind !== ""
+                ? rec.kind.slice(0, 60)
+                : null,
+        }));
+    } catch (err) {
+      console.error(
+        "tasks-probe discovery failed (non-fatal):",
+        (err as Error)?.message ?? err,
+      );
+    }
+  }
+  return { tasks: gets, discovered: found, discoveryMeta };
 }
 
 export async function fetchCompactionHistory(
@@ -5494,6 +6398,10 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
       "/knowledge",
       "/reset",
       "/abort",
+      // Transcript projection `on` (phase 3, CU-22): before the boot sweep closes a
+      // bubble left streaming by a previous bridge life, Convex asks whether the gateway
+      // still runs it — and the turn is resumed on that bubble if so.
+      "/resume",
       "/compact",
       "/compaction-history",
       "/agent-files",
@@ -6176,7 +7084,34 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
         // frame that follows is the USER'S stop — the sink's delivery-run
         // fold must not repaint it as complete (dispatchAbort is kill-THEN-
         // finalize, so Convex has not settled the message yet — codex P2).
-        registry.peekByChat(abort.chatId)?.runManager.noteUserAbort();
+        // PROJECTION `on` (phase 3, design §3.4): the Control UI's stop. `projection`
+        // and `discardPendingInput` are named explicitly; anything else keeps the
+        // legacy kill below.
+        let projected = false;
+        let discardPendingInput = false;
+        try {
+          const o = JSON.parse(raw) as Record<string, unknown>;
+          projected = o.projection === "on";
+          discardPendingInput = o.discardPendingInput === true;
+        } catch {
+          /* parseResetBody already validated the body shape */
+        }
+        const peeked = registry.peekByChat(abort.chatId);
+        if (projected) {
+          const aim = planProjectedStop(peeked, sessionKey, runId, discardPendingInput);
+          if (aim === null) {
+            sendJson(res, 400, { ok: false, error: { code: "invalid_body" } });
+            return;
+          }
+          await withOperatorConnection(
+            abortBundle.config,
+            (conn) => sendProjectedStop(conn, sessionKey, aim),
+            noteHandshakeFor(abortInstance),
+          );
+          sendJson(res, 200, { ok: true });
+          return;
+        }
+        peeked?.runManager.noteUserAbort();
         await withOperatorConnection(
           abortBundle.config,
           // With runId, the gateway cancels the NAMED run (immune to a newer
@@ -6512,143 +7447,7 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
         const { tasks, discovered, discoveryMeta } =
           await withOperatorConnection(
             pBundle.config,
-            async (conn) => {
-              // PARALLEL lookups on the multiplexed socket: a sequential batch
-              // (10 ids x 10s worst case + a cold 30s connect) would blow past
-              // the Convex client's 50s budget and lose EVERY already-fetched
-              // status. Worst case here: connect + one 8s window.
-              const settled = await Promise.all(
-                pIds.map(async (taskId) => {
-                  try {
-                    const r = await conn.request(
-                      "tasks.get",
-                      taskGetParams(taskId),
-                      8_000,
-                    );
-                    const task = (
-                      r.payload as { task?: Record<string, unknown> }
-                    )?.task;
-                    return { taskId, ...projectTaskProbe(task) };
-                  } catch (err) {
-                    // DISTINGUISH the registry's explicit "task not found"
-                    // (pinned: INVALID_REQUEST `task not found: <id>`) from a
-                    // transient failure (timeout, drop, missing RPC on an old
-                    // gateway): only the former may ever settle a row as lost —
-                    // a transient error must leave the local state untouched,
-                    // so the entry is OMITTED from the batch.
-                    const msg = (err as Error)?.message ?? "";
-                    if (/task not found/i.test(msg)) {
-                      return {
-                        taskId,
-                        status: "not_found",
-                        summary: null,
-                        error: null,
-                      };
-                    }
-                    return null;
-                  }
-                }),
-              );
-              const gets = settled.filter(
-                (t): t is NonNullable<typeof t> => t !== null,
-              );
-              // Session-scoped discovery (best-effort: a gateway without the
-              // RPC, or a transient failure, yields an empty list — the local
-              // state stays untouched).
-              let found: {
-                taskId: string;
-                status: string;
-                toolName: string | null;
-              }[] = [];
-              // COUNTS-only diagnostics (no keys/content — SOC2): how many live
-              // sessions matched the chat and how many records the registry
-              // listed. A persistent {sessions:0} explains an empty discovery.
-              let discoveryMeta: { sessions: number; listed: number } | null =
-                null;
-              if (discoverKeys.length > 0) {
-                try {
-                  // SERVER-side filters (TasksListParamsSchema, pinned from the
-                  // gateway dist: sessionKey + status[] + limit): an unfiltered
-                  // list is paginated (~100 oldest records) and NEVER contains
-                  // the live link — the very task this discovery exists for.
-                  // One request per live session key (normally exactly one).
-                  let listedTotal = 0;
-                  const records: Record<string, unknown>[] = [];
-                  // FOUR, matching what the registry keeps (`recentChatKeys`, capped
-                  // at 4 in session.ts): asking three left the oldest retained key
-                  // unqueried, and after four re-keys that is exactly where a chain
-                  // still producing invisible links can live — its next link was never
-                  // adopted, so the indicator went dark and the delivery lost its
-                  // anchor (codex). The cap belongs to the registry; this only has to
-                  // agree with it.
-                  // IN PARALLEL, each key isolated. Sequentially, four 10s lookups
-                  // plus the connect and the per-task gets could exceed the 50s budget
-                  // Convex gives this probe — and one failing key aborted the loop, so
-                  // the very key this widening was for was never asked (codex).
-                  const settled = await Promise.allSettled(
-                    discoverKeys
-                      .slice(0, MAX_DISCOVERY_KEYS)
-                      .map((key) =>
-                        conn.request("tasks.list", taskListParams(key), 10_000),
-                      ),
-                  );
-                  for (const outcome of settled) {
-                    if (outcome.status !== "fulfilled") continue; // one key's failure is its own
-                    const payload = outcome.value.payload as {
-                      tasks?: unknown[];
-                    } | null;
-                    const list = Array.isArray(payload?.tasks)
-                      ? payload.tasks
-                      : [];
-                    listedTotal += list.length;
-                    for (const t of list) {
-                      if (typeof t === "object" && t !== null) {
-                        records.push(t as Record<string, unknown>);
-                      }
-                    }
-                  }
-                  discoveryMeta = {
-                    sessions: discoverKeys.length,
-                    listed: listedTotal,
-                  };
-                  // Known ids are excluded BEFORE the cap: with 10+ live tasks
-                  // a stable-ordered list would otherwise return the same known
-                  // entries forever and starve the new invisible link behind
-                  // them (the gets batch already refreshes the known ones).
-                  const known = new Set(pIds);
-                  found = records
-                    .filter((rec) => {
-                      const id = rec.taskId ?? rec.id;
-                      return (
-                        (rec.status === "queued" || rec.status === "running") &&
-                        typeof id === "string" &&
-                        id !== "" &&
-                        !known.has(id)
-                      );
-                    })
-                    .slice(0, 10)
-                    .map((rec) => ({
-                      taskId: ((rec.taskId ?? rec.id) as string).slice(0, 80),
-                      status: (rec.status as string).slice(0, 40),
-                      // The chain key: the tool family. Pinned live shape:
-                      // sourceId "image_generate:openai" (tool before ':'),
-                      // summary `kind` ("image_generation") as the fallback.
-                      toolName:
-                        typeof rec.sourceId === "string" && rec.sourceId !== ""
-                          ? rec.sourceId.split(":")[0]!.slice(0, 60)
-                          : typeof rec.kind === "string" && rec.kind !== ""
-                            ? rec.kind.slice(0, 60)
-                            : null,
-                    }));
-                } catch (err) {
-                  console.error(
-                    "tasks-probe discovery failed (non-fatal):",
-                    (err as Error)?.message ?? err,
-                  );
-                }
-              }
-              return { tasks: gets, discovered: found, discoveryMeta };
-            },
+            (conn) => probeOpenClawTasks(conn, pIds, discoverKeys),
             noteHandshakeFor(pInstance),
           );
         sendJson(res, 200, { ok: true, tasks, discovered, discoveryMeta });
@@ -6749,6 +7548,112 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
           (err as Error)?.message ?? err,
         );
         sendJson(res, 502, { ok: false, error: { code } });
+      }
+      return;
+    }
+
+    if (req.url === "/resume") {
+      // TRANSCRIPT PROJECTION `on` (phase 3, CU-22): a restarted bridge lost the turn,
+      // not the run. Convex asks, before closing a bubble left streaming by the previous
+      // bridge life, whether the gateway still runs it: if so the turn is picked up on
+      // that bubble (the Control UI adopts `inFlightRun` on reconnect,
+      // ui/src/pages/chat/chat-history-stream.ts at v2026.9.8); if not, Convex closes it
+      // as before. Same body shape and routing as /compact, plus the bubble and its run.
+      const resume = parseResetBody(raw);
+      let bubble: { messageId: string; runId: string } | null = null;
+      try {
+        bubble = parseLiveBubble((JSON.parse(raw) as { liveBubble?: unknown }).liveBubble);
+      } catch {
+        bubble = null;
+      }
+      if (resume === null || bubble === null) {
+        sendJson(res, 400, { ok: false, error: "invalid body" });
+        return;
+      }
+      const resumeInstance = resume.instanceName;
+      if (!resumeInstance || !served.has(resumeInstance)) {
+        sendJson(res, 409, { ok: false, error: { code: "instance_not_served" } });
+        return;
+      }
+      let requestedSessionKey: string | null = null;
+      try {
+        const k = (JSON.parse(raw) as { sessionKey?: unknown }).sessionKey;
+        requestedSessionKey = typeof k === "string" && k.length > 0 ? k : null;
+      } catch {
+        requestedSessionKey = null;
+      }
+      const routing = toRouting(resume, resumeInstance);
+      const want = {
+        sessionKey: buildSessionKey(
+          routing.openclawChatId ?? routing.chatId,
+          routing.agentId,
+          routing.canonical,
+        ),
+        instanceName: resumeInstance,
+        requestedSessionKey,
+      };
+      const refuseStale = (why: string): void => {
+        console.log(`[resume] chat=${resume.chatId} not resumed: stale request (${why})`);
+        sendJson(res, 200, { ok: true, resumed: false });
+      };
+      // Decided BEFORE anything is acquired: the request is automatic and may be late —
+      // prepared for run A, delivered after A ended and B started on another agent or
+      // instance, possibly one whose projection is off. Acquiring first would re-key
+      // the chat's socket and close B's live turn (codex pass 4).
+      const pre = resumePreflight(liveSessionView(registry.peekByChat(resume.chatId)), want, bubble);
+      if (pre !== "proceed") {
+        if (pre === "resumed") sendJson(res, 200, { ok: true, resumed: true });
+        else refuseStale("the chat's socket is not on the bubble's session or run");
+        return;
+      }
+      // Serialized with the chat's sends (ChatTransitionGate): never decided while one
+      // is being prepared, and none starts until this one has decided.
+      const leaveResume = chatTransitions.tryBeginResume(resume.chatId);
+      if (leaveResume === null) {
+        refuseStale("a send to the chat is being prepared");
+        return;
+      }
+      try {
+        let session: BridgeSession;
+        try {
+          session = await registry.acquire(routing, { displace: false });
+        } catch (err) {
+          if (err instanceof SessionDisplaceRefusedError) {
+            refuseStale("another session took the chat's socket");
+            return;
+          }
+          throw err;
+        }
+        if (
+          gatewayAtLeast(session.connection.gatewayVersion, TRANSCRIPT_PROJECTION_SINCE) !== true
+        ) {
+          sendJson(res, 200, { ok: true, resumed: false });
+          return;
+        }
+        // Re-validated after the acquire's network await: the socket is still the
+        // chat's, on the bubble's session, and carries no other work.
+        const after = resumePreflight(liveSessionView(registry.peekByChat(resume.chatId)), want, bubble);
+        if (registry.peekByChat(resume.chatId) !== session || after === "stale") {
+          refuseStale("the chat's socket changed or carries other work");
+          return;
+        }
+        if (after === "resumed") {
+          sendJson(res, 200, { ok: true, resumed: true });
+          return;
+        }
+        const resumed = await admitResume(session, resume.chatId, bubble, () =>
+          registry.peekByChat(resume.chatId) === session && !session.connection.isClosed,
+        );
+        console.log(
+          `[resume] chat=${resume.chatId} ${resumed ? "resumed: the gateway still runs the bubble's run" : "not resumed: the gateway no longer runs it (or the socket moved on)"}`,
+        );
+        sendJson(res, 200, { ok: true, resumed });
+      } catch (err) {
+        const code = classifyGatewayError(err);
+        console.error(`bridge /resume failed [${code}]:`, (err as Error)?.message ?? err);
+        sendJson(res, 502, { ok: false, error: { code } });
+      } finally {
+        leaveResume();
       }
       return;
     }
@@ -8128,33 +9033,39 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
         sendJson(res, 200, { ok: true });
         return;
       }
-      const session = await registry.acquire({
-        ...toRouting(body, sendInstance),
-        inlineWidgets: body.inlineWidgets === true,
-      });
-      // The mount the AGENT is being told to write to on THIS turn. A delegated
-      // child's `MEDIA:` directive names a path under it, and its frames are
-      // observation-only — so the observer has to be told, or an instance with a
-      // custom `outboundAgentMount` loses every child delivery (the exact defect
-      // the child lane exists to fix, on any non-default mount).
-      session.noteOutboundMount(deliveryDir);
-      const sendOnce = () =>
-        performSend(
-          session,
-          body,
-          bundle.writer,
-          inboundCfg,
-          deliveryDir,
-          {
-            gatewayVersionFallback: bundle.config.gatewayVersionFallback ?? null,
-            attachmentFixAttested: bundle.config.attachmentFixAttested === true,
-          },
-          sendReceivedMs,
-          bundle.config,
-          defaultSpeakers,
-          sendReport,
-        );
-      await withOneRePreparation(sendOnce, body.chatId);
+      // Serialized with a resume of this chat (CU-22), in every mode: see ChatTransitionGate.
+      const leaveSendGate = await chatTransitions.enterSend(body.chatId);
+      try {
+        const session = await registry.acquire({
+          ...toRouting(body, sendInstance),
+          inlineWidgets: body.inlineWidgets === true,
+        });
+        // The mount the AGENT is being told to write to on THIS turn. A delegated
+        // child's `MEDIA:` directive names a path under it, and its frames are
+        // observation-only — so the observer has to be told, or an instance with a
+        // custom `outboundAgentMount` loses every child delivery (the exact defect
+        // the child lane exists to fix, on any non-default mount).
+        session.noteOutboundMount(deliveryDir);
+        const sendOnce = () =>
+          performSend(
+            session,
+            body,
+            bundle.writer,
+            inboundCfg,
+            deliveryDir,
+            {
+              gatewayVersionFallback: bundle.config.gatewayVersionFallback ?? null,
+              attachmentFixAttested: bundle.config.attachmentFixAttested === true,
+            },
+            sendReceivedMs,
+            bundle.config,
+            defaultSpeakers,
+            sendReport,
+          );
+        await withOneRePreparation(sendOnce, body.chatId);
+      } finally {
+        leaveSendGate();
+      }
       // A real send proves connection + the ROUTED agent answered.
       health.recordOk(targetRef(body.agentId, body.canonical, sendInstance));
       // The knowledge choice's outcome rides the answer: Convex records it for the
@@ -8162,6 +9073,8 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
       sendJson(res, 200, {
         ok: true,
         ...(sendReport.knowledge === undefined ? {} : { knowledge: sendReport.knowledge }),
+        // The send identity actually used (Convex corrects its record if it differs).
+        ...(sendReport.sendId === undefined ? {} : { sendId: sendReport.sendId }),
       });
     } catch (err) {
       // A per-send upstream failure is reported but does not crash the bridge.

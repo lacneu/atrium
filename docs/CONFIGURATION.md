@@ -139,7 +139,7 @@ stack is placed on a host, not how Atrium behaves.
 | `CONVEX_RUST_LOG`                                 | no                |                                           | Backend log level.                                                                                                                                                                                                                               | `info`                                            |
 | `BRIDGE_RUN_AS_UID`                               | no                |                                           | `uid:gid` the bridge container runs as. Must match the gateway's, or inbound files the bridge writes are unreadable by the agent. A bridge process has ONE uid, so every served gateway must share it.                                           | `1000:1000`                                       |
 | `OPENCLAW_MEDIA_OUTBOUND_HOST_DIR`                | no                |                                           | Host path of the gateway's outbound media dir. **Read by nothing until you uncomment the matching mount** (CASE A in `docker-compose.yml`).                                                                                                      | `<root>/instances/alpha/.openclaw/media/outbound` |
-| `OPENCLAW_INBOUND_HOST_DIR`                       | no                |                                           | Host inbound root containing `published/` + `.staging/`. Mount this one root read-write into the bridge; mount only its `published/` child read-only into the gateway. The removed `OPENCLAW_INBOUND_STAGING_HOST_DIR` is rejected by preflight. | `<root>/instances/alpha/.openclaw/media/inbound`  |
+| `OPENCLAW_INBOUND_HOST_DIR`                       | no                |                                           | Host inbound root containing `published/` + `.staging/`. Mount this one root read-write into the bridge; the agent reads its `published/` child at `/home/node/.openclaw/media/inbound/published`. Never mount anything read-only over the gateway's own `media/inbound` (its attachment store). The removed `OPENCLAW_INBOUND_STAGING_HOST_DIR` is rejected by preflight. | `<root>/instances/alpha/.openclaw/media/inbound`  |
 
 ## Scope 2 — Convex deployment env
 
@@ -297,6 +297,19 @@ cannot express them as process-global variables.
 One consequence worth knowing before you install: **enabling an agent is what
 exposes it**. Visibility is authorisation by default; attribution is not a second
 lock.
+
+One per-instance setting has no control in the UI on purpose, because it is a rollout
+lever rather than a preference: `transcriptProjection` (`off` by default, `shadow`, or
+`on`). In `shadow` the bridge reads the gateway's session transcript back after each run
+(`chat.history`, delta cursor) and Convex records its identities beside the bubbles;
+nothing on screen changes, and `diagnose_chat` reports how far the bubbles are from the
+transcript. In `on` the transcript decides what is shown: a message sent while the agent
+works follows the session's queue mode (as OpenClaw's Control UI does), a bubble opens with
+its run's first content, and once a run is over its bubble is rewritten from the run's rows
+in the session transcript (Convex then also stores the text of those rows, purged with the
+conversation). It needs OpenClaw 2026.8.2 or later and is
+set through the admin API (`admin.upsertInstanceConfig`); the Bridge and Injections tabs
+carry it through their saves unchanged.
 
 ## Secrets discipline
 

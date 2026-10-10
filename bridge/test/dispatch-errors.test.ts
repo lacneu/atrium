@@ -595,3 +595,21 @@ describe("the gateway's own storage and agent-database refusals (OpenClaw 2026.9
     }
   });
 });
+
+describe("a provider's revoked credential is the provider's, not the bridge's", () => {
+  test("named, downstream, and before the gateway-credential rule", () => {
+    const err = new Error(
+      "chat.send failed: 401 Unauthorized: Encountered invalidated oauth token for user. Re-authenticate with: openclaw models auth login --provider 'openai' --force",
+    );
+    // "unauthorized" alone made it AUTH_TOKEN_MISMATCH: the bridge's own pairing blamed,
+    // and the bridge painted red, for an agent credential the PROVIDER revoked.
+    expect(classifyGatewayError(err)).toBe("provider_auth_revoked");
+    expect(faultDomain("provider_auth_revoked")).toBe("downstream");
+  });
+
+  test("the gateway refusing OUR credentials stays AUTH_TOKEN_MISMATCH", () => {
+    expect(classifyGatewayError(new Error("unauthorized: gateway token mismatch"))).toBe(
+      "AUTH_TOKEN_MISMATCH",
+    );
+  });
+});

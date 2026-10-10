@@ -32,6 +32,7 @@ import { requireRealUserId, getProfile } from "./lib/access";
 import { loadLocalCrypto } from "./lib/crypto/keyProvider";
 import { encryptedSecretValidator } from "./lib/crypto/convexValidator";
 import { maskCredentialId } from "./lib/chatRenderState";
+import { loadProjectionReport } from "./lib/transcriptProjection";
 
 function assertDev() {
   if (process.env.OPENCLAW_ENABLE_ANON_AUTH !== "1") {
@@ -1265,6 +1266,43 @@ export const testSetInboundMediaMode = mutation({
   },
 });
 
+/**
+ * Bench-only: switch an instance's TRANSCRIPT PROJECTION (redesign phase 1) — `shadow`
+ * to measure the projection ↔ bubble gaps during a run, back to the reported previous
+ * value afterwards. Same contract as `testSetInboundMediaMode`: the previous value is
+ * returned so the runner can restore it (`null` = never set = `off`).
+ */
+export const testSetTranscriptProjection = mutation({
+  args: {
+    instanceName: v.string(),
+    mode: v.union(v.literal("off"), v.literal("shadow"), v.literal("on")),
+  },
+  handler: async (ctx, { instanceName, mode }) => {
+    assertDev();
+    assertDevInstance(instanceName);
+    const inst = await ctx.db
+      .query("instances")
+      .withIndex("by_name", (q) => q.eq("name", instanceName))
+      .first();
+    if (!inst) return { ok: false as const, reason: "instance not found" };
+    const previous = inst.config?.transcriptProjection ?? null;
+    await ctx.db.patch(inst._id, {
+      config: { ...(inst.config ?? {}), transcriptProjection: mode },
+    });
+    return { ok: true as const, previous };
+  },
+});
+
+/** Bench-only: the projection ↔ bubble measurement of one chat (invariants I1–I3), the
+ *  same report `diagnose_chat` carries — metadata only. */
+export const testProjectionReport = query({
+  args: { chatId: v.id("chats") },
+  handler: async (ctx, { chatId }) => {
+    assertDev();
+    return await loadProjectionReport(ctx, chatId);
+  },
+});
+
 export const inspectChat = query({
   args: { chatId: v.id("chats"), take: v.optional(v.number()) },
   handler: async (ctx, { chatId, take }) => {
@@ -1469,10 +1507,14 @@ export const seedImageAttachment = action({
     // resolved instance, so a scenario must be able to say which one stages.
     instanceName: v.optional(v.string()),
     agentId: v.optional(v.string()),
+    // Grow the file to this many bytes with filler LINES after the given content —
+    // for a scenario that needs a file larger than the gateway frame can carry, which
+    // no command line could pass as base64.
+    padToBytes: v.optional(v.number()),
   },
   handler: async (
     ctx,
-    { base64, filename, mimeType, text, chatId, instanceName, agentId },
+    { base64, filename, mimeType, text, chatId, instanceName, agentId, padToBytes },
   ): Promise<
     | { ok: true; chatId: Id<"chats">; outboxId: Id<"outbox">; storageId: Id<"_storage"> }
     | { ok: false; reason: string }
@@ -1483,7 +1525,14 @@ export const seedImageAttachment = action({
     const binary = atob(base64);
     const bytes = new Uint8Array(binary.length);
     for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-    const blob = new Blob([bytes], { type: mimeType });
+    const parts: BlobPart[] = [bytes];
+    if (padToBytes !== undefined && padToBytes > bytes.length) {
+      const filler = new Uint8Array(padToBytes - bytes.length);
+      const line = new TextEncoder().encode("filler line, nothing to read here\n");
+      for (let i = 0; i < filler.length; i++) filler[i] = line[i % line.length];
+      parts.push(filler);
+    }
+    const blob = new Blob(parts, { type: mimeType });
     const storageId = await ctx.storage.store(blob);
     const res = await ctx.runMutation(internal.dev.enqueueAttachmentTurn, {
       storageId,

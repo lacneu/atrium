@@ -4,8 +4,8 @@ import {
   messageHasText as sharedMessageHasText,
   maskCredentialId,
   type RunStatusKind,
-  withoutOperatorValues,
 } from "../../convex/lib/chatRenderState";
+import { classifyStoredFailureText, unwrapGatewayFailure } from "../../convex/lib/failureText";
 import { turnDifficultyLabel, type TurnDifficulty } from "./turnDifficultyView";
 
 // Thin localization wrapper over the SHARED pure derivation
@@ -227,8 +227,14 @@ export interface ErrorDetailView {
   /** Localized headline (actionable) — null when the code is unknown. */
   headline: string | null;
   /** Technical detail: the gateway's own text, MASKED of any credential id — null
-   *  when empty or redundant. */
+   *  when empty, redundant, suppressed, or moved to `rawDetail`. */
   detail: string | null;
+  /** The gateway's raw text for a collapsible "Details" with a copy button (the Control
+   *  UI's own pattern: headline first, the full text one click away) — set instead of
+   *  `detail` when the text is upstream's GENERIC wrapper ("Context is too large …",
+   *  "Something went wrong …") or a cause the headline already states, so the wrapper's
+   *  words never sit under the headline as if they were the cause. */
+  rawDetail: string | null;
   /** The class this view RESOLVED to, including the text-phrasing fallback. The
    *  card keys its wired actions on THIS, not on the raw `errorCode`: an overflow
    *  recognized only by its phrasing used to get the right headline and no way out
@@ -276,6 +282,26 @@ export const HEADLINE_REPLACES_DETAIL: ReadonlySet<string> = new Set([
   // host (src/state/agent-database-admission.ts:56-57 and :81 at v2026.9.6). Neither
   // belongs on the reader's card; the sentence stays on the row for the operator.
   "gateway_agent_db_closed",
+  // A revoked provider credential arrives wrapped in upstream's "Context is too large …
+  // Try again, use /compact, or use /new" — three instructions that cannot help, under a
+  // headline that says only an administrator can — plus the gateway's re-authentication
+  // command. Neither belongs on the reader's card; the sentence stays on the row.
+  "provider_auth_revoked",
+  // The two other credential refusals carry the same wrapper and the same command.
+  "provider_permission_denied",
+  "provider_auth_failed",
+]);
+
+/** Classes whose gateway text belongs in the collapsible Details rather than under the
+ *  headline: the headline already states the cause, and the text is upstream's copy written
+ *  for the gateway's own operator ("Check your provider's billing dashboard and top up …",
+ *  "Check the model id …") or, for the no-cause classes, the generic wrapper itself. */
+const DETAIL_IN_DISCLOSURE: ReadonlySet<string> = new Set([
+  "provider_billing",
+  "model_not_found",
+  "compaction_failed_no_cause",
+  "run_failed_no_cause",
+  "compaction_timeout",
 ]);
 
 export const ERROR_CODE_LABEL: Record<string, () => string> = {
@@ -371,7 +397,30 @@ export const ERROR_CODE_LABEL: Record<string, () => string> = {
   // could not be put on the session (the plugin refused it or is gone, or the bridge
   // cannot apply it). Stored as a dispatch code; never retried.
   knowledge_policy_not_applied: m.runstatus_error_knowledge_policy_not_applied,
+  // The BRIDGE refused the turn: the instance's gateway runs a version below the
+  // supported minimum (2026.8.2). Only an administrator can act (upgrade the gateway);
+  // stored as a dispatch code, never retried.
+  gateway_version_unsupported: m.runstatus_error_gateway_version_unsupported,
   auth_profile_cooldown: m.runstatus_error_auth_profile_cooldown,
+  // The model provider refused the agent's credential (revoked or expired). Nothing is
+  // retried (convex/turnRetry.ts) and nothing the reader does helps: the copy says an
+  // administrator must reconnect the agent, and that resending changes nothing until then.
+  provider_auth_revoked: m.runstatus_error_provider_auth_revoked,
+  // A 403 / `auth_permanent`: the account lacks a right or is blocked. Reconnecting the same
+  // account does not help — the one thing the revoked-credential copy would have suggested.
+  provider_permission_denied: m.runstatus_error_provider_permission_denied,
+  // An auth refusal nothing qualifies (upstream's re-authentication hint alone): the copy
+  // claims neither an expiry nor a permission, only that an administrator must look.
+  provider_auth_failed: m.runstatus_error_provider_auth_failed,
+  provider_billing: m.runstatus_error_provider_billing,
+  model_not_found: m.runstatus_error_model_not_found,
+  // An operator logged the provider out on the gateway, which aborted the run
+  // (`stopReason: "auth-revoked"`) — never the reader's own Stop.
+  provider_access_removed: m.runstatus_error_provider_access_removed,
+  // Upstream's generic wrapper with no cause inside: a neutral headline that says so, no
+  // compaction or branching advice, and the gateway's words in the Details.
+  compaction_failed_no_cause: m.runstatus_error_compaction_failed_no_cause,
+  run_failed_no_cause: m.runstatus_error_run_failed_no_cause,
   // The gateway dropped the admitted input: another reply was being written at the same
   // moment. Nothing ran, and no retry is scheduled (convex/turnRetry.ts) — the copy says
   // so by asking the reader to send again, and claims no attempt of its own. It holds
@@ -413,89 +462,27 @@ export const ERROR_CODE_LABEL: Record<string, () => string> = {
   subagent_reply_pending: m.runstatus_error_subagent_reply_pending,
 };
 
-// Defense-in-depth: overflow phrasings the UI recognizes CLIENT-side, so a bare
-// overflow error string with no errorCode still gets the actionable card even if
-// the bridge classifier ever misses a novel provider phrasing (the bridge is the
-// primary classifier; this is the backstop).
-/** The gateway's preflight-compaction wrapper, recognized from the TEXT ALONE.
- *
- *  Every row already persisted — including the one that opened this lot, stored with no
- *  errorCode at all — and every row a pre-class bridge writes during a rolling deploy
- *  carries the sentence and nothing else. Keyed on the class alone, the headline and the
- *  detail suppression both stayed inactive for exactly those rows, so reopening Denis's
- *  own conversation still showed him `/compact` and `/new` (codex).
- *
- *  The reason list and its clause-ending rule MIRROR `SESSION_GONE_REASON_RE` in
- *  bridge/src/core/failure-classifier.ts — same sentence, one read by the classifier for
- *  new rows, one read here for rows stored before the class existed. They must stay in step.
- *
- *  Placed before the overflow test, defensively — the wrapper opens with "Context is too
- *  large", and an overflow vocabulary that grew to cover that phrasing would otherwise win
- *  and put compact/branch actions on a session that no longer exists. Today's
- *  OVERFLOW_TEXT_RE does NOT match it, so the order changes nothing yet: neutralizing it
- *  leaves the suite green, and that is the honest state of it. */
-const SESSION_GONE_TEXT_RE = new RegExp(
-  // The clause opener is BOUND to the compaction clause — `failed:` inside it, or
-  // `Reason:` opening the next sentence. Accepting an opener anywhere after the wrapper
-  // still reached the second one of a composite diagnostic (codex).
-  String.raw`(?:auto-compaction|preflight compaction)(?:[^\n.!?;,:—-]{0,200}?failed\s*:\s*|[^\n.!?;,:—-]{0,200}?[.!?]\s*reason\s*:\s*)(?:no conversation found|conversation (?:not found|does not exist|expired|invalid)|session (?:not found|does not exist|expired|invalid)|no such session|invalid session|(?:session|conversation) id not found)(?=[.,;:!)\]]|\s*$|\s+(?:for|on|in|with)\b|\s+[—-]\s)`,
-  "i",
-);
+// THE STORED TEXT, READ LIKE THE BRIDGE READS A FRESH ONE.
+//
+// A row stored before its class existed — or by an older bridge during a rolling deploy —
+// carries only the gateway's sentence. It is classified by the front's MIRROR of the bridge's
+// classifier (convex/lib/failureText.ts: same patterns, same unwrapping, same precedence,
+// held to the bridge's verdicts by a parity test), so a stored row renders as a fresh one.
+// Only the classes whose copy holds for a HISTORIC row become its code: a copy that promises
+// a retry (`provider_internal`, the session conflicts) would be false there, since the retry
+// policy keys on the STORED errorKind (convex/turnRetry.ts) and never scheduled one.
 
-/** THE SAME REFUSAL, READ FROM ITS TEXT.
- *
- *  `session_archived` became a stored class only in 0.84.18. Keyed on the class
- *  alone, both the headline AND the detail suppression stay inactive for every row
- *  written before that — and for any row written during a rolling deploy, where
- *  Convex and the front can be ahead of the bridge image. Those rows keep showing
- *  the gateway's raw sentence, which is exactly what the suppression exists to
- *  prevent: an instruction to restore the conversation yourself (Atrium does it),
- *  and the session key, which spells out the reader's canonical id and the chat id.
- *
- *  This is the lesson `session_gone` already paid for, in the comment just above:
- *  "Keyed on the class alone, the headline and the detail suppression both stayed
- *  inactive for exactly those rows." Two readers, one sentence — the bridge's
- *  `SESSION_ARCHIVED_RE` (core/failure-classifier.ts) for new rows, this one here
- *  for rows stored before the class existed. They must stay in step.
- *
- *  Quoted spans are blanked first, mirroring the bridge's `withoutOperatorData`: a
- *  session key is operator data and must never be able to mint the class by itself. */
-const SESSION_ARCHIVED_TEXT_RE =
-  /is archived\.?\s*restore it before starting new work/i;
-
-/** The provider-review PAUSE, read from its text — same reason as the archived rule
- *  above: a row stored before `session_paused_review` existed (or during a rolling deploy,
- *  a bridge ahead of or behind the front) would otherwise show the raw sentence, session
- *  key included. Mirrors the bridge's `PROVIDER_REVIEW_PAUSED_RE`
- *  (core/failure-classifier.ts); they must stay in step. The class's copy holds for such
- *  a row too — it promises no retry, and none was scheduled. */
-const SESSION_PAUSED_REVIEW_TEXT_RE =
-  /is paused as a precaution\.?\s*review the provider findings|provider review changed\.?\s*refresh the findings/i;
-
-/** Operator-chosen values live inside double quotes in every upstream sentence of
- *  this family; blanking them keeps a key or a title from deciding a class. */
-function withoutQuotedSpans(text: string): string {
-  return text.replace(/"[^"]*"/g, '""');
-}
-
-/** The gateway's DROPPED-INPUT sentence, read from the text — same reason as the rules
- *  above: the row that opened this class (prod 2026-09-28, message ph7e6a5j…) was stored
- *  with no code at all, and every row written before the bridge minted it still is.
- *  Mirrors the bridge's `PENDING_INPUT_DROPPED_RE` (core/failure-classifier.ts), which
- *  carries the upstream citation; they must stay in step. Fixed gateway words only —
- *  no operator value can carry the whole sentence into a summary by accident. */
-const PENDING_INPUT_DROPPED_TEXT_RE =
-  /pending input is no longer active in its admitted transcript/i;
 const FALLBACK_SUMMARY_TEXT_RE = /^\s*all (?:[a-z][\w -]{0,60}? )?models failed \(\d+\):\s*/i;
 const FALLBACK_ATTEMPT_PREFIX_TEXT_RE = /^[^\s/|]+\/\S+?:\s+/;
+const PENDING_INPUT_DROPPED_TEXT_RE =
+  /pending input is no longer active in its admitted transcript/i;
 
 /** Does this text prove the input was dropped AND nothing ran? A model-fallback summary
  *  qualifies only when EVERY attempt lost its input, because an attempt that failed any
  *  other way may have streamed or run a tool first, and the card promises "nothing was
- *  processed". Stricter than the bridge's rule (core/failure-classifier.ts), which also
- *  accepts a candidate refused at preparation for a credential cooldown: a stored text
- *  cannot prove that one, since the credential mask cuts it at the profile id's quote. A
- *  row the bridge classified carries the code and does not reach this reading. */
+ *  processed". Stricter than the bridge's rule, which also accepts a candidate refused at
+ *  preparation for a credential cooldown: a stored text cannot prove that one, since the
+ *  credential mask cuts it at the profile id's quote. */
 function droppedInputWithNothingRun(text: string): boolean {
   const head = FALLBACK_SUMMARY_TEXT_RE.exec(text);
   if (head === null) return PENDING_INPUT_DROPPED_TEXT_RE.test(text);
@@ -510,8 +497,41 @@ function droppedInputWithNothingRun(text: string): boolean {
   );
 }
 
-const OVERFLOW_TEXT_RE =
-  /context overflow|prompt too large|maximum context length|context[- ]length exceeded|request_too_large|request too large|input (?:token count )?exceeds the maximum number of (?:input )?tokens|input is too long for the model|too many tokens/i;
+/** The classes a STORED text may name on the card — each one's copy is true for a row whose
+ *  class was never stored, and promises no retry that never ran. */
+const TEXT_DERIVABLE_CODES: ReadonlySet<string> = new Set([
+  "session_gone",
+  "session_paused_review",
+  "provider_auth_revoked",
+  "provider_permission_denied",
+  "provider_auth_failed",
+  "provider_billing",
+  "model_not_found",
+  "rate_limit",
+  "context_length",
+  "compaction_timeout",
+  "compaction_failed_no_cause",
+  "run_failed_no_cause",
+]);
+
+const CREDENTIAL_CODES: ReadonlySet<string> = new Set([
+  "provider_auth_revoked",
+  "provider_permission_denied",
+  "provider_auth_failed",
+]);
+
+/** The card code a stored text names, or null. */
+function codeFromStoredText(shown: string): string | null {
+  const cls = classifyStoredFailureText(shown);
+  if (cls === null) return null;
+  // The archived refusal keeps a copy of its own for a stored row: the class's copy states
+  // that a second attempt is under way, true only when the RETRYABLE class was stored.
+  if (cls === "session_archived") return "session_archived_historic";
+  if (cls === "pending_input_dropped") {
+    return droppedInputWithNothingRun(shown) ? "pending_input_dropped" : null;
+  }
+  return TEXT_DERIVABLE_CODES.has(cls) ? cls : null;
+}
 
 // Error-STRING codes (a stable code stored in `error` rather than `errorCode`):
 // the bridge finalizes some infrastructure ends with the code as the error text
@@ -537,79 +557,65 @@ const ERROR_STRING_CODES = new Set([
   "attachment_cleanup_unconfirmed",
   "message_too_large",
   "subagent_reply_pending",
+  // The bridge stores the provider-logout abort under its code, as its text too.
+  "provider_access_removed",
 ]);
 
 export function errorDetailView(
   error: string | null | undefined,
   errorCode: string | null | undefined,
 ): ErrorDetailView {
-  // TWO readings of the text, and they are not the same one. What is SHOWN goes
-  // through the display mask; what DECIDES goes through the classification normalizer,
-  // which removes every operator-chosen value, not only a credential id — otherwise a
-  // quoted value could still win the overflow fallback below and put context actions
-  // on a failure that has nothing to do with context (codex).
+  // What is SHOWN goes through the display mask; what DECIDES goes through the mirror
+  // classifier, which removes every operator-chosen value itself, not only a credential id —
+  // otherwise a quoted value could still choose a class (codex).
   const shown = maskCredentialId((error ?? "").trim());
-  const raw0 = withoutOperatorValues(shown);
-  // Prefer a MAPPED errorCode; a curated-but-unmapped one (e.g.
-  // BRIDGE_UNREACHABLE, kept for diagnostics) falls through to the error
-  // STRING code (the localizable reason failDispatch stores), then the
-  // overflow phrasing fallback, then the raw errorCode (headline null).
-  // THE ONE STORED CODE THAT YIELDS TO THE TEXT.
+  const fromText = shown === "" ? null : codeFromStoredText(shown);
+  // Prefer a MAPPED errorCode; a curated-but-unmapped one (e.g. BRIDGE_UNREACHABLE, kept for
+  // diagnostics) falls through to the error STRING code (the localizable reason failDispatch
+  // stores), then the text's own class, then the raw errorCode (headline null).
   //
-  // `unclassified_error` does not name a cause — it asserts the ABSENCE of one, in
-  // so many words: "nothing gave its cause, neither the gateway nor the failure
-  // text". When a text rule below does recognise the sentence, that stored code is
-  // simply false, and letting it win keeps the reader staring at a card that says
-  // we know nothing about a failure we can name. Every other stored code states a
-  // fact and still wins outright. Nothing is lost when no rule matches: the final
-  // fallback returns `errorCode` unchanged.
-  const code =
-    errorCode && ERROR_CODE_LABEL[errorCode] && errorCode !== "unclassified_error"
-      ? errorCode
-      : ERROR_STRING_CODES.has(raw0)
-        ? raw0
-        : SESSION_GONE_TEXT_RE.test(raw0)
-          ? "session_gone"
-          : SESSION_ARCHIVED_TEXT_RE.test(withoutQuotedSpans(raw0))
-            ? "session_archived_historic"
-            : SESSION_PAUSED_REVIEW_TEXT_RE.test(withoutQuotedSpans(raw0))
-              ? "session_paused_review"
-              : droppedInputWithNothingRun(shown)
-              ? "pending_input_dropped"
-              : OVERFLOW_TEXT_RE.test(raw0)
-              ? "context_length"
-              : (errorCode ?? null);
+  // `unclassified_error` is the ONE stored code that yields to the text: it does not name a
+  // cause, it asserts the ABSENCE of one, and a text rule that recognises the sentence makes
+  // it false. Every other stored code states a fact and wins — with one exception: 0.91.2
+  // stored `provider_auth_revoked` for upstream's re-authentication hint ALONE, which also
+  // follows a 403, a region or a deactivated workspace. Where the stored text itself names
+  // one of the other two credential classes, that row's code was wrong, and the "access
+  // expired, reconnect" card on a permission refusal is the very advice this removes.
+  let code: string | null;
+  if (errorCode && ERROR_CODE_LABEL[errorCode] && errorCode !== "unclassified_error") {
+    code =
+      errorCode === "provider_auth_revoked" &&
+      fromText !== null &&
+      fromText !== errorCode &&
+      CREDENTIAL_CODES.has(fromText)
+        ? fromText
+        : errorCode;
+  } else if (ERROR_STRING_CODES.has(shown)) {
+    code = shown;
+  } else {
+    code = fromText ?? errorCode ?? null;
+  }
   const headline = code !== null ? (ERROR_CODE_LABEL[code]?.() ?? null) : null;
-  // Already masked above; `raw0` is the single reading of the text in this function.
-  const detail0 =
-    raw0 && raw0 !== code && !ERROR_STRING_CODES.has(raw0) ? raw0 : null;
-  // BELT, behind the boundary mask in `stream.finalize`.
-  //
-  // Keyed on the TEXT, never on the class: the very message that opened this lot was
-  // stored with NO errorCode — which cost it the actionable headline, not the whole
-  // card: the raw sentence still rendered as a detail line (codex) — so a
-  // code-keyed mask left it, and every row persisted before the boundary mask existed,
-  // showing the credential id in full (codex).
-  // …and the detail line is the SHOWN text, never the normalized one: blanking a
-  // session key would cost the reader the only identifier in the sentence.
-  //
-  // EXCEPT where the gateway's own prose tells the reader to type a command. The card
-  // renders headline AND detail together (RunStatus.tsx), so a headline that carefully
-  // avoids instructing the user is worth nothing while the sentence underneath still
-  // says "/compact or /new" — commands Atrium has no prompt for (codex). For those
-  // classes the headline is the whole answer; the raw sentence stays where it belongs,
-  // on the message row — and in the exports and feedback reports built from it — for the
-  // operator. NOT in the trace: that path deliberately carries `errorCode` only
-  // (convex/stream.ts).
-  const detail =
-    shown &&
-    shown !== code &&
-    !ERROR_STRING_CODES.has(shown) &&
-    !(code !== null && HEADLINE_REPLACES_DETAIL.has(code))
-      ? shown
-      : null;
-  void detail0;
-  return { headline, detail, code };
+  // The text is redundant when it IS the code (the curated codes stored as `error`).
+  const isCodeText = shown === "" || shown === code || ERROR_STRING_CODES.has(shown);
+  // Where the gateway's prose tells the reader to type a command (`/compact`, `/new`, a
+  // re-authentication command) or names an identifier that is not theirs to see, the
+  // headline is the whole answer: the card renders headline AND detail together
+  // (RunStatus.tsx), so a careful headline is worth nothing under that sentence (codex). The
+  // sentence stays on the message row — and in the exports and feedback reports built from
+  // it — for the operator. NOT in the trace: that path carries `errorCode` only.
+  const suppressed = code !== null && HEADLINE_REPLACES_DETAIL.has(code);
+  // A GENERIC upstream wrapper never sits under the headline as if it were the cause: with a
+  // cause found inside it, the headline names that cause; without one, the headline says the
+  // gateway withheld it. Either way the gateway's own words move to the Details.
+  const disclosed =
+    !isCodeText &&
+    !suppressed &&
+    (unwrapGatewayFailure(shown).wrapper !== null ||
+      (code !== null && DETAIL_IN_DISCLOSURE.has(code)));
+  const detail = isCodeText || suppressed || disclosed ? null : shown;
+  const rawDetail = disclosed ? shown : null;
+  return { headline, detail, rawDetail, code };
 }
 
 /** Re-exported from the shared module so existing importers (RunStatus) are

@@ -300,6 +300,15 @@ export const bridgeCompatTarget = v.object({
   turnSessionEcho: v.optional(v.union(v.boolean(), v.null())),
 });
 
+/** The gateway's queue modes (packages/gateway-protocol/src/schema/logs-chat.ts
+ *  `QUEUE_MODES`, identical at v2026.8.2, v2026.9.6 and v2026.9.8). */
+const queueModeValidator = v.union(
+  v.literal("steer"),
+  v.literal("followup"),
+  v.literal("collect"),
+  v.literal("interrupt"),
+);
+
 export default defineSchema({
   // @convex-dev/auth's own tables (authAccounts, authSessions, authRefreshTokens,
   // authVerificationCodes, ... AND its own `users` table). Spreading this is
@@ -377,6 +386,12 @@ export default defineSchema({
     // Plain string, validated at the setter (Intl round-trip) — the zone
     // database evolves, so membership is a setter concern, not a schema one.
     timezone: v.optional(v.string()),
+
+    // What a message sent WHILE THE AGENT WORKS does by default (redesign phase 3): the
+    // Control UI's `chatFollowUpMode` override (ui/src/app/settings.ts:123-130 at
+    // v2026.9.8) — `queue` (held until the agent is free) or `steer` (injected into the
+    // turn in progress). Unset = the gateway's own mode for the session.
+    followUpMode: v.optional(v.union(v.literal("queue"), v.literal("steer"))),
 
     // DEPRECATED — superseded by `uiPrefs.showTools`. No longer READ by the
     // resolver (it shadowed the admin default + mislabeled as "default"); kept as
@@ -1652,6 +1667,21 @@ export default defineSchema({
     //
     // Monotonic — a second Stop only ever moves it forward.
     stoppedAt: v.optional(v.number()),
+    // Projection `on` (phase 4): a queued send is held by a gateway FACT (a run active
+    // at the last read, or a run admitted with no bubble yet), which only a read or its
+    // expiry ends. A drain re-check is scheduled at that expiry — this is when, so one
+    // hold arms one re-check, not one per drain attempt. Absent everywhere else.
+    projectedHoldRecheckAt: v.optional(v.number()),
+    // …and the ONE scheduled re-check itself: while it is pending no other is armed; when
+    // it runs it reads the hold's CURRENT end and re-arms only if still held (each read
+    // moves the end — codex phase 4 pass 2 counted 100 rechecks for 100 reads).
+    projectedHoldRecheckId: v.optional(v.id("_scheduled_functions")),
+    // The transcript projection (phase 4) wrote something for this conversation — set by
+    // the very first transcript write, BEFORE any row text is stored. A deletion asks it
+    // (`deletionTombstones`): a conversation never projected does no transcript work at
+    // all; one that was — even by a texts-only chunk that ran before any read created a
+    // cursor — gets its tombstones (codex phase 4 pass 8).
+    transcriptSeenAt: v.optional(v.number()),
     userId: v.id("users"),
     title: v.optional(v.string()),
     // The OpenClaw-side chat identifier (used to route sends). Non-secret.
@@ -2168,6 +2198,52 @@ export default defineSchema({
       v.literal("system"),
     ),
     runId: v.optional(v.string()),
+    // USER rows only: the send identity of the dispatch that carried this message (the
+    // outbox row's `sendId`, see there) — the key the transcript's `"<sendId>:user"` row
+    // is reconciled on (invariant I3). The LAST dispatch wins (a regenerate re-sends the
+    // same message under a new key). Absent before 0.92.0 and on Hermes targets.
+    sendId: v.optional(v.string()),
+    // USER rows: the send identities this message carried BEFORE its current `sendId`
+    // (newest last, at most MAX_PRIOR_SEND_IDS — lib/sendIdentity `sendIdChange`). Each
+    // may have run at the gateway: deleting the message tombstones their runs too, with
+    // no read (codex phase 4 pass 13). Written in the patch that changes `sendId`.
+    priorSendIds: v.optional(v.array(v.string())),
+    // ASSISTANT rows of a projected conversation (phase 4, codex pass 22): an upload into
+    // this message is under way until this time (the bridge's own window per upload,
+    // capped — stream.noteUploadStarted). A file job the transcript settled waits for it;
+    // cleared by the run's live terminal, else it simply expires.
+    uploadsInFlightUntil: v.optional(v.number()),
+    // ASSISTANT rows the TRANSCRIPT settled from an INFERRED outcome (an idle read, no
+    // terminal of the run's own — codex phase 4 pass 24): the run's live terminal may
+    // still correct it (complete → error). Absent once confirmed or corrected, and on
+    // every bubble an explicit terminal settled — that outcome is never overridden.
+    closeInferred: v.optional(v.boolean()),
+    // ASSISTANT rows of a service job whose status-dependent correlates (summarizer,
+    // curator) wait for the run's live terminal, the outcome being only inferred (codex
+    // phase 4 pass 25 — stream.settleStatusJobs). Removed when they run, once.
+    statusJobsDeferred: v.optional(v.boolean()),
+    // USER rows of a conversation whose instance runs the transcript projection `on`
+    // (redesign phase 3, design §3.2): what the GATEWAY says it does with this input —
+    // the ACK is a guard, not a reply. `accepted` (ACK started/in_flight), `queued`
+    // (the gateway's own queue, 9.7+ explicit flag), `steered` (injected into the run
+    // in progress: its `<sendId>:user` row names a `steerTargetRunId`), `persisted`
+    // (its row is in the transcript), `cancelled` / `interrupted` (pendingInputs).
+    // Absent = legacy path, or no fact yet. Display only: no decision reads it.
+    custody: v.optional(
+      v.union(
+        v.literal("accepted"),
+        v.literal("queued"),
+        v.literal("steered"),
+        v.literal("persisted"),
+        v.literal("cancelled"),
+        v.literal("interrupted"),
+      ),
+    ),
+    // ASSISTANT rows: the run's bubble was SPLIT at a steered input (phase 3, CU-20 —
+    // the Control UI cuts the run's stream at the steered user row). 1, 2, … for the
+    // segments after the first, which keeps the field absent. Same `runId` on every
+    // segment: the projection measure counts one run, not one duplicate per segment.
+    runSegment: v.optional(v.number()),
     // The OUTBOX row whose dispatch produced this turn — the only CORRELATION
 
     // between a queued send and the assistant reply it caused. Written by
@@ -2380,6 +2456,13 @@ export default defineSchema({
     // bubble in one point read (stream.ts `bubbleWrittenByRun`), whether the run
     // merged into a turn's bubble or opened its own.
     .index("by_chat_run", ["chatId", "runId"])
+    // (chatId, runId, runSegment): ONE segment of a run cut at steered inputs (phase 3,
+    // CU-20) — the successor a repeated steer cut hands back, and a run's first segment
+    // (runSegment absent), as point reads however many times the run was cut.
+    .index("by_chat_run_segment", ["chatId", "runId", "runSegment"])
+    // (chatId, sendId): "how many bubbles carry THIS send?" — the transcript projection's
+    // invariant I3 (exactly one user bubble per `<sendId>:user` row), one point range.
+    .index("by_chat_send_id", ["chatId", "sendId"])
     // Bounded scan for the stuck-stream watchdog: a message left `status:
     // "streaming"` whose `updatedAt` is far in the past = the bridge lost the
     // run's WS subscription and never relayed the finalize frame (the UI then
@@ -2427,6 +2510,8 @@ export default defineSchema({
   // only the LAST run that wrote there, so without this record a requester-settle
   // join could not find where an earlier continuation wrote once a later wave took
   // the bubble over. Ids only; purged with the chat (chats.cascadeDeleteChat).
+  // Projection `on` also records an ADOPTED (non-delivery) run when a merge rotates
+  // its id off the bubble it opened (stream.ts `recordRotatedRunBubble`).
   runBubbles: defineTable({
     chatId: v.id("chats"),
     runId: v.string(),
@@ -2434,7 +2519,312 @@ export default defineSchema({
     createdAt: v.number(),
   })
     .index("by_chat", ["chatId"])
-    .index("by_chat_run", ["chatId", "runId"]),
+    .index("by_chat_run", ["chatId", "runId"])
+    // Projection `on` (phase 4): the runs a merged bubble shows — every run whose rows a
+    // recomposition of that bubble must cover (convex/lib/bubbleProjection.ts).
+    .index("by_message", ["messageId"]),
+
+  // THE SESSION TRANSCRIPT, AS IDENTITIES (transcript redesign, phase 1 — SHADOW).
+  //
+  // One row per durable transcript entry the bridge read back from the gateway's
+  // `chat.history` (convex/transcriptProjection.ts). IDENTITY ONLY: no text, no content —
+  // the display source stays `messages.text`/`messageParts`. In shadow mode nothing reads
+  // these rows to build a bubble; they exist so the projection can be compared with the
+  // bubbles (invariants I1–I3, `diagnose_chat`) before any phase lets it decide.
+  // Upserted by (chatId, sessionKey, entryId): a replayed read or a bridge restart
+  // re-writes nothing. `seq` is per gateway SESSION (sessionId): a reset restarts it.
+  transcriptRows: defineTable({
+    chatId: v.id("chats"),
+    instanceName: v.string(),
+    sessionKey: v.string(),
+    // The gateway transcript this row belongs to ("" when the reply did not say).
+    sessionId: v.string(),
+    // `__openclaw.id` (upstream session-transcript-entry-message.ts).
+    entryId: v.string(),
+    // `__openclaw.seq`: transcript order within `sessionId` (positive integer).
+    seq: v.number(),
+    role: v.string(),
+    // The run that PRODUCED the row (`__openclaw.runId`; for a user row, its send key).
+    runId: v.optional(v.string()),
+    // User rows: the send identity (`idempotencyKey` minus the `:user` suffix).
+    sendId: v.optional(v.string()),
+    // User rows injected into a running turn (`__openclaw.steerTargetRunId`).
+    steerTargetRunId: v.optional(v.string()),
+    mirrorOrigin: v.optional(v.string()),
+    runTerminal: v.optional(v.boolean()),
+    // Hidden by the Control UI's display rules (exact `NO_REPLY`, heartbeat ack).
+    hidden: v.boolean(),
+    // Carries something a reader sees (text or a non-tool, non-thinking block), or is a
+    // tool result — the rows a bubble must exist for (I1).
+    visible: v.boolean(),
+    // The bubble this row is projected into (projection `on`, phase 4): STICKY once set —
+    // a replayed read never moves a row to another bubble. UNSET in shadow mode.
+    messageId: v.optional(v.id("messages")),
+    // Tool calls/results the row carries (bounded), for the tool-card join of later phases.
+    toolCallIds: v.optional(v.array(v.string())),
+    // Projection `on` (phase 4): the row's display text is KNOWN, and this is its
+    // signature (UTF-8 size + hash of text and acknowledgment). The text itself lives in
+    // `transcriptRowTexts`, so every identity read stays small in every mode — a row with
+    // 32 KiB of text read back by a replay in `shadow` rolled the whole read back past
+    // 16 MiB (codex phase 4 pass 3). Absent: the text is not known (an older bridge, a
+    // read in shadow) — the projection then never recomposes from the row.
+    textSig: v.optional(v.string()),
+    // DEPRECATED — never written or read since the text moved to `transcriptRowTexts`.
+    // Only pre-release 0.96.0 development builds wrote them, before the split; kept
+    // optional so such a deployment still validates, and emptied by
+    // `migrations.moveTranscriptRowTexts`. Remove once no deployment holds them.
+    text: v.optional(v.string()),
+    yieldAck: v.optional(v.string()),
+    updatedAt: v.number(),
+  })
+    .index("by_chat_session_entry", ["chatId", "sessionKey", "entryId"])
+    .index("by_chat_session_seq", ["chatId", "sessionKey", "sessionId", "seq"])
+    .index("by_chat_run", ["chatId", "runId"])
+    .index("by_chat_send", ["chatId", "sendId"])
+    // Projection `on` (phase 4): the user rows that STEERED into a run cut its bubble
+    // into segments (CU-20) — one bounded range per run.
+    .index("by_chat_steer_target", ["chatId", "steerTargetRunId", "seq"])
+    // …and the rows a bubble shows, in transcript order (its text is recomposed from them).
+    .index("by_message_seq", ["messageId", "seq"]),
+
+  // WHAT A TRANSCRIPT ROW SAYS (projection `on`, phase 4) — kept apart from its identity
+  // (`transcriptRows`) so that identity reads (every mode: replays, measures, custody) never
+  // load text. One document per row whose display text is known (`transcriptRows.textSig`):
+  // an assistant row's text blocks, extracted and sanitized exactly as the live stream is
+  // (bridge normalizer), bounded at 32 KiB; and a `sessions_yield` row's acknowledgment,
+  // shown only when its run wrote no text of its own (TurnSink's rule). A settled bubble's
+  // text is recomposed from these. User content, like `messages.text`: never in a metadata
+  // report, purged with the chat.
+  transcriptRowTexts: defineTable({
+    chatId: v.id("chats"),
+    rowId: v.id("transcriptRows"),
+    text: v.optional(v.string()),
+    yieldAck: v.optional(v.string()),
+    updatedAt: v.number(),
+  })
+    // The text of one row (the projection reads it only for the rows it composes).
+    .index("by_row", ["rowId"])
+    // The chat purge.
+    .index("by_chat", ["chatId"]),
+
+  // DELETED BUBBLES, by what the transcript knows them as (projection `on`, phase 4): the
+  // run and steer segment a bubble showed, in its session. Written when a person deletes a
+  // bubble (or a retry replaces its card); read before ANY row text is stored and before
+  // any segment is projected — so a row of that segment, early (received while streaming,
+  // not yet assigned) or late (a replayed read), never keeps its text nor makes a bubble
+  // again (codex phase 4 pass 5). Identity only. Purged with the chat.
+  // RUN ADMISSIONS (projection `on`, phase 4): the gateway ACCEPTED a send (ACK) and its
+  // run has not shown anything yet — a projected send's bubble is born from the run's
+  // first content, so until then nothing else says the agent works. Holds the chat busy
+  // (a QUEUED send waits) and the composer "working", bounded in time; removed when the
+  // run's bubble opens, or when a read finds the session idle with this send's user row
+  // persisted, or when its run is over, or once stale. A record of its OWN, apart from
+  // the outbox row and its prompt (up to a document's 1 MiB): every reader of admissions
+  // reads identities only (codex phase 4 pass 15). Purged with the chat.
+  runAdmissions: defineTable({
+    chatId: v.id("chats"),
+    outboxId: v.id("outbox"),
+    // The send's identity (its run id) and the instance it went to, as the ACK knew them.
+    sendId: v.optional(v.string()),
+    sentToInstance: v.optional(v.string()),
+    routedInstanceName: v.optional(v.string()),
+    admittedAt: v.number(),
+  })
+    // The admissions of a chat by age: the freshest is the busy check's point range; the
+    // release walk reads them oldest first, identities only.
+    .index("by_chat_admitted", ["chatId", "admittedAt"])
+    // The admission of one send (cleared when its bubble opens).
+    .index("by_outbox", ["outboxId"]),
+
+  transcriptTombstones: defineTable({
+    chatId: v.id("chats"),
+    sessionKey: v.string(),
+    runId: v.string(),
+    // The steer segment (0: the run's first; `messages.runSegment`) — an ORDINAL, as known
+    // when the tombstone was written: informational once `fromSeq` is set.
+    segment: v.number(),
+    // THE STABLE BOUNDARY (codex phase 4 pass 27): the deleted span starts after this row
+    // `seq` of the run (a cut row's; -1: the run's start) and is open-ended. A late cut —
+    // earlier or inside — never moves it. Absent: an answer's own tombstone not yet
+    // resolved by its deletion's follow-up (read conservatively from its ordinal meanwhile).
+    fromSeq: v.optional(v.number()),
+    // The bubble that was deleted (gone — kept as the rows' sticky tombstone target).
+    messageId: v.optional(v.id("messages")),
+    createdAt: v.number(),
+  })
+    // Is this run (any segment) tombstoned? One bounded range per run, every session —
+    // the reader keeps its own session's and the session-less ones (`sessionKey` "": a
+    // deleted USER message's run, whose session no read had told yet — codex phase 4
+    // pass 12).
+    .index("by_chat_run", ["chatId", "runId", "segment"])
+    // The tombstones one deleted bubble left, walked one by one by its purge.
+    .index("by_message", ["messageId", "runId", "segment"])
+    // The chat purge.
+    .index("by_chat", ["chatId"]),
+
+  // Per-run state of the projected sessions (design §10.1): the Control UI's run table
+  // (`streaming/completed/error/aborted/timeout/yielded`), plus `persisted` for a run
+  // known only from its durable rows (no terminal frame observed, not active). A terminal
+  // status never returns to `streaming` (upstream session-projection.ts run reducer).
+  transcriptRuns: defineTable({
+    chatId: v.id("chats"),
+    sessionKey: v.string(),
+    runId: v.string(),
+    status: v.union(
+      v.literal("streaming"),
+      v.literal("completed"),
+      v.literal("error"),
+      v.literal("aborted"),
+      v.literal("timeout"),
+      v.literal("yielded"),
+      v.literal("persisted"),
+    ),
+    // A terminal frame came for this run carrying no message (Control UI recovery case).
+    emptyFinal: v.optional(v.boolean()),
+    terminalAt: v.optional(v.number()),
+    // Proof of the delegation chain (later phases); unset in phase 1.
+    parentRunId: v.optional(v.string()),
+    firstSeq: v.optional(v.number()),
+    lastSeq: v.optional(v.number()),
+    // Projection `on` (phase 4): when the run was known to be OVER — a terminal frame was
+    // observed, or a fresh read found the session idle (`hasActiveRun:false`, which the
+    // gateway reports only once the terminal row is queryable) or its complete
+    // `activeRunIds` list no longer named a run whose rows were read. Never cleared — a
+    // settled run never streams again (the run table's sticky terminal) — except for an
+    // owned delivery that ended in error and that its replay resumes (stream.startAssistant,
+    // lib/projectedRuns `reopenTranscriptRun`, codex phase 4 pass 12).
+    settledAt: v.optional(v.number()),
+    updatedAt: v.number(),
+  })
+    .index("by_chat_session_run", ["chatId", "sessionKey", "runId"])
+    .index("by_chat_run", ["chatId", "runId"])
+    // The runs of a session NOT yet known over (`settledAt` absent), bounded per read.
+    .index("by_chat_session_settled", ["chatId", "sessionKey", "settledAt"]),
+
+  // Where the bridge's next `chat.history` read resumes, per (chat, gateway session key),
+  // and the FLOOR under which transcript rows predate the projection (design §10.2:
+  // rows at or below `floorSeq` are already shown by legacy bubbles and are never
+  // compared). A new gateway `sessionId` (reset, rotation) drops the cursor and sets the
+  // floor of the new transcript to 0 — it was written entirely under the projection.
+  transcriptCursors: defineTable({
+    chatId: v.id("chats"),
+    instanceName: v.string(),
+    sessionKey: v.string(),
+    sessionId: v.string(),
+    deltaCursor: v.optional(v.string()),
+    floorSeq: v.number(),
+    // When the floor was set (epoch ms): bubbles older than this are legacy (I2).
+    floorAt: v.number(),
+    // `floorAt` comes from a dispatch PROVEN in the session's rows (the outbox row of a
+    // send whose `<sendId>:user` row was read). False ⇒ only the read time was known: the
+    // bubble boundary is a guess, and the report qualifies its verdict until a proven
+    // send replaces it. Absent on cursors written before this field (read as proven).
+    floorAtProven: v.optional(v.boolean()),
+    // COVERAGE GAPS: seq ranges of the current gateway session that no read returned. A
+    // `reset` (more than 200 events, or the byte budget, since the cursor —
+    // gateway-protocol logs-chat.ts `ChatHistoryDeltaResultSchema`) is answered by a
+    // fresh TAIL page, exactly as the Control UI does, so whatever lay between the last
+    // delta and that page was never read. Recorded, never guessed; the report qualifies
+    // its verdict and suspends I2 for bubbles written while the gap was open. Bounded
+    // (newest kept); `gapsDropped` counts the evicted ones.
+    gaps: v.optional(
+      v.array(
+        v.object({
+          fromSeq: v.number(),
+          toSeq: v.number(),
+          // The previous read (epoch ms) and the read that found the hole.
+          sinceAt: v.number(),
+          detectedAt: v.number(),
+        }),
+      ),
+    ),
+    gapsDropped: v.optional(v.number()),
+    // When the last read that RETURNED rows (a page or a delta, never a reset) landed:
+    // the start of whatever hole the next page may reveal.
+    coveredAt: v.optional(v.number()),
+    // The bridge's issue time of the newest read this cursor reflects. An older read that
+    // lands later merges its rows and changes nothing else; `staleReads` counts them.
+    lastReadAt: v.optional(v.number()),
+    staleReads: v.optional(v.number()),
+    lastSeq: v.optional(v.number()),
+    lastKind: v.union(v.literal("page"), v.literal("delta"), v.literal("reset")),
+    // The gateway's active runs at the last read (`sessionInfo.activeRunIds`, bounded).
+    activeRunIds: v.optional(v.array(v.string())),
+    hasActiveRun: v.optional(v.boolean()),
+    // PHASE 3 — the session's queue modes at the last read (`sessionInfo.queueMode`, the
+    // session's own override, and `effectiveQueueMode`, the gateway's resolution): what
+    // the composer says a message sent while the agent works will do.
+    sessionQueueMode: v.optional(queueModeValidator),
+    effectiveQueueMode: v.optional(queueModeValidator),
+    reads: v.number(),
+    resets: v.number(),
+    // Durable rows the reads could not identify (no `__openclaw.id` or `seq`).
+    unidentified: v.number(),
+    // PHASE 2 — the gateway's input custody at the last read (`pendingInputs.total` and,
+    // 2026.9.7+, `queuedCount`), and the rows applied directly from `session.message`
+    // (CU-16): how many posts, and the last one. Absent on cursors written before.
+    pendingInputsTotal: v.optional(v.number()),
+    pendingQueuedCount: v.optional(v.number()),
+    // The last read's pending-input list was the WHOLE list (no older page): only then
+    // does an input's absence from it clear its current pending state.
+    pendingInputsComplete: v.optional(v.boolean()),
+    // A complete list's cleanup is still running in scheduled batches: until it ends, the
+    // current custody of this session is not yet what the list says (report qualified).
+    pendingCleanupInProgress: v.optional(v.boolean()),
+    // The read (`readAt`) whose complete list started the current cleanup: a scheduled
+    // continuation of an older one stands down.
+    pendingCleanupEpoch: v.optional(v.number()),
+    liveApplies: v.optional(v.number()),
+    lastLiveAt: v.optional(v.number()),
+    updatedAt: v.number(),
+  })
+    .index("by_chat_session", ["chatId", "sessionKey"])
+    .index("by_chat", ["chatId"])
+    // The MOST RECENTLY read sessions of a chat first (the report's bounded window).
+    .index("by_chat_updated", ["chatId", "updatedAt"]),
+
+  // THE INPUT GUARD, AS THE GATEWAY STATES IT (transcript redesign, phase 2 — SHADOW).
+  //
+  // One row per send identity a read asked about (`chat.history` `inputRunIds`) or that
+  // the gateway listed in `pendingInputs`: what the gateway said it holds — a receipt
+  // (`pending`/`consumed`, 9.7+ `queued`/`cancelled` flags), a pending-input state
+  // (`queued`/`cancelled`/`interrupted`), or NOTHING when asked after the ACK
+  // (`absentAt`). Identity only (never the input's text). Compared with Atrium's own
+  // outbox state by the projection report (the guard measure); nothing reads it to
+  // decide anything in shadow mode. Bounded per read (50 receipts, 20 items, 50 ids).
+  transcriptInputs: defineTable({
+    chatId: v.id("chats"),
+    sessionKey: v.string(),
+    sendId: v.string(),
+    receipt: v.optional(v.union(v.literal("pending"), v.literal("consumed"))),
+    receiptQueued: v.optional(v.boolean()),
+    receiptCancelled: v.optional(v.boolean()),
+    pendingState: v.optional(
+      v.union(v.literal("queued"), v.literal("cancelled"), v.literal("interrupted")),
+    ),
+    pendingQueued: v.optional(v.boolean()),
+    // The first read that asked about this send.
+    askedAt: v.optional(v.number()),
+    // A read asked about it after its ACK and the gateway answered no receipt at all.
+    absentAt: v.optional(v.number()),
+    // HISTORICAL proof the gateway received it (first receipt or pending entry). Never
+    // cleared: `pendingState` is the CURRENT custody, replaced by each authoritative read.
+    heldAt: v.optional(v.number()),
+    // The issue time of the last read that CONFIRMED this input (a receipt or a pending
+    // item naming it), even with nothing else changed.
+    confirmedAt: v.optional(v.number()),
+    // CURRENT: the last read's receipt for it carried a state Atrium does not know.
+    receiptUnreadable: v.optional(v.boolean()),
+    updatedAt: v.number(),
+  })
+    .index("by_chat_session_send", ["chatId", "sessionKey", "sendId"])
+    // One send's facts whatever its session (the guard measure's retry evidence).
+    .index("by_chat_send", ["chatId", "sendId"])
+    // The inputs a session's queue currently holds (cleared by a complete pending list).
+    .index("by_chat_session_pending", ["chatId", "sessionKey", "pendingState"])
+    // …and the receipt-only queued flag (a receipt seen without its pending item).
+    .index("by_chat_session_receipt_queued", ["chatId", "sessionKey", "receiptQueued"])
+    .index("by_chat_updated", ["chatId", "updatedAt"]),
 
   // Structured non-text content attached to a message, ordered for rendering.
   // DURABLE protocol drift — the shapes a gateway emits that this build does not know.
@@ -3481,6 +3871,25 @@ export default defineSchema({
     // stays untouched (it is the BROWSER retry dedup key in send.sendMessage;
     // rewriting it would let a network-retried send duplicate the message).
     dispatchKey: v.optional(v.string()),
+    // THE SEND IDENTITY (transcript redesign, phase 1): the exact `idempotencyKey` this
+    // row's LAST dispatch carried to the gateway, which the gateway turns into the run id
+    // of the send (upstream `chat-send-session.ts` `clientRunId = p.idempotencyKey`) and
+    // into the user row's `__openclaw.idempotencyKey = "<sendId>:user"`. Stamped by the
+    // last gate before the POST (bridge.lastGateBeforeSend). It stays bound to the gateway
+    // SESSION (lib/sendIdentity.ts): the gateway's send dedupe is process-global, not
+    // per session, so a key reused on another session would be answered from the first.
+    // Absent on rows dispatched before 0.92.0 and on Hermes targets.
+    // HOW THIS SEND LANDS IF THE AGENT IS WORKING (redesign phase 3, design §3.1): the
+    // person's explicit choice for this send — `steer` or `interrupt`; absent = the
+    // gateway's own mode (the Control UI's "server" default). The client-side `queue`
+    // is never stored: a queued row waits here until the conversation is idle.
+    followUpMode: v.optional(v.union(v.literal("steer"), v.literal("interrupt"))),
+    sendId: v.optional(v.string()),
+    // WHEN this row's send LEFT for the gateway (stamped with `sendId` by the last gate).
+    // Not `_creationTime`: a send queued behind a running turn is created long before it
+    // is dispatched, and the transcript projection bounds the bubbles of a session by the
+    // dispatch its rows prove (convex/lib/transcriptProjection.ts `dispatchTimeOf`).
+    dispatchedAt: v.optional(v.number()),
     // WHEN this row entered `pending` — the dispatch-in-flight window. NOT
     // derivable from `_creationTime`: a mid-turn send can sit `queued` for hours
     // before the drain promotes it, so creation time would read as "stuck for
@@ -3530,6 +3939,9 @@ export default defineSchema({
     // unique because clientMessageId is a client-generated UUID; scoping by
     // userId keeps one user's id space from colliding with another's.
     .index("by_client_message", ["userId", "clientMessageId"])
+    // Transcript row -> send: "which outbox row sent the user row `<sendId>:user`?"
+    // (convex/transcriptProjection.ts). One point read per transcript user row.
+    .index("by_send_id", ["sendId"])
     // Sidebar busy signal (chatReads.myBusyChats): the caller's (user, "pending")
     // and (user, "queued") slices — the dispatch→ack window and the parked
     // follow-ups, both transient and tiny. Bounded per-user range, never a scan.
@@ -3545,7 +3957,10 @@ export default defineSchema({
     .index("by_chat_routed_instance_status", ["chatId", "routedAgent.instanceName", "status"])
     // …and a row whose send LEFT for an instance (the last gate's stamp), in flight
     // or sent — point lookups by status, never a scan of the chat's rows.
-    .index("by_chat_sent_instance_status", ["chatId", "sentToInstance", "status"]),
+    .index("by_chat_sent_instance_status", ["chatId", "sentToInstance", "status"])
+    // A chat's sends in DISPATCH order (`dispatchedAt` is set only by lastGateBeforeSend):
+    // the projection report's dispatched-send scan, bounded by the window's boundary.
+    .index("by_chat_dispatched", ["chatId", "dispatchedAt"]),
 
   // L2 "Joindre les documents": per (source assistant message, document reference)
   // attachment lifecycle. The user asks a DOCUMENTARY agent to fetch the real file
@@ -4155,6 +4570,16 @@ export default defineSchema({
   //     so an OpenClaw agent can report an anomaly OR a self-repair action taken.
   // D2 PHI: METADATA ONLY. `evidence` is a JSON string of NON-PHI signals
   // (counts/ratios/thresholds/window) — never message text, tokens, or paths.
+  // The anomaly detector's APPLY generation (one row, key "detector"): the scan start time
+  // of the newest plan applied. A plan scanned earlier that lands later (a cron overlapping
+  // a manual run) is refused whole — it would auto-resolve an alert a newer scan opened, or
+  // downgrade its severity. Read and written in the apply transaction (OCC serializes them).
+  anomalyDetectorState: defineTable({
+    key: v.string(),
+    lastAppliedGeneration: v.number(),
+    updatedAt: v.number(),
+  }).index("by_key", ["key"]),
+
   anomalies: defineTable({
     at: v.number(), // first-seen (insert) / last-seen (patch) timestamp
     // AGGREGATE of the append-only `anomalyOccurrences` history: how many times

@@ -62,6 +62,9 @@ export async function scanAndHostOutbound(
    *  attach so an upload finishing after the finalize cannot land in a later
    *  generation of the same message. */
   runId: string | null = null,
+  /** PROJECTION `on` only (codex phase 4 pass 23): each upload announces itself, so a
+   *  file job the transcript settled waits for it. Off: the request is unchanged. */
+  markUpload = false,
 ): Promise<{ candidates: string[]; host: () => Promise<void> }> {
   const none = { candidates: [] as string[], host: async () => {} };
   if (!deps.enabled()) return none;
@@ -142,6 +145,7 @@ export async function scanAndHostOutbound(
             filename: name,
             path: name,
             runId,
+            ...(markUpload ? { markUpload: true } : {}),
           });
           if (attached) hosted.add(name);
         } catch {

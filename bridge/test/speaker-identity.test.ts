@@ -19,6 +19,7 @@ import {
   OpenClawError,
 } from "../src/providers/openclaw/openclaw-client.js";
 import type { GatewayFrame } from "../src/providers/openclaw/openclaw-client.js";
+import { LiveTextBaselines } from "../src/providers/openclaw/live-text-baseline.js";
 import type { SeqGap } from "../src/providers/openclaw/frame-seq.js";
 import { SessionRegistry } from "../src/session.js";
 import { modelsConnSpy } from "./helpers/fake-gateway.js";
@@ -362,6 +363,8 @@ describe("the owner's socket drops the native copies of a run carried elsewhere"
     const pushed: unknown[] = [];
     Object.assign(conn, {
       runsCarriedElsewhere: new Set<string>(),
+      liveText: new LiveTextBaselines(),
+      liveTextRereads: new Map(),
       seq: { observe: () => null },
       configChangedListeners: new Set(),
       rosterEpoch: 0,

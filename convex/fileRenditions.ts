@@ -40,6 +40,8 @@ import { resolveConverterTarget } from "./agents";
 import { contentLocaleForInstance } from "./lib/serverLocale";
 import { isChatBusy } from "./lib/outboxQueue";
 import { isTrashed } from "./lib/trash";
+import { transcriptStoredText } from "./lib/transcriptProjection";
+import { FILE_JOB_MAX_DEFER_MS, uploadInFlightIn } from "./lib/fileJobs";
 
 // ===========================================================================
 // Pure policy (exported for unit tests)
@@ -543,17 +545,47 @@ export async function correlateConversion(
  *  catch). Also clears any hidden-chat lock still pointing at the timed-out row.
  *  Bounded scan; self-reschedules on a full batch. */
 export const timeoutStaleRenditions = internalMutation({
-  args: {},
-  handler: async (ctx) => {
+  args: {
+    /** A continuation PAST rows the projection's wait kept pending (their creation
+     *  time): absent on the cron's own runs, which scan from the start as always. */
+    after: v.optional(v.number()),
+  },
+  handler: async (ctx, { after }) => {
     const cutoff = Date.now() - RENDITION_TIMEOUT_MS;
     const BATCH = 50;
     const stale = await ctx.db
       .query("fileRenditions")
-      .withIndex("by_status", (q) => q.eq("status", "pending"))
+      .withIndex("by_status", (q) =>
+        after === undefined ? q.eq("status", "pending") : q.eq("status", "pending").gt("_creationTime", after),
+      )
       .take(BATCH);
     let failed = 0;
+    /** Rows this page kept pending for an upload in flight (projection `on` only). */
+    let deferred = 0;
     for (const r of stale) {
       if (r.createdAt >= cutoff) continue; // still within the grace window
+      // The converter chat that may still be locked on THIS rendition (the one read
+      // this loop always made; read first now, so the projection's wait can be asked).
+      const chat = await ctx.db
+        .query("chats")
+        .withIndex("by_user", (q) => q.eq("userId", r.userId))
+        .filter((q) => q.eq(q.field("kind"), "converter"))
+        .first();
+      // PROJECTION `on` (codex phase 4 pass 23): the job's answer is receiving its PDF —
+      // the deferred check's same wait, under the same overall bound, before any failure
+      // or cleanup. Only a conversation that stored transcript text carries the marker:
+      // every other one is timed out exactly as before.
+      const now = Date.now();
+      if (
+        chat !== null &&
+        chat.pendingConvert?.renditionId === r._id &&
+        transcriptStoredText(chat) &&
+        now - r.createdAt < RENDITION_TIMEOUT_MS + FILE_JOB_MAX_DEFER_MS &&
+        (await uploadInFlightIn(ctx, chat._id, now))
+      ) {
+        deferred++;
+        continue;
+      }
       await ctx.db.patch(r._id, {
         status: "failed" as const,
         failureReason: "timeout",
@@ -562,11 +594,6 @@ export const timeoutStaleRenditions = internalMutation({
       failed++;
       // Clear a converter chat still locked on THIS rendition (defensive; the
       // stuck-stream watchdog usually clears it first).
-      const chat = await ctx.db
-        .query("chats")
-        .withIndex("by_user", (q) => q.eq("userId", r.userId))
-        .filter((q) => q.eq(q.field("kind"), "converter"))
-        .first();
       if (chat?.pendingConvert?.renditionId === r._id) {
         await ctx.db.patch(chat._id, { pendingConvert: undefined });
         // The timed-out job's rows go, as in failRenditionForChat.
@@ -576,7 +603,20 @@ export const timeoutStaleRenditions = internalMutation({
       }
     }
     if (stale.length === BATCH) {
-      await ctx.scheduler.runAfter(0, internal.fileRenditions.timeoutStaleRenditions, {});
+      if (deferred > 0) {
+        // A page the wait kept (partly) pending would come back unchanged from the start:
+        // the next step continues PAST it (codex phase 4 pass 24), so every row is reached
+        // and nothing loops. The kept rows are seen again by the cron's next run, and the
+        // job's own deferred check settles them when their upload ends.
+        await ctx.scheduler.runAfter(0, internal.fileRenditions.timeoutStaleRenditions, {
+          after: stale[stale.length - 1]!._creationTime,
+        });
+      } else {
+        // As before phase 4 (no row waits: a conversation never `on` always lands here).
+        await ctx.scheduler.runAfter(0, internal.fileRenditions.timeoutStaleRenditions, {
+          ...(after !== undefined ? { after: stale[stale.length - 1]!._creationTime } : {}),
+        });
+      }
     }
     return { failed };
   },

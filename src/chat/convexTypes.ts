@@ -218,6 +218,10 @@ export interface ConvexMessageView {
    *  (text after the batch, or a file one of its runs delivered). */
   followedUpChildRunIds?: readonly string[];
   status: MessageStatus;
+  /** USER rows, transcript projection `on`: what the gateway does with the input. */
+  custody?: "accepted" | "queued" | "steered" | "persisted" | "cancelled" | "interrupted";
+  /** ASSISTANT rows, projection `on`: the run's bubble settled at a steered input. */
+  steerSegment?: boolean;
   text: string;
   error?: string;
   /** Stable failure class: the gateway's own errorKind (context_length|rate_limit|

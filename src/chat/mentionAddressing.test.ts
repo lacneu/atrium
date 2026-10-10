@@ -10,7 +10,8 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, test } from "vitest";
 
-import { agentAddressFailure } from "./useConvexChatRuntime";
+import { m } from "@/paraglide/messages.js";
+import { agentAddressFailure, commandWithFilesRefused } from "./useConvexChatRuntime";
 
 function stripComments(src: string): string {
   return src.replace(/\/\*[\s\S]*?\*\//g, "").replace(/(^|[^:])\/\/.*$/gm, "$1");
@@ -105,6 +106,17 @@ describe("a refused address is said, not swallowed", () => {
       expect(body).toMatch(/const addressing = agentAddressFailure\(e\);/);
       expect(body).toMatch(/m\.chat_send_agents_too_many\(\)/);
       expect(body).toMatch(/m\.chat_send_agents_invalid\(\)/);
+    }
+  });
+});
+
+describe("a command sent with files is named to the writer", () => {
+  test("recognizes the server's refusal, and nothing else", () => {
+    expect(commandWithFilesRefused(new Error("Uncaught Error: COMMAND_WITH_ATTACHMENTS"))).toBe(true);
+    expect(commandWithFilesRefused(new Error("QUEUE_FULL"))).toBe(false);
+    expect(commandWithFilesRefused(undefined)).toBe(false);
+    for (const locale of ["en", "fr"] as const) {
+      expect(m.chat_send_command_with_files({}, { locale })).toMatch(/\//);
     }
   });
 });

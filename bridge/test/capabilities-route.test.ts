@@ -151,23 +151,17 @@ describe("GET /capabilities + /health (compat surface)", () => {
     expect(body.compat.bridgeVersion).toBe(PKG.version);
     expect(body.compat.protocolVersion).toBe(2);
     expect(body.compat.providers.openclaw!.supportedRange).toEqual({
-      min: "2026.5.19",
-      maxValidated: "2026.9.6",
+      min: "2026.8.2",
+      maxValidated: "2026.9.8",
     });
     expect(body.compat.providers.openclaw!.validatedVersions).toEqual([
-      "2026.5.19",
-      "2026.6.1",
-      "2026.6.5",
-      "2026.6.10",
-      "2026.6.11",
-      "2026.7.1-beta.2",
-      "2026.7.1-beta.5",
-      "2026.7.1",
       "2026.9.1",
       "2026.9.2",
       "2026.9.4",
       "2026.9.5",
       "2026.9.6",
+      "2026.9.7",
+      "2026.9.8",
     ]);
     expect(body.compat.providers.hermes).toEqual({
       supportedRange: { min: "0.18.0", maxValidated: "0.21.5" },
@@ -281,25 +275,24 @@ describe("buildCapabilityTargets (live-session projection)", () => {
   });
 
   test("a validated live version resolves its full capability row", () => {
-    // 2026.7.1 = the newest fully-validated row (cronManage included; 6.5
-    // resolves everything EXCEPT cronManage, whose floor is 7.1-beta.2).
-    const targets = buildCapabilityTargets([LIVE("2026.7.1")], "primary");
+    // 2026.9.1 = the oldest validated version above the 2026.8.2 floor.
+    const targets = buildCapabilityTargets([LIVE("2026.9.1")], "primary");
     expect(targets).toHaveLength(1);
     const t = targets[0]!;
     expect(t.key).toBe("u-alice");
     expect(t.instanceName).toBe("primary");
     expect(t.provider).toBe("openclaw");
     expect(t.agentId).toBe("main");
-    expect(t.gatewayVersion).toBe("2026.7.1");
-    // Everything this version reaches, with THREE exceptions: `permissionModes`, whose
-    // floor (2026.8.2, the send guard) is above 7.1, `knowledgePolicy` (2026.9.6, the
-    // knowledge plugin's control plane) and `inlineWidgets` (2026.9.6, proven live). Kept as an exact list rather than a
-    // loosened assertion: the next capability that stops resolving must be named here
-    // deliberately.
+    expect(t.gatewayVersion).toBe("2026.9.1");
+    // Everything this version reaches, with THREE exceptions: `knowledgePolicy` (2026.9.6,
+    // the knowledge plugin's control plane), `inlineWidgets` (2026.9.6, proven live) and
+    // `discardPendingInput` (2026.9.7, the queued-input cancel).
+    // Kept as an exact list rather than a loosened assertion: the next capability that
+    // stops resolving must be named here deliberately.
     const off = Object.entries(t.capabilities)
       .filter(([, v]) => v !== true)
       .map(([k]) => k);
-    expect(off).toEqual(["permissionModes", "knowledgePolicy", "inlineWidgets"]);
+    expect(off).toEqual(["knowledgePolicy", "inlineWidgets", "discardPendingInput"]);
     // The flag is OMITTED (not false) within the validated range.
     expect(t).not.toHaveProperty("versionBeyondValidated");
   });
@@ -308,9 +301,12 @@ describe("buildCapabilityTargets (live-session projection)", () => {
     const t = buildCapabilityTargets([LIVE(null)], null)[0]!;
     expect(t.gatewayVersion).toBeNull();
     expect(t.instanceName).toBeNull();
+    // The FLOOR profile (2026.8.2): everything at or below the floor, nothing above it.
     expect(t.capabilities.knobThinkingLevel).toBe(true);
-    expect(t.capabilities.knobFastMode).toBe(false);
-    expect(t.capabilities.inboundAttachments).toBe(false);
+    expect(t.capabilities.knobFastMode).toBe(true);
+    expect(t.capabilities.permissionModes).toBe(true);
+    expect(t.capabilities.knowledgePolicy).toBe(false);
+    expect(t.capabilities.inlineWidgets).toBe(false);
     expect(t).not.toHaveProperty("versionBeyondValidated");
   });
 
@@ -327,16 +323,16 @@ describe("buildCapabilityTargets (live-session projection)", () => {
 
   test("dedupes by canonical (bounded like /health), last live session wins", () => {
     const targets = buildCapabilityTargets(
-      [LIVE("2026.6.1"), LIVE("2026.6.5")],
+      [LIVE("2026.9.1"), LIVE("2026.9.2")],
       "primary",
     );
     expect(targets).toHaveLength(1);
-    expect(targets[0]!.gatewayVersion).toBe("2026.6.5");
+    expect(targets[0]!.gatewayVersion).toBe("2026.9.2");
   });
 
   test("distinct canonicals yield distinct targets", () => {
     const targets = buildCapabilityTargets(
-      [LIVE("2026.6.5", "u-alice"), LIVE("2026.6.5", "u-bob")],
+      [LIVE("2026.9.2", "u-alice"), LIVE("2026.9.2", "u-bob")],
       "primary",
     );
     expect(targets.map((t) => t.key).sort()).toEqual(["u-alice", "u-bob"]);
@@ -346,13 +342,13 @@ describe("buildCapabilityTargets (live-session projection)", () => {
   // gateway resolve to "unknown version". The served instance gets a fallback
   // target from the last gateway version seen on any connection (discovery).
   test("no live session + fallback version: synthetic served-instance target", () => {
-    const targets = buildCapabilityTargets([], "primary", "2026.6.5");
+    const targets = buildCapabilityTargets([], "primary", "2026.9.2");
     expect(targets).toHaveLength(1);
     const t = targets[0]!;
     expect(t.instanceName).toBe("primary");
     expect(t.key).toBe("primary");
-    expect(t.gatewayVersion).toBe("2026.6.5");
-    // Full 6.5 row -> agentFiles/configDefaults resolve TRUE (no longer gated).
+    expect(t.gatewayVersion).toBe("2026.9.2");
+    // Full 9.2 row -> agentFiles/configDefaults resolve TRUE (no longer gated).
     expect(t.capabilities.agentFiles).toBe(true);
     expect(t.capabilities.configDefaults).toBe(true);
   });
@@ -398,13 +394,13 @@ describe("buildCapabilityTargets (live-session projection)", () => {
     // The live target is more specific; the synthetic one must not duplicate it.
     // Its REAL version wins over the configured fallback (precedence).
     const targets = buildCapabilityTargets(
-      [LIVE("2026.6.1")],
+      [LIVE("2026.9.1")],
       "primary",
-      "2026.6.5",
+      "2026.9.2",
     );
     expect(targets).toHaveLength(1);
     expect(targets[0]!.key).toBe("u-alice");
-    expect(targets[0]!.gatewayVersion).toBe("2026.6.1");
+    expect(targets[0]!.gatewayVersion).toBe("2026.9.1");
   });
 
   test("a live session with a NULL version is filled by the configured fallback (H1)", () => {
@@ -412,10 +408,10 @@ describe("buildCapabilityTargets (live-session projection)", () => {
     // server.version → null. WITHOUT the fill, this live target would resolve to
     // the conservative floor (agentFiles off) and SUPPRESS the synthetic
     // fallback. The configured version must fill it so features still resolve.
-    const targets = buildCapabilityTargets([LIVE(null)], "primary", "2026.6.5");
+    const targets = buildCapabilityTargets([LIVE(null)], "primary", "2026.9.2");
     expect(targets).toHaveLength(1);
     const t = targets[0]!;
-    expect(t.gatewayVersion).toBe("2026.6.5");
+    expect(t.gatewayVersion).toBe("2026.9.2");
     expect(t.capabilities.agentFiles).toBe(true);
     expect(t.capabilities.configDefaults).toBe(true);
   });
@@ -436,7 +432,7 @@ describe("GET /capabilities with a configured gateway-version fallback", () => {
   let baseUrl: string;
 
   beforeAll(async () => {
-    const cfg = { ...CONFIG, gatewayVersionFallback: "2026.6.5" };
+    const cfg = { ...CONFIG, gatewayVersionFallback: "2026.9.2" };
     const registry = new SessionRegistry(servedMap(cfg)); // no live session
     const health = new HealthRegistry(1000, () => 2000);
     server = createBridgeServer({
@@ -464,7 +460,7 @@ describe("GET /capabilities with a configured gateway-version fallback", () => {
     expect(body.targets).toHaveLength(1);
     const t = body.targets[0]!;
     expect(t.instanceName).toBe("primary"); // == config.instanceName the app queries by
-    expect(t.gatewayVersion).toBe("2026.6.5");
+    expect(t.gatewayVersion).toBe("2026.9.2");
     // The previously-gated features now resolve TRUE.
     expect(t.capabilities.agentFiles).toBe(true);
     expect(t.capabilities.configDefaults).toBe(true);
@@ -477,7 +473,7 @@ describe("GET /capabilities with a configured gateway-version fallback", () => {
     const body = (await (await fetch(`${baseUrl}/capabilities`)).json()) as {
       gatewayVersion: string | null;
     };
-    expect(body.gatewayVersion).toBe("2026.6.5");
+    expect(body.gatewayVersion).toBe("2026.9.2");
   });
 });
 

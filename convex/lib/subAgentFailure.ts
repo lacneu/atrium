@@ -16,8 +16,10 @@
 // arbitrary line of the raw error (display-injection safety, NOT content-freeness)
 // and using it would leak content into the anomaly/MCP plane.
 
-/** The four lifecycle states the bridge writes (mirrors the schema union). */
 import { withoutOperatorValues } from "./chatRenderState";
+import { classifyStoredFailureText } from "./failureText";
+
+/** The four lifecycle states the bridge writes (mirrors the schema union). */
 export type SubAgentStatus = "running" | "done" | "error" | "aborted";
 
 /**
@@ -39,6 +41,17 @@ export const SUBAGENT_ERROR_CATEGORIES = [
   // The gateway closed the agent's database to new work (OpenClaw 2026.9.5+): the child
   // was refused or retired by the gateway, not failed by its own task.
   "gateway_agent_db_closed",
+  // The model provider refused the agent's credential as revoked or expired: the child
+  // did not fail its task, its agent cannot reach the model until an operator
+  // fixes its credential. Before the text patterns — its `401` would read as `api_error`,
+  // and an "expired" token as a `timeout`.
+  "provider_auth_revoked",
+  // The two other credential refusals (0.91.3): the provider refuses the account's
+  // PERMISSION (a 403, `auth_permanent`), or refused the credential without saying how.
+  // Apart from `provider_auth_revoked` because the operator's fix differs — reconnecting
+  // the same account does not help a permission refusal.
+  "provider_permission_denied",
+  "provider_auth_failed",
   // OUR verdict, not the gateway's: a reaper gave up on a child it saw no activity from
   // (Convex's stale-row reaper, 20 min; the bridge's no-frame sweep, 15 min). The child
   // may have run unseen — a frozen bridge, a reconnect — or never started. Decided from
@@ -68,12 +81,17 @@ export function isFailedStatus(status: SubAgentStatus): boolean {
 // enum literal only — the text itself is never echoed.
 
 // Timeout. It ALSO matches the reapers' own prose ("Sous-agent expiré — aucune activité …",
-// "no activity for 900s"), and that is deliberate: a row reaped before the reapers stored
-// SUBAGENT_NO_ACTIVITY_CODE keeps the category it was always published under — nothing
-// on it says which of the two it was, and re-deriving one from prose is what the code
-// replaces. New rows carry the code, which is read first.
+// "no activity for 900s", "background task expired (no delivery, unverifiable)"), and that is
+// deliberate: a row reaped before the reapers stored SUBAGENT_NO_ACTIVITY_CODE keeps the
+// category it was always published under — nothing on it says which of the two it was, and
+// re-deriving one from prose is what the code replaces. New rows carry the code, which is
+// read first.
+//
+// "Expired" is read ONLY in those reapers' sentences. A bare /expir/ took a provider's
+// "401 … token expired" and a "session expired" for a timeout, and the anomaly told the
+// operator a child ran out of time when its credential had been refused (R12).
 const TIMEOUT_RE =
-  /expir|p[ée]rim|stale|timed?\s*out|timeout|no\s+activity|aucune\s+activit/i;
+  /sous-agent expir|task expired \(no delivery|p[ée]rim|stale|timed?\s*out|timeout|no\s+activity|aucune\s+activit/i;
 // HTTP status (4xx/5xx) or an explicit API/auth/quota signal.
 const API_ERROR_RE =
   /\b(4\d{2}|5\d{2})\b|api[\s_-]?error|rate[\s_-]?limit|unauthoriz|forbidden|quota|too\s+many\s+requests/i;
@@ -97,6 +115,9 @@ const GATEWAY_AGENT_DB_CLOSED_TEXT_RE =
 const CATEGORY_BY_CODE: Readonly<Record<string, SubAgentErrorCategory>> = {
   gateway_storage_unavailable: "gateway_storage_unavailable",
   gateway_agent_db_closed: "gateway_agent_db_closed",
+  provider_auth_revoked: "provider_auth_revoked",
+  provider_permission_denied: "provider_permission_denied",
+  provider_auth_failed: "provider_auth_failed",
   [SUBAGENT_NO_ACTIVITY_CODE]: "no_activity",
 };
 
@@ -127,6 +148,17 @@ export function classifySubAgentError(
   // Storage first, as in the bridge: an admission refusal can carry a full disk as its reason.
   if (GATEWAY_STORAGE_UNAVAILABLE_TEXT_RE.test(text)) return "gateway_storage_unavailable";
   if (GATEWAY_AGENT_DB_CLOSED_TEXT_RE.test(text)) return "gateway_agent_db_closed";
+  // The shared mirror of the bridge classifier (failureText), on the RAW message: it does its
+  // own operator-value stripping, model ids of a fallback summary included. Only its
+  // credential verdicts are taken here — the other classes keep the categories below.
+  const credential = classifyStoredFailureText(errorMessage);
+  if (
+    credential === "provider_auth_revoked" ||
+    credential === "provider_permission_denied" ||
+    credential === "provider_auth_failed"
+  ) {
+    return credential;
+  }
   if (TIMEOUT_RE.test(text)) return "timeout";
   if (API_ERROR_RE.test(text)) return "api_error";
   if (TOOL_FAILED_RE.test(text)) return "tool_failed";

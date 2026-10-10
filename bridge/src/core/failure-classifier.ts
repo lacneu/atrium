@@ -26,8 +26,262 @@ export const GATEWAY_CHAT_ERROR_KINDS: ReadonlySet<string> = new Set([
   "context_length",
 ]);
 
+/** Gateway `errorKind` values that name a fact Atrium already has its OWN class for.
+ *
+ *  `state_contention` is NEW at v2026.9.7 (logs-chat.ts:363-370): the `chat.send`
+ *  setup/dispatch path emits it for a TYPED SQLite BUSY/LOCKED only
+ *  (src/sessions/session-run-error-presentation.ts:10-17, `isSqliteLockError` in
+ *  src/infra/sqlite-error-diagnostics.ts:158-165; frame built by
+ *  src/gateway/server-methods/chat-broadcast.ts:142-154), and REPLACES the raw
+ *  "database is locked" text the storage-busy pattern read on 9.6 with fixed copy that
+ *  names no storage fact. It is the same fact — contention, the run may already have
+ *  executed — so it is the same class, terminal and never auto-retried (upstream:
+ *  "Execution may have occurred; check the recorded outcome before resending"). */
+//
+// A Map, not an object literal: the key is a WIRE string, and an object lookup answers
+// `constructor`, `toString` or `__proto__` with an inherited function or prototype.
+const GATEWAY_ERROR_KIND_CLASSES: ReadonlyMap<string, string> = new Map([
+  ["state_contention", "gateway_storage_busy"],
+]);
+
+/** `FailoverReason` — the gateway's own vocabulary for WHY a provider attempt failed
+ *  (packages/gateway-protocol/src/failover-reasons.ts at v2026.9.6, sixteen values). It
+ *  rides three carriers Atrium reads: `ChatErrorEvent.errorDetail.failoverReason`
+ *  (logs-chat.ts ChatErrorDetailSchema, bounded by `projectChatErrorDetail`), the lifecycle
+ *  `data.errorObservation` it is projected from (src/agents/embedded-agent-subscribe.
+ *  handlers.lifecycle.ts:168-174, server-chat.ts:738 → :1219), and the machine-written
+ *  `(<reason>)` suffix of each attempt of a model-fallback summary
+ *  (src/agents/model-fallback-runner.ts:698-701). */
+const FAILOVER_REASONS: ReadonlySet<string> = new Set([
+  "auth",
+  "auth_permanent",
+  "format",
+  "rate_limit",
+  "overloaded",
+  "billing",
+  "server_error",
+  "timeout",
+  "tls_certificate",
+  "context_overflow",
+  "model_not_found",
+  "session_expired",
+  "empty_response",
+  "no_error_details",
+  "unclassified",
+  "unknown",
+]);
+
+/** The OAuth refresh failure reasons (src/agents/auth-profiles/oauth-refresh-failure.ts:21-28).
+ *  NOT FailoverReasons: the lifecycle backstop stores one in `failoverReason` beside
+ *  `providerRuntimeFailureKind: "auth_refresh"` (src/auto-reply/reply/agent-lifecycle-terminal.ts:
+ *  126-136), and every one of them is a stored login the provider no longer accepts — the reply
+ *  for a classified reason is "Model login expired on the gateway…"
+ *  (src/auto-reply/reply/agent-runner-failure-reply.ts:300-315). */
+const OAUTH_REFRESH_REASONS: ReadonlySet<string> = new Set([
+  "refresh_token_reused",
+  "expired",
+  "invalid_grant",
+  "sign_in_again",
+  "invalid_refresh_token",
+  "token_invalidated",
+  "revoked",
+]);
+
+/** A 401 or 403 standing as an HTTP STATUS (`401:`, `HTTP 403 `, `(401)`, `403 {…}`) —
+ *  never inside an identifier such as `x-401-expired-token`. */
+const STATUS_401_RE = /(?:^|[\s:(\[])401(?=[:)\s,.{]|$)/;
+const STATUS_403_RE = /(?:^|[\s:(\[])403(?=[:)\s,.{]|$)/;
+
+/** Upstream's HIGH-CONFIDENCE `auth_permanent` wording (src/agents/failover/message-patterns.ts:
+ *  49-56): a key or an account the provider has switched off for good. */
+const AUTH_PERMANENT_TEXT_RE =
+  /api[_ ]?key[_ ]?(?:revoked|deactivated|deleted)|deactivated[_ ]workspace|key has been (?:disabled|revoked)|account has been deactivated|not allowed for this organization/i;
+/** What a 403 says beside its status when it is a PERMISSION refusal rather than a credential
+ *  that stopped working: rights, region, workspace. Read only next to a 403 status. */
+const PERMISSION_403_WORDS_RE =
+  /forbidden|permission|not allowed|access denied|access to this|unsupported[_ ](?:country|region)|region|territory|deactivated|re-authenticate with:/i;
+
+/** The CREDENTIAL class an auth failure belongs to, from the facts the gateway gave.
+ *
+ *  Upstream's `auth` reason covers a 401 AND a plain 403 AND status-less auth text
+ *  (src/agents/embedded-agent-helpers/provider-runtime-failure.ts:242-258, classification-rules.ts:
+ *  220-233), and its `Re-authenticate with:` hint follows `auth` and `auth_permanent` alike
+ *  (src/agents/failover-error.ts:486-502) — a 403 permission refusal, an unsupported region, a
+ *  deactivated workspace, a CLI backend with no profile. Telling the reader "your access expired,
+ *  reconnect" is true for only one of those, so three classes:
+ *   - `provider_auth_revoked`: 401 evidence, or a token the provider says is expired/revoked;
+ *   - `provider_permission_denied`: `auth_permanent`, a 403, an OAuth scope refusal;
+ *   - `provider_auth_failed`: an auth refusal whose kind nothing names. */
+function credentialClass(
+  reason: "auth" | "auth_permanent",
+  status: number | null,
+  text: string,
+): string {
+  if (reason === "auth_permanent") return "provider_permission_denied";
+  if (status === 403) return "provider_permission_denied";
+  if (status === 401) return "provider_auth_revoked";
+  const has401 = STATUS_401_RE.test(text);
+  const has403 = STATUS_403_RE.test(text);
+  if (has403 && !has401) return "provider_permission_denied";
+  if (AUTH_PERMANENT_TEXT_RE.test(text)) return "provider_permission_denied";
+  if (has401 && !has403) return "provider_auth_revoked";
+  if (AUTH_401_TOKEN_REVOKED_RE.test(text) || TOKEN_REVOKED_ASSERTED_RE.test(text)) {
+    return "provider_auth_revoked";
+  }
+  return "provider_auth_failed";
+}
+
+/** The Atrium class for ONE `FailoverReason`, with the attempt's own text as evidence for the
+ *  credential split. Null for the reasons that name nothing a reader can act on (`format`,
+ *  `tls_certificate`, `empty_response`, `no_error_details`, `unclassified`, `unknown`) and for
+ *  `session_expired`, whose Atrium counterpart (`session_gone`) drops the stored session and is
+ *  only granted on the narrow wrapper proof below. */
+function classFromFailoverReason(
+  reason: string,
+  status: number | null,
+  text: string,
+): string | null {
+  switch (reason) {
+    case "auth":
+    case "auth_permanent":
+      return credentialClass(reason, status, text);
+    case "billing":
+      return "provider_billing";
+    case "rate_limit":
+      return "rate_limit";
+    // Upstream folds `overloaded` into the `rate_limit` chat errorKind (server-chat.ts:189-206),
+    // but its own copy for it is "temporarily overloaded" (user-copy.ts:53-54), and the reader's
+    // remedy is the transient one; `timeout` is upstream's "retryable-transient bucket" that
+    // "deliberately swallows generic 5xx" (server-chat.ts:235-236) — not a run time limit.
+    case "overloaded":
+    case "server_error":
+    case "timeout":
+      return "provider_internal";
+    case "context_overflow":
+      return "context_length";
+    case "model_not_found":
+      return "model_not_found";
+    default:
+      return null;
+  }
+}
+
+/** The class a STRUCTURED provider observation names, or null — read BEFORE any prose.
+ *
+ *  `errorDetail` on a chat error and `errorObservation` on a lifecycle error are the same
+ *  closed shape (packages/gateway-protocol/src/schema/logs-chat.ts:419-462
+ *  `ChatErrorDetailSchema` / `projectChatErrorDetail`): {provider, model, failoverReason,
+ *  providerRuntimeFailureKind, providerErrorType, httpStatus, providerErrorMessagePreview}.
+ *  Upstream's protocol doc calls it the structured route "not from reparsing the user-facing
+ *  message" (docs/gateway/protocol/rpc-bootstrap-and-events.md:68-79). Only enums and the
+ *  status are read: `provider`/`model` are operator configuration and the preview is provider
+ *  prose, so none of them may choose a class.
+ *
+ *  The runtime kind first where it is narrower than the reason
+ *  (src/agents/embedded-agent-helpers/provider-runtime-failure.ts:16-39, `classifyProvider
+ *  RuntimeFailureKind` :168-268), then the reason, then a bare status. */
+export function classifyErrorDetail(detail: unknown): string | null {
+  if (detail === null || typeof detail !== "object" || Array.isArray(detail)) return null;
+  const d = detail as Record<string, unknown>;
+  const reason = typeof d.failoverReason === "string" ? d.failoverReason.trim() : "";
+  const kind =
+    typeof d.providerRuntimeFailureKind === "string" ? d.providerRuntimeFailureKind.trim() : "";
+  const status =
+    typeof d.httpStatus === "number" && Number.isInteger(d.httpStatus) ? d.httpStatus : null;
+  switch (kind) {
+    case "auth_refresh":
+      // The OAuth refresh failed (agent-lifecycle-terminal.ts:126-136): a classified reason
+      // is a login the provider no longer accepts. Without one, upstream itself says only
+      // "Model login failed … Please try again" (agent-runner-failure-reply.ts:318-321) —
+      // possibly transient, so no class rather than one that says resending cannot help.
+      return OAUTH_REFRESH_REASONS.has(reason) ? "provider_auth_revoked" : null;
+    case "auth_invalid_token":
+      // "Plain provider HTTP 401 auth failure" (provider-runtime-failure.ts:25-26, :242-258:
+      // requires positive 401 evidence and an invalid/expired-token hint).
+      return "provider_auth_revoked";
+    case "auth_scope":
+      // The credential works but lacks a scope (provider-runtime-failure.ts:200-202).
+      return "provider_permission_denied";
+    case "auth_html":
+      // An HTML page behind a 401/403 (provider-runtime-failure.ts:206-215).
+      return status === 403 ? "provider_permission_denied" : "provider_auth_failed";
+    case "rate_limit":
+      return "rate_limit";
+    case "model_not_found":
+      return "model_not_found";
+    default:
+      break;
+  }
+  if (FAILOVER_REASONS.has(reason)) {
+    const byReason = classFromFailoverReason(reason, status, "");
+    if (byReason !== null) return byReason;
+  }
+  if (status === 429) return "rate_limit";
+  if (status !== null && status >= 500 && status <= 599) return "provider_internal";
+  return null;
+}
+
+/** The gateway's own TERMINAL classes that outrank a provider observation: `timeout` is
+ *  minted from the run's recorded terminal classification (server-chat.ts:725-730) — the run
+ *  hit its time limit, whatever the last provider error was — and `refusal` is a stop-reason
+ *  fact (server-chat.ts:215-226). */
+const TERMINAL_FACT_KINDS: ReadonlySet<string> = new Set(["timeout", "refusal"]);
+
+/** The STRUCTURED class of a failure frame — chat `state:"error"` or lifecycle
+ *  `phase:"error"` — or null when neither structured field names one; the caller then falls
+ *  back to the text (`classifyFailureText`), which stays the LAST resort. One function for
+ *  the turn normalizer and the sub-agent observer, so the two readers of one frame agree. */
+export function classifyStructuredFailure(fields: {
+  errorKind?: unknown;
+  errorDetail?: unknown;
+}): string | null {
+  // A storage fact the gateway itself classified outranks a provider observation, as
+  // `timeout` does: the failure is the gateway's state, not the model's.
+  const mapped =
+    typeof fields.errorKind === "string"
+      ? GATEWAY_ERROR_KIND_CLASSES.get(fields.errorKind)
+      : undefined;
+  if (mapped !== undefined) return mapped;
+  const kind =
+    typeof fields.errorKind === "string" && GATEWAY_CHAT_ERROR_KINDS.has(fields.errorKind)
+      ? fields.errorKind
+      : null;
+  if (kind !== null && TERMINAL_FACT_KINDS.has(kind)) return kind;
+  return classifyErrorDetail(fields.errorDetail) ?? kind;
+}
+
+// Upstream's context-overflow vocabulary (packages/ai/src/utils/overflow.ts
+// ASSISTANT_OVERFLOW_PATTERNS / FAILOVER_EXPLICIT_OVERFLOW_PATTERNS, abridged to the phrasings
+// gateways were seen to send), read only after the exclusions below.
 const CONTEXT_OVERFLOW_TEXT_RE =
   /context overflow|prompt too large|maximum context length|context[- ]length exceeded|request_too_large|request too large|input (?:token count )?exceeds the maximum number of (?:input )?tokens|input is too long for the model|too many tokens|reduce the length|exceeds? (?:the )?(?:model'?s )?(?:maximum )?context/i;
+/** What upstream EXCLUDES from an overflow before reading it as one
+ *  (src/agents/failover/context-overflow.ts:34-80 `isLikelyContextOverflowError`): a TPM limit
+ *  (Groq answers 413 for "tokens per minute", :45-48; packages/ai/src/utils/overflow.ts:115), a
+ *  rate limit or a quota (:64-69; message-patterns.ts rateLimit), billing (:54-59;
+ *  message-patterns.ts:207-229), and the Bedrock throttling sentence "Too many tokens, please
+ *  wait before trying again" (overflow.ts:133-145 NON_OVERFLOW_PATTERNS). Offering to compact
+ *  a session that is only being rate-limited is the wrong remedy. */
+const CONTEXT_OVERFLOW_EXCLUDE_RE =
+  /\btpm\b|tokens per (?:minute|day)|rate[_ -]?limit|too many requests|requests per (?:minute|hour|day)|throttl|please wait before trying again|\bquota\b|resource[_ -]?exhausted|usage limit|^(?:throttling error|service unavailable):|payment required|insufficient (?:credits|balance|funds)|insufficient[_ ]quota|credit balance|billing/i;
+/** Upstream's carve-out from the TPM exclusion: a request larger than the whole TPM bucket
+ *  cannot succeed by waiting (src/agents/failover/message-patterns.ts:7-25
+ *  `isProviderRequestSizeCeilingError`), so the overflow tables still decide it
+ *  (context-overflow.ts:39-43). Upstream's pattern with its free spans BOUNDED: two unbounded
+ *  lazy spans in a row backtrack quadratically on a long sentence. */
+const TPM_SIZE_CEILING_RE =
+  /(?:\btpm\b|tokens per minute)[^.\n]{0,120}?\blimit\s+([\d,]{1,12})[^.\n]{0,120}?\brequested\s+([\d,]{1,12})/i;
+
+function isContextOverflowText(text: string): boolean {
+  if (!CONTEXT_OVERFLOW_TEXT_RE.test(text)) return false;
+  const ceiling = TPM_SIZE_CEILING_RE.exec(text);
+  if (ceiling !== null) {
+    const limit = Number(ceiling[1]?.replaceAll(",", ""));
+    const requested = Number(ceiling[2]?.replaceAll(",", ""));
+    if (limit > 0 && requested > limit) return true;
+  }
+  return !CONTEXT_OVERFLOW_EXCLUDE_RE.test(text);
+}
 const SESSION_INIT_CONFLICT_RE =
   /reply session initialization conflicted/i;
 // <= 2026.7.x ONLY: the file-based embedded prompt lock and its message were
@@ -96,15 +350,21 @@ const SESSION_INITIALIZING_RE = /is still initializing\.?\s*retry after initiali
 // (src/agents/failover/assistant-request-failure-copy.ts:13-26,52), from the classification in
 // src/infra/sqlite-error-diagnostics.ts:4-11. They reach us as TEXT and nothing else: the chat
 // error frame declares no errorCode field (packages/gateway-protocol/src/schema/logs-chat.ts:418-432)
-// and its errorKind enum has no storage member (:313-319), so no structured fact survives.
+// and its errorKind enum had no storage member up to v2026.9.6 (:313-319), so no structured
+// fact survived. v2026.9.7 adds `state_contention` for the busy half on the chat.send path
+// (GATEWAY_ERROR_KIND_CLASSES); the text below stays the reading for every other carrier.
 // SPLIT IN TWO, by what the event asks of the reader — one label for both would be half wrong
 // in each case. Busy/locked is contention: the same send can succeed. Full, read-only and I/O
 // are the gateway's host: no resend helps until an operator acts. The raw sentence is still
 // shown under the localized headline (errorDetailView), so the exact cause stays readable.
 // NEITHER is retryable: the write failed with the run already working, exactly like the writer
 // rebound, so an automatic re-dispatch could repeat work whose effects already happened.
+// v2026.9.7 replaces the SQLite sentence with fixed copy on the chat.send path
+// (src/sessions/session-run-error-presentation.ts:3-7,14) and on chat.abort
+// (src/gateway/server-methods/chat-abort-handler.ts:691-692); both name the admission
+// that stayed busy, which is the one storage fact left in the text.
 const GATEWAY_STORAGE_BUSY_RE =
-  /database is locked|database table is locked|state database was (?:busy|locked)\b/i;
+  /database is locked|database table is locked|state database was (?:busy|locked)\b|sqlite transaction admission remained busy/i;
 const GATEWAY_STORAGE_UNAVAILABLE_RE =
   /database or disk is full|attempt to write a readonly database|disk i\/o error|state database was (?:full|read-only)|state database had an i\/o error/i;
 // The SAME host fact when the full filesystem is not the SQLite file itself but the scratch
@@ -214,6 +474,133 @@ export function fallbackSummaryCauses(raw: string): string[] | null {
     .filter((segment) => FALLBACK_ATTEMPT_PREFIX_RE.test(segment))
     .map((segment) => segment.replace(FALLBACK_ATTEMPT_PREFIX_RE, ""));
   return causes.length > 0 ? causes : null;
+}
+
+/** One attempt of a model-fallback summary: its cause with the `<provider>/<model>: ` prefix
+ *  removed, and the machine-written `(<reason>)` suffix split off when it names a
+ *  `FailoverReason` (model-fallback-runner.ts:698-701: `${attempt.reason ? ` (${reason})` : ""}`). */
+export interface FallbackAttempt {
+  text: string;
+  reason: string | null;
+}
+
+/** The remediation upstream appends after the summary for an `auth`/`auth_permanent` last
+ *  error (src/agents/model-fallback-attempt.ts:626-628 → failover-error.ts:486-502): ". Re-
+ *  authenticate with: <command>", or the Gemini CLI variant. Machine-written, so its presence
+ *  is a structured fact — an auth refusal — and it is not part of the last attempt's cause. */
+const REMEDIATION_TAIL_RE =
+  /\.\s+(?:re-authenticate with:\s|authenticate in gemini cli directly, or configure a supported google api key with:\s)[\s\S]*$/i;
+/** The `(<reason>)` suffix at the very end of one attempt. A trailing period is tolerated: the
+ *  preflight wrapper writes ` Reason: ${reason}.` (agent-runner-failure-reply.ts:213). */
+const ATTEMPT_REASON_SUFFIX_RE = /\s\(([a-z_]+)\)\s*\.?\s*$/;
+
+/** A model-fallback summary read into its attempts — with each `(<reason>)` suffix — and
+ *  whether upstream appended its re-authentication remediation; null when the text is not one.
+ *  A summary cut by the 240-character cap simply has fewer, or shorter, attempts. */
+export function parseFallbackSummary(
+  raw: string,
+): { attempts: FallbackAttempt[]; authHint: boolean } | null {
+  const head = FALLBACK_SUMMARY_RE.exec(raw);
+  if (head === null) return null;
+  let body = raw.slice(head[0].length);
+  const hint = REMEDIATION_TAIL_RE.exec(body);
+  if (hint !== null) body = body.slice(0, hint.index);
+  const attempts = body
+    .split(" | ")
+    .map((segment) => segment.trim())
+    .filter((segment) => FALLBACK_ATTEMPT_PREFIX_RE.test(segment))
+    .map((segment): FallbackAttempt => {
+      const text = segment.replace(FALLBACK_ATTEMPT_PREFIX_RE, "");
+      const suffix = ATTEMPT_REASON_SUFFIX_RE.exec(text);
+      const reason = suffix?.[1];
+      return suffix !== null && reason !== undefined && FAILOVER_REASONS.has(reason)
+        ? { text: text.slice(0, suffix.index), reason }
+        : { text, reason: null };
+    });
+  return attempts.length > 0 ? { attempts, authHint: hint !== null } : null;
+}
+
+/** Upstream's PREFLIGHT-COMPACTION wrapper (v2026.9.6,
+ *  src/auto-reply/reply/agent-runner-failure-reply.ts:198-218
+ *  `buildPreflightCompactionFailureText`): a fixed headline, ` Reason: <reason>.` only when
+ *  verbose failure details are on (:213), then a fixed tail. The headline is upstream's copy
+ *  for ANY compaction failure — a 401, a 429, a busy writer — whatever the context size. */
+const PREFLIGHT_WRAPPER_HEAD_RE =
+  /^[\s⚠️]*context is too large and auto-compaction could not recover this turn\.\s*/i;
+/** Its timed-out variant (:212-216) never carries a reason: the timeout IS the cause. */
+const PREFLIGHT_TIMEOUT_HEAD_RE =
+  /^[\s⚠️]*context is too large and auto-compaction timed out before it could finish\.\s*/i;
+const WRAPPER_REASON_HEAD_RE = /^reason:\s*/i;
+const PREFLIGHT_WRAPPER_TAIL_RE =
+  /\.?\s*try again, use \/compact, or use \/new to start a fresh session\.?\s*$/i;
+/** The other generic wrappers, v2026.9.6:
+ *   - agent-runner-failure-reply.ts:416-424 `renderPostCompactionModelFailurePayload`:
+ *     "⚠️ Context compaction succeeded, but the later model request still failed. <reply>";
+ *   - :243-248 `formatForwardedExternalRunFailureText` (verbose only): "⚠️ Agent failed before
+ *     reply: <detail>. Please try again, or use /new to start a fresh session.";
+ *   - src/sessions/session-run-error.ts:42: "This turn ended before a reply: <error>";
+ *   - src/agents/failover/user-copy.ts:304-305 `GENERIC_EXTERNAL_RUN_FAILURE_TEXT`: "⚠️
+ *     Something went wrong while processing your request. Please try again, or use /new to
+ *     start a fresh session." — the copy upstream shows when it withholds the detail. */
+const POST_COMPACTION_HEAD_RE =
+  /^[\s⚠️]*context compaction succeeded, but the later model request still failed\.\s*/i;
+const AGENT_FAILED_HEAD_RE = /^[\s⚠️]*agent failed before reply:\s*/i;
+const AGENT_FAILED_TAIL_RE = /\.?\s*please try again, or use \/new to start a fresh session\.?\s*$/i;
+const TURN_ENDED_HEAD_RE = /^\s*this turn ended before a reply:\s*/i;
+const SOMETHING_WENT_WRONG_RE = /^[\s⚠️]*something went wrong while processing your request\./i;
+/** `formatForLog` caps a chat error at 240 characters and appends "..."
+ *  (src/gateway/ws-log.ts:18, :115-152). */
+const LOG_TRUNCATION_MARK_RE = /\.\.\.\s*$/;
+
+/** Which generic wrapper a failure text came in. */
+export type GatewayWrapper = "preflight_compaction" | "compaction_timeout" | "run_failure";
+
+/** The failure text with upstream's generic wrappers peeled off: the outermost wrapper, and
+ *  the cause text inside it (null when the wrapper carried none — verbose details off, or
+ *  upstream's generic copy). Text that is not wrapped comes back unchanged with
+ *  `wrapper: null`. */
+export function unwrapGatewayFailure(raw: string): {
+  wrapper: GatewayWrapper | null;
+  inner: string | null;
+} {
+  let wrapper: GatewayWrapper | null = null;
+  let text: string | null = raw.replace(LOG_TRUNCATION_MARK_RE, "");
+  for (let depth = 0; depth < 4 && text !== null; depth++) {
+    let next: string | null | undefined;
+    let kind: GatewayWrapper | undefined;
+    const pre = PREFLIGHT_WRAPPER_HEAD_RE.exec(text);
+    const timedOut = pre === null ? PREFLIGHT_TIMEOUT_HEAD_RE.exec(text) : null;
+    if (pre !== null || timedOut !== null) {
+      kind = pre !== null ? "preflight_compaction" : "compaction_timeout";
+      const rest = text.slice((pre ?? timedOut)![0].length);
+      const reason = WRAPPER_REASON_HEAD_RE.exec(rest);
+      next =
+        reason === null ? null : rest.slice(reason[0].length).replace(PREFLIGHT_WRAPPER_TAIL_RE, "");
+    } else if (POST_COMPACTION_HEAD_RE.test(text)) {
+      kind = "run_failure";
+      next = text.replace(POST_COMPACTION_HEAD_RE, "");
+    } else if (AGENT_FAILED_HEAD_RE.test(text)) {
+      kind = "run_failure";
+      next = text.replace(AGENT_FAILED_HEAD_RE, "").replace(AGENT_FAILED_TAIL_RE, "");
+    } else if (TURN_ENDED_HEAD_RE.test(text)) {
+      kind = "run_failure";
+      next = text.replace(TURN_ENDED_HEAD_RE, "");
+    } else if (SOMETHING_WENT_WRONG_RE.test(text)) {
+      kind = "run_failure";
+      next = null;
+    }
+    if (kind === undefined) break;
+    wrapper ??= kind;
+    text = next === null || next === undefined || next.trim() === "" ? null : next.trim();
+  }
+  return wrapper === null ? { wrapper: null, inner: raw } : { wrapper, inner: text };
+}
+
+/** The REASON inside the preflight-compaction wrapper, or null when the text is not one or
+ *  carries none. Kept for its readers; `unwrapGatewayFailure` is the general form. */
+export function preflightWrappedReason(raw: string): string | null {
+  const { wrapper, inner } = unwrapGatewayFailure(raw);
+  return wrapper === "preflight_compaction" || wrapper === "compaction_timeout" ? inner : null;
 }
 
 export function isAgentDatabaseClosedText(text: string | null | undefined): boolean {
@@ -444,6 +831,110 @@ export function namesACredential(text: string): boolean {
 const COOLDOWN_SENTENCE_RE =
   /\bauth profile\s+"[\s\S]*?"\s+is temporarily unavailable\s+for\b/i;
 
+/** The PROVIDER refused the agent's credential as revoked or expired (v2026.9.6).
+ *
+ *  Two fixed gateway phrases, either of which is enough:
+ *   - `Re-authenticate with: <command>` — emitted ONLY for the failover reasons `auth` and
+ *     `auth_permanent` (src/agents/failover-error.ts:486-502 `buildFailoverRemediationHint`,
+ *     appended to the model-fallback summary by src/agents/model-fallback-attempt.ts:627-628;
+ *     same words in src/agents/cli-runner/prepare.ts:484 for a CLI backend whose profile
+ *     could not be resolved). The cooldown's own hint is spelled `Re-authenticate with \``
+ *     — no colon — and that sentence is classified by the rule before this one.
+ *   - a `401` status followed by `invalidated|expired|revoked` and then `token`, the
+ *     provider's own refusal as the summary carries it — prod 2026-10-02, agent `jerome`:
+ *     `401: Encountered invalidated oauth token for user (auth)`. The `401` must stand as a
+ *     STATUS (`401:`, `401)` or `401 `), so a model id such as `x-401-expired-token` cannot carry it.
+ *     The provider's own wording in the OTHER order is taken too when it ASSERTS the fact —
+ *     `HTTP 401: Your authentication token has been invalidated.` (OpenAI/Codex) — but not
+ *     a token that "may have expired", which is upstream's hedge (below).
+ *
+ *  Upstream's own hedged copy for a bare 401 — "Authentication failed (provider returned
+ *  HTTP 401). Your provider token may have expired — try the request again in a moment."
+ *  (src/agents/failover/user-copy.ts:40-43) — is deliberately NOT matched: it puts `token`
+ *  before `expired` and says the failure may pass, so it stays unclassified.
+ *
+ *  Read through `withoutOperatorData` like every rule here, so a quoted value cannot carry
+ *  either phrase; the provider id in the command is single-quoted shell, not operator
+ *  prose, and is never read by the rule (only by Convex, to name it in the anomaly). */
+const REAUTHENTICATE_HINT_RE = /\bre-authenticate with:\s/i;
+const AUTH_401_TOKEN_REVOKED_RE =
+  /(?:^|[\s:(\[])401[:)\s][^|\n]{0,120}?(?:\b(?:invalidated|expired|revoked)\b[^|\n]{0,60}?\btokens?\b|\btokens?\s+(?:has|have)\s+(?:been\s+)?(?:invalidated|expired|revoked)\b|\btokens?\s+(?:was|were|is|are)\s+(?:invalidated|expired|revoked)\b)/i;
+/** A token the provider ASSERTS is gone, without a status beside it — read only inside an
+ *  attempt the gateway already classed `auth` (credentialClass), never alone. */
+const TOKEN_REVOKED_ASSERTED_RE =
+  /\b(?:invalidated|revoked)\b[^|\n]{0,60}?\btokens?\b|\btokens?\s+(?:has|have)\s+been\s+(?:invalidated|expired|revoked)\b|\b(?:refresh|access|oauth)\s+tokens?\s+(?:is|was|has)\s+(?:been\s+)?(?:invalidated|expired|revoked)\b/i;
+/** Upstream's reply for an OAuth refresh failure with a classified reason
+ *  (src/auto-reply/reply/agent-runner-failure-reply.ts:300-315): "⚠️ Model login expired on the
+ *  gateway[ for <provider>]. Re-auth with <command> in a terminal, then try again." */
+const MODEL_LOGIN_EXPIRED_RE = /\bmodel login expired on the gateway\b/i;
+/** A 403 named as a status and, beside it, the words of a permission refusal. */
+const PERMISSION_403_RE = new RegExp(
+  `${STATUS_403_RE.source}[^|\\n]{0,200}?(?:${PERMISSION_403_WORDS_RE.source})`,
+  "i",
+);
+
+/** The credential class a failure TEXT carries, or null (see `credentialClass` for the three).
+ *
+ *  Fixed gateway phrases and provider statuses only:
+ *   - REVOKED: a `401` status followed by `invalidated|expired|revoked … token` (prod
+ *     2026-10-02, agent `jerome`: `401: Encountered invalidated oauth token for user (auth)`),
+ *     or the provider's own assertion in the other order (`HTTP 401: Your authentication token
+ *     has been invalidated.`), or upstream's "Model login expired on the gateway";
+ *   - PERMISSION: upstream's high-confidence `auth_permanent` wording, or a `403` status with
+ *     permission words beside it;
+ *   - FAILED: the `Re-authenticate with:` hint alone. It follows `auth` AND `auth_permanent`
+ *     (failover-error.ts:486-502; the CLI backend with no resolvable profile,
+ *     src/agents/cli-runner/prepare.ts:484), so it proves an auth refusal and nothing about
+ *     its kind. The cooldown's own hint has no colon and is classified before this.
+ *
+ *  Upstream's HEDGED copy for a bare 401 — "Authentication failed (provider returned HTTP
+ *  401). Your provider token may have expired — try the request again in a moment."
+ *  (src/agents/failover/user-copy.ts:40-43) — is deliberately NOT matched: it says the failure
+ *  may pass. The structured `errorDetail` beside it, when present, decides instead.
+ *
+ *  Read through `withoutOperatorData` like every rule here, so a quoted value cannot carry
+ *  any of these phrases. Exported: the dispatch door asks the same question. */
+export function providerCredentialTextClass(
+  text: string | null | undefined,
+  opts: { requireProviderEvidence?: boolean } = {},
+): string | null {
+  if (!text) return null;
+  const t = withoutOperatorData(text);
+  // The DISPATCH door also sees the bridge's OWN link fail: a reverse proxy in front of the
+  // gateway can answer the WebSocket upgrade "403 Forbidden", which is the bridge's fault
+  // domain, not a provider's. There a 403 counts only beside the gateway's own
+  // re-authentication hint — words no proxy writes.
+  if (
+    opts.requireProviderEvidence === true &&
+    PERMISSION_403_RE.test(t) &&
+    !REAUTHENTICATE_HINT_RE.test(t) &&
+    !AUTH_PERMANENT_TEXT_RE.test(t)
+  ) {
+    return AUTH_401_TOKEN_REVOKED_RE.test(t) || MODEL_LOGIN_EXPIRED_RE.test(t)
+      ? "provider_auth_revoked"
+      : null;
+  }
+  return credentialTextClassOf(t);
+}
+
+export function isProviderAuthRevokedText(text: string | null | undefined): boolean {
+  return providerCredentialTextClass(text) === "provider_auth_revoked";
+}
+
+/** Upstream's fixed copy for a billing refusal (src/agents/failover/user-copy.ts:66-84
+ *  `formatBillingErrorMessage`): "… returned a billing error — …". */
+const BILLING_COPY_RE = /\breturned a billing error\b/i;
+/** Upstream's fixed copy for an unknown model (src/agents/failover/user-copy.ts:135-136 and
+ *  :590): "The selected model was not found by the provider." / "<provider> can't find the
+ *  model you're using right now." */
+const MODEL_NOT_FOUND_COPY_RE =
+  /\bthe selected model was not found by the provider\b|\bcan'?t find the model you'?re using right now\b/i;
+/** Upstream's two fixed rate-limit copies (src/agents/failover/user-copy.ts:39 "⚠️ API rate
+ *  limit reached. Please try again later." and :55-56 "⚠️ The model request was rate-limited.
+ *  Please try again in a few minutes."). Fixed gateway words only: a provider's own wording
+ *  ("HTTP 429: Too Many Requests") stays for the structured fields to decide. */
+const RATE_LIMIT_COPY_RE = /\bapi rate limit reached\b|\bthe model request was rate-limited\b/i;
+
 /** The text with every operator-chosen segment removed, leaving only what the GATEWAY
  *  itself wrote — which is the only thing any rule below may read.
  *
@@ -457,7 +948,7 @@ const COOLDOWN_SENTENCE_RE =
  *  after the id: it keeps `Auth profile "…" is temporarily unavailable for …`, anchored
  *  on `for`, the word upstream always emits next. */
 export function withoutOperatorData(raw: string): string {
-  if (!namesACredential(raw)) return blankQuotedValues(raw);
+  if (!namesACredential(raw)) return blankQuotedValues(exposeProviderErrorBodies(raw));
   // The cooldown exception applies ONLY when the first quote in the text is the
   // cooldown's OWN — i.e. the prose before it ends with `auth profile `. Testing the
   // raw text let an EARLIER operator segment carry the phrase: an MCP server named
@@ -491,6 +982,76 @@ export function withoutOperatorData(raw: string): string {
  *  opening and swallow the fixed words behind it. (An injected quote can still shift
  *  the pairing, which is why a CREDENTIAL sentence is cut rather than blanked: there,
  *  the whole tail is operator data anyway.) */
+/** The fields of a provider's JSON error body whose STRING value is the provider's own
+ *  wording — `{"type":"error","error":{"type":"authentication_error","message":"…"}}`. */
+const PROVIDER_BODY_KEYS = "message|type|code|status|reason|detail|error";
+/** A JSON body opened right after an HTTP status — `401 {…}`, `HTTP 403: {…}` — which is how
+ *  provider SDK errors reach an attempt (packages/ai/src/utils/overflow.ts:16 quotes one:
+ *  `413 {"error":{"type":"request_too_large",…}}`). The status anchor is what keeps an operator
+ *  value out: a session key, a profile id or a server name never follows a status. */
+const STATUS_BODY_OPEN_RE = /(?:^|[\s:(\[|])(?:http\s*)?[45]\d\d\b[^{"\n|]{0,40}?\{/gi;
+const BODY_STRING_FIELD_RE = new RegExp(
+  `"(?:${PROVIDER_BODY_KEYS})"\\s*:\\s*"((?:[^"\\\\]|\\\\.)*)"`,
+  "gi",
+);
+
+/** Each status-anchored provider JSON body replaced by the plain words of its message/type/code
+ *  fields, so `blankQuotedValues` — which exists to blank OPERATOR values — does not also erase
+ *  the provider's own refusal: `401 {"error":{"message":"OAuth token has been revoked"}}` used to
+ *  reach every rule as `401 {"…":{"…":"…"}}`. A body the scan cannot close is left as it is. */
+function exposeProviderErrorBodies(raw: string): string {
+  let out = "";
+  let cursor = 0;
+  STATUS_BODY_OPEN_RE.lastIndex = 0;
+  for (let m = STATUS_BODY_OPEN_RE.exec(raw); m !== null; m = STATUS_BODY_OPEN_RE.exec(raw)) {
+    const open = m.index + m[0].length - 1;
+    if (open < cursor) continue;
+    // A body the 240-character cap cut (src/gateway/ws-log.ts:115-152 `formatForLog`) never
+    // closes: it runs to the end of the text, and its last field may be cut mid-string.
+    const close = matchingBrace(raw, open);
+    const end = close === -1 ? raw.length - 1 : close;
+    const body = raw.slice(open, end + 1);
+    const words: string[] = [];
+    BODY_STRING_FIELD_RE.lastIndex = 0;
+    for (let f = BODY_STRING_FIELD_RE.exec(body); f !== null; f = BODY_STRING_FIELD_RE.exec(body)) {
+      words.push(unescapeBodyString(f[1] ?? ""));
+    }
+    if (close === -1) {
+      const cut = BODY_CUT_FIELD_RE.exec(body);
+      if (cut !== null) words.push(unescapeBodyString(cut[1] ?? ""));
+    }
+    out += `${raw.slice(cursor, open)}${words.join(" ")}`;
+    cursor = end + 1;
+    STATUS_BODY_OPEN_RE.lastIndex = cursor;
+  }
+  return cursor === 0 ? raw : out + raw.slice(cursor);
+}
+
+const BODY_CUT_FIELD_RE = new RegExp(`"(?:${PROVIDER_BODY_KEYS})"\\s*:\\s*"((?:[^"\\\\]|\\\\.)*)$`, "i");
+
+function unescapeBodyString(value: string): string {
+  return value.replace(/\\(.)/g, "$1").replace(/"/g, "");
+}
+
+/** The index of the `}` closing the `{` at `open`, string-aware; -1 when it never closes
+ *  (a body cut by the 240-character cap). */
+function matchingBrace(text: string, open: number): number {
+  let depth = 0;
+  let inString = false;
+  for (let i = open; i < text.length; i++) {
+    const c = text[i];
+    if (inString) {
+      if (c === "\\") i++;
+      else if (c === '"') inString = false;
+      continue;
+    }
+    if (c === '"') inString = true;
+    else if (c === "{") depth++;
+    else if (c === "}" && --depth === 0) return i;
+  }
+  return -1;
+}
+
 function blankQuotedValues(raw: string): string {
   let out = raw;
   if (((out.match(/"/g) ?? []).length % 2) === 1) out = out.replace(/"[^"]*$/, '"…');
@@ -563,16 +1124,90 @@ export function isSessionGoneText(text: string | null | undefined): boolean {
   return SESSION_GONE_REASON_RE.test(t);
 }
 
-export function classifyFailureText(raw: string | null | undefined): string | null {
-  if (!raw) return null;
-  // A model-fallback summary is classified by the causes INSIDE it, never by its wrapper
-  // or the model ids it lists (see `fallbackSummaryCauses`). The causes are read together,
-  // through the same precedence as a single text: the graver class still wins.
-  const causes = fallbackSummaryCauses(raw);
-  if (causes === null) return classifySingleFailureText(raw);
-  const perAttempt = causes.map((cause) => classifySingleFailureText(cause));
+/** ONE precedence for every reading of a failure text — a single sentence, the attempts of a
+ *  model-fallback summary, and the front's mirror of this file (convex/lib/failureText.ts,
+ *  which a parity test holds to the same verdicts): the GRAVER, more actionable class first.
+ *
+ *  The gateway's own host comes first (a full disk is what the operator must act on, and read
+ *  as anything else it would be retried into the same wall), then a dropped input and a gone
+ *  conversation (each asks for something specific), then the provider ACCOUNT — a credential,
+ *  a permission, billing: every turn of the agent fails the same way until an operator acts —
+ *  then what a later attempt or the reader can route around, and last what is retried. */
+export const FAILURE_CLASS_PRECEDENCE: readonly string[] = [
+  "gateway_storage_unavailable",
+  "gateway_agent_db_closed",
+  "gateway_storage_busy",
+  "pending_input_dropped",
+  "session_gone",
+  "provider_auth_revoked",
+  "provider_permission_denied",
+  "provider_billing",
+  "provider_auth_failed",
+  "auth_profile_cooldown",
+  "model_not_found",
+  "context_length",
+  "session_write_conflict",
+  "session_init_conflict",
+  "session_archived",
+  "session_paused_review",
+  "rate_limit",
+  "provider_internal",
+];
+
+function precedence(cls: string): number {
+  const i = FAILURE_CLASS_PRECEDENCE.indexOf(cls);
+  return i === -1 ? FAILURE_CLASS_PRECEDENCE.length : i;
+}
+
+function mostGrave(classes: ReadonlyArray<string | null>): string | null {
+  let best: string | null = null;
+  for (const c of classes) {
+    if (c !== null && (best === null || precedence(c) < precedence(best))) best = c;
+  }
+  return best;
+}
+
+/** Classes decided by a FIXED GATEWAY SENTENCE about the gateway's own state. Inside a summary
+ *  attempt they outrank the attempt's `(<reason>)` suffix, which describes the provider side:
+ *  a candidate skipped for a paused profile, or refused by a full disk, is that — whatever
+ *  failover reason the runner filed it under. */
+const GATEWAY_OWN_CLASSES: ReadonlySet<string> = new Set([
+  "gateway_storage_unavailable",
+  "gateway_agent_db_closed",
+  "gateway_storage_busy",
+  "pending_input_dropped",
+  "session_gone",
+  "auth_profile_cooldown",
+  "session_write_conflict",
+  "session_init_conflict",
+  "session_archived",
+  "session_paused_review",
+]);
+
+/** The class of ONE fallback attempt: a gateway-own sentence first, then the machine-written
+ *  `(<reason>)` suffix — with the attempt's own text as the evidence that splits an auth
+ *  refusal — and the prose rules last. */
+function classifyFallbackAttempt(attempt: FallbackAttempt): string | null {
+  const prose = classifySingleFailureText(attempt.text);
+  if (prose !== null && GATEWAY_OWN_CLASSES.has(prose)) return prose;
+  const structured =
+    attempt.reason === null
+      ? null
+      : classFromFailoverReason(attempt.reason, null, withoutOperatorData(attempt.text));
+  return structured ?? prose;
+}
+
+/** The class of a failure text with no wrapper around it — or, in a summary, of its attempts. */
+function classifyFailureCause(text: string): string | null {
+  const summary = parseFallbackSummary(text);
+  if (summary === null) return classifySingleFailureText(text);
+  // Each attempt is read ON ITS OWN. Read joined, the operator-data cut of one attempt (a
+  // cooldown sentence keeps nothing after its profile id) erased every attempt after it — a
+  // later candidate's 401 included.
+  const perAttempt = summary.attempts.map(classifyFallbackAttempt);
+  const fromHint = summary.authHint ? "provider_auth_failed" : null;
   if (!perAttempt.includes("pending_input_dropped")) {
-    return classifySingleFailureText(causes.join(" | "));
+    return mostGrave([...perAttempt, fromHint]);
   }
   // `pending_input_dropped` PROMISES THE READER NOTHING RAN. One attempt losing its input
   // proves that only for that attempt: an earlier candidate may have streamed, or run a
@@ -582,9 +1217,39 @@ export function classifyFailureText(raw: string | null | undefined): string | nu
   if (perAttempt.every((c) => c !== null && PRE_EXECUTION_CLASSES.has(c))) {
     return "pending_input_dropped";
   }
-  return classifySingleFailureText(
-    causes.filter((_, i) => perAttempt[i] !== "pending_input_dropped").join(" | "),
-  );
+  return mostGrave([...perAttempt.filter((c) => c !== "pending_input_dropped"), fromHint]);
+}
+
+/** The stable class of a failure TEXT, or null when it names nothing recognizable.
+ *
+ *  STRUCTURED FACTS FIRST, prose last. The caller has already read `errorKind` and
+ *  `errorDetail` (`classifyStructuredFailure`); inside the text, the machine-written parts —
+ *  upstream's wrappers, the fallback summary's `(<reason>)` suffixes, its re-authentication
+ *  remediation — decide before any phrasing rule.
+ *
+ *  A GENERIC WRAPPER NEVER NAMES THE CAUSE. Upstream wraps ANY preflight-compaction failure
+ *  in "Context is too large and auto-compaction could not recover this turn"
+ *  (agent-runner-failure-reply.ts:198-218) and drops the reason unless verbose details are
+ *  on (:213); the structured cause is lost earlier still (src/auto-reply/reply/agent-runner-
+ *  memory.ts:1096-1098 rethrows the string alone). So the cause inside is classified, and
+ *  when there is none the class says exactly that — `compaction_failed_no_cause`,
+ *  `run_failed_no_cause` — instead of letting the wrapper's first words become the label.
+ *
+ *  FAIL-SAFE by construction: ambiguous text yields null. A wrong class is worse than none —
+ *  `provider_internal` triggers an automatic retry, and retrying an auth or entitlement
+ *  failure burns quota and shows a misleading label. */
+export function classifyFailureText(raw: string | null | undefined): string | null {
+  if (!raw) return null;
+  const { wrapper, inner } = unwrapGatewayFailure(raw);
+  let cause = inner === null ? null : classifyFailureCause(inner);
+  // The gone-conversation proof is read on the WHOLE text: it is bound to the compaction
+  // wrapper's own clause (SESSION_GONE_REASON_RE), which unwrapping removes.
+  if (isSessionGoneText(raw)) cause = mostGrave([cause, "session_gone"]);
+  if (cause !== null) return cause;
+  if (wrapper === "compaction_timeout") return "compaction_timeout";
+  if (wrapper === "preflight_compaction") return "compaction_failed_no_cause";
+  if (wrapper === "run_failure") return "run_failed_no_cause";
+  return null;
 }
 
 /** The attempt failures upstream raises BEFORE the candidate executes anything, read at
@@ -602,55 +1267,27 @@ const PRE_EXECUTION_CLASSES: ReadonlySet<string> = new Set([
   "auth_profile_cooldown",
 ]);
 
+/** The provider-credential rules on text ALREADY stripped of operator values. */
+function credentialTextClassOf(text: string): string | null {
+  if (AUTH_401_TOKEN_REVOKED_RE.test(text) || MODEL_LOGIN_EXPIRED_RE.test(text)) {
+    return "provider_auth_revoked";
+  }
+  if (AUTH_PERMANENT_TEXT_RE.test(text) || PERMISSION_403_RE.test(text)) {
+    return "provider_permission_denied";
+  }
+  if (REAUTHENTICATE_HINT_RE.test(text)) return "provider_auth_failed";
+  return null;
+}
+
+/** The rules, IN `FAILURE_CLASS_PRECEDENCE` ORDER, on one sentence. */
 function classifySingleFailureText(raw: string): string | null {
   // A sentence that NAMES A CREDENTIAL gets exactly one possible class — the cooldown,
   // decided by fixed words — and otherwise none. Everything else in such a sentence is
   // operator data, and no pattern below may be applied to it (see `namesACredential`).
   const text = withoutOperatorData(raw);
-  if (CONTEXT_OVERFLOW_TEXT_RE.test(text)) return "context_length";
-  // Its OWN class, kept out of the automatic retry. Every other pattern below fires
-  // while the session is being STARTED, before the model generates anything — which
-  // is exactly what the retry relies on when it re-dispatches a zero-content turn
-  // (convex/turnRetry.ts). This sentence carries no such guarantee: upstream throws
-  // the SAME error before generation (run/session-bootstrap.ts
-  // prepareInitialSessionWriter, run/pre-persisted-user-turn.ts
-  // preparePersistedCurrentUserTurn) AND at transcript commits once the model has run
-  // (run/settled-turn-finalization.ts, the sqlite transcript writers), where tools may
-  // already have had external effects. The TEXT names neither moment (a refusal cause,
-  // when one is passed, follows ` <- ` as a JSON object of hashes), so this function
-  // returns the class sized for the worse one: a replay could repeat work the
-  // zero-content gate cannot see (codex). The STREAM does tell them apart — a
-  // generating run emits `lifecycle start` first — and the OpenClaw normalizer, which
-  // sees the frames, upgrades a rebound it can prove pre-generation to
-  // `session_init_conflict` (Normalizer.writeReboundBeforeGeneration).
-  if (WRITER_CLAIM_REBOUND_RE.test(text) || WRITER_FENCED_COPY_RE.test(text)) {
-    return "session_write_conflict";
-  }
-  // BEFORE the provider rule on purpose: its markers ("internal server error", a 5xx) can ride
-  // the same sentence, and a full disk read as a provider blip would be AUTO-RETRIED into the
-  // same wall (pinned in failure-classifier.test.ts). The graver class is tested first.
-  // AFTER the two storage classes and BEFORE the provider rule.
-  //
-  // After, because the contract above is that the graver class wins: a gateway whose
-  // disk is full can emit that sentence and this one in the same text, and naming the
-  // cooldown would hide the only thing an operator can act on (codex). Before, because
-  // this
-  // `provider_internal` is AUTO-RETRIED on a short backoff. Whether a retry is even
-  // ATTEMPTED upstream depends on the reason that opened the window: a probe is allowed
-  // for billing and for the transient ones — rate_limit, overloaded, unknown,
-  // empty_response, no_error_details, unclassified, timeout — and refused for
-  // model_not_found, format, auth, auth_permanent and session_expired
-  // (failover-policy.ts).
-  //
-  // TWO VOCABULARIES, and they are not the same one: the window is opened by an
-  // `AuthProfileFailureReason` (auth-profiles/types.ts, thirteen values), while the
-  // probe predicates take a `FailoverReason` (gateway-protocol/failover-reasons.ts,
-  // sixteen). `tls_certificate`, `server_error` and `context_overflow` exist only in
-  // the second, so they are refusals a probe can meet but never reasons a cooldown
-  // started from. An earlier version of this list conflated them (codex). The class does not
-  // say which of those it is, so a countdown promising recovery would be a guess shown
-  // as a schedule. The reader decides instead: this class is deliberately absent from
-  // RETRYABLE_KINDS.
+  // The gateway's HOST first: a full disk read as a provider blip would be AUTO-RETRIED into
+  // the same wall (pinned in failure-classifier.test.ts), and naming anything else beside it
+  // would hide the only thing an operator can act on (codex).
   if (GATEWAY_STORAGE_UNAVAILABLE_RE.test(text) || GATEWAY_HOST_STORAGE_FULL_RE.test(text)) {
     return "gateway_storage_unavailable";
   }
@@ -667,13 +1304,59 @@ function classifySingleFailureText(raw: string): string | null {
   // this one says the conversation is gone for good, and the two ask for opposite
   // things — a bounded retry into the same session, versus dropping it first.
   if (isSessionGoneText(text)) return "session_gone";
-  // AFTER the storage classes, like every other rule: the precedence above is that the
-  // graver class wins, and a gateway whose disk is full can report both facts in one
-  // text (codex).
+  // The provider ACCOUNT: a credential, a permission, billing. Every attempt fails the same
+  // way until an operator fixes it, so it is never `provider_internal` (auto-retried) nor a
+  // session conflict, and it outranks the overflow vocabulary — "Context is too large" is
+  // upstream's wrapper, not a context fact (agent-runner-failure-reply.ts:198-218).
+  const credential = credentialTextClassOf(text);
+  if (credential === "provider_auth_revoked" || credential === "provider_permission_denied") {
+    return credential;
+  }
+  if (BILLING_COPY_RE.test(text)) return "provider_billing";
+  if (credential !== null) return credential;
+  // The cooldown AFTER the credential classes: inside one sentence its fixed words keep only
+  // `Auth profile "…" is temporarily unavailable for …` (withoutOperatorData), so nothing
+  // else can match there; across a summary's attempts the revoked credential is the root
+  // cause the paused profile inherited.
+  //
+  // `provider_internal` is AUTO-RETRIED on a short backoff, and this class is not. Whether a
+  // retry is even ATTEMPTED upstream depends on the reason that opened the window: a probe
+  // is allowed for billing and for the transient ones — rate_limit, overloaded, unknown,
+  // empty_response, no_error_details, unclassified, timeout — and refused for
+  // model_not_found, format, auth, auth_permanent and session_expired (failover-policy.ts).
+  //
+  // TWO VOCABULARIES, and they are not the same one: the window is opened by an
+  // `AuthProfileFailureReason` (auth-profiles/types.ts, thirteen values), while the
+  // probe predicates take a `FailoverReason` (gateway-protocol/failover-reasons.ts,
+  // sixteen). `tls_certificate`, `server_error` and `context_overflow` exist only in
+  // the second, so they are refusals a probe can meet but never reasons a cooldown
+  // started from. An earlier version of this list conflated them (codex). The class does not
+  // say which of those it is, so a countdown promising recovery would be a guess shown
+  // as a schedule. The reader decides instead: this class is deliberately absent from
+  // RETRYABLE_KINDS.
   if (COOLDOWN_SENTENCE_RE.test(text)) return "auth_profile_cooldown";
+  if (MODEL_NOT_FOUND_COPY_RE.test(text)) return "model_not_found";
+  if (isContextOverflowText(text)) return "context_length";
+  // Its OWN class, kept out of the automatic retry. Every pattern below fires while the
+  // session is being STARTED, before the model generates anything — which is exactly what
+  // the retry relies on when it re-dispatches a zero-content turn (convex/turnRetry.ts).
+  // This sentence carries no such guarantee: upstream throws the SAME error before
+  // generation (run/session-bootstrap.ts prepareInitialSessionWriter, run/pre-persisted-
+  // user-turn.ts preparePersistedCurrentUserTurn) AND at transcript commits once the model
+  // has run (run/settled-turn-finalization.ts, the sqlite transcript writers), where tools
+  // may already have had external effects. The TEXT names neither moment (a refusal cause,
+  // when one is passed, follows ` <- ` as a JSON object of hashes), so this function
+  // returns the class sized for the worse one: a replay could repeat work the zero-content
+  // gate cannot see (codex). The STREAM does tell them apart — a generating run emits
+  // `lifecycle start` first — and the OpenClaw normalizer, which sees the frames, upgrades
+  // a rebound it can prove pre-generation to `session_init_conflict`
+  // (Normalizer.writeReboundBeforeGeneration).
+  if (WRITER_CLAIM_REBOUND_RE.test(text) || WRITER_FENCED_COPY_RE.test(text)) {
+    return "session_write_conflict";
+  }
   if (isSessionInitConflictText(text)) return "session_init_conflict";
   // THE SECOND DOOR. The same refusal reaches Atrium two ways: as a dispatch
-  // rejection (classified in dispatch-errors.ts:423) and as the FAILURE TEXT of a
+  // rejection (classified in dispatch-errors.ts) and as the FAILURE TEXT of a
   // turn already streaming — a run.status reason, a lifecycle error, a sub-agent's
   // own failure. Only the first was named, so an archived refusal arriving on the
   // wire fell to the generic bucket: `unclassified_error`, no card the reader can
@@ -686,6 +1369,7 @@ function classifySingleFailureText(raw: string): string | null {
   if (isSessionArchivedText(text)) return "session_archived";
   // Same place in both readers (dispatch-errors.ts), for the same reason.
   if (isProviderReviewPausedText(text)) return "session_paused_review";
+  if (RATE_LIMIT_COPY_RE.test(text)) return "rate_limit";
   if (PROVIDER_INTERNAL_TEXT_RE.test(text) && !PROVIDER_INTERNAL_EXCLUDE_RE.test(text)) {
     return "provider_internal";
   }

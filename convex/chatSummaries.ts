@@ -62,6 +62,7 @@ import {
 import { userTurnAuthorLabels } from "./lib/turnAuthors";
 import { AGENT_REQUEST_DELETE_READS, deleteChatAgentRequests } from "./agentRequests";
 import { isTrashed } from "./lib/trash";
+import { deletionTombstones, transcriptStoredText } from "./lib/transcriptProjection";
 import {
   BLOB_RELEASE_READS,
   releaseBlob,
@@ -210,10 +211,33 @@ async function sweepHiddenChatBatch(
   ) {
     return;
   }
+  // What the service session's transcript rows SAID: their own bounded purge, ids only,
+  // scheduled once per sweep (each row stays as a purged tombstone — `markPurged`) — only
+  // for a service conversation that ever stored row text (`transcriptStoredText`, on the
+  // chat just read): any other sweep does exactly what it did before phase 4.
+  if (after === 0 && transcriptStoredText(hidden)) {
+    // The finished job's texts only: the newest text stored by now bounds the purge — what
+    // is stored after it is a later job's (codex phase 4 pass 16). Nothing stored: no step.
+    const newest = await ctx.db
+      .query("transcriptRowTexts")
+      .withIndex("by_chat", (q) => q.eq("chatId", hiddenChatId))
+      .order("desc")
+      .first();
+    if (newest !== null) {
+      await ctx.scheduler.runAfter(0, internal.transcriptProjection.purgeChatRowTexts, {
+        chatId: hiddenChatId,
+        markPurged: true,
+        before: newest._creationTime,
+      });
+    }
+  }
   let budget = HIDDEN_SWEEP_BUDGET;
   let cursor = after;
   let streaming = sawStreaming;
+  // The tombstones of the replies this batch deletes (one follow-up per batch).
+  const tombs = deletionTombstones(ctx, hidden);
   const more = async () => {
+    await tombs.finish();
     await ctx.scheduler.runAfter(0, internal.chatSummaries.sweepHiddenChat, {
       hiddenChatId,
       after: cursor,
@@ -324,15 +348,26 @@ async function sweepHiddenChatBatch(
       });
     }
     budget -= 1;
+    // Projection `on`: a service reply deleted here is a deleted bubble like any other — its
+    // run is tombstoned (one insert, no read; nothing at all for a conversation that never
+    // stored text — the budget is left as it was then), so a late read of the same run
+    // never stores its text again nor makes the bubble again (codex phase 4 pass 6).
+    await tombs.add(m);
     await ctx.db.delete(m._id);
     if (budget <= 0) return more();
   }
 
+  // Every reply of this batch is deleted: its tombstones' follow-up, once.
+  await tombs.finish();
   // Ancillary CONTENT tables keyed by chat (mirror of cascadeDeleteChat): a
   // summarizer agent that spawned children / recorded interactions leaves copies
   // there too. Skipped while a streaming reply remains (its rows are live; the
   // next settle's sweep finishes the job).
   if (streaming) return;
+  // Projection `on`: what the service session's transcript rows SAID is purged in its OWN
+  // transactions (`purgeChatRowTexts`, scheduled once when the sweep starts), never in this
+  // one — a batch of texts on top of the messages read here passed 16 MiB (codex phase 4
+  // pass 9).
   // Settled outbox rows no message points back to any more (their message went
   // without them): copies of a prompt, like the rest. After the messages, and only
   // when no reply is streaming — a live reply's own row is left to its settle.

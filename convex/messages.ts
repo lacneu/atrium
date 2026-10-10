@@ -78,6 +78,7 @@ import { deleteMessageAgentRequests } from "./agentRequests";
 import { textIsYieldAcknowledgment, type YieldAckToolPart } from "./lib/toolOutcome";
 import { isTrashed } from "./lib/trash";
 import { releaseBlob, storageIdsOfPart } from "./lib/blobs";
+import { deletionTombstones } from "./lib/transcriptProjection";
 
 // Hard upper bound on how many recent messages the reactive feed loads. Chosen
 // to cover a typical visible conversation while keeping the query (and the
@@ -559,6 +560,16 @@ async function loadChatView(
           ...(message.authorUserId === undefined
             ? {}
             : { authorName: nameAt(message.authorUserId, writtenAtOf(message)) }),
+          // TRANSCRIPT PROJECTION `on` (phase 3): what the gateway does with this input
+          // (accepted / queued / steered / persisted / cancelled / interrupted).
+          ...(message.role === "user" && message.custody !== undefined
+            ? { custody: message.custody }
+            : {}),
+          // …and the bubble of a run that settled because an input was STEERED into it:
+          // what the run wrote before the cut (often tool work only).
+          ...(message.role === "assistant" && message.finalizeCause === "steer_segment"
+            ? { steerSegment: true }
+            : {}),
           // Written by the READER — what decides who may rewrite a queued turn
           // (only its author) without handing the client anybody's user id.
           ...(message.role === "user"
@@ -2136,6 +2147,9 @@ export const deleteMessage = mutation({
       .withIndex("by_chat", (q) => q.eq("chatId", chat._id))
       .collect();
     const deletedIds = new Set<string>();
+    // Projection `on`: the tombstones of this deletion — O(1) per answer here, the merges
+    // and purges in ONE scheduled follow-up (lib/transcriptProjection).
+    const tombs = deletionTombstones(ctx, chat);
     // The storage blobs the truncated rows named — released once every row is gone
     // (lib/blobs.releaseBlob), so a blob another message or a fork still shows stays.
     const releasedBlobs = new Set<Id<"_storage">>();
@@ -2187,9 +2201,12 @@ export const deleteMessage = mutation({
       if ((m.mentions?.length ?? 0) > 0) {
         await withdrawNotifications(ctx, `mention:${String(m._id)}`);
       }
+      await tombs.add(m);
       deletedIds.add(m._id);
       await ctx.db.delete(m._id);
     }
+
+    await tombs.finish();
 
     // Agent requests shown under a deleted turn go with it: the question or the
     // command they name belonged to that turn, and an open one could otherwise be

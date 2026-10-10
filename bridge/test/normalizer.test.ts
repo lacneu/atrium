@@ -1157,6 +1157,32 @@ describe("main-lane chat error/aborted terminalization (ChatErrorEventSchema)", 
     expect(final?.errorKind).toBe("pending_input_dropped");
   });
 
+  it("a REVOKED provider credential leaves the normalizer named, not as an overflow (prod 2026-10-02)", () => {
+    // The production frame: upstream's preflight-compaction headline around a 401 on an
+    // invalidated OAuth token, capped at the chat error's 240 characters (server-chat.ts).
+    const normalizer = newNormalizer();
+    const clock = new Clock();
+    normalizer.beginTurn(clock.now);
+    normalizer.noteRunStarted(OWN_RUN, clock.now);
+    const errorMessage = (
+      "⚠️ Context is too large and auto-compaction could not recover this turn. Reason: " +
+      "All models failed (2): openai/gpt-5.6-sol: 401: Encountered invalidated oauth token for user (auth) | " +
+      "openai/gpt-5.6-terra: 401: Encountered invalidated oauth token for user (auth). " +
+      "Re-authenticate with: openclaw models auth login --provider 'openai' --force. " +
+      "Try again, use /compact, or use /new to start a fresh session."
+    ).slice(0, 240);
+    const events = normalizer.feed(
+      {
+        type: "event",
+        event: "chat",
+        payload: { runId: OWN_RUN, sessionKey: SESSION_KEY, state: "error", errorMessage },
+      },
+      clock.tick(),
+    );
+    const final = events.find((e) => e.type === "message.final");
+    expect(final?.errorKind).toBe("provider_auth_revoked");
+  });
+
   it("the auth-profile COOLDOWN sentence classifies from bare text, as production sent it", () => {
     // The production frame carried NO errorKind — which is why the reader got an empty
     // bubble (feedback prod-ms7ed3bn…). This is the hop the per-hop tests do not cover
@@ -1264,8 +1290,23 @@ describe("main-lane chat error/aborted terminalization (ChatErrorEventSchema)", 
       "invalid_api_key: Incorrect API key provided",
       "HTTP 404: model not found",
       "insufficient_quota: You exceeded your current quota",
-      "All models failed (1): openai/gpt-5.5: 403 Forbidden",
     ];
+    // A provider 403 is a PERMISSION refusal now (0.91.3): named, and still never retried.
+    {
+      const n = newNormalizer();
+      const c = new Clock();
+      n.beginTurn(c.now);
+      n.noteRunStarted(OWN_RUN, c.now);
+      const events = n.feed(
+        chatFrame({
+          state: "error",
+          errorMessage: "All models failed (1): openai/gpt-5.5: 403 Forbidden",
+        }),
+        c.tick(),
+      );
+      const final = events.find((e) => e.type === "message.final");
+      expect(final?.errorKind).toBe("provider_permission_denied");
+    }
     for (const error of nonTransient) {
       const n = newNormalizer();
       const c = new Clock();

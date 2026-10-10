@@ -249,7 +249,92 @@ export interface SubAgentToolPartRecord {
  * internal stream mutation (see convex/stream.ts). All calls MUST be awaited in
  * order by the run-manager so appendDelta ordering is deterministic.
  */
+/** One transcript row, as identities (transcript redesign, phase 1). Provider-neutral:
+ *  the OpenClaw reader fills it (providers/openclaw/transcript-rows.ts). */
+export interface TranscriptRowReport {
+  entryId: string;
+  seq: number;
+  role: string;
+  runId?: string;
+  sendId?: string;
+  steerTargetRunId?: string;
+  mirrorOrigin?: string;
+  runTerminal?: boolean;
+  hidden: boolean;
+  visible: boolean;
+  toolCallIds?: string[];
+  /** Projection `on` (phase 4): what the row shows (display text, yield acknowledgment). */
+  text?: string;
+  yieldAck?: string;
+}
+
+/** What one transcript read posts (convex/transcriptProjection.ts `applyTranscript`). */
+export interface TranscriptApplyReport {
+  chatId: string;
+  sessionKey: string;
+  sessionId: string;
+  /** `live`: rows CU-16 admitted from `session.message` (phase 2) — rows only, never a
+   *  cursor, a floor or session state. */
+  kind: "page" | "delta" | "reset" | "live";
+  deltaCursor?: string;
+  rows: TranscriptRowReport[];
+  terminals: Array<{
+    runId: string;
+    status: "completed" | "error" | "aborted" | "timeout" | "yielded";
+    emptyFinal?: true;
+    at: number;
+  }>;
+  activeRunIds?: string[];
+  hasActiveRun?: boolean;
+  /** The session's queue modes (`sessionInfo.queueMode` / `effectiveQueueMode`). */
+  queueMode?: string;
+  effectiveQueueMode?: string;
+  unidentified: number;
+  /** When the read was ISSUED (epoch ms, strictly increasing per reconciler): Convex
+   *  never lets an older read replace the cursor or the session. */
+  readAt: number;
+  /** The sends this read asked the gateway about (`chat.history` `inputRunIds`). */
+  inputRunIds?: string[];
+  /** Projection `on` (phase 4): the runs the bridge's foreground turn owns. */
+  foregroundRunIds?: string[];
+  /** Projection `on` (phase 4): a `live` post carrying only row TEXT ahead of its read
+   *  (providers/openclaw/transcript-shadow.ts `chunkTextRows`). */
+  textsOnly?: boolean;
+  /** The gateway's custody of accepted inputs (`pendingInputs`), identity only. */
+  pendingInputs?: {
+    total: number;
+    queuedCount?: number;
+    /** The page was the whole list (see transcript-rows.ts PendingInputsFacts). */
+    complete?: true;
+    items: Array<{
+      runId?: string;
+      state: "queued" | "cancelled" | "interrupted";
+      queued?: true;
+    }>;
+  };
+  /** Receipts for the asked sends (`inputReceipts`). */
+  inputReceipts?: Array<{
+    runId: string;
+    state: "pending" | "consumed";
+    queued?: true;
+    cancelled?: true;
+  }>;
+  /** Asked sends, ACKed before the read was issued, for which the gateway answered NO
+   *  receipt at all (an exact queried absence). */
+  inputAbsent?: string[];
+  /** Asked sends whose receipt the reply carried but Atrium could not interpret (an
+   *  unknown state): observed, never absent. */
+  inputUnreadable?: string[];
+}
+
 export interface ConvexWriter {
+  /** THE TRANSCRIPT PROJECTION (phase 1, shadow): record one `chat.history` read as
+   *  identities. Never touches a message. Optional: fakes that predate it skip it. */
+  /** Resolves to Convex's answer (phase 4: `settledRuns`, the runs the projection found
+   *  over); void on fakes that predate it. */
+  applyTranscript?(
+    report: TranscriptApplyReport,
+  ): Promise<{ ok?: boolean; reason?: string; settledRuns?: unknown } | void>;
   /** run start -> internal.stream.startAssistant; returns the new message id,
    *  or NULL when the run has nowhere to land — the user stopped the work this
    *  delivery carries, so it is dropped whole and nothing that follows it
@@ -263,9 +348,47 @@ export interface ConvexWriter {
     /** The OUTBOX row this turn was dispatched from (correlation for
      *  outboxReconcile); null on a gateway-initiated turn. */
     dispatchOutboxId?: string | null,
+    /** Projection `on` (phase 4): the run's bubble opens AFTER steered inputs already
+     *  cut it (CU-20) — it is that segment, not the run's first. */
+    runSegment?: number,
   ): Promise<string | null>;
+  /** PROJECTION `on` (phase 3, CU-20): settle this run's live bubble at a steered input
+   *  and open the next segment after `afterMessageId`; returns the new segment's id, or
+   *  null when the bubble was no longer streaming. Optional: fakes that predate it skip
+   *  the split (the run then keeps one bubble). */
+  splitSegment?(
+    messageId: string,
+    afterMessageId: string | null,
+    /** The settling segment's whole text (authoritative, like a finalize's). */
+    text?: string,
+  ): Promise<string | null>;
+  /** PROJECTION `on` (phase 3, CU-8): a distinct late final of a settled run. */
+  appendLateFinal?(args: {
+    chatId: string;
+    runId: string;
+    messageId: string | null;
+    text: string;
+    sessionKey: string | null;
+  }): Promise<string | null>;
   /** message.delta -> internal.stream.appendDelta. */
   appendDelta(messageId: string, text: string): Promise<void>;
+  /** The bubble the TRANSCRIPT made for a run (projection `on`, codex phase 4 pass 21):
+   *  a run closed by the transcript before its bubble opened here still delivers its
+   *  media and terminal — onto that bubble. Verified by Convex against this bridge's
+   *  bound instance, the chat, the session, the run and its segment. Null when none. */
+  findProjectedBubble?(chatId: string, sessionKey: string, runId: string, segment: number): Promise<string | null>;
+  /** The LIVE terminal of a run the transcript already closed (run-manager
+   *  `reconcileTranscriptClosed`, codex phase 4 pass 18): carries THAT run's generation
+   *  explicitly — the bubble may belong to another run by now (an announce took it
+   *  over) — and touches no per-message writer state (another generation's buffers). */
+  finalizeClosedRun?(
+    messageId: string,
+    runId: string,
+    status: FinalizeStatus,
+    error: string | null,
+    errorKind: string | null,
+    finalizeCause: string,
+  ): Promise<void>;
   /** The compaction VERDICT (G-08): the last compaction failed for good, so the
    *  session never shrank and the NEXT turn is likely to hit the context wall.
    *  Chat-scoped on purpose — it must outlive the turn that observed it. */
@@ -347,6 +470,15 @@ export interface ConvexWriter {
       costUsd?: number | null;
       toolCalls?: number;
       compaction: string | null;
+      /** Whether this turn HAD a pre-send describe to read its pressure from
+       *  (`presend_describe`), or none at all (`absent` — a gateway-initiated run
+       *  opens without one, and the gateway stamps no usage on its agent events). The
+       *  null counters then mean "never measured", not "telemetry lost". */
+      pressureSource?: "presend_describe" | "absent";
+      /** Who started this turn: an Atrium dispatch (an outbox row), or the gateway
+       *  itself (an announce/requester-settle delivery, a talk consult, any other
+       *  spontaneous run). */
+      turnOrigin?: "dispatch" | "gateway_initiated";
       /** The send path's fill reading AND the figure it came from. Sent rather
        *  than recomputed in Convex: a percentage stripped of its provenance
        *  cannot be told apart from a gateway-measured one. */
@@ -429,6 +561,9 @@ export interface ConvexWriter {
         /** Generation of the turn that started this upload — a late attach must not
      *  inherit whatever generation now owns the message (see the impl note). */
     runId?: string | null;
+    /** PROJECTION `on` only: tell Convex an upload into this message has started, so a
+     *  file job the transcript settled waits for it (codex phase 4 pass 22). */
+    markUpload?: boolean;
   },
   ): Promise<boolean>;
   /** media.undelivered -> a SOC2-safe `openclaw.media` dropped diagnostic (NO part):
@@ -660,11 +795,16 @@ export interface SessionRosterReport {
  * the error's class name and the frame's shape — never the message, which can quote
  * content. As a plain `Error` a refused write read exactly like a bug in the bridge's own
  * reader: production showed `«exception».Error@feed.agent` and nothing said which side
- * failed. The class says it; the op and status stay on the instance for the log line.
+ * failed. The class says it, and the sensor adds the op and the status — both structural
+ * (`ConvexIngestError.<op>.<status|timeout>`), so the sample says WHICH write Convex
+ * refused, and how.
  */
 export class ConvexIngestError extends Error {
   constructor(
-    readonly op: string,
+    /** The ingest op — a compile-time literal of `IngestOp`, never wire text: the
+     *  reader-exception sensor names it in the drift report. */
+    readonly op: IngestOp["op"],
+    /** Convex's HTTP status, or null when it never answered (the write timed out). */
     readonly status: number | null,
     message: string,
   ) {
@@ -760,6 +900,7 @@ type IngestOp =
       runId: string | null;
       sessionKey?: string | null;
       dispatchOutboxId?: string | null;
+      runSegment?: number;
     }
   // Delivery recorder clock calibration: a lightweight round-trip (no server writes)
   // so the measured RTT is free of server work -> a clean skew. See deliveryTiming.ts.
@@ -853,7 +994,13 @@ type IngestOp =
   //   2. the bridge STREAMS the raw file bytes straight to that URL (not an ingest
   //      op — a direct binary POST; the server-side fs path NEVER reaches Convex)
   //   3. addMediaPart -> persist the returned storageId as a kind:media part
-  | { op: "getUploadUrl" }
+  | {
+      op: "getUploadUrl";
+      /** PROJECTION `on`: the upload's destination and the window it may take. */
+      messageId?: string;
+      runId?: string | null;
+      uploadWindowMs?: number;
+    }
   | {
       op: "addMediaPart";
       messageId: string;
@@ -927,6 +1074,16 @@ type IngestOp =
        *  The ID, not a flag: it narrows the drop to the binding this turn actually had. */
       clearProviderSession?: string;
       recoverableSession?: boolean;
+      /** Projection `on`: a complete terminal with nothing visible leaves no bubble. */
+      dropIfEmpty?: boolean;
+    }
+  // The bubble the transcript made for a closed run (projection `on`, phase 4).
+  | {
+      op: "projectedBubble";
+      chatId: string;
+      sessionKey: string;
+      runId: string;
+      segment: number;
     }
   // Session re-hydration READ: fetch a bounded block of this chat's prior turns
   // (excluding the current message) to prepend when the OpenClaw session is fresh.
@@ -960,6 +1117,15 @@ type IngestOp =
     }
   | { op: "updateRunId"; messageId: string; runId: string }
   | { op: "heartbeat"; messageId: string }
+  | { op: "splitSegment"; messageId: string; afterMessageId: string | null; text?: string }
+  | {
+      op: "appendLateFinal";
+      chatId: string;
+      runId: string;
+      messageId: string | null;
+      text: string;
+      sessionKey: string | null;
+    }
   // Sub-agent observation upsert (inbound-only). Keyed by childSessionKey; NOT
   // message-scoped (a child outlives the parent turn). resultText is server-path
   // stripped by the observer before it reaches here.
@@ -1005,7 +1171,8 @@ type IngestOp =
       errorMessage?: string;
     }
   | ({ op: "upsertAgentRequest" } & AgentRequestRecord)
-  | ({ op: "settleAgentRequest" } & AgentRequestSettle);
+  | ({ op: "settleAgentRequest" } & AgentRequestSettle)
+  | ({ op: "applyTranscript" } & TranscriptApplyReport);
 
 export interface HttpConvexWriterOptions {
   /** Convex httpActions base URL (the `.site` origin). */
@@ -1139,6 +1306,10 @@ const RETRY_BACKOFF_MS: readonly number[] = [500, 2_000];
  * the turn's fate out of the transfer's hands.
  */
 const UPLOAD_TIMEOUT_MS = 5 * 60_000;
+/** How long ONE upload may hold a projected file job (`getUploadUrl` `uploadWindowMs`):
+ *  its byte transfer's own timeout plus the part write that follows it. Convex caps it
+ *  (convex/stream.ts UPLOAD_MARKER_MAX_MS) and caps the whole wait. */
+export const UPLOAD_MARKER_WINDOW_MS = UPLOAD_TIMEOUT_MS + WRITE_TIMEOUT_MS;
 // Hard cap on ONE message's un-flushed delta buffer (chars). A sustained Convex
 // outage would otherwise grow it without bound -> OOM (which the process safety
 // net CANNOT catch). The turn's setSnapshot/finalize carries the FULL text, so
@@ -1258,6 +1429,10 @@ export class HttpConvexWriter implements ConvexWriter {
     // and the agent waited on a card nobody could see.
     "upsertAgentRequest",
     "settleAgentRequest",
+    // The steer cut (projection `on`): a repeat of a split that committed answers the
+    // segment it opened (convex/stream.ts `splitSegment`), so a lost answer is retried
+    // instead of leaving the turn on the settled segment (codex pass 4).
+    "splitSegment",
   ]);
 
   /** `doPost`, retried on TRANSIENT failures when the op is idempotent. */
@@ -1442,6 +1617,39 @@ export class HttpConvexWriter implements ConvexWriter {
     return (await response.json()) as T;
   }
 
+  async findProjectedBubble(chatId: string, sessionKey: string, runId: string, segment: number): Promise<string | null> {
+    const res = await this.post<{ messageId?: string | null }>({
+      op: "projectedBubble",
+      chatId,
+      sessionKey,
+      runId,
+      segment,
+    });
+    return typeof res?.messageId === "string" ? res.messageId : null;
+  }
+
+  async finalizeClosedRun(
+    messageId: string,
+    runId: string,
+    status: FinalizeStatus,
+    error: string | null,
+    errorKind: string | null,
+    finalizeCause: string,
+  ): Promise<void> {
+    // No flush, no `forgetMessage`: those belong to whichever generation streams into
+    // the message now. The run id is this run's, never `genTag(messageId)`.
+    await this.post({
+      op: "finalize",
+      messageId,
+      status,
+      text: "",
+      error,
+      errorKind,
+      ...{ finalizeCause },
+      runId,
+    });
+  }
+
   async startAssistant(
     chatId: string,
     runId: string | null,
@@ -1451,6 +1659,7 @@ export class HttpConvexWriter implements ConvexWriter {
      *  Null on gateway-initiated turns (announce/task deliveries, talk), which is
      *  itself the signal that no queued send is waiting on them. */
     dispatchOutboxId?: string | null,
+    runSegment?: number,
   ): Promise<string> {
     const ack = await this.post<{
       messageId: string;
@@ -1461,6 +1670,7 @@ export class HttpConvexWriter implements ConvexWriter {
       runId,
       sessionKey: sessionKey ?? null,
       dispatchOutboxId: dispatchOutboxId ?? null,
+      ...(runSegment !== undefined && runSegment > 0 ? { runSegment } : {}),
     });
     this.runByMessage.set(ack.messageId, runId);
     // Delivery recorder: learn ONCE per turn the recording session (if any) to tag
@@ -1977,6 +2187,11 @@ export class HttpConvexWriter implements ConvexWriter {
        *  into whatever generation now owns the message — an announce's reply could
        *  inherit the previous turn's attachment (codex P2). */
       runId?: string | null;
+      /** PROJECTION `on` only (codex phase 4 pass 22): the upload-start signal carries
+       *  the message and this writer's own delivery window (UPLOAD_MARKER_WINDOW_MS), so
+       *  a file job the transcript settled waits for the bytes instead of judging the
+       *  job without them. Never set for a conversation that is not projected. */
+      markUpload?: boolean;
     },
   ): Promise<boolean> {
     // NOT ON A REPAIR (codex P1). This set is this PROCESS's memory of what it
@@ -2040,6 +2255,9 @@ export class HttpConvexWriter implements ConvexWriter {
       const mimeType = media.mimeType ?? opened.mimeType;
       const { uploadUrl } = await this.post<{ uploadUrl: string }>({
         op: "getUploadUrl",
+        ...(media.markUpload === true
+          ? { messageId, runId: media.runId ?? null, uploadWindowMs: UPLOAD_MARKER_WINDOW_MS }
+          : {}),
       });
       // The getUploadUrl await is the window where the just-opened fs stream can
       // fail (file removed after the stat, EACCES). If it errored BEFORE we start
@@ -2321,6 +2539,8 @@ export class HttpConvexWriter implements ConvexWriter {
        *  message it explains does not — and which fires conditionally, so an
        *  ordinary terminal was computed and written nowhere. */
       finalizeCause?: string | null;
+      /** Projection `on` (phase 3): nothing visible ⇒ no bubble (stream.finalize). */
+      dropIfEmpty?: boolean;
     },
   ): Promise<void> {
     try {
@@ -2343,6 +2563,7 @@ export class HttpConvexWriter implements ConvexWriter {
         ...(typeof opts?.finalizeCause === "string" && opts.finalizeCause !== ""
           ? { finalizeCause: opts.finalizeCause }
           : {}),
+        ...(opts?.dropIfEmpty === true ? { dropIfEmpty: true } : {}),
         ...this.genTag(messageId),
       });
       // The finalize is the LAST write (it stamps the message's updatedAt) — its
@@ -2418,6 +2639,45 @@ export class HttpConvexWriter implements ConvexWriter {
       // Best-effort liveness: a missed beat only risks the 12-min watchdog,
       // never the turn.
     });
+  }
+
+  async splitSegment(
+    messageId: string,
+    afterMessageId: string | null,
+    text?: string,
+  ): Promise<string | null> {
+    if (text === undefined) {
+      // Everything streamed so far belongs to the segment that settles.
+      await this.flushDelta(messageId);
+    } else {
+      // The cut carries the segment's whole text and settles it with that, so a stream
+      // write that failed — or committed with its answer lost — is superseded rather
+      // than replayed onto it (codex pass 5). Its ordering still holds: the flush goes
+      // first on this message's chain, and its failure no longer blocks the cut.
+      await this.flushDelta(messageId).catch(() => undefined);
+      this.pendingDelta.delete(messageId);
+    }
+    const run = this.runByMessage.get(messageId);
+    const ack = await this.post<{ messageId: string | null }>({
+      op: "splitSegment",
+      messageId,
+      afterMessageId,
+      ...(text === undefined ? {} : { text }),
+    });
+    this.forgetMessage(messageId);
+    if (ack.messageId !== null && run !== undefined) this.runByMessage.set(ack.messageId, run);
+    return ack.messageId;
+  }
+
+  async appendLateFinal(args: {
+    chatId: string;
+    runId: string;
+    messageId: string | null;
+    text: string;
+    sessionKey: string | null;
+  }): Promise<string | null> {
+    const ack = await this.post<{ messageId: string | null }>({ op: "appendLateFinal", ...args });
+    return ack.messageId ?? null;
   }
 
   async updateRunId(messageId: string, runId: string): Promise<void> {
@@ -2578,5 +2838,17 @@ export class HttpConvexWriter implements ConvexWriter {
 
   async settleAgentRequest(settle: AgentRequestSettle): Promise<void> {
     await this.doPostWithRetry({ op: "settleAgentRequest", ...settle });
+  }
+
+  async applyTranscript(
+    report: TranscriptApplyReport,
+  ): Promise<{ ok?: boolean; reason?: string; settledRuns?: unknown }> {
+    // OFF the per-message chain, like the session meta: a transcript read is keyed by
+    // session, not message, and a slow one must never delay a turn's ordered writes.
+    const res = await this.doPost<{ ok?: boolean; reason?: string; settledRuns?: unknown } | null>({
+      op: "applyTranscript",
+      ...report,
+    });
+    return res ?? {};
   }
 }

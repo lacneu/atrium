@@ -23,6 +23,7 @@ import type { Filter } from "./lib/filters";
 import { enrichTraceByCorrelation } from "./integrations/enrich";
 import { langfuseConfig, opikConfig } from "./integrations/config";
 import { assessChat } from "./lib/diagnose";
+import { projectionForDiagnose } from "./lib/transcriptProjection";
 import { listSchemas, getSchema } from "./lib/schemaRegistry";
 import { DEPLOYED_VERSION } from "./version";
 import type { WidgetViewAuthorization } from "./widgets";
@@ -590,6 +591,13 @@ http.route({
       {},
     );
     const assessment = assessChat(chatState, availability);
+    // THE TRANSCRIPT PROJECTION (redesign phase 1): the projection ↔ bubble gaps
+    // (invariants I1–I3) for a chat whose instance reads the transcript back (shadow).
+    // Identities and counts only — never content. Reported BESIDE the assessment, not
+    // folded into it: in shadow mode the projection measures, it does not decide.
+    // Its OWN query (own read budget) and never fatal: a projection that cannot be
+    // computed is reported `unavailable`; the diagnosis stands.
+    const projection = await projectionForDiagnose(ctx, chatId);
     // SOC2 access log (CC6.1/CC7.2), mirroring /chat-state: WHO diagnosed WHICH chat
     // + the structural verdict (class/severity only — never content). Attributes the
     // read to the chat so a key enumerating chatIds is detectable.
@@ -609,7 +617,7 @@ http.route({
         severity: assessment.severity,
       }),
     });
-    return apiJson({ ok: true, assessment, chatState, availability });
+    return apiJson({ ok: true, assessment, chatState, availability, projection });
   }),
 });
 

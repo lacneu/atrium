@@ -27,8 +27,10 @@ import { HermesDashboardAbsentError } from "../providers/hermes/files-fetcher.js
 import { SubAgentReplyPendingError, TalkCallActiveError } from "../session.js";
 import { PermissionModeNotAppliedError } from "../providers/openclaw/permission-mode.js";
 import { KnowledgePolicyNotAppliedError } from "../providers/openclaw/knowledge-policy.js";
+import { GatewayVersionUnsupportedError } from "../providers/openclaw/version-floor.js";
 import {
   gatewayOwnRefusal,
+  providerCredentialTextClass,
   isProviderReviewPausedText,
   isSessionArchivedText,
   isSessionInitConflictText,
@@ -157,6 +159,11 @@ export type DispatchErrorCode =
   // turn never searches sources the owner turned off. Not retried: the same refusal
   // would repeat. Lower-case like the other codes Convex reads.
   | "knowledge_policy_not_applied"
+  // THE BRIDGE refused to send: the gateway's live version is below the supported floor
+  // (2026.8.2, OPENCLAW_MIN_SUPPORTED). Nothing was sent; the gateway must be upgraded.
+  // Not retried: the same gateway refuses the same way until it is upgraded. Lower-case
+  // like the other codes Convex reads.
+  | "gateway_version_unsupported"
   // The gateway's HOST storage refused the work (a full disk, a read-only database, an I/O
   // failure) — the same class, spelled the same way, as the turn-level one the frame
   // classifier mints (core/failure-classifier.ts), so the card, the anomaly plane and the
@@ -173,6 +180,23 @@ export type DispatchErrorCode =
   // request the gateway had plainly answered. Not retried: the refusal lasts until the
   // gateway's operator acts (or its startup inspection finishes).
   | "gateway_agent_db_closed"
+  // The MODEL PROVIDER refused this agent's credential as revoked or expired (the
+  // gateway's `Re-authenticate with:` hint, or a `401 … invalidated|expired|revoked …
+  // token` refusal — core/failure-classifier.ts `isProviderAuthRevokedText`). The same
+  // class, spelled the same way, as the turn-level one, so the card, the anomaly plane and
+  // the retry policy key on one string whichever door it came through. Normally it comes
+  // back on the STREAM — the provider is called after `chat.send` is admitted — and this
+  // door exists so a refusal surfaced by the RPC itself is not read as OUR credentials
+  // (`AUTH_TOKEN_MISMATCH` would paint the bridge red for a provider's revocation). Never
+  // retried: every attempt fails the same way until an operator fixes the agent's credential.
+  | "provider_auth_revoked"
+  // The SAME door for the two other credential classes (core/failure-classifier.ts
+  // `providerCredentialTextClass`): the provider refused the account's PERMISSION (a 403,
+  // `auth_permanent` — reconnecting the same account does not help), or refused the
+  // credential without saying how (the gateway's `Re-authenticate with:` hint alone, which
+  // upstream appends for both). Never retried, for the same reason.
+  | "provider_permission_denied"
+  | "provider_auth_failed"
   | "UPSTREAM_ERROR"; // anything else (fallback)
 
 /**
@@ -226,6 +250,9 @@ const LOCAL_REFUSAL_CODES: ReadonlySet<DispatchErrorCode> = new Set([
   "permission_mode_not_applied",
   // Same, for the conversation's knowledge choice.
   "knowledge_policy_not_applied",
+  // We refused a gateway below the supported floor. Its link answered (the version came
+  // from its own handshake); its age is not a health fault of the bridge.
+  "gateway_version_unsupported",
 ]);
 
 // Codes where the gateway DEMONSTRABLY responded and refused this specific request
@@ -268,6 +295,11 @@ const DOWNSTREAM_REJECTION_CODES: ReadonlySet<DispatchErrorCode> = new Set([
   // gateway host must never paint the bridge red.
   "gateway_storage_unavailable",
   "gateway_agent_db_closed",
+  // The gateway reached the MODEL PROVIDER, which refused the agent's credential: the
+  // bridge's link and its own credentials worked.
+  "provider_auth_revoked",
+  "provider_permission_denied",
+  "provider_auth_failed",
 ]);
 
 /**
@@ -365,6 +397,8 @@ export function classifyGatewayError(
   if (err instanceof PermissionModeNotAppliedError) return "permission_mode_not_applied";
   // …and the conversation's knowledge choice, by TYPE.
   if (err instanceof KnowledgePolicyNotAppliedError) return "knowledge_policy_not_applied";
+  // …and a gateway below the supported floor, by TYPE.
+  if (err instanceof GatewayVersionUnsupportedError) return "gateway_version_unsupported";
   // OUR OWN inbound-media refusal, by TYPE for the same reason. Only the BATCH
   // failures reach here — a size/collision/fetch failure drops that one file and
   // the send continues (`RECOVERABLE_DROP_FAILURES`) — but the size class is
@@ -390,6 +424,17 @@ export function classifyGatewayError(
   // retry and blaming the bridge (codex).
   const msg = withoutOperatorData(errorChainText(err)).toLowerCase();
 
+  // BEFORE the gateway-credential rule just below: a provider's refusal can say
+  // "unauthorized", and read there it blamed the bridge's own pairing for an agent
+  // credential the PROVIDER revoked.
+  const credential = providerCredentialTextClass(msg, { requireProviderEvidence: true });
+  if (
+    credential === "provider_auth_revoked" ||
+    credential === "provider_permission_denied" ||
+    credential === "provider_auth_failed"
+  ) {
+    return credential;
+  }
   if (
     /no longer exists|agent[^.]*not found|unknown agent|no such agent/.test(msg)
   ) {

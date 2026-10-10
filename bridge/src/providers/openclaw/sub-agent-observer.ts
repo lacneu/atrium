@@ -38,7 +38,7 @@ import {
 import { isDeliveryRunId } from "../../core/async-task.js";
 import {
   classifyFailureText,
-  GATEWAY_CHAT_ERROR_KINDS,
+  classifyStructuredFailure,
 } from "../../core/failure-classifier.js";
 import {
   childChatTerminalStatus,
@@ -682,11 +682,14 @@ export class SubAgentObserver {
           // when the ceiling was the spawn's own `runTimeoutSeconds`, and that the
           // classifier cannot class at all. Unread, the reader got that sentence
           // cut at 120 characters (prod 2026-09-27, a 900 s child).
-          const kind = readString(payload, "errorKind");
+          // …then the provider observation beside it (`errorDetail`, the same structured
+          // read as the turn normalizer's — one function, so the two readers of one frame
+          // cannot disagree), and the sentence last.
           const code =
-            kind !== null && GATEWAY_CHAT_ERROR_KINDS.has(kind)
-              ? kind
-              : classifyFailureText(reason);
+            classifyStructuredFailure({
+              errorKind: readString(payload, "errorKind"),
+              errorDetail: readField(payload, "errorDetail"),
+            }) ?? classifyFailureText(reason);
           if (code) rec.errorCode = code;
         }
         return [...meta, rec];

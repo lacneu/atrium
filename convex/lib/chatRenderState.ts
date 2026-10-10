@@ -122,7 +122,36 @@ export const KNOWN_ERROR_CODES = [
   "permission_mode_not_applied",
   // Same, for the owner's knowledge-source choice (convex/knowledge.ts).
   "knowledge_policy_not_applied",
+  // The bridge refused a gateway below the supported floor (2026.8.2, release 0.92.0).
+  "gateway_version_unsupported",
   "auth_profile_cooldown",
+  // The MODEL PROVIDER refused the agent's credential as revoked or expired (prod
+  // 2026-10-02: three turns shown as "context too large", the cause a 401 on an
+  // invalidated OAuth token). Named so the card says an administrator must reconnect the
+  // agent, and so the per-cause plane raises it on the first occurrence.
+  "provider_auth_revoked",
+  // The two other credential refusals (0.91.3). Upstream's `Re-authenticate with:` hint and
+  // its `auth` reason cover a 403, a region, a deactivated workspace as well as a 401, and
+  // telling the reader "your access expired, reconnect" is true for only one of them:
+  // `provider_permission_denied` = the provider refuses this account's RIGHTS (403,
+  // `auth_permanent`); `provider_auth_failed` = it refused the credential and nothing says how.
+  "provider_permission_denied",
+  "provider_auth_failed",
+  // The provider account is out of credit or quota (failoverReason `billing`), and the
+  // configured model does not exist for it (`model_not_found`): every turn of the agent fails
+  // the same way until an operator acts, so each is named rather than folded into `unknown`.
+  "provider_billing",
+  "model_not_found",
+  // An operator logged the provider out on the gateway, which aborted the run
+  // (`stopReason: "auth-revoked"`): named, so it never reads as the reader's own Stop.
+  "provider_access_removed",
+  // Upstream's GENERIC wrappers with no cause inside — "Context is too large and
+  // auto-compaction could not recover this turn" without its verbose `Reason:`, "Something
+  // went wrong while processing your request", "Agent failed before reply: <unrecognized>".
+  // Named for what they are: the gateway withheld the cause. Neither is `unclassified_error`,
+  // which says WE recognized nothing; here we recognized the wrapper and it carried nothing.
+  "compaction_failed_no_cause",
+  "run_failed_no_cause",
   // The gateway DROPPED the user's admitted input: a concurrent run (a requester-settle
   // wake, prod 2026-09-28) replaced the conversation's active branch before the input
   // was promoted, so nothing was processed. Named, so the card can say "send it again"
@@ -202,6 +231,18 @@ export const KNOWN_ERROR_CODES = [
   "ATTACHMENT_TOO_LARGE",
   "ATTACHMENT_REJECTED",
 ] as const;
+
+/** The failure classes whose remedy is per AGENT and per PROVIDER account: every turn of that
+ *  agent fails the same way until an operator acts on the gateway. The finalize names the agent
+ *  (and the provider the re-authentication hint names) on the trace for these only, so the
+ *  anomaly says where to look — ids, never text. */
+export const PER_AGENT_FAILURE_CAUSES: ReadonlySet<string> = new Set([
+  "provider_auth_revoked",
+  "provider_permission_denied",
+  "provider_auth_failed",
+  "provider_billing",
+  "model_not_found",
+]);
 
 export function normalizeMessageErrorCode(
   error: string | null | undefined,
@@ -402,4 +443,21 @@ export function maskCredentialId<T extends string | undefined | null>(text: T): 
   // cutting there left it stored, served and exported (codex).
   const firstQuote = text.indexOf('"');
   return (firstQuote === -1 ? text : `${text.slice(0, firstQuote + 1)}…`) as T;
+}
+
+/** A provider id as upstream spells one — the only shape `reauthProviderFromText` returns. */
+const PROVIDER_ID_RE = /^[a-z0-9][a-z0-9._-]{0,63}$/i;
+
+/** The PROVIDER the gateway's `Re-authenticate with: openclaw models auth login --provider
+ *  '<id>' --force` hint names (src/agents/failover-error.ts:504-520
+ *  `buildProviderReauthCommand`, POSIX-quoted), or null. An operator's configuration value,
+ *  not conversation content — returned only when it has a provider id's shape, so it can
+ *  ride the anomaly evidence that tells the operator which provider to inspect. */
+export function reauthProviderFromText(text: string | null | undefined): string | null {
+  if (!text) return null;
+  const hint = /\bre-authenticate with:\s[^|\n]*?--provider\s+(?:'([^'\n]{1,64})'|([^\s'"]{1,64}))/i.exec(
+    text,
+  );
+  const provider = hint?.[1] ?? hint?.[2] ?? null;
+  return provider !== null && PROVIDER_ID_RE.test(provider) ? provider : null;
 }

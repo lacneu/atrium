@@ -447,7 +447,7 @@ function ProviderCard({
         {verdict ? (
           <Badge
             variant={
-              verdict === "beyond" || verdict === "defective"
+              verdict === "beyond" || verdict === "defective" || verdict === "unsupported"
                 ? "destructive"
                 : "secondary"
             }
@@ -671,7 +671,9 @@ function ProviderCompat({
                 variant={
                   r.state === "supported"
                     ? "secondary"
-                    : r.state === "beyond" || r.state === "defective"
+                    : r.state === "beyond" ||
+                        r.state === "defective" ||
+                        r.state === "unsupported"
                       ? "destructive"
                       : "outline"
                 }

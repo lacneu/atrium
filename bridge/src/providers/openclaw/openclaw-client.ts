@@ -35,6 +35,8 @@ import { readConfigChanged, type ConfigChangedNotice } from "./config-changed.js
 import { buildIdentityHeaders, type GatewayIdentity } from "./gateway-identity.js";
 import type { RosterEntry } from "./models-roster.js";
 import { decodeInboundFrame, protocolDrift } from "./protocol-drift.js";
+import { LiveTextBaselines, type LiveTextGap } from "./live-text-baseline.js";
+import { chatHistoryParams } from "../../core/rpc-params.js";
 import {
   SecretAnswerRedactor,
   redactAllQuestionAnswers,
@@ -850,7 +852,13 @@ export class OpenClawConnection {
     // THE SHARED SOCKET. Every chat rides this connection, so an unreadable frame that
     // threw out of the callback took all of them with it — and said nothing.
     const decoded = decodeInboundFrame(raw, "openclaw-ws-parse");
-    if (decoded === null) return; // unreadable frame: reported inside, then dropped
+    if (decoded === null) {
+      // Unreadable frame: reported inside, then dropped. It may have been an append of a
+      // live reply, and nothing in it says which run: every baseline of this socket is
+      // retired, so the next append re-reads instead of extending a prefix with a hole.
+      this.liveText.invalidate();
+      return;
+    }
     frame = decoded;
     // DEV-ONLY ground-truth frame capture (see captureFrame): the FULL untruncated
     // frame exactly as received — fixture + version-diagnosis material. No-op unless
@@ -903,7 +911,27 @@ export class OpenClawConnection {
       // lost may have been its `config.changed` (sent `dropIfSlow`): the epoch moves,
       // here where both the sequence tracker and the epoch live. Free — no request.
       this.rosterEpoch += 1;
+      // The frame lost may have been an APPEND of a live reply (2026.9.7): a hole in the
+      // envelope says nothing about which run, so every baseline is retired BEFORE this
+      // frame is projected — an append now re-reads rather than skipping the lost text.
+      this.liveText.invalidate();
     }
+    // APPEND-ONLY LIVE TEXT (OpenClaw 2026.9.7+): restore the cumulative `message` /
+    // `data.text` the gateway now sends once per socket, BEFORE any reader — the
+    // capture above keeps the raw wire. Identity on a gateway that sends it every time.
+    const projected = this.liveText.project(frame);
+    frame = projected.frame;
+    if (projected.gap !== null) this.onLiveTextGap(projected.gap);
+    // The queue holds the REBUILT frame, so it is weighed as one: a small append that came
+    // in as a few bytes leaves carrying the whole reply so far. Counting the wire bytes
+    // alone let a stalled consumer of a long reply hold many cumulative snapshots while
+    // MAX_INBOUND_BYTES saw only the fragments. The projection reports the text it added,
+    // carried forward per delta (O(delta), no re-serialisation). Queued snapshots of one
+    // run are NOT coalesced: the normalizer reads each frame as an event in its own right
+    // (seq dedup, the finishing grace that slides on every write, the recovery revocation
+    // in applyVisible), so dropping intermediates would change a reading, not just its
+    // cost — and overflow already has its safe failure, the close plus transcript recovery.
+    const queuedBytes = wireBytes + projected.addedBytes;
     // `config.changed` (config-changed.ts) is reported to the roster policy, then queued
     // UNCHANGED like any other frame (observe-only: the normalizer drops it, the drift
     // sensor sees it) — the same treatment as the shutdown notice above.
@@ -940,11 +968,105 @@ export class OpenClawConnection {
     // or the consumer would see the run twice, and the two sockets' orders mixed.
     const foreignRun = eventRunId(frame as GatewayFrame);
     if (foreignRun !== null && this.runsCarriedElsewhere.has(foreignRun)) return;
-    this.push(frame as GatewayFrame, wireBytes);
+    this.push(frame as GatewayFrame, queuedBytes);
   }
 
   /** Runs whose frames reach this connection's consumer only via injectFrame. */
   private readonly runsCarriedElsewhere = new Set<string>();
+
+  /** This socket's live-text baselines (live-text-baseline.ts). Socket-owned on
+   *  purpose: the gateway keeps one receipt chain per socket, so a baseline is only
+   *  meaningful on the socket that received it. */
+  private readonly liveText = new LiveTextBaselines();
+  /** Re-reads of a run's in-flight text after a missing baseline, bounded per run. */
+  private readonly liveTextRereads = new Map<
+    string,
+    { inFlight: boolean; count: number; lastAt: number }
+  >();
+
+  /**
+   * A delta arrived with no baseline: this side lost a frame the gateway sent. The
+   * Control UI reconnects (ui/src/api/gateway-chat-events.ts:59-74); a conversation
+   * socket cannot be dropped mid-turn for that, so the run's in-flight text is RE-READ
+   * instead (`chat.history` → `inFlightRun`, src/gateway/chat-abort.ts:335-405 at
+   * v2026.9.7) and handed to the consumer as a snapshot of that run.
+   *
+   * The re-read never becomes a baseline to append to: a delta still queued on the
+   * gateway when it answered would be counted twice, and a reply grown by a duplicated
+   * fragment is a shrink Convex refuses when the true final arrives. Until the gateway
+   * sends a real snapshot (the final always is one), each further gap re-reads again —
+   * one at a time, spaced, and a bounded number of times per run.
+   */
+  private onLiveTextGap(gap: LiveTextGap): void {
+    const now = Date.now();
+    const state = this.liveTextRereads.get(gap.runId) ?? {
+      inFlight: false,
+      count: 0,
+      lastAt: 0,
+    };
+    if (state.count === 0 && !state.inFlight) {
+      console.warn(
+        `[openclaw] live-text baseline missing (stream=${gap.stream}, run=${gap.runId}) — re-reading the in-flight text`,
+      );
+    }
+    if (
+      gap.stream !== "chat" ||
+      state.inFlight ||
+      state.count >= OpenClawConnection.LIVE_TEXT_REREAD_MAX ||
+      now - state.lastAt < OpenClawConnection.LIVE_TEXT_REREAD_SPACING_MS
+    ) {
+      this.liveTextRereads.set(gap.runId, state);
+      return;
+    }
+    state.inFlight = true;
+    state.count += 1;
+    state.lastAt = now;
+    this.liveTextRereads.set(gap.runId, state);
+    if (this.liveTextRereads.size > 64) {
+      const oldest = this.liveTextRereads.keys().next().value;
+      if (oldest !== undefined && oldest !== gap.runId) this.liveTextRereads.delete(oldest);
+    }
+    this.request(
+      "chat.history",
+      chatHistoryParams({ sessionKey: gap.sessionKey, limit: 1 }, this.gatewayVersion),
+      10_000,
+    )
+      .then((res) => {
+        const run = (res.payload as { inFlightRun?: unknown } | undefined)?.inFlightRun;
+        if (typeof run !== "object" || run === null) return;
+        const { runId, text } = run as { runId?: unknown; text?: unknown };
+        if (runId !== gap.runId || typeof text !== "string" || text === "") return;
+        // A real snapshot that arrived meanwhile is newer than this read.
+        if (this.liveText.hasChatBaseline(gap.runId)) return;
+        // …and a run that ended meanwhile is over: its in-flight text is history, and a
+        // `delta` after its terminal would reopen a turn that is closing.
+        if (this.liveText.hasEnded(gap.runId)) return;
+        if (this.runsCarriedElsewhere.has(gap.runId)) return;
+        const snapshot: GatewayFrame = {
+          type: "event",
+          event: "chat",
+          payload: {
+            runId: gap.runId,
+            sessionKey: gap.sessionKey,
+            state: "delta",
+            deltaText: "",
+            message: { role: "assistant", content: [{ type: "text", text }] },
+          },
+        };
+        // Weighed like any frame: an in-flight text can be large, and several runs'
+        // re-reads must not grow the queue past MAX_INBOUND_BYTES unseen.
+        this.push(snapshot, Buffer.byteLength(JSON.stringify(snapshot), "utf8"));
+      })
+      .catch(() => {
+        /* best effort: the run's final frame carries the whole text anyway */
+      })
+      .finally(() => {
+        state.inFlight = false;
+      });
+  }
+
+  private static readonly LIVE_TEXT_REREAD_MAX = 8;
+  private static readonly LIVE_TEXT_REREAD_SPACING_MS = 2_000;
 
   /** From now on, `runId`'s native frames are dropped: another socket carries it. */
   carryRunElsewhere(runId: string): void {

@@ -23,7 +23,7 @@ import { createHash } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { resolveVendorEntries, since } from "./lib/vendor-files.mjs";
+import { resolveVendorEntries, since, until } from "./lib/vendor-files.mjs";
 import process from "node:process";
 
 import {
@@ -71,8 +71,11 @@ const FILES = [
   // contract drift here shows up as a broken control rather than a silent one.
   "schema/cron.ts",
   // `tasks.*` (2 calls): the background-task reconciliation the activity indicator
-  // uses before expiring an engagement.
-  "schema/tasks.ts",
+  // uses before expiring an engagement. RETIRED at v2026.9.7: upstream removed the
+  // `tasks.*` RPCs and this module with them (no `tasks.` descriptor in
+  // src/gateway/methods/core-descriptors.ts at that tag), so the bridge no longer
+  // calls them there (server.ts `/tasks-probe`, TASKS_RPC_RETIRED_IN).
+  ...until("2026.9.7", ["schema/tasks.ts"]),
   // `config.get` / `config.patch` (4 call sites): the ONLY place the bridge writes
   // gateway configuration. `config.patch` carries a `baseHash` OCC guard, so a
   // contract move here silently turns a guarded write into an unguarded one.
@@ -230,6 +233,20 @@ const FILES = [
     "schema/sessions-search.ts",
     "schema/skill-curator.ts",
     "schema/ui-appearance-typefaces.ts",
+  ]),
+
+  // New transitive imports as of 2026.9.7, computed as the closure of the modules
+  // above against the checkout: environments read a worker-capacity bound, plugins a
+  // UI-capability list, worker admission the presence query, and sessions a
+  // companion-selection limit.
+  ...since("2026.9.7", [
+    // `agents.files.*` (the Files agent's CRUD) left agents-models-skills.ts for a
+    // module of its own at this tag.
+    "schema/agents-files.ts",
+    "worker-capacity.ts",
+    "plugin-ui-capabilities.ts",
+    "session-companion-contract.ts",
+    "schema/presence.ts",
   ]),
 
   // INLINE WIDGETS: `canvas.document.view` — the bridge relays one widget document
@@ -546,8 +563,12 @@ const broadcastCatalogue = deriveBroadcastCatalogue(broadcastRaw, broadcastConst
 fs.mkdirSync(OUT_DIR, { recursive: true });
 const files = {};
 const { entries: vendorEntries, skipped: vendorSkipped } = resolveVendorEntries(FILES, version);
-for (const { candidates, since: from } of vendorSkipped) {
-  console.error(`[vendor] ${candidates.join(" | ")}: not before v${from}, skipped for v${version}`);
+for (const { candidates, since: from, until: retired } of vendorSkipped) {
+  console.error(
+    retired !== undefined
+      ? `[vendor] ${candidates.join(" | ")}: retired upstream at v${retired}, skipped for v${version}`
+      : `[vendor] ${candidates.join(" | ")}: not before v${from}, skipped for v${version}`,
+  );
 }
 for (const { candidates } of vendorEntries) {
   // A candidate starting with "../" leaves gateway-protocol for another package

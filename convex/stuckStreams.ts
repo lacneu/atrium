@@ -16,7 +16,13 @@
 // written so the action is visible in the trace center / API.
 
 import { v } from "convex/values";
-import { internalMutation, type MutationCtx } from "./_generated/server";
+import {
+  internalAction,
+  internalMutation,
+  internalQuery,
+  type MutationCtx,
+} from "./_generated/server";
+import { heldInputsOfRun, projectionModeOfChat, segmentPrefixOf } from "./lib/followUp";
 import { internal } from "./_generated/api";
 import type { Doc, Id } from "./_generated/dataModel";
 import { writeTraceEvent } from "./observability";
@@ -387,6 +393,74 @@ export const reconcileStuckStreams = internalMutation({
 export const SWEEP_MIN_AGE_MS = 300 * 1000;
 export const SWEEP_ERROR_CODE = "connection_lost";
 
+
+/** Close ONE orphaned live bubble at bridge boot (the sweep's own close). */
+async function closeSweptStream(
+  ctx: MutationCtx,
+  row: Doc<"streamingText">,
+  msg: Doc<"messages">,
+  instanceName: string,
+  now: number,
+): Promise<void> {
+  const preserved = (row.text ?? "") || (msg.liveText ?? "");
+  await ctx.db.patch(msg._id, {
+    status: "error",
+    error: SWEEP_ERROR_CODE,
+    ...(preserved ? { text: preserved } : {}),
+  });
+  await ctx.db.delete(row._id);
+  await clearLiveActivity(ctx, row.messageId);
+  await ctx.scheduler.runAfter(0, internal.stream.deleteStreamChunksStep, {
+    beforeSeq: row.chunkSeq ?? 1,
+    messageId: msg._id,
+  });
+  await writeTraceEvent(ctx, {
+    kind: "assistant.reconcile",
+    direction: "internal",
+    principalType: "service",
+    principalId: "bridge-boot-sweep",
+    chatId: msg.chatId,
+    runId: msg.runId ?? undefined,
+    correlationId: msg.runId ? `${msg.chatId}:${msg.runId}` : msg.chatId,
+    meta: JSON.stringify({
+      reason: "bridge_boot_sweep",
+      messageId: msg._id,
+      instanceName,
+      ageSeconds: Math.round((now - row.updatedAt) / 1000),
+      hadText: preserved.length > 0,
+    }),
+  });
+  // SPECIALIZED service chats (documentary/summarizer/curator/converter)
+  // hold job locks tied to the in-flight turn: releasing the stream here
+  // deletes the very row the watchdog would later act on, so the locks
+  // must be released NOW, exactly like the watchdog path (codex P1 —
+  // a boot sweep otherwise left pendingFetch/-Summarize/-Curate/-Convert
+  // stuck forever).
+  const sweptChat = await ctx.db.get(msg.chatId);
+  // SAME reasoning as the periodic reap: no finalize ever ran, so nothing is known
+  // about the provider's run. This path is the restart case specifically — the
+  // bridge's in-memory session cache is gone, so the next send reads the PERSISTED id
+  // and would resume an orphaned run outright (raised in review).
+  if (sweptChat !== null) {
+    await ctx.db.patch(
+      msg.chatId,
+      providerSessionClearPatch(
+        sweptChat.openclawChatId,
+        sweptChat.providerResetCount,
+      ),
+    );
+  }
+  await releaseStuckDocumentaryFetch(ctx, sweptChat);
+  await releaseStuckSummarize(ctx, sweptChat);
+  await releaseStuckCurate(ctx, sweptChat);
+  await releaseStuckConvert(ctx, sweptChat);
+  // A finished turn may have queued follow-ups parked behind it: the
+  // stream we just closed was the queue's blocker, so drain — every other
+  // terminal path (finalize, watchdog) does the same (codex P1: without
+  // this the first queued message sat forever).
+  await drainNextQueued(ctx, msg.chatId);
+}
+
 export const sweepInstanceStreams = internalMutation({
   args: {
     instanceName: v.string(),
@@ -447,63 +521,23 @@ export const sweepInstanceStreams = internalMutation({
         await clearLiveActivity(ctx, row.messageId);
         continue;
       }
-      const preserved = (row.text ?? "") || (msg.liveText ?? "");
-      await ctx.db.patch(msg._id, {
-        status: "error",
-        error: SWEEP_ERROR_CODE,
-        ...(preserved ? { text: preserved } : {}),
-      });
-      await ctx.db.delete(row._id);
-      await clearLiveActivity(ctx, row.messageId);
-      await ctx.scheduler.runAfter(0, internal.stream.deleteStreamChunksStep, {
-        beforeSeq: row.chunkSeq ?? 1,
-        messageId: msg._id,
-      });
-      await writeTraceEvent(ctx, {
-        kind: "assistant.reconcile",
-        direction: "internal",
-        principalType: "service",
-        principalId: "bridge-boot-sweep",
-        chatId: msg.chatId,
-        runId: msg.runId ?? undefined,
-        correlationId: msg.runId ? `${msg.chatId}:${msg.runId}` : msg.chatId,
-        meta: JSON.stringify({
-          reason: "bridge_boot_sweep",
+      // TRANSCRIPT PROJECTION `on` (phase 3, design §8.2, CU-22): the restart lost the
+      // TURN, not necessarily the RUN. Before closing, the bridge is asked whether the
+      // gateway still runs it; it resumes the bubble if so, and this close runs only
+      // when it does not (or cannot be asked) — the sweep stays the net, no longer the
+      // decision.
+      if (
+        msg.runId !== undefined &&
+        msg.turnSessionKey !== undefined &&
+        (await projectionModeOfChat(ctx, await ctx.db.get(msg.chatId))) === "on"
+      ) {
+        await ctx.scheduler.runAfter(0, internal.stuckStreams.resumeOrClose, {
           messageId: msg._id,
           instanceName,
-          ageSeconds: Math.round((now - row.updatedAt) / 1000),
-          hadText: preserved.length > 0,
-        }),
-      });
-      // SPECIALIZED service chats (documentary/summarizer/curator/converter)
-      // hold job locks tied to the in-flight turn: releasing the stream here
-      // deletes the very row the watchdog would later act on, so the locks
-      // must be released NOW, exactly like the watchdog path (codex P1 —
-      // a boot sweep otherwise left pendingFetch/-Summarize/-Curate/-Convert
-      // stuck forever).
-      const sweptChat = await ctx.db.get(msg.chatId);
-      // SAME reasoning as the periodic reap: no finalize ever ran, so nothing is known
-      // about the provider's run. This path is the restart case specifically — the
-      // bridge's in-memory session cache is gone, so the next send reads the PERSISTED id
-      // and would resume an orphaned run outright (raised in review).
-      if (sweptChat !== null) {
-        await ctx.db.patch(
-          msg.chatId,
-          providerSessionClearPatch(
-            sweptChat.openclawChatId,
-            sweptChat.providerResetCount,
-          ),
-        );
+        });
+        continue;
       }
-      await releaseStuckDocumentaryFetch(ctx, sweptChat);
-      await releaseStuckSummarize(ctx, sweptChat);
-      await releaseStuckCurate(ctx, sweptChat);
-      await releaseStuckConvert(ctx, sweptChat);
-      // A finished turn may have queued follow-ups parked behind it: the
-      // stream we just closed was the queue's blocker, so drain — every other
-      // terminal path (finalize, watchdog) does the same (codex P1: without
-      // this the first queued message sat forever).
-      await drainNextQueued(ctx, msg.chatId);
+      await closeSweptStream(ctx, row, msg, instanceName, now);
       swept++;
     }
     if (skippedFresh > 0 && rerun !== true) {
@@ -515,5 +549,133 @@ export const sweepInstanceStreams = internalMutation({
       );
     }
     return { swept };
+  },
+});
+
+// ── CU-22: resume before closing (transcript projection `on`, phase 3) ─────────────────
+
+/** How long Convex waits for the bridge's resume answer before closing as before. */
+const RESUME_POST_TIMEOUT_MS = 30_000;
+
+/** What the resume request needs about one orphaned bubble (null: nothing to resume). */
+export const resumeTarget = internalQuery({
+  args: { messageId: v.id("messages") },
+  handler: async (ctx, { messageId }) => {
+    const msg = await ctx.db.get(messageId);
+    if (msg === null || msg.status !== "streaming" || msg.runId === undefined) return null;
+    if (msg.turnSessionKey === undefined) return null;
+    const chat = await ctx.db.get(msg.chatId);
+    if (chat === null) return null;
+    // Re-read at action time: the sweep's decision may be stale (codex pass 4).
+    if ((await projectionModeOfChat(ctx, chat)) !== "on") return null;
+    const held = await heldInputsOfRun(ctx, msg);
+    const segmentPrefix = await segmentPrefixOf(ctx, msg);
+    return {
+      segmentPrefix,
+      chatId: msg.chatId,
+      ownerId: chat.userId,
+      runId: msg.runId,
+      heldInputs: held,
+      sessionKey: msg.turnSessionKey,
+      routedAgent:
+        msg.routedInstanceName !== undefined && msg.routedAgentId !== undefined
+          ? { instanceName: msg.routedInstanceName, agentId: msg.routedAgentId }
+          : undefined,
+    };
+  },
+});
+
+/** The bubble was resumed by the bridge: it is live again (the sweep's age gate and the
+ *  watchdog read the live row's stamp). */
+export const markResumed = internalMutation({
+  args: { messageId: v.id("messages") },
+  handler: async (ctx, { messageId }) => {
+    const row = await ctx.db
+      .query("streamingText")
+      .withIndex("by_message", (q) => q.eq("messageId", messageId))
+      .first();
+    if (row !== null) await ctx.db.patch(row._id, { updatedAt: Date.now() });
+  },
+});
+
+/** The bridge could not resume it: close it exactly as the boot sweep would have. */
+export const closeAfterResumeRefused = internalMutation({
+  args: { messageId: v.id("messages"), instanceName: v.string() },
+  handler: async (ctx, { messageId, instanceName }) => {
+    const msg = await ctx.db.get(messageId);
+    if (msg === null || msg.status !== "streaming") return;
+    const row = await ctx.db
+      .query("streamingText")
+      .withIndex("by_message", (q) => q.eq("messageId", messageId))
+      .first();
+    if (row === null) return;
+    // A write landed since the sweep chose it (the resumed run, a sibling bridge): live.
+    if (row.updatedAt >= Date.now() - SWEEP_MIN_AGE_MS) return;
+    await closeSweptStream(ctx, row, msg, instanceName, Date.now());
+  },
+});
+
+/**
+ * Ask the instance's bridge to RESUME an orphaned bubble (POST /resume): the gateway
+ * still running the bubble's run means the turn continues there (the Control UI adopts
+ * `inFlightRun` on reconnect). Any other answer — not running, unreachable, an old
+ * bridge without the route — closes the bubble as the sweep always did.
+ */
+export const resumeOrClose = internalAction({
+  args: { messageId: v.id("messages"), instanceName: v.string() },
+  handler: async (ctx, { messageId, instanceName }) => {
+    let resumed = false;
+    try {
+      const target = await ctx.runQuery(internal.stuckStreams.resumeTarget, { messageId });
+      const secret = process.env.BRIDGE_SHARED_SECRET;
+      if (target !== null && secret) {
+        const routing = await ctx.runQuery(internal.bridge.getChatRouting, {
+          chatId: target.chatId,
+          userId: target.ownerId,
+          ...(target.routedAgent ? { routedAgent: target.routedAgent } : {}),
+        });
+        // Only the bridge of the bubble's OWN instance is asked: a route that moved
+        // to another instance in the meantime makes this request stale.
+        if (routing?.target && routing.bridgeUrl && routing.target.instanceName === instanceName) {
+          const res = await fetch(`${routing.bridgeUrl.replace(/\/$/, "")}/resume`, {
+            method: "POST",
+            signal: AbortSignal.timeout(RESUME_POST_TIMEOUT_MS),
+            headers: { "Content-Type": "application/json", Authorization: secret },
+            body: JSON.stringify({
+              chatId: target.chatId,
+              openclawChatId: routing.openclawChatId,
+              instanceName: routing.target.instanceName,
+              agentId: routing.target.agentId,
+              canonical: routing.target.canonical,
+              ...(routing.gatewayUser === undefined ? {} : { gatewayUser: routing.gatewayUser }),
+              sessionKey: target.sessionKey,
+              liveBubble: {
+                messageId,
+                runId: target.runId,
+                ...(target.heldInputs.length > 0 ? { heldInputs: target.heldInputs } : {}),
+                ...(target.segmentPrefix !== undefined
+                  ? { segmentPrefix: target.segmentPrefix }
+                  : {}),
+              },
+            }),
+          });
+          if (res.ok) {
+            const body = (await res.json()) as { resumed?: unknown };
+            resumed = body.resumed === true;
+          }
+        }
+      }
+    } catch (err) {
+      console.error("stuckStreams.resumeOrClose: resume request failed:", err);
+    }
+    console.log(`stuckStreams.resumeOrClose: ${resumed ? "resumed" : "not resumed — closing as the sweep does"}`);
+    if (resumed) {
+      await ctx.runMutation(internal.stuckStreams.markResumed, { messageId });
+    } else {
+      await ctx.runMutation(internal.stuckStreams.closeAfterResumeRefused, {
+        messageId,
+        instanceName,
+      });
+    }
   },
 });

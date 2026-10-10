@@ -141,10 +141,12 @@ crons.interval(
 // trace window and UPSERT anomalies (one OPEN row per kind — de-duped, never
 // double-inserted across runs). Bounded scan; safe to overlap. Feeds the
 // heartbeat so an OpenClaw agent can learn of anomalies and self-repair.
+// The scan runs in a QUERY (anomalies.detectAnomaliesScheduled): as a mutation it
+// conflicted with every trace written while it ran and was retried in a loop.
 crons.interval(
   "detect anomalies",
   { minutes: 5 },
-  internal.anomalies.detectAnomalies,
+  internal.anomalies.detectAnomaliesScheduled,
   {},
 );
 

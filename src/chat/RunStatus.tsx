@@ -1,7 +1,8 @@
 import { useContext, useEffect, useState } from "react";
 import { useMessage } from "@assistant-ui/react";
-import { CircleAlert, RotateCw, Square } from "lucide-react";
+import { Check, CircleAlert, Copy, RotateCw, Square } from "lucide-react";
 import { m } from "@/paraglide/messages.js";
+import { Button } from "@/components/ui/button";
 import type { MessageStatus } from "./convexTypes";
 import { ContextLengthActions } from "./ContextLengthActions";
 import {
@@ -45,6 +46,34 @@ interface RunMeta {
   autoRetryOutcome?: AutoRetryOutcome | null;
   /** Stamped when the user's Stop cut this block's delegated work short. */
   interruptedAt?: number | null;
+}
+
+/** The gateway's raw text, one click away (the Control UI's own pattern: the headline
+ *  first, the full error in "Details" with a copy button). Used for upstream's generic
+ *  wrappers and for texts the headline already explains, so their words never read as the
+ *  cause while staying available to quote to an administrator. */
+function ErrorRawDetails({ text }: { text: string }) {
+  const [copied, setCopied] = useState(false);
+  return (
+    <details className="oc-error-card__details">
+      <summary>{m.runstatus_error_details()}</summary>
+      <pre>{text}</pre>
+      <Button
+        type="button"
+        variant="ghost"
+        size="xs"
+        onClick={() => {
+          void navigator.clipboard.writeText(text).then(() => {
+            setCopied(true);
+            window.setTimeout(() => setCopied(false), 1500);
+          });
+        }}
+      >
+        {copied ? <Check aria-hidden /> : <Copy aria-hidden />}
+        {copied ? m.runstatus_error_copied() : m.runstatus_error_copy()}
+      </Button>
+    </details>
+  );
 }
 
 // Claude-Code-style VISIBLE resilience: while a bounded automatic re-dispatch
@@ -190,7 +219,7 @@ export function RunStatus() {
     // a class the bridge minted from the sentence, or a curated code — shows a
     // localized headline; the gateway's text demotes to a detail line underneath,
     // masked of any credential id.
-    const { headline, detail, code } = errorDetailView(error, errorCode);
+    const { headline, detail, rawDetail, code } = errorDetailView(error, errorCode);
     return (
       <div className="oc-error-card" role="alert" title={runId ? `run ${runId}` : undefined}>
         <CircleAlert size={18} className="oc-error-card__icon" aria-hidden />
@@ -210,6 +239,7 @@ export function RunStatus() {
               {detail}
             </span>
           ) : null}
+          {rawDetail ? <ErrorRawDetails text={rawDetail} /> : null}
           {autoRetry ? (
             <RetryCountdown retry={autoRetry} />
           ) : retryOutcomeLine ? (

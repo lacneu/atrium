@@ -132,6 +132,13 @@ const UNCOVERED_SNAPSHOT = [
   // (COMPACTION_CHECKPOINTS_RETIRED_IN, fetchCompactionHistory). Leaves with the last
   // supported version that had it.
   "sessions.compaction.list",
+  // `tasks.get` / `tasks.list` joined it on 2026-10-03 for the same reason: 2026.9.7
+  // RETIRED the `tasks.*` RPCs and `schema/tasks.ts` with them. The bridge still calls
+  // them on gateways BELOW that version only, and answers empty from it on
+  // (TASKS_RPC_RETIRED_IN, probeOpenClawTasks). Leave with the last supported version
+  // that had them.
+  "tasks.get",
+  "tasks.list",
   // `usage.status` is `async ({ respond }) => …` upstream: it takes NO parameters, so
   // there is no params schema to vendor and none to classify. Listed anyway — a method
   // the ratchet cannot see is a method nobody re-examines at the next version bump.
@@ -158,6 +165,13 @@ const UNCOVERED_SNAPSHOT = [
   // parsed defensively (knowledge-policy.ts parseKnowledgeSources) and an `unknown
   // method` answer is the feature detection itself.
   "knowledge.sources",
+  // `sessions.subscribe` (transcript redesign, phase 2 — the session-events connection)
+  // has no params schema of its OWN: upstream validates it with the `sessions.list`
+  // one (`validateSessionsListParams`, src/gateway/server-methods/sessions-subscriptions.ts
+  // :29 at v2026.9.8, :26 at v2026.9.6 and v2026.8.2), and Atrium sends `{}` — no list
+  // snapshot, just the registration. `SessionsListParams` is vendored and classified;
+  // there is no `SessionsSubscribeParamsSchema` to name. Uncovered by CONSTRUCTION.
+  "sessions.subscribe",
 ];
 
 /** The methods mapped to `null` — "no params on the wire" — whose claim is now
@@ -431,6 +445,9 @@ describe("RPC scope derivation (W10)", () => {
       "canvas.document.view",
       "chat.send",
       "chat.abort",
+      // The Control UI's key-only stop (projection `on`, phase 3): no run in the
+      // foreground here, the session's followup queue cleared with it.
+      "sessions.abort",
       "sessions.describe",
       "sessions.patch",
       "sessions.reset",
@@ -458,8 +475,6 @@ describe("RPC scope derivation (W10)", () => {
       "cron.remove",
       "cron.run",
       "cron.runs",
-      "tasks.get",
-      "tasks.list",
       // The config / agents / models families, added 2026-07-27.
       "config.get",
       "config.patch",

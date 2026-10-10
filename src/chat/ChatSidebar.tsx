@@ -982,15 +982,6 @@ export function ChatSidebar({
           ) : null}
         </DragOverlay>
       </DndContext>
-      {/* THE TRASH: deleted conversations wait there, restorable, until their purge. */}
-      <Button
-        variant="ghost"
-        size="sm"
-        className="oc-sidebar__trash"
-        onClick={() => void navigate({ to: "/trash" })}
-      >
-        <Trash2 /> {m.trash_title()}
-      </Button>
     </aside>
     </TurnDifficultyContext.Provider>
     </AgentRequestBadgeContext.Provider>

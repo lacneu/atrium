@@ -98,6 +98,30 @@ describe("capture anonymiser — nothing content-bearing survives", () => {
     ).not.toMatch(/^image_generate:/);
   });
 
+  it("keeps the 2026.9.7 task id grammar `tool:<tool>:<uuid>`, in the run id AND standalone", () => {
+    // 2026.9.7 mints the media task id as its own run id (media-generate-background-shared.ts:
+    // 220,280). The delivery run embeds it, the ack's `details.taskId` carries it alone; the
+    // two must pseudonymise to the SAME value or the engagement never settles in the replay
+    // (found by the fidelity gate on the 2026.9.7 bench, 2026-10-03).
+    const p = createPseudonymiser(["image_generate"]);
+    const u = "c0db0a8a-80b0-4073-b00c-af5148c8ac09";
+    const run = p.identifier(`image_generate:tool:image_generate:${u}:ok:agent-loop`);
+    expect(run).toMatch(/^image_generate:tool:image_generate:[0-9a-f-]{36}:ok:agent-loop$/);
+    expect(run).not.toContain(u);
+    const id = p.identifier(`tool:image_generate:${u}`);
+    expect(run).toBe(`image_generate:${id}:ok:agent-loop`);
+  });
+
+  it("keeps an agent assistant `data.delta` as masked prose (the 2026.9.7 append-only text)", () => {
+    const frame = {
+      type: "event",
+      event: "agent",
+      payload: { runId: "webchat-abc", stream: "assistant", data: { delta: "Secret answer" } },
+    };
+    const out = anonymize(frame) as { payload: { data: Record<string, unknown> } };
+    expect(out.payload.data.delta).toBe("Xxxxxx xxxxxx");
+  });
+
   it("a marker in EVERY position is gone from the output", () => {
     const frame = {
       type: "event",

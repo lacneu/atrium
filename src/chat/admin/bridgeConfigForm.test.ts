@@ -222,6 +222,7 @@ describe("a Bridge / Injections save keeps every key other surfaces own", () => 
     contentLocale: "fr",
     inboundAgentMount: "/data/in",
     outboundAgentMount: "/data/out",
+    transcriptProjection: "shadow",
     promptInjections: {},
   };
 

@@ -564,6 +564,10 @@ export function convertConvexMessage(
         // Drives the "en attente" badge; clears reactively when the drainer promotes
         // it to dispatch (status -> pending/sent). Only meaningful for user turns.
         queued: message.role === "user" && message.outbox?.status === "queued",
+        // Transcript projection `on`: the gateway's custody of this input (phase 3).
+        custody: message.role === "user" ? (message.custody ?? null) : null,
+        // The part of a run before a steered input cut it (phase 3, CU-20).
+        steerSegment: message.steerSegment === true,
         // The EXACT stored text — the verbatim string for the "Source" view (no
         // markdown, no autocorrect, no transformation). For the user turn this is
         // what was typed/sent; for the assistant turn it is the gateway's final

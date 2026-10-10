@@ -49,6 +49,16 @@ export type NormalizedCapabilities = {
   targets: CompatTarget[];
 }
 
+/** One drift shape: how often the bridge saw it and, from a bridge that reports them, when
+ *  it FIRST and LAST did (epoch ms, the bridge's clock) — what tells a live sample from a
+ *  leftover. The two times travel together or not at all. */
+export type DriftShape = {
+  shape: string;
+  count: number;
+  firstAt?: number;
+  lastAt?: number;
+};
+
 /** The bridge's protocol-contract self-description (see the bridge's
  *  protocol-drift.ts): all fields defensive-parsed + size-bounded here. */
 export type BridgeProtocolInfo = {
@@ -59,7 +69,7 @@ export type BridgeProtocolInfo = {
     gaps: number;
     gapList: string[];
   } | null;
-  drift: { shape: string; count: number }[];
+  drift: DriftShape[];
   /** Drift observations the BRIDGE could not name (its tracked-shape cap). 0 on a bridge
    *  that predates the field — absence is not zero drift, but it is all we can say. */
   driftOverflow: number;
@@ -643,7 +653,7 @@ export function boundProtocolInfo(raw: unknown): BridgeProtocolInfo | null {
   // phantom loss as at the merge, one layer up. Only two DIFFERENT originals converging on
   // one key is a lost distinction.
   const drift = rawDrift
-    .map((d): { shape: string; original: string; count: number } | null => {
+    .map((d): { shape: string; original: string; count: number; seen: Seen | null } | null => {
       if (typeof d !== "object" || d === null) return null;
       const e = d as Record<string, unknown>;
       const shape = typeof e.shape === "string" ? e.shape : null;
@@ -659,11 +669,12 @@ export function boundProtocolInfo(raw: unknown): BridgeProtocolInfo | null {
           ? e.count
           : null;
       return shape !== null && count !== null
-        ? { shape: boundShapeName(shape), original: shape, count }
+        ? { shape: boundShapeName(shape), original: shape, count, seen: seenOf(e) }
         : null;
     })
     .filter(
-      (d): d is { shape: string; original: string; count: number } => d !== null,
+      (d): d is { shape: string; original: string; count: number; seen: Seen | null } =>
+        d !== null,
     );
   // The SECOND half of a double silent loss. The bridge caps its tracked shapes and
   // reports how many it dropped; this side then sliced the list again and said nothing, so
@@ -690,11 +701,19 @@ export function boundProtocolInfo(raw: unknown): BridgeProtocolInfo | null {
   // …and their COUNTS are summed, not dropped with the duplicate. Keeping only the first
   // entry warned the operator of a collision and then under-reported the drift volume
   // behind it (raised in review): the distinction is what was lost, not the observations.
-  const byShape = new Map<string, { count: number; originals: Set<string> }>();
+  const byShape = new Map<
+    string,
+    { count: number; originals: Set<string>; seen: Seen | null }
+  >();
   for (const d of drift) {
-    const entry = byShape.get(d.shape) ?? { count: 0, originals: new Set<string>() };
+    const entry = byShape.get(d.shape) ?? {
+      count: 0,
+      originals: new Set<string>(),
+      seen: null,
+    };
     entry.count = clampCount(entry.count + d.count);
     entry.originals.add(d.original);
+    entry.seen = widenSeen(entry.seen, d.seen);
     byShape.set(d.shape, entry);
   }
   // A collision is a lost DISTINCTION: two different names now indistinguishable. The same
@@ -705,7 +724,7 @@ export function boundProtocolInfo(raw: unknown): BridgeProtocolInfo | null {
     collided += entry.originals.size - 1;
   }
   const deduped = [...byShape.entries()]
-    .map(([shape, e]) => ({ shape, count: e.count }))
+    .map(([shape, e]): DriftShape => ({ shape, count: e.count, ...(e.seen ?? {}) }))
     // …ordered BEFORE the slice below, and not left to the order the bridge happened to
     // send: a well-behaved bridge puts its sensor findings first, but this side does not
     // get to assume that, and a hundred ordinary drifts ahead of one `«exception».` used
@@ -751,6 +770,26 @@ export function boundProtocolInfo(raw: unknown): BridgeProtocolInfo | null {
  *  non-finite input — which reproduced the exact failure it was written to prevent: an
  *  overflowing sum became "nothing was dropped". Only NaN and negatives are meaningless,
  *  and those are the only inputs that yield 0. */
+/** A drift shape's first/last sighting, VALIDATED: two non-negative integer epoch-ms values
+ *  no later than a day past this server's clock, first ≤ last. Anything else is dropped as a
+ *  PAIR — half a window, or a reversed one, is a claim the bridge did not make. */
+type Seen = { firstAt: number; lastAt: number };
+const SEEN_MAX_SKEW_MS = 24 * 60 * 60 * 1000;
+function seenOf(e: Record<string, unknown> | DriftShape): Seen | null {
+  const { firstAt, lastAt } = e as { firstAt?: unknown; lastAt?: unknown };
+  const ok = (v: unknown): v is number =>
+    typeof v === "number" &&
+    Number.isInteger(v) &&
+    v >= 0 &&
+    v <= Date.now() + SEEN_MAX_SKEW_MS;
+  return ok(firstAt) && ok(lastAt) && firstAt <= lastAt ? { firstAt, lastAt } : null;
+}
+function widenSeen(a: Seen | null, b: Seen | null): Seen | null {
+  if (a === null) return b;
+  if (b === null) return a;
+  return { firstAt: Math.min(a.firstAt, b.firstAt), lastAt: Math.max(a.lastAt, b.lastAt) };
+}
+
 function clampCount(n: number): number {
   if (Number.isNaN(n) || n <= 0) return 0;
   if (!Number.isFinite(n)) return Number.MAX_SAFE_INTEGER;
@@ -768,6 +807,8 @@ function mergeProtocolInfo(
   // itself vanished, with no counter naming the loss (raised in review). Same failure as
   // the two loss counters had, on the list they were meant to account for.
   const merged = new Map(a.drift.map((d) => [d.shape, clampCount(d.count)]));
+  // WHEN, unioned like the counts: the earliest first sighting and the latest last one.
+  const seenByShape = new Map<string, Seen | null>(a.drift.map((d) => [d.shape, seenOf(d)]));
   // A shape present on BOTH sides is the normal union — the same unknown field seen by two
   // bridges — and its counts are summed. It is NOT counted as a truncation collision.
   //
@@ -783,6 +824,7 @@ function mergeProtocolInfo(
   // key, so summing a shared key here is unambiguously a union.
   for (const d of b.drift) {
     merged.set(d.shape, clampCount((merged.get(d.shape) ?? 0) + d.count));
+    seenByShape.set(d.shape, widenSeen(seenByShape.get(d.shape) ?? null, seenOf(d)));
   }
   // TOTAL order, not just by count. Ties kept `Map` insertion order, i.e. the order the
   // bridges happened to be polled in — so with more distinct shapes than the cap, which
@@ -796,7 +838,7 @@ function mergeProtocolInfo(
   // priority has to be re-stated wherever the order is re-decided.
   //
   const all = [...merged.entries()]
-    .map(([shape, count]) => ({ shape, count }))
+    .map(([shape, count]): DriftShape => ({ shape, count, ...(seenByShape.get(shape) ?? {}) }))
     .sort(
       (x, y) =>
         sensorFirst(x.shape) - sensorFirst(y.shape) ||
@@ -982,7 +1024,8 @@ export function providerCapabilityTable(
  *  when the bridge reports no per-session target. Policy (identical to the bridge):
  *   - provider with no published range: zero capabilities;
  *   - null/unparseable version: CONSERVATIVE floor — a capability is true only
- *     when its minVersion IS the supported floor (`range.min`);
+ *     when its minVersion is AT OR BELOW the supported floor (`range.min`);
+ *   - version below the floor: zero capabilities (unsupported as a whole);
  *   - version within range: true iff version >= its minVersion;
  *   - version beyond `maxValidated`: FROZEN at the maxValidated profile (the
  *     capabilities actually exercised, and no more) + `versionBeyondValidated`, which
@@ -1003,9 +1046,18 @@ export function resolveCapabilitiesFromManifest(
   const capabilities: Record<string, boolean> = {};
   const parsed = gatewayVersion === null ? null : parseVersion(gatewayVersion);
   if (parsed === null) {
+    // Conservative floor: every capability the WEAKEST supported gateway has (minVersion
+    // at or below the floor) — identical to the bridge's resolveCapabilitiesFor.
     for (const [cap, minVersion] of Object.entries(table)) {
-      capabilities[cap] = minVersion === range.min;
+      const cmp = compareVersions(minVersion, range.min);
+      capabilities[cap] = cmp !== null && cmp <= 0;
     }
+    return { capabilities, versionBeyondValidated: false };
+  }
+  const floorCmp = compareVersions(gatewayVersion as string, range.min);
+  if (floorCmp !== null && floorCmp < 0) {
+    // Below the supported floor: unsupported as a whole, zero capabilities.
+    for (const cap of Object.keys(table)) capabilities[cap] = false;
     return { capabilities, versionBeyondValidated: false };
   }
   const beyondCmp = compareVersions(gatewayVersion as string, range.maxValidated);

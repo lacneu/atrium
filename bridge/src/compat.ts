@@ -78,6 +78,68 @@ export const EXPECTED_PERMISSION_MODE_SINCE = "2026.8.2";
  *  applied (the `permissionModes` capability): the guard's floor, see above. */
 export const PERMISSION_MODES_SINCE = EXPECTED_PERMISSION_MODE_SINCE;
 
+/**
+ * The OLDEST OpenClaw gateway Atrium supports (operator decision, 2026-10-01: the
+ * "session transcript is the truth" redesign raises the floor instead of keeping a
+ * frozen legacy pipeline for older generations).
+ *
+ * 2026.8.2 is the first tag carrying every transcript fact the redesign reconciles on
+ * (design §9.1): `__openclaw.runId` on assistant/toolResult rows and
+ * `__openclaw.steerTargetRunId` on steered user rows (upstream
+ * `src/sessions/transcript-events.ts`, `src/sessions/user-turn-transcript.metadata.ts`,
+ * both from 2026.8.1), the `chat.history` cursor/delta reply
+ * (`packages/gateway-protocol/src/schema/logs-chat.ts` `ChatHistoryDeltaResultSchema`,
+ * 2026.8.1) and `inputRunIds`/`inputReceipts` (`ChatHistoryParamsSchema.inputRunIds`,
+ * present at v2026.8.2, absent at v2026.8.1). Below it a reply cannot be placed by
+ * identity, only guessed — so a gateway below the floor is refused by name
+ * (`gateway_version_unsupported`), never driven through the old heuristics.
+ */
+export const OPENCLAW_MIN_SUPPORTED = "2026.8.2";
+
+/** First gateway version the shadow transcript projection runs against (the
+ *  `transcriptProjection` capability): the floor itself, for the reasons above. */
+export const TRANSCRIPT_PROJECTION_SINCE = OPENCLAW_MIN_SUPPORTED;
+
+/** First gateway version whose `chat.history` params accept `maxBytes` (the params
+ *  object is CLOSED upstream: `ChatHistoryParamsSchema` carries it at v2026.9.2, not at
+ *  v2026.9.1), so an older gateway would refuse the whole read over the unknown key. */
+export const CHAT_HISTORY_MAX_BYTES_SINCE = "2026.9.2";
+
+/** First gateway version whose `chat.history` params accept `inputRunIds` and whose
+ *  reply carries `inputReceipts` (upstream `ChatHistoryParamsSchema.inputRunIds`,
+ *  packages/gateway-protocol/src/schema/logs-chat.ts — present at v2026.8.2, absent at
+ *  v2026.8.1): the floor, stated on its own so the builder's gate names its reason. */
+export const CHAT_HISTORY_INPUT_RUN_IDS_SINCE = OPENCLAW_MIN_SUPPORTED;
+
+/** First gateway version the dedicated session-events connection runs against: the
+ *  `session-scoped-events` client capability (packages/gateway-protocol/src/
+ *  client-info.ts `SESSION_SCOPED_EVENTS`, v2026.8.1) keeps the cross-session
+ *  `chat`/`agent`/`session.tool` fanout off that socket, and `sessions.subscribe`
+ *  (src/gateway/server-methods/sessions-subscriptions.ts, ≤ v2026.5.19) delivers
+ *  `session.message` / `sessions.changed`. Both exist at the floor. */
+export const SESSION_EVENTS_SINCE = OPENCLAW_MIN_SUPPORTED;
+
+/** First gateway version whose `chat.abort` takes `discardPendingInput` — the cancel of
+ *  ONE input waiting in the gateway's queue (packages/gateway-protocol/src/schema/
+ *  logs-chat.ts `ChatAbortParamsSchema`, present at v2026.9.7 and v2026.9.8, absent at
+ *  v2026.9.6; closed params object, so an older gateway refuses the whole call). */
+export const DISCARD_PENDING_INPUT_SINCE = "2026.9.7";
+
+/** First gateway version whose `chat.send` takes an explicit `queueMode` (steer /
+ *  followup / collect / interrupt; logs-chat.ts `ChatSendParamsSchema.queueMode`,
+ *  present from 2026.8.1, so at the floor). */
+export const CHAT_SEND_QUEUE_MODE_SINCE = OPENCLAW_MIN_SUPPORTED;
+
+/** Is this LIVE gateway version known to be BELOW the supported floor?
+ *
+ *  Only a version that parses and compares below the floor answers true. An absent or
+ *  unreadable version is not evidence of an old gateway — the handshake can degrade —
+ *  so it answers false and the capability policy stays conservative instead. */
+export function openClawBelowFloor(gatewayVersion: string | null | undefined): boolean {
+  if (gatewayVersion === null || gatewayVersion === undefined) return false;
+  return gatewayAtLeast(gatewayVersion, OPENCLAW_MIN_SUPPORTED) === false;
+}
+
 /** First gateway version whose inline-widget chain Atrium proved live (see the
  *  `inlineWidgets` capability below). Exported for the socket-caps decision. */
 export const INLINE_WIDGETS_MIN_VERSION = "2026.9.6";
@@ -169,6 +231,23 @@ const OPENCLAW_CAPABILITIES: Record<string, string> = {
   // exercised the whole chain on (probe + `widget-inline` scenario), like
   // `knowledgePolicy`. Never on Hermes: it has no widgets.
   inlineWidgets: INLINE_WIDGETS_MIN_VERSION,
+  // THE SESSION TRANSCRIPT AS THE TRUTH (redesign phase 1): the bridge reads
+  // `chat.history` with a delta cursor at the Control UI's own triggers and records the
+  // transcript's identity rows (`__openclaw.id`/`seq`/`runId`/`idempotencyKey`/
+  // `steerTargetRunId`) in Convex, in SHADOW — it never creates, edits or finalizes a
+  // bubble. The floor is the supported floor (OPENCLAW_MIN_SUPPORTED): every fact it
+  // reads exists from there. Bridge-internal: no UI control is gated on it yet. Never on
+  // Hermes: it has no transcript with these identities.
+  transcriptProjection: TRANSCRIPT_PROJECTION_SINCE,
+  // SEND LIKE THE CONTROL UI (redesign phase 3): with the projection `on`, a message
+  // sent while the agent works carries an explicit `chat.send.queueMode` (the person's
+  // choice queue/steer, or "interrupt and send"), its ACK is custody, and Stop is the
+  // Control UI's chat.abort / sessions.abort {clearQueued}. Gates the composer's mode
+  // control. Never on Hermes: it has no queue modes.
+  followUpModes: CHAT_SEND_QUEUE_MODE_SINCE,
+  // Cancel ONE input waiting in the gateway's own queue (`chat.abort
+  // {runId, discardPendingInput:true}`). Below it the action is hidden.
+  discardPendingInput: DISCARD_PENDING_INPUT_SINCE,
 };
 
 // Hermes exposes a DELIBERATELY SMALL surface via its OpenAI-compatible API
@@ -239,7 +318,7 @@ const HERMES_WS_CAPABILITIES: Record<string, string> = {
  *   * `maxValidated`, and every version added from now on, MUST have a
  *     `bridge/protocol/openclaw/<version>/BENCH.json` recording a GO run over the
  *     complete catalogue.
- *   * The six entries below `maxValidated` that predate this rule are GRANDFATHERED —
+ *   * The entries below `maxValidated` that predated this rule were GRANDFATHERED —
  *     listed here, explicitly and dated. Re-running those gateways today would not tell
  *     us whether the claim was true when it was made; it would manufacture evidence for a
  *     past we cannot re-enter. What matters is that the exemption is finite, visible, and
@@ -256,15 +335,10 @@ const HERMES_WS_CAPABILITIES: Record<string, string> = {
 export const BENCH_GRANDFATHERED: Readonly<Record<string, readonly string[]>> = {
   // Validated on the standing bench before BENCH.json existed (dates are the runs
   // recorded in the release notes and the version-validation memory).
-  openclaw: [
-    "2026.5.19", // 2026-05 — first validated range floor
-    "2026.6.1",
-    "2026.6.5", // 2026-06-19 — full suite
-    "2026.6.10", // 2026-06-28 — full suite
-    "2026.6.11", // 2026-07-03 — full suite (announce fixtures captured here)
-    "2026.7.1-beta.2", // 2026-07-09 — RC bench
-    "2026.7.1-beta.5", // 2026-07-12 — GO 9/9
-  ],
+  // EMPTY since 0.92.0: every grandfathered version (2026.5.19 → 2026.7.1-beta.5) sat
+  // below the 2026.8.2 floor and left `validatedVersions` with it. The exemption could
+  // only ever shrink; it has now shrunk to nothing, and every OpenClaw claim is earned.
+  openclaw: [],
   // Hermes: these TWO stand on their 2026-07-11 WS-transport run, from before any
   // attestation existed. The note that used to sit here — "Hermes has no BENCH.json and
   // will not get one in this program" — rested on a premise that is now dead: the wave was
@@ -304,6 +378,16 @@ export const MODELS_LIST_OWNER_SINCE = "2026.8.1";
  *  method needs admin before it is found missing), and an empty list would claim the
  *  session never compacted. */
 export const COMPACTION_CHECKPOINTS_RETIRED_IN = "2026.9.6";
+
+/** The generation without a task registry RPC: 2026.9.7 removed `tasks.list`,
+ *  `tasks.get`, `tasks.cancel` and `tasks.history` together with their schema module
+ *  (no `tasks.` descriptor in src/gateway/methods/core-descriptors.ts and no
+ *  `packages/gateway-protocol/src/schema/tasks.ts` at that tag; the Control UI's own
+ *  run-transcript test asserts it sends none of them, ui/src/pages/cron/
+ *  run-transcript.e2e.test.ts:130). The background-task probe answers empty there, as
+ *  for a provider with no registry, instead of sending calls a missing method refuses —
+ *  by scope first, so the refusal would not even name the fact. */
+export const TASKS_RPC_RETIRED_IN = "2026.9.7";
 
 /** The generation whose gateway takes re-hydrated history TOGETHER with an inline
  *  attachment. Up to v2026.6.11 the attachment check was a regex over the whole base64
@@ -384,7 +468,10 @@ export const COMPAT_MANIFEST: CompatManifest = {
       // hashes). It had previously been declared through its beta.2 RC
       // (release-day upgrades stay in support with no banner) — that proxy
       // note is now history, the row stands on its own run.
-      supportedRange: { min: "2026.5.19", maxValidated: "2026.9.6" },
+      // FLOOR 2026.8.2 (OPENCLAW_MIN_SUPPORTED, release 0.92.0): the versions below it
+      // were retired from support — their validation runs stay in the release notes, but
+      // the redesigned turn model cannot run on them, and a claim nobody keeps is not one.
+      supportedRange: { min: OPENCLAW_MIN_SUPPORTED, maxValidated: "2026.9.8" },
       // Inside the range, and BROKEN on a stock gateway: a managed-media
       // `attachment` block persisted by the gateway's own path crashes
       // `transcript-transform` on every later turn of that session (upstream
@@ -415,21 +502,10 @@ export const COMPAT_MANIFEST: CompatManifest = {
           "a delivered file poisons the session: every later turn fails in transcript-transform (upstream #135747)",
       },
       validatedVersions: [
-        "2026.5.19",
-        "2026.6.1",
-        "2026.6.5",
-        "2026.6.10",
-        "2026.6.11",
-        "2026.7.1-beta.2",
-        // beta.5: full live suite GO 2026-07-12 (9/9 — wire contracts, SSE,
-        // plan, media, spawn/announce, async tasks, cron, Hermes co-run).
-        // Upgrade notes: startup migrations refuse to boot on codex binding
-        // sidecars with an unresolvable session owner (move them aside), and
-        // containerized gateways now REQUIRE auth for non-loopback binds.
-        "2026.7.1-beta.5",
-        // Shipped release, re-validated directly (GO 9/9, 2026-07-13) after
-        // the beta.2-proxy declaration. Standing bench.
-        "2026.7.1",
+        // 2026.5.19 → 2026.7.1 (incl. 2026.7.1-beta.2/-beta.5) were validated on the
+        // standing bench and are RETIRED with the 2026.8.2 floor (0.92.0): below it a
+        // reply cannot be placed by transcript identity. Their runs are recorded in the
+        // release notes of the versions that validated them.
         // 2026.8.1 / 2026.8.2 were NOT validated: both refused the catalogue on a
         // gateway defect (an `attachment` block persisted by the gateway's own
         // managed-media path crashes `transcript-transform` on every later turn of
@@ -541,6 +617,54 @@ export const COMPAT_MANIFEST: CompatManifest = {
         // automatically at the first boot on the bench. Going back to 2026.9.5 needs a
         // state snapshot taken before the upgrade.
         "2026.9.6",
+        // 2026.9.7: full live suite GO (proof run 2026-10-03T17-30-21-704Z, then the attestation run on the
+        // final tree), Hermes co-run on 0.21.5. Zones 1 to 5 re-verified: no preemption
+        // policy, no `status:"queued"` ack, the announce identity, the dedup window and
+        // the lock sentences hold.
+        //
+        // What changed for Atrium, and was adapted before the run:
+        //  - APPEND-ONLY LIVE TEXT, with no negotiation: after the first frame a socket
+        //    receives, `chat` deltas lose `message` and `agent` assistant events lose
+        //    `data.text`. The connection rebuilds both before any reader
+        //    (providers/openclaw/live-text-baseline.ts), as the Control UI does.
+        //  - The `tasks.*` RPCs are RETIRED upstream: the background-task probe answers
+        //    empty from this version on (TASKS_RPC_RETIRED_IN), never sent.
+        //  - `errorKind:"state_contention"` (typed SQLite contention on chat.send) is
+        //    read as `gateway_storage_busy`, never retried.
+        //
+        // THE IMAGE THIS ROW STANDS ON: the distribution image WITHOUT its agent-database
+        // birthtime patch. 2026.9.7 requires the identity's `birthtime` to be a string
+        // (src/state/openclaw-agent-execution-native.ts:276-282), so the patch that blanks
+        // it for kernels without statx makes every agent-database operation fail
+        // ("belongs to another native owner"). The patch must be reworked before a 9.7
+        // image reaches a host that needs it.
+        //
+        // UPGRADE NOTE, one-way and NOT automatic: the agent database schema moves
+        // 23 -> 24 and the gateway refuses every session until `openclaw doctor --fix`
+        // has run with the gateway stopped. Going back to 2026.9.6 needs a state
+        // snapshot taken before the upgrade.
+        "2026.9.7",
+        // 2026.9.8: full live suite GO 21/21 (proof run 2026-10-04T04-19-09-224Z, then the
+        // attestation run on the final tree) on the PUBLISHED distribution image r5 — the
+        // one with the reworked birthtime patch — Hermes co-run on 0.21.5. A reliability
+        // hotfix of 2026.9.7: the 86 vendored schema modules and both event catalogues are
+        // byte-identical, the 140 watched interpretation files unchanged, every anchor
+        // held. Nothing was adapted in the bridge.
+        //
+        // One behaviour moved WITHOUT a wire change: a silent reply (`NO_REPLY` or empty)
+        // is allowed only in a channel GROUP (src/shared/silent-reply-policy.ts:33-42), so
+        // announce, settle and sub-agent runs started through the `agent` method now
+        // require a reply (attempt-execution.helpers.ts:44-71): an empty one is retried
+        // once, then ends as an incomplete turn. The frames, run ids and the `NO_REPLY`
+        // token Atrium reads are unchanged; the sub-agent scenarios stayed green.
+        //
+        // UPGRADE NOTE, one-way, now AUTOMATIC: the schema is still 24 (as 2026.9.7); the
+        // distribution image r5 delegates to the official entrypoint, which runs `openclaw
+        // doctor --fix` before every start, so a 2026.9.6 state migrated 23 -> 24 at the
+        // first boot on the bench (a `.bak` per database). Stop the old
+        // gateway GRACEFULLY: a killed one keeps its owner lease, and the next container is
+        // refused for up to 5 min ("Another Gateway owner lease is still active").
+        "2026.9.8",
       ],
       capabilities: OPENCLAW_CAPABILITIES,
     },
@@ -649,8 +773,9 @@ export interface ResolvedCapabilities {
  *  - unknown provider, or a provider with no validated range (hermes
  *    placeholder): zero capabilities;
  *  - null/malformed gateway version: CONSERVATIVE — only the capabilities
- *    whose minVersion IS the supported floor (`supportedRange.min`) are true
- *    (the floor is the weakest gateway we ever talk to);
+ *    whose minVersion is AT OR BELOW the supported floor (`supportedRange.min`) are
+ *    true (the floor is the weakest gateway we ever talk to);
+ *  - version below the floor: zero capabilities (unsupported, not "older");
  *  - version within range: capability true iff version >= its minVersion;
  *  - version beyond `maxValidated`: FROZEN at the maxValidated profile — the
  *    capabilities we have actually exercised, and no more — plus the
@@ -833,15 +958,29 @@ export function resolveCapabilitiesFor(
   if (range === null) return { capabilities: {}, versionBeyondValidated: false };
   const capabilities: Record<string, boolean> = {};
   const parsed = gatewayVersion === null ? null : parseVersion(gatewayVersion);
+  const floor = parseVersion(range.min);
   if (parsed === null) {
-    // Unknown gateway version -> conservative floor.
+    // Unknown gateway version -> conservative floor: what the WEAKEST supported gateway
+    // has, i.e. every capability whose minVersion is at or below the floor. Equality
+    // alone was the same rule while the floor was the lowest minVersion of the table;
+    // raising the floor above older entries (2026.8.2) would have stripped an unknown
+    // gateway of everything the floor gateway has.
     for (const [cap, minVersion] of Object.entries(table)) {
-      capabilities[cap] = minVersion === range.min;
+      const min = parseVersion(minVersion);
+      capabilities[cap] = min !== null && floor !== null && compareVersions(min, floor) <= 0;
     }
     return {
       capabilities: applyAuthModeGate(capabilities, authMode, gate),
       versionBeyondValidated: false,
     };
+  }
+  if (floor !== null && compareVersions(parsed, floor) < 0) {
+    // BELOW THE SUPPORTED FLOOR: nothing, whatever the table says about older versions.
+    // The table keeps the generation each capability first appeared in (history), but a
+    // gateway under the floor is unsupported as a whole — offering it a control would
+    // drive it through the pipeline the floor retired.
+    for (const cap of Object.keys(table)) capabilities[cap] = false;
+    return { capabilities, versionBeyondValidated: false };
   }
   const maxValidated = parseVersion(range.maxValidated);
   const beyond = maxValidated !== null && compareVersions(parsed, maxValidated) > 0;

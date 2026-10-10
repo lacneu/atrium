@@ -14,6 +14,7 @@
 // (`convex/bridge.ts`) because mutations cannot do `fetch`. Secrets used to
 // reach the bridge live only in deployment env, never here or in the browser.
 
+import { COMMAND_WITH_ATTACHMENTS, isGatewayCommandText } from "./lib/gatewayCommand";
 import { v } from "convex/values";
 import { mutation, MutationCtx } from "./_generated/server";
 import { internal } from "./_generated/api";
@@ -31,8 +32,20 @@ import { assertOwnsUpload } from "./uploads";
 import { writeTraceEvent } from "./observability";
 import { recordFileForPart } from "./lib/files";
 import { partStorageField } from "./lib/blobs";
-import { isChatBusy, countQueued, MAX_QUEUED_PER_CHAT } from "./lib/outboxQueue";
+import {
+  armProjectedHoldRecheck,
+  countQueued,
+  isChatBusy,
+  MAX_QUEUED_PER_CHAT,
+} from "./lib/outboxQueue";
 import { QUEUED_ORDER_SENTINEL } from "./lib/messageOrder";
+import {
+  busySendParks,
+  projectionModeOfChat,
+  sendTargetsActiveSession,
+  storedFollowUpMode,
+  type FollowUpChoice,
+} from "./lib/followUp";
 import {
   assertQuoteRefs,
   outboxQuoteFieldsFor,
@@ -127,6 +140,14 @@ export const sendMessage = mutation({
         excerpt: v.string(),
       }),
     ),
+    // HOW THIS SEND LANDS IF THE AGENT IS WORKING (transcript projection `on`, phase 3):
+    // the composer's explicit choice for this one send — `queue` (wait until the agent
+    // is free), `steer` (inject into the turn in progress) or `interrupt` (stop it and
+    // answer this). Absent = the person's preference, else the gateway's own mode.
+    // Ignored on any other instance: the historical queue applies.
+    followUpMode: v.optional(
+      v.union(v.literal("queue"), v.literal("steer"), v.literal("interrupt")),
+    ),
     // SEVERAL passages in one turn. Supersedes `quote` when both are sent (an
     // older client sends only `quote`); the guards below are the same, applied
     // per passage, plus a count and a TOTAL excerpt budget.
@@ -190,6 +211,13 @@ export const sendMessage = mutation({
 
     const now = Date.now();
     const attachments = args.attachments ?? [];
+    // A GATEWAY COMMAND leaves exactly as typed (lib/gatewayCommand.ts), and a file can
+    // only reach the agent as text added to the message on a shared-fs instance — so the
+    // two are refused together, visibly, before anything is written or sent. Sending the
+    // command and dropping the file would lose it without a word.
+    if (attachments.length > 0 && isGatewayCommandText(args.text)) {
+      throw new Error(COMMAND_WITH_ATTACHMENTS);
+    }
 
     // 2a. WHO THE TURN IS FOR. The agent mentions, when there are any, decide it —
     //     spans checked with the people's (one text, one set of disjoint spans),
@@ -339,7 +367,26 @@ export const sendMessage = mutation({
     //     `isChatBusy` itself also answers the dispatch-reset probe, where a queued
     //     row must not read as activity.
     const queuedBefore = await countQueued(ctx, chat._id);
-    const busy = (await isChatBusy(ctx, chat._id)) || queuedBefore > 0;
+    // The switch is resolved ONCE per send (bounded reads) and reused by the busy check.
+    const projectionMode = await projectionModeOfChat(ctx, chat, routedAgent?.instanceName);
+    const activityBusy =
+      (await isChatBusy(ctx, chat._id, projectionMode)) || queuedBefore > 0;
+    // TRANSCRIPT PROJECTION `on` (phase 3, design §3.5): the outbox is the Control UI's
+    // client-side `queue` mode and nothing else. A busy conversation parks the send
+    // only when the person chose `queue`; any other mode goes to the gateway NOW, with
+    // the explicit `queueMode` the bridge resolves (steer by default, like the Control
+    // UI). A chain's tail still queues (each agent answers after the one before).
+    const projectionOn = projectionMode === "on";
+    const followUpChoice: FollowUpChoice | undefined = projectionOn
+      ? (args.followUpMode ?? (await getProfile(ctx, userId))?.followUpMode)
+      : undefined;
+    // …and only to the session at work: another agent's session would take the
+    // conversation's socket from the turn in progress — that send waits its turn.
+    const busy = projectionOn
+      ? activityBusy &&
+        (busySendParks(followUpChoice) || !sendTargetsActiveSession(chat, routedAgent))
+      : activityBusy;
+    const followUpMode = projectionOn && activityBusy ? storedFollowUpMode(followUpChoice) : undefined;
     // A CHAIN QUEUES ITS TAIL whatever the chat's state: every reply after the
     // first waits for the one before it. All of them count against the bound —
     // a message addressed to five agents takes five places, as five messages would.
@@ -552,6 +599,9 @@ export const sendMessage = mutation({
       ...(busy ? {} : { pendingSince: Date.now() }),
       // Per-turn routing target, read back by the dispatch.
       ...(routedAgent ? { routedAgent } : {}),
+      // Projection `on`, sent while the agent works: the person's mode (the bridge sends
+      // it as `chat.send.queueMode` when a run is active).
+      ...(followUpMode !== undefined ? { followUpMode } : {}),
       // Quote-reply: the dispatch (and any redo) prefixes the text with the
       // resolved quote_reply injection filled with this excerpt.
       ...outboxQuoteFieldsFor(quotes.map((q) => q.excerpt)),
@@ -595,6 +645,10 @@ export const sendMessage = mutation({
     if (!busy) {
       await ctx.scheduler.runAfter(0, internal.bridge.dispatch, { outboxId });
     }
+    // A row parked behind a projected gateway hold (phase 4) gets the hold's re-check in
+    // this same transaction: no drain may ever run again for it otherwise (the one at the
+    // ACK ran before any queue existed). No-op off `on`, without a hold, or already armed.
+    if (projectionOn && willQueue > 0) await armProjectedHoldRecheck(ctx, chat._id);
 
     // Audit a send performed under impersonation. PHI: we log the message id
     // ONLY — never `args.text` or attachment contents.
@@ -748,6 +802,11 @@ export const updateQueuedMessage = mutation({
     // somebody else's mouth. The owner may still withdraw it (cancelQueuedMessage).
     if (row.userId !== userId) {
       throw new Error("Forbidden: not your queued message");
+    }
+    // Rewritten INTO a command, a turn carrying files would be sent without them (see
+    // sendMessage).
+    if ((row.attachmentIds?.length ?? 0) > 0 && isGatewayCommandText(trimmed)) {
+      throw new Error(COMMAND_WITH_ATTACHMENTS);
     }
     // …and only the account that wrote it: the same person provisioned again after
     // a deletion has the same user id, not the deleted account's pen (the same

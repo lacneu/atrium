@@ -204,8 +204,12 @@ services:
     #   4. Uncomment the `volumes:` block and point each HOST source at those dirs. The
     #      mount TARGET is keyed by the LITERAL instance name so it equals the bridge's
     #      auto-derived dir.
-    #      Outbound is :ro. The bridge mounts ONE inbound root rw; the gateway
-    #      mounts only that root's published/ child, read-only.
+    #      Outbound is :ro. The bridge mounts ONE inbound root rw; the agent reads
+    #      its published/ child at /home/node/.openclaw/media/inbound/published.
+    #      NEVER mount anything read-only over the gateway's own
+    #      /home/node/.openclaw/media/inbound: it is OpenClaw's attachment store,
+    #      and every native upload (small files are sent natively even in
+    #      shared-fs mode) is saved there first.
     #   5. Recreate the bridge (a docker mount is NOT hot): `up -d --force-recreate bridge`,
     #      then click "Vérifier les chemins" in the per-instance config modal.
     #

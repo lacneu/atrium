@@ -1,4 +1,5 @@
 import { randomBytes } from "node:crypto";
+import { ConvexIngestError } from "../../convex-writer.js";
 
 // Protocol DRIFT detector (Inc 2 of docs/PROTOCOL_CONTRACT.md).
 //
@@ -29,7 +30,7 @@ import { randomBytes } from "node:crypto";
 // to exercise; it cannot enumerate a contract. That is what the vendored schema is
 // for, and inferring "the surface" from a bench run is the exact mistake the ratchet
 // exists to make impossible.
-export const DRIFT_VENDORED_VERSION = "2026.9.6";
+export const DRIFT_VENDORED_VERSION = "2026.9.8";
 
 /** Chat payload fields PER STATE, not their union.
  *
@@ -221,6 +222,9 @@ export const CLASSIFIED_EVENTS: ReadonlySet<string> = new Set([
   "session.message",
   "session.observer",
   "session.operation",
+  // NEW in 2026.9.7, classified `gap`: the bounded digest a narration-mode
+  // `sessions.messages.subscribe` receives. Atrium never subscribes in that mode.
+  "session.narration",
   "session.sharing",
   "session.sharing.evidence",
   "session.suggestion",
@@ -234,7 +238,6 @@ export const CLASSIFIED_EVENTS: ReadonlySet<string> = new Set([
   // NEW in 2026.9.5, classified `gap`: acknowledges a realtime voice switch, to the
   // CALLER connection only. Atrium never changes voice mid-session today.
   "talk.voice.change",
-  "task",
   "task.suggestion",
   "terminal.data",
   "terminal.exit",
@@ -265,6 +268,9 @@ export const BROADCAST_ONLY_EVENTS: ReadonlySet<string> = new Set([
   "chat.side_result",
   "config.changed",
   "sessions.catalog.host",
+  // No longer ANNOUNCED from 2026.9.7 (it left GATEWAY_EVENTS with the `tasks.*` RPCs),
+  // still a key of the scope-guard table, so a gateway can still broadcast it.
+  "task",
 ]);
 
 export const AGENT_ROUTING_ENVELOPE_FIELDS: readonly string[] = [
@@ -438,10 +444,21 @@ export const KNOWN_AGENT_FIELDS: ReadonlySet<string> = new Set([
  * matrix instead of being invisible omissions.
  */
 export const COVERAGE_SUMMARY = {
-  handled: 343,
-  ignored: 817,
-  gaps: 905,
+  handled: 348,
+  ignored: 814,
+  gaps: 920,
   /** The declared gaps, by schema path — the actionable part of the matrix.
+   *
+   *  TRANSCRIPT PROJECTION (2026-10-04, phases 1-2): the cursor reads of `chat.history`
+   *  are classified for what phase 1 already did (`ChatHistoryParams.cursor`/`maxBytes`,
+   *  the delta, reset and cursor results field by field), and phase 2's input guard is
+   *  handled: `ChatHistoryParams.inputRunIds`, the reply's `pendingInputs` (with the 9.7+
+   *  `queuedCount`) and `inputReceipts`. `session.message` / `sessions.changed` are
+   *  handled in the event manifest (the dedicated session-events connection).
+   *
+   *  ERROR LABELS (2026-10-02): `ChatErrorEvent.errorDetail` is handled — the provider
+   *  observation a failed chat carries (failoverReason, providerRuntimeFailureKind,
+   *  httpStatus) decides the failure class before the error text is read.
    *
    *  INLINE WIDGETS (2026-09-30): `ConnectParams.caps` is handled — the conversation
    *  socket declares `inline-widgets` when the conversation wants widgets — and the
@@ -501,7 +518,12 @@ export const COVERAGE_SUMMARY = {
    *  the history read is refused by name there) and added 25 schemas and 16 fields, all
    *  gaps by construction. The actionable one is `SessionRow.providerReview` /
    *  `SessionsProviderReviewContinueParams`: a session paused after a provider refusal,
-   *  which Atrium names (`session_paused_review`) but cannot continue. */
+   *  which Atrium names (`session_paused_review`) but cannot continue.
+   *  2026.9.7 retired the `tasks.*` RPCs (12 schemas, 16 handled fields among them — the
+   *  task probe answers empty there, TASKS_RPC_RETIRED_IN) and added 21 schemas and 13
+   *  fields; among the 21 new gaps, the ones that matter are the session-event ancestors
+   *  and the narration event (phases 2 and 6 of the transcript refonte) and the queue
+   *  cancellation `ChatAbortParams.discardPendingInput` (phase 6). */
   gapList: [
     "AgentActivityItem.approvalId",
     "AgentActivityItem.approvalSlug",
@@ -534,8 +556,10 @@ export const COVERAGE_SUMMARY = {
     "AgentsFileEntry.expectedAbsent",
     "AgentsFileEntry.hash",
     "AgentsFilesSetParams.expectedHash",
+    "AgentsFilesSetParams.expectedMissing",
     "ApprovalPresentation.externalResolution",
     "AuthProbeStatus",
+    "ChatAbortParams.discardPendingInput",
     "ChatAbortParams.preserveSideRuns",
     "ChatAbortedEvent.errorMessage",
     "ChatAccountSelection.authProfileId",
@@ -543,7 +567,6 @@ export const COVERAGE_SUMMARY = {
     "ChatAccountSelection.label",
     "ChatAccountSelection.source",
     "ChatAttachments",
-    "ChatErrorEvent.errorDetail",
     "ChatHistoryActivity.items",
     "ChatHistoryActivity.messageId",
     "ChatRunStartupPhase",
@@ -652,6 +675,7 @@ export const COVERAGE_SUMMARY = {
     "CronJob.scheduledToolPolicy",
     "CronJobState.consecutiveErrors",
     "CronJobState.deliverySuppressionReason",
+    "CronJobState.scheduleErrorCount",
     "CronJobState.streamCoalescedBatches",
     "CronJobState.streamConsecutiveFailures",
     "CronJobState.streamDroppedBatches",
@@ -867,6 +891,7 @@ export const COVERAGE_SUMMARY = {
     "PluginCatalogClawHubInstall.packageName",
     "PluginCatalogClawHubInstall.source",
     "PluginCatalogEntry.activityIconTools",
+    "PluginCatalogEntry.capabilityCategories",
     "PluginCatalogEntry.catalogId",
     "PluginCatalogEntry.categories",
     "PluginCatalogEntry.category",
@@ -928,6 +953,7 @@ export const COVERAGE_SUMMARY = {
     "PluginRuntimeApplication.generation",
     "PluginRuntimeApplication.operationId",
     "PluginRuntimeApplication.pluginIds",
+    "PluginRuntimeApplication.selectedEntries",
     "PluginRuntimeApplication.sourceDigests",
     "PluginRuntimeStatus.error",
     "PluginRuntimeStatus.state",
@@ -951,6 +977,7 @@ export const COVERAGE_SUMMARY = {
     "PluginsCredentialsInspectResult.baseHash",
     "PluginsCredentialsInspectResult.credential",
     "PluginsInstallParams.archivePath",
+    "PluginsInstallParams.enable",
     "PluginsInstallParams.expectedIntegrity",
     "PluginsInstallParams.expectedPluginId",
     "PluginsInstallParams.link",
@@ -985,6 +1012,7 @@ export const COVERAGE_SUMMARY = {
     "PluginsRefreshResult.warnings",
     "PluginsReloadParams.acknowledgeCapabilities",
     "PluginsReloadParams.plugins",
+    "PluginsReloadParams.waitForDrain",
     "PluginsReloadResult.ok",
     "PluginsReloadResult.pluginIds",
     "PluginsReloadResult.restartRequired",
@@ -1010,6 +1038,8 @@ export const COVERAGE_SUMMARY = {
     "PluginsUninstallResult.runtime",
     "PluginsUninstallResult.warnings",
     "PresenceEntry.clientId",
+    "PresenceEntry.connectionId",
+    "PresenceEntry.connectionLastActivityAt",
     "PresenceEntry.deviceFamily",
     "PresenceEntry.deviceId",
     "PresenceEntry.host",
@@ -1043,6 +1073,11 @@ export const COVERAGE_SUMMARY = {
     "SessionActivitySummary.state",
     "SessionActivitySummary.text",
     "SessionActivitySummary.updatedAt",
+    "SessionAncestorRef.agentId",
+    "SessionAncestorRef.key",
+    "SessionAncestorRef.revision",
+    "SessionAncestorRef.sessionId",
+    "SessionAncestorRef.snapshotAt",
     "SessionBranch.active",
     "SessionBranch.headline",
     "SessionBranch.leafEntryId",
@@ -1065,8 +1100,14 @@ export const COVERAGE_SUMMARY = {
     "SessionDiffFile.untracked",
     "SessionDiffFileStatus",
     "SessionEntryArchiveReason",
+    "SessionEventAncestors.ancestorSessionRefs",
+    "SessionEventAncestors.ancestorSessions",
     "SessionGroup.name",
     "SessionGroup.position",
+    "SessionNarrationEvent.agentId",
+    "SessionNarrationEvent.runId",
+    "SessionNarrationEvent.sessionKey",
+    "SessionNarrationEvent.text",
     "SessionObserverDigest.agentId",
     "SessionObserverDigest.assessment",
     "SessionObserverDigest.headline",
@@ -1098,6 +1139,7 @@ export const COVERAGE_SUMMARY = {
     "SessionRow.activeModel",
     "SessionRow.activeModelProvider",
     "SessionRow.activitySummary",
+    "SessionRow.ancestorRevision",
     "SessionRow.archiveReason",
     "SessionRow.archived",
     "SessionRow.archivedAt",
@@ -1323,11 +1365,6 @@ export const COVERAGE_SUMMARY = {
     "TalkClientTranscriptParams.text",
     "TalkClientTranscriptParams.timestamp",
     "TalkClientTranscriptParams.voiceSessionId",
-    "TaskSummary.execution",
-    "TaskSummary.hasTranscript",
-    "TaskSummary.lastToolName",
-    "TaskSummary.prompt",
-    "TaskSummary.toolUseCount",
     "TickEvent.ts",
     "UserChannelIdentity.accountId",
     "UserChannelIdentity.channelId",
@@ -1415,6 +1452,12 @@ export interface DriftEntry {
   /** `chat.<field>` or `agent.<field>` — schema vocabulary only. */
   shape: string;
   count: number;
+  /** When this process FIRST and LAST observed the shape (epoch ms). A count alone could
+   *  not say whether a sample is still happening or a leftover from hours ago — the
+   *  question an operator asks first, and the one a restart-scoped counter cannot answer
+   *  by itself. Timestamps only: no frame content. */
+  firstAt: number;
+  lastAt: number;
 }
 
 // Bounds: a pathological gateway must not grow memory or spam logs.
@@ -1462,6 +1505,30 @@ export const SAFE_CLASS_MAX = 48;
 const SAFE_NAME_CHARS = /^[a-zA-Z][a-zA-Z0-9._-]*$/; // compiled once: this sits on the frame path
 export function containName(raw: string, max: number = SAFE_NAME_MAX): string {
   return raw.length <= max && SAFE_NAME_CHARS.test(raw) ? raw : "«unprintable»";
+}
+
+/** An ingest op name as `ConvexIngestError` carries it (an `IngestOp` literal). Checked
+ *  anyway: this string is stored, and a class name must never become free text. */
+const INGEST_OP_NAME = /^[A-Za-z][A-Za-z0-9]{0,39}$/;
+
+/** The class a reader exception is filed under. For a write CONVEX refused it says which
+ *  write and how — `ConvexIngestError.<op>.<status|timeout>` — because the bare class told
+ *  an operator only that "some ingest failed" (prod 2026-10-01: a drift sample nobody
+ *  could attribute). Both parts are structural: the op is a compile-time literal, the
+ *  status an HTTP code or `timeout` (Convex never answered); the message stays out. The
+ *  Convex grammar accepts exactly this form (convex/compat.ts, INGEST_CLASS_NAME). */
+export function exceptionClassName(err: unknown): string {
+  if (err instanceof ConvexIngestError && INGEST_OP_NAME.test(err.op)) {
+    const status =
+      err.status === null
+        ? "timeout"
+        : Number.isInteger(err.status) && err.status >= 100 && err.status <= 599
+          ? String(err.status)
+          : "other";
+    return `ConvexIngestError.${err.op}.${status}`;
+  }
+  const cls = err instanceof Error ? err.constructor.name : typeof err;
+  return containName(cls, SAFE_CLASS_MAX);
 }
 const UNANTICIPATED_PREFIX = "«unanticipated-event».";
 /** A broadcast family RECEIVED on the wire that neither vocabulary classifies — the
@@ -1724,6 +1791,11 @@ class ProtocolDriftRegistry {
   private countersOf(kind: ShapeKind): Map<string, number> {
     return this.byKind.get(kind)!;
   }
+  /** First and last observation of each NAMED shape (see `DriftEntry`). Bounded by the
+   *  counters: a shape enters here only when it gets a counter. */
+  private readonly seenAt = new Map<string, { firstAt: number; lastAt: number }>();
+  /** The clock the timestamps read; a test seam. */
+  private clock: () => number = Date.now;
   /** Errors already reported, by IDENTITY. A `WeakSet` so a long-lived registry never
    *  holds an error alive; primitives thrown (`throw "x"`) cannot be tracked and are the
    *  one case that could still double-count — vanishingly rare, and over-reporting a
@@ -1852,11 +1924,10 @@ class ProtocolDriftRegistry {
         if (this.observedErrors.has(err)) return;
         this.observedErrors.add(err);
       }
-      const cls = err instanceof Error ? err.constructor.name : typeof err;
       // Same guard the detector-failure path uses: a class name is normally an
       // identifier, but `constructor.name` is attacker-influenceable in principle
       // (a thrown object from a dynamically named class), and this string is stored.
-      const safeClass = containName(cls, SAFE_CLASS_MAX);
+      const safeClass = exceptionClassName(err);
       this.bump(`${EXCEPTION_PREFIX}${safeClass}@${site}.${exceptionFrameShape(frame, site)}`);
     } catch {
       // The sensor itself failed. Count it as a detector failure rather than losing it,
@@ -1940,6 +2011,19 @@ class ProtocolDriftRegistry {
    *  stdout and nothing else: the report said "here is the drift" while silently omitting
    *  everything past 512 shapes. A bound is legitimate; a bound nobody downstream can see
    *  is the same silence the bound was supposed to replace. */
+  /** An open-vocabulary VALUE a reader met and could not interpret — e.g. the `state` of
+   *  a `chat.history` input receipt. Digested like every value nobody has vouched for
+   *  (see `observe` above): the counter says which reader and tells unknown values apart,
+   *  without publishing the wire string. Never throws. */
+  observeUnknownValue(site: string, value: unknown): void {
+    try {
+      const raw = typeof value === "string" ? value : `<${typeof value}>`;
+      this.bump(`${containName(site, SAFE_NAME_MAX)}_${shortDigest(raw)}`);
+    } catch {
+      // A sensor must never break the reader it observes.
+    }
+  }
+
   private bump(shape: string): void {
     const row = rowOfShape(shape);
     const map = this.countersOf(row.kind);
@@ -1947,6 +2031,8 @@ class ProtocolDriftRegistry {
     const current = map.get(shape);
     if (current !== undefined) {
       map.set(shape, current + 1);
+      const seen = this.seenAt.get(shape);
+      if (seen !== undefined) seen.lastAt = this.clock();
       return;
     }
     if (map.size >= cap) {
@@ -1966,6 +2052,8 @@ class ProtocolDriftRegistry {
     // received; a broadcast is one that arrived and was dropped.
     console.log(`[protocol-drift] ${row.wording(shape)}`);
     map.set(shape, 1);
+    const at = this.clock();
+    this.seenAt.set(shape, { firstAt: at, lastAt: at });
   }
 
   /** How many observations fell past the tracked-shape cap. Reported, not just logged. */
@@ -1983,13 +2071,21 @@ class ProtocolDriftRegistry {
     // exception is a count of 1 on the day it matters most.
     const byCount = (a: DriftEntry, b: DriftEntry): number => b.count - a.count;
     return SENSOR_KINDS.flatMap((row) =>
-      [...this.countersOf(row.kind).entries()].map(([shape, count]) => ({ shape, count })).sort(byCount),
+      [...this.countersOf(row.kind).entries()]
+        .map(([shape, count]) => {
+          const at = this.clock();
+          const seen = this.seenAt.get(shape) ?? { firstAt: at, lastAt: at };
+          return { shape, count, firstAt: seen.firstAt, lastAt: seen.lastAt };
+        })
+        .sort(byCount),
     );
   }
 
   /** Test seam. */
-  resetForTests(): void {
+  resetForTests(clock: () => number = Date.now): void {
     for (const map of this.byKind.values()) map.clear();
+    this.seenAt.clear();
+    this.clock = clock;
     this.overflowed = false;
     this.overflowCounter = 0;
   }

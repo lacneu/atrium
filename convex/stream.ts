@@ -18,10 +18,15 @@
 
 import { WIDGET_TITLE_MAX_CHARS, WIDGET_VIEW_ID_RE, partWidgetField } from "./lib/widgetDescriptor";
 import { conversationWantsWidgets, viewRegisteredTo, widgetInstanceFor } from "./widgets";
-import { v } from "convex/values";
+import { v, type ObjectType } from "convex/values";
 import { boundPartDepth } from "./lib/partDepth";
 import { contentLocaleForInstance } from "./lib/serverLocale";
-import { KNOWN_ERROR_CODES, maskCredentialId } from "./lib/chatRenderState";
+import {
+  KNOWN_ERROR_CODES,
+  maskCredentialId,
+  PER_AGENT_FAILURE_CAUSES,
+  reauthProviderFromText,
+} from "./lib/chatRenderState";
 import { SESSION_ACCESS_FIELDS } from "./lib/sessionAccess";
 import { internalMutation, internalQuery, MutationCtx, type QueryCtx } from "./_generated/server";
 import { internal } from "./_generated/api";
@@ -47,6 +52,11 @@ import {
 import { drainNextQueued, MAX_QUEUED_PER_CHAT } from "./lib/outboxQueue";
 import { MAX_ADDRESSED_AGENTS } from "./lib/agentMentions";
 import { maybeScheduleTurnRetry } from "./turnRetry";
+import { projectionModeOfChat } from "./lib/followUp";
+import { deletedRunSegment, purgeRowTextsOfMessage, transcriptStoredText } from "./lib/transcriptProjection";
+import { reopenTranscriptRun, settledProjectedBubble } from "./lib/projectedRuns";
+import { FILE_JOB_MAX_DEFER_MS, UPLOAD_MARKER_MAX_MS } from "./lib/fileJobs";
+import { isExplicitTerminal } from "./lib/bubbleProjection";
 import { maybeReparkPreemptedTurn } from "./preemptRepark";
 import { chatAllowsInstance } from "./lib/ingestAuthz";
 import { currentPlanIndex, usablePlanStamp } from "./lib/planOrder";
@@ -188,7 +198,7 @@ async function traceStream(
     chatId: Id<"chats">;
     runId: string | undefined;
     messageId: Id<"messages">;
-    streamStatus: "streaming" | "complete" | "error" | "aborted";
+    streamStatus: "streaming" | "complete" | "error" | "aborted" | "dropped_empty";
     textLen?: number;
     /** Snapshot regression only: the LENGTHS of the kept and refused texts.
      *  Lengths only — the texts themselves are conversational content (SOC2). */
@@ -199,6 +209,13 @@ async function traceStream(
      *  a context overflow and two unrelated blips looked identical, so the signal
      *  named a number instead of a cause (C-01). */
     errorCode?: string;
+    /** WHICH AGENT failed, for a cause whose remedy is per agent
+     *  (PER_AGENT_FAILURE_CAUSES — a provider credential, permission, billing or model):
+     *  ids only, never text. */
+    failedAgent?: { agentId: string; instanceName?: string };
+    /** The provider id the gateway's re-authentication hint names (an operator
+     *  configuration value, shape-checked by `reauthProviderFromText`). */
+    authProvider?: string;
   },
 ): Promise<void> {
   try {
@@ -219,6 +236,15 @@ async function traceStream(
         ...(args.oldLen !== undefined ? { oldLen: args.oldLen } : {}),
         ...(args.newLen !== undefined ? { newLen: args.newLen } : {}),
         ...(args.errorCode !== undefined ? { errorCode: args.errorCode } : {}),
+        ...(args.failedAgent !== undefined
+          ? {
+              agentId: args.failedAgent.agentId,
+              ...(args.failedAgent.instanceName !== undefined
+                ? { instanceName: args.failedAgent.instanceName }
+                : {}),
+            }
+          : {}),
+        ...(args.authProvider !== undefined ? { authProvider: args.authProvider } : {}),
       }),
     });
   } catch {
@@ -244,6 +270,9 @@ export const startAssistant = internalMutation({
     // correlation outboxReconcile needs to tell "this send never ran" from
     // "its ack was lost". Absent on gateway-initiated turns.
     dispatchOutboxId: v.optional(v.string()),
+    // PROJECTION `on` (phase 4): the bubble opens at the run's first visible content,
+    // which can come AFTER steered inputs cut the run (CU-20): it is that segment.
+    runSegment: v.optional(v.number()),
     ...boundArg,
   },
   // NULL = "this run has nowhere to land": the user stopped the work it
@@ -253,7 +282,7 @@ export const startAssistant = internalMutation({
   returns: v.union(v.id("messages"), v.null()),
   handler: async (
     ctx,
-    { chatId, runId, turnSessionKey, dispatchOutboxId, boundInstanceName },
+    { chatId, runId, turnSessionKey, dispatchOutboxId, runSegment, boundInstanceName },
   ) => {
     // REFUSE a turn whose dispatch was already SETTLED. Aborting the Convex-side POST
     // does not cancel the bridge's `/send` handler: a handler blocked past the
@@ -269,10 +298,13 @@ export const startAssistant = internalMutation({
     // inherits that one — the thread, the export and the rehydrated history would
     // all sign the second agent's answer with the first agent's name.
     let chainedAgent: { instanceName: string; agentId: string } | null = null;
+    /** The dispatch's outbox row, as read here (reused below — never read twice). */
+    let dispatchRow: Doc<"outbox"> | null = null;
     if (dispatchOutboxId !== undefined) {
       const rowId = ctx.db.normalizeId("outbox", dispatchOutboxId);
       if (rowId !== null) {
         const row = await ctx.db.get(rowId);
+        dispatchRow = row;
         if (row !== null && row.status === "failed") {
           throw new Error(
             "dispatch already reconciled — refusing to open a turn for a settled send",
@@ -298,6 +330,52 @@ export const startAssistant = internalMutation({
     // compares at zero extra reads.
     await assertChatBound(ctx, chatId, boundInstanceName);
     const now = Date.now();
+    // A run segment whose bubble a person DELETED opens nothing — no bubble, no merge — in
+    // EVERY mode: its tombstone (written while the transcript was read) or a merge record
+    // pointing at a bubble that is gone. A late, replayed or stashed live frame of that run
+    // would otherwise make the deleted answer again (codex phase 4 pass 7). Two index
+    // probes; nothing to find in a conversation that never deleted such a bubble.
+    // Gated on stored text (lib/transcriptProjection `transcriptStoredText`): a conversation
+    // never `on` reads nothing more here than it did before phase 4.
+    const storedText = transcriptStoredText(chat);
+    if (
+      storedText &&
+      runId !== undefined &&
+      (await deletedRunSegment(ctx, chatId, turnSessionKey, runId, runSegment !== undefined && runSegment > 0 ? runSegment : 0))
+    ) {
+      return null;
+    }
+    // PROJECTION `on` (phase 4): a run the transcript already proved over, whose bubble
+    // its rows already settled, opens nothing new — not a bubble, not a merge: its late
+    // live frames land on that bubble (text dropped, parts kept). One run, one bubble.
+    /** An owned delivery whose settled bubble ENDED IN ERROR: its replay resumes it
+     *  through the delivery door below, as in 0.95.0 (codex phase 4 pass 12). */
+    let resumesErroredDelivery = false;
+    // Whatever the CURRENT mode (codex phase 4 pass 16): a conversation that stored text
+    // keeps its projected bubbles after a rollback, and a live start delayed across the
+    // switch must land on the one already there — never open a second answer.
+    if (storedText && runId !== undefined) {
+      // …except a delivery the user STOPPED: it gets no bubble back either, not even the
+      // one its rows settled (aborted) — a replayed announce would otherwise land its
+      // files and results on it after the Stop (codex phase 4 pass 4). Same verdict as the
+      // delivery door below.
+      if (await deliveryRefusedByStop(ctx, chat, runId)) return null;
+      const settled = await settledProjectedBubble(
+        ctx,
+        chatId,
+        runId,
+        {
+          ...(boundInstanceName !== undefined ? { instanceName: boundInstanceName } : {}),
+          ...(turnSessionKey !== undefined ? { sessionKey: turnSessionKey } : {}),
+        },
+        runSegment !== undefined && runSegment > 0 ? runSegment : 0,
+      );
+      if (settled !== null) {
+        const delivery = deliveryChildKey(runId) !== null || isRequesterSettleRun(runId);
+        if (!delivery || (await ctx.db.get(settled))?.status !== "error") return settled;
+        resumesErroredDelivery = true;
+      }
+    }
     // SUB-AGENT ANNOUNCE MERGE: a gateway announce-run delivers the result of
     // a sub-agent whose PARENT turn already finished — as a separate run. The
     // user asked ONE question; the answer must land in ONE bubble. When the
@@ -328,14 +406,11 @@ export const startAssistant = internalMutation({
       // Work that STARTED before the user pressed Stop does not get to deliver
       // afterwards. A child spawned AFTER it is younger than the epoch and
       // passes untouched — stopping this turn must never mute the next one.
-      const stoppedAt = chat.stoppedAt;
-      if (stoppedAt !== undefined) {
-        if (await refusedByStopEpoch(ctx, chatId, runId, stoppedAt)) {
-          // Dropped whole: no bubble, no reopen, no row settle. The bridge
-          // treats a null start as "this run has nowhere to land" and stops
-          // feeding it, so the deltas that follow never arrive either.
-          return null;
-        }
+      if (await deliveryRefusedByStop(ctx, chat, runId)) {
+        // Dropped whole: no bubble, no reopen, no row settle. The bridge
+        // treats a null start as "this run has nowhere to land" and stops
+        // feeding it, so the deltas that follow never arrive either.
+        return null;
       }
       // A task-delivery run arriving means the background task IS finished:
       // settle its engagement row (turns the thread indicator off) whatever
@@ -389,6 +464,9 @@ export const startAssistant = internalMutation({
       );
       if (merge !== null) {
         if (merge.reopened) {
+          // The resumed run streams again: its transcript state no longer holds it over,
+          // or the next read would settle the reopened bubble back to the old error.
+          if (resumesErroredDelivery) await reopenTranscriptRun(ctx, chatId, runId, now);
           await ctx.db.patch(chatId, { updatedAt: now });
           await traceStream(ctx, {
             phase: "start",
@@ -403,6 +481,18 @@ export const startAssistant = internalMutation({
         return merge.messageId;
       }
     }
+    // PROJECTION `on` (phase 4): the admitted run shows its first content — the bubble
+    // now holds the chat, the admission marker's work is done.
+    // Gated on stored text: an admission is only ever written for a conversation that
+    // carries the marker (bridge.markOutbox sets both), so no other conversation reads here.
+    if (storedText && dispatchRow !== null && dispatchRow.chatId === chatId) {
+      const dispatchId = dispatchRow._id;
+      const admissions = await ctx.db
+        .query("runAdmissions")
+        .withIndex("by_outbox", (q) => q.eq("outboxId", dispatchId))
+        .take(4);
+      for (const a of admissions) await ctx.db.delete(a._id);
+    }
     const messageId = await ctx.db.insert("messages", {
       chatId,
       userId: chat.userId,
@@ -411,6 +501,7 @@ export const startAssistant = internalMutation({
       role: "assistant",
       runId,
       status: "streaming",
+      ...(runSegment !== undefined && runSegment > 0 ? { runSegment } : {}),
       ...(chainedAgent !== null
         ? {
             routedInstanceName: chainedAgent.instanceName,
@@ -1030,6 +1121,22 @@ async function recordRunBubble(
   await ctx.db.insert("runBubbles", { chatId, runId, messageId, createdAt: Date.now() });
 }
 
+/** `recordRunBubble` for a NON-delivery run whose id a merge rotated off its bubble
+ *  (projection `on` only, see the caller). The first record stands. */
+async function recordRotatedRunBubble(
+  ctx: MutationCtx,
+  chatId: Id<"chats">,
+  runId: string,
+  messageId: Id<"messages">,
+): Promise<void> {
+  const existing = await ctx.db
+    .query("runBubbles")
+    .withIndex("by_chat_run", (q) => q.eq("chatId", chatId).eq("runId", runId))
+    .first();
+  if (existing !== null) return;
+  await ctx.db.insert("runBubbles", { chatId, runId, messageId, createdAt: Date.now() });
+}
+
 /** The bubble run `run` wrote to in this chat, or null when that is not KNOWN.
  *
  *  The durable record first (`recordRunBubble`); then, for a bubble written before
@@ -1088,6 +1195,23 @@ async function settleMemberRows(
       q.eq("chatId", chatId).eq("childRunId", childRunId),
     )
     .take(2);
+}
+
+/** THE INTERRUPTION EPOCH's verdict on a run, for every door a delivery can come in by:
+ *  the live one (`startAssistant`) and the transcript projection's (phase 4,
+ *  lib/bubbleProjectionStore — a refused delivery's rows never make or rewrite a bubble,
+ *  codex phase 4 pass 3). Only a post-turn delivery (an announce, a background-task
+ *  delivery, a requester-settle continuation) is ever refused, and only once a Stop was
+ *  recorded. */
+export async function deliveryRefusedByStop(
+  ctx: MutationCtx,
+  chat: Doc<"chats">,
+  runId: string,
+): Promise<boolean> {
+  const stoppedAt = chat.stoppedAt;
+  if (stoppedAt === undefined) return false;
+  if (deliveryChildKey(runId) === null && !isRequesterSettleRun(runId)) return false;
+  return refusedByStopEpoch(ctx, chat._id, runId, stoppedAt);
 }
 
 /** Does the interruption epoch refuse this delivery? The single rule every
@@ -1610,6 +1734,18 @@ async function reopenParentForAnnounce(
   });
   // Where this run wrote, durably: the bubble's `runId` will name a later run.
   await recordRunBubble(ctx, chatId, announceRunId, parentId);
+  // Projection `on` (phase 3, CU-9): the bridge ADOPTS the run the gateway answers a
+  // queued input under — a bare id, not a delivery run, opened under its own `runId`.
+  // The rotation above erases that id from the bubble; without a record the run →
+  // bubble join (I1, a child's birth run) would read a reply that IS shown as lost.
+  if (
+    parent.runId !== undefined &&
+    parent.runId !== announceRunId &&
+    !isDeliveryRun(parent.runId) &&
+    (await projectionModeOfChat(ctx, await ctx.db.get(chatId))) === "on"
+  ) {
+    await recordRotatedRunBubble(ctx, chatId, parent.runId, parentId);
+  }
   if (resuming) {
     await ctx.scheduler.runAfter(
       ANNOUNCE_REPLAY_WINDOW_MS,
@@ -3507,8 +3643,9 @@ export const recoverLostReply = internalMutation({
   },
 });
 
-export const finalize = internalMutation({
-  args: {
+/** The argument object of `finalize` (shared with the transcript projection, which
+ *  settles a bubble in the SAME mutation that recomposes it from its rows). */
+export const finalizeArgs = {
     messageId: v.id("messages"),
     status: v.union(
       v.literal("complete"),
@@ -3579,497 +3716,857 @@ export const finalize = internalMutation({
      *  and the message would then carry a terminal nobody could explain — which is
      *  the exact gap the field exists to close. */
     finalizeCause: v.optional(v.string()),
+    /** TRANSCRIPT PROJECTION `on` (redesign phase 3): a run that ended with nothing a
+     *  reader sees — no text and no part — leaves NO bubble, like the Control UI (a
+     *  hidden terminal creates no row, CU-21). Only for a COMPLETE terminal: an error
+     *  or a Stop keeps its card. The bubble is still created at the ACK until phase 4
+     *  makes bubbles from the runs themselves; this removes the empty one. */
+    dropIfEmpty: v.optional(v.boolean()),
     ...boundArg,
-  },
-  handler: async (
-    ctx,
-    {
-      messageId,
-      status,
-      text,
-      error,
-      errorKind,
-      expectedRunId,
+  };
+
+export type FinalizeArgs = ObjectType<typeof finalizeArgs>;
+
+/** `finalize`'s whole handler, callable from another mutation (phase 4). */
+export async function finalizeMessageCore(
+  ctx: MutationCtx,
+  {
+    messageId,
+    status,
+    text,
+    error,
+    errorKind,
+    expectedRunId,
+    boundInstanceName,
+    discardStreamText,
+    gatewayPreempted,
+    clearProviderSession,
+    recoverableSession,
+    finalizeCause,
+    dropIfEmpty,
+  }: FinalizeArgs,
+): Promise<{ transitioned: boolean }> {
+  // The gateway's own sentence is stored on the message and served to the browser
+  // (messages.ts), copied with the bubble, and written into an archive export. When
+  // it is the auth-profile cooldown, that sentence NAMES THE CREDENTIAL — upstream
+  // lets an operator call a profile anything, and the reported one was an email
+  // address — while the reader of a chat is not necessarily its owner (codex).
+  //
+  // Masked HERE, at the first mutation that could STORE it, rather than at the view:
+  // a view mask leaves the id in the row, in every client's copy of it and in the
+  // export. Precise about what this does and does not achieve: the raw body does
+  // reach Convex — it arrives on the ingest HTTP action — and this is where it stops
+  // for a TURN, before anything persists or serves it. The sub-agent writers are a
+  // second door and call the same masker (subAgents.ts, subAgentInteractions.ts). The operator's source of truth for which
+  // profile is paused is the GATEWAY's own auth-profile store; the bridge logs raw
+  // frames only under BRIDGE_DEBUG / BRIDGE_FRAME_DUMP, which are off in production
+  // (codex).
+  error = maskCredentialId(error);
+  const message = await ctx.db.get(messageId);
+  if (message === null) {
+    throw new Error("finalize: message not found");
+  }
+  // ATOMIC cross-gateway barrier (durable message stamp — see addPart).
+  await assertMessageBound(ctx, message, boundInstanceName);
+  if (
+    expectedRunId !== undefined &&
+    (message.runId ?? null) !== expectedRunId
+  ) {
+    console.log(
+      "[stream] finalize skipped: message re-owned by another run (announce merge)",
+    );
+    // …and `clearProviderSession` is skipped with it, deliberately, for a reason the
+    // id match does NOT cover: the announce run works on that VERY session, so the id
+    // would match and the clear would fire. Dropping it here would break a turn that is
+    // working, to protect against one that already lost its claim. The chat is not
+    // released by this path either, so nothing resumes in the meantime.
+    return { transitioned: false as const };
+  }
+  // FIRST TERMINAL WRITE WINS (symmetric): a user-aborted message stays
+  // aborted when the gateway's late chat:final loses the race — and a reply
+  // that COMPLETED before the abort RPC landed stays complete (the kill's
+  // guaranteed-settle finalize must not repaint a finished answer as
+  // interrupted). A SAME-status redelivery is a full no-op too: the first
+  // finalize already wrote the text (possibly recomposed from a consumed
+  // announcePrefix — re-running would wipe the merged parent reply), drained
+  // the queue and scheduled the GC.
+  if (message.status !== "streaming") {
+    console.log(
+      `[stream] finalize skipped: already terminal (${message.status} vs ${status})`,
+    );
+    // …but the SESSION DROP still applies — unless the terminal already there is a
+    // COMPLETE one. That is the gateway's own account of a run that ENDED: a kill
+    // whose POST failed or timed out declares the session untrusted from the
+    // action, which reads a state up to forty-five seconds old, and during that
+    // wait the run can finish normally and win the race. Dropping then costs a
+    // rehydration and the provider's warm context to protect against a run that
+    // is demonstrably over. An `aborted` row is the opposite case — our own
+    // settle won — and keeps the drop.
+    //
+    // A user Stop finalizes the bubble `aborted`
+    // in Convex while the bridge's own silence terminal is in flight; the bridge writes
+    // no terminal of its own on a Stop (`forceSettle(false)`), so if the drop rode only
+    // the transition it would vanish with the race — and the chat is released, so the
+    // next send reads the very slot this turn declared untrusted. The id match is what
+    // makes this late write safe (see `providerSessionClearPatch`).
+    await dropUntrustedProviderSession(
+      ctx,
+      message.chatId,
+      message.status === "complete" ? undefined : clearProviderSession,
+      true,
+      // NEVER on this branch. It exists for the race where a user Stop already settled the
+      // message and our terminal is still in flight — so the row is the user's
+      // CANCELLATION, and recording a handle for it would let the harvest flip it back to
+      // `complete` (raised in review). The drop still applies: the session is untrusted
+      // either way.
+      null,
       boundInstanceName,
-      discardStreamText,
-      gatewayPreempted,
-      clearProviderSession,
-      recoverableSession,
-      finalizeCause,
-    },
-  ) => {
-    // The gateway's own sentence is stored on the message and served to the browser
-    // (messages.ts), copied with the bubble, and written into an archive export. When
-    // it is the auth-profile cooldown, that sentence NAMES THE CREDENTIAL — upstream
-    // lets an operator call a profile anything, and the reported one was an email
-    // address — while the reader of a chat is not necessarily its owner (codex).
-    //
-    // Masked HERE, at the first mutation that could STORE it, rather than at the view:
-    // a view mask leaves the id in the row, in every client's copy of it and in the
-    // export. Precise about what this does and does not achieve: the raw body does
-    // reach Convex — it arrives on the ingest HTTP action — and this is where it stops
-    // for a TURN, before anything persists or serves it. The sub-agent writers are a
-    // second door and call the same masker (subAgents.ts, subAgentInteractions.ts). The operator's source of truth for which
-    // profile is paused is the GATEWAY's own auth-profile store; the bridge logs raw
-    // frames only under BRIDGE_DEBUG / BRIDGE_FRAME_DUMP, which are off in production
-    // (codex).
-    error = maskCredentialId(error);
-    const message = await ctx.db.get(messageId);
-    if (message === null) {
-      throw new Error("finalize: message not found");
-    }
-    // ATOMIC cross-gateway barrier (durable message stamp — see addPart).
-    await assertMessageBound(ctx, message, boundInstanceName);
+      // This turn's own age: an outbox row older than it is this very turn's, still
+      // `pending` because the error beat the sent-flip.
+      message._creationTime,
+    );
+    // A bubble the TRANSCRIPT settled in error (born from its rows, or settled by them)
+    // knows THAT the run failed, never WHY: the run's own live terminal carries the
+    // cause (masked above) and its curated code. It ENRICHES that bubble — nothing else
+    // of the terminal re-runs: no status, text, retry, notification or counter (codex
+    // phase 4 pass 14: a billing failure's cause was otherwise lost for good).
     if (
-      expectedRunId !== undefined &&
-      (message.runId ?? null) !== expectedRunId
+      message.status === "error" &&
+      status === "error" &&
+      message.finalizeCause === "transcript_settled" &&
+      message.error === undefined &&
+      message.errorCode === undefined &&
+      (error !== undefined || errorKind !== undefined)
     ) {
-      console.log(
-        "[stream] finalize skipped: message re-owned by another run (announce merge)",
-      );
-      // …and `clearProviderSession` is skipped with it, deliberately, for a reason the
-      // id match does NOT cover: the announce run works on that VERY session, so the id
-      // would match and the clear would fire. Dropping it here would break a turn that is
-      // working, to protect against one that already lost its claim. The chat is not
-      // released by this path either, so nothing resumes in the meantime.
-      return { transitioned: false as const };
-    }
-    // FIRST TERMINAL WRITE WINS (symmetric): a user-aborted message stays
-    // aborted when the gateway's late chat:final loses the race — and a reply
-    // that COMPLETED before the abort RPC landed stays complete (the kill's
-    // guaranteed-settle finalize must not repaint a finished answer as
-    // interrupted). A SAME-status redelivery is a full no-op too: the first
-    // finalize already wrote the text (possibly recomposed from a consumed
-    // announcePrefix — re-running would wipe the merged parent reply), drained
-    // the queue and scheduled the GC.
-    if (message.status !== "streaming") {
-      console.log(
-        `[stream] finalize skipped: already terminal (${message.status} vs ${status})`,
-      );
-      // …but the SESSION DROP still applies — unless the terminal already there is a
-      // COMPLETE one. That is the gateway's own account of a run that ENDED: a kill
-      // whose POST failed or timed out declares the session untrusted from the
-      // action, which reads a state up to forty-five seconds old, and during that
-      // wait the run can finish normally and win the race. Dropping then costs a
-      // rehydration and the provider's warm context to protect against a run that
-      // is demonstrably over. An `aborted` row is the opposite case — our own
-      // settle won — and keeps the drop.
-      //
-      // A user Stop finalizes the bubble `aborted`
-      // in Convex while the bridge's own silence terminal is in flight; the bridge writes
-      // no terminal of its own on a Stop (`forceSettle(false)`), so if the drop rode only
-      // the transition it would vanish with the race — and the chat is released, so the
-      // next send reads the very slot this turn declared untrusted. The id match is what
-      // makes this late write safe (see `providerSessionClearPatch`).
-      await dropUntrustedProviderSession(
-        ctx,
-        message.chatId,
-        message.status === "complete" ? undefined : clearProviderSession,
-        true,
-        // NEVER on this branch. It exists for the race where a user Stop already settled the
-        // message and our terminal is still in flight — so the row is the user's
-        // CANCELLATION, and recording a handle for it would let the harvest flip it back to
-        // `complete` (raised in review). The drop still applies: the session is untrusted
-        // either way.
-        null,
-        boundInstanceName,
-        // This turn's own age: an outbox row older than it is this very turn's, still
-        // `pending` because the error beat the sent-flip.
-        message._creationTime,
-      );
-      // NOT a transition. The bridge now RETRIES a finalize whose response was lost,
-      // so this no-op is expected — and the ingest route must not write a second
-      // `openclaw.ingest` trace for it, or every recovered network blip inflates the
-      // finalize counters the anomaly detector and the audits read (codex P2).
-      return { transitioned: false as const };
-    }
-    // A2: write the authoritative final text into the searchable/indexed `text`
-    // ONCE here, and CLEAR `liveText` (so listByChat now reads `text`). Prefer the
-    // normalizer's final text; fall back to whatever streamed into `liveText` (so
-    // a final with no explicit text never wipes a streamed reply).
-    // The live text now lives in the streamingText row; `message.liveText` is only
-    // a fallback for a message that was mid-stream across a deploy to this version.
-    const stRow = await streamingRow(ctx, messageId);
-    // The live row's stamp is STRICTER than chat membership (per-TURN owner):
-    // an instance routed in this chat but not owning THIS stream must not
-    // terminate it (codex P1 — a bound C finalizing B's active stream).
-    if (stRow !== null) await assertRowBound(ctx, stRow, boundInstanceName);
-    const streamedText = discardStreamText
-      ? "" // sentinel noise — never resurrect it as the reply (codex P2)
-      : (stRow?.text ?? message.liveText ?? message.text);
-    const prefix = message.announcePrefix ?? "";
-    // Announce merge: the run's final frame carries ONLY the announce text —
-    // recompose behind the parked parent reply. The FALLBACK path (no final
-    // text: a preempted or swept merge) must honor the parked prefix too: the
-    // reopen seeds the stream row with it, but a SNAPSHOT frame replaces the
-    // row text — closing with the bare snapshot would overwrite the already
-    // delivered reply (live 2026-07-19: a replayed announce, preempted
-    // mid-stream, shrank a full report to its replayed head).
-    let finalText =
-      text !== undefined && text !== ""
-        ? prefix !== ""
-          ? prefix + ANNOUNCE_SEP + text
-          : text
-        : prefix === "" || streamedText.startsWith(prefix)
-          ? streamedText // no merge, or the row still carries the seeded prefix
-          : streamedText === "" || prefix.startsWith(streamedText)
-            ? prefix // replayed head of the parked reply (nothing new): keep the reply
-            : prefix + ANNOUNCE_SEP + streamedText; // genuinely new partial content
-    // ANTI-REGRESSION AT THE TERMINAL WRITE (G-14, codex P1). The guard on
-    // setSnapshot protects the LIVE row, but the reply the user keeps is this
-    // `text` — a stale or truncated final would defeat the guard one write later.
-    //
-    // The test is PREFIX, not length. A final that merely differs is the
-    // gateway's authoritative re-render (directives stripped, whitespace
-    // collapsed) and may legitimately be shorter — an existing abort test proves
-    // that case is real. A final that is a strict PREFIX of what the user has
-    // already read is not a re-render: it is the same text, cut. Only for a
-    // COMPLETE turn (an error/aborted finalize legitimately carries a partial or
-    // an error string), and never for declared stream noise.
-    // Two independent reasons to keep the streamed text. The remembered refusal
-    // is EXACT and stands on its own: gating it behind the length comparison let
-    // an authorized `replace` shorten the row and, once the displayed text was no
-    // longer longer, the very same stale final walked back in (codex P2).
-    const finalRepeatsRefused =
-      stRow?.refusedText !== undefined && finalText === stRow.refusedText;
-    // A strict PREFIX of what is displayed is the same text, cut. A final that
-    // merely DIFFERS is the gateway's authoritative re-render and may
-    // legitimately be shorter — an existing abort test proves that case is real.
-    const finalCutsDisplayed =
-      finalText.length < streamedText.length &&
-      streamedText.startsWith(finalText);
-    if (
-      status === "complete" &&
-      !discardStreamText &&
-      streamedText !== "" &&
-      (finalRepeatsRefused || finalCutsDisplayed)
-    ) {
-      await traceStream(ctx, {
-        phase: "snapshot_regression",
-        chatId: message.chatId,
-        runId: message.runId,
-        messageId,
-        streamStatus: status,
-        oldLen: streamedText.length,
-        newLen: finalText.length,
+      await ctx.db.patch(messageId, {
+        ...(error !== undefined ? { error } : {}),
+        ...(errorKind !== undefined ? { errorCode: errorKind } : {}),
       });
-      finalText = streamedText;
     }
-    // A DELIVERY run is EXEMPT from the sink's empty-response verdict: its
-    // item-derived cards usually ARE the content, and it often merges into an
-    // already-complete bubble — two facts the sink cannot see from the wire. The
-    // exemption left the opposite case unnamed: a delivery that brought NEITHER
-    // text NOR a file landed as a silent empty bubble, with no cause for the
-    // reader and nothing for the per-cause anomaly plane to count (live: four
-    // consecutive empty replies on one chat, and a delegated task whose
-    // deliverable never arrived). The verdict belongs HERE because only the
-    // stored message shows what the reader actually has — the merged text and
-    // the parts already attached to the bubble.
-    let deliveredNothing = false;
-    if (
-      status === "complete" &&
-      errorKind === undefined &&
-      isDeliveryRun(message.runId) &&
-      // `finalText` is what the reader KEEPS — the merge case included: a settle
-      // run that merges into a parent's bubble falls back to the bubble's own
-      // text here (see `streamedText`), so a delivery that added nothing to a
-      // reply the reader can read is never named a failure.
-      finalText.trim() === ""
-    ) {
-      const parts = await ctx.db
-        .query("messageParts")
-        .withIndex("by_message", (q) => q.eq("messageId", messageId))
-        .take(DELIVERED_PROBE_CAP + 1);
-      try {
-        deliveredNothing =
-          parts.length <= DELIVERED_PROBE_CAP &&
-          // An explicit hand-off is not a failed delivery: the parent chose to
-          // answer nothing and the child replies in its own run. Checked BEFORE
-          // the content probe because it is decisive on its own and needs no
-          // storage round-trip.
-          !handedOffToChild(message.runId, parts) &&
-          // An intermediate continuation of a delegation still under way.
-          !(await delegationContinues(ctx, message, parts)) &&
-          !(await carriesDeliveredContent(ctx, parts));
-      } catch {
-        // Storage refused to answer: the probe has no evidence, and a verdict
-        // without evidence never names a failure. It must not take the FINALIZE
-        // down with it either — a thrown mutation leaves the message `streaming`
-        // until the watchdog reaps it, which is the very silence this rule
-        // exists to end.
-        deliveredNothing = false;
+    // The run's live terminal on an answer the TRANSCRIPT settled: its media are in now —
+    // the file jobs that waited for them settle (codex phase 4 pass 16). Guarded by each
+    // job's identity: a job already settled (deferred check, earlier terminal) is left.
+    // AN INFERRED OUTCOME, CORRECTED by the run's own live terminal (codex phase 4 pass
+    // 24): an idle read closed the answer `complete` before its `chat:error` arrived.
+    // The SAME run (the generation check above) turns it into the error it was — text
+    // kept, cause masked above and its code. Once only (the mark goes), and never an
+    // explicit terminal's outcome. The correlates that JUDGE the status (summarizer,
+    // curator) did NOT run at the inferred close — they were deferred to this terminal
+    // and run just below (codex phase 4 pass 25). Nothing else of a terminal is re-run:
+    // the remaining end-of-turn hooks do not read the status (the file jobs read parts,
+    // the summarize check counts turns), and an answer that showed content is never
+    // auto-retried.
+    if (message.closeInferred === true && finalizeCause !== "transcript_settled") {
+      // ANY live terminal that is not `complete` corrects it (codex phase 4 pass 26): an
+      // `error` (a timeout arrives as `error` with errorKind `timeout`) or an `aborted`,
+      // to the very status this finalize gives a fresh bubble. `yielded` is no finalize
+      // status — the bridge settles a handed-off turn `complete` — so it confirms.
+      if (message.status === "complete" && status !== "complete") {
+        await ctx.db.patch(messageId, {
+          status,
+          ...(error !== undefined ? { error } : {}),
+          ...(errorKind !== undefined ? { errorCode: errorKind } : {}),
+          closeInferred: undefined,
+          updatedAt: Date.now(),
+        });
+      } else {
+        await ctx.db.patch(messageId, { closeInferred: undefined });
       }
     }
-    // Same shape as the sink's own empty verdict: a status the UI paints as a
-    // failure, and a CURATED class the anomaly plane keys on. `empty_response`
-    // (not the `_silent` variant) because a delivery run that failed to deliver
-    // has already billed its work — it must never be auto-retried.
-    const finalStatus = deliveredNothing ? ("error" as const) : status;
-    const finalErrorKind = deliveredNothing
-      ? DELIVERED_NOTHING_CODE
-      : errorKind;
-    await ctx.db.patch(messageId, {
-      status: finalStatus,
-      text: finalText,
-      ...(deliveredNothing ? { error: DELIVERED_NOTHING_TEXT } : {}),
-      // Consumed on success/abort; PRESERVED on error — a rebroadcast may
-      // RESUME the merge and needs the pre-merge prefix (parent.text is by
-      // then `original + partial`, unusable as a prefix).
-      // `finalStatus`: a contentless delivery IS an error, and the rebroadcast
-      // that can still repair it needs both the pre-merge prefix and the armed
-      // window (the window is what lets a dead twin be replaced rather than
-      // stacked — addPart).
-      ...(finalStatus !== "error"
-        ? {
-            announcePrefix: undefined,
-            announceReplayArmed: undefined,
-            announceReplayRun: undefined,
-          }
-        : {}),
-      liveText: undefined, // clear the legacy live field (optional → field removed)
-      ...(error !== undefined ? { error } : {}),
-      // Reuses the existing stable-code field (failDispatch codes live there
-      // too) — the UI maps context_length/rate_limit/... to actionable labels.
-      ...(finalErrorKind !== undefined ? { errorCode: finalErrorKind } : {}),
-      // The turn's own verdict, stored WITH the turn. Written whenever the bridge
-      // sent one — including on a success, which is the case the trace channel
-      // most often skipped: `gateway_final` fires no pressure trace of its own, so
-      // the ordinary terminal was computed and persisted nowhere.
-      ...(finalizeCause !== undefined ? { finalizeCause } : {}),
-      // A generation's terminal starts its OWN retry story (turnRetry writes it
-      // right after this patch). Every reopen path clears the old one already; this
-      // holds the rule for any path that forgets to.
-      ...(message.status === "streaming"
-        ? { autoRetry: undefined, autoRetryOutcome: undefined }
-        : {}),
-      updatedAt: Date.now(),
-      // The FIRST terminal transition stamps the generation end. A same-status
-      // re-finalize (redelivered final) or a late addPart may bump updatedAt
-      // again, so the reply-duration UI reads THIS stable stamp, never
-      // updatedAt (codex: duration must not grow with redeliveries).
-      ...(message.finalizedAt === undefined ? { finalizedAt: Date.now() } : {}),
+    // The outcome is KNOWN now (confirmed or corrected): the status-dependent correlates
+    // an inferred close deferred run — once (codex phase 4 pass 25).
+    if (message.statusJobsDeferred === true && finalizeCause !== "transcript_settled") {
+      await settleStatusJobs(ctx, messageId);
+    }
+    // Only the LIVE terminal (codex phase 4 pass 17): the bridge's own echo of the
+    // transcript's settle (`RunManager.settleFromTranscript`, cause `transcript_settled`)
+    // arrives BEFORE the run's media — it must never judge the job.
+    if (message.finalizeCause === "transcript_settled" && finalizeCause !== "transcript_settled") {
+      // The run's uploads are done when its live terminal comes (the bridge's lane awaits
+      // them first): no upload holds the answer any more.
+      if (message.uploadsInFlightUntil !== undefined) {
+        await ctx.db.patch(messageId, { uploadsInFlightUntil: undefined });
+      }
+      const settledDoc = await ctx.db.get(messageId);
+      if (settledDoc !== null) await settleFileJobs(ctx, settledDoc);
+    }
+    // NOT a transition. The bridge now RETRIES a finalize whose response was lost,
+    // so this no-op is expected — and the ingest route must not write a second
+    // `openclaw.ingest` trace for it, or every recovered network blip inflates the
+    // finalize counters the anomaly detector and the audits read (codex P2).
+    return { transitioned: false as const };
+  }
+  // A2: write the authoritative final text into the searchable/indexed `text`
+  // ONCE here, and CLEAR `liveText` (so listByChat now reads `text`). Prefer the
+  // normalizer's final text; fall back to whatever streamed into `liveText` (so
+  // a final with no explicit text never wipes a streamed reply).
+  // The live text now lives in the streamingText row; `message.liveText` is only
+  // a fallback for a message that was mid-stream across a deploy to this version.
+  const stRow = await streamingRow(ctx, messageId);
+  // The live row's stamp is STRICTER than chat membership (per-TURN owner):
+  // an instance routed in this chat but not owning THIS stream must not
+  // terminate it (codex P1 — a bound C finalizing B's active stream).
+  if (stRow !== null) await assertRowBound(ctx, stRow, boundInstanceName);
+  const streamedText = discardStreamText
+    ? "" // sentinel noise — never resurrect it as the reply (codex P2)
+    : (stRow?.text ?? message.liveText ?? message.text);
+  const prefix = message.announcePrefix ?? "";
+  // Announce merge: the run's final frame carries ONLY the announce text —
+  // recompose behind the parked parent reply. The FALLBACK path (no final
+  // text: a preempted or swept merge) must honor the parked prefix too: the
+  // reopen seeds the stream row with it, but a SNAPSHOT frame replaces the
+  // row text — closing with the bare snapshot would overwrite the already
+  // delivered reply (live 2026-07-19: a replayed announce, preempted
+  // mid-stream, shrank a full report to its replayed head).
+  let finalText =
+    text !== undefined && text !== ""
+      ? prefix !== ""
+        ? prefix + ANNOUNCE_SEP + text
+        : text
+      : prefix === "" || streamedText.startsWith(prefix)
+        ? streamedText // no merge, or the row still carries the seeded prefix
+        : streamedText === "" || prefix.startsWith(streamedText)
+          ? prefix // replayed head of the parked reply (nothing new): keep the reply
+          : prefix + ANNOUNCE_SEP + streamedText; // genuinely new partial content
+  // ANTI-REGRESSION AT THE TERMINAL WRITE (G-14, codex P1). The guard on
+  // setSnapshot protects the LIVE row, but the reply the user keeps is this
+  // `text` — a stale or truncated final would defeat the guard one write later.
+  //
+  // The test is PREFIX, not length. A final that merely differs is the
+  // gateway's authoritative re-render (directives stripped, whitespace
+  // collapsed) and may legitimately be shorter — an existing abort test proves
+  // that case is real. A final that is a strict PREFIX of what the user has
+  // already read is not a re-render: it is the same text, cut. Only for a
+  // COMPLETE turn (an error/aborted finalize legitimately carries a partial or
+  // an error string), and never for declared stream noise.
+  // Two independent reasons to keep the streamed text. The remembered refusal
+  // is EXACT and stands on its own: gating it behind the length comparison let
+  // an authorized `replace` shorten the row and, once the displayed text was no
+  // longer longer, the very same stale final walked back in (codex P2).
+  const finalRepeatsRefused =
+    stRow?.refusedText !== undefined && finalText === stRow.refusedText;
+  // A strict PREFIX of what is displayed is the same text, cut. A final that
+  // merely DIFFERS is the gateway's authoritative re-render and may
+  // legitimately be shorter — an existing abort test proves that case is real.
+  const finalCutsDisplayed =
+    finalText.length < streamedText.length &&
+    streamedText.startsWith(finalText);
+  if (
+    status === "complete" &&
+    !discardStreamText &&
+    streamedText !== "" &&
+    (finalRepeatsRefused || finalCutsDisplayed)
+  ) {
+    await traceStream(ctx, {
+      phase: "snapshot_regression",
+      chatId: message.chatId,
+      runId: message.runId,
+      messageId,
+      streamStatus: status,
+      oldLen: streamedText.length,
+      newLen: finalText.length,
     });
-    // Delete the live-text row WITH the lifecycle flip (same atomic mutation) so the
-    // "streaming <=> row exists" invariant holds and the watchdog won't re-see it.
+    finalText = streamedText;
+  }
+  // A DELIVERY run is EXEMPT from the sink's empty-response verdict: its
+  // item-derived cards usually ARE the content, and it often merges into an
+  // already-complete bubble — two facts the sink cannot see from the wire. The
+  // exemption left the opposite case unnamed: a delivery that brought NEITHER
+  // text NOR a file landed as a silent empty bubble, with no cause for the
+  // reader and nothing for the per-cause anomaly plane to count (live: four
+  // consecutive empty replies on one chat, and a delegated task whose
+  // deliverable never arrived). The verdict belongs HERE because only the
+  // stored message shows what the reader actually has — the merged text and
+  // the parts already attached to the bubble.
+  let deliveredNothing = false;
+  if (
+    status === "complete" &&
+    errorKind === undefined &&
+    isDeliveryRun(message.runId) &&
+    // `finalText` is what the reader KEEPS — the merge case included: a settle
+    // run that merges into a parent's bubble falls back to the bubble's own
+    // text here (see `streamedText`), so a delivery that added nothing to a
+    // reply the reader can read is never named a failure.
+    finalText.trim() === ""
+  ) {
+    const parts = await ctx.db
+      .query("messageParts")
+      .withIndex("by_message", (q) => q.eq("messageId", messageId))
+      .take(DELIVERED_PROBE_CAP + 1);
+    try {
+      deliveredNothing =
+        parts.length <= DELIVERED_PROBE_CAP &&
+        // An explicit hand-off is not a failed delivery: the parent chose to
+        // answer nothing and the child replies in its own run. Checked BEFORE
+        // the content probe because it is decisive on its own and needs no
+        // storage round-trip.
+        !handedOffToChild(message.runId, parts) &&
+        // An intermediate continuation of a delegation still under way.
+        !(await delegationContinues(ctx, message, parts)) &&
+        !(await carriesDeliveredContent(ctx, parts));
+    } catch {
+      // Storage refused to answer: the probe has no evidence, and a verdict
+      // without evidence never names a failure. It must not take the FINALIZE
+      // down with it either — a thrown mutation leaves the message `streaming`
+      // until the watchdog reaps it, which is the very silence this rule
+      // exists to end.
+      deliveredNothing = false;
+    }
+  }
+  // Same shape as the sink's own empty verdict: a status the UI paints as a
+  // failure, and a CURATED class the anomaly plane keys on. `empty_response`
+  // (not the `_silent` variant) because a delivery run that failed to deliver
+  // has already billed its work — it must never be auto-retried.
+  const finalStatus = deliveredNothing ? ("error" as const) : status;
+  const finalErrorKind = deliveredNothing
+    ? DELIVERED_NOTHING_CODE
+    : errorKind;
+  /** The chat, as the drop condition below reads it (reused, never read twice). */
+  let dropChat: Doc<"chats"> | null = null;
+  if (
+    dropIfEmpty === true &&
+    finalStatus === "complete" &&
+    finalText.trim() === "" &&
+    (await ctx.db
+      .query("messageParts")
+      .withIndex("by_message", (q) => q.eq("messageId", messageId))
+      .first()) === null &&
+    // A SERVICE conversation (summarizer, curator, documentary…) is never dropped: its
+    // terminal handling below is what releases the job's lock (pendingSummarize /
+    // pendingCurate) — an empty reply must reach it like any other, and the watchdog
+    // cannot free a lock whose live row this branch deleted.
+    (dropChat = await ctx.db.get(message.chatId))?.kind === undefined
+  ) {
+    // Nothing to show: the bubble goes, with its live row and live activity, in the
+    // same transaction as the turn's end — then the turn ends like any other.
     if (stRow !== null) await ctx.db.delete(stRow._id);
     await clearLiveActivity(ctx, messageId);
-    // A COMPLETED reply stamps the chat's `lastAssistantAt` — the single signal
-    // the sidebar consumes for the arrival flash / unread dot / reply sound
-    // (multi-chat UX). Deliberately NOT on error/aborted: a failed turn already
-    // paints its own error card, and "ding + unread" on a failure would read as
-    // "a reply arrived". `updatedAt` (bumped at turn START) keeps ordering.
-    // ONLY on the INITIAL streaming→complete transition: a redelivered
-    // finalize(complete) passes the idempotence guard above (same-status
-    // re-finalize is supported) and must NOT re-stamp — it would resurrect the
-    // unread dot / replay the cue for a reply the user already saw (codex P2).
-    // `finalStatus`, never `status`: a delivery that delivered nothing is a
-    // failure — ringing the sidebar's arrival cue would announce a reply that
-    // does not exist.
-    if (finalStatus === "complete" && message.status === "streaming") {
-      await ctx.db.patch(message.chatId, { lastAssistantAt: Date.now() });
+    await ctx.db.delete(messageId);
+    // Projection `on` only (a conversation that stored row text): its assigned rows'
+    // texts. Read on the chat document (no index read for any other conversation).
+    if (transcriptStoredText(dropChat)) {
+      await purgeRowTextsOfMessage(ctx, messageId, message.chatId);
     }
-    // SSE transport (Phase 1): GC the message's stream chunks (bounded + self-scheduling
-    // — a long turn can accumulate hundreds). Off the lifecycle path; best-effort.
     await ctx.scheduler.runAfter(0, internal.stream.deleteStreamChunksStep, {
       messageId,
-      // Generation isolation: an announce merge may REOPEN this message right
-      // after — this GC then races the new stream and must only ever delete
-      // the CLOSED generation's chunks. Bounded by SEQ (exact by
-      // construction: the reopened generation continues AFTER the closed
-      // one's max — see the reopen's cursor-monotony seed), never by wall
-      // clock (same-millisecond writes made a time bound ambiguous).
       beforeSeq: stRow?.chunkSeq ?? 1,
     });
-    // The finalized text length — never the text itself.
-    const finalLen = finalText.length;
     await traceStream(ctx, {
       phase: "finalize",
       chatId: message.chatId,
       runId: message.runId,
       messageId,
-      streamStatus: finalStatus,
-      textLen: finalLen,
-      // The class this turn failed with — filtered through the platform's non-PHI
-      // ALLOWLIST. `error` can carry raw gateway text (the schema says so), and a
-      // trace must never contain content: an unrecognized value is dropped, and the
-      // generic class still surfaces the failure. `errorKind` is curated but goes
-      // through the same gate, so one contract governs both.
-      ...(() => {
-        const code = finalErrorKind ?? error ?? null;
-        return code !== null &&
-          (KNOWN_ERROR_CODES as readonly string[]).includes(code)
-          ? { errorCode: code }
-          : {};
-      })(),
+      streamStatus: "dropped_empty",
+      textLen: 0,
     });
-    // LEGACY "gateway-preempted" turn (a zero-content real turn once ATTRIBUTED to a
-    // delivery claiming the session — never proven; no production caller sets the flag
-    // any more, only preemptRepark.test.ts does): re-park the outbox row for one
-    // automatic re-dispatch. Kept until the
-    // outbox fields are migrated out. BEFORE drainNextQueued so the (deleted) card and
-    // the stamped row are settled when the drain reads the world; the row is HELD
-    // `pending` at once (the queue's own busy blocker) and the delayed flip takes it
-    // pending → queued, so this drain never promotes it.
-    if (status === "aborted" && gatewayPreempted === true) {
-      const fresh = await ctx.db.get(messageId);
-      if (fresh !== null) {
-        await maybeReparkPreemptedTurn(ctx, fresh, finalLen);
-      }
-    }
-    // DROP the provider session BEFORE the drain, for the same reason the bridge clears
-    // before it settles: the drain is what releases the next send, and a send that reads
-    // the slot after this point must not find a session whose run may never have stopped.
     await dropUntrustedProviderSession(
       ctx,
       message.chatId,
       clearProviderSession,
       false,
-      recoverableSession === true ? messageId : null,
+      null,
       boundInstanceName,
     );
-    // The turn ended → the chat is now idle. Dispatch the next QUEUED send (if
-    // any) — the engine of mid-turn message serialization (Phase 1).
     await drainNextQueued(ctx, message.chatId);
-
-    // TRANSIENT gateway session-init conflict (errorKind minted by the bridge
-    // classifier) on a ZERO-content turn → schedule the bounded auto-retry
-    // (turnRetry.ts: the system does the delete+regenerate the user would do by
-    // hand). AFTER drainNextQueued on purpose: if a queued follow-up just
-    // drained, the chat is busy and the retry stands down (checked inside).
-    //
-    if (status === "error") {
-      const fresh = await ctx.db.get(messageId);
-      if (fresh !== null) {
-        await maybeScheduleTurnRetry(ctx, fresh, errorKind, finalLen);
-      }
+    return { transitioned: true as const };
+  }
+  // A close BY THE TRANSCRIPT (projection `on` only — the cause) whose outcome nothing
+  // stated: no terminal of the run's own is on record (an idle read inferred it). Marked,
+  // so the run's live terminal may still correct it (codex phase 4 pass 24).
+  let closeInferred = false;
+  if (finalizeCause === "transcript_settled" && finalStatus === "complete" && message.runId !== undefined) {
+    const runId = message.runId;
+    const runs = await ctx.db
+      .query("transcriptRuns")
+      .withIndex("by_chat_run", (q) => q.eq("chatId", message.chatId).eq("runId", runId))
+      .take(4);
+    closeInferred = !runs.some((r) => isExplicitTerminal(r.status));
+  }
+  await ctx.db.patch(messageId, {
+    ...(closeInferred ? { closeInferred: true } : {}),
+    status: finalStatus,
+    text: finalText,
+    ...(deliveredNothing ? { error: DELIVERED_NOTHING_TEXT } : {}),
+    // Consumed on success/abort; PRESERVED on error — a rebroadcast may
+    // RESUME the merge and needs the pre-merge prefix (parent.text is by
+    // then `original + partial`, unusable as a prefix).
+    // `finalStatus`: a contentless delivery IS an error, and the rebroadcast
+    // that can still repair it needs both the pre-merge prefix and the armed
+    // window (the window is what lets a dead twin be replaced rather than
+    // stacked — addPart).
+    ...(finalStatus !== "error"
+      ? {
+          announcePrefix: undefined,
+          announceReplayArmed: undefined,
+          announceReplayRun: undefined,
+        }
+      : {}),
+    liveText: undefined, // clear the legacy live field (optional → field removed)
+    ...(error !== undefined ? { error } : {}),
+    // Reuses the existing stable-code field (failDispatch codes live there
+    // too) — the UI maps context_length/rate_limit/... to actionable labels.
+    ...(finalErrorKind !== undefined ? { errorCode: finalErrorKind } : {}),
+    // The turn's own verdict, stored WITH the turn. Written whenever the bridge
+    // sent one — including on a success, which is the case the trace channel
+    // most often skipped: `gateway_final` fires no pressure trace of its own, so
+    // the ordinary terminal was computed and persisted nowhere.
+    ...(finalizeCause !== undefined ? { finalizeCause } : {}),
+    // A generation's terminal starts its OWN retry story (turnRetry writes it
+    // right after this patch). Every reopen path clears the old one already; this
+    // holds the rule for any path that forgets to.
+    ...(message.status === "streaming"
+      ? { autoRetry: undefined, autoRetryOutcome: undefined }
+      : {}),
+    updatedAt: Date.now(),
+    // The FIRST terminal transition stamps the generation end. A same-status
+    // re-finalize (redelivered final) or a late addPart may bump updatedAt
+    // again, so the reply-duration UI reads THIS stable stamp, never
+    // updatedAt (codex: duration must not grow with redeliveries).
+    ...(message.finalizedAt === undefined ? { finalizedAt: Date.now() } : {}),
+  });
+  // Delete the live-text row WITH the lifecycle flip (same atomic mutation) so the
+  // "streaming <=> row exists" invariant holds and the watchdog won't re-see it.
+  if (stRow !== null) await ctx.db.delete(stRow._id);
+  await clearLiveActivity(ctx, messageId);
+  // A COMPLETED reply stamps the chat's `lastAssistantAt` — the single signal
+  // the sidebar consumes for the arrival flash / unread dot / reply sound
+  // (multi-chat UX). Deliberately NOT on error/aborted: a failed turn already
+  // paints its own error card, and "ding + unread" on a failure would read as
+  // "a reply arrived". `updatedAt` (bumped at turn START) keeps ordering.
+  // ONLY on the INITIAL streaming→complete transition: a redelivered
+  // finalize(complete) passes the idempotence guard above (same-status
+  // re-finalize is supported) and must NOT re-stamp — it would resurrect the
+  // unread dot / replay the cue for a reply the user already saw (codex P2).
+  // `finalStatus`, never `status`: a delivery that delivered nothing is a
+  // failure — ringing the sidebar's arrival cue would announce a reply that
+  // does not exist.
+  if (finalStatus === "complete" && message.status === "streaming") {
+    await ctx.db.patch(message.chatId, { lastAssistantAt: Date.now() });
+  }
+  // SSE transport (Phase 1): GC the message's stream chunks (bounded + self-scheduling
+  // — a long turn can accumulate hundreds). Off the lifecycle path; best-effort.
+  await ctx.scheduler.runAfter(0, internal.stream.deleteStreamChunksStep, {
+    messageId,
+    // Generation isolation: an announce merge may REOPEN this message right
+    // after — this GC then races the new stream and must only ever delete
+    // the CLOSED generation's chunks. Bounded by SEQ (exact by
+    // construction: the reopened generation continues AFTER the closed
+    // one's max — see the reopen's cursor-monotony seed), never by wall
+    // clock (same-millisecond writes made a time bound ambiguous).
+    beforeSeq: stRow?.chunkSeq ?? 1,
+  });
+  // The finalized text length — never the text itself.
+  const finalLen = finalText.length;
+  // The class this turn failed with — filtered through the platform's non-PHI
+  // ALLOWLIST. `error` can carry raw gateway text (the schema says so), and a
+  // trace must never contain content: an unrecognized value is dropped, and the
+  // generic class still surfaces the failure. `errorKind` is curated but goes
+  // through the same gate, so one contract governs both.
+  const traceCode = (() => {
+    const code = finalErrorKind ?? error ?? null;
+    return code !== null && (KNOWN_ERROR_CODES as readonly string[]).includes(code)
+      ? code
+      : undefined;
+  })();
+  // A REVOKED CREDENTIAL — and every other provider-account refusal in
+  // PER_AGENT_FAILURE_CAUSES (a permission, billing, an unknown model) — is fixed per agent,
+  // on the gateway, by an operator: the anomaly
+  // must say WHICH agent and which provider, or it names a cause nobody can act on. The
+  // agent is the one that ran this turn (a room's routed agent, else the chat's own);
+  // the provider is the one the gateway's re-authentication hint names, read from the
+  // raw `error` before anything else — ids only, the sentence never leaves this mutation.
+  const failedAgent =
+    traceCode !== undefined && PER_AGENT_FAILURE_CAUSES.has(traceCode)
+      ? await (async () => {
+          if (message.routedAgentId) {
+            return {
+              agentId: message.routedAgentId,
+              ...(message.routedInstanceName
+                ? { instanceName: message.routedInstanceName }
+                : {}),
+            };
+          }
+          const owner = await ctx.db.get(message.chatId);
+          return owner?.agentId
+            ? {
+                agentId: owner.agentId,
+                ...(owner.instanceName ? { instanceName: owner.instanceName } : {}),
+              }
+            : undefined;
+        })()
+      : undefined;
+  const authProvider =
+    traceCode !== undefined && PER_AGENT_FAILURE_CAUSES.has(traceCode)
+      ? (reauthProviderFromText(error) ?? undefined)
+      : undefined;
+  await traceStream(ctx, {
+    phase: "finalize",
+    chatId: message.chatId,
+    runId: message.runId,
+    messageId,
+    streamStatus: finalStatus,
+    textLen: finalLen,
+    ...(traceCode !== undefined ? { errorCode: traceCode } : {}),
+    ...(failedAgent !== undefined ? { failedAgent } : {}),
+    ...(authProvider !== undefined ? { authProvider } : {}),
+  });
+  // LEGACY "gateway-preempted" turn (a zero-content real turn once ATTRIBUTED to a
+  // delivery claiming the session — never proven; no production caller sets the flag
+  // any more, only preemptRepark.test.ts does): re-park the outbox row for one
+  // automatic re-dispatch. Kept until the
+  // outbox fields are migrated out. BEFORE drainNextQueued so the (deleted) card and
+  // the stamped row are settled when the drain reads the world; the row is HELD
+  // `pending` at once (the queue's own busy blocker) and the delayed flip takes it
+  // pending → queued, so this drain never promotes it.
+  if (status === "aborted" && gatewayPreempted === true) {
+    const fresh = await ctx.db.get(messageId);
+    if (fresh !== null) {
+      await maybeReparkPreemptedTurn(ctx, fresh, finalLen);
     }
+  }
+  // DROP the provider session BEFORE the drain, for the same reason the bridge clears
+  // before it settles: the drain is what releases the next send, and a send that reads
+  // the slot after this point must not find a session whose run may never have stopped.
+  await dropUntrustedProviderSession(
+    ctx,
+    message.chatId,
+    clearProviderSession,
+    false,
+    recoverableSession === true ? messageId : null,
+    boundInstanceName,
+  );
+  // The turn ended → the chat is now idle. Dispatch the next QUEUED send (if
+  // any) — the engine of mid-turn message serialization (Phase 1).
+  await drainNextQueued(ctx, message.chatId);
 
-    // L2: a finished DOCUMENTARY fetch turn → correlate the returned files back to
-    // the source reply's references. Best-effort: a correlation failure must NEVER
-    // break the turn lifecycle. GUARD: only correlate when THIS finalizing message is
-    // the reply to the CURRENT fetch. If an earlier fetch was declared stuck + released
-    // and a NEW one started, a LATE finalize of the OLD gateway run must not correlate
-    // against the new fetch's rows / clear its lock. The old run's assistant message
-    // was created when it streamed (before the new fetch's dispatch), so its
-    // _creationTime is strictly BEFORE the current pendingFetch.createdAt.
-    const chat = await ctx.db.get(message.chatId);
-    // (chatFork's one-shot rehydration flag is NOT consumed here: finalize
-    // over/under-approximates delivery — a Hermes WS submit-failure finalizes
-    // an error row though nothing was delivered, and the stuck-stream watchdog
-    // terminates rows without this mutation. The dispatch consumes it at the
-    // gateway-ACK point instead: bridge.consumeForkRehydration.)
-    if (
-      chat?.kind === "documentary" &&
-      chat.pendingFetch &&
-      message._creationTime >= chat.pendingFetch.createdAt
-    ) {
+  // TRANSIENT gateway session-init conflict (errorKind minted by the bridge
+  // classifier) on a ZERO-content turn → schedule the bounded auto-retry
+  // (turnRetry.ts: the system does the delete+regenerate the user would do by
+  // hand). AFTER drainNextQueued on purpose: if a queued follow-up just
+  // drained, the chat is busy and the retry stands down (checked inside).
+  //
+  if (status === "error") {
+    const fresh = await ctx.db.get(messageId);
+    if (fresh !== null) {
+      await maybeScheduleTurnRetry(ctx, fresh, errorKind, finalLen);
+    }
+  }
+
+  // A settle BY THE TRANSCRIPT (projection `on`) comes before the run's media: the file
+  // jobs wait for them (`settleTurnEnd` `files`).
+  await settleTurnEnd(ctx, message, { files: finalizeCause !== "transcript_settled", inferred: closeInferred });
+  // The terminal transition really happened on THIS call (see the no-op returns
+  // above): the ingest route traces only this case.
+  return { transitioned: true as const };
+}
+
+/** How long a file-delivering service job (documentary fetch, conversion) whose answer the
+ *  TRANSCRIPT settled waits for the run's media before it is correlated anyway — when no
+ *  live terminal ever comes to do it (codex phase 4 pass 16). */
+export const FILE_JOB_GRACE_MS = 2 * 60_000;
+// The upload-in-flight bounds (lib/fileJobs, codex phase 4 passes 22–23).
+export { FILE_JOB_MAX_DEFER_MS, UPLOAD_MARKER_MAX_MS } from "./lib/fileJobs";
+
+/** How long the STATUS-dependent correlates of an answer whose outcome was only INFERRED
+ *  (an idle read, no terminal of the run's own — `messages.closeInferred`) wait for the
+ *  run's live terminal before they settle on what is known (codex phase 4 pass 25). */
+export const STATUS_JOB_WAIT_MS = 5 * 60_000;
+
+/**
+ * What a turn's END settles beyond its bubble — the service jobs' correlates (documentary
+ * fetch, summarizer, curator, converter: each with its own job-identity guard), their
+ * hidden-chat sweeps, and a regular chat's summarize check. Run by `finalizeMessageCore`
+ * on its terminal transition, and by the projection for an answer BORN terminal from the
+ * transcript's rows (lib/bubbleProjectionStore `executePlan`) — that answer never sees a
+ * transition of its own (codex phase 4 pass 15). `message`: the answer as it was before
+ * its terminal patch (its creation time dates the job); the correlates re-read it.
+ *
+ * `files: false` — an answer the TRANSCRIPT settled (codex phase 4 pass 16): its media
+ * (a converted PDF, fetched documents) arrive with the LIVE run, after the rows. The
+ * correlates that read parts or files wait: the live terminal that later finds the answer
+ * terminal runs them (`settleFileJobs`), else a deferred check at FILE_JOB_GRACE_MS does.
+ *
+ * `inferred: true` — the answer's `complete` was only INFERRED (codex phase 4 pass 25):
+ * the summarizer and curator correlates JUDGE the answer's status (a summary is stored,
+ * a curation proposed, only from a `complete` answer), so they wait too — for the run's
+ * live terminal (`settleStatusJobs`: a `complete` confirms, an `error` corrects), else a
+ * bounded check at STATUS_JOB_WAIT_MS (`settleDeferredStatusJobs`). Their job identity
+ * (the lock and its nonce) is left untouched meanwhile; they run exactly once.
+ */
+export async function settleTurnEnd(
+  ctx: MutationCtx,
+  message: Doc<"messages">,
+  opts: { files: boolean; inferred?: boolean } = { files: true },
+): Promise<void> {
+  const chat = await ctx.db.get(message.chatId);
+  if (opts.inferred === true && (chat?.kind === "summarizer" || chat?.kind === "curator")) {
+    await ctx.db.patch(message._id, { statusJobsDeferred: true });
+    await ctx.scheduler.runAfter(STATUS_JOB_WAIT_MS, internal.stream.settleDeferredStatusJobs, {
+      messageId: message._id,
+    });
+  } else {
+    await settleStatusJobsOf(ctx, chat, message);
+  }
+  if (opts.files) {
+    await settleFileJobsOf(ctx, chat, message);
+  } else if (chat?.kind === "documentary" || chat?.kind === "converter") {
+    await ctx.scheduler.runAfter(FILE_JOB_GRACE_MS, internal.stream.settleDeferredFileJobs, {
+      messageId: message._id,
+      since: Date.now(),
+    });
+  }
+  // Hybrid rehydration: a REGULAR chat's finished turn may have accumulated enough
+  // new content for a summarize job — check OUTSIDE this transaction (scheduled,
+  // fire-and-forget; every guard in maybeScheduleSummarize fails quiet).
+  if (chat && chat.kind === undefined) {
+    await ctx.scheduler.runAfter(
+      0,
+      internal.chatSummaries.maybeScheduleSummarize,
+      { chatId: chat._id },
+    );
+  }
+}
+
+/** The correlates that JUDGE the answer's status (summarizer, curator) — each guarded
+ *  by its job's identity — and their cleanup of a reply that settled nothing.
+ *  `finalizedView`: the answer as the job must judge it (a bounded check that knows the
+ *  run failed — `settleDeferredStatusJobs`); otherwise re-read. */
+async function settleStatusJobsOf(
+  ctx: MutationCtx,
+  chat: Doc<"chats"> | null,
+  message: Doc<"messages">,
+  finalizedView?: Doc<"messages">,
+): Promise<void> {
+  // Hybrid rehydration: a finished SUMMARIZE turn → store the reply as the target
+  // chat's rolling summary. Same best-effort shape + late-finalize guard as the
+  // documentary correlate above (an old released job's late reply must not
+  // correlate against a NEWER job's lock).
+  if (chat?.kind === "summarizer") {
+    let settled = false;
+    if (chat.pendingSummarize) {
       try {
-        await correlateDocumentaryFetch(ctx, chat, message);
+        // `message` was read BEFORE this handler's finalize patch (status still
+        // "streaming", text possibly stale) — re-read the FINALIZED doc, or every
+        // successful summary would be misread as a failure (codex P2). The job
+        // identity check (session-key nonce) lives INSIDE correlateSummarize.
+        const finalized = finalizedView ?? (await ctx.db.get(message._id));
+        if (finalized) {
+          settled = await correlateSummarize(ctx, chat, finalized);
+        }
       } catch (e) {
-        console.error("[docfetch] correlate failed:", (e as Error)?.message ?? e);
+        console.error("[chatsum] correlate failed:", (e as Error)?.message ?? e);
       }
     }
-    // Hybrid rehydration: a finished SUMMARIZE turn → store the reply as the target
-    // chat's rolling summary. Same best-effort shape + late-finalize guard as the
-    // documentary correlate above (an old released job's late reply must not
-    // correlate against a NEWER job's lock).
-    if (chat?.kind === "summarizer") {
-      let settled = false;
-      if (chat.pendingSummarize) {
-        try {
-          // `message` was read BEFORE this handler's finalize patch (status still
-          // "streaming", text possibly stale) — re-read the FINALIZED doc, or every
-          // successful summary would be misread as a failure (codex P2). The job
-          // identity check (session-key nonce) lives INSIDE correlateSummarize.
-          const finalized = await ctx.db.get(message._id);
-          if (finalized) {
-            settled = await correlateSummarize(ctx, chat, finalized);
-          }
-        } catch (e) {
-          console.error("[chatsum] correlate failed:", (e as Error)?.message ?? e);
-        }
-      }
-      if (!settled) {
-        // A LATE/FOREIGN reply that settled nothing (released job, or an old
-        // cancelled job's reply arriving under a NEWER lock): it may hold a summary
-        // of deleted content and no correlate will ever sweep it — schedule the
-        // settled-rows cleanup (its internal guard protects a live job's rows).
-        await ctx.scheduler.runAfter(
-          0,
-          internal.chatSummaries.cleanupSummarizerChat,
-          { hiddenChatId: chat._id },
-        );
-      }
-    }
-    // Agent-file curation: a finished CURATOR turn → extract+validate the reply
-    // into a PROPOSED revision (never a live write). Same best-effort shape +
-    // FINALIZED re-read + nonce identity guard as the summarizer correlate above.
-    if (chat?.kind === "curator") {
-      let settled = false;
-      if (chat.pendingCurate) {
-        try {
-          const finalized = await ctx.db.get(message._id);
-          if (finalized) {
-            settled = await correlateCuration(ctx, chat, finalized);
-          }
-        } catch (e) {
-          console.error("[curation] correlate failed:", (e as Error)?.message ?? e);
-        }
-      }
-      if (!settled) {
-        // A LATE/FOREIGN reply that settled nothing (released/stuck job, or a
-        // stale nonce): it holds a COPY of the agent file — sweep the hidden
-        // chat's rows or it lingers indefinitely (codex P2; summarizer twin).
-        await ctx.scheduler.runAfter(
-          0,
-          internal.agentFileCuration.cleanupCuratorChat,
-          { hiddenChatId: chat._id },
-        );
-      }
-    }
-    // Document conversion: a finished CONVERTER turn → the delivered PDF becomes
-    // the source file's rendition (ready), else the rendition fails. Same
-    // best-effort shape + FINALIZED re-read as the correlations above.
-    if (chat?.kind === "converter") {
-      if (chat.pendingConvert) {
-        try {
-          const finalized = await ctx.db.get(message._id);
-          if (finalized) {
-            await correlateConversion(ctx, chat, finalized);
-          }
-        } catch (e) {
-          console.error("[convert] correlate failed:", (e as Error)?.message ?? e);
-        }
-      }
-    }
-    // A DOCUMENTARY or CONVERTER job settled by this finalize: sweep the hidden
-    // chat's rows. What the job captured is held elsewhere (documentAttachments /
-    // fileRenditions) and survives; the prompt, the reply and every other delivered
-    // copy go. Scheduled (never inside this finalize), and a no-op while a newer job
-    // holds the chat. A finalize that settled no job sweeps nothing: the next job's
-    // settle takes its rows along.
-    if (
-      (chat?.kind === "documentary" && chat.pendingFetch) ||
-      (chat?.kind === "converter" && chat.pendingConvert)
-    ) {
-      await ctx.scheduler.runAfter(0, internal.chatSummaries.sweepHiddenChat, {
-        hiddenChatId: chat._id,
-      });
-    }
-    // Hybrid rehydration: a REGULAR chat's finished turn may have accumulated enough
-    // new content for a summarize job — check OUTSIDE this transaction (scheduled,
-    // fire-and-forget; every guard in maybeScheduleSummarize fails quiet).
-    if (chat && chat.kind === undefined) {
+    if (!settled) {
+      // A LATE/FOREIGN reply that settled nothing (released job, or an old
+      // cancelled job's reply arriving under a NEWER lock): it may hold a summary
+      // of deleted content and no correlate will ever sweep it — schedule the
+      // settled-rows cleanup (its internal guard protects a live job's rows).
       await ctx.scheduler.runAfter(
         0,
-        internal.chatSummaries.maybeScheduleSummarize,
-        { chatId: chat._id },
+        internal.chatSummaries.cleanupSummarizerChat,
+        { hiddenChatId: chat._id },
       );
     }
-    // The terminal transition really happened on THIS call (see the no-op returns
-    // above): the ingest route traces only this case.
-    return { transitioned: true as const };
+  }
+  // Agent-file curation: a finished CURATOR turn → extract+validate the reply
+  // into a PROPOSED revision (never a live write). Same best-effort shape +
+  // FINALIZED re-read + nonce identity guard as the summarizer correlate above.
+  if (chat?.kind === "curator") {
+    let settled = false;
+    if (chat.pendingCurate) {
+      try {
+        const finalized = finalizedView ?? (await ctx.db.get(message._id));
+        if (finalized) {
+          settled = await correlateCuration(ctx, chat, finalized);
+        }
+      } catch (e) {
+        console.error("[curation] correlate failed:", (e as Error)?.message ?? e);
+      }
+    }
+    if (!settled) {
+      // A LATE/FOREIGN reply that settled nothing (released/stuck job, or a
+      // stale nonce): it holds a COPY of the agent file — sweep the hidden
+      // chat's rows or it lingers indefinitely (codex P2; summarizer twin).
+      await ctx.scheduler.runAfter(
+        0,
+        internal.agentFileCuration.cleanupCuratorChat,
+        { hiddenChatId: chat._id },
+      );
+    }
+  }
+}
+
+/** The status-dependent correlates an INFERRED close deferred, now that the outcome is
+ *  known: the run's live terminal confirmed or corrected it, or the bounded check
+ *  decided. Exactly once (the mark goes first). */
+export async function settleStatusJobs(
+  ctx: MutationCtx,
+  messageId: Id<"messages">,
+  outcome?: "error",
+): Promise<void> {
+  const message = await ctx.db.get(messageId);
+  if (message === null || message.statusJobsDeferred !== true) return;
+  await ctx.db.patch(messageId, { statusJobsDeferred: undefined });
+  const fresh = (await ctx.db.get(messageId))!;
+  const chat = await ctx.db.get(message.chatId);
+  await settleStatusJobsOf(ctx, chat, fresh, outcome === "error" ? { ...fresh, status: "error" } : fresh);
+}
+
+/**
+ * NO LIVE TERMINAL CAME for an answer whose `complete` was inferred (the bridge went away,
+ * the frame was lost): its deferred status jobs settle on what the TRANSCRIPT knows by now.
+ * A terminal the run table recorded since (an `error`, `timeout` or `aborted` read from the
+ * rows or a later frame) fails the job; otherwise the transcript's own verdict stands —
+ * the gateway reports a session idle only once the run's terminal row is queryable, and
+ * no error row was read. Either way the job's lock is released: it never stays stuck.
+ */
+export const settleDeferredStatusJobs = internalMutation({
+  args: { messageId: v.id("messages") },
+  handler: async (ctx, { messageId }) => {
+    const message = await ctx.db.get(messageId);
+    if (message === null || message.statusJobsDeferred !== true) return;
+    let failed = false;
+    if (message.closeInferred === true && message.runId !== undefined) {
+      const runId = message.runId;
+      const runs = await ctx.db
+        .query("transcriptRuns")
+        .withIndex("by_chat_run", (q) => q.eq("chatId", message.chatId).eq("runId", runId))
+        .take(4);
+      failed = runs.some((r) => r.status === "error" || r.status === "timeout" || r.status === "aborted");
+    }
+    await settleStatusJobs(ctx, messageId, failed ? "error" : undefined);
   },
+});
+
+/** The file-delivering service jobs' end (documentary fetch, conversion): their
+ *  correlates — each guarded by its job's identity, so running it again after the job
+ *  settled does nothing — and the hidden chat's sweep of a job they settled. */
+async function settleFileJobsOf(
+  ctx: MutationCtx,
+  chat: Doc<"chats"> | null,
+  message: Doc<"messages">,
+): Promise<void> {
+  // L2: a finished DOCUMENTARY fetch turn → correlate the returned files back to
+  // the source reply's references. Best-effort: a correlation failure must NEVER
+  // break the turn lifecycle. GUARD: only correlate when THIS finalizing message is
+  // the reply to the CURRENT fetch. If an earlier fetch was declared stuck + released
+  // and a NEW one started, a LATE finalize of the OLD gateway run must not correlate
+  // against the new fetch's rows / clear its lock. The old run's assistant message
+  // was created when it streamed (before the new fetch's dispatch), so its
+  // _creationTime is strictly BEFORE the current pendingFetch.createdAt.
+  // (chatFork's one-shot rehydration flag is NOT consumed here: finalize
+  // over/under-approximates delivery — a Hermes WS submit-failure finalizes
+  // an error row though nothing was delivered, and the stuck-stream watchdog
+  // terminates rows without this mutation. The dispatch consumes it at the
+  // gateway-ACK point instead: bridge.consumeForkRehydration.)
+  if (
+    chat?.kind === "documentary" &&
+    chat.pendingFetch &&
+    message._creationTime >= chat.pendingFetch.createdAt
+  ) {
+    try {
+      await correlateDocumentaryFetch(ctx, chat, message);
+    } catch (e) {
+      console.error("[docfetch] correlate failed:", (e as Error)?.message ?? e);
+    }
+  }
+  // Document conversion: a finished CONVERTER turn → the delivered PDF becomes
+  // the source file's rendition (ready), else the rendition fails. Same
+  // best-effort shape + FINALIZED re-read as the correlations above.
+  if (chat?.kind === "converter") {
+    if (chat.pendingConvert) {
+      try {
+        const finalized = await ctx.db.get(message._id);
+        if (finalized) {
+          await correlateConversion(ctx, chat, finalized);
+        }
+      } catch (e) {
+        console.error("[convert] correlate failed:", (e as Error)?.message ?? e);
+      }
+    }
+  }
+  // A DOCUMENTARY or CONVERTER job settled by this finalize: sweep the hidden
+  // chat's rows. What the job captured is held elsewhere (documentAttachments /
+  // fileRenditions) and survives; the prompt, the reply and every other delivered
+  // copy go. Scheduled (never inside this finalize), and a no-op while a newer job
+  // holds the chat. A finalize that settled no job sweeps nothing: the next job's
+  // settle takes its rows along.
+  if (
+    (chat?.kind === "documentary" && chat.pendingFetch) ||
+    (chat?.kind === "converter" && chat.pendingConvert)
+  ) {
+    await ctx.scheduler.runAfter(0, internal.chatSummaries.sweepHiddenChat, {
+      hiddenChatId: chat._id,
+    });
+  }
+}
+
+/** The file jobs of an answer the transcript settled, once its media had their chance:
+ *  the live terminal that finds it terminal, or the deferred check. Only for such an
+ *  answer, in a file-delivering service chat; the job guards make it idempotent. */
+export async function settleFileJobs(ctx: MutationCtx, message: Doc<"messages">): Promise<void> {
+  if (message.finalizeCause !== "transcript_settled") return;
+  const chat = await ctx.db.get(message.chatId);
+  if (chat?.kind !== "documentary" && chat?.kind !== "converter") return;
+  // The job's identity, here where an answer may settle LATE: a conversion lock taken
+  // after this answer was created is a NEWER job's, never this one's (the documentary
+  // correlate carries the same guard).
+  if (chat.kind === "converter" && (chat.pendingConvert === undefined || message._creationTime < chat.pendingConvert.createdAt)) {
+    return;
+  }
+  await settleFileJobsOf(ctx, chat, message);
+}
+
+export const settleDeferredFileJobs = internalMutation({
+  args: {
+    messageId: v.id("messages"),
+    /** When the wait began (bounds it: FILE_JOB_MAX_DEFER_MS). */
+    since: v.optional(v.number()),
+  },
+  handler: async (ctx, { messageId, since }) => {
+    const message = await ctx.db.get(messageId);
+    if (message === null || message.status === "streaming") return;
+    const now = Date.now();
+    const began = since ?? now;
+    // An upload into the answer is under way (codex phase 4 pass 22): judging the job now
+    // would miss its file, and the cleanup could delete its destination mid-transfer.
+    // Wait for it — never past the overall bound.
+    const until = message.uploadsInFlightUntil;
+    if (until !== undefined && until > now && now - began < FILE_JOB_MAX_DEFER_MS) {
+      await ctx.scheduler.runAt(Math.min(until, began + FILE_JOB_MAX_DEFER_MS), internal.stream.settleDeferredFileJobs, {
+        messageId,
+        since: began,
+      });
+      return;
+    }
+    if (until !== undefined) await ctx.db.patch(messageId, { uploadsInFlightUntil: undefined });
+    await settleFileJobs(ctx, message);
+  },
+});
+
+/** The bridge starts an upload into `messageId` (projection `on` — bridge_ingest
+ *  `getUploadUrl`): the answer is marked "upload in flight" for the window the bridge
+ *  announced (capped). Bound to the proven instance; inert for a conversation that
+ *  never stored transcript text. Expires on its own — a crashed bridge holds nothing. */
+export const noteUploadStarted = internalMutation({
+  args: { messageId: v.id("messages"), boundInstanceName: v.string(), windowMs: v.number() },
+  handler: async (ctx, { messageId, boundInstanceName, windowMs }) => {
+    const message = await ctx.db.get(messageId);
+    if (message === null || message.role !== "assistant") return;
+    if (message.boundInstance !== undefined && message.boundInstance !== boundInstanceName) return;
+    if (!(await chatAllowsInstance(ctx, message.chatId, boundInstanceName))) return;
+    const chat = await ctx.db.get(message.chatId);
+    if (!transcriptStoredText(chat)) return;
+    const until = Date.now() + Math.max(0, Math.min(windowMs, UPLOAD_MARKER_MAX_MS));
+    if ((message.uploadsInFlightUntil ?? 0) >= until) return;
+    await ctx.db.patch(messageId, { uploadsInFlightUntil: until });
+  },
+});
+
+export const finalize = internalMutation({
+  args: finalizeArgs,
+  handler: finalizeMessageCore,
 });
 
 // Mirror the gateway's `sessions.describe` onto the chat so the header strip can
@@ -5200,5 +5697,214 @@ export const rehydrationContext = internalQuery({
       summaryChars: composed.summaryChars,
       ...(sinceLastReplyOf !== undefined ? { sinceFound: sinceAnchor !== null } : {}),
     };
+  },
+});
+
+// ── TRANSCRIPT PROJECTION `on` (redesign phase 3): the live placement of a run that
+//    received a steered input, and of a distinct late final. ─────────────────────────
+
+/** Most text a late final may add to a closed bubble (a gateway fallback sentence is a
+ *  hundred characters; a whole reply is bounded by the stream's own caps). */
+const LATE_FINAL_MAX_CHARS = 64 * 1024;
+/** Bound on the authoritative text a steer cut settles a segment with. */
+const SEGMENT_TEXT_MAX_CHARS = 512 * 1024;
+
+/**
+ * STEER (CU-20): an input was injected into the run this bubble streams — its
+ * `<sendId>:user` row names the run as `steerTargetRunId`. The Control UI cuts the run's
+ * live stream at that row (ui/src/pages/chat/session-message-apply.ts:168-187,
+ * `rolloverChatStream`, at v2026.9.8), so what the run writes AFTER the injection sits
+ * under the steered message. Here: the current segment settles as it stands (text +
+ * parts), and a new STREAMING bubble of the same run opens after `afterMessageId` — in
+ * ONE transaction, so the reader never sees the run without a live bubble.
+ *
+ * Not a turn end: no drain, no retry, no arrival cue — the run is still working.
+ * Returns the new segment's id, or null when the bubble is no longer streaming (the run
+ * ended first: nothing to cut).
+ */
+export const splitSegment = internalMutation({
+  args: {
+    messageId: v.id("messages"),
+    /** The steered user message: the new segment is ordered after it. */
+    afterMessageId: v.optional(v.id("messages")),
+    /** The settling segment's WHOLE text as the bridge holds it — authoritative, like a
+     *  finalize's: a stream write lost or doubled before the cut never decides what the
+     *  segment says (codex pass 5). Absent (older bridge): the streamed text. */
+    text: v.optional(v.string()),
+    ...boundArg,
+  },
+  returns: v.union(v.id("messages"), v.null()),
+  handler: async (ctx, { messageId, afterMessageId, text, boundInstanceName }) => {
+    const message = await ctx.db.get(messageId);
+    if (message === null || message.role !== "assistant") return null;
+    if (message.status !== "streaming") {
+      // A REPEAT of a split that committed but whose answer was lost (the bridge retries
+      // it, or re-arms the cut at the next delivery of the steered row): hand back the
+      // segment that split opened, while it still streams — answering null left the
+      // bridge on the settled segment and the new one empty forever (codex pass 4).
+      if (message.finalizeCause !== "steer_segment" || message.runId === undefined) return null;
+      await assertMessageBound(ctx, message, boundInstanceName);
+      const runId = message.runId;
+      const want = (message.runSegment ?? 0) + 1;
+      // A point read of the successor, whatever the number of cuts (codex pass 6: a scan
+      // of the first 50 segments lost it after the 50th).
+      const opened = (
+        await ctx.db
+          .query("messages")
+          .withIndex("by_chat_run_segment", (q) =>
+            q.eq("chatId", message.chatId).eq("runId", runId).eq("runSegment", want),
+          )
+          .take(4)
+      ).find((x) => x.role === "assistant");
+      return opened !== undefined && opened.status === "streaming" ? opened._id : null;
+    }
+    await assertMessageBound(ctx, message, boundInstanceName);
+    const stRow = await streamingRow(ctx, messageId);
+    if (stRow !== null) await assertRowBound(ctx, stRow, boundInstanceName);
+    const now = Date.now();
+    // A DELIVERY that reopened this bubble (announce merge) parked the parent's reply
+    // in `announcePrefix`; the run's own text is only the delivery's. The segment is
+    // settled exactly as finalize recomposes it — the parent's reply first (codex
+    // pass 6: replacing the text with the delivery segment alone erased it).
+    const prefix = message.announcePrefix ?? "";
+    const streamed = stRow?.text ?? message.liveText ?? message.text;
+    const settledText =
+      text !== undefined
+        ? prefix !== ""
+          ? prefix + ANNOUNCE_SEP + text.slice(0, SEGMENT_TEXT_MAX_CHARS)
+          : text.slice(0, SEGMENT_TEXT_MAX_CHARS)
+        : prefix === "" || streamed.startsWith(prefix)
+          ? streamed
+          : streamed === "" || prefix.startsWith(streamed)
+            ? prefix
+            : prefix + ANNOUNCE_SEP + streamed;
+    await ctx.db.patch(messageId, {
+      status: "complete",
+      text: settledText,
+      liveText: undefined,
+      // Consumed, as a complete finalize consumes it.
+      announcePrefix: undefined,
+      announceReplayArmed: undefined,
+      announceReplayRun: undefined,
+      finalizeCause: "steer_segment",
+      updatedAt: now,
+      ...(message.finalizedAt === undefined ? { finalizedAt: now } : {}),
+    });
+    if (stRow !== null) await ctx.db.delete(stRow._id);
+    await clearLiveActivity(ctx, messageId);
+    await ctx.scheduler.runAfter(0, internal.stream.deleteStreamChunksStep, {
+      messageId,
+      beforeSeq: stRow?.chunkSeq ?? 1,
+    });
+    // Strictly after the steered message, whatever its stamp (a queued-then-drained
+    // send carries a logical orderTime later than its _creationTime).
+    let orderTime: number | undefined;
+    if (afterMessageId !== undefined) {
+      const after = await ctx.db.get(afterMessageId);
+      if (after !== null && after.chatId === message.chatId) {
+        const floor = effectiveOrder(after) + 1;
+        if (floor > now) orderTime = floor;
+      }
+    }
+    const next = await ctx.db.insert("messages", {
+      chatId: message.chatId,
+      userId: message.userId,
+      ...(message.turnSessionKey !== undefined ? { turnSessionKey: message.turnSessionKey } : {}),
+      ...(message.dispatchOutboxId !== undefined
+        ? { dispatchOutboxId: message.dispatchOutboxId }
+        : {}),
+      role: "assistant",
+      runId: message.runId,
+      status: "streaming",
+      runSegment: (message.runSegment ?? 0) + 1,
+      ...(message.routedInstanceName !== undefined
+        ? { routedInstanceName: message.routedInstanceName }
+        : {}),
+      ...(message.routedAgentId !== undefined ? { routedAgentId: message.routedAgentId } : {}),
+      ...(message.boundInstance !== undefined ? { boundInstance: message.boundInstance } : {}),
+      ...(orderTime !== undefined ? { orderTime } : {}),
+      text: "",
+      updatedAt: now,
+    });
+    await ctx.db.insert("streamingText", {
+      messageId: next,
+      chatId: message.chatId,
+      userId: message.userId,
+      generation: message.runId ?? null,
+      ...(message.boundInstance !== undefined ? { boundInstance: message.boundInstance } : {}),
+      text: "",
+      updatedAt: now,
+    });
+    await traceStream(ctx, {
+      phase: "start",
+      chatId: message.chatId,
+      runId: message.runId,
+      messageId: next,
+      streamStatus: "streaming",
+    });
+    return next;
+  },
+});
+
+/**
+ * A DISTINCT FINAL of a run whose bubble already settled (CU-8, ui/src/pages/chat/
+ * chat-gateway.ts:257-304 at v2026.9.8: a late final already accepted, empty or hidden
+ * only reconciles; a DISTINCT one is added). Measured on 2026.9.8: a run that ended
+ * with `NO_REPLY` outside a group gets a second `chat final` carrying the gateway's own
+ * fallback ("The tool run finished, but no final summary was produced…") ~100 ms after
+ * the first. The text joins the run's last bubble; when the run left none (its first
+ * terminal had nothing to show), a bubble is created for it.
+ */
+export const appendLateFinal = internalMutation({
+  args: {
+    chatId: v.id("chats"),
+    runId: v.string(),
+    /** The run's last bubble, when the bridge knows it. */
+    messageId: v.optional(v.id("messages")),
+    text: v.string(),
+    turnSessionKey: v.optional(v.string()),
+    ...boundArg,
+  },
+  returns: v.union(v.id("messages"), v.null()),
+  handler: async (ctx, { chatId, runId, messageId, text, turnSessionKey, boundInstanceName }) => {
+    const add = text.trim().slice(0, LATE_FINAL_MAX_CHARS);
+    if (add === "") return null;
+    await assertChatBound(ctx, chatId, boundInstanceName);
+    const existing = messageId === undefined ? null : await ctx.db.get(messageId);
+    const now = Date.now();
+    if (
+      existing !== null &&
+      existing.chatId === chatId &&
+      existing.role === "assistant" &&
+      existing.status !== "streaming"
+    ) {
+      // The bubble's OWN bridge only: in a conversation several instances serve, the
+      // chat check alone would let bridge A write into a bubble bridge B settled.
+      await assertMessageBound(ctx, existing, boundInstanceName);
+      // Idempotent: a retransmit of the same final finds its text already there.
+      if (existing.text.includes(add)) return existing._id;
+      await ctx.db.patch(existing._id, {
+        text: existing.text.trim() === "" ? add : `${existing.text}\n\n${add}`,
+        updatedAt: now,
+      });
+      return existing._id;
+    }
+    const chat = await ctx.db.get(chatId);
+    if (chat === null) return null;
+    const created = await ctx.db.insert("messages", {
+      chatId,
+      userId: chat.userId,
+      ...(turnSessionKey !== undefined ? { turnSessionKey } : {}),
+      role: "assistant",
+      runId,
+      status: "complete",
+      text: add,
+      finalizeCause: "gateway_final",
+      ...(boundInstanceName !== undefined ? { boundInstance: boundInstanceName } : {}),
+      updatedAt: now,
+      finalizedAt: now,
+    });
+    await ctx.db.patch(chatId, { updatedAt: now, lastAssistantAt: now });
+    return created;
   },
 });

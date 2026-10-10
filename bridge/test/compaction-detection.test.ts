@@ -1242,6 +1242,9 @@ describe("TurnSink compaction part + pressure trace", () => {
       contextTokens: 272000,
       costUsd: null, // pressure seeded without a cost in this fixture
       toolCalls: 0, // no tools in this fixture turn
+      // A describe seeded the pressure; no outbox row started this fixture turn.
+      pressureSource: "presend_describe",
+      turnOrigin: "gateway_initiated",
       compaction: "preflight",
       // The fixture seeds a pressure snapshot with counters only and no derived
       // reading — so the trace carries an EXPLICIT unknown. That is not the same

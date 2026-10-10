@@ -10,7 +10,12 @@
 // timeout fires is never dropped; on timeout we `tick()` the normalizer so an
 // armed grace always finalizes (never a hung "thinking" UI).
 
-import { openClawAgentRequestsEnabled, openClawInlineWidgetsEnabled } from "./compat.js";
+import {
+  gatewayAtLeast,
+  openClawAgentRequestsEnabled,
+  openClawInlineWidgetsEnabled,
+  SESSION_EVENTS_SINCE,
+} from "./compat.js";
 import { INLINE_WIDGETS_CAP } from "./providers/openclaw/widgets.js";
 import {
   holdGatewayVersion,
@@ -37,7 +42,6 @@ import type { ConvexWriter, SubAgentRecord } from "./convex-writer.js";
 import { attachRosterPolicy, attachSharingRefresh } from "./providers/openclaw/models-roster.js";
 import type { OutboundScan } from "./core/turn-sink.js";
 import { gatewayHostOf } from "./core/health.js";
-import { sessionsGetParams } from "./core/rpc-params.js";
 import { deviceTokenPromotion } from "./core/device-token-promotion.js";
 import type { BridgeConfig } from "./config.js";
 import type { MediaFetcherProvider } from "./core/media-fetcher-provider.js";
@@ -45,6 +49,20 @@ import { buildSessionKey } from "./providers/openclaw/session-keys.js";
 import { protocolDrift } from "./providers/openclaw/protocol-drift.js";
 import type { FinalizeCause } from "./core/finalize-causes.js";
 import { OpenClawAgentRequestObserver } from "./providers/openclaw/agent-request-observer.js";
+import {
+  TranscriptShadow,
+  type SessionEventSource,
+} from "./providers/openclaw/transcript-shadow.js";
+import {
+  SESSION_SCOPED_EVENTS_CAP,
+  SessionEventsHub,
+} from "./providers/openclaw/session-events.js";
+import {
+  CHAT_HISTORY_PAGE_LIMIT,
+  CHAT_HISTORY_PAGE_MAX_BYTES,
+  chatHistoryParams,
+  sessionsGetParams,
+} from "./core/rpc-params.js";
 
 // Stable errorCode for a bridge-side infrastructure end (socket drop / crash
 // mid-turn): the UI maps it to "connection lost — retry", never the user
@@ -157,6 +175,10 @@ export interface SessionRouting {
 export interface BridgeSession {
   readonly chatId: string;
   readonly sessionKey: string;
+  /** The SHADOW transcript reconciler of this conversation session (redesign phase 1):
+   *  reads `chat.history` back at the Control UI's triggers, never touches a bubble.
+   *  Optional so test doubles that predate it keep compiling. */
+  readonly transcriptShadow?: TranscriptShadow;
   /** The served instance (gateway) this session is bound to (one bridge, N gateways). */
   readonly instanceName: string;
   readonly connection: OpenClawConnection;
@@ -258,6 +280,8 @@ class Session implements BridgeSession {
   // Decoupled from the parent-turn lifecycle so a child frame arriving AFTER the
   // parent turn finalized still records (the whole reason the monitor exists).
   readonly observer: SubAgentObserver;
+  /** See BridgeSession.transcriptShadow. */
+  readonly transcriptShadow: TranscriptShadow;
   /** What the agent ASKS the person on this session (questions, approvals) — see
    *  providers/openclaw/agent-request-observer.ts. Inbound-only, like the sub-agent
    *  observer; its one effect on the turn is to say that a human now holds it. */
@@ -347,6 +371,10 @@ class Session implements BridgeSession {
     // Health-stats hook: a turn of THIS session finalizing in error is a
     // downstream failure on its target (HealthRegistry.recordTurnError).
     onTurnError?: (code: string) => void,
+    // The instance's session-events connection (transcript redesign, phase 2): what
+    // feeds this session's reconciler with `session.message` / `sessions.changed`.
+    // Never this conversation's socket (session-events.ts).
+    sessionEvents?: SessionEventSource,
   ) {
     this.chatId = chatId;
     this.sessionKey = sessionKey;
@@ -420,6 +448,65 @@ class Session implements BridgeSession {
     this.clock = clock;
     this.lastActivityAt = clock();
     this.transcriptFetcher = transcriptFetcher;
+    // SHADOW transcript reconciler: off until a /send carries the instance switch.
+    this.transcriptShadow = new TranscriptShadow({
+      chatId,
+      sessionKey,
+      readHistory: async (cursor, opts) =>
+        (
+          await connection.request(
+            "chat.history",
+            chatHistoryParams(
+              {
+                sessionKey,
+                cursor,
+                limit: CHAT_HISTORY_PAGE_LIMIT,
+                maxBytes: CHAT_HISTORY_PAGE_MAX_BYTES,
+                ...(opts?.inputRunIds === undefined ? {} : { inputRunIds: opts.inputRunIds }),
+              },
+              connection.gatewayVersion,
+            ),
+          )
+        ).payload,
+      // Convex's ANSWER is the reconciler's input (the runs it found over, a refusal to
+      // split): it was dropped here, so no settled run ever reached the turn (codex phase 4
+      // pass 6 review).
+      apply: async (report) => (await writer.applyTranscript?.(report)) ?? undefined,
+      ...(sessionEvents === undefined ? {} : { events: sessionEvents }),
+      // READ-ONLY view of the turn: the run in the foreground, for CU-16's admission.
+      foregroundRunId: () =>
+        this.runManager.turnActive ? (this.runManager.activeRunIds[0] ?? null) : null,
+      foregroundRunIds: () => (this.runManager.turnActive ? this.runManager.activeRunIds : []),
+      // PROJECTION `on` (phase 3): the live overlay's transcript facts. Inert when the
+      // switch is off (RunManager.setProjection).
+      onUserRow: (row) => {
+        void this.runManager.onUserRow(row).catch((e) =>
+          console.error("[send] steer split failed (non-fatal):", (e as Error)?.message ?? e),
+        );
+      },
+      onInputDropped: (sendId) => this.runManager.noteInputDropped(sendId),
+      // PROJECTION `on` (phase 4): the transcript proved runs over — a foreground turn
+      // among them ends here (never on a timer).
+      onRunsSettled: (runIds) => {
+        void this.runManager
+          .settleFromTranscript(runIds, this.clock())
+          .then((ended) => {
+            if (ended) {
+              console.log(`[transcript] chat=${this.chatId} turn settled by the transcript`);
+              this.wake();
+            }
+          })
+          .catch((e) =>
+            console.error("[transcript] settle failed (non-fatal):", (e as Error)?.message ?? e),
+          );
+      },
+    });
+    // The reconciler lives exactly as long as this socket, whichever path closes it (the
+    // consume loop's end, a crash recovery, the reaper, a re-key): otherwise its
+    // session-events attachment would keep it — and reads on a dead socket — alive.
+    if (typeof connection.onClosed === "function") {
+      connection.onClosed(() => this.transcriptShadow.close());
+    }
   }
 
   /** The outbound mount the AGENT was instructed to write to on the last send.
@@ -569,6 +656,9 @@ class Session implements BridgeSession {
               // incidental mention — so no freshness gate, exactly as on the
               // owner's lane. The gate exists for paths found in prose.
               explicit: true,
+              // Projection `on` only: announced, so a file job the transcript
+              // settled waits for it (codex phase 4 pass 23).
+              ...(this.runManager.projectionOn ? { markUpload: true } : {}),
             })
             .then((attached) => {
               // Not attached (not found / upload error): release the claim so a
@@ -679,6 +769,9 @@ class Session implements BridgeSession {
     } catch {
       /* already gone */
     }
+    // …and the reconciler with it (detaches from the session-events connection), even
+    // on a connection double that has no close listeners.
+    this.transcriptShadow.close();
     // The connection is gone -> no more child frames; drop observations AND the
     // registration-ordering set so the crash-recovery path can't leak the registry
     // (keep registeredChildren in lockstep with the observer — invariant: it only ever
@@ -797,7 +890,16 @@ class Session implements BridgeSession {
             // Whatever the gateway sent between the last frame read and the close is
             // gone: from here on, an absence in this turn's stream proves nothing.
             this.runManager.noteStreamGap();
-            if (this.transcriptFetcher) {
+            if (this.runManager.projectionOn) {
+              // PROJECTION `on` (phase 4, CU-22): no transcript poll and no settle on a
+              // deadline. The bubble stays as the run left it; the next reconciler read
+              // — the resume a send or the stuck-stream net asks for (`/resume`) —
+              // settles it from the run's durable rows, or resumes it if the gateway
+              // still runs it.
+              console.log(
+                `[session] close mid-turn on a projected session — left to the transcript (resume) chat=${this.chatId}`,
+              );
+            } else if (this.transcriptFetcher) {
               // Unified orphan-turn recovery (gateway restart OR compaction
               // recreated the session and dropped this socket): the gateway's
               // restart-recovery resumes the run and the answer lands in the
@@ -888,6 +990,8 @@ class Session implements BridgeSession {
           // set so a reconnect re-orders the first running-row write for each child.
           this.observer.clear();
           this.registeredChildren.clear();
+          // No more frames, no more reads on a closed socket (the next session reads).
+          this.transcriptShadow.close();
           break;
         }
         nextFrame = iterator.next();
@@ -912,6 +1016,16 @@ class Session implements BridgeSession {
           // (C4 lives on the reader, so the voice relay and the pre-ack replay are
           // covered too). Reporting again would count one unreadable frame twice.
           console.error("session feed error:", (err as Error)?.message ?? err);
+        }
+        // THE TRANSCRIPT PROJECTION (shadow): a terminal chat frame of any run of this
+        // session asks for a read. Read-only — the frame went through the feed above
+        // untouched, and nothing here can change what it did.
+        try {
+          this.transcriptShadow.observeFrame(winner.value);
+        } catch (err) {
+          // Shadow-only: a failure here loses a READ trigger, never a frame (the feed
+          // above already consumed it), so it is logged rather than sensed.
+          console.error("session transcript observe error:", (err as Error)?.message ?? err);
         }
         // AGENT REQUESTS ride broadcasts, not the turn's frames: the feed above drops
         // them. Awaited because the one local effect — a human now holds the turn —
@@ -1017,7 +1131,16 @@ class Session implements BridgeSession {
         // normally (recovery stops on isFinalized). No fetcher (tests) -> the
         // normalizer's own finalize path already handled it.
         if (this.runManager.takeRecvSilence() && !this.runManager.isFinalized) {
-          if (this.transcriptFetcher) {
+          if (this.runManager.projectionOn) {
+            // PROJECTION `on` (phase 4, §8.2 net): a silence asks the transcript, it never
+            // ends the turn. The read settles it if the gateway says the run is over; the
+            // silence budget restarts so a longer silence asks again, once per budget.
+            console.log(
+              `[session] recv-silence on a projected session — reading the transcript chat=${this.chatId}`,
+            );
+            this.transcriptShadow.requestRead("silence");
+            this.runManager.rearmSilence(now);
+          } else if (this.transcriptFetcher) {
             if (this.recoveryEpoch !== this.runManager.turnEpoch) {
               console.log(
                 `[session] recv-silence — querying gateway status (self-heal) chat=${this.chatId}`,
@@ -1658,6 +1781,15 @@ export class TalkCallActiveError extends Error {
   }
 }
 
+/** An acquire that must never displace the chat's socket found one bound to ANOTHER
+ *  identity (session key or instance): nothing was closed. */
+export class SessionDisplaceRefusedError extends Error {
+  constructor(readonly chatId: string) {
+    super(`acquire refused: chat ${chatId}'s socket is bound to another session`);
+    this.name = "SessionDisplaceRefusedError";
+  }
+}
+
 export class SessionRegistry {
   private readonly sessions = new Map<string, Session>();
   private readonly inflight = new Map<string, Promise<Session>>();
@@ -1676,6 +1808,10 @@ export class SessionRegistry {
     { key: string; at: number }[]
   >();
   private sweepTimer: ReturnType<typeof setInterval> | null = null;
+  /** ONE session-events connection per served instance (transcript redesign, phase 2),
+   *  opened lazily by the first session whose projection is on, closed after the last
+   *  detaches. See providers/openclaw/session-events.ts. */
+  private readonly sessionEventHubs = new Map<string, SessionEventsHub>();
 
   constructor(
     // The instances this bridge serves, keyed by instanceName. Each bundle carries
@@ -1769,8 +1905,17 @@ export class SessionRegistry {
    * By TYPE, not by message, like every other decision the bridge takes itself — a
    * refusal must not depend on how it was phrased (`classifyGatewayError`).
    */
-  async acquire(routing: SessionRouting): Promise<BridgeSession> {
+  async acquire(
+    routing: SessionRouting,
+    opts?: {
+      /** False: an automatic caller (the CU-22 resume) that must never close a socket
+       *  bound to another identity — it may carry another agent's live turn, on an
+       *  instance whose projection is off. Throws SessionDisplaceRefusedError instead. */
+      displace?: boolean;
+    },
+  ): Promise<BridgeSession> {
     this.ensureSweeper();
+    const displace = opts?.displace !== false;
     const { chatId, openclawChatId, agentId, canonical } = routing;
     // The session key is derived from THIS turn's routed agent + canonical, so a
     // rebind (deleted agent → default = new agentId, or a changed canonical)
@@ -1834,6 +1979,9 @@ export class SessionRegistry {
     // A closed, missing, OR re-keyed (incl. re-routed) session: drop (closing if
     // still open) and (re)connect, deduping concurrent acquisitions for the same chat.
     if (existing) {
+      if (!existing.connection.isClosed && !displace && !sameIdentity(existing)) {
+        throw new SessionDisplaceRefusedError(chatId);
+      }
       if (!existing.connection.isClosed) {
         // ONE live socket per chat is this registry's invariant (the old consumer
         // loop would keep writing under the old key). A gateway-owned voice call
@@ -1869,7 +2017,11 @@ export class SessionRegistry {
     if (pending) {
       // Honor an in-flight create only if it targets the SAME key + instance;
       // otherwise wait for it to settle, then recurse so the re-key is applied.
-      return pending.then((s) => (matches(s) ? s : this.acquire(routing)));
+      return pending.then((s) => {
+        if (matches(s)) return s;
+        if (!displace && !sameIdentity(s)) throw new SessionDisplaceRefusedError(chatId);
+        return this.acquire(routing, opts);
+      });
     }
     // What the chat's previous socket was opened for: a route that names no wish
     // creates the new one with the same (never silently off when it was on).
@@ -2060,6 +2212,7 @@ export class SessionRegistry {
               code,
             )
         : undefined,
+      this.sessionEventsFor(instanceName, cfg),
     );
     session.widgetsWanted = widgetsWanted;
     session.runManager.setWidgetsEnabled(declared.includes(INLINE_WIDGETS_CAP));
@@ -2132,5 +2285,35 @@ export class SessionRegistry {
       session.close();
     }
     this.sessions.clear();
+    for (const hub of this.sessionEventHubs.values()) hub.stop();
+    this.sessionEventHubs.clear();
+  }
+
+  /** The session-events connection of one served instance (created on first use; it
+   *  connects only when a session attaches). Its socket is NOT a conversation socket:
+   *  it declares `session-scoped-events`, so no turn frame of any session reaches it, and
+   *  its frames are read by the hub alone — never by a RunManager. */
+  sessionEventsFor(instanceName: string, cfg: BridgeConfig): SessionEventsHub {
+    const existing = this.sessionEventHubs.get(instanceName);
+    if (existing !== undefined) return existing;
+    const hub = new SessionEventsHub({
+      instanceName,
+      versionSupported: (v) => gatewayAtLeast(v, SESSION_EVENTS_SINCE) !== false,
+      connect: () =>
+        OpenClawConnection.connect(
+          cfg.openclawGatewayUrl,
+          cfg.openclawToken ?? "",
+          cfg.deviceIdentity!,
+          deviceTokenPromotion(cfg),
+          0,
+          // SYSTEM, like the transcript fetcher: the hub serves every conversation of
+          // the instance, whoever owns it.
+          systemConnectIdentity(cfg),
+          connectUserHeader(cfg),
+          [SESSION_SCOPED_EVENTS_CAP],
+        ),
+    });
+    this.sessionEventHubs.set(instanceName, hub);
+    return hub;
   }
 }

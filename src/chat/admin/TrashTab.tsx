@@ -5,7 +5,7 @@
 
 import { useMutation, usePaginatedQuery } from "convex/react";
 import { api } from "../convexApi";
-import { TRASH_PAGE, TrashList, TrashLoadMore } from "../TrashPage";
+import { TRASH_PAGE, TrashList, TrashLoadMore } from "../TrashList";
 import { useTrashRetentionDays } from "../trashView";
 import { m } from "@/paraglide/messages.js";
 import "../trashPage.css";

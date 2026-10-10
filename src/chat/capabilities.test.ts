@@ -78,6 +78,10 @@ describe("CAPABILITY_KEYS contract (lockstep with the bridge manifest)", () => {
       "knowledgePolicy",
       // The conversation's inline-widget switch (floor 2026.9.6).
       "inlineWidgets",
+      // The composer's "while the agent works" control (projection `on`, floor 2026.8.2).
+      "followUpModes",
+      // Withdraw an input waiting in the gateway's queue (floor 2026.9.7).
+      "discardPendingInput",
     ]);
   });
 
@@ -181,6 +185,8 @@ describe("capabilityOf — capability x set matrix", () => {
         permissionModes: false,
         knowledgePolicy: false,
         inlineWidgets: false,
+        followUpModes: false,
+        discardPendingInput: false,
       },
     ],
     [
@@ -203,6 +209,8 @@ describe("capabilityOf — capability x set matrix", () => {
         permissionModes: false,
         knowledgePolicy: false,
         inlineWidgets: false,
+        followUpModes: false,
+        discardPendingInput: false,
       },
     ],
     [
@@ -226,6 +234,8 @@ describe("capabilityOf — capability x set matrix", () => {
         permissionModes: false,
         knowledgePolicy: false,
         inlineWidgets: false,
+        followUpModes: false,
+        discardPendingInput: false,
       },
     ],
     [
@@ -248,6 +258,8 @@ describe("capabilityOf — capability x set matrix", () => {
         permissionModes: false,
         knowledgePolicy: false,
         inlineWidgets: false,
+        followUpModes: false,
+        discardPendingInput: false,
       },
     ],
     [
@@ -270,6 +282,8 @@ describe("capabilityOf — capability x set matrix", () => {
         permissionModes: false,
         knowledgePolicy: false,
         inlineWidgets: false,
+        followUpModes: false,
+        discardPendingInput: false,
       },
     ],
   ];

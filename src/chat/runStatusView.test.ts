@@ -13,6 +13,7 @@ import {
   toolFamily,
   ERROR_CODE_LABEL,
   autoRetryOutcomeLine,
+  CONTEXT_OVERFLOW_CODES,
 } from "./runStatusView";
 
 describe("runStatusView", () => {
@@ -825,8 +826,10 @@ describe("the two surfaces that show an error go through this view", () => {
       /const errorCode = useMessage\(\s*\(m\) => \(m\.metadata\?\.custom as RunMeta \| undefined\)\?\.errorCode,/,
     );
     expect(src).toMatch(
-      /const \{ headline, detail, code \} = errorDetailView\(error, errorCode\);/,
+      /const \{ headline, detail, rawDetail, code \} = errorDetailView\(error, errorCode\);/,
     );
+    // The raw text behind the disclosure is the VIEW's `rawDetail` too (0.91.3).
+    expect(src).toMatch(/\{rawDetail \? <ErrorRawDetails text=\{rawDetail\} \/> : null\}/);
     // …and the card body shows that `detail`, never the `error` it was built from.
     // TOTAL, not a window: `error` may appear nowhere in the rendered JSX. The first
     // version of this guard looked for a CSS class that does not exist
@@ -849,7 +852,7 @@ describe("the two surfaces that show an error go through this view", () => {
     // The WHOLE payload expression, anchored: asserting only that the safe expression
     // exists somewhere left `error ||` free to sit in front of it (codex).
     expect(src).toMatch(
-      /const payload =\s*text\.trim\(\) \|\|\s*\[detail\.headline, detail\.detail\]\.filter\(Boolean\)\.join\("\\n"\);/,
+      /const payload =\s*text\.trim\(\) \|\|\s*\[detail\.headline, detail\.detail, detail\.rawDetail\]\.filter\(Boolean\)\.join\("\\n"\);/,
     );
   });
 });
@@ -984,5 +987,179 @@ describe("runStatusView — the agent is struggling (live-turn difficulty)", () 
     expect(runStatusView("complete", true, null, null, false, null, retrying)).toBeNull();
     expect(runStatusView("error", true, null, null, false, null, retrying)?.struggling)
       .toBeUndefined();
+  });
+});
+
+describe("a REVOKED provider credential (prod 2026-10-02)", () => {
+  // Upstream's preflight-compaction wrapper around a model-fallback summary of 401s on an
+  // invalidated OAuth token and the gateway's re-authentication hint (v2026.9.6). Gateway
+  // text only.
+  const PROD_REVOKED_TEXT =
+    "⚠️ Context is too large and auto-compaction could not recover this turn. Reason: " +
+    "All models failed (2): openai/gpt-5.6-sol: 401: Encountered invalidated oauth token for user (auth) | " +
+    "openai/gpt-5.6-terra: 401: Encountered invalidated oauth token for user (auth). " +
+    "Re-authenticate with: openclaw models auth login --provider 'openai' --force. " +
+    "Try again, use /compact, or use /new to start a fresh session.";
+
+  it("the card says an administrator must reconnect the agent — and nothing else", () => {
+    const v = errorDetailView(PROD_REVOKED_TEXT, "provider_auth_revoked");
+    expect(v.code).toBe("provider_auth_revoked");
+    expect(v.headline).toBe(m.runstatus_error_provider_auth_revoked());
+    // No raw detail: neither upstream's /compact and /new nor the operator's command.
+    expect(v.detail).toBeNull();
+    expect(`${v.headline}`).not.toMatch(/\/new|\/compact|openclaw models/);
+    expect(m.runstatus_error_provider_auth_revoked({}, { locale: "fr" })).toBe(
+      "L’accès de l’agent au fournisseur de modèle a expiré. Un administrateur doit le reconnecter ; renvoyer le message ne changera rien d’ici là.",
+    );
+    expect(m.runstatus_error_provider_auth_revoked({}, { locale: "en" })).not.toMatch(
+      /\/new|\/compact|try again/i,
+    );
+  });
+
+  it("a row stored BEFORE the class existed gets the same card from its text", () => {
+    // The three production rows were stored `unclassified_error` — the one stored code
+    // that yields to the text — and older ones carry no code at all.
+    for (const stored of ["unclassified_error", null, undefined]) {
+      const v = errorDetailView(PROD_REVOKED_TEXT, stored);
+      expect(v.code, String(stored)).toBe("provider_auth_revoked");
+      expect(v.detail, String(stored)).toBeNull();
+    }
+    // …never the overflow card (compacting cannot help a refused credential).
+    expect(errorDetailView(PROD_REVOKED_TEXT, null).code).not.toBe("context_length");
+  });
+
+  it("a code that names another cause still wins, and a quoted value cannot mint it", () => {
+    expect(errorDetailView(PROD_REVOKED_TEXT, "rate_limit").code).toBe("rate_limit");
+    expect(
+      errorDetailView(
+        'Session "401: Encountered invalidated oauth token" changed while starting work. Retry.',
+        null,
+      ).code,
+    ).not.toBe("provider_auth_revoked");
+  });
+});
+
+// ERROR LABELS, STRUCTURED FIRST (0.91.3). Upstream's generic wrappers never become the
+// headline; a cause found inside one hides the wrapper's prose; the credential refusal is
+// split three ways; and a stored row renders as a fresh one (the mirror classifier).
+describe("errorDetailView — generic wrappers, the credential split, stored rows", () => {
+  const PREFLIGHT_NO_REASON =
+    "⚠️ Context is too large and auto-compaction could not recover this turn. Try again, use /compact, or use /new to start a fresh session.";
+  const REAUTH = "Re-authenticate with: openclaw models auth login --provider 'openai' --force";
+
+  it("the preflight wrapper without a cause: neutral headline, no overflow card, raw text in Details", () => {
+    for (const stored of [null, "unclassified_error", "compaction_failed_no_cause"]) {
+      const v = errorDetailView(PREFLIGHT_NO_REASON, stored);
+      expect(v.code, String(stored)).toBe("compaction_failed_no_cause");
+      expect(v.headline).toBe(m.runstatus_error_compaction_failed_no_cause());
+      expect(CONTEXT_OVERFLOW_CODES.has(v.code ?? "")).toBe(false);
+      expect(v.detail).toBeNull();
+      expect(v.rawDetail).toBe(PREFLIGHT_NO_REASON);
+    }
+    // The neutral headline gives no compaction or branching advice.
+    expect(m.runstatus_error_compaction_failed_no_cause()).not.toMatch(/\/compact|\/new|branch|compactez|try again/i);
+  });
+
+  it("upstream's other generic wrappers: the turn failed, the gateway withheld the cause", () => {
+    for (const t of [
+      "⚠️ Something went wrong while processing your request. Please try again, or use /new to start a fresh session.",
+      "⚠️ Agent failed before reply: provider stream closed. Please try again, or use /new to start a fresh session.",
+      "This turn ended before a reply: LLM request failed.",
+    ]) {
+      const v = errorDetailView(t, null);
+      expect(v.code, t).toBe("run_failed_no_cause");
+      expect(v.detail, t).toBeNull();
+      expect(v.rawDetail, t).toBe(t);
+    }
+  });
+
+  it("R10: a cause found under a wrapper is the headline, and the wrapper's prose leaves the card body", () => {
+    const t =
+      "⚠️ Context compaction succeeded, but the later model request still failed. API rate limit reached. Please try again later.";
+    for (const stored of [null, "rate_limit"]) {
+      const v = errorDetailView(t, stored);
+      expect(v.code).toBe("rate_limit");
+      expect(v.detail).toBeNull();
+      expect(v.rawDetail).toBe(t);
+    }
+  });
+
+  it("R4: a 403 behind the hint is a permission refusal — even on a row 0.91.2 stored as revoked", () => {
+    const t = `All models failed (2): openai/a: 403 Forbidden (auth) | openai/b: 403 Forbidden (auth). ${REAUTH}`;
+    for (const stored of [null, "unclassified_error", "provider_auth_revoked"]) {
+      const v = errorDetailView(t, stored);
+      expect(v.code, String(stored)).toBe("provider_permission_denied");
+      expect(v.headline).toBe(m.runstatus_error_provider_permission_denied());
+      // The re-authentication command never reaches the reader's card.
+      expect(v.detail).toBeNull();
+      expect(v.rawDetail).toBeNull();
+    }
+    // The hint alone names no kind: neither "expired" nor "permission".
+    expect(errorDetailView(`${REAUTH}.`, "provider_auth_revoked").code).toBe(
+      "provider_auth_failed",
+    );
+    // A structured 401 verdict over upstream's hedged copy is kept: the text names no other class.
+    expect(
+      errorDetailView(
+        "Authentication failed (provider returned HTTP 401). Your provider token may have expired — try the request again in a moment.",
+        "provider_auth_revoked",
+      ).code,
+    ).toBe("provider_auth_revoked");
+  });
+
+  it("R7: a rate limit that says 'too many tokens' never offers to compact", () => {
+    for (const t of [
+      "ThrottlingException: Too many tokens, please wait before trying again.",
+      "413 Request too large: too many tokens per minute (TPM), please slow down.",
+    ]) {
+      const v = errorDetailView(t, null);
+      expect(v.code, t).not.toBe("context_length");
+    }
+    expect(errorDetailView("maximum context length exceeded", null).code).toBe("context_length");
+  });
+
+  it("R13: the provider-logout abort is a labelled end, its code never shown as text", () => {
+    const v = errorDetailView("provider_access_removed", "provider_access_removed");
+    expect(v.headline).toBe(m.runstatus_error_provider_access_removed());
+    expect(v.detail).toBeNull();
+    expect(v.rawDetail).toBeNull();
+    // A row whose class did not survive (an older Convex in a rolling deploy) still reads it
+    // from the error string the bridge stores.
+    const byString = errorDetailView("provider_access_removed", null);
+    expect(byString.code).toBe("provider_access_removed");
+    expect(byString.detail).toBeNull();
+  });
+
+  it("billing and an unknown model: the headline speaks, upstream's operator advice goes to Details", () => {
+    const t =
+      "⚠️ API provider returned a billing error — your API key has run out of credits or has an insufficient balance. Check your provider's billing dashboard and top up or switch to a different API key.";
+    const v = errorDetailView(t, null);
+    expect(v.code).toBe("provider_billing");
+    expect(v.detail).toBeNull();
+    expect(v.rawDetail).toBe(t);
+    expect(errorDetailView("The selected model was not found by the provider.", null).code).toBe(
+      "model_not_found",
+    );
+  });
+
+  it("an ordinary classified error keeps its detail line, nothing behind a disclosure", () => {
+    const v = errorDetailView("fetch failed", "provider_internal");
+    expect(v.detail).toBe("fetch failed");
+    expect(v.rawDetail).toBeNull();
+  });
+
+  it("every new class has a headline in both locales", () => {
+    for (const code of [
+      "provider_permission_denied",
+      "provider_auth_failed",
+      "provider_billing",
+      "model_not_found",
+      "provider_access_removed",
+      "compaction_failed_no_cause",
+      "run_failed_no_cause",
+    ]) {
+      expect(ERROR_CODE_LABEL[code], code).toBeDefined();
+      expect(errorDetailView("", code).headline, code).toBeTruthy();
+    }
   });
 });

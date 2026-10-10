@@ -12,6 +12,7 @@
 //   - REQUIRES A LIVE DEPLOYMENT + a reachable bridge to actually send; the
 //     `fetch` here only runs server-side on Convex.
 
+import { isGatewayCommandText } from "./lib/gatewayCommand";
 import { v } from "convex/values";
 import { chatAllowsInstance } from "./lib/ingestAuthz";
 import {
@@ -47,6 +48,14 @@ import { readDoc as readCompatDoc } from "./compat";
 import { decideTurnKnowledge, type TurnKnowledge } from "./knowledge";
 import { PERMISSIONS } from "./lib/rbac";
 import { buildOpenClawThreadId } from "./lib/openclawThread";
+import { sendIdChange, sendIdentityFor } from "./lib/sendIdentity";
+import { transcriptRoutingFor, transcriptStoredText } from "./lib/transcriptProjection";
+import {
+  custodyOf,
+  heldInputsOfRun,
+  projectionModeOfChat,
+  segmentPrefixOf,
+} from "./lib/followUp";
 import {
   expectedPermissionModeFor,
   withoutSessionAccess,
@@ -84,7 +93,7 @@ import {
   quotedRefsOf,
   resolveQuoteTemplates,
 } from "./lib/quoteReply";
-import { classifyAttachment } from "./lib/mediaTransport";
+import { planAttachmentTransports } from "./lib/mediaTransport";
 import {
   chatHasActivityBlockers,
   drainNextQueued,
@@ -237,17 +246,27 @@ export async function readErrorCode(
  *  knowledge choice's outcome (`knowledge`, a new bridge only). Never throws. */
 export async function readSendAnswer(
   response: Response,
-): Promise<{ errorCode?: string; knowledge?: unknown }> {
+): Promise<{ errorCode?: string; knowledge?: unknown; sendId?: string }> {
   try {
-    const body = (await response.json()) as { error?: unknown; knowledge?: unknown };
+    const body = (await response.json()) as {
+      error?: unknown;
+      knowledge?: unknown;
+      sendId?: unknown;
+    };
     const err = body?.error;
     const errorCode =
       err !== null && typeof err === "object" && typeof (err as { code?: unknown }).code === "string"
         ? (err as { code: string }).code
         : undefined;
+    // The key the bridge ACTUALLY sent (bounded like an upstream run id).
+    const sendId =
+      typeof body?.sendId === "string" && body.sendId.length > 0 && body.sendId.length <= 256
+        ? body.sendId
+        : undefined;
     return {
       ...(errorCode === undefined ? {} : { errorCode }),
       ...(body?.knowledge === undefined ? {} : { knowledge: body.knowledge }),
+      ...(sendId === undefined ? {} : { sendId }),
     };
   } catch {
     return {};
@@ -332,6 +351,21 @@ export const getOutbox = internalQuery({
   },
 });
 
+// Byte size of each stored inbound blob, in order (null for a blob that is gone),
+// read from the `_storage` metadata so the dispatch can plan a transport without
+// loading a file it may only ever reference.
+export const storageSizesInternal = internalQuery({
+  args: { storageIds: v.array(v.id("_storage")) },
+  handler: async (ctx, { storageIds }): Promise<Array<number | null>> => {
+    const sizes: Array<number | null> = [];
+    for (const id of storageIds) {
+      const meta = await ctx.db.system.get("_storage", id);
+      sizes.push(meta?.size ?? null);
+    }
+    return sizes;
+  },
+});
+
 // Mark an outbox row's terminal status after the dispatch attempt.
 export const markOutbox = internalMutation({
   args: {
@@ -346,8 +380,11 @@ export const markOutbox = internalMutation({
     // user's turn with its card already deleted. Optional: legacy/other
     // callers keep the unbound behavior.
     expectedClientMessageId: v.optional(v.string()),
+    /** The gateway key the bridge reported it sent. Corrects the stamped send identity
+     *  when the bridge's derivation (from the session it actually used) disagrees. */
+    sendId: v.optional(v.string()),
   },
-  handler: async (ctx, { outboxId, status, expectedClientMessageId }) => {
+  handler: async (ctx, { outboxId, status, expectedClientMessageId, sendId }) => {
     const row = await ctx.db.get(outboxId);
     if (row === null) {
       return; // row gone; nothing to do
@@ -381,7 +418,92 @@ export const markOutbox = internalMutation({
     if (row.preemptHold === true && row.status === "pending") {
       return;
     }
-    await ctx.db.patch(outboxId, { status });
+    const restamp =
+      status === "sent" && sendId !== undefined && sendId !== row.sendId ? sendId : undefined;
+    await ctx.db.patch(outboxId, { status, ...(restamp === undefined ? {} : { sendId: restamp }) });
+    // The ACK of a turn's head row reads its chat (the custody block below): read once,
+    // here, so the key correction can gate on it without a read of its own.
+    const turnAck = status === "sent" && row.messageId !== undefined && row.chainStep === undefined;
+    const turnChat = turnAck ? await ctx.db.get(row.chatId) : null;
+    if (restamp !== undefined) {
+      // The bridge derived the key from the session it ACTUALLY sent to: that is the
+      // identity the transcript will carry, so the user bubble follows it (I3).
+      console.warn("bridge.markOutbox: send identity corrected from the bridge's answer");
+      if (row.messageId !== undefined && row.chainStep === undefined) {
+        const message = await ctx.db.get(row.messageId);
+        if (message !== null && message.role === "user") {
+          await ctx.db.patch(row.messageId, sendIdChange(message, restamp, transcriptStoredText(turnChat)));
+        }
+      }
+    }
+    // TRANSCRIPT PROJECTION `on` (phase 3, design §3.2): the ACK is CUSTODY — the user
+    // bubble says the gateway accepted the input. Never over a fact a transcript read
+    // already wrote (steered, persisted, …): those come later in the input's life.
+    if (turnAck && row.messageId !== undefined) {
+      const chat = turnChat;
+      if ((await projectionModeOfChat(ctx, chat, row.routedAgent?.instanceName)) === "on") {
+        const message = await ctx.db.get(row.messageId);
+        if (message !== null && message.role === "user" && message.custody === undefined) {
+          await ctx.db.patch(row.messageId, {
+            custody: custodyOf({ acked: true, row: null, queuedAtGateway: false }),
+          });
+        }
+        // PROJECTION `on` (phase 4): the run is ADMITTED and its bubble is born only with
+        // its first content — until then this durable marker is what holds the chat busy
+        // (a QUEUED send waits) and says the agent works, whatever the last read said
+        // (lib/outboxQueue `projectedGatewayHoldUntil`). Not when the bubble already
+        // opened (a fast turn whose first content beat this ACK), nor when the transcript
+        // got there first: the send's run (its identity IS the run id) already settled,
+        // or already has a bubble born from its rows (codex phase 4 pass 2). Asked here,
+        // inside the switch phase 3 already resolved: an off/shadow ACK reads nothing more.
+        const opened = await ctx.db
+          .query("messages")
+          .withIndex("by_dispatch_outbox", (q) => q.eq("dispatchOutboxId", String(outboxId)))
+          .first();
+        const effectiveSendId = restamp ?? row.sendId;
+        const ranAlready =
+          effectiveSendId !== undefined &&
+          ((
+            await ctx.db
+              .query("transcriptRuns")
+              .withIndex("by_chat_run", (q) => q.eq("chatId", row.chatId).eq("runId", effectiveSendId))
+              .take(4)
+          ).some((r) => r.settledAt !== undefined) ||
+            (
+              await ctx.db
+                .query("messages")
+                .withIndex("by_chat_run", (q) => q.eq("chatId", row.chatId).eq("runId", effectiveSendId))
+                .take(4)
+            ).some((m) => m.role === "assistant"));
+        if (opened === null && !ranAlready) {
+          // Its own small record (never the outbox row: a reader of admissions must not
+          // load prompts — codex phase 4 pass 15). One per send: a repeated ACK refreshes it.
+          const admittedAt = Date.now();
+          const known = await ctx.db
+            .query("runAdmissions")
+            .withIndex("by_outbox", (q) => q.eq("outboxId", outboxId))
+            .first();
+          if (known !== null) {
+            await ctx.db.patch(known._id, { admittedAt, ...(effectiveSendId !== undefined ? { sendId: effectiveSendId } : {}) });
+          } else {
+            await ctx.db.insert("runAdmissions", {
+              chatId: row.chatId,
+              outboxId,
+              ...(effectiveSendId !== undefined ? { sendId: effectiveSendId } : {}),
+              ...(row.sentToInstance !== undefined ? { sentToInstance: row.sentToInstance } : {}),
+              ...(row.routedAgent?.instanceName !== undefined
+                ? { routedInstanceName: row.routedAgent.instanceName }
+                : {}),
+              admittedAt,
+            });
+          }
+          // The projection now holds facts for this conversation: its drains ask them.
+          if (chat !== null && chat.transcriptSeenAt === undefined) {
+            await ctx.db.patch(chat._id, { transcriptSeenAt: Date.now() });
+          }
+        }
+      }
+    }
     // Drain the next queued send on BOTH terminal statuses. `drainNextQueued` is
     // idempotent and isChatBusy-guarded, so this is safe in every ordering:
     //   - failed: the turn never streamed → chat idle → drains now.
@@ -926,7 +1048,33 @@ export const getChatRouting = internalQuery({
       routedTarget === null
         ? null
         : await decideTurnPermission(ctx, chat, routedTarget.instanceName);
+    // The provider-side conversation id this routing keys the gateway session on (see
+    // `openclawChatId` below — computed once, because the transcript cursor and the send
+    // identity derive the SAME session key from it).
+    const providerConversationId =
+      chat.perTurnRouting && routedAgent
+        ? (routingSegment ?? chat.routingSegment ?? null)
+        : res.rebind
+          ? null
+          : (chat.openclawChatId ?? null);
+    // THE TRANSCRIPT PROJECTION (redesign phase 1): the instance switch, and where this
+    // session's last transcript read stopped, so the bridge resumes with a delta.
+    const projectionMode = instance?.config?.transcriptProjection ?? "off";
+    const transcript =
+      routedTarget === null || provider !== "openclaw" || projectionMode === "off"
+        ? null
+        : await transcriptRoutingFor(ctx, chat._id, {
+            mode: projectionMode,
+            // Never null here: all three ingredients are present.
+            sessionKey: buildOpenClawThreadId({
+              agentId: routedTarget.agentId,
+              canonical: routedTarget.canonical,
+              chatId: providerConversationId ?? chat._id,
+            }) as string,
+          });
     return {
+      provider,
+      transcript,
       // INLINE WIDGETS for whatever socket this routing opens: the instance switch
       // AND the conversation override (conversationWantsWidgets) — a PREVIEW for a
       // turn (the /send carries lastGateBeforeSend's decision), and THE wish for
@@ -965,12 +1113,7 @@ export const getChatRouting = internalQuery({
       // beginTurnRouting. ONLY when a routed agent is in play — a routed send, or a
       // session operation (dispatchPatch/Reset/compact) asking for `currentSession`
       // on a chat with a confirmed route; otherwise the legacy session id.
-      openclawChatId:
-        chat.perTurnRouting && routedAgent
-          ? (routingSegment ?? chat.routingSegment ?? null)
-          : res.rebind
-            ? null
-            : (chat.openclawChatId ?? null),
+      openclawChatId: providerConversationId,
       // WHAT IS STORED, as opposed to what this send may use. The field above is
       // nulled on a rebind — it means "do not reuse this" — so a caller that needs
       // to NAME the binding (to quarantine it after a kill it cannot vouch for)
@@ -1061,7 +1204,7 @@ export const getChatRouting = internalQuery({
         isSole,
       }),
       // `config` is the RESOLVED (defaults-filled) view for Convex's OWN inbound
-      // transport decision (classifyAttachment). `configOverrides` is the RAW stored
+      // transport decision (planAttachmentTransports). `configOverrides` is the RAW stored
       // partial sent to the bridge — only fields the admin explicitly set, so an
       // UNSET field lets the bridge keep its OWN env default (D-F-b) instead of being
       // shadowed by a Convex default on every /send (which would force e.g. an
@@ -1792,6 +1935,10 @@ async function reparkRowIfBusy(ctx: MutationCtx, outboxId: Id<"outbox">): Promis
     await ctx.db.patch(outboxId, { status: "queued" });
     return true;
   }
+  // TRANSCRIPT PROJECTION `on` (phase 3, design §8.1): never re-parked. A send that finds
+  // the conversation busy is an explicit follow-up the gateway places (steer by default),
+  // and a `queue` send only left the outbox because the conversation was free.
+  if ((await projectionModeOfChat(ctx, owner, row.routedAgent?.instanceName)) === "on") return false;
   // The FULL activity predicate (streaming message OR live sub-agent) — a
   // `subagent.start` observed during the dispatch delay must hold too, or
   // the follow-up would be routed into / kill the child session (codex P1).
@@ -1838,10 +1985,14 @@ export const lastGateBeforeSend = internalMutation({
   args: {
     outboxId: v.id("outbox"),
     target: v.object({ instanceName: v.string(), agentId: v.string() }),
+    /** The send identity this dispatch carries (lib/sendIdentity.ts), stamped on the
+     *  row and on its user message in the transaction that lets the send leave. Absent
+     *  for a provider without transcript identities (Hermes). */
+    sendId: v.optional(v.string()),
   },
   handler: async (
     ctx,
-    { outboxId, target },
+    { outboxId, target, sendId },
   ): Promise<
     | { kind: "gone" }
     | { kind: "reparked" }
@@ -1903,7 +2054,19 @@ export const lastGateBeforeSend = internalMutation({
     // The send leaves for this instance NOW: from here on (while the row is in flight
     // or once sent) its bridge may read this chat's history and open the reply — and
     // not before (lib/ingestAuthz.chatAllowsInstance).
-    await ctx.db.patch(outboxId, { sentToInstance: target.instanceName });
+    await ctx.db.patch(outboxId, {
+      sentToInstance: target.instanceName,
+      ...(sendId === undefined ? {} : { sendId, dispatchedAt: Date.now() }),
+    });
+    // The user bubble carries the identity of the send that delivered it (I3). Only the
+    // HEAD row of a turn: a chained row re-asks another agent with a prompt of its own,
+    // and the bubble keeps the identity of the turn the person sent.
+    if (sendId !== undefined && row.messageId !== undefined && row.chainStep === undefined) {
+      const message = await ctx.db.get(row.messageId);
+      if (message !== null && message.role === "user" && message.sendId !== sendId) {
+        await ctx.db.patch(row.messageId, sendIdChange(message, sendId, transcriptStoredText(chat)));
+      }
+    }
     // INLINE WIDGETS, decided in this same transaction as the permission and knowledge
     // choices: the instance switch AND the conversation override (convex/widgets.ts).
     // The bridge adds the gateway-version judgement and re-opens the socket on change.
@@ -2047,6 +2210,9 @@ export const chainedPrompt = internalQuery({
     if (row === null || row.chainStep === undefined || row.messageId === undefined) {
       return null;
     }
+    // A gateway COMMAND goes to every agent of the chain exactly as typed: the earlier
+    // replies appended to it would become its arguments (lib/gatewayCommand.ts).
+    if (isGatewayCommandText(row.text)) return row.text;
     const question = await ctx.db.get(row.messageId);
     const chat = await ctx.db.get(row.chatId);
     if (question === null || chat === null) return null;
@@ -2609,17 +2775,37 @@ export const dispatch = internalAction({
       fileName: string;
       content: string;
     }> = [];
-    // Phase 3 (shared-fs): TOOL-READ files in shared-fs mode ride BY REFERENCE — a
-    // short-lived Convex getUrl the bridge STREAMS to a shared volume (no base64, no
-    // frame ceiling → videos/audio of any size). The storageId is server-minted from
-    // the outbox (never client-supplied — IDOR lesson). References are NOT counted
-    // toward the maxPayload frame guard (only inline base64 is).
+    // Phase 3 (shared-fs): a TOOL-READ file the frame cannot carry rides BY REFERENCE
+    // — a short-lived Convex getUrl the bridge STREAMS to a shared volume (no base64,
+    // no frame ceiling → videos/audio of any size). One the frame CAN carry rides as
+    // a native gateway attachment instead (see planAttachmentTransports for why). The
+    // storageId is server-minted from the outbox (never client-supplied — IDOR
+    // lesson). References are NOT counted toward the maxPayload frame guard (only
+    // inline base64 is).
     const referenceAttachments: Array<{
       url: string;
       mimeType: string;
       fileName: string;
     }> = [];
     const inboundMediaMode = routing.config.inboundMediaMode;
+    const rowAttachments = row.attachments ?? [];
+    // Sizes come from the storage METADATA: a shared-fs file may be far larger than
+    // an action should ever load just to learn that it does not fit. Only shared-fs
+    // needs them — inline mode sends everything inline and sizes it as it reads.
+    const sizes: Array<number | null> =
+      inboundMediaMode === "shared-fs" && rowAttachments.length > 0
+        ? await ctx.runQuery(internal.bridge.storageSizesInternal, {
+            storageIds: rowAttachments.map((a) => a.storageId),
+          })
+        : rowAttachments.map(() => null);
+    const transports = planAttachmentTransports({
+      inboundMediaMode,
+      maxPayload,
+      attachments: rowAttachments.map((a, i) => ({
+        mimeType: a.mimeType,
+        size: sizes[i] ?? null,
+      })),
+    });
     let attachmentTooLarge = false;
     // We size the frame by the SUM of the attachments' base64 only. The message
     // text + JSON structure ride the fixed envelope reserved inside base64FitsFrame
@@ -2630,14 +2816,11 @@ export const dispatch = internalAction({
     // the bridge frame guard. A pathological prompt larger than the envelope is the
     // only residual, backstopped by the bridge body cap (413) + the gateway.
     let base64Total = 0;
-    for (const a of row.attachments ?? []) {
+    for (const [index, a] of rowAttachments.entries()) {
       try {
-        // Model-native (Vision) → inline base64 (size-bounded). Tool-read in
-        // shared-fs mode → reference (streamed by the bridge, any size).
-        if (
-          classifyAttachment({ mimeType: a.mimeType, inboundMediaMode }) ===
-          "reference"
-        ) {
+        // Inline → base64 in the frame (size-bounded, checked below). Reference →
+        // streamed by the bridge to the shared volume (any size).
+        if (transports[index] === "reference") {
           const url = await ctx.storage.getUrl(a.storageId);
           if (url === null) continue; // blob gone — skip (never fail the whole turn)
           referenceAttachments.push({
@@ -2683,6 +2866,9 @@ export const dispatch = internalAction({
     // What the bridge reported of the knowledge choice this turn carried (its /send
     // answer's `knowledge`), and for which agent — recorded for the composer below.
     let knowledgeReport: unknown = undefined;
+    // The gateway key the bridge reported sending (a newer bridge), to correct the
+    // stamped send identity if the two derivations ever disagree.
+    let sentKey: string | undefined = undefined;
     let knowledgeTarget: { instanceName: string; agentId: string } | null = null;
     // The meta-derived guard that actually rode this send (decided at the last gate),
     // for the refusal handler below — null when none did.
@@ -2711,13 +2897,18 @@ export const dispatch = internalAction({
       // measured against the exact string that ships.
       // A CHAINED reply is asked the question WITH the replies already given to it
       // (chainedPrompt); every other row sends its text as is.
+      // A GATEWAY COMMAND (`/…`) is sent EXACTLY as typed — no quoted-reply preamble in
+      // front of it (nor, in `chainedPrompt`, earlier replies behind it): the gateway
+      // reads a command from the text's first word and takes everything after it as
+      // arguments (lib/gatewayCommand.ts).
+      const verbatimCommand = isGatewayCommandText(row.text);
       const promptText =
         row.chainStep === undefined
           ? row.text
           : ((await ctx.runQuery(internal.bridge.chainedPrompt, { outboxId })) ?? row.text);
       const composedText = (() => {
         const excerpts = outboxExcerpts(row);
-        return excerpts.length === 0
+        return excerpts.length === 0 || verbatimCommand
           ? promptText
           : composeQuotedText(
               fillQuoteTemplate(
@@ -2747,12 +2938,27 @@ export const dispatch = internalAction({
       // who speaks. WHO SPEAKS: a participant's gateway name when the instance lets
       // participants speak in their own name; null ⇒ the owner's socket sends,
       // byte-identical to before. A refusal is never downgraded to the owner.
+      // THE SEND IDENTITY: the very `idempotencyKey` the bridge sends, bound to the
+      // gateway session this turn runs on (lib/sendIdentity.ts). OpenClaw only — Hermes
+      // has no transcript identity to reconcile it against.
+      const sendId =
+        routing.provider === "openclaw"
+          ? await sendIdentityFor(
+              buildOpenClawThreadId({
+                agentId: routing.target.agentId,
+                canonical: routing.target.canonical,
+                chatId: routing.openclawChatId ?? row.chatId,
+              }) as string,
+              row.dispatchKey ?? row.clientMessageId,
+            )
+          : null;
       const gate = await ctx.runMutation(internal.bridge.lastGateBeforeSend, {
         outboxId,
         target: {
           instanceName: routing.target.instanceName,
           agentId: routing.target.agentId,
         },
+        ...(sendId === null ? {} : { sendId }),
       });
       if (gate.kind === "gone" || gate.kind === "reparked") return;
       if (gate.kind === "permission_refused") {
@@ -2916,6 +3122,30 @@ export const dispatch = internalAction({
             // key) while the browser's own clientMessageId stays intact for
             // send.sendMessage's retry dedup (preemptRepark.ts).
             clientMessageId: row.dispatchKey ?? row.clientMessageId,
+            // The send identity (lib/sendIdentity.ts): the bridge uses it as the
+            // gateway `idempotencyKey` when its own derivation agrees, and answers the
+            // key it actually used. An old bridge ignores the field and derives the very
+            // same key from `clientMessageId`.
+            ...(sendId === null ? {} : { sendId }),
+            // THE TRANSCRIPT PROJECTION (phase 1, shadow): where this session's last
+            // `chat.history` read stopped, so the bridge resumes with a delta. The mode
+            // itself rides `config.transcriptProjection`.
+            ...(routing.transcript?.cursor ? { transcriptCursor: routing.transcript.cursor } : {}),
+            // TRANSCRIPT PROJECTION `on` (phase 3): the person's mode for a send made
+            // while the agent works, and the bubble still streaming on this session (a
+            // restarted bridge resumes it when the gateway still runs it, CU-22).
+            ...(routing.transcript?.mode === "on" && row.followUpMode !== undefined
+              ? { followUpMode: row.followUpMode }
+              : {}),
+            ...(routing.transcript?.mode === "on"
+              ? await (async () => {
+                  const live = await ctx.runQuery(internal.bridge.liveBubbleForSession, {
+                    chatId: row.chatId as Id<"chats">,
+                    sessionKey: routing.transcript!.sessionKey,
+                  });
+                  return live === null ? {} : { liveBubble: live };
+                })()
+              : {}),
             // How long this row has ALREADY been `pending` — a DURATION, so no clock
             // is shared. The bridge adds its own elapsed time and refuses to submit a
             // prompt whose dispatch is past the deadline: otherwise a POST arriving
@@ -2989,6 +3219,7 @@ export const dispatch = internalAction({
         // choice's outcome either way (tolerant of old/new bridge).
         const answer = await readSendAnswer(response);
         knowledgeReport = answer.knowledge;
+        sentKey = answer.sendId;
         if (!ok) {
           console.error(`bridge POST /send -> HTTP ${response.status}`);
           errorCode = answer.errorCode;
@@ -3041,6 +3272,7 @@ export const dispatch = internalAction({
         // a fresh dispatchKey at its flip, so a straggler ack from the killed
         // dispatch can never flip the re-queued row (codex P1).
         expectedClientMessageId: row.dispatchKey ?? row.clientMessageId,
+        ...(sentKey === undefined ? {} : { sendId: sentKey }),
       });
       // CONFIRM the WHOLE routing tuple {segment, lastRoutedAgent*} ONLY now that the
       // gateway accepted the send — so a FAILED routed dispatch advances NOTHING and a
@@ -3303,10 +3535,23 @@ export const dispatchAbort = internalAction({
     routedAgent: v.optional(
       v.object({ instanceName: v.string(), agentId: v.string() }),
     ),
+    /** Projection `on`, 2026.9.7+: cancel the ONE input `runId` names (its send
+     *  identity) in the gateway's queue — `chat.abort {runId, discardPendingInput}`.
+     *  Nothing is settled here: the input never became a turn. */
+    discardPendingInput: v.optional(v.boolean()),
   },
   handler: async (
     ctx,
-    { chatId, userId, sessionKey, runId, finalizeMessageId, childRowId, routedAgent },
+    {
+      chatId,
+      userId,
+      sessionKey,
+      runId,
+      finalizeMessageId,
+      childRowId,
+      routedAgent,
+      discardPendingInput,
+    },
   ) => {
     /** The provider session the bridge asked to interrupt WITHOUT being able to confirm
      *  it stopped. Set only from a verdict the bridge actually reported; it rides the
@@ -3411,6 +3656,10 @@ export const dispatchAbort = internalAction({
             : { gatewayUser: routing.gatewayUser }),
           ...(sessionKey ? { sessionKey } : {}),
           ...(runId ? { runId } : {}),
+          // TRANSCRIPT PROJECTION `on` (phase 3): the Control UI's stop — the bridge's
+          // foreground run, or a key-only stop that clears the session's queue.
+          ...(routing.transcript?.mode === "on" ? { projection: "on" } : {}),
+          ...(discardPendingInput === true ? { discardPendingInput: true } : {}),
         }),
       });
       if (!response.ok) {
@@ -3467,6 +3716,39 @@ export const dispatchAbort = internalAction({
         });
       }
     }
+  },
+});
+
+/** The assistant bubble still STREAMING on a session of this conversation, with its run
+ *  (projection `on`: what a restarted bridge resumes, CU-22). One indexed point read. */
+export const liveBubbleForSession = internalQuery({
+  args: { chatId: v.id("chats"), sessionKey: v.string() },
+  handler: async (
+    ctx,
+    { chatId, sessionKey },
+  ): Promise<{
+    messageId: string;
+    runId: string;
+    heldInputs?: Array<{ sendId: string; messageId: string }>;
+    segmentPrefix?: string;
+  } | null> => {
+    const m = await ctx.db
+      .query("messages")
+      .withIndex("by_chat_status", (q) => q.eq("chatId", chatId).eq("status", "streaming"))
+      .order("desc")
+      .first();
+    if (m === null || m.role !== "assistant" || m.runId === undefined) return null;
+    if (m.turnSessionKey !== undefined && m.turnSessionKey !== sessionKey) return null;
+    // The inputs accepted while it streamed: a restarted bridge knows them again.
+    const held = await heldInputsOfRun(ctx, m);
+    // A later segment of a cut run: the earlier segments' text, for the resumed buffer.
+    const prefix = await segmentPrefixOf(ctx, m);
+    return {
+      messageId: m._id,
+      runId: m.runId,
+      ...(held.length > 0 ? { heldInputs: held } : {}),
+      ...(prefix !== undefined ? { segmentPrefix: prefix } : {}),
+    };
   },
 });
 

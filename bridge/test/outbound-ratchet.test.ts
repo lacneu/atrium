@@ -34,9 +34,12 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   COMPACTION_CHECKPOINTS_RETIRED_IN,
+  TASKS_RPC_RETIRED_IN,
   compareVersions,
   gatewayAtLeast,
   parseVersion,
+  TRANSCRIPT_PROJECTION_SINCE,
+  DISCARD_PENDING_INPUT_SINCE,
 } from "../src/compat.js";
 import { sleep } from "./helpers/sleep.js";
 import { readFileSync, readdirSync } from "node:fs";
@@ -49,6 +52,7 @@ import {
   fetchCompactionHistory,
   fetchCronJobs,
   lcmSendParams,
+  probeOpenClawTasks,
   performOpenClawCronManage,
   performSend,
   subAgentSendParams,
@@ -56,12 +60,14 @@ import {
 import { ensureAvailableModels } from "../src/providers/openclaw/models-roster.js";
 import {
   chatAbortParams,
+  sessionsAbortParams,
+  chatHistoryParams,
+  CHAT_HISTORY_PAGE_LIMIT,
+  CHAT_HISTORY_PAGE_MAX_BYTES,
   sessionsGetParams,
   talkClientCloseParams,
   talkClientCreateParams,
   talkToolCallParams,
-  taskGetParams,
-  taskListParams,
   ttsParams,
 } from "../src/core/rpc-params.js";
 import {
@@ -198,6 +204,18 @@ async function captureCronBodies(
     if (!(err instanceof CompactionHistoryRetiredError)) throw err;
   }
   out.push(...hist.calls);
+
+  // `tasks.get` + `tasks.list`: the background-task probe, through the real function,
+  // so a gateway that retired the RPCs (2026.9.7) is shown to receive neither.
+  const probe = recorder((method) =>
+    method === "tasks.get" ? { task: { status: "running" } } : { tasks: [] },
+  );
+  await probeOpenClawTasks(
+    { ...probe.conn, gatewayVersion } as never,
+    ["task-7"],
+    ["agent:alice:atrium:chat:olivier:c1"],
+  );
+  out.push(...probe.calls);
   return out;
 }
 
@@ -255,8 +273,6 @@ function builtBodies(): [string, Record<string, unknown>][] {
     ["tts.convert", ttsParams("convert", "bonjour")],
     ["tts.status", ttsParams("status", "")],
     ["tts.providers", ttsParams("providers", "")],
-    ["tasks.get", taskGetParams("task-7")],
-    ["tasks.list", taskListParams("agent:alice:atrium:chat:olivier:c1")],
     // EVERY talk create shape. The three optionals are built independently, so each
     // combination is really sendable — capturing only the empty and the all-set cases
     // left valid bodies unvalidated (raised in review). `sessionKey` joined them when
@@ -313,6 +329,26 @@ function builtBodies(): [string, Record<string, unknown>][] {
     [
       "talk.client.close",
       talkClientCloseParams("agent:alice:atrium:chat:olivier:c1", "vs-1"),
+    ],
+    // `chat.history` in the two shapes every vendored schema must accept, built with NO
+    // known version (the conservative body): the run-release probe and the transcript
+    // reconciler's tail page. The DELTA read (`cursor`, 2026.8.1+) and `maxBytes`
+    // (2026.9.2+) are version-gated and validated per supported version below.
+    [
+      "chat.history",
+      chatHistoryParams({ sessionKey: "agent:alice:atrium:chat:olivier:c1", limit: 1, maxChars: 1 }, null),
+    ],
+    [
+      "chat.history",
+      chatHistoryParams(
+        {
+          sessionKey: "agent:alice:atrium:chat:olivier:c1",
+          cursor: null,
+          limit: CHAT_HISTORY_PAGE_LIMIT,
+          maxBytes: CHAT_HISTORY_PAGE_MAX_BYTES,
+        },
+        null,
+      ),
     ],
   ];
 }
@@ -656,6 +692,7 @@ describe("outbound ratchet — what the bridge SENDS fits the vendored contract"
     "agents.files.set",
     "agents.list",
     "chat.abort",
+    "chat.history",
     "chat.send",
     "config.get",
     "config.patch",
@@ -696,6 +733,37 @@ describe("outbound ratchet — what the bridge SENDS fits the vendored contract"
     ).toEqual([...EXPECTED_CAPTURED].sort());
   });
 
+  // The VERSION-GATED `chat.history` body (transcript reconciler): built for each
+  // vendored version as the reconciler builds it for that gateway, so `maxBytes` rides
+  // exactly where the schema has it (2026.9.2+) and never where a closed schema would
+  // refuse the whole read (2026.8.x, 2026.9.1).
+  // Only the SUPPORTED vendored versions: the reconciler never runs below
+  // TRANSCRIPT_PROJECTION_SINCE (performSend switches it off), and below 2026.8.1 the
+  // schema has no `cursor` at all.
+  for (const version of vendoredVersions().filter(
+    (v) => gatewayAtLeast(v, TRANSCRIPT_PROJECTION_SINCE) === true,
+  )) {
+    it(`the transcript read built FOR ${version} validates against ${version}`, async () => {
+      const bodies: [string, Record<string, unknown>][] = [null, "c:7"].map((cursor) => [
+        "chat.history",
+        chatHistoryParams(
+          {
+            sessionKey: "agent:alice:atrium:chat:olivier:c1",
+            cursor,
+            limit: CHAT_HISTORY_PAGE_LIMIT,
+            maxBytes: CHAT_HISTORY_PAGE_MAX_BYTES,
+          },
+          version,
+        ),
+      ]);
+      expect(
+        "maxBytes" in (bodies[0]![1] as object),
+        "maxBytes rides exactly from 2026.9.2",
+      ).toBe(gatewayAtLeast(version, "2026.9.2") === true);
+      await expectBodiesValid(version, bodies, `transcript read for ${version}`);
+    });
+  }
+
   it("every builder-backed call site still USES its builder", () => {
     // The residual hole in the whole builder approach, and the last one review found: this
     // suite validates what the BUILDERS produce, and nothing tied a builder to the handler
@@ -709,6 +777,8 @@ describe("outbound ratchet — what the bridge SENDS fits the vendored contract"
     // literal" is not the same as "it comes from the builder".
     const BUILDER_BACKED: Record<string, string> = {
       "chat.abort": "chatAbortParams",
+      "chat.history": "chatHistoryParams",
+      "sessions.abort": "sessionsAbortParams",
       "sessions.get": "sessionsGetParams",
       "tasks.get": "taskGetParams",
       "tasks.list": "taskListParams",
@@ -877,6 +947,30 @@ describe("outbound ratchet — what the bridge SENDS fits the vendored contract"
     ).toBe(true);
   });
 
+  // THE CONTROL UI'S STOP (projection `on`, phase 3): `sessions.abort {clearQueued}` from
+  // the supported floor, `chat.abort {discardPendingInput}` only from 2026.9.7 — the
+  // route refuses the cancel below it, the schema being CLOSED.
+  for (const version of vendoredVersions().filter(
+    (v) => gatewayAtLeast(v, TRANSCRIPT_PROJECTION_SINCE) === true,
+  )) {
+    it(`the projected stop bodies validate against ${version}`, async () => {
+      const bodies: [string, Record<string, unknown>][] = [
+        ["sessions.abort", sessionsAbortParams("agent:alice:atrium:chat:olivier:c1")],
+        ...(gatewayAtLeast(version, DISCARD_PENDING_INPUT_SINCE) === true
+          ? ([
+              [
+                "chat.abort",
+                chatAbortParams("agent:alice:atrium:chat:olivier:c1", "send-1", {
+                  discardPendingInput: true,
+                }),
+              ],
+            ] as [string, Record<string, unknown>][])
+          : []),
+      ];
+      await expectBodiesValid(version, bodies, "projected stop");
+    });
+  }
+
   for (const version of vendoredVersions()) {
     it(`the operator, cron and built bodies validate against ${version}`, async () => {
       const bodies = [
@@ -889,6 +983,8 @@ describe("outbound ratchet — what the bridge SENDS fits the vendored contract"
       // The compaction history is read only from a gateway that still keeps it.
       const keepsCheckpoints =
         gatewayAtLeast(version, COMPACTION_CHECKPOINTS_RETIRED_IN) !== true;
+      // …and the task registry only from one that still serves it.
+      const keepsTasks = gatewayAtLeast(version, TASKS_RPC_RETIRED_IN) !== true;
       // The WRITE bodies, named: an incidental read would otherwise satisfy the loop.
       for (const m of [
         "config.patch",
@@ -896,6 +992,7 @@ describe("outbound ratchet — what the bridge SENDS fits the vendored contract"
         "agents.files.set",
         "talk.client.create",
         ...(keepsCheckpoints ? ["sessions.compaction.list"] : []),
+        ...(keepsTasks ? ["tasks.get", "tasks.list"] : []),
       ]) {
         expect(
           bodies.map(([x]) => x),
@@ -907,6 +1004,12 @@ describe("outbound ratchet — what the bridge SENDS fits the vendored contract"
         expect(bodies.map(([x]) => x), `sessions.compaction.list sent to ${version}`).not.toContain(
           "sessions.compaction.list",
         );
+      }
+      if (!keepsTasks) {
+        expect(
+          bodies.map(([x]) => x).filter((x) => x.startsWith("tasks.")),
+          `tasks.* sent to ${version}`,
+        ).toEqual([]);
       }
       await expectBodiesValid(version, bodies, "operator/cron/built");
     });

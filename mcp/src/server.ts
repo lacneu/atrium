@@ -271,7 +271,14 @@ function main(): void {
         "`deliveredFileCount` (files in the bubble, a count) says a file answered. " +
         "`subAgents` samples carry `errorCategory` (tool_failed | timeout | aborted | " +
         "api_error | spawn_refused | gateway_storage_unavailable | " +
-        "gateway_agent_db_closed | no_activity | unknown): `timeout` is a limit the " +
+        "gateway_agent_db_closed | provider_auth_revoked | provider_permission_denied | " +
+        "provider_auth_failed | no_activity | unknown): " +
+        "`provider_auth_revoked` = the model provider refused the agent's credential as " +
+        "expired or revoked (check which profile that agent or its session uses on the gateway); " +
+        "`provider_permission_denied` = the provider refused the account's rights (a 403: " +
+        "permission, region, deactivated workspace — reconnecting the same account does not " +
+        "help); `provider_auth_failed` = it refused the credential without saying how; " +
+        "`timeout` is a limit the " +
         "GATEWAY enforced; `no_activity` is ATRIUM's reaper giving up on a child it saw " +
         "nothing from (it may have run unseen — a frozen bridge, a reconnect — or never " +
         "started); rows reaped before that code existed still read `timeout`. " +
@@ -360,6 +367,43 @@ function main(): void {
         "`subagent_failure` also covers a LAST turn that handed off and got no answer — " +
         "a bubble with no text or only its hand-off acknowledgment, whose child " +
         "(anchored to it, or born in its run) failed, with nothing after it. " +
+        "Also carries `projection` (transcript redesign, metadata only): for a chat whose " +
+        "instance reads the session transcript back (`transcriptProjection: shadow`), the " +
+        "gaps between the transcript and the bubbles — I1 a visible run with no bubble " +
+        "(`transcriptOnly`) or two (`duplicated`), I2 a settled bubble whose runs wrote no " +
+        "durable row (`bubbleWithoutRow`), I3 a user row `<sendId>:user` with no user bubble " +
+        "or two, I4 an error card (`status:error`) whose run the transcript ANSWERED " +
+        "(`gaps.i4.errorCardWithAnswer` — not counted when the gateway's own run status is " +
+        "error/timeout, `errorCardRunFailed`), and G the input guard against Atrium's " +
+        "outbox (`gaps.guard`: an input the gateway holds — receipt, pending input or its " +
+        "user row — while the outbox says `failed` (`heldButFailed`, a retry would run it " +
+        "twice) or never sent (`heldButQueuedLocal`), an auto-retry of a message whose " +
+        "earlier send the gateway holds and that the gateway accepted (`retriedWhileHeld`, the " +
+        "same input run twice; a retry that passed Atrium's last gate with no proof of " +
+        "acceptance is `retryOutcomeUnknown`, an incompleteness reason, not a gap), and " +
+        "a sent input the gateway, asked after its ACK, has no receipt for " +
+        "(`sentButAbsent`)) — with counts, run/send ids " +
+        "and seqs, never text; `verdict` is " +
+        "`not_projected` | `consistent` | `consistent_in_window` | `gaps`. The measure " +
+        "covers the most recently read sessions (at most 10, `window.sessionsTruncated`), " +
+        "the NEWEST rows of each (`sessions[].windowStartSeq`, `rowsTruncated`) and the " +
+        "bubbles of that same window; when anything was cut " +
+        "(`window.truncated`), when a gateway cursor reset left a hole no read returned " +
+        "(`window.coverageGaps`, `sessions[].coverageGaps` — bubbles written while it was " +
+        "open are not judged, `gaps.i2.inCoverageGap`), or when a session's bubble boundary " +
+        "rests on a read time rather than a proven dispatch (`window.boundaryUnproven`), " +
+        "`window.qualified` is set and a clean result reads `consistent_in_window`, never " +
+        "`consistent`. `window.incompleteReasons` lists EVERY reason the measurement is " +
+        "incomplete (cut sessions/rows/bubbles, coverage holes, unproven boundary, rows " +
+        "it could not identify or attribute, bubbles naming no run or not yet settled, " +
+        "error cards or guard inputs it could not look up, sends still in flight, a pending " +
+        "state the last partial pending-input page could not confirm, a dispatched send the " +
+        "gateway has not confirmed or denied since its ACK, a receipt in a state Atrium " +
+        "cannot interpret); " +
+        "`consistent` means that list is empty. The measurement reads a bounded volume " +
+        "of messages (`window.readBudgetExhausted` when it stops early); if it cannot be " +
+        "computed at all, `projection` is `{verdict: \"unavailable\"}` and the rest of " +
+        "the diagnosis is unaffected. In shadow mode it measures, it decides nothing. " +
         "Also states `participantCount` (people sharing the chat besides its owner) " +
         "and `authMode` (`token` = the gateway sees one shared operator for every " +
         "conversation; `trusted-proxy` = it sees one profile per person) — start " +

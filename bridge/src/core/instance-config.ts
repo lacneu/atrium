@@ -46,7 +46,14 @@ export interface InboundInstanceConfig {
    *  consumer: a key ABSENT here -> the bridge's own fallback default (pre-feature Convex);
    *  present + `enabled:false` -> skip; present + `enabled:true` -> use `template`. */
   injections?: Record<string, InboundInjection>;
+  /** The transcript projection switch (redesign phase 1): `off` | `shadow` | `on`.
+   *  Absent ⇒ off. `on` (phase 3) also sends like the Control UI and lets the gateway's
+   *  facts place the live bubbles (server.ts `planProjectedSend`, RunManager). */
+  transcriptProjection?: TranscriptProjectionMode;
 }
+
+export type TranscriptProjectionMode = "off" | "shadow" | "on";
+const TRANSCRIPT_PROJECTION_MODES: readonly TranscriptProjectionMode[] = ["off", "shadow", "on"];
 
 /** One resolved injection as received from Convex. */
 export interface InboundInjection {
@@ -124,6 +131,12 @@ export function parseInboundConfig(raw: unknown): InboundInstanceConfig | null {
   }
   if (typeof o.outboundAgentMount === "string" && o.outboundAgentMount.startsWith("/")) {
     out.outboundAgentMount = o.outboundAgentMount;
+  }
+  if (
+    typeof o.transcriptProjection === "string" &&
+    (TRANSCRIPT_PROJECTION_MODES as readonly string[]).includes(o.transcriptProjection)
+  ) {
+    out.transcriptProjection = o.transcriptProjection as TranscriptProjectionMode;
   }
   if (
     typeof o.injections === "object" &&

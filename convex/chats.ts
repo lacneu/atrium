@@ -5,6 +5,7 @@
 // via me.bootstrap (the only thing a pending user may call), not here.
 
 import { resolveAgentTypes } from "./lib/agentTypes";
+import { transcriptStoredText } from "./lib/transcriptProjection";
 import { v } from "convex/values";
 import { internalMutation, mutation } from "./_generated/server";
 import type { MutationCtx } from "./_generated/server";
@@ -483,6 +484,18 @@ export async function cascadeDeleteChat(
     console.error("[chatsum] purge on delete:", (e as Error)?.message ?? e);
   }
   await ctx.db.delete(chatId);
+  // Projection `on` (phase 4): what the transcript rows SAID, with the deleted-bubble
+  // tombstones, purged in their OWN bounded transactions (never inside the sweep: a
+  // message batch plus a text batch passed 16 MiB — codex phase 4 pass 9), whichever way
+  // the chat is swept (inline or scheduled — pass 10: the inline callers skipped it). The
+  // marker is read on the chat captured above, before its deletion; a conversation that
+  // never stored text schedules nothing.
+  if (transcriptStoredText(chat)) {
+    await ctx.scheduler.runAfter(0, internal.transcriptProjection.purgeChatRowTexts, {
+      chatId,
+      markPurged: false,
+    });
+  }
   await dropReadMarkers(ctx, chatId, chat.userId);
   const now = Date.now();
   const ledger = await ctx.db
@@ -810,6 +823,43 @@ async function sweepChatDependents(
     const rows = await ctx.db
       .query(table)
       .withIndex("by_chat", (q) => q.eq("chatId", chatId))
+      .take(asked);
+    if (!(await drain(rows, asked)) || budget <= 0) return more();
+  }
+
+  // 5b. The transcript projection (redesign phases 1-2): identities, run states, the
+  //     read cursors and the input guard of this conversation's gateway sessions —
+  //     meaningless without it.
+  {
+    const asked = Math.max(budget, 0);
+    const rows = await ctx.db
+      .query("transcriptRows")
+      .withIndex("by_chat_run", (q) => q.eq("chatId", chatId))
+      .take(asked);
+    if (!(await drain(rows, asked)) || budget <= 0) return more();
+  }
+  {
+    const asked = Math.max(budget, 0);
+    const rows = await ctx.db
+      .query("transcriptRuns")
+      .withIndex("by_chat_run", (q) => q.eq("chatId", chatId))
+      .take(asked);
+    if (!(await drain(rows, asked)) || budget <= 0) return more();
+  }
+  {
+    const asked = Math.max(budget, 0);
+    const rows = await ctx.db
+      .query("transcriptCursors")
+      .withIndex("by_chat", (q) => q.eq("chatId", chatId))
+      .take(asked);
+    if (!(await drain(rows, asked)) || budget <= 0) return more();
+  }
+  {
+    // Phase 2: what the gateway said it held for this conversation's sends.
+    const asked = Math.max(budget, 0);
+    const rows = await ctx.db
+      .query("transcriptInputs")
+      .withIndex("by_chat_updated", (q) => q.eq("chatId", chatId))
       .take(asked);
     if (!(await drain(rows, asked)) || budget <= 0) return more();
   }

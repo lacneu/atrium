@@ -154,7 +154,6 @@ describe("gatewayPreempted finalize flag — never minted", () => {
       "archive",
       "delete",
       "timeout",
-      "auth-revoked",
       "stop",
       undefined,
     ]) {
@@ -163,6 +162,15 @@ describe("gatewayPreempted finalize flag — never minted", () => {
       expect(finals[0]?.status, String(stopReason)).toBe("aborted");
       expect(finals[0]?.opts?.gatewayPreempted, String(stopReason)).toBeUndefined();
       expect(flag, String(stopReason)).toBe(false);
+    }
+    // `auth-revoked` is not an abort the reader made: an operator logged the provider out
+    // (models-auth-status.ts:538). It finalizes as a LABELLED error — and still never flags.
+    {
+      const { flag, finals } = await flagFor((r) => [abortedFrame(r, "auth-revoked")]);
+      expect(finals).toHaveLength(1);
+      expect(finals[0]?.status).toBe("error");
+      expect(finals[0]?.opts?.gatewayPreempted).toBeUndefined();
+      expect(flag).toBe(false);
     }
     // `flagFor` reads an ABSENT finalize as "unflagged" too: pin that the finalize happened.
     const superseded = await flagFor((r) => [supersededEndFrame(r), abortedFrame(r, "superseded")]);

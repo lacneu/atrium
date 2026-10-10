@@ -6,13 +6,29 @@
 //     and are therefore bounded by the gateway maxPayload. A huge image that can't
 //     fit is a DOCUMENTED LIMIT (there is no "vision via path"), not a bug.
 //   - TOOL-READ: a tool reads the file BY PATH (transcription / docling /
-//     office-to-md). These can go BY REFERENCE — the bridge streams the bytes to a
-//     shared volume and injects the gateway-visible path — so any size works
-//     (video / audio / large docs), bypassing the WS frame ceiling entirely.
+//     office-to-md). Whenever the frame can carry it, it rides INLINE too — as a
+//     native `chat.send` attachment the GATEWAY owns: it offloads the bytes to its
+//     own media store, copies them into the session's sandbox workspace when the
+//     agent is sandboxed, extracts text/PDF content into the prompt, and cleans up.
+//     Only what the frame CANNOT carry goes BY REFERENCE — the bridge streams the
+//     bytes to a shared volume and injects the gateway-visible path — so any size
+//     still works (video / audio / large docs), bypassing the WS frame ceiling.
+//
+// Why the native leg first (OpenClaw 2026.9.6, read in its source and measured on
+// the bench): a path Atrium writes beside the gateway is not an attachment to it.
+// No media fact is recorded, nothing is staged into a sandbox, and an agent whose
+// file tools are confined (`tools.fs.workspaceOnly`, or a Docker sandbox) is
+// refused by its own `read` tool on that path ("Path escapes sandbox root") — the
+// attachment then reaches the agent only if it thinks of a shell. The gateway's own
+// attachment path (`chat.send` attachments → `prestageMediaPathOffloads` →
+// `stageSandboxMedia`) is the one every OpenClaw client uses, and the one the
+// gateway makes readable.
 //
 // Reference transport only applies when the routed instance is in `shared-fs`
 // inbound mode; otherwise everything is inline (today's behaviour + the existing
 // ATTACHMENT_TOO_LARGE gate for oversize files).
+
+import { base64ByteLength, base64FitsFrame } from "./attachmentLimits";
 
 export type AttachmentTransport = "inline" | "reference";
 
@@ -62,14 +78,60 @@ export function isModelNativeMime(mimeType: string | null | undefined): boolean 
   return MODEL_NATIVE_IMAGE_MIMES.has(base);
 }
 
-/**
- * Classify how an inbound attachment should reach the gateway. Tool-read files go
- * by reference ONLY in shared-fs mode; model-native (Vision) files always inline.
- */
-export function classifyAttachment(opts: {
+/** Any `image/*` type, decodable or not. Used for the ones that are NOT. */
+function isImageMime(mimeType: string | null | undefined): boolean {
+  if (typeof mimeType !== "string") return false;
+  return mimeType.toLowerCase().trim().startsWith("image/");
+}
+
+/** One attachment, as the planner needs to see it. `size` is the stored blob's byte
+ *  count, `null` when it could not be read. */
+export interface PlannedAttachment {
   mimeType: string | null | undefined;
+  size: number | null;
+}
+
+/**
+ * Decide how each inbound attachment reaches the gateway, in the order given.
+ *
+ * `inline` mode: everything inline (the frame check that follows is the dispatch's).
+ *
+ * `shared-fs` mode:
+ *   - a model-native raster image is inline, always — the model needs the bytes;
+ *   - any OTHER `image/*` (svg, tiff, heic, …) is a reference, always. The gateway
+ *     classifies by `image/` prefix and would hand those bytes to the model as an
+ *     image it cannot decode — the 2026-09-11 SVG defect, which leaves the file to
+ *     nobody. As a reference, a tool can still open it;
+ *   - every other file is inline when it fits the frame BESIDE what must ride inline
+ *     (the raster images are reserved first, whatever their position, so a document
+ *     placed before a photo can never push the photo over the frame), and a
+ *     reference otherwise. Files are admitted in order: the first ones that fit go
+ *     native, the rest by reference — never a refusal for size;
+ *   - an EMPTY file, or one whose size is unknown, is a reference: the gateway
+ *     refuses an empty payload outright (`empty-payload`, the whole turn with it),
+ *     and a size we cannot read is a size we cannot budget.
+ */
+export function planAttachmentTransports(opts: {
   inboundMediaMode: "inline" | "shared-fs";
-}): AttachmentTransport {
-  if (opts.inboundMediaMode !== "shared-fs") return "inline";
-  return isModelNativeMime(opts.mimeType) ? "inline" : "reference";
+  attachments: readonly PlannedAttachment[];
+  maxPayload: number;
+}): AttachmentTransport[] {
+  if (opts.inboundMediaMode !== "shared-fs") {
+    return opts.attachments.map(() => "inline");
+  }
+  let reserved = 0;
+  for (const a of opts.attachments) {
+    if (isModelNativeMime(a.mimeType)) reserved += base64ByteLength(a.size ?? 0);
+  }
+  return opts.attachments.map((a): AttachmentTransport => {
+    if (isModelNativeMime(a.mimeType)) return "inline";
+    if (isImageMime(a.mimeType)) return "reference";
+    if (a.size === null || !Number.isFinite(a.size) || a.size <= 0) {
+      return "reference";
+    }
+    const next = reserved + base64ByteLength(a.size);
+    if (!base64FitsFrame(next, opts.maxPayload)) return "reference";
+    reserved = next;
+    return "inline";
+  });
 }

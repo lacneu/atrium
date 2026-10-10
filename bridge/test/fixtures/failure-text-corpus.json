@@ -1,0 +1,251 @@
+{
+  "$comment": "Failure texts composed EXACTLY as OpenClaw v2026.9.6 composes them (each `source` cites the template), with the class Atrium must give them. Read by bridge/test/failure-classifier.test.ts (the bridge verdict) AND convex/lib/failureText.test.ts (the front mirror's verdict): the two readers of one stored sentence must agree. `expected: null` = no class.",
+  "cases": [
+    {
+      "id": "preflight-verbose-off",
+      "source": "src/auto-reply/reply/agent-runner-failure-reply.ts:212-217 (no Reason: verbose off, :213)",
+      "text": "⚠️ Context is too large and auto-compaction could not recover this turn. Try again, use /compact, or use /new to start a fresh session.",
+      "expected": "compaction_failed_no_cause"
+    },
+    {
+      "id": "preflight-timed-out",
+      "source": "src/auto-reply/reply/agent-runner-failure-reply.ts:214-216",
+      "text": "⚠️ Context is too large and auto-compaction timed out before it could finish. Try again, use /compact, or use /new to start a fresh session.",
+      "expected": "compaction_timeout"
+    },
+    {
+      "id": "preflight-reason-unrecognized",
+      "source": "src/auto-reply/reply/agent-runner-failure-reply.ts:213",
+      "text": "⚠️ Context is too large and auto-compaction could not recover this turn. Reason: compaction summarizer returned no summary. Try again, use /compact, or use /new to start a fresh session.",
+      "expected": "compaction_failed_no_cause"
+    },
+    {
+      "id": "prod-revoked-verbose-on",
+      "source": "src/auto-reply/reply/agent-runner-failure-reply.ts:213 + src/agents/model-fallback-runner.ts:698-701 + src/agents/model-fallback-attempt.ts:626-628",
+      "text": "⚠️ Context is too large and auto-compaction could not recover this turn. Reason: All models failed (2): openai/gpt-5.6-sol: 401: Encountered invalidated oauth token for user (auth) | openai/gpt-5.6-terra: 401: Encountered invalidated oauth token for user (auth). Re-authenticate with: openclaw models auth login --provider 'openai' --force. Try again, use /compact, or use /new to start a fresh session.",
+      "expected": "provider_auth_revoked"
+    },
+    {
+      "id": "prod-revoked-truncated-240",
+      "source": "src/gateway/ws-log.ts:115-152 (240 + '...') over the prod text",
+      "text": "⚠️ Context is too large and auto-compaction could not recover this turn. Reason: All models failed (2): openai/gpt-5.6-sol: 401: Encountered invalidated oauth token for user (auth) | openai/gpt-5.6-terra: 401: Encountered invalidated oauth ...",
+      "expected": "provider_auth_revoked"
+    },
+    {
+      "id": "summary-403-region",
+      "source": "model-fallback-runner.ts:698-701 + failover-error.ts:486-502 (403 provider body)",
+      "text": "All models failed (2): openai/gpt-5.6-sol: 403 {\"error\":{\"message\":\"Country, region, or territory not supported\",\"type\":\"request_forbidden\",\"param\":null,\"code\":\"unsupported_country_region_territory\"}} (auth) | openai/gpt-5.6-terra: 403 {\"error\":{\"message\":\"Country, region, or territory not supported\",\"type\":\"request_forbidden\",\"param\":null,\"code\":\"unsupported_country_region_territory\"}} (auth). Re-authenticate with: openclaw models auth login --provider 'openai' --force",
+      "expected": "provider_permission_denied"
+    },
+    {
+      "id": "wrapped-403-region",
+      "source": "src/auto-reply/reply/agent-runner-failure-reply.ts:213 around the 403 summary",
+      "text": "⚠️ Context is too large and auto-compaction could not recover this turn. Reason: All models failed (2): openai/gpt-5.6-sol: 403 {\"error\":{\"message\":\"Country, region, or territory not supported\",\"type\":\"request_forbidden\",\"param\":null,\"code\":\"unsupported_country_region_territory\"}} (auth) | openai/gpt-5.6-terra: 403 {\"error\":{\"message\":\"Country, region, or territory not supported\",\"type\":\"request_forbidden\",\"param\":null,\"code\":\"unsupported_country_region_territory\"}} (auth). Re-authenticate with: openclaw models auth login --provider 'openai' --force. Try again, use /compact, or use /new to start a fresh session.",
+      "expected": "provider_permission_denied"
+    },
+    {
+      "id": "summary-auth-permanent",
+      "source": "model-fallback-runner.ts:698-701 (reason auth_permanent) + message-patterns.ts:49-56",
+      "text": "All models failed (2): openai/a: Your workspace has been deactivated (deactivated_workspace) (auth_permanent) | openai/b: Your workspace has been deactivated (deactivated_workspace) (auth_permanent). Re-authenticate with: openclaw models auth login --provider 'openai' --force",
+      "expected": "provider_permission_denied"
+    },
+    {
+      "id": "summary-auth-no-evidence",
+      "source": "model-fallback-runner.ts:698-701 + failover-error.ts:486-502 (hint alone)",
+      "text": "All models failed (2): openai/a: Unauthorized (auth) | openai/b: Unauthorized (auth). Re-authenticate with: openclaw models auth login --provider 'openai' --force",
+      "expected": "provider_auth_failed"
+    },
+    {
+      "id": "hint-alone",
+      "source": "failover-error.ts:502",
+      "text": "Re-authenticate with: openclaw models auth login --provider 'openai' --force.",
+      "expected": "provider_auth_failed"
+    },
+    {
+      "id": "cli-backend-no-login",
+      "source": "src/agents/cli-runner/prepare.ts:484",
+      "text": "CLI backend \"codex\" could not resolve its login. Re-authenticate with: openclaw models auth login --provider 'openai' --force. OpenClaw did not start the run.",
+      "expected": "provider_auth_failed"
+    },
+    {
+      "id": "summary-mixed-cooldown-then-401",
+      "source": "model-fallback-runner.ts:698-701; cooldown sentence src/agents/runtime-plan/prepare-auth.ts",
+      "text": "All models failed (2): openai/gpt-5.6-sol: Auth profile \"openai:someone\" is temporarily unavailable for openai/gpt-5.6-sol (rate_limit) | openai/gpt-5.6-terra: 401: Encountered invalidated oauth token for user (auth). Re-authenticate with: openclaw models auth login --provider 'openai' --force",
+      "expected": "provider_auth_revoked"
+    },
+    {
+      "id": "summary-skip-recent-auth",
+      "source": "model-fallback-runner.ts:356-362 (skipped candidate) + :698-701",
+      "text": "All models failed (2): openai/gpt-5.6-sol: 401: Encountered invalidated oauth token for user (auth) | openai/gpt-5.6-terra: Skipping openai/gpt-5.6-terra: recent auth failure in this session (run `openclaw models auth login --provider 'openai' --force` to re-authenticate) (auth). Re-authenticate with: openclaw models auth login --provider 'openai' --force",
+      "expected": "provider_auth_revoked"
+    },
+    {
+      "id": "summary-tpm-rate-limit",
+      "source": "model-fallback-runner.ts:698-701 (reason rate_limit) over a Groq 413 TPM body",
+      "text": "All models failed (2): groq/llama-a: 413 Request too large for model `llama-a` on tokens per minute (TPM): Limit 6000, Requested 5200 (rate_limit) | groq/llama-b: 413 Request too large for model `llama-b` on tokens per minute (TPM): Limit 6000, Requested 5200 (rate_limit)",
+      "expected": "rate_limit"
+    },
+    {
+      "id": "bedrock-throttling-too-many-tokens",
+      "source": "packages/ai/src/utils/overflow.ts:133-145 NON_OVERFLOW_PATTERNS example",
+      "text": "ThrottlingException: Too many tokens, please wait before trying again.",
+      "expected": null
+    },
+    {
+      "id": "too-many-tokens-per-day",
+      "source": "context-overflow.ts:76 rate-limit-hint (tokens per day)",
+      "text": "Too many tokens per day, please wait before trying again.",
+      "expected": null
+    },
+    {
+      "id": "tpm-rate-limit-plain",
+      "source": "context-overflow.ts:45-48 (TPM hint)",
+      "text": "413 Request too large: too many tokens per minute (TPM), please slow down.",
+      "expected": null
+    },
+    {
+      "id": "tpm-request-size-ceiling",
+      "source": "message-patterns.ts:7-25 (requested > limit)",
+      "text": "413 Request too large for model `llama` on tokens per minute (TPM): Limit 6000, Requested 9000, please reduce your message size and try again.",
+      "expected": "context_length"
+    },
+    {
+      "id": "context-overflow-copy",
+      "source": "src/agents/failover/user-copy.ts:133-134",
+      "text": "Context overflow: prompt too large for the model. Try /reset (or /new) to start a fresh session, or use a larger-context model.",
+      "expected": "context_length"
+    },
+    {
+      "id": "something-went-wrong",
+      "source": "src/agents/failover/user-copy.ts:304-305",
+      "text": "⚠️ Something went wrong while processing your request. Please try again, or use /new to start a fresh session.",
+      "expected": "run_failed_no_cause"
+    },
+    {
+      "id": "agent-failed-before-reply-unknown",
+      "source": "src/auto-reply/reply/agent-runner-failure-reply.ts:243-248",
+      "text": "⚠️ Agent failed before reply: provider stream closed without a terminal event. Please try again, or use /new to start a fresh session.",
+      "expected": "run_failed_no_cause"
+    },
+    {
+      "id": "agent-failed-before-reply-401",
+      "source": "src/auto-reply/reply/agent-runner-failure-reply.ts:243-248",
+      "text": "⚠️ Agent failed before reply: 401: the access token has been revoked. Please try again, or use /new to start a fresh session.",
+      "expected": "provider_auth_revoked"
+    },
+    {
+      "id": "turn-ended-before-reply",
+      "source": "src/sessions/session-run-error.ts:42",
+      "text": "This turn ended before a reply: LLM request failed.",
+      "expected": "run_failed_no_cause"
+    },
+    {
+      "id": "post-compaction-rate-limit",
+      "source": "src/auto-reply/reply/agent-runner-failure-reply.ts:416-424 around user-copy.ts:39",
+      "text": "⚠️ Context compaction succeeded, but the later model request still failed. API rate limit reached. Please try again later.",
+      "expected": "rate_limit"
+    },
+    {
+      "id": "post-compaction-billing",
+      "source": "src/auto-reply/reply/agent-runner-failure-reply.ts:416-424 around user-copy.ts:80-84",
+      "text": "⚠️ Context compaction succeeded, but the later model request still failed. API provider returned a billing error — your API key has run out of credits or has an insufficient balance. Check your provider's billing dashboard and top up or switch to a different API key.",
+      "expected": "provider_billing"
+    },
+    {
+      "id": "post-compaction-unknown",
+      "source": "src/auto-reply/reply/agent-runner-failure-reply.ts:416-424",
+      "text": "⚠️ Context compaction succeeded, but the later model request still failed. LLM request failed.",
+      "expected": "run_failed_no_cause"
+    },
+    {
+      "id": "model-login-expired",
+      "source": "src/auto-reply/reply/agent-runner-failure-reply.ts:314",
+      "text": "⚠️ Model login expired on the gateway for openai-codex. Re-auth with `openclaw models auth login --provider openai-codex` in a terminal, then try again.",
+      "expected": "provider_auth_revoked"
+    },
+    {
+      "id": "hedged-401",
+      "source": "src/agents/failover/user-copy.ts:40-43",
+      "text": "Authentication failed (provider returned HTTP 401). Your provider token may have expired — try the request again in a moment. If the failure persists, re-authenticate this provider.",
+      "expected": null
+    },
+    {
+      "id": "billing-copy",
+      "source": "src/agents/failover/user-copy.ts:80-84",
+      "text": "⚠️ API provider returned a billing error — your API key has run out of credits or has an insufficient balance. Check your provider's billing dashboard and top up or switch to a different API key.",
+      "expected": "provider_billing"
+    },
+    {
+      "id": "model-not-found-copy",
+      "source": "src/agents/failover/user-copy.ts:135-136",
+      "text": "The selected model was not found by the provider. Check the model id or choose a different model.",
+      "expected": "model_not_found"
+    },
+    {
+      "id": "rate-limit-copy",
+      "source": "src/agents/failover/user-copy.ts:55-56",
+      "text": "⚠️ The model request was rate-limited. Please try again in a few minutes.",
+      "expected": "rate_limit"
+    },
+    {
+      "id": "json-body-401-revoked",
+      "source": "provider SDK body after a status (overflow.ts:16 shape)",
+      "text": "401 {\"type\":\"error\",\"error\":{\"type\":\"authentication_error\",\"message\":\"OAuth token has been revoked. Please obtain a new token.\"}}",
+      "expected": "provider_auth_revoked"
+    },
+    {
+      "id": "json-body-403-region",
+      "source": "provider SDK body after a status",
+      "text": "403 {\"error\":{\"message\":\"Country, region, or territory not supported\",\"type\":\"request_forbidden\",\"param\":null,\"code\":\"unsupported_country_region_territory\"}}",
+      "expected": "provider_permission_denied"
+    },
+    {
+      "id": "json-body-cut-by-cap",
+      "source": "ws-log.ts:115-152 cut inside the body",
+      "text": "All models failed (2): openai/gpt-5.6-sol: 401 {\"type\":\"error\",\"error\":{\"type\":\"authentication_error\",\"message\":\"OAuth token has been revoked. Sign in again from the provider console, then retry; this message is long on purpose so the cap c...",
+      "expected": "provider_auth_revoked"
+    },
+    {
+      "id": "cooldown-sentence",
+      "source": "src/agents/runtime-plan/prepare-auth.ts",
+      "text": "Auth profile \"openai:someone\" is temporarily unavailable for openai/gpt-5.6-sol. Re-authenticate with `openclaw models auth login --provider openai`.",
+      "expected": "auth_profile_cooldown"
+    },
+    {
+      "id": "summary-server-error-suffix",
+      "source": "model-fallback-runner.ts:698-701 (reason server_error / timeout)",
+      "text": "All models failed (2): openai/a: LLM request failed: provider returned an internal error. (server_error) | openai/b: LLM request timed out. (timeout)",
+      "expected": "provider_internal"
+    },
+    {
+      "id": "summary-billing-suffix",
+      "source": "model-fallback-runner.ts:698-701 (reason billing)",
+      "text": "All models failed (2): openai/a: You exceeded your current quota (billing) | openai/b: LLM request timed out. (timeout)",
+      "expected": "provider_billing"
+    },
+    {
+      "id": "summary-overflow-suffix",
+      "source": "model-fallback-runner.ts:698-701 (reason context_overflow)",
+      "text": "All models failed (2): openai/a: prompt is too long: 213462 tokens > 200000 maximum (context_overflow) | openai/b: prompt is too long: 213462 tokens > 200000 maximum (context_overflow)",
+      "expected": "context_length"
+    },
+    {
+      "id": "summary-model-not-found-suffix",
+      "source": "model-fallback-runner.ts:698-701 (reason model_not_found)",
+      "text": "All models failed (2): acme/a: Unknown model: acme/a (model_not_found) | acme/b: Unknown model: acme/b (model_not_found)",
+      "expected": "model_not_found"
+    },
+    {
+      "id": "storage-full-beats-revoked",
+      "source": "precedence: the gateway host first",
+      "text": "database or disk is full | 401: Encountered invalidated oauth token for user (auth)",
+      "expected": "gateway_storage_unavailable"
+    },
+    {
+      "id": "session-gone-wrapped",
+      "source": "src/auto-reply/reply/agent-runner-failure-reply.ts:213 (Reason: session family)",
+      "text": "⚠️ Context is too large and auto-compaction could not recover this turn. Reason: no conversation found. Try again, use /compact, or use /new to start a fresh session.",
+      "expected": "session_gone"
+    }
+  ]
+}

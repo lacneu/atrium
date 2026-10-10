@@ -7,7 +7,7 @@ modes; this page is the unambiguous setup for the second one.
 | Mode                       | Needs a shared filesystem?                                              | Outbound (agent → user)                                                                                                             | Inbound (user → agent)                                                            |
 | -------------------------- | ----------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------- |
 | **gateway-http** (default) | **No**                                                                  | Best-effort — depends on the agent emitting a path the gateway surfaces                                                             | Capped by the WebSocket frame ceiling (~25 MiB)                                   |
-| **shared-fs** (opt-in)     | **Yes** — Atrium and the gateway share the gateway's media dirs on disk | **Deterministic** — the bridge scans the dir after every turn and hosts every file the agent wrote, with or without a `MEDIA:` line | **Any size** — the bridge streams big files to the dir and hands the agent a path |
+| **shared-fs** (opt-in)     | **Yes** — Atrium and the gateway share the gateway's media dirs on disk | **Deterministic** — the bridge scans the dir after every turn and hosts every file the agent wrote, with or without a `MEDIA:` line | **Any size** — a file the WebSocket frame can carry is sent as a native gateway attachment (as in gateway-http); a bigger one is streamed to the dir and the agent is handed its path |
 
 Use **gateway-http** when Atrium and the gateway run on different hosts. Use
 **shared-fs** when they share a host (or NFS) and you want reliable downloads and
@@ -59,8 +59,28 @@ instance's per-bridge secret, so the path follows the name.
 
 The bridge gets **one** read-write bind for the whole inbound root. It derives
 `published/` and `.staging/` beneath that mount, guaranteeing one filesystem for
-the atomic hardlink. The gateway receives only the same host root's `published/`
-child at its flat inbound path, read-only; it can never see `.staging/`.
+the atomic hardlink. The agent reads the published files at
+`/home/node/.openclaw/media/inbound/published/` — the bridge's default
+received-files path.
+
+**Never mount anything read-only over the gateway's own `media/inbound`.** That
+directory is OpenClaw's managed attachment store: every native attachment — from
+Atrium, the Control UI or a channel — is saved there before the agent sees it, and
+copied from there into a sandboxed agent's workspace. Mounted read-only, every one
+of those uploads fails (`Failed to save intercepted media to disk`). To harden the
+gateway's view of Atrium's files, re-bind only the `published/` child read-only at
+its own path, and mask `.staging/` (see the convention below).
+
+**Which files take the shared volume.** A file the gateway's WebSocket frame can
+carry is sent as a native `chat.send` attachment even in `shared-fs` mode: the
+gateway owns it end to end, which is the only way a **sandboxed** agent (Docker
+sandbox, or `tools.fs.workspaceOnly`) can read it — the gateway stages it into the
+sandbox workspace, and extracts text and PDF content into the prompt. Only a file
+the frame cannot carry (above ~18 MiB at the default 25 MiB frame), or an image
+format no model decodes (SVG, TIFF, HEIC…), is written to `published/` and quoted
+to the agent by path. A sandboxed agent's file tools cannot reach that path; it
+needs a shell (or a skill) the sandbox lets out — a limit of the reference leg, not
+a misconfiguration.
 
 ---
 
@@ -77,7 +97,7 @@ and runs as uid **`<UID>:<GID>`**:
 | Bridge env: run-as uid            | `user: "<UID>:<GID>"` (match the gateway)                                                                                                                                    |
 | Bridge mount (outbound)           | `<H>/media/outbound  →  /home/node/.openclaw/media/<I>/outbound  :ro`                                                                                                        |
 | Bridge mount (inbound root)       | `<H>/media/inbound → /home/node/.openclaw/media/<I>/inbound` (rw, one mount)                                                                                                 |
-| Gateway mount (published inbound) | `<H>/media/inbound/published → /home/node/.openclaw/media/inbound` (ro)                                                                                                      |
+| Gateway mount (published inbound) | optional hardening: `<H>/media/inbound/published → /home/node/.openclaw/media/inbound/published` (ro) + an empty tmpfs on `/home/node/.openclaw/media/inbound/.staging` — never a read-only mount over `/home/node/.openclaw/media/inbound` itself |
 | Atrium UI                         | Settings → Agents → Instances: set `<I>`'s gateway URL + credentials, mint its secret; Settings → Agents → Bridge → Configure `<I>` → Outbound **and** Inbound = `shared-fs` |
 
 The bridge auto-derives its read/write dirs from the instance **name** it resolves
@@ -172,8 +192,11 @@ bridge's `<HOSTPORT>`:
    - `<H>/media/outbound : /home/node/.openclaw/media/<I>/outbound : ro`
    - `<H>/media/inbound : /home/node/.openclaw/media/<I>/inbound` (rw, one root)
 
-   The gateway mounts only `<H>/media/inbound/published`, read-only, at its flat
-   `/home/node/.openclaw/media/inbound` path. Leave the two process-global
+   The gateway already sees `<H>/media/inbound/published` through its `<H>` mount,
+   at `/home/node/.openclaw/media/inbound/published`; to harden it, re-bind that
+   child read-only at the same path and mask `.staging` with an empty tmpfs —
+   never mount anything read-only over `/home/node/.openclaw/media/inbound`
+   itself (the gateway's own attachment store). Leave the two process-global
    directory overrides unset when this bridge serves more than one instance.
    (One bridge can carry several instances — list several secrets and several mount
    pairs; or run a dedicated bridge per gateway on its own `<HOSTPORT>:8787`.)
@@ -208,7 +231,11 @@ bridge's `<HOSTPORT>`:
   shared-fs is the agent writing a file that the gateway never signalled.
 - **Inbound live test:** upload a file **larger than ~25 MiB** (a video / big doc).
   It must reach the agent by path (not die on the WS frame ceiling) — that is the
-  shared-fs reason-to-exist.
+  shared-fs reason-to-exist. Then upload a **small** document: it must reach the
+  agent as a native attachment (the gateway stores it as
+  `media/inbound/<name>---<uuid>.<ext>`, nothing appears under `published/`); if
+  that send fails with `Failed to save intercepted media to disk`, something is
+  mounted read-only over the gateway's `media/inbound`.
 
 ---
 

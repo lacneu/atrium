@@ -252,9 +252,16 @@ const escapeRegExp = (raw: string): string => raw.replace(/[.*+?^${}()|[\]\\]/g,
 /** An error CLASS name as the bridge contains it (`containName(cls, SAFE_CLASS_MAX)`, 48 characters): the same
  *  charset as a wire name, bounded shorter, or the `«unprintable»` sentinel. */
 const CLASS_NAME = "(?:[A-Za-z][A-Za-z0-9._-]{0,47}|«unprintable»)";
+/** A write CONVEX refused, as the reader-exception sensor files it
+ *  (`exceptionClassName`, bridge protocol-drift.ts): `ConvexIngestError.<op>.<status>`,
+ *  the op an ingest literal of at most 40 characters, the status an HTTP code, `timeout`
+ *  or `other`. Its own alternative rather than a longer CLASS_NAME: the longest op does
+ *  not fit 48 characters, and widening every class name to make room would admit more
+ *  than this one structural form. Exception sensor only. */
+const INGEST_CLASS_NAME = "ConvexIngestError\\.[A-Za-z][A-Za-z0-9]{0,39}\\.(?:[1-5][0-9]{2}|timeout|other)";
 const SUFFIX_GRAMMAR: Record<"segment" | "exception" | "name", string> = {
   segment: CLASS_NAME,
-  exception: `${CLASS_NAME}@[a-z0-9-]{1,40}\\.${EXC_SUFFIX}`,
+  exception: `(?:${INGEST_CLASS_NAME}|${CLASS_NAME})@[a-z0-9-]{1,40}\\.${EXC_SUFFIX}`,
   name: ANNOUNCED_NAME,
 };
 /** Every reserved prefix the bridge ranks (lib/compat.ts, SENSOR_PREFIX_TIERS) — ONE table

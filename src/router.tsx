@@ -92,6 +92,7 @@ import {
   type ParamlessTab,
 } from "./chat/AdminSettings";
 import { SettingsNav, SettingsTabBar } from "./chat/admin/SettingsNav";
+import { LEGACY_TRASH_PATH, redirectLegacyTrash } from "./chat/admin/legacyTrashRoute";
 import {
   voiceSearchSchema,
   bridgeSearchSchema,
@@ -163,6 +164,11 @@ const SubAgentReportsTab = lazy(() =>
 );
 const TrashTab = lazy(() =>
   import("./chat/admin/TrashTab").then((m) => ({ default: m.TrashTab })),
+);
+const DeletedChatsTab = lazy(() =>
+  import("./chat/admin/DeletedChatsTab").then((m) => ({
+    default: m.DeletedChatsTab,
+  })),
 );
 const FilesTab = lazy(() =>
   import("./chat/admin/FilesTab").then((m) => ({ default: m.FilesTab })),
@@ -1034,6 +1040,8 @@ function paramlessTab(tab: string) {
       return <AccessTab />;
     case "trash":
       return <TrashTab />;
+    case "deletedChats":
+      return <DeletedChatsTab />;
     case "roles":
     default:
       return <RolesTab />;
@@ -1139,11 +1147,12 @@ const projectRoute = createRoute({
   }),
 });
 
-// The caller's trash (deleted conversations, restorable until their purge date).
-const trashRoute = createRoute({
+// Legacy page URL: the caller's trash moved into Settings › Deleted conversations.
+// A hard redirect keeps old bookmarks / deep links landing on that tab.
+const legacyTrashRoute = createRoute({
   getParentRoute: () => rootRoute,
-  path: "trash",
-  component: lazyRouteComponent(() => import("./chat/TrashPage"), "TrashPage"),
+  path: LEGACY_TRASH_PATH,
+  beforeLoad: redirectLegacyTrash,
 });
 
 const settingsRoute = createRoute({
@@ -1342,7 +1351,7 @@ const routeTree = rootRoute.addChildren([
   indexRoute,
   chatRoute,
   projectRoute,
-  trashRoute,
+  legacyTrashRoute,
   settingsRoute.addChildren([
     settingsIndexRoute,
     tracesRoute,

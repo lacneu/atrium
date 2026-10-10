@@ -1,0 +1,84 @@
+{
+ "_source": "busy-send-2026-10-04T05-11-17-190Z/bs-message-tool (OpenClaw 2026.9.8, chat.history limit 1000): the two rows the gateway writes ON BEHALF of a run — a message-tool delivery mirror (carries __openclaw.runId) and a settled-finalization fallback (carries its run only in its key). Bench tokens only; verbatim.",
+ "messages": [
+  {
+   "role": "assistant",
+   "content": [
+    {
+     "type": "text",
+     "text": "BS9B933_A_OK"
+    }
+   ],
+   "api": "openclaw-transcript",
+   "provider": "openclaw",
+   "model": "delivery-mirror",
+   "usage": {
+    "input": 0,
+    "output": 0,
+    "totalTokens": 0,
+    "cacheRead": 0,
+    "cacheWrite": 0,
+    "cost": {
+     "input": 0,
+     "output": 0,
+     "cacheRead": 0,
+     "cacheWrite": 0,
+     "total": 0
+    }
+   },
+   "stopReason": "stop",
+   "timestamp": 1791091580765,
+   "idempotencyKey": "webchat-c185b06eaff71ba449e7d78c9945ec22fa9357840b3a9c5f09080adfd4bbc800:message-tool:0hBJ_qa25P1LTsDHgxunMdTe:tool_call:call_YOs5y8dehyGlO1WoNtKrkum2_fc_003faaf38c11bc4f016ac1e37bb6c087d1b4fdaba72efc5ac3:message:1",
+   "__openclaw": {
+    "runId": "webchat-c185b06eaff71ba449e7d78c9945ec22fa9357840b3a9c5f09080adfd4bbc800",
+    "id": "f5cd7acf-db4b-471e-aa0b-a228d43623b5",
+    "idempotencyKey": "webchat-c185b06eaff71ba449e7d78c9945ec22fa9357840b3a9c5f09080adfd4bbc800:message-tool:0hBJ_qa25P1LTsDHgxunMdTe:tool_call:call_YOs5y8dehyGlO1WoNtKrkum2_fc_003faaf38c11bc4f016ac1e37bb6c087d1b4fdaba72efc5ac3:message:1",
+    "recordTimestampMs": 1791091580767,
+    "transcriptPosition": {
+     "source": "moboiiUfnsx-BPq-pNy7f_6Lz3aeuHd-YQhgRTZuIX4",
+     "rawSeq": 31
+    },
+    "seq": 20
+   }
+  },
+  {
+   "role": "assistant",
+   "content": [
+    {
+     "type": "text",
+     "text": "The tool run finished, but no final summary was produced. I did not repeat any completed actions."
+    }
+   ],
+   "api": "openai-responses",
+   "provider": "openclaw",
+   "model": "delivery-mirror",
+   "usage": {
+    "input": 0,
+    "output": 0,
+    "totalTokens": 0,
+    "cacheRead": 0,
+    "cacheWrite": 0,
+    "cost": {
+     "input": 0,
+     "output": 0,
+     "cacheRead": 0,
+     "cacheWrite": 0,
+     "total": 0
+    }
+   },
+   "stopReason": "stop",
+   "timestamp": 1791091604072,
+   "idempotencyKey": "webchat-5aef4d9be91225d22a22f40109999428a49e72b21af562b5fa767dac7e9a343c:settled-finalization-fallback",
+   "__openclaw": {
+    "id": "073c9745-a4fb-4b1a-953d-2205ba54177b",
+    "idempotencyKey": "webchat-5aef4d9be91225d22a22f40109999428a49e72b21af562b5fa767dac7e9a343c:settled-finalization-fallback",
+    "recordTimestampMs": 1791091604074,
+    "transcriptPosition": {
+     "source": "moboiiUfnsx-BPq-pNy7f_6Lz3aeuHd-YQhgRTZuIX4",
+     "rawSeq": 56
+    },
+    "seq": 35
+   }
+  }
+ ]
+}

@@ -64,6 +64,11 @@ import {
  * a metadata-ONLY record exposed through the diagnostic surface (codex P1, SOC2).
  */
 const TIMEOUT_PHASES = new Set(["provider", "queue", "gateway_draining"]);
+/** `chat.gateway_pressure`: where the pre-turn counters came from, and who started the
+ *  turn (bridge core/turn-sink.ts). Closed lists — the boundary does not store an
+ *  unreviewed label. */
+const PRESSURE_SOURCES: ReadonlySet<string> = new Set(["presend_describe", "absent"]);
+const TURN_ORIGINS: ReadonlySet<string> = new Set(["dispatch", "gateway_initiated"]);
 function bucketTimeoutPhase(phase: string): string {
   return TIMEOUT_PHASES.has(phase) ? phase : "other";
 }
@@ -202,6 +207,8 @@ type IngestOp =
       sessionKey?: string | null;
       /** The outbox row this turn was dispatched from (correlation, see schema). */
       dispatchOutboxId?: string | null;
+      /** Projection `on` (phase 4): the steer segment a deferred bubble opens as. */
+      runSegment?: number;
     }
   // Delivery recorder clock calibration: lightweight (no writes) so its round-trip is
   // free of server work and yields a clean bridge<->Convex skew. See deliveryTiming.ts.
@@ -278,7 +285,13 @@ type IngestOp =
   // URL, STREAMS the raw bytes straight to it (a direct binary POST, NOT through
   // this endpoint — the 20MB httpAction limit never applies), then persists the
   // returned storageId. The server-side fs path is NEVER sent to Convex.
-  | { op: "getUploadUrl" }
+  | {
+      op: "getUploadUrl";
+      // Projection `on` (phase 4, codex pass 22): an upload into this message starts.
+      messageId?: string;
+      runId?: string | null;
+      uploadWindowMs?: number;
+    }
   | {
       op: "addMediaPart";
       messageId: string;
@@ -365,6 +378,10 @@ type IngestOp =
        *  turns and 272000 on others of the same chat looked like a contradiction
        *  until the model explained it (prod 2026-08-08). */
       model?: string | null;
+      /** Whether the turn had a pre-send describe to read its pressure from, and
+       *  who started it. Closed vocabularies: anything else is dropped. */
+      pressureSource?: string;
+      turnOrigin?: string;
       /** WHY it compacted — bucketed by the bridge, re-bucketed on arrival. */
       compactionReason?: string;
       /** The gateway REFUSED to compact rather than failing at it. */
@@ -405,6 +422,9 @@ type IngestOp =
       /** WHY the turn closed, from the bridge's own account. Allowlisted below
        *  before it reaches storage — the wire never writes its own vocabulary. */
       finalizeCause?: string | null;
+      /** Projection `on` (phase 3): a COMPLETE terminal with nothing visible leaves no
+       *  bubble (stream.finalize `dropIfEmpty`). */
+      dropIfEmpty?: boolean;
       /** TRUE = the streamed text is protocol NOISE (a NO_REPLY sentinel that
        *  reached the live row): the finalize must NOT fall back to it. Carried
        *  ON the finalize so the discard is atomic with it — a separate purge
@@ -439,6 +459,23 @@ type IngestOp =
       providerChatId: string;
       // The reset epoch the turn started under (see bindProviderChat).
       resetCount?: number;
+    }
+  // Projection `on` (phase 3): cut a run's bubble at a steered input (CU-20), and add a
+  // distinct late final of a settled run to its bubble (CU-8). See stream.ts.
+  | {
+      op: "splitSegment";
+      messageId: string;
+      afterMessageId?: string | null;
+      /** The settling segment's whole text (authoritative). */
+      text?: string;
+    }
+  | {
+      op: "appendLateFinal";
+      chatId: string;
+      runId: string;
+      messageId?: string | null;
+      text: string;
+      sessionKey?: string | null;
     }
   | {
       op: "recoverLostReply";
@@ -493,6 +530,16 @@ type IngestOp =
         permissionModePending?: boolean;
         sessionRoot?: string;
       };
+    }
+  // The bubble the transcript made for a run the bridge closed before opening one
+  // (projection `on`, phase 4 — codex pass 21). Read-only; verified against the proven
+  // instance, the chat, the session, the run and its segment.
+  | {
+      op: "projectedBubble";
+      chatId: string;
+      sessionKey: string;
+      runId: string;
+      segment: number;
     }
   // Session re-hydration READ (see docs/SESSION_CONTINUITY_DESIGN.md). The bridge
   // asks for a bounded block of this chat's prior turns when it detects a fresh/
@@ -648,6 +695,33 @@ type IngestOp =
       status: string;
       answers?: Array<{ id: string; values: string[] }>;
       decision?: string;
+    }
+  // THE TRANSCRIPT PROJECTION (redesign phase 1, shadow): what one `chat.history` read
+  // returned, as identities. Never touches a message (convex/transcriptProjection.ts).
+  | {
+      op: "applyTranscript";
+      chatId: string;
+      sessionKey: string;
+      sessionId?: string;
+      kind: "page" | "delta" | "reset" | "live";
+      deltaCursor?: string;
+      rows: unknown[];
+      terminals: unknown[];
+      activeRunIds?: unknown[];
+      hasActiveRun?: boolean;
+      queueMode?: unknown;
+      effectiveQueueMode?: unknown;
+      unidentified?: number;
+      readAt?: number;
+      // Phase 2 — the input guard (shapes re-validated by the mutation).
+      inputRunIds?: unknown[];
+      pendingInputs?: unknown;
+      inputReceipts?: unknown[];
+      inputAbsent?: unknown[];
+      inputUnreadable?: unknown[];
+      // Phase 4 — the runs the bridge's foreground turn owns (projection `on`).
+      foregroundRunIds?: unknown[];
+      textsOnly?: boolean;
     };
 
 /** The target id(s) an op writes against — what ingest authorization resolves to
@@ -740,6 +814,7 @@ export const ingest = httpAction(async (ctx, request) => {
   try {
     body = (await request.json()) as IngestOp;
   } catch {
+    await traceIngestRejected(ctx, null, 400, "invalid_body");
     return new Response(JSON.stringify({ ok: false, error: "invalid body" }), {
       status: 400,
       headers: { "Content-Type": "application/json" },
@@ -790,6 +865,12 @@ export const ingest = httpAction(async (ctx, request) => {
         runId: body.runId ?? undefined,
         turnSessionKey: body.sessionKey ?? undefined,
         dispatchOutboxId: body.dispatchOutboxId ?? undefined,
+        ...(typeof body.runSegment === "number" &&
+        Number.isSafeInteger(body.runSegment) &&
+        body.runSegment > 0 &&
+        body.runSegment <= 10_000
+          ? { runSegment: body.runSegment }
+          : {}),
         boundInstanceName,
       });
       // Delivery recorder: a ONCE-per-turn probe (not per delta) telling the bridge
@@ -970,6 +1051,19 @@ export const ingest = httpAction(async (ctx, request) => {
       // A short-lived URL the bridge POSTs raw file bytes to (no size limit,
       // no base64). Returned to the bridge, never persisted.
       const uploadUrl = await ctx.storage.generateUploadUrl();
+      // Projection `on` only: the bridge names the destination of the upload starting
+      // now, so a file job the transcript settled waits for it (stream.noteUploadStarted
+      // — bound to the proven instance, inert for a conversation that never stored text).
+      if (typeof body.messageId === "string" && body.messageId !== "") {
+        await ctx.runMutation(internal.stream.noteUploadStarted, {
+          messageId: body.messageId as Id<"messages">,
+          boundInstanceName,
+          windowMs:
+            typeof body.uploadWindowMs === "number" && Number.isFinite(body.uploadWindowMs)
+              ? body.uploadWindowMs
+              : 0,
+        });
+      }
       await traceIngest(ctx, {
         kind: "openclaw.ingest",
         meta: { op: body.op, ok: true },
@@ -1228,6 +1322,14 @@ export const ingest = httpAction(async (ctx, request) => {
           ...(typeof body.model === "string" && body.model
             ? { model: body.model.slice(0, 64) }
             : {}),
+          // WHY the counters may be null, and WHO started the turn: a
+          // gateway-initiated run (announce/requester-settle, talk consult) has no
+          // pre-send describe, so `absent` is its honest reading — not lost
+          // telemetry. Closed vocabularies: an unknown value is dropped, never stored.
+          ...(PRESSURE_SOURCES.has(String(body.pressureSource))
+            ? { pressureSource: body.pressureSource }
+            : {}),
+          ...(TURN_ORIGINS.has(String(body.turnOrigin)) ? { turnOrigin: body.turnOrigin } : {}),
           // Session-cumulative cost BEFORE the turn (per-turn cost = the delta
           // between consecutive gateway_pressure traces of the chat).
           ...(typeof body.costUsd === "number" ? { costUsd: body.costUsd } : {}),
@@ -1349,6 +1451,7 @@ export const ingest = httpAction(async (ctx, request) => {
         boundInstanceName,
         ...(body.runId !== undefined ? { expectedRunId: body.runId } : {}),
         ...(body.discardStreamText === true ? { discardStreamText: true } : {}),
+        ...(body.dropIfEmpty === true ? { dropIfEmpty: true } : {}),
         // `body.gatewayPreempted` is deliberately NOT relayed: the current bridge never
         // mints it, and an older bridge still running during a rolling deploy must
         // not trigger the supposition-based re-dispatch either (see preemptRepark.ts).
@@ -1407,6 +1510,41 @@ export const ingest = httpAction(async (ctx, request) => {
           : {}),
       });
       return json({ ok: true });
+    }
+    case "splitSegment": {
+      if (typeof body.messageId !== "string") return json({ error: "invalid body" }, 400);
+      const afterId = typeof body.afterMessageId === "string" ? body.afterMessageId : null;
+      const next = await ctx.runMutation(internal.stream.splitSegment, {
+        messageId: body.messageId as Id<"messages">,
+        ...(afterId !== null ? { afterMessageId: afterId as Id<"messages"> } : {}),
+        ...(typeof body.text === "string" ? { text: body.text } : {}),
+        boundInstanceName,
+      });
+      return json({ messageId: next });
+    }
+    case "appendLateFinal": {
+      if (
+        typeof body.chatId !== "string" ||
+        typeof body.runId !== "string" ||
+        body.runId === "" ||
+        body.runId.length > 256 ||
+        typeof body.text !== "string"
+      ) {
+        return json({ error: "invalid body" }, 400);
+      }
+      const id = await ctx.runMutation(internal.stream.appendLateFinal, {
+        chatId: body.chatId as Id<"chats">,
+        runId: body.runId,
+        ...(typeof body.messageId === "string"
+          ? { messageId: body.messageId as Id<"messages"> }
+          : {}),
+        text: body.text,
+        ...(typeof body.sessionKey === "string" && body.sessionKey !== ""
+          ? { turnSessionKey: body.sessionKey }
+          : {}),
+        boundInstanceName,
+      });
+      return json({ messageId: id });
     }
     case "recoverLostReply": {
       await ctx.runMutation(internal.stream.recoverLostReply, {
@@ -1475,6 +1613,16 @@ export const ingest = httpAction(async (ctx, request) => {
         },
       });
       return json({ ok: true });
+    }
+    case "projectedBubble": {
+      const result = await ctx.runQuery(internal.transcriptProjection.projectedBubble, {
+        chatId: body.chatId as Id<"chats">,
+        boundInstanceName,
+        sessionKey: String(body.sessionKey ?? ""),
+        runId: String(body.runId ?? ""),
+        segment: typeof body.segment === "number" && Number.isFinite(body.segment) ? body.segment : 0,
+      });
+      return json(result);
     }
     case "getRehydrationContext": {
       // Network input: an agent reference is used only when both names are strings,
@@ -1759,7 +1907,71 @@ export const ingest = httpAction(async (ctx, request) => {
       });
       return json({ ok: true, settled: res.settled });
     }
+    case "applyTranscript": {
+      // Shape is re-validated by the mutation's validators (a malformed body is a 500
+      // traced as `handler_threw`, never a partial write); the barrier is atomic inside.
+      const res = await ctx.runMutation(internal.transcriptProjection.applyTranscript, {
+        chatId: body.chatId as Id<"chats">,
+        boundInstanceName,
+        sessionKey: body.sessionKey,
+        sessionId: typeof body.sessionId === "string" ? body.sessionId : "",
+        kind: body.kind,
+        ...(typeof body.deltaCursor === "string" ? { deltaCursor: body.deltaCursor } : {}),
+        rows: body.rows as never,
+        terminals: body.terminals as never,
+        ...(Array.isArray(body.activeRunIds)
+          ? {
+              activeRunIds: body.activeRunIds.filter(
+                (x): x is string => typeof x === "string",
+              ),
+            }
+          : {}),
+        ...(typeof body.hasActiveRun === "boolean" ? { hasActiveRun: body.hasActiveRun } : {}),
+        ...(typeof body.queueMode === "string" && body.queueMode.length <= 32
+          ? { queueMode: body.queueMode }
+          : {}),
+        ...(typeof body.effectiveQueueMode === "string" && body.effectiveQueueMode.length <= 32
+          ? { effectiveQueueMode: body.effectiveQueueMode }
+          : {}),
+        unidentified:
+          typeof body.unidentified === "number" && Number.isFinite(body.unidentified)
+            ? body.unidentified
+            : 0,
+        ...(typeof body.readAt === "number" && Number.isFinite(body.readAt)
+          ? { readAt: body.readAt }
+          : {}),
+        ...(Array.isArray(body.inputRunIds)
+          ? { inputRunIds: body.inputRunIds.filter((x): x is string => typeof x === "string") }
+          : {}),
+        ...(body.pendingInputs !== undefined && body.pendingInputs !== null
+          ? { pendingInputs: body.pendingInputs as never }
+          : {}),
+        ...(Array.isArray(body.inputReceipts) ? { inputReceipts: body.inputReceipts as never } : {}),
+        ...(Array.isArray(body.inputAbsent)
+          ? { inputAbsent: body.inputAbsent.filter((x): x is string => typeof x === "string") }
+          : {}),
+        ...(Array.isArray(body.inputUnreadable)
+          ? {
+              inputUnreadable: body.inputUnreadable.filter(
+                (x): x is string => typeof x === "string",
+              ),
+            }
+          : {}),
+        ...(Array.isArray(body.foregroundRunIds)
+          ? {
+              foregroundRunIds: body.foregroundRunIds
+                .filter((x): x is string => typeof x === "string")
+                .slice(0, 10),
+            }
+          : {}),
+        ...(body.textsOnly === true ? { textsOnly: true } : {}),
+      });
+      // NO per-apply trace row: reads follow every run terminal, and the cursor doc
+      // already carries the counters an operator needs (reads, resets, unidentified).
+      return json(res);
+    }
     default:
+      await traceIngestRejected(ctx, (body as { op?: unknown }).op, 400, "unknown_op");
       return json({ ok: false, error: "unknown op" }, 400);
   }
   } catch (e) {
@@ -1767,10 +1979,40 @@ export const ingest = httpAction(async (ctx, request) => {
     // chatAllowsInstance re-check) → 403. Any other error re-throws — a real
     // failure must never read as a cross-instance denial.
     const msg = e instanceof Error ? e.message : String(e);
-    if (!msg.includes("forbidden: cross-instance")) throw e;
+    if (!msg.includes("forbidden: cross-instance")) {
+      // The 500 the bridge reports as `ConvexIngestError.<op>.500`: traced HERE too, so
+      // the drift sample on the bridge and a row on this side name the same write.
+      // Content-free — the op and the status, never the message.
+      await traceIngestRejected(ctx, body.op, 500, "handler_threw");
+      throw e;
+    }
     return await forbiddenResponse(ctx, body.op, boundInstanceName, true);
   }
 });
+
+/** An ingest op as it may be STORED: the bridge's literal (`IngestOp["op"]`), or a
+ *  sentinel — a 400 can carry anything, and a trace never stores wire text. */
+const INGEST_OP_LABEL = /^[A-Za-z][A-Za-z0-9]{0,39}$/;
+
+/** `openclaw.ingest.rejected`: Convex refused a bridge write with a 400 or a 500. The
+ *  bridge sees the same refusal as `ConvexIngestError.<op>.<status>` in its drift report;
+ *  this row is the Convex side of it, so the two can be matched. Structural only. */
+async function traceIngestRejected(
+  ctx: ActionCtx,
+  op: unknown,
+  status: 400 | 500,
+  reason: "invalid_body" | "unknown_op" | "handler_threw",
+): Promise<void> {
+  await traceIngest(ctx, {
+    kind: "openclaw.ingest.rejected",
+    status,
+    meta: {
+      op: typeof op === "string" && INGEST_OP_LABEL.test(op) ? op : op == null ? "«none»" : "«unprintable»",
+      status,
+      reason,
+    },
+  });
+}
 
 function json(value: unknown, status = 200): Response {
   return new Response(JSON.stringify(value), {

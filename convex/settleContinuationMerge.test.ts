@@ -1398,3 +1398,87 @@ describe("a long chain of parallel re-delegations stays in ONE bubble", () => {
     }
   });
 });
+
+// codex phase 4 pass 12 #3: under the transcript projection (`on`), the transcript may
+// record the first wake's ERROR terminal before its replay arrives. The replay of that
+// same run must resume the bubble exactly as 0.95.0 does (the `off` run below is the
+// reference): reopened, its deltas kept, completed.
+describe("a replayed requester-settle after a transcript-recorded error resumes as in 0.95.0", () => {
+  async function errorThenReplay(mode: "off" | "on") {
+    const t = convexTest(schema, modules);
+    const { chatId, parentId } = await seedYieldedTurn(t, { parentText: "Je délègue." });
+    if (mode === "on") {
+      await t.run(async (ctx) => {
+        await ctx.db.insert("instances", {
+          name: "lacneu",
+          gatewayUrl: "ws://gw",
+          config: { transcriptProjection: "on" } as never,
+        });
+        await ctx.db.patch(chatId, { transcriptSeenAt: 1 });
+      });
+    }
+    await t.mutation(internal.stream.startAssistant, { chatId, runId: PROD_SETTLE });
+    await t.mutation(internal.stream.appendDelta, { messageId: parentId, text: "partial result", expectedRunId: PROD_SETTLE });
+    await t.mutation(internal.stream.finalize, {
+      messageId: parentId,
+      status: "error",
+      text: "partial result",
+      error: "provider failed",
+      expectedRunId: PROD_SETTLE,
+    });
+    if (mode === "on") {
+      // The transcript read recorded the run's error terminal (sticky, settled).
+      await t.run(async (ctx) => {
+        await ctx.db.insert("transcriptRuns", {
+          chatId,
+          sessionKey: REQUESTER,
+          runId: PROD_SETTLE,
+          status: "error",
+          terminalAt: 3000,
+          settledAt: 3000,
+          updatedAt: 3000,
+        });
+      });
+    }
+    // The gateway replays the SAME run (error resume).
+    const opened = await t.mutation(internal.stream.startAssistant, { chatId, runId: PROD_SETTLE });
+    const reopened = await t.run((ctx) => ctx.db.get(parentId));
+    await t.mutation(internal.stream.appendDelta, { messageId: parentId, text: "recovered result", expectedRunId: PROD_SETTLE });
+    await t.mutation(internal.stream.finalize, {
+      messageId: parentId,
+      status: "complete",
+      text: "recovered result",
+      expectedRunId: PROD_SETTLE,
+    });
+    const doc = await t.run((ctx) => ctx.db.get(parentId));
+    const runs = await t.run((ctx) => ctx.db.query("transcriptRuns").collect());
+    return {
+      opened: opened === parentId,
+      reopenedStatus: reopened?.status,
+      text: doc?.text,
+      status: doc?.status,
+      errorCode: doc?.errorCode,
+      bubbles: (await assistants(t, chatId)).length,
+      runs,
+    };
+  }
+
+  test("off (0.95.0's path): reopened, completed with the recovered result", async () => {
+    const off = await errorThenReplay("off");
+    expect(off.opened).toBe(true);
+    expect(off.reopenedStatus).toBe("streaming");
+    expect(off.status).toBe("complete");
+    expect(off.text).toContain("recovered result");
+  });
+
+  test("on: the same bubble, text and status as 0.95.0 — and the run is no longer held as settled", async () => {
+    const off = await errorThenReplay("off");
+    const on = await errorThenReplay("on");
+    expect({ ...on, runs: undefined }).toEqual({ ...off, runs: undefined });
+    // The resumed run streams again for the projection: the transcript must not settle
+    // the reopened bubble back to its old error before the replay's own terminal.
+    expect(on.runs.map((r) => ({ status: r.status, settled: r.settledAt !== undefined }))).toEqual([
+      { status: "streaming", settled: false },
+    ]);
+  });
+});

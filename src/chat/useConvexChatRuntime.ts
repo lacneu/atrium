@@ -46,6 +46,7 @@ import {
 import type { PickableAgent } from "./AgentPicker";
 import { useSseStreamingText, sseDevOverride } from "./useSseStreamingText";
 import { useDeliveryRecorder } from "./useDeliveryRecorder";
+import { isProjectedWorking } from "./followUpComposer";
 import type { SseTimingSample } from "./deliveryRecorder";
 import { m } from "@/paraglide/messages.js";
 
@@ -120,6 +121,14 @@ export function agentAddressFailure(error: unknown): "too_many" | "invalid" | nu
     return "invalid";
   }
   return null;
+}
+
+/** The server refused a COMMAND (`/…`) sent with files: a command leaves exactly as
+ *  typed, and files can only reach the agent as text added to the message
+ *  (convex/lib/gatewayCommand.ts `COMMAND_WITH_ATTACHMENTS`). */
+export function commandWithFilesRefused(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error ?? "");
+  return message.includes("COMMAND_WITH_ATTACHMENTS");
 }
 
 export function useConvexChatRuntime({ chatId }: UseConvexChatRuntimeArgs) {
@@ -680,6 +689,10 @@ export function useConvexChatRuntime({ chatId }: UseConvexChatRuntimeArgs) {
   const lastRole =
     visibleList.length > 0 ? visibleList[visibleList.length - 1].role : null;
   const anyStreaming = visibleList.some((m) => m.status === "streaming");
+  const followUp = useQuery(
+    api.followUp.followUpState,
+    chatId ? { chatId: chatId as Id<"chats"> } : "skip",
+  );
 
   // "A turn I sent this session is awaiting its first assistant message."
   // This — NOT "the last message is a user message" — is what drives the gap
@@ -720,7 +733,27 @@ export function useConvexChatRuntime({ chatId }: UseConvexChatRuntimeArgs) {
   // the double-send hole — Nielsen heuristic #1) AND triggers assistant-ui's
   // upcoming-message placeholder, which RunStatus renders as the thinking label
   // (m.runstatus_thinking) to fill the gap (see runStatusView's `undefined` case).
-  const isRunning = pendingSince !== null || anyStreaming;
+  // TRANSCRIPT PROJECTION `on` (phase 4): a sent turn's bubble is born at its run's
+  // first visible content, not at the ACK — until then the gateway's own fact (a run is
+  // active on the session, read back by the reconciler) says the agent works. Only while
+  // the conversation still ends on the reader's message: once an answer is there, the
+  // short lag before the next read must not show a second "thinking" under it.
+  const workingUntil =
+    followUp?.projection === true && typeof followUp.workingUntil === "number"
+      ? followUp.workingUntil
+      : null;
+  const [, setWorkingTick] = useState(0);
+  // The deadline passes without any data changing: re-render at that instant so a stale
+  // fact (a connection lost before the run showed anything) stops reading "working".
+  useEffect(() => {
+    if (workingUntil === null) return;
+    const ms = workingUntil - Date.now();
+    if (ms <= 0) return;
+    const t = window.setTimeout(() => setWorkingTick((n) => n + 1), ms + 50);
+    return () => window.clearTimeout(t);
+  }, [workingUntil]);
+  const sessionWorking = isProjectedWorking(workingUntil, lastRole, Date.now());
+  const isRunning = pendingSince !== null || anyStreaming || sessionWorking;
 
   // The LAST user turn is parked in the mid-turn QUEUE (its outbox is `queued`),
   // parked BEHIND the in-flight turn. assistant-ui still shows a synthetic
@@ -868,6 +901,9 @@ export function useConvexChatRuntime({ chatId }: UseConvexChatRuntimeArgs) {
                 : m.chat_send_agents_invalid(),
             );
           }
+          // A command (`/…`) is sent exactly as typed and cannot carry files: said, so
+          // the writer removes them or sends them apart (convex/lib/gatewayCommand.ts).
+          if (commandWithFilesRefused(e)) toast.error(m.chat_send_command_with_files());
           // The mutation rejected BEFORE the server accepted the turn (validation,
           // auth, transient client failure). No assistant reply will arrive, so
           // the reactive clear can't fire — release the in-flight gate now instead
@@ -919,7 +955,13 @@ export function useConvexChatRuntime({ chatId }: UseConvexChatRuntimeArgs) {
   );
 
   const queueSend = useCallback(
-    async (text: string): Promise<boolean> => {
+    async (
+      text: string,
+      /** TRANSCRIPT PROJECTION `on` (phase 3): the explicit mode of this send made
+       *  while the agent works, and whether it leaves NOW (anything but `queue`): an
+       *  immediate send echoes in the thread, not in the queue dock. */
+      opts?: { mode?: "queue" | "steer" | "interrupt"; immediate?: boolean },
+    ): Promise<boolean> => {
       const trimmed = text.trim();
       if (!chatId || trimmed === "") return false;
       const quotes = takePendingQuotes(chatId);
@@ -940,12 +982,15 @@ export function useConvexChatRuntime({ chatId }: UseConvexChatRuntimeArgs) {
       const clientMessageId = crypto.randomUUID();
       // Route the optimistic echo to the QUEUE DOCK (not the thread): the echo
       // id is deterministic (optimistic-<clientMessageId>).
-      queuedEchoIds.current.add(`optimistic-${clientMessageId}`);
+      if (opts?.immediate !== true) {
+        queuedEchoIds.current.add(`optimistic-${clientMessageId}`);
+      }
       try {
         await sendMessage({
           chatId: chatId as Id<"chats">,
           text,
           clientMessageId,
+          ...(opts?.mode !== undefined ? { followUpMode: opts.mode } : {}),
           ...address,
           ...(quotes.length > 0
             ? {
@@ -991,6 +1036,8 @@ export function useConvexChatRuntime({ chatId }: UseConvexChatRuntimeArgs) {
             ? m.chat_send_agents_invalid()
             : failure.includes("QUEUE_FULL")
             ? m.chat_queue_full()
+            : commandWithFilesRefused(e)
+            ? m.chat_send_command_with_files()
             : // A voice call pins this chat's agent. The selector normally says so
               // BEFORE the click — but not for a reader who has no selector: a
               // single-agent participant sees no picker and no voice control, so the
