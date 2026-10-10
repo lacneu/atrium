@@ -12,7 +12,8 @@ jobs:
   # Image jobs run on GitHub-hosted amd64 runners: they build `linux/amd64`, which
   # is NATIVE there. On the arm64 self-hosted fleet the same build is emulated by
   # QEMU, whose x86 emulation segfaults non-deterministically inside `npm ci`
-  # (see the RUNNERS note in build-and-push.yml). Test-only jobs stay on the fleet.
+  # (see the RUNNERS note in build-and-push.yml). Test-only jobs also use standard
+  # GitHub machines; no developer workstation runner is used.
   frontend-image:
     name: frontend image supply chain
     runs-on: ubuntu-24.04
@@ -52,7 +53,8 @@ jobs:
 
   app:
     name: app (front + Convex)
-    runs-on: [self-hosted, macOS, ARM64, lacneu-atrium-ci]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
     strategy:
       matrix:
         node-version: [22, 24]
@@ -92,7 +94,8 @@ jobs:
 
   bridge:
     name: bridge
-    runs-on: [self-hosted, macOS, ARM64, lacneu-atrium-ci]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
     defaults:
       run:
         working-directory: bridge

@@ -164,6 +164,20 @@ functions read the **deployment** environment.
 | `AUTH_AUTHELIA_ID`                      | no              |               | Self-hosted OIDC client id — Authelia, Keycloak, Authentik, Zitadel. Omit the whole trio to disable the provider.                                                 | `<client-id>`                                     |
 | `AUTH_AUTHELIA_SECRET`                  | no              |               | Its client secret.                                                                                                                                                | `<client-secret>`                                 |
 | `AUTH_AUTHELIA_ISSUER`                  | no              |               | Issuer URL. REQUIRED: the issuer is the primary authorization, so the provider refuses to enable without it and names the missing piece in the deployment log.    | `https://auth.example.org`                        |
+| `AUTH_LOGIN_MODE` | no | `providers` | `authelia-only` redirects directly to Authelia and registers no Google, Microsoft or anonymous sign-in provider. Unknown values are rejected. | `authelia-only` |
+
+For an Authelia-only installation, configure all three `AUTH_AUTHELIA_*` values
+and set `AUTH_LOGIN_MODE=authelia-only`. The browser starts the native OAuth flow
+automatically, returns to the same Atrium page, and keeps Atrium's existing
+account/permission checks. No provider chooser is displayed, and existing Google
+credentials do not enable an alternative sign-in. Missing Authelia configuration
+fails closed; it does not fall back to Google or anonymous access.
+
+One automatic attempt is recorded per browser tab. A failed callback requires an
+explicit retry instead of another automatic redirect. Signing out invalidates
+the Atrium session and pauses automatic sign-in in that tab; it does not sign out
+other applications using Authelia. Only successful Atrium authentication clears
+the attempt marker. Browser session storage is required for automatic sign-in.
 
 Register `<VITE_CONVEX_SITE_URL>/api/auth/callback/authelia` as the client's
 redirect URI with your issuer, and grant it the `openid profile email` scopes — the

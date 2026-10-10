@@ -28,9 +28,12 @@ function reportedProviders(): string[] {
   const start = ME.indexOf("export const authProviders = query({");
   expect(start, "authProviders must still exist in convex/me.ts").toBeGreaterThan(-1);
   const end = ME.indexOf("});", start);
-  const body = ME.slice(start, end);
+  const handler = ME.indexOf("handler:", start);
+  expect(handler).toBeGreaterThan(start);
+  const body = ME.slice(handler, end);
   // The keys of the returned object literal, at its own indentation level.
-  return [...body.matchAll(/^\s{4}(\w+):/gm)].map((m) => m[1]!);
+  return [...body.matchAll(/^\s{4}(\w+):/gm)].map((m) => m[1]!)
+    .filter((key) => key !== "autheliaOnly"); // Login mode metadata, not a provider.
 }
 
 /**
@@ -51,6 +54,12 @@ const PROVIDER_ID: Record<string, string> = {
 };
 
 describe("the sign-in screen offers what the deployment enabled", () => {
+  test("the router guards the entire legacy chooser with the server-resolved login boundary", () => {
+    const signIn = ROUTER.slice(ROUTER.indexOf("function SignIn()"), ROUTER.indexOf("function AppShellSkeleton()"));
+    expect(signIn).toContain("<LoginBoundary providers={providers}>");
+    expect(signIn.indexOf("<LoginBoundary")).toBeLessThan(signIn.indexOf('className="oc-signin"'));
+    expect(signIn.indexOf("</LoginBoundary>")).toBeGreaterThan(signIn.indexOf('signIn("anonymous")'));
+  });
   test("the extraction still finds the providers it is meant to check", () => {
     // Both assertions below compare against an EMPTY list when the extraction
     // finds nothing — so a reindentation of the handler in convex/me.ts would turn

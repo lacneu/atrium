@@ -3075,10 +3075,11 @@ describe("review 5 — sends never confirmed after their ACK; a reread item repl
 describe("review 6 — a dispatched send nothing was ever observed about is still owed a confirmation", () => {
   const A1 = "webchat-" + "6".repeat(63) + "a";
   const A2 = "webchat-" + "6".repeat(63) + "b";
+  const FIRST_DISPATCHED_AT = 1_700_000_000_000;
   const world = async (t: T, s: Awaited<ReturnType<typeof seed>>, second: Record<string, unknown> | null) => {
     await t.run(async (ctx) => {
       const u1 = await ctx.db.insert("messages", { chatId: s.chatId, userId: s.owner, role: "user", status: "complete" as const, text: "q1", sendId: A1, updatedAt: 1 });
-      await ctx.db.insert("outbox", { chatId: s.chatId, userId: s.owner, clientMessageId: "cm-6a", text: "q1", attachmentIds: [], status: "sent", messageId: u1, sendId: A1, sentToInstance: "alpha", dispatchedAt: Date.now() });
+      await ctx.db.insert("outbox", { chatId: s.chatId, userId: s.owner, clientMessageId: "cm-6a", text: "q1", attachmentIds: [], status: "sent", messageId: u1, sendId: A1, sentToInstance: "alpha", dispatchedAt: FIRST_DISPATCHED_AT });
       await ctx.db.insert("messages", { chatId: s.chatId, userId: s.owner, role: "assistant", status: "complete" as const, text: "a1", runId: A1, turnSessionKey: SK, updatedAt: 1 });
       if (second !== null) {
         const u2 = await ctx.db.insert("messages", { chatId: s.chatId, userId: s.owner, role: "user", status: "complete" as const, text: "q2", sendId: A2, updatedAt: 1 });
@@ -3097,10 +3098,13 @@ describe("review 6 — a dispatched send nothing was ever observed about is stil
     expect(r.verdict).toBe("consistent");
   });
 
-  test("a second send DISPATCHED then failed, with no fact row and no user row: unconfirmed, never `consistent`", async () => {
+  test.each([FIRST_DISPATCHED_AT, FIRST_DISPATCHED_AT + 1])("a second send DISPATCHED at %i then failed, with no fact row and no user row: unconfirmed, never `consistent`", async (secondDispatchedAt) => {
     const t = convexTest(schema, modules);
     const s = await seed(t);
-    const r = await world(t, s, { status: "failed", sentToInstance: "alpha", dispatchedAt: Date.now() });
+    vi.useFakeTimers({ toFake: ["Date"] });
+    // Fixture dispatch order must not depend on the clock while world() inserts rows.
+    vi.setSystemTime(FIRST_DISPATCHED_AT + 1_000);
+    const r = await world(t, s, { status: "failed", sentToInstance: "alpha", dispatchedAt: secondDispatchedAt });
     expect(r.gaps!.guard).toMatchObject({ inputs: 2, custodyUnconfirmed: 1 });
     expect(r.window.incompleteReasons).toContain("unconfirmed_inputs");
     expect(r.verdict).not.toBe("consistent");

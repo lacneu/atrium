@@ -1,6 +1,6 @@
-// Convex Auth setup (Google sign-in).
+// Convex Auth setup (environment-driven providers or exclusive Authelia SSO).
 //
-// This wires @convex-dev/auth with the Google OAuth provider. The exported
+// This wires @convex-dev/auth with the selected OAuth providers. The exported
 // `auth`, `signIn`, `signOut`, `store`, and `isAuthenticated` are consumed by
 // `convex/http.ts` (the auth HTTP routes) and by the public functions in this
 // project via `getAuthUserId(ctx)`.
@@ -25,6 +25,7 @@ import MicrosoftEntraID, {
 } from "@auth/core/providers/microsoft-entra-id";
 import { Anonymous } from "@convex-dev/auth/providers/Anonymous";
 import { convexAuth } from "@convex-dev/auth/server";
+import { autheliaOnlyLogin } from "./lib/authLoginMode";
 import {
   allowedEmailDomains,
   anonAuthEnabled,
@@ -46,8 +47,9 @@ import {
 // Same rule as the other two: a provider is "enabled" only when it can COMPLETE.
 // Naming `AUTH_GOOGLE_SECRET` here also puts it in reach of the
 // env-reaches-deployment guard, which only sees what this code reads.
+const autheliaOnly = autheliaOnlyLogin();
 const googleEnabled =
-  !!process.env.AUTH_GOOGLE_ID && !!process.env.AUTH_GOOGLE_SECRET;
+  !autheliaOnly && !!process.env.AUTH_GOOGLE_ID && !!process.env.AUTH_GOOGLE_SECRET;
 // And say which piece is missing, like the other two — a provider that vanishes
 // without a word leaves an empty sign-in card to explain itself.
 const googleMissing = [
@@ -97,6 +99,7 @@ const msIssuer = process.env.AUTH_MICROSOFT_ENTRA_ID_ISSUER;
 // token exchange fails as the generic refusal. A provider is "enabled" only when it
 // can complete — anything less is an affordance that cannot keep its promise.
 const microsoftEnabled =
+  !autheliaOnly &&
   !!process.env.AUTH_MICROSOFT_ENTRA_ID_ID &&
   !!process.env.AUTH_MICROSOFT_ENTRA_ID_SECRET &&
   !!msIssuer;
@@ -140,10 +143,9 @@ const microsoft = MicrosoftEntraID({
 // services — Authelia is the case this was written for, but the shape is the
 // generic OIDC one, so Keycloak, Authentik or Zitadel work the same way.
 //
-// WHY IT IS ADDITIVE, and must stay so: a deployment that sets nothing here is
-// byte-for-byte the deployment that shipped before this existed. Providers are a
-// list, and several can be live at once — a NAS on Google keeps its Google
-// sign-in while a VPS behind Authelia uses Authelia, from the SAME code.
+// The default remains additive for existing installations. AUTH_LOGIN_MODE=
+// authelia-only explicitly delegates sign-in to Authelia: other providers are
+// not registered, even when their old credentials remain on the deployment.
 //
 // REFUSE without an issuer, for the reason the Entra provider refuses "common":
 // the issuer IS the primary authorization here. Everything else — the email
@@ -237,7 +239,7 @@ const enabled = [
   ...(googleEnabled ? ["google"] : []),
   ...(microsoftEnabled ? ["microsoft"] : []),
   ...(autheliaEnabled ? ["authelia"] : []),
-  ...(anonAuthEnabled() ? ["anonymous(dev)"] : []),
+  ...(!autheliaOnly && anonAuthEnabled() ? ["anonymous(dev)"] : []),
 ];
 console.log(
   `[auth] providers: ${enabled.join(", ") || "NONE"} | allowed domains: ${allowedEmailDomains().join(", ")}`,
@@ -248,6 +250,6 @@ export const { auth, signIn, signOut, store, isAuthenticated } = convexAuth({
     ...(googleEnabled ? [google] : []),
     ...(microsoftEnabled ? [microsoft] : []),
     ...(autheliaEnabled ? [authelia] : []),
-    ...(anonAuthEnabled() ? [Anonymous()] : []),
+    ...(!autheliaOnly && anonAuthEnabled() ? [Anonymous()] : []),
   ],
 });

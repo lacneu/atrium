@@ -30,6 +30,7 @@ import {
   roleOf,
 } from "./lib/access";
 import { auditImpersonated } from "./lib/audit";
+import { autheliaOnlyLogin } from "./lib/authLoginMode";
 import {
   isUiPrefKey,
   prefGateKey,
@@ -80,9 +81,18 @@ export const bootstrap = mutation({
 // tenant issuer (mirrors auth.ts's refuse-without-issuer rule).
 export const authProviders = query({
   args: {},
+  returns: v.object({
+    autheliaOnly: v.boolean(),
+    google: v.boolean(),
+    microsoft: v.boolean(),
+    authelia: v.boolean(),
+    anonymous: v.boolean(),
+  }),
   handler: async () => ({
-    google: !!process.env.AUTH_GOOGLE_ID && !!process.env.AUTH_GOOGLE_SECRET,
+    autheliaOnly: autheliaOnlyLogin(),
+    google: !autheliaOnlyLogin() && !!process.env.AUTH_GOOGLE_ID && !!process.env.AUTH_GOOGLE_SECRET,
     microsoft:
+      !autheliaOnlyLogin() &&
       !!process.env.AUTH_MICROSOFT_ENTRA_ID_ID &&
       !!process.env.AUTH_MICROSOFT_ENTRA_ID_SECRET &&
       !!process.env.AUTH_MICROSOFT_ENTRA_ID_ISSUER,
@@ -93,7 +103,7 @@ export const authProviders = query({
       !!process.env.AUTH_AUTHELIA_ID &&
       !!process.env.AUTH_AUTHELIA_SECRET &&
       !!process.env.AUTH_AUTHELIA_ISSUER,
-    anonymous: process.env.OPENCLAW_ENABLE_ANON_AUTH === "1",
+    anonymous: !autheliaOnlyLogin() && process.env.OPENCLAW_ENABLE_ANON_AUTH === "1",
   }),
 });
 
