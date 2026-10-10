@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- Resolve Seroval 1.6.9 and source-map-js 1.2.2 in the dependency lockfile.
+  Keep the rest of the dependency graph unchanged. Reject high and critical
+  application dependency advisories in both Node CI jobs before merge.
+
 ## [0.96.0] — The bubbles come from the session transcript
 
 Minor release, the second step of the transcript redesign you can see. Like 0.95.0 it changes
