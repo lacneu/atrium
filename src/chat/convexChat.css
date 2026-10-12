@@ -1920,6 +1920,18 @@ button.oc-bmk-rail__count:hover {
   width: 1.6rem;
   height: 1.6rem;
 }
+/* Phase 5 — a delegation chain's display group reads as ONE answer: the bubbles that
+   follow the first sit right under it (the thread's gap taken back), with a blank avatar
+   column and no name, and only the last keeps the action-bar row. */
+.oc-msg--group-follow {
+  margin-top: -1.5rem;
+}
+.oc-msg__avatar--group {
+  background: transparent;
+}
+.oc-msg--group-continues > .oc-msg__col {
+  padding-bottom: 0.25rem;
+}
 .oc-msg__col {
   flex: 1;
   min-width: 0;

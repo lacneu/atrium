@@ -16,6 +16,7 @@ import { api } from "./convexApi";
 import type { Id } from "./convexApi";
 import type { ConvexId, ConvexMessageView } from "./convexTypes";
 import { convertConvexMessage } from "./convertMessage";
+import { displayGroupPlaces, groupInputsChanged, groupInputsOf, type GroupInputs } from "./displayGroups";
 import {
   attachmentParts,
   createConvexAttachmentAdapter,
@@ -774,14 +775,24 @@ export function useConvexChatRuntime({ chatId }: UseConvexChatRuntimeArgs) {
     () => resolveImportedAgentLabels(messages ?? []),
     [messages],
   );
+  // Phase 5: where each displayed bubble sits in its delegation chain's display group.
+  // Recomputed only when the positions or a settled grouped text really change — never per
+  // token (src/chat/displayGroups.ts `groupInputsChanged`).
+  const groupInputs = groupInputsOf(visibleList);
+  const groupMemo = useRef<{ inputs: GroupInputs; places: ReturnType<typeof displayGroupPlaces> } | null>(null);
+  if (groupMemo.current === null || groupInputsChanged(groupMemo.current.inputs, groupInputs)) {
+    groupMemo.current = { inputs: groupInputs, places: displayGroupPlaces(visibleList) };
+  }
+  const groupPlaces = groupMemo.current.places;
   const convertWithAgents = useCallback(
     (msg: ConvexMessageView) =>
       convertConvexMessage(
         msg,
         messageAgents.get(msg._id) ?? null,
         importedAgentLabels.get(msg._id) ?? null,
+        groupPlaces.get(msg._id) ?? null,
       ),
-    [messageAgents, importedAgentLabels],
+    [messageAgents, importedAgentLabels, groupPlaces],
   );
 
   const adapter = useMemo<ExternalStoreAdapter<ConvexMessageView>>(() => {

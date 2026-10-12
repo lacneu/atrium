@@ -1,0 +1,71 @@
+{
+ "_source": "bench-runs/2026-10-09T13-07-24-381Z/scenario-spawn-announce-merge (OpenClaw 2026.9.8, projection on): a code-mode sessions_spawn as chat.history returns it — the openclaw.nested-tool.v1 custom row projected as content [toolCall, toolResult] owned by the calling run (src/gateway/chat-display-projection.core.ts:439-457). Bench tokens only; verbatim.",
+ "messages": [
+  {
+   "role": "custom",
+   "customType": "openclaw.nested-tool.v1",
+   "display": true,
+   "excludeFromContext": true,
+   "content": [
+    {
+     "type": "toolCall",
+     "id": "tool_call:call_1a739c745e0b4627854559880372a2a4_fc_06b16fdd7b80cc2c016ac8e82bcb888194939f509f6aac8b42:sessions_spawn:1",
+     "runId": "webchat-5b3d11b8cc701a668db42ba4925e40e295a2cbed279f8e6cc585b767a60c2c90",
+     "name": "sessions_spawn",
+     "arguments": {
+      "runtime": "subagent",
+      "agentId": "files",
+      "taskName": "bench_spawn_media",
+      "label": "Bench spawn media",
+      "context": "isolated",
+      "completionTarget": "parent",
+      "expectsCompletionMessage": true,
+      "runTimeoutSeconds": 120,
+      "task": "Execute the shell command `sleep 20` first. Then create a text file at `/home/node/.openclaw/media/outbound/bench-spawn.txt` containing exactly `BENCH_SPAWN_OK` plus a trailing newline. Verify the file exists and is non-empty. Final response must include a brief visible sentence and then a line exactly `MEDIA:/home/node/.openclaw/media/outbound/bench-spawn.txt`. Do not use markdown links."
+     },
+     "parentToolCallId": "call_1a739c745e0b4627854559880372a2a4|fc_06b16fdd7b80cc2c016ac8e82bcb888194939f509f6aac8b42",
+     "timestamp": 1791551532946
+    },
+    {
+     "runId": "webchat-5b3d11b8cc701a668db42ba4925e40e295a2cbed279f8e6cc585b767a60c2c90",
+     "scopeId": "3ff083af-c0b9-4bbe-926c-cccb4f25ca90",
+     "afterEntryId": "bc7f81f9-79d8-455b-9c33-b19f7662aac7",
+     "startOrder": 0,
+     "parentToolCallId": "call_1a739c745e0b4627854559880372a2a4|fc_06b16fdd7b80cc2c016ac8e82bcb888194939f509f6aac8b42",
+     "toolCallId": "tool_call:call_1a739c745e0b4627854559880372a2a4_fc_06b16fdd7b80cc2c016ac8e82bcb888194939f509f6aac8b42:sessions_spawn:1",
+     "toolName": "sessions_spawn",
+     "isError": false,
+     "startedAt": 1791551532946,
+     "timestamp": 1791551533042,
+     "content": [
+      {
+       "type": "text",
+       "text": "{\n  \"status\": \"accepted\",\n  \"childSessionKey\": \"agent:files:subagent:3b0e99f7-9148-4fe1-a921-aac84c1f42ef\",\n  \"runId\": \"6ddc400c-da16-464e-8e74-65deeafb9383\",\n  \"mode\": \"run\",\n  \"expectsCompletionMessage\": true,\n  \"completionTarget\": \"parent\",\n  \"context\": \"isolated\",\n  \"taskName\": \"bench_spawn_media\",\n  \"note\": \"The result returns privately to the requester. No result is automatically sent to a channel; the requester reviews the result and continues any unfinished work. Continue independent work; completion will trigger a private requester turn. Never busy-poll.\",\n  \"resolvedModel\": \"openai/gpt-5.5\",\n  \"resolvedProvider\": \"openai\",\n  \"modelApplied\": true\n}"
+      }
+     ],
+     "type": "toolResult",
+     "role": "toolResult"
+    }
+   ],
+   "timestamp": 1791551532946,
+   "idempotencyKey": "3ff083af-c0b9-4bbe-926c-cccb4f25ca90:tool_call:call_1a739c745e0b4627854559880372a2a4_fc_06b16fdd7b80cc2c016ac8e82bcb888194939f509f6aac8b42:sessions_spawn:1",
+   "__openclaw": {
+    "id": "8657b299-21e5-4ebd-ab51-632c7ffaa6f4",
+    "idempotencyKey": "3ff083af-c0b9-4bbe-926c-cccb4f25ca90:tool_call:call_1a739c745e0b4627854559880372a2a4_fc_06b16fdd7b80cc2c016ac8e82bcb888194939f509f6aac8b42:sessions_spawn:1",
+    "recordTimestampMs": 1791551533043,
+    "transcriptPosition": {
+     "source": "S0ZNILK6notJskpuF5ARWnjmfmprKbdacuK_NGCbjls",
+     "rawSeq": 103,
+     "activity": {
+      "afterRawSeq": 102,
+      "scopeId": "3ff083af-c0b9-4bbe-926c-cccb4f25ca90",
+      "startOrder": 0
+     }
+    },
+    "seq": 59,
+    "runId": "webchat-5b3d11b8cc701a668db42ba4925e40e295a2cbed279f8e6cc585b767a60c2c90"
+   },
+   "runId": "webchat-5b3d11b8cc701a668db42ba4925e40e295a2cbed279f8e6cc585b767a60c2c90"
+  }
+ ]
+}

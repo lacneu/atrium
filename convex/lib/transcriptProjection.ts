@@ -32,6 +32,7 @@ import { internal } from "../_generated/api";
 import { ATRIUM_SEND_ID_RE, sendIdsOf } from "./sendIdentity";
 import type { TranscriptProjectionMode } from "./instanceConfig";
 import { MAX_COMPOSED_TEXT_BYTES, utf8Bytes } from "./bubbleProjection";
+import { CHILD_RUN_ID_RE } from "./deliveryRuns";
 
 /** Per-run status: the Control UI's run table (upstream
  *  packages/gateway-client/src/session-projection-run-event.ts:50-71) plus `persisted`,
@@ -104,7 +105,16 @@ export type TranscriptRowInput = {
   /** Projection `on` (phase 4): the row's display text / `sessions_yield` acknowledgment. */
   text?: string;
   yieldAck?: string;
+  /** Projection `on` (phase 5): the sub-agents this row says its run LAUNCHED (an
+   *  accepted `sessions_spawn` result). Stored as `transcriptSpawns`, never on the row. */
+  spawns?: SpawnFact[];
 };
+
+/** One launch a row states (bridge: providers/openclaw/transcript-rows.ts `spawnFacts`). */
+export type SpawnFact = { childSessionKey: string; childRunId: string };
+
+/** Most launches one row may state (a parallel fan-out in one call is a handful). */
+export const MAX_SPAWNS_PER_ROW = 8;
 
 /** Most a row may SAY, in UTF-8 bytes, text and acknowledgment together — ONE budget,
  *  the bridge's too (providers/openclaw/transcript-rows.ts `ROW_TEXT_MAX_BYTES`). It IS the
@@ -509,6 +519,9 @@ export function deletionTombstones(
         index: 0,
         after: null,
       });
+      // Phase 5: what is left of a display group is regrouped (an `on` conversation only —
+      // the regroup re-reads the mode when it runs).
+      await ctx.scheduler.runAfter(0, internal.displayGroups.regroup, { chatId: chat._id });
     },
   };
 }
@@ -723,7 +736,26 @@ export function sanitizeRow(raw: TranscriptRowInput): TranscriptRowInput | null 
     visible: raw.visible === true,
     ...(toolCallIds.length > 0 ? { toolCallIds } : {}),
     ...boundRowShown(raw.text, raw.yieldAck),
+    ...boundSpawns(raw.spawns),
   };
+}
+
+/** The launches a row states, bounded and shaped like the identities they are (a child run
+ *  id as upstream mints it, lib/deliveryRuns `CHILD_RUN_ID_RE`): anything else is dropped,
+ *  never guessed. */
+function boundSpawns(raw: unknown): { spawns?: SpawnFact[] } {
+  if (!Array.isArray(raw)) return {};
+  const out: SpawnFact[] = [];
+  for (const s of raw) {
+    if (out.length >= MAX_SPAWNS_PER_ROW) break;
+    if (typeof s !== "object" || s === null) continue;
+    const childSessionKey = boundedId((s as { childSessionKey?: unknown }).childSessionKey, MAX_RUN_ID_CHARS);
+    const childRunId = (s as { childRunId?: unknown }).childRunId;
+    if (childSessionKey === undefined || typeof childRunId !== "string" || !CHILD_RUN_ID_RE.test(childRunId)) continue;
+    if (out.some((o) => o.childRunId === childRunId && o.childSessionKey === childSessionKey)) continue;
+    out.push({ childSessionKey, childRunId });
+  }
+  return out.length > 0 ? { spawns: out } : {};
 }
 
 /**

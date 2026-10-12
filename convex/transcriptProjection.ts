@@ -63,6 +63,8 @@ import {
   type InputFact,
   type RunStatus,
   type TranscriptRowInput,
+  type SpawnFact,
+  MAX_SPAWNS_PER_ROW,
 } from "./lib/transcriptProjection";
 import { custodyOf, instanceNameOfChat, projectionModeOfChat } from "./lib/followUp";
 import {
@@ -78,6 +80,7 @@ import {
   type ProjectionScope,
 } from "./lib/bubbleProjectionStore";
 import { drainNextQueued, SESSION_ACTIVE_FRESH_MS } from "./lib/outboxQueue";
+import { scheduleRegroup } from "./displayGroups";
 import { utf8Bytes } from "./lib/bubbleProjection";
 
 const rowValidator = v.object({
@@ -96,6 +99,9 @@ const rowValidator = v.object({
   // conversation (sanitized + bounded by lib/transcriptProjection `sanitizeRow`).
   text: v.optional(v.string()),
   yieldAck: v.optional(v.string()),
+  // Projection `on` (phase 5): the sub-agents the row's run launched (identities only;
+  // stored as `transcriptSpawns` for an `on` conversation, ignored otherwise).
+  spawns: v.optional(v.array(v.object({ childSessionKey: v.string(), childRunId: v.string() }))),
 });
 
 const terminalValidator = v.object({
@@ -335,6 +341,8 @@ async function upsertRows(
   seqByRun: Map<string, { first: number; last: number }>;
   /** Runs whose rows got a text stored now (they may be projectable now). */
   textedRuns: string[];
+  /** Launch facts stored now (phase 5). */
+  spawnIds: Array<Id<"transcriptSpawns">>;
 }> {
   let inserted = 0;
   let updated = 0;
@@ -345,8 +353,10 @@ async function upsertRows(
   const newCuts = new Set<string>();
   /** The new cut rows themselves: one whose send was DELETED takes its segment with it. */
   const newCutRows: LateCut[] = [];
+  /** Launch facts newly stored by this apply (`on` only: other modes strip them). */
+  const spawnIds: Array<Id<"transcriptSpawns">> = [];
   for (const r of rows) {
-    const { text, yieldAck, ...identity } = r;
+    const { text, yieldAck, spawns, ...identity } = r;
     const next: TranscriptRowInput & { sessionId: string } = { ...identity, sessionId: a.sessionId };
     budget.queries++;
     const stored = await ctx.db
@@ -405,6 +415,11 @@ async function upsertRows(
         });
         updated++;
       }
+    }
+    // PROJECTION `on` (phase 5): the launches the row states, as identities — the proof a
+    // delivery run joins its launcher by (lib/delegationChain.ts). Idempotent per row.
+    if (spawns !== undefined && spawns.length > 0 && r.runId !== undefined && r.role !== "user") {
+      spawnIds.push(...(await storeSpawns(ctx, a, r, spawns, budget)));
     }
     // A text once read is a fact about the row: a later read that carries none (an older
     // bridge, a switch flipped back to shadow) never erases it — nor reads it.
@@ -466,7 +481,50 @@ async function upsertRows(
   }
   const stored = await writeRowTexts(ctx, a, textWork, a.now, budget);
   const textedRuns = [...new Set(stored.flatMap((w) => (w.row.runId === undefined ? [] : [w.row.runId])))];
-  return { inserted, updated, maxSeq, seqByRun, textedRuns };
+  return { inserted, updated, maxSeq, seqByRun, textedRuns, spawnIds };
+}
+
+/** Store the launches one row states (phase 5): one probe for the row's facts, one insert
+ *  per new child. Charged to the shared budget. */
+async function storeSpawns(
+  ctx: MutationCtx,
+  a: { chatId: Id<"chats">; instanceName: string; sessionKey: string; now: number },
+  r: TranscriptRowInput,
+  spawns: readonly SpawnFact[],
+  budget: Budget,
+): Promise<Array<Id<"transcriptSpawns">>> {
+  budget.queries++;
+  // The row's facts IN ITS SCOPE (codex phase 5 pass 1 #1): an entry id of another session
+  // or instance is another row. Read with a sentinel: a row states at most
+  // MAX_SPAWNS_PER_ROW launches, and a fuller list is not this row's to extend.
+  const known = (
+    await ctx.db
+      .query("transcriptSpawns")
+      .withIndex("by_chat_entry", (q) => q.eq("chatId", a.chatId).eq("entryId", r.entryId))
+      .take(4 * MAX_SPAWNS_PER_ROW + 1)
+  ).filter((k) => {
+    budget.bytes += docBytes(k);
+    return k.sessionKey === a.sessionKey && k.instanceName === a.instanceName;
+  });
+  if (known.length >= MAX_SPAWNS_PER_ROW) return [];
+  const out: Array<Id<"transcriptSpawns">> = [];
+  for (const s of spawns) {
+    if (known.some((k) => k.childRunId === s.childRunId && k.childSessionKey === s.childSessionKey)) continue;
+    out.push(
+      await ctx.db.insert("transcriptSpawns", {
+        chatId: a.chatId,
+        instanceName: a.instanceName,
+        sessionKey: a.sessionKey,
+        parentRunId: r.runId!,
+        childSessionKey: s.childSessionKey,
+        childRunId: s.childRunId,
+        entryId: r.entryId,
+        seq: r.seq,
+        createdAt: a.now,
+      }),
+    );
+  }
+  return out;
 }
 
 /** A new cut row: its own send, the run it was steered into, its `seq`. */
@@ -1525,7 +1583,19 @@ export const purgeChatRowTexts = internalMutation({
         .withIndex("by_chat_admitted", (q) => q.eq("chatId", chatId))
         .take(500);
       for (const a of admissions) await ctx.db.delete(a._id);
-      if (tombs.length === 500 || admissions.length === 500) {
+      // …and its launch facts (phase 5, written only for an `on` conversation).
+      const spawns = await ctx.db
+        .query("transcriptSpawns")
+        .withIndex("by_chat_child_run", (q) => q.eq("chatId", chatId))
+        .take(500);
+      for (const sp of spawns) await ctx.db.delete(sp._id);
+      // …and its own-bubble release records (§14.29, same conversations only).
+      const releases = await ctx.db
+        .query("ownBubbleReleases")
+        .withIndex("by_chat_run", (q) => q.eq("chatId", chatId))
+        .take(500);
+      for (const r of releases) await ctx.db.delete(r._id);
+      if (tombs.length === 500 || admissions.length === 500 || spawns.length === 500 || releases.length === 500) {
         await ctx.scheduler.runAfter(0, internal.transcriptProjection.purgeChatRowTexts, { chatId, markPurged });
       }
     }
@@ -1914,7 +1984,7 @@ export const applyTranscript = internalMutation({
     const rows: TranscriptRowInput[] = projectionOn
       ? sanitized
       : sanitized.map((row) => {
-          const { text: _text, yieldAck: _ack, ...identity } = row;
+          const { text: _text, yieldAck: _ack, spawns: _spawns, ...identity } = row;
           return identity;
         });
     // REFUSED WHOLE, before any write, when it carries more text than one transaction can
@@ -1982,6 +2052,9 @@ export const applyTranscript = internalMutation({
         rows,
         budget,
       );
+      // Phase 5: launches stated by these rows get their sub-agents anchored and their
+      // deliveries grouped (`on` only — nothing else posts texts).
+      if (res.spawnIds.length > 0) await scheduleRegroup(ctx, args.chatId, res.spawnIds);
       return {
         ok: true as const,
         inserted: res.inserted,
@@ -2032,6 +2105,8 @@ export const applyTranscript = internalMutation({
         const assignLeft = await assignUserRows(ctx, scope, rows, budget);
         await continueUserRowsLater(ctx, scope, custodyLeft, assignLeft);
         await projectAll(ctx, scope, [...res.seqByRun.keys()], undefined, budget);
+        // Phase 5: a live row may place a bubble or state a launch (design §14.3).
+        if (rows.length > 0) await scheduleRegroup(ctx, args.chatId, res.spawnIds);
       } else {
         await continueUserRowsLater(
           ctx,
@@ -2384,6 +2459,11 @@ export const applyTranscript = internalMutation({
       // table holds as over are named again, whichever apply first marked them.
       const replay = await alreadySettled(ctx, args, args.foregroundRunIds ?? []);
       settledRuns = [...new Set([...settledRuns, ...replay])];
+      // Phase 5: the bubbles this read placed or settled, and the launches it read, may
+      // change how the latest bubbles group (design §14.3).
+      if (rows.length > 0 || terminalRuns.length > 0 || settledRuns.length > 0 || upserted.spawnIds.length > 0) {
+        await scheduleRegroup(ctx, args.chatId, upserted.spawnIds);
+      }
     }
     return {
       ok: true as const,

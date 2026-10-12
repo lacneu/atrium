@@ -33,6 +33,8 @@ import { loadLocalCrypto } from "./lib/crypto/keyProvider";
 import { encryptedSecretValidator } from "./lib/crypto/convexValidator";
 import { maskCredentialId } from "./lib/chatRenderState";
 import { loadProjectionReport } from "./lib/transcriptProjection";
+import { compareOrder } from "./lib/messageOrder";
+import { readBounded } from "./lib/boundedRead";
 
 function assertDev() {
   if (process.env.OPENCLAW_ENABLE_ANON_AUTH !== "1") {
@@ -1344,6 +1346,10 @@ export const inspectChat = query({
         mergedAnnounceRuns: m.mergedAnnounceRuns ?? [],
         // Each merged hand-off continuation's batch (child run ids — ids only).
         continuations: m.continuations ?? [],
+        // Phase 5 (projection `on`): the display group (a message id) and whether a
+        // delivery opened this bubble as its own.
+        displayGroupId: m.displayGroupId ?? null,
+        deliveryOwnBubble: m.deliveryOwnBubble === true,
         parts: parts.map((p) => ({
           kind: p.part.kind,
           name: "name" in p.part ? p.part.name : undefined,
@@ -2262,6 +2268,11 @@ export const benchReconcileTasks = action({
   },
 });
 
+/** `peekSubAgents`' read of the last display group: bounded in bytes and in members (a
+ *  group past either is reported cut, its last message alone). */
+const PEEK_GROUP_READ_BYTES = 8 * 1024 * 1024;
+const PEEK_GROUP_MAX = 64;
+
 export const peekSubAgents = query({
   args: { chatId: v.id("chats") },
   handler: async (ctx, { chatId }) => {
@@ -2275,6 +2286,29 @@ export const peekSubAgents = query({
       .withIndex("by_chat", (q) => q.eq("chatId", chatId))
       .order("desc")
       .first();
+    // Phase 5 (projection `on`): the last DISPLAY GROUP — the bubbles that share the last
+    // message's `displayGroupId` read as one answer (a group is one consecutive stretch by
+    // construction: its id is its head's). Its merged runs are every member's run (and every
+    // member's own merges): what the bench's one-bubble contract compares. Read only when the
+    // last message carries a group, by the group's own index and under a byte budget (codex
+    // phase 5 pass 12 #2); otherwise exactly 0.96.0's single read.
+    const gid = last?.displayGroupId;
+    const group: Doc<"messages">[] = [];
+    let groupCut = false;
+    if (last !== null && gid !== undefined) {
+      const read = await readBounded({ bytes: 0, limit: PEEK_GROUP_READ_BYTES }, PEEK_GROUP_MAX, (from, n) =>
+        ctx.db
+          .query("messages")
+          .withIndex("by_chat_display_group", (q) =>
+            from === null
+              ? q.eq("chatId", chatId).eq("displayGroupId", gid)
+              : q.eq("chatId", chatId).eq("displayGroupId", gid).gte("_creationTime", from),
+          )
+          .take(n),
+      );
+      groupCut = read.cut;
+      if (!read.cut) group.push(...[...read.docs].sort(compareOrder));
+    }
     const chatDoc = await ctx.db.get(chatId);
     return {
       chatInstanceName: chatDoc?.instanceName ?? null,
@@ -2303,9 +2337,22 @@ export const peekSubAgents = query({
               role: last.role,
               status: last.status,
               runId: last.runId ?? null,
-              mergedAnnounceRuns: last.mergedAnnounceRuns ?? [],
+              mergedAnnounceRuns:
+                group.length > 1
+                  ? [
+                      ...new Set(
+                        group.flatMap((m) => [
+                          ...(m.runId !== undefined ? [m.runId] : []),
+                          ...(m.mergedAnnounceRuns ?? []),
+                        ]),
+                      ),
+                    ]
+                  : (last.mergedAnnounceRuns ?? []),
               announceReplayArmed: last.announceReplayArmed ?? null,
               textLen: last.text.length,
+              displayGroupId: gid ?? null,
+              groupMemberIds: group.length > 1 ? group.map((m) => m._id) : [last._id],
+              groupCut,
             },
     };
   },

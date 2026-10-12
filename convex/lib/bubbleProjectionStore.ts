@@ -9,9 +9,10 @@
 import type { Doc, Id } from "../_generated/dataModel";
 import type { MutationCtx } from "../_generated/server";
 import { internal } from "../_generated/api";
-import { deliveryRefusedByStop, finalizeMessageCore, settleTurnEnd } from "../stream";
+import { deliveryRefusedByStop, finalizeMessageCore, insertAssistantBubble, settleTurnEnd } from "../stream";
 import { ALL_SEGMENTS, deletedMergeOf, segmentDeleted, steerSeqsOf, tombstonedSegments } from "./transcriptProjection";
 import { effectiveOrder, QUEUED_ORDER_SENTINEL } from "./messageOrder";
+import { isDeliveryRun } from "./deliveryRuns";
 import { bubbleInScope, type BubbleScope } from "./projectedRuns";
 import {
   planProjection,
@@ -657,7 +658,9 @@ async function executePlan(
   for (const c of [...plan.create].sort((a, b) => a.firstSeq - b.firstSeq)) {
     const orderTime = await placeBetween(ctx, scope, c.firstSeq, budget);
     const before = orderTime.before;
-    const messageId = await ctx.db.insert("messages", {
+    // A delivery run's bubble, born (or born again) from its rows, carries the delivery's
+    // identity like the one the live door opens (§14.28) — its replay finds it.
+    const { messageId } = await insertAssistantBubble(ctx, isDeliveryRun(c.runId), {
       chatId: scope.chatId,
       userId: chat.userId,
       turnSessionKey: scope.sessionKey,

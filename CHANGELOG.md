@@ -12,6 +12,85 @@
   Keep the rest of the dependency graph unchanged. Reject high and critical
   application dependency advisories in both Node CI jobs before merge.
 
+## [0.97.0] — One answer per delegation, built from the session transcript
+
+Minor release, the third step of the transcript redesign you can see. Like 0.96.0 it changes
+nothing unless an OpenClaw instance's `transcriptProjection` is `on`; an instance at `off` or
+`shadow` behaves exactly as in 0.96.0. **`on` stays opt-in and is not for production yet.**
+Deploy Convex before the bridge (the bridge now sends, with each transcript row, the
+sub-agents it launched, which an older Convex refuses), and the frontend with Convex. To roll
+back, set the instance back to `shadow`: deliveries merge into their parent again as in
+0.96.0, except into a bubble that a delivery opened while `on` was active — a delivery that
+belongs there gets a bubble of its own instead, and keeps it when the gateway runs it again or
+when `on` is switched back. The groups already shown stay shown.
+
+**A delegation still reads as one answer — now decided from what the session recorded.** When
+the agent hands work to a sub-agent or starts a background task (an image generation, say), its
+result arrives later as a run of its own. Until now Atrium reopened the earlier answer and
+wrote the result into it, deciding live whether that was safe; the decision depended on what
+had already arrived and in which order. On a projected instance each run now keeps its own
+bubble, with its own text, tool cards, plan, files and sources, and Atrium shows consecutive
+bubbles of one delegation as a single answer: one name, one avatar, one row of actions, and
+Copy takes the whole answer. Which bubbles belong together is computed from facts the gateway
+writes — the sub-agent launch recorded in the transcript, the delivery's own identifier, the
+task the turn started — and recomputed whenever a fact arrives. Nothing depends on timing any
+more: a delivery shown before its launch was read joins its answer as soon as it is, and the
+gateway's "all sub-agents have finished" wake-up, which sometimes landed in a bubble of its
+own, now always joins its delegation.
+
+**Your messages keep their place.** If you write while a sub-agent works, its result comes in
+its own bubble under your message, in the order the session recorded it — as in OpenClaw's
+Control UI — instead of being written back into the answer above.
+
+**When there is no proof, nothing is merged.** A delivery Atrium cannot tie to its delegation
+with certainty — its launch was never recorded, two runs claim it, it was started by a run
+Atrium did not follow — is shown in a bubble of its own. A wrong merge is worse than two
+bubbles.
+
+**The sub-agent cards sit under the run that launched them.** The transcript's launch record
+now decides where a sub-agent's card appears; the bridge's guess is only used until that record
+is read.
+
+**Also in this version:**
+- A delivery that brought nothing to show is no longer labelled "The delivery finished without
+  bringing anything" on a projected instance: a run with nothing to show opens no bubble, and
+  one that only used tools keeps its tool cards.
+- A delivery the gateway runs again after it failed resumes its own bubble, never a second one.
+- Switching an instance to `on` keeps what 0.96.0 already wrote: a delivery 0.96.0 merged into
+  its answer, or showed in a bubble of its own, is still recognized when the gateway runs it
+  again, and lands where it already is — never as a second answer.
+- A delivery whose first attempt showed nothing, and whose answer the session records later,
+  gets its answer back in one bubble — also when the gateway retries it, and also after a
+  rollback to `shadow`.
+- An automatic retry or re-send of a failed reply never takes a delivery's bubble for the
+  answer to your last message: it is left in place, and the gateway's own retry resumes it.
+- Deleting or regenerating a delegation's answer acts on the whole answer, from its first
+  bubble, as it did on the merged bubble; Read aloud, Report and the header's quote take the
+  whole answer too. Branching from it still keeps the whole answer.
+- A sub-agent's card is placed from the launch record of the instance that runs it only, and
+  waits for the launching run's bubble when the record is read first.
+
+**Known limitations of `on` in this version:**
+- A background task's delivery joins its answer only when Atrium followed the run that started
+  the task live: the transcript does not keep the task's identifier, so a task started from
+  another client is shown on its own.
+- A delegation is grouped among the most recent bubbles of a conversation (the last 24); an
+  older delegation keeps the grouping it had.
+- An exported or forked conversation shows a delegation as its separate bubbles.
+- Each run of a delegation keeps its own plan card, so a delegation that updates its plan from
+  several runs shows several plan cards in its answer.
+- After a rollback to `shadow`, deliveries follow 0.96.0's rules again, with 0.96.0's own
+  limits: a delivery 0.96.0 had shown in a bubble of its own that failed, and that the gateway
+  runs again while `shadow` is active, opens a new bubble (as in 0.96.0); switching `on` back
+  makes later replays find their bubble.
+- A delivery bubble left empty and holding more than 256 recorded transcript entries is kept
+  (empty) rather than removed.
+- The limitations listed for `on` in 0.96.0 are unchanged: a run that only used tools and that
+  Atrium did not follow live still gets no bubble; a part of an answer rebuilt after a late
+  "message added while the agent worked" can still be attached to the wrong bubble of the same
+  run; live adoption of a run Atrium did not start is still limited to the cases of 0.95.0; and
+  deleting stays deliberately over-careful.
+
 ## [0.96.0] — The bubbles come from the session transcript
 
 Minor release, the second step of the transcript redesign you can see. Like 0.95.0 it changes

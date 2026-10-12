@@ -578,6 +578,8 @@ type IngestOp =
       runTimeoutSeconds?: number;
       kind?: "subagent" | "task";
       bornOfRun?: string;
+      /** A TASK row of a projected turn (phase 5): the run whose tool frame started it. */
+      startRunId?: string;
       taskName?: string;
       /** The bound the TOOL declared for this background task (async-start
        *  details). Relayed to the mutation, which turns it into an absolute
@@ -1703,6 +1705,10 @@ export const ingest = httpAction(async (ctx, request) => {
             : undefined,
         kind: body.kind,
         bornOfRun: body.bornOfRun,
+        // Phase 5: a run id, bounded like one (lib/transcriptProjection MAX_RUN_ID_CHARS).
+        ...(typeof body.startRunId === "string" && body.startRunId.length > 0 && body.startRunId.length <= 256
+          ? { startRunId: body.startRunId }
+          : {}),
         taskName: body.taskName,
         // BOUNDED here, at the untrusted boundary: a non-finite or absurd figure
         // must not become a deadline. The cap is the safety net's own horizon, so

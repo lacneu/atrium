@@ -33,6 +33,7 @@ import { internal } from "./_generated/api";
 import { MESSAGE_WINDOW } from "./messages";
 import {
   deliveryChildKey,
+  deliveryIdentityKey,
   deliveryPartStamp,
   isDeliveryRun,
   isRequesterSettleRun,
@@ -53,8 +54,10 @@ import { drainNextQueued, MAX_QUEUED_PER_CHAT } from "./lib/outboxQueue";
 import { MAX_ADDRESSED_AGENTS } from "./lib/agentMentions";
 import { maybeScheduleTurnRetry } from "./turnRetry";
 import { projectionModeOfChat } from "./lib/followUp";
+import { regroupIfLaunchWaits, scheduleRegroup } from "./displayGroups";
 import { deletedRunSegment, purgeRowTextsOfMessage, transcriptStoredText } from "./lib/transcriptProjection";
-import { reopenTranscriptRun, settledProjectedBubble } from "./lib/projectedRuns";
+import { bubbleInScope, reopenTranscriptRun, settledProjectedBubble } from "./lib/projectedRuns";
+import { readBounded } from "./lib/boundedRead";
 import { FILE_JOB_MAX_DEFER_MS, UPLOAD_MARKER_MAX_MS } from "./lib/fileJobs";
 import { isExplicitTerminal } from "./lib/bubbleProjection";
 import { maybeReparkPreemptedTurn } from "./preemptRepark";
@@ -351,6 +354,10 @@ export const startAssistant = internalMutation({
     /** An owned delivery whose settled bubble ENDED IN ERROR: its replay resumes it
      *  through the delivery door below, as in 0.95.0 (codex phase 4 pass 12). */
     let resumesErroredDelivery = false;
+    /** Phase 5: a delivery run of an `on` conversation opens a bubble of its own. */
+    let ownDelivery = false;
+    /** Phase 5 (§14.27): 0.96.0's merge refused because the parent is an own bubble. */
+    let ownBubbleByRefusal = false;
     // Whatever the CURRENT mode (codex phase 4 pass 16): a conversation that stored text
     // keeps its projected bubbles after a rollback, and a live start delayed across the
     // switch must land on the one already there — never open a second answer.
@@ -372,7 +379,14 @@ export const startAssistant = internalMutation({
       );
       if (settled !== null) {
         const delivery = deliveryChildKey(runId) !== null || isRequesterSettleRun(runId);
-        if (!delivery || (await ctx.db.get(settled))?.status !== "error") return settled;
+        if (!delivery) return settled;
+        const settledDoc = await ctx.db.get(settled);
+        if (settledDoc?.status !== "error") {
+          // A replayed DELIVERY handed back its settled bubble: what it re-uploads is
+          // deduplicated against what it already attached (codex phase 5 pass 5 #2).
+          if (settledDoc !== null) await armReplayWindow(ctx, settledDoc, runId, now, boundInstanceName);
+          return settled;
+        }
         resumesErroredDelivery = true;
       }
     }
@@ -455,13 +469,44 @@ export const startAssistant = internalMutation({
           });
         }
       }
-      const merge = await reopenParentForAnnounce(
-        ctx,
-        chatId,
-        runId,
-        now,
-        boundInstanceName,
-      );
+      // PROJECTION `on` (phase 5, design §14.2): a delivery never reopens its parent — it
+      // opens its OWN bubble below, and the display groups it with its chain from the
+      // transcript's identities (displayGroups.regroup). Read only for a conversation that
+      // stored text (no read at all for one never `on`); after a rollback the 0.96.0
+      // reopen below applies again.
+      // A delivery that ALREADY opened its own bubble (phase 5) gets that bubble back,
+      // BEFORE any create or merge, whatever the transcript has read of it and whatever the
+      // mode is now (codex phase 5 pass 2 #1): a replay of a run that ended in error resumes
+      // it (the 0.96.0 rule, codex phase 4 pass 12); any other replay lands on it. Found
+      // through the run → bubble record; read only for a conversation that stored text.
+      if (storedText) {
+        const own = await ownDeliveryBubble(
+          ctx,
+          chatId,
+          runId,
+          runSegment !== undefined && runSegment > 0 ? runSegment : 0,
+          boundInstanceName,
+          turnSessionKey,
+        );
+        if (own !== null) {
+          const landed = await landOnOwnDelivery(ctx, chatId, own, runId, now, boundInstanceName, false);
+          if (landed !== null) return landed;
+        }
+      }
+      ownDelivery = storedText && (await projectionModeOfChat(ctx, chat)) === "on";
+      // In `on`, a delivery 0.96.0 ALREADY merged (a bubble from before the switch: no
+      // delivery key, no own marker, so the lookups above miss it) is a replay of that
+      // merge, and 0.96.0's idempotence decides it — handed back, its answer checked by
+      // `batchAnswered`, resumed after an error — never a second answer (codex phase 5
+      // pass 12 #1). Every other delivery opens its own bubble below.
+      const refusal = { ownParent: false };
+      const merge = await reopenParentForAnnounce(ctx, chatId, runId, now, boundInstanceName, ownDelivery, refusal);
+      // After a rollback, 0.96.0's path refused to merge into an OWN bubble (§14.26): the
+      // delivery's bubble is an own bubble too, whatever the mode — it carries the delivery's
+      // identity, so its replay finds it (the lookup above, for any conversation that stored
+      // text) instead of opening a second answer (codex phase 5 pass 16, §14.27). Only an
+      // own bubble's existence leads here: a conversation never `on` has none.
+      if (refusal.ownParent) ownBubbleByRefusal = true;
       if (merge !== null) {
         if (merge.reopened) {
           // The resumed run streams again: its transcript state no longer holds it over,
@@ -480,6 +525,25 @@ export const startAssistant = internalMutation({
         // sidebar reorder (chat.updatedAt), no bogus streaming trace.
         return merge.messageId;
       }
+      // In `on`, a delivery 0.96.0 could not merge and gave a bubble of its OWN — written
+      // before the switch, so unmarked: its replay lands there, as on a phase 5 own bubble,
+      // never on a second one (codex phase 5 pass 12, §14.23 row L8).
+      if (ownDelivery) {
+        const standalone = await legacyStandaloneBubble(
+          ctx,
+          chatId,
+          runId,
+          runSegment !== undefined && runSegment > 0 ? runSegment : 0,
+          {
+            ...(boundInstanceName !== undefined ? { instanceName: boundInstanceName } : {}),
+            ...(turnSessionKey !== undefined ? { sessionKey: turnSessionKey } : {}),
+          },
+        );
+        if (standalone !== null) {
+          const landed = await landOnOwnDelivery(ctx, chatId, standalone, runId, now, boundInstanceName, true);
+          if (landed !== null) return landed;
+        }
+      }
     }
     // PROJECTION `on` (phase 4): the admitted run shows its first content — the bubble
     // now holds the chat, the admission marker's work is done.
@@ -493,7 +557,7 @@ export const startAssistant = internalMutation({
         .take(4);
       for (const a of admissions) await ctx.db.delete(a._id);
     }
-    const messageId = await ctx.db.insert("messages", {
+    const { messageId, stamped } = await insertAssistantBubble(ctx, ownDelivery || ownBubbleByRefusal, {
       chatId,
       userId: chat.userId,
       ...(turnSessionKey !== undefined ? { turnSessionKey } : {}),
@@ -535,8 +599,15 @@ export const startAssistant = internalMutation({
       updatedAt: now,
     });
     // A delivery run that opens a bubble of its own: where its children's
-    // continuation will look for it (`bubbleWrittenByRun`).
-    if (runId !== undefined) await recordRunBubble(ctx, chatId, runId, messageId);
+    // continuation will look for it (`bubbleWrittenByRun`). (An own bubble's record is
+    // written by its birth, `insertAssistantBubble`.)
+    if (runId !== undefined && !stamped) await recordRunBubble(ctx, chatId, runId, messageId);
+    // Phase 5: the new delivery bubble joins its chain's display group now, not at the
+    // next transcript read.
+    if (ownDelivery) await scheduleRegroup(ctx, chatId);
+    // …and a launch of THIS run read before the run had a bubble now anchors its sub-agent
+    // (codex phase 5 pass 1 #6). One probe, for a conversation that stored text only.
+    else if (storedText && runId !== undefined) await regroupIfLaunchWaits(ctx, chatId, runId);
     await ctx.db.patch(chatId, { updatedAt: now });
     await traceStream(ctx, {
       phase: "start",
@@ -548,6 +619,236 @@ export const startAssistant = internalMutation({
     return messageId;
   },
 });
+
+/**
+ * PROJECTION `on` (phase 5, codex passes 4 #1 and 5 #2): a REPLAYED delivery run is handed
+ * an EXISTING bubble — settled, resumed after an error, or its own not yet settled. What it
+ * re-uploads must meet what that run already attached: 0.96.0's filename-keyed window
+ * (`addPart`, against the parts stamped with this run), armed for ANNOUNCE_REPLAY_WINDOW_MS
+ * and disarmed when it expires. Never for a bubble still streaming: a replay racing its own
+ * first attempt is that attempt (0.96.0 arms only a settled parent too).
+ */
+async function armReplayWindow(
+  ctx: MutationCtx,
+  message: Doc<"messages">,
+  runId: string,
+  now: number,
+  /** The proven starting instance: a bubble another gateway owns is never armed (codex
+   *  phase 5 pass 8 #1 — its own later file would be swallowed as a replay). */
+  boundInstanceName: string | undefined,
+): Promise<void> {
+  if (message.status === "streaming") return;
+  await assertMessageBound(ctx, message, boundInstanceName);
+  await ctx.db.patch(message._id, {
+    announceReplayArmed: now + ANNOUNCE_REPLAY_WINDOW_MS,
+    announceReplayRun: runId,
+  });
+  await ctx.scheduler.runAfter(ANNOUNCE_REPLAY_WINDOW_MS, internal.stream.disarmAnnounceReplay, {
+    messageId: message._id,
+  });
+}
+
+/** The OWN bubble a delivery run opened (phase 5) for THIS segment, in scope — or null
+ *  (none, or only a merged parent: 0.96.0's path then). A segment is matched by the identity
+ *  the bubble stores (`runSegment`, absent for the first): an exact equality with the
+ *  segment the live overlay opens, as `liveBubbleFor` does — never another segment's bubble
+ *  (codex phase 5 pass 3 #1: the first segment, ended at a steered input, was handed back to
+ *  the replay of the second). */
+async function ownDeliveryBubble(
+  ctx: MutationCtx,
+  chatId: Id<"chats">,
+  runId: string,
+  segment: number,
+  boundInstanceName: string | undefined,
+  turnSessionKey: string | undefined,
+): Promise<Doc<"messages"> | null> {
+  const key = deliveryIdentityKey(runId);
+  if (key === null) return null;
+  const candidates = await ctx.db
+    .query("messages")
+    .withIndex("by_chat_delivery_key", (q) =>
+      q.eq("chatId", chatId).eq("deliveryKey", key).eq("runSegment", segment === 0 ? undefined : segment),
+    )
+    .take(4);
+  return (
+    candidates.find(
+      (m) =>
+        m.role === "assistant" &&
+        m.deliveryOwnBubble === true &&
+        bubbleInScope(m, {
+          ...(boundInstanceName !== undefined ? { instanceName: boundInstanceName } : {}),
+          ...(turnSessionKey !== undefined ? { sessionKey: turnSessionKey } : {}),
+        }),
+    ) ?? null
+  );
+}
+
+/**
+ * A REPLAY of a delivery handed the bubble the delivery opened as its own (codex phase 5
+ * pass 6 #1: found by the delivery's IDENTITY, not its run id — a `:retry-N` wake of a
+ * settled batch is the same delivery made again). 0.96.0's rules apply to it — the owner
+ * still streaming: a replay racing it, handed the bubble (its writes fail the generation
+ * guard); settled with an answer, or stopped: handed back, re-uploads deduplicated; failed,
+ * or settled with NOTHING answered by an earlier attempt of the batch: resumed under the new
+ * run. Null when it could not be resumed (the caller goes on). `legacy`: a bubble 0.96.0
+ * opened for the delivery (no phase 5 marker), proven its own by the caller.
+ */
+async function landOnOwnDelivery(
+  ctx: MutationCtx,
+  chatId: Id<"chats">,
+  own: Doc<"messages">,
+  runId: string,
+  now: number,
+  boundInstanceName: string | undefined,
+  legacy: boolean,
+): Promise<Id<"messages"> | null> {
+  // A bubble 0.96.0 opened for this delivery, adopted in `on`: it takes the delivery's
+  // identity now (§14.28), so every later replay — in any mode, after a rollback too — finds
+  // it by that identity instead of 0.96.0's merge into the parent (the answer twice).
+  if (legacy) {
+    const key = deliveryIdentityKey(runId);
+    await ctx.db.patch(own._id, { deliveryOwnBubble: true, ...(key !== null ? { deliveryKey: key } : {}) });
+  }
+  const answered = own.status !== "complete" || own.runId === runId || (await ownBubbleAnswered(ctx, own, runId));
+  if (own.status !== "error" && answered) {
+    // Same for an own bubble the transcript has not settled yet (pass 5 #2).
+    await armReplayWindow(ctx, own, runId, now, boundInstanceName);
+    return own._id;
+  }
+  const resumed = await resumeOwnDelivery(ctx, own._id, runId, now, boundInstanceName, legacy);
+  if (resumed === null) return null;
+  // Where this run writes (a retry's run id names the bubble now).
+  await recordRunBubble(ctx, chatId, runId, resumed);
+  await reopenTranscriptRun(ctx, chatId, runId, now);
+  await ctx.db.patch(chatId, { updatedAt: now });
+  return resumed;
+}
+
+/** The run ids a delivery's earlier attempts carried: the run itself, and — for a
+ *  requester-settle `:retry-N` wake — the batch's first run and its earlier retries (the
+ *  most recent `LEGACY_RETRY_PROBES`). */
+const LEGACY_RETRY_PROBES = 8;
+function earlierAttemptRuns(runId: string): string[] {
+  const runs = [runId];
+  if (!isRequesterSettleRun(runId)) return runs;
+  const m = /^(.*):retry-(\d+)$/.exec(runId);
+  if (m === null || m[1] === undefined || m[2] === undefined) return runs;
+  const base = m[1];
+  const n = Number(m[2]);
+  for (let k = n - 1; k >= 1 && runs.length <= LEGACY_RETRY_PROBES; k--) runs.push(`${base}:retry-${k}`);
+  runs.push(base);
+  return runs;
+}
+
+/** PROJECTION `on` over 0.96.0's data (codex phase 5 pass 12, §14.23 row L8): the bubble
+ *  0.96.0 opened for THIS delivery when it could not merge it — unmarked, never a merge
+ *  target (no parked prefix, no merged run), still owned by this delivery's generation, in
+ *  scope. Found through the run → bubble records 0.96.0 wrote; first segment only (0.96.0
+ *  had no other). */
+async function legacyStandaloneBubble(
+  ctx: MutationCtx,
+  chatId: Id<"chats">,
+  runId: string,
+  segment: number,
+  scope: { instanceName?: string; sessionKey?: string },
+): Promise<Doc<"messages"> | null> {
+  if (segment !== 0) return null;
+  for (const run of earlierAttemptRuns(runId)) {
+    const records = await ctx.db
+      .query("runBubbles")
+      .withIndex("by_chat_run", (q) => q.eq("chatId", chatId).eq("runId", run))
+      .take(4);
+    for (const r of records) {
+      const m = await ctx.db.get(r.messageId);
+      if (
+        m !== null &&
+        m.chatId === chatId &&
+        m.role === "assistant" &&
+        m.deliveryOwnBubble === undefined &&
+        m.announcePrefix === undefined &&
+        m.mergedAnnounceRuns === undefined &&
+        m.runSegment === undefined &&
+        m.runId !== undefined &&
+        sameDeliveryGeneration(m.runId, runId) &&
+        bubbleInScope(m, scope)
+      ) {
+        return m;
+      }
+    }
+  }
+  return null;
+}
+
+/**
+ * PROJECTION `on` (phase 5): resume a delivery's OWN bubble that ended in error, for the
+ * gateway's replay of the same run — streaming again, the failure cleared, a fresh live row
+ * continuing the SSE sequence. Null when the bubble is not the run's own (then the caller
+ * opens nothing new for it either: it returns through the ordinary path).
+ */
+async function resumeOwnDelivery(
+  ctx: MutationCtx,
+  messageId: Id<"messages">,
+  runId: string,
+  now: number,
+  boundInstanceName: string | undefined,
+  /** A bubble 0.96.0 opened for this delivery, proven by the caller (`legacyStandaloneBubble`). */
+  legacy = false,
+): Promise<Id<"messages"> | null> {
+  const message = await ctx.db.get(messageId);
+  if (message === null || message.role !== "assistant" || message.status === "streaming") return null;
+  // The same DELIVERY (its identity), possibly under a new run: a `:retry-N` wake resumes
+  // the bubble of the attempt it repeats, and takes its run (codex phase 5 pass 6 #1).
+  // Found by its delivery's identity (or, for 0.96.0's, proven its generation's by the
+  // caller): a bubble no other delivery ever merged into (§14.26) — its run is this
+  // delivery's own.
+  if (message.deliveryOwnBubble !== true && !legacy) return null;
+  if (
+    boundInstanceName !== undefined &&
+    message.boundInstance !== undefined &&
+    message.boundInstance !== boundInstanceName
+  ) {
+    throw new Error(CROSS_INSTANCE);
+  }
+  await ctx.db.patch(messageId, {
+    status: "streaming",
+    runId,
+    error: undefined,
+    errorCode: undefined,
+    autoRetry: undefined,
+    autoRetryOutcome: undefined,
+    finalizeCause: undefined,
+    finalizedAt: undefined,
+    updatedAt: now,
+  });
+  // The replay re-delivers what the failed attempt already attached (codex phase 5 pass 4
+  // #1): the same window as every other replay handed an existing bubble.
+  await armReplayWindow(ctx, { ...message, status: "error" }, runId, now, boundInstanceName);
+  const existing = await streamingRow(ctx, messageId);
+  if (existing === null) {
+    const lastChunk = await ctx.db
+      .query("streamChunks")
+      .withIndex("by_message_seq", (q) => q.eq("messageId", messageId))
+      .order("desc")
+      .first();
+    await ctx.db.insert("streamingText", {
+      messageId,
+      chatId: message.chatId,
+      userId: message.userId,
+      generation: runId,
+      ...(boundInstanceName !== undefined ? { boundInstance: boundInstanceName } : {}),
+      text: "",
+      updatedAt: now,
+      ...(lastChunk !== null ? { chunkSeq: lastChunk.seq + 1 } : {}),
+    });
+  } else {
+    await ctx.db.patch(existing._id, {
+      generation: runId,
+      ...(boundInstanceName !== undefined ? { boundInstance: boundInstanceName } : {}),
+      updatedAt: now,
+    });
+  }
+  return messageId;
+}
 
 // The streamingText row for a message (the live-text home). `.first()` (not
 // `.unique()`): the by_message invariant is one row, but the STREAMING write path
@@ -1097,6 +1398,34 @@ async function recordCarrierAnchors(
   }
 }
 
+/**
+ * THE birth of an assistant bubble that may be a delivery's OWN (phase 5, codex pass 17,
+ * design §14.28). Every path that creates a bubble for a delivery run as its own goes
+ * through here — the live door (`startAssistant`, `on` and the §14.27 refusal), a bubble
+ * born from transcript rows (`bubbleProjectionStore`), a delivery's later segment
+ * (`splitSegment`), a late final (`appendLateFinal`) — so the bubble always carries the
+ * delivery's identity: `deliveryOwnBubble`, `deliveryKey` (`deliveryIdentityKey`) and its
+ * run → bubble record. Its scope (instance, session, segment) is the bubble's own fields
+ * (`boundInstance`, `turnSessionKey`, `runSegment`), which the identity lookup compares.
+ * A bubble whose identity is missing escapes every replay lookup and its answer is shown
+ * twice. `own` false, or a run that is no delivery: the document exactly as given.
+ */
+export async function insertAssistantBubble(
+  ctx: MutationCtx,
+  own: boolean,
+  doc: Omit<Doc<"messages">, "_id" | "_creationTime" | "deliveryOwnBubble" | "deliveryKey">,
+): Promise<{ messageId: Id<"messages">; stamped: boolean }> {
+  const runId = doc.runId;
+  const stamped = own && runId !== undefined && isDeliveryRun(runId);
+  const key = stamped ? deliveryIdentityKey(runId) : null;
+  const messageId = await ctx.db.insert("messages", {
+    ...doc,
+    ...(stamped ? { deliveryOwnBubble: true, ...(key !== null ? { deliveryKey: key } : {}) } : {}),
+  });
+  if (stamped) await recordRunBubble(ctx, doc.chatId, runId!, messageId);
+  return { messageId, stamped };
+}
+
 /** Record that DELIVERY run `runId` wrote to bubble `messageId` — when it opens a
  *  bubble of its own and when it merges into one (`reopenParentForAnnounce`).
  *
@@ -1120,6 +1449,68 @@ async function recordRunBubble(
   if (existing !== null) return;
   await ctx.db.insert("runBubbles", { chatId, runId, messageId, createdAt: Date.now() });
 }
+
+/** Transcript rows an own delivery bubble may hold and still be dropped in one transaction. */
+const RELEASABLE_ROWS = 256;
+
+/** The transcript rows assigned to a bubble, or null when there are more than one
+ *  transaction releases (the bubble is then kept, never dropped half-released). */
+async function releasableRows(
+  ctx: MutationCtx,
+  messageId: Id<"messages">,
+): Promise<Doc<"transcriptRows">[] | null> {
+  const rows = await ctx.db
+    .query("transcriptRows")
+    .withIndex("by_message_seq", (q) => q.eq("messageId", messageId))
+    .take(RELEASABLE_ROWS + 1);
+  return rows.length > RELEASABLE_ROWS ? null : rows;
+}
+
+/** Release what pointed at an own delivery bubble the SYSTEM dropped: its rows go back to
+ *  unassigned (their texts kept), its run → bubble records go. */
+async function releaseDroppedOwnBubble(
+  ctx: MutationCtx,
+  message: Doc<"messages">,
+  rows: readonly Doc<"transcriptRows">[],
+): Promise<void> {
+  for (const row of rows) await ctx.db.patch(row._id, { messageId: undefined });
+  await dropRunBubbleLinks(ctx, message._id);
+  // The durable fact that this run's bubble was an own one (§14.29): what a rebirth after a
+  // rollback reads, once every reference to the bubble is gone.
+  if (message.runId !== undefined) {
+    await ctx.db.insert("ownBubbleReleases", {
+      chatId: message.chatId,
+      runId: message.runId,
+      messageId: message._id,
+      releasedAt: Date.now(),
+    });
+  }
+}
+
+/** Was a bubble of this run an own one, dropped by the system (§14.29)? */
+async function ownBubbleReleased(ctx: MutationCtx, chatId: Id<"chats">, runId: string): Promise<boolean> {
+  return (
+    (await ctx.db
+      .query("ownBubbleReleases")
+      .withIndex("by_chat_run", (q) => q.eq("chatId", chatId).eq("runId", runId))
+      .first()) !== null
+  );
+}
+
+/** Remove every run → bubble record of a bubble the SYSTEM removed (never one a person
+ *  deleted: those records are what refuses its runs while the deletion's tombstoning
+ *  paginates). Bounded per step; an own bubble carries one record per attempt. */
+async function dropRunBubbleLinks(ctx: MutationCtx, messageId: Id<"messages">): Promise<void> {
+  for (;;) {
+    const links = await ctx.db
+      .query("runBubbles")
+      .withIndex("by_message", (q) => q.eq("messageId", messageId))
+      .take(RUN_LINK_DROP_BATCH);
+    for (const l of links) await ctx.db.delete(l._id);
+    if (links.length < RUN_LINK_DROP_BATCH) return;
+  }
+}
+const RUN_LINK_DROP_BATCH = 64;
 
 /** `recordRunBubble` for a NON-delivery run whose id a merge rotated off its bubble
  *  (projection `on` only, see the caller). The first record stands. */
@@ -1295,20 +1686,40 @@ async function batchAnswered(
   parent: Doc<"messages">,
   parentId: Id<"messages">,
   batch: { at: number; childRunIds: string[] },
+  replayRunId: string,
 ): Promise<boolean> {
-  if (parent.text.slice(batch.at).trim() !== "") return true;
-  const key = batchKey(batch.childRunIds);
-  const parts = (
-    await ctx.db
+  // 0.96.0's reads, one for one: the text first (no part read when it answers), then every
+  // part of the bubble (codex phase 5 pass 11: loading the parts before the text check made
+  // a retry of an answered batch read megabytes 0.96.0 never read).
+  return answeredSince(ctx, parent, batch.at, replayRunId, () =>
+    ctx.db
       .query("messageParts")
       .withIndex("by_message", (q) => q.eq("messageId", parentId))
-      .collect()
-  ).filter(
-    (row) =>
-      row.announceRun !== undefined &&
-      batchKey(parseRequesterSettleRun(row.announceRun)?.childRunIds ?? []) === key,
+      .collect(),
   );
-  for (const row of parts) {
+}
+
+/**
+ * THE predicate "did this delivery already answer in this bubble?" — 0.96.0's
+ * `batchAnswered`, shared by its merge path and phase 5's own bubbles (codex phase 5 pass
+ * 10: a parallel re-implementation kept diverging). From `at` (where this delivery's
+ * generation begins in the bubble's text — after an inherited prefix or an earlier batch),
+ * any text is an answer; among the parts, only those THIS delivery stamped
+ * (`announceRun`, same generation) count: a cron card, a widget, a file or medium whose
+ * blob still resolves (storage refusing to answer counts as resolving: the conservative
+ * side — a rerun would deliver it twice).
+ */
+async function answeredSince(
+  ctx: MutationCtx,
+  message: Doc<"messages">,
+  at: number,
+  runId: string,
+  /** Reads the parts — called ONLY when the text did not answer (0.96.0's short-circuit). */
+  loadParts: () => Promise<ReadonlyArray<Doc<"messageParts">>>,
+): Promise<boolean> {
+  if (message.text.slice(at).trim() !== "") return true;
+  for (const row of await loadParts()) {
+    if (row.announceRun === undefined || !sameDeliveryGeneration(row.announceRun, runId)) continue;
     const part = row.part;
     if (part.kind === "cron") return true;
     // A widget the batch showed is an answer; a rerun would show it again.
@@ -1321,6 +1732,48 @@ async function batchAnswered(
     }
   }
   return false;
+}
+
+/** Bytes the own-bubble answer probe may read before it stops (paid before each read). */
+const ANSWER_PROBE_BYTES = 4 * 1024 * 1024;
+/** Parts it may read. */
+const ANSWER_PROBE_PARTS = 1024;
+
+/**
+ * Phase 5's own delivery bubble: the SAME predicate, over the parts read by the shared
+ * bounded reader (lib/boundedRead.ts). A read the budget cut finds no answer it did not
+ * see: an incomplete probe is never "answered" (codex phase 5 pass 9 #2) — the retry then
+ * resumes the bubble and the replay window deduplicates what it re-sends.
+ */
+export async function ownBubbleAnswered(
+  ctx: MutationCtx,
+  message: Doc<"messages">,
+  runId: string,
+): Promise<boolean> {
+  // From the start: no other delivery ever wrote in an own bubble (§14.26), nor in a 0.96.0
+  // bubble `legacyStandaloneBubble` accepts (never a merge target).
+  return answeredSince(ctx, message, 0, runId, async () => {
+    const { docs } = await readBounded({ bytes: 0, limit: ANSWER_PROBE_BYTES }, ANSWER_PROBE_PARTS, (from, n) =>
+      ctx.db
+        .query("messageParts")
+        .withIndex("by_message", (q) =>
+          from === null ? q.eq("messageId", message._id) : q.eq("messageId", message._id).gte("_creationTime", from),
+        )
+        .take(n),
+    );
+    return docs;
+  });
+}
+
+/** 0.96.0's `batchAnswered`, for the differential test (own bubble ≡ merged bubble). */
+export async function legacyBatchAnswered(
+  ctx: MutationCtx,
+  parent: Doc<"messages">,
+  childRunIds: string[],
+  replayRunId: string,
+): Promise<boolean | null> {
+  const batch = recordedBatch(parent, childRunIds);
+  return batch === null ? null : await batchAnswered(ctx, parent, parent._id, batch, replayRunId);
 }
 
 /** Were two delivery runs the SAME delivery? The same run, or two runs of one
@@ -1387,6 +1840,13 @@ async function reopenParentForAnnounce(
   // path previously produced an UNSTAMPED row that fell back to the weaker
   // chat-membership check).
   boundInstanceName?: string,
+  /** PROJECTION `on` (phase 5, codex pass 12 #1): only a delivery this path ALREADY merged
+   *  (0.96.0's data, from before the switch) is handled here — by 0.96.0's own idempotence
+   *  (sink, `batchAnswered`, resume). Any other delivery returns null before a write: it
+   *  opens its own bubble. */
+  replayOnly = false,
+  /** Set when the merge is refused because the parent is an own bubble (§14.26-27). */
+  refusal: { ownParent: boolean } = { ownParent: false },
 ): Promise<{ messageId: Id<"messages">; reopened: boolean } | null> {
   const settle = parseRequesterSettleRun(announceRunId);
   const childSessionKey = deliveryChildKey(announceRunId);
@@ -1410,6 +1870,7 @@ async function reopenParentForAnnounce(
   // fail-close to two bubbles, never merge into a wrong one).
   let anchoredResolution =
     parentId !== undefined && sub?.anchorExact === true;
+  let carrierJoin: { toRecord: readonly Id<"subAgents">[]; bubble: Id<"messages"> } | null = null;
   if (settle !== null) {
     // The continuation of a YIELDED turn, and nothing else, joined on certain
     // evidence only: it may return to a bubble the conversation moved past. No
@@ -1418,7 +1879,9 @@ async function reopenParentForAnnounce(
     if (join === null) return null;
     // Recorded whatever the reopen decides below: where these children belong is
     // a fact about their turn, not about whether this delivery may merge now.
-    await recordCarrierAnchors(ctx, join.toRecord, join.bubble);
+    // (Replay-only: once the delivery is known to be a replay, below.)
+    if (replayOnly) carrierJoin = join;
+    else await recordCarrierAnchors(ctx, join.toRecord, join.bubble);
     parentId = join.bubble;
     anchoredResolution = true;
   }
@@ -1492,6 +1955,16 @@ async function reopenParentForAnnounce(
   if (parent === null || parent.chatId !== chatId || parent.role !== "assistant") {
     return null;
   }
+  // PROJECTION (phase 5, codex pass 15, design §14.26): a delivery's OWN bubble is never a
+  // merge target — not in `on` (deliveries open their own), not after a rollback either.
+  // It reads as a parent that cannot be merged into: the delivery gets a bubble of its own,
+  // as 0.96.0 gives one whenever it cannot merge. 0.96.0 has no own bubble, so nothing it
+  // decides changes (the field is read off the parent already loaded); and a bubble mixing
+  // two deliveries' generations, whose inherited text a resume could lose, cannot exist.
+  if (parent.deliveryOwnBubble === true) {
+    refusal.ownParent = true;
+    return null;
+  }
   const alreadyMerged =
     parent.runId === announceRunId ||
     (parent.mergedAnnounceRuns ?? []).includes(announceRunId);
@@ -1515,6 +1988,11 @@ async function reopenParentForAnnounce(
   // answer (codex pass 13). Three rounds of findings came from each gate carrying
   // its own notion of "this run may act here"; they now read this one.
   const ownsBubble = sameDeliveryGeneration(parent.runId, announceRunId);
+  if (replayOnly) {
+    // Never merged here by 0.96.0: not this path's to decide — its own bubble.
+    if (!alreadyMerged && replayOf === null) return null;
+    if (carrierJoin !== null) await recordCarrierAnchors(ctx, carrierJoin.toRecord, carrierJoin.bubble);
+  }
   let resuming = false;
   if (alreadyMerged || replayOf !== null) {
     // Silent sink — the parent handed back unopened; every tagged write fails the
@@ -1553,7 +2031,7 @@ async function reopenParentForAnnounce(
       // A retry of the owning batch: silent if that batch ANSWERED (text, a file, a
       // cron card — `batchAnswered`); otherwise it brings the answer, an ordinary
       // reopen below.
-      if (replayOf !== null && (await batchAnswered(ctx, parent, parentId, replayOf))) {
+      if (replayOf !== null && (await batchAnswered(ctx, parent, parentId, replayOf, announceRunId))) {
         return await sink();
       }
     }
@@ -3987,7 +4465,15 @@ export async function finalizeMessageCore(
     // run that merges into a parent's bubble falls back to the bubble's own
     // text here (see `streamedText`), so a delivery that added nothing to a
     // reply the reader can read is never named a failure.
-    finalText.trim() === ""
+    finalText.trim() === "" &&
+    // PROJECTION `on` (phase 5): a delivery's OWN bubble is born at its first visible
+    // content and rewritten from its rows — a run with nothing to show has no bubble, one
+    // with only tool cards keeps them. The merge-path verdict below does not apply (design
+    // §7.4) — while the conversation is `on`: an own bubble opened after a rollback
+    // (§14.27) is not rebuilt from rows, and gets 0.96.0's verdict. The mode is read for an
+    // own bubble only (the field is on the message already loaded: no cost elsewhere).
+    (message.deliveryOwnBubble !== true ||
+      (await projectionModeOfChat(ctx, await ctx.db.get(message.chatId))) !== "on")
   ) {
     const parts = await ctx.db
       .query("messageParts")
@@ -4023,6 +4509,8 @@ export async function finalizeMessageCore(
     : errorKind;
   /** The chat, as the drop condition below reads it (reused, never read twice). */
   let dropChat: Doc<"chats"> | null = null;
+  /** An own delivery bubble's assigned transcript rows, read by the drop condition. */
+  let ownRows: Doc<"transcriptRows">[] | null = null;
   if (
     dropIfEmpty === true &&
     finalStatus === "complete" &&
@@ -4035,16 +4523,29 @@ export async function finalizeMessageCore(
     // terminal handling below is what releases the job's lock (pendingSummarize /
     // pendingCurate) — an empty reply must reach it like any other, and the watchdog
     // cannot free a lock whose live row this branch deleted.
-    (dropChat = await ctx.db.get(message.chatId))?.kind === undefined
+    (dropChat = await ctx.db.get(message.chatId))?.kind === undefined &&
+    // PROJECTION `on` (phase 5): an own delivery bubble is dropped only when every transcript
+    // row assigned to it can be released in this transaction (`releaseDroppedOwnBubble`);
+    // otherwise it stays, settled and empty. Read off the message already loaded: no read
+    // for any other bubble.
+    (message.deliveryOwnBubble !== true || (ownRows = await releasableRows(ctx, messageId)) !== null)
   ) {
     // Nothing to show: the bubble goes, with its live row and live activity, in the
     // same transaction as the turn's end — then the turn ends like any other.
     if (stRow !== null) await ctx.db.delete(stRow._id);
     await clearLiveActivity(ctx, messageId);
     await ctx.db.delete(messageId);
-    // Projection `on` only (a conversation that stored row text): its assigned rows'
-    // texts. Read on the chat document (no index read for any other conversation).
-    if (transcriptStoredText(dropChat)) {
+    if (message.deliveryOwnBubble === true) {
+      // PROJECTION `on` (phase 5): an own delivery bubble with nothing to show is dropped by
+      // the SYSTEM, not deleted by a person — it leaves no reference to itself behind (codex
+      // phase 5 passes 13-14, design §14.25). A run → bubble record or a row assigned to a
+      // bubble that no longer exists is what every reader takes for a person's deletion:
+      // the run refused for good, its later rows never shown, their texts purged. No purge
+      // is scheduled: the rows' texts stay, for the bubble their run may still make.
+      await releaseDroppedOwnBubble(ctx, message, ownRows ?? []);
+    } else if (transcriptStoredText(dropChat)) {
+      // Projection `on` only (a conversation that stored row text): its assigned rows'
+      // texts. Read on the chat document (no index read for any other conversation).
       await purgeRowTextsOfMessage(ctx, messageId, message.chatId);
     }
     await ctx.scheduler.runAfter(0, internal.stream.deleteStreamChunksStep, {
@@ -5806,7 +6307,9 @@ export const splitSegment = internalMutation({
         if (floor > now) orderTime = floor;
       }
     }
-    const next = await ctx.db.insert("messages", {
+    // A delivery's own bubble stays one across its segments (phase 5, codex pass 3 #1): born
+    // with the delivery's identity (§14.28).
+    const { messageId: next } = await insertAssistantBubble(ctx, message.deliveryOwnBubble === true, {
       chatId: message.chatId,
       userId: message.userId,
       ...(message.turnSessionKey !== undefined ? { turnSessionKey: message.turnSessionKey } : {}),
@@ -5891,7 +6394,16 @@ export const appendLateFinal = internalMutation({
     }
     const chat = await ctx.db.get(chatId);
     if (chat === null) return null;
-    const created = await ctx.db.insert("messages", {
+    // A delivery's late final is its own bubble (§14.28) when the conversation is `on` — or
+    // when the run's bubble WAS an own one the system dropped (its release record, §14.29):
+    // a durable fact, so a rebirth after a rollback keeps the delivery's identity and its
+    // replay finds it. Read only for a delivery run of a conversation that stored text
+    // (nothing more for any other).
+    const own =
+      isDeliveryRun(runId) &&
+      transcriptStoredText(chat) &&
+      ((await projectionModeOfChat(ctx, chat)) === "on" || (await ownBubbleReleased(ctx, chatId, runId)));
+    const { messageId: created } = await insertAssistantBubble(ctx, own, {
       chatId,
       userId: chat.userId,
       ...(turnSessionKey !== undefined ? { turnSessionKey } : {}),

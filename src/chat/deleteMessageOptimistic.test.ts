@@ -88,3 +88,34 @@ describe("deleteMessageOptimisticUpdate (truncate-forward, instant)", () => {
     expect(writes).toHaveLength(0);
   });
 });
+
+describe("deleteMessageOptimisticUpdate — a delegation's display group (codex phase 5 pass 1 #4)", () => {
+  test("deleting the group's LAST bubble truncates from its FIRST, like the server", () => {
+    const g = (id: string, t: number, role: string, displayGroupId?: string) => ({
+      ...row(id, t),
+      role,
+      ...(displayGroupId !== undefined ? { displayGroupId } : {}),
+    });
+    const { store, writes } = fakeStore([
+      {
+        args: { chatId: "c1" },
+        value: [g("q", 10, "user"), g("p", 20, "assistant", "p"), g("d", 30, "assistant", "p")] as unknown as Row[],
+      },
+    ]);
+    run(store, "d");
+    expect(writes[0].value.map((r) => r._id)).toEqual(["q"]);
+  });
+});
+
+describe("deleteMessageOptimisticUpdate — a head placed before the cached window (codex phase 5 pass 9 #1)", () => {
+  test("P and D recent but placed around an old question X outside the window: deleting D removes D only", () => {
+    // The window holds messages created since t=100; P (created 300) is placed at 50,
+    // before the window starts — X, displayed between them, is not in the cache.
+    const P = { ...row("p", 300), role: "assistant", displayGroupId: "p", orderTime: 50 };
+    const D = { ...row("d", 310), role: "assistant", displayGroupId: "p", orderTime: 60 };
+    const older = { ...row("o", 100), role: "assistant" };
+    const { store, writes } = fakeStore([{ args: { chatId: "c1" }, value: [P, D, older] as unknown as Row[] }]);
+    run(store, "d");
+    expect(writes[0].value.map((r) => r._id).sort()).toEqual(["o", "p"]);
+  });
+});

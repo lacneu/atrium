@@ -287,6 +287,150 @@
     "bytesRead": 1519,
     "bytesWritten": 612
   },
+  "off:startAnnounceMerge": {
+    "ranges": 12,
+    "reads": 35,
+    "writes": 7,
+    "scheduled": 0,
+    "bytesRead": 8679,
+    "bytesWritten": 2546
+  },
+  "off:startSettleMerge": {
+    "ranges": 12,
+    "reads": 33,
+    "writes": 6,
+    "scheduled": 0,
+    "bytesRead": 7842,
+    "bytesWritten": 2193
+  },
+  "off:startTaskMerge": {
+    "ranges": 12,
+    "reads": 35,
+    "writes": 7,
+    "scheduled": 0,
+    "bytesRead": 8547,
+    "bytesWritten": 2190
+  },
+  "off:startUnanchoredDelivery": {
+    "ranges": 5,
+    "reads": 3,
+    "writes": 5,
+    "scheduled": 0,
+    "bytesRead": 468,
+    "bytesWritten": 1596
+  },
+  "off:finalizeMergedAnnounce": {
+    "ranges": 10,
+    "reads": 9,
+    "writes": 5,
+    "scheduled": 2,
+    "bytesRead": 2684,
+    "bytesWritten": 1335
+  },
+  "off:finalizeEmptyDelivery": {
+    "ranges": 12,
+    "reads": 9,
+    "writes": 3,
+    "scheduled": 2,
+    "bytesRead": 2340,
+    "bytesWritten": 1025
+  },
+  "off:addPartMergedAnnounce": {
+    "ranges": 3,
+    "reads": 4,
+    "writes": 3,
+    "scheduled": 0,
+    "bytesRead": 1856,
+    "bytesWritten": 1252
+  },
+  "off:upsertSubAgentNew": {
+    "ranges": 5,
+    "reads": 4,
+    "writes": 1,
+    "scheduled": 0,
+    "bytesRead": 752,
+    "bytesWritten": 370
+  },
+  "off:upsertSubAgentUpdate": {
+    "ranges": 10,
+    "reads": 6,
+    "writes": 1,
+    "scheduled": 1,
+    "bytesRead": 1684,
+    "bytesWritten": 434
+  },
+  "off:upsertTaskEngagement": {
+    "ranges": 5,
+    "reads": 4,
+    "writes": 1,
+    "scheduled": 0,
+    "bytesRead": 752,
+    "bytesWritten": 376
+  },
+  "off:listByChat": {
+    "ranges": 34,
+    "reads": 29,
+    "writes": 0,
+    "scheduled": 0,
+    "bytesRead": 6668,
+    "bytesWritten": 0
+  },
+  "off:submitFeedback": {
+    "ranges": 10,
+    "reads": 29,
+    "writes": 2,
+    "scheduled": 1,
+    "bytesRead": 6824,
+    "bytesWritten": 1324
+  },
+  "off:retryAnsweredBatch": {
+    "ranges": 5,
+    "reads": 5,
+    "writes": 1,
+    "scheduled": 1,
+    "bytesRead": 1986,
+    "bytesWritten": 787
+  },
+  "off:retryUnansweredBatch": {
+    "ranges": 10,
+    "reads": 31,
+    "writes": 6,
+    "scheduled": 0,
+    "bytesRead": 8709,
+    "bytesWritten": 2354
+  },
+  "off:retryGoneBlobBatch": {
+    "ranges": 10,
+    "reads": 31,
+    "writes": 6,
+    "scheduled": 0,
+    "bytesRead": 8755,
+    "bytesWritten": 2354
+  },
+  "off:submitFeedbackOlderThanScan": {
+    "ranges": 11,
+    "reads": 66,
+    "writes": 2,
+    "scheduled": 1,
+    "bytesRead": 13326,
+    "bytesWritten": 983
+  },
+  "off:peekSubAgents": {
+    "ranges": 3,
+    "reads": 4,
+    "writes": 0,
+    "scheduled": 0,
+    "bytesRead": 1236,
+    "bytesWritten": 0
+  },
+  "off:peekSubAgentsHeavy": {
+    "ranges": 3,
+    "reads": 4,
+    "writes": 0,
+    "scheduled": 0,
+    "bytesRead": 666835,
+    "bytesWritten": 0
+  },
   "shadow:deleteMessage": {
     "ranges": 182,
     "reads": 54,
@@ -574,5 +718,149 @@
     "scheduled": 1,
     "bytesRead": 1519,
     "bytesWritten": 612
+  },
+  "shadow:startAnnounceMerge": {
+    "ranges": 12,
+    "reads": 35,
+    "writes": 7,
+    "scheduled": 0,
+    "bytesRead": 8685,
+    "bytesWritten": 2546
+  },
+  "shadow:startSettleMerge": {
+    "ranges": 12,
+    "reads": 33,
+    "writes": 6,
+    "scheduled": 0,
+    "bytesRead": 7848,
+    "bytesWritten": 2193
+  },
+  "shadow:startTaskMerge": {
+    "ranges": 12,
+    "reads": 35,
+    "writes": 7,
+    "scheduled": 0,
+    "bytesRead": 8553,
+    "bytesWritten": 2190
+  },
+  "shadow:startUnanchoredDelivery": {
+    "ranges": 5,
+    "reads": 3,
+    "writes": 5,
+    "scheduled": 0,
+    "bytesRead": 468,
+    "bytesWritten": 1596
+  },
+  "shadow:finalizeMergedAnnounce": {
+    "ranges": 10,
+    "reads": 9,
+    "writes": 5,
+    "scheduled": 2,
+    "bytesRead": 2684,
+    "bytesWritten": 1335
+  },
+  "shadow:finalizeEmptyDelivery": {
+    "ranges": 12,
+    "reads": 9,
+    "writes": 3,
+    "scheduled": 2,
+    "bytesRead": 2346,
+    "bytesWritten": 1025
+  },
+  "shadow:addPartMergedAnnounce": {
+    "ranges": 3,
+    "reads": 4,
+    "writes": 3,
+    "scheduled": 0,
+    "bytesRead": 1856,
+    "bytesWritten": 1252
+  },
+  "shadow:upsertSubAgentNew": {
+    "ranges": 5,
+    "reads": 4,
+    "writes": 1,
+    "scheduled": 0,
+    "bytesRead": 752,
+    "bytesWritten": 370
+  },
+  "shadow:upsertSubAgentUpdate": {
+    "ranges": 10,
+    "reads": 6,
+    "writes": 1,
+    "scheduled": 1,
+    "bytesRead": 1684,
+    "bytesWritten": 434
+  },
+  "shadow:upsertTaskEngagement": {
+    "ranges": 5,
+    "reads": 4,
+    "writes": 1,
+    "scheduled": 0,
+    "bytesRead": 752,
+    "bytesWritten": 376
+  },
+  "shadow:listByChat": {
+    "ranges": 34,
+    "reads": 29,
+    "writes": 0,
+    "scheduled": 0,
+    "bytesRead": 6668,
+    "bytesWritten": 0
+  },
+  "shadow:submitFeedback": {
+    "ranges": 10,
+    "reads": 29,
+    "writes": 2,
+    "scheduled": 1,
+    "bytesRead": 6824,
+    "bytesWritten": 1324
+  },
+  "shadow:retryAnsweredBatch": {
+    "ranges": 5,
+    "reads": 5,
+    "writes": 1,
+    "scheduled": 1,
+    "bytesRead": 1986,
+    "bytesWritten": 787
+  },
+  "shadow:retryUnansweredBatch": {
+    "ranges": 10,
+    "reads": 31,
+    "writes": 6,
+    "scheduled": 0,
+    "bytesRead": 8709,
+    "bytesWritten": 2354
+  },
+  "shadow:retryGoneBlobBatch": {
+    "ranges": 10,
+    "reads": 31,
+    "writes": 6,
+    "scheduled": 0,
+    "bytesRead": 8755,
+    "bytesWritten": 2354
+  },
+  "shadow:submitFeedbackOlderThanScan": {
+    "ranges": 11,
+    "reads": 66,
+    "writes": 2,
+    "scheduled": 1,
+    "bytesRead": 13326,
+    "bytesWritten": 983
+  },
+  "shadow:peekSubAgents": {
+    "ranges": 3,
+    "reads": 4,
+    "writes": 0,
+    "scheduled": 0,
+    "bytesRead": 1236,
+    "bytesWritten": 0
+  },
+  "shadow:peekSubAgentsHeavy": {
+    "ranges": 3,
+    "reads": 4,
+    "writes": 0,
+    "scheduled": 0,
+    "bytesRead": 666835,
+    "bytesWritten": 0
   }
 }

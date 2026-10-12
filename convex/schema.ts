@@ -2218,6 +2218,19 @@ export default defineSchema({
     // still correct it (complete → error). Absent once confirmed or corrected, and on
     // every bubble an explicit terminal settled — that outcome is never overridden.
     closeInferred: v.optional(v.boolean()),
+    // ASSISTANT rows of a projected conversation (phase 5, design §14): the DISPLAY GROUP
+    // this bubble belongs to — the id of the group's first message — when consecutive
+    // bubbles of one delegation chain show as one (convex/lib/delegationChain.ts). A
+    // recomputable CACHE (displayGroups.regroup), never a decision: absent = shown alone.
+    displayGroupId: v.optional(v.string()),
+    // ASSISTANT rows a DELIVERY run (announce / requester-settle / background task)
+    // opened as its OWN bubble on a projected instance, instead of reopening its parent
+    // (phase 5): the empty-delivery verdict of the merge path does not apply to it.
+    deliveryOwnBubble: v.optional(v.boolean()),
+    // …and the identity of that delivery (lib/deliveryRuns `deliveryIdentityKey`: a settle
+    // wake's batch, whatever its yield/retry suffix; else the run id) — what a replay or a
+    // `:retry-N` finds its bubble by (codex phase 5 pass 6 #1).
+    deliveryKey: v.optional(v.string()),
     // ASSISTANT rows of a service job whose status-dependent correlates (summarizer,
     // curator) wait for the run's live terminal, the outcome being only inferred (codex
     // phase 4 pass 25 — stream.settleStatusJobs). Removed when they run, once.
@@ -2460,6 +2473,13 @@ export default defineSchema({
     // CU-20) — the successor a repeated steer cut hands back, and a run's first segment
     // (runSegment absent), as point reads however many times the run was cut.
     .index("by_chat_run_segment", ["chatId", "runId", "runSegment"])
+    // A delivery's own bubble by its identity (phase 5, codex pass 6 #1).
+    .index("by_chat_delivery_key", ["chatId", "deliveryKey", "runSegment"])
+    // The members of a display group, whatever their creation times (codex phase 5 pass 7 #2).
+    .index("by_chat_display_group", ["chatId", "displayGroupId"])
+    // The messages PLACED (orderTime) inside a display span — with by_chat on creation time,
+    // a read of everything a reader sees between two bubbles (codex phase 5 pass 8 #3).
+    .index("by_chat_order_time", ["chatId", "orderTime"])
     // (chatId, sendId): "how many bubbles carry THIS send?" — the transcript projection's
     // invariant I3 (exactly one user bubble per `<sendId>:user` row), one point range.
     .index("by_chat_send_id", ["chatId", "sendId"])
@@ -2512,6 +2532,18 @@ export default defineSchema({
   // the bubble over. Ids only; purged with the chat (chats.cascadeDeleteChat).
   // Projection `on` also records an ADOPTED (non-delivery) run when a merge rotates
   // its id off the bubble it opened (stream.ts `recordRotatedRunBubble`).
+  // PROJECTION `on` (phase 5, codex pass 18, design §14.29): an own delivery bubble the
+  // SYSTEM dropped empty (`finalize … dropIfEmpty`). Its references are released with it
+  // (§14.25), so this is the durable fact that the run's bubble WAS an own one — read when
+  // the run's late final is born after a rollback, so it keeps the delivery's identity.
+  // Ids only; written only for a conversation that stored text; purged with the chat.
+  ownBubbleReleases: defineTable({
+    chatId: v.id("chats"),
+    runId: v.string(),
+    messageId: v.id("messages"),
+    releasedAt: v.number(),
+  }).index("by_chat_run", ["chatId", "runId"]),
+
   runBubbles: defineTable({
     chatId: v.id("chats"),
     runId: v.string(),
@@ -2635,6 +2667,36 @@ export default defineSchema({
     .index("by_chat_admitted", ["chatId", "admittedAt"])
     // The admission of one send (cleared when its bubble opens).
     .index("by_outbox", ["outboxId"]),
+
+  // PROJECTION `on` (phase 5, design §14.1): a sub-agent the transcript shows a run
+  // LAUNCHED — read from the `sessions_spawn` result row (direct, or the nested-tool row
+  // of a code-mode call), status `accepted`. Identities only; the proof `chainRoot` joins
+  // a delivery run to its launcher by. Written only for an `on` conversation; purged with
+  // the chat.
+  transcriptSpawns: defineTable({
+    chatId: v.id("chats"),
+    instanceName: v.string(),
+    sessionKey: v.string(),
+    // The run that made the call (the row's `__openclaw.runId`).
+    parentRunId: v.string(),
+    childSessionKey: v.string(),
+    childRunId: v.string(),
+    // The row that says it, and where it sits in the transcript.
+    entryId: v.string(),
+    seq: v.number(),
+    createdAt: v.number(),
+    // The launch could not anchor its sub-agent yet: the launching run had no bubble when
+    // it was read (codex phase 5 pass 1 #6). Re-tried when a bubble of that run opens and at
+    // every regroup, at most MAX_ANCHOR_TRIES times. Absent once anchored or given up.
+    anchorPending: v.optional(v.boolean()),
+    anchorTries: v.optional(v.number()),
+  })
+    // Who launched this child run (an announce names it; a settle wake names several).
+    .index("by_chat_child_run", ["chatId", "childRunId"])
+    // Idempotence of a replayed row.
+    .index("by_chat_entry", ["chatId", "entryId"])
+    // The launches of a run still waiting for that run's bubble.
+    .index("by_chat_pending_parent", ["chatId", "anchorPending", "parentRunId"]),
 
   transcriptTombstones: defineTable({
     chatId: v.id("chats"),
@@ -2997,6 +3059,15 @@ export default defineSchema({
     // when that run never opened a message, the announce merge resolves the
     // anchor through the ENGAGEMENT row this points to.
     bornOfRun: v.optional(v.string()),
+    // TASK rows of a projected turn (phase 5, design §14.1): the run whose tool frame
+    // STARTED the task (`payload.runId` beside the structured `details.taskId`) — the
+    // proof a `<tool>:<taskId>:ok|error` delivery joins its launcher by. The transcript
+    // row cannot carry it (chat.history strips tool-result details). Fill-only.
+    startRunId: v.optional(v.string()),
+    // PROJECTION `on` (phase 5, codex pass 1 #6): the transcript names this child's launch
+    // but the launching run's bubble did not exist yet — the next observation of the child
+    // (or the bubble's opening) re-tries the anchor. Absent everywhere else.
+    anchorPending: v.optional(v.boolean()),
     taskName: v.optional(v.string()), // best-effort, parsed from the spawn tool meta
     /** The bound the TOOL ITSELF declared for this background task, in ms.
      *
@@ -4097,6 +4168,12 @@ export default defineSchema({
       messageErrorCode: v.optional(v.string()),
       messageUpdatedAt: v.optional(v.number()),
       runId: v.optional(v.string()),
+      // PROJECTION `on` (phase 5): a report on a delegation's display group freezes every
+      // member — their message ids and runs (ids only). Absent for a bubble shown alone.
+      groupMessageIds: v.optional(v.array(v.id("messages"))),
+      groupRunIds: v.optional(v.array(v.string())),
+      // …and whether that snapshot had to be cut to fit one document (codex pass 3 #2).
+      groupTruncated: v.optional(v.boolean()),
       isRegeneration: v.optional(v.boolean()), // derived from a regen-* outbox key
       partsJson: v.optional(v.string()), // serialized messageParts (tools/reasoning/media)
       partsCount: v.optional(v.number()),

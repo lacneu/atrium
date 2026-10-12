@@ -101,6 +101,9 @@ export interface SubAgentRecord {
    *  lets the announce merge fall back to the ENGAGEMENT's anchor when the
    *  delivery run never opened a message of its own. */
   bornOfRun?: string;
+  /** PROJECTION `on` (phase 5): a TASK row's starting run — the `runId` of the tool frame
+   *  that carried `{async:true, taskId}`. Sent only for a projected turn. */
+  startRunId?: string;
   /** The child's RUN id from its `sessions_spawn` result — what the gateway's
    *  requester-settle wake names, and so the only exact join from that wake back
    *  to the bubble that spawned the child (convex/lib/deliveryRuns.ts). */
@@ -266,6 +269,8 @@ export interface TranscriptRowReport {
   /** Projection `on` (phase 4): what the row shows (display text, yield acknowledgment). */
   text?: string;
   yieldAck?: string;
+  /** Projection `on` (phase 5): the sub-agents the row's run launched. */
+  spawns?: Array<{ childSessionKey: string; childRunId: string }>;
 }
 
 /** What one transcript read posts (convex/transcriptProjection.ts `applyTranscript`). */
@@ -2779,6 +2784,7 @@ export class HttpConvexWriter implements ConvexWriter {
       childSessionKey: record.childSessionKey,
       kind: record.kind,
       bornOfRun: record.bornOfRun,
+      ...(record.startRunId !== undefined ? { startRunId: record.startRunId } : {}),
       ...(record.childRunId !== undefined ? { childRunId: record.childRunId } : {}),
       ...(record.runTimeoutSeconds !== undefined
         ? { runTimeoutSeconds: record.runTimeoutSeconds }

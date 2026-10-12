@@ -212,3 +212,16 @@ export function followedUpChildRunIds(
   });
   return out;
 }
+
+/** The IDENTITY of a delivery, as 0.96.0's idempotence compared it (stream.ts
+ *  `sameDeliveryGeneration`): a requester-settle wake is its BATCH — the settled child run
+ *  ids, order-free — whatever its `:yield-N` / `:retry-N` suffixes (a retry is the same
+ *  delivery made again, upstream subagent-requester-settle-identity.ts:18-24 at v2026.9.8);
+ *  an announce or a task delivery is its exact run id (no retry form is minted for them).
+ *  Null for a run that delivers nothing. Phase 5 keys a delivery's OWN bubble by it (codex
+ *  pass 6 #1). */
+export function deliveryIdentityKey(runId: string | null | undefined): string | null {
+  const settle = parseRequesterSettleRun(runId);
+  if (settle !== null) return `settle:${[...settle.childRunIds].sort().join(",")}`;
+  return typeof runId === "string" && isDeliveryRun(runId) ? `run:${runId}` : null;
+}

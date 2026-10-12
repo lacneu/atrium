@@ -39,6 +39,11 @@ import {
   getProfile,
 } from "./lib/access";
 import { recordAudit } from "./lib/audit";
+import { compareOrder } from "./lib/messageOrder";
+import { groupMembers, groupTextOf } from "./lib/displayGroupHead";
+import { utf8Bytes } from "./lib/bubbleProjection";
+import { readBounded as readBoundedUnder } from "./lib/boundedRead";
+import type { MutationCtx } from "./_generated/server";
 import { notifyAdmins, notifyUser } from "./notifications";
 import {
   PERMISSIONS,
@@ -70,6 +75,122 @@ const DISPLAYED_MAX = 100_000; // generous; just a guard against abuse
 const CONTEXT_SCAN = 60;
 const CONTEXT_WINDOW = 12;
 const PARTS_MAX = 50;
+// PROJECTION `on` (phase 5, codex pass 3 #2): what a report on a delegation's display group
+// may hold, in UTF-8 bytes — together well under a document's 1 MiB with the rest of the
+// snapshot. A cut is marked in the text and flagged (`groupTruncated`).
+const GROUP_TEXT_BYTES = 384 * 1024;
+const GROUP_PARTS_BYTES = 160 * 1024;
+const GROUP_CONTEXT_BYTES = 96 * 1024;
+const GROUP_MEMBER_IN_CONTEXT = "[the reported answer — see messageText]";
+// …and how far around the reported bubble its group is looked for (codex pass 3 #3): a
+// group is formed among the latest bubbles (displayGroups.REGROUP_WINDOW), read here from
+// its head, bounded in count and in bytes.
+const GROUP_SCAN = 48;
+// ONE read budget for what a group report reads on top of the single-message path (codex
+// phase 5 pass 4 #2): the members and their parts stop at it, leaving headroom for the
+// reads that follow (chat, outbox, documents) under Convex's 16 MiB per transaction.
+const GROUP_READ_BYTES = 10 * 1024 * 1024;
+
+/** `text` cut to `max` UTF-8 bytes, with a marker naming the full size. */
+function cutUtf8(text: string, max: number): string {
+  const size = utf8Bytes(text);
+  if (size <= max) return text;
+  const marker = `\n\n[… truncated for the report: ${size} bytes in all]`;
+  let out = "";
+  let used = utf8Bytes(marker);
+  for (const ch of text) {
+    const b = utf8Bytes(ch);
+    if (used + b > max) break;
+    out += ch;
+    used += b;
+  }
+  return out + marker;
+}
+
+/** What the access guards of a report read before anything else (identity, profile, chat). */
+const GUARD_READ_RESERVE_BYTES = 256 * 1024;
+
+/** What the last group report's budget counted, in bytes (read by the accounting test,
+ *  convex/displayGroups.test.ts — a document read outside the count shows there). */
+export const reportReadAccounting = { lastBytes: 0 };
+
+/** The shared bounded reader (lib/boundedRead.ts) under this report's group budget. */
+function readBounded<D extends { _id: string; _creationTime: number }>(
+  meter: { bytes: number },
+  max: number,
+  step: (from: number | null, n: number) => Promise<D[]>,
+  keyOf?: (d: D) => number,
+): Promise<{ docs: D[]; cut: boolean }> {
+  const budget = { bytes: meter.bytes, limit: GROUP_READ_BYTES };
+  return readBoundedUnder(budget, max, step, keyOf).then((r) => {
+    meter.bytes = budget.bytes;
+    return r;
+  });
+}
+
+/** The members of the reported bubble's display group, read from the group's head forward
+ *  — independent of the context scan, which an older group falls out of (codex phase 5
+ *  pass 3 #3). Only bubbles of this chat owned by the reporter; the bubble alone when its
+ *  group cannot be read. Every read is checked against the shared budget BEFORE it happens
+ *  (`readBounded`, codex phase 5 pass 5 #1): `cut` says the group may go on past it. */
+async function groupOfReported(
+  ctx: MutationCtx,
+  message: Doc<"messages">,
+  userId: Id<"users">,
+  meter: { bytes: number },
+): Promise<{ members: Doc<"messages">[]; cut: boolean }> {
+  const group = message.displayGroupId!;
+  // The bubbles carrying the group, by the group itself — never by the head's creation
+  // time: a parent the transcript recovered AFTER its delivery is created later and placed
+  // earlier (codex phase 5 pass 7 #2).
+  const { docs: tagged, cut: taggedCut } = await readBounded(meter, GROUP_SCAN, (from, n) =>
+    ctx.db
+      .query("messages")
+      .withIndex("by_chat_display_group", (q) =>
+        from === null
+          ? q.eq("chatId", message.chatId).eq("displayGroupId", group)
+          : q.eq("chatId", message.chatId).eq("displayGroupId", group).gte("_creationTime", from),
+      )
+      .take(n),
+  );
+  if (!tagged.some((m) => m._id === message._id)) tagged.push(message);
+  if (taggedCut) return { members: [message], cut: true };
+  // …then EVERYTHING the reader sees between the first and the last of them (codex phase 5
+  // pass 8 #3): a message is displayed at its `orderTime` when it has one, else at its
+  // creation — so the span is read twice, by creation time and by placement, each range
+  // whole. A group is only taken as proven when both reads reached their end; otherwise the
+  // bubble is reported alone and the report says the group was cut.
+  const positions = tagged.map((m) => m.orderTime ?? m._creationTime);
+  const lo = Math.min(...positions);
+  const hi = Math.max(...positions);
+  const created = await readBounded(meter, GROUP_SCAN, (from, n) =>
+    ctx.db
+      .query("messages")
+      .withIndex("by_chat", (q) => q.eq("chatId", message.chatId).gte("_creationTime", from ?? lo).lte("_creationTime", hi))
+      .take(n),
+  );
+  const placed = created.cut
+    ? { docs: [] as Doc<"messages">[], cut: true }
+    : await readBounded(
+        meter,
+        GROUP_SCAN,
+        (from, n) =>
+          ctx.db
+            .query("messages")
+            .withIndex("by_chat_order_time", (q) => q.eq("chatId", message.chatId).gte("orderTime", from ?? lo).lte("orderTime", hi))
+            .take(n),
+        (d) => d.orderTime ?? d._creationTime,
+      );
+  if (created.cut || placed.cut) return { members: [message], cut: true };
+  const byId = new Map<string, Doc<"messages">>();
+  for (const m of [...tagged, ...created.docs, ...placed.docs]) byId.set(m._id, m);
+  const ordered = [...byId.values()].sort(compareOrder);
+  const members = groupMembers(ordered, message).filter(
+    (m) => m.chatId === message.chatId && m.userId === userId,
+  );
+  if (!members.some((m) => m._id === message._id)) return { members: [message], cut: false };
+  return { members, cut: false };
+}
 
 function isCategory(s: string): s is FeedbackCategory {
   return (FEEDBACK_CATEGORIES as readonly string[]).includes(s);
@@ -192,7 +313,7 @@ export const submitFeedback = mutation({
     }
 
     // --- SERVER-READ authoritative content (never from the client) ---
-    const messageText = message.text;
+    let messageText = message.text;
 
     // Message structure: tools / reasoning / media parts, ordered, bounded.
     const partDocs = await ctx.db
@@ -200,13 +321,13 @@ export const submitFeedback = mutation({
       .withIndex("by_message", (q) => q.eq("messageId", message._id))
       .collect();
     partDocs.sort((a, b) => a.order - b.order);
-    const partsCount = partDocs.length;
+    let partsCount = partDocs.length;
     // A FROZEN COPY IS STILL A COPY. `sessions_yield.message` is private by
     // upstream's schema, and a report taken on a historic turn copied it into a
     // permanent snapshot that `readSnapshot` and /api/v1/feedback-report hand back —
     // outliving the message it came from, and surviving its deletion. Observed:
     // a production report carried a parent's private hand-off note verbatim.
-    const partsJson = safeJson(
+    let partsJson = safeJson(
       partDocs.slice(0, PARTS_MAX).map((p) => readablePart(p.part)),
     );
 
@@ -220,6 +341,9 @@ export const submitFeedback = mutation({
     const idx = asc.findIndex((m) => m._id === message._id);
 
     let promptMessage: Doc<"messages"> | null = null;
+    /** The older messages read to find the prompt of a message out of the scan (counted
+     *  by a group report's budget — codex phase 5 pass 6 #2). */
+    let olderRead: Array<Doc<"messages">> = [];
     let contextSlice: Doc<"messages">[] = [];
     let contextTruncated = false;
     if (idx >= 0) {
@@ -238,7 +362,7 @@ export const submitFeedback = mutation({
       // the FROZEN routing identity below) is found by a bounded indexed walk
       // backwards from the reported message — without it, a rerouted chat would
       // freeze TODAY's routing onto an OLD turn's report (codex P2).
-      const older = await ctx.db
+      const older: Array<Doc<"messages">> = await ctx.db
         .query("messages")
         .withIndex("by_chat", (q) =>
           // Index RANGE (not a post-scan filter): a report on a very old
@@ -247,15 +371,106 @@ export const submitFeedback = mutation({
         )
         .order("desc")
         .take(50);
+      olderRead = older;
       promptMessage = older.find((m) => m.role === "user") ?? null;
       // Freeze just the message itself and record that context was unavailable
       // rather than silently dropping it.
       contextSlice = [message];
       contextTruncated = true;
     }
-    const contextJson = safeJson(
-      contextSlice.map((m) => ({ role: m.role, text: m.text })),
-    );
+    // PROJECTION `on` (phase 5, codex pass 2 #3): a bubble of a delegation's display group
+    // is reported as the ONE answer the reader saw — every member frozen: their texts as
+    // the group shows them, their parts (tool cards included, each through the same
+    // `readablePart` redaction), their runs; the context runs to the group's last bubble.
+    // Read only for a bubble that carries a group: a bubble shown alone is frozen exactly
+    // as before (same reads, same bytes — the invariance harness pins it).
+    let group: Doc<"messages">[] = [message];
+    /** Phase 5: the group's snapshot was cut — to fit one document (codex pass 3 #2) or
+     *  the read budget (pass 4 #2). */
+    let groupTruncated = false;
+    /** What this report has read so far (the group's reads are charged on top). */
+    // EVERY document this report read before its group reads is charged first (codex phase
+    // 5 pass 6 #2): the reported message, its parts, the context scan, the older prompt
+    // walk, plus a fixed reserve for the identity and chat reads of the guards above.
+    // Sizes only — no read is added to a report shown alone.
+    const meter = { bytes: 0 };
+    if (message.role === "assistant" && message.displayGroupId !== undefined) {
+      meter.bytes += GUARD_READ_RESERVE_BYTES + utf8Bytes(JSON.stringify(message));
+      for (const p of partDocs) meter.bytes += utf8Bytes(JSON.stringify(p));
+      for (const m of recentDesc) meter.bytes += utf8Bytes(JSON.stringify(m));
+      for (const m of olderRead) meter.bytes += utf8Bytes(JSON.stringify(m));
+      const found = await groupOfReported(ctx, message, userId, meter);
+      group = found.members;
+      if (found.cut) groupTruncated = true;
+      reportReadAccounting.lastBytes = meter.bytes;
+    }
+    let groupStatus: Pick<Doc<"messages">, "status" | "error" | "errorCode"> = message;
+    let contextJson: string | undefined;
+    if (group.length > 1) {
+      // ONE byte budget for what the group adds (codex phase 5 pass 3 #2): a report is one
+      // document (1 MiB), and the members' texts are not copied twice. Each cut is marked.
+      const fullText = groupTextOf(group);
+      messageText = cutUtf8(fullText, GROUP_TEXT_BYTES);
+      if (messageText !== fullText) groupTruncated = true;
+      const parts: Array<Doc<"messageParts">> = [];
+      for (const m of group) {
+        if (m._id === message._id) {
+          parts.push(...partDocs);
+          continue;
+        }
+        // Every part read is checked against the shared budget BEFORE it happens and
+        // counted; once the budget stops a member, no later member is read at all
+        // (codex phase 5 pass 5 #1).
+        const { docs: own, cut } = await readBounded(meter, PARTS_MAX + 1, (from, n) =>
+          ctx.db
+            .query("messageParts")
+            .withIndex("by_message", (q) => (from === null ? q.eq("messageId", m._id) : q.eq("messageId", m._id).gte("_creationTime", from)))
+            .take(n),
+        );
+        parts.push(...own.sort((a, b) => a.order - b.order));
+        if (cut) {
+          groupTruncated = true;
+          break;
+        }
+      }
+      reportReadAccounting.lastBytes = meter.bytes;
+      partsCount = parts.length;
+      const kept: unknown[] = [];
+      let partBytes = 2;
+      for (const p of parts.slice(0, PARTS_MAX)) {
+        const readable = readablePart(p.part);
+        const size = utf8Bytes(safeJson(readable) ?? "") + 1;
+        if (partBytes + size > GROUP_PARTS_BYTES) {
+          groupTruncated = true;
+          break;
+        }
+        partBytes += size;
+        kept.push(readable);
+      }
+      partsJson = safeJson(kept);
+      const last = group[group.length - 1]!;
+      const failed = group.find((m) => m.status === "error");
+      groupStatus = failed ?? last;
+      // The context: what led to the answer, then the answer — its members stand in by
+      // reference (their text is `messageText`), oldest turns dropped past the budget.
+      const members = new Set(group.map((m) => String(m._id)));
+      const head = group[0]!;
+      const headIdx = asc.findIndex((m) => m._id === head._id);
+      const before = headIdx >= 0 ? asc.slice(Math.max(0, headIdx - (CONTEXT_WINDOW - group.length)), headIdx) : [];
+      const entries = [
+        ...before.filter((m) => !members.has(String(m._id))).map((m) => ({ role: m.role, text: m.text })),
+        ...group.map((m) => ({ role: m.role, text: GROUP_MEMBER_IN_CONTEXT })),
+      ];
+      while (entries.length > group.length && utf8Bytes(safeJson(entries) ?? "") > GROUP_CONTEXT_BYTES) {
+        entries.shift();
+        contextTruncated = true;
+      }
+      contextSlice = [...before, ...group];
+      if (headIdx < 0 || headIdx - before.length > 0 || recentDesc.length === CONTEXT_SCAN) contextTruncated = true;
+      contextJson = safeJson(entries);
+    } else {
+      contextJson = safeJson(contextSlice.map((m) => ({ role: m.role, text: m.text })));
+    }
 
     // Session config that produced the message.
     const chat = await ctx.db.get(args.chatId);
@@ -336,16 +551,25 @@ export const submitFeedback = mutation({
           chat?.agentId,
         messageRole: message.role,
         messageText,
-        messageStatus: message.status,
+        messageStatus: groupStatus.status,
         // A snapshot FREEZES the sentence, so it outlives the row it came from — and a
         // snapshot taken while the migration is still walking the table would copy a
         // row it has not reached yet (codex).
-        messageError: maskCredentialId(message.error),
+        messageError: maskCredentialId(groupStatus.error),
         // The root cause next to the headline (see the schema note): `error` is
         // what the user was shown, `errorCode` is what actually happened.
-        messageErrorCode: message.errorCode,
+        messageErrorCode: groupStatus.errorCode,
         messageUpdatedAt: message.updatedAt,
         runId: message.runId,
+        // Phase 5: the bubbles of the reported display group and their runs (ids only).
+        ...(group.length > 1
+          ? {
+              groupMessageIds: group.map((m) => m._id),
+              groupRunIds: group.flatMap((m) => (m.runId !== undefined ? [m.runId] : [])),
+            }
+          : {}),
+        // …cut by the budget — also when only the reported bubble could be read.
+        ...(groupTruncated ? { groupTruncated: true } : {}),
         isRegeneration: outbox?.clientMessageId?.startsWith("regen-"),
         partsJson,
         partsCount,

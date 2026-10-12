@@ -1,0 +1,1718 @@
+{
+  "L1 merged announce · rebroadcast": {
+    "landed": "P",
+    "bubbles": [
+      {
+        "id": "u0",
+        "role": "user",
+        "status": "complete",
+        "runId": null,
+        "text": "q0",
+        "mergedAnnounceRuns": null,
+        "continuations": null,
+        "announcePrefix": null,
+        "replayArmed": false,
+        "interrupted": false
+      },
+      {
+        "id": "a0",
+        "role": "assistant",
+        "status": "complete",
+        "runId": "run0",
+        "text": "r0",
+        "mergedAnnounceRuns": null,
+        "continuations": null,
+        "announcePrefix": null,
+        "replayArmed": false,
+        "interrupted": false
+      },
+      {
+        "id": "u1",
+        "role": "user",
+        "status": "complete",
+        "runId": null,
+        "text": "q1",
+        "mergedAnnounceRuns": null,
+        "continuations": null,
+        "announcePrefix": null,
+        "replayArmed": false,
+        "interrupted": false
+      },
+      {
+        "id": "a1",
+        "role": "assistant",
+        "status": "complete",
+        "runId": "run1",
+        "text": "r1",
+        "mergedAnnounceRuns": null,
+        "continuations": null,
+        "announcePrefix": null,
+        "replayArmed": false,
+        "interrupted": false
+      },
+      {
+        "id": "u2",
+        "role": "user",
+        "status": "complete",
+        "runId": null,
+        "text": "q2",
+        "mergedAnnounceRuns": null,
+        "continuations": null,
+        "announcePrefix": null,
+        "replayArmed": false,
+        "interrupted": false
+      },
+      {
+        "id": "P",
+        "role": "assistant",
+        "status": "complete",
+        "runId": "announce:v1:agent:files:subagent:0d59e951-cbaa-44f1-92e5-33b9729d096e:742ca132-060c-4cf8-8c0a-3f1377095ea3",
+        "text": "r2\n\nrésultat",
+        "mergedAnnounceRuns": [
+          "announce:v1:agent:files:subagent:0d59e951-cbaa-44f1-92e5-33b9729d096e:742ca132-060c-4cf8-8c0a-3f1377095ea3"
+        ],
+        "continuations": null,
+        "announcePrefix": "r2",
+        "replayArmed": true,
+        "interrupted": false
+      }
+    ]
+  },
+  "L2 merged settle · retry, answered": {
+    "landed": "P",
+    "bubbles": [
+      {
+        "id": "u0",
+        "role": "user",
+        "status": "complete",
+        "runId": null,
+        "text": "q0",
+        "mergedAnnounceRuns": null,
+        "continuations": null,
+        "announcePrefix": null,
+        "replayArmed": false,
+        "interrupted": false
+      },
+      {
+        "id": "a0",
+        "role": "assistant",
+        "status": "complete",
+        "runId": "run0",
+        "text": "r0",
+        "mergedAnnounceRuns": null,
+        "continuations": null,
+        "announcePrefix": null,
+        "replayArmed": false,
+        "interrupted": false
+      },
+      {
+        "id": "u1",
+        "role": "user",
+        "status": "complete",
+        "runId": null,
+        "text": "q1",
+        "mergedAnnounceRuns": null,
+        "continuations": null,
+        "announcePrefix": null,
+        "replayArmed": false,
+        "interrupted": false
+      },
+      {
+        "id": "a1",
+        "role": "assistant",
+        "status": "complete",
+        "runId": "run1",
+        "text": "r1",
+        "mergedAnnounceRuns": null,
+        "continuations": null,
+        "announcePrefix": null,
+        "replayArmed": false,
+        "interrupted": false
+      },
+      {
+        "id": "u2",
+        "role": "user",
+        "status": "complete",
+        "runId": null,
+        "text": "q2",
+        "mergedAnnounceRuns": null,
+        "continuations": null,
+        "announcePrefix": null,
+        "replayArmed": false,
+        "interrupted": false
+      },
+      {
+        "id": "P",
+        "role": "assistant",
+        "status": "complete",
+        "runId": "announce:requester-settle:main:agent:main:atrium:chat:u:c1:742ca132-060c-4cf8-8c0a-3f1377095ea3:yield-1",
+        "text": "r2\n\nSYNTHESE: fini.",
+        "mergedAnnounceRuns": [
+          "announce:requester-settle:main:agent:main:atrium:chat:u:c1:742ca132-060c-4cf8-8c0a-3f1377095ea3:yield-1"
+        ],
+        "continuations": [
+          {
+            "at": 4,
+            "childRunIds": [
+              "742ca132-060c-4cf8-8c0a-3f1377095ea3"
+            ]
+          }
+        ],
+        "announcePrefix": "r2",
+        "replayArmed": true,
+        "interrupted": false
+      }
+    ]
+  },
+  "L3 merged settle · retry, unanswered": {
+    "landed": "P",
+    "bubbles": [
+      {
+        "id": "u0",
+        "role": "user",
+        "status": "complete",
+        "runId": null,
+        "text": "q0",
+        "mergedAnnounceRuns": null,
+        "continuations": null,
+        "announcePrefix": null,
+        "replayArmed": false,
+        "interrupted": false
+      },
+      {
+        "id": "a0",
+        "role": "assistant",
+        "status": "complete",
+        "runId": "run0",
+        "text": "r0",
+        "mergedAnnounceRuns": null,
+        "continuations": null,
+        "announcePrefix": null,
+        "replayArmed": false,
+        "interrupted": false
+      },
+      {
+        "id": "u1",
+        "role": "user",
+        "status": "complete",
+        "runId": null,
+        "text": "q1",
+        "mergedAnnounceRuns": null,
+        "continuations": null,
+        "announcePrefix": null,
+        "replayArmed": false,
+        "interrupted": false
+      },
+      {
+        "id": "a1",
+        "role": "assistant",
+        "status": "complete",
+        "runId": "run1",
+        "text": "r1",
+        "mergedAnnounceRuns": null,
+        "continuations": null,
+        "announcePrefix": null,
+        "replayArmed": false,
+        "interrupted": false
+      },
+      {
+        "id": "u2",
+        "role": "user",
+        "status": "complete",
+        "runId": null,
+        "text": "q2",
+        "mergedAnnounceRuns": null,
+        "continuations": null,
+        "announcePrefix": null,
+        "replayArmed": false,
+        "interrupted": false
+      },
+      {
+        "id": "P",
+        "role": "assistant",
+        "status": "streaming",
+        "runId": "announce:requester-settle:main:agent:main:atrium:chat:u:c1:742ca132-060c-4cf8-8c0a-3f1377095ea3:yield-1:retry-1",
+        "text": "r2\n\n",
+        "mergedAnnounceRuns": [
+          "announce:requester-settle:main:agent:main:atrium:chat:u:c1:742ca132-060c-4cf8-8c0a-3f1377095ea3:yield-1",
+          "announce:requester-settle:main:agent:main:atrium:chat:u:c1:742ca132-060c-4cf8-8c0a-3f1377095ea3:yield-1:retry-1"
+        ],
+        "continuations": [
+          {
+            "at": 4,
+            "childRunIds": [
+              "742ca132-060c-4cf8-8c0a-3f1377095ea3"
+            ]
+          }
+        ],
+        "announcePrefix": "r2\n\n",
+        "replayArmed": false,
+        "interrupted": false
+      }
+    ]
+  },
+  "L4 merged announce · error, replay resumes": {
+    "landed": "P",
+    "bubbles": [
+      {
+        "id": "u0",
+        "role": "user",
+        "status": "complete",
+        "runId": null,
+        "text": "q0",
+        "mergedAnnounceRuns": null,
+        "continuations": null,
+        "announcePrefix": null,
+        "replayArmed": false,
+        "interrupted": false
+      },
+      {
+        "id": "a0",
+        "role": "assistant",
+        "status": "complete",
+        "runId": "run0",
+        "text": "r0",
+        "mergedAnnounceRuns": null,
+        "continuations": null,
+        "announcePrefix": null,
+        "replayArmed": false,
+        "interrupted": false
+      },
+      {
+        "id": "u1",
+        "role": "user",
+        "status": "complete",
+        "runId": null,
+        "text": "q1",
+        "mergedAnnounceRuns": null,
+        "continuations": null,
+        "announcePrefix": null,
+        "replayArmed": false,
+        "interrupted": false
+      },
+      {
+        "id": "a1",
+        "role": "assistant",
+        "status": "complete",
+        "runId": "run1",
+        "text": "r1",
+        "mergedAnnounceRuns": null,
+        "continuations": null,
+        "announcePrefix": null,
+        "replayArmed": false,
+        "interrupted": false
+      },
+      {
+        "id": "u2",
+        "role": "user",
+        "status": "complete",
+        "runId": null,
+        "text": "q2",
+        "mergedAnnounceRuns": null,
+        "continuations": null,
+        "announcePrefix": null,
+        "replayArmed": false,
+        "interrupted": false
+      },
+      {
+        "id": "P",
+        "role": "assistant",
+        "status": "streaming",
+        "runId": "announce:v1:agent:files:subagent:0d59e951-cbaa-44f1-92e5-33b9729d096e:742ca132-060c-4cf8-8c0a-3f1377095ea3",
+        "text": "r2\n\nrésul",
+        "mergedAnnounceRuns": [
+          "announce:v1:agent:files:subagent:0d59e951-cbaa-44f1-92e5-33b9729d096e:742ca132-060c-4cf8-8c0a-3f1377095ea3",
+          "announce:v1:agent:files:subagent:0d59e951-cbaa-44f1-92e5-33b9729d096e:742ca132-060c-4cf8-8c0a-3f1377095ea3"
+        ],
+        "continuations": null,
+        "announcePrefix": "r2",
+        "replayArmed": true,
+        "interrupted": false
+      }
+    ]
+  },
+  "L5 merged announce · later generation owns": {
+    "landed": "P",
+    "bubbles": [
+      {
+        "id": "u0",
+        "role": "user",
+        "status": "complete",
+        "runId": null,
+        "text": "q0",
+        "mergedAnnounceRuns": null,
+        "continuations": null,
+        "announcePrefix": null,
+        "replayArmed": false,
+        "interrupted": false
+      },
+      {
+        "id": "a0",
+        "role": "assistant",
+        "status": "complete",
+        "runId": "run0",
+        "text": "r0",
+        "mergedAnnounceRuns": null,
+        "continuations": null,
+        "announcePrefix": null,
+        "replayArmed": false,
+        "interrupted": false
+      },
+      {
+        "id": "u1",
+        "role": "user",
+        "status": "complete",
+        "runId": null,
+        "text": "q1",
+        "mergedAnnounceRuns": null,
+        "continuations": null,
+        "announcePrefix": null,
+        "replayArmed": false,
+        "interrupted": false
+      },
+      {
+        "id": "a1",
+        "role": "assistant",
+        "status": "complete",
+        "runId": "run1",
+        "text": "r1",
+        "mergedAnnounceRuns": null,
+        "continuations": null,
+        "announcePrefix": null,
+        "replayArmed": false,
+        "interrupted": false
+      },
+      {
+        "id": "u2",
+        "role": "user",
+        "status": "complete",
+        "runId": null,
+        "text": "q2",
+        "mergedAnnounceRuns": null,
+        "continuations": null,
+        "announcePrefix": null,
+        "replayArmed": false,
+        "interrupted": false
+      },
+      {
+        "id": "P",
+        "role": "assistant",
+        "status": "complete",
+        "runId": "announce:v1:agent:files:subagent:second:742ca132-060c-4cf8-8c0a-3f1377095ea32",
+        "text": "r2\n\nun\n\ndeux",
+        "mergedAnnounceRuns": [
+          "announce:v1:agent:files:subagent:0d59e951-cbaa-44f1-92e5-33b9729d096e:742ca132-060c-4cf8-8c0a-3f1377095ea3",
+          "announce:v1:agent:files:subagent:second:742ca132-060c-4cf8-8c0a-3f1377095ea32"
+        ],
+        "continuations": null,
+        "announcePrefix": "r2",
+        "replayArmed": true,
+        "interrupted": false
+      }
+    ]
+  },
+  "L6 merged announce · stopped": {
+    "landed": "P",
+    "bubbles": [
+      {
+        "id": "u0",
+        "role": "user",
+        "status": "complete",
+        "runId": null,
+        "text": "q0",
+        "mergedAnnounceRuns": null,
+        "continuations": null,
+        "announcePrefix": null,
+        "replayArmed": false,
+        "interrupted": false
+      },
+      {
+        "id": "a0",
+        "role": "assistant",
+        "status": "complete",
+        "runId": "run0",
+        "text": "r0",
+        "mergedAnnounceRuns": null,
+        "continuations": null,
+        "announcePrefix": null,
+        "replayArmed": false,
+        "interrupted": false
+      },
+      {
+        "id": "u1",
+        "role": "user",
+        "status": "complete",
+        "runId": null,
+        "text": "q1",
+        "mergedAnnounceRuns": null,
+        "continuations": null,
+        "announcePrefix": null,
+        "replayArmed": false,
+        "interrupted": false
+      },
+      {
+        "id": "a1",
+        "role": "assistant",
+        "status": "complete",
+        "runId": "run1",
+        "text": "r1",
+        "mergedAnnounceRuns": null,
+        "continuations": null,
+        "announcePrefix": null,
+        "replayArmed": false,
+        "interrupted": false
+      },
+      {
+        "id": "u2",
+        "role": "user",
+        "status": "complete",
+        "runId": null,
+        "text": "q2",
+        "mergedAnnounceRuns": null,
+        "continuations": null,
+        "announcePrefix": null,
+        "replayArmed": false,
+        "interrupted": false
+      },
+      {
+        "id": "P",
+        "role": "assistant",
+        "status": "aborted",
+        "runId": "announce:v1:agent:files:subagent:0d59e951-cbaa-44f1-92e5-33b9729d096e:742ca132-060c-4cf8-8c0a-3f1377095ea3",
+        "text": "r2\n\nrés",
+        "mergedAnnounceRuns": [
+          "announce:v1:agent:files:subagent:0d59e951-cbaa-44f1-92e5-33b9729d096e:742ca132-060c-4cf8-8c0a-3f1377095ea3"
+        ],
+        "continuations": null,
+        "announcePrefix": "r2",
+        "replayArmed": false,
+        "interrupted": true
+      }
+    ]
+  },
+  "L7 merged task delivery · rebroadcast": {
+    "landed": "P",
+    "bubbles": [
+      {
+        "id": "u0",
+        "role": "user",
+        "status": "complete",
+        "runId": null,
+        "text": "q0",
+        "mergedAnnounceRuns": null,
+        "continuations": null,
+        "announcePrefix": null,
+        "replayArmed": false,
+        "interrupted": false
+      },
+      {
+        "id": "a0",
+        "role": "assistant",
+        "status": "complete",
+        "runId": "run0",
+        "text": "r0",
+        "mergedAnnounceRuns": null,
+        "continuations": null,
+        "announcePrefix": null,
+        "replayArmed": false,
+        "interrupted": false
+      },
+      {
+        "id": "u1",
+        "role": "user",
+        "status": "complete",
+        "runId": null,
+        "text": "q1",
+        "mergedAnnounceRuns": null,
+        "continuations": null,
+        "announcePrefix": null,
+        "replayArmed": false,
+        "interrupted": false
+      },
+      {
+        "id": "a1",
+        "role": "assistant",
+        "status": "complete",
+        "runId": "run1",
+        "text": "r1",
+        "mergedAnnounceRuns": null,
+        "continuations": null,
+        "announcePrefix": null,
+        "replayArmed": false,
+        "interrupted": false
+      },
+      {
+        "id": "u2",
+        "role": "user",
+        "status": "complete",
+        "runId": null,
+        "text": "q2",
+        "mergedAnnounceRuns": null,
+        "continuations": null,
+        "announcePrefix": null,
+        "replayArmed": false,
+        "interrupted": false
+      },
+      {
+        "id": "P",
+        "role": "assistant",
+        "status": "complete",
+        "runId": "image_generate:bf66f802-e5a6-4394-9815-40c4bcd28dae:ok",
+        "text": "r2\n\nimage prête",
+        "mergedAnnounceRuns": [
+          "image_generate:bf66f802-e5a6-4394-9815-40c4bcd28dae:ok"
+        ],
+        "continuations": null,
+        "announcePrefix": "r2",
+        "replayArmed": true,
+        "interrupted": false
+      }
+    ]
+  },
+  "L8 standalone 0.96.0 delivery bubble · replay": {
+    "landed": "P",
+    "bubbles": [
+      {
+        "id": "u0",
+        "role": "user",
+        "status": "complete",
+        "runId": null,
+        "text": "q0",
+        "mergedAnnounceRuns": null,
+        "continuations": null,
+        "announcePrefix": null,
+        "replayArmed": false,
+        "interrupted": false
+      },
+      {
+        "id": "a0",
+        "role": "assistant",
+        "status": "complete",
+        "runId": "run0",
+        "text": "r0",
+        "mergedAnnounceRuns": null,
+        "continuations": null,
+        "announcePrefix": null,
+        "replayArmed": false,
+        "interrupted": false
+      },
+      {
+        "id": "u1",
+        "role": "user",
+        "status": "complete",
+        "runId": null,
+        "text": "q1",
+        "mergedAnnounceRuns": null,
+        "continuations": null,
+        "announcePrefix": null,
+        "replayArmed": false,
+        "interrupted": false
+      },
+      {
+        "id": "a1",
+        "role": "assistant",
+        "status": "complete",
+        "runId": "run1",
+        "text": "r1",
+        "mergedAnnounceRuns": null,
+        "continuations": null,
+        "announcePrefix": null,
+        "replayArmed": false,
+        "interrupted": false
+      },
+      {
+        "id": "u2",
+        "role": "user",
+        "status": "complete",
+        "runId": null,
+        "text": "q2",
+        "mergedAnnounceRuns": null,
+        "continuations": null,
+        "announcePrefix": null,
+        "replayArmed": false,
+        "interrupted": false
+      },
+      {
+        "id": "P",
+        "role": "assistant",
+        "status": "streaming",
+        "runId": "announce:v1:agent:files:subagent:0d59e951-cbaa-44f1-92e5-33b9729d096e:742ca132-060c-4cf8-8c0a-3f1377095ea3",
+        "text": "r2",
+        "mergedAnnounceRuns": [
+          "announce:v1:agent:files:subagent:0d59e951-cbaa-44f1-92e5-33b9729d096e:742ca132-060c-4cf8-8c0a-3f1377095ea3"
+        ],
+        "continuations": null,
+        "announcePrefix": "r2",
+        "replayArmed": false,
+        "interrupted": false
+      },
+      {
+        "id": "D",
+        "role": "assistant",
+        "status": "complete",
+        "runId": "announce:v1:agent:files:subagent:0d59e951-cbaa-44f1-92e5-33b9729d096e:742ca132-060c-4cf8-8c0a-3f1377095ea3",
+        "text": "résultat",
+        "mergedAnnounceRuns": null,
+        "continuations": null,
+        "announcePrefix": null,
+        "replayArmed": false,
+        "interrupted": false
+      }
+    ]
+  },
+  "L8b standalone 0.96.0 settle bubble · error, retry resumes": {
+    "landed": "P",
+    "bubbles": [
+      {
+        "id": "u0",
+        "role": "user",
+        "status": "complete",
+        "runId": null,
+        "text": "q0",
+        "mergedAnnounceRuns": null,
+        "continuations": null,
+        "announcePrefix": null,
+        "replayArmed": false,
+        "interrupted": false
+      },
+      {
+        "id": "a0",
+        "role": "assistant",
+        "status": "complete",
+        "runId": "run0",
+        "text": "r0",
+        "mergedAnnounceRuns": null,
+        "continuations": null,
+        "announcePrefix": null,
+        "replayArmed": false,
+        "interrupted": false
+      },
+      {
+        "id": "u1",
+        "role": "user",
+        "status": "complete",
+        "runId": null,
+        "text": "q1",
+        "mergedAnnounceRuns": null,
+        "continuations": null,
+        "announcePrefix": null,
+        "replayArmed": false,
+        "interrupted": false
+      },
+      {
+        "id": "a1",
+        "role": "assistant",
+        "status": "complete",
+        "runId": "run1",
+        "text": "r1",
+        "mergedAnnounceRuns": null,
+        "continuations": null,
+        "announcePrefix": null,
+        "replayArmed": false,
+        "interrupted": false
+      },
+      {
+        "id": "u2",
+        "role": "user",
+        "status": "complete",
+        "runId": null,
+        "text": "q2",
+        "mergedAnnounceRuns": null,
+        "continuations": null,
+        "announcePrefix": null,
+        "replayArmed": false,
+        "interrupted": false
+      },
+      {
+        "id": "P",
+        "role": "assistant",
+        "status": "streaming",
+        "runId": "announce:requester-settle:main:agent:main:atrium:chat:u:c1:742ca132-060c-4cf8-8c0a-3f1377095ea3:yield-1:retry-1",
+        "text": "r2",
+        "mergedAnnounceRuns": [
+          "announce:requester-settle:main:agent:main:atrium:chat:u:c1:742ca132-060c-4cf8-8c0a-3f1377095ea3:yield-1:retry-1"
+        ],
+        "continuations": [
+          {
+            "at": 4,
+            "childRunIds": [
+              "742ca132-060c-4cf8-8c0a-3f1377095ea3"
+            ]
+          }
+        ],
+        "announcePrefix": "r2",
+        "replayArmed": false,
+        "interrupted": false
+      },
+      {
+        "id": "D",
+        "role": "assistant",
+        "status": "error",
+        "runId": "announce:requester-settle:main:agent:main:atrium:chat:u:c1:742ca132-060c-4cf8-8c0a-3f1377095ea3:yield-1",
+        "text": "SYNTH",
+        "mergedAnnounceRuns": null,
+        "continuations": null,
+        "announcePrefix": null,
+        "replayArmed": false,
+        "interrupted": false
+      }
+    ]
+  },
+  "L8c standalone 0.96.0 settle bubble · answered, second retry": {
+    "landed": "P",
+    "bubbles": [
+      {
+        "id": "u0",
+        "role": "user",
+        "status": "complete",
+        "runId": null,
+        "text": "q0",
+        "mergedAnnounceRuns": null,
+        "continuations": null,
+        "announcePrefix": null,
+        "replayArmed": false,
+        "interrupted": false
+      },
+      {
+        "id": "a0",
+        "role": "assistant",
+        "status": "complete",
+        "runId": "run0",
+        "text": "r0",
+        "mergedAnnounceRuns": null,
+        "continuations": null,
+        "announcePrefix": null,
+        "replayArmed": false,
+        "interrupted": false
+      },
+      {
+        "id": "u1",
+        "role": "user",
+        "status": "complete",
+        "runId": null,
+        "text": "q1",
+        "mergedAnnounceRuns": null,
+        "continuations": null,
+        "announcePrefix": null,
+        "replayArmed": false,
+        "interrupted": false
+      },
+      {
+        "id": "a1",
+        "role": "assistant",
+        "status": "complete",
+        "runId": "run1",
+        "text": "r1",
+        "mergedAnnounceRuns": null,
+        "continuations": null,
+        "announcePrefix": null,
+        "replayArmed": false,
+        "interrupted": false
+      },
+      {
+        "id": "u2",
+        "role": "user",
+        "status": "complete",
+        "runId": null,
+        "text": "q2",
+        "mergedAnnounceRuns": null,
+        "continuations": null,
+        "announcePrefix": null,
+        "replayArmed": false,
+        "interrupted": false
+      },
+      {
+        "id": "P",
+        "role": "assistant",
+        "status": "streaming",
+        "runId": "announce:requester-settle:main:agent:main:atrium:chat:u:c1:742ca132-060c-4cf8-8c0a-3f1377095ea3:yield-1:retry-2",
+        "text": "r2",
+        "mergedAnnounceRuns": [
+          "announce:requester-settle:main:agent:main:atrium:chat:u:c1:742ca132-060c-4cf8-8c0a-3f1377095ea3:yield-1:retry-2"
+        ],
+        "continuations": [
+          {
+            "at": 4,
+            "childRunIds": [
+              "742ca132-060c-4cf8-8c0a-3f1377095ea3"
+            ]
+          }
+        ],
+        "announcePrefix": "r2",
+        "replayArmed": false,
+        "interrupted": false
+      },
+      {
+        "id": "D",
+        "role": "assistant",
+        "status": "complete",
+        "runId": "announce:requester-settle:main:agent:main:atrium:chat:u:c1:742ca132-060c-4cf8-8c0a-3f1377095ea3:yield-1:retry-1",
+        "text": "SYNTHESE: fini.",
+        "mergedAnnounceRuns": null,
+        "continuations": null,
+        "announcePrefix": null,
+        "replayArmed": false,
+        "interrupted": false
+      }
+    ]
+  },
+  "L9 merged settle · reopened retry finalizes empty": {
+    "landed": "P",
+    "bubbles": [
+      {
+        "id": "u0",
+        "role": "user",
+        "status": "complete",
+        "runId": null,
+        "text": "q0",
+        "mergedAnnounceRuns": null,
+        "continuations": null,
+        "announcePrefix": null,
+        "replayArmed": false,
+        "interrupted": false
+      },
+      {
+        "id": "a0",
+        "role": "assistant",
+        "status": "complete",
+        "runId": "run0",
+        "text": "r0",
+        "mergedAnnounceRuns": null,
+        "continuations": null,
+        "announcePrefix": null,
+        "replayArmed": false,
+        "interrupted": false
+      },
+      {
+        "id": "u1",
+        "role": "user",
+        "status": "complete",
+        "runId": null,
+        "text": "q1",
+        "mergedAnnounceRuns": null,
+        "continuations": null,
+        "announcePrefix": null,
+        "replayArmed": false,
+        "interrupted": false
+      },
+      {
+        "id": "a1",
+        "role": "assistant",
+        "status": "complete",
+        "runId": "run1",
+        "text": "r1",
+        "mergedAnnounceRuns": null,
+        "continuations": null,
+        "announcePrefix": null,
+        "replayArmed": false,
+        "interrupted": false
+      },
+      {
+        "id": "u2",
+        "role": "user",
+        "status": "complete",
+        "runId": null,
+        "text": "q2",
+        "mergedAnnounceRuns": null,
+        "continuations": null,
+        "announcePrefix": null,
+        "replayArmed": false,
+        "interrupted": false
+      },
+      {
+        "id": "P",
+        "role": "assistant",
+        "status": "complete",
+        "runId": "announce:requester-settle:main:agent:main:atrium:chat:u:c1:742ca132-060c-4cf8-8c0a-3f1377095ea3:yield-1:retry-1",
+        "text": "r2\n\n\n\n",
+        "mergedAnnounceRuns": [
+          "announce:requester-settle:main:agent:main:atrium:chat:u:c1:742ca132-060c-4cf8-8c0a-3f1377095ea3:yield-1",
+          "announce:requester-settle:main:agent:main:atrium:chat:u:c1:742ca132-060c-4cf8-8c0a-3f1377095ea3:yield-1:retry-1"
+        ],
+        "continuations": [
+          {
+            "at": 4,
+            "childRunIds": [
+              "742ca132-060c-4cf8-8c0a-3f1377095ea3"
+            ]
+          }
+        ],
+        "announcePrefix": null,
+        "replayArmed": false,
+        "interrupted": false
+      }
+    ]
+  },
+  "F1 fresh announce on a 0.96.0 answer": {
+    "landed": "P",
+    "bubbles": [
+      {
+        "id": "u0",
+        "role": "user",
+        "status": "complete",
+        "runId": null,
+        "text": "q0",
+        "mergedAnnounceRuns": null,
+        "continuations": null,
+        "announcePrefix": null,
+        "replayArmed": false,
+        "interrupted": false
+      },
+      {
+        "id": "a0",
+        "role": "assistant",
+        "status": "complete",
+        "runId": "run0",
+        "text": "r0",
+        "mergedAnnounceRuns": null,
+        "continuations": null,
+        "announcePrefix": null,
+        "replayArmed": false,
+        "interrupted": false
+      },
+      {
+        "id": "u1",
+        "role": "user",
+        "status": "complete",
+        "runId": null,
+        "text": "q1",
+        "mergedAnnounceRuns": null,
+        "continuations": null,
+        "announcePrefix": null,
+        "replayArmed": false,
+        "interrupted": false
+      },
+      {
+        "id": "a1",
+        "role": "assistant",
+        "status": "complete",
+        "runId": "run1",
+        "text": "r1",
+        "mergedAnnounceRuns": null,
+        "continuations": null,
+        "announcePrefix": null,
+        "replayArmed": false,
+        "interrupted": false
+      },
+      {
+        "id": "u2",
+        "role": "user",
+        "status": "complete",
+        "runId": null,
+        "text": "q2",
+        "mergedAnnounceRuns": null,
+        "continuations": null,
+        "announcePrefix": null,
+        "replayArmed": false,
+        "interrupted": false
+      },
+      {
+        "id": "P",
+        "role": "assistant",
+        "status": "streaming",
+        "runId": "announce:v1:agent:files:subagent:0d59e951-cbaa-44f1-92e5-33b9729d096e:742ca132-060c-4cf8-8c0a-3f1377095ea3",
+        "text": "r2",
+        "mergedAnnounceRuns": [
+          "announce:v1:agent:files:subagent:0d59e951-cbaa-44f1-92e5-33b9729d096e:742ca132-060c-4cf8-8c0a-3f1377095ea3"
+        ],
+        "continuations": null,
+        "announcePrefix": "r2",
+        "replayArmed": false,
+        "interrupted": false
+      }
+    ]
+  },
+  "F2 fresh settle on a 0.96.0 answer": {
+    "landed": "P",
+    "bubbles": [
+      {
+        "id": "u0",
+        "role": "user",
+        "status": "complete",
+        "runId": null,
+        "text": "q0",
+        "mergedAnnounceRuns": null,
+        "continuations": null,
+        "announcePrefix": null,
+        "replayArmed": false,
+        "interrupted": false
+      },
+      {
+        "id": "a0",
+        "role": "assistant",
+        "status": "complete",
+        "runId": "run0",
+        "text": "r0",
+        "mergedAnnounceRuns": null,
+        "continuations": null,
+        "announcePrefix": null,
+        "replayArmed": false,
+        "interrupted": false
+      },
+      {
+        "id": "u1",
+        "role": "user",
+        "status": "complete",
+        "runId": null,
+        "text": "q1",
+        "mergedAnnounceRuns": null,
+        "continuations": null,
+        "announcePrefix": null,
+        "replayArmed": false,
+        "interrupted": false
+      },
+      {
+        "id": "a1",
+        "role": "assistant",
+        "status": "complete",
+        "runId": "run1",
+        "text": "r1",
+        "mergedAnnounceRuns": null,
+        "continuations": null,
+        "announcePrefix": null,
+        "replayArmed": false,
+        "interrupted": false
+      },
+      {
+        "id": "u2",
+        "role": "user",
+        "status": "complete",
+        "runId": null,
+        "text": "q2",
+        "mergedAnnounceRuns": null,
+        "continuations": null,
+        "announcePrefix": null,
+        "replayArmed": false,
+        "interrupted": false
+      },
+      {
+        "id": "P",
+        "role": "assistant",
+        "status": "streaming",
+        "runId": "announce:requester-settle:main:agent:main:atrium:chat:u:c1:742ca132-060c-4cf8-8c0a-3f1377095ea3:yield-1",
+        "text": "r2",
+        "mergedAnnounceRuns": [
+          "announce:requester-settle:main:agent:main:atrium:chat:u:c1:742ca132-060c-4cf8-8c0a-3f1377095ea3:yield-1"
+        ],
+        "continuations": [
+          {
+            "at": 4,
+            "childRunIds": [
+              "742ca132-060c-4cf8-8c0a-3f1377095ea3"
+            ]
+          }
+        ],
+        "announcePrefix": "r2",
+        "replayArmed": false,
+        "interrupted": false
+      }
+    ]
+  },
+  "F3 fresh settle · a positional member stays positional": {
+    "landed": "P",
+    "bubbles": [
+      {
+        "id": "u0",
+        "role": "user",
+        "status": "complete",
+        "runId": null,
+        "text": "q0",
+        "mergedAnnounceRuns": null,
+        "continuations": null,
+        "announcePrefix": null,
+        "replayArmed": false,
+        "interrupted": false
+      },
+      {
+        "id": "a0",
+        "role": "assistant",
+        "status": "complete",
+        "runId": "run0",
+        "text": "r0",
+        "mergedAnnounceRuns": null,
+        "continuations": null,
+        "announcePrefix": null,
+        "replayArmed": false,
+        "interrupted": false
+      },
+      {
+        "id": "u1",
+        "role": "user",
+        "status": "complete",
+        "runId": null,
+        "text": "q1",
+        "mergedAnnounceRuns": null,
+        "continuations": null,
+        "announcePrefix": null,
+        "replayArmed": false,
+        "interrupted": false
+      },
+      {
+        "id": "a1",
+        "role": "assistant",
+        "status": "complete",
+        "runId": "run1",
+        "text": "r1",
+        "mergedAnnounceRuns": null,
+        "continuations": null,
+        "announcePrefix": null,
+        "replayArmed": false,
+        "interrupted": false
+      },
+      {
+        "id": "u2",
+        "role": "user",
+        "status": "complete",
+        "runId": null,
+        "text": "q2",
+        "mergedAnnounceRuns": null,
+        "continuations": null,
+        "announcePrefix": null,
+        "replayArmed": false,
+        "interrupted": false
+      },
+      {
+        "id": "P",
+        "role": "assistant",
+        "status": "streaming",
+        "runId": "announce:requester-settle:main:agent:main:atrium:chat:u:c1:742ca132-060c-4cf8-8c0a-3f1377095ea3,842ca132-060c-4cf8-8c0a-3f1377095ea3:yield-1",
+        "text": "r2",
+        "mergedAnnounceRuns": [
+          "announce:requester-settle:main:agent:main:atrium:chat:u:c1:742ca132-060c-4cf8-8c0a-3f1377095ea3,842ca132-060c-4cf8-8c0a-3f1377095ea3:yield-1"
+        ],
+        "continuations": [
+          {
+            "at": 4,
+            "childRunIds": [
+              "742ca132-060c-4cf8-8c0a-3f1377095ea3",
+              "842ca132-060c-4cf8-8c0a-3f1377095ea3"
+            ]
+          }
+        ],
+        "announcePrefix": "r2",
+        "replayArmed": false,
+        "interrupted": false
+      }
+    ]
+  },
+  "G1 list over 0.96.0 bubbles": [
+    {
+      "id": "u0",
+      "status": "complete",
+      "text": "q0",
+      "runId": null,
+      "group": null
+    },
+    {
+      "id": "a0",
+      "status": "complete",
+      "text": "r0",
+      "runId": "run0",
+      "group": null
+    },
+    {
+      "id": "u1",
+      "status": "complete",
+      "text": "q1",
+      "runId": null,
+      "group": null
+    },
+    {
+      "id": "a1",
+      "status": "complete",
+      "text": "r1",
+      "runId": "run1",
+      "group": null
+    },
+    {
+      "id": "u2",
+      "status": "complete",
+      "text": "q2",
+      "runId": null,
+      "group": null
+    },
+    {
+      "id": "P",
+      "status": "complete",
+      "text": "r2\n\nrésultat",
+      "runId": "announce:v1:agent:files:subagent:0d59e951-cbaa-44f1-92e5-33b9729d096e:742ca132-060c-4cf8-8c0a-3f1377095ea3",
+      "group": null
+    }
+  ],
+  "G2 delete a 0.96.0 merged answer": [
+    "u0",
+    "a0",
+    "u1",
+    "a1",
+    "u2"
+  ],
+  "G3 report a 0.96.0 merged answer": {
+    "agentId": "main",
+    "clientInfo": {},
+    "contextCount": 6,
+    "contextJson": "[{\"role\":\"user\",\"text\":\"q0\"},{\"role\":\"assistant\",\"text\":\"r0\"},{\"role\":\"user\",\"text\":\"q1\"},{\"role\":\"assistant\",\"text\":\"r1\"},{\"role\":\"user\",\"text\":\"q2\"},{\"role\":\"assistant\",\"text\":\"r2\\n\\nrésultat\"}]",
+    "contextTruncated": false,
+    "contextWindowLimit": 12,
+    "displayedMatchesStored": true,
+    "displayedText": "r2\n\nrésultat",
+    "instanceName": "prod",
+    "messageRole": "assistant",
+    "messageStatus": "complete",
+    "messageText": "r2\n\nrésultat",
+    "messageUpdatedAt": 1,
+    "outboxAvailable": false,
+    "partsCount": 0,
+    "partsJson": "[]",
+    "promptMessageId": "u2",
+    "promptText": "q2",
+    "runId": "announce:v1:agent:files:subagent:0d59e951-cbaa-44f1-92e5-33b9729d096e:742ca132-060c-4cf8-8c0a-3f1377095ea3"
+  },
+  "S1 0.96.0 sub-agent row · observed again": {
+    "parent": "P",
+    "exact": true,
+    "status": "done",
+    "childRunId": "742ca132-060c-4cf8-8c0a-3f1377095ea3"
+  },
+  "S2 0.96.0 positional anchor · observed again": {
+    "parent": "P",
+    "exact": null,
+    "childRunId": "742ca132-060c-4cf8-8c0a-3f1377095ea3"
+  },
+  "D1 0.96.0 delivery bubble · empty terminal with dropIfEmpty (on)": {
+    "bubbles": [
+      {
+        "id": "u0",
+        "role": "user",
+        "status": "complete",
+        "runId": null,
+        "text": "q0",
+        "mergedAnnounceRuns": null,
+        "continuations": null,
+        "announcePrefix": null,
+        "replayArmed": false,
+        "interrupted": false
+      },
+      {
+        "id": "a0",
+        "role": "assistant",
+        "status": "complete",
+        "runId": "run0",
+        "text": "r0",
+        "mergedAnnounceRuns": null,
+        "continuations": null,
+        "announcePrefix": null,
+        "replayArmed": false,
+        "interrupted": false
+      },
+      {
+        "id": "u1",
+        "role": "user",
+        "status": "complete",
+        "runId": null,
+        "text": "q1",
+        "mergedAnnounceRuns": null,
+        "continuations": null,
+        "announcePrefix": null,
+        "replayArmed": false,
+        "interrupted": false
+      },
+      {
+        "id": "a1",
+        "role": "assistant",
+        "status": "complete",
+        "runId": "run1",
+        "text": "r1",
+        "mergedAnnounceRuns": null,
+        "continuations": null,
+        "announcePrefix": null,
+        "replayArmed": false,
+        "interrupted": false
+      },
+      {
+        "id": "u2",
+        "role": "user",
+        "status": "complete",
+        "runId": null,
+        "text": "q2",
+        "mergedAnnounceRuns": null,
+        "continuations": null,
+        "announcePrefix": null,
+        "replayArmed": false,
+        "interrupted": false
+      },
+      {
+        "id": "P",
+        "role": "assistant",
+        "status": "complete",
+        "runId": "run2",
+        "text": "r2",
+        "mergedAnnounceRuns": null,
+        "continuations": null,
+        "announcePrefix": null,
+        "replayArmed": false,
+        "interrupted": false
+      },
+      {
+        "id": "D",
+        "role": "assistant",
+        "status": "error",
+        "runId": "announce:v1:agent:files:subagent:0d59e951-cbaa-44f1-92e5-33b9729d096e:742ca132-060c-4cf8-8c0a-3f1377095ea3",
+        "text": "",
+        "mergedAnnounceRuns": null,
+        "continuations": null,
+        "announcePrefix": null,
+        "replayArmed": false,
+        "interrupted": false
+      }
+    ],
+    "links": [
+      {
+        "runId": "announce:v1:agent:files:subagent:0d59e951-cbaa-44f1-92e5-33b9729d096e:742ca132-060c-4cf8-8c0a-3f1377095ea3",
+        "to": "D"
+      }
+    ]
+  },
+  "D2 0.96.0 delivery bubble · empty terminal, then replay (shadow)": {
+    "links": [
+      {
+        "runId": "announce:v1:agent:files:subagent:0d59e951-cbaa-44f1-92e5-33b9729d096e:742ca132-060c-4cf8-8c0a-3f1377095ea3",
+        "to": "D"
+      }
+    ],
+    "landed": "new",
+    "bubbles": [
+      {
+        "id": "u0",
+        "role": "user",
+        "status": "complete",
+        "runId": null,
+        "text": "q0",
+        "mergedAnnounceRuns": null,
+        "continuations": null,
+        "announcePrefix": null,
+        "replayArmed": false,
+        "interrupted": false
+      },
+      {
+        "id": "a0",
+        "role": "assistant",
+        "status": "complete",
+        "runId": "run0",
+        "text": "r0",
+        "mergedAnnounceRuns": null,
+        "continuations": null,
+        "announcePrefix": null,
+        "replayArmed": false,
+        "interrupted": false
+      },
+      {
+        "id": "u1",
+        "role": "user",
+        "status": "complete",
+        "runId": null,
+        "text": "q1",
+        "mergedAnnounceRuns": null,
+        "continuations": null,
+        "announcePrefix": null,
+        "replayArmed": false,
+        "interrupted": false
+      },
+      {
+        "id": "a1",
+        "role": "assistant",
+        "status": "complete",
+        "runId": "run1",
+        "text": "r1",
+        "mergedAnnounceRuns": null,
+        "continuations": null,
+        "announcePrefix": null,
+        "replayArmed": false,
+        "interrupted": false
+      },
+      {
+        "id": "u2",
+        "role": "user",
+        "status": "complete",
+        "runId": null,
+        "text": "q2",
+        "mergedAnnounceRuns": null,
+        "continuations": null,
+        "announcePrefix": null,
+        "replayArmed": false,
+        "interrupted": false
+      },
+      {
+        "id": "P",
+        "role": "assistant",
+        "status": "complete",
+        "runId": "run2",
+        "text": "r2",
+        "mergedAnnounceRuns": null,
+        "continuations": null,
+        "announcePrefix": null,
+        "replayArmed": false,
+        "interrupted": false
+      },
+      {
+        "id": "D",
+        "role": "assistant",
+        "status": "error",
+        "runId": "announce:v1:agent:files:subagent:0d59e951-cbaa-44f1-92e5-33b9729d096e:742ca132-060c-4cf8-8c0a-3f1377095ea3",
+        "text": "",
+        "mergedAnnounceRuns": null,
+        "continuations": null,
+        "announcePrefix": null,
+        "replayArmed": false,
+        "interrupted": false
+      },
+      {
+        "id": "new",
+        "role": "assistant",
+        "status": "streaming",
+        "runId": "announce:v1:agent:files:subagent:0d59e951-cbaa-44f1-92e5-33b9729d096e:742ca132-060c-4cf8-8c0a-3f1377095ea3",
+        "text": "",
+        "mergedAnnounceRuns": null,
+        "continuations": null,
+        "announcePrefix": null,
+        "replayArmed": false,
+        "interrupted": false
+      }
+    ]
+  },
+  "D3 0.96.0 settle bubble dropped empty, then replay (shadow)": {
+    "links": [
+      {
+        "runId": "announce:requester-settle:main:agent:main:atrium:chat:u:c1:742ca132-060c-4cf8-8c0a-3f1377095ea3:yield-1",
+        "to": "D"
+      }
+    ],
+    "landed": null,
+    "bubbles": [
+      {
+        "id": "u0",
+        "role": "user",
+        "status": "complete",
+        "runId": null,
+        "text": "q0",
+        "mergedAnnounceRuns": null,
+        "continuations": null,
+        "announcePrefix": null,
+        "replayArmed": false,
+        "interrupted": false
+      },
+      {
+        "id": "a0",
+        "role": "assistant",
+        "status": "complete",
+        "runId": "run0",
+        "text": "r0",
+        "mergedAnnounceRuns": null,
+        "continuations": null,
+        "announcePrefix": null,
+        "replayArmed": false,
+        "interrupted": false
+      },
+      {
+        "id": "u1",
+        "role": "user",
+        "status": "complete",
+        "runId": null,
+        "text": "q1",
+        "mergedAnnounceRuns": null,
+        "continuations": null,
+        "announcePrefix": null,
+        "replayArmed": false,
+        "interrupted": false
+      },
+      {
+        "id": "a1",
+        "role": "assistant",
+        "status": "complete",
+        "runId": "run1",
+        "text": "r1",
+        "mergedAnnounceRuns": null,
+        "continuations": null,
+        "announcePrefix": null,
+        "replayArmed": false,
+        "interrupted": false
+      },
+      {
+        "id": "u2",
+        "role": "user",
+        "status": "complete",
+        "runId": null,
+        "text": "q2",
+        "mergedAnnounceRuns": null,
+        "continuations": null,
+        "announcePrefix": null,
+        "replayArmed": false,
+        "interrupted": false
+      },
+      {
+        "id": "P",
+        "role": "assistant",
+        "status": "complete",
+        "runId": "run2",
+        "text": "r2",
+        "mergedAnnounceRuns": null,
+        "continuations": null,
+        "announcePrefix": null,
+        "replayArmed": false,
+        "interrupted": false
+      }
+    ]
+  },
+  "U1 a person's deletion before the switch stays a deletion": {
+    "landed": null,
+    "bubbles": [
+      {
+        "id": "u0",
+        "role": "user",
+        "status": "complete",
+        "runId": null,
+        "text": "q0",
+        "mergedAnnounceRuns": null,
+        "continuations": null,
+        "announcePrefix": null,
+        "replayArmed": false,
+        "interrupted": false
+      },
+      {
+        "id": "a0",
+        "role": "assistant",
+        "status": "complete",
+        "runId": "run0",
+        "text": "r0",
+        "mergedAnnounceRuns": null,
+        "continuations": null,
+        "announcePrefix": null,
+        "replayArmed": false,
+        "interrupted": false
+      },
+      {
+        "id": "u1",
+        "role": "user",
+        "status": "complete",
+        "runId": null,
+        "text": "q1",
+        "mergedAnnounceRuns": null,
+        "continuations": null,
+        "announcePrefix": null,
+        "replayArmed": false,
+        "interrupted": false
+      },
+      {
+        "id": "a1",
+        "role": "assistant",
+        "status": "complete",
+        "runId": "run1",
+        "text": "r1",
+        "mergedAnnounceRuns": null,
+        "continuations": null,
+        "announcePrefix": null,
+        "replayArmed": false,
+        "interrupted": false
+      },
+      {
+        "id": "u2",
+        "role": "user",
+        "status": "complete",
+        "runId": null,
+        "text": "q2",
+        "mergedAnnounceRuns": null,
+        "continuations": null,
+        "announcePrefix": null,
+        "replayArmed": false,
+        "interrupted": false
+      },
+      {
+        "id": "new",
+        "role": "assistant",
+        "status": "error",
+        "runId": null,
+        "text": "",
+        "mergedAnnounceRuns": null,
+        "continuations": null,
+        "announcePrefix": null,
+        "replayArmed": false,
+        "interrupted": false
+      }
+    ]
+  },
+  "T1 first transcript read over 0.96.0 bubbles": [
+    {
+      "id": "u0",
+      "role": "user",
+      "status": "complete",
+      "runId": null,
+      "text": "q0",
+      "mergedAnnounceRuns": null,
+      "continuations": null,
+      "announcePrefix": null,
+      "replayArmed": false,
+      "interrupted": false
+    },
+    {
+      "id": "a0",
+      "role": "assistant",
+      "status": "complete",
+      "runId": "run0",
+      "text": "r0",
+      "mergedAnnounceRuns": null,
+      "continuations": null,
+      "announcePrefix": null,
+      "replayArmed": false,
+      "interrupted": false
+    },
+    {
+      "id": "u1",
+      "role": "user",
+      "status": "complete",
+      "runId": null,
+      "text": "q1",
+      "mergedAnnounceRuns": null,
+      "continuations": null,
+      "announcePrefix": null,
+      "replayArmed": false,
+      "interrupted": false
+    },
+    {
+      "id": "a1",
+      "role": "assistant",
+      "status": "complete",
+      "runId": "run1",
+      "text": "r1",
+      "mergedAnnounceRuns": null,
+      "continuations": null,
+      "announcePrefix": null,
+      "replayArmed": false,
+      "interrupted": false
+    },
+    {
+      "id": "u2",
+      "role": "user",
+      "status": "complete",
+      "runId": null,
+      "text": "q2",
+      "mergedAnnounceRuns": null,
+      "continuations": null,
+      "announcePrefix": null,
+      "replayArmed": false,
+      "interrupted": false
+    },
+    {
+      "id": "P",
+      "role": "assistant",
+      "status": "complete",
+      "runId": "announce:v1:agent:files:subagent:0d59e951-cbaa-44f1-92e5-33b9729d096e:742ca132-060c-4cf8-8c0a-3f1377095ea3",
+      "text": "r2\n\nrésultat",
+      "mergedAnnounceRuns": [
+        "announce:v1:agent:files:subagent:0d59e951-cbaa-44f1-92e5-33b9729d096e:742ca132-060c-4cf8-8c0a-3f1377095ea3"
+      ],
+      "continuations": null,
+      "announcePrefix": "r2",
+      "replayArmed": false,
+      "interrupted": false
+    }
+  ]
+}

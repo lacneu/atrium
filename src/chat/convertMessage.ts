@@ -24,6 +24,7 @@ import { activeToolFromParts } from "./runStatusView";
 import type { DelegatedSlot } from "./assistantEmptyState";
 import { stripGatewayMediaId } from "../../convex/lib/mediaName";
 import { renderableText } from "./widgets/shortcodes";
+import type { GroupPlace } from "./displayGroups";
 import { m } from "@/paraglide/messages.js";
 
 // A localized "(N KB, not shown here)" note for a part field ELIDED from the window
@@ -261,6 +262,9 @@ export function convertConvexMessage(
   // conversation came from. Passed separately from `resolvedAgent` because that
   // one is ROUTABLE and this must never be — nothing it names exists here.
   importedAgentLabel?: string | null,
+  // PHASE 5 (projection `on`): this bubble's place in its delegation chain's display group
+  // (src/chat/displayGroups.ts) — null when it is shown alone.
+  group?: GroupPlace | null,
 ): ThreadMessageLike {
   const content: ContentPart[] = [];
   const toolParts: ToolActivityPart[] = [];
@@ -568,6 +572,14 @@ export function convertConvexMessage(
         custody: message.role === "user" ? (message.custody ?? null) : null,
         // The part of a run before a steered input cut it (phase 3, CU-20).
         steerSegment: message.steerSegment === true,
+        // Phase 5: one answer across consecutive bubbles of a delegation chain — a follower
+        // shows no header, a non-last member no action bar, the last copies the group.
+        groupFollows: group?.follows === true,
+        groupContinues: group?.continues === true,
+        groupText: group?.groupText ?? null,
+        // …and the group's first bubble: Delete / Regenerate and Report act on the whole
+        // answer, which starts there (codex phase 5 pass 1 #4).
+        groupFirstId: group?.firstId ?? null,
         // The EXACT stored text — the verbatim string for the "Source" view (no
         // markdown, no autocorrect, no transformation). For the user turn this is
         // what was typed/sent; for the assistant turn it is the gateway's final

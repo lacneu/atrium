@@ -835,7 +835,7 @@ describe("an adopted run keeps its bubble when a delivery merge rotates the id (
         .collect(),
     );
 
-  test("on: the rotated adopted run is recorded, and I1 still finds its bubble", async () => {
+  test("on (phase 5): the delivery opens its OWN bubble — the adopted run keeps its id, and I1 still finds its bubble", async () => {
     const t = convexTest(schema, modules);
     const { chatId, bubble } = await seedAdoptedBubble(t, "on");
     await t.mutation(internal.transcriptProjection.applyTranscript, {
@@ -849,11 +849,12 @@ describe("an adopted run keeps its bubble when a delivery merge rotates the id (
       unidentified: 0,
       readAt: 1000,
     });
-    await t.mutation(internal.stream.startAssistant, { chatId, runId: DELIVERY });
-    const merged = await t.run((ctx) => ctx.db.get(bubble));
-    expect(merged?.runId).toBe(DELIVERY);
-    const rec = await recordsOf(t, chatId, ADOPTED);
-    expect(rec.map((r) => r.messageId)).toEqual([bubble]);
+    const own = await t.mutation(internal.stream.startAssistant, { chatId, runId: DELIVERY });
+    expect(own).not.toBe(bubble);
+    const kept = await t.run((ctx) => ctx.db.get(bubble));
+    // No rotation, hence nothing to record: the run id IS the join.
+    expect(kept?.runId).toBe(ADOPTED);
+    expect(await recordsOf(t, chatId, ADOPTED)).toEqual([]);
     await t.mutation(internal.transcriptProjection.applyTranscript, {
       chatId,
       boundInstanceName: "prod",

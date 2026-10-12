@@ -1417,10 +1417,12 @@ describe("a replayed requester-settle after a transcript-recorded error resumes 
         await ctx.db.patch(chatId, { transcriptSeenAt: 1 });
       });
     }
-    await t.mutation(internal.stream.startAssistant, { chatId, runId: PROD_SETTLE });
-    await t.mutation(internal.stream.appendDelta, { messageId: parentId, text: "partial result", expectedRunId: PROD_SETTLE });
+    // `off`: the wake merges into the parent; `on` (phase 5): it opens its own bubble.
+    const first = (await t.mutation(internal.stream.startAssistant, { chatId, runId: PROD_SETTLE }))!;
+    const bubbleId = first;
+    await t.mutation(internal.stream.appendDelta, { messageId: bubbleId, text: "partial result", expectedRunId: PROD_SETTLE });
     await t.mutation(internal.stream.finalize, {
-      messageId: parentId,
+      messageId: bubbleId,
       status: "error",
       text: "partial result",
       error: "provider failed",
@@ -1442,18 +1444,21 @@ describe("a replayed requester-settle after a transcript-recorded error resumes 
     }
     // The gateway replays the SAME run (error resume).
     const opened = await t.mutation(internal.stream.startAssistant, { chatId, runId: PROD_SETTLE });
-    const reopened = await t.run((ctx) => ctx.db.get(parentId));
-    await t.mutation(internal.stream.appendDelta, { messageId: parentId, text: "recovered result", expectedRunId: PROD_SETTLE });
+    const reopened = await t.run((ctx) => ctx.db.get(bubbleId));
+    await t.mutation(internal.stream.appendDelta, { messageId: bubbleId, text: "recovered result", expectedRunId: PROD_SETTLE });
     await t.mutation(internal.stream.finalize, {
-      messageId: parentId,
+      messageId: bubbleId,
       status: "complete",
       text: "recovered result",
       expectedRunId: PROD_SETTLE,
     });
-    const doc = await t.run((ctx) => ctx.db.get(parentId));
+    const doc = await t.run((ctx) => ctx.db.get(bubbleId));
     const runs = await t.run((ctx) => ctx.db.query("transcriptRuns").collect());
+    const parent = await t.run((ctx) => ctx.db.get(parentId));
     return {
-      opened: opened === parentId,
+      ownBubble: bubbleId !== parentId,
+      parentText: parent?.text,
+      opened: opened === bubbleId,
       reopenedStatus: reopened?.status,
       text: doc?.text,
       status: doc?.status,
@@ -1471,10 +1476,20 @@ describe("a replayed requester-settle after a transcript-recorded error resumes 
     expect(off.text).toContain("recovered result");
   });
 
-  test("on: the same bubble, text and status as 0.95.0 — and the run is no longer held as settled", async () => {
+  test("on (phase 5): the wake's OWN bubble resumes — same text and status as 0.95.0's merge, the parent untouched, the run no longer held as settled", async () => {
     const off = await errorThenReplay("off");
     const on = await errorThenReplay("on");
-    expect({ ...on, runs: undefined }).toEqual({ ...off, runs: undefined });
+    expect(off.ownBubble).toBe(false);
+    expect(on.ownBubble).toBe(true);
+    expect(on.parentText).toBe("Je délègue.");
+    expect(on.bubbles).toBe(off.bubbles + 1);
+    expect({ opened: on.opened, reopenedStatus: on.reopenedStatus, status: on.status, errorCode: on.errorCode }).toEqual({
+      opened: off.opened,
+      reopenedStatus: off.reopenedStatus,
+      status: off.status,
+      errorCode: off.errorCode,
+    });
+    expect(on.text).toContain("recovered result");
     // The resumed run streams again for the projection: the transcript must not settle
     // the reopened bubble back to its old error before the replay's own terminal.
     expect(on.runs.map((r) => ({ status: r.status, settled: r.settledAt !== undefined }))).toEqual([

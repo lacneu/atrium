@@ -38,6 +38,8 @@ import { drainNextQueued, SUBAGENT_STALE_TTL_MS } from "./lib/outboxQueue";
 import { writeTraceEvent } from "./observability";
 import { deliveryChildKey } from "./lib/deliveryRuns";
 import { effectiveOrder, QUEUED_ORDER_SENTINEL } from "./lib/messageOrder";
+import { transcriptStoredText } from "./lib/transcriptProjection";
+import { transcriptAnchorOf } from "./displayGroups";
 
 /** How long a finished-but-undelivered child keeps the "composing the reply"
  *  indicator up. It bounds a terminal row whose announce never arrives
@@ -213,6 +215,9 @@ export const upsertSubAgent = internalMutation({
     runTimeoutSeconds: v.optional(v.number()),
     kind: v.optional(v.union(v.literal("subagent"), v.literal("task"))),
     bornOfRun: v.optional(v.string()),
+    /** TASK rows of a projected turn (phase 5, schema note): the run that started the
+     *  task. Fill-only. */
+    startRunId: v.optional(v.string()),
     taskName: v.optional(v.string()),
     /** The bound the task declared for itself (schema note): the tightest honest
      *  limit on how long this row may claim to be running. */
@@ -309,6 +314,35 @@ export const upsertSubAgent = internalMutation({
               : undefined;
         }
       }
+      // PROJECTION `on` (phase 5, design §14.3): the transcript's launch row names the
+      // run that launched this child — its bubble IS the anchor, whatever position the
+      // bridge guessed. Read only for a conversation that stored transcript text.
+      // Scoped to the instance writing this row (codex phase 5 pass 1 #1).
+      let anchorPending = false;
+      // A projected child whose run id or instance is not known yet cannot be correlated
+      // with its launch: it is marked, and re-tried once they arrive (codex phase 5 pass 2
+      // #2) — never for a task row (no launch row names one), never for a chat never `on`.
+      const correlationOf = args.boundInstanceName ?? args.instanceName;
+      if (
+        transcriptStoredText(chat) &&
+        args.kind !== "task" &&
+        (args.childRunId === undefined || correlationOf === undefined)
+      ) {
+        anchorPending = true;
+      } else if (transcriptStoredText(chat) && args.kind !== "task") {
+        const fromTranscript = await transcriptAnchorOf(
+          ctx,
+          args.chatId,
+          args.childSessionKey,
+          args.childRunId,
+          args.boundInstanceName ?? args.instanceName,
+        );
+        if (fromTranscript === "pending") anchorPending = true;
+        else if (fromTranscript !== null) {
+          parentMessageId = fromTranscript;
+          anchorExact = true;
+        }
+      }
       const insertedId = await ctx.db.insert("subAgents", {
         chatId: args.chatId,
         userId: chat.userId,
@@ -316,6 +350,8 @@ export const upsertSubAgent = internalMutation({
         parentMessageId,
         anchorExact,
         childSessionKey: args.childSessionKey,
+        ...(args.startRunId !== undefined ? { startRunId: args.startRunId } : {}),
+        ...(anchorPending ? { anchorPending: true } : {}),
         ...(args.childRunId !== undefined ? { childRunId: args.childRunId } : {}),
         ...(args.runTimeoutSeconds !== undefined
           ? { runTimeoutSeconds: args.runTimeoutSeconds }
@@ -392,6 +428,8 @@ export const upsertSubAgent = internalMutation({
       kind?: "subagent" | "task";
       instanceName?: string;
       bornOfRun?: string;
+      startRunId?: string;
+      anchorPending?: boolean;
       childRunId?: string;
       runTimeoutSeconds?: number;
       userId?: Id<"users">;
@@ -418,6 +456,9 @@ export const upsertSubAgent = internalMutation({
     // re-point the settle join at a run the batch never contained.
     if (args.childRunId !== undefined && existing.childRunId === undefined) {
       patch.childRunId = args.childRunId;
+    }
+    if (args.startRunId !== undefined && existing.startRunId === undefined) {
+      patch.startRunId = args.startRunId;
     }
     if (
       args.runTimeoutSeconds !== undefined &&
@@ -557,7 +598,31 @@ export const upsertSubAgent = internalMutation({
     if (args.taskName !== undefined && existing.taskName === undefined) {
       patch.taskName = args.taskName;
     }
+    // PROJECTION `on` (codex phase 5 pass 1 #6): the transcript named this child's launch
+    // before its launching run had a bubble — this observation re-tries the transcript's
+    // anchor. Read only for a row so marked (never for a conversation never `on`).
+    // …or before its run id / instance was known (codex phase 5 pass 2 #2): it waits,
+    // without a read, until both are, then resolves like a first observation.
+    if (existing.anchorPending === true) {
+      const childRunId = existing.childRunId ?? args.childRunId;
+      const instanceName = existing.instanceName ?? args.instanceName;
+      if (childRunId !== undefined && instanceName !== undefined) {
+        const fromTranscript = await transcriptAnchorOf(
+          ctx,
+          existing.chatId,
+          existing.childSessionKey,
+          childRunId,
+          instanceName,
+        );
+        if (fromTranscript !== "pending") patch.anchorPending = undefined;
+        if (fromTranscript !== null && fromTranscript !== "pending") {
+          patch.parentMessageId = fromTranscript;
+          patch.anchorExact = true;
+        }
+      }
+    }
     if (
+      patch.parentMessageId === undefined &&
       args.parentMessageId !== undefined &&
       (existing.parentMessageId === undefined ||
         (args.anchorExact === true && existing.anchorExact !== true))

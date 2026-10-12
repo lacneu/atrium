@@ -1539,6 +1539,11 @@ export class TurnSink {
             );
             if (asyncStart !== null) {
               this.asyncTaskStartedThisTurn = true;
+              // PROJECTION `on` (phase 5): the run that started the task — the frame's own
+              // run, beside the structured `taskId`. The proof the delivery run
+              // `<tool>:<taskId>:ok` joins its chain by (convex/lib/delegationChain.ts):
+              // the transcript row cannot carry it (chat.history strips tool details).
+              const startRunId = this.projection ? asString((event as { runId?: unknown }).runId) : undefined;
               const engagement = {
                 chatId: this.chatId,
                 parentMessageId: messageId,
@@ -1546,6 +1551,7 @@ export class TurnSink {
                 anchorExact: true,
                 childSessionKey: taskChildKey(asyncStart.taskId),
                 kind: "task" as const,
+                ...(startRunId !== undefined && startRunId !== "" ? { startRunId } : {}),
                 status: "running" as const,
                 taskName: asyncStart.toolName,
                 // The bound the TOOL declared for itself, when it states one.

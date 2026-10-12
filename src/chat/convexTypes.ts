@@ -222,6 +222,9 @@ export interface ConvexMessageView {
   custody?: "accepted" | "queued" | "steered" | "persisted" | "cancelled" | "interrupted";
   /** ASSISTANT rows, projection `on`: the run's bubble settled at a steered input. */
   steerSegment?: boolean;
+  /** ASSISTANT rows, projection `on` (phase 5): the delegation chain's display group —
+   *  consecutive bubbles sharing it read as one answer (src/chat/displayGroups.ts). */
+  displayGroupId?: string;
   text: string;
   error?: string;
   /** Stable failure class: the gateway's own errorKind (context_length|rate_limit|

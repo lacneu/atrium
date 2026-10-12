@@ -549,3 +549,26 @@ describe("inline widgets", () => {
     expect(contentTypes(makeMessage({ role: "user", text: "hi", parts: [widget] }))).toEqual(["text"]);
   });
 });
+
+describe("convertConvexMessage — display group place (phase 5)", () => {
+  it("carries the bubble's place in its delegation chain's group to the renderer", () => {
+    const meta = convertConvexMessage(makeMessage({ text: "Fini." }), null, null, {
+      follows: true,
+      continues: false,
+      firstId: "p",
+      groupText: "Je délègue.\n\nFini.",
+    }).metadata?.custom as Record<string, unknown>;
+    expect(meta.groupFollows).toBe(true);
+    expect(meta.groupContinues).toBe(false);
+    expect(meta.groupText).toBe("Je délègue.\n\nFini.");
+    expect(meta.groupFirstId).toBe("p");
+  });
+
+  it("a bubble shown alone carries no group", () => {
+    const meta = customMeta(makeMessage({ text: "x" }));
+    expect(meta.groupFollows).toBe(false);
+    expect(meta.groupContinues).toBe(false);
+    expect(meta.groupText).toBeNull();
+    expect(meta.groupFirstId).toBeNull();
+  });
+});

@@ -281,6 +281,11 @@ export async function maybeScheduleTurnRetry(
   knownMaxAttempts?: number,
 ): Promise<void> {
   if (errorKind === undefined || !RETRYABLE_KINDS.has(errorKind)) return;
+  // PROJECTION `on` (phase 5): a delivery's OWN bubble answers no user turn — re-sending
+  // the message above it would answer that message again and delete the delivery as if a
+  // person had (its run tombstoned for good). Its gateway replay resumes it instead (codex
+  // phase 5 pass 13 audit, §14.24). Read off the message: no cost for any other bubble.
+  if (message.deliveryOwnBubble === true) return;
   // REGULAR chats only: the utility kinds (documentary/summarizer/curator) have
   // their OWN failure handling, and finalize runs their correlation side effects
   // right after this hook — an auto-retry racing those (e.g. a documentary
@@ -910,6 +915,8 @@ export const autoRetryTurn = internalMutation({
     if (
       message === null ||
       message.role !== "assistant" ||
+      // Never an own delivery bubble (see maybeScheduleTurnRetry), re-checked at fire time.
+      message.deliveryOwnBubble === true ||
       message.status !== "error" ||
       !RETRYABLE_KINDS.has(message.errorCode ?? "") ||
       (message.text ?? "") !== ""

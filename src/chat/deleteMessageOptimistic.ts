@@ -1,6 +1,7 @@
 import type { OptimisticLocalStore } from "convex/browser";
 import type { Id } from "./convexApi";
 import { api } from "./convexApi";
+import { deletionStart } from "../../convex/lib/displayGroupHead";
 
 // OPTIMISTIC truncation for messages.deleteMessage — the delete-side twin of
 // the send path's optimistic echo (useConvexChatRuntime). Without it the
@@ -24,8 +25,15 @@ export function deleteMessageOptimisticUpdate(
 ): void {
   for (const { args, value } of store.getAllQueries(api.messages.listByChat)) {
     if (value === undefined) continue;
-    const target = value.find((msg) => msg._id === messageId);
-    if (target === undefined) continue;
+    const named = value.find((msg) => msg._id === messageId);
+    if (named === undefined) continue;
+    // A delegation's display group is deleted from its first bubble, as on the server
+    // (convex/lib/displayGroupHead.ts).
+    // The cached window holds every message created since its oldest one: a head
+    // displayed before that is not proven here (the server, which reads the whole
+    // conversation, decides on commit).
+    const coveredFrom = value.reduce((min, m) => Math.min(min, m._creationTime), Number.POSITIVE_INFINITY);
+    const target = deletionStart(value, named, coveredFrom);
     const cutoff = target._creationTime;
     store.setQuery(
       api.messages.listByChat,

@@ -219,6 +219,7 @@ import {
 } from "./useConvexChatRuntime";
 import { uiPrefOptimisticUpdate } from "./uiPrefOptimistic";
 import { deleteMessageOptimisticUpdate } from "./deleteMessageOptimistic";
+import { writeTargetId } from "./displayGroups";
 import { RunStatus } from "./RunStatus";
 import { TurnClock } from "./TurnClock";
 import {
@@ -2711,12 +2712,18 @@ function BookmarkMenuItem() {
 
 function CopyAssistantButton() {
   const [copied, setCopied] = useState(false);
-  const text = useMessage((msg) =>
+  const ownText = useMessage((msg) =>
     (msg.content as ReadonlyArray<{ type?: string; text?: string }>)
       .filter((p) => p.type === "text" && typeof p.text === "string")
       .map((p) => p.text as string)
       .join("\n"),
   );
+  // Phase 5: the last bubble of a delegation chain's display group copies the whole
+  // answer the reader sees as one.
+  const groupText = useMessage(
+    (msg) => (msg.metadata?.custom as { groupText?: string | null } | undefined)?.groupText ?? null,
+  );
+  const text = groupText !== null && groupText.trim() !== "" ? groupText : ownText;
   const error = useMessage(
     (msg) => (msg.metadata?.custom as { error?: string | null } | undefined)?.error ?? null,
   );
@@ -2817,12 +2824,17 @@ function ReadAloudButton() {
     (msg) =>
       (msg.metadata?.custom as { chatId?: string } | undefined)?.chatId ?? null,
   );
-  const text = useMessage((msg) =>
+  const ownText = useMessage((msg) =>
     msg.content
       .filter((p): p is { type: "text"; text: string } => p.type === "text")
       .map((p) => p.text)
       .join("\n"),
   );
+  // Phase 5: the last bubble of a delegation's display group reads the whole answer.
+  const groupText = useMessage(
+    (msg) => (msg.metadata?.custom as { groupText?: string | null } | undefined)?.groupText ?? null,
+  );
+  const text = groupText !== null && groupText.trim() !== "" ? groupText : ownText;
   const browserEngine = voice.engine !== "gateway";
   if (!voice.enabled || !text.trim()) return null;
   if (browserEngine && !ttsSupported()) return null;
@@ -3084,8 +3096,12 @@ const assistantComponents = {
 // deleting a user turn removes it + all following. The cascade is destructive +
 // has no undo, so the user-message variant confirms first.
 function DeleteMessageButton({ kind }: { kind: "user" | "assistant" }) {
-  const messageId = useMessage(
-    (m) => (m.metadata?.custom as { messageId?: string } | undefined)?.messageId,
+  // A delegation's display group (phase 5) is ONE answer, deleted from its FIRST bubble —
+  // but that head is resolved where it can be PROVEN: the server (whole conversation) and
+  // the optimistic update (covered window), from the bubble actually clicked. Sending the
+  // head from here crossed a message the window did not hold (codex phase 5 pass 9 #1).
+  const messageId = useMessage((m) =>
+    writeTargetId(m.metadata?.custom as { messageId?: string; groupFirstId?: string | null } | undefined),
   );
   // OPTIMISTIC truncation (perceived performance, same science as the send
   // echo): the deleted turn — and everything after it — vanishes on the NEXT
@@ -3800,9 +3816,12 @@ function AssistantMessage() {
   // Whole-message quote source (header ↩ next to the agent name — same two
   // levels as bookmarks: header = message, gutter = block). The STORED final
   // text, not the streaming DOM.
+  // Phase 5: the header of a delegation's display group quotes the whole answer.
   const quoteRawText = useMessage(
     (msg) =>
-      (msg.metadata?.custom as { rawText?: string } | undefined)?.rawText ?? "",
+      (msg.metadata?.custom as { groupText?: string | null } | undefined)?.groupText ??
+      (msg.metadata?.custom as { rawText?: string } | undefined)?.rawText ??
+      "",
   );
   const quoteRunning = useMessage((msg) => msg.status?.type === "running");
   // DELEGATED turn (empty text, visible answer = the sub-agent's resultText,
@@ -3882,6 +3901,14 @@ function AssistantMessage() {
         (p) => p?.type === "file" || (p?.type === "data" && p.name === "widget"),
       ),
   );
+  // Phase 5 (projection `on`): consecutive bubbles of one delegation chain read as ONE
+  // answer — a follower shows no avatar/name, a member continued below no action bar.
+  const groupFollows = useMessage(
+    (msg) => (msg.metadata?.custom as { groupFollows?: boolean } | undefined)?.groupFollows === true,
+  );
+  const groupContinues = useMessage(
+    (msg) => (msg.metadata?.custom as { groupContinues?: boolean } | undefined)?.groupContinues === true,
+  );
   // Auto read-aloud (per-instance opt-in): speaks a reply that completes live.
   const autoReadText = useMessage((msg) =>
     msg.content
@@ -3946,11 +3973,18 @@ function AssistantMessage() {
   // (codex R2 P2 vs R3 P2: rendering an honest explainer beats hiding a row).
   return (
     <MessagePrimitive.Root
-      className="oc-msg oc-msg--assistant"
+      className={`oc-msg oc-msg--assistant${groupFollows ? " oc-msg--group-follow" : ""}${
+        groupContinues ? " oc-msg--group-continues" : ""
+      }`}
       data-message-id={messageId}
     >
-      <BrandAvatar className="oc-msg__avatar" />
+      {groupFollows ? (
+        <span className="oc-msg__avatar oc-msg__avatar--group" aria-hidden />
+      ) : (
+        <BrandAvatar className="oc-msg__avatar" />
+      )}
       <div className="oc-msg__col">
+        {groupFollows ? null : (
         <div className="oc-msg__name">
           {perMsgAgent ? (
             <MessageAgentChip pool={routing!.pool} agent={perMsgAgent} />
@@ -3996,6 +4030,7 @@ function AssistantMessage() {
             </button>
           ) : null}
         </div>
+        )}
         <div className="oc-msg__body">
           {/* Live turn clock (ChatGPT-style "Working for 5 min 21 s"): renders
               only while THIS message streams; the final duration stays in the
@@ -4087,6 +4122,7 @@ function AssistantMessage() {
             non-last turns (always shown on the last). Copy + Delete. Deleting an
             assistant turn truncates from here and REGENERATES the last user turn
             (see messages.deleteMessage) — no confirm (recoverable). */}
+        {groupContinues ? null : (
         <ActionBarPrimitive.Root
           className="oc-msg__actions"
           autohide="not-last"
@@ -4103,6 +4139,7 @@ function AssistantMessage() {
             onToggleSource={() => setShowSource((s) => !s)}
           />
         </ActionBarPrimitive.Root>
+        )}
       </div>
     </MessagePrimitive.Root>
   );

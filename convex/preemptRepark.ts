@@ -145,6 +145,10 @@ export async function maybeReparkPreemptedTurn(
   message: Doc<"messages">,
   finalTextLen: number,
 ): Promise<void> {
+  // PROJECTION `on` (phase 5): a delivery's OWN bubble is no user turn to re-park — its
+  // removal would tombstone the delivery as a person's deletion (codex phase 5 pass 13
+  // audit, §14.24). Read off the message: no cost for any other bubble.
+  if (message.deliveryOwnBubble === true) return;
   // REGULAR chats only (mirrors turnRetry): utility kinds own their failures.
   const chat = await ctx.db.get(message.chatId);
   if (chat === null || chat.kind != null) return;

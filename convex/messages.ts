@@ -79,6 +79,7 @@ import { textIsYieldAcknowledgment, type YieldAckToolPart } from "./lib/toolOutc
 import { isTrashed } from "./lib/trash";
 import { releaseBlob, storageIdsOfPart } from "./lib/blobs";
 import { deletionTombstones } from "./lib/transcriptProjection";
+import { deletionStart } from "./lib/displayGroupHead";
 
 // Hard upper bound on how many recent messages the reactive feed loads. Chosen
 // to cover a typical visible conversation while keeping the query (and the
@@ -570,6 +571,9 @@ async function loadChatView(
           ...(message.role === "assistant" && message.finalizeCause === "steer_segment"
             ? { steerSegment: true }
             : {}),
+          // …and the display group of a delegation chain (phase 5): consecutive bubbles
+          // sharing it read as ONE answer. Absent everywhere else.
+          ...(message.displayGroupId !== undefined ? { displayGroupId: message.displayGroupId } : {}),
           // Written by the READER — what decides who may rewrite a queued turn
           // (only its author) without handing the client anybody's user id.
           ...(message.role === "user"
@@ -2110,9 +2114,26 @@ export const deleteMessage = mutation({
   args: { messageId: v.id("messages") },
   handler: async (ctx, { messageId }) => {
     const { userId, actor } = await requireActive(ctx);
-    const message = await ctx.db.get(messageId);
-    if (message === null) return; // already gone (e.g. double-click)
-    const chat = await requireOwnedChat(ctx, userId, message.chatId);
+    const named = await ctx.db.get(messageId);
+    if (named === null) return; // already gone (e.g. double-click)
+    const chat = await requireOwnedChat(ctx, userId, named.chatId);
+    // PROJECTION `on` (phase 5, codex pass 1 #4): a bubble of a delegation's display group
+    // is deleted — and regenerated — from the group's FIRST bubble, the same rule the
+    // client's optimistic truncation applies (lib/displayGroupHead.ts). Read only for a
+    // bubble that carries a group, never for one shown alone.
+    // The head is resolved from the WHOLE conversation the cascade below needs anyway, read
+    // once and reused (codex phase 5 pass 8 #2: a second, partial read of the same messages
+    // doubled the bytes) — and complete, so the head is never taken across a message the
+    // reader sees in between. A bubble shown alone reads exactly what it read before.
+    let message = named;
+    let preloaded: Array<Doc<"messages">> | null = null;
+    if (named.displayGroupId !== undefined && named.displayGroupId !== named._id) {
+      preloaded = await ctx.db
+        .query("messages")
+        .withIndex("by_chat", (q) => q.eq("chatId", chat._id))
+        .collect();
+      message = deletionStart([...preloaded].sort(compareOrder), named);
+    }
 
     // Do not delete a turn mid-stream — the bridge's finalize would then throw on
     // a missing message. Ask the user to wait for the reply to settle.
@@ -2142,10 +2163,12 @@ export const deleteMessage = mutation({
     // compareOrder tie-breaks by _creationTime, so deleting ONE of several still-queued
     // follow-ups (all sharing the SENTINEL orderTime) keeps the EARLIER queued ones.
     // This message + every LATER one in the chat (truncate forward). Bounded read.
-    const chatMessages = await ctx.db
-      .query("messages")
-      .withIndex("by_chat", (q) => q.eq("chatId", chat._id))
-      .collect();
+    const chatMessages =
+      preloaded ??
+      (await ctx.db
+        .query("messages")
+        .withIndex("by_chat", (q) => q.eq("chatId", chat._id))
+        .collect());
     const deletedIds = new Set<string>();
     // Projection `on`: the tombstones of this deletion — O(1) per answer here, the merges
     // and purges in ONE scheduled follow-up (lib/transcriptProjection).

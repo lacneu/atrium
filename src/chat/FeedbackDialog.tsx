@@ -1,3 +1,5 @@
+import { captureDisplayed } from "./feedbackCapture";
+import { writeTargetId } from "./displayGroups";
 import * as React from "react";
 import { useState } from "react";
 import { useMessage } from "@assistant-ui/react";
@@ -329,33 +331,30 @@ export function FeedbackProvider({ children }: { children: React.ReactNode }) {
 // the open source view (`.oc-msg__source-pre`, ligatures disabled) over the
 // markdown body (which transforms text by design → false mismatches). Falls back
 // to the client's received copy (`rawText`) when the source view is closed.
-function captureDisplayed(
-  btn: HTMLElement,
-  rawText: string,
-): { displayedText: string; sourceWasOpen: boolean } {
-  const root = btn.closest(".oc-msg");
-  const pre = root?.querySelector<HTMLElement>(".oc-msg__source-pre");
-  const t = pre?.textContent;
-  if (pre && t != null && t !== "(aucun texte)") {
-    return { displayedText: t, sourceWasOpen: true };
-  }
-  return { displayedText: rawText, sourceWasOpen: false };
-}
 
 // The per-message flag. Lives inside the (autohiding) action bar, but only
 // captures + delegates to the root dialog — so the dialog survives the bar's
 // unmount on mouse-leave.
 export function FeedbackButton() {
   const openFeedback = useFeedback();
-  const messageId = useMessage(
-    (m) => (m.metadata?.custom as { messageId?: string } | undefined)?.messageId,
+  // A delegation's display group (phase 5) is ONE answer: the server freezes every member
+  // from the bubble actually flagged (convex/feedback.ts `groupOfReported`) — the client
+  // never substitutes the head (codex phase 5 pass 9 #1).
+  const messageId = useMessage((m) =>
+    writeTargetId(m.metadata?.custom as { messageId?: string; groupFirstId?: string | null } | undefined),
   );
   const chatId = useMessage(
     (m) => (m.metadata?.custom as { chatId?: string } | undefined)?.chatId,
   );
   const role = useMessage((m) => m.role) as MsgRole;
   const rawText = useMessage(
-    (m) => (m.metadata?.custom as { rawText?: string } | undefined)?.rawText ?? "",
+    (m) =>
+      (m.metadata?.custom as { groupText?: string | null } | undefined)?.groupText ??
+      (m.metadata?.custom as { rawText?: string } | undefined)?.rawText ??
+      "",
+  );
+  const grouped = useMessage(
+    (m) => ((m.metadata?.custom as { groupText?: string | null } | undefined)?.groupText ?? null) !== null,
   );
 
   const reported = useQuery(
@@ -367,7 +366,7 @@ export function FeedbackButton() {
   const alreadyReported = (reported ?? []).includes(messageId);
 
   function onFlag(e: React.MouseEvent<HTMLButtonElement>) {
-    const cap = captureDisplayed(e.currentTarget, rawText);
+    const cap = captureDisplayed(e.currentTarget, rawText, grouped);
     openFeedback({
       chatId: chatId as string,
       messageId: messageId as string,

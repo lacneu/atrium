@@ -90,6 +90,13 @@ export const MESSAGE_FIELDS_DROPPED: ReadonlyArray<string> = [
   "closeInferred",
   // Service correlates waiting for the outcome (projection `on`): settlement state.
   "statusJobsDeferred",
+  // The display group of a delegation chain (phase 5): a cache keyed by the SOURCE
+  // deployment's message ids, recomputed from its transcript facts — meaningless here.
+  "displayGroupId",
+  // A delivery that opened its own bubble (phase 5): settlement state…
+  "deliveryOwnBubble",
+  // …and that delivery's identity (a SOURCE run / batch), what its replays find it by.
+  "deliveryKey",
   // The gateway's custody of that send (phase 3): a fact about a session of the SOURCE
   // deployment, display-only, meaningless once the message is copied elsewhere.
   "custody",

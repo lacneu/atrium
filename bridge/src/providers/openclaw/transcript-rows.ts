@@ -299,6 +299,86 @@ export function rowToolCallIds(message: unknown): string[] {
   return [...out].slice(0, 32);
 }
 
+// ── Launches (transcript redesign, phase 5) ───────────────────────────────────────────
+
+/** Most launches one row may state (convex/lib/transcriptProjection.ts
+ *  `MAX_SPAWNS_PER_ROW`). */
+export const MAX_SPAWNS_PER_ROW = 8;
+
+/** A child run id as upstream mints it (convex/lib/deliveryRuns.ts `CHILD_RUN_ID_RE`). */
+const CHILD_RUN_ID_RE = /^[A-Za-z0-9_-]{1,128}$/;
+
+export type SpawnFact = { childSessionKey: string; childRunId: string };
+
+/** The text blocks of a tool result's `content`, joined. */
+function blockText(content: unknown): string {
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return "";
+  const parts: string[] = [];
+  for (const block of content) {
+    const b = asRecord(block);
+    if (b?.type === "text" && typeof b.text === "string") parts.push(b.text);
+  }
+  return parts.join("");
+}
+
+/** An ACCEPTED `sessions_spawn` result, read from the JSON the TOOL wrote — `jsonResult`
+ *  (src/agents/tools/tool-results.ts:10-12 at v2026.9.8) of a `SpawnSubagentResult`
+ *  (src/agents/subagents/spawn/subagent-spawn-contract.ts:65-88). Anything else — an error,
+ *  a refusal, a text cut by the history's display limit — states nothing. */
+function acceptedSpawn(text: string): SpawnFact | null {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    return null;
+  }
+  const r = asRecord(parsed);
+  if (r?.status !== "accepted") return null;
+  const childSessionKey = projString(r.childSessionKey);
+  const childRunId = projString(r.runId);
+  if (childSessionKey === null || childSessionKey.length > 256) return null;
+  if (childRunId === null || !CHILD_RUN_ID_RE.test(childRunId)) return null;
+  return { childSessionKey, childRunId };
+}
+
+/**
+ * PROJECTION `on` (phase 5): the sub-agents a transcript row says its run LAUNCHED. Two
+ * shapes, both written by the gateway, never by the model:
+ *  - a direct call: a `toolResult` row of `sessions_spawn` (sessions-spawn-tool.ts:670);
+ *  - a nested call (code mode): the `openclaw.nested-tool.v1` custom row
+ *    (src/sessions/nested-tool-activity.ts:5-70), which history and `session.message`
+ *    project as `content:[toolCall, toolResult{toolName}]`, owned by the calling run
+ *    (src/gateway/chat-display-projection.core.ts:439-457).
+ * The result `details` never reach us (chat-display-projection.sanitize.ts:447-466 keeps
+ * an allow-list), so the identities are read from the result text — the tool's JSON. The
+ * output of `exec` (the agent's own code) is never read.
+ */
+export function spawnFacts(message: unknown): SpawnFact[] {
+  const record = asRecord(message);
+  if (record === null) return [];
+  const role = projString(record.role)?.toLowerCase();
+  const texts: string[] = [];
+  if ((role === "toolresult" || role === "tool_result") && record.toolName === "sessions_spawn") {
+    if (record.isError !== true) texts.push(blockText(record.content));
+  } else if (role === "custom" && record.customType === "openclaw.nested-tool.v1" && Array.isArray(record.content)) {
+    for (const block of record.content) {
+      const b = asRecord(block);
+      if (b === null || !isToolResultType(b.type) || b.toolName !== "sessions_spawn" || b.isError === true) continue;
+      texts.push(blockText(b.content));
+    }
+  }
+  const out: SpawnFact[] = [];
+  for (const text of texts) {
+    const fact = acceptedSpawn(text);
+    if (fact === null) continue;
+    if (out.some((f) => f.childRunId === fact.childRunId && f.childSessionKey === fact.childSessionKey)) continue;
+    out.push(fact);
+    if (out.length >= MAX_SPAWNS_PER_ROW) break;
+  }
+  return out;
+}
+
 // ── Rows and replies ──────────────────────────────────────────────────────────────────
 
 /** One durable row, as identities: what Convex stores (convex/transcriptProjection.ts). */
@@ -317,6 +397,9 @@ export type TranscriptRow = {
   /** PROJECTION `on` (phase 4): what the row shows — set only when the read asked for it. */
   text?: string;
   yieldAck?: string;
+  /** PROJECTION `on` (phase 5): the sub-agents the row's run launched — set only when the
+   *  read asked for what rows say (`spawnFacts`). */
+  spawns?: SpawnFact[];
 };
 
 /** PROJECTION `on` (phase 4): read what a row SAYS, for the session it belongs to. */
@@ -368,6 +451,8 @@ export function toTranscriptRow(
   const toolCallIds = rowToolCallIds(message);
   let runId = id.runId;
   let shown: { text?: string; yieldAck?: string } = {};
+  // Launches are a fact about the row's RUN: only a row attributed to one states any.
+  const spawns = display !== undefined && id.runId !== null && id.role !== "user" ? spawnFacts(message) : [];
   if (display !== undefined && id.role === "assistant") {
     if (runId?.endsWith(SETTLED_FALLBACK_SUFFIX)) {
       runId = runId.slice(0, -SETTLED_FALLBACK_SUFFIX.length) || null;
@@ -398,6 +483,7 @@ export function toTranscriptRow(
     visible: facts.visible,
     ...(toolCallIds.length > 0 ? { toolCallIds } : {}),
     ...shown,
+    ...(spawns.length > 0 ? { spawns } : {}),
   };
 }
 
