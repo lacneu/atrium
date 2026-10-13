@@ -12,6 +12,42 @@
   Keep the rest of the dependency graph unchanged. Reject high and critical
   application dependency advisories in both Node CI jobs before merge.
 
+## [0.99.0] — Hermes 0.21.7, and "Skip" means skip again
+
+Minor release. Hermes 0.21.7 is supported, validated on the live bench alongside OpenClaw
+2026.9.8. Nothing to reconfigure. Only the bridge changes: deploy it as usual.
+
+**"Skip" on a Hermes question tells the agent you skipped it, not that you cancelled.** From
+Hermes 0.21.6, every question an agent asks arrives as a set of one to five questions, and an
+answer that names none of them means "cancel everything". Skipping a question in Atrium sent
+exactly that, so the agent was told the user had cancelled rather than that the question was
+passed. Atrium now answers each question of the set with an empty answer, which Hermes reports
+to the agent as skipped. The agent decides how to carry on, as it did on Hermes 0.21.5. The
+card still reads "Skipped" for you. Earlier Hermes versions read the same answer as a skip, so
+nothing changes there.
+
+**Hermes 0.21.7 is supported.** Its published REST contract is identical to 0.21.5's, and
+0.21.6 shares it byte for byte. The official Docker image reports its version normally. An
+installation that cannot name its own version (no install stamp, no git checkout) reports
+"unknown": Atrium then treats it as the oldest supported Hermes and says the version is
+unknown, rather than guessing. Two new Hermes requests are deliberately not used: the
+Desktop app's setup cards are declined at once, so the agent never waits on them, and the new
+"approvals cancelled" broadcast is ignored, because Atrium already closes those cards when
+Hermes withdraws a request or when the turn ends.
+
+**Upgrade note — one-way.** On first start, Hermes 0.21.7 migrates its configuration (schema
+46 → 50) and keeps a copy of the old file under `backups/config/`. Going back to 0.21.5 needs a
+copy of the Hermes data directory taken before the upgrade.
+
+## [0.98.1] — Conversations open again
+
+Patch release. Frontend only: no Convex deploy, no bridge change.
+
+**Every conversation page showed "Something went wrong" in 0.98.0.** The composer's read of the
+follow-up state (queued messages, agent working) subscribed again on every render, and React
+stopped the page after too many renders, on every instance whatever its `transcriptProjection`.
+The subscription is now stable, and a test renders it so this cannot come back unnoticed.
+
 ## [0.98.0] — The agent's own queue in the composer, and honest usage telemetry
 
 Minor release, the fourth step of the transcript redesign you can see. Like 0.97.0 it changes
