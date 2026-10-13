@@ -30,7 +30,7 @@ import { ConvexIngestError } from "../../convex-writer.js";
 // to exercise; it cannot enumerate a contract. That is what the vendored schema is
 // for, and inferring "the surface" from a bench run is the exact mistake the ratchet
 // exists to make impossible.
-export const DRIFT_VENDORED_VERSION = "2026.9.8";
+export const DRIFT_VENDORED_VERSION = "2026.9.9";
 
 /** Chat payload fields PER STATE, not their union.
  *

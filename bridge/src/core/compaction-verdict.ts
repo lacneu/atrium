@@ -128,3 +128,35 @@ export function isCompactionRefusal(reason: string | null): boolean {
     reason === "unsupported_harness_compaction"
   );
 }
+
+/**
+ * The 2026.9.9 answer to compacting a session that does not exist, read back as the
+ * refusal 2026.9.8 gave for it.
+ *
+ * Up to 2026.9.8 `sessions.compact` on a key with no stored session answered 200
+ * `{compacted:false, reason:"no sessionId"}`. From 2026.9.9 the same case is REFUSED:
+ * `INVALID_REQUEST`, `Session ${key} not found. Run openclaw sessions list --json to
+ * choose a valid key.` (v2026.9.9 src/gateway/server-methods/sessions-compact.ts:138-147,
+ * pinned by src/gateway/server.sessions.compaction-read-errors.test.ts:176-196). Nothing
+ * else about the session changed: it simply has not been written yet, which is the fact
+ * `no sessionId` already names. Without this, the refusal read as a failed RPC — the
+ * /compact route answered 502 and the pre-send guard recorded `error` where 9.8 said
+ * `refused`.
+ *
+ * `message` is what the OpenClaw client puts on an ANSWERED refusal (`<code>: <message>`);
+ * the CALLER guarantees it came from one — this module does not know the client. The
+ * sentence must START with the code and name the key WE sent, verbatim (upstream only
+ * trims it, sessions-shared.ts `requireSessionKey`): a session key is partly
+ * operator-chosen, so a key that merely CONTAINS this sentence, another session's key,
+ * or the same words further into some other refusal never decide anything.
+ */
+export function compactRefusalFromAnswer(
+  message: string,
+  sentKey: string,
+): "no sessionId" | null {
+  const key = sentKey.trim();
+  if (key === "") return null;
+  return message.startsWith(`INVALID_REQUEST: Session ${key} not found.`)
+    ? "no sessionId"
+    : null;
+}

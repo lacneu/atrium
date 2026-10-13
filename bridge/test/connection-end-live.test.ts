@@ -19,7 +19,7 @@ import {
   GatewayAnsweredError,
   OpenClawConnection,
 } from "../src/providers/openclaw/openclaw-client.js";
-import { classifyGatewayError } from "../src/core/dispatch-errors.js";
+import { answeredRefusalShape, classifyGatewayError } from "../src/core/dispatch-errors.js";
 import { sleep } from "./helpers/sleep.js";
 import { MAX_BUFFERED, MAX_PAYLOAD, NO_ANSWER, deviceIdentity, startWsFakeGateway } from "./helpers/ws-fake-gateway.js";
 
@@ -372,6 +372,38 @@ describe("connection end over a real socket", () => {
     } finally {
       // Closed even on a failed assertion: a client left open keeps the server's
       // close pending and times out every test after this one.
+      conn.close();
+    }
+  });
+
+  it("keeps a refusal's error CODE across the wire (the media-offload refusal, prod 2026-10-13)", async () => {
+    // chat-send-attachments.ts answers a MediaOffloadError `errorShape(UNAVAILABLE,
+    // String(err))`. The class keys on the ANSWERED code, so the client must keep it
+    // beside the `code: message` text — and the trace shape reports it.
+    gateway = startWsFakeGateway({
+      version: "2026.9.9",
+      onMethod: () => ({
+        error: {
+          code: "UNAVAILABLE",
+          message:
+            "MediaOffloadError: [Gateway Error] Failed to save intercepted media to disk: native fs-safe helper is unavailable",
+        },
+      }),
+    });
+    await gateway.ready;
+    const conn = await OpenClawConnection.connect(gateway.url, "tok", deviceIdentity());
+    try {
+      const err = await conn.request("chat.send", { text: "x" }).then(
+        () => null,
+        (e: unknown) => e,
+      );
+      expect(err).toBeInstanceOf(GatewayAnsweredError);
+      expect((err as GatewayAnsweredError).gatewayCode).toBe("UNAVAILABLE");
+      expect(classifyGatewayError(err, { hasAttachments: true })).toBe(
+        "gateway_media_unavailable",
+      );
+      expect(answeredRefusalShape(err)).toEqual({ gatewayCode: "UNAVAILABLE" });
+    } finally {
       conn.close();
     }
   });

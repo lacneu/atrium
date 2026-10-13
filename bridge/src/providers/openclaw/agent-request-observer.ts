@@ -34,6 +34,7 @@ import {
 } from "../../core/agent-requests.js";
 import { SIGHTING_EPOCH, nextSightingSeq } from "../../core/sighting-order.js";
 import { payloadOf, type GatewayRpc } from "../../agent-request-rpc.js";
+import { errForLog } from "../../core/log-safe-error.js";
 
 export interface AgentRequestObserverDeps {
   chatId: string;
@@ -148,7 +149,7 @@ export class OpenClawAgentRequestObserver {
     } catch (err) {
       console.error(
         `[agent-request] ${event} handling failed chat=${this.deps.chatId}:`,
-        (err as Error)?.message ?? err,
+        errForLog(err),
       );
     }
   }
@@ -172,7 +173,7 @@ export class OpenClawAgentRequestObserver {
       // An older gateway without the method, or a transient failure: the live
       // broadcasts still work — this only closes the reconnect window.
       console.log(
-        `[agent-request] question replay skipped chat=${this.deps.chatId}: ${(err as Error)?.message ?? err}`,
+        `[agent-request] question replay skipped chat=${this.deps.chatId}: ${errForLog(err)}`,
       );
     }
   }
@@ -235,7 +236,7 @@ export class OpenClawAgentRequestObserver {
         this.scheduleReplay();
         console.error(
           `[agent-request] question write failed chat=${this.deps.chatId}:`,
-          (err as Error)?.message ?? err,
+          errForLog(err),
         );
       }),
     );
@@ -370,7 +371,7 @@ export class OpenClawAgentRequestObserver {
       .catch((err) =>
         console.error(
           `[agent-request] question settle failed chat=${this.deps.chatId}:`,
-          (err as Error)?.message ?? err,
+          errForLog(err),
         ),
       );
   }
@@ -442,7 +443,7 @@ export class OpenClawAgentRequestObserver {
       }
       console.error(
         `[agent-request] approval read failed chat=${this.deps.chatId}:`,
-        (err as Error)?.message ?? err,
+        errForLog(err),
       );
     });
     this.noteWrite(aKey(a.id), write);
@@ -497,7 +498,7 @@ export class OpenClawAgentRequestObserver {
       .catch((err) =>
         console.error(
           `[agent-request] approval settle failed chat=${this.deps.chatId}:`,
-          (err as Error)?.message ?? err,
+          errForLog(err),
         ),
       );
   }

@@ -44,6 +44,7 @@ import {
   MAX_PROVENANCE_PARTS_PER_TURN,
   type ProvenancePart,
 } from "./provenance.js";
+import { errForLog } from "./log-safe-error.js";
 
 /** The `widget` event's payload as the sink reads it (structurally). */
 interface WidgetDescriptorEvent {
@@ -976,7 +977,7 @@ export class TurnSink {
         } catch (err) {
           console.error(
             "plan clear on silent delivery failed (non-fatal):",
-            (err as Error)?.message ?? err,
+            errForLog(err),
           );
         }
       }
@@ -994,7 +995,7 @@ export class TurnSink {
       } catch (err) {
         console.error(
           "task engagement settle failed (non-fatal):",
-          (err as Error)?.message ?? err,
+          errForLog(err),
         );
       }
       return;
@@ -1016,7 +1017,7 @@ export class TurnSink {
         } catch (err) {
           console.error(
             "announced child settle failed (non-fatal):",
-            (err as Error)?.message ?? err,
+            errForLog(err),
           );
         }
       }
@@ -1076,7 +1077,7 @@ export class TurnSink {
         } catch (e) {
           console.error(
             "[sink] session-overfull verdict not recorded (non-fatal):",
-            (e as Error)?.message ?? e,
+            errForLog(e),
           );
         }
         continue;
@@ -1224,7 +1225,7 @@ export class TurnSink {
             // replaying; the terminal run.status still finalizes the message.
             console.error(
               "[announce] deferred replay event failed (skipped, non-fatal):",
-              (e as Error)?.message ?? e,
+              errForLog(e),
             );
           }
         }
@@ -1237,7 +1238,7 @@ export class TurnSink {
       this.openPromise = null; // allow a retry on the next visible event
       console.error(
         "[announce] deferred message create failed (will retry):",
-        (e as Error)?.message ?? e,
+        errForLog(e),
       );
       return false;
     }
@@ -1600,13 +1601,13 @@ export class TurnSink {
                 // once off the critical path before giving up.
                 console.error(
                   "task engagement upsert failed (retrying once):",
-                  (err as Error)?.message ?? err,
+                  errForLog(err),
                 );
                 setTimeout(() => {
                   void this.writer.upsertSubAgent?.(engagement).catch((e) =>
                     console.error(
                       "task engagement upsert retry failed:",
-                      (e as Error)?.message ?? e,
+                      errForLog(e),
                     ),
                   );
                 }, 2_000);
@@ -1728,7 +1729,7 @@ export class TurnSink {
               } catch (e) {
                 console.error(
                   "[sink] media upload failed (non-fatal):",
-                  (e as Error)?.message ?? e,
+                  errForLog(e),
                 );
               }
             });
@@ -1776,7 +1777,7 @@ export class TurnSink {
             ?.catch((e: unknown) =>
               console.error(
                 "[frame-gap] trace skipped (non-fatal):",
-                (e as Error)?.message ?? e,
+                errForLog(e),
               ),
             );
           break;
@@ -1969,7 +1970,7 @@ export class TurnSink {
               } catch (e) {
                 console.error(
                   "[sink] phase not recorded (non-fatal):",
-                  (e as Error)?.message ?? e,
+                  errForLog(e),
                 );
               }
             }
@@ -2191,7 +2192,7 @@ export class TurnSink {
       } catch (e) {
         console.error(
           "[outbound-scan] detect skipped (non-fatal):",
-          (e as Error)?.message ?? e,
+          errForLog(e),
         );
       }
     }
@@ -2212,7 +2213,7 @@ export class TurnSink {
       } catch (e) {
         console.error(
           "[sink] early text snapshot failed (non-fatal):",
-          (e as Error)?.message ?? e,
+          errForLog(e),
         );
       }
     }
@@ -2257,7 +2258,7 @@ export class TurnSink {
       } catch (e) {
         console.error(
           "[outbound-scan] host skipped (non-fatal):",
-          (e as Error)?.message ?? e,
+          errForLog(e),
         );
       }
     }
@@ -2484,7 +2485,7 @@ export class TurnSink {
       } catch (e) {
         console.error(
           "[sink] plan advance failed (non-fatal):",
-          (e as Error)?.message ?? e,
+          errForLog(e),
         );
       }
     }
@@ -2517,7 +2518,7 @@ export class TurnSink {
         } catch (e) {
           console.error(
             "[sink] open tool card not closed (non-fatal):",
-            (e as Error)?.message ?? e,
+            errForLog(e),
           );
         }
       }
@@ -2740,7 +2741,7 @@ export class TurnSink {
         .catch((e) =>
           console.error(
             "[gateway-pressure] trace skipped (non-fatal):",
-            (e as Error)?.message ?? e,
+            errForLog(e),
           ),
         );
     }
@@ -2754,7 +2755,7 @@ export class TurnSink {
         ?.catch((e) =>
           console.error(
             "[session-active-tokens] skipped (non-fatal):",
-            (e as Error)?.message ?? e,
+            errForLog(e),
           ),
         );
     }

@@ -28,6 +28,7 @@ import {
   type HermesWsTurnRun,
   type HermesWsSessionHandlers,
 } from "./ws-turn.js";
+import { errForLog } from "../../core/log-safe-error.js";
 
 /** Non-secret routed body fields the Hermes path needs (subset of the send body). */
 export interface HermesSendBody {
@@ -137,7 +138,7 @@ export async function promptWithFreshSessionHistory(
   } catch (e) {
     console.error(
       "[rehydrate] hermes context fetch failed (bare send):",
-      (e as Error)?.message ?? e,
+      errForLog(e),
     );
   }
   return body.text;
@@ -832,7 +833,7 @@ async function runClaimedWsSend(
       .catch((e) =>
         console.error(
           "[hermes-recover] the harvest could not be recorded:",
-          (e as Error)?.message ?? e,
+          errForLog(e),
         ),
       ) ?? Promise.resolve());
   }
@@ -1037,7 +1038,7 @@ export async function harvestLostReply(
   } catch (e) {
     console.error(
       "[hermes-recover] could not read the lost reply (non-fatal):",
-      (e as Error)?.message ?? e,
+      errForLog(e),
     );
     return null;
   }
@@ -1181,7 +1182,7 @@ export async function applyDurableSessionDrop(
   } catch (e) {
     console.error(
       "[hermes-abort] durable session drop failed (the response still carries it):",
-      (e as Error)?.message ?? e,
+      errForLog(e),
     );
   }
 }

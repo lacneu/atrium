@@ -34,6 +34,7 @@ import {
 } from "../../core/provenance.js";
 import { EXEC_APPROVAL_FOLLOWUP_PREFIX } from "./run-families.js";
 import { redactAllQuestionAnswers } from "../../core/secret-answer-redaction.js";
+import { errForLog } from "../../core/log-safe-error.js";
 
 // Cap on the pre-ack frame stash (see `pendingFrames`): bounds memory if a
 // dispatch fails and beginTurn never drains it. Generous — a whole turn's worth.
@@ -374,7 +375,7 @@ export class RunManager {
         held.steered = false;
         console.error(
           `[send] steered input: the cut failed, re-armed for the next delivery of its row:`,
-          (err as Error)?.message ?? err,
+          errForLog(err),
         );
         return;
       }
@@ -760,7 +761,7 @@ export class RunManager {
         .catch((e) =>
           console.error(
             "[announce] post-failed-send flush skipped (non-fatal):",
-            (e as Error)?.message ?? e,
+            errForLog(e),
           ),
         )
         .finally(() => onFlushed?.());
@@ -888,7 +889,7 @@ export class RunManager {
       } catch (e) {
         console.error(
           "[announce] preempt close failed (non-fatal):",
-          (e as Error)?.message ?? e,
+          errForLog(e),
         );
       }
     }
@@ -1122,7 +1123,7 @@ export class RunManager {
           `[final] a distinct late final joined the settled run's bubble (CU-8) run=${late.runId.slice(0, 60)}${opened ? " (new bubble)" : ""}`,
         );
       } catch (e) {
-        console.error("[final] late final not written (non-fatal):", (e as Error)?.message ?? e);
+        console.error("[final] late final not written (non-fatal):", errForLog(e));
       }
       return;
     }
@@ -1741,7 +1742,7 @@ export class RunManager {
         // A close that FAILED (Convex unreachable past its retries) still closed the turn
         // here: the lane keeps the run with the destination it captured, and drains.
         protocolDrift.observeException({ settle: current }, err, "feed");
-        console.error("[transcript] the close of a run failed (its lane keeps draining):", (err as Error)?.message ?? err);
+        console.error("[transcript] the close of a run failed (its lane keeps draining):", errForLog(err));
       }
       if (closed) {
         lane.state = "closed";
@@ -1772,7 +1773,7 @@ export class RunManager {
       if (id !== null) lane.messageId = id;
     } catch (err) {
       protocolDrift.observeException({ closedRun: lane.runId }, err, "feed");
-      console.error("[transcript] a closed run's bubble lookup failed (will retry):", (err as Error)?.message ?? err);
+      console.error("[transcript] a closed run's bubble lookup failed (will retry):", errForLog(err));
     }
   }
 
@@ -1804,7 +1805,7 @@ export class RunManager {
         await task();
       } catch (err) {
         protocolDrift.observeException(frame, err, "feed");
-        console.error("[transcript] a run lane item failed (non-fatal):", (err as Error)?.message ?? err);
+        console.error("[transcript] a run lane item failed (non-fatal):", errForLog(err));
       } finally {
         lane.queued--;
         // An aborted lane has handed back what it held: the run is the turn's again.

@@ -30,6 +30,7 @@ import {
   type MediaFetcher,
   type OpenResult,
 } from "./media-fetcher.js";
+import { readProviderJson } from "./provider-body.js";
 
 export interface GatewayHttpMediaFetcherOptions {
   /** Gateway HTTP origin, e.g. "http://host:18790" (trailing slash trimmed). */
@@ -191,12 +192,13 @@ export class GatewayHttpMediaFetcher implements MediaFetcher {
         discardBody(metaRes);
         return { ok: false, reason: "fetch_error" };
       }
-      const meta = (await metaRes.json()) as {
-        available?: boolean;
-        mediaTicket?: string;
-        size?: number;
-        mtimeMs?: number;
-      };
+      const meta =
+        (await readProviderJson<{
+          available?: boolean;
+          mediaTicket?: string;
+          size?: number;
+          mtimeMs?: number;
+        } | null>(metaRes, "OpenClaw media meta")) ?? {};
       if (!meta.available || !meta.mediaTicket) {
         return { ok: false, reason: "not_found" };
       }

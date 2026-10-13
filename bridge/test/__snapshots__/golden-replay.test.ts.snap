@@ -3507,3 +3507,643 @@ exports[`golden replay — the interpretation is pinned > 2026.9.8/widget-off 1`
   ],
 }
 `;
+
+exports[`golden replay — the interpretation is pinned > 2026.9.9/agent-request-exec-approval 1`] = `
+{
+  "bubbles": [
+    "turn",
+  ],
+  "byCall": {
+    "addProvenancePart": 2,
+    "addToolPart": 3,
+    "finalize": 1,
+    "setSnapshot": 5,
+    "startAssistant": 1,
+  },
+  "calls": 12,
+  "engagements": [],
+  "finals": [
+    "complete",
+  ],
+  "order": [
+    "startAssistant",
+    "addProvenancePart",
+    "addToolPart",
+    "setSnapshot",
+    "finalize",
+  ],
+  "tools": [
+    "tool:exec",
+  ],
+}
+`;
+
+exports[`golden replay — the interpretation is pinned > 2026.9.9/agent-request-question 1`] = `
+{
+  "bubbles": [
+    "turn",
+  ],
+  "byCall": {
+    "addProvenancePart": 2,
+    "addToolPart": 6,
+    "finalize": 1,
+    "setSnapshot": 5,
+    "startAssistant": 1,
+  },
+  "calls": 15,
+  "engagements": [],
+  "finals": [
+    "complete",
+  ],
+  "order": [
+    "startAssistant",
+    "addProvenancePart",
+    "addToolPart",
+    "setSnapshot",
+    "finalize",
+  ],
+  "tools": [
+    "tool:tool_1",
+    "tool:tool_2",
+    "tool:tool_3",
+  ],
+}
+`;
+
+exports[`golden replay — the interpretation is pinned > 2026.9.9/announce-reverse-hold 1`] = `
+{
+  "bubbles": [
+    "turn",
+    "announce",
+    "turn",
+  ],
+  "byCall": {
+    "addProvenancePart": 6,
+    "addToolPart": 13,
+    "finalize": 3,
+    "setSnapshot": 21,
+    "settleAnnouncedChild": 1,
+    "startAssistant": 3,
+  },
+  "calls": 47,
+  "engagements": [],
+  "finals": [
+    "complete",
+    "complete",
+    "complete",
+  ],
+  "order": [
+    "startAssistant",
+    "addProvenancePart",
+    "addToolPart",
+    "setSnapshot",
+    "finalize",
+    "startAssistant",
+    "addProvenancePart",
+    "addToolPart",
+    "setSnapshot",
+    "addToolPart",
+    "setSnapshot",
+    "finalize",
+    "settleAnnouncedChild",
+    "startAssistant",
+    "addProvenancePart",
+    "setSnapshot",
+    "finalize",
+  ],
+  "tools": [
+    "tool:exec",
+    "tool:sessions_spawn",
+    "tool:tool_2",
+    "tool:tool_3",
+    "tool:tool_4",
+  ],
+}
+`;
+
+exports[`golden replay — the interpretation is pinned > 2026.9.9/async-task 1`] = `
+{
+  "bubbles": [
+    "turn",
+    "announce",
+    "announce",
+    "task-delivery",
+  ],
+  "byCall": {
+    "addMedia": 1,
+    "addProvenancePart": 6,
+    "addToolPart": 13,
+    "finalize": 4,
+    "setSnapshot": 24,
+    "settleAnnouncedChild": 1,
+    "startAssistant": 4,
+    "upsertSubAgent": 2,
+  },
+  "calls": 55,
+  "engagements": [
+    "task:running",
+    "task:done",
+  ],
+  "finals": [
+    "complete",
+    "complete",
+    "complete",
+    "complete",
+  ],
+  "order": [
+    "startAssistant",
+    "addProvenancePart",
+    "addToolPart",
+    "upsertSubAgent",
+    "addToolPart",
+    "setSnapshot",
+    "finalize",
+    "startAssistant",
+    "setSnapshot",
+    "finalize",
+    "settleAnnouncedChild",
+    "startAssistant",
+    "addProvenancePart",
+    "setSnapshot",
+    "finalize",
+    "startAssistant",
+    "addProvenancePart",
+    "addToolPart",
+    "setSnapshot",
+    "addMedia",
+    "setSnapshot",
+    "finalize",
+    "upsertSubAgent",
+  ],
+  "tools": [
+    "tool:image_generate",
+    "tool:read",
+    "tool:tool_1",
+    "tool:tool_2",
+    "tool:tool_3",
+    "tool:tool_4",
+  ],
+}
+`;
+
+exports[`golden replay — the interpretation is pinned > 2026.9.9/basic-turn 1`] = `
+{
+  "bubbles": [
+    "turn",
+  ],
+  "byCall": {
+    "addProvenancePart": 2,
+    "finalize": 1,
+    "setSnapshot": 61,
+    "startAssistant": 1,
+  },
+  "calls": 65,
+  "engagements": [],
+  "finals": [
+    "complete",
+  ],
+  "order": [
+    "startAssistant",
+    "addProvenancePart",
+    "setSnapshot",
+    "finalize",
+  ],
+  "tools": [],
+}
+`;
+
+exports[`golden replay — the interpretation is pinned > 2026.9.9/cron-tool 1`] = `
+{
+  "bubbles": [
+    "turn",
+  ],
+  "byCall": {
+    "addCronPart": 1,
+    "addProvenancePart": 2,
+    "addToolPart": 8,
+    "finalize": 1,
+    "setSnapshot": 7,
+    "startAssistant": 1,
+  },
+  "calls": 20,
+  "engagements": [],
+  "finals": [
+    "complete",
+  ],
+  "order": [
+    "startAssistant",
+    "addProvenancePart",
+    "addToolPart",
+    "addCronPart",
+    "addToolPart",
+    "setSnapshot",
+    "finalize",
+  ],
+  "tools": [
+    "tool:automations",
+    "tool:tool_1",
+    "tool:tool_2",
+    "tool:tool_3",
+  ],
+}
+`;
+
+exports[`golden replay — the interpretation is pinned > 2026.9.9/fork-attachment-rehydrate 1`] = `
+{
+  "bubbles": [
+    "turn",
+  ],
+  "byCall": {
+    "addProvenancePart": 2,
+    "finalize": 1,
+    "setSnapshot": 5,
+    "startAssistant": 1,
+  },
+  "calls": 9,
+  "engagements": [],
+  "finals": [
+    "complete",
+  ],
+  "order": [
+    "startAssistant",
+    "addProvenancePart",
+    "setSnapshot",
+    "finalize",
+  ],
+  "tools": [],
+}
+`;
+
+exports[`golden replay — the interpretation is pinned > 2026.9.9/inbound-attachment 1`] = `
+{
+  "bubbles": [
+    "turn",
+  ],
+  "byCall": {
+    "addProvenancePart": 2,
+    "finalize": 1,
+    "setSnapshot": 5,
+    "startAssistant": 1,
+  },
+  "calls": 9,
+  "engagements": [],
+  "finals": [
+    "complete",
+  ],
+  "order": [
+    "startAssistant",
+    "addProvenancePart",
+    "setSnapshot",
+    "finalize",
+  ],
+  "tools": [],
+}
+`;
+
+exports[`golden replay — the interpretation is pinned > 2026.9.9/inbound-attachment-large 1`] = `
+{
+  "bubbles": [
+    "turn",
+  ],
+  "byCall": {
+    "addProvenancePart": 2,
+    "addToolPart": 3,
+    "finalize": 1,
+    "setSnapshot": 11,
+    "startAssistant": 1,
+  },
+  "calls": 18,
+  "engagements": [],
+  "finals": [
+    "complete",
+  ],
+  "order": [
+    "startAssistant",
+    "addProvenancePart",
+    "addToolPart",
+    "setSnapshot",
+    "finalize",
+  ],
+  "tools": [
+    "tool:exec",
+  ],
+}
+`;
+
+exports[`golden replay — the interpretation is pinned > 2026.9.9/media-outbound 1`] = `
+{
+  "bubbles": [
+    "turn",
+  ],
+  "byCall": {
+    "addMedia": 1,
+    "addProvenancePart": 2,
+    "addToolPart": 2,
+    "finalize": 1,
+    "setSnapshot": 25,
+    "startAssistant": 1,
+  },
+  "calls": 32,
+  "engagements": [],
+  "finals": [
+    "complete",
+  ],
+  "order": [
+    "startAssistant",
+    "addProvenancePart",
+    "addToolPart",
+    "setSnapshot",
+    "addMedia",
+    "setSnapshot",
+    "finalize",
+  ],
+  "tools": [
+    "tool:exec",
+  ],
+}
+`;
+
+exports[`golden replay — the interpretation is pinned > 2026.9.9/spawn-announce-merge 1`] = `
+{
+  "bubbles": [
+    "turn",
+    "announce",
+  ],
+  "byCall": {
+    "addMedia": 1,
+    "addProvenancePart": 4,
+    "addToolPart": 5,
+    "finalize": 2,
+    "setSnapshot": 16,
+    "settleAnnouncedChild": 1,
+    "startAssistant": 2,
+  },
+  "calls": 31,
+  "engagements": [],
+  "finals": [
+    "complete",
+    "complete",
+  ],
+  "order": [
+    "startAssistant",
+    "addProvenancePart",
+    "addToolPart",
+    "setSnapshot",
+    "finalize",
+    "startAssistant",
+    "addProvenancePart",
+    "addToolPart",
+    "setSnapshot",
+    "addMedia",
+    "setSnapshot",
+    "finalize",
+    "settleAnnouncedChild",
+  ],
+  "tools": [
+    "tool:exec",
+    "tool:sessions_spawn",
+    "tool:tool_1",
+  ],
+}
+`;
+
+exports[`golden replay — the interpretation is pinned > 2026.9.9/spawn-chain-merge 1`] = `
+{
+  "bubbles": [
+    "turn",
+    "announce",
+    "announce",
+  ],
+  "byCall": {
+    "addPlanPart": 3,
+    "addProvenancePart": 6,
+    "addToolPart": 15,
+    "finalize": 3,
+    "setSnapshot": 19,
+    "settleAnnouncedChild": 2,
+    "startAssistant": 3,
+  },
+  "calls": 51,
+  "engagements": [],
+  "finals": [
+    "complete",
+    "complete",
+    "complete",
+  ],
+  "order": [
+    "startAssistant",
+    "addProvenancePart",
+    "addToolPart",
+    "addPlanPart",
+    "addToolPart",
+    "setSnapshot",
+    "finalize",
+    "startAssistant",
+    "addProvenancePart",
+    "addPlanPart",
+    "addToolPart",
+    "setSnapshot",
+    "addToolPart",
+    "setSnapshot",
+    "finalize",
+    "settleAnnouncedChild",
+    "startAssistant",
+    "addProvenancePart",
+    "addPlanPart",
+    "addToolPart",
+    "setSnapshot",
+    "addToolPart",
+    "setSnapshot",
+    "finalize",
+    "settleAnnouncedChild",
+  ],
+  "tools": [
+    "tool:progress_card",
+    "tool:sessions_spawn",
+    "tool:tool_2",
+  ],
+}
+`;
+
+exports[`golden replay — the interpretation is pinned > 2026.9.9/spawn-parallel-merge 1`] = `
+{
+  "bubbles": [
+    "turn",
+    "announce",
+    "announce",
+  ],
+  "byCall": {
+    "addProvenancePart": 6,
+    "addToolPart": 11,
+    "finalize": 3,
+    "setSnapshot": 19,
+    "settleAnnouncedChild": 2,
+    "startAssistant": 3,
+  },
+  "calls": 44,
+  "engagements": [],
+  "finals": [
+    "complete",
+    "complete",
+    "complete",
+  ],
+  "order": [
+    "startAssistant",
+    "addProvenancePart",
+    "addToolPart",
+    "setSnapshot",
+    "finalize",
+    "startAssistant",
+    "addProvenancePart",
+    "addToolPart",
+    "setSnapshot",
+    "addToolPart",
+    "setSnapshot",
+    "finalize",
+    "settleAnnouncedChild",
+    "startAssistant",
+    "addProvenancePart",
+    "addToolPart",
+    "setSnapshot",
+    "finalize",
+    "settleAnnouncedChild",
+  ],
+  "tools": [
+    "tool:sessions_spawn",
+    "tool:sessions_yield",
+    "tool:tool_1",
+  ],
+}
+`;
+
+exports[`golden replay — the interpretation is pinned > 2026.9.9/tool-exec 1`] = `
+{
+  "bubbles": [
+    "turn",
+  ],
+  "byCall": {
+    "addProvenancePart": 2,
+    "addToolPart": 3,
+    "finalize": 1,
+    "setSnapshot": 7,
+    "startAssistant": 1,
+  },
+  "calls": 14,
+  "engagements": [],
+  "finals": [
+    "complete",
+  ],
+  "order": [
+    "startAssistant",
+    "addProvenancePart",
+    "addToolPart",
+    "setSnapshot",
+    "finalize",
+  ],
+  "tools": [
+    "tool:exec",
+  ],
+}
+`;
+
+exports[`golden replay — the interpretation is pinned > 2026.9.9/update-plan 1`] = `
+{
+  "bubbles": [
+    "turn",
+  ],
+  "byCall": {
+    "addPlanPart": 3,
+    "addProvenancePart": 2,
+    "addToolPart": 14,
+    "finalize": 1,
+    "setSnapshot": 5,
+    "startAssistant": 1,
+  },
+  "calls": 26,
+  "engagements": [],
+  "finals": [
+    "complete",
+  ],
+  "order": [
+    "startAssistant",
+    "addProvenancePart",
+    "addToolPart",
+    "addPlanPart",
+    "addToolPart",
+    "addPlanPart",
+    "addToolPart",
+    "addPlanPart",
+    "addToolPart",
+    "setSnapshot",
+    "finalize",
+  ],
+  "tools": [
+    "tool:progress_card",
+    "tool:tool_1",
+    "tool:tool_2",
+  ],
+}
+`;
+
+exports[`golden replay — the interpretation is pinned > 2026.9.9/widget-inline 1`] = `
+{
+  "bubbles": [
+    "turn",
+  ],
+  "byCall": {
+    "addProvenancePart": 2,
+    "addToolPart": 8,
+    "finalize": 1,
+    "setSnapshot": 5,
+    "startAssistant": 1,
+  },
+  "calls": 17,
+  "engagements": [],
+  "finals": [
+    "complete",
+  ],
+  "order": [
+    "startAssistant",
+    "addProvenancePart",
+    "addToolPart",
+    "setSnapshot",
+    "finalize",
+  ],
+  "tools": [
+    "tool:tool_1",
+    "tool:tool_2",
+    "tool:tool_3",
+    "tool:tool_4",
+  ],
+}
+`;
+
+exports[`golden replay — the interpretation is pinned > 2026.9.9/widget-off 1`] = `
+{
+  "bubbles": [
+    "turn",
+  ],
+  "byCall": {
+    "addProvenancePart": 2,
+    "addToolPart": 2,
+    "finalize": 1,
+    "setSnapshot": 5,
+    "startAssistant": 1,
+  },
+  "calls": 11,
+  "engagements": [],
+  "finals": [
+    "complete",
+  ],
+  "order": [
+    "startAssistant",
+    "addProvenancePart",
+    "addToolPart",
+    "setSnapshot",
+    "finalize",
+  ],
+  "tools": [
+    "tool:tool_1",
+  ],
+}
+`;

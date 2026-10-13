@@ -71,8 +71,13 @@ export class PermissionModeNotAppliedError extends Error {
   constructor(
     readonly reason: PermissionModeFailure,
     detail?: string,
+    cause?: unknown,
   ) {
-    super(`permission mode not applied (${reason})${detail ? `: ${detail}` : ""}`);
+    // `cause` keeps the gateway's refusal TYPED, so the log helper withholds its text.
+    super(
+      `permission mode not applied (${reason})${detail ? `: ${detail}` : ""}`,
+      cause === undefined ? undefined : { cause },
+    );
     this.name = "PermissionModeNotAppliedError";
   }
 }
@@ -166,7 +171,7 @@ export async function enforcePermissionMode(args: {
     if (reason === "saved_not_applied") {
       return { mode: target, patched: true, savedNotApplied: true };
     }
-    throw new PermissionModeNotAppliedError(reason, (err as Error).message);
+    throw new PermissionModeNotAppliedError(reason, (err as Error).message, err);
   }
   return { mode: target, patched: true };
 }

@@ -152,7 +152,7 @@ describe("GET /capabilities + /health (compat surface)", () => {
     expect(body.compat.protocolVersion).toBe(2);
     expect(body.compat.providers.openclaw!.supportedRange).toEqual({
       min: "2026.8.2",
-      maxValidated: "2026.9.8",
+      maxValidated: "2026.9.9",
     });
     expect(body.compat.providers.openclaw!.validatedVersions).toEqual([
       "2026.9.1",
@@ -162,6 +162,7 @@ describe("GET /capabilities + /health (compat surface)", () => {
       "2026.9.6",
       "2026.9.7",
       "2026.9.8",
+      "2026.9.9",
     ]);
     expect(body.compat.providers.hermes).toEqual({
       supportedRange: { min: "0.18.0", maxValidated: "0.21.7" },
@@ -311,7 +312,7 @@ describe("buildCapabilityTargets (live-session projection)", () => {
   });
 
   test("a version beyond maxValidated sets the flag", () => {
-    const t = buildCapabilityTargets([LIVE("2026.9.9")], "primary")[0]!;
+    const t = buildCapabilityTargets([LIVE("2026.9.10")], "primary")[0]!;
     expect(t.versionBeyondValidated).toBe(true);
     // Frozen at maxValidated, so the version grants everything, and no capability
     // depends on the authentication mode any more.
@@ -417,7 +418,7 @@ describe("buildCapabilityTargets (live-session projection)", () => {
   });
 
   test("fallback version beyond maxValidated flags the synthetic target", () => {
-    const t = buildCapabilityTargets([], "primary", "2026.9.9")[0]!;
+    const t = buildCapabilityTargets([], "primary", "2026.9.10")[0]!;
     expect(t.versionBeyondValidated).toBe(true);
   });
 });

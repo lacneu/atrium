@@ -10,6 +10,7 @@ import type { ConvexWriter, SessionMetaReport, SessionRosterReport } from "../..
 import { sessionFillDetail } from "../../core/context-budget.js";
 import type { ConfigChangedNotice } from "./config-changed.js";
 import type { OpenClawConnection } from "./openclaw-client.js";
+import { errForLog } from "../../core/log-safe-error.js";
 
 /**
  * Project the gateway's `contextBudgetStatus` down to the three counts the gauge
@@ -349,7 +350,7 @@ export function attachSharingRefresh(
   const off = conn.onSessionSharing((sessionKey) => {
     if (disposed || conn.isClosed || sessionKey !== session.sessionKey) return;
     void publishDescribedSession(session, writer).catch((err: unknown) => {
-      console.error(`[sharing] chat=${session.chatId} refresh skipped (non-fatal):`, (err as Error)?.message ?? err);
+      console.error(`[sharing] chat=${session.chatId} refresh skipped (non-fatal):`, errForLog(err));
     });
   });
   let offClosed: (() => void) | null = null;
@@ -507,7 +508,7 @@ function askModels(
     } catch (err) {
       console.error(
         `[models.list] skipped (non-fatal, owner=${ownerKey || "<connection>"}):`,
-        (err as Error)?.message ?? err,
+        errForLog(err),
       );
       const previous = conn.modelsByOwner.get(ownerKey)?.roster ?? null;
       file(previous, false);
@@ -605,7 +606,7 @@ export async function publishSessionMeta(
       return writer.reportSessionRoster(session.chatId, fresh);
     })
     .catch((err: unknown) => {
-      console.error(`[roster] chat=${session.chatId} re-ask after publish skipped (non-fatal):`, (err as Error)?.message ?? err);
+      console.error(`[roster] chat=${session.chatId} re-ask after publish skipped (non-fatal):`, errForLog(err));
     });
 }
 
@@ -627,7 +628,7 @@ export async function publishDescribedSession(session: PublishedSession, writer:
     await publishSessionMeta(session, writer, described);
     return true;
   } catch (err) {
-    console.error(`[roster] chat=${session.chatId} describe-and-publish skipped (non-fatal):`, (err as Error)?.message ?? err);
+    console.error(`[roster] chat=${session.chatId} describe-and-publish skipped (non-fatal):`, errForLog(err));
     return false;
   }
 }
@@ -661,7 +662,7 @@ export async function refreshAfterConfigChange(
     console.log(`[roster] chat=${session.chatId} refreshed after config.changed hash=${notice.hash ?? "?"}: ${roster?.models.length ?? "no"} model(s), roster epoch ${rosterEpoch}`);
     return { published: true, rosterEpoch };
   } catch (err) {
-    console.error(`[roster] chat=${session.chatId} refresh after config.changed skipped (non-fatal):`, (err as Error)?.message ?? err);
+    console.error(`[roster] chat=${session.chatId} refresh after config.changed skipped (non-fatal):`, errForLog(err));
     return none;
   }
 }
@@ -731,7 +732,7 @@ export function attachRosterPolicy(
         }
       })
       .catch((err: unknown) => {
-        console.error(`[roster] chat=${session.chatId} refresh failed:`, (err as Error)?.message ?? err);
+        console.error(`[roster] chat=${session.chatId} refresh failed:`, errForLog(err));
       });
   };
   const offConfigChanged = conn.onConfigChanged((notice) => {

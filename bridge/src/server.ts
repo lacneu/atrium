@@ -136,6 +136,7 @@ import {
 } from "./core/presend-guard.js";
 import {
   bucketCompactionReason,
+  compactRefusalFromAnswer,
   isPermanentCompactionRefusal,
   isTransientCompactionRefusal,
 } from "./core/compaction-verdict.js";
@@ -167,6 +168,7 @@ import {
   assertBeforeSendDeadline,
 } from "./core/dispatch-deadline.js";
 import {
+  answeredRefusalShape,
   classifyGatewayError,
   LOST_RESPONSE_CODES,
   faultDomain,
@@ -306,6 +308,7 @@ import {
   respondOpenClaw,
   type RespondOutcome,
 } from "./agent-request-respond.js";
+import { errForLog } from "./core/log-safe-error.js";
 
 /** The widget-document relay's cache and concurrency bound (one per bridge process). */
 const canvasViewCache = new CanvasViewCache();
@@ -1444,7 +1447,7 @@ export async function applySessionSettings(
   } catch (err) {
     console.error(
       "[sessionSettings] patch skipped (non-fatal):",
-      (err as Error)?.message ?? err,
+      errForLog(err),
     );
   }
 }
@@ -1699,7 +1702,7 @@ async function pollGatewayRunRelease(
       } catch (err) {
         console.error(
           `[send] chat=${chatId} gateway run-release check failed (non-fatal, send proceeds):`,
-          (err as Error)?.message ?? err,
+          errForLog(err),
         );
         return;
       }
@@ -2144,7 +2147,7 @@ async function performSendComposed(
         } catch (err) {
           console.error(
             `[verbose] chat=${body.chatId} could not re-apply verboseLevel on a session that was gone: ${
-              (err as Error)?.message ?? err
+              errForLog(err)
             }`,
           );
         }
@@ -2382,13 +2385,26 @@ async function performSendComposed(
             }
           }
         } catch (e) {
-          // The RPC threw (UNAVAILABLE "still active", a lifecycle change, a
-          // timeout): we do NOT know the session did not shrink, so the send goes.
-          presend.compactOutcome = "error";
-          console.error(
-            `[presend] chat=${body.chatId} compaction attempt failed (non-fatal):`,
-            (e as Error)?.message ?? e,
-          );
+          // 2026.9.9 REFUSES a session it has no record of, where 2026.9.8 answered
+          // `compacted:false, reason:"no sessionId"` — the same fact, so the same
+          // outcome (compactRefusalFromAnswer). Only an ANSWERED refusal qualifies:
+          // a timeout or a dropped socket says nothing about the session.
+          const refusal =
+            e instanceof GatewayAnsweredError
+              ? compactRefusalFromAnswer(e.message, sessionKey)
+              : null;
+          if (refusal !== null) {
+            presend.compactOutcome = "refused";
+            presend.compactReasonClass = refusal;
+          } else {
+            // The RPC threw (UNAVAILABLE "still active", a lifecycle change, a
+            // timeout): we do NOT know the session did not shrink, so the send goes.
+            presend.compactOutcome = "error";
+            console.error(
+              `[presend] chat=${body.chatId} compaction attempt failed (non-fatal):`,
+              errForLog(e),
+            );
+          }
         }
         // Re-describe so everything downstream (rehydration, the header meter, the
         // pressure snapshot) reads the session as it is AFTER the compaction.
@@ -2409,7 +2425,7 @@ async function performSendComposed(
           } catch (e) {
             console.error(
               `[presend] chat=${body.chatId} re-describe after compaction failed (non-fatal):`,
-              (e as Error)?.message ?? e,
+              errForLog(e),
             );
           }
         }
@@ -2452,7 +2468,7 @@ async function performSendComposed(
       ).catch((e) =>
         console.error(
           "[sessionMeta] skipped (non-fatal):",
-          (e as Error)?.message ?? e,
+          errForLog(e),
         ),
       );
     } else if (
@@ -2473,7 +2489,7 @@ async function performSendComposed(
         .catch((e) =>
           console.error(
             "[sessionMeta] absent-session access skipped (non-fatal):",
-            (e as Error)?.message ?? e,
+            errForLog(e),
           ),
         );
     }
@@ -2530,7 +2546,7 @@ async function performSendComposed(
         .catch((e) =>
           console.error(
             "[rehydrate] session-state clear skipped (non-fatal):",
-            (e as Error)?.message ?? e,
+            errForLog(e),
           ),
         );
     }
@@ -2742,7 +2758,7 @@ async function performSendComposed(
   } catch (err) {
     console.error(
       "[rehydrate] skipped (non-fatal):",
-      (err as Error)?.message ?? err,
+      errForLog(err),
     );
   }
 
@@ -2795,7 +2811,7 @@ async function performSendComposed(
       ).catch((e) =>
         console.error(
           "[sessionMeta] post-permission describe skipped (non-fatal):",
-          (e as Error)?.message ?? e,
+          errForLog(e),
         ),
       );
     }
@@ -3361,7 +3377,7 @@ export async function gatewayRunsOn(session: BridgeSession, chatId: string): Pro
   } catch (err) {
     console.error(
       `[presend] chat=${chatId} session read before compaction failed (treated as busy):`,
-      (err as Error)?.message ?? err,
+      errForLog(err),
     );
     return true;
   }
@@ -3475,7 +3491,7 @@ export async function planProjectedSend(
   } catch (err) {
     console.error(
       `[send] chat=${body.chatId} session read before send failed (run policy applies):`,
-      (err as Error)?.message ?? err,
+      errForLog(err),
     );
   }
   const live = liveRunIds(facts);
@@ -3586,7 +3602,7 @@ async function sendHeldInput(
       void reconcileUncertainInput(session, opts.sendKey).catch((e) =>
         console.error(
           `[send] chat=${body.chatId} uncertain input reconciliation failed (non-fatal):`,
-          (e as Error)?.message ?? e,
+          errForLog(e),
         ),
       );
     }
@@ -3805,7 +3821,7 @@ export async function performPermissionModeChange(
     });
   } catch (err) {
     if (err instanceof PermissionModeNotAppliedError) {
-      console.error(`[permissions] chat=${body.chatId} ${err.message}`);
+      console.error(`[permissions] chat=${body.chatId} ${errForLog(err)}`);
       return { ok: false, reason: err.reason };
     }
     throw err;
@@ -3921,7 +3937,7 @@ export async function performKnowledgeApply(
       };
     } catch (err) {
       if (err instanceof KnowledgePolicyNotAppliedError) {
-        console.error(`[knowledge] chat=${body.chatId} ${err.message}`);
+        console.error(`[knowledge] chat=${body.chatId} ${errForLog(err)}`);
         return { ok: false, reason: err.reason };
       }
       throw err;
@@ -4137,7 +4153,7 @@ export async function sendAsSpeaker(
     }
     console.error(
       `[identity] chat=${body.chatId} participant socket unavailable — sent as the owner: ${
-        (err as Error)?.message ?? err
+        errForLog(err)
       }`,
     );
     return await send(conn);
@@ -4208,7 +4224,7 @@ export async function sendAsSpeaker(
     }
     console.error(
       `[identity] chat=${body.chatId} the gateway refused the participant in this session — sent as the owner: ${
-        (err as Error)?.message ?? err
+        errForLog(err)
       }`,
     );
     return await send(conn);
@@ -4347,7 +4363,7 @@ async function claimSessionForOwner(
   } catch (err) {
     console.error(
       `[identity] could not claim session ${sessionKey} for its owner: ${
-        (err as Error)?.message ?? err
+        errForLog(err)
       }`,
     );
   }
@@ -4475,7 +4491,7 @@ export async function withOneRePreparation(
     const replaced =
       err instanceof KnowledgePolicyNotAppliedError && err.reason === "session_replaced";
     if (!(err instanceof SessionVanishedBeforeSend) && !replaced) throw err;
-    console.error(`[identity] chat=${chatId} ${(err as Error).message} — preparing it again`);
+    console.error(`[identity] chat=${chatId} ${errForLog(err)} — preparing it again`);
     await sendOnce();
   }
 }
@@ -4560,7 +4576,7 @@ async function resolveGatewayMentions(
   } catch (err) {
     console.error(
       `[mentions] chat=${body.chatId} not forwarded — the gateway would not list ` +
-        `who may be named: ${(err as Error)?.message ?? err}`,
+        `who may be named: ${errForLog(err)}`,
     );
     return [];
   }
@@ -4713,23 +4729,37 @@ async function performReset(
  * timeout: the gateway summarizes with the model, which can take well beyond
  * the default RPC budget.
  */
-async function performCompact(
+export async function performCompact(
   session: BridgeSession,
   config?: BridgeConfig,
 ): Promise<{ compacted: boolean; reasonClass: string | null }> {
-  const r = await withSessionAdminConnection(session, config, (conn) =>
-    conn.request(
-      "sessions.compact",
-      { key: session.sessionKey },
-      COMPACT_TIMEOUT_MS,
-    ),
-  );
+  let payload: unknown;
+  try {
+    const r = await withSessionAdminConnection(session, config, (conn) =>
+      conn.request(
+        "sessions.compact",
+        { key: session.sessionKey },
+        COMPACT_TIMEOUT_MS,
+      ),
+    );
+    payload = r.payload;
+  } catch (err) {
+    // 2026.9.9 refuses a session it has no record of; 2026.9.8 answered it as a
+    // `no sessionId` refusal with a 200. Same fact, same answer to the caller — a
+    // conversation that has not sent its first turn yet is not a gateway failure.
+    const refusal =
+      err instanceof GatewayAnsweredError
+        ? compactRefusalFromAnswer(err.message, session.sessionKey)
+        : null;
+    if (refusal === null) throw err;
+    return { compacted: false, reasonClass: refusal };
+  }
   // The gateway answers `{ok, compacted, reason?}` and REFUSES with a 200 (no
   // transcript, one already running, an unsupported harness). Returning void here
   // made every refusal look like a success: the user pressed "Compact the session",
   // was told nothing was wrong, and nothing had changed. Report the outcome so the
   // caller can say what actually happened.
-  const p = r.payload as { compacted?: unknown; reason?: unknown } | undefined;
+  const p = payload as { compacted?: unknown; reason?: unknown } | undefined;
   return {
     compacted: p?.compacted === true,
     reasonClass:
@@ -4907,7 +4937,7 @@ export async function probeOpenClawTasks(
     } catch (err) {
       console.error(
         "tasks-probe discovery failed (non-fatal):",
-        (err as Error)?.message ?? err,
+        errForLog(err),
       );
     }
   }
@@ -5929,7 +5959,7 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
   return createServer((req: IncomingMessage, res: ServerResponse) => {
     void handle(req, res).catch((err: unknown) => {
       // Never leave the dispatcher hanging; never leak gateway detail.
-      console.error("bridge server error:", (err as Error)?.message ?? err);
+      console.error("bridge server error:", errForLog(err));
       if (!res.headersSent) {
         sendJson(res, 500, { ok: false, error: "internal error" });
       }
@@ -6005,7 +6035,7 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
               .catch((err) => {
                 console.error(
                   `[capabilities] one-shot version discovery failed for ${name} (non-fatal):`,
-                  (err as Error)?.message ?? err,
+                  errForLog(err),
                 );
               })
               .finally(() => versionDiscoveryInFlight.delete(name));
@@ -6340,7 +6370,7 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
         const code = classifyGatewayError(err);
         console.error(
           `bridge /agents failed [${code}]:`,
-          (err as Error)?.message ?? err,
+          errForLog(err),
         );
         sendJson(res, 502, { ok: false, error: { code } });
       }
@@ -6388,7 +6418,7 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
         ).catch((err) => {
           console.log(
             `[refresh] discovery connect for ${instanceName} (non-fatal):`,
-            (err as Error)?.message ?? err,
+            errForLog(err),
           );
         });
       }
@@ -6634,7 +6664,7 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
         } catch (err) {
           console.error(
             "bridge /deliver-media failed for one file:",
-            (err as Error)?.message ?? err,
+            errForLog(err),
           );
           notDelivered.push(name);
         }
@@ -6671,7 +6701,7 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
         );
         sendJson(res, 200, { ok: true });
       } catch (err) {
-        console.error("bridge /patch failed:", (err as Error)?.message ?? err);
+        console.error("bridge /patch failed:", errForLog(err));
         sendJson(res, 502, { ok: false, error: "upstream patch failed" });
       }
       return;
@@ -6711,7 +6741,7 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
             error: { code: "permission_mode_not_applied", reason: outcome.reason },
           });
       } catch (err) {
-        console.error("bridge /permission-mode failed:", (err as Error)?.message ?? err);
+        console.error("bridge /permission-mode failed:", errForLog(err));
         sendJson(res, 502, { ok: false, error: { code: "upstream_failed" } });
       }
       return;
@@ -6755,7 +6785,7 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
               error: { code: "knowledge_policy_not_applied", reason: outcome.reason },
             });
         } catch (err) {
-          console.error("bridge /knowledge apply failed:", (err as Error)?.message ?? err);
+          console.error("bridge /knowledge apply failed:", errForLog(err));
           sendJson(res, 502, { ok: false, error: { code: "upstream_failed" } });
         }
         return;
@@ -6777,7 +6807,7 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
         const code = classifyGatewayError(err);
         console.error(
           `bridge /knowledge ${kb.op} failed [${code}]:`,
-          (err as Error)?.message ?? err,
+          errForLog(err),
         );
         sendJson(res, 502, { ok: false, error: { code } });
       }
@@ -6836,7 +6866,7 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
         } catch (err) {
           console.error(
             "bridge /reset (hermes) failed:",
-            (err as Error)?.message ?? err,
+            errForLog(err),
           );
           sendJson(res, 502, { ok: false, error: "upstream reset failed" });
         }
@@ -6863,7 +6893,7 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
         await performReset(session, resetBundle?.config);
         sendJson(res, 200, { ok: true });
       } catch (err) {
-        console.error("bridge /reset failed:", (err as Error)?.message ?? err);
+        console.error("bridge /reset failed:", errForLog(err));
         sendJson(res, 502, { ok: false, error: "upstream reset failed" });
       }
       return;
@@ -6906,7 +6936,7 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
         } catch (err) {
           console.error(
             `bridge /canvas-view connect failed [${classifyGatewayError(err)}]:`,
-            (err as Error)?.message ?? err,
+            errForLog(err),
           );
           return { ok: false as const, httpStatus: 502, code: "gateway_error" as const };
         }
@@ -6977,7 +7007,7 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
           const code = classifyGatewayError(err);
           console.error(
             `bridge /agent-request/respond connect failed [${code}]:`,
-            (err as Error)?.message ?? err,
+            errForLog(err),
           );
           outcome = { ok: false, httpStatus: 502, code: "gateway_unreachable" };
         }
@@ -7135,7 +7165,7 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
         const code = classifyGatewayError(err);
         console.error(
           `bridge /abort failed [${code}]:`,
-          (err as Error)?.message ?? err,
+          errForLog(err),
         );
         sendJson(res, 502, { ok: false, error: { code } });
       }
@@ -7186,7 +7216,7 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
         const code = classifyGatewayError(err);
         console.error(
           `bridge /compaction-history failed [${code}]:`,
-          (err as Error)?.message ?? err,
+          errForLog(err),
         );
         sendJson(res, 502, { ok: false, error: { code } });
       }
@@ -7347,7 +7377,7 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
         const code = classifyGatewayError(err);
         console.error(
           `bridge /lossless failed [${code}]:`,
-          (err as Error)?.message ?? err,
+          errForLog(err),
         );
         sendJson(res, 502, { ok: false, error: { code } });
       }
@@ -7393,7 +7423,7 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
         const code = classifyGatewayError(err);
         console.error(
           `bridge /cron-list failed [${code}]:`,
-          (err as Error)?.message ?? err,
+          errForLog(err),
         );
         sendJson(res, 502, { ok: false, error: { code } });
       }
@@ -7465,7 +7495,7 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
         const code = classifyGatewayError(err);
         console.error(
           `bridge /tasks-probe failed [${code}]:`,
-          (err as Error)?.message ?? err,
+          errForLog(err),
         );
         sendJson(res, 502, { ok: false, error: { code } });
       }
@@ -7555,7 +7585,7 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
         const code = classifyGatewayError(err);
         console.error(
           `bridge /cron-manage failed [${code}]:`,
-          (err as Error)?.message ?? err,
+          errForLog(err),
         );
         sendJson(res, 502, { ok: false, error: { code } });
       }
@@ -7660,7 +7690,7 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
         sendJson(res, 200, { ok: true, resumed });
       } catch (err) {
         const code = classifyGatewayError(err);
-        console.error(`bridge /resume failed [${code}]:`, (err as Error)?.message ?? err);
+        console.error(`bridge /resume failed [${code}]:`, errForLog(err));
         sendJson(res, 502, { ok: false, error: { code } });
       } finally {
         leaveResume();
@@ -7705,7 +7735,7 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
         const code = classifyGatewayError(err);
         console.error(
           `bridge /compact failed [${code}]:`,
-          (err as Error)?.message ?? err,
+          errForLog(err),
         );
         sendJson(res, 502, { ok: false, error: { code } });
       }
@@ -7843,7 +7873,7 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
         const code = classifyGatewayError(err);
         console.error(
           `bridge /subagent-send failed [${code}]:`,
-          (err as Error)?.message ?? err,
+          errForLog(err),
         );
         sendJson(res, 502, { ok: false, error: { code } });
       }
@@ -7954,7 +7984,7 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
         const code = classifyGatewayError(err);
         console.error(
           `bridge /tts ${method} failed [${code}]:`,
-          (err as Error)?.message ?? err,
+          errForLog(err),
         );
         sendJson(res, 502, { ok: false, error: { code } });
       }
@@ -8386,7 +8416,7 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
         const code = classifyGatewayError(err);
         console.error(
           `bridge /talk-session failed [${code}]:`,
-          (err as Error)?.message ?? err,
+          errForLog(err),
         );
         sendJson(res, 502, { ok: false, error: { code } });
       } finally {
@@ -8566,7 +8596,7 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
         sendJson(res, 200, { ok: true, closed: "closed" });
       } catch (err) {
         const code = classifyGatewayError(err);
-        console.error(`bridge /talk-hangup failed [${code}]:`, (err as Error)?.message ?? err);
+        console.error(`bridge /talk-hangup failed [${code}]:`, errForLog(err));
         sendJson(res, 502, { ok: false, error: { code } });
       } finally {
         // Whatever the gateway said, the bridge no longer holds the socket for THIS
@@ -8746,7 +8776,7 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
           const code = classifyGatewayError(err);
           console.error(
             `bridge /talk-toolcall failed [${code}]:`,
-            (err as Error)?.message ?? err,
+            errForLog(err),
           );
           resolveStarted({ ok: false, code });
           resolveTerminal({ errorText: code });
@@ -8809,7 +8839,7 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
         const code = classifyGatewayError(err);
         console.error(
           `bridge /agent-files ${body.op} failed [${code}]:`,
-          (err as Error)?.message ?? err,
+          errForLog(err),
         );
         sendJson(res, 502, { ok: false, error: { code } });
       }
@@ -8878,7 +8908,7 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
         }
         console.error(
           `bridge /config-defaults ${body.op} failed [${code}]:`,
-          (err as Error)?.message ?? err,
+          errForLog(err),
         );
         sendJson(res, 502, { ok: false, error: { code } });
       }
@@ -9120,7 +9150,7 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
       }
       console.error(
         `bridge /send failed [${code}]:`,
-        (err as Error)?.message ?? err,
+        errForLog(err),
       );
       // WHICH rule refused, when the refusal knows. The code is the wire contract
       // and does not change; this line is for whoever has to fix the deployment.
@@ -9128,6 +9158,10 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
       // the path contract has a dozen clauses and the message named none of them.
       // Structural only — the reason never carries a filename.
       logInboundRefusal(err);
+      // The SHAPE of a refusal the gateway answered (its code, the names of its
+      // `details` keys) — what survives of an unrecognized refusal once this log is
+      // gone. Never its text (dispatch-errors.ts `answeredRefusalShape`).
+      const answered = answeredRefusalShape(err);
       sendJson(res, 502, {
         ok: false,
         error: {
@@ -9135,6 +9169,7 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
           // WHY the knowledge choice could not be applied — a closed vocabulary
           // (knowledge-policy.ts), never gateway text.
           ...(err instanceof KnowledgePolicyNotAppliedError ? { reason: err.reason } : {}),
+          ...(answered === null ? {} : { answered }),
         },
         ...(sendReport.knowledge === undefined ? {} : { knowledge: sendReport.knowledge }),
       });

@@ -464,6 +464,9 @@ export const ERROR_CODE_LABEL: Record<string, () => string> = {
   message_too_large: m.runstatus_error_message_too_large,
   // A sub-agent's reply is still owed on the conversation's socket: send again soon.
   subagent_reply_pending: m.runstatus_error_subagent_reply_pending,
+  // The GATEWAY could not save the attachment to its own disk (prod 2026-10-13). Stored
+  // as a dispatch code; never retried. The reader can still send the text alone.
+  gateway_media_unavailable: m.runstatus_error_gateway_media_unavailable,
 };
 
 // THE STORED TEXT, READ LIKE THE BRIDGE READS A FRESH ONE.
@@ -561,6 +564,7 @@ const ERROR_STRING_CODES = new Set([
   "attachment_cleanup_unconfirmed",
   "message_too_large",
   "subagent_reply_pending",
+  "gateway_media_unavailable",
   // The bridge stores the provider-logout abort under its code, as its text too.
   "provider_access_removed",
 ]);

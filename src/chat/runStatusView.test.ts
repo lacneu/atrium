@@ -146,6 +146,19 @@ describe("errorDetailView (actionable error classification)", () => {
     expect(byString.detail).toBeNull();
   });
 
+  it("the gateway refusing to save an attachment to its disk is named, by code and by string", () => {
+    // Prod 2026-10-13: shown as the generic "send failed" card. failDispatch stores the
+    // code in both fields (an attachment-family code), so both reads must name it.
+    const byCode = errorDetailView("", "gateway_media_unavailable");
+    expect(byCode.headline).toBe(m.runstatus_error_gateway_media_unavailable());
+    expect(byCode.headline).not.toBe(m.runstatus_error_send_failed());
+    // A row read without its errorCode (an older reader, a projection that drops it).
+    const byString = errorDetailView("gateway_media_unavailable", null);
+    expect(byString.headline).toBe(byCode.headline);
+    // The stored string is the code itself: no raw detail line under the headline.
+    expect(byString.detail).toBeNull();
+  });
+
   it("an agent taken out of the room is named as such, not as a change of access", () => {
     // failDispatch stores the reason in `error` and the finer code in `errorCode`.
     const v = errorDetailView("agent_restricted", "AGENT_LEFT_ROOM");

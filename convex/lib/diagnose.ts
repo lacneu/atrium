@@ -204,6 +204,8 @@ export function actionForErrorCode(code: string | null): string {
       return "The bridge refused the target path for this instance's inbound directory. That covers the whole path contract, not one fault: a path outside the allowed root, a staging directory equal to or nested inside the published one, the two on different filesystems, a non-canonical path or a symlink, a wrong owner, or group/world-writable permissions — and the bridge log records the class, not which rule gave way. The turn was never sent, and this refusal alone proves nothing about the link. Check that pair of directories on the bridge host — distinct, same filesystem, canonical, owned by the bridge user, not group/world-writable — and that they match what the instance is configured with. A retry fails identically until it is fixed.";
     case "attachment_staging_failed":
       return "The bridge could not complete the attachment's transfer into this instance's shared space: the write failed (permissions, disk space, a missing mount) OR the download from Convex broke mid-stream — `boundedFailure` folds both into this class. The turn was never sent, and this refusal alone proves nothing about the link. Check the inbound volume on the bridge host; if it is healthy, a broken transfer is the other candidate and a re-send can succeed.";
+    case "gateway_media_unavailable":
+      return "The GATEWAY refused the send because it could not save the attachment to its own disk (its answer: \"Failed to save intercepted media to disk\"). The bridge and the link are fine, and text-only sends still work. Read the gateway's own log for the underlying error: a media directory that is not writable, or an unusable safe-filesystem helper (OPENCLAW_FS_SAFE_NATIVE_MODE), are the causes seen so far. Resending the file fails the same way until the gateway host is fixed.";
     case "attachment_cleanup_unconfirmed":
       return "Placing a batch of attachments failed AND the rollback could not be confirmed: partial files may remain in this instance's shared inbound space. The turn was never sent. Inspect (and clean) that directory on the bridge host before sending again.";
     case "AGENT_NOT_FOUND":
@@ -265,6 +267,8 @@ const ATTACHMENT_CODES = new Set([
   "attachment_cleanup_unconfirmed",
   "message_too_large",
   "subagent_reply_pending",
+  // The gateway could not save the file to its own disk: an attachment failure too.
+  "gateway_media_unavailable",
 ]);
 
 /**

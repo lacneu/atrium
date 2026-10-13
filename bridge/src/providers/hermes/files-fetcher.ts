@@ -7,6 +7,7 @@
 
 import { Readable } from "node:stream";
 import type { MediaFetcher, OpenResult } from "../../core/media-fetcher.js";
+import { readProviderJson } from "../../core/provider-body.js";
 
 /**
  * The managed-files API is NOT DEPLOYED on this instance — not a fault to retry.
@@ -134,7 +135,11 @@ export class HermesFilesFetcher implements MediaFetcher {
     // ambiguity gets resolved rather than assumed.
     if (res.status === 404) await this.assertDashboardStillThere();
     if (!res.ok) throw new Error(`files list -> HTTP ${res.status}`);
-    const d = (await res.json()) as { entries?: Array<Record<string, unknown>> };
+    const d =
+      (await readProviderJson<{ entries?: Array<Record<string, unknown>> } | null>(
+        res,
+        "Hermes files list",
+      )) ?? {};
     return (d.entries ?? [])
       .filter((e) => e.is_directory !== true && typeof e.path === "string")
       .map((e) => ({
@@ -170,15 +175,16 @@ export class HermesFilesFetcher implements MediaFetcher {
     if (res.status === 404) {
       // …with one residual case named rather than assumed away: the managed root itself
       // could be gone, and upstream says so in its body. Read it before claiming absence.
-      const detail = await res
-        .clone()
-        .json()
-        .then((b: unknown) => (b as { detail?: unknown } | null)?.detail)
+      const detail = await readProviderJson<{ detail?: unknown } | null>(
+        res.clone(),
+        "Hermes files root",
+      )
+        .then((b) => b?.detail)
         .catch(() => undefined);
       if (detail !== "Path not found") throw new HermesDashboardAbsentError("/api/files");
     }
     if (!res.ok) throw new Error(`files root -> HTTP ${res.status}`);
-    const d = (await res.json()) as { path?: string };
+    const d = (await readProviderJson<{ path?: string } | null>(res, "Hermes files root")) ?? {};
     this.rootPath = typeof d.path === "string" && d.path ? d.path : "/";
     return this.rootPath;
   }
@@ -205,7 +211,8 @@ export class HermesFilesFetcher implements MediaFetcher {
       return { content: "", missing: true, decoded: false };
     }
     if (!res.ok) throw new Error(`files read -> HTTP ${res.status}`);
-    const d = (await res.json()) as { data_url?: string };
+    const d =
+      (await readProviderJson<{ data_url?: string } | null>(res, "Hermes files read")) ?? {};
     const m = /^data:[^;]*;base64,(.*)$/s.exec(d.data_url ?? "");
     if (m === null) return { content: "", missing: false, decoded: false };
     // The PAYLOAD is validated, not just the prefix. `Buffer.from` accepts invalid

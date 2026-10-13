@@ -9,6 +9,7 @@
 // This module is the ONLY Hermes-specific transport; everything it produces
 // flows through the shared normalizer → TurnSink → convex-writer downstream.
 
+import { parseProviderJson } from "../../core/provider-body.js";
 import { SseParser, type SseFrame } from "./sse.js";
 
 export interface HermesClientOptions {
@@ -108,8 +109,9 @@ export class HermesClient {
       }
       const text = await res.text();
       try {
-        return JSON.parse(text) as T;
+        return parseProviderJson<T>(text, `Hermes ${method} ${path}`);
       } catch {
+        // Our own words, never the body (core/provider-body.ts).
         throw new HermesError(
           `Hermes ${method} ${path}: non-JSON response`,
           "BAD_RESPONSE",

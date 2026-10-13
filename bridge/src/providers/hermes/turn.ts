@@ -25,6 +25,7 @@ import {
 } from "../../core/dispatch-deadline.js";
 import { HermesNormalizer } from "./normalizer.js";
 import { protocolDrift } from "../openclaw/protocol-drift.js";
+import { errForLog } from "../../core/log-safe-error.js";
 
 /** Abort reason set by /reset (vs a user Stop) — tells the turn to FINALIZE the
  *  message as aborted (Convex's dispatchReset does not). */
@@ -168,7 +169,7 @@ export function runHermesTurn(opts: HermesTurnOptions): HermesTurnRun {
         .catch((e) =>
           console.error(
             "[hermes-turn] session bind failed (continuity miss):",
-            (e as Error)?.message ?? e,
+            errForLog(e),
           ),
         );
     };
@@ -367,7 +368,7 @@ export function runHermesTurn(opts: HermesTurnOptions): HermesTurnRun {
               .catch((e) =>
                 console.error(
                   "[hermes-turn] stopRun after timeout failed:",
-                  (e as Error)?.message ?? e,
+                  errForLog(e),
                 ),
               );
           }
@@ -455,7 +456,7 @@ export function runHermesTurn(opts: HermesTurnOptions): HermesTurnRun {
           .catch((e) =>
             console.error(
               "[hermes-turn] usage meta failed:",
-              (e as Error)?.message ?? e,
+              errForLog(e),
             ),
           );
       }
@@ -477,7 +478,7 @@ export function runHermesTurn(opts: HermesTurnOptions): HermesTurnRun {
     // beginTurn after acceptance) is a BACKGROUND error — `done` must resolve so
     // the registry cleanup runs and the caller never sees an unhandled reject.
     await chain.catch((e) =>
-      console.error("[hermes-turn] drain error:", (e as Error)?.message ?? e),
+      console.error("[hermes-turn] drain error:", errForLog(e)),
     );
   })();
 

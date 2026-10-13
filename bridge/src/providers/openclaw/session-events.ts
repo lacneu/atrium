@@ -37,6 +37,7 @@ import type { GatewayFrame } from "./openclaw-client.js";
 import type { SeqGap } from "./frame-seq.js";
 import { sessionEventKey } from "./transcript-rows.js";
 import type { SessionEventListener, SessionEventSource } from "./transcript-shadow.js";
+import { errForLog } from "../../core/log-safe-error.js";
 
 /** The client capability this connection declares (packages/gateway-protocol/src/
  *  client-info.ts `GATEWAY_CLIENT_CAPS.SESSION_SCOPED_EVENTS`, v2026.8.1+). */
@@ -229,7 +230,7 @@ export class SessionEventsHub implements SessionEventSource {
       this.stats.listenerErrors++;
       this.log(
         `[session-events] ${this.deps.instanceName}: listener failed (non-fatal): ${
-          (err as Error)?.message ?? err
+          errForLog(err)
         }`,
       );
     }
@@ -274,7 +275,7 @@ export class SessionEventsHub implements SessionEventSource {
     try {
       conn = await this.deps.connect();
     } catch (err) {
-      this.scheduleRetry(`connect failed: ${(err as Error)?.message ?? err}`);
+      this.scheduleRetry(`connect failed: ${errForLog(err)}`);
       return;
     }
     if (this.stopped || this.listeners.size === 0) {
@@ -295,7 +296,7 @@ export class SessionEventsHub implements SessionEventSource {
     } catch (err) {
       this.stats.subscribeFailures++;
       this.closeConn("subscribe failed");
-      this.scheduleRetry(`sessions.subscribe failed: ${(err as Error)?.message ?? err}`);
+      this.scheduleRetry(`sessions.subscribe failed: ${errForLog(err)}`);
       return;
     }
     this.subscribed = true;
@@ -327,7 +328,7 @@ export class SessionEventsHub implements SessionEventSource {
       }
     } catch (err) {
       this.log(
-        `[session-events] ${this.deps.instanceName}: reader stopped: ${(err as Error)?.message ?? err}`,
+        `[session-events] ${this.deps.instanceName}: reader stopped: ${errForLog(err)}`,
       );
     }
     if (this.conn !== conn) return;

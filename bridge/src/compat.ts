@@ -471,7 +471,7 @@ export const COMPAT_MANIFEST: CompatManifest = {
       // FLOOR 2026.8.2 (OPENCLAW_MIN_SUPPORTED, release 0.92.0): the versions below it
       // were retired from support — their validation runs stay in the release notes, but
       // the redesigned turn model cannot run on them, and a claim nobody keeps is not one.
-      supportedRange: { min: OPENCLAW_MIN_SUPPORTED, maxValidated: "2026.9.8" },
+      supportedRange: { min: OPENCLAW_MIN_SUPPORTED, maxValidated: "2026.9.9" },
       // Inside the range, and BROKEN on a stock gateway: a managed-media
       // `attachment` block persisted by the gateway's own path crashes
       // `transcript-transform` on every later turn of that session (upstream
@@ -665,6 +665,17 @@ export const COMPAT_MANIFEST: CompatManifest = {
         // gateway GRACEFULLY: a killed one keeps its owner lease, and the next container is
         // refused for up to 5 min ("Another Gateway owner lease is still active").
         "2026.9.8",
+        // 2026.9.9: full live suite GO 22/22 (proof run 2026-10-13T16-58-42-574Z, then the
+        // attestation run on the final tree), Hermes co-run on 0.21.7, on the distribution
+        // image r5 PINNED BY DIGEST (sha256:a8cec0af…): its tag was published twice. A
+        // maintenance release of the 9.x line: the vendored schema modules and both event
+        // catalogues are byte-identical to 2026.9.8, one watched file moved, every anchor
+        // held. ONE adaptation: `sessions.compact` on a session with no record is now a
+        // refusal (`INVALID_REQUEST: Session <key> not found.`, sessions-compact.ts:138-147)
+        // where 2026.9.8 answered `compacted:false, reason:"no sessionId"`; the bridge reads
+        // it back as that answer (core/compaction-verdict.ts `compactRefusalFromAnswer`), so
+        // /compact and the pre-send guard behave as on 2026.9.8. No capability floor moves.
+        "2026.9.9",
       ],
       capabilities: OPENCLAW_CAPABILITIES,
     },

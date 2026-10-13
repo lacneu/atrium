@@ -17,6 +17,10 @@
 
 import { createHash, createPrivateKey, sign as cryptoSign } from "node:crypto";
 import { readSessionSharingKey } from "./session-access.js";
+import {
+  RECEIVED_PROVIDER_TEXT,
+  type ReceivedProviderText,
+} from "../../core/gateway-text-error.js";
 import { appendFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { URL } from "node:url";
@@ -130,7 +134,17 @@ const CLIENT_ROLE = "operator";
 const CONNECT_TIMEOUT_MS = 30_000;
 const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
 
+/** An error of this client. The base class is for failures the BRIDGE describes itself — a
+ *  refused URL scheme, a local signing failure, a timeout, a closed socket — whose message
+ *  holds no gateway text and is logged as is. The subclasses built FROM a gateway's text
+ *  (`GatewayAnsweredError`, `GatewayConnectRefusedError`) carry the received-text mark, so
+ *  the log helper withholds their message (core/log-safe-error.ts). */
 export class OpenClawError extends Error {}
+
+/** The gateway REFUSED the connect handshake: its message is `<code>: <gateway message>`. */
+export class GatewayConnectRefusedError extends OpenClawError implements ReceivedProviderText {
+  readonly [RECEIVED_PROVIDER_TEXT] = true as const;
+}
 
 /**
  * A request the gateway ANSWERED with an error (`res` with `ok: false`) — as
@@ -138,7 +152,8 @@ export class OpenClawError extends Error {}
  * frame could not be written). The distinction is whether the gateway definitely
  * did NOT act on it: a refusal is final, a missing answer is not.
  */
-export class GatewayAnsweredError extends OpenClawError {
+export class GatewayAnsweredError extends OpenClawError implements ReceivedProviderText {
+  readonly [RECEIVED_PROVIDER_TEXT] = true as const;
   /** The refusal's structured `ErrorShape.details`, verbatim (packages/gateway-protocol/src/
    *  schema/frames.ts:180-186 at v2026.9.6: `details: Type.Unknown()`). Kept so a classifier
    *  can read a CODE the gateway attached instead of pattern-matching the prose beside it —
@@ -146,9 +161,15 @@ export class GatewayAnsweredError extends OpenClawError {
    *  src/gateway/session-request-agent.ts:29-38). Unknown by contract: every reader
    *  narrows it itself. */
   readonly details: unknown;
-  constructor(message: string, details?: unknown) {
+  /** The refusal's `ErrorShape.code` as the gateway sent it (`INVALID_REQUEST`,
+   *  `UNAVAILABLE`, …), or null when the answer carried none. Read STRUCTURALLY by
+   *  the dispatch classifier and the trace shape (core/dispatch-errors.ts), which do
+   *  not import this client. */
+  readonly gatewayCode: string | null;
+  constructor(message: string, details?: unknown, gatewayCode?: string | null) {
     super(message);
     this.details = details;
+    this.gatewayCode = typeof gatewayCode === "string" ? gatewayCode : null;
   }
 }
 
@@ -808,7 +829,7 @@ export class OpenClawConnection {
         const error = (frame.error ?? {}) as Record<string, unknown>;
         dbg("connect FAILED (raw):", clip(frame, 1500));
         fail(
-          new OpenClawError(
+          new GatewayConnectRefusedError(
             `${(error.code as string) ?? "CONNECT_FAILED"}: ` +
               `${(error.message as string) ?? "OpenClaw connect failed"}`,
           ),
@@ -1272,6 +1293,7 @@ export class OpenClawConnection {
               new GatewayAnsweredError(
                 `${error.code ?? "REQUEST_FAILED"}: ${error.message ?? method + " failed"}`,
                 error.details,
+                error.code ?? null,
               ),
             );
             return;

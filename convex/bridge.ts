@@ -112,6 +112,9 @@ import { composeChainedPrompt } from "./lib/rehydration";
 import { safeAuthorLabel } from "./lib/turnAuthors";
 import { isTrashed } from "./lib/trash";
 import { conversationWantsWidgets } from "./widgets";
+import { gatewayAnswerShape, type GatewayAnswerShape } from "./lib/gatewayAnswer";
+
+export { gatewayAnswerShape };
 
 // OpenClaw's default WS frame limit (policy.maxPayload), observed live on every
 // 2026.x hello-ok. The conservative inbound-attachment fallback (DEFAULT_GATEWAY_MAX_PAYLOAD)
@@ -172,6 +175,11 @@ async function traceDispatch(
     // the bridge's classified 502 body; for the pre-bridge branches it is a fixed
     // local code. NEVER the raw gateway message (that stays in the bridge log).
     errorCode?: string;
+    /** The SHAPE of the refusal when the gateway itself answered it — its error code
+     *  and the names of its `details` keys, never its text or a value. The one thing
+     *  an unrecognized refusal (`UPSTREAM_ERROR`) leaves once the bridge's log is gone
+     *  (prod 2026-10-13). Validated by `readSendAnswer`. */
+    gatewayAnswer?: GatewayAnswerShape;
   },
 ): Promise<void> {
   try {
@@ -192,6 +200,7 @@ async function traceDispatch(
         agentId: args.target?.agentId,
         ...(args.reason ? { reason: args.reason } : {}),
         ...(args.errorCode ? { errorCode: args.errorCode } : {}),
+        ...(args.gatewayAnswer ? { gatewayAnswer: args.gatewayAnswer } : {}),
         // Written on EVERY dispatch, not just failures: reading "was this internal?"
         // out of the trace is what turns a future analysis into one `list_traces`
         // call instead of a second round-trip to ask what the chat was.
@@ -242,11 +251,17 @@ export async function readErrorCode(
   return undefined;
 }
 
-/** The /send answer, read ONCE: the curated failure code (as readErrorCode) and the
- *  knowledge choice's outcome (`knowledge`, a new bridge only). Never throws. */
+/** The /send answer, read ONCE: the curated failure code (as readErrorCode), the shape of
+ *  a refusal the gateway answered (`gatewayAnswer`), and the knowledge choice's outcome
+ *  (`knowledge`, a new bridge only). Never throws. */
 export async function readSendAnswer(
   response: Response,
-): Promise<{ errorCode?: string; knowledge?: unknown; sendId?: string }> {
+): Promise<{
+  errorCode?: string;
+  gatewayAnswer?: GatewayAnswerShape;
+  knowledge?: unknown;
+  sendId?: string;
+}> {
   try {
     const body = (await response.json()) as {
       error?: unknown;
@@ -263,8 +278,13 @@ export async function readSendAnswer(
       typeof body?.sendId === "string" && body.sendId.length > 0 && body.sendId.length <= 256
         ? body.sendId
         : undefined;
+    const gatewayAnswer =
+      err !== null && typeof err === "object"
+        ? gatewayAnswerShape((err as { answered?: unknown }).answered)
+        : undefined;
     return {
       ...(errorCode === undefined ? {} : { errorCode }),
+      ...(gatewayAnswer === undefined ? {} : { gatewayAnswer }),
       ...(body?.knowledge === undefined ? {} : { knowledge: body.knowledge }),
       ...(sendId === undefined ? {} : { sendId }),
     };
@@ -533,6 +553,10 @@ const ATTACHMENT_FAILURE_CODES = new Set([
   "attachment_cleanup_unconfirmed",
   // The bridge refused a send whose message plus files exceed the gateway's frame.
   "message_too_large",
+  // The GATEWAY could not write the attachment to its own disk (prod 2026-10-13): the
+  // reader's message is intact and the file is what could not be taken — only an
+  // operator can fix it, and sending the text alone works meanwhile.
+  "gateway_media_unavailable",
   // The bridge refused to re-key the socket while a sub-agent's reply is still owed
   // on it: the reader is told to send again in a moment (shown as its own code).
   "subagent_reply_pending",
@@ -2863,6 +2887,8 @@ export const dispatch = internalAction({
     // Curated root-cause code for a failed send (non-PHI). From the bridge's 502
     // body when reachable; a fixed local code when the bridge can't be reached.
     let errorCode: string | undefined;
+    // The shape (code + detail key names) of a refusal the gateway answered, for the trace.
+    let gatewayAnswer: GatewayAnswerShape | undefined;
     // What the bridge reported of the knowledge choice this turn carried (its /send
     // answer's `knowledge`), and for which agent — recorded for the composer below.
     let knowledgeReport: unknown = undefined;
@@ -3223,6 +3249,7 @@ export const dispatch = internalAction({
         if (!ok) {
           console.error(`bridge POST /send -> HTTP ${response.status}`);
           errorCode = answer.errorCode;
+          gatewayAnswer = answer.gatewayAnswer;
         }
       } catch (err) {
         console.error("bridge POST /send failed:", err);
@@ -3370,7 +3397,7 @@ export const dispatch = internalAction({
       gatewayIdentity: routing.target.canonical,
       participantCount: chatFacts?.participantCount ?? 0,
       fromParticipant: String(row.userId) !== String(chatOwnerId),
-      ...(ok ? {} : { reason: "send_failed", errorCode }),
+      ...(ok ? {} : { reason: "send_failed", errorCode, gatewayAnswer }),
     });
   },
 });

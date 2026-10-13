@@ -58,6 +58,7 @@ import {
   type AgentRequestRecord,
 } from "../../core/agent-requests.js";
 import { isHermesVersionScheme } from "../../compat.js";
+import { errForLog } from "../../core/log-safe-error.js";
 
 /**
  * Read a gateway version Hermes reported, or `null` when it is not one we can read.
@@ -448,7 +449,7 @@ export function runHermesWsTurn(
       .catch((e) =>
         console.error(
           "[hermes-ws-turn] agent request settle failed:",
-          (e as Error)?.message ?? e,
+          errForLog(e),
         ),
       );
   };
@@ -539,7 +540,7 @@ export function runHermesWsTurn(
         .catch((e) =>
           console.error(
             "[hermes-ws-turn] session bind failed (continuity miss):",
-            (e as Error)?.message ?? e,
+            errForLog(e),
           ),
         );
     };
@@ -818,7 +819,7 @@ export function runHermesWsTurn(
         .catch((e) => {
           console.error(
             "[hermes-ws-turn] agent request write failed:",
-            (e as Error)?.message ?? e,
+            errForLog(e),
           );
           // No card will ever show it. A server→client request is ADDRESSABLE: refuse it,
           // so Hermes withdraws it instead of waiting — without limit when its clarify
@@ -891,7 +892,7 @@ export function runHermesWsTurn(
         .catch((e) => {
           console.error(
             `[hermes-ws-turn] ${responder.method} failed (best effort):`,
-            (e as Error)?.message ?? e,
+            errForLog(e),
           );
           // The answer never landed: the gateway is still blocked, same as if we had no
           // address at all. Same treatment — outlast its timeout rather than pre-empt it.
@@ -932,7 +933,7 @@ export function runHermesWsTurn(
             .catch((e) =>
               console.error(
                 "[hermes-ws-turn] terminal.read answer failed (best effort):",
-                (e as Error)?.message ?? e,
+                errForLog(e),
               ),
             );
           return;
@@ -1556,7 +1557,7 @@ export function runHermesWsTurn(
               .catch((e) =>
                 console.error(
                   "[hermes-ws-turn] session meta failed:",
-                  (e as Error)?.message ?? e,
+                  errForLog(e),
                 ),
               );
           }
@@ -1724,7 +1725,7 @@ export function runHermesWsTurn(
               .catch((e) =>
                 console.error(
                   "[hermes-ws-turn] usage meta failed:",
-                  (e as Error)?.message ?? e,
+                  errForLog(e),
                 ),
               );
           }
@@ -2061,7 +2062,7 @@ export function runHermesWsTurn(
         .catch((e) =>
           console.error(
             "[hermes-ws-turn] interrupt after timeout failed (best effort):",
-            (e as Error)?.message ?? e,
+            errForLog(e),
           ),
         );
       // The stored session is dropped ATOMICALLY WITH THE TERMINAL below — see
@@ -2484,7 +2485,7 @@ export function runHermesWsTurn(
       const t = setTimeout(unsubscribe, 120_000);
       (t as { unref?: () => void }).unref?.();
       await chain.catch((e) =>
-        console.error("[hermes-ws-turn] drain error:", (e as Error)?.message ?? e),
+        console.error("[hermes-ws-turn] drain error:", errForLog(e)),
       );
     }
   })();

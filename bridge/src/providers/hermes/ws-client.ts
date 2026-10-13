@@ -22,6 +22,11 @@
 // The credential in the instance's `apiKey` secret selects the mode:
 // "user:password" (a colon) → password flow; otherwise → static token.
 
+import {
+  RECEIVED_PROVIDER_TEXT,
+  type ReceivedProviderText,
+} from "../../core/gateway-text-error.js";
+import { readProviderJson } from "../../core/provider-body.js";
 import WebSocket from "ws";
 import { decodeInboundFrame, protocolDrift } from "../openclaw/protocol-drift.js";
 
@@ -119,6 +124,12 @@ export class HermesWsError extends Error {
     super(`${message} [${code}]`);
     this.name = "HermesWsError";
   }
+}
+
+/** A JSON-RPC error the Hermes server SENT: its message is the server's text, withheld from
+ *  logs (core/log-safe-error.ts). Every other `HermesWsError` is described by the bridge. */
+export class HermesWsRpcError extends HermesWsError implements ReceivedProviderText {
+  readonly [RECEIVED_PROVIDER_TEXT] = true as const;
 }
 
 interface Pending {
@@ -290,11 +301,12 @@ export class HermesWsClient {
         ticketRes.status === 401 ? "UNAUTHORIZED" : "HTTP_ERROR",
       );
     }
-    const body = (await ticketRes.json()) as { ticket?: string };
-    if (!body.ticket) {
+    const body = await readProviderJson<{ ticket?: string } | null>(ticketRes, "Hermes ws-ticket");
+    const ticket = body?.ticket;
+    if (typeof ticket !== "string" || ticket === "") {
       throw new HermesWsError("Hermes ws-ticket returned no ticket", "BAD_RESPONSE");
     }
-    return `ticket=${encodeURIComponent(body.ticket)}`;
+    return `ticket=${encodeURIComponent(ticket)}`;
   }
 
   /** Connect (idempotent). Resolves after the server's gateway.ready event.
@@ -418,7 +430,7 @@ export class HermesWsClient {
         if (obj.error !== undefined) {
           const e = obj.error as { code?: number; message?: string };
           p.reject(
-            new HermesWsError(
+            new HermesWsRpcError(
               e?.message ?? "RPC error",
               "RPC_ERROR",
               typeof e?.code === "number" ? e.code : undefined,

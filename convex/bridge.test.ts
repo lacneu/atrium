@@ -16,7 +16,7 @@ import schema from "./schema";
 import { RETRYABLE_KINDS } from "./turnRetry";
 import { assessChat } from "./lib/diagnose";
 import type { Id } from "./_generated/dataModel";
-import { readErrorCode } from "./bridge";
+import { gatewayAnswerShape, readErrorCode, readSendAnswer } from "./bridge";
 import { maxRawInboundBytes } from "./lib/attachmentLimits";
 
 const modules = import.meta.glob("./**/*.ts");
@@ -648,6 +648,166 @@ describe("bridge.dispatch — over-cap inbound attachment FAILS (never silently 
 // produce the SAME string the bridge sends with (session-keys.ts) — these pin that
 // the Convex-side reconstruction (resolveTargetForChat + the openclawChatId??chatId
 // + rebind rules) agrees with the bridge byte-for-byte.
+describe("bridge.dispatch — the GATEWAY could not save the attachment (prod 2026-10-13)", () => {
+  // Every send with a file failed on one instance: the gateway answered `UNAVAILABLE`
+  // `MediaOffloadError: [Gateway Error] Failed to save intercepted media to disk: …`. The
+  // bridge now names it `gateway_media_unavailable` and reports the refusal's SHAPE; this
+  // pins what Convex does with both, through the real dispatch action.
+  async function dispatchAnswered(body: unknown) {
+    const t = convexTest(schema, modules);
+    const prevUrl = process.env.BRIDGE_URL;
+    const prevSecret = process.env.BRIDGE_SHARED_SECRET;
+    process.env.BRIDGE_URL = "http://127.0.0.1:0";
+    process.env.BRIDGE_SHARED_SECRET = "test-secret";
+    const origFetch = globalThis.fetch;
+    globalThis.fetch = (async () =>
+      new Response(JSON.stringify(body), {
+        status: 502,
+        headers: { "content-type": "application/json" },
+      })) as unknown as typeof fetch;
+    try {
+      const { outboxId, chatId } = await t.run(async (ctx) => {
+        const userId = await ctx.db.insert("users", {});
+        const now = Date.now();
+        await ctx.db.insert("userAgents", {
+          userId,
+          instanceName: "primary",
+          agentId: "alice",
+          isDefault: true,
+          source: "manual",
+          createdAt: now,
+        });
+        const chatId = await ctx.db.insert("chats", { userId, archived: false, updatedAt: now });
+        const messageId = await ctx.db.insert("messages", {
+          chatId,
+          userId,
+          role: "user",
+          status: "complete",
+          text: "voici le fichier",
+          updatedAt: now,
+        });
+        const outboxId = await ctx.db.insert("outbox", {
+          chatId,
+          userId,
+          clientMessageId: "cmid-media",
+          messageId,
+          text: "voici le fichier",
+          attachmentIds: [],
+          status: "pending",
+        });
+        return { outboxId, chatId };
+      });
+      await t.action(internal.bridge.dispatch, { outboxId });
+      const traces = await t.run((ctx) => ctx.db.query("traceEvents").collect());
+      const dispatchTrace = traces.find((r) => r.kind === "openclaw.dispatch");
+      return { t, outboxId, chatId, dispatchTrace };
+    } finally {
+      globalThis.fetch = origFetch;
+      if (prevUrl === undefined) delete process.env.BRIDGE_URL;
+      else process.env.BRIDGE_URL = prevUrl;
+      if (prevSecret === undefined) delete process.env.BRIDGE_SHARED_SECRET;
+      else process.env.BRIDGE_SHARED_SECRET = prevSecret;
+    }
+  }
+
+  test("its own card, never retried, an attachment problem for the operator", async () => {
+    const { t, outboxId, chatId } = await dispatchAnswered({
+      ok: false,
+      error: { code: "gateway_media_unavailable", answered: { gatewayCode: "UNAVAILABLE" } },
+    });
+    expect((await t.run((ctx) => ctx.db.get(outboxId)))?.status).toBe("failed");
+    const card = (await messagesOf(t, chatId)).find(
+      (m) => m.role === "assistant" && m.status === "error",
+    );
+    // The code in BOTH fields: the reader's card names the file, not "send failed".
+    expect(card?.error).toBe("gateway_media_unavailable");
+    expect(card?.errorCode).toBe("gateway_media_unavailable");
+    expect(RETRYABLE_KINDS.has("gateway_media_unavailable")).toBe(false);
+    const scheduled = await t.run((ctx) => ctx.db.system.query("_scheduled_functions").collect());
+    expect(scheduled.filter((f) => f.name.includes("turnRetry"))).toHaveLength(0);
+    const state = await t.query(internal.messages.chatStateInternal, { chatId });
+    const verdict = assessChat(state, { known: true, available: true, degraded: false, reason: null });
+    expect(verdict.class).toBe("attachment_problem");
+    expect(verdict.suggestedAction).toMatch(/gateway/i);
+    expect(verdict.suggestedAction).not.toMatch(/retry the turn/i);
+  });
+
+  test("the dispatch trace keeps the curated code AND the answered shape — no text", async () => {
+    const { dispatchTrace } = await dispatchAnswered({
+      ok: false,
+      error: {
+        code: "UPSTREAM_ERROR",
+        answered: {
+          // Clean-looking content (it passes any syntax filter): a faulty or older bridge
+          // must not get it persisted.
+          gatewayCode: "SYNTHETIC_SECRET_VALUE",
+          detailKeys: ["reason", "SyntheticSecretDocument", "a file name.pdf", 42],
+          unknownDetailKeyCount: 2,
+        },
+        // A bridge that (wrongly) shipped text must not get it into the trace.
+        message: "MediaOffloadError: secret /data/olivier/file.pdf",
+      },
+    });
+    const meta = JSON.parse(dispatchTrace?.meta ?? "{}") as Record<string, unknown>;
+    expect(meta.dispatchStatus).toBe("failed");
+    expect(meta.errorCode).toBe("UPSTREAM_ERROR");
+    expect(meta.gatewayAnswer).toEqual({
+      code: "other",
+      detailKeys: ["reason"],
+      unknownDetailKeyCount: 5,
+    });
+    expect(dispatchTrace?.meta).not.toMatch(/olivier|secret|Secret|SYNTHETIC|MediaOffloadError|pdf/);
+  });
+
+  test("an older bridge (no shape) changes nothing", async () => {
+    const { dispatchTrace } = await dispatchAnswered({ ok: false, error: { code: "UPSTREAM_ERROR" } });
+    const meta = JSON.parse(dispatchTrace?.meta ?? "{}") as Record<string, unknown>;
+    expect(meta.errorCode).toBe("UPSTREAM_ERROR");
+    expect("gatewayAnswer" in meta).toBe(false);
+  });
+});
+
+describe("gatewayAnswerShape — network input bound for the trace store", () => {
+  test("closed vocabularies: only upstream's codes and key names survive", () => {
+    expect(gatewayAnswerShape({ gatewayCode: "INVALID_REQUEST", detailKeys: ["code", "reason"] })).toEqual({
+      code: "INVALID_REQUEST",
+      detailKeys: ["code", "reason"],
+    });
+    // Syntactically clean content: replaced by a fixed value, or only counted.
+    expect(
+      gatewayAnswerShape({ gatewayCode: "SYNTHETIC_SECRET_VALUE", detailKeys: ["SyntheticSecretDocument"] }),
+    ).toEqual({ code: "other", detailKeys: [], unknownDetailKeyCount: 1 });
+    expect(gatewayAnswerShape({ gatewayCode: "Failed to save: /x", detailKeys: "reason" })).toEqual({
+      code: "other",
+    });
+    expect(gatewayAnswerShape({ gatewayCode: "UNAVAILABLE", text: "secret" })).toEqual({ code: "UNAVAILABLE" });
+    expect(
+      gatewayAnswerShape({ detailKeys: Array.from({ length: 40 }, (_, i) => `k${i}`) }),
+    ).toEqual({ detailKeys: [], unknownDetailKeyCount: 16 });
+    // The bridge's own count is bounded and must be a positive integer.
+    expect(gatewayAnswerShape({ gatewayCode: "UNAVAILABLE", unknownDetailKeyCount: 1e9 })).toEqual({
+      code: "UNAVAILABLE",
+      unknownDetailKeyCount: 16,
+    });
+    expect(gatewayAnswerShape({ gatewayCode: "UNAVAILABLE", unknownDetailKeyCount: "9" })).toEqual({
+      code: "UNAVAILABLE",
+    });
+    expect(gatewayAnswerShape(null)).toBeUndefined();
+    expect(gatewayAnswerShape(["UNAVAILABLE"])).toBeUndefined();
+  });
+
+  test("readSendAnswer reads it from error.answered", async () => {
+    const r = new Response(
+      JSON.stringify({ ok: false, error: { code: "x", answered: { gatewayCode: "UNAVAILABLE", detailKeys: [] } } }),
+      { status: 502 },
+    );
+    expect(await readSendAnswer(r)).toEqual({
+      errorCode: "x",
+      gatewayAnswer: { code: "UNAVAILABLE", detailKeys: [] },
+    });
+  });
+});
+
 describe("bridge.dispatch — the bridge's refusal to cut a live call REQUEUES the turn", () => {
   test("a 502 talk_call_active leaves the row queued, with no error card", async () => {
     // The bridge is the only place that can decide with the socket in hand, so it is

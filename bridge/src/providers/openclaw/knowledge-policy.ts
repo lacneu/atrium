@@ -919,8 +919,13 @@ export class KnowledgePolicyNotAppliedError extends Error {
   constructor(
     readonly reason: KnowledgePolicyFailure,
     detail?: string,
+    cause?: unknown,
   ) {
-    super(`knowledge policy not applied (${reason})${detail ? `: ${detail}` : ""}`);
+    // `cause` keeps the gateway's refusal TYPED, so the log helper withholds its text.
+    super(
+      `knowledge policy not applied (${reason})${detail ? `: ${detail}` : ""}`,
+      cause === undefined ? undefined : { cause },
+    );
     this.name = "KnowledgePolicyNotAppliedError";
   }
 }
@@ -995,7 +1000,7 @@ export async function writeKnowledgePolicy(
     // classified as itself rather than as a knowledge choice not applied.
     if (gatewayOwnRefusal(err) !== null) throw err;
     if (err instanceof GatewayAnsweredError) {
-      throw new KnowledgePolicyNotAppliedError(classifyKnowledgeActionError(err), err.message);
+      throw new KnowledgePolicyNotAppliedError(classifyKnowledgeActionError(err), err.message, err);
     }
     throw err;
   }
@@ -1155,7 +1160,7 @@ export async function enforceKnowledgePolicy(args: {
   } catch (err) {
     if (gatewayOwnRefusal(err) !== null) throw err;
     if (err instanceof GatewayAnsweredError) {
-      throw new KnowledgePolicyNotAppliedError("session_not_established", err.message);
+      throw new KnowledgePolicyNotAppliedError("session_not_established", err.message, err);
     }
     throw err;
   }

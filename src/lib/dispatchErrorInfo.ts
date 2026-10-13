@@ -96,6 +96,10 @@ const INFO: Record<string, (ctx: DispatchErrorContext) => DispatchErrorInfo> = {
     label: m.error_message_too_large_label(),
     hint: m.error_message_too_large_hint(),
   }),
+  gateway_media_unavailable: () => ({
+    label: m.error_gateway_media_unavailable_label(),
+    hint: m.error_gateway_media_unavailable_hint(),
+  }),
   subagent_reply_pending: () => ({
     label: m.error_subagent_reply_pending_label(),
     hint: m.error_subagent_reply_pending_hint(),

@@ -40,7 +40,7 @@ describe("resolveVendorEntries", () => {
         ["schema/tasks.ts"],
       ]);
     }
-    for (const v of ["2026.9.7", "2026.9.8"]) {
+    for (const v of ["2026.9.7", "2026.9.8", "2026.9.9"]) {
       const { entries, skipped } = resolveVendorEntries(files, v);
       expect(entries).toHaveLength(1);
       expect(skipped).toEqual([{ candidates: ["schema/tasks.ts"], until: "2026.9.7" }]);

@@ -24,7 +24,10 @@ import { GatewayVersionUnsupportedError } from "../src/providers/openclaw/versio
 import { SessionRegistry } from "../src/session.js";
 import type { BridgeConfig } from "../src/config.js";
 import type { ConvexWriter } from "../src/convex-writer.js";
-import { OpenClawConnection } from "../src/providers/openclaw/openclaw-client.js";
+import {
+  GatewayAnsweredError,
+  OpenClawConnection,
+} from "../src/providers/openclaw/openclaw-client.js";
 import {
   fakeGateway,
   type FakeGateway,
@@ -150,6 +153,49 @@ describe("pre-send guard on the real send path", () => {
     expect(gw.countOf("sessions.compact")).toBe(1);
     // Nothing was spent: the gateway never saw the message.
     expect(gw.countOf("chat.send")).toBe(0);
+  });
+
+  it("2026.9.9's missing-session REFUSAL decides exactly what 2026.9.8's `no sessionId` did", async () => {
+    // 9.8 answered `{compacted:false, reason:"no sessionId"}`; 9.9 refuses the same case
+    // (sessions-compact.ts:138-147). Read as a THROWN RPC it would have let the send
+    // through (`error`) where 9.8 withheld it under compact_or_block — parity decided.
+    async function outcome(compact: NonNullable<Parameters<typeof fakeGateway>[0]>["compact"]) {
+      const { gw, session, writer, traces } = await harness({ describe: [at(97)], compact });
+      const sent = await performSend(session, body, writer, null, null).then(
+        () => "sent",
+        (e: Error) => e.message,
+      );
+      const trace = traces.find((t) => "presendCompaction" in t);
+      vi.restoreAllMocks();
+      return {
+        sent: /send withheld/.test(sent) ? "withheld" : sent,
+        chatSends: gw.countOf("chat.send"),
+        compaction: trace?.presendCompaction,
+        reasonClass: trace?.presendCompactReasonClass,
+        sessionKey: session.sessionKey,
+      };
+    }
+    const v98 = await outcome({
+      payload: { ok: true, compacted: false, reason: "no sessionId" },
+    });
+    const key = v98.sessionKey;
+    const v99 = await outcome({
+      throws: new GatewayAnsweredError(
+        `INVALID_REQUEST: Session ${key} not found. Run openclaw sessions list --json to choose a valid key.`,
+        undefined,
+        "INVALID_REQUEST",
+      ),
+    });
+    expect(v98).toMatchObject({ sent: "withheld", compaction: "refused", reasonClass: "no sessionId" });
+    expect(v99).toEqual(v98);
+    // A plain Error with the same words is NOT the gateway answering: the P6 rule holds.
+    const plain = await outcome({
+      throws: new Error(
+        `INVALID_REQUEST: Session ${key} not found. Run openclaw sessions list --json to choose a valid key.`,
+      ),
+    });
+    expect(plain.sent).toBe("sent");
+    expect(plain.chatSends).toBe(1);
   });
 
   it("a compaction RPC that THROWS lets the send through (P6)", async () => {

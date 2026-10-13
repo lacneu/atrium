@@ -54,6 +54,7 @@ import {
   type RowDisplay,
   type TranscriptRow,
 } from "./transcript-rows.js";
+import { errForLog } from "../../core/log-safe-error.js";
 
 export type ProjectionMode = "off" | "shadow" | "on";
 
@@ -470,7 +471,7 @@ export class TranscriptShadow {
     } catch (err) {
       this.log(
         `[transcript] chat=${this.deps.chatId} session events unavailable (non-fatal): ${
-          (err as Error)?.message ?? err
+          errForLog(err)
         }`,
       );
     }
@@ -580,7 +581,7 @@ export class TranscriptShadow {
       this.stats.failures++;
       this.log(
         `[transcript] chat=${this.deps.chatId} read failed (${reason}, non-fatal): ${
-          (err as Error)?.message ?? err
+          errForLog(err)
         }`,
       );
       this.retryFailedRead();
@@ -826,7 +827,7 @@ export class TranscriptShadow {
       this.stats.failures++;
       this.log(
         `[transcript] chat=${this.deps.chatId} live rows post failed (non-fatal, the read brings them): ${
-          (err as Error)?.message ?? err
+          errForLog(err)
         }`,
       );
     }

@@ -9,10 +9,10 @@ WebSocket protocol, versus the Atrium bridge normalizer
 ratchet; the per-field classification lives in the coverage manifests under
 `bridge/protocol/openclaw/coverage/`.
 
-Reference source: `github.com/openclaw/openclaw` at tag **`v2026.9.8`** — the
+Reference source: `github.com/openclaw/openclaw` at tag **`v2026.9.9`** — the
 exact `maxValidated` gateway version in `bridge/src/compat.ts`.
 
-> **WHAT "ANCHORED AT v2026.9.8" MEANS.** The CONCLUSIONS below were re-verified against that
+> **WHAT "ANCHORED AT v2026.9.9" MEANS.** The CONCLUSIONS below were re-verified against that
 > tag, zone by zone, at each revision. The `file:line` CITATIONS are checked as well: every
 > citation of this document and of the scenario descriptions of
 > `bridge/test/fixtures/openclaw_upstream_frames.json` is recorded in
@@ -37,10 +37,19 @@ references below (`$UP/…`) are paths inside that tag. The Control UI is a
 the divergence is documented as deliberate rather than "fixed".
 
 No internal offset: the runtime drift detector vendors its schema at
-`2026.9.8` (`DRIFT_VENDORED_VERSION`, `protocol-drift.ts`), the same version as
+`2026.9.9` (`DRIFT_VENDORED_VERSION`, `protocol-drift.ts`), the same version as
 the validated ceiling. An unknown-field warning against a 2026.9.x gateway is
 therefore real drift, not schema staleness — it names a field the published
 contract does not declare, and should be read as such.
+
+**Revision of 2026-10-13 (v2026.9.8 → v2026.9.9).** A maintenance release of the 9.x
+line. Re-verified against the tag (report: `openclaw-notes/atrium/bench-runs/upstream-diff-2026.9.8-vs-2026.9.9/`
+— one of the 145 watched files changed, 42 anchors held; `packages/gateway-protocol/src`,
+the 86 vendored schema modules and both event catalogues are byte-identical beyond their
+provenance header). Two citations moved and were corrected in place. The one watched
+change is a BEHAVIOUR change of `sessions.compact`, read in §4: a session the gateway has
+no record of is now refused instead of answered as a refusal. Atrium maps it back to the
+2026.9.8 answer, so neither the manual compaction nor the pre-send guard changes outcome.
 
 **Revision of 2026-10-04 (v2026.9.7 → v2026.9.8).** A reliability hotfix ("No
 intentional capability changes", upstream CHANGELOG). Re-verified against the tag
@@ -461,7 +470,7 @@ resolved by:
   `interrupt` queue mode (above; at admission too when the send carries the
   field, `$UP/src/gateway/server-methods/chat-send-admission.ts:277,558`, and
   `sessions.steer` forces it, `sessions-messaging.ts:109`), a session
-  reset/delete (`session-reset-service.ts:935`), a session archive/delete
+  reset/delete (`session-reset-service.ts:903`), a session archive/delete
   drain (`sessions-lifecycle-drain.ts`, `stopReason` = the action), an
   operator's authority revoked (`operator-run-cancellation.ts:134-138`, new at
   v2026.9.6 — a compaction checkpoint restore was on this list until checkpoints
@@ -542,7 +551,7 @@ at six sites (one under an import alias, which a search on the canonical
 name misses) — among them a CLI turn whose session incarnation or lifecycle
 revision moved before it executed
 (`$UP/src/agents/command/attempt-execution.ts:530`; also
-`auto-reply/reply/agent-runner-cli-candidate.ts:183`,
+`auto-reply/reply/agent-runner-cli-candidate.ts:198`,
 `auto-reply/reply/reply-run-registry.operation.ts:519` (`supersede`, imported
 as `createSupersededError`),
 `embedded-agent-runner/run/deferred-lifecycle-owner.ts:158`,
@@ -938,6 +947,22 @@ a durable surface the Control UI does not have.
 
 ---
 
+**Changed since 2026.9.8** (re-verified at v2026.9.9): `sessions.compact` on a key with
+no stored session no longer answers `{ok:true, compacted:false, reason:"no sessionId"}`. It
+REFUSES: `INVALID_REQUEST`, `Session <key> not found. Run openclaw sessions list --json to
+choose a valid key.` (`$UP/src/gateway/server-methods/sessions-compact.ts:138-147`, pinned
+upstream by `server.sessions.compaction-read-errors.test.ts:176-196`, with and without
+`maxLines`). The fact is the same one — a conversation whose first turn has not been sent
+yet — so the bridge reads that answer back as the `no sessionId` refusal
+(`compactRefusalFromAnswer`, `bridge/src/core/compaction-verdict.ts`), in both of its
+callers: the manual `/compact` route answers `200 {compacted:false, reasonClass:"no
+sessionId"}` as it did on 2026.9.8, and the pre-send guard records `refused` and decides
+exactly as before. Only an ANSWERED refusal qualifies, and only when its message starts
+with the code and names the key the bridge itself sent: a timeout, a plain error carrying
+the same words, or another session's key keep their old meaning. The dispatch classifier
+also stops reading that key as a missing agent (the key starts `agent:`; the gateway's real
+missing-agent refusals quote the id).
+
 **Changed since 2026.9.6** (re-verified at v2026.9.7): the compaction emitters are
 unchanged. NEW, and not a compaction: when a run that must reply ends with visible
 text while its saved plan has unfinished steps, the runner queues a hidden
@@ -987,7 +1012,7 @@ reads that start as a run start and must never infer a compaction from it.
 ### Atrium behavior and verdict
 
 - Bridge derivation: `webchat-<sha256(sessionKey|clientMessageId)>`
-  (`bridge/src/providers/openclaw/openclaw-client.ts:1334-1345`), stable across Convex's at-least-once
+  (`bridge/src/providers/openclaw/openclaw-client.ts:1356-1367`), stable across Convex's at-least-once
   dispatch — this **exploits the upstream window correctly** (re-POSTs
   replay/`in_flight` while the run is active, since active entries outlive
   the TTL).

@@ -79,6 +79,7 @@ import type { CronPart } from "./core/cron-part.js";
 export type { PlanPart } from "./core/plan-part.js";
 import type { PlanPart } from "./core/plan-part.js";
 import type { AgentRequestRecord, AgentRequestSettle } from "./core/agent-requests.js";
+import { errForLog } from "./core/log-safe-error.js";
 
 export type FinalizeStatus = "complete" | "error" | "aborted";
 
@@ -1472,7 +1473,7 @@ export class HttpConvexWriter implements ConvexWriter {
         console.error(
           `[writer] ${body.op} failed transiently — retrying in ${delay}ms ` +
             `(attempt ${attempt + 1}/${RETRY_BACKOFF_MS.length + 1}): ` +
-            ((err as Error)?.message ?? err),
+            (errForLog(err)),
         );
         await new Promise((r) => {
           const t = setTimeout(r, delay);
@@ -2110,7 +2111,7 @@ export class HttpConvexWriter implements ConvexWriter {
       .catch((e) => {
         console.warn(
           "[sweep] boot stream sweep failed (non-fatal):",
-          (e as Error)?.message ?? e,
+          errForLog(e),
         );
       });
   }
@@ -2444,7 +2445,7 @@ export class HttpConvexWriter implements ConvexWriter {
     }).catch((e) =>
       console.error(
         "[frame-gap] trace skipped (non-fatal):",
-        (e as Error)?.message ?? e,
+        errForLog(e),
       ),
     );
   }
@@ -2647,7 +2648,7 @@ export class HttpConvexWriter implements ConvexWriter {
       (e) =>
         console.error(
           "[convex-writer] bindProviderChat failed:",
-          (e as Error)?.message ?? e,
+          errForLog(e),
         ),
     );
   }
@@ -2716,7 +2717,7 @@ export class HttpConvexWriter implements ConvexWriter {
         this.runByMessage.delete(messageId);
         console.error(
           "[convex-writer] updateRunId failed (generation tagging disabled for this message):",
-          (e as Error)?.message ?? e,
+          errForLog(e),
         );
       },
     );

@@ -2,8 +2,10 @@ import { describe, expect, test } from "vitest";
 import { TalkCallActiveError } from "../src/session.js";
 import { GatewayAnsweredError } from "../src/providers/openclaw/openclaw-client.js";
 import {
+  answeredRefusalShape,
   classifyGatewayError,
   errorChainText,
+  isGatewayMediaOffloadRefusal,
   faultDomain,
   LOST_RESPONSE_CODES,
   type DispatchErrorCode,
@@ -611,5 +613,146 @@ describe("a provider's revoked credential is the provider's, not the bridge's", 
     expect(classifyGatewayError(new Error("unauthorized: gateway token mismatch"))).toBe(
       "AUTH_TOKEN_MISMATCH",
     );
+  });
+});
+
+describe("a missing SESSION is never a missing AGENT (OpenClaw 2026.9.9)", () => {
+  // `sessions.compact` on a session with no record answers this from 2026.9.9
+  // (sessions-compact.ts:138-147). The key starts `agent:`, so `agent[^.]*not found`
+  // read it as AGENT_NOT_FOUND — "fix OPENCLAW_AGENT_ID" for a conversation that had not
+  // sent its first turn.
+  const missing =
+    "INVALID_REQUEST: Session agent:main:webchat:chat:olivier:c1 not found. Run openclaw sessions list --json to choose a valid key.";
+
+  test("the 9.9 sentence is a refused request, not a configuration fault", () => {
+    expect(classifyGatewayError(new Error(missing))).toBe("INVALID_REQUEST");
+    expect(
+      classifyGatewayError(new GatewayAnsweredError(missing, undefined, "INVALID_REQUEST")),
+    ).toBe("INVALID_REQUEST");
+  });
+
+  test("the gateway's real missing-agent refusals still are AGENT_NOT_FOUND", () => {
+    // Upstream quotes the id (agents.ts:110, sessions-abort.ts:290 at v2026.9.9).
+    expect(classifyGatewayError(new Error('INVALID_REQUEST: agent "main" not found'))).toBe(
+      "AGENT_NOT_FOUND",
+    );
+    expect(
+      classifyGatewayError(new Error('INVALID_REQUEST: Agent "main" no longer exists in configuration')),
+    ).toBe("AGENT_NOT_FOUND");
+    expect(classifyGatewayError(new Error("unknown agent id"))).toBe("AGENT_NOT_FOUND");
+  });
+});
+
+describe("the gateway could not save an inbound attachment to its disk (prod 2026-10-13)", () => {
+  // Verbatim shape: chat-send-attachments.ts answers `errorShape(UNAVAILABLE, String(err))`
+  // for a MediaOffloadError (v2026.9.8 chat-attachments.ts:470-473), and the client
+  // reports `<code>: <message>`.
+  const HEAD =
+    "UNAVAILABLE: MediaOffloadError: [Gateway Error] Failed to save intercepted media to disk";
+  const answered = (message: string, code: string | null = "UNAVAILABLE") =>
+    new GatewayAnsweredError(message, undefined, code);
+
+  test("named — not the catch-all that painted the bridge red", () => {
+    const err = answered(`${HEAD}: native fs-safe helper is unavailable`);
+    expect(classifyGatewayError(err, { hasAttachments: true })).toBe("gateway_media_unavailable");
+    expect(classifyGatewayError(err)).toBe("gateway_media_unavailable");
+    // Downstream: the gateway answered; the link and our credentials worked.
+    expect(faultDomain("gateway_media_unavailable")).toBe("downstream");
+    expect(LOST_RESPONSE_CODES.has("gateway_media_unavailable")).toBe(false);
+    // Without the name prefix (a gateway answering `err.message`), the same class.
+    expect(
+      classifyGatewayError(
+        answered("UNAVAILABLE: [Gateway Error] Failed to save intercepted media to disk: EACCES"),
+      ),
+    ).toBe("gateway_media_unavailable");
+    // Found on the cause chain too.
+    expect(
+      classifyGatewayError(new Error("send failed", { cause: err })),
+    ).toBe("gateway_media_unavailable");
+  });
+
+  test("a FULL disk under the same wrapper names the disk", () => {
+    expect(
+      classifyGatewayError(answered(`${HEAD}: ENOSPC: no space left on device, write`), {
+        hasAttachments: true,
+      }),
+    ).toBe("gateway_storage_unavailable");
+  });
+
+  test("only an ANSWERED UNAVAILABLE whose message STARTS with the wrapper", () => {
+    const text = `${HEAD}: native fs-safe helper is unavailable`;
+    // A plain error carrying the words (a log line, a quoted reply) is not the gateway.
+    expect(isGatewayMediaOffloadRefusal(new Error(text))).toBe(false);
+    expect(classifyGatewayError(new Error(text))).not.toBe("gateway_media_unavailable");
+    // Another code.
+    expect(
+      isGatewayMediaOffloadRefusal(answered(text.replace(/^UNAVAILABLE/, "INVALID_REQUEST"), "INVALID_REQUEST")),
+    ).toBe(false);
+    // The words further in — e.g. inside an operator-chosen reason — never decide.
+    expect(
+      isGatewayMediaOffloadRefusal(answered(`UNAVAILABLE: plugin "x" failed: ${text}`)),
+    ).toBe(false);
+    // The sibling wrappers are not this class (different facts upstream).
+    expect(
+      isGatewayMediaOffloadRefusal(
+        answered("UNAVAILABLE: MediaOffloadError: [Gateway Error] Failed to prepare attachments: timeout"),
+      ),
+    ).toBe(false);
+  });
+});
+
+describe("the SHAPE of an answered refusal — code and detail KEY names, never text", () => {
+  test("code + sorted key names; values and the message never appear", () => {
+    const err = new GatewayAnsweredError(
+      "UNAVAILABLE: MediaOffloadError: [Gateway Error] Failed to save intercepted media to disk: /home/node/secret-file.pdf",
+      { reason: "SECRET-REASON /home/node/secret-file.pdf", code: "agent-database-inspection-failed", agentId: "alice" },
+      "UNAVAILABLE",
+    );
+    const shape = answeredRefusalShape(err);
+    expect(shape).toEqual({ gatewayCode: "UNAVAILABLE", detailKeys: ["agentId", "code", "reason"] });
+    const wire = JSON.stringify(shape);
+    for (const leak of ["SECRET", "secret-file", "alice", "inspection", "Failed to save", "/home"]) {
+      expect(wire, leak).not.toContain(leak);
+    }
+  });
+
+  test("CLOSED vocabularies: clean-looking content never passes (codex)", () => {
+    // Both strings satisfy the old syntax filters (`[A-Z][A-Z0-9_]*`, identifier keys) — and
+    // are still content. Only names upstream declares may be copied.
+    const shape = answeredRefusalShape(
+      new GatewayAnsweredError(
+        "SYNTHETIC_SECRET_VALUE: x",
+        { SyntheticSecretDocument: "v", reason: "r" },
+        "SYNTHETIC_SECRET_VALUE",
+      ),
+    );
+    expect(shape).toEqual({ gatewayCode: "other", detailKeys: ["reason"], unknownDetailKeyCount: 1 });
+    expect(JSON.stringify(shape)).not.toMatch(/SYNTHETIC|Synthetic|Secret/);
+  });
+
+  test("bounded: unknown keys are only counted, capped", () => {
+    const many: Record<string, number> = {};
+    for (let i = 0; i < 40; i++) many[`k${String(i).padStart(2, "0")}`] = i;
+    many["a file name.pdf"] = 1;
+    many["olivier@example.org"] = 1;
+    const shape = answeredRefusalShape(new GatewayAnsweredError("x", many, "weird code: with text"));
+    expect(shape).toEqual({ gatewayCode: "other", detailKeys: [], unknownDetailKeyCount: 16 });
+    expect(JSON.stringify(shape)).not.toMatch(/pdf|@|k0|weird/);
+    // Non-object details: no keys claimed.
+    expect(answeredRefusalShape(new GatewayAnsweredError("x", ["a"], "UNAVAILABLE"))).toEqual({
+      gatewayCode: "UNAVAILABLE",
+    });
+    expect(answeredRefusalShape(new GatewayAnsweredError("x", "text", "UNAVAILABLE"))).toEqual({
+      gatewayCode: "UNAVAILABLE",
+    });
+  });
+
+  test("nothing for a refusal no gateway answered", () => {
+    expect(answeredRefusalShape(new Error("UNAVAILABLE: whatever"))).toBeNull();
+    expect(answeredRefusalShape("UNAVAILABLE")).toBeNull();
+    // …but found behind a wrapper that kept it as its cause.
+    expect(
+      answeredRefusalShape(new Error("send", { cause: new GatewayAnsweredError("m", {}, "INVALID_REQUEST") })),
+    ).toEqual({ gatewayCode: "INVALID_REQUEST", detailKeys: [] });
   });
 });

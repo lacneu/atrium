@@ -21,6 +21,13 @@ describe("dispatchErrorInfo", () => {
     expect(info.hint).toBe(m.error_uncategorized_hint());
   });
 
+  test("the gateway's refusal to save an attachment points at the GATEWAY host, not the bridge", () => {
+    const info = dispatchErrorInfo("gateway_media_unavailable");
+    expect(info.label).toBe(m.error_gateway_media_unavailable_label());
+    expect(info.label).not.toBe("gateway_media_unavailable");
+    expect(info.hint).toBe(m.error_gateway_media_unavailable_hint());
+  });
+
   test("null/undefined -> the UNKNOWN entry, not a crash", () => {
     expect(dispatchErrorInfo(undefined).label).toBe("Cause inconnue");
     expect(dispatchErrorInfo(null).label).toBe("Cause inconnue");

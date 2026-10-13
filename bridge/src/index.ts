@@ -47,6 +47,7 @@ import {
   startEventLoopWatchdog,
   watchdogOptionsFromEnv,
 } from "./core/event-loop-watchdog.js";
+import { carriesGatewayText, errForLog } from "./core/log-safe-error.js";
 
 /**
  * Build one self-contained bundle for an instance: its hot media provider, a Convex
@@ -320,6 +321,8 @@ async function main(): Promise<void> {
 }
 
 main().catch((err) => {
-  console.error("bridge failed to start:", err);
+  // A provider's text never reaches this log (core/log-safe-error.ts); our own startup
+  // errors keep their stack.
+  console.error("bridge failed to start:", carriesGatewayText(err) ? errForLog(err) : err);
   process.exit(1);
 });

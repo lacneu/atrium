@@ -12,6 +12,26 @@
 // it (`errorChainText`) -> unit-tested offline.
 
 import { ContextBlockedError } from "./presend-guard.js";
+import {
+  GATEWAY_DETAIL_KEYS,
+  GATEWAY_ERROR_CODES,
+  MAX_UNKNOWN_DETAIL_KEYS,
+  OTHER_GATEWAY_CODE,
+} from "./gateway-answer-vocabulary.js";
+import {
+  answeredRefusal,
+  answeredRefusalShape,
+  type AnsweredRefusalShape,
+} from "./answered-refusal-shape.js";
+
+export {
+  GATEWAY_DETAIL_KEYS,
+  GATEWAY_ERROR_CODES,
+  MAX_UNKNOWN_DETAIL_KEYS,
+  OTHER_GATEWAY_CODE,
+  answeredRefusalShape,
+  type AnsweredRefusalShape,
+};
 import { FrameTooLargeError } from "./frame-size.js";
 import {
   INBOUND_CLEANUP_FAILED,
@@ -180,6 +200,18 @@ export type DispatchErrorCode =
   // request the gateway had plainly answered. Not retried: the refusal lasts until the
   // gateway's operator acts (or its startup inspection finishes).
   | "gateway_agent_db_closed"
+  // The gateway could not WRITE an inbound attachment to its own disk: `chat.send` with
+  // files answered `UNAVAILABLE` with a `MediaOffloadError` whose message starts
+  // `[Gateway Error] Failed to save intercepted media to disk:` (v2026.9.8
+  // src/gateway/chat-attachments.ts:470-473, wrapping any `saveMediaBuffer` failure;
+  // answered by chat-send-attachments.ts with `String(err)`). Prod 2026-10-13: every
+  // send with a file failed on one instance whose gateway could not load its native
+  // safe-filesystem helper — an infrastructure fact, shown until then as a generic
+  // upstream error and blamed on the bridge. Lower-case like the other codes Convex
+  // reads. Never retried: the same host refuses the same way until an operator acts. A
+  // FULL disk under the same wrapper stays `gateway_storage_unavailable` (checked first):
+  // the disk is the graver fact and the operator's action.
+  | "gateway_media_unavailable"
   // The MODEL PROVIDER refused this agent's credential as revoked or expired (the
   // gateway's `Re-authenticate with:` hint, or a `401 … invalidated|expired|revoked …
   // token` refusal — core/failure-classifier.ts `isProviderAuthRevokedText`). The same
@@ -295,6 +327,8 @@ const DOWNSTREAM_REJECTION_CODES: ReadonlySet<DispatchErrorCode> = new Set([
   // gateway host must never paint the bridge red.
   "gateway_storage_unavailable",
   "gateway_agent_db_closed",
+  // The gateway RECEIVED the send and could not write its attachment to its own disk.
+  "gateway_media_unavailable",
   // The gateway reached the MODEL PROVIDER, which refused the agent's credential: the
   // bridge's link and its own credentials worked.
   "provider_auth_revoked",
@@ -377,6 +411,30 @@ export function errorChainText(err: unknown): string {
   return parts.join(" <- ");
 }
 
+/** An unquoted session key as the gateway echoes it (`agent:<agentId>:<rest>`, no
+ *  whitespace), in the lower-cased text the rules read. */
+const SESSION_KEY_TOKEN_RE = /\bagent:[^\s"]*/g;
+
+/** The fixed head of the gateway's media-offload refusal, as the OpenClaw client reports an
+ *  answered refusal (`<code>: <message>`). `MediaOffloadError: ` is `String(err)`'s name
+ *  prefix (chat-send-attachments.ts answers `String(err)`); optional so a gateway that
+ *  answers `err.message` is still recognized. Anchored at the start: everything after the
+ *  colon is the underlying error's text, which never decides. */
+const MEDIA_OFFLOAD_REFUSAL_HEAD_RE =
+  /^UNAVAILABLE: (?:MediaOffloadError: )?\[Gateway Error\] Failed to save intercepted media to disk(?::|$)/;
+
+/** Did the GATEWAY answer that it could not save an inbound attachment to its disk? Only an
+ *  answered `UNAVAILABLE` whose message starts with the fixed wrapper qualifies — a plain
+ *  error carrying the same words (a log line, a quoted reply) does not. */
+export function isGatewayMediaOffloadRefusal(err: unknown): boolean {
+  const answered = answeredRefusal(err);
+  return (
+    answered !== null &&
+    answered.gatewayCode === "UNAVAILABLE" &&
+    MEDIA_OFFLOAD_REFUSAL_HEAD_RE.test(answered.error.message)
+  );
+}
+
 export function classifyGatewayError(
   err: unknown,
   opts?: { hasAttachments?: boolean },
@@ -417,6 +475,10 @@ export function classifyGatewayError(
   // (agent-database-startup.ts:290-294): the disk names the class.
   const own = gatewayOwnRefusal(err);
   if (own !== null) return own;
+  // The gateway's refusal to write an inbound file to its own disk — after the storage
+  // rule above (a full disk under the same wrapper names the disk), before any text
+  // rule: the reason after the prefix is arbitrary error text.
+  if (isGatewayMediaOffloadRefusal(err)) return "gateway_media_unavailable";
   // Through the SAME normalization the frame classifier uses, not a special case of
   // it: an early return for credential sentences left every OTHER quoted value free
   // here, so `Session "agent:timeout:…" changed while starting work` became
@@ -435,8 +497,15 @@ export function classifyGatewayError(
   ) {
     return credential;
   }
+  // Session KEYS are blanked before this rule reads the text: every Atrium key starts
+  // `agent:`, so 2026.9.9's `Session agent:<id>:… not found.` (a compaction of a session
+  // that does not exist yet) read as a missing AGENT — a configuration fault, for a
+  // conversation that had simply not sent its first turn. The gateway's real refusals
+  // quote the id (`agent "<id>" not found`), which survives the blanking.
   if (
-    /no longer exists|agent[^.]*not found|unknown agent|no such agent/.test(msg)
+    /no longer exists|agent[^.]*not found|unknown agent|no such agent/.test(
+      msg.replace(SESSION_KEY_TOKEN_RE, "<session-key>"),
+    )
   ) {
     return "AGENT_NOT_FOUND";
   }

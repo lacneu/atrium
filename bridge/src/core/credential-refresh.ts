@@ -16,6 +16,7 @@ import type {
   ResolveOneResult,
 } from "./credential-resolver.js";
 import type { InstanceData } from "../config.js";
+import { errForLog } from "./log-safe-error.js";
 
 /** Result of attempting to register a resolved instance. */
 export type RegisterOutcome =
@@ -146,7 +147,7 @@ export function startCredentialRefresh(
         // never kill the pass or the loop.
         reasons.set(secret, { reason: "bad_value" });
         deps.log?.(
-          `unexpected error registering a resolved instance (kept pending): ${(err as Error)?.message ?? err}`,
+          `unexpected error registering a resolved instance (kept pending): ${errForLog(err)}`,
         );
       }
     }

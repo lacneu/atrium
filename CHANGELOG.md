@@ -12,6 +12,41 @@
   Keep the rest of the dependency graph unchanged. Reject high and critical
   application dependency advisories in both Node CI jobs before merge.
 
+## [0.100.0] — OpenClaw 2026.9.9, and a gateway that cannot store a file says so
+
+Minor release. OpenClaw 2026.9.9 is supported, validated on the live bench alongside Hermes
+0.21.7. Nothing to reconfigure. Convex and the bridge both change: deploy Convex first, then
+the bridge (an older Convex ignores what the new bridge adds; an older bridge simply sends
+less), and the frontend with Convex.
+
+**Compacting a conversation that has not started yet behaves as it did on 2026.9.8.** OpenClaw
+2026.9.9 refuses to compact a session it has no record of, where 2026.9.8 answered "nothing to
+compact". Atrium read the new refusal as a failure: "Compact the session" on a conversation
+whose first message had not been sent showed an error blaming a missing agent, and the check
+Atrium runs before each send on a nearly full conversation could let through a message 2026.9.8
+held back. Atrium now reads that refusal as the old answer — but only when the gateway itself
+answered it and named the very conversation Atrium asked about — so both paths behave exactly
+as before. A missing conversation is also never reported as a missing agent any more.
+
+**An attachment the agent's server cannot store gets a clear card.** When the gateway receives a
+message with a file but cannot save the file to its own disk, it refuses the turn. Atrium
+reported that as a generic failure and showed the bridge as unhealthy, although the bridge and
+the link were fine. The card now says the agent's server could not save the attachment, that
+nothing was lost, and that the message can be sent without the file or reported to an
+administrator. The bridge stays green, the refusal is never retried automatically, and the
+diagnostic tools name it as an attachment problem pointing at the gateway host. A full disk on
+that host is still reported as the storage problem it is.
+
+**Unrecognised gateway refusals leave a trace.** When the gateway refuses a send for a reason
+Atrium does not recognise, the dispatch trace now records its shape: the gateway's error code
+and the names of the fields it attached, never its text or their values. Both come from closed
+lists of the codes and field names the gateway's protocol declares: any other code is recorded
+as `other`, and an unlisted field name is only counted, never written. Until now that reason
+lived only in the bridge's log and was lost on the next deploy.
+
+**OpenClaw 2026.9.9 is supported.** Its protocol package and event catalogues are identical to
+2026.9.8; the compaction refusal above is the one change Atrium reads.
+
 ## [0.99.0] — Hermes 0.21.7, and "Skip" means skip again
 
 Minor release. Hermes 0.21.7 is supported, validated on the live bench alongside OpenClaw

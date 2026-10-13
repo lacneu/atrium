@@ -49,6 +49,9 @@ describe("normalizeMessageErrorCode (raw gateway text never leaves)", () => {
     // A sub-agent row's class for a spawn the gateway refused: collapsed to "unknown",
     // the card could not say the delegation never started.
     expect(normalizeMessageErrorCode("spawn_refused")).toBe("spawn_refused");
+    // The gateway could not save an attachment to its disk (a dispatch refusal, prod
+    // 2026-10-13): named on a row that carries only the code string, never "unknown".
+    expect(normalizeMessageErrorCode("gateway_media_unavailable")).toBe("gateway_media_unavailable");
     // The gateway's storage classes: curated CLASS names the bridge mints from the gateway's
     // sentence, never that sentence. Absent from the list they collapsed to "unknown" and the
     // trace filter dropped them, leaving their two per-cause anomaly classes unreachable.

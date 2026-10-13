@@ -63,6 +63,7 @@ import {
   chatHistoryParams,
   sessionsGetParams,
 } from "./core/rpc-params.js";
+import { errForLog } from "./core/log-safe-error.js";
 
 // Stable errorCode for a bridge-side infrastructure end (socket drop / crash
 // mid-turn): the UI maps it to "connection lost — retry", never the user
@@ -483,7 +484,7 @@ class Session implements BridgeSession {
       // switch is off (RunManager.setProjection).
       onUserRow: (row) => {
         void this.runManager.onUserRow(row).catch((e) =>
-          console.error("[send] steer split failed (non-fatal):", (e as Error)?.message ?? e),
+          console.error("[send] steer split failed (non-fatal):", errForLog(e)),
         );
       },
       onInputDropped: (sendId) => this.runManager.noteInputDropped(sendId),
@@ -499,7 +500,7 @@ class Session implements BridgeSession {
             }
           })
           .catch((e) =>
-            console.error("[transcript] settle failed (non-fatal):", (e as Error)?.message ?? e),
+            console.error("[transcript] settle failed (non-fatal):", errForLog(e)),
           );
       },
     });
@@ -532,7 +533,7 @@ class Session implements BridgeSession {
       .catch((err) =>
         console.error(
           `[agent-request] approval release failed chat=${this.chatId}:`,
-          (err as Error)?.message ?? err,
+          errForLog(err),
         ),
       );
   }
@@ -624,7 +625,7 @@ class Session implements BridgeSession {
           .catch((err) => {
             console.warn(
               `[subagent] interaction reply write failed chat=${this.chatId}:`,
-              (err as Error)?.message ?? err,
+              errForLog(err),
             );
           });
         continue;
@@ -672,7 +673,7 @@ class Session implements BridgeSession {
               hosted.delete(item.filename);
               console.warn(
                 `[subagent] delivery attach failed chat=${this.chatId}:`,
-                (err as Error)?.message ?? err,
+                errForLog(err),
               );
             });
         }
@@ -689,7 +690,7 @@ class Session implements BridgeSession {
           // child UNREGISTERED so the next frame re-attempts the ordered write.
           console.warn(
             `[subagent] registration upsert failed chat=${this.chatId}:`,
-            (err as Error)?.message ?? err,
+            errForLog(err),
           );
         }
       } else {
@@ -699,7 +700,7 @@ class Session implements BridgeSession {
         void this.writer.upsertSubAgent(record).catch((err) => {
           console.warn(
             `[subagent] upsert failed chat=${this.chatId}:`,
-            (err as Error)?.message ?? err,
+            errForLog(err),
           );
         });
       }
@@ -712,7 +713,7 @@ class Session implements BridgeSession {
           .catch((err) => {
             console.warn(
               `[subagent] tool-part upsert failed chat=${this.chatId}:`,
-              (err as Error)?.message ?? err,
+              errForLog(err),
             );
           });
       }
@@ -745,7 +746,7 @@ class Session implements BridgeSession {
     void this.consume().catch((err) => {
       console.error(
         `[session] consume loop crashed chat=${this.chatId} — recovering:`,
-        (err as Error)?.message ?? err,
+        errForLog(err),
       );
       void this.recoverFromConsumeCrash();
     });
@@ -802,7 +803,7 @@ class Session implements BridgeSession {
       } catch (err) {
         console.error(
           `[session] crash finalize error chat=${this.chatId}:`,
-          (err as Error)?.message ?? err,
+          errForLog(err),
         );
       }
     }
@@ -933,7 +934,7 @@ class Session implements BridgeSession {
                 } catch (err) {
                   console.error(
                     "[session] announced-restart settle failed:",
-                    (err as Error)?.message ?? err,
+                    errForLog(err),
                   );
                 }
               } else {
@@ -960,7 +961,7 @@ class Session implements BridgeSession {
                     .catch((e) =>
                       console.error(
                         "[session] deferred compaction settle failed:",
-                        (e as Error)?.message ?? e,
+                        errForLog(e),
                       ),
                     );
                 }
@@ -981,7 +982,7 @@ class Session implements BridgeSession {
               } catch (err) {
                 console.error(
                   "session close finalize error:",
-                  (err as Error)?.message ?? err,
+                  errForLog(err),
                 );
               }
             }
@@ -1017,7 +1018,7 @@ class Session implements BridgeSession {
           // NO sensor call here: `runManager.feed` reports the frame itself and rethrows
           // (C4 lives on the reader, so the voice relay and the pre-ack replay are
           // covered too). Reporting again would count one unreadable frame twice.
-          console.error("session feed error:", (err as Error)?.message ?? err);
+          console.error("session feed error:", errForLog(err));
         }
         // THE TRANSCRIPT PROJECTION (shadow): a terminal chat frame of any run of this
         // session asks for a read. Read-only — the frame went through the feed above
@@ -1027,7 +1028,7 @@ class Session implements BridgeSession {
         } catch (err) {
           // Shadow-only: a failure here loses a READ trigger, never a frame (the feed
           // above already consumed it), so it is logged rather than sensed.
-          console.error("session transcript observe error:", (err as Error)?.message ?? err);
+          console.error("session transcript observe error:", errForLog(err));
         }
         // AGENT REQUESTS ride broadcasts, not the turn's frames: the feed above drops
         // them. Awaited because the one local effect — a human now holds the turn —
@@ -1083,7 +1084,7 @@ class Session implements BridgeSession {
           protocolDrift.observeException(winner.value, err, "subagent-observe");
           console.error(
             "session subagent observe error:",
-            (err as Error)?.message ?? err,
+            errForLog(err),
           );
         }
         // Anchor propagation for frames the observer never re-observes (a
@@ -1114,7 +1115,7 @@ class Session implements BridgeSession {
           protocolDrift.observeException(winner.value, err, "subagent-anchor");
           console.error(
             "session subagent anchor error:",
-            (err as Error)?.message ?? err,
+            errForLog(err),
           );
         }
       } else {
@@ -1123,7 +1124,7 @@ class Session implements BridgeSession {
         try {
           await this.runManager.tick(now);
         } catch (err) {
-          console.error("session tick error:", (err as Error)?.message ?? err);
+          console.error("session tick error:", errForLog(err));
         }
         // A PURE recv-silence elapsed (the gateway is reasoning silently, socket
         // still alive) — do NOT let the turn close empty. QUERY the gateway for
@@ -1164,7 +1165,7 @@ class Session implements BridgeSession {
               .catch((e) =>
                 console.error(
                   "[session] recv-silence settle failed:",
-                  (e as Error)?.message ?? e,
+                  errForLog(e),
                 ),
               );
           }
@@ -1180,7 +1181,7 @@ class Session implements BridgeSession {
         } catch (err) {
           console.error(
             "session subagent sweep error:",
-            (err as Error)?.message ?? err,
+            errForLog(err),
           );
         }
       }
@@ -1373,7 +1374,7 @@ class Session implements BridgeSession {
           .catch((e) =>
             console.error(
               "[session] orphan settle failed:",
-              (e as Error)?.message ?? e,
+              errForLog(e),
             ),
           );
         finishPoll();
@@ -1471,7 +1472,7 @@ class Session implements BridgeSession {
       } catch (err) {
         // Gateway may still be rebooting — keep polling until the deadline.
         console.log(
-          `[session] transcript recovery poll failed (retrying): ${(err as Error)?.message ?? err}`,
+          `[session] transcript recovery poll failed (retrying): ${errForLog(err)}`,
         );
       }
       setTimeout(() => void tick(), ORPHAN_RECOVERY_POLL_MS).unref?.();
@@ -1539,7 +1540,7 @@ class Session implements BridgeSession {
       // Non-fatal: the private-ack grace will flush best-effort content.
       console.error(
         "[recovery] sessions.get failed:",
-        (err as Error)?.message ?? err,
+        errForLog(err),
       );
     } finally {
       // ALWAYS, on every exit: a fetch that found nothing, or threw, is over just as
