@@ -308,6 +308,24 @@ describe("only a version in the manifest's own scheme is published", () => {
     expect(target?.versionBeyondValidated).toBe(true);
   });
 
+  it("Hermes 0.21.7 is validated: no banner; 0.21.6 below it is in support; 0.21.8 is beyond", () => {
+    // 0.21.7 earned its claim on the live bench (bridge/protocol/hermes/0.21.7/BENCH.json).
+    // From 0.21.6 Hermes tags are plain semver (`v0.21.7`) and the image reports
+    // `get_version_info().base_version` from its install stamp — the same scheme.
+    for (const [v, beyond] of [
+      ["0.21.6", false],
+      ["0.21.7", false],
+      ["0.21.8", true],
+    ] as const) {
+      expect(isHermesVersionScheme(v), v).toBe(true);
+      const [target] = buildCapabilityTargets([], "primary", v, "hermes", "ws");
+      expect(target?.versionBeyondValidated === true, v).toBe(beyond);
+    }
+    // An installation with neither stamp nor git reports "unknown" (hermes_cli/
+    // version_info.py, v0.21.7): refused, never compared.
+    expect(isHermesVersionScheme("unknown")).toBe(false);
+  });
+
   it("a major further out fails CLOSED", () => {
     expect(isHermesVersionScheme("2.0.0")).toBe(false);
   });

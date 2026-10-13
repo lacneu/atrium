@@ -17,12 +17,13 @@ import { WebSocketServer, type WebSocket as WsSocket } from "ws";
 import type { AddressInfo } from "node:net";
 import {
   HERMES_SERVER_REQUEST_EVENT,
+  HERMES_SERVER_REQUESTS_TAKEN,
   HermesWsClient,
 } from "../src/providers/hermes/ws-client.js";
 import { runHermesWsTurn } from "../src/providers/hermes/ws-turn.js";
 import { respondHermes, type RespondBody } from "../src/agent-request-respond.js";
-import { readHermesClarify } from "../src/core/agent-requests.js";
-import { harvestLostReply } from "../src/providers/hermes/dispatch.js";
+import { hermesClarifyBatchIds, readHermesClarify } from "../src/core/agent-requests.js";
+import { HermesTurnRegistry, harvestLostReply } from "../src/providers/hermes/dispatch.js";
 import type { ConvexWriter } from "../src/convex-writer.js";
 
 // ── the client: advertise, route, refuse ─────────────────────────────────────────────
@@ -154,6 +155,58 @@ describe("the client says it answers server→client requests", () => {
       id: "srq-bbbbbbbbbbbb",
       error: expect.objectContaining({ code: -32601 }),
     });
+    client.close();
+  });
+
+  it("Hermes 0.21.6+ `setup_choose` is refused -32601 even with a LIVE turn on its session; a clarify beside it is taken", async () => {
+    // v0.21.7 tui_gateway/contracts/server_requests.py:59-94: a Desktop-onboarding card
+    // (SetupChooseKind question | accent | theme | layout | connectors | plugins | tour | fork |
+    // machine_use) Atrium has no card for. An error response settles the wait with None at
+    // once (server_requests.py:179-180 and 285-287), so the tool returns instead of waiting
+    // out the clarify deadline. Through the REAL registry wiring: the refusal is decided there.
+    const serve = await fakeServe((f, s) => {
+      if (f.method === "client.capabilities") reply(s, f.id, { server_requests: ["clarify", "setup_choose"] });
+    });
+    const registry = new HermesTurnRegistry();
+    const client = registry.wsClientFor({
+      instanceName: "inst-a",
+      gatewayHttpBase: serve.base,
+      openclawToken: "tok",
+    } as never);
+    const lane: Array<[string, Frame]> = [];
+    registry.subscribeWsSession("inst-a", "sid-1", {
+      onEvent: (type, payload) => lane.push([type, payload as Frame]),
+      onTransportLost: () => {},
+    });
+    await client.connect();
+    const sock = serve.socket();
+    sock.send(
+      JSON.stringify({
+        jsonrpc: "2.0",
+        id: "srq-0000000000s1",
+        method: "setup_choose",
+        params: { session_id: "sid-1", kind: "accent", question: "Accent ?", multi_select: false },
+      }),
+    );
+    sock.send(
+      JSON.stringify({
+        jsonrpc: "2.0",
+        id: "srq-0000000000c1",
+        method: "clarify",
+        params: { session_id: "sid-1", questions: [{ qid: "q0", question: "Ville ?" }] },
+      }),
+    );
+    await vi.waitFor(() => expect(lane).toHaveLength(1));
+    expect(serve.received.slice(1)).toEqual([
+      {
+        jsonrpc: "2.0",
+        id: "srq-0000000000s1",
+        error: expect.objectContaining({ code: -32601 }),
+      },
+    ]);
+    expect(lane[0]![0]).toBe(HERMES_SERVER_REQUEST_EVENT);
+    expect(lane[0]![1]).toMatchObject({ id: "srq-0000000000c1", method: "clarify" });
+    expect(HERMES_SERVER_REQUESTS_TAKEN.has("setup_choose")).toBe(false);
     client.close();
   });
 });
@@ -305,6 +358,59 @@ describe("a server→client request becomes a card answered BY ID", () => {
     expect(run.heldServerRequest("srq-00000000aa02")).toBeNull();
   });
 
+  it("the turn holds a batch clarify's qids in order, none for the single form (Hermes 0.21.6+ skip)", async () => {
+    const { run } = await turnWith(
+      (send) => {
+        send("sr", {
+          id: "srq-00000000bb01",
+          method: "clarify",
+          params: {
+            questions: [
+              { qid: "q0", question: "Ville ?", choices: ["Paris"], multi_select: false },
+              { qid: "q1", question: "Libre ?", multi_select: false },
+            ],
+          },
+        });
+        send("sr", { id: "srq-00000000bb02", method: "clarify", params: { question: "?", choices: ["A"] } });
+      },
+      { finish: false },
+    );
+    expect(run.heldServerRequest("srq-00000000bb01")?.batchIds).toEqual(["q0", "q1"]);
+    expect(run.heldServerRequest("srq-00000000bb02")).not.toBeNull();
+    expect(run.heldServerRequest("srq-00000000bb02")?.batchIds).toBeUndefined();
+  });
+
+  it("Hermes 0.21.6+ `approval.cancelled` closes NO card — `request.cancel` and the turn's end own that (deliberately not consumed)", async () => {
+    // v0.21.7 session_lifecycle.py:484-513 broadcasts it to every client (server.py:746-760,
+    // envelope session_id ""), carrying the approval QUEUE's request_ids, not the srq id the
+    // card is addressed by. Even delivered to the lane, it must not settle anything: an
+    // id-bearing withdrawal arrives as `request.cancel` on the session (server_requests.py:224-230,
+    // wired at server.py:848-852), and every turn that ends closes the cards it still holds.
+    const { run, settled } = await turnWith(
+      (send) => {
+        send("sr", { id: "srq-00000000cc01", method: "approval", params: { request_id: "r1", command: "rm x" } });
+        send("approval.cancelled", {
+          session_id: "cc4ebdee",
+          stored_session_id: "stored-1",
+          reason: "interrupt",
+          cancelled_count: 1,
+          request_ids: ["r1"],
+        });
+        send("approval.cancelled", {
+          session_id: "cc4ebdee",
+          stored_session_id: "stored-1",
+          reason: "interrupt",
+          cancelled_count: 1,
+          request_ids: ["srq-00000000cc01"],
+        });
+      },
+      { finish: false },
+    );
+    await new Promise((r) => setTimeout(r, 0));
+    expect(settled).toEqual([]);
+    expect(run.heldServerRequest("srq-00000000cc01")).not.toBeNull();
+  });
+
   it("a FINALIZED turn holds nothing answerable, though still registered (0.21.5 pass 25)", async () => {
     const { run } = await turnWith(
       (send) => {
@@ -450,6 +556,23 @@ describe("an answer by id goes back through request.answer", () => {
     }
   });
 
+  it("a skip on a held BATCH answers every qid with \"\" — skipped, never a cancel-all (Hermes 0.21.6+)", async () => {
+    // v0.21.7 tui_gateway/server_requests.py:289-300: a reply without `answers` settles the
+    // clarify as outcome `cancelled`; tools/clarify_tool.py:86-92 reads "" under a present
+    // qid as status `skipped`. 0.21.5 (`_batch_result`) reads the same "" as a skip.
+    const turn = {
+      ...holding(),
+      held: (id: string) =>
+        id === "srq-000000000099" ? { multiSelect: new Set<string>(), batchIds: ["q0", "q1"] } : null,
+    };
+    const r = rpc();
+    const out = await respondHermes(body({ skip: true, answers: [] }), r.call as never, turn);
+    expect(out).toEqual({ ok: true });
+    expect(r.sent).toEqual([
+      ["request.answer", { id: "srq-000000000099", result: { answers: { q0: "", q1: "" } } }],
+    ]);
+  });
+
   it("`expired` means the request had already ended — gone, and the turn is released", async () => {
     const served: string[] = [];
     const r = rpc("expired");
@@ -546,6 +669,14 @@ describe("the clarify reader", () => {
     expect(readHermesClarify({ questions: [{ qid: "q0", question: "A ?" }, { question: "no qid" }] })).toBeNull();
     // multi_select without choices is free text, not a multi-select.
     expect(readHermesClarify({ question: "?", multi_select: true })?.[0]?.multiSelect).toBe(false);
+  });
+
+  it("hermesClarifyBatchIds: a batch's qids in order, null for the single form or a qid-less entry", () => {
+    expect(hermesClarifyBatchIds({ questions: [{ qid: "q0", question: "A ?" }, { qid: "q1", question: "B ?" }] })).toEqual(["q0", "q1"]);
+    expect(hermesClarifyBatchIds({ question: "?" })).toBeNull();
+    expect(hermesClarifyBatchIds({ questions: [] })).toBeNull();
+    expect(hermesClarifyBatchIds({ questions: [{ qid: "q0", question: "A ?" }, { question: "no qid" }] })).toBeNull();
+    expect(hermesClarifyBatchIds(null)).toBeNull();
   });
 });
 

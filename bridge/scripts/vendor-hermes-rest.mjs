@@ -16,8 +16,12 @@
 //   node scripts/vendor-hermes-rest.mjs 0.19.0 --src <checkout> [--tag v2026.7.20]
 //                                       [--identical-to 0.18.2=v2026.7.7.2]
 //
-// The checkout must be at the tag for `version`. Hermes publishes TWO schemes for one build
-// (pyproject semver + a calendar git tag), so both are recorded and neither is guessed.
+// The bytes are read AT `--tag` (`git show <tag>:…`), whatever the checkout's HEAD. Up to 0.21.5
+// Hermes published TWO schemes for one build (pyproject semver + a calendar git tag, e.g.
+// 0.21.5 = v2026.9.24), so the version is given explicitly and never guessed. From 0.21.6 the
+// release tag IS the semver (`v0.21.7`) and the pyproject on main carries 0.0.0; the runtime
+// version comes from the install stamp / tags (hermes_cli/version_info.py), never from the
+// pyproject.
 //
 // `--identical-to <version>=<tag>` PROVES that an older claimed version shares this exact
 // contract, by re-extracting from that tag and comparing. That earns coverage for it instead

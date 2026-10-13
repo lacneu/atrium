@@ -810,6 +810,27 @@ export function hermesClarifyMultiIds(payload: unknown): ReadonlySet<string> {
   return ids;
 }
 
+/**
+ * The qids of a BATCH clarify, in the order Hermes sent them, or null for the single
+ * question form (≤ 0.21.5 only; 0.21.6 made `questions` mandatory). A skip answers EVERY
+ * one of them with "": 0.21.5 reads a blank as a deliberate skip (tools/clarify_tool.py
+ * `_batch_result`), 0.21.6+ as status `skipped` under outcome `submitted`
+ * (`_response_status`, v0.21.7:86-91). A reply WITHOUT `answers` is a cancel-all instead,
+ * which 0.21.7 reports to the agent as outcome `cancelled`
+ * (tui_gateway/server_requests.py, v0.21.7:289-300).
+ */
+export function hermesClarifyBatchIds(payload: unknown): readonly string[] | null {
+  const p = obj(payload);
+  if (p === null || !Array.isArray(p.questions) || p.questions.length === 0) return null;
+  const ids: string[] = [];
+  for (const raw of p.questions) {
+    const qid = providerId(obj(raw)?.qid);
+    if (qid === undefined) return null;
+    ids.push(qid);
+  }
+  return ids;
+}
+
 /** `secret.request {prompt, env_var}` / `sudo.request {}`. */
 export function readHermesCredential(type: string, payload: unknown): AgentRequestCredential {
   const p = obj(payload) ?? {};

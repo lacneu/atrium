@@ -362,7 +362,7 @@ export function hermesCapabilitiesFor(
  *  surface as capabilities appearing or vanishing for reasons nobody could trace back. */
 export const HERMES_RANGE: VersionRange = {
   min: "0.18.0",
-  maxValidated: "0.21.5",
+  maxValidated: "0.21.7",
 };
 
 /** The generation from which `models.list` takes (and, on a multi-agent roster,
@@ -678,9 +678,13 @@ export const COMPAT_MANIFEST: CompatManifest = {
       // `bridge/protocol/hermes/0.19.0/BENCH.json`. 0.21.5 (v2026.9.24): GO 17/17 on
       // 2026-09-24, attested at `bridge/protocol/hermes/0.21.5/BENCH.json` — the first
       // version whose prompts are SERVER→CLIENT requests (`client.capabilities`,
-      // `request.answer`, `request.cancel`; tui_gateway/server_requests.py).
+      // `request.answer`, `request.cancel`; tui_gateway/server_requests.py). 0.21.7 (tag
+      // v0.21.7, the first plain-semver Hermes tag): GO 22/22 on 2026-10-13, attested at
+      // `bridge/protocol/hermes/0.21.7/BENCH.json` — every clarify is a batch from 0.21.6, so
+      // a skip answers each question with "" (a reply without `answers` is a cancel-all).
+      // 0.21.6 shares its REST contract byte for byte but was not benched, so it is not claimed.
       supportedRange: HERMES_RANGE,
-      validatedVersions: ["0.18.0", "0.18.2", "0.19.0", "0.21.5"],
+      validatedVersions: ["0.18.0", "0.18.2", "0.19.0", "0.21.5", "0.21.7"],
       capabilities: HERMES_CAPABILITIES,
     },
   },

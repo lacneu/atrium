@@ -415,7 +415,7 @@ export interface HermesApprovalQueue {
    *  holds the turn. */
   served?(id: string, verdict?: HermesAnsweredVerdict): void;
   /** Server→client request `id` as the live turn holds it; null when it holds none. */
-  held?(id: string): { multiSelect: ReadonlySet<string> } | null;
+  held?(id: string): HermesHeldRequest | null;
   /** Whether the live turn raised request `id` and it is still unsettled. */
   holds?(id: string): boolean;
 }
@@ -428,19 +428,36 @@ function clarifyText(values: ReadonlyArray<string>, multi: boolean): string {
   return multi || values.length > 1 ? JSON.stringify(values) : (values[0] ?? "");
 }
 
+/** What the live turn holds for a server→client request (ws-turn.ts). */
+export interface HermesHeldRequest {
+  multiSelect: ReadonlySet<string>;
+  /** A batch clarify's qids; absent for the single-question form. */
+  batchIds?: readonly string[];
+}
+
 /** The `result` a server→client request is answered with (tui_gateway/contracts/
  *  server_requests.py), or null for a body that cannot answer it. */
 function serverRequestResult(
   body: RespondBody,
-  multiSelect: ReadonlySet<string>,
+  held: HermesHeldRequest,
 ): Record<string, unknown> | null {
+  const { multiSelect } = held;
   switch (body.source) {
     case "hermes.approval":
       return body.decision === undefined ? null : { choice: hermesChoice(body.decision) };
     case "hermes.clarify": {
       const answers = body.answers ?? [];
       const batch = answers.some((a) => a.id !== "answer");
-      if (body.skip) return batch ? {} : { answer: "" }; // `{}` on a batch is a cancel-all
+      if (body.skip) {
+        // A skip is per QUESTION: every qid answered "" — a deliberate skip on 0.21.5
+        // and status `skipped` on 0.21.6+. A reply without `answers` would be a
+        // cancel-all, which 0.21.6+ (every clarify a batch) reports to the agent as
+        // outcome `cancelled` (hermesClarifyBatchIds).
+        if (held.batchIds !== undefined && held.batchIds.length > 0) {
+          return { answers: Object.fromEntries(held.batchIds.map((id) => [id, ""])) };
+        }
+        return batch ? {} : { answer: "" };
+      }
       if (!batch) return { answer: clarifyText(answers[0]?.values ?? [], multiSelect.has("answer")) };
       return {
         answers: Object.fromEntries(
@@ -489,7 +506,7 @@ export async function respondHermes(
         return { ok: false, httpStatus: 409, code: "request_gone", status: "expired" };
       }
       // `request.answer` says whether it was still open (`ok`) or had already ended.
-      const result = serverRequestResult(body, held.multiSelect);
+      const result = serverRequestResult(body, held);
       if (result === null) return { ok: false, httpStatus: 400, code: "invalid_answer" };
       const out = promptReply(
         await call("request.answer", { id: body.providerRequestId, result }),

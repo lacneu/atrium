@@ -53,6 +53,7 @@ import {
   readHermesApproval,
   readHermesClarify,
   hermesClarifyMultiIds,
+  hermesClarifyBatchIds,
   readHermesCredential,
   type AgentRequestRecord,
 } from "../../core/agent-requests.js";
@@ -209,6 +210,9 @@ export interface HermesWsTurnRun {
 export interface HermesHeldServerRequest {
   /** Clarify question ids Hermes parses as multi-select (`answer` for a single one). */
   multiSelect: ReadonlySet<string>;
+  /** A batch clarify's qids, in order (absent for the single-question form): a skip
+   *  answers each of them, never the batch as a whole (see hermesClarifyBatchIds). */
+  batchIds?: readonly string[];
 }
 
 const NOT_A_CLARIFY: HermesHeldServerRequest = { multiSelect: new Set() };
@@ -970,7 +974,11 @@ export function runHermesWsTurn(
           });
           const mid = sink.currentMessageId;
           if (mid) void opts.writer.setPhase?.(mid, "awaiting_input");
-          holdServerRequest(id, { multiSelect: hermesClarifyMultiIds(params) });
+          const batchIds = hermesClarifyBatchIds(params);
+          holdServerRequest(id, {
+            multiSelect: hermesClarifyMultiIds(params),
+            ...(batchIds !== null ? { batchIds } : {}),
+          });
           return;
         }
         case "sudo":

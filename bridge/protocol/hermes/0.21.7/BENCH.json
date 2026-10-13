@@ -1,0 +1,47 @@
+{
+  "kind": "atrium-bench-attestation",
+  "version": 2,
+  "provider": "hermes",
+  "hermesVersion": "0.21.7",
+  "gatewayVersion": "2026.9.8",
+  "verdict": "GO",
+  "at": "2026-10-13T04:04:25.250Z",
+  "scenarios": [
+    "agent-request-exec-approval",
+    "agent-request-question",
+    "announce-reverse-hold",
+    "async-task",
+    "basic-turn",
+    "cron-tool",
+    "fork-attachment-rehydrate",
+    "hermes-basic-turn",
+    "hermes-clarify",
+    "hermes-clarify-skip",
+    "hermes-cron-list",
+    "inbound-attachment",
+    "inbound-attachment-large",
+    "media-outbound",
+    "spawn-announce-merge",
+    "spawn-chain-merge",
+    "spawn-parallel-merge",
+    "talk-session",
+    "tool-exec",
+    "update-plan",
+    "widget-inline",
+    "widget-off"
+  ],
+  "hermesScenarios": [
+    "hermes-basic-turn",
+    "hermes-clarify",
+    "hermes-clarify-skip",
+    "hermes-cron-list"
+  ],
+  "flags": [],
+  "atriumSha": "18c468fd50e5b66b48efd37448891e1ccd5e73d5",
+  "worktree": {
+    "dirty": true,
+    "deltaSha256": "06f79e5e2fa546309d675b21e944d04aeb705a9aaa7c89af15bcb0457cd8a616"
+  },
+  "supportDigest": "77eba8ca9ab8226119c31a657a6378265e51615988ab01b24b3d024bee633d12",
+  "bridgeVersion": "0.98.0"
+}
