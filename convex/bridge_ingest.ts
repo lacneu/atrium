@@ -33,6 +33,11 @@ import { chatAllowsInstance } from "./lib/ingestAuthz";
 import { compactionReasonClass } from "./lib/compactionReasons";
 import { finalizeCauseClass } from "./lib/finalizeCause";
 import {
+  gatewayVersionLabel,
+  pressureVerdict,
+  validPressureCounter,
+} from "./lib/pressureTelemetry";
+import {
   classifyForeignRunRefusals,
   costlyForeignRunRefusals,
 } from "./lib/foreignRunRefusals";
@@ -402,6 +407,12 @@ type IngestOp =
       postInputTokens?: number | null;
       postOutputTokens?: number | null;
       postCostUsd?: number | null;
+      /** A reading that is not complete, as the bridge explains it (re-derived here). */
+      telemetryStatus?: string;
+      telemetryMissing?: unknown;
+      telemetryCause?: string;
+      gatewayVersion?: string;
+      runOutputTokens?: number;
     }
   | {
       op: "setPhase";
@@ -1302,8 +1313,12 @@ export const ingest = httpAction(async (ctx, request) => {
       // ratio of our own — that would resurrect a figure the send path declined to
       // give, or hand an orphan source a measurement to hide behind, which is the
       // ambiguity this lot exists to remove.
+      // A 0.98.0+ bridge LEAVES OUT a fill it could not determine and says so with
+      // `telemetryStatus`: that is the explicit unknown, never an older bridge.
       const sentAbsent =
-        body.fillPct === undefined && body.fillSource === undefined;
+        body.fillPct === undefined &&
+        body.fillSource === undefined &&
+        body.telemetryStatus === undefined;
       const fillPct = sentAbsent
         ? typeof body.totalTokens === "number" &&
           typeof body.contextTokens === "number" &&
@@ -1311,15 +1326,48 @@ export const ingest = httpAction(async (ctx, request) => {
           ? Math.round((body.totalTokens / body.contextTokens) * 100)
           : null
         : sentPct;
+      // THE GAP, SAID (prod 2026-10-10: 53 of 58 traces all-null, alternating with
+      // complete ones in one conversation). A counter is stored only when it is a valid
+      // number; a reading that is not complete names what is missing, why
+      // (lib/pressureTelemetry `pressureVerdict`, re-derived here — an older bridge sends no
+      // cause), and what identifies it without content: the agent as an opaque key (its
+      // `agents` row id, never its name), the gateway version, the run's model and output
+      // tokens. A complete reading stores what 0.97.0 stored, plus `telemetryStatus`.
+      const verdict = pressureVerdict(
+        { totalTokens: body.totalTokens, contextTokens: body.contextTokens, fillPct },
+        body,
+      );
+      // ZERO reads on this path beyond 0.97.0's (codex phase 6 pass 3): everything below is
+      // derived from the body alone. No gateway-supplied free string is stored — the run's
+      // announced model and the agent id are not read at all (the trace's `chatId` names the
+      // conversation, and so its agent); only a strict release number and an integer.
+      const gatewayVersion = gatewayVersionLabel(body.gatewayVersion);
       await traceIngest(ctx, {
         kind: "chat.gateway_pressure",
         chatId: body.chatId,
         correlationId: `${body.chatId}:${body.messageId}`,
         meta: {
-          totalTokens: body.totalTokens,
-          contextTokens: body.contextTokens,
-          fillPct,
-          ...(fillSource !== null ? { fillSource } : {}),
+          ...(validPressureCounter("totalTokens", body.totalTokens)
+            ? { totalTokens: body.totalTokens }
+            : {}),
+          ...(validPressureCounter("contextTokens", body.contextTokens)
+            ? { contextTokens: body.contextTokens }
+            : {}),
+          ...(validPressureCounter("fillPct", fillPct) ? { fillPct } : {}),
+          ...(fillSource !== null && validPressureCounter("fillPct", fillPct) ? { fillSource } : {}),
+          telemetryStatus: verdict.status,
+          ...(verdict.status !== "present"
+            ? {
+                telemetryMissing: verdict.missing,
+                telemetryCause: verdict.cause,
+                ...(gatewayVersion !== null ? { gatewayVersion } : {}),
+                ...(typeof body.runOutputTokens === "number" &&
+                Number.isSafeInteger(body.runOutputTokens) &&
+                body.runOutputTokens >= 0
+                  ? { runOutputTokens: body.runOutputTokens }
+                  : {}),
+              }
+            : {}),
           // A SLUG, capped: config-class like `taskName`, never free text.
           ...(typeof body.model === "string" && body.model
             ? { model: body.model.slice(0, 64) }

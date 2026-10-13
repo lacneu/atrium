@@ -48,6 +48,14 @@ import type { PickableAgent } from "./AgentPicker";
 import { useSseStreamingText, sseDevOverride } from "./useSseStreamingText";
 import { useDeliveryRecorder } from "./useDeliveryRecorder";
 import { isProjectedWorking } from "./followUpComposer";
+import { useQueryOrNull } from "./useQueryOrNull";
+import {
+  dockPlaceOf,
+  gatewayQueuedIds,
+  liveQueueSessions,
+  othersInGatewayQueue,
+  type GatewayQueueFact,
+} from "./queueDock";
 import type { SseTimingSample } from "./deliveryRecorder";
 import { m } from "@/paraglide/messages.js";
 
@@ -667,33 +675,68 @@ export function useConvexChatRuntime({ chatId }: UseConvexChatRuntimeArgs) {
   // a queue-send (no outbox yet) is matched via the client ids queueSend
   // recorded, so the card appears instantly without a bubble flash.
   const queuedEchoIds = useRef<Set<string>>(new Set());
-  const isQueuedTurn = (m: ConvexMessageView): boolean =>
-    m.role === "user" &&
-    (m.outbox?.status === "queued" ||
-      queuedEchoIds.current.has(String(m._id)));
-  const queuedTurns = list.filter(isQueuedTurn).map((m) => ({
-    messageId: String(m._id),
-    text: m.text,
-    // Rewriting is its author's alone; withdrawing, its author's or the owner's
-    // (convex/send.ts). The optimistic echo is always the reader's own.
-    mine: (m as { mine?: boolean }).mine !== false,
-    canCancel: (m as { mine?: boolean }).mine !== false || !isGuest,
-    // The optimistic echo has no server row yet — its card shows but its
-    // actions arm only once the real id lands (no `optimistic-` prefix).
-    pending: String(m._id).startsWith("optimistic-"),
-  }));
+  // A failed follow-up state degrades to "no queue information" — never a broken chat
+  // (codex phase 6 pass 5).
+  const followUp = useQueryOrNull(
+    api.followUp.followUpState,
+    chatId ? { chatId: chatId as Id<"chats"> } : "skip",
+  );
+  // Phase 6: an input the GATEWAY holds in its own queue (2026.9.7+) joins the dock too —
+  // in the thread OR in the dock, never both (src/chat/queueDock.ts). The fact is a
+  // deadline (the last read's freshness): re-render at that instant, as `workingUntil` does.
+  const gatewayQueue =
+    followUp?.projection === true ? (followUp as { gatewayQueue?: GatewayQueueFact }).gatewayQueue : null;
+  const [, setQueueTick] = useState(0);
+  // The EARLIEST future deadline among the sessions: re-render then (each passes on its own).
+  const nextQueueDeadline = (gatewayQueue?.sessions ?? [])
+    .map((q) => q.until)
+    .filter((u) => u > Date.now())
+    .reduce<number | null>((a, u) => (a === null || u < a ? u : a), null);
+  useEffect(() => {
+    if (nextQueueDeadline === null) return;
+    const ms = nextQueueDeadline - Date.now();
+    if (ms <= 0) return;
+    const t = window.setTimeout(() => setQueueTick((n) => n + 1), ms + 50);
+    return () => window.clearTimeout(t);
+  }, [nextQueueDeadline]);
+  const liveQueues = liveQueueSessions(followUp?.projection === true, gatewayQueue, Date.now());
+  const gatewayQueued = gatewayQueuedIds(liveQueues);
+  // The memo key below: which messages leave the thread (changes with a deadline or a read).
+  const gatewayLive = [...gatewayQueued].sort().join(",");
+  const placeOf = (m: ConvexMessageView) =>
+    dockPlaceOf(m as Parameters<typeof dockPlaceOf>[0], queuedEchoIds.current, gatewayQueued);
+  const isQueuedTurn = (m: ConvexMessageView): boolean => placeOf(m) !== "thread";
+  const queuedTurns = list.filter(isQueuedTurn).map((m) => {
+    const gateway = placeOf(m) === "gateway";
+    return {
+      messageId: String(m._id),
+      text: m.text,
+      // Rewriting is its author's alone; withdrawing, its author's or the owner's
+      // (convex/send.ts, convex/followUp.ts). The optimistic echo is always the reader's own.
+      // A gateway-queued input is not editable (the Control UI's rule: an accepted input
+      // has a run identity, ui/src/lib/chat/chat-queue-order.ts:28-38).
+      mine: !gateway && (m as { mine?: boolean }).mine !== false,
+      canCancel: (m as { mine?: boolean }).mine !== false || !isGuest,
+      // The optimistic echo has no server row yet — its card shows but its
+      // actions arm only once the real id lands (no `optimistic-` prefix).
+      pending: String(m._id).startsWith("optimistic-"),
+      gateway,
+      sendId: (m as { queuedSendId?: string }).queuedSendId,
+    };
+  });
+  const gatewayOthers = othersInGatewayQueue(
+    liveQueues,
+    new Set(queuedTurns.flatMap((q) => (q.gateway && q.sendId !== undefined ? [q.sendId] : []))),
+  );
   const visibleList = useMemo(
     () => list.filter((m) => !isQueuedTurn(m)),
     // eslint-disable-next-line react-hooks/exhaustive-deps -- isQueuedTurn reads a ref
-    [list],
+    // `gatewayLive`: the gateway's queue goes stale or empties without the list changing.
+    [list, gatewayLive],
   );
   const lastRole =
     visibleList.length > 0 ? visibleList[visibleList.length - 1].role : null;
   const anyStreaming = visibleList.some((m) => m.status === "streaming");
-  const followUp = useQuery(
-    api.followUp.followUpState,
-    chatId ? { chatId: chatId as Id<"chats"> } : "skip",
-  );
 
   // "A turn I sent this session is awaiting its first assistant message."
   // This — NOT "the last message is a user message" — is what drives the gap
@@ -950,6 +993,22 @@ export function useConvexChatRuntime({ chatId }: UseConvexChatRuntimeArgs) {
   const abortTurnMutation = useMutation(api.messages.abortTurn);
 
   const cancelQueuedMutation = useMutation(api.send.cancelQueuedMessage);
+  const withdrawGatewayMutation = useMutation(api.followUp.cancelGatewayQueuedInput);
+  // Withdraw an input the GATEWAY holds (`chat.abort {runId, discardPendingInput}`): the
+  // gateway's answer comes back through the transcript reads (custody `cancelled`).
+  const withdrawGatewayQueued = useCallback(
+    async (messageId: string): Promise<boolean> => {
+      try {
+        const r = await withdrawGatewayMutation({ messageId: messageId as Id<"messages"> });
+        if (!r.ok) toast.error(m.chat_custody_cancel_failed());
+        return r.ok;
+      } catch {
+        toast.error(m.chat_custody_cancel_failed());
+        return false;
+      }
+    },
+    [withdrawGatewayMutation, toast],
+  );
   const cancelQueued = useCallback(
     async (messageId: string): Promise<boolean> => {
       try {
@@ -1134,6 +1193,9 @@ export function useConvexChatRuntime({ chatId }: UseConvexChatRuntimeArgs) {
     // The queue dock's data + actions (cards above the composer).
     queuedTurns,
     cancelQueued,
+    withdrawGatewayQueued,
+    // Inputs the gateway queues that are not this conversation's own messages.
+    gatewayOthers,
     // TRUE until listByChat first responds for this chat: drives the loading
     // skeleton (without it a content-heavy chat looks EMPTY for the 2-3s the
     // payload takes to arrive, reading as "is anything happening?").

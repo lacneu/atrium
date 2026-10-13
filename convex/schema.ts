@@ -2827,6 +2827,12 @@ export default defineSchema({
     // (CU-16): how many posts, and the last one. Absent on cursors written before.
     pendingInputsTotal: v.optional(v.number()),
     pendingQueuedCount: v.optional(v.number()),
+    // PHASE 6 (codex pass 1) — the issue time of the read that SUPPLIED each fact a
+    // freshness bound is derived from. `updatedAt` moves with every write (a reset, a read
+    // that omits the field), so a bound computed from it was renewed by reads that said
+    // nothing. Written on `on` only (shadow keeps 0.97.0's bytes); absent ⇒ no claim.
+    pendingQueuedAt: v.optional(v.number()),
+    hasActiveRunAt: v.optional(v.number()),
     // The last read's pending-input list was the WHOLE list (no older page): only then
     // does an input's absence from it clear its current pending state.
     pendingInputsComplete: v.optional(v.boolean()),

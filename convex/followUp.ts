@@ -15,7 +15,10 @@ import { internal } from "./_generated/api";
 import { mutation, query } from "./_generated/server";
 import { getProfile, requireActive, requireReachableChat } from "./lib/access";
 import { projectionModeOfChat } from "./lib/followUp";
-import { projectedGatewayHoldUntil } from "./lib/outboxQueue";
+import { projectedGatewayHoldUntil, SESSION_ACTIVE_FRESH_MS } from "./lib/outboxQueue";
+import type { Doc, Id } from "./_generated/dataModel";
+import type { QueryCtx } from "./_generated/server";
+import { currentCustody } from "./lib/transcriptProjection";
 
 /** What the composer needs to label and offer the busy-send actions. */
 export const followUpState = query({
@@ -43,9 +46,91 @@ export const followUpState = query({
       // boolean: a query is not re-run when time passes, so the client stops showing it
       // at that instant on its own (`useConvexChatRuntime`). Null: nothing says so.
       workingUntil: await projectedGatewayHoldUntil(ctx, chatId),
+      // Phase 6: the gateway's OWN queue, PER SESSION (2026.9.7+ `pendingInputs.queuedCount`,
+      // chat-pending-inputs.ts:72-99 at v2026.9.8). The composer shows a queued input there,
+      // never in the thread — the Control UI's split (ui/src/pages/chat/history-merge.ts:
+      // 402-441). Each session's fact governs ONLY the messages that session holds (codex
+      // phase 6 pass 4: one session's read used to move another session's messages), with
+      // its own deadline like `workingUntil`.
+      gatewayQueue: { sessions: await gatewayQueueSessions(ctx, chatId) },
     };
   },
 });
+
+/** The gateway's queue as the last read stated it, bounded by that read's freshness. */
+export function gatewayQueueOf(
+  cursor: Pick<Doc<"transcriptCursors">, "pendingQueuedCount" | "pendingQueuedAt"> | null,
+): { count: number; until: number } | null {
+  // The bound runs from the read that STATED the count (`pendingQueuedAt`), never from the
+  // cursor's `updatedAt`: a reset or a read without the counter rewrites the cursor and
+  // would renew an hour-old queue (codex phase 6 pass 1). No stamp ⇒ no claim.
+  if (
+    cursor === null ||
+    typeof cursor.pendingQueuedCount !== "number" ||
+    typeof cursor.pendingQueuedAt !== "number"
+  ) {
+    return null;
+  }
+  return {
+    count: Math.max(0, Math.floor(cursor.pendingQueuedCount)),
+    until: cursor.pendingQueuedAt + SESSION_ACTIVE_FRESH_MS,
+  };
+}
+
+/** Sessions of a conversation whose queue the composer shows (the most recently read). */
+export const MAX_QUEUE_SESSIONS = 8;
+/** Queued inputs read per session (the gateway's pending page holds at most 20). */
+export const MAX_QUEUED_INPUTS_PER_SESSION = 20;
+
+export type GatewayQueueSession = { count: number; until: number; sendIds: string[] };
+
+/**
+ * The gateway's queue of each recently read session that is still FRESH: its count and
+ * deadline (the read that stated it, on Convex's clock), and the send identities that
+ * session holds queued (its `transcriptInputs` facts, `currentCustody === "queued"`). A
+ * message is shown in the dock only through its own session's fact (codex phase 6 pass 4).
+ *
+ * LIGHTWEIGHT BY CONSTRUCTION (codex phase 6 pass 5): an expired session is dropped before
+ * anything else is read, and no message document is ever loaded here — the client matches
+ * a queued bubble by the send identity `messages.listByChat` already gives it — so a
+ * conversation of huge messages cannot push this query past the read limit. Bounded:
+ * MAX_QUEUE_SESSIONS cursors, then two index ranges of MAX_QUEUED_INPUTS_PER_SESSION input
+ * rows (identities only, never text) per fresh, non-empty session. `on` only.
+ */
+export async function gatewayQueueSessions(
+  ctx: QueryCtx,
+  chatId: Id<"chats">,
+  now: number = Date.now(),
+): Promise<GatewayQueueSession[]> {
+  const cursors = await ctx.db
+    .query("transcriptCursors")
+    .withIndex("by_chat_updated", (q) => q.eq("chatId", chatId))
+    .order("desc")
+    .take(MAX_QUEUE_SESSIONS);
+  const out: GatewayQueueSession[] = [];
+  for (const c of cursors) {
+    const fact = gatewayQueueOf(c);
+    if (fact === null || fact.count === 0 || fact.until <= now) continue;
+    const byPending = await ctx.db
+      .query("transcriptInputs")
+      .withIndex("by_chat_session_pending", (q) =>
+        q.eq("chatId", chatId).eq("sessionKey", c.sessionKey).eq("pendingState", "queued"),
+      )
+      .take(MAX_QUEUED_INPUTS_PER_SESSION);
+    const byReceipt = await ctx.db
+      .query("transcriptInputs")
+      .withIndex("by_chat_session_receipt_queued", (q) =>
+        q.eq("chatId", chatId).eq("sessionKey", c.sessionKey).eq("receiptQueued", true),
+      )
+      .take(MAX_QUEUED_INPUTS_PER_SESSION);
+    const sendIds = new Set<string>();
+    for (const f of [...byPending, ...byReceipt]) {
+      if (currentCustody(f) === "queued") sendIds.add(f.sendId);
+    }
+    out.push({ ...fact, sendIds: [...sendIds] });
+  }
+  return out;
+}
 
 /** The person's default for a message sent while the agent works (`null` = the
  *  gateway's own mode, the Control UI's "server" choice). */

@@ -31,6 +31,10 @@ import {
 } from "./private-tool-args.js";
 import { planPartFromTool } from "./plan-part.js";
 import {
+  withPressureTelemetry,
+  type PresendDescribeOutcome,
+} from "./pressure-telemetry.js";
+import {
   asyncTaskStartFromTool,
   isDeliveryRunId,
   taskChildKey,
@@ -444,6 +448,12 @@ export class TurnSink {
     outputTokens: number | null;
     estimatedCostUsd: number | null;
   } | null = null;
+  /** The run's output tokens (normalizer `diagnosticOutputTokens`): what a missing
+   *  pressure reading still says. */
+  private pendingDiagOutputTokens: number | null = null;
+  /** The gateway version this sink's connection negotiated, read when a trace is built
+   *  (null: unknown, Hermes). */
+  private gatewayVersionOf: () => string | null = () => null;
   private hasPendingFinal = false;
   // Per-turn provenance budget: a misbehaving plugin (or several) must never
   // turn the sources affordance into a flood of parts.
@@ -463,6 +473,8 @@ export class TurnSink {
     fillSource?: SessionFillSource | null;
     /** WHICH model the window belongs to — a fill without it is uncheckable. */
     model?: string | null;
+    /** How the pre-send describe went (pressure-telemetry.ts). */
+    describe?: PresendDescribeOutcome;
   } | null = null;
   private compactionPhase: string | null = null;
   /** WHY the gateway compacted this turn, from `session.operation` (W2 / G-09).
@@ -590,6 +602,19 @@ export class TurnSink {
     this.outboundScan = outboundScan;
     this.sessionKey = sessionKey;
     this.onTurnError = onTurnError;
+  }
+
+  /** The gateway version of the connection this sink writes for (`chat.gateway_pressure`
+   *  names it on a missing reading). */
+  setGatewayVersionSource(source: () => string | null): void {
+    this.gatewayVersionOf = () => {
+      const version = source();
+      // STRICTLY a release number (codex phase 6 pass 2): the same pattern Convex enforces.
+      return typeof version === "string" &&
+        /^\d{1,4}\.\d{1,3}\.\d{1,3}(?:-(?:alpha|beta|rc)\.\d{1,3})?$/.test(version)
+        ? version
+        : null;
+    };
   }
 
   /** True between beginTurn and the terminal flush; gates driving the provider. */
@@ -749,6 +774,8 @@ export class TurnSink {
       fillPct?: number | null;
       fillSource?: SessionFillSource | null;
       model?: string | null;
+      /** How the pre-send describe went (pressure-telemetry.ts). */
+      describe?: PresendDescribeOutcome;
     },
     deferOpen = false,
     rehydrated = false,
@@ -789,6 +816,7 @@ export class TurnSink {
     this.pendingDiagStopReason = null;
     this.pendingDiagFinalizeCause = null;
     this.pendingDiagUsage = null;
+    this.pendingDiagOutputTokens = null;
     this.hasPendingFinal = false;
     this.provenanceCount = 0;
     this.pressure = pressure ?? null;
@@ -1814,6 +1842,11 @@ export class TurnSink {
                   estimatedCostUsd: number | null;
                 })
               : null;
+          {
+            const out = (event as { diagnosticOutputTokens?: unknown }).diagnosticOutputTokens;
+            this.pendingDiagOutputTokens =
+              Number.isSafeInteger(out) && (out as number) >= 0 ? (out as number) : null;
+          }
           this.pendingMediaGeneratedUndelivered =
             (event as { mediaGeneratedUndelivered?: unknown })
               .mediaGeneratedUndelivered === true;
@@ -2617,8 +2650,8 @@ export class TurnSink {
       (this.pendingDiagFinalizeCause !== null &&
         AUTO_CLOSE_CAUSES.has(this.pendingDiagFinalizeCause))
     ) {
-      void this.writer
-        .recordGatewayPressure(this.chatId, messageId, {
+      const turnOrigin = this.dispatchOutboxId !== null ? "dispatch" : "gateway_initiated";
+      const body: Parameters<ConvexWriter["recordGatewayPressure"]>[2] = {
           totalTokens: this.pressure?.totalTokens ?? null,
           contextTokens: this.pressure?.contextTokens ?? null,
           // Session-cumulative cost BEFORE this turn (sessions.describe): the
@@ -2645,7 +2678,7 @@ export class TurnSink {
           // rather than left to read as lost telemetry. Never backfilled from an older
           // describe: that would be another session state presented as this turn's.
           pressureSource: this.pressure !== null ? "presend_describe" : "absent",
-          turnOrigin: this.dispatchOutboxId !== null ? "dispatch" : "gateway_initiated",
+          turnOrigin,
           // Frames LOST during this turn (0 on the overwhelming majority). A
           // non-zero value is the honest answer to "why does this reply look
           // truncated" — the measure did not exist before this lot.
@@ -2694,7 +2727,16 @@ export class TurnSink {
           postInputTokens: this.pendingDiagUsage?.inputTokens ?? null,
           postOutputTokens: this.pendingDiagUsage?.outputTokens ?? null,
           postCostUsd: this.pendingDiagUsage?.estimatedCostUsd ?? null,
-        })
+        };
+      void this.writer
+        .recordGatewayPressure(
+          this.chatId,
+          messageId,
+          withPressureTelemetry(body, this.pressure, turnOrigin, {
+            gatewayVersion: this.gatewayVersionOf(),
+            runOutputTokens: this.pendingDiagOutputTokens,
+          }) as typeof body,
+        )
         .catch((e) =>
           console.error(
             "[gateway-pressure] trace skipped (non-fatal):",

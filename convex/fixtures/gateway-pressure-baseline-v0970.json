@@ -1,0 +1,56 @@
+{
+  "dispatch, presend describe, gateway estimate": {
+    "compaction": null,
+    "contextTokens": 272000,
+    "costUsd": 0.42,
+    "fillPct": 15,
+    "fillSource": "gateway_estimate",
+    "finalizeCause": "gateway_final",
+    "model": "gpt-5.5",
+    "postCostUsd": 0.45,
+    "postInputTokens": 40000,
+    "postOutputTokens": 3000,
+    "postTotalTokens": 43000,
+    "pressureSource": "presend_describe",
+    "stopReason": "stop",
+    "toolCalls": 3,
+    "totalTokens": 41000,
+    "turnOrigin": "dispatch"
+  },
+  "dispatch, presend describe, counter fill, no post usage": {
+    "compaction": "preflight",
+    "contextTokens": 372000,
+    "fillPct": 2,
+    "fillSource": "counter",
+    "finalizeCause": "gateway_final",
+    "model": "gpt-5.6-luna",
+    "pressureSource": "presend_describe",
+    "stopReason": "end_turn",
+    "toolCalls": 0,
+    "totalTokens": 9000,
+    "turnOrigin": "dispatch"
+  },
+  "gateway-initiated delivery (the prod anomaly)": {
+    "compaction": null,
+    "contextTokens": null,
+    "fillPct": null,
+    "finalizeCause": "gateway_final",
+    "pressureSource": "absent",
+    "stopReason": "end_turn",
+    "toolCalls": 23,
+    "totalTokens": null,
+    "turnOrigin": "gateway_initiated"
+  },
+  "dispatch whose describe answered without counters": {
+    "compaction": null,
+    "contextTokens": 272000,
+    "fillPct": null,
+    "finalizeCause": "gateway_final",
+    "model": "gpt-5.5",
+    "pressureSource": "presend_describe",
+    "stopReason": "stop",
+    "toolCalls": 1,
+    "totalTokens": null,
+    "turnOrigin": "dispatch"
+  }
+}

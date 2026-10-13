@@ -15,6 +15,7 @@
 // SECURITY: the shared secret is compared in CONSTANT TIME; the body is size-
 // limited before parsing. We never echo gateway/filesystem detail to the caller.
 
+import type { PresendDescribeOutcome } from "./core/pressure-telemetry.js";
 import { assertSupportedGateway } from "./providers/openclaw/version-floor.js";
 import {
   CanvasViewCache,
@@ -2062,6 +2063,11 @@ async function performSendComposed(
   // 2026-08-08, diagnosing a mid-turn overflow). Declared upstream, so this is
   // not a new undeclared dependency.
   let preTurnModel: string | null = null;
+  // How the pre-send describe went, carried WITH the reading (codex phase 6 pass 1): a
+  // describe that threw leaves every counter null, and the pressure trace must name THAT
+  // (`presend_describe_unavailable`), not a session with no usage yet. Failed until a
+  // describe answers.
+  let presendDescribeOutcome: PresendDescribeOutcome = "failed";
   // Whether THIS send prepended rehydration history (function-scope: read by
   // the post-ack beginTurn in the LATER try block for the processing_history phase).
   let turnWasRehydrated = false;
@@ -2111,6 +2117,8 @@ async function performSendComposed(
     let described =
       answer.kind === "session" ? { sess: answer.sess, observedAt: answer.observedAt } : null;
     sessionAbsent = answer.kind === "absent";
+    presendDescribeOutcome =
+      answer.kind === "session" ? "answered" : answer.kind === "absent" ? "absent" : "failed";
     // The gateway ANSWERED that there is no session: whatever the claim proved
     // earlier on this socket no longer holds (the session was pruned since). The
     // proof is dropped, so this turn goes out from the OWNER's socket — which
@@ -3287,6 +3295,8 @@ async function performSendComposed(
           // The window's OWNER (see preTurnModel): without it a fill percentage
           // cannot be checked against the model that actually had to hold it.
           model: preTurnModel,
+          // Never sent as such: it names the cause of a missing reading.
+          describe: presendDescribeOutcome,
         };
       })(),
       rehydrated: turnWasRehydrated,

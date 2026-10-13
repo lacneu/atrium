@@ -215,6 +215,9 @@ export const CAUSE_ANOMALY_KINDS: Record<string, string> = {
   // apart is the whole point — a storage wall that repeats is an infrastructure signal, not a
   // run of bad luck.
   gateway_storage_busy: "assistant.cause.gateway_storage_busy",
+  // Phase 6: the same contention on a projected conversation, counted apart — the turn may
+  // have run, so it is not folded into the storage-busy failures.
+  gateway_state_contention: "assistant.cause.gateway_state_contention",
   gateway_storage_unavailable: "assistant.cause.gateway_storage_unavailable",
   // The gateway closed the AGENT'S database to new work. Its own class because the operator's
   // answer is neither of the two above: not a disk to free but an agent the gateway refuses

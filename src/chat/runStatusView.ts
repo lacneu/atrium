@@ -427,6 +427,10 @@ export const ERROR_CODE_LABEL: Record<string, () => string> = {
   // for rows stored before the class existed too, so the text fallback below shares it.
   pending_input_dropped: m.runstatus_error_pending_input_dropped,
   gateway_storage_busy: m.runstatus_error_gateway_storage_busy,
+  // Phase 6 (projection `on`): the gateway interrupted the turn on state contention. Upstream
+  // says the turn may have run; Atrium re-read the conversation — check before resending.
+  // Rendered as a STATUS, not an error card (RunStatus.tsx `STATUS_NOT_FAILURE_CODES`).
+  gateway_state_contention: m.runstatus_error_gateway_state_contention,
   gateway_storage_unavailable: m.runstatus_error_gateway_storage_unavailable,
   // The gateway closed the agent's database to new work (OpenClaw 2026.9.5+). Not retried.
   gateway_agent_db_closed: m.runstatus_error_gateway_agent_db_closed,
@@ -673,3 +677,11 @@ export function autoRetryOutcomeLine(
   }
   return m.runstatus_retry_stood_down();
 }
+
+/** Terminal codes that are a STATUS the reader checks, not a failure (phase 6): rendered as
+ *  a warning-toned card with its own title and `role="status"` — the Control UI's warning
+ *  notice and "Check status" for state contention (ui/src/pages/chat/chat-view-notices.ts:
+ *  203-218 at v2026.9.8). Only codes the projection `on` path mints belong here. */
+export const STATUS_NOT_FAILURE_CODES: ReadonlyMap<string, () => string> = new Map([
+  ["gateway_state_contention", m.runstatus_status_gateway_state_contention],
+]);

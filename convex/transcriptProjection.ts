@@ -2360,7 +2360,14 @@ export const applyTranscript = internalMutation({
       ...(args.kind === "reset" ? {} : { activeRunIds: [...active] }),
       ...(args.kind === "reset" || args.hasActiveRun === undefined
         ? {}
-        : { hasActiveRun: args.hasActiveRun }),
+        : {
+            hasActiveRun: args.hasActiveRun,
+            // Its own freshness (phase 6, codex pass 1): never renewed by a write that does
+            // not carry the fact. `on` only — shadow's bytes are 0.97.0's. CONVEX's clock
+            // (codex pass 2): `readAt` is the bridge's, uncorrected, and a skewed bridge
+            // would set the deadline (+1 h ahead = a 75-min hold). `readAt` orders reads only.
+            ...(projectionOn ? { hasActiveRunAt: now } : {}),
+          }),
       // The session's queue modes (phase 3): what the composer says a busy send does.
       ...(args.kind === "reset"
         ? {}
@@ -2378,7 +2385,12 @@ export const applyTranscript = internalMutation({
               : { pendingCleanupInProgress: cleanupPending, pendingCleanupEpoch: readAt }),
             ...(args.pendingInputs.queuedCount === undefined
               ? {}
-              : { pendingQueuedCount: Math.max(0, Math.floor(args.pendingInputs.queuedCount)) }),
+              : {
+                  pendingQueuedCount: Math.max(0, Math.floor(args.pendingInputs.queuedCount)),
+                  // When Convex received the read that stated it — the queue's freshness
+                  // (phase 6, codex passes 1-2: never `updatedAt`, never the bridge's clock).
+                  ...(projectionOn ? { pendingQueuedAt: now } : {}),
+                }),
           }),
       updatedAt: now,
     };

@@ -1012,6 +1012,10 @@ export class Normalizer {
     outputTokens: number | null;
     estimatedCostUsd: number | null;
   } | null = null;
+  /** The run's cumulative output tokens (`stream:"usage"`): what the gateway reports for
+   *  EVERY run, deliveries included — carried by a pressure trace whose counters are
+   *  missing (core/pressure-telemetry.ts). Trace-only, reset per turn. */
+  private diagOutputTokens: number | null = null;
   // Buffered tool args by toolCallId: a real tool's start(args) + result(result)
   // coalesce into ONE `completed` tool.status carrying input+output, so the UI
   // shows a single clean card per tool instead of a start card + a result card.
@@ -1126,6 +1130,7 @@ export class Normalizer {
     this.finalizeCause = null;
     this.recvSilence = false;
     this.diagUsage = null;
+    this.diagOutputTokens = null;
     this.turnActive = true;
     this.finalized = false;
     this.compactionPending = false;
@@ -2156,10 +2161,13 @@ export class Normalizer {
       // beside it, `errorDetail` (logs-chat.ts ChatErrorDetailSchema, projected from the
       // lifecycle `errorObservation` by server-chat.ts:1219-1245). The prose is read only
       // when neither names a class — inside finalize, as before.
-      const kind = classifyStructuredFailure({
-        errorKind: payload.errorKind,
-        errorDetail: payload.errorDetail,
-      });
+      const kind = this.projectedFailureClass(
+        classifyStructuredFailure({
+          errorKind: payload.errorKind,
+          errorDetail: payload.errorDetail,
+        }),
+        payload.errorKind,
+      );
       // Through the arbitration like the successes: an error terminal closes the
       // sink exactly as hard, and a reply the user was really sent — still being read
       // out of the transcript — was lost to it. Held, the error still arrives; it
@@ -2267,6 +2275,20 @@ export class Normalizer {
    *  statuses — `startupStagesEmitted` survives the retry `continue` upstream. A run
    *  that resumed by calling a tool therefore kept showing "retrying 2/10" (raised in
    *  review). Idempotent: the flag is consumed, so only the FIRST signal speaks. */
+  /**
+   * PHASE 6 — the turn the gateway interrupted on STATE CONTENTION (`errorKind:
+   * "state_contention"`, 2026.9.7+) is, on a projected conversation, a status the reader
+   * checks — not a failure to resend. Upstream's own words: "Execution may have occurred;
+   * check the recorded outcome before resending" (src/sessions/session-run-error-presentation.ts:3-7
+   * at v2026.9.8); the Control UI shows it in a warning tone with "Check status"
+   * (ui/src/pages/chat/chat-view-notices.ts:203-218). On `on`, the read that follows every
+   * terminal re-reads the transcript and the bubble shows what was recorded, so the class
+   * says so (`gateway_state_contention`). Off/shadow keep 0.97.0's `gateway_storage_busy`.
+   */
+  private projectedFailureClass(kind: string | null, rawErrorKind: unknown): string | null {
+    return this.transcriptDecides && rawErrorKind === "state_contention" ? "gateway_state_contention" : kind;
+  }
+
   private clearRetryingPhase(events: BridgeEvent[]): void {
     if (!this.inRetryingPhase) return;
     this.inRetryingPhase = false;
@@ -2295,6 +2317,14 @@ export class Normalizer {
         outputTokens: num(payload.outputTokens),
         estimatedCostUsd: num(payload.estimatedCostUsd),
       };
+    }
+    // The run's output tokens (trace-only, latest wins: the value is cumulative).
+    if (
+      payload.stream === "usage" &&
+      Number.isSafeInteger(data.outputTokens) &&
+      (data.outputTokens as number) >= 0
+    ) {
+      this.diagOutputTokens = data.outputTokens as number;
     }
     const stream = payload.stream;
     // Codex NATIVE media generation (e.g. an `imageGeneration` item, stream
@@ -3551,10 +3581,13 @@ export class Normalizer {
       // 168-174, :219; the OAuth-refresh backstop's own one, src/auto-reply/reply/
       // agent-lifecycle-terminal.ts:126-136) — the same closed shape the chat error
       // later carries as `errorDetail`, read BEFORE the text.
-      const kind = classifyStructuredFailure({
-        errorKind: rawKind,
-        errorDetail: data.errorObservation,
-      });
+      const kind = this.projectedFailureClass(
+        classifyStructuredFailure({
+          errorKind: rawKind,
+          errorDetail: data.errorObservation,
+        }),
+        rawKind,
+      );
       // Through the arbitration, like `chat:error`: this terminal closes the sink
       // just as hard, and the message-tool reply still being read out of the
       // transcript was lost to it. The error survives; so does the delivery.
@@ -4161,6 +4194,7 @@ export class Normalizer {
       // exempt it even when no `sessions_yield` tool frame was seen.
       gatewayYielded: this.sawYielded,
       diagnosticUsage: this.diagUsage,
+      diagnosticOutputTokens: this.diagOutputTokens,
       diagnosticFinalizeCause: this.finalizeCause,
       // Native media generation with NO delivery directive (no MEDIA:/outbound):
       // the sink's empty-result guard needs this AT finalize time (the separate
@@ -4302,6 +4336,7 @@ export class Normalizer {
     // (codex P2): its stopReason/usage belong to the aborted attempt.
     this.diagStopReason = null;
     this.diagUsage = null;
+    this.diagOutputTokens = null;
     // The abandoned attempt's media-generation flag would otherwise leak into
     // the replay's mediaGeneratedUndelivered (a replay ending clean without
     // media would be misflagged empty_response — codex P2).

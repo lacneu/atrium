@@ -1247,11 +1247,13 @@ describe("TurnSink compaction part + pressure trace", () => {
       turnOrigin: "gateway_initiated",
       compaction: "preflight",
       // The fixture seeds a pressure snapshot with counters only and no derived
-      // reading — so the trace carries an EXPLICIT unknown. That is not the same
-      // as omitting the pair (which would mean an older bridge and let Convex
-      // derive a raw ratio of its own); the send path looked and could not tell.
-      fillPct: null,
-      fillSource: null,
+      // reading — so the trace carries an EXPLICIT unknown: since 0.98.0 the fill is
+      // left out and SAID (telemetryStatus/Missing/Cause), which Convex never answers
+      // with a raw ratio of its own (only a body with neither the pair nor a status is
+      // an older bridge's); the send path looked and could not tell.
+      telemetryStatus: "partial",
+      telemetryMissing: ["fillPct"],
+      telemetryCause: "fill_undetermined",
       // The window's OWNER, absent in this fixture (no model on the seeded
       // pressure): a window value alone cannot be interpreted, so the field is
       // always present and explicitly null rather than omitted.

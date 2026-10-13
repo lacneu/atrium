@@ -566,6 +566,12 @@ async function loadChatView(
           ...(message.role === "user" && message.custody !== undefined
             ? { custody: message.custody }
             : {}),
+          // …and, ONLY while the gateway holds it queued, its send identity: the composer
+          // matches it against the queue facts of its own session (followUp.followUpState),
+          // which never load a message (codex phase 6 pass 5). Absent everywhere else.
+          ...(message.role === "user" && message.custody === "queued" && message.sendId !== undefined
+            ? { queuedSendId: message.sendId }
+            : {}),
           // …and the bubble of a run that settled because an input was STEERED into it:
           // what the run wrote before the cut (often tool work only).
           ...(message.role === "assistant" && message.finalizeCause === "steer_segment"

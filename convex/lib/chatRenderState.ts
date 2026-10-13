@@ -158,6 +158,10 @@ export const KNOWN_ERROR_CODES = [
   // instead of "unknown", and the per-cause plane can count the race.
   "pending_input_dropped",
   "gateway_storage_busy",
+  // PHASE 6 (projection `on` only): the gateway interrupted the turn on state contention
+  // (2026.9.7+ `errorKind: "state_contention"`); the turn may have run, and the transcript
+  // read shows what was recorded — a status to check, not a failure to resend.
+  "gateway_state_contention",
   "gateway_storage_unavailable",
   // The gateway closed THIS AGENT'S database to new work (refused at startup, or retired
   // under the run — OpenClaw 2026.9.5+). Named, so a turn or a child that dies of it is

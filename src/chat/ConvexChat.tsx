@@ -454,10 +454,18 @@ export interface QueuedTurnView {
   mine: boolean;
   /** The reader may withdraw it (its author, or the conversation's owner). */
   canCancel: boolean;
+  /** Phase 6: an input the GATEWAY holds in its own queue (2026.9.7+), not Atrium's. */
+  gateway?: boolean;
 }
 export interface QueueDockValue {
   queuedTurns: QueuedTurnView[];
   cancelQueued: (messageId: string) => Promise<boolean>;
+  /** Withdraw an input the gateway queues (`chat.abort {discardPendingInput}`). */
+  withdrawGatewayQueued?: (messageId: string) => Promise<boolean>;
+  /** The gateway can withdraw a queued input (capability `discardPendingInput`). */
+  canWithdrawGateway?: boolean;
+  /** Inputs the gateway queues that are not this conversation's own messages. */
+  gatewayOthers?: number;
 }
 export const QueueDockContext = createContext<QueueDockValue | null>(null);
 
@@ -525,11 +533,16 @@ export function ConvexChat({ chatId, focusMessageId }: ConvexChatProps) {
     lastUserTurnQueued,
     queuedTurns,
     cancelQueued,
+    withdrawGatewayQueued,
+    gatewayOthers,
     initialLoading,
   } =
     useConvexChatRuntime({
     chatId,
   });
+  // Phase 6: withdrawing an input the gateway queues needs `chat.abort {discardPendingInput}`
+  // (2026.9.7+); below it the dock's gateway card shows no action.
+  const { can: canWithdrawGateway } = useInstanceCapabilities(chatId as ConvexId<"chats"> | null);
   // (The delivery-latency recorder now runs INSIDE useConvexChatRuntime, where it can see
   // the active transport + the SSE samples to close segment C on the displayed leg — Phase 5.)
   // Resolved UI preferences (reactive): the single source for which interface
@@ -828,7 +841,15 @@ export function ConvexChat({ chatId, focusMessageId }: ConvexChatProps) {
       <ReadAloudContext.Provider value={readAloudState}>
       <TurnGateContext.Provider value={turnGate}>
       <QueueSendContext.Provider value={queueSend}>
-      <QueueDockContext.Provider value={{ queuedTurns, cancelQueued }}>
+      <QueueDockContext.Provider
+        value={{
+          queuedTurns,
+          cancelQueued,
+          withdrawGatewayQueued,
+          canWithdrawGateway: canWithdrawGateway("discardPendingInput"),
+          gatewayOthers,
+        }}
+      >
       <QuoteChatIdContext.Provider value={chatId}>
       <AbortTurnContext.Provider value={guestView ? null : abortTurn}>
       <OwnerViewContext.Provider value={!guestView}>

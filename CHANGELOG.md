@@ -12,6 +12,77 @@
   Keep the rest of the dependency graph unchanged. Reject high and critical
   application dependency advisories in both Node CI jobs before merge.
 
+## [0.98.0] — The agent's own queue in the composer, and honest usage telemetry
+
+Minor release, the fourth step of the transcript redesign you can see. Like 0.97.0 it changes
+nothing in conversations unless an OpenClaw instance's `transcriptProjection` is `on`; an
+instance at `off` or `shadow` shows conversations exactly as in 0.97.0. **`on` stays opt-in and
+is not for production yet.** The usage telemetry change below applies to every instance.
+Deploy Convex before the bridge (the bridge now names a missing usage reading, which an older
+Convex does not keep), and the frontend with Convex. To roll back the conversation changes, set
+the instance back to `shadow`: messages waiting in the agent's queue are shown in the
+conversation again, as in 0.97.0.
+
+**Messages the agent has queued wait above the composer, not in the conversation.** On
+OpenClaw 2026.9.7 and later, a message you send while the agent works can be accepted and held
+in the agent's own queue (the `followup` and `collect` queue modes). Atrium now shows it where
+OpenClaw's Control UI does: as a card above the composer, next to the messages Atrium itself is
+holding, marked "Queued by the agent". It moves into the conversation when the agent takes it
+up. A message is either in the conversation or above the composer, never both. In a
+conversation with several agents, each agent's queue only ever moves that agent's messages. If
+the agent holds messages sent from somewhere else, one line says how many. If Atrium cannot
+read the agent's queue, the composer simply shows nothing about it; the conversation keeps
+working.
+
+**You can withdraw a message the agent has queued.** The card has a withdraw button when the
+agent's gateway supports it (OpenClaw 2026.9.7 and later). The agent never answers a withdrawn
+message; it stays in the conversation marked "Cancelled". A message the agent has queued
+cannot be edited, as in the Control UI.
+
+**"The gateway was busy" is no longer shown as a failure to resend.** When the gateway
+interrupts a turn because its database was busy (OpenClaw 2026.9.7 and later), the turn may
+have run anyway. On a projected instance Atrium re-reads the conversation, shows what the agent
+recorded, and marks the turn in amber, "Interrupted — the gateway was busy", asking you to check
+before sending again. It is never resent automatically.
+
+**Usage telemetry says when a reading is missing, and why.** The per-turn context-pressure
+record (`chat.gateway_pressure`, read through the observability API) used to store empty
+token counts for many turns without saying why. The cause is OpenClaw's: a run the gateway
+starts itself, such as a sub-agent's delivery, comes with no usage reading at all. A record now
+carries its counts only when they were measured; otherwise it says `telemetryStatus: "missing"`
+(or `"partial"`), which counts are missing, and the cause — the gateway started the run, the
+pre-send reading was unavailable, the session had no usage yet, or the fill could not be
+derived. A send whose pre-send reading failed says so (`presend_describe_unavailable`) instead
+of blaming the session. A missing reading also gives the gateway version and the output tokens
+the run reported, and no text the gateway chose: the agent is the conversation's, and the run's
+announced model is not recorded. Recording it costs the observability endpoint no extra reads.
+A complete record is unchanged, plus `telemetryStatus: "present"`.
+
+**"The agent is working" no longer outlives the gateway's own word.** On a projected instance
+the "working" indicator and the hold on Atrium's queue came from the last read that said a run
+was active; a later read that said nothing about it (a reset of the read cursor, for example)
+kept that old statement alive for another 15 minutes. Each fact now expires 15 minutes after
+Atrium received the read that stated it — measured on Atrium's clock, never the bridge's — and
+so does the agent's queue above the composer.
+
+**Also in this version:**
+- OpenClaw's `waiting_for_state` startup status is not shown: no OpenClaw release emits it
+  yet.
+- Two items of the redesign are deferred, with the reasons recorded: showing a sub-agent that
+  OpenClaw marked `interrupted` after a gateway restart (Atrium does not read that status yet,
+  and such a sub-agent still ends as "no activity" after 20 minutes), and subscribing the
+  conversation connection to sessions one by one.
+
+**Known limits:**
+- A message the agent took out of its queue goes back to its place in the conversation by the
+  time you sent it. OpenClaw's Control UI places it where the session recorded it, so the two
+  differ only when you sent it before the agent's first visible reply to the previous message.
+- A complete usage record still carries the model name the gateway reported for the session
+  before the turn, as in 0.97.0.
+- If a bridge's clock runs ahead of Atrium's, the conversation's transcript reads are ignored
+  as out of date until the clocks agree again. This has been the case since 0.92.0, in every
+  mode.
+
 ## [0.97.0] — One answer per delegation, built from the session transcript
 
 Minor release, the third step of the transcript redesign you can see. Like 0.96.0 it changes

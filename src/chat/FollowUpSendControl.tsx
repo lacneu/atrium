@@ -5,7 +5,8 @@
 // queue, interrupt and send — plus the person's default. Shown only on a conversation
 // whose instance runs the projection `on` and whose bridge declares `followUpModes`.
 
-import { useMutation, useQuery } from "convex/react";
+import { useQueryOrNull } from "./useQueryOrNull";
+import { useMutation } from "convex/react";
 import { useComposer, useComposerRuntime } from "@assistant-ui/react";
 import {
   ArrowUp,
@@ -49,8 +50,9 @@ export function useFollowUpState(chatId: ConvexId<"chats">): {
   preference: FollowUpPreference | null;
   serverMode: GatewayQueueMode | null;
 } | null {
-  const state = useQuery(api.followUp.followUpState, { chatId: chatId as Id<"chats"> });
-  if (state === undefined || state.projection !== true) return null;
+  // Its failure is "no follow-up information", never a broken composer (codex phase 6 pass 5).
+  const state = useQueryOrNull(api.followUp.followUpState, { chatId: chatId as Id<"chats"> });
+  if (state === undefined || state === null || state.projection !== true) return null;
   return {
     preference: state.preference ?? null,
     serverMode: (state.serverMode as GatewayQueueMode | null) ?? null,

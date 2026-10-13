@@ -208,8 +208,11 @@ export async function projectedGatewayHoldUntil(
     .withIndex("by_chat_updated", (q) => q.eq("chatId", chatId))
     .order("desc")
     .first();
-  if (cursor !== null && cursor.hasActiveRun === true) {
-    const end = cursor.updatedAt + SESSION_ACTIVE_FRESH_MS;
+  // The bound runs from the read that STATED the run active (`hasActiveRunAt`), never from
+  // the cursor's `updatedAt`: a reset or a read without the fact rewrites the cursor and
+  // kept an old "active" alive (codex phase 6 pass 1 audit, §15.11). No stamp ⇒ no claim.
+  if (cursor !== null && cursor.hasActiveRun === true && typeof cursor.hasActiveRunAt === "number") {
+    const end = cursor.hasActiveRunAt + SESSION_ACTIVE_FRESH_MS;
     if (end > now) until = end;
   }
   const admitted = await ctx.db

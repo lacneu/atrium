@@ -581,9 +581,66 @@ describe("busy is the gateway's fact on a projected chat (CU-2)", () => {
     await apply(t, ids.chatId, [], { hasActiveRun: true, activeRunIds: ["r"] });
     await t.run(async (ctx) => {
       const c = await ctx.db.query("transcriptCursors").collect();
-      await ctx.db.patch(c[0]!._id, { updatedAt: Date.now() - SESSION_ACTIVE_FRESH_MS - 1 });
+      // The fact's OWN stamp ages (phase 6, codex pass 1: never the cursor's updatedAt).
+      await ctx.db.patch(c[0]!._id, { hasActiveRunAt: Date.now() - SESSION_ACTIVE_FRESH_MS - 1 } as never);
     });
     expect(await t.run((ctx) => isChatBusy(ctx, ids.chatId, "on"))).toBe(false);
+  });
+
+  test("on: a RESET, or a read that does not state the run, never renews an old 'active' (codex phase 6 pass 1)", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    const t = convexTest(schema, modules);
+    const ids = await seed(t, "on");
+    await apply(t, ids.chatId, [], { hasActiveRun: true, activeRunIds: ["r"], readAt: Date.now() });
+    vi.setSystemTime(Date.now() + 60 * 60_000); // an hour later, on Convex's clock
+    // A reset (no session state) and a read without `hasActiveRun`, both fresh: they
+    // rewrite the cursor (its updatedAt moves) and say nothing about the run.
+    await apply(t, ids.chatId, [], { kind: "reset", deltaCursor: undefined, readAt: Date.now() });
+    await apply(t, ids.chatId, [], { readAt: Date.now() });
+    expect(await t.run((ctx) => isChatBusy(ctx, ids.chatId, "on"))).toBe(false);
+    const until = await t.run((ctx) => projectedGatewayHoldUntil(ctx, ids.chatId));
+    expect(until, "an hour-old 'active' renewed by unrelated writes").toBeNull();
+    vi.useRealTimers();
+  });
+
+  test.each([
+    ["an hour AHEAD", 60 * 60_000],
+    ["an hour BEHIND", -60 * 60_000],
+  ])("on: a bridge clock %s never moves the hold (codex phase 6 pass 2)", async (_n, skew) => {
+    const t = convexTest(schema, modules);
+    const ids = await seed(t, "on");
+    const before = Date.now();
+    // The bridge's clock has been skewed all along: its earlier read is just as skewed
+    // (otherwise a read an hour behind is simply an OLDER read, ordered out by lastReadAt).
+    await t.run(async (ctx) => {
+      for (const c of await ctx.db.query("transcriptCursors").collect()) {
+        await ctx.db.patch(c._id, { lastReadAt: before + skew - 1 });
+      }
+    });
+    const res = await apply(t, ids.chatId, [], { hasActiveRun: true, activeRunIds: ["r"], readAt: before + skew });
+    expect((res as { stale: boolean }).stale).toBe(false);
+    const until = await t.run((ctx) => projectedGatewayHoldUntil(ctx, ids.chatId));
+    // The fact is fresh from when CONVEX received it: never +75 min, never already stale.
+    expect(until).not.toBeNull();
+    expect(until!).toBeGreaterThanOrEqual(before + SESSION_ACTIVE_FRESH_MS);
+    expect(until!).toBeLessThanOrEqual(Date.now() + SESSION_ACTIVE_FRESH_MS);
+  });
+
+  test("on → rollback with a re-check armed by a skewed read: the queue leaves within the bound (codex phase 6 pass 2)", async () => {
+    vi.useFakeTimers();
+    const t = convexTest(schema, modules);
+    const ids = await seed(t, "on");
+    await apply(t, ids.chatId, [], { hasActiveRun: true, activeRunIds: ["r"], readAt: Date.now() + 60 * 60_000 });
+    const q = await queueSend(t, ids);
+    await t.mutation(internal.bridge.drainAfterCallRefusal, { chatId: ids.chatId });
+    expect((await t.run((ctx) => ctx.db.get(q)))?.status).toBe("queued");
+    const armed = (await t.run((ctx) => ctx.db.get(ids.chatId)))?.projectedHoldRecheckAt;
+    expect(armed!).toBeLessThanOrEqual(Date.now() + SESSION_ACTIVE_FRESH_MS);
+    await setMode(t, "shadow");
+    vi.advanceTimersByTime(SESSION_ACTIVE_FRESH_MS + 5_000);
+    await t.finishAllScheduledFunctions(vi.runAllTimers);
+    expect((await t.run((ctx) => ctx.db.get(q)))?.status, "held by a bridge-clock deadline").not.toBe("queued");
+    vi.useRealTimers();
   });
 
   test("shadow: the gateway's fact is measured, never a hold", async () => {

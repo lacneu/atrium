@@ -136,6 +136,7 @@ import type * as lib_outboxQueue from "../lib/outboxQueue.js";
 import type * as lib_partDepth from "../lib/partDepth.js";
 import type * as lib_permissionMode from "../lib/permissionMode.js";
 import type * as lib_planOrder from "../lib/planOrder.js";
+import type * as lib_pressureTelemetry from "../lib/pressureTelemetry.js";
 import type * as lib_privateToolArgs from "../lib/privateToolArgs.js";
 import type * as lib_projectedRuns from "../lib/projectedRuns.js";
 import type * as lib_promptInjections from "../lib/promptInjections.js";
@@ -332,6 +333,7 @@ declare const fullApi: ApiFromModules<{
   "lib/partDepth": typeof lib_partDepth;
   "lib/permissionMode": typeof lib_permissionMode;
   "lib/planOrder": typeof lib_planOrder;
+  "lib/pressureTelemetry": typeof lib_pressureTelemetry;
   "lib/privateToolArgs": typeof lib_privateToolArgs;
   "lib/projectedRuns": typeof lib_projectedRuns;
   "lib/promptInjections": typeof lib_promptInjections;

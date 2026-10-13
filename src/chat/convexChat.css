@@ -2360,6 +2360,14 @@ button.oc-bmk-rail__count:hover {
 }
 .oc-queue-card__btn--danger:hover:not(:disabled) { color: var(--destructive); }
 .oc-queue-card__btn:disabled { opacity: 0.4; cursor: default; }
+/* Phase 6: an input the GATEWAY queues — same card, its own state label. */
+.oc-queue-card__state {
+  flex-shrink: 0;
+  font-size: 0.75rem;
+  color: var(--muted-foreground);
+  white-space: nowrap;
+}
+.oc-queue-card--others .oc-queue-card__text { color: var(--muted-foreground); }
 
 /* ── Inline turn-activity group (interleaved flow, ChatGPT-style): a quiet
    collapsed row between narrative paragraphs; expand = the ToolCards. Carries
@@ -6271,6 +6279,16 @@ button.oc-perm__opt:disabled {
   border-radius: var(--radius, 0.5rem);
   background: color-mix(in srgb, var(--destructive) 9%, var(--background));
   border: 1px solid color-mix(in srgb, var(--destructive) 35%, transparent);
+}
+/* Phase 6: a terminal that is a STATUS to check, not a failure (gateway state contention on
+   a projected conversation) — the warning amber the struggling chip uses, never red. */
+.oc-error-card--status {
+  background: color-mix(in srgb, oklch(0.74 0.16 75) 10%, var(--background));
+  border-color: color-mix(in srgb, oklch(0.74 0.16 75) 40%, transparent);
+}
+.oc-error-card--status .oc-error-card__icon,
+.oc-error-card--status .oc-error-card__title {
+  color: oklch(0.56 0.13 75);
 }
 .oc-error-card__icon {
   color: var(--destructive);

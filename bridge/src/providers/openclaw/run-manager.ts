@@ -9,6 +9,7 @@
 //
 // One RunManager handles one OpenClaw session (one chat).
 
+import type { PresendDescribeOutcome } from "../../core/pressure-telemetry.js";
 import { Normalizer } from "./normalizer.js";
 import { protocolDrift } from "./protocol-drift.js";
 import { TurnSink, type OutboundScan } from "../../core/turn-sink.js";
@@ -195,6 +196,11 @@ export class RunManager {
     this.providerSessionId = providerSessionId;
     this.normalizer = new Normalizer(sessionKey, providerSessionId);
     this.sink = new TurnSink(chatId, writer, outboundScan, sessionKey, onTurnError);
+  }
+
+  /** Where the turn's `chat.gateway_pressure` trace reads the gateway version from. */
+  setGatewayVersionSource(source: () => string | null): void {
+    this.sink.setGatewayVersionSource(source);
   }
 
   // ── TRANSCRIPT PROJECTION `on` (redesign phase 3) ─────────────────────────────────
@@ -793,6 +799,9 @@ export class RunManager {
         fillPct?: number | null;
         fillSource?: SessionFillSource | null;
         model?: string | null;
+        /** How the pre-send describe went (core/pressure-telemetry.ts): answered with a
+         *  session, answered that there is none, or failed (threw / unreadable). */
+        describe?: PresendDescribeOutcome;
       };
       /** Spontaneous (announce) turn: the sink DEFERS creating the assistant
        *  message until the normalizer proves visible content (turn-sink). */

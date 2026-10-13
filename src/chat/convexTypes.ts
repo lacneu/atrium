@@ -220,6 +220,8 @@ export interface ConvexMessageView {
   status: MessageStatus;
   /** USER rows, transcript projection `on`: what the gateway does with the input. */
   custody?: "accepted" | "queued" | "steered" | "persisted" | "cancelled" | "interrupted";
+  /** Phase 6: present only while the gateway holds this input queued (its send identity). */
+  queuedSendId?: string;
   /** ASSISTANT rows, projection `on`: the run's bubble settled at a steered input. */
   steerSegment?: boolean;
   /** ASSISTANT rows, projection `on` (phase 5): the delegation chain's display group —

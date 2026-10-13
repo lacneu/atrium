@@ -444,9 +444,9 @@ export const KNOWN_AGENT_FIELDS: ReadonlySet<string> = new Set([
  * matrix instead of being invisible omissions.
  */
 export const COVERAGE_SUMMARY = {
-  handled: 348,
+  handled: 349,
   ignored: 814,
-  gaps: 920,
+  gaps: 919,
   /** The declared gaps, by schema path — the actionable part of the matrix.
    *
    *  TRANSCRIPT PROJECTION (2026-10-04, phases 1-2): the cursor reads of `chat.history`
@@ -523,7 +523,12 @@ export const COVERAGE_SUMMARY = {
    *  task probe answers empty there, TASKS_RPC_RETIRED_IN) and added 21 schemas and 13
    *  fields; among the 21 new gaps, the ones that matter are the session-event ancestors
    *  and the narration event (phases 2 and 6 of the transcript refonte) and the queue
-   *  cancellation `ChatAbortParams.discardPendingInput` (phase 6). */
+   *  cancellation `ChatAbortParams.discardPendingInput` (phase 6).
+   *
+   *  GATEWAY QUEUE (2026-10-12, transcript refonte phase 6): `ChatAbortParams.discardPendingInput`
+   *  is handled — the withdraw of an input the gateway queues, offered from the composer's
+   *  queue dock. `ChatStatusEvent.phase` stays a gap: its 2026.9.7 value `waiting_for_state`
+   *  has no producer at v2026.9.8/9.9. */
   gapList: [
     "AgentActivityItem.approvalId",
     "AgentActivityItem.approvalSlug",
@@ -559,7 +564,6 @@ export const COVERAGE_SUMMARY = {
     "AgentsFilesSetParams.expectedMissing",
     "ApprovalPresentation.externalResolution",
     "AuthProbeStatus",
-    "ChatAbortParams.discardPendingInput",
     "ChatAbortParams.preserveSideRuns",
     "ChatAbortedEvent.errorMessage",
     "ChatAccountSelection.authProfileId",

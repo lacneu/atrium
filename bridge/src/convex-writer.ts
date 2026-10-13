@@ -470,8 +470,8 @@ export interface ConvexWriter {
     chatId: string,
     messageId: string,
     data: {
-      totalTokens: number | null;
-      contextTokens: number | null;
+      totalTokens?: number | null;
+      contextTokens?: number | null;
       costUsd?: number | null;
       toolCalls?: number;
       compaction: string | null;
@@ -520,6 +520,14 @@ export interface ConvexWriter {
       postInputTokens?: number | null;
       postOutputTokens?: number | null;
       postCostUsd?: number | null;
+      /** A reading that is not complete says so (core/pressure-telemetry.ts): its status,
+       *  the counters left out, the cause, the gateway version and the run's output
+       *  tokens. No gateway-supplied free string (codex phase 6 pass 3). */
+      telemetryStatus?: "partial" | "missing";
+      telemetryMissing?: string[];
+      telemetryCause?: string;
+      gatewayVersion?: string;
+      runOutputTokens?: number;
     },
   ): Promise<void>;
   /** Live processing-phase hint for the Tools-ON placeholder (fire-and-forget;
@@ -973,8 +981,8 @@ type IngestOp =
       op: "gatewayPressure";
       chatId: string;
       messageId: string;
-      totalTokens: number | null;
-      contextTokens: number | null;
+      totalTokens?: number | null;
+      contextTokens?: number | null;
       costUsd?: number | null;
       toolCalls?: number;
       compaction: string | null;
@@ -993,6 +1001,11 @@ type IngestOp =
       postInputTokens?: number | null;
       postOutputTokens?: number | null;
       postCostUsd?: number | null;
+      telemetryStatus?: "partial" | "missing";
+      telemetryMissing?: string[];
+      telemetryCause?: string;
+      gatewayVersion?: string;
+      runOutputTokens?: number;
     }
   // Outbound media is a 3-step, base64-free flow (Convex upload URL pattern):
   //   1. getUploadUrl -> Convex `ctx.storage.generateUploadUrl()` (no size limit)
@@ -2076,8 +2089,8 @@ export class HttpConvexWriter implements ConvexWriter {
     chatId: string,
     messageId: string,
     data: {
-      totalTokens: number | null;
-      contextTokens: number | null;
+      totalTokens?: number | null;
+      contextTokens?: number | null;
       costUsd?: number | null;
       toolCalls?: number;
       compaction: string | null;

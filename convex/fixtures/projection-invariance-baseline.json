@@ -431,6 +431,46 @@
     "bytesRead": 666835,
     "bytesWritten": 0
   },
+  "off:cancelGatewayQueuedInput": {
+    "ranges": 6,
+    "reads": 6,
+    "writes": 0,
+    "scheduled": 0,
+    "bytesRead": 903,
+    "bytesWritten": 0
+  },
+  "off:followUpStateQueuedCursor": {
+    "ranges": 5,
+    "reads": 5,
+    "writes": 0,
+    "scheduled": 0,
+    "bytesRead": 670,
+    "bytesWritten": 0
+  },
+  "off:finalizeStateContention": {
+    "ranges": 11,
+    "reads": 7,
+    "writes": 3,
+    "scheduled": 2,
+    "bytesRead": 1710,
+    "bytesWritten": 829
+  },
+  "off:gatewayPressureComplete": {
+    "ranges": 3,
+    "reads": 3,
+    "writes": 1,
+    "scheduled": 0,
+    "bytesRead": 571,
+    "bytesWritten": 554
+  },
+  "off:gatewayPressureIncomplete": {
+    "ranges": 3,
+    "reads": 3,
+    "writes": 1,
+    "scheduled": 0,
+    "bytesRead": 571,
+    "bytesWritten": 502
+  },
   "shadow:deleteMessage": {
     "ranges": 182,
     "reads": 54,
@@ -862,5 +902,45 @@
     "scheduled": 0,
     "bytesRead": 666835,
     "bytesWritten": 0
+  },
+  "shadow:cancelGatewayQueuedInput": {
+    "ranges": 6,
+    "reads": 6,
+    "writes": 0,
+    "scheduled": 0,
+    "bytesRead": 909,
+    "bytesWritten": 0
+  },
+  "shadow:followUpStateQueuedCursor": {
+    "ranges": 5,
+    "reads": 5,
+    "writes": 0,
+    "scheduled": 0,
+    "bytesRead": 676,
+    "bytesWritten": 0
+  },
+  "shadow:finalizeStateContention": {
+    "ranges": 11,
+    "reads": 7,
+    "writes": 3,
+    "scheduled": 2,
+    "bytesRead": 1710,
+    "bytesWritten": 829
+  },
+  "shadow:gatewayPressureComplete": {
+    "ranges": 3,
+    "reads": 3,
+    "writes": 1,
+    "scheduled": 0,
+    "bytesRead": 574,
+    "bytesWritten": 554
+  },
+  "shadow:gatewayPressureIncomplete": {
+    "ranges": 3,
+    "reads": 3,
+    "writes": 1,
+    "scheduled": 0,
+    "bytesRead": 574,
+    "bytesWritten": 502
   }
 }

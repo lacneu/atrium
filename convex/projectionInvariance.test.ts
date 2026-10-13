@@ -10,7 +10,10 @@
 // was produced by running THIS file against the 0.95.0 tree (HEAD before phase 4) with
 // PROJECTION_INVARIANCE_RECORD=<path>, then RE-MEASURED on the 0.96.0 tree (`git archive
 // v0.96.0`) once phase 5 added its paths — the delivery runs' merge, the sub-agent
-// observations, the message list (every older entry came out identical). Each path below is
+// observations, the message list (every older entry came out identical) — and once more on the
+// v0.97.0 tree (`git archive v0.97.0`) when phase 6 added its paths (the gateway-queue withdraw,
+// the follow-up state with queued inputs, a state-contention finalize; the 108 older entries
+// identical). Each path below is
 // replayed here and its counts must be identical. Neutralizing the gate
 // (lib/transcriptProjection `transcriptStoredText`) turns it red.
 
@@ -254,8 +257,21 @@ const PATHS = [
   // even when the conversation's recent bubbles weigh more than a transaction may read.
   "peekSubAgents",
   "peekSubAgentsHeavy",
+  // phase 6 (9.7 complete): the composer's gateway queue — the withdraw of an input the
+  // gateway holds, and the follow-up state with a cursor that names queued inputs — and the
+  // finalize of a turn the gateway failed on state contention. Measured on the v0.97.0 tree
+  // before any phase-6 code.
+  "cancelGatewayQueuedInput",
+  "followUpStateQueuedCursor",
+  "finalizeStateContention",
+  // codex phase 6 pass 3: the `chat.gateway_pressure` ingest (every mode) — a complete and
+  // an incomplete reading cost exactly 0.97.0's reads. Only the stored trace's BYTES may
+  // differ (the closed-vocabulary telemetry fields), see GATEWAY_PRESSURE_PATHS.
+  "gatewayPressureComplete",
+  "gatewayPressureIncomplete",
 ] as const;
 type PathName = (typeof PATHS)[number];
+const GATEWAY_PRESSURE_PATHS = new Set<PathName>(["gatewayPressureComplete", "gatewayPressureIncomplete"]);
 const DELEGATION_PATHS = new Set<PathName>([
   "retryAnsweredBatch",
   "retryUnansweredBatch",
@@ -455,6 +471,67 @@ async function runPath(path: PathName, mode: Mode): Promise<Counts> {
         return await measure(() => t.mutation(internal.turnRetry.autoRetryTurn, { chatId: w.chatId, messageId: w.erroredId!, attempt: 1 }));
       case "followUpState":
         return await measure(() => asUser.query(api.followUp.followUpState, { chatId: w.chatId }));
+      case "followUpStateQueuedCursor":
+        // A read cursor (shadow writes one; off gets the same row here) that says the
+        // gateway queues two inputs, and a user bubble the gateway holds.
+        await t.run(async (ctx) => {
+          const cursor = await ctx.db.query("transcriptCursors").first();
+          if (cursor !== null) await ctx.db.patch(cursor._id, { pendingQueuedCount: 2, pendingInputsTotal: 2 } as never);
+          else
+            await ctx.db.insert("transcriptCursors", {
+              chatId: w.chatId, sessionKey: SK, instanceName: "prod", sessionId: "s-1", floorSeq: 0, floorAt: 1,
+              lastKind: "page", reads: 1, resets: 0, unidentified: 0, pendingQueuedCount: 2, pendingInputsTotal: 2, updatedAt: 1,
+            } as never);
+          await ctx.db.patch(w.messages[w.messages.length - 2]!, { custody: "queued" } as never);
+        });
+        return await measure(() => asUser.query(api.followUp.followUpState, { chatId: w.chatId }));
+      case "cancelGatewayQueuedInput":
+        await t.run((ctx) => ctx.db.patch(w.messages[w.messages.length - 2]!, { custody: "queued" } as never));
+        return await measure(() =>
+          asUser.mutation(api.followUp.cancelGatewayQueuedInput, { messageId: w.messages[w.messages.length - 2]! }),
+        );
+      case "gatewayPressureComplete":
+      case "gatewayPressureIncomplete": {
+        const instanceId = (await t.run((ctx) => ctx.db.query("instances").collect())).find((i) => i.name === "prod")!._id;
+        const { plaintext } = await asAdmin.action(api.bridgeAuth.mintBridgeSecret, { instanceId });
+        const bubble = w.messages[w.messages.length - 1]!;
+        const body =
+          path === "gatewayPressureComplete"
+            ? { totalTokens: 41_000, contextTokens: 272_000, fillPct: 15, fillSource: "gateway_estimate", model: "gpt-5.5", pressureSource: "presend_describe", turnOrigin: "dispatch" }
+            : {
+                totalTokens: null,
+                contextTokens: null,
+                pressureSource: "absent",
+                turnOrigin: "gateway_initiated",
+                // What a 0.98.0 bridge adds; 0.97.0's ingest ignores it.
+                telemetryStatus: "missing",
+                telemetryMissing: ["totalTokens", "contextTokens", "fillPct"],
+                telemetryCause: "gateway_initiated_run",
+                gatewayVersion: "2026.9.8",
+                runOutputTokens: 217,
+                agentId: "main",
+                runModel: "gpt-5.5",
+              };
+        return await measure(() =>
+          t.fetch("/bridge/ingest", {
+            method: "POST",
+            headers: { "Content-Type": "application/json", Authorization: `Bearer ${plaintext}` },
+            body: JSON.stringify({ op: "gatewayPressure", chatId: w.chatId, messageId: bubble, toolCalls: 2, compaction: null, stopReason: "stop", finalizeCause: "gateway_final", ...body }),
+          }),
+        );
+      }
+      case "finalizeStateContention": {
+        const id = (await t.mutation(internal.stream.startAssistant, { chatId: w.chatId, runId: "fresh", turnSessionKey: SK })) as Id<"messages">;
+        return await measure(() =>
+          t.mutation(internal.stream.finalize, {
+            messageId: id,
+            status: "error",
+            text: "",
+            error: "The turn was interrupted while the server was busy. Check its status before trying again.",
+            errorKind: "gateway_storage_busy",
+          } as never),
+        );
+      }
       case "resumeTarget":
         return await measure(() => t.query(internal.stuckStreams.resumeTarget, { messageId: w.stuckId! }));
       case "markResumed":
@@ -647,7 +724,17 @@ describe("a conversation never `on` costs exactly what it cost before phase 4", 
       test(`${mode} · ${path}`, async () => {
         const c = await run(path, mode);
         recorded[`${mode}:${path}`] = c;
-        if (RECORD === undefined) expect(c).toEqual(baseline[`${mode}:${path}`]);
+        if (RECORD === undefined) {
+          if (GATEWAY_PRESSURE_PATHS.has(path)) {
+            // The trace written carries the closed telemetry fields 0.97.0 did not (pinned
+            // field by field in gatewayPressureTelemetry.test.ts): its bytes differ, nothing else.
+            const { bytesWritten: _now, ...rest } = c;
+            const { bytesWritten: _then, ...was } = baseline[`${mode}:${path}`]!;
+            expect(rest).toEqual(was);
+          } else {
+            expect(c).toEqual(baseline[`${mode}:${path}`]);
+          }
+        }
       }, 60_000);
     }
   }

@@ -12,6 +12,7 @@ import {
   type AutoRetryOutcome,
   errorDetailView,
   CONTEXT_OVERFLOW_CODES,
+  STATUS_NOT_FAILURE_CODES,
   messageHasText,
   activeToolFromParts,
   toolFamily,
@@ -220,11 +221,16 @@ export function RunStatus() {
     // localized headline; the gateway's text demotes to a detail line underneath,
     // masked of any credential id.
     const { headline, detail, rawDetail, code } = errorDetailView(error, errorCode);
+    const statusTitle = code !== null ? STATUS_NOT_FAILURE_CODES.get(code) : undefined;
     return (
-      <div className="oc-error-card" role="alert" title={runId ? `run ${runId}` : undefined}>
+      <div
+        className={statusTitle ? "oc-error-card oc-error-card--status" : "oc-error-card"}
+        role={statusTitle ? "status" : "alert"}
+        title={runId ? `run ${runId}` : undefined}
+      >
         <CircleAlert size={18} className="oc-error-card__icon" aria-hidden />
         <div className="oc-error-card__body">
-          <span className="oc-error-card__title">{view.label}</span>
+          <span className="oc-error-card__title">{statusTitle ? statusTitle() : view.label}</span>
           {headline ? (
             <span className="oc-error-card__msg">{headline}</span>
           ) : null}

@@ -157,9 +157,12 @@ describe("the gateway-pressure trace says where its counters came from", () => {
     expect(writer.pressures[1]).toMatchObject({
       pressureSource: "absent",
       turnOrigin: "gateway_initiated",
-      totalTokens: null,
-      contextTokens: null,
+      // Since 0.98.0 the gap is SAID, never a silent null (test/pressure-telemetry.test.ts).
+      telemetryStatus: "missing",
+      telemetryCause: "gateway_initiated_run",
     });
-    expect(writer.pressures[1]?.fillPct).toBeUndefined();
+    for (const k of ["totalTokens", "contextTokens", "fillPct"]) {
+      expect(Object.hasOwn(writer.pressures[1]!, k), k).toBe(false);
+    }
   });
 });

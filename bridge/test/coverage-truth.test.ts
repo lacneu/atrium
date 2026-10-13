@@ -53,6 +53,7 @@ const PROOF_KINDS = ["golden-corpus", "live-bench", "deterministic-test"] as con
  *  FROZEN_GRANDFATHER in bench-attestation.test.ts. Growing is free; removing a name
  *  means editing THIS list, which a reviewer sees. */
 const FROZEN_TRUTH_FLOOR = [
+  "ChatAbortParams.discardPendingInput",
   "SessionRow.visibility",
   "SessionRow.sharingRole",
   "SessionRow.permissionMode",

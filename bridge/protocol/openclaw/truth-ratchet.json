@@ -197,6 +197,10 @@
     {
       "path": "ChatPendingInputsPage.queuedCount",
       "scan": true
+    },
+    {
+      "path": "ChatAbortParams.discardPendingInput",
+      "scan": false
     }
   ]
 }

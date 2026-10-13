@@ -365,8 +365,20 @@
           "note": "NOT sent, so the stop button also kills a BTW side run in flight. Upstream semantics (server-methods/chat.ts): with the flag, runs whose `turnKind === \"btw\"` are SPARED from the abort — exactly the side-result runs Atrium already renders. Same floor constraint and same remedy as expectedSessionRoutingContract: version-gated, with the upstream TUI's send-then-retry fallback."
         },
         "discardPendingInput": {
-          "status": "gap",
-          "note": "NEW at 2026.9.7: drop a gateway-queued input instead of aborting the active run (chat-abort-handler.ts, requires an exact runId). Atrium's Stop aborts the streaming run by runId and never cancels a gateway-queued input; showing and cancelling the gateway queue is phase 6 of the transcript refonte."
+          "status": "handled",
+          "by": "server.ts /abort route (planProjectedStop) -> core/rpc-params.ts chatAbortParams `{runId, discardPendingInput:true}` (exact runId = the send identity the gateway indexes the queued turn by) — the withdraw of an input the gateway queues, offered from the composer's queue dock (transcript refonte phase 6, projection `on`, capability `discardPendingInput` >= 2026.9.7); convex/followUp.ts cancelGatewayQueuedInput -> bridge.dispatchAbort.",
+          "anchor": {
+            "file": "src/core/rpc-params.ts",
+            "token": "discardPendingInput"
+          },
+          "proof": {
+            "kind": "deterministic-test",
+            "ref": "bridge/test/projection-send-path.test.ts",
+            "note": "Live: the busy-send case `bs-withdraw-queued` (openclaw-notes live-bench, 2026.9.8) withdraws a followup-queued input and checks the gateway never answers it; busy-send runs are not promoted to the golden corpus (their frames span several sockets), so the field is pinned on the params the route builds."
+          },
+          "verifiedVersions": [
+            "2026.9.8"
+          ]
         }
       }
     },
@@ -1021,7 +1033,7 @@
         },
         "phase": {
           "status": "gap",
-          "note": "2026.9.4 — the run's startup phase, and since this version NOT startup-only (a status frame now arrives mid-turn). The startup values stay deliberately unrendered (they describe work Atrium does not show); only the `retry`-bearing frame produces an event. See `retry`."
+          "note": "2026.9.4 — the run's startup phase, and since this version NOT startup-only (a status frame now arrives mid-turn). The startup values stay deliberately unrendered (they describe work Atrium does not show); only the `retry`-bearing frame produces an event. See `retry`. 2026.9.7 adds `waiting_for_state` (logs-chat.ts ChatRunStartupPhaseSchema; the Control UI labels it \"Temporarily busy—retrying…\", ui/src/pages/chat/chat-run-startup.ts:45 at v2026.9.8): DECLARED, NOT ADOPTED — no producer emits it at v2026.9.8 or v2026.9.9 (`resolveRunStartupPhase`, src/auto-reply/reply/agent-runner-turn-timing.ts:20-44, never returns it; the other emitters name other phases), so a reader could be proven neither live nor in the corpus. Re-examine when a producer appears (transcript refonte phase 6, §15.1)."
         },
         "runId": {
           "status": "handled",

@@ -654,23 +654,27 @@ describe("bridge_ingest httpAction: addMediaPart dispatch", () => {
       JSON.parse(tr.meta ?? "{}"),
     );
     const orphanNoField = traces3[traces3.length - 1];
+    // Since 0.98.0 an UNKNOWN fill is left out and SAID (telemetryMissing), never a null.
     expect(
       orphanNoField?.fillPct,
       "an orphan source falls through to the legacy ratio and hides behind it",
-    ).toBeNull();
+    ).toBeUndefined();
+    expect(orphanNoField?.telemetryMissing).toEqual(["fillPct"]);
     expect(orphanNoField?.fillSource).toBeUndefined();
 
     const [rejectedLabel, orphanSource] = traces.slice(-2);
     expect(
       rejectedLabel?.fillPct,
       "a figure whose label was refused is kept anyway, and reads unattributed",
-    ).toBeNull();
+    ).toBeUndefined();
+    expect(rejectedLabel?.telemetryMissing).toEqual(["fillPct"]);
     expect(rejectedLabel?.fillSource).toBeUndefined();
     expect(
       orphanSource?.fillSource,
       "a provenance is stored with no measurement to attribute",
     ).toBeUndefined();
-    expect(orphanSource?.fillPct).toBeNull();
+    expect(orphanSource?.fillPct).toBeUndefined();
+    expect(orphanSource?.telemetryMissing).toEqual(["fillPct"]);
   });
 
   test("a measured UNKNOWN is not answered with a ratio of our own", async () => {
@@ -695,8 +699,10 @@ describe("bridge_ingest httpAction: addMediaPart dispatch", () => {
     expect(
       last?.fillPct,
       "a reading the send path declined to state is re-derived here anyway",
-    ).toBeNull();
+    ).toBeUndefined();
     expect(last?.fillSource).toBeUndefined();
+    expect(last?.telemetryStatus).toBe("partial");
+    expect(last?.telemetryMissing).toEqual(["fillPct"]);
   });
 
   test("a REFUSED compaction is named as a refusal, not as a failure", async () => {

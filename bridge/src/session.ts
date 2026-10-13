@@ -392,6 +392,8 @@ class Session implements BridgeSession {
       // clear can be matched exactly rather than dropping whatever is bound.
       routing.openclawChatId ?? null,
     );
+    // The connection's negotiated version, read at trace time (a reconnect may change it).
+    this.runManager.setGatewayVersionSource(() => this.connection.gatewayVersion);
     // FRAME-LOSS reporting (see providers/openclaw/frame-seq.ts). The gateway
     // drops frames destined for this socket when its outbound buffer is full,
     // advancing the envelope `seq` as it does — the hole is the only trace.
