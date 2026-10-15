@@ -76,6 +76,7 @@ import {
   type BridgeEvent,
 } from "../../core/events.js";
 import type { FinalizeCause } from "../../core/finalize-causes.js";
+import type { SnapshotSource } from "../../core/snapshot-source.js";
 import { isDeliveryRunId } from "../../core/async-task.js";
 import {
   isProvenanceStream,
@@ -1833,7 +1834,7 @@ export class Normalizer {
       );
       return;
     }
-    this.applyVisible(text, false, false, now, events);
+    this.applyVisible(text, false, false, now, events, null);
   }
 
   // -- chat (5.19 official path) -------------------------------------------
@@ -2206,7 +2207,7 @@ export class Normalizer {
           );
         }
         this.sawTruncatedFinal = true;
-        this.applyVisible(snapshotText, true, false, now, events);
+        this.applyVisible(snapshotText, true, false, now, events, "chat_final_truncated");
         if (!this.finalized) {
           // A lifecycle end may already have armed its 10 s follow-on grace, and
           // the recovery RPC alone is allowed 10 s: leaving it in place would
@@ -2218,7 +2219,14 @@ export class Normalizer {
         }
         return;
       }
-      this.applyVisible(snapshotText, true, isFinal, now, events);
+      this.applyVisible(
+        snapshotText,
+        true,
+        isFinal,
+        now,
+        events,
+        isFinal ? "chat_final" : "chat_delta",
+      );
       return;
     }
     if (isString(deltaText) && deltaText) {
@@ -2228,11 +2236,11 @@ export class Normalizer {
       // precedence: a mid-stream refresh is followed by MORE deltas, which a
       // locked hasSnapshot would silently drop (stream stuck to timeout).
       if (payload.replace === true) {
-        this.applyVisible(deltaText, true, isFinal, now, events, true);
+        this.applyVisible(deltaText, true, isFinal, now, events, "chat_delta_replace", true);
         this.hasSnapshot = false; // stay in delta mode; the stream continues
         return;
       }
-      this.applyVisible(deltaText, false, isFinal, now, events);
+      this.applyVisible(deltaText, false, isFinal, now, events, null);
       return;
     }
     // No usable text. A final with no deliverable is an empty final: wait for
@@ -2377,15 +2385,23 @@ export class Normalizer {
       if (isString(text) && text) {
         // Full snapshot: replace and lock out later deltas/acks.
         this.collectShortcodeWidgets(text, events);
-        this.applyVisible(text, true, false, now, events, replace);
+        this.applyVisible(
+          text,
+          true,
+          false,
+          now,
+          events,
+          replace ? "agent_assistant_replace" : "agent_assistant_text",
+          replace,
+        );
         if (replace) this.hasSnapshot = false;
       } else if (isString(delta) && delta) {
         if (replace) {
-          this.applyVisible(delta, true, false, now, events, true);
+          this.applyVisible(delta, true, false, now, events, "agent_assistant_replace", true);
           this.hasSnapshot = false;
         } else {
           // Legacy 5.7 incremental: append verbatim (spaces are load-bearing).
-          this.applyVisible(delta, false, false, now, events);
+          this.applyVisible(delta, false, false, now, events, null);
         }
       }
       return;
@@ -2855,7 +2871,14 @@ export class Normalizer {
       // A transcript reply carries the `[embed]` shortcode the live chat part stood
       // for (chat.history projects no canvas part in code mode, captured on 2026.9.6).
       this.collectShortcodeWidgets(text, events);
-      this.applyVisible(text, true, !heldTerminal && !othersInFlight, now, events);
+      this.applyVisible(
+        text,
+        true,
+        !heldTerminal && !othersInFlight,
+        now,
+        events,
+        "history_recovery",
+      );
       return this.runHeldTerminal(now, events, othersInFlight, heldTerminal);
     }
     // Work resumed while this fetch was on the wire. What came back is an OLDER
@@ -2953,7 +2976,7 @@ export class Normalizer {
         const { text: visible, unreadable } = this.messageToolText(data.args);
         if (visible) {
           this.hasVisibleToolText = true;
-          this.applyVisible(visible, true, false, now, events);
+          this.applyVisible(visible, true, false, now, events, "message_tool");
         } else if (unreadable) {
           // The reply mechanism ran and we cannot read what it sent. LOUD, once
           // per turn: silence here is exactly how a turn ended blank with no
@@ -3646,7 +3669,12 @@ export class Normalizer {
         // an empty snapshot so the sink CLEARS that stale liveText too — otherwise
         // a replay that yields no new text would let stream.finalize fall back to
         // the invalidated prefix. The replay refills it when real text resumes.
-        events.push({ type: EVENT_MESSAGE_SNAPSHOT, text: "", replace: true });
+        events.push({
+          type: EVENT_MESSAGE_SNAPSHOT,
+          text: "",
+          replace: true,
+          snapshotSource: "compaction_reset" satisfies SnapshotSource,
+        });
         events.push({ type: EVENT_RUN_STATUS, status: "compacting", runId: this.currentRunId });
         // Signal the compaction itself (persisted marker), and suppress the
         // follow-up session-id rotation — the replay's rotated id is THIS same
@@ -3790,6 +3818,10 @@ export class Normalizer {
     isFinal: boolean,
     now: number,
     events: BridgeEvent[],
+    /** WHICH producer path this write comes from — carried on the snapshot event to
+     *  the anti-regression guard's trace, so a refused write names its frame. `null`
+     *  on a delta-only call; ignored whenever the write goes out as a delta. */
+    source: SnapshotSource | null,
     /** This snapshot is ALLOWED to shorten the persisted reply. Only the
      *  upstream `ChatDeltaEventSchema.replace` refresh sets it: everything else
      *  on this path is the gateway's growing view of the same answer, and a
@@ -3960,6 +3992,7 @@ export class Normalizer {
       type: eventType,
       text: this.safeSanitizeText(emitted),
       ...(isSnapshot && authorizedShrink ? { replace: true } : {}),
+      ...(isSnapshot && source !== null ? { snapshotSource: source } : {}),
     });
     // A MEDIA: directive (or a bare outbound path) in the VISIBLE reply is a real
     // attachment — emit a media event so it renders as a downloadable part. We

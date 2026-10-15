@@ -155,6 +155,8 @@ import type * as lib_sendIdentity from "../lib/sendIdentity.js";
 import type * as lib_serverLocale from "../lib/serverLocale.js";
 import type * as lib_sessionAccess from "../lib/sessionAccess.js";
 import type * as lib_signedAnnouncements from "../lib/signedAnnouncements.js";
+import type * as lib_snapshotRegression from "../lib/snapshotRegression.js";
+import type * as lib_streamTrace from "../lib/streamTrace.js";
 import type * as lib_subAgentFailure from "../lib/subAgentFailure.js";
 import type * as lib_talk from "../lib/talk.js";
 import type * as lib_talkFreeze from "../lib/talkFreeze.js";
@@ -353,6 +355,8 @@ declare const fullApi: ApiFromModules<{
   "lib/serverLocale": typeof lib_serverLocale;
   "lib/sessionAccess": typeof lib_sessionAccess;
   "lib/signedAnnouncements": typeof lib_signedAnnouncements;
+  "lib/snapshotRegression": typeof lib_snapshotRegression;
+  "lib/streamTrace": typeof lib_streamTrace;
   "lib/subAgentFailure": typeof lib_subAgentFailure;
   "lib/talk": typeof lib_talk;
   "lib/talkFreeze": typeof lib_talkFreeze;

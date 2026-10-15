@@ -254,6 +254,11 @@ type IngestOp =
       // Declares an AUTHORIZED shrink (compaction reset / upstream `replace`
       // refresh). Absent = the snapshot may only grow (stream.setSnapshot).
       replace?: boolean;
+      // Diagnostics for the anti-regression guard (lib/snapshotRegression.ts):
+      // the producer of this snapshot / of the kept text. Absent from a bridge
+      // older than 0.100.1; normalized to a closed vocabulary server-side.
+      snapshotSource?: string;
+      keptSource?: string;
       runId?: string | null;
       recSessionId?: string;
       bridgeRecvAt?: number;
@@ -953,6 +958,14 @@ export const ingest = httpAction(async (ctx, request) => {
         text: body.text,
         boundInstanceName,
         ...(body.replace !== undefined ? { replace: body.replace } : {}),
+        // Only a string crosses into the mutation's validator: a malformed value
+        // from an untrusted body must cost the diagnostic, never the write.
+        ...(typeof body.snapshotSource === "string"
+          ? { snapshotSource: body.snapshotSource.slice(0, 64) }
+          : {}),
+        ...(typeof body.keptSource === "string"
+          ? { keptSource: body.keptSource.slice(0, 64) }
+          : {}),
         ...(body.runId !== undefined ? { expectedRunId: body.runId } : {}),
         recSessionId: body.recSessionId,
         bridgeRecvAt: body.bridgeRecvAt,

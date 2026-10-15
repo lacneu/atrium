@@ -80,6 +80,7 @@ export type { PlanPart } from "./core/plan-part.js";
 import type { PlanPart } from "./core/plan-part.js";
 import type { AgentRequestRecord, AgentRequestSettle } from "./core/agent-requests.js";
 import { errForLog } from "./core/log-safe-error.js";
+import type { SnapshotSource } from "./core/snapshot-source.js";
 
 export type FinalizeStatus = "complete" | "error" | "aborted";
 
@@ -413,11 +414,13 @@ export interface ConvexWriter {
 
   /** message.snapshot -> internal.stream.setSnapshot. `replace` declares an
    *  AUTHORIZED shrink (compaction reset / upstream `replace` refresh); without
-   *  it Convex refuses a snapshot that would shorten the displayed reply. */
+   *  it Convex refuses a snapshot that would shorten the displayed reply.
+   *  `source` names the producing path (closed vocabulary) for the guard's trace. */
   setSnapshot(
     messageId: string,
     text: string,
     replace?: boolean,
+    source?: SnapshotSource,
   ): Promise<boolean>;
   /** tool.status -> internal.stream.addPart(kind:tool). */
   addToolPart(messageId: string, part: ToolPart): Promise<void>;
@@ -943,6 +946,10 @@ type IngestOp =
       messageId: string;
       text: string;
       runId?: string | null;
+      /** The producer of THIS snapshot (diagnostic only; an older Convex ignores it). */
+      snapshotSource?: SnapshotSource;
+      /** The producer of the text Convex holds now, as this writer last confirmed it. */
+      keptSource?: SnapshotSource;
     } & RecTags)
   | {
       op: "advancePlan";
@@ -1384,6 +1391,11 @@ export class HttpConvexWriter implements ConvexWriter {
   // which corrects liveText whether or not the failed delta landed. Cleared once a
   // full snapshot resyncs; evicted with forgetMessage.
   private pendingResync = new Set<string>();
+  // WHICH producer wrote what `confirmedText` holds (the last successful write that
+  // advanced it: a snapshot's source, or `delta_stream` for flushed deltas). Rides a
+  // full setSnapshot as `keptSource`, so a write Convex refuses as a regression names
+  // BOTH sides of the conflict. Diagnostic only; evicted with forgetMessage.
+  private confirmedSource = new Map<string, SnapshotSource>();
   // PER-MESSAGE serialization chains: ordering is load-bearing only WITHIN a
   // message (a flush timer firing concurrently with a snapshot/finalize must not
   // scramble that message's ingest order). A SINGLE global chain (the old design)
@@ -1568,6 +1580,7 @@ export class HttpConvexWriter implements ConvexWriter {
     this.pendingFirstAt.delete(messageId);
     this.deltaCapped.delete(messageId);
     this.confirmedText.delete(messageId);
+    this.confirmedSource.delete(messageId);
     this.pendingResync.delete(messageId);
     this.chains.delete(messageId);
     this.recTurns.delete(messageId);
@@ -1844,6 +1857,7 @@ export class HttpConvexWriter implements ConvexWriter {
           messageId,
           (this.confirmedText.get(messageId) ?? "") + text,
         );
+        this.confirmedSource.set(messageId, "delta_stream");
         // Per-flush timing (~1 line per backend round-trip while streaming): the
         // production diagnostic that separates "backend slow" (high postMs),
         // "queue starved" (high waitedMs) and "gateway delivered late" (no flush
@@ -1915,6 +1929,7 @@ export class HttpConvexWriter implements ConvexWriter {
     messageId: string,
     text: string,
     replace?: boolean,
+    source?: SnapshotSource,
   ): Promise<boolean> {
     // t0: this snapshot FRAME's receipt (snapshot-streaming gateways never call
     // appendDelta, so without this the bridge-internal segment is empty for them).
@@ -1937,6 +1952,7 @@ export class HttpConvexWriter implements ConvexWriter {
     // ONLY after a SUCCESSFUL post (this.post propagates the rejection), so a failed
     // write leaves it at `prev` and the next snapshot re-extends with no gap.
     const prev = this.confirmedText.get(messageId) ?? "";
+    const kept = this.confirmedSource.get(messageId);
     const canSuffix =
       !this.pendingResync.has(messageId) &&
       text.length > prev.length &&
@@ -1957,6 +1973,8 @@ export class HttpConvexWriter implements ConvexWriter {
           messageId,
           text,
           ...(replace === true ? { replace: true } : {}),
+          ...(source !== undefined ? { snapshotSource: source } : {}),
+          ...(kept !== undefined ? { keptSource: kept } : {}),
           ...this.genTag(messageId),
           ...this.recTags(messageId, text, recvAt),
         });
@@ -1989,6 +2007,8 @@ export class HttpConvexWriter implements ConvexWriter {
     // ambiguity, so clear the flag.
     this.pendingResync.delete(messageId);
     this.confirmedText.set(messageId, text);
+    if (source !== undefined) this.confirmedSource.set(messageId, source);
+    else this.confirmedSource.delete(messageId);
     return true;
   }
 

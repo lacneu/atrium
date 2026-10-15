@@ -12,6 +12,23 @@
   Keep the rest of the dependency graph unchanged. Reject high and critical
   application dependency advisories in both Node CI jobs before merge.
 
+## [0.100.1] — Clearer diagnostics when a reply's text is refused as a regression
+
+Patch release. No behaviour change: the reply a user reads is decided exactly as before.
+Convex and the bridge both change. Deploy Convex first, then the bridge; either order is
+safe (an older Convex ignores the fields the new bridge adds, and an older bridge sends
+none of them — its refusals are still counted, without a producer).
+
+**A refused stream write now says which frame produced it.** Atrium refuses a live update
+that would shorten a reply already on screen. When that happened, every refused update
+wrote its own `snapshot_regression` trace — 25 for one turn in production — and none of
+them said where the update came from. The first refusal of a reply is now traced once, with
+the producer of the refused update and of the text that was kept (`snapshotSource`,
+`keptSource`: a closed list of the bridge's frame paths, `other` for anything unknown). Later
+refusals are only counted, and when the reply ends — finalize, the stuck-stream watchdog,
+the boot sweep, a deletion — one `snapshot_regression_summary` trace gives the count, the
+largest gap, the producers seen and the time span. Lengths and names only, never text.
+
 ## [0.100.0] — OpenClaw 2026.9.9, and a gateway that cannot store a file says so
 
 Minor release. OpenClaw 2026.9.9 is supported, validated on the live bench alongside Hermes

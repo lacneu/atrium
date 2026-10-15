@@ -62,6 +62,7 @@ import {
 import { userTurnAuthorLabels } from "./lib/turnAuthors";
 import { AGENT_REQUEST_DELETE_READS, deleteChatAgentRequests } from "./agentRequests";
 import { isTrashed } from "./lib/trash";
+import { traceRegressionSummary } from "./lib/streamTrace";
 import { deletionTombstones, transcriptStoredText } from "./lib/transcriptProjection";
 import {
   BLOB_RELEASE_READS,
@@ -326,6 +327,14 @@ async function sweepHiddenChatBatch(
         .query("streamingText")
         .withIndex("by_message", (q) => q.eq("messageId", m._id))
         .take(asked);
+      // The row's refusal counters die with it: summarize first (no extra read).
+      for (const row of live) {
+        await traceRegressionSummary(ctx, row, {
+          runId: m.runId,
+          streamStatus: m.status,
+          endedBy: "chat_purge",
+        });
+      }
       if (!(await drain(live, asked)) || budget <= 0) return more();
     }
     {

@@ -45,6 +45,7 @@ import {
   type ProvenancePart,
 } from "./provenance.js";
 import { errForLog } from "./log-safe-error.js";
+import { asSnapshotSource } from "./snapshot-source.js";
 
 /** The `widget` event's payload as the sink reads it (structurally). */
 interface WidgetDescriptorEvent {
@@ -1310,10 +1311,13 @@ export class TurnSink {
           // regression the stored text is still the longer one, and mirroring the
           // refused length here would anchor every later tool card at an offset
           // that does not exist in the reply the user is reading.
+          // The producing path rides along (closed vocabulary, structural only) so
+          // a refusal by the guard names the frame that wrote it.
           const snapApplied = await this.writer.setSnapshot(
             messageId,
             snap,
             snapReplace,
+            asSnapshotSource(event.snapshotSource),
           );
           if (snapApplied !== false) {
             this.sawVisibleText = snap.trim().length > 0;
@@ -2209,7 +2213,7 @@ export class TurnSink {
       earlyText
     ) {
       try {
-        await this.writer.setSnapshot(messageId, earlyText);
+        await this.writer.setSnapshot(messageId, earlyText, undefined, "early_text_media");
       } catch (e) {
         console.error(
           "[sink] early text snapshot failed (non-fatal):",

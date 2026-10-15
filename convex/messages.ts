@@ -80,6 +80,7 @@ import { isTrashed } from "./lib/trash";
 import { releaseBlob, storageIdsOfPart } from "./lib/blobs";
 import { deletionTombstones } from "./lib/transcriptProjection";
 import { deletionStart } from "./lib/displayGroupHead";
+import { traceRegressionSummary } from "./lib/streamTrace";
 
 // Hard upper bound on how many recent messages the reactive feed loads. Chosen
 // to cover a typical visible conversation while keeping the query (and the
@@ -2210,7 +2211,14 @@ export const deleteMessage = mutation({
         .query("streamingText")
         .withIndex("by_message", (q) => q.eq("messageId", m._id))
         .collect();
-      for (const s of live) await ctx.db.delete(s._id);
+      for (const s of live) {
+        await traceRegressionSummary(ctx, s, {
+          runId: m.runId,
+          streamStatus: "streaming",
+          endedBy: "message_deleted",
+        });
+        await ctx.db.delete(s._id);
+      }
       await clearLiveActivity(ctx, m._id);
       // SSE transport (Phase 1): a message truncated BEFORE its finalize GC ran (e.g. a
       // still-streaming later turn) leaks its stream chunks (which hold text). Schedule

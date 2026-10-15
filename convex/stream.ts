@@ -44,7 +44,11 @@ import {
 import { spawnAccepted, yieldHandedOff } from "./lib/toolOutcome";
 import { Doc, Id } from "./_generated/dataModel";
 import { messagePart } from "./schema";
-import { writeTraceEvent } from "./observability";
+import { traceRegressionSummary, traceStream } from "./lib/streamTrace";
+import {
+  nextRegressionState,
+  normalizeSnapshotSource,
+} from "./lib/snapshotRegression";
 import {
   deleteFileRowsForStorage,
   isFilePart,
@@ -168,92 +172,6 @@ const recArgs = {
   bridgeSkew: v.optional(v.number()),
   sizeBytes: v.optional(v.number()),
 };
-
-/**
- * Build the stable per-turn correlationId for an assistant message. Prefers
- * `chatId:runId` (the whole conversational turn); falls back to chatId, then to
- * the messageId, so a trace is always correlatable even mid-run.
- *
- * TODO(M8): the user half (send.ts traceSend) keys on `${chatId}:${outboxId}`,
- * which is never associated with this `${chatId}:${runId}`. Linking the two
- * halves end-to-end needs the bridge to carry a single correlationId across the
- * turn (write the runId back onto the outbox row, or echo a shared id through
- * startAssistant). Bridge wiring — deferred.
- */
-function streamCorrelationId(
-  chatId: Id<"chats">,
-  runId: string | undefined,
-  messageId: Id<"messages">,
-): string {
-  if (runId) return `${chatId}:${runId}`;
-  if (chatId) return `${chatId}`;
-  return `${messageId}`;
-}
-
-/**
- * Emit an `assistant.stream` trace (D2 metadata only — never message text).
- * Wrapped so a trace failure can NEVER abort the bridge's streaming mutation.
- */
-async function traceStream(
-  ctx: MutationCtx,
-  args: {
-    phase: "start" | "finalize" | "snapshot_regression" | "finalize_repaired";
-    chatId: Id<"chats">;
-    runId: string | undefined;
-    messageId: Id<"messages">;
-    streamStatus: "streaming" | "complete" | "error" | "aborted" | "dropped_empty";
-    textLen?: number;
-    /** Snapshot regression only: the LENGTHS of the kept and refused texts.
-     *  Lengths only — the texts themselves are conversational content (SOC2). */
-    oldLen?: number;
-    newLen?: number;
-    /** The CURATED failure class (`errorCode`) — a stable non-PHI code, never the
-     *  gateway's text. Without it the anomaly detector could only count errors:
-     *  a context overflow and two unrelated blips looked identical, so the signal
-     *  named a number instead of a cause (C-01). */
-    errorCode?: string;
-    /** WHICH AGENT failed, for a cause whose remedy is per agent
-     *  (PER_AGENT_FAILURE_CAUSES — a provider credential, permission, billing or model):
-     *  ids only, never text. */
-    failedAgent?: { agentId: string; instanceName?: string };
-    /** The provider id the gateway's re-authentication hint names (an operator
-     *  configuration value, shape-checked by `reauthProviderFromText`). */
-    authProvider?: string;
-  },
-): Promise<void> {
-  try {
-    await writeTraceEvent(ctx, {
-      kind: "assistant.stream",
-      direction: "inbound",
-      principalType: "system",
-      principalId: "bridge",
-      chatId: args.chatId,
-      runId: args.runId,
-      correlationId: streamCorrelationId(args.chatId, args.runId, args.messageId),
-      meta: JSON.stringify({
-        phase: args.phase,
-        messageId: args.messageId,
-        // String lifecycle status lives in meta (the `status` column is numeric).
-        streamStatus: args.streamStatus,
-        ...(args.textLen !== undefined ? { textLen: args.textLen } : {}),
-        ...(args.oldLen !== undefined ? { oldLen: args.oldLen } : {}),
-        ...(args.newLen !== undefined ? { newLen: args.newLen } : {}),
-        ...(args.errorCode !== undefined ? { errorCode: args.errorCode } : {}),
-        ...(args.failedAgent !== undefined
-          ? {
-              agentId: args.failedAgent.agentId,
-              ...(args.failedAgent.instanceName !== undefined
-                ? { instanceName: args.failedAgent.instanceName }
-                : {}),
-            }
-          : {}),
-        ...(args.authProvider !== undefined ? { authProvider: args.authProvider } : {}),
-      }),
-    });
-  } catch {
-    // Best-effort: never break the primary stream write on a trace error.
-  }
-}
 
 // Create the streaming assistant message for a run. Returns the message id the
 // bridge then threads through the rest of the stream calls.
@@ -2698,6 +2616,12 @@ export const setSnapshot = internalMutation({
     // here: this is the durable lock that makes the displayed reply insensitive
     // to any residual disorder upstream of Convex.
     replace: v.optional(v.boolean()),
+    // DIAGNOSTIC ONLY (never part of the accept/refuse decision): which producer
+    // path wrote this snapshot, and which wrote the text the bridge believes Convex
+    // holds. A free string on the wire (a newer bridge may know more paths), reduced
+    // to the closed vocabulary before it is stored or traced.
+    snapshotSource: v.optional(v.string()),
+    keptSource: v.optional(v.string()),
     ...boundArg,
   },
   handler: async (
@@ -2712,6 +2636,8 @@ export const setSnapshot = internalMutation({
       sizeBytes,
       expectedRunId,
       replace,
+      snapshotSource,
+      keptSource,
       boundInstanceName,
     },
   ) => {
@@ -2766,18 +2692,38 @@ export const setSnapshot = internalMutation({
       // stale/out-of-order snapshot silently truncated a reply the user had
       // already read, and nothing recorded it.
       if (replace !== true && text.length < (row.text ?? "").length) {
-        await traceStream(ctx, {
-          phase: "snapshot_regression",
-          chatId: row.chatId,
-          runId: message.runId,
-          messageId,
-          streamStatus: "streaming",
-          oldLen: (row.text ?? "").length,
+        const oldLen = (row.text ?? "").length;
+        const source = normalizeSnapshotSource(snapshotSource);
+        const kept = normalizeSnapshotSource(keptSource);
+        const { state, first } = nextRegressionState(row.snapshotRegression, {
+          oldLen,
           newLen: text.length,
+          source,
+          kept,
+          now,
         });
+        // ONE trace per stream, at its FIRST refusal: a producer that keeps losing
+        // to another refuses every frame (prod: 25 in 9 s), and the rest only
+        // count on the row — summarized once where the row ends.
+        if (first) {
+          await traceStream(ctx, {
+            phase: "snapshot_regression",
+            chatId: row.chatId,
+            runId: message.runId,
+            messageId,
+            streamStatus: "streaming",
+            oldLen,
+            newLen: text.length,
+            ...(source !== undefined ? { snapshotSource: source } : {}),
+            ...(kept !== undefined ? { keptSource: kept } : {}),
+          });
+        }
         // REMEMBER the refusal: this exact text usually comes back as the turn's
         // final, and finalize is where the kept reply is decided (codex P1).
-        await ctx.db.patch(row._id, { refusedText: text });
+        await ctx.db.patch(row._id, {
+          refusedText: text,
+          snapshotRegression: state,
+        });
         // The caller MUST know: the bridge mirrors `liveText` locally to send
         // suffix-only deltas, and a refused write it believed applied would
         // make the next suffix append onto text that never shrank (codex-class
@@ -4532,7 +4478,14 @@ export async function finalizeMessageCore(
   ) {
     // Nothing to show: the bubble goes, with its live row and live activity, in the
     // same transaction as the turn's end — then the turn ends like any other.
-    if (stRow !== null) await ctx.db.delete(stRow._id);
+    if (stRow !== null) {
+      await traceRegressionSummary(ctx, stRow, {
+        runId: message.runId,
+        streamStatus: "dropped_empty",
+        endedBy: "dropped_empty",
+      });
+      await ctx.db.delete(stRow._id);
+    }
     await clearLiveActivity(ctx, messageId);
     await ctx.db.delete(messageId);
     if (message.deliveryOwnBubble === true) {
@@ -4627,7 +4580,14 @@ export async function finalizeMessageCore(
   });
   // Delete the live-text row WITH the lifecycle flip (same atomic mutation) so the
   // "streaming <=> row exists" invariant holds and the watchdog won't re-see it.
-  if (stRow !== null) await ctx.db.delete(stRow._id);
+  if (stRow !== null) {
+    await traceRegressionSummary(ctx, stRow, {
+      runId: message.runId,
+      streamStatus: finalStatus,
+      endedBy: "finalize",
+    });
+    await ctx.db.delete(stRow._id);
+  }
   await clearLiveActivity(ctx, messageId);
   // A COMPLETED reply stamps the chat's `lastAssistantAt` — the single signal
   // the sidebar consumes for the arrival flash / unread dot / reply sound
@@ -6291,7 +6251,14 @@ export const splitSegment = internalMutation({
       updatedAt: now,
       ...(message.finalizedAt === undefined ? { finalizedAt: now } : {}),
     });
-    if (stRow !== null) await ctx.db.delete(stRow._id);
+    if (stRow !== null) {
+      await traceRegressionSummary(ctx, stRow, {
+        runId: message.runId,
+        streamStatus: "complete",
+        endedBy: "steer_segment",
+      });
+      await ctx.db.delete(stRow._id);
+    }
     await clearLiveActivity(ctx, messageId);
     await ctx.scheduler.runAfter(0, internal.stream.deleteStreamChunksStep, {
       messageId,

@@ -19,6 +19,7 @@ import { defineSchema, defineTable } from "convex/server";
 import { v } from "convex/values";
 import { authTables } from "@convex-dev/auth/server";
 import { instanceConfigValidator } from "./lib/instanceConfig";
+import { snapshotRegressionValidator } from "./lib/snapshotRegression";
 import {
   agentRequestAnswerValidator,
   agentRequestApprovalValidator,
@@ -3482,6 +3483,11 @@ export default defineSchema({
     // text the guard never refused) still win, which an existing abort test
     // proves is a real case. Transient: the row dies with the turn.
     refusedText: v.optional(v.string()),
+    // The guard's REFUSAL COUNTERS for this stream (lib/snapshotRegression.ts): the
+    // first refusal is traced in full, the rest only count here, and the path that
+    // ends the row traces ONE summary when there was more than one. Diagnostic only;
+    // absent on a stream that never had a refusal.
+    snapshotRegression: v.optional(snapshotRegressionValidator),
     updatedAt: v.number(),
     // Live PROCESSING PHASE of the in-flight turn (processing_history /
     // compacting / querying_gateway / awaiting_subagents) — shown by the

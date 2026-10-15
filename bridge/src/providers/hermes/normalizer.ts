@@ -24,6 +24,7 @@ import {
   type BridgeEvent,
 } from "../../core/events.js";
 import type { FinalizeCause } from "../../core/finalize-causes.js";
+import type { SnapshotSource } from "../../core/snapshot-source.js";
 import type { SseFrame } from "./sse.js";
 import { protocolDrift } from "../openclaw/protocol-drift.js";
 
@@ -448,7 +449,12 @@ export class HermesNormalizer {
       }
       if (typeof content === "string" && content) {
         return [
-          { type: EVENT_MESSAGE_SNAPSHOT, text: content, runId: this.runId },
+          {
+            type: EVENT_MESSAGE_SNAPSHOT,
+            text: content,
+            runId: this.runId,
+            snapshotSource: "hermes_assistant_completed" satisfies SnapshotSource,
+          },
         ];
       }
       return [];

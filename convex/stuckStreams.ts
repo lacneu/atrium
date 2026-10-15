@@ -31,6 +31,7 @@ import { failDocumentaryFetchForChat } from "./documentAttachments";
 import { failSummarizeForChat } from "./chatSummaries";
 import { providerSessionClearPatch } from "./lib/providerSession";
 import { clearLiveActivity } from "./lib/liveTurnDifficulty";
+import { traceRegressionSummary } from "./lib/streamTrace";
 
 /**
  * When the watchdog flips a stale streaming message, also release a documentary
@@ -173,7 +174,14 @@ export const reconcileChatStuckStreams = internalMutation({
         error: STUCK_STREAM_ERROR_CODE,
         ...(preserved ? { text: preserved } : {}),
       });
-      if (row) await ctx.db.delete(row._id);
+      if (row) {
+        await traceRegressionSummary(ctx, row, {
+          runId: msg.runId,
+          streamStatus: "error",
+          endedBy: "stuck_reconcile",
+        });
+        await ctx.db.delete(row._id);
+      }
       await clearLiveActivity(ctx, msg._id);
       // SSE transport (Phase 1): GC this message's stream chunks too (finalize's GC
       // never ran for an orphaned turn). Bounded + self-scheduling; no-op if none.
@@ -283,6 +291,11 @@ export const reconcileStuckStreams = internalMutation({
       // up here so getStreamingText stops returning it forever; not a reap (there is
       // nothing to recover — the turn already ended cleanly).
       if (msg === null || msg.status !== "streaming") {
+        await traceRegressionSummary(ctx, row, {
+          runId: msg?.runId,
+          streamStatus: msg?.status ?? "streaming",
+          endedBy: "orphan_row",
+        });
         await ctx.db.delete(row._id);
         await clearLiveActivity(ctx, row.messageId);
         await ctx.scheduler.runAfter(0, internal.stream.deleteStreamChunksStep, {
@@ -302,6 +315,11 @@ export const reconcileStuckStreams = internalMutation({
         status: "error",
         error: STUCK_STREAM_ERROR_CODE,
         ...(preserved ? { text: preserved } : {}),
+      });
+      await traceRegressionSummary(ctx, row, {
+        runId: msg.runId,
+        streamStatus: "error",
+        endedBy: "stuck_reap",
       });
       await ctx.db.delete(row._id);
       await clearLiveActivity(ctx, row.messageId);
@@ -407,6 +425,11 @@ async function closeSweptStream(
     status: "error",
     error: SWEEP_ERROR_CODE,
     ...(preserved ? { text: preserved } : {}),
+  });
+  await traceRegressionSummary(ctx, row, {
+    runId: msg.runId,
+    streamStatus: "error",
+    endedBy: "boot_sweep",
   });
   await ctx.db.delete(row._id);
   await clearLiveActivity(ctx, row.messageId);
@@ -517,6 +540,11 @@ export const sweepInstanceStreams = internalMutation({
       }
       const msg = await ctx.db.get(row.messageId);
       if (msg === null || msg.status !== "streaming") {
+        await traceRegressionSummary(ctx, row, {
+          runId: msg?.runId,
+          streamStatus: msg?.status ?? "streaming",
+          endedBy: "orphan_row",
+        });
         await ctx.db.delete(row._id); // stale row without a live turn
         await clearLiveActivity(ctx, row.messageId);
         continue;

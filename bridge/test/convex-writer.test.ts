@@ -924,6 +924,8 @@ describe("snapshot write-reduction (suffix-delta, heartbeat-preserving)", () => 
       op: "setSnapshot",
       messageId: "m1",
       text: "abcd",
+      // The retried flush landed "ab" before it: the kept text is the delta stream's.
+      keptSource: "delta_stream",
     });
     // Even if the failed "ab" applied AND the retry re-applied it (doubling), the
     // full setSnapshot corrects liveText to exactly "abcd".

@@ -23,6 +23,7 @@ import { purgeSummaryForChat } from "./chatSummaries";
 import { AGENT_REQUEST_DELETE_READS, deleteChatAgentRequests } from "./agentRequests";
 import { CHAT_WITHDRAW_BATCH, withdrawAllChatNotifications } from "./notifications";
 import { drainNextQueued } from "./lib/outboxQueue";
+import { traceRegressionSummary } from "./lib/streamTrace";
 import { isTrashed, purgeDateFor } from "./lib/trash";
 import {
   BLOB_RELEASE_READS,
@@ -776,8 +777,23 @@ async function sweepChatDependents(
       if (!(await drainReleasing(docs, asked, blobsOfDoc)) || budget <= 0) return more();
     }
     const hanging = [
-      (n: number) =>
-        ctx.db.query("streamingText").withIndex("by_message", (q) => q.eq("messageId", m._id)).take(n),
+      async (n: number) => {
+        const live = await ctx.db
+          .query("streamingText")
+          .withIndex("by_message", (q) => q.eq("messageId", m._id))
+          .take(n);
+        // A purged chat ends its live streams too: the refusal counters a row
+        // carries die with it, so their summary goes out first (one trace per row
+        // that had more than one refusal, from the row already read).
+        for (const row of live) {
+          await traceRegressionSummary(ctx, row, {
+            runId: m.runId,
+            streamStatus: m.status,
+            endedBy: "chat_purge",
+          });
+        }
+        return live;
+      },
       (n: number) =>
         ctx.db
           .query("liveTurnActivity")
