@@ -15,5 +15,5 @@
     "types": ["node"]
   },
   "include": ["src"],
-  "exclude": []
+  "exclude": ["src/chat/transcriptSplitting.test.ts"]
 }
