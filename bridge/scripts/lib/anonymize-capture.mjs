@@ -675,6 +675,19 @@ export function createPseudonymiser(literals = [], renamed = new Map(), reserved
       // that version literal to settle the announced child.
       m = /^announce:(.+)$/.exec(value);
       if (m) {
+        // `requester-settle:<agentId>:<requesterSessionKey>:<childRunId>[,<childRunId>…]:yield-<n>`
+        // — the requester's wake after a yield (upstream subagent-announce-delivery, 2026.8.1+).
+        // The bridge keys on the `requester-settle` literal (core/async-task.ts) and Convex
+        // reads the child run ids it names; pseudonymised token by token, the family was lost
+        // and two settle runs of one chain replayed as one (fidelity gate, 2026.9.33 bench).
+        const settle = /^requester-settle:([^:]+):(agent:.+):([^:]+):(yield-\d+)$/.exec(m[1]);
+        if (settle) {
+          const children = settle[3]
+            .split(",")
+            .map((id) => opaque(id))
+            .join(",");
+          return `announce:requester-settle:${opaque(settle[1])}:${this.identifier(settle[2])}:${children}:${settle[4]}`;
+        }
         const inner = /^(v\d+):(.+):([^:]+)$/.exec(m[1]);
         return inner
           ? `announce:${inner[1]}:${this.identifier(inner[2])}:${opaque(inner[3])}`

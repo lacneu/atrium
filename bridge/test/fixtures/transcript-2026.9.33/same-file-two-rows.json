@@ -1,0 +1,159 @@
+{
+ "_source": "probe-refonte-r4-20261016T182436Z (OpenClaw 2026.9.33 r5, bench run 2026-10-16T18-14-42-224Z, scenario settle-message-tool-codemode; bench tokens only): Olivier's R4 decision, corpus case — the SAME file (bench-codemode-a.txt, 17 bytes) sent by two message-tool calls of the resume run, so two delivery-mirror rows, two artifactIds, the same bytes (both copies measured sha256 cf9c741d…ba359 by the bench files check). Storage keeps both; the display dedup is step 3's. Row 59 is the run's last send, its MEDIA: line left in the text.",
+ "rows": [
+  {
+   "role": "assistant",
+   "content": [
+    {
+     "type": "text",
+     "text": "CODEMODE_SEND_DONE Voici les deux fichiers demandés."
+    },
+    {
+     "type": "attachment",
+     "attachment": {
+      "artifactId": "artifact_managed_media_5952df0c-55a9-40d6-8915-9f7bbe2ff0ec",
+      "url": "/api/chat/media/outgoing/agent%3Aalice%3Aatrium%3Achat%3Au-repro%3Aturn-nx74hd3e31hpfwgkcbzyz22san8gcata/5952df0c-55a9-40d6-8915-9f7bbe2ff0ec/full",
+      "kind": "document",
+      "label": "bench-codemode-a.txt",
+      "mimeType": "text/plain",
+      "sizeBytes": 17
+     }
+    },
+    {
+     "type": "image",
+     "artifactId": "artifact_managed_image_b38e93de-0483-4fa1-a775-b1c523874e5f",
+     "url": "/api/chat/media/outgoing/agent%3Aalice%3Aatrium%3Achat%3Au-repro%3Aturn-nx74hd3e31hpfwgkcbzyz22san8gcata/b38e93de-0483-4fa1-a775-b1c523874e5f/full",
+     "openUrl": "/api/chat/media/outgoing/agent%3Aalice%3Aatrium%3Achat%3Au-repro%3Aturn-nx74hd3e31hpfwgkcbzyz22san8gcata/b38e93de-0483-4fa1-a775-b1c523874e5f/full",
+     "alt": "bench-codemode-img.png",
+     "mimeType": "image/png",
+     "width": 32,
+     "height": 32,
+     "sizeBytes": 1795
+    }
+   ],
+   "api": "openclaw-transcript",
+   "provider": "openclaw",
+   "model": "delivery-mirror",
+   "usage": {
+    "input": 0,
+    "output": 0,
+    "totalTokens": 0,
+    "cacheRead": 0,
+    "cacheWrite": 0,
+    "cost": {
+     "input": 0,
+     "output": 0,
+     "cacheRead": 0,
+     "cacheWrite": 0,
+     "total": 0
+    }
+   },
+   "stopReason": "stop",
+   "timestamp": 1792174785554,
+   "idempotencyKey": "announce:requester-settle:alice:agent:alice:atrium:chat:u-repro:turn-nx74hd3e31hpfwgkcbzyz22san8gcata:c01fe382-95c9-4a5e-a056-0d38c65a57d6:yield-1:message-tool:FU6kB9_id6l5BhjbRm3bumWz:tool_call:call_98e5060daff14596a4311eac4165e6b0_fc_0cf1b4cce5ea7f4e016ad26ac165a48190891b538650256a1d:message:1",
+   "__openclaw": {
+    "runId": "announce:requester-settle:alice:agent:alice:atrium:chat:u-repro:turn-nx74hd3e31hpfwgkcbzyz22san8gcata:c01fe382-95c9-4a5e-a056-0d38c65a57d6:yield-1",
+    "id": "3be74d61-7bee-4bb8-8580-22287642b766",
+    "idempotencyKey": "announce:requester-settle:alice:agent:alice:atrium:chat:u-repro:turn-nx74hd3e31hpfwgkcbzyz22san8gcata:c01fe382-95c9-4a5e-a056-0d38c65a57d6:yield-1:message-tool:FU6kB9_id6l5BhjbRm3bumWz:tool_call:call_98e5060daff14596a4311eac4165e6b0_fc_0cf1b4cce5ea7f4e016ad26ac165a48190891b538650256a1d:message:1",
+    "recordTimestampMs": 1792174785558,
+    "transcriptPosition": {
+     "source": "z5ig-jQ5eVoJKzI7D9e0y32A0zhc_usAMDCJVvK1Q6w",
+     "rawSeq": 82
+    },
+    "seq": 48
+   }
+  },
+  {
+   "role": "assistant",
+   "content": [
+    {
+     "type": "text",
+     "text": "CODEMODE_RESEND Voici à nouveau le fichier texte."
+    },
+    {
+     "type": "attachment",
+     "attachment": {
+      "artifactId": "artifact_managed_media_a2f0cb47-0a14-4e65-8d82-2fa7cbbf6b97",
+      "url": "/api/chat/media/outgoing/agent%3Aalice%3Aatrium%3Achat%3Au-repro%3Aturn-nx74hd3e31hpfwgkcbzyz22san8gcata/a2f0cb47-0a14-4e65-8d82-2fa7cbbf6b97/full",
+      "kind": "document",
+      "label": "bench-codemode-a.txt",
+      "mimeType": "text/plain",
+      "sizeBytes": 17
+     }
+    }
+   ],
+   "api": "openclaw-transcript",
+   "provider": "openclaw",
+   "model": "delivery-mirror",
+   "usage": {
+    "input": 0,
+    "output": 0,
+    "totalTokens": 0,
+    "cacheRead": 0,
+    "cacheWrite": 0,
+    "cost": {
+     "input": 0,
+     "output": 0,
+     "cacheRead": 0,
+     "cacheWrite": 0,
+     "total": 0
+    }
+   },
+   "stopReason": "stop",
+   "timestamp": 1792174791032,
+   "idempotencyKey": "announce:requester-settle:alice:agent:alice:atrium:chat:u-repro:turn-nx74hd3e31hpfwgkcbzyz22san8gcata:c01fe382-95c9-4a5e-a056-0d38c65a57d6:yield-1:message-tool:GkoIe9-cGGAGIhVKBXKW35Us:tool_call:call_e97929014e2a48468d79f0763b2a4f77_fc_0cf1b4cce5ea7f4e016ad26ac5f8c481908a092e6a440d8a3a:message:1",
+   "__openclaw": {
+    "runId": "announce:requester-settle:alice:agent:alice:atrium:chat:u-repro:turn-nx74hd3e31hpfwgkcbzyz22san8gcata:c01fe382-95c9-4a5e-a056-0d38c65a57d6:yield-1",
+    "id": "2d0a09c3-f56d-464e-be45-28f586948a4c",
+    "idempotencyKey": "announce:requester-settle:alice:agent:alice:atrium:chat:u-repro:turn-nx74hd3e31hpfwgkcbzyz22san8gcata:c01fe382-95c9-4a5e-a056-0d38c65a57d6:yield-1:message-tool:GkoIe9-cGGAGIhVKBXKW35Us:tool_call:call_e97929014e2a48468d79f0763b2a4f77_fc_0cf1b4cce5ea7f4e016ad26ac5f8c481908a092e6a440d8a3a:message:1",
+    "recordTimestampMs": 1792174791034,
+    "transcriptPosition": {
+     "source": "z5ig-jQ5eVoJKzI7D9e0y32A0zhc_usAMDCJVvK1Q6w",
+     "rawSeq": 91
+    },
+    "seq": 55
+   }
+  },
+  {
+   "role": "assistant",
+   "content": [
+    {
+     "type": "text",
+     "text": "CODEMODE_SUMMARY Les fichiers ont été envoyés et le fichier texte a été renvoyé.\nMEDIA:/home/node/.openclaw/media/outbound/bench-codemode-a.txt"
+    }
+   ],
+   "api": "openclaw-transcript",
+   "provider": "openclaw",
+   "model": "delivery-mirror",
+   "usage": {
+    "input": 0,
+    "output": 0,
+    "totalTokens": 0,
+    "cacheRead": 0,
+    "cacheWrite": 0,
+    "cost": {
+     "input": 0,
+     "output": 0,
+     "cacheRead": 0,
+     "cacheWrite": 0,
+     "total": 0
+    }
+   },
+   "stopReason": "stop",
+   "timestamp": 1792174794770,
+   "idempotencyKey": "announce:requester-settle:alice:agent:alice:atrium:chat:u-repro:turn-nx74hd3e31hpfwgkcbzyz22san8gcata:c01fe382-95c9-4a5e-a056-0d38c65a57d6:yield-1:message-tool:kYzSjB-3xbsZ5pfUDhK52dBV:tool_call:call_1d71299eac734710b122c0066dd688a7_fc_0cf1b4cce5ea7f4e016ad26aca4bd081908af829ba05480aae:message:1",
+   "__openclaw": {
+    "runId": "announce:requester-settle:alice:agent:alice:atrium:chat:u-repro:turn-nx74hd3e31hpfwgkcbzyz22san8gcata:c01fe382-95c9-4a5e-a056-0d38c65a57d6:yield-1",
+    "id": "5a5ecbc7-4665-471e-bcb6-72344d357bb8",
+    "idempotencyKey": "announce:requester-settle:alice:agent:alice:atrium:chat:u-repro:turn-nx74hd3e31hpfwgkcbzyz22san8gcata:c01fe382-95c9-4a5e-a056-0d38c65a57d6:yield-1:message-tool:kYzSjB-3xbsZ5pfUDhK52dBV:tool_call:call_1d71299eac734710b122c0066dd688a7_fc_0cf1b4cce5ea7f4e016ad26aca4bd081908af829ba05480aae:message:1",
+    "recordTimestampMs": 1792174794772,
+    "transcriptPosition": {
+     "source": "z5ig-jQ5eVoJKzI7D9e0y32A0zhc_usAMDCJVvK1Q6w",
+     "rawSeq": 96
+    },
+    "seq": 59
+   }
+  }
+ ],
+ "copiedSha256": "cf9c741d516c50f4c328066ac8175d13ae59c56c8de14ab5155696a66f9ba359"
+}

@@ -52,6 +52,8 @@ export type ConvexMessagePartView =
       // PART_FIELD_CAP) — `*Omitted` + `*Bytes` let the card show a size note.
       input?: unknown;
       inputOmitted?: boolean;
+      /** The input came from a transcript row: masked at display (toolCardDisplay). */
+      inputFromTranscript?: boolean;
       inputBytes?: number;
       output?: unknown;
       outputOmitted?: boolean;
@@ -66,6 +68,8 @@ export type ConvexMessagePartView =
       mimeType: string;
       /** Resolved download URL (server-side ctx.storage.getUrl). */
       url: string | null;
+      /** Projection `on` (final design step 3): the transcript file this part shows. */
+      transcriptFileId?: string;
     }
   | {
       kind: "file";
@@ -73,6 +77,7 @@ export type ConvexMessagePartView =
       filename: string;
       mimeType: string;
       url: string | null;
+      transcriptFileId?: string;
     }
   | {
       kind: "reasoning";
@@ -227,6 +232,18 @@ export interface ConvexMessageView {
   /** ASSISTANT rows, projection `on` (phase 5): the delegation chain's display group —
    *  consecutive bubbles sharing it read as one answer (src/chat/displayGroups.ts). */
   displayGroupId?: string;
+  /** ASSISTANT rows, projection `on` (final design step 3): the transcript rows the
+   *  bubble shows, in display order — each row's span of `text`, its files, its tool
+   *  cards. Absent on a bubble the rows never composed (text + parts rendering). */
+  rowLayout?: RowLayoutView[];
+  /** The state of each file the rows name (by row and block index). */
+  rowFiles?: RowFileView[];
+  /** An ACTIVE bubble whose rows already speak (convex/messages.ts `activeRowLayout`): the
+   *  rows' composition (`rowLayout` indexes it) and the run's own assistant row texts, in
+   *  transcript order — what the live cumulative text is reduced by (src/chat/streamTail.ts). */
+  activeRows?: { text: string; persisted: Array<{ role: string; runId: string | null; commentaryItemId?: string; text: string | null }> };
+  /** What the display withholds (Olivier's R4 decision: no visible duplicate). */
+  displayHidden?: DisplayHiddenView[];
   text: string;
   error?: string;
   /** Stable failure class: the gateway's own errorKind (context_length|rate_limit|
@@ -345,3 +362,45 @@ export function isCompactionPart(
 ): p is Extract<ConvexMessagePartView, { kind: "compaction" }> {
   return p.kind === "compaction";
 }
+
+
+/** One row of a bubble composed from transcript rows (convex/lib/bubbleProjection.ts). */
+export type RowLayoutView = {
+  entryId: string;
+  start: number;
+  end: number;
+  files?: Array<{ blockIndex: number; artifactId?: string; remoteUrl?: string; label?: string; mimeType?: string }>;
+  tools?: Array<{ toolCallId: string; name?: string; status: "call" | "result" | "error" }>;
+  /** The row's blocks are known (a bridge that sends them; an older one sends text only). */
+  blocks?: boolean;
+  /** The row as its blocks, in order: text spans of the bubble's text and file blocks. */
+  items?: Array<{ kind: "text"; start: number; end: number } | { kind: "file"; blockIndex: number }>;
+  /** On the last row only: what the layout left out past its bounds (convex/lib/
+   *  bubbleProjection.ts `LAYOUT_MAX_*`), counted. */
+  cut?: { rows?: number; files?: number; tools?: number; widgets?: number };
+};
+
+/** A file a row names, with its copy's state (convex/messages.ts `rowFilesOf`). */
+export type RowFileView = {
+  entryId: string;
+  blockIndex: number;
+  fileId?: string;
+  state: "pending" | "copied" | "gone" | "refused" | "remote";
+  /** `remote`: the https URL, shown as is; `copied`: the copy's URL, read with the view. */
+  url?: string;
+  /** `copied`: the copy's storage id. */
+  storageId?: string;
+  reason?: string;
+  label?: string;
+  kind?: string;
+  mimeType?: string;
+  sizeBytes?: number;
+  sha256?: string;
+};
+
+/** A display decision (convex/lib/displayDedup.ts). */
+export type DisplayHiddenView =
+  | { messageId: string; entryId: string; rule: "same_sha256_in_group"; blockIndex: number }
+  /** A file part no row derived (the live path's), withheld in a mixed group (R4). */
+  | { messageId: string; rule: "same_sha256_in_group"; storageId: string }
+  | { messageId: string; entryId: string; rule: "repeated_text_in_group" };

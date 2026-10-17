@@ -572,6 +572,10 @@ export class TurnSink {
    *  verdict (the Control UI shows nothing for a run with nothing visible, CU-21), and
    *  a complete terminal with nothing visible leaves no bubble. */
   private projection = false;
+  /** PROJECTION `on` NOW (final design step 4) — the instance's CURRENT switch, unlike
+   *  `projection` (the turn's, kept across a rollback): while set, no file is taken from
+   *  the outbound directory either. Set by RunManager.setProjection. */
+  liveFilesOff = false;
   /** PROJECTION `on` (phase 4): a SENT turn's bubble is born from its run, at the run's
    *  first visible content or first tool activity (a tool card is visible in Atrium, and
    *  the sub-agent anchor needs the bubble of the run that spawns) — never at the ACK. */
@@ -2166,7 +2170,9 @@ export class TurnSink {
     // text-first gate below knows the FULL media set. Best-effort.
     let scanHost: (() => Promise<void>) | null = null;
     let scanCandidates = 0;
-    if (this.outboundScan) {
+    // PROJECTION `on` (final design step 4): no file from the live side either — the
+    // outbound directory's files reach a bubble only through the rows that carry them.
+    if (this.outboundScan && !this.liveFilesOff) {
       try {
         // The reply text is part of the turn's artifacts too (an agent that
         // wrote "j'ai produit rapport.pdf" without MEDIA: still names it).

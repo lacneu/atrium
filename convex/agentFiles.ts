@@ -178,8 +178,8 @@ export async function postBridge(
     // on, but this function's OWN timeout was indistinguishable from a dead
     // host — so a caller that wanted to say "it may still be working" could
     // not, and its classification was dead code. `Error.cause` would be the
-    // idiom; convex/tsconfig.json is lib ES2021, where it does not exist (the
-    // same trap as Array.prototype.at), so the marker is a property.
+    // idiom; convex/tsconfig.json was lib ES2021 when this was written, where it
+    // did not exist, so the marker is a property.
     const failure = new Error("bridge_error: bridge unreachable");
     // An ALREADY-MARKED failure keeps its marker: the body-read path throws one
     // of these, and recomputing from `name` here (it is a plain Error, not an

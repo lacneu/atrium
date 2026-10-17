@@ -9,16 +9,21 @@
 import type { Doc, Id } from "../_generated/dataModel";
 import type { MutationCtx } from "../_generated/server";
 import { internal } from "../_generated/api";
-import { deliveryRefusedByStop, finalizeMessageCore, insertAssistantBubble, settleTurnEnd } from "../stream";
+import { deliveryRefusedByStop, dropVanishedBubble, finalizeMessageCore, insertAssistantBubble, settleTurnEnd } from "../stream";
 import { ALL_SEGMENTS, deletedMergeOf, segmentDeleted, steerSeqsOf, tombstonedSegments } from "./transcriptProjection";
 import { effectiveOrder, QUEUED_ORDER_SENTINEL } from "./messageOrder";
 import { isDeliveryRun } from "./deliveryRuns";
 import { bubbleInScope, type BubbleScope } from "./projectedRuns";
+import { syncBubbleRowParts } from "./rowParts";
+import { maskCredentialId } from "./chatRenderState";
 import {
+  layoutKey,
   planProjection,
   segmentKey,
   utf8Bytes,
   segmentOf,
+  LAYOUT_MAX_ROWS,
+  type LayoutWidget,
   type PlanBubble,
   type PlanRow,
   type ProjectionPlan,
@@ -31,8 +36,9 @@ import {
 export const MAX_PROJECTED_RUNS = 20;
 /** Rows of one run / of one bubble / steers of one run read for a projection. A run
  *  whose rows reach the bound is treated as NOT covered (its bubble keeps its text). */
-const MAX_ROWS_PER_RUN = 400;
-const MAX_ROWS_PER_BUBBLE = 400;
+// The layout's row bound (one constant: what a bubble composes, its readers resolve).
+const MAX_ROWS_PER_RUN = LAYOUT_MAX_ROWS;
+const MAX_ROWS_PER_BUBBLE = LAYOUT_MAX_ROWS;
 const MAX_MERGED_RUNS = 50;
 /** Rows looked back for the anchor of a bubble born from rows. */
 const MAX_ANCHOR_LOOKBACK = 50;
@@ -49,7 +55,31 @@ export type ProjectionScope = {
   gaps: readonly Gap[];
 };
 
-function toPlanRow(d: Doc<"transcriptRows">, shown?: RowText): PlanRow {
+export function toPlanRow(d: Doc<"transcriptRows">, shown?: RowText): PlanRow {
+  const files: Array<{ blockIndex: number; artifactId?: string; label?: string; remoteUrl?: string; mimeType?: string }> = [];
+  const tools: Array<{ toolCallId: string; name?: string; status: "call" | "result" | "error" }> = [];
+  const widgets: LayoutWidget[] = [];
+  (shown?.blocks ?? []).forEach((b, blockIndex) => {
+    if (b.type === "file") {
+      files.push({
+        blockIndex,
+        ...(b.artifactId !== undefined ? { artifactId: b.artifactId } : {}),
+        ...(b.label !== undefined ? { label: b.label } : {}),
+        ...(b.remote === true && b.url !== undefined
+          ? { remoteUrl: b.url, ...(b.mimeType !== undefined ? { mimeType: b.mimeType } : {}) }
+          : {}),
+      });
+    } else if (b.type === "tool") {
+      tools.push({ toolCallId: b.toolCallId, ...(b.name !== undefined ? { name: b.name } : {}), status: b.status });
+    } else if (b.type === "widget") {
+      widgets.push({
+        viewId: b.viewId,
+        ...(b.title !== undefined ? { title: b.title } : {}),
+        ...(b.preferredHeight !== undefined ? { preferredHeight: b.preferredHeight } : {}),
+        origin: b.origin,
+      });
+    }
+  });
   return {
     entryId: d.entryId,
     seq: d.seq,
@@ -61,10 +91,44 @@ function toPlanRow(d: Doc<"transcriptRows">, shown?: RowText): PlanRow {
     ...(shown?.text === undefined ? {} : { text: shown.text }),
     ...(shown?.yieldAck === undefined ? {} : { yieldAck: shown.yieldAck }),
     ...(d.messageId === undefined ? {} : { messageId: d.messageId }),
+    ...(d.transcriptPosition === undefined ? {} : { position: d.transcriptPosition }),
+    ...(files.length > 0 ? { files } : {}),
+    ...(tools.length > 0 ? { tools } : {}),
+    ...(widgets.length > 0 ? { widgets } : {}),
+    ...(shown?.errorMessage === undefined ? {} : { errorText: shown.errorMessage }),
+    ...(d.stopReason === undefined ? {} : { stopReason: d.stopReason }),
+    ...(d.streamSegment === true ? { streamSegment: true } : {}),
+    ...(d.segmentOrder !== undefined ? { segmentOrder: d.segmentOrder } : {}),
+    ...(d.retracted === true ? { retracted: true } : {}),
+    ...(shown?.blocks !== undefined ? { hasBlocks: true } : {}),
+    ...(itemsOf(shown) !== undefined ? { items: itemsOf(shown)! } : {}),
   };
 }
 
-type RowText = { text?: string; yieldAck?: string };
+/** The row as its blocks (`PlanRow.items`) — only when they are whole: a cut list or an
+ *  omitted text leaves the raw text in charge. */
+function itemsOf(shown: RowText | undefined): PlanRow["items"] | undefined {
+  const blocks = shown?.blocks;
+  if (blocks === undefined || shown?.blocksTruncated === true) return undefined;
+  const items: Array<{ kind: "text"; text: string } | { kind: "file"; blockIndex: number }> = [];
+  for (const [blockIndex, b] of blocks.entries()) {
+    if (b.type === "text") {
+      if (b.omitted === true || b.text === undefined) return undefined;
+      items.push({ kind: "text", text: b.text });
+    } else if (b.type === "file") {
+      items.push({ kind: "file", blockIndex });
+    }
+  }
+  return items;
+}
+
+export type RowText = {
+  text?: string;
+  yieldAck?: string;
+  errorMessage?: string;
+  blocks?: Doc<"transcriptRowTexts">["blocks"];
+  blocksTruncated?: boolean;
+};
 
 /** What one projection call may read and write, in bytes. Convex refuses a transaction
  *  past 16 MiB read (and as much written), and the read that triggers a projection has
@@ -195,6 +259,9 @@ async function textsOf(
       texts.set(String(r._id), {
         ...(doc.text === undefined ? {} : { text: doc.text }),
         ...(doc.yieldAck === undefined ? {} : { yieldAck: doc.yieldAck }),
+        ...(doc.errorMessage === undefined ? {} : { errorMessage: doc.errorMessage }),
+        ...(doc.blocksTruncated === true ? { blocksTruncated: true } : {}),
+        ...(doc.blocks === undefined ? {} : { blocks: doc.blocks }),
       });
     }
   }
@@ -240,7 +307,12 @@ async function runFacts(
     run.lastSeq !== undefined &&
     run.firstSeq > scope.floorSeq &&
     !overlapsGap(scope.gaps, run.firstSeq, run.lastSeq);
-  return { settled: run.settledAt !== undefined, covered, status: run.status as RunStatus };
+  return {
+    settled: run.settledAt !== undefined,
+    covered,
+    status: run.status as RunStatus,
+    ...(run.errorText !== undefined ? { errorText: run.errorText } : {}),
+  };
 }
 
 /**
@@ -619,6 +691,8 @@ async function loadBubble(
     runIds: [...runIdsOfBubble],
     rows: assigned.map((d) => toPlanRow(d, texts.texts.get(String(d._id)))),
     ...(foreignRows ? { uncovered: true } : {}),
+    ...(layoutKey(message.rowLayout) !== undefined ? { layoutKey: layoutKey(message.rowLayout) } : {}),
+    ...(message.error !== undefined ? { hasError: true } : {}),
   });
 }
 
@@ -669,6 +743,9 @@ async function executePlan(
       ...(c.segment > 0 ? { runSegment: c.segment } : {}),
       status: c.status,
       text: c.text,
+      // The row's own error text (step 4), masked like any stored gateway error.
+      ...(c.error !== undefined ? { error: maskCredentialId(c.error) } : {}),
+      ...(c.layout.length > 0 ? { rowLayout: c.layout } : {}),
       finalizeCause: "transcript_settled",
       ...(c.inferred ? { closeInferred: true } : {}),
       boundInstance: scope.instanceName,
@@ -685,6 +762,12 @@ async function executePlan(
     result.created++;
     for (const a of plan.assign) {
       if ("born" in a.to && a.to.born === c.born) await assign(a.entryId, messageId);
+    }
+    // Final design step 3: a bubble born from rows is COMPLETE — its rows' copied files and
+    // their tool cards, as parts (lib/rowParts.ts).
+    if (c.layout.length > 0) {
+      budget.queries += 2 + c.layout.length;
+      await syncBubbleRowParts(ctx, messageId);
     }
     // Born TERMINAL: what a turn's end settles beyond its bubble (a service job's
     // correlate and sweep, a summarize check) runs now, once — a late live finalize
@@ -713,6 +796,28 @@ async function executePlan(
     if (message.boundInstance !== undefined && message.boundInstance !== scope.instanceName) {
       continue;
     }
+    // §3.3: a settled bubble every row of which was retracted goes; so does one whose rows
+    // decide and show nothing. A streaming one the same rewrite settles is settled first,
+    // then removed in the same pass — never left showing its live text.
+    if (w.vanish === true && (message.status !== "streaming" || w.settle !== undefined)) {
+      if (message.status === "streaming") {
+        await finalizeMessageCore(ctx, {
+          messageId,
+          status: w.settle!,
+          ...(w.text !== undefined ? { text: w.text } : {}),
+          finalizeCause: "transcript_settled",
+          boundInstanceName: scope.instanceName,
+        });
+        result.settled++;
+      }
+      if (await dropVanishedBubble(ctx, messageId)) result.rewritten++;
+      continue;
+    }
+    // An error bubble whose terminal carried no text: the error the transcript states.
+    if (w.errorText !== undefined && message.status === "error" && message.error === undefined) {
+      await ctx.db.patch(messageId, { error: maskCredentialId(w.errorText), updatedAt: now });
+      result.rewritten++;
+    }
     const settle = message.status === "streaming" ? w.settle : undefined;
     const settling = settle !== undefined;
     if (settle !== undefined) {
@@ -725,22 +830,36 @@ async function executePlan(
         messageId,
         status: settle,
         ...(w.text !== undefined ? { text: w.text } : {}),
+        // An error settled from its row carries the row's text (finalize masks it).
+        ...(settle === "error" && w.error !== undefined ? { error: w.error } : {}),
         finalizeCause: "transcript_settled",
         boundInstanceName: scope.instanceName,
         // A run over with nothing a reader sees leaves no bubble (CU-21), as phase 3's
-        // live terminal already did.
-        ...(settle === "complete" ? { dropIfEmpty: true } : {}),
+        // live terminal already did — but tool cards or files its rows lay out ARE seen.
+        ...(settle === "complete" && (w.layout ?? message.rowLayout ?? []).length === 0 ? { dropIfEmpty: true } : {}),
       });
       result.settled++;
     }
-    if (w.text !== undefined) {
+    if (w.text !== undefined || w.layout !== undefined) {
       // After a settle too: `finalize`'s anti-regression keeps a longer streamed text
       // over a shorter final, and the rows are the authority here.
       // Read again only when `finalize` just wrote it (reserved by `loadBubble`); else the
       // copy this call already read IS the current one.
       const fresh = settling ? await ctx.db.get(messageId) : message;
-      if (fresh !== null && fresh.text !== w.text && fresh.status !== "streaming") {
-        await ctx.db.patch(messageId, { text: w.text, updatedAt: now });
+      if (fresh !== null && fresh.status !== "streaming") {
+        const textChanged = w.text !== undefined && fresh.text !== w.text;
+        if (textChanged || w.layout !== undefined) {
+          await ctx.db.patch(messageId, {
+            ...(textChanged ? { text: w.text } : {}),
+            // The row layout (final design step 3) goes with the composition it indexes.
+            ...(w.layout !== undefined ? { rowLayout: w.layout } : {}),
+            updatedAt: now,
+          });
+        }
+        if (w.layout !== undefined) {
+          budget.queries += 2 + w.layout.length;
+          await syncBubbleRowParts(ctx, messageId);
+        }
       }
       result.rewritten++;
     }

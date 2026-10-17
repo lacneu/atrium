@@ -27,7 +27,7 @@
 import { quoteFieldsFor, quotedRefsOf } from "./lib/quoteReply";
 import { maskCredentialId } from "./lib/chatRenderState";
 import { ConvexError, v } from "convex/values";
-import { mutation } from "./_generated/server";
+import { mutation, type MutationCtx } from "./_generated/server";
 import { Doc, Id } from "./_generated/dataModel";
 import { requireActive } from "./lib/access";
 import { writtenAtOf } from "./lib/chatAccess";
@@ -40,11 +40,53 @@ import { MAX_KNOWLEDGE_CHOICES_PER_CHAT } from "./lib/knowledge";
 import { isTrashed } from "./lib/trash";
 import { widgetInstanceForViews } from "./widgets";
 import { partWidgetField } from "./lib/widgetDescriptor";
+import { fileOfLayout } from "./lib/rowParts";
 
 /** Copy bound = the visible window (loadChatView's MESSAGE_WINDOW): the fork
  *  shows exactly what the user sees in the source. Older context still reaches
  *  the AGENT through the carried rolling summary when one covers it. */
 export const FORK_MESSAGE_CAP = 200;
+
+/** The transcript-file records a rows-composed bubble's layout names, copied into the fork
+ *  (same blob: a copied record holds it, lib/blobs.ts). A pending one is copied WITHOUT a
+ *  due time: shown as pending, never leased (the fork's own session copies its own files).
+ *  Returns old id -> copy. */
+async function copyRowFileRecords(
+  ctx: MutationCtx,
+  msg: Doc<"messages">,
+  forkId: Id<"chats">,
+  instanceName: string,
+): Promise<Map<string, Id<"transcriptFiles">>> {
+  const out = new Map<string, Id<"transcriptFiles">>();
+  for (const row of msg.rowLayout ?? []) {
+    for (const f of row.files ?? []) {
+      if (f.remoteUrl !== undefined) continue;
+      const record = await fileOfLayout(ctx, msg, row.entryId, f);
+      if (record === null || out.has(String(record._id))) continue;
+      const copy = await ctx.db.insert("transcriptFiles", {
+        chatId: forkId,
+        // No gateway session of the fork's: found by its row (chat, entry, block).
+        instanceName,
+        sessionKey: "",
+        entryId: record.entryId,
+        blockIndex: record.blockIndex,
+        ...(record.artifactId !== undefined ? { artifactId: record.artifactId } : {}),
+        kind: record.kind,
+        ...(record.mimeType !== undefined ? { mimeType: record.mimeType } : {}),
+        ...(record.sizeBytes !== undefined ? { sizeBytes: record.sizeBytes } : {}),
+        ...(record.label !== undefined ? { label: record.label } : {}),
+        state: record.state,
+        ...(record.reason !== undefined ? { reason: record.reason } : {}),
+        ...(record.storageId !== undefined ? { storageId: record.storageId } : {}),
+        ...(record.sha256 !== undefined ? { sha256: record.sha256 } : {}),
+        attempts: 0,
+        updatedAt: record.updatedAt,
+      });
+      out.set(String(record._id), copy);
+    }
+  }
+  return out;
+}
 
 /** Delegation MARKER tool names (mirror of the frontend's SPAWN_TOOL_NAMES in
  *  assistantEmptyState.ts): the ONLY tool parts the fork copies — the
@@ -318,8 +360,20 @@ export const forkChat = mutation({
         // in the fork), so they sort as the history they are.
         orderTime: effectiveOrder(msg),
         updatedAt: msg.updatedAt,
+        // A bubble the transcript rows composed is copied AS SHOWN (codex review 17): its
+        // rows (text spans, order, files, remote references, cards, widgets, cut notice)
+        // and its display group — the head's copy, which precedes it in this loop (R4).
+        ...(msg.rowLayout !== undefined ? { rowLayout: msg.rowLayout } : {}),
+        ...(msg.displayGroupId !== undefined && idMap.has(msg.displayGroupId as Id<"messages">)
+          ? { displayGroupId: String(idMap.get(msg.displayGroupId as Id<"messages">)) }
+          : {}),
       });
       idMap.set(msg._id, newMsgId);
+      // A group's HEAD names itself: its copy's own id, known only now.
+      if (msg.displayGroupId === String(msg._id)) await ctx.db.patch(newMsgId, { displayGroupId: String(newMsgId) });
+      // …and the state of each file its rows name (copied with the SAME blob, gone,
+      // refused, pending): the view reads a row's file through its record.
+      const fileRecords = msg.rowLayout === undefined ? new Map<string, Id<"transcriptFiles">>() : await copyRowFileRecords(ctx, msg, forkId, source.instanceName ?? "");
       const parts = await ctx.db
         .query("messageParts")
         .withIndex("by_message", (q) => q.eq("messageId", msg._id))
@@ -329,6 +383,13 @@ export const forkChat = mutation({
       // hold, e.g. origin:"pasted" (hidden by default in Settings > Files).
       let srcFileRows: { storageId: string; origin?: "pasted" }[] | null = null;
       for (const p of parts) {
+        // A rows-composed bubble: EVERY part rides — its cards (with their arguments and
+        // results), its reasoning, its derived files tied to their copied records — since
+        // its view is made of them (codex review 17).
+        if (msg.rowLayout !== undefined && !isFilePart(p.part) && p.part.kind !== "widget") {
+          await ctx.db.insert("messageParts", { messageId: newMsgId, order: p.order, part: p.part });
+          continue;
+        }
         // Delegation MARKER tool parts ride (they gate the in-context sub-agent
         // cards — see SPAWN_TOOL_NAMES); every other tool/provenance/reasoning
         // part stays in the original (analysis metadata, not conversation).
@@ -354,11 +415,13 @@ export const forkChat = mutation({
         }
         if (!isFilePart(p.part)) continue; // file + media only (see header)
         const part = p.part; // narrowed const (survives the closure below)
+        const recordCopy = p.transcriptFileId === undefined ? undefined : fileRecords.get(String(p.transcriptFileId));
         await ctx.db.insert("messageParts", {
           messageId: newMsgId,
           order: p.order,
           part,
           ...partStorageField(part),
+          ...(recordCopy !== undefined ? { transcriptFileId: recordCopy } : {}),
         });
         if (srcFileRows === null) {
           srcFileRows = await ctx.db

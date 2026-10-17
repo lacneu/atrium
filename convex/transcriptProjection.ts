@@ -8,7 +8,9 @@
 // NEVER touches a message: shadow mode measures, it does not decide. The policy lives in
 // lib/transcriptProjection.ts (pure, tested); this file loads and stores.
 
-import { v } from "convex/values";
+import { liveBubbleFor } from "./lib/projectedRuns";
+import { deriveRowWidgetsOnLiveBubble } from "./lib/rowParts";
+import { v, type ObjectType } from "convex/values";
 import { internalMutation, internalQuery, type MutationCtx } from "./_generated/server";
 import { internal } from "./_generated/api";
 import type { Doc, Id } from "./_generated/dataModel";
@@ -59,6 +61,7 @@ import {
   TEXT_PURGED_SIG,
   TEXT_PURGE_BATCH,
   boundRowShown,
+  identityOnly,
   sanitizeRow,
   type InputFact,
   type RunStatus,
@@ -81,7 +84,15 @@ import {
 } from "./lib/bubbleProjectionStore";
 import { drainNextQueued, SESSION_ACTIVE_FRESH_MS } from "./lib/outboxQueue";
 import { scheduleRegroup } from "./displayGroups";
-import { utf8Bytes } from "./lib/bubbleProjection";
+import { displayReport } from "./messages";
+import {
+  boundRowContent,
+  rowBlockValidator,
+  rowContentBytes,
+  transcriptPositionValidator,
+  type RowBlock,
+} from "./lib/transcriptContent";
+import { leaseFilesToCopy, purgeChatFiles, purgeRowFiles, recordRowFiles } from "./transcriptFiles";
 
 const rowValidator = v.object({
   entryId: v.string(),
@@ -102,6 +113,20 @@ const rowValidator = v.object({
   // Projection `on` (phase 5): the sub-agents the row's run launched (identities only;
   // stored as `transcriptSpawns` for an `on` conversation, ignored otherwise).
   spawns: v.optional(v.array(v.object({ childSessionKey: v.string(), childRunId: v.string() }))),
+  // Projection `on` (final design step 1, lib/transcriptContent.ts): what the row shows as
+  // ordered blocks and its error text (kept with its text, `on` only), and the display
+  // facts beside its identity (stored on the row, `on` only). Ignored in `off`/`shadow`.
+  blocks: v.optional(v.array(rowBlockValidator)),
+  blocksTruncated: v.optional(v.boolean()),
+  errorMessage: v.optional(v.string()),
+  transcriptPosition: v.optional(transcriptPositionValidator),
+  idempotencyKind: v.optional(v.string()),
+  deliveryMirror: v.optional(v.boolean()),
+  stopReason: v.optional(v.string()),
+  provenanceKind: v.optional(v.string()),
+  provenanceSourceTool: v.optional(v.string()),
+  streamSegment: v.optional(v.boolean()),
+  segmentOrder: v.optional(v.number()),
 });
 
 const terminalValidator = v.object({
@@ -164,15 +189,29 @@ const MAX_TEXT_DOC_BYTES = MAX_ROW_TEXT_BYTES + 256;
  *  incoming bound: over it, the apply is refused like an oversized one. */
 export const MAX_APPLY_TEXT_READ_BYTES = 6 * 1024 * 1024;
 
-const textDocBytes = (d: { text?: string; yieldAck?: string }): number =>
-  utf8Bytes(d.text ?? "") + utf8Bytes(d.yieldAck ?? "") + 128;
+const textDocBytes = (d: { text?: string; yieldAck?: string; errorMessage?: string; blocks?: RowBlock[] }): number =>
+  rowContentBytes(d) + 128;
+
+/** A row carries something it shows (its text, acknowledgment, error text or blocks). */
+const hasContent = (r: { text?: string; yieldAck?: string; errorMessage?: string; blocks?: RowBlock[] }): boolean =>
+  r.text !== undefined || r.yieldAck !== undefined || r.errorMessage !== undefined || r.blocks !== undefined;
+
+/** The incoming content's signature (lib/transcriptProjection `rowTextSignature`). */
+const contentSignature = (r: {
+  text?: string;
+  yieldAck?: string;
+  errorMessage?: string;
+  blocks?: RowBlock[];
+  blocksTruncated?: boolean;
+}): string | undefined =>
+  rowTextSignature(r.text, r.yieldAck, { errorMessage: r.errorMessage, blocks: r.blocks, blocksTruncated: r.blocksTruncated });
 
 /** The text an apply carries: refused when over either bound (see MAX_APPLY_TEXT_BYTES). */
 export function textLoadOf(rows: readonly TranscriptRowInput[]): { rows: number; bytes: number } {
   let n = 0;
   let bytes = 0;
   for (const r of rows) {
-    if (r.text === undefined && r.yieldAck === undefined) continue;
+    if (!hasContent(r)) continue;
     if (r.runId === undefined) continue; // never stored (see upsertRows)
     n++;
     bytes += textDocBytes(r);
@@ -192,6 +231,10 @@ type TextWork = {
   };
   text?: string;
   yieldAck?: string;
+  /** Final design step 1: the rest of what the row shows. */
+  errorMessage?: string;
+  blocks?: RowBlock[];
+  blocksTruncated?: boolean;
 };
 
 /** Is a row's run segment one whose bubble a person DELETED? — the run's tombstones
@@ -273,7 +316,7 @@ async function writeRowTexts(
       }
       continue;
     }
-    if (w.row.textSig === rowTextSignature(w.text, w.yieldAck)) continue;
+    if (w.row.textSig === contentSignature(w)) continue;
     budget.queries++;
     const doc = await ctx.db
       .query("transcriptRowTexts")
@@ -285,17 +328,39 @@ async function writeRowTexts(
     // …and the MERGED result is bounded again (codex phase 4 pass 8: a 600 KiB
     // acknowledgment kept beside a new 600 KiB text made a 1.2 MiB document): the text
     // first, the acknowledgment only while it still fits.
-    const merged = boundRowShown(w.text ?? doc?.text, w.yieldAck ?? doc?.yieldAck);
-    const sig = rowTextSignature(merged.text, merged.yieldAck);
+    // Final design step 1: the blocks and the error text follow the same rule — a read
+    // that carries none (an older bridge) keeps the stored ones — under the same budget.
+    const carriesBlocks = w.blocks !== undefined;
+    const merged = boundRowContent(boundRowShown(w.text ?? doc?.text, w.yieldAck ?? doc?.yieldAck), {
+      errorMessage: w.errorMessage ?? doc?.errorMessage,
+      blocks: w.blocks ?? doc?.blocks,
+    });
+    const blocksTruncated = carriesBlocks ? w.blocksTruncated === true : doc?.blocksTruncated === true;
+    const sig = contentSignature({ ...merged, ...(merged.blocks !== undefined && blocksTruncated ? { blocksTruncated } : {}) });
     if (sig === w.row.textSig && doc !== null) continue;
+    const content = {
+      ...merged,
+      ...(merged.blocks !== undefined && blocksTruncated ? { blocksTruncated: true } : {}),
+    };
     if (doc === null) {
-      await ctx.db.insert("transcriptRowTexts", { chatId: a.chatId, rowId: w.row._id, ...merged, updatedAt: now });
+      await ctx.db.insert("transcriptRowTexts", { chatId: a.chatId, rowId: w.row._id, ...content, updatedAt: now });
     } else {
-      await ctx.db.patch(doc._id, { text: merged.text, yieldAck: merged.yieldAck, updatedAt: now });
+      await ctx.db.patch(doc._id, {
+        text: content.text,
+        yieldAck: content.yieldAck,
+        // Only a document that ever held them is patched with the new fields: a text-only
+        // row writes exactly what it wrote before this step.
+        ...(content.errorMessage !== undefined || doc.errorMessage !== undefined ? { errorMessage: content.errorMessage } : {}),
+        ...(content.blocks !== undefined || doc.blocks !== undefined ? { blocks: content.blocks } : {}),
+        ...(content.blocksTruncated !== undefined || doc.blocksTruncated !== undefined
+          ? { blocksTruncated: content.blocksTruncated }
+          : {}),
+        updatedAt: now,
+      });
     }
     await ctx.db.patch(w.row._id, { textSig: sig });
     w.row.textSig = sig;
-    stored.push(w);
+    stored.push({ ...w, ...(content.blocks !== undefined ? { blocks: content.blocks } : {}) });
   }
   if (copies.length > 0) await purgeRowTextsLater(ctx, a.chatId, copies);
   return stored;
@@ -320,6 +385,111 @@ export async function purgeRowTextsLater(
  * pass 3): the text is compared through its signature. Every read is charged to the
  * transaction's shared budget (codex phase 4 pass 6).
  */
+/** Keep the error the gateway recorded for a run (projection `on`), once its run exists. */
+async function recordRunError(
+  ctx: MutationCtx,
+  chatId: Id<"chats">,
+  sessionKey: string,
+  f: { runId: string; error: string },
+): Promise<void> {
+  const run = await ctx.db
+    .query("transcriptRuns")
+    .withIndex("by_chat_session_run", (q) => q.eq("chatId", chatId).eq("sessionKey", sessionKey).eq("runId", f.runId))
+    .first();
+  if (run !== null && run.errorText !== f.error) await ctx.db.patch(run._id, { errorText: f.error });
+}
+
+/** Rows a presentation-owner lookup reads back (a row of no run follows its owner closely). */
+const PRESENTATION_OWNER_LOOKBACK = 32;
+
+/**
+ * THE PRESENTATION OWNER of a row that names no run (projection `on`). The Control UI
+ * keeps such a row with what precedes it in the thread — "keeps unscoped trailing
+ * activity with its presentation owner" (ui/src/pages/chat/chat-thread-grouping.test.ts:570
+ * at v2026.9.33) — and shows an unscoped delivery mirror where it was written (:419); it
+ * never drops it. Here: the run of the nearest earlier row of the session that is not a
+ * user row; a user row in between ends the search (a person's message is never crossed —
+ * Q2), and a row with no owner gets one of its own (`unscoped:<entryId>`), so it is still
+ * shown, as its own bubble. Bounded; the owner is kept once stored.
+ */
+async function presentationOwnerOf(
+  ctx: MutationCtx,
+  a: { chatId: Id<"chats">; sessionKey: string; sessionId: string },
+  r: TranscriptRowInput,
+  budget: Budget,
+): Promise<string> {
+  budget.queries++;
+  const earlier = await ctx.db
+    .query("transcriptRows")
+    .withIndex("by_chat_session_seq", (q) =>
+      q.eq("chatId", a.chatId).eq("sessionKey", a.sessionKey).eq("sessionId", a.sessionId).lt("seq", r.seq),
+    )
+    .order("desc")
+    .take(PRESENTATION_OWNER_LOOKBACK);
+  for (const d of earlier) {
+    budget.bytes += docBytes(d);
+    if (d.role.toLowerCase() === "user") break;
+    if (d.runId !== undefined && d.retracted !== true) return d.runId;
+  }
+  return `unscoped:${r.entryId}`;
+}
+
+/** How many live-only rows one durable read may retract (the rest wait for the next read
+ *  that covers them). */
+const MAX_RETRACT_PER_READ = 64;
+
+/**
+ * FINAL DESIGN §3.3 (step 4): « une ligne vue seulement en direct, puis absente d'une
+ * lecture durable qui couvre sa position (page de queue ou delta qui l'enjambe) ⇒ marquée
+ * `retracted` et jamais rendue ». The Control UI replaces what it holds with each
+ * `chat.history` it loads (ui/src/pages/chat/chat-history.ts at v2026.9.33): a row only
+ * `session.message` published — the ephemeral `aborted` row of a yielded run, whose live
+ * `seq` the durable `subagent_settle` entry holds (corpus
+ * `session-message-ephemeral-aborted.json`) — is gone at the next load. Here, the read's
+ * rows span `[min seq, max seq]` of its session; every live-only row of that session in the
+ * span that the read did not return is retracted (hidden with it, so every reader of the
+ * row — the planner, I1 — leaves it out) and its run re-projected. `on` only. Bounded.
+ */
+async function retractUnreadLiveRows(
+  ctx: MutationCtx,
+  a: { chatId: Id<"chats">; sessionKey: string; sessionId: string; instanceName: string; now: number },
+  rows: readonly TranscriptRowInput[],
+  budget: Budget,
+): Promise<{ runs: string[]; count: number }> {
+  if (rows.length === 0) return { runs: [], count: 0 };
+  const read = new Set<string>();
+  let min = Number.POSITIVE_INFINITY;
+  let max = Number.NEGATIVE_INFINITY;
+  for (const r of rows) {
+    read.add(r.entryId);
+    if (r.seq < min) min = r.seq;
+    if (r.seq > max) max = r.seq;
+  }
+  budget.queries++;
+  const live = await ctx.db
+    .query("transcriptRows")
+    .withIndex("by_chat_session_live", (q) =>
+      q
+        .eq("chatId", a.chatId)
+        .eq("sessionKey", a.sessionKey)
+        .eq("liveOnly", true)
+        .eq("sessionId", a.sessionId)
+        .gte("seq", min)
+        .lte("seq", max),
+    )
+    .take(MAX_RETRACT_PER_READ);
+  const runs = new Set<string>();
+  let count = 0;
+  for (const d of live) {
+    budget.bytes += docBytes(d);
+    if (read.has(d.entryId) || d.instanceName !== a.instanceName) continue;
+    await ctx.db.patch(d._id, { liveOnly: undefined, retracted: true, hidden: true, updatedAt: a.now });
+    count++;
+    if (d.runId !== undefined && d.role.toLowerCase() !== "user") runs.add(d.runId);
+  }
+  return { runs: [...runs], count };
+}
+
 async function upsertRows(
   ctx: MutationCtx,
   a: {
@@ -331,6 +501,10 @@ async function upsertRows(
     /** The conversation ever stored row text (`chats.transcriptSeenAt`): only then can a
      *  new cut row reveal a stored copy to purge. */
     textsStored: boolean;
+    /** PROJECTION `on` only (final design §3.3): where these rows come from — a LIVE post
+     *  marks a new row `liveOnly`; a durable READ replaces a live-only or retracted row.
+     *  Absent (any other mode, a text post): nothing of the kind is written. */
+    origin?: "live" | "read";
   },
   rows: readonly TranscriptRowInput[],
   budget: Budget,
@@ -355,17 +529,33 @@ async function upsertRows(
   const newCutRows: LateCut[] = [];
   /** Launch facts newly stored by this apply (`on` only: other modes strip them). */
   const spawnIds: Array<Id<"transcriptSpawns">> = [];
-  for (const r of rows) {
-    const { text, yieldAck, spawns, ...identity } = r;
-    const next: TranscriptRowInput & { sessionId: string } = { ...identity, sessionId: a.sessionId };
+  for (const read of rows) {
     budget.queries++;
     const stored = await ctx.db
       .query("transcriptRows")
       .withIndex("by_chat_session_entry", (q) =>
-        q.eq("chatId", a.chatId).eq("sessionKey", a.sessionKey).eq("entryId", r.entryId),
+        q.eq("chatId", a.chatId).eq("sessionKey", a.sessionKey).eq("entryId", read.entryId),
       )
       .first();
     budget.bytes += docBytes(stored);
+    // PROJECTION `on`: a row that names no run is shown with its PRESENTATION OWNER, never
+    // dropped (`presentationOwnerOf`) — resolved on EVERY `on` write (a text post too), so
+    // what a row says never depends on how its posts were split or ordered. Kept once the
+    // row is placed in a bubble; until then it is resolved again (an owner row that arrived
+    // later takes it over from a provisional `unscoped:` one).
+    const r: TranscriptRowInput =
+      a.origin !== undefined && read.runId === undefined && read.role.toLowerCase() !== "user"
+        ? {
+            ...read,
+            runId:
+              stored?.presentationOwner === true && stored.runId !== undefined && stored.messageId !== undefined
+                ? stored.runId
+                : await presentationOwnerOf(ctx, a, read, budget),
+            presentationOwner: true,
+          }
+        : read;
+    const { text, yieldAck, spawns, blocks, blocksTruncated, errorMessage, ...identity } = r;
+    const next: TranscriptRowInput & { sessionId: string } = { ...identity, sessionId: a.sessionId };
     // Another instance's row (codex pass 5/6): never rewritten from here, and it feeds
     // NOTHING this apply aggregates — not the session's last seq, not a run's span.
     if (stored !== null && stored.instanceName !== a.instanceName) continue;
@@ -386,6 +576,9 @@ async function upsertRows(
       const own = r.sendId ?? r.runId;
       if (own !== undefined) newCutRows.push({ sendId: own, target: r.steerTargetRunId, seq: r.seq });
     }
+    // A RETRACTED row stays hidden whatever a later live post of it says: only a durable
+    // read brings it back (final design §3.3).
+    if (stored?.retracted === true && a.origin === "live") next.hidden = true;
     let rowId: Id<"transcriptRows">;
     if (stored === null) {
       rowId = await ctx.db.insert("transcriptRows", {
@@ -393,11 +586,16 @@ async function upsertRows(
         instanceName: a.instanceName,
         sessionKey: a.sessionKey,
         ...next,
+        ...(a.origin === "live" ? { liveOnly: true as const } : {}),
         updatedAt: a.now,
       });
       inserted++;
     } else {
       rowId = stored._id;
+      // A durable read of the row: it is no longer live-only, nor retracted.
+      if (a.origin === "read" && (stored.liveOnly === true || stored.retracted === true)) {
+        await ctx.db.patch(stored._id, { liveOnly: undefined, retracted: undefined });
+      }
       if (!sameRow(stored, next)) {
         await ctx.db.patch(stored._id, {
           sessionId: next.sessionId,
@@ -411,6 +609,32 @@ async function upsertRows(
           hidden: next.hidden,
           visible: next.visible,
           toolCallIds: next.toolCallIds,
+          // Final design step 1 (`on` only: absent from an `off`/`shadow` row, so a patch
+          // there writes exactly what it wrote before).
+          ...(next.transcriptPosition !== undefined || stored.transcriptPosition !== undefined
+            ? { transcriptPosition: next.transcriptPosition }
+            : {}),
+          ...(next.idempotencyKind !== undefined || stored.idempotencyKind !== undefined
+            ? { idempotencyKind: next.idempotencyKind }
+            : {}),
+          ...(next.deliveryMirror !== undefined || stored.deliveryMirror !== undefined
+            ? { deliveryMirror: next.deliveryMirror }
+            : {}),
+          ...(next.stopReason !== undefined || stored.stopReason !== undefined ? { stopReason: next.stopReason } : {}),
+          ...(next.provenanceKind !== undefined || stored.provenanceKind !== undefined
+            ? { provenanceKind: next.provenanceKind }
+            : {}),
+          ...(next.provenanceSourceTool !== undefined || stored.provenanceSourceTool !== undefined
+            ? { provenanceSourceTool: next.provenanceSourceTool }
+            : {}),
+          ...(next.streamSegment !== undefined || stored.streamSegment !== undefined
+            ? { streamSegment: next.streamSegment }
+            : {}),
+          // The read states it; a live post (one segment at a time) never erases it.
+          ...(next.segmentOrder !== undefined ? { segmentOrder: next.segmentOrder } : {}),
+          ...(next.presentationOwner !== undefined || stored.presentationOwner !== undefined
+            ? { presentationOwner: next.presentationOwner }
+            : {}),
           updatedAt: a.now,
         });
         updated++;
@@ -423,7 +647,7 @@ async function upsertRows(
     }
     // A text once read is a fact about the row: a later read that carries none (an older
     // bridge, a switch flipped back to shadow) never erases it — nor reads it.
-    if (text === undefined && yieldAck === undefined) continue;
+    if (!hasContent({ text, yieldAck, errorMessage, blocks })) continue;
     // Only a row ATTRIBUTED to a run keeps its text: every purge reaches a text through
     // its run or its bubble, and a row of no run has neither — its text could never be
     // purged with what it belongs to (codex phase 4 pass 7: a producerless mirror row
@@ -440,6 +664,9 @@ async function upsertRows(
       },
       ...(text !== undefined ? { text } : {}),
       ...(yieldAck !== undefined ? { yieldAck } : {}),
+      ...(errorMessage !== undefined ? { errorMessage } : {}),
+      ...(blocks !== undefined ? { blocks } : {}),
+      ...(blocksTruncated === true ? { blocksTruncated: true } : {}),
     });
   }
   // A cut row read AFTER its user message was deleted (codex phase 4 pass 13): the segment
@@ -480,6 +707,33 @@ async function upsertRows(
     });
   }
   const stored = await writeRowTexts(ctx, a, textWork, a.now, budget);
+  // Final design step 2: the files a row whose content was just stored carries — one record
+  // each, idempotent (convex/transcriptFiles.ts). Only content reaches here, and only an
+  // `on` apply carries content.
+  await recordRowFiles(
+    ctx,
+    { chatId: a.chatId, instanceName: a.instanceName, sessionKey: a.sessionKey, now: a.now },
+    stored.filter((w) => w.blocks !== undefined).map((w) => ({ entryId: w.row.entryId, blocks: w.blocks })),
+    budget,
+  );
+  // Codex review 6: a widget a row names shows on its run's LIVE bubble at once (the row is
+  // not placed yet), under the ownership rule (lib/rowParts.ts). Bounded by the rows stored.
+  for (const w of stored) {
+    if (w.row.messageId !== undefined || w.row.runId === undefined) continue;
+    const widgets = (w.blocks ?? []).flatMap((b) =>
+      b.type === "widget"
+        ? [{ viewId: b.viewId, ...(b.title !== undefined ? { title: b.title } : {}), ...(b.preferredHeight !== undefined ? { preferredHeight: b.preferredHeight } : {}), origin: b.origin, entryId: w.row.entryId }]
+        : [],
+    );
+    if (widgets.length === 0) continue;
+    budget.queries += 4;
+    const cuts = await steerSeqsOf(ctx, a.chatId, a.sessionKey, w.row.runId);
+    const live = await liveBubbleFor(ctx, a.chatId, w.row.runId, segmentOfRow(w.row.seq, cuts) ?? 0, {
+      instanceName: a.instanceName,
+      sessionKey: a.sessionKey,
+    });
+    if (live !== null) await deriveRowWidgetsOnLiveBubble(ctx, live, widgets);
+  }
   const textedRuns = [...new Set(stored.flatMap((w) => (w.row.runId === undefined ? [] : [w.row.runId])))];
   return { inserted, updated, maxSeq, seqByRun, textedRuns, spawnIds };
 }
@@ -1595,7 +1849,16 @@ export const purgeChatRowTexts = internalMutation({
         .withIndex("by_chat_run", (q) => q.eq("chatId", chatId))
         .take(500);
       for (const r of releases) await ctx.db.delete(r._id);
-      if (tombs.length === 500 || admissions.length === 500 || spawns.length === 500 || releases.length === 500) {
+      // …and the files its rows carried, copied once (final design step 2): each record
+      // goes, and its blob with it when nothing else holds it (lib/blobs).
+      const moreFiles = await purgeChatFiles(ctx, chatId);
+      if (
+        tombs.length === 500 ||
+        admissions.length === 500 ||
+        spawns.length === 500 ||
+        releases.length === 500 ||
+        moreFiles
+      ) {
         await ctx.scheduler.runAfter(0, internal.transcriptProjection.purgeChatRowTexts, { chatId, markPurged });
       }
     }
@@ -1806,7 +2069,11 @@ export const purgeDeletedBubbleTexts = internalMutation({
         .query("transcriptRows")
         .withIndex("by_message_seq", (q) => q.eq("messageId", messageId))
         .paginate({ numItems: ROW_TEXT_PURGE_BATCH, cursor: cursor ?? null });
-      for (const row of page.page) if (await purgeRowText(ctx, row)) purged++;
+      for (const row of page.page) {
+        if (await purgeRowText(ctx, row)) purged++;
+        // Final design step 3: the files the deleted bubble's rows showed go with it.
+        await purgeRowFiles(ctx, row);
+      }
       if (!page.isDone) {
         await next({ cursor: page.continueCursor });
       } else {
@@ -1840,6 +2107,7 @@ export const purgeDeletedBubbleTexts = internalMutation({
         }
         if (row.seq <= from) continue;
         if (await purgeRowText(ctx, row)) purged++;
+        await purgeRowFiles(ctx, row);
         if (row.messageId === undefined) await ctx.db.patch(row._id, { messageId });
       }
       if (!page.isDone) {
@@ -1873,8 +2141,7 @@ async function nextTombstone(
     .first();
 }
 
-export const applyTranscript = internalMutation({
-  args: {
+const applyTranscriptArgs = {
     chatId: v.id("chats"),
     boundInstanceName: v.string(),
     sessionKey: v.string(),
@@ -1890,6 +2157,11 @@ export const applyTranscript = internalMutation({
     terminals: v.array(terminalValidator),
     activeRunIds: v.optional(v.array(v.string())),
     hasActiveRun: v.optional(v.boolean()),
+    /** Projection `on` (final design step 4): the session's last run ended failed / timed
+     *  out, with the error the gateway recorded (bridge transcript-rows.ts `LastRunFailure`). */
+    lastRunFailure: v.optional(
+      v.object({ runId: v.string(), status: v.union(v.literal("failed"), v.literal("timeout")), error: v.string() }),
+    ),
     /** The session's queue modes the read projected (phase 3: the composer's label). */
     queueMode: v.optional(v.string()),
     effectiveQueueMode: v.optional(v.string()),
@@ -1914,8 +2186,27 @@ export const applyTranscript = internalMutation({
      *  chunks a read's texts under MAX_APPLY_TEXT_*): its rows and their texts are stored,
      *  nothing else — no run, no custody, no projection, no cursor. */
     textsOnly: v.optional(v.boolean()),
-  },
+  };
+
+export const applyTranscript = internalMutation({
+  args: applyTranscriptArgs,
   handler: async (ctx, args) => {
+    const seen = { projectionOn: false };
+    const res = await applyTranscriptImpl(ctx, args, seen);
+    // PROJECTION `on` (final design step 2): the session's files still to copy ride every
+    // answer — those this apply recorded and any left pending (a bridge that restarted, a
+    // copy that failed) — leased so a second read does not start a second copy at once.
+    if (!seen.projectionOn || res.ok !== true) return res;
+    const filesToCopy = await leaseFilesToCopy(ctx, { chatId: args.chatId, sessionKey: args.sessionKey, now: Date.now() });
+    return filesToCopy.length > 0 ? { ...res, filesToCopy } : res;
+  },
+});
+
+async function applyTranscriptImpl(
+  ctx: MutationCtx,
+  args: ObjectType<typeof applyTranscriptArgs>,
+  seen: { projectionOn: boolean },
+) {
     // The cross-gateway write barrier, atomic with the write (lib/ingestAuthz).
     if (!(await chatAllowsInstance(ctx, args.chatId, args.boundInstanceName))) {
       throw new Error("forbidden: cross-instance transcript target");
@@ -1970,6 +2261,7 @@ export const applyTranscript = internalMutation({
     // `shadow` store identities only, exactly as before.
     const chatDoc = await ctx.db.get(args.chatId);
     const projectionOn = (await projectionModeOfChat(ctx, chatDoc)) === "on";
+    seen.projectionOn = projectionOn;
     // A text post outside `on` has nothing to store — the read that follows carries the
     // identities. Answered without a write (codex phase 4 pass 12).
     if (!projectionOn && args.kind === "live" && args.textsOnly === true) {
@@ -1981,12 +2273,7 @@ export const applyTranscript = internalMutation({
         settledRuns: [] as string[],
       };
     }
-    const rows: TranscriptRowInput[] = projectionOn
-      ? sanitized
-      : sanitized.map((row) => {
-          const { text: _text, yieldAck: _ack, spawns: _spawns, ...identity } = row;
-          return identity;
-        });
+    const rows: TranscriptRowInput[] = projectionOn ? sanitized : sanitized.map(identityOnly);
     // REFUSED WHOLE, before any write, when it carries more text than one transaction can
     // persist (codex phase 4 pass 6): nothing is stored, nothing deferred, the cursor does
     // not move — the bridge splits and posts again (transcript-shadow.ts `chunkTextRows`).
@@ -1996,7 +2283,7 @@ export const applyTranscript = internalMutation({
     // either. Identity probes only, before any write.
     let readBack = 0;
     for (const r of rows) {
-      if ((r.text === undefined && r.yieldAck === undefined) || r.runId === undefined) continue;
+      if (!hasContent(r) || r.runId === undefined) continue;
       const known = await ctx.db
         .query("transcriptRows")
         .withIndex("by_chat_session_entry", (q) =>
@@ -2004,7 +2291,7 @@ export const applyTranscript = internalMutation({
         )
         .first();
       const sig = known?.textSig;
-      if (sig !== undefined && sig !== TEXT_PURGED_SIG && sig !== rowTextSignature(r.text, r.yieldAck)) {
+      if (sig !== undefined && sig !== TEXT_PURGED_SIG && sig !== contentSignature(r)) {
         readBack += MAX_TEXT_DOC_BYTES;
       }
     }
@@ -2048,10 +2335,33 @@ export const applyTranscript = internalMutation({
           sessionId: sessionId !== "" ? sessionId : (cursor?.sessionId ?? ""),
           now,
           textsStored,
+          // A text post is the first half of a live post or of a read (transcript-shadow.ts
+          // `postTexts`): in `on` it writes as a live post does — owners resolved, a new row
+          // live-only, a retracted one kept hidden — so the read or live post that follows
+          // finds what it would have written itself (codex review 3, finding 1).
+          ...(projectionOn ? { origin: "live" as const } : {}),
         },
         rows,
         budget,
       );
+      // …and what it stored is projected: the identities may have come FIRST (a post split
+      // the other way round), and then this post is the one that completes the rows.
+      if (projectionOn && cursor !== null && res.textedRuns.length > 0) {
+        await projectAll(
+          ctx,
+          {
+            chatId: args.chatId,
+            sessionKey: args.sessionKey,
+            sessionId: sessionId !== "" ? sessionId : cursor.sessionId,
+            instanceName: args.boundInstanceName,
+            floorSeq: cursor.floorSeq,
+            gaps: cursor.gaps ?? [],
+          },
+          res.textedRuns,
+          undefined,
+          budget,
+        );
+      }
       // Phase 5: launches stated by these rows get their sub-agents anchored and their
       // deliveries grouped (`on` only — nothing else posts texts).
       if (res.spawnIds.length > 0) await scheduleRegroup(ctx, args.chatId, res.spawnIds);
@@ -2074,6 +2384,7 @@ export const applyTranscript = internalMutation({
           sessionId: liveSessionId,
           now,
           textsStored,
+          ...(projectionOn ? { origin: "live" as const } : {}),
         },
         rows,
         budget,
@@ -2237,11 +2548,23 @@ export const applyTranscript = internalMutation({
         sessionId: effectiveSessionId,
         now,
         textsStored,
+        ...(projectionOn ? { origin: "read" as const } : {}),
       },
       rows,
       budget,
     );
     const { inserted, updated, seqByRun } = upserted;
+    // PROJECTION `on` (final design §3.3, step 4): a row seen only live that this durable
+    // read covers and did not return is retracted — never rendered.
+    const retracted =
+      projectionOn && !stale && (args.kind === "page" || args.kind === "delta")
+        ? await retractUnreadLiveRows(
+            ctx,
+            { chatId: args.chatId, sessionKey: args.sessionKey, sessionId: effectiveSessionId, instanceName: args.boundInstanceName, now },
+            rows,
+            budget,
+          )
+        : { runs: [] as string[], count: 0 };
     let lastSeq = sessionChanged ? 0 : (cursor?.lastSeq ?? 0);
     if (upserted.maxSeq > lastSeq) lastSeq = upserted.maxSeq;
 
@@ -2270,6 +2593,16 @@ export const applyTranscript = internalMutation({
     for (const runId of active) {
       if (!seqByRun.has(runId)) observe(runId, { status: "streaming" });
     }
+    // The run's own error (final design step 4): the session row says the last run ended
+    // failed / timed out, with its error — its status, and the text kept for its bubble.
+    const lastRunFailure =
+      projectionOn && !stale && args.kind !== "reset" && args.lastRunFailure !== undefined &&
+      args.lastRunFailure.runId.length > 0 && args.lastRunFailure.runId.length <= MAX_RUN_ID_CHARS
+        ? { ...args.lastRunFailure, error: args.lastRunFailure.error.slice(0, 1024) }
+        : null;
+    if (lastRunFailure !== null) {
+      observe(lastRunFailure.runId, { status: lastRunFailure.status === "timeout" ? "timeout" : "error" });
+    }
     for (const t of args.terminals.slice(0, MAX_TERMINALS_PER_APPLY)) {
       if (t.runId.length === 0 || t.runId.length > MAX_RUN_ID_CHARS) continue;
       observe(t.runId, {
@@ -2279,6 +2612,7 @@ export const applyTranscript = internalMutation({
       });
     }
     await upsertRuns(ctx, { chatId: args.chatId, sessionKey: args.sessionKey, now }, observations, seqByRun);
+    if (lastRunFailure !== null) await recordRunError(ctx, args.chatId, args.sessionKey, lastRunFailure);
 
     // The input guard: what the gateway says it holds, per asked send. A stale read's
     // view of custody is older than the stored one: it is not recorded.
@@ -2355,6 +2689,7 @@ export const applyTranscript = internalMutation({
       lastSeq: lastSeq > 0 ? lastSeq : undefined,
       lastKind: args.kind,
       lastReadAt: Math.max(readAt, cursor?.lastReadAt ?? Number.NEGATIVE_INFINITY),
+      ...(retracted.count > 0 ? { retractedRows: (cursor?.retractedRows ?? 0) + retracted.count } : {}),
       // A reset reply carries no session state: what the last effective read said about
       // active runs stands until a read that returned rows says otherwise.
       ...(args.kind === "reset" ? {} : { activeRunIds: [...active] }),
@@ -2416,10 +2751,14 @@ export const applyTranscript = internalMutation({
     // brought rows of: a settled bubble is recomposed from its rows in the SAME message.
     let settledRuns: string[] = [];
     if (projectionOn && args.kind !== "reset") {
-      const terminalRuns = args.terminals
-        .slice(0, MAX_TERMINALS_PER_APPLY)
-        .map((t) => t.runId)
-        .filter((id) => id.length > 0 && id.length <= MAX_RUN_ID_CHARS);
+      const terminalRuns = [
+        ...args.terminals
+          .slice(0, MAX_TERMINALS_PER_APPLY)
+          .map((t) => t.runId)
+          .filter((id) => id.length > 0 && id.length <= MAX_RUN_ID_CHARS),
+        // The session row's failed / timed-out last run is over too (step 4).
+        ...(lastRunFailure !== null ? [lastRunFailure.runId] : []),
+      ];
       // A run whose rows this read returned and that a COMPLETE active list omits.
       // Only a list that was not cut is complete: past the bound, a run missing from it
       // may simply have been cut off.
@@ -2445,7 +2784,7 @@ export const applyTranscript = internalMutation({
         gaps,
       };
       await continueUserRowsLater(ctx, scope, [], await assignUserRows(ctx, scope, rows, budget));
-      await projectAll(ctx, scope, [...seqByRun.keys(), ...terminalRuns, ...settledRuns], undefined, budget);
+      await projectAll(ctx, scope, [...seqByRun.keys(), ...terminalRuns, ...settledRuns, ...retracted.runs], undefined, budget);
       const released = await releaseAdmittedRuns(
         ctx,
         { chatId: args.chatId, sessionKey: args.sessionKey, instanceName: args.boundInstanceName },
@@ -2486,8 +2825,7 @@ export const applyTranscript = internalMutation({
       stale: false,
       settledRuns,
     };
-  },
-});
+}
 
 /** The projection ↔ bubble measurement of one chat (invariants I1–I3), metadata only. */
 export const projectionReportInternal = internalQuery({
@@ -2499,8 +2837,20 @@ export const projectionReportInternal = internalQuery({
   handler: async (ctx, { chatId, readBudgetBytes }) => {
     const id = ctx.db.normalizeId("chats", chatId);
     if (id === null) return null;
-    return await loadProjectionReport(ctx, id, {
+    const report = await loadProjectionReport(ctx, id, {
       ...(readBudgetBytes === undefined ? {} : { readBudgetBytes }),
     });
+    if (report === null) return report;
+    // Final design step 3 (R4): what the display withholds, named — never silent. Read only
+    // for a conversation that stored transcript content (`on`).
+    const chat = await ctx.db.get(id);
+    if (chat === null || chat.transcriptSeenAt === undefined) return report;
+    // …and the live-only rows a covering durable read retracted (step 4), per session.
+    const cursors = await ctx.db
+      .query("transcriptCursors")
+      .withIndex("by_chat_session", (q) => q.eq("chatId", id))
+      .take(16);
+    const retractedRows = cursors.reduce((n, c) => n + (c.retractedRows ?? 0), 0);
+    return { ...report, display: await displayReport(ctx, id), retractedRows };
   },
 });

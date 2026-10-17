@@ -15,6 +15,12 @@
 import { describe, expect, test } from "vitest";
 import {
   composeText,
+  composeBubble,
+  layoutKey,
+  LAYOUT_MAX_FILES,
+  LAYOUT_MAX_ROWS,
+  LAYOUT_MAX_TOOLS,
+  LAYOUT_MAX_WIDGETS,
   MAX_COMPOSED_TEXT_BYTES,
   planProjection,
   segmentKey,
@@ -74,8 +80,10 @@ describe("composeText — the text a bubble's rows make", () => {
       row("t", 20, { runId: "R", role: "toolresult" }),
       row("b", 25, { runId: "R", text: "  deux  " }),
     ];
-    expect(composeText(rows)).toBe("un\n\ndeux\n\ntrois");
-    expect(composeText([...rows].reverse())).toBe("un\n\ndeux\n\ntrois");
+    // Each text as written (codex review 8: leading spaces can be Markdown — an indented
+    // code block); `trim` only decides whether a row shows anything.
+    expect(composeText(rows)).toBe("un\n\n  deux  \n\ntrois");
+    expect(composeText([...rows].reverse())).toBe("un\n\n  deux  \n\ntrois");
   });
 
   test("a duplicated row is shown once", () => {
@@ -115,7 +123,9 @@ describe("planProjection — truth table", () => {
     );
     expect(plan.assign).toEqual([{ entryId: "a", to: { messageId: "m1" } }]);
     expect(plan.create).toEqual([]);
-    expect(plan.rewrite).toEqual([{ messageId: "m1", text: "réponse", settle: "complete" }]);
+    expect(plan.rewrite).toEqual([
+      { messageId: "m1", text: "réponse", layout: [{ entryId: "a", start: 0, end: 7 }], settle: "complete" },
+    ]);
   });
 
   test("a run still streaming is left to the live overlay", () => {
@@ -142,7 +152,19 @@ describe("planProjection — truth table", () => {
       }),
     );
     expect(plan.create).toEqual([
-      { born: segmentKey("R", 0), runId: "R", segment: 0, firstSeq: 3, text: "un\n\ndeux", status: "complete", inferred: false },
+      {
+        born: segmentKey("R", 0),
+        runId: "R",
+        segment: 0,
+        firstSeq: 3,
+        text: "un\n\ndeux",
+        layout: [
+          { entryId: "a", start: 0, end: 2 },
+          { entryId: "b", start: 4, end: 8 },
+        ],
+        status: "complete",
+        inferred: false,
+      },
     ]);
     expect(plan.assign.map((a) => a.entryId).sort()).toEqual(["a", "b"]);
   });
@@ -205,7 +227,16 @@ describe("planProjection — truth table", () => {
       }),
     );
     expect(plan.assign).toEqual([{ entryId: "b", to: { messageId: "old" } }]);
-    expect(plan.rewrite).toEqual([{ messageId: "old", text: "x\n\ny" }]);
+    expect(plan.rewrite).toEqual([
+      {
+        messageId: "old",
+        text: "x\n\ny",
+        layout: [
+          { entryId: "a", start: 0, end: 1 },
+          { entryId: "b", start: 3, end: 4 },
+        ],
+      },
+    ]);
   });
 
   test("a deleted bubble is a tombstone: its segment is never re-born", () => {
@@ -244,7 +275,7 @@ describe("planProjection — truth table", () => {
           runs: new Map([["R", settled({ status })]]),
         }),
       );
-      expect(plan.rewrite).toEqual([{ messageId: "m1", text: "x" }]);
+      expect(plan.rewrite).toEqual([{ messageId: "m1", text: "x", layout: [{ entryId: "a", start: 0, end: 1 }] }]);
     }
     const aborted = planProjection(
       view({
@@ -255,7 +286,9 @@ describe("planProjection — truth table", () => {
         runs: new Map([["R", settled({ status: "aborted" })]]),
       }),
     );
-    expect(aborted.rewrite).toEqual([{ messageId: "m1", text: "x", settle: "aborted" }]);
+    expect(aborted.rewrite).toEqual([
+      { messageId: "m1", text: "x", layout: [{ entryId: "a", start: 0, end: 1 }], settle: "aborted" },
+    ]);
   });
 
   test("a bubble showing a run that is not covered (or not over) keeps its live text", () => {
@@ -332,8 +365,8 @@ describe("planProjection — truth table", () => {
       }),
     );
     expect(plan.rewrite).toEqual([
-      { messageId: "s0", text: "avant" },
-      { messageId: "s1", text: "après", settle: "complete" },
+      { messageId: "s0", text: "avant", layout: [{ entryId: "a", start: 0, end: 5 }] },
+      { messageId: "s1", text: "après", layout: [{ entryId: "b", start: 0, end: 5 }], settle: "complete" },
     ]);
   });
 
@@ -374,7 +407,15 @@ describe("planProjection — truth table", () => {
       }),
     );
     expect(plan.rewrite).toEqual([
-      { messageId: "m1", text: "En attente du sous-agent.\n\nBS_PARENT_OK\n\nTerminé." },
+      {
+        messageId: "m1",
+        text: "En attente du sous-agent.\n\nBS_PARENT_OK\n\nTerminé.",
+        layout: [
+          { entryId: "p2", start: 0, end: 25 },
+          { entryId: "s1", start: 27, end: 39 },
+          { entryId: "s2", start: 41, end: 49 },
+        ],
+      },
     ]);
   });
 
@@ -406,7 +447,15 @@ describe("planProjection — truth table", () => {
       }),
     );
     expect(plan.rewrite).toEqual([
-      { messageId: "m1", text: "Première partie.\n\nSuite.", settle: "complete" },
+      {
+        messageId: "m1",
+        text: "Première partie.\n\nSuite.",
+        layout: [
+          { entryId: "a", start: 0, end: 16 },
+          { entryId: "b", start: 18, end: 24 },
+        ],
+        settle: "complete",
+      },
     ]);
   });
 });
@@ -467,7 +516,7 @@ function makeWorld(rand: () => number): World {
 
 type Store = {
   rows: Map<string, PlanRow>;
-  bubbles: Map<string, { status: "streaming" | "complete" | "aborted" | "error"; text: string; runId: string; segment: number; born: boolean }>;
+  bubbles: Map<string, { status: "streaming" | "complete" | "aborted" | "error"; text: string; runId: string; segment: number; born: boolean; layoutKey?: string }>;
   settled: Set<string>;
   nextId: number;
 };
@@ -506,6 +555,7 @@ function project(w: World, s: Store, runIds: readonly string[]): ProjectionPlan 
       text: b.text,
       runIds: [b.runId],
       rows: [...s.rows.values()].filter((r) => r.messageId === id),
+      ...(b.layoutKey !== undefined ? { layoutKey: b.layoutKey } : {}),
     });
   }
   const runs = new Map<string, RunFacts>();
@@ -523,7 +573,7 @@ function project(w: World, s: Store, runIds: readonly string[]): ProjectionPlan 
   for (const c of plan.create) {
     const id = `born:${s.nextId++}`;
     born.set(c.born, id);
-    s.bubbles.set(id, { status: c.status, text: c.text, runId: c.runId, segment: c.segment, born: true });
+    s.bubbles.set(id, { status: c.status, text: c.text, runId: c.runId, segment: c.segment, born: true, layoutKey: layoutKey(c.layout) });
   }
   for (const a of plan.assign) {
     const target = "messageId" in a.to ? a.to.messageId : born.get(a.to.born)!;
@@ -534,6 +584,7 @@ function project(w: World, s: Store, runIds: readonly string[]): ProjectionPlan 
     const b = s.bubbles.get(wr.messageId)!;
     if (wr.settle !== undefined && b.status === "streaming") b.status = wr.settle;
     if (wr.text !== undefined) b.text = wr.text;
+    if (wr.layout !== undefined) b.layoutKey = layoutKey(wr.layout);
   }
   return plan;
 }
@@ -629,4 +680,51 @@ describe("planProjection — an outcome only INFERRED is marked (codex phase 4 p
       expect(plan.create[0]?.inferred).toBe(inferred);
     });
   }
+});
+
+// Codex review 5, finding 2: the layout stops itself at its bounds — the same constants its
+// readers use — and COUNTS what it left out, on its last row. A file past the bound is in
+// neither the layout nor its items: no reader ever meets it as an unresolved file.
+describe("the layout bounds (LAYOUT_MAX_*)", () => {
+  test("rows past the bound: left out and counted; the file on the last row is not laid out", () => {
+    const rows = Array.from({ length: LAYOUT_MAX_ROWS + 2 }, (_, i) =>
+      row(`r${i}`, i + 1, {
+        runId: "R",
+        items: [{ kind: "text", text: `ligne ${i}` }, ...(i === LAYOUT_MAX_ROWS + 1 ? [{ kind: "file" as const, blockIndex: 1 }] : [])],
+        hasBlocks: true,
+        ...(i === LAYOUT_MAX_ROWS + 1 ? { files: [{ blockIndex: 1, label: "last.png" }] } : {}),
+      }),
+    );
+    const { text, layout } = composeBubble(rows);
+    expect(layout).toHaveLength(LAYOUT_MAX_ROWS);
+    expect(layout[layout.length - 1]!.cut).toEqual({ rows: 2 });
+    expect(layout.some((r) => (r.files ?? []).length > 0)).toBe(false);
+    expect(text).not.toContain("last.png");
+  });
+
+  test("files, cards and widgets past their bounds: left out of the layout AND of the items, counted", () => {
+    const perRow = 60;
+    const rowsN = Math.ceil((LAYOUT_MAX_FILES + 10) / perRow);
+    const rows = Array.from({ length: rowsN }, (_, i) =>
+      row(`f${i}`, i + 1, {
+        runId: "R",
+        hasBlocks: true,
+        files: Array.from({ length: perRow }, (_, k) => ({ blockIndex: k })),
+        items: [{ kind: "text" as const, text: `rangée ${i}` }, ...Array.from({ length: perRow }, (_, k) => ({ kind: "file" as const, blockIndex: k }))],
+        tools: Array.from({ length: Math.ceil((LAYOUT_MAX_TOOLS + 5) / rowsN) }, (_, k) => ({ toolCallId: `t${i}-${k}`, status: "result" as const })),
+        widgets: Array.from({ length: 5 }, (_, k) => ({ viewId: `cv_${i}_${k}`, origin: "tool" as const })),
+      }),
+    );
+    const { layout } = composeBubble(rows);
+    const files = layout.flatMap((r) => r.files ?? []);
+    const itemFiles = layout.flatMap((r) => (r.items ?? []).filter((it) => it.kind === "file"));
+    expect(files).toHaveLength(LAYOUT_MAX_FILES);
+    expect(itemFiles).toHaveLength(LAYOUT_MAX_FILES);
+    expect(layout.flatMap((r) => r.tools ?? [])).toHaveLength(LAYOUT_MAX_TOOLS);
+    expect(layout.flatMap((r) => r.widgets ?? [])).toHaveLength(LAYOUT_MAX_WIDGETS);
+    const cut = layout[layout.length - 1]!.cut!;
+    expect(cut.files).toBe(rowsN * perRow - LAYOUT_MAX_FILES);
+    expect(cut.widgets).toBe(rowsN * 5 - LAYOUT_MAX_WIDGETS);
+    expect(cut.tools).toBeGreaterThan(0);
+  });
 });

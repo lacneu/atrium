@@ -257,6 +257,13 @@ export class RunManager {
     this.projection = on;
     // Phase 4: on a projected session the transcript decides when a turn ended.
     this.normalizer.transcriptDecides = on;
+    // Final design step 4: while `on`, no file is taken from the live side — the turn's,
+    // the outbound scan's, nor a closed run's lane's.
+    this.normalizer.liveFilesOff = on;
+    this.sink.liveFilesOff = on;
+    for (const lane of this.lanes.values()) {
+      if (lane.normalizer !== null) lane.normalizer.liveFilesOff = on;
+    }
     if (!on) {
       this.heldInputs.clear();
       this.inputAckRuns.clear();
@@ -1781,6 +1788,7 @@ export class RunManager {
   private laneNormalizer(runId: string, now: number): Normalizer {
     const normalizer = new Normalizer(this.sessionKey, this.providerSessionId);
     normalizer.transcriptDecides = true;
+    normalizer.liveFilesOff = this.projection;
     normalizer.beginTurn(now);
     normalizer.noteRunStarted(runId, now);
     return normalizer;

@@ -1,0 +1,58 @@
+{
+ "_source": "probe-refonte-r4-20261016T182436Z (OpenClaw 2026.9.33 r5, bench run 2026-10-16T18-14-42-224Z, scenario settle-message-tool-codemode; bench tokens only): artifacts.download {sessionKey, artifactId} answers recorded RAW (the first probe kept only their summary): a managed file, a managed image, and the structured refusal of an id the session does not hold. Ticket values replaced by <redacted> at capture.",
+ "managedFile": {
+  "ok": true,
+  "payload": {
+   "artifact": {
+    "id": "artifact_managed_media_5952df0c-55a9-40d6-8915-9f7bbe2ff0ec",
+    "type": "file",
+    "title": "bench-codemode-a.txt",
+    "mimeType": "text/plain",
+    "sizeBytes": 17,
+    "sessionKey": "agent:alice:atrium:chat:u-repro:turn-nx74hd3e31hpfwgkcbzyz22san8gcata",
+    "source": "session-transcript",
+    "download": {
+     "mode": "url"
+    }
+   },
+   "url": "/api/chat/media/outgoing/agent%3Aalice%3Aatrium%3Achat%3Au-repro%3Aturn-nx74hd3e31hpfwgkcbzyz22san8gcata/5952df0c-55a9-40d6-8915-9f7bbe2ff0ec/full?mediaTicket=<redacted>",
+   "expiresAt": "2026-10-16T18:29:36.888Z"
+  },
+  "bytes": 919,
+  "ms": 18
+ },
+ "managedImage": {
+  "ok": true,
+  "payload": {
+   "artifact": {
+    "id": "artifact_managed_image_b38e93de-0483-4fa1-a775-b1c523874e5f",
+    "type": "image",
+    "title": "bench-codemode-img.png",
+    "mimeType": "image/png",
+    "sizeBytes": 1795,
+    "sessionKey": "agent:alice:atrium:chat:u-repro:turn-nx74hd3e31hpfwgkcbzyz22san8gcata",
+    "source": "session-transcript",
+    "download": {
+     "mode": "url"
+    }
+   },
+   "url": "/api/chat/media/outgoing/agent%3Aalice%3Aatrium%3Achat%3Au-repro%3Aturn-nx74hd3e31hpfwgkcbzyz22san8gcata/b38e93de-0483-4fa1-a775-b1c523874e5f/full?mediaTicket=<redacted>",
+   "expiresAt": "2026-10-16T18:29:36.904Z"
+  },
+  "bytes": 923,
+  "ms": 17
+ },
+ "notFound": {
+  "ok": false,
+  "error": {
+   "code": "INVALID_REQUEST",
+   "message": "artifact not found",
+   "details": {
+    "type": "artifact_not_found",
+    "artifactId": "artifact_managed_media_00000000-0000-4000-8000-000000000000"
+   }
+  },
+  "bytes": 250,
+  "ms": 3
+ }
+}

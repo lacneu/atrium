@@ -44,7 +44,10 @@ import type { OutboundScan } from "./core/turn-sink.js";
 import { gatewayHostOf } from "./core/health.js";
 import { deviceTokenPromotion } from "./core/device-token-promotion.js";
 import type { BridgeConfig } from "./config.js";
-import type { MediaFetcherProvider } from "./core/media-fetcher-provider.js";
+import { mediaIdentityHeaders, type MediaFetcherProvider } from "./core/media-fetcher-provider.js";
+import { ArtifactCopier } from "./core/artifact-copier.js";
+import type { MediaFetcher } from "./core/media-fetcher.js";
+import { requestArtifactDownload, type ArtifactRequester } from "./providers/openclaw/artifact-download.js";
 import { buildSessionKey } from "./providers/openclaw/session-keys.js";
 import { protocolDrift } from "./providers/openclaw/protocol-drift.js";
 import type { FinalizeCause } from "./core/finalize-causes.js";
@@ -122,6 +125,53 @@ export interface InstanceBundle {
   writer: ConvexWriter;
   mediaProvider: MediaFetcherProvider;
   outboundScan?: OutboundScan;
+}
+
+/** What the transcript file copier needs of the instance (projection `on`, final design
+ *  step 2): its gateway's HTTP origin, the identity a media request presents, and the
+ *  current media fetcher and cap (hot). */
+export interface ArtifactCopyEnv {
+  httpBase: () => string;
+  identityHeaders: () => Record<string, string>;
+  mediaFetcher: () => MediaFetcher | undefined;
+  maxBytes: () => number;
+}
+
+/** A copier reading through `conn` (a conversation socket, or the resume route's short
+ *  operator connection) — null when the writer cannot report copies (an older fake). */
+export function buildArtifactCopier(
+  env: ArtifactCopyEnv,
+  writer: ConvexWriter,
+  conn: ArtifactRequester,
+): ArtifactCopier | null {
+  if (
+    writer.transcriptFileUpload === undefined ||
+    writer.transcriptFileCopied === undefined ||
+    writer.transcriptFileFailed === undefined
+  ) {
+    return null;
+  }
+  return new ArtifactCopier({
+    download: (key, artifactId) => requestArtifactDownload(conn, key, artifactId),
+    httpBase: env.httpBase,
+    identityHeaders: env.identityHeaders,
+    mediaFetcher: env.mediaFetcher,
+    maxBytes: env.maxBytes,
+    upload: writer.transcriptFileUpload.bind(writer),
+    copied: writer.transcriptFileCopied.bind(writer),
+    failed: writer.transcriptFileFailed.bind(writer),
+  });
+}
+
+/** The copy environment of one served instance. */
+export function artifactCopyEnvOf(bundle: InstanceBundle): ArtifactCopyEnv {
+  return {
+    httpBase: () => bundle.config.gatewayHttpBase,
+    identityHeaders: () => mediaIdentityHeaders(bundle.config),
+    // The gateway's media route ONLY, never a local mount (MediaFetcherProvider.mediaRoute).
+    mediaFetcher: () => bundle.mediaProvider.mediaRoute(),
+    maxBytes: () => bundle.mediaProvider.currentMaxBytes(),
+  };
 }
 
 /** The bridge's clock, in SECONDS (matches the normalizer's time unit).
@@ -283,6 +333,9 @@ class Session implements BridgeSession {
   readonly observer: SubAgentObserver;
   /** See BridgeSession.transcriptShadow. */
   readonly transcriptShadow: TranscriptShadow;
+  /** PROJECTION `on` (final design step 2): copies the files this session's transcript
+   *  rows carry, once, by artifact id. Absent when the instance gave no copy environment. */
+  readonly artifactCopier: ArtifactCopier | null;
   /** What the agent ASKS the person on this session (questions, approvals) — see
    *  providers/openclaw/agent-request-observer.ts. Inbound-only, like the sub-agent
    *  observer; its one effect on the turn is to say that a human now holds it. */
@@ -376,6 +429,8 @@ class Session implements BridgeSession {
     // feeds this session's reconciler with `session.message` / `sessions.changed`.
     // Never this conversation's socket (session-events.ts).
     sessionEvents?: SessionEventSource,
+    // PROJECTION `on` (final design step 2): what the transcript file copier needs.
+    artifactCopy?: ArtifactCopyEnv,
   ) {
     this.chatId = chatId;
     this.sessionKey = sessionKey;
@@ -451,6 +506,11 @@ class Session implements BridgeSession {
     this.clock = clock;
     this.lastActivityAt = clock();
     this.transcriptFetcher = transcriptFetcher;
+    // The copier reads through THIS conversation's socket — the Control UI asks
+    // `artifacts.download` on the socket that shows the session (final design §3.5).
+    this.artifactCopier =
+      artifactCopy === undefined ? null : buildArtifactCopier(artifactCopy, writer, connection);
+    const copier = this.artifactCopier;
     // SHADOW transcript reconciler: off until a /send carries the instance switch.
     this.transcriptShadow = new TranscriptShadow({
       chatId,
@@ -488,6 +548,9 @@ class Session implements BridgeSession {
         );
       },
       onInputDropped: (sendId) => this.runManager.noteInputDropped(sendId),
+      // PROJECTION `on` (final design step 2): the files Convex has no copy of yet. Called
+      // only in `on` (TranscriptShadow.emitFiles).
+      ...(copier === null ? {} : { copyFiles: (files) => copier.enqueue(files) }),
       // PROJECTION `on` (phase 4): the transcript proved runs over — a foreground turn
       // among them ends here (never on a timer).
       onRunsSettled: (runIds) => {
@@ -508,7 +571,10 @@ class Session implements BridgeSession {
     // consume loop's end, a crash recovery, the reaper, a re-key): otherwise its
     // session-events attachment would keep it — and reads on a dead socket — alive.
     if (typeof connection.onClosed === "function") {
-      connection.onClosed(() => this.transcriptShadow.close());
+      connection.onClosed(() => {
+        this.transcriptShadow.close();
+        copier?.close();
+      });
     }
   }
 
@@ -638,7 +704,9 @@ class Session implements BridgeSession {
       // which is settled by now, since the child outlives the turn that spawned
       // it. Best-effort, off the critical path: a delivery must never break the
       // observation writes that carry the child's lifecycle.
-      if (record.deliveredMedia !== undefined && record.parentMessageId) {
+      // PROJECTION `on` (final design step 4): never — the child's files are in the
+      // child's transcript, and what the parent shows is what the PARENT's rows carry.
+      if (record.deliveredMedia !== undefined && record.parentMessageId && !this.runManager.projectionOn) {
         const anchor = record.parentMessageId;
         let hosted = this.childDeliveredMedia.get(record.childSessionKey);
         if (hosted === undefined) {
@@ -2216,6 +2284,7 @@ export class SessionRegistry {
             )
         : undefined,
       this.sessionEventsFor(instanceName, cfg),
+      artifactCopyEnvOf(bundle),
     );
     session.widgetsWanted = widgetsWanted;
     session.runManager.setWidgetsEnabled(declared.includes(INLINE_WIDGETS_CAP));

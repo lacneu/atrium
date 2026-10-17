@@ -846,10 +846,42 @@ describe("archive import", () => {
     ).rejects.toThrow();
   });
 
+  test("a version-3 archive (no row layout, no transcript files) still imports as it did", async () => {
+    const t = convexTest(schema, modules);
+    const importer = await user(t);
+    const as = t.withIdentity({ subject: importer });
+    const importId = await as.mutation(api.archiveImport.beginImport, { manifest: { formatVersion: 3, origin: null } });
+    await as.mutation(api.archiveImport.importBatch, { importId, section: "chats", rows: [archived("c1", { title: "v3", updatedAt: 1 })] });
+    await as.mutation(api.archiveImport.importBatch, {
+      importId,
+      section: "messages",
+      rows: [archived("m1", { chatId: "c1", role: "assistant", status: "complete", text: "Bonjour", updatedAt: 1 })],
+    });
+    const [message] = await t.run((ctx) => ctx.db.query("messages").collect());
+    expect(message).toMatchObject({ text: "Bonjour", role: "assistant" });
+    expect(message!.rowLayout).toBeUndefined();
+  });
+
+  test("a row layout over the row field budget is accepted under its own (format 4)", async () => {
+    const t = convexTest(schema, modules);
+    const importer = await user(t);
+    const as = t.withIdentity({ subject: importer });
+    const importId = await as.mutation(api.archiveImport.beginImport, { manifest: MANIFEST });
+    await as.mutation(api.archiveImport.importBatch, { importId, section: "chats", rows: [archived("c1", { title: "on", updatedAt: 1 })] });
+    const rowLayout = Array.from({ length: 300 }, (_, i) => ({ entryId: `e${i}`, start: 0, end: 0, blocks: true }));
+    await as.mutation(api.archiveImport.importBatch, {
+      importId,
+      section: "messages",
+      rows: [archived("m1", { chatId: "c1", role: "assistant", status: "complete", text: "", updatedAt: 1, rowLayout })],
+    });
+    const [message] = await t.run((ctx) => ctx.db.query("messages").collect());
+    expect(message!.rowLayout).toHaveLength(300);
+  });
+
   test("EVERY older format this version claims to read is still accepted", () => {
     // Reading older archives costs nothing; what the number buys is the refusal
     // above. Losing an old version by accident would strand real archives.
-    expect([...SUPPORTED_FORMAT_VERSIONS].sort()).toEqual([1, 2, 3]);
+    expect([...SUPPORTED_FORMAT_VERSIONS].sort()).toEqual([1, 2, 3, 4]);
   });
 
   test("two anchor-less passages of the SAME block stay two passages", async () => {

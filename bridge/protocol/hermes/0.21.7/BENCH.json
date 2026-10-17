@@ -3,9 +3,9 @@
   "version": 2,
   "provider": "hermes",
   "hermesVersion": "0.21.7",
-  "gatewayVersion": "2026.9.9",
+  "gatewayVersion": "2026.9.33",
   "verdict": "GO",
-  "at": "2026-10-14T12:54:59.788Z",
+  "at": "2026-10-17T17:12:39.412Z",
   "scenarios": [
     "agent-request-exec-approval",
     "agent-request-question",
@@ -21,14 +21,19 @@
     "inbound-attachment",
     "inbound-attachment-large",
     "media-outbound",
+    "settle-chain-no-synthesis",
+    "settle-message-tool-codemode",
     "spawn-announce-merge",
     "spawn-chain-merge",
     "spawn-parallel-merge",
     "talk-session",
     "tool-exec",
+    "transcript-files-replay",
     "update-plan",
     "widget-inline",
-    "widget-off"
+    "widget-off",
+    "yield-settle-media",
+    "yield-settle-media-param"
   ],
   "hermesScenarios": [
     "hermes-basic-turn",
@@ -37,11 +42,11 @@
     "hermes-cron-list"
   ],
   "flags": [],
-  "atriumSha": "7d281f02cf821619414664e1cc13bc1453f2871a",
+  "atriumSha": "6ce45860a7f57552f8b6745c52e8c7bc68c331fa",
   "worktree": {
     "dirty": true,
-    "deltaSha256": "80ed6cbc43b043ea456926ff8c731a84d7d85eed8bfcd04b2d2fc59cd1732da2"
+    "deltaSha256": "7a55b19b7091d3b49dbbf0ffbf8a6610dc5be810da715bc668e0bedf238d4b82"
   },
-  "supportDigest": "5ba3e366c611102dae48e1ef983c31862c998dd73b8f956343c7221e293baf0e",
-  "bridgeVersion": "0.100.0"
+  "supportDigest": "35358abe0cfd3d48fdf2834ed52ad4760fec0120d7189c1e41f1af49f02db352",
+  "bridgeVersion": "0.100.1"
 }

@@ -1,0 +1,270 @@
+{
+ "_source": "probe-refonte-20261016T165938Z (OpenClaw 2026.9.33 r5, 5873f81; bench, token mode; bench tokens only): a LIVE row published with messageSeq 9 (assistant, empty text, stopReason aborted, errorMessage) of the yielded run, from ANOTHER transcript source; no durable read ever returns it — the durable seq 9 is the subagent_settle entry (sessions-get-settle-entry.json). seq is not an identity.",
+ "t_ms": 17464,
+ "payload": {
+  "sessionKey": "agent:alice:atrium:chat:u-probe:refonte-2026-10-16t16-59-38-883z",
+  "agentId": "alice",
+  "message": {
+   "role": "assistant",
+   "content": [
+    {
+     "type": "text",
+     "text": ""
+    }
+   ],
+   "api": "openai-chatgpt-responses",
+   "provider": "openai",
+   "model": "gpt-6.1-sol",
+   "stopReason": "aborted",
+   "errorMessage": "Agent run aborted",
+   "timestamp": 1792169996317,
+   "usage": {
+    "input": 0,
+    "output": 0,
+    "totalTokens": 0,
+    "cacheRead": 0,
+    "cacheWrite": 0,
+    "cost": {
+     "input": 0,
+     "output": 0,
+     "cacheRead": 0,
+     "cacheWrite": 0,
+     "total": 0
+    }
+   },
+   "__openclaw": {
+    "runId": "probe-refonte-80ee9278-2008-42a6-8293-e00368eb4de0",
+    "id": "7546448a-dba6-43ec-92c0-c8a869d2b257",
+    "recordTimestampMs": 1792169996319,
+    "transcriptPosition": {
+     "source": "YMItc_gVMhcsOyadjKWFyomev7aQ2oSmKyULRT18IMw",
+     "rawSeq": 14
+    },
+    "seq": 9
+   }
+  },
+  "messageId": "7546448a-dba6-43ec-92c0-c8a869d2b257",
+  "messageSeq": 9,
+  "updatedAt": 1792169979864,
+  "sessionId": "514937bc-8f7f-491e-8e0b-235ffe63a8d4",
+  "createdActor": null,
+  "owner": null,
+  "participants": [
+   {
+    "identity": {
+     "type": "observation",
+     "pluginId": null,
+     "accountId": null,
+     "senderKind": "unknown",
+     "id": "cli"
+    }
+   }
+  ],
+  "participantCount": 1,
+  "kind": "direct",
+  "visibility": "shared",
+  "chatType": "direct",
+  "archived": false,
+  "archivedAt": null,
+  "archivedBy": null,
+  "archiveReason": null,
+  "pinned": false,
+  "pinnedAt": null,
+  "unread": false,
+  "markedUnreadAt": null,
+  "agentStatus": null,
+  "observerDigest": null,
+  "activitySummary": {
+   "text": "La création du fichier `probe-refonte-a-2026-10-16t16-59-38-883z.txt` contenant `PROBE_REFONTE_OK` a été demandée sous `/home/node/.openclaw/media/outbound/`, mais aucun résultat vérifié n’est encore disponible. Travail en attente.",
+   "updatedAt": 1792169981929,
+   "state": "updating",
+   "canEnsure": true
+  },
+  "controlOwnerSessionKey": null,
+  "swarm": null,
+  "permissionMode": null,
+  "permissionModePending": false,
+  "createdVia": "operator",
+  "createdAt": 1792169979011,
+  "label": null,
+  "autoLabel": null,
+  "icon": null,
+  "color": null,
+  "channelAvatarUrl": null,
+  "category": null,
+  "boardPresentation": null,
+  "displayName": null,
+  "childSessions": [
+   "agent:files:subagent:e5c51644-7e28-4670-8f87-73c9bb47f20d"
+  ],
+  "thinkingLevel": null,
+  "effectiveFastMode": false,
+  "effectiveFastModeSource": "default",
+  "fastAutoOnSeconds": 60,
+  "toolOverrides": null,
+  "systemSent": true,
+  "abortedLastRun": false,
+  "restartRecoveryStatus": null,
+  "totalTokens": 0,
+  "totalTokensFresh": true,
+  "goal": null,
+  "contextTokens": 272000,
+  "contextBudgetStatus": null,
+  "effectiveResponseUsage": "off",
+  "modelProvider": "openai",
+  "model": "gpt-6.1-sol",
+  "activeModelProvider": "openai",
+  "activeModel": "gpt-6.1-sol",
+  "modelOverrideSource": null,
+  "agentRuntime": {
+   "id": "openclaw",
+   "cloudPlacementSupported": true,
+   "cloudPlacementExecutionMode": "worker-turn",
+   "devicePlacement": {
+    "requiredNodeCommands": [],
+    "consumesWorkerSlot": true
+   },
+   "devicePlacementSupported": true,
+   "source": "model"
+  },
+  "runtimeSelectionLocked": false,
+  "status": "running",
+  "lastRunError": null,
+  "providerReview": null,
+  "lastRunId": null,
+  "hasAutomation": false,
+  "hasActiveRun": true,
+  "activeRunIds": null,
+  "startedAt": 1792169979861,
+  "endedAt": null,
+  "runtimeMs": null,
+  "runId": "probe-refonte-80ee9278-2008-42a6-8293-e00368eb4de0",
+  "ancestorSessions": [],
+  "sharingRole": "admin",
+  "session": {
+   "key": "agent:alice:atrium:chat:u-probe:refonte-2026-10-16t16-59-38-883z",
+   "visibility": "shared",
+   "permissionModePending": false,
+   "createdVia": "operator",
+   "participants": [
+    {
+     "identity": {
+      "type": "observation",
+      "pluginId": null,
+      "accountId": null,
+      "senderKind": "unknown",
+      "id": "cli"
+     }
+    }
+   ],
+   "expandedParticipants": [
+    {
+     "identity": {
+      "type": "observation",
+      "pluginId": null,
+      "accountId": null,
+      "senderKind": "unknown",
+      "id": "cli"
+     }
+    }
+   ],
+   "participantCount": 1,
+   "createdAt": 1792169979011,
+   "kind": "direct",
+   "classification": "direct",
+   "agentId": "alice",
+   "isMain": false,
+   "isBackground": false,
+   "chatType": "direct",
+   "updatedAt": 1792169979864,
+   "archived": false,
+   "pinned": false,
+   "unread": false,
+   "lastInteractionAt": 1792169979010,
+   "sessionId": "514937bc-8f7f-491e-8e0b-235ffe63a8d4",
+   "systemSent": true,
+   "abortedLastRun": false,
+   "thinkingLevels": [
+    {
+     "id": "low",
+     "label": "low"
+    },
+    {
+     "id": "medium",
+     "label": "medium"
+    },
+    {
+     "id": "high",
+     "label": "high"
+    },
+    {
+     "id": "xhigh",
+     "label": "xhigh"
+    },
+    {
+     "id": "max",
+     "label": "max"
+    },
+    {
+     "id": "ultra",
+     "label": "ultra"
+    }
+   ],
+   "thinkingOptions": [
+    "low",
+    "medium",
+    "high",
+    "xhigh",
+    "max",
+    "ultra"
+   ],
+   "thinkingDefault": "high",
+   "effectiveFastMode": false,
+   "effectiveFastModeSource": "default",
+   "fastAutoOnSeconds": 60,
+   "totalTokens": 0,
+   "totalTokensFresh": true,
+   "status": "running",
+   "startedAt": 1792169979861,
+   "childSessions": [
+    "agent:files:subagent:e5c51644-7e28-4670-8f87-73c9bb47f20d"
+   ],
+   "effectiveResponseUsage": "off",
+   "effectiveQueueMode": "steer",
+   "modelProvider": "openai",
+   "model": "gpt-6.1-sol",
+   "activeModelProvider": "openai",
+   "activeModel": "gpt-6.1-sol",
+   "modelOverrideSource": null,
+   "runtimeSelectionLocked": false,
+   "agentRuntime": {
+    "id": "openclaw",
+    "cloudPlacementSupported": true,
+    "cloudPlacementExecutionMode": "worker-turn",
+    "devicePlacement": {
+     "requiredNodeCommands": [],
+     "consumesWorkerSlot": true
+    },
+    "devicePlacementSupported": true,
+    "source": "model"
+   },
+   "contextTokens": 272000,
+   "snapshotAt": 1792169996345,
+   "placement": {
+    "state": "local",
+    "generation": 0,
+    "createdAtMs": 1792169979579,
+    "updatedAtMs": 1792169979579,
+    "stateChangedAtMs": 1792169979579
+   },
+   "activitySummary": {
+    "text": "La création du fichier `probe-refonte-a-2026-10-16t16-59-38-883z.txt` contenant `PROBE_REFONTE_OK` a été demandée sous `/home/node/.openclaw/media/outbound/`, mais aucun résultat vérifié n’est encore disponible. Travail en attente.",
+    "updatedAt": 1792169981929,
+    "state": "updating",
+    "canEnsure": true
+   },
+   "hasActiveRun": true,
+   "sharingRole": "admin"
+  }
+ }
+}

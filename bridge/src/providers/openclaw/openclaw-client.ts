@@ -36,6 +36,7 @@ import {
   type ShutdownNotice,
 } from "./connection-end.js";
 import { readConfigChanged, type ConfigChangedNotice } from "./config-changed.js";
+import { redactToolPayloadText } from "../../vendor/upstream-redact/ui/src/lib/browser-redact.js";
 import { buildIdentityHeaders, type GatewayIdentity } from "./gateway-identity.js";
 import type { RosterEntry } from "./models-roster.js";
 import { decodeInboundFrame, protocolDrift } from "./protocol-drift.js";
@@ -179,14 +180,23 @@ export class GatewayAnsweredError extends OpenClawError implements ReceivedProvi
 // every correlated `res`/ack, and every raw inbound frame (the diagnosis +
 // fixture material for the auto-adjust loop). Off by default; verbose at our
 // scale only when explicitly enabled.
+function debugOn(): boolean {
+  return process.env.BRIDGE_DEBUG === "1";
+}
+
 function dbg(...args: unknown[]): void {
-  if (process.env.BRIDGE_DEBUG === "1") {
+  if (debugOn()) {
     console.log("[oc]", ...args);
   }
 }
 
 /** A value as debug text. Every `dbg` of a frame or a response goes through here, so a
- *  question's answers — a secret may be among them — are replaced first. */
+ *  question's answers — a secret may be among them — are replaced first, and the text is
+ *  then masked as the Control UI masks a tool detail (ui/src/lib/browser-redact.ts,
+ *  vendored; codex reviews 12-15): a raw frame carries tool arguments and results — a
+ *  `chat.history` page carries whole transcript rows. A gateway's own
+ *  `logging.redactPatterns` are already applied to what it stores and sends
+ *  (src/agents/transcript-redact.ts:721). */
 export function clip(value: unknown, max = 1200): string {
   if (value === undefined) return "undefined";
   let s: string;
@@ -196,6 +206,7 @@ export function clip(value: unknown, max = 1200): string {
     // JSON.stringify returns undefined for undefined/functions/symbols.
     s = typeof j === "string" ? j : String(value);
   }
+  s = redactToolPayloadText(s);
   return s.length > max ? s.slice(0, max) + `…(+${s.length - max})` : s;
 }
 
@@ -901,12 +912,16 @@ export class OpenClawConnection {
     }
     if (frame.type === "res") {
       const id = String(frame.id);
-      dbg(
-        "res <-",
-        id,
-        frame.ok ? "ok" : "ERR " + clip(frame.error, 300),
-        frame.ok ? clip(frame.result, 400) : "",
-      );
+      // Guarded: `clip` serializes and redacts the whole response, so it only runs when
+      // the line is actually written.
+      if (debugOn()) {
+        dbg(
+          "res <-",
+          id,
+          frame.ok ? "ok" : "ERR " + clip(frame.error, 300),
+          frame.ok ? clip(frame.result, 400) : "",
+        );
+      }
       const pending = this.pending.get(id);
       if (pending) {
         this.pending.delete(id);
@@ -982,7 +997,7 @@ export class OpenClawConnection {
       }
     }
     // Raw inbound frame: the diagnosis + first-fixture material for the harness.
-    dbg("frame <-", clip(frame));
+    if (debugOn()) dbg("frame <-", clip(frame));
     // A run another socket carries in full (a participant's, speaker-pool.ts): its
     // frames come through injectFrame, in THAT socket's order. The copies arriving
     // here natively are dropped — AFTER the sequence tracker, which counts them —

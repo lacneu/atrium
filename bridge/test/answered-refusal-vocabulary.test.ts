@@ -20,15 +20,15 @@ import { describe, expect, it } from "vitest";
 
 import { GATEWAY_DETAIL_KEYS, GATEWAY_ERROR_CODES } from "../src/core/dispatch-errors.js";
 import { DRIFT_VENDORED_VERSION } from "../src/providers/openclaw/protocol-drift.js";
-import * as admission from "../protocol/openclaw/2026.9.9/agent-database-admission.js";
-import * as worker from "../protocol/openclaw/2026.9.9/worker-protocol-primitives.js";
+import * as admission from "../protocol/openclaw/2026.9.33/agent-database-admission.js";
+import * as worker from "../protocol/openclaw/2026.9.33/worker-protocol-primitives.js";
 
 type Schema = { anyOf?: Schema[]; properties?: Record<string, Schema>; const?: unknown };
 const objects = (s: Schema): Schema[] => (s.anyOf ? s.anyOf.flatMap(objects) : [s]);
 
 describe("the answered-refusal vocabularies are upstream's", () => {
   it("the vendored modules read here are the drift detector's version", () => {
-    expect(DRIFT_VENDORED_VERSION).toBe("2026.9.9");
+    expect(DRIFT_VENDORED_VERSION).toBe("2026.9.33");
   });
 
   it("vendored: every documented details key and worker error code is in the lists", () => {

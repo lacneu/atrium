@@ -3748,6 +3748,22 @@ button.oc-bmk-rail__count:hover {
   max-width: 100%;
   border-radius: 8px;
 }
+/* A transcript file with no copy (projection `on`): its state, stated (never hidden). */
+.oc-media--unavailable {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.4rem 0.6rem;
+  border: 1px dashed var(--border, currentColor);
+  border-radius: 0.5rem;
+  opacity: 0.85;
+}
+.oc-media__icon {
+  width: 1rem;
+  height: 1rem;
+  flex: none;
+}
+
 .oc-media__name {
   display: block;
   font-size: 0.75rem;

@@ -30,7 +30,7 @@ import { ConvexIngestError } from "../../convex-writer.js";
 // to exercise; it cannot enumerate a contract. That is what the vendored schema is
 // for, and inferring "the surface" from a bench run is the exact mistake the ratchet
 // exists to make impossible.
-export const DRIFT_VENDORED_VERSION = "2026.9.9";
+export const DRIFT_VENDORED_VERSION = "2026.9.33";
 
 /** Chat payload fields PER STATE, not their union.
  *
@@ -444,10 +444,14 @@ export const KNOWN_AGENT_FIELDS: ReadonlySet<string> = new Set([
  * matrix instead of being invisible omissions.
  */
 export const COVERAGE_SUMMARY = {
-  handled: 349,
+  handled: 350,
   ignored: 814,
-  gaps: 919,
+  gaps: 918,
   /** The declared gaps, by schema path — the actionable part of the matrix.
+   *
+   *  DELIVERY ITEM PROGRESS (2026-10-17): `AgentActivityItem.phase` is handled — on a
+   *  delivery run `end` writes the card, `start` is resumed work, and `update` (a running
+   *  tool's progress, captured on the 2026.9.33 bench) writes no card and closes nothing.
    *
    *  TRANSCRIPT PROJECTION (2026-10-04, phases 1-2): the cursor reads of `chat.history`
    *  are classified for what phase 1 already did (`ChatHistoryParams.cursor`/`maxBytes`,
@@ -540,7 +544,6 @@ export const COVERAGE_SUMMARY = {
     "AgentActivityItem.kind",
     "AgentActivityItem.meta",
     "AgentActivityItem.name",
-    "AgentActivityItem.phase",
     "AgentActivityItem.progressText",
     "AgentActivityItem.startedAt",
     "AgentActivityItem.status",

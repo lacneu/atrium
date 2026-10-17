@@ -96,6 +96,10 @@ const NAMESPACE_MODULE: Record<string, string | null> = {
   knowledge: "(plugin: openclaw-knowledge)",
   // `canvas.document.view` — one inline-widget document, relayed by `/canvas-view`.
   canvas: "canvas.ts",
+  // `artifacts.download` — the transcript file copier (projection `on`, final design
+  // step 2): `ArtifactsDownloadParamsSchema`, packages/gateway-protocol/src/schema/
+  // artifacts.ts:68 at v2026.9.33.
+  artifacts: "artifacts.ts",
 };
 
 /** Modules vendored for the version the bridge PROMISES (`maxValidated`).
@@ -172,6 +176,14 @@ const UNCOVERED_SNAPSHOT = [
   // snapshot, just the registration. `SessionsListParams` is vendored and classified;
   // there is no `SessionsSubscribeParamsSchema` to name. Uncovered by CONSTRUCTION.
   "sessions.subscribe",
+  // `artifacts.download` (projection `on`, final design step 2 — the transcript file
+  // copier, core/artifact-copier.ts): its schema module `schema/artifacts.ts` is NOT
+  // vendored for the promised version (2026.9.9), nor in the 2026.9.33 set prepared beside
+  // it. Unlike the entries above this one is uncovered by OMISSION: it leaves this list
+  // when `artifacts.ts` is vendored and classified with the 9.33 support lot. The body
+  // sent is the Control UI's own (`{sessionKey, artifactId}`, ui/src/api/
+  // artifact-download.ts:55-60), both fields declared by the closed schema at :68-73.
+  "artifacts.download",
 ];
 
 /** The methods mapped to `null` — "no params on the wire" — whose claim is now

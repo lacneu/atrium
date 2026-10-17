@@ -84,6 +84,13 @@ const MESSAGE_FIELDS_KEPT: ReadonlyArray<string> = [
   "attachedDocCount",
   "updatedAt",
   "importedAgentLabel",
+  // How a bubble the transcript rows composed is SHOWN (format 4, codex review 17): its
+  // rows' spans, order, files, remote references, cards, widgets and cut notice — the
+  // view itself, which nothing else in the archive can rebuild.
+  "rowLayout",
+  // Its display group (R4): the head's message id, remapped by the import like any
+  // reference to a message.
+  "displayGroupId",
 ];
 
 describe("every field is classified, or the archive is not honest", () => {

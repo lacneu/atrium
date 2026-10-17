@@ -13,6 +13,9 @@ const SRC = new URL("../../src/", import.meta.url);
 export function sourceFiles(dir: URL = SRC, out: URL[] = []): URL[] {
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
     const child = new URL(entry.name + (entry.isDirectory() ? "/" : ""), dir);
+    // `src/vendor/` is upstream's code, vendored byte for byte (its PROVENANCE.json): it
+    // makes no gateway call of the bridge's, and its `.request` tokens are not calls.
+    if (entry.isDirectory() && entry.name === "vendor" && dir.href === SRC.href) continue;
     if (entry.isDirectory()) sourceFiles(child, out);
     else if (entry.name.endsWith(".ts")) out.push(child);
   }

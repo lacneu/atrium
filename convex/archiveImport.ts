@@ -33,9 +33,11 @@ import {
   MESSAGE_FIELDS_DROPPED,
   OPAQUE_PART_KEYS,
   STORAGE_POINTER_KEYS,
+  TRANSCRIPT_FILE_FIELDS_DROPPED,
 } from "./lib/exportArchive";
 import {
   ArchiveRejected,
+  MAX_LAYOUT_FIELDS,
   MAX_ROWS_PER_BATCH,
   assertRowAcceptable,
   isArchiveId,
@@ -72,8 +74,17 @@ const SECTION_REFS: Record<
   messages: [
     { field: "chatId", kind: "chats", required: true },
     { field: "quotedMessageId", kind: "messages", required: false },
+    // The display group a bubble belongs to (format 4): its head's id — the head precedes
+    // its members in the archive's order, so it is mapped by then.
+    { field: "displayGroupId", kind: "messages", required: false },
   ],
-  messageParts: [{ field: "messageId", kind: "messages", required: true }],
+  // A transcript file's terminal state (format 4).
+  transcriptFiles: [{ field: "chatId", kind: "chats", required: true }],
+  messageParts: [
+    { field: "messageId", kind: "messages", required: true },
+    // The record a derived file part shows (format 4).
+    { field: "transcriptFileId", kind: "transcriptFiles", required: false },
+  ],
   files: [
     { field: "chatId", kind: "chats", required: true },
     { field: "messageId", kind: "messages", required: true },
@@ -285,6 +296,10 @@ export const importBatch = mutation({
       if (section === "messages") orderCursor += 1;
       const newId = await ctx.db.insert(section as "messages", prepared as never);
       await recordMapping(ctx, importId, section, archiveId, newId);
+      // A group's HEAD names itself (format 4): its own id is only known now.
+      if (section === "messages" && row.displayGroupId === archiveId) {
+        await ctx.db.patch(newId as Id<"messages">, { displayGroupId: String(newId) });
+      }
       writtenIds.push(archiveId);
       written += 1;
     }
@@ -604,8 +619,16 @@ const importedSessionKey = (
   archiveKey: string,
 ): string => `imported:${importId}:${archiveKey}`.slice(0, 200);
 
-/** Refuse a row the archive should never have contained. */
+/** Refuse a row the archive should never have contained. A bubble's `rowLayout` is
+ *  checked under its OWN field budget: it is bounded by construction (lib/bubbleProjection
+ *  `LAYOUT_MAX_*`) far past a row's, and the schema validates its shape at insert. */
 function assertRow(row: unknown): void {
+  if (row !== null && typeof row === "object" && !Array.isArray(row) && "rowLayout" in row) {
+    const { rowLayout, ...rest } = row as Record<string, unknown>;
+    assertRowAcceptable(rest, STORAGE_POINTER_KEYS, OPAQUE_PART_KEYS);
+    assertRowAcceptable({ rowLayout }, STORAGE_POINTER_KEYS, [], MAX_LAYOUT_FIELDS);
+    return;
+  }
   assertRowAcceptable(row, STORAGE_POINTER_KEYS, OPAQUE_PART_KEYS);
 }
 
@@ -951,6 +974,31 @@ async function prepareRow(
       // whole batch on a row the schema will refuse anyway.
       return null;
     }
+  }
+
+  if (section === "transcriptFiles") {
+    if (out.state !== "copied" && out.state !== "gone" && out.state !== "refused" && out.state !== "pending") return null;
+    // No due time (`nextAttemptAt` dropped): a pending copy is shown as pending and never
+    // leased — no gateway here can make it (transcriptFiles.leaseDueForResume).
+    for (const field of TRANSCRIPT_FILE_FIELDS_DROPPED) delete out[field];
+    // No gateway session here: the record is found by its row (chat, entry, block).
+    out.instanceName = "";
+    out.sessionKey = "";
+    out.attempts = 0;
+    delete out.unresolvedBlobs;
+    if (out.state === "copied") {
+      const key = row.archiveBlobKey;
+      const storageId = typeof key === "string" ? blobByKey.get(key) : undefined;
+      if (storageId === undefined) {
+        // A copy whose bytes did not come along: what it now is, said plainly.
+        out.state = "gone";
+        out.reason = "not_in_archive";
+        delete out.storageId;
+      } else {
+        out.storageId = storageId;
+      }
+    }
+    if (typeof out.updatedAt !== "number") out.updatedAt = Date.now();
   }
 
   if (section === "files" || section === "documentAttachments") {

@@ -3642,6 +3642,59 @@ describe("G-20: lifecycle `finishing` and terminal metadata", () => {
     expect(n.finalized).toBe(false);
   });
 
+  it("…but a delivery item's PROGRESS (`update`) after `finishing` is a straggler, not new work", () => {
+    // `update` refreshes an item that started earlier (upstream emitTrackedItemEvent counts
+    // only `start` and `end` as an item's life, src/agents/embedded-agent-subscribe.handlers.
+    // tools.start.ts:223-246 at v2026.9.33). The tool lane's rule holds on the item lane:
+    // only a START is resumed work; the progress of a tool begun before the `finishing` is
+    // the tail of the turn, and must not drop the 60 s bound (G-20).
+    const DELIVERY_RUN =
+      "announce:requester-settle:olivier:agent:olivier:atrium:chat:olivier:c1:1623c22b:yield-1";
+    const n = newNormalizer();
+    const clock = new Clock();
+    n.beginTurn(clock.now);
+    n.noteRunStarted(DELIVERY_RUN, clock.now);
+    n.feed(
+      {
+        event: "agent",
+        payload: {
+          runId: DELIVERY_RUN,
+          sessionKey: SESSION_KEY,
+          stream: "lifecycle",
+          data: { phase: "finishing" },
+        },
+      },
+      clock.tick(),
+    );
+    const progress = n.feed(
+      {
+        event: "agent",
+        payload: {
+          runId: DELIVERY_RUN,
+          sessionKey: SESSION_KEY,
+          stream: "item",
+          data: {
+            itemId: "tool:tc-progress-item",
+            kind: "tool",
+            name: "exec",
+            phase: "update",
+            status: "running",
+            toolCallId: "tc-progress-item",
+            commandBearing: true,
+          },
+        },
+      },
+      clock.tick(),
+    );
+    expect(progress.find((e) => e.type === "turn.phase")).toBeUndefined();
+    expect(progress.some((e) => e.type === "tool.status")).toBe(false);
+    const ev = n.tick(clock.now + 61);
+    expect(
+      ev.some((e) => e.type === "message.final"),
+      "the finishing promise still bounds the turn",
+    ).toBe(true);
+  });
+
   it("an APPROVAL request after `finishing` is not a finished turn", () => {
     // `approval:requested` suspended the 240 s recv clock and bounded its own wait
     // at 900 s — but left the 60 s finishing promise armed. So the turn settled as a

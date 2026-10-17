@@ -201,6 +201,10 @@
     {
       "path": "ChatAbortParams.discardPendingInput",
       "scan": false
+    },
+    {
+      "path": "AgentActivityItem.phase",
+      "scan": false
     }
   ]
 }

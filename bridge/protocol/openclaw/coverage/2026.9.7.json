@@ -9326,8 +9326,24 @@
           "note": "new in 2026.9.6 — not yet instructed (frame-discovery queue)"
         },
         "phase": {
-          "status": "gap",
-          "note": "new in 2026.9.6 — not yet instructed (frame-discovery queue)"
+          "status": "handled",
+          "by": "normalizer item branch (src/providers/openclaw/normalizer.ts, stream:\"item\"): on a DELIVERY run (announce / task delivery, the runs that carry no `tool` stream) `end` writes the tool card with the item's status and error; `start` is resumed work (it cancels the finishing bound); `update` (a running tool's progress) writes no card, closes nothing and is not resumed work — the tool lane's START-only rule, since the progress of a tool begun before a `finishing` is the tail of the turn. Ordinary runs read the `tool` stream, never the item one.",
+          "anchor": {
+            "file": "src/providers/openclaw/normalizer.ts",
+            "token": "data.phase === \"end\""
+          },
+          "proof": {
+            "kind": "golden-corpus",
+            "ref": "spawn-announce-merge",
+            "note": "The 2026.9.9 corpus carries an announce run's exec item with phase `update` (golden/2026.9.9/spawn-announce-merge.jsonl); the 2026.9.33 bench (distribution image r6, 2026-10-17) captured it again on five delivery scenarios. The reading is pinned by bridge/test/announce-item-activity.test.ts (one card from `end`, identical reading with and without the progress frames) and bridge/test/normalizer.test.ts (a progress frame after `finishing` keeps the 60 s bound)."
+          },
+          "verifiedVersions": [],
+          "dossier": {
+            "writers": "Read at v2026.9.33 (5873f81). The union is `start | update | end` (packages/gateway-protocol/src/schema/logs-chat.ts AgentActivityItemSchema). A tool item is projected by projectAgentToolActivity (src/infra/agent-activity-events.ts:84-130: phase `result` becomes `end`, `start`/`update` carry status `running`) and published by emitTrackedItemEvent (src/agents/embedded-agent-subscribe.handlers.tools.start.ts:223-246) at a tool's start, at each progress of a running tool (…handlers.tools.progress.ts:115-144, `phase: \"update\"`, every run family, delivery runs included) and at its result (…handlers.tools.completion.ts). Other `update` writers: the fast-mode status item (src/agents/embedded-agent-runner/run/progress-controller.ts:56-80, kind `status`), its CLI twin (src/auto-reply/reply/agent-runner-cli-dispatch.ts:347-360) and preamble progress items (kind `preamble`). Unchanged between v2026.9.9 and v2026.9.33; the r6 distribution patches do not touch it (runtime dist byte-identical to r5).",
+            "resets": "None: an item has no reset; `start` adds it to the run's active items and `end` removes it (emitTrackedItemEvent, itemActiveIds); `update` changes neither.",
+            "upstreamUse": "Control UI (ui/src/pages/chat/tool-stream.ts:521-551): every schema-valid item creates or refreshes the run's live tool entry keyed by its toolCallId, replacing that itemId's previous activity, and only `end` forces an immediate sync; the activity page reads the `tool` stream's `update` partial result (ui/src/pages/activity/tool-activity.ts:174-189).",
+            "wire": "Gateway -> client, `agent` event, stream `item`, `data` = AgentActivityItem."
+          }
         },
         "kind": {
           "status": "gap",

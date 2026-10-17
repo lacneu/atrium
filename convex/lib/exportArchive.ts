@@ -19,9 +19,17 @@
  * know to remap: it would accept the manifest as compatible, then try to insert
  * an unknown field into its own schema and fail partway through the import.
  * Refusing at the manifest is the whole point of the number.
+ *
+ * 4 — a bubble the transcript rows composed travels AS SHOWN (codex review 17): its
+ * `rowLayout` (rows, their text spans and order, files, remote references, cards,
+ * widgets, cut notices), its `displayGroupId` (a message id, remapped — what the R4
+ * display decisions group by), a `transcriptFiles` section (each terminal copy's state,
+ * reason and bytes), and `messageParts.transcriptFileId` (remapped — what ties a derived
+ * file part to its row). A version-3 reader would drop the layout silently and show a
+ * remote attachment as a bare name; versions 1-3 are still read (they carry none of it).
  */
 import { maskCredentialId } from "./chatRenderState";
-export const ARCHIVE_FORMAT_VERSION = 3;
+export const ARCHIVE_FORMAT_VERSION = 4;
 
 /** Rows read per bounded page. Small enough that any single call stays well
  *  inside a Convex read, large enough that a long conversation does not take
@@ -90,9 +98,6 @@ export const MESSAGE_FIELDS_DROPPED: ReadonlyArray<string> = [
   "closeInferred",
   // Service correlates waiting for the outcome (projection `on`): settlement state.
   "statusJobsDeferred",
-  // The display group of a delegation chain (phase 5): a cache keyed by the SOURCE
-  // deployment's message ids, recomputed from its transcript facts — meaningless here.
-  "displayGroupId",
   // A delivery that opened its own bubble (phase 5): settlement state…
   "deliveryOwnBubble",
   // …and that delivery's identity (a SOURCE run / batch), what its replays find it by.
@@ -162,6 +167,8 @@ export const MAX_FOLDER_DEPTH = 64;
 /** The per-chat sections, in the order an archive lists them. */
 export const CHAT_SECTIONS = [
   "messages",
+  // Before the parts: a derived file part names its record (`transcriptFileId`).
+  "transcriptFiles",
   "messageParts",
   "files",
   "subAgents",
@@ -179,7 +186,25 @@ export type ChatSection = (typeof CHAT_SECTIONS)[number];
  * What an archive deliberately leaves behind, with the reason. Copied into every
  * manifest so a reader is told, not left to infer.
  */
+/**
+ * `transcriptFiles` fields that are the SOURCE deployment's copy machinery rather than
+ * what the conversation shows: the gateway session it was copied from, its media path,
+ * the retry clock. A copy still pending travels as pending — what the conversation shows —
+ * with no due time: it is never resumed elsewhere (transcriptFiles.leaseDueForResume).
+ */
+export const TRANSCRIPT_FILE_FIELDS_DROPPED: ReadonlyArray<string> = [
+  "instanceName",
+  "sessionKey",
+  "mediaSource",
+  "attempts",
+  "nextAttemptAt",
+];
+
 export const NOT_EXPORTED: ReadonlyArray<{ what: string; why: string }> = [
+  {
+    what: "the bytes of transcript file copies still in progress",
+    why: "a copy from the gateway that had not finished can never finish elsewhere; the file travels as pending, which is what the conversation shows, and is never retried",
+  },
   {
     what: "live streaming buffers",
     why: "the in-flight text of a turn that had not finished; the finished message carries it",

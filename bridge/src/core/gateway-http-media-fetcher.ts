@@ -28,6 +28,7 @@ import {
   mimeForFilename,
   MEDIA_TOO_LARGE_CODE,
   type MediaFetcher,
+  type MediaOpenOptions,
   type OpenResult,
 } from "./media-fetcher.js";
 import { readProviderJson } from "./provider-body.js";
@@ -159,9 +160,16 @@ export class GatewayHttpMediaFetcher implements MediaFetcher {
 
   async open(
     path: string,
-    opts?: { rejectOlderThanMs?: number | null },
+    opts?: MediaOpenOptions,
   ): Promise<OpenResult> {
     const enc = encodeURIComponent(path);
+    // The session, on BOTH requests when named: the meta probe resolves the policy the
+    // ticket is minted for, and the download must present the same one or the gateway
+    // refuses the ticket (control-ui.ts:502-510 `sameSession`).
+    const session =
+      opts?.sessionKey !== undefined && opts.sessionKey !== ""
+        ? `&sessionKey=${encodeURIComponent(opts.sessionKey)}`
+        : "";
     // Bounds the meta-probe + the time to get the download RESPONSE HEADERS. Once
     // headers arrive we clear it and hand the BODY to streamGuard's idle timeout, so
     // a large-but-steady download is never aborted by an absolute deadline. A hang
@@ -173,7 +181,7 @@ export class GatewayHttpMediaFetcher implements MediaFetcher {
     try {
       // 1) Authenticated meta probe -> the gateway mints the ticket.
       const metaRes = await this.fetchImpl(
-        `${this.httpBase}${MEDIA_ROUTE}?source=${enc}&meta=1`,
+        `${this.httpBase}${MEDIA_ROUTE}?source=${enc}${session}&meta=1`,
         {
           headers: this.authHeaders(),
           signal: controller.signal,
@@ -230,7 +238,7 @@ export class GatewayHttpMediaFetcher implements MediaFetcher {
       // the whole turn lost its file with `fetch_error` and no error anywhere the
       // operator could see it.
       const dlRes = await this.fetchImpl(
-        `${this.httpBase}${MEDIA_ROUTE}?source=${enc}` +
+        `${this.httpBase}${MEDIA_ROUTE}?source=${enc}${session}` +
           `&mediaTicket=${encodeURIComponent(meta.mediaTicket)}`,
         { headers: this.identityHeaders(), signal: controller.signal },
       );

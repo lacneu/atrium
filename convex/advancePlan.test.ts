@@ -80,8 +80,8 @@ async function planParts(
   });
 }
 
-/** The newest plan part. NOT `Array.prototype.at`: convex/tsconfig.json is
- *  lib ES2021, where it does not exist — the trap ci.yml's Convex gate names. */
+/** The newest plan part. Written without `Array.prototype.at` when convex/tsconfig.json
+ *  was lib ES2021 (now ES2023, the Convex template's — deployGate.test.ts). */
 function lastPlan<T>(parts: T[]): T {
   const last = parts[parts.length - 1];
   if (last === undefined) throw new Error("expected at least one plan part");

@@ -279,7 +279,13 @@ import type {
   LiveTarget,
   InstanceBundle,
 } from "./session.js";
-import { SessionDisplaceRefusedError, SessionRegistry } from "./session.js";
+import {
+  artifactCopyEnvOf,
+  buildArtifactCopier,
+  SessionDisplaceRefusedError,
+  SessionRegistry,
+} from "./session.js";
+import { readFilesToCopy } from "./providers/openclaw/transcript-shadow.js";
 import {
   describeSession,
   describeSessionAnswer,
@@ -6489,6 +6495,9 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
       // Convex owns the authorization — the reader may read the chat AND the view is
       // one of that chat's own widget parts (convex/widgets.ts).
       "/canvas-view",
+      // Transcript files (projection `on`, final design step 2): Convex's resume cron
+      // hands over files still `pending` that no read of their session picked up.
+      "/transcript-files/copy",
     ];
     if (req.method !== "POST" || !POST_ROUTES.includes(req.url ?? "")) {
       sendJson(res, 404, { ok: false, error: "not found" });
@@ -7169,6 +7178,43 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
         );
         sendJson(res, 502, { ok: false, error: { code } });
       }
+      return;
+    }
+
+    if (req.url === "/transcript-files/copy") {
+      // THE RESUME OF PENDING TRANSCRIPT FILES (convex/transcriptFiles.ts resumePending):
+      // files a row carries that no read of their session copied (the session was not
+      // reopened after a restart, the in-process retries failed). Copied over a SHORT
+      // operator connection, never a conversation socket — like every out-of-band read
+      // here. Answered at once: the copies report their own outcome to Convex.
+      let body: { instanceName?: unknown; files?: unknown };
+      try {
+        body = JSON.parse(raw) as typeof body;
+      } catch {
+        sendJson(res, 400, { ok: false, error: "invalid body" });
+        return;
+      }
+      const copyInstance = typeof body.instanceName === "string" ? body.instanceName : "";
+      const copyBundle = copyInstance ? served.get(copyInstance) : undefined;
+      if (!copyBundle) {
+        sendJson(res, 409, { ok: false, error: { code: "instance_not_served" } });
+        return;
+      }
+      const files = readFilesToCopy(body.files);
+      sendJson(res, 202, { ok: true, accepted: files.length });
+      if (files.length === 0) return;
+      void withOperatorConnection(
+        copyBundle.config,
+        async (conn) => {
+          const copier = buildArtifactCopier(artifactCopyEnvOf(copyBundle), copyBundle.writer, conn);
+          if (copier === null) return;
+          copier.enqueue(files);
+          await copier.idle();
+        },
+        noteHandshakeFor(copyInstance),
+      ).catch((err) =>
+        console.error(`bridge /transcript-files/copy failed [${classifyGatewayError(err)}]:`, errForLog(err)),
+      );
       return;
     }
 

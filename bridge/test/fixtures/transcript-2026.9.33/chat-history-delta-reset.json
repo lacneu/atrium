@@ -1,0 +1,6 @@
+{
+ "_source": "probe-refonte-20261016T165938Z (OpenClaw 2026.9.33 r5, 5873f81; bench, token mode; bench tokens only): chat.history with a cursor taken 10 s into the turn, read after the resume: the gateway answers a reset (ChatHistoryResetResultSchema) — the reader takes a fresh tail page.",
+ "reply": {
+  "kind": "reset"
+ }
+}

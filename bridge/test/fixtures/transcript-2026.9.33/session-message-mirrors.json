@@ -1,0 +1,581 @@
+{
+ "_source": "probe-refonte-20261016T165938Z (OpenClaw 2026.9.33 r5, 5873f81; bench, token mode; bench tokens only): the two delivery-mirror rows as session.message published them on the bridge-like `evt` socket (session-scoped-events + sessions.subscribe), 8 s before the run ended. seq 16 carries a managed attachment + a managed image (artifactId); seq 23 a MEDIA: line left in its text.",
+ "events": [
+  {
+   "t_ms": 34536,
+   "payload": {
+    "sessionKey": "agent:alice:atrium:chat:u-probe:refonte-2026-10-16t16-59-38-883z",
+    "agentId": "alice",
+    "message": {
+     "role": "assistant",
+     "content": [
+      {
+       "type": "text",
+       "text": "PROBE_SEND_DONE Voici les deux fichiers demandés."
+      },
+      {
+       "type": "attachment",
+       "attachment": {
+        "artifactId": "artifact_managed_media_03d85d8e-b298-4812-b5a1-3fffb6ad2e8b",
+        "url": "/api/chat/media/outgoing/agent%3Aalice%3Aatrium%3Achat%3Au-probe%3Arefonte-2026-10-16t16-59-38-883z/03d85d8e-b298-4812-b5a1-3fffb6ad2e8b/full",
+        "kind": "document",
+        "label": "probe-refonte-a-2026-10-16t16-59-38-883z.txt",
+        "mimeType": "text/plain",
+        "sizeBytes": 16
+       }
+      },
+      {
+       "type": "image",
+       "artifactId": "artifact_managed_image_0e844b10-2d50-44ce-a329-983b99c8b328",
+       "url": "/api/chat/media/outgoing/agent%3Aalice%3Aatrium%3Achat%3Au-probe%3Arefonte-2026-10-16t16-59-38-883z/0e844b10-2d50-44ce-a329-983b99c8b328/full",
+       "openUrl": "/api/chat/media/outgoing/agent%3Aalice%3Aatrium%3Achat%3Au-probe%3Arefonte-2026-10-16t16-59-38-883z/0e844b10-2d50-44ce-a329-983b99c8b328/full",
+       "alt": "probe-refonte-img-2026-10-16t16-59-38-883z.png",
+       "mimeType": "image/png",
+       "width": 32,
+       "height": 32,
+       "sizeBytes": 1795
+      }
+     ],
+     "api": "openclaw-transcript",
+     "provider": "openclaw",
+     "model": "delivery-mirror",
+     "usage": {
+      "input": 0,
+      "output": 0,
+      "totalTokens": 0,
+      "cacheRead": 0,
+      "cacheWrite": 0,
+      "cost": {
+       "input": 0,
+       "output": 0,
+       "cacheRead": 0,
+       "cacheWrite": 0,
+       "total": 0
+      }
+     },
+     "stopReason": "stop",
+     "timestamp": 1792170013385,
+     "idempotencyKey": "announce:requester-settle:alice:agent:alice:atrium:chat:u-probe:refonte-2026-10-16t16-59-38-883z:1fe3d5c5-1320-45ac-b11f-60b2987e65e5:yield-1:message-tool:T447zrc_S2WsH_CKsza3-KnR:tool_call:call_f3d9dd0255e244bda0e0f04cdedddec6_fc_0878bee94750a3d4016ad2581b3fa081969602b8b561cabe46:message:1",
+     "__openclaw": {
+      "runId": "announce:requester-settle:alice:agent:alice:atrium:chat:u-probe:refonte-2026-10-16t16-59-38-883z:1fe3d5c5-1320-45ac-b11f-60b2987e65e5:yield-1",
+      "id": "e8bd9834-d360-4cd2-8302-4a51e3dde5f2",
+      "idempotencyKey": "announce:requester-settle:alice:agent:alice:atrium:chat:u-probe:refonte-2026-10-16t16-59-38-883z:1fe3d5c5-1320-45ac-b11f-60b2987e65e5:yield-1:message-tool:T447zrc_S2WsH_CKsza3-KnR:tool_call:call_f3d9dd0255e244bda0e0f04cdedddec6_fc_0878bee94750a3d4016ad2581b3fa081969602b8b561cabe46:message:1",
+      "recordTimestampMs": 1792170013388,
+      "transcriptPosition": {
+       "source": "M-WCtPtLqwIScHKjz_RlYtCESxjAfvCr8hzVGJfF3Hw",
+       "rawSeq": 27
+      },
+      "seq": 16
+     }
+    },
+    "messageId": "e8bd9834-d360-4cd2-8302-4a51e3dde5f2",
+    "messageSeq": 16,
+    "updatedAt": 1792170013390,
+    "sessionId": "514937bc-8f7f-491e-8e0b-235ffe63a8d4",
+    "createdActor": null,
+    "owner": null,
+    "participants": [
+     {
+      "identity": {
+       "type": "observation",
+       "pluginId": null,
+       "accountId": null,
+       "senderKind": "unknown",
+       "id": "cli"
+      }
+     }
+    ],
+    "participantCount": 1,
+    "kind": "direct",
+    "visibility": "shared",
+    "chatType": "direct",
+    "archived": false,
+    "archivedAt": null,
+    "archivedBy": null,
+    "archiveReason": null,
+    "pinned": false,
+    "pinnedAt": null,
+    "unread": true,
+    "markedUnreadAt": null,
+    "agentStatus": null,
+    "observerDigest": null,
+    "activitySummary": {
+     "text": "La création et la vérification du fichier `probe-refonte-a-2026-10-16t16-59-38-883z.txt` contenant `PROBE_REFONTE_OK` ont été demandées sous `/home/node/.openclaw/media/outbound/`. Aucun résultat d’exécution n’est encore confirmé ; la tâche est en attente.",
+     "updatedAt": 1792169998435,
+     "state": "updating",
+     "canEnsure": true
+    },
+    "controlOwnerSessionKey": null,
+    "swarm": null,
+    "permissionMode": null,
+    "permissionModePending": false,
+    "createdVia": "operator",
+    "createdAt": 1792169979011,
+    "label": null,
+    "autoLabel": null,
+    "icon": null,
+    "color": null,
+    "channelAvatarUrl": null,
+    "category": null,
+    "boardPresentation": null,
+    "displayName": null,
+    "childSessions": [
+     "agent:files:subagent:e5c51644-7e28-4670-8f87-73c9bb47f20d"
+    ],
+    "thinkingLevel": null,
+    "effectiveFastMode": false,
+    "effectiveFastModeSource": "default",
+    "fastAutoOnSeconds": 60,
+    "toolOverrides": null,
+    "systemSent": true,
+    "abortedLastRun": false,
+    "restartRecoveryStatus": null,
+    "inputTokens": 33468,
+    "outputTokens": 509,
+    "totalTokens": 33182,
+    "totalTokensFresh": true,
+    "goal": null,
+    "contextTokens": 272000,
+    "contextBudgetStatus": null,
+    "estimatedCostUsd": 0.07654440000000001,
+    "effectiveResponseUsage": "off",
+    "modelProvider": "openai",
+    "model": "gpt-6.1-sol",
+    "activeModelProvider": "openai",
+    "activeModel": "gpt-6.1-sol",
+    "modelOverrideSource": null,
+    "agentRuntime": {
+     "id": "openclaw",
+     "cloudPlacementSupported": true,
+     "cloudPlacementExecutionMode": "worker-turn",
+     "devicePlacement": {
+      "requiredNodeCommands": [],
+      "consumesWorkerSlot": true
+     },
+     "devicePlacementSupported": true,
+     "source": "model"
+    },
+    "runtimeSelectionLocked": false,
+    "status": "running",
+    "lastRunError": null,
+    "providerReview": null,
+    "lastRunId": null,
+    "hasAutomation": false,
+    "hasActiveRun": true,
+    "activeRunIds": null,
+    "startedAt": 1792169997652,
+    "endedAt": null,
+    "runtimeMs": null,
+    "runId": "announce:requester-settle:alice:agent:alice:atrium:chat:u-probe:refonte-2026-10-16t16-59-38-883z:1fe3d5c5-1320-45ac-b11f-60b2987e65e5:yield-1",
+    "ancestorSessions": [],
+    "sharingRole": "admin",
+    "session": {
+     "key": "agent:alice:atrium:chat:u-probe:refonte-2026-10-16t16-59-38-883z",
+     "visibility": "shared",
+     "permissionModePending": false,
+     "createdVia": "operator",
+     "participants": [
+      {
+       "identity": {
+        "type": "observation",
+        "pluginId": null,
+        "accountId": null,
+        "senderKind": "unknown",
+        "id": "cli"
+       }
+      }
+     ],
+     "expandedParticipants": [
+      {
+       "identity": {
+        "type": "observation",
+        "pluginId": null,
+        "accountId": null,
+        "senderKind": "unknown",
+        "id": "cli"
+       }
+      }
+     ],
+     "participantCount": 1,
+     "createdAt": 1792169979011,
+     "kind": "direct",
+     "classification": "direct",
+     "agentId": "alice",
+     "isMain": false,
+     "isBackground": false,
+     "lastMessagePreview": "PROBE_SEND_DONE Voici les deux fichiers demandés.",
+     "chatType": "direct",
+     "updatedAt": 1792170013390,
+     "archived": false,
+     "pinned": false,
+     "unread": true,
+     "lastInteractionAt": 1792169996467,
+     "sessionId": "514937bc-8f7f-491e-8e0b-235ffe63a8d4",
+     "systemSent": true,
+     "abortedLastRun": false,
+     "thinkingLevels": [
+      {
+       "id": "low",
+       "label": "low"
+      },
+      {
+       "id": "medium",
+       "label": "medium"
+      },
+      {
+       "id": "high",
+       "label": "high"
+      },
+      {
+       "id": "xhigh",
+       "label": "xhigh"
+      },
+      {
+       "id": "max",
+       "label": "max"
+      },
+      {
+       "id": "ultra",
+       "label": "ultra"
+      }
+     ],
+     "thinkingOptions": [
+      "low",
+      "medium",
+      "high",
+      "xhigh",
+      "max",
+      "ultra"
+     ],
+     "thinkingDefault": "high",
+     "effectiveFastMode": false,
+     "effectiveFastModeSource": "default",
+     "fastAutoOnSeconds": 60,
+     "inputTokens": 33468,
+     "outputTokens": 509,
+     "totalTokens": 33182,
+     "totalTokensFresh": true,
+     "estimatedCostUsd": 0.07654440000000001,
+     "status": "running",
+     "startedAt": 1792169997652,
+     "childSessions": [
+      "agent:files:subagent:e5c51644-7e28-4670-8f87-73c9bb47f20d"
+     ],
+     "effectiveResponseUsage": "off",
+     "effectiveQueueMode": "steer",
+     "modelProvider": "openai",
+     "model": "gpt-6.1-sol",
+     "activeModelProvider": "openai",
+     "activeModel": "gpt-6.1-sol",
+     "modelOverrideSource": null,
+     "runtimeSelectionLocked": false,
+     "agentRuntime": {
+      "id": "openclaw",
+      "cloudPlacementSupported": true,
+      "cloudPlacementExecutionMode": "worker-turn",
+      "devicePlacement": {
+       "requiredNodeCommands": [],
+       "consumesWorkerSlot": true
+      },
+      "devicePlacementSupported": true,
+      "source": "model"
+     },
+     "contextTokens": 272000,
+     "snapshotAt": 1792170013415,
+     "placement": {
+      "state": "local",
+      "generation": 0,
+      "createdAtMs": 1792169979579,
+      "updatedAtMs": 1792169996672,
+      "stateChangedAtMs": 1792169979579
+     },
+     "activitySummary": {
+      "text": "La création et la vérification du fichier `probe-refonte-a-2026-10-16t16-59-38-883z.txt` contenant `PROBE_REFONTE_OK` ont été demandées sous `/home/node/.openclaw/media/outbound/`. Aucun résultat d’exécution n’est encore confirmé ; la tâche est en attente.",
+      "updatedAt": 1792169998435,
+      "state": "updating",
+      "canEnsure": true
+     },
+     "hasActiveRun": true,
+     "sharingRole": "admin"
+    }
+   }
+  },
+  {
+   "t_ms": 40902,
+   "payload": {
+    "sessionKey": "agent:alice:atrium:chat:u-probe:refonte-2026-10-16t16-59-38-883z",
+    "agentId": "alice",
+    "message": {
+     "role": "assistant",
+     "content": [
+      {
+       "type": "text",
+       "text": "PROBE_SUMMARY Les deux fichiers ont été envoyés et le fichier texte vérifié.\nMEDIA:/home/node/.openclaw/media/outbound/probe-refonte-a-2026-10-16t16-59-38-883z.txt"
+      }
+     ],
+     "api": "openclaw-transcript",
+     "provider": "openclaw",
+     "model": "delivery-mirror",
+     "usage": {
+      "input": 0,
+      "output": 0,
+      "totalTokens": 0,
+      "cacheRead": 0,
+      "cacheWrite": 0,
+      "cost": {
+       "input": 0,
+       "output": 0,
+       "cacheRead": 0,
+       "cacheWrite": 0,
+       "total": 0
+      }
+     },
+     "stopReason": "stop",
+     "timestamp": 1792170019739,
+     "idempotencyKey": "announce:requester-settle:alice:agent:alice:atrium:chat:u-probe:refonte-2026-10-16t16-59-38-883z:1fe3d5c5-1320-45ac-b11f-60b2987e65e5:yield-1:message-tool:Z63J2rUTYRWrIwhn0uQqDGJf:tool_call:call_bed29fdc8eb4404bbfe5fcb7b5c2de06_fc_0878bee94750a3d4016ad25822520c8196a4619c71ccc9f35c:message:1",
+     "__openclaw": {
+      "runId": "announce:requester-settle:alice:agent:alice:atrium:chat:u-probe:refonte-2026-10-16t16-59-38-883z:1fe3d5c5-1320-45ac-b11f-60b2987e65e5:yield-1",
+      "id": "221b30f1-fb50-452d-a8e3-3a5f9224e696",
+      "idempotencyKey": "announce:requester-settle:alice:agent:alice:atrium:chat:u-probe:refonte-2026-10-16t16-59-38-883z:1fe3d5c5-1320-45ac-b11f-60b2987e65e5:yield-1:message-tool:Z63J2rUTYRWrIwhn0uQqDGJf:tool_call:call_bed29fdc8eb4404bbfe5fcb7b5c2de06_fc_0878bee94750a3d4016ad25822520c8196a4619c71ccc9f35c:message:1",
+      "recordTimestampMs": 1792170019743,
+      "transcriptPosition": {
+       "source": "M-WCtPtLqwIScHKjz_RlYtCESxjAfvCr8hzVGJfF3Hw",
+       "rawSeq": 36
+      },
+      "seq": 23
+     }
+    },
+    "messageId": "221b30f1-fb50-452d-a8e3-3a5f9224e696",
+    "messageSeq": 23,
+    "updatedAt": 1792170019746,
+    "sessionId": "514937bc-8f7f-491e-8e0b-235ffe63a8d4",
+    "createdActor": null,
+    "owner": null,
+    "participants": [
+     {
+      "identity": {
+       "type": "observation",
+       "pluginId": null,
+       "accountId": null,
+       "senderKind": "unknown",
+       "id": "cli"
+      }
+     }
+    ],
+    "participantCount": 1,
+    "kind": "direct",
+    "visibility": "shared",
+    "chatType": "direct",
+    "archived": false,
+    "archivedAt": null,
+    "archivedBy": null,
+    "archiveReason": null,
+    "pinned": false,
+    "pinnedAt": null,
+    "unread": true,
+    "markedUnreadAt": null,
+    "agentStatus": null,
+    "observerDigest": null,
+    "activitySummary": {
+     "text": "La création et la vérification du fichier `probe-refonte-a-2026-10-16t16-59-38-883z.txt` contenant `PROBE_REFONTE_OK` ont été demandées sous `/home/node/.openclaw/media/outbound/`. Aucun résultat d’exécution n’est encore confirmé ; la tâche est en attente.",
+     "updatedAt": 1792169998435,
+     "state": "updating",
+     "canEnsure": true
+    },
+    "controlOwnerSessionKey": null,
+    "swarm": null,
+    "permissionMode": null,
+    "permissionModePending": false,
+    "createdVia": "operator",
+    "createdAt": 1792169979011,
+    "label": null,
+    "autoLabel": null,
+    "icon": null,
+    "color": null,
+    "channelAvatarUrl": null,
+    "category": null,
+    "boardPresentation": null,
+    "displayName": null,
+    "childSessions": [
+     "agent:files:subagent:e5c51644-7e28-4670-8f87-73c9bb47f20d"
+    ],
+    "thinkingLevel": null,
+    "effectiveFastMode": false,
+    "effectiveFastModeSource": "default",
+    "fastAutoOnSeconds": 60,
+    "toolOverrides": null,
+    "systemSent": true,
+    "abortedLastRun": false,
+    "restartRecoveryStatus": null,
+    "inputTokens": 33468,
+    "outputTokens": 509,
+    "totalTokens": 33182,
+    "totalTokensFresh": true,
+    "goal": null,
+    "contextTokens": 272000,
+    "contextBudgetStatus": null,
+    "estimatedCostUsd": 0.07654440000000001,
+    "effectiveResponseUsage": "off",
+    "modelProvider": "openai",
+    "model": "gpt-6.1-sol",
+    "activeModelProvider": "openai",
+    "activeModel": "gpt-6.1-sol",
+    "modelOverrideSource": null,
+    "agentRuntime": {
+     "id": "openclaw",
+     "cloudPlacementSupported": true,
+     "cloudPlacementExecutionMode": "worker-turn",
+     "devicePlacement": {
+      "requiredNodeCommands": [],
+      "consumesWorkerSlot": true
+     },
+     "devicePlacementSupported": true,
+     "source": "model"
+    },
+    "runtimeSelectionLocked": false,
+    "status": "running",
+    "lastRunError": null,
+    "providerReview": null,
+    "lastRunId": null,
+    "hasAutomation": false,
+    "hasActiveRun": true,
+    "activeRunIds": null,
+    "startedAt": 1792169997652,
+    "endedAt": null,
+    "runtimeMs": null,
+    "runId": "announce:requester-settle:alice:agent:alice:atrium:chat:u-probe:refonte-2026-10-16t16-59-38-883z:1fe3d5c5-1320-45ac-b11f-60b2987e65e5:yield-1",
+    "ancestorSessions": [],
+    "sharingRole": "admin",
+    "session": {
+     "key": "agent:alice:atrium:chat:u-probe:refonte-2026-10-16t16-59-38-883z",
+     "visibility": "shared",
+     "permissionModePending": false,
+     "createdVia": "operator",
+     "participants": [
+      {
+       "identity": {
+        "type": "observation",
+        "pluginId": null,
+        "accountId": null,
+        "senderKind": "unknown",
+        "id": "cli"
+       }
+      }
+     ],
+     "expandedParticipants": [
+      {
+       "identity": {
+        "type": "observation",
+        "pluginId": null,
+        "accountId": null,
+        "senderKind": "unknown",
+        "id": "cli"
+       }
+      }
+     ],
+     "participantCount": 1,
+     "createdAt": 1792169979011,
+     "kind": "direct",
+     "classification": "direct",
+     "agentId": "alice",
+     "isMain": false,
+     "isBackground": false,
+     "lastMessagePreview": "PROBE_SEND_DONE Voici les deux fichiers demandés.",
+     "chatType": "direct",
+     "updatedAt": 1792170019746,
+     "archived": false,
+     "pinned": false,
+     "unread": true,
+     "lastInteractionAt": 1792169996467,
+     "sessionId": "514937bc-8f7f-491e-8e0b-235ffe63a8d4",
+     "systemSent": true,
+     "abortedLastRun": false,
+     "thinkingLevels": [
+      {
+       "id": "low",
+       "label": "low"
+      },
+      {
+       "id": "medium",
+       "label": "medium"
+      },
+      {
+       "id": "high",
+       "label": "high"
+      },
+      {
+       "id": "xhigh",
+       "label": "xhigh"
+      },
+      {
+       "id": "max",
+       "label": "max"
+      },
+      {
+       "id": "ultra",
+       "label": "ultra"
+      }
+     ],
+     "thinkingOptions": [
+      "low",
+      "medium",
+      "high",
+      "xhigh",
+      "max",
+      "ultra"
+     ],
+     "thinkingDefault": "high",
+     "effectiveFastMode": false,
+     "effectiveFastModeSource": "default",
+     "fastAutoOnSeconds": 60,
+     "inputTokens": 33468,
+     "outputTokens": 509,
+     "totalTokens": 33182,
+     "totalTokensFresh": true,
+     "estimatedCostUsd": 0.07654440000000001,
+     "status": "running",
+     "startedAt": 1792169997652,
+     "childSessions": [
+      "agent:files:subagent:e5c51644-7e28-4670-8f87-73c9bb47f20d"
+     ],
+     "effectiveResponseUsage": "off",
+     "effectiveQueueMode": "steer",
+     "modelProvider": "openai",
+     "model": "gpt-6.1-sol",
+     "activeModelProvider": "openai",
+     "activeModel": "gpt-6.1-sol",
+     "modelOverrideSource": null,
+     "runtimeSelectionLocked": false,
+     "agentRuntime": {
+      "id": "openclaw",
+      "cloudPlacementSupported": true,
+      "cloudPlacementExecutionMode": "worker-turn",
+      "devicePlacement": {
+       "requiredNodeCommands": [],
+       "consumesWorkerSlot": true
+      },
+      "devicePlacementSupported": true,
+      "source": "model"
+     },
+     "contextTokens": 272000,
+     "snapshotAt": 1792170019770,
+     "placement": {
+      "state": "local",
+      "generation": 0,
+      "createdAtMs": 1792169979579,
+      "updatedAtMs": 1792169996672,
+      "stateChangedAtMs": 1792169979579
+     },
+     "activitySummary": {
+      "text": "La création et la vérification du fichier `probe-refonte-a-2026-10-16t16-59-38-883z.txt` contenant `PROBE_REFONTE_OK` ont été demandées sous `/home/node/.openclaw/media/outbound/`. Aucun résultat d’exécution n’est encore confirmé ; la tâche est en attente.",
+      "updatedAt": 1792169998435,
+      "state": "updating",
+      "canEnsure": true
+     },
+     "hasActiveRun": true,
+     "sharingRole": "admin"
+    }
+   }
+  }
+ ]
+}

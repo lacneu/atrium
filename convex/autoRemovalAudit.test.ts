@@ -326,10 +326,13 @@ describe("a delivery bubble born from transcript rows carries the delivery's ide
       (await ctx.db.query("messages").withIndex("by_chat", (q) => q.eq("chatId", chatId)).collect()).filter((m) => m.role === "assistant" && m.text.includes("Résultat tardif.")),
     );
 
-  test("in `on`: its :retry-1 lands on the reborn bubble — one answer", async () => {
+  test("in `on`: its :retry-1 is another run — its own bubble; the answer stays one, on the reborn bubble", async () => {
+    // FINAL DESIGN STEP 4 (§3.4): each run has its bubble; the retry joins the chain's group.
     const t = convexTest({ schema, modules, transactionLimits: true });
     const { chatId, reborn } = await droppedThenReborn(t);
-    expect(await start(t, chatId, `${W}:retry-1`)).toBe(reborn);
+    const retry = await start(t, chatId, `${W}:retry-1`);
+    expect(retry).not.toBe(reborn);
+    expect((await t.run((ctx) => ctx.db.get(retry!)))?.deliveryKey).toBe(`settle:${CR_W}`);
     expect((await answerBubbles(t, chatId)).map((m) => m._id)).toEqual([reborn]);
   });
 

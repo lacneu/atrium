@@ -35,6 +35,9 @@ import { maskCredentialId } from "./lib/chatRenderState";
 import { loadProjectionReport } from "./lib/transcriptProjection";
 import { compareOrder } from "./lib/messageOrder";
 import { readBounded } from "./lib/boundedRead";
+import schema from "./schema";
+import { displayReport } from "./messages";
+import { paginationOptsValidator } from "convex/server";
 
 function assertDev() {
   if (process.env.OPENCLAW_ENABLE_ANON_AUTH !== "1") {
@@ -1305,15 +1308,69 @@ export const testProjectionReport = query({
   },
 });
 
+/** Bench-only (final design step 2): the files a chat's transcript rows carry — every
+ *  file block of a stored row beside the record of its copy, and the copy's stored blob
+ *  (`_storage` sha256, base64). Metadata and bench content only. */
+export const testTranscriptFiles = query({
+  args: { chatId: v.id("chats") },
+  handler: async (ctx, { chatId }) => {
+    assertDev();
+    const files = await ctx.db
+      .query("transcriptFiles")
+      .withIndex("by_chat_entry", (q) => q.eq("chatId", chatId))
+      .take(500);
+    const texts = await ctx.db
+      .query("transcriptRowTexts")
+      .withIndex("by_chat", (q) => q.eq("chatId", chatId))
+      .take(500);
+    const blocks: Array<Record<string, unknown>> = [];
+    for (const d of texts) {
+      const row = await ctx.db.get(d.rowId);
+      (d.blocks ?? []).forEach((b, blockIndex) => {
+        if (b.type === "file") blocks.push({ entryId: row?.entryId ?? null, seq: row?.seq ?? null, blockIndex, ...b });
+      });
+    }
+    const out: Array<Record<string, unknown>> = [];
+    for (const f of files) {
+      const blob = f.storageId === undefined ? null : await ctx.db.system.get("_storage", f.storageId);
+      out.push({
+        id: f._id,
+        entryId: f.entryId,
+        blockIndex: f.blockIndex,
+        artifactId: f.artifactId ?? null,
+        mediaSource: f.mediaSource ?? null,
+        label: f.label ?? null,
+        state: f.state,
+        reason: f.reason ?? null,
+        attempts: f.attempts,
+        sha256: f.sha256 ?? null,
+        storageId: f.storageId ?? null,
+        blob: blob === null ? null : { size: blob.size, sha256: blob.sha256 },
+      });
+    }
+    return { files: out, blocks };
+  },
+});
+
 export const inspectChat = query({
-  args: { chatId: v.id("chats"), take: v.optional(v.number()) },
-  handler: async (ctx, { chatId, take }) => {
+  // `find`: tokens the bench looks up in each message's FULL text (only the ones found come
+  // back) — the preview below is 80 characters.
+  args: { chatId: v.id("chats"), take: v.optional(v.number()), find: v.optional(v.array(v.string())) },
+  handler: async (ctx, { chatId, take, find }) => {
     assertDev();
     const msgs = await ctx.db
       .query("messages")
       .withIndex("by_chat", (q) => q.eq("chatId", chatId))
       .order("desc")
       .take(Math.min(Math.max(take ?? 6, 1), 40));
+    // Final design step 3 (R4): what the display withholds, by bubble — the bench counts
+    // the files a reader SEES (a row's files minus the withheld duplicates).
+    const hiddenFilesOf = new Map<string, number>();
+    if (msgs.some((m) => m.rowLayout !== undefined)) {
+      for (const d of (await displayReport(ctx, chatId)).decisions) {
+        if (d.rule === "same_sha256_in_group") hiddenFilesOf.set(d.messageId, (hiddenFilesOf.get(d.messageId) ?? 0) + 1);
+      }
+    }
     const out = [];
     for (const m of msgs) {
       const parts = await ctx.db
@@ -1342,7 +1399,10 @@ export const inspectChat = query({
         textLen: m.text.length,
         liveTextLen: (m.liveText ?? "").length,
         textPreview: m.text.slice(0, 80),
+        found: (find ?? []).slice(0, 10).filter((t) => t !== "" && m.text.includes(t)),
         runId: m.runId ?? null,
+        // The gateway session the bubble belongs to (additive: a probe addresses it).
+        turnSessionKey: m.turnSessionKey ?? null,
         mergedAnnounceRuns: m.mergedAnnounceRuns ?? [],
         // Each merged hand-off continuation's batch (child run ids — ids only).
         continuations: m.continuations ?? [],
@@ -1350,6 +1410,18 @@ export const inspectChat = query({
         // delivery opened this bubble as its own.
         displayGroupId: m.displayGroupId ?? null,
         deliveryOwnBubble: m.deliveryOwnBubble === true,
+        // Final design step 3 (additive): the bubble's rows, the files they carry, and the
+        // files the display shows of them (R4 duplicates withheld).
+        ...(m.rowLayout !== undefined
+          ? (() => {
+              const layoutFiles = m.rowLayout.reduce((n, r) => n + (r.files?.length ?? 0), 0);
+              return {
+                layoutRows: m.rowLayout.length,
+                layoutFiles,
+                shownFiles: layoutFiles - (hiddenFilesOf.get(String(m._id)) ?? 0),
+              };
+            })()
+          : {}),
         parts: parts.map((p) => ({
           kind: p.part.kind,
           name: "name" in p.part ? p.part.name : undefined,
@@ -1361,7 +1433,14 @@ export const inspectChat = query({
           // An inline widget's view id (additive): the bench fetches its document through
           // the real reader path to prove the chain end to end.
           viewId: p.part.kind === "widget" ? p.part.viewId : undefined,
+          // A part derived from a transcript file (final design step 3, additive).
+          transcriptFileId: "transcriptFileId" in p ? p.transcriptFileId : undefined,
+          toolCallId: p.part.kind === "tool" ? p.part.toolCallId : undefined,
         })),
+        // The tool cards the rows name, row by row (final design step 3, additive).
+        ...(m.rowLayout !== undefined
+          ? { layoutTools: m.rowLayout.map((r) => (r.tools ?? []).map((t) => t.toolCallId)) }
+          : {}),
       });
     }
     // NB: the live-bench harness consumes this as a BARE ARRAY — keep the
@@ -3382,5 +3461,103 @@ export const peekToolPhases = query({
         .filter((p) => p.part.kind === "compaction")
         .map((p) => (p.part as { phase: string }).phase),
     };
+  },
+});
+
+
+// ── Dev data hygiene: rows the CURRENT schema no longer accepts ─────────────────────────
+//
+// A local deployment that ran an unmerged lot keeps that lot's rows (a part kind, a field,
+// a table HEAD never had), and the next push of HEAD is then refused by schema validation.
+// This deletes them — on a dev deployment only, page by page, judged by HEAD's own table
+// validators (never by a hand-kept list). `dryRun` reports without deleting.
+
+type AnyValidator = {
+  kind: string;
+  isOptional?: string;
+  fields?: Record<string, AnyValidator>;
+  members?: AnyValidator[];
+  element?: AnyValidator;
+  key?: AnyValidator;
+  value?: unknown;
+};
+
+/** Does `x` satisfy validator `val` (the convex/values runtime shape)? */
+export function matchesValidator(val: AnyValidator, x: unknown): boolean {
+  switch (val.kind) {
+    case "any":
+      return true;
+    case "id":
+    case "string":
+      return typeof x === "string";
+    case "float64":
+      return typeof x === "number";
+    case "int64":
+      return typeof x === "bigint";
+    case "boolean":
+      return typeof x === "boolean";
+    case "null":
+      return x === null;
+    case "bytes":
+      return x instanceof ArrayBuffer;
+    case "literal":
+      return x === val.value;
+    case "array":
+      return Array.isArray(x) && x.every((e) => matchesValidator(val.element!, e));
+    case "union":
+      return (val.members ?? []).some((m) => matchesValidator(m, x));
+    case "record":
+      return (
+        typeof x === "object" &&
+        x !== null &&
+        !Array.isArray(x) &&
+        Object.entries(x).every(
+          ([k, e]) => matchesValidator(val.key!, k) && matchesValidator(val.value as AnyValidator, e),
+        )
+      );
+    case "object": {
+      if (typeof x !== "object" || x === null || Array.isArray(x)) return false;
+      const rec = x as Record<string, unknown>;
+      const fields = val.fields ?? {};
+      for (const k of Object.keys(rec)) if (!(k in fields)) return false;
+      for (const [k, f] of Object.entries(fields)) {
+        if (rec[k] === undefined) {
+          if (f.isOptional !== "optional") return false;
+        } else if (!matchesValidator(f, rec[k])) {
+          return false;
+        }
+      }
+      return true;
+    }
+    default:
+      return false;
+  }
+}
+
+export const purgeSchemaStrays = internalMutation({
+  args: {
+    table: v.string(),
+    paginationOpts: paginationOptsValidator,
+    dryRun: v.boolean(),
+  },
+  handler: async (ctx, { table, paginationOpts, dryRun }) => {
+    assertDev();
+    const def = (schema.tables as Record<string, { validator: AnyValidator } | undefined>)[table];
+    const page = await ctx.db.query(table as never).paginate(paginationOpts);
+    let stray = 0;
+    const samples: string[] = [];
+    for (const doc of page.page as Array<Record<string, unknown>>) {
+      const { _id, _creationTime, ...body } = doc;
+      // A table HEAD does not define: every row of it is a stray.
+      const ok = def !== undefined && matchesValidator(def.validator, body);
+      if (ok) continue;
+      stray++;
+      if (samples.length < 3) {
+        const kind = (body.part as { kind?: unknown } | undefined)?.kind;
+        samples.push(`${String(_id)} keys=${Object.keys(body).sort().join(",")}${typeof kind === "string" ? ` part.kind=${kind}` : ""}`);
+      }
+      if (!dryRun) await ctx.db.delete(_id as never);
+    }
+    return { scanned: page.page.length, stray, samples, isDone: page.isDone, continueCursor: page.continueCursor };
   },
 });

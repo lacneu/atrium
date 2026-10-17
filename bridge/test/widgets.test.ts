@@ -148,6 +148,8 @@ describe("[embed] shortcodes (port of extractCanvasShortcodes)", () => {
 
   it("findCodeRegions covers fences, inline spans and indented blocks", () => {
     expect(findCodeRegions("no code")).toEqual([]);
-    expect(findCodeRegions("a `x` b")).toEqual([{ start: 2, end: 5 }]);
+    expect(findCodeRegions("a `x` b")).toEqual([{ start: 2, end: 5, block: false }]);
+    // The upstream CommonMark parser (code-regions.ts): a fence inside a block quote.
+    expect(findCodeRegions("> ~~~text\n> [embed ref=\"cv_x\" /]\n> ~~~").map((r) => r.block)).toEqual([true]);
   });
 });

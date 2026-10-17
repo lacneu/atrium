@@ -16,6 +16,7 @@
 // still gated per-user in messages.ts, so a user can never read another user's
 // streamed message.
 
+import { catchUpLiveBubbleFromRows } from "./lib/rowParts";
 import { WIDGET_TITLE_MAX_CHARS, WIDGET_VIEW_ID_RE, partWidgetField } from "./lib/widgetDescriptor";
 import { conversationWantsWidgets, viewRegisteredTo, widgetInstanceFor } from "./widgets";
 import { v, type ObjectType } from "convex/values";
@@ -51,6 +52,7 @@ import {
 } from "./lib/snapshotRegression";
 import {
   deleteFileRowsForStorage,
+  deleteFilesByMessage,
   isFilePart,
   recordFileForPart,
 } from "./lib/files";
@@ -201,10 +203,40 @@ export const startAssistant = internalMutation({
   // Every other outcome is a message id (a fresh turn, a merged announce, or a
   // silent terminal rebroadcast).
   returns: v.union(v.id("messages"), v.null()),
-  handler: async (
-    ctx,
-    { chatId, runId, turnSessionKey, dispatchOutboxId, runSegment, boundInstanceName },
-  ) => {
+  // THE ONE OPENING POINT of a live bubble (codex review 9): whatever path the run takes — a
+  // fresh bubble, its own bubble handed back (`:retry-N`, a replayed delivery), a settled
+  // bubble resumed, a parent reopened for an announce merge — what the run's rows already
+  // said before the bubble was open is taken up here (lib/rowParts.ts
+  // `catchUpLiveBubbleFromRows`), never left for the terminal.
+  handler: async (ctx, args) => {
+    // Read for a conversation that stored transcript text only (`storedText`, as the core
+    // decides it): one never `on` costs exactly what it did (projectionInvariance.test.ts).
+    const seen = { storedText: false };
+    const opened = await startAssistantCore(ctx, args, seen);
+    if (opened !== null && seen.storedText && args.runId !== undefined) await catchUpLiveBubbleFromRows(ctx, opened, args.runId);
+    return opened;
+  },
+});
+
+async function startAssistantCore(
+  ctx: MutationCtx,
+  {
+    chatId,
+    runId,
+    turnSessionKey,
+    dispatchOutboxId,
+    runSegment,
+    boundInstanceName,
+  }: {
+    chatId: Id<"chats">;
+    runId?: string;
+    turnSessionKey?: string;
+    dispatchOutboxId?: string;
+    runSegment?: number;
+    boundInstanceName?: string;
+  },
+  seen: { storedText: boolean },
+): Promise<Id<"messages"> | null> {
     // REFUSE a turn whose dispatch was already SETTLED. Aborting the Convex-side POST
     // does not cancel the bridge's `/send` handler: a handler blocked past the
     // reconciliation window (an unbounded internal fetch, a paused process) could
@@ -259,6 +291,7 @@ export const startAssistant = internalMutation({
     // Gated on stored text (lib/transcriptProjection `transcriptStoredText`): a conversation
     // never `on` reads nothing more here than it did before phase 4.
     const storedText = transcriptStoredText(chat);
+    seen.storedText = storedText;
     if (
       storedText &&
       runId !== undefined &&
@@ -397,6 +430,11 @@ export const startAssistant = internalMutation({
       // mode is now (codex phase 5 pass 2 #1): a replay of a run that ended in error resumes
       // it (the 0.96.0 rule, codex phase 4 pass 12); any other replay lands on it. Found
       // through the run → bubble record; read only for a conversation that stored text.
+      // FINAL DESIGN STEP 4 (§3.4/§3.6): in `on`, EACH RUN HAS ITS BUBBLE — a `:retry-N`
+      // wake that speaks gets its own, in its chain's display group (`chainRoot`), and an
+      // attempt's bubble is never reused for the next (`resumeOwnDelivery` runs outside
+      // `on` only). Only a replay of the SAME run is handed its bubble back.
+      const deliveryOn = storedText && (await projectionModeOfChat(ctx, chat)) === "on";
       if (storedText) {
         const own = await ownDeliveryBubble(
           ctx,
@@ -405,13 +443,16 @@ export const startAssistant = internalMutation({
           runSegment !== undefined && runSegment > 0 ? runSegment : 0,
           boundInstanceName,
           turnSessionKey,
+          deliveryOn ? runId : undefined,
         );
         if (own !== null) {
-          const landed = await landOnOwnDelivery(ctx, chatId, own, runId, now, boundInstanceName, false);
+          const landed = deliveryOn
+            ? await handBackOwnRun(ctx, chatId, own, runId, now, boundInstanceName, false)
+            : await landOnOwnDelivery(ctx, chatId, own, runId, now, boundInstanceName, false);
           if (landed !== null) return landed;
         }
       }
-      ownDelivery = storedText && (await projectionModeOfChat(ctx, chat)) === "on";
+      ownDelivery = deliveryOn;
       // In `on`, a delivery 0.96.0 ALREADY merged (a bubble from before the switch: no
       // delivery key, no own marker, so the lookups above miss it) is a replay of that
       // merge, and 0.96.0's idempotence decides it — handed back, its answer checked by
@@ -456,9 +497,10 @@ export const startAssistant = internalMutation({
             ...(boundInstanceName !== undefined ? { instanceName: boundInstanceName } : {}),
             ...(turnSessionKey !== undefined ? { sessionKey: turnSessionKey } : {}),
           },
+          true,
         );
         if (standalone !== null) {
-          const landed = await landOnOwnDelivery(ctx, chatId, standalone, runId, now, boundInstanceName, true);
+          const landed = await handBackOwnRun(ctx, chatId, standalone, runId, now, boundInstanceName, true);
           if (landed !== null) return landed;
         }
       }
@@ -535,8 +577,7 @@ export const startAssistant = internalMutation({
       streamStatus: "streaming",
     });
     return messageId;
-  },
-});
+}
 
 /**
  * PROJECTION `on` (phase 5, codex passes 4 #1 and 5 #2): a REPLAYED delivery run is handed
@@ -579,6 +620,9 @@ async function ownDeliveryBubble(
   segment: number,
   boundInstanceName: string | undefined,
   turnSessionKey: string | undefined,
+  /** Projection `on` (final design step 4): only the bubble of THIS run — never an
+   *  earlier attempt's of the same delivery. */
+  sameRun?: string,
 ): Promise<Doc<"messages"> | null> {
   const key = deliveryIdentityKey(runId);
   if (key === null) return null;
@@ -593,6 +637,7 @@ async function ownDeliveryBubble(
       (m) =>
         m.role === "assistant" &&
         m.deliveryOwnBubble === true &&
+        (sameRun === undefined || m.runId === sameRun) &&
         bubbleInScope(m, {
           ...(boundInstanceName !== undefined ? { instanceName: boundInstanceName } : {}),
           ...(turnSessionKey !== undefined ? { sessionKey: turnSessionKey } : {}),
@@ -642,6 +687,26 @@ async function landOnOwnDelivery(
   return resumed;
 }
 
+/**
+ * PROJECTION `on` (final design step 4): a replay of THE SAME delivery run is handed the
+ * bubble it opened (resumed if it ended in error — the same run's bubble, whose rows the
+ * transcript keeps placing there); a later attempt (`:retry-N`, another run) is not: it
+ * opens its own, and an attempt's bubble is never reused for the next. `legacy`: a bubble
+ * 0.96.0 opened for this run, adopted under the delivery's identity (§14.28).
+ */
+async function handBackOwnRun(
+  ctx: MutationCtx,
+  chatId: Id<"chats">,
+  own: Doc<"messages">,
+  runId: string,
+  now: number,
+  boundInstanceName: string | undefined,
+  legacy: boolean,
+): Promise<Id<"messages"> | null> {
+  if (own.runId !== runId) return null;
+  return await landOnOwnDelivery(ctx, chatId, own, runId, now, boundInstanceName, legacy);
+}
+
 /** The run ids a delivery's earlier attempts carried: the run itself, and — for a
  *  requester-settle `:retry-N` wake — the batch's first run and its earlier retries (the
  *  most recent `LEGACY_RETRY_PROBES`). */
@@ -669,9 +734,11 @@ async function legacyStandaloneBubble(
   runId: string,
   segment: number,
   scope: { instanceName?: string; sessionKey?: string },
+  /** Projection `on` (final design step 4): this run's own bubble only. */
+  sameRunOnly = false,
 ): Promise<Doc<"messages"> | null> {
   if (segment !== 0) return null;
-  for (const run of earlierAttemptRuns(runId)) {
+  for (const run of sameRunOnly ? [runId] : earlierAttemptRuns(runId)) {
     const records = await ctx.db
       .query("runBubbles")
       .withIndex("by_chat_run", (q) => q.eq("chatId", chatId).eq("runId", run))
@@ -1403,6 +1470,42 @@ async function releaseDroppedOwnBubble(
       releasedAt: Date.now(),
     });
   }
+}
+
+/**
+ * FINAL DESIGN §3.3 (step 4): a settled bubble every row of which was RETRACTED — seen only
+ * live, absent from every durable read that covers it — shows a text the transcript does
+ * not hold. It goes, as a bubble dropped by the SYSTEM: its parts and their `files` rows,
+ * its run → bubble records, its live residue; its rows are released (a later durable read
+ * that brings one back places it again). Never a streaming bubble (the live turn settles
+ * it first). Returns whether it was removed.
+ */
+export async function dropVanishedBubble(ctx: MutationCtx, messageId: Id<"messages">): Promise<boolean> {
+  const message = await ctx.db.get(messageId);
+  if (message === null || message.role !== "assistant" || message.status === "streaming") return false;
+  const rows = await releasableRows(ctx, messageId);
+  if (rows === null) return false;
+  if (message.deliveryOwnBubble === true) {
+    await releaseDroppedOwnBubble(ctx, message, rows);
+  } else {
+    for (const row of rows) await ctx.db.patch(row._id, { messageId: undefined });
+    await dropRunBubbleLinks(ctx, messageId);
+  }
+  for (;;) {
+    const parts = await ctx.db
+      .query("messageParts")
+      .withIndex("by_message", (q) => q.eq("messageId", messageId))
+      .take(RUN_LINK_DROP_BATCH);
+    for (const p of parts) await ctx.db.delete(p._id);
+    if (parts.length < RUN_LINK_DROP_BATCH) break;
+  }
+  await deleteFilesByMessage(ctx, messageId);
+  const live = await streamingRow(ctx, messageId);
+  if (live !== null) await ctx.db.delete(live._id);
+  await clearLiveActivity(ctx, messageId);
+  await ctx.db.delete(messageId);
+  await ctx.scheduler.runAfter(0, internal.stream.deleteStreamChunksStep, { messageId });
+  return true;
 }
 
 /** Was a bubble of this run an own one, dropped by the system (§14.29)? */
@@ -6312,6 +6415,9 @@ export const splitSegment = internalMutation({
       messageId: next,
       streamStatus: "streaming",
     });
+    // The one opening point (see startAssistant): what the run's rows of the NEW segment
+    // already said (a steer and its show_widget result read before this cut) is taken up now.
+    if (message.runId !== undefined) await catchUpLiveBubbleFromRows(ctx, next, message.runId);
     return next;
   },
 });

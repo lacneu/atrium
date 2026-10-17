@@ -18,6 +18,26 @@ import {
 import { buildIdentityHeaders } from "../providers/openclaw/gateway-identity.js";
 import type { InboundInstanceConfig, MediaMode } from "./instance-config.js";
 
+/**
+ * The identity a request to the gateway's HTTP media routes presents: the bridge's SYSTEM
+ * identity headers in trusted-proxy mode (empty in token mode). Shared by the media
+ * fetcher and the transcript file copier (core/artifact-copier.ts) — one definition of
+ * the authorization contract.
+ */
+export function mediaIdentityHeaders(config: BridgeConfig): Record<string, string> {
+  // The forwarded ORIGIN must describe the request being authorized. The
+  // socket's identity carries the operator URL, and `gatewayHttpBase` can
+  // differ from it (`instances.gatewayHttpUrl`) — a gateway whose
+  // `requiredHeaders` lists the host would then be told about the wrong one.
+  const identity = systemConnectIdentity(config);
+  return buildIdentityHeaders(
+    identity === undefined
+      ? undefined
+      : { ...identity, ...mediaForwardedOrigin(config) },
+    connectUserHeader(config),
+  );
+}
+
 /** The gateway's own media route, built once and used by TWO modes: as the whole
  *  fetcher in `gateway-http`, and as the sibling-directory fallback under
  *  `shared-fs`. Extracted verbatim rather than duplicated — the identity and
@@ -35,19 +55,7 @@ function buildGatewayHttpFetcher(
     // Trusted-proxy: the HTTP media route is behind the SAME header-based
     // authorization as the WebSocket, so the probe must state an identity or
     // it is refused. Empty in token mode ⇒ the Bearer path is untouched.
-    identityHeaders: () => {
-      // The forwarded ORIGIN must describe the request being authorized. The
-      // socket's identity carries the operator URL, and `gatewayHttpBase` can
-      // differ from it (`instances.gatewayHttpUrl`) — a gateway whose
-      // `requiredHeaders` lists the host would then be told about the wrong one.
-      const identity = systemConnectIdentity(config);
-      return buildIdentityHeaders(
-        identity === undefined
-          ? undefined
-          : { ...identity, ...mediaForwardedOrigin(config) },
-        connectUserHeader(config),
-      );
-    },
+    identityHeaders: () => mediaIdentityHeaders(config),
     maxBytes,
     timeoutMs: config.mediaFetchTimeoutMs,
   });
@@ -116,6 +124,7 @@ export class MediaFetcherProvider {
   private maxBytes: number;
   private signature: string;
   private fetcher: MediaFetcher | undefined;
+  private routeFetcher: { maxBytes: number; fetcher: GatewayHttpMediaFetcher } | undefined;
 
   constructor(config: BridgeConfig) {
     this.config = config;
@@ -129,6 +138,28 @@ export class MediaFetcherProvider {
   /** The current fetcher (undefined in "off" mode). Read lazily by the writer. */
   current(): MediaFetcher | undefined {
     return this.fetcher;
+  }
+
+  /**
+   * THE GATEWAY'S MEDIA ROUTE, and nothing else — what a transcript `MEDIA:` reference is
+   * copied through (core/artifact-copier.ts). The Control UI resolves every such reference
+   * through `/__openclaw__/assistant-media?source=…&sessionKey=…` (meta, then a ticket;
+   * src/gateway/control-ui.ts:429 at v2026.9.33), under the policy of the SESSION that
+   * names it (control-ui-assistant-media-policy.test.ts:157, :441). A local outbound mount
+   * is never consulted for it, even under `shared-fs`: it is keyed by base name and knows
+   * no session, so a homonym written by another conversation would be read instead.
+   * Undefined in `off`, or when the route cannot be authenticated (no HTTP base; no token
+   * outside trusted-proxy).
+   */
+  mediaRoute(): GatewayHttpMediaFetcher | undefined {
+    if (this.mode === "off") return undefined;
+    const httpBase = this.config.gatewayHttpBase;
+    const trustedProxy = this.config.openclawAuthMode === "trusted-proxy";
+    if (!httpBase || (!this.config.openclawToken && !trustedProxy)) return undefined;
+    if (this.routeFetcher?.maxBytes !== this.maxBytes) {
+      this.routeFetcher = { maxBytes: this.maxBytes, fetcher: buildGatewayHttpFetcher(this.config, this.maxBytes) };
+    }
+    return this.routeFetcher.fetcher;
   }
 
   /** The currently applied mode (for diagnostics/tests). */

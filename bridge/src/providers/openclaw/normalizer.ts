@@ -735,6 +735,11 @@ export class Normalizer {
    *  it said; no time-based wait (TRANSCRIPT_DECIDED_WAITS) and no prose rule ever closes
    *  a turn. Set by RunManager.setProjection. */
   transcriptDecides = false;
+  /** PROJECTION `on` NOW (final design step 4): no file is taken from the live stream —
+   *  a file is the transcript row's that carries it, copied by its identity
+   *  (core/artifact-copier.ts). Follows the instance's CURRENT switch (RunManager
+   *  .setProjection), so a rollback to shadow gives the live files back. */
+  liveFilesOff = false;
   /** The run's generation ENDED (lifecycle `end`), as a fact rather than a window: what
    *  a projected turn reads where the legacy path reads the 10 s `lifecycle_end` grace. */
   private lifecycleEnded = false;
@@ -2561,6 +2566,16 @@ export class Normalizer {
       ) {
         this.noteGatewayResumedWork(events, now);
       }
+      // `update` is the third phase of an item (AgentActivityItemSchema: start | update |
+      // end): the PROGRESS of a tool still running, `status:"running"`, emitted by
+      // upstream's tool progress handler on delivery runs as on any other
+      // (src/agents/embedded-agent-subscribe.handlers.tools.progress.ts:115-144 at
+      // v2026.9.33). Upstream counts only `start` and `end` as the item's life
+      // (`emitTrackedItemEvent`, ...tools.start.ts:223-246) and the Control UI only
+      // refreshes the running item with it (ui/src/pages/chat/tool-stream.ts:521-551).
+      // Read the same here, deliberately: it writes no card (the card is the `end`'s),
+      // closes nothing, and is not resumed work — the tool lane's rule (START only), since
+      // the progress of a tool begun before a `finishing` is the tail of the turn.
       // Ordinary runs keep their exact tool-frame pipeline — never both.
       if (
         (data.kind === "tool" || data.kind === "command") &&
@@ -4060,6 +4075,9 @@ export class Normalizer {
    * non-outbound / inbound / "..", scheme/netloc/query; dedupe within a turn.
    */
   private collectMedia(candidates: Json, events: BridgeEvent[]): void {
+    // PROJECTION `on` (final design step 4): the live stream keeps only the text being
+    // written; a file reaches a bubble only through the row that carries it.
+    if (this.liveFilesOff) return;
     if (!Array.isArray(candidates)) {
       return;
     }

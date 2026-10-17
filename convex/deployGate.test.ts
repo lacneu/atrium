@@ -18,7 +18,7 @@
 // from a test would double every suite's cost, and CI already runs it. What can rot
 // is the wiring, and that is what is pinned here.
 
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import { describe, expect, test } from "vitest";
 
 const read = (rel: string): string =>
@@ -110,18 +110,43 @@ describe("the convex project is checked as Convex itself checks it", () => {
     expect(tsconfig).not.toMatch(/"exclude":\s*\[[^\]]*test/);
   });
 
-  test("its `lib` is recorded as NARROWER than the root's", () => {
-    // Not a style preference — a fact with teeth. `lib: ES2021` here vs `ES2023` at
-    // the root means built-ins the app may use freely (`Array.prototype.at`) DO NOT
-    // EXIST for the deploy compiler. A test written under vitest's esbuild passes and
-    // breaks the deploy. If this ever stops being true, the comments warning about it
-    // are stale and must be revisited — hence the pin.
-    const convexLib = /"lib":\s*\[([^\]]*)\]/.exec(read("./tsconfig.json"))?.[1] ?? "";
-    const rootLib = /"lib":\s*\[([^\]]*)\]/.exec(read("../tsconfig.json"))?.[1] ?? "";
+  test("its `lib` is the one Convex's own template declares for its runtime", () => {
+    // A fact with teeth, re-pinned (codex review 12). It was ES2021 — narrower than the
+    // root's ES2023 — so built-ins the app used freely (`Array.prototype.at`) did not
+    // exist for the deploy compiler. The Convex CLI in
+    // use declares ES2023 "required by Convex" for its functions
+    // (node_modules/convex/dist/esm/cli/codegen_templates/tsconfig.js). The project now
+    // says what its runtime has — no wider: a lib past the template's would let the
+    // deploy compiler accept what the runtime may lack.
+    const libOf = (text: string): string => /"lib":\s*\[([^\]]*)\]/.exec(text)?.[1] ?? "";
     const year = (s: string): number =>
-      Math.max(0, ...[...s.matchAll(/ES(\d{4})/g)].map((m) => Number(m[1])));
-    expect(year(convexLib)).toBeGreaterThan(0);
-    expect(year(rootLib)).toBeGreaterThan(0);
-    expect(year(convexLib)).toBeLessThan(year(rootLib));
+      Math.max(0, ...[...s.matchAll(/ES(\d{4})/gi)].map((m) => Number(m[1])));
+    const convexLib = libOf(read("./tsconfig.json"));
+    const template = libOf(read("../node_modules/convex/dist/esm/cli/codegen_templates/tsconfig.js"));
+    expect(year(template)).toBeGreaterThan(0);
+    expect(year(convexLib)).toBe(year(template));
+    expect(year(convexLib)).toBeLessThanOrEqual(year(libOf(read("../tsconfig.json"))));
+  });
+});
+
+describe("every file under convex/ is a valid Convex module path", () => {
+  test("no path component holds a character the deploy refuses (a hyphen, above all)", () => {
+    // `convex dev` refused the whole push on 2026-10-17: a vendored
+    // `lib/upstreamRedact/src/logging/redact-patterns.js` "is not a valid path to a Convex
+    // module. Path component redact-patterns.js can only contain alphanumeric characters,
+    // underscores, or periods" — while typecheck and every test were green.
+    const root = new URL("./", import.meta.url).pathname;
+    const bad: string[] = [];
+    const walk = (dir: string, rel: string): void => {
+      for (const e of readdirSync(dir, { withFileTypes: true })) {
+        if (e.name === "_generated" || e.name === "node_modules" || e.name.startsWith(".")) continue;
+        const path = rel === "" ? e.name : `${rel}/${e.name}`;
+        if (e.isDirectory()) walk(`${dir}/${e.name}`, path);
+        else if (/\.(ts|js)$/.test(e.name) && !/^[A-Za-z0-9_.]+$/.test(e.name)) bad.push(path);
+        if (e.isDirectory() && !/^[A-Za-z0-9_.]+$/.test(e.name)) bad.push(`${path}/`);
+      }
+    };
+    walk(root, "");
+    expect(bad).toEqual([]);
   });
 });

@@ -1,4 +1,5 @@
 import { m } from "@/paraglide/messages.js";
+import { redactToolPayloadText } from "../vendor/upstream-redact/ui/src/lib/browser-redact";
 
 // Pure logic for the grouped "agent activity" block (ToolActivity.tsx).
 //
@@ -28,6 +29,9 @@ export type ToolActivityPart = {
   resultDetails?: unknown;
   /** Bridge tool phase: "started" | "running" | "completed" | "error". */
   phase?: string;
+  /** The input came from a transcript row (convex/lib/viewReconcile.ts): masked at
+   *  display as the Control UI masks history (`toolCardDisplay`). */
+  inputFromTranscript?: boolean;
 };
 
 /** Projection of a tool's `result` for display. An exec/bash result on OpenClaw
@@ -167,6 +171,11 @@ const PREVIEW_KEYS = [
  * full input always remains in ToolCard's expandable "input" block.
  */
 export function toolPreview(args: unknown, argsText: string | undefined): string {
+  return previewSource(args, argsText).replace(/\s+/g, " ").trim();
+}
+
+/** The text the preview is taken from, before it is made one line. */
+function previewSource(args: unknown, argsText: string | undefined): string {
   let raw = "";
   if (args && typeof args === "object" && !Array.isArray(args)) {
     const rec = args as Record<string, unknown>;
@@ -179,7 +188,48 @@ export function toolPreview(args: unknown, argsText: string | undefined): string
     }
   }
   if (!raw) raw = argsText ?? (typeof args === "string" ? args : "");
-  return raw.replace(/\s+/g, " ").trim();
+  return raw;
+}
+
+/** A tool input as text: a string as is, anything else as pretty JSON — upstream's
+ *  `serializeToolInput` (ui/src/lib/chat/tool-cards.ts:248-260). */
+export function toolInputText(value: unknown): string {
+  if (value === undefined || value === null) return "";
+  if (typeof value === "string") return value;
+  try {
+    return JSON.stringify(value, null, 2);
+  } catch {
+    return String(value);
+  }
+}
+
+/**
+ * What a tool card SHOWS of its input: the header preview and the full input text.
+ *
+ * Arguments rebuilt from a transcript row are masked here, at display, exactly as the
+ * Control UI masks a history card (codex review 15): `redactToolPayloadText`
+ * (ui/src/lib/browser-redact.ts, vendored verbatim) over the collapsed argument preview
+ * (ui/src/lib/chat/tool-cards.ts:328 `resolveCollapsedToolArgumentPreview`) and over the
+ * full input text (ui/src/pages/chat/components/chat-transcript-feed.ts:176, and the line
+ * label at :181). The output is not masked there: the Control UI renders `outputText` as
+ * stored (chat-tool-content.ts), and the gateway stored it masked
+ * (src/agents/transcript-redact.ts:721). A live input is shown as the gateway sent it,
+ * already masked (embedded-agent-subscribe.handlers.tools.start.ts:541).
+ */
+export function toolCardDisplay(part: {
+  args?: unknown;
+  argsText?: string;
+  inputFromTranscript?: boolean;
+}): { inputText: string; preview: string } {
+  const inputText = part.argsText ?? toolInputText(part.args);
+  const source = previewSource(part.args, part.argsText);
+  if (part.inputFromTranscript !== true) {
+    return { inputText, preview: source.replace(/\s+/g, " ").trim() };
+  }
+  return {
+    inputText: redactToolPayloadText(inputText.trim()),
+    preview: redactToolPayloadText(source).replace(/\s+/g, " ").trim(),
+  };
 }
 
 /**

@@ -727,6 +727,7 @@ type IngestOp =
       terminals: unknown[];
       activeRunIds?: unknown[];
       hasActiveRun?: boolean;
+      lastRunFailure?: unknown;
       queueMode?: unknown;
       effectiveQueueMode?: unknown;
       unidentified?: number;
@@ -740,6 +741,23 @@ type IngestOp =
       // Phase 4 — the runs the bridge's foreground turn owns (projection `on`).
       foregroundRunIds?: unknown[];
       textsOnly?: boolean;
+    }
+  // THE TRANSCRIPT FILES (final design step 2, convex/transcriptFiles.ts): a copy the
+  // bridge made — the bytes already streamed to an upload URL — or why it could not.
+  // The file's instance is checked atomically inside the mutation.
+  | {
+      op: "transcriptFileCopied";
+      fileId: string;
+      storageId: string;
+      sha256: string;
+      sizeBytes: number;
+      mimeType: string;
+    }
+  | {
+      op: "transcriptFileFailed";
+      fileId: string;
+      outcome: "gone" | "refused" | "retry";
+      reason: string;
     };
 
 /** The target id(s) an op writes against — what ingest authorization resolves to
@@ -1994,6 +2012,9 @@ export const ingest = httpAction(async (ctx, request) => {
             }
           : {}),
         ...(typeof body.hasActiveRun === "boolean" ? { hasActiveRun: body.hasActiveRun } : {}),
+        // Final design step 4: the session row's failed / timed-out last run (re-validated
+        // by the mutation's validator; anything else is dropped here).
+        ...(lastRunFailureOf(body.lastRunFailure) ?? {}),
         ...(typeof body.queueMode === "string" && body.queueMode.length <= 32
           ? { queueMode: body.queueMode }
           : {}),
@@ -2035,6 +2056,28 @@ export const ingest = httpAction(async (ctx, request) => {
       });
       // NO per-apply trace row: reads follow every run terminal, and the cursor doc
       // already carries the counters an operator needs (reads, resets, unidentified).
+      return json(res);
+    }
+    case "transcriptFileCopied": {
+      // Shapes re-validated by the mutation; the reason/sha are closed or bounded there.
+      const res = await ctx.runMutation(internal.transcriptFiles.finalizeCopy, {
+        boundInstanceName,
+        fileId: String(body.fileId),
+        storageId: String(body.storageId),
+        sha256: typeof body.sha256 === "string" ? body.sha256 : "",
+        sizeBytes: typeof body.sizeBytes === "number" && Number.isFinite(body.sizeBytes) ? body.sizeBytes : -1,
+        mimeType: typeof body.mimeType === "string" ? body.mimeType.slice(0, 128) : "",
+      });
+      return json(res);
+    }
+    case "transcriptFileFailed": {
+      const outcome = body.outcome === "gone" || body.outcome === "refused" ? body.outcome : "retry";
+      const res = await ctx.runMutation(internal.transcriptFiles.noteCopyFailure, {
+        boundInstanceName,
+        fileId: String(body.fileId),
+        outcome,
+        reason: typeof body.reason === "string" ? body.reason.slice(0, 64) : "other",
+      });
       return json(res);
     }
     default:
@@ -2103,4 +2146,16 @@ async function forbiddenResponse(
     meta: { reason: "cross_instance", op, boundInstance, atomic },
   });
   return json({ ok: false, error: "forbidden: cross-instance target" }, 403);
+}
+
+/** The `lastRunFailure` an apply carries, in the shape the mutation takes — or null. */
+function lastRunFailureOf(
+  value: unknown,
+): { lastRunFailure: { runId: string; status: "failed" | "timeout"; error: string } } | null {
+  if (typeof value !== "object" || value === null) return null;
+  const v = value as Record<string, unknown>;
+  if (typeof v.runId !== "string" || typeof v.error !== "string") return null;
+  if (v.status !== "failed" && v.status !== "timeout") return null;
+  if (v.runId.length === 0 || v.runId.length > 256 || v.error.length > 4096) return null;
+  return { lastRunFailure: { runId: v.runId, status: v.status, error: v.error } };
 }

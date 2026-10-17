@@ -38,12 +38,34 @@ interface FileContentPartProps {
   data?: string; // resolved Convex storage URL
   filename?: string;
   storageId?: string; // opaque key → the Document Viewer's rendition request
+  /** A transcript file not (yet) copied (projection `on`, final design step 3): shown as
+   *  what it is — being copied, expired on the gateway, too large… — never hidden. */
+  unavailable?: "pending" | "gone" | "refused";
+  reason?: string;
 }
 
-export function MediaPart({ mimeType, data, filename, storageId }: FileContentPartProps) {
+/** The sentence a transcript file that has no copy shows (its state, then its reason). */
+export function unavailableFileLabel(name: string, state: "pending" | "gone" | "refused", reason?: string): string {
+  if (state === "pending") return m.media_file_pending({ name });
+  if (state === "gone") return m.media_file_gone({ name });
+  if (reason === "too_large") return m.media_file_too_large({ name });
+  if (reason === "media_disabled") return m.media_file_media_disabled({ name });
+  if (reason === "remote_source") return m.media_file_remote({ name });
+  return m.media_file_refused({ name });
+}
+
+export function MediaPart({ mimeType, data, filename, storageId, unavailable, reason }: FileContentPartProps) {
   const mime = mimeType ?? "";
   const url = data ?? "";
   const name = filename ?? "attachment";
+  if (unavailable !== undefined) {
+    return (
+      <div className={`oc-media oc-media--unavailable oc-media--${unavailable}`} role="note">
+        <Info className="oc-media__icon" aria-hidden="true" />
+        <span className="oc-media__name">{unavailableFileLabel(name, unavailable, reason)}</span>
+      </div>
+    );
+  }
   // Defensive: a file part with no resolved URL renders nothing rather than a
   // broken link (e.g. storage URL not yet available).
   if (!url) {

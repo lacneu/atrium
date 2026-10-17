@@ -273,6 +273,94 @@ export interface TranscriptRowReport {
   yieldAck?: string;
   /** Projection `on` (phase 5): the sub-agents the row's run launched. */
   spawns?: Array<{ childSessionKey: string; childRunId: string }>;
+  /** Projection `on` (final design step 1): what the row shows, in order, and the identity
+   *  facts beside it (providers/openclaw/transcript-rows.ts `TranscriptRow`). */
+  blocks?: TranscriptRowBlockReport[];
+  blocksTruncated?: true;
+  transcriptPosition?: {
+    source: string;
+    rawSeq: number;
+    activity?: { afterRawSeq: number | null; scopeId: string; startOrder: number };
+  };
+  idempotencyKind?: "message-tool" | "internal-source-reply" | "user" | "settled-finalization-fallback" | "other";
+  deliveryMirror?: true;
+  stopReason?: string;
+  errorMessage?: string;
+  provenanceKind?: string;
+  provenanceSourceTool?: string;
+  /** A stream segment split out of its transcript row (transcript-rows.ts
+   *  `streamSegmentEntryId`): shown right before its owner. */
+  streamSegment?: true;
+  /** Its place among the segments of the same row, as `chat.history` lists them. */
+  segmentOrder?: number;
+}
+
+/** One block of a row (providers/openclaw/row-blocks.ts `RowBlock`). */
+export type TranscriptRowBlockReport =
+  | { type: "text"; text?: string; omitted?: true }
+  | {
+      type: "file";
+      kind: "image" | "audio" | "video" | "document";
+      artifactId?: string;
+      mediaSource?: string;
+      remote?: true;
+      url?: string;
+      errorCode?: "file-not-found" | "unsupported-format" | "delivery-failed";
+      omitted?: true;
+      mimeType?: string;
+      sizeBytes?: number;
+      label?: string;
+    }
+  | {
+      type: "tool";
+      toolCallId: string;
+      name?: string;
+      status: "call" | "result" | "error";
+      input?: unknown;
+      output?: unknown;
+      inputOmitted?: true;
+      inputBytes?: number;
+      outputOmitted?: true;
+      outputBytes?: number;
+    }
+  | { type: "widget"; viewId: string; title?: string; preferredHeight?: number; origin: "tool" | "canvas" | "shortcode" };
+
+/** A file Convex asks the bridge to copy (convex/transcriptFiles.ts `FileToCopy`). */
+export interface TranscriptFileToCopy {
+  fileId: string;
+  sessionKey: string;
+  artifactId?: string;
+  mediaSource?: string;
+  kind: string;
+  mimeType?: string;
+  sizeBytes?: number;
+  label?: string;
+  attempts: number;
+}
+
+export interface TranscriptFileCopiedReport {
+  fileId: string;
+  storageId: string;
+  /** Hex SHA-256 of the bytes that streamed (the source's, byte for byte). */
+  sha256: string;
+  sizeBytes: number;
+  mimeType: string;
+}
+
+export interface TranscriptFileFailedReport {
+  fileId: string;
+  /** `gone`: the gateway no longer has it; `refused`: it will never be copied (too large,
+   *  media disabled, a source the fetcher refuses); `retry`: a transient failure. */
+  outcome: "gone" | "refused" | "retry";
+  reason: string;
+}
+
+/** Convex's answer about one file (its state after the report). */
+export interface TranscriptFileAnswer {
+  ok?: boolean;
+  state?: string;
+  /** The copy lost a race (another copy finalized first): its blob was released. */
+  duplicate?: boolean;
 }
 
 /** What one transcript read posts (convex/transcriptProjection.ts `applyTranscript`). */
@@ -293,6 +381,9 @@ export interface TranscriptApplyReport {
   }>;
   activeRunIds?: string[];
   hasActiveRun?: boolean;
+  /** Projection `on`: the session's last run ended failed/timed out, with its recorded
+   *  error (providers/openclaw/transcript-rows.ts `LastRunFailure`). */
+  lastRunFailure?: { runId: string; status: "failed" | "timeout"; error: string };
   /** The session's queue modes (`sessionInfo.queueMode` / `effectiveQueueMode`). */
   queueMode?: string;
   effectiveQueueMode?: string;
@@ -341,7 +432,14 @@ export interface ConvexWriter {
    *  over); void on fakes that predate it. */
   applyTranscript?(
     report: TranscriptApplyReport,
-  ): Promise<{ ok?: boolean; reason?: string; settledRuns?: unknown } | void>;
+  ): Promise<{ ok?: boolean; reason?: string; settledRuns?: unknown; filesToCopy?: unknown } | void>;
+  /** PROJECTION `on` (final design step 2): stream one transcript file's bytes into
+   *  Convex storage (an upload URL, then the bytes); resolves to the storage id. */
+  transcriptFileUpload?(stream: Readable, mimeType: string): Promise<string>;
+  /** …and report the copy (convex/transcriptFiles.ts `finalizeCopy`). */
+  transcriptFileCopied?(report: TranscriptFileCopiedReport): Promise<TranscriptFileAnswer>;
+  /** …or why it could not be made (`noteCopyFailure`). */
+  transcriptFileFailed?(report: TranscriptFileFailedReport): Promise<TranscriptFileAnswer>;
   /** run start -> internal.stream.startAssistant; returns the new message id,
    *  or NULL when the run has nowhere to land — the user stopped the work this
    *  delivery carries, so it is dropped whole and nothing that follows it
@@ -1198,7 +1296,9 @@ type IngestOp =
     }
   | ({ op: "upsertAgentRequest" } & AgentRequestRecord)
   | ({ op: "settleAgentRequest" } & AgentRequestSettle)
-  | ({ op: "applyTranscript" } & TranscriptApplyReport);
+  | ({ op: "applyTranscript" } & TranscriptApplyReport)
+  | ({ op: "transcriptFileCopied" } & TranscriptFileCopiedReport)
+  | ({ op: "transcriptFileFailed" } & TranscriptFileFailedReport);
 
 export interface HttpConvexWriterOptions {
   /** Convex httpActions base URL (the `.site` origin). */
@@ -2882,13 +2982,34 @@ export class HttpConvexWriter implements ConvexWriter {
 
   async applyTranscript(
     report: TranscriptApplyReport,
-  ): Promise<{ ok?: boolean; reason?: string; settledRuns?: unknown }> {
+  ): Promise<{ ok?: boolean; reason?: string; settledRuns?: unknown; filesToCopy?: unknown }> {
     // OFF the per-message chain, like the session meta: a transcript read is keyed by
     // session, not message, and a slow one must never delay a turn's ordered writes.
-    const res = await this.doPost<{ ok?: boolean; reason?: string; settledRuns?: unknown } | null>({
+    const res = await this.doPost<{
+      ok?: boolean;
+      reason?: string;
+      settledRuns?: unknown;
+      filesToCopy?: unknown;
+    } | null>({
       op: "applyTranscript",
       ...report,
     });
     return res ?? {};
+  }
+
+  // PROJECTION `on` (final design step 2): a transcript file's copy. OFF the per-message
+  // chain like the reads: a copy belongs to a transcript row, not to a bubble's ordered
+  // writes, and a slow one never delays a turn.
+  async transcriptFileUpload(stream: Readable, mimeType: string): Promise<string> {
+    const { uploadUrl } = await this.doPost<{ uploadUrl: string }>({ op: "getUploadUrl" });
+    return this.streamToUploadUrl(uploadUrl, stream, mimeType);
+  }
+
+  async transcriptFileCopied(report: TranscriptFileCopiedReport): Promise<TranscriptFileAnswer> {
+    return (await this.doPost<TranscriptFileAnswer | null>({ op: "transcriptFileCopied", ...report })) ?? {};
+  }
+
+  async transcriptFileFailed(report: TranscriptFileFailedReport): Promise<TranscriptFileAnswer> {
+    return (await this.doPost<TranscriptFileAnswer | null>({ op: "transcriptFileFailed", ...report })) ?? {};
   }
 }

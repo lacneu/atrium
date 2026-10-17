@@ -298,4 +298,15 @@ crons.interval(
   {},
 );
 
+// Transcript files still `pending` that no read of their session handed back (a session
+// nobody reopened after a bridge restart, a copy that failed its in-process retries): sent
+// to their instance's bridge for a copy (projection `on`, final design step 2). Bounded:
+// one indexed range of the oldest pending files; a no-op when there are none.
+crons.interval(
+  "resume pending transcript files",
+  { minutes: 10 },
+  internal.transcriptFiles.resumePending,
+  {},
+);
+
 export default crons;

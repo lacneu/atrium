@@ -1027,7 +1027,53 @@ describe("codex phase 5 pass 6 #1 — a delivery is found by its IDENTITY (a `:r
       await ctx.db.patch(inst._id, { config: { transcriptProjection: "shadow" } as never });
     });
 
-  for (const rollback of [false, true]) {
+  // FINAL DESIGN STEP 4 (§3.4/§3.6): in `on`, EACH RUN HAS ITS BUBBLE — a `:retry-N` that
+  // speaks opens its own, with the delivery's identity (so the chain groups it), and the
+  // earlier attempt's bubble is left as it is. The cross-attempt reuse below
+  // (`resumeOwnDelivery`) holds outside `on` only (after a rollback).
+  async function retryOwnBubble(t: T, chatId: Id<"chats">, mW: Id<"messages">) {
+    const before = await msg(t, mW);
+    const mR = (await start(t, chatId, W1R))!;
+    expect(mR).not.toBe(mW);
+    const retry = await msg(t, mR);
+    expect(retry.runId).toBe(W1R);
+    expect(retry.status).toBe("streaming");
+    expect(retry.deliveryOwnBubble).toBe(true);
+    expect(retry.deliveryKey).toBe(before.deliveryKey);
+    const after = await msg(t, mW);
+    expect([after.status, after.runId, after.text]).toEqual([before.status, before.runId, before.text]);
+    return mR;
+  }
+
+  test("`on`: a retry of a batch that ANSWERED opens its own bubble, the answer stays where it was", async () => {
+    const t = convexTest({ schema, modules });
+    const { chatId } = await seed(t, "on");
+    const mP = await turnWithLaunch(t, chatId);
+    const mW = (await start(t, chatId, W1))!;
+    await finish(t, mW, "SYNTHESE: fini.");
+    const mR = await retryOwnBubble(t, chatId, mW);
+    expect((await msg(t, mW)).text).toBe("SYNTHESE: fini.");
+    expect((await msg(t, mP)).text).toBe("Je délègue.");
+    // …and the chain shows them together: one display group (`chainRoot`, unchanged).
+    await finish(t, mR, "SYNTHESE: encore.");
+    await t.run((ctx) => regroupChat(ctx, chatId));
+    const group = (await msg(t, mW)).displayGroupId;
+    expect(group).toBeDefined();
+    expect((await msg(t, mR)).displayGroupId).toBe(group);
+  });
+
+  test("`on`: a retry after an ERROR opens its own bubble — the failed attempt keeps its error", async () => {
+    const t = convexTest({ schema, modules });
+    const { chatId } = await seed(t, "on");
+    const mP = await turnWithLaunch(t, chatId);
+    const mW = (await start(t, chatId, W1))!;
+    await t.mutation(internal.stream.finalize, { messageId: mW, status: "error", error: "boom" } as never);
+    await retryOwnBubble(t, chatId, mW);
+    expect((await msg(t, mW)).status).toBe("error");
+    expect((await msg(t, mP)).mergedAnnounceRuns).toBeUndefined();
+  });
+
+  for (const rollback of [true]) {
     test(`a retry of a batch that ANSWERED is handed the same bubble (${rollback ? "after a rollback" : "on"})`, async () => {
       const t = convexTest({ schema, modules });
       const { chatId } = await seed(t, "on");
@@ -1056,7 +1102,7 @@ describe("codex phase 5 pass 6 #1 — a delivery is found by its IDENTITY (a `:r
     });
   }
 
-  test("a retry of a batch that answered NOTHING (tool cards only) brings the answer in that bubble", async () => {
+  test("`on`: a retry of a batch that answered NOTHING (tool cards only) brings its answer in its own bubble", async () => {
     const t = convexTest({ schema, modules });
     const { chatId } = await seed(t, "on");
     await turnWithLaunch(t, chatId);
@@ -1066,18 +1112,25 @@ describe("codex phase 5 pass 6 #1 — a delivery is found by its IDENTITY (a `:r
       part: { kind: "tool", name: "exec", phase: "result", toolCallId: "c1" },
     } as never);
     await finish(t, mW, "");
-    expect(await start(t, chatId, W1R)).toBe(mW);
-    expect((await msg(t, mW)).status).toBe("streaming");
-    expect((await msg(t, mW)).runId).toBe(W1R);
+    await retryOwnBubble(t, chatId, mW);
   });
 
-  test("a retry racing its first attempt (still streaming) joins it, never a second bubble", async () => {
+  test("`on`: a retry racing its first attempt (still streaming) is another run — its own bubble", async () => {
     const t = convexTest({ schema, modules });
     const { chatId } = await seed(t, "on");
     await turnWithLaunch(t, chatId);
     const mW = (await start(t, chatId, W1))!;
-    expect(await start(t, chatId, W1R)).toBe(mW);
+    await retryOwnBubble(t, chatId, mW);
     expect((await msg(t, mW)).runId).toBe(W1);
+  });
+
+  test("`on`: a replay of the SAME attempt is handed its bubble back — one bubble per run", async () => {
+    const t = convexTest({ schema, modules });
+    const { chatId } = await seed(t, "on");
+    await turnWithLaunch(t, chatId);
+    const mW = (await start(t, chatId, W1))!;
+    await finish(t, mW, "SYNTHESE: fini.");
+    expect(await start(t, chatId, W1)).toBe(mW);
   });
 });
 
@@ -1167,9 +1220,11 @@ describe("codex phase 5 passes 7 and 15 — after a rollback, an own bubble is n
       const retry = `${W_B}:retry-1`;
       const landed = (await start(t, chatId, retry))!;
       expect(landed).not.toBe(mA);
-      // The retry resumes B's bubble — an own bubble since 0.96.0's path refused to merge it
-      // into A's (§14.27), found by its delivery's identity in either mode.
-      expect(landed).toBe(mB);
+      // Shadow: the retry resumes B's bubble — an own bubble since 0.96.0's path refused to
+      // merge it into A's (§14.27), found by its delivery's identity. `on` (final design
+      // step 4): the retry is another run — its own bubble, B's first one left as it is.
+      if (mode === "shadow") expect(landed).toBe(mB);
+      else expect(landed).not.toBe(mB);
       await t.mutation(internal.stream.appendDelta, { messageId: landed, text: "réponse B", expectedRunId: retry } as never);
       await t.mutation(internal.stream.finalize, { messageId: landed, status: "complete", text: "réponse B", expectedRunId: retry } as never);
       await untouchedA(t, mA);
@@ -1232,8 +1287,14 @@ describe("codex phase 5 pass 16 — a delivery refused a merge into an own bubbl
     await t.mutation(internal.stream.finalize, { messageId: mB, status: "complete", text: "réponse B", expectedRunId: retry } as never);
     expect((await bubblesOf(t, chatId, W_B)).map((m) => m._id)).toEqual([mB]);
     await setMode(t, "on");
-    expect(await start(t, chatId, `${W_B}:retry-2`)).toBe(mB);
-    expect((await bubblesOf(t, chatId, W_B)).map((m) => [m._id, m.text])).toEqual([[mB, "réponse B"]]);
+    // `on` (final design step 4): a further attempt is another run — its own bubble; B's
+    // answer stays where it landed.
+    const m2 = (await start(t, chatId, `${W_B}:retry-2`))!;
+    expect(m2).not.toBe(mB);
+    expect((await bubblesOf(t, chatId, W_B)).map((m) => [m._id, m.text])).toEqual([
+      [mB, "réponse B"],
+      [m2, ""],
+    ]);
     expect((await msg(t, mA)).text).toBe("résultat A");
   });
 
@@ -1482,16 +1543,32 @@ describe("codex phase 5 pass 9 #2 — many tool cards are not an answer", () => 
     await finish(t, mW, "");
     return { chatId, mW };
   }
-  test("65 tool cards, nothing delivered: the retry resumes the bubble to bring the answer", async () => {
+  // The answered probe decides a retry's landing outside `on` only (final design step 4:
+  // in `on` the retry opens its own bubble): exercised after a rollback.
+  const rollback = (t: T) =>
+    t.run(async (ctx) => {
+      const inst = (await ctx.db.query("instances").collect())[0]!;
+      await ctx.db.patch(inst._id, { config: { transcriptProjection: "shadow" } as never });
+    });
+  test("`on`: 65 tool cards, nothing delivered — the retry brings its answer in its own bubble", async () => {
     const t = convexTest({ schema, modules });
     const { chatId, mW } = await toolHeavy(t, false);
+    const mR = (await start(t, chatId, `${W1}:retry-1`))!;
+    expect(mR).not.toBe(mW);
+    expect((await msg(t, mW)).runId).toBe(W1);
+  });
+  test("65 tool cards, nothing delivered: the retry resumes the bubble to bring the answer (after a rollback)", async () => {
+    const t = convexTest({ schema, modules });
+    const { chatId, mW } = await toolHeavy(t, false);
+    await rollback(t);
     expect(await start(t, chatId, `${W1}:retry-1`)).toBe(mW);
     expect((await msg(t, mW)).status).toBe("streaming");
     expect((await msg(t, mW)).runId).toBe(`${W1}:retry-1`);
   });
-  test("…and a file beyond the first page of parts IS an answer: handed back unchanged", async () => {
+  test("…and a file beyond the first page of parts IS an answer: handed back unchanged (after a rollback)", async () => {
     const t = convexTest({ schema, modules });
     const { chatId, mW } = await toolHeavy(t, true);
+    await rollback(t);
     expect(await start(t, chatId, `${W1}:retry-1`)).toBe(mW);
     expect((await msg(t, mW)).status).toBe("complete");
     expect((await msg(t, mW)).runId).toBe(W1);

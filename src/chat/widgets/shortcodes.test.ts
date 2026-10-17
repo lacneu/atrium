@@ -9,6 +9,8 @@ import {
 } from "../../../bridge/src/providers/openclaw/widgets";
 import { convertConvexMessage } from "../convertMessage";
 import type { ConvexMessageView } from "../convexTypes";
+import { findCodeRegions as bridgeCodeRegions } from "../../../bridge/src/providers/openclaw/code-regions";
+import { findCodeRegions as spaCodeRegions } from "./codeRegions";
 import { findShortcodes, renderableText } from "./shortcodes";
 
 const VIEW = "cv_87c3b1326a2c47028d93b4c38e242832";
@@ -82,7 +84,17 @@ describe("parity with the bridge (the SPA reads the shortcodes the bridge reads)
     `[EMBED REF="${VIEW}" /]`,
     `[embed ref="${VIEW}" /][embed ref="${VIEW}" /]`,
     `no shortcode at all`,
+    // Codex review 4, finding 3 — CommonMark containers: a fence inside a block quote, an
+    // indented block inside a list item, a tab-indented block. Literal examples all.
+    `> ~~~text\n> [embed ref="${VIEW}" /]\n> ~~~`,
+    `- Example\n\n      [embed ref="${VIEW}" /]`,
+    `\t[embed ref="${VIEW}" /]`,
+    `> quoted prose [embed ref="${OTHER}" /]`,
   ];
+
+  it.each(CORPUS)("same code regions: %s", (text) => {
+    expect(spaCodeRegions(text)).toEqual(bridgeCodeRegions(text));
+  });
 
   it.each(CORPUS)("same views named: %s", (text) => {
     const bridge = extractCanvasShortcodes(text)

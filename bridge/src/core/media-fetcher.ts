@@ -138,8 +138,18 @@ export interface MediaFetcher {
    */
   open(
     path: string,
-    opts?: { rejectOlderThanMs?: number | null },
+    opts?: MediaOpenOptions,
   ): Promise<OpenResult>;
+}
+
+/** What a caller may ask of one open. */
+export interface MediaOpenOptions {
+  rejectOlderThanMs?: number | null;
+  /** PROJECTION `on` (final design step 2): the session the reference belongs to. The
+   *  gateway route binds its ticket and resolves a relative source against THAT session's
+   *  policy (src/gateway/control-ui.ts:458-526 at v2026.9.33) — the Control UI always names
+   *  it (ui/src/app/assistant-media.ts:5 `buildAssistantMediaUrl`). Absent: unchanged. */
+  sessionKey?: string;
 }
 
 // Minimal extension -> mime map for the file kinds the chat matrix exercises
@@ -208,7 +218,7 @@ export class LocalDirMediaFetcher implements MediaFetcher {
 
   async open(
     path: string,
-    opts?: { rejectOlderThanMs?: number | null },
+    opts?: MediaOpenOptions,
   ): Promise<OpenResult> {
     const filename = basename(path);
     // Defense in depth: the normalizer already rejected "..", but a bad basename

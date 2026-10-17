@@ -10,7 +10,11 @@
 // Nothing in this module writes anything: transcript-shadow.ts orchestrates the reads
 // and posts the result to Convex, which never edits a bubble in shadow mode.
 
+import { createHash } from "node:crypto";
+
 import { messageDisplayText, sanitizeDisplay } from "./normalizer.js";
+import { blocksBytes, rowBlocks, withoutBlockTexts, withoutToolPayloads, type RowBlock } from "./row-blocks.js";
+import { resolveToolCallId, resolveToolName, toolItemCallIds } from "./tool-call-id.js";
 
 const asRecord = (x: unknown): Record<string, unknown> | null =>
   typeof x === "object" && x !== null && !Array.isArray(x) ? (x as Record<string, unknown>) : null;
@@ -279,22 +283,27 @@ export function rowDisplayFacts(message: unknown): { hidden: boolean; visible: b
   return { hidden: silent || heartbeat, visible };
 }
 
-/** Tool call ids a row carries (`toolCallId` on a tool result, `id` on call blocks). */
-export function rowToolCallIds(message: unknown): string[] {
+/** Tool call ids a row carries, read by the ONE identity the tool blocks use
+ *  (tool-call-id.ts `resolveToolCallId`, upstream tool-cards.ts:224): the message's own on
+ *  a tool result (:499), each tool content item's — its id, its legacy `callId`, then the
+ *  message's — otherwise (:386, :409). */
+export function rowToolCallIds(message: unknown, rowKey?: string): string[] {
   const record = asRecord(message);
   if (record === null) return [];
   const out = new Set<string>();
-  const direct = projString(record.toolCallId) ?? projString(record.tool_call_id);
+  const meta = asRecord(record.__openclaw);
+  const key = rowKey ?? (typeof meta?.id === "string" && meta.id.trim() !== "" ? meta.id.trim() : "row");
+  const direct = resolveToolCallId({}, record);
+  const role = typeof record.role === "string" ? record.role.toLowerCase() : "";
+  if (role === "toolresult" || role === "tool_result" || role === "tool") {
+    // The row's one card, keyed as its block is (row-blocks.ts; tool-cards.ts:494-500).
+    out.add(direct ?? `${key}#${resolveToolName({}, record)}:0`);
+    return [...out];
+  }
   if (direct) out.add(direct);
   if (Array.isArray(record.content)) {
-    for (const block of record.content) {
-      const b = asRecord(block);
-      if (b === null) continue;
-      if (isToolCallType(b.type) || isToolResultType(b.type)) {
-        const id = projString(b.id) ?? projString(b.toolCallId) ?? projString(b.toolUseId);
-        if (id) out.add(id);
-      }
-    }
+    // The same pairing the tool blocks are keyed by (row-blocks.ts), id-less calls included.
+    for (const id of toolItemCallIds(record, record.content, key).values()) out.add(id);
   }
   return [...out].slice(0, 32);
 }
@@ -400,7 +409,124 @@ export type TranscriptRow = {
   /** PROJECTION `on` (phase 5): the sub-agents the row's run launched — set only when the
    *  read asked for what rows say (`spawnFacts`). */
   spawns?: SpawnFact[];
+  // PROJECTION `on` (final design §3.3-§3.5, step 1) — set only when the read asked for
+  // what rows say. Display facts: none of them decides where a row is placed.
+  /** What the row shows, in order: text, files, tool blocks (row-blocks.ts `rowBlocks`). */
+  blocks?: RowBlock[];
+  /** The row carried more blocks than MAX_ROW_BLOCKS: the first ones are kept. */
+  blocksTruncated?: true;
+  /** The gateway's display position (`__openclaw.transcriptPosition`, upstream
+   *  src/chat/transcript-display-position.ts) — the order the Control UI shows rows in. */
+  transcriptPosition?: TranscriptPosition;
+  /** What the row's idempotency key says it is (`idempotencyKindOf`). */
+  idempotencyKind?: IdempotencyKind;
+  /** `model === "delivery-mirror"`: a row the gateway wrote ON BEHALF of a run. */
+  deliveryMirror?: true;
+  stopReason?: string;
+  /** The row's own error text (`errorMessage`), sanitized like the text. */
+  errorMessage?: string;
+  /** `provenance.kind` / `provenance.sourceTool`, read-only diagnostics. */
+  provenanceKind?: string;
+  provenanceSourceTool?: string;
+  /** A STREAM SEGMENT the gateway split out of its transcript row (`streamSegmentEntryId`):
+   *  shown right before the row that owns it. */
+  streamSegment?: true;
+  /** Its place among the segments of the same row, as `chat.history` lists them — the
+   *  items' order (`projectAssistantCommentaryFallbacks`, codex review 10): what breaks the
+   *  tie between segments of one `seq`, never their identity. */
+  segmentOrder?: number;
 };
+
+/**
+ * THE STREAM SEGMENT'S OWN IDENTITY (projection `on`). `chat.history` splits an assistant
+ * row whose provider items carry commentary/segment text into an assistant message of its
+ * own, `openclawStreamFallback: {source: "segment", itemId}`, placed BEFORE the rest of the
+ * row — both with the row's `__openclaw` meta, same `id`, same `seq`
+ * (src/gateway/chat-display-projection.commentary.ts:96-125 at v2026.9.33). The Control UI
+ * shows both, and gives the segment a display identity of its own, its `itemId` — "a
+ * commentary item's display identity is separate from the transcript row that later owns
+ * it" (packages/gateway-client/src/session-projection-message-identity.ts:116-131). Keyed
+ * by the row's id alone, the second message overwrote the first: its text and its
+ * `MEDIA:` file were lost (bench run 2026-10-16T20-26-29-405Z, yield-settle-media). The
+ * segment's key is the row's id plus a digest of its item id (bounded: Convex keeps
+ * 128 characters of an entry id). Null for any other message.
+ */
+export function streamSegmentEntryId(message: unknown, rowId: string): string | null {
+  const record = asRecord(message);
+  if (projString(record?.role)?.toLowerCase() !== "assistant") return null;
+  const fallback = asRecord(record?.openclawStreamFallback);
+  if (fallback?.source !== "segment") return null;
+  const itemId = projString(fallback.itemId);
+  if (itemId === null) return null;
+  return `${rowId}:segment:${createHash("sha256").update(itemId).digest("hex").slice(0, 32)}`;
+}
+
+/** `__openclaw.transcriptPosition` (upstream src/chat/transcript-display-position.ts:36
+ *  `composeTranscriptDisplay` reads `{source, rawSeq, activity?}`). */
+export type TranscriptPosition = {
+  source: string;
+  rawSeq: number;
+  activity?: { afterRawSeq: number | null; scopeId: string; startOrder: number };
+};
+
+/** What an idempotency key names, by the shapes upstream mints:
+ *  `${runId}:message-tool:…` (src/agents/tools/message-tool-execution.ts:546),
+ *  `…:internal-source-reply:…` (message-tool.internal-source-reply.integration.test.ts:82),
+ *  `${runId}:user` (session-projection-message-identity.ts:43-46),
+ *  `${runId}:settled-finalization-fallback` (settled-turn-finalization.ts:608). */
+export type IdempotencyKind =
+  | "message-tool"
+  | "internal-source-reply"
+  | "user"
+  | "settled-finalization-fallback"
+  | "other";
+
+export function idempotencyKindOf(key: string | null): IdempotencyKind | null {
+  if (key === null) return null;
+  if (key.includes(":message-tool:")) return "message-tool";
+  if (key.includes(":internal-source-reply:")) return "internal-source-reply";
+  if (key.endsWith(":user")) return "user";
+  if (key.endsWith(":settled-finalization-fallback")) return "settled-finalization-fallback";
+  return "other";
+}
+
+const safeNonNegativeInt = (x: unknown): number | null =>
+  typeof x === "number" && Number.isSafeInteger(x) && x >= 0 ? x : null;
+
+/** The row's display position — upstream `readTranscriptDisplayPosition`
+ *  (src/chat/transcript-display-position.ts:24-34 at v2026.9.33): `source` 1-128 chars, a
+ *  non-negative `rawSeq`, an optional `activity` {`afterRawSeq` non-negative or null,
+ *  `scopeId` 1-1024 chars, `startOrder`}, refused whole when `afterRawSeq >= rawSeq`. */
+export function readTranscriptPosition(message: unknown): TranscriptPosition | null {
+  const position = asRecord(asRecord(asRecord(message)?.["__openclaw"])?.transcriptPosition);
+  if (position === null) return null;
+  const source = typeof position.source === "string" ? position.source : null;
+  const rawSeq = safeNonNegativeInt(position.rawSeq);
+  if (source === null || source.length < 1 || source.length > 128 || rawSeq === null) return null;
+  if (position.activity === undefined) return { source, rawSeq };
+  const activity = asRecord(position.activity);
+  const afterRawSeq = activity?.afterRawSeq === null ? null : safeNonNegativeInt(activity?.afterRawSeq);
+  const scopeId = typeof activity?.scopeId === "string" ? activity.scopeId : null;
+  const startOrder = safeNonNegativeInt(activity?.startOrder);
+  if (
+    activity === null ||
+    (afterRawSeq === null && activity.afterRawSeq !== null) ||
+    scopeId === null ||
+    scopeId.length < 1 ||
+    scopeId.length > 1024 ||
+    startOrder === null ||
+    (afterRawSeq !== null && afterRawSeq >= rawSeq)
+  ) {
+    return null;
+  }
+  return { source, rawSeq, activity: { afterRawSeq, scopeId, startOrder } };
+}
+
+/** Most an error text keeps (UTF-8 bytes); a longer one is not sent (never cut). */
+export const ROW_ERROR_MAX_BYTES = 4096;
+/** The custom row type the gateway writes when a run ends before a reply
+ *  (src/sessions/session-run-error.ts:15 at v2026.9.33). */
+export const RUN_FAILED_BEFORE_REPLY = "run-failed-before-reply";
 
 /** PROJECTION `on` (phase 4): read what a row SAYS, for the session it belongs to. */
 export type RowDisplay = { sessionKey: string };
@@ -448,9 +574,10 @@ export function toTranscriptRow(
   const id = readTranscriptIdentity(message, envelope);
   if (id === null || id.isImported || id.id === null || id.seq === null) return null;
   const facts = rowDisplayFacts(message);
-  const toolCallIds = rowToolCallIds(message);
+  const toolCallIds = rowToolCallIds(message, id.id);
   let runId = id.runId;
-  let shown: { text?: string; yieldAck?: string } = {};
+  let shown: { text?: string; yieldAck?: string; errorMessage?: string; blocks?: RowBlock[] } = {};
+  let content: ContentFacts = {};
   // Launches are a fact about the row's RUN: only a row attributed to one states any.
   const spawns = display !== undefined && id.runId !== null && id.role !== "user" ? spawnFacts(message) : [];
   if (display !== undefined && id.role === "assistant") {
@@ -469,9 +596,47 @@ export function toTranscriptRow(
     if (ack !== null && utf8Length(shown.text ?? "") + utf8Length(ack) <= ROW_TEXT_MAX_BYTES) {
       shown = { ...shown, yieldAck: ack };
     }
+    const error = typeof record.errorMessage === "string" ? sanitizeDisplay(record.errorMessage, display.sessionKey) : "";
+    // The error text only while it fits beside the text and acknowledgment (never cut).
+    if (
+      error.trim() !== "" &&
+      utf8Length(error) <= ROW_ERROR_MAX_BYTES &&
+      rowContentBytes({ ...shown, errorMessage: error }) <= ROW_TEXT_MAX_BYTES
+    ) {
+      shown = { ...shown, errorMessage: error };
+    }
   }
+  // THE ROW THAT STATES A RUN'S FAILURE (final design step 4, « l'erreur vient de la
+  // ligne »): the gateway appends a `custom` row `run-failed-before-reply` whose content is
+  // the public summary (src/sessions/session-run-error.ts:35-62 at v2026.9.33), projected
+  // with its run (`GW/chat-display-projection.state-contention.test.ts:5`: `content`,
+  // `__openclaw.runId`, raw diagnostics never) — the row the Control UI shows as the error
+  // (ui/src/pages/chat/components/chat-message-group.ts:410-425). Its text is carried as
+  // the row's error text, bounded like any other.
+  if (display !== undefined && id.role === "custom" && asRecord(message)?.customType === RUN_FAILED_BEFORE_REPLY) {
+    const error = sanitizeDisplay(blockText(asRecord(message)!.content), display.sessionKey);
+    if (error.trim() !== "" && utf8Length(error) <= ROW_ERROR_MAX_BYTES) shown = { errorMessage: error };
+  }
+  if (display !== undefined) {
+    content = contentFacts(message, id.idempotencyKey);
+    // Blocks for the rows the Control UI shows content of: assistant rows, tool results and
+    // nested-tool rows — never a hidden one (`NO_REPLY`, heartbeat acknowledgment).
+    const role = id.role;
+    if (!facts.hidden && (role === "assistant" || role === "toolresult" || role === "tool_result" || role === "tool" || role === "custom")) {
+      // KNOWN BUT EMPTY is a fact, never "absent" (codex review 4, finding 2): a row whose
+      // whole text is inbound metadata normalizes to nothing (`stripMessageDisplayMetadata`,
+      // message-normalizer.ts:368) and shows nothing — its raw text is never the fallback.
+      // Only a row with no `blocks` at all (a 0.100.1 bridge) falls back to its text.
+      const { blocks, truncated } = rowBlocks(message, display.sessionKey, id.id);
+      shown = boundRowContent({ ...shown, blocks });
+      if (truncated) content = { ...content, blocksTruncated: true };
+    }
+  }
+  // Projection `on` only: off/shadow keep the identities they always stored.
+  const segmentId = display !== undefined ? streamSegmentEntryId(message, id.id) : null;
   return {
-    entryId: id.id,
+    entryId: segmentId ?? id.id,
+    ...(segmentId !== null ? { streamSegment: true as const } : {}),
     seq: id.seq,
     role: id.role,
     ...(runId === null ? {} : { runId }),
@@ -484,7 +649,82 @@ export function toTranscriptRow(
     ...(toolCallIds.length > 0 ? { toolCallIds } : {}),
     ...shown,
     ...(spawns.length > 0 ? { spawns } : {}),
+    ...content,
   };
+}
+
+/** The identity facts a row states beside what it shows (projection `on`). */
+type ContentFacts = Pick<
+  TranscriptRow,
+  | "transcriptPosition"
+  | "idempotencyKind"
+  | "deliveryMirror"
+  | "stopReason"
+  | "provenanceKind"
+  | "provenanceSourceTool"
+  | "blocksTruncated"
+>;
+
+const shortString = (x: unknown, max: number): string | null => {
+  const s = projString(x);
+  return s !== null && s.length <= max ? s : null;
+};
+
+function contentFacts(message: unknown, idempotencyKey: string | null): ContentFacts {
+  const record = asRecord(message);
+  const position = readTranscriptPosition(message);
+  const kind = idempotencyKindOf(idempotencyKey);
+  const stopReason = shortString(record?.stopReason, 32);
+  const provenance = asRecord(record?.provenance);
+  const provenanceKind = shortString(provenance?.kind, 64);
+  const sourceTool = shortString(provenance?.sourceTool, 64);
+  return {
+    ...(position !== null ? { transcriptPosition: position } : {}),
+    ...(kind !== null ? { idempotencyKind: kind } : {}),
+    ...(projString(record?.model) === "delivery-mirror" ? { deliveryMirror: true as const } : {}),
+    ...(stopReason !== null ? { stopReason } : {}),
+    ...(provenanceKind !== null ? { provenanceKind } : {}),
+    ...(sourceTool !== null ? { provenanceSourceTool: sourceTool } : {}),
+  };
+}
+
+/** What a row's content weighs against ROW_TEXT_MAX_BYTES: text, acknowledgment, error text
+ *  and blocks (their JSON). Mirrored by convex/lib/transcriptProjection.ts `rowContentBytes`. */
+export function rowContentBytes(r: {
+  text?: string;
+  yieldAck?: string;
+  errorMessage?: string;
+  blocks?: readonly RowBlock[];
+}): number {
+  return (
+    utf8Length(r.text ?? "") +
+    utf8Length(r.yieldAck ?? "") +
+    utf8Length(r.errorMessage ?? "") +
+    blocksBytes(r.blocks ?? [])
+  );
+}
+
+/**
+ * Bound one row's content under ROW_TEXT_MAX_BYTES, never by cutting a text:
+ *   1. everything when it fits;
+ *   1b. else the tool blocks lose their arguments and results, marked cut with their size;
+ *   2. else the blocks lose their text segments (`omitted`) — a row's FILES and TOOL blocks
+ *      are never dropped for the size of its text;
+ *   3. else (the text alone leaves no room for them) the text, acknowledgment and error text
+ *      go — exactly what an over-bound text always did (its bubble keeps the live text).
+ * Mirrored by convex/lib/transcriptProjection.ts `boundRowContent`.
+ */
+export function boundRowContent<
+  R extends { text?: string; yieldAck?: string; errorMessage?: string; blocks?: RowBlock[] },
+>(r: R): R {
+  if (r.blocks === undefined || rowContentBytes(r) <= ROW_TEXT_MAX_BYTES) return r;
+  // 2. the tool payloads go first (codex review 11): the cards stay, marked cut.
+  const lean = { ...r, blocks: withoutToolPayloads(r.blocks) };
+  if (rowContentBytes(lean) <= ROW_TEXT_MAX_BYTES) return lean;
+  const stripped = { ...r, blocks: withoutBlockTexts(withoutToolPayloads(r.blocks)) };
+  if (rowContentBytes(stripped) <= ROW_TEXT_MAX_BYTES) return stripped;
+  const { text: _t, yieldAck: _a, errorMessage: _e, ...rest } = stripped;
+  return rest as R;
 }
 
 export type HistoryRead = {
@@ -509,7 +749,31 @@ export type HistoryRead = {
   /** Receipts the reply carried but Atrium could not interpret (an unknown `state`,
    *  protocol drift): the ids are OBSERVED, never absent. */
   unreadableReceipts: UnreadableReceipts;
+  /** Projection `on` only: the session's LAST run, when it ended failed or timed out, with
+   *  the error the gateway recorded (`sessionInfo.lastRunId/status/lastRunError`). */
+  lastRunFailure?: LastRunFailure;
 };
+
+/** THE RUN'S OWN ERROR (final design step 4). A run that failed with nothing written is
+ *  shown by the gateway's `run-failed-before-reply` row; one that wrote anything first —
+ *  the embedded runner always appends its `aborted` assistant row, so this is the common
+ *  case (bench 2026-10-16, a run timeout: `stopReason: "aborted"`, empty) — has no such
+ *  row, and the Control UI takes the terminal's error from the session row:
+ *  `failureMessage ?? sessionInfo.lastRunError` for a failed/timeout status
+ *  (ui/src/pages/chat/chat-history-stream.ts:233-247 at v2026.9.33). Bounded. */
+export type LastRunFailure = { runId: string; status: "failed" | "timeout"; error: string };
+export const LAST_RUN_ERROR_MAX_CHARS = 1024;
+
+function readLastRunFailure(payload: Record<string, unknown>, display: RowDisplay): LastRunFailure | undefined {
+  const info = asRecord(payload.sessionInfo);
+  const runId = normalizeRunId(info?.lastRunId);
+  const status = info?.status;
+  const raw = projString(info?.lastRunError);
+  if (runId === null || (status !== "failed" && status !== "timeout") || raw === null) return undefined;
+  const error = sanitizeDisplay(raw, display.sessionKey).trim();
+  if (error === "" || error.length > LAST_RUN_ERROR_MAX_CHARS) return undefined;
+  return { runId, status, error };
+}
 
 export type UnreadableReceipts = {
   /** Ids of receipts whose state is not one Atrium knows. */
@@ -717,9 +981,21 @@ export function parseHistoryReply(payload: unknown, display?: RowDisplay): Histo
     if (row === null) unidentified++;
     else rows.push(row);
   }
+  // The segments of one row, in the order the read lists them (codex review 10).
+  const segmentsSeen = new Map<string, number>();
+  for (const row of rows) {
+    if (row.streamSegment !== true) continue;
+    const at = row.entryId.indexOf(":segment:");
+    const owner = at < 0 ? row.entryId : row.entryId.slice(0, at);
+    const n = segmentsSeen.get(owner) ?? 0;
+    row.segmentOrder = n;
+    segmentsSeen.set(owner, n + 1);
+  }
   const info = readSessionInfo(p);
+  const lastRunFailure = display !== undefined ? readLastRunFailure(p, display) : undefined;
   return {
     kind: delta ? "delta" : "page",
+    ...(lastRunFailure !== undefined ? { lastRunFailure } : {}),
     rows,
     unidentified,
     deltaCursor: typeof p.deltaCursor === "string" && p.deltaCursor !== "" ? p.deltaCursor : null,

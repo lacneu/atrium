@@ -228,7 +228,9 @@ const ROWS: Record<string, Row> = {
       expect(got.bubbles.length).toBe(v096.bubbles.length);
     },
   },
-  // L8b — the same for a settle batch's bubble that ended in ERROR: its `:retry-1` resumes it.
+  // L8b — the same for a settle batch's bubble that ended in ERROR. FINAL DESIGN STEP 4: in
+  // `on` its `:retry-1` is another run — its OWN bubble; the failed attempt's is left as it
+  // is (no more `resumeOwnDelivery` across attempts in `on`).
   "L8b standalone 0.96.0 settle bubble · error, retry resumes": {
     kind: "fixed",
     run: async () => {
@@ -237,14 +239,16 @@ const ROWS: Record<string, Row> = {
     },
     fixed: (got, v096) => {
       expect(v096.landed).toBe("P");
-      expect(got.landed).toBe("D");
+      expect(got.landed).toBe("new");
       expect(got.bubbles.find((b) => b.id === "P")).toMatchObject({ status: "complete", runId: "run2", text: "r2" });
-      expect(got.bubbles.find((b) => b.id === "D")).toMatchObject({ status: "streaming", runId: WR, replayArmed: true });
-      expect(got.bubbles.length).toBe(v096.bubbles.length);
+      expect(got.bubbles.find((b) => b.id === "D")).toMatchObject({ status: "error", runId: W, text: "SYNTH" });
+      expect(got.bubbles.find((b) => b.id === "new")).toMatchObject({ status: "streaming", runId: WR });
+      expect(got.bubbles.length).toBe(v096.bubbles.length + 1);
     },
   },
-  // L8c — a settle batch's bubble ANSWERED by its first retry, then a second retry: handed
-  // back (found through the first retry's run → bubble record).
+  // L8c — a settle batch's bubble ANSWERED by its first retry, then a second retry. FINAL
+  // DESIGN STEP 4: in `on` the second retry is another run — its own bubble; the answer
+  // stays where it was.
   "L8c standalone 0.96.0 settle bubble · answered, second retry": {
     kind: "fixed",
     run: async () => {
@@ -253,10 +257,11 @@ const ROWS: Record<string, Row> = {
     },
     fixed: (got, v096) => {
       expect(v096.landed).toBe("P");
-      expect(got.landed).toBe("D");
+      expect(got.landed).toBe("new");
       expect(got.bubbles.find((b) => b.id === "P")).toMatchObject({ status: "complete", runId: "run2", text: "r2" });
-      expect(got.bubbles.find((b) => b.id === "D")).toMatchObject({ status: "complete", runId: WR, text: "SYNTHESE: fini.", replayArmed: true });
-      expect(got.bubbles.length).toBe(v096.bubbles.length);
+      expect(got.bubbles.find((b) => b.id === "D")).toMatchObject({ status: "complete", runId: WR, text: "SYNTHESE: fini." });
+      expect(got.bubbles.find((b) => b.id === "new")).toMatchObject({ status: "streaming", runId: `${W}:retry-2` });
+      expect(got.bubbles.length).toBe(v096.bubbles.length + 1);
     },
   },
   // L9 — after L3's reopen, the retry ends with nothing more: 0.96.0's verdict on the

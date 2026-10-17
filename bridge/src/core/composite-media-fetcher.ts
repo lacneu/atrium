@@ -27,6 +27,7 @@ import { sep } from "node:path";
 import {
   GENERATED_MEDIA_SUBDIRS,
   type MediaFetcher,
+  type MediaOpenOptions,
   type OpenResult,
 } from "./media-fetcher.js";
 
@@ -93,7 +94,7 @@ export class CompositeMediaFetcher implements MediaFetcher {
 
   async open(
     path: string,
-    opts?: { rejectOlderThanMs?: number | null },
+    opts?: MediaOpenOptions,
   ): Promise<OpenResult> {
     const first = await this.primary.open(path, opts);
     if (first.ok || first.reason !== "not_in_this_mount") return first;

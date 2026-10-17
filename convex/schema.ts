@@ -20,6 +20,7 @@ import { v } from "convex/values";
 import { authTables } from "@convex-dev/auth/server";
 import { instanceConfigValidator } from "./lib/instanceConfig";
 import { snapshotRegressionValidator } from "./lib/snapshotRegression";
+import { rowBlockValidator, transcriptPositionValidator } from "./lib/transcriptContent";
 import {
   agentRequestAnswerValidator,
   agentRequestApprovalValidator,
@@ -51,6 +52,16 @@ export const messagePart = v.union(
     phase: v.string(),
     input: v.optional(v.any()),
     output: v.optional(v.any()),
+    // PROJECTION `on`: a card rebuilt from transcript rows whose arguments / result the row's
+    // content budget left out — the size they had, shown like a live part over the read cap
+    // (convex/messages.ts `inputOmitted`/`outputOmitted`; codex review 11).
+    inputOmittedBytes: v.optional(v.number()),
+    outputOmittedBytes: v.optional(v.number()),
+    // PROJECTION `on`: the arguments came from a transcript row, not the live stream. The
+    // tool card then masks them AT DISPLAY exactly as the Control UI masks history
+    // (ui/src/lib/browser-redact.ts; src/chat/toolActivityView.ts `toolCardDisplay`, codex
+    // review 15). A live part never carries it: it shows as the gateway sent it.
+    inputFromTranscript: v.optional(v.boolean()),
     // Provider tool-call id (OpenClaw native; Hermes synthetic) — the addPart
     // UPSERT key, so a start and its completed collapse into ONE part. Absent
     // on legacy parts and the `message` pseudo-tool (append-only path).
@@ -2224,6 +2235,79 @@ export default defineSchema({
     // bubbles of one delegation chain show as one (convex/lib/delegationChain.ts). A
     // recomputable CACHE (displayGroups.regroup), never a decision: absent = shown alone.
     displayGroupId: v.optional(v.string()),
+    // PROJECTION `on` (final design §3.4, step 3): how this bubble shows its transcript rows
+    // — each row's span in `text`, then its files (by block index / artifact id, resolved
+    // through `transcriptFiles`), then its tool blocks — in the gateway's display order
+    // (lib/bubbleProjection.ts `composeBubble`). Written with the composed text; absent on
+    // every bubble the rows never composed (they keep the text + parts rendering).
+    rowLayout: v.optional(
+      v.array(
+        v.object({
+          entryId: v.string(),
+          start: v.number(),
+          end: v.number(),
+          files: v.optional(
+            v.array(
+              v.object({
+                blockIndex: v.number(),
+                artifactId: v.optional(v.string()),
+                // A remote https reference, shown as is (never copied): its URL and facts.
+                remoteUrl: v.optional(v.string()),
+                label: v.optional(v.string()),
+                mimeType: v.optional(v.string()),
+              }),
+            ),
+          ),
+          // The row's blocks are known (a bridge that sends them): its tool cards are the
+          // row's own. Absent: an older bridge sent text only — the live cards stay shown.
+          blocks: v.optional(v.boolean()),
+          // The row as its blocks, in order: text spans of the bubble's text and file block
+          // indexes ("Intro", image, "Outro", audio). Absent: the span, then the files.
+          items: v.optional(
+            v.array(
+              v.union(
+                v.object({ kind: v.literal("text"), start: v.number(), end: v.number() }),
+                v.object({ kind: v.literal("file"), blockIndex: v.number() }),
+              ),
+            ),
+          ),
+          tools: v.optional(
+            v.array(
+              v.object({
+                toolCallId: v.string(),
+                name: v.optional(v.string()),
+                status: v.union(v.literal("call"), v.literal("result"), v.literal("error")),
+              }),
+            ),
+          ),
+          // The inline widgets the row names (a managed canvas document), with the carrier
+          // that named it: `tool` (the session's own `show_widget` result) registers the
+          // view to the conversation; the others are shown only for a registered view
+          // (lib/rowParts.ts `syncBubbleRowParts`).
+          widgets: v.optional(
+            v.array(
+              v.object({
+                viewId: v.string(),
+                title: v.optional(v.string()),
+                preferredHeight: v.optional(v.number()),
+                origin: v.union(v.literal("tool"), v.literal("canvas"), v.literal("shortcode")),
+              }),
+            ),
+          ),
+          // On the LAST row only: what the layout left out past its bounds (lib/
+          // bubbleProjection.ts `LAYOUT_MAX_*`), counted — shown as such, never laid out
+          // without its facts.
+          cut: v.optional(
+            v.object({
+              rows: v.optional(v.number()),
+              files: v.optional(v.number()),
+              tools: v.optional(v.number()),
+              widgets: v.optional(v.number()),
+            }),
+          ),
+        }),
+      ),
+    ),
     // ASSISTANT rows a DELIVERY run (announce / requester-settle / background task)
     // opened as its OWN bubble on a projected instance, instead of reopening its parent
     // (phase 5): the empty-delivery verdict of the merge path does not apply to it.
@@ -2608,9 +2692,41 @@ export default defineSchema({
     // `migrations.moveTranscriptRowTexts`. Remove once no deployment holds them.
     text: v.optional(v.string()),
     yieldAck: v.optional(v.string()),
+    // PROJECTION `on` (final design step 1, lib/transcriptContent.ts): display facts the
+    // row states beside its identity — never written for an `off`/`shadow` conversation,
+    // and none of them decides where the row is placed. The gateway's display position
+    // (`__openclaw.transcriptPosition`, the order the Control UI shows rows in); what its
+    // idempotency key names (`message-tool`, `internal-source-reply`, `user`, …); a row
+    // the gateway wrote on behalf of a run (`model: "delivery-mirror"`); its stop reason;
+    // and its provenance (`kind`/`sourceTool`, read-only diagnostics).
+    transcriptPosition: v.optional(transcriptPositionValidator),
+    idempotencyKind: v.optional(v.string()),
+    deliveryMirror: v.optional(v.boolean()),
+    stopReason: v.optional(v.string()),
+    provenanceKind: v.optional(v.string()),
+    provenanceSourceTool: v.optional(v.string()),
+    // A stream segment `chat.history` split out of its transcript row (same id and seq,
+    // `openclawStreamFallback.source: "segment"`): keyed apart, shown before its owner.
+    streamSegment: v.optional(v.boolean()),
+    // Its place among the segments of the same row (`chat.history`'s order, else arrival):
+    // what orders segments of one `seq` (codex review 10).
+    segmentOrder: v.optional(v.number()),
+    // Set by Convex (`on`): the row named no run, and `runId` is its PRESENTATION OWNER —
+    // the run it is shown with (convex/transcriptProjection.ts `presentationOwnerOf`).
+    presentationOwner: v.optional(v.boolean()),
+    // PROJECTION `on` (final design §3.3, step 4): a row so far seen ONLY live
+    // (`session.message`), never by a durable read — and, once a durable read that covers
+    // its position (a tail page or a delta spanning its `seq`) did not return it, RETRACTED:
+    // never rendered (`hidden` set with it), as the Control UI drops it when it reloads the
+    // history (the ephemeral `aborted` row of a yielded run, seq reused by the durable
+    // entry). A durable read of the same `entryId` always replaces it (both cleared).
+    liveOnly: v.optional(v.literal(true)),
+    retracted: v.optional(v.literal(true)),
     updatedAt: v.number(),
   })
     .index("by_chat_session_entry", ["chatId", "sessionKey", "entryId"])
+    // …the rows still seen only live, by position: what a covering durable read checks.
+    .index("by_chat_session_live", ["chatId", "sessionKey", "liveOnly", "sessionId", "seq"])
     .index("by_chat_session_seq", ["chatId", "sessionKey", "sessionId", "seq"])
     .index("by_chat_run", ["chatId", "runId"])
     .index("by_chat_send", ["chatId", "sendId"])
@@ -2633,12 +2749,69 @@ export default defineSchema({
     rowId: v.id("transcriptRows"),
     text: v.optional(v.string()),
     yieldAck: v.optional(v.string()),
+    // PROJECTION `on` (final design step 1): the rest of what the row SHOWS, under the
+    // same 768 KiB budget as its text (lib/transcriptContent.ts `boundRowContent`) — its
+    // ordered blocks (text segments, files, tool blocks, as the Control UI's
+    // `normalizeMessage` reads the row) and its own error text. The design names this
+    // document "transcriptRowContent"; the table keeps its name (a rename is a data
+    // migration of every `on` deployment, out of this step).
+    blocks: v.optional(v.array(rowBlockValidator)),
+    blocksTruncated: v.optional(v.boolean()),
+    errorMessage: v.optional(v.string()),
     updatedAt: v.number(),
   })
     // The text of one row (the projection reads it only for the rows it composes).
     .index("by_row", ["rowId"])
     // The chat purge.
     .index("by_chat", ["chatId"]),
+
+  // THE FILES TRANSCRIPT ROWS CARRY, COPIED ONCE (projection `on`, final design §3.5,
+  // step 2 — convex/transcriptFiles.ts). One document per file block of a stored row,
+  // identified as the Control UI identifies it — never by name, path or content:
+  //   - a gateway-managed file by (instance, session, artifactId): a replay with the same
+  //     idempotency key keeps the same artifact id upstream, so it is ONE copy;
+  //   - any other reference (a `MEDIA:` line) by (row, block index).
+  // Two rows carrying the same file are two documents and two copies, like the Control UI
+  // shows two attachments. `pending` until the bridge copies the bytes into storage
+  // (`copied`, with the sha256 of what streamed), or the gateway says it no longer has it
+  // (`gone`), or it can never be copied (`refused`: over the size cap, media disabled, a
+  // remote or unsupported source). `mediaSource` is a gateway-side reference: never
+  // returned to a browser. Written only for an `on` conversation; purged with the chat.
+  transcriptFiles: defineTable({
+    chatId: v.id("chats"),
+    instanceName: v.string(),
+    sessionKey: v.string(),
+    entryId: v.string(),
+    blockIndex: v.number(),
+    artifactId: v.optional(v.string()),
+    mediaSource: v.optional(v.string()),
+    kind: v.string(),
+    mimeType: v.optional(v.string()),
+    sizeBytes: v.optional(v.number()),
+    label: v.optional(v.string()),
+    state: v.union(v.literal("pending"), v.literal("copied"), v.literal("gone"), v.literal("refused")),
+    // Why a file is `gone` or `refused`, or why its last attempt failed (a closed code).
+    reason: v.optional(v.string()),
+    storageId: v.optional(v.id("_storage")),
+    sha256: v.optional(v.string()),
+    attempts: v.number(),
+    // A `pending` file is handed to the bridge again from this time (resume).
+    nextAttemptAt: v.optional(v.number()),
+    updatedAt: v.number(),
+  })
+    // The logical uniqueness of a managed file (and its chat, so a purge never reaches
+    // another conversation's copy).
+    .index("by_instance_session_artifact", ["instanceName", "sessionKey", "artifactId", "chatId"])
+    // A row's files, in block order (the identity of a non-managed reference).
+    .index("by_chat_entry", ["chatId", "entryId", "blockIndex"])
+    // The resume sweep, PER INSTANCE and by due time (codex review 17): an instance whose
+    // copies keep failing never holds back another's. A record with no due time (a copy
+    // carried by an import or a fork, which no gateway here can make) is never due.
+    .index("by_instance_state_next", ["instanceName", "state", "nextAttemptAt"])
+    // A session's files still to copy, handed back by each read of that session.
+    .index("by_chat_session_state", ["chatId", "sessionKey", "state", "nextAttemptAt"])
+    // A blob's holder (lib/blobs.blobReference).
+    .index("by_storage", ["storageId"]),
 
   // DELETED BUBBLES, by what the transcript knows them as (projection `on`, phase 4): the
   // run and steer segment a bubble showed, in its session. Written when a person deletes a
@@ -2745,6 +2918,10 @@ export default defineSchema({
     // A terminal frame came for this run carrying no message (Control UI recovery case).
     emptyFinal: v.optional(v.boolean()),
     terminalAt: v.optional(v.number()),
+    // Projection `on` (final design step 4): the error the gateway recorded for this run
+    // when it ended failed / timed out (`sessionInfo.lastRunError` of a durable read) —
+    // the terminal error the Control UI shows when no failure row exists.
+    errorText: v.optional(v.string()),
     // Proof of the delegation chain (later phases); unset in phase 1.
     parentRunId: v.optional(v.string()),
     firstSeq: v.optional(v.number()),
@@ -2809,6 +2986,8 @@ export default defineSchema({
     // lands later merges its rows and changes nothing else; `staleReads` counts them.
     lastReadAt: v.optional(v.number()),
     staleReads: v.optional(v.number()),
+    // Live-only rows a covering durable read retracted (`on`, final design step 4).
+    retractedRows: v.optional(v.number()),
     lastSeq: v.optional(v.number()),
     lastKind: v.union(v.literal("page"), v.literal("delta"), v.literal("reset")),
     // The gateway's active runs at the last read (`sessionInfo.activeRunIds`, bounded).
@@ -2989,10 +3168,19 @@ export default defineSchema({
     // Written by every widget-part writer; older rows are backfilled from the widget
     // registry (widgets.backfillWidgetPartViewIds). Absent on every other kind.
     widgetViewId: v.optional(v.string()),
+    // PROJECTION `on` (final design step 3): the transcript file this file/media part shows
+    // — a part DERIVED from a `transcriptFiles` copy for the bubble of the row that carries
+    // it (lib/rowParts.ts), so the viewer, the files list, the archive and the trash keep
+    // reading parts. Absent on every other part.
+    transcriptFileId: v.optional(v.id("transcriptFiles")),
+    // PROJECTION `on`: a WIDGET part derived from the bubble's transcript rows (not posted
+    // live) — it exists only while the current rows name its view (lib/rowParts.ts).
+    transcriptWidget: v.optional(v.boolean()),
   })
     .index("by_message", ["messageId"])
     .index("by_storage", ["storageId"])
-    .index("by_messageId_and_widgetViewId", ["messageId", "widgetViewId"]),
+    .index("by_messageId_and_widgetViewId", ["messageId", "widgetViewId"])
+    .index("by_transcript_file", ["transcriptFileId", "messageId"]),
 
   // SUB-AGENT observation store (increment 1 of the sub-agent monitor). A chat's
   // agent can spawn an isolated child via the gateway `sessions_spawn` tool; the

@@ -12,6 +12,158 @@
   Keep the rest of the dependency graph unchanged. Reject high and critical
   application dependency advisories in both Node CI jobs before merge.
 
+## [0.101.0] — The transcript decides what a reply shows, and OpenClaw 2026.9.33
+
+Minor release. With the transcript projection switched `on` for an instance, a reply is now
+rendered from the gateway's own transcript rows — its text, its files and its tool cards —
+exactly as the OpenClaw Control UI shows them. OpenClaw 2026.9.33, the extended-stable
+release, is supported, validated on the live bench alongside Hermes 0.21.7. Convex, the
+frontend and the bridge all change. Deploy them in that order: **Convex first, then the
+frontend, then the bridge.** Nothing changes for an instance until its projection is
+switched on (`transcriptProjection: on` in the instance's configuration); `off` and `shadow`
+behave exactly as in 0.100.1.
+
+**Files sent during a delegation are no longer lost.** When an agent delegated a task, waited
+for it, and then sent its result through the `message` tool — a case reported in production
+in October — the first message and its file never reached the conversation: only the closing
+summary did. They existed in the gateway's transcript only. With the projection `on`, Atrium
+reads that transcript: both messages are shown, and the file appears under the message that
+sent it.
+
+**Every file of a reply is copied once, from the gateway, by its identity.** A file the
+transcript names is fetched through the gateway's own download (`artifacts.download`) for a
+managed file, or its media route for a `MEDIA:` reference, and stored once with its checksum.
+Nothing is taken any more from the live stream, the outbound folder or a sub-agent's delivery
+while the projection is `on`. A file the gateway no longer holds, or one over the size limit,
+is shown as such ("file expired on the gateway", "file too large") instead of disappearing.
+Copies interrupted by a restart are resumed automatically, instance by instance: an
+unreachable gateway no longer holds back the copies of the others. A copy reported twice, for example
+after a network retry, keeps its file, and a failure reported after a successful copy changes
+nothing. A file appears under its message as soon as its
+copy is made, while the reply is still being written. An `https:` reference in a reply is
+shown from its address, as the Control UI shows it; Atrium never downloads it.
+
+**A reply is shown row by row.** Each row of the transcript appears in the order the gateway
+displays it: its text, the files it carries just below, then its tool cards. A reply born
+from the transcript alone — a delegated result, a run the browser never followed live — is
+complete, with its files and its cards. A run that only used tools is shown by its cards. A
+row the gateway wrote without naming a run stays visible next to the reply it follows. A retry
+(`:retry-N`) gets its own bubble in the delegation's group instead of overwriting the previous
+attempt.
+
+**No duplicate on screen.** When the same file is sent twice in one delegation chain (two
+messages, two gateway copies of the same bytes), or a message only repeats one already shown,
+the reader sees it once. Both are still stored; only the display withholds the repeat, and
+`diagnose_chat` names every withheld item.
+
+**Errors come from the transcript.** A run that fails or times out shows the error the gateway
+recorded for it ("Request timed out before a response was generated…"), even when the live
+stream carried no text.
+
+**A row the gateway never kept is not shown.** A row published live but absent from the
+transcript once it is read again (an aborted attempt the gateway discarded) is withdrawn, and
+a bubble made only of such rows goes with it. `diagnose_chat` counts them.
+
+**OpenClaw 2026.9.33 is supported.** It is cut from 2026.9.9 and carries fixes only. Its
+protocol package and event catalogues are identical to 2026.9.9, and Atrium reads it exactly as
+it reads 2026.9.9: same features, same behaviour. An instance on 2026.9.33 no longer shows the
+"newer than validated" notice. Despite its number, 2026.9.33 is not older than 2026.9.9:
+Atrium compares versions by number, so it counts as the newer one. The OpenClaw 2026.10 releases
+are newer still and not yet validated, so they keep the notice. Upgrading a gateway from 2026.9.9
+to 2026.9.33 needed no migration of its stored state on the bench: the gateway started on the
+existing state as is.
+
+**Models.** OpenAI no longer serves `gpt-5.5` to Codex sign-ins made with a ChatGPT account:
+every turn then fails with "The 'gpt-5.5' model is not supported when using Codex with a
+ChatGPT account". This is independent of Atrium and of the gateway version. A gateway, an agent
+or a Hermes preset (including Hermes' mixture-of-agents models) still set to `gpt-5.5` must be
+moved to a model the account serves; the bench now runs on `gpt-6.1-sol`.
+
+**A reply reads the same however it reached Atrium.** A reply and the delivery notice that
+follows it are shown together and complete, whether the bridge sent their text in one post or
+in several, in either order. Before, a notice with no run of its own could lose its text and
+hide the whole reply until the next reload.
+
+**What the transcript says shows as soon as it arrives.** While a reply is still running, its
+cards, files and widgets already follow the transcript. A tool the transcript reports as
+failed shows as failed, even if the live stream left it "running". A remote image appears
+right away, not at the end of the reply. A widget appears as soon as its result is in the
+transcript. The messages the transcript already holds, a delivery notice included, show at
+once in their place. Only the message still being written comes from the live stream, and it
+is never shown twice, a progress note included, and several progress notes of one message
+keep their order. A tool card rebuilt from the transcript (a run missed while the bridge was
+disconnected, for example) shows its arguments and its result, with the same limits as a card
+seen live. This holds even when the transcript arrived
+before the reply's bubble opened, or before a follow-up message split the reply in two. Text keeps its spacing exactly, so an indented code example stays a code example. A file
+sent twice is shown once, even in a reply with dozens of tool cards.
+
+**Exported, imported and branched conversations look the same.** A reply shown row by row keeps
+everything it shows when the conversation is exported and imported again, or branched: the
+order of its rows, its copied files, its remote links (a `MEDIA:https://…` attachment stays a
+link), the files that expired or were refused (with their reason), its widgets, its tool
+cards with their inputs and outputs, the "not shown" notice of a very long reply, and the
+duplicates it hides. The archive format moves to version 4, and archives from earlier
+versions are still read. A file whose copy was still in progress at export time stays
+shown as pending, and is never retried from the copy.
+
+**Tool cards survive a bridge upgrade mid-conversation.** In a reply whose first messages were
+written by an older bridge and the next ones by the new one, each message keeps its own cards:
+the older messages keep the cards seen live, the newer ones show theirs, and a card is never
+shown twice.
+
+**A rebuilt tool card masks what the Control UI masks.** The gateway stores its transcript with
+credentials already masked. On top of that, the Control UI masks a tool's arguments again when it
+shows them: `Authorization:`, `Cookie:` and `Set-Cookie:` headers, `Bearer` tokens, API keys,
+passwords and private keys. Atrium now does the same, using the Control UI's own masking code copied
+unchanged from 2026.9.33. It applies to the one-line preview of a card rebuilt from the transcript
+and to its full input. A tool result is shown as stored, as in the Control UI. Cards seen live,
+and conversations whose projection is `off` or `shadow`, show exactly what they showed before.
+The bridge's debug logs (`BRIDGE_DEBUG=1`) are masked the same way. A tool call from an older
+format, identified only by `callId`, now shows its arguments and its result on a rebuilt card, as
+in the Control UI. A tool call with no identifier at all keeps its card too: each result is
+paired with its call by name and order, as in the Control UI.
+
+**Code examples stay code, as in the Control UI.** A `MEDIA:` line inside any Markdown code
+block (fenced, indented by four spaces or a tab, or indented inside a list) is shown as text,
+never as an attachment. The Markdown reading is now the same parser the gateway uses. Remote
+references follow the gateway's address rules exactly. For example, a reference to a bare IPv6
+address stays text. Metadata the gateway injects (a leading `[Thu 2026-03-12 07:00 UTC]`
+timestamp, its context blocks, its delivery hints) is no longer shown when an agent repeats it.
+A message made only of such metadata shows nothing, and the text used by export and search no
+longer contains it, even when the live stream had already shown it. Likewise, when the
+transcript's version of a reply differs from what was streamed live, the transcript's version
+replaces it.
+
+**Very long replies.** A reply of hundreds of messages shows all of its files, including those
+on its last messages. Past the display limits (400 messages, 256 files, 512 tool cards and 16
+widgets per reply), the reply ends with a notice giving how many items are not shown, instead of
+showing files that never load.
+The bridge gains four dependencies for this (`mdast-util-from-markdown`,
+`mdast-util-gfm-table`, `micromark-extension-gfm-table`, `ipaddr.js`); the web app gains the first three.
+
+**Widgets in a reply rebuilt from the transcript.** A reply Atrium rebuilds from the
+transcript, for example one sent while the bridge was down, shows its inline widgets as the
+Control UI does, with the `[embed]` tag hidden beside the widget. A widget is shown only if the
+conversation's own session created it: its `show_widget` result is in that session's
+transcript, including when the agent ran it in code mode. A document from another
+conversation, even one named in a reply, is never registered, never shown and never served.
+An `[embed]` example inside code, including a code block in a quote, stays text, both in the
+bridge and on screen.
+
+**Known limits.**
+- When an instance is switched from `on` back to `shadow` or `off`, turns follow the previous
+  path again, and a file may appear twice once, at the switch: the copy the transcript made
+  and the one the live path attaches. The display still shows identical bytes once within a
+  delegation group; storage keeps both.
+- On an instance left `off`, the previous path keeps its known intermittent defect: a file or
+  a first message sent through the `message` tool after a delegation can still be missing.
+  Switching the instance `on` is the fix.
+- Hermes conversations are unchanged: the projection applies to OpenClaw instances only.
+- Custom masking patterns (`logging.redactPatterns`) are applied by the gateway itself, to the
+  transcript it stores. Atrium shows what the gateway stored: a value saved before its pattern
+  was added stays visible, exactly as in the Control UI. The same goes for the secret values the
+  gateway masks from memory (OAuth and MCP credentials).
+
 ## [0.100.1] — Clearer diagnostics when a reply's text is refused as a regression
 
 Patch release. No behaviour change: the reply a user reads is decided exactly as before.

@@ -40,7 +40,7 @@
 // costs one tail page of 80 rows. Directly applied rows are posted between reads, on
 // the same single flight.
 
-import type { TranscriptApplyReport } from "../../convex-writer.js";
+import type { TranscriptApplyReport, TranscriptFileToCopy } from "../../convex-writer.js";
 import type { GatewayFrame } from "./openclaw-client.js";
 import { protocolDrift } from "./protocol-drift.js";
 import {
@@ -49,6 +49,7 @@ import {
   INPUT_RUN_IDS_MAX,
   INPUT_RUN_ID_MAX_CHARS,
   parseHistoryReply,
+  rowContentBytes,
   runTerminalStatus,
   type HistoryRead,
   type RowDisplay,
@@ -71,7 +72,14 @@ export type TranscriptCursor = { sessionId: string; deltaCursor: string };
 /** What Convex answers to an apply (absent on an older Convex). `ok:false` with
  *  `reason:"too_large"`: refused WHOLE, nothing written (convex/transcriptProjection.ts
  *  `MAX_APPLY_TEXT_*`). */
-export type TranscriptApplyResult = { ok?: boolean; reason?: string; settledRuns?: unknown };
+export type TranscriptApplyResult = {
+  ok?: boolean;
+  reason?: string;
+  settledRuns?: unknown;
+  /** PROJECTION `on` (final design step 2): the session's files waiting for their copy —
+   *  the ones this apply recorded and any still pending (convex/transcriptFiles.ts). */
+  filesToCopy?: unknown;
+};
 
 /** The row TEXT one Convex apply may carry (convex/transcriptProjection.ts
  *  `MAX_APPLY_TEXT_ROWS` = 40, `MAX_APPLY_TEXT_BYTES` = 4 MiB), with margin. A read's texts
@@ -81,16 +89,24 @@ export type TranscriptApplyResult = { ok?: boolean; reason?: string; settledRuns
 export const TEXT_CHUNK_MAX_ROWS = 32;
 export const TEXT_CHUNK_MAX_BYTES = 3 * 1024 * 1024;
 
-/** What a row's text weighs for Convex's bound: UTF-8 of text and acknowledgment, plus
- *  the same envelope Convex charges (`textDocBytes`). */
-export function rowTextBytes(r: { text?: string; yieldAck?: string }): number {
-  return Buffer.byteLength(r.text ?? "", "utf8") + Buffer.byteLength(r.yieldAck ?? "", "utf8") + 128;
+/** What a row's content weighs for Convex's bound: UTF-8 of text, acknowledgment, error
+ *  text and blocks (transcript-rows.ts `rowContentBytes`), plus the same envelope Convex
+ *  charges (`textDocBytes`). */
+export function rowTextBytes(r: RowContent): number {
+  return rowContentBytes(r) + 128;
 }
+
+/** What a row SAYS (projection `on`): everything a `textsOnly` post carries ahead of its
+ *  read. */
+type RowContent = Pick<TranscriptRow, "text" | "yieldAck" | "errorMessage" | "blocks">;
+
+const hasContent = (r: RowContent): boolean =>
+  r.text !== undefined || r.yieldAck !== undefined || r.errorMessage !== undefined || r.blocks !== undefined;
 
 /** The rows that carry a text, in order, in chunks under both bounds. A single row is a
  *  chunk of its own whatever it weighs (a row's text is already bounded at 32 KiB
  *  characters by `toTranscriptRow`, ~196 KB at most — far under the byte bound). */
-export function chunkTextRows<R extends { text?: string; yieldAck?: string }>(
+export function chunkTextRows<R extends RowContent>(
   rows: readonly R[],
   maxRows: number = TEXT_CHUNK_MAX_ROWS,
   maxBytes: number = TEXT_CHUNK_MAX_BYTES,
@@ -99,7 +115,7 @@ export function chunkTextRows<R extends { text?: string; yieldAck?: string }>(
   let chunk: R[] = [];
   let bytes = 0;
   for (const r of rows) {
-    if (r.text === undefined && r.yieldAck === undefined) continue;
+    if (!hasContent(r)) continue;
     const cost = rowTextBytes(r);
     if (chunk.length > 0 && (chunk.length >= maxRows || bytes + cost > maxBytes)) {
       chunks.push(chunk);
@@ -113,10 +129,48 @@ export function chunkTextRows<R extends { text?: string; yieldAck?: string }>(
   return chunks;
 }
 
-/** A row without what it shows (its identity), as a read posts it once its text went ahead. */
-export function withoutText<R extends { text?: string; yieldAck?: string }>(r: R): Omit<R, "text" | "yieldAck"> {
-  const { text: _text, yieldAck: _ack, ...identity } = r;
+/** A row without what it shows (its identity), as a read posts it once its content went
+ *  ahead. */
+export function withoutText<R extends RowContent & { blocksTruncated?: true }>(
+  r: R,
+): Omit<R, "text" | "yieldAck" | "errorMessage" | "blocks" | "blocksTruncated"> {
+  const { text: _text, yieldAck: _ack, errorMessage: _err, blocks: _blocks, blocksTruncated: _cut, ...identity } = r;
   return identity;
+}
+
+/** Most files one answer hands over (Convex bounds its own list the same way). */
+export const MAX_FILES_TO_COPY = 16;
+
+/** The files Convex's answer asks to copy, read defensively (an older Convex sends none). */
+export function readFilesToCopy(value: unknown): TranscriptFileToCopy[] {
+  if (!Array.isArray(value)) return [];
+  const out: TranscriptFileToCopy[] = [];
+  for (const raw of value.slice(0, MAX_FILES_TO_COPY)) {
+    if (typeof raw !== "object" || raw === null) continue;
+    const r = raw as Record<string, unknown>;
+    const str = (k: string): string | undefined => (typeof r[k] === "string" && r[k] !== "" ? (r[k] as string) : undefined);
+    const fileId = str("fileId");
+    const sessionKey = str("sessionKey");
+    const kind = str("kind");
+    const artifactId = str("artifactId");
+    const mediaSource = str("mediaSource");
+    if (fileId === undefined || sessionKey === undefined || kind === undefined) continue;
+    if ((artifactId === undefined) === (mediaSource === undefined)) continue;
+    const mimeType = str("mimeType");
+    const label = str("label");
+    out.push({
+      fileId,
+      sessionKey,
+      kind,
+      ...(artifactId !== undefined ? { artifactId } : {}),
+      ...(mediaSource !== undefined ? { mediaSource } : {}),
+      ...(mimeType !== undefined ? { mimeType } : {}),
+      ...(typeof r.sizeBytes === "number" && Number.isFinite(r.sizeBytes) ? { sizeBytes: r.sizeBytes } : {}),
+      ...(label !== undefined ? { label } : {}),
+      attempts: typeof r.attempts === "number" && Number.isFinite(r.attempts) ? r.attempts : 0,
+    });
+  }
+  return out;
 }
 
 /** What the session-events demultiplexer delivers for ONE session key. */
@@ -162,6 +216,10 @@ export interface TranscriptShadowDeps {
    *  terminal, or a fresh read that found the session idle). A foreground turn among
    *  them ends here: a fact, never a timer. Never awaited by the reconciler. */
   onRunsSettled?: (runIds: readonly string[]) => void;
+  /** PROJECTION `on` (final design step 2): files a row carries that Convex has no copy of
+   *  yet — handed to the copier (core/artifact-copier.ts) the moment the row is stored.
+   *  Never awaited by the reconciler. */
+  copyFiles?: (files: readonly TranscriptFileToCopy[]) => void;
   sleep?: (ms: number) => Promise<void>;
   now?: () => number;
   log?: (line: string) => void;
@@ -429,6 +487,18 @@ export class TranscriptShadow {
     }
   }
 
+  /** PROJECTION `on`: hand the files Convex's answer names to the copier. */
+  private emitFiles(res: TranscriptApplyResult | void): void {
+    if (this.mode !== "on" || res === undefined || res === null) return;
+    const files = readFilesToCopy(res.filesToCopy);
+    if (files.length === 0) return;
+    try {
+      this.deps.copyFiles?.(files);
+    } catch {
+      /* the copier's bookkeeping never fails a read */
+    }
+  }
+
   private emitUserRow(row: TranscriptRow): void {
     if (row.sendId === undefined) return;
     try {
@@ -687,6 +757,7 @@ export class TranscriptShadow {
       terminals,
       ...(read.activeRunIds === null ? {} : { activeRunIds: read.activeRunIds }),
       ...(read.hasActiveRun === null ? {} : { hasActiveRun: read.hasActiveRun }),
+      ...(read.lastRunFailure !== undefined ? { lastRunFailure: read.lastRunFailure } : {}),
       ...(read.queueMode === null ? {} : { queueMode: read.queueMode }),
       ...(read.effectiveQueueMode === null ? {} : { effectiveQueueMode: read.effectiveQueueMode }),
       unidentified: read.unidentified,
@@ -709,6 +780,7 @@ export class TranscriptShadow {
         throw new Error("read refused as too large");
       }
       this.emitSettled(answer);
+      this.emitFiles(answer);
       this.stats.applies++;
     } catch (err) {
       // The read is lost, not the terminals nor the custody it would have settled: the
@@ -775,6 +847,7 @@ export class TranscriptShadow {
         unidentified: 0,
         readAt,
       });
+      this.emitFiles(res);
       if (res !== undefined && res.ok === false) {
         if (res.reason !== "too_large") {
           throw new Error(`texts refused: ${res.reason ?? "unknown"}`);
@@ -816,7 +889,9 @@ export class TranscriptShadow {
     };
     try {
       if (oversized) await this.postTexts(sessionId, all, payload.readAt);
-      this.emitSettled(await this.deps.apply(payload));
+      const answer = await this.deps.apply(payload);
+      this.emitSettled(answer);
+      this.emitFiles(answer);
       this.stats.liveApplies++;
       for (const row of rows) {
         if (row.runId !== undefined && !row.hidden && (row.visible || row.role === "toolresult")) {

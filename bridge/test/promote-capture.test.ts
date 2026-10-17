@@ -112,6 +112,25 @@ describe("capture anonymiser — nothing content-bearing survives", () => {
     expect(run).toBe(`image_generate:${id}:ok:agent-loop`);
   });
 
+  it("keeps the requester-settle grammar: family literal, session key, child run ids, yield", () => {
+    // Token by token, `requester-settle` itself was pseudonymised: the bridge keys on that
+    // literal (core/async-task.ts), so two settle runs of one chain replayed as one bubble
+    // and the fidelity gate refused the 2026.9.33 capture (bench 2026-10-17).
+    const p = createPseudonymiser();
+    const key = "agent:alice:atrium:chat:u-repro:turn-nx780nngeqazbjn2t34x5shmyn8ge07h";
+    const a = "50e4d5b8-2c41-460d-a462-b6f6958973c1";
+    const b = "8e2e3311-6150-4bae-acb3-a1a179f23eba";
+    const one = p.identifier(`announce:requester-settle:alice:${key}:${a}:yield-1`);
+    const two = p.identifier(`announce:requester-settle:alice:${key}:${a},${b}:yield-2`);
+    const pk = p.identifier(key);
+    expect(one).toMatch(new RegExp(`^announce:requester-settle:[^:]+:${pk}:[0-9a-f-]{36}:yield-1$`));
+    expect(two).toMatch(new RegExp(`^announce:requester-settle:[^:]+:${pk}:[0-9a-f-]{36},[0-9a-f-]{36}:yield-2$`));
+    expect(one.split(":")[2]).not.toBe("alice");
+    expect(two).not.toContain(a);
+    expect(two).not.toContain(b);
+    expect(one).not.toBe(p.identifier(`announce:requester-settle:alice:${key}:${b}:yield-1`));
+  });
+
   it("keeps an agent assistant `data.delta` as masked prose (the 2026.9.7 append-only text)", () => {
     const frame = {
       type: "event",

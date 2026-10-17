@@ -755,9 +755,9 @@ describe("afterStateFromSetResponse — the revision's after-state (W10)", () =>
     // catch. Fail-closed — every mention of the mutation must be either a recognised
     // call that derives through the helper, or the definition/import itself.
     // An explicit walk, and NOT `readdirSync({recursive:true})` with `Dirent.path`:
-    // `tsc -p convex` compiles this file with lib ES2021 typings where that property
-    // does not exist, so it typechecked green under vitest and broke `convex deploy` —
-    // the exact failure mode lot 14 put a gate around.
+    // `tsc -p convex` compiled this file with lib ES2021 typings where that property did
+    // not exist, so it typechecked green under vitest and broke `convex deploy` — the
+    // exact failure mode lot 14 put a gate around (the lib is ES2023 since review 12).
     const walk = (dir: string): string[] =>
       readdirSync(dir, { withFileTypes: true }).flatMap((e) => {
         if (e.isDirectory()) {

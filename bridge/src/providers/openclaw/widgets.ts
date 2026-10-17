@@ -27,6 +27,8 @@
 //
 // PURE module: no I/O, every rule unit-tested (bridge/test/widgets.test.ts).
 
+import { findCodeRegions, isInsideCode } from "./code-regions.js";
+
 /** The connect capability that makes the gateway offer `show_widget` to the agent
  *  (packages/gateway-protocol/src/client-info.ts `GATEWAY_CLIENT_CAPS.INLINE_WIDGETS`). */
 export const INLINE_WIDGETS_CAP = "inline-widgets";
@@ -295,96 +297,11 @@ export function isNestedShowWidgetCallId(toolCallId: string | undefined): boolea
 
 // --- [embed …] shortcodes -----------------------------------------------------
 
-/** Code ranges of a Markdown text: fenced blocks (``` / ~~~, up to 3 spaces of
- *  indent, closed by a fence of the same character at least as long), indented
- *  blocks (4 spaces or a tab after a blank line or at the start), and inline code
- *  spans (a backtick run closed by a run of the same length). Upstream parses
- *  CommonMark with a full parser (packages/markdown-core findMarkdownCodeRegions);
- *  this covers the constructs an agent writes a literal example in. */
-export function findCodeRegions(text: string): Array<{ start: number; end: number }> {
-  if (!/[`~\t]| {4}/u.test(text)) return [];
-  const regions: Array<{ start: number; end: number }> = [];
-  const lines: Array<{ start: number; end: number; body: string }> = [];
-  {
-    let start = 0;
-    while (start <= text.length) {
-      const nl = text.indexOf("\n", start);
-      const end = nl === -1 ? text.length : nl + 1;
-      lines.push({ start, end, body: text.slice(start, nl === -1 ? text.length : nl) });
-      if (nl === -1) break;
-      start = end;
-    }
-  }
-  const blockCovered: Array<{ start: number; end: number }> = [];
-  let prevBlank = true;
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i]!;
-    const fence = /^ {0,3}(`{3,}|~{3,})/.exec(line.body);
-    if (fence && !(fence[1]![0] === "`" && line.body.slice(fence[0].length).includes("`"))) {
-      const ch = fence[1]![0]!;
-      const len = fence[1]!.length;
-      const closeRe = new RegExp(`^ {0,3}\\${ch}{${len},}\\s*$`);
-      let j = i + 1;
-      while (j < lines.length && !closeRe.test(lines[j]!.body)) j++;
-      const end = j < lines.length ? lines[j]!.end : text.length;
-      blockCovered.push({ start: line.start, end });
-      i = j;
-      prevBlank = false;
-      continue;
-    }
-    if (prevBlank && /^(?: {4}|\t)/.test(line.body) && line.body.trim() !== "") {
-      let j = i;
-      while (
-        j + 1 < lines.length &&
-        (/^(?: {4}|\t)/.test(lines[j + 1]!.body) || lines[j + 1]!.body.trim() === "")
-      ) {
-        j++;
-      }
-      blockCovered.push({ start: line.start, end: lines[j]!.end });
-      i = j;
-      prevBlank = lines[j]!.body.trim() === "";
-      continue;
-    }
-    prevBlank = line.body.trim() === "";
-  }
-  regions.push(...blockCovered);
-  const inBlock = (pos: number) => blockCovered.some((r) => pos >= r.start && pos < r.end);
-  let i = 0;
-  while (i < text.length) {
-    if (text[i] !== "`" || inBlock(i)) {
-      i++;
-      continue;
-    }
-    let run = 0;
-    while (text[i + run] === "`") run++;
-    let j = i + run;
-    let closed = -1;
-    while (j < text.length) {
-      if (text[j] === "`") {
-        let r = 0;
-        while (text[j + r] === "`") r++;
-        if (r === run) {
-          closed = j + r;
-          break;
-        }
-        j += r;
-      } else {
-        j++;
-      }
-    }
-    if (closed === -1) {
-      i += run;
-      continue;
-    }
-    regions.push({ start: i, end: closed });
-    i = closed;
-  }
-  return regions.sort((a, b) => a.start - b.start);
-}
-
-function isInsideCode(pos: number, regions: Array<{ start: number; end: number }>): boolean {
-  return regions.some((region) => pos >= region.start && pos < region.end);
-}
+/** The code regions are the upstream parser's (code-regions.ts, a port of
+ *  src/shared/text/code-regions.ts at v2026.9.33 — what `extractCanvasShortcodes` reads,
+ *  src/chat/canvas-render.ts): a shortcode starting inside fenced, indented, quoted or
+ *  inline code is a literal example (codex review 4, finding 3). */
+export { findCodeRegions };
 
 function parseCanvasAttributes(raw: string): Record<string, string> {
   const attrs: Record<string, string> = {};

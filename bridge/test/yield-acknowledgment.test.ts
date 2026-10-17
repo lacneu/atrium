@@ -257,3 +257,20 @@ describe("a hand-off speaks with the acknowledgment it was given", () => {
     expect(w.finals[0]?.text).toBe("");
   });
 });
+
+describe("a live tool part is written as the gateway sent it (codex review 14)", () => {
+  it("no second masking: an off/shadow conversation stores exactly what it stored before", async () => {
+    // The gateway masks live payloads before emitting them
+    // (embedded-agent-subscribe.handlers.tools.start.ts:541): re-masking here would turn
+    // `sk-or-…6789` into `***` and change what every live card shows.
+    const args = { command: "OPENROUTER_API_KEY=sk-or-…6789 ./run.sh" };
+    const w = await runTurn([
+      agentTool({ phase: "start", name: "exec", toolCallId: "e1", args }),
+      agentTool({ phase: "result", name: "exec", toolCallId: "e1", args, result: { content: [{ type: "text", text: "Authorization: Bearer abcdef…RTY=" }] } }),
+      lifecycleEnd(),
+    ]);
+    const parts = w.toolParts.filter((p) => p.name === "exec");
+    expect(parts.some((p) => JSON.stringify(p.input) === JSON.stringify(args))).toBe(true);
+    expect(JSON.stringify(parts)).toContain("Bearer abcdef…RTY=");
+  });
+});

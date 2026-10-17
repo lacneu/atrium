@@ -26,10 +26,54 @@ import { stripGatewayMediaId } from "../../convex/lib/mediaName";
 import { renderableText } from "./widgets/shortcodes";
 import type { GroupPlace } from "./displayGroups";
 import { m } from "@/paraglide/messages.js";
+import { cardOwnership, hiddenPartStorageIds, layoutFileIds, rowSegments, type RowSegment } from "./rowLayoutView";
+import { activeBubbleTail } from "./streamTail";
 
 // A localized "(N KB, not shown here)" note for a part field ELIDED from the window
 // read (loadChatView PART_FIELD_CAP) — shown in place of the omitted output/input/
 // reasoning so the card reads honestly instead of appearing empty.
+/** One file a row names, as an assistant-ui file part (lib/viewReconcile.ts decides which). */
+function rowFileContent(seg: Extract<RowSegment, { kind: "file" }>): ContentPart {
+  return (seg.file.kind === "copied"
+    ? {
+        type: "file",
+        mimeType: seg.file.mimeType,
+        data: seg.file.url,
+        filename: displayFilename(seg.file.filename),
+        storageId: seg.file.storageId,
+      }
+    : seg.file.kind === "remote"
+      ? {
+          // As is: the reader's browser loads the remote reference (never copied).
+          type: "file",
+          mimeType: seg.file.mimeType,
+          data: seg.file.url,
+          filename: displayFilename(seg.file.filename),
+          remote: true,
+        }
+      : {
+          type: "file",
+          mimeType: seg.file.mimeType,
+          data: "",
+          filename: displayFilename(seg.file.filename),
+          unavailable: seg.file.state,
+          ...(seg.file.reason !== undefined ? { reason: seg.file.reason } : {}),
+        }) as unknown as ContentPart;
+}
+
+/** An active bubble with rows: the rows' composition as its text, and the live tail (what
+ *  the live cumulative text says past the rows' prefix). Any other bubble as it is. */
+function withActiveRows(message: ConvexMessageView): { message: ConvexMessageView; liveTail: string | null } {
+  const active = message.activeRows;
+  if (message.status !== "streaming" || active === undefined) return { message, liveTail: null };
+  const live = message.text ?? "";
+  // No live text overlaid (the view's own text is the composition): nothing in progress.
+  const tail = live === active.text || message.runId === undefined ? null : activeBubbleTail(active.persisted, live, message.runId);
+  // Exactly as the resolver returns it (codex review 8): its leading spaces can be Markdown
+  // (an indented code block); `trim` only decides whether there is anything to show.
+  return { message: { ...message, text: active.text }, liveTail: tail !== null && tail.trim() !== "" ? tail : null };
+}
+
 function omittedNote(bytes: number | undefined): string {
   return m.tools_field_omitted({ size: String(Math.round((bytes ?? 0) / 1024)) });
 }
@@ -103,6 +147,7 @@ function toolPartToActivity(
         ? undefined
         : safeStringify(part.input),
     phase: typeof part.phase === "string" ? part.phase : undefined,
+    ...(part.inputFromTranscript === true ? { inputFromTranscript: true } : {}),
   };
 }
 
@@ -252,7 +297,7 @@ function safeStringify(value: unknown): string {
 }
 
 export function convertConvexMessage(
-  message: ConvexMessageView,
+  incoming: ConvexMessageView,
   // Per-message attribution resolved by the runtime (resolveMessageAgents):
   // an assistant message usually carries NO routed fields of its own and
   // INHERITS the preceding user turn's agent — the cron detail panel must
@@ -266,6 +311,10 @@ export function convertConvexMessage(
   // (src/chat/displayGroups.ts) — null when it is shown alone.
   group?: GroupPlace | null,
 ): ThreadMessageLike {
+  // AN ACTIVE BUBBLE WHOSE ROWS ALREADY SPEAK (codex review 7): the rows are shown as a
+  // settled bubble's, and the live text adds only the message still being written — its
+  // cumulative text minus the prefix the rows hold (streamTail.ts, the Control UI's rule).
+  const { message, liveTail } = withActiveRows(incoming);
   const content: ContentPart[] = [];
   const toolParts: ToolActivityPart[] = [];
   const anchored: AnchoredActivity[] = [];
@@ -280,6 +329,15 @@ export function convertConvexMessage(
   // always visible (it explains the agent's shortened memory + a long wait),
   // never gated behind the tools toggle.
   let compaction: { phase: string; at: number; reason?: string } | null = null;
+  // PROJECTION `on` (final design step 3): a bubble the transcript rows composed is shown
+  // row by row — text, the row's files, its tool cards (rowLayoutView.ts). Null for every
+  // other bubble, which keeps the rendering below unchanged.
+  const segments = rowSegments(message);
+  // DEPLOYMENT ORDER (Convex → frontend → bridge), decided ROW BY ROW: a row with its
+  // blocks shows its cards; a row a bridge without blocks (0.100.x) wrote names none, and
+  // the bubble keeps the live cards for it, as before (`cardOwnership`).
+  const cards = segments === null ? null : cardOwnership(message);
+  const activityById = new Map<string, ToolActivityPart>();
 
   // 1) Parts that PRECEDE the text chronologically (listByChat returns parts
   //    flat + sorted by order): reasoning goes into content; tool calls are
@@ -296,7 +354,16 @@ export function convertConvexMessage(
     } else if (isToolPart(p)) {
       const activity = toolPartToActivity(message, index, p);
       allToolParts.push(activity);
-      if (p.textOffset !== undefined) {
+      if (cards !== null) {
+        // A card a row with blocks names is shown under that row, and only there.
+        if (p.toolCallId !== undefined && cards.cardsOfBlockRows.has(p.toolCallId)) activityById.set(p.toolCallId, activity);
+        // Any other live card stays shown while a row without blocks may own it. When every
+        // row carries its blocks, the rows are the whole truth (the Control UI renders tool
+        // cards from transcript rows only): a live part no row names — the overlay of the
+        // same call, often without an id on a delivery lane — is not shown a second time.
+        // …and on an ACTIVE bubble, a card the transcript does not hold yet (the run goes on).
+        else if (cards.rowsWithoutBlocks || message.status === "streaming") toolParts.push(activity);
+      } else if (p.textOffset !== undefined) {
         anchored.push({ offset: p.textOffset, activity });
       } else {
         toolParts.push(activity);
@@ -354,7 +421,31 @@ export function convertConvexMessage(
     message.role === "assistant" && !settledBody && withReplies[withReplies.length - 1]?.kind === "text"
       ? withReplies.length - 1
       : -1;
-  withReplies.forEach((seg, segIndex) => {
+  if (segments !== null) {
+    for (const seg of segments) {
+      if (seg.kind === "text") {
+        content.push({ type: "text", text: renderableText(seg.text, renderedViewIds, false) });
+      } else if (seg.kind === "cut") {
+        content.push({ type: "text", text: `_${m.chat_layout_cut({ count: String(seg.count) })}_` });
+      } else if (seg.kind === "file") {
+        content.push(rowFileContent(seg));
+      } else {
+        const parts = seg.toolCallIds.flatMap((id) => {
+          const a = activityById.get(id);
+          return a === undefined ? [] : [a];
+        });
+        if (parts.length > 0) {
+          content.push({
+            type: "tool-call",
+            toolCallId: `flow:${message._id}:row:${seg.entryId}`,
+            toolName: "__turn_flow__",
+            args: { parts },
+          } as ContentPart);
+        }
+      }
+    }
+  }
+  (segments === null ? withReplies : []).forEach((seg, segIndex) => {
     if (seg.kind === "text") {
       content.push({
         type: "text",
@@ -387,6 +478,9 @@ export function convertConvexMessage(
     }
   });
 
+  // The message still being written, after what the rows already say.
+  if (liveTail !== null) content.push({ type: "text", text: renderableText(liveTail, renderedViewIds, true) });
+
   // 3) Inline widgets, then media/file attachments, stay AFTER the text. A widget is
   // an assistant-ui DATA part (`data-widget`), rendered in the message BODY by
   // WidgetPart — never behind the tools toggle: it is the reply, not its work.
@@ -404,8 +498,16 @@ export function convertConvexMessage(
       }
     });
   }
+  // A row layout already showed the files derived for its rows; the bubble's other file
+  // parts (a repair, an older delivery) still follow the body. (A part derived from a file
+  // the current rows no longer name does not exist: convex/lib/rowParts.ts removes it.)
+  const shownByRows = segments === null ? new Set<string>() : layoutFileIds(message);
+  // R4 over a mixed group: a live file part whose bytes the group already shows.
+  const hiddenParts = hiddenPartStorageIds(message);
   message.parts.forEach((p) => {
     if (isMediaPart(p) || isFilePart(p)) {
+      if (p.transcriptFileId !== undefined && shownByRows.has(p.transcriptFileId)) return;
+      if (hiddenParts.has(String(p.storageId))) return;
       const fileContent = filePartToContent(p);
       if (fileContent) content.push(fileContent);
     }

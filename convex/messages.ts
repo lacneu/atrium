@@ -58,6 +58,16 @@ import { DEFAULT_STREAM_TRANSPORT } from "./lib/instanceConfig";
 import { resolveTargetForChat } from "./routing";
 import { auditImpersonated } from "./lib/audit";
 import { deleteFilesByMessage } from "./lib/files";
+import { composeBubble, LAYOUT_MAX_FILES, LAYOUT_MAX_ROWS, type LayoutRow } from "./lib/bubbleProjection";
+import { toPlanRow } from "./lib/bubbleProjectionStore";
+import {
+  hydrateToolParts,
+  reconcileToolParts,
+  renderedFilePieces,
+  toolPayloadsOf,
+  type FilePiece,
+  type ToolPayload,
+} from "./lib/viewReconcile";
 import {
   enrichUserAgents,
   guestRoomView,
@@ -78,9 +88,11 @@ import { deleteMessageAgentRequests } from "./agentRequests";
 import { textIsYieldAcknowledgment, type YieldAckToolPart } from "./lib/toolOutcome";
 import { isTrashed } from "./lib/trash";
 import { releaseBlob, storageIdsOfPart } from "./lib/blobs";
-import { deletionTombstones } from "./lib/transcriptProjection";
+import { deletionTombstones, segmentOfRow, steerSeqsOf } from "./lib/transcriptProjection";
 import { deletionStart } from "./lib/displayGroupHead";
 import { traceRegressionSummary } from "./lib/streamTrace";
+import { fileOfLayout } from "./lib/rowParts";
+import { displayDecisions, type DedupBubble, type DedupDecision } from "./lib/displayDedup";
 
 // Hard upper bound on how many recent messages the reactive feed loads. Chosen
 // to cover a typical visible conversation while keeping the query (and the
@@ -128,6 +140,9 @@ type ClientPart =
       output?: unknown;
       outputOmitted?: boolean;
       outputBytes?: number;
+      /** The arguments came from a transcript row: the card masks them at display as the
+       *  Control UI masks history (src/chat/toolActivityView.ts `toolCardDisplay`). */
+      inputFromTranscript?: boolean;
       /** THE STRUCTURED REMNANT OF AN ELIDED OUTPUT.
        *
        *  A tool result carries the same object twice: destructured under `details`,
@@ -145,8 +160,8 @@ type ClientPart =
   // rendition op is OWNERSHIP-gated server-side (ownedFile) and READ-ONLY — this
   // is NOT the delete-IDOR class (a client-provided id the SERVER deletes). The
   // signed `url` already embeds the same storage path, so this reveals nothing new.
-  | { kind: "media"; url: string | null; storageId: string; filename: string; mimeType: string }
-  | { kind: "file"; url: string | null; storageId: string; filename: string; mimeType: string }
+  | { kind: "media"; url: string | null; storageId: string; filename: string; mimeType: string; transcriptFileId?: Id<"transcriptFiles"> }
+  | { kind: "file"; url: string | null; storageId: string; filename: string; mimeType: string; transcriptFileId?: Id<"transcriptFiles"> }
   // Gateway context-compaction marker (content-free: phase + timestamp).
   | { kind: "compaction"; phase: string; at: number }
   // A work-plan update (update_plan): ordered steps + status. Bounded at
@@ -304,13 +319,21 @@ async function loadChatView(
   // once here rather than copied onto every imported message, because a
   // conversation-wide fallback stored per message would override the real routed
   // agent of every turn in a multi-agent one.
-  const chatImportedAgentLabel = (await ctx.db.get(id))?.importedAgentLabel;
+  const chatDoc = await ctx.db.get(id);
+  const chatImportedAgentLabel = chatDoc?.importedAgentLabel;
+  // R4 (no visible duplicate) is decided over every assistant bubble of a conversation that
+  // stored transcript content (`on`); any other conversation reads exactly what it did.
   // Bounded read: most-recent MESSAGE_WINDOW messages, newest first.
   const recentDesc = await ctx.db
       .query("messages")
       .withIndex("by_chat", (q) => q.eq("chatId", id))
       .order("desc")
       .take(MESSAGE_WINDOW);
+  // …and over a copy of such a conversation (an import, a fork): its rows-composed
+  // bubbles show the same decisions without the copy pretending it read a transcript
+  // (codex review 17). A conversation with neither reads exactly what it did.
+  const decidesDisplay =
+    chatDoc?.transcriptSeenAt !== undefined || recentDesc.some((m) => m.rowLayout !== undefined);
 
     // Present in LOGICAL turn order (see lib/messageOrder): identical to creation
     // time for idle sends + assistants, but a mid-turn QUEUE follow-up's orderTime
@@ -399,9 +422,47 @@ async function loadChatView(
           .withIndex("by_message", (q) => q.eq("messageId", message._id))
           .collect();
         partDocs.sort((a, b) => a.order - b.order);
+        const transcriptFileOf = new Map<unknown, Id<"transcriptFiles">>();
+        for (const d of partDocs) if (d.transcriptFileId !== undefined) transcriptFileOf.set(d.part, d.transcriptFileId);
+        // Final design step 3: a bubble the transcript rows composed shows them row by
+        // row; each file of a row is read with its copy's state. Read only for such a
+        // bubble (`rowLayout`): every other one costs exactly what it did.
+        const rowFiles = message.rowLayout === undefined ? undefined : await rowFilesOf(ctx, message);
+        // An ACTIVE bubble of a projected conversation: what its rows already say, now
+        // (codex review 6 — lib/viewReconcile.ts).
+        const active =
+          decidesDisplay && message.role === "assistant" && message.status === "streaming" && message.rowLayout === undefined
+            ? await activeRowLayout(ctx, message)
+            : undefined;
+        const activeLayout = active?.layout;
+        // The rows of an ACTIVE bubble are its layout too: the view, R4 and the SPA treat
+        // them as a settled bubble's; the live text adds only the message still being
+        // written (src/chat/streamTail.ts).
+        const layoutFiles = active === undefined ? rowFiles : await rowFilesOf(ctx, { ...message, rowLayout: active.layout });
+        // …and the bytes of the file parts no row of the LAYOUT shows, for a bubble that can
+        // share a display group with one (R4 over a mixed group). Every other bubble: no read.
+        const liveFileShas =
+          decidesDisplay && message.role === "assistant"
+            ? await filePiecesOf(
+                ctx,
+                partDocs,
+                new Set((layoutFiles ?? []).flatMap((f) => (f.fileId === undefined ? [] : [String(f.fileId)]))),
+              )
+            : undefined;
 
         const parts: ClientPart[] = [];
-        for (const { part } of partDocs) {
+        // Codex review 11: the tool parts completed by what the rows say (arguments, result),
+        // and a card for each call only a row names — with its payloads — BEFORE the one
+        // projection below, so a rebuilt card is read like a live one (same cap, same
+        // redaction). Settled bubbles were hydrated in storage (lib/rowParts.ts).
+        const rawParts = (
+          active !== undefined
+            ? hydrateToolParts(partDocs.map((d) => d.part), active.layout, active.payloads)
+            : message.rowLayout !== undefined
+              ? hydrateToolParts(partDocs.map((d) => d.part), message.rowLayout, new Map())
+              : partDocs.map((d) => d.part)
+        ) as Array<Doc<"messageParts">["part"]>;
+        for (const part of rawParts) {
           switch (part.kind) {
             case "tool": {
               // Elide oversized input/output from the window read (see PART_FIELD_CAP).
@@ -417,14 +478,19 @@ async function loadChatView(
                 ...(part.textOffset !== undefined
                   ? { textOffset: part.textOffset }
                   : {}),
+                ...(part.inputFromTranscript === true ? { inputFromTranscript: true } : {}),
                 // REDACTED ON READ, not only on write. The bridge stopped storing
                 // `sessions_yield.message`, which covers new turns and nothing
                 // else: every conversation that ran before the repair still holds
                 // it, and this projection handed it straight to `ToolCard`.
-                ...(inBytes > PART_FIELD_CAP
+                ...(part.input === undefined && part.inputOmittedBytes !== undefined
+                  ? { inputOmitted: true, inputBytes: part.inputOmittedBytes }
+                  : inBytes > PART_FIELD_CAP
                   ? { inputOmitted: true, inputBytes: inBytes }
                   : { input: readableToolValue(part.name, part.input, "input") }),
-                ...(outBytes > PART_FIELD_CAP
+                ...(part.output === undefined && part.outputOmittedBytes !== undefined
+                  ? { outputOmitted: true, outputBytes: part.outputOmittedBytes }
+                  : outBytes > PART_FIELD_CAP
                   ? {
                       outputOmitted: true,
                       outputBytes: outBytes,
@@ -448,6 +514,8 @@ async function loadChatView(
                 storageId: part.storageId,
                 filename: part.filename,
                 mimeType: part.mimeType,
+                // Final design step 3: the transcript file this part shows (its row's).
+                ...(transcriptFileOf.get(part) !== undefined ? { transcriptFileId: transcriptFileOf.get(part) } : {}),
               });
               break;
             }
@@ -683,12 +751,306 @@ async function loadChatView(
           // Drives the mid-turn QUEUE "En attente" badge + placeholder.
           outbox: outboxByMsg.get(message._id) ?? null,
           updatedAt: message.updatedAt,
-          parts,
+          // The live parts once the rows have spoken (lib/viewReconcile.ts): a card takes
+          // its row's outcome, a card only a row names is added.
+          parts: reconcileToolParts(parts, message.rowLayout ?? activeLayout) as ClientPart[],
+          ...(message.rowLayout !== undefined ? { rowLayout: message.rowLayout, rowFiles } : {}),
+          ...(active !== undefined
+            ? {
+                rowLayout: active.layout,
+                rowFiles: layoutFiles,
+                // The composition is the text the layout indexes; the SPA overlays the live
+                // text and keeps only its tail (`activeRows.persisted`).
+                text: active.text,
+                activeRows: { text: active.text, persisted: active.persisted },
+              }
+            : {}),
+          ...(liveFileShas !== undefined && liveFileShas.length > 0 ? { liveFileShas } : {}),
         };
       }),
     );
 
-  return result;
+  // Olivier's R4 decision: no visible duplicate. Decided over the window, in thread order,
+  // group by group (lib/displayDedup.ts) — a display fact, never a stored one.
+  return withDisplayDecisions(result);
+}
+
+/** What the display withholds in a chat's recent bubbles (Olivier's R4 decision) — the
+ *  metadata `diagnose_chat` reports: message and row ids, the rule, never content. */
+export async function displayReport(
+  ctx: QueryCtx,
+  chatId: Id<"chats">,
+): Promise<{ bubbles: number; hiddenFiles: number; hiddenRows: number; decisions: DedupDecision[] }> {
+  const recent = await ctx.db
+    .query("messages")
+    .withIndex("by_chat", (q) => q.eq("chatId", chatId))
+    .order("desc")
+    .take(MESSAGE_WINDOW);
+  const ordered = [...recent].sort(compareOrder).filter((m) => m.role === "assistant");
+  const views = [];
+  for (const m of ordered) {
+    // EVERY part, as the conversation view reads them: R4 here decides over what it renders.
+    const partDocs = await ctx.db
+      .query("messageParts")
+      .withIndex("by_message", (q) => q.eq("messageId", m._id))
+      .collect();
+    const rowFiles = m.rowLayout !== undefined ? await rowFilesOf(ctx, m) : undefined;
+    views.push({
+      ...m,
+      ...(rowFiles !== undefined ? { rowFiles } : {}),
+      liveFileShas: await filePiecesOf(
+        ctx,
+        partDocs,
+        new Set((rowFiles ?? []).flatMap((f) => (f.fileId === undefined ? [] : [String(f.fileId)]))),
+      ),
+    });
+  }
+  const decided = withDisplayDecisions(views);
+  const decisions = decided.flatMap((m) => m.displayHidden ?? []);
+  return {
+    bubbles: ordered.length,
+    hiddenFiles: decisions.filter((d) => d.rule === "same_sha256_in_group").length,
+    hiddenRows: decisions.filter((d) => d.rule === "repeated_text_in_group").length,
+    decisions: decisions.slice(0, 50),
+  };
+}
+
+/** `_storage.sha256` (base64) → hex, the encoding `transcriptFiles.sha256` keeps. */
+function base64ToHex(b64: string): string | undefined {
+  try {
+    const bin = atob(b64);
+    let hex = "";
+    for (let i = 0; i < bin.length; i++) hex += bin.charCodeAt(i).toString(16).padStart(2, "0");
+    return hex.length === 64 ? hex : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * THE FILE PIECES A BUBBLE SHOWS BESIDE ITS ROWS, with their bytes (sha256, hex) — what R4
+ * decides over (lib/displayDedup.ts). Which pieces, in which order, and the bound: the
+ * view's one reconciliation (lib/viewReconcile.ts `renderedFilePieces`), over EVERY file
+ * part of the bubble — the bound counts rendered pieces, never cards or plans. Read only for
+ * a conversation that stored transcript content (`on`).
+ */
+async function filePiecesOf(
+  ctx: QueryCtx,
+  partDocs: ReadonlyArray<Doc<"messageParts">>,
+  rowFileIds: ReadonlySet<string>,
+): Promise<Array<{ storageId: string; sha256?: string }>> {
+  const pieces: FilePiece[] = [];
+  for (const d of partDocs) {
+    if (d.part.kind !== "media" && d.part.kind !== "file") continue;
+    pieces.push({
+      storageId: String(d.part.storageId),
+      ...(d.transcriptFileId !== undefined ? { transcriptFileId: String(d.transcriptFileId) } : {}),
+      order: d.order,
+    });
+  }
+  // The row position of each derived part still in the running (bounded by the layout).
+  const derivedLeft = pieces.filter((p) => p.transcriptFileId !== undefined && !rowFileIds.has(p.transcriptFileId));
+  for (const p of derivedLeft.slice(0, LAYOUT_MAX_FILES)) {
+    const record = await ctx.db.get(p.transcriptFileId as Id<"transcriptFiles">);
+    if (record === null) continue;
+    const row = await ctx.db
+      .query("transcriptRows")
+      .withIndex("by_chat_session_entry", (q) =>
+        q.eq("chatId", record.chatId).eq("sessionKey", record.sessionKey).eq("entryId", record.entryId),
+      )
+      .first();
+    if (row !== null) p.seq = row.seq;
+    p.blockIndex = record.blockIndex;
+  }
+  const out: Array<{ storageId: string; sha256?: string }> = [];
+  for (const p of renderedFilePieces(pieces, rowFileIds)) {
+    const meta = await ctx.db.system.get(p.storageId as Id<"_storage">);
+    const sha256 = meta === null ? undefined : base64ToHex(meta.sha256);
+    out.push({ storageId: p.storageId, ...(sha256 !== undefined ? { sha256 } : {}) });
+  }
+  return out;
+}
+
+/**
+ * WHAT THE ROWS OF AN ACTIVE BUBBLE ALREADY SAY (codex review 6): the layout of the rows of
+ * its run received so far — their files, cards and their outcome, widgets — composed by the
+ * planner's own function (lib/bubbleProjection.ts `composeBubble`), so the view shows them
+ * from the moment the rows exist, not at the terminal. Only the rows not placed in another
+ * bubble, of the bubble's own session and segment, at most `LAYOUT_MAX_ROWS`. Undefined:
+ * nothing to say (no rows yet, or not a projected conversation).
+ */
+type ActiveRows = {
+  layout: LayoutRow[];
+  /** The rows' composition (the layout's spans index it). */
+  text: string;
+  /** The run's own assistant rows' texts, in transcript order — what the SPA retires from
+   *  the head of the live cumulative text (src/chat/streamTail.ts, the Control UI's rule). */
+  persisted: Array<{ role: string; runId: string | null; commentaryItemId?: string; text: string | null }>;
+  /** The payloads the rows' tool blocks carry, by call id (lib/viewReconcile.ts). */
+  payloads: Map<string, ToolPayload>;
+};
+
+async function activeRowLayout(ctx: QueryCtx, message: Doc<"messages">): Promise<ActiveRows | undefined> {
+  if (message.runId === undefined || message.turnSessionKey === undefined) return undefined;
+  const runId = message.runId;
+  const docs = await ctx.db
+    .query("transcriptRows")
+    .withIndex("by_chat_run", (q) => q.eq("chatId", message.chatId).eq("runId", runId))
+    .take(LAYOUT_MAX_ROWS);
+  const cuts = await steerSeqsOf(ctx, message.chatId, message.turnSessionKey, runId);
+  const own = docs.filter(
+    (d) =>
+      d.sessionKey === message.turnSessionKey &&
+      d.role.toLowerCase() !== "user" &&
+      d.retracted !== true &&
+      (d.messageId === undefined || d.messageId === message._id) &&
+      (segmentOfRow(d.seq, cuts) ?? 0) === (message.runSegment ?? 0),
+  );
+  if (own.length === 0) return undefined;
+  const rows = [];
+  const persisted: ActiveRows["persisted"] = [];
+  const toolBlocks: Array<NonNullable<Doc<"transcriptRowTexts">["blocks"]>[number]> = [];
+  // The display order of the planner (`composeBubble`): seq, a segment before its owner,
+  // segments in `chat.history`'s order — what the tail resolver consumes in turn.
+  for (const d of [...own].sort(
+    (a, b) =>
+      a.seq - b.seq ||
+      (b.streamSegment === true ? 1 : 0) - (a.streamSegment === true ? 1 : 0) ||
+      (a.segmentOrder ?? 0) - (b.segmentOrder ?? 0),
+  )) {
+    const doc = d.textSig === undefined ? null : await ctx.db.query("transcriptRowTexts").withIndex("by_row", (q) => q.eq("rowId", d._id)).first();
+    // The messages upstream's resolver reads (src/chat/streamTail.ts): each visible assistant
+    // row with its identity — its run (a row shown with a presentation owner names none of
+    // its own), a keyed stream segment (commentary), its text.
+    for (const b of doc?.blocks ?? []) if (b.type === "tool") toolBlocks.push(b);
+    if (d.role.toLowerCase() === "assistant" && !d.hidden) {
+      persisted.push({
+        role: "assistant",
+        runId: d.presentationOwner === true ? null : (d.runId ?? null),
+        ...(d.streamSegment === true ? { commentaryItemId: "segment" } : {}),
+        text: doc?.text ?? null,
+      });
+    }
+    rows.push(
+      toPlanRow(
+        d,
+        doc === null
+          ? undefined
+          : {
+              ...(doc.text !== undefined ? { text: doc.text } : {}),
+              ...(doc.yieldAck !== undefined ? { yieldAck: doc.yieldAck } : {}),
+              ...(doc.errorMessage !== undefined ? { errorMessage: doc.errorMessage } : {}),
+              ...(doc.blocksTruncated === true ? { blocksTruncated: true } : {}),
+              ...(doc.blocks !== undefined ? { blocks: doc.blocks } : {}),
+            },
+      ),
+    );
+  }
+  const { text, layout } = composeBubble(rows);
+  return layout.length > 0 || persisted.length > 0 ? { layout, text, persisted, payloads: toolPayloadsOf(toolBlocks) } : undefined;
+}
+
+/** The state of each file a bubble's rows name (final design step 3). */
+async function rowFilesOf(ctx: QueryCtx, message: Doc<"messages">): Promise<RowFileView[]> {
+  const out: RowFileView[] = [];
+  // The layout's own bounds (lib/bubbleProjection.ts `LAYOUT_MAX_*`): it never holds more,
+  // so every file it renders is resolved here — never a generic "pending" past a reader cut.
+  let files = 0;
+  for (const row of (message.rowLayout ?? []).slice(0, LAYOUT_MAX_ROWS)) {
+    for (const f of row.files ?? []) {
+      if (++files > LAYOUT_MAX_FILES) return out;
+      // A remote https reference: shown as is, never copied (no record to read).
+      if (f.remoteUrl !== undefined) {
+        out.push({
+          entryId: row.entryId,
+          blockIndex: f.blockIndex,
+          state: "remote",
+          url: f.remoteUrl,
+          ...(f.label !== undefined ? { label: f.label } : {}),
+          ...(f.mimeType !== undefined ? { mimeType: f.mimeType } : {}),
+        });
+        continue;
+      }
+      const record = await fileOfLayout(ctx, message, row.entryId, f);
+      out.push({
+        entryId: row.entryId,
+        blockIndex: f.blockIndex,
+        ...(record === null
+          ? { state: "pending" as const }
+          : {
+              fileId: record._id,
+              state: record.state,
+              ...(record.reason !== undefined ? { reason: record.reason } : {}),
+              ...(record.label !== undefined ? { label: record.label } : {}),
+              kind: record.kind,
+              ...(record.mimeType !== undefined ? { mimeType: record.mimeType } : {}),
+              ...(record.sizeBytes !== undefined ? { sizeBytes: record.sizeBytes } : {}),
+              ...(record.sha256 !== undefined ? { sha256: record.sha256 } : {}),
+              // The copy itself, read now (codex review 8): a row's copied file shows
+              // whatever derived part exists or not yet — the view never waits for one.
+              ...(record.state === "copied" && record.storageId !== undefined
+                ? { storageId: String(record.storageId), url: (await ctx.storage.getUrl(record.storageId)) ?? undefined }
+                : {}),
+            }),
+      });
+    }
+  }
+  return out;
+}
+
+
+export type RowFileView = {
+  entryId: string;
+  blockIndex: number;
+  fileId?: Id<"transcriptFiles">;
+  /** `remote`: an https reference the reader's browser loads (`url`), never copied. */
+  state: "pending" | "copied" | "gone" | "refused" | "remote";
+  url?: string;
+  reason?: string;
+  label?: string;
+  kind?: string;
+  mimeType?: string;
+  sizeBytes?: number;
+  sha256?: string;
+};
+
+/** Attach the display decisions (lib/displayDedup.ts) to the bubbles of a window. */
+export function withDisplayDecisions<
+  M extends {
+    _id: Id<"messages">;
+    role: string;
+    text: string;
+    displayGroupId?: string;
+    rowLayout?: Doc<"messages">["rowLayout"];
+    rowFiles?: RowFileView[];
+    liveFileShas?: ReadonlyArray<{ storageId: string; sha256?: string }>;
+  },
+>(messages: M[]): Array<M & { displayHidden?: DedupDecision[] }> {
+  const bubbles: DedupBubble[] = [];
+  for (const m of messages) {
+    if (m.role !== "assistant" || (m.rowLayout === undefined && m.liveFileShas === undefined)) continue;
+    bubbles.push({
+      messageId: String(m._id),
+      groupId: m.displayGroupId ?? String(m._id),
+      ...(m.liveFileShas !== undefined ? { parts: m.liveFileShas } : {}),
+      rows: (m.rowLayout ?? []).map((r) => ({
+        entryId: r.entryId,
+        text: m.text.slice(r.start, r.end),
+        files: (r.files ?? []).map((f) => {
+          const sha = m.rowFiles?.find((x) => x.entryId === r.entryId && x.blockIndex === f.blockIndex)?.sha256;
+          return { blockIndex: f.blockIndex, ...(sha !== undefined ? { sha256: sha } : {}) };
+        }),
+      })),
+    });
+  }
+  const decisions = displayDecisions(bubbles);
+  if (decisions.length === 0) return messages;
+  const byMessage = new Map<string, DedupDecision[]>();
+  for (const d of decisions) byMessage.set(d.messageId, [...(byMessage.get(d.messageId) ?? []), d]);
+  return messages.map((m) => {
+    const hidden = byMessage.get(String(m._id));
+    return hidden === undefined ? m : { ...m, displayHidden: hidden };
+  });
 }
 
 /**

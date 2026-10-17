@@ -28,6 +28,14 @@
 
 import type { Doc, Id } from "../_generated/dataModel";
 import type { ActionCtx, MutationCtx, QueryCtx } from "../_generated/server";
+import {
+  boundRowContent,
+  IDEMPOTENCY_KINDS,
+  sanitizePosition,
+  sanitizeRowBlocks,
+  type RowBlock,
+  type TranscriptPosition,
+} from "./transcriptContent";
 import { internal } from "../_generated/api";
 import { ATRIUM_SEND_ID_RE, sendIdsOf } from "./sendIdentity";
 import type { TranscriptProjectionMode } from "./instanceConfig";
@@ -108,6 +116,26 @@ export type TranscriptRowInput = {
   /** Projection `on` (phase 5): the sub-agents this row says its run LAUNCHED (an
    *  accepted `sessions_spawn` result). Stored as `transcriptSpawns`, never on the row. */
   spawns?: SpawnFact[];
+  // Projection `on` (final design step 1, lib/transcriptContent.ts). Content — stored in
+  // the row's content document beside its text:
+  blocks?: RowBlock[];
+  blocksTruncated?: boolean;
+  errorMessage?: string;
+  // …and identity facts, stored on the row (`on` only; display facts, never placement):
+  transcriptPosition?: TranscriptPosition;
+  idempotencyKind?: string;
+  deliveryMirror?: boolean;
+  stopReason?: string;
+  provenanceKind?: string;
+  provenanceSourceTool?: string;
+  /** A stream segment the gateway split out of its transcript row (bridge
+   *  transcript-rows.ts `streamSegmentEntryId`): shown right before its owner. */
+  streamSegment?: boolean;
+  /** Its place among the segments of the same row (`chat.history`'s order). */
+  segmentOrder?: number;
+  /** Projection `on`, set by Convex: `runId` is the row's PRESENTATION OWNER (the row named
+   *  no run — convex/transcriptProjection.ts `presentationOwnerOf`), not the gateway's. */
+  presentationOwner?: boolean;
 };
 
 /** One launch a row states (bridge: providers/openclaw/transcript-rows.ts `spawnFacts`). */
@@ -696,10 +724,19 @@ export async function deletedMergeOf(
 
 /** The signature of what a row shows (`transcriptRows.textSig`): compared on upsert so a
  *  replayed read never has to load the text document to know nothing changed. Undefined
- *  when the row carries neither a text nor an acknowledgment (nothing known). */
-export function rowTextSignature(text: string | undefined, yieldAck: string | undefined): string | undefined {
-  if (text === undefined && yieldAck === undefined) return undefined;
-  const body = JSON.stringify([text ?? null, yieldAck ?? null]);
+ *  when the row carries nothing it shows (nothing known). A row with no blocks and no
+ *  error text keeps the signature it always had (final design step 1): only the content
+ *  that is new is signed differently. */
+export function rowTextSignature(
+  text: string | undefined,
+  yieldAck: string | undefined,
+  extra?: { errorMessage?: string; blocks?: readonly RowBlock[]; blocksTruncated?: boolean },
+): string | undefined {
+  const more = extra !== undefined && (extra.errorMessage !== undefined || extra.blocks !== undefined);
+  if (text === undefined && yieldAck === undefined && !more) return undefined;
+  const body = more
+    ? JSON.stringify([text ?? null, yieldAck ?? null, extra!.errorMessage ?? null, extra!.blocks ?? null, extra!.blocksTruncated === true])
+    : JSON.stringify([text ?? null, yieldAck ?? null]);
   return `${body.length}:${fnv1a(body, 0x811c9dc5)}${fnv1a(body, 0x050c5d1f)}`;
 }
 
@@ -718,11 +755,22 @@ export function sanitizeRow(raw: TranscriptRowInput): TranscriptRowInput | null 
   const sendId = boundedId(raw.sendId, MAX_RUN_ID_CHARS);
   const steerTargetRunId = boundedId(raw.steerTargetRunId, MAX_RUN_ID_CHARS);
   const mirrorOrigin = boundedId(raw.mirrorOrigin, 64);
-  const toolCallIds = Array.isArray(raw.toolCallIds)
-    ? raw.toolCallIds
-        .filter((id): id is string => boundedId(id, MAX_RUN_ID_CHARS) !== undefined)
-        .slice(0, MAX_TOOL_CALL_IDS)
-    : [];
+  const content = boundRowContent(boundRowShown(raw.text, raw.yieldAck), {
+    errorMessage: raw.errorMessage,
+    blocks: sanitizeRowBlocks(raw.blocks),
+  });
+  // The call-id index holds every call the row names: the ids the bridge reported AND the
+  // ids of the row's own tool blocks — the ONE identity both were read with (bridge
+  // tool-call-id.ts `resolveToolCallId`, upstream tool-cards.ts:224; codex review 12). A
+  // row whose index missed a block's id was a row the payload reader skipped.
+  const toolCallIds = [
+    ...new Set([
+      ...(Array.isArray(raw.toolCallIds) ? raw.toolCallIds : []),
+      ...(content.blocks ?? []).flatMap((b) => (b.type === "tool" ? [b.toolCallId] : [])),
+    ]),
+  ]
+    .filter((id): id is string => boundedId(id, MAX_RUN_ID_CHARS) !== undefined)
+    .slice(0, MAX_TOOL_CALL_IDS);
   return {
     entryId,
     seq: raw.seq,
@@ -735,9 +783,67 @@ export function sanitizeRow(raw: TranscriptRowInput): TranscriptRowInput | null 
     hidden: raw.hidden === true,
     visible: raw.visible === true,
     ...(toolCallIds.length > 0 ? { toolCallIds } : {}),
-    ...boundRowShown(raw.text, raw.yieldAck),
+    ...content,
+    ...(raw.blocksTruncated === true ? { blocksTruncated: true } : {}),
     ...boundSpawns(raw.spawns),
+    ...identityFacts(raw),
   };
+}
+
+/** The display facts a row states beside its identity (final design §3.3), bounded. */
+function identityFacts(raw: TranscriptRowInput): Pick<
+  TranscriptRowInput,
+  | "transcriptPosition"
+  | "idempotencyKind"
+  | "deliveryMirror"
+  | "stopReason"
+  | "provenanceKind"
+  | "provenanceSourceTool"
+  | "streamSegment"
+  | "segmentOrder"
+> {
+  const position = sanitizePosition(raw.transcriptPosition);
+  const kind = typeof raw.idempotencyKind === "string" && IDEMPOTENCY_KINDS.has(raw.idempotencyKind) ? raw.idempotencyKind : undefined;
+  const stopReason = boundedId(raw.stopReason, 32);
+  const provenanceKind = boundedId(raw.provenanceKind, 64);
+  const provenanceSourceTool = boundedId(raw.provenanceSourceTool, 64);
+  return {
+    ...(position !== undefined ? { transcriptPosition: position } : {}),
+    ...(kind !== undefined ? { idempotencyKind: kind } : {}),
+    ...(raw.deliveryMirror === true ? { deliveryMirror: true } : {}),
+    ...(stopReason !== undefined ? { stopReason } : {}),
+    ...(provenanceKind !== undefined ? { provenanceKind } : {}),
+    ...(provenanceSourceTool !== undefined ? { provenanceSourceTool } : {}),
+    ...(raw.streamSegment === true ? { streamSegment: true } : {}),
+    ...(raw.streamSegment === true && typeof raw.segmentOrder === "number" && Number.isSafeInteger(raw.segmentOrder) && raw.segmentOrder >= 0 && raw.segmentOrder < 1024
+      ? { segmentOrder: raw.segmentOrder }
+      : {}),
+  };
+}
+
+/** The fields a row carries only in projection `on` (final design step 1) — stripped from
+ *  an `off`/`shadow` apply with its text, so those modes store exactly what they did. */
+export const ON_ONLY_ROW_FIELDS = [
+  "text",
+  "yieldAck",
+  "spawns",
+  "blocks",
+  "blocksTruncated",
+  "errorMessage",
+  "transcriptPosition",
+  "idempotencyKind",
+  "deliveryMirror",
+  "stopReason",
+  "provenanceKind",
+  "provenanceSourceTool",
+  "streamSegment",
+  "segmentOrder",
+] as const;
+
+export function identityOnly(row: TranscriptRowInput): TranscriptRowInput {
+  const out: Record<string, unknown> = { ...row };
+  for (const k of ON_ONLY_ROW_FIELDS) delete out[k];
+  return out as TranscriptRowInput;
 }
 
 /** The launches a row states, bounded and shaped like the identities they are (a child run
@@ -2428,6 +2534,18 @@ export async function loadProjectionReport(
   };
 }
 
+/** Two display positions, field by field (a stored document's key order is not ours). */
+function samePosition(a: TranscriptPosition | undefined, b: TranscriptPosition | undefined): boolean {
+  if (a === undefined || b === undefined) return a === b;
+  return (
+    a.source === b.source &&
+    a.rawSeq === b.rawSeq &&
+    a.activity?.afterRawSeq === b.activity?.afterRawSeq &&
+    a.activity?.scopeId === b.activity?.scopeId &&
+    a.activity?.startOrder === b.activity?.startOrder
+  );
+}
+
 /** The stored row for an upsert comparison: true when nothing identity-bearing moved. */
 export function sameRow(
   stored: Doc<"transcriptRows">,
@@ -2444,7 +2562,17 @@ export function sameRow(
     (stored.runTerminal ?? false) === (next.runTerminal ?? false) &&
     stored.hidden === next.hidden &&
     stored.visible === next.visible &&
-    JSON.stringify(stored.toolCallIds ?? []) === JSON.stringify(next.toolCallIds ?? [])
+    JSON.stringify(stored.toolCallIds ?? []) === JSON.stringify(next.toolCallIds ?? []) &&
+    // Final design step 1 (`on` only — absent on both sides in `off`/`shadow`).
+    samePosition(stored.transcriptPosition, next.transcriptPosition) &&
+    stored.idempotencyKind === next.idempotencyKind &&
+    (stored.deliveryMirror ?? false) === (next.deliveryMirror ?? false) &&
+    stored.stopReason === next.stopReason &&
+    stored.provenanceKind === next.provenanceKind &&
+    stored.provenanceSourceTool === next.provenanceSourceTool &&
+    (stored.streamSegment ?? false) === (next.streamSegment ?? false) &&
+    (next.segmentOrder === undefined || stored.segmentOrder === next.segmentOrder) &&
+    (stored.presentationOwner ?? false) === (next.presentationOwner ?? false)
   );
 }
 

@@ -21,6 +21,7 @@ import { ARCHIVE_FORMAT_VERSION } from "./exportArchive";
 export const SUPPORTED_FORMAT_VERSIONS: ReadonlyArray<number> = [
   1,
   2,
+  3,
   ARCHIVE_FORMAT_VERSION,
 ];
 
@@ -30,6 +31,9 @@ export const MAX_ROWS_PER_BATCH = 200;
 export const MAX_STRING_LENGTH = 200_000;
 /** Fields one row may carry, at any depth. */
 export const MAX_FIELDS_PER_ROW = 500;
+/** Fields a bubble's `rowLayout` may hold: its own bounds (lib/bubbleProjection
+ *  `LAYOUT_MAX_*` — 400 rows, 256 files, 512 cards, 16 widgets) with room to spare. */
+export const MAX_LAYOUT_FIELDS = 20_000;
 /** How deep a row's own structure may nest. Bounded because the walk that checks
  *  it is recursive, and a hand-written archive can nest as deep as it likes. */
 export const MAX_ROW_DEPTH = 12;
@@ -142,6 +146,8 @@ export function assertRowAcceptable(
    * rejecting them here would refuse an archive this very deployment produced.
    */
   opaqueKeys: ReadonlyArray<string> = [],
+  /** The field budget of this row (MAX_FIELDS_PER_ROW unless the caller names its own). */
+  maxFields: number = MAX_FIELDS_PER_ROW,
 ): void {
   let fields = 0;
   /** Bounds still apply to opaque content — only its SHAPE is none of our business. */
@@ -160,7 +166,7 @@ export function assertRowAcceptable(
     if (value === null || typeof value !== "object") return;
     for (const inner of Object.values(value as Record<string, unknown>)) {
       fields += 1;
-      if (fields > MAX_FIELDS_PER_ROW) {
+      if (fields > maxFields) {
         throw new ArchiveRejected("row_too_large");
       }
       walkSizeOnly(inner, depth + 1);
@@ -183,7 +189,7 @@ export function assertRowAcceptable(
       value as Record<string, unknown>,
     )) {
       fields += 1;
-      if (fields > MAX_FIELDS_PER_ROW) {
+      if (fields > maxFields) {
         throw new ArchiveRejected("row_too_large");
       }
       if (opaqueKeys.includes(key)) {

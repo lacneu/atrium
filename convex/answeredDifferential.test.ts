@@ -200,17 +200,28 @@ describe("codex phase 5 pass 10 — the repros", () => {
     expect((await t.run((ctx) => ctx.db.get(retried)))!.text).toBe("B recovered answer");
   });
 
-  test("#2 in `on`: a file whose blob is gone does not refuse the retry that can repair it", async () => {
+  // FINAL DESIGN STEP 4: in `on` a retry is another run with its own bubble — the answered
+  // probe below decides a retry's landing outside `on` only (after a rollback).
+  test("`on`: a retry opens its own bubble, the probe is never asked", async () => {
     const t = convexTest({ schema, modules });
     const { chatId, userId } = await projected(t, "on");
+    const mW = await bubble(t, chatId, userId, { name: "", text: "", parts: [{ kind: "file", stamp: W, blob: "gone" }], expected: false }, "fresh");
+    const mR = await startRun(t, chatId, WR);
+    expect(mR).not.toBe(mW);
+    expect((await t.run((ctx) => ctx.db.get(mW)))!.status).toBe("complete");
+  });
+
+  test("#2 after a rollback: a file whose blob is gone does not refuse the retry that can repair it", async () => {
+    const t = convexTest({ schema, modules });
+    const { chatId, userId } = await projected(t, "shadow");
     const mW = await bubble(t, chatId, userId, { name: "", text: "", parts: [{ kind: "file", stamp: W, blob: "gone" }], expected: false }, "fresh");
     expect(await startRun(t, chatId, WR)).toBe(mW);
     expect((await t.run((ctx) => ctx.db.get(mW)))!.status).toBe("streaming");
   });
 
-  test("#3 under the real read limits: 19 tool outputs of 900 KiB — the probe stays bounded, the retry resumes", async () => {
+  test("#3 under the real read limits: 19 tool outputs of 900 KiB — the probe stays bounded, the retry resumes (after a rollback)", async () => {
     const t = convexTest({ schema, modules, transactionLimits: true });
-    const { chatId, userId } = await projected(t, "on");
+    const { chatId, userId } = await projected(t, "shadow");
     const mW = await bubble(t, chatId, userId, { name: "", text: "", parts: [], expected: false }, "fresh");
     for (let i = 0; i < 19; i++) {
       await t.run((ctx) =>

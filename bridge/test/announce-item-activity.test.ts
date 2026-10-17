@@ -407,3 +407,80 @@ describe("announce run with item-only tool activity (captured 2026-07-14)", () =
     expect(writer.advances).toHaveLength(0);
   });
 });
+
+// A delivery item's PROGRESS (`phase: "update"`), as the bench captured it on 2026.9.33
+// (distribution image r6, 2026-10-17): an announce run whose `exec` runs long emits, between
+// its `start` and its `end`, item frames with `phase:"update"` and `status:"running"`
+// (upstream `src/agents/embedded-agent-subscribe.handlers.tools.progress.ts:115-144`,
+// through `emitTrackedItemEvent`, `...tools.start.ts:223-246`; the schema's phase union is
+// `start | update | end`, vendored `logs-chat.ts` AgentActivityItemSchema). Upstream counts
+// only `start` and `end` as the item's life (`itemActiveIds`); `update` refreshes the
+// running item, and the Control UI replaces that item's activity on its live card and
+// syncs at once only on `end` (ui/src/pages/chat/tool-stream.ts:521-551). A delivery run's
+// card is written at `end`, so the progress frames add nothing to it and close nothing.
+function capturedExecItem(phase: "start" | "update" | "end", status: string): unknown {
+  return {
+    type: "event",
+    event: "agent",
+    payload: {
+      runId: ANNOUNCE_RUN,
+      stream: "item",
+      sessionKey: SESSION_KEY,
+      data: {
+        itemId: "tool:call_ca56|fc_0efd",
+        toolCallId: "call_ca56|fc_0efd",
+        name: "exec",
+        kind: "tool",
+        phase,
+        title: "Exec Verify completed chain file",
+        status,
+        meta: "Verify completed chain file",
+        commandBearing: true,
+      },
+    },
+  };
+}
+
+describe("a delivery item's progress frames (phase update, captured 2026.9.33)", () => {
+  async function drive(updates: number): Promise<ItemWriter> {
+    const writer = new ItemWriter();
+    const manager = new RunManager("annitems1", SESSION_KEY, writer);
+    let now = 1000;
+    await manager.feed(lifecycleFrame(ANNOUNCE_RUN, "start"), (now += 1));
+    await manager.feed(capturedExecItem("start", "running"), (now += 1));
+    for (let i = 0; i < updates; i++) {
+      await manager.feed(capturedExecItem("update", "running"), (now += 1));
+    }
+    await manager.feed(capturedExecItem("end", "completed"), (now += 1));
+    await manager.feed(chatAborted(ANNOUNCE_RUN), (now += 1));
+    await manager.feed(lifecycleFrame(ANNOUNCE_RUN, "end"), (now += 1));
+    await manager.tick(now + 100_000);
+    return writer;
+  }
+
+  it("one card, written by the item's end, whatever the number of progress frames", async () => {
+    const writer = await drive(4);
+    expect(writer.toolParts.map((p) => [p.name, p.phase])).toEqual([["exec", "completed"]]);
+    expect(writer.finals.map((f) => f.status)).toEqual(["complete"]);
+  });
+
+  it("reads exactly as the same run without its progress frames", async () => {
+    const withUpdates = await drive(4);
+    const without = await drive(0);
+    expect(withUpdates.toolParts).toEqual(without.toolParts);
+    expect(withUpdates.finals).toEqual(without.finals);
+    expect(withUpdates.started).toBe(without.started);
+  });
+
+  it("progress frames alone open no card and close nothing", async () => {
+    const writer = new ItemWriter();
+    const manager = new RunManager("annitems1", SESSION_KEY, writer);
+    let now = 1000;
+    await manager.feed(lifecycleFrame(ANNOUNCE_RUN, "start"), (now += 1));
+    await manager.feed(capturedExecItem("start", "running"), (now += 1));
+    await manager.feed(capturedExecItem("update", "running"), (now += 1));
+    await manager.feed(capturedExecItem("update", "running"), (now += 1));
+    expect(writer.toolParts).toEqual([]);
+    expect(writer.finals).toEqual([]);
+  });
+});

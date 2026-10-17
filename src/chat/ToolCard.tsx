@@ -10,8 +10,8 @@ import {
 import { m } from "@/paraglide/messages.js";
 import {
   formatToolResult,
+  toolCardDisplay,
   toolOutcomeLabel,
-  toolPreview,
 } from "./toolActivityView";
 
 // Small copy button for a tool's input/output block. Hover-revealed in the
@@ -48,6 +48,8 @@ type ToolCardProps = {
   toolName: string;
   args?: unknown;
   argsText?: string;
+  /** The input came from a transcript row: masked at display (toolCardDisplay). */
+  inputFromTranscript?: boolean;
   result?: unknown;
   status?: { type?: string } | undefined;
 };
@@ -76,20 +78,11 @@ function phaseClass(
   return "running";
 }
 
-function pretty(value: unknown): string {
-  if (value === undefined || value === null) return "";
-  if (typeof value === "string") return value;
-  try {
-    return JSON.stringify(value, null, 2);
-  } catch {
-    return String(value);
-  }
-}
-
 export function ToolCard({
   toolName,
   args,
   argsText,
+  inputFromTranscript,
   result,
   status,
   turnSettled,
@@ -97,8 +90,7 @@ export function ToolCard({
   const hasResult = result !== undefined && result !== null;
   // assistant-ui status.type is "running" | "complete" | "incomplete" | ...
   const phase = phaseClass(status?.type, hasResult, turnSettled);
-  const inputText = argsText ?? pretty(args);
-  const preview = toolPreview(args, argsText);
+  const { inputText, preview } = toolCardDisplay({ args, argsText, inputFromTranscript });
   // Classify the result so a bare exec OUTCOME envelope (no stdout -- the gateway
   // does not transmit it; see formatToolResult) renders as a clear outcome line
   // instead of misleading raw JSON, while real text/rich results show in full.

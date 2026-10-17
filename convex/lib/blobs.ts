@@ -37,6 +37,9 @@
 //   - archiveImportIds of kind IMPORT_BLOB_KIND (by_kind_archive) — while its
 //     import is `applying` or `abandoning`: the import is about to attach the blob,
 //     or wrote a part naming it before the part's files mirror.
+//   - transcriptFiles.storageId  (by_storage)      — a file a transcript row carries,
+//     copied once (projection `on`, convex/transcriptFiles.ts). Read LAST: only a blob
+//     nothing else holds pays for it, so every other release costs what it did.
 //   - uploads.storageId          (by_storage)      — an OWNERSHIP registration
 //     (the IDOR gate): counted while it is USABLE — its owner may still attach the
 //     blob (uploadIsUsable) — and, on request (`countUploads`), whatever its age.
@@ -65,7 +68,8 @@ export type BlobReference =
   | "chartLogo"
   | "renditionSource"
   | "importing"
-  | "upload";
+  | "upload"
+  | "transcriptFile";
 
 /**
  * The first row that references `storageId`, or null when none does. Point reads
@@ -164,6 +168,14 @@ export async function blobReference(
     .take(DEPENDENTS_READ)) {
     if (opts.countUploads === true || uploadIsUsable(upload, now)) return "upload";
   }
+  if (
+    (await ctx.db
+      .query("transcriptFiles")
+      .withIndex("by_storage", (q) => q.eq("storageId", storageId))
+      .first()) !== null
+  ) {
+    return "transcriptFile";
+  }
   return null;
 }
 
@@ -202,10 +214,10 @@ export const IMPORT_BLOB_KIND = "blob";
  *  registrations of one blob — one of each in practice). */
 const DEPENDENTS_READ = 4;
 
-/** Reads of one reference test (`blobReference`): seven point reads, the source's
+/** Reads of one reference test (`blobReference`): eight point reads, the source's
  *  rendition row, the imports holding it (a mapping and its session each) and its
  *  upload registrations. */
-const REFERENCE_READS = 8 + 2 * DEPENDENTS_READ + DEPENDENTS_READ;
+const REFERENCE_READS = 9 + 2 * DEPENDENTS_READ + DEPENDENTS_READ;
 
 /**
  * Upper bound of the documents one `releaseBlob` touches — the budget a batched

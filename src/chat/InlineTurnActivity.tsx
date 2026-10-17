@@ -101,6 +101,7 @@ export function InlineTurnActivity(props: {
               toolName={p.toolName}
               args={p.args}
               argsText={p.argsText}
+              inputFromTranscript={p.inputFromTranscript}
               result={p.result}
               status={p.phase ? { type: p.phase } : undefined}
               turnSettled={status !== undefined && status !== "streaming"}

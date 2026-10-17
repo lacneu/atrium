@@ -1,0 +1,60 @@
+{
+ "_source": "bench run 2026-10-16T20-26-29-405Z (OpenClaw 2026.9.33 r5, bench tokens only), chat.history tail page: ONE transcript row (id 6f3b0282…, seq 114) projected as TWO messages — the stream segment (openclawStreamFallback.source segment, its text and MEDIA line) then the rest of the row (the exec tool call). Upstream src/gateway/chat-display-projection.commentary.ts:96-125.",
+ "sessionKey": "agent:alice:atrium:chat:u-repro:turn-nx70bxpvn6m5xqbgw484tz78618gdy6b",
+ "messages": [
+  {
+   "role": "assistant",
+   "content": [
+    {
+     "type": "text",
+     "text": "SETTLE_MEDIA_DONE Le fichier demandé est prêt et vous est livré en pièce jointe.\nMEDIA:/home/node/.openclaw/media/outbound/bench-settle.txt"
+    }
+   ],
+   "timestamp": 1792182878076,
+   "openclawStreamFallback": {
+    "replacementText": "SETTLE_MEDIA_DONE Le fichier demandé est prêt et vous est livré en pièce jointe.\nMEDIA:/home/node/.openclaw/media/outbound/bench-settle.txt",
+    "source": "segment",
+    "itemId": "msg_01d57fa7ea993712016ad28a5faec081958e7b8b7aba8b242e"
+   },
+   "__openclaw": {
+    "runId": "fbd3af78-3946-474f-9c2f-2a2de803f9ef",
+    "id": "6f3b0282-6ac6-4189-90dd-d8e253b6c268",
+    "recordTimestampMs": 1792182881044,
+    "transcriptPosition": {
+     "source": "joygANwYEeGbnTZ7TScTBNSEFbIHwtdOYXH5E0TDhtQ",
+     "rawSeq": 200
+    },
+    "seq": 114
+   }
+  },
+  {
+   "role": "assistant",
+   "content": [
+    {
+     "type": "toolCall",
+     "id": "call_22cd7a15af2b41358f1e5adb9828f44c|fc_01d57fa7ea993712016ad28a606b548195b024c7aa753cc746",
+     "name": "exec",
+     "arguments": {
+      "title": "List delivered attachment file details",
+      "code": "return await exec({command:'ls -la /home/node/.openclaw/media/outbound/bench-settle.txt'});"
+     }
+    }
+   ],
+   "api": "openai-chatgpt-responses",
+   "provider": "openai",
+   "model": "gpt-6.1-sol",
+   "stopReason": "toolUse",
+   "timestamp": 1792182878076,
+   "__openclaw": {
+    "runId": "fbd3af78-3946-474f-9c2f-2a2de803f9ef",
+    "id": "6f3b0282-6ac6-4189-90dd-d8e253b6c268",
+    "recordTimestampMs": 1792182881044,
+    "transcriptPosition": {
+     "source": "joygANwYEeGbnTZ7TScTBNSEFbIHwtdOYXH5E0TDhtQ",
+     "rawSeq": 200
+    },
+    "seq": 114
+   }
+  }
+ ]
+}

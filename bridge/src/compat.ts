@@ -471,7 +471,7 @@ export const COMPAT_MANIFEST: CompatManifest = {
       // FLOOR 2026.8.2 (OPENCLAW_MIN_SUPPORTED, release 0.92.0): the versions below it
       // were retired from support — their validation runs stay in the release notes, but
       // the redesigned turn model cannot run on them, and a claim nobody keeps is not one.
-      supportedRange: { min: OPENCLAW_MIN_SUPPORTED, maxValidated: "2026.9.9" },
+      supportedRange: { min: OPENCLAW_MIN_SUPPORTED, maxValidated: "2026.9.33" },
       // Inside the range, and BROKEN on a stock gateway: a managed-media
       // `attachment` block persisted by the gateway's own path crashes
       // `transcript-transform` on every later turn of that session (upstream
@@ -676,6 +676,16 @@ export const COMPAT_MANIFEST: CompatManifest = {
         // it back as that answer (core/compaction-verdict.ts `compactRefusalFromAnswer`), so
         // /compact and the pre-send guard behave as on 2026.9.8. No capability floor moves.
         "2026.9.9",
+        // 2026.9.33: the EXTENDED-STABLE release, cut from 2026.9.9 with backports only
+        // (upstream v2026.9.33 = 5873f81). Full live suite GO (proof run, then the
+        // attestation run on the final tree), Hermes co-run on 0.21.7, on the distribution
+        // image r6 PINNED BY DIGEST (sha256:ac34c683…). `packages/gateway-protocol/src` and
+        // both event catalogues are byte-identical to 2026.9.9, no watched file changed,
+        // every anchor held: 2026.9.9's profile, no adaptation. It sorts ABOVE 2026.9.9
+        // (compareVersions is numeric: 33 > 9), which leaves 2026.9.10–2026.9.32 under the
+        // ceiling — an interval no upstream release occupies. The 2026.10 mainline stays
+        // beyond it.
+        "2026.9.33",
       ],
       capabilities: OPENCLAW_CAPABILITIES,
     },

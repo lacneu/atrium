@@ -32,6 +32,7 @@ import {
   SUBAGENT_FIELDS_DROPPED,
   AGENT_REQUEST_FIELDS_DROPPED,
   NOT_EXPORTED,
+  TRANSCRIPT_FILE_FIELDS_DROPPED,
   stripChatForExport,
   stripRowForExport,
 } from "./lib/exportArchive";
@@ -502,6 +503,31 @@ export const exportChatSection = query({
         blobs,
         cursor: encodePartsCursor({ at: messageAt, childAt }),
       };
+    }
+
+    // A transcript file's state as the conversation shows it (format 4, codex review 17):
+    // copied with its bytes (the archive key of this chat's `files` row over the same blob —
+    // the derived part's mirror), gone or refused with its reason, pending with its name.
+    if (section === "transcriptFiles") {
+      const result = await ctx.db
+        .query("transcriptFiles")
+        .withIndex("by_chat_entry", (q) => q.eq("chatId", chatId))
+        .paginate(page);
+      const rows: Record<string, unknown>[] = [];
+      for (const record of result.page) {
+        const row = stripRowForExport(record, { drop: TRANSCRIPT_FILE_FIELDS_DROPPED });
+        if (record.storageId !== undefined) {
+          const owners = await ctx.db
+            .query("files")
+            .withIndex("by_storage", (q) => q.eq("storageId", record.storageId!))
+            .take(BLOB_OWNER_SCAN);
+          const owned = owners.find((f) => f.chatId === chatId && (f.deletedAt === undefined || f.deletedAt === null));
+          if (owned !== undefined) row.archiveBlobKey = owned._id;
+          else row.unresolvedBlobs = 1;
+        }
+        rows.push(row);
+      }
+      return { rows, blobs: [], cursor: result.isDone ? null : result.continueCursor };
     }
 
     if (section === "agentRequests") {

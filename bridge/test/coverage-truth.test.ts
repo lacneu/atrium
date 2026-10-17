@@ -108,6 +108,8 @@ const FROZEN_TRUTH_FLOOR = [
   "ChatHistoryDeltaResult.pendingInputs",
   "ChatHistoryDeltaResult.inputReceipts",
   "ChatPendingInputsPage.queuedCount",
+  // A delivery item's phase, `update` (a running tool's progress) included (2026-10-17).
+  "AgentActivityItem.phase",
 ];
 
 const ratchet = JSON.parse(

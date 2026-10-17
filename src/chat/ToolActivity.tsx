@@ -82,6 +82,7 @@ export function ToolActivity() {
               toolName={p.toolName}
               args={p.args}
               argsText={p.argsText}
+              inputFromTranscript={p.inputFromTranscript}
               result={p.result}
               // ToolCard's phaseClass understands the bridge phases directly
               // ("started"/"running"/"completed"/"error") via status.type.

@@ -1,0 +1,77 @@
+{
+ "_source": "probe-refonte-20261016T165938Z (OpenClaw 2026.9.33 r5, 5873f81; bench, token mode; bench tokens only): artifacts.download {sessionKey, artifactId} answers. REBUILT from the probe summary (the raw res payload was not recorded): `artifact`, `expiresAt` verbatim; `url` is the recorded shape with the ticket value replaced by <redacted>. ticketFetch = GET <url> with NO authentication. afterReset: the same request after sessions.reset (only the error MESSAGE was recorded; its structured details come from upstream artifacts.ts:194-202, not from this capture).",
+ "answers": [
+  {
+   "artifactId": "artifact_managed_media_03d85d8e-b298-4812-b5a1-3fffb6ad2e8b",
+   "answer": {
+    "artifact": {
+     "id": "artifact_managed_media_03d85d8e-b298-4812-b5a1-3fffb6ad2e8b",
+     "type": "file",
+     "title": "probe-refonte-a-2026-10-16t16-59-38-883z.txt",
+     "mimeType": "text/plain",
+     "sizeBytes": 16,
+     "sessionKey": "agent:alice:atrium:chat:u-probe:refonte-2026-10-16t16-59-38-883z",
+     "source": "session-transcript",
+     "download": {
+      "mode": "url"
+     }
+    },
+    "url": "/api/chat/media/outgoing/agent%3Aalice%3Aatrium%3Achat%3Au-probe%3Arefonte-2026-10-16t16-59-38-883z/03d85d8e-b298-4812-b5a1-3fffb6ad2e8b/full?mediaTicket=<redacted>",
+    "expiresAt": "2026-10-16T17:05:37.275Z"
+   },
+   "ticketFetch": {
+    "status": 200,
+    "contentType": "text/plain",
+    "bytes": 16,
+    "sha256": "b973a6005c36512b5bd405e41ffc3bc5be128098b650b0ebc477f1f554a4ba68"
+   },
+   "ticketOnOtherId": {
+    "status": 401
+   },
+   "noAuthNoTicket": {
+    "status": 401
+   }
+  },
+  {
+   "artifactId": "artifact_managed_image_0e844b10-2d50-44ce-a329-983b99c8b328",
+   "answer": {
+    "artifact": {
+     "id": "artifact_managed_image_0e844b10-2d50-44ce-a329-983b99c8b328",
+     "type": "image",
+     "title": "probe-refonte-img-2026-10-16t16-59-38-883z.png",
+     "mimeType": "image/png",
+     "sizeBytes": 1795,
+     "sessionKey": "agent:alice:atrium:chat:u-probe:refonte-2026-10-16t16-59-38-883z",
+     "source": "session-transcript",
+     "download": {
+      "mode": "url"
+     }
+    },
+    "url": "/api/chat/media/outgoing/agent%3Aalice%3Aatrium%3Achat%3Au-probe%3Arefonte-2026-10-16t16-59-38-883z/0e844b10-2d50-44ce-a329-983b99c8b328/full?mediaTicket=<redacted>",
+    "expiresAt": "2026-10-16T17:05:37.429Z"
+   },
+   "ticketFetch": {
+    "status": 200,
+    "contentType": "image/png",
+    "bytes": 1795,
+    "sha256": "04536bd570c5086e9e801ad5430ba98a71cb84289655fb085c5137f4c24e5176"
+   },
+   "ticketOnOtherId": {
+    "status": 401
+   },
+   "noAuthNoTicket": {
+    "status": 401
+   }
+  }
+ ],
+ "afterReset": {
+  "download": {
+   "ok": false,
+   "error": "artifact not found"
+  },
+  "canonicalUrlWithBearer": {
+   "status": 404,
+   "body": "not found"
+  }
+ }
+}

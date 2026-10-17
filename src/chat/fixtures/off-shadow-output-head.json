@@ -1,0 +1,780 @@
+{
+  "off": {
+    "view": [
+      {
+        "hasAnnouncePrefix": false,
+        "hasMergedRuns": false,
+        "mine": true,
+        "outbox": null,
+        "parts": [],
+        "role": "user",
+        "status": "complete",
+        "text": "q"
+      },
+      {
+        "hasAnnouncePrefix": false,
+        "hasMergedRuns": false,
+        "outbox": null,
+        "parts": [
+          {
+            "input": {
+              "command": "OPENROUTER_API_KEY=sk-or-v1-abcdef0123456789 ./run.sh"
+            },
+            "kind": "tool",
+            "name": "exec",
+            "output": {
+              "content": [
+                {
+                  "text": "OPENROUTER_API_KEY=sk-or-v1-abcdef0123456789 ./run.sh",
+                  "type": "text"
+                }
+              ],
+              "details": {
+                "status": "completed"
+              }
+            },
+            "phase": "completed",
+            "toolCallId": "t1"
+          },
+          {
+            "input": {
+              "command": "OPENROUTER_API_KEY=sk-or-…6789 ./run.sh"
+            },
+            "kind": "tool",
+            "name": "exec",
+            "output": "Authorization: Bearer abcdef0123456789QWERTY=",
+            "phase": "completed",
+            "toolCallId": "t2"
+          },
+          {
+            "input": {
+              "acknowledgment": "Je reviens vers toi."
+            },
+            "kind": "tool",
+            "name": "sessions_yield",
+            "output": {
+              "details": {
+                "status": "yielded"
+              }
+            },
+            "phase": "completed",
+            "toolCallId": "t3"
+          },
+          {
+            "input": {
+              "q": "token=abcdefghijklmnop1234"
+            },
+            "kind": "tool",
+            "name": "web_search",
+            "phase": "started",
+            "toolCallId": "t4"
+          }
+        ],
+        "role": "assistant",
+        "runId": "run1",
+        "status": "complete",
+        "text": "r"
+      }
+    ],
+    "converted": [
+      {
+        "role": "user",
+        "content": [
+          {
+            "type": "text",
+            "text": "q"
+          }
+        ],
+        "metadata": {
+          "custom": {
+            "authorName": null,
+            "mentions": null,
+            "importedAgentLabel": null,
+            "settledAt": 1,
+            "generationMs": null,
+            "status": "complete",
+            "runId": null,
+            "hasMergedRuns": false,
+            "continuationAt": null,
+            "hasContinuation": false,
+            "answeredChildRunIds": [],
+            "error": null,
+            "errorCode": null,
+            "autoRetry": null,
+            "autoRetryOutcome": null,
+            "interruptedAt": null,
+            "phase": null,
+            "phaseRetry": null,
+            "toolParts": [],
+            "allToolParts": [],
+            "activeToolName": null,
+            "provenanceParts": [],
+            "cronParts": [],
+            "planParts": [],
+            "routedInstanceName": null,
+            "routedAgentId": null,
+            "compaction": null,
+            "attachedDocCount": 0,
+            "queued": false,
+            "custody": null,
+            "steerSegment": false,
+            "groupFollows": false,
+            "groupContinues": false,
+            "groupText": null,
+            "groupFirstId": null,
+            "rawText": "q",
+            "quotedRefs": null
+          }
+        }
+      },
+      {
+        "role": "assistant",
+        "status": {
+          "type": "complete",
+          "reason": "stop"
+        },
+        "content": [
+          {
+            "type": "text",
+            "text": "r"
+          }
+        ],
+        "metadata": {
+          "custom": {
+            "authorName": null,
+            "mentions": null,
+            "importedAgentLabel": null,
+            "settledAt": 1,
+            "generationMs": null,
+            "status": "complete",
+            "runId": "run1",
+            "hasMergedRuns": false,
+            "continuationAt": null,
+            "hasContinuation": false,
+            "answeredChildRunIds": [],
+            "error": null,
+            "errorCode": null,
+            "autoRetry": null,
+            "autoRetryOutcome": null,
+            "interruptedAt": null,
+            "phase": null,
+            "phaseRetry": null,
+            "toolParts": [
+              {
+                "toolCallId": "t1",
+                "toolName": "exec",
+                "args": {
+                  "command": "OPENROUTER_API_KEY=sk-or-v1-abcdef0123456789 ./run.sh"
+                },
+                "result": {
+                  "content": [
+                    {
+                      "text": "OPENROUTER_API_KEY=sk-or-v1-abcdef0123456789 ./run.sh",
+                      "type": "text"
+                    }
+                  ],
+                  "details": {
+                    "status": "completed"
+                  }
+                },
+                "argsText": "{\n  \"command\": \"OPENROUTER_API_KEY=sk-or-v1-abcdef0123456789 ./run.sh\"\n}",
+                "phase": "completed"
+              },
+              {
+                "toolCallId": "t2",
+                "toolName": "exec",
+                "args": {
+                  "command": "OPENROUTER_API_KEY=sk-or-…6789 ./run.sh"
+                },
+                "result": "Authorization: Bearer abcdef0123456789QWERTY=",
+                "argsText": "{\n  \"command\": \"OPENROUTER_API_KEY=sk-or-…6789 ./run.sh\"\n}",
+                "phase": "completed"
+              },
+              {
+                "toolCallId": "t3",
+                "toolName": "sessions_yield",
+                "args": {
+                  "acknowledgment": "Je reviens vers toi."
+                },
+                "result": {
+                  "details": {
+                    "status": "yielded"
+                  }
+                },
+                "argsText": "{\n  \"acknowledgment\": \"Je reviens vers toi.\"\n}",
+                "phase": "completed"
+              },
+              {
+                "toolCallId": "t4",
+                "toolName": "web_search",
+                "args": {
+                  "q": "token=abcdefghijklmnop1234"
+                },
+                "argsText": "{\n  \"q\": \"token=abcdefghijklmnop1234\"\n}",
+                "phase": "started"
+              }
+            ],
+            "allToolParts": [
+              {
+                "toolCallId": "t1",
+                "toolName": "exec",
+                "args": {
+                  "command": "OPENROUTER_API_KEY=sk-or-v1-abcdef0123456789 ./run.sh"
+                },
+                "result": {
+                  "content": [
+                    {
+                      "text": "OPENROUTER_API_KEY=sk-or-v1-abcdef0123456789 ./run.sh",
+                      "type": "text"
+                    }
+                  ],
+                  "details": {
+                    "status": "completed"
+                  }
+                },
+                "argsText": "{\n  \"command\": \"OPENROUTER_API_KEY=sk-or-v1-abcdef0123456789 ./run.sh\"\n}",
+                "phase": "completed"
+              },
+              {
+                "toolCallId": "t2",
+                "toolName": "exec",
+                "args": {
+                  "command": "OPENROUTER_API_KEY=sk-or-…6789 ./run.sh"
+                },
+                "result": "Authorization: Bearer abcdef0123456789QWERTY=",
+                "argsText": "{\n  \"command\": \"OPENROUTER_API_KEY=sk-or-…6789 ./run.sh\"\n}",
+                "phase": "completed"
+              },
+              {
+                "toolCallId": "t3",
+                "toolName": "sessions_yield",
+                "args": {
+                  "acknowledgment": "Je reviens vers toi."
+                },
+                "result": {
+                  "details": {
+                    "status": "yielded"
+                  }
+                },
+                "argsText": "{\n  \"acknowledgment\": \"Je reviens vers toi.\"\n}",
+                "phase": "completed"
+              },
+              {
+                "toolCallId": "t4",
+                "toolName": "web_search",
+                "args": {
+                  "q": "token=abcdefghijklmnop1234"
+                },
+                "argsText": "{\n  \"q\": \"token=abcdefghijklmnop1234\"\n}",
+                "phase": "started"
+              }
+            ],
+            "activeToolName": "web_search",
+            "provenanceParts": [],
+            "cronParts": [],
+            "planParts": [],
+            "routedInstanceName": null,
+            "routedAgentId": null,
+            "compaction": null,
+            "attachedDocCount": 0,
+            "queued": false,
+            "custody": null,
+            "steerSegment": false,
+            "groupFollows": false,
+            "groupContinues": false,
+            "groupText": null,
+            "groupFirstId": null,
+            "rawText": "r",
+            "quotedRefs": null
+          }
+        }
+      }
+    ],
+    "panel": [
+      {
+        "argsText": "{\"command\":\"OPENROUTER_API_KEY=sk-or-v1-abcdef0123456789 ./run.sh\"}",
+        "childSessionKey": "child-1",
+        "name": "exec",
+        "resultText": "OPENROUTER_API_KEY=sk-or-v1-abcdef0123456789 ./run.sh",
+        "status": "done",
+        "toolCallId": "s1"
+      }
+    ],
+    "exported": [
+      {
+        "blobs": [],
+        "cursor": null,
+        "rows": [
+          {
+            "order": 0,
+            "part": {
+              "input": {
+                "command": "OPENROUTER_API_KEY=sk-or-v1-abcdef0123456789 ./run.sh"
+              },
+              "kind": "tool",
+              "name": "exec",
+              "output": {
+                "content": [
+                  {
+                    "text": "OPENROUTER_API_KEY=sk-or-v1-abcdef0123456789 ./run.sh",
+                    "type": "text"
+                  }
+                ],
+                "details": {
+                  "status": "completed"
+                }
+              },
+              "phase": "completed",
+              "toolCallId": "t1"
+            }
+          },
+          {
+            "order": 1,
+            "part": {
+              "input": {
+                "command": "OPENROUTER_API_KEY=sk-or-…6789 ./run.sh"
+              },
+              "kind": "tool",
+              "name": "exec",
+              "output": "Authorization: Bearer abcdef0123456789QWERTY=",
+              "phase": "completed",
+              "toolCallId": "t2"
+            }
+          },
+          {
+            "order": 2,
+            "part": {
+              "input": {
+                "acknowledgment": "Je reviens vers toi."
+              },
+              "kind": "tool",
+              "name": "sessions_yield",
+              "output": {
+                "details": {
+                  "status": "yielded"
+                }
+              },
+              "phase": "completed",
+              "toolCallId": "t3"
+            }
+          },
+          {
+            "order": 3,
+            "part": {
+              "input": {
+                "q": "token=abcdefghijklmnop1234"
+              },
+              "kind": "tool",
+              "name": "web_search",
+              "phase": "started",
+              "toolCallId": "t4"
+            }
+          }
+        ]
+      },
+      {
+        "blobs": [],
+        "cursor": null,
+        "rows": [
+          {
+            "argsText": "{\"command\":\"OPENROUTER_API_KEY=sk-or-v1-abcdef0123456789 ./run.sh\"}",
+            "childSessionKey": "child-1",
+            "name": "exec",
+            "resultText": "OPENROUTER_API_KEY=sk-or-v1-abcdef0123456789 ./run.sh",
+            "status": "done",
+            "toolCallId": "s1"
+          }
+        ]
+      }
+    ]
+  },
+  "shadow": {
+    "view": [
+      {
+        "hasAnnouncePrefix": false,
+        "hasMergedRuns": false,
+        "mine": true,
+        "outbox": null,
+        "parts": [],
+        "role": "user",
+        "status": "complete",
+        "text": "q"
+      },
+      {
+        "hasAnnouncePrefix": false,
+        "hasMergedRuns": false,
+        "outbox": null,
+        "parts": [
+          {
+            "input": {
+              "command": "OPENROUTER_API_KEY=sk-or-v1-abcdef0123456789 ./run.sh"
+            },
+            "kind": "tool",
+            "name": "exec",
+            "output": {
+              "content": [
+                {
+                  "text": "OPENROUTER_API_KEY=sk-or-v1-abcdef0123456789 ./run.sh",
+                  "type": "text"
+                }
+              ],
+              "details": {
+                "status": "completed"
+              }
+            },
+            "phase": "completed",
+            "toolCallId": "t1"
+          },
+          {
+            "input": {
+              "command": "OPENROUTER_API_KEY=sk-or-…6789 ./run.sh"
+            },
+            "kind": "tool",
+            "name": "exec",
+            "output": "Authorization: Bearer abcdef0123456789QWERTY=",
+            "phase": "completed",
+            "toolCallId": "t2"
+          },
+          {
+            "input": {
+              "acknowledgment": "Je reviens vers toi."
+            },
+            "kind": "tool",
+            "name": "sessions_yield",
+            "output": {
+              "details": {
+                "status": "yielded"
+              }
+            },
+            "phase": "completed",
+            "toolCallId": "t3"
+          },
+          {
+            "input": {
+              "q": "token=abcdefghijklmnop1234"
+            },
+            "kind": "tool",
+            "name": "web_search",
+            "phase": "started",
+            "toolCallId": "t4"
+          }
+        ],
+        "role": "assistant",
+        "runId": "run1",
+        "status": "complete",
+        "text": "r"
+      }
+    ],
+    "converted": [
+      {
+        "role": "user",
+        "content": [
+          {
+            "type": "text",
+            "text": "q"
+          }
+        ],
+        "metadata": {
+          "custom": {
+            "authorName": null,
+            "mentions": null,
+            "importedAgentLabel": null,
+            "settledAt": 1,
+            "generationMs": null,
+            "status": "complete",
+            "runId": null,
+            "hasMergedRuns": false,
+            "continuationAt": null,
+            "hasContinuation": false,
+            "answeredChildRunIds": [],
+            "error": null,
+            "errorCode": null,
+            "autoRetry": null,
+            "autoRetryOutcome": null,
+            "interruptedAt": null,
+            "phase": null,
+            "phaseRetry": null,
+            "toolParts": [],
+            "allToolParts": [],
+            "activeToolName": null,
+            "provenanceParts": [],
+            "cronParts": [],
+            "planParts": [],
+            "routedInstanceName": null,
+            "routedAgentId": null,
+            "compaction": null,
+            "attachedDocCount": 0,
+            "queued": false,
+            "custody": null,
+            "steerSegment": false,
+            "groupFollows": false,
+            "groupContinues": false,
+            "groupText": null,
+            "groupFirstId": null,
+            "rawText": "q",
+            "quotedRefs": null
+          }
+        }
+      },
+      {
+        "role": "assistant",
+        "status": {
+          "type": "complete",
+          "reason": "stop"
+        },
+        "content": [
+          {
+            "type": "text",
+            "text": "r"
+          }
+        ],
+        "metadata": {
+          "custom": {
+            "authorName": null,
+            "mentions": null,
+            "importedAgentLabel": null,
+            "settledAt": 1,
+            "generationMs": null,
+            "status": "complete",
+            "runId": "run1",
+            "hasMergedRuns": false,
+            "continuationAt": null,
+            "hasContinuation": false,
+            "answeredChildRunIds": [],
+            "error": null,
+            "errorCode": null,
+            "autoRetry": null,
+            "autoRetryOutcome": null,
+            "interruptedAt": null,
+            "phase": null,
+            "phaseRetry": null,
+            "toolParts": [
+              {
+                "toolCallId": "t1",
+                "toolName": "exec",
+                "args": {
+                  "command": "OPENROUTER_API_KEY=sk-or-v1-abcdef0123456789 ./run.sh"
+                },
+                "result": {
+                  "content": [
+                    {
+                      "text": "OPENROUTER_API_KEY=sk-or-v1-abcdef0123456789 ./run.sh",
+                      "type": "text"
+                    }
+                  ],
+                  "details": {
+                    "status": "completed"
+                  }
+                },
+                "argsText": "{\n  \"command\": \"OPENROUTER_API_KEY=sk-or-v1-abcdef0123456789 ./run.sh\"\n}",
+                "phase": "completed"
+              },
+              {
+                "toolCallId": "t2",
+                "toolName": "exec",
+                "args": {
+                  "command": "OPENROUTER_API_KEY=sk-or-…6789 ./run.sh"
+                },
+                "result": "Authorization: Bearer abcdef0123456789QWERTY=",
+                "argsText": "{\n  \"command\": \"OPENROUTER_API_KEY=sk-or-…6789 ./run.sh\"\n}",
+                "phase": "completed"
+              },
+              {
+                "toolCallId": "t3",
+                "toolName": "sessions_yield",
+                "args": {
+                  "acknowledgment": "Je reviens vers toi."
+                },
+                "result": {
+                  "details": {
+                    "status": "yielded"
+                  }
+                },
+                "argsText": "{\n  \"acknowledgment\": \"Je reviens vers toi.\"\n}",
+                "phase": "completed"
+              },
+              {
+                "toolCallId": "t4",
+                "toolName": "web_search",
+                "args": {
+                  "q": "token=abcdefghijklmnop1234"
+                },
+                "argsText": "{\n  \"q\": \"token=abcdefghijklmnop1234\"\n}",
+                "phase": "started"
+              }
+            ],
+            "allToolParts": [
+              {
+                "toolCallId": "t1",
+                "toolName": "exec",
+                "args": {
+                  "command": "OPENROUTER_API_KEY=sk-or-v1-abcdef0123456789 ./run.sh"
+                },
+                "result": {
+                  "content": [
+                    {
+                      "text": "OPENROUTER_API_KEY=sk-or-v1-abcdef0123456789 ./run.sh",
+                      "type": "text"
+                    }
+                  ],
+                  "details": {
+                    "status": "completed"
+                  }
+                },
+                "argsText": "{\n  \"command\": \"OPENROUTER_API_KEY=sk-or-v1-abcdef0123456789 ./run.sh\"\n}",
+                "phase": "completed"
+              },
+              {
+                "toolCallId": "t2",
+                "toolName": "exec",
+                "args": {
+                  "command": "OPENROUTER_API_KEY=sk-or-…6789 ./run.sh"
+                },
+                "result": "Authorization: Bearer abcdef0123456789QWERTY=",
+                "argsText": "{\n  \"command\": \"OPENROUTER_API_KEY=sk-or-…6789 ./run.sh\"\n}",
+                "phase": "completed"
+              },
+              {
+                "toolCallId": "t3",
+                "toolName": "sessions_yield",
+                "args": {
+                  "acknowledgment": "Je reviens vers toi."
+                },
+                "result": {
+                  "details": {
+                    "status": "yielded"
+                  }
+                },
+                "argsText": "{\n  \"acknowledgment\": \"Je reviens vers toi.\"\n}",
+                "phase": "completed"
+              },
+              {
+                "toolCallId": "t4",
+                "toolName": "web_search",
+                "args": {
+                  "q": "token=abcdefghijklmnop1234"
+                },
+                "argsText": "{\n  \"q\": \"token=abcdefghijklmnop1234\"\n}",
+                "phase": "started"
+              }
+            ],
+            "activeToolName": "web_search",
+            "provenanceParts": [],
+            "cronParts": [],
+            "planParts": [],
+            "routedInstanceName": null,
+            "routedAgentId": null,
+            "compaction": null,
+            "attachedDocCount": 0,
+            "queued": false,
+            "custody": null,
+            "steerSegment": false,
+            "groupFollows": false,
+            "groupContinues": false,
+            "groupText": null,
+            "groupFirstId": null,
+            "rawText": "r",
+            "quotedRefs": null
+          }
+        }
+      }
+    ],
+    "panel": [
+      {
+        "argsText": "{\"command\":\"OPENROUTER_API_KEY=sk-or-v1-abcdef0123456789 ./run.sh\"}",
+        "childSessionKey": "child-1",
+        "name": "exec",
+        "resultText": "OPENROUTER_API_KEY=sk-or-v1-abcdef0123456789 ./run.sh",
+        "status": "done",
+        "toolCallId": "s1"
+      }
+    ],
+    "exported": [
+      {
+        "blobs": [],
+        "cursor": null,
+        "rows": [
+          {
+            "order": 0,
+            "part": {
+              "input": {
+                "command": "OPENROUTER_API_KEY=sk-or-v1-abcdef0123456789 ./run.sh"
+              },
+              "kind": "tool",
+              "name": "exec",
+              "output": {
+                "content": [
+                  {
+                    "text": "OPENROUTER_API_KEY=sk-or-v1-abcdef0123456789 ./run.sh",
+                    "type": "text"
+                  }
+                ],
+                "details": {
+                  "status": "completed"
+                }
+              },
+              "phase": "completed",
+              "toolCallId": "t1"
+            }
+          },
+          {
+            "order": 1,
+            "part": {
+              "input": {
+                "command": "OPENROUTER_API_KEY=sk-or-…6789 ./run.sh"
+              },
+              "kind": "tool",
+              "name": "exec",
+              "output": "Authorization: Bearer abcdef0123456789QWERTY=",
+              "phase": "completed",
+              "toolCallId": "t2"
+            }
+          },
+          {
+            "order": 2,
+            "part": {
+              "input": {
+                "acknowledgment": "Je reviens vers toi."
+              },
+              "kind": "tool",
+              "name": "sessions_yield",
+              "output": {
+                "details": {
+                  "status": "yielded"
+                }
+              },
+              "phase": "completed",
+              "toolCallId": "t3"
+            }
+          },
+          {
+            "order": 3,
+            "part": {
+              "input": {
+                "q": "token=abcdefghijklmnop1234"
+              },
+              "kind": "tool",
+              "name": "web_search",
+              "phase": "started",
+              "toolCallId": "t4"
+            }
+          }
+        ]
+      },
+      {
+        "blobs": [],
+        "cursor": null,
+        "rows": [
+          {
+            "argsText": "{\"command\":\"OPENROUTER_API_KEY=sk-or-v1-abcdef0123456789 ./run.sh\"}",
+            "childSessionKey": "child-1",
+            "name": "exec",
+            "resultText": "OPENROUTER_API_KEY=sk-or-v1-abcdef0123456789 ./run.sh",
+            "status": "done",
+            "toolCallId": "s1"
+          }
+        ]
+      }
+    ]
+  }
+}

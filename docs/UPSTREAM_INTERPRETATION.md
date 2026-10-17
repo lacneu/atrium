@@ -9,10 +9,10 @@ WebSocket protocol, versus the Atrium bridge normalizer
 ratchet; the per-field classification lives in the coverage manifests under
 `bridge/protocol/openclaw/coverage/`.
 
-Reference source: `github.com/openclaw/openclaw` at tag **`v2026.9.9`** — the
+Reference source: `github.com/openclaw/openclaw` at tag **`v2026.9.33`** — the
 exact `maxValidated` gateway version in `bridge/src/compat.ts`.
 
-> **WHAT "ANCHORED AT v2026.9.9" MEANS.** The CONCLUSIONS below were re-verified against that
+> **WHAT "ANCHORED AT v2026.9.33" MEANS.** The CONCLUSIONS below were re-verified against that
 > tag, zone by zone, at each revision. The `file:line` CITATIONS are checked as well: every
 > citation of this document and of the scenario descriptions of
 > `bridge/test/fixtures/openclaw_upstream_frames.json` is recorded in
@@ -37,10 +37,26 @@ references below (`$UP/…`) are paths inside that tag. The Control UI is a
 the divergence is documented as deliberate rather than "fixed".
 
 No internal offset: the runtime drift detector vendors its schema at
-`2026.9.9` (`DRIFT_VENDORED_VERSION`, `protocol-drift.ts`), the same version as
+`2026.9.33` (`DRIFT_VENDORED_VERSION`, `protocol-drift.ts`), the same version as
 the validated ceiling. An unknown-field warning against a 2026.9.x gateway is
 therefore real drift, not schema staleness — it names a field the published
 contract does not declare, and should be read as such.
+
+**Revision of 2026-10-15 (v2026.9.9 → v2026.9.33).** The extended-stable line: v2026.9.33
+is cut from v2026.9.9 and carries backports only (17 commits). Re-verified against the tag
+(report: `openclaw-notes/atrium/bench-runs/upstream-diff-2026.9.9-vs-2026.9.33/` — none of the
+145 watched files changed, 42 anchors held; `packages/gateway-protocol/src` is unchanged, the
+86 vendored schema modules and both event catalogues are byte-identical beyond their
+provenance header). Two citations moved by one or two lines and were corrected in place.
+Read outside the watchlist, with no wire change for Atrium: the Control UI's typed stop command now asks `chat.abort` at SESSION scope (no
+`runId`; `ui/src/pages/chat/chat-send-submit.ts`, `run-lifecycle.ts`) where it named the
+run — a choice of that client: the `chat.abort` schema is unchanged, and Atrium's Stop keeps
+naming the run when it knows it; a session archive/delete drain now issues its run
+cancellations from a dedicated cancellation-started step rather than after the queue clear
+(`sessions-lifecycle-drain.ts`); long streamed replies carrying reply directives reuse the
+settled text instead of re-parsing the whole reply on every delta
+(`embedded-agent-subscribe.handlers.messages.stream.ts`), a performance fix upstream proves
+text-identical. The live suite ran GO on the tag before the ceiling moved.
 
 **Revision of 2026-10-13 (v2026.9.8 → v2026.9.9).** A maintenance release of the 9.x
 line. Re-verified against the tag (report: `openclaw-notes/atrium/bench-runs/upstream-diff-2026.9.8-vs-2026.9.9/`
@@ -202,7 +218,7 @@ identical. The two broken anchors are real and are each recorded:
 
 **DECLARED GAP, not a conclusion.** 2026.9.5 adds a RETRACTION delta —
 `delta { deltaText: "", replace: true }` — and the bridge normalizer drops any
-delta whose text is empty (`bridge/src/providers/openclaw/normalizer.ts:2232`,
+delta whose text is empty (`bridge/src/providers/openclaw/normalizer.ts:2237`,
 the `&& deltaText` guard), so Atrium keeps a text the gateway has just withdrawn.
 Written here because it is known and unfixed, not because it was measured on the
 bench: the catalogue never elicits a retraction. It is owed a scenario before it
@@ -550,7 +566,7 @@ by `createAgentRunSupersededAbortError` carries it, and that error is created
 at six sites (one under an import alias, which a search on the canonical
 name misses) — among them a CLI turn whose session incarnation or lifecycle
 revision moved before it executed
-(`$UP/src/agents/command/attempt-execution.ts:530`; also
+(`$UP/src/agents/command/attempt-execution.ts:531`; also
 `auto-reply/reply/agent-runner-cli-candidate.ts:198`,
 `auto-reply/reply/reply-run-registry.operation.ts:519` (`supersede`, imported
 as `createSupersededError`),
@@ -1012,7 +1028,7 @@ reads that start as a run start and must never infer a compaction from it.
 ### Atrium behavior and verdict
 
 - Bridge derivation: `webchat-<sha256(sessionKey|clientMessageId)>`
-  (`bridge/src/providers/openclaw/openclaw-client.ts:1356-1367`), stable across Convex's at-least-once
+  (`bridge/src/providers/openclaw/openclaw-client.ts:1371-1382`), stable across Convex's at-least-once
   dispatch — this **exploits the upstream window correctly** (re-POSTs
   replay/`in_flight` while the run is active, since active entries outlive
   the TTL).

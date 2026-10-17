@@ -2360,14 +2360,19 @@ describe("pass 7 #1 — a deleted run segment opens no live bubble again, in any
 });
 
 describe("pass 7 #2 — only a row attributed to a run keeps its text", () => {
-  test("on: a producerless row (no runId) is stored as an identity, its text never", async () => {
+  // Codex review 3, finding 1: a text post resolves the row's PRESENTATION OWNER like any
+  // `on` post (transcriptProjection.ts `presentationOwnerOf`) — so the row is attributed
+  // (here to an owner of its own, `unscoped:<entryId>`) and its text is reached by that
+  // run's purges. What pass 7 forbids still holds: no stored text without a run.
+  test("on: a producerless row (no runId) gets its presentation owner; no text is ever stored without a run", async () => {
     const t = convexTest(schema, modules);
     const ids = await seed(t, "on");
     await apply(t, ids.chatId, [said("mirror", 5, "", "copie miroir", { runId: undefined })], { kind: "live", textsOnly: true });
     const row = (await rowsOf(t, ids.chatId)).find((r) => r.entryId === "mirror");
-    expect(row).toBeDefined();
-    expect(row?.textSig).toBeUndefined();
-    expect(await textCount(t)).toBe(0);
+    expect(row).toMatchObject({ runId: "unscoped:mirror", presentationOwner: true });
+    expect(row?.textSig).toBeDefined();
+    expect(await textCount(t)).toBe(1);
+    expect((await rowsOf(t, ids.chatId)).filter((r) => r.textSig !== undefined && r.runId === undefined)).toEqual([]);
   });
 
   test("the cleanup deletes text copies already stored for rows of no run", async () => {
