@@ -299,8 +299,9 @@ exposes it**. Visibility is authorisation by default; attribution is not a secon
 lock.
 
 One per-instance setting has no control in the UI on purpose, because it is a rollout
-lever rather than a preference: `transcriptProjection` (`off` by default, `shadow`, or
-`on`). In `shadow` the bridge reads the gateway's session transcript back after each run
+lever rather than a preference: `transcriptProjection` (`on`, the default for an OpenClaw
+instance that names none since 0.101.1; `off` and `shadow` stay available, set explicitly;
+never applied to a Hermes instance). In `shadow` the bridge reads the gateway's session transcript back after each run
 (`chat.history`, delta cursor) and Convex records its identities beside the bubbles;
 nothing on screen changes, and `diagnose_chat` reports how far the bubbles are from the
 transcript. In `on` the transcript decides what is shown: a message sent while the agent

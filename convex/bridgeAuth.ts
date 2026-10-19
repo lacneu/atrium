@@ -25,6 +25,7 @@ import { getActor, requireAdmin } from "./lib/access";
 import { recordAudit } from "./lib/audit";
 import { generateApiKey, hashKey } from "./lib/apikeys";
 import { envLabel } from "./lib/envLabel";
+import { writeTraceEvent } from "./observability";
 
 /**
  * Internal: persist a freshly-minted bridge secret (already hashed) for an instance,
@@ -183,6 +184,45 @@ export const resolveBridgeInstanceBySecretHash = internalQuery({
 });
 
 /** INTERNAL: record last-used on a successful bridge auth (best-effort heartbeat). */
+/** An `unchanged` promotion is traced at most this often per instance. */
+export const UNCHANGED_PROMOTION_TRACE_INTERVAL_MS = 60 * 60 * 1000;
+
+/** THE TRACE POLICY OF A DEVICE-TOKEN PROMOTION (prod anomaly jh7fkb54…, 2026-10-18: 360
+ *  `unchanged` traces in 6 h, one per instance every two minutes, burying the useful
+ *  events). A change (`stored`), a refusal of an older token (`superseded`) and a failure
+ *  (`rejected`) are ALWAYS traced, never sampled. An `unchanged` promotion — the bridge
+ *  presenting the token Convex already holds — is a heartbeat: traced at most once an hour
+ *  per instance, decided and written in this one mutation so two concurrent calls cannot
+ *  both trace. Returns whether a trace was written. Metadata only, never the token. */
+export const recordDeviceTokenPromotion = internalMutation({
+  args: {
+    authId: v.id("bridgeAuth"),
+    instance: v.string(),
+    status: v.number(),
+    outcome: v.union(v.literal("stored"), v.literal("unchanged"), v.literal("superseded"), v.literal("rejected")),
+  },
+  handler: async (ctx, { authId, instance, status, outcome }): Promise<boolean> => {
+    const now = Date.now();
+    if (outcome === "unchanged") {
+      const row = await ctx.db.get(authId);
+      if (row === null) return false;
+      if (row.promoteUnchangedTracedAt !== undefined && now - row.promoteUnchangedTracedAt < UNCHANGED_PROMOTION_TRACE_INTERVAL_MS) {
+        return false;
+      }
+      await ctx.db.patch(authId, { promoteUnchangedTracedAt: now });
+    }
+    await writeTraceEvent(ctx, {
+      kind: "openclaw.device_token.promote",
+      direction: "inbound",
+      principalType: "system",
+      principalId: "bridge",
+      status,
+      meta: JSON.stringify({ instance, outcome }),
+    });
+    return true;
+  },
+});
+
 export const touchBridgeLastUsed = internalMutation({
   args: { authId: v.id("bridgeAuth") },
   handler: async (ctx, { authId }) => {

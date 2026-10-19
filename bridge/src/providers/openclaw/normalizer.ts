@@ -787,6 +787,15 @@ export class Normalizer {
   // holding a private-ack/empty-final grace, the session loop recovers the text
   // via `sessions.get` (history recovery, deferred since 5.19) exactly once.
   sawMessageToolItem: boolean;
+  /** The delivery-run items whose `end` already wrote a card, by `<runId>\0<itemId>`.
+   *  Upstream re-emits the `end` of every completed wrapper (a code-mode `exec` that ran
+   *  nested tools) when the run finishes, marked `hideFromChannelProgress`
+   *  (`finalizeToolActivity`, src/agents/embedded-agent-subscribe.handlers.tools.start.ts:
+   *  285-322 at v2026.9.33): the same item again, never a new call. The Control UI keeps one
+   *  activity per item — it replaces the item's previous activity
+   *  (ui/src/pages/chat/tool-stream.ts:536-547) and counts operations by `toolCallId ??
+   *  itemId` (src/agents/agent-activity-presentation.ts:83-86). Bounded. */
+  deliveryItemEnds: Set<string>;
   // Message-tool calls this turn whose `args` we could not read at all (G-16).
   // The tool IS the visible-reply mechanism, so an unreadable call means the
   // answer may exist only in the transcript: it arms the same history recovery
@@ -1032,6 +1041,8 @@ export class Normalizer {
    *  logged ONCE per episode — the pattern `stashAnnounceFrame` already sets in the
    *  run-manager — because a silent truncation reads as "nothing was dropped". */
   private static readonly MAX_TOOL_ARGS = 2_000;
+  /** Delivery items remembered per turn for the `end` dedupe (claimDeliveryItemEnd). */
+  private static readonly MAX_DELIVERY_ITEM_ENDS = 2_000;
   /** Deliveries recovered after work resumed and held for the terminal. Bounded for
    *  memory alone — reaching it is reported, never absorbed. */
   private static readonly MAX_RECOVERED_TAILS = 16;
@@ -1090,6 +1101,7 @@ export class Normalizer {
     this.seenDedupKeys = new Set();
     this.lastDedupKey = null;
     this.sawMessageToolItem = false;
+    this.deliveryItemEnds = new Set();
     this.msgtoolUnreadableArgs = 0;
     this.sawTruncatedFinal = false;
     this.truncatedFinals = 0;
@@ -1152,6 +1164,7 @@ export class Normalizer {
     this.seenDedupKeys = new Set();
     this.lastDedupKey = null;
     this.sawMessageToolItem = false;
+    this.deliveryItemEnds = new Set();
     this.msgtoolUnreadableArgs = 0;
     this.sawTruncatedFinal = false;
     this.truncatedFinals = 0;
@@ -2582,7 +2595,8 @@ export class Normalizer {
         isString(data.name) &&
         data.name !== "" &&
         isDeliveryRunId(this.currentRunId) &&
-        data.phase === "end"
+        data.phase === "end" &&
+        this.claimDeliveryItemEnd(data)
       ) {
         const itemStatus = isString(data.status) ? data.status : null;
         // `progress_card` (2026.8.1+) is NOT a tool card here: the gateway
@@ -2631,10 +2645,23 @@ export class Normalizer {
           const itemError = isString(data.error)
             ? this.safeSanitizeText(data.error)
             : null;
+          // THE CALL'S IDENTITY, carried like the tool lane's (Codex review 1 of 0.101.1):
+          // without it this card is anonymous, and when the transcript brings the same call
+          // under its id the reconciliation cannot fold them — an `exec` too many while the
+          // run is still being written. `toolCallId` is in AgentActivityItemSchema
+          // (packages/gateway-protocol/src/schema/logs-chat.ts:133 at v2026.9.33);
+          // `parentToolCallId` is not (closed schema), so `parentOf` reads it only if a
+          // frame ever carries it.
+          const itemToolCallId =
+            isString(data.toolCallId) && data.toolCallId.trim() !== ""
+              ? data.toolCallId.trim().slice(0, 512)
+              : undefined;
           events.push({
             type: EVENT_TOOL_STATUS,
             name: data.name,
             phase: itemStatus === "completed" ? "completed" : "error",
+            ...(itemToolCallId !== undefined ? { toolCallId: itemToolCallId } : {}),
+            ...this.parentOf(data, itemToolCallId),
             ...(itemError !== null && itemError !== ""
               ? { output: { details: { status: "error", error: itemError } } }
               : {}),
@@ -2981,6 +3008,7 @@ export class Normalizer {
         name,
         phase: phase ?? null,
         runId: this.currentRunId,
+        ...this.parentOf(data, toolCallId),
       });
       if (phase === "start") {
         // Same reading as every other tool start (see the `else` branch below): the
@@ -3050,6 +3078,7 @@ export class Normalizer {
             name: name ?? null,
             phase: "start",
             toolCallId,
+            ...this.parentOf(data, toolCallId),
             // Sanitized on EVERY phase, not just the terminal one. The sink writes
             // a card for `start` too, so an acknowledgment carrying a `MEDIA:`
             // directive or an absolute `/home/node/.openclaw/...` path reached the
@@ -3083,6 +3112,7 @@ export class Normalizer {
             name: name ?? null,
             phase: "start", // the card stays in its running state
             toolCallId,
+            ...this.parentOf(data, toolCallId),
             // Same rule on a progress frame — it re-emits the buffered args.
             input:
               name === "sessions_yield"
@@ -3111,6 +3141,7 @@ export class Normalizer {
           name: name ?? null,
           phase: errored ? "error" : "completed",
           ...(toolCallId ? { toolCallId } : {}),
+          ...this.parentOf(data, toolCallId),
           // The hand-off's waiting reply becomes visible text downstream, so it is
           // sanitized like text. `sessions_yield` only — see the method's note.
           input:
@@ -3524,6 +3555,31 @@ export class Normalizer {
    */
   private suspendFinishingGrace(now: number): void {
     if (this.cancelFinishingGrace(now)) this.finishingSuspended = true;
+  }
+
+  /** The call a tool frame ran INSIDE (`data.parentToolCallId`: a tool called from the code
+   *  of a code-mode `exec`, src/agents/embedded-agent-subscribe.handlers.tools.progress.ts:
+   *  131-138 and the start/result handlers at v2026.9.33), as a spread for the card's event.
+   *  The Control UI ranks the card under that parent (src/chat/tool-call-grouping.ts
+   *  `groupToolCalls`). Bounded; never the call's own id. */
+  private parentOf(data: JsonObject, toolCallId: string | undefined): { parentToolCallId?: string } {
+    const raw = data.parentToolCallId;
+    if (!isString(raw)) return {};
+    const parent = raw.trim().slice(0, 512);
+    return parent === "" || parent === toolCallId ? {} : { parentToolCallId: parent };
+  }
+
+  /** True the FIRST time a delivery item's `end` is seen in its run: that end writes the
+   *  card. A later `end` of the same item (upstream's wrapper re-emission, a replayed frame)
+   *  writes nothing. An item naming neither `itemId` nor `toolCallId` cannot be matched and
+   *  keeps its card. */
+  private claimDeliveryItemEnd(data: JsonObject): boolean {
+    const id = isString(data.itemId) && data.itemId !== "" ? data.itemId : isString(data.toolCallId) ? data.toolCallId : "";
+    if (id === "") return true;
+    const key = `${this.currentRunId ?? ""}\u0000${id}`;
+    if (this.deliveryItemEnds.has(key)) return false;
+    if (this.deliveryItemEnds.size < Normalizer.MAX_DELIVERY_ITEM_ENDS) this.deliveryItemEnds.add(key);
+    return true;
   }
 
   private noteGatewayResumedWork(events: BridgeEvent[], now: number): void {

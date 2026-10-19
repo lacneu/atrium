@@ -484,3 +484,103 @@ describe("a delivery item's progress frames (phase update, captured 2026.9.33)",
     expect(writer.finals).toEqual([]);
   });
 });
+
+// THE WRAPPER RE-EMISSION (prod report prod-ms7dc0ne…, 2026-10-18; bench 2026.9.33 r6): when a
+// delivery run finishes, upstream re-emits the `end` of every completed wrapper — a code-mode
+// `exec` that ran nested tools — marked `hideFromChannelProgress`
+// (src/agents/embedded-agent-subscribe.handlers.tools.start.ts:285-322 `finalizeToolActivity`).
+// The same item again: the Control UI replaces an item's activity by its `itemId`
+// (ui/src/pages/chat/tool-stream.ts:536-547). One card per item, whatever the frames.
+function wrapperEnd(itemId: string, extra: Record<string, unknown> = {}): unknown {
+  return {
+    type: "event",
+    event: "agent",
+    payload: {
+      runId: ANNOUNCE_RUN,
+      stream: "item",
+      sessionKey: SESSION_KEY,
+      data: {
+        itemId: `tool:${itemId}`,
+        toolCallId: itemId,
+        name: "exec",
+        kind: "tool",
+        phase: "end",
+        title: "Exec Send requested pair of attachments",
+        status: "completed",
+        meta: "Send requested pair of attachments",
+        ...extra,
+      },
+    },
+  };
+}
+
+describe("a delivery item's end seen twice writes one card (wrapper re-emission, 2026.9.33)", () => {
+  async function drive(frames: unknown[]): Promise<ItemWriter> {
+    const writer = new ItemWriter();
+    const manager = new RunManager("annitems1", SESSION_KEY, writer);
+    let now = 1000;
+    await manager.feed(lifecycleFrame(ANNOUNCE_RUN, "start"), (now += 1));
+    for (const f of frames) await manager.feed(f, (now += 1));
+    await manager.feed(chatAborted(ANNOUNCE_RUN), (now += 1));
+    await manager.feed(lifecycleFrame(ANNOUNCE_RUN, "end"), (now += 1));
+    await manager.tick(now + 100_000);
+    return writer;
+  }
+
+  it("the re-emitted end of a wrapper adds no card", async () => {
+    const writer = await drive([
+      wrapperEnd("call_a|fc_1"),
+      wrapperEnd("call_b|fc_1"),
+      wrapperEnd("call_b|fc_1", { hideFromChannelProgress: true }),
+      wrapperEnd("call_a|fc_1", { hideFromChannelProgress: true }),
+    ]);
+    expect(writer.toolParts.map((p) => [p.name, p.phase])).toEqual([
+      ["exec", "completed"],
+      ["exec", "completed"],
+    ]);
+  });
+
+  it("a second end of one update_plan item advances the plan once", async () => {
+    const writer = await drive([
+      itemFrame(ANNOUNCE_RUN, "update_plan", "end", "completed", PLAN_STEP),
+      itemFrame(ANNOUNCE_RUN, "update_plan", "end", "completed", PLAN_STEP),
+    ]);
+    expect(writer.advances).toEqual([{ messageId: "msg_item_1", count: 1, settleIfIdle: true }]);
+  });
+
+  it("a re-emitted end alone still writes its card (the first end was never seen)", async () => {
+    const writer = await drive([wrapperEnd("call_c|fc_1", { hideFromChannelProgress: true })]);
+    expect(writer.toolParts.map((p) => p.name)).toEqual(["exec"]);
+  });
+
+  // Codex review 1 of 0.101.1 [medium]: the item lane's card was anonymous, so the same call
+  // brought by the transcript under its id added a second `exec` card while the run was being
+  // written. The card carries the call's id from the frame (AgentActivityItemSchema
+  // `toolCallId`) through `tool.status` to the part.
+  it("the item lane's card carries the call's toolCallId to the part", async () => {
+    const writer = await drive([
+      wrapperEnd("call_a|fc_1"),
+      itemFrame(ANNOUNCE_RUN, "update_plan", "end", "completed", PLAN_STEP, "call_p|fc_2"),
+    ]);
+    expect(writer.toolParts.map((p) => [p.name, p.toolCallId])).toEqual([
+      ["exec", "call_a|fc_1"],
+      ["update_plan", "call_p|fc_2"],
+    ]);
+    expect(writer.toolParts.every((p) => p.parentToolCallId === undefined)).toBe(true);
+  });
+
+  it("an item naming no id keeps every card (nothing to match it by)", async () => {
+    const bare = (): unknown => ({
+      type: "event",
+      event: "agent",
+      payload: {
+        runId: ANNOUNCE_RUN,
+        stream: "item",
+        sessionKey: SESSION_KEY,
+        data: { kind: "command", name: "exec", phase: "end", status: "completed" },
+      },
+    });
+    const writer = await drive([bare(), bare()]);
+    expect(writer.toolParts).toHaveLength(2);
+  });
+});

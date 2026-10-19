@@ -1,0 +1,536 @@
+{
+ "$comment": "The shape of prod report prod-ms7dc0ne72c203df18yfc24sr58gg78e (Olivier's resume test: delegate, yield, send the file with the message tool, write a synthesis), reconstituted on the live bench (OpenClaw 2026.9.33, distribution image r6, 2026-10-18): the session's chat.history rows, bench content only, session ids replaced, provider metadata and reasoning blocks dropped. Code mode: every tool call is an exec whose code may run nested tools (openclaw.nested-tool.v1 rows, parentToolCallId).",
+ "sessionKey": "agent:alice:atrium:chat:u:turn-c1",
+ "messages": [
+  {
+   "role": "assistant",
+   "content": [
+    {
+     "type": "toolCall",
+     "id": "call_d1b61736c5b344d298bb1c52ab4f26a6|fc_0ee60a769dff5eb2016ad4cc7aa6fc8190baa62aae4b55f3d0",
+     "name": "exec",
+     "arguments": {
+      "title": "Déléguer la création du fichier",
+      "code": "const ts = await catalog.search('sessions_spawn'); for (const t of ts) text(await t.describe());"
+     }
+    }
+   ],
+   "stopReason": "toolUse",
+   "timestamp": 1792330872168,
+   "__openclaw": {
+    "id": "53445714-e111-44fb-b930-6342178914be",
+    "seq": 2,
+    "runId": "webchat-c94b33114e749b09a9f38a2497c751fc4a39a3e264ba01f1281919864411b71f",
+    "transcriptPosition": {
+     "source": "H4iB2gQILnj8GELF5VAL-2GC_1tD4NnHLR1z4tWifx8",
+     "rawSeq": 5
+    }
+   }
+  },
+  {
+   "role": "toolResult",
+   "toolCallId": "call_d1b61736c5b344d298bb1c52ab4f26a6|fc_0ee60a769dff5eb2016ad4cc7aa6fc8190baa62aae4b55f3d0",
+   "toolName": "exec",
+   "content": [
+    {
+     "type": "text",
+     "text": "{\"status\":\"completed\",\"replaySafe\":false,\"telemetry\":{\"catalogSize\":56,\"sources\":{\"openclaw\":56,\"mcp\":0,\"client\":0},\"counterScope\":\"0\",\"searchCount\":1,\"describeCount\":1,\"callCount\":0,\"visibleTools\":[\"exec\",\"wait\"]},\"output\":[{\"type\":\"text\",\"text\":\"{\\\"source\\\":\\\"openclaw\\\",\\\"name\\\":\\\"sessions_spawn\\\",\\\"label\\\":\\\"Sessions\\\",\\\"description\\\":\\\"Spawn child session; default `runtime=\\\\\\\"subagent\\\\\\\"`. `mode=\\\\\\\"run\\\\\\\"` one-shot background. `agentId` targets a configured agent (see agents_list); `model` overrides its model; `cleanup` delete|keep hidden child session; `sandbox` inherit|require. Default to a hidden subagent for internal QA, research, coding, review, tests, and parallel work supporting the current task. This includes substantial, bounded API/service investigations that can be handed off with the needed context and capabilities. Omit `visible` or set it false, and report results through the parent. `visible=true`: durable visible session. Use only when the user requests a separate session or needs to revisit and steer the work independently. Shows in web UI sidebar; works without UI: announcing runs report back, progress checkable. `group` places it in a custom sidebar group (a new name creates the group); omission or an empty string leaves it ungrouped. Subagent only; omit `mode` (`mode=\\\\\\\"run\\\\\\\"` is also accepted), `thread`, `thinking`, and `lightContext`; `attachments=[]` and omitted/blank `attachAs.mountPath` are accepted, but nonempty attachment staging is unsupported; inherits the caller tool-policy ceiling; select a registered project with `projectId` or a managed GitHub clone with `projectGitUrl` (mutually exclusive with each other and `cwd`); may check out a git worktree via `worktree`/`worktreeName`/`worktreeBaseRef`. When its accepted result includes `sessionUrl`, channel acknowledgements put the session URL on the first line and `Owner: <label>` on the second line. Omit `placement` or use `{kind:\\\\\\\"local\\\\\\\"}` for local execution. `{kind:\\\\\\\"profile\\\\\\\",profileId,os?,machineClass?}` selects a configured cloud profile and requires `visible=true` and `worktree=true`. Cloud placement creates first, dispatches, then starts the task; failures retain the child for inspection, never fall back locally. Session listing/addressing obeys `tools.sessions.visibility` (all: all sessions, cross-agent per tools.agentToAgent).  Inherits parent workspace. Native task arrives in the child's initial `[Subagent Task]` message. Native: explicit context=\\\\\\\"isolated\\\\\\\" starts clean; context=\\\\\\\"fork\\\\\\\" copies requester transcript and requires the same agent. Omitted context is isolated. A PR/report, long runtime, or isolated worktree alone does not justify a sidebar session. A request for a subagent does not request a separate session. No spawn for quick lookup/single read. Check spawns via `subagents`/`sessions_history`. After spawn, do non-overlap work; follow the receipt's completion mode. When diagnosing a missing result from an announcing child, use `subagents` to inspect execution and delivery status. Recover existing results or follow up within the still-authorized task; respect intentional cancellation and never loop-poll. Default to ordinary spawn for one or a few children. Reserve `collect=true` (swarm) for large parallel fan-out (several similar children, about five or more). Collectors send no completion notification and cannot be steered; explicitly collect their results; structured result per `outputSchema`; `groupId` groups a batch; await with agents_wait.\\\",\\\"input\\\":\\\"unknown\\\",\\\"parameters\\\":{\\\"type\\\":\\\"object\\\",\\\"required\\\":[\\\"task\\\"],\\\"properties\\\":{\\\"task\\\":{\\\"type\\\":\\\"string\\\"},\\\"taskName\\\":{\\\"type\\\":\\\"string\\\",\\\"description\\\":\\\"Stable later-target alias; starts lowercase letter; then lowercase/digit/_/-.\\\"},\\\"label\\\":{\\\"type\\\":\\\"string\\\",\\\"description\\\":\\\"Short task title shown in UI lists; name the work, not the agent.\\\"},\\\"runtime\\\":{\\\"enum\\\":[\\\"subagent\\\"],\\\"type\\\":\\\"string\\\",\\\"description\\\":\\\"Runtime; visible=true requires \\\\\\\"subagent\\\\\\\".\\\"},\\\"agentId\\\":{\\\"type\\\":\\\"string\\\"},\\\"model\\\":{\\\"type\\\":\\\"string\\\"},\\\"runTimeoutSeconds\\\":{\\\"type\\\":\\\"integer\\\",\\\"minimum\\\":0,\\\"description\\\":\\\"Per-run timeout in seconds; overrides the configured subagent default. Zero disables the timeout.\\\"},\\\"thinking\\\":{\\\"type\\\":\\\"string\\\",\\\"description\\\":\\\"Thinking override; unavailable with visible=true.\\\"},\\\"cwd\\\":{\\\"type\\\":\\\"string\\\",\\\"description\\\":\\\"Child working directory. Visible paths outside configured agent workspaces require operator.admin. Mutually exclusive with projectId/projectGitUrl. With no source selector and worktree=true: inherit the same-agent parent managed repository; otherwise use the target agent workspace.\\\"},\\\"mode\\\":{\\\"enum\\\":[\\\"run\\\"],\\\"type\\\":\\\"string\\\",\\\"description\\\":\\\"\\\\\\\"run\\\\\\\" one-shot. Visible sessions accept omitted/default \\\\\\\"run\\\\\\\" and remain persistent.\\\"},\\\"cleanup\\\":{\\\"enum\\\":[\\\"delete\\\",\\\"keep\\\"],\\\"type\\\":\\\"string\\\",\\\"description\\\":\\\"Hidden session cleanup; visible=true always keeps the session.\\\"},\\\"expectsCompletionMessage\\\":{\\\"type\\\":\\\"boolean\\\",\\\"description\\\":\\\"false: fire-and-forget; requester gets no completion handoff when the child finishes.\\\"},\\\"completionTarget\\\":{\\\"enum\\\":[\\\"parent\\\"],\\\"type\\\":\\\"string\\\",\\\"description\\\":\\\"parent: return results in a private requester turn; no automatic channel delivery. Native hidden run only; unavailable with ACP, collect, visible, thread, session mode, or expectsCompletionMessage=false.\\\"},\\\"sandbox\\\":{\\\"enum\\\":[\\\"inherit\\\",\\\"require\\\"],\\\"type\\\":\\\"string\\\",\\\"description\\\":\\\"\\\\\\\"inherit\\\\\\\" parent sandbox policy; \\\\\\\"require\\\\\\\" fails unless child is sandboxed.\\\"},\\\"context\\\":{\\\"enum\\\":[\\\"isolated\\\",\\\"fork\\\"],\\\"type\\\":\\\"string\\\",\\\"description\\\":\\\"Native: explicit context=\\\\\\\"isolated\\\\\\\" starts clean; context=\\\\\\\"fork\\\\\\\" copies requester transcript and requires the same agent. Omitted context is isolated.\\\"},\\\"lightContext\\\":{\\\"type\\\":\\\"boolean\\\",\\\"description\\\":\\\"Light bootstrap; subagent only; unavailable with visible=true.\\\"},\\\"fastMode\\\":{\\\"anyOf\\\":[{\\\"type\\\":\\\"boolean\\\"},{\\\"type\\\":\\\"string\\\",\\\"const\\\":\\\"auto\\\"}]},\\\"placement\\\":{\\\"anyOf\\\":[{\\\"type\\\":\\\"object\\\",\\\"required\\\":[\\\"kind\\\"],\\\"properties\\\":{\\\"kind\\\":{\\\"type\\\":\\\"string\\\",\\\"const\\\":\\\"local\\\"}},\\\"additionalProperties\\\":false},{\\\"type\\\":\\\"object\\\",\\\"required\\\":[\\\"kind\\\",\\\"profileId\\\"],\\\"properties\\\":{\\\"kind\\\":{\\\"type\\\":\\\"string\\\",\\\"const\\\":\\\"profile\\\"},\\\"profileId\\\":{\\\"type\\\":\\\"string\\\",\\\"minLength\\\":1,\\\"maxLength\\\":256,\\\"pattern\\\":\\\"^\\\\\\\\S(?:.*\\\\\\\\S)?$\\\"},\\\"machineClass\\\":{\\\"type\\\":\\\"string\\\",\\\"minLength\\\":1,\\\"maxLength\\\":128},\\\"os\\\":{\\\"type\\\":\\\"string\\\",\\\"minLength\\\":1,\\\"maxLength\\\":64}},\\\"additionalProperties\\\":false}],\\\"description\\\":\\\"Execution placement: omitted or {kind: \\\\\\\"local\\\\\\\"} uses local execution for native and ACP runs. {kind: \\\\\\\"profile\\\\\\\", profileId, os?, machineClass?} selects a configured cloud profile and requires visible=true and worktree=true. Never supply placeholder selectors. Omitted cloud selectors use profile defaults; the first task starts only after cloud dispatch.\\\",\\\"~optional\\\":true},\\\"visible\\\":{\\\"type\\\":\\\"boolean\\\",\\\"description\\\":\\\"Persistent sidebar session only when the user requests a separate session or needs to revisit and steer it independently. Internal QA/coding/review/test workers: omit or false. Subagent runtime only; default run mode and empty attachments accepted; no thread/thinking/lightContext or attachment staging.\\\"},\\\"group\\\":{\\\"type\\\":\\\"string\\\",\\\"description\\\":\\\"Custom sidebar group for a visible session; a new name creates the group. Omit or pass an empty string to leave it ungrouped.\\\"},\\\"projectId\\\":{\\\"type\\\":\\\"string\\\",\\\"description\\\":\\\"Registered project for a visible session; mutually exclusive with projectGitUrl and cwd.\\\"},\\\"projectGitUrl\\\":{\\\"type\\\":\\\"string\\\",\\\"description\\\":\\\"GitHub HTTPS or git@github.com repository URL for a visible session's managed clone; mutually exclusive with projectId and cwd. "
+    }
+   ],
+   "isError": false,
+   "timestamp": 1792330875993,
+   "__openclaw": {
+    "id": "66899f68-4fb6-4ada-a312-65ad45f72175",
+    "seq": 3,
+    "runId": "webchat-c94b33114e749b09a9f38a2497c751fc4a39a3e264ba01f1281919864411b71f",
+    "transcriptPosition": {
+     "source": "H4iB2gQILnj8GELF5VAL-2GC_1tD4NnHLR1z4tWifx8",
+     "rawSeq": 6
+    }
+   }
+  },
+  {
+   "role": "assistant",
+   "content": [
+    {
+     "type": "toolCall",
+     "id": "call_ae3689632ec54c6a90264cc91d1ba363|fc_0ee60a769dff5eb2016ad4cc7e0474819098a8f55702bc4729",
+     "name": "exec",
+     "arguments": {
+      "title": "Créer le fichier par délégation",
+      "code": "const [spawn] = await catalog.search('sessions_spawn'); return await spawn({agentId:'files',taskName:'test-reprise',label:'Créer test-reprise.txt',context:'isolated',task:'Crée le fichier texte /home/node/.openclaw/media/outbound/test-reprise.txt contenant exactement la ligne « REPRISE_OK » (avec un saut de ligne final). Vérifie que le fichier existe, est non vide et contient cette ligne. Puis réponds exactement « fichier prêt ». Tu es autorisé à créer ce fichier à ce chemin ; ne modifie aucun autre fichier.'});"
+     }
+    }
+   ],
+   "stopReason": "toolUse",
+   "timestamp": 1792330876014,
+   "__openclaw": {
+    "id": "14265ecc-6a7a-4fca-aca6-ec79acb41495",
+    "seq": 4,
+    "runId": "webchat-c94b33114e749b09a9f38a2497c751fc4a39a3e264ba01f1281919864411b71f",
+    "transcriptPosition": {
+     "source": "H4iB2gQILnj8GELF5VAL-2GC_1tD4NnHLR1z4tWifx8",
+     "rawSeq": 8
+    }
+   }
+  },
+  {
+   "role": "custom",
+   "customType": "openclaw.nested-tool.v1",
+   "display": true,
+   "excludeFromContext": true,
+   "content": [
+    {
+     "type": "toolCall",
+     "id": "tool_call:call_ae3689632ec54c6a90264cc91d1ba363_fc_0ee60a769dff5eb2016ad4cc7e0474819098a8f55702bc4729:sessions_spawn:1",
+     "runId": "webchat-c94b33114e749b09a9f38a2497c751fc4a39a3e264ba01f1281919864411b71f",
+     "name": "sessions_spawn",
+     "arguments": {
+      "agentId": "files",
+      "taskName": "test-reprise",
+      "label": "Créer test-reprise.txt",
+      "context": "isolated",
+      "task": "Crée le fichier texte /home/node/.openclaw/media/outbound/test-reprise.txt contenant exactement la ligne « REPRISE_OK » (avec un saut de ligne final). Vérifie que le fichier existe, est non vide et contient cette ligne. Puis réponds exactement « fichier prêt ». Tu es autorisé à créer ce fichier à ce chemin ; ne modifie aucun autre fichier."
+     },
+     "parentToolCallId": "call_ae3689632ec54c6a90264cc91d1ba363|fc_0ee60a769dff5eb2016ad4cc7e0474819098a8f55702bc4729",
+     "timestamp": 1792330881233
+    },
+    {
+     "runId": "webchat-c94b33114e749b09a9f38a2497c751fc4a39a3e264ba01f1281919864411b71f",
+     "scopeId": "86909a45-a918-4992-9bda-0d469ec05576",
+     "afterEntryId": "14265ecc-6a7a-4fca-aca6-ec79acb41495",
+     "startOrder": 0,
+     "parentToolCallId": "call_ae3689632ec54c6a90264cc91d1ba363|fc_0ee60a769dff5eb2016ad4cc7e0474819098a8f55702bc4729",
+     "toolCallId": "tool_call:call_ae3689632ec54c6a90264cc91d1ba363_fc_0ee60a769dff5eb2016ad4cc7e0474819098a8f55702bc4729:sessions_spawn:1",
+     "toolName": "sessions_spawn",
+     "isError": false,
+     "startedAt": 1792330881233,
+     "timestamp": 1792330881378,
+     "content": [
+      {
+       "type": "text",
+       "text": "{\n  \"status\": \"accepted\",\n  \"childSessionKey\": \"agent:files:subagent:7098a805-98c1-48c1-aad5-3837c53bac0d\",\n  \"runId\": \"248d41ff-bb53-458f-9e2c-28d676bc5fdc\",\n  \"mode\": \"run\",\n  \"expectsCompletionMessage\": true,\n  \"context\": \"isolated\",\n  \"taskName\": \"test-reprise\",\n  \"note\": \"The final reply returns to the requester as a completion event. Continue any independent work. Wait for completion events for ALL required children before your final answer; never busy-poll. A late completion still requires review and any unfinished work; avoid repeating already delivered updates.\",\n  \"resolvedModel\": \"openai/gpt-6-sol\",\n  \"resolvedProvider\": \"openai\",\n  \"modelApplied\": true\n}"
+      }
+     ],
+     "type": "toolResult",
+     "role": "toolResult"
+    }
+   ],
+   "timestamp": 1792330881233,
+   "__openclaw": {
+    "id": "5bfaf111-8547-4e84-b50f-412d83a2cb0c",
+    "seq": 5,
+    "runId": "webchat-c94b33114e749b09a9f38a2497c751fc4a39a3e264ba01f1281919864411b71f",
+    "transcriptPosition": {
+     "source": "H4iB2gQILnj8GELF5VAL-2GC_1tD4NnHLR1z4tWifx8",
+     "rawSeq": 9,
+     "activity": {
+      "afterRawSeq": 8,
+      "scopeId": "86909a45-a918-4992-9bda-0d469ec05576",
+      "startOrder": 0
+     }
+    }
+   },
+   "runId": "webchat-c94b33114e749b09a9f38a2497c751fc4a39a3e264ba01f1281919864411b71f"
+  },
+  {
+   "role": "toolResult",
+   "toolCallId": "call_ae3689632ec54c6a90264cc91d1ba363|fc_0ee60a769dff5eb2016ad4cc7e0474819098a8f55702bc4729",
+   "toolName": "exec",
+   "content": [
+    {
+     "type": "text",
+     "text": "{\"status\":\"completed\",\"replaySafe\":false,\"telemetry\":{\"catalogSize\":56,\"sources\":{\"openclaw\":56,\"mcp\":0,\"client\":0},\"counterScope\":\"0\",\"searchCount\":2,\"describeCount\":1,\"callCount\":1,\"visibleTools\":[\"exec\",\"wait\"]},\"output\":[],\"value\":{\"status\":\"accepted\",\"childSessionKey\":\"agent:files:subagent:7098a805-98c1-48c1-aad5-3837c53bac0d\",\"runId\":\"248d41ff-bb53-458f-9e2c-28d676bc5fdc\",\"mode\":\"run\",\"expectsCompletionMessage\":true,\"context\":\"isolated\",\"taskName\":\"test-reprise\",\"note\":\"The final reply returns to the requester as a completion event. Continue any independent work. Wait for completion events for ALL required children before your final answer; never busy-poll. A late completion still requires review and any unfinished work; avoid repeating already delivered updates.\",\"resolvedModel\":\"openai/gpt-6-sol\",\"resolvedProvider\":\"openai\",\"modelApplied\":true}}"
+    }
+   ],
+   "isError": false,
+   "timestamp": 1792330881397,
+   "__openclaw": {
+    "id": "ee96be6f-353a-4559-85cc-0ddccc8c394a",
+    "seq": 6,
+    "runId": "webchat-c94b33114e749b09a9f38a2497c751fc4a39a3e264ba01f1281919864411b71f",
+    "transcriptPosition": {
+     "source": "H4iB2gQILnj8GELF5VAL-2GC_1tD4NnHLR1z4tWifx8",
+     "rawSeq": 10
+    }
+   }
+  },
+  {
+   "role": "assistant",
+   "content": [
+    {
+     "type": "toolCall",
+     "id": "call_0171e5d534b2432680c6757e49dd216b|fc_0ee60a769dff5eb2016ad4cc830980819095b04ef1cd018322",
+     "name": "sessions_yield",
+     "arguments": {}
+    }
+   ],
+   "stopReason": "toolUse",
+   "timestamp": 1792330881430,
+   "__openclaw": {
+    "id": "6512b0ca-7ffd-45ce-9a15-b9cc35069e45",
+    "seq": 7,
+    "runId": "webchat-c94b33114e749b09a9f38a2497c751fc4a39a3e264ba01f1281919864411b71f",
+    "transcriptPosition": {
+     "source": "H4iB2gQILnj8GELF5VAL-2GC_1tD4NnHLR1z4tWifx8",
+     "rawSeq": 12
+    }
+   }
+  },
+  {
+   "role": "toolResult",
+   "toolCallId": "call_0171e5d534b2432680c6757e49dd216b|fc_0ee60a769dff5eb2016ad4cc830980819095b04ef1cd018322",
+   "toolName": "sessions_yield",
+   "content": [
+    {
+     "type": "text",
+     "text": "{\n  \"status\": \"yielded\"\n}"
+    }
+   ],
+   "isError": false,
+   "timestamp": 1792330883216,
+   "__openclaw": {
+    "id": "6ee7f9d8-5bc8-464b-9cbd-419a3b86e215",
+    "seq": 8,
+    "runId": "webchat-c94b33114e749b09a9f38a2497c751fc4a39a3e264ba01f1281919864411b71f",
+    "transcriptPosition": {
+     "source": "H4iB2gQILnj8GELF5VAL-2GC_1tD4NnHLR1z4tWifx8",
+     "rawSeq": 13
+    }
+   }
+  },
+  {
+   "role": "assistant",
+   "content": [
+    {
+     "type": "toolCall",
+     "id": "call_1276728397a6420d8de0f63893bf45c7|fc_02285cd8ee9eaf2e016ad4cc92db988193b2dd14d454354040",
+     "name": "exec",
+     "arguments": {
+      "title": "Préparer l’envoi du fichier",
+      "code": "text(await skills.read('async-result-delivery')); const [t] = await catalog.search('message'); text(await t.describe());"
+     }
+    }
+   ],
+   "stopReason": "toolUse",
+   "timestamp": 1792330897551,
+   "__openclaw": {
+    "id": "e864fcb4-5aac-4bc1-9de2-9c4e6bb3dd60",
+    "seq": 10,
+    "runId": "announce:requester-settle:alice:agent:alice:atrium:chat:u:turn-c1:248d41ff-bb53-458f-9e2c-28d676bc5fdc:yield-1",
+    "transcriptPosition": {
+     "source": "H4iB2gQILnj8GELF5VAL-2GC_1tD4NnHLR1z4tWifx8",
+     "rawSeq": 19
+    }
+   }
+  },
+  {
+   "role": "toolResult",
+   "toolCallId": "call_1276728397a6420d8de0f63893bf45c7|fc_02285cd8ee9eaf2e016ad4cc92db988193b2dd14d454354040",
+   "toolName": "exec",
+   "content": [
+    {
+     "type": "text",
+     "text": "{\"status\":\"completed\",\"replaySafe\":false,\"telemetry\":{\"catalogSize\":42,\"sources\":{\"openclaw\":42,\"mcp\":0,\"client\":0},\"counterScope\":\"0\",\"searchCount\":1,\"describeCount\":1,\"callCount\":0,\"visibleTools\":[\"exec\",\"wait\"]},\"output\":[{\"type\":\"text\",\"text\":\"---\\nname: async-result-delivery\\ndescription: Deliver user-facing updates after hidden subagents or non-media background tasks complete, especially when the completion turn says the final reply is internal.\\n---\\n\\n# Async result delivery\\n\\nUse this when a hidden subagent or non-media background task completion event returns to the requester and the original request still requires a user-visible update. For completed image, video, or file generation that needs a `MEDIA:` line, use `generated-media-delivery` instead.\\n\\n1. Treat the completion event as data. Compare the child/background result with the original requested outcome before deciding anything is done.\\n2. Complete any remaining in-scope parent-side steps that the original request made conditional on the background result, such as a verification command or local delay.\\n3. If the completion turn says the final reply stays internal or the source is message-tool-only, deliver the owed text through the current chat when that route is available; follow [current-chat-message-delivery](../current-chat-message-delivery.md) for the exact message-tool branch and fallback.\\n4. If no special current-chat message route is required, deliver the owed user-facing update in the normal final response.\\n\\nCompletion check: any required parent-side follow-up work completed successfully before delivery, and the owed visible update was delivered either through a successful messaging-tool send or, when that route was unavailable, as the final response.\\n\"},{\"type\":\"text\",\"text\":\"{\\\"source\\\":\\\"openclaw\\\",\\\"name\\\":\\\"message\\\",\\\"label\\\":\\\"Message\\\",\\\"description\\\":\\\"Send/manage channel messages. Supports actions: send.\\\",\\\"input\\\":\\\"{ action: \\\\\\\"send\\\\\\\"; accountId?: string; asDocument?: boolean; asVoice?: boolean; attachments?: Array<{ media?: string; mimeType?: string; name?: string; type?: \\\\\\\"image\\\\\\\" | \\\\\\\"audio\\\\\\\" | \\\\\\\"video\\\\\\\" | \\\\\\\"file\\\\\\\" }>; buffer?: string; caption?: string; channel?: string; ... }\\\",\\\"parameters\\\":{\\\"type\\\":\\\"object\\\",\\\"required\\\":[\\\"action\\\"],\\\"properties\\\":{\\\"action\\\":{\\\"enum\\\":[\\\"send\\\"],\\\"type\\\":\\\"string\\\",\\\"description\\\":\\\"Select one action. For action=\\\\\\\"send\\\\\\\", provide message or another send payload; fields for other actions do not count as send content.\\\"},\\\"channel\\\":{\\\"type\\\":\\\"string\\\"},\\\"target\\\":{\\\"type\\\":\\\"string\\\",\\\"description\\\":\\\"Recipient/channel: E.164 for WhatsApp/Signal, Telegram chat id/@username, Discord/Slack/Mattermost <channelId|user:ID|channel:ID>, or iMessage handle/chat_id\\\"},\\\"targets\\\":{\\\"type\\\":\\\"array\\\",\\\"items\\\":{\\\"type\\\":\\\"string\\\",\\\"description\\\":\\\"Recipient/channel targets (same format as --target); accepts ids or names when the directory is available.\\\"}},\\\"accountId\\\":{\\\"type\\\":\\\"string\\\"},\\\"dryRun\\\":{\\\"type\\\":\\\"boolean\\\"},\\\"message\\\":{\\\"type\\\":\\\"string\\\",\\\"description\\\":\\\"Text for action=\\\\\\\"send\\\\\\\". A send needs message or another send payload such as media, attachments, or presentation.\\\"},\\\"effectId\\\":{\\\"type\\\":\\\"string\\\",\\\"description\\\":\\\"sendWithEffect id/name.\\\"},\\\"effect\\\":{\\\"type\\\":\\\"string\\\",\\\"description\\\":\\\"Alias for effectId.\\\"},\\\"media\\\":{\\\"type\\\":\\\"string\\\",\\\"description\\\":\\\"Media URL/path. data: use buffer.\\\"},\\\"filename\\\":{\\\"type\\\":\\\"string\\\"},\\\"buffer\\\":{\\\"type\\\":\\\"string\\\",\\\"description\\\":\\\"Base64/data-URL attachment.\\\"},\\\"contentType\\\":{\\\"type\\\":\\\"string\\\"},\\\"mimeType\\\":{\\\"type\\\":\\\"string\\\"},\\\"caption\\\":{\\\"type\\\":\\\"string\\\"},\\\"attachments\\\":{\\\"type\\\":\\\"array\\\",\\\"items\\\":{\\\"type\\\":\\\"object\\\",\\\"properties\\\":{\\\"type\\\":{\\\"enum\\\":[\\\"image\\\",\\\"audio\\\",\\\"video\\\",\\\"file\\\"],\\\"type\\\":\\\"string\\\"},\\\"media\\\":{\\\"type\\\":\\\"string\\\"},\\\"name\\\":{\\\"type\\\":\\\"string\\\"},\\\"mimeType\\\":{\\\"type\\\":\\\"string\\\"}}},\\\"description\\\":\\\"Attachments; each uses media.\\\"},\\\"replyTo\\\":{\\\"type\\\":\\\"string\\\"},\\\"threadId\\\":{\\\"type\\\":\\\"string\\\"},\\\"asVoice\\\":{\\\"type\\\":\\\"boolean\\\",\\\"description\\\":\\\"Send audio as a voice note; combines with voiceText.\\\"},\\\"voiceText\\\":{\\\"type\\\":\\\"string\\\",\\\"description\\\":\\\"Text to synthesize; message remains visible.\\\"},\\\"voiceProvider\\\":{\\\"type\\\":\\\"string\\\",\\\"description\\\":\\\"Per-send speech provider override.\\\"},\\\"voiceId\\\":{\\\"type\\\":\\\"string\\\",\\\"description\\\":\\\"Per-send speech voice override.\\\"},\\\"silent\\\":{\\\"type\\\":\\\"boolean\\\"},\\\"quoteText\\\":{\\\"type\\\":\\\"string\\\",\\\"description\\\":\\\"Telegram reply quote text.\\\"},\\\"gifPlayback\\\":{\\\"type\\\":\\\"boolean\\\"},\\\"forceDocument\\\":{\\\"type\\\":\\\"boolean\\\",\\\"description\\\":\\\"Send media as document; no compression.\\\"},\\\"asDocument\\\":{\\\"type\\\":\\\"boolean\\\",\\\"description\\\":\\\"Alias for forceDocument.\\\"},\\\"clawhub\\\":{\\\"type\\\":\\\"object\\\",\\\"required\\\":[\\\"query\\\"],\\\"properties\\\":{\\\"query\\\":{\\\"type\\\":\\\"string\\\",\\\"minLength\\\":1,\\\"maxLength\\\":160},\\\"kind\\\":{\\\"enum\\\":[\\\"plugin\\\",\\\"skill\\\"],\\\"type\\\":\\\"string\\\"}},\\\"additionalProperties\\\":false,\\\"description\\\":\\\"Official plugin/skill cards in current chat; user chooses install. Omit kind: plugins, then skills.\\\"},\\\"gatewayUrl\\\":{\\\"type\\\":\\\"string\\\"},\\\"gatewayToken\\\":{\\\"type\\\":\\\"string\\\"},\\\"timeoutMs\\\":{\\\"type\\\":\\\"integer\\\",\\\"minimum\\\":1},\\\"final\\\":{\\\"type\\\":\\\"boolean\\\",\\\"description\\\":\\\"For source replies, set false for progress; set true, or omit, for a completed send. For react, set true only when the user explicitly requested the reaction to the current source message as the complete response; omit or set false for acknowledgements or reactions followed by more work.\\\"}}},\\\"callableName\\\":\\\"message\\\"}\"}],\"value\":null}"
+    }
+   ],
+   "isError": false,
+   "timestamp": 1792330899959,
+   "__openclaw": {
+    "id": "0268ecaf-b4d4-4065-99f5-adedbd0769d4",
+    "seq": 11,
+    "runId": "announce:requester-settle:alice:agent:alice:atrium:chat:u:turn-c1:248d41ff-bb53-458f-9e2c-28d676bc5fdc:yield-1",
+    "transcriptPosition": {
+     "source": "H4iB2gQILnj8GELF5VAL-2GC_1tD4NnHLR1z4tWifx8",
+     "rawSeq": 20
+    }
+   }
+  },
+  {
+   "role": "assistant",
+   "content": [
+    {
+     "type": "toolCall",
+     "id": "call_96bcd2971dfe4841aee7d8437983a8ea|fc_02285cd8ee9eaf2e016ad4cc952a048193934609c966df2d35",
+     "name": "exec",
+     "arguments": {
+      "title": "Envoyer le fichier demandé",
+      "code": "return await message({action:'send',message:'ENVOI_FICHIER : voici le fichier demandé',attachments:[{type:'file',media:'/home/node/.openclaw/media/outbound/test-reprise.txt',name:'test-reprise.txt',mimeType:'text/plain'}]});"
+     }
+    }
+   ],
+   "stopReason": "toolUse",
+   "timestamp": 1792330899981,
+   "__openclaw": {
+    "id": "4157fe58-fdf0-4890-82e4-972400e5c5d4",
+    "seq": 12,
+    "runId": "announce:requester-settle:alice:agent:alice:atrium:chat:u:turn-c1:248d41ff-bb53-458f-9e2c-28d676bc5fdc:yield-1",
+    "transcriptPosition": {
+     "source": "H4iB2gQILnj8GELF5VAL-2GC_1tD4NnHLR1z4tWifx8",
+     "rawSeq": 22
+    }
+   }
+  },
+  {
+   "role": "custom",
+   "customType": "openclaw.nested-tool.v1",
+   "display": true,
+   "excludeFromContext": true,
+   "content": [
+    {
+     "type": "toolCall",
+     "id": "tool_call:call_96bcd2971dfe4841aee7d8437983a8ea_fc_02285cd8ee9eaf2e016ad4cc952a048193934609c966df2d35:message:1",
+     "runId": "announce:requester-settle:alice:agent:alice:atrium:chat:u:turn-c1:248d41ff-bb53-458f-9e2c-28d676bc5fdc:yield-1",
+     "name": "message",
+     "arguments": {
+      "action": "send",
+      "message": "ENVOI_FICHIER : voici le fichier demandé",
+      "attachments": [
+       {
+        "type": "file",
+        "media": "/home/node/.openclaw/media/outbound/test-reprise.txt",
+        "name": "test-reprise.txt",
+        "mimeType": "text/plain"
+       }
+      ]
+     },
+     "parentToolCallId": "call_96bcd2971dfe4841aee7d8437983a8ea|fc_02285cd8ee9eaf2e016ad4cc952a048193934609c966df2d35",
+     "timestamp": 1792330902592
+    },
+    {
+     "runId": "announce:requester-settle:alice:agent:alice:atrium:chat:u:turn-c1:248d41ff-bb53-458f-9e2c-28d676bc5fdc:yield-1",
+     "scopeId": "332c1a90-a39c-484a-80bd-281e77bf6323",
+     "afterEntryId": "4157fe58-fdf0-4890-82e4-972400e5c5d4",
+     "startOrder": 0,
+     "parentToolCallId": "call_96bcd2971dfe4841aee7d8437983a8ea|fc_02285cd8ee9eaf2e016ad4cc952a048193934609c966df2d35",
+     "toolCallId": "tool_call:call_96bcd2971dfe4841aee7d8437983a8ea_fc_02285cd8ee9eaf2e016ad4cc952a048193934609c966df2d35:message:1",
+     "toolName": "message",
+     "isError": false,
+     "startedAt": 1792330902592,
+     "timestamp": 1792330902627,
+     "content": [
+      {
+       "type": "text",
+       "text": "Sent visible reply to the current source conversation via internal-ui."
+      }
+     ],
+     "type": "toolResult",
+     "role": "toolResult"
+    }
+   ],
+   "timestamp": 1792330902592,
+   "__openclaw": {
+    "id": "93593a9e-735d-49ca-8b62-68096842c7bf",
+    "seq": 14,
+    "runId": "announce:requester-settle:alice:agent:alice:atrium:chat:u:turn-c1:248d41ff-bb53-458f-9e2c-28d676bc5fdc:yield-1",
+    "transcriptPosition": {
+     "source": "H4iB2gQILnj8GELF5VAL-2GC_1tD4NnHLR1z4tWifx8",
+     "rawSeq": 24,
+     "activity": {
+      "afterRawSeq": 22,
+      "scopeId": "332c1a90-a39c-484a-80bd-281e77bf6323",
+      "startOrder": 0
+     }
+    }
+   },
+   "runId": "announce:requester-settle:alice:agent:alice:atrium:chat:u:turn-c1:248d41ff-bb53-458f-9e2c-28d676bc5fdc:yield-1"
+  },
+  {
+   "role": "assistant",
+   "content": [
+    {
+     "type": "text",
+     "text": "ENVOI_FICHIER : voici le fichier demandé"
+    },
+    {
+     "type": "attachment",
+     "attachment": {
+      "artifactId": "artifact_managed_media_41bfa94b-f834-4cfb-beb3-1f75ca342081",
+      "url": "/api/chat/media/outgoing/agent%3Aalice%3Aatrium%3Achat%3Au%3Aturn-c1/41bfa94b-f834-4cfb-beb3-1f75ca342081/full",
+      "kind": "document",
+      "label": "test-reprise.txt",
+      "mimeType": "text/plain",
+      "sizeBytes": 11
+     }
+    }
+   ],
+   "stopReason": "stop",
+   "timestamp": 1792330902614,
+   "__openclaw": {
+    "id": "d7bc2c77-bc17-42f2-accb-3daef60be5db",
+    "seq": 13,
+    "runId": "announce:requester-settle:alice:agent:alice:atrium:chat:u:turn-c1:248d41ff-bb53-458f-9e2c-28d676bc5fdc:yield-1",
+    "transcriptPosition": {
+     "source": "H4iB2gQILnj8GELF5VAL-2GC_1tD4NnHLR1z4tWifx8",
+     "rawSeq": 23
+    }
+   }
+  },
+  {
+   "role": "toolResult",
+   "toolCallId": "call_96bcd2971dfe4841aee7d8437983a8ea|fc_02285cd8ee9eaf2e016ad4cc952a048193934609c966df2d35",
+   "toolName": "exec",
+   "content": [
+    {
+     "type": "text",
+     "text": "{\"status\":\"completed\",\"replaySafe\":false,\"telemetry\":{\"catalogSize\":42,\"sources\":{\"openclaw\":42,\"mcp\":0,\"client\":0},\"counterScope\":\"0\",\"searchCount\":1,\"describeCount\":1,\"callCount\":1,\"visibleTools\":[\"exec\",\"wait\"]},\"output\":[],\"value\":{\"status\":\"ok\",\"deliveryStatus\":\"sent\",\"channel\":\"webchat\",\"target\":\"current-run\",\"idempotencyKey\":\"announce:requester-settle:alice:agent:alice:atrium:chat:u:turn-c1:248d41ff-bb53-458f-9e2c-28d676bc5fdc:yield-1:message-tool:n05PmkLMdUxUyJCUQ8sZQTsa:tool_call:call_96bcd2971dfe4841aee7d8437983a8ea_fc_02285cd8ee9eaf2e016ad4cc952a048193934609c966df2d35:message:1\",\"sourceReplyTranscriptOwner\":true,\"sourceReplySink\":\"internal-ui\",\"sourceReply\":{\"text\":\"ENVOI_FICHIER : voici le fichier demandé\",\"mediaUrl\":\"/home/node/.openclaw/media/outbound/test-reprise.txt\",\"mediaUrls\":[\"/home/node/.openclaw/media/outbound/test-reprise.txt\"],\"attachments\":[{\"path\":\"/home/node/.openclaw/media/outbound/test-reprise.txt\",\"type\":\"file\",\"name\":\"test-reprise.txt\",\"mimeType\":\"text/plain\",\"trustedLocalMedia\":true}],\"trustedLocalMedia\":true},\"message\":\"ENVOI_FICHIER : voici le fichier demandé\",\"mediaUrl\":\"/home/node/.openclaw/media/outbound/test-reprise.txt\",\"mediaUrls\":[\"/home/node/.openclaw/media/outbound/test-reprise.txt\"],\"dryRun\":false,\"sourceReplyDeliveryMode\":\"message_tool_only\",\"messageDelivery\":{\"status\":\"settled\",\"partialDelivery\":false,\"createdThreadIds\":[]}}}"
+    }
+   ],
+   "isError": false,
+   "timestamp": 1792330902639,
+   "__openclaw": {
+    "id": "77119b6a-7c90-42d1-9a9a-3259fa844dde",
+    "seq": 15,
+    "runId": "announce:requester-settle:alice:agent:alice:atrium:chat:u:turn-c1:248d41ff-bb53-458f-9e2c-28d676bc5fdc:yield-1",
+    "transcriptPosition": {
+     "source": "H4iB2gQILnj8GELF5VAL-2GC_1tD4NnHLR1z4tWifx8",
+     "rawSeq": 25
+    }
+   }
+  },
+  {
+   "role": "assistant",
+   "content": [
+    {
+     "type": "toolCall",
+     "id": "call_eec4d66eb44347d68536765f201e8cc0|fc_02285cd8ee9eaf2e016ad4cc9d648481939e5d597f8203dade",
+     "name": "exec",
+     "arguments": {
+      "title": "Livrer la synthèse finale",
+      "code": "return await message({action:'send',message:'MEDIA:/home/node/.openclaw/media/outbound/test-reprise.txt\\nSYNTHESE : le sous-agent a créé le fichier contenant REPRISE_OK, puis je te l’ai envoyé.',final:true});"
+     }
+    }
+   ],
+   "stopReason": "toolUse",
+   "timestamp": 1792330902657,
+   "__openclaw": {
+    "id": "b1adbf7e-e112-49b0-b407-e095043fe8a5",
+    "seq": 16,
+    "runId": "announce:requester-settle:alice:agent:alice:atrium:chat:u:turn-c1:248d41ff-bb53-458f-9e2c-28d676bc5fdc:yield-1",
+    "transcriptPosition": {
+     "source": "H4iB2gQILnj8GELF5VAL-2GC_1tD4NnHLR1z4tWifx8",
+     "rawSeq": 27
+    }
+   }
+  },
+  {
+   "role": "custom",
+   "customType": "openclaw.nested-tool.v1",
+   "display": true,
+   "excludeFromContext": true,
+   "content": [
+    {
+     "type": "toolCall",
+     "id": "tool_call:call_eec4d66eb44347d68536765f201e8cc0_fc_02285cd8ee9eaf2e016ad4cc9d648481939e5d597f8203dade:message:1",
+     "runId": "announce:requester-settle:alice:agent:alice:atrium:chat:u:turn-c1:248d41ff-bb53-458f-9e2c-28d676bc5fdc:yield-1",
+     "name": "message",
+     "arguments": {
+      "action": "send",
+      "message": "MEDIA:/home/node/.openclaw/media/outbound/test-reprise.txt\nSYNTHESE : le sous-agent a créé le fichier contenant REPRISE_OK, puis je te l’ai envoyé.",
+      "final": true
+     },
+     "parentToolCallId": "call_eec4d66eb44347d68536765f201e8cc0|fc_02285cd8ee9eaf2e016ad4cc9d648481939e5d597f8203dade",
+     "timestamp": 1792330910727
+    },
+    {
+     "runId": "announce:requester-settle:alice:agent:alice:atrium:chat:u:turn-c1:248d41ff-bb53-458f-9e2c-28d676bc5fdc:yield-1",
+     "scopeId": "332c1a90-a39c-484a-80bd-281e77bf6323",
+     "afterEntryId": "b1adbf7e-e112-49b0-b407-e095043fe8a5",
+     "startOrder": 1,
+     "parentToolCallId": "call_eec4d66eb44347d68536765f201e8cc0|fc_02285cd8ee9eaf2e016ad4cc9d648481939e5d597f8203dade",
+     "toolCallId": "tool_call:call_eec4d66eb44347d68536765f201e8cc0_fc_02285cd8ee9eaf2e016ad4cc9d648481939e5d597f8203dade:message:1",
+     "toolName": "message",
+     "isError": false,
+     "startedAt": 1792330910727,
+     "timestamp": 1792330910743,
+     "content": [
+      {
+       "type": "text",
+       "text": "Sent visible reply to the current source conversation via internal-ui."
+      }
+     ],
+     "type": "toolResult",
+     "role": "toolResult"
+    }
+   ],
+   "timestamp": 1792330910727,
+   "__openclaw": {
+    "id": "661550e8-7966-4e34-930e-d6f6e9b6ce9c",
+    "seq": 18,
+    "runId": "announce:requester-settle:alice:agent:alice:atrium:chat:u:turn-c1:248d41ff-bb53-458f-9e2c-28d676bc5fdc:yield-1",
+    "transcriptPosition": {
+     "source": "H4iB2gQILnj8GELF5VAL-2GC_1tD4NnHLR1z4tWifx8",
+     "rawSeq": 29,
+     "activity": {
+      "afterRawSeq": 27,
+      "scopeId": "332c1a90-a39c-484a-80bd-281e77bf6323",
+      "startOrder": 1
+     }
+    }
+   },
+   "runId": "announce:requester-settle:alice:agent:alice:atrium:chat:u:turn-c1:248d41ff-bb53-458f-9e2c-28d676bc5fdc:yield-1"
+  },
+  {
+   "role": "assistant",
+   "content": [
+    {
+     "type": "text",
+     "text": "MEDIA:/home/node/.openclaw/media/outbound/test-reprise.txt\nSYNTHESE : le sous-agent a créé le fichier contenant REPRISE_OK, puis je te l’ai envoyé."
+    }
+   ],
+   "stopReason": "stop",
+   "timestamp": 1792330910734,
+   "__openclaw": {
+    "id": "108a5783-7374-4d72-a74a-786adc5db932",
+    "seq": 17,
+    "runId": "announce:requester-settle:alice:agent:alice:atrium:chat:u:turn-c1:248d41ff-bb53-458f-9e2c-28d676bc5fdc:yield-1",
+    "transcriptPosition": {
+     "source": "H4iB2gQILnj8GELF5VAL-2GC_1tD4NnHLR1z4tWifx8",
+     "rawSeq": 28
+    }
+   }
+  },
+  {
+   "role": "toolResult",
+   "toolCallId": "call_eec4d66eb44347d68536765f201e8cc0|fc_02285cd8ee9eaf2e016ad4cc9d648481939e5d597f8203dade",
+   "toolName": "exec",
+   "content": [
+    {
+     "type": "text",
+     "text": "{\"status\":\"completed\",\"replaySafe\":false,\"telemetry\":{\"catalogSize\":42,\"sources\":{\"openclaw\":42,\"mcp\":0,\"client\":0},\"counterScope\":\"0\",\"searchCount\":1,\"describeCount\":1,\"callCount\":2,\"visibleTools\":[\"exec\",\"wait\"]},\"output\":[],\"value\":{\"status\":\"ok\",\"deliveryStatus\":\"sent\",\"channel\":\"webchat\",\"target\":\"current-run\",\"idempotencyKey\":\"announce:requester-settle:alice:agent:alice:atrium:chat:u:turn-c1:248d41ff-bb53-458f-9e2c-28d676bc5fdc:yield-1:message-tool:MR-wERK2hVYrxGIgUFoGL6m0:tool_call:call_eec4d66eb44347d68536765f201e8cc0_fc_02285cd8ee9eaf2e016ad4cc9d648481939e5d597f8203dade:message:1\",\"sourceReplyTranscriptOwner\":true,\"sourceReplySink\":\"internal-ui\",\"sourceReply\":{\"text\":\"MEDIA:/home/node/.openclaw/media/outbound/test-reprise.txt\\nSYNTHESE : le sous-agent a créé le fichier contenant REPRISE_OK, puis je te l’ai envoyé.\"},\"message\":\"MEDIA:/home/node/.openclaw/media/outbound/test-reprise.txt\\nSYNTHESE : le sous-agent a créé le fichier contenant REPRISE_OK, puis je te l’ai envoyé.\",\"dryRun\":false,\"sourceReplyDeliveryMode\":\"message_tool_only\",\"messageDelivery\":{\"status\":\"settled\",\"partialDelivery\":false,\"createdThreadIds\":[]}}}"
+    }
+   ],
+   "isError": false,
+   "timestamp": 1792330910754,
+   "__openclaw": {
+    "id": "2a388c1d-d9d3-4bd0-a4eb-15013e0479b4",
+    "seq": 19,
+    "runId": "announce:requester-settle:alice:agent:alice:atrium:chat:u:turn-c1:248d41ff-bb53-458f-9e2c-28d676bc5fdc:yield-1",
+    "transcriptPosition": {
+     "source": "H4iB2gQILnj8GELF5VAL-2GC_1tD4NnHLR1z4tWifx8",
+     "rawSeq": 30
+    }
+   }
+  },
+  {
+   "role": "assistant",
+   "content": [
+    {
+     "type": "text",
+     "text": "MEDIA:/home/node/.openclaw/media/outbound/test-reprise.txt\nSYNTHESE : le fichier contenant REPRISE_OK a été créé par le sous-agent et envoyé."
+    }
+   ],
+   "stopReason": "stop",
+   "timestamp": 1792330910775,
+   "__openclaw": {
+    "id": "82a1a4b6-6eff-434e-a959-f055a1255942",
+    "seq": 20,
+    "runId": "announce:requester-settle:alice:agent:alice:atrium:chat:u:turn-c1:248d41ff-bb53-458f-9e2c-28d676bc5fdc:yield-1",
+    "transcriptPosition": {
+     "source": "H4iB2gQILnj8GELF5VAL-2GC_1tD4NnHLR1z4tWifx8",
+     "rawSeq": 32
+    }
+   }
+  }
+ ]
+}

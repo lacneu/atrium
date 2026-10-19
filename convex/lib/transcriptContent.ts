@@ -58,6 +58,10 @@ export const rowBlockValidator = v.union(
     // content budget left them out.
     input: v.optional(v.any()),
     output: v.optional(v.any()),
+    // The call this one ran inside (a tool called from a code-mode `exec`'s code): bridge
+    // row-blocks.ts `RowToolBlock.parentToolCallId`, the Control UI's nesting key
+    // (ui/src/lib/chat/tool-cards.ts:383). Optional: an older bridge sends none.
+    parentToolCallId: v.optional(v.string()),
     inputOmitted: v.optional(v.boolean()),
     inputBytes: v.optional(v.number()),
     outputOmitted: v.optional(v.boolean()),
@@ -176,6 +180,10 @@ export function sanitizeRowBlocks(raw: unknown): RowBlock[] | undefined {
         toolCallId,
         ...(name !== undefined ? { name } : {}),
         status: b.status as "call" | "result" | "error",
+        ...(() => {
+          const parent = boundedString(b.parentToolCallId, MAX_TOOL_ID_CHARS);
+          return parent !== undefined && parent !== toolCallId ? { parentToolCallId: parent } : {};
+        })(),
         // Kept as the bridge sent them (JSON values; the row's budget bounds them): what
         // `chat.history` serves, already masked by the gateway's storage
         // (src/agents/transcript-redact.ts:721). The card masks them again at display, as

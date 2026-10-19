@@ -32,6 +32,10 @@ export type ToolActivityPart = {
   /** The input came from a transcript row (convex/lib/viewReconcile.ts): masked at
    *  display as the Control UI masks history (`toolCardDisplay`). */
   inputFromTranscript?: boolean;
+  /** The call this one ran inside (a tool called from a code-mode `exec`'s code), from the
+   *  bubble's row layout: the activity block ranks the card under its parent, as the Control
+   *  UI does (src/vendor/upstream-activity `groupToolCalls`). */
+  parentToolCallId?: string;
 };
 
 /** Projection of a tool's `result` for display. An exec/bash result on OpenClaw

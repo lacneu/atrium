@@ -15,6 +15,7 @@ import { useUiPrefs } from "./ConvexChat";
 import { ActivityRow } from "./ActivityRow";
 import { ToolCard } from "./ToolCard";
 import type { ToolActivityPart } from "./toolActivityView";
+import { activityBlock, type ActivityNode } from "./activityBlock";
 import {
   activityLabel,
   dominantFamily,
@@ -44,8 +45,30 @@ interface FlowMeta {
   status?: string;
 }
 
+/** A rows block's cards, nested under their parent (activityBlock.ts): a node's children
+ *  are shown inside its card, once it is open. */
+function NodeCard({ node, settled }: { node: ActivityNode; settled: boolean }) {
+  const p = node.part;
+  return (
+    <ToolCard
+      toolName={p.toolName}
+      args={p.args}
+      argsText={p.argsText}
+      inputFromTranscript={p.inputFromTranscript}
+      result={p.result}
+      status={p.phase ? { type: p.phase } : undefined}
+      turnSettled={settled}
+      nested={
+        node.children.length > 0
+          ? node.children.map((c) => <NodeCard key={c.part.toolCallId} node={c} settled={settled} />)
+          : undefined
+      }
+    />
+  );
+}
+
 export function InlineTurnActivity(props: {
-  args?: { parts?: ToolActivityPart[] };
+  args?: { parts?: ToolActivityPart[]; rows?: boolean };
 }) {
   const status = useMessage(
     (msg) => (msg.metadata?.custom as FlowMeta | undefined)?.status,
@@ -61,7 +84,16 @@ export function InlineTurnActivity(props: {
   // TERMINAL message the row must read settled, never spin (codex P2).
   const live =
     status === "streaming" && parts.some((p) => isLivePhase(p.phase));
-  const Icon = FAMILY_ICON[dominantFamily(parts)];
+  const settled = status !== undefined && status !== "streaming";
+  // PROJECTION `on`: the block is the Control UI's activity group — wrappers out of the
+  // count, the visible operations summarized by family, nested calls under their parent.
+  const block = props.args?.rows === true ? activityBlock(parts, settled) : null;
+  const shown = block?.visible ?? parts;
+  const label =
+    block === null || live || shown.length <= 1
+      ? activityLabel(block === null || live ? parts : shown, { live })
+      : block.summary;
+  const Icon = FAMILY_ICON[dominantFamily(shown)];
   const trailing = live ? (
     <LoaderCircle
       size={13}
@@ -70,8 +102,8 @@ export function InlineTurnActivity(props: {
     />
   ) : (
     <>
-      {parts.length > 1 ? (
-        <span className="oc-flowact__count">{parts.length}</span>
+      {shown.length > 1 ? (
+        <span className="oc-flowact__count">{shown.length}</span>
       ) : null}
       <Check size={13} className="oc-actrow__status-icon" aria-hidden />
     </>
@@ -84,7 +116,7 @@ export function InlineTurnActivity(props: {
     >
       <ActivityRow
         icon={<Icon size={14} />}
-        label={activityLabel(parts, { live })}
+        label={label}
         trailing={trailing}
         open={expanded}
         ariaExpanded={expanded}
@@ -93,7 +125,13 @@ export function InlineTurnActivity(props: {
         }
         onClick={() => setExpanded(!expanded)}
       />
-      {expanded ? (
+      {expanded && block !== null ? (
+        <div className="oc-toolact__detail">
+          {block.roots.map((node) => (
+            <NodeCard key={node.part.toolCallId} node={node} settled={settled} />
+          ))}
+        </div>
+      ) : expanded ? (
         <div className="oc-toolact__detail">
           {parts.map((p) => (
             <ToolCard

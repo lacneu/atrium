@@ -30,6 +30,23 @@ export type InboundMediaMode = (typeof INBOUND_MEDIA_MODES)[number];
 export const TRANSCRIPT_PROJECTION_MODES = ["off", "shadow", "on"] as const;
 export type TranscriptProjectionMode = (typeof TRANSCRIPT_PROJECTION_MODES)[number];
 
+/** The projection an OpenClaw instance runs when its configuration names none: `on` since
+ *  0.101.1 (the transcript decides what a reply shows). `off` and `shadow` stay available,
+ *  explicitly. */
+export const DEFAULT_TRANSCRIPT_PROJECTION: TranscriptProjectionMode = "on";
+
+/** THE projection mode of an instance — the one reading every site uses (dispatch, the
+ *  follow-up composer, the diagnosis, the guard). An explicit value is kept; an OpenClaw
+ *  instance with none runs `DEFAULT_TRANSCRIPT_PROJECTION`; a Hermes instance is never
+ *  projected (it has no transcript with these identities, design §9.2), whatever its
+ *  configuration says. An unknown instance is not projected. */
+export function effectiveTranscriptProjection(
+  inst: { kind?: "openclaw" | "hermes"; config?: { transcriptProjection?: TranscriptProjectionMode } | null } | null | undefined,
+): TranscriptProjectionMode {
+  if (inst === null || inst === undefined || inst.kind === "hermes") return "off";
+  return inst.config?.transcriptProjection ?? DEFAULT_TRANSCRIPT_PROJECTION;
+}
+
 /** Live-stream transport (frontend↔Convex) for an instance's chats: the reactive query
  *  push (default) or the SSE / streamable-HTTP endpoint. A FRONTEND display choice — it is
  *  a TOP-LEVEL instance property (`instances.streamTransport`), NOT part of this bridge
@@ -507,10 +524,17 @@ export function bridgeDispatchConfig(
   cfg: InstanceConfig | undefined | null,
   // The instance's CONTENT locale — picks the language of default injection texts.
   contentLocale: Locale,
+  // The instance's provider: the projection mode is sent RESOLVED (an OpenClaw instance
+  // with none set runs the default), so the bridge never applies a default of its own.
+  kind?: "openclaw" | "hermes",
 ): BridgeDispatchConfig {
   const { promptInjections, converterAgentId: _converter, ...transport } =
     cfg ?? {};
-  return { ...transport, injections: resolveBridgeInjections(promptInjections, contentLocale) };
+  return {
+    ...transport,
+    transcriptProjection: effectiveTranscriptProjection({ ...(kind !== undefined ? { kind } : {}), config: cfg ?? null }),
+    injections: resolveBridgeInjections(promptInjections, contentLocale),
+  };
 }
 
 /** Force the media mode OFF when the target gateway must not be asked to deliver a

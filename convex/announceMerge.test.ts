@@ -1064,6 +1064,35 @@ describe("subAgents.turnActivity", () => {
     expect(a.workingSince).toBeNull(); // quiet → no clock
   });
 
+  test("a resume bubble that names the child's run ends the delivery window (projection `on`)", async () => {
+    // prod report prod-ms7dc0ne…: in `on` the resume (`announce:requester-settle:…`) is a
+    // bubble of its own and names the child by its RUN; the hand-off bubble settled before
+    // the child finished. Without this fact, only the 45 s window ended "composing".
+    const t = convexTest(schema, modules);
+    const { userId, chatId } = await seedDelegatedTurn(t);
+    const asUser = t.withIdentity({ subject: `${userId}|s` });
+    const childRunId = "248d41ff-bb53-458f-9e2c-28d676bc5fdc";
+    await t.run(async (ctx) => {
+      const sub = await ctx.db.query("subAgents").first();
+      await ctx.db.patch(sub!._id, { status: "done" as const, childRunId, updatedAt: Date.now() });
+    });
+    expect((await asUser.query(api.subAgents.turnActivity, { chatId })).deliveringSince).not.toBeNull();
+    await t.run(async (ctx) => {
+      await ctx.db.insert("messages", {
+        chatId,
+        userId,
+        role: "assistant" as const,
+        status: "streaming" as const,
+        text: "",
+        runId: `announce:requester-settle:main:agent:main:atrium:chat:u:c1:${childRunId}:yield-1`,
+        updatedAt: Date.now(),
+      });
+    });
+    const a = await asUser.query(api.subAgents.turnActivity, { chatId });
+    expect(a.deliveringSince).toBeNull();
+    expect(a.workingSince).toBeNull();
+  });
+
   test("a merge whose parent scrolled beyond the recent-message window stays quiet", async () => {
     // The announce merged into the parent, then 11 newer messages pushed it
     // out of the 10-message mergedRuns scan, and the child's detached

@@ -10,6 +10,8 @@ import { createContext } from "react";
 // per-message clock (which must not compute a second opinion of it) can read
 // it without importing each other.
 export interface TurnActivityAnchor {
+  /** Projection `on`: render the quiet (static) mark. */
+  quiet?: boolean;
   messageId: string;
   running: boolean;
   workingSince: number | null;

@@ -238,4 +238,89 @@ describe("device token promotion", () => {
     value.bridgeInstanceSecret = null;
     expect(deviceTokenPromotion(value)).toBeUndefined();
   });
+
+  // CADENCE (prod anomaly jh7fkb54…, 2026-10-18): every new gateway connection hands the
+  // device token back, and the bridge asked Convex again each time — one promotion per
+  // instance every two minutes. Once Convex confirmed the token, the same token is not
+  // asked again; a new one, and a failed or unconfirmed one, still are.
+  test("a token Convex confirmed is not promoted again by the same process", async () => {
+    const value = config();
+    const fetchImpl = answering("stored");
+    const promote = deviceTokenPromotion(value, fetchImpl)!;
+    expect(await promote("device-token")).toBe("stored");
+    for (let i = 0; i < 180; i++) expect(await promote("device-token")).toBe("unchanged");
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(await promote("rotated-token")).toBe("stored");
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+  });
+
+  // Codex review 1 of 0.101.1 [high]: the cache keyed on the token alone. A promoted without
+  // `issuedAtMs`, then A presented WITH its issuance time, was answered locally — so Convex
+  // never recorded the time, and B (issued later) was refused as `superseded` for ever.
+  test("the same token with a NEW issuance time goes to Convex, then B rotates", async () => {
+    const value = config();
+    const bodies: Array<Record<string, unknown>> = [];
+    const fetchImpl = vi.fn(async (_url: unknown, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      bodies.push(body);
+      return new Response(JSON.stringify({ ok: true, outcome: "stored" }), { status: 200 });
+    }) as unknown as typeof fetch;
+    const promote = deviceTokenPromotion(value, fetchImpl)!;
+    expect(await promote("token-a")).toBe("stored");
+    expect(await promote("token-a", 1000)).toBe("stored");
+    expect(await promote("token-a", 1000)).toBe("unchanged");
+    expect(await promote("token-b", 2000)).toBe("stored");
+    expect(bodies.map((b) => [b.token, b.issuedAtMs])).toEqual([
+      ["token-a", undefined],
+      ["token-a", 1000],
+      ["token-b", 2000],
+    ]);
+    expect(value.openclawToken).toBe("token-b");
+  });
+
+  // NOTHING THE REQUEST CARRIES IS HIDDEN BY THE CACHE: over random sequences, Convex is
+  // asked exactly when the body differs from the last one it confirmed.
+  test("the cache answers locally only for a body identical to the last confirmed one", async () => {
+    let seed = 7;
+    const next = () => (seed = (seed * 1103515245 + 12345) % 2 ** 31);
+    for (let run = 0; run < 50; run++) {
+      const value = config();
+      const sent: string[] = [];
+      const fetchImpl = vi.fn(async (_url: unknown, init?: RequestInit) => {
+        sent.push(String(init?.body));
+        return new Response(JSON.stringify({ ok: true, outcome: "unchanged" }), { status: 200 });
+      }) as unknown as typeof fetch;
+      const promote = deviceTokenPromotion(value, fetchImpl)!;
+      let lastConfirmed: string | null = null;
+      for (let step = 0; step < 20; step++) {
+        const token = ["t1", "t2"][next() % 2]!;
+        const issued = [undefined, 1000, 2000][next() % 3];
+        const body = JSON.stringify({
+          deviceId: value.deviceIdentity!.id,
+          publicKey: value.deviceIdentity!.publicKey,
+          token,
+          ...(issued === undefined ? {} : { issuedAtMs: issued }),
+        });
+        const before = sent.length;
+        await promote(token, issued);
+        expect(sent.length - before).toBe(body === lastConfirmed ? 0 : 1);
+        if (sent.length > before) expect(sent.at(-1)).toBe(body);
+        lastConfirmed = body;
+      }
+    }
+  });
+
+  test("a refusal, or a superseded answer, leaves the next promotion to Convex", async () => {
+    const value = config();
+    const refused = vi.fn(async () => new Response("{}", { status: 409 })) as unknown as typeof fetch;
+    const promote = deviceTokenPromotion(value, refused)!;
+    await expect(promote("device-token")).rejects.toThrow();
+    await expect(promote("device-token")).rejects.toThrow();
+    expect(refused).toHaveBeenCalledTimes(2);
+    const superseded = answering("superseded");
+    const again = deviceTokenPromotion(config(), superseded)!;
+    expect(await again("older-token")).toBe("superseded");
+    expect(await again("older-token")).toBe("superseded");
+    expect(superseded).toHaveBeenCalledTimes(2);
+  });
 });

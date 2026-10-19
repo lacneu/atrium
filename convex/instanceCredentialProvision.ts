@@ -14,6 +14,7 @@ import {
 } from "./_generated/server";
 import { mintDeviceIdentity } from "./deviceIdentity";
 import { loadLocalCrypto } from "./lib/crypto/keyProvider";
+import { hashKey } from "./lib/apikeys";
 import {
   encryptedSecretValidator,
   secretFieldValidator,
@@ -648,7 +649,10 @@ async function promoteOnce(
           issuedAtMs > current.issuedAtMs;
         if (!provablyNewer) return { outcome: "superseded" };
       }
-      if (currentPlaintext === token && current.source === "device") {
+      // THE SAME TOKEN, by fingerprint (SHA-256 of each, compared): the bridge presents it
+      // again on every new connection.
+      const sameToken = (await hashKey(currentPlaintext)) === (await hashKey(token));
+      if (sameToken && current.source === "device") {
         // The VALUE is unchanged, but the gateway may now be supplying an issuance
         // time it did not before (`auth.issuedAtMs` is optional, and an upgraded
         // gateway starts sending it). Record it: without it, `provablyNewer` can
@@ -656,6 +660,9 @@ async function promoteOnce(
         // `superseded` for ever — a deadlock built out of a missing timestamp.
         const adoptsTimestamp =
           issuedAtMs !== undefined && current.issuedAtMs === undefined;
+        // With no change, this compare-and-set REVALIDATES what was read and writes
+        // nothing (no row is patched for an empty change list): `unchanged` is answered
+        // only once confirmed, and costs no write.
         await ctx.runMutation(
           internal.instanceCredentialProvision.storeProvisionedCredentials,
           {

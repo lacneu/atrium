@@ -116,7 +116,9 @@ export type LayoutRow = {
 
 /** A tool card of a bubble: one per `toolCallId`, held by the first row that names it, at
  *  the most advanced status any of its rows states (a call, then its result or error). */
-export type LayoutTool = { toolCallId: string; name?: string; status: "call" | "result" | "error" };
+/** `parentToolCallId`: the call this card ran inside (the Control UI's nesting key,
+ *  ui/src/lib/chat/tool-cards.ts:383, src/chat/tool-call-grouping.ts `groupToolCalls`). */
+export type LayoutTool = { toolCallId: string; name?: string; status: "call" | "result" | "error"; parentToolCallId?: string };
 /** THE bounds of a row layout, shared by the planner that writes it and by every reader of
  *  it (convex/messages.ts `rowFilesOf`, lib/rowParts.ts): whatever the layout renders, a
  *  reader resolves (codex review 5, finding 2). Rows: also the bubble/run row loads
@@ -331,6 +333,8 @@ export function composeBubble(rows: readonly PlanRow[]): { text: string; layout:
       else {
         if (TOOL_RANK[t.status] > TOOL_RANK[known.status]) known.status = t.status;
         if (known.name === undefined && t.name !== undefined) known.name = t.name;
+        // tool-cards.ts:448 `existing.parentToolCallId ??= parentToolCallId`.
+        if (known.parentToolCallId === undefined && t.parentToolCallId !== undefined) known.parentToolCallId = t.parentToolCallId;
       }
     }
   }

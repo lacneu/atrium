@@ -192,6 +192,7 @@ import {
 } from "./core/attachment-limits.js";
 import {
   parseInboundConfig,
+  transcriptProjectionOf,
   type InboundInstanceConfig,
   type MediaMode,
 } from "./core/instance-config.js";
@@ -1759,7 +1760,7 @@ export async function performSend(
   // the same session (Convex no longer parks a steer). ONE at a time per session: the
   // first one's turn begins (or its custody is recorded) before the next decides
   // whether a run is in the foreground. Off ⇒ no lock (Convex serializes, as before).
-  if (body.config?.transcriptProjection === "on") {
+  if (transcriptProjectionOf(body.config) === "on") {
     const prev = SEND_LOCKS.get(session) ?? Promise.resolve();
     let release!: () => void;
     const mine = new Promise<void>((r) => (release = r));
@@ -1936,14 +1937,14 @@ async function performSendComposed(
   const projectionGateway =
     gatewayAtLeast(conn.gatewayVersion, TRANSCRIPT_PROJECTION_SINCE) === true;
   session.transcriptShadow?.configure({
-    mode: projectionGateway ? body.config?.transcriptProjection : "off",
+    mode: projectionGateway ? transcriptProjectionOf(body.config) : "off",
     cursor: body.transcriptCursor ?? null,
   });
   // TRANSCRIPT PROJECTION `on` (redesign phase 3, design §3): the send goes like the
   // Control UI's — with an explicit `queueMode` while a run is active, its ACK recorded
   // as custody — and none of the holds below: a send landing while the gateway still
   // holds a run is a follow-up the transcript places, not a race to wait out (§8.1).
-  const projectionOn = projectionGateway && body.config?.transcriptProjection === "on";
+  const projectionOn = projectionGateway && transcriptProjectionOf(body.config) === "on";
   session.runManager.setProjection(projectionOn);
   // FIRST, before anything reads the session: the describe, the pre-send guard and
   // its compaction below must see the session the send will actually run on — not

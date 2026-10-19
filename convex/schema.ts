@@ -66,6 +66,10 @@ export const messagePart = v.union(
     // UPSERT key, so a start and its completed collapse into ONE part. Absent
     // on legacy parts and the `message` pseudo-tool (append-only path).
     toolCallId: v.optional(v.string()),
+    // The call this one ran INSIDE (a tool called from a code-mode `exec`'s code): the live
+    // frame's `parentToolCallId`, the Control UI's nesting key (src/chat/tool-call-grouping.ts
+    // `groupToolCalls`). Optional: an older bridge sends none.
+    parentToolCallId: v.optional(v.string()),
     // UTF-16 offset into the message's visible text at the moment the sink
     // emitted this part — anchors the tool inside the narrative flow (the
     // ChatGPT-style interleaved rendering). Absent = un-anchored (legacy /
@@ -747,6 +751,10 @@ export default defineSchema({
     createdBy: v.optional(v.id("users")),
     createdByPrincipal: v.optional(v.string()),
     lastUsedAt: v.optional(v.number()),
+    // When this bridge's last `unchanged` device-token promotion was TRACED: an unchanged
+    // promotion is traced at most once an hour per instance (bridgeAuth.ts
+    // `recordDeviceTokenPromotion`); a change or a failure always is.
+    promoteUnchangedTracedAt: v.optional(v.number()),
   })
     .index("by_hash", ["hashedSecret"]) // O(1) verification -> resolves the instance
     .index("by_instance", ["instanceId"]), // status + rotate (one per instance)
@@ -2277,6 +2285,9 @@ export default defineSchema({
                 toolCallId: v.string(),
                 name: v.optional(v.string()),
                 status: v.union(v.literal("call"), v.literal("result"), v.literal("error")),
+                // The call this card ran inside (the Control UI's nesting key,
+                // ui/src/lib/chat/tool-cards.ts:383): the card is ranked under its parent.
+                parentToolCallId: v.optional(v.string()),
               }),
             ),
           ),

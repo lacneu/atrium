@@ -1,6 +1,60 @@
 # Changelog
 
-## Unreleased
+## [0.101.1] — Cleaner replies in projection `on`, and new OpenClaw instances start in `on`
+
+Patch release, after the first days of projection `on` in production. Convex, the frontend and
+the bridge all change. Deploy them in that order: **Convex first, then the frontend, then the
+bridge.** The schema only gains optional fields.
+
+**One block per run of tools.** A reply shown from its transcript drew one card per tool, because
+a code-mode turn writes one row per call: four "Ran a command" cards in a row, then the
+delegation, then the wait. Consecutive tool rows are now one collapsible block, as in the
+OpenClaw Control UI. Its summary counts the operations by family, for example "1 commande ·
+2 autres opérations". The counting and the wording are the Control UI's own. While a reply is
+still being written, its block already reads that way.
+
+**A tool called from code sits under the call that ran it.** When an agent runs code that itself
+calls a tool (`sessions_spawn`, `message`, a command), that tool's card is now nested under the
+`exec` that ran it, and that `exec` is not counted a second time in the summary. This is the
+Control UI's rule (`groupToolCalls`, copied with its upstream test). Open the `exec` card to see
+the calls it made. This works live and once the reply is settled.
+
+**No more duplicate cards.** When a delegated run finishes, the gateway sends the end of each
+code-mode `exec` a second time. Atrium drew a second card for each one. Now each tool shows once,
+in every projection mode. While a delegated run is still being written, the card it sends live
+now carries the call's id, so it merges with the same call read from the transcript. In `off` and `shadow`, this removal is the only change on screen.
+
+**The waiting indicator ends when the agent resumes.** After a delegation, a dashed, animated
+note ("… terminé — l'agent rédige la réponse…") stayed under the reply for up to three minutes,
+then pasted the sub-agent's raw answer ("fichier prêt") into the parent bubble. In projection
+`on`, one quiet, static line now says the agent is waiting. It shows while the sub-agent still
+runs, or while the gateway says the agent is working on its reply. It disappears as soon as the
+agent's resume appears in the conversation, or as soon as you write again. No fixed delay
+decides: a resume the agent keeps silent leaves no line behind, and the end of the agent's run
+puts the line out at once, even when Atrium cannot reread the conversation afterwards. The sub-agent's raw
+answer is never pasted into the parent bubble, as in the Control UI.
+
+**A repeated answer no longer reads "no response".** When a resume repeated, word for word, a
+text already shown in the same reply, the repeat is hidden, as before. Its bubble used to say
+"The agent acted but returned no answer". It no longer does.
+
+**New OpenClaw instances start in projection `on`.** An OpenClaw instance with no
+`transcriptProjection` setting now runs `on`. `off` and `shadow` remain available: set them
+explicitly. Instances that already have a value are unchanged. Hermes instances are never
+projected.
+
+**Fewer device-token traces.** The bridge asked Convex to store its device token again on every
+new gateway connection, about once every two minutes per instance. Each request left an
+`openclaw.device_token.promote` trace saying `unchanged`, and those traces buried the useful ones.
+The bridge now stops asking once Convex has confirmed the token with exactly the same details.
+When the gateway starts sending the token's issue time, the bridge passes it on, so Convex can
+accept the next rotation. An unchanged token writes
+nothing, and is traced at most once an hour per instance. A changed token and a failure are
+always traced.
+
+**On a phone,** an activity block's summary now wraps instead of being cut off.
+
+**Dependencies.**
 
 - Resolve proxy-addr 2.0.8 without changing its dependency graph, fixing the
   official critical IP-spoofing advisory GHSA-jqcg-44mw-7w3h. The function

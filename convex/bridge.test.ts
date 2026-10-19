@@ -1308,10 +1308,13 @@ describe("bridge.dispatch — per-instance bridgeUrl + in-band config (Model M)"
       // The stored overrides ride through — PLUS the media quarantine envelope, which
       // every non-attested dispatch now carries: `off` for a bridge that cannot verify
       // its gateway at send time, and the real mode for one that can.
+      // …and the projection mode, RESOLVED: an OpenClaw instance that names none runs
+      // `on` since 0.101.1, and the bridge must not apply a default of its own.
       expect(transport).toEqual({
         mediaMode: "off",
         mediaModeIfGuarded: "shared-fs",
         inboundMediaMode: "shared-fs",
+        transcriptProjection: "on",
       });
       expect(Object.keys(injections).sort()).toEqual([
         "inbound_files",
@@ -1512,6 +1515,7 @@ describe("bridge.dispatch — per-instance bridgeUrl + in-band config (Model M)"
       expect(transport).toEqual({
         mediaMode: "off",
         mediaModeIfGuarded: "inherit",
+        transcriptProjection: "on",
       });
       expect(Object.keys(injections).sort()).toEqual([
         "inbound_files",

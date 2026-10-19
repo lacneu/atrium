@@ -77,6 +77,7 @@ import { resolveBridgeUrlForDispatch } from "./lib/bridgeRouting";
 import { contentLocaleForInstance } from "./lib/serverLocale";
 import {
   bridgeDispatchConfig,
+  effectiveTranscriptProjection,
   resolveInstanceConfig,
   withMediaQuarantine,
 } from "./lib/instanceConfig";
@@ -1083,7 +1084,7 @@ export const getChatRouting = internalQuery({
           : (chat.openclawChatId ?? null);
     // THE TRANSCRIPT PROJECTION (redesign phase 1): the instance switch, and where this
     // session's last transcript read stopped, so the bridge resumes with a delta.
-    const projectionMode = instance?.config?.transcriptProjection ?? "off";
+    const projectionMode = effectiveTranscriptProjection(instance);
     const transcript =
       routedTarget === null || provider !== "openclaw" || projectionMode === "off"
         ? null
@@ -1278,10 +1279,10 @@ export const getChatRouting = internalQuery({
         chat.kind === "summarizer" ||
         chat.kind === "curator" ||
         chat.kind === "converter"
-          ? { ...bridgeDispatchConfig(instance?.config, contentLocale), rehydration: false }
+          ? { ...bridgeDispatchConfig(instance?.config, contentLocale, instance?.kind), rehydration: false }
           : chat.perTurnRouting && routedAgent
             ? {
-                ...bridgeDispatchConfig(instance?.config, contentLocale),
+                ...bridgeDispatchConfig(instance?.config, contentLocale, instance?.kind),
                 rehydration: true,
                 // For EVERY provider: "another agent spoke since this one's last
                 // turn" is Convex's fact; what a warm session does with it (OpenClaw
@@ -1292,10 +1293,10 @@ export const getChatRouting = internalQuery({
               }
             : chat.forkPendingRehydration === true
               ? {
-                  ...bridgeDispatchConfig(instance?.config, contentLocale),
+                  ...bridgeDispatchConfig(instance?.config, contentLocale, instance?.kind),
                   routedSwitch: true,
                 }
-              : bridgeDispatchConfig(instance?.config, contentLocale),
+              : bridgeDispatchConfig(instance?.config, contentLocale, instance?.kind),
         mediaQuarantine,
       ),
     };

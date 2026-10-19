@@ -228,6 +228,43 @@ export async function projectedGatewayHoldUntil(
 }
 
 /**
+ * THE RUN'S END, RECEIVED LIVE, ENDS THE ACTIVITY CORRELATED WITH IT (Codex review 2 of
+ * 0.101.1). The "agent works" fact above is the last read's `hasActiveRun`, bounded by
+ * `SESSION_ACTIVE_FRESH_MS`; only a later read replaced it. A terminal with no content
+ * whose re-reads of `chat.history` then fail left that fact standing for 15 minutes — the
+ * thread's waiting line with it. The Control UI ends the run on its terminal itself
+ * (`handleTerminalChatEvent`). Called from `finalize` with the run that ended: that run
+ * leaves the cursor's active set, and the claim falls when no other run is left in it; the
+ * send admission of that run goes too. Correlated only: a claim that names no run (no
+ * `activeRunIds`) is not this terminal's to end. Projection `on` only (`hasActiveRunAt`).
+ */
+export async function endProjectedActivityOfRun(
+  ctx: MutationCtx,
+  chatId: Id<"chats">,
+  runId: string,
+): Promise<void> {
+  const cursor = await ctx.db
+    .query("transcriptCursors")
+    .withIndex("by_chat_updated", (q) => q.eq("chatId", chatId))
+    .order("desc")
+    .first();
+  if (
+    cursor !== null &&
+    cursor.hasActiveRun === true &&
+    typeof cursor.hasActiveRunAt === "number" &&
+    (cursor.activeRunIds ?? []).includes(runId)
+  ) {
+    const left = (cursor.activeRunIds ?? []).filter((id) => id !== runId);
+    await ctx.db.patch(cursor._id, { activeRunIds: left, hasActiveRun: left.length > 0 });
+  }
+  const admissions = await ctx.db
+    .query("runAdmissions")
+    .withIndex("by_chat_admitted", (q) => q.eq("chatId", chatId).gt("admittedAt", Date.now() - SESSION_ACTIVE_FRESH_MS))
+    .take(MAX_QUEUED_PER_CHAT + 1);
+  for (const a of admissions) if (a.sendId === runId) await ctx.db.delete(a._id);
+}
+
+/**
  * A QUEUED send held only by a projected gateway fact (phase 4) would wait for a read that
  * may never come (the terminal's read failed, the bridge went away): nothing else ends the
  * hold, and its expiry writes nothing. Arm ONE drain re-check at the hold's end — the

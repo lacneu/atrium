@@ -196,3 +196,125 @@ describe("rowSegments / convertConvexMessage — a bubble shown by its rows", ()
     expect(types(m)).toEqual(["text:ancien", "file", "file"]);
   });
 });
+
+// ONE BLOCK PER RUN OF TOOL ROWS (0.101.1, prod report prod-ms7dc0ne…): a code-mode turn writes
+// one row per call, and the Control UI shows consecutive tool-only message groups as ONE
+// activity run (ui/src/pages/chat/chat-thread-grouping.ts:493-538). A text or a file between
+// them ends the block. Each card keeps the parent its row recorded.
+describe("rowSegments — consecutive tool rows are one block", () => {
+  const tool = (toolCallId: string, name = "exec", parentToolCallId?: string) => ({
+    toolCallId,
+    name,
+    status: "result" as const,
+    ...(parentToolCallId !== undefined ? { parentToolCallId } : {}),
+  });
+  const bubble = (rowLayout: NonNullable<ConvexMessageView["rowLayout"]>, text = "Envoyé."): ConvexMessageView => ({
+    _id: "m2" as ConvexMessageView["_id"],
+    chatId: "c1" as ConvexMessageView["chatId"],
+    _creationTime: 1,
+    role: "assistant",
+    status: "complete",
+    text,
+    updatedAt: 2,
+    parts: [],
+    rowLayout,
+  });
+
+  it("merges the tool rows that follow one another, and keeps the nesting", () => {
+    const segs = rowSegments(
+      bubble([
+        { entryId: "a", start: 0, end: 0, tools: [tool("e1")], blocks: true },
+        { entryId: "b", start: 0, end: 0, tools: [tool("e2"), tool("n1", "sessions_spawn", "e2")], blocks: true },
+        { entryId: "c", start: 0, end: 0, tools: [tool("y1", "sessions_yield")], blocks: true },
+      ]),
+    );
+    expect(segs).toEqual([
+      { kind: "tools", entryId: "a", toolCallIds: ["e1", "e2", "n1", "y1"], parents: { n1: "e2" } },
+    ]);
+  });
+
+  it("a text between two tool rows ends the block", () => {
+    const segs = rowSegments(
+      bubble([
+        { entryId: "a", start: 0, end: 0, tools: [tool("e1")], blocks: true },
+        { entryId: "b", start: 0, end: 7, blocks: true },
+        { entryId: "c", start: 0, end: 0, tools: [tool("e2")], blocks: true },
+      ]),
+    );
+    expect(segs?.map((s) => s.kind)).toEqual(["tools", "text", "tools"]);
+  });
+
+  it("the converted bubble carries one flow part per block, in rows mode, with the parents", () => {
+    const msg = bubble([
+      { entryId: "a", start: 0, end: 0, tools: [tool("e1")], blocks: true },
+      { entryId: "b", start: 0, end: 0, tools: [tool("e2"), tool("n1", "message", "e2")], blocks: true },
+    ]);
+    msg.parts = [
+      { kind: "tool", name: "exec", phase: "completed", toolCallId: "e1" },
+      { kind: "tool", name: "exec", phase: "completed", toolCallId: "e2" },
+      { kind: "tool", name: "message", phase: "completed", toolCallId: "n1" },
+    ];
+    const content = convertConvexMessage(msg).content as ReadonlyArray<{ type: string; toolName?: string; args?: { parts: Array<{ toolCallId: string; parentToolCallId?: string }>; rows?: boolean } }>;
+    const flows = content.filter((p) => p.type === "tool-call" && p.toolName === "__turn_flow__");
+    expect(flows).toHaveLength(1);
+    expect(flows[0]!.args!.rows).toBe(true);
+    expect(flows[0]!.args!.parts.map((p) => [p.toolCallId, p.parentToolCallId])).toEqual([
+      ["e1", undefined],
+      ["e2", undefined],
+      ["n1", "e2"],
+    ]);
+  });
+});
+
+// R4 WITHHOLDS A REPEATED TEXT — the bubble still ANSWERED (0.101.1, seen on the bench: a
+// resume repeating `PARALLEL_DONE` read "the agent acted but returned no answer").
+describe("a bubble whose text is the withheld repeat of its group", () => {
+  it("is marked as answered for the empty-state decision", () => {
+    const msg: ConvexMessageView = {
+      _id: "m3" as ConvexMessageView["_id"],
+      chatId: "c1" as ConvexMessageView["chatId"],
+      _creationTime: 1,
+      role: "assistant",
+      status: "complete",
+      text: "PARALLEL_DONE",
+      updatedAt: 2,
+      parts: [],
+      rowLayout: [{ entryId: "r9", start: 0, end: 13, blocks: true }],
+      displayHidden: [{ messageId: "m3", rule: "repeated_text_in_group", entryId: "r9" }],
+    } as unknown as ConvexMessageView;
+    const converted = convertConvexMessage(msg) as unknown as { content: Array<{ type: string; text?: string }>; metadata: { custom: { repeatWithheld?: boolean } } };
+    expect(converted.content.filter((p) => p.type === "text" && (p.text ?? "").includes("PARALLEL_DONE"))).toEqual([]);
+    expect(converted.metadata.custom.repeatWithheld).toBe(true);
+  });
+});
+
+// While a projected bubble is still being written (no rows yet), its live cards already form
+// the Control UI's block: the family summary, and the nesting the live frames carry.
+describe("a projected bubble being written", () => {
+  it("marks its flow block rows-mode and keeps each live card's parent", () => {
+    const msg: ConvexMessageView = {
+      _id: "m4" as ConvexMessageView["_id"],
+      chatId: "c1" as ConvexMessageView["chatId"],
+      _creationTime: 1,
+      role: "assistant",
+      status: "streaming",
+      text: "",
+      updatedAt: 2,
+      parts: [
+        { kind: "tool", name: "exec", phase: "completed", toolCallId: "e1", textOffset: 0 },
+        { kind: "tool", name: "exec", phase: "completed", toolCallId: "n1", parentToolCallId: "e1", textOffset: 0 },
+      ],
+    };
+    const run = (projected: boolean) =>
+      (convertConvexMessage(msg, null, null, null, { childRunIds: [], childKeys: [], lastUserAt: null, ...(projected ? { projected: true } : {}) }).content as ReadonlyArray<{
+        type: string;
+        toolName?: string;
+        args?: { parts: Array<{ toolCallId: string; parentToolCallId?: string }>; rows?: boolean };
+      }>).filter((p) => p.type === "tool-call" && p.toolName === "__turn_flow__");
+    const [on] = run(true);
+    expect(on!.args!.rows).toBe(true);
+    expect(on!.args!.parts.map((p) => [p.toolCallId, p.parentToolCallId])).toEqual([["e1", undefined], ["n1", "e1"]]);
+    const [off] = run(false);
+    expect(off!.args!.rows).toBeUndefined();
+  });
+});

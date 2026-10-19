@@ -1860,6 +1860,11 @@ describe("the last gate before the send leaves is one transaction", () => {
     const { owner, chatId } = await room(t);
     const outboxId = await pendingTurn(t, owner, chatId);
     await t.run(async (ctx) => {
+      // The re-park is the `off` gate's (in `on` the send goes with its queue mode, as
+      // the Control UI's). `on` is the OpenClaw default since 0.101.1: `off` is set here.
+      for (const inst of await ctx.db.query("instances").collect()) {
+        await ctx.db.patch(inst._id, { config: { ...(inst.config ?? {}), transcriptProjection: "off" as const } });
+      }
       await ctx.db.insert("messages", {
         chatId,
         userId: owner,

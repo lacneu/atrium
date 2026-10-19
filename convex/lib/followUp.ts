@@ -11,6 +11,7 @@
 import type { Doc } from "../_generated/dataModel";
 import type { Id } from "../_generated/dataModel";
 import type { QueryCtx } from "../_generated/server";
+import { effectiveTranscriptProjection } from "./instanceConfig";
 
 export type ProjectionMode = "off" | "shadow" | "on";
 
@@ -32,7 +33,7 @@ async function instancesOn(ctx: QueryCtx): Promise<Set<string> | null> {
   if (rows.length > MAX_INSTANCES_SCANNED) return null;
   const on = new Set<string>();
   for (const r of rows) {
-    if (r.kind !== "hermes" && r.config?.transcriptProjection === "on") on.add(r.name);
+    if (effectiveTranscriptProjection(r) === "on") on.add(r.name);
   }
   return on;
 }
@@ -101,8 +102,7 @@ async function switchOf(ctx: QueryCtx, name: string): Promise<ProjectionMode> {
   // OpenClaw only: Hermes has no transcript with these identities and no queue modes,
   // and its bridge path is one turn per session — a switch set on a Hermes instance is
   // inert here, as it is in the bridge (design §9.2).
-  if (inst?.kind === "hermes") return "off";
-  return inst?.config?.transcriptProjection ?? "off";
+  return effectiveTranscriptProjection(inst);
 }
 
 /**

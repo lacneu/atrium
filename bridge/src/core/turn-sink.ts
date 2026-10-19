@@ -1465,11 +1465,13 @@ export class TurnSink {
             // (codex P2). It stays on the legacy metadata path.
             asString(event.name) !== "message";
           const toolCallId = asString(event.toolCallId);
+          const parentToolCallId = asString(event.parentToolCallId);
           const part: ToolPart = {
             kind: "tool",
             name: asString(event.name),
             phase: asString(event.phase),
             ...(toolCallId ? { toolCallId } : {}),
+            ...(parentToolCallId ? { parentToolCallId } : {}),
             ...(anchorable ? { textOffset: this.visibleLineStart } : {}),
             // PRIVATE ARGUMENTS NEVER REACH THE DATABASE. `sessions_yield.message`
             // is the parent's note to its own resumed turn ("not sent to the

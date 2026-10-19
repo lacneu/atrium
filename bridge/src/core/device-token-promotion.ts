@@ -40,6 +40,22 @@ export function deviceTokenPromotion(
    * token may re-issue nothing. The repair has to be scheduled here.
    */
   let owed: { token: string; issuedAtMs?: number } | null = null;
+  /** The promotion Convex CONFIRMED (`stored`/`unchanged`) in this process: EVERY fact the
+   *  request carried, not just the token. Every new gateway connection hands the device
+   *  token back; presenting the same promotion again would only ask Convex what it already
+   *  answered (prod anomaly jh7fkb54…, 2026-10-18: one promotion per instance every two
+   *  minutes). A promotion that differs in ANY field Convex records — the issuance time
+   *  first: Convex adopts a late `issuedAtMs` for the token it holds, and without it every
+   *  later rotation is refused as `superseded` — is new and goes to Convex. */
+  let confirmed: PromotionFacts | null = null;
+  /** Everything the request body sends Convex, as one comparable record. The body IS this
+   *  record serialized, so a field added to the request is a field the cache compares. */
+  const factsOf = (token: string, issuedAtMs: number | undefined): PromotionFacts => ({
+    deviceId: identity.id,
+    publicKey: identity.publicKey,
+    token,
+    issuedAtMs,
+  });
 
   const attempt = async (
     token: string,
@@ -56,12 +72,9 @@ export function deviceTokenPromotion(
             Authorization: `Bearer ${bridgeSecret}`,
             "Content-Type": "application/json",
           },
-          body: JSON.stringify({
-            deviceId: identity.id,
-            publicKey: identity.publicKey,
-            token,
-            ...(issuedAtMs === undefined ? {} : { issuedAtMs }),
-          }),
+          // `JSON.stringify` drops an undefined `issuedAtMs`, exactly as the endpoint's
+          // two accepted key sets require.
+          body: JSON.stringify(factsOf(token, issuedAtMs)),
           signal: AbortSignal.timeout(10_000),
         },
       );
@@ -126,6 +139,7 @@ export function deviceTokenPromotion(
       // established, hence the one-way set.
       config.openclawToken = token;
       config.openclawCredentialSource = "device";
+      confirmed = factsOf(token, issuedAtMs);
     }
     // ANY definite answer clears the debt, whatever it says and whichever token it
     // was about. Convex's state is known at this point, and re-pushing an older
@@ -152,5 +166,32 @@ export function deviceTokenPromotion(
     }, delay);
   }
 
-  return (token: string, issuedAtMs?: number) => attempt(token, issuedAtMs, 0);
+  return (token: string, issuedAtMs?: number) =>
+    // Already confirmed with exactly these facts, and still the token in use with its
+    // device provenance: nothing to ask. Any differing fact, or a persistence still owed,
+    // goes to Convex.
+    confirmed !== null &&
+    sameFacts(confirmed, factsOf(token, issuedAtMs)) &&
+    owed === null &&
+    config.openclawToken === token &&
+    config.openclawCredentialSource === "device"
+      ? Promise.resolve("unchanged" as const)
+      : attempt(token, issuedAtMs, 0);
+}
+
+/** The fields of one promotion request — the body `attempt` posts, field for field. */
+type PromotionFacts = {
+  deviceId: string;
+  publicKey: string;
+  token: string;
+  issuedAtMs: number | undefined;
+};
+
+function sameFacts(a: PromotionFacts, b: PromotionFacts): boolean {
+  return (
+    a.deviceId === b.deviceId &&
+    a.publicKey === b.publicKey &&
+    a.token === b.token &&
+    a.issuedAtMs === b.issuedAtMs
+  );
 }

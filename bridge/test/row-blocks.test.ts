@@ -386,3 +386,31 @@ describe("one row's content budget (ROW_TEXT_MAX_BYTES), never by cutting a text
     expect(row?.blocks?.[0]).toEqual({ type: "text", omitted: true });
   });
 });
+
+// THE NESTING (0.101.1): a tool called from the code of a code-mode `exec` is a nested-activity
+// row whose call and result carry `parentToolCallId` (src/sessions/nested-tool-activity.ts:73-87
+// at v2026.9.33). The Control UI reads it per item (ui/src/lib/chat/tool-cards.ts:383) to rank
+// the card under its parent; the block carries it.
+describe("rowBlocks — a nested call keeps its parent", () => {
+  const nested = {
+    role: "custom",
+    customType: "openclaw.nested-tool.v1",
+    content: [
+      { type: "toolCall", id: "tool_call:call_a_fc_b:sessions_spawn:1", name: "sessions_spawn", arguments: { agentId: "files" }, parentToolCallId: "call_a|fc_b" },
+      { type: "toolResult", toolCallId: "tool_call:call_a_fc_b:sessions_spawn:1", toolName: "sessions_spawn", parentToolCallId: "call_a|fc_b", content: [{ type: "text", text: "{}" }], isError: false },
+    ],
+    __openclaw: { id: "n1", seq: 4, runId: "run-1" },
+  };
+  it("on the call and on the result", () => {
+    const tools = rowBlocks(nested, "agent:main:atrium:chat:u:c1").blocks.filter((b) => b.type === "tool");
+    expect(tools.map((b) => [b.status, (b as { parentToolCallId?: string }).parentToolCallId])).toEqual([
+      ["call", "call_a|fc_b"],
+      ["result", "call_a|fc_b"],
+    ]);
+  });
+  it("a call never names itself as parent, and a blank parent is none", () => {
+    const self = { ...nested, content: [{ type: "toolCall", id: "x", name: "exec", arguments: {}, parentToolCallId: "x" }, { type: "toolCall", id: "y", name: "exec", arguments: {}, parentToolCallId: "  " }] };
+    const tools = rowBlocks(self, "agent:main:atrium:chat:u:c1").blocks.filter((b) => b.type === "tool");
+    expect(tools.map((b) => (b as { parentToolCallId?: string }).parentToolCallId)).toEqual([undefined, undefined]);
+  });
+});

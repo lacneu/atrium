@@ -36,7 +36,7 @@ import { chatAllowsInstance } from "./lib/ingestAuthz";
 import { currentPlanIndex } from "./lib/planOrder";
 import { drainNextQueued, SUBAGENT_STALE_TTL_MS } from "./lib/outboxQueue";
 import { writeTraceEvent } from "./observability";
-import { deliveryChildKey } from "./lib/deliveryRuns";
+import { deliveryChildKey, parseRequesterSettleRun } from "./lib/deliveryRuns";
 import { effectiveOrder, QUEUED_ORDER_SENTINEL } from "./lib/messageOrder";
 import { transcriptStoredText } from "./lib/transcriptProjection";
 import { transcriptAnchorOf } from "./displayGroups";
@@ -1098,11 +1098,21 @@ export const turnActivity = query({
       .withIndex("by_chat", (q) => q.eq("chatId", chatId))
       .order("desc")
       .take(10);
+    // …and the child RUN ids a resume names (`announce:requester-settle:…:<childRunIds>:
+    // yield-N`, lib/deliveryRuns `parseRequesterSettleRun`). A resume names the child by its
+    // run, never by its session key, so the merge test above cannot see it: in projection
+    // `on` the resume is a bubble of its own, the hand-off bubble settled BEFORE the child
+    // finished, and the 45 s window was the only thing that ended "composing the reply"
+    // (prod report prod-ms7dc0ne…, 2026-10-18). The resume landing is the fact.
+    const resumedChildRunIds = new Set<string>();
     for (const m of recent) {
       if (m.runId !== undefined && deliveryChildKey(m.runId) !== null) {
         mergedRuns.push(m.runId);
       }
       for (const r of m.mergedAnnounceRuns ?? []) mergedRuns.push(r);
+      for (const run of [m.runId, ...(m.mergedAnnounceRuns ?? [])]) {
+        for (const id of parseRequesterSettleRun(run)?.childRunIds ?? []) resumedChildRunIds.add(id);
+      }
     }
     let deliveringSince: number | null = null;
     let deliveringAnchor: Id<"messages"> | null = null;
@@ -1131,6 +1141,7 @@ export const turnActivity = query({
       ) {
         continue;
       }
+      if (r.childRunId !== undefined && resumedChildRunIds.has(r.childRunId)) continue;
       // The child's own PARENT message is the window-independent test: its
       // merge history (or its own announce runId) names this child even when
       // the parent scrolled beyond the recent-messages scan above. INLINE

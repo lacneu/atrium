@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
 import {
   CircleDot,
   LoaderCircle,
@@ -52,6 +52,10 @@ type ToolCardProps = {
   inputFromTranscript?: boolean;
   result?: unknown;
   status?: { type?: string } | undefined;
+  /** The calls this one ran (a code-mode `exec`'s nested tools): shown INSIDE the card, when
+   *  it is open — the Control UI renders a call's children under it only once it is expanded
+   *  (ui/src/pages/chat/components/chat-message-group.ts:262-283 `renderOperation`). */
+  nested?: ReactNode;
 };
 
 // Renders a single tool invocation. The bridge normalizer emits
@@ -86,6 +90,7 @@ export function ToolCard({
   result,
   status,
   turnSettled,
+  nested,
 }: ToolCardProps) {
   const hasResult = result !== undefined && result !== null;
   // assistant-ui status.type is "running" | "complete" | "incomplete" | ...
@@ -153,6 +158,7 @@ export function ToolCard({
             </div>
           </details>
         ) : null}
+        {nested ? <div className="oc-tool__nested">{nested}</div> : null}
       </div>
     </details>
   );

@@ -2425,6 +2425,9 @@ button.oc-bmk-rail__count:hover {
 /* Thread-level "turn still working" chip (sub-agent running / result being
    delivered) — sits under the last bubble, aligned with assistant content,
    quiet (muted) but unmistakably ALIVE via the shared dots animation. */
+.oc-turn-activity__mark {
+  flex: 0 0 auto;
+}
 .oc-turn-activity {
   display: flex;
   align-items: center;
@@ -2610,6 +2613,14 @@ button.oc-bmk-rail__count:hover {
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;
+}
+/* On a phone the summary of an activity block ("1 commande · 2 autres opérations") would
+   be cut mid-word: it wraps instead, so what the agent did stays readable. */
+@media (max-width: 480px) {
+  .oc-actrow__label {
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
 }
 /* Sublabel (the sub-agent task): its own line UNDER the top row, indented to align
    with the label (past the leading icon + gap). */
@@ -3511,6 +3522,16 @@ button.oc-bmk-rail__count:hover {
 }
 .oc-tool__body {
   padding-top: 0.15rem;
+}
+/* The calls a code-mode `exec` ran, under it (the Control UI's nested operations): indented,
+   flat, no box of their own. */
+.oc-tool__nested {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  margin-top: 0.35rem;
+  padding-left: 0.9rem;
+  border-left: 1px solid var(--border);
 }
 /* Exec OUTCOME line: a bash/exec result is only the envelope (status/exit/
    duration) — the gateway does not transmit stdout on the operator stream

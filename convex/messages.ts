@@ -143,6 +143,8 @@ type ClientPart =
       /** The arguments came from a transcript row: the card masks them at display as the
        *  Control UI masks history (src/chat/toolActivityView.ts `toolCardDisplay`). */
       inputFromTranscript?: boolean;
+      /** The call this one ran inside (the Control UI's nesting key). */
+      parentToolCallId?: string;
       /** THE STRUCTURED REMNANT OF AN ELIDED OUTPUT.
        *
        *  A tool result carries the same object twice: destructured under `details`,
@@ -479,6 +481,7 @@ async function loadChatView(
                   ? { textOffset: part.textOffset }
                   : {}),
                 ...(part.inputFromTranscript === true ? { inputFromTranscript: true } : {}),
+                ...(part.parentToolCallId !== undefined ? { parentToolCallId: part.parentToolCallId } : {}),
                 // REDACTED ON READ, not only on write. The bridge stopped storing
                 // `sessions_yield.message`, which covers new turns and nothing
                 // else: every conversation that ran before the repair still holds

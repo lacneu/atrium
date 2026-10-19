@@ -38,7 +38,7 @@ import {
 } from "./transcriptContent";
 import { internal } from "../_generated/api";
 import { ATRIUM_SEND_ID_RE, sendIdsOf } from "./sendIdentity";
-import type { TranscriptProjectionMode } from "./instanceConfig";
+import { effectiveTranscriptProjection, type TranscriptProjectionMode } from "./instanceConfig";
 import { MAX_COMPOSED_TEXT_BYTES, utf8Bytes } from "./bubbleProjection";
 import { CHILD_RUN_ID_RE } from "./deliveryRuns";
 
@@ -1890,7 +1890,7 @@ export async function loadProjectionReport(
           .query("instances")
           .withIndex("by_name", (q) => q.eq("name", instanceName))
           .first();
-  const mode = instance?.config?.transcriptProjection ?? (instance === null ? null : "off");
+  const mode = instance === null ? null : effectiveTranscriptProjection(instance);
   const runs = await ctx.db
     .query("transcriptRuns")
     .withIndex("by_chat_run", (q) => q.eq("chatId", chatId))
@@ -2389,7 +2389,7 @@ export async function loadProjectionReport(
       .query("instances")
       .withIndex("by_name", (q) => q.eq("name", name))
       .first();
-    const m = inst?.config?.transcriptProjection;
+    const m = effectiveTranscriptProjection(inst);
     if (m === "shadow" || m === "on") projectedInstances.add(name);
   }
   if (Number.isFinite(earliestBoundary) && projectedInstances.size > 0) {

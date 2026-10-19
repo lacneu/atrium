@@ -874,6 +874,56 @@ describe("PROPERTY — the view does not depend on the arrival order between the
   }, 120_000);
 });
 
+// CODEX REVIEW 1 OF 0.101.1 — a live card of the ITEM lane (a delivery run's only tool
+// telemetry: name, outcome and, since the fix, the call's `toolCallId` — no args, no result)
+// and the same call brought by the rows: ONE card, in every arrival order, while the run is
+// still being written (after the rows are received, before any terminal), then settled.
+describe("PROPERTY — an item-lane live card and the same call from the rows are one card", () => {
+  async function itemLaneCard(t: T, m: Id<"messages">, toolCallId: string | undefined) {
+    await t.mutation(internal.stream.addPart, { messageId: m, part: { kind: "tool", name: "exec", phase: "completed", ...(toolCallId === undefined ? {} : { toolCallId }) }, boundInstanceName: "prod" } as never);
+  }
+  const rows: Row[] = [
+    { entryId: "call-x", seq: 3, role: "assistant", runId: R, hidden: false, visible: true, toolCallIds: ["call_x|fc_1"], blocks: [{ type: "tool", toolCallId: "call_x|fc_1", name: "exec", status: "call", input: { command: "ls" } }] },
+    { entryId: "res-x", seq: 4, role: "toolresult", runId: R, hidden: false, visible: true, toolCallIds: ["call_x|fc_1"], blocks: [{ type: "tool", toolCallId: "call_x|fc_1", name: "exec", status: "result", output: { content: [{ type: "text", text: "ok" }] } }] },
+  ];
+  const cardsOf = (m: ConvexMessageView | undefined) =>
+    (convertConvexMessage(m!).metadata?.custom as { allToolParts: Array<{ toolCallId: string; toolName?: string; phase?: string }> }).allToolParts.map((c) => [c.toolCallId, c.phase]);
+  async function runOrder(order: readonly Ev[]) {
+    const t = convexTest(schema, modules);
+    const ids = await seed(t);
+    let m: Id<"messages"> | undefined;
+    for (const ev of order) {
+      if (ev === "start") m = await startLive(t, ids.chatId);
+      else if (ev === "rows") await apply(t, ids.chatId, rows, active);
+      else if (ev === "live") await itemLaneCard(t, m!, "call_x|fc_1");
+    }
+    const b = await bubble(t, ids);
+    expect(b!.status).toBe("streaming");
+    const activeCards = { cards: cardsOf(b), shown: shownCards(b) };
+    await apply(t, ids.chatId, rows, over);
+    return { activeCards, settledCards: cardsOf(await bubble(t, ids)) };
+  }
+  const ITEM_ORDERS: Ev[][] = [
+    ["start", "live", "rows"],
+    ["start", "rows", "live"],
+    ["rows", "start", "live"],
+  ];
+  test.each(ITEM_ORDERS)("order %s, %s, %s: one exec card, active then settled", async (...order) => {
+    const view = await runOrder(order as Ev[]);
+    expect(view.activeCards.cards).toEqual([["call_x|fc_1", "completed"]]);
+    expect(view.activeCards.shown).toEqual(["call_x|fc_1"]);
+    expect(view.settledCards).toEqual([["call_x|fc_1", "completed"]]);
+  }, 60_000);
+  test("the anonymous card the item lane wrote before the fix is the extra `exec` Codex saw", async () => {
+    const t = convexTest(schema, modules);
+    const ids = await seed(t);
+    const m = await startLive(t, ids.chatId);
+    await itemLaneCard(t, m, undefined);
+    await apply(t, ids.chatId, rows, active);
+    expect(cardsOf(await bubble(t, ids))).toHaveLength(2);
+  });
+});
+
 // ── Codex review 17: what an `on` conversation shows survives export, import and fork ──────
 /** Every assistant bubble of a conversation, as the SPA renders it (convertConvexMessage),
  *  with what names THIS deployment removed: ids, urls, storage, clocks, attribution. */

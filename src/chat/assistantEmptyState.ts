@@ -71,6 +71,17 @@ export type EmptyStateMessage = {
    *  UP — text after the batch, or a file one of its runs delivered
    *  (convex/lib/deliveryRuns.ts `followedUpChildRunIds`). */
   answeredChildRunIds?: readonly string[];
+  /** PROJECTION `on`: the bubble is composed from its transcript rows (`rowLayout`). Its
+   *  delegation's resume is a bubble of its own, so a hand-off ends on the RESUME, a fact of
+   *  the transcript, never on a delay. */
+  projected?: boolean;
+  /** The child run ids a resume bubble of this chat names (its `announce:requester-settle:`
+   *  run id, convex/lib/deliveryRuns.ts `parseRequesterSettleRun`), and the child session
+   *  keys an announce bubble names (`deliveryChildKey`). */
+  resumedChildRunIds?: readonly string[];
+  resumedChildKeys?: readonly string[];
+  /** The reader wrote again after this bubble: the conversation went on. */
+  laterUserTurn?: boolean;
 };
 
 /** The discriminated render decision. `none` = render normally (there is an
@@ -87,7 +98,7 @@ export type AssistantEmptyState =
    *  showing the child's raw result now would get REWRITTEN by the merged
    *  reply moments later (live 2026-07-19 — the "block rewrote itself"
    *  report). Hold a composing note until `recheckAt`, then fall back. */
-  | { kind: "composing"; taskName?: string; recheckAt: number }
+  | { kind: "composing"; taskName?: string; recheckAt?: number }
   | {
       kind: "done";
       taskName?: string;
@@ -509,6 +520,19 @@ export function assistantEmptyState(
   // gateway) the child's OWN result IS this turn's answer — the pre-merge
   // fallback, never a blank bubble for a real delegation.
   const done = settled.find((s) => s.status === "done");
+  // PROJECTION `on`: the delegation's answer is the RESUME BUBBLE, not this one. The note
+  // holds while the child is done and no resume names it yet, and ends on a fact — a bubble
+  // that names it, or the reader writing again — never on a delay. The child's own reply is
+  // never shown here: the Control UI shows the parent session's messages only (the child's
+  // reply lives in the child's session), and the resume says what the agent made of it.
+  if (done && message.projected === true) {
+    const resumed = (c: SubAgentRow): boolean =>
+      (c.childRunId !== undefined && (message.resumedChildRunIds ?? []).includes(c.childRunId)) ||
+      (message.resumedChildKeys ?? []).includes(c.childSessionKey);
+    const finished = settled.filter((s) => s.status === "done");
+    if (message.laterUserTurn === true || finished.every(resumed)) return { kind: "none" };
+    return { kind: "composing", taskName: cleanTaskName(finished.find((c) => !resumed(c))?.taskName) };
+  }
   if (done) {
     const recheckAt = done.updatedAt + ANNOUNCE_COMPOSE_GRACE_MS;
     if (now < recheckAt) {

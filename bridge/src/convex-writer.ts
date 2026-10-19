@@ -26,6 +26,10 @@ export interface ToolPart {
   /** Provider tool-call id — Convex addPart's upsert key (start->completed
    *  collapse into one part). */
   toolCallId?: string;
+  /** The call this one ran inside (a tool called from a code-mode `exec`'s code): the
+   *  live frame's `parentToolCallId`, so the card is ranked under its parent while the
+   *  reply is still being written (the rows carry the same fact once read). */
+  parentToolCallId?: string;
   /** UTF-16 offset into the turn's visible text when the sink emitted this
    *  part (narrative anchor). Omitted on delivery/announce runs. */
   textOffset?: number;

@@ -53,6 +53,17 @@ export interface InboundInstanceConfig {
 }
 
 export type TranscriptProjectionMode = "off" | "shadow" | "on";
+
+/** The projection a send runs under when Convex names none: `on`, as Convex's own default
+ *  for an OpenClaw instance (convex/lib/instanceConfig.ts `DEFAULT_TRANSCRIPT_PROJECTION`).
+ *  Convex resolves and sends the mode on every dispatch since 0.101.1; this reading only
+ *  keeps the two sides from disagreeing when it does not. The bridge applies it to OpenClaw
+ *  sessions only. */
+export const DEFAULT_TRANSCRIPT_PROJECTION: TranscriptProjectionMode = "on";
+
+export function transcriptProjectionOf(config: { transcriptProjection?: TranscriptProjectionMode } | undefined | null): TranscriptProjectionMode {
+  return config?.transcriptProjection ?? DEFAULT_TRANSCRIPT_PROJECTION;
+}
 const TRANSCRIPT_PROJECTION_MODES: readonly TranscriptProjectionMode[] = ["off", "shadow", "on"];
 
 /** One resolved injection as received from Convex. */

@@ -1204,3 +1204,56 @@ describe("collapsedSubAgentFailure — the folded list's failure line", () => {
     expect(childFailureRecovered(noRun, [noRun], "B", ["run-c1"])).toBe(false);
   });
 });
+
+// PROJECTION `on` (0.101.1, prod report prod-ms7dc0ne…): the hand-off bubble's answer is the
+// RESUME bubble. The note ends on a fact — a bubble naming the child, the reader writing again
+// — never on the 3-minute delay, and the child's raw reply is never pasted here.
+describe("assistantEmptyState — projection `on`: the hand-off note ends on a fact", () => {
+  const done = row({ childSessionKey: "K", childRunId: "11111111-1111-4111-8111-111111111111", status: "done", resultText: "fichier prêt", taskName: "test-reprise", updatedAt: 1000 });
+  const projected = { ...COMPLETE_EMPTY, projected: true };
+
+  it("the child done and no resume yet: a note with NO deadline, however long it waits", () => {
+    const state = assistantEmptyState(projected, [spawnPart("K")], [done], undefined, 1000 + 10 * ANNOUNCE_COMPOSE_GRACE_MS);
+    expect(state).toEqual({ kind: "composing", taskName: "test-reprise" });
+  });
+
+  it("a resume that names the child's run ends it — and never shows the child's reply", () => {
+    expect(
+      assistantEmptyState({ ...projected, resumedChildRunIds: ["11111111-1111-4111-8111-111111111111"] }, [spawnPart("K")], [done], undefined, 1000),
+    ).toEqual({ kind: "none" });
+  });
+
+  it("an announce that names the child's session ends it", () => {
+    expect(assistantEmptyState({ ...projected, resumedChildKeys: ["K"] }, [spawnPart("K")], [done], undefined, 1000)).toEqual({ kind: "none" });
+  });
+
+  it("the reader writing again ends it", () => {
+    expect(assistantEmptyState({ ...projected, laterUserTurn: true }, [spawnPart("K")], [done], undefined, 1000)).toEqual({ kind: "none" });
+  });
+
+  it("with two children, it holds while one is not resumed, and names that one", () => {
+    const other = row({ _id: "s2", childSessionKey: "K2", childRunId: "22222222-2222-4222-8222-222222222222", status: "done", taskName: "second", updatedAt: 1000 });
+    expect(
+      assistantEmptyState(
+        { ...projected, resumedChildRunIds: ["11111111-1111-4111-8111-111111111111"] },
+        [spawnPart("K"), spawnPart("K2")],
+        [done, other],
+        undefined,
+        1000,
+      ),
+    ).toEqual({ kind: "composing", taskName: "second" });
+  });
+
+  it("a running child still waits, and a failed one still says so", () => {
+    expect(assistantEmptyState(projected, [spawnPart("K")], [row({ childSessionKey: "K" })], undefined, 1000).kind).toBe("waiting");
+    expect(assistantEmptyState(projected, [spawnPart("K")], [row({ childSessionKey: "K", status: "error", errorMessage: "boom" })], undefined, 1000).kind).toBe("failed");
+  });
+
+  it("`off`/`shadow` keep the delay and the child's reply (unchanged)", () => {
+    expect(assistantEmptyState(COMPLETE_EMPTY, [spawnPart("K")], [done], undefined, 1000).kind).toBe("composing");
+    expect(assistantEmptyState(COMPLETE_EMPTY, [spawnPart("K")], [done], undefined, 1000 + ANNOUNCE_COMPOSE_GRACE_MS + 1)).toMatchObject({
+      kind: "done",
+      resultText: "fichier prêt",
+    });
+  });
+});

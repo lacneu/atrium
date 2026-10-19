@@ -56,7 +56,7 @@ import {
   isFilePart,
   recordFileForPart,
 } from "./lib/files";
-import { drainNextQueued, MAX_QUEUED_PER_CHAT } from "./lib/outboxQueue";
+import { drainNextQueued, endProjectedActivityOfRun, MAX_QUEUED_PER_CHAT } from "./lib/outboxQueue";
 import { MAX_ADDRESSED_AGENTS } from "./lib/agentMentions";
 import { maybeScheduleTurnRetry } from "./turnRetry";
 import { projectionModeOfChat } from "./lib/followUp";
@@ -4308,6 +4308,17 @@ export async function finalizeMessageCore(
     // working, to protect against one that already lost its claim. The chat is not
     // released by this path either, so nothing resumes in the meantime.
     return { transitioned: false as const };
+  }
+  // The run ended: what the last read said about it being active no longer stands, even
+  // when the re-reads of the transcript fail (endProjectedActivityOfRun). Only for a
+  // bubble the projection `on` made (a delivery run's own bubble, or one laid out from rows),
+  // read off the message already loaded: a conversation never `on` costs exactly what it
+  // cost before (projectionInvariance — a chat read here would add one).
+  if (
+    message.runId !== undefined &&
+    (message.deliveryOwnBubble === true || message.rowLayout !== undefined)
+  ) {
+    await endProjectedActivityOfRun(ctx, message.chatId, message.runId);
   }
   // FIRST TERMINAL WRITE WINS (symmetric): a user-aborted message stays
   // aborted when the gateway's late chat:final loses the race — and a reply

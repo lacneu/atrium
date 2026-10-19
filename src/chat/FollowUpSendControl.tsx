@@ -49,6 +49,8 @@ export type FollowUpQueueSend = (
 export function useFollowUpState(chatId: ConvexId<"chats">): {
   preference: FollowUpPreference | null;
   serverMode: GatewayQueueMode | null;
+  /** Until when a gateway fact says the agent works (`followUpState.workingUntil`). */
+  workingUntil: number | null;
 } | null {
   // Its failure is "no follow-up information", never a broken composer (codex phase 6 pass 5).
   const state = useQueryOrNull(api.followUp.followUpState, { chatId: chatId as Id<"chats"> });
@@ -56,6 +58,7 @@ export function useFollowUpState(chatId: ConvexId<"chats">): {
   return {
     preference: state.preference ?? null,
     serverMode: (state.serverMode as GatewayQueueMode | null) ?? null,
+    workingUntil: typeof state.workingUntil === "number" ? state.workingUntil : null,
   };
 }
 

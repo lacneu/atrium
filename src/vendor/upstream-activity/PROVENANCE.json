@@ -1,0 +1,23 @@
+{
+  "upstreamRepo": "openclaw/openclaw",
+  "upstreamTag": "v2026.9.33",
+  "upstreamSha": "5873f8174e0b2866a2b8bc0dbf4c4c8164d8dc82",
+  "roots": [
+    "src/chat/tool-call-grouping.ts",
+    "src/chat/tool-call-grouping.test.ts"
+  ],
+  "files": {
+    "src/chat/tool-call-grouping.test.ts": {
+      "upstreamPath": "src/chat/tool-call-grouping.test.ts",
+      "upstream": "7f0f6512b5a788164bc9b29378cfa624649188f60b981ef2ac0144f8513d092f",
+      "vendored": "7f0f6512b5a788164bc9b29378cfa624649188f60b981ef2ac0144f8513d092f",
+      "rewrites": []
+    },
+    "src/chat/tool-call-grouping.ts": {
+      "upstreamPath": "src/chat/tool-call-grouping.ts",
+      "upstream": "a3c50ece0f47fee34ca19cc146f4b6368865514b94787cf66865925fe82eaf99",
+      "vendored": "a3c50ece0f47fee34ca19cc146f4b6368865514b94787cf66865925fe82eaf99",
+      "rewrites": []
+    }
+  }
+}

@@ -215,14 +215,24 @@ describe("the instance switch reaches the reconciler — and only where the fact
 
   it.each([
     ["switch off", "2026.9.6", { transcriptProjection: "off" }],
-    ["no switch at all", "2026.9.6", null],
     ["an UNKNOWN gateway version", null, { transcriptProjection: "shadow" }],
+    ["an UNKNOWN gateway version, no switch", null, null],
   ] as const)("%s: no transcript read, nothing posted", async (_label, version, cfg) => {
     const h = await harness(version);
     await performSend(h.session, body({ config: cfg }), h.writer, null, null);
     await settle(h.session);
     expect(h.gw.countOf("chat.history")).toBe(0);
     expect(h.applies).toEqual([]);
+  });
+
+  it("NO SWITCH AT ALL: the default since 0.101.1 is `on`, so the transcript is read", async () => {
+    // Convex sends the mode resolved on every dispatch; a dispatch that names none gets
+    // Convex's own default for an OpenClaw instance (core/instance-config.ts
+    // `transcriptProjectionOf`).
+    const h = await harness("2026.9.6");
+    await performSend(h.session, body({ config: null }), h.writer, null, null);
+    await settle(h.session);
+    expect(h.gw.countOf("chat.history")).toBeGreaterThan(0);
   });
 
   it("SHADOW: the projection writes nothing but `applyTranscript` — the turn writes exactly what it wrote before", async () => {

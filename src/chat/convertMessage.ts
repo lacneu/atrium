@@ -27,6 +27,7 @@ import { renderableText } from "./widgets/shortcodes";
 import type { GroupPlace } from "./displayGroups";
 import { m } from "@/paraglide/messages.js";
 import { cardOwnership, hiddenPartStorageIds, layoutFileIds, rowSegments, type RowSegment } from "./rowLayoutView";
+import { handOffFactsOf, type ResumeIndex } from "./handOffFacts";
 import { activeBubbleTail } from "./streamTail";
 
 // A localized "(N KB, not shown here)" note for a part field ELIDED from the window
@@ -148,6 +149,9 @@ function toolPartToActivity(
         : safeStringify(part.input),
     phase: typeof part.phase === "string" ? part.phase : undefined,
     ...(part.inputFromTranscript === true ? { inputFromTranscript: true } : {}),
+    // The live nesting key (a code-mode `exec`'s nested call). A rows block overrides it
+    // with the row's own record, which is the same fact.
+    ...(part.parentToolCallId !== undefined ? { parentToolCallId: part.parentToolCallId } : {}),
   };
 }
 
@@ -310,6 +314,9 @@ export function convertConvexMessage(
   // PHASE 5 (projection `on`): this bubble's place in its delegation chain's display group
   // (src/chat/displayGroups.ts) — null when it is shown alone.
   group?: GroupPlace | null,
+  // PROJECTION `on`: the resumes the chat holds and the reader's last turn (handOffFacts.ts) —
+  // what ends a hand-off note on a fact.
+  resume?: ResumeIndex,
 ): ThreadMessageLike {
   // AN ACTIVE BUBBLE WHOSE ROWS ALREADY SPEAK (codex review 7): the rows are shown as a
   // settled bubble's, and the live text adds only the message still being written — its
@@ -432,14 +439,18 @@ export function convertConvexMessage(
       } else {
         const parts = seg.toolCallIds.flatMap((id) => {
           const a = activityById.get(id);
-          return a === undefined ? [] : [a];
+          if (a === undefined) return [];
+          const parent = seg.parents?.[id];
+          return [parent === undefined ? a : { ...a, parentToolCallId: parent }];
         });
         if (parts.length > 0) {
           content.push({
             type: "tool-call",
             toolCallId: `flow:${message._id}:row:${seg.entryId}`,
             toolName: "__turn_flow__",
-            args: { parts },
+            // `rows`: the block is the Control UI's activity group (one summary by families,
+            // nested calls under their parent) — the legacy flow keeps its own label.
+            args: { parts, rows: true },
           } as ContentPart);
         }
       }
@@ -473,7 +484,9 @@ export function convertConvexMessage(
         // crash: assistant-ui lost the part it was tracking).
         toolCallId: `flow:${message._id}:${seg.cut}`,
         toolName: "__turn_flow__",
-        args: { parts: seg.parts },
+        // Projection `on`: the block reads as it will once the rows compose the bubble
+        // (one summary by families, the Control UI's), while it is still being written.
+        args: { parts: seg.parts, ...(resume?.projected === true ? { rows: true } : {}) },
       } as ContentPart);
     }
   });
@@ -610,6 +623,16 @@ export function convertConvexMessage(
         // alone is not enough (the continuation can end on nothing).
         answeredChildRunIds:
           message.role === "assistant" ? [...(message.followedUpChildRunIds ?? [])] : [],
+        // The bubble's text is withheld as the REPEAT of one its group already shows (R4,
+        // `displayHidden`): it answered — the answer is just shown once, above. Never an
+        // "acted but did not answer" bubble.
+        ...((message.displayHidden ?? []).some((d) => d.rule === "repeated_text_in_group") ? { repeatWithheld: true } : {}),
+        ...(resume !== undefined && message.status === "complete"
+          ? (() => {
+              const handOff = handOffFactsOf(message, resume);
+              return handOff === undefined ? {} : { handOff };
+            })()
+          : {}),
         error: message.error ?? null,
         // Stable failure class (gateway errorKind or dispatch code) — drives
         // the actionable localized headline on the error card.

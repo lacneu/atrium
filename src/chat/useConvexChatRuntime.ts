@@ -48,6 +48,7 @@ import type { PickableAgent } from "./AgentPicker";
 import { useSseStreamingText, sseDevOverride } from "./useSseStreamingText";
 import { useDeliveryRecorder } from "./useDeliveryRecorder";
 import { isProjectedWorking } from "./followUpComposer";
+import { resumeIndexOf, type ResumeIndex } from "./handOffFacts";
 import { useQueryOrNull } from "./useQueryOrNull";
 import {
   dockPlaceOf,
@@ -827,6 +828,15 @@ export function useConvexChatRuntime({ chatId }: UseConvexChatRuntimeArgs) {
     groupMemo.current = { inputs: groupInputs, places: displayGroupPlaces(visibleList) };
   }
   const groupPlaces = groupMemo.current.places;
+  // Projection `on`: the resumes the chat holds (handOffFacts.ts). Kept by VALUE, so a token
+  // streamed into a bubble does not reconvert the thread.
+  const resumeNext = resumeIndexOf(visibleList, followUp?.projection === true);
+  const resumeMemo = useRef<{ key: string; index: ResumeIndex } | null>(null);
+  const resumeKey = JSON.stringify(resumeNext);
+  if (resumeMemo.current === null || resumeMemo.current.key !== resumeKey) {
+    resumeMemo.current = { key: resumeKey, index: resumeNext };
+  }
+  const resumeIndex = resumeMemo.current.index;
   const convertWithAgents = useCallback(
     (msg: ConvexMessageView) =>
       convertConvexMessage(
@@ -834,8 +844,9 @@ export function useConvexChatRuntime({ chatId }: UseConvexChatRuntimeArgs) {
         messageAgents.get(msg._id) ?? null,
         importedAgentLabels.get(msg._id) ?? null,
         groupPlaces.get(msg._id) ?? null,
+        resumeIndex,
       ),
-    [messageAgents, importedAgentLabels, groupPlaces],
+    [messageAgents, importedAgentLabels, groupPlaces, resumeIndex],
   );
 
   const adapter = useMemo<ExternalStoreAdapter<ConvexMessageView>>(() => {

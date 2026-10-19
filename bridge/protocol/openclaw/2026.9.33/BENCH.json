@@ -6,121 +6,121 @@
     {
       "id": "announce-reverse-hold",
       "ok": true,
-      "chat": "480a98322eb37ab9"
+      "chat": "2df2db84ad92d21d"
     },
     {
       "id": "basic-turn",
       "ok": true,
-      "chat": "480a98322eb37ab9"
+      "chat": "2df2db84ad92d21d"
     },
     {
       "id": "tool-exec",
       "ok": true,
-      "chat": "480a98322eb37ab9"
+      "chat": "2df2db84ad92d21d"
     },
     {
       "id": "update-plan",
       "ok": true,
-      "chat": "480a98322eb37ab9"
+      "chat": "2df2db84ad92d21d"
     },
     {
       "id": "media-outbound",
       "ok": true,
-      "chat": "480a98322eb37ab9"
+      "chat": "2df2db84ad92d21d"
     },
     {
       "id": "inbound-attachment",
       "ok": true,
-      "chat": "480a98322eb37ab9"
+      "chat": "2df2db84ad92d21d"
     },
     {
       "id": "inbound-attachment-large",
       "ok": true,
-      "chat": "480a98322eb37ab9"
+      "chat": "2df2db84ad92d21d"
     },
     {
       "id": "fork-attachment-rehydrate",
       "ok": true,
-      "chat": "480a98322eb37ab9"
+      "chat": "2df2db84ad92d21d"
     },
     {
       "id": "talk-session",
       "ok": true,
-      "chat": "480a98322eb37ab9"
+      "chat": "2df2db84ad92d21d"
     },
     {
       "id": "spawn-announce-merge",
       "ok": true,
-      "chat": "480a98322eb37ab9"
+      "chat": "2df2db84ad92d21d"
     },
     {
       "id": "spawn-chain-merge",
       "ok": true,
-      "chat": "480a98322eb37ab9"
+      "chat": "2df2db84ad92d21d"
     },
     {
       "id": "spawn-parallel-merge",
       "ok": true,
-      "chat": "480a98322eb37ab9"
+      "chat": "2df2db84ad92d21d"
     },
     {
       "id": "settle-chain-no-synthesis",
       "ok": true,
-      "chat": "480a98322eb37ab9"
+      "chat": "2df2db84ad92d21d"
     },
     {
       "id": "yield-settle-media",
       "ok": true,
-      "chat": "480a98322eb37ab9"
+      "chat": "2df2db84ad92d21d"
     },
     {
       "id": "settle-message-tool-codemode",
       "ok": true,
-      "chat": "480a98322eb37ab9"
+      "chat": "2df2db84ad92d21d"
     },
     {
       "id": "yield-settle-media-param",
       "ok": true,
-      "chat": "480a98322eb37ab9"
+      "chat": "2df2db84ad92d21d"
     },
     {
       "id": "async-task",
       "ok": true,
-      "chat": "480a98322eb37ab9"
+      "chat": "2df2db84ad92d21d"
     },
     {
       "id": "cron-tool",
       "ok": true,
-      "chat": "480a98322eb37ab9"
+      "chat": "2df2db84ad92d21d"
     },
     {
       "id": "agent-request-question",
       "ok": true,
-      "chat": "480a98322eb37ab9"
+      "chat": "2df2db84ad92d21d"
     },
     {
       "id": "agent-request-exec-approval",
       "ok": true,
-      "chat": "480a98322eb37ab9"
+      "chat": "2df2db84ad92d21d"
     },
     {
       "id": "widget-inline",
       "ok": true,
-      "chat": "480a98322eb37ab9"
+      "chat": "2df2db84ad92d21d"
     },
     {
       "id": "widget-off",
       "ok": true,
-      "chat": "480a98322eb37ab9"
+      "chat": "2df2db84ad92d21d"
     },
     {
       "id": "transcript-files-replay",
       "ok": true,
-      "chat": "480a98322eb37ab9"
+      "chat": "2df2db84ad92d21d"
     }
   ],
   "verdict": "GO",
-  "at": "2026-10-17T17:12:39.412Z",
+  "at": "2026-10-19T02:12:24.304Z",
   "scenarios": [
     "agent-request-exec-approval",
     "agent-request-question",
@@ -180,13 +180,13 @@
     "transcript-files-replay": "openclaw"
   },
   "flags": [],
-  "atriumSha": "6ce45860a7f57552f8b6745c52e8c7bc68c331fa",
+  "atriumSha": "dcbc2f0214c0a0a9f4d0ebd815d6396a5a5ef91b",
   "worktree": {
     "dirty": true,
-    "deltaSha256": "102b4ac85d58cb04f233ef0353c37c33fbe9043dee144f640031ee580208cf89"
+    "deltaSha256": "2f49a5f3845ea2bb36b8793f8a408e092ab9a1791cf6b1d138faac4cf06bd615"
   },
-  "supportDigest": "35358abe0cfd3d48fdf2834ed52ad4760fec0120d7189c1e41f1af49f02db352",
+  "supportDigest": "15834e702a99f701c85b6a1f6835219853575d85e26230d3bea13bdf54626e54",
   "authMode": "token",
-  "bridgeVersion": "0.100.1",
+  "bridgeVersion": "0.101.0",
   "vendoredSha256": "26258570f384115682aee4b325133ce4b5ca1a7db6e5d13f0be721b6b1516944"
 }

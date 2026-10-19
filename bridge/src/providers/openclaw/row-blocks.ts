@@ -111,6 +111,12 @@ export type RowToolBlock = {
    *  part). The card masks the input again at display, as the Control UI does (review 15). */
   input?: unknown;
   output?: unknown;
+  /** The call this one ran INSIDE (a tool called from the code of a code-mode `exec`): the
+   *  item's `parentToolCallId`, as the Control UI reads it (ui/src/lib/chat/tool-cards.ts:383)
+   *  to rank the card under its parent (src/chat/tool-call-grouping.ts `groupToolCalls`).
+   *  Upstream writes it on the nested-activity row's call and result
+   *  (src/sessions/nested-tool-activity.ts:73-87). */
+  parentToolCallId?: string;
   /** Left out for the row's content budget (`boundRowContent`): the card stays, marked cut,
    *  with the size it had — as a live part over PART_FIELD_CAP is shown (convex/messages.ts
    *  `inputOmitted`/`outputOmitted`). */
@@ -734,9 +740,13 @@ function toolBlock(
   name: unknown,
   status: RowToolBlock["status"],
   payload: { input?: unknown; output?: unknown } = {},
+  parent?: unknown,
 ): RowToolBlock | null {
   const toolCallId = typeof id === "string" ? bounded(id.trim(), MAX_TOOL_ID_CHARS) : undefined;
   if (toolCallId === undefined) return null;
+  // tool-cards.ts:383 `readNonBlankString(item.parentToolCallId)`; a call is never its own parent.
+  const parentToolCallId =
+    typeof parent === "string" && parent.trim() !== "" ? bounded(parent.trim(), MAX_TOOL_ID_CHARS) : undefined;
   const n = typeof name === "string" ? bounded(name.trim(), MAX_TOOL_NAME_CHARS) : undefined;
   const input = payload.input === undefined ? undefined : redactPrivateToolArgs(n ?? "", payload.input, "input");
   const output = payload.output === undefined ? undefined : redactPrivateToolArgs(n ?? "", payload.output, "output");
@@ -747,6 +757,7 @@ function toolBlock(
     status,
     ...(input !== undefined ? { input } : {}),
     ...(output !== undefined ? { output } : {}),
+    ...(parentToolCallId !== undefined && parentToolCallId !== toolCallId ? { parentToolCallId } : {}),
   };
 }
 
@@ -891,6 +902,7 @@ export function rowBlocks(
       record.toolName ?? record.tool_name,
       record.isError === true ? "error" : "result",
       { output: resultOutput(record) },
+      record.parentToolCallId,
     );
     if (tool !== null) out.push(tool);
     if (Array.isArray(record.content)) {
@@ -931,6 +943,7 @@ export function rowBlocks(
           item.name ?? item.toolName,
           t === "call" ? "call" : item.isError === true ? "error" : "result",
           t === "call" ? { input: callArgs(item) } : { output: resultOutput(item) },
+          item.parentToolCallId,
         );
         if (tool !== null) out.push(tool);
         // A `show_widget` that ran nested in code mode: the history keeps its call and its
@@ -986,6 +999,7 @@ export function rowBlocks(
             item.name ?? item.toolName,
             t === "call" ? "call" : item.isError === true ? "error" : "result",
             t === "call" ? { input: callArgs(item) } : { output: resultOutput(item) },
+            item.parentToolCallId,
           );
           if (tool !== null) out.push(tool);
           continue;

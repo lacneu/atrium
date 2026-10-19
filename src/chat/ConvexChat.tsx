@@ -132,6 +132,7 @@ import {
   Volume2,
   X,
 } from "lucide-react";
+import type { HandOffFacts } from "./handOffFacts";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -222,12 +223,8 @@ import { deleteMessageOptimisticUpdate } from "./deleteMessageOptimistic";
 import { writeTargetId } from "./displayGroups";
 import { RunStatus } from "./RunStatus";
 import { TurnClock } from "./TurnClock";
-import {
-  TurnActivityAnchorContext,
-  deliveryWindowOpen,
-  threadStreaming,
-  type DeliveryExpiry,
-} from "./turnActivityAnchor";
+import { TurnActivityAnchorContext, threadStreaming } from "./turnActivityAnchor";
+import { lastUserTurnAt, useDeliveringSignal } from "./useDeliveringSignal";
 import {
   turnBaselineMs,
   turnElapsedMs,
@@ -1391,6 +1388,10 @@ function ChatThread({
   const turnActivity = useQuery(api.subAgents.turnActivity, {
     chatId: chatId as Id<"chats">,
   });
+  // PROJECTION `on`: the waiting signal is a quiet status line — no animation (prod report
+  // prod-ms7dc0ne…, Olivier's call); it ends on the resume (subAgents.turnActivity).
+  const followUp = useFollowUpState(chatId as Id<"chats">);
+  const quietActivity = followUp !== null;
   // "A message is actively streaming" read from the MESSAGES' own status, the
   // way the runtime already reads it — not from the presence of a live-text row.
   // The two are not the same fact: `getStreamingText` returns every row of the
@@ -1403,40 +1404,8 @@ function ChatThread({
   // Convex dedupes this subscription with the runtime's identical one.
   const threadMessages = useQuery(api.messages.listByChat, {
     chatId: chatId as Id<"chats">,
-  }) as { status?: string }[] | undefined;
+  }) as { status?: string; role?: string; orderTime?: number; _creationTime?: number }[] | undefined;
   const anyStreaming = threadStreaming(threadMessages);
-  // WHETHER a reply is being composed is the SERVER's answer, remaining time
-  // included. The client no longer keeps a baseline of the value it saw at
-  // mount: that existed only because it could not tell a live delivery from a
-  // stale one without comparing a server timestamp to its own clock, and it
-  // therefore missed every delivery already under way when a conversation was
-  // opened. There is nothing to arm and nothing to advance — the whole window
-  // is derived while rendering, so it also cannot lag a frame behind the
-  // running signal it takes over from.
-  const deliverKey = turnActivity?.deliveringSince ?? null;
-  const deliverTtl = turnActivity?.deliveringTtlRemainingMs ?? null;
-  // The LOCAL expiry: the remaining time is not a reactive dependency, so a
-  // client that receives no further write closes the window on its own timer.
-  // It records WHICH delivery it closed, so a fresh one is live on the render
-  // that first sees it — a plain flag would still be raised from the previous
-  // window and would blank the signal until an effect lowered it.
-  const [deliverExpired, setDeliverExpired] = useState<DeliveryExpiry | null>(
-    null,
-  );
-  useEffect(() => {
-    if (deliverKey === null || deliverTtl === null || deliverTtl <= 0) return;
-    const t = window.setTimeout(
-      () => setDeliverExpired({ chatId, key: deliverKey }),
-      deliverTtl,
-    );
-    return () => window.clearTimeout(t);
-  }, [deliverKey, deliverTtl, chatId]);
-  const deliveringFresh = deliveryWindowOpen(
-    chatId,
-    deliverKey,
-    deliverTtl,
-    deliverExpired,
-  );
   // LOCAL expiry of the running signal: Date.now() is not a reactive Convex
   // dependency, so a dead child's row keeps `running:true` cached client-side
   // until the reaper writes. The query ships the remaining display TTL —
@@ -1451,7 +1420,18 @@ function ChatThread({
     return () => window.clearTimeout(t);
   }, [turnActivity?.running, runningTtl, chatId]);
   const runningLive = turnActivity?.running === true && !runningExpired;
-  const showTurnActivity = !anyStreaming && (runningLive || deliveringFresh);
+  // The display gate, window and all (useDeliveringSignal): in projection `on` it is
+  // driven by facts only — the resume naming the child, or a newer user message.
+  const { showTurnActivity } = useDeliveringSignal({
+    chatId,
+    projected: quietActivity,
+    anyStreaming,
+    runningLive,
+    deliveringSince: turnActivity?.deliveringSince ?? null,
+    deliveringTtlRemainingMs: turnActivity?.deliveringTtlRemainingMs ?? null,
+    lastUserAt: lastUserTurnAt(threadMessages),
+    gatewayWorkingUntil: followUp?.workingUntil ?? null,
+  });
   // Anchor the indicator under the WORKING bubble when that bubble is
   // actually mounted (a >window-old anchor degrades to the bottom fallback,
   // never to a lost signal). DOM-checked on a slow tick: bounded to the
@@ -1487,6 +1467,7 @@ function ChatThread({
           messageId: anchorId,
           running: runningLive,
           workingSince: visibleWorkingSince,
+          quiet: quietActivity,
           // Carried to the ANCHORED indicator too: the same signal must read the same
           // whether it renders under the thread or on the bubble it belongs to.
           progressSummary: turnActivity?.progressSummary ?? null,
@@ -1523,6 +1504,7 @@ function ChatThread({
         />
         {showTurnActivity && anchoredActivity === null ? (
           <TurnActivityIndicator
+            quiet={quietActivity}
             running={runningLive}
             // A DETACHED background task gets no clock: the reply is settled and
             // the number would be the task's age, reading as "your answer has
@@ -1610,7 +1592,10 @@ function TurnActivityIndicator({
   since = null,
   anchored = false,
   progress = null,
+  quiet = false,
 }: {
+  /** Projection `on`: a static mark instead of the bouncing dots. */
+  quiet?: boolean;
   running: boolean;
   since?: number | null;
   anchored?: boolean;
@@ -1664,11 +1649,15 @@ function TurnActivityIndicator({
     <div
       className={`oc-turn-activity${anchored ? " oc-turn-activity--anchored" : ""}`}
     >
-      <span className="oc-dots" aria-hidden>
-        <span />
-        <span />
-        <span />
-      </span>
+      {quiet ? (
+        <Clock size={13} className="oc-turn-activity__mark" aria-hidden />
+      ) : (
+        <span className="oc-dots" aria-hidden>
+          <span />
+          <span />
+          <span />
+        </span>
+      )}
       {/* The LIVE region is the LABEL alone (codex P2, a11y): the ticking
           clock must not live inside role="status" — its every-second update
           would make screen readers re-announce the whole status. role="timer"
@@ -3674,13 +3663,37 @@ function AssistantEmptyState({ show }: { show: boolean }) {
       (msg.metadata?.custom as { answeredChildRunIds?: string[] } | undefined)
         ?.answeredChildRunIds ?? EMPTY_RUN_IDS,
   );
+  // PROJECTION `on`: the hand-off's facts (convertMessage `handOff`) — the bubble is composed
+  // from its rows, the resumes the chat holds, and whether the reader wrote again.
+  const handOff = useMessage(
+    (msg) => (msg.metadata?.custom as { handOff?: HandOffFacts } | undefined)?.handOff ?? null,
+  );
+  // R4: the text this bubble carries is shown once, in an earlier bubble of its group.
+  const repeatWithheld = useMessage(
+    (msg) => (msg.metadata?.custom as { repeatWithheld?: boolean } | undefined)?.repeatWithheld === true,
+  );
 
   // Re-evaluate when a "composing" grace window elapses: the pure decision is
   // time-dependent there (child done -> announce still expected) and nothing
   // else re-renders this component at the deadline.
   const [, bumpClock] = useState(0);
   const state = assistantEmptyState(
-    { status, hasText, hasMedia, settledAt, delegatedInline, answeredChildRunIds },
+    {
+      status,
+      hasText: hasText || repeatWithheld,
+      hasMedia,
+      settledAt,
+      delegatedInline,
+      answeredChildRunIds,
+      ...(handOff !== null
+        ? {
+            projected: handOff.projected,
+            resumedChildRunIds: handOff.resumedChildRunIds,
+            resumedChildKeys: handOff.resumedChildKeys,
+            laterUserTurn: handOff.laterUserTurn,
+          }
+        : {}),
+    },
     toolParts,
     // NOT `?? []` — undefined means "the query has not answered", and collapsing
     // that into "no sub-agents" made a settled hand-off read as a turn that
@@ -3693,7 +3706,7 @@ function AssistantEmptyState({ show }: { show: boolean }) {
   // the deadline.
   const recheckAt =
     state.kind === "composing"
-      ? state.recheckAt
+      ? (state.recheckAt ?? null)
       : state.kind === "waiting"
         ? (state.recheckAt ?? null)
         : null;
@@ -3706,6 +3719,15 @@ function AssistantEmptyState({ show }: { show: boolean }) {
     return () => window.clearTimeout(t);
   }, [recheckAt]);
   if (state.kind === "none" || steerSegment) return null;
+
+  // PROJECTION `on`: ONE waiting signal, the thread's (TurnActivityIndicator, quiet: a
+  // static mark, no animation), anchored under this bubble and ended by the resume itself
+  // (subAgents.turnActivity). A second note here said the same thing twice. What this
+  // decision still does in `on` is refuse the delayed fallback: the child's raw reply is
+  // never pasted into the hand-off bubble (assistantEmptyState `projected`).
+  if (handOff?.projected === true && (state.kind === "composing" || state.kind === "waiting")) {
+    return null;
+  }
 
   if (state.kind === "composing") {
     // The child finished; the parent's merged reply is on its way. Same pill
@@ -4119,6 +4141,7 @@ function AssistantMessage() {
           </AssistantIdentityContext.Provider>
           {anchoredHere !== null ? (
             <TurnActivityIndicator
+              quiet={anchoredHere.quiet === true}
               running={anchoredHere.running}
               since={anchoredHere.workingSince}
               progress={anchoredHere.progressSummary ?? null}

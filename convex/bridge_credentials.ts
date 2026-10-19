@@ -23,6 +23,7 @@ import { internal } from "./_generated/api";
 import { hashKey } from "./lib/apikeys";
 import { loadLocalCrypto } from "./lib/crypto/keyProvider";
 import type { ActionCtx } from "./_generated/server";
+import type { Id } from "./_generated/dataModel";
 
 /** Metadata-only audit trace (NEVER the secret values). Best-effort. */
 async function traceCred(
@@ -50,26 +51,20 @@ function unauthorized(): Response {
   });
 }
 
+/** Metadata-only audit of a promotion, under its trace policy (bridgeAuth.ts
+ *  `recordDeviceTokenPromotion`: changes and failures always, `unchanged` at most once an
+ *  hour per instance). Best-effort. */
 async function traceDeviceTokenPromotion(
   ctx: ActionCtx,
   args: {
+    authId: Id<"bridgeAuth">;
     instance: string;
     status: number;
     outcome: "stored" | "unchanged" | "superseded" | "rejected";
   },
 ): Promise<void> {
   try {
-    await ctx.runMutation(internal.observability.recordEvent, {
-      kind: "openclaw.device_token.promote",
-      direction: "inbound",
-      principalType: "system",
-      principalId: "bridge",
-      status: args.status,
-      meta: JSON.stringify({
-        instance: args.instance,
-        outcome: args.outcome,
-      }),
-    });
+    await ctx.runMutation(internal.bridgeAuth.recordDeviceTokenPromotion, args);
   } catch {
     // Never break promotion on a metadata-only audit failure.
   }
@@ -259,10 +254,16 @@ export const promoteDeviceToken = httpAction(async (ctx, request) => {
           : {}),
       },
     );
-    await ctx.runMutation(internal.bridgeAuth.touchBridgeLastUsed, {
-      authId: resolved.authId,
-    });
+    // An `unchanged` promotion writes NOTHING: the token is the one Convex holds, so
+    // neither the credential nor the bridge's last-use stamp moves for it (the
+    // credential fetch keeps that stamp).
+    if (result.outcome !== "unchanged") {
+      await ctx.runMutation(internal.bridgeAuth.touchBridgeLastUsed, {
+        authId: resolved.authId,
+      });
+    }
     await traceDeviceTokenPromotion(ctx, {
+      authId: resolved.authId,
       instance: resolved.instanceName,
       status: 200,
       outcome: result.outcome,
@@ -276,6 +277,7 @@ export const promoteDeviceToken = httpAction(async (ctx, request) => {
     });
   } catch {
     await traceDeviceTokenPromotion(ctx, {
+      authId: resolved.authId,
       instance: resolved.instanceName,
       status: 409,
       outcome: "rejected",

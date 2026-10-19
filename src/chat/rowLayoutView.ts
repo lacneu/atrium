@@ -19,7 +19,11 @@ export type RowFile =
 export type RowSegment =
   | { kind: "text"; entryId: string; text: string }
   | { kind: "file"; entryId: string; blockIndex: number; file: RowFile }
-  | { kind: "tools"; entryId: string; toolCallIds: string[] }
+  /** ONE activity block: every tool card of the consecutive rows that show nothing else
+   *  between them (the Control UI's "activity-run", ui/src/pages/chat/chat-thread-grouping.ts:
+   *  493-538 — consecutive tool-only message groups render as one block). `entryId` is the
+   *  first row's. `parents`: a card's recorded parent call (the Control UI's nesting key). */
+  | { kind: "tools"; entryId: string; toolCallIds: string[]; parents?: Record<string, string> }
   /** What the layout left out past its bounds: shown as such, at the end. */
   | { kind: "cut"; count: number };
 
@@ -92,8 +96,19 @@ export function rowSegments(message: ConvexMessageView): RowSegment[] | null {
       if (piece.trim() !== "" && !hiddenText.has(row.entryId)) out.push({ kind: "text", entryId: row.entryId, text: piece });
       for (const f of row.files ?? []) pushFile(row.entryId, f.blockIndex);
     }
-    const tools = (row.tools ?? []).map((t) => t.toolCallId);
-    if (tools.length > 0) out.push({ kind: "tools", entryId: row.entryId, toolCallIds: tools });
+    const tools = row.tools ?? [];
+    if (tools.length > 0) {
+      // Rows that show only cards, one after another (a code-mode turn writes one row per
+      // call), are ONE block, as in the Control UI; a text or a file between them ends it.
+      const last = out[out.length - 1];
+      const block: Extract<RowSegment, { kind: "tools" }> =
+        last?.kind === "tools" ? last : { kind: "tools", entryId: row.entryId, toolCallIds: [] };
+      if (block !== last) out.push(block);
+      for (const t of tools) {
+        block.toolCallIds.push(t.toolCallId);
+        if (t.parentToolCallId !== undefined) (block.parents ??= {})[t.toolCallId] = t.parentToolCallId;
+      }
+    }
   }
   const cut = layout[layout.length - 1]?.cut;
   const count = (cut?.rows ?? 0) + (cut?.files ?? 0) + (cut?.tools ?? 0) + (cut?.widgets ?? 0);

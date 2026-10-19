@@ -57,7 +57,7 @@ export type ProjectionScope = {
 
 export function toPlanRow(d: Doc<"transcriptRows">, shown?: RowText): PlanRow {
   const files: Array<{ blockIndex: number; artifactId?: string; label?: string; remoteUrl?: string; mimeType?: string }> = [];
-  const tools: Array<{ toolCallId: string; name?: string; status: "call" | "result" | "error" }> = [];
+  const tools: Array<{ toolCallId: string; name?: string; status: "call" | "result" | "error"; parentToolCallId?: string }> = [];
   const widgets: LayoutWidget[] = [];
   (shown?.blocks ?? []).forEach((b, blockIndex) => {
     if (b.type === "file") {
@@ -70,7 +70,12 @@ export function toPlanRow(d: Doc<"transcriptRows">, shown?: RowText): PlanRow {
           : {}),
       });
     } else if (b.type === "tool") {
-      tools.push({ toolCallId: b.toolCallId, ...(b.name !== undefined ? { name: b.name } : {}), status: b.status });
+      tools.push({
+        toolCallId: b.toolCallId,
+        ...(b.name !== undefined ? { name: b.name } : {}),
+        status: b.status,
+        ...(b.parentToolCallId !== undefined ? { parentToolCallId: b.parentToolCallId } : {}),
+      });
     } else if (b.type === "widget") {
       widgets.push({
         viewId: b.viewId,

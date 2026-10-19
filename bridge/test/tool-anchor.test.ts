@@ -215,3 +215,33 @@ describe("turn-sink: tool-part text anchors (interleaved flow)", () => {
     expect(writer.toolParts.filter((p) => p.phase === "start")).toHaveLength(1);
   });
 });
+
+// THE LIVE NESTING KEY (0.101.1): a tool called from the code of a code-mode `exec` arrives
+// with `parentToolCallId` on its frames (src/agents/embedded-agent-subscribe.handlers.tools.
+// progress.ts:131-138 at v2026.9.33; bench capture 2026-10-17). The card carries it, so the
+// block ranks it under its `exec` while the reply is still being written.
+describe("turn-sink: a nested call's card keeps its parent", () => {
+  it("on its start and its result; never its own id", async () => {
+    const writer = new SinkWriter();
+    const manager = new RunManager("anchorchat1", SESSION_KEY, writer);
+    let now = 1000;
+    await manager.beginTurn((now += 1), RUN_ID);
+    await manager.feed(toolFrame({ name: "exec", phase: "start", toolCallId: "call_a|fc_b", args: { code: "…" } }), (now += 1));
+    await manager.feed(
+      toolFrame({ name: "message", phase: "start", toolCallId: "tool_call:call_a_fc_b:message:1", parentToolCallId: "call_a|fc_b", args: {} }),
+      (now += 1),
+    );
+    await manager.feed(
+      toolFrame({ name: "message", phase: "result", toolCallId: "tool_call:call_a_fc_b:message:1", parentToolCallId: "call_a|fc_b", isError: false, result: {} }),
+      (now += 1),
+    );
+    await manager.feed(toolFrame({ name: "exec", phase: "result", toolCallId: "call_a|fc_b", parentToolCallId: "call_a|fc_b", isError: false, result: {} }), (now += 1));
+    expect(writer.toolParts.map((p) => [p.name, p.phase, p.parentToolCallId])).toEqual([
+      ["exec", "start", undefined],
+      ["message", "start", "call_a|fc_b"],
+      // The `message` card keeps the gateway's own phase names (its dedicated branch).
+      ["message", "result", "call_a|fc_b"],
+      ["exec", "completed", undefined],
+    ]);
+  });
+});

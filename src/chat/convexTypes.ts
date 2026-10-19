@@ -54,6 +54,8 @@ export type ConvexMessagePartView =
       inputOmitted?: boolean;
       /** The input came from a transcript row: masked at display (toolCardDisplay). */
       inputFromTranscript?: boolean;
+      /** The call this one ran inside (the Control UI's nesting key). */
+      parentToolCallId?: string;
       inputBytes?: number;
       output?: unknown;
       outputOmitted?: boolean;
@@ -370,7 +372,9 @@ export type RowLayoutView = {
   start: number;
   end: number;
   files?: Array<{ blockIndex: number; artifactId?: string; remoteUrl?: string; label?: string; mimeType?: string }>;
-  tools?: Array<{ toolCallId: string; name?: string; status: "call" | "result" | "error" }>;
+  /** `parentToolCallId`: the call this card ran inside — the Control UI's nesting key
+   *  (ui/src/lib/chat/tool-cards.ts:383), ranked under its parent in the activity block. */
+  tools?: Array<{ toolCallId: string; name?: string; status: "call" | "result" | "error"; parentToolCallId?: string }>;
   /** The row's blocks are known (a bridge that sends them; an older one sends text only). */
   blocks?: boolean;
   /** The row as its blocks, in order: text spans of the bubble's text and file blocks. */
