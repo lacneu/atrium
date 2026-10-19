@@ -53,6 +53,7 @@ import {
   rehydrateTraceMeta,
   shouldReportRehydrateMissed,
 } from "./lib/rehydrateTrace";
+import { hashedChatRef, ingestErrorClass, type IngestErrorClass } from "./lib/ingestErrorClass";
 
 /**
  * Stored-object metadata for an outbound media blob — size + content-type, read
@@ -2093,7 +2094,10 @@ export const ingest = httpAction(async (ctx, request) => {
       // The 500 the bridge reports as `ConvexIngestError.<op>.500`: traced HERE too, so
       // the drift sample on the bridge and a row on this side name the same write.
       // Content-free — the op and the status, never the message.
-      await traceIngestRejected(ctx, body.op, 500, "handler_threw");
+      await traceIngestRejected(ctx, body.op, 500, "handler_threw", {
+        errorClass: ingestErrorClass(e),
+        chatRef: await hashedChatRef((body as { chatId?: unknown }).chatId),
+      });
       throw e;
     }
     return await forbiddenResponse(ctx, body.op, boundInstanceName, true);
@@ -2112,6 +2116,9 @@ async function traceIngestRejected(
   op: unknown,
   status: 400 | 500,
   reason: "invalid_body" | "unknown_op" | "handler_threw",
+  /** A thrown handler only: the error's CLASS and the chat's hashed reference — never the
+   *  message, never the id (lib/ingestErrorClass). */
+  thrown?: { errorClass: IngestErrorClass; chatRef: string | null },
 ): Promise<void> {
   await traceIngest(ctx, {
     kind: "openclaw.ingest.rejected",
@@ -2120,6 +2127,9 @@ async function traceIngestRejected(
       op: typeof op === "string" && INGEST_OP_LABEL.test(op) ? op : op == null ? "«none»" : "«unprintable»",
       status,
       reason,
+      ...(thrown === undefined
+        ? {}
+        : { errorClass: thrown.errorClass, ...(thrown.chatRef === null ? {} : { chatRef: thrown.chatRef }) }),
     },
   });
 }

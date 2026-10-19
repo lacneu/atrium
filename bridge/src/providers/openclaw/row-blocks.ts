@@ -16,6 +16,7 @@
 // said where it would apply. Nothing here decides placement, merges rows or reads a file.
 
 
+import { historyToolResultFailed } from "./tool-error.js";
 import { redactPrivateToolArgs } from "../../core/private-tool-args.js";
 import { findCodeRegions } from "./code-regions.js";
 import { isToolCallItem, resolveToolCallId, resolveToolName, toolItemCallIds } from "./tool-call-id.js";
@@ -900,7 +901,7 @@ export function rowBlocks(
       // tool-cards.ts:494-500: a tool message naming no call is the card `${name}:0`.
       resolveToolCallId({}, record) ?? `${key}#${resolveToolName({}, record)}:0`,
       record.toolName ?? record.tool_name,
-      record.isError === true ? "error" : "result",
+      historyToolResultFailed(record, record) ? "error" : "result",
       { output: resultOutput(record) },
       record.parentToolCallId,
     );
@@ -919,7 +920,7 @@ export function rowBlocks(
     const toolName = record.toolName ?? record.tool_name;
     const toolCallId = resolveToolCallId({}, record);
     if (
-      record.isError !== true &&
+      !historyToolResultFailed(record, record) &&
       (toolName === SHOW_WIDGET_TOOL || (typeof toolCallId === "string" && isNestedShowWidgetCallId(toolCallId)))
     ) {
       // A history row may carry the tool's JSON text as a bare string
@@ -941,7 +942,7 @@ export function rowBlocks(
         const tool = toolBlock(
           ids.get(index),
           item.name ?? item.toolName,
-          t === "call" ? "call" : item.isError === true ? "error" : "result",
+          t === "call" ? "call" : historyToolResultFailed(item, record) ? "error" : "result",
           t === "call" ? { input: callArgs(item) } : { output: resultOutput(item) },
           item.parentToolCallId,
         );
@@ -951,7 +952,7 @@ export function rowBlocks(
         // `prepareChatHistoryRecoveryMessages`, content = `nestedToolActivityContent`,
         // src/sessions/nested-tool-activity.ts:73-87: `{...call, ...result, type:"toolResult"}`).
         // The result is the proof the document belongs to this session, as at top level.
-        if (t !== "call" && item.isError !== true && (item.toolName ?? item.name) === SHOW_WIDGET_TOOL) {
+        if (t !== "call" && !historyToolResultFailed(item, record) && (item.toolName ?? item.name) === SHOW_WIDGET_TOOL) {
           pushWidget(widgetFromShowWidgetResult(item), "tool");
         }
       }
@@ -997,7 +998,7 @@ export function rowBlocks(
             // tool-cards.ts:386/:409 — one identity everywhere (tool-call-id.ts).
             ids.get(index),
             item.name ?? item.toolName,
-            t === "call" ? "call" : item.isError === true ? "error" : "result",
+            t === "call" ? "call" : historyToolResultFailed(item, record) ? "error" : "result",
             t === "call" ? { input: callArgs(item) } : { output: resultOutput(item) },
             item.parentToolCallId,
           );

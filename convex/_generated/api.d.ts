@@ -123,6 +123,7 @@ import type * as lib_groupAccess from "../lib/groupAccess.js";
 import type * as lib_groupMembers from "../lib/groupMembers.js";
 import type * as lib_importArchive from "../lib/importArchive.js";
 import type * as lib_ingestAuthz from "../lib/ingestAuthz.js";
+import type * as lib_ingestErrorClass from "../lib/ingestErrorClass.js";
 import type * as lib_instanceCascade from "../lib/instanceCascade.js";
 import type * as lib_instanceConfig from "../lib/instanceConfig.js";
 import type * as lib_knowledge from "../lib/knowledge.js";
@@ -329,6 +330,7 @@ declare const fullApi: ApiFromModules<{
   "lib/groupMembers": typeof lib_groupMembers;
   "lib/importArchive": typeof lib_importArchive;
   "lib/ingestAuthz": typeof lib_ingestAuthz;
+  "lib/ingestErrorClass": typeof lib_ingestErrorClass;
   "lib/instanceCascade": typeof lib_instanceCascade;
   "lib/instanceConfig": typeof lib_instanceConfig;
   "lib/knowledge": typeof lib_knowledge;

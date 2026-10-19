@@ -2529,6 +2529,54 @@
       "literals": [
         "message: expect.stringContaining(\"Session agent:main:missing not found\"),"
       ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "src/gateway/chat-display-projection.reconciliation.test.ts:70",
+      "repo": "upstream",
+      "tag": "2026.9.33",
+      "path": "src/gateway/chat-display-projection.reconciliation.test.ts",
+      "lines": [
+        [
+          70,
+          70
+        ]
+      ],
+      "literals": [
+        "preserves distinct durable answers even when one run produced identical text"
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "ui/src/pages/chat/chat-gateway.ts:195-204",
+      "repo": "upstream",
+      "tag": "2026.9.33",
+      "path": "ui/src/pages/chat/chat-gateway.ts",
+      "lines": [
+        [
+          195,
+          204
+        ]
+      ],
+      "literals": [
+        "clearLocalRun: true,"
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "ui/src/pages/chat/chat-outbox-drain.ts:190-198",
+      "repo": "upstream",
+      "tag": "2026.9.33",
+      "path": "ui/src/pages/chat/chat-outbox-drain.ts",
+      "lines": [
+        [
+          190,
+          198
+        ]
+      ],
+      "literals": [
+        "Passive unknown sends need positive delivery proof; only an explicit retry"
+      ]
     }
   ]
 }

@@ -13,13 +13,14 @@ import schema from "./schema";
 import { toBase64 } from "./lib/crypto/cipher";
 import type { Id } from "./_generated/dataModel";
 import type { BridgeConfig } from "../bridge/src/config";
-import { deviceTokenPromotion } from "../bridge/src/core/device-token-promotion";
+import { deviceTokenPromotion, resetDeviceTokenPromotionStates } from "../bridge/src/core/device-token-promotion";
 
 const modules = import.meta.glob("./**/*.ts");
 beforeAll(() => {
   process.env.ATRIUM_SECRET_KEY = toBase64(new Uint8Array(32).fill(7));
 });
 beforeEach(() => {
+  resetDeviceTokenPromotionStates();
   vi.useFakeTimers();
   vi.setSystemTime(1_800_000_000_000);
 });

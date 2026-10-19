@@ -504,6 +504,25 @@ describe("bridge_ingest httpAction: addMediaPart dispatch", () => {
     expect(JSON.stringify(rejected)).not.toMatch(/EUR|secret reply/);
   });
 
+  // 0.101.2 (prod 2026-10-18/19: ~67 `applyTranscript` 500s, all `handler_threw`): a thrown
+  // handler's trace carries the error's CLASS and the chat's HASHED reference — never the
+  // message, never the id.
+  test("a thrown applyTranscript is traced with its error class and a hashed chat reference", async () => {
+    const t = convexTest(schema, modules);
+    await seedAssistantMessage(t);
+    const chatId = "jd7000000000000000000000000000001";
+    const threw = await post(t, { op: "applyTranscript", chatId, sessionKey: "agent:main:x", kind: "bogus-kind", rows: "not rows", terminals: [] }).catch(() => null);
+    expect(threw === null || threw.status >= 500).toBe(true);
+    const rejected = (await tracesByKind(t, "openclaw.ingest.rejected")).map(
+      (tr) => JSON.parse(tr.meta ?? "{}") as Record<string, unknown>,
+    );
+    const row = rejected.find((r) => r.op === "applyTranscript");
+    expect(row).toMatchObject({ status: 500, reason: "handler_threw", errorClass: "validator" });
+    expect(row!.chatRef).toMatch(/^[0-9a-f]{16}$/);
+    expect(JSON.stringify(rejected)).not.toContain(chatId);
+    expect(JSON.stringify(rejected)).not.toMatch(/bogus-kind|not rows/);
+  });
+
   test("the compaction CAUSE reaches the trace (it was computed and dropped)", async () => {
     // G-09 exists to answer "why did the gateway compact". The bridge derived the
     // cause and POSTed it; the ingest projected every OTHER field and silently

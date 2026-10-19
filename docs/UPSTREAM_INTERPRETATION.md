@@ -1129,6 +1129,37 @@ result (`chat.side_result`, admitted and handled by the normalizer) are handled;
 events and the progressive session-catalog delivery are addressed to surfaces or requests
 Atrium never has (ignored, verifiably); the per-phase `chat.send` timing is a gap.
 
+## 7. Deliberate deviations of projection `on` (0.101.x)
+
+Where Atrium's projection `on` departs from the Control UI on purpose. Each is a choice, not a
+gap to close; the 0.101.x audit of 2026-10-19 (`audit-conformite-9.33-lots-0.101.md`, kept
+outside the repository) lists them against the upstream code.
+
+- **No visible duplicate (R4).** Upstream keeps two durable answers of one run even when their
+  text is identical (`src/gateway/chat-display-projection.reconciliation.test.ts:70`). Atrium
+  shows one: a repeated text or file in a bubble is withheld, the bubble saying nothing about
+  it. Atrium's chats are documents read later, where a repeat reads as a defect.
+- **Files copied at once, with a `gone` state.** The Control UI fetches a transcript file
+  when it is displayed. Atrium copies it into its own storage as soon as the row is read, so
+  the conversation stays complete after the gateway prunes the file; a file the gateway no
+  longer serves is shown as gone, with its name, rather than as a broken link.
+- **A waiting line while a delegated child runs.** After `sessions_yield` the Control UI
+  clears the run and shows nothing until the resume
+  (`ui/src/pages/chat/chat-gateway.ts:195-204`). Atrium shows one quiet line under the
+  hand-off while the child runs or the gateway reports an active run; a user message sent
+  after the work started, or the resume naming the child, ends it.
+- **Stricter masking.** A tool card rebuilt from the transcript masks its input as the
+  Control UI masks history, and Atrium applies the same masking to the card's header preview
+  too; an input or output over 8 KiB is omitted with its size rather than cut at 8,000
+  characters.
+- **Automatic resend after a send timeout.** The Control UI parks a send it is unsure of and
+  waits for the reader: only an explicit retry continues to the same idempotency key
+  (`ui/src/pages/chat/chat-outbox-drain.ts:190-198`). Atrium asks for the send's receipt the
+  same way, and when the gateway reports it absent, resends it ONCE with the same key and
+  attachments — the gateway answers a repeated key with the run it already holds, so the input
+  never runs twice. A received send is followed, never resent; an unprovable one stays failed
+  for the reader.
+
 ## Conformance summary
 
 | Zone | Verdict |
@@ -1139,6 +1170,7 @@ Atrium never has (ignored, verifiably); the per-phase `chat.send` timing is a ga
 | Init-conflict retry | **Conformant** with upstream channel-side retry treatment |
 | Compaction | **Explicit signals consumed** — `{stream:"compaction"}` is the primary mid-turn signal (marker + widened budget, no buffer reset); the `abandoned` heuristic survives as the multi-version/Hermes fallback and stands down when explicit signals are present; `session.operation`/`sessions.changed` remain unconsumed (rotation detection covers the manual path) |
 | chat.send idempotency | **Conformant** for a faithful duplicate; since 2026.9.2 a key reused with other content is refused (`chat-request-conflict`), classified as its own downstream rejection, never retried; the preempt `dispatchKey` alias WAS necessary to the retired inverse repark (abort markers poison the original key for ~60 min) and stays only for a recovery row created before 2026-09-14 (held, flipped `queued`, or promoted again), until the outbox fields are migrated out |
+| Projection `on` deviations | **Deliberate** (§7) — no visible duplicate, files copied at once with a `gone` state, a waiting line while a child runs, stricter masking, one automatic resend of a send the gateway reports absent |
 | Config changes / model roster | **Handled** — `config.changed` (broadcast-only, never announced) invalidates the per-connection roster and triggers a refresh pushed to Convex under the roster's own observation stamp; a frame gap invalidates in the transport and the next publish re-asks and reports the newer answer; the scope-guard table is vendored beside the announced catalogue, and a family in neither vocabulary is named on receipt |
 
 Fixtures built from upstream sources at `v2026.9.4` — copied from upstream unit tests, or

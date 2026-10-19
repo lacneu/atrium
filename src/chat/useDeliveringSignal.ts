@@ -57,6 +57,7 @@ export function useDeliveringSignal({
   deliveringTtlRemainingMs,
   lastUserAt,
   gatewayWorkingUntil,
+  runningSince = null,
   now = Date.now(),
 }: {
   chatId: string;
@@ -67,6 +68,9 @@ export function useDeliveringSignal({
   deliveringTtlRemainingMs: number | null;
   lastUserAt: number | null;
   gatewayWorkingUntil: number | null;
+  /** When the running delegated work started (turnActivity `workingSince`). In `on`, a user
+   *  message sent after it ends the signal too (see `projectedRunningShown`). */
+  runningSince?: number | null;
   /** Injectable for a test; the render's own clock otherwise. */
   now?: number;
 }): { deliveringFresh: boolean; showTurnActivity: boolean } {
@@ -96,5 +100,20 @@ export function useDeliveringSignal({
   const deliveringFresh = projected
     ? projectedDeliveryOpen(deliveringSince, lastUserAt, gatewayWorkingUntil, now)
     : deliveryWindowOpen(chatId, deliveringSince, deliveringTtlRemainingMs, expired);
-  return { deliveringFresh, showTurnActivity: !anyStreaming && (runningLive || deliveringFresh) };
+  const running = projected ? projectedRunningShown(runningLive, runningSince, lastUserAt) : runningLive;
+  return { deliveringFresh, showTurnActivity: !anyStreaming && (running || deliveringFresh) };
+}
+
+/** Projection `on`: the line under a delegation while its child still runs is Atrium's own
+ *  (the Control UI shows nothing while a yielded child runs — ui/src/pages/chat/
+ *  chat-gateway.ts:195-204, test chat-gateway.test.ts:1527). It is no stronger than the
+ *  waiting line: a user message sent after the work started ends it, as the 0.101.1
+ *  CHANGELOG says (0.101.2 audit). */
+export function projectedRunningShown(
+  runningLive: boolean,
+  runningSince: number | null,
+  lastUserAt: number | null,
+): boolean {
+  if (!runningLive) return false;
+  return !(runningSince !== null && lastUserAt !== null && lastUserAt > runningSince);
 }

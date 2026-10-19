@@ -66,6 +66,15 @@ describe("the thread's activity indicator in projection `on`", () => {
   it("a child still running keeps it up whatever the gateway's parent session says", () => {
     expect(shown(render({ runningLive: true, deliveringSince: null, gatewayWorkingUntil: null }))).toBe(true);
   });
+  // 0.101.2 audit: the 0.101.1 CHANGELOG promises the line goes as soon as the reader writes
+  // again — while the child still runs too.
+  it("a user message sent after the delegated work started ends it, the child still running", () => {
+    const running = { runningLive: true, deliveringSince: null, gatewayWorkingUntil: null, runningSince: 10_000 };
+    expect(shown(render({ ...running, lastUserAt: 9_000 }))).toBe(true);
+    expect(shown(render({ ...running, lastUserAt: 10_001 }))).toBe(false);
+    // Outside `on`, the running signal is unchanged.
+    expect(shown(render({ ...running, projected: false, lastUserAt: 10_001 }))).toBe(true);
+  });
   it("arms no window timer", () => {
     expect(armsDeliveryTimer(true, 10_000, 30_000)).toBe(false);
     expect(armsDeliveryTimer(false, 10_000, 30_000)).toBe(true);

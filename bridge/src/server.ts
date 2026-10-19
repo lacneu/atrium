@@ -3245,20 +3245,29 @@ async function performSendComposed(
     // WHO SENDS. The conversation's socket (the owner's), unless this turn is a
     // participant's on an instance that lets them speak as themselves — then their
     // own socket sends, and only sends: the owner's socket stays the one consumer.
-    const response = await sendAsSpeaker(
-      conn,
-      params,
-      // The widget declaration a participant's socket makes is the one the
-      // conversation's socket ACTUALLY holds, not the wish this body carries: a switch
-      // deferred by a live call (or a turn still streaming) keeps the conversation
-      // socket — and its normalizer — on the old declaration, and a participant's
-      // socket declaring otherwise would make the gateway answer with widgets the
-      // receiving normalizer drops.
-      { ...body, inlineWidgets: session.runManager.widgetsEnabled },
-      presendConfig,
-      speakers,
-      knowledgeGate,
-    );
+    const sent = await sendRecoveringTimeout({
+      send: () =>
+        sendAsSpeaker(
+          conn,
+          params,
+          // The widget declaration a participant's socket makes is the one the
+          // conversation's socket ACTUALLY holds, not the wish this body carries: a switch
+          // deferred by a live call (or a turn still streaming) keeps the conversation
+          // socket — and its normalizer — on the old declaration, and a participant's
+          // socket declaring otherwise would make the gateway answer with widgets the
+          // receiving normalizer drops.
+          { ...body, inlineWidgets: session.runManager.widgetsEnabled },
+          presendConfig,
+          speakers,
+          knowledgeGate,
+        ),
+      ask: () => askGatewayForInput(session.connection, sessionKey, sendKey),
+      closed: () => session.connection.isClosed,
+      log: (line) => console.warn(`[send] chat=${body.chatId} ${line}`),
+    });
+    // Received without an ACK: the gateway holds it; its run is this send's (the client
+    // run id is the idempotency key) — the answer a repeated key gets, `in_flight`.
+    const response = sent.kind === "acked" ? sent.response : { payload: { status: "in_flight", runId: sendKey } };
     // The gateway ACCEPTED the message (with any prepended re-hydration history) — only
     // now consume firstSendPending (codex P2.A). A failed send above leaves it true so a
     // retry of this freshly-routed session re-hydrates again; a post-ack beginTurn throw
@@ -3575,14 +3584,22 @@ async function sendHeldInput(
   );
   let ackStatus: unknown = undefined;
   try {
-    const response = await sendAsSpeaker(
-      conn,
-      params,
-      { ...body, inlineWidgets: session.runManager.widgetsEnabled },
-      presendConfig,
-      speakers,
-      gate,
-    );
+    const sent = await sendRecoveringTimeout({
+      send: () =>
+        sendAsSpeaker(
+          conn,
+          params,
+          { ...body, inlineWidgets: session.runManager.widgetsEnabled },
+          presendConfig,
+          speakers,
+          gate,
+        ),
+      ask: () => askGatewayForInput(session.connection, session.sessionKey, opts.sendKey),
+      closed: () => session.connection.isClosed,
+      log: (line) => console.warn(`[send] chat=${body.chatId} ${line}`),
+    });
+    const response =
+      sent.kind === "acked" ? sent.response : { payload: { status: "in_flight", runId: opts.sendKey } };
     if (!opts.verbatimCommand) {
       session.firstSendPending = false;
       conn.claimCreatedSession = false;
@@ -3643,49 +3660,152 @@ export async function reconcileUncertainInput(
   sleep: (ms: number) => Promise<void> = (ms) =>
     new Promise((r) => setTimeout(r, ms).unref?.()),
 ): Promise<"received" | "cancelled" | "absent" | "unproven"> {
+  // A reply that cannot say (`unknown`) is asked again here, as an unreadable one always was.
+  const verdict = await askGatewayForInputBounded(
+    async () => {
+      const v = await askGatewayForInput(session.connection, session.sessionKey, sendKey);
+      return v === "unknown" ? null : v;
+    },
+    () => session.connection.isClosed,
+    delaysMs,
+    sleep,
+  );
+  if (verdict === "cancelled") session.runManager.noteInputDropped(sendKey);
+  else if (verdict !== "received") session.runManager.forgetHeldInput(sendKey);
+  return verdict;
+}
+
+/**
+ * ONE question to the gateway about an input it may hold — the Control UI's
+ * (`readChatInputRunIds`, ui/src/pages/chat/chat-pending-inputs.ts:215 at v2026.9.33): a
+ * `chat.history` with `inputRunIds`, whose reply carries the receipt (`inputReceipts`) or
+ * the pending item (`pendingInputs`) of the send. A receipt or an item ⇒ `received` (a
+ * cancelled one ⇒ `cancelled`); a reply that reports receipts and names none for it ⇒
+ * `absent` (the exact queried absence, chat-pending-inputs.ts:73-80). `null`: the question
+ * failed (worth asking again); `unknown`: it was answered without receipts (a gateway that
+ * keeps none — asking again will not change that).
+ */
+export async function askGatewayForInput(
+  connection: Pick<OpenClawConnection, "request" | "gatewayVersion">,
+  sessionKey: string,
+  sendKey: string,
+): Promise<"received" | "cancelled" | "absent" | "unknown" | null> {
+  let payload: unknown;
+  try {
+    const res = await connection.request(
+      "chat.history",
+      chatHistoryParams(
+        { sessionKey, limit: 1, maxChars: 1, inputRunIds: [sendKey] },
+        connection.gatewayVersion,
+      ),
+      GATEWAY_RELEASE_RPC_TIMEOUT_MS,
+    );
+    payload = (res as { payload?: unknown }).payload;
+  } catch {
+    return null;
+  }
+  const p = (payload ?? {}) as {
+    inputReceipts?: unknown;
+    pendingInputs?: { items?: unknown };
+  };
+  const receipts = Array.isArray(p.inputReceipts)
+    ? (p.inputReceipts as Array<{ runId?: unknown; state?: unknown; cancelled?: unknown }>)
+    : null;
+  const pending = Array.isArray(p.pendingInputs?.items)
+    ? (p.pendingInputs!.items as Array<{ runId?: unknown; state?: unknown }>)
+    : [];
+  const receipt = receipts?.find((r) => r.runId === sendKey);
+  const item = pending.find((i) => i.runId === sendKey);
+  if (receipt?.cancelled === true || item?.state === "cancelled") return "cancelled";
+  if (receipt !== undefined || item !== undefined) return "received";
+  return receipts !== null ? "absent" : "unknown";
+}
+
+/** `askGatewayForInput`, asked at each delay until it can say — `unproven` if it never
+ *  could (bounded by `delaysMs`, stopped early by a closed socket, or at once by a gateway
+ *  that answered without receipts). */
+export async function askGatewayForInputBounded(
+  ask: () => Promise<"received" | "cancelled" | "absent" | "unknown" | null>,
+  closed: () => boolean,
+  delaysMs: readonly number[],
+  sleep: (ms: number) => Promise<void>,
+): Promise<"received" | "cancelled" | "absent" | "unproven"> {
   let waited = 0;
   for (const at of delaysMs) {
     await sleep(Math.max(0, at - waited));
     waited = at;
-    if (session.connection.isClosed) break;
-    let payload: unknown;
+    if (closed()) break;
+    const verdict = await ask();
+    if (verdict === "unknown") return "unproven";
+    if (verdict !== null) return verdict;
+  }
+  return "unproven";
+}
+
+/** How a send that met a gateway timeout ended (`sendRecoveringTimeout`). */
+export type RecoveredSend<T> =
+  | { kind: "acked"; response: T; resent: boolean }
+  | { kind: "received" };
+
+/**
+ * A `chat.send` — or the control request that precedes it (`issueChatSend`'s gate) — that
+ * got NO answer in time (0.101.2, prod feedback prod-ms7c46hw…, 2026-10-19: a turn lost to
+ * a 20 s `GATEWAY_TIMEOUT`, the reader had to send it again in an emergency).
+ *
+ * Asked first: did the gateway receive it (`askGatewayForInput`, the Control UI's receipt
+ * question)? Received ⇒ no resend: the run is followed as if acknowledged. Absent ⇒ ONE
+ * resend of the SAME params — the same `idempotencyKey`, the attachments with them; the
+ * gateway answers a repeated key with the run it already holds (`status: "in_flight"`,
+ * src/gateway/server-methods/chat-send-pending-inputs.test.ts:199-205 at v2026.9.33), so
+ * even a receipt that lands after the question cannot make it run twice. A control
+ * request that timed out withheld the send (`wasWithheldBeforeSend`): nothing was written,
+ * the absence is proven locally. The question fails, the input was cancelled, or the
+ * resend times out too and is not proven received ⇒ the timeout stands, visible, for the
+ * reader's own resend. Any other failure is not this function's: thrown as it came.
+ */
+export async function sendRecoveringTimeout<T>(deps: {
+  send: () => Promise<T>;
+  ask: () => Promise<"received" | "cancelled" | "absent" | "unknown" | null>;
+  closed: () => boolean;
+  log: (line: string) => void;
+  delaysMs?: readonly number[];
+  sleep?: (ms: number) => Promise<void>;
+}): Promise<RecoveredSend<T>> {
+  const delaysMs = deps.delaysMs ?? UNCERTAIN_INPUT_RECHECK_MS;
+  const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms).unref?.()));
+  const noAnswer = (err: unknown): boolean =>
+    !(err instanceof GatewayAnsweredError) && classifyGatewayError(err) === "GATEWAY_TIMEOUT";
+  const verdictOf = (err: unknown) =>
+    wasWithheldBeforeSend(err)
+      ? Promise.resolve("absent" as const)
+      : askGatewayForInputBounded(deps.ask, deps.closed, delaysMs, sleep);
+  try {
+    return { kind: "acked", response: await deps.send(), resent: false };
+  } catch (first) {
+    if (!noAnswer(first)) throw first;
+    const verdict = await verdictOf(first);
+    if (verdict === "received") {
+      deps.log("the gateway received the send it did not acknowledge in time — following its run");
+      return { kind: "received" };
+    }
+    if (verdict !== "absent") {
+      deps.log(`no answer to the send, and its receipt is ${verdict} — not resent`);
+      throw first;
+    }
+    deps.log("the gateway did not receive the send — resending it once, same idempotency key");
     try {
-      const res = await session.connection.request(
-        "chat.history",
-        chatHistoryParams(
-          { sessionKey: session.sessionKey, limit: 1, maxChars: 1, inputRunIds: [sendKey] },
-          session.connection.gatewayVersion,
-        ),
-        GATEWAY_RELEASE_RPC_TIMEOUT_MS,
-      );
-      payload = (res as { payload?: unknown }).payload;
-    } catch {
-      continue;
-    }
-    const p = (payload ?? {}) as {
-      inputReceipts?: unknown;
-      pendingInputs?: { items?: unknown };
-    };
-    const receipts = Array.isArray(p.inputReceipts)
-      ? (p.inputReceipts as Array<{ runId?: unknown; state?: unknown; cancelled?: unknown }>)
-      : null;
-    const pending = Array.isArray(p.pendingInputs?.items)
-      ? (p.pendingInputs!.items as Array<{ runId?: unknown; state?: unknown }>)
-      : [];
-    const receipt = receipts?.find((r) => r.runId === sendKey);
-    const item = pending.find((i) => i.runId === sendKey);
-    if (receipt?.cancelled === true || item?.state === "cancelled") {
-      session.runManager.noteInputDropped(sendKey);
-      return "cancelled";
-    }
-    if (receipt !== undefined || item !== undefined) return "received";
-    if (receipts !== null) {
-      session.runManager.forgetHeldInput(sendKey);
-      return "absent";
+      return { kind: "acked", response: await deps.send(), resent: true };
+    } catch (second) {
+      if (noAnswer(second) && !wasWithheldBeforeSend(second)) {
+        const again = await askGatewayForInputBounded(deps.ask, deps.closed, delaysMs, sleep);
+        if (again === "received") {
+          deps.log("the resend was received though not acknowledged in time — following its run");
+          return { kind: "received" };
+        }
+      }
+      throw second;
     }
   }
-  session.runManager.forgetHeldInput(sendKey);
-  return "unproven";
 }
 
 /**

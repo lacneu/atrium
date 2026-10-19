@@ -1420,6 +1420,14 @@ function ChatThread({
     return () => window.clearTimeout(t);
   }, [turnActivity?.running, runningTtl, chatId]);
   const runningLive = turnActivity?.running === true && !runningExpired;
+  // ONE duration for BOTH renders. Withheld only on the bottom fallback, the
+  // anchored indicator kept showing a detached task's age — and the anchored path
+  // is the NORMAL one for the production case (the bubble is mounted), so the
+  // 47-hour clock survived the fix that was meant to remove it (codex P1).
+  const visibleWorkingSince =
+    turnActivity?.detachedTask === true
+      ? null
+      : (turnActivity?.workingSince ?? null);
   // The display gate, window and all (useDeliveringSignal): in projection `on` it is
   // driven by facts only — the resume naming the child, or a newer user message.
   const { showTurnActivity } = useDeliveringSignal({
@@ -1431,6 +1439,7 @@ function ChatThread({
     deliveringTtlRemainingMs: turnActivity?.deliveringTtlRemainingMs ?? null,
     lastUserAt: lastUserTurnAt(threadMessages),
     gatewayWorkingUntil: followUp?.workingUntil ?? null,
+    runningSince: visibleWorkingSince,
   });
   // Anchor the indicator under the WORKING bubble when that bubble is
   // actually mounted (a >window-old anchor degrades to the bottom fallback,
@@ -1453,14 +1462,6 @@ function ChatThread({
     const t = window.setInterval(check, 2000);
     return () => window.clearInterval(t);
   }, [showTurnActivity, anchorId]);
-  // ONE duration for BOTH renders. Withheld only on the bottom fallback, the
-  // anchored indicator kept showing a detached task's age — and the anchored path
-  // is the NORMAL one for the production case (the bubble is mounted), so the
-  // 47-hour clock survived the fix that was meant to remove it (codex P1).
-  const visibleWorkingSince =
-    turnActivity?.detachedTask === true
-      ? null
-      : (turnActivity?.workingSince ?? null);
   const anchoredActivity =
     showTurnActivity && anchorId !== null && anchorMounted
       ? {

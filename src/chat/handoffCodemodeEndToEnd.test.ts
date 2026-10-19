@@ -158,7 +158,9 @@ describe("prod-ms7dc0ne: a code-mode delegation and its resume, in projection `o
       ["sessions_yield", []],
     ]);
     expect(view.visible.map((p) => p.toolName)).toEqual(["exec", "sessions_spawn", "sessions_yield"]);
-    expect(view.summary).toBe("1 commande · 2 autres opérations");
+    // sessions_yield is routine work the Control UI leaves out of the count
+    // (projectAgentActivityItem, agent-activity-presentation.ts:24-64; 0.101.2 audit).
+    expect(view.summary).toBe("1 commande · 1 autre opération");
     // 2. The child is done and no resume names it yet: one quiet note, with no deadline.
     expect(noteOf(first, [child], handOff._id)).toEqual({ kind: "composing", taskName: "test-reprise" });
 

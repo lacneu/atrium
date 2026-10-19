@@ -1,6 +1,13 @@
-import { describe, expect, test, vi } from "vitest";
+import { beforeEach, describe, expect, test, vi } from "vitest";
 import type { BridgeConfig } from "../src/config.js";
-import { deviceTokenPromotion } from "../src/core/device-token-promotion.js";
+import {
+  deviceTokenPromotion,
+  resetDeviceTokenPromotionStates,
+} from "../src/core/device-token-promotion.js";
+
+// The promotion state is process-wide (one per instance and device): each test is a fresh
+// process.
+beforeEach(() => resetDeviceTokenPromotionStates());
 
 function config(): BridgeConfig {
   return {
@@ -308,6 +315,41 @@ describe("device token promotion", () => {
         lastConfirmed = body;
       }
     }
+  });
+
+  // 0.101.2 (prod 2026-10-19): every short connection — discovery, the transcript fetcher,
+  // the session-events hub, a speaker socket — built its own promotion closure, so the cache
+  // started empty each time and Convex was still asked every two minutes per instance. Two
+  // instances, a new connection (a new closure, a new config object) every two minutes for
+  // six hours, nothing changing: Convex is asked once per instance, never 360 times.
+  test("two instances, a new connection every 2 min for 6 h: at most 12 Convex calls", async () => {
+    const fetchImpl = answering("unchanged");
+    const instanceOf = (name: string) => () => ({
+      ...config(),
+      instanceName: name,
+      deviceIdentity: { id: name.padEnd(64, "x"), publicKey: "A".repeat(43), privateKey: "private" },
+      openclawToken: `${name}-device-token`,
+      openclawCredentialSource: "device" as const,
+    });
+    const instances = [instanceOf("operations"), instanceOf("research")];
+    for (let tick = 0; tick < 180; tick++) {
+      for (const make of instances) {
+        const value = make();
+        const promote = deviceTokenPromotion(value, fetchImpl)!;
+        expect(await promote(value.openclawToken, 1_000)).toBe("unchanged");
+      }
+    }
+    expect((fetchImpl as unknown as { mock: { calls: unknown[] } }).mock.calls.length).toBeLessThanOrEqual(12);
+    expect((fetchImpl as unknown as { mock: { calls: unknown[] } }).mock.calls.length).toBe(2);
+  });
+
+  test("the shared state is per instance and device: one instance's confirmation never answers another's", async () => {
+    const fetchImpl = answering("stored");
+    const a = { ...config(), instanceName: "operations" };
+    const b = { ...config(), instanceName: "research" };
+    expect(await deviceTokenPromotion(a, fetchImpl)!("device-token")).toBe("stored");
+    expect(await deviceTokenPromotion(b, fetchImpl)!("device-token")).toBe("stored");
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
   });
 
   test("a refusal, or a superseded answer, leaves the next promotion to Convex", async () => {

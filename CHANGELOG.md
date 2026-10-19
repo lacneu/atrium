@@ -1,5 +1,56 @@
 # Changelog
 
+## [0.101.2] — A message the gateway did not acknowledge is sent again, once
+
+Patch release. Convex, the frontend and the bridge change. Deploy **Convex first, then the
+frontend, then the bridge**. The schema does not change.
+
+**A send that timed out is no longer simply lost.** When the gateway did not acknowledge a
+message within 20 seconds, Atrium showed "Délai dépassé" and the reader had to send it again,
+in an emergency too (production feedback, 2026-10-19). Atrium now asks the gateway whether it
+received the message, with the same question the OpenClaw Control UI asks (its input
+receipts). If it did, nothing is sent again and the reply arrives as usual. If it did not,
+Atrium sends it once more, with the same identity and the same attachments; the gateway
+answers a repeated identity with the run it already holds, so a message never runs twice. If
+the gateway cannot answer, or the second send times out too, the failure stays on screen and
+the reader can send it again. **This resend is a deliberate departure from the Control UI**,
+which never resends on its own: it parks an uncertain send and waits for the reader to retry
+it (`chat-outbox-drain.ts:190-198`). It is listed with Atrium's other deliberate departures in
+`docs/UPSTREAM_INTERPRETATION.md` §7.
+
+**The activity summary counts what the Control UI counts.** Routine work — `sessions_yield`, a
+`process` poll, a native wait, the plan tools — is no longer counted ("1 command · 1 other
+operation" for a hand-off, not "2 other operations"). A command that exits with a nonzero code
+is counted as failed. An `exec` interrupted after its code started other calls stays in the
+count instead of disappearing once the reply settles. Each rule is the Control UI's own
+(`projectAgentActivityItem`).
+
+**A rebuilt tool card shows a failure the Control UI shows.** A card rebuilt from the
+transcript read only one spelling of the error flag. It now decides as OpenClaw does: the error
+flag first, then the result's structured details (`isToolResultError`: a failure status such as
+`forbidden`, `denied` or `unavailable`, `ok: false`, a timeout, an error field), and the output
+text ("Tool not found", or a JSON `error` or `status: "error"`) only for a result that has no
+details. A refused `sessions_send` now shows as failed, and a command that exits 0 while
+printing an error-shaped JSON stays a success. A failure the live stream reported is no longer
+turned into a success when the transcript row arrives without one.
+
+**The waiting line goes when you write again, while the sub-agent runs too.** 0.101.1 said
+the line disappears as soon as you write again; while the sub-agent was still running, it came
+back. It now stays gone. The line going out at the end of the agent's run, even when Atrium
+cannot reread the conversation, holds for a run that has a reply bubble; a resume the agent
+keeps silent goes out with the gateway's next report that nothing runs.
+
+**Rejected transcript writes say why.** A rejected transcript write was traced only as "the
+handler threw". The trace now carries the class of the error — a write conflict, a platform
+limit, a refused value, or another error — and a hashed reference to the conversation, never
+its id or any content.
+
+**Fewer device-token requests.** 0.101.1 stopped asking Convex again for a device token it had
+confirmed, but only within one connection: every short connection of the bridge (discovery, the
+transcript reader, the session events) started over, and Convex was still asked every two
+minutes per instance. The confirmation is now shared by every connection of the bridge to the
+same instance: once confirmed, a token is not asked about again until something changes.
+
 ## [0.101.1] — Cleaner replies in projection `on`, and new OpenClaw instances start in `on`
 
 Patch release, after the first days of projection `on` in production. Convex, the frontend and

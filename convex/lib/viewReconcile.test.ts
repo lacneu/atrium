@@ -19,6 +19,10 @@ describe("reconcileToolParts", () => {
     const live = [{ kind: "tool", name: "exec", phase: "started", toolCallId: "c1" }];
     expect(reconcileToolParts(live, layout([{ toolCallId: "c1", status: "result" }]))[0]).toMatchObject({ phase: "completed" });
   });
+  test("a row's RESULT does not undo a failure the live stream reported (0.101.2 audit)", () => {
+    const live = [{ kind: "tool", name: "exec", phase: "error", toolCallId: "c1" }];
+    expect(reconcileToolParts(live, layout([{ toolCallId: "c1", status: "result" }]))[0]).toMatchObject({ phase: "error" });
+  });
   test("a call-only row says no outcome: the live phase stays", () => {
     const live = [{ kind: "tool", name: "exec", phase: "completed", toolCallId: "c1" }];
     expect(reconcileToolParts(live, layout([{ toolCallId: "c1", status: "call" }]))[0]).toMatchObject({ phase: "completed" });

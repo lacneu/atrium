@@ -50,6 +50,11 @@ export function reconcileToolParts<P extends { kind: string }>(
     seen.add(tool.toolCallId);
     const row = fromRows.get(tool.toolCallId);
     if (row === undefined || row.status === "call") return p;
+    // A row's `result` only says no error was READ from it (lib tool-error: its flags and its
+    // output text). A failure the live stream reported is a known fact the row's silence
+    // does not undo (0.101.2 audit; the Control UI's live card keeps its activity outcome,
+    // ui/src/lib/chat/tool-cards.ts:132-141 `isToolCardError`). A row's `error` always wins.
+    if (row.status === "result" && tool.phase === "error") return p;
     return { ...p, phase: ROW_PHASE[row.status] } as P;
   });
   for (const [toolCallId, row] of fromRows) {

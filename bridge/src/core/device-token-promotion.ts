@@ -29,7 +29,9 @@ export function deviceTokenPromotion(
     return undefined;
   }
   /**
-   * The token whose persistence is still owed, if any. A LOST answer is the case
+   * The state shared by every connection to this instance (`promotionStateOf`):
+   *
+   * `st.owed` — the token whose persistence is still owed, if any. A LOST answer is the case
    * this exists for: we adopt the token in memory so the live connection keeps
    * working, but Convex may still hold the bootstrap — and after a bridge restart
    * it is Convex that is read back, so a gateway that has since revoked the
@@ -39,15 +41,15 @@ export function deviceTokenPromotion(
    * OPTIONAL in the contract, and a reconnect that succeeds with the in-memory
    * token may re-issue nothing. The repair has to be scheduled here.
    */
-  let owed: { token: string; issuedAtMs?: number } | null = null;
-  /** The promotion Convex CONFIRMED (`stored`/`unchanged`) in this process: EVERY fact the
+  const st = promotionStateOf(config.instanceName, identity.id);
+  /* `st.confirmed` — the promotion Convex CONFIRMED (`stored`/`unchanged`) in this process: EVERY fact the
    *  request carried, not just the token. Every new gateway connection hands the device
    *  token back; presenting the same promotion again would only ask Convex what it already
    *  answered (prod anomaly jh7fkb54…, 2026-10-18: one promotion per instance every two
    *  minutes). A promotion that differs in ANY field Convex records — the issuance time
    *  first: Convex adopts a late `issuedAtMs` for the token it holds, and without it every
    *  later rotation is refused as `superseded` — is new and goes to Convex. */
-  let confirmed: PromotionFacts | null = null;
+
   /** Everything the request body sends Convex, as one comparable record. The body IS this
    *  record serialized, so a field added to the request is a field the cache compares. */
   const factsOf = (token: string, issuedAtMs: number | undefined): PromotionFacts => ({
@@ -139,12 +141,12 @@ export function deviceTokenPromotion(
       // established, hence the one-way set.
       config.openclawToken = token;
       config.openclawCredentialSource = "device";
-      confirmed = factsOf(token, issuedAtMs);
+      st.confirmed = factsOf(token, issuedAtMs);
     }
     // ANY definite answer clears the debt, whatever it says and whichever token it
     // was about. Convex's state is known at this point, and re-pushing an older
     // owed value would be exactly the walk backwards this module exists to avoid.
-    owed = null;
+    st.owed = null;
     return outcome;
   };
 
@@ -155,11 +157,11 @@ export function deviceTokenPromotion(
     issuedAtMs: number | undefined,
     retryIndex: number,
   ): void {
-    owed = { token, issuedAtMs };
+    st.owed = { token, issuedAtMs };
     const delay = RETRY_DELAYS_MS[retryIndex];
     if (delay === undefined) return; // attempts exhausted; the debt stays visible
     scheduleRetry(() => {
-      if (owed?.token !== token) return; // a newer promotion took over
+      if (st.owed?.token !== token) return; // a newer promotion took over
       void attempt(token, issuedAtMs, retryIndex + 1).catch(() => {
         /* each attempt arms the next; nothing further to do here */
       });
@@ -170,13 +172,42 @@ export function deviceTokenPromotion(
     // Already confirmed with exactly these facts, and still the token in use with its
     // device provenance: nothing to ask. Any differing fact, or a persistence still owed,
     // goes to Convex.
-    confirmed !== null &&
-    sameFacts(confirmed, factsOf(token, issuedAtMs)) &&
-    owed === null &&
+    st.confirmed !== null &&
+    sameFacts(st.confirmed, factsOf(token, issuedAtMs)) &&
+    st.owed === null &&
     config.openclawToken === token &&
     config.openclawCredentialSource === "device"
       ? Promise.resolve("unchanged" as const)
       : attempt(token, issuedAtMs, 0);
+}
+
+/** What the bridge knows about one device's promotion: shared by EVERY connection of
+ *  the process to that instance (0.101.2, prod 2026-10-19). Each short connection —
+ *  discovery, the transcript fetcher, the session-events hub, a speaker socket — built its
+ *  own `deviceTokenPromotion(config)`, so a per-closure cache started empty every time and
+ *  Convex was still asked every two minutes per instance. Keyed by instance and device. */
+type PromotionState = {
+  /** The token whose persistence is still owed, if any (see `deviceTokenPromotion`). */
+  owed: { token: string; issuedAtMs?: number } | null;
+  /** The promotion Convex CONFIRMED (`stored`/`unchanged`), every fact it carried. */
+  confirmed: PromotionFacts | null;
+};
+
+const PROMOTION_STATES = new Map<string, PromotionState>();
+
+function promotionStateOf(instanceName: string | null | undefined, deviceId: string): PromotionState {
+  const key = `${instanceName ?? ""}\u0000${deviceId}`;
+  let st = PROMOTION_STATES.get(key);
+  if (st === undefined) {
+    st = { owed: null, confirmed: null };
+    PROMOTION_STATES.set(key, st);
+  }
+  return st;
+}
+
+/** Tests only: forget every instance's promotion state (a fresh process). */
+export function resetDeviceTokenPromotionStates(): void {
+  PROMOTION_STATES.clear();
 }
 
 /** The fields of one promotion request — the body `attempt` posts, field for field. */

@@ -49,6 +49,79 @@ export function resolveCompletedActivityWrappers<
   return wrappers;
 }
 
+const asRecord = (value: unknown): Record<string, unknown> | undefined =>
+  typeof value === "object" && value !== null && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : undefined;
+
+/** src/session-cards/progress-card-input.ts:10-14 (`isAgentPlanProgressToolName`). */
+const PLAN_PROGRESS_TOOL_NAMES = new Set(["progress_card", "update_plan"]);
+function isAgentPlanProgressToolName(name: string | undefined): boolean {
+  return PLAN_PROGRESS_TOOL_NAMES.has(name?.trim().toLowerCase() ?? "");
+}
+
+/** src/agents/bash-tools.process-schema.ts:116-128 — poll is the only process action that
+ *  returns an aggregate for one session. */
+export function isProcessPollResultDetails(value: unknown): boolean {
+  const details = asRecord(value);
+  return Boolean(
+    details &&
+    typeof details.sessionId === "string" &&
+    (details.status === "running" || details.status === "completed") &&
+    (typeof details.aggregated === "string" ||
+      (details.persistedDetailsTruncated === true &&
+        Array.isArray(details.originalDetailKeys) &&
+        details.originalDetailKeys.includes("aggregated"))),
+  );
+}
+
+/** src/agents/agent-activity-presentation.ts:24-64 (`projectAgentActivityItem`), line for
+ *  line: an `exec`/`bash`/`process` that completed with a nonzero exit is `failed` in the
+ *  prepared outcome, and routine work — `sessions_yield`, a `process` poll, a native
+ *  wait, the plan tools — is marked `hideFromChannelProgress`, so the summary leaves it
+ *  out (upstream test ui/src/lib/chat/tool-call-grouping.test.ts:40). */
+export function projectAgentActivityItem<
+  Item extends {
+    kind?: string;
+    name?: string;
+    status?: string;
+    phase?: string;
+    hideFromChannelProgress?: boolean;
+  },
+>(
+  item: Item,
+  facts: { args?: unknown; result?: unknown; nativeOperation?: "wait" | "process.poll" } = {},
+): Item & { hideFromChannelProgress?: boolean } {
+  if (item.kind === "analysis") {
+    return { ...item, hideFromChannelProgress: true };
+  }
+  const name = (item.name ?? "").toLowerCase();
+  const details = asRecord(asRecord(facts.result)?.details);
+  // Tool completion is not command success. Preserve the execution contract and
+  // expose a normal nonzero exit only in the prepared activity outcome.
+  if (
+    item.phase === "end" &&
+    item.status === "completed" &&
+    (name === "exec" || name === "bash" || name === "process") &&
+    details?.status === "completed" &&
+    details.exitReason !== "manual-cancel" &&
+    typeof details.exitCode === "number" &&
+    Number.isFinite(details.exitCode) &&
+    details.exitCode !== 0
+  ) {
+    return { ...item, status: "failed" };
+  }
+  const routine =
+    facts.nativeOperation === "wait" ||
+    facts.nativeOperation === "process.poll" ||
+    isAgentPlanProgressToolName(name) ||
+    name === "sessions_yield" ||
+    (name === "process" && asRecord(facts.args)?.action === "poll");
+  return routine && (item.status === "running" || item.status === "completed")
+    ? { ...item, hideFromChannelProgress: true }
+    : item;
+}
+
 /** src/agents/agent-activity-presentation.ts:70-114. */
 export function summarizeAgentActivity(items: readonly ActivityItem[]) {
   const operations = new Map(
