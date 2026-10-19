@@ -32,7 +32,10 @@ const fileKindValidator = v.union(v.literal("image"), v.literal("audio"), v.lite
 
 /** One block of a row (bridge row-blocks.ts `RowBlock`). */
 export const rowBlockValidator = v.union(
-  v.object({ type: v.literal("text"), text: v.optional(v.string()), omitted: v.optional(v.boolean()) }),
+  // `capped` (0.101.3): the gateway's display cap cut this text and its full version could
+  // not be recovered — the bounded preview, told as cut (bridge transcript-rows.ts
+  // `capDisplayedRow`).
+  v.object({ type: v.literal("text"), text: v.optional(v.string()), omitted: v.optional(v.boolean()), capped: v.optional(v.boolean()) }),
   v.object({
     type: v.literal("file"),
     kind: fileKindValidator,
@@ -137,7 +140,7 @@ export function sanitizeRowBlocks(raw: unknown): RowBlock[] | undefined {
     if (typeof item !== "object" || item === null) continue;
     const b = item as Record<string, unknown>;
     if (b.type === "text") {
-      if (typeof b.text === "string") out.push({ type: "text", text: b.text });
+      if (typeof b.text === "string") out.push({ type: "text", text: b.text, ...(b.capped === true ? { capped: true } : {}) });
       else if (b.omitted === true) out.push({ type: "text", omitted: true });
     } else if (b.type === "file") {
       if (typeof b.kind !== "string" || !FILE_KINDS.has(b.kind)) continue;

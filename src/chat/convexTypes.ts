@@ -378,7 +378,7 @@ export type RowLayoutView = {
   /** The row's blocks are known (a bridge that sends them; an older one sends text only). */
   blocks?: boolean;
   /** The row as its blocks, in order: text spans of the bubble's text and file blocks. */
-  items?: Array<{ kind: "text"; start: number; end: number } | { kind: "file"; blockIndex: number }>;
+  items?: Array<{ kind: "text"; start: number; end: number; capped?: boolean } | { kind: "file"; blockIndex: number }>;
   /** On the last row only: what the layout left out past its bounds (convex/lib/
    *  bubbleProjection.ts `LAYOUT_MAX_*`), counted. */
   cut?: { rows?: number; files?: number; tools?: number; widgets?: number };

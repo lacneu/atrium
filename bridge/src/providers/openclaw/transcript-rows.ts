@@ -727,9 +727,63 @@ export function boundRowContent<
   return rest as R;
 }
 
+/**
+ * THE GATEWAY'S DISPLAY CAP (0.101.3). `chat.history` bounds every text of a message to
+ * `maxChars` — 8 000 by default (`DEFAULT_CHAT_HISTORY_TEXT_MAX_CHARS`,
+ * src/gateway/chat-display-projection.helpers.ts:13 at v2026.9.33) — appends
+ * `\n...(truncated)...` to a cut text (`truncateChatHistoryText`, :93-104) and records the
+ * cap as a structured fact, `__openclaw: {truncated: true, reason: "display-cap"}`, "so any
+ * session.message or chat.history consumer can tell a bounded preview from the full row and
+ * fetch it via chat.message.get" (chat-display-projection.sanitize.ts:576-586; tests
+ * chat-display-projection.test.ts:518-545). The Control UI recovers an ASSISTANT message on
+ * that fact alone — "only the Gateway marker proves a display cap; sentinel text can be
+ * literal" — never a message-tool mirror (ui/src/pages/chat/chat-message-recovery.ts:30-41).
+ */
+export const DISPLAY_CAP_SENTINEL = "\n...(truncated)...";
+
+/** A row of the read the gateway capped for display, to complete by `chat.message.get`. */
+export type CappedRef = { entryId: string; seq: number; envelope?: TranscriptEnvelope };
+
+/** The Control UI's `resolveCappedMessageId` test (chat-message-recovery.ts:30-41): an
+ *  assistant message, not a message-tool mirror, whose `__openclaw.truncated` is true. */
+export function isDisplayCapped(message: unknown): boolean {
+  const record = asRecord(message);
+  if (record === null || record.openclawMessageToolMirror) return false;
+  return asRecord(record["__openclaw"])?.truncated === true;
+}
+
+/** A capped row that stays the bounded preview: its sentinel removed from the text and from
+ *  the text blocks that carried it, those blocks marked `capped` (the last text block when
+ *  none carried it) — so the reader is told, instead of reading `...(truncated)...`. */
+export function capDisplayedRow(row: TranscriptRow): TranscriptRow {
+  const strip = (t: string): { text: string; cut: boolean } =>
+    t.endsWith(DISPLAY_CAP_SENTINEL) ? { text: t.slice(0, -DISPLAY_CAP_SENTINEL.length), cut: true } : { text: t, cut: false };
+  const out: TranscriptRow = { ...row };
+  if (out.text !== undefined) out.text = out.text.split(DISPLAY_CAP_SENTINEL).join("");
+  if (out.blocks !== undefined) {
+    let marked = false;
+    const blocks = out.blocks.map((b) => {
+      if (b.type !== "text" || b.text === undefined) return b;
+      const s = strip(b.text);
+      if (!s.cut) return b;
+      marked = true;
+      return { ...b, text: s.text, capped: true as const };
+    });
+    if (!marked) {
+      const last = blocks.map((b) => b.type).lastIndexOf("text");
+      if (last >= 0) blocks[last] = { ...(blocks[last] as Extract<RowBlock, { type: "text" }>), capped: true as const };
+    }
+    out.blocks = blocks;
+  }
+  return out;
+}
+
 export type HistoryRead = {
   kind: "page" | "delta" | "reset";
   rows: TranscriptRow[];
+  /** Projection `on`: the rows the gateway capped for display (`isDisplayCapped`), already
+   *  stripped of their sentinel (`capDisplayedRow`) — the reader completes them. */
+  capped?: CappedRef[];
   /** Durable rows that could not be placed by identity (no id or seq). */
   unidentified: number;
   deltaCursor: string | null;
@@ -969,17 +1023,30 @@ export function parseHistoryReply(payload: unknown, display?: RowDisplay): Histo
   if (!Array.isArray(p.messages)) return null;
   const delta = p.kind === "delta";
   const rows: TranscriptRow[] = [];
+  const capped: CappedRef[] = [];
   let unidentified = 0;
   for (const item of p.messages) {
     let row: TranscriptRow | null;
+    let message: unknown = item;
+    let envelope: TranscriptEnvelope | undefined;
     if (delta) {
       const env = asRecord(item);
-      row = env === null ? null : toTranscriptRow(env.message, env as TranscriptEnvelope, display);
+      message = env?.message;
+      envelope = env === null ? undefined : (env as TranscriptEnvelope);
+      row = env === null ? null : toTranscriptRow(env.message, envelope, display);
     } else {
       row = toTranscriptRow(item, undefined, display);
     }
-    if (row === null) unidentified++;
-    else rows.push(row);
+    if (row === null) {
+      unidentified++;
+      continue;
+    }
+    // Projection `on` only (`display`): off and shadow keep the rows they always stored.
+    if (display !== undefined && row.role === "assistant" && row.streamSegment !== true && isDisplayCapped(message)) {
+      row = capDisplayedRow(row);
+      capped.push({ entryId: row.entryId, seq: row.seq, ...(envelope !== undefined ? { envelope } : {}) });
+    }
+    rows.push(row);
   }
   // The segments of one row, in the order the read lists them (codex review 10).
   const segmentsSeen = new Map<string, number>();
@@ -997,6 +1064,7 @@ export function parseHistoryReply(payload: unknown, display?: RowDisplay): Histo
     kind: delta ? "delta" : "page",
     ...(lastRunFailure !== undefined ? { lastRunFailure } : {}),
     rows,
+    ...(capped.length > 0 ? { capped } : {}),
     unidentified,
     deltaCursor: typeof p.deltaCursor === "string" && p.deltaCursor !== "" ? p.deltaCursor : null,
     ...info,

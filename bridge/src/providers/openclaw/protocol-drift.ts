@@ -444,10 +444,15 @@ export const KNOWN_AGENT_FIELDS: ReadonlySet<string> = new Set([
  * matrix instead of being invisible omissions.
  */
 export const COVERAGE_SUMMARY = {
-  handled: 350,
-  ignored: 814,
+  handled: 356,
+  ignored: 813,
   gaps: 918,
   /** The declared gaps, by schema path — the actionable part of the matrix.
+   *
+   *  CAPPED ROWS (0.101.3): `chat.message.get` is called — the full message of a row
+   *  `chat.history` capped for display — so `ChatMessageGetParams` (sessionKey, messageId,
+   *  maxChars; agentId ignored) and `ChatMessageGetResult` (ok, message, unavailableReason)
+   *  are classified field by field instead of ignored as unused.
    *
    *  DELIVERY ITEM PROGRESS (2026-10-17): `AgentActivityItem.phase` is handled — on a
    *  delivery run `end` writes the card, `start` is resumed work, and `update` (a running

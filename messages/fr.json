@@ -606,6 +606,7 @@
   "tools_outcome_ms": "{ms} ms",
   "tools_output_not_transmitted": "Sortie non transmise par la passerelle",
   "tools_field_omitted": "Contenu volumineux ({size} Ko) — non affiché ici pour alléger le chargement.",
+  "chat_text_capped": "Ce message a été tronqué par la passerelle pour l’affichage, et son texte complet n’a pas pu être récupéré.",
   "chat_layout_cut": "Cette réponse est trop longue pour être affichée en entier : {count} éléments de plus (messages, fichiers, cartes d'outil ou widgets) ne sont pas affichés ici.",
   "delivery_title": "Latence de livraison",
   "delivery_hint": "Mesure le pipeline bridge → Convex → frontend par delta (horodatages seuls, sans contenu).",

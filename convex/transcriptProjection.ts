@@ -225,6 +225,8 @@ type TextWork = {
     _id: Id<"transcriptRows">;
     entryId: string;
     seq: number;
+    /** The row's `seq` as stored BEFORE this apply (absent: a new row). */
+    storedSeq?: number;
     textSig?: string;
     runId?: string;
     messageId?: Id<"messages">;
@@ -323,6 +325,11 @@ async function writeRowTexts(
       .withIndex("by_row", (q) => q.eq("rowId", w.row._id))
       .first();
     if (doc !== null) budget.bytes += textDocBytes(doc);
+    // A CAPPED PREVIEW NEVER REPLACES A WHOLE TEXT OF THE SAME ROW VERSION (0.101.3 review):
+    // a bridge that lost its completions (its session expired) and could not ask the gateway
+    // again posts the bounded preview, marked `capped` — the full text already stored for
+    // this row, same `seq`, stays. A whole text always replaces a preview.
+    if (cappedPreview(w.blocks) && doc !== null && storedWhole(doc) && w.row.storedSeq === w.row.seq) continue;
     // A partial read (text without its acknowledgment, or the reverse) keeps the half it
     // does not carry.
     // …and the MERGED result is bounded again (codex phase 4 pass 8: a 600 KiB
@@ -364,6 +371,25 @@ async function writeRowTexts(
   }
   if (copies.length > 0) await purgeRowTextsLater(ctx, a.chatId, copies);
   return stored;
+}
+
+/** The gateway's in-band display-cap sentinel (bridge transcript-rows.ts). */
+const DISPLAY_CAP_SENTINEL = "\n...(truncated)...";
+
+/** The row's text, as posted, is the gateway's bounded preview (a text block `capped`). */
+function cappedPreview(blocks: readonly RowBlock[] | undefined): boolean {
+  return (blocks ?? []).some((b) => b.type === "text" && b.capped === true);
+}
+
+/** A stored row text that is whole: it has a text, no block of it is `capped`, and it does
+ *  not carry the sentinel a bridge before 0.101.3 stored with a preview. */
+function storedWhole(doc: { text?: string; blocks?: readonly RowBlock[] }): boolean {
+  return (
+    doc.text !== undefined &&
+    !doc.text.includes(DISPLAY_CAP_SENTINEL) &&
+    !cappedPreview(doc.blocks) &&
+    !(doc.blocks ?? []).some((b) => b.type === "text" && b.text?.includes(DISPLAY_CAP_SENTINEL) === true)
+  );
 }
 
 /** Delete the stored copies of these rows' texts in their own bounded steps (ids only). */
@@ -658,6 +684,7 @@ async function upsertRows(
         _id: rowId,
         entryId: r.entryId,
         seq: r.seq,
+        ...(stored !== null && stored !== undefined ? { storedSeq: stored.seq } : {}),
         ...(stored?.textSig !== undefined ? { textSig: stored.textSig } : {}),
         ...(r.runId !== undefined ? { runId: r.runId } : {}),
         ...(stored?.messageId !== undefined ? { messageId: stored.messageId } : {}),

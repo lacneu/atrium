@@ -2274,7 +2274,8 @@ export default defineSchema({
           items: v.optional(
             v.array(
               v.union(
-                v.object({ kind: v.literal("text"), start: v.number(), end: v.number() }),
+                // `capped` (0.101.3): the span is a text the gateway's display cap cut.
+                v.object({ kind: v.literal("text"), start: v.number(), end: v.number(), capped: v.optional(v.boolean()) }),
                 v.object({ kind: v.literal("file"), blockIndex: v.number() }),
               ),
             ),

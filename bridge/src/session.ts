@@ -53,6 +53,7 @@ import { protocolDrift } from "./providers/openclaw/protocol-drift.js";
 import type { FinalizeCause } from "./core/finalize-causes.js";
 import { OpenClawAgentRequestObserver } from "./providers/openclaw/agent-request-observer.js";
 import {
+  FULL_MESSAGE_MAX_CHARS,
   TranscriptShadow,
   type SessionEventSource,
 } from "./providers/openclaw/transcript-shadow.js";
@@ -515,6 +516,7 @@ class Session implements BridgeSession {
     this.transcriptShadow = new TranscriptShadow({
       chatId,
       sessionKey,
+      instanceName: this.instanceName,
       readHistory: async (cursor, opts) =>
         (
           await connection.request(
@@ -530,6 +532,17 @@ class Session implements BridgeSession {
               connection.gatewayVersion,
             ),
           )
+        ).payload,
+      // The full message of a row `chat.history` capped for display (0.101.3): the Control
+      // UI's own question (ui/src/pages/chat/chat-pane-sidebar-layout.ts:270-277 at
+      // v2026.9.33), with its bound.
+      readMessage: async (messageId) =>
+        (
+          await connection.request("chat.message.get", {
+            sessionKey,
+            messageId,
+            maxChars: FULL_MESSAGE_MAX_CHARS,
+          })
         ).payload,
       // Convex's ANSWER is the reconciler's input (the runs it found over, a refusal to
       // split): it was dropped here, so no settled run ever reached the turn (codex phase 4

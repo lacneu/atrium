@@ -467,6 +467,9 @@ describe("RPC scope derivation (W10)", () => {
       // Asked after a delivery run, before a send, for `sessionInfo.hasActiveRun`:
       // the gateway clears the run only after broadcasting its end (defect 18).
       "chat.history",
+      // The full message of a row `chat.history` capped for display (0.101.3), as the
+      // Control UI asks it (chat-pane-sidebar-layout.ts:270-277); `operator.read`.
+      "chat.message.get",
   // Sent ONLY in trusted-proxy mode, to claim a conversation's session for the
   // person having it before the admin-scoped verboseLevel patch (which rides the
   // bridge's system socket) would create it under the bridge's own identity.

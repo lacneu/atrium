@@ -48,9 +48,13 @@ import {
   classifySessionsChanged,
   INPUT_RUN_IDS_MAX,
   INPUT_RUN_ID_MAX_CHARS,
+  capDisplayedRow,
+  isDisplayCapped,
   parseHistoryReply,
   rowContentBytes,
+  toTranscriptRow,
   runTerminalStatus,
+  type CappedRef,
   type HistoryRead,
   type RowDisplay,
   type TranscriptRow,
@@ -131,6 +135,44 @@ export function chunkTextRows<R extends RowContent>(
 
 /** A row without what it shows (its identity), as a read posts it once its content went
  *  ahead. */
+/** A `chat.message.get` reply (ChatMessageGetResultSchema, packages/gateway-protocol/src/
+ *  schema/logs-chat.ts:238-244 at v2026.9.33), read defensively. */
+function asPayload(x: unknown): { ok?: unknown; message?: unknown; unavailableReason?: unknown } | null {
+  return typeof x === "object" && x !== null && !Array.isArray(x)
+    ? (x as { ok?: unknown; message?: unknown; unavailableReason?: unknown })
+    : null;
+}
+
+/** The full message the Control UI asks for a capped one (`DETAIL_FULL_MESSAGE_MAX_CHARS`,
+ *  ui/src/pages/chat/chat-pane-sidebar-layout.ts:36 at v2026.9.33); Atrium's own row bound
+ *  (ROW_TEXT_MAX_BYTES, 768 KiB) still applies to what comes back. */
+export const FULL_MESSAGE_MAX_CHARS = 500_000;
+/** Capped rows one read completes (each is one `chat.message.get`); the rest stay previews
+ *  until a later read. */
+export const MAX_CAPPED_PER_READ = 8;
+/** Full rows a live reader keeps, to post them again when a read brings their preview back. */
+const MAX_CAPPED_ROWS_KEPT = 16;
+/** Row outcomes remembered for the whole process (0.101.3 review): a reader dies with its
+ *  session after IDLE_SESSION_TTL_SECONDS, and a new one must not ask the gateway again
+ *  for a row already completed — nor post its preview as if it were news. */
+const MAX_CAPPED_OUTCOMES = 4096;
+const CAPPED_OUTCOMES = new Map<string, "completed" | "failed">();
+/** The sessions whose tail was scanned in this process (bounded like the outcomes). */
+const MAX_TAIL_SCANS = 1024;
+const TAIL_SCANNED = new Set<string>();
+
+function remember<K, V>(map: Map<K, V>, key: K, value: V, max: number): void {
+  map.delete(key);
+  if (map.size >= max) map.delete(map.keys().next().value as K);
+  map.set(key, value);
+}
+
+/** Tests only: a fresh process (no row outcome, no scanned tail remembered). */
+export function resetCappedRowMemory(): void {
+  CAPPED_OUTCOMES.clear();
+  TAIL_SCANNED.clear();
+}
+
 export function withoutText<R extends RowContent & { blocksTruncated?: true }>(
   r: R,
 ): Omit<R, "text" | "yieldAck" | "errorMessage" | "blocks" | "blocksTruncated"> {
@@ -196,6 +238,13 @@ export interface TranscriptShadowDeps {
     cursor: string | null,
     opts?: { inputRunIds?: readonly string[] },
   ) => Promise<unknown>;
+  /** PROJECTION `on` (0.101.3): one `chat.message.get` of this session — the full message a
+   *  read capped for display (`isDisplayCapped`). Resolves to the reply payload. Absent ⇒
+   *  capped rows stay the bounded preview, marked `capped`. */
+  readMessage?: (messageId: string) => Promise<unknown>;
+  /** The instance this conversation runs on: with `sessionKey`, the scope of what the
+   *  process remembers about capped rows across readers (0.101.3). */
+  instanceName?: string;
   /** Post one read to Convex. Resolves to Convex's answer when it gives one (phase 4:
    *  the runs the projection found over). */
   apply: (payload: TranscriptApply) => Promise<TranscriptApplyResult | void>;
@@ -245,6 +294,9 @@ type Custody = {
 export class TranscriptShadow {
   private mode: ProjectionMode = "off";
   private cursor: TranscriptCursor | null = null;
+  /** Full rows this reader completed (bounded): a later read of their preview posts them
+   *  again. Whether a row was asked at all is remembered process-wide (`CAPPED_OUTCOMES`). */
+  private readonly completedRows = new Map<string, TranscriptRow>();
   private inFlight: Promise<void> | null = null;
   /** The reason of the read wanted next (null: none). Requests while a read is in flight
    *  collapse into ONE more read. */
@@ -645,8 +697,10 @@ export class TranscriptShadow {
           return;
         }
       }
+      read = await this.completeCapped(read);
       await this.post(read, readAt, asked, ackedBefore, epoch);
       this.failedReads = 0;
+      await this.scanCappedTail(epoch);
     } catch (err) {
       this.stats.failures++;
       this.log(
@@ -655,6 +709,111 @@ export class TranscriptShadow {
         }`,
       );
       this.retryFailedRead();
+    }
+  }
+
+  /**
+   * THE FULL TEXT OF A CAPPED ROW (0.101.3, prod feedback prod-ms71ea7g…, 2026-10-19: a long
+   * answer shown cut at 8 000 characters). `chat.history` bounds each text to 8 000
+   * characters and marks the message `__openclaw.truncated`; the rows of a read are then the
+   * preview, and the bubble that the rows decide was cut for good. As the Control UI does
+   * (chat-message-recovery.ts:30-41, chat-pane-sidebar-layout.ts:262-279), the full message is
+   * asked by `chat.message.get` (`operator.read`, src/gateway/methods/core-descriptors.ts:367;
+   * handler src/gateway/server-methods/chat-message-get-handler.ts:88-262), and the row
+   * rebuilt from it replaces the preview when it is the same row (same `entryId`, same
+   * `seq`) and fits Atrium's bound. Once per row and version: a failure, a refusal
+   * (`not_found` / `oversized` / `not_visible`) or a row over the bound keeps the preview,
+   * marked `capped`, and is never asked again.
+   */
+  private async completeCapped(read: HistoryRead): Promise<HistoryRead> {
+    const refs = read.capped ?? [];
+    if (this.mode !== "on" || refs.length === 0) return read;
+    const rows = [...read.rows];
+    const at = new Map(rows.map((r, i) => [r.entryId, i]));
+    for (const ref of refs.slice(0, MAX_CAPPED_PER_READ)) {
+      const i = at.get(ref.entryId);
+      if (i === undefined) continue;
+      const full = await this.completion(ref);
+      if (full !== null) rows[i] = { ...full, ...(rows[i]!.segmentOrder !== undefined ? { segmentOrder: rows[i]!.segmentOrder } : {}) };
+    }
+    return { ...read, rows };
+  }
+
+  /** This conversation's scope in the process-wide memory: its instance and session key. */
+  private scope(): string {
+    return `${this.deps.instanceName ?? ""}\u0000${this.deps.sessionKey}`;
+  }
+
+  /** The process-wide key of one row version. */
+  private outcomeKey(ref: Pick<CappedRef, "entryId" | "seq">): string {
+    return `${this.scope()}\u0000${ref.entryId}\u0000${ref.seq}`;
+  }
+
+  /** One capped row's full version, asked once per process (`CAPPED_OUTCOMES`); null: keep
+   *  the preview — which Convex never lets replace a whole text of the same row version
+   *  (convex/transcriptProjection.ts `storedWhole`), so a row completed by an earlier
+   *  reader stays whole. */
+  private async completion(ref: CappedRef): Promise<TranscriptRow | null> {
+    const key = this.outcomeKey(ref);
+    const kept = this.completedRows.get(key);
+    if (kept !== undefined) return kept;
+    if (CAPPED_OUTCOMES.has(key)) return null;
+    let full: TranscriptRow | null = null;
+    if (this.deps.readMessage !== undefined) {
+      try {
+        const payload = asPayload(await this.deps.readMessage(ref.entryId));
+        if (payload?.ok === true && payload.message !== undefined) {
+          const { display } = this.displayOpt();
+          let row = toTranscriptRow(payload.message, ref.envelope, display);
+          // Still capped at FULL_MESSAGE_MAX_CHARS: the longer preview, told as cut.
+          if (row !== null && isDisplayCapped(payload.message)) row = capDisplayedRow(row);
+          if (row !== null && row.entryId === ref.entryId && row.seq === ref.seq && row.text !== undefined) full = row;
+        } else {
+          this.log(
+            `[transcript] chat=${this.deps.chatId} capped row ${ref.entryId} not recovered (${String(payload?.unavailableReason ?? "no message")}) — the preview stays, marked cut`,
+          );
+        }
+      } catch (err) {
+        this.log(
+          `[transcript] chat=${this.deps.chatId} capped row ${ref.entryId} not recovered: ${errForLog(err)} — the preview stays, marked cut`,
+        );
+      }
+    }
+    remember(CAPPED_OUTCOMES, key, full !== null ? "completed" : "failed", MAX_CAPPED_OUTCOMES);
+    if (full !== null) remember(this.completedRows, key, full, MAX_CAPPED_ROWS_KEPT);
+    return full;
+  }
+
+  /**
+   * ROWS STORED CAPPED BEFORE 0.101.3: a conversation resumes by its stored cursor, so a
+   * read never brings them back. Once per process and session, the tail page is read (the
+   * page the Control UI reads when it opens a conversation) for its capped rows only, and
+   * those — completed, or stripped and marked cut — are posted as texts, which updates the
+   * stored rows and re-projects their bubbles (`postTexts`). Nothing else of the page is
+   * posted. Non-fatal.
+   */
+  private async scanCappedTail(epoch: number): Promise<void> {
+    if (TAIL_SCANNED.has(this.scope()) || this.mode !== "on" || this.deps.readMessage === undefined) return;
+    TAIL_SCANNED.delete(this.scope());
+    if (TAIL_SCANNED.size >= MAX_TAIL_SCANS) TAIL_SCANNED.delete(TAIL_SCANNED.values().next().value as string);
+    TAIL_SCANNED.add(this.scope());
+    try {
+      const page = parseHistoryReply(await this.deps.readHistory(null, {}), this.displayOpt().display);
+      // Only the rows no read of this process handled (a read that brought them completed
+      // and posted them already).
+      const fresh = (page?.capped ?? []).filter((c) => !CAPPED_OUTCOMES.has(this.outcomeKey(c)));
+      if (page === null || page.kind === "reset" || fresh.length === 0) return;
+      const sessionId = page.sessionId ?? this.cursor?.sessionId ?? "";
+      if (epoch !== this.epoch || (this.cursor !== null && sessionId !== this.cursor.sessionId)) return;
+      const ids = new Set(fresh.map((c) => c.entryId));
+      const completed = await this.completeCapped({ ...page, capped: fresh });
+      // Only rows really completed: a preview is never posted by the scan (0.101.3 review).
+      const rows = completed.rows.filter(
+        (r) => ids.has(r.entryId) && !(r.blocks ?? []).some((b) => b.type === "text" && b.capped === true),
+      );
+      if (rows.length > 0) await this.postTexts(sessionId, rows, this.nextReadAt());
+    } catch (err) {
+      this.log(`[transcript] chat=${this.deps.chatId} capped-row tail scan failed (non-fatal): ${errForLog(err)}`);
     }
   }
 

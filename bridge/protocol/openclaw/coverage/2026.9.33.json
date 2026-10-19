@@ -842,12 +842,40 @@
       "by": "transcript-rows.ts readInputReceipts (redesign phase 2, the input guard): asked with `inputRunIds`, each receipt (`pending` with the 9.7+ `queued`/`cancelled` flags, or `consumed`) is posted to Convex (transcriptInputs) and measured against Atrium's own outbox by the projection report (G) — shadow only: the outbox still decides."
     },
     "ChatMessageGetParams": {
-      "status": "ignored",
-      "why": "single-message lookup unused (Convex is the message store)"
+      "fields": {
+        "sessionKey": {
+          "status": "handled",
+          "by": "session.ts TranscriptShadow `readMessage` (0.101.3) — the conversation's own session, as the Control UI asks it (ui/src/pages/chat/chat-pane-sidebar-layout.ts:270-277)."
+        },
+        "messageId": {
+          "status": "handled",
+          "by": "transcript-shadow.ts `completion` — the capped row's `__openclaw.id`, the id the Control UI recovers by (chat-message-recovery.ts:20-41)."
+        },
+        "maxChars": {
+          "status": "handled",
+          "by": "transcript-shadow.ts FULL_MESSAGE_MAX_CHARS = 500 000, the Control UI's DETAIL_FULL_MESSAGE_MAX_CHARS (chat-pane-sidebar-layout.ts:36); Atrium's 768 KiB row bound still applies."
+        },
+        "agentId": {
+          "status": "ignored",
+          "why": "the session key already names the agent; the Control UI sends it only for an explicit agent override"
+        }
+      }
     },
     "ChatMessageGetResult": {
-      "status": "ignored",
-      "why": "result envelope of the unused chat.message.get"
+      "fields": {
+        "ok": {
+          "status": "handled",
+          "by": "transcript-shadow.ts `completion` — only `ok: true` with a message completes the capped row."
+        },
+        "message": {
+          "status": "handled",
+          "by": "transcript-shadow.ts `completion` — rebuilt by toTranscriptRow, taken only for the same entryId and seq, still capped ⇒ marked cut."
+        },
+        "unavailableReason": {
+          "status": "handled",
+          "by": "transcript-shadow.ts `completion` — logged; the preview stays, marked cut, never asked again."
+        }
+      }
     },
     "ChatMetadataParams": {
       "status": "ignored",

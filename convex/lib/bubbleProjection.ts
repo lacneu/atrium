@@ -75,7 +75,7 @@ export type PlanRow = {
    *  (ui/src/lib/chat/message-normalizer.test.ts:501; the gateway's own projection strips
    *  them, `stripAssistantMediaDirectivesForDisplay`). Absent: the raw text (an older bridge,
    *  cut or omitted blocks). */
-  items?: ReadonlyArray<{ kind: "text"; text: string } | { kind: "file"; blockIndex: number }>;
+  items?: ReadonlyArray<{ kind: "text"; text: string; capped?: boolean } | { kind: "file"; blockIndex: number }>;
   /** The row's tool blocks, in block order. */
   tools?: ReadonlyArray<LayoutTool>;
   /** The inline widgets the row names, with their carrier (bridge row-blocks.ts
@@ -111,7 +111,7 @@ export type LayoutRow = {
   blocks?: boolean;
   /** The row's texts and files in block order (`PlanRow.items`): spans of the bubble's text
    *  and file block indexes. Absent: the row's span, then its files. */
-  items?: Array<{ kind: "text"; start: number; end: number } | { kind: "file"; blockIndex: number }>;
+  items?: Array<{ kind: "text"; start: number; end: number; capped?: boolean } | { kind: "file"; blockIndex: number }>;
 };
 
 /** A tool card of a bubble: one per `toolCallId`, held by the first row that names it, at
@@ -415,7 +415,7 @@ export function composeBubble(rows: readonly PlanRow[]): { text: string; layout:
         } else {
           text += "\n";
         }
-        items.push({ kind: "text", start: text.length, end: text.length + t.length });
+        items.push({ kind: "text", start: text.length, end: text.length + t.length, ...(it.capped === true ? { capped: true } : {}) });
         text += t;
       }
     } else if (piece !== null) {

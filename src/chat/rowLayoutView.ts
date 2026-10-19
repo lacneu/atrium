@@ -17,7 +17,9 @@ export type RowFile =
   | { kind: "unavailable"; state: "pending" | "gone" | "refused"; reason?: string; filename: string; mimeType: string };
 
 export type RowSegment =
-  | { kind: "text"; entryId: string; text: string }
+  /** `capped` (0.101.3): a text the gateway's display cap cut, whose full version could not
+   *  be recovered — rendered with an honest note, never the gateway's in-band sentinel. */
+  | { kind: "text"; entryId: string; text: string; capped?: true }
   | { kind: "file"; entryId: string; blockIndex: number; file: RowFile }
   /** ONE activity block: every tool card of the consecutive rows that show nothing else
    *  between them (the Control UI's "activity-run", ui/src/pages/chat/chat-thread-grouping.ts:
@@ -88,7 +90,9 @@ export function rowSegments(message: ConvexMessageView): RowSegment[] | null {
         if (it.kind === "file") pushFile(row.entryId, it.blockIndex);
         else if (!hiddenText.has(row.entryId)) {
           const piece = text.slice(it.start, it.end);
-          if (piece.trim() !== "") out.push({ kind: "text", entryId: row.entryId, text: piece });
+          if (piece.trim() !== "") {
+            out.push({ kind: "text", entryId: row.entryId, text: piece, ...(it.capped === true ? { capped: true as const } : {}) });
+          }
         }
       }
     } else {

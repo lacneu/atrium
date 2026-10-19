@@ -606,6 +606,7 @@
   "tools_outcome_ms": "{ms} ms",
   "tools_output_not_transmitted": "Output not transmitted by the gateway",
   "tools_field_omitted": "Large content ({size} KB) — not shown here to keep loading fast.",
+  "chat_text_capped": "This message was cut by the gateway for display, and its full text could not be retrieved.",
   "chat_layout_cut": "This reply is too long to show in full: {count} more items (messages, files, tool cards or widgets) are not shown here.",
   "delivery_title": "Delivery latency",
   "delivery_hint": "Measures the bridge → Convex → frontend pipeline per delta (timestamps only, no content).",

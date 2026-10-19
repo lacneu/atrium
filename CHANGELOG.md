@@ -1,5 +1,30 @@
 # Changelog
 
+## [0.101.3] — Long answers are shown in full
+
+Patch release. Convex, the frontend and the bridge change. Deploy **Convex first, then the
+frontend, then the bridge**. The schema only gains optional fields.
+
+**A long answer is no longer cut at 8,000 characters.** In projection `on`, a reply is shown
+from the conversation's transcript, and the gateway serves each text of that transcript cut at
+8,000 characters, ending with "...(truncated)..." (production feedback, 2026-10-19). The gateway
+marks such a message as cut, and the OpenClaw Control UI then asks for the whole message. Atrium
+now does the same: the bridge asks the gateway for the full message once, and the reply shows
+its whole text. A message longer than Atrium's own limit (768 KiB per message) stays cut.
+
+**A cut that remains is said plainly.** If the full message cannot be retrieved, the answer
+shows the part that arrived, followed by a note saying the message was cut by the gateway. The
+"...(truncated)..." marker, which read like part of the answer, is no longer shown.
+
+**Answers already cut are repaired.** The first time the bridge serves a conversation after it
+starts, it reads the conversation's latest messages once more and replaces any answer stored cut
+with its full text. This covers the most recent messages of each conversation, not its whole
+history. An answer stored whole is never replaced by a cut version of the same message, even
+when the bridge cannot reach the gateway; and the bridge asks for each message at most once
+while it runs.
+
+Outside projection `on` (`off`, `shadow`), nothing changes.
+
 ## [0.101.2] — A message the gateway did not acknowledge is sent again, once
 
 Patch release. Convex, the frontend and the bridge change. Deploy **Convex first, then the

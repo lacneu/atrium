@@ -74,6 +74,11 @@ export type RowTextBlock = {
   /** Absent with `omitted` when the row's content was over its byte budget. */
   text?: string;
   omitted?: true;
+  /** The gateway's display cap cut this text (`__openclaw.truncated`) and the full message
+   *  could not be recovered (transcript-rows.ts `capDisplayedRow`): the text is the bounded
+   *  preview, its in-band `...(truncated)...` sentinel removed — the reader is told the
+   *  message is cut instead of reading the sentinel as content. */
+  capped?: true;
 };
 
 export type RowFileBlock = {

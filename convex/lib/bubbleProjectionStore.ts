@@ -115,11 +115,11 @@ export function toPlanRow(d: Doc<"transcriptRows">, shown?: RowText): PlanRow {
 function itemsOf(shown: RowText | undefined): PlanRow["items"] | undefined {
   const blocks = shown?.blocks;
   if (blocks === undefined || shown?.blocksTruncated === true) return undefined;
-  const items: Array<{ kind: "text"; text: string } | { kind: "file"; blockIndex: number }> = [];
+  const items: Array<{ kind: "text"; text: string; capped?: boolean } | { kind: "file"; blockIndex: number }> = [];
   for (const [blockIndex, b] of blocks.entries()) {
     if (b.type === "text") {
       if (b.omitted === true || b.text === undefined) return undefined;
-      items.push({ kind: "text", text: b.text });
+      items.push({ kind: "text", text: b.text, ...(b.capped === true ? { capped: true } : {}) });
     } else if (b.type === "file") {
       items.push({ kind: "file", blockIndex });
     }

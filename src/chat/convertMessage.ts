@@ -432,6 +432,8 @@ export function convertConvexMessage(
     for (const seg of segments) {
       if (seg.kind === "text") {
         content.push({ type: "text", text: renderableText(seg.text, renderedViewIds, false) });
+        // The gateway cut this text and its full version could not be recovered: said so.
+        if (seg.capped === true) content.push({ type: "text", text: `_${m.chat_text_capped()}_` });
       } else if (seg.kind === "cut") {
         content.push({ type: "text", text: `_${m.chat_layout_cut({ count: String(seg.count) })}_` });
       } else if (seg.kind === "file") {
