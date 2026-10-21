@@ -76,6 +76,7 @@ import {
   type GatewayRequester,
 } from "../src/conf.js";
 import { SessionRegistry } from "../src/session.js";
+import { ChildRowStatus } from "../src/providers/openclaw/child-row-status.js";
 import type { BridgeConfig } from "../src/config.js";
 import type { ConvexWriter } from "../src/convex-writer.js";
 import { OpenClawConnection } from "../src/providers/openclaw/openclaw-client.js";
@@ -595,6 +596,32 @@ async function captureOperatorBodies(): Promise<
     out.push(...cfg.calls);
   }
 
+  // sessions.list (a parent's children) + sessions.describe (one child's row), as the
+  // sub-agent status follower sends them (0.101.4).
+  const parent = "agent:alice:atrium:chat:olivier:c1";
+  const child = "agent:files:subagent:c1";
+  // Two pages, so the later page's `offset` body is validated too.
+  const rows = recorder((method, params) =>
+    method === "sessions.list"
+      ? params.offset === undefined
+        ? { sessions: [{ key: child, spawnedBy: parent, status: "running" }], hasMore: true, nextOffset: 1 }
+        : { sessions: [], hasMore: false }
+      : { session: { key: child, status: "done" } },
+  );
+  const follower = new ChildRowStatus({
+    chatId: "c1",
+    parentSessionKey: parent,
+    gateway: rows.conn,
+    write: async () => ({ applied: true, display: "done" }),
+  });
+  await follower.relistChildren();
+  follower.runEnded(child);
+  await vi.waitFor(() =>
+    expect(rows.calls.map(([m]) => m)).toEqual(["sessions.list", "sessions.list", "sessions.describe"]),
+  );
+  follower.close();
+  out.push(...rows.calls);
+
   // agents.files.list
   const list = recorder(() => ({
     files: [{ name: "AGENTS.md", path: "/w/AGENTS.md", missing: false, size: 3 }],
@@ -706,6 +733,7 @@ describe("outbound ratchet — what the bridge SENDS fits the vendored contract"
     "sessions.compaction.list",
     "sessions.describe",
     "sessions.get",
+    "sessions.list",
     "sessions.patch",
     "talk.client.close",
     "talk.client.create",
@@ -780,6 +808,7 @@ describe("outbound ratchet — what the bridge SENDS fits the vendored contract"
       "chat.history": "chatHistoryParams",
       "sessions.abort": "sessionsAbortParams",
       "sessions.get": "sessionsGetParams",
+      "sessions.list": "childSessionListQuery",
       "tasks.get": "taskGetParams",
       "tasks.list": "taskListParams",
       "talk.client.create": "talkClientCreateParams",

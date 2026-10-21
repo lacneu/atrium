@@ -2018,3 +2018,52 @@ describe("recordInteractionReply carries provisional", () => {
     expect("provisional" in bodies[1]!).toBe(false);
   });
 });
+
+describe("applySubAgentRowStatus (0.101.4)", () => {
+  test("posts the row as read, once, off the message chain, and returns Convex's answer", async () => {
+    const bodies: Array<Record<string, unknown>> = [];
+    const fetchImpl = (async (_url: unknown, init: { body: string }) => {
+      bodies.push(JSON.parse(init.body) as Record<string, unknown>);
+      return {
+        ok: true,
+        json: async () => ({ applied: false, reason: "older" }),
+      } as unknown as Response;
+    }) as unknown as typeof fetch;
+    const w = writerWith(fetchImpl);
+    const answer = await w.applySubAgentRowStatus({
+      chatId: "c1",
+      childSessionKey: "agent:files:subagent:x",
+      status: "timeout",
+      hasActiveRun: false,
+      runId: "r1",
+      snapshotAt: 42,
+    });
+    expect(answer).toEqual({ applied: false, reason: "older" });
+    expect(bodies).toEqual([
+      {
+        op: "applySubAgentRowStatus",
+        chatId: "c1",
+        childSessionKey: "agent:files:subagent:x",
+        status: "timeout",
+        hasActiveRun: false,
+        runId: "r1",
+        snapshotAt: 42,
+      },
+    ]);
+  });
+
+  test("a gone child and a complete child list are posted as such; the candidates come back", async () => {
+    const bodies: Array<Record<string, unknown>> = [];
+    const fetchImpl = (async (_url: unknown, init: { body: string }) => {
+      bodies.push(JSON.parse(init.body) as Record<string, unknown>);
+      return { ok: true, json: async () => ({ applied: true, display: "absent", keys: ["k2", 7] }) } as unknown as Response;
+    }) as unknown as typeof fetch;
+    const w = writerWith(fetchImpl);
+    await w.applySubAgentRowStatus({ chatId: "c1", childSessionKey: "k", absent: true, parentKey: "p" });
+    expect(await w.missingSubAgentRows("c1", "p", ["k1", "k2"])).toEqual(["k2"]);
+    expect(bodies).toEqual([
+      { op: "applySubAgentRowStatus", chatId: "c1", childSessionKey: "k", parentKey: "p", absent: true },
+      { op: "missingSubAgentRows", chatId: "c1", parentKey: "p", presentKeys: ["k1", "k2"] },
+    ]);
+  });
+});

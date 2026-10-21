@@ -3257,6 +3257,11 @@ export default defineSchema({
     // report the user refused reappears in the sub-agent panel. Never rewritten
     // once set.
     stopRequestedAt: v.optional(v.number()),
+    // The run the reader STOPPED, once a terminal session-row read after the stop proved
+    // it over (0.101.4): the "stopped" protection holds for that run only, never for a
+    // later one ("Interagir"). `stoppedRunId` is that read's `lastRunId` when it had one.
+    stoppedRunEndedAt: v.optional(v.number()),
+    stoppedRunId: v.optional(v.string()),
     // Row family: absent/"subagent" = a spawned child session; "task" = a
     // gateway BACKGROUND-TASK engagement (`task:<taskId>` key, born from an
     // async tool ack {async:true, taskId}) — same lifecycle/anchor semantics,
@@ -3313,6 +3318,42 @@ export default defineSchema({
     // distinction: `timeout` and `failed` both map to `error`, and a reader who cannot tell
     // them apart cannot act on either. Enum-checked by the bridge, never free text.
     providerStatus: v.optional(v.string()),
+    // The child's SESSION ROW as the gateway last stated it (0.101.4): the source of the
+    // status once present (convex/lib/sessionRowStatus.ts). `status` is the row's own word,
+    // `display` what the Control UI's badge says of it, `runId` the row's `lastRunId` (the
+    // run its terminal projection belongs to), `snapshotAt` the gateway's sampling time —
+    // the clock that orders two reads (an older one is ignored). Absent until the bridge
+    // first reads the row; frame-derived writes then no longer move the status.
+    gatewayRow: v.optional(
+      v.object({
+        status: v.optional(v.string()),
+        hasActiveRun: v.optional(v.boolean()),
+        display: v.string(),
+        runId: v.optional(v.string()),
+        snapshotAt: v.optional(v.number()),
+        readAt: v.number(),
+        // The row's parent (`spawnedBy`): which complete child list may report it gone.
+        parentKey: v.optional(v.string()),
+      }),
+    ),
+    // When the gateway reported the child's session GONE (0.101.4). Sub-agent keys are a
+    // fresh UUID per spawn (src/agents/spawn-plan.ts:51-57 at v2026.9.33), so a deleted
+    // session never comes back under its key: every later row write is refused (a stale
+    // live read landing after the absence must not bring the child back to running).
+    rowAbsentAt: v.optional(v.number()),
+    // "absent-fallback": the status is a `done` standing in for a deleted child's UNKNOWN
+    // end (no end reported yet) — provisional, the child's own reported end replaces it.
+    terminalSource: v.optional(v.literal("absent-fallback")),
+    // The last TERMINAL the child's frames reported (0.101.4), kept even while the row
+    // holds the status: when the row disappears (the gateway deleted the session, e.g.
+    // `cleanup: "delete"`), it is the end Atrium knows of.
+    frameTerminal: v.optional(
+      v.object({
+        status: v.string(),
+        providerStatus: v.optional(v.string()),
+        errorCode: v.optional(v.string()),
+      }),
+    ),
     // Per-branch ROLLUPS reported when a child ends: what it cost and how long it took.
     // NUMBERS ONLY, and that is a decision rather than an omission — the same payload also
     // carries `files_read`/`files_written` (server PATHS) and `output_tail` (fragments of

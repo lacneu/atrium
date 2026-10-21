@@ -1,5 +1,9 @@
 import { m } from "@/paraglide/messages.js";
 import { ERROR_CODE_LABEL } from "./runStatusView";
+import {
+  atriumStatusOfDisplay,
+  type SessionRowDisplay,
+} from "../../convex/lib/sessionRowStatus";
 
 // Pure logic for the chat-level "Sous-agents" block (SubAgentActivity.tsx).
 //
@@ -91,6 +95,14 @@ export type SubAgentRow = {
    *  set once, never rewritten). Absent on an `aborted` row = the gateway ended
    *  the child, not the reader. */
   stopRequestedAt?: number;
+  /** The gateway's own terminal word beside `status` (`timeout`, `failed`, `killed`,
+   *  `interrupted`), from the session row or from Hermes. */
+  providerStatus?: string;
+  /** The child's session row as the gateway last stated it (0.101.4) — what the Control
+   *  UI's badge shows (`display`). The status source once present. */
+  gatewayRow?: { display: string; status?: string; runId?: string };
+  /** The run the reader stopped, once a row read proved it over (0.101.4). */
+  stoppedRunId?: string;
   tools?: ReadonlyArray<SubAgentToolRow>;
   sessionMeta?: SubAgentSessionMeta;
   telemetry?: SubAgentTelemetry;
@@ -122,6 +134,8 @@ export type SubAgentCardView = {
   label: string;
   status: SubAgentStatus;
   tone: SubAgentTone;
+  /** What the card says of the child's state (`subAgentStatusView`). */
+  statusLabel: string;
   failure: boolean;
   phase?: string;
   errorMessage?: string;
@@ -265,11 +279,80 @@ export function hasRunningSubAgent(rows: readonly SubAgentRow[]): boolean {
  *  Rendering that as a failure told the user their own decision had broken something,
  *  which is the lie this lot exists to remove. `aborted` gets its own tone; `failure`
  *  stays false for it. */
-export function statusTone(status: SubAgentStatus): SubAgentTone {
+export function statusTone(status: SubAgentStatus, providerStatus?: string): SubAgentTone {
   if (status === "running") return "running";
   if (status === "done") return "done";
-  if (status === "aborted") return "aborted";
+  // The Control UI's tones for the gateway's words (ui/src/pages/sessions/session-status.ts
+  // :30-37 at v2026.9.33): `killed` is a danger like `failed` and `timeout`; `interrupted`
+  // is muted — Atrium's `aborted` tone, the one a user's own Stop also takes.
+  if (status === "aborted") return providerStatus === "killed" ? "failed" : "aborted";
   return "failed";
+}
+
+/** What the card says of a row without a session-row read: the four states, with the
+ *  gateway's word when it gave one (Hermes, or a row written before 0.101.4). A child
+ *  stopped with no word from the gateway says "stopped" — never "done". */
+export function subAgentStatusLabel(status: SubAgentStatus, providerStatus?: string): string {
+  if (status === "running") return m.subagents_status_running();
+  if (status === "done") return m.subagents_status_done();
+  if (status === "error") {
+    return providerStatus === "timeout" ? m.subagents_status_timeout() : m.subagents_status_failed();
+  }
+  if (providerStatus === "killed") return m.subagents_status_killed();
+  if (providerStatus === "interrupted") return m.subagents_status_interrupted();
+  return m.subagents_status_stopped();
+}
+
+/** The Control UI's badge for a session-row word (session-status.ts:7-37 at v2026.9.33):
+ *  its label, and its kind as Atrium's tone (ok → done, warn/live → running, danger →
+ *  failed, muted → aborted). */
+const ROW_DISPLAY_VIEW: Record<SessionRowDisplay, () => { tone: SubAgentTone; label: string }> = {
+  queued: () => ({ tone: "running", label: m.subagents_status_queued() }),
+  live: () => ({ tone: "running", label: m.subagents_status_running() }),
+  running: () => ({ tone: "running", label: m.subagents_status_running() }),
+  idle: () => ({ tone: "aborted", label: m.subagents_status_idle() }),
+  unknown: () => ({ tone: "aborted", label: m.subagents_status_unknown() }),
+  done: () => ({ tone: "done", label: m.subagents_status_done() }),
+  failed: () => ({ tone: "failed", label: m.subagents_status_failed() }),
+  timeout: () => ({ tone: "failed", label: m.subagents_status_timeout() }),
+  killed: () => ({ tone: "failed", label: m.subagents_status_killed() }),
+  interrupted: () => ({ tone: "aborted", label: m.subagents_status_interrupted() }),
+};
+
+/** What a card shows of its child's state (0.101.4), in order:
+ *  1. the READER stopped it (`stopRequestedAt`, set by their Stop and never rewritten) and
+ *     it is no longer running: "stopped" — whatever word the gateway gives the aborted run
+ *     afterwards (an aborted sub-agent run can be recorded `done` upstream). Unless the
+ *     row now speaks for ANOTHER run than the one the reader stopped (an "Interagir" turn
+ *     since): that run's status is shown — and a live one is `running`, shown as such;
+ *  2. the gateway's session row, as the Control UI's badge shows it — while the stored
+ *     state still says what that row says: a settle Convex applied since (the announce
+ *     that proves a child finished, the stale-row reaper) speaks until the next read;
+ *  3. otherwise the frame-derived state and word. */
+export function subAgentStatusView(
+  row: Pick<
+    SubAgentRow,
+    "status" | "providerStatus" | "gatewayRow" | "stopRequestedAt" | "childRunId" | "stoppedRunId"
+  >,
+): { tone: SubAgentTone; label: string } {
+  // The stopped run: the one a row read after the Stop proved over, else the delegation.
+  const stoppedRun = row.stoppedRunId ?? row.childRunId;
+  const laterRun =
+    row.gatewayRow?.runId !== undefined &&
+    stoppedRun !== undefined &&
+    row.gatewayRow.runId !== stoppedRun;
+  if (row.stopRequestedAt !== undefined && row.status !== "running" && !laterRun) {
+    return { tone: "aborted", label: m.subagents_status_stopped() };
+  }
+  const display = row.gatewayRow?.display as SessionRowDisplay | undefined;
+  const view = display === undefined ? undefined : ROW_DISPLAY_VIEW[display];
+  if (view !== undefined && (atriumStatusOfDisplay(display!) ?? row.status) === row.status) {
+    return view();
+  }
+  return {
+    tone: statusTone(row.status, row.providerStatus),
+    label: subAgentStatusLabel(row.status, row.providerStatus),
+  };
 }
 
 /** A sub-agent can be REPORTED once it has reached a TERMINAL state — `done`
@@ -311,7 +394,7 @@ export function isForkedSubAgentCopy(childSessionKey: string): boolean {
 
 /** Build one card from a row. */
 function toCard(row: SubAgentRow): SubAgentCardView {
-  const tone = statusTone(row.status);
+  const { tone, label: statusLabel } = subAgentStatusView(row);
   const role = row.sessionMeta?.subagentRole;
   return {
     id: row._id,
@@ -324,6 +407,7 @@ function toCard(row: SubAgentRow): SubAgentCardView {
     label: subAgentLabel(row),
     status: row.status,
     tone,
+    statusLabel,
     failure: tone === "failed",
     // phase is only meaningful while running; drop it on a settled card.
     phase: row.status === "running" ? row.phase : undefined,

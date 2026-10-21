@@ -38,6 +38,7 @@ import {
   transcriptEntryCount,
 } from "./providers/openclaw/history-recovery.js";
 import { SubAgentObserver } from "./providers/openclaw/sub-agent-observer.js";
+import { ChildRowStatus } from "./providers/openclaw/child-row-status.js";
 import type { ConvexWriter, SubAgentRecord } from "./convex-writer.js";
 import { attachRosterPolicy, attachSharingRefresh } from "./providers/openclaw/models-roster.js";
 import type { OutboundScan } from "./core/turn-sink.js";
@@ -332,6 +333,10 @@ class Session implements BridgeSession {
   // Decoupled from the parent-turn lifecycle so a child frame arriving AFTER the
   // parent turn finalized still records (the whole reason the monitor exists).
   readonly observer: SubAgentObserver;
+  /** The children's STATUS, read from their gateway session rows (0.101.4,
+   *  providers/openclaw/child-row-status.ts) — every projection mode. Null when the
+   *  writer cannot record a row. Lives exactly as long as this socket. */
+  readonly childRows: ChildRowStatus | null;
   /** See BridgeSession.transcriptShadow. */
   readonly transcriptShadow: TranscriptShadow;
   /** PROJECTION `on` (final design step 2): copies the files this session's transcript
@@ -486,6 +491,23 @@ class Session implements BridgeSession {
       // it while this session lives.
       outboundAgentMount: () => this.outboundAgentMount,
     });
+    const writeRow = writer.applySubAgentRowStatus?.bind(writer);
+    this.childRows =
+      writeRow === undefined
+        ? null
+        : new ChildRowStatus({
+            chatId,
+            parentSessionKey: sessionKey,
+            gateway: connection,
+            write: writeRow,
+            ...(writer.missingSubAgentRows === undefined
+              ? {}
+              : {
+                  missing: (parentKey: string, presentKeys: string[]) =>
+                    writer.missingSubAgentRows!(chatId, parentKey, presentKeys),
+                }),
+            ...(sessionEvents === undefined ? {} : { events: sessionEvents }),
+          });
     this.agentRequests = new OpenClawAgentRequestObserver({
       chatId,
       sessionKey,
@@ -586,6 +608,7 @@ class Session implements BridgeSession {
     if (typeof connection.onClosed === "function") {
       connection.onClosed(() => {
         this.transcriptShadow.close();
+        this.childRows?.close();
         copier?.close();
       });
     }
@@ -647,6 +670,8 @@ class Session implements BridgeSession {
    *  interaction reply and routed to the interaction store). */
   armSubAgentInteraction(childKey: string, interactionId: string): void {
     this.observer.armInteraction(childKey, interactionId, this.clock());
+    // Followed again (a child finished long ago, or one a reconnection did not relist).
+    this.childRows?.track(childKey);
     // A deadline moved (a resurrected observation's TTL): the consume loop blocks on
     // the one it computed before, so it must re-read it.
     this.wake();
@@ -707,6 +732,8 @@ class Session implements BridgeSession {
               errForLog(err),
             );
           });
+        // The interaction's run ended: the row now states the child's status.
+        this.childRows?.runEnded(record.childSessionKey);
         continue;
       }
       // A child that DELIVERED files with its answer. Its frames are
@@ -766,6 +793,8 @@ class Session implements BridgeSession {
         try {
           await this.writer.upsertSubAgent(record);
           this.registeredChildren.add(record.childSessionKey);
+          // Its row exists in Convex now: follow the child's session row.
+          this.childRows?.track(record.childSessionKey);
         } catch (err) {
           // Best-effort: a failed registration must not break the loop. Leave the
           // child UNREGISTERED so the next frame re-attempts the ordered write.
@@ -775,15 +804,27 @@ class Session implements BridgeSession {
           );
         }
       } else {
-        if (record.status !== "running") {
+        const ended = record.status !== "running";
+        if (ended) {
           this.registeredChildren.delete(record.childSessionKey);
+        } else {
+          this.childRows?.track(record.childSessionKey);
         }
-        void this.writer.upsertSubAgent(record).catch((err) => {
-          console.warn(
-            `[subagent] upsert failed chat=${this.chatId}:`,
-            errForLog(err),
-          );
-        });
+        const childKey = record.childSessionKey;
+        void this.writer
+          .upsertSubAgent(record)
+          .catch((err) => {
+            console.warn(
+              `[subagent] upsert failed chat=${this.chatId}:`,
+              errForLog(err),
+            );
+          })
+          // A run ended on this socket: read the child's row — after this write, so a
+          // child first seen terminal already has its Convex row. Only the STATUS comes
+          // from the row; the content above keeps its frame source.
+          .finally(() => {
+            if (ended) this.childRows?.runEnded(childKey);
+          });
       }
       // Per-tool DETAIL (args + result) rides on the same tool-frame emission; route
       // it to its OWN table best-effort, off the critical path — it never gates the
@@ -817,6 +858,9 @@ class Session implements BridgeSession {
     if (openClawAgentRequestsEnabled(this.connection.gatewayVersion)) {
       void this.agentRequests.replayPending();
     }
+    // A new conversation socket inherits nothing: relist this conversation's children
+    // from the gateway (detached, a read; it never delays the consume loop).
+    void this.childRows?.relistChildren();
     // The consume loop catches its own feed/tick/endTurn errors, but a throw in
     // the loop machinery itself (iterator, race) would otherwise become an
     // unhandled rejection and kill the whole bridge. Guard it: finalize any
@@ -856,6 +900,7 @@ class Session implements BridgeSession {
     // …and the reconciler with it (detaches from the session-events connection), even
     // on a connection double that has no close listeners.
     this.transcriptShadow.close();
+    this.childRows?.close();
     // The connection is gone -> no more child frames; drop observations AND the
     // registration-ordering set so the crash-recovery path can't leak the registry
     // (keep registeredChildren in lockstep with the observer — invariant: it only ever
@@ -1076,6 +1121,7 @@ class Session implements BridgeSession {
           this.registeredChildren.clear();
           // No more frames, no more reads on a closed socket (the next session reads).
           this.transcriptShadow.close();
+          this.childRows?.close();
           break;
         }
         nextFrame = iterator.next();

@@ -158,6 +158,7 @@ import {
   stampLiveActivity,
   writeLiveActivity,
 } from "./lib/liveTurnDifficulty";
+import { settleChildEnd } from "./lib/subAgentSettle";
 
 // Optional delivery-recorder fields the bridge attaches to a stream write while a
 // turn is being recorded (see convex/deliveryTiming.ts). `recSessionId` is the
@@ -391,8 +392,7 @@ async function startAssistantCore(
           .filter((q) => q.eq(q.field("chatId"), chatId))
           .first();
         if (engagement !== null && engagement.status === "running") {
-          await ctx.db.patch(engagement._id, {
-            status: outcome === "ok" ? ("done" as const) : ("error" as const),
+          await settleChildEnd(ctx, engagement, outcome === "ok" ? "done" : "error", {
             updatedAt: now,
           });
         }
@@ -413,11 +413,11 @@ async function startAssistantCore(
           )
           .filter((q) => q.eq(q.field("chatId"), chatId))
           .first();
+        // A late announce of an EARLIER run must not end the run the gateway row now
+        // speaks for ("Interagir"): with a row read, the row keeps the status
+        // (lib/subAgentSettle.ts). The announce's content is untouched.
         if (row !== null && row.status === "running") {
-          await ctx.db.patch(row._id, {
-            status: "done" as const,
-            updatedAt: now,
-          });
+          await settleChildEnd(ctx, row, "done", { updatedAt: now });
         }
       }
       // PROJECTION `on` (phase 5, design §14.2): a delivery never reopens its parent — it

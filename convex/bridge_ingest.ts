@@ -43,6 +43,7 @@ import {
 } from "./lib/foreignRunRefusals";
 import { usablePlanStamp } from "./lib/planOrder";
 import { CHILD_RUN_ID_RE } from "./lib/deliveryRuns";
+import { isSessionRunStatus } from "./lib/sessionRowStatus";
 import {
   AGENT_REQUEST_SOURCES,
   type AgentRequestSource,
@@ -575,6 +576,28 @@ type IngestOp =
       // The caller's own character ceiling — can only lower the budget.
       maxChars?: unknown;
     }
+  // A child's SESSION ROW as the bridge read it from the gateway (0.101.4): the status
+  // the Control UI shows. Applied by subAgents.applySubAgentRowStatus (ordered by the
+  // row's `snapshotAt`); never creates a row.
+  | {
+      op: "applySubAgentRowStatus";
+      chatId: string;
+      childSessionKey: string;
+      status?: unknown;
+      hasActiveRun?: unknown;
+      runId?: unknown;
+      snapshotAt?: unknown;
+      parentKey?: unknown;
+      absent?: unknown;
+    }
+  // A COMPLETE child list of one parent session (0.101.4): which of its running children
+  // the list no longer has — candidates the bridge then reads (subAgents.missingSubAgentRows).
+  | {
+      op: "missingSubAgentRows";
+      chatId: string;
+      parentKey: string;
+      presentKeys: unknown;
+    }
   // Sub-agent observation upsert (inbound only): the bridge observed a child run
   // (spawn / lifecycle phase / final result) on the gateway and records its status
   // here, keyed by childSessionKey. NOT message-scoped (a child outlives the parent
@@ -788,7 +811,9 @@ function ingestTargetIds(op: IngestOp): {
   // authorization follows the existing row's chat, not the self-asserted chatId
   // (the mutation re-checks atomically as well — this is the fast 403).
   const childSessionKey =
-    (op.op === "upsertSubAgent" || op.op === "upsertSubAgentToolPart") &&
+    (op.op === "upsertSubAgent" ||
+      op.op === "upsertSubAgentToolPart" ||
+      op.op === "applySubAgentRowStatus") &&
     typeof b.childSessionKey === "string"
       ? b.childSessionKey
       : undefined;
@@ -1746,6 +1771,65 @@ export const ingest = httpAction(async (ctx, request) => {
           ...(result.sinceFound !== undefined ? { sinceFound: result.sinceFound } : {}),
           ok: true,
         },
+      });
+      return json(result);
+    }
+    case "applySubAgentRowStatus": {
+      // Network input: each field is used only in the shape upstream mints, else dropped
+      // (an unknown status reads as no status — the badge then says "unknown").
+      const result = await ctx.runMutation(internal.subAgents.applySubAgentRowStatus, {
+        chatId: body.chatId as Id<"chats">,
+        boundInstanceName,
+        childSessionKey: String(body.childSessionKey ?? ""),
+        ...(isSessionRunStatus(body.status) ? { status: body.status } : {}),
+        ...(typeof body.hasActiveRun === "boolean" ? { hasActiveRun: body.hasActiveRun } : {}),
+        ...(typeof body.runId === "string" && body.runId.length > 0 && body.runId.length <= 256
+          ? { runId: body.runId }
+          : {}),
+        ...(typeof body.snapshotAt === "number" &&
+        Number.isFinite(body.snapshotAt) &&
+        body.snapshotAt >= 0
+          ? { snapshotAt: body.snapshotAt }
+          : {}),
+        ...(typeof body.parentKey === "string" && body.parentKey.length > 0 && body.parentKey.length <= 512
+          ? { parentKey: body.parentKey }
+          : {}),
+        ...(body.absent === true ? { absent: true } : {}),
+      });
+      await traceIngest(ctx, {
+        kind: "openclaw.ingest",
+        chatId: body.chatId,
+        correlationId: body.chatId,
+        meta: {
+          op: body.op,
+          // Structural only: the row's word and whether it was applied.
+          ...(isSessionRunStatus(body.status) ? { status: body.status } : {}),
+          applied: result.applied,
+          ...(result.applied ? { display: result.display } : { reason: result.reason }),
+          ok: true,
+        },
+      });
+      return json(result);
+    }
+    case "missingSubAgentRows": {
+      const keys = Array.isArray(body.presentKeys)
+        ? body.presentKeys.filter((k): k is string => typeof k === "string" && k.length <= 512)
+        : null;
+      if (keys === null || typeof body.parentKey !== "string" || body.parentKey.length === 0) {
+        return json({ error: "bad missingSubAgentRows body" }, 400);
+      }
+      const result = await ctx.runQuery(internal.subAgents.missingSubAgentRows, {
+        chatId: body.chatId as Id<"chats">,
+        boundInstanceName,
+        parentKey: body.parentKey,
+        presentKeys: keys,
+      });
+      await traceIngest(ctx, {
+        kind: "openclaw.ingest",
+        chatId: body.chatId,
+        correlationId: body.chatId,
+        // Counts only — never the keys.
+        meta: { op: body.op, presentCount: keys.length, missing: result.keys.length, ok: true },
       });
       return json(result);
     }

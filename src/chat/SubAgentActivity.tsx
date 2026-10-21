@@ -1,7 +1,7 @@
 import { useContext, useMemo, useState } from "react";
 import { useQuery } from "convex/react";
 import { useMessage } from "@assistant-ui/react";
-import { Bot, Check, CircleAlert, LoaderCircle,
+import { Bot, Check, CircleAlert, CircleSlash, LoaderCircle,
   Zap,
 } from "lucide-react";
 import { ActivityRow } from "./ActivityRow";
@@ -70,7 +70,9 @@ function SubAgentCard({ card }: { card: SubAgentCardView }) {
       ? LoaderCircle
       : card.tone === "failed"
         ? CircleAlert
-        : Check;
+        : card.tone === "aborted"
+          ? CircleSlash
+          : Check;
   const panel = useContext(SubAgentPanelContext);
   const toolCount = card.tools?.length ?? 0;
   // The "currently detailed in the panel" highlight — the visual breadcrumb tying

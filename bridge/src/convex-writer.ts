@@ -178,6 +178,32 @@ export interface SubAgentRecord {
   interactionReply?: SubAgentInteractionReply;
 }
 
+/** A child's SESSION ROW as the bridge read it from the gateway (0.101.4): the status
+ *  the Control UI shows. Forwarded as read — Convex derives the badge and orders reads by
+ *  `snapshotAt` (convex/lib/sessionRowStatus.ts). */
+export interface SubAgentRowStatusRecord {
+  chatId: string;
+  childSessionKey: string;
+  /** The row's `status` (packages/gateway-protocol/src/schema/sessions-row.ts:156). */
+  status?: string;
+  hasActiveRun?: boolean;
+  /** The row's `lastRunId`: the run its terminal projection belongs to (:159-160). */
+  runId?: string;
+  /** The row's `snapshotAt`: the gateway's sampling time (:139-140). */
+  snapshotAt?: number;
+  /** The row's parent (`spawnedBy`, :163): which complete child list may report it gone. */
+  parentKey?: string;
+  /** The gateway stated there is NO session under this key any more (`sessions.describe`
+   *  answered `{ session: null }`) — e.g. deleted by `cleanup: "delete"`. */
+  absent?: true;
+}
+
+/** Convex's answer to a row write: applied, or why not (no such child yet, another
+ *  chat's, an older read than the one held). */
+export type SubAgentRowStatusResult =
+  | { applied: true; display: string }
+  | { applied: false; reason: string };
+
 /** The child's reply to a user interaction (2c), keyed by the Convex interactionId. */
 export interface SubAgentInteractionReply {
   interactionId: string;
@@ -819,6 +845,17 @@ export interface ConvexWriter {
    */
   upsertSubAgent(record: SubAgentRecord): Promise<void>;
   /**
+   * A child's session row as read from the gateway (0.101.4) — the status source once
+   * present. Optional: a writer without it leaves the status to the frames.
+   */
+  applySubAgentRowStatus?(record: SubAgentRowStatusRecord): Promise<SubAgentRowStatusResult>;
+  /**
+   * A COMPLETE child list of one parent session (0.101.4): which of this chat's running
+   * children of that parent the list no longer has — candidates to READ, nothing is
+   * written. Optional, like the row write.
+   */
+  missingSubAgentRows?(chatId: string, parentKey: string, presentKeys: string[]): Promise<string[]>;
+  /**
    * Per-tool DETAIL upsert (args + result) for a sub-agent call -> its OWN table
    * (subAgentToolParts), keyed by (childSessionKey, toolCallId). Best-effort + off
    * any chain, exactly like upsertSubAgent: a child outlives the parent turn and a
@@ -1254,6 +1291,19 @@ type IngestOp =
       text: string;
       sessionKey: string | null;
     }
+  // A child's session row as read from the gateway (0.101.4).
+  | {
+      op: "applySubAgentRowStatus";
+      chatId: string;
+      childSessionKey: string;
+      status?: string;
+      hasActiveRun?: boolean;
+      runId?: string;
+      snapshotAt?: number;
+      parentKey?: string;
+      absent?: true;
+    }
+  | { op: "missingSubAgentRows"; chatId: string; parentKey: string; presentKeys: string[] }
   // Sub-agent observation upsert (inbound-only). Keyed by childSessionKey; NOT
   // message-scoped (a child outlives the parent turn). resultText is server-path
   // stripped by the observer before it reaches here.
@@ -2942,6 +2992,38 @@ export class HttpConvexWriter implements ConvexWriter {
       sessionMeta: record.sessionMeta,
       telemetry: record.telemetry,
     });
+  }
+
+  async applySubAgentRowStatus(
+    record: SubAgentRowStatusRecord,
+  ): Promise<SubAgentRowStatusResult> {
+    // Off the per-message chain, like upsertSubAgent, and NOT retried here: the caller
+    // (ChildRowStatus) reads again on the next trigger, plus one deferred retry.
+    return await this.doPost<SubAgentRowStatusResult>({
+      op: "applySubAgentRowStatus",
+      chatId: record.chatId,
+      childSessionKey: record.childSessionKey,
+      ...(record.status !== undefined ? { status: record.status } : {}),
+      ...(record.hasActiveRun !== undefined ? { hasActiveRun: record.hasActiveRun } : {}),
+      ...(record.runId !== undefined ? { runId: record.runId } : {}),
+      ...(record.snapshotAt !== undefined ? { snapshotAt: record.snapshotAt } : {}),
+      ...(record.parentKey !== undefined ? { parentKey: record.parentKey } : {}),
+      ...(record.absent === true ? { absent: true as const } : {}),
+    });
+  }
+
+  async missingSubAgentRows(
+    chatId: string,
+    parentKey: string,
+    presentKeys: string[],
+  ): Promise<string[]> {
+    const res = await this.doPost<{ keys?: unknown }>({
+      op: "missingSubAgentRows",
+      chatId,
+      parentKey,
+      presentKeys,
+    });
+    return Array.isArray(res?.keys) ? res.keys.filter((k): k is string => typeof k === "string") : [];
   }
 
   async upsertSubAgentToolPart(record: SubAgentToolPartRecord): Promise<void> {

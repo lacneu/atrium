@@ -2300,6 +2300,10 @@ export const abortTurn = mutation({
         // decision must outlive it — it is what keeps the refused report out of
         // the sub-agent panel.
         stopRequestedAt: abortedAt,
+        // Each Stop opens a new epoch (0.101.4): the run THIS Stop stops is not known
+        // over yet, whatever an earlier Stop's run was (subAgents.applySubAgentRowStatus).
+        stoppedRunEndedAt: undefined,
+        stoppedRunId: undefined,
       });
     }
     // The children's kills are dispatched per row, each with ITS OWN session and

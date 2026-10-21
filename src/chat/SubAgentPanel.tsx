@@ -14,6 +14,7 @@ import {
   ChevronDown,
   ChevronRight,
   CircleAlert,
+  CircleSlash,
   Cpu,
   Download,
   Flag,
@@ -129,19 +130,17 @@ export const SubAgentPanelContext = createContext<SubAgentPanelApi | null>(null)
 
 /** The header status line: a presence icon/spinner + the localized state. */
 function HeaderStatus({ card }: { card: SubAgentCardView }) {
-  const label =
-    card.tone === "running"
-      ? m.subagents_status_running()
-      : card.tone === "failed"
-        ? m.subagents_status_failed()
-        : m.subagents_status_done();
+  // The session row's word, as the Control UI shows it (0.101.4): a child that timed out
+  // says so, and a stopped one never reads "done".
   return (
     <span className={`oc-subpanel__status oc-subpanel__status--${card.tone}`}>
-      {label}
+      {card.statusLabel}
       {card.tone === "running" ? (
         <LoaderCircle size={13} className="oc-subagent__spin" aria-hidden />
       ) : card.tone === "failed" ? (
         <CircleAlert size={13} aria-hidden />
+      ) : card.tone === "aborted" ? (
+        <CircleSlash size={13} aria-hidden />
       ) : (
         <Check size={13} aria-hidden />
       )}

@@ -28,10 +28,17 @@ import {
 } from "./_generated/server";
 import { internal } from "./_generated/api";
 import { postBridge } from "./agentFiles";
-import type { Id } from "./_generated/dataModel";
+import type { Doc, Id } from "./_generated/dataModel";
 import { requireActive, requireReachableChat } from "./lib/access";
 import { normalizeMessageErrorCode, maskCredentialId } from "./lib/chatRenderState";
 import { SUBAGENT_NO_ACTIVITY_CODE } from "./lib/subAgentFailure";
+import { settleChildEnd } from "./lib/subAgentSettle";
+import {
+  atriumStatusOfDisplay,
+  isSessionRunStatus,
+  sessionRowDisplay,
+  type SessionRowDisplay,
+} from "./lib/sessionRowStatus";
 import { chatAllowsInstance } from "./lib/ingestAuthz";
 import { currentPlanIndex } from "./lib/planOrder";
 import { drainNextQueued, SUBAGENT_STALE_TTL_MS } from "./lib/outboxQueue";
@@ -435,6 +442,8 @@ export const upsertSubAgent = internalMutation({
       userId?: Id<"users">;
       declaredTimeoutMs?: number;
       taskDeadlineAt?: number;
+      frameTerminal?: { status: string; providerStatus?: string; errorCode?: string };
+      terminalSource?: "absent-fallback";
       updatedAt: number;
     } = { updatedAt: now };
     // Fill-only metadata (never rewritten once set).
@@ -499,11 +508,39 @@ export const upsertSubAgent = internalMutation({
     // the in-memory observer, whose 15-min TTL sweep then synthesizes a
     // "timed out" upsert for a child the announce PROVED finished (codex
     // P2). The documented recovery direction is error -> done, never back.
+    //
+    // THE ROW HOLDS THE STATUS (0.101.4). Once the bridge has read the child's session
+    // row (`gatewayRow`, applySubAgentRowStatus), the status is the gateway's, as the
+    // Control UI shows it: a frame-derived write (a child `chat` final read as `done`, the
+    // TTL sweep's synthesized error) no longer moves it, nor the word and class beside
+    // it. Its content (result, media, tools, telemetry) still lands below.
+    const rowHeld = existing.gatewayRow !== undefined;
+    // The end the frames reported while the row holds the status: the end Atrium knows of
+    // if the row disappears. (Without a row read, the status itself carries it; a row read
+    // that moves it back to live keeps it — applySubAgentRowStatus.)
+    if (rowHeld && args.status !== "running") {
+      patch.frameTerminal = {
+        status: args.status,
+        ...(args.providerStatus !== undefined ? { providerStatus: args.providerStatus } : {}),
+        ...(args.errorCode !== undefined
+          ? { errorCode: normalizeMessageErrorCode(args.errorCode) ?? "unknown" }
+          : {}),
+      };
+    }
+    // A `done` that only stood in for a deleted child's unknown end (applyRowAbsent) is
+    // provisional: the child's own reported end replaces it — not the observer's
+    // synthesized "no activity" error, which is no end the child reported.
+    const provisionalDone =
+      existing.terminalSource === "absent-fallback" &&
+      args.status !== "running" &&
+      args.errorCode !== SUBAGENT_NO_ACTIVITY_CODE;
     if (
+      !rowHeld &&
       !(terminal && args.status === "running") &&
-      !(existing.status === "done" && args.status === "error")
+      (provisionalDone || !(existing.status === "done" && args.status === "error"))
     ) {
       patch.status = args.status;
+      if (provisionalDone) patch.terminalSource = undefined;
     }
     // Overflow-recovery transition (error -> done): the gateway can abandon an
     // attempt with a chat:error, truncate tool results, resume the SAME run and
@@ -525,13 +562,14 @@ export const upsertSubAgent = internalMutation({
     }
     // SUPPLIED-ONLY, like resultText above: these arrive on the terminal, and a later
     // running-state refresh must not erase what the terminal established.
-    if (args.providerStatus !== undefined) {
+    if (args.providerStatus !== undefined && !rowHeld) {
       patch.providerStatus = args.providerStatus;
     }
     if (args.rollup !== undefined) patch.rollup = args.rollup;
     if (args.errorMessage !== undefined)
       patch.errorMessage = maskCredentialId(args.errorMessage);
-    if (args.errorCode !== undefined) {
+    // The class is part of the status the row holds (applySubAgentRowStatus).
+    if (!rowHeld && args.errorCode !== undefined) {
       patch.errorCode = normalizeMessageErrorCode(args.errorCode) ?? undefined;
     }
     else if (recoveredToDone && existing.errorMessage !== undefined) {
@@ -543,6 +581,7 @@ export const upsertSubAgent = internalMutation({
     // the reaper under the gateway's sentence (an error that brought no class) or on a
     // child that finished after all.
     if (
+      !rowHeld &&
       args.errorCode === undefined &&
       existing.errorCode === SUBAGENT_NO_ACTIVITY_CODE &&
       (recoveredToDone || args.errorMessage !== undefined)
@@ -664,6 +703,260 @@ export const upsertSubAgent = internalMutation({
       patch.status ?? existing.status,
     );
     return existing._id;
+  },
+});
+
+/**
+ * Record what the gateway's SESSION ROW says of a child (0.101.4) — the status the
+ * Control UI shows (convex/lib/sessionRowStatus.ts).
+ *
+ * The bridge reads the row (`sessions.describe`, or `sessions.list` filtered by
+ * `spawnedBy` after a reconnection) and posts it as read. Nothing is arbitrated here:
+ * the last read written stands, except a read OLDER than one already written for this
+ * child, by the row's own sampling clock (`snapshotAt`), which is ignored. A row without
+ * that clock (a gateway predating it) is applied in arrival order; the bridge writes one
+ * read at a time per child.
+ *
+ * Never creates a row (the observer does, with its anchor), never touches a task row,
+ * and never the content: result, media, tools and telemetry keep their frame source.
+ */
+export const applySubAgentRowStatus = internalMutation({
+  args: {
+    chatId: v.id("chats"),
+    boundInstanceName: v.optional(v.string()),
+    childSessionKey: v.string(),
+    status: v.optional(v.string()),
+    hasActiveRun: v.optional(v.boolean()),
+    runId: v.optional(v.string()),
+    snapshotAt: v.optional(v.number()),
+    parentKey: v.optional(v.string()),
+    /** The gateway stated there is NO session under this key any more
+     *  (`sessions.describe` → `{ session: null }`). */
+    absent: v.optional(v.boolean()),
+  },
+  handler: async (ctx, args) => {
+    const existing = await ctx.db
+      .query("subAgents")
+      .withIndex("by_child", (q) => q.eq("childSessionKey", args.childSessionKey))
+      .first();
+    if (existing === null) return { applied: false as const, reason: "no_row" as const };
+    // Same atomic per-bridge barrier as upsertSubAgent: the row is resolved by a GLOBAL key.
+    if (
+      args.boundInstanceName !== undefined &&
+      !(await chatAllowsInstance(ctx, existing.chatId, args.boundInstanceName))
+    ) {
+      throw new Error("forbidden: cross-instance sub-agent target");
+    }
+    if (existing.chatId !== args.chatId || existing.kind === "task") {
+      return { applied: false as const, reason: "not_this_chat" as const };
+    }
+    if (args.absent === true) {
+      await applyRowAbsent(ctx, existing);
+      return { applied: true as const, display: "absent" };
+    }
+    if (existing.rowAbsentAt !== undefined) {
+      return { applied: false as const, reason: "absent" as const };
+    }
+    const status = isSessionRunStatus(args.status) ? args.status : undefined;
+    const held = existing.gatewayRow;
+    if (
+      held?.snapshotAt !== undefined &&
+      args.snapshotAt !== undefined &&
+      args.snapshotAt < held.snapshotAt
+    ) {
+      return { applied: false as const, reason: "older" as const };
+    }
+    const now = Date.now();
+    const display = sessionRowDisplay({ status, hasActiveRun: args.hasActiveRun });
+    const next = atriumStatusOfDisplay(display);
+    const patch: {
+      gatewayRow: NonNullable<typeof existing.gatewayRow>;
+      updatedAt: number;
+      status?: "running" | "done" | "error" | "aborted";
+      providerStatus?: string;
+      errorCode?: string;
+      errorMessage?: string;
+      stoppedRunEndedAt?: number;
+      stoppedRunId?: string;
+      frameTerminal?: { status: string; providerStatus?: string; errorCode?: string };
+    } = {
+      gatewayRow: {
+        ...(status !== undefined ? { status } : {}),
+        ...(args.hasActiveRun !== undefined ? { hasActiveRun: args.hasActiveRun } : {}),
+        display,
+        ...(args.runId !== undefined ? { runId: args.runId } : {}),
+        ...(args.snapshotAt !== undefined ? { snapshotAt: args.snapshotAt } : {}),
+        ...(args.parentKey !== undefined ? { parentKey: args.parentKey } : {}),
+        readAt: now,
+      },
+      updatedAt: now,
+    };
+    // The READER's Stop is terminal for the run it stopped (convex/messages.ts abortTurn):
+    // a row read while the kill is still travelling says that run is live, and must not
+    // bring back the "a sub-agent is working" state the reader just refused. For THAT run
+    // only: once a terminal read after the stop proved it over, or an interaction was
+    // asked since the stop ("Interagir" starts a new run), a live row is live again.
+    const stopAt = existing.stopRequestedAt;
+    const stopPending = stopAt !== undefined && existing.stoppedRunEndedAt === undefined;
+    const askedSinceStop =
+      stopPending &&
+      (
+        await ctx.db
+          .query("subAgentInteractions")
+          .withIndex("by_child", (q) => q.eq("childSessionKey", existing.childSessionKey))
+          .collect()
+      ).some((r) => r.chatId === existing.chatId && r.createdAt > stopAt);
+    const stoppedByReader =
+      next === "running" && stopPending && !askedSinceStop && existing.status !== "running";
+    if (stopPending && !askedSinceStop && next !== null && next !== "running") {
+      patch.stoppedRunEndedAt = now;
+      if (args.runId !== undefined) patch.stoppedRunId = args.runId;
+    }
+    if (
+      next === "running" &&
+      !stoppedByReader &&
+      held === undefined &&
+      existing.status !== "running" &&
+      existing.frameTerminal === undefined
+    ) {
+      // The first row read moves a frame-derived END back to live (a read sampled before
+      // that end, landing after it): keep that end for the day the row disappears.
+      patch.frameTerminal = {
+        status: existing.status,
+        ...(existing.providerStatus !== undefined ? { providerStatus: existing.providerStatus } : {}),
+        ...(existing.errorCode !== undefined ? { errorCode: existing.errorCode } : {}),
+      };
+    }
+    if (next !== null && !stoppedByReader) {
+      patch.status = next;
+      // The row's own word stays beside Atrium's four states (`timeout` vs `failed`,
+      // `killed` vs `interrupted`); a live row has none.
+      patch.providerStatus = next === "running" ? undefined : status;
+      const provisionalCode =
+        existing.errorCode === "timeout" || existing.errorCode === SUBAGENT_NO_ACTIVITY_CODE;
+      if (display === "timeout") {
+        patch.errorCode = "timeout";
+      } else if (display === "done") {
+        // A finished child carries no failure: a provisional one is cleared.
+        if (existing.errorCode !== undefined) patch.errorCode = undefined;
+        if (existing.errorMessage !== undefined) patch.errorMessage = undefined;
+      } else if (next !== "running" && provisionalCode) {
+        patch.errorCode = undefined;
+      }
+    }
+    await ctx.db.patch(existing._id, patch);
+    if (patch.status !== undefined && patch.status !== "running" && existing.status === "running") {
+      await ctx.scheduler.runAfter(0, internal.chatSummaries.maybeScheduleSummarize, {
+        chatId: existing.chatId,
+      });
+    }
+    await maybeDrainOnTerminal(ctx, existing.chatId, patch.status ?? existing.status);
+    return { applied: true as const, display };
+  },
+});
+
+/**
+ * The child's session is GONE at the gateway (0.101.4): `sessions.describe` answered
+ * `{ session: null }`, or a complete `sessions.list` of its parent no longer has it. The
+ * Control UI then shows no row at all — a deleted session leaves the list
+ * (ui/src/lib/sessions/reconcile.ts:158-163, session-row-reconcile.ts:530-537), a null
+ * describe ends the read (ui/src/components/app-sidebar-child-session-data.ts:112-120),
+ * a refreshed child list drops it (:284-290). A sub-agent session is deleted by its
+ * `cleanup: "delete"` once its run is over
+ * (src/agents/subagents/registry/subagent-registry-lifecycle-announce-cleanup.ts:379-395).
+ *
+ * Atrium keeps the card, so it must not keep claiming the work is alive with no row
+ * behind it. A row whose last word was an END keeps it (it is still the gateway's last
+ * statement). A row whose last word was live, queued, idle or unknown stops holding the
+ * status: the end the frames reported (`frameTerminal`) applies — `done` when they
+ * reported none, the session being deleted only after its run — and later frames apply
+ * as before.
+ */
+async function applyRowAbsent(ctx: MutationCtx, existing: Doc<"subAgents">): Promise<void> {
+  const held = existing.gatewayRow;
+  const lastWordEnded =
+    held !== undefined && (() => {
+      const next = atriumStatusOfDisplay(held.display as SessionRowDisplay);
+      return next !== null && next !== "running";
+    })();
+  const now = Date.now();
+  if (lastWordEnded) {
+    if (existing.rowAbsentAt === undefined) await ctx.db.patch(existing._id, { rowAbsentAt: now });
+    return;
+  }
+  const end = existing.frameTerminal;
+  const patch: {
+    gatewayRow: undefined;
+    terminalSource?: "absent-fallback";
+    rowAbsentAt: number;
+    updatedAt: number;
+    status?: "running" | "done" | "error" | "aborted";
+    providerStatus?: string;
+    errorCode?: string;
+  } = { gatewayRow: undefined, rowAbsentAt: existing.rowAbsentAt ?? now, updatedAt: now };
+  if (existing.status === "running") {
+    const known = end?.status === "done" || end?.status === "error" || end?.status === "aborted";
+    const status = known ? (end.status as "done" | "error" | "aborted") : "done";
+    patch.status = status;
+    // No end reported yet: `done` stands in, PROVISIONAL — a real end the frames report
+    // later replaces it (upsertSubAgent), even an error.
+    if (!known) patch.terminalSource = "absent-fallback";
+    patch.providerStatus = end?.providerStatus;
+    patch.errorCode = end?.errorCode;
+  }
+  await ctx.db.patch(existing._id, patch);
+  if (patch.status !== undefined) {
+    await ctx.scheduler.runAfter(0, internal.chatSummaries.maybeScheduleSummarize, {
+      chatId: existing.chatId,
+    });
+  }
+  await maybeDrainOnTerminal(ctx, existing.chatId, patch.status ?? existing.status);
+}
+
+/** Bound on the keys one complete child list may report (the bridge reads at most
+ *  20 pages of 100), and on the candidates returned. */
+const MAX_PRESENT_CHILD_KEYS = 2_000;
+const MAX_MISSING_CHILD_KEYS = 64;
+
+/**
+ * A COMPLETE child list of one parent session (0.101.4) names the children it no longer
+ * has — CANDIDATES only, nothing is written: a list sampled before a later spawn would
+ * otherwise declare that new child gone. The bridge reads each candidate's row
+ * (`sessions.describe`), and only the gateway's `{ session: null }` makes it gone
+ * (applySubAgentRowStatus). Upstream a list only refreshes rows. Concerned: this chat's
+ * still-running children whose last row read named that parent.
+ */
+export const missingSubAgentRows = internalQuery({
+  args: {
+    chatId: v.id("chats"),
+    boundInstanceName: v.optional(v.string()),
+    parentKey: v.string(),
+    presentKeys: v.array(v.string()),
+  },
+  handler: async (ctx, args) => {
+    if (
+      args.boundInstanceName !== undefined &&
+      !(await chatAllowsInstance(ctx, args.chatId, args.boundInstanceName))
+    ) {
+      throw new Error("forbidden: cross-instance sub-agent target");
+    }
+    if (args.presentKeys.length > MAX_PRESENT_CHILD_KEYS) return { keys: [] as string[] };
+    const present = new Set(args.presentKeys);
+    const running = await ctx.db
+      .query("subAgents")
+      .withIndex("by_chat_status", (q) => q.eq("chatId", args.chatId).eq("status", "running"))
+      .take(MAX_PRESENT_CHILD_KEYS);
+    const keys = running
+      .filter(
+        (row) =>
+          row.kind !== "task" &&
+          row.rowAbsentAt === undefined &&
+          row.gatewayRow?.parentKey === args.parentKey &&
+          !present.has(row.childSessionKey),
+      )
+      .slice(0, MAX_MISSING_CHILD_KEYS)
+      .map((row) => row.childSessionKey);
+    return { keys };
   },
 });
 
@@ -1286,11 +1579,11 @@ export const settleAnnouncedChild = internalMutation({
       .filter((q) => q.eq(q.field("chatId"), chatId))
       .first();
     if (row === null || row.status !== "running") return;
-    await ctx.db.patch(row._id, {
-      status: "done" as const,
-      updatedAt: Date.now(),
-    });
-    await maybeDrainOnTerminal(ctx, chatId, "done");
+    // The announce may be an EARLIER run's (a late NO_REPLY of run A while "Interagir"
+    // runs B): with a row read, the row keeps the status (lib/subAgentSettle.ts).
+    if (await settleChildEnd(ctx, row, "done", { updatedAt: Date.now() })) {
+      await maybeDrainOnTerminal(ctx, chatId, "done");
+    }
   },
 });
 
@@ -1734,15 +2027,19 @@ export const settleTaskEngagement = internalMutation({
     ) {
       return null;
     }
-    await ctx.db.patch(row._id, {
-      status,
-      // The FIFTH door: a task engagement settles from `tasks.get`'s own
-      // `TaskSummary.error`, which never passes through any writer above (codex).
-      ...(errorMessage !== undefined
-        ? { errorMessage: maskCredentialId(errorMessage) }
-        : {}),
-      updatedAt: Date.now(),
-    });
+    // A task row never holds a gateway row: the shared rule settles it as before.
+    if (
+      !(await settleChildEnd(ctx, row, status, {
+        // The FIFTH door: a task engagement settles from `tasks.get`'s own
+        // `TaskSummary.error`, which never passes through any writer above (codex).
+        ...(errorMessage !== undefined
+          ? { errorMessage: maskCredentialId(errorMessage) }
+          : {}),
+        updatedAt: Date.now(),
+      }))
+    ) {
+      return null;
+    }
     // Same post-settle hooks as the upsert path: the summarize watermark
     // waits on unsettled children — a registry-driven settle must release it.
     await ctx.scheduler.runAfter(

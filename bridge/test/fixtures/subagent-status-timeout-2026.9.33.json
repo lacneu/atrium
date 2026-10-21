@@ -1,0 +1,759 @@
+{
+ "_about": "Captured on the local bench, OpenClaw 2026.9.33 image r6 (sha256:ac34c683…), 2026-10-19, run 2026-10-19T22-08-59-553Z, scenario settle-chain-no-synthesis: the second child, spawned with runTimeoutSeconds 20 to run `sleep 120`, is cut off by its time limit. Its run ends with a plain chat final; on the instance's session-events connection the gateway then sends `sessions.changed` reason `agent.input.settled` (status done) and, from the sub-agent registry, reason `subagent-status` with status `timeout`. Bench data, no personal data.",
+ "gatewayVersion": "2026.9.33",
+ "frames": [
+  {
+   "connection": "session-events",
+   "receivedAt": 1792448269708,
+   "frame": {
+    "type": "event",
+    "event": "sessions.changed",
+    "payload": {
+     "sessionKey": "agent:files:subagent:361fc922-2926-46f4-a9f9-219dc1cb829a",
+     "agentId": "files",
+     "reason": "agent.input.settled",
+     "ts": 1792448269709,
+     "updatedAt": 1792448269675,
+     "sessionId": "762c8173-9565-45c2-aafb-1396f889f836",
+     "createdActor": {
+      "type": "agent",
+      "id": "alice",
+      "identity": {
+       "type": "agent",
+       "id": "alice"
+      },
+      "label": "Alice"
+     },
+     "owner": {
+      "actor": {
+       "type": "agent",
+       "id": "alice",
+       "identity": {
+        "type": "agent",
+        "id": "alice"
+       },
+       "label": "Alice"
+      }
+     },
+     "participants": [],
+     "participantCount": 0,
+     "kind": "direct",
+     "visibility": "shared",
+     "archived": false,
+     "archivedAt": null,
+     "archivedBy": null,
+     "archiveReason": null,
+     "pinned": false,
+     "pinnedAt": null,
+     "unread": true,
+     "markedUnreadAt": null,
+     "agentStatus": null,
+     "observerDigest": null,
+     "activitySummary": {
+      "state": "stale",
+      "canEnsure": true
+     },
+     "lastActivityAt": 1792448269672,
+     "spawnedBy": "agent:alice:atrium:chat:u-repro:turn-nx754bf0728eb2kjvprsx3h0ts8gj3st",
+     "controlOwnerSessionKey": "agent:alice:atrium:chat:u-repro:turn-nx754bf0728eb2kjvprsx3h0ts8gj3st",
+     "swarm": null,
+     "spawnedWorkspaceDir": "/home/node/.openclaw/workspace-files",
+     "permissionMode": null,
+     "permissionModePending": false,
+     "spawnDepth": 1,
+     "subagentRole": "orchestrator",
+     "subagentControlScope": "children",
+     "createdVia": "spawn",
+     "createdAt": 1792448248953,
+     "label": "Seconde tâche déléguée",
+     "autoLabel": null,
+     "icon": null,
+     "color": null,
+     "channelAvatarUrl": null,
+     "category": null,
+     "boardPresentation": null,
+     "displayName": "Seconde tâche déléguée",
+     "parentSessionKey": "agent:alice:atrium:chat:u-repro:turn-nx754bf0728eb2kjvprsx3h0ts8gj3st",
+     "thinkingLevel": "low",
+     "effectiveFastMode": false,
+     "effectiveFastModeSource": "default",
+     "fastAutoOnSeconds": 60,
+     "toolOverrides": null,
+     "abortedLastRun": false,
+     "restartRecoveryStatus": null,
+     "inputTokens": 22437,
+     "outputTokens": 136,
+     "totalTokens": 12795,
+     "totalTokensFresh": true,
+     "goal": null,
+     "contextTokens": 272000,
+     "contextBudgetStatus": {
+      "schemaVersion": 1,
+      "source": "pre-prompt-estimate",
+      "updatedAt": 1792448249677,
+      "provider": "openai",
+      "model": "gpt-6-sol",
+      "route": "fits",
+      "shouldCompact": false,
+      "estimatedPromptTokens": 16558,
+      "contextTokenBudget": 272000,
+      "promptBudgetBeforeReserve": 252000,
+      "reserveTokens": 20000,
+      "effectiveReserveTokens": 20000,
+      "remainingPromptBudgetTokens": 235442,
+      "overflowTokens": 0,
+      "toolResultReducibleChars": 0,
+      "messageCount": 0,
+      "unwindowedMessageCount": 0,
+      "sessionId": "762c8173-9565-45c2-aafb-1396f889f836"
+     },
+     "estimatedCostUsd": 0.049306,
+     "effectiveResponseUsage": "off",
+     "modelProvider": "openai",
+     "model": "gpt-6-sol",
+     "activeModelProvider": null,
+     "activeModel": null,
+     "modelOverrideSource": "auto",
+     "agentRuntime": {
+      "id": "openclaw",
+      "cloudPlacementSupported": true,
+      "cloudPlacementExecutionMode": "worker-turn",
+      "devicePlacement": {
+       "requiredNodeCommands": [],
+       "consumesWorkerSlot": true
+      },
+      "devicePlacementSupported": true,
+      "source": "model"
+     },
+     "runtimeSelectionLocked": false,
+     "status": "done",
+     "lastRunError": null,
+     "providerReview": null,
+     "lastRunId": "1355bb44-f5ea-4f60-b3e9-9dabbc490abf",
+     "hasAutomation": false,
+     "hasActiveRun": false,
+     "activeRunIds": [],
+     "startedAt": 1792448249455,
+     "endedAt": 1792448269672,
+     "runtimeMs": 20217,
+     "subagentRunState": "historical",
+     "hasActiveSubagentRun": false,
+     "placement": {
+      "state": "local",
+      "generation": 0,
+      "createdAtMs": 1792448249470,
+      "updatedAtMs": 1792448269658,
+      "stateChangedAtMs": 1792448249470
+     },
+     "placementMove": null,
+     "ancestorSessions": [
+      {
+       "key": "agent:alice:atrium:chat:u-repro:turn-nx754bf0728eb2kjvprsx3h0ts8gj3st",
+       "visibility": "shared",
+       "permissionModePending": false,
+       "createdVia": "operator",
+       "participants": [
+        {
+         "identity": {
+          "type": "observation",
+          "pluginId": null,
+          "accountId": null,
+          "senderKind": "unknown",
+          "id": "cli"
+         }
+        }
+       ],
+       "expandedParticipants": [
+        {
+         "identity": {
+          "type": "observation",
+          "pluginId": null,
+          "accountId": null,
+          "senderKind": "unknown",
+          "id": "cli"
+         }
+        }
+       ],
+       "participantCount": 1,
+       "createdAt": 1792447761380,
+       "kind": "direct",
+       "classification": "direct",
+       "agentId": "alice",
+       "isMain": false,
+       "isBackground": false,
+       "lastMessagePreview": "Mission DELEGUEE en chaine SANS synthese — suis exactement ces etapes, n ecris AUCUN texte a aucune etape. 1) Delegue via sessions_spawn (agentId files) la PREMIERE tache: executer sleep 5 puis repondre une phrase contenant CHAIN_FIRST_O...",
+       "chatType": "direct",
+       "updatedAt": 1792448256887,
+       "archived": false,
+       "pinned": false,
+       "unread": true,
+       "lastInteractionAt": 1792448256877,
+       "lastActivityAt": 1792448226035,
+       "sessionId": "f50ff68e-7c12-4c24-85f8-a8fc603b9e62",
+       "systemSent": true,
+       "abortedLastRun": false,
+       "thinkingLevels": [
+        {
+         "id": "low",
+         "label": "low"
+        },
+        {
+         "id": "medium",
+         "label": "medium"
+        },
+        {
+         "id": "high",
+         "label": "high"
+        },
+        {
+         "id": "xhigh",
+         "label": "xhigh"
+        },
+        {
+         "id": "max",
+         "label": "max"
+        },
+        {
+         "id": "ultra",
+         "label": "ultra"
+        }
+       ],
+       "thinkingOptions": [
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max",
+        "ultra"
+       ],
+       "thinkingDefault": "high",
+       "effectiveFastMode": false,
+       "effectiveFastModeSource": "default",
+       "fastAutoOnSeconds": 60,
+       "verboseLevel": "full",
+       "inputTokens": 9242,
+       "outputTokens": 124,
+       "totalTokens": 58560,
+       "totalTokensFresh": true,
+       "estimatedCostUsd": 0.030476000000000003,
+       "status": "running",
+       "startedAt": 1792448242089,
+       "endedAt": 1792448256881,
+       "runtimeMs": 14792,
+       "childSessions": [
+        "agent:files:subagent:088e4630-c354-42b2-90ba-d423e0500647",
+        "agent:files:subagent:1afa605e-7462-4562-aa1a-0555ba51c553",
+        "agent:files:subagent:21e80123-fa3a-4ccf-8380-fd8bb1bcbcf9",
+        "agent:files:subagent:340ccdc1-188a-47f6-af8a-a4dd04a8d206",
+        "agent:files:subagent:361fc922-2926-46f4-a9f9-219dc1cb829a",
+        "agent:files:subagent:3bb33ec6-d8bc-4b92-adfa-4096f6ee88e5",
+        "agent:files:subagent:6930ab65-b0a0-4575-99e3-fed0a3c979fc",
+        "agent:files:subagent:851c57fb-98cd-4ac3-9b8b-e975d2c8cc82",
+        "agent:files:subagent:c08d333d-2d5e-422a-93dc-f4fb9808edf6"
+       ],
+       "effectiveResponseUsage": "off",
+       "effectiveQueueMode": "steer",
+       "modelProvider": "openai",
+       "model": "gpt-6.1-sol",
+       "modelOverrideSource": null,
+       "runtimeSelectionLocked": false,
+       "agentRuntime": {
+        "id": "openclaw",
+        "cloudPlacementSupported": true,
+        "cloudPlacementExecutionMode": "worker-turn",
+        "devicePlacement": {
+         "requiredNodeCommands": [],
+         "consumesWorkerSlot": true
+        },
+        "devicePlacementSupported": true,
+        "source": "model"
+       },
+       "contextTokens": 272000,
+       "snapshotAt": 1792448269709,
+       "placement": {
+        "state": "local",
+        "generation": 0,
+        "createdAtMs": 1792447763075,
+        "updatedAtMs": 1792448256850,
+        "stateChangedAtMs": 1792447763075
+       },
+       "activitySummary": {
+        "text": "Le calcul 6 × 7 = 42, plusieurs tâches déléguées et la chaîne « silent-chain-first » ont abouti, dont la création de bench-spawn.txt contenant BENCH_SPAWN_OK. La création de bench-media.txt avec BENCH_MEDIA_OK reste à faire.",
+        "updatedAt": 1792448266335,
+        "state": "current",
+        "canEnsure": true
+       },
+       "hasActiveRun": false,
+       "activeRunIds": [],
+       "sharingRole": "admin",
+       "ancestorRevision": "4f1d0e8f-8790-4e13-9f90-9486a4c8f84e"
+      }
+     ],
+     "sharingRole": "admin",
+     "session": {
+      "key": "agent:files:subagent:361fc922-2926-46f4-a9f9-219dc1cb829a",
+      "visibility": "shared",
+      "spawnedBy": "agent:alice:atrium:chat:u-repro:turn-nx754bf0728eb2kjvprsx3h0ts8gj3st",
+      "controlOwnerSessionKey": "agent:alice:atrium:chat:u-repro:turn-nx754bf0728eb2kjvprsx3h0ts8gj3st",
+      "spawnedWorkspaceDir": "/home/node/.openclaw/workspace-files",
+      "workspaceDir": "/home/node/.openclaw/workspace-files",
+      "permissionModePending": false,
+      "spawnDepth": 1,
+      "subagentRole": "orchestrator",
+      "subagentControlScope": "children",
+      "createdVia": "spawn",
+      "createdActor": {
+       "type": "agent",
+       "id": "alice",
+       "identity": {
+        "type": "agent",
+        "id": "alice"
+       },
+       "label": "Alice"
+      },
+      "owner": {
+       "actor": {
+        "type": "agent",
+        "id": "alice",
+        "identity": {
+         "type": "agent",
+         "id": "alice"
+        },
+        "label": "Alice"
+       }
+      },
+      "createdAt": 1792448248953,
+      "kind": "direct",
+      "label": "Seconde tâche déléguée",
+      "classification": "subagent",
+      "agentId": "files",
+      "isMain": false,
+      "isBackground": true,
+      "displayName": "Seconde tâche déléguée",
+      "derivedTitle": "Seconde tâche déléguée",
+      "lastMessagePreview": "[Subagent Context] You are running as a subagent (depth 1/5). Complete the current [Subagent Task]; inherited conversation is background context, not your assignment. [Subagent Task] Execute the shell command sleep 120, wait for it to fi...",
+      "updatedAt": 1792448269675,
+      "archived": false,
+      "pinned": false,
+      "unread": true,
+      "lastInteractionAt": 1792448269663,
+      "lastActivityAt": 1792448269672,
+      "sessionId": "762c8173-9565-45c2-aafb-1396f889f836",
+      "abortedLastRun": false,
+      "thinkingLevel": "low",
+      "thinkingLevels": [
+       {
+        "id": "low",
+        "label": "low"
+       },
+       {
+        "id": "medium",
+        "label": "medium"
+       },
+       {
+        "id": "high",
+        "label": "high"
+       },
+       {
+        "id": "xhigh",
+        "label": "xhigh"
+       },
+       {
+        "id": "max",
+        "label": "max"
+       },
+       {
+        "id": "ultra",
+        "label": "ultra"
+       }
+      ],
+      "thinkingOptions": [
+       "low",
+       "medium",
+       "high",
+       "xhigh",
+       "max",
+       "ultra"
+      ],
+      "thinkingDefault": "high",
+      "effectiveFastMode": false,
+      "effectiveFastModeSource": "default",
+      "fastAutoOnSeconds": 60,
+      "inputTokens": 22437,
+      "outputTokens": 136,
+      "totalTokens": 12795,
+      "totalTokensFresh": true,
+      "estimatedCostUsd": 0.049306,
+      "status": "done",
+      "subagentRunState": "historical",
+      "hasActiveSubagentRun": false,
+      "startedAt": 1792448249455,
+      "endedAt": 1792448269672,
+      "runtimeMs": 20217,
+      "lastRunId": "1355bb44-f5ea-4f60-b3e9-9dabbc490abf",
+      "parentSessionKey": "agent:alice:atrium:chat:u-repro:turn-nx754bf0728eb2kjvprsx3h0ts8gj3st",
+      "effectiveResponseUsage": "off",
+      "effectiveQueueMode": "steer",
+      "modelProvider": "openai",
+      "model": "gpt-6-sol",
+      "modelOverrideSource": "auto",
+      "runtimeSelectionLocked": false,
+      "agentRuntime": {
+       "id": "openclaw",
+       "cloudPlacementSupported": true,
+       "cloudPlacementExecutionMode": "worker-turn",
+       "devicePlacement": {
+        "requiredNodeCommands": [],
+        "consumesWorkerSlot": true
+       },
+       "devicePlacementSupported": true,
+       "source": "model"
+      },
+      "contextTokens": 272000,
+      "contextBudgetStatus": {
+       "schemaVersion": 1,
+       "source": "pre-prompt-estimate",
+       "updatedAt": 1792448249677,
+       "provider": "openai",
+       "model": "gpt-6-sol",
+       "route": "fits",
+       "shouldCompact": false,
+       "estimatedPromptTokens": 16558,
+       "contextTokenBudget": 272000,
+       "promptBudgetBeforeReserve": 252000,
+       "reserveTokens": 20000,
+       "effectiveReserveTokens": 20000,
+       "remainingPromptBudgetTokens": 235442,
+       "overflowTokens": 0,
+       "toolResultReducibleChars": 0,
+       "messageCount": 0,
+       "unwindowedMessageCount": 0,
+       "sessionId": "762c8173-9565-45c2-aafb-1396f889f836"
+      },
+      "snapshotAt": 1792448269709,
+      "placement": {
+       "state": "local",
+       "generation": 0,
+       "createdAtMs": 1792448249470,
+       "updatedAtMs": 1792448269658,
+       "stateChangedAtMs": 1792448249470
+      },
+      "activitySummary": {
+       "state": "stale",
+       "canEnsure": true
+      },
+      "hasActiveRun": false,
+      "activeRunIds": [],
+      "sharingRole": "admin"
+     }
+    },
+    "seq": 533
+   }
+  },
+  {
+   "connection": "session-events",
+   "receivedAt": 1792448269764,
+   "frame": {
+    "type": "event",
+    "event": "sessions.changed",
+    "payload": {
+     "sessionKey": "agent:files:subagent:361fc922-2926-46f4-a9f9-219dc1cb829a",
+     "agentId": "files",
+     "reason": "subagent-status",
+     "parentSessionKey": "agent:alice:atrium:chat:u-repro:turn-nx754bf0728eb2kjvprsx3h0ts8gj3st",
+     "label": "Seconde tâche déléguée",
+     "displayName": "Seconde tâche déléguée",
+     "ts": 1792448269765,
+     "updatedAt": 1792448269675,
+     "sessionId": "762c8173-9565-45c2-aafb-1396f889f836",
+     "createdActor": {
+      "type": "agent",
+      "id": "alice",
+      "identity": {
+       "type": "agent",
+       "id": "alice"
+      },
+      "label": "Alice"
+     },
+     "owner": {
+      "actor": {
+       "type": "agent",
+       "id": "alice",
+       "identity": {
+        "type": "agent",
+        "id": "alice"
+       },
+       "label": "Alice"
+      }
+     },
+     "participants": [],
+     "participantCount": 0,
+     "kind": "direct",
+     "visibility": "shared",
+     "archived": false,
+     "archivedAt": null,
+     "archivedBy": null,
+     "archiveReason": null,
+     "pinned": false,
+     "pinnedAt": null,
+     "unread": true,
+     "markedUnreadAt": null,
+     "agentStatus": null,
+     "observerDigest": null,
+     "activitySummary": {
+      "state": "stale",
+      "canEnsure": true
+     },
+     "lastActivityAt": 1792448269672,
+     "spawnedBy": "agent:alice:atrium:chat:u-repro:turn-nx754bf0728eb2kjvprsx3h0ts8gj3st",
+     "controlOwnerSessionKey": "agent:alice:atrium:chat:u-repro:turn-nx754bf0728eb2kjvprsx3h0ts8gj3st",
+     "swarm": null,
+     "spawnedWorkspaceDir": "/home/node/.openclaw/workspace-files",
+     "permissionMode": null,
+     "permissionModePending": false,
+     "spawnDepth": 1,
+     "subagentRole": "orchestrator",
+     "subagentControlScope": "children",
+     "createdVia": "spawn",
+     "createdAt": 1792448248953,
+     "autoLabel": null,
+     "icon": null,
+     "color": null,
+     "channelAvatarUrl": null,
+     "category": null,
+     "boardPresentation": null,
+     "thinkingLevel": "low",
+     "effectiveFastMode": false,
+     "effectiveFastModeSource": "default",
+     "fastAutoOnSeconds": 60,
+     "toolOverrides": null,
+     "restartRecoveryStatus": null,
+     "inputTokens": 22437,
+     "outputTokens": 136,
+     "totalTokens": 12795,
+     "totalTokensFresh": true,
+     "goal": null,
+     "contextTokens": 272000,
+     "contextBudgetStatus": {
+      "schemaVersion": 1,
+      "source": "pre-prompt-estimate",
+      "updatedAt": 1792448249677,
+      "provider": "openai",
+      "model": "gpt-6-sol",
+      "route": "fits",
+      "shouldCompact": false,
+      "estimatedPromptTokens": 16558,
+      "contextTokenBudget": 272000,
+      "promptBudgetBeforeReserve": 252000,
+      "reserveTokens": 20000,
+      "effectiveReserveTokens": 20000,
+      "remainingPromptBudgetTokens": 235442,
+      "overflowTokens": 0,
+      "toolResultReducibleChars": 0,
+      "messageCount": 0,
+      "unwindowedMessageCount": 0,
+      "sessionId": "762c8173-9565-45c2-aafb-1396f889f836"
+     },
+     "estimatedCostUsd": 0.049306,
+     "effectiveResponseUsage": "off",
+     "modelProvider": "openai",
+     "model": "gpt-6-sol",
+     "activeModelProvider": null,
+     "activeModel": null,
+     "modelOverrideSource": "auto",
+     "agentRuntime": {
+      "id": "openclaw",
+      "cloudPlacementSupported": true,
+      "cloudPlacementExecutionMode": "worker-turn",
+      "devicePlacement": {
+       "requiredNodeCommands": [],
+       "consumesWorkerSlot": true
+      },
+      "devicePlacementSupported": true,
+      "source": "model"
+     },
+     "runtimeSelectionLocked": false,
+     "status": "timeout",
+     "lastRunError": null,
+     "providerReview": null,
+     "lastRunId": "1355bb44-f5ea-4f60-b3e9-9dabbc490abf",
+     "hasAutomation": false,
+     "hasActiveRun": false,
+     "activeRunIds": [],
+     "startedAt": 1792448248988,
+     "endedAt": 1792448269455,
+     "runtimeMs": 20000,
+     "subagentRunState": "historical",
+     "hasActiveSubagentRun": false,
+     "ancestorSessions": [],
+     "ancestorSessionRefs": [
+      {
+       "key": "agent:alice:atrium:chat:u-repro:turn-nx754bf0728eb2kjvprsx3h0ts8gj3st",
+       "sessionId": "f50ff68e-7c12-4c24-85f8-a8fc603b9e62",
+       "agentId": "alice",
+       "revision": "4f1d0e8f-8790-4e13-9f90-9486a4c8f84e",
+       "snapshotAt": 1792448269766
+      }
+     ],
+     "sharingRole": "admin",
+     "session": {
+      "key": "agent:files:subagent:361fc922-2926-46f4-a9f9-219dc1cb829a",
+      "visibility": "shared",
+      "spawnedBy": "agent:alice:atrium:chat:u-repro:turn-nx754bf0728eb2kjvprsx3h0ts8gj3st",
+      "controlOwnerSessionKey": "agent:alice:atrium:chat:u-repro:turn-nx754bf0728eb2kjvprsx3h0ts8gj3st",
+      "spawnedWorkspaceDir": "/home/node/.openclaw/workspace-files",
+      "workspaceDir": "/home/node/.openclaw/workspace-files",
+      "permissionModePending": false,
+      "spawnDepth": 1,
+      "subagentRole": "orchestrator",
+      "subagentControlScope": "children",
+      "createdVia": "spawn",
+      "createdActor": {
+       "type": "agent",
+       "id": "alice",
+       "identity": {
+        "type": "agent",
+        "id": "alice"
+       },
+       "label": "Alice"
+      },
+      "owner": {
+       "actor": {
+        "type": "agent",
+        "id": "alice",
+        "identity": {
+         "type": "agent",
+         "id": "alice"
+        },
+        "label": "Alice"
+       }
+      },
+      "createdAt": 1792448248953,
+      "kind": "direct",
+      "label": "Seconde tâche déléguée",
+      "classification": "subagent",
+      "agentId": "files",
+      "isMain": false,
+      "isBackground": true,
+      "displayName": "Seconde tâche déléguée",
+      "derivedTitle": "Seconde tâche déléguée",
+      "lastMessagePreview": "[Subagent Context] You are running as a subagent (depth 1/5). Complete the current [Subagent Task]; inherited conversation is background context, not your assignment. [Subagent Task] Execute the shell command sleep 120, wait for it to fi...",
+      "updatedAt": 1792448269675,
+      "archived": false,
+      "pinned": false,
+      "unread": true,
+      "lastInteractionAt": 1792448269663,
+      "lastActivityAt": 1792448269672,
+      "sessionId": "762c8173-9565-45c2-aafb-1396f889f836",
+      "thinkingLevel": "low",
+      "thinkingLevels": [
+       {
+        "id": "low",
+        "label": "low"
+       },
+       {
+        "id": "medium",
+        "label": "medium"
+       },
+       {
+        "id": "high",
+        "label": "high"
+       },
+       {
+        "id": "xhigh",
+        "label": "xhigh"
+       },
+       {
+        "id": "max",
+        "label": "max"
+       },
+       {
+        "id": "ultra",
+        "label": "ultra"
+       }
+      ],
+      "thinkingOptions": [
+       "low",
+       "medium",
+       "high",
+       "xhigh",
+       "max",
+       "ultra"
+      ],
+      "thinkingDefault": "high",
+      "effectiveFastMode": false,
+      "effectiveFastModeSource": "default",
+      "fastAutoOnSeconds": 60,
+      "inputTokens": 22437,
+      "outputTokens": 136,
+      "totalTokens": 12795,
+      "totalTokensFresh": true,
+      "estimatedCostUsd": 0.049306,
+      "status": "timeout",
+      "subagentRunState": "historical",
+      "hasActiveSubagentRun": false,
+      "startedAt": 1792448248988,
+      "endedAt": 1792448269455,
+      "runtimeMs": 20000,
+      "lastRunId": "1355bb44-f5ea-4f60-b3e9-9dabbc490abf",
+      "parentSessionKey": "agent:alice:atrium:chat:u-repro:turn-nx754bf0728eb2kjvprsx3h0ts8gj3st",
+      "effectiveResponseUsage": "off",
+      "effectiveQueueMode": "steer",
+      "modelProvider": "openai",
+      "model": "gpt-6-sol",
+      "modelOverrideSource": "auto",
+      "runtimeSelectionLocked": false,
+      "agentRuntime": {
+       "id": "openclaw",
+       "cloudPlacementSupported": true,
+       "cloudPlacementExecutionMode": "worker-turn",
+       "devicePlacement": {
+        "requiredNodeCommands": [],
+        "consumesWorkerSlot": true
+       },
+       "devicePlacementSupported": true,
+       "source": "model"
+      },
+      "contextTokens": 272000,
+      "contextBudgetStatus": {
+       "schemaVersion": 1,
+       "source": "pre-prompt-estimate",
+       "updatedAt": 1792448249677,
+       "provider": "openai",
+       "model": "gpt-6-sol",
+       "route": "fits",
+       "shouldCompact": false,
+       "estimatedPromptTokens": 16558,
+       "contextTokenBudget": 272000,
+       "promptBudgetBeforeReserve": 252000,
+       "reserveTokens": 20000,
+       "effectiveReserveTokens": 20000,
+       "remainingPromptBudgetTokens": 235442,
+       "overflowTokens": 0,
+       "toolResultReducibleChars": 0,
+       "messageCount": 0,
+       "unwindowedMessageCount": 0,
+       "sessionId": "762c8173-9565-45c2-aafb-1396f889f836"
+      },
+      "snapshotAt": 1792448269766,
+      "placement": {
+       "state": "local",
+       "generation": 0,
+       "createdAtMs": 1792448249470,
+       "updatedAtMs": 1792448269658,
+       "stateChangedAtMs": 1792448249470
+      },
+      "activitySummary": {
+       "state": "stale",
+       "canEnsure": true
+      },
+      "hasActiveRun": false,
+      "activeRunIds": [],
+      "sharingRole": "admin"
+     }
+    },
+    "seq": 534
+   }
+  }
+ ]
+}

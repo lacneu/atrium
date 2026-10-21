@@ -461,6 +461,10 @@ describe("RPC scope derivation (W10)", () => {
       // foreground here, the session's followup queue cleared with it.
       "sessions.abort",
       "sessions.describe",
+      // A sub-agent's status IS its session row (0.101.4): a new conversation socket
+      // lists the parent's children as the Control UI does (`spawnedBy`,
+      // child-session-data.ts:9-17); `operator.read`.
+      "sessions.list",
       "sessions.patch",
       "sessions.reset",
       "sessions.compact",

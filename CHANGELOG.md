@@ -1,5 +1,42 @@
 # Changelog
 
+## [0.101.4] — A sub-agent shows the status the gateway gives it
+
+Patch release. Convex, the frontend and the bridge change. Deploy **Convex first, then the
+frontend, then the bridge**. The schema only gains optional fields.
+
+**A sub-agent that timed out no longer reads "done".** A child cut off by its time limit, or
+that failed, was killed, or was interrupted, showed a check mark: Atrium derived its status
+from the child's last frame, and a run cut off ends with an ordinary final. The OpenClaw
+Control UI derives nothing. It reads the child's session row from the gateway and shows the
+row's status (`session-status.ts:17-37`). Atrium now does the same, in every projection mode:
+the bridge reads the row (`sessions.describe`) when the gateway announces a change to that
+child, when its event connection (re)subscribes, and when a child run ends; a new conversation
+socket lists the parent's children first (`sessions.list` filtered by `spawnedBy`, as the
+Control UI does, page after page, with another pass when rows move between pages) and
+applies every row it returns, however old; each child it follows is then read once more, so a
+child the gateway corrected while the bridge was disconnected shows its real end. A child whose
+session the gateway deleted (`cleanup: "delete"`) no longer stays "running": when the row is
+gone — the gateway says so when the row is read, including for the children a complete child
+list no longer has — the card takes the end the child's own frames reported (a later one still
+replaces a stand-in), and a held send is released.
+Convex records the row as read and orders two reads by the gateway's own sampling clock
+(`snapshotAt`): an older read never replaces a newer one. Once a row has been read, frames no
+longer change the status; the child's answer, files and tools still come from its frames.
+
+**The card says what the Control UI says.** Timed out ("délai dépassé"), failed, killed
+("arrêt forcé"), interrupted, queued, idle — with the Control UI's tones: a timeout or a kill
+reads as a failure, an interruption as stopped. A child cut off by the limit its spawn declared
+still names that limit ("dépassé son délai de 20 s"). After "Interagir" on a finished child,
+the card follows that turn, as the Control UI's row does.
+
+**A sub-agent the reader stopped reads "stopped".** It no longer shows a check mark when the
+gateway records the stopped run as finished, and a row read while the stop is still travelling
+does not bring the "working" state back. The protection holds for the stopped run only: after
+"Interagir", the new run shows as running, then with its own end; the stopped run's report
+stays out. Each Stop protects the run it stops, however many Stop / "Interagir" cycles came
+before.
+
 ## [0.101.3] — Long answers are shown in full
 
 Patch release. Convex, the frontend and the bridge change. Deploy **Convex first, then the

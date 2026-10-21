@@ -1159,6 +1159,15 @@ outside the repository) lists them against the upstream code.
   attachments — the gateway answers a repeated key with the run it already holds, so the input
   never runs twice. A received send is followed, never resent; an unprovable one stays failed
   for the reader.
+- **A child the reader stopped reads "stopped" (0.101.4, every projection mode).** A
+  sub-agent's status is otherwise its gateway session row, shown with the Control UI's badge
+  rule (`ui/src/pages/sessions/session-status.ts:17-37`; `convex/lib/sessionRowStatus.ts`).
+  The Control UI has no notion of Atrium's Stop: an aborted sub-agent run is recorded `done`
+  (`resolveSubagentSessionStatus`,
+  `src/agents/subagents/registry/subagent-session-metrics.ts:69-102` — an aborted outcome is
+  neither `error` nor `timeout`), so its row would show Done. Atrium shows "stopped" for a
+  child the reader stopped, until the row speaks for another run (an "Interagir" turn), and a
+  row read while the stop is still travelling does not bring the "working" state back.
 
 ## Conformance summary
 

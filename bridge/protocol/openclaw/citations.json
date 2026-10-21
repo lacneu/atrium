@@ -2577,6 +2577,38 @@
       "literals": [
         "Passive unknown sends need positive delivery proof; only an explicit retry"
       ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "ui/src/pages/sessions/session-status.ts:17-37",
+      "repo": "upstream",
+      "tag": "2026.9.33",
+      "path": "ui/src/pages/sessions/session-status.ts",
+      "lines": [
+        [
+          17,
+          37
+        ]
+      ],
+      "literals": [
+        "export function renderSessionStatusBadge(row: GatewaySessionRow) {"
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "src/agents/subagents/registry/subagent-session-metrics.ts:69-102",
+      "repo": "upstream",
+      "tag": "2026.9.33",
+      "path": "src/agents/subagents/registry/subagent-session-metrics.ts",
+      "lines": [
+        [
+          69,
+          102
+        ]
+      ],
+      "literals": [
+        "export function resolveSubagentSessionStatus("
+      ]
     }
   ]
 }

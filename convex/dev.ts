@@ -2403,6 +2403,11 @@ export const peekSubAgents = query({
         childRunId: r.childRunId ?? null,
         bornOfRun: r.bornOfRun ?? null,
         errorCode: r.errorCode ?? null,
+        // The gateway's own word and its session row's badge (0.101.4) — enums and ids,
+        // never content; the bench gates the expired child on them.
+        providerStatus: r.providerStatus ?? null,
+        gatewayRowDisplay: r.gatewayRow?.display ?? null,
+        gatewayRowRunId: r.gatewayRow?.runId ?? null,
         runTimeoutSeconds: r.runTimeoutSeconds ?? null,
         sessionMeta: r.sessionMeta ?? null,
         createdAt: r.createdAt,
