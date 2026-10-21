@@ -15,5 +15,5 @@
     "types": ["node"]
   },
   "include": ["src"],
-  "exclude": ["src/chat/transcriptSplitting.test.ts"]
+  "exclude": ["src/chat/transcriptSplitting.test.ts", "src/chat/subAgentRowStatus.e2e.test.ts"]
 }
