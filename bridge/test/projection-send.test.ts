@@ -131,10 +131,9 @@ const tool = (runId: string, phase: "start" | "result", id: string) => ({
   },
 });
 
-function harness(projection: boolean) {
+function harness() {
   const writer = new FakeWriter();
   const rm = new RunManager("c1", KEY, writer);
-  rm.setProjection(projection);
   let now = 1_000;
   const feed = async (...frames: unknown[]) => {
     for (const f of frames) await rm.feed(f, (now += 10));
@@ -152,7 +151,7 @@ const finals = (w: FakeWriter) =>
 
 describe("projection on — a send while the agent works", () => {
   it("CU-20: a steered input cuts the run's bubble; the answer streams into the new segment", async () => {
-    const h = harness(true);
+    const h = harness();
     await h.rm.beginTurn(h.now(), "runA", { expectedSessionId: null });
     await h.feed(lifecycle("runA", "start"), tool("runA", "start", "t1"), tool("runA", "result", "t1"));
     h.rm.noteHeldInput("sendB", "ackB", "userB");
@@ -169,7 +168,7 @@ describe("projection on — a send while the agent works", () => {
   });
 
   it("CU-20: the text written BEFORE the cut is not repeated in the new segment", async () => {
-    const h = harness(true);
+    const h = harness();
     await h.rm.beginTurn(h.now(), "runA", { expectedSessionId: null });
     await h.feed(chat("runA", "delta", "Je lance la commande."));
     h.rm.noteHeldInput("sendB", "ackB", "userB");
@@ -186,7 +185,7 @@ describe("projection on — a send while the agent works", () => {
   });
 
   it("CU-20: a tool card opened before the cut finishes in its own segment, never a twin", async () => {
-    const h = harness(true);
+    const h = harness();
     await h.rm.beginTurn(h.now(), "runA", { expectedSessionId: null });
     await h.feed(tool("runA", "start", "t1"));
     h.rm.noteHeldInput("sendB", "ackB", "userB");
@@ -198,7 +197,7 @@ describe("projection on — a send while the agent works", () => {
   });
 
   it("phase 4: a steer that lands before the run showed anything — the bubble is born as that segment", async () => {
-    const h = harness(true);
+    const h = harness();
     await h.rm.beginTurn(h.now(), "runA", { expectedSessionId: null });
     await h.feed(lifecycle("runA", "start"));
     h.rm.noteHeldInput("sendB", "ackB", "userB");
@@ -212,7 +211,7 @@ describe("projection on — a send while the agent works", () => {
   });
 
   it("CU-20: a steered row of an input this bridge does not hold, or of another run, cuts nothing", async () => {
-    const h = harness(true);
+    const h = harness();
     await h.rm.beginTurn(h.now(), "runA", { expectedSessionId: null });
     await h.feed(chat("runA", "delta", "x"));
     await h.rm.onUserRow({ sendId: "unknown", steerTargetRunId: "runA" });
@@ -222,7 +221,7 @@ describe("projection on — a send while the agent works", () => {
   });
 
   it("CU-4: an input's custody run (bare final) opens no turn — even while the sink is free", async () => {
-    const h = harness(true);
+    const h = harness();
     await h.rm.beginTurn(h.now(), "runA", { expectedSessionId: null });
     h.rm.noteHeldInput("sendB", "ackB", "userB");
     await h.feed(chat("ackB", "final"));
@@ -235,7 +234,7 @@ describe("projection on — a send while the agent works", () => {
   });
 
   it("CU-9: a followup run answering a held input gets its OWN bubble, never folded into A's", async () => {
-    const h = harness(true);
+    const h = harness();
     await h.rm.beginTurn(h.now(), "runA", { expectedSessionId: null });
     h.rm.noteHeldInput("sendB", "ackB", "userB");
     await h.feed(chat("ackB", "final"));
@@ -250,7 +249,7 @@ describe("projection on — a send while the agent works", () => {
   });
 
   it("CU-9: while A still streams, the other run waits and opens after A settles", async () => {
-    const h = harness(true);
+    const h = harness();
     await h.rm.beginTurn(h.now(), "runA", { expectedSessionId: null });
     h.rm.noteHeldInput("sendB", "ackB", "userB");
     await h.feed(chat("runA", "delta", "A_"));
@@ -262,7 +261,7 @@ describe("projection on — a send while the agent works", () => {
   });
 
   it("a dropped input (cancelled / absent) stops the adoption of strangers", async () => {
-    const h = harness(true);
+    const h = harness();
     h.rm.noteHeldInput("sendB", "ackB", "userB");
     expect(h.rm.outstandingInputs).toEqual(["sendB"]);
     h.rm.noteInputDropped("sendB");
@@ -272,7 +271,7 @@ describe("projection on — a send while the agent works", () => {
   });
 
   it("CU-8: a DISTINCT late final of the settled run joins its bubble; a repeat does not", async () => {
-    const h = harness(true);
+    const h = harness();
     await h.rm.beginTurn(h.now(), "runB", { expectedSessionId: null });
     await h.feed(chat("runB", "final", "widget done"));
     const fallback = "The tool run finished, but no final summary was produced.";
@@ -283,7 +282,7 @@ describe("projection on — a send while the agent works", () => {
   });
 
   it("CU-21: a projected turn with nothing visible leaves no bubble — none is even created (phase 4)", async () => {
-    const h = harness(true);
+    const h = harness();
     await h.rm.beginTurn(h.now(), "runA", { expectedSessionId: null });
     await h.feed(chat("runA", "final", "NO_REPLY"));
     await h.tick(200_000);
@@ -293,7 +292,7 @@ describe("projection on — a send while the agent works", () => {
   });
 
   it("phase 4: a projected turn's bubble is born at its run's first tool activity, not at the ACK", async () => {
-    const h = harness(true);
+    const h = harness();
     await h.rm.beginTurn(h.now(), "runA", { expectedSessionId: null });
     expect(starts(h.writer)).toHaveLength(0);
     await h.feed({
@@ -310,7 +309,7 @@ describe("projection on — a send while the agent works", () => {
   });
 
   it("interrupt: the foreground turn settles as stopped when the interrupting send's turn begins", async () => {
-    const h = harness(true);
+    const h = harness();
     await h.rm.beginTurn(h.now(), "runA", { expectedSessionId: null });
     await h.feed(chat("runA", "delta", "partial"));
     await h.rm.beginTurn(h.now(), "runB", { expectedSessionId: null, interruptActive: true });
@@ -321,7 +320,7 @@ describe("projection on — a send while the agent works", () => {
   });
 
   it("CU-22: a resumed turn writes into the bubble Convex still shows streaming", async () => {
-    const h = harness(true);
+    const h = harness();
     await h.rm.resumeTurn(h.now(), "bubbleA", "runA");
     await h.feed(chat("runA", "final", "A_OK"));
     expect(starts(h.writer)).toHaveLength(0);
@@ -330,7 +329,7 @@ describe("projection on — a send while the agent works", () => {
   });
 
   it("a run live before the input (none here) is never its answer: A's final leaves B waiting for B's run", async () => {
-    const h = harness(true);
+    const h = harness();
     // The gateway runs A (no turn here); B is accepted as a followup behind it.
     h.rm.noteHeldInput("sendB", "ackB", "userB", ["runA"]);
     await h.feed(chat("ackB", "final"));
@@ -346,7 +345,7 @@ describe("projection on — a send while the agent works", () => {
   });
 
   it("a steer into a run live before the input: the transcript's steer target answers it, in its own bubble", async () => {
-    const h = harness(true);
+    const h = harness();
     h.rm.noteHeldInput("sendB", "ackB", "userB", ["runA"]);
     await h.feed(chat("runA", "delta", "working"));
     expect(starts(h.writer)).toHaveLength(0);
@@ -360,7 +359,7 @@ describe("projection on — a send while the agent works", () => {
 
 describe("projection on — successive steers and late finals (codex pass 1)", () => {
   it("three steers: each segment carries only its own text (the buffer's separators kept)", async () => {
-    const h = harness(true);
+    const h = harness();
     await h.rm.beginTurn(h.now(), "runA", { expectedSessionId: null });
     await h.feed(chat("runA", "delta", "First."));
     h.rm.noteHeldInput("s1", "ack1", "u1");
@@ -388,7 +387,7 @@ describe("projection on — successive steers and late finals (codex pass 1)", (
   });
 
   it("a tool open across two cuts finishes in the segment it was opened in", async () => {
-    const h = harness(true);
+    const h = harness();
     await h.rm.beginTurn(h.now(), "runA", { expectedSessionId: null });
     await h.feed(chat("runA", "delta", "x"), tool("runA", "start", "t1"));
     h.rm.noteHeldInput("s1", "ack1", "u1");
@@ -403,7 +402,7 @@ describe("projection on — successive steers and late finals (codex pass 1)", (
   });
 
   it("CU-8: a late cumulative final that repeats the reply AND adds to it joins with the addition only", async () => {
-    const h = harness(true);
+    const h = harness();
     await h.rm.beginTurn(h.now(), "runB", { expectedSessionId: null });
     await h.feed(chat("runB", "final", "Widget done."));
     await h.feed(chat("runB", "final", "Widget done.\n\nAlso: the file is saved."));
@@ -417,7 +416,7 @@ describe("projection on — successive steers and late finals (codex pass 1)", (
 
 describe("codex pass 2 — a bridge restart", () => {
   it("P1: the inputs held while the resumed bubble streamed are known again — B's run gets B's bubble", async () => {
-    const h = harness(true);
+    const h = harness();
     await h.rm.resumeTurn(h.now(), "bubbleA", "runA");
     h.rm.rehydrateHeldInputs([{ sendId: "sendB", messageId: "userB" }]);
     await h.feed(chat("runA", "final", "A_OK"), lifecycle("runA", "end"));
@@ -432,7 +431,7 @@ describe("codex pass 2 — a bridge restart", () => {
 
 describe("codex pass 4 — a restored input keeps its custody run (P1)", () => {
   it("resume A, restore B, B's bare custody final, A ends: B's real answer still gets B's bubble", async () => {
-    const h = harness(true);
+    const h = harness();
     await h.rm.resumeTurn(h.now(), "bubbleA", "runA");
     h.rm.rehydrateHeldInputs([{ sendId: "sendB", messageId: "userB" }]);
     // The custody run of B (the send identity, the gateway's client run id) ends bare.
@@ -450,7 +449,7 @@ describe("codex pass 4 — a restored input keeps its custody run (P1)", () => {
 
 describe("codex pass 4 — a run is recorded settled before the next turn opens (P2)", () => {
   it("A finalizes, the stashed run B opens in the same feed: A's distinct late final still joins A's bubble", async () => {
-    const h = harness(true);
+    const h = harness();
     await h.rm.beginTurn(h.now(), "runA", { expectedSessionId: null });
     h.rm.noteHeldInput("sendB", "ackB", "userB");
     await h.feed(chat("runA", "delta", "A_"));
@@ -468,7 +467,7 @@ describe("codex pass 4 — a run is recorded settled before the next turn opens 
 
 describe("codex pass 5 — the cut settles the segment with its whole text (P1)", () => {
   it("the segment's text rides the cut; the cumulative final leaves only the rest to segment 2", async () => {
-    const h = harness(true);
+    const h = harness();
     await h.rm.beginTurn(h.now(), "runA", { expectedSessionId: null });
     // Whatever became of this stream write (failed, or committed with its answer lost),
     // the cut must settle segment 1 with "Before." — not with what Convex streamed.
@@ -494,14 +493,14 @@ describe("codex pass 2 — cut runs, restarts and late finals", () => {
   };
 
   it("P2: a resumed LATER segment strips the earlier segments from the run's buffer", async () => {
-    const h = harness(true);
+    const h = harness();
     await h.rm.resumeTurn(h.now(), "seg2", "runA", "First.");
     await h.feed(chat("runA", "delta", "First.\n\nSecond"), chat("runA", "final", "First.\n\nSecond."));
     expect(textOf(h.writer, "seg2")).toBe("Second.");
   });
 
   it("P2: the stored segments' separators may differ from the buffer's — still stripped", async () => {
-    const h = harness(true);
+    const h = harness();
     await h.rm.resumeTurn(h.now(), "seg3", "runA", "First.\n\nSecond.");
     await h.feed(chat("runA", "final", "First.\nSecond.\n\nThird."));
     expect(textOf(h.writer, "seg3")).toBe("Third.");
@@ -515,7 +514,7 @@ describe("codex pass 2 — cut runs, restarts and late finals", () => {
   });
 
   it("P2: a late cumulative final of a cut run is compared with ALL its segments", async () => {
-    const h = harness(true);
+    const h = harness();
     await h.rm.beginTurn(h.now(), "runA", { expectedSessionId: null });
     await h.feed(chat("runA", "delta", "First."));
     h.rm.noteHeldInput("s1", "ack1", "u1");
@@ -527,7 +526,7 @@ describe("codex pass 2 — cut runs, restarts and late finals", () => {
   });
 
   it("P2: a late final of A after B settled still joins A's bubble", async () => {
-    const h = harness(true);
+    const h = harness();
     await h.rm.beginTurn(h.now(), "runA", { expectedSessionId: null });
     await h.feed(chat("runA", "final", "A."));
     await h.rm.beginTurn(h.now(), "runB", { expectedSessionId: null });
@@ -537,7 +536,7 @@ describe("codex pass 2 — cut runs, restarts and late finals", () => {
   });
 
   it("P2: a cut that fails before Convex has it re-arms the input; the next delivery cuts", async () => {
-    const h = harness(true);
+    const h = harness();
     await h.rm.beginTurn(h.now(), "runA", { expectedSessionId: null });
     await h.feed(chat("runA", "delta", "x"));
     h.rm.noteHeldInput("s1", "ack1", "u1");
@@ -546,29 +545,5 @@ describe("codex pass 2 — cut runs, restarts and late finals", () => {
     expect(h.rm.outstandingInputs).toEqual(["s1"]);
     await h.rm.onUserRow({ sendId: "s1", steerTargetRunId: "runA" });
     expect(h.writer.calls.filter((c) => c[0] === "split")).toEqual([["split", "msg1", "u1"]]);
-  });
-});
-
-describe("projection OFF — the legacy pipeline, unchanged", () => {
-  it("no split, no adoption, no late-final join, no drop flag", async () => {
-    const h = harness(false);
-    await h.rm.beginTurn(h.now(), "runA", { expectedSessionId: null });
-    h.rm.noteHeldInput("sendB", "ackB", "userB");
-    await h.rm.onUserRow({ sendId: "sendB", steerTargetRunId: "runA" });
-    await h.feed(chat("runA", "final", "A_OK"));
-    await h.feed(chat("runA", "final", "something else entirely"));
-    expect(h.writer.calls.some((c) => c[0] === "split" || c[0] === "late")).toBe(false);
-    expect(h.rm.outstandingInputs).toEqual([]);
-    for (const f of finals(h.writer)) expect(f[4]).not.toHaveProperty("dropIfEmpty");
-  });
-
-  it("a run answering nothing is still the legacy empty-response verdict", async () => {
-    const h = harness(false);
-    await h.rm.beginTurn(h.now(), "runA", { expectedSessionId: null });
-    await h.feed(chat("runA", "final", "NO_REPLY"));
-    await h.tick(200_000);
-    const f = finals(h.writer);
-    expect(f).toHaveLength(1);
-    expect(f[0]![2]).toBe("error");
   });
 });

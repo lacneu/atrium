@@ -95,9 +95,20 @@ const SCHEMA_MODULES = (
   }
 ).glob("../protocol/openclaw/*/*.ts");
 
+/** Methods upstream validates with ANOTHER method's schema. `sessions.subscribe` is
+ *  checked against `SessionsListParamsSchema` (src/gateway/server-methods/
+ *  sessions-subscriptions.ts:29 at v2026.9.33, :26 at v2026.8.1); before 2026.8.1 its
+ *  handler read no params at all (src/gateway/server-methods/sessions.ts:906 at v2026.7.1),
+ *  so the body is held to the list schema on every vendored version. */
+const PARAMS_SCHEMA_ALIAS: Record<string, string> = {
+  "sessions.subscribe": "SessionsListParamsSchema",
+};
+
 /** Upstream's mechanical naming: `sessions.compaction.list` ->
- *  `SessionsCompactionListParamsSchema`. */
+ *  `SessionsCompactionListParamsSchema` (unless aliased, above). */
 function paramsSchemaName(method: string): string {
+  const alias = PARAMS_SCHEMA_ALIAS[method];
+  if (alias !== undefined) return alias;
   return `${method
     .split(".")
     .map((p) => p.charAt(0).toUpperCase() + p.slice(1))
@@ -735,6 +746,9 @@ describe("outbound ratchet — what the bridge SENDS fits the vendored contract"
     "sessions.get",
     "sessions.list",
     "sessions.patch",
+    // The instance's session-events connection: the send switches the session's
+    // reconciler on, which attaches it (every OpenClaw session since 0.102.0).
+    "sessions.subscribe",
     "talk.client.close",
     "talk.client.create",
     "talk.client.toolCall",

@@ -16,8 +16,6 @@ export const SNAPSHOT_SOURCES = [
   "chat_delta",
   /** OpenClaw `chat` final carrying the message. */
   "chat_final",
-  /** OpenClaw `chat` final cut by the gateway's display projection (G-13). */
-  "chat_final_truncated",
   /** OpenClaw `chat` delta with `replace: true` (ChatDeltaEventSchema.replace refresh). */
   "chat_delta_replace",
   /** OpenClaw `agent` stream `assistant`, full `text`. */
@@ -26,8 +24,6 @@ export const SNAPSHOT_SOURCES = [
   "agent_assistant_replace",
   /** OpenClaw `message` tool start: the visible reply read from its args. */
   "message_tool",
-  /** Transcript (history) recovery applied as the answer. */
-  "history_recovery",
   /** The empty snapshot clearing an invalidated prefix on a mid-turn compaction. */
   "compaction_reset",
   /** Turn-sink text-first write of the final text before awaiting media uploads. */

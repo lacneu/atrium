@@ -11,11 +11,12 @@
  * cause of the "stuck thinking" stream the watchdog cron mitigates downstream.
  *
  * The fix: `session.wake()` (called by performSend right after beginTurn) prods
- * the loop to re-evaluate nextTimeout and install the recv timer.
+ * the loop to re-evaluate nextTimeout and install the recv timer. Its expiry never
+ * ends the turn: the silence asks the transcript (a reconciler read), and the run's
+ * durable rows or its live terminal end it.
  */
 
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { readFileSync } from "node:fs";
 
 import { SessionRegistry, IDLE_SESSION_TTL_SECONDS } from "../src/session.js";
 import type { BridgeConfig } from "../src/config.js";
@@ -90,7 +91,7 @@ afterEach(() => {
 });
 
 describe("Session consume loop — stuck-stream liveness (beginTurn wake)", () => {
-  it("WITH wake: an idle-blocked loop installs the recv deadline and finalizes even if NO frame ever arrives", async () => {
+  it("WITH wake: an idle-blocked loop installs the recv deadline; its expiry reads the transcript, never ends the turn", async () => {
     vi.useFakeTimers();
     let now = 1000;
     vi.spyOn(OpenClawConnection, "connect").mockImplementation(
@@ -99,6 +100,7 @@ describe("Session consume loop — stuck-stream liveness (beginTurn wake)", () =
     const { writer, finalized } = fakeWriter();
     const reg = new SessionRegistry(servedMap(config, writer), () => now);
     const s = await reg.acquire(ROUTING);
+    const reads = vi.spyOn(s.transcriptShadow!, "requestRead");
     // Let the consumer loop reach its first (null-timeout) frame wait.
     await vi.advanceTimersByTimeAsync(0);
 
@@ -111,95 +113,12 @@ describe("Session consume loop — stuck-stream liveness (beginTurn wake)", () =
     // fire the loop's installed timer (BASE_RECV_TIMEOUT = 240s).
     now += 300;
     await vi.advanceTimersByTimeAsync(300_000);
-
-    // NEW CONTRACT: the recv-silence no longer closes the turn instantly — the
-    // session QUERIES the gateway (transcript recovery). Here every poll fails
-    // (fakeConn has no request), so liveness is now BOUNDED by the recovery
-    // budget: after ~9 min of failed polls the turn settles response_timeout.
-    expect(finalized.length).toBe(0); // still open right after the deadline
-    now += 600;
-    await vi.advanceTimersByTimeAsync(600_000);
-    expect(finalized.length).toBeGreaterThan(0); // turn closed — no stuck stream
-    const last = finalized[finalized.length - 1]!;
-    expect(last[1]).toBe("error");
-    expect(String(last[3])).toBe("response_timeout");
-    reg.closeAll();
-  });
-
-  it("a stale recovery poll NEVER touches the NEXT turn (epoch guard, codex P1)", async () => {
-    vi.useFakeTimers();
-    let now = 1000;
-    vi.spyOn(OpenClawConnection, "connect").mockImplementation(
-      async () => fakeConn() as never,
-    );
-    const { writer, finalized } = fakeWriter();
-    const reg = new SessionRegistry(servedMap(config, writer), () => now);
-    const s = await reg.acquire(ROUTING);
-    await vi.advanceTimersByTimeAsync(0);
-
-    // Turn 1: silence past the recv deadline -> recovery scheduled (first poll +20s).
-    await s.runManager.beginTurn(now, "run-1");
-    s.wake();
-    await vi.advanceTimersByTimeAsync(0);
+    expect(reads).toHaveBeenCalledWith("silence");
+    // …and the silence budget restarts: a longer silence asks again, once per budget.
     now += 300;
-    await vi.advanceTimersByTimeAsync(300_000 - 10_000); // recv fired; polls pending
-
-    // Turn 1 finalizes via an EXPLICIT settle (stands in for a live final frame),
-    // then turn 2 begins BEFORE the next poll wakes.
-    await s.runManager.endTurn(now, "final", null, "gateway_final");
-    const settledSoFar = finalized.length;
-    await s.runManager.beginTurn(now, "run-2");
-    s.wake();
-    await vi.advanceTimersByTimeAsync(0);
-
-    // Let the STALE poll run its full budget: it must self-cancel (epoch mismatch),
-    // never settling turn 2 as response_timeout.
-    now += 700;
-    await vi.advanceTimersByTimeAsync(700_000);
-    const turn2Settles = finalized
-      .slice(settledSoFar)
-      .filter((c) => String(c[3]) === "response_timeout");
-    expect(turn2Settles.length).toBe(0);
-    reg.closeAll();
-  });
-
-  it("the silence recovery SELF-CANCELS when the live stream resumes (codex R7 P1)", async () => {
-    vi.useFakeTimers();
-    let now = 1000;
-    vi.spyOn(OpenClawConnection, "connect").mockImplementation(
-      async () => fakeConn() as never,
-    );
-    const { writer, finalized } = fakeWriter();
-    const reg = new SessionRegistry(servedMap(config, writer), () => now);
-    const s = await reg.acquire(ROUTING);
-    await vi.advanceTimersByTimeAsync(0);
-
-    await s.runManager.beginTurn(now, "run-1");
-    s.wake();
-    await vi.advanceTimersByTimeAsync(0);
-    // Silence past recv -> recovery scheduled.
-    now += 300;
-    await vi.advanceTimersByTimeAsync(300_000 - 10_000);
-
-    // The live stream RESUMES: an own frame re-arms the recv deadline.
-    await s.runManager.feed(
-      {
-        event: "agent",
-        payload: {
-          sessionKey: s.sessionKey,
-          runId: "run-1",
-          data: { delta: "still working…" },
-        },
-      },
-      now,
-    );
-
-    // Let the recovery run FAR past its silence wall: it must have self-canceled,
-    // never settling response_timeout while the live turn streams.
-    now += 900;
-    await vi.advanceTimersByTimeAsync(900_000);
-    const timeouts = finalized.filter((c) => String(c[3]) === "response_timeout");
-    expect(timeouts.length).toBe(0);
+    await vi.advanceTimersByTimeAsync(300_000);
+    expect(reads.mock.calls.filter((c) => (c as unknown[])[0] === "silence").length).toBe(2);
+    expect(finalized.length).toBe(0); // no turn ends on a timer
     reg.closeAll();
   });
 
@@ -208,51 +127,6 @@ describe("Session consume loop — stuck-stream liveness (beginTurn wake)", () =
   // (no fix-discriminating power) and it would break on a benign future self-heal.
   // The "WITH wake" test above is the discriminating regression gate for the fix.
 });
-
-// Codex review #14 (P1) — history recovery must survive the wake `continue`s.
-// When the whole reply arrives in the pre-ACK buffer, beginTurn's replay arms
-// wantsHistoryRecovery and then wake() makes the loop `continue`; the recovery
-// check is the FIRST statement of the loop body so the `continue` does NOT skip
-// it (pre-fix it sat at the loop bottom -> skipped -> the private_ack grace
-// finalized a bare "Envoyé." before sessions.get could recover the delivered text).
-const FIXTURES = JSON.parse(
-  readFileSync(new URL("./fixtures/openclaw_frames.json", import.meta.url), "utf-8"),
-) as { run_id: string; scenarios: Record<string, { frames: unknown[] }> };
-
-/** fakeConn that ALSO records `request(method)` so we can assert the recovery
- *  fetch (`sessions.get`) fired. frames() never yields (the whole reply was
- *  pre-ACK-buffered, replayed by beginTurn, not delivered through the loop). */
-function fakeConnRecording() {
-  let closed = false;
-  let release: () => void = () => {};
-  const gate = new Promise<void>((r) => {
-    release = r;
-  });
-  const requests: string[] = [];
-  return {
-    requests,
-    get isClosed() {
-      return closed;
-    },
-    close() {
-      closed = true;
-      release();
-    },
-    onConfigChanged: () => () => {},
-    onSessionSharing: () => () => {},
-    onClosed: () => () => {},
-    async *frames() {
-      await gate;
-    },
-    reply: { payload: {} } as unknown,
-    async request(method: string) {
-      requests.push(method);
-      // Default: benign, recovery extracts no text -> logs, harmless. A test may
-      // set `reply` to drive a real transcript through the recovery path.
-      return (this as { reply: unknown }).reply;
-    },
-  };
-}
 
 // Mars robustness — a throw in the consume loop's own machinery (NOT inside the
 // feed/tick try/catch) used to become an UNHANDLED REJECTION (the loop is started
@@ -340,6 +214,12 @@ describe("Session never mints gatewayPreempted through the real wiring", () => {
     const s = await reg.acquire(ROUTING);
     const key = (s as unknown as { sessionKey: string }).sessionKey;
     await s.runManager.beginTurn(1001, "run-1");
+    // Content first: the turn's bubble is born from its run, and the finalize below must
+    // be a real one (a zero-content abort leaves no bubble to finalize at all).
+    await s.runManager.feed(
+      { type: "event", event: "chat", payload: { runId: "run-1", sessionKey: key, state: "delta", deltaText: "Un début" } },
+      1001.5,
+    );
     await s.runManager.feed({ ...abortedRpc, payload: { ...abortedRpc.payload, sessionKey: key } }, 1002);
     reg.closeAll();
     // Exactly ONE finalize, of status `aborted`, and only then the absence of the flag:
@@ -436,143 +316,6 @@ describe("Session consume loop — crash self-heal (Mars robustness)", () => {
   });
 });
 
-describe("Session consume loop — history recovery survives a wake (review #14 P1)", () => {
-  it("a pre-ACK-buffered message-tool reply triggers sessions.get AFTER the wake", async () => {
-    let now = 1000;
-    const conn = fakeConnRecording();
-    vi.spyOn(OpenClawConnection, "connect").mockImplementation(async () => conn as never);
-    const { writer } = fakeWriter();
-    const reg = new SessionRegistry(servedMap(config, writer), () => now);
-    // Routing chosen so the session key matches the fixture, else the normalizer
-    // filters the replayed frames as foreign-session.
-    const s = await reg.acquire({
-      chatId: "own-chat",
-      openclawChatId: "own-chat",
-      agentId: "main",
-      canonical: "u-testuser01",
-    });
-    await new Promise((r) => setTimeout(r, 10)); // loop reaches its first (null) wait
-
-    // Whole reply arrived in the pre-ACK buffer: arm, feed the message-tool item +
-    // private-ack frames (sink inactive -> buffered), beginTurn replays them
-    // (arming wantsHistoryRecovery), then wake the loop.
-    s.runManager.armReplayBuffer();
-    for (const frame of FIXTURES.scenarios["message-tool-item-then-private-ack"]!.frames) {
-      await s.runManager.feed(frame, now);
-    }
-    await s.runManager.beginTurn(now, FIXTURES.run_id);
-    s.wake();
-    await new Promise((r) => setTimeout(r, 30)); // loop TOP checks recovery -> sessions.get
-
-    expect(conn.requests).toContain("sessions.get");
-    reg.closeAll();
-  });
-
-  // codex P1 (W4): the recovery read only the message-tool entries. A TRUNCATED
-  // DIRECT reply (G-13) has no toolResult at all, so the full text sat in the
-  // transcript's plain assistant entry and was never read — the turn finalized
-  // 20 s later with the cut text and its marker.
-  it("does NOT promote a private ack to the reply when the trigger was not a truncation (codex P1)", async () => {
-    let now = 1000;
-    const conn = fakeConnRecording();
-    conn.reply = {
-      payload: {
-        messages: [
-          { role: "user", content: [{ type: "text", text: "the question" }] },
-          // The transcript holds only an acknowledgement — the real delivery is
-          // nowhere to be found. This wording is deliberately one the
-          // private-ack heuristic does NOT match: the guard must come from
-          // restricting the fallback, not from a phrase list that will always be
-          // incomplete. Persisting it would hide a lost reply behind something
-          // that reads like an answer.
-          {
-            role: "assistant",
-            content: [{ type: "text", text: "Acknowledged, the note was handed off." }],
-          },
-        ],
-      },
-    };
-    vi.spyOn(OpenClawConnection, "connect").mockImplementation(async () => conn as never);
-    const { writer, finalized } = fakeWriter();
-    const reg = new SessionRegistry(servedMap(config, writer), () => now);
-    const s = await reg.acquire({
-      chatId: "own-chat",
-      openclawChatId: "own-chat",
-      agentId: "main",
-      canonical: "u-testuser01",
-    });
-    await new Promise((r) => setTimeout(r, 10));
-
-    s.runManager.armReplayBuffer();
-    for (const frame of FIXTURES.scenarios["message-tool-item-then-private-ack"]!.frames) {
-      await s.runManager.feed(frame, now);
-    }
-    await s.runManager.beginTurn(now, FIXTURES.run_id);
-    s.wake();
-    await new Promise((r) => setTimeout(r, 40));
-
-    expect(conn.requests).toContain("sessions.get");
-    expect(JSON.stringify(finalized)).not.toContain("handed off");
-    reg.closeAll();
-  });
-
-  it("recovers a plain ASSISTANT transcript entry when there is no message-tool delivery", async () => {
-    let now = 1000;
-    const conn = fakeConnRecording();
-    const FULL = "the complete answer that the display projection had cut";
-    conn.reply = {
-      payload: {
-        messages: [
-          { role: "user", content: [{ type: "text", text: "the question" }] },
-          { role: "assistant", content: [{ type: "text", text: FULL }] },
-        ],
-      },
-    };
-    vi.spyOn(OpenClawConnection, "connect").mockImplementation(async () => conn as never);
-    const { writer, finalized } = fakeWriter();
-    const reg = new SessionRegistry(servedMap(config, writer), () => now);
-    const s = await reg.acquire({
-      chatId: "own-chat",
-      openclawChatId: "own-chat",
-      agentId: "main",
-      canonical: "u-testuser01",
-    });
-    await new Promise((r) => setTimeout(r, 10));
-
-    s.runManager.armReplayBuffer();
-    // A chat final the gateway CUT at its display cap: the reply lives in the
-    // transcript's plain ASSISTANT entry, with no message-tool delivery at all.
-    await s.runManager.feed(
-      {
-        event: "chat",
-        payload: {
-          sessionKey: "agent:main:atrium:chat:u-testuser01:own-chat",
-          runId: FIXTURES.run_id,
-          seq: 1,
-          state: "final",
-          message: {
-            role: "assistant",
-            content: [{ type: "text", text: `${"a".repeat(8000)}\n...(truncated)...` }],
-          },
-        },
-      },
-      now,
-    );
-    await s.runManager.beginTurn(now, FIXTURES.run_id);
-    s.wake();
-    await new Promise((r) => setTimeout(r, 40));
-
-    expect(conn.requests).toContain("sessions.get");
-    // The recovered text reached the writer as the turn's REPLY.
-    expect(JSON.stringify(finalized)).toContain("display projection had cut");
-    reg.closeAll();
-  });
-});
-
-// FD-leak reaping (audit CRITICAL): each chat holds an open WebSocket/FD; an idle
-// gateway socket stays open forever, so without reaping the bridge accumulates
-// sockets until FD exhaustion takes down ALL chats. The sweeper closes + drops
-// idle sessions and closed husks.
 describe("SessionRegistry — idle-session sweeper (FD-leak reaping)", () => {
   // UNIT GUARD: the Clock is in SECONDS, so the TTL must be too. We assert the
   // concrete value (900 = 15 min) and drive the boundary in SECONDS — re-introducing
@@ -627,39 +370,14 @@ describe("SessionRegistry — idle-session sweeper (FD-leak reaping)", () => {
   });
 });
 
-describe("close mid-turn = transcript recovery, then connection lost (never a user interruption)", () => {
-  // The registry injects a transcript fetcher (its polls run on the mocked
-  // OpenClawConnection.connect), so a close mid-turn STARTS recovery instead
-  // of finalizing immediately — the gateway restart-recovery case (live CSV
-  // 2026-07-04: a resumed run delivered its answer 7 min after the SIGTERM).
-
+describe("close mid-turn: left to the transcript (CU-22), never settled by the bridge", () => {
   it("a close mid-turn marks the turn's stream as incomplete", async () => {
     // Whatever the gateway sent before the close is gone, so an absence in this turn's
     // stream — no lifecycle start, say — can no longer prove that nothing ran.
     vi.useFakeTimers();
     const now = 1000;
     const conn = fakeConn();
-    const pollConn = {
-      get isClosed() {
-        return false;
-      },
-      close() {},
-      onConfigChanged: () => () => {},
-      onSessionSharing: () => () => {},
-      onClosed: () => () => {},
-      async *frames() {},
-      async request() {
-        return { payload: { messages: [] } };
-      },
-    };
-    let first = true;
-    vi.spyOn(OpenClawConnection, "connect").mockImplementation(async () => {
-      if (first) {
-        first = false;
-        return conn as never;
-      }
-      return pollConn as never;
-    });
+    vi.spyOn(OpenClawConnection, "connect").mockImplementation(async () => conn as never);
     const { writer } = fakeWriter();
     const reg = new SessionRegistry(servedMap(config, writer), () => now);
     const s = await reg.acquire(ROUTING);
@@ -674,415 +392,11 @@ describe("close mid-turn = transcript recovery, then connection lost (never a us
     reg.closeAll();
   });
 
-  it("recovers the RESUMED run's reply from the transcript and finalizes COMPLETE", async () => {
+  it("the turn is neither finalized nor polled for: the next read (a send's, or `/resume`) settles it", async () => {
     vi.useFakeTimers();
     let now = 1000;
     const conn = fakeConn();
-    // First connect = the session socket; later connects = the recovery polls.
-    // The transcript starts WITHOUT a reply (gateway rebooting), then the
-    // resumed run finishes and the assistant entry appears.
-    let transcriptReady = false;
-    const pollConn = {
-      get isClosed() {
-        return false;
-      },
-      close() {},
-      onConfigChanged: () => () => {},
-      onSessionSharing: () => () => {},
-      onClosed: () => () => {},
-      async *frames() {},
-      async request(method: string) {
-        expect(method).toBe("sessions.get");
-        return {
-          payload: {
-            messages: [
-              { role: "user", content: "analyse ça s'il te plaît" },
-              ...(transcriptReady
-                ? [{ role: "assistant", content: [{ text: "réponse reprise après redémarrage" }] }]
-                : []),
-            ],
-          },
-        };
-      },
-    };
-    let first = true;
-    vi.spyOn(OpenClawConnection, "connect").mockImplementation(async () => {
-      if (first) {
-        first = false;
-        return conn as never;
-      }
-      return pollConn as never;
-    });
-    const { writer, finalized } = fakeWriter();
-    const reg = new SessionRegistry(servedMap(config, writer), () => now);
-    const s = await reg.acquire(ROUTING);
-    await vi.advanceTimersByTimeAsync(0);
-    await s.runManager.beginTurn(now, "run-1");
-    s.noteTurnUserAnchor("analyse ça s'il te plaît");
-    s.wake();
-    await vi.advanceTimersByTimeAsync(0);
-    // The gateway is SIGTERMed mid-turn.
-    conn.close();
-    await vi.advanceTimersByTimeAsync(0);
-    expect(finalized.length).toBe(0); // NOT settled — recovery is polling
-    // Two polls come back empty (run still resuming)...
-    now += 40_000;
-    await vi.advanceTimersByTimeAsync(40_000);
-    expect(finalized.length).toBe(0);
-    // ...then the resumed run finishes.
-    transcriptReady = true;
-    now += 20_000;
-    await vi.advanceTimersByTimeAsync(20_000);
-    expect(finalized.length).toBeGreaterThan(0);
-    const last = finalized[finalized.length - 1] as unknown[];
-    expect(last?.[1]).toBe("complete"); // the REAL answer, not an error
-    expect(String(last?.[2] ?? "")).toContain("réponse reprise après redémarrage");
-    reg.closeAll();
-  });
-
-  it("…and on 2026.9.4, whose restart recovery appends its RESUME prompt before the reply", async () => {
-    // Measured on the bench (forced gateway restart mid-reply): the transcript becomes the user
-    // entry, then the gateway's resume prompt as a `user` entry with provenance
-    // `internal_system/main_session_restart_recovery` and none of the user's text, then the
-    // complete resumed reply. Read as the turn boundary, that prompt failed the anchor on every
-    // poll: the turn settled as an error after nine minutes while its answer was there.
-    vi.useFakeTimers();
-    let now = 1000;
-    const conn = fakeConn();
-    let stage: "rebooting" | "resumed" | "working" | "answered" = "rebooting";
-    const pollConn = {
-      get isClosed() {
-        return false;
-      },
-      close() {},
-      onConfigChanged: () => () => {},
-      onSessionSharing: () => () => {},
-      onClosed: () => () => {},
-      async *frames() {},
-      async request(method: string) {
-        expect(method).toBe("sessions.get");
-        return {
-          payload: {
-            messages: [
-              { role: "user", content: "analyse ça s'il te plaît" },
-              ...(stage === "rebooting"
-                ? []
-                : [
-                    // What the interrupted run had committed before the restart: a visible
-                    // fragment, not the answer.
-                    {
-                      role: "assistant",
-                      content: [{ type: "text", text: "début avant la coupure" }],
-                      stopReason: "toolUse",
-                    },
-                    {
-                      role: "user",
-                      content:
-                        "[System] Your previous turn was interrupted by a gateway restart while OpenClaw was waiting on tool/model work. Continue from the existing transcript and finish the interrupted response.",
-                      provenance: {
-                        kind: "internal_system",
-                        sourceSessionKey: "agent:alice:atrium:chat:u:c",
-                        sourceTool: "main_session_restart_recovery",
-                      },
-                    },
-                  ]),
-              // The resumed run starts by calling a tool: a fragment, not an answer.
-              ...(stage === "working" || stage === "answered"
-                ? [
-                    {
-                      role: "assistant",
-                      content: [{ type: "text", text: "je vérifie les journaux" }],
-                      stopReason: "toolUse",
-                    },
-                    { role: "toolResult", toolName: "exec", content: "sortie" },
-                  ]
-                : []),
-              ...(stage === "answered"
-                ? [
-                    {
-                      role: "assistant",
-                      content: [
-                        { type: "thinking", thinking: "…" },
-                        { type: "text", text: "réponse reprise après redémarrage" },
-                      ],
-                      stopReason: "stop",
-                    },
-                  ]
-                : []),
-            ],
-          },
-        };
-      },
-    };
-    let first = true;
-    vi.spyOn(OpenClawConnection, "connect").mockImplementation(async () => {
-      if (first) {
-        first = false;
-        return conn as never;
-      }
-      return pollConn as never;
-    });
-    const { writer, finalized } = fakeWriter();
-    const reg = new SessionRegistry(servedMap(config, writer), () => now);
-    const s = await reg.acquire(ROUTING);
-    await vi.advanceTimersByTimeAsync(0);
-    await s.runManager.beginTurn(now, "run-1");
-    s.noteTurnUserAnchor("analyse ça s'il te plaît");
-    s.wake();
-    await vi.advanceTimersByTimeAsync(0);
-    conn.close();
-    await vi.advanceTimersByTimeAsync(0);
-    now += 20_000;
-    await vi.advanceTimersByTimeAsync(20_000);
-    expect(finalized.length).toBe(0);
-    // The gateway is back and has appended its resume prompt; the resumed run is still writing.
-    stage = "resumed";
-    now += 20_000;
-    await vi.advanceTimersByTimeAsync(20_000);
-    expect(finalized.length, "a resume prompt alone is not an answer").toBe(0);
-    // The resumed run is working: it called a tool. A fragment is not an answer either (codex).
-    stage = "working";
-    now += 20_000;
-    await vi.advanceTimersByTimeAsync(20_000);
-    expect(finalized.length, "a mid-run fragment of the resumed run is not an answer").toBe(0);
-    stage = "answered";
-    now += 20_000;
-    await vi.advanceTimersByTimeAsync(20_000);
-    expect(finalized.length).toBeGreaterThan(0);
-    const last = finalized[finalized.length - 1] as unknown[];
-    expect(last?.[1]).toBe("complete");
-    // The turn's text is what the interrupted run had committed, then what the resumed run
-    // wrote — the same join a turn with several assistant entries already gets.
-    expect(String(last?.[2] ?? "")).toBe(
-      "début avant la coupure\n\nje vérifie les journaux\n\nréponse reprise après redémarrage",
-    );
-    reg.closeAll();
-  });
-
-  it("prefers a message-tool DELIVERY over the private ack when the resumed run used it", async () => {
-    vi.useFakeTimers();
-    let now = 1000;
-    const conn = fakeConn();
-    const pollConn = {
-      get isClosed() {
-        return false;
-      },
-      close() {},
-      onConfigChanged: () => () => {},
-      onSessionSharing: () => () => {},
-      onClosed: () => () => {},
-      async *frames() {},
-      async request() {
-        return {
-          payload: {
-            messages: [
-              { role: "user", content: "question suffisamment longue" },
-              {
-                role: "toolResult",
-                toolName: "message",
-                content: [
-                  {
-                    text: JSON.stringify({
-                      deliveryStatus: "sent",
-                      channel: "webchat",
-                      target: "current-run",
-                      sourceReply: { text: "la VRAIE réponse livrée par le message-tool" },
-                    }),
-                  },
-                ],
-              },
-              { role: "assistant", content: "Envoyé dans le webchat." },
-            ],
-          },
-        };
-      },
-    };
-    let first = true;
-    vi.spyOn(OpenClawConnection, "connect").mockImplementation(async () => {
-      if (first) {
-        first = false;
-        return conn as never;
-      }
-      return pollConn as never;
-    });
-    const { writer, finalized } = fakeWriter();
-    const reg = new SessionRegistry(servedMap(config, writer), () => now);
-    const s = await reg.acquire(ROUTING);
-    await vi.advanceTimersByTimeAsync(0);
-    await s.runManager.beginTurn(now, "run-1");
-    s.noteTurnUserAnchor("question suffisamment longue");
-    s.wake();
-    await vi.advanceTimersByTimeAsync(0);
-    conn.close();
-    await vi.advanceTimersByTimeAsync(0);
-    now += 20_000;
-    await vi.advanceTimersByTimeAsync(20_000);
-    expect(finalized.length).toBeGreaterThan(0);
-    const last = finalized[finalized.length - 1] as unknown[];
-    expect(last?.[1]).toBe("complete");
-    expect(String(last?.[2] ?? "")).toContain("la VRAIE réponse livrée par le message-tool");
-    expect(String(last?.[2] ?? "")).not.toContain("Envoyé dans le webchat");
-    reg.closeAll();
-  });
-
-  it("rejects a STALE transcript (previous turn's reply) until the current turn appears", async () => {
-    vi.useFakeTimers();
-    let now = 1000;
-    const conn = fakeConn();
-    let staleServed = 0;
-    const pollConn = {
-      get isClosed() {
-        return false;
-      },
-      close() {},
-      onConfigChanged: () => () => {},
-      onSessionSharing: () => () => {},
-      onClosed: () => () => {},
-      async *frames() {},
-      async request() {
-        staleServed++;
-        if (staleServed < 2) {
-          // Mid-reboot: the transcript still predates the current turn.
-          return {
-            payload: {
-              messages: [
-                { role: "user", content: "ANCIENNE question" },
-                { role: "assistant", content: "ANCIENNE réponse à ne jamais livrer" },
-              ],
-            },
-          };
-        }
-        return {
-          payload: {
-            messages: [
-              { role: "user", content: "question du tour COURANT" },
-              { role: "assistant", content: "réponse reprise correcte" },
-            ],
-          },
-        };
-      },
-    };
-    let first = true;
-    vi.spyOn(OpenClawConnection, "connect").mockImplementation(async () => {
-      if (first) {
-        first = false;
-        return conn as never;
-      }
-      return pollConn as never;
-    });
-    const { writer, finalized } = fakeWriter();
-    const reg = new SessionRegistry(servedMap(config, writer), () => now);
-    const s = await reg.acquire(ROUTING);
-    await vi.advanceTimersByTimeAsync(0);
-    await s.runManager.beginTurn(now, "run-1");
-    s.noteTurnUserAnchor("question du tour COURANT");
-    s.wake();
-    await vi.advanceTimersByTimeAsync(0);
-    conn.close();
-    await vi.advanceTimersByTimeAsync(0);
-    // First poll serves the STALE transcript — must be rejected, nothing finalized.
-    now += 20_000;
-    await vi.advanceTimersByTimeAsync(20_000);
-    expect(finalized.length).toBe(0);
-    // Second poll serves the current-turn transcript — recovered.
-    now += 20_000;
-    await vi.advanceTimersByTimeAsync(20_000);
-    expect(finalized.length).toBeGreaterThan(0);
-    const last = finalized[finalized.length - 1] as unknown[];
-    expect(last?.[1]).toBe("complete");
-    expect(String(last?.[2] ?? "")).toContain("réponse reprise correcte");
-    expect(String(last?.[2] ?? "")).not.toContain("ANCIENNE");
-    reg.closeAll();
-  });
-
-  it("an ANCHOR-LESS turn (attachment-only) accepts only a transcript that GREW", async () => {
-    vi.useFakeTimers();
-    let now = 1000;
-    const conn = fakeConn();
-    let served = 0;
-    const pollConn = {
-      get isClosed() {
-        return false;
-      },
-      close() {},
-      onConfigChanged: () => () => {},
-      onSessionSharing: () => () => {},
-      onClosed: () => () => {},
-      async *frames() {},
-      async request() {
-        served++;
-        const base = [
-          { role: "user", content: "" }, // attachment-only send
-          { role: "assistant", content: "réponse du tour précédent" },
-        ];
-        // Polls 1-2: stale, constant transcript. Poll 3+: the resumed run grew it.
-        return {
-          payload: {
-            messages:
-              served < 3
-                ? base
-                : [...base, { role: "user", content: "" }, { role: "assistant", content: "réponse du run repris (pièce jointe)" }],
-          },
-        };
-      },
-    };
-    let first = true;
-    vi.spyOn(OpenClawConnection, "connect").mockImplementation(async () => {
-      if (first) {
-        first = false;
-        return conn as never;
-      }
-      return pollConn as never;
-    });
-    const { writer, finalized } = fakeWriter();
-    const reg = new SessionRegistry(servedMap(config, writer), () => now);
-    const s = await reg.acquire(ROUTING);
-    await vi.advanceTimersByTimeAsync(0);
-    await s.runManager.beginTurn(now, "run-1");
-    // NO anchor (attachment-only) — the structural baseline is the only guard.
-    s.wake();
-    await vi.advanceTimersByTimeAsync(0);
-    conn.close();
-    await vi.advanceTimersByTimeAsync(0);
-    // Polls 1-2 (baseline + constant): nothing finalized — the stale reply is NEVER delivered.
-    now += 40_000;
-    await vi.advanceTimersByTimeAsync(40_000);
-    expect(finalized.length).toBe(0);
-    // Poll 3: the transcript grew — the resumed reply is accepted.
-    now += 20_000;
-    await vi.advanceTimersByTimeAsync(20_000);
-    expect(finalized.length).toBeGreaterThan(0);
-    const last = finalized[finalized.length - 1] as unknown[];
-    expect(last?.[1]).toBe("complete");
-    expect(String(last?.[2] ?? "")).toContain("réponse du run repris");
-    reg.closeAll();
-  });
-
-  it("settles as error(connection_lost) when no resumed reply ever appears (deadline)", async () => {
-    vi.useFakeTimers();
-    let now = 1000;
-    const conn = fakeConn();
-    const emptyPollConn = {
-      get isClosed() {
-        return false;
-      },
-      close() {},
-      onConfigChanged: () => () => {},
-      onSessionSharing: () => () => {},
-      onClosed: () => () => {},
-      async *frames() {},
-      async request() {
-        return { payload: { messages: [{ role: "user", content: "question" }] } };
-      },
-    };
-    let first = true;
-    vi.spyOn(OpenClawConnection, "connect").mockImplementation(async () => {
-      if (first) {
-        first = false;
-        return conn as never;
-      }
-      return emptyPollConn as never;
-    });
+    const connect = vi.spyOn(OpenClawConnection, "connect").mockImplementation(async () => conn as never);
     const { writer, finalized } = fakeWriter();
     const reg = new SessionRegistry(servedMap(config, writer), () => now);
     const s = await reg.acquire(ROUTING);
@@ -1090,185 +404,14 @@ describe("close mid-turn = transcript recovery, then connection lost (never a us
     await s.runManager.beginTurn(now, "run-1");
     s.wake();
     await vi.advanceTimersByTimeAsync(0);
+    const connectsBefore = connect.mock.calls.length;
     conn.close();
-    await vi.advanceTimersByTimeAsync(0);
-    // Poll to the deadline (9 min) with no reply.
     for (let i = 0; i < 30; i++) {
       now += 20_000;
       await vi.advanceTimersByTimeAsync(20_000);
     }
-    expect(finalized.length).toBeGreaterThan(0);
-    const last = finalized[finalized.length - 1] as unknown[];
-    expect(last?.[1]).toBe("error"); // NOT "aborted"
-    expect(String(last?.[3] ?? "")).toContain("connection_lost");
-    reg.closeAll();
-  });
-
-  it("names an ANNOUNCED restart instead of blaming a lost connection (deadline)", async () => {
-    // The gateway broadcasts `shutdown` before closing, so a turn in flight has a
-    // KNOWN cause. Before this lot the notice was dropped and every end read
-    // `connection_lost` — a false cause on a planned maintenance window.
-    vi.useFakeTimers();
-    let now = 1000;
-    const conn = { ...fakeConn(), connectionEnd: null as unknown };
-    const emptyPollConn = {
-      get isClosed() {
-        return false;
-      },
-      close() {},
-      onConfigChanged: () => () => {},
-      onSessionSharing: () => () => {},
-      onClosed: () => () => {},
-      async *frames() {},
-      async request() {
-        return { payload: { messages: [{ role: "user", content: "question" }] } };
-      },
-    };
-    let first = true;
-    vi.spyOn(OpenClawConnection, "connect").mockImplementation(async () => {
-      if (first) {
-        first = false;
-        return conn as never;
-      }
-      return emptyPollConn as never;
-    });
-    const { writer, finalized } = fakeWriter();
-    const reg = new SessionRegistry(servedMap(config, writer), () => now);
-    const s = await reg.acquire(ROUTING);
-    await vi.advanceTimersByTimeAsync(0);
-    await s.runManager.beginTurn(now, "run-1");
-    s.wake();
-    await vi.advanceTimersByTimeAsync(0);
-    // The gateway announced a SHORT absence: recovery still runs (the run resumes
-    // and its answer may land in the transcript) — only the CAUSE changes.
-    conn.connectionEnd = {
-      kind: "gateway_restarting",
-      restartExpectedMs: 30_000,
-      reasonPresent: true,
-    };
-    conn.close();
-    await vi.advanceTimersByTimeAsync(0);
-    for (let i = 0; i < 30; i++) {
-      now += 20_000;
-      await vi.advanceTimersByTimeAsync(20_000);
-    }
-    const last = finalized[finalized.length - 1] as unknown[];
-    expect(last?.[1]).toBe("error");
-    expect(String(last?.[3] ?? "")).toBe("gateway_restarting");
-    // The class rides the DEADLINE settle too — this is the path a real restart
-    // takes (the live gateway sends no `restartExpectedMs`, so recovery always runs).
-    expect(String(last?.[4] ?? "")).toBe("gateway_restarting");
-    reg.closeAll();
-  });
-
-  it("does not poll for nine minutes when the gateway announced a LONGER absence", async () => {
-    // `restartExpectedMs` beyond the whole recovery budget: polling would burn the
-    // budget on a gateway that said it will not be back, then settle a FALSE
-    // cause. The honest answer is available immediately.
-    vi.useFakeTimers();
-    let now = 1000;
-    const conn = { ...fakeConn(), connectionEnd: null as unknown };
-    const pollConn = {
-      get isClosed() {
-        return false;
-      },
-      close() {},
-      onConfigChanged: () => () => {},
-      onSessionSharing: () => () => {},
-      onClosed: () => () => {},
-      async *frames() {},
-      async request() {
-        return { payload: { messages: [] } };
-      },
-    };
-    let first = true;
-    vi.spyOn(OpenClawConnection, "connect").mockImplementation(async () => {
-      if (first) {
-        first = false;
-        return conn as never;
-      }
-      return pollConn as never;
-    });
-    const { writer, finalized } = fakeWriter();
-    // The health hook the boot wires: it must receive the NAMED class, not the
-    // generic `gateway_error` the forced-finalize path used to report (codex P2).
-    const turnErrors: string[] = [];
-    const reg = new SessionRegistry(servedMap(config, writer), () => now, (_t, code) =>
-      turnErrors.push(code),
-    );
-    const s = await reg.acquire(ROUTING);
-    await vi.advanceTimersByTimeAsync(0);
-    await s.runManager.beginTurn(now, "run-1");
-    s.wake();
-    await vi.advanceTimersByTimeAsync(0);
-    conn.connectionEnd = {
-      kind: "gateway_restarting",
-      restartExpectedMs: 30 * 60_000, // half an hour: past the 9-minute budget
-      reasonPresent: true,
-    };
-    conn.close();
-    // No timer advance at all: the settle must be immediate, not scheduled.
-    await vi.advanceTimersByTimeAsync(0);
-    expect(finalized.length).toBe(1);
-    const last = finalized[0] as unknown[];
-    expect(last?.[1]).toBe("error");
-    expect(String(last?.[3] ?? "")).toBe("gateway_restarting"); // `error`
-    // …and the FAILURE CLASS (`errorKind`, the 5th arg) — the field Convex stores
-    // as `errorCode` and the diagnose surface keys on. Asserting only `error` left
-    // that half of the chain unproven.
-    expect(String(last?.[4] ?? "")).toBe("gateway_restarting");
-    expect(turnErrors).toEqual(["gateway_restarting"]);
-    reg.closeAll();
-  });
-
-  it("names a saturated connection (1008 slow consumer) as its own cause", async () => {
-    // The gateway had been DROPPING frames before hanging up, so the reply is
-    // provably incomplete — a different fact from a network blip, and one whose
-    // remedy is on our side.
-    vi.useFakeTimers();
-    let now = 1000;
-    const conn = { ...fakeConn(), connectionEnd: null as unknown };
-    const emptyPollConn = {
-      get isClosed() {
-        return false;
-      },
-      close() {},
-      onConfigChanged: () => () => {},
-      onSessionSharing: () => () => {},
-      onClosed: () => () => {},
-      async *frames() {},
-      async request() {
-        return { payload: { messages: [{ role: "user", content: "question" }] } };
-      },
-    };
-    let first = true;
-    vi.spyOn(OpenClawConnection, "connect").mockImplementation(async () => {
-      if (first) {
-        first = false;
-        return conn as never;
-      }
-      return emptyPollConn as never;
-    });
-    const { writer, finalized } = fakeWriter();
-    const reg = new SessionRegistry(servedMap(config, writer), () => now);
-    const s = await reg.acquire(ROUTING);
-    await vi.advanceTimersByTimeAsync(0);
-    await s.runManager.beginTurn(now, "run-1");
-    s.wake();
-    await vi.advanceTimersByTimeAsync(0);
-    conn.connectionEnd = {
-      kind: "slow_consumer",
-      restartExpectedMs: null,
-      reasonPresent: true,
-    };
-    conn.close();
-    await vi.advanceTimersByTimeAsync(0);
-    for (let i = 0; i < 30; i++) {
-      now += 20_000;
-      await vi.advanceTimersByTimeAsync(20_000);
-    }
-    const last = finalized[finalized.length - 1] as unknown[];
-    expect(String(last?.[3] ?? "")).toBe("connection_saturated");
+    expect(finalized.length).toBe(0);
+    expect(connect.mock.calls.length).toBe(connectsBefore); // no recovery connection
     reg.closeAll();
   });
 });

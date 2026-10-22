@@ -1,12 +1,11 @@
 /// <reference types="vite/client" />
 //
-// "DID THIS DELIVERY ALREADY ANSWER?" — ONE predicate (codex phase 5 pass 10). Phase 5's
-// own delivery bubbles decide a `:retry-N` with the SAME rule 0.96.0's merge path applies
-// (`batchAnswered`): text from where this delivery's generation begins, parts this
-// delivery stamped, a file only while its blob resolves, storage failure counted as
-// answered. The differential below builds each bubble state twice — as 0.96.0's merged
-// bubble and as a phase 5 own bubble — and requires the same decision; then Codex's three
-// repros stay as regressions (after a rollback, in `on`, under the real read limits).
+// "DID THIS DELIVERY ALREADY ANSWER?" — 0.96.0's rule (`batchAnswered`), still applied when
+// a `:retry-N` replays a batch 0.96.0 merged into a bubble: text from where this delivery's
+// generation begins, parts this delivery stamped, a file only while its blob resolves,
+// storage failure counted as answered. The differential below requires the same decision
+// AND the same reads as the v0.96.0 code. A delivery's OWN bubble is never reused by a
+// retry since 0.102.0 (each run has its bubble), so no probe is asked of one.
 
 import { convexTest, type TestConvex } from "convex-test";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
@@ -14,7 +13,7 @@ import { internal } from "./_generated/api";
 import type { Doc, Id } from "./_generated/dataModel";
 import type { MutationCtx } from "./_generated/server";
 import schema from "./schema";
-import { legacyBatchAnswered, ownBubbleAnswered } from "./stream";
+import { legacyBatchAnswered } from "./stream";
 import { legacyV096BatchAnswered } from "./fixtures/batchAnsweredV096.test";
 import { TransactionMetricsTracker } from "convex-test/dist/transactionMetrics.js";
 
@@ -137,13 +136,12 @@ async function chat(t: T) {
   });
 }
 
-describe("own-bubble decision ≡ 0.96.0's batchAnswered", () => {
+describe("the merged-bubble decision ≡ 0.96.0's batchAnswered", () => {
   for (const s of STATES) {
     test(s.name, async () => {
       const t = convexTest({ schema, modules });
       const { chatId, userId } = await chat(t);
       const legacy = await bubble(t, chatId, userId, s, null);
-      const ownFresh = await bubble(t, chatId, userId, s, "fresh");
       const decide = async (fn: (ctx: MutationCtx, doc: Doc<"messages">) => Promise<boolean | null>, id: Id<"messages">) => {
         const doc = (await t.run((ctx) => ctx.db.get(id))) as Doc<"messages">;
         reads = 0;
@@ -153,25 +151,21 @@ describe("own-bubble decision ≡ 0.96.0's batchAnswered", () => {
       // THE REAL v0.96.0 CODE (extracted from the tag), and its reads.
       const v096 = await decide((ctx, doc) => legacyV096BatchAnswered(ctx, doc, doc._id, { at: AT, childRunIds: [CR] }), legacy);
       const now = await decide((ctx, doc) => legacyBatchAnswered(ctx, doc, [CR], WR), legacy);
-      const fresh = await decide((ctx, doc) => ownBubbleAnswered(ctx, doc, WR), ownFresh);
       expect(v096.answer).toBe(s.expected);
       // 0.96.0's merge path: same decision AND the same reads as the tag's code.
       expect(now).toEqual(v096);
-      // Phase 5's own bubble: the same decision. (An own bubble another delivery merged into
-      // no longer exists — §14.26 — so there is no "merged own" variant to compare.)
-      expect(fresh.answer).toBe(s.expected);
     }, 60_000);
   }
 });
 
 // ── Codex pass 10 repros ─────────────────────────────────────────────────────────────
 
-async function projected(t: T, mode: "on" | "shadow") {
+async function projected(t: T) {
   return t.run(async (ctx) => {
     const userId = await ctx.db.insert("users", {});
     await ctx.db.insert("profiles", { userId, role: "user" as const, canonical: "u" });
     await ctx.db.insert("userAgents", { userId, instanceName: "prod", agentId: "main", isDefault: true, source: "manual" as const, createdAt: 1 });
-    await ctx.db.insert("instances", { name: "prod", gatewayUrl: "ws://gw", config: { transcriptProjection: mode } as never });
+    await ctx.db.insert("instances", { name: "prod", gatewayUrl: "ws://gw" });
     const chatId = await ctx.db.insert("chats", { userId, updatedAt: 1, instanceName: "prod", agentId: "main", transcriptSeenAt: 1 } as never);
     return { userId, chatId };
   });
@@ -179,56 +173,16 @@ async function projected(t: T, mode: "on" | "shadow") {
 const startRun = (t: T, chatId: Id<"chats">, runId: string) =>
   t.mutation(internal.stream.startAssistant, { chatId, runId, turnSessionKey: SK, boundInstanceName: "prod" }) as Promise<Id<"messages"> | null>;
 
-describe("codex phase 5 pass 10 — the repros", () => {
-  test("#1 after a rollback: B's batch, joined to A's own bubble, is never merged there — nor is its retry (§14.26)", async () => {
+describe("codex phase 5 pass 10 — the repro that holds", () => {
+  // FINAL DESIGN STEP 4: a retry is another run with its own bubble — never the earlier
+  // attempt's, even one that answered nothing.
+  test("a retry opens its own bubble, the probe is never asked", async () => {
     const t = convexTest({ schema, modules });
-    const { chatId, userId } = await projected(t, "shadow");
-    const mA = await t.run((ctx) =>
-      ctx.db.insert("messages", { chatId, userId, role: "assistant" as const, status: "complete" as const, text: "résultat A", runId: "announce:v1:agent:files:subagent:a:run-a", turnSessionKey: SK, boundInstance: "prod", deliveryOwnBubble: true, deliveryKey: "run:announce:v1:agent:files:subagent:a:run-a", updatedAt: 1 } as never),
-    );
-    await t.run((ctx) =>
-      ctx.db.insert("subAgents", { chatId, userId, instanceName: "prod", parentMessageId: mA, anchorExact: true, childSessionKey: "agent:files:subagent:b", childRunId: CR, kind: "subagent" as const, status: "done" as const, createdAt: 1, updatedAt: 1 }),
-    );
-    const mB = (await startRun(t, chatId, W))!;
-    expect(mB).not.toBe(mA);
-    await t.mutation(internal.stream.finalize, { messageId: mB, status: "complete", expectedRunId: W } as never);
-    const retried = (await startRun(t, chatId, WR))!;
-    expect(retried).not.toBe(mA);
-    await t.mutation(internal.stream.appendDelta, { messageId: retried, text: "B recovered answer", expectedRunId: WR } as never);
-    await t.mutation(internal.stream.finalize, { messageId: retried, status: "complete", text: "B recovered answer", expectedRunId: WR } as never);
-    expect((await t.run((ctx) => ctx.db.get(mA)))!.text).toBe("résultat A");
-    expect((await t.run((ctx) => ctx.db.get(retried)))!.text).toBe("B recovered answer");
-  });
-
-  // FINAL DESIGN STEP 4: in `on` a retry is another run with its own bubble — the answered
-  // probe below decides a retry's landing outside `on` only (after a rollback).
-  test("`on`: a retry opens its own bubble, the probe is never asked", async () => {
-    const t = convexTest({ schema, modules });
-    const { chatId, userId } = await projected(t, "on");
+    const { chatId, userId } = await projected(t);
     const mW = await bubble(t, chatId, userId, { name: "", text: "", parts: [{ kind: "file", stamp: W, blob: "gone" }], expected: false }, "fresh");
     const mR = await startRun(t, chatId, WR);
     expect(mR).not.toBe(mW);
     expect((await t.run((ctx) => ctx.db.get(mW)))!.status).toBe("complete");
   });
 
-  test("#2 after a rollback: a file whose blob is gone does not refuse the retry that can repair it", async () => {
-    const t = convexTest({ schema, modules });
-    const { chatId, userId } = await projected(t, "shadow");
-    const mW = await bubble(t, chatId, userId, { name: "", text: "", parts: [{ kind: "file", stamp: W, blob: "gone" }], expected: false }, "fresh");
-    expect(await startRun(t, chatId, WR)).toBe(mW);
-    expect((await t.run((ctx) => ctx.db.get(mW)))!.status).toBe("streaming");
-  });
-
-  test("#3 under the real read limits: 19 tool outputs of 900 KiB — the probe stays bounded, the retry resumes (after a rollback)", async () => {
-    const t = convexTest({ schema, modules, transactionLimits: true });
-    const { chatId, userId } = await projected(t, "shadow");
-    const mW = await bubble(t, chatId, userId, { name: "", text: "", parts: [], expected: false }, "fresh");
-    for (let i = 0; i < 19; i++) {
-      await t.run((ctx) =>
-        ctx.db.insert("messageParts", { messageId: mW, order: i, announceRun: W, part: { kind: "tool", name: "exec", phase: "result", toolCallId: `c${i}`, output: "x".repeat(900 * 1024) } } as never),
-      );
-    }
-    expect(await startRun(t, chatId, WR)).toBe(mW);
-    expect((await t.run((ctx) => ctx.db.get(mW)))!.status).toBe("streaming");
-  }, 120_000);
 });

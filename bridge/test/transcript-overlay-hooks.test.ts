@@ -45,7 +45,7 @@ function rig(replies: unknown[]) {
 describe("TranscriptShadow → live overlay hooks", () => {
   it("a session.message user row reaches onUserRow with its steer target", async () => {
     const r = rig([]);
-    r.shadow.configure({ mode: "on" });
+    r.shadow.configure({});
     await r.flush();
     r.listener!.onSessionMessage({
       sessionKey: KEY,
@@ -71,7 +71,7 @@ describe("TranscriptShadow → live overlay hooks", () => {
         sessionInfo: { sessionId: "s-1" },
       },
     ]);
-    r.shadow.configure({ mode: "on" });
+    r.shadow.configure({});
     await r.flush();
     expect(r.userRows.map((x) => x.sendId)).toEqual(["sendB"]);
   });
@@ -88,7 +88,7 @@ describe("TranscriptShadow → live overlay hooks", () => {
       },
     ]);
     r.shadow.noteSend("sendB");
-    r.shadow.configure({ mode: "on" });
+    r.shadow.configure({});
     await r.flush();
     expect(r.dropped.sort()).toEqual(["sendB", "sendC"]);
   });

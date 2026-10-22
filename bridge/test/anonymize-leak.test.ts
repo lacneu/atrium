@@ -402,7 +402,26 @@ describe("a promoted capture still READS the same — provenance, cron schedule,
       { receivedAt: 0, frame: { type: "res", payload: { runId: "webchat-r1" } } },
       ...frames.map((frame, i) => ({ receivedAt: 10 + i, frame })),
     ];
-    const consumed = await consumedReadings(RunManager, entries, readers);
+    // The turn's bubble is born from the run's first visible content, and what the readers
+    // consumed is written onto it then: the replay gives the run a visible final so it opens
+    // (the promoted frames themselves are only the ones under test).
+    const replayed = [
+      ...entries,
+      {
+        receivedAt: 10 + frames.length,
+        frame: {
+          type: "event",
+          event: "chat",
+          payload: {
+            runId: "webchat-r1",
+            sessionKey: "agent:a:atrium:chat:u:c",
+            state: "final",
+            message: { role: "assistant", content: [{ type: "text", text: "fin" }] },
+          },
+        },
+      },
+    ];
+    const consumed = await consumedReadings(RunManager, replayed, readers);
     const pseudo = createPseudonymiser([], new Map());
     const shared = captureReaderRules(entries, readers, consumed);
     return frames.map(

@@ -1,8 +1,7 @@
-// The transcript projection on the REAL send path (redesign phase 1): the instance
-// switch reaches the session's reconciler only on a gateway carrying the transcript
-// identities; reads go out through the version-gated builder; what is read is posted to
-// Convex and NOTHING else is written for it; and the send identity Convex computed is
-// the gateway key exactly when the bridge's own derivation agrees.
+// The transcript projection on the REAL send path: the send switches the session's
+// reconciler on (every OpenClaw session since 0.102.0); reads go out through the
+// version-gated builder; what is read is posted to Convex; and the send identity Convex
+// computed is the gateway key exactly when the bridge's own derivation agrees.
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createHash } from "node:crypto";
@@ -144,6 +143,11 @@ const settle = async (s: { transcriptShadow?: { idle(): Promise<void> } }) => {
   }
 };
 
+/** The reconciler's `chat.history` reads (a page of 80) — not the one-row read the send
+ *  plan asks the session's run facts with (server.ts `planProjectedSend`). */
+const reconcilerReads = (gw: FakeGateway) =>
+  gw.calls.filter(([m, p]) => m === "chat.history" && (p as { limit?: unknown }).limit === 80);
+
 afterEach(() => {
   vi.restoreAllMocks();
 });
@@ -157,33 +161,40 @@ describe("Convex's answer reaches the turn (codex phase 4 pass 6 review)", () =>
         return { ok: true, settledRuns: ["webchat-x"] };
       };
     const spy = vi.spyOn(h.session.runManager, "settleFromTranscript");
-    await performSend(h.session, body({ config: { transcriptProjection: "on" } }), h.writer, null, null);
+    await performSend(h.session, body(), h.writer, null, null);
     await settle(h.session);
     expect(h.applies.length).toBeGreaterThan(0);
     expect(spy.mock.calls.some(([ids]) => (ids as readonly string[]).includes("webchat-x"))).toBe(true);
   });
 });
 
-describe("the instance switch reaches the reconciler — and only where the facts exist", () => {
-  it("shadow on 2026.9.6: one tail page read with the page budget, posted as identities", async () => {
+describe("the send switches the session's reconciler on", () => {
+  it("2026.9.6: one tail page read with the page budget, its rows posted", async () => {
     const h = await harness("2026.9.6");
-    await performSend(h.session, body({ config: { transcriptProjection: "shadow" } }), h.writer, null, null);
+    await performSend(h.session, body(), h.writer, null, null);
     await settle(h.session);
-    const reads = h.gw.calls.filter(([m]) => m === "chat.history");
-    // The switch-on read (a tail page), then the one the session-events subscription
-    // asks for once it is established (phase 2) — a delta from the page's cursor.
-    expect(reads).toHaveLength(2);
+    const reads = reconcilerReads(h.gw);
+    // The switch-on read (a tail page) — plus, once per session and process, the
+    // capped-row scan of the same tail page (transcript-shadow.ts `scanCappedTail`,
+    // remembered module-wide, so present only for the first test of a scope) — then the
+    // one the session-events subscription asks for once it is established (phase 2): a
+    // delta from the page's cursor.
+    const tails = reads.filter(([, p]) => (p as { cursor?: unknown }).cursor === undefined);
+    expect(tails.length).toBeGreaterThanOrEqual(1);
+    for (const [, p] of tails) expect(p).toEqual({ sessionKey: SESSION_KEY, limit: 80, maxBytes: 262144 });
     expect(reads[0]![1]).toEqual({ sessionKey: SESSION_KEY, limit: 80, maxBytes: 262144 });
-    expect(reads[1]![1]).toMatchObject({ cursor: "c:3" });
-    expect(h.applies).toHaveLength(2);
-    expect(h.applies[0]).toMatchObject({
+    expect(reads.filter(([, p]) => (p as { cursor?: unknown }).cursor === "c:3")).toHaveLength(1);
+    // Each read's rows travel ahead of it as text (`textsOnly`), then the read itself.
+    const posted = h.applies.filter((a) => (a as { textsOnly?: boolean }).textsOnly !== true);
+    expect(posted).toHaveLength(2);
+    expect(posted[0]).toMatchObject({
       chatId: "c1",
       sessionKey: SESSION_KEY,
       sessionId: "s-1",
       kind: "page",
       deltaCursor: "c:3",
     });
-    expect(h.applies[0]!.rows.map((r) => [r.entryId, r.seq, r.role, r.runId ?? null, r.sendId ?? null])).toEqual([
+    expect(posted[0]!.rows.map((r) => [r.entryId, r.seq, r.role, r.runId ?? null, r.sendId ?? null])).toEqual([
       ["u1", 1, "user", "webchat-x", "webchat-x"],
       ["a1", 2, "assistant", "webchat-x", null],
     ]);
@@ -191,7 +202,7 @@ describe("the instance switch reaches the reconciler — and only where the fact
 
   it("2026.9.1 reads WITHOUT `maxBytes` (its closed params schema predates it)", async () => {
     const h = await harness("2026.9.1");
-    await performSend(h.session, body({ config: { transcriptProjection: "shadow" } }), h.writer, null, null);
+    await performSend(h.session, body(), h.writer, null, null);
     await settle(h.session);
     const read = h.gw.calls.find(([m]) => m === "chat.history");
     expect(read?.[1]).toEqual({ sessionKey: SESSION_KEY, limit: 80 });
@@ -202,7 +213,6 @@ describe("the instance switch reaches the reconciler — and only where the fact
     await performSend(
       h.session,
       body({
-        config: { transcriptProjection: "shadow" },
         transcriptCursor: { sessionId: "s-1", deltaCursor: "c:41" },
       }),
       h.writer,
@@ -213,43 +223,28 @@ describe("the instance switch reaches the reconciler — and only where the fact
     expect(h.gw.calls.find(([m]) => m === "chat.history")?.[1]).toMatchObject({ cursor: "c:41" });
   });
 
-  it.each([
-    ["switch off", "2026.9.6", { transcriptProjection: "off" }],
-    ["an UNKNOWN gateway version", null, { transcriptProjection: "shadow" }],
-    ["an UNKNOWN gateway version, no switch", null, null],
-  ] as const)("%s: no transcript read, nothing posted", async (_label, version, cfg) => {
-    const h = await harness(version);
-    await performSend(h.session, body({ config: cfg }), h.writer, null, null);
+  it("an UNKNOWN gateway version: the reconciler still reads, through the version-gated builder", async () => {
+    // The floor refuses only a gateway KNOWN to be below it; an unreadable version runs
+    // the one path there is, and the builder adds no key it cannot vouch for.
+    const h = await harness(null);
+    await performSend(h.session, body(), h.writer, null, null);
     await settle(h.session);
-    expect(h.gw.countOf("chat.history")).toBe(0);
-    expect(h.applies).toEqual([]);
+    const read = reconcilerReads(h.gw)[0];
+    expect(read?.[1]).toEqual({ sessionKey: SESSION_KEY, limit: 80 });
   });
 
-  it("NO SWITCH AT ALL: the default since 0.101.1 is `on`, so the transcript is read", async () => {
-    // Convex sends the mode resolved on every dispatch; a dispatch that names none gets
-    // Convex's own default for an OpenClaw instance (core/instance-config.ts
-    // `transcriptProjectionOf`).
+  it("a stored `off` is ignored: every OpenClaw session reads its transcript (0.102.0)", async () => {
+    // The bridge no longer reads a projection mode: whatever an older Convex sends, the
+    // session's reconciler is switched on by the send.
     const h = await harness("2026.9.6");
-    await performSend(h.session, body({ config: null }), h.writer, null, null);
+    await performSend(h.session, body({ config: { transcriptProjection: "off" } }), h.writer, null, null);
     await settle(h.session);
     expect(h.gw.countOf("chat.history")).toBeGreaterThan(0);
   });
 
-  it("SHADOW: the projection writes nothing but `applyTranscript` — the turn writes exactly what it wrote before", async () => {
-    const off = await harness("2026.9.6");
-    await performSend(off.session, body({ config: { transcriptProjection: "off" } }), off.writer, null, null);
-    await settle(off.session);
-    vi.restoreAllMocks();
-    const on = await harness("2026.9.6");
-    await performSend(on.session, body({ config: { transcriptProjection: "shadow" } }), on.writer, null, null);
-    await settle(on.session);
-    expect(on.written.filter((w) => w !== "applyTranscript")).toEqual(off.written);
-    expect(on.written).toContain("applyTranscript");
-  });
-
   it("a terminal chat frame of the session reads again with the cursor it was given", async () => {
     const h = await harness("2026.9.6");
-    await performSend(h.session, body({ config: { transcriptProjection: "shadow" } }), h.writer, null, null);
+    await performSend(h.session, body(), h.writer, null, null);
     await settle(h.session);
     h.gw.emit({
       type: "event",
@@ -258,7 +253,7 @@ describe("the instance switch reaches the reconciler — and only where the fact
     });
     await sleep(20);
     await settle(h.session);
-    const reads = h.gw.calls.filter(([m]) => m === "chat.history");
+    const reads = reconcilerReads(h.gw);
     expect(reads).toHaveLength(3); // switch-on page, subscription delta, terminal delta
     expect(reads[2]![1]).toMatchObject({ cursor: "c:3" });
     expect(h.applies.at(-1)!.terminals).toEqual([
@@ -274,14 +269,9 @@ describe("phase 2: the session-events connection (design §6.2)", () => {
     payload: { sessionKey: SESSION_KEY, sessionId: "s-1", message: row, ...extra },
   });
 
-  it("subscribes on its OWN socket — scoped, never the conversation's — and only while a session is projected", async () => {
-    const off = await harness("2026.9.6");
-    await performSend(off.session, body({ config: { transcriptProjection: "off" } }), off.writer, null, null);
-    await settle(off.session);
-    expect(off.eventSockets()).toHaveLength(0);
-    vi.restoreAllMocks();
+  it("subscribes on its OWN socket — scoped, never the conversation's", async () => {
     const h = await harness("2026.9.6");
-    await performSend(h.session, body({ config: { transcriptProjection: "shadow" } }), h.writer, null, null);
+    await performSend(h.session, body(), h.writer, null, null);
     await settle(h.session);
     const events = h.eventSockets();
     expect(events).toHaveLength(1);
@@ -294,7 +284,7 @@ describe("phase 2: the session-events connection (design §6.2)", () => {
 
   it("a `session.message` on the events socket reads the transcript back — on the CONVERSATION socket", async () => {
     const h = await harness("2026.9.6");
-    await performSend(h.session, body({ config: { transcriptProjection: "shadow" } }), h.writer, null, null);
+    await performSend(h.session, body(), h.writer, null, null);
     await settle(h.session);
     const before = h.gw.countOf("chat.history");
     const ev = h.eventSockets()[0]!.gw;
@@ -316,7 +306,7 @@ describe("phase 2: the session-events connection (design §6.2)", () => {
 
   it("NO duplicate delivery: a turn frame arriving on the events socket reaches no RunManager and writes nothing", async () => {
     const h = await harness("2026.9.6");
-    await performSend(h.session, body({ config: { transcriptProjection: "shadow" } }), h.writer, null, null);
+    await performSend(h.session, body(), h.writer, null, null);
     await settle(h.session);
     const feed = vi.spyOn(h.session.runManager, "feed");
     const writtenBefore = [...h.written];
@@ -347,7 +337,7 @@ describe("phase 2: the session-events connection (design §6.2)", () => {
     const report: SendReport = {};
     await performSend(
       h.session,
-      body({ config: { transcriptProjection: "shadow" } }),
+      body(),
       h.writer,
       null,
       null,
@@ -375,7 +365,7 @@ describe("phase 2: the session-events connection (design §6.2)", () => {
 
   it("closing the conversation detaches it; the events socket closes once no session is attached", async () => {
     const h = await harness("2026.9.6");
-    await performSend(h.session, body({ config: { transcriptProjection: "shadow" } }), h.writer, null, null);
+    await performSend(h.session, body(), h.writer, null, null);
     await settle(h.session);
     const hub = h.reg.sessionEventsFor("primary", config);
     expect(hub.attachedKeys).toEqual([SESSION_KEY]);
@@ -401,7 +391,7 @@ describe("phase 2 — the reconciler dies with its socket, whichever path closes
         await crashed;
       };
     });
-    await performSend(h.session, body({ config: { transcriptProjection: "shadow" } }), h.writer, null, null);
+    await performSend(h.session, body(), h.writer, null, null);
     await settle(h.session);
     const hub = h.reg.sessionEventsFor("primary", config);
     expect(hub.attachedKeys).toEqual([SESSION_KEY]);

@@ -15,7 +15,7 @@
 import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 
 import { RunManager } from "../src/providers/openclaw/run-manager.js";
 import type {
@@ -185,6 +185,20 @@ function frames(scenario: string): unknown[] {
     throw new Error(`unknown scenario: ${scenario}`);
   }
   return s.frames;
+}
+
+/** An own-session chat delta carrying `text` (visible content: it opens the bubble). */
+function chatDelta(runId: string, text: string): unknown {
+  return {
+    type: "event",
+    event: "chat",
+    payload: {
+      sessionKey: SESSION_KEY,
+      runId,
+      state: "delta",
+      message: { role: "assistant", content: [{ type: "text", text }] },
+    },
+  };
 }
 
 /**
@@ -366,11 +380,12 @@ describe("run-manager -> convex-writer mapping", () => {
     for (const frame of frames("chat-final-content")) {
       await manager.feed(frame, clock.tick()); // disarmed -> dropped, not buffered
     }
-    // The NEXT (successful) turn arms fresh + begins: only its own (empty) message,
-    // zero stale content from the failed send leaks in.
+    // The NEXT (successful) turn arms fresh + begins: zero stale content from the
+    // failed send leaks in (its bubble is born from its run's first content, so
+    // nothing at all is written yet).
     manager.armReplayBuffer();
     await manager.beginTurn(clock.now, OWN_RUN);
-    expect(writer.calls).toEqual([["startAssistant", CHAT_ID, OWN_RUN]]);
+    expect(writer.calls).toEqual([]);
     expect(manager.isFinalized).toBe(false);
   });
 
@@ -388,17 +403,16 @@ describe("run-manager -> convex-writer mapping", () => {
     // A fresh turn begins (armed, but the strays were dropped, not buffered).
     manager.armReplayBuffer();
     await manager.beginTurn(clock.now, OWN_RUN);
-    // Only the new (empty) assistant message exists — zero stray content leaked.
-    expect(writer.calls).toEqual([["startAssistant", CHAT_ID, OWN_RUN]]);
+    // Zero stray content leaked (the new turn's bubble waits for its own content).
+    expect(writer.calls).toEqual([]);
     expect(manager.isFinalized).toBe(false);
   });
 
-  it("frames during the startAssistant window (post-ack, pre-messageId) survive (P1 sink)", async () => {
-    // Codex P1: if the sink went active BEFORE startAssistant resolved, frames
-    // arriving during that network round-trip would hit an active sink with a
-    // null messageId and be dropped. With the fix the sink stays inactive across
-    // the await, so RunManager.feed (still armed) BUFFERS them and the replay
-    // loop drains them once the message exists.
+  it("frames during the startAssistant window (bubble opening, pre-messageId) survive (P1 sink)", async () => {
+    // Codex P1: frames arriving while the bubble's creation round-trip is in flight
+    // must not hit a null messageId and be dropped. The bubble opens on the run's
+    // first content; everything behind it waits in the ordered chain and lands once
+    // the message exists.
     const writer = new FakeWriter();
     let release!: () => void;
     const gate = new Promise<void>((r) => {
@@ -412,15 +426,14 @@ describe("run-manager -> convex-writer mapping", () => {
     const manager = new RunManager(CHAT_ID, SESSION_KEY, writer);
     const clock = new Clock();
     manager.armReplayBuffer();
-    const begin = manager.beginTurn(clock.now, OWN_RUN); // suspends on the gate
-    // The whole response arrives AFTER the ack but BEFORE the message exists.
-    for (const frame of frames("chat-final-content")) {
-      await manager.feed(frame, clock.tick());
-    }
-    expect(writer.calls).toEqual([]); // sink inactive (no messageId) -> buffered
+    await manager.beginTurn(clock.now, OWN_RUN);
+    // The whole response arrives while the message is still being created.
+    const fed = frames("chat-final-content").map((frame) => manager.feed(frame, clock.tick()));
+    await new Promise((r) => setTimeout(r, 0));
+    expect(writer.calls).toEqual([]); // creation in flight (no messageId) -> waiting
 
-    release(); // message creation completes -> sink active -> replay drains buffer
-    await begin;
+    release(); // message creation completes -> the waiting frames drain in order
+    await Promise.all(fed);
     expect(manager.isFinalized).toBe(true);
     expect(writer.calls).toEqual([
       ["startAssistant", CHAT_ID, OWN_RUN],
@@ -430,29 +443,19 @@ describe("run-manager -> convex-writer mapping", () => {
     ]);
   });
 
-  it("legacy agent deltas accumulate as appendDelta then finalize", async () => {
+  it("legacy agent deltas accumulate as appendDelta; the silence asks, never ends the turn", async () => {
     const { writer, manager } = await drive("agent-assistant-delta-legacy", {
       advanceToFinalize: true,
     });
-    expect(manager.isFinalized).toBe(true);
     expect(writer.calls[0]).toEqual(["startAssistant", CHAT_ID, OWN_RUN]);
     const deltas = writer.calls
       .filter((c) => c[0] === "appendDelta")
       .map((c) => (c as ["appendDelta", string, string])[2]);
     expect(deltas).toEqual(["Hello ", "world"]);
-    const final = writer.calls.find((c) => c[0] === "finalize") as [
-      "finalize",
-      string,
-      FinalizeStatus,
-      string,
-      string | null,
-      string | null,
-    ];
-    // A timeout-finalized turn now ships the diagnostic pressure trace AFTER the
-    // finalize (finalizeCause), so find the finalize by kind, not last position.
-    expect(final[0]).toBe("finalize");
-    expect(final[2]).toBe("complete");
-    expect(final[3]).toBe("Hello world");
+    // The capture ends on a lifecycle `end` and no chat terminal: no grace closes the
+    // turn on a timer — the transcript's fact (or the run's terminal) does.
+    expect(manager.isFinalized).toBe(false);
+    expect(writer.calls.some((c) => c[0] === "finalize")).toBe(false);
   });
 
   it("tool message: addToolPart precedes the finalize", async () => {
@@ -473,33 +476,18 @@ describe("run-manager -> convex-writer mapping", () => {
     ];
     expect(final[0]).toBe("finalize");
     expect(final[2]).toBe("complete");
-    expect(final[3]).toBe("Réponse visible complète.");
+    // The run's final text is its text — no prose rule sets the acknowledgment aside;
+    // the run's durable rows replace the live text when it settles.
+    expect(final[3]).toBe("Envoyé.");
   });
 
-  it("mediaUrls: addMedia for each filtered item, no path leak in finalize", async () => {
-    const { writer, manager } = await drive("mediaurls-list", {
+  it("mediaUrls: no file is taken from the live side, and no path leaks in any write", async () => {
+    const { writer } = await drive("mediaurls-list", {
       advanceToFinalize: true,
     });
-    expect(manager.isFinalized).toBe(true);
-    const media = writer.calls.filter((c) => c[0] === "addMedia") as Array<
-      ["addMedia", string, { filename: string; path: string }]
-    >;
-    // Same filtering as the normalizer: dup collapsed; empty/int/https/../inbound
-    // rejected. Only a.pdf + c.pdf survive.
-    expect(media.map((c) => c[2].filename)).toEqual(["a.pdf", "c.pdf"]);
-    expect(media.map((c) => c[2].path)).toEqual([
-      "/home/node/.openclaw/media/outbound/a.pdf",
-      "/home/node/.openclaw/media/outbound/c.pdf",
-    ]);
-    const final = writer.calls.find((c) => c[0] === "finalize") as [
-      "finalize",
-      string,
-      FinalizeStatus,
-      string,
-      string | null,
-      string | null,
-    ];
-    expect(final[0]).toBe("finalize");
+    // A file reaches a bubble through the transcript row that carries it.
+    expect(writer.calls.some((c) => c[0] === "addMedia")).toBe(false);
+    expect(JSON.stringify(writer.calls)).not.toContain("/home/node");
   });
 
   it("lifecycle error: finalize(error) with partial text + error string", async () => {
@@ -523,37 +511,18 @@ describe("run-manager -> convex-writer mapping", () => {
     expect(final[5]).toBe("context_length"); // fallback classification fired
   });
 
-  it("isolation: a foreign-session turn writes nothing but the streaming message", async () => {
-    // No own frames are admitted, so only startAssistant fired; nothing else.
+  it("isolation: a foreign-session turn writes nothing", async () => {
+    // No own frames are admitted, so the turn's bubble (born from its run) never opens.
     const { writer } = await drive("isolation-foreign-session", {
       advanceToFinalize: false,
     });
-    expect(writer.calls).toEqual([["startAssistant", CHAT_ID, OWN_RUN]]);
+    expect(writer.calls).toEqual([]);
   });
 
   it("exactly one finalize is emitted per turn", async () => {
     const { writer } = await drive("duplicate-final");
     const finals = writer.calls.filter((c) => c[0] === "finalize");
     expect(finals.length).toBe(1);
-  });
-});
-
-describe("history recovery arming (6.5 message-tool item frame)", () => {
-  it("a message-tool ITEM frame holding a private-ack arms wantsHistoryRecovery", async () => {
-    // 6.5: the gateway-run message-tool surfaces as an item frame with NO visible
-    // text; the turn then holds a bare private-ack. The delivered reply lives in
-    // the transcript, so the session loop must run sessions.get recovery (reviews
-    // #11/#14 P1) — takeRecoveryRequest is true while the turn is NOT yet finalized.
-    const { manager } = await drive("message-tool-item-then-private-ack", {
-      advanceToFinalize: false,
-    });
-    expect(manager.isFinalized).toBe(false); // private-ack grace holds it open
-    expect(manager.takeRecoveryRequest(0)).not.toBeNull();
-  });
-
-  it("a private-ack WITHOUT a message-tool item does NOT arm recovery (discriminant)", async () => {
-    const { manager } = await drive("private-ack-only", { advanceToFinalize: false });
-    expect(manager.takeRecoveryRequest(0)).toBeNull();
   });
 });
 
@@ -640,94 +609,7 @@ describe("toolCalls + costUsd in the pressure trace (causal overflow reading)", 
   });
 });
 
-describe("recovery epoch guard (Q9 / G-28)", () => {
-  it("refuses to write a recovered reply into a turn it did not open", async () => {
-    // The transcript fetch is allowed 10 s and the private-ack grace finalizes in 5,
-    // so the turn being recovered can end — and the NEXT one open — before the answer
-    // comes back. `sink.active` is true again for that new turn, so without the epoch
-    // the previous question's answer replaced the one the user was waiting for, AND
-    // finalized it.
-    const writer = new FakeWriter();
-    const manager = new RunManager(CHAT_ID, SESSION_KEY, writer);
-    const clock = new Clock();
-    await manager.beginTurn(clock.now, OWN_RUN);
-    const recoveredEpoch = manager.turnEpoch;
-    // Turn N ends and turn N+1 opens while the recovery RPC is in flight.
-    await manager.endTurn(clock.tick(), "error", "connection_lost");
-    await manager.beginTurn(clock.tick(), "run-next");
-    expect(manager.turnEpoch).not.toBe(recoveredEpoch);
-    const before = writer.calls.length;
-
-    const applied = await manager.recoverVisibleText(
-      "turn N's answer",
-      clock.tick(),
-      recoveredEpoch,
-      manager.recoveryGeneration,
-      manager.noteRecoveryDispatched(),
-    );
-
-    // Reported as NOT delivered, so the caller cannot log a success (codex P3).
-    expect(applied).toBe(false);
-    // Nothing written, and the new turn is still live (it was NOT finalized).
-    expect(writer.calls.length).toBe(before);
-    expect(manager.isFinalized).toBe(false);
-  });
-
-  it("still applies a recovery for the turn that asked for it", async () => {
-    // The guard must not break the feature it protects.
-    const writer = new FakeWriter();
-    const manager = new RunManager(CHAT_ID, SESSION_KEY, writer);
-    const clock = new Clock();
-    await manager.beginTurn(clock.now, OWN_RUN);
-    const applied = await manager.recoverVisibleText(
-      "the recovered answer",
-      clock.tick(),
-      manager.turnEpoch,
-      manager.recoveryGeneration,
-      manager.noteRecoveryDispatched(),
-    );
-    expect(applied).toBe(true);
-    const finalize = writer.calls.find((c) => c[0] === "finalize");
-    expect(finalize).toBeDefined();
-    expect(String(finalize?.[3] ?? finalize?.[2] ?? "")).toContain(
-      "the recovered answer",
-    );
-  });
-
-  it("a compaction reset INVALIDATES a recovery already in flight (codex P1)", async () => {
-    const writer = new FakeWriter();
-    const manager = new RunManager(CHAT_ID, SESSION_KEY, writer);
-    const clock = new Clock();
-    await manager.beginTurn(clock.now, OWN_RUN);
-    const boundEpoch = manager.turnEpoch;
-    const boundGen = manager.recoveryGeneration;
-    // The gateway abandons the run to compact WHILE the sessions.get is in
-    // flight: the turn epoch does not move, so only the generation can tell the
-    // recovery that the text it carries belongs to a discarded attempt.
-    await manager.feed(
-      {
-        event: "agent",
-        payload: {
-          runId: OWN_RUN,
-          sessionKey: SESSION_KEY,
-          stream: "lifecycle",
-          data: { phase: "end", livenessState: "abandoned", replayInvalid: true },
-        },
-      },
-      clock.tick(),
-    );
-    expect(manager.turnEpoch).toBe(boundEpoch); // the epoch alone would let it through
-    const applied = await manager.recoverVisibleText(
-      "the abandoned attempt's answer",
-      clock.tick(),
-      boundEpoch,
-      boundGen,
-      manager.noteRecoveryDispatched(),
-    );
-    expect(applied).toBe(false);
-    expect(manager.isFinalized).toBe(false);
-  });
-
+describe("compaction verdicts across the ack (G-28)", () => {
   it("codex P1: a compaction that fails BETWEEN turns reaches the sink (no active turn)", async () => {
     const writer = new FakeWriter();
     const manager = new RunManager(CHAT_ID, SESSION_KEY, writer);
@@ -769,8 +651,10 @@ describe("recovery epoch guard (Q9 / G-28)", () => {
     expect(JSON.stringify(writer.calls)).toContain("setSessionOverfull");
 
     // …and the frame still reaches the TURN when its ack lands: swallowed, the
-    // turn would stay in compaction state and lose its thread marker.
+    // turn would stay in compaction state and lose its thread marker. The marker
+    // lands on the bubble, which opens on the run's first content.
     await manager.beginTurn(clock.tick(), OWN_RUN);
+    await manager.feed(chatDelta(OWN_RUN, "Bonjour"), clock.tick());
     expect(JSON.stringify(writer.calls)).toContain("addCompactionPart");
   });
 
@@ -826,6 +710,8 @@ describe("recovery epoch guard (Q9 / G-28)", () => {
       clock.tick(),
     );
     await manager.beginTurn(clock.tick(), OWN_RUN);
+    // The marker lands on the bubble, which opens on the run's first content.
+    await manager.feed(chatDelta(OWN_RUN, "Bonjour"), clock.tick());
 
     // Swallowed, the turn would hold only the `start`: stuck in compaction until
     // the 900 s budget, and with the marker still reading "in progress" instead
@@ -837,127 +723,6 @@ describe("recovery epoch guard (Q9 / G-28)", () => {
     ).toHaveLength(1);
   });
 
-  it("the epoch AND the recovery generation are REQUIRED — the compiler is the guard for future callers", () => {
-    // A forgotten guard is the entire defect, so neither can be optional: this
-    // pins that the signature takes both (a caller that omits one does not
-    // compile, which no runtime test could guarantee for code not yet written).
-    // The generation is the second guard: a compaction reset invalidates the
-    // attempt a recovery belongs to WITHOUT moving the turn epoch.
-    const manager = new RunManager(CHAT_ID, SESSION_KEY, new FakeWriter());
-    // Five now: the DISPATCH TOKEN joined them. A recovery judged against the
-    // newest mark instead of its own let a revoked attempt come back and close the
-    // turn with a stale transcript, so the token is as mandatory as the epoch.
-    expect(manager.recoverVisibleText.length).toBe(5);
-  });
-});
-
-describe("a hung media upload never holds a written reply (G-31)", () => {
-  afterEach(() => {
-    vi.useRealTimers();
-  });
-
-  it("finalizes the TEXT once the media budget elapses", async () => {
-    // The reply is complete; only an attachment is still uploading. Before this the
-    // finalize waited on the media chain with no ceiling, so the reader watched
-    // "Generating…" until the 12-minute watchdog — for an answer already written.
-    vi.useFakeTimers();
-    const writer = new FakeWriter();
-    // An upload that never returns (a wedged transfer, a stalled socket).
-    writer.addMedia = (() => new Promise<boolean>(() => {})) as never;
-    const manager = new RunManager(CHAT_ID, SESSION_KEY, writer);
-    const clock = new Clock();
-    await manager.beginTurn(clock.now, OWN_RUN);
-    for (const frame of frames("mediaurls-list")) {
-      await manager.feed(frame, clock.tick());
-    }
-    clock.tick(BASE_RECV_TIMEOUT + 1);
-    // Do NOT await: the finalize is blocked on the media chain until the budget.
-    const finalizing = manager.tick(clock.now);
-    await vi.advanceTimersByTimeAsync(6 * 60_000 + 1_000);
-    await finalizing;
-
-    const finalize = writer.calls.find((c) => c[0] === "finalize");
-    expect(finalize).toBeDefined();
-    // The TEXT landed; the attachment simply did not — an answer with a missing
-    // file beats no answer at all.
-    expect(writer.calls.some((c) => c[0] === "addMedia")).toBe(false);
-  });
-
-  it("does not double-attach: the rescue scan stands down while media is in flight", async () => {
-    // The rescue scan decides by reading the dedup set, which is not yet the answer
-    // while the chain runs. Rescuing then would host a SECOND copy of a file whose
-    // upload is merely slow — two parts and two storage objects for one file.
-    vi.useFakeTimers();
-    const writer = new FakeWriter();
-    let attachAttempts = 0;
-    writer.addMedia = (() => {
-      attachAttempts += 1;
-      return new Promise<boolean>(() => {});
-    }) as never;
-    let scanHostCalls = 0;
-    // The scan is the FOURTH constructor argument (an OutboundScan function), not an
-    // options object — passing it wrongly made an earlier version of this test pass
-    // without the fix, which is worse than no test.
-    const manager = new RunManager(
-      CHAT_ID,
-      SESSION_KEY,
-      writer,
-      (async () => ({
-        candidates: ["a.pdf"],
-        host: async () => {
-          scanHostCalls += 1;
-        },
-      })) as never,
-    );
-    const clock = new Clock();
-    await manager.beginTurn(clock.now, OWN_RUN);
-    for (const frame of frames("mediaurls-list")) {
-      await manager.feed(frame, clock.tick());
-    }
-    clock.tick(BASE_RECV_TIMEOUT + 1);
-    const finalizing = manager.tick(clock.now);
-    await vi.advanceTimersByTimeAsync(6 * 60_000 + 1_000);
-    await finalizing;
-
-    expect(writer.calls.some((c) => c[0] === "finalize")).toBe(true);
-    expect(attachAttempts).toBe(1); // the explicit upload only
-    expect(scanHostCalls).toBe(0); // no second copy hosted behind its back
-  });
-
-  it("a hung RESCUE upload cannot hold the reply either (one budget, both steps)", async () => {
-    // With no explicit media the chain is already settled, so bounding only it left
-    // the scan free to hold the reply past the watchdog — the defect would have
-    // moved one step instead of closing.
-    vi.useFakeTimers();
-    const writer = new FakeWriter();
-    let hostStarted = false;
-    const manager = new RunManager(
-      CHAT_ID,
-      SESSION_KEY,
-      writer,
-      (async () => ({
-        candidates: ["scanned.pdf"],
-        host: () =>
-          new Promise<void>(() => {
-            hostStarted = true;
-          }),
-      })) as never,
-    );
-    const clock = new Clock();
-    await manager.beginTurn(clock.now, OWN_RUN);
-    // This scenario finalizes INSIDE feed (its final frame is terminal), so the
-    // budget has to be advanced while the feed is still in flight.
-    const driving = (async () => {
-      for (const frame of frames("chat-final-content")) {
-        await manager.feed(frame, clock.tick());
-      }
-    })();
-    await vi.advanceTimersByTimeAsync(6 * 60_000 + 1_000);
-    await driving;
-
-    expect(hostStarted).toBe(true); // the rescue really was attempted…
-    expect(writer.calls.some((c) => c[0] === "finalize")).toBe(true); // …and lost the race
-  });
 });
 
 describe("single ordered application path (G-29)", () => {
@@ -1042,57 +807,6 @@ describe("single ordered application path (G-29)", () => {
     );
     // Only the failing one was attempted — the queued remainder stood down.
     expect(snapshots).toBe(1);
-  });
-
-  it("a recovery QUEUED behind a slow chain still refuses a turn that moved on", async () => {
-    // The guard has to live inside the queued unit: checked before enqueueing, the
-    // unit can wait behind a slow apply while a new turn begins — and then write the
-    // previous turn's answer into it (and finalize it).
-    const writer = new FakeWriter();
-    const realSnapshot = writer.setSnapshot.bind(writer);
-    writer.setSnapshot = (async (messageId: string, text: string) => {
-      await new Promise((r) => setTimeout(r, 15));
-      return realSnapshot(messageId, text);
-    }) as never;
-    const manager = new RunManager(CHAT_ID, SESSION_KEY, writer);
-    const clock = new Clock();
-    await manager.beginTurn(clock.now, OWN_RUN);
-    const recoveredEpoch = manager.turnEpoch;
-    // Something slow occupies the chain…
-    const slow = manager.feed(
-      {
-        event: "chat",
-        payload: {
-          sessionKey: SESSION_KEY,
-          runId: OWN_RUN,
-          seq: 1,
-          state: "delta",
-          message: { role: "assistant", content: [{ type: "text", text: "x" }] },
-        },
-      },
-      clock.tick(),
-    );
-    // …the recovery queues behind it (its epoch is still valid AT THIS POINT)…
-    const recovering = manager.recoverVisibleText(
-      "turn N's answer",
-      clock.tick(),
-      recoveredEpoch,
-      manager.recoveryGeneration,
-      manager.noteRecoveryDispatched(),
-    );
-    // …and a new turn starts before the queued unit runs. NOT awaited: awaiting would
-    // drain the chain first, which is precisely the race this test must avoid
-    // simulating away — `beginTurn` bumps the epoch synchronously.
-    const opening = manager.beginTurn(clock.tick(), "run-next");
-    const applied = await recovering;
-    await Promise.all([slow, opening]);
-
-    expect(applied).toBe(false);
-    // The new turn was neither written into nor finalized by the old answer.
-    const texts = writer.calls
-      .filter((c) => c[0] === "setSnapshot")
-      .map((c) => String(c[2]));
-    expect(texts).not.toContain("turn N's answer");
   });
 
   it("a stashed announce replays with its ARRIVAL clock, not the flush clock", async () => {

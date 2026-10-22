@@ -1,5 +1,53 @@
 # Changelog
 
+## [0.102.0] — OpenClaw conversations always follow the session transcript
+
+Minor release. Convex, the frontend and the bridge change. Deploy **Convex first, then the
+frontend, then the bridge**. The schema does not change: the fields only the old path wrote
+stay readable, and are removed in a later release.
+
+**The transcript projection is no longer a setting for OpenClaw.** Since 0.101.1 an OpenClaw
+instance has drawn its conversations from the gateway's session transcript (`on`), as the
+OpenClaw Control UI does, and `off` and `shadow` were kept as a way back. That way back is
+gone: every OpenClaw instance runs the projection, and a stored `off` or `shadow` is ignored
+(read as `on`). The admin API still accepts the value, without effect; a save from the
+Bridge or Injections tab drops it. **Hermes is unchanged**: a Hermes instance was never
+projected, and its bubbles are still written from the live stream.
+
+**The old live-stream path is removed from the bridge.** It had not run on a production
+OpenClaw instance since 0.101.1. What goes: the timers that closed a turn on an empty or
+truncated final, on a "sent" acknowledgement or on a deferred `finishing`; the rule that
+read an acknowledgement's wording; the transcript polling (`sessions.get`) after a socket
+drop or a long silence; the hold of a send while a delivery run was live; files taken from
+the live stream or from a sub-agent's frames. A turn ends on the gateway's terminal or on
+the transcript's own fact, and a file reaches a bubble only through the transcript row that
+carries it.
+
+**What an operator may notice — little, on an instance that was already `on`.** Two
+corners used the old path even then, and no longer do: a session the bridge had just
+opened (after a restart, before its first send), and a gateway whose handshake did not
+report a version. In both, a connection lost in the middle of a turn no longer ends the
+turn as "connection lost" after polling the transcript: the bubble stays as the run left it
+and the next read of the transcript (the reconnect, or the stuck-stream net's resume)
+settles it, as it already did for every other projected turn. A delivery run (a sub-agent's
+announce, a requester-settle, a background task) always opens its own bubble, grouped with
+its delegation chain, even in a conversation Convex cannot attribute to an instance;
+bubbles merged by earlier releases are still shown as they are, and a gateway replay of
+such a merge is still recognised.
+
+**Supported gateways are unchanged.** The projection needs nothing beyond OpenClaw 2026.8.2,
+the supported minimum: the two newer parameters it uses are already sent only to gateways
+that accept them (`chat.history` `maxBytes` from 2026.9.2, `chat.abort`
+`discardPendingInput` from 2026.9.7).
+
+**Dependencies.** The lockfiles take the security fixes published since 0.101.4: DOMPurify
+(critical, pulled in through the Markdown renderer `streamdown`, now 2.7.1, which no longer
+bundles Mermaid — Atrium never enabled Mermaid diagrams) and the MCP server's
+`@modelcontextprotocol/sdk` (1.32.1).
+
+**Rolling back** is redeploying 0.101.4 (bridge, then frontend, then Convex). Nothing is
+migrated: a stored `off` or `shadow` applies again under 0.101.4.
+
 ## [0.101.4] — A sub-agent shows the status the gateway gives it
 
 Patch release. Convex, the frontend and the bridge change. Deploy **Convex first, then the

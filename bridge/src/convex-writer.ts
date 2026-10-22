@@ -127,13 +127,6 @@ export interface SubAgentRecord {
   declaredTimeoutMs?: number;
   status: "running" | "done" | "error" | "aborted";
   resultText?: string;
-  /** Files the child DELIVERED with its answer (`MEDIA:` directives on its own
-   *  lane). Carried on the record because nothing else can: a child's frames are
-   *  observation-only, so the media pipeline that serves the owner's lane never
-   *  sees them, and a delegation whose whole answer is a delivery reached the
-   *  user as an empty bubble (prod 2026-09-09). The bridge attaches these to
-   *  `parentMessageId` — the bubble the reader is looking at. */
-  deliveredMedia?: Array<{ filename: string; path: string }>;
   phase?: string;
   // The failure reason on a status:"error"/"aborted" child (sanitized + capped). Lets the
   // monitor show WHY a sub-agent failed / why the parent is stuck.

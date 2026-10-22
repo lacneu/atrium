@@ -123,11 +123,6 @@ describe("a writer-claim rebound is retried only when the stream proves nothing 
     expect(final?.errorKind).toBe("session_write_conflict");
   });
 
-  it("a transcript recovery standing in for frames keeps it", () => {
-    const final = once([...PRELUDE, chatError(5)], (n) => n.markRecoveryAttempted(0));
-    expect(final?.errorKind).toBe("session_write_conflict");
-  });
-
   it("the gateway's USER-FACING copy of the rebound, on the wire, classifies like the raw text", () => {
     // 2026.9.3+ (read at v2026.9.4) renders the rebound as `transcript_writer_fenced` copy and ships THAT as
     // the lifecycle `error` and the chat error's `errorMessage` (upstream

@@ -243,11 +243,17 @@ describe("inline widgets — the widget-only turn (two finals for one run)", () 
     expect(n.finalized).toBe(true);
   });
 
-  it("with widgets OFF, the same frames end on the fallback sentence (the behaviour widgets change)", () => {
-    const { events } = replay("widgetOnly", false);
+  it("with widgets OFF: no widget, and the same first final closes the turn on nothing live", () => {
+    // A final with no visible text is the run's terminal: the turn ends on it, and what
+    // the run wrote durably comes from its transcript rows — the delivery-mirror final
+    // that follows is never waited for.
+    const { events, perFrame, frames } = replay("widgetOnly", false);
     expect(widgetsOf(events)).toEqual([]);
-    const final = events.find((e) => e.type === "message.final");
-    expect(String(final?.text ?? "")).toContain(FALLBACK);
+    const finals = events.filter((e) => e.type === "message.final");
+    expect(finals).toHaveLength(1);
+    expect(String(finals[0]!.text)).toBe("");
+    const firstFinal = frames.findIndex((f) => f.event === "chat" && f.payload.state === "final");
+    expect(perFrame[firstFinal]!.some((e) => e.type === "message.final")).toBe(true);
   });
 });
 
@@ -285,42 +291,3 @@ describe("drift sensors one level inside the known fields", () => {
   });
 });
 
-describe("a widget does not cost a message-tool reply its recovery", () => {
-  it("a turn that showed a widget AND delivered its text through the message tool still recovers the text", () => {
-    const n = new Normalizer(FIXTURE.session_key);
-    n.widgetsEnabled = true;
-    n.beginTurn(1000);
-    n.noteRunStarted(FIXTURE.runs.cap, 1000);
-    const result = FIXTURE.cap.find(
-      (f) => f.event === "agent" && (f.payload.data as { name?: string; phase?: string })?.name === "show_widget" &&
-        (f.payload.data as { phase?: string }).phase === "result",
-    )!;
-    n.feed({ event: result.event, payload: result.payload }, 1001);
-    const item = (phase: string) => ({
-      event: "agent",
-      payload: {
-        sessionKey: FIXTURE.session_key,
-        runId: FIXTURE.runs.cap,
-        stream: "item",
-        data: { itemId: "i1", kind: "tool", name: "message", phase, status: phase === "start" ? "running" : "completed" },
-      },
-    });
-    n.feed(item("start"), 1002);
-    n.feed(item("end"), 1003);
-    // The final carries the canvas part only: the text sits in the transcript.
-    n.feed(
-      {
-        event: "chat",
-        payload: {
-          runId: FIXTURE.runs.cap,
-          sessionKey: FIXTURE.session_key,
-          seq: 99,
-          state: "final",
-          message: { role: "assistant", content: [] },
-        },
-      },
-      1004,
-    );
-    expect(n.wantsHistoryRecovery).toBe(true);
-  });
-});

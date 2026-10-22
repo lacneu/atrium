@@ -234,7 +234,13 @@ describe("a Bridge / Injections save keeps every key other surfaces own", () => 
     const out = buildConfigOverride(formFromConfig(full as never, "fr"), full as never, "fr") as Record<string, unknown>;
     for (const [k, v] of Object.entries(full)) {
       if (k === "promptInjections") continue; // sparse by design: {} persists as absent
+      if (k === "transcriptProjection") continue; // retired switch: dropped, see below
       expect(out[k], k).toEqual(v);
     }
+  });
+
+  test("a stored transcript projection switch is not carried by a save (0.102.0: it no longer exists)", () => {
+    const out = buildConfigOverride(formFromConfig(full as never, "fr"), full as never, "fr") as Record<string, unknown>;
+    expect(out).not.toHaveProperty("transcriptProjection");
   });
 });

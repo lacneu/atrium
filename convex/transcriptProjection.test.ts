@@ -50,7 +50,7 @@ afterEach(() => {
 
 const SK = "agent:alice:atrium:chat:owner:c1";
 
-async function seed(t: T, config: Record<string, unknown> = { transcriptProjection: "shadow" }) {
+async function seed(t: T, config: Record<string, unknown> = {}) {
   return t.run(async (ctx) => {
     const owner = await ctx.db.insert("users", {});
     await ctx.db.insert("profiles", {
@@ -254,9 +254,10 @@ describe("applyTranscript — idempotent, sticky, never a bubble", () => {
       { ...reply(3, "r"), runId: "x".repeat(300) },
     ], { unidentified: 2 });
     const st = await stored(t);
-    // The over-long run id is dropped from the row, the row itself is kept.
+    // The over-long run id is dropped from the row, the row itself is kept — with its
+    // presentation owner, as every row that names no run (`presentationOwnerOf`).
     expect(st.rows.map((r) => r.entryId).sort()).toEqual(["a3", "u1"]);
-    expect(st.rows.find((r) => r.entryId === "a3")!.runId).toBeUndefined();
+    expect(st.rows.find((r) => r.entryId === "a3")!.runId).toBe("unscoped:a3");
     expect(st.cursors[0]!.unidentified).toBe(4);
   });
 
@@ -316,7 +317,7 @@ describe("applyTranscript — idempotent, sticky, never a bubble", () => {
     );
     await apply(t, s.chatId, [reply(2, "r")]);
     const r = await t.query(internal.transcriptProjection.projectionReportInternal, { chatId: s.chatId });
-    expect(r!.mode).toBe("shadow");
+    expect(r!.mode).toBe("on");
   });
 
   test("a `reset` drops the cursor; a new gateway session restarts seq with a floor of 0", async () => {
@@ -649,9 +650,9 @@ describe("the instance switch", () => {
     expect(parseInstanceConfig({ transcriptProjection: "yes" })).toBe("invalid");
   });
 
-  test("the routing carries the cursor only when the switch is not off", async () => {
+  test("a stored `off` or `shadow` is IGNORED: the routing and the dispatch carry `on` (0.102.0)", async () => {
     const t = convexTest(schema, modules);
-    const s = await seed(t);
+    const s = await seed(t, { transcriptProjection: "shadow" });
     const sessionKey = "agent:alice:atrium:chat:owner:" + s.chatId;
     await apply(t, s.chatId, [], { deltaCursor: "c:4" });
     // The test applied under SK; mirror it under the real key the routing derives.
@@ -659,12 +660,14 @@ describe("the instance switch", () => {
       const c = (await ctx.db.query("transcriptCursors").collect())[0]!;
       await ctx.db.patch(c._id, { sessionKey });
     });
-    const routing = await t.query(internal.bridge.getChatRouting, { chatId: s.chatId, userId: s.owner });
-    expect(routing?.transcript).toEqual({ mode: "shadow", sessionKey, cursor: { sessionId: "s-1", deltaCursor: "c:4" } });
+    const projected = { mode: "on", sessionKey, cursor: { sessionId: "s-1", deltaCursor: "c:4" } };
+    const shadow = await t.query(internal.bridge.getChatRouting, { chatId: s.chatId, userId: s.owner });
+    expect(shadow?.transcript).toEqual(projected);
+    expect(shadow?.configOverrides).toMatchObject({ transcriptProjection: "on" });
     await t.run((ctx) => ctx.db.patch(s.instanceId, { config: { transcriptProjection: "off" } }));
     const off = await t.query(internal.bridge.getChatRouting, { chatId: s.chatId, userId: s.owner });
-    expect(off?.transcript).toBeNull();
-    expect(off?.configOverrides).toMatchObject({ transcriptProjection: "off" });
+    expect(off?.transcript).toEqual(projected);
+    expect(off?.configOverrides).toMatchObject({ transcriptProjection: "on" });
   });
 });
 
@@ -673,7 +676,7 @@ describe("the report diagnose_chat carries", () => {
     const t = convexTest(schema, modules);
     const s = await seed(t);
     const report = () => t.query(internal.transcriptProjection.projectionReportInternal, { chatId: s.chatId });
-    expect(await report()).toMatchObject({ mode: "shadow", verdict: "not_projected", gaps: null });
+    expect(await report()).toMatchObject({ mode: "on", verdict: "not_projected", gaps: null });
 
     const sendId = "webchat-" + "b".repeat(64);
     const ids = await t.run(async (ctx) => {
@@ -1534,7 +1537,24 @@ describe("ONE completeness predicate: nothing unmeasured can read `consistent`",
     test("a visible reply with NO run cannot be verified: `unattributed_rows`, not `consistent`", async () => {
       const t = convexTest(schema, modules);
       const s = await seed(t);
-      await provenTurn(t, s, [{ entryId: "a3", seq: 3, role: "assistant", hidden: false, visible: true }]);
+      await provenTurn(t, s);
+      // A row stored with no run before every OpenClaw read gave it a presentation owner
+      // (a `shadow` read of 0.92.0–0.101.x): the measure still has to say it cannot judge it.
+      await t.run(async (ctx) => {
+        const known = (await ctx.db.query("transcriptRows").collect())[0]!;
+        await ctx.db.insert("transcriptRows", {
+          chatId: s.chatId,
+          instanceName: known.instanceName,
+          sessionKey: known.sessionKey,
+          sessionId: known.sessionId,
+          entryId: "a3",
+          seq: 3,
+          role: "assistant",
+          hidden: false,
+          visible: true,
+          updatedAt: 1,
+        } as never);
+      });
       const r = (await report(t, s.chatId))!;
       expect(r.gaps!.i1.unattributedRows).toBe(1);
       expect(r.window.incompleteReasons).toContain("unattributed_rows");
@@ -2359,57 +2379,6 @@ describe("phase 2 — the input guard as the gateway states it", () => {
   });
 });
 
-describe("phase 2 — SHADOW: the projection writes no message, part, outbox or chat", () => {
-  test("a battery of reads, live rows and guard facts leaves every other table byte-identical", async () => {
-    const t = convexTest(schema, modules);
-    const s = await seed(t);
-    const X = "webchat-" + "9".repeat(64);
-    await t.run(async (ctx) => {
-      const um = await ctx.db.insert("messages", { chatId: s.chatId, userId: s.owner, role: "user", status: "complete" as const, text: "q", sendId: X, updatedAt: 1 });
-      await ctx.db.insert("outbox", { chatId: s.chatId, userId: s.owner, clientMessageId: "cm", text: "q", attachmentIds: [], status: "failed", messageId: um, sendId: X });
-      await ctx.db.insert("messages", { chatId: s.chatId, userId: s.owner, role: "assistant", status: "error" as const, text: "", runId: X, turnSessionKey: SK, updatedAt: 1 });
-    });
-    const snapshot = () =>
-      t.run(async (ctx) => ({
-        messages: await ctx.db.query("messages").collect(),
-        outbox: await ctx.db.query("outbox").collect(),
-        messageParts: await ctx.db.query("messageParts").collect(),
-        chats: await ctx.db.query("chats").collect(),
-        subAgents: await ctx.db.query("subAgents").collect(),
-      }));
-    const before = await snapshot();
-    await apply(t, s.chatId, [user(1, X), reply(2, X)], { deltaCursor: "c:1" });
-    await t.mutation(internal.transcriptProjection.applyTranscript, {
-      chatId: s.chatId,
-      boundInstanceName: "alpha",
-      sessionKey: SK,
-      sessionId: "s-1",
-      kind: "live",
-      rows: [reply(3, X)],
-      terminals: [],
-      unidentified: 0,
-      readAt: Date.now(),
-    });
-    await t.mutation(internal.transcriptProjection.applyTranscript, {
-      chatId: s.chatId,
-      boundInstanceName: "alpha",
-      sessionKey: SK,
-      sessionId: "s-1",
-      kind: "delta",
-      deltaCursor: "c:2",
-      rows: [],
-      terminals: [{ runId: X, status: "completed", at: 3 }],
-      unidentified: 0,
-      readAt: Date.now() + 1,
-      inputRunIds: [X],
-      inputReceipts: [{ runId: X, state: "consumed" }],
-      pendingInputs: { total: 0, items: [] },
-    });
-    await t.query(internal.transcriptProjection.projectionReportInternal, { chatId: s.chatId });
-    expect(await snapshot()).toEqual(before);
-  });
-});
-
 describe("phase 2 — I4 (an error card over an answered run) and G (the guard vs the outbox)", () => {
   const report = (t: T, chatId: Id<"chats">) =>
     t.query(internal.transcriptProjection.projectionReportInternal, { chatId });
@@ -3120,13 +3089,13 @@ describe("review 6 — a dispatched send nothing was ever observed about is stil
 });
 
 describe("review 7 — multi-instance chats: only sends to a PROJECTED instance are owed a confirmation", () => {
-  test("alpha shadow + beta off: a dispatched send to beta is not a guard candidate", async () => {
+  test("alpha (OpenClaw) + beta (Hermes): a dispatched send to beta is not a guard candidate", async () => {
     const t = convexTest(schema, modules);
     const s = await seed(t);
     const A1 = "webchat-" + "7".repeat(63) + "a";
     const B1 = "webchat-" + "7".repeat(63) + "b";
     await t.run(async (ctx) => {
-      await ctx.db.insert("instances", { name: "beta", gatewayUrl: "ws://gw-b", config: { transcriptProjection: "off" } as never });
+      await ctx.db.insert("instances", { name: "beta", gatewayUrl: "ws://gw-b", kind: "hermes" as const });
       const u1 = await ctx.db.insert("messages", { chatId: s.chatId, userId: s.owner, role: "user", status: "complete" as const, text: "q1", sendId: A1, updatedAt: 1 });
       await ctx.db.insert("outbox", { chatId: s.chatId, userId: s.owner, clientMessageId: "cm-7a", text: "q1", attachmentIds: [], status: "sent", messageId: u1, sendId: A1, sentToInstance: "alpha", dispatchedAt: Date.now() });
       await ctx.db.insert("messages", { chatId: s.chatId, userId: s.owner, role: "assistant", status: "complete" as const, text: "a1", runId: A1, turnSessionKey: SK, updatedAt: 1 });

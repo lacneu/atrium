@@ -26,25 +26,22 @@ export type MediaMode = (typeof MEDIA_MODES)[number];
 export const INBOUND_MEDIA_MODES = ["inline", "shared-fs"] as const;
 export type InboundMediaMode = (typeof INBOUND_MEDIA_MODES)[number];
 
-/** The transcript projection switch (design §10.4): see `instanceConfigValidator`. */
+/** The values a stored `config.transcriptProjection` may hold (the switch of 0.92.0 to
+ *  0.101.x). Still accepted and stored, never applied: see `effectiveTranscriptProjection`. */
 export const TRANSCRIPT_PROJECTION_MODES = ["off", "shadow", "on"] as const;
 export type TranscriptProjectionMode = (typeof TRANSCRIPT_PROJECTION_MODES)[number];
 
-/** The projection an OpenClaw instance runs when its configuration names none: `on` since
- *  0.101.1 (the transcript decides what a reply shows). `off` and `shadow` stay available,
- *  explicitly. */
-export const DEFAULT_TRANSCRIPT_PROJECTION: TranscriptProjectionMode = "on";
-
 /** THE projection mode of an instance — the one reading every site uses (dispatch, the
- *  follow-up composer, the diagnosis, the guard). An explicit value is kept; an OpenClaw
- *  instance with none runs `DEFAULT_TRANSCRIPT_PROJECTION`; a Hermes instance is never
- *  projected (it has no transcript with these identities, design §9.2), whatever its
- *  configuration says. An unknown instance is not projected. */
+ *  follow-up composer, the diagnosis, the guard). An OpenClaw instance is ALWAYS `on`
+ *  since 0.102.0: the transcript decides what a reply shows, and the bridge has no other
+ *  path. A stored `off`/`shadow` (the 0.92.0–0.101.x switch) is IGNORED, read as `on`. A
+ *  Hermes instance is never projected (it has no transcript with these identities, design
+ *  §9.2); an unknown instance is not projected either. */
 export function effectiveTranscriptProjection(
   inst: { kind?: "openclaw" | "hermes"; config?: { transcriptProjection?: TranscriptProjectionMode } | null } | null | undefined,
 ): TranscriptProjectionMode {
   if (inst === null || inst === undefined || inst.kind === "hermes") return "off";
-  return inst.config?.transcriptProjection ?? DEFAULT_TRANSCRIPT_PROJECTION;
+  return "on";
 }
 
 /** Live-stream transport (frontend↔Convex) for an instance's chats: the reactive query
@@ -138,16 +135,10 @@ export const instanceConfigValidator = v.object({
   // volume). Used only in shared-fs mode. Non-secret.
   inboundAgentMount: v.optional(v.string()),
   outboundAgentMount: v.optional(v.string()),
-  // THE SESSION TRANSCRIPT AS THE TRUTH (redesign): `off` (default) = the bridge does not
-  // read the transcript back; `shadow` = it records the transcript's identity rows beside
-  // the bubbles (convex/transcriptProjection.ts) and changes nothing on screen; `on`
-  // (phase 3) also SENDS like the Control UI: a message sent while the agent works goes
-  // to the gateway at once with an explicit queue mode (steer by default; only an
-  // explicit `queue` waits in the outbox), its ACK is custody shown on the user bubble,
-  // no hold while a sub-agent works, no re-send of an input the gateway held, and the
-  // live bubbles follow the gateway's facts (a steer cuts the run's bubble, a run that
-  // answers a held input opens its own). OpenClaw only. Carried to the bridge in the
-  // dispatch config like `mediaMode`.
+  // THE RETIRED TRANSCRIPT PROJECTION SWITCH (0.92.0–0.101.x: `off` | `shadow` | `on`).
+  // Accepted so a stored value stays readable and a config save never fails over it, but
+  // IGNORED since 0.102.0: an OpenClaw instance always runs the projection
+  // (`effectiveTranscriptProjection`). Removed from the schema in the next release.
   transcriptProjection: v.optional(
     v.union(v.literal("off"), v.literal("shadow"), v.literal("on")),
   ),

@@ -1,0 +1,226 @@
+{
+  "hermes:deleteMessage": {
+    "ranges": 182,
+    "reads": 54,
+    "writes": 25,
+    "scheduled": 1,
+    "bytesRead": 12883,
+    "bytesWritten": 156
+  },
+  "hermes:dropIfEmpty": {
+    "ranges": 11,
+    "reads": 6,
+    "writes": 3,
+    "scheduled": 1,
+    "bytesRead": 1302,
+    "bytesWritten": 394
+  },
+  "hermes:turnRetryCascade": {
+    "ranges": 5,
+    "reads": 2,
+    "writes": 1,
+    "scheduled": 0,
+    "bytesRead": 440,
+    "bytesWritten": 0
+  },
+  "hermes:preemptedResume": {
+    "ranges": 3,
+    "reads": 1,
+    "writes": 0,
+    "scheduled": 0,
+    "bytesRead": 156,
+    "bytesWritten": 0
+  },
+  "hermes:sweepDeletedChat": {
+    "ranges": 194,
+    "reads": 120,
+    "writes": 60,
+    "scheduled": 0,
+    "bytesRead": 25060,
+    "bytesWritten": 0
+  },
+  "hermes:sweepHiddenChat": {
+    "ranges": 154,
+    "reads": 49,
+    "writes": 24,
+    "scheduled": 0,
+    "bytesRead": 12117,
+    "bytesWritten": 0
+  },
+  "hermes:trashPurgeChat": {
+    "ranges": 203,
+    "reads": 127,
+    "writes": 63,
+    "scheduled": 0,
+    "bytesRead": 26269,
+    "bytesWritten": 184
+  },
+  "hermes:adminPurgeChat": {
+    "ranges": 202,
+    "reads": 126,
+    "writes": 64,
+    "scheduled": 0,
+    "bytesRead": 26142,
+    "bytesWritten": 453
+  },
+  "hermes:deleteUser": {
+    "ranges": 213,
+    "reads": 131,
+    "writes": 66,
+    "scheduled": 1,
+    "bytesRead": 26909,
+    "bytesWritten": 448
+  },
+  "hermes:send": {
+    "ranges": 12,
+    "reads": 6,
+    "writes": 4,
+    "scheduled": 1,
+    "bytesRead": 782,
+    "bytesWritten": 1065
+  },
+  "hermes:startAssistant": {
+    "ranges": 1,
+    "reads": 2,
+    "writes": 4,
+    "scheduled": 0,
+    "bytesRead": 312,
+    "bytesWritten": 1026
+  },
+  "hermes:appendDelta": {
+    "ranges": 2,
+    "reads": 2,
+    "writes": 3,
+    "scheduled": 0,
+    "bytesRead": 466,
+    "bytesWritten": 592
+  },
+  "hermes:finalize": {
+    "ranges": 10,
+    "reads": 9,
+    "writes": 5,
+    "scheduled": 2,
+    "bytesRead": 1850,
+    "bytesWritten": 859
+  },
+  "hermes:markOutboxSent": {
+    "ranges": 10,
+    "reads": 6,
+    "writes": 1,
+    "scheduled": 0,
+    "bytesRead": 1112,
+    "bytesWritten": 290
+  },
+  "hermes:reconcileChatStuckStreams": {
+    "ranges": 6,
+    "reads": 33,
+    "writes": 3,
+    "scheduled": 1,
+    "bytesRead": 8068,
+    "bytesWritten": 908
+  },
+  "hermes:reconcileStuckStreams": {
+    "ranges": 1,
+    "reads": 0,
+    "writes": 0,
+    "scheduled": 0,
+    "bytesRead": 0,
+    "bytesWritten": 0
+  },
+  "hermes:sweepInstanceStreams": {
+    "ranges": 2,
+    "reads": 0,
+    "writes": 0,
+    "scheduled": 0,
+    "bytesRead": 0,
+    "bytesWritten": 0
+  },
+  "hermes:drainNextQueued": {
+    "ranges": 1,
+    "reads": 1,
+    "writes": 0,
+    "scheduled": 0,
+    "bytesRead": 301,
+    "bytesWritten": 0
+  },
+  "hermes:reconcileStalledOutbox": {
+    "ranges": 10,
+    "reads": 8,
+    "writes": 3,
+    "scheduled": 0,
+    "bytesRead": 1956,
+    "bytesWritten": 755
+  },
+  "hermes:autoRetryTurn": {
+    "ranges": 14,
+    "reads": 7,
+    "writes": 2,
+    "scheduled": 0,
+    "bytesRead": 1598,
+    "bytesWritten": 864
+  },
+  "hermes:followUpState": {
+    "ranges": 5,
+    "reads": 5,
+    "writes": 0,
+    "scheduled": 0,
+    "bytesRead": 626,
+    "bytesWritten": 0
+  },
+  "hermes:regenerationStamp": {
+    "ranges": 18,
+    "reads": 15,
+    "writes": 2,
+    "scheduled": 0,
+    "bytesRead": 3448,
+    "bytesWritten": 703
+  },
+  "hermes:timeoutStaleRenditions": {
+    "ranges": 8,
+    "reads": 5,
+    "writes": 2,
+    "scheduled": 1,
+    "bytesRead": 1519,
+    "bytesWritten": 612
+  },
+  "hermes:listByChat": {
+    "ranges": 34,
+    "reads": 29,
+    "writes": 0,
+    "scheduled": 0,
+    "bytesRead": 6668,
+    "bytesWritten": 0
+  },
+  "hermes:submitFeedback": {
+    "ranges": 10,
+    "reads": 29,
+    "writes": 2,
+    "scheduled": 1,
+    "bytesRead": 6824,
+    "bytesWritten": 1324
+  },
+  "hermes:submitFeedbackOlderThanScan": {
+    "ranges": 11,
+    "reads": 66,
+    "writes": 2,
+    "scheduled": 1,
+    "bytesRead": 13326,
+    "bytesWritten": 983
+  },
+  "hermes:peekSubAgents": {
+    "ranges": 3,
+    "reads": 4,
+    "writes": 0,
+    "scheduled": 0,
+    "bytesRead": 1236,
+    "bytesWritten": 0
+  },
+  "hermes:peekSubAgentsHeavy": {
+    "ranges": 3,
+    "reads": 4,
+    "writes": 0,
+    "scheduled": 0,
+    "bytesRead": 666835,
+    "bytesWritten": 0
+  }
+}

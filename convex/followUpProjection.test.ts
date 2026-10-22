@@ -2,8 +2,9 @@
 //
 // SEND LIKE THE CONTROL UI — the Convex half (transcript redesign phase 3).
 //
-// Every rule is asserted ON (`transcriptProjection: "on"`) AND OFF (`"shadow"`, the
-// legacy path), so the legacy path is pinned unchanged next to each new behaviour:
+// Every rule is asserted on an OpenClaw instance (always projected since 0.102.0) AND on a
+// HERMES one (never projected: the historical path), so that path is pinned unchanged
+// next to each projected behaviour:
 //   - a busy conversation parks only an explicit `queue` send; steer / interrupt / the
 //     gateway's own mode dispatch NOW;
 //   - a running sub-agent no longer holds a send; the queue drains without the 2.5 s
@@ -35,7 +36,8 @@ import {
 
 const modules = import.meta.glob("./**/*.ts");
 type T = TestConvex<typeof schema>;
-type Mode = "on" | "shadow" | "off";
+/** `on`: an OpenClaw instance (always projected); `hermes`: a Hermes one (never). */
+type Mode = "on" | "hermes";
 
 let prevAnon: string | undefined;
 beforeEach(() => {
@@ -69,7 +71,7 @@ async function seed(t: T, mode: Mode) {
     await ctx.db.insert("instances", {
       name: "prod",
       gatewayUrl: "ws://gw",
-      config: { transcriptProjection: mode } as never,
+      ...(mode === "hermes" ? { kind: "hermes" as const } : {}),
     });
     const chatId = await ctx.db.insert("chats", {
       userId,
@@ -160,9 +162,9 @@ describe("sendMessage while the agent works", () => {
     ["on", "steer", "pending"],
     ["on", "interrupt", "pending"],
     ["on", "queue", "queued"],
-    ["shadow", undefined, "queued"],
-    ["shadow", "steer", "queued"],
-    ["off", "interrupt", "queued"],
+    ["hermes", undefined, "queued"],
+    ["hermes", "steer", "queued"],
+    ["hermes", "interrupt", "queued"],
   ] as const) {
     test(`${mode} + ${choice ?? "gateway mode"} → ${expected}`, async () => {
       const t = convexTest(schema, modules);
@@ -229,7 +231,7 @@ test("a Hermes instance is never projected, whatever its switch says", async () 
 });
 
 describe("busy, drain, re-park", () => {
-  for (const [mode, busy] of [["on", false], ["shadow", true]] as const) {
+  for (const [mode, busy] of [["on", false], ["hermes", true]] as const) {
     test(`${mode}: a running sub-agent ${busy ? "holds" : "does not hold"} the conversation`, async () => {
       const t = convexTest(schema, modules);
       const { chatId } = await seed(t, mode);
@@ -246,7 +248,7 @@ describe("busy, drain, re-park", () => {
     });
   }
 
-  for (const [mode, delay] of [["on", 0], ["shadow", QUEUE_DRAIN_DELAY_MS]] as const) {
+  for (const [mode, delay] of [["on", 0], ["hermes", QUEUE_DRAIN_DELAY_MS]] as const) {
     test(`${mode}: the drained send is dispatched after ${delay} ms`, async () => {
       const t = convexTest(schema, modules);
       const { userId, chatId } = await seed(t, mode);
@@ -273,7 +275,7 @@ describe("busy, drain, re-park", () => {
     });
   }
 
-  for (const [mode, reparked] of [["on", false], ["shadow", true]] as const) {
+  for (const [mode, reparked] of [["on", false], ["hermes", true]] as const) {
     test(`${mode}: a pending send in a busy conversation is ${reparked ? "re-parked" : "never re-parked"}`, async () => {
       const t = convexTest(schema, modules);
       const { userId, chatId } = await seed(t, mode);
@@ -321,7 +323,7 @@ describe("custody on the user bubble", () => {
     return { userId, chatId, messageId, outboxId };
   }
 
-  for (const mode of ["on", "shadow"] as const) {
+  for (const mode of ["on", "hermes"] as const) {
     test(`${mode}: the ACK ${mode === "on" ? "marks" : "does not mark"} the input accepted`, async () => {
       const t = convexTest(schema, modules);
       const { messageId, outboxId } = await sentRow(t, mode);
@@ -378,14 +380,6 @@ describe("custody on the user bubble", () => {
     expect((await t.run((ctx) => ctx.db.get(messageId)))?.custody).toBe("cancelled");
   });
 
-  test("shadow: the same facts change no bubble (measure only)", async () => {
-    const t = convexTest(schema, modules);
-    const { chatId, messageId } = await sentRow(t, "shadow");
-    await applyRows(t, chatId, [
-      { entryId: "u2", seq: 2, role: "user", runId: "sendB", sendId: "sendB", steerTargetRunId: "runA", hidden: false, visible: true },
-    ]);
-    expect((await t.run((ctx) => ctx.db.get(messageId)))?.custody).toBeUndefined();
-  });
 });
 
 describe("I4 — never re-send an input the gateway held", () => {
@@ -490,9 +484,9 @@ describe("I4 — never re-send an input the gateway held", () => {
     });
   }
 
-  test("shadow: the legacy retry is unchanged (empty_response_silent re-runs)", async () => {
+  test("hermes: the legacy retry is unchanged (empty_response_silent re-runs)", async () => {
     const t = convexTest(schema, modules);
-    const m = await erroredTurn(t, "shadow", "empty_response_silent", "none");
+    const m = await erroredTurn(t, "hermes", "empty_response_silent", "none");
     expect(m?.autoRetry).toBeDefined();
   });
 
@@ -547,7 +541,7 @@ describe("the bubble writes of the projected path", () => {
 
   test("finalize WITHOUT dropIfEmpty keeps an empty bubble (legacy)", async () => {
     const t = convexTest(schema, modules);
-    const { userId, chatId } = await seed(t, "shadow");
+    const { userId, chatId } = await seed(t, "hermes");
     const id = await streamingAssistant(t, chatId, userId);
     await t.run(async (ctx) => {
       const row = await ctx.db.query("streamingText").withIndex("by_message", (q) => q.eq("messageId", id)).first();
@@ -692,7 +686,7 @@ describe("the bubble writes of the projected path", () => {
 });
 
 describe("the boot sweep (CU-22)", () => {
-  for (const mode of ["on", "shadow"] as const) {
+  for (const mode of ["on", "hermes"] as const) {
     test(`${mode}: an orphaned live bubble is ${mode === "on" ? "first offered to the bridge to resume" : "closed connection_lost"}`, async () => {
       const t = convexTest(schema, modules);
       const { userId, chatId } = await seed(t, mode);
@@ -735,7 +729,7 @@ describe("the boot sweep (CU-22)", () => {
   });
 });
 
-describe("the shadow measure counts a cut run once (I1)", () => {
+describe("the measure counts a cut run once (I1)", () => {
   test("two segments of one run = one bubble; a true twin is still a duplicate", async () => {
     const t = convexTest(schema, modules);
     const { userId, chatId } = await seed(t, "on");
@@ -872,27 +866,15 @@ describe("an adopted run keeps its bubble when a delivery merge rotates the id (
     expect(report!.gaps!.i1.transcriptOnly).toBe(0);
   });
 
-  test("off and shadow: no record (the historical path is unchanged)", async () => {
-    for (const mode of ["off", "shadow"] as const) {
-      const t = convexTest(schema, modules);
-      const { chatId, bubble } = await seedAdoptedBubble(t, mode);
-      await t.mutation(internal.stream.startAssistant, { chatId, runId: DELIVERY });
-      expect((await t.run((ctx) => ctx.db.get(bubble)))?.runId).toBe(DELIVERY);
-      expect(await recordsOf(t, chatId, ADOPTED)).toEqual([]);
-    }
-  });
 });
 
 describe("the switch of the instance the turns go to (per-turn routed, legacy chats)", () => {
   async function chatWith(t: T, fields: Record<string, unknown>) {
     const { userId } = await seed(t, "on");
     return t.run(async (ctx) => {
-      // A second instance, on the legacy path: the resolution must pick the right one.
-      await ctx.db.insert("instances", {
-        name: "other",
-        gatewayUrl: "ws://gw2",
-        config: { transcriptProjection: "shadow" } as never,
-      });
+      // A second instance, a Hermes one (never projected): the resolution must pick the
+      // right one.
+      await ctx.db.insert("instances", { name: "other", gatewayUrl: "ws://gw2", kind: "hermes" as const });
       return ctx.db.insert("chats", { userId, updatedAt: 1, ...fields });
     });
   }
@@ -932,7 +914,7 @@ describe("the switch of the instance the turns go to (per-turn routed, legacy ch
   test("a bound chat reads its binding; the turn's own instance decides when given", async () => {
     const t = convexTest(schema, modules);
     const chatId = await chatWith(t, { instanceName: "other", agentId: "main" });
-    expect(await modeOf(t, chatId)).toBe("shadow");
+    expect(await modeOf(t, chatId)).toBe("off");
     expect(await modeOf(t, chatId, "prod")).toBe("on");
   });
 
@@ -1171,16 +1153,12 @@ describe("codex pass 3 — the switch never reads the agent catalogue (bounded, 
   const CATALOGUE = 3_000;
   const LIMIT = { documentsRead: 2_000 };
 
-  async function legacyChatWithCatalogue(mode: Mode, ownRows = 0) {
+  async function legacyChatWithCatalogue(ownRows = 0) {
     const t = convexTest({ schema, modules, transactionLimits: LIMIT });
     const ids = await t.run(async (ctx) => {
       const userId = await ctx.db.insert("users", {});
       await ctx.db.insert("profiles", { userId, role: "user" as const, canonical: "u" });
-      await ctx.db.insert("instances", {
-        name: "prod",
-        gatewayUrl: "ws://gw",
-        config: { transcriptProjection: mode } as never,
-      });
+      await ctx.db.insert("instances", { name: "prod", gatewayUrl: "ws://gw" });
       for (let i = 0; i < ownRows; i++) {
         await ctx.db.insert("userAgents", {
           userId,
@@ -1212,27 +1190,25 @@ describe("codex pass 3 — the switch never reads the agent catalogue (bounded, 
     return { t, ...ids };
   }
 
-  for (const mode of ["off", "shadow"] as const) {
-    test(`${mode}: an unbound chat's switch reads no catalogue — the send goes through`, async () => {
-      const { t, userId, chatId } = await legacyChatWithCatalogue(mode);
-      expect(
-        await t.run(async (ctx) => projectionModeOfChat(ctx, await ctx.db.get(chatId))),
-      ).toBe("off");
-      const asUser = t.withIdentity({ subject: `${userId}|session` });
-      await asUser.mutation(api.send.sendMessage, { chatId, text: "hi", clientMessageId: "m1" });
-      expect((await outboxOf(t, userId, "m1"))?.status).toBeDefined();
-    });
-  }
+  test("an unbound chat with no own agent row reads no catalogue — off, and the send goes through", async () => {
+    const { t, userId, chatId } = await legacyChatWithCatalogue();
+    expect(
+      await t.run(async (ctx) => projectionModeOfChat(ctx, await ctx.db.get(chatId))),
+    ).toBe("off");
+    const asUser = t.withIdentity({ subject: `${userId}|session` });
+    await asUser.mutation(api.send.sendMessage, { chatId, text: "hi", clientMessageId: "m1" });
+    expect((await outboxOf(t, userId, "m1"))?.status).toBeDefined();
+  });
 
   test("on: an unbound chat reads the owner's own rows, bounded — beyond the bound it is off", async () => {
-    const { t, chatId } = await legacyChatWithCatalogue("on", 70);
+    const { t, chatId } = await legacyChatWithCatalogue(70);
     expect(
       await t.run(async (ctx) => projectionModeOfChat(ctx, await ctx.db.get(chatId))),
     ).toBe("off");
   });
 
   test("on: an unbound chat whose owner names a default agent on the `on` instance reads `on`", async () => {
-    const { t, chatId } = await legacyChatWithCatalogue("on", 1);
+    const { t, chatId } = await legacyChatWithCatalogue(1);
     expect(
       await t.run(async (ctx) => projectionModeOfChat(ctx, await ctx.db.get(chatId))),
     ).toBe("on");
@@ -1249,7 +1225,7 @@ describe("codex pass 4 — a stale /resume is never sent (P1)", () => {
         name: "other",
         gatewayUrl: "ws://gw2",
         bridgeUrl: "http://bridge-other",
-        config: { transcriptProjection: "off" } as never,
+        kind: "hermes" as const,
       });
       await ctx.db.insert("userAgents", {
         userId,
@@ -1304,15 +1280,6 @@ describe("codex pass 4 — a stale /resume is never sent (P1)", () => {
     expect((await t.run((ctx) => ctx.db.get(id)))?.status).toBe("error");
   });
 
-  test("the instance left `on` since the sweep: nothing to resume", async () => {
-    const t = convexTest(schema, modules);
-    const { id } = await orphan(t, "on");
-    await t.run(async (ctx) => {
-      const prod = await ctx.db.query("instances").withIndex("by_name", (q) => q.eq("name", "prod")).first();
-      await ctx.db.patch(prod!._id, { config: { transcriptProjection: "shadow" } as never });
-    });
-    expect(await t.query(internal.stuckStreams.resumeTarget, { messageId: id })).toBeNull();
-  });
 });
 
 describe("codex pass 4 — held inputs are the RUN's, not the current segment's (P1)", () => {

@@ -14,8 +14,9 @@
 import { v, type Infer } from "convex/values";
 
 /** Mirrors the bridge's SNAPSHOT_SOURCES (bridge/src/core/snapshot-source.ts), plus
- *  `other` for a value this Convex does not know (a newer bridge). A lockstep test
- *  holds the two lists together. */
+ *  `other` for a value this Convex does not know (a newer bridge), plus the values a
+ *  bridge no longer produces but stored traces still carry (RETIRED_SNAPSHOT_SOURCES). A
+ *  lockstep test holds the lists together. */
 export const SNAPSHOT_SOURCES = [
   "chat_delta",
   "chat_final",
@@ -32,6 +33,13 @@ export const SNAPSHOT_SOURCES = [
   "other",
 ] as const;
 export type SnapshotSourceValue = (typeof SNAPSHOT_SOURCES)[number];
+
+/** Produced by the OpenClaw live path 0.102.0 removed (the cut-final wait and the
+ *  transcript recovery by `sessions.get`): still read, never written by a 0.102.0+ bridge. */
+export const RETIRED_SNAPSHOT_SOURCES: readonly SnapshotSourceValue[] = [
+  "chat_final_truncated",
+  "history_recovery",
+];
 
 export const snapshotSourceValidator = v.union(
   ...SNAPSHOT_SOURCES.map((s) => v.literal(s)),

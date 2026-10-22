@@ -5,7 +5,8 @@
 // `applyTranscript` on a projected conversation (`transcriptProjection: "on"`): a durable
 // row REPLACES the live bubble in the same message, settled in the same mutation (live
 // row deleted); rows that arrive before any live frame make the bubble; the three `on`
-// limitations of 0.95.0, each as a case; and `shadow` pinned unchanged next to them.
+// limitations of 0.95.0, each as a case. Every OpenClaw conversation is projected since
+// 0.102.0 (no `shadow` or rollback any more).
 
 import { convexTest, type TestConvex } from "convex-test";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
@@ -26,7 +27,8 @@ import { newBudget, PROJECTION_BYTE_BUDGET, projectBubbles } from "./lib/bubbleP
 
 const modules = import.meta.glob("./**/*.ts");
 type T = TestConvex<typeof schema>;
-type Mode = "on" | "shadow";
+/** Every OpenClaw instance is projected (0.102.0). */
+type Mode = "on";
 
 let prevAnon: string | undefined;
 beforeEach(() => {
@@ -326,28 +328,6 @@ describe("a durable row replaces the live bubble (CU-18)", () => {
     expect((await get(t, b))?.status).toBe("streaming");
   });
 
-  test("shadow: the same reads change no bubble and store no text", async () => {
-    const t = convexTest(schema, modules);
-    const ids = await seed(t, "shadow");
-    const b = await liveBubble(t, ids, "sendA", "Bonj");
-    const res = (await apply(t, ids.chatId, [said("a1", 2, "sendA", "Bonjour.")], {
-      hasActiveRun: false,
-      terminals: [terminal("sendA")],
-    })) as { settledRuns: string[] };
-    expect(res.settledRuns).toEqual([]);
-    expect((await get(t, b))?.status).toBe("streaming");
-    const stored = await t.run((ctx) =>
-      ctx.db
-        .query("transcriptRows")
-        .withIndex("by_chat_session_entry", (q) =>
-          q.eq("chatId", ids.chatId).eq("sessionKey", SK).eq("entryId", "a1"),
-        )
-        .first(),
-    );
-    expect(stored?.textSig).toBeUndefined();
-    expect(await t.run((ctx) => ctx.db.query("transcriptRowTexts").collect())).toHaveLength(0);
-    expect(stored?.messageId).toBeUndefined();
-  });
 });
 
 describe("rows that arrive before any live frame make the bubble", () => {
@@ -626,30 +606,6 @@ describe("busy is the gateway's fact on a projected chat (CU-2)", () => {
     expect(until!).toBeLessThanOrEqual(Date.now() + SESSION_ACTIVE_FRESH_MS);
   });
 
-  test("on → rollback with a re-check armed by a skewed read: the queue leaves within the bound (codex phase 6 pass 2)", async () => {
-    vi.useFakeTimers();
-    const t = convexTest(schema, modules);
-    const ids = await seed(t, "on");
-    await apply(t, ids.chatId, [], { hasActiveRun: true, activeRunIds: ["r"], readAt: Date.now() + 60 * 60_000 });
-    const q = await queueSend(t, ids);
-    await t.mutation(internal.bridge.drainAfterCallRefusal, { chatId: ids.chatId });
-    expect((await t.run((ctx) => ctx.db.get(q)))?.status).toBe("queued");
-    const armed = (await t.run((ctx) => ctx.db.get(ids.chatId)))?.projectedHoldRecheckAt;
-    expect(armed!).toBeLessThanOrEqual(Date.now() + SESSION_ACTIVE_FRESH_MS);
-    await setMode(t, "shadow");
-    vi.advanceTimersByTime(SESSION_ACTIVE_FRESH_MS + 5_000);
-    await t.finishAllScheduledFunctions(vi.runAllTimers);
-    expect((await t.run((ctx) => ctx.db.get(q)))?.status, "held by a bridge-clock deadline").not.toBe("queued");
-    vi.useRealTimers();
-  });
-
-  test("shadow: the gateway's fact is measured, never a hold", async () => {
-    const t = convexTest(schema, modules);
-    const ids = await seed(t, "shadow");
-    await apply(t, ids.chatId, [], { hasActiveRun: true, activeRunIds: ["r"] });
-    expect(await t.run((ctx) => isChatBusy(ctx, ids.chatId, "shadow"))).toBe(false);
-    expect(await t.run((ctx) => isChatBusy(ctx, ids.chatId))).toBe(false);
-  });
 });
 
 // ── Codex phase 4, pass 1 ───────────────────────────────────────────────────────────
@@ -798,14 +754,6 @@ describe("pass 1 #2 — a run admitted by its ACK holds the chat until it shows 
     expect((await t.run((ctx) => ctx.db.get(q)))?.status).toBe("pending");
   });
 
-  test("shadow: no marker", async () => {
-    const t = convexTest(schema, modules);
-    const ids = await seed(t, "shadow");
-    const ob = await t.run(async (ctx) => (await ctx.db.query("outbox").collect())[0]!._id);
-    await t.run((ctx) => ctx.db.patch(ob, { status: "pending" }));
-    await t.mutation(internal.bridge.markOutbox, { outboxId: ob, status: "sent" });
-    expect((await admittedAt(t, ob))).toBeUndefined();
-  });
 });
 
 describe("pass 1 #3 — a settled foreground run is named again by every read", () => {
@@ -904,28 +852,7 @@ describe("pass 1 #7 — 'the agent works' has the busy check's deadline", () => 
 
 // ── Codex phase 4, pass 2 ───────────────────────────────────────────────────────────
 
-const setMode = (t: T, mode: Mode) =>
-  t.run(async (ctx) => {
-    const inst = (await ctx.db.query("instances").collect())[0]!;
-    await ctx.db.patch(inst._id, { config: { transcriptProjection: mode } as never });
-  });
-
 describe("pass 2 #1 — a scheduled projection step re-validates instance and mode when it runs", () => {
-  test("a continuation scheduled before a switch back to shadow writes nothing", async () => {
-    vi.useFakeTimers();
-    const t = convexTest(schema, modules);
-    const ids = await seed(t, "on");
-    const rows: Row[] = [];
-    for (let i = 0; i < 23; i++) rows.push(said(`a${i}`, 10 + i, `run${String(i).padStart(2, "0")}`, `R${i}`));
-    await apply(t, ids.chatId, rows, { hasActiveRun: true, activeRunIds: rows.map((r) => r.runId!) });
-    await apply(t, ids.chatId, [], { hasActiveRun: false });
-    const before = (await assistants(t, ids.chatId)).length;
-    expect(before).toBe(20);
-    await setMode(t, "shadow");
-    await t.finishAllScheduledFunctions(vi.runAllTimers);
-    expect(await assistants(t, ids.chatId)).toHaveLength(before);
-  });
-
   test("…nor after the chat was rebound to another instance", async () => {
     vi.useFakeTimers();
     const t = convexTest(schema, modules);
@@ -1250,47 +1177,6 @@ describe("pass 3 #1 — a send parked behind a projected hold is re-checked, wha
     expect(await t.run((ctx) => isChatBusy(ctx, ids.chatId, "on"))).toBe(false);
   });
 
-  test("shadow: a parked send arms nothing (the legacy turn-end drains own it)", async () => {
-    const t = convexTest(schema, modules);
-    const ids = await seed(t, "shadow");
-    await liveBubble(t, ids, "sendA", "en cours");
-    const asUser = t.withIdentity({ subject: `${ids.userId}|session` });
-    await asUser.mutation(api.send.sendMessage, { chatId: ids.chatId, text: "ensuite", clientMessageId: "b" });
-    expect(await pendingRechecks(t)).toHaveLength(0);
-  });
-
-  test("rolled back to shadow before it runs: the re-check runs the LEGACY drain (the queue leaves), and never re-arms", async () => {
-    vi.useFakeTimers();
-    const t = convexTest(schema, modules);
-    const ids = await seed(t, "on");
-    await apply(t, ids.chatId, [], { hasActiveRun: true, activeRunIds: ["r"] });
-    const q = await queueSend(t, ids);
-    await t.mutation(internal.bridge.drainAfterCallRefusal, { chatId: ids.chatId });
-    expect(await pendingRechecks(t)).toHaveLength(1);
-    await setMode(t, "shadow");
-    vi.advanceTimersByTime(SESSION_ACTIVE_FRESH_MS + 5_000);
-    await t.finishAllScheduledFunctions(vi.runAllTimers);
-    // Legacy-idle (no turn streams): the queued send was dispatched by the legacy rules.
-    expect((await t.run((ctx) => ctx.db.get(q)))?.status).not.toBe("queued");
-    expect(await pendingRechecks(t)).toHaveLength(0);
-    const chat = await t.run((ctx) => ctx.db.get(ids.chatId));
-    expect(chat?.projectedHoldRecheckId).toBeUndefined();
-  });
-
-  test("…and a legacy turn streaming at that moment keeps the queue for its own finalize", async () => {
-    vi.useFakeTimers();
-    const t = convexTest(schema, modules);
-    const ids = await seed(t, "on");
-    await apply(t, ids.chatId, [], { hasActiveRun: true, activeRunIds: ["r"] });
-    const q = await queueSend(t, ids);
-    await t.mutation(internal.bridge.drainAfterCallRefusal, { chatId: ids.chatId });
-    await setMode(t, "shadow");
-    await liveBubble(t, ids, "sendA", "en cours");
-    vi.advanceTimersByTime(SESSION_ACTIVE_FRESH_MS + 5_000);
-    await t.finishAllScheduledFunctions(vi.runAllTimers);
-    expect((await t.run((ctx) => ctx.db.get(q)))?.status).toBe("queued");
-    expect(await pendingRechecks(t)).toHaveLength(0);
-  });
 });
 
 const CJK = "漢".repeat(32_700);
@@ -1323,18 +1209,6 @@ describe("pass 3 #2 — a row's text never rides on its identity", () => {
   }
   const replay = (n: number): Row[] =>
     Array.from({ length: n }, (_, i) => said(`big-${i}`, 10 + i, "bigRun", "", { text: undefined }));
-
-  test("200 rows of 32 700 CJK chars written in `on`, replayed in shadow: the read commits under the real limits", async () => {
-    const t = convexTest({ schema, modules, transactionLimits: true });
-    const ids = await seed(t, "on");
-    await bigRowsWrittenInOn(t, ids, 200);
-    await setMode(t, "shadow");
-    const res = (await apply(t, ids.chatId, replay(200), { kind: "page" })) as { ok: boolean };
-    expect(res.ok).toBe(true);
-    // Nothing of what the rows say was lost by the identity replay.
-    const rows = await t.run((ctx) => ctx.db.query("transcriptRows").collect());
-    expect(rows.filter((r) => r.textSig === rowTextSignature(CJK, undefined))).toHaveLength(200);
-  });
 
   test("on: one apply carrying 200 rows of that text is REFUSED whole (too_large), nothing written", async () => {
     const t = convexTest({ schema, modules, transactionLimits: true });
@@ -1878,13 +1752,6 @@ describe("pass 5 #1 — a bubble deleted before its rows were projected: its seg
     expect((await assistants(t, ids.chatId)).filter((m) => m.runId === "sendA")).toHaveLength(0);
   });
 
-  test("…and after a rollback to shadow the text is gone too (it was purged in `on`)", async () => {
-    vi.useFakeTimers();
-    const t = convexTest(schema, modules);
-    await deletedBeforeProjection(t);
-    await setMode(t, "shadow");
-    expect(await textCount(t)).toBe(0);
-  });
 });
 
 describe("pass 5 #1 (bis) — deleted before ANY of its rows was read", () => {
@@ -2321,42 +2188,6 @@ describe("pass 7 #1 — a deleted run segment opens no live bubble again, in any
     expect((await assistants(t, ids.chatId)).filter((m) => m.runId === ANNOUNCE_RUN)).toHaveLength(0);
   });
 
-  test("…and after a rollback to shadow too", async () => {
-    vi.useFakeTimers();
-    const t = convexTest(schema, modules);
-    const ids = await projectedThenDeleted(t);
-    await setMode(t, "shadow");
-    const landed = await t.mutation(internal.stream.startAssistant, {
-      chatId: ids.chatId,
-      runId: ANNOUNCE_RUN,
-      turnSessionKey: SK,
-      boundInstanceName: "prod",
-    });
-    expect(landed).toBeNull();
-  });
-
-  test("off: a run merged into a bubble the person deleted opens nothing either (the merge record says so)", async () => {
-    const t = convexTest(schema, modules);
-    const ids = await seed(t, "on");
-    await setMode(t, "off" as Mode);
-    const parent = await t.run((ctx) =>
-      ctx.db.insert("messages", {
-        chatId: ids.chatId,
-        userId: ids.userId,
-        role: "assistant" as const,
-        status: "complete" as const,
-        text: "parent",
-        runId: "P",
-        updatedAt: 1,
-      }),
-    );
-    await t.run(async (ctx) => {
-      await ctx.db.insert("runBubbles", { chatId: ids.chatId, runId: ANNOUNCE_RUN, messageId: parent, createdAt: 1 });
-      await ctx.db.delete(parent);
-    });
-    const landed = await t.mutation(internal.stream.startAssistant, { chatId: ids.chatId, runId: ANNOUNCE_RUN });
-    expect(landed).toBeNull();
-  });
 });
 
 describe("pass 7 #2 — only a row attributed to a run keeps its text", () => {
@@ -2406,8 +2237,8 @@ describe("pass 7 #2 — only a row attributed to a run keeps its text", () => {
 });
 
 describe("pass 7 #3 — deleting many answers stays within Convex's limits, whatever the mode", () => {
-  async function manyAnswersWithMerges(t: T, mode: Mode | "off", projected: boolean) {
-    const ids = projected ? await seed(t, mode as Mode) : await seedNoRead(t, mode);
+  async function manyAnswersWithMerges(t: T, projected: boolean) {
+    const ids = projected ? await seed(t, "on") : await seedNoRead(t);
     let first: Id<"messages"> | null = null;
     for (let a = 0; a < 20; a++) {
       await t.run(async (ctx) => {
@@ -2439,11 +2270,11 @@ describe("pass 7 #3 — deleting many answers stays within Convex's limits, what
     return { ...ids, first: first! as Id<"messages"> };
   }
 
-  async function seedNoRead(t: T, mode: Mode | "off") {
+  async function seedNoRead(t: T) {
     return t.run(async (ctx) => {
       const userId = await ctx.db.insert("users", {});
       await ctx.db.insert("profiles", { userId, role: "user" as const, canonical: "u" });
-      await ctx.db.insert("instances", { name: "prod", gatewayUrl: "ws://gw", config: { transcriptProjection: mode } as never });
+      await ctx.db.insert("instances", { name: "prod", gatewayUrl: "ws://gw" });
       const chatId = await ctx.db.insert("chats", { userId, updatedAt: 1, instanceName: "prod", agentId: "main" });
       return { userId, chatId };
     });
@@ -2456,7 +2287,7 @@ describe("pass 7 #3 — deleting many answers stays within Convex's limits, what
 
   test("never-on conversation (no transcript read ever): 20 answers × 50 merges deleted at once — no transcript work at all", async () => {
     const t = convexTest({ schema, modules, transactionLimits: true });
-    const ids = await manyAnswersWithMerges(t, "off", false);
+    const ids = await manyAnswersWithMerges(t, false);
     await t.withIdentity({ subject: `${ids.userId}|session` }).mutation(api.messages.deleteMessage, { messageId: ids.first });
     expect(await transcriptJobs(t)).toHaveLength(0);
     expect(await t.run(async (ctx) => (await ctx.db.query("transcriptTombstones").collect()).length)).toBe(0);
@@ -2466,7 +2297,7 @@ describe("pass 7 #3 — deleting many answers stays within Convex's limits, what
   test("on: the same deletion commits, schedules at most one transcript step per answer, and tombstones every merge", async () => {
     vi.useFakeTimers();
     const t = convexTest({ schema, modules, transactionLimits: true });
-    const ids = await manyAnswersWithMerges(t, "on", true);
+    const ids = await manyAnswersWithMerges(t, true);
     // The session holds rows (something to purge).
     await apply(t, ids.chatId, [said("x1", 2, "ans0", "texte")], { kind: "live", textsOnly: true });
     await t.withIdentity({ subject: `${ids.userId}|session` }).mutation(api.messages.deleteMessage, { messageId: ids.first });
@@ -2720,17 +2551,6 @@ describe("pass 8 #4 — a merged text document is bounded again before it is wri
 // ── Codex phase 4, pass 9 ───────────────────────────────────────────────────────────
 
 describe("pass 9 #1 — a conversation that never stored text pays nothing for the transcript on deletion", () => {
-  test("shadow, never on: 280 turns with 50 merges each, first message deleted under the real limits — no tombstone, no step", async () => {
-    vi.useFakeTimers();
-    const t = convexTest({ schema, modules, transactionLimits: true });
-    const ids = await seed(t, "shadow");
-    const first = await answersWithMerges(t, ids, 280, 0);
-    await t.withIdentity({ subject: `${ids.userId}|session` }).mutation(api.messages.deleteMessage, { messageId: first });
-    expect((await assistants(t, ids.chatId)).filter((m) => m.runId?.startsWith("ans"))).toHaveLength(0);
-    expect(await t.run(async (ctx) => (await ctx.db.query("transcriptTombstones").collect()).length)).toBe(0);
-    expect(await transcriptJobs8(t)).toHaveLength(0);
-  }, 300_000);
-
   test("on: the same 280-turn deletion adds one insert per answer and ONE step", async () => {
     vi.useFakeTimers();
     const t = convexTest({ schema, modules, transactionLimits: true });
@@ -3014,49 +2834,6 @@ describe("pass 10 #5 / pass 11 #1 — a run's cuts are read whole, or the run is
 
 // ── Codex phase 4, pass 11 ──────────────────────────────────────────────────────────
 
-describe("pass 11 #1 — a segment past 64 is purged on deletion, even unassigned and after a rollback", () => {
-  test("on → shadow: the segment-65 bubble deleted, its unassigned row's text is purged by the purge steps", async () => {
-    vi.useFakeTimers();
-    const t = convexTest(schema, modules);
-    const ids = await seed(t, "on");
-    // 65 cuts of run R, and a row of segment 65 whose text was stored (never assigned).
-    await t.run(async (ctx) => {
-      for (let k = 0; k < 65; k++) {
-        await ctx.db.insert("transcriptRows", {
-          chatId: ids.chatId, instanceName: "prod", sessionKey: SK, sessionId: "s-1",
-          entryId: `c${k}`, seq: 3 + 2 * k, role: "user", runId: `cs${k}`, sendId: `cs${k}`,
-          steerTargetRunId: "R", hidden: false, visible: true, updatedAt: 1,
-        });
-      }
-      await insertRowWithText(
-        ctx,
-        { chatId: ids.chatId, instanceName: "prod", sessionKey: SK, sessionId: "s-1", entryId: "late", seq: 500, role: "assistant", runId: "R", hidden: false, visible: true, updatedAt: 1 },
-        "réponse du segment 65",
-      );
-    });
-    const bubble65 = await t.run((ctx) =>
-      ctx.db.insert("messages", {
-        chatId: ids.chatId, userId: ids.userId, role: "assistant" as const, status: "complete" as const,
-        text: "réponse du segment 65", runId: "R", runSegment: 65, turnSessionKey: SK, boundInstance: "prod", updatedAt: 1,
-      }),
-    );
-    await t.withIdentity({ subject: `${ids.userId}|session` }).mutation(api.messages.deleteMessage, { messageId: bubble65 });
-    await setMode(t, "shadow");
-    await t.finishAllScheduledFunctions(vi.runAllTimers);
-    expect(await textCount(t)).toBe(0);
-  });
-
-  test("a run with more tombstones than one read takes: every row of it counts as deleted (conservative)", () => {
-    const tombs = new Map<number, Id<"messages"> | undefined>([[ALL_SEGMENTS, undefined]]);
-    expect(tombstoneHit(tombs, { seqs: [], sends: [], complete: true }, 5)).toEqual({});
-    expect(tombstoneHit(new Map([[3, undefined]]), { seqs: [1, 2], sends: [], complete: false }, 5)).toEqual({});
-    // An ordinal past the known cuts resolves to the last one known (conservative, pass 27).
-    expect(tombstoneHit(new Map([[3, undefined]]), { seqs: [1, 2], sends: [], complete: true }, 5)).toEqual({});
-    expect(tombstoneHit(new Map([[1, undefined]]), { seqs: [4, 8], sends: [], complete: true }, 3)).toBeNull();
-    expect(tombstoneHit(new Map(), { seqs: [], sends: [], complete: false }, 5)).toBeNull();
-  });
-});
-
 describe("pass 11 #3 — a bubble born from rows keeps the run's error or timeout", () => {
   for (const status of ["error", "timeout"] as const) {
     test(`on: the transcript arrives before the live ${status} terminal: the bubble is born \`error\`, and stays so`, async () => {
@@ -3149,15 +2926,6 @@ describe("pass 12 #1 — a deleted USER message takes its send's run with it, bu
     expect(await textCount(t)).toBe(1);
   });
 
-  test("shadow: a user message deletion writes no tombstone and schedules nothing", async () => {
-    vi.useFakeTimers();
-    const t = convexTest({ schema, modules, transactionLimits: true });
-    const ids = await seed(t, "shadow");
-    await deleteUser(t, ids);
-    expect(await t.run((ctx) => ctx.db.query("transcriptTombstones").collect())).toHaveLength(0);
-    const steps = await t.run((ctx) => ctx.db.system.query("_scheduled_functions").collect());
-    expect(steps.filter((f) => /transcriptProjection/.test(f.name))).toHaveLength(0);
-  });
 });
 
 describe("pass 12 #2 — a bubble is recomposed only when EVERY run it shows is assigned and known", () => {
@@ -3329,52 +3097,6 @@ describe("pass 13 #1 — a deleted STEER takes the segment it started with it", 
   });
 });
 
-describe("pass 13 #2 — a re-sent message's EARLIER sends go with it too", () => {
-  const SA = `webchat-${"a".repeat(64)}`;
-  const SB = `webchat-${"b".repeat(64)}`;
-
-  test("on, then rolled back to shadow: deleting the message purges the unassigned text of its first send", async () => {
-    vi.useFakeTimers();
-    const t = convexTest({ schema, modules, transactionLimits: true });
-    const ids = await seed(t, "on");
-    const asUser = t.withIdentity({ subject: `${ids.userId}|session` });
-    // Settle seed's turn so the new send dispatches at once.
-    await t.run(async (ctx) => {
-      for (const o of await ctx.db.query("outbox").collect()) await ctx.db.delete(o._id);
-      await ctx.db.delete(ids.userMessageId);
-    });
-    const { outboxId } = await asUser.mutation(api.send.sendMessage, { chatId: ids.chatId, text: "question B", clientMessageId: "b" });
-    const target = { instanceName: "prod", agentId: "main" };
-    await t.mutation(internal.bridge.lastGateBeforeSend, { outboxId, target, sendId: SA });
-    const userMsg = (await t.run((ctx) => ctx.db.get(outboxId)))!.messageId!;
-    expect((await t.run((ctx) => ctx.db.get(userMsg)))?.sendId).toBe(SA);
-    // Send A ran far enough for its answer's text to be stored (unassigned).
-    await postTextsInChunks(t, ids.chatId, [said("x1", 7, SA, "Réponse A secrète.")]);
-    // The dispatch then failed: an error card; deleting it (it has no run) regenerates.
-    await t.mutation(internal.bridge.failDispatch, { outboxId, reason: "send_failed" });
-    const card = (await assistants(t, ids.chatId)).find((m) => m.status === "error");
-    expect(card).toBeDefined();
-    expect(card?.runId).toBeUndefined();
-    await asUser.mutation(api.messages.deleteMessage, { messageId: card!._id });
-    const regen = (await t.run((ctx) => ctx.db.query("outbox").collect())).find((o) => o._id !== outboxId && o.messageId === userMsg);
-    expect(regen).toBeDefined();
-    await t.mutation(internal.bridge.lastGateBeforeSend, { outboxId: regen!._id, target, sendId: SB });
-    await t.mutation(internal.bridge.markOutbox, { outboxId: regen!._id, status: "sent", sendId: SB } as never);
-    expect((await t.run((ctx) => ctx.db.get(userMsg)))?.sendId).toBe(SB);
-    // Rolled back to shadow; the person deletes the message.
-    await setMode(t, "shadow");
-    await asUser.mutation(api.messages.deleteMessage, { messageId: userMsg });
-    // In the deletion's own transaction (no read): both sends' runs are tombstoned — the
-    // message kept its earlier send identity when the regenerate re-stamped it.
-    const atOnce = await t.run((ctx) => ctx.db.query("transcriptTombstones").collect());
-    expect(new Set(atOnce.filter((x) => x.sessionKey === "").map((x) => x.runId))).toEqual(new Set([SA, SB]));
-    await t.finishAllScheduledFunctions(vi.runAllTimers);
-    expect(await textCount(t)).toBe(0);
-    const tombs = await t.run((ctx) => ctx.db.query("transcriptTombstones").collect());
-    expect(new Set(tombs.filter((x) => x.sessionKey === "").map((x) => x.runId))).toEqual(new Set([SA, SB]));
-  });
-});
-
 describe("pass 13 #2 (bis) — sends past the inline bound are tombstoned by the follow-up", () => {
   test("on: 20 sends of one message — the 18th's stored text is purged, every send tombstoned", async () => {
     vi.useFakeTimers();
@@ -3403,38 +3125,6 @@ describe("pass 13 #2 (bis) — sends past the inline bound are tombstoned by the
     expect(runs.size).toBe(21);
     for (let i = 0; i < 20; i++) expect(runs.has(`send-r${i}`)).toBe(true);
   });
-});
-
-describe("pass 14 #1 — the deletion's follow-up is bounded in BYTES read, outbox prompts included", () => {
-  test("on then rolled back: 33 regenerated sends of a 600 000-byte prompt — the follow-up completes, the old send's text is purged", async () => {
-    vi.useFakeTimers();
-    const t = convexTest({ schema, modules, transactionLimits: true });
-    const ids = await seed(t, "on");
-    const prompt = "p".repeat(600_000);
-    for (let k = 0; k < 33; k += 4) {
-      await t.run(async (ctx) => {
-        for (let i = k; i < Math.min(k + 4, 33); i++) {
-          await ctx.db.insert("outbox", {
-            chatId: ids.chatId,
-            userId: ids.userId,
-            clientMessageId: `big${i}`,
-            messageId: ids.userMessageId,
-            text: prompt,
-            attachmentIds: [],
-            status: "failed",
-            sendId: `send-big${i}`,
-          } as never);
-        }
-      });
-    }
-    await postTextsInChunks(t, ids.chatId, [said("b30", 9, "send-big30", "Réponse d'un ancien envoi.")]);
-    await setMode(t, "shadow");
-    await t.withIdentity({ subject: `${ids.userId}|session` }).mutation(api.messages.deleteMessage, { messageId: ids.userMessageId });
-    await t.finishAllScheduledFunctions(vi.runAllTimers);
-    expect(await textCount(t)).toBe(0);
-    const runs = new Set((await t.run((ctx) => ctx.db.query("transcriptTombstones").collect())).map((x) => x.runId));
-    for (let i = 0; i < 33; i++) expect(runs.has(`send-big${i}`)).toBe(true);
-  }, 120_000);
 });
 
 describe("pass 14 #3 — the live terminal of the same run tells WHY a transcript-born error bubble failed", () => {
@@ -3484,38 +3174,6 @@ describe("pass 14 #3 — the live terminal of the same run tells WHY a transcrip
     expect(doc?.errorCode).toBe("provider_billing");
     expect(doc?.error).toBe("insufficient credits");
     // No side effect of a terminal ran again (no retry, no drain, no notification step).
-    const after = await t.run((ctx) => ctx.db.system.query("_scheduled_functions").collect());
-    expect(after.length).toBe(before.length);
-  });
-
-  test("after a rollback to shadow: the bubble the live run already landed on gets its cause when its terminal arrives", async () => {
-    vi.useFakeTimers();
-    const t = convexTest({ schema, modules, transactionLimits: true });
-    const ids = await bornError(t);
-    // The live run landed on the born bubble while `on`…
-    const landed = (await t.mutation(internal.stream.startAssistant, {
-      chatId: ids.chatId,
-      runId: "sendA",
-      turnSessionKey: SK,
-      boundInstanceName: "prod",
-    })) as Id<"messages">;
-    expect(landed).toBe(ids.born._id);
-    // …the instance is rolled back, then its terminal arrives.
-    await setMode(t, "shadow");
-    const before = await t.run((ctx) => ctx.db.system.query("_scheduled_functions").collect());
-    const res = (await t.mutation(internal.stream.finalize, {
-      messageId: landed,
-      status: "error",
-      error: "insufficient credits",
-      errorKind: "provider_billing",
-      expectedRunId: "sendA",
-      boundInstanceName: "prod",
-    } as never)) as { transitioned: boolean };
-    expect(res.transitioned).toBe(false);
-    const doc = await get(t, landed);
-    expect(doc?.errorCode).toBe("provider_billing");
-    expect(doc?.error).toBe("insufficient credits");
-    expect(doc?.status).toBe("error");
     const after = await t.run((ctx) => ctx.db.system.query("_scheduled_functions").collect());
     expect(after.length).toBe(before.length);
   });
@@ -3602,38 +3260,6 @@ describe("pass 16 #1 — a finished service job's purge never touches the next j
     expect(j2.textSig).not.toBe(TEXT_PURGED_SIG);
     expect(await docsOfRow(t, "j1")).toHaveLength(0);
     expect((await docsOfRow(t, "j2")).map((d) => d.text)).toEqual(["Résumé du job 2."]);
-  });
-});
-
-describe("pass 16 #3 — after a rollback, a live start lands on the answer already projected", () => {
-  test("rolled back to shadow before the live start: no second answer, one summarize check", async () => {
-    vi.useFakeTimers();
-    const t = convexTest({ schema, modules, transactionLimits: true });
-    const ids = await seed(t, "on");
-    await apply(t, ids.chatId, [user("u1", 1, "sendA"), said("a1", 2, "sendA", "Réponse.")], {
-      terminals: [terminal("sendA")],
-      hasActiveRun: false,
-    });
-    const born = (await assistants(t, ids.chatId)).filter((m) => m.runId === "sendA");
-    expect(born).toHaveLength(1);
-    await setMode(t, "shadow");
-    const before = (await t.run((ctx) => ctx.db.system.query("_scheduled_functions").collect())).length;
-    const landed = await t.mutation(internal.stream.startAssistant, {
-      chatId: ids.chatId,
-      runId: "sendA",
-      turnSessionKey: SK,
-      boundInstanceName: "prod",
-    });
-    expect(landed).toBe(born[0]!._id);
-    await t.mutation(internal.stream.finalize, {
-      messageId: landed as Id<"messages">,
-      status: "complete",
-      text: "Réponse.",
-      expectedRunId: "sendA",
-    } as never);
-    expect((await assistants(t, ids.chatId)).filter((m) => m.runId === "sendA")).toHaveLength(1);
-    const after = await t.run((ctx) => ctx.db.system.query("_scheduled_functions").collect());
-    expect(after.length).toBe(before);
   });
 });
 
@@ -3747,19 +3373,6 @@ describe("pass 21 — the bridge finds the bubble the transcript made for a run 
     expect((await ask(t, ids.chatId, { segment: -1 })).messageId).toBeNull();
   });
 
-  test("after a rollback to shadow: still found (the run was closed while `on`)", async () => {
-    const t = convexTest({ schema, modules, transactionLimits: true });
-    const ids = await bornA(t);
-    await setMode(t, "shadow");
-    expect((await ask(t, ids.chatId)).messageId).toBe(ids.born._id);
-  });
-
-  test("a conversation that never stored text answers none", async () => {
-    const t = convexTest({ schema, modules, transactionLimits: true });
-    const ids = await seed(t, "shadow");
-    expect((await ask(t, ids.chatId)).messageId).toBeNull();
-  });
-
   test("through the bridge ingest, with the instance's own secret", async () => {
     const t = convexTest({ schema, modules, transactionLimits: true });
     const ids = await bornA(t);
@@ -3795,8 +3408,8 @@ describe("pass 24 #2 — the run's live terminal corrects an outcome an idle rea
       finalizeCause: "gateway_final",
     } as never) as Promise<{ transitioned: boolean }>;
 
-  for (const rolledBack of [false, true]) {
-    test(`live bubble closed by an idle read, then chat:error: it becomes the error${rolledBack ? " (rolled back)" : ""}`, async () => {
+  {
+    test("live bubble closed by an idle read, then chat:error: it becomes the error", async () => {
       vi.useFakeTimers();
       const t = convexTest({ schema, modules, transactionLimits: true });
       const ids = await seed(t, "on");
@@ -3805,7 +3418,6 @@ describe("pass 24 #2 — the run's live terminal corrects an outcome an idle rea
       const closed = await get(t, b);
       expect(closed?.status).toBe("complete");
       expect(closed?.closeInferred).toBe(true);
-      if (rolledBack) await setMode(t, "shadow");
       const before = (await t.run((ctx) => ctx.db.system.query("_scheduled_functions").collect())).length;
       await liveError(t, b);
       const doc = await get(t, b);
@@ -3851,7 +3463,7 @@ describe("pass 24 #2 — the run's live terminal corrects an outcome an idle rea
 describe("pass 27 — a deleted span is identified by a STABLE boundary, never by an ordinal", () => {
   /** Run R: segment 0 answer (seq 20), a known cut at 30, the segment-1 answer (seq 35,
    *  assigned to its bubble), then an UNASSIGNED copy at 40 (a text chunk ahead of a read). */
-  async function codexSequence(t: T, rollback: boolean) {
+  async function codexSequence(t: T) {
     const ids = await seed(t, "on");
     const seg1 = await t.run(async (ctx) => {
       const m = await ctx.db.insert("messages", {
@@ -3878,7 +3490,6 @@ describe("pass 27 — a deleted span is identified by a STABLE boundary, never b
       const a1 = (await ctx.db.query("transcriptRows").collect()).find((r) => r.entryId === "a1")!;
       await ctx.db.patch(a1._id, { messageId: seg1 });
     });
-    if (rollback) await setMode(t, "shadow");
     await t.withIdentity({ subject: `${ids.userId}|session` }).mutation(api.messages.deleteMessage, { messageId: seg1 });
     // A LATE, EARLIER cut lands before the deletion's follow-up has run.
     await apply(t, ids.chatId, [user("c10", 10, "sendT", { steerTargetRunId: "R" })], { kind: "live" });
@@ -3891,7 +3502,7 @@ describe("pass 27 — a deleted span is identified by a STABLE boundary, never b
   test("on: the copy stays purged and a later row recreates nothing of the deleted span", async () => {
     vi.useFakeTimers();
     const t = convexTest({ schema, modules, transactionLimits: true });
-    const ids = await codexSequence(t, false);
+    const ids = await codexSequence(t);
     expect(await secretTexts(t)).toBe(0);
     // A new row of the run, then its terminal.
     await apply(t, ids.chatId, [said("a2", 50, "R", "SECRET suite 50")], { kind: "live", textsOnly: true });
@@ -3903,13 +3514,6 @@ describe("pass 27 — a deleted span is identified by a STABLE boundary, never b
     expect(await secretTexts(t)).toBe(0);
     const answers = (await assistants(t, ids.chatId)).filter((m) => m.runId === "R");
     expect(answers.some((m) => (m.text ?? "").includes("SECRET"))).toBe(false);
-  });
-
-  test("after a rollback to shadow: the copy's text is purged anyway", async () => {
-    vi.useFakeTimers();
-    const t = convexTest({ schema, modules, transactionLimits: true });
-    await codexSequence(t, true);
-    expect(await secretTexts(t)).toBe(0);
   });
 
   test("property: random late cuts around a deleted span never bring a deleted row back", async () => {

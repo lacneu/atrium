@@ -1,5 +1,5 @@
-// THE SEND PATH, projection `on` vs off (phase 3): the real performSend against a
-// scripted gateway, reading what `chat.send` carried and whether a turn began.
+// THE SEND PATH (phase 3, every OpenClaw session since 0.102.0): the real performSend
+// against a scripted gateway, reading what `chat.send` carried and whether a turn began.
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { performSend, planProjectedStop, sendProjectedStop } from "../src/server.js";
@@ -27,7 +27,7 @@ const ROUTING = {
   instanceName: "primary",
 };
 
-function body(projection: "on" | "shadow" | "off", extra: Record<string, unknown> = {}) {
+function body(extra: Record<string, unknown> = {}) {
   return {
     ...ROUTING,
     text: "bonjour",
@@ -40,7 +40,7 @@ function body(projection: "on" | "shadow" | "off", extra: Record<string, unknown
     switchedFromInstanceName: null,
     sessionSettings: null,
     referenceAttachments: [],
-    config: { transcriptProjection: projection },
+    config: null,
     ...extra,
   } as unknown as Parameters<typeof performSend>[1];
 }
@@ -116,24 +116,13 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-describe("off / shadow: the legacy send, unchanged", () => {
-  for (const mode of ["off", "shadow"] as const) {
-    it(`${mode}: no queueMode even with a run active, and the turn begins on the ACK`, async () => {
-      const h = await harness(ACTIVE);
-      await performSend(h.session, body(mode), h.writer, null, null);
-      expect(sends(h.gw)[0]).not.toHaveProperty("queueMode");
-      expect(h.started).toEqual(["ack-1"]);
-    });
-  }
-});
-
 describe("on: the Control UI's send", () => {
   it("idle gateway: no queueMode (no run policy), a turn begins", async () => {
     const h = await harness({
       "chat.history": { payload: { sessionInfo: { hasActiveRun: false, effectiveQueueMode: "steer" } } },
       "chat.send": { payload: { status: "started", runId: "ack-1" } },
     });
-    await performSend(h.session, body("on"), h.writer, null, null);
+    await performSend(h.session, body(), h.writer, null, null);
     expect(sends(h.gw)[0]).not.toHaveProperty("queueMode");
     expect(h.started).toEqual([]);
     await expectTurnBornFromRun(h, "ack-1");
@@ -142,13 +131,10 @@ describe("on: the Control UI's send", () => {
   it("phase 4: an ACK that names no run never opens the turn to ANY run — the send's identity is its run", async () => {
     const idle = { "chat.history": { payload: { sessionInfo: { hasActiveRun: false } } } };
     const on = await harness({ ...idle, "chat.send": { payload: { status: "started" } } });
-    await performSend(on.session, body("on"), on.writer, null, null);
+    await performSend(on.session, body(), on.writer, null, null);
     const key = sends(on.gw)[0]!.idempotencyKey as string;
     expect(key).toBeTruthy();
     expect(on.session.runManager.activeRunIds).toEqual([key]);
-    const off = await harness({ ...idle, "chat.send": { payload: { status: "started" } } });
-    await performSend(off.session, body("shadow"), off.writer, null, null);
-    expect(off.session.runManager.activeRunIds).toEqual([]);
   });
 
   it("a run active at the gateway, none here: explicit queueMode, the send is a held input — that run is never its bubble", async () => {
@@ -158,7 +144,7 @@ describe("on: the Control UI's send", () => {
         payload: { sessionInfo: { hasActiveRun: true, activeRunIds: ["runA"], effectiveQueueMode: "followup" } },
       },
     });
-    await performSend(h.session, body("on"), h.writer, null, null);
+    await performSend(h.session, body(), h.writer, null, null);
     expect(sends(h.gw)[0]).toMatchObject({ queueMode: "followup" });
     // No turn, no bubble on the ACK, nothing adopted: the input waits for its answer.
     expect(h.started).toEqual([]);
@@ -173,7 +159,7 @@ describe("on: the Control UI's send", () => {
         payload: { sessionInfo: { hasActiveRun: true, activeRunIds: ["runA"], effectiveQueueMode: "steer" } },
       },
     });
-    await performSend(h.session, body("on", { followUpMode: "interrupt" }), h.writer, null, null);
+    await performSend(h.session, body({ followUpMode: "interrupt" }), h.writer, null, null);
     expect(sends(h.gw)[0]).toMatchObject({ queueMode: "interrupt" });
     expect(h.session.runManager.activeRunIds).toEqual(["ack-1"]);
     await expectTurnBornFromRun(h, "ack-1");
@@ -182,9 +168,8 @@ describe("on: the Control UI's send", () => {
   it("a turn in the foreground HERE: the send is custody only — steer, no new bubble", async () => {
     const h = await harness(ACTIVE);
     await h.session.runManager.beginTurn(1000, "runA", { expectedSessionId: null });
-    h.session.runManager.setProjection(true);
     const before = h.started.length;
-    await performSend(h.session, body("on"), h.writer, null, null);
+    await performSend(h.session, body(), h.writer, null, null);
     expect(sends(h.gw)[0]).toMatchObject({ queueMode: "steer" });
     expect(h.started.length).toBe(before);
     expect(h.session.runManager.outstandingInputs).toHaveLength(1);
@@ -193,14 +178,14 @@ describe("on: the Control UI's send", () => {
   it("the person's `queue` choice never rides the wire (client mode)", async () => {
     const h = await harness(ACTIVE);
     await h.session.runManager.beginTurn(1000, "runA", { expectedSessionId: null });
-    await performSend(h.session, body("on", { followUpMode: "queue" }), h.writer, null, null);
+    await performSend(h.session, body({ followUpMode: "queue" }), h.writer, null, null);
     expect(sends(h.gw)[0]).not.toHaveProperty("queueMode");
   });
 
   it("interrupt replaces the foreground turn: a new bubble on its ACK", async () => {
     const h = await harness(ACTIVE);
     await h.session.runManager.beginTurn(1000, "runA", { expectedSessionId: null });
-    await performSend(h.session, body("on", { followUpMode: "interrupt" }), h.writer, null, null);
+    await performSend(h.session, body({ followUpMode: "interrupt" }), h.writer, null, null);
     expect(sends(h.gw)[0]).toMatchObject({ queueMode: "interrupt" });
     await expectTurnBornFromRun(h, "ack-1");
   });
@@ -209,7 +194,7 @@ describe("on: the Control UI's send", () => {
     const h = await harness(ACTIVE);
     await performSend(
       h.session,
-      body("on", { liveBubble: { messageId: "bubbleA", runId: "runA" } }),
+      body({ liveBubble: { messageId: "bubbleA", runId: "runA" } }),
       h.writer,
       null,
       null,
@@ -224,7 +209,7 @@ describe("on: the Control UI's send", () => {
     const h = await harness(ACTIVE);
     await performSend(
       h.session,
-      body("on", {
+      body({
         liveBubble: {
           messageId: "bubbleA",
           runId: "runA",
@@ -243,7 +228,7 @@ describe("on: the Control UI's send", () => {
     const h = await harness(ACTIVE);
     await performSend(
       h.session,
-      body("on", { liveBubble: { messageId: "seg2", runId: "runA", segmentPrefix: "First." } }),
+      body({ liveBubble: { messageId: "seg2", runId: "runA", segmentPrefix: "First." } }),
       h.writer,
       null,
       null,
@@ -260,7 +245,7 @@ describe("on: the Control UI's send", () => {
     });
     await performSend(
       h.session,
-      body("on", { liveBubble: { messageId: "bubbleA", runId: "runA" } }),
+      body({ liveBubble: { messageId: "bubbleA", runId: "runA" } }),
       h.writer,
       null,
       null,
@@ -378,8 +363,22 @@ describe("codex pass 2 — the steered row can beat the ACK (P1)", () => {
       return "seg-2";
     };
     await h.session.runManager.beginTurn(1000, "runA", { expectedSessionId: null });
-    h.session.runManager.setProjection(true);
-    const sending = performSend(h.session, body("on"), h.writer, null, null);
+    // The run has shown something: its bubble exists (a projected bubble is born from
+    // the run's first content, never at the ACK), so there is a bubble to cut.
+    await h.session.runManager.feed(
+      {
+        type: "event",
+        event: "chat",
+        payload: {
+          sessionKey: h.session.sessionKey,
+          runId: "runA",
+          state: "delta",
+          message: { role: "assistant", content: [{ type: "text", text: "A works" }] },
+        },
+      },
+      1001,
+    );
+    const sending = performSend(h.session, body(), h.writer, null, null);
     await sleep(15);
     // The input is already known while its send is in flight…
     const [sendId] = h.session.runManager.outstandingInputs;
@@ -396,8 +395,7 @@ describe("codex pass 2 — the steered row can beat the ACK (P1)", () => {
       "chat.send": { throws: new GatewayAnsweredError("INVALID_REQUEST: refused") },
     });
     await h.session.runManager.beginTurn(1000, "runA", { expectedSessionId: null });
-    h.session.runManager.setProjection(true);
-    await expect(performSend(h.session, body("on"), h.writer, null, null)).rejects.toThrow();
+    await expect(performSend(h.session, body(), h.writer, null, null)).rejects.toThrow();
     expect(h.session.runManager.outstandingInputs).toEqual([]);
   });
 
@@ -407,8 +405,7 @@ describe("codex pass 2 — the steered row can beat the ACK (P1)", () => {
       "chat.send": { throws: new Error("request chat.send timed out after 30000ms") },
     });
     await h.session.runManager.beginTurn(1000, "runA", { expectedSessionId: null });
-    h.session.runManager.setProjection(true);
-    await expect(performSend(h.session, body("on"), h.writer, null, null)).rejects.toThrow();
+    await expect(performSend(h.session, body(), h.writer, null, null)).rejects.toThrow();
     expect(h.session.runManager.outstandingInputs).toHaveLength(1);
   });
 });
@@ -424,7 +421,7 @@ describe("codex pass 2 — never compact under a run the gateway still runs (P1)
   };
   it("on: a run active at the gateway (none here, e.g. after a restart) — no sessions.compact", async () => {
     const h = await harness(ACTIVE, { describe: [full], compact: { payload: { ok: true, compacted: true } } });
-    await performSend(h.session, body("on"), h.writer, null, null);
+    await performSend(h.session, body(), h.writer, null, null);
     expect(h.gw.countOf("sessions.compact")).toBe(0);
     expect(h.gw.countOf("chat.send")).toBe(1);
   });
@@ -436,7 +433,7 @@ describe("codex pass 2 — never compact under a run the gateway still runs (P1)
       },
       { describe: [full, { ...full, estimatedPromptTokens: 30_000 }], compact: { payload: { ok: true, compacted: true } } },
     );
-    await performSend(h.session, body("on"), h.writer, null, null);
+    await performSend(h.session, body(), h.writer, null, null);
     expect(h.gw.countOf("sessions.compact")).toBe(1);
   });
 });

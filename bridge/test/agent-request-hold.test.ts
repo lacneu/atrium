@@ -63,19 +63,17 @@ describe("a question put to a person holds the turn", () => {
     expect(n.takeRecvSilence?.() ?? false).toBe(false);
   });
 
-  it("the finishing promise is borrowed, not spent", () => {
-    // `finishing -> ask_user`: without the hold, the 60 s grace would settle the turn
-    // as a success while the person is still being asked.
+  it("a question asked during `finishing` holds the turn, and the answer gives the phase back", () => {
+    // `finishing -> ask_user`: the turn stays open while the person is asked; once the
+    // question is answered the turn says `generating` again (it ends on the run's
+    // terminal or on the transcript's fact, never on a timer).
     const { n, at } = startTurn();
     n.feed(lifecycle({ phase: "finishing" }), at(1));
     n.noteQuestionRequested("ask_1", 900, at(2));
     expect(finals(n.tick(at(70)))).toEqual([]);
     expect(n.finalized).toBe(false);
-    // …and given back when the question is answered.
     const back = n.noteQuestionSettled("ask_1", at(80));
     expect(phases(back)).toEqual(["generating"]);
-    const closed = n.tick(at(80 + 61));
-    expect(closed.some((e) => e.type === "message.final")).toBe(true);
   });
 
   it("the phase is re-published every minute — the streaming row's heartbeat", () => {

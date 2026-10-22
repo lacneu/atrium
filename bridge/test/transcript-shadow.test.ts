@@ -7,6 +7,7 @@ import { describe, expect, it } from "vitest";
 
 import { protocolDrift } from "../src/providers/openclaw/protocol-drift.js";
 import {
+  FAILED_READ_RETRY_DELAYS_MS,
   TERMINAL_RECOVERY_DELAYS_MS,
   TranscriptShadow,
   type TranscriptApply,
@@ -109,7 +110,12 @@ const flush = async (s: TranscriptShadow) => {
   }
 };
 
-describe("off by default — nothing is read until the instance switch says so", () => {
+/** The applies a READ posted — not the `textsOnly` posts that carry its rows' text ahead
+ *  of it (transcript-shadow.ts `postTexts`). */
+const readApplies = (r: { applies: TranscriptApply[] }): TranscriptApply[] =>
+  r.applies.filter((a) => (a as { textsOnly?: boolean }).textsOnly !== true);
+
+describe("inactive until switched on — nothing is read until a send configures it", () => {
   it("frames and acks are ignored while off", async () => {
     const r = rig();
     r.shadow.observeFrame(chatFrame({ runId: "run-1", state: "final", message: {} }));
@@ -121,10 +127,10 @@ describe("off by default — nothing is read until the instance switch says so",
 
   it("switching it on reads a TAIL PAGE when no cursor is known, then resumes from its cursor", async () => {
     const r = rig({ replies: [page("c:1", [assistantRow("e1", 1, "run-1")])] });
-    r.shadow.configure({ mode: "shadow" });
+    r.shadow.configure({});
     await flush(r.shadow);
     expect(r.reads).toEqual([null]);
-    expect(r.applies[0]).toMatchObject({ kind: "page", deltaCursor: "c:1", sessionId: "s-1" });
+    expect(readApplies(r)[0]).toMatchObject({ kind: "page", deltaCursor: "c:1", sessionId: "s-1" });
     r.shadow.observeFrame(chatFrame({ runId: "run-2", state: "final", message: {} }));
     await flush(r.shadow);
     expect(r.reads).toEqual([null, "c:1"]);
@@ -132,27 +138,16 @@ describe("off by default — nothing is read until the instance switch says so",
 
   it("Convex's stored cursor is resumed on a fresh process", async () => {
     const r = rig();
-    r.shadow.configure({ mode: "shadow", cursor: { sessionId: "s-1", deltaCursor: "c:77" } });
+    r.shadow.configure({ cursor: { sessionId: "s-1", deltaCursor: "c:77" } });
     await flush(r.shadow);
     expect(r.reads).toEqual(["c:77"]);
-  });
-
-  it("`on` behaves as shadow in phase 1, and `off` again stops it", async () => {
-    const r = rig();
-    r.shadow.configure({ mode: "on" });
-    await flush(r.shadow);
-    expect(r.reads).toHaveLength(1);
-    r.shadow.configure({ mode: "off" });
-    r.shadow.observeFrame(chatFrame({ runId: "run-1", state: "final", message: {} }));
-    await flush(r.shadow);
-    expect(r.reads).toHaveLength(1);
   });
 });
 
 describe("triggers (design §4.1)", () => {
   const on = async (replies: Reply[] = []) => {
     const r = rig({ replies: [page("c:1"), ...replies] });
-    r.shadow.configure({ mode: "shadow" });
+    r.shadow.configure({});
     await flush(r.shadow);
     r.reads.length = 0;
     r.applies.length = 0;
@@ -221,7 +216,7 @@ describe("triggers (design §4.1)", () => {
 describe("read ordering for Convex's freshness guard", () => {
   it("every apply carries a STRICTLY increasing issue time, even on a frozen clock", async () => {
     const r = rig({ replies: [page("c:1"), { kind: "reset" }, page("c:2")] });
-    r.shadow.configure({ mode: "shadow" });
+    r.shadow.configure({});
     await flush(r.shadow);
     r.shadow.noteAck("ok");
     await flush(r.shadow);
@@ -238,7 +233,7 @@ describe("read ordering for Convex's freshness guard", () => {
 describe("cost: one read in flight, one chained", () => {
   it("a burst of triggers during a read costs exactly ONE more read", async () => {
     const r = rig({ replies: [page("c:1")] });
-    r.shadow.configure({ mode: "shadow" });
+    r.shadow.configure({});
     await flush(r.shadow);
     r.hold(true);
     r.shadow.observeFrame(chatFrame({ runId: "a", state: "final", message: {} }));
@@ -258,23 +253,24 @@ describe("cost: one read in flight, one chained", () => {
 describe("resets and failures", () => {
   it("a `reset` is recorded, the cursor dropped, and a fresh tail page read in the SAME read", async () => {
     const r = rig({ replies: [page("c:1"), { kind: "reset" }, page("c:9", [assistantRow("e1", 1, "r")])] });
-    r.shadow.configure({ mode: "shadow" });
+    r.shadow.configure({});
     await flush(r.shadow);
     r.shadow.noteAck("ok");
     await flush(r.shadow);
     expect(r.reads).toEqual([null, "c:1", null]);
-    expect(r.applies.map((a) => a.kind)).toEqual(["page", "reset", "page"]);
-    expect(r.applies[2]!.deltaCursor).toBe("c:9");
+    expect(readApplies(r).map((a) => a.kind)).toEqual(["page", "reset", "page"]);
+    expect(readApplies(r)[2]!.deltaCursor).toBe("c:9");
   });
 
   it("a failed apply keeps its terminals for the next one (nothing lost, nothing doubled)", async () => {
     const r = rig({ replies: [page("c:1")] });
-    r.shadow.configure({ mode: "shadow" });
+    r.shadow.configure({});
     await flush(r.shadow);
     r.failNextApplies(1);
     r.shadow.observeFrame(chatFrame({ runId: "keep-me", state: "error" }));
     await flush(r.shadow);
-    expect(r.applies).toHaveLength(1); // the page only: the terminal's apply failed
+    // The failed apply is read again on its own (the bounded re-read), carrying the
+    // terminal it lost; the next read must not carry it a second time.
     r.shadow.noteAck("ok");
     await flush(r.shadow);
     const all = r.applies.flatMap((a) => a.terminals.map((t) => t.runId));
@@ -291,14 +287,14 @@ describe("resets and failures", () => {
       apply: async () => {},
       log: () => {},
     });
-    shadow.configure({ mode: "shadow" });
+    shadow.configure({});
     await shadow.idle();
     expect(shadow.stats.failures).toBe(1);
   });
 
   it("close() ends everything", async () => {
     const r = rig();
-    r.shadow.configure({ mode: "shadow" });
+    r.shadow.configure({});
     await flush(r.shadow);
     r.shadow.close();
     r.shadow.observeFrame(chatFrame({ runId: "r", state: "final", message: {} }));
@@ -334,7 +330,7 @@ describe("properties (seeded schedules)", () => {
         replies.push(rand() < 0.15 ? page(`c:${cursorN}`) : delta(`c:${cursorN}`));
       }
       const r = rig({ replies });
-      r.shadow.configure({ mode: "shadow" });
+      r.shadow.configure({});
       const observed: string[] = [];
       for (let step = 0; step < 30; step++) {
         const x = rand();
@@ -462,24 +458,21 @@ const userEnv = (id: string, seq: number, sendId: string, extra: Reply = {}): Re
 });
 
 describe("phase 2 — the session-events connection feeds the reconciler", () => {
-  it("attaches when switched on, detaches when switched off or closed", async () => {
+  it("attaches when switched on, detaches when closed", async () => {
     const r = rig2();
     expect(r.src.counts.attaches).toBe(0);
-    r.shadow.configure({ mode: "shadow" });
+    r.shadow.configure({});
     expect(r.src.counts.attaches).toBe(1);
-    r.shadow.configure({ mode: "shadow" }); // already on: no second attach
+    r.shadow.configure({}); // already on: no second attach
     expect(r.src.counts.attaches).toBe(1);
-    r.shadow.configure({ mode: "off" });
-    expect(r.src.counts.detaches).toBe(1);
-    r.shadow.configure({ mode: "shadow" });
     r.shadow.close();
-    expect(r.src.counts).toEqual({ attaches: 2, detaches: 2 });
+    expect(r.src.counts).toEqual({ attaches: 1, detaches: 1 });
     await flush(r.shadow);
   });
 
   it("the subscription (re)established reads the transcript back", async () => {
     const r = rig2({ replies: [page("c:1")] });
-    r.shadow.configure({ mode: "shadow" });
+    r.shadow.configure({});
     await flush(r.shadow);
     r.src.listener!.onSubscribed();
     await flush(r.shadow);
@@ -488,7 +481,7 @@ describe("phase 2 — the session-events connection feeds the reconciler", () =>
 
   it("a user row is applied DIRECTLY (kind `live`, rows only) and the transcript is read back", async () => {
     const r = rig2({ replies: [page("c:1")] });
-    r.shadow.configure({ mode: "shadow" });
+    r.shadow.configure({});
     await flush(r.shadow);
     r.applies.length = 0;
     r.src.listener!.onSessionMessage(userEnv("u5", 5, "webchat-a"));
@@ -503,7 +496,7 @@ describe("phase 2 — the session-events connection feeds the reconciler", () =>
 
   it("a row the read already brought is not posted again", async () => {
     const r = rig2({ replies: [page("c:1")] });
-    r.shadow.configure({ mode: "shadow" });
+    r.shadow.configure({});
     await flush(r.shadow);
     r.push(delta("c:2", [userEnv("u5", 5, "webchat-a")]));
     r.applies.length = 0;
@@ -514,7 +507,7 @@ describe("phase 2 — the session-events connection feeds the reconciler", () =>
 
   it("while the turn is live, a non-user row of it asks for no read (its terminal will)", async () => {
     const r = rig2({ replies: [page("c:1")], foreground: () => "webchat-a" });
-    r.shadow.configure({ mode: "shadow" });
+    r.shadow.configure({});
     await flush(r.shadow);
     r.src.listener!.onSessionMessage({
       sessionKey: KEY,
@@ -531,7 +524,7 @@ describe("phase 2 — the session-events connection feeds the reconciler", () =>
 
   it("sessions.changed: custody reasons and compaction read; housekeeping does not", async () => {
     const r = rig2({ replies: [page("c:1")] });
-    r.shadow.configure({ mode: "shadow" });
+    r.shadow.configure({});
     await flush(r.shadow);
     for (const reason of ["patch", "chat.title"]) r.src.listener!.onSessionsChanged({ sessionKey: KEY, reason });
     await flush(r.shadow);
@@ -545,7 +538,7 @@ describe("phase 2 — the session-events connection feeds the reconciler", () =>
 
   it("a session RESET drops the cursor (fresh tail page) — and a read issued before it never restores it", async () => {
     const r = rig2({ replies: [page("c:1")] });
-    r.shadow.configure({ mode: "shadow" });
+    r.shadow.configure({});
     await flush(r.shadow);
     // A read in flight with the OLD cursor, then the reset lands before it posts.
     r.push(delta("c:2"));
@@ -564,7 +557,7 @@ describe("phase 2 — the session-events connection feeds the reconciler", () =>
 describe("phase 2 — the input guard (inputRunIds → pendingInputs / inputReceipts)", () => {
   it("a send is asked about until its user row is read", async () => {
     const r = rig2({ replies: [page("c:1")] });
-    r.shadow.configure({ mode: "shadow" });
+    r.shadow.configure({});
     await flush(r.shadow);
     r.shadow.noteSend("webchat-a");
     r.shadow.noteAck("started", "webchat-a");
@@ -584,7 +577,7 @@ describe("phase 2 — the input guard (inputRunIds → pendingInputs / inputRece
 
   it("receipts and pending inputs are posted as read; consumed / cancelled settle custody", async () => {
     const r = rig2({ replies: [page("c:1")] });
-    r.shadow.configure({ mode: "shadow" });
+    r.shadow.configure({});
     await flush(r.shadow);
     for (const id of ["webchat-a", "webchat-b", "webchat-c"]) {
       r.shadow.noteSend(id);
@@ -610,7 +603,7 @@ describe("phase 2 — the input guard (inputRunIds → pendingInputs / inputRece
   it("an ACKed send the gateway answers NO receipt for is reported ABSENT once, then retired", async () => {
     let now = 1000;
     const r = rig2({ replies: [page("c:1")], now: () => now });
-    r.shadow.configure({ mode: "shadow" });
+    r.shadow.configure({});
     await flush(r.shadow);
     r.shadow.noteSend("webchat-lost");
     r.shadow.noteSend("webchat-unacked");
@@ -631,7 +624,7 @@ describe("phase 2 — the input guard (inputRunIds → pendingInputs / inputRece
 
   it("no receipts in the reply (an older gateway) proves no absence", async () => {
     const r = rig2({ replies: [page("c:1")], now: () => 5000 });
-    r.shadow.configure({ mode: "shadow" });
+    r.shadow.configure({});
     await flush(r.shadow);
     r.shadow.noteSend("webchat-a");
     r.shadow.noteAck("started", "webchat-a");
@@ -644,7 +637,7 @@ describe("phase 2 — the input guard (inputRunIds → pendingInputs / inputRece
 
   it("a refused send stays asked about (failed): whether the gateway holds it is the measure", async () => {
     const r = rig2({ replies: [page("c:1")] });
-    r.shadow.configure({ mode: "shadow" });
+    r.shadow.configure({});
     await flush(r.shadow);
     r.shadow.noteSend("webchat-a");
     r.shadow.noteAck("error", "webchat-a");
@@ -655,7 +648,7 @@ describe("phase 2 — the input guard (inputRunIds → pendingInputs / inputRece
     const r = rig2();
     r.shadow.noteSend("webchat-off");
     expect(r.shadow.inputRunIds).toEqual([]);
-    r.shadow.configure({ mode: "shadow" });
+    r.shadow.configure({});
     for (let i = 0; i < 60; i++) r.shadow.noteSend(`webchat-${String(i).padStart(2, "0")}`);
     const ids = r.shadow.inputRunIds;
     expect(ids).toHaveLength(50);
@@ -667,13 +660,15 @@ describe("phase 2 — the input guard (inputRunIds → pendingInputs / inputRece
 
   it("a failed live post drops its rows (the read brings them) — never a loop", async () => {
     const r = rig2({ replies: [page("c:1")] });
-    r.shadow.configure({ mode: "shadow" });
+    r.shadow.configure({});
     await flush(r.shadow);
     r.failNextApplies(5);
     r.src.listener!.onSessionMessage(userEnv("u5", 5, "webchat-a"));
     await flush(r.shadow);
     expect(r.shadow.stats.liveApplies).toBe(0);
-    expect(r.reads.length).toBeLessThanOrEqual(3);
+    // Bounded: the page, the read the row asks for, then the bounded re-reads of a
+    // failed apply (FAILED_READ_RETRY_DELAYS_MS) — never a loop.
+    expect(r.reads.length).toBeLessThanOrEqual(2 + FAILED_READ_RETRY_DELAYS_MS.length);
   });
 });
 
@@ -683,7 +678,7 @@ describe("phase 2 — properties over seeded event schedules (reorder, duplicate
       const rand = prng(seed);
       let cursorN = 1;
       const r = rig2({ replies: [page("c:1")] });
-      r.shadow.configure({ mode: "shadow" });
+      r.shadow.configure({});
       // Rows admitted since the last reset: a reset discards the old transcript's live
       // rows (the Control UI's `sessionReset`), so only these are owed to Convex.
       let owed = new Set<string>();
@@ -754,7 +749,7 @@ describe("phase 2 — custody is released only once the read is stored (review p
   it("a failed write after a no-receipt reply keeps the send asked about, and the absence is posted next time", async () => {
     let now = 1000;
     const r = rig2({ replies: [page("c:1")], now: () => now });
-    r.shadow.configure({ mode: "shadow" });
+    r.shadow.configure({});
     await flush(r.shadow);
     r.shadow.noteSend("webchat-lost");
     now = 2000;
@@ -776,7 +771,7 @@ describe("phase 2 — custody is released only once the read is stored (review p
 
   it("a failed write keeps a send its user row settled, too", async () => {
     const r = rig2({ replies: [page("c:1")] });
-    r.shadow.configure({ mode: "shadow" });
+    r.shadow.configure({});
     await flush(r.shadow);
     r.shadow.noteSend("webchat-a");
     r.shadow.noteAck("started", "webchat-a");
@@ -797,7 +792,7 @@ describe("phase 2 — absence is judged on the sends ACKED WHEN THE READ LEFT, n
 
   it("an ACK in the SAME millisecond as the read it follows does not make that read prove absence", async () => {
     const r = held(() => 1000);
-    r.shadow.configure({ mode: "shadow" });
+    r.shadow.configure({});
     await flush(r.shadow);
     r.shadow.noteSend("webchat-a");
     r.push({ ...delta("c:2"), inputReceipts: [] });
@@ -816,7 +811,7 @@ describe("phase 2 — absence is judged on the sends ACKED WHEN THE READ LEFT, n
   it("a wall clock going BACK between the read and the ACK changes nothing", async () => {
     let now = 5000;
     const r = held(() => now);
-    r.shadow.configure({ mode: "shadow" });
+    r.shadow.configure({});
     await flush(r.shadow);
     r.shadow.noteSend("webchat-b");
     r.push({ ...delta("c:2"), inputReceipts: [] });
@@ -833,7 +828,7 @@ describe("review 11 — an uninterpretable receipt never proves absence", () => 
   it("a receipt with an UNKNOWN state for an acked send: kept in custody, reported unreadable, never absent; the state reaches the drift sensor", async () => {
     protocolDrift.resetForTests();
     const r = rig2({ replies: [page("c:1")] });
-    r.shadow.configure({ mode: "shadow" });
+    r.shadow.configure({});
     await flush(r.shadow);
     r.shadow.noteSend("webchat-a");
     r.shadow.noteAck("started", "webchat-a");
@@ -851,7 +846,7 @@ describe("review 11 — an uninterpretable receipt never proves absence", () => 
 
   it("an id-less unreadable receipt makes EVERY asked id unprovable this read", async () => {
     const r = rig2({ replies: [page("c:1")] });
-    r.shadow.configure({ mode: "shadow" });
+    r.shadow.configure({});
     await flush(r.shadow);
     for (const id of ["webchat-a", "webchat-b"]) {
       r.shadow.noteSend(id);

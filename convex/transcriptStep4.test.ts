@@ -45,11 +45,11 @@ const said = (entryId: string, seq: number, runId: string, text: string, extra: 
   ...extra,
 });
 
-async function seed(t: T, mode: "on" | "shadow" = "on") {
+async function seed(t: T) {
   const ids = await t.run(async (ctx) => {
     const userId = await ctx.db.insert("users", {});
     await ctx.db.insert("profiles", { userId, role: "user" as const, canonical: "u" });
-    await ctx.db.insert("instances", { name: "prod", gatewayUrl: "ws://gw", config: { transcriptProjection: mode } as never });
+    await ctx.db.insert("instances", { name: "prod", gatewayUrl: "ws://gw" });
     const chatId = await ctx.db.insert("chats", { userId, updatedAt: 1, instanceName: "prod", agentId: "alice" });
     return { userId, chatId };
   });
@@ -189,16 +189,6 @@ describe("§3.3 — a row seen only live, absent from a covering durable read, i
     expect(bubbles).toHaveLength(1);
   });
 
-  test("off/shadow store nothing of the kind (the invariance of those modes)", async () => {
-    const t = convexTest(schema, modules);
-    const { chatId } = await seed(t, "shadow");
-    await live(t, chatId, [EPHEMERAL]);
-    await read(t, chatId, [said("d7", 7, YIELDED, "avant"), said("d10", 10, RESUME, "reprise")], { kind: "page" });
-    const row = await rowOf(t, EPHEMERAL.entryId as string);
-    expect(row?.liveOnly).toBeUndefined();
-    expect(row?.retracted).toBeUndefined();
-    expect(row?.hidden).toBe(false);
-  });
 });
 
 describe("step 4 — a run's error is its failure row's", () => {
@@ -395,11 +385,4 @@ describe("the run's error from the session row when no failure row exists", () =
     expect(await t.run((ctx) => ctx.db.get(m))).toMatchObject({ status: "error", error: lastRunFailure.error });
   });
 
-  test("off/shadow record nothing of it", async () => {
-    const t = convexTest(schema, modules);
-    const { chatId } = await seed(t, "shadow");
-    await read(t, chatId, [aborted], { lastRunFailure, hasActiveRun: false, activeRunIds: [] });
-    const runs = await t.run((ctx) => ctx.db.query("transcriptRuns").collect());
-    expect(runs.some((r) => r.errorText !== undefined)).toBe(false);
-  });
 });

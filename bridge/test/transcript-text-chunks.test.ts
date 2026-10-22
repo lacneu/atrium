@@ -100,7 +100,7 @@ function rig(opts: {
     now: () => 1000,
     log: () => {},
   });
-  shadow.configure({ mode: "on" });
+  shadow.configure({});
   return { shadow, posted, reads };
 }
 
@@ -207,7 +207,7 @@ describe("one UTF-8 budget per row, shared with Convex (codex phase 4 pass 7)", 
       now: () => 1000,
       log: () => {},
     });
-    shadow.configure({ mode: "on" });
+    shadow.configure({});
     await flush(shadow);
     expect(reads[0]).toBeNull();
     expect(reads[1]).toBeNull();
@@ -243,7 +243,7 @@ describe("the cut rows ride ahead of the texts (codex phase 4 pass 9)", () => {
       now: () => 1000,
       log: () => {},
     });
-    shadow.configure({ mode: "on" });
+    shadow.configure({});
     await flush(shadow);
     const first = posted.find((p) => p.textsOnly === true)!;
     expect(first.rows[0]).toMatchObject({ entryId: "u1", role: "user", steerTargetRunId: "R" });

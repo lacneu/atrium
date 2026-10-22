@@ -53,14 +53,14 @@ type World = { t: T; userId: Id<"users">; chatId: Id<"chats">; labels: Map<strin
 
 /** An `on` conversation (the instance switched, the transcript already read once) holding
  *  three 0.96.0 turns; `P` is the last answer. `shape` lays 0.96.0's documents on it. */
-async function onWorld(shape: (ctx: Parameters<Parameters<T["run"]>[0]>[0], w: Omit<World, "t" | "labels">) => Promise<Record<string, string>>, mode: "on" | "shadow" = "on"): Promise<World> {
+async function onWorld(shape: (ctx: Parameters<Parameters<T["run"]>[0]>[0], w: Omit<World, "t" | "labels">) => Promise<Record<string, string>>): Promise<World> {
   const t = convexTest({ schema, modules, transactionLimits: true });
   const labels = new Map<string, string>();
   const base = await t.run(async (ctx) => {
     const userId = await ctx.db.insert("users", {});
     await ctx.db.insert("profiles", { userId, role: "user" as const, canonical: "u" });
     await ctx.db.insert("userAgents", { userId, instanceName: "prod", agentId: "main", isDefault: true, source: "manual" as const, createdAt: 1 });
-    await ctx.db.insert("instances", { name: "prod", gatewayUrl: "ws://gw", config: { transcriptProjection: mode } as never });
+    await ctx.db.insert("instances", { name: "prod", gatewayUrl: "ws://gw" });
     const chatId = await ctx.db.insert("chats", { userId, updatedAt: 1, instanceName: "prod", agentId: "main", transcriptSeenAt: 1 } as never);
     let P: Id<"messages"> | null = null;
     for (let i = 0; i < 3; i++) {
@@ -389,31 +389,8 @@ const READS: Record<string, () => Promise<unknown>> = {
   // 0.96.0's verdict ("delivered nothing"), its record kept — the automatic drop of an own
   // bubble (§14.24) never applies to it.
   "D1 0.96.0 delivery bubble · empty terminal with dropIfEmpty (on)": async () => {
-    const { w, links } = await emptyLegacyDelivery("on");
+    const { w, links } = await emptyLegacyDelivery();
     return { bubbles: (await outcome(w, null)).bubbles, links };
-  },
-  // D2 — the same after a rollback to shadow, then the run's replay: as 0.96.0.
-  "D2 0.96.0 delivery bubble · empty terminal, then replay (shadow)": async () => {
-    const { w, links } = await emptyLegacyDelivery("shadow");
-    const landed = await start(w, A);
-    return { links, ...(await outcome(w, landed)) };
-  },
-  // D3 — a 0.96.0 settle bubble 0.96.0 itself DROPS empty (its delegation still runs: no
-  // "delivered nothing" verdict), then the run's replay: 0.96.0's record and its refusal
-  // are kept exactly — only a phase 5 own bubble's drop releases its run.
-  "D3 0.96.0 settle bubble dropped empty, then replay (shadow)": async () => {
-    const w = await onWorld(async (ctx, b) => {
-      const d = await ctx.db.insert("messages", { chatId: b.chatId, userId: b.userId, role: "assistant" as const, status: "streaming" as const, text: "", runId: W, turnSessionKey: SK, boundInstance: "prod", updatedAt: 1 });
-      await ctx.db.insert("streamingText", { messageId: d, chatId: b.chatId, userId: b.userId, generation: W, boundInstance: "prod", text: "", updatedAt: 1 });
-      await ctx.db.insert("runBubbles", { chatId: b.chatId, runId: W, messageId: d, createdAt: 1 });
-      await ctx.db.insert("subAgents", { chatId: b.chatId, userId: b.userId, instanceName: "prod", parentMessageId: d, anchorExact: true, childSessionKey: `${CHILD_KEY}-next`, childRunId: CR2, kind: "subagent" as const, status: "running" as const, createdAt: 1, updatedAt: 1 });
-      return { [d]: "D" };
-    }, "shadow");
-    const D = [...w.labels].find(([, l]) => l === "D")![0] as Id<"messages">;
-    await w.t.mutation(internal.stream.finalize, { messageId: D, status: "complete", text: "", dropIfEmpty: true } as never);
-    const links = (await w.t.run((ctx) => ctx.db.query("runBubbles").collect())).map((l) => ({ runId: l.runId, to: label(w, l.messageId) }));
-    const landed = await start(w, W);
-    return { links, ...(await outcome(w, landed)) };
   },
   // U1 — a person deleted a merged answer BEFORE the switch (off: no tombstone is written);
   // then `on`: the delivery's replay and its transcript rows never bring the answer back.
@@ -423,18 +400,13 @@ const READS: Record<string, () => Promise<unknown>> = {
     const w = await mergedWorld();
     const asUser = w.t.withIdentity({ subject: `${w.userId}|session` });
     const chatDoc = (await w.t.run((ctx) => ctx.db.get(w.chatId)))!;
-    await w.t.run(async (ctx) => {
-      const inst = (await ctx.db.query("instances").collect())[0]!;
-      await ctx.db.patch(inst._id, { config: { transcriptProjection: "off" } as never });
-      await ctx.db.patch(w.chatId, { transcriptSeenAt: undefined } as never);
-    });
+    // Before the switch the conversation had stored no transcript text: no tombstone.
+    await w.t.run((ctx) => ctx.db.patch(w.chatId, { transcriptSeenAt: undefined } as never));
     await asUser.mutation(api.messages.deleteMessage, { messageId: w.P });
     await w.t.finishAllScheduledFunctions(vi.runAllTimers);
-    await w.t.run(async (ctx) => {
-      const inst = (await ctx.db.query("instances").collect())[0]!;
-      await ctx.db.patch(inst._id, { config: { transcriptProjection: "on" } as never });
-      await ctx.db.patch(w.chatId, { transcriptSeenAt: (chatDoc as { transcriptSeenAt?: number }).transcriptSeenAt } as never);
-    });
+    await w.t.run((ctx) =>
+      ctx.db.patch(w.chatId, { transcriptSeenAt: (chatDoc as { transcriptSeenAt?: number }).transcriptSeenAt } as never),
+    );
     const landed = await start(w, A);
     await w.t.mutation(internal.transcriptProjection.applyTranscript, {
       chatId: w.chatId,
@@ -490,13 +462,13 @@ async function standalone(
 
 /** A delivery bubble 0.96.0 opened (no phase 5 marker), still streaming, recorded as the
  *  run's bubble: its terminal arrives EMPTY with `dropIfEmpty` (codex phase 5 pass 13). */
-async function emptyLegacyDelivery(mode: "on" | "shadow") {
+async function emptyLegacyDelivery() {
   const w = await onWorld(async (ctx, b) => {
     const d = await ctx.db.insert("messages", { chatId: b.chatId, userId: b.userId, role: "assistant" as const, status: "streaming" as const, text: "", runId: A, turnSessionKey: SK, boundInstance: "prod", updatedAt: 1 });
     await ctx.db.insert("streamingText", { messageId: d, chatId: b.chatId, userId: b.userId, generation: A, boundInstance: "prod", text: "", updatedAt: 1 });
     await ctx.db.insert("runBubbles", { chatId: b.chatId, runId: A, messageId: d, createdAt: 1 });
     return { [d]: "D" };
-  }, mode);
+  });
   const D = [...w.labels].find(([, l]) => l === "D")![0] as Id<"messages">;
   await w.t.mutation(internal.stream.finalize, { messageId: D, status: "complete", text: "", dropIfEmpty: true } as never);
   const links = await w.t.run((ctx) => ctx.db.query("runBubbles").collect());

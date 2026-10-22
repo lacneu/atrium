@@ -368,7 +368,7 @@ function main(): void {
         "a bubble with no text or only its hand-off acknowledgment, whose child " +
         "(anchored to it, or born in its run) failed, with nothing after it. " +
         "Also carries `projection` (transcript redesign, metadata only): for a chat whose " +
-        "instance reads the session transcript back (`transcriptProjection: shadow`), the " +
+        "instance reads the session transcript back (every OpenClaw instance), the " +
         "gaps between the transcript and the bubbles — I1 a visible run with no bubble " +
         "(`transcriptOnly`) or two (`duplicated`), I2 a settled bubble whose runs wrote no " +
         "durable row (`bubbleWithoutRow`), I3 a user row `<sendId>:user` with no user bubble " +
@@ -403,7 +403,7 @@ function main(): void {
         "`consistent` means that list is empty. The measurement reads a bounded volume " +
         "of messages (`window.readBudgetExhausted` when it stops early); if it cannot be " +
         "computed at all, `projection` is `{verdict: \"unavailable\"}` and the rest of " +
-        "the diagnosis is unaffected. In shadow mode it measures, it decides nothing. " +
+        "the diagnosis is unaffected. It measures; the diagnosis decides nothing from it. " +
         "Also states `participantCount` (people sharing the chat besides its owner) " +
         "and `authMode` (`token` = the gateway sees one shared operator for every " +
         "conversation; `trusted-proxy` = it sees one profile per person) — start " +

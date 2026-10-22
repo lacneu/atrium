@@ -71,41 +71,25 @@ describe("replay fidelity", () => {
     expect(diffs).toEqual([]);
   });
 
-  it("REPORTS a difference when a masked path kills the media reading", async () => {
+  it("REPORTS a difference when a masked key kills a reading", async () => {
     // The real shape of a promotion defect: the frame still parses, the fixture still
     // looks healthy, and one reading is simply gone. (A CONSISTENT rename is not a
     // difference — the replay derives the session from the capture, which is why a
-    // pseudonymised corpus is faithful in the first place.)
-    const withMedia = capture("exec").map((e, i) =>
+    // pseudonymised corpus is faithful in the first place.) Here the session key of the
+    // tool frame alone is masked: the frame reads as another session's.
+    const raw = capture("exec");
+    const masked = raw.map((e, i) =>
       i === 1
         ? {
             ...e,
-            frame: {
-              event: "agent",
-              payload: {
-                runId: RUN,
-                sessionKey: KEY,
-                stream: "assistant",
-                seq: 1,
-                data: {
-                  mediaUrls: ["/home/node/.openclaw/media/outbound/a.png"],
-                  text: "voila",
-                },
-              },
-            },
+            frame: JSON.parse(JSON.stringify(e.frame).replace(KEY, "agent:xxxxx:xxxxxx:xxxx:x-x:xxxx-x")),
           }
         : e,
     );
-    const masked = JSON.parse(
-      JSON.stringify(withMedia).replace(
-        "/home/node/.openclaw/media/outbound/a.png",
-        "/xxxx/xxxx/.xxxxxxxx/xxxxx/xxxxxxxx/x.xxx",
-      ),
-    ) as typeof withMedia;
-    const clean = await fidelityDiff(RunManager, withMedia, withMedia);
+    const clean = await fidelityDiff(RunManager, raw, raw);
     expect(clean, "identical input, no difference").toEqual([]);
-    const diffs = await fidelityDiff(RunManager, withMedia, masked);
-    expect(diffs.join(" "), "the lost media delivery must be reported").toContain("addMedia");
+    const diffs = await fidelityDiff(RunManager, raw, masked);
+    expect(diffs.length, "the lost reading must be reported").toBeGreaterThan(0);
   });
 
   it("REFUSES to load without a build, instead of skipping the check", async () => {

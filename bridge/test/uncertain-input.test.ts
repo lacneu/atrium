@@ -11,7 +11,6 @@ const KEY = "agent:alice:atrium:chat:u:c1";
 
 function harness(answers: Array<unknown | Error>) {
   const rm = new RunManager("c1", KEY, {} as ConvexWriter);
-  rm.setProjection(true);
   rm.noteHeldInput("sendB", "sendB", "userB");
   const asked: unknown[] = [];
   let i = 0;

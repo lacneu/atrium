@@ -1,37 +1,29 @@
-// I5 — ON A PROJECTED SESSION, NO TURN ENDS ON A TIMER OR ON THE WORDS OF AN ANSWER
-// (transcript redesign phase 4, design §4.4 / §11.3).
+// I5 — NO TURN OF AN OPENCLAW SESSION ENDS ON A TIMER OR ON THE WORDS OF AN ANSWER
+// (transcript redesign phase 4, design §4.4 / §11.3; the switch is gone since 0.102.0).
 //
 // A guard that reads source as TEXT is a false guard (lesson of the inbound-attachment
 // lot: three text guards fell one after the other). These rules walk the TypeScript
 // SYNTAX TREE and refuse what they cannot read (a computed wait name, a call they cannot
 // place):
-//   1. a deadline is written only by `arm` and `armRecv` (no side door around the gate);
-//   2. `arm` opens with THE gate: `if (this.transcriptDecides && TRANSCRIPT_DECIDED_WAITS
-//      .has(name)) return;`;
-//   3. every wait `arm` is asked for is named by a literal, and is either one the
-//      transcript now decides or one of the §8.2 nets — and the decided set is exactly
-//      the armed waits minus the nets, so a NEW wait must be classified to compile green;
-//   4. the prose rule (`isPrivateAck`) is reachable only when the transcript does not
-//      decide (`!this.transcriptDecides && …` or `this.transcriptDecides || …`);
-//   5. the positional transcript recovery is refused first thing on a projected turn;
-//   6. the orphan poll (`scheduleOrphanRecovery`) runs only in the `else` of
-//      `if (this.runManager.projectionOn)`;
-//   7. the Convex planner that places rows reads no clock, no timer and no pattern;
-//   8. NO FILE FROM THE LIVE SIDE while `on` (final design step 4, refonte-finale-
-//      conception.md): every `addMedia` call site of bridge/src is known and each one is
-//      unreachable while the instance is `on` — the normalizer's only media producer
-//      (`collectMedia`) opens with `if (this.liveFilesOff) return;`, the sink's and the
-//      lane's uploads consume only that event, the outbound scan runs only under
-//      `!this.liveFilesOff`, the sub-agent's delivered media only under
-//      `!this.runManager.projectionOn`, and `liveFilesOff` follows the switch
-//      (RunManager.setProjection). The operator's `/deliver-media` repair is the one
-//      named exception: an explicit human act, not the live stream.
+//   1. a deadline is written only by `arm` and `armRecv` (no side door);
+//   2. every wait `arm` is asked for is named by a literal, and is one of the §8.2 nets
+//      (the human waits) — a NEW wait must be classified to compile green;
+//   3. the tick resolves only those nets and the silence budget (`recv`);
+//   4. the session reads no transcript positionally: no `sessions.get`, nothing from the
+//      `history-recovery` readers (the `/lossless` route's own concern, server.ts);
+//   5. a socket that closes mid-turn, and a silence, never END the turn in the session
+//      loop (no `endTurn` under `if (winner.done)` nor under the recv-silence branch);
+//   6. the Convex planner that places rows reads no clock, no timer and no pattern;
+//   7. NO FILE FROM THE LIVE SIDE (final design step 4): every `addMedia` call site of
+//      bridge/src is known — the normalizer produces no media event at all, the sink's
+//      and the lane's uploads consume only that event, the outbound scan runs only under
+//      `!this.liveFilesOff`, `liveFilesOff` is set once (true) by the RunManager for its
+//      sink, and the session attaches nothing. The operator's `/deliver-media` repair is
+//      the one named exception: an explicit human act, not the live stream.
 
 import { readdirSync, readFileSync } from "node:fs";
 import ts from "typescript";
 import { describe, expect, it } from "vitest";
-
-import { TRANSCRIPT_DECIDED_WAITS } from "../src/providers/openclaw/normalizer.js";
 
 const SRC = new URL("../src/", import.meta.url);
 const NORMALIZER = new URL("providers/openclaw/normalizer.ts", SRC).pathname;
@@ -42,8 +34,8 @@ const RUN_MANAGER = new URL("providers/openclaw/run-manager.ts", SRC).pathname;
 const OUTBOUND_SCAN = new URL("core/outbound-scan.ts", SRC).pathname;
 const SERVER = new URL("server.ts", SRC).pathname;
 
-/** The §8.2 nets that stay armed on a projected turn: the silence budget is `armRecv`'s
- *  (a READ, never an end), the human waits are the gateway's own deadlines. */
+/** The §8.2 nets: the silence budget is `armRecv`'s (a READ, never an end), the human
+ *  waits are the gateway's own deadlines. */
 const NETS = new Set(["approval_wait", "question_wait", "human_beat"]);
 
 function parse(path: string): ts.SourceFile {
@@ -96,9 +88,8 @@ function members(sf: ts.SourceFile): Map<string, ts.MethodDeclaration | ts.GetAc
   return out;
 }
 
-describe("I5 — the normalizer cannot end a projected turn on a timer or on prose", () => {
+describe("I5 — the normalizer cannot end a turn on a timer", () => {
   const sf = parse(NORMALIZER);
-  const methods = members(sf);
 
   it("1. a deadline is written only by `arm` and `armRecv`", () => {
     const writers: string[] = [];
@@ -116,30 +107,7 @@ describe("I5 — the normalizer cannot end a projected turn on a timer or on pro
     expect([...new Set(writers)].sort()).toEqual(["arm", "armRecv"]);
   });
 
-  it("2. `arm` opens with the gate", () => {
-    const arm = methods.get("arm");
-    expect(arm, "arm() not found").toBeDefined();
-    const param = (arm as ts.MethodDeclaration).parameters[0]!.name.getText();
-    const first = (arm as ts.MethodDeclaration).body!.statements[0]!;
-    expect(ts.isIfStatement(first)).toBe(true);
-    const cond = (first as ts.IfStatement).expression;
-    const parts = conjuncts(cond);
-    expect(parts).toHaveLength(2);
-    expect(isThisProp(parts[0]!, "transcriptDecides")).toBe(true);
-    const has = parts[1]!;
-    expect(
-      ts.isCallExpression(has) &&
-        ts.isPropertyAccessExpression(has.expression) &&
-        has.expression.expression.getText() === "TRANSCRIPT_DECIDED_WAITS" &&
-        has.expression.name.text === "has" &&
-        has.arguments.length === 1 &&
-        has.arguments[0]!.getText() === param,
-    ).toBe(true);
-    const then = (first as ts.IfStatement).thenStatement;
-    expect(ts.isReturnStatement(then) && then.expression === undefined).toBe(true);
-  });
-
-  it("3. every armed wait is named, and classified: decided by the transcript, or a §8.2 net", () => {
+  it("2. every armed wait is named by a literal, and is a §8.2 net", () => {
     const armed = new Set<string>();
     const unreadable: string[] = [];
     walk(sf, (n) => {
@@ -154,78 +122,73 @@ describe("I5 — the normalizer cannot end a projected turn on a timer or on pro
       }
     });
     expect(unreadable, "a wait name the guard cannot read").toEqual([]);
-    const decided = [...armed].filter((w) => !NETS.has(w)).sort();
-    expect(decided).toEqual([...TRANSCRIPT_DECIDED_WAITS].sort());
+    expect(armed.size).toBeGreaterThan(0);
+    expect([...armed].filter((w) => !NETS.has(w))).toEqual([]);
   });
 
-  it("4. the prose rule is reachable only when the transcript does not decide", () => {
-    const unguarded: string[] = [];
-    let calls = 0;
-    walk(sf, (n) => {
-      if (!ts.isCallExpression(n) || n.expression.getText() !== "isPrivateAck") return;
-      calls++;
-      let guarded = false;
-      let child: ts.Node = n;
-      for (let p = n.parent; p !== undefined && !ts.isStatement(p); child = p, p = p.parent) {
-        if (!ts.isBinaryExpression(p) || p.right !== child) continue;
-        const op = p.operatorToken.kind;
-        if (
-          op === ts.SyntaxKind.AmpersandAmpersandToken &&
-          conjuncts(p.left).some((c) => isNotThisProp(c, "transcriptDecides"))
-        ) {
-          guarded = true;
-        }
-        if (op === ts.SyntaxKind.BarBarToken && isThisProp(p.left, "transcriptDecides")) guarded = true;
+  it("3. the tick resolves only the nets and the silence budget", () => {
+    const tick = members(sf).get("tickAt");
+    expect(tick, "tickAt() not found").toBeDefined();
+    const resolved = new Set<string>();
+    const unreadable: string[] = [];
+    walk(tick!, (n) => {
+      if (
+        ts.isCallExpression(n) &&
+        ts.isPropertyAccessExpression(n.expression) &&
+        n.expression.name.text === "has" &&
+        n.expression.expression.getText() === "expired"
+      ) {
+        const name = n.arguments[0];
+        if (name !== undefined && ts.isStringLiteral(name)) resolved.add(name.text);
+        else unreadable.push(n.getText().slice(0, 60));
       }
-      if (!guarded) unguarded.push(`${enclosingMethod(n)}: ${n.parent.getText().slice(0, 80)}`);
     });
-    expect(calls).toBeGreaterThan(0);
-    expect(unguarded).toEqual([]);
-  });
-
-  it("5. the positional transcript recovery is refused first on a projected turn", () => {
-    const getter = methods.get("wantsHistoryRecovery") as ts.GetAccessorDeclaration;
-    const ret = getter.body!.statements[0]!;
-    expect(ts.isReturnStatement(ret)).toBe(true);
-    const parts = conjuncts((ret as ts.ReturnStatement).expression!);
-    expect(isNotThisProp(parts[0]!, "transcriptDecides")).toBe(true);
+    expect(unreadable).toEqual([]);
+    expect(resolved.has("recv")).toBe(true);
+    expect([...resolved].filter((w) => w !== "recv" && !NETS.has(w))).toEqual([]);
   });
 });
 
-describe("I5 — the session never polls an orphan on a projected session", () => {
-  it("6. `scheduleOrphanRecovery` runs only in the else of `if (this.runManager.projectionOn)`", () => {
-    const sf = parse(SESSION);
-    const calls: Array<{ guarded: boolean; at: string }> = [];
+describe("I5 — the session never reads the transcript by position, nor ends a turn on a close or a silence", () => {
+  const sf = parse(SESSION);
+
+  it("4. no `sessions.get`, nothing from the positional readers", () => {
+    const found: string[] = [];
     walk(sf, (n) => {
+      if (ts.isStringLiteral(n) && n.text === "sessions.get") found.push("sessions.get");
       if (
-        !ts.isCallExpression(n) ||
-        !ts.isPropertyAccessExpression(n.expression) ||
-        n.expression.name.text !== "scheduleOrphanRecovery"
+        ts.isImportDeclaration(n) &&
+        ts.isStringLiteral(n.moduleSpecifier) &&
+        n.moduleSpecifier.text.includes("history-recovery")
       ) {
-        return;
+        found.push(n.moduleSpecifier.text);
       }
-      let guarded = false;
-      let child: ts.Node = n;
-      for (let p = n.parent; p !== undefined; child = p, p = p.parent) {
-        if (
-          ts.isIfStatement(p) &&
-          p.elseStatement === child &&
-          p.expression.getText() === "this.runManager.projectionOn"
-        ) {
-          guarded = true;
-          break;
-        }
-        if (ts.isMethodDeclaration(p) || ts.isFunctionDeclaration(p)) break;
-      }
-      calls.push({ guarded, at: `line ${sf.getLineAndCharacterOfPosition(n.getStart()).line + 1}` });
     });
-    expect(calls.length).toBeGreaterThan(0);
-    expect(calls.filter((c) => !c.guarded)).toEqual([]);
+    expect(found).toEqual([]);
+  });
+
+  it("5. no `endTurn` under the close (`winner.done`) nor under the recv-silence branch", () => {
+    const branches: ts.IfStatement[] = [];
+    walk(sf, (n) => {
+      if (!ts.isIfStatement(n)) return;
+      const cond = n.expression.getText();
+      if (cond === "winner.done" || cond.startsWith("this.runManager.takeRecvSilence()")) branches.push(n);
+    });
+    expect(branches).toHaveLength(2);
+    const ends: string[] = [];
+    for (const b of branches) {
+      walk(b.thenStatement, (n) => {
+        if (ts.isCallExpression(n) && ts.isPropertyAccessExpression(n.expression) && n.expression.name.text === "endTurn") {
+          ends.push(b.expression.getText().slice(0, 40));
+        }
+      });
+    }
+    expect(ends).toEqual([]);
   });
 });
 
 describe("I5 — the Convex planner places rows by identity only", () => {
-  it("7. no clock, no timer, no pattern in convex/lib/bubbleProjection.ts", () => {
+  it("6. no clock, no timer, no pattern in convex/lib/bubbleProjection.ts", () => {
     const sf = parse(PLANNER);
     const found: string[] = [];
     walk(sf, (n) => {
@@ -249,7 +212,7 @@ describe("I5 — the Convex planner places rows by identity only", () => {
   });
 });
 
-describe("I5 — no file from the live side while `on` (final design step 4)", () => {
+describe("I5 — no file from the live side (final design step 4)", () => {
   /** Every `x.addMedia(…)` / `x.addMedia?.(…)` call of a file, with its enclosing chain. */
   function addMediaCalls(sf: ts.SourceFile): ts.CallExpression[] {
     const out: ts.CallExpression[] = [];
@@ -294,45 +257,38 @@ describe("I5 — no file from the live side while `on` (final design step 4)", (
     return files;
   })();
 
-  it("8a. the addMedia call sites of bridge/src are exactly the known ones", () => {
+  it("7a. the addMedia call sites of bridge/src are exactly the known ones", () => {
     const sites: string[] = [];
     for (const f of SOURCE_FILES) {
       const sf = parse(f);
-      for (const c of addMediaCalls(sf)) sites.push(f.slice(f.indexOf("/src/") + 5));
+      const n = addMediaCalls(sf).length;
+      for (let i = 0; i < n; i++) sites.push(f.slice(f.indexOf("/src/") + 5));
     }
     expect(sites.sort()).toEqual(
       [
         "core/outbound-scan.ts",
         "core/turn-sink.ts",
-        "providers/openclaw/run-manager.ts",
         "server.ts",
-        "session.ts",
       ].sort(),
     );
   });
 
-  it("8b. the normalizer's only media producer opens with the live-files gate", () => {
+  it("7b. the normalizer produces no media event at all", () => {
     const sf = parse(NORMALIZER);
     const producers: string[] = [];
     walk(sf, (n) => {
       if (
         ts.isPropertyAssignment(n) &&
         n.name.getText() === "type" &&
-        n.initializer.getText() === "EVENT_MEDIA"
+        (n.initializer.getText() === "EVENT_MEDIA" || n.initializer.getText() === '"media"')
       ) {
         producers.push(enclosingMethod(n) ?? "<outside a method>");
       }
     });
-    expect(producers).toEqual(["collectMedia"]);
-    const collect = members(sf).get("collectMedia") as ts.MethodDeclaration;
-    const first = collect.body!.statements[0]!;
-    expect(ts.isIfStatement(first)).toBe(true);
-    expect(isThisProp((first as ts.IfStatement).expression, "liveFilesOff")).toBe(true);
-    const then = (first as ts.IfStatement).thenStatement;
-    expect(ts.isReturnStatement(then) && then.expression === undefined).toBe(true);
+    expect(producers).toEqual([]);
   });
 
-  it("8c. the sink uploads only a media event, and scans the outbound directory only under `!this.liveFilesOff`", () => {
+  it("7c. the sink uploads only a media event, and scans the outbound directory only under `!this.liveFilesOff`", () => {
     const sf = parse(TURN_SINK);
     const calls = addMediaCalls(sf);
     expect(calls).toHaveLength(1);
@@ -359,14 +315,10 @@ describe("I5 — no file from the live side while `on` (final design step 4)", (
     }
   });
 
-  it("8d. a closed run's lane uploads only a media event of ITS normalizer, which follows the switch", () => {
+  it("7d. the run manager uploads nothing (a closed run's lane included), and the sink's gate is set once, on", () => {
     const sf = parse(RUN_MANAGER);
-    const calls = addMediaCalls(sf);
-    expect(calls).toHaveLength(1);
-    const conds = thenConditions(calls[0]!).flatMap((c) => conjuncts(c).map((p) => p.getText()));
-    expect(conds).toContain('e.type === "media"');
-    // `liveFilesOff` is written only by setProjection (every normalizer, the sink, every
-    // lane) and by laneNormalizer (from the current switch).
+    expect(addMediaCalls(sf)).toEqual([]);
+    // `liveFilesOff` is written once: `true`, on the RunManager's own sink, at construction.
     const writes: string[] = [];
     walk(sf, (n) => {
       if (
@@ -376,31 +328,20 @@ describe("I5 — no file from the live side while `on` (final design step 4)", (
         n.left.name.text === "liveFilesOff"
       ) {
         let m: ts.Node | undefined = n.parent;
-        while (m !== undefined && !ts.isMethodDeclaration(m)) m = m.parent;
-        writes.push(`${(m as ts.MethodDeclaration | undefined)?.name.getText()}:${n.left.expression.getText()}=${n.right.getText()}`);
+        while (m !== undefined && !ts.isMethodDeclaration(m) && !ts.isConstructorDeclaration(m)) m = m.parent;
+        const where =
+          m === undefined ? "<outside>" : ts.isConstructorDeclaration(m) ? "constructor" : m.name.getText();
+        writes.push(`${where}:${n.left.expression.getText()}=${n.right.getText()}`);
       }
     });
-    expect(writes.sort()).toEqual(
-      [
-        "laneNormalizer:normalizer=this.projection",
-        "setProjection:lane.normalizer=on",
-        "setProjection:this.normalizer=on",
-        "setProjection:this.sink=on",
-      ].sort(),
-    );
+    expect(writes).toEqual(["constructor:this.sink=true"]);
   });
 
-  it("8e. the sub-agent's delivered media is attached only when the switch is not `on`", () => {
-    const sf = parse(SESSION);
-    const calls = addMediaCalls(sf);
-    expect(calls).toHaveLength(1);
-    const guarded = thenConditions(calls[0]!).some((c) =>
-      conjuncts(c).some((p) => isNotThisPropPath(p, "this.runManager.projectionOn")),
-    );
-    expect(guarded).toBe(true);
+  it("7e. the session attaches no file", () => {
+    expect(addMediaCalls(parse(SESSION))).toEqual([]);
   });
 
-  it("8f. the server's only addMedia is the operator's `/deliver-media` repair", () => {
+  it("7f. the server's only addMedia is the operator's `/deliver-media` repair", () => {
     const sf = parse(SERVER);
     const calls = addMediaCalls(sf);
     expect(calls).toHaveLength(1);
@@ -409,8 +350,3 @@ describe("I5 — no file from the live side while `on` (final design step 4)", (
     expect(conds).toContain('req.url === "/deliver-media"');
   });
 });
-
-/** `!<path>` where the operand's text is exactly `path`. */
-function isNotThisPropPath(n: ts.Node, path: string): boolean {
-  return ts.isPrefixUnaryExpression(n) && n.operator === ts.SyntaxKind.ExclamationToken && n.operand.getText() === path;
-}

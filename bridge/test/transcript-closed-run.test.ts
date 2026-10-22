@@ -7,10 +7,9 @@
 // is taken from the live side — not the turn's, not a closed run's lane's: a file reaches
 // a bubble only through the transcript row that carries it (bridge/src/core/
 // artifact-copier.ts), as the Control UI shows a row's files and nothing else
-// (ui/src/lib/chat/message-normalizer.ts at v2026.9.33). The lane's media paths below are
-// therefore exercised after a ROLLBACK to shadow (the instance's current switch decides:
-// a rollback gives the live files back). Deterministic: real RunManager, Normalizer and
-// TurnSink, a recording writer.
+// (ui/src/lib/chat/message-normalizer.ts at v2026.9.33). A live media frame below is
+// therefore a probe that must upload NOTHING. Deterministic: real RunManager, Normalizer
+// and TurnSink, a recording writer.
 
 import { describe, expect, it, vi } from "vitest";
 
@@ -57,14 +56,12 @@ function recordingWriter(bubbles: string[] = ["m1"]) {
   return { writer: w as unknown as ConvexWriter, calls };
 }
 
-async function run(opts: { closeEarly: boolean; rollback?: boolean }) {
+async function run(opts: { closeEarly: boolean }) {
   const { writer, calls } = recordingWriter();
   const rm = new RunManager("chat1", SK, writer);
-  rm.setProjection(true);
   await rm.beginTurn(1000, RUN, { expectedSessionId: null });
   await rm.feed(chat({ state: "delta", message: text("Voici le PDF.") }), 1001);
   if (opts.closeEarly) expect(await rm.settleFromTranscript([RUN], 1002)).toBe(true);
-  if (opts.rollback === true) rm.setProjection(false);
   await rm.feed(mediaFrame(), 1003);
   await rm.lanesIdle();
   await rm.feed(chat({ state: "final", message: text("Voici le PDF.") }), 1004);
@@ -87,11 +84,6 @@ describe("a run the transcript closed still delivers its media and its live term
     expect(calls.filter((c) => c.op === "addMedia")).toHaveLength(0);
   });
 
-  it("baseline (no early close), rolled back to shadow before the media: the live turn attaches the PDF once", async () => {
-    const { calls } = await run({ closeEarly: false, rollback: true });
-    expect(calls.filter((c) => c.op === "addMedia")).toHaveLength(1);
-  });
-
   it("closed by the transcript, `on`: no file from the lane, the live terminal still lands — the turn stays closed", async () => {
     const { rm, calls } = await run({ closeEarly: true });
     expect(calls.filter((c) => c.op === "addMedia")).toHaveLength(0);
@@ -103,32 +95,9 @@ describe("a run the transcript closed still delivers its media and its live term
     expect(calls.filter((c) => c.op === "startAssistant")).toHaveLength(1);
   });
 
-  for (const rollback of [true]) {
-    it(`closed by the transcript${rollback ? ", then rolled back to shadow" : ""}: the PDF lands on the bubble, then the live terminal — the turn stays closed`, async () => {
-      const { rm, calls } = await run({ closeEarly: true, rollback });
-      const media = calls.filter((c) => c.op === "addMedia");
-      expect(media).toHaveLength(1);
-      expect(media[0]!.args[0]).toBe("m1");
-      expect((media[0]!.args[1] as { filename: string }).filename).toBe("result.pdf");
-      // The transcript's echo, then the run's LIVE terminal — on the same bubble.
-      expect(finalizes(calls)).toEqual([
-        { messageId: "m1", cause: "transcript_settled" },
-        { messageId: "m1", runId: RUN, cause: "gateway_final" },
-      ]);
-      // The live terminal comes AFTER the media.
-      const order = calls
-        .filter((c) => c.op === "addMedia" || c.op === "finalize" || c.op === "finalizeClosedRun")
-        .map((c) => c.op);
-      expect(order).toEqual(["finalize", "addMedia", "finalizeClosedRun"]);
-      expect(rm.turnActive).toBe(false);
-      expect(calls.filter((c) => c.op === "startAssistant")).toHaveLength(1);
-    });
-  }
-
   it("bounded by count: past MAX_TRANSCRIPT_CLOSED closed runs, the oldest is forgotten", async () => {
     const { writer, calls } = recordingWriter();
     const rm = new RunManager("chat1", SK, writer);
-    rm.setProjection(true);
     const n = RunManager.MAX_TRANSCRIPT_CLOSED + 1;
     for (let i = 0; i < n; i++) {
       const rid = `run-${i}`;
@@ -145,25 +114,20 @@ describe("a run the transcript closed still delivers its media and its live term
     expect(calls.filter((c) => c.op === "finalizeClosedRun")).toHaveLength(1);
   });
 
-  for (const rollback of [false, true]) {
-    it(`bounded by age, in the injected clock's unit (seconds): reconciled at 599 s, not at 601 s${rollback ? " (rolled back)" : ""}`, async () => {
-      for (const [after, expected] of [[599, 1], [601, 0]] as const) {
-        const { writer, calls } = recordingWriter();
-        const rm = new RunManager("chat1", SK, writer);
-        rm.setProjection(true);
-        await rm.beginTurn(1000, RUN, { expectedSessionId: null });
-        await rm.feed(chat({ state: "delta", message: text("Voici le PDF.") }), 1001);
-        await rm.settleFromTranscript([RUN], 1002);
-        if (rollback) rm.setProjection(false);
-        // `on`: the probe is the live terminal (no file from a lane, step 4).
-        if (rollback) await rm.feed(mediaFrame(), 1002 + after);
-        else await rm.feed(chat({ state: "final", message: text("Voici le PDF.") }), 1002 + after);
-        await rm.lanesIdle();
-        expect(calls.filter((c) => c.op === (rollback ? "addMedia" : "finalizeClosedRun"))).toHaveLength(expected);
-      }
-      expect(RunManager.TRANSCRIPT_CLOSED_TTL_S).toBe(600);
-    });
-  }
+  it("bounded by age, in the injected clock's unit (seconds): reconciled at 599 s, not at 601 s", async () => {
+    for (const [after, expected] of [[599, 1], [601, 0]] as const) {
+      const { writer, calls } = recordingWriter();
+      const rm = new RunManager("chat1", SK, writer);
+      await rm.beginTurn(1000, RUN, { expectedSessionId: null });
+      await rm.feed(chat({ state: "delta", message: text("Voici le PDF.") }), 1001);
+      await rm.settleFromTranscript([RUN], 1002);
+      // The probe is the live terminal (no file from a lane, step 4).
+      await rm.feed(chat({ state: "final", message: text("Voici le PDF.") }), 1002 + after);
+      await rm.lanesIdle();
+      expect(calls.filter((c) => c.op === "finalizeClosedRun")).toHaveLength(expected);
+    }
+    expect(RunManager.TRANSCRIPT_CLOSED_TTL_S).toBe(600);
+  });
 });
 
 // codex phase 4 pass 18: a stashed announce B, flushed when A's turn closes, must never
@@ -174,7 +138,6 @@ describe("pass 18 — the closed run keeps ITS identity, whatever opens next", (
   async function closedWithAnnounce(bTerminal: boolean) {
     const { writer, calls } = recordingWriter(["m1", "m2"]);
     const rm = new RunManager("chat1", SK, writer);
-    rm.setProjection(true);
     await rm.beginTurn(1000, RUN, { expectedSessionId: null });
     await rm.feed(chat({ state: "delta", message: text("Voici le PDF.") }), 1001);
     // B arrives while A streams: stashed until A's turn is over.
@@ -201,7 +164,6 @@ describe("pass 18 — the closed run keeps ITS identity, whatever opens next", (
     // The announce merge reopens the parent: B's start answers A's bubble, m1.
     const { writer, calls } = recordingWriter(["m1", "m1"]);
     const rm = new RunManager("chat1", SK, writer);
-    rm.setProjection(true);
     await rm.beginTurn(1000, RUN, { expectedSessionId: null });
     await rm.feed(chat({ state: "delta", message: text("Je délègue.") }), 1001);
     expect(await rm.settleFromTranscript([RUN], 1002)).toBe(true);
@@ -264,7 +226,6 @@ describe("pass 19 — frames during the close are held, and the close re-checks 
   it("a PDF and the live terminal arriving while the close's finalize is suspended: the terminal reaches the bubble, the PDF is the row's (step 4)", async () => {
     const { writer, calls, release } = suspendedWriter("finalize");
     const rm = new RunManager("chat1", SK, writer);
-    rm.setProjection(true);
     await rm.beginTurn(1000, RUN, { expectedSessionId: null });
     await rm.feed(chat({ state: "delta", message: text("Voici le PDF.") }), 1001);
     const settling = rm.settleFromTranscript([RUN], 1002);
@@ -278,45 +239,10 @@ describe("pass 19 — frames during the close are held, and the close re-checks 
     expect(finalizes(calls).filter((f) => "runId" in f)).toEqual([{ messageId: "m1", runId: RUN, cause: "gateway_final" }]);
   });
 
-  it("…and after a rollback to shadow during the close, the PDF is the lane's again", async () => {
-    const { writer, calls, release } = suspendedWriter("finalize");
-    const rm = new RunManager("chat1", SK, writer);
-    rm.setProjection(true);
-    await rm.beginTurn(1000, RUN, { expectedSessionId: null });
-    await rm.feed(chat({ state: "delta", message: text("Voici le PDF.") }), 1001);
-    const settling = rm.settleFromTranscript([RUN], 1002);
-    await new Promise((r) => setTimeout(r, 0));
-    rm.setProjection(false);
-    await rm.feed(mediaFrame(), 1003);
-    await rm.feed(chat({ state: "final", message: text("Voici le PDF.") }), 1004);
-    release();
-    expect(await settling).toBe(true);
-    await rm.lanesIdle();
-    expect(calls.filter((c) => c.op === "addMedia")).toHaveLength(1);
-    expect(finalizes(calls).filter((f) => "runId" in f)).toHaveLength(1);
-  });
-
-  it("a settle queued while the projection is rolled back closes nothing (the legacy terminals decide)", async () => {
-    const { writer, calls, release } = suspendedWriter("startAssistant");
-    const rm = new RunManager("chat1", SK, writer);
-    rm.setProjection(true);
-    await rm.beginTurn(1000, RUN, { expectedSessionId: null });
-    const a = rm.feed(chat({ state: "delta", message: text("début") }), 1001);
-    await new Promise((r) => setTimeout(r, 0));
-    const settling = rm.settleFromTranscript([RUN], 1002);
-    rm.setProjection(false);
-    release();
-    await a;
-    expect(await settling).toBe(false);
-    expect(rm.turnActive).toBe(true);
-    expect(finalizes(calls)).toEqual([]);
-  });
-
   it("a settle queued behind a compaction resume onto B never closes B", async () => {
     // A's first write (the bubble's open) is suspended: everything after it queues.
     const { writer, calls, release } = suspendedWriter("startAssistant");
     const rm = new RunManager("chat1", SK, writer);
-    rm.setProjection(true);
     await rm.beginTurn(1000, RUN, { expectedSessionId: null });
     const a = rm.feed(chat({ state: "delta", message: text("début") }), 1001);
     await new Promise((r) => setTimeout(r, 0));
@@ -351,7 +277,6 @@ describe("pass 20 — the closed run's lane is strictly serial and survives a fa
   it("`on`: a media held while the close writes uploads nothing, and the terminal is not held behind it (step 4)", async () => {
     const base = recordingWriter();
     const rm = new RunManager("chat1", SK, base.writer);
-    rm.setProjection(true);
     await rm.beginTurn(1000, RUN, { expectedSessionId: null });
     await rm.feed(chat({ state: "delta", message: text("Voici le PDF.") }), 1001);
     const settling = rm.settleFromTranscript([RUN], 1002);
@@ -364,87 +289,34 @@ describe("pass 20 — the closed run's lane is strictly serial and survives a fa
     expect(finalizes(base.calls).filter((f) => "runId" in f)).toEqual([{ messageId: "m1", runId: RUN, cause: "gateway_final" }]);
   });
 
-  for (const rollback of [true]) {
-    it(`the terminal arrives DURING the upload of a held media: it waits for it${rollback ? " (rolled back during the close)" : ""}`, async () => {
-      const base = recordingWriter();
-      const w = base.writer as unknown as Record<string, (...a: unknown[]) => Promise<unknown>>;
-      const closeGate = gate();
-      const uploadGate = gate();
-      const log: string[] = [];
-      const finalize = w.finalize!;
-      let firstFinalize = true;
-      w.finalize = async (...a: unknown[]) => {
-        if (firstFinalize) {
-          firstFinalize = false;
-          await closeGate.wait;
-        }
-        return finalize(...a);
-      };
-      const addMedia = w.addMedia!;
-      w.addMedia = async (...a: unknown[]) => {
-        log.push("upload:start");
-        await uploadGate.wait;
-        const r = await addMedia(...a);
-        log.push("upload:done");
-        return r;
-      };
-      const finalizeClosedRun = w.finalizeClosedRun!;
-      w.finalizeClosedRun = async (...a: unknown[]) => {
-        log.push("terminal");
-        return finalizeClosedRun(...a);
-      };
-      const rm = new RunManager("chat1", SK, base.writer);
-      rm.setProjection(true);
-      await rm.beginTurn(1000, RUN, { expectedSessionId: null });
-      await rm.feed(chat({ state: "delta", message: text("Voici le PDF.") }), 1001);
-      const settling = rm.settleFromTranscript([RUN], 1002);
-      await tick();
-      if (rollback) rm.setProjection(false);
-      await rm.feed(mediaFrame(), 1003); // held while the close writes
-      closeGate.open();
-      expect(await settling).toBe(true);
-      await tick();
-      expect(log).toEqual(["upload:start"]);
-      await rm.feed(chat({ state: "final", message: text("Voici le PDF.") }), 1004);
-      await tick();
-      expect(log).toEqual(["upload:start"]); // the terminal waits for the upload
-      uploadGate.open();
-      await rm.lanesIdle();
-      expect(log).toEqual(["upload:start", "upload:done", "terminal"]);
-    });
-
-    it(`the close's finalize is REJECTED, then a media, then the terminal: both still land${rollback ? " (rolled back during the close)" : ""}`, async () => {
-      const base = recordingWriter();
-      const w = base.writer as unknown as Record<string, (...a: unknown[]) => Promise<unknown>>;
-      const closeGate = gate();
-      const finalize = w.finalize!;
-      let firstFinalize = true;
-      w.finalize = async (...a: unknown[]) => {
-        if (firstFinalize) {
-          firstFinalize = false;
-          await closeGate.wait;
-          throw new Error("Convex ingest finalize -> HTTP 503");
-        }
-        return finalize(...a);
-      };
-      const rm = new RunManager("chat1", SK, base.writer);
-      rm.setProjection(true);
-      await rm.beginTurn(1000, RUN, { expectedSessionId: null });
-      await rm.feed(chat({ state: "delta", message: text("Voici le PDF.") }), 1001);
-      const settling = rm.settleFromTranscript([RUN], 1002);
-      await tick();
-      if (rollback) rm.setProjection(false);
-      closeGate.open();
-      expect(await settling).toBe(true);
-      await rm.feed(mediaFrame(), 1003);
-      await rm.feed(chat({ state: "final", message: text("Voici le PDF.") }), 1004);
-      await rm.lanesIdle();
-      const media = base.calls.filter((c) => c.op === "addMedia");
-      expect(media.map((c) => c.args[0])).toEqual(["m1"]);
-      expect(finalizes(base.calls).filter((f) => "runId" in f)).toEqual([{ messageId: "m1", runId: RUN, cause: "gateway_final" }]);
-      expect(rm.turnActive).toBe(false);
-    });
-  }
+  it("the close's finalize is REJECTED, then the terminal: it still lands, on the bubble the close captured", async () => {
+    const base = recordingWriter();
+    const w = base.writer as unknown as Record<string, (...a: unknown[]) => Promise<unknown>>;
+    const closeGate = gate();
+    const finalize = w.finalize!;
+    let firstFinalize = true;
+    w.finalize = async (...a: unknown[]) => {
+      if (firstFinalize) {
+        firstFinalize = false;
+        await closeGate.wait;
+        throw new Error("Convex ingest finalize -> HTTP 503");
+      }
+      return finalize(...a);
+    };
+    const rm = new RunManager("chat1", SK, base.writer);
+    await rm.beginTurn(1000, RUN, { expectedSessionId: null });
+    await rm.feed(chat({ state: "delta", message: text("Voici le PDF.") }), 1001);
+    const settling = rm.settleFromTranscript([RUN], 1002);
+    await tick();
+    closeGate.open();
+    expect(await settling).toBe(true);
+    await rm.feed(mediaFrame(), 1003);
+    await rm.feed(chat({ state: "final", message: text("Voici le PDF.") }), 1004);
+    await rm.lanesIdle();
+    expect(base.calls.filter((c) => c.op === "addMedia")).toHaveLength(0);
+    expect(finalizes(base.calls).filter((f) => "runId" in f)).toEqual([{ messageId: "m1", runId: RUN, cause: "gateway_final" }]);
+    expect(rm.turnActive).toBe(false);
+  });
 });
 
 // codex phase 4 pass 21: a run closed before any bubble opened here still delivers — onto
@@ -466,7 +338,6 @@ describe("pass 21 — a closed run without a local bubble finds the projected on
   it("closed before any bubble opened: the terminal goes to the projected bubble (the PDF is the row's, step 4)", async () => {
     const { writer, calls, lookups } = lookupWriter(["m9"]);
     const rm = new RunManager("chat1", SK, writer);
-    rm.setProjection(true);
     await rm.beginTurn(1000, RUN, { expectedSessionId: null });
     expect(await rm.settleFromTranscript([RUN], 1001)).toBe(true);
     await rm.feed(mediaFrame(), 1002);
@@ -491,7 +362,6 @@ describe("pass 21 — a closed run without a local bubble finds the projected on
       throw new Error("Convex ingest finalize -> HTTP 503");
     };
     const rm = new RunManager("chat1", SK, writer);
-    rm.setProjection(true);
     await rm.beginTurn(1000, RUN, { expectedSessionId: null });
     const delta = rm.feed(chat({ state: "delta", message: text("Voici le PDF.") }), 1001);
     await new Promise((r) => setTimeout(r, 0));
@@ -510,7 +380,6 @@ describe("pass 21 — a closed run without a local bubble finds the projected on
   it("the lookup fails, then finds nothing, then finds it: the waiting frames drain in order", async () => {
     const { writer, calls, lookups } = lookupWriter([new Error("ingest down"), null, "m9"]);
     const rm = new RunManager("chat1", SK, writer);
-    rm.setProjection(true);
     await rm.beginTurn(1000, RUN, { expectedSessionId: null });
     await rm.settleFromTranscript([RUN], 1001);
     await rm.feed(mediaFrame(), 1002);
@@ -524,7 +393,6 @@ describe("pass 21 — a closed run without a local bubble finds the projected on
   it("never found: the lane gives up after MAX_DESTINATION_LOOKUPS, writes nothing", async () => {
     const { writer, calls, lookups } = lookupWriter([null]);
     const rm = new RunManager("chat1", SK, writer);
-    rm.setProjection(true);
     await rm.beginTurn(1000, RUN, { expectedSessionId: null });
     await rm.settleFromTranscript([RUN], 1001);
     await rm.feed(mediaFrame(), 1002);
@@ -535,39 +403,13 @@ describe("pass 21 — a closed run without a local bubble finds the projected on
     expect(calls.filter((c) => c.op === "addMedia" || c.op === "finalizeClosedRun")).toHaveLength(0);
   });
 
-  it("projection off or shadow: no lane, so the lookup is never reached", async () => {
-    const { writer, lookups } = lookupWriter(["m9"]);
-    const rm = new RunManager("chat1", SK, writer);
-    rm.setProjection(false);
-    await rm.beginTurn(1000, RUN, { expectedSessionId: null });
-    expect(await rm.settleFromTranscript([RUN], 1001)).toBe(false);
-    await rm.feed(mediaFrame(), 1002);
-    await rm.feed(chat({ state: "final", message: text("Voici le PDF.") }), 1003);
-    await rm.lanesIdle();
-    expect(lookups).toEqual([]);
-  });
 });
 
 // codex phase 4 pass 22: an upload of a projected run tells Convex it is under way.
-describe("pass 22 — projected uploads are announced; others are not", () => {
-  it("the lane's upload (after a rollback to shadow) carries markUpload", async () => {
-    const { writer, calls } = recordingWriter();
-    const rm = new RunManager("chat1", SK, writer);
-    rm.setProjection(true);
-    await rm.beginTurn(1000, RUN, { expectedSessionId: null });
-    await rm.feed(chat({ state: "delta", message: text("Voici le PDF.") }), 1001);
-    await rm.settleFromTranscript([RUN], 1002);
-    rm.setProjection(false);
-    await rm.feed(mediaFrame(), 1003);
-    await rm.lanesIdle();
-    const media = calls.filter((c) => c.op === "addMedia");
-    expect((media[0]!.args[1] as { markUpload?: boolean }).markUpload).toBe(true);
-  });
-
+describe("pass 22 — no upload of the turn's own; the writer's upload marker", () => {
   it("`on`: the turn uploads nothing of its own (step 4)", async () => {
     const { writer, calls } = recordingWriter();
     const rm = new RunManager("chat1", SK, writer);
-    rm.setProjection(true);
     await rm.beginTurn(1000, RUN, { expectedSessionId: null });
     await rm.feed(chat({ state: "delta", message: text("Voici le PDF.") }), 1001);
     await rm.feed(mediaFrame(), 1002);
@@ -575,23 +417,6 @@ describe("pass 22 — projected uploads are announced; others are not", () => {
     await new Promise((r) => setTimeout(r, 10));
     expect(calls.filter((c) => c.op === "addMedia")).toHaveLength(0);
   });
-
-  for (const projection of [true, false]) {
-    it(`the turn's own upload carries markUpload only when the turn was projected (${projection ? "begun on, rolled back" : "off/shadow"})`, async () => {
-      const { writer, calls } = recordingWriter();
-      const rm = new RunManager("chat1", SK, writer);
-      rm.setProjection(projection);
-      await rm.beginTurn(1000, RUN, { expectedSessionId: null });
-      await rm.feed(chat({ state: "delta", message: text("Voici le PDF.") }), 1001);
-      rm.setProjection(false);
-      await rm.feed(mediaFrame(), 1002);
-      await rm.feed(chat({ state: "final", message: text("Voici le PDF.") }), 1003);
-      await new Promise((r) => setTimeout(r, 10));
-      const media = calls.filter((c) => c.op === "addMedia");
-      expect(media).toHaveLength(1);
-      expect((media[0]!.args[1] as { markUpload?: boolean }).markUpload).toBe(projection ? true : undefined);
-    });
-  }
 
   it("the writer names the destination and its window on getUploadUrl only when asked", async () => {
     const { HttpConvexWriter, UPLOAD_MARKER_WINDOW_MS } = await import("../src/convex-writer.js");
@@ -621,10 +446,10 @@ describe("pass 22 — projected uploads are announced; others are not", () => {
   });
 });
 
-// codex phase 4 pass 23: the outbound scan's rescue uploads announce themselves too —
-// only on a projected turn (a turn begun `on` stays so across a rollback).
-describe("pass 23 — the outbound scan announces its uploads on a projected turn", () => {
-  async function scannedTurn(projection: boolean, rollbackMidTurn = false) {
+// codex phase 4 pass 23: the outbound scan never runs on an OpenClaw turn (step 4); its
+// own upload marker is still honoured when asked.
+describe("pass 23 — the outbound scan", () => {
+  async function scannedTurn() {
     const { writer } = recordingWriter();
     const scans: unknown[][] = [];
     const scan = async (...args: unknown[]) => {
@@ -632,28 +457,16 @@ describe("pass 23 — the outbound scan announces its uploads on a projected tur
       return { candidates: [] as string[], host: async () => {} };
     };
     const rm = new RunManager("chat1", SK, writer, scan as never);
-    rm.setProjection(projection);
     await rm.beginTurn(1000, RUN, { expectedSessionId: null });
     await rm.feed(chat({ state: "delta", message: text("Voici le PDF.") }), 1001);
-    if (rollbackMidTurn) rm.setProjection(false);
     await rm.feed(chat({ state: "final", message: text("Voici le PDF.") }), 1002);
     await new Promise((r) => setTimeout(r, 10));
     return scans;
   }
 
   it("`on`: the outbound directory is not scanned at all — no file from the live side (step 4)", async () => {
-    const scans = await scannedTurn(true);
+    const scans = await scannedTurn();
     expect(scans).toHaveLength(0);
-  });
-
-  it("a turn begun `on`, rolled back mid-turn: still announced (its job may be deferred)", async () => {
-    const scans = await scannedTurn(true, true);
-    expect(scans[0]![6]).toBe(true);
-  });
-
-  it("never-on turn: not announced", async () => {
-    const scans = await scannedTurn(false);
-    expect(scans[0]![6]).toBe(false);
   });
 
   for (const mark of [true, false]) {

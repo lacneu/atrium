@@ -284,35 +284,31 @@ describe("turn-sink: async engagement lifecycle (captured flow)", () => {
     expect(writer.finals[0]?.error).toBeNull();
   });
 
-  // Phase 5 (design §14.1): on a projected turn the engagement names the run that started
-  // the task — the proof the `<tool>:<taskId>:ok` delivery joins its chain by; never off.
-  for (const projected of [true, false]) {
-    it(`the engagement ${projected ? "names" : "does NOT name"} its starting run (projection ${projected ? "on" : "off"})`, async () => {
-      const writer = new AsyncWriter();
-      const manager = new RunManager("asyncchat2", SESSION_KEY, writer);
-      if (projected) manager.setProjection(true);
-      let now = 1000;
-      await manager.beginTurn((now += 1), "webchat-asyncrun2");
-      await manager.feed(
-        agentFrame("webchat-asyncrun2", { name: "image_generate", phase: "start", toolCallId: "c1|f1", args: {} }),
-        (now += 1),
-      );
-      await manager.feed(
-        agentFrame("webchat-asyncrun2", {
-          name: "image_generate",
-          phase: "result",
-          toolCallId: "c1|f1",
-          isError: false,
-          result: ASYNC_ACK_OUTPUT,
-        }),
-        (now += 1),
-      );
-      const task = writer.upserts.find((u) => u.kind === "task");
-      expect(task).toBeDefined();
-      if (projected) expect(task!.startRunId).toBe("webchat-asyncrun2");
-      else expect(Object.keys(task!)).not.toContain("startRunId");
-    });
-  }
+  // Phase 5 (design §14.1): the engagement names the run that started the task — the
+  // proof the `<tool>:<taskId>:ok` delivery joins its chain by.
+  it("the engagement names its starting run", async () => {
+    const writer = new AsyncWriter();
+    const manager = new RunManager("asyncchat2", SESSION_KEY, writer);
+    let now = 1000;
+    await manager.beginTurn((now += 1), "webchat-asyncrun2");
+    await manager.feed(
+      agentFrame("webchat-asyncrun2", { name: "image_generate", phase: "start", toolCallId: "c1|f1", args: {} }),
+      (now += 1),
+    );
+    await manager.feed(
+      agentFrame("webchat-asyncrun2", {
+        name: "image_generate",
+        phase: "result",
+        toolCallId: "c1|f1",
+        isError: false,
+        result: ASYNC_ACK_OUTPUT,
+      }),
+      (now += 1),
+    );
+    const task = writer.upserts.find((u) => u.kind === "task");
+    expect(task).toBeDefined();
+    expect(task!.startRunId).toBe("webchat-asyncrun2");
+  });
 
   it("codex P2: a spontaneous run whose only output is a native PLAN still reaches the thread", async () => {
     const writer = new AsyncWriter();

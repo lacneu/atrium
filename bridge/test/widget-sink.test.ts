@@ -1,7 +1,7 @@
 // A widget-only turn through the whole reading stack (RunManager → normalizer → sink),
 // replayed from the frames captured live on 2026.9.6: the widget part reaches the
-// writer as a `tool`-origin descriptor, and the turn closes COMPLETE — never as the
-// empty-response error card a text-less turn otherwise earns.
+// writer as a `tool`-origin descriptor, and the turn closes COMPLETE — never as an
+// empty-response error card.
 import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -76,14 +76,24 @@ describe("a widget-only turn, sink side", () => {
     expect(errorKind).toBeNull();
   });
 
-  it("a widget Convex REFUSED is not a reply: the text-less turn closes as the empty-response error", async () => {
+  it("a widget Convex REFUSED is not a reply: the text-less turn shows nothing (no empty-response verdict)", async () => {
     const calls = await replay(true, false);
     expect(calls.filter((c) => c.method === "addWidgetPart")).toHaveLength(1);
     const finals = calls.filter((c) => c.method === "finalize");
     expect(finals).toHaveLength(1);
-    const [, status, , error, errorKind] = finals[0]!.args as [string, string, string, unknown, unknown];
-    expect(status).toBe("error");
-    expect(errorKind).toBe("empty_response");
-    expect(error).toEqual(expect.any(String));
+    const [, status, , error, errorKind, opts] = finals[0]!.args as [
+      string,
+      string,
+      string,
+      unknown,
+      unknown,
+      { dropIfEmpty?: boolean } | undefined,
+    ];
+    // Like the Control UI (CU-21): a run that ended with nothing visible shows nothing —
+    // the finalize lets Convex remove the empty bubble — and is never re-run.
+    expect(status).toBe("complete");
+    expect(error).toBeNull();
+    expect(errorKind).toBeNull();
+    expect(opts?.dropIfEmpty).toBe(true);
   });
 });

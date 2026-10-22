@@ -592,9 +592,9 @@ http.route({
     );
     const assessment = assessChat(chatState, availability);
     // THE TRANSCRIPT PROJECTION (redesign phase 1): the projection ↔ bubble gaps
-    // (invariants I1–I3) for a chat whose instance reads the transcript back (shadow).
+    // (invariants I1–I3) for a chat whose instance reads the transcript back (OpenClaw).
     // Identities and counts only — never content. Reported BESIDE the assessment, not
-    // folded into it: in shadow mode the projection measures, it does not decide.
+    // folded into it: the measurement decides nothing here.
     // Its OWN query (own read budget) and never fatal: a projection that cannot be
     // computed is reported `unavailable`; the diagnosis stands.
     const projection = await projectionForDiagnose(ctx, chatId);

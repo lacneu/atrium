@@ -192,7 +192,6 @@ import {
 } from "./core/attachment-limits.js";
 import {
   parseInboundConfig,
-  transcriptProjectionOf,
   type InboundInstanceConfig,
   type MediaMode,
 } from "./core/instance-config.js";
@@ -705,10 +704,9 @@ export function resumePreflight(
 }
 
 /**
- * The CU-22 resume itself, once admitted: the projection is switched on only for the
- * attempt, and left on only when the bubble's turn was actually resumed on a socket that
- * is still the chat's — a not-resumed answer restores the switch as it was, so a later
- * `off` send never inherits it (codex pass 5). Exported for tests.
+ * The CU-22 resume itself, once admitted: resumed only when the bubble's run is still the
+ * gateway's on a socket that is still the chat's; the session's reconciler is switched on
+ * then (a not-resumed answer leaves it as it was). Exported for tests.
  */
 export async function admitResume(
   session: Pick<BridgeSession, "runManager" | "transcriptShadow" | "clock"> &
@@ -718,8 +716,6 @@ export async function admitResume(
   stillTheChatsSocket: () => boolean,
 ): Promise<boolean> {
   const rm = session.runManager;
-  const previous = rm.projectionOn;
-  rm.setProjection(true);
   let resumed = false;
   try {
     const plan = await planProjectedSend(
@@ -729,8 +725,7 @@ export async function admitResume(
     );
     resumed = rm.turnActive && liveRunIds(plan.facts).includes(bubble.runId) && stillTheChatsSocket();
   } finally {
-    if (resumed) session.transcriptShadow?.configure({ mode: "on" });
-    else if (!(rm.turnActive || rm.turnFinalizing)) rm.setProjection(previous);
+    if (resumed) session.transcriptShadow?.configure({});
   }
   return resumed;
 }
@@ -1556,191 +1551,6 @@ function warnOnce(key: string, message: string): void {
   console.warn(message);
 }
 
-/** How often a held send re-reads the session's delivery state. */
-const DELIVERY_HOLD_POLL_MS = 50;
-
-/**
- * Hold a send while a gateway DELIVERY run is live on its session (defect 18 —
- * see RunManager.deliveryInProgress for what was measured).
- *
- * Waiting is the only reading that needs no guess: the bridge cannot tell the
- * gateway to run the send instead of queueing it, and nothing on the wire links a
- * queued send to the run that later answers it. Once the delivery run's own
- * terminal has closed its turn — finalize included — the send may go.
- *
- * Bounded by the dispatch's pre-send deadline, checked on EVERY exit that follows an
- * await: past it this throws the deadline refusal itself, so nothing more (claim,
- * patches, describe) runs for a send that will never go out. The caller re-reads the
- * state SYNCHRONOUSLY right before arming (the resolution of this promise is itself
- * an await), so a delivery frame arriving after that last read is stashed by the
- * armed buffer rather than opening a turn under the send.
- */
-async function holdWhileDeliveryRunLive(
-  session: BridgeSession,
-  chatId: string,
-  sendReceivedMs: number,
-  dispatchAgeMs: number,
-): Promise<void> {
-  const rm = session.runManager;
-  if (!rm.deliveryInProgress) return;
-  const heldFrom = Date.now();
-  console.log(
-    `[send] chat=${chatId} a delivery run is live on the session — holding the send until it ends`,
-  );
-  while (rm.deliveryInProgress) {
-    // Wake the consume loop ONLY when the flush opened a turn (its deadlines were
-    // armed from outside the loop). An unconditional wake every poll restarts the
-    // loop's frame race 20 times a second, each leaving a timer behind (codex).
-    if (await rm.flushStashedDeliveries(session.clock())) {
-      session.wake();
-    }
-    if (!rm.deliveryInProgress) break;
-    if (dispatchAgeMs + (Date.now() - sendReceivedMs) > PRE_SEND_DEADLINE_MS) {
-      console.error(
-        `[send] chat=${chatId} delivery run still live at the pre-send deadline — the send is refused`,
-      );
-      break;
-    }
-    await new Promise((r) => setTimeout(r, DELIVERY_HOLD_POLL_MS));
-  }
-  assertBeforeSendDeadline(sendReceivedMs, Date.now(), dispatchAgeMs);
-  console.log(
-    `[send] chat=${chatId} delivery run ended — send released after ${Date.now() - heldFrom}ms`,
-  );
-}
-
-/** Release-check pacing: first re-ask, then doubling up to the cap. */
-const GATEWAY_RELEASE_FIRST_POLL_MS = 250;
-const GATEWAY_RELEASE_MAX_POLL_MS = 2_000;
-/** The release check's own RPC timeout, before clamping to the budget left. */
-const GATEWAY_RELEASE_RPC_TIMEOUT_MS = 8_000;
-/**
- * How long ONE send may wait, in total, on a run the gateway STILL counts after a
- * delivery — shared by the check at the top of the send and the one before the arm,
- * RPC time and pacing included (each RPC's timeout is clamped to what is left).
- *
- * A POLICY bound, not an upstream fact: the window this check targets (the
- * trajectory flush between a run's broadcast end and its release) has no bound
- * the sources certify — its cleanup timeout bounds reporting, not closure
- * (run-cleanup-timeout.ts:49-50 at v2026.9.4). A run still counted this long is
- * treated as some other reason the signal is true, and the send goes as it did
- * before the check existed.
- */
-let gatewayReleaseBudgetMs = 30_000;
-
-/** Test seam: shorten the release budget (restore it after). */
-export function setGatewayReleaseBudgetForTests(ms: number): void {
-  gatewayReleaseBudgetMs = ms;
-}
-
-/** One send's share of the release budget, spent across its checks. */
-interface ReleaseWait {
-  spentMs: number;
-}
-
-/**
- * After a delivery run, wait while the GATEWAY still counts a run on the session
- * — the bridge seeing the run end is not enough.
- *
- * On 2026.9.4 a run's lifecycle `end` and `chat final` reach clients before the
- * embedded run is cleared: `emitEnd` (post-run.ts:638), then an awaited
- * trajectory flush — disk I/O, on by default (trajectory/runtime.ts:425-427) —
- * then `clearActiveEmbeddedRun` (deferred-lifecycle-owner.ts:62-78). chat.send
- * admission reads that registry (runs.ts:1017, get-reply-run-admission.ts:508), so
- * a send landing in between is queued as a followup: defect 18 again.
- *
- * `chat.history` → `sessionInfo.hasActiveRun` (chat-history-handler.ts:493-503) is
- * TRUE across that window for a run that ended normally: the retained handle
- * projects `running` until it is cleared (runs.ts:1160-1187). It is NOT the
- * admission predicate. It over-approximates it — chat.history also counts terminal
- * persistence and projected or queued states (session-active-runs.ts:245-262) — and
- * it under-approximates it too — an aborted handle still registered, or a recovery
- * owner, can count for admission while the projection says false. So this can only
- * narrow the window; it fails OPEN: an absent field, a failed call, or a run still
- * counted once the send's `gatewayReleaseBudgetMs` is spent lets the send go as
- * before. Every exit checks the dispatch's pre-send deadline and throws past it.
- */
-async function awaitGatewayRunRelease(
-  session: BridgeSession,
-  chatId: string,
-  sendReceivedMs: number,
-  dispatchAgeMs: number,
-  wait: ReleaseWait,
-): Promise<void> {
-  await pollGatewayRunRelease(session, chatId, sendReceivedMs, dispatchAgeMs, wait);
-  assertBeforeSendDeadline(sendReceivedMs, Date.now(), dispatchAgeMs);
-}
-
-async function pollGatewayRunRelease(
-  session: BridgeSession,
-  chatId: string,
-  sendReceivedMs: number,
-  dispatchAgeMs: number,
-  wait: ReleaseWait,
-): Promise<void> {
-  const startedAt = Date.now();
-  const left = () => gatewayReleaseBudgetMs - wait.spentMs - (Date.now() - startedAt);
-  let polls = 0;
-  let delayMs = GATEWAY_RELEASE_FIRST_POLL_MS;
-  try {
-    for (;;) {
-      if (left() <= 0) {
-        if (polls > 0) {
-          console.error(
-            `[send] chat=${chatId} the gateway still counts a run once the release budget is spent (${polls} checks) — not the release window this check targets; the send goes as before`,
-          );
-        }
-        return;
-      }
-      let active: boolean;
-      try {
-        // `limit: 1` + `maxChars: 1` bound the page nobody reads, on every vendored
-        // version. Not `maxBytes`: it exists only from 2026.9.2 and the params schema
-        // is CLOSED, so an older gateway would refuse the call and the check would
-        // never run there (no version given: the builder then never adds it).
-        const res = await session.connection.request(
-          "chat.history",
-          chatHistoryParams({ sessionKey: session.sessionKey, limit: 1, maxChars: 1 }, null),
-          Math.max(1, Math.min(GATEWAY_RELEASE_RPC_TIMEOUT_MS, Math.ceil(left()))),
-        );
-        const info = (res as { payload?: { sessionInfo?: { hasActiveRun?: unknown } } })
-          .payload?.sessionInfo;
-        active = info?.hasActiveRun === true;
-      } catch (err) {
-        console.error(
-          `[send] chat=${chatId} gateway run-release check failed (non-fatal, send proceeds):`,
-          errForLog(err),
-        );
-        return;
-      }
-      polls++;
-      if (!active) {
-        if (polls > 1) {
-          console.log(
-            `[send] chat=${chatId} the gateway no longer counts a run — send released after ${Date.now() - startedAt}ms`,
-          );
-        }
-        return;
-      }
-      if (polls === 1) {
-        console.log(
-          `[send] chat=${chatId} the gateway still counts a run on the session — waiting for its release`,
-        );
-      }
-      if (dispatchAgeMs + (Date.now() - sendReceivedMs) > PRE_SEND_DEADLINE_MS) {
-        console.error(
-          `[send] chat=${chatId} gateway run still counted at the pre-send deadline — the send is refused`,
-        );
-        return;
-      }
-      await new Promise((r) => setTimeout(r, Math.max(0, Math.min(delayMs, left()))));
-      delayMs = Math.min(delayMs * 2, GATEWAY_RELEASE_MAX_POLL_MS);
-    }
-  } finally {
-    wait.spentMs += Date.now() - startedAt;
-  }
-}
-
 export async function performSend(
   session: BridgeSession,
   body: SendBody,
@@ -1756,32 +1566,24 @@ export async function performSend(
   speakers: SpeakerSource = defaultSpeakers,
   report: SendReport = {},
 ): Promise<void> {
-  // PROJECTION `on` (phase 3): a send may now arrive while another is being prepared on
-  // the same session (Convex no longer parks a steer). ONE at a time per session: the
-  // first one's turn begins (or its custody is recorded) before the next decides
-  // whether a run is in the foreground. Off ⇒ no lock (Convex serializes, as before).
-  if (transcriptProjectionOf(body.config) === "on") {
-    const prev = SEND_LOCKS.get(session) ?? Promise.resolve();
-    let release!: () => void;
-    const mine = new Promise<void>((r) => (release = r));
-    const chained = prev.then(() => mine);
-    SEND_LOCKS.set(session, chained);
-    await prev;
-    try {
-      await performSendUnlocked(
-        session, body, writer, inbound, deliveryDir, mediaGuard, sendReceivedMs,
-        presendConfig, speakers, report,
-      );
-    } finally {
-      release();
-      if (SEND_LOCKS.get(session) === chained) SEND_LOCKS.delete(session);
-    }
-    return;
+  // A send may arrive while another is being prepared on the same session (Convex does
+  // not park a steer). ONE at a time per session: the first one's turn begins (or its
+  // custody is recorded) before the next decides whether a run is in the foreground.
+  const prev = SEND_LOCKS.get(session) ?? Promise.resolve();
+  let release!: () => void;
+  const mine = new Promise<void>((r) => (release = r));
+  const chained = prev.then(() => mine);
+  SEND_LOCKS.set(session, chained);
+  await prev;
+  try {
+    await performSendUnlocked(
+      session, body, writer, inbound, deliveryDir, mediaGuard, sendReceivedMs,
+      presendConfig, speakers, report,
+    );
+  } finally {
+    release();
+    if (SEND_LOCKS.get(session) === chained) SEND_LOCKS.delete(session);
   }
-  await performSendUnlocked(
-    session, body, writer, inbound, deliveryDir, mediaGuard, sendReceivedMs,
-    presendConfig, speakers, report,
-  );
 }
 
 /**
@@ -1831,7 +1633,7 @@ export class ChatTransitionGate {
 /** The process-wide gate the HTTP routes share. */
 export const chatTransitions = new ChatTransitionGate();
 
-/** Per-session send serialization (projection `on` only — see performSend). */
+/** Per-session send serialization (see performSend). */
 const SEND_LOCKS = new WeakMap<BridgeSession, Promise<void>>();
 
 async function performSendUnlocked(
@@ -1930,43 +1732,13 @@ async function performSendComposed(
   // BEFORE EVERYTHING: a gateway known to be below the supported floor (2026.8.2) is
   // not driven at all — no hold, no describe, no patch, no send (version-floor.ts).
   assertSupportedGateway(conn.gatewayVersion);
-  // THE TRANSCRIPT PROJECTION (redesign phase 1, SHADOW): the instance switch and the
-  // cursor Convex stored, applied to this session's reconciler. Only on a gateway known
-  // to carry the transcript identities (TRANSCRIPT_PROJECTION_SINCE); otherwise off. The
-  // first switch-on reads the transcript in the background — nothing here waits on it.
-  const projectionGateway =
-    gatewayAtLeast(conn.gatewayVersion, TRANSCRIPT_PROJECTION_SINCE) === true;
-  session.transcriptShadow?.configure({
-    mode: projectionGateway ? transcriptProjectionOf(body.config) : "off",
-    cursor: body.transcriptCursor ?? null,
-  });
-  // TRANSCRIPT PROJECTION `on` (redesign phase 3, design §3): the send goes like the
-  // Control UI's — with an explicit `queueMode` while a run is active, its ACK recorded
-  // as custody — and none of the holds below: a send landing while the gateway still
-  // holds a run is a follow-up the transcript places, not a race to wait out (§8.1).
-  const projectionOn = projectionGateway && transcriptProjectionOf(body.config) === "on";
-  session.runManager.setProjection(projectionOn);
-  // FIRST, before anything reads the session: the describe, the pre-send guard and
-  // its compaction below must see the session the send will actually run on — not
-  // one a delivery run is still writing to (and compacting would interrupt it).
-  const releaseWait: ReleaseWait = { spentMs: 0 };
-  if (!projectionOn) {
-    await holdWhileDeliveryRunLive(
-      session,
-      body.chatId,
-      sendReceivedMs,
-      body.dispatchAgeMs,
-    );
-    if (session.runManager.lastTurnWasDelivery) {
-      await awaitGatewayRunRelease(
-        session,
-        body.chatId,
-        sendReceivedMs,
-        body.dispatchAgeMs,
-        releaseWait,
-      );
-    }
-  }
+  // THE TRANSCRIPT PROJECTION: the cursor Convex stored, applied to this session's
+  // reconciler (the first send of a session switches it on and reads the transcript in
+  // the background — nothing here waits on it). Every OpenClaw session runs it: the
+  // send goes like the Control UI's — an explicit `queueMode` while a run is active, its
+  // ACK recorded as custody — and nothing holds it: a send landing while the gateway
+  // still holds a run is a follow-up the transcript places, not a race to wait out.
+  session.transcriptShadow?.configure({ cursor: body.transcriptCursor ?? null });
   // Nothing administrative touches a session whose existence the claim could not
   // establish: an admin `sessions.patch` into an empty key CREATES it — under the
   // bridge's identity, for good, and already reading `systemSent` (so the next turn
@@ -2290,12 +2062,12 @@ async function performSendComposed(
       // interruptSessionRunIfActive). A delivery/announce run can be live on this
       // session even though Convex considers the chat idle — compacting under it
       // would destroy a reply the user is owed. Busy ⇒ do nothing, send as before.
-      // Projection `on`: no turn here does not mean no run there — a run that outlived a
-      // bridge restart (not resumed yet), a wake. The gateway is asked before compacting.
+      // No turn here does not mean no run there — a run that outlived a bridge restart
+      // (not resumed yet), a wake. The gateway is asked before compacting.
       const busy =
         session.runManager.turnActive ||
         session.runManager.dispatchInFlight ||
-        (projectionOn && requiresCompaction(action) && (await gatewayRunsOn(session, body.chatId)));
+        (requiresCompaction(action) && (await gatewayRunsOn(session, body.chatId)));
       // What is LEFT of this dispatch's pre-send deadline. Measured, not assumed:
       // Convex tells us how long the row was already pending, and everything above
       // (patch, describe, rehydration reads) has already spent some of it.
@@ -3142,44 +2914,7 @@ async function performSendComposed(
   // LAST CHECK before the gateway sees anything (codex P1): everything above may
   // have blocked for minutes, and past the deadline this dispatch is no longer ours
   // to send — Convex has settled the row and moved the conversation on.
-  //
-  // A delivery run may also have STARTED during those minutes (defect 18): hold
-  // again, then — after any delivery — wait for the gateway's own release. The exit
-  // test is the last read, synchronous with the arm below: from the arm on, a
-  // delivery frame is stashed instead of opening a turn. A delivery turn opened
-  // DURING the release check (turnEpoch moved) sends the loop round again, since
-  // the check it just passed predates that run. (Projection `on`: no hold at all.)
-  for (;;) {
-    if (projectionOn) break;
-    await holdWhileDeliveryRunLive(
-      session,
-      body.chatId,
-      sendReceivedMs,
-      body.dispatchAgeMs,
-    );
-    const epoch = session.runManager.turnEpoch;
-    if (session.runManager.lastTurnWasDelivery) {
-      await awaitGatewayRunRelease(
-        session,
-        body.chatId,
-        sendReceivedMs,
-        body.dispatchAgeMs,
-        releaseWait,
-      );
-    }
-    if (
-      body.dispatchAgeMs + (Date.now() - sendReceivedMs) > PRE_SEND_DEADLINE_MS
-    ) {
-      break; // assertBeforeSendDeadline refuses right below
-    }
-    if (
-      !session.runManager.deliveryInProgress &&
-      session.runManager.turnEpoch === epoch
-    ) {
-      break;
-    }
-  }
-  // Read HERE, after the holds (codex P1): beginTurn arms the new turn's silence
+  // Read HERE, after the waits above (codex P1): beginTurn arms the new turn's silence
   // budget from this instant, and a clock read before a minutes-long hold would hand
   // the turn a deadline already spent.
   const now = session.clock();
@@ -3221,12 +2956,10 @@ async function performSendComposed(
             },
           },
         );
-  // PROJECTION `on`: how this send lands, decided like the Control UI's submit.
-  const plan = projectionOn
-    ? await planProjectedSend(session, body, session.clock)
-    : null;
-  if (plan !== null && plan.queueMode !== undefined) params.queueMode = plan.queueMode;
-  if (plan !== null && plan.path === "input") {
+  // How this send lands, decided like the Control UI's submit.
+  const plan = await planProjectedSend(session, body, session.clock);
+  if (plan.queueMode !== undefined) params.queueMode = plan.queueMode;
+  if (plan.path === "input") {
     await sendHeldInput(session, conn, params, body, presendConfig, speakers, knowledgeGate, {
       sendKey,
       verbatimCommand,
@@ -3285,12 +3018,11 @@ async function performSendComposed(
       conn.claimCreatedSession = false;
       conn.sessionReplaced = false;
     }
-    // PROJECTION `on` (phase 4): an ACK that names no run never leaves the turn open to
-    // ANY run of the session (the legacy "everything before the run is known" admission,
-    // design §8.1): the send's identity IS the run the gateway starts for it (the
+    // An ACK that names no run never leaves the turn open to ANY run of the session: the
+    // send's identity IS the run the gateway starts for it (the
     // `chat.send` idempotency key — `const clientRunId = p.idempotencyKey`, upstream
     // src/gateway/server-methods/chat-send-session.ts:103 at v2026.9.8 — is the ACK's runId).
-    const ackRunId = extractRunId(response) ?? (projectionOn && sendKey !== "" ? sendKey : null);
+    const ackRunId = extractRunId(response) ?? (sendKey !== "" ? sendKey : null);
     ackStatus = (response as { payload?: { status?: unknown } } | undefined)?.payload?.status;
     // Anchor the RAW user text for orphan-recovery boundary validation — NOT
     // params.message: the enriched message can END with static injections (the
@@ -3339,17 +3071,8 @@ async function performSendComposed(
       // The guard shrank the session for THIS send: a `context_length` answer is
       // then transient, and Convex may re-dispatch it once.
       compactedBeforeSend: presend.compactOutcome === "compacted",
-      ...(plan !== null
-        ? {
-            interruptActive: plan.queueMode === "interrupt",
-          }
-        : {}),
+      interruptActive: plan.queueMode === "interrupt",
     });
-    // AFTER beginTurn (which bumps turnEpoch): the anchor is stamped with the
-    // NEW turn's epoch, so the recovery honors it for this turn (codex R11 P2 —
-    // stamping before beginTurn bound it to the PREVIOUS epoch, disabling the
-    // anchored fast-accept for every normal user send).
-    session.noteTurnUserAnchor(String(body.text ?? ""));
   } catch (err) {
     // ANY failure in the armed send→turn-start window: chat.send rejected (e.g. the
     // gateway refused the attachment), OR beginTurn threw AFTER the ack (e.g. its
@@ -3378,7 +3101,10 @@ async function performSendComposed(
   session.transcriptShadow?.noteAck(ackStatus, sendKey);
 }
 
-/** Projection `on`: does the gateway report a run active on this session (chat.history
+/** The timeout of a one-row `chat.history` read of the session's run facts. */
+const SESSION_FACTS_RPC_TIMEOUT_MS = 8_000;
+
+/** Does the gateway report a run active on this session (chat.history
  *  `sessionInfo.hasActiveRun` / `activeRunIds` / `inFlightRun`)? An unreadable answer
  *  counts as active: a compaction interrupts the run it would land on. */
 export async function gatewayRunsOn(session: BridgeSession, chatId: string): Promise<boolean> {
@@ -3386,7 +3112,7 @@ export async function gatewayRunsOn(session: BridgeSession, chatId: string): Pro
     const res = await session.connection.request(
       "chat.history",
       chatHistoryParams({ sessionKey: session.sessionKey, limit: 1, maxChars: 1 }, null),
-      GATEWAY_RELEASE_RPC_TIMEOUT_MS,
+      SESSION_FACTS_RPC_TIMEOUT_MS,
     );
     const facts = readSessionRunFacts((res as { payload?: unknown }).payload);
     return facts === null || facts.hasActiveRun === true || liveRunIds(facts).length > 0;
@@ -3402,7 +3128,7 @@ export async function gatewayRunsOn(session: BridgeSession, chatId: string): Pro
 /** What a projected stop needs of the chat's live session (`/abort`). */
 export interface ProjectedStopLive {
   sessionKey: string;
-  runManager: { projectionOn: boolean; foregroundRunId: string | null; noteUserAbort(): void };
+  runManager: { foregroundRunId: string | null; noteUserAbort(): void };
 }
 
 /**
@@ -3425,9 +3151,7 @@ export function planProjectedStop(
         ? null
         : {
             sessionKey: peeked.sessionKey,
-            foregroundRunId: peeked.runManager.projectionOn
-              ? peeked.runManager.foregroundRunId
-              : null,
+            foregroundRunId: peeked.runManager.foregroundRunId,
           },
     bodyRunId,
     discardPendingInput,
@@ -3501,7 +3225,7 @@ export async function planProjectedSend(
     const res = await session.connection.request(
       "chat.history",
       chatHistoryParams({ sessionKey: session.sessionKey, limit: 1, maxChars: 1 }, null),
-      GATEWAY_RELEASE_RPC_TIMEOUT_MS,
+      SESSION_FACTS_RPC_TIMEOUT_MS,
     );
     facts = readSessionRunFacts((res as { payload?: unknown }).payload);
   } catch (err) {
@@ -3698,7 +3422,7 @@ export async function askGatewayForInput(
         { sessionKey, limit: 1, maxChars: 1, inputRunIds: [sendKey] },
         connection.gatewayVersion,
       ),
-      GATEWAY_RELEASE_RPC_TIMEOUT_MS,
+      SESSION_FACTS_RPC_TIMEOUT_MS,
     );
     payload = (res as { payload?: unknown }).payload;
   } catch {

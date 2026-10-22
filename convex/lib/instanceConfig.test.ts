@@ -5,7 +5,6 @@
 import { describe, expect, it, test } from "vitest";
 import {
   DEFAULT_INSTANCE_CONFIG,
-  DEFAULT_TRANSCRIPT_PROJECTION,
   bridgeDispatchConfig,
   configSignature,
   effectiveTranscriptProjection,
@@ -148,19 +147,18 @@ describe("parseInstanceConfig — talkEnabled (per-instance realtime voice gate)
   });
 });
 
-// THE PROJECTION DEFAULT (0.101.1): an OpenClaw instance that names no mode runs `on`; an
-// explicit `off`/`shadow` is kept; a Hermes instance is never projected; the dispatch sends
-// the mode resolved, so the bridge never applies a default of its own.
+// THE PROJECTION IS NOT A SWITCH ANY MORE (0.102.0): an OpenClaw instance always runs
+// `on`, whatever an old configuration stored; a Hermes instance is never projected; the
+// dispatch sends the mode resolved.
 describe("effectiveTranscriptProjection", () => {
-  it("is `on` for an OpenClaw instance that names none (kind set or absent)", () => {
+  it("is `on` for an OpenClaw instance (kind set or absent)", () => {
     expect(effectiveTranscriptProjection({ config: {} })).toBe("on");
     expect(effectiveTranscriptProjection({ kind: "openclaw" })).toBe("on");
     expect(effectiveTranscriptProjection({ kind: "openclaw", config: null })).toBe("on");
-    expect(DEFAULT_TRANSCRIPT_PROJECTION).toBe("on");
   });
-  it("keeps an explicit `off` or `shadow`", () => {
-    expect(effectiveTranscriptProjection({ config: { transcriptProjection: "off" } })).toBe("off");
-    expect(effectiveTranscriptProjection({ kind: "openclaw", config: { transcriptProjection: "shadow" } })).toBe("shadow");
+  it("ignores a stored `off` or `shadow` (read as `on`)", () => {
+    expect(effectiveTranscriptProjection({ config: { transcriptProjection: "off" } })).toBe("on");
+    expect(effectiveTranscriptProjection({ kind: "openclaw", config: { transcriptProjection: "shadow" } })).toBe("on");
   });
   it("never projects a Hermes instance, whatever its configuration says", () => {
     expect(effectiveTranscriptProjection({ kind: "hermes" })).toBe("off");
@@ -173,7 +171,8 @@ describe("effectiveTranscriptProjection", () => {
   it("is sent resolved on dispatch", () => {
     expect(bridgeDispatchConfig({}, "fr", "openclaw").transcriptProjection).toBe("on");
     expect(bridgeDispatchConfig(undefined, "fr").transcriptProjection).toBe("on");
-    expect(bridgeDispatchConfig({ transcriptProjection: "off" }, "fr", "openclaw").transcriptProjection).toBe("off");
+    expect(bridgeDispatchConfig({ transcriptProjection: "off" }, "fr", "openclaw").transcriptProjection).toBe("on");
+    expect(bridgeDispatchConfig({ transcriptProjection: "shadow" }, "fr", "openclaw").transcriptProjection).toBe("on");
     expect(bridgeDispatchConfig({ transcriptProjection: "on" }, "fr", "hermes").transcriptProjection).toBe("off");
   });
 });

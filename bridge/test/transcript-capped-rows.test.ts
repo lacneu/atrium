@@ -55,7 +55,6 @@ type Texts = Array<{ entryId: string; text?: string; blocks?: Array<{ type: stri
 function rig(opts: {
   history: unknown[] | (() => unknown);
   message?: (id: string) => Promise<unknown>;
-  mode?: "on" | "shadow";
   cursor?: { sessionId: string; deltaCursor: string };
 }) {
   const applies: TranscriptApply[] = [];
@@ -83,7 +82,7 @@ function rig(opts: {
     sleep: async () => {},
     log: () => {},
   });
-  shadow.configure({ mode: opts.mode ?? "on", ...(opts.cursor ? { cursor: opts.cursor } : {}) });
+  shadow.configure({ ...(opts.cursor ? { cursor: opts.cursor } : {}) });
   const texts = (): Texts =>
     applies.filter((a) => a.textsOnly === true).flatMap((a) => a.rows as unknown as Texts);
   return { shadow, applies, asked, reads, texts };
@@ -102,7 +101,7 @@ describe("the display-cap marker (chat-message-recovery.ts:30-41)", () => {
     expect(row.text).toBe(FULL.slice(0, 8_000));
     expect(row.blocks).toEqual([{ type: "text", text: FULL.slice(0, 8_000), capped: true }]);
   });
-  it("outside `on` nothing changes: no list, rows as always", () => {
+  it("without a display key nothing changes: no list, rows as always", () => {
     const read = parseHistoryReply(page([preview()]))!;
     expect(read.capped).toBeUndefined();
   });
@@ -161,12 +160,6 @@ describe("projection `on`: the capped row is completed by chat.message.get", () 
     r.shadow.requestRead("again");
     await r.shadow.idle();
     expect(r.asked).toEqual(["e42", "e42"]);
-  });
-
-  it("outside `on`, chat.message.get is never asked", async () => {
-    const r = rig({ history: [preview()], message: async () => ({ ok: true, message: full() }), mode: "shadow" });
-    await r.shadow.idle();
-    expect(r.asked).toEqual([]);
   });
 });
 
@@ -238,7 +231,7 @@ describe("captured on the 2026.9.33 bench: a 17 000-character answer", () => {
       sleep: async () => {},
       log: () => {},
     });
-    shadow.configure({ mode: "on" });
+    shadow.configure({});
     await shadow.idle();
     expect(asked).toHaveLength(1);
     const posted = applies
@@ -273,7 +266,7 @@ describe("across readers of one conversation (the session expired and came back)
       sleep: async () => {},
       log: () => {},
     });
-    shadow.configure({ mode: "on", cursor: { sessionId: "s-1", deltaCursor: "c:0" } });
+    shadow.configure({ cursor: { sessionId: "s-1", deltaCursor: "c:0" } });
     return shadow;
   }
   const postedTexts = (applies: TranscriptApply[]) =>
@@ -329,7 +322,7 @@ describe("across readers of one conversation (the session expired and came back)
       sleep: async () => {},
       log: () => {},
     });
-    s.configure({ mode: "on", cursor: { sessionId: "s-1", deltaCursor: "c:1" } });
+    s.configure({ cursor: { sessionId: "s-1", deltaCursor: "c:1" } });
     await s.idle();
     expect(asked).toEqual(["e42"]);
     expect(postedTexts(applies)).toEqual([]);

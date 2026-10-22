@@ -218,7 +218,7 @@ identical. The two broken anchors are real and are each recorded:
 
 **DECLARED GAP, not a conclusion.** 2026.9.5 adds a RETRACTION delta —
 `delta { deltaText: "", replace: true }` — and the bridge normalizer drops any
-delta whose text is empty (`bridge/src/providers/openclaw/normalizer.ts:2250`,
+delta whose text is empty (`bridge/src/providers/openclaw/normalizer.ts:1793`,
 the `&& deltaText` guard), so Atrium keeps a text the gateway has just withdrawn.
 Written here because it is known and unfixed, not because it was measured on the
 bench: the catalogue never elicits a retraction. It is owed a scenario before it
@@ -1129,9 +1129,10 @@ result (`chat.side_result`, admitted and handled by the normalizer) are handled;
 events and the progressive session-catalog delivery are addressed to surfaces or requests
 Atrium never has (ignored, verifiably); the per-phase `chat.send` timing is a gap.
 
-## 7. Deliberate deviations of projection `on` (0.101.x)
+## 7. Deliberate deviations of the transcript projection (0.101.x)
 
-Where Atrium's projection `on` departs from the Control UI on purpose. Each is a choice, not a
+Where Atrium's transcript projection (every OpenClaw conversation since 0.102.0) departs from
+the Control UI on purpose. Each is a choice, not a
 gap to close; the 0.101.x audit of 2026-10-19 (`audit-conformite-9.33-lots-0.101.md`, kept
 outside the repository) lists them against the upstream code.
 

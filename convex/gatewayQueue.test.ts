@@ -3,8 +3,8 @@
 // PHASE 6 — the gateway's own queue, as the composer reads it (`followUp.followUpState`
 // `gatewayQueue`). The gateway states how many inputs it queues behind the run in progress
 // (2026.9.7+ `pendingInputs.queuedCount`, chat-pending-inputs.ts:72-99 at v2026.9.8); the
-// last read's cursor carries it (`transcriptCursors.pendingQueuedCount`). Asserted ON and
-// off/shadow: outside `on` nothing changes (the harness pins the cost, this pins the answer).
+// last read's cursor carries it (`transcriptCursors.pendingQueuedCount`). Asserted on an
+// OpenClaw instance (always projected) and on a Hermes one, where nothing changes.
 
 import { convexTest, type TestConvex } from "convex-test";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
@@ -28,12 +28,12 @@ afterEach(() => {
   else process.env.OPENCLAW_ENABLE_ANON_AUTH = prevAnon;
 });
 
-async function seed(t: T, mode: "on" | "shadow" | "off", cursors: Array<{ queued?: number; updatedAt: number; sessionKey?: string }>) {
+async function seed(t: T, mode: "on" | "hermes", cursors: Array<{ queued?: number; updatedAt: number; sessionKey?: string }>) {
   return t.run(async (ctx) => {
     const userId = await ctx.db.insert("users", {});
     await ctx.db.insert("profiles", { userId, role: "user" as const, canonical: "u" });
     await ctx.db.insert("userAgents", { userId, instanceName: "prod", agentId: "main", isDefault: true, source: "manual" as const, createdAt: 1 });
-    await ctx.db.insert("instances", { name: "prod", gatewayUrl: "ws://gw", config: { transcriptProjection: mode } as never });
+    await ctx.db.insert("instances", { name: "prod", gatewayUrl: "ws://gw", ...(mode === "hermes" ? { kind: "hermes" as const } : {}) });
     const chatId = await ctx.db.insert("chats", { userId, updatedAt: 1, instanceName: "prod", agentId: "main" });
     for (const c of cursors) {
       await ctx.db.insert("transcriptCursors", {
@@ -92,9 +92,9 @@ describe("followUpState.gatewayQueue", () => {
     expect(await one(t, userId, chatId)).toBeNull();
   });
 
-  test.each(["shadow", "off"] as const)("%s: nothing but `projection: false`, as in 0.97.0", async (mode) => {
+  test("hermes: nothing but `projection: false`, as in 0.97.0", async () => {
     const t = convexTest(schema, modules);
-    const { userId, chatId } = await seed(t, mode, [{ queued: 2, updatedAt: Date.now() }]);
+    const { userId, chatId } = await seed(t, "hermes", [{ queued: 2, updatedAt: Date.now() }]);
     expect(await stateOf(t, userId, chatId)).toStrictEqual({ projection: false });
   });
 
@@ -164,15 +164,6 @@ describe("the queue's freshness belongs to the read that stated it (codex phase 
     expect(q).toEqual({ count: 1, until: later + SESSION_ACTIVE_FRESH_MS });
   });
 
-  test("SHADOW: the stamp is never written (0.97.0's bytes)", async () => {
-    const t = convexTest(schema, modules);
-    const { chatId } = await seed(t, "shadow", []);
-    await read(t, chatId, { readAt: Date.now(), hasActiveRun: true, pendingInputs: { items: [], total: 2, queuedCount: 2, complete: true } });
-    const c = await t.run((ctx) => ctx.db.query("transcriptCursors").first());
-    expect(c?.pendingQueuedCount).toBe(2);
-    expect(c && "pendingQueuedAt" in c).toBe(false);
-    expect(c && "hasActiveRunAt" in c).toBe(false);
-  });
 });
 
 describe("each session names ONLY its own queued inputs (codex phase 6 passes 4-5)", () => {

@@ -160,27 +160,11 @@ describe("SubAgentObserver — registration & lifecycle (real frames)", () => {
     expect(text).toContain("2026 09 10 - VADE-MECUM.pdf");
     // ...and still carries no server path (the SOC2 rule that made it disappear).
     expect(text).not.toContain("/home/node/");
-    // And the DELIVERY itself rides the record: the child's lane is the only
-    // place these files appear, so the bridge attaches them to the child's
-    // anchor. The RAW path is kept — sanitising rewrites it to a basename, and
-    // the fetch needs the path.
-    expect((out[0] as { deliveredMedia?: unknown }).deliveredMedia).toEqual([
-      {
-        filename: "2026 09 10 - VADE-MECUM.docx",
-        path: "/home/node/.openclaw/media/outbound/2026 09 10 - VADE-MECUM.docx",
-      },
-      {
-        filename: "2026 09 10 - VADE-MECUM.pdf",
-        path: "/home/node/.openclaw/media/outbound/2026 09 10 - VADE-MECUM.pdf",
-      },
-    ]);
   });
 
   it("...on a CUSTOM outbound mount too, not only the image's default", () => {
     // An instance may override `outboundAgentMount`, and `/send` then instructs
-    // the agent to write there — so the child's directive names THAT path. The
-    // recogniser was pinned to the image default, so on any custom mount the
-    // delivery stayed exactly as lost as before this lane existed.
+    // the agent to write there — so the child's directive names THAT path.
     const obs = new SubAgentObserver(PARENT1, "chatA", {
       outboundAgentMount: () => "/srv/atrium/out",
     });
@@ -191,9 +175,6 @@ describe("SubAgentObserver — registration & lifecycle (real frames)", () => {
       content: [{ type: "text", text: "MEDIA:/srv/atrium/out/report.pdf" }],
     };
     const out = obs.observe(media, 1002);
-    expect((out[0] as { deliveredMedia?: unknown }).deliveredMedia).toEqual([
-      { filename: "report.pdf", path: "/srv/atrium/out/report.pdf" },
-    ]);
     // ...and the VISIBLE answer names the file without the server path. On a
     // custom mount the line matched no rule at all, so the raw absolute path
     // reached the reader — the SOC2 rule that the default mount already held.
@@ -231,8 +212,7 @@ describe("SubAgentObserver — registration & lifecycle (real frames)", () => {
 
   it("a ROOT mount is a real configuration, not a silent fallback", () => {
     // Convex ACCEPTS "/" (`isValidAgentMountPath`). Reading it as "unset" sent
-    // this lane looking for the image default while the agent wrote to "/": the
-    // delivery lost, and nothing anywhere said why.
+    // this lane looking for the image default while the agent wrote to "/".
     const obs = new SubAgentObserver(PARENT1, "chatA", {
       outboundAgentMount: () => "/",
     });
@@ -243,9 +223,6 @@ describe("SubAgentObserver — registration & lifecycle (real frames)", () => {
       content: [{ type: "text", text: "MEDIA:/rapport.pdf" }],
     };
     const out = obs.observe(media, 1002);
-    expect((out[0] as { deliveredMedia?: unknown }).deliveredMedia).toEqual([
-      { filename: "rapport.pdf", path: "/rapport.pdf" },
-    ]);
     // ...and the visible answer carries the NAME, not the path. The root mount
     // normalises to the empty prefix, which a second normalisation read as
     // "unset" — the delivery was detected and the absolute path stayed visible.
@@ -257,7 +234,7 @@ describe("SubAgentObserver — registration & lifecycle (real frames)", () => {
     // A delegation outlives the turn that spawned it. A later `/send` after a
     // config change moved the session's mount, and reading it at terminal looked
     // for the NEW directory while the child had written to the old one: the
-    // delivery lost again, and the server path left in the visible text.
+    // server path left in the visible text.
     let current = "/srv/old/out";
     const obs = new SubAgentObserver(PARENT1, "chatA", {
       outboundAgentMount: () => current,
@@ -270,70 +247,8 @@ describe("SubAgentObserver — registration & lifecycle (real frames)", () => {
       content: [{ type: "text", text: "MEDIA:/srv/old/out/report.pdf" }],
     };
     const out = obs.observe(media, 1002);
-    expect((out[0] as { deliveredMedia?: unknown }).deliveredMedia).toEqual([
-      { filename: "report.pdf", path: "/srv/old/out/report.pdf" },
-    ]);
     const text = (out[0] as { resultText?: string }).resultText ?? "";
     expect(text).toBe("report.pdf");
-  });
-
-  it("a TRAVERSING directive delivers nothing (the child lane had no filter)", () => {
-    // The owner's lane has refused these shapes since the Python original
-    // (`isOutboundMediaPath`: no "..", no query, no scheme). The child lane had
-    // NO filter, and its path goes straight to the fetcher — which in
-    // `gateway-http` mode asks the gateway for that exact `source`.
-    const obs = new SubAgentObserver(PARENT1, "chatA");
-    obs.observe(SPAWN_RESULT_1, 1000);
-    const media = JSON.parse(JSON.stringify(CHILD_FINAL_1)) as Record<string, any>;
-    media.payload.message = {
-      role: "assistant",
-      content: [
-        {
-          type: "text",
-          text:
-            "MEDIA:/home/node/.openclaw/media/outbound/../../secrets.env\n" +
-            "MEDIA:/home/node/.openclaw/media/outbound/r.pdf?x=1\n" +
-            "MEDIA:/home/node/.openclaw/media/outbound/ok.pdf",
-        },
-      ],
-    };
-    const out = obs.observe(media, 1002);
-    // ONLY the well-formed one rides.
-    expect((out[0] as { deliveredMedia?: unknown }).deliveredMedia).toEqual([
-      {
-        filename: "ok.pdf",
-        path: "/home/node/.openclaw/media/outbound/ok.pdf",
-      },
-    ]);
-  });
-
-  it("a child that delivered nothing carries no delivery", () => {
-    // The field's ABSENCE is the signal the attach path keys on — a turn with
-    // an empty list would make every ordinary delegation walk the media code.
-    const obs = new SubAgentObserver(PARENT1, "chatA");
-    obs.observe(SPAWN_RESULT_1, 1000);
-    const out = obs.observe(CHILD_FINAL_1, 1002);
-    expect((out[0] as { deliveredMedia?: unknown }).deliveredMedia).toBeUndefined();
-  });
-
-  it("a path MENTIONED in the child's prose is not a delivery", () => {
-    // Only a `MEDIA:` directive is the agent delivering. A path an agent merely
-    // named — reading old notes, echoing a shell transcript — must never
-    // re-attach last week's files to today's bubble.
-    const obs = new SubAgentObserver(PARENT1, "chatA");
-    obs.observe(SPAWN_RESULT_1, 1000);
-    const mentioned = JSON.parse(JSON.stringify(CHILD_FINAL_1)) as Record<string, any>;
-    mentioned.payload.message = {
-      role: "assistant",
-      content: [
-        {
-          type: "text",
-          text: "J'ai relu /home/node/.openclaw/media/outbound/vieux-rapport.pdf pour m'en inspirer.",
-        },
-      ],
-    };
-    const out = obs.observe(mentioned, 1002);
-    expect((out[0] as { deliveredMedia?: unknown }).deliveredMedia).toBeUndefined();
   });
 
   it("child chat:final -> done + resultText, and the observation is REAPED", () => {
@@ -1799,7 +1714,7 @@ describe("SubAgentObserver — child-lane anchor fallback (missed spawn result)"
   });
 });
 
-describe("a delivery made BEFORE the bubble is known", () => {
+describe("a child settled BEFORE the bubble is known", () => {
   // The SAME shapes the neighbouring anchor-fallback suite uses: an announce-run
   // item sighting parks a null anchor, the child registers lazily, and the run
   // correlation supplies the bubble later.
@@ -1807,11 +1722,9 @@ describe("a delivery made BEFORE the bubble is known", () => {
   const CHILD = "agent:files:subagent:cccc1111-2222-3333-4444-555566667777";
   const RUN = "announce:v1:agent:files:subagent:prev:run9";
 
-  it("rides the LATE anchor instead of being lost", () => {
-    // A fast child can settle before its spawn result names the parent bubble.
-    // The terminal upsert then carried the delivery with a NULL anchor — the
-    // session's attach path requires one, so it skipped — and the late anchor
-    // backfill said nothing about files. The document was gone for good.
+  it("a child settled before its bubble is known still gets the LATE anchor", () => {
+    // A fast child can settle before its spawn result names the parent bubble:
+    // the terminal upsert carries a NULL anchor, and the late backfill anchors it.
     const obs = new SubAgentObserver(PARENT, "chatA");
     obs.observe(
       {
@@ -1868,20 +1781,16 @@ describe("a delivery made BEFORE the bubble is known", () => {
       null,
     );
     const t = term.find((u) => u.childSessionKey === CHILD) as
-      | { parentMessageId?: string | null; deliveredMedia?: unknown }
+      | { parentMessageId?: string | null }
       | undefined;
-    expect(t?.parentMessageId ?? null).toBeNull(); // nothing to attach to yet
-    expect(t?.deliveredMedia).toBeDefined();
+    expect(t?.parentMessageId ?? null).toBeNull(); // no bubble to anchor to yet
 
-    // ...and when the bubble finally opens, the delivery rides WITH the anchor.
+    // ...and when the bubble finally opens, the settled child is anchored to it.
     const late = obs.noteRunAnchor([RUN], "msg-announce", 1030);
     const carried = late.find((u) => u.childSessionKey === CHILD) as
-      | { parentMessageId?: string | null; deliveredMedia?: unknown }
+      | { parentMessageId?: string | null }
       | undefined;
     expect(carried?.parentMessageId).toBe("msg-announce");
-    expect(carried?.deliveredMedia).toEqual([
-      { filename: "r.pdf", path: "/home/node/.openclaw/media/outbound/r.pdf" },
-    ]);
   });
 });
 

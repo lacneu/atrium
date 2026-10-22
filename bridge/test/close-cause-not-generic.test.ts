@@ -1,7 +1,7 @@
 // A CLOSE THAT KNOWS ITS CAUSE MUST NOT REPORT THE GENERIC ONE.
 //
 // `endTurn(now, status, error, cause, errorKind)` — its fourth argument used to
-// feed a trace, so three close paths in `session.ts` computed a precise cause
+// feed a trace, so the close paths in `session.ts` computed a precise cause
 // (`gateway_restarting`, `connection_saturated`, `connection_lost`) and then
 // passed the literal `"external"` anyway. That argument is now the turn's DURABLE
 // verdict: writing `external` over a known class would make the record lie about
@@ -59,8 +59,9 @@ describe("a close reports the cause it computed", () => {
 
   test("the parse found the close paths (a silent zero would pass for ever)", () => {
     // The failure mode of every derived check: a walk that matches nothing makes
-    // the assertion below vacuously true.
-    expect(calls.length).toBeGreaterThanOrEqual(3);
+    // the assertion below vacuously true. One is left since 0.102.0 — the crash
+    // finalize; the transcript, not a deadline, settles a turn whose socket closed.
+    expect(calls.length).toBeGreaterThanOrEqual(1);
   });
 
   test("none of them replaces it with a generic literal", () => {

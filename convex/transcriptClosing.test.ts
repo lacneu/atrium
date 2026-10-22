@@ -3,8 +3,8 @@
 // THE POINTS LEFT OPEN AFTER STEPS 3-4, CLOSED (coordinator, 2026-10-16): a run of tool
 // calls only is shown; a row naming no run is shown with its presentation owner; a derived
 // part the current rows no longer name is gone from storage (export and archive included);
-// a bubble every row of which was retracted goes; after a rollback the row's copy wins
-// over a live file. Each case cites the upstream behaviour it reproduces (v2026.9.33).
+// a bubble every row of which was retracted goes. Each case cites the upstream behaviour it
+// reproduces (v2026.9.33).
 
 import { convexTest, type TestConvex } from "convex-test";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
@@ -30,11 +30,11 @@ afterEach(() => {
 const SK = "agent:main:atrium:chat:u:c1";
 type Row = Record<string, unknown>;
 
-async function seed(t: T, mode: "on" | "shadow" = "on") {
+async function seed(t: T) {
   const ids = await t.run(async (ctx) => {
     const userId = await ctx.db.insert("users", {});
     await ctx.db.insert("profiles", { userId, role: "user" as const, canonical: "u" });
-    await ctx.db.insert("instances", { name: "prod", gatewayUrl: "ws://gw", config: { transcriptProjection: mode } as never });
+    await ctx.db.insert("instances", { name: "prod", gatewayUrl: "ws://gw" });
     const chatId = await ctx.db.insert("chats", { userId, updatedAt: 1, instanceName: "prod", agentId: "main" });
     return { userId, chatId };
   });
@@ -242,14 +242,6 @@ describe("chat-thread-grouping.test.ts:419 — an unscoped delivery mirror is ne
     expect(bubbles.find((m) => m.runId === "r1")!.text).toBe("Réponse.");
   });
 
-  test("off/shadow store the row as before (no owner inferred)", async () => {
-    const t = convexTest(schema, modules);
-    const ids = await seed(t, "shadow");
-    await read(t, ids.chatId, [said("ans", 3, "r1", "x"), said("mirror", 4, undefined, "y")], over("r1"));
-    const stored = await t.run(async (ctx) => (await ctx.db.query("transcriptRows").collect()).find((r) => r.entryId === "mirror"));
-    expect(stored?.runId).toBeUndefined();
-    expect(stored?.presentationOwner).toBeUndefined();
-  });
 });
 
 // The row replaced its `MEDIA:` copy by its managed block (the gateway's structured
@@ -344,55 +336,3 @@ describe("a bubble every row of which was retracted goes", () => {
   });
 });
 
-// Final design §5 and Olivier's R4 decision: after `on` → `shadow`, the turns follow the
-// old path again — a live file is attached as before (no rule by name or path: a duplicate
-// is possible once, at the switch, and stays stored). What the READER sees is still decided
-// by R4: in a mixed group, a live part whose bytes a row already shows is withheld.
-describe("rollback to shadow: R4 holds over a mixed group, storage stays faithful", () => {
-  test("a live part with the bytes a row shows is withheld at display (same bubble, then another of the group)", async () => {
-    const t = convexTest(schema, modules);
-    const ids = await seed(t);
-    const R = "run-r";
-    await read(
-      t,
-      ids.chatId,
-      [said("m1", 5, R, "Voici.", { blocks: [{ type: "text", text: "Voici." }, { type: "file", kind: "document", artifactId: "artifact_managed_media_9", label: "bench-settle.txt" }] })],
-      over(R),
-    );
-    await copyAll(t, "SETTLE");
-    const [b] = await view(t, ids);
-    await t.run(async (ctx) => {
-      const inst = (await ctx.db.query("instances").collect())[0]!;
-      await ctx.db.patch(inst._id, { config: { transcriptProjection: "shadow" } as never });
-    });
-    const add = async (messageId: Id<"messages">, filename: string, bytes: string) => {
-      const storageId = await t.run((ctx) => ctx.storage.store(new Blob([bytes])));
-      await t.mutation(internal.stream.addPart, {
-        messageId,
-        part: { kind: "media", storageId, filename, mimeType: "text/plain" },
-        boundInstanceName: "prod",
-      } as never);
-      return storageId;
-    };
-    // Same bubble: the same bytes under another name (no rule by name), and other bytes.
-    const dup = await add(b!._id, "copie.txt", "SETTLE");
-    const other = await add(b!._id, "autre.txt", "AUTRE");
-    // Another bubble of the same display group (shadow-era, no row layout).
-    const later = await t.run((ctx) =>
-      ctx.db.insert("messages", { chatId: ids.chatId, userId: ids.userId, role: "assistant" as const, status: "complete" as const, text: "suite", runId: "after-rollback", turnSessionKey: SK, boundInstance: "prod", displayGroupId: b!._id, updatedAt: 2 }),
-    );
-    await t.run((ctx) => ctx.db.patch(b!._id, { displayGroupId: b!._id }));
-    const dupLater = await add(later, "bench-settle.txt", "SETTLE");
-    // Storage: every part kept.
-    const stored = await t.run((ctx) => ctx.db.query("messageParts").collect());
-    expect(stored.filter((p) => p.part.kind === "media")).toHaveLength(4);
-    // Display: the two duplicates withheld by their bytes (sha256), never by name or path.
-    const all = (await t.withIdentity({ subject: ids.userId }).query(api.messages.listByChat, { chatId: ids.chatId as string })) as unknown as Array<{
-      _id: Id<"messages">;
-      displayHidden?: Array<{ rule: string; storageId?: string }>;
-    }>;
-    const hidden = all.flatMap((m) => (m.displayHidden ?? []).filter((d) => d.storageId !== undefined).map((d) => d.storageId));
-    expect(hidden.sort()).toEqual([String(dup), String(dupLater)].sort());
-    expect(hidden).not.toContain(String(other));
-  });
-});

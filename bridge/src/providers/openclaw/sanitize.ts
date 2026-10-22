@@ -143,25 +143,6 @@ function normaliseMount(raw: string | null | undefined): string | null {
   return stripped;
 }
 
-/**
- * The shapes NO outbound path may have, whatever lane it arrived on.
- *
- * The owner's lane has refused these since the Python original
- * (`normalizer.isOutboundMediaPath`); the child lane had NO filter at all, so a
- * directive naming `<mount>/../../secrets.env` was handed to the fetcher — which
- * in `gateway-http` mode asks the gateway for that exact `source`. Same rule,
- * ONE definition; each lane adds its own prefix test on top (the owner's is "any
- * /media/outbound/", the child's is "the mount it was instructed to use").
- */
-export function isUnsafeOutboundPath(path: string): boolean {
-  if (typeof path !== "string" || path === "") return true;
-  if (!path.startsWith("/")) return true;
-  if (path.includes("..")) return true;
-  if (path.includes("?")) return true; // query component
-  if (/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(path)) return true; // scheme
-  return false;
-}
-
 /** `MEDIA:<mount>/<tail>` for THIS mount. The tail is the rest of the line, so a
  *  filename with spaces survives (see the note above). */
 function directiveRegExpFor(mount: string): RegExp {
@@ -241,55 +222,6 @@ function stripPathsToBasename(
 function customPathRegExpFor(mount: string): RegExp {
   const escaped = mount.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   return new RegExp(`${escaped}\\/([^\\s\`)>]+)`, "g");
-}
-
-/**
- * The files a text DELIVERS: one entry per well-formed `MEDIA:` directive line.
- *
- * Only DIRECTIVES count — a path merely mentioned in prose is not a delivery,
- * and treating it as one would re-attach files an agent happened to name while
- * reading old notes. The whole rest of the line is the path, so a filename with
- * spaces survives intact (the same rule the normalizer's discovery uses; a
- * bare-token scan truncates "IFOA Presentation.pdf" at the first space and then
- * fetches a path that does not exist).
- *
- * Exists for the CHILD lane: a sub-agent's frames are observation-only, so the
- * media pipeline never sees them, and a delegated answer that IS a delivery had
- * no way to reach the reader (prod 2026-09-09).
- */
-export function outboundMediaDeliveries(
-  text: string,
-  /** The mount the agent was INSTRUCTED to write to for this turn. An instance
-   *  may override it (`outboundAgentMount`), and the directive then names that
-   *  path — the historic constant matched nothing and the delivery stayed lost,
-   *  which is the very defect this function exists for. Defaults to the constant
-   *  so a caller without the config behaves as before. */
-  outboundAgentMount?: string | null,
-): Array<{ filename: string; path: string }> {
-  if (typeof text !== "string") return [];
-  const mount = normaliseMount(outboundAgentMount) ?? DEFAULT_OUTBOUND_MOUNT;
-  // The configured mount OR any deliverable media directory. This is a SUB-AGENT's only
-  // extraction — the parent cannot be trusted to re-deliver — so gating it on the staging
-  // mount alone meant a delegated agent's generated image was never delivered at all, the
-  // same defect one lane over (codex).
-  if (!text.includes(mount) && !containsDeliverableMediaPath(text)) return [];
-  const directive = directiveRegExpFor(mount);
-  const out: Array<{ filename: string; path: string }> = [];
-  const seen = new Set<string>();
-  for (const line of text.split(/\r\n|[\n\r\v\f\x1c\x1d\x1e\u0085\u2028\u2029]/)) {
-    const m = directive.exec(line);
-    if (m === null) continue;
-    // trimEnd: the gateway file has no trailing whitespace, and a trailing space
-    // makes the fetch path not-found.
-    const path = m[1]!.trimEnd();
-    // The child lane's HALF of the shared rule (the other half is the mount
-    // prefix, which the regex above already enforced).
-    if (isUnsafeOutboundPath(path)) continue;
-    if (seen.has(path)) continue;
-    seen.add(path);
-    out.push({ filename: posixBasename(path), path });
-  }
-  return out;
 }
 
 /**

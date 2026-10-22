@@ -4,9 +4,8 @@
 // design §14.24). A person's deletion refuses its runs for good — tombstones, and the
 // run → bubble records left pointing at the missing bubble (`deletedMergeOf`). An automatic
 // removal must not borrow that verdict: an own delivery bubble dropped empty at its
-// terminal leaves its run recoverable — from the transcript, and by its replay after a
-// rollback — and the turn-replacing paths (auto-retry, preempt re-park) never take a
-// delivery's own bubble for a user turn.
+// terminal leaves its run recoverable from the transcript, and the turn-replacing paths
+// (auto-retry, preempt re-park) never take a delivery's own bubble for a user turn.
 
 import { convexTest, type TestConvex } from "convex-test";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
@@ -71,11 +70,6 @@ const assistantsOf = (t: T, chatId: Id<"chats">, runId: string) =>
   t.run(async (ctx) =>
     (await ctx.db.query("messages").withIndex("by_chat", (q) => q.eq("chatId", chatId)).collect()).filter((m) => m.role === "assistant" && m.runId === runId),
   );
-const setMode = (t: T, mode: "on" | "shadow") =>
-  t.run(async (ctx) => {
-    const inst = (await ctx.db.query("instances").collect())[0]!;
-    await ctx.db.patch(inst._id, { config: { transcriptProjection: mode } as never });
-  });
 
 /** The turn P answered and settled, its launch read; then delivery A's own bubble: a
  *  visible delta, an authorized empty snapshot, an empty terminal — dropped. */
@@ -121,16 +115,6 @@ describe("an own delivery bubble dropped empty leaves its run recoverable", () =
     expect(await start(t, chatId, A)).toBe(shown[0]!._id);
   });
 
-  test("after a rollback to shadow, its replay opens a bubble as in 0.96.0, never refused", async () => {
-    const t = convexTest({ schema, modules });
-    const { chatId } = await droppedOwnDelivery(t);
-    await setMode(t, "shadow");
-    // No sub-agent row anchors the child (its launch was read from the transcript): 0.96.0's
-    // path opens a bubble of its own for the delivery.
-    const landed = await start(t, chatId, A);
-    expect(landed).not.toBeNull();
-    expect((await assistantsOf(t, chatId, A)).map((m) => [m._id, m.status])).toEqual([[landed, "streaming"]]);
-  });
 });
 
 describe("the turn-replacing paths never take a delivery's own bubble for a user turn", () => {
@@ -228,7 +212,7 @@ describe("an own delivery bubble dropped by its rows' settle releases those rows
     expect((await assistantsOf(t, chatId, A)).map((m) => m.text)).toEqual(["Résultat tardif."]);
   });
 
-  test("a purge already scheduled for the dropped bubble erases nothing; after a rollback the replay lands", async () => {
+  test("a purge already scheduled for the dropped bubble erases nothing", async () => {
     const t = convexTest({ schema, modules });
     const { chatId, mA } = await droppedByItsRows(t);
     const h1 = (await rowOf(t, "h1"))!;
@@ -237,10 +221,6 @@ describe("an own delivery bubble dropped by its rows' settle releases those rows
     await settle(t);
     expect(await textOf(t, h1._id)).not.toBeNull();
     expect((await rowOf(t, "h1"))?.messageId).toBeUndefined();
-    await setMode(t, "shadow");
-    const landed = await start(t, chatId, A);
-    expect(landed).not.toBeNull();
-    expect((await assistantsOf(t, chatId, A)).map((m) => m._id)).toEqual([landed]);
   });
 
   test("a person's deletion still purges, and the run's late rows never bring the answer back", async () => {
@@ -336,14 +316,6 @@ describe("a delivery bubble born from transcript rows carries the delivery's ide
     expect((await answerBubbles(t, chatId)).map((m) => m._id)).toEqual([reborn]);
   });
 
-  test("after a rollback to shadow: its :retry-1 lands on the reborn bubble, never merges into the parent", async () => {
-    const t = convexTest({ schema, modules, transactionLimits: true });
-    const { chatId, mP, reborn } = await droppedThenReborn(t);
-    await setMode(t, "shadow");
-    expect(await start(t, chatId, `${W}:retry-1`)).toBe(reborn);
-    expect((await t.run((ctx) => ctx.db.get(mP)))?.text).toBe("Je délègue.");
-    expect((await answerBubbles(t, chatId)).map((m) => m._id)).toEqual([reborn]);
-  });
 });
 
 describe("a delivery's late final with no bubble is born its own (§14.28)", () => {
@@ -358,25 +330,3 @@ describe("a delivery's late final with no bubble is born its own (§14.28)", () 
   });
 });
 
-// ── codex phase 5 pass 18: a late final after a rollback keeps the delivery's identity ──
-describe("a late final born after a rollback, for a run whose own bubble was dropped (§14.29)", () => {
-  test("on → empty drop → shadow → late final → replay: exactly one answer", async () => {
-    const t = convexTest({ schema, modules, transactionLimits: true });
-    const { chatId, userId, mA } = await droppedOwnDelivery(t);
-    // The child stays anchored to the turn's bubble: 0.96.0's path would reopen it.
-    const mP = (await assistantsOf(t, chatId, P))[0]!._id;
-    await t.run((ctx) =>
-      ctx.db.insert("subAgents", { chatId, userId, instanceName: "prod", parentMessageId: mP, anchorExact: true, childSessionKey: CHILD, childRunId: CHILD_RUN, kind: "subagent" as const, status: "done" as const, createdAt: 1, updatedAt: 1 }),
-    );
-    await setMode(t, "shadow");
-    const late = (await t.mutation(internal.stream.appendLateFinal, { chatId, runId: A, messageId: mA, text: "Résultat.", turnSessionKey: SK, boundInstanceName: "prod" } as never)) as Id<"messages">;
-    const doc = (await t.run((ctx) => ctx.db.get(late)))!;
-    expect({ own: doc.deliveryOwnBubble, key: doc.deliveryKey }).toEqual({ own: true, key: `run:${A}` });
-    expect(await start(t, chatId, A)).toBe(late);
-    const shown = await t.run(async (ctx) =>
-      (await ctx.db.query("messages").withIndex("by_chat", (q) => q.eq("chatId", chatId)).collect()).filter((m) => m.role === "assistant" && m.text.includes("Résultat.")),
-    );
-    expect(shown.map((m) => m._id)).toEqual([late]);
-    expect((await t.run((ctx) => ctx.db.get(mP)))?.text).toBe("Je délègue.");
-  });
-});

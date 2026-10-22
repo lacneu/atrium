@@ -1855,15 +1855,15 @@ describe("the last gate before the send leaves is one transaction", () => {
     expect(await named()).toEqual([String(owner)]);
   });
 
-  test("a chat that became busy re-parks the turn instead", async () => {
+  test("a Hermes chat that became busy re-parks the turn instead", async () => {
     const t = convexTest(schema, modules);
     const { owner, chatId } = await room(t);
     const outboxId = await pendingTurn(t, owner, chatId);
     await t.run(async (ctx) => {
-      // The re-park is the `off` gate's (in `on` the send goes with its queue mode, as
-      // the Control UI's). `on` is the OpenClaw default since 0.101.1: `off` is set here.
+      // The re-park is the historical gate's, which only a Hermes instance (never projected)
+      // still runs: an OpenClaw send goes with its queue mode, as the Control UI's.
       for (const inst of await ctx.db.query("instances").collect()) {
-        await ctx.db.patch(inst._id, { config: { ...(inst.config ?? {}), transcriptProjection: "off" as const } });
+        await ctx.db.patch(inst._id, { kind: "hermes" as const });
       }
       await ctx.db.insert("messages", {
         chatId,

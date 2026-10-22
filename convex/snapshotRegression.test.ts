@@ -16,7 +16,7 @@ import { describe, expect, test } from "vitest";
 import { api, internal } from "./_generated/api";
 import schema from "./schema";
 import type { Id } from "./_generated/dataModel";
-import { SNAPSHOT_SOURCES } from "./lib/snapshotRegression";
+import { RETIRED_SNAPSHOT_SOURCES, SNAPSHOT_SOURCES } from "./lib/snapshotRegression";
 import { cascadeDeleteChat } from "./chats";
 import { SNAPSHOT_SOURCES as BRIDGE_SOURCES } from "../bridge/src/core/snapshot-source";
 
@@ -118,8 +118,12 @@ async function replayProdTurn(t: T, messageId: Id<"messages">) {
 }
 
 describe("snapshot regression diagnostics (G-14)", () => {
-  test("the two vocabularies are the same list (Convex adds only `other`)", () => {
-    expect([...SNAPSHOT_SOURCES].sort()).toEqual([...BRIDGE_SOURCES, "other"].sort());
+  test("the two vocabularies are the same list (Convex adds only `other` and the retired values)", () => {
+    expect([...SNAPSHOT_SOURCES].sort()).toEqual(
+      [...BRIDGE_SOURCES, "other", ...RETIRED_SNAPSHOT_SOURCES].sort(),
+    );
+    // A retired value is one the bridge no longer produces.
+    for (const v of RETIRED_SNAPSHOT_SOURCES) expect(BRIDGE_SOURCES as readonly string[]).not.toContain(v);
   });
 
   test("prod 2026-10-13: 25 refusals → ONE snapshot_regression (first, with its producer) + ONE summary at finalize; the kept text is unchanged", async () => {

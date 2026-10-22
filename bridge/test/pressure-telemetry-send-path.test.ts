@@ -67,7 +67,12 @@ async function sendAndFinish(script: NonNullable<Parameters<typeof fakeGateway>[
     ...script,
     answers: { ...(script.answers ?? {}), "chat.send": { payload: { runId: RUN, status: "started" } } },
   });
-  vi.spyOn(OpenClawConnection, "connect").mockImplementation(async () => gw as never);
+  // The conversation's socket first; every later connection (the instance's
+  // session-events socket, which the reconciler attaches on the first send) is a
+  // socket of its own — sharing this fake would hand it the turn's frames.
+  vi.spyOn(OpenClawConnection, "connect")
+    .mockImplementationOnce(async () => gw as never)
+    .mockImplementation(async () => fakeGateway() as never);
   const { writer, pressures } = recordingWriter();
   const reg = new SessionRegistry(servedMap(config, writer), () => 1000);
   const session = await reg.acquire(ROUTING);

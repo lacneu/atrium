@@ -232,10 +232,11 @@ describe("upstream v2026.9.7 frame contracts", () => {
   });
 
   for (const scenario of ["error-state-contention-schema", "error-state-contention-dispatch"]) {
-    it(`${scenario}: state_contention is gateway_storage_busy, a terminal error`, () => {
+    // A status to check, not a failure to resend (state-contention-projected.test.ts).
+    it(`${scenario}: state_contention is gateway_state_contention, a terminal error`, () => {
       const { events } = drive(scenario);
       expect(statusOf(events)?.status).toBe("error");
-      expect(finalOf(events)?.errorKind).toBe("gateway_storage_busy");
+      expect(finalOf(events)?.errorKind).toBe("gateway_state_contention");
     });
   }
 

@@ -13,8 +13,6 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import {
   Normalizer,
-  TRUNCATED_FINAL_MARKER,
-  TRUNCATED_FINAL_MIN_BODY,
   type BridgeEvent,
 } from "../src/providers/openclaw/normalizer.js";
 import { HermesNormalizer } from "../src/providers/hermes/normalizer.js";
@@ -77,13 +75,6 @@ describe("OpenClaw normalizer: each snapshot path names itself", () => {
     expect(sources(ev)).toEqual(["chat_delta", "chat_final"]);
   });
 
-  it("chat final cut by the display projection → chat_final_truncated", () => {
-    const { n, at } = turn();
-    const body = "a".repeat(TRUNCATED_FINAL_MIN_BODY);
-    const ev = n.feed(chat("final", message(body + TRUNCATED_FINAL_MARKER)), at());
-    expect(sources(ev)).toEqual(["chat_final_truncated"]);
-  });
-
   it("chat delta with replace:true → chat_delta_replace (and plain deltas carry none)", () => {
     const { n, at } = turn();
     const ev = [
@@ -115,13 +106,6 @@ describe("OpenClaw normalizer: each snapshot path names itself", () => {
     const ev: BridgeEvent[] = [];
     for (const f of FIXTURES.scenarios["tool-message-visible"]!.frames) ev.push(...n.feed(f, at()));
     expect(sources(ev)[0]).toBe("message_tool");
-  });
-
-  it("a transcript recovery applied as the answer → history_recovery", () => {
-    const { n, at } = turn();
-    const token = n.noteRecoveryDispatched();
-    const ev = n.recoverVisibleText("La réponse complète.", at(), token);
-    expect(sources(ev)).toEqual(["history_recovery"]);
   });
 
   it("the empty snapshot of a mid-turn compaction reset → compaction_reset", () => {

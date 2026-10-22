@@ -20,7 +20,8 @@ import { COPY_LEASE_MS, MAX_COPY_ATTEMPTS, MAX_FILES_HANDED } from "./transcript
 
 const modules = import.meta.glob("./**/*.ts");
 type T = TestConvex<typeof schema>;
-type Mode = "on" | "shadow";
+/** Every OpenClaw instance is projected (0.102.0). */
+type Mode = "on";
 
 let prevAnon: string | undefined;
 beforeEach(() => {
@@ -104,8 +105,8 @@ async function seed(t: T, mode: Mode, instanceName = "prod") {
     await ctx.db.insert("instances", {
       name: instanceName,
       gatewayUrl: "ws://gw",
-      config: { transcriptProjection: mode } as never,
     });
+    void mode;
     const chatId = await ctx.db.insert("chats", { userId, updatedAt: 1, instanceName, agentId: "alice" });
     return { userId, chatId };
   });
@@ -154,19 +155,6 @@ describe("step 1 — the row contract with blocks (projection `on` only)", () =>
     expect(doc?.blocks?.map((b) => b.type)).toEqual(["text", "file", "file"]);
     expect(doc?.blocks?.[1]).toMatchObject({ artifactId: ART_DOC, kind: "document", sizeBytes: 16 });
     expect(doc?.blocks?.[2]).toMatchObject({ artifactId: ART_IMG, kind: "image", mimeType: "image/png" });
-  });
-
-  test("shadow stores identities exactly as before: no block, no display fact, no file", async () => {
-    const t = convexTest(schema, modules);
-    const { chatId } = await seed(t, "shadow");
-    await apply(t, chatId, [mirror16()], { kind: "delta", textsOnly: undefined, deltaCursor: "c1" });
-    const [row] = await t.run((ctx) => ctx.db.query("transcriptRows").collect());
-    expect(row).toBeDefined();
-    for (const field of ["transcriptPosition", "idempotencyKind", "deliveryMirror", "stopReason", "textSig"]) {
-      expect(row).not.toHaveProperty(field);
-    }
-    expect(await t.run((ctx) => ctx.db.query("transcriptRowTexts").collect())).toHaveLength(0);
-    expect(await files(t)).toHaveLength(0);
   });
 
   test("a replayed row rewrites nothing: same signature, same document, no second file", async () => {

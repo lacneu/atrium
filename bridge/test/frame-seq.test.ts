@@ -218,6 +218,21 @@ describe("frame-gap reporting reaches the writer", () => {
       gapFrame("webchat-gap-run", { reason: "seq gap", expected: 2, received: 5 }),
       1010,
     );
+    // The turn's bubble is born from the run's first visible content: the report
+    // waits for it, then lands on it.
+    await manager.feed(
+      {
+        type: "event",
+        event: "chat",
+        payload: {
+          runId: "webchat-gap-run",
+          sessionKey: SK,
+          state: "delta",
+          message: { role: "assistant", content: [{ type: "text", text: "Voici" }] },
+        },
+      },
+      1020,
+    );
     expect(writer.gaps).toEqual([
       {
         source: "gateway",
@@ -253,8 +268,6 @@ describe("frame-gap reporting reaches the writer", () => {
           runId: "webchat-gap-run2",
           sessionKey: SK,
           state: "final",
-          // NOT a bare "ok": that matches the private-ack pattern and would arm
-          // a grace period instead of finalizing the turn.
           message: {
             role: "assistant",
             content: [{ type: "text", text: "Voici le résultat complet." }],

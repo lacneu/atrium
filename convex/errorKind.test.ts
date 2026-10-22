@@ -215,12 +215,12 @@ describe("a delivery run that delivered nothing", () => {
     expect(msg?.errorCode).toBeUndefined();
   });
 
-  test("a REAL announce merge is never stamped — the bubble shows the parent's reply", async () => {
-    // Built through the merge path itself (startAssistant reopens the parent,
-    // parks its text as the prefix and seeds the live row with it), because the
-    // rule that holds this case is the FINAL TEXT one: with no new text, the
-    // finalize recomposes what the reader already has. A test that only patched
-    // `text` onto a bubble would prove the fallback, not the merge.
+  test("a REPLAYED legacy announce merge is never stamped — the bubble shows the parent's reply", async () => {
+    // A bubble 0.96.0 merged this announce into (its delivery's own merge, left in
+    // error), replayed: startAssistant resumes it, parks nothing new and seeds the live
+    // row with the parked prefix. The rule that holds this case is the FINAL TEXT one:
+    // with no new text, the finalize recomposes what the reader already has. (No new
+    // delivery merges into its parent since 0.102.0 — it opens its own bubble.)
     const t = convexTest(schema, modules);
     const { chatId, parentId } = await t.run(async (ctx) => {
       const userId = await ctx.db.insert("users", {});
@@ -235,11 +235,17 @@ describe("a delivery run that delivered nothing", () => {
         userId,
         role: "assistant" as const,
         status: "complete" as const,
-        text: "La tâche est lancée.",
-        runId: "webchat-parent-run",
+        text: "La tâche est lancée.\n\n",
+        // 0.96.0's merge, as it wrote it: the announce took the bubble's run, the
+        // parent's own reply parked as the prefix, the run recorded as merged.
+        runId: ANNOUNCE_RUN,
+        announcePrefix: "La tâche est lancée.",
+        mergedAnnounceRuns: [ANNOUNCE_RUN],
+        mergedIntoTurn: true,
         finalizedAt: 2000,
         updatedAt: 2000,
       });
+      await ctx.db.patch(parentId, { status: "error" as const, error: "connection lost" });
       await ctx.db.insert("subAgents", {
         chatId,
         parentMessageId: parentId,

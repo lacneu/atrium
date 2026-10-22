@@ -22,7 +22,6 @@ import {
   Normalizer,
   BASE_RECV_TIMEOUT,
   COMPACTION_RECV_TIMEOUT,
-  LIFECYCLE_END_GRACE,
 } from "../src/providers/openclaw/normalizer.js";
 import type { BridgeEvent } from "../src/core/events.js";
 import { TurnSink } from "../src/core/turn-sink.js";
@@ -295,10 +294,10 @@ describe("explicit compaction stream (primary mid-turn signal)", () => {
     expect(
       ev.some((e) => e.type === "message.snapshot" && e.text === ""),
     ).toBe(false);
-    // Normal follow-on grace, not the 900s compaction wait.
-    expect(n.nextTimeout(5)).toBe(LIFECYCLE_END_GRACE);
-    // The grace elapses -> the turn closes FINAL with the streamed text intact.
-    const done = n.tick(5 + LIFECYCLE_END_GRACE + 1);
+    // The ordinary silence budget, not the 900s compaction wait.
+    expect(n.nextTimeout(5)).toBeLessThanOrEqual(BASE_RECV_TIMEOUT);
+    // The turn ends on the run's own fact with the streamed text intact.
+    const done = n.endTurn(6, "final", null, "transcript_settled");
     const final = done.find((e) => e.type === "message.final") as
       | { text?: string }
       | undefined;
@@ -780,8 +779,17 @@ describe("W2 / G-09: the cause reaches the marker and the trace", () => {
 // 900-second door, because summarizing a long session legitimately takes minutes — so
 // the two deadlines disagreed by a factor of fifteen and the shorter one won, closing
 // the turn as finished while the gateway was demonstrably still working.
-describe("the finishing grace does not outrank a compaction", () => {
-  it("a compaction start keeps the turn open past the 60 s grace", () => {
+// `finishing` is a pre-terminal and nothing more: no timer closes the turn on it — the
+// gateway's terminal or the transcript's fact does. A compaction keeps its own budget.
+describe("a compaction during `finishing`", () => {
+  it("`finishing` alone never closes the turn — no 60 s timer", () => {
+    const n = startTurn(PRE_SESSION_ID);
+    n.feed(lifecycleFrame(PRE_SESSION_ID, { phase: "finishing" }), 1);
+    n.tick(1 + 70);
+    expect(n.finalized).toBe(false);
+  });
+
+  it("a compaction start keeps the turn open past a minute", () => {
     const n = startTurn(PRE_SESSION_ID);
     n.feed(lifecycleFrame(PRE_SESSION_ID, { phase: "finishing" }), 1);
     n.feed(compactionStreamFrame(PRE_SESSION_ID, { phase: "start" }), 2);
@@ -792,9 +800,8 @@ describe("the finishing grace does not outrank a compaction", () => {
   });
 
   it("…and the turn is STILL bounded — by the budget that was widened for it", () => {
-    // Clearing a deadline is only safe if another one is holding the turn. The recv
-    // budget armed by the same compaction is that one: a compaction that never ends
-    // still closes the turn, just not after sixty seconds.
+    // The recv budget armed by the compaction holds the turn: a compaction that never
+    // ends still closes it.
     const n = startTurn(PRE_SESSION_ID);
     n.feed(lifecycleFrame(PRE_SESSION_ID, { phase: "finishing" }), 1);
     n.feed(compactionStreamFrame(PRE_SESSION_ID, { phase: "start" }), 2);
@@ -803,155 +810,26 @@ describe("the finishing grace does not outrank a compaction", () => {
     expect(n.finalized, "nothing hangs for ever").toBe(true);
   });
 
-  it("the grace COMES BACK when the compaction settles", () => {
-    // Suspending it is what keeps a long summary from closing the turn; DROPPING it left
-    // `finishing -> start -> end -> silence` unbounded, because a settled compaction
-    // narrows the recv budget again and a recv expiry opens recovery instead of
-    // finalizing (raised in review). The gateway said it was finishing before it
-    // compacted; having finished compacting it still owes a terminal.
-    const n = startTurn(PRE_SESSION_ID);
-    n.feed(lifecycleFrame(PRE_SESSION_ID, { phase: "finishing" }), 1);
-    n.feed(compactionStreamFrame(PRE_SESSION_ID, { phase: "start" }), 2);
-    n.feed(
-      compactionStreamFrame(PRE_SESSION_ID, {
-        phase: "end",
-        completed: true,
-        willRetry: false,
-        outcome: "completed",
-      }),
-      3,
-    );
-    n.tick(3 + 70);
-    expect(n.finalized, "the 60 s bound is back once the summary is done").toBe(true);
-  });
-
-  it("a REPLAY supersedes the promise — a later compaction cannot resurrect it", () => {
-    // Found by walking the exit paths of my own fix rather than by reading it: the
-    // replay branch left the suspension flag set for ever, so the NEXT compaction to
-    // settle re-armed a 60 s grace for a `finishing` the replay had already superseded —
-    // closing a turn that had gone back to producing.
-    const n = startTurn(PRE_SESSION_ID);
-    n.feed(lifecycleFrame(PRE_SESSION_ID, { phase: "finishing" }), 1);
-    n.feed(compactionStreamFrame(PRE_SESSION_ID, { phase: "start" }), 2);
-    // settled WITH a replay: the run resumes
-    n.feed(
-      compactionStreamFrame(PRE_SESSION_ID, {
-        phase: "end",
-        completed: true,
-        willRetry: true,
-        outcome: "completed",
-      }),
-      3,
-    );
-    // a second compaction, settling normally, must NOT bring the grace back
-    n.feed(compactionStreamFrame(PRE_SESSION_ID, { phase: "start" }), 4);
-    n.feed(
-      compactionStreamFrame(PRE_SESSION_ID, {
-        phase: "end",
-        completed: true,
-        willRetry: false,
-        outcome: "completed",
-      }),
-      5,
-    );
-    n.tick(5 + 70);
-    expect(n.finalized, "the superseded promise must not close this turn").toBe(false);
-  });
-
-  it("an ABANDONED end during a compaction does not drop the suspension", () => {
-    // `abandoned` while a compaction is active is not the terminal — the branch below it
-    // hands the turn back to the compaction machinery and returns. Clearing the
-    // suspension there meant the real `compaction end` could no longer restore the
-    // 60 s bound, and the turn was left holding nothing (raised in review).
-    const n = startTurn(PRE_SESSION_ID);
-    n.feed(lifecycleFrame(PRE_SESSION_ID, { phase: "finishing" }), 1);
-    n.feed(compactionStreamFrame(PRE_SESSION_ID, { phase: "start" }), 2);
-    n.feed(
-      lifecycleFrame(PRE_SESSION_ID, { phase: "end", livenessState: "abandoned" }),
-      3,
-    );
-    n.feed(
-      compactionStreamFrame(PRE_SESSION_ID, {
-        phase: "end",
-        completed: true,
-        willRetry: false,
-        outcome: "completed",
-      }),
-      4,
-    );
-    n.tick(4 + 70);
-    expect(n.finalized, "the bound comes back when the summary really ends").toBe(true);
-  });
-
-  it("VISIBLE CONTENT supersedes the promise too — the fourth exit", () => {
-    // A compaction ends in more ways than the branch called `end`: resumed content
-    // closes it as well, and that exit was not consuming the suspension marker. Left
-    // standing, a later compaction re-armed a grace for a turn that had gone back to
-    // producing. Enumerated, not guessed.
-    const n = startTurn(PRE_SESSION_ID);
-    n.feed(lifecycleFrame(PRE_SESSION_ID, { phase: "finishing" }), 1);
-    n.feed(compactionStreamFrame(PRE_SESSION_ID, { phase: "start" }), 2);
-    n.feed(assistantFrame(PRE_SESSION_ID, "the run is producing again"), 3);
-    n.feed(compactionStreamFrame(PRE_SESSION_ID, { phase: "start" }), 4);
-    n.feed(
-      compactionStreamFrame(PRE_SESSION_ID, {
-        phase: "end",
-        completed: true,
-        willRetry: false,
-        outcome: "completed",
-      }),
-      5,
-    );
-    n.tick(5 + 70);
-    expect(n.finalized, "a superseded promise must not be resurrected").toBe(false);
-  });
-
-  it("the REVERSE order is handled too — compaction first, finishing second", () => {
-    // The first version of this fix only knew `finishing -> compaction start`. Nothing
-    // upstream forbids the other order, and there the grace was armed unconditionally:
-    // the turn closed at 60 s while the gateway was still summarizing — the same defect
-    // from the other end (raised in review).
-    const n = startTurn(PRE_SESSION_ID);
-    // MONOTONE: the frame stamps move forward with the clock. The first version fed the
-    // compaction end at t=3 after ticking to t=72 — time travel, and a test that asks the
-    // implementation to accept a past it will never see (raised in review).
-    n.feed(compactionStreamFrame(PRE_SESSION_ID, { phase: "start" }), 1);
-    n.feed(lifecycleFrame(PRE_SESSION_ID, { phase: "finishing" }), 2);
-    n.tick(72);
-    expect(n.finalized, "not while the compaction is still running").toBe(false);
-    n.feed(
-      compactionStreamFrame(PRE_SESSION_ID, {
-        phase: "end",
-        completed: true,
-        willRetry: false,
-        outcome: "completed",
-      }),
-      73,
-    );
-    n.tick(143);
-    expect(n.finalized, "…and bounded again once it ends").toBe(true);
-  });
-
-  it("a hook relay does not START a compaction — no widened budget, no suspension", () => {
+  it("a hook relay does not START a compaction — no widened budget", () => {
     // The relay is `{phase:"start"|"end", messages}`. Falling through, a plugin's text
-    // widened the silence budget and suspended the finishing grace: state changes nothing
-    // in the gateway had made. Found by grepping every place a compaction decision is
-    // recomposed, after a review showed the verdict itself had two copies.
+    // widened the silence budget: state changes nothing in the gateway had made. Found by
+    // grepping every place a compaction decision is recomposed, after a review showed the
+    // verdict itself had two copies.
     const n = startTurn(PRE_SESSION_ID);
     n.feed(lifecycleFrame(PRE_SESSION_ID, { phase: "finishing" }), 1);
     n.feed(
       compactionStreamFrame(PRE_SESSION_ID, { phase: "start", messages: ["hook says hi"] }),
       2,
     );
-    n.tick(72);
-    expect(n.finalized, "the 60 s bound must still hold — nothing compacted").toBe(true);
+    expect(n.compactionPending, "nothing compacted").toBe(false);
+    expect(n.nextTimeout(2)).toBeLessThanOrEqual(BASE_RECV_TIMEOUT);
   });
 
   it("a hook relay does not END one either", () => {
     const n = startTurn(PRE_SESSION_ID);
     n.feed(compactionStreamFrame(PRE_SESSION_ID, { phase: "start" }), 1);
     n.feed(lifecycleFrame(PRE_SESSION_ID, { phase: "finishing" }), 2);
-    // A hook's `after` text must not close the compaction and re-arm the grace.
+    // A hook's `after` text must not close the compaction.
     n.feed(
       compactionStreamFrame(PRE_SESSION_ID, {
         phase: "end",
@@ -960,18 +838,10 @@ describe("the finishing grace does not outrank a compaction", () => {
       }),
       3,
     );
-    n.tick(73);
-    expect(n.finalized, "the real compaction is still running").toBe(false);
+    expect(n.compactionPending, "the real compaction is still running").toBe(true);
+    expect(n.nextTimeout(3)).toBeGreaterThan(BASE_RECV_TIMEOUT);
   });
 
-  it("WITHOUT a compaction the grace still closes a silent turn at 60 s", () => {
-    // The guard must not disarm the defect the grace exists for (G-20): a deferred
-    // terminal followed by silence used to hold the turn to the 240 s recv timeout.
-    const n = startTurn(PRE_SESSION_ID);
-    n.feed(lifecycleFrame(PRE_SESSION_ID, { phase: "finishing" }), 1);
-    n.tick(1 + 70);
-    expect(n.finalized).toBe(true);
-  });
 });
 
 describe("normalizer emits the session-overfull verdict", () => {
@@ -1082,7 +952,7 @@ describe("normalizer emits the session-overfull verdict", () => {
       }),
       1,
     );
-    n.tick(1 + 11); // the follow-on grace elapses: the turn is finalized
+    n.endTurn(1 + 11, "final", null, "transcript_settled"); // the turn is over
     expect(n.finalized).toBe(true);
     const ev = n.feed(
       compactionStreamFrame(PRE_SESSION_ID, {

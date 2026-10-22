@@ -165,8 +165,21 @@ describe("gateway ANNOUNCE run -> spontaneous turn (real captured frames)", () =
     const writer = new FakeWriter();
     const manager = new RunManager("chatAnnounce", SESSION_KEY, writer);
     let now = 1000;
-    // A real user turn is streaming.
+    // A real user turn is streaming (its bubble opens on its first content).
     await manager.beginTurn((now += 1), "webchat-activerun");
+    await manager.feed(
+      {
+        type: "event",
+        event: "chat",
+        payload: {
+          runId: "webchat-activerun",
+          sessionKey: SESSION_KEY,
+          state: "delta",
+          message: { role: "assistant", content: [{ type: "text", text: "réponse" }] },
+        },
+      },
+      (now += 1),
+    );
     // The late child announce lands MID-TURN.
     for (const frame of ANNOUNCE_FRAMES) {
       await manager.feed(frame, (now += 1));
@@ -249,8 +262,8 @@ describe("gateway ANNOUNCE run -> spontaneous turn (real captured frames)", () =
     await manager.beginTurn((now += 1), "webchat-nextrun2");
     const finals = writer.calls.filter((c) => c[0] === "finalize");
     expect(finals).toHaveLength(1); // still only the original announce finalize
-    // The real turn is streaming, untouched.
-    expect(writer.calls.filter((c) => c[0] === "startAssistant")).toHaveLength(2);
+    // The real turn is untouched: its bubble waits for its own run's first content.
+    expect(writer.calls.filter((c) => c[0] === "startAssistant")).toHaveLength(1);
   });
 
   it("announce deltas racing the deferred startAssistant write are all delivered (concurrent applies)", async () => {
@@ -335,38 +348,6 @@ describe("gateway ANNOUNCE run -> spontaneous turn (real captured frames)", () =
     expect(finals[0]?.[3]).toContain("Rapport delta-only");
   });
 
-  it("an EMPTY final preceding the visible content does not condemn the run (empty-final grace)", async () => {
-    const writer = new FakeWriter();
-    const manager = new RunManager("chatAnnounce", SESSION_KEY, writer);
-    const RUN = "announce:v1:agent:alice:subagent:grace-child:grace-run";
-    let now = 1000;
-    const mk = (payload: Record<string, unknown>, event = "agent") => ({
-      type: "event",
-      event,
-      payload: { runId: RUN, sessionKey: SESSION_KEY, ...payload },
-    });
-    await manager.feed(mk({ stream: "lifecycle", data: { phase: "start" } }), (now += 1));
-    // Contentless terminal arrives FIRST (the gateway pattern the normalizer
-    // handles with its empty-final grace on normal turns).
-    await manager.feed(mk({ state: "final" }, "chat"), (now += 1));
-    expect(writer.calls).toHaveLength(0);
-    // The visible reply follows — the run must still open and deliver.
-    await manager.feed(mk({ stream: "assistant", data: { text: "Rapport tardif" } }), (now += 1));
-    await manager.feed(
-      mk(
-        {
-          state: "final",
-          message: { role: "assistant", content: [{ type: "text", text: "Rapport tardif" }] },
-        },
-        "chat",
-      ),
-      (now += 1),
-    );
-    const finals = writer.calls.filter((c) => c[0] === "finalize");
-    expect(finals).toHaveLength(1);
-    expect(finals[0]?.[3]).toContain("Rapport tardif");
-  });
-
   it("a chat final with STRING content (chat-final-content-string shape) opens and delivers", async () => {
     const writer = new FakeWriter();
     const manager = new RunManager("chatAnnounce", SESSION_KEY, writer);
@@ -390,7 +371,7 @@ describe("gateway ANNOUNCE run -> spontaneous turn (real captured frames)", () =
     expect(finals[0]?.[3]).toContain("Rapport contenu-chaine");
   });
 
-  it("a media-ONLY announce (mediaUrls, no text) still opens the turn (file delivery)", async () => {
+  it("a media-ONLY announce (mediaUrls, no text) opens no live bubble — the row carries the file", async () => {
     const writer = new FakeWriter();
     const manager = new RunManager("chatAnnounce", SESSION_KEY, writer);
     const RUN = "announce:v1:agent:alice:subagent:media-child:media-run";
@@ -410,8 +391,9 @@ describe("gateway ANNOUNCE run -> spontaneous turn (real captured frames)", () =
       },
       (now += 1),
     );
-    // The spontaneous turn opened (message created) so the media event can land.
-    expect(writer.calls.filter((c) => c[0] === "startAssistant")).toHaveLength(1);
+    // No file is taken from the live side: the delivery's transcript row carries it,
+    // and the bubble is the one its rows make.
+    expect(writer.calls.filter((c) => c[0] === "startAssistant")).toHaveLength(0);
   });
 
   it("a silent announce that reaches its terminal is DISCARDED: no message, sink freed for the next turn", async () => {
@@ -669,12 +651,13 @@ describe("gateway ANNOUNCE run -> spontaneous turn (real captured frames)", () =
     // A deferred announce turn is ACTIVE but unopened (lifecycle only).
     await manager.feed(ANNOUNCE_FRAMES[0], (now += 1));
     expect(writer.calls).toHaveLength(0);
-    // A real dispatch preempts: arm + beginTurn (startAssistant hangs).
+    // A real dispatch preempts: arm + beginTurn (its bubble opens on its first
+    // content, and that create hangs).
     manager.armReplayBuffer();
     const bt = manager.beginTurn((now += 1), "webchat-slowreal");
-    // The real run's first delta RACES the create — it must reach the armed
-    // pre-ack buffer (sink deactivated), NOT vanish into the stale deferred state.
-    await manager.feed(
+    // The real run's first delta opens the bubble while the create is in flight — it
+    // must land once the message exists, NOT vanish into the stale deferred state.
+    const fed = manager.feed(
       {
         type: "event",
         event: "chat",
@@ -688,9 +671,11 @@ describe("gateway ANNOUNCE run -> spontaneous turn (real captured frames)", () =
       },
       (now += 1),
     );
-    writer.resolveStart?.();
     await bt;
-    // The replay delivered the raced delta into the real message.
+    await new Promise((r) => setTimeout(r, 0));
+    writer.resolveStart?.();
+    await fed;
+    // The raced delta reached the real message.
     const deltas = writer.calls.filter(
       (c) => c[0] === "appendDelta" && String(c[2]).includes("Début de réponse"),
     );
@@ -896,8 +881,8 @@ describe("realtime-voice AGENT-CONSULT run -> spontaneous turn (talk- family)", 
   });
 
   it("RELAY-driven consult (beginTurn + real pipeline) renders TOOL CARDS like a typed turn", async () => {
-    // The /talk-toolcall relay drives a first-class turn: beginTurn(runId)
-    // opens the bubble immediately and the SAME normalizer/sink pipeline as a
+    // The /talk-toolcall relay drives a first-class turn: beginTurn(runId), its
+    // bubble born from the run's first activity, and the SAME normalizer/sink pipeline as a
     // typed turn processes tool frames — one implementation, zero drift
     // (user requirement 2026-07-16).
     class ToolRecordingWriter extends FakeWriter {
@@ -918,8 +903,8 @@ describe("realtime-voice AGENT-CONSULT run -> spontaneous turn (talk- family)", 
     const manager = new RunManager("chatTalk", SESSION_KEY, writer);
     let now = 1000;
     await manager.beginTurn((now += 1), RELAY_RUN);
-    // Bubble opens at beginTurn (in-progress indicator) — before any frame.
-    expect(writer.calls.filter((c) => c[0] === "startAssistant")).toHaveLength(1);
+    // No bubble before the run shows something (born from the run, not the ACK).
+    expect(writer.calls.filter((c) => c[0] === "startAssistant")).toHaveLength(0);
     const agentTool = (data: Record<string, unknown>) => ({
       type: "event",
       event: "agent",

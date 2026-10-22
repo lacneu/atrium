@@ -428,17 +428,26 @@ describe("golden replay — the corpus covers what it claims", () => {
     ).toContain("task-delivery");
   });
 
-  it("MEDIA is delivered", async () => {
-    // `mediaUrls` was not classified, so promotion renamed it to a masked key and the
-    // outbound path became unrecognisable: the media scenario replayed as a plain turn
-    // and any regression in the extraction path stayed green (raised in review).
-    const fx = byScenario.get("media-outbound");
-    expect(fx, "the media scenario is missing from the corpus").toBeDefined();
-    const writer = await replay(fx!);
-    expect(
-      writer.calls.filter((c) => c.call === "addMedia").length,
-      "no media delivered — the outbound reading is gone",
-    ).toBeGreaterThan(0);
+  it("MEDIA rides the transcript row: the live side delivers NO file", async () => {
+    // A file reaches a bubble through the transcript row that carries it, copied by its
+    // identity (core/artifact-copier.ts) — never from a live `mediaUrls` / `MEDIA:` / tool
+    // result path. Every media capture of the corpus DOES carry a live delivery (checked
+    // first, so the absence below is not vacuous), and none of it becomes an upload.
+    const media = CORPUS.filter((fx) => fx.header.scenario === "media-outbound");
+    expect(media.length, "the media scenario is missing from the corpus").toBeGreaterThan(0);
+    for (const fx of media) {
+      const raw = JSON.stringify(fx.entries.map((e) => e.frame));
+      expect(
+        raw.includes("mediaUrls") || raw.includes("MEDIA:"),
+        `${fx.version}: the capture carries no live delivery`,
+      ).toBe(true);
+      const writer = await replay(fx);
+      expect(
+        writer.calls.filter((c) => c.call === "addMedia").length,
+        `${fx.version}: a file was taken from the live side`,
+      ).toBe(0);
+      expect(writer.calls.some((c) => c.call === "finalize"), `${fx.version}: never finalized`).toBe(true);
+    }
   });
 
   it("the PLAN card is produced", async () => {

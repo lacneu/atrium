@@ -8,15 +8,16 @@
 // subagent-announce.requester-settle-wake.ts:443-447).
 //
 // The exemption was keyed on the PARTS alone — "is there a completed
-// sessions_yield on this bubble?" — and `messageParts` carry no runId. An
-// announce merge reopens the parent's bubble, rotates its runId and KEEPS its
-// parts, so the yield written in an earlier run stays attached forever. Any later
-// child-announce merge that delivered nothing then matched that stale part and
-// was exempted: a silent empty bubble, no card, no cause, nothing counted.
+// sessions_yield on this bubble?" — and `messageParts` carry no runId. While a
+// delivery merged into its parent's bubble (0.96.0), the yield written in an
+// earlier run stayed attached, and any later child-announce merge that delivered
+// nothing matched that stale part: a silent empty bubble, no card, no cause.
+// Since 0.102.0 a delivery opens its own bubble; the exemption still reads only the
+// yield THIS run wrote.
 //
 // Production shape (2026-08-02, ataraxis): a `sessions_yield` with a private
 // `message` and NO acknowledgment leaves the parent bubble EMPTY, and the child's
-// announce merges onto it. That is the exact pair below.
+// announce delivers nothing. That is the exact pair below.
 
 import { convexTest } from "convex-test";
 import { describe, expect, test } from "vitest";
@@ -96,53 +97,24 @@ async function seedYieldedEmptyParent(
 }
 
 describe("the hand-off exemption is scoped to the run that handed off", () => {
-  test("a CHILD-ANNOUNCE merge that delivers nothing is NAMED, despite the parent's stale yield part", async () => {
-    const t = convexTest(schema, modules);
-    const { chatId, parentId } = await seedYieldedEmptyParent(t);
-
-    const reopened = await t.mutation(internal.stream.startAssistant, {
-      chatId,
-      runId: ANNOUNCE_RUN,
-    });
-    expect(reopened, "the merge must reopen the parent bubble").toBe(parentId);
-
-    // The child announced and brought NOTHING — no text, no file. This is the
-    // defect a user is still waiting on: the deliverable never arrived and the
-    // conversation never said so.
-    await t.mutation(internal.stream.finalize, {
-      messageId: parentId,
-      status: "complete",
-      text: "",
-    });
-
-    const settled = await t.run((ctx) => ctx.db.get(parentId));
-    expect(
-      settled?.status,
-      "a delivery that delivered nothing must be an error, not a silent bubble",
-    ).toBe("error");
-    expect(settled?.errorCode).toBe("empty_response");
-  });
-
   test("a yield written BY the announce run is still exempt — the healthy chain must not be reclassified", async () => {
     // A delivery turn can legitimately delegate again and yield: captured on the
     // wire in golden/2026.7.1/spawn-parallel-merge.jsonl, where `sessions_yield`
     // COMPLETES on an `announce:v1:` run. Keying the exemption on the run FAMILY
-    // refused exactly this turn and turned it into a red `empty_response` card —
-    // and a parent left in `error` then fails the merge gate, so the child's real
-    // answer lands in a NEW bubble with the false card stranded above it.
+    // refused exactly this turn and turned it into a red `empty_response` card.
     const t = convexTest(schema, modules);
     const { chatId, parentId } = await seedYieldedEmptyParent(t);
 
-    const reopened = await t.mutation(internal.stream.startAssistant, {
+    const own = (await t.mutation(internal.stream.startAssistant, {
       chatId,
       runId: ANNOUNCE_RUN,
-    });
-    expect(reopened).toBe(parentId);
+    }))!;
+    expect(own).not.toBe(parentId);
 
     // THIS run's own yield, stamped with its provenance exactly as addPart writes it.
     await t.run(async (ctx) => {
       await ctx.db.insert("messageParts", {
-        messageId: parentId,
+        messageId: own,
         order: 1,
         part: {
           kind: "tool" as const,
@@ -155,48 +127,17 @@ describe("the hand-off exemption is scoped to the run that handed off", () => {
     });
 
     await t.mutation(internal.stream.finalize, {
-      messageId: parentId,
+      messageId: own,
       status: "complete",
       text: "",
     });
 
-    const settled = await t.run((ctx) => ctx.db.get(parentId));
+    const settled = await t.run((ctx) => ctx.db.get(own));
     expect(
       settled?.status,
       "this delivery handed off again; it did not fail to deliver",
     ).toBe("complete");
     expect(settled?.errorCode).toBeUndefined();
-  });
-
-  test("a yield that ERRORED on this run handed nothing to anyone", async () => {
-    const t = convexTest(schema, modules);
-    const { chatId, parentId } = await seedYieldedEmptyParent(t);
-    const reopened = await t.mutation(internal.stream.startAssistant, {
-      chatId,
-      runId: ANNOUNCE_RUN,
-    });
-    expect(reopened).toBe(parentId);
-    await t.run(async (ctx) => {
-      await ctx.db.insert("messageParts", {
-        messageId: parentId,
-        order: 1,
-        part: {
-          kind: "tool" as const,
-          name: "sessions_yield",
-          phase: "error",
-          output: { details: { status: "error" } },
-        },
-        announceRun: ANNOUNCE_RUN,
-      });
-    });
-    await t.mutation(internal.stream.finalize, {
-      messageId: parentId,
-      status: "complete",
-      text: "",
-    });
-    const settled = await t.run((ctx) => ctx.db.get(parentId));
-    expect(settled?.status).toBe("error");
-    expect(settled?.errorCode).toBe("empty_response");
   });
 
   test("the REQUESTER-SETTLE run that closes the hand-off is still exempt", async () => {

@@ -30,13 +30,6 @@ import { TALK_CALL_HOLD_MS } from "./core/talk-relay.js";
 import { presentedIdentity } from "./providers/openclaw/gateway-identity.js";
 import { OpenClawConnection } from "./providers/openclaw/openclaw-client.js";
 import { RunManager } from "./providers/openclaw/run-manager.js";
-import {
-  extractLatestAssistantReply,
-  extractMessageToolReplies,
-  extractRunDeliveryMirrors,
-  lastUserEntryText,
-  transcriptEntryCount,
-} from "./providers/openclaw/history-recovery.js";
 import { SubAgentObserver } from "./providers/openclaw/sub-agent-observer.js";
 import { ChildRowStatus } from "./providers/openclaw/child-row-status.js";
 import type { ConvexWriter, SubAgentRecord } from "./convex-writer.js";
@@ -66,7 +59,6 @@ import {
   CHAT_HISTORY_PAGE_LIMIT,
   CHAT_HISTORY_PAGE_MAX_BYTES,
   chatHistoryParams,
-  sessionsGetParams,
 } from "./core/rpc-params.js";
 import { errForLog } from "./core/log-safe-error.js";
 
@@ -84,36 +76,6 @@ const GATEWAY_RESTARTING_CODE: FinalizeCause = "gateway_restarting";
 // from a network blip — the reply was provably incomplete, and the remedy is on
 // our side, not the user's.
 const CONNECTION_SATURATED_CODE: FinalizeCause = "connection_saturated";
-// The gateway kept reasoning past the recovery budget (a recv-silence turn whose
-// active status-query never resolved) — an actionable class distinct from a
-// dropped connection (the socket was fine; the agent simply took too long).
-const RESPONSE_TIMEOUT_CODE: FinalizeCause = "response_timeout";
-
-// Orphan-turn recovery (gateway restart mid-turn): the gateway's
-// main-session-restart-recovery RESUMES the run after boot and the answer
-// lands only in the session transcript. Poll it over a fresh connection until
-// the resumed reply appears, bounded WELL under the Convex stuck-stream
-// watchdog (12 min) so the backstop keeps the last word.
-const ORPHAN_RECOVERY_POLL_MS = 20_000;
-// DOUBLE deadline: poll ticks AND wall clock. Ticks alone can stretch past the
-// Convex watchdog when the gateway is down (each tick may burn the WS connect +
-// request timeouts BEFORE arming the next 20s timer — codex P2); a wall bound
-// alone tied to the injected Clock would misread its SECONDS unit (codex P1).
-// Date.now() is used for the wall bound (vitest fake timers advance it, so the
-// tests stay deterministic). 9 min, well under the 12-min stuck-stream watchdog.
-const ORPHAN_RECOVERY_MAX_POLLS = 27;
-const ORPHAN_RECOVERY_WALL_MS = 9 * 60_000;
-// The recv-silence recovery starts LATE (after BASE_RECV_TIMEOUT = 240s of
-// silence), so its budget must keep the TOTAL under the Convex stuck-stream
-// watchdog (12 min): 240s + 6.5min = ~10.5min, 1.5min of margin. A 9-min wall
-// here would reach ~13min and the watchdog would orphan the turn first,
-// discarding a delivery landing in the 12-13min window (codex P2).
-const SILENCE_RECOVERY_MAX_POLLS = 19;
-const SILENCE_RECOVERY_WALL_MS = 6.5 * 60_000;
-
-/** Fetches the raw `sessions.get` payload for a sessionKey over a FRESH
- *  connection (the session's own socket is dead when recovery runs). */
-export type TranscriptFetcher = (sessionKey: string) => Promise<unknown>;
 
 /**
  * Everything needed to serve ONE instance: its full per-instance config (gateway
@@ -284,8 +246,6 @@ export interface BridgeSession {
    *  OUTSIDE the loop) so a loop blocked on a null-timeout frame wait does not
    *  hang the turn forever in "streaming". */
   wake(): void;
-  /** Anchor the current turn's sent user text for orphan-recovery validation. */
-  noteTurnUserAnchor(sentMessage: string): void;
   /** Test/diagnostic seam: count of children with an ordered registration recorded
    *  (registeredChildren). Asserts the set never leaks across terminated/swept children. */
   readonly registeredChildCount: number;
@@ -351,14 +311,6 @@ class Session implements BridgeSession {
   // child (its spawn registration) and fire every later status/heartbeat off the
   // loop's critical path. Cleared with the observer on connection close.
   private readonly registeredChildren = new Set<string>();
-  /** Basenames already attached from a CHILD's own lane, per child key.
-   *
-   *  Two readers: this session attaches from it (never twice for the same file),
-   *  and the sink seeds a DELIVERY turn's dedup set from it — so when the child's
-   *  announce finally arrives carrying the same files, it finds them already
-   *  hosted and adds nothing. One rule, one place: the announce path keeps using
-   *  the dedup it already had rather than gaining a second one. */
-  private readonly childDeliveredMedia = new Map<string, Set<string>>();
   private readonly writer: ConvexWriter;
   readonly clock: Clock;
   // Last time this session saw work (a send via acquire, or an inbound frame), on
@@ -378,28 +330,6 @@ class Session implements BridgeSession {
     string,
     { until: number; ceiling: number }
   >();
-  private readonly transcriptFetcher?: TranscriptFetcher;
-  // Tail of the CURRENT turn's sent user message (set by the send path at
-  // beginTurn). The orphan recovery only accepts a transcript whose last user
-  // entry ends with this anchor — a stale transcript served mid-reboot may
-  // still predate the current turn (codex P2: without the check, the PREVIOUS
-  // turn's reply could be finalized as the current answer).
-  private turnUserAnchor: string | null = null;
-  // The turnEpoch the anchor was set for: a SPONTANEOUS (announce) turn never
-  // calls noteTurnUserAnchor, so its epoch differs — the recovery must then
-  // treat the turn as anchor-less (baseline-growth gate) instead of matching
-  // the PREVIOUS user turn's anchor against a stale transcript (codex R10 P2).
-  private turnUserAnchorEpoch = -1;
-  // The turnEpoch a transcript-recovery poll is currently bound to (socket-drop OR
-  // recv-silence), or null. Per-EPOCH: the same turn never gets two polls, while a
-  // NEW turn can always start its own (a stale poll self-cancels on mismatch).
-  private recoveryEpoch: number | null = null;
-  // Why the active recovery is running: a socket_drop SUPERSEDES a recv_silence
-  // one on the same turn (graver event, longer budget, connection_lost class).
-  private recoveryReason: "socket_drop" | "recv_silence" | null = null;
-  // Poll-generation token: bumped on every accepted schedule; a superseded poll
-  // sees the mismatch on its next wake and dies WITHOUT touching the new claim.
-  private recoveryGen = 0;
   // See BridgeSession.firstSendPending. True until performSend runs the first turn.
   firstSendPending = true;
   // See BridgeSession.presendCompactRefusedFor.
@@ -427,7 +357,6 @@ class Session implements BridgeSession {
     writer: ConvexWriter,
     clock: Clock,
     outboundScan?: OutboundScan,
-    transcriptFetcher?: TranscriptFetcher,
     // Health-stats hook: a turn of THIS session finalizing in error is a
     // downstream failure on its target (HealthRegistry.recordTurnError).
     onTurnError?: (code: string) => void,
@@ -528,7 +457,6 @@ class Session implements BridgeSession {
     });
     this.clock = clock;
     this.lastActivityAt = clock();
-    this.transcriptFetcher = transcriptFetcher;
     // The copier reads through THIS conversation's socket — the Control UI asks
     // `artifacts.download` on the socket that shows the session (final design §3.5).
     this.artifactCopier =
@@ -575,8 +503,7 @@ class Session implements BridgeSession {
       foregroundRunId: () =>
         this.runManager.turnActive ? (this.runManager.activeRunIds[0] ?? null) : null,
       foregroundRunIds: () => (this.runManager.turnActive ? this.runManager.activeRunIds : []),
-      // PROJECTION `on` (phase 3): the live overlay's transcript facts. Inert when the
-      // switch is off (RunManager.setProjection).
+      // The live overlay's transcript facts (phase 3).
       onUserRow: (row) => {
         void this.runManager.onUserRow(row).catch((e) =>
           console.error("[send] steer split failed (non-fatal):", errForLog(e)),
@@ -643,18 +570,6 @@ class Session implements BridgeSession {
   /** Record the mount `/send` just instructed the agent to use. */
   noteOutboundMount(dir: string | null): void {
     this.outboundAgentMount = dir;
-  }
-
-  /** Anchor the current turn's sent user text (tail) for orphan-recovery
-   *  boundary validation. Called by the send path right after beginTurn. */
-  noteTurnUserAnchor(sentMessage: string): void {
-    // RAW user text only (never the enriched message — its static injection
-    // suffixes are identical across turns and would defeat the guard). The
-    // transcript entry may WRAP the raw text (history prefix, delivery
-    // suffix), so the recovery checks CONTAINMENT of this tail.
-    const trimmed = sentMessage.trim();
-    this.turnUserAnchor = trimmed ? trimmed.slice(-120) : null;
-    this.turnUserAnchorEpoch = this.runManager.turnEpoch;
   }
 
   /** Test/diagnostic seam (mirrors observer.size): how many children currently hold an
@@ -736,56 +651,9 @@ class Session implements BridgeSession {
         this.childRows?.runEnded(record.childSessionKey);
         continue;
       }
-      // A child that DELIVERED files with its answer. Its frames are
-      // observation-only, so the media pipeline that serves the owner's lane
-      // never sees them: without this, a delegation whose whole answer is a
-      // delivery reaches the reader as an empty bubble (prod 2026-09-09).
-      // Attached to the child's ANCHOR — the bubble the reader is looking at,
-      // which is settled by now, since the child outlives the turn that spawned
-      // it. Best-effort, off the critical path: a delivery must never break the
-      // observation writes that carry the child's lifecycle.
-      // PROJECTION `on` (final design step 4): never — the child's files are in the
-      // child's transcript, and what the parent shows is what the PARENT's rows carry.
-      if (record.deliveredMedia !== undefined && record.parentMessageId && !this.runManager.projectionOn) {
-        const anchor = record.parentMessageId;
-        let hosted = this.childDeliveredMedia.get(record.childSessionKey);
-        if (hosted === undefined) {
-          hosted = new Set<string>();
-          this.childDeliveredMedia.set(record.childSessionKey, hosted);
-        }
-        for (const item of record.deliveredMedia) {
-          // Claim BEFORE the upload: a re-observed terminal (a replayed frame)
-          // must not start a second transfer of a file already in flight.
-          if (hosted.has(item.filename)) continue;
-          hosted.add(item.filename);
-          void this.writer
-            .addMedia(anchor, {
-              chatId: this.chatId,
-              filename: item.filename,
-              path: item.path,
-              // A `MEDIA:` directive is the child DELIVERING, never an
-              // incidental mention — so no freshness gate, exactly as on the
-              // owner's lane. The gate exists for paths found in prose.
-              explicit: true,
-              // Projection `on` only: announced, so a file job the transcript
-              // settled waits for it (codex phase 4 pass 23).
-              ...(this.runManager.projectionOn ? { markUpload: true } : {}),
-            })
-            .then((attached) => {
-              // Not attached (not found / upload error): release the claim so a
-              // later re-delivery of the same file can still succeed. Keeping it
-              // would turn a transient failure into a permanent silence.
-              if (!attached) hosted.delete(item.filename);
-            })
-            .catch((err) => {
-              hosted.delete(item.filename);
-              console.warn(
-                `[subagent] delivery attach failed chat=${this.chatId}:`,
-                errForLog(err),
-              );
-            });
-        }
-      }
+      // A child's files are in the CHILD's transcript: what the parent shows is what the
+      // PARENT's rows carry (copied by identity, core/artifact-copier.ts). Nothing of the
+      // child's live frames is attached to the parent's bubble.
       const isRegistration =
         record.status === "running" &&
         !this.registeredChildren.has(record.childSessionKey);
@@ -959,19 +827,6 @@ class Session implements BridgeSession {
     // Maintain a single pending read so a frame is never lost on a tick timeout.
     let nextFrame = iterator.next();
     while (true) {
-      // Webchat sink (history recovery), checked as the FIRST thing each iteration
-      // so the wake `continue`s below DON'T skip it: when the whole reply arrived
-      // in the pre-ACK buffer, beginTurn's replay arms wantsHistoryRecovery and
-      // then wake() makes the loop `continue` — without this at the top, the next
-      // event would be the private_ack grace finalizing a bare ack ("Sent.")
-      // before sessions.get could recover the delivered message-tool text. For the
-      // normal frame/tick path this is equivalent to the old loop-bottom placement
-      // (no await between feed and the re-top). takeRecoveryRequest latches, so it
-      // fires at most once per turn.
-      const recoveryToken = this.runManager.takeRecoveryRequest(this.clock());
-      if (recoveryToken !== null) {
-        void this.recoverDeliveredReply(recoveryToken);
-      }
       // The next deadline is the EARLIER of the parent turn's grace and any live
       // sub-agent observation's TTL — so the observer's stalled-child sweep fires
       // even when the parent turn is idle/finalized (the FD-leak TTL guardrail).
@@ -1008,110 +863,20 @@ class Session implements BridgeSession {
       const now = this.clock();
       if (winner.kind === "frame") {
         if (winner.done) {
-          // Connection closed. If a turn was mid-flight, finalize it as aborted
-          // so the UI never stays stuck on a "streaming" message — UNLESS the
-          // gateway abandoned the run to COMPACT (a session compaction can
-          // recreate the session and drop this socket): the run resumes after
-          // the replay, so aborting here freezes a live turn as "Interrompu"
-          // (live report 2026-07-04). The reconnect/replay resumes it; the
-          // stuck-stream watchdog stays the backstop if it never does.
+          // Connection closed. A turn in flight is NOT finalized here: the gateway may
+          // still run it (a restart recovery, a compaction that recreated the session
+          // and dropped this socket), and its durable rows say how it ended.
           if (!this.runManager.isFinalized) {
             // Whatever the gateway sent between the last frame read and the close is
             // gone: from here on, an absence in this turn's stream proves nothing.
             this.runManager.noteStreamGap();
-            if (this.runManager.projectionOn) {
-              // PROJECTION `on` (phase 4, CU-22): no transcript poll and no settle on a
-              // deadline. The bubble stays as the run left it; the next reconciler read
-              // — the resume a send or the stuck-stream net asks for (`/resume`) —
-              // settles it from the run's durable rows, or resumes it if the gateway
-              // still runs it.
-              console.log(
-                `[session] close mid-turn on a projected session — left to the transcript (resume) chat=${this.chatId}`,
-              );
-            } else if (this.transcriptFetcher) {
-              // Unified orphan-turn recovery (gateway restart OR compaction
-              // recreated the session and dropped this socket): the gateway's
-              // restart-recovery resumes the run and the answer lands in the
-              // TRANSCRIPT. Poll it over a fresh connection; settle as
-              // connection_lost only when the deadline passes with no reply.
-              const cause = this.closeCauseCode();
-              const restartMs =
-                this.connection.connectionEnd?.restartExpectedMs ?? null;
-              // An announced absence LONGER than the whole recovery budget: polling
-              // would burn nine minutes on a gateway that has told us it will not be
-              // back, and then settle `connection_lost` — a false cause after a long
-              // wait. Settle immediately with the TRUE one instead.
-              if (
-                cause === GATEWAY_RESTARTING_CODE &&
-                restartMs !== null &&
-                restartMs > ORPHAN_RECOVERY_WALL_MS
-              ) {
-                console.log(
-                  `[session] gateway restart announced beyond the recovery budget (restartExpectedMs=${restartMs}) — settling ${cause} chat=${this.chatId}`,
-                );
-                try {
-                  await this.runManager.endTurn(
-                    now,
-                    "error",
-                    cause,
-                    cause,
-                    Session.namedKind(cause),
-                  );
-                } catch (err) {
-                  console.error(
-                    "[session] announced-restart settle failed:",
-                    errForLog(err),
-                  );
-                }
-              } else {
-                console.log(
-                  `[session] close mid-turn — starting transcript recovery chat=${this.chatId} (compactionPending=${this.runManager.compactionPending}, cause=${cause})`,
-                );
-                this.scheduleOrphanRecovery("socket_drop", cause);
-              }
-            } else if (this.runManager.compactionPending) {
-              // No fetcher injected (test harness): keep the bounded settle.
-              const rm = this.runManager;
-              const settleClock = this.clock;
-              const deferredCause = this.closeCauseCode();
-              setTimeout(() => {
-                if (!rm.isFinalized) {
-                  void rm
-                    .endTurn(
-                      settleClock(),
-                      "error",
-                      deferredCause,
-                      deferredCause,
-                      Session.namedKind(deferredCause),
-                    )
-                    .catch((e) =>
-                      console.error(
-                        "[session] deferred compaction settle failed:",
-                        errForLog(e),
-                      ),
-                    );
-                }
-              }, 120_000).unref?.();
-            } else {
-              console.log(
-                `[session] close mid-turn — force-abort chat=${this.chatId} (no compaction pending)`,
-              );
-              try {
-                const abortCause = this.closeCauseCode();
-                await this.runManager.endTurn(
-                  now,
-                  "error",
-                  abortCause,
-                  abortCause,
-                  Session.namedKind(abortCause),
-                );
-              } catch (err) {
-                console.error(
-                  "session close finalize error:",
-                  errForLog(err),
-                );
-              }
-            }
+            // CU-22: no transcript poll and no settle on a deadline. The bubble stays as
+            // the run left it; the next reconciler read — the resume a send or the
+            // stuck-stream net asks for (`/resume`) — settles it from the run's durable
+            // rows, or resumes it if the gateway still runs it.
+            console.log(
+              `[session] close mid-turn — left to the transcript (resume) chat=${this.chatId}`,
+            );
           }
           // Drop every sub-agent observation (status left as last-known): the
           // connection is gone, so no more child frames can arrive — never leak
@@ -1253,49 +1018,16 @@ class Session implements BridgeSession {
         } catch (err) {
           console.error("session tick error:", errForLog(err));
         }
-        // A PURE recv-silence elapsed (the gateway is reasoning silently, socket
-        // still alive) — do NOT let the turn close empty. QUERY the gateway for
-        // the real status (self-heal): the SAME transcript-recovery machinery used
-        // on a socket drop, but triggered by silence. Guarded so the live socket
-        // and the poll don't both start it; a late live frame still finalizes
-        // normally (recovery stops on isFinalized). No fetcher (tests) -> the
-        // normalizer's own finalize path already handled it.
+        // A PURE recv-silence elapsed (the gateway is reasoning silently, socket still
+        // alive). §8.2 net: a silence asks the transcript, it never ends the turn. The
+        // read settles it if the gateway says the run is over; the silence budget
+        // restarts so a longer silence asks again, once per budget.
         if (this.runManager.takeRecvSilence() && !this.runManager.isFinalized) {
-          if (this.runManager.projectionOn) {
-            // PROJECTION `on` (phase 4, §8.2 net): a silence asks the transcript, it never
-            // ends the turn. The read settles it if the gateway says the run is over; the
-            // silence budget restarts so a longer silence asks again, once per budget.
-            console.log(
-              `[session] recv-silence on a projected session — reading the transcript chat=${this.chatId}`,
-            );
-            this.transcriptShadow.requestRead("silence");
-            this.runManager.rearmSilence(now);
-          } else if (this.transcriptFetcher) {
-            if (this.recoveryEpoch !== this.runManager.turnEpoch) {
-              console.log(
-                `[session] recv-silence — querying gateway status (self-heal) chat=${this.chatId}`,
-              );
-              const liveMsgId = this.runManager.currentMessageId;
-              if (liveMsgId !== null) {
-                // Tools-ON placeholder detail: the bridge is actively asking the
-                // gateway whether the silent run is still working.
-                this.writer.setPhase?.(liveMsgId, "querying_gateway");
-              }
-              this.scheduleOrphanRecovery("recv_silence");
-            }
-          } else {
-            // No fetcher (test harness / degraded deploy): the self-heal query is
-            // unavailable, so keep the LIVENESS guarantee the old way — settle the
-            // turn rather than hang it open forever.
-            await this.runManager
-              .endTurn(now, "final", null, "recv_timeout")
-              .catch((e) =>
-                console.error(
-                  "[session] recv-silence settle failed:",
-                  errForLog(e),
-                ),
-              );
-          }
+          console.log(
+            `[session] recv-silence — reading the transcript chat=${this.chatId}`,
+          );
+          this.transcriptShadow.requestRead("silence");
+          this.runManager.rearmSilence(now);
         }
         try {
           // The TTL sweep returns visible terminal upserts for silently-hung
@@ -1349,333 +1081,6 @@ class Session implements BridgeSession {
         return CONNECTION_SATURATED_CODE;
       default:
         return CONNECTION_LOST_CODE;
-    }
-  }
-
-  /**
-   * Orphan-turn recovery: the socket died mid-turn (gateway restart /
-   * compaction session-recreate) but the gateway RESUMES the run and its
-   * answer lands in the session transcript (main-session-restart-recovery,
-   * live CSV 2026-07-04). Poll `sessions.get` over a fresh connection until
-   * the resumed assistant reply appears, then finalize the turn COMPLETE with
-   * the real text. Bounded well under the Convex stuck-stream watchdog; on
-   * deadline the turn settles as connection_lost. A user Stop meanwhile wins:
-   * Convex finalize is first-terminal-wins, so a late recovery write is a
-   * no-op there (and isFinalized stops the poll bridge-side).
-   */
-  private scheduleOrphanRecovery(
-    reason: "socket_drop" | "recv_silence" = "socket_drop",
-    // Cause captured AT THE DROP: by the time the deadline fires, the connection
-    // object may have been replaced, so re-reading it then would lose the name of
-    // the end we are settling for.
-    dropCause: FinalizeCause = CONNECTION_LOST_CODE,
-  ): void {
-    const rm = this.runManager;
-    const fetcher = this.transcriptFetcher;
-    if (!fetcher) return;
-    // Bind this recovery to the CURRENT turn: if the live socket finalizes it and
-    // a NEW turn begins before the next poll wakes, the epoch mismatch kills the
-    // stale poll instead of letting it settle/recover the wrong turn (codex P1).
-    // Per-EPOCH claim (not a global boolean): the same turn never double-polls,
-    // while a NEWER turn can always start its own recovery.
-    const boundEpoch = rm.turnEpoch;
-    // Same reasoning as the epoch: a compaction reset mid-poll invalidates the
-    // attempt whose text we are recovering, and the epoch does not move for it.
-    const boundRecoveryGen = rm.recoveryGeneration;
-    if (this.recoveryEpoch === boundEpoch) {
-      // Same-turn re-entry: a socket_drop SUPERSEDES a running recv_silence
-      // (fresh 9-min budget + connection_lost class + the stale-transcript
-      // baseline gate — the gateway may be REBOOTING now; codex R8 P2). Any
-      // other combination is already covered by the active poll.
-      if (
-        !(reason === "socket_drop" && this.recoveryReason === "recv_silence")
-      ) {
-        return;
-      }
-    }
-    // …and this poll takes its OWN right to close the turn. A recovery started
-    // because the socket died or the silence budget ran out IS the turn's ending;
-    // inheriting an earlier attempt's revocation would leave it applying the reply
-    // and never settling the bubble. Minted AFTER the re-entry guard above: a poll
-    // that never starts must not leave a token behind, which the arbitration would
-    // read as a fetch still on the wire.
-    const orphanToken = rm.noteRecoveryDispatched();
-    // Every terminal exit of this poll goes through here. A token left behind holds
-    // the turn's terminal back for an answer nobody is going to send, and on a dead
-    // socket no tick remains to expire the window that would otherwise bound it.
-    const finishPoll = (): void => {
-      rm.releaseRecoveryToken(orphanToken);
-      if (this.recoveryEpoch === boundEpoch) this.recoveryEpoch = null;
-    };
-    this.recoveryEpoch = boundEpoch;
-    this.recoveryReason = reason;
-    const boundGen = ++this.recoveryGen;
-    const chatId = this.chatId;
-    const sessionKey = this.sessionKey;
-    const clock = this.clock;
-    let polls = 0;
-    const startedWallMs = Date.now();
-    // Structural baseline for ANCHOR-LESS turns (attachment-only sends, or a
-    // trivial anchor like "ok" that any old transcript would contain): a
-    // resumed run always GROWS the transcript; a stale one never does. Set on
-    // the first successful poll, so acceptance requires growth beyond it.
-    // DELIBERATE trade-off (correctness > completeness): if the resumed reply
-    // is ALREADY complete at the first poll, an anchor-less turn cannot
-    // distinguish it from the previous turn's reply — that residual case (an
-    // attachment-only turn finishing within the first ~20s after the drop)
-    // settles honestly as connection_lost instead of risking delivering the
-    // WRONG turn's answer into the conversation.
-    let baselineCount: number | null = null;
-    // recv_silence acceptance gate: the run is ALIVE, so sessions.get can show a
-    // reply STILL BEING WRITTEN — accepting it would truncate the answer (codex
-    // R12 P2). Require the extracted reply to be IDENTICAL on two consecutive
-    // polls (a finished reply is stable across 20s; a streaming one grows).
-    let lastSeenReply: string | null = null;
-    const tick = async (): Promise<void> => {
-      if (this.recoveryGen !== boundGen) {
-        // Superseded by a newer recovery: do NOT touch its claim — but DO release
-        // our own. A token left behind counts as a fetch still on the wire, and the
-        // arbitration then holds the turn's terminal back for an answer that is
-        // never coming. Not `finishPoll`: the epoch now belongs to the newer poll.
-        rm.releaseRecoveryToken(orphanToken);
-        return;
-      }
-      if (
-        rm.turnEpoch !== boundEpoch ||
-        rm.recoveryGeneration !== boundRecoveryGen
-      ) {
-        // A NEWER turn is running — or a compaction reset invalidated the
-        // attempt this poll belongs to WITHOUT moving the epoch (codex P1).
-        // Checked here, at the TOP of every tick: the expiry branch below calls
-        // endTurn directly, so without this a stale poll could close the replay
-        // that is still running as `connection_lost` / `response_timeout`.
-        // Only release the claim if a newer recovery hasn't already re-claimed it.
-        finishPoll();
-        return;
-      }
-      if (rm.isFinalized) {
-        // The live socket delivered the real result first — nothing to recover.
-        finishPoll();
-        return;
-      }
-      if (reason === "recv_silence" && rm.questionPending) {
-        // A HUMAN is being asked a question: the silence is the agent waiting on
-        // them, not a lost run. Recovering here would settle a false
-        // `response_timeout` over a run that resumes the moment they answer (prod
-        // 2026-09-22, 20:42 → 20:52). The question's own deadline bounds the wait.
-        finishPoll();
-        return;
-      }
-      if (reason === "recv_silence" && rm.recvDeadlineArmed) {
-        // The live stream RESUMED (own frames re-armed the recv deadline): the
-        // turn is healthy again — cancel this recovery instead of racing it
-        // (its wall could truncate a long in-flight reply as response_timeout;
-        // codex P1). A NEW silence elapse re-raises the signal and a fresh
-        // recovery re-claims the epoch (released here).
-        finishPoll();
-        return;
-      }
-      polls++;
-      const maxPolls =
-        reason === "recv_silence"
-          ? SILENCE_RECOVERY_MAX_POLLS
-          : ORPHAN_RECOVERY_MAX_POLLS;
-      const wallMs =
-        reason === "recv_silence"
-          ? SILENCE_RECOVERY_WALL_MS
-          : ORPHAN_RECOVERY_WALL_MS;
-      if (polls > maxPolls || Date.now() - startedWallMs >= wallMs) {
-        const settleCode =
-          reason === "recv_silence" ? RESPONSE_TIMEOUT_CODE : dropCause;
-        console.log(
-          `[session] transcript recovery deadline — settling ${settleCode} chat=${chatId}`,
-        );
-        await rm
-          .endTurn(
-            clock(),
-            "error",
-            settleCode,
-            settleCode,
-            Session.namedKind(settleCode),
-          )
-          .catch((e) =>
-            console.error(
-              "[session] orphan settle failed:",
-              errForLog(e),
-            ),
-          );
-        finishPoll();
-        return;
-      }
-      try {
-        const payload = await fetcher(sessionKey);
-        // The fetch AWAIT is long: the live socket may have finalized this turn
-        // AND a new turn may have begun meanwhile. Re-validate BEFORE any
-        // acceptance/recovery so a stale poll can never touch the new turn
-        // (codex P1 — anchor-less turns would otherwise pass the checks below).
-        if (rm.turnEpoch !== boundEpoch || rm.isFinalized) {
-          finishPoll();
-          return;
-        }
-        if (
-          reason === "recv_silence" &&
-          (rm.recvDeadlineArmed || rm.questionPending)
-        ) {
-          // The live stream resumed WHILE we were fetching — same cancel as the
-          // pre-fetch check, or a partial transcript could finalize a turn that
-          // is actively streaming again (codex R9 P2). And a question put to a
-          // human DURING the fetch holds the turn the same way: the text written
-          // before `ask_user` is not the answer (prod 2026-09-22 17:47).
-          finishPoll();
-          return;
-        }
-        // STALE-transcript guard: mid-reboot the gateway can serve a transcript
-        // that predates the current turn; its last user entry is then the
-        // PREVIOUS turn's. Only accept a transcript anchored to the message
-        // this turn actually sent (codex P2). No anchor (no send through this
-        // session) -> accept as before.
-        // Boundary validation — NEVER finalize the previous turn's reply as
-        // the current answer (codex P2 x2). A >=12-char anchor validates by
-        // containment; an absent/trivial anchor falls back to the structural
-        // baseline (the transcript must have GROWN since the first poll).
-        const anchor =
-          this.turnUserAnchor &&
-          this.turnUserAnchor.length >= 12 &&
-          this.turnUserAnchorEpoch === boundEpoch
-            ? this.turnUserAnchor
-            : null;
-        if (anchor) {
-          if (!lastUserEntryText(payload).includes(anchor)) {
-            setTimeout(() => void tick(), ORPHAN_RECOVERY_POLL_MS).unref?.();
-            return;
-          }
-        } else {
-          // ANCHOR-LESS turns (attachment-only / <12-char text): require transcript
-          // GROWTH before acceptance — for EVERY reason. Deliberate trade-off
-          // (codex R5 vs R6): skipping this gate on recv_silence could accept a
-          // lagging pre-turn snapshot and deliver the PREVIOUS turn's reply as the
-          // current answer (content corruption). The residual cost of keeping it —
-          // an anchor-less turn whose reply was already complete at the first poll
-          // settles response_timeout instead of recovering — is the same honest
-          // trade-off the socket-drop path already documents above.
-          const count = transcriptEntryCount(payload);
-          if (baselineCount === null || count <= baselineCount) {
-            if (baselineCount === null) baselineCount = count;
-            setTimeout(() => void tick(), ORPHAN_RECOVERY_POLL_MS).unref?.();
-            return;
-          }
-        }
-        // A resumed run may have delivered its REAL answer through the gateway
-        // message-tool (the assistant entry is then only a private ack like
-        // "Envoyé dans le webchat.") — prefer that delivery; fall back to the
-        // plain assistant reply (codex P2). Both scan only the current turn
-        // (backwards to the latest user entry).
-        const text =
-          extractMessageToolReplies(payload) ||
-          extractLatestAssistantReply(payload);
-        if (text && reason === "recv_silence" && text !== lastSeenReply) {
-          // First sighting (or still growing): remember and re-poll — only a
-          // reply UNCHANGED across two polls is proven finished.
-          lastSeenReply = text;
-          setTimeout(() => void tick(), ORPHAN_RECOVERY_POLL_MS).unref?.();
-          return;
-        }
-        if (text && !rm.isFinalized) {
-          console.log(
-            `[session] transcript recovery SUCCESS chat=${chatId} (${text.length} chars after ${polls} polls)`,
-          );
-          // The tick checks the epoch above, but this write happens after another
-          // await: pass the bound epoch so the guard holds at the write itself.
-          await rm.recoverVisibleText(
-            text,
-            clock(),
-            boundEpoch,
-            boundRecoveryGen,
-            orphanToken,
-          );
-          finishPoll();
-          return;
-        }
-      } catch (err) {
-        // Gateway may still be rebooting — keep polling until the deadline.
-        console.log(
-          `[session] transcript recovery poll failed (retrying): ${errForLog(err)}`,
-        );
-      }
-      setTimeout(() => void tick(), ORPHAN_RECOVERY_POLL_MS).unref?.();
-    };
-    setTimeout(() => void tick(), ORPHAN_RECOVERY_POLL_MS).unref?.();
-  }
-
-  private async recoverDeliveredReply(token: number): Promise<void> {
-    // Bind the turn we are recovering BEFORE the RPC below: it is allowed 10 s, the
-    // private-ack grace can finalize this turn in 5, and a queued send can open the
-    // next one immediately after. Captured here, checked at the write.
-    const boundEpoch = this.runManager.turnEpoch;
-    // Read BEFORE the RPC, like the epoch: the turn may move on during it.
-    const needsFullText = this.runManager.recoveryNeedsFullText;
-    // Also captured before the RPC: a compaction reset during it INVALIDATES the
-    // attempt this recovery belongs to, and the turn epoch does not move for it.
-    const boundRecoveryGen = this.runManager.recoveryGeneration;
-    // …and the runs this turn OWNS, for the run-exact mirror reader below: read after
-    // the RPC they could already name the next turn's run.
-    const boundRunIds = this.runManager.activeRunIds;
-    try {
-      const raw = await this.connection.request(
-        "sessions.get",
-        sessionsGetParams(this.sessionKey),
-        10_000,
-      );
-      const payload =
-        raw && typeof raw === "object" && "payload" in raw
-          ? (raw as { payload: unknown }).payload
-          : raw;
-      // Prefer a message-tool delivery. The plain assistant entry is a fallback
-      // ONLY for a gateway-TRUNCATED final (G-13), where it is the full reply:
-      // for the other triggers that entry is typically the private ack ("Sent."),
-      // and persisting it would hide a lost reply behind something that reads
-      // like an answer, masking the named cause (codex P1).
-      // Then the delivery MIRRORS this turn's own runs wrote. The only reader that
-      // works on a gateway DELIVERY run (requester-settle, announce): its turn starts
-      // at an inter-session entry the reader above must not cross, and a message tool
-      // called from code mode leaves no top-level `message` result for it to find
-      // (history-recovery.ts `extractRunDeliveryMirrors`). Exact ownership, so it
-      // cannot hand back another turn's words.
-      const text =
-        extractMessageToolReplies(payload) ||
-        extractRunDeliveryMirrors(payload, boundRunIds) ||
-        (needsFullText ? extractLatestAssistantReply(payload) : "");
-      if (text) {
-        const applied = await this.runManager.recoverVisibleText(
-          text,
-          this.clock(),
-          boundEpoch,
-          boundRecoveryGen,
-          token,
-        );
-        console.log(
-          applied
-            ? `[recovery] transcript reply recovered (${text.length} chars) chat=${this.chatId}`
-            : `[recovery] transcript reply found but NOT delivered — the turn had already moved on chat=${this.chatId}`,
-        );
-      } else {
-        console.log(
-          `[recovery] no recoverable delivery found chat=${this.chatId}`,
-        );
-      }
-    } catch (err) {
-      // Non-fatal: the private-ack grace will flush best-effort content.
-      console.error(
-        "[recovery] sessions.get failed:",
-        errForLog(err),
-      );
-    } finally {
-      // ALWAYS, on every exit: a fetch that found nothing, or threw, is over just as
-      // surely as one that delivered. Left behind, its token counts as a fetch still
-      // on the wire and the arbitration holds the turn's terminal back for an answer
-      // nobody is going to send. A no-op when `recoverVisibleText` already consumed
-      // it.
-      this.runManager.releaseRecoveryToken(token);
     }
   }
 
@@ -2283,35 +1688,7 @@ export class SessionRegistry {
     // SEPARATE, dedicated connection whose frames never reach RunManager.feed —
     // scoped as its own piece of work, not smuggled into the turn path.
     // `handleSessionOperation` stays ready for it and is unfed until then.
-    // Transcript fetcher for orphan-turn recovery: a SHORT dedicated
-    // connection per poll (the session's own socket is dead when recovery
-    // runs; the gateway may be mid-reboot — connect errors are the caller's
-    // retry signal).
     const cfg = bundle.config;
-    const transcriptFetcher: TranscriptFetcher = async (key) => {
-      const conn = await OpenClawConnection.connect(
-        cfg.openclawGatewayUrl,
-        cfg.openclawToken ?? "",
-        cfg.deviceIdentity!,
-        deviceTokenPromotion(cfg),
-        0,
-        // SYSTEM, not the owner: recovery reads a transcript whose session may have
-        // been created before this bridge knew the person, and it must succeed even
-        // when the role boundary would hide that session from them.
-        systemConnectIdentity(cfg),
-        connectUserHeader(cfg),
-      );
-      try {
-        const raw = await conn.request("sessions.get", sessionsGetParams(key), 10_000);
-        // request() resolves the response ENVELOPE; the transcript is .payload
-        // (same unwrap as recoverDeliveredReply).
-        return raw && typeof raw === "object" && "payload" in raw
-          ? (raw as { payload: unknown }).payload
-          : raw;
-      } finally {
-        conn.close();
-      }
-    };
     const onTurnError = this.onTurnError;
     const session = new Session(
       chatId,
@@ -2326,7 +1703,6 @@ export class SessionRegistry {
       bundle.writer,
       this.clock,
       bundle.outboundScan,
-      transcriptFetcher,
       // Bind the session's own target identity once — the sink only supplies
       // the failure code. Full identity (incl. host) so the health row can be
       // ensured even when the error beats the send's recordOk (codex P2).

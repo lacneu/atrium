@@ -165,9 +165,12 @@ A turn is rendered from the operations above: `startAssistant` opens the
 message, `appendDelta`/`setSnapshot` build its text, `addPart`/`addMediaPart`
 attach tool, reasoning, and media parts, and `finalize` commits it with a
 terminal status. Once a snapshot is authoritative for a turn, later deltas for
-that turn are ignored. Auto-compaction, empty/duplicate finals, follow-on runs,
-and private acknowledgements are absorbed by the bridge normalizer so the Convex
-state — and therefore the UI — stays consistent.
+that turn are ignored. Auto-compaction, empty/duplicate finals and follow-on runs
+are absorbed by the bridge normalizer so the Convex state — and therefore the UI — stays
+consistent. On an OpenClaw conversation this live stream is only the overlay of the run in
+progress: the bubbles are placed and rewritten from the gateway's session transcript
+(`applyTranscript`), and a file reaches a bubble only through the transcript row that
+carries it.
 
 ## Provider and version compatibility
 

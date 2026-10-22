@@ -1,12 +1,10 @@
 // THE TRANSCRIPT DECIDES (transcript redesign phase 4, projection `on`) — the bridge half.
 //
-//  - the normalizer on a projected session: no time-based wait ever closes a turn
-//    (empty final, cut final, private ack, `finishing`, a lifecycle end's follow-on
-//    window, the transcript-recovery window), and no prose rule is consulted; the
-//    legacy behaviour is pinned next to each case (`transcriptDecides` off);
+//  - the normalizer: no time-based wait ever closes a turn (empty final, cut final,
+//    private ack, `finishing`, a lifecycle end) and no prose rule is consulted;
 //  - the run manager ends a foreground turn on the transcript's own fact
 //    (`settleFromTranscript`) — and only its own run's;
-//  - the row reader sends what a row SAYS only when asked (projection `on`), extracted
+//  - the row reader sends what a row SAYS only when asked (display options), extracted
 //    and sanitized as the live text is, with the settled-finalization fallback row
 //    attributed to its run (the 2026.9.8 golden capture);
 //  - the reconciler relays Convex's settled runs.
@@ -19,8 +17,6 @@ import { describe, expect, it, vi } from "vitest";
 import {
   BASE_RECV_TIMEOUT,
   Normalizer,
-  TRUNCATED_FINAL_MARKER,
-  TRUNCATED_FINAL_MIN_BODY,
   type BridgeEvent,
 } from "../src/providers/openclaw/normalizer.js";
 import { RunManager } from "../src/providers/openclaw/run-manager.js";
@@ -44,9 +40,8 @@ const lifecycle = (phase: string, extra: Record<string, unknown> = {}) => ({
 });
 const text = (t: string) => ({ role: "assistant", content: [{ type: "text", text: t }] });
 
-function start(decides: boolean): { n: Normalizer; now: number } {
+function start(): { n: Normalizer; now: number } {
   const n = new Normalizer(SK, null);
-  n.transcriptDecides = decides;
   const now = 1000;
   n.beginTurn(now);
   n.noteRunStarted(RUN, now);
@@ -60,39 +55,29 @@ const finalOf = (ev: BridgeEvent[]) =>
 
 describe("normalizer — a projected turn never ends on a timer", () => {
   it("an empty final ends the turn at once (CU-13: the rows will say what it was)", () => {
-    const on = start(true);
+    const on = start();
     const ev = on.n.feed(chat({ state: "final" }), on.now + 1);
     expect(on.n.finalized).toBe(true);
     expect(finalOf(ev)?.diagnosticFinalizeCause).toBe("gateway_final");
-    // Legacy: the 90 s empty-final wait.
-    const off = start(false);
-    off.n.feed(chat({ state: "final" }), off.now + 1);
-    expect(off.n.finalized).toBe(false);
-    expect(off.n.nextTimeout(off.now + 1)).toBeLessThan(BASE_RECV_TIMEOUT);
   });
 
   it("a final the gateway CUT ends the turn at once (the durable row is whole)", () => {
-    const cut = "x".repeat(TRUNCATED_FINAL_MIN_BODY) + TRUNCATED_FINAL_MARKER;
-    const on = start(true);
+    // The gateway's display cap (8 000 characters) and its marker, as a live final carries them.
+    const cut = "x".repeat(8_000) + "\n...(truncated)...";
+    const on = start();
     on.n.feed(chat({ state: "final", message: text(cut) }), on.now + 1);
     expect(on.n.finalized).toBe(true);
-    const off = start(false);
-    off.n.feed(chat({ state: "final", message: text(cut) }), off.now + 1);
-    expect(off.n.finalized).toBe(false);
   });
 
   it("a private acknowledgment is the run's text like any other — no prose rule, no 5 s wait", () => {
-    const on = start(true);
+    const on = start();
     const ev = on.n.feed(chat({ state: "final", message: text("Envoyé dans le webchat.") }), on.now + 1);
     expect(on.n.finalized).toBe(true);
     expect(finalOf(ev)?.text).toBe("Envoyé dans le webchat.");
-    const off = start(false);
-    off.n.feed(chat({ state: "final", message: text("Envoyé dans le webchat.") }), off.now + 1);
-    expect(off.n.finalized).toBe(false);
   });
 
   it("`finishing` and a lifecycle end arm no wait: only the silence net remains", () => {
-    const on = start(true);
+    const on = start();
     on.n.feed(chat({ state: "delta", message: text("réponse") }), on.now + 1);
     on.n.feed(lifecycle("finishing"), on.now + 2);
     on.n.feed(lifecycle("end"), on.now + 3);
@@ -100,14 +85,10 @@ describe("normalizer — a projected turn never ends on a timer", () => {
     expect(on.n.nextTimeout(on.now + 3)).toBeCloseTo(BASE_RECV_TIMEOUT, 0);
     // Nothing closes it before the silence budget, and the silence asks (never ends).
     expect(on.n.tick(on.now + 3 + 120)).toEqual([]);
-    const off = start(false);
-    off.n.feed(chat({ state: "delta", message: text("réponse") }), off.now + 1);
-    off.n.feed(lifecycle("end"), off.now + 3);
-    expect(off.n.nextTimeout(off.now + 3)).toBeLessThan(BASE_RECV_TIMEOUT);
   });
 
   it("an unknown run is never adopted into the turn through a lifecycle-end window", () => {
-    const on = start(true);
+    const on = start();
     on.n.feed(chat({ state: "delta", message: text("A") }), on.now + 1);
     on.n.feed(lifecycle("end"), on.now + 2);
     const ev = on.n.feed(
@@ -116,14 +97,6 @@ describe("normalizer — a projected turn never ends on a timer", () => {
     );
     expect(on.n.ownRunIds.has("stranger")).toBe(false);
     expect(finalOf(ev)).toBeUndefined();
-    const off = start(false);
-    off.n.feed(chat({ state: "delta", message: text("A") }), off.now + 1);
-    off.n.feed(lifecycle("end"), off.now + 2);
-    off.n.feed(
-      { type: "event", event: "chat", payload: { sessionKey: SK, runId: "stranger", state: "final", message: text("B") } },
-      off.now + 3,
-    );
-    expect(off.n.ownRunIds.has("stranger")).toBe(true);
   });
 
   it("a chat error AFTER the run's end is still a post-reply failure (the end is a fact)", () => {
@@ -131,30 +104,20 @@ describe("normalizer — a projected turn never ends on a timer", () => {
       (ev.find((e) => e.type === "run.status" && (e as { status?: string }).status !== "working") as
         | { status?: string }
         | undefined)?.status;
-    const on = start(true);
+    const on = start();
     on.n.feed(chat({ state: "delta", message: text("réponse livrée") }), on.now + 1);
     on.n.feed(lifecycle("end"), on.now + 2);
     const after = on.n.feed(chat({ state: "error", errorMessage: "compaction timed out" }), on.now + 3);
     // Settled complete: the delivered answer is never painted as a failed turn.
     expect(statusOf(after)).toBe("complete");
     // Without the end, the same error is the turn's failure.
-    const mid = start(true);
+    const mid = start();
     mid.n.feed(chat({ state: "delta", message: text("réponse") }), mid.now + 1);
     expect(statusOf(mid.n.feed(chat({ state: "error", errorMessage: "boom" }), mid.now + 3))).toBe("error");
   });
 
-  it("the positional transcript recovery is never requested", () => {
-    const on = start(true);
-    on.n.feed(
-      { type: "event", event: "agent", payload: { sessionKey: SK, runId: RUN, stream: "item", data: { kind: "tool", name: "message", phase: "start", toolCallId: "t1", args: { action: "send", message: "x" } } } },
-      on.now + 1,
-    );
-    on.n.feed(chat({ state: "final" }), on.now + 2);
-    expect(on.n.wantsHistoryRecovery).toBe(false);
-  });
-
   it("a silence on a projected turn asks again a budget later, never ends it", () => {
-    const on = start(true);
+    const on = start();
     on.n.feed(chat({ state: "delta", message: text("…") }), on.now + 1);
     const silentAt = on.now + 1 + BASE_RECV_TIMEOUT + 1;
     expect(on.n.tick(silentAt)).toEqual([]);
@@ -185,37 +148,33 @@ function fakeWriter(): ConvexWriter & { finalizes: Array<Record<string, unknown>
 }
 
 describe("run manager — the transcript's fact ends the foreground turn", () => {
-  async function turn(projection: boolean) {
+  async function turn() {
     const writer = fakeWriter();
     const rm = new RunManager("chat1", SK, writer);
-    rm.setProjection(projection);
     await rm.beginTurn(1000, RUN, { expectedSessionId: null });
     return { rm, writer };
   }
 
   it("its own run settled → the turn ends (`transcript_settled`)", async () => {
-    const { rm } = await turn(true);
+    const { rm } = await turn();
     expect(await rm.settleFromTranscript(["other", RUN], 1001)).toBe(true);
     expect(rm.turnActive).toBe(false);
   });
 
   it("another run settled → nothing (the turn's own run is still working)", async () => {
-    const { rm } = await turn(true);
+    const { rm } = await turn();
     expect(await rm.settleFromTranscript(["other"], 1001)).toBe(false);
     expect(rm.turnActive).toBe(true);
   });
 
-  it("the switch reaches the normalizer: a bare final ends a projected turn at once", async () => {
-    const on = await turn(true);
+  it("a bare final ends the turn at once", async () => {
+    const on = await turn();
     await on.rm.feed(chat({ state: "final" }), 1001);
     expect(on.rm.turnActive).toBe(false);
-    const off = await turn(false);
-    await off.rm.feed(chat({ state: "final" }), 1001);
-    expect(off.rm.turnActive).toBe(true);
   });
 
   it("pass 2: a run the turn no longer follows (compaction resumed on B) ending never closes it", async () => {
-    const { rm } = await turn(true);
+    const { rm } = await turn();
     await rm.feed(chat({ state: "delta", message: text("début") }), 1001);
     // The gateway abandons A to replay the turn on a new run B (compaction heuristic).
     await rm.feed(lifecycle("end", { livenessState: "abandoned" }), 1002);
@@ -230,11 +189,6 @@ describe("run manager — the transcript's fact ends the foreground turn", () =>
     expect(rm.turnActive).toBe(false);
   });
 
-  it("projection off → never (the legacy path keeps its own terminals)", async () => {
-    const { rm } = await turn(false);
-    expect(await rm.settleFromTranscript([RUN], 1001)).toBe(false);
-    expect(rm.turnActive).toBe(true);
-  });
 });
 
 // The 2026.9.8 capture (busy-send bs-message-tool): a message-tool delivery mirror and a
@@ -243,7 +197,7 @@ const CAPTURE = JSON.parse(
   readFileSync(resolve(__dirname, "./fixtures/transcript-delivery-rows-2026.9.8.json"), "utf-8"),
 ) as { messages: unknown[] };
 
-describe("row reader — what a row says, only when the projection is on", () => {
+describe("row reader — what a row says, only when display options are given", () => {
   const mirror = CAPTURE.messages.find(
     (m) => (m as { idempotencyKey?: string }).idempotencyKey?.includes(":message-tool:"),
   )!;
@@ -263,7 +217,7 @@ describe("row reader — what a row says, only when the projection is on", () =>
     expect(row.text).toMatch(/^The tool run finished/);
   });
 
-  it("off/shadow: identities only — no text, and the fallback keeps upstream's own run id", () => {
+  it("without display options: identities only — no text, and the fallback keeps upstream's own run id", () => {
     const m = toTranscriptRow(mirror)!;
     expect(m.text).toBeUndefined();
     const f = toTranscriptRow(fallback)!;
@@ -309,8 +263,8 @@ describe("row reader — what a row says, only when the projection is on", () =>
   });
 });
 
-describe("reconciler — Convex's settled runs reach the run manager (on only)", () => {
-  async function reconciler(mode: "on" | "shadow") {
+describe("reconciler — Convex's settled runs reach the run manager", () => {
+  async function reconciler() {
     const settled: string[][] = [];
     const posted: TranscriptApply[] = [];
     const shadow = new TranscriptShadow({
@@ -330,22 +284,17 @@ describe("reconciler — Convex's settled runs reach the run manager (on only)",
       sleep: async () => {},
       log: () => {},
     });
-    shadow.configure({ mode });
+    shadow.configure({});
     await shadow.idle();
     return { settled, posted };
   }
 
   it("on: rows carry text, settled runs are relayed", async () => {
-    const { settled, posted } = await reconciler("on");
+    const { settled, posted } = await reconciler();
     expect(settled).toEqual([["run-x"]]);
     expect(posted[0]!.rows.some((r) => r.text !== undefined)).toBe(true);
   });
 
-  it("shadow: identities only, nothing relayed", async () => {
-    const { settled, posted } = await reconciler("shadow");
-    expect(settled).toEqual([]);
-    expect(posted[0]!.rows.every((r) => r.text === undefined)).toBe(true);
-  });
 });
 
 describe("reconciler — pass 1: the foreground runs ride every apply; a failed read is asked again", () => {
@@ -362,7 +311,7 @@ describe("reconciler — pass 1: the foreground runs ride every apply; a failed 
       sleep: async () => {},
       log: () => {},
     });
-    shadow.configure({ mode: "on" });
+    shadow.configure({});
     await shadow.idle();
     expect(posted[0]!.foregroundRunIds).toEqual(["run-a", "run-b"]);
   });
@@ -387,7 +336,7 @@ describe("reconciler — pass 1: the foreground runs ride every apply; a failed 
       },
       log: () => {},
     });
-    shadow.configure({ mode: "on" });
+    shadow.configure({});
     for (let i = 0; i < 20 && reads < 3; i++) await new Promise((r) => setTimeout(r, 0));
     await shadow.idle();
     expect(reads).toBe(3);
@@ -408,32 +357,13 @@ describe("reconciler — pass 1: the foreground runs ride every apply; a failed 
       sleep: () => new Promise((r) => setTimeout(r, 0)),
       log: () => {},
     });
-    shadow.configure({ mode: "on" });
+    shadow.configure({});
     for (let i = 0; i < 60; i++) await new Promise((r) => setTimeout(r, 0));
     // Not awaiting idle: an unbounded re-read would never let it resolve.
     expect(reads).toBe(4);
     shadow.close();
   });
 
-  it("shadow: a failed read is not retried (unchanged)", async () => {
-    let reads = 0;
-    const shadow = new TranscriptShadow({
-      chatId: "chat1",
-      sessionKey: SK,
-      readHistory: async () => {
-        reads++;
-        throw new Error("gateway down");
-      },
-      apply: async () => {},
-      foregroundRunIds: () => ["run-a"],
-      sleep: async () => {},
-      log: () => {},
-    });
-    shadow.configure({ mode: "shadow" });
-    for (let i = 0; i < 20; i++) await new Promise((r) => setTimeout(r, 0));
-    await shadow.idle();
-    expect(reads).toBe(1);
-  });
 });
 
 describe("row reader — pass 2: a cut active-run list is unknown, never complete", () => {

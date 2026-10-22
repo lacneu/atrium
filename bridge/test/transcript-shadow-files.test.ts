@@ -41,7 +41,7 @@ const FILE: TranscriptFileToCopy = {
   attempts: 0,
 };
 
-function rig(mode: "on" | "shadow") {
+function rig() {
   const applies: TranscriptApply[] = [];
   const handed: TranscriptFileToCopy[][] = [];
   const shadow = new TranscriptShadow({
@@ -54,8 +54,7 @@ function rig(mode: "on" | "shadow") {
       deltaCursor: "c:1",
       sessionInfo: { sessionId: "s-1", hasActiveRun: false, activeRunIds: [] },
     }),
-    // Convex answers every apply with the file it recorded (whatever the mode: the
-    // reconciler must not hand it over outside `on`).
+    // Convex answers every apply with the file it recorded.
     apply: async (p) => {
       applies.push(p);
       return { ok: true, filesToCopy: [FILE] };
@@ -64,13 +63,13 @@ function rig(mode: "on" | "shadow") {
     sleep: async () => {},
     log: () => {},
   });
-  shadow.configure({ mode });
+  shadow.configure({});
   return { shadow, applies, handed };
 }
 
 describe("projection `on`: blocks ride ahead of the read, files go to the copier", () => {
   it("the texts-only post carries the row's blocks; the read carries its identity only", async () => {
-    const r = rig("on");
+    const r = rig();
     await r.shadow.idle();
     const [texts, read] = r.applies;
     expect(texts?.textsOnly).toBe(true);
@@ -81,21 +80,10 @@ describe("projection `on`: blocks ride ahead of the read, files go to the copier
   });
 
   it("the files Convex names are handed to the copier after each apply", async () => {
-    const r = rig("on");
+    const r = rig();
     await r.shadow.idle();
     expect(r.handed.length).toBeGreaterThanOrEqual(1);
     expect(r.handed[0]).toEqual([FILE]);
-  });
-});
-
-describe("projection `shadow`: unchanged", () => {
-  it("no blocks, no display facts, no texts-only post, and nothing handed to a copier", async () => {
-    const r = rig("shadow");
-    await r.shadow.idle();
-    expect(r.applies).toHaveLength(1);
-    expect(r.applies[0]?.textsOnly).toBeUndefined();
-    expect(Object.keys(r.applies[0]!.rows[0]!).sort()).toEqual(["entryId", "hidden", "role", "runId", "seq", "visible"]);
-    expect(r.handed).toEqual([]);
   });
 });
 

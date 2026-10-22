@@ -18,9 +18,11 @@
 //   - before 2026.8.1 no frame tells the announce kill apart ("rpc" is that gateway's
 //     DEFAULT stop reason and the one a chat.abort from another client carries), and a
 //     recent child is a temporal correlation, not a cause.
-// So the flag is never set, whatever the terminal carries — the turn keeps the honest
-// aborted card. These tests pin the ABSENCE on the shapes below (the measured incident,
-// every stop reason, a superseded lifecycle end, a user Stop, streamed content); the
+// So the flag is never set, whatever the terminal carries. A turn's bubble is born from
+// its run, so a ZERO-content abort leaves no bubble at all (nothing to finalize, nothing
+// to flag), and an abort after content keeps the honest aborted card. These tests pin the
+// ABSENCE on the shapes below (the measured incident, every stop reason, a superseded
+// lifecycle end, a user Stop, streamed content); the
 // Convex side pins it at the ingest boundary (convex/bridgeIngest.test.ts, "legacy
 // gatewayPreempted"); convex/preemptRepark.test.ts still exercises the internal
 // mechanism itself, which stays until its outbox fields are migrated out.
@@ -137,11 +139,9 @@ async function flagFor(
 }
 
 describe("gatewayPreempted finalize flag — never minted", () => {
-  it("the measured 2026.7.x incident shape (chat:aborted, rpc, zero content) finalizes aborted, unflagged", async () => {
+  it("the measured 2026.7.x incident shape (chat:aborted, rpc, zero content) leaves no bubble, nothing flagged", async () => {
     const { flag, finals } = await flagFor((r) => [abortedFrame(r, "rpc")]);
-    expect(finals).toHaveLength(1);
-    expect(finals[0]?.status).toBe("aborted");
-    expect(finals[0]?.opts?.gatewayPreempted).toBeUndefined();
+    expect(finals).toHaveLength(0);
     expect(flag).toBe(false);
   });
 
@@ -158,9 +158,7 @@ describe("gatewayPreempted finalize flag — never minted", () => {
       undefined,
     ]) {
       const { flag, finals } = await flagFor((r) => [abortedFrame(r, stopReason)]);
-      expect(finals, String(stopReason)).toHaveLength(1);
-      expect(finals[0]?.status, String(stopReason)).toBe("aborted");
-      expect(finals[0]?.opts?.gatewayPreempted, String(stopReason)).toBeUndefined();
+      expect(finals, String(stopReason)).toHaveLength(0);
       expect(flag, String(stopReason)).toBe(false);
     }
     // `auth-revoked` is not an abort the reader made: an operator logged the provider out
@@ -172,8 +170,13 @@ describe("gatewayPreempted finalize flag — never minted", () => {
       expect(finals[0]?.opts?.gatewayPreempted).toBeUndefined();
       expect(flag).toBe(false);
     }
-    // `flagFor` reads an ABSENT finalize as "unflagged" too: pin that the finalize happened.
-    const superseded = await flagFor((r) => [supersededEndFrame(r), abortedFrame(r, "superseded")]);
+    // With content first, the finalize HAPPENS: `flagFor` reads an absent one as
+    // "unflagged" too, so the flag's absence is pinned on a real finalize here.
+    const superseded = await flagFor((r) => [
+      deltaFrame(r, "Un début"),
+      supersededEndFrame(r),
+      abortedFrame(r, "superseded"),
+    ]);
     expect(superseded.finals, "with a superseded lifecycle end").toHaveLength(1);
     expect(superseded.finals[0]?.status, "with a superseded lifecycle end").toBe("aborted");
     expect(superseded.finals[0]?.opts?.gatewayPreempted).toBeUndefined();
@@ -182,10 +185,11 @@ describe("gatewayPreempted finalize flag — never minted", () => {
 
   it("a USER Stop (noteUserAbort) finalizes aborted, unflagged", async () => {
     const { flag, finals } = await flagFor(
-      (r) => [abortedFrame(r, "rpc")],
+      (r) => [deltaFrame(r, "Un début"), abortedFrame(r, "rpc")],
       (m) => m.noteUserAbort(),
     );
     expect(finals[0]?.status).toBe("aborted");
+    expect(finals[0]?.opts?.gatewayPreempted).toBeUndefined();
     expect(flag).toBe(false);
   });
 

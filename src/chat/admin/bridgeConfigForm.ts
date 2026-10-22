@@ -140,8 +140,6 @@ export type ConfigOverride = Partial<
   /** Passthrough (owned by the instance sheet's inline-widget switches). */
   widgetsEnabled?: boolean;
   widgetPromptConfirm?: boolean;
-  /** Passthrough (the transcript projection switch, set through the admin API). */
-  transcriptProjection?: "off" | "shadow" | "on";
 };
 
 /** Config keys OWNED BY OTHER admin surfaces (the Chat-defaults tab's summarize
@@ -172,10 +170,8 @@ const PASSTHROUGH_KEYS = [
   // The instance sheet's inline-widget switches (convex/widgets.ts).
   "widgetsEnabled",
   "widgetPromptConfirm",
-  // The transcript projection switch (redesign phase 1). No control on this form on
-  // purpose — it is an operator rollout lever, set through the admin API — but a Bridge
-  // or Injections save must not quietly turn a shadow measurement off.
-  "transcriptProjection",
+  // NOT `transcriptProjection`: the switch is gone for OpenClaw (0.102.0, always `on`) and
+  // never applied to Hermes, so a save drops a value an older release stored.
 ] as const;
 
 export function buildConfigOverride(

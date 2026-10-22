@@ -6,121 +6,121 @@
     {
       "id": "announce-reverse-hold",
       "ok": true,
-      "chat": "ea2890188aeb6c9b"
+      "chat": "baaf69d4daecf319"
     },
     {
       "id": "basic-turn",
       "ok": true,
-      "chat": "ea2890188aeb6c9b"
+      "chat": "baaf69d4daecf319"
     },
     {
       "id": "tool-exec",
       "ok": true,
-      "chat": "ea2890188aeb6c9b"
+      "chat": "baaf69d4daecf319"
     },
     {
       "id": "update-plan",
       "ok": true,
-      "chat": "ea2890188aeb6c9b"
+      "chat": "baaf69d4daecf319"
     },
     {
       "id": "media-outbound",
       "ok": true,
-      "chat": "ea2890188aeb6c9b"
+      "chat": "baaf69d4daecf319"
     },
     {
       "id": "inbound-attachment",
       "ok": true,
-      "chat": "ea2890188aeb6c9b"
+      "chat": "baaf69d4daecf319"
     },
     {
       "id": "inbound-attachment-large",
       "ok": true,
-      "chat": "ea2890188aeb6c9b"
+      "chat": "baaf69d4daecf319"
     },
     {
       "id": "fork-attachment-rehydrate",
       "ok": true,
-      "chat": "ea2890188aeb6c9b"
+      "chat": "baaf69d4daecf319"
     },
     {
       "id": "talk-session",
       "ok": true,
-      "chat": "ea2890188aeb6c9b"
+      "chat": "baaf69d4daecf319"
     },
     {
       "id": "spawn-announce-merge",
       "ok": true,
-      "chat": "ea2890188aeb6c9b"
+      "chat": "baaf69d4daecf319"
     },
     {
       "id": "spawn-chain-merge",
       "ok": true,
-      "chat": "ea2890188aeb6c9b"
+      "chat": "baaf69d4daecf319"
     },
     {
       "id": "spawn-parallel-merge",
       "ok": true,
-      "chat": "ea2890188aeb6c9b"
+      "chat": "baaf69d4daecf319"
     },
     {
       "id": "settle-chain-no-synthesis",
       "ok": true,
-      "chat": "ea2890188aeb6c9b"
+      "chat": "baaf69d4daecf319"
     },
     {
       "id": "yield-settle-media",
       "ok": true,
-      "chat": "ea2890188aeb6c9b"
+      "chat": "baaf69d4daecf319"
     },
     {
       "id": "settle-message-tool-codemode",
       "ok": true,
-      "chat": "ea2890188aeb6c9b"
+      "chat": "baaf69d4daecf319"
     },
     {
       "id": "yield-settle-media-param",
       "ok": true,
-      "chat": "ea2890188aeb6c9b"
+      "chat": "baaf69d4daecf319"
     },
     {
       "id": "async-task",
       "ok": true,
-      "chat": "ea2890188aeb6c9b"
+      "chat": "baaf69d4daecf319"
     },
     {
       "id": "cron-tool",
       "ok": true,
-      "chat": "ea2890188aeb6c9b"
+      "chat": "baaf69d4daecf319"
     },
     {
       "id": "agent-request-question",
       "ok": true,
-      "chat": "ea2890188aeb6c9b"
+      "chat": "baaf69d4daecf319"
     },
     {
       "id": "agent-request-exec-approval",
       "ok": true,
-      "chat": "ea2890188aeb6c9b"
+      "chat": "baaf69d4daecf319"
     },
     {
       "id": "widget-inline",
       "ok": true,
-      "chat": "ea2890188aeb6c9b"
+      "chat": "baaf69d4daecf319"
     },
     {
       "id": "widget-off",
       "ok": true,
-      "chat": "ea2890188aeb6c9b"
+      "chat": "baaf69d4daecf319"
     },
     {
       "id": "transcript-files-replay",
       "ok": true,
-      "chat": "ea2890188aeb6c9b"
+      "chat": "baaf69d4daecf319"
     }
   ],
   "verdict": "GO",
-  "at": "2026-10-20T21:56:22.286Z",
+  "at": "2026-10-22T20:49:24.530Z",
   "scenarios": [
     "agent-request-exec-approval",
     "agent-request-question",
@@ -180,12 +180,12 @@
     "transcript-files-replay": "openclaw"
   },
   "flags": [],
-  "atriumSha": "d0eed2545040eed24c0f6b930fca4da2a99ecdfb",
+  "atriumSha": "420e3f4399b32061059fbfc2c39dbf36878ef8bb",
   "worktree": {
     "dirty": true,
-    "deltaSha256": "de77f7b2d3ac0390ae48560cf8fd576e3949a66b6d395d05ae66f0828764db22"
+    "deltaSha256": "0a004814a32dde63c9af50464f24145348dcf36dbaf5257d65fdf7f826c30140"
   },
-  "supportDigest": "967bc96ccd85f109abe238941154bbe3f224d625a2e9b9556398dbfe0a47bb08",
+  "supportDigest": "6e905bd803b1e7f57351afc3f403756c84229338ee594f4170ecff3278794b5e",
   "authMode": "token",
   "bridgeVersion": "0.101.3",
   "vendoredSha256": "26258570f384115682aee4b325133ce4b5ca1a7db6e5d13f0be721b6b1516944"

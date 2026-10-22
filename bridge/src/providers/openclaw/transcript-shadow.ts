@@ -1,11 +1,9 @@
-// THE SHADOW RECONCILER (transcript redesign, phases 1–2, design §4).
+// THE TRANSCRIPT RECONCILER (transcript redesign, design §4).
 //
 // Per conversation session: reads the gateway's `chat.history` back with a delta cursor
-// at the Control UI's own triggers, and posts what it read — identity rows, run
-// statuses, the input guard, the cursor — to Convex (`applyTranscript`). It NEVER
-// creates, edits or finalizes a bubble: shadow mode measures the distance between the
-// transcript and the bubbles Atrium built from the live stream, it does not decide
-// anything.
+// at the Control UI's own triggers, and posts what it read — rows with what they say,
+// run statuses, the input guard, the cursor — to Convex (`applyTranscript`), which
+// places the bubbles from them. It never writes a bubble itself.
 //
 // TRIGGERS (design §4.1), each the Control UI's:
 //   - a terminal chat frame of ANY run of the session (`final`/`error`/`aborted`):
@@ -61,7 +59,9 @@ import {
 } from "./transcript-rows.js";
 import { errForLog } from "../../core/log-safe-error.js";
 
-export type ProjectionMode = "off" | "shadow" | "on";
+/** `off`: the reconciler has not been switched on yet (no `/send` or `/resume` gave it
+ *  its cursor); `on`: it reads the transcript and its facts place the bubbles. */
+export type ProjectionMode = "off" | "on";
 
 /** Upstream `MISSING_TERMINAL_HISTORY_RETRY_DELAYS_MS` (chat-state-events.ts:73). */
 export const TERMINAL_RECOVERY_DELAYS_MS: readonly number[] = [100, 400, 1_500, 3_000];
@@ -348,8 +348,8 @@ export class TranscriptShadow {
   }
 
   /** The projection is doing something on this session. The reconciler itself never
-   *  writes a bubble in either mode; with `on` its facts also feed the live overlay
-   *  (`onUserRow` / `onInputDropped`). */
+   *  writes a bubble; its facts also feed the live overlay (`onUserRow` /
+   *  `onInputDropped`). */
   get active(): boolean {
     return !this.closed && this.mode !== "off";
   }
@@ -360,23 +360,15 @@ export class TranscriptShadow {
   }
 
   /**
-   * Apply the instance switch and the cursor Convex stored, as carried by a `/send`.
-   * Turning the projection on for a live session triggers a read (a tail page when no
+   * Switch the reconciler on with the cursor Convex stored, as carried by a `/send` (or
+   * none, for a `/resume`). The first switch-on triggers a read (a tail page when no
    * cursor is known yet) — the Control UI's own "pane opened" read — and attaches the
    * session to the session-events connection.
    */
-  configure(opts: { mode: ProjectionMode | undefined; cursor?: TranscriptCursor | null }): void {
+  configure(opts: { cursor?: TranscriptCursor | null }): void {
     if (this.closed) return;
-    const next = opts.mode ?? "off";
     const wasActive = this.mode !== "off";
-    this.mode = next;
-    if (next === "off") {
-      this.pendingTerminals = [];
-      this.pendingLive.clear();
-      this.custody.clear();
-      this.detach();
-      return;
-    }
+    this.mode = "on";
     // Convex's cursor is adopted only when this process holds none: a live process is
     // never behind the store it writes to.
     if (this.cursor === null && opts.cursor) this.cursor = { ...opts.cursor };
@@ -521,7 +513,7 @@ export class TranscriptShadow {
     return ids.length > 0 ? { foregroundRunIds: [...ids] } : {};
   }
 
-  /** PROJECTION `on` (phase 4): rows carry what they say; `off`/`shadow` identities only. */
+  /** Rows carry what they say (text, blocks, display order). */
   private displayOpt(): { display?: RowDisplay } {
     return this.mode === "on" ? { display: { sessionKey: this.deps.sessionKey } } : {};
   }

@@ -298,19 +298,20 @@ One consequence worth knowing before you install: **enabling an agent is what
 exposes it**. Visibility is authorisation by default; attribution is not a second
 lock.
 
-One per-instance setting has no control in the UI on purpose, because it is a rollout
-lever rather than a preference: `transcriptProjection` (`on`, the default for an OpenClaw
-instance that names none since 0.101.1; `off` and `shadow` stay available, set explicitly;
-never applied to a Hermes instance). In `shadow` the bridge reads the gateway's session transcript back after each run
-(`chat.history`, delta cursor) and Convex records its identities beside the bubbles;
-nothing on screen changes, and `diagnose_chat` reports how far the bubbles are from the
-transcript. In `on` the transcript decides what is shown: a message sent while the agent
-works follows the session's queue mode (as OpenClaw's Control UI does), a bubble opens with
-its run's first content, and once a run is over its bubble is rewritten from the run's rows
-in the session transcript (Convex then also stores the text of those rows, purged with the
-conversation). It needs OpenClaw 2026.8.2 or later and is
-set through the admin API (`admin.upsertInstanceConfig`); the Bridge and Injections tabs
-carry it through their saves unchanged.
+The conversation display of an OpenClaw instance follows the gateway's session
+transcript, as OpenClaw's Control UI does; there is no setting for it. The bridge reads
+the transcript back (`chat.history`, delta cursor, plus the `session.message` events of a
+dedicated connection) and Convex places the bubbles from its rows: a message sent while the
+agent works follows the session's queue mode, a bubble opens with its run's first content,
+and once a run is over its bubble is rewritten from the run's rows (Convex then also stores
+the text of those rows, purged with the conversation). Files shown in a reply are the ones
+the rows carry, copied once into Convex. `diagnose_chat` reports how far the bubbles are
+from the transcript. It needs OpenClaw 2026.8.2 or later. A Hermes instance is never
+projected: its bubbles are written from the live stream.
+
+An instance configuration may still carry a `transcriptProjection` value (`off`,
+`shadow` or `on`) written by an older release. It is accepted and ignored, and a save from
+the Bridge or Injections tab drops it.
 
 ## Secrets discipline
 

@@ -3,7 +3,7 @@
 // is dropped, a non-object yields null — it must NEVER throw and NEVER fail a send.
 
 import { describe, it, expect } from "vitest";
-import { DEFAULT_TRANSCRIPT_PROJECTION, parseInboundConfig, transcriptProjectionOf } from "../src/core/instance-config.js";
+import { parseInboundConfig } from "../src/core/instance-config.js";
 
 describe("parseInboundConfig", () => {
   it("returns null for absent / non-object input (→ caller uses env defaults)", () => {
@@ -119,17 +119,14 @@ describe("Convex's fail-closed media envelope is folded into mediaMode (codex)",
   });
 });
 
-// THE PROJECTION DEFAULT (0.101.1): Convex sends the mode resolved on every dispatch; when it
-// names none, the bridge reads Convex's own default for an OpenClaw instance, `on` — the two
-// sides never disagree. An explicit mode is kept.
-describe("transcriptProjectionOf", () => {
-  it("is `on` when the dispatch names none", () => {
-    expect(transcriptProjectionOf(undefined)).toBe("on");
-    expect(transcriptProjectionOf({})).toBe("on");
-    expect(DEFAULT_TRANSCRIPT_PROJECTION).toBe("on");
-  });
-  it("keeps an explicit mode", () => {
-    expect(transcriptProjectionOf({ transcriptProjection: "off" })).toBe("off");
-    expect(transcriptProjectionOf({ transcriptProjection: "shadow" })).toBe("shadow");
+// The projection switch is gone for OpenClaw (0.102.0): every session runs `on`. A Convex
+// 0.101.x still sends the instance's stored mode in the dispatch config; the bridge does
+// not read it, so a stored `off` or `shadow` changes nothing.
+describe("transcriptProjection in the dispatch config", () => {
+  it("is not read: a stored off/shadow is dropped with the unknown fields", () => {
+    for (const mode of ["off", "shadow", "on"]) {
+      const parsed = parseInboundConfig({ transcriptProjection: mode, rehydration: true });
+      expect(parsed).toEqual({ rehydration: true });
+    }
   });
 });

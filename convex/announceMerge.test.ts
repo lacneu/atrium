@@ -7,13 +7,14 @@ import { assessChat, type DiagAvailability } from "./lib/diagnose";
 
 const modules = import.meta.glob("./**/*.ts");
 
-// SUB-AGENT ANNOUNCE MERGE — the user asks ONE question, the answer must land
-// in ONE bubble. When a sub-agent finishes AFTER its parent turn ended, the
-// gateway delivers the result as a separate `announce:v1:<childSessionKey>:
-// <childRunId>` run; startAssistant must REOPEN the finished parent message
-// (joined through subAgents.parentMessageId) instead of creating a second
-// assistant message — and every merge condition must FAIL CLOSED to the old
-// two-bubble behaviour, never lose text, and re-notify on the real result.
+// SUB-AGENT ANNOUNCE DELIVERIES — until 0.102.0 a delivery run
+// (`announce:v1:<childSessionKey>:<childRunId>`, a task delivery) REOPENED the finished
+// parent message and streamed into it (0.96.0's merge). Since 0.102.0 every delivery
+// opens its OWN bubble, grouped with its chain by the display (displayGroups.regroup);
+// what remains of the merge is its REPLAY: a bubble 0.96.0 merged a delivery into is
+// still in the data, and a replay of that delivery (a rebroadcast, a resume after an
+// error) must stay idempotent on it. `seedLegacyMerge` builds that state as 0.96.0
+// wrote it; the cases below replay it.
 
 const CHILD_KEY = "agent:files:subagent:9af5b6c1-d161-4994-a5df-6e256c5b4336";
 const ANNOUNCE_RUN = `announce:v1:${CHILD_KEY}:650150d5-fa3d-4c7c-825c-e6684997f82d`;
@@ -80,6 +81,29 @@ async function seedDelegatedTurn(
   });
 }
 
+/** A bubble 0.96.0 MERGED `runs` (the last one owning it) into, as that version left
+ *  it: the bubble took the delivery's run, recorded every merged run, kept the parent's
+ *  reply as the parked prefix while the merge was not settled complete (a complete
+ *  finalize consumed it), and was stamped a turn. */
+async function seedLegacyMerge(
+  t: ReturnType<typeof convexTest>,
+  state: { status: "complete" | "error" | "aborted"; text: string; runs?: string[] },
+) {
+  const seeded = await seedDelegatedTurn(t);
+  const runs = state.runs ?? [ANNOUNCE_RUN];
+  await t.run((ctx) =>
+    ctx.db.patch(seeded.parentId, {
+      status: state.status,
+      text: state.text,
+      runId: runs[runs.length - 1]!,
+      mergedAnnounceRuns: runs,
+      mergedIntoTurn: true,
+      ...(state.status !== "complete" ? { announcePrefix: "La tâche est lancée." } : {}),
+    }),
+  );
+  return seeded;
+}
+
 async function assistantMessages(
   t: ReturnType<typeof convexTest>,
   chatId: Id<"chats">,
@@ -90,62 +114,16 @@ async function assistantMessages(
   });
 }
 
-describe("announce merge (one bubble per delegated turn)", () => {
-  test("announce run REOPENS the parent message — no second bubble; text recomposes; user is re-notified", async () => {
+describe("announce deliveries and the replay of a legacy merge", () => {
+  test("a REPLACE snapshot on a RESUMED legacy merge keeps the parent text", async () => {
     const t = convexTest(schema, modules);
-    const { chatId, parentId } = await seedDelegatedTurn(t);
-
-    const reopened = await t.mutation(internal.stream.startAssistant, {
-      chatId,
-      runId: ANNOUNCE_RUN,
+    const { chatId, parentId } = await seedLegacyMerge(t, {
+      status: "error",
+      text: "La tâche est lancée.\n\nRésultat par",
     });
-    // startAssistant returns null only when the interruption epoch refuses the
-    // delivery; this turn is not one, so the id is the contract here.
-    if (reopened === null) throw new Error("startAssistant refused an ordinary turn");
-    expect(reopened).toBe(parentId);
-
-    // Reopened: streaming again, owned by the announce run, prefix parked,
-    // live row seeded with it.
-    const reopenedDoc = await t.run((ctx) => ctx.db.get(parentId));
-    expect(reopenedDoc?.status).toBe("streaming");
-    expect(reopenedDoc?.runId).toBe(ANNOUNCE_RUN);
-    expect(reopenedDoc?.announcePrefix).toBe("La tâche est lancée.");
-    const row = await t.run(async (ctx) =>
-      ctx.db
-        .query("streamingText")
-        .withIndex("by_message", (q) => q.eq("messageId", parentId))
-        .first(),
-    );
-    expect(row?.text).toBe("La tâche est lancée.\n\n");
-
-    await t.mutation(internal.stream.appendDelta, {
-      messageId: reopened,
-      text: "Document créé et vérifié.",
-    });
-    await t.mutation(internal.stream.finalize, {
-      messageId: reopened,
-      status: "complete",
-      text: "Document créé et vérifié.",
-    });
-
-    const assts = await assistantMessages(t, chatId);
-    expect(assts).toHaveLength(1); // THE invariant: one bubble
-    const settled = assts[0]!;
-    expect(settled.text).toBe("La tâche est lancée.\n\nDocument créé et vérifié.");
-    expect(settled.status).toBe("complete");
-    expect(settled.announcePrefix).toBeUndefined(); // consumed
-    // The REAL result arrival re-notifies (unread dot / sound source).
-    const chat = await t.run((ctx) => ctx.db.get(chatId));
-    expect(chat?.lastAssistantAt).toBeTypeOf("number");
-  });
-
-  test("a REPLACE snapshot on the reopened message keeps the parent text", async () => {
-    const t = convexTest(schema, modules);
-    const { chatId, parentId } = await seedDelegatedTurn(t);
-    await t.mutation(internal.stream.startAssistant, {
-      chatId,
-      runId: ANNOUNCE_RUN,
-    });
+    expect(
+      await t.mutation(internal.stream.startAssistant, { chatId, runId: ANNOUNCE_RUN }),
+    ).toBe(parentId);
     await t.mutation(internal.stream.setSnapshot, {
       messageId: parentId,
       text: "Résultat (révision complète).",
@@ -159,7 +137,7 @@ describe("announce merge (one bubble per delegated turn)", () => {
     expect(row?.text).toBe("La tâche est lancée.\n\nRésultat (révision complète).");
   });
 
-  test("PREEMPTED merge (finalize with no text): the parked reply is never lost to a bare replayed head", async () => {
+  test("PREEMPTED resumed merge (finalize with no text): the parked reply is never lost to a bare replayed head", async () => {
     // The bridge closes a preempted announce turn with finalize(no text). The
     // fallback normally reads the seeded/prefixed stream row — but a row
     // rewritten WITHOUT the prefix (legacy writer / lost seed) must still
@@ -174,7 +152,7 @@ describe("announce merge (one bubble per delegated turn)", () => {
       ["La tâche est lancée.\n\nDébut du rapport", "La tâche est lancée.\n\nDébut du rapport"],
     ] as const) {
       const t = convexTest(schema, modules);
-      const { parentId } = await seedDelegatedTurn(t);
+      const { parentId } = await seedLegacyMerge(t, { status: "error", text: "La tâche est lancée.\n\n" });
       await t.mutation(internal.stream.startAssistant, {
         chatId: (await t.run((ctx) => ctx.db.get(parentId)))!.chatId,
         runId: ANNOUNCE_RUN,
@@ -198,42 +176,6 @@ describe("announce merge (one bubble per delegated turn)", () => {
       expect(doc?.announcePrefix).toBe("La tâche est lancée.");
       expect(doc?.errorCode).toBe("announce_preempted");
     }
-  });
-
-  test("an ANCHORED delivery merges into its parent even after the conversation moved on (order fix)", async () => {
-    const t = convexTest(schema, modules);
-    const { userId, chatId, parentId } = await seedDelegatedTurn(t);
-    // An interleaved follow-up + its reply: the parent is NOT the last
-    // message any more. The engagement anchor is exact, so the delivery must
-    // return to ITS turn — landing at the bottom made the thread read
-    // out-of-order (user report, pptx iteration chain).
-    await t.run(async (ctx) => {
-      await ctx.db.insert("messages", {
-        chatId,
-        userId,
-        role: "user" as const,
-        status: "complete" as const,
-        text: "Autre question entre-temps",
-        updatedAt: 3000,
-      });
-      await ctx.db.insert("messages", {
-        chatId,
-        userId,
-        role: "assistant" as const,
-        status: "complete" as const,
-        text: "Réponse au follow-up",
-        runId: "webchat-followup-run",
-        updatedAt: 3500,
-      });
-    });
-    const created = await t.mutation(internal.stream.startAssistant, {
-      chatId,
-      runId: ANNOUNCE_RUN,
-    });
-    expect(created).toBe(parentId);
-    const parent = await t.run((ctx) => ctx.db.get(parentId));
-    expect(parent?.status).toBe("streaming"); // reopened by the merge
-    expect(parent?.announcePrefix).toBe("La tâche est lancée.");
   });
 
   test("an UNCORRELATED anchor keeps the positional gate: conversation moved -> fresh bubble", async () => {
@@ -264,18 +206,6 @@ describe("announce merge (one bubble per delegated turn)", () => {
     expect(parent?.status).toBe("complete"); // untouched
   });
 
-  test("an uncorrelated anchor STILL merges while its parent is the last message (historical behaviour)", async () => {
-    const t = convexTest(schema, modules);
-    const { chatId, parentId } = await seedDelegatedTurn(t, {
-      anchorExact: false,
-    });
-    const created = await t.mutation(internal.stream.startAssistant, {
-      chatId,
-      runId: ANNOUNCE_RUN,
-    });
-    expect(created).toBe(parentId);
-  });
-
   test("an anchored delivery does NOT merge into a parent evicted from the loaded window (fresh bubble)", async () => {
     const t = convexTest(schema, modules);
     const { userId, chatId, parentId } = await seedDelegatedTurn(t);
@@ -301,30 +231,6 @@ describe("announce merge (one bubble per delegated turn)", () => {
     expect(created).not.toBe(parentId);
     const parent = await t.run((ctx) => ctx.db.get(parentId));
     expect(parent?.status).toBe("complete"); // untouched
-  });
-
-  test("an anchored delivery also merges past a QUEUED follow-up (orderTime sentinel)", async () => {
-    const t = convexTest(schema, modules);
-    const { userId, chatId, parentId } = await seedDelegatedTurn(t);
-    // A mid-turn queued follow-up: _creationTime BEFORE the parent reply's,
-    // but its orderTime sentinel places it logically AFTER. The acked anchor
-    // still wins — the delivery merges into its own turn.
-    await t.run(async (ctx) => {
-      await ctx.db.insert("messages", {
-        chatId,
-        userId,
-        role: "user" as const,
-        status: "complete" as const,
-        text: "Follow-up mis en file",
-        orderTime: 8.64e15, // QUEUED_ORDER_SENTINEL (still parked)
-        updatedAt: 1500,
-      });
-    });
-    const created = await t.mutation(internal.stream.startAssistant, {
-      chatId,
-      runId: ANNOUNCE_RUN,
-    });
-    expect(created).toBe(parentId);
   });
 
   test("NO merge into an error/aborted parent (never repaint a failure)", async () => {
@@ -364,9 +270,12 @@ describe("announce merge (one bubble per delegated turn)", () => {
     expect(created).not.toBe(parentId);
   });
 
-  test("ingest RETRY of the announce start is idempotent (same message, one live row)", async () => {
+  test("ingest RETRY of a resumed merge's start is idempotent (same message, one live row)", async () => {
     const t = convexTest(schema, modules);
-    const { chatId, parentId } = await seedDelegatedTurn(t);
+    const { chatId, parentId } = await seedLegacyMerge(t, {
+      status: "error",
+      text: "La tâche est lancée.\n\n",
+    });
     const first = await t.mutation(internal.stream.startAssistant, {
       chatId,
       runId: ANNOUNCE_RUN,
@@ -392,16 +301,9 @@ describe("announce merge (one bubble per delegated turn)", () => {
 
   test("terminal REBROADCAST of a merged announce never duplicates the result", async () => {
     const t = convexTest(schema, modules);
-    const { chatId, parentId } = await seedDelegatedTurn(t);
-    // First delivery: merge completes.
-    await t.mutation(internal.stream.startAssistant, {
-      chatId,
-      runId: ANNOUNCE_RUN,
-    });
-    await t.mutation(internal.stream.finalize, {
-      messageId: parentId,
+    const { chatId, parentId } = await seedLegacyMerge(t, {
       status: "complete",
-      text: "Document créé.",
+      text: "La tâche est lancée.\n\nDocument créé.",
     });
     const settledText = (await t.run((ctx) => ctx.db.get(parentId)))!.text;
     // Bridge restarts, loses its in-memory dedupe, replays the announce run.
@@ -425,9 +327,12 @@ describe("announce merge (one bubble per delegated turn)", () => {
     expect(assts).toHaveLength(1);
   });
 
-  test("reopen publishes the seeded prefix as an SSE replace chunk", async () => {
+  test("a resumed merge publishes the seeded prefix as an SSE replace chunk", async () => {
     const t = convexTest(schema, modules);
-    const { chatId, parentId } = await seedDelegatedTurn(t);
+    const { chatId, parentId } = await seedLegacyMerge(t, {
+      status: "error",
+      text: "La tâche est lancée.\n\nRésultat par",
+    });
     await t.mutation(internal.stream.startAssistant, {
       chatId,
       runId: ANNOUNCE_RUN,
@@ -451,12 +356,11 @@ describe("announce merge (one bubble per delegated turn)", () => {
     expect(row?.chunkSeq).toBe((chunks[0]?.seq ?? 0) + 1);
   });
 
-  test("replayed parts on a settled parent dedupe (no visible duplicates)", async () => {
+  test("replayed parts on a settled merged parent dedupe (no visible duplicates)", async () => {
     const t = convexTest(schema, modules);
-    const { chatId, parentId } = await seedDelegatedTurn(t);
-    await t.mutation(internal.stream.startAssistant, {
-      chatId,
-      runId: ANNOUNCE_RUN,
+    const { chatId, parentId } = await seedLegacyMerge(t, {
+      status: "complete",
+      text: "La tâche est lancée.\n\nDocument créé.",
     });
     const storageId = await t.run(async (ctx) =>
       ctx.storage.store(new Blob(["docx-bytes"])),
@@ -468,15 +372,10 @@ describe("announce merge (one bubble per delegated turn)", () => {
       mimeType:
         "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
     };
-    await t.mutation(internal.stream.addPart, {
-      messageId: parentId,
-      part: mediaPart,
-    });
-    await t.mutation(internal.stream.finalize, {
-      messageId: parentId,
-      status: "complete",
-      text: "Document créé.",
-    });
+    // The file the merge attached, stamped with its delivery.
+    await t.run((ctx) =>
+      ctx.db.insert("messageParts", { messageId: parentId, order: 0, announceRun: ANNOUNCE_RUN, part: mediaPart }),
+    );
     // Rebroadcast: the replayed run re-registers (arming the replay window),
     // then RE-UPLOADS the bytes (new storageId, same file) — the dedup must be
     // storage-independent or every replay stacks a visible duplicate.
@@ -507,29 +406,17 @@ describe("announce merge (one bubble per delegated turn)", () => {
     expect(parts.some((p) => p.part.kind === "tool")).toBe(true); // late part kept
   });
 
-  test("SEQUENTIAL merges accumulate; replaying an OLDER announce never re-appends", async () => {
+  test("replaying an OLDER announce of sequential merges never re-appends", async () => {
     const t = convexTest(schema, modules);
-    const { chatId, parentId } = await seedDelegatedTurn(t);
     const RUN_A = ANNOUNCE_RUN;
     const RUN_B = `announce:v1:${CHILD_KEY}:aaaaaaaa-bbbb-cccc-dddd-eeeeffff0000`;
-    // Merge A.
-    await t.mutation(internal.stream.startAssistant, { chatId, runId: RUN_A });
-    await t.mutation(internal.stream.finalize, {
-      messageId: parentId,
+    // 0.96.0 merged A then B: B rotated the runId, both recorded.
+    const { chatId, parentId } = await seedLegacyMerge(t, {
       status: "complete",
-      text: "Résultat A.",
-    });
-    // Merge B (parent settled again, still last message).
-    await t.mutation(internal.stream.startAssistant, { chatId, runId: RUN_B });
-    await t.mutation(internal.stream.finalize, {
-      messageId: parentId,
-      status: "complete",
-      text: "Résultat B.",
+      text: "La tâche est lancée.\n\nRésultat A.\n\nRésultat B.",
+      runs: [RUN_A, RUN_B],
     });
     const settled = (await t.run((ctx) => ctx.db.get(parentId)))!;
-    expect(settled.text).toBe(
-      "La tâche est lancée.\n\nRésultat A.\n\nRésultat B.",
-    );
     // Replay A after B rotated runId: must NOT reopen nor re-append.
     const again = await t.mutation(internal.stream.startAssistant, {
       chatId,
@@ -559,21 +446,11 @@ describe("announce merge (one bubble per delegated turn)", () => {
 
   test("a rediffused announce RESUMES a merge the watchdog settled as error — original prefix, no duplicated partial", async () => {
     const t = convexTest(schema, modules);
-    const { chatId, parentId } = await seedDelegatedTurn(t);
-    // First delivery: reopen, a PARTIAL streams, then the bridge dies — the
-    // watchdog settles the parent as error (text is now `original + partial`).
-    await t.mutation(internal.stream.startAssistant, {
-      chatId,
-      runId: ANNOUNCE_RUN,
-    });
-    await t.mutation(internal.stream.appendDelta, {
-      messageId: parentId,
-      text: "Résultat par",
-    });
-    await t.mutation(internal.stream.finalize, {
-      messageId: parentId,
+    // The first delivery reopened, streamed a PARTIAL, then the bridge died — the
+    // watchdog settled the parent as error (text `original + partial`, prefix parked).
+    const { chatId, parentId } = await seedLegacyMerge(t, {
       status: "error",
-      error: "bridge lost",
+      text: "La tâche est lancée.\n\nRésultat par",
     });
     // Rebroadcast after restart: the SAME announce must reopen and deliver
     // the FULL result behind the ORIGINAL prefix (never `+ partial +` too).
@@ -597,14 +474,9 @@ describe("announce merge (one bubble per delegated turn)", () => {
 
   test("a rebroadcast after a user ABORT stays a silent sink (never reopens)", async () => {
     const t = convexTest(schema, modules);
-    const { chatId, parentId } = await seedDelegatedTurn(t);
-    await t.mutation(internal.stream.startAssistant, {
-      chatId,
-      runId: ANNOUNCE_RUN,
-    });
-    await t.mutation(internal.stream.finalize, {
-      messageId: parentId,
+    const { chatId, parentId } = await seedLegacyMerge(t, {
       status: "aborted",
+      text: "La tâche est lancée.\n\n",
     });
     const again = await t.mutation(internal.stream.startAssistant, {
       chatId,
@@ -649,13 +521,16 @@ describe("announce merge (one bubble per delegated turn)", () => {
     expect(parts.filter((p) => p.part.kind === "media")).toHaveLength(2);
   });
 
-  test("a LATE delta/finalize from the PREVIOUS generation drops after the reopen", async () => {
+  test("a LATE delta/finalize from the PREVIOUS generation drops after a resume", async () => {
     const t = convexTest(schema, modules);
-    const { chatId, parentId } = await seedDelegatedTurn(t);
+    const { chatId, parentId } = await seedLegacyMerge(t, {
+      status: "error",
+      text: "La tâche est lancée.\n\n",
+    });
     await t.mutation(internal.stream.startAssistant, {
       chatId,
       runId: ANNOUNCE_RUN,
-    }); // reopened — owned by the announce run now
+    }); // resumed — owned by the announce run
     // A retried write from the ORIGINAL parent run (generation mismatch).
     await t.mutation(internal.stream.appendDelta, {
       messageId: parentId,
@@ -694,9 +569,12 @@ describe("announce merge (one bubble per delegated turn)", () => {
     expect(settled.text).toBe("La tâche est lancée.\n\nRésultat réel.");
   });
 
-  test("announce run that FAILS still keeps the parent's own reply", async () => {
+  test("a resumed merge that FAILS again still keeps the parent's own reply", async () => {
     const t = convexTest(schema, modules);
-    const { chatId, parentId } = await seedDelegatedTurn(t);
+    const { chatId, parentId } = await seedLegacyMerge(t, {
+      status: "error",
+      text: "La tâche est lancée.\n\n",
+    });
     await t.mutation(internal.stream.startAssistant, {
       chatId,
       runId: ANNOUNCE_RUN,
@@ -715,9 +593,9 @@ describe("announce merge (one bubble per delegated turn)", () => {
   });
 });
 
-// Background-task delivery runs (`<tool>:<taskId>:ok`) reuse the announce
-// merge machinery through the ENGAGEMENT row written when the task started.
-describe("task-delivery merge (async tools)", () => {
+// Background-task delivery runs (`<tool>:<taskId>:ok`) settle the ENGAGEMENT row
+// written when the task started, and open their own bubble.
+describe("task deliveries (async tools)", () => {
   const TASK_ID = "c3e21208-67c2-40ca-b9a4-7368a7109605";
   const DELIVERY_RUN = `image_generate:${TASK_ID}:ok`;
 
@@ -741,18 +619,18 @@ describe("task-delivery merge (async tools)", () => {
     return seeded;
   }
 
-  test("the delivery run MERGES into the requesting turn's bubble + settles the engagement", async () => {
+  test("the delivery run opens its OWN bubble + settles the engagement", async () => {
     const t = convexTest(schema, modules);
     const { chatId, parentId } = await seedEngagement(t);
-    await t.mutation(internal.stream.startAssistant, {
+    const own = await t.mutation(internal.stream.startAssistant, {
       chatId,
       runId: DELIVERY_RUN,
     });
+    expect(own).not.toBe(parentId);
     const parent = await t.run((ctx) => ctx.db.get(parentId));
-    // Reopened for streaming: the delivery lands in the SAME bubble.
-    expect(parent?.status).toBe("streaming");
-    expect(parent?.runId).toBe(DELIVERY_RUN);
-    expect(parent?.announcePrefix).toBe("La tâche est lancée.");
+    // The requesting turn's bubble is left as it was.
+    expect(parent?.status).toBe("complete");
+    expect(parent?.runId).toBe("webchat-parent-run");
     // The engagement row settled (thread indicator off).
     const row = await t.run(async (ctx) =>
       ctx.db
@@ -765,7 +643,7 @@ describe("task-delivery merge (async tools)", () => {
     expect(row?.status).toBe("done");
   });
 
-  test("an :error delivery settles the engagement as error (still merges)", async () => {
+  test("an :error delivery settles the engagement as error", async () => {
     const t = convexTest(schema, modules);
     const { chatId } = await seedEngagement(t);
     await t.mutation(internal.stream.startAssistant, {
@@ -781,31 +659,6 @@ describe("task-delivery merge (async tools)", () => {
         .first(),
     );
     expect(row?.status).toBe("error");
-  });
-
-  test("a child spawned INSIDE the delivery run (bornOfRun, no own anchor) merges via the ENGAGEMENT anchor", async () => {
-    const t = convexTest(schema, modules);
-    const { chatId, parentId } = await seedEngagement(t);
-    // The delivery run stayed invisible (NO_REPLY): the spawned child was
-    // registered WITHOUT an anchor but stamped bornOfRun.
-    await t.run(async (ctx) => {
-      await ctx.db.insert("subAgents", {
-        chatId,
-        childSessionKey: CHILD_KEY,
-        bornOfRun: DELIVERY_RUN,
-        status: "done" as const,
-        createdAt: 2600,
-        updatedAt: 2700,
-      });
-    });
-    await t.mutation(internal.stream.startAssistant, {
-      chatId,
-      runId: ANNOUNCE_RUN,
-    });
-    const parent = await t.run((ctx) => ctx.db.get(parentId));
-    // The announce resolved its anchor THROUGH the engagement row.
-    expect(parent?.status).toBe("streaming");
-    expect(parent?.runId).toBe(ANNOUNCE_RUN);
   });
 
   test("no engagement row -> fail closed (fresh bubble, no crash)", async () => {
@@ -826,77 +679,6 @@ describe("task-delivery merge (async tools)", () => {
   // acked engagement. The chain fallback merges the next link into the last
   // same-tool delivery bubble — and anchors its row at merge time.
   const NEXT_ID = "7d10a2be-0000-4a11-8b22-93c344d55e66";
-
-  test("CHAIN: a next-link delivery without engagement merges into the last same-tool bubble + anchors its row", async () => {
-    const t = convexTest(schema, modules);
-    const { chatId, parentId } = await seedDelegatedTurn(t, {
-      withSubAgentRow: false,
-    });
-    // The chat's last bubble IS link N's delivery (its runId carries the family).
-    await t.run(async (ctx) => {
-      await ctx.db.patch(parentId, { runId: DELIVERY_RUN });
-    });
-    await t.mutation(internal.stream.startAssistant, {
-      chatId,
-      runId: `image_generate:${NEXT_ID}:ok`,
-    });
-    const parent = await t.run((ctx) => ctx.db.get(parentId));
-    expect(parent?.status).toBe("streaming"); // reopened: ONE bubble per chain
-    expect(parent?.runId).toBe(`image_generate:${NEXT_ID}:ok`);
-    const row = await t.run(async (ctx) =>
-      ctx.db
-        .query("subAgents")
-        .withIndex("by_child", (q) =>
-          q.eq("childSessionKey", `task:${NEXT_ID}`),
-        )
-        .first(),
-    );
-    expect(row?.parentMessageId).toBe(parentId);
-    expect(row?.kind).toBe("task");
-  });
-
-  test("CHAIN: recognizes the family in mergedAnnounceRuns too (link N itself was merged)", async () => {
-    const t = convexTest(schema, modules);
-    const { chatId, parentId } = await seedDelegatedTurn(t, {
-      withSubAgentRow: false,
-    });
-    await t.run(async (ctx) => {
-      await ctx.db.patch(parentId, { mergedAnnounceRuns: [DELIVERY_RUN] });
-    });
-    await t.mutation(internal.stream.startAssistant, {
-      chatId,
-      runId: `image_generate:${NEXT_ID}:ok`,
-    });
-    const parent = await t.run((ctx) => ctx.db.get(parentId));
-    expect(parent?.status).toBe("streaming");
-  });
-
-  test("CHAIN: silent middle links — inherits through the newest ANCHORED same-tool row (measured live)", async () => {
-    // The agent NO_REPLYed deliveries 1..N-1 while starting the next task in
-    // each (no startAssistant ever ran, the turn bubble is still the chat's
-    // last message and carries NO delivery family) — only task 1's row,
-    // acked in the user turn, is anchored. Delivery N must land in that
-    // anchor.
-    const t = convexTest(schema, modules);
-    const { chatId, parentId } = await seedEngagement(t); // task 1 anchored, done later
-    await t.mutation(internal.stream.startAssistant, {
-      chatId,
-      runId: `image_generate:${NEXT_ID}:ok`,
-    });
-    const parent = await t.run((ctx) => ctx.db.get(parentId));
-    expect(parent?.status).toBe("streaming"); // merged into the turn bubble
-    expect(parent?.runId).toBe(`image_generate:${NEXT_ID}:ok`);
-    // And link N's row was anchored at merge time.
-    const row = await t.run(async (ctx) =>
-      ctx.db
-        .query("subAgents")
-        .withIndex("by_child", (q) =>
-          q.eq("childSessionKey", `task:${NEXT_ID}`),
-        )
-        .first(),
-    );
-    expect(row?.parentMessageId).toBe(parentId);
-  });
 
   test("CHAIN fail-closed: the conversation moved on (anchor no longer last) -> fresh bubble", async () => {
     const t = convexTest(schema, modules);
@@ -1099,17 +881,11 @@ describe("subAgents.turnActivity", () => {
     // terminal upsert landed AFTER the parent finalized (so the finalizedAt
     // test alone cannot filter it). The parent's own merge history must.
     const t = convexTest(schema, modules);
-    const { userId, chatId, parentId } = await seedDelegatedTurn(t);
-    const asUser = t.withIdentity({ subject: `${userId}|s` });
-    await t.mutation(internal.stream.startAssistant, {
-      chatId,
-      runId: ANNOUNCE_RUN,
-    });
-    await t.mutation(internal.stream.finalize, {
-      messageId: parentId,
+    const { userId, chatId, parentId } = await seedLegacyMerge(t, {
       status: "complete",
-      text: "Résultat livré.",
+      text: "La tâche est lancée.\n\nRésultat livré.",
     });
+    const asUser = t.withIdentity({ subject: `${userId}|s` });
     await t.run(async (ctx) => {
       const parent = (await ctx.db.get(parentId))!;
       const sub = await ctx.db.query("subAgents").first();
@@ -1388,9 +1164,12 @@ describe("subAgents.turnActivity", () => {
     });
   });
 
-  test("a stopped block is never reopened by a late announce", async () => {
+  test("a stopped merged block is never reopened by a late replay", async () => {
     const t = convexTest(schema, modules);
-    const { chatId, parentId } = await seedDelegatedTurn(t);
+    const { chatId, parentId } = await seedLegacyMerge(t, {
+      status: "complete",
+      text: "La tâche est lancée.",
+    });
     await t.run(async (ctx) => {
       await ctx.db.patch(parentId, { interruptedAt: Date.now() });
     });
@@ -1406,15 +1185,12 @@ describe("subAgents.turnActivity", () => {
       chatId,
       runId: ANNOUNCE_RUN,
     });
-    // NOT merely "it did not reopen the parent": refusing the merge used to
-    // fall through to inserting a NEW assistant message, so the report the user
-    // refused simply arrived in the next bubble — the same broken promise one
-    // message lower. Counting is what catches that; an id comparison passes
-    // precisely BECAUSE a new message was created.
+    // Counting is what catches a refused replay falling through to a NEW message;
+    // an id comparison alone would pass precisely BECAUSE one was created.
     expect(await countMessages(), "no new bubble for a refused report").toBe(
       before,
     );
-    expect(landed, "the delivery is sunk into the stopped block").toBe(parentId);
+    expect(landed, "the replay is sunk into the stopped block").toBe(parentId);
     const parent = await t.run(async (ctx) => ctx.db.get(parentId));
     expect(parent?.status, "…which is not dragged back into streaming").toBe(
       "complete",
@@ -1492,49 +1268,6 @@ describe("sub-agent announce CHAIN (bornOfRun = announce run)", () => {
     );
     expect(row?.parentMessageId).toBe(parentId);
     expect(row?.anchorExact).toBe(true);
-  });
-
-  test("the chained child's announce merges into the ROOT bubble (one bubble per pipeline)", async () => {
-    const t = convexTest(schema, modules);
-    const { chatId, parentId } = await seedDelegatedTurn(t);
-    await t.mutation(internal.subAgents.upsertSubAgent, {
-      chatId,
-      childSessionKey: CHAIN_CHILD,
-      bornOfRun: ANNOUNCE_RUN,
-      status: "running",
-    });
-    const merged = await t.mutation(internal.stream.startAssistant, {
-      chatId,
-      runId: CHAIN_ANNOUNCE,
-    });
-    expect(merged).toBe(parentId);
-    const parent = await t.run((ctx) => ctx.db.get(parentId));
-    expect(parent?.status).toBe("streaming");
-    expect(parent?.runId).toBe(CHAIN_ANNOUNCE);
-    // No second bubble.
-    const assistants = await assistantMessages(t, chatId);
-    expect(assistants).toHaveLength(1);
-  });
-
-  test("a LEGACY unanchored row (no birth inheritance) still resolves through the carrier at announce time", async () => {
-    const t = convexTest(schema, modules);
-    const { chatId, parentId } = await seedDelegatedTurn(t);
-    // Row inserted raw (no upsert): bornOfRun present, anchor absent.
-    await t.run(async (ctx) => {
-      await ctx.db.insert("subAgents", {
-        chatId,
-        childSessionKey: CHAIN_CHILD,
-        bornOfRun: ANNOUNCE_RUN,
-        status: "done" as const,
-        createdAt: 2600,
-        updatedAt: 2700,
-      });
-    });
-    const merged = await t.mutation(internal.stream.startAssistant, {
-      chatId,
-      runId: CHAIN_ANNOUNCE,
-    });
-    expect(merged).toBe(parentId);
   });
 
   test("the announce SETTLES a still-running child row (timeout-killed child, no terminal frame)", async () => {
@@ -1769,12 +1502,11 @@ describe("stream.addPart — compaction marker upsert", () => {
 
 // WHAT THE DIAGNOSIS SEES AFTER A MERGE.
 //
-// The merge ROTATES the parent turn's runId to the announce run and never
-// restores it. A diagnosis that reads the run alone therefore stops seeing the
-// user's own turn — the newest bubble in a healthy delegated conversation. This
-// walks the REAL path (startAssistant → finalize → chatStateInternal →
-// assessChat) rather than hand-building a message shaped the way the assertion
-// wants; the rotation is the whole point and only the real path performs it.
+// 0.96.0's merge ROTATED the parent turn's runId to the announce run and never
+// restored it. A diagnosis that reads the run alone therefore stops seeing the
+// user's own turn — the newest bubble in a healthy delegated conversation. Such
+// bubbles stay in the data (no delivery merges since 0.102.0): the cases below
+// build them as 0.96.0 left them (`seedLegacyMerge`) and diagnose them.
 describe("a merged report does not blind the diagnosis", () => {
   const AVAIL: DiagAvailability = {
     known: true,
@@ -1811,22 +1543,16 @@ describe("a merged report does not blind the diagnosis", () => {
 
   test("a merge that FAILS is a lost report, never a failed turn", async () => {
     const t = convexTest(schema, modules);
-    const { chatId } = await seedDelegatedTurn(t);
-    const reopened = await t.mutation(internal.stream.startAssistant, {
-      chatId,
-      runId: ANNOUNCE_RUN,
-    });
-    await t.mutation(internal.stream.finalize, {
-      messageId: reopened as Id<"messages">,
+    const { chatId, parentId } = await seedLegacyMerge(t, {
       status: "error",
-      error: "delivery lost",
+      text: "La tâche est lancée.\n\n",
     });
+    // Settled just now, as the failed finalize stamped it.
+    await t.run((ctx) =>
+      ctx.db.patch(parentId, { error: "delivery lost", finalizedAt: Date.now(), updatedAt: Date.now() }),
+    );
     // The pre-merge reply is still parked on the bubble: the user HAS an
     // answer, so this is not the chat's reply failing.
-    const doc = await t.run(async (ctx) =>
-      ctx.db.get(reopened as Id<"messages">),
-    );
-    expect(doc?.announcePrefix).toBe("La tâche est lancée.");
     const a = await diagnose(t, chatId);
     // The EXACT class, not merely "not dispatch_error": skipping the bubble
     // altogether also clears that bar, while leaving the user's own reply
@@ -1942,13 +1668,12 @@ describe("a failed background-task delivery is not a failed reply", () => {
 
 // A CHAIN OF DELIVERIES IS STILL NOT A TURN.
 //
-// A task delivery that resolves no engagement row gets its OWN bubble. The next
-// same-tool delivery of the chain then merges into THAT bubble — which now
-// carries a reopen history without ever having been a user turn. Inferring
-// "this is a turn" from that history let a pure delivery chain stand in for the
+// Under 0.96.0 a task delivery that resolved no engagement row got its OWN bubble,
+// and the next same-tool delivery of the chain merged into THAT bubble — which then
+// carried a reopen history without ever having been a user turn. Inferring "this is
+// a turn" from that history let a pure delivery chain stand in for the
 // conversation's reply.
 describe("a standalone delivery chain never stands in for a turn", () => {
-  const T1 = "aaaaaaaa-1111-4a2e-9d55-0f1a2b3c4d5e";
   const T2 = "bbbbbbbb-2222-4a2e-9d55-0f1a2b3c4d5e";
   const AVAIL3: DiagAvailability = {
     known: true,
@@ -1970,45 +1695,22 @@ describe("a standalone delivery chain never stands in for a turn", () => {
         .filter((q) => q.eq(q.field("role"), "assistant"))
         .first();
       await ctx.db.patch(parent!._id, { errorCode: "timeout" });
-      void userId;
-      // The chain's FIRST task row, anchored nowhere: its delivery gets a bubble
-      // of its own rather than merging.
-      await ctx.db.insert("subAgents", {
+      // The chain as 0.96.0 left it: the FIRST delivery got a bubble of its own (no
+      // engagement to merge into), and the SECOND same-tool delivery merged into THAT
+      // bubble — a reopen history on a bubble that was never a turn.
+      await ctx.db.insert("messages", {
         chatId,
-        childSessionKey: `task:${T1}`,
-        kind: "task" as const,
-        taskName: "image_generate",
-        status: "running" as const,
-        createdAt: 1500,
-        updatedAt: 2500,
+        userId,
+        role: "assistant" as const,
+        status: "complete" as const,
+        text: "Image 1.\n\nImage 2.",
+        runId: `image_generate:${T2}:ok`,
+        mergedAnnounceRuns: [`image_generate:${T2}:ok`],
+        mergedIntoTurn: false,
+        finalizedAt: 4000,
+        updatedAt: 4000,
       });
     });
-    const first = await t.mutation(internal.stream.startAssistant, {
-      chatId,
-      runId: `image_generate:${T1}:ok`,
-    });
-    await t.mutation(internal.stream.finalize, {
-      messageId: first as Id<"messages">,
-      status: "complete",
-      text: "Image 1.",
-    });
-    // The chain's SECOND delivery merges into that standalone bubble.
-    const second = await t.mutation(internal.stream.startAssistant, {
-      chatId,
-      runId: `image_generate:${T2}:ok`,
-    });
-    await t.mutation(internal.stream.finalize, {
-      messageId: second as Id<"messages">,
-      status: "complete",
-      text: "Image 2.",
-    });
-    const merged = await t.run(async (ctx) =>
-      ctx.db.get(second as Id<"messages">),
-    );
-    // The precondition the defect needs: a reopen history on a bubble that was
-    // never a turn. If this stops holding, the test proves nothing.
-    expect((merged?.mergedAnnounceRuns ?? []).length).toBeGreaterThan(0);
-    expect(merged?.mergedIntoTurn).toBe(false);
 
     const state = await t.query(internal.messages.chatStateInternal, {
       chatId,
@@ -2024,21 +1726,26 @@ describe("a standalone delivery chain never stands in for a turn", () => {
 
 // A BUBBLE THAT PREDATES THE STAMP MUST NOT BE BRANDED BY IT.
 describe("a turn merged before the stamp existed keeps its identity", () => {
-  test("re-merging it does not durably record it as a delivery", async () => {
+  test("resuming a merge it already carried does not durably record it as a delivery", async () => {
     const t = convexTest(schema, modules);
     const { chatId, parentId } = await seedDelegatedTurn(t);
-    // Exactly what production holds today: a REAL turn already merged once —
-    // rotated runId, reopen history, and no stamp because it did not exist yet.
+    // Exactly what production holds: a REAL turn merged before the stamp existed —
+    // rotated runId, reopen history, no stamp — whose last merge (ANNOUNCE_RUN) died
+    // in error, its prefix parked.
     await t.run(async (ctx) => {
       await ctx.db.patch(parentId, {
-        runId: "announce:v1:agent:old:subagent:c0:r0",
-        mergedAnnounceRuns: ["announce:v1:agent:old:subagent:c0:r0"],
+        status: "error" as const,
+        text: "La tâche est lancée.\n\n",
+        runId: ANNOUNCE_RUN,
+        announcePrefix: "La tâche est lancée.",
+        mergedAnnounceRuns: ["announce:v1:agent:old:subagent:c0:r0", ANNOUNCE_RUN],
       });
     });
     const reopened = await t.mutation(internal.stream.startAssistant, {
       chatId,
       runId: ANNOUNCE_RUN,
     });
+    expect(reopened).toBe(parentId);
     await t.mutation(internal.stream.finalize, {
       messageId: reopened as Id<"messages">,
       status: "complete",
@@ -2071,19 +1778,19 @@ describe("a reopened bubble does not keep the previous generation's verdict", ()
   // an older bridge, Hermes, a Stop settled directly, a cause refused at the
   // ingest. The diagnostic plane would then attribute the old run's ending to the
   // new one, durably, long after the traces that could contradict it expired.
-  test("the old cause is cleared on reopen, not inherited by the merge", async () => {
+  test("the old cause is cleared on a resume, not inherited by the new generation", async () => {
     const t = convexTest(schema, modules);
-    const { chatId, parentId } = await seedDelegatedTurn(t);
-
-    // Generation 1 ended on a named deadline. Stamped directly: the seed hands us
-    // an already-terminal parent, so a finalize here is the idempotent no-op — and
-    // that the finalize WRITES the cause is proven at the ingest boundary
-    // (bridgeIngest.test.ts). What is under test here is the generation boundary.
+    // Generation 1 (the merge, 0.96.0) ended in error on a named deadline. Stamped
+    // directly — what is under test here is the generation boundary.
+    const { chatId, parentId } = await seedLegacyMerge(t, {
+      status: "error",
+      text: "La tâche est lancée.\n\n",
+    });
     await t.run((ctx) =>
       ctx.db.patch(parentId, { finalizeCause: "lifecycle_finishing_timeout" }),
     );
 
-    // The announce reopens the SAME bubble…
+    // The replayed announce resumes the SAME bubble…
     const reopened = await t.mutation(internal.stream.startAssistant, {
       chatId,
       runId: ANNOUNCE_RUN,
@@ -2099,7 +1806,7 @@ describe("a reopened bubble does not keep the previous generation's verdict", ()
     // row, and the first one's ending is what a triage reading it a day later
     // needs. Attributed to the run that earned it.
     expect(afterReopen?.priorFinalizeCauses).toEqual([
-      { runId: "webchat-parent-run", cause: "lifecycle_finishing_timeout" },
+      { runId: ANNOUNCE_RUN, cause: "lifecycle_finishing_timeout" },
     ]);
 
     // …and generation 2 ends WITHOUT a cause (an older bridge, say).

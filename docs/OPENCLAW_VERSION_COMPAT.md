@@ -44,10 +44,10 @@ The validation runs recorded below predate the floor and are kept as history.
 
 On 2026.6.5 a long message-tool reply arrives as a bare `stream:"item"` frame (no
 inline args/result, unlike the 2026.5.19 args path), so the visible text lives only
-in the session transcript; the bridge recovers it with a one-shot session-history
-read (`bridge/src/providers/openclaw/history-recovery.ts`) during the existing
-ack/empty-final grace. This is the kind of per-version handling the design
-conclusion below refers to — added only where a frame shape actually differs.
+in the session transcript. Since 0.102.0 every OpenClaw conversation is drawn from that
+transcript (`chat.history` read by identity, `bridge/src/providers/openclaw/transcript-shadow.ts`),
+so the reply's row carries it like any other. This is the kind of per-version handling
+the design conclusion below refers to — added only where a frame shape actually differs.
 
 ## Design conclusion: the harness is already version-aware WITHOUT per-version logic
 - **Wrapper**: `local-openclaw/up.sh` + the compose ALWAYS bind-mount the reorder

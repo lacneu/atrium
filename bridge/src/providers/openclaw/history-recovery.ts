@@ -1,13 +1,7 @@
-// History recovery for gateway-delivered replies (the webchat "sink").
-//
-// On 2026.6.5 the agent can deliver its real answer through the gateway
-// message-tool: the gateway executes it itself ({deliveryStatus:"sent",
-// channel:"webchat", target:"current-run", sourceReplySink:"internal-ui"})
-// and the run only streams a private ack ("Envoyé dans le webchat."). The
-// delivered text exists NOWHERE in the run frames — only in the session
-// transcript, which `sessions.get {key}` returns. This module extracts those
-// deliveries from the transcript payload; the session loop feeds the result
-// back into the normalizer (recoverVisibleText) before the ack-grace expires.
+// Positional readers of a `sessions.get` transcript payload, for the `/lossless`
+// maintenance route only (server.ts): it sends one command into a fresh, single-use
+// session and reads the reply back. No conversation turn reads the transcript this way —
+// a conversation's rows are read by identity (`chat.history`, transcript-shadow.ts).
 
 type Json = unknown;
 
@@ -17,37 +11,6 @@ function isObject(v: Json): v is Record<string, Json> {
 
 function isString(v: Json): v is string {
   return typeof v === "string";
-}
-
-// Channels/targets the gateway uses for "this very conversation". Anything
-// else (telegram, whatsapp, an explicit peer id…) is a REAL external delivery
-// and must never be folded back into the webchat answer.
-const CURRENT_CHANNELS = new Set(["atrium", "webchat", "chat", "current"]);
-const CURRENT_TARGETS = new Set(["current-run", "current", "current-session"]);
-
-/** Parse one message-tool RESULT json (string) → delivered text, or null. */
-function deliveredTextFromResult(raw: string): string | null {
-  let parsed: Json;
-  try {
-    parsed = JSON.parse(raw);
-  } catch {
-    return null;
-  }
-  if (!isObject(parsed)) return null;
-  if (parsed.deliveryStatus !== "sent") return null;
-  const channel = parsed.channel;
-  if (isString(channel) && !CURRENT_CHANNELS.has(channel.toLowerCase())) {
-    return null;
-  }
-  const target = parsed.target;
-  if (isString(target) && !CURRENT_TARGETS.has(target.toLowerCase())) {
-    return null;
-  }
-  const reply = parsed.sourceReply;
-  if (isObject(reply) && isString(reply.text) && reply.text.trim()) {
-    return reply.text;
-  }
-  return null;
 }
 
 /** Every string carried by a transcript entry's `content` (string or parts). */
@@ -67,77 +30,9 @@ function contentStrings(content: Json): string[] {
 }
 
 /**
- * Extract the text(s) the CURRENT turn delivered via the gateway message-tool
- * from a `sessions.get` payload. Scans backwards to the latest `user` entry
- * (the turn boundary), collects message-tool results addressed to the current
- * conversation, and returns them in chronological order joined by blank lines.
- * Empty string when nothing recoverable is found (caller degrades to the ack).
- */
-export function extractMessageToolReplies(payload: Json): string {
-  const messages = isObject(payload) && Array.isArray(payload.messages)
-    ? payload.messages
-    : [];
-  const collected: string[] = [];
-  // The SAME two rules as the assistant scan below, for the same reasons (codex pass 10, both
-  // reproduced): this reader is preferred over that one by both callers, so a delivery it
-  // returns finalizes the turn on its own — and on a socket_drop there is no two-poll stability
-  // to catch it.
-  let answered = false;
-  for (let i = messages.length - 1; i >= 0; i--) {
-    const entry = messages[i];
-    if (!isObject(entry)) continue;
-    const role = entry.role;
-    if (role === "user") {
-      // The resume prompt continues this turn, but only once the resumed run has ANSWERED:
-      // crossed earlier, a delivery made before the restart is returned while the relaunched
-      // run is still writing, finalizing the turn on a partial answer.
-      if (isRestartRecoveryResumeEntry(entry)) {
-        if (!answered) return "";
-        continue;
-      }
-      // An inter-session entry ends the turn, and what was collected above it came AFTER it —
-      // i.e. it belongs to whatever that entry started. Returning it would deliver another
-      // turn's message-tool text as this turn's answer (isInterSessionEntry).
-      if (isInterSessionEntry(entry)) return "";
-      break;
-    }
-    if (role === "assistant") {
-      // Same terminal proof as the assistant scan: `error` is a failed attempt, `toolUse` a
-      // run still working, and an absent or unknown stopReason proves nothing.
-      if (
-        entry.stopReason === "stop" ||
-        entry.stopReason === "length" ||
-        entry.stopReason === "end_turn"
-      ) {
-        answered = true;
-      }
-      continue;
-    }
-    if (role !== "toolResult") continue;
-    const toolName = entry.toolName ?? entry.name;
-    if (toolName !== "message") continue;
-    for (const s of contentStrings(entry.content)) {
-      const text = deliveredTextFromResult(s);
-      if (text) {
-        collected.push(text);
-        break; // one delivery per toolResult entry
-      }
-    }
-  }
-  collected.reverse();
-  return collected.join("\n\n");
-}
-
-/**
- * Extract the assistant reply of the CURRENT turn from a `sessions.get`
- * payload — the transcript-recovery half of gateway restart-recovery. When the
- * gateway is SIGTERMed mid-turn it marks the orphaned main session for restart
- * recovery, resumes the run after boot, and the finished answer lands ONLY in
- * the session transcript (the bridge socket died with the old gateway — live
- * CSV evidence 2026-07-04: a 429s resumed run delivered to the Control UI
- * while Atrium showed nothing). Scans backwards to the latest `user` entry
- * (the turn boundary) collecting `assistant` texts; empty string while the
- * resumed run hasn't answered yet (the caller keeps polling).
+ * The assistant reply of the CURRENT turn of a `sessions.get` payload: scans backwards
+ * to the latest `user` entry (the turn boundary) collecting `assistant` texts; empty
+ * string while the run hasn't answered yet (the caller keeps polling).
  */
 export function extractLatestAssistantReply(payload: Json): string {
   const messages = isObject(payload) && Array.isArray(payload.messages)
@@ -259,107 +154,10 @@ function isInterSessionEntry(entry: Json): boolean {
   return isObject(provenance) && provenance.kind === "inter_session";
 }
 
-/** Text of the LAST `user` entry in a `sessions.get` payload — the turn-boundary
- *  anchor the orphan recovery validates against (a STALE transcript served
- *  mid-reboot may predate the current turn; matching the anchor prevents
- *  finalizing the PREVIOUS turn's reply as the current one). The gateway's
- *  restart-recovery resume prompt is skipped: it resumes THIS turn and carries
- *  none of its text (isRestartRecoveryResumeEntry). */
-export function lastUserEntryText(payload: Json): string {
-  const messages = isObject(payload) && Array.isArray(payload.messages)
-    ? payload.messages
-    : [];
-  for (let i = messages.length - 1; i >= 0; i--) {
-    const entry = messages[i];
-    if (!isObject(entry) || entry.role !== "user") continue;
-    if (isRestartRecoveryResumeEntry(entry)) continue;
-    return contentStrings(entry.content).join("");
-  }
-  return "";
-}
-
-/** Number of transcript entries in a `sessions.get` payload (0 when malformed).
- *  The orphan recovery's STRUCTURAL baseline for anchor-less turns: a resumed
- *  run always GROWS the transcript, a stale one never does. */
+/** Number of transcript entries in a `sessions.get` payload (0 when malformed): the
+ *  baseline `/lossless` compares against to see its reply land. */
 export function transcriptEntryCount(payload: Json): number {
   return isObject(payload) && Array.isArray(payload.messages)
     ? payload.messages.length
     : 0;
-}
-
-/**
- * The text a GIVEN RUN delivered to this conversation through the message tool, read
- * from the gateway's own delivery mirrors — or "" when it delivered none.
- *
- * WHY A THIRD READER. The two above find a turn by walking back to its `user`
- * boundary, and they must stop at an inter-session entry (see isInterSessionEntry).
- * A gateway DELIVERY run starts at exactly such an entry — the requester-settle wake
- * is `role:"user"` with `provenance.kind:"inter_session"`, `sourceTool:
- * "subagent_settle"` — so for that lane they can never return anything. And the
- * message tool need not leave a top-level `toolResult` named `message`: called from
- * code mode it is NESTED inside `exec` (transcript entry
- * `openclaw.nested-tool.v1`), so `extractMessageToolReplies` would miss it even
- * without the boundary. Measured on the 2026.9.6 bench (2026-09-26): a private
- * settle wake ("Your final reply stays internal… send it through a messaging tool…
- * Reply ONLY: NO_REPLY") → `exec` → nested `message send final:true` → `NO_REPLY`.
- * The answer existed only as the mirror below, and the merged bubble was named
- * `empty_response`.
- *
- * THE MIRROR. Every internal-ui delivery is persisted as an assistant entry
- * `{provider:"openclaw", model:"delivery-mirror", stopReason:"stop"}` stamped with
- * the delivering run (upstream v2026.9.6 internal-source-reply-persistence.ts:132-196
- * passes `runId`; session-transcript-runtime.ts:541-570 builds the entry), and
- * `sessions.get` returns it with its fields and `__openclaw` intact
- * (session-transcript-entry-message.ts:7-23, 46-60).
- *
- * OWNERSHIP IS EXACT, NOT POSITIONAL — which is what lets this reader ignore the
- * boundary the other two must respect. An entry is taken only when BOTH the
- * gateway-stamped `__openclaw.runId` equals one of the turn's own run ids AND its
- * idempotency key is that run's message-tool or internal-source-reply key — the very
- * test upstream applies to recognise a run's own mirror
- * (subagent-registry-lifecycle-delivery.ts:179-186, 222; key built at
- * message-tool-idempotency.ts:65). Text only: a media-only delivery carries no text
- * block and is not recovered here.
- */
-export function extractRunDeliveryMirrors(
-  payload: Json,
-  runIds: readonly string[],
-): string {
-  if (runIds.length === 0) return "";
-  const messages = isObject(payload) && Array.isArray(payload.messages)
-    ? payload.messages
-    : [];
-  const owners = new Set(runIds);
-  const collected: string[] = [];
-  for (const entry of messages) {
-    if (!isObject(entry)) continue;
-    if (
-      entry.role !== "assistant" ||
-      entry.provider !== "openclaw" ||
-      entry.model !== "delivery-mirror" ||
-      entry.stopReason === "error"
-    ) {
-      continue;
-    }
-    const meta = isObject(entry.__openclaw) ? entry.__openclaw : {};
-    const runId = meta.runId;
-    if (!isString(runId) || !owners.has(runId)) continue;
-    const key = isString(entry.idempotencyKey)
-      ? entry.idempotencyKey
-      : isString(meta.idempotencyKey)
-        ? meta.idempotencyKey
-        : null;
-    if (
-      key === null ||
-      !(
-        key.startsWith(`${runId}:message-tool:`) ||
-        key.startsWith(`${runId}:internal-source-reply:`)
-      )
-    ) {
-      continue;
-    }
-    const text = contentStrings(entry.content).join("").trim();
-    if (text) collected.push(text);
-  }
-  return collected.join("\n\n");
 }

@@ -331,6 +331,19 @@ class FakeWriter implements ConvexWriter {
   }
 }
 
+// The turn's bubble is born from its run's first content: what the run reports before
+// that is held by the sink and written once the bubble exists.
+const contentFrame = (text = "Réponse") => ({
+  type: "event",
+  event: "chat",
+  payload: {
+    sessionKey: SESSION_KEY,
+    runId: RUN_ID,
+    state: "delta",
+    message: { role: "assistant", content: [{ type: "text", text }] },
+  },
+});
+
 describe("RunManager provenance pipeline", () => {
   it("PRE-TURN race: frames stashed while inactive flush at beginTurn (same runId)", async () => {
     const writer = new FakeWriter();
@@ -340,6 +353,7 @@ describe("RunManager provenance pipeline", () => {
     await rm.feed(provenanceFrame(DOCUMENTS_REPORT), 1000.1);
     expect(writer.provenanceParts()).toHaveLength(0); // nothing yet
     await rm.beginTurn(1000.2, RUN_ID);
+    await rm.feed(contentFrame(), 1000.3);
     const parts = writer.provenanceParts();
     expect(parts.map((p) => p.group)).toEqual(["memory", "documents"]);
     // startAssistant precedes the parts (the message must exist first).
@@ -355,6 +369,7 @@ describe("RunManager provenance pipeline", () => {
     await rm.feed(provenanceFrame(DOCUMENTS_REPORT), 1000.1);
     await rm.feed(provenanceFrame(DOCUMENTS_REPORT), 1000.15); // exact duplicate
     await rm.beginTurn(1000.2, RUN_ID);
+    await rm.feed(contentFrame(), 1000.3);
     const parts = writer.provenanceParts();
     // Each report stored ONCE — not doubled (the "every source shown twice" bug).
     expect(parts.map((p) => p.group)).toEqual(["memory", "documents"]);
@@ -373,6 +388,7 @@ describe("RunManager provenance pipeline", () => {
     await rm.feed(provenanceFrame(pgvector), 1000);
     await rm.feed(provenanceFrame(lightrag), 1000.1);
     await rm.beginTurn(1000.2, RUN_ID);
+    await rm.feed(contentFrame(), 1000.3);
     const parts = writer.provenanceParts();
     expect(parts).toHaveLength(2); // both kept
     expect(parts.every((p) => p.group === "documents")).toBe(true);
@@ -386,6 +402,7 @@ describe("RunManager provenance pipeline", () => {
       1000,
     );
     await rm.beginTurn(1000.2, RUN_ID);
+    await rm.feed(contentFrame(), 1000.3);
     expect(writer.provenanceParts()).toHaveLength(0);
   });
 
@@ -399,6 +416,7 @@ describe("RunManager provenance pipeline", () => {
     );
     await rm.feed(provenanceFrame(MEMORY_REPORT), 1000.1); // same content, RUN_ID
     await rm.beginTurn(1000.2, RUN_ID);
+    await rm.feed(contentFrame(), 1000.3);
     // Regression guard: a GLOBAL (non-run-scoped) dedup drops this run's report as a
     // "duplicate" of the foreign one → beginTurn(RUN_ID) then flushes NOTHING and the
     // run loses all its sources despite a valid frame.
@@ -409,6 +427,7 @@ describe("RunManager provenance pipeline", () => {
     const writer = new FakeWriter();
     const rm = new RunManager("chat_p", SESSION_KEY, writer);
     await rm.beginTurn(1000, RUN_ID);
+    await rm.feed(contentFrame(), 1000.1);
     await rm.feed(provenanceFrame(DOCUMENTS_REPORT), 1000.5);
     const parts = writer.provenanceParts();
     expect(parts).toHaveLength(1);
@@ -423,6 +442,7 @@ describe("RunManager provenance pipeline", () => {
     const writer = new FakeWriter();
     const rm = new RunManager("chat_p", SESSION_KEY, writer);
     await rm.beginTurn(1000, RUN_ID);
+    await rm.feed(contentFrame(), 999.5);
     for (let i = 0; i < MAX_PROVENANCE_PARTS_PER_TURN + 5; i++) {
       await rm.feed(provenanceFrame(MEMORY_REPORT), 1000 + i);
     }
@@ -433,6 +453,7 @@ describe("RunManager provenance pipeline", () => {
     const writer = new FakeWriter();
     const rm = new RunManager("chat_p", SESSION_KEY, writer);
     await rm.beginTurn(1000, RUN_ID);
+    await rm.feed(contentFrame(), 1000.1);
     await rm.feed(provenanceFrame({ v: 99, garbage: true }), 1000.5);
     expect(writer.provenanceParts()).toHaveLength(0);
   });

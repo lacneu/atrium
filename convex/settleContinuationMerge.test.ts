@@ -1,4 +1,11 @@
-// A YIELDED TURN'S CONTINUATION LANDS IN THAT TURN'S BUBBLE.
+// A YIELDED TURN'S CONTINUATION, AND THE REPLAY OF ONE 0.96.0 MERGED.
+//
+// Since 0.102.0 a continuation opens its OWN bubble, grouped with its turn by the
+// display (displayGroups.regroup, `chainRoot`) — no continuation merges into the
+// yielded turn's bubble any more. What remains of 0.96.0's merge is its REPLAY: a
+// bubble a continuation was merged into is still in the data, and a retry wake or a
+// rebroadcast of that batch must stay idempotent on it (`seedLegacySettleMerge`). The
+// history below is 0.96.0's.
 //
 // Production, 2026-09-26 (chat mh74rj7t…, OpenClaw 2026.9.6, agent "meta"): the
 // turn ran exec ×5, `sessions_spawn`, `sessions_yield` and said nothing — bubble A.
@@ -14,7 +21,7 @@
 // The join is the settled children's RUN ids (the only child identity the wake
 // names), recorded on each subAgents row from its spawn result.
 
-import { convexTest, type TestConvex } from "convex-test";
+import { convexTest } from "convex-test";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { api, internal } from "./_generated/api";
 import schema from "./schema";
@@ -170,127 +177,6 @@ async function childSpawnedInContinuation(
   });
 }
 
-describe("requester-settle continuation merges into the yielded turn", () => {
-  test("the production id reopens bubble A — one bubble, the conclusion in it", async () => {
-    const t = convexTest(schema, modules);
-    const { chatId, parentId } = await seedYieldedTurn(t);
-    const before = (await assistants(t, chatId)).length;
-
-    const opened = await t.mutation(internal.stream.startAssistant, {
-      chatId,
-      runId: PROD_SETTLE,
-    });
-    expect(opened).toBe(parentId);
-    const reopened = await t.run((ctx) => ctx.db.get(parentId));
-    expect(reopened?.status).toBe("streaming");
-    expect(reopened?.runId).toBe(PROD_SETTLE);
-    // The turn said nothing: its continuation begins at the very start, and it
-    // answers for the child its settle run named.
-    expect(reopened?.continuations).toEqual([{ at: 0, childRunIds: [CHILD_RUN] }]);
-
-    await t.mutation(internal.stream.appendDelta, {
-      messageId: parentId,
-      text: "C'est fait : l'archive s'appelle désormais memory-2026-09.",
-    });
-    await t.mutation(internal.stream.finalize, {
-      messageId: parentId,
-      status: "complete",
-      text: "C'est fait : l'archive s'appelle désormais memory-2026-09.",
-    });
-
-    const after = await assistants(t, chatId);
-    expect(after).toHaveLength(before); // NO second bubble
-    const settled = await t.run((ctx) => ctx.db.get(parentId));
-    // The bubble that carried the finishing promise now carries the answer: the
-    // empty-state decision (src/chat/assistantEmptyState.ts) reads `hasText` and
-    // stands down — the promise resolves when the merged run settles.
-    expect(settled?.status).toBe("complete");
-    expect(settled?.text).toBe("C'est fait : l'archive s'appelle désormais memory-2026-09.");
-    expect(settled?.mergedAnnounceRuns).toContain(PROD_SETTLE);
-    expect(settled?.announcePrefix).toBeUndefined();
-  });
-
-  test("a multi-child batch, a later yield generation and a retry suffix all join", async () => {
-    const t = convexTest(schema, modules);
-    const { parentId, chatId } = await seedYieldedTurn(t, {
-      parentText: "Je confie les deux tâches.",
-      children: [
-        { key: CHILD_KEY, runId: CHILD_RUN },
-        { key: CHILD_KEY_2, runId: CHILD_RUN_2 },
-      ],
-    });
-    const run = settleRun([CHILD_RUN_2, CHILD_RUN].sort(), ":yield-2:retry-1");
-    const opened = await t.mutation(internal.stream.startAssistant, { chatId, runId: run });
-    expect(opened).toBe(parentId);
-    const doc = await t.run((ctx) => ctx.db.get(parentId));
-    // After the turn's own words and the merge separator.
-    expect(doc?.continuations).toEqual([
-      { at: "Je confie les deux tâches.".length + 2, childRunIds: [CHILD_RUN_2, CHILD_RUN].sort() },
-    ]);
-    expect(doc?.announcePrefix).toBe("Je confie les deux tâches.");
-  });
-
-  test("a continuation that delegates and yields AGAIN gets its own position (codex pass 2, P2)", async () => {
-    const t = convexTest(schema, modules);
-    const { parentId, chatId } = await seedYieldedTurn(t);
-    await t.mutation(internal.stream.startAssistant, { chatId, runId: PROD_SETTLE });
-    await t.mutation(internal.stream.finalize, {
-      messageId: parentId,
-      status: "complete",
-      text: "Première conclusion.",
-    });
-    // The continuation delegated again and yielded again. Its child is written the
-    // way the bridge writes it — the run id learned from the child's own startup,
-    // the correlated anchor from the item sighting — and ITS settle run is a new
-    // requester run, so its generation counter restarts: `yield-1` again.
-    await childSpawnedInContinuation(t, chatId, parentId, PROD_SETTLE);
-    const second = await t.mutation(internal.stream.startAssistant, {
-      chatId,
-      runId: settleRun([CHILD_RUN_2]),
-    });
-    expect(second).toBe(parentId);
-    const doc = await t.run((ctx) => ctx.db.get(parentId));
-    // The first batch keeps its place; the second is recorded where ITS continuation
-    // begins — after the first conclusion — so its child's reply precedes the second
-    // conclusion instead of the text that asked for it.
-    expect(doc?.continuations).toEqual([
-      { at: 0, childRunIds: [CHILD_RUN] },
-      { at: "Première conclusion.".length + 2, childRunIds: [CHILD_RUN_2] },
-    ]);
-    // A per-batch bubble writes no legacy single offset.
-    expect(doc?.continuationAt).toBeUndefined();
-  });
-
-  test("a replay of the SAME batch (retry wake, error resume) keeps its first position", async () => {
-    const t = convexTest(schema, modules);
-    const { parentId, chatId } = await seedYieldedTurn(t);
-    await t.mutation(internal.stream.startAssistant, { chatId, runId: PROD_SETTLE });
-    await t.mutation(internal.stream.finalize, { messageId: parentId, status: "error", text: "Partiel", error: "lost" });
-    // The rebroadcast resumes the errored merge (same run), then a retry wake of the
-    // same batch arrives under its `:retry-1` id.
-    await t.mutation(internal.stream.startAssistant, { chatId, runId: PROD_SETTLE });
-    await t.mutation(internal.stream.finalize, { messageId: parentId, status: "complete", text: "Fin." });
-    await t.mutation(internal.stream.startAssistant, {
-      chatId,
-      runId: settleRun([CHILD_RUN], ":yield-1:retry-1"),
-    });
-    const doc = await t.run((ctx) => ctx.db.get(parentId));
-    expect(doc?.continuations).toEqual([{ at: 0, childRunIds: [CHILD_RUN] }]);
-  });
-
-  test("the list is bounded: a batch past the bound gets no entry, the merge still happens", async () => {
-    const t = convexTest(schema, modules);
-    const { parentId, chatId } = await seedYieldedTurn(t);
-    const full = Array.from({ length: 16 }, (_, i) => ({ at: i, childRunIds: [`old-${i}`] }));
-    await t.run((ctx) => ctx.db.patch(parentId, { continuations: full }));
-    const opened = await t.mutation(internal.stream.startAssistant, { chatId, runId: PROD_SETTLE });
-    expect(opened).toBe(parentId);
-    const doc = await t.run((ctx) => ctx.db.get(parentId));
-    expect(doc?.status).toBe("streaming");
-    expect(doc?.continuations).toEqual(full);
-  });
-});
-
 describe("the merge fails CLOSED to its own bubble whenever the join is not exact", () => {
   async function expectOwnBubble(
     t: T,
@@ -331,8 +217,7 @@ describe("the merge fails CLOSED to its own bubble whenever the join is not exac
     const { chatId, parentId, userId } = await seedYieldedTurn(t, {
       children: [{ key: CHILD_KEY, runId: CHILD_RUN, anchorExact: false }],
     });
-    // A positional anchor is a guess: it only ever joins the conversation's LAST
-    // bubble (settleChainJoin.test.ts covers the join while it still is).
+    // A positional anchor is a guess: it never makes the wake land in that bubble.
     await t.run((ctx) =>
       ctx.db.insert("messages", {
         chatId,
@@ -392,58 +277,6 @@ describe("the merge fails CLOSED to its own bubble whenever the join is not exac
 });
 
 describe("a merged continuation writes in its OWN generation", () => {
-  test("its parts are stamped, so the parent's own yield cannot excuse an empty continuation", async () => {
-    const t = convexTest(schema, modules);
-    const { chatId, parentId } = await seedYieldedTurn(t);
-    await t.mutation(internal.stream.startAssistant, { chatId, runId: PROD_SETTLE });
-    await t.mutation(internal.stream.addPart, {
-      messageId: parentId,
-      expectedRunId: PROD_SETTLE,
-      part: { kind: "tool", name: "exec", phase: "completed", toolCallId: "call-1" },
-    });
-    const parts = await t.run((ctx) =>
-      ctx.db
-        .query("messageParts")
-        .withIndex("by_message", (q) => q.eq("messageId", parentId))
-        .collect(),
-    );
-    expect(parts.find((p) => p.part.kind === "tool" && p.part.name === "exec")?.announceRun).toBe(
-      PROD_SETTLE,
-    );
-    // The continuation was REQUIRED to answer (requireVisibleReply) and brought
-    // nothing: named, not excused by the stale `sessions_yield` of the turn it
-    // continues.
-    await t.mutation(internal.stream.finalize, { messageId: parentId, status: "complete", text: "" });
-    const settled = await t.run((ctx) => ctx.db.get(parentId));
-    expect(settled?.status).toBe("error");
-    expect(settled?.errorCode).toBe("empty_response");
-  });
-
-  test("a continuation whose answer arrived as a SNAPSHOT, then a text-less close, is not named empty", async () => {
-    // Bench 2026-09-26 (chat m971j0qw…): the answer was sent through the message tool and
-    // the run's own final was NO_REPLY, so the bridge recovers the text from the transcript
-    // and writes it as a snapshot; the close that follows carries no text of its own. The
-    // verdict must read the bubble's stored text, not the close's.
-    const t = convexTest(schema, modules);
-    const { chatId, parentId } = await seedYieldedTurn(t);
-    await t.mutation(internal.stream.startAssistant, { chatId, runId: PROD_SETTLE });
-    await t.mutation(internal.stream.addPart, {
-      messageId: parentId,
-      expectedRunId: PROD_SETTLE,
-      part: { kind: "tool", name: "exec", phase: "completed", toolCallId: "call-e" },
-    });
-    await t.mutation(internal.stream.setSnapshot, {
-      messageId: parentId,
-      expectedRunId: PROD_SETTLE,
-      text: "SYNTHESE: L’agent files a terminé.",
-    });
-    await t.mutation(internal.stream.finalize, { messageId: parentId, status: "complete", text: "" });
-    const settled = await t.run((ctx) => ctx.db.get(parentId));
-    expect(settled?.status).toBe("complete");
-    expect(settled?.errorCode).toBeUndefined();
-    expect(settled?.text).toBe("SYNTHESE: L’agent files a terminé.");
-  });
-
   test("a continuation that yields AGAIN (its own, stamped yield) is still a hand-off", async () => {
     const t = convexTest(schema, modules);
     const { chatId, parentId } = await seedYieldedTurn(t);
@@ -464,30 +297,6 @@ describe("a merged continuation writes in its OWN generation", () => {
     expect(settled?.status).toBe("complete");
   });
 
-  test("a continuation's tool anchor is rebased past the text the turn already held", async () => {
-    const t = convexTest(schema, modules);
-    const prefix = "Je délègue le renommage.";
-    const { chatId, parentId } = await seedYieldedTurn(t, { parentText: prefix });
-    await t.mutation(internal.stream.startAssistant, { chatId, runId: PROD_SETTLE });
-    // The sink stamps against the text IT streamed — zero at the continuation's start.
-    await t.mutation(internal.stream.addPart, {
-      messageId: parentId,
-      expectedRunId: PROD_SETTLE,
-      part: { kind: "tool", name: "exec", phase: "start", toolCallId: "call-2", textOffset: 0 },
-    });
-    const part = await t.run(async (ctx) =>
-      (
-        await ctx.db
-          .query("messageParts")
-          .withIndex("by_message", (q) => q.eq("messageId", parentId))
-          .collect()
-      ).find((p) => p.part.kind === "tool" && p.part.toolCallId === "call-2"),
-    );
-    const offset = part?.part.kind === "tool" ? part.part.textOffset : undefined;
-    expect(offset).toBe(prefix.length + 2);
-    const doc = await t.run((ctx) => ctx.db.get(parentId));
-    expect(offset).toBe(doc?.continuations?.[0]?.at);
-  });
 });
 
 describe("the child run id is recorded from the spawn result, once", () => {
@@ -515,9 +324,6 @@ describe("the child run id is recorded from the spawn result, once", () => {
         .first(),
     );
     expect(row?.childRunId).toBe(CHILD_RUN);
-    // …and the join works off it end to end.
-    const opened = await t.mutation(internal.stream.startAssistant, { chatId, runId: PROD_SETTLE });
-    expect(opened).toBe(parentId);
   });
 });
 
@@ -582,7 +388,9 @@ describe("the interruption epoch applies to the children a settle run names", ()
     const { chatId, parentId } = await seedYieldedTurn(t);
     await stopAt(t, chatId, 1000);
     const opened = await t.mutation(internal.stream.startAssistant, { chatId, runId: PROD_SETTLE });
-    expect(opened).toBe(parentId);
+    // Delivered: its own bubble (a continuation never reopens the turn's since 0.102.0).
+    expect(opened).not.toBeNull();
+    expect(opened).not.toBe(parentId);
   });
 
   test("NO named child known and a Stop on record: its own bubble — the work cannot be dated", async () => {
@@ -599,22 +407,6 @@ describe("the interruption epoch applies to the children a settle run names", ()
 });
 
 describe("partial knowledge: the known members anchor the batch (codex pass 3)", () => {
-  test("one member known, one unknown: merges into the known member's bubble", async () => {
-    const t = convexTest(schema, modules);
-    const { chatId, parentId } = await seedYieldedTurn(t, {
-      children: [{ key: CHILD_KEY, runId: CHILD_RUN }, { key: CHILD_KEY_2 }],
-    });
-    const opened = await t.mutation(internal.stream.startAssistant, {
-      chatId,
-      runId: settleRun([CHILD_RUN, CHILD_RUN_2].sort()),
-    });
-    expect(opened).toBe(parentId);
-    const doc = await t.run((ctx) => ctx.db.get(parentId));
-    // The batch is recorded whole: the unknown member's reply, once its row learns its
-    // run id, belongs at this continuation too.
-    expect(doc?.continuations?.[0]?.childRunIds).toEqual([CHILD_RUN, CHILD_RUN_2].sort());
-  });
-
   test("…but the known members must still agree: a split stays its own bubble", async () => {
     const t = convexTest(schema, modules);
     const { chatId, parentId } = await seedYieldedTurn(t, {
@@ -640,44 +432,75 @@ describe("partial knowledge: the known members anchor the batch (codex pass 3)",
 // of the same batch, so `alreadyMerged` (keyed on the run id) never matched it, and the
 // reopen appended a second answer. Every test drives the bridge's own writes — tagged
 // with their run, as the writer tags them — and asserts the TEXT and the STATUS.
-describe("a retry wake of a batch already merged", () => {
+describe("a retry wake of a batch 0.96.0 already merged", () => {
   const RETRY = settleRun([CHILD_RUN], ":yield-1:retry-1");
+  const SECOND = settleRun([CHILD_RUN_2]);
+  const PREFIX = "Je délègue.";
 
-  async function runGeneration(t: T, messageId: Id<"messages">, runId: string, text: string, status: "complete" | "error" = "complete") {
-    await t.mutation(internal.stream.appendDelta, { messageId, text, expectedRunId: runId });
-    await t.mutation(internal.stream.finalize, {
-      messageId,
-      status,
-      text,
-      expectedRunId: runId,
-      ...(status === "error" ? { error: "provider failed" } : {}),
+  /** The yielded turn's bubble as 0.96.0 left it after merging `batches` (the last one
+   *  owning it): the bubble took the last wake's run, recorded every merged run and one
+   *  continuation position per batch, kept the turn's own words parked as the prefix
+   *  while the last merge was not settled complete, and was stamped a turn. */
+  async function seedLegacySettleMerge(
+    t: T,
+    state: {
+      status: "complete" | "error" | "streaming";
+      answers: string[];
+      batches?: Array<{ run: string; childRunIds: string[] }>;
+    },
+  ) {
+    const seeded = await seedYieldedTurn(t, { parentText: PREFIX });
+    const batches = state.batches ?? [{ run: PROD_SETTLE, childRunIds: [CHILD_RUN] }];
+    // A second batch's child was spawned inside the first continuation (its carrier).
+    if (batches.length > 1) await childSpawnedInContinuation(t, seeded.chatId, seeded.parentId, batches[0]!.run);
+    const continuations: Array<{ at: number; childRunIds: string[] }> = [];
+    let text = PREFIX;
+    batches.forEach((b, i) => {
+      continuations.push({ at: text.length + 2, childRunIds: b.childRunIds });
+      text = `${text}\n\n${state.answers[i] ?? ""}`;
     });
+    const last = batches[batches.length - 1]!;
+    const parked = state.status === "complete" ? undefined : text.slice(0, continuations[continuations.length - 1]!.at - 2);
+    await t.run((ctx) =>
+      ctx.db.patch(seeded.parentId, {
+        status: state.status,
+        text,
+        runId: last.run,
+        continuations,
+        mergedAnnounceRuns: batches.map((x) => x.run),
+        mergedIntoTurn: true,
+        ...(parked !== undefined ? { announcePrefix: parked } : {}),
+        ...(state.status === "error" ? { error: "provider failed" } : {}),
+      }),
+    );
+    return seeded;
+  }
+
+  async function runGeneration(t: T, messageId: Id<"messages">, runId: string, text: string) {
+    await t.mutation(internal.stream.appendDelta, { messageId, text, expectedRunId: runId });
+    await t.mutation(internal.stream.finalize, { messageId, status: "complete", text, expectedRunId: runId });
   }
 
   test("after a first wake that ANSWERED: a silent replay — one answer, still complete", async () => {
     const t = convexTest(schema, modules);
-    const { chatId, parentId } = await seedYieldedTurn(t);
-    await t.mutation(internal.stream.startAssistant, { chatId, runId: PROD_SETTLE });
-    await runGeneration(t, parentId, PROD_SETTLE, "Réponse.");
-    const before = (await assistants(t, chatId)).length;
+    const { chatId, parentId } = await seedLegacySettleMerge(t, { status: "complete", answers: ["Réponse."] });
+    const before = await t.run((ctx) => ctx.db.get(parentId));
+    const bubbles = (await assistants(t, chatId)).length;
 
     const opened = await t.mutation(internal.stream.startAssistant, { chatId, runId: RETRY });
     expect(opened).toBe(parentId); // handed back as a sink, never a new bubble
     await runGeneration(t, parentId, RETRY, "Réponse bis.");
 
     const doc = await t.run((ctx) => ctx.db.get(parentId));
-    expect(doc?.text).toBe("Réponse.");
+    expect(doc?.text).toBe(before?.text);
     expect(doc?.status).toBe("complete");
     expect(doc?.runId).toBe(PROD_SETTLE);
-    expect(await assistants(t, chatId)).toHaveLength(before);
+    expect(await assistants(t, chatId)).toHaveLength(bubbles);
   });
 
   test("after a first wake that ENDED IN ERROR: the retry resumes it and completes", async () => {
     const t = convexTest(schema, modules);
-    const { chatId, parentId } = await seedYieldedTurn(t, { parentText: "Je délègue." });
-    await t.mutation(internal.stream.startAssistant, { chatId, runId: PROD_SETTLE });
-    await runGeneration(t, parentId, PROD_SETTLE, "Répo", "error");
-
+    const { chatId, parentId } = await seedLegacySettleMerge(t, { status: "error", answers: ["Répo"] });
     const opened = await t.mutation(internal.stream.startAssistant, { chatId, runId: RETRY });
     expect(opened).toBe(parentId);
     await runGeneration(t, parentId, RETRY, "Réponse complète.");
@@ -690,20 +513,9 @@ describe("a retry wake of a batch already merged", () => {
   });
 
   test("after a first wake that settled WITHOUT an answer of its own: the retry brings it", async () => {
-    // `visible_reply_missing` can be retryable upstream: the first run did work (here a
-    // live checklist) but wrote no text, and the bubble settled complete on its prefix.
     const t = convexTest(schema, modules);
-    const { chatId, parentId } = await seedYieldedTurn(t, { parentText: "Je délègue." });
-    await t.mutation(internal.stream.startAssistant, { chatId, runId: PROD_SETTLE });
-    await t.mutation(internal.stream.addPart, {
-      messageId: parentId,
-      expectedRunId: PROD_SETTLE,
-      part: { kind: "plan", steps: [{ step: "Synthèse", status: "in_progress" }] },
-    });
-    await t.mutation(internal.stream.finalize, { messageId: parentId, status: "complete", text: "", expectedRunId: PROD_SETTLE });
-    expect((await t.run((ctx) => ctx.db.get(parentId)))?.status).toBe("complete");
-
-    await t.mutation(internal.stream.startAssistant, { chatId, runId: RETRY });
+    const { chatId, parentId } = await seedLegacySettleMerge(t, { status: "complete", answers: [""] });
+    expect(await t.mutation(internal.stream.startAssistant, { chatId, runId: RETRY })).toBe(parentId);
     await runGeneration(t, parentId, RETRY, "Voici la synthèse.");
 
     const doc = await t.run((ctx) => ctx.db.get(parentId));
@@ -712,112 +524,9 @@ describe("a retry wake of a batch already merged", () => {
     expect(doc?.status).toBe("complete");
   });
 
-  test("a retry arriving while the first wake is STILL streaming: no second bubble, no interleave", async () => {
-    const t = convexTest(schema, modules);
-    const { chatId, parentId } = await seedYieldedTurn(t);
-    await t.mutation(internal.stream.startAssistant, { chatId, runId: PROD_SETTLE });
-    const before = (await assistants(t, chatId)).length;
-
-    const opened = await t.mutation(internal.stream.startAssistant, { chatId, runId: RETRY });
-    expect(opened).toBe(parentId);
-    expect(await assistants(t, chatId)).toHaveLength(before);
-    await t.mutation(internal.stream.appendDelta, { messageId: parentId, text: "Doublon.", expectedRunId: RETRY });
-    await runGeneration(t, parentId, PROD_SETTLE, "Réponse.");
-
-    const doc = await t.run((ctx) => ctx.db.get(parentId));
-    expect(doc?.text).toBe("Réponse.");
-    expect(doc?.status).toBe("complete");
-  });
-
-  test("a retry of an OLDER batch, once a later continuation owns the bubble: silent", async () => {
-    const t = convexTest(schema, modules);
-    const { chatId, parentId } = await seedYieldedTurn(t);
-    await t.mutation(internal.stream.startAssistant, { chatId, runId: PROD_SETTLE });
-    await runGeneration(t, parentId, PROD_SETTLE, "Première.");
-    await childSpawnedInContinuation(t, chatId, parentId, PROD_SETTLE);
-    const SECOND = settleRun([CHILD_RUN_2]);
-    await t.mutation(internal.stream.startAssistant, { chatId, runId: SECOND });
-    await runGeneration(t, parentId, SECOND, "Seconde.");
-
-    await t.mutation(internal.stream.startAssistant, { chatId, runId: RETRY });
-    await runGeneration(t, parentId, RETRY, "Première bis.");
-    const doc = await t.run((ctx) => ctx.db.get(parentId));
-    expect(doc?.text).toBe("Première.\n\nSeconde.");
-    expect(doc?.status).toBe("complete");
-  });
-
-  // What "answered" means (codex pass 11): the SAME verdict that named the first run's
-  // delivery (stream.ts `carriesDeliveredContent`) — text, or a file the reader can open,
-  // or a live checklist / a cron card. Text alone was the first rule, and a first run
-  // that delivered only a FILE was reopened by its retry: the file landed twice.
-  async function mediaPart(t: T, messageId: Id<"messages">, runId: string, bytes: string) {
-    const storageId = await t.run((ctx) => ctx.storage.store(new Blob([bytes])));
-    await t.mutation(internal.stream.addPart, {
-      messageId,
-      expectedRunId: runId,
-      part: { kind: "media", storageId, filename: "synthese.pdf", mimeType: "application/pdf" },
-    });
-  }
-  async function partsOf(t: TestConvex<typeof schema>, messageId: Id<"messages">) {
-    return t.run((ctx) =>
-      ctx.db.query("messageParts").withIndex("by_message", (q) => q.eq("messageId", messageId)).collect(),
-    );
-  }
-
-  test("after a first wake that delivered only a FILE: silent — one file, still complete", async () => {
-    const t = convexTest(schema, modules);
-    const { chatId, parentId } = await seedYieldedTurn(t, { parentText: "Je délègue." });
-    await t.mutation(internal.stream.startAssistant, { chatId, runId: PROD_SETTLE });
-    await mediaPart(t, parentId, PROD_SETTLE, "pdf-v1");
-    await t.mutation(internal.stream.finalize, { messageId: parentId, status: "complete", text: "", expectedRunId: PROD_SETTLE });
-    const settled = await t.run((ctx) => ctx.db.get(parentId));
-    expect(settled?.status).toBe("complete");
-
-    await t.mutation(internal.stream.startAssistant, { chatId, runId: RETRY });
-    await mediaPart(t, parentId, RETRY, "pdf-v2");
-    await t.mutation(internal.stream.finalize, { messageId: parentId, status: "complete", text: "Voici le PDF.", expectedRunId: RETRY });
-
-    const doc = await t.run((ctx) => ctx.db.get(parentId));
-    expect(doc?.status).toBe("complete");
-    expect(doc?.text).toBe(settled?.text);
-    expect(doc?.runId).toBe(PROD_SETTLE);
-    const files = (await partsOf(t, parentId)).filter((p) => p.part.kind === "media");
-    expect(files).toHaveLength(1);
-    expect(files[0]?.announceRun).toBe(PROD_SETTLE);
-  });
-
-  test("only THIS batch's parts count: a file the turn itself delivered does not silence the retry", async () => {
-    const t = convexTest(schema, modules);
-    const { chatId, parentId } = await seedYieldedTurn(t, { parentText: "Je délègue." });
-    // The yielded turn's OWN attachment — written by its webchat run, so unstamped.
-    const own = await t.run((ctx) => ctx.storage.store(new Blob(["brief"])));
-    await t.run((ctx) =>
-      ctx.db.insert("messageParts", {
-        messageId: parentId,
-        order: 5,
-        part: { kind: "media", storageId: own, filename: "brief.pdf", mimeType: "application/pdf" },
-      }),
-    );
-    await t.mutation(internal.stream.startAssistant, { chatId, runId: PROD_SETTLE });
-    await t.mutation(internal.stream.addPart, {
-      messageId: parentId,
-      expectedRunId: PROD_SETTLE,
-      part: { kind: "tool", name: "exec", phase: "completed", toolCallId: "c1" },
-    });
-    await t.mutation(internal.stream.finalize, { messageId: parentId, status: "complete", text: "", expectedRunId: PROD_SETTLE });
-    expect((await t.run((ctx) => ctx.db.get(parentId)))?.status).toBe("complete");
-
-    await t.mutation(internal.stream.startAssistant, { chatId, runId: RETRY });
-    await t.mutation(internal.stream.finalize, { messageId: parentId, status: "complete", text: "Voici la synthèse.", expectedRunId: RETRY });
-    const doc = await t.run((ctx) => ctx.db.get(parentId));
-    expect(doc?.text?.endsWith("Voici la synthèse.")).toBe(true);
-    expect(doc?.status).toBe("complete");
-  });
-
   test("a CRON card the batch wrote is an answer: the retry stays silent", async () => {
     const t = convexTest(schema, modules);
-    const { chatId, parentId } = await seedYieldedTurn(t, { parentText: "Je délègue." });
-    await t.mutation(internal.stream.startAssistant, { chatId, runId: PROD_SETTLE });
+    const { chatId, parentId } = await seedLegacySettleMerge(t, { status: "complete", answers: [""] });
     await t.run(async (ctx) => {
       await ctx.db.insert("messageParts", {
         messageId: parentId,
@@ -826,10 +535,7 @@ describe("a retry wake of a batch already merged", () => {
         announceRun: PROD_SETTLE,
       });
     });
-    await t.mutation(internal.stream.finalize, { messageId: parentId, status: "complete", text: "", expectedRunId: PROD_SETTLE });
     const settled = await t.run((ctx) => ctx.db.get(parentId));
-    expect(settled?.status).toBe("complete");
-
     await t.mutation(internal.stream.startAssistant, { chatId, runId: RETRY });
     await t.mutation(internal.stream.finalize, { messageId: parentId, status: "complete", text: "Rappel créé.", expectedRunId: RETRY });
     const doc = await t.run((ctx) => ctx.db.get(parentId));
@@ -837,202 +543,75 @@ describe("a retry wake of a batch already merged", () => {
     expect(doc?.runId).toBe(PROD_SETTLE);
   });
 
-  test("a first wake with only TOOL cards has not answered: the retry brings the answer", async () => {
-    // Tool cards are work, not an answer — the delivery verdict says so, and the retry
-    // exists precisely because that run delivered nothing. Its own tools ran again, so
-    // their cards are added: a second execution, not a duplicate of the first.
+  test("a FILE the batch delivered is an answer: the retry stays silent, one file", async () => {
     const t = convexTest(schema, modules);
-    const { chatId, parentId } = await seedYieldedTurn(t, { parentText: "Je délègue." });
-    await t.mutation(internal.stream.startAssistant, { chatId, runId: PROD_SETTLE });
-    await t.mutation(internal.stream.addPart, {
-      messageId: parentId,
-      expectedRunId: PROD_SETTLE,
-      part: { kind: "tool", name: "exec", phase: "completed", toolCallId: "c1" },
-    });
-    await t.mutation(internal.stream.addPart, {
-      messageId: parentId,
-      expectedRunId: PROD_SETTLE,
-      part: { kind: "plan", steps: [{ step: "Synthèse", status: "in_progress" }] },
-    });
-    await t.mutation(internal.stream.finalize, { messageId: parentId, status: "complete", text: "", expectedRunId: PROD_SETTLE });
-    // The live checklist kept that bubble complete; clear it, as the run's own later plan
-    // update would, so the only thing left from the first run is a tool card.
-    await t.run(async (ctx) => {
-      for (const p of await ctx.db.query("messageParts").withIndex("by_message", (q) => q.eq("messageId", parentId)).collect()) {
-        if (p.part.kind === "plan") await ctx.db.delete(p._id);
-      }
-    });
-
-    await t.mutation(internal.stream.startAssistant, { chatId, runId: RETRY });
-    await t.mutation(internal.stream.addPart, {
-      messageId: parentId,
-      expectedRunId: RETRY,
-      part: { kind: "tool", name: "exec", phase: "completed", toolCallId: "c2" },
-    });
-    await t.mutation(internal.stream.finalize, { messageId: parentId, status: "complete", text: "Voici la synthèse.", expectedRunId: RETRY });
-
-    const doc = await t.run((ctx) => ctx.db.get(parentId));
-    expect(doc?.status).toBe("complete");
-    expect(doc?.text?.endsWith("Voici la synthèse.")).toBe(true);
-    const tools = (await partsOf(t, parentId)).filter((p) => p.part.kind === "tool" && p.part.name === "exec");
-    expect(tools.map((p) => p.announceRun)).toEqual(expect.arrayContaining([PROD_SETTLE, RETRY]));
-  });
-
-  // A FAILED ATTEMPT'S FILE, AND THE RETRY THAT RE-SENDS IT (codex pass 12). The resume
-  // of a failed run keeps what it already attached and dedupes a re-upload by name,
-  // while its text is re-seeded from the parked prefix. A retry is a new run of the SAME
-  // batch: it must meet the first attempt's parts under the same rule, or the file is
-  // attached twice — in the bubble AND in the chat's files list.
-  test("an errored first wake's FILE, re-sent by the retry: one copy in the bubble and in the files list", async () => {
-    const t = convexTest(schema, modules);
-    const { chatId, parentId } = await seedYieldedTurn(t, { parentText: "Je délègue." });
-    await t.mutation(internal.stream.startAssistant, { chatId, runId: PROD_SETTLE });
-    await mediaPart(t, parentId, PROD_SETTLE, "pdf-v1");
-    await t.mutation(internal.stream.appendDelta, { messageId: parentId, text: "Voici", expectedRunId: PROD_SETTLE });
-    await t.mutation(internal.stream.finalize, {
-      messageId: parentId,
-      status: "error",
-      text: "Voici",
-      error: "provider failed",
-      expectedRunId: PROD_SETTLE,
-    });
-
-    await t.mutation(internal.stream.startAssistant, { chatId, runId: RETRY });
-    await mediaPart(t, parentId, RETRY, "pdf-v2"); // the same document, re-uploaded
-    await t.mutation(internal.stream.finalize, {
-      messageId: parentId,
-      status: "complete",
-      text: "Voici le PDF.",
-      expectedRunId: RETRY,
-    });
-
-    const doc = await t.run((ctx) => ctx.db.get(parentId));
-    expect(doc?.status).toBe("complete");
-    expect(doc?.text).toBe("Je délègue.\n\nVoici le PDF.");
-    const files = (await partsOf(t, parentId)).filter((p) => p.part.kind === "media");
-    expect(files).toHaveLength(1);
-    const rows = await t.run((ctx) =>
-      ctx.db.query("files").collect(),
+    const { chatId, parentId } = await seedLegacySettleMerge(t, { status: "complete", answers: [""] });
+    const storageId = await t.run((ctx) => ctx.storage.store(new Blob(["pdf-v1"])));
+    await t.run((ctx) =>
+      ctx.db.insert("messageParts", {
+        messageId: parentId,
+        order: 9,
+        announceRun: PROD_SETTLE,
+        part: { kind: "media", storageId, filename: "synthese.pdf", mimeType: "application/pdf" },
+      }),
     );
-    const listed = rows.filter((r) => r.messageId === parentId);
-    expect(listed).toHaveLength(1);
-    // The row points at the copy the bubble shows — never at a reclaimed blob.
-    expect(listed[0]?.storageId).toBe(files[0]?.part.kind === "media" ? files[0].part.storageId : null);
-    const url = await t.run((ctx) => ctx.storage.getUrl(listed[0]!.storageId));
-    expect(url).not.toBeNull();
-  });
-
-  test("…while a DIFFERENT file the retry sends is kept beside it", async () => {
-    const t = convexTest(schema, modules);
-    const { chatId, parentId } = await seedYieldedTurn(t, { parentText: "Je délègue." });
-    await t.mutation(internal.stream.startAssistant, { chatId, runId: PROD_SETTLE });
-    await mediaPart(t, parentId, PROD_SETTLE, "pdf-v1");
-    await t.mutation(internal.stream.finalize, {
-      messageId: parentId, status: "error", text: "", error: "provider failed", expectedRunId: PROD_SETTLE,
-    });
+    const settled = await t.run((ctx) => ctx.db.get(parentId));
     await t.mutation(internal.stream.startAssistant, { chatId, runId: RETRY });
-    const other = await t.run((ctx) => ctx.storage.store(new Blob(["xlsx"])));
-    await t.mutation(internal.stream.addPart, {
-      messageId: parentId,
-      expectedRunId: RETRY,
-      part: { kind: "media", storageId: other, filename: "annexe.xlsx", mimeType: "application/vnd.ms-excel" },
-    });
-    await t.mutation(internal.stream.finalize, { messageId: parentId, status: "complete", text: "Deux fichiers.", expectedRunId: RETRY });
-    const names = (await partsOf(t, parentId))
-      .flatMap((p) => (p.part.kind === "media" ? [p.part.filename] : []))
-      .sort();
-    expect(names).toEqual(["annexe.xlsx", "synthese.pdf"]);
-    expect((await t.run((ctx) => ctx.db.get(parentId)))?.status).toBe("complete");
-  });
-
-  test("a SILENT retry's late, untagged re-upload is deduped like a rebroadcast's", async () => {
-    // Self-audit, same class: a retry handed back as a silent sink cannot write through
-    // the generation guard — until its message is forgotten by the writer at finalize,
-    // after which a late upload goes out UNTAGGED (convex-writer.ts `genTag`). The
-    // terminal-rebroadcast sink arms the replay window for exactly this; this one must.
-    const t = convexTest(schema, modules);
-    const { chatId, parentId } = await seedYieldedTurn(t, { parentText: "Je délègue." });
-    await t.mutation(internal.stream.startAssistant, { chatId, runId: PROD_SETTLE });
-    await mediaPart(t, parentId, PROD_SETTLE, "pdf-v1");
-    await t.mutation(internal.stream.finalize, { messageId: parentId, status: "complete", text: "Voici.", expectedRunId: PROD_SETTLE });
-
-    const opened = await t.mutation(internal.stream.startAssistant, { chatId, runId: RETRY });
-    expect(opened).toBe(parentId);
-    // The late upload, untagged: no `expectedRunId`.
-    const late = await t.run((ctx) => ctx.storage.store(new Blob(["pdf-v2"])));
-    await t.mutation(internal.stream.addPart, {
-      messageId: parentId,
-      part: { kind: "media", storageId: late, filename: "synthese.pdf", mimeType: "application/pdf" },
-    });
-
-    const files = (await partsOf(t, parentId)).filter((p) => p.part.kind === "media");
-    expect(files).toHaveLength(1);
-    const listed = (await t.run((ctx) => ctx.db.query("files").collect())).filter((r) => r.messageId === parentId);
-    expect(listed).toHaveLength(1);
+    await t.mutation(internal.stream.finalize, { messageId: parentId, status: "complete", text: "Voici le PDF.", expectedRunId: RETRY });
     const doc = await t.run((ctx) => ctx.db.get(parentId));
     expect(doc?.status).toBe("complete");
-    expect(doc?.text).toBe("Je délègue.\n\nVoici.");
+    expect(doc?.text).toBe(settled?.text);
+    expect(doc?.runId).toBe(PROD_SETTLE);
   });
 
   test("A complete, B in error, a REBROADCAST of A's original run: B's error is left alone (codex pass 13)", async () => {
-    // `alreadyMerged` knows every run the bubble ever took — A included — and the resume
-    // gate trusted it: A's replay re-seeded B's failed merge and wrote A's text over it.
     const t = convexTest(schema, modules);
-    const { chatId, parentId } = await seedYieldedTurn(t, { parentText: "Je délègue." });
-    await t.mutation(internal.stream.startAssistant, { chatId, runId: PROD_SETTLE });
-    await mediaPart(t, parentId, PROD_SETTLE, "pdf-a");
-    await runGeneration(t, parentId, PROD_SETTLE, "Première.");
-    await childSpawnedInContinuation(t, chatId, parentId, PROD_SETTLE);
-    const SECOND = settleRun([CHILD_RUN_2]);
-    await t.mutation(internal.stream.startAssistant, { chatId, runId: SECOND });
-    await runGeneration(t, parentId, SECOND, "Seco", "error");
+    const { chatId, parentId } = await seedLegacySettleMerge(t, {
+      status: "error",
+      answers: ["Première.", "Seco"],
+      batches: [
+        { run: PROD_SETTLE, childRunIds: [CHILD_RUN] },
+        { run: SECOND, childRunIds: [CHILD_RUN_2] },
+      ],
+    });
     const failed = await t.run((ctx) => ctx.db.get(parentId));
-    const partsBefore = (await partsOf(t, parentId)).length;
-
-    // The REBROADCAST of A's own run (bridge restart), carrying A's answer and file again.
-    const opened = await t.mutation(internal.stream.startAssistant, { chatId, runId: PROD_SETTLE });
-    expect(opened).toBe(parentId);
-    await mediaPart(t, parentId, PROD_SETTLE, "pdf-a-again");
+    // The REBROADCAST of A's own run (bridge restart), carrying A's answer again.
+    expect(await t.mutation(internal.stream.startAssistant, { chatId, runId: PROD_SETTLE })).toBe(parentId);
     await runGeneration(t, parentId, PROD_SETTLE, "Première rejouée.");
-
     const doc = await t.run((ctx) => ctx.db.get(parentId));
     expect(doc?.status).toBe("error");
     expect(doc?.text).toBe(failed?.text);
-    expect(doc?.text).not.toContain("rejouée");
     expect(doc?.runId).toBe(SECOND);
-    expect(doc?.errorCode).toBe(failed?.errorCode);
-    expect(await partsOf(t, parentId)).toHaveLength(partsBefore);
   });
 
   test("…while B's OWN rebroadcast still resumes B", async () => {
     const t = convexTest(schema, modules);
-    const { chatId, parentId } = await seedYieldedTurn(t, { parentText: "Je délègue." });
-    await t.mutation(internal.stream.startAssistant, { chatId, runId: PROD_SETTLE });
-    await runGeneration(t, parentId, PROD_SETTLE, "Première.");
-    await childSpawnedInContinuation(t, chatId, parentId, PROD_SETTLE);
-    const SECOND = settleRun([CHILD_RUN_2]);
-    await t.mutation(internal.stream.startAssistant, { chatId, runId: SECOND });
-    await runGeneration(t, parentId, SECOND, "Seco", "error");
-    await t.mutation(internal.stream.startAssistant, { chatId, runId: SECOND });
+    const { chatId, parentId } = await seedLegacySettleMerge(t, {
+      status: "error",
+      answers: ["Première.", "Seco"],
+      batches: [
+        { run: PROD_SETTLE, childRunIds: [CHILD_RUN] },
+        { run: SECOND, childRunIds: [CHILD_RUN_2] },
+      ],
+    });
+    expect(await t.mutation(internal.stream.startAssistant, { chatId, runId: SECOND })).toBe(parentId);
     await runGeneration(t, parentId, SECOND, "Seconde.");
     const doc = await t.run((ctx) => ctx.db.get(parentId));
     expect(doc?.status).toBe("complete");
     expect(doc?.text).toBe("Je délègue.\n\nPremière.\n\nSeconde.");
   });
 
-  test("…and it never RESUMES a later continuation's failure it does not own", async () => {
+  test("…and the first batch's retry never RESUMES a later continuation's failure it does not own", async () => {
     const t = convexTest(schema, modules);
-    const { chatId, parentId } = await seedYieldedTurn(t);
-    await t.mutation(internal.stream.startAssistant, { chatId, runId: PROD_SETTLE });
-    await runGeneration(t, parentId, PROD_SETTLE, "Première.");
-    await childSpawnedInContinuation(t, chatId, parentId, PROD_SETTLE);
-    const SECOND = settleRun([CHILD_RUN_2]);
-    await t.mutation(internal.stream.startAssistant, { chatId, runId: SECOND });
-    // The SECOND continuation failed: its own rebroadcast may resume it, the first
-    // batch's retry may not.
-    await runGeneration(t, parentId, SECOND, "Seco", "error");
+    const { chatId, parentId } = await seedLegacySettleMerge(t, {
+      status: "error",
+      answers: ["Première.", "Seco"],
+      batches: [
+        { run: PROD_SETTLE, childRunIds: [CHILD_RUN] },
+        { run: SECOND, childRunIds: [CHILD_RUN_2] },
+      ],
+    });
     const failed = await t.run((ctx) => ctx.db.get(parentId));
-
     await t.mutation(internal.stream.startAssistant, { chatId, runId: RETRY });
     await runGeneration(t, parentId, RETRY, "Première bis.");
     const doc = await t.run((ctx) => ctx.db.get(parentId));
@@ -1040,27 +619,24 @@ describe("a retry wake of a batch already merged", () => {
     expect(doc?.text).toBe(failed?.text);
     expect(doc?.runId).toBe(SECOND);
   });
+
+  test("a NEW batch's wake (never merged here) opens its own bubble beside the legacy merge", async () => {
+    const t = convexTest(schema, modules);
+    const { chatId, parentId } = await seedLegacySettleMerge(t, { status: "complete", answers: ["Réponse."] });
+    await childSpawnedInContinuation(t, chatId, parentId, PROD_SETTLE);
+    const opened = await t.mutation(internal.stream.startAssistant, { chatId, runId: SECOND });
+    expect(opened).not.toBeNull();
+    expect(opened).not.toBe(parentId);
+    expect((await t.run((ctx) => ctx.db.get(parentId)))?.status).toBe("complete");
+  });
 });
 
-// PRODUCTION, 2026-09-27 (chat mh71qt6…, gateway 2026.9.6, bridge 0.87.0). The turn
-// delegated to C1 (`runTimeoutSeconds: 900`) and yielded: bubble B. C1 timed out; its
-// settle run `…:<C1>:yield-1` merged into B. Inside that continuation the agent
-// delegated AGAIN, to C2, and yielded again. C2 finished, and ITS settle run —
-// `…:<C2>:yield-1`, a new requester run, so a counter that restarts — carried the PDF
-// into a SECOND bubble: C2 was spawned by item frames only, no spawn result named its
-// run id, and the join had no member to anchor on.
-//
-// Every write the bridge makes goes through the real ingest door (`/bridge/ingest`,
-// per-bridge secret), in the shapes the observer emits (bridge/test/
-// sub-agent-child-run-id.test.ts, sub-agent-timeout.test.ts). The stream is driven
-// through the mutations the ingest routes to, as everywhere else in this file.
-describe("a continuation that re-delegates and yields AGAIN lands in the SAME bubble", () => {
+// A DECLARED TIME LIMIT on a child (`runTimeoutSeconds`), through the real ingest door
+// (`/bridge/ingest`, per-bridge secret), in the shape the observer emits
+// (bridge/test/sub-agent-timeout.test.ts).
+describe("the sub-agent ingest bounds a declared time limit", () => {
   const C1_KEY = "agent:files:subagent:7a1c2e90-4b3d-4f6e-8a21-9c0d1e2f3a4b";
   const C1_RUN = "3e9b7c10-2d4a-4c8e-9f1b-6a5d4c3b2a19";
-  const C2_KEY = "agent:files:subagent:b82f0d6e-91c4-4e7a-a3d5-0f2e4c6b8a17";
-  const C2_RUN = "c4d2e1f0-7b6a-4958-8c3d-2e1f0a9b8c7d";
-  const GEN1 = settleRun([C1_RUN]);
-  const GEN2 = settleRun([C2_RUN]); // `yield-1` too: the production id
   const TIMEOUT_TEXT =
     "Request timed out before a response was generated. Please try again, or increase `agents.defaults.timeoutSeconds` in your config.";
 
@@ -1115,111 +691,6 @@ describe("a continuation that re-delegates and yields AGAIN lands in the SAME bu
     return { chatId, parentId, ingest };
   }
 
-  /** C2 as the bridge writes it at its `lifecycle start` (item-only spawn inside GEN1),
-   *  then at its final. `learnedRunId: false` = the bridge before this fix. */
-  async function c2(
-    ingest: (b: Record<string, unknown>) => Promise<void>,
-    chatId: Id<"chats">,
-    parentId: Id<"messages">,
-    learnedRunId: boolean,
-  ) {
-    const c = {
-      op: "upsertSubAgent",
-      chatId,
-      parentMessageId: parentId,
-      anchorExact: true,
-      childSessionKey: C2_KEY,
-      ...(learnedRunId ? { childRunId: C2_RUN } : {}),
-    };
-    await ingest({ ...c, bornOfRun: GEN1, taskName: "Rédige le rapport en PDF", status: "running", phase: "start" });
-    await ingest({ ...c, status: "done", resultText: "PDF prêt : rapport.pdf" });
-  }
-
-  async function generation(t: T, messageId: Id<"messages">, runId: string, text: string) {
-    await t.mutation(internal.stream.appendDelta, { messageId, text, expectedRunId: runId });
-    await t.mutation(internal.stream.finalize, { messageId, status: "complete", text, expectedRunId: runId });
-  }
-
-  test("ONE bubble: both continuations recorded, the PDF in it", async () => {
-    const t = convexTest(schema, modules);
-    const { chatId, parentId, ingest } = await seedProd(t);
-    const before = (await assistants(t, chatId)).length;
-
-    expect(await t.mutation(internal.stream.startAssistant, { chatId, runId: GEN1 })).toBe(parentId);
-    await c2(ingest, chatId, parentId, true);
-    await generation(t, parentId, GEN1, "Le premier sous-agent a expiré ; je relance la rédaction.");
-
-    const opened = await t.mutation(internal.stream.startAssistant, { chatId, runId: GEN2 });
-    expect(opened).toBe(parentId);
-    const storageId = await t.run((ctx) => ctx.storage.store(new Blob(["%PDF-1.7"])));
-    await t.mutation(internal.stream.addPart, {
-      messageId: parentId,
-      expectedRunId: GEN2,
-      part: { kind: "media", storageId, filename: "rapport.pdf", mimeType: "application/pdf" },
-    });
-    await generation(t, parentId, GEN2, "Voici le rapport en PDF.");
-
-    expect(await assistants(t, chatId)).toHaveLength(before); // NO second bubble
-    const doc = await t.run((ctx) => ctx.db.get(parentId));
-    expect(doc?.status).toBe("complete");
-    expect(doc?.continuations?.map((c) => c.childRunIds)).toEqual([[C1_RUN], [C2_RUN]]);
-    expect(doc?.mergedAnnounceRuns).toEqual(expect.arrayContaining([GEN1, GEN2]));
-    expect(doc?.text?.endsWith("Voici le rapport en PDF.")).toBe(true);
-    const pdf = (
-      await t.run((ctx) =>
-        ctx.db.query("messageParts").withIndex("by_message", (q) => q.eq("messageId", parentId)).collect(),
-      )
-    ).filter((p) => p.part.kind === "media");
-    expect(pdf).toHaveLength(1);
-    expect(pdf[0]?.announceRun).toBe(GEN2);
-    // The rows the bridge wrote carry what the triage needs.
-    const rows = await t.run((ctx) =>
-      ctx.db.query("subAgents").withIndex("by_chat", (q) => q.eq("chatId", chatId)).collect(),
-    );
-    const byKey = new Map(rows.map((r) => [r.childSessionKey, r]));
-    expect(byKey.get(C2_KEY)?.childRunId).toBe(C2_RUN);
-    expect(byKey.get(C1_KEY)?.errorCode).toBe("timeout");
-    expect(byKey.get(C1_KEY)?.runTimeoutSeconds).toBe(900);
-    // The reader's projection: both batches were visibly followed up (text after
-    // each point, and the PDF delivered by the second run) — so C1's failure, which
-    // the agent answered by re-delegating, is not the bubble's verdict.
-    const userId = (await t.run((ctx) => ctx.db.get(chatId)))!.userId;
-    const view = await t
-      .withIdentity({ subject: `${userId}|session` })
-      .query(api.messages.listByChat, { chatId: chatId as string });
-    const b = (view as Array<{ _id: string; followedUpChildRunIds?: string[] }>).find(
-      (m) => m._id === parentId,
-    );
-    expect(b?.followedUpChildRunIds).toEqual([C1_RUN, C2_RUN]);
-  });
-
-  test("a continuation that received C1's failure and ended on NOTHING follows nothing up", async () => {
-    const t = convexTest(schema, modules);
-    const { chatId, parentId } = await seedProd(t);
-    await t.mutation(internal.stream.startAssistant, { chatId, runId: GEN1 });
-    await t.mutation(internal.stream.finalize, { messageId: parentId, status: "complete", text: "", expectedRunId: GEN1 });
-    const userId = (await t.run((ctx) => ctx.db.get(chatId)))!.userId;
-    const view = await t
-      .withIdentity({ subject: `${userId}|session` })
-      .query(api.messages.listByChat, { chatId: chatId as string });
-    const b = (view as Array<{ _id: string; followedUpChildRunIds?: string[] }>).find(
-      (m) => m._id === parentId,
-    );
-    expect(b?.followedUpChildRunIds).toEqual([]);
-  });
-
-  test("RED without the learned run id — today's two bubbles, reproduced", async () => {
-    const t = convexTest(schema, modules);
-    const { chatId, parentId, ingest } = await seedProd(t);
-    const before = (await assistants(t, chatId)).length;
-    await t.mutation(internal.stream.startAssistant, { chatId, runId: GEN1 });
-    await c2(ingest, chatId, parentId, false);
-    await generation(t, parentId, GEN1, "Je relance.");
-    const opened = await t.mutation(internal.stream.startAssistant, { chatId, runId: GEN2 });
-    expect(opened).not.toBe(parentId);
-    expect(await assistants(t, chatId)).toHaveLength(before + 1);
-  });
-
   test("the ingest refuses a declared limit that is not a whole, bounded number of seconds", async () => {
     const t = convexTest(schema, modules);
     const { chatId, ingest } = await seedProd(t);
@@ -1268,59 +739,6 @@ describe("children spawned together inside a continuation join through their car
     await childSpawnedInContinuation(t, chatId, parentId, carrier, { key: C2B, runId: C2B_RUN, anchored: false });
   }
 
-  test("the carrier merged into B: the next continuation merges into B", async () => {
-    const t = convexTest(schema, modules);
-    const { chatId, parentId } = await seedYieldedTurn(t);
-    await t.mutation(internal.stream.startAssistant, { chatId, runId: PROD_SETTLE });
-    await parallelChildren(t, chatId, parentId, PROD_SETTLE);
-    await t.mutation(internal.stream.finalize, { messageId: parentId, status: "complete", text: "Deux relectures lancées.", expectedRunId: PROD_SETTLE });
-    const next = settleRun([C2A_RUN, C2B_RUN].sort());
-    expect(await t.mutation(internal.stream.startAssistant, { chatId, runId: next })).toBe(parentId);
-    const doc = await t.run((ctx) => ctx.db.get(parentId));
-    expect(doc?.continuations?.map((c) => c.childRunIds)).toEqual([[CHILD_RUN], [C2A_RUN, C2B_RUN].sort()]);
-  });
-
-  // The carrier is read where it WROTE, never re-derived: a carrier that opened a
-  // bubble of its own keeps its children's continuation there (settleChainJoin.test.ts:
-  // production 2026-09-29, where re-deriving it broke every link after the first).
-  async function ownBubbleOf(t: T, chatId: Id<"chats">, runId: string) {
-    return t.run(async (ctx) => {
-      const chat = await ctx.db.get(chatId);
-      return ctx.db.insert("messages", {
-        chatId,
-        userId: chat!.userId,
-        role: "assistant" as const,
-        status: "complete" as const,
-        text: "Deux relectures lancées.",
-        runId,
-        finalizedAt: 2600,
-        updatedAt: 2600,
-      });
-    });
-  }
-
-  test("a carrier that never merged here (its own bubble): the next continuation joins THAT bubble", async () => {
-    const t = convexTest(schema, modules);
-    const { chatId, parentId } = await seedYieldedTurn(t);
-    // The carrier did NOT run on B — it opened W.
-    const w = await ownBubbleOf(t, chatId, PROD_SETTLE);
-    await parallelChildren(t, chatId, parentId, PROD_SETTLE);
-    const next = settleRun([C2A_RUN, C2B_RUN].sort());
-    expect(await t.mutation(internal.stream.startAssistant, { chatId, runId: next })).toBe(w);
-    expect((await t.run((ctx) => ctx.db.get(parentId)))?.runId).toBe("webchat-6309c12f");
-  });
-
-  test("a carrier that is a settle wake WITHOUT a yield (its own bubble): its children's continuation joins it", async () => {
-    const t = convexTest(schema, modules);
-    const { chatId, parentId } = await seedYieldedTurn(t);
-    const noYield = settleRun([CHILD_RUN], "");
-    // A wake without a yield never merges: it opens W, and delegates from there.
-    const w = await ownBubbleOf(t, chatId, noYield);
-    await parallelChildren(t, chatId, parentId, noYield);
-    const next = settleRun([C2A_RUN, C2B_RUN].sort());
-    expect(await t.mutation(internal.stream.startAssistant, { chatId, runId: next })).toBe(w);
-  });
-
   test("a carrier that is a settle wake WITHOUT a yield and landed NOWHERE: never walked up", async () => {
     const t = convexTest(schema, modules);
     const { chatId, parentId } = await seedYieldedTurn(t);
@@ -1330,30 +748,6 @@ describe("children spawned together inside a continuation join through their car
     expect(await t.mutation(internal.stream.startAssistant, { chatId, runId: next })).not.toBe(parentId);
   });
 
-  test("a HEURISTIC anchor with a carrier: the carrier decides (production row 24152ba9)", async () => {
-    const t = convexTest(schema, modules);
-    const { chatId, parentId } = await seedYieldedTurn(t);
-    await t.mutation(internal.stream.startAssistant, { chatId, runId: PROD_SETTLE });
-    await t.mutation(internal.stream.finalize, { messageId: parentId, status: "complete", text: "x", expectedRunId: PROD_SETTLE });
-    // The bridge's positional fallback: an anchor, but not a correlated one.
-    await t.mutation(internal.subAgents.upsertSubAgent, {
-      chatId,
-      parentMessageId: parentId,
-      childSessionKey: C2A,
-      childRunId: C2A_RUN,
-      bornOfRun: PROD_SETTLE,
-      status: "done",
-    });
-    expect(
-      await t.mutation(internal.stream.startAssistant, { chatId, runId: settleRun([C2A_RUN]) }),
-    ).toBe(parentId);
-    // …and the guess is replaced by what the join proved.
-    const row = await t.run((ctx) =>
-      ctx.db.query("subAgents").withIndex("by_child", (q) => q.eq("childSessionKey", C2A)).first(),
-    );
-    expect(row?.anchorExact).toBe(true);
-    expect(row?.parentMessageId).toBe(parentId);
-  });
 });
 
 // Codex pass 1 (P3): a chain of successive continuations, each re-delegating to
@@ -1362,64 +756,21 @@ describe("children spawned together inside a continuation join through their car
 // carrier per generation, under a depth cap: long enough, the chain fell off the cap
 // and the delivery opened a new bubble. The resolved anchor is now recorded on the
 // members at each successful join, so the next generation needs one hop.
-describe("a long chain of parallel re-delegations stays in ONE bubble", () => {
-  test("eight generations, every batch spawned in parallel without a direct anchor", async () => {
-    const t = convexTest(schema, modules);
-    const { chatId, parentId } = await seedYieldedTurn(t);
-    const before = (await assistants(t, chatId)).length;
-    let carrier = PROD_SETTLE; // generation 1: the turn's own child, exactly anchored
-    expect(await t.mutation(internal.stream.startAssistant, { chatId, runId: carrier })).toBe(parentId);
-    await t.mutation(internal.stream.finalize, { messageId: parentId, status: "complete", text: "g1", expectedRunId: carrier });
-    for (let g = 2; g <= 8; g++) {
-      const ids = [`g${g}a-0000-4000-8000-000000000001`, `g${g}b-0000-4000-8000-000000000002`];
-      for (const [i, id] of ids.entries()) {
-        await childSpawnedInContinuation(t, chatId, parentId, carrier, {
-          key: `agent:files:subagent:g${g}-${i}`,
-          runId: id,
-          anchored: false,
-        });
-      }
-      const next = settleRun([...ids].sort());
-      const opened = await t.mutation(internal.stream.startAssistant, { chatId, runId: next });
-      expect(opened, `generation ${g}`).toBe(parentId);
-      await t.mutation(internal.stream.finalize, { messageId: parentId, status: "complete", text: `g${g}`, expectedRunId: next });
-      carrier = next;
-    }
-    expect(await assistants(t, chatId)).toHaveLength(before);
-    const doc = await t.run((ctx) => ctx.db.get(parentId));
-    expect(doc?.continuations).toHaveLength(8);
-    // The joined members now carry the anchor they were proven to belong to.
-    const rows = await t.run((ctx) =>
-      ctx.db.query("subAgents").withIndex("by_chat", (q) => q.eq("chatId", chatId)).collect(),
-    );
-    for (const r of rows) {
-      expect(r.parentMessageId, r.childSessionKey).toBe(parentId);
-      expect(r.anchorExact, r.childSessionKey).toBe(true);
-    }
-  });
-});
-
 // codex phase 4 pass 12 #3: under the transcript projection (`on`), the transcript may
 // record the first wake's ERROR terminal before its replay arrives. The replay of that
 // same run must resume the bubble exactly as 0.95.0 does (the `off` run below is the
 // reference): reopened, its deltas kept, completed.
-describe("a replayed requester-settle after a transcript-recorded error resumes as in 0.95.0", () => {
-  async function errorThenReplay(mode: "off" | "on") {
+describe("a replayed requester-settle after a transcript-recorded error resumes its own bubble", () => {
+  test("the wake's OWN bubble resumes and completes with the recovered result, the parent untouched, the run no longer held as settled", async () => {
     const t = convexTest(schema, modules);
     const { chatId, parentId } = await seedYieldedTurn(t, { parentText: "Je délègue." });
-    if (mode === "on") {
-      await t.run(async (ctx) => {
-        await ctx.db.insert("instances", {
-          name: "lacneu",
-          gatewayUrl: "ws://gw",
-          config: { transcriptProjection: "on" } as never,
-        });
-        await ctx.db.patch(chatId, { transcriptSeenAt: 1 });
-      });
-    }
-    // `off`: the wake merges into the parent; `on` (phase 5): it opens its own bubble.
-    const first = (await t.mutation(internal.stream.startAssistant, { chatId, runId: PROD_SETTLE }))!;
-    const bubbleId = first;
+    await t.run(async (ctx) => {
+      await ctx.db.insert("instances", { name: "lacneu", gatewayUrl: "ws://gw" });
+      await ctx.db.patch(chatId, { transcriptSeenAt: 1 });
+    });
+    // The wake opens its own bubble.
+    const bubbleId = (await t.mutation(internal.stream.startAssistant, { chatId, runId: PROD_SETTLE }))!;
+    expect(bubbleId).not.toBe(parentId);
     await t.mutation(internal.stream.appendDelta, { messageId: bubbleId, text: "partial result", expectedRunId: PROD_SETTLE });
     await t.mutation(internal.stream.finalize, {
       messageId: bubbleId,
@@ -1428,23 +779,23 @@ describe("a replayed requester-settle after a transcript-recorded error resumes 
       error: "provider failed",
       expectedRunId: PROD_SETTLE,
     });
-    if (mode === "on") {
-      // The transcript read recorded the run's error terminal (sticky, settled).
-      await t.run(async (ctx) => {
-        await ctx.db.insert("transcriptRuns", {
-          chatId,
-          sessionKey: REQUESTER,
-          runId: PROD_SETTLE,
-          status: "error",
-          terminalAt: 3000,
-          settledAt: 3000,
-          updatedAt: 3000,
-        });
+    // The transcript read recorded the run's error terminal (sticky, settled).
+    await t.run(async (ctx) => {
+      await ctx.db.insert("transcriptRuns", {
+        chatId,
+        sessionKey: REQUESTER,
+        runId: PROD_SETTLE,
+        status: "error",
+        terminalAt: 3000,
+        settledAt: 3000,
+        updatedAt: 3000,
       });
-    }
+    });
+    const bubbles = (await assistants(t, chatId)).length;
     // The gateway replays the SAME run (error resume).
     const opened = await t.mutation(internal.stream.startAssistant, { chatId, runId: PROD_SETTLE });
-    const reopened = await t.run((ctx) => ctx.db.get(bubbleId));
+    expect(opened).toBe(bubbleId);
+    expect((await t.run((ctx) => ctx.db.get(bubbleId)))?.status).toBe("streaming");
     await t.mutation(internal.stream.appendDelta, { messageId: bubbleId, text: "recovered result", expectedRunId: PROD_SETTLE });
     await t.mutation(internal.stream.finalize, {
       messageId: bubbleId,
@@ -1453,46 +804,15 @@ describe("a replayed requester-settle after a transcript-recorded error resumes 
       expectedRunId: PROD_SETTLE,
     });
     const doc = await t.run((ctx) => ctx.db.get(bubbleId));
-    const runs = await t.run((ctx) => ctx.db.query("transcriptRuns").collect());
-    const parent = await t.run((ctx) => ctx.db.get(parentId));
-    return {
-      ownBubble: bubbleId !== parentId,
-      parentText: parent?.text,
-      opened: opened === bubbleId,
-      reopenedStatus: reopened?.status,
-      text: doc?.text,
-      status: doc?.status,
-      errorCode: doc?.errorCode,
-      bubbles: (await assistants(t, chatId)).length,
-      runs,
-    };
-  }
-
-  test("off (0.95.0's path): reopened, completed with the recovered result", async () => {
-    const off = await errorThenReplay("off");
-    expect(off.opened).toBe(true);
-    expect(off.reopenedStatus).toBe("streaming");
-    expect(off.status).toBe("complete");
-    expect(off.text).toContain("recovered result");
-  });
-
-  test("on (phase 5): the wake's OWN bubble resumes — same text and status as 0.95.0's merge, the parent untouched, the run no longer held as settled", async () => {
-    const off = await errorThenReplay("off");
-    const on = await errorThenReplay("on");
-    expect(off.ownBubble).toBe(false);
-    expect(on.ownBubble).toBe(true);
-    expect(on.parentText).toBe("Je délègue.");
-    expect(on.bubbles).toBe(off.bubbles + 1);
-    expect({ opened: on.opened, reopenedStatus: on.reopenedStatus, status: on.status, errorCode: on.errorCode }).toEqual({
-      opened: off.opened,
-      reopenedStatus: off.reopenedStatus,
-      status: off.status,
-      errorCode: off.errorCode,
-    });
-    expect(on.text).toContain("recovered result");
+    expect(doc?.status).toBe("complete");
+    expect(doc?.errorCode).toBeUndefined();
+    expect(doc?.text).toContain("recovered result");
+    expect((await t.run((ctx) => ctx.db.get(parentId)))?.text).toBe("Je délègue.");
+    expect(await assistants(t, chatId)).toHaveLength(bubbles);
     // The resumed run streams again for the projection: the transcript must not settle
     // the reopened bubble back to its old error before the replay's own terminal.
-    expect(on.runs.map((r) => ({ status: r.status, settled: r.settledAt !== undefined }))).toEqual([
+    const runs = await t.run((ctx) => ctx.db.query("transcriptRuns").collect());
+    expect(runs.map((r) => ({ status: r.status, settled: r.settledAt !== undefined }))).toEqual([
       { status: "streaming", settled: false },
     ]);
   });

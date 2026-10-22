@@ -29,7 +29,7 @@
 // the registry. A bounded `recentlyFinal` set prevents a stray post-final frame
 // from resurrecting a reaped child.
 
-import { outboundMediaDeliveries, sanitizeText } from "./sanitize.js";
+import { sanitizeText } from "./sanitize.js";
 import {
   SHOW_WIDGET_TOOL,
   extractCanvasShortcodes,
@@ -101,12 +101,6 @@ interface Observation {
    *  path in the visible text. Captured per child; the session's current value
    *  is only the fallback for a child registered before this existed. */
   outboundAgentMount?: string | null;
-  /** The files this child DELIVERED with its answer, kept until an anchor exists
-   *  to attach them to. A fast child can settle before its spawn result names
-   *  the parent bubble — the terminal upsert then carried the delivery with a
-   *  NULL anchor, the session skipped it, and the late anchor backfill said
-   *  nothing about files: the delivery was lost for good. */
-  deliveredMedia?: Array<{ filename: string; path: string }>;
   /** The tools the child has called so far (name + status; SOC2 — no args/results). */
   tools?: ChildTool[];
   /** Last-known STATIC session config (model/reasoning/speed/scope), merged across
@@ -548,21 +542,8 @@ export class SubAgentObserver {
         // (a REAL failure stays visible immediately), and a later terminal
         // done/aborted overwrites it (Convex upsertSubAgent allows error→done).
         // A child that truly died emits nothing more — the TTL sweep reaps it.
-        // BEFORE the reap, which detaches this observation: the files this child
-        // delivered have to be ON it when `reap` copies it into the late-anchor
-        // ledger, or a child that settles before its bubble exists loses them
-        // for good (the terminal upsert cannot attach without an anchor, and the
-        // late backfill is the only write that still can).
         const childMount =
           obs.outboundAgentMount ?? this.outboundAgentMount?.() ?? null;
-        const deliveredNow =
-          term === "done"
-            ? outboundMediaDeliveries(
-                textFromMessage(readField(payload, "message")),
-                childMount,
-              )
-            : [];
-        if (deliveredNow.length > 0) obs.deliveredMedia = deliveredNow;
         if (term !== "error") {
           this.reap(childKey, term);
         } else {
@@ -652,12 +633,6 @@ export class SubAgentObserver {
         };
         if (term === "done") {
           const raw = textFromMessage(readField(payload, "message"));
-          // Read the deliveries from the RAW answer: sanitising rewrites the
-          // directive to its basename, and the fetch needs the server path.
-          // Extracted above (before the reap) — reused here so the terminal
-          // upsert carries it too, for the ordinary case where the anchor is
-          // already known.
-          if (deliveredNow.length > 0) rec.deliveredMedia = deliveredNow;
           const text = this.sanitizeResult(raw, childMount);
           if (text) rec.resultText = text;
         } else {
@@ -1535,8 +1510,6 @@ export class SubAgentObserver {
       runId: string;
       status: SubAgentStatus;
       at: number;
-      /** Kept with the reaped child: only the late anchor can still deliver it. */
-      deliveredMedia?: Array<{ filename: string; path: string }>;
     }
   >();
 
@@ -1593,11 +1566,6 @@ export class SubAgentObserver {
           anchorExact: true,
           childSessionKey: o.childSessionKey,
           status: o.status,
-          // The delivery this child made BEFORE its bubble was known: this is
-          // the only write that can still carry it to the attach path.
-          ...(o.deliveredMedia !== undefined
-            ? { deliveredMedia: o.deliveredMedia }
-            : {}),
         });
       }
     }
@@ -1611,9 +1579,6 @@ export class SubAgentObserver {
         anchorExact: true,
         childSessionKey: childKey,
         status: entry.status,
-        ...(entry.deliveredMedia !== undefined
-          ? { deliveredMedia: entry.deliveredMedia }
-          : {}),
       });
     }
     return lateAnchors;
@@ -1978,9 +1943,6 @@ export class SubAgentObserver {
         runId: reaped.spawnRunHint,
         status: finalStatus,
         at: reaped.lastFrameAt,
-        ...(reaped.deliveredMedia !== undefined
-          ? { deliveredMedia: reaped.deliveredMedia }
-          : {}),
       });
     }
     this.observations.delete(childKey);

@@ -1,188 +1,15 @@
-// The webchat sink: recovery of gateway-delivered message-tool replies.
-// Pure-extractor tests + normalizer wiring (flag → wantsHistoryRecovery →
-// recoverVisibleText), pinned against the bench-captured 2026.6.5 shapes.
+// Positional `sessions.get` readers (the `/lossless` route), pinned against the
+// bench-captured transcript shapes; and the normalizer's message-tool diagnostics.
 import { describe, expect, it } from "vitest";
 import {
   extractLatestAssistantReply,
-  extractMessageToolReplies,
   isRestartRecoveryResumeEntry,
-  lastUserEntryText,
 } from "../src/providers/openclaw/history-recovery.js";
 import { Normalizer } from "../src/providers/openclaw/normalizer.js";
-
-const deliveryResult = (text: string, extra: Record<string, unknown> = {}) =>
-  JSON.stringify({
-    status: "ok",
-    deliveryStatus: "sent",
-    channel: "webchat",
-    target: "current-run",
-    sourceReplyDeliveryMode: "message_tool_only",
-    sourceReplySink: "internal-ui",
-    sourceReply: { text },
-    ...extra,
-  });
-
-const toolResultEntry = (resultJson: string) => ({
-  role: "toolResult",
-  toolName: "message",
-  content: [{ type: "toolResult", text: resultJson }],
-});
-
-describe("extractMessageToolReplies (pure)", () => {
-  it("extracts the delivered text from a bench-shaped transcript", () => {
-    const payload = {
-      messages: [
-        { role: "user", content: "Cherche les actualités…" },
-        toolResultEntry(deliveryResult("Voici les 10 faits IA…")),
-        { role: "assistant", content: [{ type: "text", text: "Envoyé dans le webchat." }] },
-      ],
-    };
-    expect(extractMessageToolReplies(payload)).toBe("Voici les 10 faits IA…");
-  });
-
-  it("joins multiple deliveries of the SAME turn in chronological order", () => {
-    const payload = {
-      messages: [
-        { role: "user", content: "long ask" },
-        toolResultEntry(deliveryResult("part one")),
-        toolResultEntry(deliveryResult("part two")),
-      ],
-    };
-    expect(extractMessageToolReplies(payload)).toBe("part one\n\npart two");
-  });
-
-  it("stops at the current-turn boundary (earlier turns never leak)", () => {
-    const payload = {
-      messages: [
-        toolResultEntry(deliveryResult("PREVIOUS turn delivery")),
-        { role: "user", content: "new ask" },
-        toolResultEntry(deliveryResult("current delivery")),
-      ],
-    };
-    expect(extractMessageToolReplies(payload)).toBe("current delivery");
-  });
-
-  it("ignores real external deliveries (telegram channel / explicit target)", () => {
-    const payload = {
-      messages: [
-        { role: "user", content: "ask" },
-        toolResultEntry(deliveryResult("to telegram", { channel: "telegram" })),
-        toolResultEntry(deliveryResult("to a peer", { target: "telegram:12345" })),
-      ],
-    };
-    expect(extractMessageToolReplies(payload)).toBe("");
-  });
-
-  it("ignores non-sent deliveries, malformed JSON and foreign tools", () => {
-    const payload = {
-      messages: [
-        { role: "user", content: "ask" },
-        toolResultEntry(deliveryResult("failed one", { deliveryStatus: "error" })),
-        toolResultEntry("{not json"),
-        { role: "toolResult", toolName: "web_search", content: [{ text: deliveryResult("x") }] },
-      ],
-    };
-    expect(extractMessageToolReplies(payload)).toBe("");
-  });
-
-  it("returns empty on hostile/empty payload shapes", () => {
-    expect(extractMessageToolReplies(null)).toBe("");
-    expect(extractMessageToolReplies({})).toBe("");
-    expect(extractMessageToolReplies({ messages: "nope" })).toBe("");
-  });
-});
 
 // -- normalizer wiring --------------------------------------------------------
 
 const KEY = "agent:agent-a:atrium:chat:u-x:chat1";
-
-const itemFrame = () => ({
-  type: "event",
-  event: "agent",
-  payload: {
-    sessionKey: KEY,
-    stream: "item",
-    data: {
-      itemId: "i1",
-      phase: "start",
-      kind: "tool",
-      name: "message",
-      title: "message",
-      status: "running",
-      suppressChannelProgress: true,
-    },
-  },
-});
-
-const ackFinalFrame = (runId: string) => ({
-  type: "event",
-  event: "chat",
-  payload: {
-    runId,
-    sessionKey: KEY,
-    seq: 9,
-    state: "final",
-    message: { role: "assistant", content: [{ type: "text", text: "Envoyé dans le webchat." }] },
-  },
-});
-
-describe("normalizer history-recovery wiring", () => {
-  it("flags the 6.5 message-tool item and requests recovery on an ack-only final", () => {
-    const n = new Normalizer(KEY);
-    n.beginTurn(0);
-    n.noteRunStarted("r1", 0);
-    n.feed(itemFrame(), 1);
-    expect(n.wantsHistoryRecovery).toBe(false); // no grace armed yet
-    n.feed(ackFinalFrame("r1"), 2);
-    expect(n.finalized).toBe(false); // ack is grace-held, not finalized
-    expect(n.wantsHistoryRecovery).toBe(true);
-    n.markRecoveryAttempted(0);
-    expect(n.wantsHistoryRecovery).toBe(false); // one-shot
-  });
-
-  it("recoverVisibleText applies the snapshot and finalizes the turn", () => {
-    const n = new Normalizer(KEY);
-    n.beginTurn(0);
-    n.noteRunStarted("r1", 0);
-    n.feed(itemFrame(), 1);
-    n.feed(ackFinalFrame("r1"), 2);
-    const events = n.recoverVisibleText("Voici les 10 faits IA…", 3);
-    const types = events.map((e) => (e as { type: string }).type);
-    expect(types).toContain("message.snapshot");
-    expect(types).toContain("message.final");
-    expect(n.finalized).toBe(true);
-    const final = events.find((e) => (e as { type: string }).type === "message.final") as {
-      text?: string;
-    };
-    expect(final?.text).toContain("Voici les 10 faits IA…");
-  });
-
-  it("never requests recovery without a message-tool item (plain ack turns keep today's behavior)", () => {
-    const n = new Normalizer(KEY);
-    n.beginTurn(0);
-    n.noteRunStarted("r1", 0);
-    n.feed(ackFinalFrame("r1"), 2);
-    expect(n.wantsHistoryRecovery).toBe(false);
-    // grace expiry still degrades to the ack (unchanged fallback)
-    const events = n.tick(100);
-    expect(n.finalized).toBe(true);
-    const final = events.find((e) => (e as { type: string }).type === "message.final") as {
-      text?: string;
-    };
-    expect(final?.text).toBe("Envoyé dans le webchat.");
-  });
-
-  it("recoverVisibleText is a no-op after the grace already flushed", () => {
-    const n = new Normalizer(KEY);
-    n.beginTurn(0);
-    n.noteRunStarted("r1", 0);
-    n.feed(itemFrame(), 1);
-    n.feed(ackFinalFrame("r1"), 2);
-    n.tick(100); // grace expired → finalized with ack
-    expect(n.finalized).toBe(true);
-    expect(n.recoverVisibleText("late text", 101)).toEqual([]);
-  });
-});
 
 describe("extractLatestAssistantReply (restart-recovery transcript scan)", () => {
   it("returns the assistant reply AFTER the last user entry", () => {
@@ -294,23 +121,6 @@ describe("restart-recovery resume prompt (2026.9.4 transcript shape)", () => {
     expect(isRestartRecoveryResumeEntry(null)).toBe(false);
   });
 
-  it("the ANCHOR is the user's own message, still found under the resume prompt", () => {
-    const payload = {
-      messages: [
-        { role: "user", content: "analyse ça s'il te plaît" },
-        resumeEntry(),
-        { role: "assistant", content: [{ text: "réponse reprise" }], stopReason: "stop" },
-      ],
-    };
-    expect(lastUserEntryText(payload)).toBe("analyse ça s'il te plaît");
-    // A real user entry after it is a real boundary again.
-    expect(
-      lastUserEntryText({ messages: [...payload.messages, { role: "user", content: "nouvelle question" }] }),
-    ).toBe("nouvelle question");
-    // Nothing but resume prompts: no anchor to match (the caller then keeps polling).
-    expect(lastUserEntryText({ messages: [resumeEntry()] })).toBe("");
-  });
-
   it("the reply of the resumed run is read, joined with what the interrupted run had committed", () => {
     expect(
       extractLatestAssistantReply({
@@ -389,39 +199,6 @@ describe("restart-recovery resume prompt (2026.9.4 transcript shape)", () => {
     ).toBe("");
   });
 
-  it("codex pass 10: a delivery made before the restart waits for the resumed run to ANSWER", () => {
-    // This reader is preferred over the assistant one by both callers, and a socket_drop
-    // recovery finalizes on the first non-empty text it reads: returned while the relaunched
-    // run is still writing, a pre-restart delivery becomes the whole answer.
-    const before = [
-      { role: "user", content: "analyse ça s'il te plaît" },
-      toolResultEntry(deliveryResult("livré avant la coupure")),
-      resumeEntry(),
-    ];
-    expect(extractMessageToolReplies({ messages: before })).toBe("");
-    // Once the resumed run has answered with an explicit terminal stopReason, that delivery is
-    // the turn's reply again.
-    expect(
-      extractMessageToolReplies({
-        messages: [
-          ...before,
-          { role: "assistant", stopReason: "stop", content: "réponse reprise" },
-        ],
-      }),
-    ).toBe("livré avant la coupure");
-    // FAIL-CLOSED, exactly as in the assistant scan: a run still working proves nothing, and
-    // neither does a shape carrying no stopReason, an unknown one, or an interruption.
-    for (const stopReason of [undefined, null, "toolUse", "weird", "aborted"]) {
-      expect(
-        extractMessageToolReplies({
-          messages: [
-            ...before,
-            { role: "assistant", stopReason, content: "je consolide" },
-          ],
-        }),
-      ).toBe("");
-    }
-  });
 });
 
 // --- G-16: an unreadable message-tool call is never silent -------------------
@@ -470,19 +247,15 @@ describe("an INTER-SESSION entry inside a turn (2026.9.4)", () => {
     ],
   });
 
-  it("ends the turn: it becomes the anchor, and NOTHING is recovered", () => {
+  it("ends the turn: NOTHING after it is read as this turn's reply", () => {
     const payload = turnEndedBy(
       interSession("subagent_announce", {
         __openclaw: { idempotencyKey: "announce:v1:child:run-7:active-wake" },
       }),
     );
-    // The anchor is that entry, not the user's message: an anchored recovery keeps polling and
-    // settles on its deadline rather than delivering what follows a boundary it cannot read.
-    expect(lastUserEntryText(payload)).toBe("Child complete");
     // And the text after it — a complete, terminal reply — belongs to whatever that entry
     // started. Returning it is the inter-turn corruption this rule exists to prevent.
     expect(extractLatestAssistantReply(payload)).toBe("");
-    expect(extractMessageToolReplies(payload)).toBe("");
   });
 
   it("codex pass 9: a CALLER-CRAFTED `:active-wake` key changes nothing", () => {
@@ -495,7 +268,6 @@ describe("an INTER-SESSION entry inside a turn (2026.9.4)", () => {
       }),
     );
     expect(extractLatestAssistantReply(payload)).toBe("");
-    expect(lastUserEntryText(payload)).toBe("Child complete");
   });
 
   it("settle, direct announce, durable media handoff, plain send: all the same", () => {
@@ -509,36 +281,7 @@ describe("an INTER-SESSION entry inside a turn (2026.9.4)", () => {
     ]) {
       const payload = turnEndedBy(entry);
       expect(extractLatestAssistantReply(payload)).toBe("");
-      expect(lastUserEntryText(payload)).toBe("Child complete");
     }
-  });
-
-  it("codex pass 10: a delivery made AFTER it belongs to that turn, not to this one", () => {
-    // Scanning backwards, the delivery is met before the boundary: collected first, then
-    // returned when the boundary merely stopped the loop. It is another turn's answer.
-    const payload = {
-      messages: [
-        { role: "user", content: "question utilisateur suffisamment longue" },
-        interSession("agent_harness_task", {
-          __openclaw: { idempotencyKey: "announce:harness:job:active-wake" },
-        }),
-        toolResultEntry(deliveryResult("FOREIGN TURN")),
-      ],
-    };
-    expect(extractMessageToolReplies(payload)).toBe("");
-    expect(lastUserEntryText(payload)).toBe("Child complete");
-  });
-
-  it("a message-tool delivery made BEFORE it is out of reach — the declared cost", () => {
-    const payload = {
-      messages: [
-        { role: "user", content: "réponds dans le webchat" },
-        toolResultEntry(deliveryResult("la vraie réponse")),
-        interSession("subagent_announce"),
-        { role: "assistant", stopReason: "stop", content: "Envoyé dans le webchat." },
-      ],
-    };
-    expect(extractMessageToolReplies(payload)).toBe("");
   });
 
   it("under a resume prompt it still stops the recovery, answered or not", () => {
@@ -570,35 +313,11 @@ describe("an INTER-SESSION entry inside a turn (2026.9.4)", () => {
         { role: "assistant", stopReason: "stop", content: "réponse reprise" },
       ],
     };
-    expect(lastUserEntryText(payload)).toBe("go");
     expect(extractLatestAssistantReply(payload)).toBe("avant coupure\n\nréponse reprise");
   });
 });
 
 describe("G-16: message-tool args we cannot read", () => {
-  it("UNREADABLE args (malformed JSON) arm the transcript recovery instead of a blank turn", () => {
-    const n = new Normalizer(KEY);
-    n.beginTurn(0);
-    n.noteRunStarted("r1", 0);
-    n.feed(toolStartFrame('{"message": "half a paylo'), 1);
-    n.feed(ackFinalFrame("r1"), 2);
-    expect(n.wantsHistoryRecovery).toBe(true);
-  });
-
-  it("a DELIBERATE non-reply (explicit external channel) does NOT arm recovery", () => {
-    const n = new Normalizer(KEY);
-    n.beginTurn(0);
-    n.noteRunStarted("r1", 0);
-    n.feed(
-      toolStartFrame({ action: "send", channel: "telegram", message: "for someone else" }),
-      1,
-    );
-    n.feed(ackFinalFrame("r1"), 2);
-    // Readable args that simply are not this conversation's reply: nothing was
-    // lost, so claiming a recovery is needed would be a false alarm.
-    expect(n.wantsHistoryRecovery).toBe(false);
-  });
-
   it("the final event carries the unreadable count so the empty verdict can NAME its cause", () => {
     const n = new Normalizer(KEY);
     n.beginTurn(0);
@@ -626,7 +345,8 @@ describe("G-16: message-tool args we cannot read", () => {
 // --- G-13: a final the gateway already CUT ----------------------------------
 // `broadcastChatFinal` runs the reply through the DISPLAY projection, whose cap
 // is 8 000 chars + the marker below (verified in the deployed 2026.7.1 build).
-// Nothing detected it: the cut text was persisted as the answer, marker and all.
+// The cut text is a live overlay like any other: the turn closes on the gateway's
+// terminal, and the durable row — whole — replaces it when the run settles.
 const MARKER = "\n...(truncated)...";
 
 const truncatedFinalFrame = (runId: string, body: string) => ({
@@ -645,130 +365,14 @@ const truncatedFinalFrame = (runId: string, body: string) => ({
 });
 
 describe("G-13: a gateway-truncated chat final", () => {
-  it("does NOT close the turn, and stays eligible for transcript recovery even though it holds text", () => {
+  it("is shown and closes the turn like any final (the durable row is whole)", () => {
     const n = new Normalizer(KEY);
     n.beginTurn(0);
     n.noteRunStarted("r1", 0);
     const ev = n.feed(truncatedFinalFrame("r1", "a".repeat(8000)), 1);
-    // The cut text IS shown (better than a blank bubble)...
     const snap = ev.find((e) => e.type === "message.snapshot");
     expect(String(snap?.text ?? "").length).toBeGreaterThan(8000);
-    // ...but the turn is NOT finalized on it, and the recovery is armed — the one
-    // case where already having an answer must not stop us looking for it.
-    expect(n.finalized).toBe(false);
-    expect(n.wantsHistoryRecovery).toBe(true);
-  });
-
-  it("the recovered FULL text replaces the cut one and closes the turn", () => {
-    const n = new Normalizer(KEY);
-    n.beginTurn(0);
-    n.noteRunStarted("r1", 0);
-    n.feed(truncatedFinalFrame("r1", "a".repeat(8000)), 1);
-    n.markRecoveryAttempted(0);
-    const ev = n.recoverVisibleText("a".repeat(8000) + "THE REST OF THE ANSWER", 2);
-    const snap = ev.find((e) => e.type === "message.snapshot");
-    expect(String(snap?.text)).toContain("THE REST OF THE ANSWER");
-    expect(String(snap?.text)).not.toContain("(truncated)");
     expect(n.finalized).toBe(true);
-  });
-
-  it("when the recovery brings nothing back, the grace finalizes with the cut text (never an open turn)", () => {
-    const n = new Normalizer(KEY);
-    n.beginTurn(0);
-    n.noteRunStarted("r1", 0);
-    n.feed(truncatedFinalFrame("r1", "a".repeat(8000)), 1);
-    n.markRecoveryAttempted(0);
-    const ev = n.tick(1 + 21); // past TRUNCATED_FINAL_GRACE
-    const final = ev.find((e) => e.type === "message.final");
-    expect(n.finalized).toBe(true);
-    expect(final).toMatchObject({
-      diagnosticFinalizeCause: "truncated_final_grace",
-      truncatedFinals: 1,
-    });
-  });
-
-  it("a compaction reset CANCELS the truncated-final wait (codex P2)", () => {
-    const n = new Normalizer(KEY);
-    n.beginTurn(0);
-    n.noteRunStarted("r1", 0);
-    n.feed(truncatedFinalFrame("r1", "a".repeat(8000)), 1);
-    // The gateway then abandons the run to compact: the cut final is invalidated
-    // and the replay is in flight…
-    n.feed(
-      {
-        type: "event",
-        event: "agent",
-        payload: {
-          sessionKey: KEY,
-          runId: "r1",
-          stream: "lifecycle",
-          data: { phase: "end", livenessState: "abandoned", replayInvalid: true },
-        },
-      },
-      2,
-    );
-    // …so the 20 s wait armed by that final must not close the turn under it.
-    n.tick(2 + 21);
-    expect(n.finalized).toBe(false);
-  });
-
-  it("codex P1: an already-armed lifecycle grace does not finalize the cut text first", () => {
-    const n = new Normalizer(KEY);
-    n.beginTurn(0);
-    n.noteRunStarted("r1", 0);
-    // The gateway ends the run (10 s follow-on grace armed) and THEN sends the
-    // truncated final — a frame order this normalizer handles explicitly.
-    n.feed(
-      {
-        type: "event",
-        event: "agent",
-        payload: {
-          sessionKey: KEY,
-          runId: "r1",
-          stream: "lifecycle",
-          data: { phase: "end", stopReason: "stop", livenessState: "working" },
-        },
-      },
-      1,
-    );
-    n.feed(truncatedFinalFrame("r1", "a".repeat(8000)), 2);
-    // The recovery RPC alone may take 10 s: the 10 s lifecycle grace must not
-    // close the turn on the cut text before it can answer.
-    n.tick(2 + 11);
-    expect(n.finalized).toBe(false);
-    expect(n.wantsHistoryRecovery).toBe(true);
-  });
-
-  it("codex P2: a SHORT reply that merely ends with the marker is not a truncation", () => {
-    const n = new Normalizer(KEY);
-    n.beginTurn(0);
-    n.noteRunStarted("r1", 0);
-    // An agent quoting a log excerpt, or told to end that way: the body is
-    // nowhere near the projection cap, so nothing was cut.
-    n.feed(truncatedFinalFrame("r1", "tail of the log"), 1);
-    expect(n.finalized).toBe(true);
-    expect(n.wantsHistoryRecovery).toBe(false);
-  });
-
-  it("an UNtruncated final is untouched: it finalizes immediately as before", () => {
-    const n = new Normalizer(KEY);
-    n.beginTurn(0);
-    n.noteRunStarted("r1", 0);
-    n.feed(
-      {
-        type: "event",
-        event: "chat",
-        payload: {
-          runId: "r1",
-          sessionKey: KEY,
-          seq: 9,
-          state: "final",
-          message: { role: "assistant", content: [{ type: "text", text: "short answer" }] },
-        },
-      },
-      1,
-    );
-    expect(n.finalized).toBe(true);
-    expect(n.wantsHistoryRecovery).toBe(false);
+    expect(n.nextTimeout(2)).toBeNull();
   });
 });
