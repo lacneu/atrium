@@ -1074,7 +1074,8 @@ describe("codex pass 2 — a restarted bridge learns the inputs held during the 
     ]);
     expect(before).toBeDefined();
     const target = await t.query(internal.stuckStreams.resumeTarget, { messageId: bubble });
-    expect(target?.heldInputs.map((h) => h.sendId)).toEqual(["send-b", "send-q"]);
+    expect(target?.kind).toBe("ask");
+    expect(target?.kind === "ask" ? target.heldInputs.map((h) => h.sendId) : null).toEqual(["send-b", "send-q"]);
   });
 });
 
@@ -1270,14 +1271,14 @@ describe("codex pass 4 — a stale /resume is never sent (P1)", () => {
     expect(urls).toEqual(["http://bridge-prod/resume"]);
   });
 
-  test("the chat moved to another instance since the sweep: no bridge is asked, the bubble closes", async () => {
+  test("the chat moved to another instance since the sweep: no bridge is asked — and the bubble stays OPEN (0.102.1, Codex pass 9: a route elsewhere is no proof of its end)", async () => {
     const t = convexTest(schema, modules);
     const { chatId, id } = await orphan(t, "on");
     await t.run((ctx) => ctx.db.patch(chatId, { instanceName: "other" }));
     const urls = stubBridge();
     await t.action(internal.stuckStreams.resumeOrClose, { messageId: id, instanceName: "prod" });
     expect(urls).toEqual([]);
-    expect((await t.run((ctx) => ctx.db.get(id)))?.status).toBe("error");
+    expect((await t.run((ctx) => ctx.db.get(id)))?.status).toBe("streaming");
   });
 
 });

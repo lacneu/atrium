@@ -6250,15 +6250,21 @@ function Composer({
           />
           {unavailable ? (
             // Greyed, non-clickable send: the bridge is down, so persisting a
-            // turn would only produce an unanswerable message.
-            <button
-              type="button"
-              className="oc-composer__send"
-              disabled
-              aria-label={m.chat_send_unavailable_aria()}
-            >
-              <ArrowUp size={18} aria-hidden />
-            </button>
+            // turn would only produce an unanswerable message. STOP stays offered
+            // while the chat is busy (0.102.1): a projected turn is no longer closed
+            // on a clock, so an unreachable instance leaves it running — and the Stop
+            // settles it in Convex whatever the bridge answers (bridge.dispatchAbort).
+            <>
+              {queueMode.mode === "queue" ? <StopTurnButton /> : null}
+              <button
+                type="button"
+                className="oc-composer__send"
+                disabled
+                aria-label={m.chat_send_unavailable_aria()}
+              >
+                <ArrowUp size={18} aria-hidden />
+              </button>
+            </>
           ) : queueMode.mode === "queue" ? (
             /* The chat is BUSY — an in-flight turn OR a running sub-agent (the
                parent turn already finalized, but the bridge is one-turn-per

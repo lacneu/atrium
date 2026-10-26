@@ -1,5 +1,75 @@
 # Changelog
 
+## [0.102.1] — An OpenClaw run ends when the gateway says so, never on a clock
+
+Patch release. Convex, the frontend and the bridge change. Deploy **Convex first, then the
+frontend, then the bridge**. The schema gains one optional field (`messages.projectedTurn`).
+
+**A long silence no longer turns a running answer into an error.** Production, 2026-10-25:
+one model call streamed a tool call for seventeen minutes, and the arguments of a tool call
+in progress produce no event a client sees. Every read of the transcript said the run was
+active, yet the stuck-stream watchdog, which closes a bubble nothing has written to for
+12 minutes, marked it "orphaned" — and when the gateway retried the call and the run
+answered two minutes later, the answer landed under the error card. The OpenClaw Control
+UI has no such clock: a run ends on the gateway's terminal, or on a read of the gateway's
+state that finds it over (`chat-history-stream.ts:187-215`), and it re-reads that state on
+every reconnection. Atrium now does the same for every OpenClaw conversation: the watchdog
+no longer closes a projected bubble, whatever its silence. The bridge that runs the turn
+marks the bubble as an OpenClaw one when it opens it, so this holds from a new
+conversation's first answer, even before any read of its transcript succeeded.
+
+**What the watchdog covered is now asked of the gateway, on every cycle.** Each time an
+OpenClaw instance answers Atrium's periodic agent discovery, Atrium looks at every OpenClaw
+answer still running on it and asks the gateway about each one nobody is already following:
+still running, it streams on; over, it is settled from the conversation's transcript. The
+same question is asked at once when the bridge restarts or a conversation's socket closes,
+to save a cycle — but the cycle is what guarantees it, so an early, lost or refused
+question costs a cycle, never an answer. The gateway's answer is applied: still running, the bubble streams on;
+no longer running, the transcript is read and settles it from the run's own rows, and only
+what that read leaves open is closed. "No longer running" needs a proof — an idle session,
+or the gateway's exact list of active runs without this one; an active session whose list
+the gateway withholds (it does while a run's identity is incomplete) proves nothing. No
+answer is never taken for "over", and an answer is closed only once its end was actually
+read from the transcript and stored: while the instance cannot be reached, or its
+transcript cannot be read, the bubble stays running, the conversation shows the instance
+unavailable, and the next cycle asks again. In a conversation that switches agents between
+turns, an earlier agent's answer still running is read on its own, without disturbing the
+current one. The question goes to the instance and agent the turn was sent to, under the
+answer's own session; when Atrium cannot tell where to ask, the answer stays running —
+being unable to ask is never taken for an end. The read that settles it starts where
+Atrium's reads of that session stopped; when the gateway cannot answer from there, it
+takes the newest page, as the Control UI does. The run's final answer is in that page, and
+it now shows in the bubble even when rows in between were never read (before, such a
+bubble kept only what had streamed live). During the deployment, a bridge not yet updated
+answers without saying why: that answer closes nothing either — the bubble is settled once
+its bridge is updated.
+When the gateway cannot yet say, the bridge keeps listening to that conversation, so the
+run's end settles the bubble when it comes. The deliberate reconcile of the diagnostic API (`reconcile_chat`) asks the
+same question for an OpenClaw bubble instead of closing it.
+
+**Stop is always offered while a turn runs**, including when the instance is unavailable —
+it settles the bubble in Convex whatever the bridge answers. It used to disappear with the
+greyed-out send button.
+
+**A bubble already marked "orphaned" — or "connection lost" by a restart sweep — is
+corrected by the end of its own run.** The run's
+terminal, or the settle of its transcript rows, now replaces the watchdog's error with the
+answer (status, text, error cleared). Only the same run: another run's terminal leaves it as
+it is, and a user's Stop or a gateway error — which are terminals — still win. A bubble
+closed before this release whose run has already ended is not revisited by itself; an
+operator can ask for it once with the internal mutation
+`stuckStreams:reprojectOrphanedBubble` (`{ "messageId": "…" }`), which re-projects the run
+from its stored rows and does nothing unless the bubble is such an orphan and the run is
+known over.
+
+**Hermes is unchanged.** A Hermes conversation is not projected, and the watchdog remains its
+safety net, as before.
+
+**Dependencies.** `zod` 4.6.6 (high-severity advisory GHSA-mrhx-c7xc-m3w5).
+
+**Rolling back** is redeploying 0.102.0 (bridge, then frontend, then Convex). Nothing is
+migrated.
+
 ## [0.102.0] — OpenClaw conversations always follow the session transcript
 
 Minor release. Convex, the frontend and the bridge change. Deploy **Convex first, then the

@@ -2161,6 +2161,13 @@ export default defineSchema({
     // (deterministic reply-to-send correlation for the summarize engine); never
     // projected to clients.
     turnSessionKey: v.optional(v.string()),
+    // 0.102.1 (Codex pass 2): the bridge opened this bubble for a turn of the transcript
+    // projection (an OpenClaw session) — its end is the gateway's, never the stuck-stream
+    // watchdog's (stuckStreams `projectedOpenClawBubble`). Stated by the run's own bridge at
+    // the opening, so the watchdog decides on the message it already read: no read of the
+    // conversation's instance, nothing for a Hermes bubble (never set there). Absent on
+    // bubbles opened before 0.102.1 (the conversation's transcript facts decide then).
+    projectedTurn: v.optional(v.boolean()),
     // The agent an IMPORTED message was answered by, as a name only.
     //
     // Inert by construction: no routing path reads it. It exists because absence

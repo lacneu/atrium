@@ -50,6 +50,7 @@ import {
   FULL_MESSAGE_MAX_CHARS,
   TranscriptShadow,
   type SessionEventSource,
+  type TranscriptShadowDeps,
 } from "./providers/openclaw/transcript-shadow.js";
 import {
   SESSION_SCOPED_EVENTS_CAP,
@@ -467,33 +468,7 @@ class Session implements BridgeSession {
       chatId,
       sessionKey,
       instanceName: this.instanceName,
-      readHistory: async (cursor, opts) =>
-        (
-          await connection.request(
-            "chat.history",
-            chatHistoryParams(
-              {
-                sessionKey,
-                cursor,
-                limit: CHAT_HISTORY_PAGE_LIMIT,
-                maxBytes: CHAT_HISTORY_PAGE_MAX_BYTES,
-                ...(opts?.inputRunIds === undefined ? {} : { inputRunIds: opts.inputRunIds }),
-              },
-              connection.gatewayVersion,
-            ),
-          )
-        ).payload,
-      // The full message of a row `chat.history` capped for display (0.101.3): the Control
-      // UI's own question (ui/src/pages/chat/chat-pane-sidebar-layout.ts:270-277 at
-      // v2026.9.33), with its bound.
-      readMessage: async (messageId) =>
-        (
-          await connection.request("chat.message.get", {
-            sessionKey,
-            messageId,
-            maxChars: FULL_MESSAGE_MAX_CHARS,
-          })
-        ).payload,
+      ...transcriptReaders(connection, sessionKey),
       // Convex's ANSWER is the reconciler's input (the runs it found over, a refusal to
       // split): it was dropped here, so no settled run ever reached the turn (codex phase 4
       // pass 6 review).
@@ -537,6 +512,13 @@ class Session implements BridgeSession {
         this.transcriptShadow.close();
         this.childRows?.close();
         copier?.close();
+        // THE RECONNECTION HYDRATION (0.102.1, Codex pass 4): EVERY close of this
+        // conversation's socket, whatever its cause and whatever this process held about a
+        // turn, asks Convex once — the Control UI re-reads the gateway's state at every
+        // reconnection instead of deciding from its own. Convex decides from its state
+        // (a projected bubble of this chat still streaming is asked of the gateway; none,
+        // nothing), and the request is held until acknowledged (convex-writer).
+        void writer.resumeStreams?.(chatId);
       });
     }
   }
@@ -1275,7 +1257,46 @@ const MAX_RECENT_CHAT_KEYS = 4;
  * the log, without the address — the routing key identifies them for an operator
  * and carries no personal data into the bridge log.
  */
-function gatewayNameFor(routing: SessionRouting): string {
+/**
+ * How a reconciler reads ONE session through ONE connection: its `chat.history` pages and
+ * the full message of a capped row (0.101.3: the Control UI's own question,
+ * ui/src/pages/chat/chat-pane-sidebar-layout.ts:270-277 at v2026.9.33, with its bound).
+ * Shared by a conversation's own socket and a read of a bubble's session through a
+ * connection of its own (server.ts `readBubbleSessionApart`, Codex pass 7).
+ */
+export function transcriptReaders(
+  connection: Pick<OpenClawConnection, "request" | "gatewayVersion">,
+  sessionKey: string,
+): Pick<TranscriptShadowDeps, "readHistory" | "readMessage"> {
+  return {
+    readHistory: async (cursor, opts) =>
+      (
+        await connection.request(
+          "chat.history",
+          chatHistoryParams(
+            {
+              sessionKey,
+              cursor,
+              limit: CHAT_HISTORY_PAGE_LIMIT,
+              maxBytes: CHAT_HISTORY_PAGE_MAX_BYTES,
+              ...(opts?.inputRunIds === undefined ? {} : { inputRunIds: opts.inputRunIds }),
+            },
+            connection.gatewayVersion,
+          ),
+        )
+      ).payload,
+    readMessage: async (messageId) =>
+      (
+        await connection.request("chat.message.get", {
+          sessionKey,
+          messageId,
+          maxChars: FULL_MESSAGE_MAX_CHARS,
+        })
+      ).payload,
+  };
+}
+
+export function gatewayNameFor(routing: SessionRouting): string {
   const wanted = routing.gatewayUser;
   if (wanted === undefined) return routing.canonical;
   const presented = presentedIdentity(wanted, routing.canonical);

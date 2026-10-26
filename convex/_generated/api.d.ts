@@ -160,6 +160,7 @@ import type * as lib_sessionAccess from "../lib/sessionAccess.js";
 import type * as lib_sessionRowStatus from "../lib/sessionRowStatus.js";
 import type * as lib_signedAnnouncements from "../lib/signedAnnouncements.js";
 import type * as lib_snapshotRegression from "../lib/snapshotRegression.js";
+import type * as lib_streamOrphan from "../lib/streamOrphan.js";
 import type * as lib_streamTrace from "../lib/streamTrace.js";
 import type * as lib_subAgentFailure from "../lib/subAgentFailure.js";
 import type * as lib_subAgentSettle from "../lib/subAgentSettle.js";
@@ -369,6 +370,7 @@ declare const fullApi: ApiFromModules<{
   "lib/sessionRowStatus": typeof lib_sessionRowStatus;
   "lib/signedAnnouncements": typeof lib_signedAnnouncements;
   "lib/snapshotRegression": typeof lib_snapshotRegression;
+  "lib/streamOrphan": typeof lib_streamOrphan;
   "lib/streamTrace": typeof lib_streamTrace;
   "lib/subAgentFailure": typeof lib_subAgentFailure;
   "lib/subAgentSettle": typeof lib_subAgentSettle;

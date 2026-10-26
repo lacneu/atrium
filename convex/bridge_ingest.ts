@@ -216,11 +216,17 @@ type IngestOp =
       dispatchOutboxId?: string | null;
       /** Projection `on` (phase 4): the steer segment a deferred bubble opens as. */
       runSegment?: number;
+      /** 0.102.1: a projected (OpenClaw) turn — the bubble's end is the gateway's. */
+      projectedTurn?: boolean;
     }
   // Delivery recorder clock calibration: lightweight (no writes) so its round-trip is
   // free of server work and yields a clean bridge<->Convex skew. See deliveryTiming.ts.
   | { op: "calibrate" }
   | { op: "sweepStreams" }
+  // 0.102.1 — a conversation's gateway socket closed (every close, Codex pass 4): that
+  // chat's projected bubbles still streaming are asked of the gateway. Without `chatId`
+  // (a bridge of the first passes): the instance's projected bubbles.
+  | { op: "resumeStreams"; chatId?: string }
   // `rec*` fields are present only while a turn is being recorded (bridge tags the
   // flush): recSessionId is the turn's recording session (Convex records only if it
   // still matches the active one), bridgeSentAt (t1) + bridgeSkew feed segment A,
@@ -913,6 +919,26 @@ export const ingest = httpAction(async (ctx, request) => {
       );
       return json({ ok: true, swept: res.swept });
     }
+    case "resumeStreams": {
+      // A RECONNECTION, not a boot: the calling bridge lost a conversation's socket (any
+      // close, Codex pass 4) and lives on. Convex decides from ITS state: that chat's
+      // projected bubbles still streaming are asked what the gateway says of them; none,
+      // nothing happens. The chat passed the boundary check above (its target), and the
+      // mutation re-checks it atomically. An older bridge names no chat: its instance's
+      // projected bubbles, as before. Nothing else is touched.
+      if (typeof body.chatId === "string") {
+        await ctx.runMutation(internal.stuckStreams.resumeChatStreams, {
+          instanceName: boundInstanceName,
+          chatId: body.chatId,
+        });
+      } else {
+        await ctx.runMutation(internal.stuckStreams.sweepInstanceStreams, {
+          instanceName: boundInstanceName,
+          projectedOnly: true,
+        });
+      }
+      return json({ ok: true });
+    }
     case "calibrate":
       // Lightweight clock reference for the delivery recorder (NO writes): serverNow is
       // the entry timestamp, so the bridge's measured round-trip excludes server work
@@ -933,6 +959,7 @@ export const ingest = httpAction(async (ctx, request) => {
         body.runSegment <= 10_000
           ? { runSegment: body.runSegment }
           : {}),
+        ...(body.projectedTurn === true ? { projectedTurn: true } : {}),
         boundInstanceName,
       });
       // Delivery recorder: a ONCE-per-turn probe (not per delta) telling the bridge

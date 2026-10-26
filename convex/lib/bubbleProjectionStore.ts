@@ -14,6 +14,7 @@ import { ALL_SEGMENTS, deletedMergeOf, segmentDeleted, steerSeqsOf, tombstonedSe
 import { effectiveOrder, QUEUED_ORDER_SENTINEL } from "./messageOrder";
 import { isDeliveryRun } from "./deliveryRuns";
 import { bubbleInScope, type BubbleScope } from "./projectedRuns";
+import { isWatchdogOrphan } from "./streamOrphan";
 import { syncBubbleRowParts } from "./rowParts";
 import { maskCredentialId } from "./chatRenderState";
 import {
@@ -306,15 +307,14 @@ async function runFacts(
 ): Promise<RunFacts | undefined> {
   const run = await runOf(ctx, scope, runId, budget);
   if (run === null) return undefined;
-  const covered =
-    complete &&
-    run.firstSeq !== undefined &&
-    run.lastSeq !== undefined &&
-    run.firstSeq > scope.floorSeq &&
-    !overlapsGap(scope.gaps, run.firstSeq, run.lastSeq);
+  const covered = complete && run.firstSeq !== undefined && run.lastSeq !== undefined;
+  const belowFloor = covered && run.firstSeq! <= scope.floorSeq;
+  const gapped = covered && overlapsGap(scope.gaps, run.firstSeq!, run.lastSeq!);
   return {
     settled: run.settledAt !== undefined,
     covered,
+    ...(belowFloor ? { belowFloor: true as const } : {}),
+    ...(gapped ? { gapped: true as const } : {}),
     status: run.status as RunStatus,
     ...(run.errorText !== undefined ? { errorText: run.errorText } : {}),
   };
@@ -650,7 +650,8 @@ async function loadBubble(
   // it reads the message again (and the rewrite once more after it), its live row and
   // parts, and drains the queue — whose busy check reads the chat's next streaming bubble
   // (up to a document's 1 MiB). Reserved now, so the segments loaded after it stop in time.
-  if (message.status === "streaming") {
+  const orphaned = isWatchdogOrphan(message);
+  if (message.status === "streaming" || orphaned) {
     budget.bytes += 2 * docBytes(message) + SETTLE_RESERVE_BYTES;
     budget.queries += SETTLE_RESERVE_QUERIES;
   }
@@ -698,6 +699,7 @@ async function loadBubble(
     ...(foreignRows ? { uncovered: true } : {}),
     ...(layoutKey(message.rowLayout) !== undefined ? { layoutKey: layoutKey(message.rowLayout) } : {}),
     ...(message.error !== undefined ? { hasError: true } : {}),
+    ...(orphaned ? { orphaned: true } : {}),
   });
 }
 
@@ -823,7 +825,10 @@ async function executePlan(
       await ctx.db.patch(messageId, { error: maskCredentialId(w.errorText), updatedAt: now });
       result.rewritten++;
     }
-    const settle = message.status === "streaming" ? w.settle : undefined;
+    // A bubble the watchdog closed while its run ran is settled by that run's end, through
+    // the same core, under the run's generation (0.102.1 — finalize reopens it).
+    const orphaned = isWatchdogOrphan(message);
+    const settle = message.status === "streaming" || orphaned ? w.settle : undefined;
     const settling = settle !== undefined;
     if (settle !== undefined) {
       // The recomposed text is the WHOLE bubble: a merge's parked parent reply is in it
@@ -839,6 +844,7 @@ async function executePlan(
         ...(settle === "error" && w.error !== undefined ? { error: w.error } : {}),
         finalizeCause: "transcript_settled",
         boundInstanceName: scope.instanceName,
+        ...(orphaned && message.runId !== undefined ? { expectedRunId: message.runId } : {}),
         // A run over with nothing a reader sees leaves no bubble (CU-21), as phase 3's
         // live terminal already did — but tool cards or files its rows lay out ARE seen.
         ...(settle === "complete" && (w.layout ?? message.rowLayout ?? []).length === 0 ? { dropIfEmpty: true } : {}),

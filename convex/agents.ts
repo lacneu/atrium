@@ -82,6 +82,7 @@ async function upsertInstanceDiscovery(
     if (existing && existing.lastPollOk === true && existing.error === undefined) {
       return; // nothing a consumer reads changed
     }
+
     const fields = {
       instanceName,
       lastPollAt: patch.now,
@@ -245,6 +246,24 @@ export const applyDiscovery = internalMutation({
 
     const now = Date.now();
     await upsertInstanceDiscovery(ctx, instanceName, { ok: true, now });
+    // THE RECONCILIATION CYCLE (0.102.1, Codex pass 5): every successful discovery of an
+    // OpenClaw instance — the instance answers — asks about each projected bubble of it
+    // still streaming (stuckStreams.sweepInstanceStreams, projected-only): the bridge
+    // answers `followed` at no cost when a live socket already listens, else reads the
+    // gateway's state and applies it. Level-triggered, like the Control UI's tab that
+    // re-reads the gateway at every reconnection: an event missed, early or refused is
+    // looked at again next cycle. It never ends a bubble itself, and adds no timer (this
+    // poll is the existing one). A Hermes instance is not projected: nothing scheduled.
+    const inst = await ctx.db
+      .query("instances")
+      .withIndex("by_name", (q) => q.eq("name", instanceName))
+      .first();
+    if (inst !== null && inst.kind !== "hermes") {
+      await ctx.scheduler.runAfter(0, internal.stuckStreams.sweepInstanceStreams, {
+        instanceName,
+        projectedOnly: true,
+      });
+    }
 
     const existing = await ctx.db
       .query("agents")

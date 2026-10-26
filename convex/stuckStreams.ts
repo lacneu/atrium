@@ -32,6 +32,9 @@ import { failSummarizeForChat } from "./chatSummaries";
 import { providerSessionClearPatch } from "./lib/providerSession";
 import { clearLiveActivity } from "./lib/liveTurnDifficulty";
 import { traceRegressionSummary } from "./lib/streamTrace";
+import { isWatchdogOrphan, STUCK_STREAM_ERROR_CODE, SWEEP_ERROR_CODE } from "./lib/streamOrphan";
+import { transcriptStoredText } from "./lib/transcriptProjection";
+import { chatAllowsInstance } from "./lib/ingestAuthz";
 
 /**
  * When the watchdog flips a stale streaming message, also release a documentary
@@ -129,8 +132,9 @@ async function releaseStuckConvert(
 export const STALE_STREAM_MS = 12 * 60 * 1000;
 // Stable, non-PHI error code; the frontend maps it to a localized, actionable
 // message (RunStatus → m.runstatus_error_orphaned). Gateway-provided errors keep
-// their own text — this code is reserved for the watchdog.
-export const STUCK_STREAM_ERROR_CODE = "stream_orphaned";
+// their own text — this code is reserved for the watchdog (lib/streamOrphan, where
+// the run's own terminal may still correct what it closed).
+export { STUCK_STREAM_ERROR_CODE };
 const BATCH = 25;
 
 // A DELIBERATE, chat-scoped reconcile for the self-correction loop (#7): an AI
@@ -157,6 +161,8 @@ export const reconcileChatStuckStreams = internalMutation({
       .order("desc")
       .take(50);
     let reconciled = 0;
+    let asked = 0;
+    const chat = await ctx.db.get(id);
     for (const msg of recent) {
       if (msg.status !== "streaming") continue;
       const row = await ctx.db
@@ -165,6 +171,19 @@ export const reconcileChatStuckStreams = internalMutation({
         .first();
       const heartbeat = Math.max(row?.updatedAt ?? 0, msg.updatedAt);
       if (heartbeat >= cutoff) continue; // recent activity = actively streaming
+      // A projected OpenClaw bubble is not Atrium's to close (0.102.1): the deliberate
+      // reconcile asks the gateway, as a reconnection does, and applies its answer.
+      if (await projectedOpenClawBubble(ctx, msg, chat, false)) {
+        const instanceName = row?.boundInstance ?? msg.boundInstance ?? chat?.instanceName;
+        if (instanceName !== undefined) {
+          await ctx.scheduler.runAfter(0, internal.stuckStreams.resumeOrClose, {
+            messageId: msg._id,
+            instanceName,
+          });
+          asked++;
+        }
+        continue;
+      }
       // Preserve the partial text (row for current, legacy liveText for pre-split),
       // flip the lifecycle so isRunning releases, and delete the heartbeat row in the
       // SAME mutation (atomic → invariant preserved).
@@ -214,7 +233,6 @@ export const reconcileChatStuckStreams = internalMutation({
     // covers the rare "turn completed but the settle never cleared the lock" case
     // (the cron watchdog only catches stuck STREAMS). The age gate avoids killing a
     // legitimately in-progress fetch.
-    const chat = await ctx.db.get(id);
     let docReleased = false;
     if (
       chat?.kind === "documentary" &&
@@ -259,13 +277,52 @@ export const reconcileChatStuckStreams = internalMutation({
     }
     // Releasing a stuck stream/fetch ends that turn → drain any send queued behind it.
     if (reconciled > 0 || docReleased) await drainNextQueued(ctx, id);
-    return { ok: true as const, reconciled };
+    return { ok: true as const, reconciled, ...(asked > 0 ? { asked } : {}) };
   },
 });
 
+/** Rows one watchdog pass reads at most: the projected ones it leaves stay in range, so a
+ *  pass is bounded by what it READS, and continues past them (`after`). */
+const SCAN = 4 * BATCH;
+
+/** The bubble is a projected (`on`) OpenClaw turn: its end is the gateway's (0.102.1). A
+ *  Hermes bubble is never projected — the watchdog stays its net, unchanged.
+ *
+ *  Decided by the run's OWNER (Codex pass 2): its bridge stamps the bubble at the opening
+ *  (`messages.projectedTurn`), so a new conversation whose transcript reads all failed is
+ *  covered from its first frame, on the message already read — no read for anyone. A bubble
+ *  opened before 0.102.1 has no stamp: the conversation's transcript facts decide, as in the
+ *  first pass. */
+async function projectedOpenClawBubble(
+  ctx: MutationCtx,
+  msg: Doc<"messages">,
+  chat?: Doc<"chats"> | null,
+  /** Decide an unstamped bubble of a never-read conversation by its own instance (one
+   *  read). The periodic watchdog does; the operator's deliberate reconcile does not —
+   *  its Hermes cost is pinned (projectionInvariance), and it acts on a reported case. */
+  byInstance = true,
+): Promise<boolean> {
+  if (msg.projectedTurn === true) return true;
+  if (msg.runId === undefined || msg.turnSessionKey === undefined) return false;
+  const chatDoc = chat === undefined ? await ctx.db.get(msg.chatId) : chat;
+  if (transcriptStoredText(chatDoc)) return (await projectionModeOfChat(ctx, chatDoc)) === "on";
+  // No transcript fact yet (a bubble opened before 0.102.1 in a conversation never read):
+  // its OWN instance decides (Codex pass 9) — an OpenClaw one is projected.
+  if (!byInstance || msg.boundInstance === undefined) return false;
+  const boundInstance = msg.boundInstance;
+  const inst = await ctx.db
+    .query("instances")
+    .withIndex("by_name", (q) => q.eq("name", boundInstance))
+    .first();
+  return inst !== null && inst.kind !== "hermes";
+}
+
 export const reconcileStuckStreams = internalMutation({
-  args: {},
-  handler: async (ctx) => {
+  args: {
+    /** Continuation: the `updatedAt` of the last row the previous pass read. */
+    after: v.optional(v.number()),
+  },
+  handler: async (ctx, { after }) => {
     const now = Date.now();
     const cutoff = now - STALE_STREAM_MS;
     // The streaming HEARTBEAT lives on the streamingText row's `updatedAt` (the bridge
@@ -276,8 +333,13 @@ export const reconcileStuckStreams = internalMutation({
     // is actionable. Index + .take → never a full scan.
     const staleRows = await ctx.db
       .query("streamingText")
-      .withIndex("by_updated", (q) => q.lt("updatedAt", cutoff))
-      .take(BATCH);
+      .withIndex("by_updated", (q) =>
+        after === undefined ? q.lt("updatedAt", cutoff) : q.gt("updatedAt", after).lt("updatedAt", cutoff),
+      )
+      .take(SCAN);
+    let skipped = 0;
+    let acted = 0;
+    let lastRead: number | undefined;
 
     // Chats whose in-flight turn we ended this pass → drain their queues AFTER the
     // loop (a chat with >1 stale stream must be fully flipped before isChatBusy is
@@ -285,6 +347,8 @@ export const reconcileStuckStreams = internalMutation({
     const touchedChats = new Set<Id<"chats">>();
     let reaped = 0;
     for (const row of staleRows) {
+      if (acted >= BATCH) break;
+      lastRead = row.updatedAt;
       const msg = await ctx.db.get(row.messageId);
       // Orphan row whose message is already terminal (a phantom from a late delta
       // racing finalize, or a pre-fix leak): no finalize will ever delete it. Clean it
@@ -305,6 +369,17 @@ export const reconcileStuckStreams = internalMutation({
         beforeSeq: row.chunkSeq ?? 1,
           messageId: row.messageId,
         });
+        acted++;
+        continue;
+      }
+      // A PROJECTED OpenClaw bubble (`on`) is never closed on Atrium's clock (0.102.1): the
+      // Control UI ends a run only on the gateway's terminal or on a read that finds it over
+      // (lib/streamOrphan), and so does the projection. A silence of any length is the
+      // gateway's to end — prod 2026-10-25: 17 min without a frame, then the answer. What
+      // this net covered for it (nobody can ask the gateway) is the reconnection sweep's
+      // (`sweepInstanceStreams`, `resumeOrClose`): it asks, and applies the answer.
+      if (await projectedOpenClawBubble(ctx, msg)) {
+        skipped++;
         continue;
       }
       // Flip the lifecycle so isRunning releases, preserve the partial streamed text
@@ -353,6 +428,7 @@ export const reconcileStuckStreams = internalMutation({
       });
       touchedChats.add(msg.chatId);
       reaped++;
+      acted++;
       await writeTraceEvent(ctx, {
         kind: "assistant.reconcile",
         direction: "internal",
@@ -381,17 +457,16 @@ export const reconcileStuckStreams = internalMutation({
       await drainNextQueued(ctx, chatId);
     }
 
-    // Reschedule when we PROCESSED a full batch — every row in range is actionable
-    // (reaped or cleaned), so a full batch means more stale rows likely remain; the
-    // ones we handled are deleted, so the next read can't loop on them (converges).
-    if (staleRows.length === BATCH) {
-      await ctx.scheduler.runAfter(
-        0,
-        internal.stuckStreams.reconcileStuckStreams,
-        {},
-      );
+    // Reschedule while rows remain in range: a full batch acted on (the rows handled are
+    // deleted, the next read cannot loop on them), or a full scan. A projected row is left
+    // in range, so the continuation reads PAST the last row read (`after`) — never the
+    // same page again; the next cron pass starts over from the oldest.
+    if (acted >= BATCH || staleRows.length === SCAN) {
+      await ctx.scheduler.runAfter(0, internal.stuckStreams.reconcileStuckStreams, {
+        ...(skipped > 0 && lastRead !== undefined ? { after: lastRead } : {}),
+      });
     }
-    return { reconciled: reaped };
+    return { reconciled: reaped, skipped };
   },
 });
 
@@ -409,7 +484,7 @@ export const reconcileStuckStreams = internalMutation({
 // the worst case with margin, and still closes an orphan ~2.4× sooner than
 // the 12-minute watchdog.
 export const SWEEP_MIN_AGE_MS = 300 * 1000;
-export const SWEEP_ERROR_CODE = "connection_lost";
+export { SWEEP_ERROR_CODE };
 
 
 /** Close ONE orphaned live bubble at bridge boot (the sweep's own close). */
@@ -489,8 +564,12 @@ export const sweepInstanceStreams = internalMutation({
     instanceName: v.string(),
     // TRUE on the single deferred re-run (see below) — never re-schedules.
     rerun: v.optional(v.boolean()),
+    // 0.102.1 — a RECONNECTION, not a bridge boot (the instance answers again, or a
+    // chat's socket closed under a turn): the bridge process lives on, so only the
+    // projected bubbles are asked about; nothing else is closed.
+    projectedOnly: v.optional(v.boolean()),
   },
-  handler: async (ctx, { instanceName, rerun }) => {
+  handler: async (ctx, { instanceName, rerun, projectedOnly }) => {
     const now = Date.now();
     const cutoff = now - SWEEP_MIN_AGE_MS;
     // Bounded per-instance reads (codex P2 — a full collect scales with every
@@ -501,7 +580,8 @@ export const sweepInstanceStreams = internalMutation({
     // legacy rows could blow the transaction (per-row reads+writes+traces+
     // drains) and roll back the WHOLE sweep. 128 is ~10x any real instance's
     // in-flight set; anything beyond falls back to the 12-min watchdog — the
-    // pre-sweep safety net — and is logged (no silent cap).
+    // pre-sweep safety net — or, for a projected bubble the watchdog no longer
+    // closes (0.102.1), to the next reconnection's sweep; it is logged (no silent cap).
     const SWEEP_PAGE = 128;
     const stamped = await ctx.db
       .query("streamingText")
@@ -515,7 +595,7 @@ export const sweepInstanceStreams = internalMutation({
       .take(SWEEP_PAGE);
     if (stamped.length === SWEEP_PAGE || legacy.length === SWEEP_PAGE) {
       console.warn(
-        `[sweep] page cap hit (${SWEEP_PAGE}) for ${instanceName} — remaining orphans fall back to the 12-min watchdog`,
+        `[sweep] page cap hit (${SWEEP_PAGE}) for ${instanceName} — remaining orphans wait for the next sweep (projected) or the 12-min watchdog (unprojected)`,
       );
     }
     let swept = 0;
@@ -550,10 +630,11 @@ export const sweepInstanceStreams = internalMutation({
         continue;
       }
       // TRANSCRIPT PROJECTION `on` (phase 3, design §8.2, CU-22): the restart lost the
-      // TURN, not necessarily the RUN. Before closing, the bridge is asked whether the
-      // gateway still runs it; it resumes the bubble if so, and this close runs only
-      // when it does not (or cannot be asked) — the sweep stays the net, no longer the
-      // decision.
+      // TURN, not necessarily the RUN. The bridge is asked what the gateway says of it —
+      // the Control UI's reconnect hydration (chat.history `inFlightRun` + `sessionInfo`,
+      // ui/src/pages/chat/chat-history-hydration.ts:195-243 at v2026.9.33) — and the
+      // answer is applied: resumed, settled from the transcript, or closed because the
+      // gateway no longer runs it. No answer leaves it streaming (0.102.1).
       if (
         msg.runId !== undefined &&
         msg.turnSessionKey !== undefined &&
@@ -565,11 +646,14 @@ export const sweepInstanceStreams = internalMutation({
         });
         continue;
       }
+      if (projectedOnly === true) continue;
       await closeSweptStream(ctx, row, msg, instanceName, now);
       swept++;
     }
-    if (skippedFresh > 0 && rerun !== true) {
-      // ONE deferred pass once the grace has elapsed for the freshest skips.
+    // ONE deferred pass of the BOOT sweep once the grace has elapsed for the freshest
+    // skips. A projected-only pass plans none (Codex pass 5): it IS the reconciliation
+    // cycle, and the next cycle looks at a bubble too fresh to ask today.
+    if (skippedFresh > 0 && rerun !== true && projectedOnly !== true) {
       await ctx.scheduler.runAfter(
         SWEEP_MIN_AGE_MS + 5_000,
         internal.stuckStreams.sweepInstanceStreams,
@@ -580,38 +664,132 @@ export const sweepInstanceStreams = internalMutation({
   },
 });
 
+/**
+ * A conversation's socket CLOSED (0.102.1, Codex pass 4): the bridge asks at every close,
+ * deciding nothing from its own memory, and Convex decides from its state — each projected
+ * bubble of this chat still streaming on this instance is asked of the gateway at once
+ * (`resumeOrClose`: the socket is gone, the Control UI re-reads the gateway's state at its
+ * reconnection), and its answer applied. None: nothing is written, nothing scheduled.
+ * Idempotent: a second request asks the same question again, whose answer is the same.
+ */
+export const resumeChatStreams = internalMutation({
+  args: { instanceName: v.string(), chatId: v.string() },
+  handler: async (ctx, { instanceName, chatId }) => {
+    const id = ctx.db.normalizeId("chats", chatId);
+    if (id === null) return { asked: 0 };
+    // The atomic barrier: only the instance this chat routes to may ask about it.
+    if (!(await chatAllowsInstance(ctx, id, instanceName))) return { asked: 0 };
+    const streaming = await ctx.db
+      .query("messages")
+      .withIndex("by_chat_status", (q) => q.eq("chatId", id).eq("status", "streaming"))
+      .take(RESUME_CHAT_PAGE);
+    let asked = 0;
+    for (const msg of streaming) {
+      if (msg.role !== "assistant") continue;
+      if (msg.boundInstance !== undefined && msg.boundInstance !== instanceName) continue;
+      // Projected: the owner's stamp, else (a bubble opened before 0.102.1) the
+      // conversation's mode, as the boot sweep reads it.
+      if (
+        msg.projectedTurn !== true &&
+        !(
+          msg.runId !== undefined &&
+          msg.turnSessionKey !== undefined &&
+          (await projectionModeOfChat(ctx, await ctx.db.get(msg.chatId))) === "on"
+        )
+      ) {
+        continue;
+      }
+      await ctx.scheduler.runAfter(0, internal.stuckStreams.resumeOrClose, {
+        messageId: msg._id,
+        instanceName,
+      });
+      asked++;
+    }
+    return { asked };
+  },
+});
+
+/** Bubbles one close may ask about: a chat streams one turn (a few with steer segments). */
+const RESUME_CHAT_PAGE = 8;
+
 // ── CU-22: resume before closing (transcript projection `on`, phase 3) ─────────────────
 
-/** How long Convex waits for the bridge's resume answer before closing as before. */
+/** How long Convex waits for the bridge's resume answer (none: asked again later). */
 const RESUME_POST_TIMEOUT_MS = 30_000;
 
-/** What the resume request needs about one orphaned bubble (null: nothing to resume). */
+/**
+ * What the resume request needs about one bubble left streaming:
+ *   - `done`: it is no longer streaming (or gone) — nothing to ask, nothing to close;
+ *   - `cannot`: it cannot be asked about here (no run or session named, the conversation
+ *     no longer projected) — NOT a proof of its end (Codex pass 9): left open;
+ *   - `ask`: the request — including the bubble's OWN route: the agent and instance that
+ *     produced it, as the bubble names them (a chained reply) or as the send it answers
+ *     was routed (its outbox row: an ordinary reply to a turn addressed to another
+ *     instance carries no route of its own, Codex pass 9).
+ */
 export const resumeTarget = internalQuery({
   args: { messageId: v.id("messages") },
   handler: async (ctx, { messageId }) => {
     const msg = await ctx.db.get(messageId);
-    if (msg === null || msg.status !== "streaming" || msg.runId === undefined) return null;
-    if (msg.turnSessionKey === undefined) return null;
+    if (msg === null || msg.status !== "streaming") return { kind: "done" as const };
+    if (msg.runId === undefined || msg.turnSessionKey === undefined) {
+      return { kind: "cannot" as const, why: "no run or session named" };
+    }
     const chat = await ctx.db.get(msg.chatId);
-    if (chat === null) return null;
+    if (chat === null) return { kind: "done" as const };
     // Re-read at action time: the sweep's decision may be stale (codex pass 4).
-    if ((await projectionModeOfChat(ctx, chat)) !== "on") return null;
+    if ((await projectionModeOfChat(ctx, chat)) !== "on") {
+      return { kind: "cannot" as const, why: "the conversation is not projected" };
+    }
+    let routedAgent =
+      msg.routedInstanceName !== undefined && msg.routedAgentId !== undefined
+        ? { instanceName: msg.routedInstanceName, agentId: msg.routedAgentId }
+        : undefined;
+    if (routedAgent === undefined && msg.dispatchOutboxId !== undefined) {
+      const rowId = ctx.db.normalizeId("outbox", msg.dispatchOutboxId);
+      const row = rowId === null ? null : await ctx.db.get(rowId);
+      if (row !== null && row.chatId === msg.chatId && row.routedAgent !== undefined) {
+        routedAgent = row.routedAgent;
+      }
+    }
     const held = await heldInputsOfRun(ctx, msg);
     const segmentPrefix = await segmentPrefixOf(ctx, msg);
+    // Where the store's reads of the bubble's OWN session stopped (Codex pass 10): the
+    // bridge resumes from it by a delta, as the Control UI's hydration resumes at its cursor
+    // (a `reset` there is answered by the newest page, as upstream — Codex pass 11).
+    const cursors = await ctx.db
+      .query("transcriptCursors")
+      .withIndex("by_chat_session", (q) => q.eq("chatId", msg.chatId).eq("sessionKey", msg.turnSessionKey!))
+      .take(4);
+    const sessionCursors = cursors.flatMap((c) =>
+      c.deltaCursor === undefined
+        ? []
+        : [{ instanceName: c.instanceName, sessionId: c.sessionId, deltaCursor: c.deltaCursor }],
+    );
     return {
+      kind: "ask" as const,
+      sessionCursors,
       segmentPrefix,
       chatId: msg.chatId,
       ownerId: chat.userId,
       runId: msg.runId,
       heldInputs: held,
       sessionKey: msg.turnSessionKey,
-      routedAgent:
-        msg.routedInstanceName !== undefined && msg.routedAgentId !== undefined
-          ? { instanceName: msg.routedInstanceName, agentId: msg.routedAgentId }
-          : undefined,
+      routedAgent,
     };
   },
 });
+
+/** The store's cursor of the bubble's session on the instance asked, as the `/resume`
+ *  body carries it: none when the store never read that session there (the bridge then
+ *  starts from the newest page, as the Control UI's first read). */
+export function resumeCursorFor(
+  cursors: ReadonlyArray<{ instanceName: string; sessionId: string; deltaCursor: string }>,
+  instanceName: string,
+): { sessionId: string; deltaCursor: string } | undefined {
+  const c = cursors.find((x) => x.instanceName === instanceName);
+  return c === undefined ? undefined : { sessionId: c.sessionId, deltaCursor: c.deltaCursor };
+}
 
 /** The bubble was resumed by the bridge: it is live again (the sweep's age gate and the
  *  watchdog read the live row's stamp). */
@@ -626,10 +804,13 @@ export const markResumed = internalMutation({
   },
 });
 
-/** The bridge could not resume it: close it exactly as the boot sweep would have. */
+/** The gateway no longer runs the bubble's run, proven and read (`not_running`): close
+ *  what that read left streaming exactly as the boot sweep would have — unless anything was written to it
+ *  since the question was asked (the resumed run, a sibling bridge, the transcript's
+ *  settle that came with the answer). */
 export const closeAfterResumeRefused = internalMutation({
-  args: { messageId: v.id("messages"), instanceName: v.string() },
-  handler: async (ctx, { messageId, instanceName }) => {
+  args: { messageId: v.id("messages"), instanceName: v.string(), askedAt: v.optional(v.number()) },
+  handler: async (ctx, { messageId, instanceName, askedAt }) => {
     const msg = await ctx.db.get(messageId);
     if (msg === null || msg.status !== "streaming") return;
     const row = await ctx.db
@@ -637,34 +818,87 @@ export const closeAfterResumeRefused = internalMutation({
       .withIndex("by_message", (q) => q.eq("messageId", messageId))
       .first();
     if (row === null) return;
-    // A write landed since the sweep chose it (the resumed run, a sibling bridge): live.
-    if (row.updatedAt >= Date.now() - SWEEP_MIN_AGE_MS) return;
+    if (askedAt !== undefined ? row.updatedAt > askedAt : row.updatedAt >= Date.now() - SWEEP_MIN_AGE_MS) return;
     await closeSweptStream(ctx, row, msg, instanceName, Date.now());
   },
 });
 
 /**
- * Ask the instance's bridge to RESUME an orphaned bubble (POST /resume): the gateway
- * still running the bubble's run means the turn continues there (the Control UI adopts
- * `inFlightRun` on reconnect). Any other answer — not running, unreachable, an old
- * bridge without the route — closes the bubble as the sweep always did.
+ * What the bridge's `/resume` answer says, and what Convex does with it (0.102.1):
+ *   - `resumed` — the gateway still runs the run; the bubble streams on;
+ *   - `not_running` — it no longer does; the bridge read the transcript first (its settle
+ *     is already applied), and what is still streaming is closed;
+ *   - `followed` — a live socket of the bridge already listens to the bubble's session:
+ *     nothing to do (Codex pass 5);
+ *   - `busy` — the chat's socket or its send gate is taken right now: temporary;
+ *   - `stale` — the request no longer matches (another session key, another instance);
+ *   - `unknown` — no answer (no route, bridge or gateway unreachable, unreadable state):
+ *     left STREAMING — the Control UI keeps a run it cannot ask about;
+ *   none of these is terminal: the reconciliation cycle (every successful discovery of the
+ *   instance, agents.applyDiscovery) looks at the bubble again. A bridge before 0.102.1
+ *   refuses without a reason (`resumed:false`) for a stale session as for a busy chat:
+ *   that is no proof of an end either, so it is `unknown` too (Codex pass 10) — no
+ *   projected bubble is closed without the gateway's proof applied, whatever the bridge.
+ */
+export type ResumeVerdict =
+  | "resumed"
+  | "not_running"
+  | "followed"
+  | "busy"
+  | "stale"
+  | "unknown";
+
+export function resumeVerdict(httpOk: boolean, body: unknown): ResumeVerdict {
+  if (!httpOk || typeof body !== "object" || body === null) return "unknown";
+  const b = body as { resumed?: unknown; reason?: unknown };
+  if (b.resumed === true) return "resumed";
+  if (b.resumed !== false) return "unknown";
+  if (b.reason === "not_running") return "not_running";
+  if (b.reason === "stale") return "stale";
+  if (b.reason === "busy") return "busy";
+  if (b.reason === "followed") return "followed";
+  return "unknown";
+}
+
+/**
+ * Ask the instance's bridge what the gateway says of a bubble left streaming (POST
+ * /resume) and apply it — the Control UI's reconnect hydration: it adopts `inFlightRun`
+ * and ends a run only on a terminal or a read that finds it over. Since 0.102.1, no
+ * answer is never taken for "over": the bubble stays streaming (the chat shows the
+ * instance unavailable; Stop stays offered) and the reconciliation cycle asks again.
  */
 export const resumeOrClose = internalAction({
-  args: { messageId: v.id("messages"), instanceName: v.string() },
+  args: {
+    messageId: v.id("messages"),
+    instanceName: v.string(),
+  },
   handler: async (ctx, { messageId, instanceName }) => {
-    let resumed = false;
+    const askedAt = Date.now();
+    let verdict: ResumeVerdict = "unknown";
+    let why = "";
     try {
       const target = await ctx.runQuery(internal.stuckStreams.resumeTarget, { messageId });
       const secret = process.env.BRIDGE_SHARED_SECRET;
-      if (target !== null && secret) {
+      // PRINCIPLE (Codex pass 9): only the gateway's proof, applied, ends a projected bubble.
+      // Anything that keeps us from asking the RIGHT gateway — no run or session named, the
+      // conversation not projected, a route that resolves elsewhere or not at all, no
+      // bridge, no secret — is `unknown`: the bubble stays open for the next cycle.
+      if (target.kind === "done") return;
+      if (target.kind === "cannot") {
+        why = target.why;
+      } else if (secret) {
         const routing = await ctx.runQuery(internal.bridge.getChatRouting, {
           chatId: target.chatId,
           userId: target.ownerId,
           ...(target.routedAgent ? { routedAgent: target.routedAgent } : {}),
         });
-        // Only the bridge of the bubble's OWN instance is asked: a route that moved
-        // to another instance in the meantime makes this request stale.
-        if (routing?.target && routing.bridgeUrl && routing.target.instanceName === instanceName) {
+        if (!routing?.target || !routing.bridgeUrl) {
+          why = "no route to the bubble's gateway";
+        } else if (routing.target.instanceName !== instanceName) {
+          // The route resolves to ANOTHER instance than the one that produced the bubble:
+          // that gateway cannot answer for it.
+          why = "the route resolves to another instance";
+        } else {
           const res = await fetch(`${routing.bridgeUrl.replace(/\/$/, "")}/resume`, {
             method: "POST",
             signal: AbortSignal.timeout(RESUME_POST_TIMEOUT_MS),
@@ -677,6 +911,9 @@ export const resumeOrClose = internalAction({
               canonical: routing.target.canonical,
               ...(routing.gatewayUser === undefined ? {} : { gatewayUser: routing.gatewayUser }),
               sessionKey: target.sessionKey,
+              ...((c) => (c === undefined ? {} : { resumeCursor: c }))(
+                resumeCursorFor(target.sessionCursors, instanceName),
+              ),
               liveBubble: {
                 messageId,
                 runId: target.runId,
@@ -687,23 +924,71 @@ export const resumeOrClose = internalAction({
               },
             }),
           });
-          if (res.ok) {
-            const body = (await res.json()) as { resumed?: unknown };
-            resumed = body.resumed === true;
-          }
+          verdict = resumeVerdict(res.ok, res.ok ? await res.json() : null);
         }
+      } else {
+        why = "no bridge secret";
       }
     } catch (err) {
       console.error("stuckStreams.resumeOrClose: resume request failed:", err);
+      verdict = "unknown";
     }
-    console.log(`stuckStreams.resumeOrClose: ${resumed ? "resumed" : "not resumed — closing as the sweep does"}`);
-    if (resumed) {
+    if (why !== "") console.log(`stuckStreams.resumeOrClose: not asked (${why})`);
+    console.log(`stuckStreams.resumeOrClose: ${verdict}`);
+    if (verdict === "resumed") {
       await ctx.runMutation(internal.stuckStreams.markResumed, { messageId });
-    } else {
+    } else if (verdict === "not_running") {
       await ctx.runMutation(internal.stuckStreams.closeAfterResumeRefused, {
         messageId,
         instanceName,
+        askedAt,
       });
     }
+    // Every other answer leaves the bubble as it is: the next cycle looks again.
+  },
+});
+
+// ── 0.102.1: a bubble the watchdog closed while its run still ran ──────────────────────
+
+/**
+ * Re-project ONE bubble the watchdog closed (`stream_orphaned`) whose run the transcript
+ * since proved over — the repair for a bubble closed BEFORE 0.102.1, whose run's live
+ * terminal already came and went (prod, 2026-10-25). Since 0.102.1 the run's own terminal
+ * and the projection of its rows correct such a bubble as they arrive
+ * (stream.finalizeMessageCore, lib/bubbleProjection `orphaned`); this asks the projection
+ * once more for the run, through the same continuation every bounded projection uses.
+ * Operator-only (internal), idempotent, and a no-op unless the bubble is a watchdog
+ * orphan of a run its session's transcript holds as settled.
+ */
+export const reprojectOrphanedBubble = internalMutation({
+  args: { messageId: v.id("messages") },
+  handler: async (ctx, { messageId }) => {
+    const msg = await ctx.db.get(messageId);
+    if (msg === null || !isWatchdogOrphan(msg)) return { scheduled: false as const, reason: "not_an_orphan" };
+    if (msg.runId === undefined || msg.turnSessionKey === undefined) {
+      return { scheduled: false as const, reason: "no_run" };
+    }
+    const runId = msg.runId;
+    const sessionKey = msg.turnSessionKey;
+    const runs = await ctx.db
+      .query("transcriptRuns")
+      .withIndex("by_chat_run", (q) => q.eq("chatId", msg.chatId).eq("runId", runId))
+      .take(4);
+    if (!runs.some((r) => r.sessionKey === sessionKey && r.settledAt !== undefined)) {
+      return { scheduled: false as const, reason: "run_not_settled" };
+    }
+    const cursor = await ctx.db
+      .query("transcriptCursors")
+      .withIndex("by_chat_session", (q) => q.eq("chatId", msg.chatId).eq("sessionKey", sessionKey))
+      .first();
+    if (cursor === null) return { scheduled: false as const, reason: "no_cursor" };
+    await ctx.scheduler.runAfter(0, internal.transcriptProjection.continueProjection, {
+      chatId: msg.chatId,
+      sessionKey,
+      sessionId: cursor.sessionId,
+      instanceName: cursor.instanceName,
+      runIds: [runId],
+    });
+    return { scheduled: true as const };
   },
 });

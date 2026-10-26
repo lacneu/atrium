@@ -98,6 +98,9 @@ export const MESSAGE_FIELDS_DROPPED: ReadonlyArray<string> = [
   "closeInferred",
   // Service correlates waiting for the outcome (projection `on`): settlement state.
   "statusJobsDeferred",
+  // Who ends the live turn — the gateway, never the stuck-stream watchdog (0.102.1):
+  // lifecycle state of the source deployment's bridge, not the exchange.
+  "projectedTurn",
   // A delivery that opened its own bubble (phase 5): settlement state…
   "deliveryOwnBubble",
   // …and that delivery's identity (a SOURCE run / batch), what its replays find it by.

@@ -1437,6 +1437,64 @@ describe("sweepStreams (bridge boot-time orphan sweep)", () => {
     expect(after.rows).toHaveLength(0);
   });
 
+  test("0.102.1 (Codex pass 4): `resumeStreams` naming a chat asks about THAT chat only", async () => {
+    const t = convexTest(schema, modules);
+    const { messageId, chatId } = await seedAssistantMessage(t);
+    const now = Date.now();
+    await t.run(async (ctx) => {
+      await ctx.db.patch(messageId, { runId: "r1", turnSessionKey: "k", projectedTurn: true });
+      await ctx.db.insert("streamingText", { messageId, chatId, text: "", boundInstance: "prod", updatedAt: now });
+    });
+    const res = await post(t, { op: "resumeStreams", chatId });
+    expect(res.status).toBe(200);
+    const scheduled = await t.run((ctx) => ctx.db.system.query("_scheduled_functions").collect());
+    expect(scheduled.filter((s) => s.name.includes("resumeOrClose")).map((s) => (s.args[0] as { messageId: string }).messageId)).toEqual([
+      messageId,
+    ]);
+    // …and no instance-wide sweep.
+    expect(scheduled.some((s) => s.name.includes("sweepInstanceStreams"))).toBe(false);
+  });
+
+  test("0.102.1 (Codex pass 2): `startAssistant` carries the bridge's `projectedTurn` onto the bubble; absent, nothing", async () => {
+    const t = convexTest(schema, modules);
+    await seedAuthOnly(t);
+    const chatId = await t.run(async (ctx) => {
+      const userId = await ctx.db.insert("users", {});
+      await ctx.db.insert("profiles", { userId, role: "user" as const, canonical: "u" });
+      return await ctx.db.insert("chats", { userId, updatedAt: 1, instanceName: "prod" });
+    });
+    const projected = (await (await post(t, { op: "startAssistant", chatId, runId: "r1", projectedTurn: true })).json()) as {
+      messageId: Id<"messages">;
+    };
+    expect((await t.run((ctx) => ctx.db.get(projected.messageId)))?.projectedTurn).toBe(true);
+    const plain = (await (await post(t, { op: "startAssistant", chatId, runId: "r2" })).json()) as {
+      messageId: Id<"messages">;
+    };
+    expect((await t.run((ctx) => ctx.db.get(plain.messageId)))?.projectedTurn).toBeUndefined();
+  });
+
+  test("0.102.1: `resumeStreams` (a reconnection, the bridge lives on) closes NOTHING it cannot ask about", async () => {
+    // The boot sweep above closes the same row: after a restart no run is ours. A socket
+    // closing under a turn proves no such thing — only projected bubbles are asked.
+    const t = convexTest(schema, modules);
+    const { messageId, chatId } = await seedAssistantMessage(t);
+    const now = Date.now();
+    await t.run(async (ctx) => {
+      await ctx.db.insert("streamingText", {
+        messageId,
+        chatId,
+        text: "partial answer",
+        boundInstance: "prod",
+        updatedAt: now - 400_000,
+      });
+    });
+    const res = await post(t, { op: "resumeStreams" });
+    expect(res.status).toBe(200);
+    const msg = await t.run((ctx) => ctx.db.get(messageId));
+    expect(msg?.status).toBe("streaming");
+    expect(await t.run((ctx) => ctx.db.query("streamingText").collect())).toHaveLength(1);
+  });
+
   test("sweeping a DOCUMENTARY chat's stream releases its pendingFetch lock (codex P1)", async () => {
     // The sweep deletes the stream row — the watchdog can never see it later,
     // so the specialized-chat job locks must be released HERE, like the

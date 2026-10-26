@@ -24,6 +24,20 @@ export function safeSessionPart(value: string): string {
 }
 
 /**
+ * The conversation segment of a session key built for this agent and person, or null when
+ * the key is not one of theirs (0.102.1, Codex pass 8). A per-turn routed conversation
+ * keys each agent switch on its own segment; a bubble's key names the session it ran in
+ * for good, whatever the conversation's CURRENT segment is.
+ */
+export function sessionSegmentOf(sessionKey: string, agentId: string, canonical: string): string | null {
+  const prefix = `agent:${safeSessionPart(agentId)}:${OC_CHANNEL}:chat:${safeSessionPart(canonical)}:`;
+  if (!sessionKey.startsWith(prefix)) return null;
+  const segment = sessionKey.slice(prefix.length);
+  // Only a segment the builder itself could have produced (safe, non-empty, unchanged).
+  return segment !== "" && safeSessionPart(segment) === segment ? segment : null;
+}
+
+/**
  * Build the gateway session key from the routing identity. All three parts are
  * RESOLVED BY CONVEX and passed on the request — `agentId` and `canonical` from the
  * chat's routing (the dispatch's own authorization), `chatId` being the OpenClaw-side

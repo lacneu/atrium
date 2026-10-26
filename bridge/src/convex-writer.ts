@@ -479,6 +479,9 @@ export interface ConvexWriter {
     /** Projection `on` (phase 4): the run's bubble opens AFTER steered inputs already
      *  cut it (CU-20) — it is that segment, not the run's first. */
     runSegment?: number,
+    /** 0.102.1: the turn is a projected (OpenClaw) one — Convex stamps the bubble so the
+     *  stuck-stream watchdog leaves its end to the gateway. */
+    opts?: { projected?: boolean },
   ): Promise<string | null>;
   /** PROJECTION `on` (phase 3, CU-20): settle this run's live bubble at a steered input
    *  and open the next segment after `afterMessageId`; returns the new segment's id, or
@@ -666,6 +669,9 @@ export interface ConvexWriter {
   ): void | Promise<void | boolean>;
   /** Boot-time orphan sweep for this writer's instance (best-effort). */
   sweepStreams?(): Promise<void>;
+  /** 0.102.1 — a conversation socket closed: ask Convex to have this chat's projected
+   *  bubbles still streaming re-asked of the gateway (best-effort shortcut). */
+  resumeStreams?(chatId: string): Promise<void>;
   /** inline widget descriptor -> internal.stream.addPart(kind:widget). Resolves to
    *  whether the widget LANDED on the message (Convex refuses a view this
    *  conversation does not own, widgets switched off, a stale generation). */
@@ -1050,11 +1056,13 @@ type IngestOp =
       sessionKey?: string | null;
       dispatchOutboxId?: string | null;
       runSegment?: number;
+      projectedTurn?: boolean;
     }
   // Delivery recorder clock calibration: a lightweight round-trip (no server writes)
   // so the measured RTT is free of server work -> a clean skew. See deliveryTiming.ts.
   | { op: "calibrate" }
   | { op: "sweepStreams" }
+  | { op: "resumeStreams"; chatId?: string }
   | ({
       op: "appendDelta";
       messageId: string;
@@ -1839,6 +1847,7 @@ export class HttpConvexWriter implements ConvexWriter {
      *  itself the signal that no queued send is waiting on them. */
     dispatchOutboxId?: string | null,
     runSegment?: number,
+    opts?: { projected?: boolean },
   ): Promise<string> {
     const ack = await this.post<{
       messageId: string;
@@ -1850,6 +1859,7 @@ export class HttpConvexWriter implements ConvexWriter {
       sessionKey: sessionKey ?? null,
       dispatchOutboxId: dispatchOutboxId ?? null,
       ...(runSegment !== undefined && runSegment > 0 ? { runSegment } : {}),
+      ...(opts?.projected === true ? { projectedTurn: true } : {}),
     });
     this.runByMessage.set(ack.messageId, runId);
     // Delivery recorder: learn ONCE per turn the recording session (if any) to tag
@@ -2271,7 +2281,25 @@ export class HttpConvexWriter implements ConvexWriter {
   /** BOOT-time orphan sweep (best-effort): tells Convex to close every stale
    *  live-text row bound to THIS writer's instance — no run of ours is in
    *  flight right after a (re)start, so those rows are orphans of a previous
-   *  bridge life. Failure is non-fatal (the 12-min watchdog remains the net). */
+   *  bridge life. Failure is non-fatal (the 12-min watchdog remains the net for an
+   *  unprojected bubble; a projected one is asked again at the next reconnection). */
+  /**
+   * A RECONNECTION shortcut (0.102.1): a conversation's gateway socket closed — at EVERY
+   * close, whatever this process believed about it. Convex decides from its state: a
+   * projected bubble of this chat still streaming is asked of the gateway now; none,
+   * nothing. Best-effort and LATENCY only (Codex pass 5): the guarantee is the periodic
+   * reconciliation (every successful agent discovery of the instance asks about each
+   * projected bubble still streaming), so a lost or early request costs a cycle, never a
+   * bubble.
+   */
+  resumeStreams(chatId: string): Promise<void> {
+    return this.doPost({ op: "resumeStreams", chatId })
+      .then(() => undefined)
+      .catch((e) => {
+        console.warn("[resume] reconnection shortcut failed (non-fatal; the next cycle asks):", errForLog(e));
+      });
+  }
+
   sweepStreams(): Promise<void> {
     return this.doPost({ op: "sweepStreams" })
       .then(() => undefined)

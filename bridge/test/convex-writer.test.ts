@@ -2067,3 +2067,41 @@ describe("applySubAgentRowStatus (0.101.4)", () => {
     ]);
   });
 });
+
+
+describe("0.102.1 — the close of a socket is a best-effort SHORTCUT to the reconciliation", () => {
+  test("each close names its chat; a failure is non-fatal and not retried (the periodic cycle asks)", async () => {
+    vi.useFakeTimers();
+    try {
+      const bodies: Array<Record<string, unknown>> = [];
+      let fail = true;
+      const fetchImpl = (async (_url: unknown, init?: RequestInit) => {
+        bodies.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+        return new Response("{}", { status: fail ? 503 : 200 });
+      }) as unknown as typeof fetch;
+      const w = writerWith(fetchImpl);
+      await w.resumeStreams("c1");
+      fail = false;
+      await w.resumeStreams("c2");
+      await vi.advanceTimersByTimeAsync(10 * 60_000);
+      expect(bodies.filter((b) => b.op === "resumeStreams").map((b) => b.chatId)).toEqual(["c1", "c2"]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+describe("0.102.1 (Codex pass 2) — startAssistant states a projected turn", () => {
+  test("`{ projected: true }` posts `projectedTurn: true`; otherwise the body is unchanged", async () => {
+    const bodies: Record<string, unknown>[] = [];
+    const fetchImpl = (async (_url: unknown, init?: RequestInit) => {
+      bodies.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+      return new Response(JSON.stringify({ messageId: `m${bodies.length}` }), { status: 200 });
+    }) as unknown as typeof fetch;
+    const w = writerWith(fetchImpl);
+    await w.startAssistant("c1", "r1", "k", null, undefined, { projected: true });
+    await w.startAssistant("c1", "r2", "k", null);
+    expect(bodies[0]).toMatchObject({ op: "startAssistant", projectedTurn: true });
+    expect(bodies[1]).not.toHaveProperty("projectedTurn");
+  });
+});

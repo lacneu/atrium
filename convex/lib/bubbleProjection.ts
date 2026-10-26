@@ -156,13 +156,31 @@ export type PlanBubble = {
   layoutKey?: string;
   /** The bubble already carries an error text. */
   hasError?: boolean;
+  /** Closed by the stuck-stream WATCHDOG, not by a terminal (lib/streamOrphan
+   *  `isWatchdogOrphan`): its runs' end settles it like a streaming bubble (0.102.1). */
+  orphaned?: boolean;
 };
 
 export type RunFacts = {
   /** Known to be over (a terminal frame, or a fresh read found the session idle). */
   settled: boolean;
-  /** Every row of the run lies above the floor and outside every coverage hole. */
+  /** Every row of the run was loaded. */
   covered: boolean;
+  /** The run starts at or below the session's FIRST-READ floor (`floorForFirstRead`): a
+   *  read with no stored cursor before it, whose page no longer holds the run's user row.
+   *  An existing bubble of the run — found by instance, session and run — is recomposed
+   *  from its rows all the same (Codex pass 12: the final answer is in that page); the
+   *  floor still keeps such rows from creating a NEW bubble, a duplicate of what a bubble
+   *  from before the projection shows. */
+  belowFloor?: true;
+  /** A coverage hole (a `reset` answered by the newest page) overlaps the run's rows: what
+   *  is stored of it is what the reads returned — the Control UI's own view after a reset
+   *  (ui/src/pages/chat/chat-history-hydration.ts:175-200 at v2026.9.33: the newest page,
+   *  applied with the gateway's run state; older rows only come with paging). An existing
+   *  bubble is recomposed from those rows at its run's end (Codex pass 11: its final
+   *  answer is in the newest page); no bubble is BORN from them. The hole stays recorded on
+   *  the cursor (`gaps`), which qualifies the report. */
+  gapped?: true;
   status?: RunStatus;
   /** The error the gateway recorded for the run (`sessionInfo.lastRunError`, step 4). */
   errorText?: string;
@@ -547,8 +565,12 @@ export function planProjection(view: ProjectionView): ProjectionPlan {
     const steers = [...(view.steersOfRun.get(runId) ?? [])].sort((a, b) => a - b);
     const bySegment = new Map<number, PlanRow[]>();
     const uniq = new Map<string, PlanRow>();
+    // Rows at or below the first-read floor are taken only by the run's OWN live bubble
+    // (found by instance, session and run): never by a legacy one, never to give birth.
+    const ownBubble = steers.some((_, i) => view.liveBubbleOf.has(segmentKey(runId, i + 1))) ||
+      view.liveBubbleOf.has(segmentKey(runId, 0));
     for (const r of view.rowsOfRun.get(runId) ?? []) {
-      if (r.seq <= view.floorSeq || r.runId !== runId || r.role === "user") continue;
+      if ((r.seq <= view.floorSeq && !ownBubble) || r.runId !== runId || r.role === "user") continue;
       if (!uniq.has(r.entryId)) uniq.set(r.entryId, r);
     }
     for (const r of uniq.values()) {
@@ -590,7 +612,7 @@ export function planProjection(view: ProjectionView): ProjectionPlan {
       // ended before a reply): an error, with its text — shown by that row alone (step 4).
       const error = rowError(rows) ?? runError([facts]);
       const status = error !== undefined ? "error" : bornStatus(facts.status);
-      if (!facts.covered || !textKnown(rows) || (layout.length === 0 && error === undefined)) continue;
+      if (!facts.covered || facts.belowFloor === true || facts.gapped === true || !textKnown(rows) || (layout.length === 0 && error === undefined)) continue;
       if (utf8Bytes(text) > MAX_COMPOSED_TEXT_BYTES) continue;
       const born = segmentKey(runId, k);
       plan.create.push({
@@ -643,7 +665,8 @@ export function planProjection(view: ProjectionView): ProjectionPlan {
     if (composable && layoutKey(layout) !== bubble.layoutKey) {
       write.layout = layout;
     }
-    if (bubble.status === "streaming" && allSettled) {
+    // A watchdog orphan is no terminal (0.102.1): the end of its runs settles it too.
+    if ((bubble.status === "streaming" || bubble.orphaned === true) && allSettled) {
       const settled = settleStatus(
         facts.map((f) => f?.status),
         rowError(rows) ?? runError(facts),

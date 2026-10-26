@@ -325,6 +325,9 @@ export class TranscriptShadow {
   private lastReadAt = 0;
   /** Consecutive failed reads (projection `on`: drives the bounded re-read). */
   private failedReads = 0;
+  /** Reads started, and the latest of them whose post Convex accepted (`readNow`). */
+  private readsStarted = 0;
+  private readsApplied = 0;
   private readonly log: (line: string) => void;
   /** Counters, for tests and the log line. */
   readonly stats = {
@@ -566,6 +569,19 @@ export class TranscriptShadow {
     while (this.inFlight !== null) await this.inFlight;
   }
 
+  /**
+   * Ask for a read and resolve whether one STARTED after this call was READ AND APPLIED
+   * (0.102.1, Codex pass 7): a run is closed only on the gateway's proof applied, never on
+   * a read that merely finished — `idle()` says the reads are done, not that they worked.
+   * The caller bounds the wait; a failed read's own retry is not awaited.
+   */
+  async readNow(reason: string): Promise<boolean> {
+    const target = this.readsStarted + 1;
+    this.requestRead(reason);
+    await this.idle();
+    return this.readsApplied >= target;
+  }
+
   /** Ask for a read: joins the one in flight by chaining ONE more behind it. */
   requestRead(reason: string): void {
     if (!this.active) return;
@@ -652,6 +668,7 @@ export class TranscriptShadow {
   private async readOnce(reason: string): Promise<void> {
     let read: HistoryRead | null = null;
     const epoch = this.epoch;
+    const seq = ++this.readsStarted;
     try {
       this.stats.reads++;
       let readAt = this.nextReadAt();
@@ -691,6 +708,7 @@ export class TranscriptShadow {
       }
       read = await this.completeCapped(read);
       await this.post(read, readAt, asked, ackedBefore, epoch);
+      this.readsApplied = Math.max(this.readsApplied, seq);
       this.failedReads = 0;
       await this.scanCappedTail(epoch);
     } catch (err) {

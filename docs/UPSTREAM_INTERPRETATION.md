@@ -1170,6 +1170,87 @@ outside the repository) lists them against the upstream code.
   child the reader stopped, until the row speaks for another run (an "Interagir" turn), and a
   row read while the stop is still travelling does not bring the "working" state back.
 
+## 8. When a run is over: the gateway says so, never a client clock (0.102.1)
+
+### Upstream contract
+
+- **A run ends client-side only on the gateway's terminal.** The Control UI's chat reducer
+  ends the run it holds (`chatRunId`) when a `final` / `error` / `aborted` event of that run
+  arrives (`ui/src/pages/chat/chat-gateway.ts:128-200`).
+- **Otherwise the gateway's state decides, read from `chat.history`.** The handler states
+  `sessionInfo.hasActiveRun` from its own run registry, and keeps it true until the terminal
+  row is queryable (`src/gateway/server-methods/chat-history-handler.ts:364-381`). A hydration
+  — opening the pane, a reconnect — applies it with `isSessionRunActive`
+  (`src/shared/session-run-state.ts:8-16`: status `queued`/`running`, or `hasActiveRun`) and
+  adopts `inFlightRun` (`ui/src/pages/chat/chat-history-hydration.ts:195-243`). A run is
+  settled from history only on a terminal status AND `hasActiveRun !== true`
+  (`ui/src/pages/chat/chat-history-stream.ts:187-215`).
+- **No client timer abandons a run.** The timers of the chat pages are interface ones
+  (drafts, typing, request retries); none ends a run. `tick` (every 30 s,
+  `src/gateway/server-maintenance.ts:242-246`) is a SOCKET liveness: the client reconnects
+  after two silent ticks (`ui/src/api/gateway.ts:443-465`), and says nothing about a run.
+- **The deadlines live in the gateway.** The model-call idle timeout
+  (`src/agents/embedded-agent-runner/run/llm-idle-timeout.ts:27`, 120 s between events) and
+  the code mode's own (`src/agents/code-mode-node.ts:113`, none) decide when a run is cut or
+  retried; nothing in between reaches a client. A model call that streams the arguments of a
+  tool call emits no agent/chat event until the call is complete — prod 2026-10-25, one such
+  call ran 17 min 20 s, was cut by the gateway and retried under the same run id, which
+  answered.
+
+### Atrium behavior and verdict
+
+**Conformant since 0.102.1** for a projected (OpenClaw) conversation:
+
+- the stuck-stream watchdog (`convex/stuckStreams.ts` `reconcileStuckStreams`) leaves a
+  projected bubble alone, whatever its silence; the run's terminal, or a read that finds it
+  over, settles it through the projection. The bubble is known projected from its opening:
+  the bridge that runs the turn says so (`messages.projectedTurn`), so no transcript read
+  needs to have succeeded first;
+- a RECONCILIATION CYCLE, driven by state, not by events: every successful agent
+  discovery of the instance (Convex's existing periodic poll) asks the gateway about each
+  projected bubble still streaming that no live socket of the bridge already follows (the
+  Control UI's tab re-reads the gateway at every reconnection,
+  `ui/src/pages/chat/chat-history-hydration.ts:195-243`, whatever it held before); the
+  bridge restarting and any close of a conversation's socket ask at once, as a shortcut — (`/resume`, the reconnect hydration): still running, the turn is picked up on the
+  bubble; no longer running, one transcript read settles it from the run's rows, and only what
+  that read left streaming is closed; no answer (bridge or gateway unreachable, unreadable
+  state) leaves it streaming — the conversation shows the instance unavailable and Stop stays
+  offered — and the question is asked again;
+- the run is closed only on the gateway's proof APPLIED: a transcript read that was read
+  and accepted by Convex settles the bubble; a read that failed leaves it streaming for the
+  next cycle. A bubble whose conversation's socket moved to another session (a per-turn
+  routed conversation) is read through a connection of its own, never through or by moving
+  that socket;
+- "no longer running" needs a PROOF: an idle session (`hasActiveRun: false`), or an exact
+  active set that does not name the run. The gateway withholds that set while its run
+  identities are incomplete — a terminal still being persisted, an embedded or projected run
+  (`src/gateway/server-methods/session-active-runs.ts:273-283`) — so an active session with no
+  set proves nothing about this run, and the bubble is left streaming;
+- an early, lost or refused question (`busy`: a send holds the chat) is not terminal: the
+  next cycle looks at the bubble again;
+- the question goes where the bubble's turn was sent — the instance and agent of its send
+  (its routed fields, else its outbox row) under the bubble's own session key, as the
+  Control UI asks the session its tab holds. Being unable to ask — no resolvable route, a
+  route to another instance, no bridge — is never taken for an end: the bubble stays
+  streaming for the next cycle. A bridge older than 0.102.1 refuses without a reason, for a
+  stale session as for a busy chat: that is no proof either, and is read as `unknown` — no
+  projected bubble is closed without the gateway's proof applied, whatever the bridge;
+- the read that settles a resumed bubble starts where the store's reads of the bubble's OWN
+  session stopped, as the Control UI's hydration resumes at its cursor; on `reset` it
+  takes the newest page and applies it with the gateway's run state, as upstream does
+  (`ui/src/pages/chat/chat-history-hydration.ts:175-200`: the cursor cleared, one request
+  without it, no catch-up of the rows in between; older rows come only with paging). The
+  run's final answer is in that page: the bubble is recomposed from the rows the store
+  holds when its run ends, even with a coverage hole in between — the hole stays recorded
+  on the session's cursor (`gaps`), and no bubble is born from such a run;
+- a bubble Atrium closed itself — the watchdog's `stream_orphaned` before 0.102.1, or a
+  sweep's `connection_lost`, never finalized — is not a terminal: the end of the same run — its live terminal, or the settle of its rows — reopens
+  and settles it; another run's terminal does not, and a user Stop or a gateway error, which
+  are terminals, stay.
+
+**Deliberate deviation, kept:** a Hermes conversation is not projected, and the watchdog
+remains its net (12 min without a write closes the bubble `stream_orphaned`).
+
 ## Conformance summary
 
 | Zone | Verdict |
@@ -1180,6 +1261,7 @@ outside the repository) lists them against the upstream code.
 | Init-conflict retry | **Conformant** with upstream channel-side retry treatment |
 | Compaction | **Explicit signals consumed** — `{stream:"compaction"}` is the primary mid-turn signal (marker + widened budget, no buffer reset); the `abandoned` heuristic survives as the multi-version/Hermes fallback and stands down when explicit signals are present; `session.operation`/`sessions.changed` remain unconsumed (rotation detection covers the manual path) |
 | chat.send idempotency | **Conformant** for a faithful duplicate; since 2026.9.2 a key reused with other content is refused (`chat-request-conflict`), classified as its own downstream rejection, never retried; the preempt `dispatchKey` alias WAS necessary to the retired inverse repark (abort markers poison the original key for ~60 min) and stays only for a recovery row created before 2026-09-14 (held, flipped `queued`, or promoted again), until the outbox fields are migrated out |
+| End of a run (no client clock) | **Conformant (0.102.1)** for OpenClaw — no projected bubble is closed on Atrium's clock; the gateway's terminal or state decides, re-read at every reconnection (§8); Hermes keeps the 12-min watchdog |
 | Projection `on` deviations | **Deliberate** (§7) — no visible duplicate, files copied at once with a `gone` state, a waiting line while a child runs, stricter masking, one automatic resend of a send the gateway reports absent |
 | Config changes / model roster | **Handled** — `config.changed` (broadcast-only, never announced) invalidates the per-connection roster and triggers a refresh pushed to Convex under the roster's own observation stamp; a frame gap invalidates in the transport and the next publish re-asks and reports the newer answer; the scope-guard table is vendored beside the announced catalogue, and a family in neither vocabulary is named on receipt |
 

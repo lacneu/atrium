@@ -2609,6 +2609,182 @@
       "literals": [
         "export function resolveSubagentSessionStatus("
       ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "ui/src/pages/chat/chat-gateway.ts:128-200",
+      "repo": "upstream",
+      "tag": "2026.9.33",
+      "path": "ui/src/pages/chat/chat-gateway.ts",
+      "lines": [
+        [
+          128,
+          200
+        ]
+      ],
+      "literals": [
+        "const activeRunMatches ="
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "src/gateway/server-methods/chat-history-handler.ts:364-381",
+      "repo": "upstream",
+      "tag": "2026.9.33",
+      "path": "src/gateway/server-methods/chat-history-handler.ts",
+      "lines": [
+        [
+          364,
+          381
+        ]
+      ],
+      "literals": [
+        "sessionInfo.hasActiveRun = activeRunState.active;"
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "src/shared/session-run-state.ts:8-16",
+      "repo": "upstream",
+      "tag": "2026.9.33",
+      "path": "src/shared/session-run-state.ts",
+      "lines": [
+        [
+          8,
+          16
+        ]
+      ],
+      "literals": [
+        "export function isSessionRunActive(state: SessionRunState): boolean {"
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "ui/src/pages/chat/chat-history-hydration.ts:195-243",
+      "repo": "upstream",
+      "tag": "2026.9.33",
+      "path": "ui/src/pages/chat/chat-history-hydration.ts",
+      "lines": [
+        [
+          195,
+          243
+        ]
+      ],
+      "literals": [
+        "const runActive = isSessionRunActive(response.sessionInfo);"
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "ui/src/pages/chat/chat-history-stream.ts:187-215",
+      "repo": "upstream",
+      "tag": "2026.9.33",
+      "path": "ui/src/pages/chat/chat-history-stream.ts",
+      "lines": [
+        [
+          187,
+          215
+        ]
+      ],
+      "literals": [
+        "sessionInfo.hasActiveRun !== true &&"
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "src/gateway/server-maintenance.ts:242-246",
+      "repo": "upstream",
+      "tag": "2026.9.33",
+      "path": "src/gateway/server-maintenance.ts",
+      "lines": [
+        [
+          242,
+          246
+        ]
+      ],
+      "literals": [
+        "params.broadcast(\"tick\", payload);"
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "ui/src/api/gateway.ts:443-465",
+      "repo": "upstream",
+      "tag": "2026.9.33",
+      "path": "ui/src/api/gateway.ts",
+      "lines": [
+        [
+          443,
+          465
+        ]
+      ],
+      "literals": [
+        "this.maxInboundSilenceMs = tickIntervalMs * 2;"
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "src/agents/embedded-agent-runner/run/llm-idle-timeout.ts:27",
+      "repo": "upstream",
+      "tag": "2026.9.33",
+      "path": "src/agents/embedded-agent-runner/run/llm-idle-timeout.ts",
+      "lines": [
+        [
+          27,
+          27
+        ]
+      ],
+      "literals": [
+        "const DEFAULT_LLM_IDLE_TIMEOUT_MS = 120_000;"
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "src/agents/code-mode-node.ts:113",
+      "repo": "upstream",
+      "tag": "2026.9.33",
+      "path": "src/agents/code-mode-node.ts",
+      "lines": [
+        [
+          113,
+          113
+        ]
+      ],
+      "literals": [
+        "idleTimeoutMs: 0,"
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "src/gateway/server-methods/session-active-runs.ts:273-283",
+      "repo": "upstream",
+      "tag": "2026.9.33",
+      "path": "src/gateway/server-methods/session-active-runs.ts",
+      "lines": [
+        [
+          273,
+          283
+        ]
+      ],
+      "literals": [
+        "...(identitiesComplete ? { runIds: runIds.toSorted() } : {}),"
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "ui/src/pages/chat/chat-history-hydration.ts:175-200",
+      "repo": "upstream",
+      "tag": "2026.9.33",
+      "path": "ui/src/pages/chat/chat-history-hydration.ts",
+      "lines": [
+        [
+          175,
+          200
+        ]
+      ],
+      "literals": [
+        "clearHistoryCursor(state, sessionKey, requestAgentId);"
+      ]
     }
   ]
 }

@@ -179,6 +179,7 @@ import {
   explicitQueueMode,
   isFollowUpChoice,
   liveRunIds,
+  runProvenOver,
   readSessionRunFacts,
   resolveFollowUpMode,
   resolveServerQueueMode,
@@ -208,6 +209,7 @@ import {
   buildSessionKey,
   talkSessionOwner,
   safeSessionPart,
+  sessionSegmentOf,
 } from "./providers/openclaw/session-keys.js";
 import {
   transcriptEntryCount,
@@ -282,10 +284,12 @@ import type {
 import {
   artifactCopyEnvOf,
   buildArtifactCopier,
+  gatewayNameFor,
   SessionDisplaceRefusedError,
   SessionRegistry,
+  transcriptReaders,
 } from "./session.js";
-import { readFilesToCopy } from "./providers/openclaw/transcript-shadow.js";
+import { readFilesToCopy, TranscriptShadow, type TranscriptCursor } from "./providers/openclaw/transcript-shadow.js";
 import {
   describeSession,
   describeSessionAnswer,
@@ -640,6 +644,10 @@ export interface ResumeLiveView {
   currentMessageId: string | null;
   /** The socket carries other work (a send awaiting its ACK, a stash, a call…). */
   busy: boolean;
+  /** The session's reconciler is on, with its session-event subscription (Codex pass 5).
+   *  Not a proof that it will see the run's end — its reads may have failed meanwhile
+   *  (Codex pass 6): a listening socket gets a coalesced read on each cycle. */
+  listening: boolean;
 }
 
 function liveSessionView(
@@ -650,11 +658,13 @@ function liveSessionView(
         connection: { isClosed: boolean };
         runManager: ResumeRunView;
         busyReason(now: number): string | null;
+        transcriptShadow?: { active: boolean };
       }
     | undefined,
 ): ResumeLiveView | null {
   if (s === undefined || s.connection.isClosed) return null;
   return {
+    listening: s.transcriptShadow?.active === true,
     sessionKey: s.sessionKey,
     instanceName: s.instanceName,
     turnActive: s.runManager.turnActive,
@@ -685,28 +695,88 @@ function driveTheBubble(rm: ResumeRunView, bubble: { messageId: string; runId: s
  * bubble. "proceed": no live socket, or an idle one on exactly that session. Exported
  * for tests.
  */
+/**
+ * A FOLLOWED bubble (a listening reconciler, no turn driving it) on a reconciliation cycle
+ * (Codex pass 6): ask that reconciler for ONE read of the gateway's state. Coalesced — a
+ * read in flight takes it as its next one — and off the turn's lane (the reconciler never
+ * writes a bubble directly; its read goes through the projection). Its failure is retried by
+ * the reconciler, then by the next cycle. Exported for tests.
+ */
+export function followWithRead(session: { transcriptShadow?: { requestRead(reason: string): void } } | undefined): void {
+  session?.transcriptShadow?.requestRead("cycle");
+}
+
+/**
+ * What the chat's live socket already says about the bubble, before anything is acquired
+ * or read (Codex pass 5 — the periodic reconciliation asks about every projected bubble
+ * still streaming, so a bubble someone already follows must cost nothing):
+ *   - `resumed`: the socket's turn drives this bubble — live frames are its proof;
+ *   - `followed`: the socket is on the bubble's session with its reconciler listening, but
+ *     no turn here drives it: the caller asks that reconciler for ONE coalesced read of the
+ *     gateway's state (`followWithRead`) — never "nothing to do", since a listener whose
+ *     reads failed would otherwise hold the bubble for ever (Codex pass 6);
+ *   - `busy`: the socket carries other work right now — a TEMPORARY refusal, asked again;
+ *   - `foreign`: the chat's socket serves another session or instance — the bubble's own
+ *     session is read apart (`readBubbleSessionApart`);
+ *   - `stale`: the request no longer matches the routing (another session key);
+ *   - `proceed`: nobody follows it here — acquire and read the gateway's state.
+ */
 export function resumePreflight(
   live: ResumeLiveView | null,
   want: { sessionKey: string; instanceName: string; requestedSessionKey: string | null },
   bubble: { messageId: string; runId: string },
-): "stale" | "resumed" | "proceed" {
+): "stale" | "busy" | "followed" | "resumed" | "foreign" | "proceed" {
   if (want.requestedSessionKey !== null && want.requestedSessionKey !== want.sessionKey) {
     return "stale";
   }
   if (live === null) return "proceed";
+  // The chat's socket serves ANOTHER session or instance (a per-turn routed conversation
+  // moved on): the bubble's own session is read apart, never through — nor by moving —
+  // that socket (Codex pass 7).
   if (live.sessionKey !== want.sessionKey || live.instanceName !== want.instanceName) {
-    return "stale";
+    return "foreign";
   }
   if (live.turnActive || live.turnFinalizing) {
-    return driveTheBubble(live, bubble) ? "resumed" : "stale";
+    if (driveTheBubble(live, bubble)) return "resumed";
+    return live.listening ? "followed" : "busy";
   }
-  return live.busy ? "stale" : "proceed";
+  if (live.listening) return "followed";
+  return live.busy ? "busy" : "proceed";
+}
+
+/** How long a /resume whose run the gateway no longer runs waits for the transcript read
+ *  that settles its bubble before answering (Convex's request waits 30 s). */
+export const RESUME_SETTLE_READ_BUDGET_MS = 15_000;
+
+/** What a /resume found (0.102.1): the gateway still runs the bubble's run (`resumed`),
+ *  it said it no longer does (`not_running`), or nothing could be read (`unknown`). */
+export type ResumeOutcome = "resumed" | "not_running" | "unknown";
+
+/** The /resume answer Convex reads (stuckStreams.resumeVerdict). Without asking the
+ *  gateway: `followed` (a live socket already listens), `busy` (the chat's socket or its
+ *  send gate is taken right now — temporary), `stale` (the request no longer matches).
+ *  Exported for tests. */
+export function resumeAnswerBody(
+  outcome: ResumeOutcome | "stale" | "busy" | "followed",
+): {
+  ok: true;
+  resumed: true;
+} | { ok: true; resumed: false; reason: Exclude<ResumeOutcome, "resumed"> | "stale" | "busy" | "followed" } {
+  return outcome === "resumed" ? { ok: true, resumed: true } : { ok: true, resumed: false, reason: outcome };
 }
 
 /**
- * The CU-22 resume itself, once admitted: resumed only when the bubble's run is still the
- * gateway's on a socket that is still the chat's; the session's reconciler is switched on
- * then (a not-resumed answer leaves it as it was). Exported for tests.
+ * The CU-22 resume itself, once admitted — the Control UI's reconnect hydration
+ * (ui/src/pages/chat/chat-history-hydration.ts:195-243 at v2026.9.33): the gateway's
+ * state decides. Still running (`inFlightRun` / `activeRunIds`) on a socket that is still
+ * the chat's: the turn is picked up on the bubble and the reconciler switched on. No
+ * longer running — PROVEN over by the session's facts, `runProvenOver`: the reconciler is
+ * switched on too and ONE read of the transcript is
+ * awaited (bounded) — its idle fact settles the bubble from the run's rows, the path every
+ * run end takes — before answering; Convex closes only what that read left streaming.
+ * No proof either way, or unreadable state: `unknown` — Convex leaves the bubble streaming,
+ * and the session's reconciler is switched on so the gateway's later proof ends it (Codex
+ * pass 3). A socket that moved on: `unknown`, the session left as it was. Exported for tests.
  */
 export async function admitResume(
   session: Pick<BridgeSession, "runManager" | "transcriptShadow" | "clock"> &
@@ -714,20 +784,128 @@ export async function admitResume(
   chatId: string,
   bubble: { messageId: string; runId: string },
   stillTheChatsSocket: () => boolean,
-): Promise<boolean> {
+  settleReadBudgetMs: number = RESUME_SETTLE_READ_BUDGET_MS,
+  cursor: TranscriptCursor | null = null,
+): Promise<ResumeOutcome> {
   const rm = session.runManager;
-  let resumed = false;
-  try {
-    const plan = await planProjectedSend(
-      session,
-      { chatId, liveBubble: bubble } as SendBody,
-      session.clock,
-    );
-    resumed = rm.turnActive && liveRunIds(plan.facts).includes(bubble.runId) && stillTheChatsSocket();
-  } finally {
-    if (resumed) session.transcriptShadow?.configure({});
+  const plan = await planProjectedSend(
+    session,
+    { chatId, liveBubble: bubble } as SendBody,
+    session.clock,
+  );
+  if (!stillTheChatsSocket()) return "unknown";
+  if (rm.turnActive && liveRunIds(plan.facts).includes(bubble.runId)) {
+    session.transcriptShadow?.configure({ cursor });
+    return "resumed";
   }
-  return resumed;
+  // `not_running` only on a PROOF the run is over (`runProvenOver`): an active session
+  // whose exact run set the gateway withheld may be running this very run, and closing it
+  // would lose the answer it is about to give (Codex pass 1).
+  if (plan.facts === null || rm.turnActive || !runProvenOver(plan.facts, bubble.runId)) {
+    // …and the session is LISTENED to before that answer (Codex pass 3): the socket is the
+    // chat's, on the bubble's session, so its reconciler goes on with its session-event
+    // subscription — the run's terminal frame, a session message, any later read that finds
+    // it over then settles the bubble through the projection when the gateway says so, even
+    // after Convex has stopped asking. Listening is what ends it; no delay is added.
+    session.transcriptShadow?.configure({ cursor });
+    return "unknown";
+  }
+  const shadow = session.transcriptShadow;
+  if (shadow === undefined) return "unknown";
+  shadow.configure({ cursor });
+  // Over by the session's facts — but Convex closes only on the gateway's proof APPLIED
+  // (Codex pass 7): one read of the transcript must be read AND posted, which settles the
+  // bubble from the run's rows. A read that failed is `unknown`: the bubble stays streaming
+  // and the next cycle tries again (the reconciler stays on, listening). The reconciler
+  // starts from the store's cursor of the bubble's session when this process holds none
+  // (Codex pass 10): a delta, as the Control UI's hydration resumes at its cursor; a
+  // `reset` there is answered by the newest page, as it is upstream (Codex pass 11).
+  return (await settledRead(shadow, "resume", settleReadBudgetMs)) ? "not_running" : "unknown";
+}
+
+/** One transcript read of `shadow`, read and applied within `budgetMs` (false otherwise). */
+async function settledRead(
+  shadow: Pick<TranscriptShadow, "readNow">,
+  reason: string,
+  budgetMs: number,
+): Promise<boolean> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  return await Promise.race([
+    shadow.readNow(reason),
+    new Promise<boolean>((resolve) => {
+      timer = setTimeout(() => resolve(false), budgetMs);
+    }),
+  ]).finally(() => clearTimeout(timer));
+}
+
+/**
+ * Read a bubble's OWN session through a connection of its own, without touching the
+ * chat's socket (Codex pass 7). A per-turn routed conversation moves its single socket to
+ * the next turn's session (agent A → B) while A's run goes on; when A's run ends, nobody
+ * listens to A's session any more. The bubble's session is immutable: the gateway's state
+ * of it is read through a connection of the bubble's instance, as the conversation's
+ * person (the identity its own socket presents), and applied exactly as a resume would —
+ * still running: `unknown` (the next cycle reads again); proven over: one transcript read,
+ * read AND applied, settles it (`not_running`); anything else: `unknown`. The connection
+ * is closed after; B's socket and lane are never touched. Exported for tests.
+ */
+export async function readBubbleSessionApart(params: {
+  config: BridgeConfig;
+  writer: Pick<ConvexWriter, "applyTranscript">;
+  chatId: string;
+  instanceName: string;
+  sessionKey: string;
+  gatewayName: string;
+  runId: string;
+  budgetMs?: number;
+  /** The store's cursor of the bubble's session (Codex pass 10): this reader resumes from
+   *  it by a delta, never from nothing when the store has read the session before. */
+  cursor?: TranscriptCursor | null;
+}): Promise<ResumeOutcome> {
+  const { config } = params;
+  let conn: OpenClawConnection;
+  try {
+    conn = await OpenClawConnection.connect(
+      config.openclawGatewayUrl,
+      config.openclawToken ?? "",
+      config.deviceIdentity!,
+      deviceTokenPromotion(config),
+      0,
+      humanConnectIdentity(config, params.gatewayName),
+      connectUserHeader(config),
+    );
+  } catch (err) {
+    console.error(`[resume] chat=${params.chatId} apart read: no connection:`, errForLog(err));
+    return "unknown";
+  }
+  const shadow = new TranscriptShadow({
+    chatId: params.chatId,
+    sessionKey: params.sessionKey,
+    instanceName: params.instanceName,
+    ...transcriptReaders(conn, params.sessionKey),
+    apply: async (report) => (await params.writer.applyTranscript?.(report)) ?? undefined,
+  });
+  try {
+    let facts: SessionRunFacts | null = null;
+    try {
+      const res = await conn.request(
+        "chat.history",
+        chatHistoryParams({ sessionKey: params.sessionKey, limit: 1, maxChars: 1 }, conn.gatewayVersion),
+        SESSION_FACTS_RPC_TIMEOUT_MS,
+      );
+      facts = readSessionRunFacts((res as { payload?: unknown }).payload);
+    } catch (err) {
+      console.error(`[resume] chat=${params.chatId} apart read: facts unreadable:`, errForLog(err));
+    }
+    if (facts === null || !runProvenOver(facts, params.runId)) return "unknown";
+    shadow.configure({ cursor: params.cursor ?? null });
+    return (await settledRead(shadow, "apart", params.budgetMs ?? RESUME_SETTLE_READ_BUDGET_MS))
+      ? "not_running"
+      : "unknown";
+  } finally {
+    shadow.close();
+    conn.close();
+  }
 }
 
 /** Project any inbound body onto the session registry's routing shape. */
@@ -7507,13 +7685,28 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
         return;
       }
       let requestedSessionKey: string | null = null;
+      let resumeCursor: TranscriptCursor | null = null;
       try {
-        const k = (JSON.parse(raw) as { sessionKey?: unknown }).sessionKey;
+        const parsed = JSON.parse(raw) as { sessionKey?: unknown; resumeCursor?: unknown };
+        const k = parsed.sessionKey;
         requestedSessionKey = typeof k === "string" && k.length > 0 ? k : null;
+        resumeCursor = parseTranscriptCursor(parsed.resumeCursor);
       } catch {
         requestedSessionKey = null;
       }
-      const routing = toRouting(resume, resumeInstance);
+      // The bubble's session is IMMUTABLE (Codex pass 8): the key it ran under — stamped by
+      // the owning bridge when it opened, sent back by Convex — names it, whatever segment a
+      // per-turn routed conversation uses NOW (agent A → B moves it). Taken only when it is a
+      // key of THIS agent and person (the routing Convex authorized for the bubble's own
+      // agent); any other key is not the bubble's to resume here.
+      const bubbleSegment =
+        requestedSessionKey === null
+          ? null
+          : sessionSegmentOf(requestedSessionKey, resume.agentId, resume.canonical);
+      const routing = toRouting(
+        bubbleSegment === null ? resume : { ...resume, openclawChatId: bubbleSegment },
+        resumeInstance,
+      );
       const want = {
         sessionKey: buildSessionKey(
           routing.openclawChatId ?? routing.chatId,
@@ -7523,25 +7716,51 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
         instanceName: resumeInstance,
         requestedSessionKey,
       };
-      const refuseStale = (why: string): void => {
-        console.log(`[resume] chat=${resume.chatId} not resumed: stale request (${why})`);
-        sendJson(res, 200, { ok: true, resumed: false });
+      // Nothing asked of the gateway (0.102.1): Convex leaves the bubble as it is, and the
+      // next reconciliation cycle looks again. `busy` (a send or another session holds the
+      // chat right now) is told apart from `stale` (the request no longer matches).
+      const refuse = (reason: "stale" | "busy" | "followed", why: string): void => {
+        console.log(`[resume] chat=${resume.chatId} not resumed: ${reason} (${why})`);
+        sendJson(res, 200, resumeAnswerBody(reason));
       };
       // Decided BEFORE anything is acquired: the request is automatic and may be late —
       // prepared for run A, delivered after A ended and B started on another agent or
       // instance, possibly one whose projection is off. Acquiring first would re-key
       // the chat's socket and close B's live turn (codex pass 4).
       const pre = resumePreflight(liveSessionView(registry.peekByChat(resume.chatId)), want, bubble);
+      if (pre === "foreign") {
+        const writer = served.get(resumeInstance)?.writer;
+        const config = served.get(resumeInstance)?.config;
+        const outcome =
+          writer === undefined || config === undefined
+            ? "unknown"
+            : await readBubbleSessionApart({
+                config,
+                writer,
+                chatId: resume.chatId,
+                instanceName: resumeInstance,
+                sessionKey: want.sessionKey,
+                gatewayName: gatewayNameFor(routing),
+                runId: bubble.runId,
+                cursor: resumeCursor,
+              });
+        console.log(`[resume] chat=${resume.chatId} the chat's socket serves another session: read apart -> ${outcome}`);
+        sendJson(res, 200, resumeAnswerBody(outcome));
+        return;
+      }
       if (pre !== "proceed") {
-        if (pre === "resumed") sendJson(res, 200, { ok: true, resumed: true });
-        else refuseStale("the chat's socket is not on the bubble's session or run");
+        if (pre === "resumed") sendJson(res, 200, resumeAnswerBody("resumed"));
+        else {
+          if (pre === "followed") followWithRead(registry.peekByChat(resume.chatId));
+          refuse(pre, "the chat's live socket answered");
+        }
         return;
       }
       // Serialized with the chat's sends (ChatTransitionGate): never decided while one
       // is being prepared, and none starts until this one has decided.
       const leaveResume = chatTransitions.tryBeginResume(resume.chatId);
       if (leaveResume === null) {
-        refuseStale("a send to the chat is being prepared");
+        refuse("busy", "a send to the chat is being prepared");
         return;
       }
       try {
@@ -7550,7 +7769,7 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
           session = await registry.acquire(routing, { displace: false });
         } catch (err) {
           if (err instanceof SessionDisplaceRefusedError) {
-            refuseStale("another session took the chat's socket");
+            refuse("busy", "another session holds the chat's socket");
             return;
           }
           throw err;
@@ -7558,27 +7777,46 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
         if (
           gatewayAtLeast(session.connection.gatewayVersion, TRANSCRIPT_PROJECTION_SINCE) !== true
         ) {
+          // A gateway without the transcript facts: nothing proves the run over — Convex
+          // reads a refusal without reason as `unknown` (Codex pass 10).
           sendJson(res, 200, { ok: true, resumed: false });
           return;
         }
         // Re-validated after the acquire's network await: the socket is still the
         // chat's, on the bubble's session, and carries no other work.
         const after = resumePreflight(liveSessionView(registry.peekByChat(resume.chatId)), want, bubble);
-        if (registry.peekByChat(resume.chatId) !== session || after === "stale") {
-          refuseStale("the chat's socket changed or carries other work");
+        if (registry.peekByChat(resume.chatId) !== session) {
+          refuse("busy", "the chat's socket changed while it was opened");
+          return;
+        }
+        if (after === "stale" || after === "busy" || after === "followed" || after === "foreign") {
+          if (after === "followed") followWithRead(session);
+          // `foreign` once opened: the socket moved while it opened — asked next cycle.
+          refuse(after === "foreign" ? "busy" : after, "the chat's socket answered once opened");
           return;
         }
         if (after === "resumed") {
-          sendJson(res, 200, { ok: true, resumed: true });
+          sendJson(res, 200, resumeAnswerBody("resumed"));
           return;
         }
-        const resumed = await admitResume(session, resume.chatId, bubble, () =>
-          registry.peekByChat(resume.chatId) === session && !session.connection.isClosed,
+        const outcome = await admitResume(
+          session,
+          resume.chatId,
+          bubble,
+          () => registry.peekByChat(resume.chatId) === session && !session.connection.isClosed,
+          RESUME_SETTLE_READ_BUDGET_MS,
+          resumeCursor,
         );
         console.log(
-          `[resume] chat=${resume.chatId} ${resumed ? "resumed: the gateway still runs the bubble's run" : "not resumed: the gateway no longer runs it (or the socket moved on)"}`,
+          `[resume] chat=${resume.chatId} ${
+            outcome === "resumed"
+              ? "resumed: the gateway still runs the bubble's run"
+              : outcome === "not_running"
+                ? "not resumed: the gateway no longer runs it (transcript read)"
+                : "not resumed: the gateway's state could not be read (or the socket moved on)"
+          }`,
         );
-        sendJson(res, 200, { ok: true, resumed });
+        sendJson(res, 200, resumeAnswerBody(outcome));
       } catch (err) {
         const code = classifyGatewayError(err);
         console.error(`bridge /resume failed [${code}]:`, errForLog(err));

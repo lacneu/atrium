@@ -902,12 +902,7 @@ export class TurnSink {
       this.turnActive = true;
       return;
     }
-    this.messageId = await this.writer.startAssistant(
-      this.chatId,
-      ackRunId,
-      this.sessionKey ?? null,
-      this.dispatchOutboxId,
-    );
+    this.messageId = await this.openBubble(ackRunId, 0);
     this.turnActive = true;
     if (this.pendingRehydrated && this.messageId !== null) {
       // Tools-ON placeholder detail: the gateway is silently processing the
@@ -1164,6 +1159,25 @@ export class TurnSink {
     return false;
   }
 
+  /** The one `startAssistant` of this sink. A projected turn says so (0.102.1): Convex
+   *  stamps the bubble, and its end is the gateway's, never the stuck-stream watchdog's.
+   *  The argument list is unchanged for any other turn. */
+  private openBubble(runId: string | null, segment: number): Promise<string | null> {
+    if (this.projection) {
+      return this.writer.startAssistant(
+        this.chatId,
+        runId,
+        this.sessionKey ?? null,
+        this.dispatchOutboxId,
+        segment > 0 ? segment : undefined,
+        { projected: true },
+      );
+    }
+    return segment > 0
+      ? this.writer.startAssistant(this.chatId, runId, this.sessionKey ?? null, this.dispatchOutboxId, segment)
+      : this.writer.startAssistant(this.chatId, runId, this.sessionKey ?? null, this.dispatchOutboxId);
+  }
+
   /** Create the deferred assistant message once (mutex via openPromise: the
    *  consume loop and a stash flush can apply concurrently) and replay the
    *  buffered pre-open events in arrival order. */
@@ -1172,13 +1186,7 @@ export class TurnSink {
     if (this.openPromise === null) {
       const epoch = this.turnEpoch;
       this.openPromise = (async () => {
-        const id = await this.writer.startAssistant(
-          this.chatId,
-          this.deferredRunId,
-          this.sessionKey ?? null,
-          this.dispatchOutboxId,
-          ...(this.pendingSegment > 0 ? [this.pendingSegment] : []),
-        );
+        const id = await this.openBubble(this.deferredRunId, this.pendingSegment);
         // GENERATION FIRST, always. A user send can call beginTurn while this
         // open is in flight: it installs its own message and bumps the epoch,
         // and this stale resolution — refusal included — must not touch the

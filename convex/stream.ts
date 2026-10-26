@@ -46,6 +46,8 @@ import { spawnAccepted, yieldHandedOff } from "./lib/toolOutcome";
 import { Doc, Id } from "./_generated/dataModel";
 import { messagePart } from "./schema";
 import { traceRegressionSummary, traceStream } from "./lib/streamTrace";
+import { isWatchdogOrphan } from "./lib/streamOrphan";
+import { writeTraceEvent } from "./observability";
 import {
   nextRegressionState,
   normalizeSnapshotSource,
@@ -195,6 +197,9 @@ export const startAssistant = internalMutation({
     // PROJECTION `on` (phase 4): the bubble opens at the run's first visible content,
     // which can come AFTER steered inputs cut the run (CU-20): it is that segment.
     runSegment: v.optional(v.number()),
+    // 0.102.1 (Codex pass 2): the bridge opens it for a projected (OpenClaw) turn — stamped
+    // on the bubble (`messages.projectedTurn`), which the stuck-stream watchdog reads.
+    projectedTurn: v.optional(v.boolean()),
     ...boundArg,
   },
   // NULL = "this run has nowhere to land": the user stopped the work it
@@ -213,6 +218,12 @@ export const startAssistant = internalMutation({
     const seen = { storedText: false };
     const opened = await startAssistantCore(ctx, args, seen);
     if (opened !== null && seen.storedText && args.runId !== undefined) await catchUpLiveBubbleFromRows(ctx, opened, args.runId);
+    // Whatever path opened it (fresh, handed back, resumed, reopened for a merge): the bubble
+    // now streams a projected turn. Only on the bridge's word, so a Hermes turn writes nothing.
+    if (opened !== null && args.projectedTurn === true) {
+      const doc = await ctx.db.get(opened);
+      if (doc !== null && doc.projectedTurn !== true) await ctx.db.patch(opened, { projectedTurn: true });
+    }
     return opened;
   },
 });
@@ -4169,7 +4180,7 @@ export async function finalizeMessageCore(
   // frames only under BRIDGE_DEBUG / BRIDGE_FRAME_DUMP, which are off in production
   // (codex).
   error = maskCredentialId(error);
-  const message = await ctx.db.get(messageId);
+  let message = await ctx.db.get(messageId);
   if (message === null) {
     throw new Error("finalize: message not found");
   }
@@ -4199,6 +4210,39 @@ export async function finalizeMessageCore(
     (message.deliveryOwnBubble === true || message.rowLayout !== undefined)
   ) {
     await endProjectedActivityOfRun(ctx, message.chatId, message.runId);
+  }
+  // THE WATCHDOG'S CLOSE IS NOT A TERMINAL (0.102.1, prod 2026-10-25): a bubble it closed
+  // `stream_orphaned` (lib/streamOrphan `isWatchdogOrphan` — no finalize ever ran) while
+  // its run still ran is ENDED BY THAT RUN: its own terminal — live, or the transcript's
+  // settle of its rows — reopens it here and takes the ordinary terminal path below, as if
+  // the watchdog had never fired (status, text, error, the turn's end). The SAME run only:
+  // the generation is required, never inferred, so another run's terminal leaves it as is.
+  // Anything that DID finalize the bubble — a gateway error, a user Stop, a settle — is a
+  // terminal, and the rule below keeps it.
+  if (
+    message.status !== "streaming" &&
+    isWatchdogOrphan(message) &&
+    expectedRunId !== undefined &&
+    expectedRunId !== null &&
+    message.runId === expectedRunId
+  ) {
+    await ctx.db.patch(messageId, { status: "streaming", error: undefined });
+    await writeTraceEvent(ctx, {
+      kind: "assistant.reconcile",
+      direction: "internal",
+      principalType: "system",
+      principalId: "run-terminal",
+      chatId: message.chatId,
+      runId: message.runId,
+      correlationId: `${message.chatId}:${message.runId}`,
+      meta: JSON.stringify({
+        reason: "orphan_corrected",
+        messageId,
+        status,
+        ...(finalizeCause !== undefined ? { finalizeCause } : {}),
+      }),
+    });
+    message = { ...message, status: "streaming", error: undefined };
   }
   // FIRST TERMINAL WRITE WINS (symmetric): a user-aborted message stays
   // aborted when the gateway's late chat:final loses the race — and a reply
@@ -6272,6 +6316,8 @@ export const splitSegment = internalMutation({
       chatId: message.chatId,
       userId: message.userId,
       ...(message.turnSessionKey !== undefined ? { turnSessionKey: message.turnSessionKey } : {}),
+      // The next segment streams the same projected turn (0.102.1).
+      ...(message.projectedTurn === true ? { projectedTurn: true } : {}),
       ...(message.dispatchOutboxId !== undefined
         ? { dispatchOutboxId: message.dispatchOutboxId }
         : {}),
