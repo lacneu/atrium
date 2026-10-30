@@ -218,7 +218,17 @@ export function sanitizeRowBlocks(raw: unknown): RowBlock[] | undefined {
   return out.length > 0 ? out : undefined;
 }
 
-export type RowContent = { text?: string; yieldAck?: string; errorMessage?: string; blocks?: RowBlock[] };
+export type RowContent = { text?: string; yieldAck?: string; errorMessage?: string; blocks?: RowBlock[]; thinking?: string };
+
+/** Most a row's reasoning may weigh (bridge transcript-rows.ts `ROW_THINKING_MAX_BYTES`):
+ *  over it, it is not kept (never cut). It is stored apart from the row's text
+ *  (`transcriptRowReasoning`), so no reader of texts ever loads it. */
+export const MAX_ROW_THINKING_BYTES = 64 * 1024;
+
+/** A row's reasoning as it may be kept (0.103.0): a non-empty string under the bound. */
+export function sanitizeThinking(raw: unknown): string | undefined {
+  return typeof raw === "string" && raw.trim() !== "" && utf8Bytes(raw) <= MAX_ROW_THINKING_BYTES ? raw : undefined;
+}
 
 /** What a row's content weighs (bridge transcript-rows.ts `rowContentBytes`). */
 export function rowContentBytes(c: RowContent): number {
@@ -226,6 +236,7 @@ export function rowContentBytes(c: RowContent): number {
     utf8Bytes(c.text ?? "") +
     utf8Bytes(c.yieldAck ?? "") +
     utf8Bytes(c.errorMessage ?? "") +
+    utf8Bytes(c.thinking ?? "") +
     (c.blocks === undefined || c.blocks.length === 0 ? 0 : utf8Bytes(JSON.stringify(c.blocks)))
   );
 }

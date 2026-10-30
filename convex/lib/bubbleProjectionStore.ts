@@ -106,6 +106,9 @@ export function toPlanRow(d: Doc<"transcriptRows">, shown?: RowText): PlanRow {
     ...(d.streamSegment === true ? { streamSegment: true } : {}),
     ...(d.segmentOrder !== undefined ? { segmentOrder: d.segmentOrder } : {}),
     ...(d.retracted === true ? { retracted: true } : {}),
+    // 0.103.0: the row carries a stored reasoning (its signature: the text is never read here).
+    ...(d.thinkingSig !== undefined ? { thinking: true } : {}),
+    ...(d.commentary === true ? { commentary: true } : {}),
     ...(shown?.blocks !== undefined ? { hasBlocks: true } : {}),
     ...(itemsOf(shown) !== undefined ? { items: itemsOf(shown)! } : {}),
   };

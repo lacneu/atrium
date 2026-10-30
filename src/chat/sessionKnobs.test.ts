@@ -464,7 +464,7 @@ describe("KNOB_CONTROL — one shape per knob, declared, not decided at the call
     expect(KNOB_CONTROL.model).toBe("list");
   });
   test("every knob field has a declared shape", () => {
-    expect(Object.keys(KNOB_CONTROL).sort()).toEqual(["fastMode", "model", "thinkingLevel"]);
+    expect(Object.keys(KNOB_CONTROL).sort()).toEqual(["fastMode", "model", "showReasoning", "thinkingLevel"]);
   });
 });
 

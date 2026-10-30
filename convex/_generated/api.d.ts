@@ -148,6 +148,7 @@ import type * as lib_providerSession from "../lib/providerSession.js";
 import type * as lib_provisionKeys from "../lib/provisionKeys.js";
 import type * as lib_quoteReply from "../lib/quoteReply.js";
 import type * as lib_rbac from "../lib/rbac.js";
+import type * as lib_reasoningDisplay from "../lib/reasoningDisplay.js";
 import type * as lib_rehydrateTrace from "../lib/rehydrateTrace.js";
 import type * as lib_rehydration from "../lib/rehydration.js";
 import type * as lib_rowParts from "../lib/rowParts.js";
@@ -358,6 +359,7 @@ declare const fullApi: ApiFromModules<{
   "lib/provisionKeys": typeof lib_provisionKeys;
   "lib/quoteReply": typeof lib_quoteReply;
   "lib/rbac": typeof lib_rbac;
+  "lib/reasoningDisplay": typeof lib_reasoningDisplay;
   "lib/rehydrateTrace": typeof lib_rehydrateTrace;
   "lib/rehydration": typeof lib_rehydration;
   "lib/rowParts": typeof lib_rowParts;

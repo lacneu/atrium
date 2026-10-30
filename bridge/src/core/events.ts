@@ -30,7 +30,7 @@ export const EVENT_TOOL_STATUS = "tool.status"; // {name, phase, runId, toolCall
  *  Its home is the message BODY, not the activity row: the activity row is the analysis
  *  view and is hidden by default, so a segment routed there is stored and never seen
  *  (lot 34's unfinished half). `{text}` -> internal.stream.addPart(kind:"reasoning"). */
-export const EVENT_REASONING = "reasoning"; // {text}
+export const EVENT_REASONING = "reasoning"; // {text, nature?: "thinking" | "commentary", itemKey?}
 export const EVENT_MEDIA = "media"; // {items: [{filename, path}]}
 // {plan} — the agent's work plan from the NATIVE `stream:"plan"` agent event
 // (G-22), already normalized into the SAME PlanPart the `update_plan` tool path

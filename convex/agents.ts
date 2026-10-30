@@ -636,6 +636,9 @@ export const listAgentsForInstance = query({
         description: a.description ?? null,
         isDefaultOnInstance: a.isDefaultOnInstance ?? false,
         enabled: a.enabled === true,
+        // 0.103.0: this agent's exception to the instance's reasoning default (true shown,
+        // false hidden, null none — the instance decides; lib/reasoningDisplay.ts).
+        showReasoningDefault: a.showReasoningDefault ?? null,
         reserved:
           a.reservedForGroupId !== undefined
             ? {
@@ -649,6 +652,9 @@ export const listAgentsForInstance = query({
         presentInLastOk: a.presentInLastOk,
       })),
       defaultAgentId: inst?.defaultAgentId ?? null,
+      // 0.103.0: the instance's reasoning default (absent = hidden), read from the instance
+      // row already loaded here — the card needs nothing else.
+      showReasoningDefault: inst?.showReasoningDefault === true,
       discovery: discovery
         ? {
             lastPollAt: discovery.lastPollAt,
@@ -911,6 +917,53 @@ export const setAgentDescription = mutation({
     await ctx.db.patch(agent._id, {
       description: trimmed.length === 0 ? undefined : trimmed,
     });
+  },
+});
+
+/** Admin (0.103.0): does a conversation on this instance SHOW the model's reasoning when
+ *  neither it nor its agent's exception decides (lib/reasoningDisplay.ts)? Atrium's display
+ *  default, a top-level instance property — never in the bridge `config`, and the gateway's
+ *  own configuration is never written. Read at every decision, so it takes effect at once for
+ *  what each inheriting conversation shows and from its next turn for the OpenClaw session
+ *  (the bridge applies `reasoningLevel` before every turn). */
+export const setInstanceReasoningDefault = mutation({
+  args: { instanceName: v.string(), show: v.boolean() },
+  handler: async (ctx, { instanceName, show }) => {
+    await requireAdmin(ctx);
+    const actor = await getActor(ctx);
+    const inst = await instanceByName(ctx, instanceName);
+    if (inst === null) throw new Error("Not found: instance");
+    await ctx.db.patch(inst._id, { showReasoningDefault: show });
+    await recordAudit(ctx, actor, show ? "instance.reasoning_default.show" : "instance.reasoning_default.hide", {
+      resource: "instance",
+      resourceId: inst._id,
+    });
+  },
+});
+
+/** Admin (0.103.0): this agent's EXCEPTION to its instance's reasoning default — `true`
+ *  shown, `false` hidden, `null` no exception (the agent follows the instance again).
+ *  Atrium's display setting (lib/reasoningDisplay.ts); the gateway's own configuration is
+ *  never written. Same timing as `setInstanceReasoningDefault`. */
+export const setAgentReasoningDefault = mutation({
+  args: { instanceName: v.string(), agentId: v.string(), show: v.union(v.boolean(), v.null()) },
+  handler: async (ctx, { instanceName, agentId, show }) => {
+    await requireAdmin(ctx);
+    const actor = await getActor(ctx);
+    if ((await instanceByName(ctx, instanceName)) === null) throw new Error("Not found: instance");
+    const agent = await agentRow(ctx, instanceName, agentId);
+    if (agent === null) throw new Error("Not found: agent");
+    await ctx.db.patch(agent._id, { showReasoningDefault: show ?? undefined });
+    await recordAudit(
+      ctx,
+      actor,
+      show === null
+        ? "agent.reasoning_default.inherit"
+        : show
+          ? "agent.reasoning_default.show"
+          : "agent.reasoning_default.hide",
+      { resource: "agent", resourceId: agentRef(instanceName, agentId) },
+    );
   },
 });
 

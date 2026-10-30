@@ -1842,16 +1842,53 @@ button.oc-bmk-rail__count:hover {
 .oc-msg--user {
   justify-content: flex-end;
 }
-/* An assistant SEGMENT: prose from during the turn that is not the final reply
-   (Hermes `message.interim`). Set apart from the answer by a rule and muted colour, so
-   the reader can tell "what the agent said along the way" from "the answer" — but always
-   VISIBLE, because the Tools toggle gates the analysis view and is off by default. */
-.oc-msg__segment {
-  margin: 0 0 0.75rem;
+/* 0.103.0 — PROSE THAT IS NOT THE ANSWER (ReasoningBlocks.tsx), always VISIBLE (the
+   Tools toggle gates the analysis view and is off by default), one type scale with the
+   reply: 14 px for what is read, the activity row's chrome for the disclosure.
+   - .oc-msg__note: the agent's WORK NOTE between its actions (Hermes `message.interim`,
+     OpenClaw preamble / commentary rows) — ordinary prose, quieter than the answer;
+   - .oc-thinking: the MODEL'S REASONING — a disclosure; its text muted, set off by a rule
+     on its left, folded once the answer begins. */
+.oc-msg__note {
+  margin: 0.25rem 0 0.5rem;
+  color: var(--muted-foreground);
+  font-size: 0.875rem;
+}
+.oc-msg__note .oc-md,
+.oc-thinking__body .oc-md {
+  font-size: inherit;
+  color: inherit;
+}
+/* Flat, never the activity card the meta block gives a tool group (`.oc-msg__meta:has(
+   .oc-actrow)`): the reasoning is prose set off by its rule, not a card. */
+.oc-msg__meta.oc-thinking,
+.oc-msg__meta.oc-thinking:has(.oc-actrow) {
+  margin: 0.25rem 0 0.5rem;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+}
+.oc-thinking > .oc-actrow {
+  width: fit-content;
+  max-width: 100%;
+}
+.oc-thinking > .oc-actrow .oc-actrow__label {
+  font-weight: 400;
+  color: var(--muted-foreground);
+}
+.oc-thinking__body {
+  margin: 0.15rem 0 0 0.75rem;
   padding: 0 0 0 0.75rem;
   border-left: 2px solid var(--border);
   color: var(--muted-foreground);
-  white-space: pre-wrap;
+  font-size: 0.875rem;
+}
+/* What the block says of its text (being read, gone, cut): the qualifier scale. */
+.oc-thinking__status {
+  margin: 0.25rem 0;
+  font-size: 0.75rem;
+  font-style: italic;
 }
 
 .oc-msg__bubble {
@@ -7484,6 +7521,9 @@ button.oc-perm__opt:disabled {
   background: var(--muted);
   color: var(--muted-foreground);
   border: 1px solid var(--border);
+  /* A provenance ("défaut de l'instance") stays on one line; the label wraps instead. */
+  white-space: nowrap;
+  flex: 0 0 auto;
 }
 .oc-spanel__reset {
   display: inline-flex;

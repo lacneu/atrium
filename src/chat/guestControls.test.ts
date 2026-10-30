@@ -31,7 +31,7 @@ describe("the owner's controls are not offered to a guest", () => {
   });
 
   test("the session's knobs and full panel are mounted for the owner only", () => {
-    expect(CHAT).toMatch(/\{sm && meta\?\.viewerRole === "owner" \? \(\s*<SessionKnobsMenu/);
+    expect(CHAT).toMatch(/\{meta\?\.viewerRole === "owner" \? \(\s*<SessionKnobsMenu/);
     expect(CHAT).toMatch(
       /\{meta\?\.viewerRole === "owner" \? \(\s*<SessionPanel chatId=\{chatId\} open=\{panelOpen\}/,
     );

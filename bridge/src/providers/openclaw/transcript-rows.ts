@@ -10,9 +10,7 @@
 // Nothing in this module writes anything: transcript-shadow.ts orchestrates the reads
 // and posts the result to Convex, which never edits a bubble in shadow mode.
 
-import { createHash } from "node:crypto";
-
-import { messageDisplayText, sanitizeDisplay } from "./normalizer.js";
+import { messageDisplayText, sanitizeDisplay, streamSegmentItemKey } from "./normalizer.js";
 import { blocksBytes, rowBlocks, withoutBlockTexts, withoutToolPayloads, type RowBlock } from "./row-blocks.js";
 import { resolveToolCallId, resolveToolName, toolItemCallIds } from "./tool-call-id.js";
 
@@ -283,6 +281,90 @@ export function rowDisplayFacts(message: unknown): { hidden: boolean; visible: b
   return { hidden: silent || heartbeat, visible };
 }
 
+// ── Reasoning and work notes (0.103.0) ──────────────────────────────────────────────
+
+/** Most a row's reasoning may weigh, in UTF-8 bytes. The gateway already caps each
+ *  `thinking` field it serves at 8 000 characters (`truncateChatHistoryText`,
+ *  src/gateway/chat-display-projection.sanitize.ts:217-231 at v2026.9.33); several blocks
+ *  in one row stay under this. A reasoning over it is not sent (never cut). */
+export const ROW_THINKING_MAX_BYTES = 64 * 1024;
+
+/** The reasoning an assistant row carries: each `{type:"thinking"}` block's `thinking`,
+ *  trimmed, the empty ones skipped, joined by a newline — the Control UI's `extractThinking`
+ *  (ui/src/lib/chat/message-extract.ts:73-90 at v2026.9.33). The gateway's display-cap
+ *  sentinel is removed (it is not the model's text) and stated instead: `truncated` (codex
+ *  pass 2 — a cut reasoning shown as whole). Null when there is none: a model whose
+ *  reasoning is encrypted leaves an EMPTY block (measured on gpt-6.1-sol, 2026-10-26), and
+ *  an empty block shows nothing. */
+export function rowThinking(message: unknown): { text: string; truncated: boolean } | null {
+  const record = asRecord(message);
+  if (record === null || !Array.isArray(record.content)) return null;
+  const parts: string[] = [];
+  let truncated = false;
+  for (const block of record.content) {
+    const b = asRecord(block);
+    if (b?.type !== "thinking" || typeof b.thinking !== "string") continue;
+    if (b.thinking.includes(DISPLAY_CAP_SENTINEL)) truncated = true;
+    const cleaned = b.thinking.split(DISPLAY_CAP_SENTINEL).join("").trim();
+    if (cleaned) parts.push(cleaned);
+  }
+  if (parts.length === 0) return null;
+  const joined = parts.join("\n");
+  return utf8Length(joined) <= ROW_THINKING_MAX_BYTES ? { text: joined, truncated } : null;
+}
+
+const ANSWER_TEXT_TYPES: ReadonlySet<unknown> = new Set(["text", "input_text", "output_text"]);
+
+/** `parseAssistantTextSignature(...).phase` (src/shared/chat-message-content.ts:47-79): a
+ *  JSON signature of version 1 names the phase; anything else names none. */
+function signaturePhase(block: Record<string, unknown>): string | null {
+  const value = block.textSignature;
+  if (typeof value !== "string" || !value.startsWith("{")) return null;
+  try {
+    const parsed = JSON.parse(value) as { v?: unknown; phase?: unknown };
+    return parsed.v === 1 && (parsed.phase === "commentary" || parsed.phase === "final_answer") ? parsed.phase : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The Control UI's `resolveAssistantReplyPhase` (ui/src/pages/chat/chat-assistant-reply.ts:
+ * 20-41 at v2026.9.33) reduced to its one question — is this row the agent's commentary?
+ *  - a keyed stream segment (`openclawStreamFallback: {source:"segment", itemId}`) is;
+ *  - a row with final-answer text is not (`extractAssistantTextForPhase(final_answer)`);
+ *  - otherwise the message's phase (`resolveAssistantMessagePhase`, src/shared/
+ *    chat-message-content.ts:81-110): its own `phase`, or the phase every phased text block
+ *    agrees on.
+ * The `codex-app-server` mirror branch only ever answers `final_answer`: not ported.
+ */
+export function rowIsCommentary(message: unknown): boolean {
+  const record = asRecord(message);
+  if (record === null || projString(record.role)?.toLowerCase() !== "assistant") return false;
+  const fallback = asRecord(record.openclawStreamFallback);
+  if (fallback?.source === "segment" && projString(fallback.itemId) !== null) return true;
+  const direct = record.phase === "commentary" || record.phase === "final_answer" ? record.phase : null;
+  const blocks = Array.isArray(record.content) ? record.content.map(asRecord).filter((b): b is Record<string, unknown> => b !== null && ANSWER_TEXT_TYPES.has(b.type)) : [];
+  const explicit = blocks.some((b) => signaturePhase(b) !== null);
+  // Final-answer text, by the same precedence as `readAssistantTextBlocksForPhase`.
+  const hasFinal = explicit
+    ? blocks.some((b) => signaturePhase(b) === "final_answer" && typeof b.text === "string" && b.text.trim() !== "")
+    : direct === "final_answer" &&
+      (typeof record.content === "string"
+        ? record.content.trim() !== ""
+        : blocks.some((b) => typeof b.text === "string" && b.text.trim() !== ""));
+  if (hasFinal) return false;
+  if (direct !== null) return direct === "commentary";
+  let phase: string | null = null;
+  for (const b of blocks) {
+    const p = signaturePhase(b);
+    if (p === null) continue;
+    if (phase !== null && phase !== p) return false;
+    phase = p;
+  }
+  return phase === "commentary";
+}
+
 /** Tool call ids a row carries, read by the ONE identity the tool blocks use
  *  (tool-call-id.ts `resolveToolCallId`, upstream tool-cards.ts:224): the message's own on
  *  a tool result (:499), each tool content item's — its id, its legacy `callId`, then the
@@ -425,6 +507,22 @@ export type TranscriptRow = {
   stopReason?: string;
   /** The row's own error text (`errorMessage`), sanitized like the text. */
   errorMessage?: string;
+  /** PROJECTION `on` (0.103.0): the model's REASONING the row carries — its non-empty
+   *  `{type:"thinking", thinking}` blocks, trimmed and joined, as the Control UI reads them
+   *  (`extractThinking`, ui/src/lib/chat/message-extract.ts:73-90 at v2026.9.33). Never part
+   *  of `text` nor of `blocks`: a block would move the index of every file block after it,
+   *  and a file's identity is (row, block index). Convex keeps it only for a conversation
+   *  that shows its reasoning. */
+  thinking?: string;
+  /** The gateway capped that reasoning for display (its sentinel, removed from `thinking`):
+   *  what is carried is its first part. Cleared when the full row is read
+   *  (transcript-shadow.ts `completion`). */
+  thinkingTruncated?: true;
+  /** The row is the agent's WORK NOTE, not its answer: a keyed stream segment, or a row
+   *  whose text the provider tagged `phase: "commentary"` with no final-answer text — the
+   *  Control UI's `resolveAssistantReplyPhase` (ui/src/pages/chat/chat-assistant-reply.ts:
+   *  20-41 at v2026.9.33). A display fact only: it never decides where a row is placed. */
+  commentary?: true;
   /** `provenance.kind` / `provenance.sourceTool`, read-only diagnostics. */
   provenanceKind?: string;
   provenanceSourceTool?: string;
@@ -458,7 +556,7 @@ export function streamSegmentEntryId(message: unknown, rowId: string): string | 
   if (fallback?.source !== "segment") return null;
   const itemId = projString(fallback.itemId);
   if (itemId === null) return null;
-  return `${rowId}:segment:${createHash("sha256").update(itemId).digest("hex").slice(0, 32)}`;
+  return `${rowId}:segment:${streamSegmentItemKey(itemId)}`;
 }
 
 /** `__openclaw.transcriptPosition` (upstream src/chat/transcript-display-position.ts:36
@@ -576,7 +674,14 @@ export function toTranscriptRow(
   const facts = rowDisplayFacts(message);
   const toolCallIds = rowToolCallIds(message, id.id);
   let runId = id.runId;
-  let shown: { text?: string; yieldAck?: string; errorMessage?: string; blocks?: RowBlock[] } = {};
+  let shown: {
+    text?: string;
+    yieldAck?: string;
+    errorMessage?: string;
+    blocks?: RowBlock[];
+    thinking?: string;
+    thinkingTruncated?: true;
+  } = {};
   let content: ContentFacts = {};
   // Launches are a fact about the row's RUN: only a row attributed to one states any.
   const spawns = display !== undefined && id.runId !== null && id.role !== "user" ? spawnFacts(message) : [];
@@ -605,6 +710,11 @@ export function toTranscriptRow(
     ) {
       shown = { ...shown, errorMessage: error };
     }
+    // The model's reasoning (0.103.0), from a row the Control UI shows: never from a hidden
+    // one. Carried beside what the row shows, under the same budget (`boundRowContent`
+    // gives it up first).
+    const thinking = facts.hidden ? null : rowThinking(record);
+    if (thinking !== null) shown = { ...shown, thinking: thinking.text, ...(thinking.truncated ? { thinkingTruncated: true as const } : {}) };
   }
   // THE ROW THAT STATES A RUN'S FAILURE (final design step 4, « l'erreur vient de la
   // ligne »): the gateway appends a `custom` row `run-failed-before-reply` whose content is
@@ -637,6 +747,7 @@ export function toTranscriptRow(
   return {
     entryId: segmentId ?? id.id,
     ...(segmentId !== null ? { streamSegment: true as const } : {}),
+    ...(display !== undefined && rowIsCommentary(message) ? { commentary: true as const } : {}),
     seq: id.seq,
     role: id.role,
     ...(runId === null ? {} : { runId }),
@@ -695,11 +806,13 @@ export function rowContentBytes(r: {
   yieldAck?: string;
   errorMessage?: string;
   blocks?: readonly RowBlock[];
+  thinking?: string;
 }): number {
   return (
     utf8Length(r.text ?? "") +
     utf8Length(r.yieldAck ?? "") +
     utf8Length(r.errorMessage ?? "") +
+    utf8Length(r.thinking ?? "") +
     blocksBytes(r.blocks ?? [])
   );
 }
@@ -715,8 +828,12 @@ export function rowContentBytes(r: {
  * Mirrored by convex/lib/transcriptProjection.ts `boundRowContent`.
  */
 export function boundRowContent<
-  R extends { text?: string; yieldAck?: string; errorMessage?: string; blocks?: RowBlock[] },
->(r: R): R {
+  R extends { text?: string; yieldAck?: string; errorMessage?: string; blocks?: RowBlock[]; thinking?: string; thinkingTruncated?: true },
+>(input: R): R {
+  if (rowContentBytes(input) <= ROW_TEXT_MAX_BYTES) return input;
+  // 0. The reasoning goes first: what the row shows never makes room for it.
+  const { thinking: _thinking, thinkingTruncated: _cut, ...withoutThinking } = input;
+  const r = withoutThinking as R;
   if (r.blocks === undefined || rowContentBytes(r) <= ROW_TEXT_MAX_BYTES) return r;
   // 2. the tool payloads go first (codex review 11): the cards stay, marked cut.
   const lean = { ...r, blocks: withoutToolPayloads(r.blocks) };
@@ -769,7 +886,9 @@ export function capDisplayedRow(row: TranscriptRow): TranscriptRow {
       marked = true;
       return { ...b, text: s.text, capped: true as const };
     });
-    if (!marked) {
+    // No text carried the sentinel: the cap is another field's. When it is the reasoning's
+    // (0.103.0, `thinkingTruncated`), the answer is whole and is never told as cut.
+    if (!marked && row.thinkingTruncated !== true) {
       const last = blocks.map((b) => b.type).lastIndexOf("text");
       if (last >= 0) blocks[last] = { ...(blocks[last] as Extract<RowBlock, { type: "text" }>), capped: true as const };
     }

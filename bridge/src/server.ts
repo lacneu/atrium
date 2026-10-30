@@ -334,6 +334,13 @@ interface SessionSettings {
    */
   fastMode?: boolean;
   /**
+   * The session's reasoning VISIBILITY (`sessions.patch {reasoningLevel}`, 0.103.0):
+   * whether the conversation shows the model's reasoning, decided by Convex
+   * (convex/lib/reasoningDisplay.ts) and applied before every turn like the other knobs.
+   * Admin-scoped upstream (session-patch-scope.ts: not in the write set).
+   */
+  reasoningLevel?: "on" | "off";
+  /**
    * Overrides to UNSET on the gateway (`sessions.patch {<field>: null}` —
    * verified 6.5: null REMOVES the override from the session store). Persisted
    * INSIDE the intent by the app (P2-4) so an unset survives a bridge outage
@@ -1429,11 +1436,14 @@ export function parseSessionSettings(
   // fastMode: only a real boolean is an intent (false included) — anything
   // else means "no intent" and the key stays absent.
   if (typeof o.fastMode === "boolean") settings.fastMode = o.fastMode;
+  // reasoningLevel: exactly the two values Atrium decides; anything else is no intent.
+  if (o.reasoningLevel === "on" || o.reasoningLevel === "off") settings.reasoningLevel = o.reasoningLevel;
   // clears ride in the intent (P2-4); an empty list is the same as absent.
   if (clears.length > 0) settings.clears = clears;
   return settings.thinkingLevel ||
     settings.model ||
     settings.fastMode !== undefined ||
+    settings.reasoningLevel !== undefined ||
     settings.clears !== undefined
     ? settings
     : null;
@@ -1620,6 +1630,12 @@ export async function applySessionSettings(
     if (settings.fastMode !== undefined) {
       patches.push({
         params: { key: sessionKey, fastMode: settings.fastMode },
+        timeoutMs: 10_000,
+      });
+    }
+    if (settings.reasoningLevel !== undefined) {
+      patches.push({
+        params: { key: sessionKey, reasoningLevel: settings.reasoningLevel },
         timeoutMs: 10_000,
       });
     }
@@ -2419,7 +2435,7 @@ async function performSendComposed(
       // path and reports alone (models-roster.ts) — a slow `models.list` never delays
       // `chat.send` nor holds the describe's figures behind it.
       void publishSessionMeta(
-        { chatId: body.chatId, connection: conn, agentId: body.agentId },
+        { chatId: body.chatId, connection: conn, agentId: body.agentId, sessionKey },
         writer,
         { sess, observedAt: describeObservedAt },
       ).catch((e) =>

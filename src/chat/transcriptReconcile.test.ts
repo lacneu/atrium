@@ -98,10 +98,13 @@ function shownCards(m: ConvexMessageView | undefined): string[] {
   const grouped = (out.metadata?.custom as { toolParts: Array<{ toolCallId: string }> }).toolParts.map((x) => x.toolCallId);
   return [...inline, ...grouped].sort();
 }
+// The prose a reader sees, in order: the answer's text and (0.103.0) the agent's work notes,
+// which a segment row now renders as (`data-commentary`).
 const texts = (m: ConvexMessageView | undefined) =>
-  ((m === undefined ? [] : convertConvexMessage(m).content) as ReadonlyArray<{ type: string; text?: string }>)
-    .filter((p) => p.type === "text" && (p.text ?? "").trim() !== "")
-    .map((p) => p.text!.trim());
+  ((m === undefined ? [] : convertConvexMessage(m).content) as ReadonlyArray<{ type: string; text?: string; data?: { text?: string } }>)
+    .map((p) => (p.type === "text" ? (p.text ?? "") : p.type === "data-commentary" ? (p.data?.text ?? "") : ""))
+    .filter((t) => t.trim() !== "")
+    .map((t) => t.trim());
 /** The view a reader gets: each card's phase, then the files rendered (in order). */
 function seen(m: ConvexMessageView | undefined) {
   if (m === undefined) return null;

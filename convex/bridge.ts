@@ -12,6 +12,7 @@
 //   - REQUIRES A LIVE DEPLOYMENT + a reachable bridge to actually send; the
 //     `fetch` here only runs server-side on Convex.
 
+import { bridgeSessionSettings, metaDescribesSession, reasoningLevelToApply, showsReasoning } from "./lib/reasoningDisplay";
 import { isGatewayCommandText } from "./lib/gatewayCommand";
 import { v } from "convex/values";
 import { chatAllowsInstance } from "./lib/ingestAuthz";
@@ -1085,6 +1086,20 @@ export const getChatRouting = internalQuery({
     // THE TRANSCRIPT PROJECTION (redesign phase 1): the instance switch, and where this
     // session's last transcript read stopped, so the bridge resumes with a delta.
     const projectionMode = effectiveTranscriptProjection(instance);
+    // 0.103.0 — the reasoning VISIBILITY of the OpenClaw session (lib/reasoningDisplay.ts):
+    // the conversation's choice, else the routed agent's exception, else its instance's default.
+    const reasoningLevel =
+      routedTarget === null || provider !== "openclaw"
+        ? undefined
+        : reasoningLevelToApply(
+            await showsReasoning(ctx, chat, { instanceName: routedTarget.instanceName, agentId: routedTarget.agentId }),
+            chat,
+            await metaDescribesSession(chat, routedTarget.instanceName, {
+              agentId: routedTarget.agentId,
+              canonical: routedTarget.canonical,
+              chatId: providerConversationId ?? chat._id,
+            }),
+          );
     const transcript =
       routedTarget === null || provider !== "openclaw" || projectionMode === "off"
         ? null
@@ -1186,7 +1201,8 @@ export const getChatRouting = internalQuery({
       // The user's per-chat OpenClaw knob intent (reasoning/model). The bridge
       // re-applies these via sessions.patch before each turn so they survive a
       // session reset. Non-secret labels only.
-      sessionSettings: chat.sessionSettings ?? null,
+      // `showReasoning` stays here; the bridge gets the `reasoningLevel` it decides.
+      sessionSettings: bridgeSessionSettings(chat.sessionSettings, reasoningLevel),
       // THE PERMISSIONS THE READER WAS SHOWN, as the send guard — only when this
       // turn's gateway session is provably the one the stored meta describes (see
       // expectedPermissionModeFor). null = no guard, and the key is left off the body.
@@ -3452,6 +3468,7 @@ export const dispatchPatch = internalAction({
       (settings.thinkingLevel != null ||
         settings.model != null ||
         settings.fastMode != null ||
+        settings.reasoningLevel != null ||
         clearList.length > 0);
     if (!hasOverride) {
       return; // nothing to apply, nothing to clear
@@ -3512,6 +3529,7 @@ export const dispatchPatch = internalAction({
           thinkingLevel: settings?.thinkingLevel,
           model: settings?.model,
           fastMode: settings?.fastMode,
+          reasoningLevel: settings?.reasoningLevel,
           clears: clearList,
           instanceName: routing.target.instanceName,
           agentId: routing.target.agentId,

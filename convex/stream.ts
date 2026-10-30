@@ -16,6 +16,7 @@
 // still gated per-user in messages.ts, so a user can never read another user's
 // streamed message.
 
+import { capReasoningText, MESSAGE_THINKING_BYTES, producingAgentOf, sessionDigest, showsReasoning } from "./lib/reasoningDisplay";
 import { catchUpLiveBubbleFromRows } from "./lib/rowParts";
 import { WIDGET_TITLE_MAX_CHARS, WIDGET_VIEW_ID_RE, partWidgetField } from "./lib/widgetDescriptor";
 import { conversationWantsWidgets, viewRegisteredTo, widgetInstanceFor } from "./widgets";
@@ -65,7 +66,7 @@ import { regroupIfLaunchWaits, scheduleRegroup } from "./displayGroups";
 import { deletedRunSegment, purgeRowTextsOfMessage, transcriptStoredText } from "./lib/transcriptProjection";
 import { bubbleInScope, reopenTranscriptRun, settledProjectedBubble } from "./lib/projectedRuns";
 import { FILE_JOB_MAX_DEFER_MS, UPLOAD_MARKER_MAX_MS } from "./lib/fileJobs";
-import { isExplicitTerminal } from "./lib/bubbleProjection";
+import { isExplicitTerminal, utf8Bytes } from "./lib/bubbleProjection";
 import { maybeReparkPreemptedTurn } from "./preemptRepark";
 import { chatAllowsInstance } from "./lib/ingestAuthz";
 import { currentPlanIndex, usablePlanStamp } from "./lib/planOrder";
@@ -2962,6 +2963,16 @@ export const addPart = internalMutation({
       );
       return;
     }
+    // THE MODEL'S REASONING (0.103.0) is stored only for a conversation that shows it — its
+    // own choice, else what the agent that answered inherits (lib/reasoningDisplay.ts).
+    // Dropped otherwise, saying nothing of its content (its length at most).
+    if (part.kind === "reasoning" && part.nature === "thinking") {
+      const chat = await ctx.db.get(message.chatId);
+      if (chat === null || !(await showsReasoning(ctx, chat, await producingAgentOf(ctx, chat, message)))) {
+        console.log(`[stream] addPart: reasoning not kept (conversation hides it), ${part.text.length} chars`);
+        return;
+      }
+    }
     // An inline widget is something the AGENT showed: it may only sit on an assistant
     // message (the reader's fetch authorization reads assistant parts only), and its
     // view id must follow the gateway's managed-document grammar — never a string
@@ -3029,7 +3040,7 @@ export const addPart = internalMutation({
     // prefix is consumed at finalize, and a late start part has nothing to rebase
     // against (the client clamps it).
     if (
-      part.kind === "tool" &&
+      (part.kind === "tool" || part.kind === "reasoning") &&
       part.textOffset !== undefined &&
       message.status === "streaming" &&
       message.announcePrefix !== undefined &&
@@ -3090,6 +3101,23 @@ export const addPart = internalMutation({
       .query("messageParts")
       .withIndex("by_message", (q) => q.eq("messageId", messageId))
       .collect();
+    // THE MESSAGE'S REASONING BUDGET (codex pass 1 on 0.103.0): what its other reasoning
+    // parts hold counts; the part this one updates (same key, same nature) does not. Past
+    // it, only the first part is kept, and the part says so.
+    if (part.kind === "reasoning" && part.nature === "thinking") {
+      const key = part.itemKey;
+      const held = existing.reduce(
+        (sum, e) =>
+          e.part.kind === "reasoning" && e.part.nature === "thinking" && (key === undefined || e.part.itemKey !== key)
+            ? sum + utf8Bytes(e.part.text)
+            : sum,
+        0,
+      );
+      const { textCapped: _claimed, ...claimed } = part;
+      const cut = capReasoningText(part.text, MESSAGE_THINKING_BYTES - held);
+      part = cut.capped ? { ...claimed, text: cut.text, textCapped: true } : claimed;
+      if (cut.capped) console.log(`[stream] addPart: reasoning cut to the message budget (${cut.text.length} chars kept)`);
+    }
     // TERMINAL-message idempotence: a replayed announce run (bridge restarted,
     // its in-memory dedupe lost) re-delivers the same tool/media parts to the
     // settled parent. A LATE part on a terminal message is legitimate (tool
@@ -3237,6 +3265,28 @@ export const addPart = internalMutation({
           },
         });
         await ctx.db.patch(messageId, { updatedAt: Date.now() });
+        return;
+      }
+    }
+    // WORK-NOTE UPSERT (0.103.0): a live note is keyed by its preamble item (`itemKey`) —
+    // a repeated `end` frame or a retried post updates it in place, never stacks a second
+    // one. Its first position is kept, like a tool card's.
+    if (part.kind === "reasoning" && part.itemKey !== undefined) {
+      const row = existing.find(
+        (e) =>
+          e.part.kind === "reasoning" &&
+          e.part.itemKey === part.itemKey &&
+          (e.announceRun ?? null) === (announceRun ?? null),
+      );
+      if (row !== undefined && row.part.kind === "reasoning") {
+        if (row.part.text !== part.text) {
+          // Whether it is cut is the NEW text's fact, never the old one's.
+          const { textCapped: _previous, ...kept } = row.part;
+          await ctx.db.patch(row._id, {
+            part: { ...kept, ...part, textOffset: row.part.textOffset ?? part.textOffset },
+          });
+          await ctx.db.patch(messageId, { updatedAt: Date.now() });
+        }
         return;
       }
     }
@@ -5295,7 +5345,8 @@ type OrderedGroup = {
   readonly carriedBy: readonly string[] | "stamped";
   readonly stamp: string;
 };
-const KNOB_FIELDS = ["model", "modelProvider", "agentRuntime", "thinkingLevel", "thinkingDefault", "thinkingLevels", "verboseLevel"] as const;
+// `describedSession` rides with the knobs: it names the session they describe.
+const KNOB_FIELDS = ["model", "modelProvider", "agentRuntime", "thinkingLevel", "thinkingDefault", "thinkingLevels", "reasoningLevel", "verboseLevel", "describedSession"] as const;
 const KNOB_GROUP: OrderedGroup = { fields: KNOB_FIELDS, carriedBy: KNOB_FIELDS, stamp: "knobsAt" };
 const ROSTER_GROUP: OrderedGroup = { fields: ["availableModels"], carriedBy: ["availableModels"], stamp: "rosterAt" };
 // Who may act on the session and with what permissions: describe-sourced like the knobs,
@@ -5362,6 +5413,9 @@ export const setSessionMeta = internalMutation({
       thinkingLevels: v.optional(
         v.array(v.object({ id: v.string(), label: v.string() })),
       ),
+      reasoningLevel: v.optional(v.string()),
+      // The session key the describe answered for — stored as a digest only.
+      describedSessionKey: v.optional(v.string()),
       availableModels: v.optional(
         v.array(v.object({ id: v.string(), label: v.string() })),
       ),
@@ -5412,7 +5466,13 @@ export const setSessionMeta = internalMutation({
     // outrank the newer stamp (codex P2 ×2): ordering comes from the
     // bridge-stamped observedAt; a legacy snapshot without one only drops
     // the stamp on the conservative counter-fell signal.
-    const { observedAt: metaAt, rosterObservedAt, ...metaRest } = meta;
+    const { observedAt: metaAt, rosterObservedAt, describedSessionKey, ...metaFields } = meta;
+    // The session these facts describe, named by a digest (never the key) and only under
+    // the instance the serving bridge is bound to: without it the facts name no session.
+    const metaRest =
+      describedSessionKey !== undefined && boundInstanceName !== undefined
+        ? { ...metaFields, describedSession: await sessionDigest(boundInstanceName, describedSessionKey) }
+        : metaFields;
     const prev = chat.sessionMeta;
     const incoming = metaRest as Record<string, unknown>;
     const record = prev as Record<string, unknown> | undefined;

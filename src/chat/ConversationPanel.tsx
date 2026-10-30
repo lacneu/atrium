@@ -655,7 +655,9 @@ function AgentsTab({
         )
       ) : null}
 
-      {isOwner && sm ? (
+      {/* Shown before the first describe too (sm null): the reasoning-display choice
+          needs no gateway fact (KnobRow.tsx SessionKnobsGroup). */}
+      {isOwner && meta ? (
         <div className="oc-convpanel__settings">
           <button
             type="button"

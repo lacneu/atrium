@@ -1625,7 +1625,8 @@ export function runHermesWsTurn(
           // is the whole reason this event exists.
           const interim = str(payload.text).trim();
           if (!interim) return;
-          apply([{ type: EVENT_REASONING, text: interim, runId: runtimeSid }]);
+          // Nature 2 (0.103.0): the agent's work note, never the model's reasoning.
+          apply([{ type: EVENT_REASONING, text: interim, nature: "commentary", runId: runtimeSid }]);
           return;
         }
         case "message.complete": {
@@ -1842,7 +1843,20 @@ export function runHermesWsTurn(
             const kind = classifyProviderInternal(msg);
             if (kind) finalEv.errorKind = kind;
           }
-          apply([finalEv, statusEv]);
+          // THE MODEL'S REASONING (0.103.0): `message.complete.reasoning` — the last
+          // reasoning of the turn, set whatever `show_reasoning` says
+          // (tui_gateway/prompt_turn.py:950-951 at 71d34bad). Ahead of the final pair on the
+          // same chain, so it lands in THIS bubble. Convex keeps it only for a conversation
+          // that shows its reasoning (convex/lib/reasoningDisplay.ts); nothing of it is
+          // logged here — its length is all a reader of the bridge may learn.
+          const reasoning = str(payload.reasoning).trim();
+          apply([
+            ...(reasoning !== "" && status !== "error"
+              ? [{ type: EVENT_REASONING, text: reasoning, nature: "thinking", runId: runtimeSid } as BridgeEvent]
+              : []),
+            finalEv,
+            statusEv,
+          ]);
           settle();
           return;
         }

@@ -231,6 +231,7 @@ import {
   turnClockLabel,
 } from "./turnClockView";
 import { InlineTurnActivity } from "./InlineTurnActivity";
+import { CommentaryNote, ThinkingBlock } from "./ReasoningBlocks";
 import { QueuedDock } from "./QueuedDock";
 import { QueuedTurnContext } from "./queuedTurnContext";
 import {
@@ -264,6 +265,7 @@ import {
   type DelegatedSlot,
 } from "./assistantEmptyState";
 import { errorDetailView, messageHasText } from "./runStatusView";
+import { steerSegmentSilent } from "./steerSegmentView";
 import { LightboxProvider } from "./ImageLightbox";
 import { isPastedFile, markPastedFile, routePaste } from "./pasteRouting";
 import { parseChatReferenceCandidate } from "./chatReference";
@@ -2140,7 +2142,9 @@ function ChatHeader({ chatId }: { chatId: ConvexId<"chats"> }) {
       {/* The session's knobs (model, reasoning, reset, compaction, summary) act on
           the owner's gateway session and are owner-only server-side: a guest is
           not offered them at all, nor the full panel behind them. */}
-      {sm && meta?.viewerRole === "owner" ? (
+      {/* Offered before the first describe too (sm null): the reasoning-display choice
+          needs no gateway fact; the usage gauge then stays inline (above). */}
+      {meta?.viewerRole === "owner" ? (
         <SessionKnobsMenu
           chatId={chatId}
           viewerRole={meta?.viewerRole}
@@ -2149,7 +2153,7 @@ function ChatHeader({ chatId }: { chatId: ConvexId<"chats"> }) {
           onOpenPanel={() => setPanelOpen(true)}
           compact={isCompact}
           ghost={ghost}
-          showUsage={ui.showUsage}
+          showUsage={ui.showUsage && sm !== null}
         />
       ) : null}
     </>
@@ -2381,7 +2385,8 @@ function SessionKnobsMenu({
   chatId: ConvexId<"chats">;
   /** The viewer's standing in this chat — the quota badge is the OWNER's. */
   viewerRole?: "owner" | "participant";
-  sm: SessionMetaView;
+  /** Null before the first describe: no context meter, the knobs Atrium owns only. */
+  sm: SessionMetaView | null;
   settings: SessionSettingsView;
   onOpenPanel: () => void;
   /** User pref: surface the provider-subscription gauge (in this popover —
@@ -2424,7 +2429,7 @@ function SessionKnobsMenu({
             (`totalTokensFresh: false`) the meter renders its explicit unknown
             state, and this is the only surface that explains it on touch or on a
             compacted header — where the inline meter's `title` never shows. */}
-        {effectiveContextWindow(sm) ? (
+        {sm !== null && effectiveContextWindow(sm) ? (
           <div className="oc-spanel-pop__usage">
             <span className="oc-spanel-pop__usage-label">
               {m.chat_context_label()}
@@ -2996,24 +3001,6 @@ function IconCheck() {
 // system turns intentionally do NOT: a user's literal input must not be
 // reinterpreted as markdown (typing `*foo*` must stay `*foo*`), so they keep the
 // default plain-text renderer.
-/** An assistant SEGMENT: prose the agent produced during the turn that is not the final
- *  reply (Hermes `message.interim` — commentary alongside tool calls, or an answer it
- *  attempted before a verification nudge). The gateway emits it precisely so the client
- *  keeps it instead of losing it when the terminal replaces the streaming buffer.
- *
- *  Rendered in the BODY, and deliberately not behind the Tools toggle: that toggle gates
- *  the ANALYSIS view (tool activity) and is off by default, so routing this prose there
- *  stored it where nobody could see it. This is content, not activity. */
-function ReasoningSegment({ text }: { text?: string }) {
-  const body = (text ?? "").trim();
-  if (!body) return null;
-  return (
-    <div className="oc-msg__segment" role="note">
-      {body}
-    </div>
-  );
-}
-
 /**
  * A user turn's text with the people it names — and the agents it is addressed
  * to — marked.
@@ -3071,12 +3058,7 @@ const plainComponents = {
 const assistantComponents = {
   ...plainComponents,
   Text: MarkdownText,
-  // ASSISTANT ONLY. `plainComponents` also dresses the USER and SYSTEM turns, so
-  // registering the segment there let a `reasoning` part rendered inside a user's own
-  // bubble read as something the user wrote (raised in review). The seam is guarded on
-  // both sides: the mutation refuses the part on a non-assistant message, and it is not
-  // rendered here either.
-  Reasoning: ReasoningSegment as never,
+
   // DESIGN DECISION (user, 2026-07-19 — revises the earlier always-visible
   // plan): the Tools toggle gates the inline activity rows TOO. OFF = the
   // clean view, narrative only (the working label under the bubble keeps the
@@ -3086,6 +3068,13 @@ const assistantComponents = {
   data: {
     by_name: {
       widget: WidgetPart as never,
+      // 0.103.0 — prose that is not the answer, in the BODY and never behind the Tools
+      // toggle (that toggle gates the analysis view and is off by default): the model's
+      // reasoning, and the agent's work notes (ReasoningBlocks.tsx). ASSISTANT ONLY:
+      // `plainComponents` also dresses the user's turns, where such prose would read as
+      // something the user wrote — and the mutation refuses it there too.
+      thinking: ThinkingBlock as never,
+      commentary: CommentaryNote as never,
     },
   },
   tools: {
@@ -3935,15 +3924,12 @@ function AssistantMessage() {
     (m) => (m.metadata?.custom as { status?: string } | undefined)?.status,
   );
   const lastUserTurnQueued = useContext(QueuedTurnContext);
-  // A steer segment with no text and no file/widget (projection `on`, CU-20).
-  const steerSegmentSilent = useMessage(
-    (msg) =>
-      (msg.metadata?.custom as { steerSegment?: boolean } | undefined)?.steerSegment ===
-        true &&
-      !messageHasText(msg.content as ReadonlyArray<{ type?: string; text?: unknown }>) &&
-      !(msg.content as ReadonlyArray<{ type?: string; name?: string }>).some(
-        (p) => p?.type === "file" || (p?.type === "data" && p.name === "widget"),
-      ),
+  // A steer segment that shows nothing once tool work is hidden (steerSegmentView.ts).
+  const steerSegmentIsSilent = useMessage((msg) =>
+    steerSegmentSilent(
+      (msg.metadata?.custom as { steerSegment?: boolean } | undefined)?.steerSegment === true,
+      msg.content as ReadonlyArray<{ type?: string; text?: unknown; name?: string }>,
+    ),
   );
   // Phase 5 (projection `on`): consecutive bubbles of one delegation chain read as ONE
   // answer — a follower shows no avatar/name, a member continued below no action bar.
@@ -4009,7 +3995,7 @@ function AssistantMessage() {
   // The part of a run before a steered input cut it (projection `on`, CU-20) is tool
   // work only, and the clean view hides tool work: nothing to show there — the answer
   // is the next segment, under the steered message.
-  if (steerSegmentSilent && !ui.showTools) return null;
+  if (steerSegmentIsSilent && !ui.showTools) return null;
   // NOTE (deliberate): a COMPLETE-but-empty assistant row (the silent
   // sessions_spawn parent whose reply arrives as a later spontaneous turn) is
   // NOT suppressed — AssistantEmptyState already renders it as an explanatory

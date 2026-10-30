@@ -30,6 +30,7 @@
 // from resurrecting a reaped child.
 
 import { sanitizeText } from "./sanitize.js";
+import { isAnswerTextPart } from "./normalizer.js";
 import {
   SHOW_WIDGET_TOOL,
   extractCanvasShortcodes,
@@ -2015,7 +2016,8 @@ function textFromContent(content: unknown): string {
     const parts: string[] = [];
     for (const part of content) {
       if (typeof part === "string") parts.push(part);
-      else if (isObject(part) && typeof part.text === "string") parts.push(part.text);
+      // Answer text only: a reasoning block never becomes the child's text (0.103.0).
+      else if (isAnswerTextPart(part)) parts.push(part.text);
     }
     return parts.filter((p) => p).join("\n");
   }

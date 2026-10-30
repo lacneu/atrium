@@ -47,9 +47,11 @@ export type SessionSettingsView = {
   thinkingLevel?: string;
   model?: string;
   fastMode?: boolean;
+  /** 0.103.0: the conversation's own "show reasoning" choice (absent = the agent's). */
+  showReasoning?: boolean;
 } | null;
 
-export type KnobField = "thinkingLevel" | "model" | "fastMode";
+export type KnobField = "thinkingLevel" | "model" | "fastMode" | "showReasoning";
 
 /** The SHAPE of each knob's control, declared once: segmented where the option set is
  *  small by upstream POLICY (thinking: the gateway's level vocabulary; speed: static), a
@@ -60,6 +62,7 @@ export const KNOB_CONTROL: Record<KnobField, "segmented" | "list"> = {
   thinkingLevel: "segmented",
   model: "list",
   fastMode: "segmented",
+  showReasoning: "segmented",
 };
 
 /** Past this many options a segmented control overflows its row: the wire type of the
@@ -387,4 +390,20 @@ export function contextPercentDivergence(
   const delta = Math.abs(gateway - derived);
   if (delta <= tolerancePoints) return null;
   return { gateway, derived, delta };
+}
+
+/** Where "Afficher le raisonnement" inherits from, said on its badge and on its ↺: the
+ *  agent's exception or the instance's default (neither: the generic wording). */
+export function reasoningProvenance(
+  source: "agent" | "instance" | "none" | undefined,
+  inherited: boolean,
+): { inheritedLabel?: string; resetLabel?: string } {
+  const value = inherited ? m.conf_reasoning_display_on() : m.conf_reasoning_display_off();
+  if (source === "agent") {
+    return { inheritedLabel: m.conf_reasoning_inherited_agent(), resetLabel: m.conf_reasoning_reset_agent({ value }) };
+  }
+  if (source === "instance") {
+    return { inheritedLabel: m.conf_reasoning_inherited_instance(), resetLabel: m.conf_reasoning_reset_instance({ value }) };
+  }
+  return {};
 }

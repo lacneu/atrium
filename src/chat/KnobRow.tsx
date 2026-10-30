@@ -1,5 +1,5 @@
 import { useCallback, useState, type ReactNode } from "react";
-import { useMutation } from "convex/react";
+import { useMutation, useQuery } from "convex/react";
 import { LoaderCircle, RotateCcw } from "lucide-react";
 import { api } from "./convexApi";
 import type { Id } from "./convexApi";
@@ -18,6 +18,7 @@ import {
   type SessionSettingsView,
   type SpeedOption,
   knobControlShape,
+  reasoningProvenance,
 } from "./sessionKnobs";
 import { knobRowVisibility } from "./capabilities";
 import { useInstanceCapabilities } from "./useInstanceCapabilities";
@@ -56,8 +57,10 @@ export function useSessionKnobs(chatId: ConvexId<"chats">) {
         thinkingLevel?: string | null;
         model?: string | null;
         fastMode?: boolean | null;
+        showReasoning?: boolean | null;
       } = { chatId: chatId as Id<"chats"> };
       if (field === "fastMode") args.fastMode = value as boolean | null;
+      else if (field === "showReasoning") args.showReasoning = value as boolean | null;
       else args[field] = value as string | null;
       try {
         await setKnob(args);
@@ -87,6 +90,8 @@ export function KnobRow({
   help,
   children,
   resettable = true,
+  inheritedLabel,
+  resetLabel,
 }: {
   label: string;
   overridden: boolean;
@@ -97,6 +102,10 @@ export function KnobRow({
   help?: string;
   children: ReactNode;
   resettable?: boolean;
+  /** Names where the inherited value comes from (default: "inherited"). */
+  inheritedLabel?: string;
+  /** Names what ↺ goes back to (default: "back to inherited"). */
+  resetLabel?: string;
 }) {
   return (
     <div className={`oc-spanel__row${overridden ? " is-overridden" : ""}`}>
@@ -113,15 +122,15 @@ export function KnobRow({
             <button
               type="button"
               className="oc-spanel__reset"
-              title={m.conf_reset_to_inherited()}
-              aria-label={m.conf_reset_to_inherited()}
+              title={resetLabel ?? m.conf_reset_to_inherited()}
+              aria-label={resetLabel ?? m.conf_reset_to_inherited()}
               onClick={onReset}
             >
               <RotateCcw size={12} aria-hidden />
             </button>
           ) : null
         ) : (
-          <span className="oc-spanel__badge">{m.conf_badge_inherited()}</span>
+          <span className="oc-spanel__badge">{inheritedLabel ?? m.conf_badge_inherited()}</span>
         )}
       </div>
       <div className="oc-spanel__ctl">{children}</div>
@@ -253,6 +262,11 @@ export function KnobControl({
  * (not disabled) when unsupported — the popover stays lean. While the compat
  * query loads, only the LEGACY set (model/thinking) shows, so a control can
  * appear when the snapshot lands but never flashes and disappears.
+ *
+ * `sm` null = no session described yet (a new conversation before its first turn):
+ * only Atrium's own reasoning-display choice renders — it needs no gateway fact, and
+ * hiding it would leave the first turn's reasoning to the inherited default with no
+ * way to change it (codex pass 7 on 0.103.0).
  */
 export function SessionKnobsGroup({
   chatId,
@@ -260,7 +274,7 @@ export function SessionKnobsGroup({
   settings,
 }: {
   chatId: ConvexId<"chats">;
-  sm: SessionMetaView;
+  sm: SessionMetaView | null;
   settings: SessionSettingsView;
 }) {
   const { apply, pending, error } = useSessionKnobs(chatId);
@@ -270,12 +284,13 @@ export function SessionKnobsGroup({
     if (error) void apply(error.field, error.value);
   }, [apply, error]);
 
-  const levels = sm.thinkingLevels ?? [];
-  const models = sm.availableModels ?? [];
+  const levels = sm?.thinkingLevels ?? [];
+  const models = sm?.availableModels ?? [];
   const speedValue = speedSelection(settings);
   const vis = knobRowVisibility(can, {
     hasModels: models.length > 0,
     hasLevels: levels.length > 0,
+    described: sm !== null,
   });
 
   return (
@@ -293,7 +308,7 @@ export function SessionKnobsGroup({
           <KnobControl
             field="model"
             options={models}
-            value={sm.model ?? null}
+            value={sm?.model ?? null}
             onChange={(id) => void apply("model", id)}
             disabled={busy}
             ariaLabel={m.chat_model()}
@@ -318,12 +333,23 @@ export function SessionKnobsGroup({
               label: shortLevelLabel(l.id, capitalize(l.label)),
               title: capitalize(l.label),
             }))}
-            value={sm.thinkingLevel ?? null}
+            value={sm?.thinkingLevel ?? null}
             onChange={(id) => void apply("thinkingLevel", id)}
             disabled={busy}
           />
         </KnobRow>
       ) : null}
+      {/* 0.103.0 — Atrium's own display choice, for every provider: no gateway capability
+          gates it (OpenClaw gets the session's reasoningLevel from it, Hermes nothing). */}
+      <ReasoningKnob
+        chatId={chatId}
+        overridden={isOverridden(settings, "showReasoning")}
+        onApply={(v) => void apply("showReasoning", v)}
+        pending={pending === "showReasoning"}
+        error={error?.field === "showReasoning"}
+        onRetry={retry}
+        disabled={busy}
+      />
       {vis.speed ? (
         <KnobRow
           label={m.conf_speed_label()}
@@ -350,5 +376,63 @@ export function SessionKnobsGroup({
         </KnobRow>
       ) : null}
     </>
+  );
+}
+
+/** "Afficher le raisonnement" (0.103.0): the effective value (the conversation's choice,
+ *  else its agent's exception, else its instance's default, convex/lib/reasoningDisplay.ts)
+ *  and where the inherited one comes from, read from the same session meta the header
+ *  subscribes to — one subscription, shared by the Convex client. */
+function ReasoningKnob({
+  chatId,
+  overridden,
+  onApply,
+  pending,
+  error,
+  onRetry,
+  disabled,
+}: {
+  chatId: ConvexId<"chats">;
+  overridden: boolean;
+  onApply: (value: boolean | null) => void;
+  pending: boolean;
+  error: boolean;
+  onRetry: () => void;
+  disabled: boolean;
+}) {
+  const meta = useQuery(api.messages.getSessionMeta, { chatId }) as
+    | {
+        showReasoning?: boolean;
+        showReasoningDefault?: boolean;
+        showReasoningDefaultSource?: "agent" | "instance" | "none";
+      }
+    | null
+    | undefined;
+  const effective = meta?.showReasoning === true;
+  const { inheritedLabel, resetLabel } = reasoningProvenance(meta?.showReasoningDefaultSource, meta?.showReasoningDefault === true);
+  return (
+    <KnobRow
+      label={m.conf_reasoning_display_label()}
+      overridden={overridden}
+      inheritedLabel={inheritedLabel}
+      resetLabel={resetLabel}
+      onReset={() => onApply(null)}
+      pending={pending}
+      error={error}
+      onRetry={onRetry}
+      help={m.conf_reasoning_display_help()}
+    >
+      <KnobControl
+        field="showReasoning"
+        ariaLabel={m.conf_reasoning_display_label()}
+        options={[
+          { id: "on", label: m.conf_reasoning_display_on() },
+          { id: "off", label: m.conf_reasoning_display_off() },
+        ]}
+        value={meta === undefined || meta === null ? null : effective ? "on" : "off"}
+        onChange={(id) => onApply(id === "on")}
+        disabled={disabled}
+      />
+    </KnobRow>
   );
 }

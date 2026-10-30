@@ -33,6 +33,7 @@ import {
   IDEMPOTENCY_KINDS,
   sanitizePosition,
   sanitizeRowBlocks,
+  sanitizeThinking,
   type RowBlock,
   type TranscriptPosition,
 } from "./transcriptContent";
@@ -133,6 +134,12 @@ export type TranscriptRowInput = {
   streamSegment?: boolean;
   /** Its place among the segments of the same row (`chat.history`'s order). */
   segmentOrder?: number;
+  /** 0.103.0 — content: the model's reasoning the row carries (bridge `rowThinking`), stored
+   *  apart from its text (`transcriptRowReasoning`) — and whether the gateway cut it. */
+  thinking?: string;
+  thinkingTruncated?: boolean;
+  /** 0.103.0 — display fact: the row is the agent's work note (bridge `rowIsCommentary`). */
+  commentary?: boolean;
   /** Projection `on`, set by Convex: `runId` is the row's PRESENTATION OWNER (the row named
    *  no run — convex/transcriptProjection.ts `presentationOwnerOf`), not the gateway's. */
   presentationOwner?: boolean;
@@ -683,7 +690,7 @@ export async function purgeRowTextsOfMessage(
 /** Delete one row's text and mark its identity purged. True when something was purged. */
 export async function purgeRowText(
   ctx: MutationCtx,
-  row: { _id: Id<"transcriptRows">; textSig?: string },
+  row: { _id: Id<"transcriptRows">; textSig?: string; thinkingSig?: string },
 ): Promise<boolean> {
   // EVERY document of the row first, whatever its mark says — idempotent, and a purged
   // mark never shields a copy left behind (codex phase 4 pass 6: five copies of one row,
@@ -701,6 +708,14 @@ export async function purgeRowText(
     deleted += docs.length;
     if (docs.length < 2) break;
   }
+  // …and its reasoning (0.103.0), stored apart from its text, with the mark that names it.
+  const reasoning = await ctx.db
+    .query("transcriptRowReasoning")
+    .withIndex("by_row", (q) => q.eq("rowId", row._id))
+    .take(2);
+  for (const d of reasoning) await ctx.db.delete(d._id);
+  deleted += reasoning.length;
+  if (row.thinkingSig !== undefined || reasoning.length > 0) await ctx.db.patch(row._id, { thinkingSig: undefined });
   if (row.textSig === TEXT_PURGED_SIG) return deleted > 0;
   await ctx.db.patch(row._id, { textSig: TEXT_PURGED_SIG });
   return true;
@@ -740,6 +755,13 @@ export function rowTextSignature(
   return `${body.length}:${fnv1a(body, 0x811c9dc5)}${fnv1a(body, 0x050c5d1f)}`;
 }
 
+/** The signature of a row's stored reasoning (0.103.0, `transcriptRows.thinkingSig`): what
+ *  a read compares instead of loading it, and the mark that the row carries one. */
+export function rowReasoningSignature(text: string, truncated: boolean): string {
+  const body = JSON.stringify([text, truncated]);
+  return `${body.length}:${fnv1a(body, 0x811c9dc5)}${fnv1a(body, 0x050c5d1f)}`;
+}
+
 const boundedId = (x: unknown, max: number): string | undefined =>
   typeof x === "string" && x.length > 0 && x.length <= max ? x : undefined;
 
@@ -755,6 +777,7 @@ export function sanitizeRow(raw: TranscriptRowInput): TranscriptRowInput | null 
   const sendId = boundedId(raw.sendId, MAX_RUN_ID_CHARS);
   const steerTargetRunId = boundedId(raw.steerTargetRunId, MAX_RUN_ID_CHARS);
   const mirrorOrigin = boundedId(raw.mirrorOrigin, 64);
+  const thinking = sanitizeThinking(raw.thinking);
   const content = boundRowContent(boundRowShown(raw.text, raw.yieldAck), {
     errorMessage: raw.errorMessage,
     blocks: sanitizeRowBlocks(raw.blocks),
@@ -785,6 +808,7 @@ export function sanitizeRow(raw: TranscriptRowInput): TranscriptRowInput | null 
     ...(toolCallIds.length > 0 ? { toolCallIds } : {}),
     ...content,
     ...(raw.blocksTruncated === true ? { blocksTruncated: true } : {}),
+    ...(thinking !== undefined ? { thinking, ...(raw.thinkingTruncated === true ? { thinkingTruncated: true } : {}) } : {}),
     ...boundSpawns(raw.spawns),
     ...identityFacts(raw),
   };
@@ -801,6 +825,7 @@ function identityFacts(raw: TranscriptRowInput): Pick<
   | "provenanceSourceTool"
   | "streamSegment"
   | "segmentOrder"
+  | "commentary"
 > {
   const position = sanitizePosition(raw.transcriptPosition);
   const kind = typeof raw.idempotencyKind === "string" && IDEMPOTENCY_KINDS.has(raw.idempotencyKind) ? raw.idempotencyKind : undefined;
@@ -815,6 +840,7 @@ function identityFacts(raw: TranscriptRowInput): Pick<
     ...(provenanceKind !== undefined ? { provenanceKind } : {}),
     ...(provenanceSourceTool !== undefined ? { provenanceSourceTool } : {}),
     ...(raw.streamSegment === true ? { streamSegment: true } : {}),
+    ...(raw.commentary === true && raw.role.toLowerCase() === "assistant" ? { commentary: true } : {}),
     ...(raw.streamSegment === true && typeof raw.segmentOrder === "number" && Number.isSafeInteger(raw.segmentOrder) && raw.segmentOrder >= 0 && raw.segmentOrder < 1024
       ? { segmentOrder: raw.segmentOrder }
       : {}),
@@ -838,6 +864,9 @@ export const ON_ONLY_ROW_FIELDS = [
   "provenanceSourceTool",
   "streamSegment",
   "segmentOrder",
+  "thinking",
+  "thinkingTruncated",
+  "commentary",
 ] as const;
 
 export function identityOnly(row: TranscriptRowInput): TranscriptRowInput {
@@ -2571,6 +2600,7 @@ export function sameRow(
     stored.provenanceKind === next.provenanceKind &&
     stored.provenanceSourceTool === next.provenanceSourceTool &&
     (stored.streamSegment ?? false) === (next.streamSegment ?? false) &&
+    (stored.commentary ?? false) === (next.commentary ?? false) &&
     (next.segmentOrder === undefined || stored.segmentOrder === next.segmentOrder) &&
     (stored.presentationOwner ?? false) === (next.presentationOwner ?? false)
   );

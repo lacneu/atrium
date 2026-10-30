@@ -336,8 +336,12 @@ export const setSessionKnob = mutation({
     thinkingLevel: v.optional(v.union(v.string(), v.null())),
     model: v.optional(v.union(v.string(), v.null())),
     fastMode: v.optional(v.union(v.boolean(), v.null())),
+    // 0.103.0 — "Afficher le raisonnement" for this conversation; `null` = back to the
+    // inherited default (the agent's exception, else the instance's). Atrium's own decision (lib/reasoningDisplay.ts): it never enters
+    // `clears` — the bridge is told the effective value, not asked to unset anything.
+    showReasoning: v.optional(v.union(v.boolean(), v.null())),
   },
-  handler: async (ctx, { chatId, thinkingLevel, model, fastMode }) => {
+  handler: async (ctx, { chatId, thinkingLevel, model, fastMode, showReasoning }) => {
     const { userId, actor } = await requireActive(ctx);
     const chat = await requireOwnedChat(ctx, userId, chatId);
 
@@ -359,6 +363,7 @@ export const setSessionKnob = mutation({
       thinkingLevel?: string;
       model?: string;
       fastMode?: boolean;
+      showReasoning?: boolean;
       clears?: string[];
     } = { ...(chat.sessionSettings ?? {}) };
     const clears = new Set(next.clears ?? []);
@@ -388,6 +393,10 @@ export const setSessionKnob = mutation({
         next.fastMode = fastMode;
         clears.delete("fastMode");
       }
+    }
+    if (showReasoning !== undefined) {
+      if (showReasoning === null) delete next.showReasoning;
+      else next.showReasoning = showReasoning;
     }
     if (clears.size > 0) next.clears = [...clears];
     else delete next.clears;

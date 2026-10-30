@@ -24,6 +24,7 @@ import {
 import { instanceTabGate, type InstanceCompat } from "../capabilities";
 import { unsupportedInstanceLabel } from "./compatView";
 import { KnowledgeDefaultsCard } from "./KnowledgeDefaultsCard";
+import { ReasoningDefaultsCard } from "./ReasoningDefaultsCard";
 import "./confTabs.css";
 
 // Settings > chat defaults tab — READ-ONLY view of the gateway's session
@@ -515,6 +516,7 @@ export function ChatDefaultsTab() {
                 config?: Record<string, unknown>;
               }}
             />
+            <ReasoningDefaultsCard instanceName={inst.name} />
             <KnowledgeDefaultsCard instanceName={inst.name} />
           </>
         ) : null;

@@ -261,6 +261,11 @@ function readablePartsJson(json: string | undefined): string | undefined {
 }
 
 function readablePart(part: Doc<"messageParts">["part"]): unknown {
+  // A report carries the model's reasoning by presence and length only (0.103.0): it is
+  // read by operators, and a reasoning is not what the person reported.
+  if (part.kind === "reasoning" && part.nature === "thinking") {
+    return { kind: "reasoning", nature: "thinking", textLength: part.text.length };
+  }
   if (part.kind !== "tool") return part;
   return {
     ...part,

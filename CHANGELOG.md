@@ -1,5 +1,60 @@
 # Changelog
 
+## [0.103.0] — See the model's reasoning, apart from the agent's notes and the answer
+
+Minor release. Convex, the frontend and the bridge change. Deploy **Convex first, then the
+frontend, then the bridge**. The schema gains optional fields (a conversation's
+`showReasoning`, an instance's and an agent's `showReasoningDefault`, a reasoning part's
+`nature`, a row's reasoning signature and work-note fact) and one table,
+`transcriptRowReasoning`, that keeps a row's reasoning apart from its text.
+
+**Show reasoning.** A new setting, *Afficher le raisonnement*, in a conversation's advanced
+settings: when it is on, Atrium shows the reasoning the model provides, in a *Réflexion*
+block of the bubble — muted, set off by a rule, folded as soon as the answer begins, and
+open again on a click. An administrator sets its default once per instance, and only the
+agents that differ need an exception (Settings ▸ Platform ▸ Chat defaults ▸ *Raisonnement*: a switch for
+the instance, then the list of exceptions, each shown or hidden; a new one is picked from a
+searchable list, so an instance with a hundred agents stays readable). A conversation can
+override both, and its setting says whether the value it inherits is the agent's or the
+instance's. A changed default holds at once for what every conversation that inherits it
+shows, and from its next turn for the session. It is an Atrium setting: the gateway's
+configuration is not written. For an OpenClaw conversation the bridge
+sets the session's `reasoningLevel` from it before each turn, the Control UI's own condition
+for showing reasoning; once a session is known not to show reasoning, a conversation that
+hides it costs no extra call (a session not yet described gets one `reasoningLevel: off`
+patch on its first turn, since nothing proves its state before). For Hermes nothing is written to the gateway: its
+only reasoning setter also rewrites the instance's global display configuration, so Atrium
+keeps or drops what the gateway already sends (`message.complete.reasoning`).
+
+**Three natures, told apart.** The model's reasoning (*Réflexion*), the agent's work notes
+between its actions, and the answer each have their own look. OpenClaw's work notes now show
+while the run goes on, among the tool cards, as soon as the gateway completes them (they used
+to appear only once the run had ended, as part of the answer); once settled, the rows that
+hold them are shown as notes. Hermes' interim messages are work notes, now placed where the
+agent wrote them.
+
+**What is shown, and what is kept.** OpenClaw shows a reasoning once its transcript row
+arrives, above that row — between two tool cards when the model reasoned between them — as
+the Control UI does; live reasoning comes in a later release. A model whose reasoning is
+encrypted (most turns of gpt-6.1-sol) leaves an empty block, and Atrium shows nothing for it.
+The reasoning is stored only while the conversation shows it, and never enters the answer's
+text: no export, fork, feedback report, metadata API, search, notification or spoken reply
+carries it. A row's reasoning is read when its block is opened, one at a time, never with the
+conversation: a conversation full of long reasonings opens like any other, and a corrected
+reasoning is the one shown. Hermes' reasoning is kept up to 16 KiB per message; a longer one
+says it was cut. A reasoning the gateway cut to 8 000 characters is read again in full, like
+a cut answer; when it cannot be, its block says it is cut. A work note alone in the part of a
+run before a steered message stays shown with tool work hidden, and a cut note says so. A provider block that only *looks* like text (`reasoning`, `redacted_thinking`)
+can no longer leak into an answer.
+
+**Rolling back** is redeploying the **bridge, then the frontend** of 0.102.1, and keeping
+Convex on 0.103.0. Its schema only adds optional fields and its functions only optional
+arguments, so it accepts every call a 0.102.1 bridge or frontend makes, and a 0.102.1 bridge
+ignores the `reasoningLevel` it is sent. Do **not** redeploy Convex 0.102.1 once 0.103.0 has
+run: its schema rejects the documents that carry the new fields (any reasoning setting
+written, any reasoning kept), so that deploy fails, and this release ships no tool to remove
+them first.
+
 ## [0.102.1] — An OpenClaw run ends when the gateway says so, never on a clock
 
 Patch release. Convex, the frontend and the bridge change. Deploy **Convex first, then the

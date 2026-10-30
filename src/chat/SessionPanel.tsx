@@ -330,7 +330,8 @@ export function SessionPanel({
             <p className="oc-spanel__loading">{m.common_loading()}</p>
           ) : (
             <>
-              {sm ? (
+              {/* sm null (no session described yet) still offers the reasoning choice. */}
+              {meta !== null ? (
                 <section>
                   <h3 className="oc-spanel__cat">
                     {m.spanel_section_generation()}

@@ -14,6 +14,7 @@ import { internal } from "./_generated/api";
 import { requireActive, requireOwnedChat } from "./lib/access";
 import { compareOrder, effectiveOrder } from "./lib/messageOrder";
 import { isTrashed } from "./lib/trash";
+import { layoutWithoutReasoning } from "./lib/reasoningDisplay";
 import {
   pickReconciledIdentity,
   readDeploymentOrigin,
@@ -297,6 +298,8 @@ export const exportChatSection = query({
         rows: [...result.page].sort(compareOrder).map(
           (row): Record<string, unknown> => ({
             ...stripRowForExport(row, { drop: MESSAGE_FIELDS_DROPPED }),
+            // The reasoning stays out of the archive (0.103.0), its marks too.
+            ...(row.rowLayout !== undefined ? { rowLayout: layoutWithoutReasoning(row.rowLayout) } : {}),
             archiveOrder: effectiveOrder(row),
           }),
         ),
@@ -349,6 +352,11 @@ export const exportChatSection = query({
           )
           .take(remaining);
         for (const part of parts) {
+          // THE MODEL'S REASONING NEVER LEAVES (0.103.0): a display aid of this deployment,
+          // like the Control UI keeps it out of what it publishes
+          // (docs/web/control-ui/security-model.md:41-43 at v2026.9.33). A work note — what
+          // the agent said along the way — travels as before.
+          if (part.part.kind === "reasoning" && part.part.nature === "thinking") continue;
           rows.push(await exportPart(ctx, chatId, part));
         }
         if (parts.length === remaining) {

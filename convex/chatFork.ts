@@ -41,6 +41,7 @@ import { isTrashed } from "./lib/trash";
 import { widgetInstanceForViews } from "./widgets";
 import { partWidgetField } from "./lib/widgetDescriptor";
 import { fileOfLayout } from "./lib/rowParts";
+import { layoutWithoutReasoning } from "./lib/reasoningDisplay";
 
 /** Copy bound = the visible window (loadChatView's MESSAGE_WINDOW): the fork
  *  shows exactly what the user sees in the source. Older context still reaches
@@ -363,7 +364,8 @@ export const forkChat = mutation({
         // A bubble the transcript rows composed is copied AS SHOWN (codex review 17): its
         // rows (text spans, order, files, remote references, cards, widgets, cut notice)
         // and its display group — the head's copy, which precedes it in this loop (R4).
-        ...(msg.rowLayout !== undefined ? { rowLayout: msg.rowLayout } : {}),
+        // …without its reasoning marks: the reasoning stays in the original rows (0.103.0).
+        ...(msg.rowLayout !== undefined ? { rowLayout: layoutWithoutReasoning(msg.rowLayout) } : {}),
         ...(msg.displayGroupId !== undefined && idMap.has(msg.displayGroupId as Id<"messages">)
           ? { displayGroupId: String(idMap.get(msg.displayGroupId as Id<"messages">)) }
           : {}),
@@ -386,6 +388,9 @@ export const forkChat = mutation({
         // A rows-composed bubble: EVERY part rides — its cards (with their arguments and
         // results), its reasoning, its derived files tied to their copied records — since
         // its view is made of them (codex review 17).
+        // …but never the model's reasoning, nor any other reasoning part (0.103.0): a branch is
+        // a conversation, and reasoning stays in the original.
+        if (p.part.kind === "reasoning") continue;
         if (msg.rowLayout !== undefined && !isFilePart(p.part) && p.part.kind !== "widget") {
           await ctx.db.insert("messageParts", { messageId: newMsgId, order: p.order, part: p.part });
           continue;

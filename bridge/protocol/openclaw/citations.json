@@ -1862,14 +1862,14 @@
     },
     {
       "source": "docs/UPSTREAM_INTERPRETATION.md",
-      "cite": "bridge/src/providers/openclaw/normalizer.ts:1793",
+      "cite": "bridge/src/providers/openclaw/normalizer.ts:1851",
       "repo": "atrium",
       "tag": null,
       "path": "bridge/src/providers/openclaw/normalizer.ts",
       "lines": [
         [
-          1793,
-          1793
+          1851,
+          1851
         ]
       ],
       "literals": [
@@ -2784,6 +2784,203 @@
       ],
       "literals": [
         "clearHistoryCursor(state, sessionKey, requestAgentId);"
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "src/gateway/sessions-patch.ts:469-480",
+      "repo": "upstream",
+      "tag": "2026.9.33",
+      "path": "src/gateway/sessions-patch.ts",
+      "lines": [
+        [
+          469,
+          480
+        ]
+      ],
+      "literals": [
+        "if (\"reasoningLevel\" in patch) {"
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "src/agents/system-prompt.ts:1178",
+      "repo": "upstream",
+      "tag": "2026.9.33",
+      "path": "src/agents/system-prompt.ts",
+      "lines": [
+        [
+          1178,
+          1178
+        ]
+      ],
+      "literals": [
+        "Reasoning=${reasoningLevel}; hidden unless on/stream"
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "src/agents/embedded-agent-runner/run/payloads.ts:208",
+      "repo": "upstream",
+      "tag": "2026.9.33",
+      "path": "src/agents/embedded-agent-runner/run/payloads.ts",
+      "lines": [
+        [
+          208,
+          208
+        ]
+      ],
+      "literals": [
+        "params.reasoningLevel === \"on\""
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "src/gateway/server-methods/chat-assistant-content.ts:54",
+      "repo": "upstream",
+      "tag": "2026.9.33",
+      "path": "src/gateway/server-methods/chat-assistant-content.ts",
+      "lines": [
+        [
+          54,
+          54
+        ]
+      ],
+      "literals": [
+        "if (payload.isReasoning === true) {"
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "ui/src/lib/chat/message-extract.ts:81",
+      "repo": "upstream",
+      "tag": "2026.9.33",
+      "path": "ui/src/lib/chat/message-extract.ts",
+      "lines": [
+        [
+          81,
+          81
+        ]
+      ],
+      "literals": [
+        "item?.type === \"thinking\" && typeof item.thinking === \"string\""
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "ui/src/pages/chat/components/chat-transcript-projection.ts:120",
+      "repo": "upstream",
+      "tag": "2026.9.33",
+      "path": "ui/src/pages/chat/components/chat-transcript-projection.ts",
+      "lines": [
+        [
+          120,
+          120
+        ]
+      ],
+      "literals": [
+        "activeSession?.reasoningLevel === \"on\""
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "ui/src/pages/chat/components/chat-message-bubble.ts:317",
+      "repo": "upstream",
+      "tag": "2026.9.33",
+      "path": "ui/src/pages/chat/components/chat-message-bubble.ts",
+      "lines": [
+        [
+          317,
+          317
+        ]
+      ],
+      "literals": [
+        "extractThinkingCached(message)"
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "src/agents/embedded-agent-subscribe.stream-rendering.ts:670",
+      "repo": "upstream",
+      "tag": "2026.9.33",
+      "path": "src/agents/embedded-agent-subscribe.stream-rendering.ts",
+      "lines": [
+        [
+          670,
+          670
+        ]
+      ],
+      "literals": [
+        "Emit-always: the thinking stream"
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "ui/src/pages/chat/tool-stream-preamble.ts:46",
+      "repo": "upstream",
+      "tag": "2026.9.33",
+      "path": "ui/src/pages/chat/tool-stream-preamble.ts",
+      "lines": [
+        [
+          46,
+          46
+        ]
+      ],
+      "literals": [
+        "!isCompleteAgentPreamble({"
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "ui/src/pages/chat/tool-stream.ts:516",
+      "repo": "upstream",
+      "tag": "2026.9.33",
+      "path": "ui/src/pages/chat/tool-stream.ts",
+      "lines": [
+        [
+          516,
+          516
+        ]
+      ],
+      "literals": [
+        "if (handlePreambleProgress(host, payload)) {"
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "ui/src/pages/chat/chat-assistant-reply.ts:21",
+      "repo": "upstream",
+      "tag": "2026.9.33",
+      "path": "ui/src/pages/chat/chat-assistant-reply.ts",
+      "lines": [
+        [
+          21,
+          21
+        ]
+      ],
+      "literals": [
+        "if (isKeyedAssistantStreamFallbackMessage(message)) {"
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "src/gateway/chat-display-projection.sanitize.ts:217-231,576-586",
+      "repo": "upstream",
+      "tag": "2026.9.33",
+      "path": "src/gateway/chat-display-projection.sanitize.ts",
+      "lines": [
+        [
+          217,
+          231
+        ],
+        [
+          576,
+          586
+        ]
+      ],
+      "literals": [
+        "for (const field of [\"text\", \"content\", \"partialJson\", \"arguments\", \"thinking\"] as const) {",
+        "truncated: true,"
       ]
     }
   ]

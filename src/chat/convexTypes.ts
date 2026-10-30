@@ -87,6 +87,15 @@ export type ConvexMessagePartView =
       text?: string;
       textOmitted?: boolean;
       textBytes?: number;
+      /** 0.103.0: `thinking` = the model's reasoning; `commentary` (or absent, every part
+       *  written before) = the agent's work note. */
+      nature?: "thinking" | "commentary";
+      /** A live work note's key (its preamble item). */
+      itemKey?: string;
+      /** Its place in the narrative (like a tool card's). */
+      textOffset?: number;
+      /** A reasoning cut at write to the message's budget: only its first part is kept. */
+      textCapped?: true;
     }
   // Gateway context-compaction marker: the gateway summarized this session's
   // older context during the turn (content-free — phase + timestamp only).
@@ -382,6 +391,11 @@ export type RowLayoutView = {
   /** On the last row only: what the layout left out past its bounds (convex/lib/
    *  bubbleProjection.ts `LAYOUT_MAX_*`), counted. */
   cut?: { rows?: number; files?: number; tools?: number; widgets?: number };
+  /** 0.103.0: the row carries the model's reasoning, shown above it (its text read when the
+   *  reader opens it, convex/messages.ts `getRowReasoning`). */
+  thinking?: boolean;
+  /** 0.103.0: the row's text is the agent's work note. */
+  commentary?: boolean;
 };
 
 /** A file a row names, with its copy's state (convex/messages.ts `rowFilesOf`). */

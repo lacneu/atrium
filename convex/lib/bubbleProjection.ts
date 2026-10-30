@@ -92,6 +92,11 @@ export type PlanRow = {
   /** Retracted (§3.3): seen only live, absent from a durable read that covers it — never
    *  rendered (`hidden` is set with it). */
   retracted?: boolean;
+  /** 0.103.0: the row carries the model's reasoning (kept: its conversation shows it). The
+   *  text is never composed into the bubble's — it is shown from its own part. */
+  thinking?: boolean;
+  /** 0.103.0: the row is the agent's work note (the Control UI's commentary phase). */
+  commentary?: boolean;
 };
 
 /** One row of a bubble, as it is rendered (final design §3.4): its span in the bubble's
@@ -112,6 +117,10 @@ export type LayoutRow = {
   /** The row's texts and files in block order (`PlanRow.items`): spans of the bubble's text
    *  and file block indexes. Absent: the row's span, then its files. */
   items?: Array<{ kind: "text"; start: number; end: number; capped?: boolean } | { kind: "file"; blockIndex: number }>;
+  /** 0.103.0: the row's reasoning is shown above it (its part, by `entryId`). */
+  thinking?: boolean;
+  /** 0.103.0: the row's text is the agent's work note. */
+  commentary?: boolean;
 };
 
 /** A tool card of a bubble: one per `toolCallId`, held by the first row that names it, at
@@ -411,7 +420,10 @@ export function composeBubble(rows: readonly PlanRow[]): { text: string; layout:
       widgetsN++;
       return [{ ...w }];
     });
-    if (piece === null && files.length === 0 && tools.length === 0 && widgets.length === 0) continue;
+    // A row that only reasoned (encrypted reasoning leaves nothing; a summary does) is still
+    // a row of the bubble: its reasoning is shown in its place.
+    const thinking = r.thinking === true && !r.hidden && r.role === "assistant";
+    if (piece === null && files.length === 0 && tools.length === 0 && widgets.length === 0 && !thinking) continue;
     let start = text.length;
     let items: LayoutRow["items"];
     if (r.items !== undefined && itemTexts(r).length > 0) {
@@ -460,6 +472,8 @@ export function composeBubble(rows: readonly PlanRow[]): { text: string; layout:
       ...(widgets.length > 0 ? { widgets } : {}),
       ...(r.hasBlocks === true ? { blocks: true as const } : {}),
       ...(items !== undefined && items.length > 0 ? { items } : {}),
+      ...(thinking ? { thinking: true } : {}),
+      ...(r.commentary === true && piece !== null ? { commentary: true } : {}),
     });
   }
   if (labels.length > 0) text += `${text.length > 0 ? "\n\n" : ""}${FILES_SECTION_PREFIX}${labels.join(", ")}`;
@@ -487,6 +501,8 @@ export function layoutKey(layout: readonly LayoutRow[] | undefined): string | un
       (r.items ?? []).map((it) => (it.kind === "text" ? [it.start, it.end] : it.blockIndex)),
       (r.widgets ?? []).map((w) => [w.viewId, w.origin, w.title ?? null, w.preferredHeight ?? null]),
       r.cut ?? null,
+      // 0.103.0, only when set: a layout from before keeps the key it had.
+      ...(r.thinking === true || r.commentary === true ? [r.thinking === true, r.commentary === true] : []),
     ]),
   );
 }

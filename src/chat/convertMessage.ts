@@ -75,6 +75,34 @@ function withActiveRows(message: ConvexMessageView): { message: ConvexMessageVie
   return { message: { ...message, text: active.text }, liveTail: tail !== null && tail.trim() !== "" ? tail : null };
 }
 
+/** 0.103.0 — the model's reasoning, as a data part rendered by `ThinkingBlock`. `open` is
+ *  decided once the bubble's content is known (`settleThinkingBlocks`). A row's reasoning
+ *  carries no text: `row` names where the block reads it when opened. */
+function thinkingContent(
+  key: string,
+  source: { text: string; capped?: boolean } | { row: { messageId: string; entryId: string } },
+): ContentPart {
+  return { type: "data-thinking", data: { key, ...source, open: false } } as unknown as ContentPart;
+}
+
+/** 0.103.0 — the agent's work note, as a data part rendered by `CommentaryNote`. */
+function commentaryContent(key: string, text: string, capped = false): ContentPart {
+  return { type: "data-commentary", data: { key, text, ...(capped ? { capped: true } : {}) } } as unknown as ContentPart;
+}
+
+/** Open each reasoning block of a RUNNING bubble that no answer text follows yet; fold every
+ *  other one. Work notes, tool groups and files are not the answer: they do not fold it. */
+export function settleThinkingBlocks(content: ContentPart[], streaming: boolean): void {
+  let answerAfter = false;
+  for (let i = content.length - 1; i >= 0; i--) {
+    const c = content[i] as { type: string; text?: string; data?: { text: string; key: string; open: boolean } };
+    if (c.type === "text" && (c.text ?? "").trim() !== "") answerAfter = true;
+    else if (c.type === "data-thinking" && c.data !== undefined) {
+      content[i] = { ...c, data: { ...c.data, open: streaming && !answerAfter } } as unknown as ContentPart;
+    }
+  }
+}
+
 function omittedNote(bytes: number | undefined): string {
   return m.tools_field_omitted({ size: String(Math.round((bytes ?? 0) / 1024)) });
 }
@@ -245,7 +273,7 @@ export function bodyWithContinuations(
           .map((a) => ({ ...a, offset: a.offset - lo })),
         settled,
       ).map((seg) =>
-        seg.kind === "activity" ? { ...seg, cut: seg.cut + lo } : seg,
+        seg.kind === "activity" || seg.kind === "note" ? { ...seg, cut: seg.cut + lo } : seg,
       ),
     );
     if (slot !== undefined) {
@@ -352,12 +380,40 @@ export function convertConvexMessage(
   //    interleaved with the body — fixes the text-inserted-above-cards bug).
   //    Provenance reports are likewise diverted (rendered by SourcesActivity
   //    under the reply, never inside the body).
+  // 0.103.0 — the agent's live WORK NOTES on a bubble its rows already compose: shown while
+  // it runs until the row that persists each one exists (the Control UI retires a live
+  // segment once its keyed row is in the history, tool-stream-preamble.ts at v2026.9.33).
+  const liveNotes: Array<{ key: string; text: string }> = [];
+  const persistedNoteKeys = new Set(
+    (message.rowLayout ?? []).flatMap((r) => {
+      const at = r.entryId.lastIndexOf(":segment:");
+      return at < 0 ? [] : [r.entryId.slice(at + ":segment:".length)];
+    }),
+  );
   message.parts.forEach((p, index) => {
     if (isReasoningPart(p)) {
-      content.push({
-        type: "reasoning",
-        text: p.textOmitted ? omittedNote(p.textBytes) : (p.text ?? ""),
-      } as ContentPart);
+      const body = p.textOmitted ? omittedNote(p.textBytes) : (p.text ?? "");
+      // A reasoning cut to nothing (the message's budget was spent) still says it was there.
+      if (body.trim() === "" && !(p.nature === "thinking" && p.textCapped === true)) return;
+      if (p.nature === "thinking") {
+        // Hermes' reasoning of the turn, above the reply (a row's reasoning is shown in its
+        // row, rowSegments).
+        content.push(thinkingContent(`p${index}`, { text: body, ...(p.textCapped === true ? { capped: true } : {}) }));
+        return;
+      }
+      // The agent's work note: in the flow at its place, on a bubble its rows do not
+      // compose yet; after the rows on one they do (until its row exists); above the
+      // reply when it carries no place (written before 0.103.0).
+      const key = p.itemKey ?? `p${index}`;
+      if (segments !== null) {
+        if (message.status === "streaming" && p.itemKey !== undefined && !persistedNoteKeys.has(p.itemKey)) {
+          liveNotes.push({ key, text: body });
+        }
+      } else if (p.textOffset !== undefined) {
+        anchored.push({ offset: p.textOffset, note: { key, text: body } });
+      } else {
+        content.push(commentaryContent(key, body));
+      }
     } else if (isToolPart(p)) {
       const activity = toolPartToActivity(message, index, p);
       allToolParts.push(activity);
@@ -430,7 +486,12 @@ export function convertConvexMessage(
       : -1;
   if (segments !== null) {
     for (const seg of segments) {
-      if (seg.kind === "text") {
+      if (seg.kind === "thinking") {
+        content.push(thinkingContent(`row:${seg.entryId}`, { row: { messageId: message._id, entryId: seg.entryId } }));
+      } else if (seg.kind === "text" && seg.commentary === true) {
+        // A note the gateway cut, whose full version could not be read, says so — as a note.
+        content.push(commentaryContent(`row:${seg.entryId}`, renderableText(seg.text, renderedViewIds, false), seg.capped === true));
+      } else if (seg.kind === "text") {
         content.push({ type: "text", text: renderableText(seg.text, renderedViewIds, false) });
         // The gateway cut this text and its full version could not be recovered: said so.
         if (seg.capped === true) content.push({ type: "text", text: `_${m.chat_text_capped()}_` });
@@ -458,6 +519,10 @@ export function convertConvexMessage(
       }
     }
   }
+  // Activity groups at the SAME cut (a work note between two of them, 0.103.0) get an
+  // ordinal after the first: their ids stay unique and append-only (the useClientLookup
+  // class — assistant-ui refuses two parts with one id).
+  const groupsAtCut = new Map<number, number>();
   (segments === null ? withReplies : []).forEach((seg, segIndex) => {
     if (seg.kind === "text") {
       content.push({
@@ -467,6 +532,8 @@ export function convertConvexMessage(
             ? renderableText(seg.text, renderedViewIds, segIndex === streamingTailAt)
             : seg.text,
       });
+    } else if (seg.kind === "note") {
+      content.push(commentaryContent(seg.key, seg.text));
     } else if (seg.kind === "delegated") {
       content.push({
         type: "tool-call",
@@ -484,7 +551,11 @@ export function convertConvexMessage(
         // STABLE id: keyed by the group's FIXED cut (an index-based id
         // changed as segments shifted mid-stream — the useClientLookup
         // crash: assistant-ui lost the part it was tracking).
-        toolCallId: `flow:${message._id}:${seg.cut}`,
+        toolCallId: (() => {
+          const n = groupsAtCut.get(seg.cut) ?? 0;
+          groupsAtCut.set(seg.cut, n + 1);
+          return n === 0 ? `flow:${message._id}:${seg.cut}` : `flow:${message._id}:${seg.cut}:${n}`;
+        })(),
         toolName: "__turn_flow__",
         // Projection `on`: the block reads as it will once the rows compose the bubble
         // (one summary by families, the Control UI's), while it is still being written.
@@ -493,8 +564,12 @@ export function convertConvexMessage(
     }
   });
 
-  // The message still being written, after what the rows already say.
+  // The work notes the rows do not hold yet, then the message still being written.
+  for (const n of liveNotes) content.push(commentaryContent(n.key, n.text));
   if (liveTail !== null) content.push({ type: "text", text: renderableText(liveTail, renderedViewIds, true) });
+  // A reasoning block stays open while the bubble runs and no answer follows it; it folds
+  // as soon as the answer begins, and on every settled bubble (0.103.0).
+  settleThinkingBlocks(content, message.status === "streaming");
 
   // 3) Inline widgets, then media/file attachments, stay AFTER the text. A widget is
   // an assistant-ui DATA part (`data-widget`), rendered in the message BODY by

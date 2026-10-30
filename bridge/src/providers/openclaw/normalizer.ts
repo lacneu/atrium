@@ -29,6 +29,8 @@
  * any VISIBLE text via sanitizeText.
  */
 
+import { createHash } from "node:crypto";
+
 import {
   MediaConfigurationError,
   sanitizeFrame,
@@ -49,6 +51,7 @@ import {
   isCompactionRefusal,
 } from "../../core/compaction-verdict.js";
 import {
+  EVENT_REASONING,
   EVENT_OPENCLAW_FRAME,
   EVENT_MESSAGE_DELTA,
   EVENT_MESSAGE_SNAPSHOT,
@@ -389,6 +392,61 @@ function isString(v: Json): v is string {
 
 // --- Pure helpers (ports of the module-level Python functions) ---------------
 
+/**
+ * A content part whose `text` is ANSWER text. Upstream reads text only from `text` /
+ * `input_text` / `output_text` blocks (`isTextContentBlockType`, ui/src/lib/chat/
+ * message-extract.ts:15-21 at v2026.9.33); a part without a `type` is the legacy shape and
+ * stays text. Anything else that happens to carry a `text` — a `reasoning` / `thinking`
+ * block of some provider, a `redacted_thinking`, a tool block — is never the reply: a
+ * model's reasoning must never reach the answer (0.103.0).
+ */
+export function isAnswerTextPart(part: unknown): part is { text: string } {
+  if (typeof part !== "object" || part === null || Array.isArray(part)) return false;
+  const p = part as { type?: unknown; text?: unknown };
+  if (typeof p.text !== "string") return false;
+  return p.type === undefined || p.type === "text" || p.type === "input_text" || p.type === "output_text";
+}
+
+/** The key of a preamble item — a digest of its `itemId`, the same one the stream segment
+ *  that later persists it is keyed by (transcript-rows.ts `streamSegmentEntryId`). */
+export function streamSegmentItemKey(itemId: string): string {
+  return createHash("sha256").update(itemId).digest("hex").slice(0, 32);
+}
+
+/** Inline reply/voice markers (`[[reply_to_current]]`, `[[reply_to:<id>]]`,
+ *  `[[audio_as_voice]]`) — delivery directives, never text a reader is shown
+ *  (`stripInlineDirectiveTagsForDelivery`, src/utils/directive-tags.ts at v2026.9.33). */
+const INLINE_DIRECTIVE_TAG_RE = /\[\[\s*(?:audio_as_voice|reply_to_current|reply_to\s*:[^\]]*)\s*\]\]/gi;
+
+/**
+ * THE AGENT'S WORK NOTE, LIVE (0.103.0) — a `stream:"item"` preamble, as the Control UI
+ * reads it (ui/src/pages/chat/tool-stream-preamble.ts at v2026.9.33): shown only once the
+ * item is COMPLETE (`isCompleteAgentPreamble`, src/agents/agent-activity-presentation.ts:66:
+ * no text, or a phase other than `start`/`update`), its `progressText` stripped of inline
+ * directive tags and dropped when it is `NO_REPLY` (`normalizePreambleProgressText`), keyed
+ * by its `itemId`. Null when there is nothing to show. The text is sanitized like any
+ * visible text (no server path, no `MEDIA:` directive).
+ */
+export function completedPreamble(
+  data: { kind?: unknown; phase?: unknown; progressText?: unknown; itemId?: unknown; id?: unknown },
+  sessionKey: string,
+): { itemKey: string; text: string } | null {
+  if (data.kind !== "preamble") return null;
+  const raw = typeof data.progressText === "string" ? data.progressText : "";
+  if (raw.trim() !== "" && (data.phase === "start" || data.phase === "update")) return null;
+  const itemId =
+    typeof data.itemId === "string" && data.itemId.trim() !== ""
+      ? data.itemId.trim()
+      : typeof data.id === "string" && data.id.trim() !== ""
+        ? data.id.trim()
+        : null;
+  if (itemId === null) return null;
+  const stripped = raw.replace(INLINE_DIRECTIVE_TAG_RE, "").trim();
+  if (/^NO_REPLY$/i.test(stripped.replace(/^[\s*_`~]+|[\s*_`~]+$/gu, "").trim())) return null;
+  const text = sanitizeDisplay(stripped, sessionKey).trim();
+  return text === "" ? null : { itemKey: streamSegmentItemKey(itemId), text };
+}
+
 /** Extract human-visible text from a string or a list of content parts. */
 function textFromContent(content: Json): string {
   if (isString(content)) {
@@ -399,7 +457,7 @@ function textFromContent(content: Json): string {
     for (const part of content) {
       if (isString(part)) {
         parts.push(part);
-      } else if (isObject(part) && isString(part.text)) {
+      } else if (isAnswerTextPart(part)) {
         parts.push(part.text);
       }
     }
@@ -2059,6 +2117,12 @@ export class Normalizer {
         // fix. No capture exercises a preamble after a finishing; this branch is
         // reasoned from the signal's meaning here, not from an observed frame.
         this.noteGatewayResumedWork(events, now);
+        // …and the work note it carries, once complete (0.103.0): the agent's commentary
+        // between its actions, shown as the Control UI shows it while the run goes on.
+        const note = completedPreamble(data, this.sessionKey);
+        if (note !== null) {
+          events.push({ type: EVENT_REASONING, text: note.text, nature: "commentary", itemKey: note.itemKey, runId: this.currentRunId });
+        }
       }
       // 6.5 (bench-verified): the gateway-run message-tool surfaces ONLY as an
       // item frame {itemId, phase, kind:"tool", name:"message", title, status} —

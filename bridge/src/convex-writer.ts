@@ -54,11 +54,20 @@ export interface WidgetPart {
   sandbox: "scripts";
 }
 
-/** Mirrors convex/schema.ts messagePart `reasoning` variant. */
+/** Mirrors convex/schema.ts messagePart `reasoning` variant. `nature` (0.103.0): the
+ *  model's reasoning (`thinking`) or the agent's work note (`commentary`); absent on what an
+ *  older bridge wrote, which was always a work note. */
+export type ReasoningNature = "thinking" | "commentary";
 export interface ReasoningPart {
   kind: "reasoning";
   text: string;
+  nature?: ReasoningNature;
+  /** A live work note's key (a digest of its preamble item id): the upsert key. */
+  itemKey?: string;
+  /** Its place in the narrative: the reply's line start when it landed (like a tool's). */
+  textOffset?: number;
 }
+export type ReasoningPartOptions = { nature?: ReasoningNature; itemKey?: string; textOffset?: number };
 
 /** Mirrors convex/schema.ts messagePart `compaction` variant: the gateway
  *  summarized this session's older context during the turn. Content-free —
@@ -316,6 +325,12 @@ export interface TranscriptRowReport {
   streamSegment?: true;
   /** Its place among the segments of the same row, as `chat.history` lists them. */
   segmentOrder?: number;
+  /** The model's reasoning the row carries (transcript-rows.ts `rowThinking`), and whether
+   *  the gateway capped it. */
+  thinking?: string;
+  thinkingTruncated?: true;
+  /** The row is the agent's work note (transcript-rows.ts `rowIsCommentary`). */
+  commentary?: true;
 }
 
 /** One block of a row (providers/openclaw/row-blocks.ts `RowBlock`). */
@@ -551,7 +566,7 @@ export interface ConvexWriter {
   /** reasoning -> internal.stream.addPart(kind:reasoning): assistant prose that is not
    *  the reply, rendered in the message BODY. Optional so lightweight test writers need
    *  not implement it. */
-  addReasoningPart?(messageId: string, text: string): Promise<void>;
+  addReasoningPart?(messageId: string, text: string, opts?: ReasoningPartOptions): Promise<void>;
   /** A successful cron-tool mutation -> internal.stream.addPart(kind:cron).
    *  Optional so lightweight test writers need not implement it. */
   addCronPart?(messageId: string, part: CronPart): Promise<void>;
@@ -987,6 +1002,12 @@ export interface SessionMetaReport {
   thinkingLevel?: string;
   thinkingDefault?: string;
   thinkingLevels?: { id: string; label: string }[];
+  /** The session's reasoning visibility (`off`|`on`|`stream`), 0.103.0. */
+  reasoningLevel?: string;
+  /** The session key this describe answered for: the chat keeps ONE meta while its turns
+   *  can go to several sessions (per-turn routing, a rebind), so Convex trusts the facts
+   *  above for a session only when they name it (convex/lib/reasoningDisplay.ts). */
+  describedSessionKey?: string;
   // Available models for the write-back picker (deduped by id from models.list),
   // with the owner they were asked for and the roster's OWN observation stamp (see
   // SessionRosterReport). Omitted models keep the roster on record — for the SAME
@@ -2179,14 +2200,23 @@ export class HttpConvexWriter implements ConvexWriter {
     });
   }
 
-  async addReasoningPart(messageId: string, text: string): Promise<void> {
+  async addReasoningPart(messageId: string, text: string, opts?: ReasoningPartOptions): Promise<void> {
+    const nature = opts?.nature;
+    const itemKey = opts?.itemKey;
+    const textOffset = opts?.textOffset;
     // Ordered behind the buffered deltas, like every other part: a segment must land
     // where it happened in the narrative, not wherever the flush happened to be.
     await this.flushDelta(messageId);
     await this.post({
       op: "addPart",
       messageId,
-      part: { kind: "reasoning", text } satisfies ReasoningPart,
+      part: {
+        kind: "reasoning",
+        text,
+        ...(nature !== undefined ? { nature } : {}),
+        ...(itemKey !== undefined ? { itemKey } : {}),
+        ...(textOffset !== undefined ? { textOffset } : {}),
+      } satisfies ReasoningPart,
       ...this.genTag(messageId),
     });
   }

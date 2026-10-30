@@ -18,8 +18,13 @@ export type RowFile =
 
 export type RowSegment =
   /** `capped` (0.101.3): a text the gateway's display cap cut, whose full version could not
-   *  be recovered — rendered with an honest note, never the gateway's in-band sentinel. */
-  | { kind: "text"; entryId: string; text: string; capped?: true }
+   *  be recovered — rendered with an honest note, never the gateway's in-band sentinel.
+   *  `commentary` (0.103.0): the text is the agent's work note, not its answer. */
+  | { kind: "text"; entryId: string; text: string; capped?: true; commentary?: true }
+  /** 0.103.0: the model's reasoning a row carries, shown above the row (the Control UI
+   *  renders it before the message's content, chat-message-bubble.ts:579-588 at v2026.9.33).
+   *  Its text is not in the view: the block reads it from the row when opened. */
+  | { kind: "thinking"; entryId: string }
   | { kind: "file"; entryId: string; blockIndex: number; file: RowFile }
   /** ONE activity block: every tool card of the consecutive rows that show nothing else
    *  between them (the Control UI's "activity-run", ui/src/pages/chat/chat-thread-grouping.ts:
@@ -83,6 +88,10 @@ export function rowSegments(message: ConvexMessageView): RowSegment[] | null {
     out.push(fileSegment(message, message.rowFiles, entryId, blockIndex));
   };
   for (const row of layout) {
+    // The layout marks a row that carries a reasoning only while the conversation shows it
+    // (convex/messages.ts `layoutForView`).
+    if (row.thinking === true) out.push({ kind: "thinking", entryId: row.entryId });
+    const note = row.commentary === true ? ({ commentary: true } as const) : {};
     if (row.items !== undefined) {
       // The row as its blocks, in their order ("Intro", image, "Outro", audio —
       // ui/src/lib/chat/message-normalizer.test.ts:501): never its raw text.
@@ -91,13 +100,13 @@ export function rowSegments(message: ConvexMessageView): RowSegment[] | null {
         else if (!hiddenText.has(row.entryId)) {
           const piece = text.slice(it.start, it.end);
           if (piece.trim() !== "") {
-            out.push({ kind: "text", entryId: row.entryId, text: piece, ...(it.capped === true ? { capped: true as const } : {}) });
+            out.push({ kind: "text", entryId: row.entryId, text: piece, ...(it.capped === true ? { capped: true as const } : {}), ...note });
           }
         }
       }
     } else {
       const piece = text.slice(row.start, row.end);
-      if (piece.trim() !== "" && !hiddenText.has(row.entryId)) out.push({ kind: "text", entryId: row.entryId, text: piece });
+      if (piece.trim() !== "" && !hiddenText.has(row.entryId)) out.push({ kind: "text", entryId: row.entryId, text: piece, ...note });
       for (const f of row.files ?? []) pushFile(row.entryId, f.blockIndex);
     }
     const tools = row.tools ?? [];

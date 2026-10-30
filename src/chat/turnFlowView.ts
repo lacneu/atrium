@@ -16,13 +16,18 @@ import { toolFamily, type ToolFamily } from "./runStatusView";
 //     ONE activity group;
 //   - whitespace-only text segments are dropped (no empty bubbles).
 
-export interface AnchoredActivity {
-  offset: number;
-  activity: ToolActivityPart;
-}
+/** An anchored item of the flow: a tool card, or (0.103.0) the agent's WORK NOTE — the
+ *  prose it wrote between its actions (Hermes `message.interim`, OpenClaw's preamble). A
+ *  note is CONTENT: never merged into an activity group (which the Tools toggle hides), and
+ *  it ends the group before it. */
+export type AnchoredActivity =
+  | { offset: number; activity: ToolActivityPart; note?: undefined }
+  | { offset: number; note: { key: string; text: string }; activity?: undefined };
 
 export type FlowSegment =
   | { kind: "text"; text: string }
+  /** 0.103.0: a work note at its place in the narrative. `cut` is its stable identity. */
+  | { kind: "note"; key: string; text: string; cut: number }
   | {
       kind: "activity";
       parts: ToolActivityPart[];
@@ -119,25 +124,35 @@ export function buildTurnFlow(
   }
   // STABLE cuts, made monotone in PART order (arrival order is the truth;
   // a smaller late offset must not reorder cards above earlier ones).
-  const groups: Array<{ cut: number; parts: ToolActivityPart[] }> = [];
+  type Group =
+    | { cut: number; parts: ToolActivityPart[]; note?: undefined }
+    | { cut: number; note: { key: string; text: string }; parts?: undefined };
+  const groups: Group[] = [];
   let prevCut = 0;
   for (const a of anchored) {
     const cut = Math.max(prevCut, stableCut(text, a.offset));
     prevCut = cut;
+    if (a.note !== undefined) {
+      groups.push({ cut, note: a.note });
+      continue;
+    }
     const last = groups[groups.length - 1];
-    if (last !== undefined && last.cut === cut) {
+    if (last !== undefined && last.parts !== undefined && last.cut === cut) {
       last.parts.push(a.activity);
     } else {
       groups.push({ cut, parts: [a.activity] });
     }
   }
   // Merge adjacent groups separated by whitespace-only text (visually one
-  // block of activity — two rows with an invisible gap read as a bug).
-  const merged: typeof groups = [];
+  // block of activity — two rows with an invisible gap read as a bug). A note
+  // is never merged, nor merged across.
+  const merged: Group[] = [];
   for (const g of groups) {
     const last = merged[merged.length - 1];
     if (
       last !== undefined &&
+      last.parts !== undefined &&
+      g.parts !== undefined &&
       text
         .slice(Math.min(last.cut, text.length), Math.min(g.cut, text.length))
         .trim() === ""
@@ -155,7 +170,8 @@ export function buildTurnFlow(
     const at = Math.min(g.cut, text.length);
     const seg = text.slice(pos, at);
     if (seg.trim() !== "") out.push({ kind: "text", text: seg });
-    out.push({ kind: "activity", parts: g.parts, cut: g.cut });
+    if (g.note !== undefined) out.push({ kind: "note", key: g.note.key, text: g.note.text, cut: g.cut });
+    else out.push({ kind: "activity", parts: g.parts, cut: g.cut });
     pos = Math.max(pos, at);
   }
   const tail = text.slice(pos);

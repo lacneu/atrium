@@ -41,6 +41,8 @@ export interface ActivityRowProps {
   ariaLabel?: string;
   /** Mirrors the caller's disclosure state (inline-expanded or panel-open). */
   ariaExpanded?: boolean;
+  /** The id of the region an inline disclosure shows (only while it is shown). */
+  ariaControls?: string;
   /** Set on the panel-openers so AT announces "opens a dialog". */
   ariaHasPopup?: boolean;
   /** Render as a NON-interactive row (no button semantics, no chevron): for
@@ -61,6 +63,7 @@ export function ActivityRow({
   title,
   ariaLabel,
   ariaExpanded,
+  ariaControls,
   ariaHasPopup,
   inert = false,
 }: ActivityRowProps) {
@@ -91,6 +94,7 @@ export function ActivityRow({
       title={title}
       aria-label={ariaLabel}
       aria-expanded={ariaExpanded}
+      aria-controls={ariaControls}
       aria-haspopup={ariaHasPopup ? "dialog" : undefined}
     >
       {/* TOP row: icon + label + trailing + chevron, all vertically centered on one

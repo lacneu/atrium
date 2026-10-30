@@ -74,8 +74,9 @@ describe("convertConvexMessage content order (chronological)", () => {
         },
       ],
     });
+    // A part without a nature is the agent's work note (0.103.0), rendered as such.
     expect(contentTypes(message)).toEqual([
-      "reasoning",
+      "data-commentary",
       "text",
       "file",
       "file",

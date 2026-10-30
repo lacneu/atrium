@@ -157,6 +157,24 @@ describe("refreshAfterConfigChange / publishDescribedSession — describe, ask, 
     expect(rosters.map((r) => [r.chatId, r.owner, r.models.map((m) => m.id)]), "…and the new answer reached Convex on its own").toEqual([["c1", "alice", ["a", "b"]]]);
     expect(rosters[0]!.observedAt).toBeGreaterThanOrEqual(metas()[2]!.observedAt as number);
   });
+
+  // Codex pass 7 on 0.103.0: Convex trusts a meta for a session only when it names it.
+  it("a published meta names the session key it describes; a publisher without one names none", async () => {
+    const { conn } = modelsConnSpy(
+      answers({
+        "sessions.describe": () => ({ session: { key: "k", agentId: "alice", reasoningLevel: "off" } }),
+        "models.list": () => ({ models: [{ id: "a" }] }),
+      }),
+    );
+    const { metas, writer } = writerSpy();
+    await publishDescribedSession(session(conn), writer);
+    expect(metas()[0]).toMatchObject({ reasoningLevel: "off", describedSessionKey: "k" });
+    await publishSessionMeta({ chatId: "c1", connection: conn, agentId: "alice" }, writer, {
+      sess: { key: "k", reasoningLevel: "off" },
+      observedAt: 1,
+    });
+    expect(metas()[1]).not.toHaveProperty("describedSessionKey");
+  });
 });
 
 describe("the policy disposes itself, whenever the connection ends", () => {

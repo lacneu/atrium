@@ -21,7 +21,7 @@
 // aborted->aborted). Every other run.status is intermediate and dropped.
 
 import type { SessionFillSource } from "./context-budget.js";
-import { EVENT_WIDGET, type NormalizedEvent } from "./events.js";
+import { EVENT_REASONING, EVENT_WIDGET, type NormalizedEvent } from "./events.js";
 import type { ConvexWriter, FinalizeStatus, ToolPart } from "../convex-writer.js";
 import { announcedChildKey } from "../providers/openclaw/run-families.js";
 import { cronPartFromTool } from "./cron-part.js";
@@ -1345,7 +1345,29 @@ export class TurnSink {
           // it (lot 34's unfinished half — the text was saved and still lost to the user).
           const reasoningText = asString(event.text).trim();
           if (!reasoningText) break;
-          await this.writer.addReasoningPart?.(messageId, reasoningText);
+          const nature = event.nature === "thinking" || event.nature === "commentary" ? event.nature : undefined;
+          const itemKey = asString(event.itemKey);
+          // A WORK NOTE (0.103.0) takes its place in the narrative like a tool card: the
+          // line the reply was on when it landed, under the same rule (no anchor on a
+          // delivery or announce run, whose merged text this sink cannot vouch for).
+          const anchorable =
+            nature === "commentary" &&
+            taskDeliveryRunFromRunId(this.turnRunId) === null &&
+            !(this.turnRunId ?? "").startsWith("announce:v1:");
+          // ISOLATED (codex pass 9 on 0.103.0): this prose is not the reply, and it is written
+          // in the same batch as what ended it — a delta, a tool, the terminal. A failed write
+          // here (a 503) must never cost those: logged by length only, the batch goes on.
+          try {
+            await this.writer.addReasoningPart?.(messageId, reasoningText, {
+              ...(nature !== undefined ? { nature } : {}),
+              ...(itemKey ? { itemKey } : {}),
+              ...(anchorable ? { textOffset: this.visibleLineStart } : {}),
+            });
+          } catch (e) {
+            console.warn(
+              `[sink] reasoning part not written (${nature ?? "commentary"}, ${reasoningText.length} chars): ${e instanceof Error ? e.message : String(e)}`,
+            );
+          }
           break;
         }
         case "tool.status": {
@@ -2814,6 +2836,16 @@ function eventIsVisible(event: NormalizedEvent): boolean {
     // An inline widget is shown in the bubble exactly like media.
     case EVENT_WIDGET:
       return true;
+    case EVENT_REASONING:
+      // A WORK NOTE (0.103.0) is shown the moment it lands, as the Control UI shows the
+      // agent's commentary between its actions: it opens a deferred bubble like a tool card
+      // does (codex pass 5 on 0.103.0 — a preamble alone stayed buffered until the next tool
+      // or text). The model's reasoning alone does not: it is not the agent speaking, and a
+      // conversation that hides it would get a bubble with nothing to show.
+      return (
+        (event as { nature?: unknown }).nature === "commentary" &&
+        meaningfulText(asString((event as { text?: unknown }).text))
+      );
     case "plan":
       // The NATIVE plan stream (G-22) is user-visible work, exactly like the
       // `update_plan` tool card it mirrors — which DOES open a bubble through

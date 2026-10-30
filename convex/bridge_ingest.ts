@@ -533,6 +533,8 @@ type IngestOp =
         thinkingLevel?: string;
         thinkingDefault?: string;
         thinkingLevels?: { id: string; label: string }[];
+        reasoningLevel?: string;
+        describedSessionKey?: string;
         availableModels?: { id: string; label: string }[];
         availableModelsOwner?: string;
         rosterObservedAt?: number;

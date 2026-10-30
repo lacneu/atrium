@@ -130,11 +130,11 @@ const KNOWN_OFFENDERS: ReadonlyArray<string> = [
   // call, and the list still holds exactly two entries — the ratchet counts offenders, and this
   // record is what keeps a line shift from reading as one.
   "anomalies.ts:2091",
-  // Moved 926 -> 930 by the snapshot credential mask, then -> 939 by the masked reads.
-  // Same file,
+  // Moved 926 -> 930 by the snapshot credential mask, then -> 939 by the masked reads,
+  // then 1207 -> 1212 by the reasoning mask of a report (0.103.0). Same file,
   // same call: the ratchet counts offenders, and this record is what keeps a line shift
   // from reading as one.
-  "feedback.ts:1207",
+  "feedback.ts:1212",
 ];
 
 describe("Convex's one-paginated-query rule", () => {

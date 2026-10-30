@@ -219,16 +219,23 @@ async function sweepHiddenChatBatch(
   if (after === 0 && transcriptStoredText(hidden)) {
     // The finished job's texts only: the newest text stored by now bounds the purge — what
     // is stored after it is a later job's (codex phase 4 pass 16). Nothing stored: no step.
-    const newest = await ctx.db
+    const newestText = await ctx.db
       .query("transcriptRowTexts")
       .withIndex("by_chat", (q) => q.eq("chatId", hiddenChatId))
       .order("desc")
       .first();
-    if (newest !== null) {
+    // …and the rows' reasoning (0.103.0), stored apart from their texts.
+    const newestReasoning = await ctx.db
+      .query("transcriptRowReasoning")
+      .withIndex("by_chat", (q) => q.eq("chatId", hiddenChatId))
+      .order("desc")
+      .first();
+    const before = Math.max(newestText?._creationTime ?? -1, newestReasoning?._creationTime ?? -1);
+    if (before >= 0) {
       await ctx.scheduler.runAfter(0, internal.transcriptProjection.purgeChatRowTexts, {
         chatId: hiddenChatId,
         markPurged: true,
-        before: newest._creationTime,
+        before,
       });
     }
   }

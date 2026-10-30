@@ -142,12 +142,15 @@ export type KnobVisibility = {
  *  and the sessionMeta data that feeds its options. */
 export function knobRowVisibility(
   can: (key: CapabilityKey) => boolean,
-  data: { hasModels: boolean; hasLevels: boolean },
+  /** `described: false` = no session described yet: the gateway's knobs have nothing to
+   *  act on, so none renders (Atrium's own reasoning-display choice is not one of them). */
+  data: { hasModels: boolean; hasLevels: boolean; described?: boolean },
 ): KnobVisibility {
+  const described = data.described !== false;
   return {
-    model: can("knobModel") && data.hasModels,
-    thinking: can("knobThinkingLevel") && data.hasLevels,
-    speed: can("knobFastMode"),
+    model: described && can("knobModel") && data.hasModels,
+    thinking: described && can("knobThinkingLevel") && data.hasLevels,
+    speed: described && can("knobFastMode"),
     reset: can("knobUnset"),
   };
 }

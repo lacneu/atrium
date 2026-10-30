@@ -328,3 +328,45 @@ describe("across readers of one conversation (the session expired and came back)
     expect(postedTexts(applies)).toEqual([]);
   });
 });
+
+// CODEX PASS 2 ON 0.103.0 (finding 2): a row whose REASONING the gateway capped. The cap
+// marks the message like any other (`truncateChatHistoryText` on the `thinking` field,
+// chat-display-projection.sanitize.ts:217-231, marker :576-586 at v2026.9.33): the preview
+// must say it is cut, and the full row — reasoning and tools, no text — must replace it.
+describe("codex pass 2: a row whose reasoning the gateway capped", () => {
+  const THOUGHT = Array.from({ length: 900 }, (_, i) => `Pensée ${i}.`).join(" ").slice(0, 9_000);
+  const tool = { type: "toolCall", id: "call-1", name: "exec", arguments: { cmd: "date" } };
+  const capped = (extra: unknown[] = []) => ({
+    role: "assistant",
+    content: [{ type: "thinking", thinking: `${THOUGHT.slice(0, 8_000)}${DISPLAY_CAP_SENTINEL}` }, tool, ...extra],
+    __openclaw: { ...META, truncated: true, reason: "display-cap" },
+  });
+  const whole = () => ({ role: "assistant", content: [{ type: "thinking", thinking: THOUGHT }, tool], __openclaw: { ...META } });
+  type Posted = { entryId: string; thinking?: string; thinkingTruncated?: boolean; blocks?: Array<{ type: string; capped?: boolean }> };
+  const posted = (r: ReturnType<typeof rig>): Posted | undefined =>
+    (r.applies.flatMap((a) => a.rows) as unknown as Posted[]).filter((x) => x.entryId === "e42" && x.thinking !== undefined).at(-1);
+
+  it("the preview says its reasoning is cut, and never marks an uncut answer as cut", () => {
+    expect(THOUGHT.length).toBe(9_000);
+    const read = parseHistoryReply(page([capped()]), { sessionKey: KEY })!;
+    expect(read.capped).toEqual([{ entryId: "e42", seq: 42 }]);
+    expect(read.rows[0]).toMatchObject({ thinking: THOUGHT.slice(0, 8_000), thinkingTruncated: true });
+    const withAnswer = parseHistoryReply(page([capped([{ type: "text", text: "Réponse." }])]), { sessionKey: KEY })!;
+    expect(withAnswer.rows[0]!.blocks?.find((b) => b.type === "text")).toEqual({ type: "text", text: "Réponse." });
+  });
+
+  it("the full row — reasoning and tools, no text — replaces the preview", async () => {
+    const r = rig({ history: [capped()], message: async () => ({ ok: true, message: whole() }) });
+    await r.shadow.idle();
+    expect(r.asked).toEqual(["e42"]);
+    const row = posted(r)!;
+    expect(row.thinking).toBe(THOUGHT);
+    expect(row.thinkingTruncated).toBeUndefined();
+  });
+
+  it("unrecoverable, the preview stays — said cut", async () => {
+    const r = rig({ history: [capped()], message: async () => ({ ok: false, unavailableReason: "oversized" }) });
+    await r.shadow.idle();
+    expect(posted(r)).toMatchObject({ thinking: THOUGHT.slice(0, 8_000), thinkingTruncated: true });
+  });
+});

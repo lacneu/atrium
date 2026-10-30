@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { describe, expect, test } from "vitest";
 import {
   CAPABILITY_KEYS,
@@ -339,6 +341,24 @@ describe("knobRowVisibility — capability x control matrix (SessionKnobsGroup)"
     // speed/reset depend on the capability only (the segmented set is static).
     expect(vis.speed).toBe(true);
     expect(vis.reset).toBe(true);
+  });
+
+  // Codex pass 7 on 0.103.0: before the first describe the group still renders (the
+  // reasoning-display choice), with none of the gateway's knobs.
+  test("no session described yet: no gateway knob at all, whatever the capabilities", () => {
+    const vis = knobRowVisibility(canOf(FULL), { ...data, described: false });
+    expect(vis).toMatchObject({ model: false, thinking: false, speed: false });
+  });
+});
+
+describe("the knobs before the first describe (comment-stripped source pins)", () => {
+  const read = (f: string) =>
+    readFileSync(join(__dirname, f), "utf8").replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "").replace(/\{\/\*[\s\S]*?\*\/\}/g, "");
+  test("every surface mounts the group without waiting for the session meta", () => {
+    expect(read("ConvexChat.tsx")).toContain('{meta?.viewerRole === "owner" ? (\n        <SessionKnobsMenu');
+    expect(read("ConversationPanel.tsx")).toContain("{isOwner && meta ? (");
+    expect(read("SessionPanel.tsx")).toContain("{meta !== null ? (");
+    expect(read("KnobRow.tsx")).toContain("described: sm !== null,");
   });
 });
 

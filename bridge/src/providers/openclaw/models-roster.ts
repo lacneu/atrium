@@ -181,6 +181,10 @@ export function parseSessionMeta(
     thinkingLevel: str(sess.thinkingLevel) ?? thinkingDefault,
     thinkingDefault,
     thinkingLevels,
+    // Whether the session SHOWS the model's reasoning (`off`|`on`|`stream`,
+    // src/auto-reply/thinking.shared.ts:28 at v2026.9.33): the value Atrium applies for a
+    // conversation (0.103.0), read back so a decision that changed reaches the gateway.
+    reasoningLevel: str(sess.reasoningLevel),
     // `null`/absent = nothing in hand (the ask failed with no last good roster): the
     // field is omitted and Convex keeps the roster on record for the same owner.
     availableModels: availableModels ?? undefined,
@@ -575,7 +579,8 @@ export async function describeSessionAnswer(
  * picker), the rule `ensureAvailableModels` applies itself.
  */
 export async function publishSessionMeta(
-  session: { chatId: string; connection: ModelsConnection; agentId: string | null },
+  /** `sessionKey`: the key `described` answered for, reported as its provenance. */
+  session: { chatId: string; connection: ModelsConnection; agentId: string | null; sessionKey?: string },
   writer: RosterWriter,
   described: { sess: Record<string, unknown>; observedAt: number },
   roster?: RosterInHand | null,
@@ -594,6 +599,7 @@ export async function publishSessionMeta(
     ...parseSessionMeta(described.sess, inHand?.models ?? null),
     availableModelsOwner: modelsQuery(conn, owner).ownerKey,
     ...(inHand !== null ? { rosterObservedAt: inHand.observedAt } : {}),
+    ...(session.sessionKey !== undefined ? { describedSessionKey: session.sessionKey } : {}),
     observedAt: described.observedAt,
   });
   if (!reask) return;

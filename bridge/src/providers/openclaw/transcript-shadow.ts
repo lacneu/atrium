@@ -102,10 +102,14 @@ export function rowTextBytes(r: RowContent): number {
 
 /** What a row SAYS (projection `on`): everything a `textsOnly` post carries ahead of its
  *  read. */
-type RowContent = Pick<TranscriptRow, "text" | "yieldAck" | "errorMessage" | "blocks">;
+type RowContent = Pick<TranscriptRow, "text" | "yieldAck" | "errorMessage" | "blocks" | "thinking" | "thinkingTruncated">;
 
 const hasContent = (r: RowContent): boolean =>
-  r.text !== undefined || r.yieldAck !== undefined || r.errorMessage !== undefined || r.blocks !== undefined;
+  r.text !== undefined ||
+  r.yieldAck !== undefined ||
+  r.errorMessage !== undefined ||
+  r.blocks !== undefined ||
+  r.thinking !== undefined;
 
 /** The rows that carry a text, in order, in chunks under both bounds. A single row is a
  *  chunk of its own whatever it weighs (a row's text is already bounded at 32 KiB
@@ -175,8 +179,17 @@ export function resetCappedRowMemory(): void {
 
 export function withoutText<R extends RowContent & { blocksTruncated?: true }>(
   r: R,
-): Omit<R, "text" | "yieldAck" | "errorMessage" | "blocks" | "blocksTruncated"> {
-  const { text: _text, yieldAck: _ack, errorMessage: _err, blocks: _blocks, blocksTruncated: _cut, ...identity } = r;
+): Omit<R, "text" | "yieldAck" | "errorMessage" | "blocks" | "blocksTruncated" | "thinking" | "thinkingTruncated"> {
+  const {
+    text: _text,
+    yieldAck: _ack,
+    errorMessage: _err,
+    blocks: _blocks,
+    blocksTruncated: _cut,
+    thinking: _thinking,
+    thinkingTruncated: _thinkingCut,
+    ...identity
+  } = r;
   return identity;
 }
 
@@ -777,7 +790,11 @@ export class TranscriptShadow {
           let row = toTranscriptRow(payload.message, ref.envelope, display);
           // Still capped at FULL_MESSAGE_MAX_CHARS: the longer preview, told as cut.
           if (row !== null && isDisplayCapped(payload.message)) row = capDisplayedRow(row);
-          if (row !== null && row.entryId === ref.entryId && row.seq === ref.seq && row.text !== undefined) full = row;
+          // A row that shows something: its text, or (0.103.0, codex pass 2) only a reasoning
+          // beside its tool calls — a capped reasoning is completed like a capped text.
+          if (row !== null && row.entryId === ref.entryId && row.seq === ref.seq && (row.text !== undefined || row.thinking !== undefined)) {
+            full = row;
+          }
         } else {
           this.log(
             `[transcript] chat=${this.deps.chatId} capped row ${ref.entryId} not recovered (${String(payload?.unavailableReason ?? "no message")}) — the preview stays, marked cut`,

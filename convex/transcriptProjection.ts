@@ -8,6 +8,7 @@
 // NEVER touches a message: shadow mode measures, it does not decide. The policy lives in
 // lib/transcriptProjection.ts (pure, tested); this file loads and stores.
 
+import { agentIdOfSessionKey, showsReasoning } from "./lib/reasoningDisplay";
 import { liveBubbleFor } from "./lib/projectedRuns";
 import { deriveRowWidgetsOnLiveBubble } from "./lib/rowParts";
 import { v, type ObjectType } from "convex/values";
@@ -30,6 +31,7 @@ import {
   MAX_TERMINALS_PER_APPLY,
   mergeInputFact,
   currentCustody,
+  rowReasoningSignature,
   rowTextSignature,
   MAX_ROW_TEXT_BYTES,
   purgeRowText,
@@ -85,6 +87,7 @@ import {
 import { drainNextQueued, SESSION_ACTIVE_FRESH_MS } from "./lib/outboxQueue";
 import { scheduleRegroup } from "./displayGroups";
 import { displayReport } from "./messages";
+import { utf8Bytes } from "./lib/bubbleProjection";
 import {
   boundRowContent,
   rowBlockValidator,
@@ -127,6 +130,11 @@ const rowValidator = v.object({
   provenanceSourceTool: v.optional(v.string()),
   streamSegment: v.optional(v.boolean()),
   segmentOrder: v.optional(v.number()),
+  // 0.103.0: the model's reasoning the row carries (content, kept only for a conversation
+  // that shows its reasoning — lib/reasoningDisplay.ts) and the work-note fact (identity).
+  thinking: v.optional(v.string()),
+  thinkingTruncated: v.optional(v.boolean()),
+  commentary: v.optional(v.boolean()),
 });
 
 const terminalValidator = v.object({
@@ -189,12 +197,13 @@ const MAX_TEXT_DOC_BYTES = MAX_ROW_TEXT_BYTES + 256;
  *  incoming bound: over it, the apply is refused like an oversized one. */
 export const MAX_APPLY_TEXT_READ_BYTES = 6 * 1024 * 1024;
 
-const textDocBytes = (d: { text?: string; yieldAck?: string; errorMessage?: string; blocks?: RowBlock[] }): number =>
+const textDocBytes = (d: { text?: string; yieldAck?: string; errorMessage?: string; blocks?: RowBlock[]; thinking?: string }): number =>
   rowContentBytes(d) + 128;
 
-/** A row carries something it shows (its text, acknowledgment, error text or blocks). */
-const hasContent = (r: { text?: string; yieldAck?: string; errorMessage?: string; blocks?: RowBlock[] }): boolean =>
-  r.text !== undefined || r.yieldAck !== undefined || r.errorMessage !== undefined || r.blocks !== undefined;
+/** A row carries something it shows (its text, acknowledgment, error text, blocks or
+ *  reasoning). */
+const hasContent = (r: { text?: string; yieldAck?: string; errorMessage?: string; blocks?: RowBlock[]; thinking?: string }): boolean =>
+  r.text !== undefined || r.yieldAck !== undefined || r.errorMessage !== undefined || r.blocks !== undefined || r.thinking !== undefined;
 
 /** The incoming content's signature (lib/transcriptProjection `rowTextSignature`). */
 const contentSignature = (r: {
@@ -204,7 +213,11 @@ const contentSignature = (r: {
   blocks?: RowBlock[];
   blocksTruncated?: boolean;
 }): string | undefined =>
-  rowTextSignature(r.text, r.yieldAck, { errorMessage: r.errorMessage, blocks: r.blocks, blocksTruncated: r.blocksTruncated });
+  rowTextSignature(r.text, r.yieldAck, {
+    errorMessage: r.errorMessage,
+    blocks: r.blocks,
+    blocksTruncated: r.blocksTruncated,
+  });
 
 /** The text an apply carries: refused when over either bound (see MAX_APPLY_TEXT_BYTES). */
 export function textLoadOf(rows: readonly TranscriptRowInput[]): { rows: number; bytes: number } {
@@ -228,6 +241,8 @@ type TextWork = {
     /** The row's `seq` as stored BEFORE this apply (absent: a new row). */
     storedSeq?: number;
     textSig?: string;
+    /** 0.103.0: the signature of the reasoning stored for the row (absent: none). */
+    thinkingSig?: string;
     runId?: string;
     messageId?: Id<"messages">;
   };
@@ -237,6 +252,10 @@ type TextWork = {
   errorMessage?: string;
   blocks?: RowBlock[];
   blocksTruncated?: boolean;
+  /** 0.103.0: the model's reasoning (only for a conversation that shows it), stored apart
+   *  from the text (`transcriptRowReasoning`), and whether the gateway cut it. */
+  thinking?: string;
+  thinkingTruncated?: boolean;
 };
 
 /** Is a row's run segment one whose bubble a person DELETED? — the run's tombstones
@@ -309,7 +328,7 @@ async function writeRowTexts(
       // Its text is never stored. A copy stored BEFORE (a purged mark set without its
       // deletion, a segment the cut row revealed only now — codex phase 4 pass 9) is
       // deleted too: in its own bounded step, never read here.
-      if (w.row.textSig !== undefined) copies.push(w.row._id);
+      if (w.row.textSig !== undefined || w.row.thinkingSig !== undefined) copies.push(w.row._id);
       if (w.row.textSig !== TEXT_PURGED_SIG || (w.row.messageId === undefined && tomb.to !== undefined)) {
         await ctx.db.patch(w.row._id, {
           textSig: TEXT_PURGED_SIG,
@@ -318,7 +337,13 @@ async function writeRowTexts(
       }
       continue;
     }
-    if (w.row.textSig === contentSignature(w)) continue;
+    // The reasoning first, apart from the text (0.103.0): a row whose reasoning appeared or
+    // left changes the bubble's layout (its mark) even when its text did not.
+    const reasoningMarkMoved = await writeRowReasoning(ctx, a.chatId, w, now, budget);
+    if (w.row.textSig === contentSignature(w)) {
+      if (reasoningMarkMoved) stored.push({ row: w.row });
+      continue;
+    }
     budget.queries++;
     const doc = await ctx.db
       .query("transcriptRowTexts")
@@ -344,7 +369,10 @@ async function writeRowTexts(
     });
     const blocksTruncated = carriesBlocks ? w.blocksTruncated === true : doc?.blocksTruncated === true;
     const sig = contentSignature({ ...merged, ...(merged.blocks !== undefined && blocksTruncated ? { blocksTruncated } : {}) });
-    if (sig === w.row.textSig && doc !== null) continue;
+    if (sig === w.row.textSig && doc !== null) {
+      if (reasoningMarkMoved) stored.push({ row: w.row });
+      continue;
+    }
     const content = {
       ...merged,
       ...(merged.blocks !== undefined && blocksTruncated ? { blocksTruncated: true } : {}),
@@ -371,6 +399,50 @@ async function writeRowTexts(
   }
   if (copies.length > 0) await purgeRowTextsLater(ctx, a.chatId, copies);
   return stored;
+}
+
+/**
+ * THE MODEL'S REASONING OF ONE ROW (0.103.0), stored apart from its text
+ * (`transcriptRowReasoning`) so that no reader of texts loads it. Compared by its signature
+ * on the row (`thinkingSig`), never read to decide. A read that carries none — a
+ * conversation that stopped showing it, an older bridge — keeps the stored one, as a read
+ * without blocks keeps the stored blocks. A CUT reasoning (the gateway's 8 000-character
+ * preview, its full row unreadable) never replaces a whole one of the same row version —
+ * the rule a capped text follows (`storedWhole`). True when the row's mark appeared.
+ */
+async function writeRowReasoning(
+  ctx: MutationCtx,
+  chatId: Id<"chats">,
+  w: TextWork,
+  now: number,
+  budget: Budget,
+): Promise<boolean> {
+  if (w.thinking === undefined) return false;
+  const truncated = w.thinkingTruncated === true;
+  const sig = rowReasoningSignature(w.thinking, truncated);
+  if (sig === w.row.thinkingSig) return false;
+  budget.queries++;
+  const doc = await ctx.db
+    .query("transcriptRowReasoning")
+    .withIndex("by_row", (q) => q.eq("rowId", w.row._id))
+    .first();
+  if (doc !== null) budget.bytes += utf8Bytes(doc.text) + 128;
+  if (truncated && doc !== null && doc.truncated !== true && w.row.storedSeq === w.row.seq) return false;
+  if (doc === null) {
+    await ctx.db.insert("transcriptRowReasoning", {
+      chatId,
+      rowId: w.row._id,
+      text: w.thinking,
+      ...(truncated ? { truncated: true as const } : {}),
+      updatedAt: now,
+    });
+  } else {
+    await ctx.db.patch(doc._id, { text: w.thinking, truncated: truncated ? true : undefined, updatedAt: now });
+  }
+  const appeared = w.row.thinkingSig === undefined;
+  await ctx.db.patch(w.row._id, { thinkingSig: sig });
+  w.row.thinkingSig = sig;
+  return appeared;
 }
 
 /** The gateway's in-band display-cap sentinel (bridge transcript-rows.ts). */
@@ -580,7 +652,7 @@ async function upsertRows(
             presentationOwner: true,
           }
         : read;
-    const { text, yieldAck, spawns, blocks, blocksTruncated, errorMessage, ...identity } = r;
+    const { text, yieldAck, spawns, blocks, blocksTruncated, errorMessage, thinking, thinkingTruncated, ...identity } = r;
     const next: TranscriptRowInput & { sessionId: string } = { ...identity, sessionId: a.sessionId };
     // Another instance's row (codex pass 5/6): never rewritten from here, and it feeds
     // NOTHING this apply aggregates — not the session's last seq, not a run's span.
@@ -656,6 +728,9 @@ async function upsertRows(
           ...(next.streamSegment !== undefined || stored.streamSegment !== undefined
             ? { streamSegment: next.streamSegment }
             : {}),
+          ...(next.commentary !== undefined || stored.commentary !== undefined
+            ? { commentary: next.commentary === true ? true : undefined }
+            : {}),
           // The read states it; a live post (one segment at a time) never erases it.
           ...(next.segmentOrder !== undefined ? { segmentOrder: next.segmentOrder } : {}),
           ...(next.presentationOwner !== undefined || stored.presentationOwner !== undefined
@@ -673,7 +748,7 @@ async function upsertRows(
     }
     // A text once read is a fact about the row: a later read that carries none (an older
     // bridge, a switch flipped back to shadow) never erases it — nor reads it.
-    if (!hasContent({ text, yieldAck, errorMessage, blocks })) continue;
+    if (!hasContent({ text, yieldAck, errorMessage, blocks, thinking })) continue;
     // Only a row ATTRIBUTED to a run keeps its text: every purge reaches a text through
     // its run or its bubble, and a row of no run has neither — its text could never be
     // purged with what it belongs to (codex phase 4 pass 7: a producerless mirror row
@@ -686,6 +761,7 @@ async function upsertRows(
         seq: r.seq,
         ...(stored !== null && stored !== undefined ? { storedSeq: stored.seq } : {}),
         ...(stored?.textSig !== undefined ? { textSig: stored.textSig } : {}),
+        ...(stored?.thinkingSig !== undefined ? { thinkingSig: stored.thinkingSig } : {}),
         ...(r.runId !== undefined ? { runId: r.runId } : {}),
         ...(stored?.messageId !== undefined ? { messageId: stored.messageId } : {}),
       },
@@ -694,6 +770,7 @@ async function upsertRows(
       ...(errorMessage !== undefined ? { errorMessage } : {}),
       ...(blocks !== undefined ? { blocks } : {}),
       ...(blocksTruncated === true ? { blocksTruncated: true } : {}),
+      ...(thinking !== undefined ? { thinking, ...(thinkingTruncated === true ? { thinkingTruncated: true } : {}) } : {}),
     });
   }
   // A cut row read AFTER its user message was deleted (codex phase 4 pass 13): the segment
@@ -1842,7 +1919,29 @@ export const purgeChatRowTexts = internalMutation({
       }
       await ctx.db.delete(d._id);
     }
-    if (docs.length === TEXT_PURGE_BATCH) {
+    // …then the rows' reasoning (0.103.0), stored apart from their texts, under the same
+    // bound — with the mark that names it, and (`markPurged`) the purged mark that keeps a
+    // later read from storing it again.
+    const reasoning =
+      docs.length === TEXT_PURGE_BATCH
+        ? []
+        : await ctx.db
+            .query("transcriptRowReasoning")
+            .withIndex("by_chat", (q) =>
+              before === undefined ? q.eq("chatId", chatId) : q.eq("chatId", chatId).lte("_creationTime", before),
+            )
+            .take(TEXT_PURGE_BATCH);
+    for (const d of reasoning) {
+      const row = await ctx.db.get(d.rowId);
+      if (row !== null) {
+        await ctx.db.patch(row._id, {
+          thinkingSig: undefined,
+          ...(markPurged && row.textSig !== TEXT_PURGED_SIG ? { textSig: TEXT_PURGED_SIG } : {}),
+        });
+      }
+      await ctx.db.delete(d._id);
+    }
+    if (docs.length === TEXT_PURGE_BATCH || reasoning.length === TEXT_PURGE_BATCH) {
       await ctx.scheduler.runAfter(0, internal.transcriptProjection.purgeChatRowTexts, {
         chatId,
         markPurged,
@@ -2300,7 +2399,22 @@ async function applyTranscriptImpl(
         settledRuns: [] as string[],
       };
     }
-    const rows: TranscriptRowInput[] = projectionOn ? sanitized : sanitized.map(identityOnly);
+    // THE MODEL'S REASONING (0.103.0) is kept only for a conversation that shows it — the
+    // conversation's choice, else what the agent the session belongs to inherits (its
+    // exception, else its instance's default — lib/reasoningDisplay.ts). Otherwise it is
+    // dropped HERE, before anything is signed, measured or written: nothing of it is stored.
+    const keepsReasoning =
+      projectionOn &&
+      chatDoc !== null &&
+      (await showsReasoning(ctx, chatDoc, (() => {
+        const agentId = agentIdOfSessionKey(args.sessionKey);
+        return agentId === null ? null : { instanceName: args.boundInstanceName, agentId };
+      })()));
+    const rows: TranscriptRowInput[] = projectionOn
+      ? keepsReasoning
+        ? sanitized
+        : sanitized.map(({ thinking: _dropped, thinkingTruncated: _cut, ...rest }) => rest)
+      : sanitized.map(identityOnly);
     // REFUSED WHOLE, before any write, when it carries more text than one transaction can
     // persist (codex phase 4 pass 6): nothing is stored, nothing deferred, the cursor does
     // not move — the bridge splits and posts again (transcript-shadow.ts `chunkTextRows`).

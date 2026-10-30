@@ -103,9 +103,29 @@ export const messagePart = v.union(
     filename: v.string(),
     mimeType: v.string(),
   }),
+  // Prose that is NOT the reply, of two natures (0.103.0 — `nature`, the explicit
+  // discriminant; ABSENT on every part written before it, and those parts were all
+  // `commentary`: Hermes `message.interim`):
+  //   - `commentary`: the agent's WORK NOTES between its actions (Hermes `message.interim`,
+  //     OpenClaw's live preamble items) — always shown, as the Control UI shows them;
+  //   - `thinking`: the MODEL's reasoning (Hermes `message.complete.reasoning`; OpenClaw's
+  //     lives in its transcript rows, `transcriptRowReasoning`, read one row at a time —
+  //     messages.ts `getRowReasoning`) — stored ONLY for a conversation that shows its
+  //     reasoning (lib/reasoningDisplay.ts), never in an export, a fork, the API, a search,
+  //     a notification or a spoken reply.
   v.object({
     kind: v.literal("reasoning"),
     text: v.string(),
+    nature: v.optional(v.union(v.literal("thinking"), v.literal("commentary"))),
+    // A LIVE work note (an OpenClaw preamble item): a digest of its item id, the upsert
+    // key, and the identity the row that later persists it carries (bridge
+    // transcript-rows.ts `streamSegmentEntryId`).
+    itemKey: v.optional(v.string()),
+    // Its place in the narrative (like a tool part's): the reply's length when it landed.
+    textOffset: v.optional(v.number()),
+    // A reasoning cut at write to the message's reasoning budget (convex/stream.ts
+    // `MESSAGE_THINKING_BYTES`): only its first part is kept, and the reader is told so.
+    textCapped: v.optional(v.literal(true)),
   }),
   // A work-plan update (the builtin `update_plan` tool of GPT-5-family runs):
   // the model's ordered step list with per-step status. One part PER update —
@@ -515,6 +535,13 @@ export default defineSchema({
     // in "Modifier l'instance"), NOT in the bridge `config` blob: it is never dispatched to
     // the bridge. Absent => reactive (the default). See lib/instanceConfig STREAM_TRANSPORTS.
     streamTransport: v.optional(v.union(v.literal("reactive"), v.literal("sse"))),
+    // Does a conversation on this instance SHOW the model's reasoning when neither it
+    // (`chats.sessionSettings.showReasoning`) nor its agent (`agents.showReasoningDefault`,
+    // an exception) decides? 0.103.0 — Atrium's display default, set in Settings ▸ chat
+    // defaults. A top-level instance PROPERTY like `streamTransport`, NOT in the bridge
+    // `config` blob: it is never dispatched to the bridge (the bridge is told the decided
+    // `reasoningLevel`, lib/reasoningDisplay.ts). Absent => hidden.
+    showReasoningDefault: v.optional(v.boolean()),
     // Which provider technology backs this instance. OPTIONAL (additive) →
     // unset legacy rows are treated as "openclaw". The bridge adapts API calls
     // by kind; the app stays standardized.
@@ -852,6 +879,14 @@ export default defineSchema({
     // the agent pickers (what this agent is for, when to pick it). Admin-managed
     // + PRESERVED across discovery polls (the gateway exposes no such field).
     description: v.optional(v.string()),
+    // ADMIN curation (0.103.0): this agent's EXCEPTION to its instance's reasoning default
+    // (`instances.showReasoningDefault`) — does a conversation with it SHOW the model's
+    // reasoning when it sets nothing itself (`chats.sessionSettings.showReasoning`)?
+    // true = shown, false = hidden, absent = no exception (the instance decides).
+    // Atrium's display default — deliberately NOT the gateway's `reasoningDefault`, which
+    // applies to every channel of the agent and which Hermes does not have. Admin-managed +
+    // PRESERVED across discovery polls.
+    showReasoningDefault: v.optional(v.boolean()),
     // "discovered" = from a real provider enumeration; "manual" = admin fallback
     // when the provider cannot enumerate (agentDiscovery:false) => UNVERIFIED.
     source: v.union(v.literal("discovered"), v.literal("manual")),
@@ -1913,6 +1948,13 @@ export default defineSchema({
         thinkingLevels: v.optional(
           v.array(v.object({ id: v.string(), label: v.string() })),
         ),
+        // The session's reasoning VISIBILITY on the gateway (OpenClaw `reasoningLevel`,
+        // off|on|stream) as last described — 0.103.0, lib/reasoningDisplay.ts.
+        reasoningLevel: v.optional(v.string()),
+        // WHICH session the describe-sourced facts above describe: a digest of its instance
+        // and session key (lib/reasoningDisplay.ts sessionDigest — the key itself embeds the
+        // owner's canonical and the chat id). One meta, several possible sessions.
+        describedSession: v.optional(v.string()),
         // Available models for the write-back picker, mirrored once from the
         // gateway's `models.list` (deduped by id). Non-secret labels only.
         availableModels: v.optional(
@@ -2022,6 +2064,11 @@ export default defineSchema({
         thinkingLevel: v.optional(v.string()), // reasoning level id
         model: v.optional(v.string()), // model id
         fastMode: v.optional(v.boolean()), // CONF-4a "Vitesse" (bench: true/false/null patchable)
+        // 0.103.0 — "Afficher le raisonnement" for THIS conversation. Absent = inherited:
+        // the agent's exception (`agents.showReasoningDefault`), else the instance's
+        // default (`instances.showReasoningDefault`). Atrium's own display decision, never a
+        // gateway unset: the bridge is told the effective value (lib/reasoningDisplay.ts).
+        showReasoning: v.optional(v.boolean()),
         // Field names UNSET by the user (per-line ↺). Persisted IN the intent so
         // an unset survives a bridge outage exactly like a set: the bridge
         // re-applies `{<field>: null}` per turn (idempotent). A field is removed
@@ -2276,6 +2323,12 @@ export default defineSchema({
           // The row's blocks are known (a bridge that sends them): its tool cards are the
           // row's own. Absent: an older bridge sent text only — the live cards stay shown.
           blocks: v.optional(v.boolean()),
+          // 0.103.0: the row carries the model's reasoning, shown above it — its text read
+          // from the row when the reader opens it (messages.ts `getRowReasoning`), never in
+          // the bubble's text nor in the window.
+          thinking: v.optional(v.boolean()),
+          // 0.103.0: the row is the agent's work note: its text is shown as such.
+          commentary: v.optional(v.boolean()),
           // The row as its blocks, in order: text spans of the bubble's text and file block
           // indexes ("Intro", image, "Outro", audio). Absent: the span, then the files.
           items: v.optional(
@@ -2741,6 +2794,13 @@ export default defineSchema({
     // entry). A durable read of the same `entryId` always replaces it (both cleared).
     liveOnly: v.optional(v.literal(true)),
     retracted: v.optional(v.literal(true)),
+    // 0.103.0: the row is the agent's work note, not its answer (bridge transcript-rows.ts
+    // `rowIsCommentary`, the Control UI's `resolveAssistantReplyPhase`). Display only.
+    commentary: v.optional(v.boolean()),
+    // 0.103.0: the signature of the model's reasoning stored for the row
+    // (`transcriptRowReasoning`, lib/transcriptProjection.ts `rowReasoningSignature`) — the
+    // mark that the row carries one, compared by a read instead of loading the text.
+    thinkingSig: v.optional(v.string()),
     updatedAt: v.number(),
   })
     .index("by_chat_session_entry", ["chatId", "sessionKey", "entryId"])
@@ -2782,6 +2842,24 @@ export default defineSchema({
     // The text of one row (the projection reads it only for the rows it composes).
     .index("by_row", ["rowId"])
     // The chat purge.
+    .index("by_chat", ["chatId"]),
+
+  // THE MODEL'S REASONING A TRANSCRIPT ROW CARRIES (0.103.0, projection `on`): one document
+  // per row, apart from its text so that no reader of texts — a bubble being composed, an
+  // active bubble's rows, the diagnostic state — ever loads it (codex pass 2: 260 rows of
+  // 64 KiB read past Convex's 16 MiB). Read one row at a time, when the reader opens its
+  // block (messages.ts `getRowReasoning`). Stored ONLY for a conversation that shows its
+  // reasoning (lib/reasoningDisplay.ts); purged with the row's text (lib/transcriptProjection
+  // `purgeRowText`, transcriptProjection.ts `purgeChatRowTexts`). `truncated`: the gateway
+  // served only its first 8 000 characters and the full row could not be read.
+  transcriptRowReasoning: defineTable({
+    chatId: v.id("chats"),
+    rowId: v.id("transcriptRows"),
+    text: v.string(),
+    truncated: v.optional(v.literal(true)),
+    updatedAt: v.number(),
+  })
+    .index("by_row", ["rowId"])
     .index("by_chat", ["chatId"]),
 
   // THE FILES TRANSCRIPT ROWS CARRY, COPIED ONCE (projection `on`, final design §3.5,

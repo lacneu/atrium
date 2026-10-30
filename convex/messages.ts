@@ -16,6 +16,7 @@
 // reactive query; a full-history/scrollback view should paginate (see
 // `listByChatPaginated`) rather than widen this window.
 
+import { currentAgentOf, inheritedReasoning, layoutWithoutReasoning, persistedNoteKeys, showsReasoning } from "./lib/reasoningDisplay";
 import {
   hasQuotes,
   outboxQuoteFieldsFor,
@@ -192,7 +193,16 @@ type ClientPart =
       nextRunAtMs?: number;
     }
   // `text` elided when oversized (same rationale as tool fields).
-  | { kind: "reasoning"; text?: string; textOmitted?: boolean; textBytes?: number }
+  | {
+      kind: "reasoning";
+      text?: string;
+      textOmitted?: boolean;
+      textBytes?: number;
+      nature?: "thinking" | "commentary";
+      entryId?: string;
+      itemKey?: string;
+      textOffset?: number;
+    }
   // An inline widget the agent showed (descriptor only; the reader fetches the
   // document per view through /api/v1/widget-view, convex/widgets.ts).
   | {
@@ -323,6 +333,18 @@ async function loadChatView(
   // agent of every turn in a multi-agent one.
   const chatDoc = await ctx.db.get(id);
   const chatImportedAgentLabel = chatDoc?.importedAgentLabel;
+  // 0.103.0: the model's reasoning is shown only while the conversation shows it
+  // (lib/reasoningDisplay.ts) — what was kept while it did stays stored, unshown. Decided
+  // once, and only for a window that holds a reasoning: any other view reads what it did.
+  let showReasoningMemo: Promise<boolean> | null = null;
+  const showReasoningView = (): Promise<boolean> =>
+    (showReasoningMemo ??= chatDoc === null ? Promise.resolve(false) : showsReasoning(ctx, chatDoc));
+  // A row's reasoning is never in the window (codex pass 1 on 0.103.0: a window of rows
+  // that each carry one read past Convex's 16 MiB): the layout marks the rows that carry one,
+  // and the reader fetches one text when it opens it (`getRowReasoning`). A conversation
+  // that hides reasoning gets no mark.
+  const layoutForView = async (layout: LayoutRow[]): Promise<LayoutRow[]> =>
+    !layout.some((r) => r.thinking === true) || (await showReasoningView()) ? layout : layoutWithoutReasoning(layout);
   // R4 (no visible duplicate) is decided over every assistant bubble of a conversation that
   // stored transcript content (`on`); any other conversation reads exactly what it did.
   // Bounded read: most-recent MESSAGE_WINDOW messages, newest first.
@@ -464,6 +486,7 @@ async function loadChatView(
               ? hydrateToolParts(partDocs.map((d) => d.part), message.rowLayout, new Map())
               : partDocs.map((d) => d.part)
         ) as Array<Doc<"messageParts">["part"]>;
+        const noteRows = persistedNoteKeys(message.rowLayout ?? activeLayout);
         for (const part of rawParts) {
           switch (part.kind) {
             case "tool": {
@@ -533,11 +556,22 @@ async function loadChatView(
               break;
             }
             case "reasoning": {
+              if (part.nature === "thinking" && !(await showReasoningView())) break;
+              // A work note its row already shows (lib/reasoningDisplay.ts persistedNoteKeys).
+              if (part.nature !== "thinking" && part.itemKey !== undefined && noteRows.has(part.itemKey)) break;
               const tBytes = fieldBytes(part.text);
+              const facts = {
+                ...(part.nature !== undefined ? { nature: part.nature } : {}),
+                ...(part.itemKey !== undefined ? { itemKey: part.itemKey } : {}),
+                ...(part.textOffset !== undefined ? { textOffset: part.textOffset } : {}),
+                ...(part.textCapped === true ? { textCapped: true } : {}),
+              };
+              // A reasoning part is bounded at write (MESSAGE_THINKING_BYTES, stream.ts):
+              // shown whole, never elided.
               parts.push(
-                tBytes > PART_FIELD_CAP
-                  ? { kind: "reasoning", textOmitted: true, textBytes: tBytes }
-                  : { kind: "reasoning", text: part.text },
+                tBytes > PART_FIELD_CAP && part.nature !== "thinking"
+                  ? { kind: "reasoning", textOmitted: true, textBytes: tBytes, ...facts }
+                  : { kind: "reasoning", text: part.text, ...facts },
               );
               break;
             }
@@ -757,15 +791,18 @@ async function loadChatView(
           // The live parts once the rows have spoken (lib/viewReconcile.ts): a card takes
           // its row's outcome, a card only a row names is added.
           parts: reconcileToolParts(parts, message.rowLayout ?? activeLayout) as ClientPart[],
-          ...(message.rowLayout !== undefined ? { rowLayout: message.rowLayout, rowFiles } : {}),
+          ...(message.rowLayout !== undefined ? { rowLayout: await layoutForView(message.rowLayout), rowFiles } : {}),
           ...(active !== undefined
             ? {
-                rowLayout: active.layout,
+                rowLayout: await layoutForView(active.layout),
                 rowFiles: layoutFiles,
                 // The composition is the text the layout indexes; the SPA overlays the live
                 // text and keeps only its tail (`activeRows.persisted`).
                 text: active.text,
-                activeRows: { text: active.text, persisted: active.persisted },
+                activeRows: {
+                  text: active.text,
+                  persisted: active.persisted,
+                },
               }
             : {}),
           ...(liveFileShas !== undefined && liveFileShas.length > 0 ? { liveFileShas } : {}),
@@ -950,7 +987,9 @@ async function activeRowLayout(ctx: QueryCtx, message: Doc<"messages">): Promise
     );
   }
   const { text, layout } = composeBubble(rows);
-  return layout.length > 0 || persisted.length > 0 ? { layout, text, persisted, payloads: toolPayloadsOf(toolBlocks) } : undefined;
+  return layout.length > 0 || persisted.length > 0
+    ? { layout, text, persisted, payloads: toolPayloadsOf(toolBlocks) }
+    : undefined;
 }
 
 /** The state of each file a bubble's rows name (final design step 3). */
@@ -1514,7 +1553,13 @@ export const chatStateInternal = internalQuery({
               hasStorageUrl: p.url !== null && p.url !== undefined,
             };
           case "reasoning":
-            return { kind: "reasoning" as const }; // presence only — never .text
+            // Presence, nature and length only — never .text (0.103.0: the nature tells a
+            // model's reasoning from an agent's work note).
+            return {
+              kind: "reasoning" as const,
+              nature: p.nature ?? ("commentary" as const),
+              textLength: typeof p.text === "string" ? p.text.length : 0,
+            };
           case "provenance":
             // SOC2-safe STRUCTURE (convex/lib/provenance.ts): Atrium-derived item
             // kinds + presence booleans + allowlisted group/source/route + counts —
@@ -1767,6 +1812,42 @@ export const getProvenanceParts = query({
   },
 });
 
+/**
+ * THE MODEL'S REASONING OF ONE ROW (0.103.0, codex passes 1-2), read when the reader opens
+ * its block: one row's reasoning (bounded at write, MAX_ROW_THINKING_BYTES, stored apart
+ * from its text in `transcriptRowReasoning`), never a window of them. Read from the row's
+ * own document, so a corrected reasoning is the one shown; `truncated` when the gateway
+ * served only its first part and the full row could not be read. Null when the message,
+ * its row or its reasoning is gone, the row is not this message's, or the conversation does
+ * not show reasoning (lib/reasoningDisplay.ts).
+ */
+export const getRowReasoning = query({
+  args: { messageId: v.id("messages"), entryId: v.string() },
+  handler: async (ctx, { messageId, entryId }): Promise<{ text: string; truncated?: true } | null> => {
+    const { userId } = await requireActive(ctx);
+    const message = await ctx.db.get(messageId);
+    if (message === null || message.role !== "assistant" || message.turnSessionKey === undefined) return null;
+    await requireReachableChat(ctx, userId, message.chatId);
+    const chat = await ctx.db.get(message.chatId);
+    if (chat === null) return null;
+    // The view's own decision (loadChatView `showReasoningView`): a row it marks is a row
+    // this reads, and a row it does not mark is never read.
+    if (!(await showsReasoning(ctx, chat))) return null;
+    const row = await ctx.db
+      .query("transcriptRows")
+      .withIndex("by_chat_session_entry", (q) =>
+        q.eq("chatId", message.chatId).eq("sessionKey", message.turnSessionKey!).eq("entryId", entryId),
+      )
+      .first();
+    // The row of THIS bubble: assigned to it, or still unassigned on its active run.
+    if (row === null || row.retracted === true || row.hidden === true) return null;
+    if (row.messageId !== undefined ? row.messageId !== messageId : row.runId !== message.runId) return null;
+    const reasoning = await ctx.db.query("transcriptRowReasoning").withIndex("by_row", (q) => q.eq("rowId", row._id)).first();
+    if (reasoning === null || reasoning.text.trim() === "") return null;
+    return { text: reasoning.text, ...(reasoning.truncated === true ? { truncated: true as const } : {}) };
+  },
+});
+
 // Chat-header read: the chat's title + OpenClaw session meta (model, reasoning
 // level + its enum, verbosity, and the context-usage counts) so the top strip
 // can render the model/reasoning chips + context meter. Owner-scoped; resilient
@@ -1820,6 +1901,17 @@ export const getSessionMeta = query({
       // The permission chip's fallback: the described agent's default mode, for a
       // session that sets none. Shown to every reader, like the meta itself.
       agentDefaultPermissionMode: await describedAgentDefaultMode(ctx, chat),
+      // 0.103.0 — "Afficher le raisonnement": the inherited value of the conversation's knob
+      // and where it comes from (the current agent's exception, else its instance's default,
+      // else none), and the effective decision (lib/reasoningDisplay.ts).
+      ...(await (async () => {
+        const inherited = await inheritedReasoning(ctx, currentAgentOf(chat));
+        return {
+          showReasoningDefault: inherited.show,
+          showReasoningDefaultSource: inherited.source,
+          showReasoning: chat.sessionSettings?.showReasoning ?? inherited.show,
+        };
+      })()),
     };
   },
 });

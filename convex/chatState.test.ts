@@ -133,7 +133,8 @@ describe("chatStateInternal", () => {
       mimeType: "application/pdf", // base only, name= param stripped
       hasFilename: true,
     });
-    expect(byKind.reasoning).toEqual({ kind: "reasoning" }); // presence only
+    // Presence, nature and length (0.103.0) — never the text.
+    expect(byKind.reasoning).toEqual({ kind: "reasoning", nature: "commentary", textLength: 18 }); // presence only
     // Provenance now carries the SOC2-safe STRUCTURE (kinds + booleans + counts +
     // allowlisted labels) — the diagnostic signal that lets the MCP see "this turn's
     // documents carry no score" without any content. The sentinel source folded to

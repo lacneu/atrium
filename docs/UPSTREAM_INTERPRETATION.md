@@ -218,7 +218,7 @@ identical. The two broken anchors are real and are each recorded:
 
 **DECLARED GAP, not a conclusion.** 2026.9.5 adds a RETRACTION delta —
 `delta { deltaText: "", replace: true }` — and the bridge normalizer drops any
-delta whose text is empty (`bridge/src/providers/openclaw/normalizer.ts:1793`,
+delta whose text is empty (`bridge/src/providers/openclaw/normalizer.ts:1851`,
 the `&& deltaText` guard), so Atrium keeps a text the gateway has just withdrawn.
 Written here because it is known and unfixed, not because it was measured on the
 bench: the catalogue never elicits a retraction. It is owed a scenario before it
@@ -1251,6 +1251,64 @@ outside the repository) lists them against the upstream code.
 **Deliberate deviation, kept:** a Hermes conversation is not projected, and the watchdog
 remains its net (12 min without a write closes the bubble `stream_orphaned`).
 
+## 9. The model's reasoning, the agent's work notes, the answer (0.103.0)
+
+### Upstream contract
+
+- **Reasoning visibility is a session setting.** `reasoningLevel` is `off` | `on` |
+  `stream`, set per session by `sessions.patch` (`src/gateway/sessions-patch.ts:469-480`,
+  admin-scoped) and defaulting to the agent's `reasoningDefault`. With `on`, the system
+  prompt tells the model so (`src/agents/system-prompt.ts:1178`) and the run's reply items
+  gain a reasoning payload (`src/agents/embedded-agent-runner/run/payloads.ts:208`) that
+  channels may deliver; the webchat drops it (`src/gateway/server-methods/chat-assistant-content.ts:54`).
+- **The Control UI shows reasoning after the fact only.** A row's `thinking` blocks are
+  extracted (`ui/src/lib/chat/message-extract.ts:81`) and shown above the row's content when
+  the session's `reasoningLevel` is `on` and the reader asked for it
+  (`ui/src/pages/chat/components/chat-transcript-projection.ts:120`,
+  `ui/src/pages/chat/components/chat-message-bubble.ts:317`). The live `agent` stream
+  `thinking` is emitted whatever the level
+  (`src/agents/embedded-agent-subscribe.stream-rendering.ts:670`) and no Control UI code
+  renders it.
+- **Work notes are shown as the run goes.** A completed `item` preamble becomes a live
+  segment (`ui/src/pages/chat/tool-stream-preamble.ts:46`, `ui/src/pages/chat/tool-stream.ts:516`),
+  retired once the keyed row that persists it is in the history; that row is commentary for
+  presentation (`ui/src/pages/chat/chat-assistant-reply.ts:21`).
+- **Hermes (0.21.7)** sends `reasoning.delta` while `show_reasoning` holds (default true) and
+  `message.complete.reasoning` always (tui_gateway/prompt_turn.py:950-951 at 71d34bad). Its
+  only setter, `config.set {key:"reasoning", value:"show"|"hide"}`, also rewrites the global
+  `display.show_reasoning` of config.yaml (tui_gateway/methods_config_set.py:20-31, 317-326).
+
+### Atrium behavior and verdict
+
+**Conformant, with two deliberate choices:**
+
+- *Show reasoning* is a per-conversation setting with a per-agent default. The default is
+  an ATRIUM setting (`agents.showReasoningDefault`), not the gateway's `reasoningDefault`:
+  that one applies to every channel of the agent, and Hermes has none. For OpenClaw the
+  bridge applies the decision as the session's `reasoningLevel` before each turn (`on`; `off`
+  only when the conversation chose it, or the session is known to show it) — the Control
+  UI's own condition for showing reasoning.
+- Hermes: Atrium writes NOTHING to the gateway for reasoning, because the setter is global.
+  It keeps or drops what the gateway sends. Stated limit: an operator who set
+  `display.show_reasoning: false` gets no live reasoning (0.104.0), only the final one.
+- A row's reasoning reaches the store only while the conversation shows it, beside the row
+  (never in its text, nor as a block: a block would move the index that identifies a file),
+  and is shown above its row: the bubble's layout marks the row, and the text is read from
+  the row when the reader opens the block — one row at a time, never with the
+  conversation's window (whose reads Convex bounds at 16 MiB). It is stored apart from the
+  row's text, so no reader of texts loads it. A reasoning `chat.history` capped at 8 000
+  characters marks the message like a capped text (`__openclaw.truncated`,
+  `src/gateway/chat-display-projection.sanitize.ts:217-231,576-586`):
+  the row is completed by `chat.message.get` as a capped text is — even when it carries
+  only reasoning and tool calls — and, when that fails, the block says it is cut. An empty `thinking` block (a
+  model whose reasoning is encrypted) shows nothing. Hermes' reasoning, which no row
+  carries, is a part of its message, bounded per message (16 KiB) and marked when cut.
+- Work notes: a completed preamble is a live note at its place among the tool cards; a
+  commentary row is shown as a note once settled. Hermes' `message.interim` is the same
+  nature.
+- Exclusions: no export, fork, feedback report, metadata API, search, notification or
+  spoken reply carries a reasoning (the answer text never contains it).
+
 ## Conformance summary
 
 | Zone | Verdict |
@@ -1263,6 +1321,7 @@ remains its net (12 min without a write closes the bubble `stream_orphaned`).
 | chat.send idempotency | **Conformant** for a faithful duplicate; since 2026.9.2 a key reused with other content is refused (`chat-request-conflict`), classified as its own downstream rejection, never retried; the preempt `dispatchKey` alias WAS necessary to the retired inverse repark (abort markers poison the original key for ~60 min) and stays only for a recovery row created before 2026-09-14 (held, flipped `queued`, or promoted again), until the outbox fields are migrated out |
 | End of a run (no client clock) | **Conformant (0.102.1)** for OpenClaw — no projected bubble is closed on Atrium's clock; the gateway's terminal or state decides, re-read at every reconnection (§8); Hermes keeps the 12-min watchdog |
 | Projection `on` deviations | **Deliberate** (§7) — no visible duplicate, files copied at once with a `gone` state, a waiting line while a child runs, stricter masking, one automatic resend of a send the gateway reports absent |
+| Reasoning and work notes | **Conformant (0.103.0)** — shown after the fact above its row when the conversation shows reasoning (per-conversation choice, per-agent Atrium default); work notes live from completed preambles; Hermes is read, never written (its setter is global) (§9) |
 | Config changes / model roster | **Handled** — `config.changed` (broadcast-only, never announced) invalidates the per-connection roster and triggers a refresh pushed to Convex under the roster's own observation stamp; a frame gap invalidates in the transport and the next publish re-asks and reports the newer answer; the scope-guard table is vendored beside the announced catalogue, and a family in neither vocabulary is named on receipt |
 
 Fixtures built from upstream sources at `v2026.9.4` — copied from upstream unit tests, or

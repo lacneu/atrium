@@ -12,6 +12,8 @@ import { convexTest } from "convex-test";
 import { describe, expect, test, vi } from "vitest";
 import { api, internal } from "./_generated/api";
 import schema from "./schema";
+import { buildOpenClawThreadId } from "./lib/openclawThread";
+import { sessionDigest } from "./lib/reasoningDisplay";
 import { Id } from "./_generated/dataModel";
 
 const modules = import.meta.glob("./**/*.ts");
@@ -690,6 +692,12 @@ describe("bridge.dispatchPatch — persisted-intent forwarding", () => {
         archived: false,
         updatedAt: Date.now(),
         ...(sessionSettings ? { sessionSettings } : {}),
+      });
+      // Its session already described as hiding reasoning (0.103.0): the routing then
+      // adds no `reasoningLevel` of its own, and these tests see their knob intent only.
+      const key = buildOpenClawThreadId({ agentId: "alice", canonical: "alice", chatId })!;
+      await ctx.db.patch(chatId, {
+        sessionMeta: { reasoningLevel: "off", describedSession: await sessionDigest("main", key), updatedAt: 1 },
       });
       return { userId, chatId };
     });
