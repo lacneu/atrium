@@ -1,5 +1,50 @@
 # Changelog
 
+## [0.103.1] — Switching conversation mid-answer, and dictating without stopping
+
+Patch release. **Only the frontend changes**: Convex and the bridge stay on 0.103.0, nothing to
+migrate. Deploy the frontend.
+
+**Switching conversation while an answer is coming no longer replaces the page with an error.**
+Clicking another conversation in the sidebar right after sending a message could show *Une
+erreur est survenue — Réessayer* instead of the conversation clicked; *Réessayer* or a reload
+brought it back. The thread view is shared by every conversation, and for an instant a bubble
+of the conversation being left could be drawn against the new one's (shorter) list; the error
+that read raised took the whole page down. Each bubble now absorbs that instant on its own: it
+draws nothing for a moment and the conversation clicked appears. Any other error is reported
+as before, and a bubble that keeps failing still reaches the error page rather than vanishing.
+This was not new in 0.103.0 — 0.102.1 behaves the same way.
+
+**Dictation keeps listening until you stop it.** The browser ends a recognition session on its
+own — after a silence, at its own session limit, on a network hiccup. The microphone button then
+stayed lit while nothing was heard any more, and dictating meant turning it off and on again.
+Atrium now opens a new session at once and carries on: what you dictate keeps landing in the
+message, a phrase the browser had not finished is kept, and nothing is written twice. A pause to
+think does not end it: only about a minute and a half of complete silence does. The button goes
+off — with a short message — only when dictation really cannot go on (microphone refused or
+unavailable, a browser engine that keeps stopping without hearing anything, or one that will not
+start again), so one click always starts it again. A recognition still producing words is never
+cut short. Stopping it lets the browser settle the last phrase — as long as it keeps making
+progress, up to 5 seconds of silence and 20 seconds in all — and keeps the phrase shown if it
+never does; turning the
+microphone back on at once keeps that phrase too, exactly once — as does bringing a detached
+dictation back into the composer (*Récupérer ici*) or releasing it while it still listens, and
+detaching a dictation keeps the phrase it was recognising. The same applies
+to the detached composer.
+
+**Send while dictating.** The send button stays available during a dictation as soon as anything
+is shown — even a phrase still being recognised, including just after you stopped the microphone
+while the browser settles it (the phrase stays shown until then). Sending (button or Enter) sends exactly what the
+composer shows at that moment, phrase in progress included, stops the dictation, and clears the
+composer as any send does; nothing heard afterwards can slip into the next message or another
+conversation. The microphone stays off afterwards. The detached composer's *Envoyer* works the
+same way instead of asking to stop the microphone first; if that send is refused (conversation
+unavailable, queue full), the detached draft keeps every word that was shown, the phrase in
+progress included. Words still being recognised from one conversation, or from a dictation you
+already sent or stopped, never land in another conversation or in the next message.
+
+**Rolling back** is redeploying the 0.103.0 frontend.
+
 ## [0.103.0] — See the model's reasoning, apart from the agent's notes and the answer
 
 Minor release. Convex, the frontend and the bridge change. Deploy **Convex first, then the

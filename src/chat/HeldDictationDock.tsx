@@ -18,11 +18,14 @@ import {
   appendHeldDictation,
   clampGeometry,
   getHeldDictation,
+  heldSendText,
   markHeldEngineEnded,
+  markHeldFinalizing,
   reattachHeldEngine,
   releaseHeldDictation,
   requestHeldRestore,
   requestHeldSend,
+  retireHeldEngine,
   setHeldGeometry,
   setHeldInterim,
   setHeldText,
@@ -31,6 +34,8 @@ import {
   type HeldGeometry,
 } from "./dictationHold";
 import {
+  DICTATION_ENGINE_GAVE_UP,
+  DICTATION_STOP_MAX_MS,
   dictationSupported,
   resolveSpeechLang,
   startDictation,
@@ -124,11 +129,17 @@ export function HeldDictationDock() {
       // the button re-enables is complete (codex re-review P1). A fallback timer
       // force-settles THIS generation if onEnd never fires (engine died) — and
       // is ignored if a newer engine already bumped the generation.
+      // 0.103.1: the mic reads stopped at once, but the engine settles its last words — the
+      // hold is FINALIZING until its end, so a send in between still takes them and retires
+      // it. The engine itself ends at the latest when its stop grace sees no progress, or at
+      // DICTATION_STOP_MAX_MS after the stop (speech.ts): this fallback only covers an
+      // engine that never reports its end, past that bound — it never cuts one still working.
       const gen = currentEngineGen();
       engineRef.current?.stop();
       engineRef.current = null;
       stopHeldEngine();
-      window.setTimeout(() => markHeldEngineEnded(gen), 1500);
+      markHeldFinalizing(gen);
+      window.setTimeout(() => markHeldEngineEnded(gen), DICTATION_STOP_MAX_MS + 1_000);
       return;
     }
     if (!dictationSupported()) return;
@@ -161,6 +172,8 @@ export function HeldDictationDock() {
         settle();
         if (code === "not-allowed" || code === "service-not-allowed") {
           toast.error(m.chat_mic_error_denied());
+        } else if (code === DICTATION_ENGINE_GAVE_UP) {
+          toast.error(m.chat_mic_error_engine_ended());
         } else if (code !== "no-speech" && code !== "aborted") {
           toast.error(m.chat_mic_error_generic({ code }));
         }
@@ -305,7 +318,7 @@ export function HeldDictationDock() {
         readOnly={held.sending}
         autoFocus
       />
-      {recording && held.interim !== "" ? (
+      {(recording || held.finalizing) && held.interim !== "" ? (
         <div className="oc-detach__interim" aria-hidden>
           {held.interim}
         </div>
@@ -333,11 +346,11 @@ export function HeldDictationDock() {
         <button
           type="button"
           className="oc-detach__icon"
-          title={recording ? m.dictation_dock_stop_first() : m.dictation_dock_unpin()}
+          title={recording || held.finalizing ? m.dictation_dock_stop_first() : m.dictation_dock_unpin()}
           aria-label={m.dictation_dock_unpin()}
           // Stop the mic first so a trailing final is captured; never act
           // mid-send (codex re-review P1/P2).
-          disabled={held.sending || recording}
+          disabled={held.sending || recording || held.finalizing}
           onClick={() => {
             // Non-destructive un-pin: hand the draft back to the owner composer
             // (which absorbs it inline + releases the hold) and return there.
@@ -353,16 +366,23 @@ export function HeldDictationDock() {
         <button
           type="button"
           className="oc-detach__send"
-          // Disabled while recording: stop the mic first so the trailing final
-          // is in the text before it's captured (codex re-review P1); and while
-          // a send is already in flight (no double enqueue).
-          disabled={held.text.trim() === "" || recording || held.sending}
-          title={recording ? m.dictation_dock_stop_first() : m.dictation_dock_send()}
+          // Live while recording (0.103.1): the send carries what the panel SHOWS —
+          // text plus the in-flight hypothesis — and retires the engine, so a trailing
+          // final can reach neither this hold nor the target composer. Disabled while a
+          // send is already in flight (no double enqueue).
+          disabled={heldSendText(held).trim() === "" || held.sending}
+          title={m.dictation_dock_send()}
           aria-label={m.dictation_dock_send()}
           onClick={() => {
+            const text = heldSendText(held);
+            if (recording || held.finalizing) {
+              engineRef.current?.discard();
+              engineRef.current = null;
+              retireHeldEngine();
+            }
             // Defer the routed/queued send to the target composer, then return
             // there (the user's confirmed behavior).
-            requestHeldSend(held.text);
+            requestHeldSend(text);
             void navigate({
               to: "/chat/$chatId",
               params: { chatId: held.targetChatId },

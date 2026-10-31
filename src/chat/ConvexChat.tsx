@@ -189,6 +189,7 @@ import {
   playGatewayAudio,
   stopGatewayAudio,
   startDictation,
+  DICTATION_ENGINE_GAVE_UP,
   stripMarkdownForSpeech,
   ttsSupported,
   dictationSupported,
@@ -198,6 +199,7 @@ import {
 import { createPortal } from "react-dom";
 import {
   appendDictated,
+  canSendWhileDictating,
   appendHeldDictation,
   currentEngineGen,
   getHeldDictation,
@@ -205,6 +207,7 @@ import {
   markHeldEngineEnded,
   releaseHeldDictation,
   releaseHeldDictationById,
+  releaseHeldKeepingWords,
   clearHeldPendingSend,
   clearHeldPendingRestore,
   endHeldSendingById,
@@ -333,6 +336,16 @@ import {
 import { visibilityChipView } from "./sessionAccessView";
 import { PermissionModePicker, PermissionModeSection } from "./PermissionModePicker";
 import { ComposerAddMenu } from "./ComposerAddMenu";
+import { TornMessageBoundary } from "./TornMessageBoundary";
+import {
+  inlineFinal,
+  inlineHypothesisShown,
+  retirePreviousForStart,
+  sessionOwnsWords,
+  takeComposerForSend,
+  type InlineHost,
+  type InlineSession,
+} from "./inlineDictation";
 import { isAgentPurgePending } from "./admin/groupManageView";
 import {
   AgentRequestDock,
@@ -1130,6 +1143,28 @@ function ThreadLanding(props: {
   return null;
 }
 
+// Each bubble behind its own TornMessageBoundary: a bubble read through a thread store
+// that was swapped under it (conversation switch mid-stream) renders nothing for that
+// frame instead of taking the page down (0.103.1). Module-level: a new object per render
+// would remount every bubble.
+const THREAD_MESSAGE_COMPONENTS = {
+  UserMessage: () => (
+    <TornMessageBoundary>
+      <UserMessage />
+    </TornMessageBoundary>
+  ),
+  AssistantMessage: () => (
+    <TornMessageBoundary>
+      <AssistantMessage />
+    </TornMessageBoundary>
+  ),
+  SystemMessage: () => (
+    <TornMessageBoundary>
+      <SystemMessage />
+    </TornMessageBoundary>
+  ),
+};
+
 function ChatThread({
   chatId,
   showTools,
@@ -1498,13 +1533,7 @@ function ChatThread({
         <ThreadPrimitive.Empty>
           <ThreadEmptyState />
         </ThreadPrimitive.Empty>
-        <ThreadPrimitive.Messages
-          components={{
-            UserMessage,
-            AssistantMessage,
-            SystemMessage,
-          }}
-        />
+        <ThreadPrimitive.Messages components={THREAD_MESSAGE_COMPONENTS} />
         {showTurnActivity && anchoredActivity === null ? (
           <TurnActivityIndicator
             quiet={quietActivity}
@@ -5187,33 +5216,50 @@ function useDictationController(opts: {
   const composer = useComposerRuntime();
   const toast = useToast();
   const [recording, setRecording] = useState(false);
+  // Stopped but still settling its last words (0.103.1): the ghost stays shown, and a send
+  // in this window still takes them and retires the session (inlineDictation.ts).
+  const [finalizing, setFinalizing] = useState(false);
   const [interim, setInterim] = useState("");
   const handleRef = useRef<DictationHandle | null>(null);
   // The ACTIVE session's descriptor (engine handle + whether its ownership
   // moved to the pinned store): hold() flips boundToHold so the session's
   // natural onEnd still settles the dock's recording state.
-  const activeSessionRef = useRef<{
-    h: DictationHandle | null;
-    boundToHold: boolean;
-    holdGen?: number;
-  } | null>(null);
+  const activeSessionRef = useRef<InlineSession | null>(null);
   // The route component is REUSED across conversations (no per-chat key):
   // every callback reads the CURRENT chat through this ref, never a captured
   // one — a dictation started after navigating must never route to the
   // previous conversation (codex P1).
   const optsRef = useRef(opts);
   optsRef.current = opts;
+  // The inline draft as inlineDictation.ts reads and writes it (the current chat, always).
+  const hostRef = useRef<InlineHost>({
+    chatId: () => optsRef.current.chatId,
+    getText: () => composer.getState().text,
+    setText: (t) => composer.setText(t),
+  });
   const heldNow = useSyncExternalStore(subscribeHeldDictation, getHeldDictation);
   const heldHere = heldNow !== null && heldNow.targetChatId === opts.chatId;
 
   // Chat switch (same mounted component): stop a LOCAL engine (the pre-pin
   // behavior — leaving the conversation ends its dictation) and reset the
   // local mirrors so the next chat never inherits A's recording UI (codex P2).
+  // The session is RETIRED and discarded (0.103.1): its trailing final and hypotheses
+  // reach nothing — neither this chat on return nor the next one's draft.
   useEffect(() => {
     return () => {
-      handleRef.current?.stop();
+      if (handleRef.current !== null && activeSessionRef.current !== null) {
+        activeSessionRef.current.stale = true;
+      }
+      const live = activeSessionRef.current;
+      if (live !== null && live.finalizing === true && !live.boundToHold) {
+        // A session still finalizing is retired too: nothing it says reaches the next chat.
+        live.stale = true;
+        live.h?.discard();
+      }
+      handleRef.current?.discard();
       handleRef.current = null;
       setRecording(false);
+      setFinalizing(false);
       setInterim("");
     };
   }, [opts.chatId]);
@@ -5237,18 +5283,37 @@ function useDictationController(opts: {
   langRef.current = lang;
   const voiceInputRef = useRef(opts.voiceInput);
   voiceInputRef.current = opts.voiceInput;
+  // Release THIS chat's hold from its composer, keeping the words in flight: the composer
+  // already mirrors the held text, and the phrase the engine was still recognising joins
+  // it once — the release drops the engine's late final (0.103.1).
+  const releaseHereKeepingWords = useCallback(() => {
+    const words = releaseHeldKeepingWords();
+    if (words !== "") composer.setText(appendDictated(composer.getState().text, words, false));
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- runtime identity is stable
+  }, []);
+
   const stop = useCallback(() => {
     const heldState = getHeldDictation();
     if (heldState !== null && heldState.targetChatId === optsRef.current.chatId) {
       // Unpin AND stop: the composer on the target chat already mirrors the
       // text, so releasing here just retires the dock + engine. Another
       // conversation's hold is NOT ours to release (codex P1).
-      releaseHeldDictation();
+      releaseHereKeepingWords();
+    }
+    // The stopped session keeps settling its last words for its grace: a resume in that
+    // window folds what it showed (retireForNewSession).
+    const live = activeSessionRef.current;
+    const local = handleRef.current !== null && live !== null && live.h === handleRef.current;
+    if (local) {
+      live.finalizing = true;
+      live.recording = false;
     }
     handleRef.current?.stop();
     handleRef.current = null;
     setRecording(false);
-    setInterim("");
+    // The ghost stays while the engine settles: it is still part of what a send carries.
+    if (local) setFinalizing(true);
+    else setInterim("");
   }, []);
 
   const start = useCallback(() => {
@@ -5277,15 +5342,20 @@ function useDictationController(opts: {
     // the dock) can fire AFTER a newer session started here — it must never
     // reset the newer session's state (codex P1). `boundToHold` marks a
     // session whose ownership moved to the pinned store.
-    const session: {
-      h: DictationHandle | null;
-      boundToHold: boolean;
-      holdGen?: number;
-    } = {
+    const session: InlineSession = {
       h: null,
       boundToHold: false,
+      startedChatId,
+      stale: false,
+      recording: false,
     };
+    // Starting a session retires the previous one: whatever it still says is dropped. A
+    // local one the user had just stopped first gives the words it was finalizing to the
+    // draft, once, in this same step (a pinned one: reattachHeldEngine does it for the hold).
+    retirePreviousForStart(activeSessionRef.current, hostRef.current);
     activeSessionRef.current = session;
+    setFinalizing(false);
+    setInterim("");
     const h = startDictation({
       lang,
       onText: (t, meta) => {
@@ -5296,6 +5366,7 @@ function useDictationController(opts: {
         if (session.holdGen !== undefined && session.holdGen !== currentEngineGen()) {
           return;
         }
+        if (session.stale) return;
         // Route to the pinned store ONLY when the pin targets the chat this
         // SESSION started on: a leftover hold from another conversation must
         // never absorb a new dictation started here (codex P1).
@@ -5315,46 +5386,54 @@ function useDictationController(opts: {
           }
           return;
         }
-        // Local (un-pinned) path: the reused composer now belongs to ANOTHER
-        // chat — a trailing final flushed by stop() must not leak into it.
-        if (optsRef.current.chatId !== startedChatId) return;
-        const cur = composer.getState().text;
-        composer.setText(appendDictated(cur, t, meta.paragraph));
-        followCaret();
+        // Local (un-pinned) path: only the live session, in its own chat, never a session
+        // that belonged to a pin (inlineDictation.ts).
+        if (inlineFinal(session, activeSessionRef.current, hostRef.current, t, meta.paragraph)) followCaret();
       },
       onInterim: (t) => {
         if (session.holdGen !== undefined && session.holdGen !== currentEngineGen()) {
           return;
         }
+        if (session.stale) return;
+        session.lastInterim = t;
         const heldState = getHeldDictation();
         if (heldState !== null && heldState.targetChatId === startedChatId) {
           setHeldInterim(t);
         }
-        setInterim(t);
+        // The hypothesis shown under the composer — and merged by a send — is the LIVE
+        // session's, in its own chat: never another conversation's (0.103.1).
+        if (inlineHypothesisShown(session, activeSessionRef.current, hostRef.current)) setInterim(t);
       },
       onEnd: () => {
+        session.finalizing = false;
+        session.recording = false;
+        session.ended = true;
         // Settle the detached recording ONLY for this session's generation: a
         // fast stop-then-resume from the dock bumps the generation, and this
         // stale terminal must not mark the newer engine as stopped (codex P2).
         if (session.boundToHold) markHeldEngineEnded(session.holdGen);
-        // A NEWER local session owns the state now: leave it alone.
-        if (handleRef.current !== null && handleRef.current !== session.h) {
+        // A retired session, or a NEWER local one owning the state: leave it alone.
+        if (session.stale || (handleRef.current !== null && handleRef.current !== session.h)) {
           return;
         }
         handleRef.current = null;
         setRecording(false);
+        setFinalizing(false);
         setInterim("");
       },
       onError: (code) => {
         if (session.boundToHold) markHeldEngineEnded(session.holdGen);
-        if (handleRef.current !== null && handleRef.current !== session.h) {
+        if (session.stale || (handleRef.current !== null && handleRef.current !== session.h)) {
           return;
         }
         handleRef.current = null;
         setRecording(false);
+        setFinalizing(false);
         setInterim("");
         if (code === "not-allowed" || code === "service-not-allowed") {
           toast.error(m.chat_mic_error_denied());
+        } else if (code === DICTATION_ENGINE_GAVE_UP) {
+          toast.error(m.chat_mic_error_engine_ended());
         } else if (code !== "no-speech" && code !== "aborted") {
           toast.error(m.chat_mic_error_generic({ code }));
         }
@@ -5378,6 +5457,7 @@ function useDictationController(opts: {
       return;
     }
     handleRef.current = h;
+    session.recording = true;
     setRecording(true);
     // eslint-disable-next-line react-hooks/exhaustive-deps -- runtime identity is stable
   }, [lang, toast]);
@@ -5401,10 +5481,20 @@ function useDictationController(opts: {
       return;
     }
     const h = handleRef.current;
+    // The live session's hypothesis moves WITH its engine (0.103.1): restoring or sending
+    // from the panel before the next voice result must still carry it.
+    const liveSession = activeSessionRef.current;
+    // A session the user stopped and that is still finalizing does not move: its shown
+    // words join the pinned text now, and it is retired (inlineDictation.ts).
+    if (h === null && sessionOwnsWords(liveSession)) takeComposerForSend(liveSession, hostRef.current);
     const pinned = holdDictation({
       targetChatId: optsRef.current.chatId,
       targetLabel: optsRef.current.chatTitle,
       text: composer.getState().text,
+      interim:
+        h !== null && liveSession !== null && liveSession.h === h && !liveSession.stale
+          ? (liveSession.lastInterim ?? "")
+          : "",
       voiceEnabled: voiceInputRef.current,
       voiceLang: langRef.current,
       recording: h !== null,
@@ -5425,6 +5515,7 @@ function useDictationController(opts: {
     // recording UI into B (codex P2).
     handleRef.current = null;
     setRecording(false);
+    setFinalizing(false);
     setInterim("");
     // The inline composer is now replaced by a note everywhere; clear the
     // (reused) runtime so a later release/abandon never resurfaces this text
@@ -5433,10 +5524,28 @@ function useDictationController(opts: {
     // eslint-disable-next-line react-hooks/exhaustive-deps -- runtime identity is stable
   }, [toast]);
 
+  // SEND WHILE DICTATING (0.103.1): the message is what the composer SHOWS at the click —
+  // the committed text plus the hypothesis still in flight (`visibleInterim`, the ghost
+  // the reader sees). The session ends without delivering anything it still holds, so no
+  // late segment lands in the next draft (or, through the reused runtime, another
+  // chat's). The mic stays off afterwards: the next prompt starts a dictation on demand.
+  const flushForSend = useCallback((): string => {
+    // Only the LIVE local session's hypothesis joins the message (inlineDictation.ts).
+    const visible = takeComposerForSend(activeSessionRef.current, hostRef.current);
+    handleRef.current = null;
+    setRecording(false);
+    setFinalizing(false);
+    setInterim("");
+    return visible;
+  }, []);
+
   // The composer reads ONE consolidated view: held-here state wins (its
   // engine belongs to the store but the morph/ghost must render here too).
   return {
     recording: recording || (heldHere && heldNow !== null && heldNow.recording),
+    // The mic listens, or was just stopped and still settles: a send goes through
+    // flushForSend so the words it shows ride it and the session is retired (0.103.1).
+    ownsSend: (recording || finalizing) && !heldHere,
     interim: heldHere && heldNow !== null ? heldNow.interim : interim,
     held: heldHere,
     // Pin is offered whenever NO pin exists yet (one at a time). Available for
@@ -5460,6 +5569,8 @@ function useDictationController(opts: {
     start,
     stop,
     hold,
+    flushForSend,
+    releaseHereKeepingWords,
   };
 }
 
@@ -5900,30 +6011,16 @@ function Composer({
       })
       .finally(() => setPasteAttachCount((n) => Math.max(0, n - 1)));
   };
-  const onInputKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-    // Hold submit while a routed paste's attachment is still being added.
-    if (pasteAttaching && e.key === "Enter" && !e.shiftKey) {
-      e.preventDefault();
-      e.stopPropagation();
-      return;
-    }
-    if (!queued || queueSend === null) return;
-    if (e.key !== "Enter" || e.shiftKey || e.nativeEvent.isComposing) return;
-    e.preventDefault();
-    e.stopPropagation();
-    const t = composerRuntime.getState().text;
-    if (t.trim() === "") return;
-    // Projection `on`: Enter does the primary action, modifier+Enter its alternate
-    // (queue <-> steer), as the Control UI's composer does.
+  // A busy chat takes the follow-up through the queue (text only). Projection `on`: the
+  // primary action, or its alternate (queue <-> steer) with a modifier, as the Control UI's
+  // composer does.
+  const queueComposerText = (t: string, alternate: boolean) => {
+    if (queueSend === null || t.trim() === "") return;
     const primary = followUpOn
       ? primaryFollowUp(followUp?.preference ?? null, followUp?.serverMode ?? null)
       : null;
     const mode =
-      primary === null
-        ? undefined
-        : e.metaKey || e.ctrlKey
-          ? alternateFollowUp(primary)
-          : primary.mode;
+      primary === null ? undefined : alternate ? alternateFollowUp(primary) : primary.mode;
     void queueSend(
       t,
       primary === null ? undefined : { ...(mode ? { mode } : {}), immediate: mode !== "queue" },
@@ -5931,6 +6028,57 @@ function Composer({
       if (ok) composerRuntime.setText("");
     });
   };
+  // SEND WHILE DICTATING (0.103.1): every send path (the button, Enter) takes the text the
+  // composer shows — committed text plus the in-flight hypothesis — ends the dictation,
+  // then sends exactly as a normal send would.
+  const composerText = useComposer((c) => c.text);
+  const composerHasFiles = useComposer((c) => c.attachments.length > 0);
+  const dictationSendable =
+    (canSendWhileDictating(composerText, dictation.interim) || (composerHasFiles && !queued)) &&
+    !pasteAttaching;
+  const sendWhileDictating = (alternate: boolean) => {
+    if (unavailable || pasteAttaching) return;
+    const t = dictation.flushForSend();
+    if (queued) {
+      queueComposerText(t, alternate);
+      return;
+    }
+    if (t.trim() === "" && composerRuntime.getState().attachments.length === 0) return;
+    composerRuntime.send();
+  };
+  const onInputKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    // Hold submit while a routed paste's attachment is still being added.
+    if (pasteAttaching && e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      e.stopPropagation();
+      return;
+    }
+    if (e.key !== "Enter" || e.shiftKey || e.nativeEvent.isComposing) return;
+    if (dictation.ownsSend) {
+      e.preventDefault();
+      e.stopPropagation();
+      sendWhileDictating(e.metaKey || e.ctrlKey);
+      return;
+    }
+    if (!queued || queueSend === null) return;
+    e.preventDefault();
+    e.stopPropagation();
+    queueComposerText(composerRuntime.getState().text, e.metaKey || e.ctrlKey);
+  };
+  // While dictating, ONE send control stands for whichever the composer shows (send, queue
+  // or follow-up): enabled whenever something is visible — a hypothesis alone counts.
+  const dictationSendButton =
+    dictation.ownsSend ? (
+      <button
+        type="button"
+        className="oc-composer__send"
+        aria-label={m.chat_send()}
+        disabled={!dictationSendable || (queued && queueSend === null)}
+        onClick={() => sendWhileDictating(false)}
+      >
+        <ArrowUp size={18} aria-hidden />
+      </button>
+    ) : null;
   // Unified composer card (per the design reference): the input sits ON TOP, with
   // a single action bar BELOW it — attach (+) and the tools toggle on the left,
   // the circular send (or stop while running) on the right. The CARD owns the
@@ -6049,7 +6197,7 @@ function Composer({
         data-gramm_editor="false"
         data-enable-grammarly="false"
       />
-      {dictation.recording && dictation.interim !== "" ? (
+      {(dictation.recording || dictation.ownsSend) && dictation.interim !== "" ? (
         // The engine's in-flight hypothesis — display-only ghost under the
         // caret area, replaced on every event, cleared when it commits.
         <div className="oc-composer__interim" aria-hidden>
@@ -6152,7 +6300,7 @@ function Composer({
                 className="oc-composer__heldchip"
                 title={m.chat_dictation_release()}
                 aria-label={m.chat_dictation_release()}
-                onClick={() => releaseHeldDictation()}
+                onClick={dictation.releaseHereKeepingWords}
               >
                 <Pin size={12} aria-hidden />
                 {m.chat_dictation_held()}
@@ -6270,7 +6418,7 @@ function Composer({
                   minutes, and the person who pressed Stop to SAVE TIME had
                   nothing left to press (user report 2026-08-03). */}
               <StopTurnButton />
-              {followUpOn ? (
+              {dictationSendButton ?? (followUpOn ? (
                 <FollowUpSendControl
                   chatId={chatId}
                   queueSend={
@@ -6281,13 +6429,25 @@ function Composer({
                 />
               ) : (
                 <QueueSendButton reason={queueMode.reason} />
-              )}
+              ))}
             </>
           ) : followUpOn && subAgentBusy ? (
             /* Projection `on`: a sub-agent works but nothing holds the send — Stop
                stays offered (the Control UI's `hasAbortableSessionRun`). */
             <>
               <StopTurnButton />
+              {dictationSendButton ?? (
+                <ComposerPrimitive.Send
+                  className="oc-composer__send"
+                  aria-label={m.chat_send()}
+                  disabled={pasteAttaching}
+                >
+                  <ArrowUp size={18} aria-hidden />
+                </ComposerPrimitive.Send>
+              )}
+            </>
+          ) : (
+            dictationSendButton ?? (
               <ComposerPrimitive.Send
                 className="oc-composer__send"
                 aria-label={m.chat_send()}
@@ -6295,15 +6455,7 @@ function Composer({
               >
                 <ArrowUp size={18} aria-hidden />
               </ComposerPrimitive.Send>
-            </>
-          ) : (
-            <ComposerPrimitive.Send
-              className="oc-composer__send"
-              aria-label={m.chat_send()}
-              disabled={pasteAttaching}
-            >
-              <ArrowUp size={18} aria-hidden />
-            </ComposerPrimitive.Send>
+            )
           )}
         </div>
       </div>

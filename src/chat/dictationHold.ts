@@ -39,6 +39,10 @@ export type HeldDictation = {
   interim: string;
   /** TRUE while a dictation engine is live for this hold. */
   recording: boolean;
+  /** TRUE after the panel's Stop while the engine may still settle what it heard (its
+   *  stop grace, speech.ts `DICTATION_STOP_GRACE_MS`): the mic reads stopped, but a send
+   *  in this window still takes the shown hypothesis and retires the engine (0.103.1). */
+  finalizing: boolean;
   /** Floating panel geometry (persisted across pins). */
   geom: HeldGeometry;
   /** When non-null, the target composer must SEND this text and release the
@@ -173,6 +177,10 @@ export function holdDictation(init: {
   targetChatId: string;
   targetLabel: string;
   text: string;
+  /** The live engine's current hypothesis, handed over WITH the engine (0.103.1): it stays
+   *  a replaceable hypothesis here — the engine's next event replaces it, its final settles
+   *  it — never glued to the text before then. Ignored without a live engine. */
+  interim?: string;
   voiceEnabled: boolean;
   voiceLang: string;
   recording?: boolean;
@@ -186,8 +194,9 @@ export function holdDictation(init: {
     targetChatId: init.targetChatId,
     targetLabel: init.targetLabel,
     text: init.text,
-    interim: "",
+    interim: init.recording === true ? (init.interim ?? "") : "",
     recording: init.recording ?? false,
+    finalizing: false,
     geom: loadGeom(),
     pendingSend: null,
     pendingSendId: 0,
@@ -206,8 +215,20 @@ export function holdDictation(init: {
 export function reattachHeldEngine(stop: () => void): void {
   if (held === null) return;
   stopEngine = stop;
+  // The previous engine is retired with this bump; if it was still live or finalizing,
+  // the hypothesis it showed joins the draft NOW, in the same step — its late final is
+  // dropped by the generation check, so those words land exactly once (0.103.1).
   engineGen++;
-  if (!held.recording) {
+  if (held.recording || held.finalizing) {
+    held = {
+      ...held,
+      text: visibleDictationText(held.text, held.interim),
+      interim: "",
+      recording: true,
+      finalizing: false,
+    };
+    emit();
+  } else if (!held.recording) {
     held = { ...held, recording: true };
     emit();
   }
@@ -302,8 +323,27 @@ export function releaseHeldDictationById(holdId: number): string {
  *  Snapshots the CURRENT text so a later dock edit can't change what's restored. */
 export function requestHeldRestore(): void {
   if (held === null) return;
-  held = { ...held, pendingRestore: held.text };
+  // A live or finalizing engine is retired here, its shown hypothesis folded into the
+  // restored draft in the same step: its late final is then dropped (0.103.1).
+  if (held.recording || held.finalizing) {
+    const text = heldSendText(held);
+    retireEngine();
+    held = { ...held, text, interim: "", recording: false, finalizing: false, pendingRestore: text };
+  } else {
+    held = { ...held, pendingRestore: held.text };
+  }
   emit();
+}
+
+/** Stop the engine and pass the generation: anything it still says is stale. */
+function retireEngine(): void {
+  try {
+    stopEngine?.();
+  } catch {
+    // engine already gone
+  }
+  stopEngine = null;
+  engineGen++;
 }
 
 export function clearHeldPendingRestore(): void {
@@ -316,9 +356,17 @@ export function clearHeldPendingRestore(): void {
  *  until released, but stops claiming a live recording. `gen` (when given) must
  *  match the current generation — a stale session's terminal is ignored. */
 export function markHeldEngineEnded(gen?: number): void {
-  if (held === null || !held.recording) return;
+  if (held === null || (!held.recording && !held.finalizing)) return;
   if (gen !== undefined && gen !== engineGen) return;
-  held = { ...held, recording: false, interim: "" };
+  held = { ...held, recording: false, finalizing: false, interim: "" };
+  emit();
+}
+
+/** The panel's Stop: the mic reads stopped at once, while the engine (generation `gen`)
+ *  settles its last words — its end (`markHeldEngineEnded`) closes the window. */
+export function markHeldFinalizing(gen: number): void {
+  if (held === null || !held.recording || gen !== engineGen) return;
+  held = { ...held, recording: false, finalizing: true };
   emit();
 }
 
@@ -333,16 +381,56 @@ export function stopHeldEngine(): void {
   stopEngine = null;
 }
 
-/** Stop the engine (if still running) and drop the hold entirely. Returns the
- *  final text so the caller (composer on the target chat) can absorb it. */
+/** What a send WHILE DICTATING carries (0.103.1): the text the composer shows at the
+ *  click — the committed text, then the hypothesis still in flight (the ghost under it),
+ *  joined as the engine would have joined its final. Pure. */
+export function visibleDictationText(text: string, interim: string): string {
+  return interim.trim() !== "" ? appendDictated(text, interim, false) : text;
+}
+
+/** Send stays offered while dictating whenever the composer SHOWS something — a
+ *  hypothesis alone counts (it used to need a first final). Pure. */
+export function canSendWhileDictating(text: string, interim: string): boolean {
+  return visibleDictationText(text, interim).trim() !== "";
+}
+
+/** What a send from the panel carries: the text it shows (the hypothesis counts only
+ *  while the mic is live — it is not shown otherwise). Pure. */
+export function heldSendText(
+  h: Pick<HeldDictation, "text" | "interim" | "recording"> & { finalizing?: boolean },
+): string {
+  return h.recording || h.finalizing === true ? visibleDictationText(h.text, h.interim) : h.text;
+}
+
+/** The panel SENDS while the mic is live (0.103.1): the engine is retired — stopped, and
+ *  its generation passed, so nothing it still delivers reaches this hold or the target
+ *  composer — and the hold stops claiming a recording. The hypothesis on screen becomes
+ *  part of the draft FIRST: the send may still be refused (target unavailable, queue
+ *  full), and the draft that stays must be everything that was shown. */
+export function retireHeldEngine(): void {
+  retireEngine();
+  if (held === null) return;
+  held = { ...held, text: heldSendText(held), recording: false, finalizing: false, interim: "" };
+  emit();
+}
+
+/** Release the hold for the composer that owns it, KEEPING the words in flight: returns
+ *  the hypothesis a live or finalizing engine showed (to be appended to the composer's
+ *  draft), read in the same step as the release passes the generation — the engine's late
+ *  final is then dropped, so those words land exactly once (0.103.1). "" when none. */
+export function releaseHeldKeepingWords(): string {
+  const words = held !== null && (held.recording || held.finalizing) ? held.interim : "";
+  releaseHeldDictation();
+  return words.trim() !== "" ? words : "";
+}
+
+/** Stop the engine (if still running) and drop the hold entirely — a discard keeps
+ *  nothing in flight. Returns the held text so the caller (composer on the target chat)
+ *  can absorb it. */
 export function releaseHeldDictation(): string {
   const text = held?.text ?? "";
-  try {
-    stopEngine?.();
-  } catch {
-    // engine already gone
-  }
-  stopEngine = null;
+  // Every session bound to this hold is now stale: its last words reach no draft.
+  retireEngine();
   held = null;
   emit();
   return text;

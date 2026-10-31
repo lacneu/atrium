@@ -2350,6 +2350,7 @@
   "chat_mic_error_denied": "Micro refusé — autorisez l'accès au micro dans le navigateur.",
   "chat_mic_error_unsupported": "La dictée n'est pas supportée par ce navigateur.",
   "chat_mic_error_generic": "La dictée s'est interrompue ({code}).",
+  "chat_mic_error_engine_ended": "La dictée s'est arrêtée : le moteur vocal du navigateur ne reprenait plus. Cliquez sur le micro pour la relancer.",
   "voice_lang_fr": "Français (fr-FR)",
   "voice_lang_en_us": "English (en-US)",
   "voice_lang_en_gb": "English (en-GB)",

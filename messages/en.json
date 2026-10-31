@@ -2350,6 +2350,7 @@
   "chat_mic_error_denied": "Microphone denied — allow mic access in the browser.",
   "chat_mic_error_unsupported": "Dictation is not supported by this browser.",
   "chat_mic_error_generic": "Dictation stopped ({code}).",
+  "chat_mic_error_engine_ended": "Dictation stopped: the browser's speech engine would not resume. Click the microphone to start again.",
   "voice_lang_fr": "Français (fr-FR)",
   "voice_lang_en_us": "English (en-US)",
   "voice_lang_en_gb": "English (en-GB)",
