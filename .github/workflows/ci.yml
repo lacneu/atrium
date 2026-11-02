@@ -41,15 +41,26 @@ jobs:
           artifact-name: atrium-frontend-sbom.spdx.json
           syft-version: v1.48.0
           upload-artifact-retention: 90
-      - name: Reject high and critical vulnerabilities
+      - name: Report frontend image vulnerabilities
         uses: anchore/scan-action@e1165082ffb1fe366ebaf02d8526e7c4989ea9d2 # v7.4.0
         with:
           image: local/atrium:ci
-          fail-build: true
+          fail-build: false
           severity-cutoff: high
-          only-fixed: true
-          output-format: table
+          only-fixed: false
+          output-format: json
+          output-file: ${{ runner.temp }}/atrium-frontend-vulnerabilities.json
           grype-version: v0.116.0
+      - name: Validate and summarize frontend vulnerability findings
+        run: node scripts/vulnerability-report.mjs grype "$RUNNER_TEMP/atrium-frontend-vulnerabilities.json"
+      - name: Retain frontend vulnerability reports
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: atrium-frontend-vulnerabilities
+          path: ${{ runner.temp }}/atrium-frontend-vulnerabilities.json*
+          retention-days: 90
+          if-no-files-found: warn
 
   app:
     name: app (front + Convex)
@@ -69,14 +80,27 @@ jobs:
       - name: Install dependencies
         run: npm ci || npm install
 
-      - name: Reject high and critical application dependency vulnerabilities
-        run: npm audit --omit=dev --audit-level=high
+      - name: Report application dependency vulnerabilities
+        run: node scripts/vulnerability-report.mjs npm-production "$RUNNER_TEMP/npm-security/production.json"
 
-      - name: Reject critical vulnerabilities in deployer development dependencies
-        run: npm audit --include=dev --audit-level=critical
+      - name: Report deployer development dependency vulnerabilities
+        run: node scripts/vulnerability-report.mjs npm-development "$RUNNER_TEMP/npm-security/development.json"
+
+      - name: Retain dependency vulnerability reports
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: atrium-npm-vulnerabilities-node-${{ matrix.node-version }}
+          path: ${{ runner.temp }}/npm-security/
+          retention-days: 90
+          if-no-files-found: warn
 
       - name: Verify dependency security policy
-        run: node --test scripts/dependency-security.test.mjs
+        run: >-
+          node --test --experimental-test-coverage
+          --test-coverage-include=scripts/vulnerability-report.mjs
+          --test-coverage-lines=100 --test-coverage-branches=100 --test-coverage-functions=100
+          scripts/dependency-security.test.mjs scripts/vulnerability-report.test.mjs
 
       # convex/_generated is committed (Convex convention) so typecheck/build run
       # without a live backend. The front↔convex contract is enforced here: a
@@ -131,12 +155,23 @@ jobs:
             --file bridge/Dockerfile \
             --tag local/atrium-bridge:ci \
             bridge
-      - name: Reject actionable critical bridge vulnerabilities
+      - name: Report bridge image vulnerabilities
         uses: anchore/scan-action@e1165082ffb1fe366ebaf02d8526e7c4989ea9d2 # v7.4.0
         with:
           image: local/atrium-bridge:ci
-          fail-build: true
+          fail-build: false
           severity-cutoff: critical
-          only-fixed: true
-          output-format: table
+          only-fixed: false
+          output-format: json
+          output-file: ${{ runner.temp }}/atrium-bridge-vulnerabilities.json
           grype-version: v0.116.0
+      - name: Validate and summarize bridge vulnerability findings
+        run: node scripts/vulnerability-report.mjs grype "$RUNNER_TEMP/atrium-bridge-vulnerabilities.json"
+      - name: Retain bridge vulnerability reports
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: atrium-bridge-vulnerabilities
+          path: ${{ runner.temp }}/atrium-bridge-vulnerabilities.json*
+          retention-days: 90
+          if-no-files-found: warn

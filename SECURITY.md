@@ -4,6 +4,19 @@
 
 Atrium is pre-`1.0`. Security fixes land on the default branch (`main`).
 
+## CI vulnerability reporting
+
+CI scans both container images and the production/development npm dependency
+graphs. Vulnerability findings, including high and critical findings, produce
+warnings and a severity summary but do not block CI. The raw JSON reports and
+their summaries are retained as GitHub artifacts for 90 days; image SBOMs remain
+available separately. Unfixed image vulnerabilities are included in the reports.
+
+Scanner execution failures, unavailable audit services, malformed reports,
+failed functional tests and container-policy violations remain blocking. A green
+CI is not a claim that there are no vulnerabilities or a risk acceptance. Review
+the reports and update official dependencies and images as fixes become available.
+
 ## Reporting a Vulnerability
 
 Please do **not** open a public issue for vulnerabilities involving credentials,
