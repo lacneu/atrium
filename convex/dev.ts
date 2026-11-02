@@ -16,6 +16,7 @@ import { internal } from "./_generated/api";
 import { Doc, Id } from "./_generated/dataModel";
 import { generateApiKey, hashKey } from "./lib/apikeys";
 import { envLabel } from "./lib/envLabel";
+import { clearBridgeSecretRotation } from "./lib/bridgeSecretRotation";
 import { recordFileForPart } from "./lib/files";
 import { partStorageField } from "./lib/blobs";
 import { seedBuiltinRoles } from "./lib/rbac";
@@ -183,6 +184,7 @@ export const insertBridgeSecretDev = internalMutation({
   },
   handler: async (ctx, { instanceId, hashedSecret, prefix, lastFour }) => {
     assertDev();
+    await clearBridgeSecretRotation(ctx, instanceId);
     const existing = await ctx.db
       .query("bridgeAuth")
       .withIndex("by_instance", (q) => q.eq("instanceId", instanceId))
@@ -2587,6 +2589,7 @@ export const _storeSeedCreds = internalMutation({
     await upsertSecret("token", tokenSecret);
     await upsertSecret("deviceIdentity", deviceSecret);
     // One active per-bridge secret per instance — replace any prior.
+    await clearBridgeSecretRotation(ctx, instanceId);
     for (const row of await ctx.db
       .query("bridgeAuth")
       .withIndex("by_instance", (q) => q.eq("instanceId", instanceId))
@@ -2790,6 +2793,7 @@ export const _storeSeedHermesCreds = internalMutation({
       });
     }
     // One active per-bridge secret per instance — replace any prior.
+    await clearBridgeSecretRotation(ctx, instanceId);
     for (const row of await ctx.db
       .query("bridgeAuth")
       .withIndex("by_instance", (q) => q.eq("instanceId", instanceId))

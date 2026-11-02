@@ -107,6 +107,7 @@ See `lib/provisionKeys.ts` for the parsing rules.
 | `personScopes` | no | `openclaw` only: `capped` or `full`. Accepted only when the same request explicitly sets `authMode` to `trusted-proxy`; refused otherwise. |
 | `transport` | no | `hermes` only (`ws` or `rest`) — refused for `openclaw`. |
 | `rotateBridgeSecret` | no | See *Replacing a credential*. |
+| `stageBridgeSecret` | no | Prepare a non-disruptive credential rotation for an existing instance; mutually exclusive with `rotateBridgeSecret: true`. See *Staged replacement*. |
 
 A field that does not apply to the declared `kind` is **refused**, not ignored: a
 caller believing a setting took effect while nothing reads it is a defect that
@@ -319,6 +320,45 @@ serve (the installer lost the plaintext before writing it to the host), send
 `"rotateBridgeSecret": true`. This issues a new credential and **invalidates the
 old one**, disconnecting the running bridge until the new value is deployed. It is
 explicit precisely so a plain replay can never reach it.
+
+### Staged replacement
+
+For a running bridge, prefer the three-step protocol below. All three requests
+require the same authenticated service principal and `instances.provision`.
+
+1. Send the normal provision payload with `"stageBridgeSecret": true`.
+   The instance must already exist with exactly one active bridge credential.
+   The response contains `bridgeSecret: "staged"`, a new `secret` returned **once**,
+   and an opaque `rotationId`. The new secret does not authenticate yet; the old
+   one remains valid. Managed configuration and the pending rotation are written
+   atomically. Save the new credential in durable encrypted storage before sealing.
+2. `POST /api/v1/instances/bridge-secret/seal` with exactly
+   `{ "name": "<instance>", "rotationId": "<returned handle>" }` activates the
+   saved candidate **without removing the old credential**. The response is exactly
+   `{ "ok": true, "status": "sealed" }`. Now deploy the new bridge credential
+   and independently verify the bridge is operating with it.
+3. Only after that verification, `POST /api/v1/instances/bridge-secret/retire`
+   with the same body removes the exact predecessor credential, returning
+   `{ "ok": true, "status": "retired" }`.
+
+Replaying seal returns `already-sealed`, or `already-active` after retirement.
+Replaying retire returns `already-retired`. These responses never return the secret
+again. Retire before seal, an incorrect instance/handle/principal, an outstanding
+stage, or changed authentication rows are refused with HTTP 409. A normal provision
+replay still returns `existing` without reminting anything.
+
+Do not automatically retry a stage after an uncertain response: the plaintext
+cannot be recovered, and a second stage is refused while the first is pending.
+The old credential remains usable. Explicit administrator replacement/revocation,
+or the deliberately disruptive `rotateBridgeSecret` recovery, invalidates the
+pending handle. Instance deletion removes its credentials and rotation receipt in
+the same transaction. Only one lifecycle receipt is retained per instance; the
+next rotation replaces a completed receipt.
+
+This protocol preserves **credential continuity**, not zero downtime for arbitrary
+gateway configuration changes. The caller owns encrypted persistence, deployment
+and verification before retirement. Pending rotations do not expire automatically
+and the API does not infer that a bridge successfully deployed merely from a seal.
 
 ## Verifying
 
