@@ -24,6 +24,12 @@ import { describe, expect, test } from "vitest";
 const read = (rel: string): string =>
   readFileSync(new URL(rel, import.meta.url), "utf-8");
 
+const withoutArtifactRetentionConditions = (ci: string): string =>
+  ci.replace(
+    /^ {8}if: always\(\)\n(?= {8}uses: actions\/upload-artifact@)/gm,
+    "",
+  );
+
 describe("the Convex typecheck is wired as a gate", () => {
   test("`npm run typecheck` also checks the convex project", () => {
     // The local gate. Its absence is why the error was invisible to me for days:
@@ -73,11 +79,22 @@ describe("the Convex typecheck is wired as a gate", () => {
     expect(runLine, "no CI step runs npm run typecheck:convex").toBeDefined();
     expect(runLine).toBe("run: npm run typecheck:convex");
     // `continue-on-error` would neutralize the step from the outside; so would an
-    // `if:` on the step or the job (`if: ${{ false }}`). The workflow uses neither
-    // today, so the honest pin is "none at all" — a future legitimate conditional
-    // then has to be added deliberately, with this test as the place that says why.
+    // `if:` on the step or the job (`if: ${{ false }}`). Only artifact-upload
+    // steps may use `if: always()` so failed scans still retain their reports;
+    // this exception must not make a compiler or functional gate conditional.
     expect(ci).not.toMatch(/continue-on-error/);
-    expect(ci).not.toMatch(/^\s*if:/m);
+    expect(withoutArtifactRetentionConditions(ci)).not.toMatch(/^\s*if:/m);
+  });
+
+  test.each([
+    ["job", "  app:", "  app:\n    if: ${{ false }}"],
+    ["compiler step", "        run: npm run typecheck:convex",
+      "        if: always()\n        run: npm run typecheck:convex"],
+    ["conditional upload", "        if: always()", "        if: ${{ false }}"],
+  ])("artifact retention cannot hide an if on the %s", (_name, before, after) => {
+    const ci = read("../.github/workflows/ci.yml");
+    expect(ci).toContain(before);
+    expect(withoutArtifactRetentionConditions(ci.replace(before, after))).toMatch(/^\s*if:/m);
   });
 
   test("CI is not skipped by paths-ignore for convex/ or the workflow itself", () => {
