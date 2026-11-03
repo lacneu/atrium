@@ -26,7 +26,7 @@
 //     secret and lock out the bridge already installed with the old one. We mint
 //     only when absent, and rotation must be asked for EXPLICITLY.
 
-import { v } from "convex/values";
+import { ConvexError, v } from "convex/values";
 import {
   internalAction,
   internalMutation,
@@ -165,7 +165,7 @@ export const applyProvision = internalMutation({
 
     if (existing === undefined) {
       if (args.stagedCandidate !== undefined) {
-        throw new Error("bridge_rotation_requires_existing_instance");
+        throw new ConvexError("bridge_rotation_requires_existing_instance");
       }
       if (!NAME_PATTERN.test(name)) throw new Error("invalid_instance_name");
       // FIRST LOCK. A deletion answers as soon as the instance row and its
@@ -388,7 +388,7 @@ export const provisionInstance = internalAction({
     rotationId?: string;
   }> => {
     if (rotateBridgeSecret === true && stageBridgeSecret === true) {
-      throw new Error("bridge_rotation_modes_conflict");
+      throw new ConvexError("bridge_rotation_modes_conflict");
     }
     if (stageBridgeSecret === true) {
       const generated = generateApiKey(envLabel());

@@ -21,7 +21,11 @@
 
 import { convexTest, type TestConvex } from "convex-test";
 import { describe, expect, test } from "vitest";
+import { ConvexError, type Value } from "convex/values";
+import { getFunctionName, type FunctionReference } from "convex/server";
 import { api, internal } from "./_generated/api";
+import type { ActionCtx } from "./_generated/server";
+import http from "./http";
 import schema from "./schema";
 import { hashKey } from "./lib/apikeys";
 import type { Id } from "./_generated/dataModel";
@@ -145,6 +149,102 @@ async function advanceRotation(
 }
 
 describe("staged bridge-secret rotation through the authenticated HTTP boundary", () => {
+  test.each(["development", "production"] as const)(
+    "structured rotation refusals survive the %s error envelope",
+    async (deployment) => {
+      const t = convexTest(schema, modules);
+      await seed(t);
+      const original = await provision(t, OPENCLAW);
+      const staged = await provision(t, { ...OPENCLAW, stageBridgeSecret: true });
+      const handle = { name: OPENCLAW.name, rotationId: staged.json.rotationId };
+      // convex-test forwards raw errors. Model only the documented transport
+      // boundary: the message changes, while ConvexError.data remains intact.
+      const acrossBoundary = async <T,>(call: () => Promise<T>): Promise<T> => {
+        try {
+          return await call();
+        } catch (error) {
+          const message = deployment === "development"
+            ? `[Request ID: fixture] Uncaught Error: ${String(error)}\n at server/function.ts:1:1`
+            : "[Request ID: fixture] Server Error";
+          if (error instanceof ConvexError) {
+            const wrapped = new ConvexError(error.data);
+            wrapped.message = message;
+            throw wrapped;
+          }
+          throw new Error(message);
+        }
+      };
+      let injected: Error | undefined;
+      const ctx = {
+        runQuery: t.query,
+        runMutation: (reference: FunctionReference<"mutation">, args: Record<string, Value> = {}) =>
+          acrossBoundary(() => {
+            if (injected && getFunctionName(reference) === "instanceProvision:advanceBridgeSecretRotation") {
+              throw injected;
+            }
+            return t.mutation(reference, args);
+          }),
+        runAction: (reference: FunctionReference<"action">, args: Record<string, Value> = {}) =>
+          acrossBoundary(() => {
+            if (injected && getFunctionName(reference) === "instanceProvision:provisionInstance") {
+              throw injected;
+            }
+            return t.action(reference, args);
+          }),
+      } as ActionCtx;
+      const request = async (path: string, body: unknown) => {
+        const route = http.lookup(path, "POST");
+        expect(route).not.toBeNull();
+        // This SDK runtime hook is omitted from its public declaration files.
+        const handler = Reflect.get(route![0], "_handler") as
+          (context: ActionCtx, request: Request) => Promise<Response>;
+        return await handler(ctx, new Request(`https://fixture.invalid${path}`, {
+          method: "POST",
+          headers: { Authorization: `Bearer ${PROVISION_KEY}`, "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+        }));
+      };
+      for (const [path, body, code] of [
+        ["/api/v1/instances/bridge-secret/retire", handle, "bridge_rotation_not_sealed"],
+        ["/api/v1/instances/bridge-secret/seal", { ...handle, rotationId: "z".repeat(16) }, "bridge_rotation_not_found"],
+        ["/api/v1/instances/provision", { ...OPENCLAW, stageBridgeSecret: true }, "bridge_rotation_pending"],
+        ["/api/v1/instances/provision", { ...OPENCLAW, name: "absent", stageBridgeSecret: true }, "bridge_rotation_requires_existing_instance"],
+      ] as const) {
+        const response = await request(path, body);
+        expect(response.status).toBe(409);
+        expect(await response.json()).toEqual({ ok: false, error: code });
+        expect(response.headers.get("Cache-Control")).toBe("no-store");
+      }
+      expect(await resolves(t, original.json.secret!)).toBe(true);
+      expect(await resolves(t, staged.json.secret!)).toBe(false);
+      await t.run(async (context) => {
+        const active = await context.db.query("bridgeAuth").first();
+        await context.db.patch("bridgeAuth", active!._id, { hashedSecret: "drift-fixture" });
+      });
+      const drift = await request("/api/v1/instances/bridge-secret/seal", handle);
+      expect(drift.status).toBe(409);
+      expect(await drift.json()).toEqual({ ok: false, error: "bridge_rotation_drift" });
+      for (const error of [
+        new Error("bridge_rotation_drift private-decoy"),
+        new ConvexError({ code: "bridge_rotation_drift", detail: "private-decoy" }),
+        new ConvexError("unclassified private-decoy"),
+      ]) {
+        injected = error;
+        for (const [path, body, code] of [
+          ["/api/v1/instances/bridge-secret/seal", handle, "bridge_rotation_failed"],
+          ["/api/v1/instances/bridge-secret/retire", handle, "bridge_rotation_failed"],
+          ["/api/v1/instances/provision", OPENCLAW, "provision_failed"],
+        ] as const) {
+          const response = await request(path, body);
+          expect(response.status).toBe(500);
+          expect(await response.json()).toEqual({ ok: false, error: code });
+        }
+      }
+      expect(JSON.stringify(await t.run((context) => context.db.query("traceEvents").collect())))
+        .not.toContain("private-decoy");
+    },
+  );
+
   test("stage is inactive, seal keeps both keys, retire removes only the predecessor", async () => {
     const t = convexTest(schema, modules);
     await seed(t);

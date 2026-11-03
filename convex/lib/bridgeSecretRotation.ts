@@ -1,3 +1,4 @@
+import { ConvexError } from "convex/values";
 import type { Doc, Id } from "../_generated/dataModel";
 import type { MutationCtx } from "../_generated/server";
 
@@ -33,13 +34,13 @@ export async function stageBridgeSecretRotation(
 ): Promise<void> {
   const previous = await receipt(ctx, instanceId);
   if (previous !== null && previous.phase !== "retired") {
-    throw new Error("bridge_rotation_pending");
+    throw new ConvexError("bridge_rotation_pending");
   }
   const active = await ctx.db
     .query("bridgeAuth")
     .withIndex("by_instance", (q) => q.eq("instanceId", instanceId))
     .take(2);
-  if (active.length !== 1) throw new Error("bridge_rotation_requires_one_secret");
+  if (active.length !== 1) throw new ConvexError("bridge_rotation_requires_one_secret");
   const collision = await ctx.db
     .query("bridgeAuth")
     .withIndex("by_hash", (q) => q.eq("hashedSecret", candidate.hashedSecret))
@@ -49,7 +50,7 @@ export async function stageBridgeSecretRotation(
     .withIndex("by_candidateHash", (q) => q.eq("candidateHash", candidate.hashedSecret))
     .unique();
   if (collision !== null || pendingCollision !== null) {
-    throw new Error("bridge_rotation_secret_collision");
+    throw new ConvexError("bridge_rotation_secret_collision");
   }
   if (previous !== null) await ctx.db.delete("bridgeSecretRotations", previous._id);
   await ctx.db.insert("bridgeSecretRotations", {
@@ -80,11 +81,11 @@ export async function finishBridgeSecretRotation(
     .query("instances")
     .withIndex("by_name", (q) => q.eq("name", args.name.trim()))
     .take(2);
-  if (instances.length !== 1) throw new Error("bridge_rotation_not_found");
+  if (instances.length !== 1) throw new ConvexError("bridge_rotation_not_found");
   const instanceId = instances[0]!._id;
   const row = await receipt(ctx, instanceId);
   if (row === null || row.rotationId !== args.rotationId || row.principalId !== args.principalId) {
-    throw new Error("bridge_rotation_not_found");
+    throw new ConvexError("bridge_rotation_not_found");
   }
   const active = await ctx.db
     .query("bridgeAuth")
@@ -95,17 +96,17 @@ export async function finishBridgeSecretRotation(
   const predecessor = active.find((auth) => matches(auth, row.predecessorId, row.predecessorHash));
   const candidate = active.find((auth) => matches(auth, row.candidateId, row.candidateHash));
   if (row.phase === "retired") {
-    if (active.length !== 1 || candidate === undefined) throw new Error("bridge_rotation_drift");
+    if (active.length !== 1 || candidate === undefined) throw new ConvexError("bridge_rotation_drift");
     return args.operation === "seal" ? "already-active" : "already-retired";
   }
   if (row.phase === "staged") {
-    if (args.operation !== "seal") throw new Error("bridge_rotation_not_sealed");
-    if (active.length !== 1 || predecessor === undefined) throw new Error("bridge_rotation_drift");
+    if (args.operation !== "seal") throw new ConvexError("bridge_rotation_not_sealed");
+    if (active.length !== 1 || predecessor === undefined) throw new ConvexError("bridge_rotation_drift");
     const collision = await ctx.db
       .query("bridgeAuth")
       .withIndex("by_hash", (q) => q.eq("hashedSecret", row.candidateHash))
       .unique();
-    if (collision !== null) throw new Error("bridge_rotation_drift");
+    if (collision !== null) throw new ConvexError("bridge_rotation_drift");
     const candidateId = await ctx.db.insert("bridgeAuth", {
       instanceId,
       hashedSecret: row.candidateHash,
@@ -118,7 +119,7 @@ export async function finishBridgeSecretRotation(
     return "sealed";
   }
   if (active.length !== 2 || predecessor === undefined || candidate === undefined) {
-    throw new Error("bridge_rotation_drift");
+    throw new ConvexError("bridge_rotation_drift");
   }
   if (args.operation === "seal") return "already-sealed";
   await ctx.db.delete("bridgeAuth", predecessor._id);

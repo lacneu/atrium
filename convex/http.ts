@@ -5,6 +5,7 @@
 // REQUIRES A LIVE DEPLOYMENT to serve these routes.
 
 import { httpRouter } from "convex/server";
+import { ConvexError } from "convex/values";
 import { parseReference } from "./feedback";
 import { httpAction } from "./_generated/server";
 import { internal } from "./_generated/api";
@@ -2058,7 +2059,6 @@ http.route({
       );
     } catch (err) {
       // The named refusals are the caller's fault (4xx); anything else is ours.
-      const message = err instanceof Error ? err.message : "provision_failed";
       const known: Record<string, number> = {
         instance_name_ambiguous: 409,
         instance_name_sweeping: 409,
@@ -2070,6 +2070,11 @@ http.route({
         bridge_rotation_secret_collision: 409,
         bridge_rotation_modes_conflict: 400,
       };
+      // Convex decorates/redacts messages across function calls, but preserves
+      // application error data. Only allowlisted codes may cross this boundary.
+      const code = err instanceof ConvexError ? err.data : err instanceof Error ? err.message : undefined;
+      const message = typeof code === "string" && Object.hasOwn(known, code)
+        ? code : "provision_failed";
       const status = known[message] ?? 500;
       await trace(status, JSON.stringify({ error: message }));
       return apiJson({ ok: false, error: message }, status);
@@ -2149,7 +2154,8 @@ for (const operation of ["seal", "retire"] as const) {
         await trace(200);
         return apiJson({ ok: true, status });
       } catch (error) {
-        const message = error instanceof Error ? error.message : "bridge_rotation_failed";
+        const code = error instanceof ConvexError ? error.data : undefined;
+        const message = typeof code === "string" ? code : "bridge_rotation_failed";
         const known = new Set(["bridge_rotation_not_found", "bridge_rotation_not_sealed", "bridge_rotation_drift"]);
         return await refuse(known.has(message) ? message : "bridge_rotation_failed", known.has(message) ? 409 : 500);
       }
