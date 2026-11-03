@@ -21,7 +21,11 @@
 
 import { convexTest, type TestConvex } from "convex-test";
 import { describe, expect, test } from "vitest";
-import { internal } from "./_generated/api";
+import { ConvexError, type Value } from "convex/values";
+import { getFunctionName, type FunctionReference } from "convex/server";
+import { api, internal } from "./_generated/api";
+import type { ActionCtx } from "./_generated/server";
+import http from "./http";
 import schema from "./schema";
 import { hashKey } from "./lib/apikeys";
 import type { Id } from "./_generated/dataModel";
@@ -67,8 +71,9 @@ type ProvisionResponse = {
   error?: string;
   instance?: string;
   outcome?: "created" | "updated" | "unchanged";
-  bridgeSecret?: "minted" | "rotated" | "existing";
+  bridgeSecret?: "minted" | "rotated" | "existing" | "staged";
   secret?: string;
+  rotationId?: string;
 };
 
 type DeprovisionResponse = {
@@ -130,6 +135,354 @@ const resolves = async (t: TestConvex<typeof schema>, plaintext: string) => {
   );
   return row !== null;
 };
+
+async function advanceRotation(
+  t: TestConvex<typeof schema>, operation: "seal" | "retire", body: unknown,
+  key: string = PROVISION_KEY,
+) {
+  const response = await t.fetch(`/api/v1/instances/bridge-secret/${operation}`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  return { status: response.status, json: await response.json(), headers: response.headers };
+}
+
+describe("staged bridge-secret rotation through the authenticated HTTP boundary", () => {
+  test.each(["development", "production"] as const)(
+    "structured rotation refusals survive the %s error envelope",
+    async (deployment) => {
+      const t = convexTest(schema, modules);
+      await seed(t);
+      const original = await provision(t, OPENCLAW);
+      const staged = await provision(t, { ...OPENCLAW, stageBridgeSecret: true });
+      const handle = { name: OPENCLAW.name, rotationId: staged.json.rotationId };
+      // convex-test forwards raw errors. Model only the documented transport
+      // boundary: the message changes, while ConvexError.data remains intact.
+      const acrossBoundary = async <T,>(call: () => Promise<T>): Promise<T> => {
+        try {
+          return await call();
+        } catch (error) {
+          const message = deployment === "development"
+            ? `[Request ID: fixture] Uncaught Error: ${String(error)}\n at server/function.ts:1:1`
+            : "[Request ID: fixture] Server Error";
+          if (error instanceof ConvexError) {
+            const wrapped = new ConvexError(error.data);
+            wrapped.message = message;
+            throw wrapped;
+          }
+          throw new Error(message);
+        }
+      };
+      let injected: Error | undefined;
+      const ctx = {
+        runQuery: t.query,
+        runMutation: (reference: FunctionReference<"mutation">, args: Record<string, Value> = {}) =>
+          acrossBoundary(() => {
+            if (injected && getFunctionName(reference) === "instanceProvision:advanceBridgeSecretRotation") {
+              throw injected;
+            }
+            return t.mutation(reference, args);
+          }),
+        runAction: (reference: FunctionReference<"action">, args: Record<string, Value> = {}) =>
+          acrossBoundary(() => {
+            if (injected && getFunctionName(reference) === "instanceProvision:provisionInstance") {
+              throw injected;
+            }
+            return t.action(reference, args);
+          }),
+      } as ActionCtx;
+      const request = async (path: string, body: unknown) => {
+        const route = http.lookup(path, "POST");
+        expect(route).not.toBeNull();
+        // This SDK runtime hook is omitted from its public declaration files.
+        const handler = Reflect.get(route![0], "_handler") as
+          (context: ActionCtx, request: Request) => Promise<Response>;
+        return await handler(ctx, new Request(`https://fixture.invalid${path}`, {
+          method: "POST",
+          headers: { Authorization: `Bearer ${PROVISION_KEY}`, "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+        }));
+      };
+      for (const [path, body, code] of [
+        ["/api/v1/instances/bridge-secret/retire", handle, "bridge_rotation_not_sealed"],
+        ["/api/v1/instances/bridge-secret/seal", { ...handle, rotationId: "z".repeat(16) }, "bridge_rotation_not_found"],
+        ["/api/v1/instances/provision", { ...OPENCLAW, stageBridgeSecret: true }, "bridge_rotation_pending"],
+        ["/api/v1/instances/provision", { ...OPENCLAW, name: "absent", stageBridgeSecret: true }, "bridge_rotation_requires_existing_instance"],
+      ] as const) {
+        const response = await request(path, body);
+        expect(response.status).toBe(409);
+        expect(await response.json()).toEqual({ ok: false, error: code });
+        expect(response.headers.get("Cache-Control")).toBe("no-store");
+      }
+      expect(await resolves(t, original.json.secret!)).toBe(true);
+      expect(await resolves(t, staged.json.secret!)).toBe(false);
+      await t.run(async (context) => {
+        const active = await context.db.query("bridgeAuth").first();
+        await context.db.patch("bridgeAuth", active!._id, { hashedSecret: "drift-fixture" });
+      });
+      const drift = await request("/api/v1/instances/bridge-secret/seal", handle);
+      expect(drift.status).toBe(409);
+      expect(await drift.json()).toEqual({ ok: false, error: "bridge_rotation_drift" });
+      for (const error of [
+        new Error("bridge_rotation_drift private-decoy"),
+        new ConvexError({ code: "bridge_rotation_drift", detail: "private-decoy" }),
+        new ConvexError("unclassified private-decoy"),
+      ]) {
+        injected = error;
+        for (const [path, body, code] of [
+          ["/api/v1/instances/bridge-secret/seal", handle, "bridge_rotation_failed"],
+          ["/api/v1/instances/bridge-secret/retire", handle, "bridge_rotation_failed"],
+          ["/api/v1/instances/provision", OPENCLAW, "provision_failed"],
+        ] as const) {
+          const response = await request(path, body);
+          expect(response.status).toBe(500);
+          expect(await response.json()).toEqual({ ok: false, error: code });
+        }
+      }
+      expect(JSON.stringify(await t.run((context) => context.db.query("traceEvents").collect())))
+        .not.toContain("private-decoy");
+    },
+  );
+
+  test("stage is inactive, seal keeps both keys, retire removes only the predecessor", async () => {
+    const t = convexTest(schema, modules);
+    await seed(t);
+    const original = await provision(t, OPENCLAW);
+    const staged = await provision(t, { ...OPENCLAW, stageBridgeSecret: true });
+    expect(staged.status).toBe(200);
+    expect(staged.json.bridgeSecret).toBe("staged");
+    expect(staged.json.rotationId).toMatch(/^[A-Za-z0-9_-]{16,128}$/);
+    const handle = { name: OPENCLAW.name, rotationId: staged.json.rotationId };
+    expect(await resolves(t, original.json.secret!)).toBe(true);
+    expect(await resolves(t, staged.json.secret!)).toBe(false);
+    const replay = await provision(t, OPENCLAW);
+    expect(replay.json.bridgeSecret).toBe("existing");
+    expect(replay.json.secret).toBeUndefined();
+    expect((await advanceRotation(t, "retire", handle)).status).toBe(409);
+    const seal = await advanceRotation(t, "seal", handle);
+    expect(seal.json).toEqual({ ok: true, status: "sealed" });
+    expect(seal.headers.get("Cache-Control")).toBe("no-store");
+    expect(await resolves(t, original.json.secret!)).toBe(true);
+    expect(await resolves(t, staged.json.secret!)).toBe(true);
+    expect((await advanceRotation(t, "seal", handle)).json).toEqual({ ok: true, status: "already-sealed" });
+    expect((await advanceRotation(t, "retire", handle)).json).toEqual({ ok: true, status: "retired" });
+    expect(await resolves(t, original.json.secret!)).toBe(false);
+    expect(await resolves(t, staged.json.secret!)).toBe(true);
+    expect((await advanceRotation(t, "retire", handle)).json).toEqual({ ok: true, status: "already-retired" });
+    expect((await advanceRotation(t, "seal", handle)).json).toEqual({ ok: true, status: "already-active" });
+    const persisted = await t.run(async (ctx) => ({
+      auth: await ctx.db.query("bridgeAuth").collect(),
+      rotations: await ctx.db.query("bridgeSecretRotations").collect(),
+      events: await ctx.db.query("traceEvents").collect(),
+    }));
+    expect(persisted.auth).toHaveLength(1);
+    expect(persisted.rotations).toHaveLength(1);
+    expect(JSON.stringify(persisted)).not.toContain(original.json.secret);
+    expect(JSON.stringify(persisted)).not.toContain(staged.json.secret);
+    // A completed receipt is replaced, not accumulated as unbounded history.
+    const next = await provision(t, { ...OPENCLAW, stageBridgeSecret: true });
+    expect(next.status).toBe(200);
+    expect(next.json.rotationId).not.toBe(handle.rotationId);
+    expect(await t.run((ctx) => ctx.db.query("bridgeSecretRotations").collect())).toHaveLength(1);
+    expect((await advanceRotation(t, "retire", handle)).status).toBe(409);
+  });
+
+  test("an uncertain stage cannot rotate again or partially change managed configuration", async () => {
+    const t = convexTest(schema, modules);
+    await seed(t);
+    const original = await provision(t, OPENCLAW);
+    expect((await provision(t, { ...OPENCLAW, stageBridgeSecret: true })).status).toBe(200);
+    const refused = await provision(t, { ...OPENCLAW, gatewayUrl: "ws://other.internal", stageBridgeSecret: true });
+    expect(refused.status).toBe(409);
+    expect(refused.json.error).toBe("bridge_rotation_pending");
+    expect((await instances(t))[0]!.gatewayUrl).toBe(OPENCLAW.gatewayUrl);
+    expect(await resolves(t, original.json.secret!)).toBe(true);
+  });
+
+  test("concurrent stages create only one pending candidate", async () => {
+    const t = convexTest(schema, modules);
+    await seed(t);
+    const original = await provision(t, OPENCLAW);
+    const results = await Promise.all([
+      provision(t, { ...OPENCLAW, stageBridgeSecret: true }),
+      provision(t, { ...OPENCLAW, stageBridgeSecret: true }),
+    ]);
+    expect(results.map((result) => result.status).sort()).toEqual([200, 409]);
+    expect(await t.run((ctx) => ctx.db.query("bridgeSecretRotations").collect())).toHaveLength(1);
+    expect(await resolves(t, original.json.secret!)).toBe(true);
+  });
+
+  test("a delayed ordinary provision cannot replace a credential or invalidate its rotation", async () => {
+    const t = convexTest(schema, modules);
+    await seed(t);
+    const original = await provision(t, OPENCLAW);
+    const staged = await provision(t, { ...OPENCLAW, stageBridgeSecret: true });
+    const handle = { name: "compta", rotationId: staged.json.rotationId };
+    await advanceRotation(t, "seal", handle);
+    const instanceId = (await instances(t))[0]!._id;
+    // This is the write boundary of an action whose earlier query saw no key.
+    const stored = await t.mutation(internal.instanceProvision.storeProvisionedBridgeSecret, {
+      instanceId, hashedSecret: await hashKey("late-provision"), prefix: "test", lastFour: "test",
+      principalId: "service", replaceExisting: false,
+    });
+    expect(stored).toBe(false);
+    expect(await resolves(t, original.json.secret!)).toBe(true);
+    expect(await resolves(t, staged.json.secret!)).toBe(true);
+    expect((await advanceRotation(t, "retire", handle)).json).toEqual({ ok: true, status: "retired" });
+  });
+
+  test("concurrent first provisions mint only one active credential", async () => {
+    const t = convexTest(schema, modules);
+    await seed(t);
+    const results = await Promise.all([provision(t, OPENCLAW), provision(t, OPENCLAW)]);
+    expect(results.map((result) => result.json.bridgeSecret).sort()).toEqual(["existing", "minted"]);
+    const minted = results.find((result) => result.json.bridgeSecret === "minted")!;
+    expect(await resolves(t, minted.json.secret!)).toBe(true);
+    expect(await t.run((ctx) => ctx.db.query("bridgeAuth").collect())).toHaveLength(1);
+  });
+
+  test("stage refuses absent instances, absent credentials and ambiguous credentials without creating state", async () => {
+    const t = convexTest(schema, modules);
+    await seed(t);
+    expect((await provision(t, { ...OPENCLAW, stageBridgeSecret: true })).status).toBe(409);
+    expect(await instances(t)).toHaveLength(0);
+    await provision(t, OPENCLAW);
+    await t.run(async (ctx) => {
+      const row = (await ctx.db.query("bridgeAuth").collect())[0]!;
+      await ctx.db.delete(row._id);
+    });
+    expect((await provision(t, { ...OPENCLAW, stageBridgeSecret: true })).json.error).toBe("bridge_rotation_requires_one_secret");
+    await provision(t, OPENCLAW);
+    await t.run(async (ctx) => {
+      const row = (await ctx.db.query("bridgeAuth").collect())[0]!;
+      await ctx.db.insert("bridgeAuth", { instanceId: row.instanceId, hashedSecret: "other", prefix: "test", lastFour: "test", createdAt: Date.now() });
+    });
+    expect((await provision(t, { ...OPENCLAW, stageBridgeSecret: true })).status).toBe(409);
+    expect(await t.run((ctx) => ctx.db.query("bridgeSecretRotations").collect())).toHaveLength(0);
+  });
+
+  test.each(["seal", "retire"] as const)("%s rejects untrusted bodies and insufficient permissions", async (operation) => {
+    const t = convexTest(schema, modules);
+    await seed(t);
+    const handle = { name: "compta", rotationId: "a".repeat(16) };
+    expect((await advanceRotation(t, operation, handle, "invalid")).status).toBe(401);
+    expect((await advanceRotation(t, operation, handle, READONLY_KEY)).status).toBe(403);
+    for (const body of [null, [], "string", {}, { ...handle, principalId: "spoofed" },
+      { ...handle, secret: "forbidden" }, { ...handle, rotationId: "a".repeat(15) },
+      { ...handle, rotationId: "a".repeat(129) }, { ...handle, rotationId: "x/".repeat(10) },
+      { ...handle, name: " " }, { ...handle, rotationId: 42 }]) {
+      expect((await advanceRotation(t, operation, body)).status).toBe(400);
+    }
+    expect((await advanceRotation(t, operation, handle)).status).toBe(409);
+    expect(await instances(t)).toHaveLength(0);
+  });
+
+  test("stage validates exact flags and never accepts a caller-supplied identity", async () => {
+    const t = convexTest(schema, modules);
+    await seed(t);
+    for (const flags of [{ stageBridgeSecret: "true" }, { stageBridgeSecret: null },
+      { stageBridgeSecret: true, rotateBridgeSecret: true }, { principalId: "spoof" }]) {
+      expect((await provision(t, { ...OPENCLAW, ...flags })).status).toBe(400);
+    }
+    expect((await provision(t, { ...OPENCLAW, stageBridgeSecret: true }, READONLY_KEY)).status).toBe(403);
+    expect(await instances(t)).toHaveLength(0);
+  });
+
+  test("malformed JSON and non-object provision bodies are refused without state", async () => {
+    const t = convexTest(schema, modules);
+    await seed(t);
+    for (const path of ["/api/v1/instances/provision", "/api/v1/instances/bridge-secret/seal", "/api/v1/instances/bridge-secret/retire"]) {
+      for (const body of ["{", "null", "[]", '"string"']) {
+        const response = await t.fetch(path, {
+          method: "POST", headers: { Authorization: `Bearer ${PROVISION_KEY}`, "Content-Type": "application/json" }, body,
+        });
+        expect(response.status).toBe(400);
+        expect(response.headers.get("Cache-Control")).toBe("no-store");
+      }
+    }
+    expect(await instances(t)).toHaveLength(0);
+    expect(await t.run((ctx) => ctx.db.query("bridgeSecretRotations").collect())).toHaveLength(0);
+  });
+
+  test("another provisioner or instance cannot use the rotation handle", async () => {
+    const t = convexTest(schema, modules);
+    const { admin } = await seed(t);
+    await provision(t, OPENCLAW);
+    await provision(t, { ...OPENCLAW, name: "other" });
+    const staged = await provision(t, { ...OPENCLAW, stageBridgeSecret: true });
+    const hash = await hashKey("second-provisioner");
+    await t.run(async (ctx) => {
+      const serviceAccountId = await ctx.db.insert("serviceAccounts", {
+        name: "other-provisioner", roleKey: "provisioner", disabled: false, createdByUserId: admin,
+      });
+      await ctx.db.insert("apiKeys", { serviceAccountId, hashedKey: hash, prefix: "test", lastFour: "test", disabled: false, createdAt: Date.now() });
+    });
+    const handle = { name: "compta", rotationId: staged.json.rotationId };
+    for (const operation of ["seal", "retire"] as const) {
+      expect((await advanceRotation(t, operation, handle, "second-provisioner")).status).toBe(409);
+      expect((await advanceRotation(t, operation, { ...handle, name: "other" })).status).toBe(409);
+      expect((await advanceRotation(t, operation, { ...handle, rotationId: "z".repeat(16) })).status).toBe(409);
+    }
+    expect(await resolves(t, staged.json.secret!)).toBe(false);
+  });
+
+  test.each(["staged", "sealed"] as const)("admin revocation, mint and immediate rotation invalidate a %s handle", async (phase) => {
+    for (const override of ["revoke", "mint", "rotate"] as const) {
+      const t = convexTest(schema, modules);
+      const { admin } = await seed(t);
+      const original = await provision(t, OPENCLAW);
+      const staged = await provision(t, { ...OPENCLAW, stageBridgeSecret: true });
+      const handle = { name: "compta", rotationId: staged.json.rotationId };
+      if (phase === "sealed") await advanceRotation(t, "seal", handle);
+      const instanceId = (await instances(t))[0]!._id;
+      const operator = t.withIdentity({ subject: admin });
+      if (override === "revoke") await operator.mutation(api.bridgeAuth.revokeBridgeSecret, { instanceId });
+      else if (override === "mint") await operator.action(api.bridgeAuth.mintBridgeSecret, { instanceId });
+      else await provision(t, { ...OPENCLAW, rotateBridgeSecret: true });
+      expect((await advanceRotation(t, "retire", handle)).status).toBe(409);
+      expect((await advanceRotation(t, "seal", handle)).status).toBe(409);
+      expect(await resolves(t, original.json.secret!)).toBe(false);
+      expect(await resolves(t, staged.json.secret!)).toBe(false);
+      expect(await t.run((ctx) => ctx.db.query("bridgeSecretRotations").collect())).toHaveLength(0);
+    }
+  });
+
+  test.each(["staged", "sealed"] as const)("deletion removes the %s receipt and all authentication atomically", async (phase) => {
+    const t = convexTest(schema, modules);
+    await seed(t);
+    const original = await provision(t, OPENCLAW);
+    const staged = await provision(t, { ...OPENCLAW, stageBridgeSecret: true });
+    const handle = { name: "compta", rotationId: staged.json.rotationId };
+    if (phase === "sealed") await advanceRotation(t, "seal", handle);
+    expect((await deprovision(t, { name: "compta" })).status).toBe(200);
+    expect(await resolves(t, original.json.secret!)).toBe(false);
+    expect(await resolves(t, staged.json.secret!)).toBe(false);
+    expect(await t.run((ctx) => ctx.db.query("bridgeSecretRotations").collect())).toHaveLength(0);
+    expect((await advanceRotation(t, "seal", handle)).status).toBe(409);
+  });
+
+  test("predecessor or candidate drift never deletes an unrelated authentication row", async () => {
+    for (const target of ["predecessor", "candidate", "extra"] as const) {
+      const t = convexTest(schema, modules);
+      await seed(t);
+      await provision(t, OPENCLAW);
+      const staged = await provision(t, { ...OPENCLAW, stageBridgeSecret: true });
+      const handle = { name: "compta", rotationId: staged.json.rotationId };
+      await advanceRotation(t, "seal", handle);
+      await t.run(async (ctx) => {
+        const row = (await ctx.db.query("bridgeSecretRotations").collect())[0]!;
+        if (target === "extra") await ctx.db.insert("bridgeAuth", {
+          instanceId: row.instanceId, hashedSecret: "unrelated", prefix: "test", lastFour: "test", createdAt: Date.now(),
+        });
+        else await ctx.db.patch(target === "predecessor" ? row.predecessorId : row.candidateId!, { hashedSecret: "changed" });
+      });
+      const before = await t.run((ctx) => ctx.db.query("bridgeAuth").collect());
+      expect((await advanceRotation(t, "retire", handle)).json).toEqual({ ok: false, error: "bridge_rotation_drift" });
+      expect(await t.run((ctx) => ctx.db.query("bridgeAuth").collect())).toEqual(before);
+    }
+  });
+});
 
 describe("provisioning is replay-safe", () => {
   test("a retried create patches by NAME instead of forking the routing key", async () => {

@@ -26,7 +26,7 @@
 //     secret and lock out the bridge already installed with the old one. We mint
 //     only when absent, and rotation must be asked for EXPLICITLY.
 
-import { v } from "convex/values";
+import { ConvexError, v } from "convex/values";
 import {
   internalAction,
   internalMutation,
@@ -37,6 +37,11 @@ import type { Id } from "./_generated/dataModel";
 import { generateApiKey, hashKey } from "./lib/apikeys";
 import { envLabel } from "./lib/envLabel";
 import {
+  clearBridgeSecretRotation,
+  finishBridgeSecretRotation,
+  stageBridgeSecretRotation,
+} from "./lib/bridgeSecretRotation";
+import {
   assertNameNotSweeping,
   deleteInstanceCascade,
   openCascadeJob,
@@ -45,7 +50,7 @@ import {
 /** What a provisioning call did to the instance row. */
 export type ProvisionOutcome = "created" | "updated" | "unchanged";
 /** What it did to the per-bridge secret. */
-export type SecretOutcome = "minted" | "rotated" | "existing";
+export type SecretOutcome = "minted" | "rotated" | "existing" | "staged";
 /** What a deprovisioning call did to the named instance. */
 export type DeprovisionOutcome = "deleted" | "absent";
 
@@ -122,6 +127,13 @@ export const applyProvision = internalMutation({
     personScopes: v.optional(
       v.union(v.literal("capped"), v.literal("full")),
     ),
+    stagedCandidate: v.optional(v.object({
+      rotationId: v.string(),
+      principalId: v.string(),
+      hashedSecret: v.string(),
+      prefix: v.string(),
+      lastFour: v.string(),
+    })),
   },
   handler: async (
     ctx,
@@ -152,6 +164,9 @@ export const applyProvision = internalMutation({
     const existing = rows[0];
 
     if (existing === undefined) {
+      if (args.stagedCandidate !== undefined) {
+        throw new ConvexError("bridge_rotation_requires_existing_instance");
+      }
       if (!NAME_PATTERN.test(name)) throw new Error("invalid_instance_name");
       // FIRST LOCK. A deletion answers as soon as the instance row and its
       // credentials are gone; the name-bound rows are still being swept in the
@@ -177,6 +192,11 @@ export const applyProvision = internalMutation({
       return { instanceId, outcome: "created" };
     }
 
+    // The candidate and managed patch share one transaction. Refusing a pending
+    // rotation must not leave half of a new gateway configuration behind.
+    if (args.stagedCandidate !== undefined) {
+      await stageBridgeSecretRotation(ctx, existing._id, args.stagedCandidate);
+    }
     const next: Managed = {
       gatewayUrl,
       displayName: resolveField(normalize(args.displayName), existing.displayName),
@@ -287,10 +307,11 @@ export const storeProvisionedBridgeSecret = internalMutation({
     prefix: v.string(),
     lastFour: v.string(),
     principalId: v.string(),
+    replaceExisting: v.boolean(),
   },
   handler: async (
     ctx,
-    { instanceId, hashedSecret, prefix, lastFour, principalId },
+    { instanceId, hashedSecret, prefix, lastFour, principalId, replaceExisting },
   ) => {
     const inst = await ctx.db.get(instanceId);
     if (inst === null) throw new Error("instance_not_found");
@@ -299,6 +320,10 @@ export const storeProvisionedBridgeSecret = internalMutation({
       .query("bridgeAuth")
       .withIndex("by_instance", (q) => q.eq("instanceId", instanceId))
       .collect();
+    // Recheck INSIDE the write transaction: another provision or stage may have
+    // completed after the action's presence query. A plain replay never rotates.
+    if (existing.length > 0 && !replaceExisting) return false;
+    await clearBridgeSecretRotation(ctx, instanceId);
     for (const row of existing) await ctx.db.delete(row._id);
     await ctx.db.insert("bridgeAuth", {
       instanceId,
@@ -308,6 +333,7 @@ export const storeProvisionedBridgeSecret = internalMutation({
       createdAt: Date.now(),
       createdByPrincipal: principalId,
     });
+    return true;
   },
 });
 
@@ -343,12 +369,13 @@ export const provisionInstance = internalAction({
       v.union(v.literal("capped"), v.literal("full")),
     ),
     rotateBridgeSecret: v.optional(v.boolean()),
+    stageBridgeSecret: v.optional(v.boolean()),
     /** API-key principal id, for attribution on a minted secret. */
     principalId: v.string(),
   },
   handler: async (
     ctx,
-    { rotateBridgeSecret, principalId, ...instance },
+    { rotateBridgeSecret, stageBridgeSecret, principalId, ...instance },
   ): Promise<{
     instanceId: Id<"instances">;
     name: string;
@@ -358,7 +385,38 @@ export const provisionInstance = internalAction({
     plaintext?: string;
     prefix?: string;
     lastFour?: string;
+    rotationId?: string;
   }> => {
+    if (rotateBridgeSecret === true && stageBridgeSecret === true) {
+      throw new ConvexError("bridge_rotation_modes_conflict");
+    }
+    if (stageBridgeSecret === true) {
+      const generated = generateApiKey(envLabel());
+      const rotationId = crypto.randomUUID();
+      const { instanceId, outcome } = await ctx.runMutation(
+        internal.instanceProvision.applyProvision,
+        {
+          ...instance,
+          stagedCandidate: {
+            rotationId,
+            principalId,
+            hashedSecret: await hashKey(generated.plaintext),
+            prefix: generated.prefix,
+            lastFour: generated.lastFour,
+          },
+        },
+      );
+      return {
+        instanceId,
+        name: instance.name.trim(),
+        outcome,
+        bridgeSecret: "staged",
+        plaintext: generated.plaintext,
+        prefix: generated.prefix,
+        lastFour: generated.lastFour,
+        rotationId,
+      };
+    }
     const { instanceId, outcome } = await ctx.runMutation(
       internal.instanceProvision.applyProvision,
       instance,
@@ -377,7 +435,7 @@ export const provisionInstance = internalAction({
     }
     const generated = generateApiKey(envLabel());
     const hashedSecret = await hashKey(generated.plaintext);
-    await ctx.runMutation(
+    const stored = await ctx.runMutation(
       internal.instanceProvision.storeProvisionedBridgeSecret,
       {
         instanceId,
@@ -385,8 +443,12 @@ export const provisionInstance = internalAction({
         prefix: generated.prefix,
         lastFour: generated.lastFour,
         principalId,
+        replaceExisting: rotateBridgeSecret === true,
       },
     );
+    if (!stored) {
+      return { instanceId, name: instance.name.trim(), outcome, bridgeSecret: "existing" };
+    }
     return {
       instanceId,
       name: instance.name.trim(),
@@ -397,4 +459,15 @@ export const provisionInstance = internalAction({
       lastFour: generated.lastFour,
     };
   },
+});
+
+/** Service identity is derived by the authenticated HTTP boundary, never the body. */
+export const advanceBridgeSecretRotation = internalMutation({
+  args: {
+    name: v.string(),
+    rotationId: v.string(),
+    principalId: v.string(),
+    operation: v.union(v.literal("seal"), v.literal("retire")),
+  },
+  handler: finishBridgeSecretRotation,
 });

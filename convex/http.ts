@@ -5,6 +5,7 @@
 // REQUIRES A LIVE DEPLOYMENT to serve these routes.
 
 import { httpRouter } from "convex/server";
+import { ConvexError } from "convex/values";
 import { parseReference } from "./feedback";
 import { httpAction } from "./_generated/server";
 import { internal } from "./_generated/api";
@@ -1923,6 +1924,9 @@ http.route({
       await trace(400);
       return apiJson({ ok: false, error }, 400);
     };
+    if (body === null || typeof body !== "object" || Array.isArray(body)) {
+      return await reject("body must be an object");
+    }
     // A field the caller sends and we silently ignore is how a control plane
     // ships a bug that survives for months — every one is rejected loudly.
     const allowed = new Set([
@@ -1937,6 +1941,7 @@ http.route({
       "authMode",
       "personScopes",
       "rotateBridgeSecret",
+      "stageBridgeSecret",
     ]);
     const unknown = Object.keys(body)
       .filter((key) => !allowed.has(key))
@@ -2024,6 +2029,13 @@ http.route({
     if (rotate !== undefined && typeof rotate !== "boolean") {
       return await reject("rotateBridgeSecret must be a boolean");
     }
+    const stage = body.stageBridgeSecret;
+    if (stage !== undefined && typeof stage !== "boolean") {
+      return await reject("stageBridgeSecret must be a boolean");
+    }
+    if (stage === true && rotate === true) {
+      return await reject("bridge_rotation_modes_conflict");
+    }
 
     let result;
     try {
@@ -2041,18 +2053,28 @@ http.route({
           authMode,
           personScopes,
           rotateBridgeSecret: rotate,
+          stageBridgeSecret: stage,
           principalId: principal.id,
         },
       );
     } catch (err) {
       // The named refusals are the caller's fault (4xx); anything else is ours.
-      const message = err instanceof Error ? err.message : "provision_failed";
       const known: Record<string, number> = {
         instance_name_ambiguous: 409,
         instance_name_sweeping: 409,
         invalid_instance_name: 400,
         gatewayUrl_required: 400,
+        bridge_rotation_requires_existing_instance: 409,
+        bridge_rotation_requires_one_secret: 409,
+        bridge_rotation_pending: 409,
+        bridge_rotation_secret_collision: 409,
+        bridge_rotation_modes_conflict: 400,
       };
+      // Convex decorates/redacts messages across function calls, but preserves
+      // application error data. Only allowlisted codes may cross this boundary.
+      const code = err instanceof ConvexError ? err.data : err instanceof Error ? err.message : undefined;
+      const message = typeof code === "string" && Object.hasOwn(known, code)
+        ? code : "provision_failed";
       const status = known[message] ?? 500;
       await trace(status, JSON.stringify({ error: message }));
       return apiJson({ ok: false, error: message }, status);
@@ -2073,6 +2095,7 @@ http.route({
       instance: result.name,
       outcome: result.outcome,
       bridgeSecret: result.bridgeSecret,
+      ...(result.rotationId !== undefined ? { rotationId: result.rotationId } : {}),
       // Returned ONCE, at the call that mints it. A replay gets `existing` and no
       // plaintext — correct, because the installed bridge already holds it.
       ...(result.plaintext !== undefined
@@ -2085,6 +2108,60 @@ http.route({
     });
   }),
 });
+
+// A staged rotation is owned by the authenticated provisioner and exact instance.
+// Neither route accepts a caller-supplied principal, credential, or arbitrary phase.
+for (const operation of ["seal", "retire"] as const) {
+  const path = `/api/v1/instances/bridge-secret/${operation}`;
+  http.route({
+    path,
+    method: "POST",
+    handler: httpAction(async (ctx, request) => {
+      const startedAt = Date.now();
+      const auth = await authenticateApiKey(ctx, request);
+      if (!auth.ok) return apiJson({ ok: false, error: auth.error }, auth.status);
+      const { principal } = auth;
+      const trace = async (status: number): Promise<void> => {
+        await ctx.runMutation(internal.observability.recordEvent, {
+          kind: "api.call", direction: "inbound", principalType: "service",
+          principalId: principal.id, roleKey: principal.roleKey, route: path,
+          method: "POST", status, latencyMs: Date.now() - startedAt,
+        });
+      };
+      const refuse = async (error: string, status: number) => {
+        await trace(status);
+        return apiJson({ ok: false, error }, status);
+      };
+      if (!principalHasPermission(principal, PERMISSIONS.INSTANCES_PROVISION)) {
+        return await refuse("missing permission: instances.provision", 403);
+      }
+      let body: unknown;
+      try { body = await request.json(); }
+      catch { return await refuse("invalid JSON body", 400); }
+      if (body === null || typeof body !== "object" || Array.isArray(body)) {
+        return await refuse("body must be an object", 400);
+      }
+      const fields = body as Record<string, unknown>;
+      if (Object.keys(fields).some((key) => key !== "name" && key !== "rotationId") ||
+          typeof fields.name !== "string" || fields.name.trim().length === 0 ||
+          typeof fields.rotationId !== "string" || !/^[A-Za-z0-9_-]{16,128}$/.test(fields.rotationId)) {
+        return await refuse("expected name and rotationId only", 400);
+      }
+      try {
+        const status = await ctx.runMutation(internal.instanceProvision.advanceBridgeSecretRotation, {
+          name: fields.name, rotationId: fields.rotationId, principalId: principal.id, operation,
+        });
+        await trace(200);
+        return apiJson({ ok: true, status });
+      } catch (error) {
+        const code = error instanceof ConvexError ? error.data : undefined;
+        const message = typeof code === "string" ? code : "bridge_rotation_failed";
+        const known = new Set(["bridge_rotation_not_found", "bridge_rotation_not_sealed", "bridge_rotation_drift"]);
+        return await refuse(known.has(message) ? message : "bridge_rotation_failed", known.has(message) ? 409 : 500);
+      }
+    }),
+  });
+}
 
 // Enroll the gateway-side credential bundle after the instance exists and before
 // its bridge is deployed. The request is key-authenticated, provider-discriminated,

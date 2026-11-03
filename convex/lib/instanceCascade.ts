@@ -1,5 +1,6 @@
 import type { Id } from "../_generated/dataModel";
 import type { MutationCtx } from "../_generated/server";
+import { clearBridgeSecretRotation } from "./bridgeSecretRotation";
 
 /**
  * Deleting an instance touches two very different kinds of row, and they cannot
@@ -56,6 +57,7 @@ export async function deleteInstanceCascade(
   if (instance === null) return { outcome: "absent", sweepName: null };
   const name = instance.name;
   await ctx.db.delete(instanceId);
+  await clearBridgeSecretRotation(ctx, instanceId);
 
   // ID-bound credentials always belong to this exact row, even when a legacy
   // duplicate name remains in the database. Never batched — see the header.

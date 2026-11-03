@@ -25,6 +25,7 @@ import { getActor, requireAdmin } from "./lib/access";
 import { recordAudit } from "./lib/audit";
 import { generateApiKey, hashKey } from "./lib/apikeys";
 import { envLabel } from "./lib/envLabel";
+import { clearBridgeSecretRotation } from "./lib/bridgeSecretRotation";
 import { writeTraceEvent } from "./observability";
 
 /**
@@ -44,6 +45,7 @@ export const storeBridgeSecret = internalMutation({
     const inst = await ctx.db.get(instanceId);
     if (inst === null) throw new Error("Instance not found");
     const actor = await getActor(ctx);
+    await clearBridgeSecretRotation(ctx, instanceId);
     // Rotation: one active secret per instance — drop the previous row(s) first.
     const existing = await ctx.db
       .query("bridgeAuth")
@@ -99,6 +101,7 @@ export const revokeBridgeSecret = mutation({
   args: { instanceId: v.id("instances") },
   handler: async (ctx, { instanceId }) => {
     await requireAdmin(ctx);
+    await clearBridgeSecretRotation(ctx, instanceId);
     const rows = await ctx.db
       .query("bridgeAuth")
       .withIndex("by_instance", (q) => q.eq("instanceId", instanceId))

@@ -761,8 +761,8 @@ export default defineSchema({
   // bridge proves WHICH instance it is — the credential-decrypt endpoint (step 3b)
   // can then return ONLY that instance's gateway secrets, instead of trusting a
   // self-asserted instanceName under a single shared BRIDGE_INGEST_SECRET (which
-  // would let any bridge decrypt every gateway's private key). One active secret per
-  // instance (rotate = replace the row). `by_instance` serves status + the
+  // would let any bridge decrypt every gateway's private key). Normally one active
+  // secret, or two during an explicitly sealed rotation. `by_instance` serves status + the
   // deleteInstance cascade; `by_hash` is the O(1) verification lookup.
   bridgeAuth: defineTable({
     instanceId: v.id("instances"),
@@ -784,7 +784,25 @@ export default defineSchema({
     promoteUnchangedTracedAt: v.optional(v.number()),
   })
     .index("by_hash", ["hashedSecret"]) // O(1) verification -> resolves the instance
-    .index("by_instance", ["instanceId"]), // status + rotate (one per instance)
+    .index("by_instance", ["instanceId"]), // status + explicit rotation overlap
+
+  // One bounded lifecycle receipt per instance. Staged candidates are NOT auth
+  // rows: only sealing makes them valid, and retirement removes the exact old row.
+  bridgeSecretRotations: defineTable({
+    instanceId: v.id("instances"),
+    rotationId: v.string(),
+    principalId: v.string(),
+    phase: v.union(v.literal("staged"), v.literal("sealed"), v.literal("retired")),
+    predecessorId: v.id("bridgeAuth"),
+    predecessorHash: v.string(),
+    candidateHash: v.string(),
+    prefix: v.string(),
+    lastFour: v.string(),
+    candidateId: v.optional(v.id("bridgeAuth")),
+    createdAt: v.number(),
+  })
+    .index("by_instanceId", ["instanceId"])
+    .index("by_candidateHash", ["candidateHash"]),
 
   // Per-instance discovery OUTCOME (the truth dispatch keys on). Distinct from
   // the `agents` cache: a single boolean cannot tell "agent absent in a
