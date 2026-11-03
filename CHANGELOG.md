@@ -1,5 +1,40 @@
 # Changelog
 
+## [0.103.3] — Prepare a bridge credential before retiring the one in use
+
+Patch release. The Convex backend gains an opt-in provisioning API; existing
+provisioning clients and bridge credentials keep working. Deploy the updated
+Convex schema and functions before an installer uses staged rotation. The release
+does not enable automatic rotation or deploy an installer by itself.
+
+- **Replace a bridge credential without revoking the running bridge's key first.**
+  Provisioning an existing instance with `stageBridgeSecret: true` returns a new
+  secret once and a rotation handle, while the old credential remains valid. The
+  candidate cannot authenticate yet. After saving it in durable encrypted storage,
+  the installer calls `seal` to activate it alongside the predecessor, deploys it,
+  and independently verifies the bridge is working. Only then does `retire` remove
+  the exact old credential. Seal and retirement can be replayed safely with the
+  same instance, handle and authenticated service identity. See
+  [staged replacement](docs/INSTANCE_PROVISIONING.md#staged-replacement).
+- **Interrupted provisioning cannot silently replace a working credential.** A
+  normal provision replay rechecks for an existing credential inside the write
+  transaction rather than overwriting a key installed concurrently. Expected
+  staged-rotation conflicts return stable HTTP 409 errors across Convex calls;
+  unexpected failures return a generic error rather than internal details.
+- **Recovery stays explicit.** Do not retry an uncertain staging request: its
+  plaintext cannot be returned again. Pending rotations do not expire
+  automatically. Administrator replacement or revocation invalidates the pending
+  handle; the existing `rotateBridgeSecret` recovery still revokes the old key
+  immediately and can disconnect the bridge. The staged protocol preserves
+  credential continuity, not zero downtime for arbitrary gateway changes. The
+  installer remains responsible for encrypted storage, deployment and verification
+  before retirement.
+- **Vulnerabilities are reported without hiding broken scans.** CI retains npm
+  and container vulnerability reports and severity summaries for 90 days. Findings,
+  including high and critical ones, warn without blocking CI; scanner failures,
+  malformed reports, functional failures and container-policy violations still
+  block it. A green build does not mean vulnerability-free or risk-accepted.
+
 ## [0.103.2] — OpenClaw 2026.9.36 supported, and images rebuilt on fixed Node.js and go-jose
 
 Patch release. OpenClaw 2026.9.36, the latest maintenance release of the extended-stable line,
