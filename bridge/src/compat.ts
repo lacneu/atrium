@@ -471,7 +471,7 @@ export const COMPAT_MANIFEST: CompatManifest = {
       // FLOOR 2026.8.2 (OPENCLAW_MIN_SUPPORTED, release 0.92.0): the versions below it
       // were retired from support — their validation runs stay in the release notes, but
       // the redesigned turn model cannot run on them, and a claim nobody keeps is not one.
-      supportedRange: { min: OPENCLAW_MIN_SUPPORTED, maxValidated: "2026.9.33" },
+      supportedRange: { min: OPENCLAW_MIN_SUPPORTED, maxValidated: "2026.9.36" },
       // Inside the range, and BROKEN on a stock gateway: a managed-media
       // `attachment` block persisted by the gateway's own path crashes
       // `transcript-transform` on every later turn of that session (upstream
@@ -686,6 +686,18 @@ export const COMPAT_MANIFEST: CompatManifest = {
         // ceiling — an interval no upstream release occupies. The 2026.10 mainline stays
         // beyond it.
         "2026.9.33",
+        // 2026.9.36: the third maintenance release of the extended-stable line (upstream
+        // v2026.9.36 = 70c40e4, backports only on top of v2026.9.33; 2026.9.34 and 2026.9.35
+        // were never benched). Full live suite GO (proof run, then the attestation run on the
+        // final tree), Hermes co-run on 0.21.7. Two vendored modules moved, both additively:
+        // the Control UI client cap `ui-agent-github-settings` (client-info.ts — the bridge
+        // never declares it) and `timeoutPhase: "tool_execution"` on a worker lifecycle
+        // terminal (worker-admission.ts). Both event catalogues are byte-identical, 8 watched
+        // files moved, every anchor held: 2026.9.33's profile, no adaptation. The bench ran
+        // the distribution image r7 (sha256:2e5a7226…) with ONE change: r7 ships Node
+        // 24.18.0, below the >=24.22.1 floor 2026.9.34+ enforces at startup, so it cannot
+        // boot; its upstream base's Node 24.22.1 was put back for the run.
+        "2026.9.36",
       ],
       capabilities: OPENCLAW_CAPABILITIES,
     },

@@ -1,5 +1,45 @@
 # Changelog
 
+## [0.103.2] — OpenClaw 2026.9.36 supported, and images rebuilt on fixed Node.js and go-jose
+
+Patch release. OpenClaw 2026.9.36, the latest maintenance release of the extended-stable line,
+is supported, validated on the live bench alongside Hermes 0.21.7. The bridge and the frontend
+images change; Convex stays on 0.103.1 and nothing needs migrating. Deploy the new bridge and
+frontend images, in either order.
+
+**OpenClaw 2026.9.36 is supported.** It continues the 2026.9.33 line with fixes only (2026.9.34
+and 2026.9.35 included). Its protocol additions are ones Atrium does not use — a new Control UI
+capability, and a new label for where a timeout struck (`tool_execution`) — and its event
+catalogues are identical to 2026.9.33's, so Atrium reads it exactly as it reads 2026.9.33: same
+features, same behaviour. An instance on 2026.9.36 no longer shows the "newer than validated"
+notice; 2026.9.34 and 2026.9.35, never benched on their own, now sit inside the supported range
+too. The OpenClaw 2026.10 releases are newer and not yet validated, so they keep the notice.
+
+One behaviour is new in 2026.9.36 and shown differently by Atrium: a run stopped because a tool
+took too long now ends as *interrupted*, and the OpenClaw Control UI tells you to resume it and
+check the tool's effect before repeating it. Atrium does not show that advice: it shows the end of
+the run as the gateway's live events report it. The live bench does not exercise this case.
+
+**Before upgrading a gateway: Node.js 24.22.1 or newer.** From 2026.9.34, OpenClaw refuses to
+start on an older Node.js (`openclaw requires Node >=24.22.1 <25, or >=26.12.1`). The official
+image already ships 24.22.1. A custom gateway image that installs its own Node.js must be
+rebuilt with 24.22.1 or newer, or the gateway will not start after the upgrade. On the bench
+the upgrade from 2026.9.33 needed no migration of the stored state: the gateway started on it
+as is. Going back to 2026.9.33 afterwards is a downgrade OpenClaw refuses by default once
+2026.9.36 has written its configuration — keep a copy of the gateway's state before upgrading.
+
+**Container images rebuilt on fixed Node.js and go-jose.** The image supply-chain gate started
+rejecting both images on 2026-10-30 after new advisories were published — our code did not change.
+The bridge image ran Node.js 22.23.2, affected by CVE-2026-111497 (critical, actively exploited)
+and two high-severity issues; it now runs Node.js 22.23.4. The frontend image's Caddy server
+carried go-jose 4.1.4 (GHSA-mgcc-cww5-fp2q, high); it is now built with go-jose 4.1.6. The
+frontend's build stage also moves to Node.js 24.22.2 (Node is not part of the published frontend
+image). Pull the new bridge and frontend images; nothing to migrate.
+
+**Rollback.** Redeploy the 0.103.1 bridge and frontend images (the frontend image then carries
+the go-jose advisory again). A 0.103.1 bridge keeps working with a 2026.9.36 gateway: it reads it
+with the 2026.9.33 profile and shows the "newer than validated" notice.
+
 ## [0.103.1] — Switching conversation mid-answer, and dictating without stopping
 
 Patch release. **Only the frontend changes**: Convex and the bridge stay on 0.103.0, nothing to

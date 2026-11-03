@@ -168,7 +168,7 @@ describe("COMPAT_MANIFEST shape", () => {
 
   test("openclaw provider pins the validated range + versions", () => {
     const oc = COMPAT_MANIFEST.providers.openclaw!;
-    expect(oc.supportedRange).toEqual({ min: "2026.8.2", maxValidated: "2026.9.33" });
+    expect(oc.supportedRange).toEqual({ min: "2026.8.2", maxValidated: "2026.9.36" });
     // The floor is the operator-facing constant, not a second copy of a string.
     expect(oc.supportedRange?.min).toBe(OPENCLAW_MIN_SUPPORTED);
     expect(oc.validatedVersions).toEqual([
@@ -181,6 +181,7 @@ describe("COMPAT_MANIFEST shape", () => {
       "2026.9.8",
       "2026.9.9",
       "2026.9.33",
+      "2026.9.36",
     ]);
     expect(Object.keys(oc.capabilities).sort()).toEqual([...ALL_CAPS].sort());
     // The two releases inside the range that a STOCK gateway cannot be trusted on:
@@ -285,6 +286,16 @@ describe("compareVersions", () => {
     expect(cmp("2026.10.1-beta.1", "2026.9.33")).toBeGreaterThan(0);
   });
 
+  test("the extended-stable maintenance 2026.9.36 orders above 2026.9.33 and below 2026.10", () => {
+    // Same line, same numbering: v2026.9.34–v2026.9.36 continue the extended-stable
+    // releases on top of v2026.9.33, while the mainline stays at 2026.10.x.
+    const cmp = (a: string, b: string) =>
+      compareVersions(parseVersion(a)!, parseVersion(b)!);
+    expect(cmp("2026.9.36", "2026.9.33")).toBeGreaterThan(0);
+    expect(cmp("2026.9.36", "2026.9.9")).toBeGreaterThan(0);
+    expect(cmp("2026.9.36", "2026.10.1")).toBeLessThan(0);
+  });
+
   test("a pre-release orders BEFORE its release, semver-style", () => {
     const beta = parseVersion("2026.7.1-beta.2")!;
     const release = parseVersion("2026.7.1")!;
@@ -347,21 +358,21 @@ describe("resolveCapabilities — conservative policy (unknown version)", () => 
 });
 
 describe("resolveCapabilities — beyond maxValidated", () => {
-  // All STRICTLY above maxValidated, which is 2026.9.33 since 2026-10-15 — so the
-  // previous probe 2026.9.10 left this list (it now sits BELOW the ceiling, see the
-  // interval case below), as 2026.9.9, 2026.9.8, 2026.9.7, 2026.9.6, 2026.9.5 and 2026.9.3
-  // did before it: a version that earns a GO stops being "beyond" and resolves normally.
-  // 2026.10.1 and 2026.10.2 are REAL upstream mainline releases newer than the
-  // extended-stable 2026.9.33, and never benched: they must keep the banner.
+  // All STRICTLY above maxValidated, which is 2026.9.36 since 2026-11-02 — so the
+  // probe 2026.9.34 left this list (it now sits BELOW the ceiling, see the interval case
+  // below), as 2026.9.10 did at 2026.9.33 and 2026.9.9, 2026.9.8, 2026.9.7, 2026.9.6,
+  // 2026.9.5 and 2026.9.3 before it: a version that earns a GO stops being "beyond" and
+  // resolves normally. 2026.10.1 and 2026.10.2 are REAL upstream mainline releases newer
+  // than the extended-stable line, and never benched: they must keep the banner.
   // The assertion below was already the frozen profile; only the NAME claimed
   // otherwise ("enables all validated capabilities" read as a grant). On the shipped
   // table the two rules coincide — see the shared-table suite for the input where
   // they do not.
-  test.each(["2026.9.34", "2026.10.0", "2026.10.1", "2026.10.2", "2027.1.1"])(
+  test.each(["2026.9.37", "2026.10.0", "2026.10.1", "2026.10.2", "2027.1.1"])(
     "%s is FROZEN at the maxValidated profile + flags versionBeyondValidated",
     (raw) => {
       const resolved = resolveCapabilities("openclaw", raw);
-      // The 2026.9.33 profile (= 2026.9.8's): the 2026.9.2 row plus the knowledge control and the
+      // The 2026.9.36 profile (= 2026.9.8's): the 2026.9.2 row plus the knowledge control and the
       // inline widgets (floored at 2026.9.6) and the queued-input cancel (2026.9.7).
       expect(resolved.capabilities).toEqual({
         ...MATRIX["2026.9.2"],
@@ -437,7 +448,7 @@ describe("resolveCapabilities — beyond maxValidated", () => {
     expect(resolved.versionBeyondValidated).toBe(false);
   });
 
-  test("2026.9.33 is the new ceiling: inside the range, no flag", () => {
+  test("2026.9.33 stays inside the range, no flag", () => {
     const resolved = resolveCapabilities("openclaw", "2026.9.33");
     // The extended-stable line, cut from 2026.9.9 with backports only and a
     // byte-identical vendored contract: 2026.9.9's profile, no capability carries a
@@ -447,6 +458,32 @@ describe("resolveCapabilities — beyond maxValidated", () => {
     );
     expect(resolved.versionBeyondValidated).toBe(false);
   });
+
+  test("2026.9.36 is the new ceiling: inside the range, no flag", () => {
+    const resolved = resolveCapabilities("openclaw", "2026.9.36");
+    // A maintenance release of the extended-stable line whose two vendored-module
+    // changes are additive and unread by the bridge (a Control UI client cap, one more
+    // `timeoutPhase` literal): 2026.9.33's profile, no capability carries a 2026.9.36 floor.
+    expect(resolved.capabilities).toEqual(
+      resolveCapabilities("openclaw", "2026.9.33").capabilities,
+    );
+    expect(resolved.versionBeyondValidated).toBe(false);
+  });
+
+  test.each(["2026.9.34", "2026.9.35"])(
+    "%s, the never-benched releases between 2026.9.33 and 2026.9.36, is inside the range (no flag)",
+    (raw) => {
+      // Real upstream tags (v2026.9.34, v2026.9.35), never benched: raising the ceiling to
+      // 2026.9.36 puts them under it, and they resolve by the floors like any in-range
+      // version. Their changes are contained in the 2026.9.33 → 2026.9.36 diff examined
+      // for this release; they are not in `validatedVersions`.
+      const resolved = resolveCapabilities("openclaw", raw);
+      expect(resolved.capabilities).toEqual(
+        resolveCapabilities("openclaw", "2026.9.33").capabilities,
+      );
+      expect(resolved.versionBeyondValidated).toBe(false);
+    },
+  );
 
   test.each(["2026.9.10", "2026.9.32"])(
     "%s, between 2026.9.9 and the extended-stable ceiling, is inside the range (no flag)",
@@ -466,7 +503,7 @@ describe("resolveCapabilities — beyond maxValidated", () => {
 
   test("exactly maxValidated is NOT beyond", () => {
     expect(
-      resolveCapabilities("openclaw", "2026.9.33").versionBeyondValidated,
+      resolveCapabilities("openclaw", "2026.9.36").versionBeyondValidated,
     ).toBe(false);
   });
 

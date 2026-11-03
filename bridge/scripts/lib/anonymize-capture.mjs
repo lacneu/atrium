@@ -84,6 +84,10 @@ const IDENTIFIER_KEYS = new Set([
   "id",
   "taskId",
   "toolCallId",
+  // A delivery item's identity: `claimDeliveryItemEnd` (normalizer.ts) keys an item's
+  // `end` on it. Masked as text, two spawns of one code-mode exec (`…:sessions_spawn:1`,
+  // `…:sessions_spawn:2`) collapsed onto one item and replayed as one card (2026.9.36).
+  "itemId",
   "messageId",
   "chatId",
   "callId",
