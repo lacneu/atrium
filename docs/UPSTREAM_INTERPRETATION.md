@@ -9,10 +9,10 @@ WebSocket protocol, versus the Atrium bridge normalizer
 ratchet; the per-field classification lives in the coverage manifests under
 `bridge/protocol/openclaw/coverage/`.
 
-Reference source: `github.com/openclaw/openclaw` at tag **`v2026.9.33`** — the
+Reference source: `github.com/openclaw/openclaw` at tag **`v2026.9.36`** — the
 exact `maxValidated` gateway version in `bridge/src/compat.ts`.
 
-> **WHAT "ANCHORED AT v2026.9.33" MEANS.** The CONCLUSIONS below were re-verified against that
+> **WHAT "ANCHORED AT v2026.9.36" MEANS.** The CONCLUSIONS below were re-verified against that
 > tag, zone by zone, at each revision. The `file:line` CITATIONS are checked as well: every
 > citation of this document and of the scenario descriptions of
 > `bridge/test/fixtures/openclaw_upstream_frames.json` is recorded in
@@ -37,10 +37,49 @@ references below (`$UP/…`) are paths inside that tag. The Control UI is a
 the divergence is documented as deliberate rather than "fixed".
 
 No internal offset: the runtime drift detector vendors its schema at
-`2026.9.33` (`DRIFT_VENDORED_VERSION`, `protocol-drift.ts`), the same version as
+`2026.9.36` (`DRIFT_VENDORED_VERSION`, `protocol-drift.ts`), the same version as
 the validated ceiling. An unknown-field warning against a 2026.9.x gateway is
 therefore real drift, not schema staleness — it names a field the published
 contract does not declare, and should be read as such.
+
+**Revision of 2026-11-02 (v2026.9.33 → v2026.9.36).** Three maintenance releases of the
+extended-stable line (v2026.9.34, v2026.9.35, v2026.9.36), backports only, read as one diff
+against v2026.9.33 (report: `openclaw-notes/atrium/bench-runs/upstream-diff-2026.9.33-vs-2026.9.36/`
+— 8 of the 145 watched files changed, 42 anchors held). In `packages/gateway-protocol/src` three
+files moved, all additively: two of the 86 vendored modules — the Control UI client cap
+`ui-agent-github-settings` (`client-info.ts`; the bridge never declares it) and
+`timeoutPhase: "tool_execution"` on a worker lifecycle terminal (`worker-admission.ts`) — and the
+non-vendored `ui-command.ts` (an `agent-github-settings` UI command). Both event catalogues are
+byte-identical. What the watched changes mean for Atrium, zone by zone:
+
+- **Zone 1.** A run killed by a TOOL EXECUTION deadline now ends with
+  `timeoutPhase: "tool_execution"` (`$UP/src/agents/agent-run-terminal-outcome.ts`,
+  `isAgentRunResumableToolTimeout`), and its session row records `status: "interrupted"` with
+  the advisory `lastRunError` "Tool execution timed out with an unknown outcome. Resume to verify
+  state before repeating it." plus a restart-recovery checkpoint
+  (`$UP/src/gateway/session-lifecycle-state.ts`) — where 2026.9.33 recorded a timeout. The
+  Control UI shows `lastRunError` for any non-`done` status (`ui/src/pages/chat/chat-history-stream.ts`,
+  unchanged). Atrium reads the run's own terminal as before; its transcript error reading takes
+  `failed`/`timeout` only, so such a run shows Atrium's timeout reading, not upstream's resume
+  advice, and the trace buckets `tool_execution` (like `preflight`/`post_turn` already) to
+  `other`. Not exercised by the bench (no scenario hits a tool deadline).
+- **Zone 2.** `chat.send`'s admission interrupt now stamps `stopReason: "restart"` only for a
+  restart abort reason and `"rpc"` for every other interruption (it was the reverse default,
+  `$UP/src/gateway/server-methods/chat-send-admission.ts`). Atrium decides nothing on either
+  value (trace allowlist only). `attempt-execution.helpers.ts` changes concern the Claude CLI
+  runtime only.
+- **Zone 4.** A completed answer followed by a reasoning-only tail is kept instead of being
+  replaced by the incomplete-turn warning (`run/incomplete-turn-resolution.ts`, `keptAnswer`):
+  fewer "couldn't generate a response" terminals, same wire shape.
+- **Zone 5.** `chat.send` now stores the normalized (trimmed) text as the inbound message even
+  without a work context (`chat-send-request.ts`). The dedup window, the TTLs and the
+  doublon-ack behaviour are unchanged; Atrium places transcript rows by identity, not by text.
+
+Read outside the watchlist: `sessions_yield` is declared `async: false`, so a yield pauses an
+async tool response and receives that response's async results with its own result
+(`src/agents/tools/sessions-yield-tool.ts`); the yield/settle scenarios ran GO on it. Six
+citations moved by one to thirty-one lines and were corrected in place. The live suite ran GO
+on the tag before the ceiling moved.
 
 **Revision of 2026-10-15 (v2026.9.9 → v2026.9.33).** The extended-stable line: v2026.9.33
 is cut from v2026.9.9 and carries backports only (17 commits). Re-verified against the tag
@@ -484,7 +523,7 @@ resolved by:
   the cases found at v2026.9.4 — a list from reading, not a proof of
   completeness (it used to say "only reset/delete"): an effective
   `interrupt` queue mode (above; at admission too when the send carries the
-  field, `$UP/src/gateway/server-methods/chat-send-admission.ts:277,558`, and
+  field, `$UP/src/gateway/server-methods/chat-send-admission.ts:274,553`, and
   `sessions.steer` forces it, `sessions-messaging.ts:109`), a session
   reset/delete (`session-reset-service.ts:903`), a session archive/delete
   drain (`sessions-lifecycle-drain.ts`, `stopReason` = the action), an
@@ -494,7 +533,7 @@ resolved by:
   `server-worker-placement-startup.ts:322`), a sub-agent kill (on the CHILD
   session, `subagent-control-kill-runtime.ts:357-362`), a reply session rollover
   (`$UP/src/auto-reply/reply/session.ts:462`, turned into `abortForRestart`
-  by the active turn, `reply-turn-admission.ts:303-305` — `stopReason:"restart"`).
+  by the active turn, `reply-turn-admission.ts:305-307` — `stopReason:"restart"`).
   Atrium's bridge
   never sets `queueMode` on its `chat.send` calls (a declared gap in
   `protocol-drift`, inventoried by `outbound-ratchet.test.ts`), but that does
@@ -566,12 +605,12 @@ by `createAgentRunSupersededAbortError` carries it, and that error is created
 at six sites (one under an import alias, which a search on the canonical
 name misses) — among them a CLI turn whose session incarnation or lifecycle
 revision moved before it executed
-(`$UP/src/agents/command/attempt-execution.ts:531`; also
-`auto-reply/reply/agent-runner-cli-candidate.ts:198`,
+(`$UP/src/agents/command/attempt-execution.ts:530`; also
+`auto-reply/reply/agent-runner-cli-candidate.ts:196`,
 `auto-reply/reply/reply-run-registry.operation.ts:519` (`supersede`, imported
 as `createSupersededError`),
 `embedded-agent-runner/run/deferred-lifecycle-owner.ts:158`,
-`embedded-agent-runner/run/attempt-stream-prepare.ts:442`,
+`embedded-agent-runner/run/attempt-stream-prepare.ts:441`,
 `gateway/worker-environments/worker-turn-run-owner.ts:72`), mapped to
 `superseded` by `src/agents/agent-run-terminal-outcome.ts:526-533`. The other kills found
 while reading — examples, NOT an exhaustive list — carry a generic `aborted`

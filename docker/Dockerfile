@@ -6,7 +6,7 @@
 # therefore serves ANY deployment. See src/lib/runtimeConfig.ts.
 
 # --- Build stage --------------------------------------------------------------
-FROM --platform=$BUILDPLATFORM node:24-alpine@sha256:a0b9bf06e4e6193cf7a0f58816cc935ff8c2a908f81e6f1a95432d679c54fbfd AS build
+FROM --platform=$BUILDPLATFORM node:24-alpine@sha256:8a32c8cf649a49915a66e81e7a609223c708d0adabf288ee3f4077d765542f85 AS build
 WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci
@@ -39,7 +39,8 @@ ARG TARGETARCH
 # high-severity advisories, which the image scan
 # gate rejects: golang.org/x/text v0.37.0 (GO-2026-5970, fixed in 0.39.0) and
 # google.golang.org/grpc v1.81.0 (GHSA-hrxh-6v49-42gf) and v1.83.1
-# (GHSA-2v4p-qf9q-27wj) are fixed in 1.83.2.
+# (GHSA-2v4p-qf9q-27wj) are fixed in 1.83.2; github.com/go-jose/go-jose/v4
+# v4.1.4 (GHSA-mgcc-cww5-fp2q) is fixed in 4.1.6.
 # `go install pkg@version` builds in module-free mode and CANNOT override a
 # dependency, so build the same Caddy release from a throwaway module where the
 # flagged dependencies
@@ -57,9 +58,9 @@ RUN go mod init atrium/caddy-dist \
  && printf 'package main\n\nimport (\n\tcaddycmd "github.com/caddyserver/caddy/v2/cmd"\n\t_ "github.com/caddyserver/caddy/v2/modules/standard"\n)\n\nfunc main() { caddycmd.Main() }\n' > main.go \
  && go mod edit -require=github.com/caddyserver/caddy/v2@v2.11.4 \
  && go mod tidy \
- && go get golang.org/x/text@v0.42.0 golang.org/x/net@v0.60.0 google.golang.org/grpc@v1.83.2 go.opentelemetry.io/otel@v1.44.0 \
+ && go get golang.org/x/text@v0.42.0 golang.org/x/net@v0.60.0 google.golang.org/grpc@v1.83.2 go.opentelemetry.io/otel@v1.44.0 github.com/go-jose/go-jose/v4@v4.1.6 \
  && CGO_ENABLED=0 GOOS="$TARGETOS" GOARCH="$TARGETARCH" go build -trimpath -o /out/caddy . \
- && go version -m /out/caddy | grep -E 'golang.org/x/text|google.golang.org/grpc|go.opentelemetry.io/otel	'
+ && go version -m /out/caddy | grep -E 'golang.org/x/text|google.golang.org/grpc|go.opentelemetry.io/otel	|github.com/go-jose/go-jose/v4'
 FROM alpine:3.24@sha256:28bd5fe8b56d1bd048e5babf5b10710ebe0bae67db86916198a6eec434943f8b AS serve
 # Caddy is statically linked and the entrypoint only needs BusyBox + musl. Removing
 # apk-tools also removes its OpenSSL/zlib dependency chain before the trusted CA bundle

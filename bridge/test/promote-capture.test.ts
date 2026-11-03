@@ -335,6 +335,42 @@ describe("capture anonymiser — what the reader branches on survives", () => {
     expect(b.payload.sessionKey.split(":")[2]).toBe("subagent");
   });
 
+  it("two delivery items that differ only by their index stay two items (2026.9.36 bench)", () => {
+    // `claimDeliveryItemEnd` (normalizer.ts) keys an item's `end` on its `itemId`. Masked
+    // like text, `…:sessions_spawn:1` and `…:sessions_spawn:2` both became `…:0`, so the
+    // promoted capture of two spawns from ONE code-mode exec drew one card where the live
+    // run drew two, and the fidelity gate refused the 2026.9.36 corpus.
+    // `itemId` entered the protocol after 2026.7.1: the vocabulary of the version the run
+    // was captured on, as the promoter derives it.
+    const known = knownKeysFromCoverage(
+      readJson("../protocol/openclaw/coverage/2026.9.36.json"),
+      (readJson("../protocol/openclaw/2026.9.36/session-event-snapshot.json") as { fields: string[] })
+        .fields,
+    );
+    const pseudo = createPseudonymiser();
+    const item = (n: number) =>
+      anonymizeFrame(
+        {
+          payload: {
+            stream: "item",
+            data: {
+              itemId: `tool:tool_call:call_ab12_fc_cd34:sessions_spawn:${n}`,
+              toolCallId: `tool_call:call_ab12_fc_cd34:sessions_spawn:${n}`,
+            },
+          },
+        },
+        pseudo,
+        newStats(),
+        known,
+      ) as { payload: { data: { itemId: string; toolCallId: string } } };
+    const one = item(1);
+    const two = item(2);
+    expect(one.payload.data.itemId).not.toBe(two.payload.data.itemId);
+    // Same call, same gateway rule (`tool:` + the call id), so the join still holds.
+    expect(item(1).payload.data.itemId).toBe(one.payload.data.itemId);
+    expect(one.payload.data.itemId).not.toContain("ab12");
+  });
+
   it("streamed text keeps its PREFIX structure (the snapshot/replace path)", () => {
     // `mask` is applied per character, so it distributes over concatenation. Without that
     // property a promoted delta would no longer be a prefix of its snapshot, and the

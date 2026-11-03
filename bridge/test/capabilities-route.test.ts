@@ -152,7 +152,7 @@ describe("GET /capabilities + /health (compat surface)", () => {
     expect(body.compat.protocolVersion).toBe(2);
     expect(body.compat.providers.openclaw!.supportedRange).toEqual({
       min: "2026.8.2",
-      maxValidated: "2026.9.33",
+      maxValidated: "2026.9.36",
     });
     expect(body.compat.providers.openclaw!.validatedVersions).toEqual([
       "2026.9.1",
@@ -164,6 +164,7 @@ describe("GET /capabilities + /health (compat surface)", () => {
       "2026.9.8",
       "2026.9.9",
       "2026.9.33",
+      "2026.9.36",
     ]);
     expect(body.compat.providers.hermes).toEqual({
       supportedRange: { min: "0.18.0", maxValidated: "0.21.7" },
