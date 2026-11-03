@@ -323,6 +323,11 @@ explicit precisely so a plain replay can never reach it.
 
 ### Staged replacement
 
+Available from Atrium **0.103.3**. Deploy that release's Convex schema and
+functions before an installer uses these endpoints; updating the frontend or
+bridge image alone does not update the self-hosted backend's application code.
+Existing credentials do not need to be rotated just to upgrade Atrium.
+
 For a running bridge, prefer the three-step protocol below. All three requests
 require the same authenticated service principal and `instances.provision`.
 
