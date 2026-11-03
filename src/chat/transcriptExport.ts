@@ -45,10 +45,26 @@ const ROLE_LABEL: Record<ExportMessage["role"], string> = {
 };
 
 // Stated as a CAP, not an assertion of omission: at exactly 200 messages nothing
-// is actually dropped (`listByChat` does `.take(200)`), so claiming "older
+// is actually dropped (`listByChat` reads at most 200), so claiming "older
 // messages omitted" would be false in that boundary case. The cap wording is
-// accurate whether or not older turns exist, and still warns the reader.
-const TRUNCATION_NOTE = m.transcript_truncation_note();
+// accurate whether or not older turns exist, and still warns the reader. The
+// count is the export's own: a window the server's read budget stopped holds
+// fewer than 200, and the note must not claim 200 for it.
+const truncationNote = (count: number): string => m.transcript_truncation_note({ count });
+
+/** The size of a full `listByChat` window (convex/messages.ts MESSAGE_WINDOW) — the
+ *  rule a backend that predates `windowTruncated` is read by. */
+const LEGACY_FULL_WINDOW = 200;
+
+/**
+ * May older messages be missing from this `listByChat` window? The server says so on the
+ * window's first row (`windowTruncated`, convex/messages.ts loadChatView), for a full
+ * window as for one its read budget stopped — a 37-message window can be cut too, so the
+ * row count alone no longer tells. A backend without the flag: a full window, as before.
+ */
+export function windowIsTruncated(rows: ReadonlyArray<{ windowTruncated?: boolean }>): boolean {
+  return rows.some((r) => r.windowTruncated === true) || rows.length >= LEGACY_FULL_WINDOW;
+}
 
 /** UTC, stable across machines/timezones -> deterministic test output. */
 function formatTs(ts: number): string {
@@ -76,7 +92,7 @@ export function transcriptToMarkdown(
   }
   if (opts.truncated) {
     lines.push("");
-    lines.push(TRUNCATION_NOTE);
+    lines.push(truncationNote(messages.length));
   }
   for (const msg of messages) {
     lines.push("");

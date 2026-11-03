@@ -7,6 +7,7 @@ import {
   transcriptToMarkdown,
   transcriptToJson,
   exportFilename,
+  windowIsTruncated,
   type ExportMessage,
 } from "./transcriptExport";
 
@@ -37,10 +38,22 @@ describe("transcriptToMarkdown", () => {
   });
 
   it("emits the truncation marker ONLY when truncated", () => {
-    const note = "Export limité aux 200 messages";
+    const note = "Export limité aux";
     expect(transcriptToMarkdown(SAMPLE, { truncated: true })).toContain(note);
     expect(transcriptToMarkdown(SAMPLE, { truncated: false })).not.toContain(note);
     expect(transcriptToMarkdown(SAMPLE, {})).not.toContain(note);
+  });
+
+  it("states the window it holds: 200 for a full window, fewer for one the budget stopped", () => {
+    const full = Array.from({ length: 200 }, (_, i) => ({ role: "user" as const, text: `m${i}`, createdAt: T0 + i }));
+    // A full window reads exactly as before 0.103.4.
+    expect(transcriptToMarkdown(full, { truncated: true })).toContain(
+      "[Export limité aux 200 messages les plus récents de cette conversation]",
+    );
+    // A window the read budget stopped never claims 200.
+    const md = transcriptToMarkdown(SAMPLE, { truncated: true });
+    expect(md).toContain("[Export limité aux 2 messages les plus récents de cette conversation]");
+    expect(md).not.toContain("200");
   });
 
   it("falls back to a default title", () => {
@@ -140,5 +153,24 @@ describe("exportFilename", () => {
     expect(exportFilename(null)).toBe("conversation");
     expect(exportFilename("   ")).toBe("conversation");
     expect(exportFilename("!!!")).toBe("conversation");
+  });
+});
+
+describe("windowIsTruncated (the listByChat window flag)", () => {
+  it("reads the server's flag on a short window the read budget stopped", () => {
+    const rows = [{ windowTruncated: true }, {}, {}];
+    expect(windowIsTruncated(rows)).toBe(true);
+  });
+
+  it("a short window without the flag is whole", () => {
+    expect(windowIsTruncated([{}, {}, {}])).toBe(false);
+    expect(windowIsTruncated([])).toBe(false);
+  });
+
+  it("a full window is truncated, flag or not (a backend that predates the flag)", () => {
+    const full = Array.from({ length: 200 }, () => ({}));
+    expect(windowIsTruncated(full)).toBe(true);
+    expect(windowIsTruncated([{ windowTruncated: true }, ...full.slice(1)])).toBe(true);
+    expect(windowIsTruncated(full.slice(1))).toBe(false);
   });
 });

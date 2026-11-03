@@ -42,11 +42,69 @@ import { widgetInstanceForViews } from "./widgets";
 import { partWidgetField } from "./lib/widgetDescriptor";
 import { fileOfLayout } from "./lib/rowParts";
 import { layoutWithoutReasoning } from "./lib/reasoningDisplay";
+import { meteredCtx, ReadBudgetExceeded, type ArmedReadMeter } from "./lib/meteredReads";
+import { docReadBytes } from "./lib/transcriptProjection";
 
 /** Copy bound = the visible window (loadChatView's MESSAGE_WINDOW): the fork
  *  shows exactly what the user sees in the source. Older context still reaches
  *  the AGENT through the carried rolling summary when one covers it. */
 export const FORK_MESSAGE_CAP = 200;
+
+/** The bytes a fork may read of the messages it copies and their parts — roughly what it
+ *  then WRITES, since a rows-composed bubble's parts are copied whole. A branch of a long
+ *  conversation of heavy turns read past Convex's 16 MiB per-function limit, and the
+ *  mutation threw (the same conversation that no longer opened, 0.103.4). Kept well under
+ *  it: the fork also reads its anchored window of message documents and the file rows. */
+export const FORK_COPY_BUDGET_BYTES = 6 * 1024 * 1024;
+
+/**
+ * The messages a fork copies, NEWEST FIRST within FORK_COPY_BUDGET_BYTES (a message's own
+ * document plus its parts, metered as read), with those parts — read once, here; the copy
+ * reuses them. The window keeps the newest messages whole and stops at the first that does
+ * not fit. The BRANCH POINT (the newest) is always copied: when it alone does not fit, it
+ * is copied `bare` — its text and fields, without its parts or rows.
+ */
+async function forkPartsWithinBudget(
+  ctx: MutationCtx,
+  capped: readonly Doc<"messages">[],
+  budget: number = FORK_COPY_BUDGET_BYTES,
+): Promise<{
+  slice: Doc<"messages">[];
+  partsOf: Map<string, Doc<"messageParts">[]>;
+  bare: Set<string>;
+}> {
+  const meter: ArmedReadMeter = { bytes: 0, ceiling: budget };
+  const mctx = meteredCtx(ctx, meter);
+  const partsOf = new Map<string, Doc<"messageParts">[]>();
+  const bare = new Set<string>();
+  let from = capped.length;
+  for (let i = capped.length - 1; i >= 0; i--) {
+    const msg = capped[i]!;
+    const isBranch = i === capped.length - 1;
+    // Its document was read with the window; its copy is written.
+    meter.bytes += docReadBytes(msg);
+    if (!isBranch && meter.bytes > budget) break;
+    try {
+      const parts: Doc<"messageParts">[] = [];
+      for await (const d of mctx.db
+        .query("messageParts")
+        .withIndex("by_message", (q) => q.eq("messageId", msg._id))) {
+        parts.push(d);
+      }
+      partsOf.set(String(msg._id), parts);
+      from = i;
+    } catch (e) {
+      if (!(e instanceof ReadBudgetExceeded)) throw e;
+      if (isBranch) {
+        partsOf.set(String(msg._id), []);
+        bare.add(String(msg._id));
+        from = i;
+      }
+      break;
+    }
+  }
+  return { slice: capped.slice(from), partsOf, bare };
+}
 
 /** The transcript-file records a rows-composed bubble's layout names, copied into the fork
  *  (same blob: a copied record holds it, lib/blobs.ts). A pending one is copied WITHOUT a
@@ -165,8 +223,11 @@ export const forkChat = mutation({
     const upTo = ordered
       .slice(0, idx + 1)
       .filter((m) => m.status !== "streaming");
-    const slice =
+    const capped =
       upTo.length > FORK_MESSAGE_CAP ? upTo.slice(-FORK_MESSAGE_CAP) : upTo;
+    // …and bounded in BYTES, newest first: each message's parts are read ONCE here and
+    // copied from this read below (forkPartsWithinBudget).
+    const { slice, partsOf, bare } = await forkPartsWithinBudget(ctx, capped);
     const truncated = slice.length < upTo.length;
 
     const now = Date.now();
@@ -306,6 +367,8 @@ export const forkChat = mutation({
       forkPendingRehydration: true,
     });
 
+    // A branch point copied bare is copied as its text: its rows index the parts it lacks.
+    const rowLayoutOf = (m: Doc<"messages">) => (bare.has(String(m._id)) ? undefined : m.rowLayout);
     const idMap = new Map<Id<"messages">, Id<"messages">>();
     // Widget parts copied into the fork, for the ownership inheritance below.
     const copiedWidgets: Array<{ source: Doc<"messages">; copy: Id<"messages">; viewId: string }> = [];
@@ -365,7 +428,7 @@ export const forkChat = mutation({
         // rows (text spans, order, files, remote references, cards, widgets, cut notice)
         // and its display group — the head's copy, which precedes it in this loop (R4).
         // …without its reasoning marks: the reasoning stays in the original rows (0.103.0).
-        ...(msg.rowLayout !== undefined ? { rowLayout: layoutWithoutReasoning(msg.rowLayout) } : {}),
+        ...(rowLayoutOf(msg) !== undefined ? { rowLayout: layoutWithoutReasoning(rowLayoutOf(msg)!) } : {}),
         ...(msg.displayGroupId !== undefined && idMap.has(msg.displayGroupId as Id<"messages">)
           ? { displayGroupId: String(idMap.get(msg.displayGroupId as Id<"messages">)) }
           : {}),
@@ -375,11 +438,8 @@ export const forkChat = mutation({
       if (msg.displayGroupId === String(msg._id)) await ctx.db.patch(newMsgId, { displayGroupId: String(newMsgId) });
       // …and the state of each file its rows name (copied with the SAME blob, gone,
       // refused, pending): the view reads a row's file through its record.
-      const fileRecords = msg.rowLayout === undefined ? new Map<string, Id<"transcriptFiles">>() : await copyRowFileRecords(ctx, msg, forkId, source.instanceName ?? "");
-      const parts = await ctx.db
-        .query("messageParts")
-        .withIndex("by_message", (q) => q.eq("messageId", msg._id))
-        .collect();
+      const fileRecords = rowLayoutOf(msg) === undefined ? new Map<string, Id<"transcriptFiles">>() : await copyRowFileRecords(ctx, msg, forkId, source.instanceName ?? "");
+      const parts = partsOf.get(String(msg._id)) ?? [];
       // Source `files` rows for this message (lazy: only when a file part
       // exists) — the copy must carry row-level metadata the part does not
       // hold, e.g. origin:"pasted" (hidden by default in Settings > Files).
@@ -391,7 +451,7 @@ export const forkChat = mutation({
         // …but never the model's reasoning, nor any other reasoning part (0.103.0): a branch is
         // a conversation, and reasoning stays in the original.
         if (p.part.kind === "reasoning") continue;
-        if (msg.rowLayout !== undefined && !isFilePart(p.part) && p.part.kind !== "widget") {
+        if (rowLayoutOf(msg) !== undefined && !isFilePart(p.part) && p.part.kind !== "widget") {
           await ctx.db.insert("messageParts", { messageId: newMsgId, order: p.order, part: p.part });
           continue;
         }

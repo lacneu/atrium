@@ -90,6 +90,7 @@ import { textIsYieldAcknowledgment, type YieldAckToolPart } from "./lib/toolOutc
 import { isTrashed } from "./lib/trash";
 import { releaseBlob, storageIdsOfPart } from "./lib/blobs";
 import { deletionTombstones, segmentOfRow, steerSeqsOf } from "./lib/transcriptProjection";
+import { meteredCtx, ReadBudgetExceeded, type ArmedReadMeter } from "./lib/meteredReads";
 import { deletionStart } from "./lib/displayGroupHead";
 import { traceRegressionSummary } from "./lib/streamTrace";
 import { fileOfLayout } from "./lib/rowParts";
@@ -315,18 +316,109 @@ const utf8 = new TextEncoder();
 const fieldBytes = (v: unknown): number =>
   v === undefined ? 0 : utf8.encode(JSON.stringify(v)).length;
 
+/**
+ * The bytes the chat view may READ before its window stops — everything it reads, through
+ * a metered context (lib/meteredReads.ts): the conversation, the message documents, their
+ * parts, row layouts' files, an active bubble's rows, the outbox, the names. A long
+ * conversation of heavy turns (tool outputs, rows, files) read as a whole MESSAGE_WINDOW
+ * passed Convex's 16 MiB per-function limit, and the query THREW — the conversation no
+ * longer opened at all (prod, 0.103.4). Half the limit: the window stops at most one
+ * document (≤ 1 MiB) past it, and its callers read beside it (chatStateInternal: the live
+ * texts, the outbox again, the sub-agents). The measure over-counts (JSON), never under.
+ */
+export const CHAT_VIEW_READ_BUDGET_BYTES = 8 * 1024 * 1024;
+/** …of which the message documents themselves may take half: the rest is for what they
+ *  carry, so a window of heavy documents still shows its newest bubbles whole. */
+export const CHAT_VIEW_MESSAGE_DOCS_BYTES = 4 * 1024 * 1024;
+
+/**
+ * The newest messages of a chat, newest first (by creation, the `by_chat` order): at most
+ * MESSAGE_WINDOW, and no further once the meter reaches `docsBudget`. Read lazily, so a
+ * stop reads nothing past it. `cut`: older messages may exist that the window does not
+ * hold — the full window counts as one, as it always has for the client.
+ */
+async function windowDocs(
+  ctx: QueryCtx,
+  meter: ArmedReadMeter,
+  chatId: Id<"chats">,
+  docsBudget: number,
+): Promise<{ docs: Doc<"messages">[]; cut: boolean }> {
+  const docs: Doc<"messages">[] = [];
+  let cut = false;
+  for await (const m of ctx.db
+    .query("messages")
+    .withIndex("by_chat", (q) => q.eq("chatId", chatId))
+    .order("desc")) {
+    docs.push(m);
+    if (docs.length >= MESSAGE_WINDOW) {
+      cut = true;
+      break;
+    }
+    if (meter.bytes >= docsBudget) {
+      cut = true;
+      break;
+    }
+  }
+  return { docs, cut };
+}
+
+/**
+ * Build each message, newest first, while the meter stays under `budget` (armed: a read
+ * past it throws, so a message stops at most one document past the line). The window is
+ * the newest messages built WHOLE; the first one that does not fit ends it, and what it
+ * read is dropped with it. The NEWEST message is never dropped: when it alone does not fit,
+ * `bare` builds it without reading anything more (the caller decides what that shows), so
+ * the view always opens. `cut`: a message of `docs` is not in the result.
+ */
+async function withinReadBudget<T>(
+  meter: ArmedReadMeter,
+  budget: number,
+  docs: readonly Doc<"messages">[],
+  build: (message: Doc<"messages">) => Promise<T>,
+  bare?: (message: Doc<"messages">) => Promise<T>,
+): Promise<{ built: T[]; cut: boolean }> {
+  const built: T[] = [];
+  try {
+    for (const message of docs) {
+      if (built.length > 0 && meter.bytes >= budget) break;
+      meter.ceiling = budget;
+      try {
+        const out = await build(message);
+        // A reader that caught the throw has still read past the line.
+        if (meter.bytes > budget) throw new ReadBudgetExceeded();
+        built.push(out);
+      } catch (e) {
+        if (!(e instanceof ReadBudgetExceeded)) throw e;
+        meter.ceiling = Infinity;
+        if (built.length === 0 && bare !== undefined) built.push(await bare(message));
+        break;
+      }
+    }
+  } finally {
+    meter.ceiling = Infinity;
+  }
+  return { built, cut: built.length < docs.length };
+}
+
 // Shared CORE of the chat view: the EXACT bounded read + per-message part
 // resolution the client renders from. Extracted so the key-authed diagnostic
 // (chatStateInternal) consumes the SAME data path as listByChat — a structural
 // bug surfaces identically in both, never hidden behind a second implementation
 // (the projection-drift the API was asked to eliminate). Auth + owner-scoping
 // stay in the CALLERS; this core is identity-agnostic, keyed by a validated id.
+//
+// BOUNDED IN BYTES as well as in messages (CHAT_VIEW_READ_BUDGET_BYTES): the window holds
+// the newest messages whose reads fit, and says so (`windowTruncated` on its first row)
+// whenever older ones may be missing — a full MESSAGE_WINDOW included, as before.
 async function loadChatView(
-  ctx: QueryCtx,
+  rawCtx: QueryCtx,
   id: Id<"chats">,
   /** The person READING: marks the mention that concerns them, and their own turns. */
   viewerId: Id<"users">,
 ) {
+  // EVERY read below is charged to the window's meter, whichever helper makes it.
+  const meter: ArmedReadMeter = { bytes: 0, ceiling: Infinity };
+  const ctx = meteredCtx(rawCtx, meter);
   // IMPORTED history: the agent this conversation was bound to elsewhere. Read
   // once here rather than copied onto every imported message, because a
   // conversation-wide fallback stored per message would override the real routed
@@ -347,12 +439,9 @@ async function loadChatView(
     !layout.some((r) => r.thinking === true) || (await showReasoningView()) ? layout : layoutWithoutReasoning(layout);
   // R4 (no visible duplicate) is decided over every assistant bubble of a conversation that
   // stored transcript content (`on`); any other conversation reads exactly what it did.
-  // Bounded read: most-recent MESSAGE_WINDOW messages, newest first.
-  const recentDesc = await ctx.db
-      .query("messages")
-      .withIndex("by_chat", (q) => q.eq("chatId", id))
-      .order("desc")
-      .take(MESSAGE_WINDOW);
+  // Bounded read: most-recent MESSAGE_WINDOW messages, newest first — fewer when their
+  // documents alone weigh CHAT_VIEW_MESSAGE_DOCS_BYTES.
+  const { docs: recentDesc, cut: docsCut } = await windowDocs(ctx, meter, id, CHAT_VIEW_MESSAGE_DOCS_BYTES);
   // …and over a copy of such a conversation (an import, a fork): its rows-composed
   // bubbles show the same decisions without the copy pretending it read a transcript
   // (codex review 17). A conversation with neither reads exactly what it did.
@@ -435,27 +524,36 @@ async function loadChatView(
       }
     }
 
-    // Batch part resolution: fetch each message's parts in parallel. Convex has
-    // no SQL join, so this is per-message — but the message set is bounded by
-    // MESSAGE_WINDOW, so the fan-out is bounded too. Within a message, parts are
-    // bounded by how many the bridge appended for that turn.
-    const result = await Promise.all(
-      messages.map(async (message) => {
-        const partDocs = await ctx.db
-          .query("messageParts")
-          .withIndex("by_message", (q) => q.eq("messageId", message._id))
-          .collect();
+    // Part resolution, per message (Convex has no SQL join), NEWEST FIRST and one message
+    // at a time: each one's reads are charged before the next starts, so the window stops
+    // where the budget does (withinReadBudget). Within a message, parts are read lazily —
+    // a turn whose parts alone pass the budget stops at the part that crosses it.
+    //
+    // `bare`: the newest message when it alone does not fit — its own fields and text,
+    // WITHOUT its parts or rows (no read at all), marked `partsOmitted`. The conversation
+    // opens and shows what the turn said; what it carried stays stored, unshown here.
+    const viewOf = async (message: Doc<"messages">, bare: boolean) => {
+        const partDocs: Doc<"messageParts">[] = [];
+        if (!bare) {
+          for await (const d of ctx.db
+            .query("messageParts")
+            .withIndex("by_message", (q) => q.eq("messageId", message._id))) {
+            partDocs.push(d);
+          }
+        }
         partDocs.sort((a, b) => a.order - b.order);
         const transcriptFileOf = new Map<unknown, Id<"transcriptFiles">>();
         for (const d of partDocs) if (d.transcriptFileId !== undefined) transcriptFileOf.set(d.part, d.transcriptFileId);
+        // A bare bubble shows no rows: its rows index parts and files it does not read.
+        const rowLayout = bare ? undefined : message.rowLayout;
         // Final design step 3: a bubble the transcript rows composed shows them row by
         // row; each file of a row is read with its copy's state. Read only for such a
         // bubble (`rowLayout`): every other one costs exactly what it did.
-        const rowFiles = message.rowLayout === undefined ? undefined : await rowFilesOf(ctx, message);
+        const rowFiles = rowLayout === undefined ? undefined : await rowFilesOf(ctx, message);
         // An ACTIVE bubble of a projected conversation: what its rows already say, now
         // (codex review 6 — lib/viewReconcile.ts).
         const active =
-          decidesDisplay && message.role === "assistant" && message.status === "streaming" && message.rowLayout === undefined
+          !bare && decidesDisplay && message.role === "assistant" && message.status === "streaming" && message.rowLayout === undefined
             ? await activeRowLayout(ctx, message)
             : undefined;
         const activeLayout = active?.layout;
@@ -466,7 +564,7 @@ async function loadChatView(
         // …and the bytes of the file parts no row of the LAYOUT shows, for a bubble that can
         // share a display group with one (R4 over a mixed group). Every other bubble: no read.
         const liveFileShas =
-          decidesDisplay && message.role === "assistant"
+          !bare && decidesDisplay && message.role === "assistant"
             ? await filePiecesOf(
                 ctx,
                 partDocs,
@@ -482,11 +580,11 @@ async function loadChatView(
         const rawParts = (
           active !== undefined
             ? hydrateToolParts(partDocs.map((d) => d.part), active.layout, active.payloads)
-            : message.rowLayout !== undefined
-              ? hydrateToolParts(partDocs.map((d) => d.part), message.rowLayout, new Map())
+            : rowLayout !== undefined
+              ? hydrateToolParts(partDocs.map((d) => d.part), rowLayout, new Map())
               : partDocs.map((d) => d.part)
         ) as Array<Doc<"messageParts">["part"]>;
-        const noteRows = persistedNoteKeys(message.rowLayout ?? activeLayout);
+        const noteRows = persistedNoteKeys(rowLayout ?? activeLayout);
         for (const part of rawParts) {
           switch (part.kind) {
             case "tool": {
@@ -790,8 +888,8 @@ async function loadChatView(
           updatedAt: message.updatedAt,
           // The live parts once the rows have spoken (lib/viewReconcile.ts): a card takes
           // its row's outcome, a card only a row names is added.
-          parts: reconcileToolParts(parts, message.rowLayout ?? activeLayout) as ClientPart[],
-          ...(message.rowLayout !== undefined ? { rowLayout: await layoutForView(message.rowLayout), rowFiles } : {}),
+          parts: reconcileToolParts(parts, rowLayout ?? activeLayout) as ClientPart[],
+          ...(rowLayout !== undefined ? { rowLayout: await layoutForView(rowLayout), rowFiles } : {}),
           ...(active !== undefined
             ? {
                 rowLayout: await layoutForView(active.layout),
@@ -806,36 +904,62 @@ async function loadChatView(
               }
             : {}),
           ...(liveFileShas !== undefined && liveFileShas.length > 0 ? { liveFileShas } : {}),
+          ...(bare ? { partsOmitted: true as const } : {}),
         };
-      }),
+    };
+    const { built, cut } = await withinReadBudget(
+      meter,
+      CHAT_VIEW_READ_BUDGET_BYTES,
+      recentDesc,
+      (m) => viewOf(m, false),
+      (m) => viewOf(m, true),
     );
+    // Thread order (see above), and the window's own truth on its first row: older
+    // messages may be missing — a full window, or one the budget stopped. The client reads
+    // this flag, never the row count (src/chat/transcriptExport.ts windowIsTruncated).
+    const windowTruncated = docsCut || cut;
+    const result = built
+      .sort(compareOrder)
+      .map((row, i) => ({ ...row, ...(windowTruncated && i === 0 ? { windowTruncated: true as const } : {}) }));
 
   // Olivier's R4 decision: no visible duplicate. Decided over the window, in thread order,
   // group by group (lib/displayDedup.ts) — a display fact, never a stored one.
   return withDisplayDecisions(result);
 }
 
+/** The bytes `displayReport` may read. It rides `projectionReportInternal` AFTER the
+ *  projection report has read up to PROJECTION_READ_BUDGET_BYTES (6 MiB), so it keeps to
+ *  what is left under Convex's 16 MiB with a margin, bounded like the view it mirrors. */
+export const DISPLAY_REPORT_READ_BUDGET_BYTES = 4 * 1024 * 1024;
+
 /** What the display withholds in a chat's recent bubbles (Olivier's R4 decision) — the
- *  metadata `diagnose_chat` reports: message and row ids, the rule, never content. */
+ *  metadata `diagnose_chat` reports: message and row ids, the rule, never content.
+ *  Over the newest bubbles whose reads fit DISPLAY_REPORT_READ_BUDGET_BYTES — the same
+ *  bounded walk as the view; `windowTruncated` says older ones may be left out. */
 export async function displayReport(
-  ctx: QueryCtx,
+  rawCtx: QueryCtx,
   chatId: Id<"chats">,
-): Promise<{ bubbles: number; hiddenFiles: number; hiddenRows: number; decisions: DedupDecision[] }> {
-  const recent = await ctx.db
-    .query("messages")
-    .withIndex("by_chat", (q) => q.eq("chatId", chatId))
-    .order("desc")
-    .take(MESSAGE_WINDOW);
-  const ordered = [...recent].sort(compareOrder).filter((m) => m.role === "assistant");
-  const views = [];
-  for (const m of ordered) {
+): Promise<{
+  bubbles: number;
+  hiddenFiles: number;
+  hiddenRows: number;
+  decisions: DedupDecision[];
+  windowTruncated: boolean;
+}> {
+  const meter: ArmedReadMeter = { bytes: 0, ceiling: Infinity };
+  const ctx = meteredCtx(rawCtx, meter);
+  const { docs, cut: docsCut } = await windowDocs(ctx, meter, chatId, DISPLAY_REPORT_READ_BUDGET_BYTES / 2);
+  const { built, cut } = await withinReadBudget(meter, DISPLAY_REPORT_READ_BUDGET_BYTES, docs, async (m) => {
+    if (m.role !== "assistant") return null;
     // EVERY part, as the conversation view reads them: R4 here decides over what it renders.
-    const partDocs = await ctx.db
+    const partDocs: Doc<"messageParts">[] = [];
+    for await (const d of ctx.db
       .query("messageParts")
-      .withIndex("by_message", (q) => q.eq("messageId", m._id))
-      .collect();
+      .withIndex("by_message", (q) => q.eq("messageId", m._id))) {
+      partDocs.push(d);
+    }
     const rowFiles = m.rowLayout !== undefined ? await rowFilesOf(ctx, m) : undefined;
-    views.push({
+    return {
       ...m,
       ...(rowFiles !== undefined ? { rowFiles } : {}),
       liveFileShas: await filePiecesOf(
@@ -843,15 +967,17 @@ export async function displayReport(
         partDocs,
         new Set((rowFiles ?? []).flatMap((f) => (f.fileId === undefined ? [] : [String(f.fileId)]))),
       ),
-    });
-  }
+    };
+  });
+  const views = built.flatMap((v) => (v === null ? [] : [v])).sort(compareOrder);
   const decided = withDisplayDecisions(views);
   const decisions = decided.flatMap((m) => m.displayHidden ?? []);
   return {
-    bubbles: ordered.length,
+    bubbles: views.length,
     hiddenFiles: decisions.filter((d) => d.rule === "same_sha256_in_group").length,
     hiddenRows: decisions.filter((d) => d.rule === "repeated_text_in_group").length,
     decisions: decisions.slice(0, 50),
+    windowTruncated: docsCut || cut,
   };
 }
 
@@ -1685,6 +1811,9 @@ export const chatStateInternal = internalQuery({
         // reply (a COUNT — never references/filenames). null when none.
         attachedDocCount: mDoc.attachedDocCount ?? null,
         partCount: parts.length,
+        // The view showed this bubble WITHOUT its parts and rows: on its own it weighs more
+        // than the window's read budget (loadChatView `bare`). Absent everywhere else.
+        ...(mDoc.partsOmitted === true ? { partsOmitted: true } : {}),
         // null when the turn called no tool — an absent aggregate says "no tool
         // activity", which a zero-filled one would blur into "tools that did
         // nothing".
@@ -1777,6 +1906,9 @@ export const chatStateInternal = internalQuery({
           }
         : null,
       messageCount: messages.length,
+      // Older messages may exist that the window does not hold: a full MESSAGE_WINDOW, or
+      // one its read budget stopped (CHAT_VIEW_READ_BUDGET_BYTES) — the client's own flag.
+      windowTruncated: view.some((m) => m.windowTruncated === true),
       streamingCount: messages.filter((m) => m.status === "streaming").length,
       stuckCount: messages.filter((m) => m.stuckStreaming).length,
       anyStreaming: messages.some((m) => m.status === "streaming"),

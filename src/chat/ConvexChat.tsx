@@ -90,6 +90,7 @@ import {
   transcriptToMarkdown,
   transcriptToJson,
   exportFilename,
+  windowIsTruncated,
   type ExportMessage,
 } from "./transcriptExport";
 import {
@@ -2349,8 +2350,8 @@ function ExportMenu({
         name: "name" in p ? p.name : undefined,
       })),
     }));
-    // 200 = MESSAGE_WINDOW; a full window means older messages may be omitted.
-    const truncated = rows.length >= 200;
+    // The server's own flag: a full window, or one its read budget stopped.
+    const truncated = windowIsTruncated(rows);
     const opts = { title: title ?? undefined, truncated, exportedAt: Date.now() };
     const stem = exportFilename(title);
     if (format === "md") {

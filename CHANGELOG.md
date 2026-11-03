@@ -1,5 +1,35 @@
 # Changelog
 
+## [0.103.4] — A long conversation of heavy turns opens again
+
+Patch release (hotfix). The Convex functions and the frontend change; the bridge and the
+schema do not, and nothing needs migrating. Deploy the Convex functions, then the frontend.
+Either half works with the other half of 0.103.3 during the rollout.
+
+- **A long conversation no longer fails to open.** The conversation view loads the most
+  recent 200 messages with everything they carry (tool results, rows, files). On a long
+  conversation of heavy turns this added up past the backend's per-request read limit
+  (16 MiB): the request failed, the page showed its error screen, and retrying failed the
+  same way. Nothing was lost — only the read failed. The view now stops reading
+  before that limit: it shows the most recent messages that fit, complete, and leaves the
+  older ones out, exactly as it already did past 200 messages. Your messages and their
+  content stay stored; only how many of them the page loads at once changes.
+- **A single turn too heavy to load on its own still opens.** When the most recent message
+  alone exceeds the budget, it is shown with its text but without its attachments, tool
+  cards and rows, rather than failing the page.
+- **The export says how many messages it holds.** The "export limited to the most recent
+  messages" note now gives the number the export contains. For a conversation past 200
+  messages it reads exactly as before; for a shorter window cut by the read limit it no
+  longer claims 200.
+- **Branching and the diagnostics hold the same bound.** Branching such a conversation
+  into a new chat copies the most recent history that fits (reported as truncated, as a
+  branch past 200 messages already was) instead of failing; the branch point is always
+  copied. The `chat-state` and `diagnose_chat` diagnostics read the same bounded window
+  and report `windowTruncated` (and `partsOmitted` on a turn shown without its parts).
+
+**Rollback:** redeploy the 0.103.3 Convex functions and frontend. No data changes in
+either direction; a heavy conversation fails to open again after a rollback.
+
 ## [0.103.3] — Prepare a bridge credential before retiring the one in use
 
 Patch release. The Convex backend gains an opt-in provisioning API; existing

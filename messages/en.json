@@ -1510,7 +1510,7 @@
   "bridgebadge_unavailable": "Bridge unavailable ({reason}) — open the Bridge tab for details",
   "transcript_role_user": "User",
   "transcript_role_system": "System",
-  "transcript_truncation_note": "[Export limited to the 200 most recent messages of this conversation]",
+  "transcript_truncation_note": "[Export limited to the {count} most recent messages of this conversation]",
   "transcript_default_title": "Conversation",
   "transcript_exported_at": "Exported on {date}",
   "transcript_attachment": "[file: {name}]",

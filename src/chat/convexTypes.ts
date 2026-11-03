@@ -255,6 +255,12 @@ export interface ConvexMessageView {
   activeRows?: { text: string; persisted: Array<{ role: string; runId: string | null; commentaryItemId?: string; text: string | null }> };
   /** What the display withholds (Olivier's R4 decision: no visible duplicate). */
   displayHidden?: DisplayHiddenView[];
+  /** On the window's FIRST row only: older messages may exist that the window does not
+   *  hold (a full window, or one its read budget stopped) — see `windowIsTruncated`. */
+  windowTruncated?: boolean;
+  /** This bubble alone weighs more than the window's read budget: it comes WITHOUT its
+   *  parts and rows (its text and fields only). */
+  partsOmitted?: boolean;
   text: string;
   error?: string;
   /** Stable failure class: the gateway's own errorKind (context_length|rate_limit|
