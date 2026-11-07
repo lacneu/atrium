@@ -66,6 +66,10 @@
 .oc-trash__actions {
   display: flex;
   gap: 6px;
-  flex-shrink: 0;
+  /* Its buttons wrap where they do not fit side by side (French: "Analyser
+     (simulation)" and "Mettre les orphelins en quarantaine" asked 452 px of a
+     360 px screen); the row shrinks to the room it has. */
+  flex-wrap: wrap;
+  min-width: 0;
 }
 

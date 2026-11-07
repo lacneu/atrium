@@ -42,7 +42,7 @@ import {
 import { useResolvedMode } from "@/lib/useChart";
 import { uploadProgressStore } from "./uploadProgressStore";
 import { attachmentAddInFlight } from "./attachmentBusy";
-import { TalkControl } from "./TalkControl";
+import { TalkControl, type TalkPresence } from "./TalkControl";
 import { pickAvatarLogo, avatarLogoMode, brandInitials } from "@/lib/brandLogo";
 import {
   QUOTE_EXCERPT_CLIENT_MAX,
@@ -299,6 +299,18 @@ import {
   type SubAgentPanelApi,
 } from "./SubAgentPanel";
 import { useResizableWidth, useIsMobile } from "@/lib/useSidebarLayout";
+import { useFitLevel } from "@/lib/useFitLevel";
+import { measureCloneWidths } from "@/lib/measureClone";
+import { useCoarsePointer, useTouchReveal } from "@/lib/useMediaQuery";
+import { composerAutoFocus, messageActionsAutohide } from "./touchReveal";
+import { BlockPicker } from "./BlockPicker";
+import { headerFitInput } from "./chatHeaderFit";
+import {
+  composerFitLevels,
+  fitAttributes,
+  levelAt,
+  movableControls,
+} from "./composerFit";
 import { Sheet, SheetContent } from "@/components/ui/sheet";
 import { MediaPart } from "./MediaPart";
 import { MarkdownText, AgentMarkdown } from "./MarkdownText";
@@ -337,6 +349,7 @@ import {
 import { visibilityChipView } from "./sessionAccessView";
 import { PermissionModePicker, PermissionModeSection } from "./PermissionModePicker";
 import { ComposerAddMenu } from "./ComposerAddMenu";
+import { ComposerMoreMenu } from "./ComposerMoreMenu";
 import { TornMessageBoundary } from "./TornMessageBoundary";
 import {
   inlineFinal,
@@ -903,7 +916,9 @@ export function ConvexChat({ chatId, focusMessageId }: ConvexChatProps) {
             readable thread beside a column. */}
         {sourcesOpen && asSheet ? (
           <Sheet open onOpenChange={(o) => { if (!o) sourcesApi.close(); }}>
-            <SheetContent side="right" className="oc-sources-panel-sheet">
+            {/* The panel closes itself (its own ✕): the sheet's would be a second
+                one on top of it (lot 9, C3). */}
+            <SheetContent side="right" className="oc-sources-panel-sheet" showCloseButton={false}>
               <PanelBodyBoundary
                 key={shownIdentity ?? "none"}
                 onClose={closeIfOpenHere}
@@ -918,7 +933,9 @@ export function ConvexChat({ chatId, focusMessageId }: ConvexChatProps) {
         ) : null}
         {subAgentOpen && asSheet ? (
           <Sheet open onOpenChange={(o) => { if (!o) subAgentApi.close(); }}>
-            <SheetContent side="right" className="oc-sources-panel-sheet">
+            {/* The panel closes itself (its own ✕): the sheet's would be a second
+                one on top of it (lot 9, C3). */}
+            <SheetContent side="right" className="oc-sources-panel-sheet" showCloseButton={false}>
               <PanelBodyBoundary
                 key={shownIdentity ?? "none"}
                 onClose={closeIfOpenHere}
@@ -935,7 +952,9 @@ export function ConvexChat({ chatId, focusMessageId }: ConvexChatProps) {
         ) : null}
         {cronOpen && asSheet ? (
           <Sheet open onOpenChange={(o) => { if (!o) cronApi.close(); }}>
-            <SheetContent side="right" className="oc-sources-panel-sheet">
+            {/* The panel closes itself (its own ✕): the sheet's would be a second
+                one on top of it (lot 9, C3). */}
+            <SheetContent side="right" className="oc-sources-panel-sheet" showCloseButton={false}>
               <PanelBodyBoundary
                 key={shownIdentity ?? "none"}
                 onClose={closeIfOpenHere}
@@ -951,7 +970,11 @@ export function ConvexChat({ chatId, focusMessageId }: ConvexChatProps) {
         ) : null}
         {docViewerOpen && asSheet ? (
           <Sheet open onOpenChange={(o) => { if (!o) docViewerApi.close(); }}>
-            <SheetContent side="right" className="oc-sources-panel-sheet oc-docviewer-sheet">
+            <SheetContent
+              side="right"
+              className="oc-sources-panel-sheet oc-docviewer-sheet"
+              showCloseButton={false}
+            >
               <PanelBodyBoundary
                 key={shownIdentity ?? "none"}
                 onClose={closeIfOpenHere}
@@ -2096,7 +2119,6 @@ function ChatHeader({ chatId }: { chatId: ConvexId<"chats"> }) {
   const headRef = useRef<HTMLElement>(null);
   const titleRef = useRef<HTMLDivElement>(null);
   const ghostRef = useRef<HTMLDivElement>(null);
-  const [compact, setCompact] = useState(false);
 
   // WHO MAY ACT on the session — every reader sees it, guests included, and whatever
   // the "Outils" toggle. (The permission MODE is not a header chip any more: the
@@ -2205,36 +2227,32 @@ function ChatHeader({ chatId }: { chatId: ConvexId<"chats"> }) {
     visibilityChip?.label ?? "",
     meta?.title ?? "",
     // The breadcrumb widens the title block — its text must retrigger the
-    // measurement (the title claim stays capped at TITLE_CAP either way).
+    // measurement (the title claim stays capped at HEADER_TITLE_CAP either way).
     crumbs.map((c) => c.name).join("/"),
     ui.showTools ? "1" : "0",
   ].join("|");
-  useLayoutEffect(() => {
-    const head = headRef.current;
-    if (!head) return;
-    // The title is a higher priority than the technical chips, so it gets a budget
-    // (it ellipsizes within it); the chips get the remainder. Reserving the title's
-    // natural width (capped) keeps the threshold from drifting with title length.
-    const TITLE_CAP = 360;
-    const GAP = 16;
-    const measure = () => {
-      const ghostW = ghostRef.current?.offsetWidth ?? 0;
-      if (ghostW === 0) return; // not laid out yet -> stay full (no spurious collapse)
-      const titleW = Math.min(titleRef.current?.scrollWidth ?? 0, TITLE_CAP);
-      const chipsAvail = head.clientWidth - titleW - GAP;
-      const next = chipsAvail < ghostW;
-      setCompact((prev) => (prev === next ? prev : next));
-    };
-    measure();
-    const ro = new ResizeObserver(measure);
-    ro.observe(head);
-    // ALSO observe the ghost: its width changes when ASYNC content lands (the
-    // usage gauge's snapshot, late i18n, a model chip) without the header
-    // resizing — measuring only the header would keep a stale compact state
-    // and let the chips overflow (codex P2).
-    if (ghostRef.current) ro.observe(ghostRef.current);
-    return () => ro.disconnect();
-  }, [measureKey]);
+  // The title's claim is its NATURAL width: each line of the title block (crumbs,
+  // title) ellipsizes its own overflow, so it is read line by line — the block's
+  // own scrollWidth is the already-squeezed width (chatHeaderFit.ts).
+  const compact =
+    useFitLevel(
+      () => {
+        const head = headRef.current;
+        const title = titleRef.current;
+        if (!head || !title) return null;
+        return headerFitInput({
+          headWidth: head.clientWidth,
+          titleBlock: title,
+          metaWidth: ghostRef.current?.offsetWidth ?? 0,
+        });
+      },
+      // ALSO the ghost: its width changes when ASYNC content lands (the usage
+      // gauge's snapshot, late i18n, a model chip) without the header resizing —
+      // measuring only the header would keep a stale compact state and let the
+      // chips overflow (codex P2).
+      () => [headRef.current, ghostRef.current],
+      [measureKey],
+    ) > 0;
 
   return (
     <header className="oc-chathead" ref={headRef}>
@@ -2607,11 +2625,20 @@ function AssistantMoreMenu({
   sourceShown,
   sourceActive,
   onToggleSource,
+  onPickBlock,
+  onPickBookmarkBlock,
 }: {
   /** Whether the source toggle is offered at all (the showSource UI pref). */
   sourceShown: boolean;
   sourceActive: boolean;
   onToggleSource: () => void;
+  /** Opens the list of this reply's blocks to quote one ("Reply to a block…"):
+   *  the gutter that does it follows the mouse, so a touch screen never sees it.
+   *  Absent when the reply cannot be quoted. */
+  onPickBlock?: () => void;
+  /** The same list, to bookmark one ("Bookmark a block…"), for the same reason.
+   *  Absent when the reply cannot be bookmarked by block. */
+  onPickBookmarkBlock?: () => void;
 }) {
   const messageId = useMessage(
     (msg) => (msg.metadata?.custom as { messageId?: string } | undefined)?.messageId,
@@ -2730,7 +2757,27 @@ function AssistantMoreMenu({
             {m.chat_branch_action()}
           </ActionBarMorePrimitive.Item>
         ) : null}
+        {onPickBlock ? (
+          <ActionBarMorePrimitive.Item
+            className={MSG_MENU_ITEM_CLS}
+            disabled={streaming}
+            onSelect={onPickBlock}
+          >
+            <Reply size={14} aria-hidden />
+            {m.quote_reply_pick_action()}
+          </ActionBarMorePrimitive.Item>
+        ) : null}
         <BookmarkMenuItem />
+        {onPickBookmarkBlock ? (
+          <ActionBarMorePrimitive.Item
+            className={MSG_MENU_ITEM_CLS}
+            disabled={streaming}
+            onSelect={onPickBookmarkBlock}
+          >
+            <BookmarkIcon size={14} aria-hidden />
+            {m.bookmark_pick_action()}
+          </ActionBarMorePrimitive.Item>
+        ) : null}
       </ActionBarMorePrimitive.Content>
     </ActionBarMorePrimitive.Root>
   );
@@ -3332,6 +3379,7 @@ function UserMessage() {
   // instead of the action bar so the user sees their message is registered +
   // being sent (esp. on a slow/overloaded/reconnecting backend).
   const sending = useMessage((msg) => msg.id.startsWith("optimistic-"));
+  const touchReveal = useTouchReveal();
   // Mid-turn QUEUE: this user turn was sent while the chat was busy, so it is parked
   // behind the in-flight turn (its outbox row is `queued`). Show it as WAITING so the
   // interface makes the hold visible; it clears reactively when the drainer dispatches.
@@ -3441,7 +3489,7 @@ function UserMessage() {
           ) : null}
           <ActionBarPrimitive.Root
             className="oc-msg__actions oc-msg__actions--user"
-            autohide="not-last"
+            autohide={messageActionsAutohide(touchReveal)}
           >
           <BookmarkToggleButton />
           {ui.copyUser ? (
@@ -3853,11 +3901,29 @@ function AssistantEmptyState({ show }: { show: boolean }) {
 function AssistantMessage() {
   const [showSource, setShowSource] = useState(false);
   const ui = useUiPrefs();
+  const touchReveal = useTouchReveal();
+  // "Reply to a block…" and "Bookmark a block…" (the ⋯ menu): the list of blocks
+  // is the MESSAGE's, so it outlives the action bar, which unmounts when the
+  // pointer leaves the message.
+  const [quotePickOpen, setQuotePickOpen] = useState(false);
+  const [bookmarkPickOpen, setBookmarkPickOpen] = useState(false);
+  const bmApi = useBookmarks();
   // Avatar = active charte graphique (logo / Atrium mark / initials); name = the
   // responding AGENT's display name (falls back to the brand label for a
   // single-agent user). Replaces the hardcoded "OC" / "OpenClaw".
   const identity = useAssistantIdentity();
   const messageId = useMessage((msg) => msg.id);
+  // The reply's blocks that carry a bookmark: set in "Bookmark a block…".
+  const bookmarksHere = bmApi?.byMessage.get(messageId);
+  const bookmarkedBlocks = useMemo(
+    () =>
+      new Set(
+        (bookmarksHere ?? [])
+          .map((b) => b.blockIndex)
+          .filter((i): i is number => i !== null),
+      ),
+    [bookmarksHere],
+  );
   // Quote-reply staging target (the CURRENT chat — keyed store, leak-proof).
   const quoteChatId = useContext(QuoteChatIdContext);
   const quoteAddToast = useToast();
@@ -4033,7 +4099,7 @@ function AssistantMessage() {
   // (codex R2 P2 vs R3 P2: rendering an honest explainer beats hiding a row).
   return (
     <MessagePrimitive.Root
-      className={`oc-msg oc-msg--assistant${groupFollows ? " oc-msg--group-follow" : ""}${
+      className={`oc-msg oc-msg--assistant oc-reveal-host${groupFollows ? " oc-msg--group-follow" : ""}${
         groupContinues ? " oc-msg--group-continues" : ""
       }`}
       data-message-id={messageId}
@@ -4070,7 +4136,7 @@ function AssistantMessage() {
           quoteEffectiveText !== "" ? (
             <button
               type="button"
-              className="oc-bmk-headbtn"
+              className="oc-bmk-headbtn oc-reveal oc-hit"
               title={m.quote_reply_message_button()}
               aria-label={m.quote_reply_message_button()}
               onClick={() => {
@@ -4166,6 +4232,27 @@ function AssistantMessage() {
             />
           ) : null}
         </div>
+        {quoteChatId !== null && !messageId.startsWith("optimistic-") ? (
+          <BlockPicker
+            kind="quote"
+            open={quotePickOpen}
+            onOpenChange={setQuotePickOpen}
+            messageId={messageId}
+            onPick={(blockIndex, excerpt) =>
+              stageQuote(quoteChatId, { messageId, blockIndex, excerpt })
+            }
+          />
+        ) : null}
+        {bmApi !== null && !messageId.startsWith("optimistic-") ? (
+          <BlockPicker
+            kind="bookmark"
+            open={bookmarkPickOpen}
+            onOpenChange={setBookmarkPickOpen}
+            messageId={messageId}
+            marked={bookmarkedBlocks}
+            onPick={(blockIndex) => bmApi.toggle(messageId, blockIndex)}
+          />
+        ) : null}
         <BookmarkGutter
           messageLevelMarkers={false}
           onReplyToBlock={
@@ -4186,7 +4273,7 @@ function AssistantMessage() {
         {groupContinues ? null : (
         <ActionBarPrimitive.Root
           className="oc-msg__actions"
-          autohide="not-last"
+          autohide={messageActionsAutohide(touchReveal)}
         >
           {ui.copyAssistant ? <CopyAssistantButton /> : null}
           <ReadAloudButton />
@@ -4198,6 +4285,22 @@ function AssistantMessage() {
             sourceShown={ui.showSource}
             sourceActive={showSource}
             onToggleSource={() => setShowSource((s) => !s)}
+            onPickBlock={
+              quoteChatId !== null &&
+              !messageId.startsWith("optimistic-") &&
+              !quoteRunning &&
+              quoteEffectiveText !== ""
+                ? () => setQuotePickOpen(true)
+                : undefined
+            }
+            onPickBookmarkBlock={
+              bmApi !== null &&
+              !messageId.startsWith("optimistic-") &&
+              !quoteRunning &&
+              quoteEffectiveText !== ""
+                ? () => setBookmarkPickOpen(true)
+                : undefined
+            }
           />
         </ActionBarPrimitive.Root>
         )}
@@ -5163,6 +5266,7 @@ function ComposerAgentSelect({
               className="oc-roompill__chev"
               title={m.room_pill_settings()}
               aria-label={m.room_pill_settings()}
+              data-overflow="room-settings"
             >
               <ChevronDown size={13} aria-hidden />
             </button>
@@ -5609,6 +5713,7 @@ function DictationButton({
     <button
       type="button"
       className={`oc-composer__icon${recording ? " oc-composer__icon--rec" : ""}`}
+      data-overflow="mic"
       title={(recording ? m.chat_mic_stop() : m.chat_mic_start()) + shortcutHint}
       aria-label={recording ? m.chat_mic_stop() : m.chat_mic_start()}
       aria-pressed={recording}
@@ -6080,6 +6185,86 @@ function Composer({
         <ArrowUp size={18} aria-hidden />
       </button>
     ) : null;
+  // THE ACTION BAR'S MEASURED FIT. Each control that may leave the bar says so with
+  // `data-overflow`; the bar tries every level (composerFit.ts) on an off-screen
+  // clone of itself and keeps the most detailed one whose width fits. What leaves
+  // goes to the "More" menu, so it is moved, never crushed: at 360 px with dictation
+  // and Talk on, "+" used to be 0 px wide and the agent pill 2 px.
+  const coarsePointer = useCoarsePointer();
+  const [talkPresence, setTalkPresence] = useState<TalkPresence>({
+    settings: false,
+    start: false,
+  });
+  const [permVisible, setPermVisible] = useState(false);
+  const movable = movableControls({
+    hold: dictation.canPin || dictation.held,
+    expand: true,
+    talkSettings: talkPresence.settings,
+    perm: permVisible,
+    tools: !composerExpanded,
+    // The agent pill renders (with its settings chevron) wherever there is routing.
+    roomSettings: composerRouting != null,
+    talkStart: talkPresence.start,
+    mic: voiceInput,
+    recording: dictation.recording,
+  });
+  const movableKey = movable.join(" ");
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- keyed on the joined list
+  const fitLevels = useMemo(() => composerFitLevels(movable), [movableKey]);
+  const barRef = useRef<HTMLDivElement | null>(null);
+  const fitIndex = useFitLevel(
+    () => {
+      const bar = barRef.current;
+      if (!bar) return null;
+      const available = bar.getBoundingClientRect().width;
+      if (!(available > 0)) return null;
+      // The most compact level needs no measure: it is what remains.
+      const required = measureCloneWidths(
+        bar,
+        fitLevels.slice(0, -1).map((level) => (clone: HTMLElement) => {
+          for (const [name, value] of Object.entries(fitAttributes(level))) {
+            clone.setAttribute(name, value);
+          }
+        }),
+        "oc-composer__bar--measure",
+      );
+      return { available, required };
+    },
+    () => [barRef.current],
+    [fitLevels, coarsePointer, composerExpanded],
+    { content: true },
+  );
+  const fit = levelAt(fitLevels, fitIndex);
+  const moved = new Set(fit.moved);
+  const [moreOpen, setMoreOpen] = useState(false);
+  const [talkSettingsSlot, setTalkSettingsSlot] = useState<HTMLDivElement | null>(null);
+  const [talkStartSlot, setTalkStartSlot] = useState<HTMLDivElement | null>(null);
+  // Nothing left to show: the menu closes rather than stay open, empty.
+  useEffect(() => {
+    if (fit.moved.length === 0) setMoreOpen(false);
+  }, [fit.moved.length]);
+  // The full-page header's close: its label goes before it wraps onto two lines
+  // (it did at 360 px), measured like the bar. The button keeps its name.
+  const expheadRef = useRef<HTMLDivElement | null>(null);
+  const expheadLevel = useFitLevel(
+    () => {
+      const head = expheadRef.current;
+      if (!head) return null;
+      const available = head.getBoundingClientRect().width;
+      if (!(available > 0)) return null;
+      const required = measureCloneWidths(
+        head,
+        [(clone: HTMLElement) => clone.setAttribute("data-labels", "on")],
+        "oc-composer__exphead--measure",
+      );
+      return { available, required };
+    },
+    () => [expheadRef.current],
+    [composerExpanded, coarsePointer],
+  );
+  const multiAgentRoom =
+    composerRouting?.perTurnRouting === true ||
+    (composerRouting?.roomAgents?.length ?? 0) > 0;
   // Unified composer card (per the design reference): the input sits ON TOP, with
   // a single action bar BELOW it — attach (+) and the tools toggle on the left,
   // the circular send (or stop while running) on the right. The CARD owns the
@@ -6114,7 +6299,11 @@ function Composer({
       {composerExpanded ? (
         // Expanded header: a title + an ALWAYS-visible close (the action bar
         // stays reachable too, but this guarantees an exit at the top).
-        <div className="oc-composer__exphead">
+        <div
+          className="oc-composer__exphead"
+          ref={expheadRef}
+          data-labels={expheadLevel === 0 ? "on" : "off"}
+        >
           <span className="oc-composer__exptitle">
             {m.chat_composer_expand_title()}
           </span>
@@ -6122,10 +6311,11 @@ function Composer({
             type="button"
             className="oc-composer__expclose"
             title={m.chat_composer_collapse()}
+            aria-label={m.chat_composer_collapse()}
             onClick={() => setComposerExpanded(false)}
           >
             <Minimize2 size={15} aria-hidden />
-            {m.chat_composer_collapse()}
+            <span className="oc-composer__expclose-label">{m.chat_composer_collapse()}</span>
           </button>
         </div>
       ) : null}
@@ -6173,7 +6363,10 @@ function Composer({
           exactly as typed — never silently swapped at submit. `data-gramm`
           disables Grammarly. spellCheck stays ON (it underlines, it does NOT
           mutate). NB: no third-party extension is 100% controllable — the
-          per-message "Source" view is the real, convention-free guarantee. */}
+          per-message "Source" view is the real, convention-free guarantee.
+          One exception, on a coarse pointer only (Olivier's arbitration): the
+          sentence's first letter is capitalized, as every phone keyboard does —
+          it changes no word. Autocorrect stays off everywhere. */}
       <ComposerPrimitive.Input
         className="oc-composer__input"
         placeholder={
@@ -6186,13 +6379,19 @@ function Composer({
               ? m.chat_composer_placeholder_primary({ name: composerName })
               : m.chat_composer_placeholder({ name: composerName })
         }
-        autoFocus
+        // A finger's tap (opening a chat from the drawer, a run starting) must
+        // not raise the keyboard over half the thread: under a coarse pointer the
+        // composer is never focused for the reader (lot 8, G14).
+        autoFocus={composerAutoFocus(coarsePointer)}
+        unstable_focusOnRunStart={composerAutoFocus(coarsePointer)}
+        unstable_focusOnScrollToBottom={composerAutoFocus(coarsePointer)}
+        unstable_focusOnThreadSwitched={composerAutoFocus(coarsePointer)}
         rows={1}
         disabled={unavailable}
         onKeyDownCapture={onInputKeyDown}
         onPaste={onInputPaste}
         autoCorrect="off"
-        autoCapitalize="off"
+        autoCapitalize={coarsePointer ? "sentences" : "off"}
         autoComplete="off"
         data-gramm="false"
         data-gramm_editor="false"
@@ -6212,7 +6411,7 @@ function Composer({
           (a response with sub-agents, then a plain one, then another with
           sub-agents must each carry their own context where they belong). The
           held-send LOGIC stays (Enter queues while busy); only its hint is gone. */}
-      <div className="oc-composer__bar">
+      <div className="oc-composer__bar" ref={barRef} {...fitAttributes(fit)}>
         <div className="oc-composer__group">
           {/* The QUEUE is TEXT-ONLY: while the chat is busy (in-flight turn OR a
               running sub-agent) the follow-up goes through queueSend (text only),
@@ -6249,6 +6448,7 @@ function Composer({
               onClick={onToggleTools}
               aria-pressed={showTools}
               title={showTools ? m.chat_tools_hide() : m.chat_tools_show()}
+              data-overflow="tools"
             >
               <SlidersHorizontal size={15} aria-hidden />
               {/* WRAPPED so the label alone can go when the bar is narrow. The
@@ -6278,14 +6478,49 @@ function Composer({
                   }
                 : null
             }
-            multiAgent={
-              composerRouting?.perTurnRouting === true ||
-              (composerRouting?.roomAgents?.length ?? 0) > 0
-            }
+            multiAgent={multiAgentRoom}
+            onVisibleChange={setPermVisible}
           />
 
         </div>
         <div className="oc-composer__group">
+          {/* What the bar could not keep (shown only when something moved). */}
+          <ComposerMoreMenu
+            open={moreOpen}
+            onOpenChange={setMoreOpen}
+            moved={moved}
+            hold={{
+              held: dictation.held,
+              disabled: !dictation.canPin || pasteAttaching,
+              onHold: dictation.hold,
+              onRelease: dictation.releaseHereKeepingWords,
+            }}
+            expand={{
+              expanded: composerExpanded,
+              onToggle: () => setComposerExpanded((v) => !v),
+            }}
+            tools={{ shown: showTools, onToggle: onToggleTools }}
+            onManageConversation={() => openConversation("agents", null)}
+            onDictate={dictation.start}
+            permission={
+              moved.has("perm") ? (
+                <PermissionModeSection
+                  chatId={chatId}
+                  routedAgent={
+                    composerTarget
+                      ? {
+                          instanceName: composerTarget.instanceName,
+                          agentId: composerTarget.agentId,
+                        }
+                      : null
+                  }
+                  multiAgent={multiAgentRoom}
+                />
+              ) : null
+            }
+            talkSettingsSlot={setTalkSettingsSlot}
+            talkStartSlot={setTalkStartSlot}
+          />
           {/* PIN / release: detach the composer as a floating panel that
               survives navigation (dictation OR manual). Persistent slot with a
               width transition so the mic + send slide smoothly (no jump). */}
@@ -6294,6 +6529,7 @@ function Composer({
               dictation.canPin || dictation.held ? " is-shown" : ""
             }`}
             aria-hidden={!dictation.canPin && !dictation.held}
+            data-overflow="hold"
           >
             {dictation.held ? (
               <button
@@ -6339,6 +6575,7 @@ function Composer({
             }
             aria-pressed={composerExpanded}
             onClick={() => setComposerExpanded((v) => !v)}
+            data-overflow="expand"
           >
             {composerExpanded ? (
               <Minimize2 size={16} aria-hidden />
@@ -6382,6 +6619,13 @@ function Composer({
                   }
                 : null
             }
+            onPresenceChange={setTalkPresence}
+            more={{
+              moved: { settings: moved.has("talk-settings"), start: moved.has("talk") },
+              settingsSlot: talkSettingsSlot,
+              startSlot: talkStartSlot,
+              onDone: () => setMoreOpen(false),
+            }}
           />
           {unavailable ? (
             // Greyed, non-clickable send: the bridge is down, so persisting a

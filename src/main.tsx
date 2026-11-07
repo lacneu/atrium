@@ -18,6 +18,7 @@ import {
   pageFramePolicy,
   resolveWidgetSandboxOrigin,
 } from "./chat/widgets/widgetSandbox";
+import { installKeyboardInset } from "@/lib/virtualKeyboard";
 import "./index.css";
 import "./chat/convexChat.css";
 
@@ -39,7 +40,7 @@ function BootMessage({ children }: { children: React.ReactNode }) {
     <div
       style={{
         display: "flex",
-        minHeight: "100vh",
+        minHeight: "100dvh",
         alignItems: "center",
         justifyContent: "center",
         padding: "2rem",
@@ -52,6 +53,10 @@ function BootMessage({ children }: { children: React.ReactNode }) {
     </div>
   );
 }
+
+// `--oc-kb`: the height the iOS keyboard covers, for the layouts sized on the screen
+// to subtract (src/lib/virtualKeyboard.ts). Installed once, for the page's life.
+installKeyboardInset();
 
 const root = ReactDOM.createRoot(document.getElementById("root")!);
 

@@ -8,7 +8,7 @@
 // is titled "Execution permissions" with a "Learn more" link, five options (icon, title,
 // one-line description, shortcut 1-5 while the menu is open), full access in alert red.
 
-import { useCallback, useState, type KeyboardEvent, type ReactNode } from "react";
+import { useCallback, useEffect, useState, type KeyboardEvent, type ReactNode } from "react";
 import { useMutation, useQuery } from "convex/react";
 import {
   Check,
@@ -187,15 +187,28 @@ export function PermissionModePicker({
   chatId,
   routedAgent,
   multiAgent,
+  onVisibleChange,
 }: {
   chatId: ConvexId<"chats">;
   /** The agent the next message goes to (null = the chat's own resolution). */
   routedAgent: { instanceName: string; agentId: string } | null;
   /** A per-turn routed conversation: the choice spans several agents. */
   multiAgent: boolean;
+  /** Whether the button renders: the composer decides what fits in its bar. */
+  onVisibleChange?: (visible: boolean) => void;
 }) {
   const ctl = usePermissionControl(chatId, routedAgent, multiAgent);
   const [open, setOpen] = useState(false);
+  const visible = ctl !== null && !ctl.view.hidden;
+  useEffect(() => {
+    onVisibleChange?.(visible);
+  }, [visible, onVisibleChange]);
+  useEffect(
+    () => () => {
+      onVisibleChange?.(false);
+    },
+    [onVisibleChange],
+  );
   if (ctl === null || ctl.view.hidden) return null;
   const { view, pick } = ctl;
   // Shortcuts only while the menu is OPEN (upstream handlePermissionPickerKeydown).
@@ -218,6 +231,7 @@ export function PermissionModePicker({
           title={view.title}
           aria-label={view.ariaLabel}
           data-permission-mode={view.current}
+          data-overflow="perm"
         >
           <ModeIcon icon={view.icon} size={15} />
           <span className="oc-composer__perm-label">{view.label}</span>

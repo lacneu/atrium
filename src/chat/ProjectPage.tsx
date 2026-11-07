@@ -78,8 +78,17 @@ import {
 import { setPendingFocusTerms } from "./pendingFocusTerms";
 import { useStartNewChat } from "./useStartNewChat";
 import { canNest, childrenOf, type FolderNode } from "../../convex/lib/folderTree";
-import { filterChatsByTitle, reorderSlot, unreadChatIds } from "./projectPageView";
+import {
+  filterChatsByTitle,
+  projectBarState,
+  projectColumnsFit,
+  reorderSlot,
+  unreadChatIds,
+} from "./projectPageView";
 import "./projectPage.css";
+import { useFitLevel } from "@/lib/useFitLevel";
+import { measureCloneWidths } from "@/lib/measureClone";
+import { getLocale } from "@/paraglide/runtime.js";
 
 type PageChat = {
   _id: Id<"chats">;
@@ -217,6 +226,38 @@ function ProjectPageBody({ page }: { page: NonNullable<PageData> }) {
 
   // View toggle (cards / Finder-style columns / indented list), persisted.
   const [view, setView] = useState<ViewMode>(loadView);
+  // THE ACTION BAR, MEASURED (lot 6): labels, then icons only, then the two new-
+  // item actions in the ⋯ menu — each level's width read off a clone of the bar,
+  // against the header's width (the bar wraps under the title first). At 360 px
+  // it needed 509 px and the whole page scrolled sideways.
+  const headRef = useRef<HTMLElement>(null);
+  const actionsRef = useRef<HTMLDivElement>(null);
+  const barLevel = useFitLevel(
+    () => {
+      const head = headRef.current;
+      const bar = actionsRef.current;
+      if (head === null || bar === null) return null;
+      const required = measureCloneWidths(
+        bar,
+        [
+          (clone) => {
+            clone.setAttribute("data-labels", "on");
+            clone.setAttribute("data-moved", "off");
+          },
+          (clone) => {
+            clone.setAttribute("data-labels", "off");
+            clone.setAttribute("data-moved", "off");
+          },
+        ],
+        "oc-projpage__actions--measure",
+      );
+      return { available: head.clientWidth, required };
+    },
+    () => [headRef.current],
+    [getLocale(), page.project.sidebarHidden],
+  );
+  const bar = projectBarState(barLevel);
+  const barMoved = bar.moved;
   const switchView = (v: ViewMode) => {
     localStorage.setItem(VIEW_KEY, v);
     setView(v);
@@ -259,6 +300,20 @@ function ProjectPageBody({ page }: { page: NonNullable<PageData> }) {
   const { startNewChat, picker } = useStartNewChat((id) =>
     void navigate({ to: "/chat/$chatId", params: { chatId: id } }),
   );
+  // The bar's two new-item actions, shared by their buttons and — once the bar
+  // has no room for them — by their entries in the ⋯ menu.
+  const newChatHere = () => void startNewChat({ projectId: page.project._id });
+  const newSubfolder = async () => {
+    const name = await prompt({
+      title: m.sidebar_new_subfolder(),
+      label: m.sidebar_project_name_label(),
+      placeholder: m.sidebar_project_name_placeholder(),
+      confirmLabel: m.sidebar_create(),
+    });
+    if (name) {
+      await createProject({ name, parentId: page.project._id });
+    }
+  };
 
   const [term, setTerm] = useState("");
   const [renameOpen, setRenameOpen] = useState(false);
@@ -555,9 +610,11 @@ function ProjectPageBody({ page }: { page: NonNullable<PageData> }) {
         <span className="oc-projpage__crumbcur">{page.project.name}</span>
       </nav>
 
-      <header className="oc-projpage__head">
-        <span className="oc-projpage__dot" aria-hidden />
-        <h1 className="oc-projpage__title">{page.project.name}</h1>
+      <header ref={headRef} className="oc-projpage__head">
+        <div className="oc-projpage__titlebox">
+          <span className="oc-projpage__dot" aria-hidden />
+          <h1 className="oc-projpage__title">{page.project.name}</h1>
+        </div>
         {page.project.sidebarHidden ? (
           <Button
             variant="ghost"
@@ -576,7 +633,12 @@ function ProjectPageBody({ page }: { page: NonNullable<PageData> }) {
             <Eye aria-hidden />
           </Button>
         ) : null}
-        <div className="oc-projpage__actions">
+        <div
+          ref={actionsRef}
+          className="oc-projpage__actions"
+          data-labels={bar.labels ? "on" : "off"}
+          data-moved={barMoved ? "on" : "off"}
+        >
           <div
             className="oc-projpage__viewtoggle"
             role="group"
@@ -616,28 +678,24 @@ function ProjectPageBody({ page }: { page: NonNullable<PageData> }) {
           <Button
             variant="outline"
             size="sm"
-            onClick={() => void startNewChat({ projectId: page.project._id })}
+            className="oc-projpage__actbtn"
+            aria-label={m.project_page_new_chat_here()}
+            title={m.project_page_new_chat_here()}
+            onClick={newChatHere}
           >
             <MessageSquarePlus />
-            {m.project_page_new_chat_here()}
+            <span className="oc-projpage__actlabel">{m.project_page_new_chat_here()}</span>
           </Button>
           <Button
             variant="outline"
             size="sm"
-            onClick={async () => {
-              const name = await prompt({
-                title: m.sidebar_new_subfolder(),
-                label: m.sidebar_project_name_label(),
-                placeholder: m.sidebar_project_name_placeholder(),
-                confirmLabel: m.sidebar_create(),
-              });
-              if (name) {
-                await createProject({ name, parentId: page.project._id });
-              }
-            }}
+            className="oc-projpage__actbtn"
+            aria-label={m.sidebar_new_subfolder()}
+            title={m.sidebar_new_subfolder()}
+            onClick={() => void newSubfolder()}
           >
             <FolderPlus />
-            {m.sidebar_new_subfolder()}
+            <span className="oc-projpage__actlabel">{m.sidebar_new_subfolder()}</span>
           </Button>
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
@@ -650,6 +708,17 @@ function ProjectPageBody({ page }: { page: NonNullable<PageData> }) {
               </Button>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end" className="w-48">
+              {barMoved ? (
+                <>
+                  <DropdownMenuItem onSelect={newChatHere}>
+                    <MessageSquarePlus /> {m.project_page_new_chat_here()}
+                  </DropdownMenuItem>
+                  <DropdownMenuItem onSelect={() => void newSubfolder()}>
+                    <FolderPlus /> {m.sidebar_new_subfolder()}
+                  </DropdownMenuItem>
+                  <DropdownMenuSeparator />
+                </>
+              ) : null}
               <DropdownMenuItem
                 onSelect={() => {
                   setRenameValue(page.project.name);
@@ -984,7 +1053,7 @@ function FolderCard({
         drop.setNodeRef(el);
       }}
       className={
-        "oc-projpage__card" +
+        "oc-projpage__card oc-reveal-host" +
         (drop.isOver ? " is-over" : "") +
         (drag.isDragging ? " is-dragging" : "")
       }
@@ -1025,7 +1094,7 @@ function FolderCard({
           name={child.name}
           color={child.color}
           currentParentId={parentId}
-          className="oc-projpage__cardmenu"
+          className="oc-projpage__cardmenu oc-reveal oc-hit"
           onOpen={() =>
             void navigate({
               to: "/project/$projectId",
@@ -1062,7 +1131,7 @@ function SidebarToggle({ chat }: { chat: PageChat }) {
       aria-label={label}
       title={label}
       className={
-        "oc-projpage__barbtn" + (chat.inSidebar ? " is-on" : "")
+        "oc-projpage__barbtn oc-hit" + (chat.inSidebar ? " is-on" : "")
       }
       disabled={chat.pinned && chat.inSidebar} // pinned rows always show
       onClick={(e) => {
@@ -1106,7 +1175,7 @@ function ChatRow({
         locateRef.current = el;
       }}
       className={
-        "oc-projpage__chatrow" +
+        "oc-projpage__chatrow oc-reveal-host" +
         (drag.isDragging ? " is-dragging" : "") +
         (locate ? " is-locate" : "")
       }
@@ -1158,7 +1227,7 @@ function ChatRow({
       <ChatEntryMenu
         chat={chat}
         currentFolderId={currentFolderId}
-        className="oc-projpage__chatmenu"
+        className="oc-projpage__chatmenu oc-reveal oc-hit"
       />
     </li>
   );
@@ -1307,7 +1376,7 @@ function TreeFolderRow({
           drop.setNodeRef(el);
         }}
         className={
-          "oc-projpage__treerow oc-projpage__treerow--folder" +
+          "oc-projpage__treerow oc-projpage__treerow--folder oc-reveal-host" +
           (drop.isOver ? " is-over" : "") +
           (drag.isDragging ? " is-dragging" : "")
         }
@@ -1361,7 +1430,7 @@ function TreeFolderRow({
           name={folder.name}
           color={folder.color}
           currentParentId={parentId}
-          className="oc-projpage__treemenu"
+          className="oc-projpage__treemenu oc-reveal oc-hit"
           onOpen={() =>
             void navigate({
               to: "/project/$projectId",
@@ -1400,7 +1469,7 @@ function TreeChatRow({
         locateRef.current = el;
       }}
       className={
-        "oc-projpage__treerow oc-projpage__treerow--chat" +
+        "oc-projpage__treerow oc-projpage__treerow--chat oc-reveal-host" +
         (drag.isDragging ? " is-dragging" : "") +
         (locate ? " is-locate" : "")
       }
@@ -1437,7 +1506,7 @@ function TreeChatRow({
       <ChatEntryMenu
         chat={chat}
         currentFolderId={chat.folderId}
-        className="oc-projpage__treemenu"
+        className="oc-projpage__treemenu oc-reveal oc-hit"
       />
       <SidebarToggle chat={chat} />
     </div>
@@ -1468,22 +1537,50 @@ function ColumnView({
     const el = scrollRef.current;
     if (el) el.scrollLeft = el.scrollWidth;
   }, [depth, currentId]);
+  // Two readable columns side by side, or the current folder alone (one level,
+  // the breadcrumb above leading back up) — measured: the width of a parent column
+  // and the current one, read off hidden probes styled as they are, against the
+  // width the view has (projectPageView.ts projectColumnsFit).
+  const wrapRef = useRef<HTMLDivElement>(null);
+  const probesRef = useRef<HTMLDivElement>(null);
+  const fit = useFitLevel(
+    () => {
+      const wrap = wrapRef.current;
+      const probes = probesRef.current;
+      if (wrap === null || probes === null) return null;
+      return projectColumnsFit(wrap.clientWidth, probes.getBoundingClientRect().width);
+    },
+    () => [wrapRef.current],
+    [data === undefined],
+  );
+  const oneLevel = fit > 0;
   if (data === undefined) {
     return <p className="oc-projpage__hint">{m.common_loading()}</p>;
   }
+  const shown = oneLevel ? data.columns.slice(-1) : data.columns;
   return (
-    <div className="oc-projpage__cols" ref={scrollRef}>
-      {data.columns.map((col, i) => (
-        <Column
-          key={col.folderId ?? "root"}
-          col={col}
-          isLast={i === data.columns.length - 1}
-          currentId={currentId}
-          busyIds={busyIds}
-          suppressClick={suppressClick}
-          locateChatId={locateChatId}
-        />
-      ))}
+    <div ref={wrapRef} className="oc-projpage__colswrap">
+      <div ref={probesRef} className="oc-projpage__colprobes" aria-hidden>
+        <div className="oc-projpage__col" />
+        <div className="oc-projpage__col is-last" />
+      </div>
+      <div
+        className={"oc-projpage__cols" + (oneLevel ? " oc-projpage__cols--one" : "")}
+        data-layout={oneLevel ? "one-level" : "columns"}
+        ref={scrollRef}
+      >
+        {shown.map((col) => (
+          <Column
+            key={col.folderId ?? "root"}
+            col={col}
+            isLast={col === data.columns[data.columns.length - 1]}
+            currentId={currentId}
+            busyIds={busyIds}
+            suppressClick={suppressClick}
+            locateChatId={locateChatId}
+          />
+        ))}
+      </div>
     </div>
   );
 }
@@ -1586,7 +1683,7 @@ function ColumnFolderEntry({
         drop.setNodeRef(el);
       }}
       className={
-        "oc-projpage__colentry oc-projpage__colentry--folder" +
+        "oc-projpage__colentry oc-projpage__colentry--folder oc-reveal-host" +
         (folder.selected || isCurrent ? " is-selected" : "") +
         (drop.isOver ? " is-over" : "") +
         (drag.isDragging ? " is-dragging" : "")
@@ -1620,7 +1717,7 @@ function ColumnFolderEntry({
         name={folder.name}
         color={folder.color}
         currentParentId={parentId}
-        className="oc-projpage__colmenu"
+        className="oc-projpage__colmenu oc-reveal oc-hit"
         onOpen={onOpen}
       />
     </div>
@@ -1654,7 +1751,7 @@ function ColumnChatEntry({
         locateRef.current = el;
       }}
       className={
-        "oc-projpage__colentry oc-projpage__colentry--chat" +
+        "oc-projpage__colentry oc-projpage__colentry--chat oc-reveal-host" +
         (drag.isDragging ? " is-dragging" : "") +
         (locate ? " is-locate" : "")
       }
@@ -1688,7 +1785,7 @@ function ColumnChatEntry({
       <ChatEntryMenu
         chat={chat}
         currentFolderId={folderId}
-        className="oc-projpage__colmenu oc-projpage__colmenu--chat"
+        className="oc-projpage__colmenu oc-projpage__colmenu--chat oc-reveal oc-hit"
       />
       <SidebarToggle chat={chat} />
     </div>

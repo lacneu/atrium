@@ -1084,7 +1084,7 @@ function MemberAgentsDialog({
                 const key = agentPairKey(a.instanceName, a.agentId);
                 const label = a.displayName ?? a.agentId;
                 return (
-                  <div key={key} className="oc-access__row">
+                  <div key={key} className="oc-access__row oc-reveal-host">
                     <Checkbox
                       checked={a.allowed}
                       // An admin-set restriction only narrows for a manager.
@@ -1137,7 +1137,7 @@ function MemberAgentsDialog({
                           type="button"
                           size="icon-sm"
                           variant="ghost"
-                          className="oc-access__setdefault"
+                          className="oc-access__setdefault oc-reveal oc-hit"
                           disabled={!data.settable}
                           aria-label={m.groups_member_set_default()}
                           title={m.groups_member_set_default()}
@@ -1349,7 +1349,7 @@ function GroupInstanceAgents({
           return (
             <div
               key={a.agentId}
-              className={`oc-access__row${locked ? " is-disabled" : ""}`}
+              className={`oc-access__row oc-reveal-host${locked ? " is-disabled" : ""}`}
             >
               <Checkbox
                 checked={isAssigned}
@@ -1393,7 +1393,7 @@ function GroupInstanceAgents({
                     type="button"
                     size="icon-sm"
                     variant="ghost"
-                    className="oc-access__setdefault"
+                    className="oc-access__setdefault oc-reveal oc-hit"
                     aria-label={m.groups_set_default_agent()}
                     title={m.groups_set_default_agent()}
                     onClick={() => void makeDefault(a.agentId)}

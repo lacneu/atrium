@@ -111,7 +111,7 @@
   flex-direction: column;
   width: calc(100vw - 2rem);
   max-width: 72rem;
-  height: calc(100vh - 2rem);
+  height: calc(100dvh - 2rem - var(--oc-kb, 0px));
   max-height: none;
 }
 
@@ -443,7 +443,14 @@
 .oc-voice__row {
   display: flex;
   align-items: center;
-  gap: 0.75rem;
+  gap: 0.5rem 0.75rem;
+  /* Label and list side by side while they fit, the list under its label where
+     they do not (the browser measures it): side by side at any width, they made
+     the whole page scroll sideways on a phone and cut the lists. */
+  flex-wrap: wrap;
+}
+.oc-voice__row [data-slot="select-trigger"] {
+  max-width: 100%;
 }
 
 .oc-voice__row .oc-cdefaults__label {
@@ -630,7 +637,7 @@
 }
 .oc-dtp__wd {
   text-align: center;
-  font-size: 0.68rem;
+  font-size: 0.75rem;
   font-weight: 600;
   color: var(--muted-foreground);
   padding-bottom: 0.2rem;
@@ -712,7 +719,9 @@
   font-weight: 600;
   font-size: 0.95rem;
   text-transform: capitalize;
-  min-width: 0;
+  /* Never narrower than the month's name: where the head runs out of room the
+     mode buttons wrap to a line of their own instead of covering it. */
+  min-width: max-content;
 }
 .oc-cal__modes {
   display: inline-flex;
@@ -740,7 +749,7 @@
 .oc-cal__wd {
   background: var(--card);
   padding: 4px 6px;
-  font-size: 0.68rem;
+  font-size: 0.75rem;
   font-weight: 600;
   text-transform: uppercase;
   color: var(--muted-foreground);
@@ -764,7 +773,7 @@
 }
 .oc-cal__daynum {
   align-self: flex-start;
-  font-size: 0.72rem;
+  font-size: 0.75rem;
   font-weight: 600;
   color: var(--muted-foreground);
   border-radius: 999px;
@@ -785,7 +794,7 @@
   background: color-mix(in srgb, var(--cal-ev, var(--voice)) 12%, transparent);
   border-radius: 5px;
   padding: 1px 4px;
-  font-size: 0.7rem;
+  font-size: 0.75rem;
   color: var(--foreground);
   cursor: pointer;
   text-align: left;
@@ -821,7 +830,7 @@
   white-space: nowrap;
 }
 .oc-cal__more {
-  font-size: 0.68rem;
+  font-size: 0.75rem;
   color: var(--muted-foreground);
   padding-left: 4px;
 }
@@ -883,4 +892,111 @@
 .oc-cal__minidot.is-today {
   outline: 1.5px solid color-mix(in srgb, var(--voice) 80%, var(--foreground));
   outline-offset: 1px;
+}
+
+/* The hidden chip CalendarView measures the month grid's columns on: the locale's
+   widest time, in the grid's own type (calendarFit.ts). */
+.oc-cal {
+  position: relative;
+}
+.oc-cal__chipmeasure {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: max-content;
+  visibility: hidden;
+  pointer-events: none;
+}
+/* AGENDA (where the month grid does not fit): the month's days as flat rows — the
+   date, then one full-width row per occurrence, a finger's height each. */
+.oc-cal__agenda {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+/* The agenda opens scrolled to today (lot 9): its head — arrows, Today, month,
+   modes — stays at the top of the page while the days scroll under it. A sticky box
+   stops at its scroller's padding edge: the offset lifts it to the very top (the
+   host scroller states its padding). The padding and negative margin pair widen its
+   opaque band without moving the layout. */
+.oc-cal[data-mode="agenda"] > .oc-cal__head {
+  position: sticky;
+  top: calc(-1 * var(--oc-scroll-pad-top, 0px));
+  z-index: 2;
+  background: var(--background);
+  padding-block: 0.5rem;
+  margin-block: -0.5rem;
+}
+.oc-cal__agendaday {
+  display: flex;
+  flex-direction: column;
+}
+.oc-cal__agendadate {
+  margin: 0 0 0.25rem;
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--muted-foreground);
+  text-transform: capitalize;
+}
+.oc-cal__agendadate--today {
+  color: color-mix(in srgb, var(--voice) 80%, var(--foreground));
+}
+/* An occurrence row (the shared Button when it opens something): its time a
+   12 px qualifier, its title the 14 px line. */
+.oc-cal__agendaitem {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  min-height: 2.75rem;
+  min-width: 0;
+  padding-inline: 0.5rem;
+  font-size: 0.875rem;
+}
+.oc-cal__agendaitem .oc-cal__evtime {
+  font-size: 0.75rem;
+}
+.oc-cal__agendaempty {
+  margin: 0;
+  font-size: 0.875rem;
+  color: var(--muted-foreground);
+}
+
+/* Agent files: the clone AgentFilesTab measures a row's one-line width on. */
+.oc-afiles__measure {
+  position: absolute;
+  left: -100000px;
+  top: 0;
+  width: max-content;
+  visibility: hidden;
+  pointer-events: none;
+}
+/* TWO LEVELS where one line does not fit (measured): the file's name and its
+   actions on top, its size gauge under them, full width. */
+.oc-afiles__list[data-layout="two-level"] .oc-afiles__row {
+  flex-wrap: wrap;
+  row-gap: 0.35rem;
+}
+.oc-afiles__list[data-layout="two-level"] .oc-afiles__name {
+  flex: 1 1 0;
+  min-width: 0;
+}
+.oc-afiles__list[data-layout="two-level"] .oc-afiles__open,
+.oc-afiles__list[data-layout="two-level"] .oc-afiles__open ~ * {
+  order: 1;
+}
+.oc-afiles__list[data-layout="two-level"] .oc-afiles__row::after {
+  content: "";
+  flex-basis: 100%;
+  order: 2;
+}
+.oc-afiles__list[data-layout="two-level"] .oc-afiles__size,
+.oc-afiles__list[data-layout="two-level"] .oc-afiles__gauge,
+.oc-afiles__list[data-layout="two-level"] .oc-afiles__pct,
+.oc-afiles__list[data-layout="two-level"] .oc-afiles__warn,
+.oc-afiles__list[data-layout="two-level"] .oc-afiles__warn-slot,
+.oc-afiles__list[data-layout="two-level"] .oc-afiles__row > [data-slot="badge"] {
+  order: 3;
+}
+.oc-afiles__list[data-layout="two-level"] .oc-afiles__size {
+  text-align: left;
 }

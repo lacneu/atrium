@@ -1,6 +1,9 @@
 import { describe, expect, test } from "vitest";
+import { pickFitLevel } from "@/lib/useFitLevel";
 import {
   filterChatsByTitle,
+  projectBarState,
+  projectColumnsFit,
   reorderSlot,
   unreadChatIds,
 } from "./projectPageView";
@@ -73,3 +76,38 @@ describe("unreadChatIds (sidebar parity)", () => {
   });
 });
 
+
+// Lot 6 (2026-11): on a phone the columns view came down to columns of one to three
+// characters and the bar asked 509 px of 324 — both now follow MEASURED widths.
+describe("columns view or one level (arbitration n°5)", () => {
+  // A parent column (220 px) and the current one (240 px), as their probes measure.
+  const TWO = 461;
+  test("room for two readable columns: the columns view", () => {
+    expect(pickFitLevel(projectColumnsFit(980, TWO))).toBe(0);
+    expect(pickFitLevel(projectColumnsFit(TWO, TWO))).toBe(0);
+  });
+  test("short of it (a phone, 312 px): the current folder alone", () => {
+    expect(pickFitLevel(projectColumnsFit(TWO - 1, TWO))).toBe(1);
+    expect(pickFitLevel(projectColumnsFit(312, TWO))).toBe(1);
+  });
+  test("the probes not laid out yet (0): no verdict, the columns stay", () => {
+    expect(pickFitLevel(projectColumnsFit(312, 0))).toBe(0);
+  });
+});
+
+describe("the project bar's levels: labels, icons, then the ⋯ menu", () => {
+  test("level 0 keeps every label; 1 drops them; 2 moves the new-item actions", () => {
+    expect(projectBarState(0)).toEqual({ labels: true, moved: false });
+    expect(projectBarState(1)).toEqual({ labels: false, moved: false });
+    expect(projectBarState(2)).toEqual({ labels: false, moved: true });
+  });
+  test("measured: the level is the first one whose clone fits the header", () => {
+    // Labels 509 px, icons 230 px (the bar at 360 px, French), header 312 px.
+    expect(projectBarState(pickFitLevel({ available: 312, required: [509, 230] }))).toEqual({
+      labels: false,
+      moved: false,
+    });
+    expect(projectBarState(pickFitLevel({ available: 200, required: [509, 230] })).moved).toBe(true);
+    expect(projectBarState(pickFitLevel({ available: 860, required: [509, 230] })).labels).toBe(true);
+  });
+});

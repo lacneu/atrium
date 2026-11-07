@@ -892,7 +892,7 @@ function BookmarkToggleButtonInner({ header = false }: { header?: boolean }) {
   if (!bmApi) return null;
   const has = existing !== null;
   const cls = header
-    ? `oc-bmk-headbtn${has ? " is-set" : ""}`
+    ? `oc-bmk-headbtn oc-reveal oc-hit${has ? " is-set" : ""}`
     : `oc-iconbtn${has ? " oc-iconbtn--bmk-set" : ""}`;
   // PLACED header flag = the bookmark's ONLY surface on an assistant bubble:
   // clicking it edits (rename/delete popover) rather than blind-removing.

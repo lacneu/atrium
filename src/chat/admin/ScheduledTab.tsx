@@ -58,6 +58,7 @@ import { FilterBar } from "./filters/FilterBar";
 import { TimezoneCombobox } from "./TimezoneCombobox";
 import { DateTimePicker } from "./DateTimePicker";
 import "./confTabs.css";
+import { useTableLayout } from "./useTableLayout";
 import { CalendarView, type CalendarCursor, type CalendarMode } from "./CalendarView";
 import { monthWindow, yearWindow, type CalendarEvent } from "./calendarData";
 import {
@@ -229,7 +230,9 @@ export function ScheduledTab() {
     localStorage.setItem("oc.sched.view", v);
     setSchedView(v);
   };
-  const [calMode, setCalMode] = useState<CalendarMode>("month");
+  // null = not chosen: the calendar opens on the month grid where it fits, on the
+  // agenda where it does not (measured by CalendarView).
+  const [calMode, setCalMode] = useState<CalendarMode | null>(null);
   const [calCursor, setCalCursor] = useState<CalendarCursor>(() => {
     const d = new Date();
     return { year: d.getFullYear(), month: d.getMonth() };
@@ -287,6 +290,10 @@ export function ScheduledTab() {
     return params.get("job");
   }, []);
   const highlightRef = useRef<HTMLTableRowElement | null>(null);
+  // The jobs' tables (one per instance) stack their rows when the widest does not
+  // fit — measured (useTableLayout): on a phone the actions sat off-screen.
+  const listWrapRef = useRef<HTMLDivElement>(null);
+  const listLayout = useTableLayout(listWrapRef, [groups, filter, schedView, getLocale()]);
   useEffect(() => {
     if (groups !== null && highlightRef.current !== null) {
       highlightRef.current.scrollIntoView({ block: "center" });
@@ -657,6 +664,7 @@ export function ScheduledTab() {
           {groups.length === 0 ? (
             <p className="oc-admin__hint">{m.scheduled_empty()}</p>
           ) : null}
+          <div ref={listWrapRef} className="oc-tablefit" data-layout={listLayout}>
           {groups.map((g) => {
             // Filter WITHIN the group (keep the unsupported/error/empty
             // messages + the ?job deep-link highlight working).
@@ -720,7 +728,7 @@ export function ScheduledTab() {
                         }
                       >
                         <TableCell
-                          className="font-medium"
+                          className="oc-dt__lead font-medium"
                           style={{
                             maxWidth: 280,
                             overflow: "hidden",
@@ -730,10 +738,13 @@ export function ScheduledTab() {
                         >
                           {j.name ?? m.scheduled_unnamed()}
                         </TableCell>
-                        <TableCell>
+                        <TableCell data-label={m.scheduled_col_agent()}>
                           <Badge variant="secondary">{j.agentId}</Badge>
                         </TableCell>
-                        <TableCell className="whitespace-nowrap">
+                        <TableCell
+                          className="whitespace-nowrap"
+                          data-label={m.scheduled_col_schedule()}
+                        >
                           <span style={{ fontFamily: "var(--font-mono, monospace)" }}>
                             {j.schedule ?? "—"}
                           </span>
@@ -751,12 +762,15 @@ export function ScheduledTab() {
                             ) : null;
                           })()}
                         </TableCell>
-                        <TableCell className="whitespace-nowrap text-muted-foreground">
+                        <TableCell
+                          className="whitespace-nowrap text-muted-foreground"
+                          data-label={m.scheduled_col_next_run()}
+                        >
                           {j.nextRunAtMs !== null
                             ? dateFmt.format(j.nextRunAtMs)
                             : "—"}
                         </TableCell>
-                        <TableCell>
+                        <TableCell data-label={m.scheduled_col_status()}>
                           {cronJobStateKind(j) === "auto-disabled" ? (
                             // The scheduler stopped this job itself; the flag may
                             // still say enabled. Reason + moment on hover.
@@ -783,7 +797,7 @@ export function ScheduledTab() {
                             <span className="text-muted-foreground">—</span>
                           )}
                         </TableCell>
-                        <TableCell>
+                        <TableCell data-label={m.cron_col_result()}>
                           <ResultBadge status={j.lastRunStatus} />
                           {/* Shown only on an explicit `false`: a run can succeed
                               and reach nobody, and this table is where an operator
@@ -802,7 +816,7 @@ export function ScheduledTab() {
                             </Badge>
                           ) : null}
                         </TableCell>
-                        <TableCell className="whitespace-nowrap">
+                        <TableCell className="oc-dt__actionsrow whitespace-nowrap">
                           {j.id === null ? (
                             <span className="text-muted-foreground">—</span>
                           ) : busy ? (
@@ -941,6 +955,7 @@ export function ScheduledTab() {
             </section>
             );
           })}
+          </div>
           {totalJobs > 0 ? (
             <p className="oc-admin__hint" style={{ marginTop: 4 }}>
               {m.scheduled_hint_manage()}

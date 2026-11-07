@@ -2,6 +2,8 @@
 // instant title filter and the unread computation (same rule as the sidebar).
 // No React, no i18n.
 
+import type { FitInput } from "@/lib/useFitLevel";
+
 export type PageChat = {
   _id: string;
   title: string | null;
@@ -70,3 +72,21 @@ export function unreadChatIds(
   return out;
 }
 
+
+/**
+ * The columns view or its one-level navigation (arbitration n°5, 2026-11). The
+ * columns view needs room for two readable columns side by side — a parent level
+ * and the current one, `twoColumns` wide (their own CSS widths, measured on hidden
+ * probes). Short of it, the view shows the current folder alone, full width, the
+ * breadcrumb above leading back up: on a phone the columns came down to one to
+ * three characters each. Level 0 is the columns view; level 1, one level.
+ */
+export function projectColumnsFit(available: number, twoColumns: number): FitInput {
+  return { available, required: [twoColumns] };
+}
+
+/** The project page's action bar at a measured level (ProjectPage.tsx): every
+ *  label (0); icons only (1); then the two new-item actions inside the ⋯ menu. */
+export function projectBarState(level: number): { labels: boolean; moved: boolean } {
+  return { labels: level === 0, moved: level >= 2 };
+}

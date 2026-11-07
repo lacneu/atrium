@@ -1,6 +1,6 @@
 import { useMutation } from "convex/react";
 import { useAuthActions } from "@convex-dev/auth/react";
-import { ChevronDown, LogOut, Monitor, Moon, Sun } from "lucide-react";
+import { ChevronDown, CircleUserRound, LogOut, Monitor, Moon, Sun } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { APP_HOST } from "@/lib/appHost";
 import {
@@ -28,12 +28,16 @@ export function UserMenu({
   label,
   mode,
   minimal = false,
+  compact = false,
 }: {
   label: string;
   mode: ThemeMode | null;
   // Minimal surface for an UNAPPROVED (pending) account: ONLY sign out — no theme
   // controls. A pending user has zero app permissions, so no app config either.
   minimal?: boolean;
+  /** The top bar is a vertical rail (a phone in landscape): an icon, named by the
+   *  label, and a menu that opens beside it. */
+  compact?: boolean;
 }) {
   const { signOut } = useAuthActions();
   async function leaveAtrium() {
@@ -65,12 +69,18 @@ export function UserMenu({
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
-        <Button variant="ghost" size="sm" className="gap-1.5">
-          {label}
-          <ChevronDown className="opacity-60" />
-        </Button>
+        {compact ? (
+          <Button variant="ghost" size="icon" aria-label={label} title={label}>
+            <CircleUserRound />
+          </Button>
+        ) : (
+          <Button variant="ghost" size="sm" className="gap-1.5">
+            {label}
+            <ChevronDown className="opacity-60" />
+          </Button>
+        )}
       </DropdownMenuTrigger>
-      <DropdownMenuContent align="end" className="w-52">
+      <DropdownMenuContent side={compact ? "right" : "bottom"} align="end" className="w-52">
         {minimal ? (
           <DropdownMenuItem onClick={() => void leaveAtrium()}>
             <LogOut /> {m.usermenu_sign_out()}

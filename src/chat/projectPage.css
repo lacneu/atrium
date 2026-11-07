@@ -76,6 +76,16 @@
   background: var(--proj-hue);
   flex: none;
 }
+/* The folder's dot and name, one block: its own width is what the head's line
+   breaks on — where the bar does not fit beside it, the bar goes under it
+   instead of crushing it — and the dot never parts from the name. */
+.oc-projpage__titlebox {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: 1 1 auto;
+  min-width: 0;
+}
 .oc-projpage__title {
   font-size: 1.25rem;
   font-weight: 600;
@@ -91,6 +101,26 @@
   align-items: center;
   gap: 6px;
   flex: none;
+}
+/* THE BAR, MEASURED (ProjectPage.tsx): labels, then icons only, then the two
+   new-item actions moved into the ⋯ menu. */
+.oc-projpage__actions[data-labels="off"] .oc-projpage__actlabel {
+  display: none;
+}
+.oc-projpage__actions[data-labels="off"] .oc-projpage__actbtn {
+  width: 2rem;
+  padding-inline: 0;
+}
+.oc-projpage__actions[data-moved="on"] .oc-projpage__actbtn {
+  display: none;
+}
+.oc-projpage__actions--measure {
+  position: absolute;
+  left: -100000px;
+  top: 0;
+  width: max-content;
+  visibility: hidden;
+  pointer-events: none;
 }
 
 .oc-projpage__section {
@@ -161,7 +191,7 @@
   color: var(--muted-foreground);
 }
 .oc-projpage__cardage {
-  font-size: 0.72rem;
+  font-size: 0.75rem;
   color: var(--muted-foreground);
   opacity: 0.8;
 }
@@ -220,17 +250,13 @@
   flex: none;
 }
 .oc-projpage__chatage {
-  font-size: 0.72rem;
+  font-size: 0.75rem;
   color: var(--muted-foreground);
   flex: none;
 }
+/* Revealed by `.oc-reveal` (hover of its row, or always on touch). */
 .oc-projpage__chatmenu {
-  opacity: 0;
   flex: none;
-}
-.oc-projpage__chatrow:hover .oc-projpage__chatmenu,
-.oc-projpage__chatrow:focus-within .oc-projpage__chatmenu {
-  opacity: 1;
 }
 
 /* View toggle (cards / columns). */
@@ -446,21 +472,16 @@
 }
 
 /* ---- Context menus on entries (cards / columns / list) ------------------- */
-/* Card kebab: sits in the card head, revealed on hover. */
+/* Card kebab: sits in the card head, revealed on hover (`.oc-reveal`, always
+   there on touch). */
 .oc-projpage__cardmenu {
-  opacity: 0;
   flex: none;
   margin-left: auto;
 }
-.oc-projpage__card:hover .oc-projpage__cardmenu,
-.oc-projpage__card:focus-within .oc-projpage__cardmenu,
-.oc-projpage__cardmenu[aria-expanded="true"] {
-  opacity: 1;
-}
 /* Column kebab: overlaid at the right edge (folders: over the chevron, which
-   fades out; chats: left of the always-visible sidebar toggle). */
+   fades out; chats: left of the always-visible sidebar toggle). Revealed by
+   `.oc-reveal`. */
 .oc-projpage__colmenu {
-  opacity: 0;
   position: absolute;
   right: 2px;
   top: 50%;
@@ -469,28 +490,25 @@
 .oc-projpage__colmenu--chat {
   right: 26px;
 }
-.oc-projpage__colentry:hover .oc-projpage__colmenu,
-.oc-projpage__colentry:focus-within .oc-projpage__colmenu,
-.oc-projpage__colmenu[aria-expanded="true"] {
-  opacity: 1;
-}
 .oc-projpage__colentry--folder:hover .oc-projpage__colchev,
 .oc-projpage__colentry--folder:focus-within .oc-projpage__colchev {
   opacity: 0;
+}
+/* On touch the kebab is always there: the folder's chevron gives it its place
+   for good (the entry still opens the folder on tap). */
+@media (hover: none), (any-pointer: coarse) {
+  .oc-projpage__colentry--folder .oc-projpage__colchev {
+    opacity: 0;
+  }
 }
 /* Chat entries reserve room for menu + toggle so long titles ellipsize. */
 .oc-projpage__colentry--chat .oc-projpage__colchatbtn {
   padding-right: 52px;
 }
-/* List-view kebab: in-flow at the row's right end, revealed on hover. */
+/* List-view kebab: in-flow at the row's right end, revealed on hover
+   (`.oc-reveal`, always there on touch). */
 .oc-projpage__treemenu {
-  opacity: 0;
   flex: none;
-}
-.oc-projpage__treerow:hover .oc-projpage__treemenu,
-.oc-projpage__treerow:focus-within .oc-projpage__treemenu,
-.oc-projpage__treemenu[aria-expanded="true"] {
-  opacity: 1;
 }
 
 /* ---- Finder-style LIST view (indented, collapsible tree) ----------------- */
@@ -589,7 +607,7 @@
   gap: 1px;
 }
 .oc-projpage__hitpath {
-  font-size: 0.7rem;
+  font-size: 0.75rem;
   color: var(--muted-foreground);
   opacity: 0.85;
   overflow: hidden;
@@ -612,4 +630,53 @@
   color: var(--oc-muted-fg);
   font-size: 0.8125rem;
   font-weight: 500;
+}
+
+/* ONE-LEVEL NAVIGATION (arbitration n°5): the hidden probes the columns view
+   measures two readable columns on — a parent column and the current one, as
+   they are styled — and, short of them, the current folder alone, full width. */
+.oc-projpage__colswrap {
+  position: relative;
+}
+.oc-projpage__colprobes {
+  position: absolute;
+  top: 0;
+  left: -100000px;
+  display: flex;
+  width: max-content;
+  height: 0;
+  visibility: hidden;
+  pointer-events: none;
+}
+.oc-projpage__colprobes > .oc-projpage__col {
+  padding-block: 0;
+}
+
+/* TAP ZONES of the rows' small icons on touch (`.oc-hit`, convexChat.css): the
+   rows are 32 px apart, so each zone keeps to its row; a folder's menu ends 2 px
+   before its row's edge and a chat's menu sits just before its sidebar toggle,
+   so their zones slide back to stay off the edge and off the toggle. */
+@media (hover: none), (any-pointer: coarse) {
+  .oc-projpage__colentry,
+  .oc-projpage__treerow,
+  .oc-projpage__chatrow {
+    --oc-hit-h: 2rem;
+  }
+  .oc-projpage__colmenu {
+    --oc-hit-x: -0.5rem;
+  }
+  .oc-projpage__colmenu--chat {
+    --oc-hit-x: -0.6875rem;
+  }
+  .oc-projpage__barbtn {
+    --oc-hit-w: 1.5rem;
+  }
+  /* The list view puts a chat's toggle after its menu (7 px apart), the cards
+     view before it (4 px): the menu's zone slides away from it. */
+  .oc-projpage__treerow--chat .oc-projpage__treemenu {
+    --oc-hit-x: -0.25rem;
+  }
+  .oc-projpage__chatmenu {
+    --oc-hit-x: 0.4375rem;
+  }
 }

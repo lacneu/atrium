@@ -54,7 +54,7 @@
 }
 
 .oc-participants__head {
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.04em;
@@ -114,7 +114,7 @@
 }
 
 .oc-participants__role {
-  font-size: 11px;
+  font-size: 12px;
   color: var(--oc-text-muted, #64748b);
 }
 
@@ -130,7 +130,7 @@
 .oc-participants__note {
   margin: 0;
   padding: 2px 4px;
-  font-size: 11px;
+  font-size: 12px;
   color: var(--oc-text-muted, #64748b);
 }
 
@@ -142,7 +142,7 @@
 .oc-participants__error {
   margin: 0;
   padding: 4px;
-  font-size: 11px;
+  font-size: 12px;
   border-radius: 6px;
   color: var(--oc-danger-fg, #b91c1c);
   background: var(--oc-danger-bg, rgb(185 28 28 / 8%));
@@ -154,7 +154,7 @@
 .oc-msg__author {
   align-self: flex-end;
   padding: 0 4px 2px;
-  font-size: 11px;
+  font-size: 12px;
   color: var(--oc-text-muted, #64748b);
 }
 
@@ -537,13 +537,13 @@
   text-overflow: ellipsis;
 }
 .oc-convpanel__you {
-  font-size: 0.72rem;
+  font-size: 0.75rem;
   color: var(--muted-foreground);
 }
 .oc-convpanel__badge {
   padding: 0 0.4rem;
   border-radius: 999px;
-  font-size: 0.68rem;
+  font-size: 0.75rem;
   line-height: 1.4;
   color: var(--primary);
   background: color-mix(in oklch, var(--primary) 12%, transparent);

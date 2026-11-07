@@ -144,7 +144,7 @@ export function GlobalSearch() {
           showCloseButton={false}
           // Top-anchored, wider, padding/gap removed: a command palette, not a
           // centered dialog. twMerge resolves the position/size overrides.
-          className="oc-search-palette top-[12vh] translate-y-0 max-w-xl gap-0 overflow-hidden p-0"
+          className="oc-search-palette top-[12dvh] translate-y-0 max-w-xl gap-0 overflow-hidden p-0"
           onOpenAutoFocus={(e) => {
             // Focus the search field rather than the first result button.
             e.preventDefault();

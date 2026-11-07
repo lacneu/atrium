@@ -14,6 +14,7 @@ import {
   setOther,
   toggleOption,
   type AgentRequestView,
+  dockFolded,
 } from "./agentRequestsView";
 
 const NOW = 1_000_000;
@@ -184,5 +185,18 @@ describe("outcomes", () => {
   it("the folded line says what was asked", () => {
     expect(oneLiner(row({}))).toBe("Quel format ?");
     expect(oneLiner(row({ kind: "approval", questions: null, approval: { command: "rm -rf build", decisions: ["deny"] } }))).toBe("rm -rf build");
+  });
+});
+
+// The dock above the composer (lot 6, 2026-11): on a phone held sideways an open
+// request card took the thread down to a sliver.
+describe("dockFolded — the dock shows only its bar", () => {
+  it("on a short screen it starts folded, elsewhere open", () => {
+    expect(dockFolded(null, true)).toBe(true);
+    expect(dockFolded(null, false)).toBe(false);
+  });
+  it("once the reader chooses, the choice holds — on any screen", () => {
+    expect(dockFolded(false, true)).toBe(false);
+    expect(dockFolded(true, false)).toBe(true);
   });
 });

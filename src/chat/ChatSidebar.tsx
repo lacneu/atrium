@@ -1,6 +1,7 @@
-import { createContext, memo, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { createContext, memo, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import { ChatWidgetsMenuItem } from "./widgets/ChatWidgetsMenuItem";
 import { APP_HOST } from "@/lib/appHost";
+import { useFitLevel } from "@/lib/useFitLevel";
 import { clearSidebarFlash, useSidebarFlash } from "./sidebarFlash";
 import { formatDateTime } from "@/lib/format";
 import { useMutation, useQuery } from "convex/react";
@@ -107,6 +108,8 @@ const projHeadId = (pid: string) => `${PROJ_HEAD}${pid}`;
 const COLLAPSE_KEY = "oc.noproject.collapsed";
 // The "shared with me" section's fold, per browser like the one above.
 const SHARED_COLLAPSE_KEY = "oc.shared.collapsed";
+// The new-chat bar's presentations, most detailed first (useFitLevel order).
+const TOP_MODES = ["full", "label", "icon"] as const;
 
 export type ChatRow = {
   _id: Id<"chats">;
@@ -296,29 +299,25 @@ export function ChatSidebar({
   const topRef = useRef<HTMLDivElement>(null);
   const ghostFullRef = useRef<HTMLDivElement>(null);
   const ghostLabelRef = useRef<HTMLDivElement>(null);
-  const [topMode, setTopMode] = useState<"full" | "label" | "icon">("full");
-  useLayoutEffect(() => {
-    const top = topRef.current;
-    if (!top) return;
-    const measure = () => {
-      const avail = top.clientWidth;
-      const reqFull = ghostFullRef.current?.offsetWidth ?? 0;
-      const reqLabel = ghostLabelRef.current?.offsetWidth ?? 0;
-      // Ghosts not laid out yet → stay full (avoids a spurious collapse at 0).
-      const next =
-        reqFull === 0 || avail >= reqFull
-          ? "full"
-          : avail >= reqLabel
-            ? "label"
-            : "icon";
-      setTopMode((prev) => (prev === next ? prev : next));
-    };
-    measure();
-    const ro = new ResizeObserver(measure);
-    ro.observe(top);
-    return () => ro.disconnect();
-    // Re-measure when the localized label or platform badge changes width.
-  }, [newChatLabel, newChatShortcut]);
+  const topMode = TOP_MODES[
+    useFitLevel(
+      () => {
+        const top = topRef.current;
+        if (!top) return null;
+        // Ghosts not laid out yet (0) → stay full: no spurious collapse.
+        return {
+          available: top.clientWidth,
+          required: [
+            ghostFullRef.current?.offsetWidth ?? 0,
+            ghostLabelRef.current?.offsetWidth ?? 0,
+          ],
+        };
+      },
+      () => [topRef.current],
+      // Re-measure when the localized label or platform badge changes width.
+      [newChatLabel, newChatShortcut],
+    )
+  ];
 
   // Transient local buffer: Convex is the source of truth; during a drag (and
   // until the write confirms) we render the local arrangement so the item does
@@ -1113,7 +1112,7 @@ function Section({
     >
       <div
         className={
-          "oc-sidebar__group-head group/head" +
+          "oc-sidebar__group-head oc-reveal-host group/head" +
           (collapsible ? " oc-sidebar__group-head--btn" : "")
         }
         // Same reason as the row: the folded bar alone cannot carry a tooltip.
@@ -1142,7 +1141,7 @@ function Section({
           onOpen ? (
             <button
               type="button"
-              className="oc-sidebar__group-chevbtn"
+              className="oc-sidebar__group-chevbtn oc-hit"
               aria-label={collapsed ? m.sidebar_expand() : m.sidebar_collapse()}
               aria-expanded={!collapsed}
               onClick={(e) => {
@@ -1219,7 +1218,7 @@ function Section({
                 variant="ghost"
                 size="icon-xs"
                 aria-label={m.sidebar_project_actions()}
-                className="oc-sidebar__group-menu opacity-0 group-hover/head:opacity-100 group-focus-within/head:opacity-100 aria-expanded:opacity-100"
+                className="oc-sidebar__group-menu oc-reveal oc-hit"
                 onClick={(e) => e.stopPropagation()}
                 onMouseDown={(e) => e.stopPropagation()}
                 onTouchStart={(e) => e.stopPropagation()}
@@ -1510,7 +1509,7 @@ const ChatItem = memo(function ChatItem({
         }}
         style={style}
         className={
-          "oc-chatitem group/row" +
+          "oc-chatitem oc-reveal-host group/row" +
           (active ? " oc-chatitem--active" : "") +
           (flashing ? " oc-chatitem--flash" : "")
         }
@@ -1639,7 +1638,7 @@ const ChatItem = memo(function ChatItem({
               variant="ghost"
               size="icon-xs"
               aria-label={m.sidebar_actions()}
-              className="opacity-0 group-hover/row:opacity-100 group-focus-within/row:opacity-100 aria-expanded:opacity-100"
+              className="oc-reveal oc-hit"
               onClick={(e) => e.stopPropagation()}
               onMouseDown={(e) => e.stopPropagation()}
               onTouchStart={(e) => e.stopPropagation()}

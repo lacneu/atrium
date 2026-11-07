@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { APP_HOST } from "@/lib/appHost";
 import { useAction, useMutation, useQuery } from "convex/react";
 import { AlertTriangle } from "lucide-react";
@@ -49,6 +49,8 @@ import { CURATABLE_FILES, isCurationCandidate } from "../../../convex/lib/curati
 import { instanceTabGate } from "../capabilities";
 import { unsupportedInstanceLabel } from "./compatView";
 import "./confTabs.css";
+import { useFitLevel } from "@/lib/useFitLevel";
+import { measureCloneWidths } from "@/lib/measureClone";
 
 // Settings › Fichiers d'agent (CONF-4c). Read (+ admin write) of an agent's
 // workspace files over the bridge. Visible with `agents.files.read` OR admin;
@@ -261,6 +263,25 @@ export function AgentFilesTab() {
     () => new Intl.NumberFormat(locale, { maximumFractionDigits: 0 }),
     [locale],
   );
+  // A file's row on one line where it fits, else on two (name and its actions,
+  // then the size gauge) — MEASURED: the rows on one line, cloned off-screen,
+  // against the list's width. At 430 px the one line needed 424 in 390 and the
+  // edit button was cut.
+  const listRef = useRef<HTMLDivElement>(null);
+  const listLevel = useFitLevel(
+    () => {
+      const list = listRef.current;
+      if (list === null) return null;
+      const [oneLine] = measureCloneWidths(
+        list,
+        [(clone) => clone.setAttribute("data-layout", "line")],
+        "oc-afiles__measure",
+      );
+      return { available: list.clientWidth, required: [oneLine] };
+    },
+    () => [listRef.current],
+    [listing, locale, isAdmin],
+  );
 
   if (me === undefined || options === undefined) {
     return <p className="oc-admin__hint">{m.common_loading()}</p>;
@@ -332,7 +353,11 @@ export function AgentFilesTab() {
         <p className="oc-admin__hint">{m.afiles_empty()}</p>
       ) : (
         <>
-          <div className="oc-afiles__list">
+          <div
+            ref={listRef}
+            className="oc-afiles__list"
+            data-layout={listLevel === 0 ? "line" : "two-level"}
+          >
             {listing.files.map((f) => {
               const pct = gaugePct(f.size);
               const warn = pct >= GAUGE_WARN_PCT;

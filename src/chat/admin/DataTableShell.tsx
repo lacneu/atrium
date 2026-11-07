@@ -1,4 +1,4 @@
-import { Fragment, useState, type ReactNode } from "react";
+import { Fragment, useRef, useState, type ReactNode } from "react";
 import {
   ChevronDown,
   ChevronsUpDown,
@@ -26,12 +26,20 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { m } from "@/paraglide/messages.js";
+import { getLocale } from "@/paraglide/runtime.js";
+import { useTableLayout } from "./useTableLayout";
 
 // Reusable admin list pattern (the template the user asked for):
 //  - "Add" button in the header (opens a right Sheet, owned by the caller)
 //  - leading checkbox column + header select-all
 //  - bulk toolbar appears when >0 selected (caller supplies bulk actions)
 //  - per-row kebab menu, revealed on row hover AND focus-within (a11y)
+//  - STACKED ROWS when the table does not fit: measured, never guessed — the
+//    table's own narrowest width (a clone at min-content) against the width it has. A
+//    phone used to scroll it sideways, its actions 600 px off-screen. Stacked,
+//    each row reads as its first cell, then one "label value" line per column,
+//    its menu in sight at the row's end; the header row becomes the sort and
+//    select-all bar.
 // Generic over a row type T with a string id.
 
 export type RowAction<T> = {
@@ -77,6 +85,7 @@ export function DataTableShell<T extends { _id: string }>({
   renderExpanded?: (row: T) => ReactNode;
 }) {
   const [selected, setSelected] = useState<Set<string>>(new Set());
+  const wrapRef = useRef<HTMLDivElement>(null);
   // Sort is a pure render-time slice (CHARTE: every data column is sortable).
   // null = the server's incoming order. 3-state per column: asc -> desc -> none.
   const [sort, setSort] = useState<{ index: number; dir: SortDir } | null>(null);
@@ -98,6 +107,17 @@ export function DataTableShell<T extends { _id: string }>({
     (bulkActions ? 1 : 0) + columns.length + (rowActions ? 1 : 0);
   const allChecked = list.length > 0 && selected.size === list.length;
   const someChecked = selected.size > 0 && !allChecked;
+
+  // What changes the width the table needs: its rows, columns, sort, language.
+  const layout = useTableLayout(wrapRef, [
+    rows,
+    sort?.index,
+    sort?.dir,
+    columns.length,
+    !!bulkActions,
+    !!rowActions,
+    getLocale(),
+  ]);
 
   function toggleAll() {
     setSelected(allChecked ? new Set() : new Set(list.map((r) => r._id)));
@@ -144,11 +164,12 @@ export function DataTableShell<T extends { _id: string }>({
       ) : list.length === 0 ? (
         <p className="oc-admin__hint">{emptyHint}</p>
       ) : (
+        <div ref={wrapRef} className="oc-tablefit" data-layout={layout}>
         <Table>
           <TableHeader>
             <TableRow>
               {bulkActions ? (
-                <TableHead className="w-8">
+                <TableHead className="oc-dt__check w-8">
                   <Checkbox
                     aria-label={m.datatable_select_all()}
                     checked={allChecked ? true : someChecked ? "indeterminate" : false}
@@ -209,9 +230,9 @@ export function DataTableShell<T extends { _id: string }>({
               const expanded = isExpanded?.(row) ?? false;
               return (
                 <Fragment key={row._id}>
-                <TableRow className="group/row">
+                <TableRow className="oc-reveal-host group/row">
                   {bulkActions ? (
-                    <TableCell>
+                    <TableCell className="oc-dt__check">
                       <Checkbox
                         aria-label={m.datatable_select_row()}
                         checked={selected.has(row._id)}
@@ -219,13 +240,17 @@ export function DataTableShell<T extends { _id: string }>({
                       />
                     </TableCell>
                   ) : null}
-                  {columns.map((c) => (
-                    <TableCell key={c.header} className={c.className}>
+                  {columns.map((c, i) => (
+                    <TableCell
+                      key={c.header}
+                      className={i === 0 ? `oc-dt__lead ${c.className ?? ""}` : c.className}
+                      data-label={c.header}
+                    >
                       {c.cell(row)}
                     </TableCell>
                   ))}
                   {rowActions ? (
-                    <TableCell>
+                    <TableCell className="oc-dt__actions">
                       {actions.length > 0 ? (
                         <DropdownMenu>
                           <DropdownMenuTrigger asChild>
@@ -233,8 +258,9 @@ export function DataTableShell<T extends { _id: string }>({
                               variant="ghost"
                               size="icon-sm"
                               aria-label={m.datatable_actions()}
-                              // Hidden until row hover OR keyboard focus within the row.
-                              className="opacity-0 transition-opacity group-hover/row:opacity-100 group-focus-within/row:opacity-100 aria-expanded:opacity-100"
+                              // Hidden until row hover OR keyboard focus within the row,
+                              // always there where a finger can be used (`.oc-reveal`).
+                              className="oc-reveal oc-hit"
                             >
                               <MoreVertical />
                             </Button>
@@ -271,6 +297,7 @@ export function DataTableShell<T extends { _id: string }>({
             })}
           </TableBody>
         </Table>
+        </div>
       )}
     </div>
   );

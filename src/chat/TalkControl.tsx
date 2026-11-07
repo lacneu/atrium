@@ -13,12 +13,14 @@
 // matrix; an illegal transition is ignored (stale event), never applied.
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { useAction, useQuery } from "convex/react";
 import { AudioLines, ChevronDown, Mic, MicOff, PhoneOff } from "lucide-react";
 import * as m from "@/paraglide/messages.js";
 import { api } from "./convexApi";
 import type { Id } from "./convexApi";
 import { useToast } from "@/components/ui/toast";
+import { Button } from "@/components/ui/button";
 import {
   exchangeSdp,
   hangupWithRetry,
@@ -77,11 +79,94 @@ function talkErrorMessage(code: string): string {
   }
 }
 
+/** What the idle control offers, reported to the composer, which decides what fits. */
+export interface TalkPresence {
+  /** The settings chevron (voice, microphone sensitivity). */
+  settings: boolean;
+  /** The start button. */
+  start: boolean;
+}
+
+/** The composer's "More" menu, for the parts that no longer fit in its bar: they are
+ *  rendered INTO its slots, so the settings keep living in this component's state. */
+export interface TalkMoreMenu {
+  /** Which idle parts the composer moved to the menu. */
+  moved: TalkPresence;
+  /** Where each part renders while the menu is open (null when closed). */
+  settingsSlot: HTMLElement | null;
+  startSlot: HTMLElement | null;
+  /** Called after an action taken from the menu, so the menu can close. */
+  onDone: () => void;
+}
+
+/** The voice and sensitivity choices — in the chevron's popover, or in the
+ *  composer's "More" menu when the chevron no longer fits. */
+function TalkSettingsFields({
+  voice,
+  vad,
+  onVoice,
+  onVad,
+}: {
+  voice: string;
+  vad: string;
+  onVoice: (next: string) => void;
+  onVad: (next: string) => void;
+}) {
+  return (
+    <>
+      <label className="oc-talk__setting">
+        <span className="oc-talk__settinglabel">{m.talk_voice_label()}</span>
+        <Select
+          value={voice === "" ? "__default__" : voice}
+          onValueChange={(v) => onVoice(v === "__default__" ? "" : v)}
+        >
+          <SelectTrigger size="sm" aria-label={m.talk_voice_label()}>
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="__default__">{m.talk_voice_default()}</SelectItem>
+            {TALK_VOICES.map((v) => (
+              <SelectItem key={v} value={v}>
+                {v}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      </label>
+      <label className="oc-talk__setting">
+        <span className="oc-talk__settinglabel">{m.talk_sensitivity_label()}</span>
+        <Select
+          value={vad === "" ? "__default__" : vad}
+          onValueChange={(v) => onVad(v === "__default__" ? "" : v)}
+        >
+          <SelectTrigger size="sm" aria-label={m.talk_sensitivity_label()}>
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="__default__">{m.talk_sensitivity_default()}</SelectItem>
+            {TALK_VAD_LEVELS.map((l) => (
+              <SelectItem key={l.id} value={l.id}>
+                {l.id === "low"
+                  ? m.talk_sensitivity_low()
+                  : l.id === "medium"
+                    ? m.talk_sensitivity_medium()
+                    : m.talk_sensitivity_high()}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      </label>
+    </>
+  );
+}
+
 export function TalkControl({
   chatId,
   routedAgent = null,
   onCallActiveChange,
   serverCallSessionId = null,
+  onPresenceChange,
+  more,
 }: {
   chatId: string;
   /** The composer's current per-turn selection, or null. */
@@ -96,6 +181,10 @@ export function TalkControl({
    *  agent selector. The call is pinned to its agent; switching would split the
    *  conversation (and end a gateway-owned call). The server refuses it as well. */
   onCallActiveChange?: (active: boolean) => void;
+  /** What the idle control offers right now (nothing while a call runs). */
+  onPresenceChange?: (presence: TalkPresence) => void;
+  /** The composer's "More" menu, when parts of this control moved there. */
+  more?: TalkMoreMenu;
 }) {
   const [status, setStatus] = useState<TalkStatus>(INITIAL_TALK_STATUS);
   // The user's voice pick ("" = the gateway's configured default), persisted
@@ -488,6 +577,29 @@ export function TalkControl({
   // Hidden while the instance is not enabled (or the probe still loads). An
   // ACTIVE session keeps rendering so a mid-call admin flip never strands a
   // live mic without its controls.
+  // Only the IDLE pill may leave the bar: a call in progress keeps its hang-up in
+  // sight, and a call another tab owns keeps its only action (ending it).
+  const idlePill =
+    phase === "idle" &&
+    serverCallSessionId === null &&
+    !hidesTalkControl({ phase, available, serverCall: false });
+  useEffect(() => {
+    onPresenceChange?.({ settings: idlePill, start: idlePill });
+  }, [idlePill, onPresenceChange]);
+  useEffect(
+    () => () => {
+      onPresenceChange?.({ settings: false, start: false });
+    },
+    [onPresenceChange],
+  );
+  const onVoice = (next: string) => {
+    setVoice(next);
+    saveTalkVoice(next);
+  };
+  const onVad = (next: string) => {
+    setVad(next);
+    saveTalkVad(next);
+  };
   if (
     hidesTalkControl({
       phase,
@@ -524,7 +636,7 @@ export function TalkControl({
           </button>
         </span>
       ) : phase === "idle" ? (
-        <span className="oc-talk__pill">
+        <span className="oc-talk__pill" data-overflow="talk">
           {/* The pill BODY starts the conversation; the chevron opens the
               settings (voice + mic sensitivity) — mirrors the agent chip,
               icons only (i18n widths never squeeze the composer). */}
@@ -544,69 +656,42 @@ export function TalkControl({
                 className="oc-talk__pillchev"
                 title={m.talk_settings()}
                 aria-label={m.talk_settings()}
+                data-overflow="talk-settings"
               >
                 <ChevronDown size={13} aria-hidden />
               </button>
             </PopoverTrigger>
             <PopoverContent align="end" className="oc-talk__settings">
-              <label className="oc-talk__setting">
-                <span className="oc-talk__settinglabel">{m.talk_voice_label()}</span>
-                <Select
-                  value={voice === "" ? "__default__" : voice}
-                  onValueChange={(v) => {
-                    const next = v === "__default__" ? "" : v;
-                    setVoice(next);
-                    saveTalkVoice(next);
-                  }}
-                >
-                  <SelectTrigger size="sm" aria-label={m.talk_voice_label()}>
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="__default__">
-                      {m.talk_voice_default()}
-                    </SelectItem>
-                    {TALK_VOICES.map((v) => (
-                      <SelectItem key={v} value={v}>
-                        {v}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </label>
-              <label className="oc-talk__setting">
-                <span className="oc-talk__settinglabel">
-                  {m.talk_sensitivity_label()}
-                </span>
-                <Select
-                  value={vad === "" ? "__default__" : vad}
-                  onValueChange={(v) => {
-                    const next = v === "__default__" ? "" : v;
-                    setVad(next);
-                    saveTalkVad(next);
-                  }}
-                >
-                  <SelectTrigger size="sm" aria-label={m.talk_sensitivity_label()}>
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="__default__">
-                      {m.talk_sensitivity_default()}
-                    </SelectItem>
-                    {TALK_VAD_LEVELS.map((l) => (
-                      <SelectItem key={l.id} value={l.id}>
-                        {l.id === "low"
-                          ? m.talk_sensitivity_low()
-                          : l.id === "medium"
-                            ? m.talk_sensitivity_medium()
-                            : m.talk_sensitivity_high()}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </label>
+              <TalkSettingsFields voice={voice} vad={vad} onVoice={onVoice} onVad={onVad} />
             </PopoverContent>
           </Popover>
+          {more?.moved.settings && more.settingsSlot !== null
+            ? createPortal(
+                <>
+                  <p className="oc-composer__more-heading">{m.chat_composer_more_talk()}</p>
+                  <div className="oc-composer__more-fields">
+                    <TalkSettingsFields voice={voice} vad={vad} onVoice={onVoice} onVad={onVad} />
+                  </div>
+                </>,
+                more.settingsSlot,
+              )
+            : null}
+          {more?.moved.start && more.startSlot !== null
+            ? createPortal(
+                <Button
+                  variant="ghost"
+                  className="oc-composer__more-item w-full justify-start"
+                  onClick={() => {
+                    more.onDone();
+                    void start();
+                  }}
+                >
+                  <AudioLines aria-hidden />
+                  {m.talk_start()}
+                </Button>,
+                more.startSlot,
+              )
+            : null}
         </span>
       ) : (
         <span

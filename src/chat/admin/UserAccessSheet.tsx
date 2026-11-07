@@ -198,7 +198,7 @@ function InstanceAgents({
         return (
           <div
             key={a.agentId}
-            className={`oc-access__row${disabledAgent ? " is-disabled" : ""}`}
+            className={`oc-access__row oc-reveal-host${disabledAgent ? " is-disabled" : ""}`}
           >
             <Checkbox
               checked={isAssigned}
@@ -242,7 +242,7 @@ function InstanceAgents({
                   type="button"
                   size="icon-sm"
                   variant="ghost"
-                  className="oc-access__setdefault"
+                  className="oc-access__setdefault oc-reveal oc-hit"
                   aria-label={m.useraccess_set_default()}
                   title={m.useraccess_set_default()}
                   // A disabled agent can't be the default (the server rejects it).
