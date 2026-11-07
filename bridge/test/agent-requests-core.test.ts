@@ -170,6 +170,7 @@ describe("OpenClaw approvals", () => {
         sessionKey: "agent:denis:atrium:chat:denis:c1",
         agentId: "denis",
         runId: "webchat-1",
+        toolCallId: "call_1:exec:1",
       },
       createdAtMs: 1,
       expiresAtMs: 2,
@@ -180,6 +181,8 @@ describe("OpenClaw approvals", () => {
       sessionKey: "agent:denis:atrium:chat:denis:c1",
       agentId: "denis",
       runId: "webchat-1",
+      // The tool call that waits: the alias the run's own `waiting-approval` names it by.
+      toolCallId: "call_1:exec:1",
       expiresAtMs: 2,
     });
     // Nothing of the raw request (cwd, command) is carried: the card shows the

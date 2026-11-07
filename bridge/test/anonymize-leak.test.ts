@@ -848,7 +848,10 @@ describe("a promoted capture still READS the same — provenance, cron schedule,
 
 
   it("a lifecycle error's NESTED failure class is kept when a turn closes with it, and only then", async () => {
-    const error = (errorKind: string) => agent("lifecycle", { phase: "error", error: { message: "Martin overflow", errorKind } });
+    // SETTLED, as the run's owning terminal is published (agent-lifecycle-terminal.ts:182 at
+    // v2026.9.36): only a definitive lifecycle error closes the turn (lifecycle-terminal.ts).
+    const error = (errorKind: string) =>
+      agent("lifecycle", { phase: "error", error: { message: "Martin overflow", errorKind }, executionSettled: true });
     const kept = JSON.stringify(await promote(error("context_length")));
     expect(kept).toContain('"errorKind":"context_length"');
     expect(kept).not.toContain("Martin");
@@ -862,10 +865,50 @@ describe("a promoted capture still READS the same — provenance, cron schedule,
     // the reading belongs to the frame that closed the turn, not to its value (codex).
     // The own terminal carries its class NESTED too: a root `errorKind` is a vocabulary key kept
     // everywhere, and would prove nothing about the attribution (codex).
-    const ownNestedError = agent("lifecycle", { phase: "error", error: { message: "own boom", errorKind: "context_length" } });
+    const ownNestedError = agent("lifecycle", {
+      phase: "error",
+      error: { message: "own boom", errorKind: "context_length" },
+      executionSettled: true,
+    });
     const [, promotedForeign, promotedOwn] = await promoteFrames([own, foreign, ownNestedError]);
     expect(JSON.stringify(promotedForeign)).not.toContain('"errorKind":"context_length"');
     expect(JSON.stringify(promotedOwn), "the own terminal's class is kept").toContain('"errorKind":"context_length"');
+  });
+
+  it("a lifecycle terminal keeps the facts its definitiveness is decided on — and only upstream's values", async () => {
+    // lifecycle-terminal.ts reads them (upstream isDefinitiveRunLifecycle): masked, a promoted
+    // error frame would read as retryable and replay to a turn that never ends.
+    const settled = JSON.stringify(
+      await promote(
+        agent("lifecycle", {
+          phase: "error",
+          error: "Martin failed",
+          executionSettled: true,
+          fallbackExhaustedFailure: true,
+          aborted: false,
+          providerStarted: true,
+          livenessState: "blocked",
+          timeoutPhase: "provider",
+        }),
+      ),
+    );
+    for (const kept of [
+      '"executionSettled":true',
+      '"fallbackExhaustedFailure":true',
+      '"aborted":false',
+      '"providerStarted":true',
+      '"livenessState":"blocked"',
+      '"timeoutPhase":"provider"',
+    ]) {
+      expect(settled).toContain(kept);
+    }
+    expect(settled).not.toContain("Martin");
+    // A closed vocabulary keeps ONLY its own values: anything else under the name is masked.
+    const odd = JSON.stringify(
+      await promote(agent("lifecycle", { phase: "error", livenessState: "PATIENT-12345", timeoutPhase: "Martin" })),
+    );
+    expect(odd).not.toContain("PATIENT-12345");
+    expect(odd).not.toContain("Martin");
   });
 
   it("a schedule's kind is not kept when the card prints its expression instead", async () => {

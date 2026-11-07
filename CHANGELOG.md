@@ -1,5 +1,58 @@
 # Changelog
 
+## [0.103.5] — Approvals from sub-agents, after a reconnection, and past ten minutes
+
+Patch release. The bridge changes; the frontend and the schema do not, and nothing needs
+migrating. In Convex only the development-only probes the live bench reads change (they refuse
+to run outside a development deployment), so redeploying the Convex functions is optional.
+Deploy the new bridge image. Validated on the live bench on OpenClaw 2026.9.36, with Hermes
+0.21.7.
+
+- **A sub-agent's approval is shown in the conversation that started it.** When an agent
+  delegated work to a sub-agent and that sub-agent needed your approval to run a command, the
+  card never appeared: Atrium only accepted approvals raised by the conversation's own session,
+  so the sub-agent waited until its request expired. Atrium now accepts an approval raised by a
+  session that descends from the conversation — a sub-agent it saw being started, or one the
+  gateway's own session records name as started from it — and never one from another
+  conversation. The card appears under the message that started the sub-agent, and your answer
+  goes to the sub-agent's request. The card does not name the sub-agent yet.
+- **A pending approval comes back after a reconnection.** The gateway announces an approval
+  once, to the connections open at that moment, and may skip a slow one. A card missed that way,
+  or lost while the bridge was reconnecting, never came back, and the agent waited for an answer
+  nobody could give. Each time a conversation's connection opens or reopens, Atrium now reads
+  the gateway's pending approvals (commands, plugins, system agent), as the OpenClaw Control UI
+  does, and raises the missing cards of that conversation and of its sub-agents. An approval
+  already answered never comes back. If the gateway refuses a list (a missing permission), the
+  bridge logs which list and why, and goes on.
+- **Waiting for an approval no longer gives up after 10 minutes.** Atrium stopped waiting for a
+  decision after 10 minutes, while the gateway keeps a command approval open for 30: an answer
+  given between the two reached a turn Atrium had already closed. The wait now follows the
+  deadline each request announces, plus a short margin, and the gateway's 30-minute default
+  when a request names none.
+- **"Awaiting approval" follows OpenClaw 2026.9.36's own signal.** 2026.9.36 reports the wait on
+  the run itself (`waiting-approval`, then `approval-resolved`). Atrium reads it, besides the
+  older approval stream, so the turn shows it is waiting for your decision and its silence clock
+  stops while you decide — also for a turn resumed after a reconnection.
+- **An attempt the gateway may still retry no longer ends the answer in error.** Agents that run
+  through a command-line backend or ACP report a failed attempt before OpenClaw retries it or
+  falls back to another model. Atrium ended the turn on that report and showed an error, even
+  when the retry then answered. A turn now ends on an error only when the gateway marks it as
+  final — the rule the gateway itself applies — and otherwise on the gateway's own end of the
+  run. Agents on the default runtime already mark every such report as final, so nothing changes
+  for them. The protection against a turn that never ends is unchanged.
+
+**Known issue, not new in this release.** An approval you grant can still end with the command
+refused as `approval-request-failed` when a session is created on the same gateway while the
+approval is pending — another conversation's first message, a conversation summary, a sub-agent
+being started, or a new session in the OpenClaw Control UI. The gateway treats any new session as
+a change of access rights and abandons the pending wait, even though you allowed the command. It
+applies to every command approval, a sub-agent's included. This is an OpenClaw defect, reported
+upstream; Atrium cannot prevent it on its own.
+
+**Rollback:** redeploy the 0.103.4 bridge image. No data changes in either direction. After a
+rollback, sub-agent approvals are not shown, a missed card does not come back, the approval wait
+stops at 10 minutes, and a retried failure shows an error again.
+
 ## [0.103.4] — A long conversation of heavy turns opens again
 
 Patch release (hotfix). The Convex functions and the frontend change; the bridge and the

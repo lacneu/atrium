@@ -93,6 +93,7 @@ import {
   childChatTerminalStatus,
   childLifecycleStatus,
 } from "./sub-agent-frames.js";
+import { isDefinitiveLifecycleError } from "./lifecycle-terminal.js";
 
 // The normalized event vocabulary now lives in core/events.ts (the shared
 // provider contract). Re-export it from the OpenClaw normalizer so existing
@@ -171,17 +172,26 @@ const UPSTREAM_RESUME_TOOL_PHASES: ReadonlySet<string> = new Set([
 
 const RETRY_MAX_ATTEMPTS = 10;
 
-// A tool asked for HUMAN approval (`stream:"approval" phase:"requested"`). The
-// run is alive and deliberately waiting, so the 240 s silence budget is the wrong
-// clock — but the wait must still be BOUNDED, or this re-creates the "Génération…"
-// that never ends. Same budget as a compaction: generous enough for a person to
-// answer, short enough that the turn always settles with a named cause.
-// MUST stay under the Convex stuck-stream watchdog (STALE_STREAM_MS = 12 min):
-// an approval wait is genuinely SILENT — no frames, no writes, nothing to bump
-// `updatedAt` — so a longer budget would let the watchdog reap the message as
-// `stream_orphaned` before this could close it with the cause it exists to name
-// (codex P2). Ten minutes leaves the watchdog its margin.
-export const APPROVAL_WAIT = 600.0;
+// A tool asked for HUMAN approval — on 2026.9.36 the run that waits says so on its own
+// lifecycle (`waiting-approval` / `approval-resolved`, src/agents/bash-tools.exec-host-
+// gateway.ts:1313-1337), older and detached paths on `stream:"approval"`. The run is alive
+// and deliberately waiting, so the 240 s silence budget is the wrong clock; the wait follows
+// the REQUEST'S OWN deadline instead (`expiresAtMs` of the broadcast and of `approval.get`,
+// read by the agent-request observer and handed to `noteApprovalDeadline`), because the
+// gateway keeps the request answerable until then and resolves it itself at that instant
+// (the expiry is broadcast `*.approval.resolved` and ends the run's `approval-resolved`).
+// A deadline we could not read falls back to the gateway's default: 30 min for an exec
+// approval (src/infra/exec-approvals-core.ts:296 `DEFAULT_EXEC_APPROVAL_TIMEOUT_MS`) — the
+// bound we used to keep, 10 min, closed turns whose approval was still valid. The wait is
+// heartbeated like a question's (HUMAN_WAIT_BEAT), so the Convex stuck-stream watchdog sees a
+// live row for as long as it lasts.
+export const APPROVAL_WAIT_DEFAULT = 30 * 60.0;
+/** Past the request's own deadline: covers the delivery of the gateway's verdict, which is
+ *  what ends the wait — this bound only names a verdict that never arrived. */
+export const APPROVAL_WAIT_MARGIN = 30.0;
+/** A deadline read but past belief is capped here — the longest Convex keeps a request open
+ *  (convex/lib/agentRequests.ts MAX_REQUEST_TTL_MS). */
+export const APPROVAL_WAIT_MAX = 24 * 60 * 60.0;
 /** A question the agent put to a HUMAN (OpenClaw `ask_user`) holds the turn until the
  *  gateway's own deadline — 15 min by default (`src/infra/embedded-question-broker.ts:115`
  *  at v2026.9.5), which is LONGER than our 240 s silence budget and the 12 min Convex
@@ -793,6 +803,17 @@ export class Normalizer {
   private approvalsRequested = 0;
   private readonly pendingApprovalIds = new Set<string>();
   private anonymousApprovals = 0;
+  /** Each approval's OWN deadline on this clock, by approval id (`noteApprovalDeadline`).
+   *  Kept apart from the pending set on purpose: the request's broadcast may reach us
+   *  before or after the run's `waiting-approval`, and whichever comes second must find
+   *  the other's fact. Bounded; per session, like the ids it is keyed by. */
+  private readonly approvalDeadlines = new Map<string, number>();
+  private static readonly MAX_APPROVAL_DEADLINES = 64;
+  /** A lifecycle `error` the gateway may still retry (not definitive by upstream's rule,
+   *  lifecycle-terminal.ts): the run it named, or null. Nothing is closed on it — the
+   *  gateway's own terminal decides — and a later lifecycle phase of the run clears it,
+   *  as the gateway's grace is cancelled by one (server-chat.ts:1398-1400). */
+  private retryableLifecycleErrorRun: string | null = null;
   // WHY the current turn finalized (set by finalize()); shipped in the pressure
   // trace so the exact close path is unambiguous on the next live repro.
   private finalizeCause: string | null = null;
@@ -908,6 +929,7 @@ export class Normalizer {
     // when content answers one, and zeroing the count there would let the NEXT
     // request on the same turn look like the turn's first.
     this.approvalsRequested = 0;
+    this.retryableLifecycleErrorRun = null;
     this.finalizeCause = null;
     this.recvSilence = false;
     this.diagUsage = null;
@@ -2005,28 +2027,13 @@ export class Normalizer {
       // surface to answer, so the turn used to sit silent until the 240 s recv
       // timeout and settle as an unexplained empty response. Say what it is
       // waiting for, suspend the silence clock, and BOUND the wait.
+      // Kept beside the lifecycle phases 2026.9.36 uses (handleLifecycle): upstream
+      // still emits this stream when an exec RETURNS `approval-pending` instead of
+      // waiting in place (embedded-agent-subscribe.handlers.tools.completion.ts:483-513).
       const phase = data.phase;
       if (phase === "requested") {
         // `toolCallId` first: it is the one id the resolution is guaranteed to carry.
-        this.approvalsRequested += 1;
-        const aliases = [data.toolCallId, data.approvalId].filter(isString);
-        if (aliases.length > 0) {
-          const record = aliases[0]!;
-          this.pendingApprovalIds.add(record);
-          for (const alias of aliases) this.approvalAliases.set(alias, record);
-        } else this.anonymousApprovals += 1;
-        this.clearWait("recv");
-        // …AND THE FINISHING GRACE, for the same reason every other resumption
-        // clears it: an approval request is proof the gateway is not silent. It
-        // suspended the 240 s recv clock and bounded the wait at 900 s, but left the
-        // 60 s finishing promise armed — so `finishing -> approval requested`
-        // finalized the turn as a SUCCESS one minute later, while a human was still
-        // being asked to authorise a command the gateway had not cancelled. Ordered
-        // AFTER `approvalPending` is set so the helper keeps `awaiting_approval` and
-        // does not publish `generating` over it.
-        this.suspendFinishingGrace(now);
-        this.arm("approval_wait", now + APPROVAL_WAIT);
-        events.push({ type: EVENT_TURN_PHASE, phase: "awaiting_approval" });
+        this.holdForApproval([data.toolCallId, data.approvalId].filter(isString), now, events);
       } else if (phase === "resolved") {
         // Explicitly released by the gateway (approved, denied or failed) — the
         // run resumes its normal cadence. `generating` CLEARS the stored phase.
@@ -2697,6 +2704,125 @@ export class Normalizer {
   }
 
   /**
+   * A human is asked to authorise something for THIS turn's run, named by `aliases`
+   * (`toolCallId` / `approvalId`, the first one being the record). Shared by the run's
+   * `waiting-approval` lifecycle phase (2026.9.36) and the older `approval:requested`
+   * stream. A request already held under one of its names is the SAME request seen
+   * again — it is not counted twice, or "content answers the one approval this turn
+   * asked" would stop applying to a turn that asked once.
+   */
+  private holdForApproval(aliases: string[], now: number, events: BridgeEvent[]): void {
+    // A request already decided is not waiting for anyone (a stale sighting of it).
+    if (aliases.some((alias) => this.approvalsOver.has(alias))) return;
+    const known = aliases
+      .map((alias) => this.approvalAliases.get(alias))
+      .find((record) => record !== undefined);
+    if (known !== undefined) {
+      for (const alias of aliases) this.approvalAliases.set(alias, known);
+      this.rearmApprovalWait(now);
+      return;
+    }
+    this.approvalsRequested += 1;
+    if (aliases.length > 0) {
+      const record = aliases[0]!;
+      this.pendingApprovalIds.add(record);
+      for (const alias of aliases) this.approvalAliases.set(alias, record);
+    } else this.anonymousApprovals += 1;
+    this.clearWait("recv");
+    // …AND THE FINISHING GRACE, for the same reason every other resumption
+    // clears it: an approval request is proof the gateway is not silent. It
+    // suspended the 240 s recv clock and bounded the wait, but left the
+    // 60 s finishing promise armed — so `finishing -> approval requested`
+    // finalized the turn as a SUCCESS one minute later, while a human was still
+    // being asked to authorise a command the gateway had not cancelled. Ordered
+    // AFTER `approvalPending` is set so the helper keeps `awaiting_approval` and
+    // does not publish `generating` over it.
+    this.suspendFinishingGrace(now);
+    this.rearmApprovalWait(now);
+    // The streaming row's heartbeat while a person decides: nothing else moves.
+    this.arm("human_beat", now + HUMAN_WAIT_BEAT);
+    events.push({ type: EVENT_TURN_PHASE, phase: "awaiting_approval" });
+  }
+
+  /**
+   * The wait bound for the approvals still pending: the LAST of their own deadlines, a
+   * request whose deadline we do not know counting for the gateway's default, plus the
+   * delivery margin. Recomputed whenever the set or a deadline changes, so an approval's
+   * real (often shorter) deadline replaces the default it was first held under.
+   */
+  private rearmApprovalWait(now: number): void {
+    if (!this.approvalPending()) {
+      this.clearWait("approval_wait");
+      return;
+    }
+    let last = Number.NEGATIVE_INFINITY;
+    const unknownDeadline = now + APPROVAL_WAIT_DEFAULT;
+    for (const record of this.pendingApprovalIds) {
+      let deadline: number | undefined;
+      for (const [alias, target] of this.approvalAliases) {
+        if (target !== record) continue;
+        const own = this.approvalDeadlines.get(alias);
+        if (own !== undefined) deadline = Math.max(deadline ?? own, own);
+      }
+      last = Math.max(last, deadline ?? unknownDeadline);
+    }
+    if (this.anonymousApprovals > 0) last = Math.max(last, unknownDeadline);
+    this.arm("approval_wait", last + APPROVAL_WAIT_MARGIN);
+  }
+
+  /**
+   * An approval request of THIS session, read off its broadcast or the pending list by
+   * the agent-request observer (the run's `waiting-approval` frame carries no deadline):
+   *   - its OWN deadline (`expiresInSec`, time left — this clock is not an epoch) is kept,
+   *     and takes effect at once when the approval is held, or when the
+   *     `waiting-approval` that may follow arrives;
+   *   - an EXEC approval naming this turn's own run holds the turn even without that
+   *     frame — the Control UI derives the same "waiting for approval" state from its
+   *     approval queue for an exec request of its session whose run it knows
+   *     (ui/src/pages/chat/tool-stream-status.ts:119-162). That is what keeps the label
+   *     on a turn picked up after a reconnection, whose `waiting-approval` went to the
+   *     socket that closed.
+   */
+  noteApprovalRequested(
+    approvalId: string,
+    facts: {
+      kind: "exec" | "plugin" | "system-agent";
+      runId: string | null;
+      toolCallId: string | null;
+      expiresInSec: number | null;
+      /** False: a deadline update only (the record's snapshot, read later) — never a
+       *  reason to hold a turn the request may have stopped holding since. */
+      hold?: boolean;
+    },
+    now: number,
+  ): BridgeEvent[] {
+    const left = facts.expiresInSec;
+    if (left !== null && Number.isFinite(left) && left >= 0) {
+      this.approvalDeadlines.delete(approvalId);
+      this.approvalDeadlines.set(approvalId, now + Math.min(left, APPROVAL_WAIT_MAX));
+      while (this.approvalDeadlines.size > Normalizer.MAX_APPROVAL_DEADLINES) {
+        const oldest = this.approvalDeadlines.keys().next().value;
+        if (oldest === undefined) break;
+        this.approvalDeadlines.delete(oldest);
+      }
+    }
+    if (this.finalized) return [];
+    const events: BridgeEvent[] = [];
+    const aliases = [approvalId, ...(facts.toolCallId !== null ? [facts.toolCallId] : [])];
+    if (
+      facts.hold !== false &&
+      facts.kind === "exec" &&
+      facts.runId !== null &&
+      this.ownRunIds.has(facts.runId)
+    ) {
+      this.holdForApproval(aliases, now, events);
+    } else if (this.approvalAliases.has(approvalId)) {
+      this.rearmApprovalWait(now);
+    }
+    return stampReceived(events, now);
+  }
+
+  /**
    * Release ONE approval named by any of its aliases (`toolCallId`, `approvalId`), and
    * the turn with it once nobody else holds it. Shared by the gateway's own
    * `approval:resolved` frame and by an answer given from Atrium — the latter because
@@ -2710,7 +2836,10 @@ export class Normalizer {
     if (record !== undefined) {
       this.pendingApprovalIds.delete(record);
       for (const [alias, target] of this.approvalAliases) {
-        if (target === record) this.approvalAliases.delete(alias);
+        if (target === record) {
+          this.approvalAliases.delete(alias);
+          this.noteApprovalOver(alias);
+        }
       }
     } else if (
       this.anonymousApprovals > 0 &&
@@ -2726,9 +2855,13 @@ export class Normalizer {
     // request whose `requested` frame we never saw — in which case there is
     // nothing of ours to release — or a stray, and treating it as "release
     // everything" is how one answer used to close a turn over someone else's
-    // still-pending authorisation. The 900 s `approval_wait` remains the bound,
+    // still-pending authorisation. The `approval_wait` remains the bound,
     // and it ends with a NAMED cause rather than a silent success.
-    if (this.approvalPending()) return; // someone else is still waiting
+    if (this.approvalPending()) {
+      // Someone else is still waiting: the bound is THEIRS now, not the released one's.
+      this.rearmApprovalWait(now);
+      return;
+    }
     this.clearWait("approval_wait");
     // The last approval is answered, but a QUESTION may still hold the turn: its
     // own bound (question_wait) and label stay in charge.
@@ -2736,6 +2869,7 @@ export class Normalizer {
       events.push({ type: EVENT_TURN_PHASE, phase: "awaiting_input" });
       return;
     }
+    this.clearWait("human_beat");
     this.armRecv(now);
     // …and the finishing promise this approval suspended comes back with it: the
     // gateway said it was finishing before it asked, so having been answered it
@@ -2747,10 +2881,27 @@ export class Normalizer {
   /** An approval of this turn was settled OUTSIDE the frame stream (answered from
    *  Atrium, or its resolved broadcast). No-op for an id this turn never asked. */
   noteApprovalSettled(approvalId: string, now: number): BridgeEvent[] {
+    // Remembered even when this turn does not hold it (yet): a late sighting of the same
+    // request — its pending list read just before it was answered — must not hold the
+    // turn for a decision already made.
+    this.noteApprovalOver(approvalId);
     if (this.finalized || !this.approvalAliases.has(approvalId)) return [];
     const events: BridgeEvent[] = [];
     this.releaseApproval([approvalId], now, events);
     return stampReceived(events, now);
+  }
+
+  /** Approvals already decided (answered, denied, expired): never held again. Bounded;
+   *  per session, like the ids. */
+  private readonly approvalsOver = new Set<string>();
+  private noteApprovalOver(alias: string): void {
+    this.approvalsOver.delete(alias);
+    this.approvalsOver.add(alias);
+    while (this.approvalsOver.size > Normalizer.MAX_APPROVAL_DEADLINES) {
+      const oldest = this.approvalsOver.values().next().value;
+      if (oldest === undefined) break;
+      this.approvalsOver.delete(oldest);
+    }
   }
 
   /** Is a human still being asked to authorise something? */
@@ -2810,6 +2961,12 @@ export class Normalizer {
   /** Is a question of this turn still waiting on a human? */
   get questionPending(): boolean {
     return this.pendingQuestionIds.size > 0;
+  }
+
+  /** Did this turn's run report a lifecycle error the gateway may still retry (and that
+   *  therefore closed nothing)? Cleared by the run's next lifecycle phase. */
+  get lifecycleRetryPending(): boolean {
+    return !this.finalized && this.retryableLifecycleErrorRun !== null;
   }
 
   /** HOW MANY — content can stand in for a resolution only when there is exactly
@@ -2912,6 +3069,44 @@ export class Normalizer {
       // (same pattern as the explicit compaction stream vs `abandoned`).
       if (data.yielded === true) this.sawYielded = true;
     }
+    // A later lifecycle phase of the run that reported a retryable error means the
+    // gateway went on with it — upstream cancels its pending error terminal on exactly
+    // this: any STRING phase but `error` (server-chat.ts:1344-1345, 1398-1400).
+    if (
+      typeof phase === "string" &&
+      phase !== "error" &&
+      this.retryableLifecycleErrorRun !== null &&
+      this.retryableLifecycleErrorRun === this.currentRunId
+    ) {
+      this.retryableLifecycleErrorRun = null;
+    }
+    // THE RUN WAITS ON A HUMAN (2026.9.36). An exec that needs an approval keeps its run
+    // and says so on the run's own lifecycle, `{phase:"waiting-approval", approvalId,
+    // toolCallId?}` then `{phase:"approval-resolved", approvalId, toolCallId?}` around the
+    // wait (src/agents/bash-tools.exec-host-gateway.ts:1313-1337). The Control UI keys its
+    // "waiting for approval" state on exactly these (ui/src/pages/chat/tool-stream-status.ts:
+    // 357-380). `stream:"approval"`, which Atrium listened to alone, did not appear in any
+    // capture from 7.1 to 9.36 — the turn was never labelled and kept its silence clock.
+    if (phase === "waiting-approval" || phase === "approval-resolved") {
+      // Keyed on `approvalId`, as the Control UI keys it (a frame without one is read and
+      // ignored there too); the tool call is an alias, for a release that names only it.
+      // Verbatim: the same bytes the request broadcast names it by (noteApprovalSettled).
+      const approvalId =
+        isString(data.approvalId) && data.approvalId.trim() !== "" ? data.approvalId : null;
+      if (approvalId === null) return;
+      const aliases = [
+        approvalId,
+        ...(isString(data.toolCallId) && data.toolCallId.trim() !== "" ? [data.toolCallId] : []),
+      ];
+      if (phase === "waiting-approval") {
+        this.holdForApproval(aliases, now, events);
+      } else if (aliases.some((alias) => this.approvalAliases.has(alias))) {
+        // Released only when it names an approval this turn holds: its broadcast twin
+        // (`exec.approval.resolved`, via noteApprovalSettled) may have released it first.
+        this.releaseApproval(aliases, now, events);
+      }
+      return;
+    }
     if (phase === "finishing") {
       // PRE-terminal, never a terminal: the run produced everything it will
       // produce and the real `end` follows. Say so instead of going silent, and
@@ -2941,6 +3136,22 @@ export class Normalizer {
       return;
     }
     if (phase === "error") {
+      // NOT EVERY lifecycle error ends the run. Upstream holds a non-definitive one for a
+      // retry and only then emits the run's `chat` error (lifecycle-terminal.ts): closing
+      // the turn here painted an error card over an answer the retried run then delivered.
+      // A retryable error therefore closes nothing; the gateway's own terminal — its `chat`
+      // error once its grace is spent (which carries this same error, classified:
+      // server-chat.ts:599-625, 1116-1130), or the retried run's end — decides, and the
+      // silence budget this frame just re-armed still asks the transcript if neither comes.
+      if (!isDefinitiveLifecycleError(data)) {
+        if (this.retryableLifecycleErrorRun === null) {
+          console.log(
+            `[normalizer] lifecycle error not definitive — left to the gateway's terminal (session=${this.sessionKey})`,
+          );
+        }
+        this.retryableLifecycleErrorRun = this.currentRunId;
+        return;
+      }
       const message = extractLifecycleError(data.error);
       // A lifecycle error MAY carry a structured errorKind (like chat:error);
       // read it so an overflow whose only signal is the CODE (not the text) still

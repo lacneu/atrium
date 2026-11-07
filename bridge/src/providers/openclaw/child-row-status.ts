@@ -177,6 +177,12 @@ export class ChildRowStatus {
     return [...this.tracked.keys()];
   }
 
+  /** Is `childKey` a child this conversation follows — one its observer saw, or one the
+   *  parent's own list returned (`sessions.list { spawnedBy }`)? */
+  follows(childKey: string): boolean {
+    return this.tracked.has(childKey);
+  }
+
   /** A child this conversation knows (its observer saw it). Idempotent. */
   track(childKey: string): void {
     this.ensureTracked(childKey);

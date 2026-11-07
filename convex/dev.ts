@@ -2316,6 +2316,9 @@ export const peekAgentRequests = query({
         status: r.status,
         providerRequestId: r.providerRequestId,
         messageId: r.messageId ?? null,
+        // WHO asked: a sub-agent's request carries the child's own agent and session.
+        agentId: r.agentId ?? null,
+        sessionKey: r.sessionKey ?? null,
         questions: r.questions ?? null,
         approval: r.approval ?? null,
         answers: r.answers ?? null,
@@ -2458,7 +2461,8 @@ export const peekStreaming = query({
       .query("streamingText")
       .withIndex("by_chat", (q) => q.eq("chatId", chatId))
       .collect();
-    return rows.map((r) => ({ len: r.text.length, updatedAt: r.updatedAt }));
+    // `phase`: the live label (an approval wait reads `awaiting_approval`).
+    return rows.map((r) => ({ len: r.text.length, updatedAt: r.updatedAt, phase: r.phase ?? null }));
   },
 });
 

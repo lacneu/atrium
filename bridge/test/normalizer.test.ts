@@ -18,6 +18,8 @@ import { describe, expect, it } from "vitest";
 import { protocolDrift } from "../src/providers/openclaw/protocol-drift.js";
 
 import {
+  APPROVAL_WAIT_DEFAULT,
+  APPROVAL_WAIT_MARGIN,
   BASE_RECV_TIMEOUT,
   Normalizer,
   type BridgeEvent,
@@ -3613,7 +3615,13 @@ describe("G-21: `stream:\"approval\"`", () => {
   it("an approval nobody answers ends the turn with a NAMED cause, never a silent timeout", () => {
     const { n, clock } = startTurn();
     n.feed(approval({ phase: "requested", kind: "exec", status: "pending" }), clock.tick());
-    const ev = n.tick(clock.now + 901);
+    // A request whose own deadline was never read is held to the gateway's DEFAULT
+    // (30 min, exec-approvals-core.ts:296) — not to Atrium's former 10 min — plus the
+    // delivery margin; one second short of it, the turn still waits.
+    const bound = clock.now + APPROVAL_WAIT_DEFAULT + APPROVAL_WAIT_MARGIN;
+    expect(n.tick(bound - 1).some((e) => e.type === "message.final")).toBe(false);
+    expect(n.finalized).toBe(false);
+    const ev = n.tick(bound + 1);
     expect(n.finalized).toBe(true);
     const final = ev.find((e) => e.type === "message.final");
     expect(final).toMatchObject({

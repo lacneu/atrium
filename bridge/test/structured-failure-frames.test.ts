@@ -149,6 +149,9 @@ describe("lifecycle phase:error — errorObservation decides before the text", (
       lifecycle({
         phase: "error",
         error: "⚠️ OAuth refresh failed.",
+        // The backstop PUBLISHES its terminal settled (agent-lifecycle-terminal.ts:182 at
+        // v2026.9.36): a definitive error, which ends the turn at once (lifecycle-terminal.ts).
+        executionSettled: true,
         errorObservation: {
           provider: "openai-codex",
           failoverReason: "invalid_grant",
@@ -167,6 +170,9 @@ describe("lifecycle phase:error — errorObservation decides before the text", (
       lifecycle({
         phase: "error",
         error: "LLM request failed.",
+        // The embedded subscriber marks an errored working run `blocked`
+        // (embedded-agent-subscribe.handlers.lifecycle.ts:149-157,243 at v2026.9.36): definitive.
+        livenessState: "blocked",
         errorObservation: { failoverReason: "auth_permanent", httpStatus: 401 },
       }),
       clock.tick(),

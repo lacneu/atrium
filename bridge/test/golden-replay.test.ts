@@ -266,9 +266,10 @@ async function replay(fx: Fixture): Promise<RecordingWriter> {
   //
   // Driven by the manager's OWN `nextTimeout`, not by a fixed jump. Adding
   // `BASE_RECV_TIMEOUT + 1` was the first version and it assumed the base receive timeout
-  // is the longest wait there is — it is not (`APPROVAL_WAIT` is 600 s, the compaction
-  // receive timeout 900 s), so a capture ending inside either would have stayed active
-  // and failed the finalize assertion for a reason that is not a defect.
+  // is the longest wait there is — it is not (an approval wait follows the request's own
+  // deadline, 30 min + 30 s by default; the compaction receive timeout is 900 s), so a
+  // capture ending inside either would have stayed active and failed the finalize
+  // assertion for a reason that is not a defect.
   now = await drainDeadlines(manager, now);
   if (manager.turnActive && manager.takeRecvSilence()) {
     await manager.endTurn(now, "final", null, "recv_timeout");

@@ -130,7 +130,12 @@ describe("a writer-claim rebound is retried only when the stream proves nothing 
     const COPY =
       "⚠️ Agent run failed: the transcript writer no longer owned this session. Retry in the current session; if it repeats, check Gateway logs.";
     const started = [...PRELUDE, agentFrame(5, "lifecycle", { phase: "start", startedAt: 2_000 })];
-    const viaLifecycle = once([...started, agentFrame(6, "lifecycle", { phase: "error", error: COPY })]);
+    // …with the liveness that subscriber stamps on an errored working run (`blocked`,
+    // handlers.lifecycle.ts:149-157,243 at v2026.9.36): a definitive error, read at once.
+    const viaLifecycle = once([
+      ...started,
+      agentFrame(6, "lifecycle", { phase: "error", error: COPY, livenessState: "blocked" }),
+    ]);
     expect(viaLifecycle?.errorKind).toBe("session_write_conflict");
     const viaChat = once([
       ...started,

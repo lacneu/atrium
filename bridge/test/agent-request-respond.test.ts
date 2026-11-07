@@ -306,6 +306,73 @@ describe("OpenClaw approvals", () => {
     expect(await respondOpenClaw(b, agentless().gw, true, LIVE)).toEqual({ ok: true });
   });
 
+  it("a SUB-AGENT's approval is answered from the conversation that spawned it (N1, lot « trames 1 »)", async () => {
+    // The card names the CHILD's session and agent (the request broadcast's own
+    // `request.sessionKey`, approval-shared.ts:133-147 at v2026.9.36); upstream addresses
+    // it to the child's lineage (approval-session-audience.ts:52-107).
+    const CHILD = "agent:files:subagent:11111111-1111-4111-8111-111111111111";
+    const asked: string[] = [];
+    const live = {
+      ...LIVE,
+      answersFor: async (key: string) => {
+        asked.push(key);
+        return key === CHILD;
+      },
+    };
+    const childApproval = () =>
+      recorder({
+        "approval.get": { approval: { status: "pending", createdAtMs: 1_000, presentation: { kind: "exec", agentId: "files" } } },
+        "approval.resolve": { applied: true, approval: { status: "allowed" } },
+      });
+    const b = body({ source: "openclaw.exec", providerRequestId: "ap-c", approvalKind: "exec", decision: "allow-once", sessionKey: CHILD });
+    const answered = childApproval();
+    expect(await respondOpenClaw(b, answered.gw, false, live)).toEqual({ ok: true });
+    // The very request, by its id: the resolver routes it to the child's waiting exec.
+    expect(answered.calls[1]).toEqual(["approval.resolve", { id: "ap-c", kind: "exec", decision: "allow-once" }]);
+    expect(asked).toEqual([CHILD]);
+    // A session this conversation does NOT answer for: nothing is even read.
+    const foreign = childApproval();
+    const STRANGER = "agent:files:subagent:99999999-9999-4999-8999-999999999999";
+    expect(await respondOpenClaw({ ...b, sessionKey: STRANGER }, foreign.gw, false, live)).toEqual({
+      ok: false,
+      httpStatus: 409,
+      code: "request_gone",
+      status: "expired",
+    });
+    expect(foreign.calls).toEqual([]);
+    // Without the lineage (an older session object), only its own session counts.
+    const plain = childApproval();
+    expect((await respondOpenClaw(b, plain.gw, false, LIVE)).ok).toBe(false);
+    expect(plain.calls).toEqual([]);
+  });
+
+  it("a sub-agent's card whose approval names ANOTHER agent is still refused", async () => {
+    const CHILD = "agent:files:subagent:11111111-1111-4111-8111-111111111111";
+    const live = { ...LIVE, answersFor: () => true };
+    const { calls, gw } = recorder({
+      "approval.get": { approval: { status: "pending", createdAtMs: 1_000, presentation: { kind: "exec", agentId: "bob" } } },
+    });
+    expect(
+      await respondOpenClaw(
+        body({ source: "openclaw.exec", providerRequestId: "ap-c", approvalKind: "exec", decision: "allow-once", sessionKey: CHILD }),
+        gw,
+        false,
+        live,
+      ),
+    ).toEqual({ ok: false, httpStatus: 403, code: "session_mismatch" });
+    expect(calls.map(([m]) => m)).toEqual(["approval.get"]);
+  });
+
+  it("a QUESTION is still answered only on the conversation's own session", async () => {
+    const CHILD = "agent:files:subagent:11111111-1111-4111-8111-111111111111";
+    const live = { ...LIVE, answersFor: () => true };
+    const { calls, gw } = recorder({});
+    expect(
+      await respondOpenClaw(body({ sessionKey: CHILD, answers: [{ id: "format", values: ["PDF"] }] }), gw, false, live),
+    ).toEqual({ ok: false, httpStatus: 409, code: "request_gone", status: "expired" });
+    expect(calls).toEqual([]);
+  });
+
   it("first answer wins: someone else's verdict is the record", async () => {
     const { gw } = recorder({
       "approval.get": { approval: { status: "pending", createdAtMs: 1_000, presentation: { kind: "exec", agentId: "denis" } } },

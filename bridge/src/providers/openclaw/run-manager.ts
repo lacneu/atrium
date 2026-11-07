@@ -976,6 +976,24 @@ export class RunManager {
     await this.applyOrdered(() => this.normalizer.noteQuestionSettled(id, now));
   }
 
+  /** An approval request of THIS session (its broadcast or the pending list): its own
+   *  deadline bounds the turn's approval wait, and an exec one naming the turn's run
+   *  holds it (see Normalizer.noteApprovalRequested). */
+  async noteApprovalRequested(
+    approvalId: string,
+    facts: {
+      kind: "exec" | "plugin" | "system-agent";
+      runId: string | null;
+      toolCallId: string | null;
+      expiresInSec: number | null;
+      hold?: boolean;
+    },
+    now: number,
+  ): Promise<void> {
+    if (!this.sink.active) return;
+    await this.applyOrdered(() => this.normalizer.noteApprovalRequested(approvalId, facts, now));
+  }
+
   /** An approval of this turn was settled outside its frames (see
    *  Normalizer.noteApprovalSettled). */
   async noteApprovalSettled(approvalId: string, now: number): Promise<void> {

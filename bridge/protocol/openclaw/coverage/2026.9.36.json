@@ -6,7 +6,7 @@
       "fields": {
         "data": {
           "status": "handled",
-          "by": "per-stream parsing (text/delta/mediaUrls/phase/tool fields); on DELIVERY runs (announce/task) the item sub-fields name/phase/status/meta are the ONLY tool telemetry (no tool stream there) - item-derived tool cards + estimated plan advance (normalizer item branch, 2026-07-14)"
+          "by": "per-stream parsing (text/delta/mediaUrls/phase/tool fields); on DELIVERY runs (announce/task) the item sub-fields name/phase/status/meta are the ONLY tool telemetry (no tool stream there) - item-derived tool cards + estimated plan advance (normalizer item branch, 2026-07-14). Lifecycle (0.103.5): `waiting-approval` / `approval-resolved` with their approvalId (+ toolCallId) hold and release the turn's approval wait (normalizer holdForApproval / releaseApproval); an `error` ends the turn only when DEFINITIVE by upstream's rule (lifecycle-terminal.ts isDefinitiveLifecycleError <- isDefinitiveRunLifecycle: executionSettled, fallbackExhaustedFailure, or a terminal reason other than `failed`) — any other is left to the gateway's own terminal (its `chat` error once the retry grace is spent, or the retried run's end)"
         },
         "isHeartbeat": {
           "status": "ignored",
@@ -8562,7 +8562,7 @@
         },
         "agentId": {
           "status": "handled",
-          "by": "agent-request-respond.ts: an exec or plugin approval whose agent is not the conversation's is refused (session_mismatch) before approval.resolve; one naming NO agent (upstream allows null) is answered only when the chat's own socket routed it here (observer routedApproval)"
+          "by": "agent-request-respond.ts: an exec or plugin approval whose agent is not the agent of the session the card names — this conversation's, or a sub-agent's the conversation answers for (answersFor: its lineage, approval-lineage.ts) — is refused (session_mismatch) before approval.resolve; one naming NO agent (upstream allows null) is answered only when the chat's own socket routed it here (observer routedApproval)"
         },
         "scope": {
           "status": "handled",
@@ -8606,7 +8606,7 @@
         },
         "agentId": {
           "status": "handled",
-          "by": "agent-request-respond.ts: an exec or plugin approval whose agent is not the conversation's is refused (session_mismatch) before approval.resolve; one naming NO agent (upstream allows null) is answered only when the chat's own socket routed it here (observer routedApproval)"
+          "by": "agent-request-respond.ts: an exec or plugin approval whose agent is not the agent of the session the card names — this conversation's, or a sub-agent's the conversation answers for (answersFor: its lineage, approval-lineage.ts) — is refused (session_mismatch) before approval.resolve; one naming NO agent (upstream allows null) is answered only when the chat's own socket routed it here (observer routedApproval)"
         },
         "scope": {
           "status": "handled",
@@ -8678,7 +8678,7 @@
         },
         "agentId": {
           "status": "handled",
-          "by": "agent-request-respond.ts: an exec or plugin approval whose agent is not the conversation's is refused (session_mismatch) before approval.resolve; one naming NO agent (upstream allows null) is answered only when the chat's own socket routed it here (observer routedApproval)"
+          "by": "agent-request-respond.ts: an exec or plugin approval whose agent is not the agent of the session the card names — this conversation's, or a sub-agent's the conversation answers for (answersFor: its lineage, approval-lineage.ts) — is refused (session_mismatch) before approval.resolve; one naming NO agent (upstream allows null) is answered only when the chat's own socket routed it here (observer routedApproval)"
         },
         "scope": {
           "status": "handled",
@@ -8738,7 +8738,7 @@
         },
         "expiresAtMs": {
           "status": "handled",
-          "by": "core/agent-requests.ts readOpenClawApprovalPresentation -> the row's deadline (the broadcast's is the fallback)"
+          "by": "core/agent-requests.ts readOpenClawApprovalPresentation -> the row's deadline (the broadcast's is the fallback); the turn's approval wait follows it too (agent-request-observer.ts -> normalizer noteApprovalRequested / rearmApprovalWait: the request's own deadline + 30 s, the gateway's 30 min default + 30 s when none — no fixed 600 s cap since 0.103.5)"
         },
         "presentation": {
           "status": "handled",
@@ -8750,7 +8750,7 @@
         },
         "sourceSessionKey": {
           "status": "ignored",
-          "why": "absent from the PENDING snapshot approval.get serves (every capture on 2026.9.5): it is set only on the session-scoped projection Atrium does not subscribe to. Routing uses the broadcast's request.sessionKey; the answer path re-checks the presentation's agentId instead"
+          "why": "absent from the PENDING snapshot approval.get serves (every capture on 2026.9.5 and 2026.9.36): it is set only on the session-scoped projection Atrium does not subscribe to. Routing uses the broadcast's (or the pending list's) request.sessionKey, accepted for this conversation's session and the sub-agents of its lineage only; the answer path re-checks the presentation's agentId against the card's session instead"
         }
       }
     },
@@ -8954,7 +8954,7 @@
         },
         "expiresAtMs": {
           "status": "handled",
-          "by": "core/agent-requests.ts readOpenClawApprovalPresentation -> the row's deadline (the broadcast's is the fallback)"
+          "by": "core/agent-requests.ts readOpenClawApprovalPresentation -> the row's deadline (the broadcast's is the fallback); the turn's approval wait follows it too (agent-request-observer.ts -> normalizer noteApprovalRequested / rearmApprovalWait: the request's own deadline + 30 s, the gateway's 30 min default + 30 s when none — no fixed 600 s cap since 0.103.5)"
         },
         "presentation": {
           "status": "handled",
@@ -8966,7 +8966,7 @@
         },
         "sourceSessionKey": {
           "status": "ignored",
-          "why": "absent from the PENDING snapshot approval.get serves (every capture on 2026.9.5): it is set only on the session-scoped projection Atrium does not subscribe to. Routing uses the broadcast's request.sessionKey; the answer path re-checks the presentation's agentId instead"
+          "why": "absent from the PENDING snapshot approval.get serves (every capture on 2026.9.5 and 2026.9.36): it is set only on the session-scoped projection Atrium does not subscribe to. Routing uses the broadcast's (or the pending list's) request.sessionKey, accepted for this conversation's session and the sub-agents of its lineage only; the answer path re-checks the presentation's agentId against the card's session instead"
         },
         "resolvedAtMs": {
           "status": "ignored",

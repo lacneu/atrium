@@ -447,8 +447,11 @@ describe("gateway ANNOUNCE run -> spontaneous turn (real captured frames)", () =
     await manager.feed(mk({ stream: "lifecycle", data: { phase: "start" } }), (now += 1));
     // The real gateway error shape on the main lane: a lifecycle ERROR frame
     // (chat state:"error" is not consumed by the main-lane normalizer).
+    // SETTLED, as the agent command's lifecycle publishes an announce run's terminal
+    // (src/agents/command/lifecycle.ts:118-136 at v2026.9.36): a definitive error, which closes
+    // the turn at once (a retryable one waits for the gateway's chat error, lifecycle-terminal.ts).
     await manager.feed(
-      mk({ stream: "lifecycle", data: { phase: "error", error: "provider exploded" } }),
+      mk({ stream: "lifecycle", data: { phase: "error", error: "provider exploded", executionSettled: true } }),
       (now += 1),
     );
     const finals = writer.calls.filter((c) => c[0] === "finalize");

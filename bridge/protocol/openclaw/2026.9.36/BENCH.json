@@ -6,124 +6,136 @@
     {
       "id": "announce-reverse-hold",
       "ok": true,
-      "chat": "9299ea8bb6aa530c"
+      "chat": "9452bdb183d057ab"
     },
     {
       "id": "basic-turn",
       "ok": true,
-      "chat": "9299ea8bb6aa530c"
+      "chat": "9452bdb183d057ab"
     },
     {
       "id": "tool-exec",
       "ok": true,
-      "chat": "9299ea8bb6aa530c"
+      "chat": "9452bdb183d057ab"
     },
     {
       "id": "update-plan",
       "ok": true,
-      "chat": "9299ea8bb6aa530c"
+      "chat": "9452bdb183d057ab"
     },
     {
       "id": "media-outbound",
       "ok": true,
-      "chat": "9299ea8bb6aa530c"
+      "chat": "9452bdb183d057ab"
     },
     {
       "id": "inbound-attachment",
       "ok": true,
-      "chat": "9299ea8bb6aa530c"
+      "chat": "9452bdb183d057ab"
     },
     {
       "id": "inbound-attachment-large",
       "ok": true,
-      "chat": "9299ea8bb6aa530c"
+      "chat": "9452bdb183d057ab"
     },
     {
       "id": "fork-attachment-rehydrate",
       "ok": true,
-      "chat": "9299ea8bb6aa530c"
+      "chat": "9452bdb183d057ab"
     },
     {
       "id": "talk-session",
       "ok": true,
-      "chat": "9299ea8bb6aa530c"
+      "chat": "9452bdb183d057ab"
     },
     {
       "id": "spawn-announce-merge",
       "ok": true,
-      "chat": "9299ea8bb6aa530c"
+      "chat": "9452bdb183d057ab"
     },
     {
       "id": "spawn-chain-merge",
       "ok": true,
-      "chat": "9299ea8bb6aa530c"
+      "chat": "9452bdb183d057ab"
     },
     {
       "id": "spawn-parallel-merge",
       "ok": true,
-      "chat": "9299ea8bb6aa530c"
+      "chat": "9452bdb183d057ab"
     },
     {
       "id": "settle-chain-no-synthesis",
       "ok": true,
-      "chat": "9299ea8bb6aa530c"
+      "chat": "9452bdb183d057ab"
     },
     {
       "id": "yield-settle-media",
       "ok": true,
-      "chat": "9299ea8bb6aa530c"
+      "chat": "9452bdb183d057ab"
     },
     {
       "id": "settle-message-tool-codemode",
       "ok": true,
-      "chat": "9299ea8bb6aa530c"
+      "chat": "9452bdb183d057ab"
     },
     {
       "id": "yield-settle-media-param",
       "ok": true,
-      "chat": "9299ea8bb6aa530c"
+      "chat": "9452bdb183d057ab"
     },
     {
       "id": "async-task",
       "ok": true,
-      "chat": "9299ea8bb6aa530c"
+      "chat": "9452bdb183d057ab"
     },
     {
       "id": "cron-tool",
       "ok": true,
-      "chat": "9299ea8bb6aa530c"
+      "chat": "9452bdb183d057ab"
     },
     {
       "id": "agent-request-question",
       "ok": true,
-      "chat": "9299ea8bb6aa530c"
+      "chat": "9452bdb183d057ab"
     },
     {
       "id": "agent-request-exec-approval",
       "ok": true,
-      "chat": "9299ea8bb6aa530c"
+      "chat": "9452bdb183d057ab"
+    },
+    {
+      "id": "agent-request-subagent-approval",
+      "ok": true,
+      "chat": "9452bdb183d057ab"
+    },
+    {
+      "id": "agent-request-approval-replay",
+      "ok": true,
+      "chat": "9452bdb183d057ab"
     },
     {
       "id": "widget-inline",
       "ok": true,
-      "chat": "9299ea8bb6aa530c"
+      "chat": "9452bdb183d057ab"
     },
     {
       "id": "widget-off",
       "ok": true,
-      "chat": "9299ea8bb6aa530c"
+      "chat": "9452bdb183d057ab"
     },
     {
       "id": "transcript-files-replay",
       "ok": true,
-      "chat": "9299ea8bb6aa530c"
+      "chat": "9452bdb183d057ab"
     }
   ],
   "verdict": "GO",
-  "at": "2026-11-02T22:30:58.451Z",
+  "at": "2026-11-07T18:39:46.215Z",
   "scenarios": [
+    "agent-request-approval-replay",
     "agent-request-exec-approval",
     "agent-request-question",
+    "agent-request-subagent-approval",
     "announce-reverse-hold",
     "async-task",
     "basic-turn",
@@ -171,6 +183,8 @@
     "cron-tool": "openclaw",
     "agent-request-question": "openclaw",
     "agent-request-exec-approval": "openclaw",
+    "agent-request-subagent-approval": "openclaw",
+    "agent-request-approval-replay": "openclaw",
     "widget-inline": "openclaw",
     "widget-off": "openclaw",
     "hermes-basic-turn": "hermes",
@@ -180,13 +194,13 @@
     "transcript-files-replay": "openclaw"
   },
   "flags": [],
-  "atriumSha": "3283069fe7a69002244b931ca4f2700e59ea42fe",
+  "atriumSha": "c49dac12cf56721a29ccd6f54b192969fb67ffa6",
   "worktree": {
     "dirty": true,
-    "deltaSha256": "78b73d43a6e66d1fdc19b3374b1bf19f75fd111aa608178bdead659efd44a1b1"
+    "deltaSha256": "955a6abdf5cc3b54fa67fbe25b18def9af85c01d9ae247a742fca5b1b1fa4883"
   },
-  "supportDigest": "c13f4cf83d5dd39696f4fcb179e946504641baf0ecaa55456be242246bc251b3",
+  "supportDigest": "4e646e129aafc2d936d160bc1900652a901511fbe824ee3cc7cb330ba79cd7ed",
   "authMode": "token",
-  "bridgeVersion": "0.103.1",
+  "bridgeVersion": "0.103.4",
   "vendoredSha256": "dd3bf6d34c96dbdc0229aab143ef422b1d466349a0a964788473efcc6bdc640a"
 }

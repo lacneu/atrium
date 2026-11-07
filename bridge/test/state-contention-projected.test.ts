@@ -24,10 +24,18 @@ const finalOf = (ev: BridgeEvent[]) =>
   ev.find((e) => e.type === "message.final") as (BridgeEvent & { errorKind?: string | null; error?: string | null }) | undefined;
 
 const chatError = { type: "event", event: "chat", payload: { sessionKey: SK, runId: RUN, state: "error", errorMessage: SUMMARY, errorKind: "state_contention" } };
+// SETTLED: only a definitive lifecycle error ends the turn (lifecycle-terminal.ts — upstream's
+// owning terminal carries `executionSettled`, src/auto-reply/reply/agent-lifecycle-terminal.ts:182
+// at v2026.9.36); a retryable one is closed by the gateway's chat error, the case above.
 const lifecycleError = {
   type: "event",
   event: "agent",
-  payload: { sessionKey: SK, runId: RUN, stream: "lifecycle", data: { phase: "error", error: SUMMARY, errorKind: "state_contention" } },
+  payload: {
+    sessionKey: SK,
+    runId: RUN,
+    stream: "lifecycle",
+    data: { phase: "error", error: SUMMARY, errorKind: "state_contention", executionSettled: true },
+  },
 };
 
 describe("state contention on a projected conversation", () => {

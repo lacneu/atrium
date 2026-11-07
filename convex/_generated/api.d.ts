@@ -88,6 +88,7 @@ import type * as lib_blobSweep from "../lib/blobSweep.js";
 import type * as lib_blobs from "../lib/blobs.js";
 import type * as lib_boundedRead from "../lib/boundedRead.js";
 import type * as lib_bridgeRouting from "../lib/bridgeRouting.js";
+import type * as lib_bridgeSecretRotation from "../lib/bridgeSecretRotation.js";
 import type * as lib_bubbleProjection from "../lib/bubbleProjection.js";
 import type * as lib_bubbleProjectionStore from "../lib/bubbleProjectionStore.js";
 import type * as lib_chartValidation from "../lib/chartValidation.js";
@@ -300,6 +301,7 @@ declare const fullApi: ApiFromModules<{
   "lib/blobs": typeof lib_blobs;
   "lib/boundedRead": typeof lib_boundedRead;
   "lib/bridgeRouting": typeof lib_bridgeRouting;
+  "lib/bridgeSecretRotation": typeof lib_bridgeSecretRotation;
   "lib/bubbleProjection": typeof lib_bubbleProjection;
   "lib/bubbleProjectionStore": typeof lib_bubbleProjectionStore;
   "lib/chartValidation": typeof lib_chartValidation;

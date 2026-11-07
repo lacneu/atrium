@@ -228,17 +228,18 @@ describe("the gate sees a degraded reading that still writes the same card", () 
       { receivedAt: 0, frame: { type: "res", payload: { runId: RUN } } },
       { receivedAt: 10, frame: { event: "agent", payload: { runId: RUN, sessionKey: KEY, stream: "lifecycle", seq: 1, data } } },
     ];
+    // SETTLED: only a definitive lifecycle error closes the turn (lifecycle-terminal.ts).
     const diffs = await fidelityDiff(
       RunManager,
-      lifecycleError({ phase: "error", error: "boom", errorKind: "context_length" }),
-      lifecycleError({ phase: "error", error: "boom" }),
+      lifecycleError({ phase: "error", error: "boom", errorKind: "context_length", executionSettled: true }),
+      lifecycleError({ phase: "error", error: "boom", executionSettled: true }),
     );
     expect(diffs.join("\n")).toMatch(/finalize:error:context_length: raw 1, promoted 0/);
     // …and the NESTED form the normalizer reads first (`data.error.errorKind`).
     const nested = await fidelityDiff(
       RunManager,
-      lifecycleError({ phase: "error", error: { message: "boom", errorKind: "context_length" } }),
-      lifecycleError({ phase: "error", error: { message: "boom" } }),
+      lifecycleError({ phase: "error", error: { message: "boom", errorKind: "context_length" }, executionSettled: true }),
+      lifecycleError({ phase: "error", error: { message: "boom" }, executionSettled: true }),
     );
     expect(nested.join("\n")).toMatch(/finalize:error:context_length: raw 1, promoted 0/);
   });
@@ -326,9 +327,10 @@ describe("a promoted cron capture reads the same through the REAL coalescing", (
     const raw = [
       env(0, { type: "res", payload: { runId: RUN } }),
       env(5, lifecycle(RUN, 1, { phase: "start" })),
-      env(6, lifecycle("webchat-other", 2, { phase: "error", error: { errorKind: "context_length" } })),
+      env(6, lifecycle("webchat-other", 2, { phase: "error", error: { errorKind: "context_length" }, executionSettled: true })),
       // Nested, not root: a root `errorKind` is kept everywhere and would prove no attribution.
-      env(10, lifecycle(RUN, 3, { phase: "error", error: { message: "own boom", errorKind: "context_length" } })),
+      // SETTLED: only a definitive lifecycle error closes the turn (lifecycle-terminal.ts).
+      env(10, lifecycle(RUN, 3, { phase: "error", error: { message: "own boom", errorKind: "context_length" }, executionSettled: true })),
     ].join("\n");
     expect(await faithful(raw)).toEqual([]);
     const consumed = await consumedReadings(RunManager, parseEntries(raw), READERS);
@@ -348,8 +350,8 @@ describe("a promoted cron capture reads the same through the REAL coalescing", (
       env(5, lifecycle(RUN, 1, { phase: "start" })),
       env(6, lifecycle(ANNOUNCE, 2, { phase: "start" })),
       // DISTINCT classes: equal ones could not show that each frame keeps its own (codex).
-      env(7, lifecycle(ANNOUNCE, 3, { phase: "error", error: { message: "announce throttled", errorKind: "rate_limit" } })),
-      env(10, lifecycle(RUN, 4, { phase: "error", error: { message: "own overflow", errorKind: "context_length" } })),
+      env(7, lifecycle(ANNOUNCE, 3, { phase: "error", error: { message: "announce throttled", errorKind: "rate_limit" }, executionSettled: true })),
+      env(10, lifecycle(RUN, 4, { phase: "error", error: { message: "own overflow", errorKind: "context_length" }, executionSettled: true })),
     ].join("\n");
     const consumed = await consumedReadings(RunManager, parseEntries(raw), READERS);
     expect((consumed as { errorReads: unknown[] }).errorReads).toEqual([

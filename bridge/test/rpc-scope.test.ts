@@ -86,6 +86,13 @@ const NAMESPACE_MODULE: Record<string, string | null> = {
   // resolver, one module for all three kinds. Sent only from AGENT_REQUESTS_MIN_VERSION.
   question: "questions.ts",
   approval: "approvals.ts",
+  // The PENDING-APPROVAL lists read at each (re)connection, as the Control UI reads them
+  // (ui/src/app/exec-approval.ts:437-441): `exec.approval.list`, `plugin.approval.list`,
+  // `openclaw.approval.list`. Their namespaces' schema modules upstream — none of the
+  // three lists has a params schema there (see UNCOVERED_SNAPSHOT).
+  exec: "exec-approvals.ts",
+  plugin: "plugin-approvals.ts",
+  openclaw: "openclaw.ts",
   // `plugins.sessionAction` — the Gateway-authorized dispatch to a plugin's session
   // action (the knowledge plugin's `policy.get|set|reset`).
   plugins: "plugins.ts",
@@ -184,6 +191,15 @@ const UNCOVERED_SNAPSHOT = [
   // sent is the Control UI's own (`{sessionKey, artifactId}`, ui/src/api/
   // artifact-download.ts:55-60), both fields declared by the closed schema at :68-73.
   "artifacts.download",
+  // The three PENDING-APPROVAL lists (agent-request-observer.ts replayApprovals). Uncovered
+  // by CONSTRUCTION: upstream publishes no params schema for any of them — the handlers
+  // read no params at all (src/gateway/server-methods/exec-approval.ts:142-153,
+  // plugin-approval.ts:58-69, system-agent.ts:126-139 at v2026.9.36), and
+  // `packages/gateway-protocol/src/schema/{exec-approvals,plugin-approvals,openclaw}.ts`
+  // export no `*ApprovalListParamsSchema`. Atrium sends `{}`, as the Control UI does.
+  "exec.approval.list",
+  "openclaw.approval.list",
+  "plugin.approval.list",
 ];
 
 /** The methods mapped to `null` — "no params on the wire" — whose claim is now

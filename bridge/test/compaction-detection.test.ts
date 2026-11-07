@@ -1250,10 +1250,15 @@ describe("lifecycle error carries a structured errorKind", () => {
     n.feed(assistantFrame(PRE_SESSION_ID, "working"), 1);
     // A lifecycle error with a bare structured errorKind (no overflow phrasing
     // in the text) — extractLifecycleError would miss it; the structured read wins.
+    // SETTLED, as the run's owning terminal is published on 2026.9.36
+    // (src/auto-reply/reply/agent-lifecycle-terminal.ts:182 adds `executionSettled`): only
+    // a definitive error ends the turn here — a retryable one waits for the gateway's own
+    // terminal (lifecycle-terminal.ts).
     const ev = n.feed(
       lifecycleFrame(PRE_SESSION_ID, {
         phase: "error",
         error: { message: "run stopped", errorKind: "context_length" },
+        executionSettled: true,
       }),
       2,
     );

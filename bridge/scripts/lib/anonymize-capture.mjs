@@ -69,6 +69,31 @@ const VOCABULARY_KEYS = new Set([
   "lane",
 ]);
 
+/** A lifecycle terminal's facts the reading stack decides on: whether a lifecycle `error`
+ *  ends the run (providers/openclaw/lifecycle-terminal.ts — upstream's
+ *  `isDefinitiveRunLifecycle` / `resolveAgentRunLifecycleTerminalFacts`,
+ *  packages/normalization-core/src/agent-run-terminal-outcome.ts:152-241 at v2026.9.36),
+ *  and the `abandoned` heuristic. Masked, a promoted error frame read as retryable and
+ *  replayed to a turn that never ends. The FLAGS keep their key (a boolean value survives
+ *  under a known key); the two STRINGS are closed vocabularies and keep their value ONLY
+ *  when it is one of upstream's own — never "any string under the name", which is the hole
+ *  VOCABULARY_KEYS is pinned for. */
+const LIFECYCLE_FLAG_KEYS = new Set([
+  "executionSettled",
+  "fallbackExhaustedFailure",
+  "aborted",
+  "providerStarted",
+]);
+const CLOSED_VALUE_KEYS = new Map([
+  // `EmbeddedRunLivenessState`, src/agents/embedded-agent-runner/types.ts:188.
+  ["livenessState", new Set(["working", "paused", "blocked", "abandoned"])],
+  // `AGENT_RUN_TIMEOUT_PHASES`, packages/normalization-core/src/agent-run-terminal-outcome.ts:7-14.
+  [
+    "timeoutPhase",
+    new Set(["queue", "preflight", "provider", "tool_execution", "post_turn", "gateway_draining"]),
+  ],
+]);
+
 /** Keys whose STRING value is an identifier: pseudonymised, structure preserved. */
 const IDENTIFIER_KEYS = new Set([
   "runId",
@@ -755,6 +780,8 @@ export function baseKnownKeys() {
     ...STRUCTURAL_KEYS,
     ...TOOL_RESULT_KEYS,
     ...NORMALIZER_ARG_KEYS,
+    ...LIFECYCLE_FLAG_KEYS,
+    ...CLOSED_VALUE_KEYS.keys(),
   ]);
 }
 
@@ -1430,6 +1457,16 @@ export function anonymizeFrame(
     if (key !== null && VOCABULARY_KEYS.has(key)) {
       stats.verbatim += 1;
       return node;
+    }
+    // A closed vocabulary: the value is kept only when it is one of upstream's own.
+    const closed = key === null ? undefined : CLOSED_VALUE_KEYS.get(key);
+    if (closed !== undefined) {
+      if (closed.has(node)) {
+        stats.verbatim += 1;
+        return node;
+      }
+      stats.masked += 1;
+      return maskText(node);
     }
     if (key !== null && IDENTIFIER_KEYS.has(key)) {
       stats.pseudonymised += 1;
