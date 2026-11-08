@@ -111,16 +111,19 @@ describe("the lists of a grouped answer's ⋯ hold every bubble's blocks (lot 21
     expect(read!.parameters.map((p) => p.name.getText())).toEqual(["sources", "kind"]);
     const [compose] = callsTo(read!, "blockChoices");
     expect(compose, "the blocks are not composed by blockChoices").toBeDefined();
-    expect(compose.arguments[0].getText()).toMatch(/^sources\.map\(/);
-    expect(compose.arguments[0].getText()).toMatch(/collectAnchorBlocks\(body\)\.map\(blockFace\)/);
+    expect(compose.arguments[0].getText()).toBe("bubbles");
+    expect(read!.getText()).toMatch(/const bubbles = sources\.map\(\(messageId\) => \(\{ messageId, faces: facesOf\(messageId\) \?\? \[\] \}\)\);/);
+    const faces = find(SF, ts.isFunctionDeclaration).find((f) => f.name?.text === "facesOf")!;
+    expect(faces.getText()).toMatch(/collectAnchorBlocks\(body\)\.map\(blockFace\)/);
   });
 
   test("each row names its bubble and its block, and a pick hands over the whole choice", () => {
     const [row] = jsx(SF, "Button").filter((b) => attr(b, "className")?.getText().includes("oc-blockpick__item"));
     expect(attr(row, "data-message-id")?.initializer?.getText()).toBe("{choice.messageId}");
     expect(attr(row, "data-block-index")?.initializer?.getText()).toBe("{choice.blockIndex}");
+    // The whole choice — its bubble, its excerpt —, at the index its block has now (lot 22).
     const [pick] = callsTo(SF, "onPick");
-    expect(pick.arguments.map((a) => a.getText())).toEqual(["choice"]);
+    expect(pick.arguments.map((a) => a.getText())).toEqual(["{ ...choice, blockIndex: at }"]);
     // A row shows as marked when ITS bubble's block is, not the opener's.
     const [marked] = callsTo(SF, "has").filter((c) => /marked/.test(c.expression.getText()));
     expect(marked.arguments.map((a) => a.getText())).toEqual(["blockKey(choice.messageId, choice.blockIndex)"]);
@@ -173,15 +176,74 @@ describe("the lists of a grouped answer's ⋯ hold every bubble's blocks (lot 21
   });
 
   test("the gutter offers through the same rule: a block offering nothing gets no row, a block without text no quote", () => {
-    const gutter = fnNamed(GUTTER, "BookmarkGutterInner")!;
-    const offers = callsTo(gutter, "blockOffer");
+    const locate = fnNamed(GUTTER, "locateBlock")!;
+    const offers = callsTo(locate, "blockOffer");
     expect(offers).toHaveLength(1);
-    expect(offers[0].arguments[0].getText()).toMatch(/^blockFace\(/);
-    expect(gutter.getText()).toMatch(/if \(offer === null\) continue;/);
+    expect(locate.getText()).toMatch(/const faces = blocks\.map\(blockFace\);/);
+    expect(offers[0].arguments[0].getText()).toBe("faces[i]!");
+    expect(locate.getText()).toMatch(/if \(offer === null\) continue;/);
+    const gutter = fnNamed(GUTTER, "BookmarkGutterInner")!;
+    expect(callsTo(gutter, "locateBlock").length, "the hover does not go through locateBlock").toBeGreaterThan(0);
     // The innermost condition around the reply button (pre-order: the outer first).
     const reply = find(gutter, ts.isConditionalExpression)
       .filter((c) => /oc-bmk-gutter--reply/.test(c.whenTrue.getText()))
       .pop();
     expect(reply?.condition.getText()).toBe("onReplyToBlock && hover.quotable");
+  });
+});
+
+// LOT 22: the list is read when it opens, the gutter's row when the pointer comes; the
+// bubble can change before the choice — a delegated result inserted before the
+// conclusion, a block gone, the reply regenerated. The decision is pure and tested in
+// quoteBlocks.test.ts (`resolveChosen`, `pickTarget`); here, that the picker and the
+// gutter go through it, and act on nothing when it says so.
+describe("a block action lands on the block chosen, or on nothing (lot 22)", () => {
+  test("the list keeps what each bubble showed when it was read", () => {
+    const read = find(SF, ts.isFunctionDeclaration).find((f) => f.name?.text === "readChoices")!;
+    expect(read.getText()).toMatch(/seen: new Map\(bubbles\.map\(\(b\) => \[b\.messageId, b\.faces\.map\(blockPrint\)\]\)\)/);
+    const reader = find(SF, ts.isVariableDeclaration).find((d) => d.name.getText() === "read")!;
+    expect(reader.getText()).toMatch(/seen\.current = list\.seen;/);
+  });
+
+  test("a row's pick goes through pickTarget against the bubble as it is now; null does nothing but read the list again and say so", () => {
+    const [row] = jsx(SF, "Button").filter((b) => attr(b, "className")?.getText().includes("oc-blockpick__item"));
+    expect(attr(row, "onClick")?.initializer?.getText()).toBe("{() => pick(choice)}");
+    const pick = find(SF, ts.isVariableDeclaration).find((d) => d.name.getText() === "pick")!;
+    const [target] = callsTo(pick, "pickTarget");
+    expect(target.arguments.map((a) => a.getText())).toEqual([
+      "choice",
+      "kind",
+      "seen.current.get(choice.messageId) ?? null",
+      "facesOf(choice.messageId)?.map(blockPrint) ?? null",
+      "marked",
+    ]);
+    // Null: the list read again, the notice, and NOTHING more — the return comes
+    // before any action.
+    const body = pick.getText();
+    const refusal = /if \(at === null\) \{\s*read\(\);\s*setChanged\(true\);\s*return;\s*\}/.exec(body);
+    expect(refusal, "a refused pick does more than read the list again").not.toBeNull();
+    expect(body.indexOf("onPick(")).toBeGreaterThan(refusal!.index + refusal![0].length);
+    expect(callsTo(pick, "onPick")[0].arguments[0].getText()).toBe("{ ...choice, blockIndex: at }");
+    // The notice: a status line the screen reader announces.
+    expect(SF.getText()).toMatch(/role="status"[\s\S]{0,80}m\.block_pick_changed\(\)/);
+  });
+
+  test("the gutter acts on the block its row still stands by, or on nothing — the row then moves", () => {
+    const still = fnNamed(GUTTER, "stillHovered")!;
+    const [resolve] = callsTo(still, "resolveChosen");
+    expect(resolve.arguments.map((a) => a.getText())).toEqual(["hover", "hover.seen", "blocks.map((b) => blockPrint(blockFace(b)))"]);
+    expect(still.getText()).toMatch(/if \(at !== hover\.blockIndex\) return null;/);
+    expect(still.getText()).toMatch(/Math\.abs\(top - hover\.top\) < 1 \? at : null/);
+    const gutter = fnNamed(GUTTER, "BookmarkGutterInner")!;
+    const clicks = jsx(gutter, "button")
+      .map((b) => attr(b, "onClick")?.initializer?.getText() ?? "")
+      .filter((t) => /stillHovered/.test(t));
+    expect(clicks, "both gutter buttons check the block first").toHaveLength(2);
+    for (const click of clicks) {
+      expect(click).toMatch(/const at = stillHovered\(body, hover\);\s*if \(at === null\) \{\s*setHover\(locateBlock\(body, e\.clientY\)\);\s*return;\s*\}/);
+      expect(click).not.toMatch(/hover\.blockIndex/);
+    }
+    expect(clicks.join("\n")).toMatch(/bmApi\.toggle\(messageId, at\)/);
+    expect(clicks.join("\n")).toMatch(/onReplyToBlock\(at, excerpt\)/);
   });
 });

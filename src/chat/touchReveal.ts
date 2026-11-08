@@ -2,13 +2,17 @@
 // the `.oc-reveal` class of convexChat.css; this is the half that lives in props.
 
 /**
- * The message action bars (copy, read aloud, report, delete, ⋯) show on hover for
- * every message but the last. Where a finger can be used there is no hover to wait
- * for: every message keeps its bar. Nothing moves when it shows — the bar sits in
- * room the message already reserves.
+ * How a message's action bar (copy, read aloud, report, delete, ⋯) shows. It is
+ * RENDERED for every message — hidden, not absent (lot 22): assistant-ui's own autohide
+ * rendered nothing for an older message's bar without a mouse over it, so a keyboard
+ * could never reach its ⋯, nor the block lists behind it. An older message's bar shows
+ * on hover, on keyboard focus within the message and while one of its menus is open
+ * ("hover", convexChat.css); the last message's always; where a finger can be used
+ * there is no hover to wait for, every bar always. Nothing moves when it shows — the
+ * bar sits in room the message already reserves.
  */
-export function messageActionsAutohide(touch: boolean): "never" | "not-last" {
-  return touch ? "never" : "not-last";
+export function messageActionsReveal(touch: boolean, isLast: boolean): "always" | "hover" {
+  return touch || isLast ? "always" : "hover";
 }
 
 /**

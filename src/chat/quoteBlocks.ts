@@ -36,7 +36,58 @@ export type BlockChoice = {
   excerpt: string;
   /** What the row shows: the excerpt, or the media's alt text ("" when it has none). */
   label: string;
+  /** What the person saw, whole (`blockPrint`): how the block is found again when the
+   *  action is taken (lot 22). */
+  print: string;
 };
+
+/** What identifies a block the person saw: its whole text, or — for a block without
+ *  any — the media it shows, by its alt text (lot 22). */
+export function blockPrint(face: BlockFace): string {
+  const text = face.text.replace(/\s+/g, " ").trim();
+  if (text !== "") return `text:${text}`;
+  return face.media ? `media:${face.alt.trim()}` : "";
+}
+
+/**
+ * Where the block a person chose is NOW: what an action on it must target (lot 22).
+ * The list was read when it opened — the gutter's row when the pointer came —, and the
+ * bubble can change before the choice: a delegated result inserted before its
+ * conclusion, a block gone, the reply regenerated. Unchanged bubble: the index chosen.
+ * Changed: the one block that still shows what the person chose. None, or several
+ * alike: null — the action is refused, never moved onto another block.
+ */
+export function resolveChosen(
+  chosen: { blockIndex: number; print: string },
+  before: readonly string[] | null,
+  now: readonly string[] | null,
+): number | null {
+  if (now === null) return null;
+  const unchanged = before !== null && before.length === now.length && before.every((p, i) => p === now[i]);
+  if (unchanged) return now[chosen.blockIndex] === chosen.print ? chosen.blockIndex : null;
+  const hits = now.flatMap((p, i) => (p === chosen.print ? [i] : []));
+  return hits.length === 1 ? hits[0]! : null;
+}
+
+/**
+ * What a pick from a block list acts on: the chosen block where it is now
+ * (`resolveChosen`) — and, for a bookmark, only while its state is the one the row
+ * showed: a row shown marked removes a bookmark, a row shown unmarked adds one; if the
+ * bubble changed so that this no longer holds, null too. Null: nothing is done.
+ */
+export function pickTarget(
+  choice: BlockChoice,
+  kind: BlockListKind,
+  before: readonly string[] | null,
+  now: readonly string[] | null,
+  marked: ReadonlySet<string> | undefined,
+): number | null {
+  const at = resolveChosen(choice, before, now);
+  if (at === null || kind !== "bookmark") return at;
+  const shown = marked?.has(blockKey(choice.messageId, choice.blockIndex)) ?? false;
+  const still = marked?.has(blockKey(choice.messageId, at)) ?? false;
+  return shown === still ? at : null;
+}
 
 /**
  * One choice per block the gutter offers for that action, bubble after bubble, in
@@ -53,7 +104,7 @@ export function blockChoices(
     faces.forEach((face, blockIndex) => {
       const offer = blockOffer(face);
       if (offer === null || (kind === "quote" && offer.quote === "")) return;
-      choices.push({ messageId, blockIndex, excerpt: offer.quote, label: offer.label });
+      choices.push({ messageId, blockIndex, excerpt: offer.quote, label: offer.label, print: blockPrint(face) });
     });
   }
   return choices;

@@ -17,7 +17,8 @@ import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, test } from "vitest";
 import { TOUCH_REVEAL_QUERY } from "@/lib/useMediaQuery";
-import { composerAutoFocus, messageActionsAutohide } from "./touchReveal";
+import ts from "typescript";
+import { composerAutoFocus, messageActionsReveal } from "./touchReveal";
 
 const SRC = join(process.cwd(), "src");
 
@@ -147,10 +148,50 @@ function hoverRevealed(): { cls: string; fallback: boolean }[] {
   return out;
 }
 
-describe("message action bars", () => {
-  test("hover-revealed under a mouse, always there where a finger is used", () => {
-    expect(messageActionsAutohide(false)).toBe("not-last");
-    expect(messageActionsAutohide(true)).toBe("never");
+describe("message action bars: rendered for every message, revealed — never absent (lot 22)", () => {
+  // assistant-ui's `autohide="not-last"` rendered NOTHING for an older message's bar
+  // without a mouse over it: no Tab ever reached its ⋯, nor the block lists behind it.
+  test("an older message's bar shows on hover under a mouse; the last one's, and every bar under a finger, always", () => {
+    expect(messageActionsReveal(false, false)).toBe("hover");
+    expect(messageActionsReveal(false, true)).toBe("always");
+    expect(messageActionsReveal(true, false)).toBe("always");
+    expect(messageActionsReveal(true, true)).toBe("always");
+  });
+
+  test("both bars are always rendered (autohide never) and say how they reveal", () => {
+    const chat = ts.createSourceFile("ConvexChat.tsx", readFileSync(join(SRC, "chat/ConvexChat.tsx"), "utf-8"), ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+    const bars: ts.JsxOpeningElement[] = [];
+    const visit = (n: ts.Node) => {
+      if (ts.isJsxOpeningElement(n) && n.tagName.getText() === "ActionBarPrimitive.Root") bars.push(n);
+      ts.forEachChild(n, visit);
+    };
+    visit(chat);
+    expect(bars).toHaveLength(2);
+    for (const bar of bars) {
+      const attr = (name: string) =>
+        bar.attributes.properties.find((p): p is ts.JsxAttribute => ts.isJsxAttribute(p) && p.name.getText() === name)?.initializer?.getText();
+      expect(attr("autohide"), "assistant-ui's autohide would render nothing").toBe('"never"');
+      expect(attr("data-reveal")).toBe("{messageActionsReveal(touchReveal, isLast)}");
+    }
+  });
+
+  test("hidden at rest, shown on hover, on keyboard focus within the message, while a menu of the bar is open, and under a finger", () => {
+    const bar = '.oc-msg__actions[data-reveal="hover"]';
+    const hidden = ALL_RULES.find((r) => r.media === null && r.selector === bar && /opacity:\s*0/.test(r.body));
+    expect(hidden, "an older bar is not hidden at rest").toBeDefined();
+    const shown = ALL_RULES.find((r) => r.media === null && r.selector.includes(bar) && /opacity:\s*1/.test(r.body));
+    expect(shown, "no rule reveals an older bar").toBeDefined();
+    const parts = shown!.selector.split(",").map((p) => p.replace(/\s+/g, " ").trim());
+    expect(parts).toEqual(
+      expect.arrayContaining([
+        `.oc-msg:hover ${bar}`,
+        // Keyboard focus only: a mouse click leaves the focus on the button, not a bar.
+        `.oc-msg:has(:focus-visible) ${bar}`,
+        `${bar}:has([aria-expanded="true"])`,
+      ]),
+    );
+    expect(parts.some((p) => /:focus-within/.test(p)), "a mouse click would keep the bar shown").toBe(false);
+    expect(ALL_RULES.some((r) => isTouchQuery(r.media) && r.selector === bar && /opacity:\s*1/.test(r.body))).toBe(true);
   });
 });
 

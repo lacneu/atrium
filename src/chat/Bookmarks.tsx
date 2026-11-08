@@ -56,7 +56,7 @@ import {
   previewFromText,
   type BookmarkView,
 } from "./bookmarkView";
-import { blockOffer } from "./quoteBlocks";
+import { blockOffer, blockPrint, resolveChosen } from "./quoteBlocks";
 import {
   SHORTCUT_BOOKMARK_NEXT,
   SHORTCUT_BOOKMARK_PREV,
@@ -559,6 +559,48 @@ interface HoverState {
   blockIndex: number;
   /** The block has text: the reply button quotes it (`blockOffer`). */
   quotable: boolean;
+  /** What the block showed, and what the whole bubble showed, when the row came: a
+   *  click checks the block is still the one the row stands by (lot 22). */
+  print: string;
+  seen: string[];
+}
+
+/** The block a gutter row stands by at a pointer's height — the nearest within a small
+ *  radius, between blocks or on the row's own overhang —, or none. A block offering
+ *  nothing (a rule, an empty block) gets no row; one without text, no quote: the same
+ *  rule as the ⋯'s lists, so a finger reaches exactly what a mouse does (lot 21). */
+function locateBlock(body: HTMLElement, clientY: number): HoverState | null {
+  const blocks = collectAnchorBlocks(body);
+  const faces = blocks.map(blockFace);
+  const seen = faces.map(blockPrint);
+  const bodyTop = body.getBoundingClientRect().top;
+  let nearest: HoverState | null = null;
+  let nearestDist = Infinity;
+  for (let i = 0; i < blocks.length; i++) {
+    const offer = blockOffer(faces[i]!);
+    if (offer === null) continue;
+    const r = blocks[i]!.getBoundingClientRect();
+    const at = { top: r.top - bodyTop, blockIndex: i, quotable: offer.quote !== "", print: seen[i]!, seen };
+    if (clientY >= r.top && clientY <= r.bottom) return at;
+    const d = clientY < r.top ? r.top - clientY : clientY - r.bottom;
+    if (d < nearestDist) {
+      nearestDist = d;
+      nearest = at;
+    }
+  }
+  return nearestDist <= 16 ? nearest : null;
+}
+
+/** The hovered block's index if the row still stands by it (lot 22). The bubble can
+ *  change under a still pointer — a delegated result inserted above, the block gone,
+ *  the reply regenerated —: the row then no longer stands by what the person saw, and
+ *  a click acts on nothing. */
+function stillHovered(body: HTMLElement, hover: HoverState): number | null {
+  const blocks = collectAnchorBlocks(body);
+  const at = resolveChosen(hover, hover.seen, blocks.map((b) => blockPrint(blockFace(b))));
+  if (at !== hover.blockIndex) return null;
+  const top = blocks[at]!.getBoundingClientRect().top - body.getBoundingClientRect().top;
+  return Math.abs(top - hover.top) < 1 ? at : null;
 }
 
 /** Per-bubble gutter: hover a markdown block -> a toggle appears at its left
@@ -662,32 +704,7 @@ function BookmarkGutterInner({
       if (raf !== 0) return;
       raf = window.requestAnimationFrame(() => {
         raf = 0;
-        const blocks = collectAnchorBlocks(body);
-        const bodyTop = body.getBoundingClientRect().top;
-        let nearest: HoverState | null = null;
-        let nearestDist = Infinity;
-        for (let i = 0; i < blocks.length; i++) {
-          // What the block offers — the same rule as the ⋯'s lists, so a finger
-          // reaches exactly what a mouse does (lot 21): a rule or an empty block
-          // offers nothing, a block without text no quote.
-          const offer = blockOffer(blockFace(blocks[i]!));
-          if (offer === null) continue;
-          const r = blocks[i]!.getBoundingClientRect();
-          const at = { top: r.top - bodyTop, blockIndex: i, quotable: offer.quote !== "" };
-          if (e.clientY >= r.top && e.clientY <= r.bottom) {
-            setHover(at);
-            return;
-          }
-          const d =
-            e.clientY < r.top ? r.top - e.clientY : e.clientY - r.bottom;
-          if (d < nearestDist) {
-            nearestDist = d;
-            nearest = at;
-          }
-        }
-        // Between blocks / on the button's own overhang: snap to the nearest
-        // block within a small radius instead of dropping the button.
-        setHover(nearestDist <= 16 ? nearest : null);
+        setHover(locateBlock(body, e.clientY));
       });
     };
     const onLeave = () => {
@@ -752,14 +769,20 @@ function BookmarkGutterInner({
                   className="oc-bmk-gutter oc-bmk-gutter--reply"
                   title={m.quote_reply_button()}
                   aria-label={m.quote_reply_button()}
-                  onClick={() => {
-                    const target = anchorElement(body, hover.blockIndex);
+                  onClick={(e) => {
+                    // The block the row stands by, or nothing: the row moves to
+                    // what the pointer is over now (lot 22).
+                    const at = stillHovered(body, hover);
+                    if (at === null) {
+                      setHover(locateBlock(body, e.clientY));
+                      return;
+                    }
+                    const target = anchorElement(body, at);
                     const excerpt = previewFromText(
                       target.textContent ?? "",
                       QUOTE_EXCERPT_CLIENT_MAX,
                     );
-                    if (excerpt !== "")
-                      onReplyToBlock(hover.blockIndex, excerpt);
+                    if (excerpt !== "") onReplyToBlock(at, excerpt);
                   }}
                 >
                   <Reply size={14} />
@@ -774,7 +797,14 @@ function BookmarkGutterInner({
                 aria-label={
                   hoverHasBookmark ? m.bookmark_remove() : m.bookmark_add()
                 }
-                onClick={() => bmApi.toggle(messageId, hover.blockIndex)}
+                onClick={(e) => {
+                  const at = stillHovered(body, hover);
+                  if (at === null) {
+                    setHover(locateBlock(body, e.clientY));
+                    return;
+                  }
+                  bmApi.toggle(messageId, at);
+                }}
               >
                 <Bookmark size={14} />
               </button>

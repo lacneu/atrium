@@ -2171,6 +2171,7 @@
   "bookmark_pick_desc": "Choisissez le passage à marquer ; un passage déjà marqué perd son signet.",
   "bookmark_pick_empty": "Cette réponse n'a aucun passage à marquer.",
   "block_pick_media_untitled": "Image sans légende",
+  "block_pick_changed": "Ce passage a changé depuis l’ouverture de la liste : rien n’a été fait. La liste est à jour, choisissez à nouveau.",
   "injection_file_curation_help": "Instructions envoyées à l'agent « Curateur » quand une curation est lancée : le rôle de chaque fichier, l'objectif de taille, et le retour de l'admin en cas de relance. Personnalisez-le par instance (OpenClaw, Hermes…). Désactivez-le si votre agent curateur porte déjà son propre brief : seul le matériau brut (fichier + budget + retour) sera envoyé.",
   "placeholder_file_name": "Le nom du fichier d'agent en cours de curation (ex. MEMORY.md).",
   "placeholder_budget_chars": "Le budget cible en caractères configuré pour l'instance.",

@@ -308,7 +308,7 @@ import { useResizableWidth, useIsMobile } from "@/lib/useSidebarLayout";
 import { useFitLevel } from "@/lib/useFitLevel";
 import { measureCloneWidths } from "@/lib/measureClone";
 import { useCoarsePointer, useTouchReveal } from "@/lib/useMediaQuery";
-import { composerAutoFocus, messageActionsAutohide } from "./touchReveal";
+import { composerAutoFocus, messageActionsReveal } from "./touchReveal";
 import { BlockPicker } from "./BlockPicker";
 import { blockKey, listSources, type GroupMember } from "./quoteBlocks";
 import { headerFitInput } from "./chatHeaderFit";
@@ -3381,6 +3381,8 @@ function UserMessage() {
   // being sent (esp. on a slow/overloaded/reconnecting backend).
   const sending = useMessage((msg) => msg.id.startsWith("optimistic-"));
   const touchReveal = useTouchReveal();
+  // The last message's bar always shows; an older one's on hover or keyboard focus (lot 22).
+  const isLast = useMessage((msg) => msg.isLast);
   // Mid-turn QUEUE: this user turn was sent while the chat was busy, so it is parked
   // behind the in-flight turn (its outbox row is `queued`). Show it as WAITING so the
   // interface makes the hold visible; it clears reactively when the drainer dispatches.
@@ -3490,7 +3492,8 @@ function UserMessage() {
           ) : null}
           <ActionBarPrimitive.Root
             className="oc-msg__actions oc-msg__actions--user"
-            autohide={messageActionsAutohide(touchReveal)}
+            autohide="never"
+            data-reveal={messageActionsReveal(touchReveal, isLast)}
           >
           <BookmarkToggleButton />
           {ui.copyUser ? (
@@ -3903,6 +3906,8 @@ function AssistantMessage() {
   const [showSource, setShowSource] = useState(false);
   const ui = useUiPrefs();
   const touchReveal = useTouchReveal();
+  // The last message's bar always shows; an older one's on hover or keyboard focus (lot 22).
+  const isLast = useMessage((msg) => msg.isLast);
   // "Reply to a block…" and "Bookmark a block…" (the ⋯ menu): the list of blocks
   // is the MESSAGE's, so it outlives the action bar, which unmounts when the
   // pointer leaves the message.
@@ -4299,7 +4304,8 @@ function AssistantMessage() {
         {groupContinues ? null : (
         <ActionBarPrimitive.Root
           className="oc-msg__actions"
-          autohide={messageActionsAutohide(touchReveal)}
+          autohide="never"
+          data-reveal={messageActionsReveal(touchReveal, isLast)}
         >
           {ui.copyAssistant ? <CopyAssistantButton /> : null}
           <ReadAloudButton />

@@ -1352,6 +1352,25 @@
   display: flex;
   gap: 0.15rem;
 }
+/* An older message's bar is RENDERED — hidden, not absent — so a keyboard reaches it
+   (lot 22): its ⋯ and the block lists behind it were out of reach of Tab, assistant-ui
+   rendering nothing without a mouse over the message. It shows on hover, on KEYBOARD
+   focus within the message (a mouse click leaves no lasting bar: :focus-visible, not
+   :focus-within) and while one of its menus is open; a mouse sees what it saw before,
+   nothing until it hovers. Where a finger can be used, always (touchReveal.ts). */
+.oc-msg__actions[data-reveal="hover"] {
+  opacity: 0;
+}
+.oc-msg:hover .oc-msg__actions[data-reveal="hover"],
+.oc-msg:has(:focus-visible) .oc-msg__actions[data-reveal="hover"],
+.oc-msg__actions[data-reveal="hover"]:has([aria-expanded="true"]) {
+  opacity: 1;
+}
+@media (hover: none), (any-pointer: coarse) {
+  .oc-msg__actions[data-reveal="hover"] {
+    opacity: 1;
+  }
+}
 .oc-iconbtn {
   display: inline-grid;
   place-items: center;
@@ -2078,6 +2097,15 @@
 .oc-blockpick__empty {
   font-size: 0.875rem;
   color: var(--muted-foreground);
+}
+/* A pick that found its passage changed did nothing, and says so above the list read
+   again (lot 22). */
+.oc-blockpick__changed {
+  font-size: 0.875rem;
+  color: var(--foreground);
+  padding: 0.5rem 0.75rem;
+  border-radius: var(--radius-md);
+  background: var(--muted);
 }
 /* Rename/delete popover */
 .oc-bmk-pop {

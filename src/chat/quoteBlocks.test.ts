@@ -9,8 +9,11 @@ import {
   blockChoices,
   blockKey,
   blockOffer,
+  blockPrint,
   listSources,
   pickerFocusOrder,
+  pickTarget,
+  resolveChosen,
   type BlockChoice,
   type BlockListKind,
 } from "./quoteBlocks";
@@ -24,9 +27,9 @@ const one = (faces: BlockFace[], kind: BlockListKind = "quote") =>
 describe("the blocks a reply offers", () => {
   test("one choice per block with text, in reading order", () => {
     expect(one([text("Premier."), text("Deuxième."), text("Troisième.")])).toEqual([
-      { messageId: "r", blockIndex: 0, excerpt: "Premier.", label: "Premier." },
-      { messageId: "r", blockIndex: 1, excerpt: "Deuxième.", label: "Deuxième." },
-      { messageId: "r", blockIndex: 2, excerpt: "Troisième.", label: "Troisième." },
+      { messageId: "r", blockIndex: 0, excerpt: "Premier.", label: "Premier.", print: "text:Premier." },
+      { messageId: "r", blockIndex: 1, excerpt: "Deuxième.", label: "Deuxième.", print: "text:Deuxième." },
+      { messageId: "r", blockIndex: 2, excerpt: "Troisième.", label: "Troisième.", print: "text:Troisième." },
     ]);
   });
 
@@ -177,5 +180,58 @@ describe("the one fallback both block pickers give the focus back by (lot 12)", 
   test("the reply before the composer: a composer can be disabled, the reply cannot", () => {
     const order = pickerFocusOrder(false);
     expect(order.indexOf("message")).toBeLessThan(order.indexOf("composer"));
+  });
+});
+
+describe("a block chosen is acted on where it is NOW, or not at all (lot 22)", () => {
+  // The reply Codex named: its delegated result arrives — inserted before the
+  // conclusion — while the list is open.
+  const settled = [text("Je lance l'analyse."), text("Conclusion : le scénario B est retenu."), text("Merci.")];
+  const delivered = [text("Je lance l'analyse."), text("Résultat délégué : B coûte 12 % de moins."), ...settled.slice(1)];
+  const prints = (faces: BlockFace[]) => faces.map(blockPrint);
+  const conclusion = one(settled, "bookmark").find((c) => c.label.startsWith("Conclusion"))!;
+
+  test("what identifies a block: its whole text, or the media it shows; a rule nothing", () => {
+    expect(blockPrint(text("  Deux  espaces\n et une ligne. "))).toBe("text:Deux espaces et une ligne.");
+    expect(blockPrint(image("Schéma"))).toBe("media:Schéma");
+    expect(blockPrint(rule)).toBe("");
+  });
+
+  test("an unchanged reply: the index chosen", () => {
+    expect(resolveChosen(conclusion, prints(settled), prints(settled))).toBe(1);
+  });
+
+  test("a delegated result inserted before the conclusion: the conclusion, where it is now", () => {
+    expect(resolveChosen(conclusion, prints(settled), prints(delivered))).toBe(2);
+    // …never the block that took its old index.
+    expect(prints(delivered)[1]).not.toBe(conclusion.print);
+  });
+
+  test("a block added after it, or an earlier one removed: still the conclusion", () => {
+    expect(resolveChosen(conclusion, prints(settled), prints([...settled, text("P.-S. : à lundi.")]))).toBe(1);
+    expect(resolveChosen(conclusion, prints(settled), prints(settled.slice(1)))).toBe(0);
+  });
+
+  test("the conclusion gone, the reply regenerated, or the reply itself gone: nothing", () => {
+    expect(resolveChosen(conclusion, prints(settled), prints([settled[0]!, settled[2]!]))).toBeNull();
+    expect(resolveChosen(conclusion, prints(settled), prints([text("Nouvelle analyse."), text("Conclusion provisoire : rien avant lundi.")]))).toBeNull();
+    expect(resolveChosen(conclusion, prints(settled), null)).toBeNull();
+  });
+
+  test("two blocks alike once the reply changed: ambiguous, nothing — never one of them at random", () => {
+    const twice = [...delivered, text("Conclusion : le scénario B est retenu.")];
+    expect(resolveChosen(conclusion, prints(settled), prints(twice))).toBeNull();
+  });
+
+  test("a bookmark: only while the block's state is the one its row showed", () => {
+    const at = (marked: string[]) =>
+      pickTarget(conclusion, "bookmark", prints(settled), prints(delivered), new Set(marked));
+    // Shown unmarked, still unmarked where it is now: the pick adds the bookmark there.
+    expect(at([])).toBe(2);
+    // Shown MARKED (a bookmark at its old index — now the delegated result's): the pick
+    // would add instead of remove. Nothing is done.
+    expect(at([blockKey("r", 1)])).toBeNull();
+    // A quote has no state: the conclusion where it is.
+    expect(pickTarget(conclusion, "quote", prints(settled), prints(delivered), new Set([blockKey("r", 1)]))).toBe(2);
   });
 });

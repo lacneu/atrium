@@ -8,7 +8,7 @@
 // its last bubble has a ⋯ (lot 21): the list then holds the blocks of every bubble
 // of the answer, in reading order — the order a screen reader reads them too —,
 // each row naming its own bubble, so a pick quotes or marks THAT bubble's block.
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Bookmark } from "lucide-react";
 import { m } from "@/paraglide/messages.js";
 import { Button } from "@/components/ui/button";
@@ -20,28 +20,38 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { focusFirst } from "@/lib/focusFallback";
-import { blockFace, collectAnchorBlocks } from "./bookmarkView";
+import { blockFace, collectAnchorBlocks, type BlockFace } from "./bookmarkView";
 import {
   blockChoices,
   blockKey,
+  blockPrint,
   pickerFocusOrder,
+  pickTarget,
   type BlockChoice,
   type BlockListKind,
   type PickerFocusCandidate,
 } from "./quoteBlocks";
 
-/** The blocks of the bubbles listed, read from what is RENDERED (the gutter acts on
- *  the same, through the same `blockOffer`). */
-function readChoices(sources: readonly string[], kind: BlockListKind): BlockChoice[] {
-  return blockChoices(
-    sources.map((messageId) => {
-      const body = document.querySelector(
-        `.oc-msg[data-message-id="${CSS.escape(messageId)}"] .oc-msg__body`,
-      );
-      return { messageId, faces: body === null ? [] : collectAnchorBlocks(body).map(blockFace) };
-    }),
-    kind,
+/** A bubble's blocks as it is RENDERED now — what the gutter acts on, through the same
+ *  `blockOffer` —, or null when the bubble is gone. */
+function facesOf(messageId: string): BlockFace[] | null {
+  const body = document.querySelector(
+    `.oc-msg[data-message-id="${CSS.escape(messageId)}"] .oc-msg__body`,
   );
+  return body === null ? null : collectAnchorBlocks(body).map(blockFace);
+}
+
+/** The list of the bubbles listed, and what each bubble showed when it was read: what
+ *  a pick is checked against (lot 22). */
+function readChoices(sources: readonly string[], kind: BlockListKind): {
+  choices: BlockChoice[];
+  seen: Map<string, string[]>;
+} {
+  const bubbles = sources.map((messageId) => ({ messageId, faces: facesOf(messageId) ?? [] }));
+  return {
+    choices: blockChoices(bubbles, kind),
+    seen: new Map(bubbles.map((b) => [b.messageId, b.faces.map(blockPrint)])),
+  };
 }
 
 /** The candidates of `pickerFocusOrder` as they are on the page now: the reply's
@@ -101,14 +111,47 @@ export function BlockPicker({
   onPick: (choice: BlockChoice) => void;
 }) {
   const [choices, setChoices] = useState<BlockChoice[]>([]);
+  // What each bubble showed when the list was read, and whether a pick found it
+  // changed since (the list was then read again, and says so).
+  const seen = useRef(new Map<string, string[]>());
+  const [changed, setChanged] = useState(false);
   const picked = useRef(false);
   const sourceKey = sources.join(" ");
+  const read = useCallback(() => {
+    const list = readChoices(sourceKey === "" ? [] : sourceKey.split(" "), kind);
+    seen.current = list.seen;
+    setChoices(list.choices);
+  }, [sourceKey, kind]);
   useEffect(() => {
     if (open) {
       picked.current = false;
-      setChoices(readChoices(sourceKey === "" ? [] : sourceKey.split(" "), kind));
+      setChanged(false);
+      read();
     }
-  }, [open, sourceKey, kind]);
+  }, [open, read]);
+  // A PICK ACTS ON THE BLOCK THE PERSON CHOSE, OR ON NOTHING (lot 22): the bubble can
+  // change while the list is open — a delegated result inserted before its conclusion,
+  // a block gone, the reply regenerated —, so the chosen block is found again by what
+  // it showed. Found: the action takes its index now. Gone, ambiguous, or a bookmark
+  // whose state is no longer the one the row showed: nothing is done, the list is read
+  // again and says why.
+  const pick = (choice: BlockChoice) => {
+    const at = pickTarget(
+      choice,
+      kind,
+      seen.current.get(choice.messageId) ?? null,
+      facesOf(choice.messageId)?.map(blockPrint) ?? null,
+      marked,
+    );
+    if (at === null) {
+      read();
+      setChanged(true);
+      return;
+    }
+    picked.current = true;
+    onPick({ ...choice, blockIndex: at });
+    onOpenChange(false);
+  };
   // A PICKED QUOTE GOES ON TO THE REPLY BEING WRITTEN: the composer takes the
   // focus as the pick's outcome, once the list has stopped trapping it (this
   // effect runs after Radix released its trap, in the same commit). As the list
@@ -134,6 +177,11 @@ export function BlockPicker({
           <DialogTitle>{text.title()}</DialogTitle>
           <DialogDescription>{text.desc()}</DialogDescription>
         </DialogHeader>
+        {changed ? (
+          <p className="oc-blockpick__changed" role="status">
+            {m.block_pick_changed()}
+          </p>
+        ) : null}
         {choices.length === 0 ? (
           <p className="oc-blockpick__empty">{text.empty()}</p>
         ) : (
@@ -151,11 +199,7 @@ export function BlockPicker({
                   data-message-id={choice.messageId}
                   data-block-index={choice.blockIndex}
                   aria-pressed={kind === "bookmark" ? set : undefined}
-                  onClick={() => {
-                    picked.current = true;
-                    onPick(choice);
-                    onOpenChange(false);
-                  }}
+                  onClick={() => pick(choice)}
                 >
                   {kind === "bookmark" ? (
                     <Bookmark
