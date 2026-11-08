@@ -705,8 +705,26 @@ export const settleFromBridge = internalMutation({
     // …and a turn that ENDED while our answer was on the wire says "cancelled" about
     // a prompt the person has just answered. The action knows what the gateway
     // replied; it settles the row, not this.
+    // Yet it is the gateway's word that the request is over: an approval's is KEPT for this
+    // card's generation (agentRequestResolutions), so that an answer which then fails on
+    // the wire closes the card with it (revertAnswer, the stall reaper) instead of putting
+    // it back to pending — where, listed by no replay any more, it would hold every utility
+    // job of the instance (lib/utilityHold.ts) until its deadline and the grace (codex,
+    // integrated review of 0.103.5, pass 4). The answer's own reply, when one comes, still
+    // settles the card.
     if (ours && (args.status === "expired" || args.status === "cancelled")) {
-      return { settled: false, outcome: "none" };
+      const outcome =
+        familyOf(row.source) === "approval" && typeof row.providerCreatedAt === "number"
+          ? await keepResolution(ctx, {
+              chatId: args.chatId,
+              boundInstanceName: args.boundInstanceName,
+              providerRequestId: args.providerRequestId,
+              providerCreatedAt: row.providerCreatedAt,
+              family: "approval",
+              status: args.status,
+            })
+          : "none";
+      return { settled: false, outcome };
     }
     const patch: Partial<Doc<"agentRequests">> = {
       status: args.status,
@@ -879,6 +897,39 @@ async function keptResolution(
     )
     .take(MAX_GENERATIONS_READ);
   return kept.find((k) => k.providerCreatedAt === generation) ?? null;
+}
+
+/** The gateway's verdict kept for an approval card while an answer to it was on the wire
+ *  (settleFromBridge): the request is over there, whatever became of that answer. */
+async function verdictKeptForCard(
+  ctx: MutationCtx,
+  row: Doc<"agentRequests">,
+): Promise<Doc<"agentRequestResolutions"> | null> {
+  if (familyOf(row.source) !== "approval" || typeof row.providerCreatedAt !== "number") return null;
+  return await keptResolution(ctx, row.chatId, row.instanceName, row.providerRequestId, row.providerCreatedAt);
+}
+
+/** Close a card whose answer did not get through with the gateway's kept verdict — never
+ *  back to pending. Its author is the gateway, not the answer that failed. */
+async function closeWithKeptVerdict(
+  ctx: MutationCtx,
+  row: Doc<"agentRequests">,
+  kept: Doc<"agentRequestResolutions">,
+  now: number,
+): Promise<void> {
+  const decided = kept.status === "allowed" || kept.status === "denied";
+  await ctx.db.patch(row._id, {
+    status: kept.status,
+    updatedAt: now,
+    resolvedAt: now,
+    closedByGateway: true,
+    resolvedByUserId: undefined,
+    answers: undefined,
+    decision: decided ? kept.decision : undefined,
+    ...(decided ? { resolvedElsewhere: true } : {}),
+  });
+  await clearNotification(ctx, row);
+  await trace(ctx, row.chatId, { phase: "settled-kept", source: row.source, status: kept.status });
 }
 
 // ── Person → gateway ───────────────────────────────────────────────────────────
@@ -1191,6 +1242,14 @@ export const revertAnswer = internalMutation({
     const row = await ctx.db.get(requestId);
     if (row === null || row.status !== "submitting") return null;
     const now = Date.now();
+    // The gateway said the request is over while this answer was on the wire: closed with
+    // its word, never back to pending (codex, integrated review of 0.103.5, pass 4).
+    const kept = await verdictKeptForCard(ctx, row);
+    if (kept !== null) {
+      await closeWithKeptVerdict(ctx, row, kept, now);
+      await trace(ctx, row.chatId, { phase: "answer_failed", source: row.source, code: failureCode.slice(0, 64) });
+      return null;
+    }
     // Closed only past the sweep's grace, as everywhere Atrium closes a request on its own
     // clock: within it the card is pending again, no longer answerable (its deadline has
     // passed) but still holding the utility jobs while the gateway may still wait (codex,
@@ -1578,6 +1637,12 @@ export const reapExpired = internalMutation({
       .take(100);
     for (const row of stuck) {
       if (now - row.updatedAt < SUBMIT_STALL_MS) continue;
+      // The gateway's word kept while the answer was on the wire closes it (revertAnswer).
+      const kept = await verdictKeptForCard(ctx, row);
+      if (kept !== null) {
+        await closeWithKeptVerdict(ctx, row, kept, now);
+        continue;
+      }
       await ctx.db.patch(row._id, {
         status: "pending",
         updatedAt: now,

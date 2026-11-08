@@ -2156,6 +2156,65 @@ describe("only the gateway's word closes a card for good", () => {
     expect(row.resolvedByUserId).toBeUndefined();
   });
 
+  for (const status of ["cancelled", "expired"] as const) {
+    test(`the gateway's word "${status}" while our answer is on the wire, then the reply lost: closed with that word, never back to pending (codex, integrated review of 0.103.5, pass 4)`, async () => {
+      const t = convexTest(schema, modules);
+      const { userId, chatId } = await seed(t);
+      const { id } = await record(t, chatId, { providerSeenSeq: 10 });
+      let inFlight: unknown;
+      fetchMock.mockImplementationOnce(async () => {
+        inFlight = await t.mutation(internal.agentRequests.settleFromBridge, {
+          chatId, boundInstanceName: INSTANCE, providerRequestId: EXEC.providerRequestId, providerCreatedAt: 500, family: "approval", status,
+        });
+        return new Response(JSON.stringify({ ok: false, error: { code: "session_unavailable" } }), { status: 503 });
+      });
+      expect(await answer(t, userId, id!)).toEqual({ ok: false, reason: "session_unavailable" });
+      // Held by Convex: the bridge writes it no more.
+      expect(inFlight).toEqual({ settled: false, outcome: "kept" });
+      const row = (await t.run((ctx) => ctx.db.get(id!)))!;
+      expect(row).toMatchObject({ status, closedByGateway: true });
+      for (const gone of ["resolvedByUserId", "decision", "expiredLocally"] as const) {
+        expect(row[gone], gone).toBeUndefined();
+      }
+      // A verdict: no replay reopens it.
+      await record(t, chatId, { providerSeenSeq: 20 });
+      expect((await t.run((ctx) => ctx.db.get(id!)))!.status).toBe(status);
+    });
+  }
+
+  test("…but the answer's own reply, when it comes, still settles the card", async () => {
+    const t = convexTest(schema, modules);
+    const { userId, chatId } = await seed(t);
+    const { id } = await record(t, chatId, { providerSeenSeq: 10 });
+    fetchMock.mockImplementationOnce(async () => {
+      await t.mutation(internal.agentRequests.settleFromBridge, {
+        chatId, boundInstanceName: INSTANCE, providerRequestId: EXEC.providerRequestId, providerCreatedAt: 500, family: "approval", status: "cancelled",
+      });
+      return new Response(JSON.stringify({ ok: true }), { status: 200 });
+    });
+    expect(await answer(t, userId, id!)).toMatchObject({ ok: true });
+    expect(await t.run((ctx) => ctx.db.get(id!))).toMatchObject({ status: "allowed", resolvedByUserId: userId });
+  });
+
+  test("an answer stalled on the wire after the gateway's word: the reaper closes it with that word, not back to pending", async () => {
+    const t = convexTest(schema, modules);
+    const { userId, chatId } = await seed(t);
+    const { id } = await record(t, chatId, { providerSeenSeq: 10 });
+    // The answer's action died after marking the card in flight.
+    await t.run((ctx) =>
+      ctx.db.patch(id!, { status: "submitting", updatedAt: Date.now() - 10 * 60_000, resolvedByUserId: userId, decision: "allow-once" }),
+    );
+    expect(
+      await t.mutation(internal.agentRequests.settleFromBridge, {
+        chatId, boundInstanceName: INSTANCE, providerRequestId: EXEC.providerRequestId, providerCreatedAt: 500, family: "approval", status: "cancelled",
+      }),
+    ).toEqual({ settled: false, outcome: "kept" });
+    await t.mutation(internal.agentRequests.reapExpired, {});
+    const row = (await t.run((ctx) => ctx.db.get(id!)))!;
+    expect(row).toMatchObject({ status: "cancelled", closedByGateway: true });
+    expect(row.resolvedByUserId).toBeUndefined();
+  });
+
   // The gateway's own expiry, settled from its stream, lands only on a `pending` row (never
   // over our answer in flight): no answerer on it, in 0.103.4 as now — it stays closed.
   test("a REAL expiry — the gateway's own — stays: its replay is that card, closed", async () => {

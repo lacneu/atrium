@@ -42,7 +42,8 @@ session claim was validated in trusted-proxy authentication.
   could give. Only the gateway's own reply now closes a request: while it still waits, the card
   stays open and asks you to try again, and a request Atrium closed itself — on its own clock, or
   on a missing connection before this release — is shown again, answerable, when the gateway
-  lists it as still waiting before its deadline.
+  lists it as still waiting before its deadline. A request the gateway closes while your answer
+  is on its way closes with the gateway's word, even when your answer then fails.
 - **Waiting for an approval no longer gives up after 10 minutes.** Atrium stopped waiting for a
   decision after 10 minutes, while the gateway keeps a command approval open for 30: an answer
   given between the two reached a turn Atrium had already closed. The wait now follows the

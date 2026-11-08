@@ -463,6 +463,34 @@ describe("a utility job is held while an approval waits on its instance", () => 
     expect(sends()).toBe(0);
   });
 
+  test("an approval the gateway cancels while its answer is on the wire, the reply then lost, holds nothing any more (codex, integrated review of 0.103.5, pass 4)", async () => {
+    const t = convexTest(schema, modules);
+    const job = await seedJob(t);
+    const chatId = await otherConversation(t);
+    const approval = await seedRequest(t, chatId);
+    await t.run((ctx) => ctx.db.patch(approval, { providerCreatedAt: T0 - 5 * MIN }));
+    const row = (await t.run((ctx) => ctx.db.get(approval)))!;
+    fetchMock.mockImplementationOnce(async () => {
+      await t.mutation(internal.agentRequests.settleFromBridge, {
+        chatId,
+        boundInstanceName: INSTANCE,
+        providerRequestId: row.providerRequestId,
+        providerCreatedAt: T0 - 5 * MIN,
+        family: "approval",
+        status: "cancelled",
+      });
+      return new Response(JSON.stringify({ ok: false, error: { code: "session_unavailable" } }), { status: 503 });
+    });
+    expect(
+      await t
+        .withIdentity({ subject: `${row.userId}|session` })
+        .action(api.agentRequests.answer, { requestId: approval, decision: "allow-once" }),
+    ).toEqual({ ok: false, reason: "session_unavailable" });
+    expect((await t.run((ctx) => ctx.db.get(approval)))!.status).toBe("cancelled");
+    await dispatch(t, job.outboxId);
+    expect(sends()).toBe(1);
+  });
+
   test("…and so does one the bridge records late, within that grace: pending with its own deadline, until the grace ends", async () => {
     const t = convexTest(schema, modules);
     const job = await seedJob(t);
