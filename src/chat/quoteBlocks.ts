@@ -36,36 +36,36 @@ export type BlockChoice = {
   excerpt: string;
   /** What the row shows: the excerpt, or the media's alt text ("" when it has none). */
   label: string;
-  /** What the person saw, whole (`blockPrint`): how the block is found again when the
-   *  action is taken (lot 22). */
+  /** The block's exact print when the list was read (`blockPrint`): how the block is
+   *  found again when the action is taken (lots 22, 23). */
   print: string;
 };
 
-/** What identifies a block the person saw: its whole text, or — for a block without
- *  any — the media it shows, by its alt text (lot 22). */
-export function blockPrint(face: BlockFace): string {
-  const text = face.text.replace(/\s+/g, " ").trim();
-  if (text !== "") return `text:${text}`;
-  return face.media ? `media:${face.alt.trim()}` : "";
-}
-
 /**
- * Where the block a person chose is NOW: what an action on it must target (lot 22).
+ * Where the block a person chose is NOW: what an action on it must target (lots 22, 23).
  * The list was read when it opened — the gutter's row when the pointer came —, and the
  * bubble can change before the choice: a delegated result inserted before its
- * conclusion, a block gone, the reply regenerated. Unchanged bubble: the index chosen.
- * Changed: the one block that still shows what the person chose. None, or several
- * alike: null — the action is refused, never moved onto another block.
+ * conclusion, a block gone, the reply regenerated. A block is known by its exact print
+ * (`blockPrint`), and the rule is one of identity:
+ *  - the bubble unchanged, print for print: the index chosen;
+ *  - changed: the one block that shows exactly what was chosen — only if the chosen
+ *    block was the ONLY one to show it when it was read, and still is. A block that
+ *    had a homonym (an identical block) when it was read is served at its own index,
+ *    in an unchanged bubble, and nowhere else: once the bubble changed, nothing tells
+ *    which of the two it became — the one left may be the other.
+ * Anything else: null — the action is refused, never moved onto another block.
  */
 export function resolveChosen(
   chosen: { blockIndex: number; print: string },
   before: readonly string[] | null,
   now: readonly string[] | null,
 ): number | null {
-  if (now === null) return null;
-  const unchanged = before !== null && before.length === now.length && before.every((p, i) => p === now[i]);
-  if (unchanged) return now[chosen.blockIndex] === chosen.print ? chosen.blockIndex : null;
-  const hits = now.flatMap((p, i) => (p === chosen.print ? [i] : []));
+  if (before === null || now === null || before[chosen.blockIndex] !== chosen.print) return null;
+  const unchanged = before.length === now.length && before.every((p, i) => p === now[i]);
+  if (unchanged) return chosen.blockIndex;
+  const showing = (prints: readonly string[]) => prints.flatMap((p, i) => (p === chosen.print ? [i] : []));
+  if (showing(before).length !== 1) return null;
+  const hits = showing(now);
   return hits.length === 1 ? hits[0]! : null;
 }
 
@@ -104,7 +104,7 @@ export function blockChoices(
     faces.forEach((face, blockIndex) => {
       const offer = blockOffer(face);
       if (offer === null || (kind === "quote" && offer.quote === "")) return;
-      choices.push({ messageId, blockIndex, excerpt: offer.quote, label: offer.label, print: blockPrint(face) });
+      choices.push({ messageId, blockIndex, excerpt: offer.quote, label: offer.label, print: face.print });
     });
   }
   return choices;

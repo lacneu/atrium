@@ -8,7 +8,7 @@
 // its last bubble has a ⋯ (lot 21): the list then holds the blocks of every bubble
 // of the answer, in reading order — the order a screen reader reads them too —,
 // each row naming its own bubble, so a pick quotes or marks THAT bubble's block.
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Bookmark } from "lucide-react";
 import { m } from "@/paraglide/messages.js";
 import { Button } from "@/components/ui/button";
@@ -20,11 +20,11 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { focusFirst } from "@/lib/focusFallback";
+import { liveStatus, windowSchedule } from "@/lib/liveStatus";
 import { blockFace, collectAnchorBlocks, type BlockFace } from "./bookmarkView";
 import {
   blockChoices,
   blockKey,
-  blockPrint,
   pickerFocusOrder,
   pickTarget,
   type BlockChoice,
@@ -50,7 +50,7 @@ function readChoices(sources: readonly string[], kind: BlockListKind): {
   const bubbles = sources.map((messageId) => ({ messageId, faces: facesOf(messageId) ?? [] }));
   return {
     choices: blockChoices(bubbles, kind),
-    seen: new Map(bubbles.map((b) => [b.messageId, b.faces.map(blockPrint)])),
+    seen: new Map(bubbles.map((b) => [b.messageId, b.faces.map((face) => face.print)])),
   };
 }
 
@@ -111,10 +111,13 @@ export function BlockPicker({
   onPick: (choice: BlockChoice) => void;
 }) {
   const [choices, setChoices] = useState<BlockChoice[]>([]);
-  // What each bubble showed when the list was read, and whether a pick found it
-  // changed since (the list was then read again, and says so).
+  // What each bubble showed when the list was read; and the status a refused pick
+  // says — the list was then read again (lot 22). The status region is on the page,
+  // empty, from the list's opening, and every refusal is announced anew (lot 23).
   const seen = useRef(new Map<string, string[]>());
-  const [changed, setChanged] = useState(false);
+  const [status, setStatus] = useState("");
+  const announcer = useMemo(() => liveStatus(setStatus, windowSchedule), []);
+  useEffect(() => () => announcer.clear(), [announcer]);
   const picked = useRef(false);
   const sourceKey = sources.join(" ");
   const read = useCallback(() => {
@@ -123,29 +126,30 @@ export function BlockPicker({
     setChoices(list.choices);
   }, [sourceKey, kind]);
   useEffect(() => {
+    announcer.clear();
     if (open) {
       picked.current = false;
-      setChanged(false);
       read();
     }
-  }, [open, read]);
+  }, [open, read, announcer]);
   // A PICK ACTS ON THE BLOCK THE PERSON CHOSE, OR ON NOTHING (lot 22): the bubble can
   // change while the list is open — a delegated result inserted before its conclusion,
   // a block gone, the reply regenerated —, so the chosen block is found again by what
-  // it showed. Found: the action takes its index now. Gone, ambiguous, or a bookmark
-  // whose state is no longer the one the row showed: nothing is done, the list is read
-  // again and says why.
+  // it showed, exactly — and elsewhere only if nothing else showed the same (lot 23,
+  // `resolveChosen`). Found: the action takes its index now. Gone, ambiguous, or a
+  // bookmark whose state is no longer the one the row showed: nothing is done, the list
+  // is read again and says why.
   const pick = (choice: BlockChoice) => {
     const at = pickTarget(
       choice,
       kind,
       seen.current.get(choice.messageId) ?? null,
-      facesOf(choice.messageId)?.map(blockPrint) ?? null,
+      facesOf(choice.messageId)?.map((face) => face.print) ?? null,
       marked,
     );
     if (at === null) {
       read();
-      setChanged(true);
+      announcer.say(m.block_pick_changed());
       return;
     }
     picked.current = true;
@@ -177,11 +181,9 @@ export function BlockPicker({
           <DialogTitle>{text.title()}</DialogTitle>
           <DialogDescription>{text.desc()}</DialogDescription>
         </DialogHeader>
-        {changed ? (
-          <p className="oc-blockpick__changed" role="status">
-            {m.block_pick_changed()}
-          </p>
-        ) : null}
+        <p className="oc-blockpick__changed" role="status">
+          {status}
+        </p>
         {choices.length === 0 ? (
           <p className="oc-blockpick__empty">{text.empty()}</p>
         ) : (

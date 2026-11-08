@@ -49,6 +49,7 @@ import type { Id } from "./convexApi";
 import {
   anchorElement,
   blockFace,
+  blockPrint,
   collectAnchorBlocks,
   nearestBookmarkId,
   nextBookmarkId,
@@ -56,7 +57,7 @@ import {
   previewFromText,
   type BookmarkView,
 } from "./bookmarkView";
-import { blockOffer, blockPrint, resolveChosen } from "./quoteBlocks";
+import { blockOffer, resolveChosen } from "./quoteBlocks";
 import {
   SHORTCUT_BOOKMARK_NEXT,
   SHORTCUT_BOOKMARK_PREV,
@@ -559,8 +560,9 @@ interface HoverState {
   blockIndex: number;
   /** The block has text: the reply button quotes it (`blockOffer`). */
   quotable: boolean;
-  /** What the block showed, and what the whole bubble showed, when the row came: a
-   *  click checks the block is still the one the row stands by (lot 22). */
+  /** What the block showed, and what the whole bubble showed, when the row came — by
+   *  exact print (`blockPrint`): a click checks the block is still the one the row
+   *  stands by, by the lists' own rule (`resolveChosen`, lots 22, 23). */
   print: string;
   seen: string[];
 }
@@ -572,7 +574,7 @@ interface HoverState {
 function locateBlock(body: HTMLElement, clientY: number): HoverState | null {
   const blocks = collectAnchorBlocks(body);
   const faces = blocks.map(blockFace);
-  const seen = faces.map(blockPrint);
+  const seen = faces.map((face) => face.print);
   const bodyTop = body.getBoundingClientRect().top;
   let nearest: HoverState | null = null;
   let nearestDist = Infinity;
@@ -597,7 +599,7 @@ function locateBlock(body: HTMLElement, clientY: number): HoverState | null {
  *  a click acts on nothing. */
 function stillHovered(body: HTMLElement, hover: HoverState): number | null {
   const blocks = collectAnchorBlocks(body);
-  const at = resolveChosen(hover, hover.seen, blocks.map((b) => blockPrint(blockFace(b))));
+  const at = resolveChosen(hover, hover.seen, blocks.map(blockPrint));
   if (at !== hover.blockIndex) return null;
   const top = blocks[at]!.getBoundingClientRect().top - body.getBoundingClientRect().top;
   return Math.abs(top - hover.top) < 1 ? at : null;

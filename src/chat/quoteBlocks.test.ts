@@ -9,7 +9,6 @@ import {
   blockChoices,
   blockKey,
   blockOffer,
-  blockPrint,
   listSources,
   pickerFocusOrder,
   pickTarget,
@@ -18,18 +17,21 @@ import {
   type BlockListKind,
 } from "./quoteBlocks";
 
-const text = (t: string): BlockFace => ({ text: t, alt: "", media: false });
-const image = (alt: string): BlockFace => ({ text: "", alt, media: true });
-const rule: BlockFace = { text: "", alt: "", media: false };
+// A face's print stands for blockPrint's (tested on the DOM in bookmarkView.test.ts):
+// one string per distinct block.
+const text = (t: string): BlockFace => ({ text: t, alt: "", media: false, print: `P|${t}` });
+const heading = (t: string): BlockFace => ({ text: t, alt: "", media: false, print: `H2|${t}` });
+const image = (alt: string, src = "schema.png"): BlockFace => ({ text: "", alt, media: true, print: `IMG|${src}|${alt}` });
+const rule: BlockFace = { text: "", alt: "", media: false, print: "HR" };
 const one = (faces: BlockFace[], kind: BlockListKind = "quote") =>
   blockChoices([{ messageId: "r", faces }], kind);
 
 describe("the blocks a reply offers", () => {
   test("one choice per block with text, in reading order", () => {
     expect(one([text("Premier."), text("Deuxième."), text("Troisième.")])).toEqual([
-      { messageId: "r", blockIndex: 0, excerpt: "Premier.", label: "Premier.", print: "text:Premier." },
-      { messageId: "r", blockIndex: 1, excerpt: "Deuxième.", label: "Deuxième.", print: "text:Deuxième." },
-      { messageId: "r", blockIndex: 2, excerpt: "Troisième.", label: "Troisième.", print: "text:Troisième." },
+      { messageId: "r", blockIndex: 0, excerpt: "Premier.", label: "Premier.", print: "P|Premier." },
+      { messageId: "r", blockIndex: 1, excerpt: "Deuxième.", label: "Deuxième.", print: "P|Deuxième." },
+      { messageId: "r", blockIndex: 2, excerpt: "Troisième.", label: "Troisième.", print: "P|Troisième." },
     ]);
   });
 
@@ -188,13 +190,11 @@ describe("a block chosen is acted on where it is NOW, or not at all (lot 22)", (
   // conclusion — while the list is open.
   const settled = [text("Je lance l'analyse."), text("Conclusion : le scénario B est retenu."), text("Merci.")];
   const delivered = [text("Je lance l'analyse."), text("Résultat délégué : B coûte 12 % de moins."), ...settled.slice(1)];
-  const prints = (faces: BlockFace[]) => faces.map(blockPrint);
+  const prints = (faces: BlockFace[]) => faces.map((face) => face.print);
   const conclusion = one(settled, "bookmark").find((c) => c.label.startsWith("Conclusion"))!;
 
-  test("what identifies a block: its whole text, or the media it shows; a rule nothing", () => {
-    expect(blockPrint(text("  Deux  espaces\n et une ligne. "))).toBe("text:Deux espaces et une ligne.");
-    expect(blockPrint(image("Schéma"))).toBe("media:Schéma");
-    expect(blockPrint(rule)).toBe("");
+  test("a choice carries the print its block had when the list was read", () => {
+    expect(conclusion.print).toBe(settled[1]!.print);
   });
 
   test("an unchanged reply: the index chosen", () => {
@@ -218,6 +218,11 @@ describe("a block chosen is acted on where it is NOW, or not at all (lot 22)", (
     expect(resolveChosen(conclusion, prints(settled), null)).toBeNull();
   });
 
+  test("a bubble never read, or a choice that is not what its read showed: nothing (lot 23)", () => {
+    expect(resolveChosen(conclusion, null, prints(settled))).toBeNull();
+    expect(resolveChosen({ ...conclusion, blockIndex: 0 }, prints(settled), prints(settled))).toBeNull();
+  });
+
   test("two blocks alike once the reply changed: ambiguous, nothing — never one of them at random", () => {
     const twice = [...delivered, text("Conclusion : le scénario B est retenu.")];
     expect(resolveChosen(conclusion, prints(settled), prints(twice))).toBeNull();
@@ -233,5 +238,64 @@ describe("a block chosen is acted on where it is NOW, or not at all (lot 22)", (
     expect(at([blockKey("r", 1)])).toBeNull();
     // A quote has no state: the conclusion where it is.
     expect(pickTarget(conclusion, "quote", prints(settled), prints(delivered), new Set([blockKey("r", 1)]))).toBe(2);
+  });
+});
+
+// LOT 23: a block is known by its exact print, and found elsewhere only if it was the
+// ONLY one to show it when the list was read — and still is. A block that had a
+// homonym is served at its own index, in an unchanged bubble, or not at all.
+describe("a block's identity: an action never lands on a homonym (lot 23)", () => {
+  // The reply Codex named: two sections, each ending with the same conclusion.
+  const sections = [
+    heading("Section A"),
+    text("Conclusion : le scénario retenu est B."),
+    heading("Section B"),
+    text("Conclusion : le scénario retenu est B."),
+  ];
+  const prints = (faces: BlockFace[]) => faces.map((face) => face.print);
+  const [, firstConclusion, , lastConclusion] = one(sections, "bookmark");
+
+  test("a duplicate deleted: the last conclusion chosen, Section B and its conclusion gone — nothing, never A's conclusion", () => {
+    expect(lastConclusion).toMatchObject({ blockIndex: 3 });
+    const update = prints(sections.slice(0, 2));
+    expect(resolveChosen(lastConclusion!, prints(sections), update)).toBeNull();
+    expect(pickTarget(lastConclusion!, "bookmark", prints(sections), update, new Set())).toBeNull();
+    expect(pickTarget(lastConclusion!, "quote", prints(sections), update, undefined)).toBeNull();
+  });
+
+  test("a homonym is served at its own index in an unchanged bubble, both of them", () => {
+    expect(resolveChosen(lastConclusion!, prints(sections), prints(sections))).toBe(3);
+    expect(resolveChosen(firstConclusion!, prints(sections), prints(sections))).toBe(1);
+  });
+
+  test("…and nowhere once the bubble changed: not even at its own index, nor once it is alone", () => {
+    // A block added after both: the one at index 3 may be either conclusion now.
+    const appended = prints([...sections, text("P.-S. : à lundi.")]);
+    expect(resolveChosen(lastConclusion!, prints(sections), appended)).toBeNull();
+    expect(resolveChosen(firstConclusion!, prints(sections), appended)).toBeNull();
+    // Section A and its conclusion gone: one conclusion left, which was B's.
+    expect(resolveChosen(firstConclusion!, prints(sections), prints(sections.slice(2)))).toBeNull();
+  });
+
+  test("a block unique when read and still unique is found where it went", () => {
+    const sectionB = one(sections, "bookmark")[2]!;
+    expect(resolveChosen(sectionB, prints(sections), prints([text("Résultat délégué."), ...sections]))).toBe(3);
+  });
+
+  test("an image without alt text replaced by another: its print changed — nothing", () => {
+    const shown = [text("Le schéma :"), image("", "schema-b.png")];
+    const replaced = [text("Le schéma :"), image("", "organigramme.png")];
+    const [, pick] = one(shown, "bookmark");
+    expect(pick).toMatchObject({ blockIndex: 1, label: "" });
+    expect(resolveChosen(pick!, prints(shown), prints(replaced))).toBeNull();
+    expect(resolveChosen(pick!, prints(shown), prints(shown))).toBe(1);
+  });
+
+  test("a code whose indentation changed: its print changed — nothing", () => {
+    const code = (body: string): BlockFace => ({ text: `python${body}`, alt: "", media: false, print: `CODE|${body}` });
+    const shown = [text("La boucle :"), code("for x in items:\n    if ok(x):\n        send(x)")];
+    const changed = [text("La boucle :"), code("for x in items:\n    if ok(x):\n    send(x)")];
+    const [, pick] = one(shown, "quote");
+    expect(resolveChosen(pick!, prints(shown), prints(changed))).toBeNull();
   });
 });

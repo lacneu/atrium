@@ -200,7 +200,7 @@ describe("the lists of a grouped answer's ⋯ hold every bubble's blocks (lot 21
 describe("a block action lands on the block chosen, or on nothing (lot 22)", () => {
   test("the list keeps what each bubble showed when it was read", () => {
     const read = find(SF, ts.isFunctionDeclaration).find((f) => f.name?.text === "readChoices")!;
-    expect(read.getText()).toMatch(/seen: new Map\(bubbles\.map\(\(b\) => \[b\.messageId, b\.faces\.map\(blockPrint\)\]\)\)/);
+    expect(read.getText()).toMatch(/seen: new Map\(bubbles\.map\(\(b\) => \[b\.messageId, b\.faces\.map\(\(face\) => face\.print\)\]\)\)/);
     const reader = find(SF, ts.isVariableDeclaration).find((d) => d.name.getText() === "read")!;
     expect(reader.getText()).toMatch(/seen\.current = list\.seen;/);
   });
@@ -214,24 +214,24 @@ describe("a block action lands on the block chosen, or on nothing (lot 22)", () 
       "choice",
       "kind",
       "seen.current.get(choice.messageId) ?? null",
-      "facesOf(choice.messageId)?.map(blockPrint) ?? null",
+      "facesOf(choice.messageId)?.map((face) => face.print) ?? null",
       "marked",
     ]);
     // Null: the list read again, the notice, and NOTHING more — the return comes
     // before any action.
     const body = pick.getText();
-    const refusal = /if \(at === null\) \{\s*read\(\);\s*setChanged\(true\);\s*return;\s*\}/.exec(body);
+    const refusal = /if \(at === null\) \{\s*read\(\);\s*announcer\.say\(m\.block_pick_changed\(\)\);\s*return;\s*\}/.exec(body);
     expect(refusal, "a refused pick does more than read the list again").not.toBeNull();
     expect(body.indexOf("onPick(")).toBeGreaterThan(refusal!.index + refusal![0].length);
     expect(callsTo(pick, "onPick")[0].arguments[0].getText()).toBe("{ ...choice, blockIndex: at }");
-    // The notice: a status line the screen reader announces.
-    expect(SF.getText()).toMatch(/role="status"[\s\S]{0,80}m\.block_pick_changed\(\)/);
+    // The notice: said through the status region (lot 23, below).
+    expect(callsTo(pick, "say")).toHaveLength(1);
   });
 
   test("the gutter acts on the block its row still stands by, or on nothing — the row then moves", () => {
     const still = fnNamed(GUTTER, "stillHovered")!;
     const [resolve] = callsTo(still, "resolveChosen");
-    expect(resolve.arguments.map((a) => a.getText())).toEqual(["hover", "hover.seen", "blocks.map((b) => blockPrint(blockFace(b)))"]);
+    expect(resolve.arguments.map((a) => a.getText())).toEqual(["hover", "hover.seen", "blocks.map(blockPrint)"]);
     expect(still.getText()).toMatch(/if \(at !== hover\.blockIndex\) return null;/);
     expect(still.getText()).toMatch(/Math\.abs\(top - hover\.top\) < 1 \? at : null/);
     const gutter = fnNamed(GUTTER, "BookmarkGutterInner")!;
@@ -245,5 +245,59 @@ describe("a block action lands on the block chosen, or on nothing (lot 22)", () 
     }
     expect(clicks.join("\n")).toMatch(/bmApi\.toggle\(messageId, at\)/);
     expect(clicks.join("\n")).toMatch(/onReplyToBlock\(at, excerpt\)/);
+  });
+});
+
+// LOT 23: a block is known by its EXACT print (bookmarkView.test.ts: what it covers and
+// leaves out) and the rule of identity (quoteBlocks.test.ts: `resolveChosen`); what a
+// screen reader hears of a refusal is in src/lib/liveStatus.test.ts. Here, that the
+// picker and the gutter read prints from the one place, and that the status region is
+// on the page, empty, from the list's opening, every refusal said through it.
+describe("a block's identity, and every refusal heard (lot 23)", () => {
+  const VIEW = source("bookmarkView.ts");
+
+  test("one print for the lists and the gutter: blockPrint, which the face carries", () => {
+    const face = fnNamed(VIEW, "blockFace")!;
+    expect(face.getText()).toMatch(/print: blockPrint\(block\),/);
+    const locate = fnNamed(GUTTER, "locateBlock")!;
+    expect(locate.getText()).toMatch(/const seen = faces\.map\(\(face\) => face\.print\);/);
+    // No print of its own anywhere else: the lists' module only reads the face's.
+    const LISTS = source("quoteBlocks.ts");
+    expect(fnNamed(LISTS, "blockPrint"), "a second print in quoteBlocks.ts").toBeUndefined();
+    expect(LISTS.getText()).toMatch(/print: face\.print/);
+  });
+
+  test("the status region is always on the list, its content the announcer's", () => {
+    const regions = jsx(SF, "p").filter((p) => attr(p, "role")?.initializer?.getText() === '"status"');
+    expect(regions).toHaveLength(1);
+    // Not behind a condition: rendered with the list, empty until a refusal.
+    let up: ts.Node = regions[0]!;
+    while (!ts.isJsxElement(up)) up = up.parent;
+    for (let n: ts.Node = up.parent; !ts.isSourceFile(n); n = n.parent) {
+      expect(ts.isConditionalExpression(n) || (ts.isBinaryExpression(n) && n.operatorToken.kind === ts.SyntaxKind.AmpersandAmpersandToken), "the region behind a condition").toBe(false);
+      if (ts.isJsxElement(n) && n.openingElement.tagName.getText() === "DialogContent") break;
+    }
+    expect((up as ts.JsxElement).children.map((c) => c.getText().trim()).filter((t) => t !== "")).toEqual(["{status}"]);
+    const announcer = find(SF, ts.isVariableDeclaration).find((d) => d.name.getText() === "announcer")!;
+    expect(announcer.initializer?.getText()).toBe("useMemo(() => liveStatus(setStatus, windowSchedule), [])");
+  });
+
+  test("empty, the region is out of the flow — present for a screen reader, no gap in the dialog", () => {
+    const css = readFileSync(join(process.cwd(), "src/chat/convexChat.css"), "utf-8");
+    const rule = /\.oc-blockpick__changed:empty \{([^}]*)\}/.exec(css);
+    expect(rule, "no rule for the empty region").not.toBeNull();
+    expect(rule![1]).toMatch(/position: absolute;/);
+    expect(rule![1]).toMatch(/clip: rect\(0, 0, 0, 0\);/);
+    // Out of the flow, never removed from it: display none would take it out of the
+    // accessibility tree, and a region must be there before its message.
+    expect(rule![1]).not.toMatch(/display: none|visibility: hidden/);
+  });
+
+  test("every opening empties it first, and a refusal is the only thing that fills it", () => {
+    const effect = callsTo(SF, "useEffect").find((c) => /read\(\);/.test(c.getText()) && /picked\.current = false/.test(c.getText()))!;
+    expect(effect.arguments[0].getText()).toMatch(/^\(\) => \{\s*announcer\.clear\(\);\s*if \(open\) \{/);
+    expect(effect.arguments[1]?.getText()).toBe("[open, read, announcer]");
+    expect(callsTo(SF, "say")).toHaveLength(1);
+    expect(callsTo(SF, "setStatus")).toHaveLength(0);
   });
 });

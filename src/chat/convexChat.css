@@ -2107,6 +2107,18 @@
   border-radius: var(--radius-md);
   background: var(--muted);
 }
+/* The status region is on the page from the list's opening, empty (ARIA22, lot 23):
+   out of the flow until it says something, so the dialog's gap stays as it was. */
+.oc-blockpick__changed:empty {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  border: 0;
+}
 /* Rename/delete popover */
 .oc-bmk-pop {
   width: 15rem;
