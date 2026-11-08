@@ -1184,11 +1184,6 @@
     },
     "lifecycle": {
       "phases": {
-        "-": {
-          "status": "ignored",
-          "why": "A type-level over-approximation, not an upstream frame. The terminal backstop always builds `phase`, `endedAt` and `startedAt` (src/auto-reply/reply/agent-lifecycle-terminal.ts:111-116); its other merges carry no `phase` (`terminationFields`, typed without it, :136; `resolveAgentLifecycleTerminalMetadata`, which copies DEFERRED_TERMINAL_METADATA_KEYS only, :142 with :33-57). The only overwrite the extractor admits is `Object.assign(data, extraData)` (:150-152), `extraData` being typed `Record<string, unknown>`. Every caller that feeds `extraData` at 2026.9.36 passes no `phase`: agent-runner-fallback-settlement.ts:53 and :183-189 (`terminalMetadata`, :37, built by src/agents/embedded-agent-runner/run-entry-terminal.ts:214-251 from terminalReply, terminalReceipt, assistantTranscriptIdempotencyKey, stopReason, yielded, timeoutPhase, providerStarted, aborted, livenessState, replayInvalid; plus `terminalReply` at :187); agent-runner-fallback-settlement.ts:81 through emitSettledLifecycleError (:79), fed at :179 with `terminalMetadata`; agent-runner-error-handler.ts:124-128 (`{ aborted: true, stopReason }` or nothing, :123); src/cron/isolated-agent/run-executor.ts:691-695 (`resolveAgentLifecycleTerminalMetadata(meta)`).",
-          "note": "Review whenever a version changes one of the callers listed in `why`, or run-entry-terminal.ts:214-251 that builds `terminalMetadata`, or adds a caller that passes `extraData`: re-read it, re-derive, and classify this pair again."
-        },
         "<opaque>": {
           "status": "handled",
           "by": "terminal backstops whose phase is computed (end / error): read by value, like the literal phases",
