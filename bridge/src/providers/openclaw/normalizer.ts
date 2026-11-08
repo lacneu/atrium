@@ -94,6 +94,11 @@ import {
   childLifecycleStatus,
 } from "./sub-agent-frames.js";
 import { isDefinitiveLifecycleError } from "./lifecycle-terminal.js";
+import {
+  ApprovalGenerations,
+  ApprovalIdentitySet,
+  type ApprovalGeneration,
+} from "./approval-identity.js";
 
 // The normalized event vocabulary now lives in core/events.ts (the shared
 // provider contract). Re-export it from the OpenClaw normalizer so existing
@@ -2033,7 +2038,8 @@ export class Normalizer {
       const phase = data.phase;
       if (phase === "requested") {
         // `toolCallId` first: it is the one id the resolution is guaranteed to carry.
-        this.holdForApproval([data.toolCallId, data.approvalId].filter(isString), now, events);
+        const aliases = [data.toolCallId, data.approvalId].filter(isString);
+        this.holdForApproval(aliases, now, events, this.frameGeneration(aliases));
       } else if (phase === "resolved") {
         // Explicitly released by the gateway (approved, denied or failed) — the
         // run resumes its normal cadence. `generating` CLEARS the stored phase.
@@ -2711,14 +2717,23 @@ export class Normalizer {
    * again — it is not counted twice, or "content answers the one approval this turn
    * asked" would stop applying to a turn that asked once.
    */
-  private holdForApproval(aliases: string[], now: number, events: BridgeEvent[]): void {
-    // A request already decided is not waiting for anyone (a stale sighting of it).
-    if (aliases.some((alias) => this.approvalsOver.has(alias))) return;
+  private holdForApproval(
+    aliases: string[],
+    now: number,
+    events: BridgeEvent[],
+    generation: ApprovalGeneration,
+  ): void {
+    // A request already decided — THIS identity, its id and generation — is not waiting
+    // for anyone (a stale sighting of it). Another generation of the id is another request.
+    if (aliases.some((alias) => this.approvalsOver.has(alias, generation))) return;
     const known = aliases
       .map((alias) => this.approvalAliases.get(alias))
       .find((record) => record !== undefined);
     if (known !== undefined) {
       for (const alias of aliases) this.approvalAliases.set(alias, known);
+      if (generation !== null && (this.recordGenerations.get(known) ?? null) === null) {
+        this.recordGenerations.set(known, generation);
+      }
       this.rearmApprovalWait(now);
       return;
     }
@@ -2727,6 +2742,7 @@ export class Normalizer {
       const record = aliases[0]!;
       this.pendingApprovalIds.add(record);
       for (const alias of aliases) this.approvalAliases.set(alias, record);
+      this.recordGenerations.set(record, generation);
     } else this.anonymousApprovals += 1;
     this.clearWait("recv");
     // …AND THE FINISHING GRACE, for the same reason every other resumption
@@ -2793,9 +2809,14 @@ export class Normalizer {
       /** False: a deadline update only (the record's snapshot, read later) — never a
        *  reason to hold a turn the request may have stopped holding since. */
       hold?: boolean;
+      /** With the id, the request's identity (approval-identity.ts); null: not known. */
+      generation?: ApprovalGeneration;
     },
     now: number,
   ): BridgeEvent[] {
+    const generation = facts.generation ?? null;
+    this.approvalGenerations.announce(approvalId, generation);
+    if (facts.toolCallId !== null) this.approvalGenerations.announce(facts.toolCallId, generation);
     const left = facts.expiresInSec;
     if (left !== null && Number.isFinite(left) && left >= 0) {
       this.approvalDeadlines.delete(approvalId);
@@ -2815,7 +2836,7 @@ export class Normalizer {
       facts.runId !== null &&
       this.ownRunIds.has(facts.runId)
     ) {
-      this.holdForApproval(aliases, now, events);
+      this.holdForApproval(aliases, now, events, generation);
     } else if (this.approvalAliases.has(approvalId)) {
       this.rearmApprovalWait(now);
     }
@@ -2829,16 +2850,29 @@ export class Normalizer {
    * an exec approval's allow is carried by a follow-up run, not by a `resolved` frame
    * on the run that asked, so without it the turn would sit until `approval_wait`.
    */
-  private releaseApproval(aliases: string[], now: number, events: BridgeEvent[]): void {
+  private releaseApproval(
+    aliases: string[],
+    now: number,
+    events: BridgeEvent[],
+    generation: ApprovalGeneration = null,
+  ): void {
     const record = aliases
       .map((alias) => this.approvalAliases.get(alias))
       .find((found) => found !== undefined);
+    const recordGeneration = record === undefined ? null : (this.recordGenerations.get(record) ?? null);
+    // The decision of ANOTHER generation of the id (an old request's late answer) does not
+    // release the request held now.
+    if (record !== undefined && generation !== null && recordGeneration !== null && generation !== recordGeneration) {
+      return;
+    }
     if (record !== undefined) {
       this.pendingApprovalIds.delete(record);
+      this.recordGenerations.delete(record);
+      const decided = recordGeneration ?? generation;
       for (const [alias, target] of this.approvalAliases) {
         if (target === record) {
           this.approvalAliases.delete(alias);
-          this.noteApprovalOver(alias);
+          this.noteApprovalOver(alias, decided);
         }
       }
     } else if (
@@ -2879,29 +2913,47 @@ export class Normalizer {
   }
 
   /** An approval of this turn was settled OUTSIDE the frame stream (answered from
-   *  Atrium, or its resolved broadcast). No-op for an id this turn never asked. */
-  noteApprovalSettled(approvalId: string, now: number): BridgeEvent[] {
+   *  Atrium, or its resolved broadcast): that IDENTITY — `generation` null when unknown,
+   *  then the one announced and still waiting, else the only one known (approval-identity.ts
+   *  `attach`). No-op for an id this turn never asked. */
+  noteApprovalSettled(approvalId: string, now: number, generation: ApprovalGeneration = null): BridgeEvent[] {
+    const decided = generation ?? this.approvalGenerations.attach(approvalId);
     // Remembered even when this turn does not hold it (yet): a late sighting of the same
     // request — its pending list read just before it was answered — must not hold the
     // turn for a decision already made.
-    this.noteApprovalOver(approvalId);
+    this.noteApprovalOver(approvalId, decided);
     if (this.finalized || !this.approvalAliases.has(approvalId)) return [];
     const events: BridgeEvent[] = [];
-    this.releaseApproval([approvalId], now, events);
+    this.releaseApproval([approvalId], now, events, decided);
     return stampReceived(events, now);
   }
 
-  /** Approvals already decided (answered, denied, expired): never held again. Bounded;
-   *  per session, like the ids. */
-  private readonly approvalsOver = new Set<string>();
-  private noteApprovalOver(alias: string): void {
-    this.approvalsOver.delete(alias);
-    this.approvalsOver.add(alias);
-    while (this.approvalsOver.size > Normalizer.MAX_APPROVAL_DEADLINES) {
-      const oldest = this.approvalsOver.values().next().value;
-      if (oldest === undefined) break;
-      this.approvalsOver.delete(oldest);
+  /** Approvals already decided (answered, denied, expired), by IDENTITY — each alias with
+   *  the generation it was decided at (approval-identity.ts): never held again, while a new
+   *  generation of the same id is. Bounded; per session, like the ids. */
+  private readonly approvalsOver = new ApprovalIdentitySet(Normalizer.MAX_APPROVAL_DEADLINES);
+  private noteApprovalOver(alias: string, generation: ApprovalGeneration): void {
+    this.approvalsOver.add(alias, generation);
+    this.approvalGenerations.resolve(alias, generation);
+  }
+  /** The generation each held approval record was asked at (null: not known). */
+  private readonly recordGenerations = new Map<string, ApprovalGeneration>();
+  /** The generations announced for each alias (the observer's sightings), each marked once
+   *  decided: a frame, which names none, is about the one still waiting, else the only one
+   *  known. */
+  private readonly approvalGenerations = new ApprovalGenerations(Normalizer.MAX_APPROVAL_DEADLINES);
+  /** The generation a run frame naming these aliases is about: the held record's, else the
+   *  one announced and still waiting, else none known. */
+  private frameGeneration(aliases: string[]): ApprovalGeneration {
+    for (const alias of aliases) {
+      const record = this.approvalAliases.get(alias);
+      if (record !== undefined) return this.recordGenerations.get(record) ?? null;
     }
+    for (const alias of aliases) {
+      const waiting = this.approvalGenerations.attach(alias);
+      if (waiting !== null) return waiting;
+    }
+    return null;
   }
 
   /** Is a human still being asked to authorise something? */
@@ -2981,6 +3033,7 @@ export class Normalizer {
   private clearApprovals(): void {
     this.pendingApprovalIds.clear();
     this.approvalAliases.clear();
+    this.recordGenerations.clear();
     this.anonymousApprovals = 0;
   }
 
@@ -3099,7 +3152,7 @@ export class Normalizer {
         ...(isString(data.toolCallId) && data.toolCallId.trim() !== "" ? [data.toolCallId] : []),
       ];
       if (phase === "waiting-approval") {
-        this.holdForApproval(aliases, now, events);
+        this.holdForApproval(aliases, now, events, this.frameGeneration(aliases));
       } else if (aliases.some((alias) => this.approvalAliases.has(alias))) {
         // Released only when it names an approval this turn holds: its broadcast twin
         // (`exec.approval.resolved`, via noteApprovalSettled) may have released it first.

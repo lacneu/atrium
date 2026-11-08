@@ -174,3 +174,31 @@ describe("the request itself, read off its broadcast or the pending list", () =>
     expect(n.recvDeadlineArmed).toBe(true);
   });
 });
+
+describe("a run's own frame names no generation: it is about the one announced (approval-identity.ts)", () => {
+  const GA = 1_793_658_291_732;
+  it("the frame of a request already decided does not hold the turn", () => {
+    const { n, at } = startTurn();
+    n.noteApprovalRequested(
+      IDS.approvalId,
+      { kind: "exec", runId: "cron-run-9", toolCallId: IDS.toolCallId, expiresInSec: 1700, generation: GA },
+      at(1),
+    );
+    n.noteApprovalSettled(IDS.approvalId, at(2), GA);
+    expect(phases(n.feed(approvalLifecycleFrame(IDS, "waiting-approval"), at(3)))).toEqual([]);
+    expect(n.recvDeadlineArmed).toBe(true);
+  });
+
+  it("…while the frame of a NEW generation under the same id does, its request announced first", () => {
+    const { n, at } = startTurn();
+    n.noteApprovalSettled(IDS.approvalId, at(1), GA);
+    const reused = { ...IDS, toolCallId: "tool_call:call_e:exec:2" };
+    n.noteApprovalRequested(
+      reused.approvalId,
+      { kind: "exec", runId: "cron-run-9", toolCallId: reused.toolCallId, expiresInSec: 1700, generation: GA + 300_000 },
+      at(2),
+    );
+    expect(phases(n.feed(approvalLifecycleFrame(reused, "waiting-approval"), at(3)))).toEqual(["awaiting_approval"]);
+    expect(n.recvDeadlineArmed).toBe(false);
+  });
+});

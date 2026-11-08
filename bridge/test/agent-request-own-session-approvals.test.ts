@@ -96,21 +96,17 @@ function terminalApprovalGet(ids: ApprovalIds, end: Terminal): Record<string, un
  * Convex's side of the cards, as convex/agentRequests.ts keeps it (upsertFromBridge,
  * settleFromBridge — pinned by convex/agentRequests.test.ts « a verdict that reaches Convex
  * before its card » and the ingest route's « says what a settle did »): one card per id and
- * generation; a replay of a creation is that card. A settle closes an OPEN card (`settled`),
- * does nothing to a closed one (`none`), and — no card yet — keeps the FIRST verdict of an
- * approval that names its generation (`kept`), which the card's creation then takes: it is
- * recorded in that verdict, never `pending`. Nothing else is kept (`none`).
+ * generation; any creation of a generation already recorded is that card. A settle closes an
+ * OPEN card (`settled`), does nothing to a closed one (`none`), and — no card yet — keeps the
+ * FIRST verdict of an approval that names its generation (`kept`), for its whole window: the
+ * card is then created in that verdict, never `pending`. Nothing else is kept (`none`).
  */
 class FakeConvex {
   readonly cards = new Map<string, { status: string; decision?: string }>();
   readonly kept = new Map<string, { status: string; decision?: string }>();
   upsert(r: AgentRequestRecord): { recorded: boolean } {
     const key = `${r.providerRequestId}@${String(r.providerCreatedAt)}`;
-    if (!this.cards.has(key)) {
-      const verdict = this.kept.get(key);
-      this.kept.delete(key);
-      this.cards.set(key, verdict ?? { status: "pending" });
-    }
+    if (!this.cards.has(key)) this.cards.set(key, { ...(this.kept.get(key) ?? { status: "pending" }) });
     return { recorded: true };
   }
   settle(s: AgentRequestSettle): { outcome: "settled" | "kept" | "none" } {
@@ -150,6 +146,8 @@ interface Setup {
   /** Convex's cards, shared by the observers of one conversation. Without it, a settle
    *  finds the card an earlier socket recorded, open, and closes it. */
   convex?: FakeConvex;
+  /** Holds the exec list's answer until it resolves. */
+  listGate?: Promise<void>;
 }
 
 function setup(opts: Setup = {}) {
@@ -187,6 +185,7 @@ function setup(opts: Setup = {}) {
                 ? null
                 : pendingApprovalGet(ids);
         } else if (method === "exec.approval.list") {
+          await opts.listGate;
           payload = (opts.pending?.exec ?? []).map(execApprovalRequestedPayload);
         } else if (method === "plugin.approval.list") {
           payload = opts.pending?.plugin ?? [];
@@ -327,7 +326,8 @@ describe("N2 — this conversation's pending approvals are listed at every (re)c
     expect(t.requested).toEqual([
       [
         own.approvalId,
-        { kind: "exec", runId: own.runId, toolCallId: own.toolCallId, expiresInSec: expect.closeTo(1800, 0), hold: true },
+        // …named by its identity: the id, and the generation its announcement gives.
+        { kind: "exec", runId: own.runId, toolCallId: own.toolCallId, expiresInSec: expect.closeTo(1800, 0), hold: true, generation: CREATED },
       ],
     ]);
   });
@@ -447,10 +447,11 @@ describe("a TERMINAL snapshot settles this conversation's card, once", () => {
       // Its resolution broadcast: the settle is written again, and lands.
       await t.obs.observe(execApprovalResolvedFrame(own, "allow-once"));
       await vi.advanceTimersByTimeAsync(0);
-      // Past the failed write's deferred retry: nothing is settled twice.
+      // Past the failed write's deferred retry: nothing is settled twice. The resolution
+      // names the generation its list entry announced.
       await vi.advanceTimersByTimeAsync(20_000);
       expect(t.settles).toEqual([
-        { chatId: "c1", providerRequestId: own.approvalId, family: "approval", status: "allowed", decision: "allow-once" },
+        { chatId: "c1", providerRequestId: own.approvalId, family: "approval", providerCreatedAt: CREATED, status: "allowed", decision: "allow-once" },
       ]);
     } finally {
       vi.useRealTimers();
@@ -578,7 +579,7 @@ describe("the terminal state does not depend on the order of two sockets' writes
     expect(convex.card(own.approvalId)).toEqual({ status: "allowed", decision: "allow-once" });
   });
 
-  it("a resolution Convex could not hold — no card yet, its generation unknown on this socket — is not taken as held: the card write's retry settles the card", async () => {
+  it("its reads failing, the resolution that follows names the generation the announcement gave: kept and retried with it — the old socket's late card is born decided", async () => {
     vi.useFakeTimers();
     try {
       vi.spyOn(console, "error").mockImplementation(() => {});
@@ -589,26 +590,81 @@ describe("the terminal state does not depend on the order of two sockets' writes
       await vi.advanceTimersByTimeAsync(0);
       // The new socket lists it; its `approval.get` fails, every attempt (now, 1 s, 3 s)…
       const refuse: Record<string, string> = { "approval.get": "request timed out" };
-      const after = setup({ convex, pending: { exec: [own] }, refuse });
+      const after = setup({ convex, pending: { exec: [own] }, refuse, failSettles: 1 });
       await after.obs.replayPending();
       await vi.advanceTimersByTimeAsync(5_000);
-      // …and the resolution reaches it then: no card yet, and no generation to keep it by.
+      // …and the resolution reaches it then: its settle, refused once, is written again on its
+      // back-off — with the generation the list entry announced, each time.
       await after.obs.observe(execApprovalResolvedFrame(own, "allow-once"));
-      await vi.advanceTimersByTimeAsync(0);
-      expect(after.settles.map((x) => x.providerCreatedAt)).toEqual([undefined]);
-      expect(convex.kept.size).toBe(0);
-      // The old write lands: a pending card…
+      await vi.advanceTimersByTimeAsync(2_000);
+      expect(after.settleAttempts.map((x) => x.providerCreatedAt)).toEqual([CREATED, CREATED]);
+      expect(convex.kept.size, "kept for the card still on the wire").toBe(1);
+      // The old write lands: the card is born in the gateway's verdict.
       openWrite();
       await vi.advanceTimersByTimeAsync(0);
-      expect(convex.card(own.approvalId)?.status).toBe("pending");
-      // …which the new socket's one retry of its card write (15 s) settles, from the snapshot
-      // the gateway gives again.
+      expect(convex.card(own.approvalId)).toEqual({ status: "allowed", decision: "allow-once" });
+      // The new socket's card retry (15 s) has nothing left to do: Convex holds the verdict.
+      const reads = after.approvalReads();
       delete refuse["approval.get"];
-      after.answerApprovalGet(own.approvalId, terminalApprovalGet(own, { status: "allowed", decision: "allow-once" }));
       await vi.advanceTimersByTimeAsync(20_000);
+      expect(after.approvalReads()).toBe(reads);
       expect(convex.card(own.approvalId)).toEqual({ status: "allowed", decision: "allow-once" });
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it("a resolution that comes while a list asked before it is on the wire: the list's entry gives it its generation — kept for the card the old socket is still writing", async () => {
+    const convex = new FakeConvex();
+    const before = setup({ convex });
+    const openWrite = before.holdUpserts();
+    await before.obs.observe(execApprovalRequestedFrame(own));
+    await before.flush();
+    // The new socket asks the lists; the gateway is slow to answer, and every read fails.
+    let answerList: () => void = () => {};
+    const listGate = new Promise<void>((r) => (answerList = r));
+    const after = setup({ convex, pending: { exec: [own] }, refuse: { "approval.get": "request timed out" }, listGate });
+    const replay = after.obs.replayPending();
+    await after.flush();
+    // The resolution comes first: nothing announced here yet, nothing Convex can keep.
+    await after.obs.observe(execApprovalResolvedFrame(own, "allow-once"));
+    await after.flush();
+    expect(after.settles.map((x) => x.providerCreatedAt)).toEqual([undefined]);
+    expect(convex.kept.size).toBe(0);
+    // The list, read before the decision, names the request: that is its generation.
+    answerList();
+    await replay;
+    await after.flush();
+    expect(after.approvalReads(), "the decided request is not read again").toBe(0);
+    expect(after.settles.map((x) => x.providerCreatedAt)).toEqual([undefined, CREATED]);
+    openWrite();
+    await before.flush();
+    expect(convex.card(own.approvalId)).toEqual({ status: "allowed", decision: "allow-once" });
+  });
+});
+
+describe("a reused id is another request on this socket too (approval-identity.ts)", () => {
+  it("A decided and held, then B under the same id and a new generation: B's card is written, and its resolution settles B", async () => {
+    const convex = new FakeConvex();
+    const reused: ApprovalIds = { ...own, runId: "webchat-run-2", toolCallId: "tool_call:call_9:exec:1", createdAtMs: CREATED + 300_000 };
+    const t = setup({ convex });
+    await t.obs.observe(execApprovalRequestedFrame(own));
+    await t.flush();
+    await t.obs.observe(execApprovalResolvedFrame(own, "allow-once"));
+    await t.flush();
+    expect(convex.cards.get(`${own.approvalId}@${CREATED}`)).toEqual({ status: "allowed", decision: "allow-once" });
+    // The gateway forgets A and gives its id to B: `approval.get` answers B now.
+    t.answerApprovalGet(own.approvalId, pendingApprovalGet(reused));
+    await t.obs.observe(execApprovalRequestedFrame(reused));
+    await t.flush();
+    expect(t.upserts.map((u) => u.providerCreatedAt)).toEqual([CREATED, CREATED + 300_000]);
+    expect(convex.cards.get(`${own.approvalId}@${CREATED + 300_000}`)).toEqual({ status: "pending" });
+    expect(t.requested.map(([, f]) => f.generation)).toEqual([CREATED, CREATED + 300_000]);
+    // B's resolution names no generation: the one waiting, B's.
+    await t.obs.observe(execApprovalResolvedFrame(reused, "deny"));
+    await t.flush();
+    expect(t.settles.at(-1)).toMatchObject({ providerCreatedAt: CREATED + 300_000 });
+    expect(convex.cards.get(`${own.approvalId}@${CREATED + 300_000}`)?.status).toBe("denied");
+    expect(convex.cards.get(`${own.approvalId}@${CREATED}`)).toEqual({ status: "allowed", decision: "allow-once" });
   });
 });

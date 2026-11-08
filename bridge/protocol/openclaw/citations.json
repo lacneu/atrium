@@ -1862,14 +1862,14 @@
     },
     {
       "source": "docs/UPSTREAM_INTERPRETATION.md",
-      "cite": "bridge/src/providers/openclaw/normalizer.ts:1873",
+      "cite": "bridge/src/providers/openclaw/normalizer.ts:1878",
       "repo": "atrium",
       "tag": null,
       "path": "bridge/src/providers/openclaw/normalizer.ts",
       "lines": [
         [
-          1873,
-          1873
+          1878,
+          1878
         ]
       ],
       "literals": [
@@ -3093,6 +3093,43 @@
       ],
       "literals": [
         "execApproval.requestedBySession"
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "src/gateway/server-methods/exec-approval.ts:172,292-299",
+      "repo": "upstream",
+      "tag": "2026.9.36",
+      "path": "src/gateway/server-methods/exec-approval.ts",
+      "lines": [
+        [
+          172,
+          172
+        ],
+        [
+          292,
+          299
+        ]
+      ],
+      "literals": [
+        "const explicitId = p.id ?? null;",
+        "approval id already pending"
+      ]
+    },
+    {
+      "source": "docs/UPSTREAM_INTERPRETATION.md",
+      "cite": "src/gateway/server-methods/approval-shared.ts:59-65",
+      "repo": "upstream",
+      "tag": "2026.9.36",
+      "path": "src/gateway/server-methods/approval-shared.ts",
+      "lines": [
+        [
+          59,
+          65
+        ]
+      ],
+      "literals": [
+        "request: TPayload;"
       ]
     }
   ]

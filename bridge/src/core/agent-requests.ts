@@ -354,15 +354,20 @@ export interface OpenClawApprovalAnnounce {
    *  at v2026.9.36) — the alias the run's own frames name the wait by. */
   toolCallId: string | null;
   expiresAtMs: number | null;
+  /** The request's GENERATION, its creation time (`createdAtMs`): with the id, its
+   *  identity (providers/openclaw/approval-identity.ts). Read here, before any network
+   *  read, so a resolution that comes while `approval.get` fails still names it. */
+  createdAtMs: number | null;
 }
 
 /**
  * The broadcast `{id, request, createdAtMs, expiresAtMs}` — and an entry of a pending
  * list (`*.approval.list`), which has the very same shape
  * (server-methods/approval-record-lookup.ts:121-155 at v2026.9.36). Read ONLY for
- * routing — which session asked, on which run and tool call, and until when. What the
- * card shows comes from `approval.get`'s reviewer-safe presentation, never from this raw
- * request (whose exec branch carries cwd, env binding and the unredacted plan).
+ * routing — which session asked, on which run and tool call, which request it is (its id
+ * and creation time), and until when. What the card shows comes from `approval.get`'s
+ * reviewer-safe presentation, never from this raw request (whose exec branch carries cwd,
+ * env binding and the unredacted plan).
  */
 export function readOpenClawApprovalRequested(
   event: string,
@@ -383,6 +388,7 @@ export function readOpenClawApprovalRequested(
     runId: str(request?.runId) ?? null,
     toolCallId: providerId(request?.toolCallId) ?? null,
     expiresAtMs: num(p.expiresAtMs) ?? null,
+    createdAtMs: num(p.createdAtMs) ?? null,
   };
 }
 

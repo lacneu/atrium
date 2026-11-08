@@ -257,7 +257,7 @@ identical. The two broken anchors are real and are each recorded:
 
 **DECLARED GAP, not a conclusion.** 2026.9.5 adds a RETRACTION delta —
 `delta { deltaText: "", replace: true }` — and the bridge normalizer drops any
-delta whose text is empty (`bridge/src/providers/openclaw/normalizer.ts:1873`,
+delta whose text is empty (`bridge/src/providers/openclaw/normalizer.ts:1878`,
 the `&& deltaText` guard), so Atrium keeps a text the gateway has just withdrawn.
 Written here because it is known and unfixed, not because it was measured on the
 bench: the catalogue never elicits a retraction. It is owed a scenario before it
@@ -1370,6 +1370,12 @@ remains its net (12 min without a write closes the bubble `stream_orphaned`).
 - **The Control UI shows a descendant's approval in its ancestor's pane**, marked with the
   raising session (`ui/src/pages/chat/session-approval-projection.ts:31-48`,
   `ui/src/components/exec-approval-card.ts:400-408`).
+- **An approval id can be given again.** The gateway takes an explicit id from the caller of
+  `exec.approval.request` and refuses it only while a record under it still exists
+  (`src/gateway/server-methods/exec-approval.ts:172,292-299`); every record carries its
+  creation time, `createdAtMs`, on its broadcast, its pending-list entry and its snapshot. The
+  resolution broadcast carries the id, the decision and the request, not the creation time
+  (`src/gateway/server-methods/approval-shared.ts:59-65`).
 
 ### Atrium behavior and verdict
 
@@ -1385,6 +1391,14 @@ but no client-side rule reproduces it exactly — a later read proves the sub-ag
 owner, not the audience the gateway fixed — and an inexact rule lets one conversation see
 or answer another's request. Showing those approvals in the parent means consuming
 `session.approval` itself.
+
+**An approval is identified by its id and its creation time**, everywhere: the bridge's
+memories of a decided approval (the observer, the turn's hold), the Convex card and the
+verdict Convex keeps for a card not recorded yet. A write of an identity already recorded is
+that card, whatever order the writes arrive in; the same id with another creation time is
+another request, never held, released or settled by the old one's decision. A resolution is
+attached to the creation time announced for its id that is still waiting, else to the only
+one known.
 
 ## Conformance summary
 

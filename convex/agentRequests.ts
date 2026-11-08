@@ -263,21 +263,36 @@ export const upsertFromBridge = internalMutation({
     // settled row whose provider creation time differs from this one is an older
     // generation, and this request gets its own row (codex P2).
     const incomingFamily = familyOf(args.source);
-    const existing =
-      (
-        await ctx.db
-          .query("agentRequests")
-          // Same INSTANCE by the index — a per-turn-routed chat talks to several
-          // gateways, which may use the same id — then the same family (codex P2 ×2).
-          .withIndex("by_chat_instance_provider_request", (q) =>
-            q
-              .eq("chatId", args.chatId)
-              .eq("instanceName", args.boundInstanceName)
-              .eq("providerRequestId", providerRequestId),
-          )
-          .order("desc")
-          .take(MAX_GENERATIONS_READ)
-      ).find((r) => familyOf(r.source) === incomingFamily) ?? null;
+    const ofFamily = (
+      await ctx.db
+        .query("agentRequests")
+        // Same INSTANCE by the index — a per-turn-routed chat talks to several
+        // gateways, which may use the same id — then the same family (codex P2 ×2).
+        .withIndex("by_chat_instance_provider_request", (q) =>
+          q
+            .eq("chatId", args.chatId)
+            .eq("instanceName", args.boundInstanceName)
+            .eq("providerRequestId", providerRequestId),
+        )
+        .order("desc")
+        .take(MAX_GENERATIONS_READ)
+    ).filter((r) => familyOf(r.source) === incomingFamily);
+    const existing = ofFamily[0] ?? null;
+    // An OpenClaw APPROVAL is one request per id AND generation — its creation time
+    // (bridge/src/providers/openclaw/approval-identity.ts): a write of a generation already
+    // recorded — a replay, or the late write of another socket or bridge process, whatever
+    // it saw later — IS that card, never a new one. A reused id carries another generation.
+    const approvalGeneration =
+      args.source.startsWith("openclaw.") &&
+      incomingFamily === "approval" &&
+      typeof args.providerCreatedAt === "number" &&
+      Number.isFinite(args.providerCreatedAt)
+        ? args.providerCreatedAt
+        : null;
+    if (approvalGeneration !== null) {
+      const same = ofFamily.find((r) => r.providerCreatedAt === approvalGeneration);
+      if (same !== undefined) return { id: same._id, created: false };
+    }
     // A row WITHOUT a generation cannot be a replay of this one either: every OpenClaw
     // request ingested carries one (required below), so such a row came from an
     // archive import (which drops it) or a seed — an older request (codex P2).
@@ -321,7 +336,8 @@ export const upsertFromBridge = internalMutation({
         (otherQuestion && seenLater));
     // The gateway forgets a settled request and may then give its id to a NEW one — and
     // under a clock that stood still, or stepped back, with the same or an older
-    // creation time (codex P2). A `pending` sighting of an id whose row here is settled
+    // creation time (codex P2) — a QUESTION: an approval of the same generation is its
+    // card, returned above. A `pending` sighting of an id whose row here is settled
     // cannot be the old request: its own `resolved` preceded this on the same socket,
     // and the replays (question.list / approval.get) list pending ones only. So it is
     // recorded — unless it arrives already past its deadline, which is the one way a
@@ -445,12 +461,12 @@ export const upsertFromBridge = internalMutation({
     // Already decided: its settle reached Convex before this creation (keepResolution).
     // The card is recorded SETTLED, as it would stand had it been created first — the
     // conversation keeps its record of the ask and the outcome, folded to that outcome —
-    // never `pending`, and nobody is notified of a request nobody can answer any more.
+    // never `pending`, and nobody is notified of a request nobody can answer any more. The
+    // verdict is NOT taken: it stays for its whole window, and any other creation of this
+    // generation finds the card above.
     const resolution =
-      args.source.startsWith("openclaw.") &&
-      incomingFamily === "approval" &&
-      typeof args.providerCreatedAt === "number"
-        ? await takeResolution(ctx, args.chatId, args.boundInstanceName, providerRequestId, args.providerCreatedAt)
+      approvalGeneration !== null
+        ? await keptResolution(ctx, args.chatId, args.boundInstanceName, providerRequestId, approvalGeneration)
         : null;
 
     const now = Date.now();
@@ -740,9 +756,10 @@ async function keepResolution(
   return "kept";
 }
 
-/** The verdict kept for THIS generation of an approval, taken (deleted) by the creation
- *  it was waiting for. */
-async function takeResolution(
+/** The verdict kept for THIS generation of an approval. Read, never taken: it is the
+ *  generation's terminal mark for its whole window (RESOLUTION_KEEP_MS, then reapExpired),
+ *  whatever creations of it arrive, and in whatever order. */
+async function keptResolution(
   ctx: MutationCtx,
   chatId: Id<"chats">,
   instanceName: string,
@@ -755,9 +772,7 @@ async function takeResolution(
       q.eq("chatId", chatId).eq("instanceName", instanceName).eq("providerRequestId", providerRequestId),
     )
     .take(MAX_GENERATIONS_READ);
-  const found = kept.find((k) => k.providerCreatedAt === generation) ?? null;
-  if (found !== null) await ctx.db.delete(found._id);
-  return found;
+  return kept.find((k) => k.providerCreatedAt === generation) ?? null;
 }
 
 // ── Person → gateway ───────────────────────────────────────────────────────────

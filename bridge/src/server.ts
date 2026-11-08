@@ -7046,7 +7046,7 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
               respondOpenClaw(
                 body,
                 conn,
-                registry.peekByChat(body.chatId)?.routedApproval(body.providerRequestId) === true,
+                registry.peekByChat(body.chatId)?.routedApproval(body.providerRequestId, body.providerCreatedAt) === true,
                 registry.peekByChat(body.chatId),
               ),
             noteHandshakeFor(body.instanceName),
@@ -7064,7 +7064,7 @@ export function createBridgeServer(deps: BridgeServerDeps): Server {
       // approval's allow is carried by a follow-up run, not by a `resolved` frame on
       // the run that asked, so without this the turn would wait out its bound.
       if (outcome.ok && !isHermes && body.approvalKind !== undefined) {
-        registry.peekByChat(body.chatId)?.noteApprovalAnswered(body.providerRequestId);
+        registry.peekByChat(body.chatId)?.noteApprovalAnswered(body.providerRequestId, body.providerCreatedAt);
       }
       // Structural only — never an answer, a decision's subject or a secret.
       console.log(

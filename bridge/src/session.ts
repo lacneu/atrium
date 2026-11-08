@@ -451,8 +451,8 @@ class Session implements BridgeSession {
         this.runManager.noteHumanQuestion(id, expiresInSec, this.clock()),
       noteQuestionSettled: (id) =>
         this.runManager.noteHumanQuestionSettled(id, this.clock()),
-      noteApprovalSettled: (id) =>
-        this.runManager.noteApprovalSettled(id, this.clock()),
+      noteApprovalSettled: (id, generation) =>
+        this.runManager.noteApprovalSettled(id, this.clock(), generation),
       noteApprovalRequested: (id, facts) =>
         this.runManager.noteApprovalRequested(id, facts, this.clock()),
       wake: () => this.wake(),
@@ -531,17 +531,18 @@ class Session implements BridgeSession {
    *  every such delivery unrecognised on the child lane. */
   private outboundAgentMount: string | null = null;
 
-  /** An approval of this chat was answered from Atrium: release the turn it holds
-   *  (see RunManager.noteApprovalSettled). Detached — a label and a deadline. */
-  /** Whether this conversation's live socket routed approval `id` here (see the
-   *  observer's `routedApproval`). */
-  routedApproval(approvalId: string): boolean {
-    return this.agentRequests.routedApproval(approvalId);
+  /** Whether this conversation's live socket routed this approval — its id and the card's
+   *  generation — here (see the observer's `routedApproval`). */
+  routedApproval(approvalId: string, generation?: number): boolean {
+    return this.agentRequests.routedApproval(approvalId, generation);
   }
 
-  noteApprovalAnswered(approvalId: string): void {
+  /** An approval of this chat was answered from Atrium — that card's identity, its id and
+   *  generation: release the turn it holds (see RunManager.noteApprovalSettled). Detached —
+   *  a label and a deadline. */
+  noteApprovalAnswered(approvalId: string, generation?: number): void {
     void this.runManager
-      .noteApprovalSettled(approvalId, this.clock())
+      .noteApprovalSettled(approvalId, this.clock(), generation ?? null)
       .then(() => this.wake())
       .catch((err) =>
         console.error(

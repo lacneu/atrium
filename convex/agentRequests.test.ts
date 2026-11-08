@@ -1907,8 +1907,8 @@ describe("a verdict that reaches Convex before its card", () => {
     expect(row).toMatchObject({ kind: "approval", status: "allowed", resolvedElsewhere: true, decision: "allow-once" });
     expect(row!.resolvedAt).toBeTypeOf("number");
     expect(row!.resolvedByUserId).toBeUndefined();
-    // Taken by the creation it waited for.
-    expect(await keptVerdicts(t)).toEqual([]);
+    // Not taken by that creation: the generation's terminal mark for its whole window.
+    expect(await keptVerdicts(t)).toHaveLength(1);
     expect(await agentRequestNotes(t)).toEqual([]);
     expect(await t.withIdentity({ subject: `${userId}|session` }).query(api.agentRequests.pendingByChat, {})).toEqual([]);
     // A replay of the creation is that same settled card.
@@ -1936,8 +1936,48 @@ describe("a verdict that reaches Convex before its card", () => {
     const res = await record(t, chatId);
     expect(await settleEarly(t, chatId, { status: "denied", decision: "deny" })).toEqual({ settled: false, outcome: "none" });
     expect(await t.run((ctx) => ctx.db.get(res.id!))).toMatchObject({ status: "allowed", decision: "allow-once" });
-    // Nothing kept by a settle that found its card closed.
-    expect(await keptVerdicts(t)).toEqual([]);
+    // Nothing more kept by a settle that found its card closed: the first verdict, alone.
+    expect(await keptVerdicts(t)).toMatchObject([{ status: "allowed", decision: "allow-once" }]);
+  });
+
+  test("two creations of one generation still in flight when its verdict was kept: ONE card, decided, nobody notified — the one seen later included (codex, lot « trames 1 » pass 6)", async () => {
+    const t = convexTest(schema, modules);
+    const { userId, chatId } = await seed(t);
+    // Two sockets read it pending before it was decided; its verdict lands first.
+    expect(await settleEarly(t, chatId)).toEqual({ settled: false, outcome: "kept" });
+    const first = await record(t, chatId, { providerSeenSeq: 10 });
+    expect(first.created).toBe(true);
+    // The other socket's write, seen LATER (a higher sighting seq): that same card.
+    expect(await record(t, chatId, { providerSeenSeq: 20 })).toEqual({ id: first.id, created: false });
+    const rows = await t.run((ctx) => ctx.db.query("agentRequests").collect());
+    expect(rows.map((r) => [r.providerCreatedAt, r.status])).toEqual([[100, "allowed"]]);
+    expect(await agentRequestNotes(t)).toEqual([]);
+    expect(await t.withIdentity({ subject: `${userId}|session` }).query(api.agentRequests.pendingByChat, {})).toEqual([]);
+  });
+
+  test("a late write of a generation recorded and settled since is that card — never a new pending one, whatever it saw later", async () => {
+    const t = convexTest(schema, modules);
+    const { chatId } = await seed(t);
+    const open = await record(t, chatId, { providerSeenSeq: 10 });
+    expect(await settleEarly(t, chatId)).toEqual({ settled: true, outcome: "settled" });
+    expect(await record(t, chatId, { providerSeenSeq: 20 })).toEqual({ id: open.id, created: false });
+    const rows = await t.run((ctx) => ctx.db.query("agentRequests").collect());
+    expect(rows.map((r) => r.status)).toEqual(["allowed"]);
+    expect(await agentRequestNotes(t)).toHaveLength(1);
+  });
+
+  test("a REAL reuse — the id given again under another generation — is a new pending card, asked anew", async () => {
+    const t = convexTest(schema, modules);
+    const { chatId } = await seed(t);
+    const old = await record(t, chatId, { providerSeenSeq: 10 });
+    expect(await settleEarly(t, chatId)).toEqual({ settled: true, outcome: "settled" });
+    const reused = await record(t, chatId, { providerCreatedAt: 400, providerSeenSeq: 20 });
+    expect(reused.created).toBe(true);
+    expect(reused.id).not.toEqual(old.id);
+    expect((await t.run((ctx) => ctx.db.get(reused.id!)))!.status).toBe("pending");
+    expect((await t.run((ctx) => ctx.db.get(old.id!)))!.status).toBe("allowed");
+    // Each request asked for its own answer.
+    expect(await agentRequestNotes(t)).toHaveLength(2);
   });
 
   test("another generation under the same id is not touched", async () => {
