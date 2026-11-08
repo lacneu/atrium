@@ -4982,8 +4982,17 @@ button.oc-perm__opt:disabled {
 .oc-admin__header { padding: 16px 20px; border-bottom: 1px solid var(--border); }
 .oc-admin__header h1 { font-size: 1.1rem; font-weight: 600; margin-bottom: 8px; }
 /* Its top padding is a variable: a sticky head inside (the agenda's) offsets by it,
-   since a sticky box stops at the scroller's padding edge, not at its top. */
-.oc-admin__body { --oc-scroll-pad-top: 16px; padding: var(--oc-scroll-pad-top) 20px; overflow: auto; }
+   since a sticky box stops at the scroller's padding edge, not at its top.
+   Its scrollbar's room is kept whether or not the page scrolls (lot 11): where
+   scrollbars take room (Windows, or macOS set to always show them), a page whose
+   content reacts to its own width — the calendar's grid or agenda — would
+   otherwise change that width by showing the scrollbar it causes. */
+.oc-admin__body {
+  --oc-scroll-pad-top: 16px;
+  padding: var(--oc-scroll-pad-top) 20px;
+  overflow: auto;
+  scrollbar-gutter: stable;
+}
 /* The health bar now sits at the top of the content (the old settings header is
    gone — the tab nav moved to the vertical SettingsNav in the left column). */
 .oc-admin > .oc-bridgebar { margin: 16px 20px 0; }
@@ -10476,9 +10485,12 @@ button.oc-perm__opt:disabled {
   max-width: none;
   height: calc(90dvh - var(--oc-kb, 0px));
   max-height: calc(90dvh - var(--oc-kb, 0px));
-  /* Lifted by half the keyboard, like a dialog (lot 8). */
-  margin-top: calc(var(--oc-kb, 0px) / -2);
   margin: 0;
+  /* Lifted by half the keyboard, like a dialog (lot 8): centred on the visible
+     area, not on the screen the keyboard covers. AFTER the reset above — the
+     shorthand set first zeroed it, and the panel's action bar sank under the
+     keyboard (lot 11). */
+  margin-top: calc(var(--oc-kb, 0px) / -2);
   padding: 0.9rem 1.15rem 0.8rem;
   border-radius: 1.25rem;
   border: 1px solid var(--input);

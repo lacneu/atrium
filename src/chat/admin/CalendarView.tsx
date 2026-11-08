@@ -11,7 +11,7 @@ import { ChevronLeft, ChevronRight } from "lucide-react";
 import { m } from "@/paraglide/messages.js";
 import { getLocale } from "@/paraglide/runtime.js";
 import { Button } from "@/components/ui/button";
-import { useFitLevel } from "@/lib/useFitLevel";
+import { SCROLLBAR_HYSTERESIS, useFitLevel } from "@/lib/useFitLevel";
 import { monthGrid } from "./cronView";
 import { agendaAnchorDay, monthGridFit } from "./calendarFit";
 import {
@@ -85,6 +85,10 @@ export function CalendarView({
     },
     () => [rootRef.current],
     [locale],
+    // The grid and the agenda differ in height — an empty or light month is
+    // taller as a grid — so the grid can bring the scrollbar that takes its width
+    // away: the band keeps that from swapping them every frame (lot 11).
+    { hysteresis: SCROLLBAR_HYSTERESIS },
   );
   const shown: CalendarMode = mode ?? (fitLevel === 0 ? "month" : "agenda");
 

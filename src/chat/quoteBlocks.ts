@@ -25,3 +25,25 @@ export function quoteBlockChoices(texts: readonly string[]): QuoteBlockChoice[] 
   });
   return choices;
 }
+
+/** Where the focus goes when a block picker closes (BlockPicker). */
+export type PickerFocus = "composer" | "trigger" | "message" | null;
+
+/**
+ * A quote goes on to the reply being written: the composer. Anything else goes
+ * back where it came from: the reply's ⋯. On a computer, though, an older reply's
+ * action bar unmounts as soon as the pointer leaves the message — the ⋯ is gone by
+ * the time the list closes, and Radix then drops the focus on the page (lot 11):
+ * the reply itself takes it, and failing that the composer.
+ */
+export function pickerCloseFocus(o: {
+  quotePicked: boolean;
+  composer: boolean;
+  trigger: boolean;
+  message: boolean;
+}): PickerFocus {
+  if (o.quotePicked && o.composer) return "composer";
+  if (o.trigger) return "trigger";
+  if (o.message) return "message";
+  return o.composer ? "composer" : null;
+}

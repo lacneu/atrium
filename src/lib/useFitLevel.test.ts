@@ -38,6 +38,29 @@ describe("pickFitLevel — the most detailed presentation that fits", () => {
   });
 });
 
+describe("pickFitLevel — hysteresis (lot 11)", () => {
+  const NEED = [700] as const;
+
+  test("without a band, the decision ignores the current level", () => {
+    expect(pickFitLevel({ available: 700, required: NEED }, 1)).toBe(0);
+    expect(pickFitLevel({ available: 699, required: NEED }, 0)).toBe(1);
+  });
+
+  test("climbing back to a more detailed level takes the band on top", () => {
+    expect(pickFitLevel({ available: 723, required: NEED }, 1, 24)).toBe(1);
+    expect(pickFitLevel({ available: 724, required: NEED }, 1, 24)).toBe(0);
+  });
+
+  test("staying at a level, or stepping down, takes no band", () => {
+    expect(pickFitLevel({ available: 700, required: NEED }, 0, 24)).toBe(0);
+    expect(pickFitLevel({ available: 699, required: NEED }, 0, 24)).toBe(1);
+  });
+
+  test("a ghost not laid out yet still gives no verdict", () => {
+    expect(pickFitLevel({ available: 10, required: [0] }, 1, 24)).toBe(0);
+  });
+});
+
 describe("naturalWidthOf — a block whose lines ellipsize their own overflow", () => {
   test("is the widest line's scrollWidth", () => {
     expect(naturalWidthOf([{ scrollWidth: 412 }, { scrollWidth: 805 }])).toBe(805);

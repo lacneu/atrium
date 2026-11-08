@@ -57,6 +57,25 @@ describe("the page runs edge to edge, and makes room for the keyboard", () => {
     expect(sheets).toContain("top: env(safe-area-inset-top)");
   });
 
+  // Lot 11: the full-page prompt's lift sat BEFORE a `margin: 0` in its own rule,
+  // which zeroed it — the panel shrank but stayed centred on the whole screen, its
+  // action bar under the keyboard. A lift counts only if nothing after it resets it.
+  test("every lift by the keyboard survives its rule: no margin reset after it", () => {
+    const lifts = [...CSS.matchAll(/([^{}]+)\{([^{}]*margin-top:\s*calc\(var\(--oc-kb[^{}]*)\}/g)];
+    expect(lifts.map((m) => m[1].trim())).toEqual(
+      expect.arrayContaining(['[data-slot="dialog-content"]:not(.oc-search-palette)', ".oc-composer--expanded"]),
+    );
+    for (const [, selector, body] of lifts) {
+      const after = body.slice(body.lastIndexOf("margin-top: calc(var(--oc-kb"));
+      expect(after, selector.trim()).not.toMatch(/(^|[;\s])margin(-top)?\s*:(?!\s*calc\(var\(--oc-kb)/);
+    }
+  });
+
+  test("…nor in a later rule for the same selector", () => {
+    const later = [...CSS.matchAll(/\.oc-composer--expanded\s*\{([^{}]*)\}/g)].slice(1);
+    for (const [, body] of later) expect(body).not.toMatch(/(^|[;\s])margin(-top)?\s*:/);
+  });
+
   test("no layout is sized on `vh` any more (it ignores the browser's bars): dvh", () => {
     const offenders: string[] = [];
     for (const f of walk(SRC, [".css", ".tsx", ".ts"])) {

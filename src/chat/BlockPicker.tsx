@@ -15,7 +15,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { collectAnchorBlocks } from "./bookmarkView";
-import { quoteBlockChoices, type QuoteBlockChoice } from "./quoteBlocks";
+import { pickerCloseFocus, quoteBlockChoices, type QuoteBlockChoice } from "./quoteBlocks";
 
 /** The reply's blocks, read from what is RENDERED (the gutter acts on the same). */
 function readChoices(messageId: string): QuoteBlockChoice[] {
@@ -26,6 +26,41 @@ function readChoices(messageId: string): QuoteBlockChoice[] {
   return quoteBlockChoices(
     collectAnchorBlocks(body).map((block) => block.textContent ?? ""),
   );
+}
+
+/** The element the focus goes to when the list closes (`pickerCloseFocus`). The
+ *  reply is not focusable by itself: it is made so for this one focus, and gives
+ *  it up when the focus leaves. */
+function closeFocusTarget(messageId: string, quotePicked: boolean): HTMLElement | null {
+  const composer = document.querySelector<HTMLElement>(".oc-composer__input");
+  const message = document.querySelector<HTMLElement>(
+    `.oc-msg[data-message-id="${CSS.escape(messageId)}"]`,
+  );
+  const trigger =
+    message?.querySelector<HTMLElement>('.oc-msg__actions [aria-haspopup="menu"]') ?? null;
+  switch (
+    pickerCloseFocus({
+      quotePicked,
+      composer: composer !== null,
+      trigger: trigger !== null,
+      message: message !== null,
+    })
+  ) {
+    case "composer":
+      return composer;
+    case "trigger":
+      return trigger;
+    case "message":
+      if (message !== null && !message.hasAttribute("tabindex")) {
+        message.setAttribute("tabindex", "-1");
+        message.addEventListener("blur", () => message.removeAttribute("tabindex"), {
+          once: true,
+        });
+      }
+      return message;
+    default:
+      return null;
+  }
 }
 
 /** "quote": the pick goes on to the reply being written. "bookmark": the pick
@@ -79,17 +114,13 @@ export function BlockPicker({
         className="oc-blockpick"
         // Opened from a menu, not from a trigger of its own: Radix would hand the
         // focus back to the page. A quote goes on to the reply (the composer);
-        // anything else goes back to the reply's ⋯ when it is still there.
+        // anything else goes back to the reply's ⋯, or to the reply itself when its
+        // action bar has gone (`pickerCloseFocus`).
         onCloseAutoFocus={(e) => {
-          const target =
-            picked.current && kind === "quote"
-              ? document.querySelector<HTMLElement>(".oc-composer__input")
-              : document.querySelector<HTMLElement>(
-                  `.oc-msg[data-message-id="${CSS.escape(messageId)}"] .oc-msg__actions [aria-haspopup="menu"]`,
-                );
+          const target = closeFocusTarget(messageId, picked.current && kind === "quote");
           if (target !== null) {
             e.preventDefault();
-            target.focus();
+            target.focus({ preventScroll: true });
           }
         }}
       >

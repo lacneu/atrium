@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import { pickFitLevel } from "@/lib/useFitLevel";
+import { pickFitLevel, SCROLLBAR_HYSTERESIS } from "@/lib/useFitLevel";
 import {
   filterChatsByTitle,
   projectBarState,
@@ -109,5 +109,36 @@ describe("the project bar's levels: labels, icons, then the ⋯ menu", () => {
     });
     expect(projectBarState(pickFitLevel({ available: 200, required: [509, 230] })).moved).toBe(true);
     expect(projectBarState(pickFitLevel({ available: 860, required: [509, 230] })).labels).toBe(true);
+  });
+});
+
+describe("the columns' own scrollbar cannot swap the two views forever (lot 11)", () => {
+  // A parent column longer than the current folder makes the columns view the
+  // TALLER one: it brings the page's scrollbar, and a classic one takes its width
+  // from the view. Seen live: 468 px without it, 453 px with it, around a 460 px
+  // threshold — 18 swaps in seconds.
+  const TWO = 460;
+  const SCROLLBAR = 17;
+  function run(free: number, band: number): number[] {
+    let level = 0;
+    const seen: number[] = [];
+    for (let frame = 0; frame < 8; frame++) {
+      const width = level === 0 ? free - SCROLLBAR : free;
+      level = pickFitLevel(projectColumnsFit(width, TWO), level, band);
+      seen.push(level);
+    }
+    return seen;
+  }
+
+  test("without a band, it flickers within one scrollbar of the threshold", () => {
+    for (let free = TWO; free < TWO + SCROLLBAR; free++) {
+      expect(new Set(run(free, 0).slice(2)).size, `at ${free} px`).toBe(2);
+    }
+  });
+
+  test("with the band, it settles after one step", () => {
+    for (let free = TWO - 4; free < TWO + 2 * SCROLLBAR; free++) {
+      expect(new Set(run(free, SCROLLBAR_HYSTERESIS).slice(1)).size, `at ${free} px`).toBe(1);
+    }
   });
 });

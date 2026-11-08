@@ -86,7 +86,7 @@ import {
   unreadChatIds,
 } from "./projectPageView";
 import "./projectPage.css";
-import { useFitLevel } from "@/lib/useFitLevel";
+import { SCROLLBAR_HYSTERESIS, useFitLevel } from "@/lib/useFitLevel";
 import { measureCloneWidths } from "@/lib/measureClone";
 import { getLocale } from "@/paraglide/runtime.js";
 
@@ -255,6 +255,9 @@ function ProjectPageBody({ page }: { page: NonNullable<PageData> }) {
     },
     () => [headRef.current],
     [getLocale(), page.project.sidebarHidden],
+    // A wider bar wraps under the title: a taller header, which can bring the
+    // page's scrollbar and take the header's width away (lot 11).
+    { hysteresis: SCROLLBAR_HYSTERESIS },
   );
   const bar = projectBarState(barLevel);
   const barMoved = bar.moved;
@@ -1552,6 +1555,11 @@ function ColumnView({
     },
     () => [wrapRef.current],
     [data === undefined],
+    // The two views differ in height — a parent column longer than the current
+    // folder makes the columns view the taller one — so the columns can bring the
+    // page's scrollbar that takes their width away: the band keeps that from
+    // swapping the views every frame (lot 11).
+    { hysteresis: SCROLLBAR_HYSTERESIS },
   );
   const oneLevel = fit > 0;
   if (data === undefined) {
